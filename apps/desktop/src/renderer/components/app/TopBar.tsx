@@ -1011,8 +1011,8 @@ export function TopBar() {
     hasGitHubRemote === false &&
     hasOrigin === false;
   const connectedRemoteCount = remoteSnapshot?.connectedCount ?? 0;
-  const remoteStatusCount = Math.max(connectedRemoteCount, remoteBinding ? 1 : 0);
-  const remoteConnected = remoteStatusCount > 0;
+  const remoteStatusCount = Math.max(connectedRemoteCount, openRemoteProjectTabs.length);
+  const remoteConnected = connectedRemoteCount > 0;
   const syncConnected = isSyncConnected(syncSnapshot);
   const showSyncControl = workspaceProjectOpen;
 
@@ -1082,7 +1082,9 @@ export function TopBar() {
   useEffect(() => {
     if (!remoteBinding) return;
     setOpenProjectTabRoots((prev) =>
-      prev.filter((rootPath) => rootPath !== remoteBinding.rootPath),
+      useAppStore.getState().projectInfoByRoot[remoteBinding.rootPath]
+        ? prev
+        : prev.filter((rootPath) => rootPath !== remoteBinding.rootPath),
     );
     setOpenRemoteProjectTabs((prev) => {
       const existingIndex = prev.findIndex(
@@ -1472,8 +1474,11 @@ export function TopBar() {
     switchRemoteProject,
   ]);
 
-  const handleRemoteTargetDisconnectRequested = useCallback(
-    async (target: RemoteRuntimeTarget): Promise<boolean> => {
+  const confirmAndCloseRemoteTargetTabs = useCallback(
+    async (
+      target: RemoteRuntimeTarget,
+      action: "disconnect" | "remove",
+    ): Promise<boolean> => {
       const latestRemoteTabs = openRemoteProjectTabsRef.current;
       const affectedTabs = latestRemoteTabs.filter(
         (entry) => entry.targetId === target.id,
@@ -1484,20 +1489,28 @@ export function TopBar() {
         affectedTabs.length > 0
           ? affectedTabs.map((entry) => `- ${entry.displayName}`).join("\n")
           : "";
+      const verb = action === "remove" ? "Removing" : "Disconnecting";
+      const reconnectCopy = action === "remove"
+        ? "Add the machine again to reconnect."
+        : "ADE will not reconnect to this machine until you connect again.";
       const message =
         affectedCount > 0
           ? [
               `${affectedCount} open project tab${affectedCount === 1 ? "" : "s"} use this remote connection:`,
               affectedProjectLines,
               "",
-              "Disconnecting will close those project tabs. ADE will not reconnect to this machine until you connect again.",
+              `${verb} will close those project tabs. ${reconnectCopy}`,
             ].join("\n")
-          : "Disconnecting will stop this remote connection. ADE will not reconnect to this machine until you connect again.";
+          : action === "remove"
+            ? "Removing this machine will delete its saved SSH details."
+            : "Disconnecting will stop this remote connection. ADE will not reconnect to this machine until you connect again.";
 
       const confirmed = await confirmRemoteDisconnect({
-        title: `Disconnect ${targetName}?`,
+        title: action === "remove"
+          ? `Remove ${targetName}?`
+          : `Disconnect ${targetName}?`,
         message,
-        confirmLabel: "DISCONNECT",
+        confirmLabel: action === "remove" ? "REMOVE" : "DISCONNECT",
         danger: true,
       });
       if (!confirmed) return false;
@@ -1540,6 +1553,18 @@ export function TopBar() {
       return true;
     },
     [confirmRemoteDisconnect],
+  );
+
+  const handleRemoteTargetDisconnectRequested = useCallback(
+    (target: RemoteRuntimeTarget): Promise<boolean> =>
+      confirmAndCloseRemoteTargetTabs(target, "disconnect"),
+    [confirmAndCloseRemoteTargetTabs],
+  );
+
+  const handleRemoteTargetRemoveRequested = useCallback(
+    (target: RemoteRuntimeTarget): Promise<boolean> =>
+      confirmAndCloseRemoteTargetTabs(target, "remove"),
+    [confirmAndCloseRemoteTargetTabs],
   );
 
   const handleRelocate = useCallback(
@@ -2500,6 +2525,7 @@ export function TopBar() {
             <div className="p-4 pr-12">
               <RemoteTargetList
                 onDisconnectRequested={handleRemoteTargetDisconnectRequested}
+                onRemoveRequested={handleRemoteTargetRemoveRequested}
               />
             </div>
           </div>

@@ -657,6 +657,7 @@ import type {
   RemoteRuntimeConnectionSnapshot,
   RemoteRuntimeConnectResult,
   RemoteRuntimeDiscoveryResult,
+  RemoteRuntimeEventCategory,
   RemoteRuntimeEventNotificationPayload,
   RemoteRuntimeLocalWorkCheckResult,
   RemoteRuntimePortForward,
@@ -1927,6 +1928,17 @@ function toRemoteRuntimeEventNotificationPayload(
   return { bindingKey, event };
 }
 
+function isRemoteRuntimeEventCategory(
+  value: unknown,
+): value is RemoteRuntimeEventCategory {
+  return (
+    value === "orchestrator" ||
+    value === "dag_mutation" ||
+    value === "runtime" ||
+    value === "pty"
+  );
+}
+
 function toRemoteRuntimeBufferedEvent(
   value: unknown,
 ): RemoteRuntimeBufferedEvent | null {
@@ -1934,7 +1946,7 @@ function toRemoteRuntimeBufferedEvent(
   if (typeof value.id !== "number" || !Number.isFinite(value.id)) return null;
   if (typeof value.timestamp !== "string") return null;
   const category = value.category;
-  if (category !== "runtime" && category !== "pty") {
+  if (!isRemoteRuntimeEventCategory(category)) {
     return null;
   }
   const payload = isRecord(value.payload) ? value.payload : {};

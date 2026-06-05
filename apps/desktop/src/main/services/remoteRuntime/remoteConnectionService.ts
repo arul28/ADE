@@ -60,8 +60,14 @@ function automaticReconnectStoppedMessage(): string {
 
 function isImplicitConnectionFailure(error: unknown): boolean {
   const message = errorMessage(error);
-  return /remote (?:runtime|ADE service) connection (?:closed|failed|was interrupted)|remote ADE service connection failed recently|timed out waiting for method|stream closed|channel closed|connection lost|socket closed|ECONNRESET|ECONNABORTED|EPIPE|ENOTCONN|remote target is not connected/i.test(
+  return /remote (?:runtime|ADE service) connection (?:closed|failed|was interrupted)|remote ADE service connection failed recently|timed out waiting for method|stream closed|channel closed|connection lost|socket closed|ECONNRESET|ECONNABORTED|EPIPE|ENOTCONN|remote target is not connected|SSH server at .* closed the connection before ADE could finish the SSH handshake|Timed out while waiting for the SSH handshake/i.test(
     message,
+  );
+}
+
+function isConnectionBackoffThrottle(error: unknown): boolean {
+  return /^Remote ADE service connection failed recently\b/i.test(
+    errorMessage(error),
   );
 }
 
@@ -79,7 +85,7 @@ function coerceConnectionProject(value: unknown): RemoteRuntimeProjectRecord {
 }
 
 function shouldAutoconnectTarget(target: RemoteRuntimeTarget): boolean {
-  return target.lastConnectedAt != null;
+  return target.lastConnectedAt != null && target.manuallyDisconnectedAt == null;
 }
 
 export class RemoteConnectionService {
@@ -90,6 +96,7 @@ export class RemoteConnectionService {
     number
   >();
   private readonly automaticReconnectPausedTargetIds = new Set<string>();
+  private readonly disconnectGenerationByTargetId = new Map<string, number>();
   private readonly listeners = new Set<
     (snapshot: RemoteRuntimeConnectionSnapshot) => void
   >();
@@ -216,7 +223,7 @@ export class RemoteConnectionService {
     targetId: string,
     options: RemoteConnectionConnectOptions = {},
   ): Promise<RemoteRuntimeConnectResult> {
-    const target = this.requireTarget(targetId);
+    let target = this.requireTarget(targetId);
     const explicit = options.explicit === true;
     if (explicit) {
       this.manuallyDisconnectedTargetIds.delete(target.id);
@@ -224,30 +231,53 @@ export class RemoteConnectionService {
     } else {
       this.assertImplicitReconnectAllowed(target.id);
     }
+    const disconnectGeneration = this.getDisconnectGeneration(target.id);
     this.mergeStatus(target.id, {
       state: "connecting",
       lastAttemptedAt: Date.now(),
       lastError: null,
     });
     try {
-      const result = await this.pool.connect(target);
-      this.mergeStatus(result.target.id, {
+      const result = explicit
+        ? await this.pool.connect(target, { bypassFailureBackoff: true })
+        : await this.pool.connect(target);
+      if (!this.isDisconnectGenerationCurrent(target.id, disconnectGeneration)) {
+        if (this.manuallyDisconnectedTargetIds.has(target.id)) {
+          this.pool.disconnect(target.id);
+        }
+        throw new Error(
+          "Remote target was disconnected before ADE finished connecting.",
+        );
+      }
+      const connectedResult =
+        explicit && result.target.manuallyDisconnectedAt != null
+          ? {
+              ...result,
+              target: this.registry.update(result.target.id, {
+                manuallyDisconnectedAt: null,
+              }),
+            }
+          : result;
+      this.mergeStatus(connectedResult.target.id, {
         state: "connected",
-        arch: result.arch,
-        version: result.version,
-        capabilities: result.capabilities,
-        compatibilityWarnings: result.compatibilityWarnings,
-        projects: result.projects,
-        connectedAt: result.target.lastConnectedAt ?? Date.now(),
+        arch: connectedResult.arch,
+        version: connectedResult.version,
+        capabilities: connectedResult.capabilities,
+        compatibilityWarnings: connectedResult.compatibilityWarnings,
+        projects: connectedResult.projects,
+        connectedAt: connectedResult.target.lastConnectedAt ?? Date.now(),
         lastAttemptedAt: Date.now(),
         lastError: null,
       });
-      this.clearAutomaticReconnectBudget(result.target.id);
-      return result;
+      this.clearAutomaticReconnectBudget(connectedResult.target.id);
+      return connectedResult;
     } catch (error) {
+      if (!this.isDisconnectGenerationCurrent(target.id, disconnectGeneration)) {
+        throw error;
+      }
       const lastError = explicit
         ? errorMessage(error)
-        : this.noteAutomaticReconnectFailure(target.id, error);
+        : this.recordImplicitFailure(target.id, error);
       this.mergeStatus(target.id, {
         state: "error",
         lastError,
@@ -263,7 +293,11 @@ export class RemoteConnectionService {
   ): void {
     if (options.manual) {
       this.manuallyDisconnectedTargetIds.add(targetId);
+      if (this.registry.get(targetId)) {
+        this.registry.update(targetId, { manuallyDisconnectedAt: Date.now() });
+      }
     }
+    this.bumpDisconnectGeneration(targetId);
     this.pool.disconnect(targetId);
     this.mergeStatus(targetId, { state: "idle", lastError: null });
   }
@@ -650,7 +684,11 @@ export class RemoteConnectionService {
   }
 
   private assertImplicitReconnectAllowed(targetId: string): void {
-    if (this.manuallyDisconnectedTargetIds.has(targetId)) {
+    const target = this.registry.get(targetId);
+    if (
+      this.manuallyDisconnectedTargetIds.has(targetId) ||
+      target?.manuallyDisconnectedAt != null
+    ) {
       throw new Error(
         "Remote machine was manually disconnected. Connect again to use this remote project.",
       );
@@ -667,6 +705,7 @@ export class RemoteConnectionService {
 
   private recordImplicitFailure(targetId: string, error: unknown): string {
     if (!isImplicitConnectionFailure(error)) return errorMessage(error);
+    if (isConnectionBackoffThrottle(error)) return errorMessage(error);
     return this.noteAutomaticReconnectFailure(targetId, error);
   }
 
@@ -715,6 +754,24 @@ export class RemoteConnectionService {
         "idle") as RemoteRuntimeConnectionState,
     });
     this.emit();
+  }
+
+  private getDisconnectGeneration(targetId: string): number {
+    return this.disconnectGenerationByTargetId.get(targetId) ?? 0;
+  }
+
+  private bumpDisconnectGeneration(targetId: string): number {
+    const generation =
+      this.getDisconnectGeneration(targetId) + 1;
+    this.disconnectGenerationByTargetId.set(targetId, generation);
+    return generation;
+  }
+
+  private isDisconnectGenerationCurrent(
+    targetId: string,
+    generation: number,
+  ): boolean {
+    return this.getDisconnectGeneration(targetId) === generation;
   }
 
   private emit(): void {

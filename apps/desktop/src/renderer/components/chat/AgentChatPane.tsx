@@ -4727,13 +4727,13 @@ export function AgentChatPane({
     if (!selectedSessionId && !laneId) { setSdkSlashCommands([]); return; }
     let cancelled = false;
     const args = selectedSessionId
-      ? { sessionId: selectedSessionId }
-      : { laneId, provider: sessionProvider };
+      ? { sessionId: selectedSessionId, projectRoot }
+      : { laneId, provider: sessionProvider, projectRoot };
     getAgentChatSlashCommandsCached(args)
       .then((cmds) => { if (!cancelled) setSdkSlashCommands(cmds); })
       .catch(() => { if (!cancelled) setSdkSlashCommands([]); });
     return () => { cancelled = true; };
-  }, [isTileActive, laneId, selectedSessionId, sessionProvider]);
+  }, [isTileActive, laneId, projectRoot, selectedSessionId, sessionProvider]);
 
   const sessionDeltaTurnActiveRef = useRef(false);
   const sessionDeltaSessionIdRef = useRef<string | null>(null);

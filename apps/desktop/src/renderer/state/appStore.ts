@@ -953,11 +953,17 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   dismissedMissingAiBannerRoots: {},
   dismissedGithubBannerRoots: {},
 
-  setProject: (project) =>
-    set((prev) => {
-      const previousProjectRoot = selectActiveProjectRoot(prev);
-      const nextProjectRoot = project?.rootPath ?? null;
-      const projectChanged = previousProjectRoot !== nextProjectRoot;
+	  setProject: (project) =>
+	    set((prev) => {
+	      const previousProjectRoot = selectActiveProjectRoot(prev);
+	      const nextProjectRoot = project?.rootPath ?? null;
+	      const matchingRemoteBinding =
+	        project &&
+	        prev.projectBinding?.kind === "remote" &&
+	        prev.projectBinding.rootPath === project.rootPath
+	          ? prev.projectBinding
+	          : null;
+	      const projectChanged = previousProjectRoot !== nextProjectRoot;
       const warmLaneCache = projectChanged && nextProjectRoot
         ? prev.laneCacheByProject[nextProjectRoot] ?? readPersistedLaneCache(nextProjectRoot)
         : null;
@@ -974,24 +980,24 @@ const createAppState: StateCreator<AppState> = (set, get) => {
           }
         : null;
       return {
-        project,
-        projectInfoByRoot: project
-          ? {
-              ...prev.projectInfoByRoot,
-              [project.rootPath]: project,
-            }
-          : prev.projectInfoByRoot,
-        openProjectTabRoots: project && !prev.openProjectTabRoots.includes(project.rootPath)
-          ? [...prev.openProjectTabRoots, project.rootPath]
-          : prev.openProjectTabRoots,
-        projectBinding: project
-          ? {
-            kind: "local",
-            key: `local:${project.rootPath}`,
-            rootPath: project.rootPath,
-            displayName: project.displayName,
-          }
-          : null,
+	        project,
+	        projectInfoByRoot: project && !matchingRemoteBinding
+	          ? {
+	              ...prev.projectInfoByRoot,
+	              [project.rootPath]: project,
+	            }
+	          : prev.projectInfoByRoot,
+	        openProjectTabRoots: project && !matchingRemoteBinding && !prev.openProjectTabRoots.includes(project.rootPath)
+	          ? [...prev.openProjectTabRoots, project.rootPath]
+	          : prev.openProjectTabRoots,
+	        projectBinding: project
+	          ? matchingRemoteBinding ?? {
+	            kind: "local",
+	            key: `local:${project.rootPath}`,
+	            rootPath: project.rootPath,
+	            displayName: project.displayName,
+	          }
+	          : null,
         projectRevision:
           projectChanged ? prev.projectRevision + 1 : prev.projectRevision,
         laneDeleteProgressByLaneId:
@@ -1023,16 +1029,20 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         [project.rootPath]: project,
       },
     })),
-  setProjectBinding: (projectBinding) =>
-    set((prev) => ({
-      projectBinding,
-      openProjectTabRoots:
-        projectBinding?.kind === "remote"
-          ? prev.openProjectTabRoots.filter(
-              (rootPath) => rootPath !== projectBinding.rootPath,
-            )
-          : prev.openProjectTabRoots,
-    })),
+	  setProjectBinding: (projectBinding) =>
+	    set((prev) => {
+	      const shouldDropStaleRemoteRoot =
+	        projectBinding?.kind === "remote" &&
+	        !prev.projectInfoByRoot[projectBinding.rootPath];
+	      return {
+	        projectBinding,
+	        openProjectTabRoots: shouldDropStaleRemoteRoot
+	          ? prev.openProjectTabRoots.filter(
+	              (rootPath) => rootPath !== projectBinding.rootPath,
+	            )
+	          : prev.openProjectTabRoots,
+      };
+    }),
   setProjectHydrated: (projectHydrated) => set({ projectHydrated }),
   setShowWelcome: (showWelcome) => set({ showWelcome }),
   clearProjectTransitionError: () => set({ projectTransitionError: null }),

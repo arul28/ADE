@@ -63,6 +63,10 @@ type ConnectFailureBackoff = {
   retryAfterMs: number;
 };
 
+type RemoteConnectionPoolConnectOptions = {
+  bypassFailureBackoff?: boolean;
+};
+
 function isRemoteRuntimeConnectionError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   return /remote (?:runtime|ADE service) connection (?:closed|failed)|timed out waiting for method|stream closed|channel closed|connection lost|socket closed|ECONNRESET|ECONNABORTED|EPIPE|ENOTCONN/i.test(
@@ -270,6 +274,7 @@ export class RemoteConnectionPool {
     string,
     ConnectFailureBackoff
   >();
+  private readonly disconnectGenerationByTargetId = new Map<string, number>();
   private readonly evictionListeners = new Set<
     (targetId: string, error: Error) => void
   >();
@@ -281,8 +286,9 @@ export class RemoteConnectionPool {
 
   async connect(
     target: RemoteRuntimeTarget,
+    options: RemoteConnectionPoolConnectOptions = {},
   ): Promise<RemoteRuntimeConnectResult> {
-    return (await this.connectEntry(target)).result;
+    return (await this.connectEntry(target, options)).result;
   }
 
   onEntryEvicted(listener: (targetId: string, error: Error) => void): () => void {
@@ -320,13 +326,20 @@ export class RemoteConnectionPool {
     });
   }
 
-  private async connectEntry(target: RemoteRuntimeTarget): Promise<PoolEntry> {
+  private async connectEntry(
+    target: RemoteRuntimeTarget,
+    options: RemoteConnectionPoolConnectOptions = {},
+  ): Promise<PoolEntry> {
     const existing = this.entries.get(target.id);
     if (existing) {
       this.pendingDisconnects.delete(target.id);
       return await existing;
     }
-    this.assertConnectNotBackingOff(target.id);
+    if (options.bypassFailureBackoff) {
+      this.connectFailureBackoffByTargetId.delete(target.id);
+    } else {
+      this.assertConnectNotBackingOff(target.id);
+    }
     const pending = bootstrapRemoteRuntime({
       target,
       registry: this.registry,
@@ -786,6 +799,7 @@ export class RemoteConnectionPool {
   }
 
   disconnect(targetId: string): void {
+    this.bumpDisconnectGeneration(targetId);
     this.closeLocalPortForwardsForTarget(targetId);
     const existing = this.entries.get(targetId);
     if (!existing) return;
@@ -869,10 +883,18 @@ export class RemoteConnectionPool {
     options: { retryOnConnectionError: boolean },
   ): Promise<T> {
     const entry = await this.connectEntry(target);
+    const disconnectGeneration =
+      this.disconnectGenerationByTargetId.get(target.id) ?? 0;
     try {
       return await operation(entry);
     } catch (error) {
       if (!isRemoteRuntimeConnectionError(error)) throw error;
+      if (
+        (this.disconnectGenerationByTargetId.get(target.id) ?? 0) !==
+        disconnectGeneration
+      ) {
+        throw error;
+      }
       this.disconnect(target.id);
       const reconnectTarget = this.registry.get(target.id) ?? target;
       const nextEntry = await this.connectEntry(reconnectTarget);
@@ -951,6 +973,13 @@ export class RemoteConnectionPool {
       failureCount,
       retryAfterMs: Date.now() + backoffMs,
     });
+  }
+
+  private bumpDisconnectGeneration(targetId: string): void {
+    this.disconnectGenerationByTargetId.set(
+      targetId,
+      (this.disconnectGenerationByTargetId.get(targetId) ?? 0) + 1,
+    );
   }
 }
 

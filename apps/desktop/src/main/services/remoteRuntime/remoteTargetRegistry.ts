@@ -140,6 +140,7 @@ function coerceTarget(value: unknown): RemoteRuntimeTarget | null {
     lastSeenArch: typeof record.lastSeenArch === "string" && record.lastSeenArch.trim() ? record.lastSeenArch.trim() : null,
     runtimeBinaryVersion: typeof record.runtimeBinaryVersion === "string" && record.runtimeBinaryVersion.trim() ? record.runtimeBinaryVersion.trim() : null,
     lastConnectedAt: typeof record.lastConnectedAt === "number" && Number.isFinite(record.lastConnectedAt) ? record.lastConnectedAt : null,
+    manuallyDisconnectedAt: typeof record.manuallyDisconnectedAt === "number" && Number.isFinite(record.manuallyDisconnectedAt) ? record.manuallyDisconnectedAt : null,
   };
 }
 
@@ -176,6 +177,7 @@ export class RemoteTargetRegistry {
       lastSeenArch: existing?.lastSeenArch ?? null,
       runtimeBinaryVersion: existing?.runtimeBinaryVersion ?? null,
       lastConnectedAt: existing?.lastConnectedAt ?? null,
+      manuallyDisconnectedAt: existing?.manuallyDisconnectedAt ?? null,
     };
     file.targets = [next, ...file.targets.filter((target) => target.id !== id)];
     this.write(file);

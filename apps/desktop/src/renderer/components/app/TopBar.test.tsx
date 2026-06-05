@@ -151,6 +151,8 @@ function resetStore() {
     cancelNewTab: vi.fn(),
     projectTransition: null,
     projectTransitionError: null,
+    openProjectTabRoots: [],
+    projectInfoByRoot: {},
     clearProjectTransitionError: vi.fn(),
     switchProjectToPath: vi.fn(async () => undefined),
     switchRemoteProject: vi.fn(async (targetId: string, projectId: string) => ({
@@ -403,6 +405,7 @@ describe("TopBar", () => {
 
     expect(await screen.findByTitle("Mac Studio: /srv/ade/remote-app (Disconnected)")).toBeTruthy();
     expect(screen.getByLabelText("Disconnected: Mac Studio")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Remote, not connected" })).toBeTruthy();
   });
 
   it("keeps local tabs visible when a remote project is active", async () => {
@@ -538,6 +541,46 @@ describe("TopBar", () => {
       expect(screen.queryByTitle("/Users/admin/Projects/perf pass")).toBeNull();
       expect(useAppStore.getState().openProjectTabRoots).toEqual([]);
     });
+  });
+
+  it("keeps a known local tab when a remote project has the same root path", async () => {
+    const remoteBinding = {
+      kind: "remote" as const,
+      key: "remote:target-1:project-a",
+      targetId: "target-1",
+      runtimeName: "Mac Studio",
+      projectId: "project-a",
+      rootPath: "/Users/arul/Projects/perf pass",
+      displayName: "perf pass",
+    };
+    (globalThis.window.ade.remoteRuntime.getConnectionSnapshot as any)
+      .mockResolvedValue(makeRemoteConnectionSnapshot("target-1"));
+    useAppStore.setState({
+      project: {
+        rootPath: remoteBinding.rootPath,
+        displayName: remoteBinding.displayName,
+        baseRef: "main",
+      } as any,
+      projectBinding: remoteBinding,
+      projectInfoByRoot: {
+        [remoteBinding.rootPath]: {
+          rootPath: remoteBinding.rootPath,
+          displayName: "Local perf pass",
+          baseRef: "main",
+        },
+      },
+      openProjectTabRoots: [remoteBinding.rootPath],
+    } as any);
+
+    render(<TopBar />);
+
+    expect(
+      await screen.findByTitle("Mac Studio: /Users/arul/Projects/perf pass (Connected)"),
+    ).toBeTruthy();
+    expect(screen.getByTitle("/Users/arul/Projects/perf pass")).toBeTruthy();
+    expect(useAppStore.getState().openProjectTabRoots).toEqual([
+      remoteBinding.rootPath,
+    ]);
   });
 
   it("does not detach again after a project tab is dropped onto an ADE target", async () => {

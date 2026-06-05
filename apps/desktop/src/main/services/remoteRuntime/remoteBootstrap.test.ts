@@ -702,6 +702,14 @@ describe("bootstrapRemoteRuntime upload flow", () => {
     connectSshWithRouteMock.mockResolvedValue({
       client: fakeSsh.ssh,
       route: uploadRoute,
+      openSshConfig: {
+        host: "resolved-build-host.local",
+        port: 2222,
+        username: "builder",
+        identityFile: "/Users/ade/.ssh/id_ed25519",
+        knownHostsPath: "/Users/ade/.ssh/known_hosts.ade",
+        hostAliases: ["build-host.local", "resolved-build-host.local"],
+      },
     });
     const commands: string[] = [];
     execSshMock.mockImplementation(async (_client: Client, command: string) => {
@@ -776,6 +784,14 @@ describe("bootstrapRemoteRuntime upload flow", () => {
     connectSshWithRouteMock.mockResolvedValue({
       client: fakeSsh.ssh,
       route: uploadRoute,
+      openSshConfig: {
+        host: "resolved-build-host.local",
+        port: 2222,
+        username: "builder",
+        identityFile: "/Users/ade/.ssh/id_ed25519",
+        knownHostsPath: "/Users/ade/.ssh/known_hosts.ade",
+        hostAliases: ["build-host.local", "resolved-build-host.local"],
+      },
     });
     execSshMock.mockImplementation(async (_client: Client, command: string) => {
       const remotePath = resolvedRemotePath(command);
@@ -824,6 +840,14 @@ describe("bootstrapRemoteRuntime upload flow", () => {
     connectSshWithRouteMock.mockResolvedValue({
       client: fakeSsh.ssh,
       route: uploadRoute,
+      openSshConfig: {
+        host: "resolved-build-host.local",
+        port: 2222,
+        username: "builder",
+        identityFile: "/Users/ade/.ssh/id_ed25519",
+        knownHostsPath: "/Users/ade/.ssh/known_hosts.ade",
+        hostAliases: ["build-host.local", "resolved-build-host.local"],
+      },
     });
     execSshMock.mockImplementation(async (_client: Client, command: string) => {
       const remotePath = resolvedRemotePath(command);
@@ -877,6 +901,14 @@ describe("bootstrapRemoteRuntime upload flow", () => {
     connectSshWithRouteMock.mockResolvedValue({
       client: fakeSsh.ssh,
       route: uploadRoute,
+      openSshConfig: {
+        host: "resolved-build-host.local",
+        port: 2222,
+        username: "builder",
+        identityFile: "/Users/ade/.ssh/id_ed25519",
+        knownHostsPath: "/Users/ade/.ssh/known_hosts.ade",
+        hostAliases: ["build-host.local", "resolved-build-host.local"],
+      },
     });
     const commands: string[] = [];
     execSshMock.mockImplementation(async (_client: Client, command: string) => {
@@ -1069,6 +1101,14 @@ describe("bootstrapRemoteRuntime upload flow", () => {
     connectSshWithRouteMock.mockResolvedValue({
       client: fakeSsh.ssh,
       route: uploadRoute,
+      openSshConfig: {
+        host: "resolved-build-host.local",
+        port: 2222,
+        username: "builder",
+        identityFile: "/Users/ade/.ssh/id_ed25519",
+        knownHostsPath: "/Users/ade/.ssh/known_hosts.ade",
+        hostAliases: ["build-host.local", "resolved-build-host.local"],
+      },
     });
     const commands: string[] = [];
     execSshMock.mockImplementation(async (_client: Client, command: string) => {
@@ -1103,12 +1143,20 @@ describe("bootstrapRemoteRuntime upload flow", () => {
     expect(spawnMock).toHaveBeenCalledWith(
       "ssh",
       expect.arrayContaining([
+        "StrictHostKeyChecking=yes",
+        `UserKnownHostsFile=/Users/ade/.ssh/known_hosts.ade`,
+        "GlobalKnownHostsFile=/dev/null",
+        "-i",
+        "/Users/ade/.ssh/id_ed25519",
         "-p",
-        "22",
-        "ade@build-host.local",
+        "2222",
+        "builder@resolved-build-host.local",
         expect.stringMatching(guardedUploadCommandPattern(String.raw`\$HOME/\.ade/bin/ade\.upload-.*\.tmp`)),
       ]),
       expect.objectContaining({ stdio: [expect.any(Number), "ignore", "pipe"] }),
+    );
+    expect(spawnMock.mock.calls[0]?.[1]).not.toContain(
+      "StrictHostKeyChecking=accept-new",
     );
     expect(commands.some((command) => command.startsWith("rm -f $HOME/.ade/bin/ade.upload-"))).toBe(true);
     expect(openSshRuntimeTransportMock).not.toHaveBeenCalled();
@@ -1188,6 +1236,11 @@ describe("bootstrapRemoteRuntime upload flow", () => {
     expect(fakeSsh.exec).not.toHaveBeenCalled();
     expect(spawnMock).not.toHaveBeenCalled();
     expect(execSshMock).toHaveBeenCalledWith(fakeSsh.ssh, "codesign --force --sign - $HOME/.ade-alpha/bin/ade");
+    expect(execSshMock).toHaveBeenCalledWith(
+      fakeSsh.ssh,
+      expect.stringContaining("tar -xzf $HOME/.ade-alpha/runtime/ade-darwin-arm64.native.tar.gz"),
+      { timeoutMs: 10 * 60_000 },
+    );
     expect(openSshRuntimeTransportMock).toHaveBeenCalledWith(
       fakeSsh.ssh,
       'ADE_HOME="$HOME/.ade-alpha" PATH="$HOME/.ade-alpha/bin:$HOME/.local/bin:$HOME/.npm-global/bin${PATH:+:$PATH}" ADE_DEFAULT_ROLE="cto" ADE_PACKAGE_CHANNEL="alpha" ADE_DISABLE_RUNTIME_SERVICE_INSTALL=1 NODE_PATH="$HOME/.ade-alpha/runtime/darwin-arm64/node_modules${NODE_PATH:+:$NODE_PATH}" $HOME/.ade-alpha/bin/ade rpc --stdio',

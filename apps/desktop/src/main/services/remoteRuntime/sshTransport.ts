@@ -46,10 +46,20 @@ export type BuildSshConfigOptions = {
 
 export type ConnectedSshRoute = RemoteRuntimeTargetRoute;
 
+export type OpenSshResolvedConfig = {
+  host: string;
+  port: number;
+  username: string;
+  identityFile: string | null;
+  knownHostsPath: string | null;
+  hostAliases: string[];
+};
+
 export type ConnectedSshSession = {
   client: Client;
   route: ConnectedSshRoute;
   config: ConnectConfig;
+  openSshConfig: OpenSshResolvedConfig;
 };
 
 type KnownHostEntry = {
@@ -548,9 +558,32 @@ export async function trustSshHostKeyForTarget(
   };
 }
 
-export function buildSshConfig(target: RemoteRuntimeTarget, options: BuildSshConfigOptions = {}): ConnectConfig {
+function resolveOpenSshConfig(
+  target: RemoteRuntimeTarget,
+  options: BuildSshConfigOptions = {},
+): OpenSshResolvedConfig {
   const hostConfig = readOpenSshHostConfig(target, options);
   const endpoint = resolveSshEndpoint(target, options);
+  const identityFile = target.sshKeyPath
+    ?? (hostConfig.identityFile ? expandSshPath(hostConfig.identityFile, {
+      host: endpoint.host,
+      username: endpoint.username,
+      port: endpoint.port,
+      homeDir: endpoint.homeDir,
+    }) : null)
+    ?? firstReadableDefaultIdentity(endpoint.homeDir);
+  return {
+    host: endpoint.host,
+    port: endpoint.port,
+    username: endpoint.username,
+    identityFile,
+    knownHostsPath: endpoint.knownHostsPath,
+    hostAliases: endpoint.hostAliases,
+  };
+}
+
+export function buildSshConfig(target: RemoteRuntimeTarget, options: BuildSshConfigOptions = {}): ConnectConfig {
+  const endpoint = resolveOpenSshConfig(target, options);
   const env = options.env ?? process.env;
   const config: ConnectConfig = {
     host: endpoint.host,
@@ -563,16 +596,8 @@ export function buildSshConfig(target: RemoteRuntimeTarget, options: BuildSshCon
     keepaliveInterval: 0,
     keepaliveCountMax: 3,
   };
-  const identityFile = target.sshKeyPath
-    ?? (hostConfig.identityFile ? expandSshPath(hostConfig.identityFile, {
-      host: endpoint.host,
-      username: endpoint.username,
-      port: endpoint.port,
-      homeDir: endpoint.homeDir,
-    }) : null)
-    ?? firstReadableDefaultIdentity(endpoint.homeDir);
-  if (identityFile) {
-    config.privateKey = fs.readFileSync(identityFile);
+  if (endpoint.identityFile) {
+    config.privateKey = fs.readFileSync(endpoint.identityFile);
   }
   const knownHostEntries = readKnownHostEntries(endpoint.knownHostsPath);
   const candidates = knownHostCandidates(endpoint.hostAliases, endpoint.port);
@@ -898,16 +923,24 @@ function connectSshWithConfig(config: ConnectConfig): Promise<Client> {
 function buildSshConnectionCandidates(
   target: RemoteRuntimeTarget,
   options: BuildSshConfigOptions = {},
-): Array<{ config: ConnectConfig; route: ConnectedSshRoute }> {
+): Array<{
+  config: ConnectConfig;
+  openSshConfig: OpenSshResolvedConfig;
+  route: ConnectedSshRoute;
+}> {
   return buildSshRouteCandidates(target).flatMap((route) => {
     const routeTarget = targetForRoute(target, route);
-    return buildSshUsernameCandidates(routeTarget, options).map((username) => ({
-      config: buildSshConfig(routeTarget, {
+    return buildSshUsernameCandidates(routeTarget, options).map((username) => {
+      const candidateOptions = {
         ...options,
         usernameOverride: username,
-      }),
-      route,
-    }));
+      };
+      return {
+        config: buildSshConfig(routeTarget, candidateOptions),
+        openSshConfig: resolveOpenSshConfig(routeTarget, candidateOptions),
+        route,
+      };
+    });
   });
 }
 
@@ -920,7 +953,12 @@ export async function connectSshWithRoute(
     const candidate = configs[index]!;
     try {
       const client = await connectSshWithConfig(candidate.config);
-      return { client, route: candidate.route, config: candidate.config };
+      return {
+        client,
+        route: candidate.route,
+        config: candidate.config,
+        openSshConfig: candidate.openSshConfig,
+      };
     } catch (error) {
       lastError = error;
       if (index >= configs.length - 1) break;

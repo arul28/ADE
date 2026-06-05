@@ -466,12 +466,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       const welcomeChanged = currentShowWelcome === hasStoredProject;
 
       if (remoteBinding) {
+        setProjectBinding(remoteBinding);
         setProject({
           rootPath: remoteBinding.rootPath,
           displayName: remoteBinding.displayName,
           baseRef: "main",
         });
-        setProjectBinding(remoteBinding);
         setShowWelcome(false);
         clearScheduledRefreshes();
         void refreshLanes({ includeStatus: false });

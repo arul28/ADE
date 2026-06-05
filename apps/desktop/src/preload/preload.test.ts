@@ -4031,13 +4031,17 @@ describe("preload OAuth bridge", () => {
 
     const runtimeListener = on.mock.calls.find(([channel]) => channel === IPC.runtimeEvent)?.[1];
     expect(typeof runtimeListener).toBe("function");
-    const emit = (id: number, payload: Record<string, unknown>) => {
+    const emit = (
+      id: number,
+      payload: Record<string, unknown>,
+      category = "runtime",
+    ) => {
       runtimeListener({}, {
         bindingKey: binding.key,
         event: {
           id,
           timestamp: `2026-05-10T12:00:${String(id).padStart(2, "0")}.000Z`,
-          category: "runtime",
+          category,
           payload,
         },
       });
@@ -4080,9 +4084,9 @@ describe("preload OAuth bridge", () => {
 
     emit(1, { type: "usage", snapshot: usageSnapshot });
     emit(3, { ...automationEvent, source: "automations" });
-    emit(4, { type: "conflict_event", event: conflictEvent });
+    emit(4, { type: "conflict_event", event: conflictEvent }, "dag_mutation");
     emit(5, { type: "github_status_changed", event: githubStatus });
-    emit(6, { type: "linear_workflow_event", event: linearWorkflowEvent });
+    emit(6, { type: "linear_workflow_event", event: linearWorkflowEvent }, "orchestrator");
     emit(7, { type: "feedback_submission_event", event: feedbackEvent });
     emit(8, { type: "computer_use_event", event: computerUseEvent });
     emit(9, { type: "ios_simulator_event", event: iosEvent });

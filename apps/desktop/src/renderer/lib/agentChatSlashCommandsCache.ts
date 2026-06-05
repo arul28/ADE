@@ -13,10 +13,13 @@ const DEFAULT_TTL_MS = 5_000;
 const slashCommandCache = new Map<string, CacheEntry>();
 
 function cacheKey(args: AgentChatSlashCommandsArgs): string {
-  if (args.sessionId?.trim()) return `session:${args.sessionId.trim()}`;
+  const projectRoot = args.projectRoot?.trim() || "__active_project__";
+  if (args.sessionId?.trim()) {
+    return `project:${projectRoot}:session:${args.sessionId.trim()}`;
+  }
   const lane = args.laneId?.trim() || "__no_lane__";
   const provider = args.provider?.trim() || "__no_provider__";
-  return `lane:${lane}:provider:${provider}`;
+  return `project:${projectRoot}:lane:${lane}:provider:${provider}`;
 }
 
 export async function getAgentChatSlashCommandsCached(

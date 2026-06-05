@@ -21,6 +21,7 @@ export type RemoteRuntimeTarget = {
   lastSeenArch: string | null;
   runtimeBinaryVersion: string | null;
   lastConnectedAt: number | null;
+  manuallyDisconnectedAt?: number | null;
 };
 
 export type RemoteRuntimeTargetInput = {

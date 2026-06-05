@@ -1446,6 +1446,8 @@ app.whenReady().then(async () => {
     options: { emit?: boolean; foreground?: boolean } = {},
   ): void => {
     const normalizedRoot = projectRoot ? normalizeProjectRoot(projectRoot) : null;
+    const previousRemoteBinding =
+      windowId != null ? (windowProjectBindings.get(windowId) ?? null) : null;
     if (windowId != null) {
       windowProjectRoots.set(windowId, normalizedRoot);
       windowProjectBindings.delete(windowId);
@@ -1475,6 +1477,15 @@ app.whenReady().then(async () => {
             error: error instanceof Error ? error.message : String(error),
           });
         });
+      }
+    }
+    if (previousRemoteBinding) {
+      const remainingRemoteBinding =
+        Array.from(windowProjectBindings.values()).at(-1) ?? null;
+      if (remainingRemoteBinding) {
+        persistLastRemoteProjectBinding(remainingRemoteBinding);
+      } else {
+        clearLastRemoteProjectBinding();
       }
     }
     if (options.emit !== false) {

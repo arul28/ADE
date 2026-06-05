@@ -43,6 +43,9 @@ type RemoteTargetListProps = {
   onDisconnectRequested?: (
     target: RemoteRuntimeTarget,
   ) => boolean | Promise<boolean>;
+  onRemoveRequested?: (
+    target: RemoteRuntimeTarget,
+  ) => boolean | Promise<boolean>;
 };
 
 type ConnectTargetOptions = {
@@ -275,7 +278,7 @@ function discoveredMachineRouteIdentities(
 ): Set<string> {
   const identities = new Set<string>();
   for (const route of discoveredSshRoutes(machine)) {
-    const identity = routeIdentity(route.hostname, route.port ?? machine.port);
+    const identity = routeIdentity(route.hostname, route.port);
     if (identity) identities.add(identity);
   }
   return identities;
@@ -343,6 +346,7 @@ function formatRemoteTargetError(error: unknown): string {
 export function RemoteTargetList({
   onConnected,
   onDisconnectRequested,
+  onRemoveRequested,
 }: RemoteTargetListProps) {
   const [targets, setTargets] = useState<RemoteRuntimeTarget[]>([]);
   const [connectionSnapshot, setConnectionSnapshot] =
@@ -748,6 +752,11 @@ export function RemoteTargetList({
 
   const removeTarget = useCallback(
     async (targetId: string) => {
+      const target = targets.find((entry) => entry.id === targetId) ?? null;
+      if (target && onRemoveRequested) {
+        const shouldRemove = await onRemoveRequested(target);
+        if (!shouldRemove) return;
+      }
       setBusyId(targetId);
       try {
         await window.ade.remoteRuntime.removeTarget(targetId);
@@ -766,7 +775,7 @@ export function RemoteTargetList({
         setBusyId(null);
       }
     },
-    [formPrefill?.targetId, selectedId],
+    [formPrefill?.targetId, onRemoveRequested, selectedId, targets],
   );
 
   const connectedCount =

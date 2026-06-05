@@ -503,6 +503,60 @@ describe("RemoteTargetList", () => {
     expect(screen.getByText("Nearby machines are already saved.")).toBeTruthy();
   });
 
+  it("matches saved Bonjour machines by SSH default port instead of the ADE service port", async () => {
+    const target = {
+      id: "target-1",
+      name: "Studio",
+      hostname: "studio.local",
+      sshUser: null,
+      port: null,
+      sshKeyPath: null,
+      routes: [
+        {
+          hostname: "studio.local",
+          port: null,
+          source: "bonjour",
+          lastSucceededAt: null,
+        },
+      ],
+      lastSeenArch: null,
+      runtimeBinaryVersion: null,
+      lastConnectedAt: null,
+    };
+    remoteRuntimeMock.listTargets.mockResolvedValue([target]);
+    remoteRuntimeMock.listDiscoveredMachines.mockResolvedValue({
+      machines: [
+        {
+          id: "bonjour::studio",
+          serviceName: "ADE Studio",
+          machineName: "Studio",
+          hostIdentity: "studio",
+          hostName: "studio.local",
+          port: 8787,
+          addresses: [],
+          primaryRoute: "studio.local",
+          tailscaleAddress: null,
+          runtimeKind: "daemon",
+          runtimeVersion: "1.0.0",
+          projectIds: [],
+          projectCount: 0,
+          lastSeenAt: 1234,
+        },
+      ],
+      diagnostics: [],
+    });
+    installAdeMock();
+
+    render(<RemoteTargetList />);
+
+    await waitFor(() =>
+      expect(screen.getAllByText("Studio").length).toBeGreaterThan(0),
+    );
+    expect(screen.queryByText("studio.local:8787")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Use host" })).toBeNull();
+    expect(screen.getByText("Nearby machines are already saved.")).toBeTruthy();
+  });
+
   it("surfaces Tailscale discovery diagnostics separately from empty results", async () => {
     remoteRuntimeMock.listTargets.mockResolvedValue([]);
     remoteRuntimeMock.listDiscoveredMachines.mockResolvedValue({

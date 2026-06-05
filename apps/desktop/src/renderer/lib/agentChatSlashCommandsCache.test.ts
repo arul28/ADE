@@ -67,4 +67,28 @@ describe("agentChatSlashCommandsCache", () => {
 
     expect(slashCommands).toHaveBeenCalledTimes(3);
   });
+
+  it("keeps matching session and lane keys separate across project roots", async () => {
+    const slashCommands = vi.mocked(window.ade.agentChat.slashCommands);
+    slashCommands
+      .mockResolvedValueOnce([command("/local")])
+      .mockResolvedValueOnce([command("/remote")])
+      .mockResolvedValueOnce([command("/lane-local")])
+      .mockResolvedValueOnce([command("/lane-remote")]);
+
+    await expect(
+      getAgentChatSlashCommandsCached({ sessionId: "session-1", projectRoot: "/local/repo" }),
+    ).resolves.toEqual([command("/local")]);
+    await expect(
+      getAgentChatSlashCommandsCached({ sessionId: "session-1", projectRoot: "/remote/repo" }),
+    ).resolves.toEqual([command("/remote")]);
+    await expect(
+      getAgentChatSlashCommandsCached({ laneId: "lane-1", provider: "codex", projectRoot: "/local/repo" }),
+    ).resolves.toEqual([command("/lane-local")]);
+    await expect(
+      getAgentChatSlashCommandsCached({ laneId: "lane-1", provider: "codex", projectRoot: "/remote/repo" }),
+    ).resolves.toEqual([command("/lane-remote")]);
+
+    expect(slashCommands).toHaveBeenCalledTimes(4);
+  });
 });

@@ -75,4 +75,29 @@ describe("RemoteTargetRegistry", () => {
     ]);
     expect(registry.list()[0]?.routes).toEqual(target.routes);
   });
+
+  it("round-trips the manual disconnect marker", () => {
+    const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-remote-targets-"));
+    process.env.ADE_HOME = adeHome;
+
+    const registry = new RemoteTargetRegistry();
+    const target = registry.save({
+      name: "Build Server",
+      hostname: "203.0.113.10",
+      sshUser: "admin",
+      port: 22,
+      sshKeyPath: null,
+    });
+
+    registry.update(target.id, {
+      lastConnectedAt: 1_700_000_000,
+      manuallyDisconnectedAt: 1_700_000_100,
+    });
+
+    const restored = new RemoteTargetRegistry().get(target.id);
+    expect(restored).toMatchObject({
+      lastConnectedAt: 1_700_000_000,
+      manuallyDisconnectedAt: 1_700_000_100,
+    });
+  });
 });

@@ -309,7 +309,7 @@ describe("appStore", () => {
       expect(useAppStore.getState().projectHydrated).toBe(false);
     });
 
-    it("setProjectBinding removes a matching local tab root for remote projects", () => {
+    it("setProjectBinding removes a stale matching tab root for remote projects", () => {
       const remoteBinding = {
         kind: "remote" as const,
         key: "remote:target-1:project-a",
@@ -330,6 +330,59 @@ describe("appStore", () => {
       expect(useAppStore.getState().openProjectTabRoots).toEqual([
         "/Users/arul/ADE",
       ]);
+    });
+
+    it("setProjectBinding preserves a known local tab with the same root as a remote project", () => {
+      const remoteBinding = {
+        kind: "remote" as const,
+        key: "remote:target-1:project-a",
+        targetId: "target-1",
+        runtimeName: "Mac Studio",
+        projectId: "project-a",
+        rootPath: "/Users/arul/Projects/perf pass",
+        displayName: "perf pass",
+      };
+
+      useAppStore.setState({
+        projectInfoByRoot: {
+          [remoteBinding.rootPath]: {
+            rootPath: remoteBinding.rootPath,
+            displayName: "Local perf pass",
+            baseRef: "main",
+          },
+        },
+        openProjectTabRoots: [remoteBinding.rootPath],
+      } as any);
+
+      useAppStore.getState().setProjectBinding(remoteBinding);
+
+      expect(useAppStore.getState().projectBinding).toEqual(remoteBinding);
+      expect(useAppStore.getState().openProjectTabRoots).toEqual([
+        remoteBinding.rootPath,
+      ]);
+    });
+
+    it("setProject does not create a local tab for an active remote binding", () => {
+      const remoteBinding = {
+        kind: "remote" as const,
+        key: "remote:target-1:project-a",
+        targetId: "target-1",
+        runtimeName: "Mac Studio",
+        projectId: "project-a",
+        rootPath: "/Users/admin/Projects/perf pass",
+        displayName: "perf pass",
+      };
+
+      useAppStore.getState().setProjectBinding(remoteBinding);
+      useAppStore.getState().setProject({
+        rootPath: remoteBinding.rootPath,
+        displayName: remoteBinding.displayName,
+        baseRef: "main",
+      } as any);
+
+      expect(useAppStore.getState().projectBinding).toEqual(remoteBinding);
+      expect(useAppStore.getState().openProjectTabRoots).toEqual([]);
+      expect(useAppStore.getState().projectInfoByRoot[remoteBinding.rootPath]).toBeUndefined();
     });
 
     it("refreshProviderMode auto-elevates when runtime provider signals exist", async () => {

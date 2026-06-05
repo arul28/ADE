@@ -13,7 +13,7 @@ import type {
   RemoteRuntimeTargetRoute,
 } from "../../../shared/types/remoteRuntime";
 import { RuntimeRpcClient } from "./runtimeRpcClient";
-import { connectSshWithRoute, execSsh, openSshRuntimeTransport, type ConnectedSshRoute } from "./sshTransport";
+import { connectSshWithRoute, execSsh, openSshRuntimeTransport, type ConnectedSshRoute, type OpenSshResolvedConfig } from "./sshTransport";
 import { routeKey } from "./routeUtils";
 import {
   normalizeRemoteTargetRoutes,
@@ -99,6 +99,9 @@ type RemoteRuntimeInitializeInfo = {
   capabilities: RemoteRuntimeCapabilities;
   compatibilityWarnings: string[];
 };
+
+type OpenSshUploadConfig = Pick<ConnectConfig, "host" | "port" | "username"> &
+  Partial<Pick<OpenSshResolvedConfig, "identityFile" | "knownHostsPath" | "hostAliases">>;
 
 export function validateRemoteRuntimeInitializeResult(args: {
   result: unknown;
@@ -589,16 +592,26 @@ const REMOTE_ARTIFACT_UPLOAD_NO_PROGRESS_RETRIES = 2;
 function openSshArgsForRoute(
   target: RemoteRuntimeTarget,
   route: ConnectedSshRoute,
-  connectedConfig: Pick<ConnectConfig, "host" | "port" | "username"> | null | undefined,
+  connectedConfig: OpenSshUploadConfig | null | undefined,
   remoteCommand: string,
 ): string[] {
   const args = [
     "-o",
     "BatchMode=yes",
     "-o",
-    "StrictHostKeyChecking=accept-new",
+    "StrictHostKeyChecking=yes",
   ];
-  const identityFile = target.sshKeyPath?.trim();
+  const knownHostsPath = connectedConfig?.knownHostsPath?.trim();
+  if (knownHostsPath) {
+    args.push(
+      "-o",
+      `UserKnownHostsFile=${knownHostsPath}`,
+      "-o",
+      "GlobalKnownHostsFile=/dev/null",
+    );
+  }
+  const identityFile =
+    connectedConfig?.identityFile?.trim() || target.sshKeyPath?.trim();
   if (identityFile) args.push("-i", identityFile);
   const port = connectedConfig?.port ?? route.port ?? target.port;
   if (port) args.push("-p", String(port));
@@ -623,7 +636,7 @@ async function uploadSshChunk(
   client: Client,
   target: RemoteRuntimeTarget,
   route: ConnectedSshRoute,
-  connectedConfig: Pick<ConnectConfig, "host" | "port" | "username"> | null | undefined,
+  connectedConfig: OpenSshUploadConfig | null | undefined,
   remoteFileExpr: string,
   chunk: Buffer,
   committedBytes: number,
@@ -765,7 +778,7 @@ async function uploadSshChunkViaConnectedClient(
 async function uploadSshChunkViaOpenSsh(
   target: RemoteRuntimeTarget,
   route: ConnectedSshRoute,
-  connectedConfig: Pick<ConnectConfig, "host" | "port" | "username"> | null | undefined,
+  connectedConfig: OpenSshUploadConfig | null | undefined,
   remoteFileExpr: string,
   chunk: Buffer,
   committedBytes: number,
@@ -852,7 +865,7 @@ async function uploadSshFileInChunks(
   client: Client,
   target: RemoteRuntimeTarget,
   route: ConnectedSshRoute,
-  connectedConfig: Pick<ConnectConfig, "host" | "port" | "username"> | null | undefined,
+  connectedConfig: OpenSshUploadConfig | null | undefined,
   localPath: string,
   remoteFileExpr: string,
   totalBytes: number,
@@ -916,7 +929,7 @@ async function uploadSshFile(
   client: Client,
   target: RemoteRuntimeTarget,
   route: ConnectedSshRoute,
-  connectedConfig: Pick<ConnectConfig, "host" | "port" | "username"> | null | undefined,
+  connectedConfig: OpenSshUploadConfig | null | undefined,
   localPath: string,
   remoteFileExpr: string,
 ): Promise<void> {
@@ -949,7 +962,7 @@ async function uploadRuntimeBinary(
   client: Client,
   target: RemoteRuntimeTarget,
   route: ConnectedSshRoute,
-  connectedConfig: Pick<ConnectConfig, "host" | "port" | "username"> | null | undefined,
+  connectedConfig: OpenSshUploadConfig | null | undefined,
   layout: RemoteRuntimeLayout,
   localPath: string,
   appVersion: string,
@@ -985,7 +998,7 @@ async function uploadNativeDepsBundle(
   client: Client,
   target: RemoteRuntimeTarget,
   route: ConnectedSshRoute,
-  connectedConfig: Pick<ConnectConfig, "host" | "port" | "username"> | null | undefined,
+  connectedConfig: OpenSshUploadConfig | null | undefined,
   layout: RemoteRuntimeLayout,
   archLabel: string,
   localPath: string,
@@ -1002,14 +1015,18 @@ async function uploadNativeDepsBundle(
   );
   try {
     await uploadSshFile(client, target, route, connectedConfig, localPath, tempExpr);
-    const extract = await execSsh(client, [
-      remoteFileMatchesCommand(tempExpr, fileSizeBytes(localPath), localSha256),
-      `mv -f ${tempExpr} ${remoteArchiveExpr}`,
-      `rm -rf ${layout.runtimeDirExpr}/${archLabel}`,
-      `mkdir -p ${layout.runtimeDirExpr}/${archLabel}`,
-      `tar -xzf ${remoteArchiveExpr} -C ${layout.runtimeDirExpr}/${archLabel}`,
-      `printf '%s\\n' ${shellQuote(appVersion)} > ${layout.runtimeDirExpr}/${archLabel}/.ade-version`,
-    ].join(" && "));
+    const extract = await execSsh(
+      client,
+      [
+        remoteFileMatchesCommand(tempExpr, fileSizeBytes(localPath), localSha256),
+        `mv -f ${tempExpr} ${remoteArchiveExpr}`,
+        `rm -rf ${layout.runtimeDirExpr}/${archLabel}`,
+        `mkdir -p ${layout.runtimeDirExpr}/${archLabel}`,
+        `tar -xzf ${remoteArchiveExpr} -C ${layout.runtimeDirExpr}/${archLabel}`,
+        `printf '%s\\n' ${shellQuote(appVersion)} > ${layout.runtimeDirExpr}/${archLabel}/.ade-version`,
+      ].join(" && "),
+      { timeoutMs: REMOTE_ARTIFACT_UPLOAD_TIMEOUT_MS },
+    );
     if (extract.code !== 0) {
       throw new Error(extract.stderr.trim() || "Unable to unpack ADE service native dependencies on the remote machine.");
     }
@@ -1023,7 +1040,7 @@ async function uploadPtyHostWorker(
   client: Client,
   target: RemoteRuntimeTarget,
   route: ConnectedSshRoute,
-  connectedConfig: Pick<ConnectConfig, "host" | "port" | "username"> | null | undefined,
+  connectedConfig: OpenSshUploadConfig | null | undefined,
   layout: RemoteRuntimeLayout,
   localPath: string,
   localSha256: string,
@@ -1155,7 +1172,13 @@ export async function bootstrapRemoteRuntime(args: {
   resourcesPath: string;
   appVersion: string;
 }): Promise<{ client: RuntimeRpcClient; result: RemoteRuntimeConnectResult; ssh: Client }> {
-  const { client: ssh, route: connectedRoute, config: connectedConfig } = await connectSshWithRoute(args.target);
+  const {
+    client: ssh,
+    route: connectedRoute,
+    config: connectedConfig,
+    openSshConfig,
+  } = await connectSshWithRoute(args.target);
+  const uploadConnectionConfig = openSshConfig ?? connectedConfig;
   try {
     const uname = await execSsh(ssh, "uname -sm");
     if (uname.code !== 0) {
@@ -1231,7 +1254,7 @@ export async function bootstrapRemoteRuntime(args: {
 
     const uploadBundledRuntime = async (): Promise<void> => {
       if (!localBinary || !localBinarySha256) return;
-      await uploadRuntimeBinary(ssh, args.target, connectedRoute, connectedConfig, layout, localBinary, args.appVersion, localBinarySha256);
+      await uploadRuntimeBinary(ssh, args.target, connectedRoute, uploadConnectionConfig, layout, localBinary, args.appVersion, localBinarySha256);
       await signUploadedRuntimeBinaryIfNeeded(ssh, layout, arch.platform);
       runtimeUploaded = true;
       runtimeVersion = args.appVersion;
@@ -1255,7 +1278,7 @@ export async function bootstrapRemoteRuntime(args: {
       if (!nativeDepsBundle) return false;
       const shouldUploadNativeDeps = forceUpload || !supportStatus.nativeDepsReady;
       if (shouldUploadNativeDeps) {
-        await uploadNativeDepsBundle(ssh, args.target, connectedRoute, connectedConfig, layout, arch.label, nativeDepsBundle, args.appVersion);
+        await uploadNativeDepsBundle(ssh, args.target, connectedRoute, uploadConnectionConfig, layout, arch.label, nativeDepsBundle, args.appVersion);
       }
       return true;
     };
@@ -1277,7 +1300,7 @@ export async function bootstrapRemoteRuntime(args: {
           ssh,
           args.target,
           connectedRoute,
-          connectedConfig,
+          uploadConnectionConfig,
           layout,
           localPtyHostWorker,
           localPtyHostWorkerSha256,

@@ -552,6 +552,64 @@ describe("RemoteConnectionPool", () => {
     expect(bootstrapRemoteRuntimeMock).toHaveBeenCalledTimes(1);
   });
 
+  it("lets an explicit connect bypass a stale bootstrap backoff", async () => {
+    bootstrapRemoteRuntimeMock.mockRejectedValueOnce(
+      new Error("kex_exchange_identification: read: Connection reset by peer"),
+    );
+    const pool = new RemoteConnectionPool({} as RemoteTargetRegistry, "1.0.0");
+
+    await expect(pool.connect(target)).rejects.toThrow(
+      /kex_exchange_identification/i,
+    );
+    await expect(pool.connect(target)).rejects.toThrow(/Retrying in \d+s/i);
+
+    bootstrapRemoteRuntimeMock.mockResolvedValueOnce({
+      client: createClient(),
+      ssh: createSsh(),
+      result: connectResult("1.0.1"),
+    });
+
+    await expect(
+      pool.connect(target, { bypassFailureBackoff: true }),
+    ).resolves.toMatchObject({ version: "1.0.1" });
+    expect(bootstrapRemoteRuntimeMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not reconnect a retryable request after an explicit disconnect during the request", async () => {
+    const firstClient = createClient();
+    const firstSsh = createSsh();
+    let rejectCall!: (error: Error) => void;
+    firstClient.call.mockImplementationOnce(
+      () =>
+        new Promise((_resolve, reject) => {
+          rejectCall = reject;
+        }),
+    );
+    bootstrapRemoteRuntimeMock.mockResolvedValueOnce({
+      client: firstClient,
+      ssh: firstSsh,
+      result: connectResult("1.0.0"),
+    });
+    const pool = new RemoteConnectionPool(
+      { get: () => null } as unknown as RemoteTargetRegistry,
+      "1.0.0",
+    );
+
+    const pending = pool.callActionForTarget(target, "project-1", {
+      domain: "lane",
+      action: "list",
+    });
+    while (firstClient.call.mock.calls.length === 0) {
+      await Promise.resolve();
+    }
+    pool.disconnect(target.id);
+    rejectCall(new Error("Remote runtime connection closed."));
+
+    await expect(pending).rejects.toThrow(/connection closed/i);
+    expect(firstSsh.end).toHaveBeenCalledTimes(1);
+    expect(bootstrapRemoteRuntimeMock).toHaveBeenCalledTimes(1);
+  });
+
   it("does not replay non-idempotent machine calls after a connection interruption", async () => {
     const firstClient = createClient();
     firstClient.call.mockRejectedValueOnce(

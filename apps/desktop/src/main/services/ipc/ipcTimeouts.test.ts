@@ -35,6 +35,21 @@ describe("ipcInvokeTimeoutMs", () => {
       projectId: "project-1",
       request: { domain: "file", action: "readFile", args: {} },
     }])).toBe(75_000);
+    expect(ipcInvokeTimeoutMs(IPC.remoteRuntimeCallAction, [{
+      id: "target-1",
+      projectId: "project-1",
+      request: { domain: "file", action: "listTreeChildren", args: {} },
+    }])).toBe(75_000);
+    expect(ipcInvokeTimeoutMs(IPC.remoteRuntimeCallAction, [{
+      id: "target-1",
+      projectId: "project-1",
+      request: { domain: "file", action: "readFileRange", args: {} },
+    }])).toBe(75_000);
+    expect(ipcInvokeTimeoutMs(IPC.remoteRuntimeCallAction, [{
+      id: "target-1",
+      projectId: "project-1",
+      request: { domain: "file", action: "refreshGitDecorations", args: {} },
+    }])).toBe(75_000);
   });
 
   it("keeps ordinary remote runtime actions on the default timeout", () => {
