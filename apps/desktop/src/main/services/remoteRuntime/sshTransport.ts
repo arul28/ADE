@@ -20,6 +20,13 @@ export type SshExecResult = {
 };
 
 const MAX_SSH_EXEC_OUTPUT_BYTES = 8 * 1024 * 1024;
+const DEFAULT_SSH_EXEC_TIMEOUT_MS = 30_000;
+const MIN_SSH_EXEC_TIMEOUT_MS = 50;
+
+type ExecSshOptions = {
+  timeoutMs?: number;
+  env?: NodeJS.ProcessEnv;
+};
 
 type OpenSshHostConfig = {
   hostName?: string;
@@ -584,6 +591,14 @@ function sshConnectAttemptTimeoutMs(env: NodeJS.ProcessEnv): number {
     : DEFAULT_SSH_CONNECT_ATTEMPT_TIMEOUT_MS;
 }
 
+function sshExecTimeoutMs(options: ExecSshOptions = {}): number {
+  const raw = options.timeoutMs ?? options.env?.ADE_REMOTE_SSH_EXEC_TIMEOUT_MS ?? process.env.ADE_REMOTE_SSH_EXEC_TIMEOUT_MS;
+  const parsed = raw == null ? NaN : typeof raw === "number" ? raw : Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed >= MIN_SSH_EXEC_TIMEOUT_MS
+    ? parsed
+    : DEFAULT_SSH_EXEC_TIMEOUT_MS;
+}
+
 function uniqueUsernames(values: Array<string | null | undefined>): string[] {
   const seen = new Set<string>();
   const result: string[] = [];
@@ -926,41 +941,76 @@ export async function connectSsh(target: RemoteRuntimeTarget): Promise<Client> {
   return (await connectSshWithRoute(target)).client;
 }
 
-export function execSsh(client: Client, command: string): Promise<SshExecResult> {
+export function execSsh(client: Client, command: string, options: ExecSshOptions = {}): Promise<SshExecResult> {
   return new Promise((resolve, reject) => {
     client.exec(command, (error, stream) => {
       if (error) {
         reject(error);
         return;
       }
+      let settled = false;
       let stdout = "";
       let stderr = "";
       let stdoutBytes = 0;
       let stderrBytes = 0;
       let code: number | null = null;
+      let timeout: NodeJS.Timeout | null = null;
+      const closeStream = (): void => {
+        try {
+          stream.close();
+        } catch {}
+        try {
+          (stream as unknown as { destroy?: () => void }).destroy?.();
+        } catch {}
+      };
+      const clearTimer = (): void => {
+        if (!timeout) return;
+        clearTimeout(timeout);
+        timeout = null;
+      };
+      const settle = (callback: () => void): void => {
+        if (settled) return;
+        settled = true;
+        clearTimer();
+        callback();
+      };
+      const fail = (failure: Error): void => {
+        settle(() => {
+          closeStream();
+          reject(failure);
+        });
+      };
+      const timeoutMs = sshExecTimeoutMs(options);
+      timeout = setTimeout(() => {
+        fail(new Error(`Timed out waiting for SSH command to finish after ${timeoutMs}ms.`));
+      }, timeoutMs);
+      timeout.unref?.();
       stream.on("data", (chunk: Buffer) => {
+        if (settled) return;
         stdoutBytes += chunk.byteLength;
         if (stdoutBytes > MAX_SSH_EXEC_OUTPUT_BYTES) {
-          reject(new Error(`SSH command stdout exceeded ${MAX_SSH_EXEC_OUTPUT_BYTES} bytes.`));
-          stream.close();
+          fail(new Error(`SSH command stdout exceeded ${MAX_SSH_EXEC_OUTPUT_BYTES} bytes.`));
           return;
         }
         stdout += chunk.toString("utf8");
       });
       stream.stderr.on("data", (chunk: Buffer) => {
+        if (settled) return;
         stderrBytes += chunk.byteLength;
         if (stderrBytes > MAX_SSH_EXEC_OUTPUT_BYTES) {
-          reject(new Error(`SSH command stderr exceeded ${MAX_SSH_EXEC_OUTPUT_BYTES} bytes.`));
-          stream.close();
+          fail(new Error(`SSH command stderr exceeded ${MAX_SSH_EXEC_OUTPUT_BYTES} bytes.`));
           return;
         }
         stderr += chunk.toString("utf8");
       });
       stream.on("exit", (exitCode: number | null) => {
+        if (settled) return;
         code = exitCode;
       });
-      stream.on("close", () => resolve({ stdout, stderr, code }));
-      stream.on("error", reject);
+      stream.on("close", () => {
+        settle(() => resolve({ stdout, stderr, code }));
+      });
+      stream.on("error", (streamError: Error) => fail(streamError));
     });
   });
 }

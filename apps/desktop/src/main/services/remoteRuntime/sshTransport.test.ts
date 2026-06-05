@@ -3,6 +3,8 @@ import { createHmac } from "node:crypto";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
+import { PassThrough } from "node:stream";
+import type { Client } from "ssh2";
 import { afterEach, describe, expect, it } from "vitest";
 import type { RemoteRuntimeTarget } from "../../../shared/types/remoteRuntime";
 import {
@@ -10,6 +12,7 @@ import {
   buildSshConfigCandidates,
   buildSshRouteCandidates,
   buildSshUsernameCandidates,
+  execSsh,
   getSshHostKeyTrustForTarget,
   hasKnownSshHostKeyForTarget,
   parseOpenSshHostConfig,
@@ -559,6 +562,39 @@ describe("buildSshConfig", () => {
       homeDir,
       sshConfigPath: null,
     })).toBe(false);
+  });
+});
+
+describe("execSsh", () => {
+  it("times out and closes a remote exec channel that never finishes", async () => {
+    let closed = false;
+    let destroyed = false;
+    const stream = new PassThrough() as PassThrough & {
+      stderr: PassThrough;
+      close: () => void;
+      destroy: () => PassThrough;
+    };
+    stream.stderr = new PassThrough();
+    stream.close = () => {
+      closed = true;
+      stream.emit("close");
+    };
+    const originalDestroy = stream.destroy.bind(stream);
+    stream.destroy = () => {
+      destroyed = true;
+      originalDestroy();
+      return stream;
+    };
+    const client = {
+      exec(_command: string, callback: (error: Error | null, channel: typeof stream) => void) {
+        callback(null, stream);
+      },
+    } as unknown as Client;
+
+    await expect(execSsh(client, "sleep 1000", { timeoutMs: 75 })).rejects.toThrow(
+      "Timed out waiting for SSH command to finish after 75ms.",
+    );
+    expect(closed || destroyed).toBe(true);
   });
 });
 
