@@ -54,10 +54,7 @@ const panelStyle: CSSProperties = {
 const sectionStyle: CSSProperties = {
   display: "grid",
   gap: 12,
-  borderRadius: 8,
-  border: `1px solid ${COLORS.border}`,
-  background: "rgba(255,255,255,0.025)",
-  padding: 12,
+  padding: 0,
 };
 
 const machineRowStyle: CSSProperties = {
