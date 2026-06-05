@@ -2361,41 +2361,21 @@ export function TopBar() {
             )}
             role="dialog"
             aria-modal="true"
-            aria-labelledby="remote-connections-title"
+            aria-label="Remote machines"
             tabIndex={-1}
             onClick={(event) => event.stopPropagation()}
             onKeyDown={handleRemotePanelKeyDown}
           >
-            <div className="sticky top-0 z-10 flex items-center justify-between border-b border-white/10 bg-[color:var(--ade-shell-surface,#121019)] px-4 py-3">
-              <div className="flex min-w-0 items-center gap-2">
-                <DesktopTower
-                  size={16}
-                  weight="regular"
-                  className="shrink-0 text-[#FBBF24]"
-                />
-                <div className="min-w-0">
-                  <div
-                    id="remote-connections-title"
-                    className="truncate text-[13px] font-semibold"
-                  >
-                    Remote machines
-                  </div>
-                  <div className="truncate text-[11px] text-white/55">
-                    {remoteStatusCount} connected
-                  </div>
-                </div>
-              </div>
-              <button
-                type="button"
-                className="ade-shell-control inline-flex h-7 w-7 items-center justify-center rounded-md"
-                data-variant="ghost"
-                onClick={() => setRemotePanelOpen(false)}
-                title="Close remote machines"
-              >
-                <X size={13} weight="regular" />
-              </button>
-            </div>
-            <div className="p-4">
+            <button
+              type="button"
+              className="ade-shell-control absolute right-3 top-3 z-10 inline-flex h-7 w-7 items-center justify-center rounded-md"
+              data-variant="ghost"
+              onClick={() => setRemotePanelOpen(false)}
+              title="Close remote machines"
+            >
+              <X size={13} weight="regular" />
+            </button>
+            <div className="p-4 pr-12">
               <RemoteTargetList />
             </div>
           </div>

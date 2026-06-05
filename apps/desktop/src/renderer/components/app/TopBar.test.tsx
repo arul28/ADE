@@ -585,12 +585,18 @@ describe("TopBar", () => {
 
       fireEvent.click(await screen.findByTitle("Manage remote machines"));
 
-      expect(await screen.findByText("Remote machines")).toBeTruthy();
+      expect(
+        await screen.findByRole("dialog", { name: "Remote machines" }),
+      ).toBeTruthy();
       await waitFor(() => expect(events).toEqual(["start"]));
 
       fireEvent.click(screen.getByTitle("Close remote machines"));
 
-      await waitFor(() => expect(screen.queryByText("Remote machines")).toBeNull());
+      await waitFor(() =>
+        expect(
+          screen.queryByRole("dialog", { name: "Remote machines" }),
+        ).toBeNull(),
+      );
       expect(events).toEqual(["start", "end"]);
     } finally {
       window.removeEventListener(ADE_BROWSER_VIEW_OCCLUSION_START_EVENT, onStart);
