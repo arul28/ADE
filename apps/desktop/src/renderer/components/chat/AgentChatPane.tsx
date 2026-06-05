@@ -121,7 +121,7 @@ import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
 import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPicker";
 import { ConfirmDialog, useConfirmDialog } from "../shared/InlineDialogs";
 import { ChatActionsDrawerPanel, type ChatActionsTab } from "./ChatActionsDrawerPanel";
-import { useAppStore } from "../../state/appStore";
+import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
 import { buildChatAppearanceRootStyle } from "./chatAppearance";
 import { copyLaunchPromptToClipboard } from "../../lib/launchPromptClipboard";
 import { LaneAccentDot } from "../lanes/LaneAccentDot";
@@ -136,7 +136,13 @@ import {
 import { ClaudeCacheTtlBadge } from "../shared/ClaudeCacheTtlBadge";
 import { WorkSurfaceHeader } from "../work/WorkSurfaceHeader";
 import { shouldShowClaudeCacheTtl } from "../../lib/claudeCacheTtl";
+import {
+  invalidateAgentChatSessionListCache,
+  listAgentChatSessionsCached,
+} from "../../lib/agentChatSessionListCache";
+import { getAgentChatSlashCommandsCached } from "../../lib/agentChatSlashCommandsCache";
 import { getAgentChatModelsCached, getAiStatusCached, invalidateAiDiscoveryCache, peekAiStatusCached } from "../../lib/aiDiscoveryCache";
+import { getProjectConfigCached } from "../../lib/projectConfigCache";
 import { invalidateSessionListCache } from "../../lib/sessionListCache";
 import {
   isDraftLaunchJobStale,
@@ -182,6 +188,7 @@ const COMPOSER_DRAFT_WRITE_DEBOUNCE_MS = 350;
 const SUBAGENT_AUTOOPEN_FIRED_KEY_PREFIX = "ade.chat.subagentAutoOpenFired";
 const SUBAGENT_AUTOOPEN_FIRED_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const workCliStartupDelayMs = 180;
+const REMOTE_PARALLEL_LAUNCH_RECOVERY_DELAY_MS = 15_000;
 export const DEFAULT_PARALLEL_ATTACHMENT_REQUEST = "Please review the attached files.";
 
 const chatToolbarActionBase =
@@ -2336,8 +2343,9 @@ export function AgentChatPane({
   /** Callback when lane selection changes in empty state */
   onLaneChange?: (laneId: string) => void;
 }) {
-  const projectRoot = useAppStore((s) => s.project?.rootPath ?? null);
+  const projectRoot = useAppStore(selectActiveProjectRoot);
   const projectTransition = useAppStore((s) => s.projectTransition);
+  const isRemoteProject = useAppStore((s) => s.projectBinding?.kind === "remote");
   const agentTurnCompletionSound = useAppStore((s) => s.agentTurnCompletionSound);
   const agentTurnCompletionSoundVolume = useAppStore((s) => s.agentTurnCompletionSoundVolume);
   const agentTurnCompletionSoundQuietWhenFocused = useAppStore((s) => s.agentTurnCompletionSoundQuietWhenFocused);
@@ -2738,8 +2746,18 @@ export function AgentChatPane({
 
   useEffect(() => {
     const api = window.ade?.appControl;
-    if (!api?.getStatus) return;
-    if (!laneToolsVisible) return;
+    if (!api?.getStatus) {
+      setAppControlAvailable(false);
+      return;
+    }
+    if (!laneToolsVisible) {
+      setAppControlAvailable(false);
+      return;
+    }
+    if (isRemoteProject && !effectiveAppControlOpen) {
+      setAppControlAvailable(false);
+      return;
+    }
     let cancelled = false;
     void api.getStatus()
       .then((status) => {
@@ -2753,7 +2771,7 @@ export function AgentChatPane({
     return () => {
       cancelled = true;
     };
-  }, [laneToolsVisible]);
+  }, [effectiveAppControlOpen, isRemoteProject, laneToolsVisible]);
 
   useEffect(() => {
     companionHydrationKeyRef.current = companionStateKey;
@@ -3130,67 +3148,82 @@ export function AgentChatPane({
     if (recoveredParallelLaunchKeyRef.current === recoveryKey) return;
     recoveredParallelLaunchKeyRef.current = recoveryKey;
     let cancelled = false;
+    let recoveryTimer: number | null = null;
 
-    void (async () => {
-      let pendingState: AgentChatParallelLaunchState | null = null;
-      try {
-        pendingState = await window.ade.agentChat.parallelLaunchState.get({
-          projectRoot,
-          parentLaneId: laneId,
-        });
-      } catch {
-        return;
-      }
-      if (!pendingState) return;
-      if (isCompletedParallelLaunchState(pendingState)) {
-        await persistParallelLaunchState(null);
-        return;
-      }
-
-      if (!pendingState.createdLaneIds.length) {
-        await persistParallelLaunchState(null);
-        return;
-      }
-
-      if (cancelled) return;
-      setParallelLaunchBusy(true);
-      setParallelLaunchStatus("Cleaning up unfinished parallel launch…");
-      const cleanupIssues = await cleanupTransientParallelLaunchLanes({
-        laneIds: pendingState.createdLaneIds,
-        deleteLane: (args) => window.ade.lanes.delete(args),
-        refreshLanes: refreshLanesStore,
-        onCleanupError: logParallelLaunchCleanupError,
-      });
-
-      if (cleanupIssues.length === 0) {
-        await persistParallelLaunchState(null);
-      } else {
-        await persistParallelLaunchState(buildParallelLaunchState({
-          parentLaneId: pendingState.parentLaneId,
-          createdLaneIds: pendingState.createdLaneIds,
-          sentLaneIds: pendingState.sentLaneIds,
-          status: "cleanup_pending",
-          lastError: pendingState.lastError,
-        }));
-        if (!cancelled) {
-          setError(formatParallelLaunchFailureMessage({
-            launchError: "Recovered an unfinished parallel launch from before ADE closed.",
-            cleanupIssues,
-          }));
+    const recoverParallelLaunchState = () => {
+      void (async () => {
+        let pendingState: AgentChatParallelLaunchState | null = null;
+        try {
+          pendingState = await window.ade.agentChat.parallelLaunchState.get({
+            projectRoot,
+            parentLaneId: laneId,
+          });
+        } catch {
+          return;
         }
-      }
+        if (!pendingState) return;
+        if (isCompletedParallelLaunchState(pendingState)) {
+          await persistParallelLaunchState(null);
+          return;
+        }
 
-      if (!cancelled) {
-        setParallelLaunchBusy(false);
-        setParallelLaunchStatus(null);
-      }
-    })();
+        if (!pendingState.createdLaneIds.length) {
+          await persistParallelLaunchState(null);
+          return;
+        }
+
+        if (cancelled) return;
+        setParallelLaunchBusy(true);
+        setParallelLaunchStatus("Cleaning up unfinished parallel launch…");
+        try {
+          const cleanupIssues = await cleanupTransientParallelLaunchLanes({
+            laneIds: pendingState.createdLaneIds,
+            deleteLane: (args) => window.ade.lanes.delete(args),
+            refreshLanes: refreshLanesStore,
+            onCleanupError: logParallelLaunchCleanupError,
+          });
+
+          if (cleanupIssues.length === 0) {
+            await persistParallelLaunchState(null);
+          } else {
+            await persistParallelLaunchState(buildParallelLaunchState({
+              parentLaneId: pendingState.parentLaneId,
+              createdLaneIds: pendingState.createdLaneIds,
+              sentLaneIds: pendingState.sentLaneIds,
+              status: "cleanup_pending",
+              lastError: pendingState.lastError,
+            }));
+            if (!cancelled) {
+              setError(formatParallelLaunchFailureMessage({
+                launchError: "Recovered an unfinished parallel launch from before ADE closed.",
+                cleanupIssues,
+              }));
+            }
+          }
+        } finally {
+          setParallelLaunchBusy(false);
+          setParallelLaunchStatus(null);
+        }
+      })();
+    };
+
+    if (isRemoteProject) {
+      recoveryTimer = window.setTimeout(recoverParallelLaunchState, REMOTE_PARALLEL_LAUNCH_RECOVERY_DELAY_MS);
+    } else {
+      recoverParallelLaunchState();
+    }
 
     return () => {
       cancelled = true;
+      setParallelLaunchBusy(false);
+      setParallelLaunchStatus(null);
+      if (recoveryTimer != null) {
+        window.clearTimeout(recoveryTimer);
+      }
     };
   }, [
     initialSessionId,
+    isRemoteProject,
     laneId,
     lockSessionId,
     persistParallelLaunchState,
@@ -3917,6 +3950,10 @@ export function AgentChatPane({
     });
   }, []);
 
+  const invalidateCurrentChatSessionList = useCallback(() => {
+    invalidateAgentChatSessionListCache(laneId ? { laneId } : undefined);
+  }, [laneId]);
+
   const refreshLockedSessionSummary = useCallback(async () => {
     if (!lockSessionId) {
       setSessions([]);
@@ -3944,7 +3981,7 @@ export function AgentChatPane({
     return summary;
   }, [initialSessionSummary, lockSessionId]);
 
-  const refreshSessions = useCallback(async () => {
+  const refreshSessions = useCallback(async (options?: { force?: boolean }) => {
     if (lockedSingleSessionMode && lockSessionId) {
       await refreshLockedSessionSummary();
       return;
@@ -3960,7 +3997,10 @@ export function AgentChatPane({
       return;
     }
 
-    const allRows = await window.ade.agentChat.list({ laneId });
+    const allRows = await listAgentChatSessionsCached(
+      { laneId },
+      options?.force ? { force: true } : undefined,
+    );
     const rows = allRows.filter((session) => !session.archivedAt);
     setArchivedSessions(sortSessionSummariesByRecency(
       allRows.filter((session) => Boolean(session.archivedAt)),
@@ -4356,7 +4396,7 @@ export function AgentChatPane({
       setLoading(!hasRenderableSession);
       setPreferencesReady(false);
       try {
-        const snapshot = await window.ade.projectConfig.get();
+        const snapshot = await getProjectConfigCached({ projectRoot });
         const chat = snapshot.effective.ai?.chat;
         if (!cancelled) {
           // Don't auto-restore model — user must pick one explicitly each session
@@ -4637,6 +4677,10 @@ export function AgentChatPane({
       setComputerUseSnapshot(null);
       return;
     }
+    if (isRemoteProject && !(chatActionsOpen && chatActionsTab === "proof")) {
+      setComputerUseSnapshot(null);
+      return;
+    }
     if (!lockedSingleSessionMode) {
       void refreshComputerUseSnapshot(selectedSessionId);
       return;
@@ -4645,7 +4689,15 @@ export function AgentChatPane({
       void refreshComputerUseSnapshot(selectedSessionId);
     }, 180);
     return () => window.clearTimeout(handle);
-  }, [isTileActive, lockedSingleSessionMode, refreshComputerUseSnapshot, selectedSessionId]);
+  }, [
+    chatActionsOpen,
+    chatActionsTab,
+    isRemoteProject,
+    isTileActive,
+    lockedSingleSessionMode,
+    refreshComputerUseSnapshot,
+    selectedSessionId,
+  ]);
 
   useEffect(() => {
     setPromptSuggestion(null);
@@ -4686,17 +4738,38 @@ export function AgentChatPane({
     if (!selectedSessionId && !laneId) { setSdkSlashCommands([]); return; }
     let cancelled = false;
     const args = selectedSessionId
-      ? { sessionId: selectedSessionId }
-      : { laneId, provider: sessionProvider };
-    window.ade.agentChat.slashCommands(args)
+      ? { sessionId: selectedSessionId, projectRoot }
+      : { laneId, provider: sessionProvider, projectRoot };
+    getAgentChatSlashCommandsCached(args)
       .then((cmds) => { if (!cancelled) setSdkSlashCommands(cmds); })
       .catch(() => { if (!cancelled) setSdkSlashCommands([]); });
     return () => { cancelled = true; };
-  }, [isTileActive, laneId, selectedSessionId, sessionProvider]);
+  }, [isTileActive, laneId, projectRoot, selectedSessionId, sessionProvider]);
 
-  // Fetch git diff stats when the session changes or a turn completes
+  const sessionDeltaTurnActiveRef = useRef(false);
+  const sessionDeltaSessionIdRef = useRef<string | null>(null);
+  const remoteDeltaArmedSessionsRef = useRef<Set<string>>(new Set());
+
+  // Fetch git diff stats when the session changes or a turn completes. Remote
+  // chats skip the mount-time decoration fetch; the bridge should stay focused
+  // on loading the transcript until the user actually runs a turn.
   useEffect(() => {
     if (!selectedSessionId || !isTileActive) { setSessionDelta(null); return; }
+    const sameSession = sessionDeltaSessionIdRef.current === selectedSessionId;
+    const previousTurnActive = sameSession ? sessionDeltaTurnActiveRef.current : false;
+    sessionDeltaSessionIdRef.current = selectedSessionId;
+    sessionDeltaTurnActiveRef.current = turnActive;
+    if (isRemoteProject) {
+      const completedTurn =
+        sameSession
+        && previousTurnActive
+        && !turnActive;
+      if (!completedTurn) {
+        if (!turnActive) setSessionDelta(null);
+        return;
+      }
+      remoteDeltaArmedSessionsRef.current.delete(selectedSessionId);
+    }
     let cancelled = false;
     const fetchDelta = () => {
       window.ade.sessions.getDelta(selectedSessionId)
@@ -4712,7 +4785,7 @@ export function AgentChatPane({
     };
     fetchDelta();
     return () => { cancelled = true; };
-  }, [isTileActive, selectedSessionId, turnActive]);
+  }, [isRemoteProject, isTileActive, selectedSessionId, turnActive]);
 
   const flushQueuedEvents = useCallback(() => {
     const queued = pendingEventQueueRef.current;
@@ -4836,6 +4909,9 @@ export function AgentChatPane({
         envelope.event.type === "user_message"
         || (envelope.event.type === "status" && envelope.event.turnStatus === "started")
       ) {
+        if (isRemoteProject && envelope.event.type === "status") {
+          remoteDeltaArmedSessionsRef.current.add(envelope.sessionId);
+        }
         patchSessionSummary(envelope.sessionId, {
           status: "active",
           idleSinceAt: null,
@@ -4931,17 +5007,25 @@ export function AgentChatPane({
 
       if (shouldRefreshSlashCommands) {
         if (envelope.sessionId === selectedSessionIdRef.current) {
-          window.ade.agentChat.slashCommands({ sessionId: envelope.sessionId })
+          getAgentChatSlashCommandsCached(
+            { sessionId: envelope.sessionId },
+            {
+              force: envelope.event.type === "system_notice",
+            },
+          )
             .then(setSdkSlashCommands)
             .catch(() => {});
         }
       }
     });
     return unsubscribe;
-  }, [isTileVisible, layoutVariant, lockSessionId, flushQueuedEvents, patchSessionSummary, scheduleQueuedEventFlush, scheduleSessionsRefresh, touchSession]);
+  }, [isRemoteProject, isTileVisible, layoutVariant, lockSessionId, flushQueuedEvents, patchSessionSummary, scheduleQueuedEventFlush, scheduleSessionsRefresh, touchSession]);
 
   useEffect(() => {
     if (!isTileActive) return undefined;
+    if (isRemoteProject && !(chatActionsOpen && chatActionsTab === "proof")) {
+      return undefined;
+    }
     const unsubscribe = window.ade.computerUse.onEvent((event) => {
       if (!selectedSessionId) return;
       if (event.owner?.kind === "chat_session" && event.owner.id === selectedSessionId) {
@@ -4949,7 +5033,14 @@ export function AgentChatPane({
       }
     });
     return unsubscribe;
-  }, [isTileActive, refreshComputerUseSnapshot, selectedSessionId]);
+  }, [
+    chatActionsOpen,
+    chatActionsTab,
+    isRemoteProject,
+    isTileActive,
+    refreshComputerUseSnapshot,
+    selectedSessionId,
+  ]);
 
   useEffect(() => {
     if (!selectedSessionId) {
@@ -5592,6 +5683,7 @@ export function AgentChatPane({
         ...nativeControlPayload,
         ...orchestratorOverrides,
       });
+      invalidateAgentChatSessionListCache({ laneId: targetLaneId });
       // Follow-up: allocate the orchestration bundle. We do this immediately
       // so the bundle path is persisted alongside the new chat (workers will
       // pick it up from the manifest). If it fails, stop before sending the
@@ -5656,11 +5748,11 @@ export function AgentChatPane({
           sessionId: created.id,
           modelId: launchModelId,
         }).then(() => {
-          if (targetLaneId === laneId) void refreshSessions();
+          if (targetLaneId === laneId) void refreshSessions({ force: true });
         }).catch(() => { /* warmup is best-effort */ });
       }
       if (options.notify) notifySessionCreated(created, options.notifyOptions);
-      if (targetLaneId === laneId) void refreshSessions().catch(() => {});
+      if (targetLaneId === laneId) void refreshSessions({ force: true }).catch(() => {});
       return created;
   }, [codexFastMode, constrainedModelSelectionError, currentNativeControls, executionMode, initialNativeControls, laneId, lastLaunchConfigStorageKey, modelId, notifySessionCreated, patchSessionSummary, reasoningEffort, refreshSessions, touchSession, workDraftKind]);
 
@@ -5939,8 +6031,9 @@ export function AgentChatPane({
     optimisticSessionIdsRef.current.delete(session.id);
     knownSessionIdsRef.current.delete(session.id);
     invalidateSessionListCache();
+    invalidateAgentChatSessionListCache({ laneId: targetLane.laneId });
     if (targetLane.laneId === laneId) {
-      await refreshSessions().catch(() => undefined);
+      await refreshSessions({ force: true }).catch(() => undefined);
     }
   }, [laneId, refreshSessions]);
 
@@ -6134,8 +6227,9 @@ export function AgentChatPane({
         ? await startDraftChatLaunch(prepared, targetLane)
         : await startDraftCliLaunch(prepared, targetLane, mode);
       invalidateSessionListCache();
+      invalidateAgentChatSessionListCache({ laneId: targetLane.laneId });
       if (launched.draftKind === "chat" && targetLane.laneId === laneId) {
-        void refreshSessions().catch(() => {});
+        void refreshSessions({ force: true }).catch(() => {});
       }
       const launch = {
         laneId: targetLane.laneId,
@@ -6235,7 +6329,8 @@ export function AgentChatPane({
       });
       setChatActionsOpen(false);
       notifySessionCreated(result.session);
-      void refreshSessions().catch(() => {});
+      invalidateCurrentChatSessionList();
+      void refreshSessions({ force: true }).catch(() => {});
     } catch (handoffError) {
       setError(handoffError instanceof Error ? handoffError.message : String(handoffError));
     } finally {
@@ -6257,6 +6352,7 @@ export function AgentChatPane({
     handoffOpenCodePermissionMode,
     handoffReasoningEffort,
     handoffTargetProvider,
+    invalidateCurrentChatSessionList,
     notifySessionCreated,
     refreshSessions,
     selectedSession?.permissionMode,
@@ -6276,10 +6372,11 @@ export function AgentChatPane({
     void window.ade.agentChat.delete({ sessionId: selectedSessionId })
       .then(async () => {
         invalidateSessionListCache();
+        invalidateCurrentChatSessionList();
         draftsPerSessionRef.current.delete(selectedSessionId);
         localTouchBySessionRef.current.delete(selectedSessionId);
         loadedHistoryRef.current.delete(selectedSessionId);
-        await refreshSessions().catch(() => {});
+        await refreshSessions({ force: true }).catch(() => {});
       })
       .catch((err: unknown) => {
         const message = err instanceof Error ? err.message : String(err);
@@ -6288,23 +6385,24 @@ export function AgentChatPane({
       .finally(() => {
         setDeletingChatSessionId((current) => (current === selectedSessionId ? null : current));
       });
-  }, [refreshSessions, selectedSession, selectedSessionId]);
+  }, [invalidateCurrentChatSessionList, refreshSessions, selectedSession, selectedSessionId]);
 
   const handleArchiveChat = useCallback((sessionId: string) => {
     setError(null);
     void window.ade.agentChat.archive({ sessionId })
       .then(async () => {
         invalidateSessionListCache();
+        invalidateCurrentChatSessionList();
         if (selectedSessionIdRef.current === sessionId) {
           setSelectedSessionId(null);
         }
-        await refreshSessions().catch(() => {});
+        await refreshSessions({ force: true }).catch(() => {});
       })
       .catch((err: unknown) => {
         const message = err instanceof Error ? err.message : String(err);
         setError(`Archive failed: ${message}`);
       });
-  }, [refreshSessions]);
+  }, [invalidateCurrentChatSessionList, refreshSessions]);
 
   const archiveConfirm = useConfirmDialog();
   const requestArchiveChat = useCallback(
@@ -6324,13 +6422,14 @@ export function AgentChatPane({
     void window.ade.agentChat.unarchive({ sessionId })
       .then(async () => {
         invalidateSessionListCache();
-        await refreshSessions().catch(() => {});
+        invalidateCurrentChatSessionList();
+        await refreshSessions({ force: true }).catch(() => {});
       })
       .catch((err: unknown) => {
         const message = err instanceof Error ? err.message : String(err);
         setError(`Restore failed: ${message}`);
       });
-  }, [refreshSessions]);
+  }, [invalidateCurrentChatSessionList, refreshSessions]);
 
   // ── Eager session creation ──
   // Create a session as soon as we have a model + lane, so slash commands
@@ -8288,7 +8387,7 @@ export function AgentChatPane({
                   cursorModeId: updatedSession.cursorModeId,
                   cursorModeSnapshot: updatedSession.cursorModeSnapshot,
                 });
-                window.ade.agentChat.slashCommands({ sessionId: selectedSessionId })
+                getAgentChatSlashCommandsCached({ sessionId: selectedSessionId }, { force: true })
                   .then(setSdkSlashCommands)
                   .catch(() => {});
                 if (

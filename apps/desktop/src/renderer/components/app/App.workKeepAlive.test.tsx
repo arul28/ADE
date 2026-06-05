@@ -5,6 +5,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type * as ReactNamespace from "react";
 import type * as RouterNamespace from "react-router-dom";
+import { ADE_OPEN_BUILT_IN_BROWSER_EVENT } from "../../lib/openExternal";
 
 const workLifecycle = vi.hoisted(() => ({
   mounts: 0,
@@ -20,10 +21,30 @@ const appStoreState = vi.hoisted(() => ({
   projectHydrated: true,
   showWelcome: false,
   project: { rootPath: "/fake/project" },
+  projectBinding: {
+    kind: "local",
+    key: "local:/fake/project",
+    rootPath: "/fake/project",
+    displayName: "project",
+  } as {
+    kind: "local" | "remote";
+    key: string;
+    rootPath: string;
+    displayName: string;
+    targetId?: string;
+    runtimeName?: string;
+    projectId?: string;
+  },
   projectTransition: null as { kind: "opening" | "switching" | "closing"; rootPath: string | null; startedAtMs: number } | null,
   theme: "dark",
   launchPromptClipboardEnabled: true,
   launchPromptClipboardNoticeEnabled: true,
+  workViewByProject: {} as Record<string, Record<string, unknown>>,
+  setWorkViewState: vi.fn((projectRoot: string | null | undefined, next: Record<string, unknown>) => {
+    if (!projectRoot) return;
+    const current = appStoreState.workViewByProject[projectRoot] ?? {};
+    appStoreState.workViewByProject[projectRoot] = { ...current, ...next };
+  }),
   openProjectTabRoots: [] as string[],
   projectInfoByRoot: {} as Record<string, { rootPath: string; displayName?: string }>,
 }));
@@ -42,8 +63,11 @@ vi.mock("../../state/appStore", async () => {
   });
   return {
     useAppStore: vi.fn((selector: (state: typeof appStoreState) => unknown) => selector(appStoreState)),
-    createProjectAppStore: vi.fn((project) => {
-      let state = createScopedState(project);
+    createProjectAppStore: vi.fn((project, projectBinding) => {
+      let state = {
+        ...createScopedState(project),
+        projectBinding: projectBinding ?? appStoreState.projectBinding,
+      };
       return {
         getState: () => state,
         setState: (partial: unknown) => {
@@ -59,6 +83,7 @@ vi.mock("../../state/appStore", async () => {
       store.setState(partial);
     }),
     AppStoreProvider: ({ children }: { children: React.ReactNode }) => ReactModule.createElement(ReactModule.Fragment, null, children),
+    selectActiveProjectRoot: (state: typeof appStoreState) => state.project?.rootPath ?? null,
   };
 });
 
@@ -169,14 +194,33 @@ describe("App Work route keep-alive", () => {
     appStoreState.projectHydrated = true;
     appStoreState.showWelcome = false;
     appStoreState.project = { rootPath: "/fake/project" };
+    appStoreState.projectBinding = {
+      kind: "local",
+      key: "local:/fake/project",
+      rootPath: "/fake/project",
+      displayName: "project",
+    };
     appStoreState.projectTransition = null;
     appStoreState.theme = "dark";
     appStoreState.launchPromptClipboardEnabled = true;
     appStoreState.launchPromptClipboardNoticeEnabled = true;
+    appStoreState.workViewByProject = {};
+    appStoreState.setWorkViewState.mockClear();
     appStoreState.openProjectTabRoots = [];
     appStoreState.projectInfoByRoot = {};
     window.localStorage.clear();
     (window as Window & { __adeBrowserMock?: boolean }).__adeBrowserMock = true;
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      writable: true,
+      value: {
+        builtInBrowser: {
+          stopInspect: vi.fn().mockResolvedValue({}),
+          setBounds: vi.fn().mockResolvedValue({}),
+          onEvent: vi.fn(() => () => {}),
+        },
+      },
+    });
     window.history.replaceState({}, "", "/work");
   });
 
@@ -213,6 +257,58 @@ describe("App Work route keep-alive", () => {
     });
     expect(workLifecycle.mounts).toBe(1);
     expect(workLifecycle.unmounts).toBe(0);
+  });
+
+  it("parks the native Work browser view when the Work route is backgrounded", async () => {
+    const { App } = await import("./App");
+
+    render(<App />);
+
+    await screen.findByTestId("work-page");
+    const browser = window.ade.builtInBrowser as unknown as {
+      stopInspect: ReturnType<typeof vi.fn>;
+      setBounds: ReturnType<typeof vi.fn>;
+    };
+    expect(browser.setBounds).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Open files" }));
+    await screen.findByTestId("files-page");
+
+    await waitFor(() => {
+      expect(browser.stopInspect).toHaveBeenCalledWith({ projectRoot: "/fake/project" });
+      expect(browser.setBounds).toHaveBeenCalledWith({
+        projectRoot: "/fake/project",
+        x: 0,
+        y: 0,
+        width: 0,
+        height: 0,
+        visible: false,
+      });
+    });
+  });
+
+  it("reveals the Work browser pane when an ADE browser URL opens from another tab", async () => {
+    window.history.replaceState({}, "", "/files");
+    const { App } = await import("./App");
+
+    render(<App />);
+
+    await screen.findByTestId("files-page");
+    fireEvent(window, new CustomEvent(ADE_OPEN_BUILT_IN_BROWSER_EVENT, {
+      detail: { url: "http://127.0.0.1:64054" },
+    }));
+
+    await waitFor(() => {
+      expect(window.location.pathname).toBe("/work");
+    });
+    expect(appStoreState.setWorkViewState).toHaveBeenCalledWith(
+      "/fake/project",
+      expect.objectContaining({
+        viewMode: "tabs",
+        workSidebarOpen: true,
+        workSidebarTab: "browser",
+      }),
+    );
   });
 
   it("hydrates project stores with launch clipboard reminder preferences", async () => {
@@ -357,7 +453,12 @@ describe("App Work route keep-alive", () => {
 
     render(<App />);
 
-    await screen.findByTestId("work-page");
+    await waitFor(() => {
+      const activeWorkPage = screen
+        .getAllByTestId("work-page")
+        .find((node) => node.getAttribute("data-active") === "true");
+      expect(activeWorkPage).toBeTruthy();
+    });
     expect(screen.queryByTestId("lanes-page")).toBeNull();
     expect(lanesLifecycle.mounts).toBe(0);
     expect(lanesLifecycle.unmounts).toBe(0);
@@ -375,10 +476,70 @@ describe("App Work route keep-alive", () => {
 
     render(<App />);
 
-    await screen.findByTestId("work-page");
+    await waitFor(() => {
+      const activeWorkPage = screen
+        .getAllByTestId("work-page")
+        .find((node) => node.getAttribute("data-active") === "true");
+      expect(activeWorkPage).toBeTruthy();
+    });
     expect(screen.queryByTestId("lanes-page")).toBeNull();
     expect(lanesLifecycle.mounts).toBe(0);
     expect(lanesLifecycle.unmounts).toBe(0);
+  });
+
+  it("mounts the active remote project even when local project tabs are open", async () => {
+    appStoreState.project = { rootPath: "/remote/project", displayName: "Remote project" } as any;
+    appStoreState.projectBinding = {
+      kind: "remote",
+      key: "remote:studio:project-1",
+      targetId: "studio",
+      runtimeName: "Mac Studio",
+      projectId: "project-1",
+      rootPath: "/remote/project",
+      displayName: "Remote project",
+    };
+    appStoreState.openProjectTabRoots = ["/fake/project"];
+    appStoreState.projectInfoByRoot = {
+      "/fake/project": { rootPath: "/fake/project", displayName: "Fake" },
+    };
+    const { createProjectAppStore, hydrateProjectAppStore } = await import("../../state/appStore");
+    const { App } = await import("./App");
+
+    render(<App />);
+
+    await waitFor(() => {
+      const remoteSurface = screen
+        .getAllByTestId("work-page")
+        .find((node) => node.closest("[data-project-root='/remote/project']"));
+      expect(remoteSurface).toBeTruthy();
+      expect(remoteSurface?.closest("[aria-hidden='true']")).toBeNull();
+      expect(remoteSurface?.getAttribute("data-active")).toBe("true");
+    });
+    expect(createProjectAppStore).toHaveBeenCalledWith(
+      expect.objectContaining({ rootPath: "/remote/project" }),
+      expect.objectContaining({
+        kind: "remote",
+        runtimeName: "Mac Studio",
+        rootPath: "/remote/project",
+      }),
+    );
+    await waitFor(() => {
+      expect(hydrateProjectAppStore).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          projectBinding: expect.objectContaining({
+            kind: "remote",
+            runtimeName: "Mac Studio",
+            rootPath: "/remote/project",
+          }),
+        }),
+      );
+    });
+
+    const localSurface = screen
+      .getAllByTestId("work-page")
+      .find((node) => node.closest("[data-project-root='/fake/project']"));
+    expect(localSurface?.closest("[aria-hidden='true']")).not.toBeNull();
   });
 
   it("converts legacy hash app routes into BrowserRouter paths", async () => {

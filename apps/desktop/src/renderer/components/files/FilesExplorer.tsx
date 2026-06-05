@@ -77,6 +77,7 @@ export type FilesExplorerProps = {
   onContextMenu: (event: FilesExplorerContextMenuEvent) => void;
   onRenamePath: (sourcePath: string, destinationPath: string) => Promise<void>;
   onInlineRenameSettled: () => void;
+  canMutate?: boolean;
   compact?: boolean;
 };
 
@@ -172,6 +173,7 @@ export function FilesExplorer({
   onContextMenu,
   onRenamePath,
   onInlineRenameSettled,
+  canMutate = true,
   compact = false,
 }: FilesExplorerProps) {
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -282,6 +284,7 @@ export function FilesExplorer({
               type="button"
               title="New file"
               aria-label="New file"
+              disabled={!canMutate}
               style={{ ...outlineButton({ height: 24, padding: "0 6px", fontSize: 10 }) }}
               onClick={() => onCreateFile(activeContextDir)}
               onMouseEnter={(event) => { event.currentTarget.style.borderColor = COLORS.accent; event.currentTarget.style.color = COLORS.accent; }}
@@ -295,6 +298,7 @@ export function FilesExplorer({
               type="button"
               title="New folder"
               aria-label="New folder"
+              disabled={!canMutate}
               style={{ ...outlineButton({ height: 24, padding: "0 6px", fontSize: 10 }) }}
               onClick={() => onCreateDirectory(activeContextDir)}
               onMouseEnter={(event) => { event.currentTarget.style.borderColor = COLORS.accent; event.currentTarget.style.color = COLORS.accent; }}
@@ -357,6 +361,7 @@ export function FilesExplorer({
               type="button"
               title="New file"
               aria-label="New file"
+              disabled={!canMutate}
               style={{ ...outlineButton({ height: 28, padding: "0 7px", fontSize: 10 }) }}
               onClick={() => onCreateFile(activeContextDir)}
               onMouseEnter={(event) => { event.currentTarget.style.borderColor = COLORS.accent; event.currentTarget.style.color = COLORS.accent; }}
@@ -370,6 +375,7 @@ export function FilesExplorer({
               type="button"
               title="New folder"
               aria-label="New folder"
+              disabled={!canMutate}
               style={{ ...outlineButton({ height: 28, padding: "0 7px", fontSize: 10 }) }}
               onClick={() => onCreateDirectory(activeContextDir)}
               onMouseEnter={(event) => { event.currentTarget.style.borderColor = COLORS.accent; event.currentTarget.style.color = COLORS.accent; }}
@@ -458,6 +464,7 @@ export function FilesExplorer({
             type="button"
             title="New file"
             aria-label="New file"
+            disabled={!canMutate}
             style={{ ...outlineButton({ height: 24, padding: "0 6px", fontSize: 10 }) }}
             onClick={() => onCreateFile(activeContextDir)}
             onMouseEnter={(event) => { event.currentTarget.style.borderColor = COLORS.accent; event.currentTarget.style.color = COLORS.accent; }}
@@ -471,6 +478,7 @@ export function FilesExplorer({
             type="button"
             title="New folder"
             aria-label="New folder"
+            disabled={!canMutate}
             style={{ ...outlineButton({ height: 24, padding: "0 6px", fontSize: 10 }) }}
             onClick={() => onCreateDirectory(activeContextDir)}
             onMouseEnter={(event) => { event.currentTarget.style.borderColor = COLORS.accent; event.currentTarget.style.color = COLORS.accent; }}

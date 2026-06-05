@@ -250,6 +250,7 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
 
   useEffect(() => {
     if (!chatSessionId) return;
+    if (!open && !revealRequest) return;
     let cancelled = false;
     setRestoringTabs(true);
     window.ade.terminal.list({ chatSessionId, limit: 20 })
@@ -285,7 +286,7 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
     return () => {
       cancelled = true;
     };
-  }, [chatSessionId, uiStateKey]);
+  }, [chatSessionId, open, revealRequest, uiStateKey]);
 
   useEffect(() => {
     if (!revealRequest) return;
@@ -417,6 +418,7 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
   }, []);
 
   useEffect(() => {
+    if (!open) return undefined;
     const appControlBridge = window.ade?.appControl;
     if (!appControlBridge) return undefined;
     let cancelled = false;
@@ -437,7 +439,7 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
       cancelled = true;
       unsubscribe();
     };
-  }, []);
+  }, [open]);
 
   const closeTab = useCallback((tabId: string) => {
     const entry = tabsRef.current.find((tab) => tab.id === tabId);

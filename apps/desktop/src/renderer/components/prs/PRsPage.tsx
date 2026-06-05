@@ -5,7 +5,7 @@ import { EmptyState } from "../ui/EmptyState";
 import { cn } from "../ui/cn";
 import { PrsProvider, usePrs } from "./state/PrsContext";
 import { CreatePrModal, type CreatePrModalInitialValues } from "./CreatePrModal";
-import { useAppStore } from "../../state/appStore";
+import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
 import { useDialogBus } from "../../lib/useDialogBus";
 import { GitHubTab, type GitHubHeaderChromeState } from "./tabs/GitHubTab";
 import { WorkflowsTab, type WorkflowCategory } from "./tabs/WorkflowsTab";
@@ -106,7 +106,7 @@ function createInitialValuesFromDialogProps(props?: Record<string, unknown>): Cr
 function PRsPageInner() {
   const navigate = useNavigate();
   const location = useLocation();
-  const projectRoot = useAppStore((state) => state.project?.rootPath ?? null);
+  const projectRoot = useAppStore(selectActiveProjectRoot);
   const refreshLanes = useAppStore((state) => state.refreshLanes);
   const {
     activeTab,

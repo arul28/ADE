@@ -107,6 +107,8 @@ export function CreateLaneDialog({
   existingVmLane = null,
   onOpenVmTab,
   onOpenVmLaneInWork,
+  localRuntimeLabel = "Local Mac",
+  localRuntimeDescription = "Use this ADE runtime and local worktree.",
   projectRoot,
   createBranches,
   lanes,
@@ -158,6 +160,13 @@ export function CreateLaneDialog({
   onOpenVmTab?: () => void;
   /** Open the Work tab on the existing VM lane. Used when a VM lane already exists. */
   onOpenVmLaneInWork?: (laneId: string) => void;
+  /** Label for the non-VM runtime.
+   * Remote projects still submit `runtimePlacement: "local"`, but this copy
+   * should name the connected runtime.
+   */
+  localRuntimeLabel?: string;
+  /** Description for the non-VM runtime card. */
+  localRuntimeDescription?: string;
   /** Project scope for shared Linear issue browser cache/filter persistence. */
   projectRoot?: string | null;
   createBranches: LaneBranchOption[];
@@ -568,11 +577,11 @@ export function CreateLaneDialog({
                   <GitBranch size={16} weight="duotone" />
                 </span>
                 <div className="min-w-0 flex-1">
-                  <div className="text-sm font-semibold text-fg">Local Mac</div>
+                  <div className="text-sm font-semibold text-fg">{localRuntimeLabel}</div>
                 </div>
               </div>
               <div className="mt-1.5 line-clamp-2 text-[11px] leading-snug text-muted-fg/70">
-                Use this ADE runtime and local worktree.
+                {localRuntimeDescription}
               </div>
             </button>
             <button

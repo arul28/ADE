@@ -304,6 +304,17 @@ function postprocessChannelApp(appPath, channel, config, options) {
   fs.writeFileSync(path.join(cliRoot, "channel"), `${channel}\n`);
 }
 
+function adHocSignLocalMacApp(appPath) {
+  if (process.platform !== "darwin") return;
+  process.stdout.write(`[ade] Ad-hoc signing local app bundle: ${appPath}\n`);
+  run("codesign", ["--force", "--deep", "--sign", "-", "--timestamp=none", appPath], {
+    cwd: path.dirname(appPath),
+  });
+  run("codesign", ["--verify", "--deep", "--strict", "--verbose=2", appPath], {
+    cwd: path.dirname(appPath),
+  });
+}
+
 function buildChannel(repoRoot, channel, options) {
   const config = CHANNELS[channel];
   ensureRepoRoot(repoRoot, options);
@@ -352,6 +363,7 @@ function buildChannel(repoRoot, channel, options) {
   const appPath = findBuiltApp(outputRoot, config.productName);
   if (!appPath) fail(`Build finished but no .app was found in ${outputRoot}.`);
   postprocessChannelApp(appPath, channel, config, options);
+  adHocSignLocalMacApp(appPath);
   const zipPath = zipApp(appPath, outputRoot, channel, options);
   process.stdout.write(`\n[ade] Built ${config.productName}: ${appPath}\n`);
   if (zipPath) process.stdout.write(`[ade] Zipped app: ${zipPath}\n`);

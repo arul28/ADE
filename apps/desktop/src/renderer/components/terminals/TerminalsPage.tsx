@@ -12,7 +12,7 @@ import type { AgentChatSessionCreatedOptions } from "../chat/AgentChatPane";
 import { canBulkDeleteSession, canBulkStopSession, formatToolTypeLabel, isChatToolType } from "../../lib/sessions";
 import { sortLanesForTabs } from "../lanes/laneUtils";
 import { invalidateSessionListCache } from "../../lib/sessionListCache";
-import { useAppStore, type WorkDraftKind } from "../../state/appStore";
+import { selectActiveProjectRoot, useAppStore, type WorkDraftKind } from "../../state/appStore";
 import { ADE_OPEN_BUILT_IN_BROWSER_EVENT } from "../../lib/openExternal";
 import {
   ADE_WORK_SIDEBAR_BROWSER_RESIZE_END_EVENT,
@@ -103,7 +103,7 @@ async function allSettledWithConcurrency<T>(
 
 export function TerminalsPage({ active = true }: { active?: boolean }) {
   const work = useWorkSessions({ active });
-  const projectRoot = useAppStore((s) => s.project?.rootPath ?? null);
+  const projectRoot = useAppStore(selectActiveProjectRoot);
   const selectedLaneId = useAppStore((s) => s.selectedLaneId);
   const sortedLanes = useMemo(() => sortLanesForTabs(work.lanes), [work.lanes]);
 
@@ -551,9 +551,11 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
 
   const workSidebarVisible = active && work.workSidebarOpen && work.viewMode !== "grid";
   const { setViewMode, setWorkSidebarTab, showDraftKind } = work;
+  const isRemoteProject = useAppStore((state) => state.projectBinding?.kind === "remote");
   useEffect(() => {
     if (!active) return;
     const openBrowserSidebar = () => {
+      if (isRemoteProject) return;
       setViewMode("tabs");
       setWorkSidebarTab("browser");
     };
@@ -578,7 +580,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       window.removeEventListener("ade:work:stop-orchestrator-chat", stopOrchestratorChat);
       unsubscribeBrowserEvents?.();
     };
-  }, [active, projectRoot, setViewMode, setWorkSidebarTab, showDraftKind]);
+  }, [active, isRemoteProject, projectRoot, setViewMode, setWorkSidebarTab, showDraftKind]);
 
   const toggleSessionsPane = useCallback(() => {
     work.setWorkFocusSessionsHidden(!work.workFocusSessionsHidden);

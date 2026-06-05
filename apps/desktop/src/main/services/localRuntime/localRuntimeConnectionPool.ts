@@ -233,46 +233,69 @@ function openSocketTransport(socketPath: string, timeoutMs = 3_000): Promise<Run
       ? net.createConnection(socketPath)
       : net.createConnection({ path: socketPath });
     let settled = false;
+    let connected = false;
+    let closed = false;
+    let lastError: Error | null = null;
     const timer = setTimeout(() => {
       if (settled) return;
       settled = true;
       socket.destroy();
       reject(new Error(`Timed out connecting to ADE service socket: ${socketPath}`));
     }, timeoutMs);
+    const closeCallbacks = new Set<() => void>();
+    const errorCallbacks = new Set<(error: Error) => void>();
     const fail = (error: Error) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      socket.destroy();
-      reject(error);
+      if (!connected) {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        socket.destroy();
+        reject(error);
+        return;
+      }
+      lastError = error;
+      for (const callback of [...errorCallbacks]) {
+        try {
+          callback(error);
+        } catch {
+          // Disconnect observers must not turn a socket reset into a process crash.
+        }
+      }
     };
-    socket.once("error", fail);
+    socket.on("error", fail);
     socket.once("connect", () => {
       if (settled) return;
       settled = true;
+      connected = true;
       clearTimeout(timer);
-      socket.off("error", fail);
-      const closeCallbacks = new Set<() => void>();
-      const errorCallbacks = new Set<(error: Error) => void>();
-      socket.on("error", (error) => {
-        for (const callback of [...errorCallbacks]) {
-          callback(error);
-        }
-      });
       socket.on("close", () => {
+        closed = true;
         for (const callback of [...closeCallbacks]) {
-          callback();
+          try {
+            callback();
+          } catch {
+            // Disconnect observers must not turn a socket close into a process crash.
+          }
         }
       });
       resolve({
         onData(callback) {
-          socket.on("data", (chunk) => callback(Buffer.from(chunk)));
+          socket.on("data", (chunk) => {
+            try {
+              callback(Buffer.from(chunk));
+            } catch {
+              socket.destroy();
+            }
+          });
         },
         onClose(callback) {
           closeCallbacks.add(callback);
+          if (closed) queueMicrotask(callback);
         },
         onError(callback) {
           errorCallbacks.add(callback);
+          const error = lastError;
+          if (error) queueMicrotask(() => callback(error));
         },
         write(data) {
           socket.write(data);
@@ -1412,6 +1435,7 @@ async function subscribeToRuntimeEvents(
       cursor: clampCursor(request.cursor),
       limit: clampLimit(request.limit),
       ...(isRemoteRuntimeEventCategory(request.category) ? { category: request.category } : {}),
+      ...(typeof request.replay === "boolean" ? { replay: request.replay } : {}),
     });
     subscriptionId = readSubscriptionId(value);
     for (const notification of pendingNotifications) {

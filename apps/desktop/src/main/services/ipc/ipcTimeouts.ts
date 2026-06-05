@@ -1,4 +1,5 @@
 import { IPC } from "../../../shared/ipc";
+import { isRetryableRemoteAction } from "../remoteRuntime/retryableRemoteActions";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
@@ -33,6 +34,8 @@ const RUNTIME_ACTION_CHANNEL: Record<string, Record<string, string>> = {
 };
 
 const LOCAL_RUNTIME_PROJECT_SETUP_TIMEOUT_MS = 150_000;
+const REMOTE_RUNTIME_BOOTSTRAP_TIMEOUT_MS = 10 * 60_000;
+const REMOTE_RUNTIME_RETRYABLE_ACTION_TIMEOUT_MS = 75_000;
 
 function runtimeActionTimeoutMs(args: readonly unknown[]): number | null {
   const payload = args[0];
@@ -40,6 +43,17 @@ function runtimeActionTimeoutMs(args: readonly unknown[]): number | null {
   if (typeof request?.domain !== "string" || typeof request.action !== "string") return null;
   const channel = RUNTIME_ACTION_CHANNEL[request.domain]?.[request.action];
   return channel ? ipcInvokeTimeoutMs(channel) : null;
+}
+
+function retryableRemoteActionTimeoutMs(args: readonly unknown[]): number | null {
+  const payload = args[0];
+  const request = isRecord(payload) && isRecord(payload.request) ? payload.request : null;
+  const domain = request?.domain;
+  const action = request?.action;
+  if (typeof domain !== "string" || typeof action !== "string") return null;
+  return isRetryableRemoteAction(domain, action)
+    ? REMOTE_RUNTIME_RETRYABLE_ACTION_TIMEOUT_MS
+    : null;
 }
 
 export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = []): number {
@@ -54,9 +68,27 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
   if (channel === IPC.remoteRuntimeCallAction) {
     const actionTimeoutMs = runtimeActionTimeoutMs(args);
     if (actionTimeoutMs != null) return actionTimeoutMs;
+    const retryableActionTimeoutMs = retryableRemoteActionTimeoutMs(args);
+    if (retryableActionTimeoutMs != null) return retryableActionTimeoutMs;
     return 30_000;
   }
   switch (channel) {
+    case IPC.remoteRuntimeConnect:
+    case IPC.remoteRuntimeListProjects:
+    case IPC.remoteRuntimeAddProject:
+    case IPC.remoteRuntimeBrowseDirectories:
+    case IPC.remoteRuntimeGetProjectDetail:
+    case IPC.remoteRuntimeGetDefaultParentDir:
+    case IPC.remoteRuntimeCreateProject:
+    case IPC.remoteRuntimeCloneProject:
+    case IPC.remoteRuntimeListMyGitHubRepos:
+    case IPC.remoteRuntimeOpenProject:
+    case IPC.remoteRuntimeListActionRegistry:
+    case IPC.remoteRuntimeCallSync:
+    case IPC.remoteRuntimeEnsurePortForward:
+    case IPC.remoteRuntimeStreamEvents:
+    case IPC.remoteRuntimeCheckLocalWork:
+      return REMOTE_RUNTIME_BOOTSTRAP_TIMEOUT_MS;
     case IPC.lanesCreate:
     case IPC.lanesCreateChild:
     case IPC.lanesCreateFromUnstaged:

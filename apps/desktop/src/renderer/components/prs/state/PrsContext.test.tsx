@@ -22,7 +22,7 @@ import { PrsProvider, usePrs } from "./PrsContext";
 const originalAde = globalThis.window.ade;
 
 function Harness() {
-  const { refresh, rebaseNeeds, autoRebaseStatuses, loading } = usePrs();
+  const { refresh, rebaseNeeds, autoRebaseStatuses, loading, queueStates } = usePrs();
   return (
     <div>
       <button type="button" onClick={() => void refresh()}>
@@ -31,6 +31,7 @@ function Harness() {
       <div data-testid="loading">{loading ? "loading" : "idle"}</div>
       <div data-testid="needs-count">{rebaseNeeds.length}</div>
       <div data-testid="auto-count">{autoRebaseStatuses.length}</div>
+      <div data-testid="queue-count">{Object.keys(queueStates).length}</div>
     </div>
   );
 }
@@ -351,6 +352,33 @@ describe("PrsContext refresh", () => {
       expect(vi.mocked(window.ade.rebase.scanNeeds).mock.calls.length).toBeGreaterThan(initialRebaseScanCount);
       expect(vi.mocked(window.ade.lanes.listAutoRebaseStatuses).mock.calls.length).toBeGreaterThan(initialAutoStatusCount);
     });
+  });
+
+  it("keeps workflow PRs usable when queue states are unavailable on the runtime", async () => {
+    window.location.hash = "#/prs?tab=workflows&workflow=integration";
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    vi.mocked(window.ade.prs.listWithConflicts).mockResolvedValue([makeFakePr("pr-1")]);
+    vi.mocked(window.ade.prs.listQueueStates).mockRejectedValue(
+      new Error("action 'pr.listQueueStates' is not callable"),
+    );
+
+    render(
+      <PrsProvider>
+        <Harness />
+      </PrsProvider>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId("loading").textContent).toBe("idle");
+    });
+    expect(window.ade.prs.listWithConflicts).toHaveBeenCalledWith({ includeConflictAnalysis: true });
+    expect(window.ade.lanes.list).toHaveBeenCalledWith({ includeStatus: false });
+    expect(screen.getByTestId("queue-count").textContent).toBe("0");
+    expect(warnSpy).toHaveBeenCalledWith(
+      "[PrsContext] Failed to load workflow queue states:",
+      expect.any(Error),
+    );
+    warnSpy.mockRestore();
   });
 
   it("runs a GitHub PR refresh for explicit refresh actions", async () => {

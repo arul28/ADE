@@ -19,8 +19,11 @@ import type {
   RemoteRuntimeBufferedEvent,
   RemoteRuntimeConnectResult,
   RemoteRuntimeDiscoveryResult,
+  RemoteRuntimeEventCategory,
   RemoteRuntimeEventNotificationPayload,
   RemoteRuntimeLocalWorkCheckResult,
+  RemoteRuntimePortForward,
+  RemoteRuntimePortForwardRequest,
   RemoteRuntimeProjectRecord,
   RemoteRuntimeProjectWorkSummary,
   RemoteRuntimeSshHostKeyTrustStatus,
@@ -95,6 +98,33 @@ type RuntimeEventSubscribe = (
 
 function isObjectRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isRemoteRuntimeEventCategory(value: unknown): value is RemoteRuntimeEventCategory {
+  return (
+    value === "orchestrator" ||
+    value === "dag_mutation" ||
+    value === "runtime" ||
+    value === "pty"
+  );
+}
+
+function normalizeRuntimeStreamEventsRequest(value: unknown): RemoteRuntimeStreamEventsRequest {
+  if (!isObjectRecord(value)) return {};
+  const request: RemoteRuntimeStreamEventsRequest = {};
+  if (typeof value.cursor === "number" && Number.isFinite(value.cursor)) {
+    request.cursor = value.cursor;
+  }
+  if (typeof value.limit === "number" && Number.isFinite(value.limit)) {
+    request.limit = value.limit;
+  }
+  if (isRemoteRuntimeEventCategory(value.category)) {
+    request.category = value.category;
+  }
+  if (typeof value.replay === "boolean") {
+    request.replay = value.replay;
+  }
+  return request;
 }
 
 function isRemoteRuntimeSyncMethod(value: string): boolean {
@@ -301,10 +331,12 @@ export function registerRuntimeBridge({
       );
     }
   });
-  const autoconnectTimer = setTimeout(() => {
-    remoteConnectionService.startAutoconnect();
-  }, 0);
-  autoconnectTimer.unref?.();
+  if (process.env.ADE_DISABLE_REMOTE_AUTOCONNECT !== "1") {
+    const autoconnectTimer = setTimeout(() => {
+      remoteConnectionService.startAutoconnect();
+    }, 0);
+    autoconnectTimer.unref?.();
+  }
   const probeRemoteConnectionsAfterWake = (): void => {
     remoteConnectionService.probeSavedConnections();
   };
@@ -494,7 +526,7 @@ export function registerRuntimeBridge({
       arg: { id: string },
     ): Promise<RemoteRuntimeConnectResult> => {
       const id = typeof arg?.id === "string" ? arg.id.trim() : "";
-      return await remoteConnectionService.connect(id);
+      return await remoteConnectionService.connect(id, { explicit: true });
     },
   );
 
@@ -641,7 +673,9 @@ export function registerRuntimeBridge({
         if (!target) throw new Error("Remote target was not found.");
         if (!projectId) throw new Error("Remote project is required.");
 
-        const connection = await remoteConnectionService.connect(target.id);
+        const connection = await remoteConnectionService.connect(target.id, {
+          explicit: true,
+        });
         let project =
           connection.projects.find(
             (candidate) => candidate.projectId === projectId,
@@ -691,9 +725,8 @@ export function registerRuntimeBridge({
       const target = id ? remoteConnectionService.getTarget(id) : null;
       if (!target) throw new Error("Remote target was not found.");
       if (!projectId) throw new Error("Remote project is required.");
-      await remoteConnectionService.connect(target.id);
-      return await remoteConnectionPool.listActionRegistryForTarget(
-        target,
+      return await remoteConnectionService.listActionRegistry(
+        target.id,
         projectId,
       );
     },
@@ -727,16 +760,50 @@ export function registerRuntimeBridge({
       if (!projectId) throw new Error("Remote project is required.");
       if (!domain || !action)
         throw new Error("Remote action domain and action are required.");
-      await remoteConnectionService.connect(target.id);
       const actionRequest = withRuntimeActionClientMetadata(
         { ...request!, domain, action },
         event.sender.id,
       );
-      return await remoteConnectionPool.callActionForTarget(
-        target,
+      return await remoteConnectionService.callAction(
+        target.id,
         projectId,
         actionRequest,
       );
+    },
+  );
+
+  ipcMain.handle(
+    IPC.remoteRuntimeEnsurePortForward,
+    async (
+      _event,
+      arg: {
+        id: string;
+        request: RemoteRuntimePortForwardRequest;
+      },
+    ): Promise<RemoteRuntimePortForward> => {
+      const id = typeof arg?.id === "string" ? arg.id.trim() : "";
+      const request =
+        arg?.request &&
+        typeof arg.request === "object" &&
+        !Array.isArray(arg.request)
+          ? arg.request
+          : null;
+      const remotePort = Number(request?.remotePort);
+      const remoteHost =
+        typeof request?.remoteHost === "string"
+          ? request.remoteHost.trim()
+          : null;
+      const label =
+        typeof request?.label === "string" ? request.label.trim() : null;
+      if (!id) throw new Error("Remote target id is required.");
+      if (!Number.isInteger(remotePort) || remotePort < 1 || remotePort > 65_535) {
+        throw new Error("Remote port must be an integer from 1 to 65535.");
+      }
+      return await remoteConnectionService.ensurePortForward(id, {
+        remoteHost,
+        remotePort,
+        label,
+      });
     },
   );
 
@@ -761,9 +828,8 @@ export function registerRuntimeBridge({
       if (!projectId) throw new Error("Remote project is required.");
       if (!isRemoteRuntimeSyncMethod(method))
         throw new Error("Remote sync method is not exposed.");
-      await remoteConnectionService.connect(target.id);
-      return await remoteConnectionPool.callSyncForTarget(
-        target,
+      return await remoteConnectionService.callSync(
+        target.id,
         projectId,
         method,
         params,
@@ -894,6 +960,7 @@ export function registerRuntimeBridge({
           "Local runtime project is not available for this window.",
         );
       }
+      const request = normalizeRuntimeStreamEventsRequest(arg?.request);
       const requestedRootPath = normalizeLocalRuntimeRootPath(arg?.rootPath);
       if (binding?.kind === "local" || requestedRootPath) {
         const bindingKey =
@@ -904,14 +971,15 @@ export function registerRuntimeBridge({
         ensureRuntimeEventSubscription(
           event.sender,
           bindingKey,
-          `${bindingKey}:${arg?.request?.category ?? "*"}`,
+          `${bindingKey}:${request.category ?? "*"}:${request.replay === false ? "live" : "replay"}`,
           (onEvent, onEnded) =>
             localRuntimeConnectionPool.subscribeEventsForRoot(
               rootPath,
               {
-                cursor: arg?.request?.cursor,
-                limit: arg?.request?.limit,
-                category: arg?.request?.category,
+                cursor: request.cursor,
+                limit: request.limit,
+                category: request.category,
+                replay: request.replay,
               },
               onEvent,
               onEnded,
@@ -919,13 +987,13 @@ export function registerRuntimeBridge({
         );
         return {
           events: [],
-          nextCursor: arg?.request?.cursor ?? 0,
+          nextCursor: request.cursor ?? 0,
           hasMore: false,
         };
       }
       return await localRuntimeConnectionPool.streamEventsForRoot(
         rootPath,
-        arg?.request ?? {},
+        request,
       );
     },
   );
@@ -947,29 +1015,37 @@ export function registerRuntimeBridge({
       if (!projectId) throw new Error("Remote project id is required.");
       const target = remoteConnectionService.getTarget(id);
       if (!target) throw new Error("Remote target was not found.");
-      await remoteConnectionService.connect(target.id);
+      const request = normalizeRuntimeStreamEventsRequest(arg?.request);
+      const result = request.replay === false
+        ? {
+            events: [],
+            nextCursor: request.cursor ?? 0,
+            hasMore: false,
+          }
+        : await remoteConnectionService.streamEvents(
+            target.id,
+            projectId,
+            request,
+          );
       ensureRuntimeEventSubscription(
         event.sender,
         `remote:${target.id}:${projectId}`,
-        `remote:${target.id}:${projectId}:${arg?.request?.category ?? "*"}`,
+        `remote:${target.id}:${projectId}:${request.category ?? "*"}:${request.replay === false ? "live" : "replay"}`,
         (onEvent, onEnded) =>
-          remoteConnectionPool.subscribeEventsForTarget(
-            target,
+          remoteConnectionService.subscribeEvents(
+            target.id,
             projectId,
             {
-              cursor: arg?.request?.cursor,
-              limit: arg?.request?.limit,
-              category: arg?.request?.category,
+              cursor: request.cursor,
+              limit: request.limit,
+              category: request.category,
+              replay: request.replay,
             },
             onEvent,
             onEnded,
           ),
       );
-      return remoteConnectionPool.streamEventsForTarget(
-        target,
-        projectId,
-        arg?.request ?? {},
-      );
+      return result;
     },
   );
 
@@ -1078,10 +1154,17 @@ export function registerRuntimeBridge({
 
   ipcMain.handle(
     IPC.remoteRuntimeDisconnect,
-    async (_event, arg: { id: string }): Promise<{ disconnected: boolean }> => {
+    async (
+      event,
+      arg: { id: string; manual?: boolean },
+    ): Promise<{ disconnected: boolean }> => {
       const id = typeof arg?.id === "string" ? arg.id.trim() : "";
       if (!id) return { disconnected: false };
-      remoteConnectionService.disconnect(id);
+      const currentSubscription = runtimeEventSubscriptions.get(event.sender.id);
+      if (currentSubscription?.bindingKey.startsWith(`remote:${id}:`)) {
+        cleanupRuntimeEventSubscription(event.sender.id);
+      }
+      remoteConnectionService.disconnect(id, { manual: arg.manual !== false });
       return { disconnected: true };
     },
   );

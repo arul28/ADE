@@ -163,6 +163,7 @@ type CliPlan =
   | { kind: "runtime"; rest: string[] }
   | { kind: "serve"; rest: string[] }
   | { kind: "rpc-stdio"; rest: string[] }
+  | { kind: "pty-host-worker" }
   | { kind: "init"; targetPath: string | null }
   | { kind: "cursor-cloud"; rest: string[] }
   | { kind: "deeplink"; rest: string[] };
@@ -1243,7 +1244,8 @@ const HELP_BY_COMMAND: Record<string, string> = {
   Chat commands use ADE agent chat sessions. Live provider-backed chat normally
   requires an attached runtime because the daemon owns provider/session state.
 
-    $ ade chat list --text                          List chat sessions
+    $ ade chat list --lane <lane> --text            List chat sessions
+    $ ade chat list --include-automation --no-archived --text
     $ ade chat create --lane <lane> --provider codex --model <model> [--fast]
     $ ade chat create --from-linear-issue ENG-431   Start a chat with an attached issue + kickoff (alias: --linear-issue-json)
     $ ade chat send <session> --text "next step"    Send a message
@@ -5759,7 +5761,30 @@ function buildChatPlan(args: string[]): CliPlan {
       ...base,
       ...(sessionId ? { sessionId } : {}),
     });
-  if (sub === "list" || sub === "ls")
+  if (sub === "list" || sub === "ls") {
+    const includeArchived = readFlag(args, ["--archived", "--include-archived"]);
+    const excludeArchived = readFlag(args, [
+      "--active",
+      "--no-archived",
+      "--exclude-archived",
+    ]);
+    if (includeArchived && excludeArchived) {
+      throw new CliUsageError(
+        "Use either --include-archived or --no-archived, not both.",
+      );
+    }
+    const laneId = readLaneId(args);
+    const input = collectGenericObjectArgs(args, {
+      ...(laneId ? { laneId } : {}),
+      ...(includeArchived ? { includeArchived: true } : {}),
+      ...(excludeArchived ? { includeArchived: false } : {}),
+      ...(readFlag(args, ["--automation", "--include-automation"])
+        ? { includeAutomation: true }
+        : {}),
+      ...(readFlag(args, ["--identity", "--include-identity"])
+        ? { includeIdentity: true }
+        : {}),
+    });
     return {
       kind: "execute",
       label: "chat list",
@@ -5768,10 +5793,11 @@ function buildChatPlan(args: string[]): CliPlan {
           "result",
           "chat",
           "listSessions",
-          collectGenericObjectArgs(args),
+          input,
         ),
       ],
     };
+  }
   if (sub === "show" || sub === "status")
     return {
       kind: "execute",
@@ -10421,6 +10447,9 @@ function buildCliPlan(command: string[]): CliPlan {
   }
   if (primary === "version" || primary === "--version" || primary === "-v") {
     return { kind: "help", text: `ade ${VERSION}\n` };
+  }
+  if (primary === "__ade-pty-host-worker") {
+    return { kind: "pty-host-worker" };
   }
   if (primary === "code") {
     const rest = args;
@@ -15372,6 +15401,17 @@ async function runCli(
     }
     if (plan.kind === "rpc-stdio") {
       await runNativeRpcStdio(parsed.options);
+      return { output: "", exitCode: 0 };
+    }
+    if (plan.kind === "pty-host-worker") {
+      await import("../../desktop/src/main/services/pty/ptyHostWorker");
+      await new Promise<void>((resolve) => {
+        if (typeof process.send !== "function") {
+          resolve();
+          return;
+        }
+        process.once("disconnect", resolve);
+      });
       return { output: "", exitCode: 0 };
     }
     if (plan.kind === "desktop") {

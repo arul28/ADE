@@ -7,19 +7,22 @@ The wire transport is the same JSON-RPC the local daemon answers. The remote-run
 ## Source file map
 
 - `apps/desktop/src/main/services/remoteRuntime/` — SSH transport (multi-route
-  fallback, ssh2 keepalive), runtime bootstrap, target registry (saved routes +
-  per-route `lastSucceededAt`), runtime RPC client (timeouts treated as fatal),
-  remote connection pool (eviction listeners, retryable read-only actions and
-  selected retryable sync reads), remote connection service
-  (`powerMonitor`-driven `probeSavedConnections`), `runtimeDiscovery.ts`
-  (Bonjour + Tailscale with `discoverLanRuntimes` returning
-  `{ machines, diagnostics }`).
+  fallback, bounded connect/exec timeouts, normalized handshake errors),
+  runtime bootstrap, target registry (saved routes + per-route
+  `lastSucceededAt` plus manual-disconnect state), runtime RPC client
+  (timeouts treated as fatal), remote connection pool (eviction listeners,
+  retryable read-only actions and selected retryable sync reads, local TCP
+  forwards for remote preview URLs, optional-action fallbacks), remote
+  connection service (`powerMonitor`-driven `probeSavedConnections`, explicit
+  connect vs implicit reconnect policy), `runtimeDiscovery.ts` (Bonjour +
+  Tailscale with `discoverLanRuntimes` returning `{ machines, diagnostics }`).
 - `apps/desktop/src/main/services/ipc/runtimeBridge.ts` — runtime IPC boundary:
   remote target registry, connect / projects / project-open channels, remote
   action/sync/event dispatch, local-runtime project action/sync/event routing,
-  per-target action registry lookups, and per-window remote-open generation
-  guards so a slow earlier remote-project open cannot overwrite the latest
-  window binding.
+  local port-forward creation for remote previews, per-target action registry
+  lookups, replay-aware event streams, manual disconnect handling, and
+  per-window remote-open generation guards so a slow earlier remote-project
+  open cannot overwrite the latest window binding.
 - `apps/desktop/src/main/services/localRuntime/localRuntimeConnectionPool.ts` —
   the local daemon connection used by desktop IPC, event streaming, sync
   Settings, and local-work checks. Spawns `ade serve` if the machine socket is
@@ -46,15 +49,21 @@ The wire transport is the same JSON-RPC the local daemon answers. The remote-run
   and includes `rootPath` on local runtime action/sync/event calls so early
   renderer requests hit the destination daemon project instead of the previous
   window session binding. During remote project opens, preload clears the
-  current binding, tracks the newest open generation, blocks mutating
-  action/sync calls with the "Project is switching" error, and avoids refreshing
-  a stale runtime binding.
+  current binding, tracks the newest open generation, waits for active remote
+  opens before retrying read-only project calls, blocks mutating action/sync
+  calls with the "Project is switching" error, and avoids refreshing a stale
+  runtime binding. Remote event polling suppresses buffered replay on the first
+  live subscription and backs off when idle; lane preview URLs returned by a
+  remote runtime are localized through a local TCP forward before the renderer
+  opens them.
 - `apps/ade-cli/src/multiProjectRpcServer.ts` — runtime-level project catalog
   and sync methods plus project-scoped action dispatch.
 - `apps/ade-cli/src/services/projects/` — machine project registry and
   per-project service scope cache.
 - `apps/ade-cli/scripts/build-static.mjs` — produces the static
-  `ade-<platform-arch>` SEA binary and the `.native.tar.gz` of native modules.
+  `ade-<platform-arch>` SEA binary and the `.native.tar.gz` of native modules,
+  resolves the runtime version from the CLI / desktop package metadata, and
+  verifies same-platform static binaries report that version.
 - `apps/ade-cli/scripts/install-runtime.sh` — standalone installer that
   downloads `ade-<platform-arch>` and the matching native deps from a release.
 - `apps/desktop/scripts/materialize-runtime-resources.mjs` and
@@ -71,14 +80,14 @@ When opening a remote project, ADE checks local projects with the same git origi
 
 1. Add a machine from the remote machines panel or command palette. Discovered machines (LAN + Tailscale) prefill the form with the Tailscale FQDN as the primary host plus every other reachable route (LAN address, mDNS host, alt IPs) on the saved target so reconnects can fall back automatically.
 2. Enter a display name, hostname, SSH user, port, and optionally a private key path. If no key path is provided, ADE uses the user's local ssh-agent when `SSH_AUTH_SOCK` is available and reads matching `HostName` / `IdentityFile` entries from `~/.ssh/config`.
-3. Connect. If the machine's SSH host key has not been trusted on this Mac before, the Remote pane shows the key fingerprint and records the user's explicit "Trust & connect" decision in `known_hosts`; users should not need to run `ssh <host>` manually. ADE then opens an SSH session (15 s keepalive, 3 strikes), detects the remote platform with `uname -sm`, and starts `ade rpc --stdio`. If the primary host is unreachable, ADE walks alternate `routes` ranked by most-recent success and records the route that wins.
-4. If the bundled ADE runtime for that platform is present and the remote ADE binary is missing or stale, ADE uploads `ade-<platform-arch>` to `~/.ade/bin/ade` (or the matching channel home), uploads native dependencies to `~/.ade/runtime/<platform-arch>/`, and verifies `~/.ade/bin/ade --version`. If the desktop has no bundled binary for that arch, bootstrap probes the alternate channel homes (`.ade`, `.ade-alpha`, `.ade-beta`) for a working `ade` and uses whichever already serves a compatible RPC; the chosen home is recorded as a `compatibilityWarnings` entry so the UI explains why a non-default home was used.
+3. Connect. If the machine's SSH host key has not been trusted on this Mac before, the Remote pane shows the key fingerprint and records the user's explicit "Trust & connect" decision in `known_hosts`; users should not need to run `ssh <host>` manually. ADE then opens an SSH session with a bounded handshake timeout, detects the remote platform with `uname -sm`, and starts `ade rpc --stdio`. If the primary host is unreachable, ADE walks alternate `routes` ranked by most-recent success and records the route that wins.
+4. If the bundled ADE runtime for that platform is present and the remote ADE binary is missing, stale, or hash-mismatched, ADE uploads `ade-<platform-arch>` to `~/.ade/bin/ade` (or the matching channel home), uploads native dependencies to `~/.ade/runtime/<platform-arch>/`, uploads the PTY host worker used by remote terminals, and verifies `~/.ade/bin/ade --version`. Uploads prefer SFTP and fall back to bounded SSH chunk uploads / OpenSSH when needed. If the desktop has no bundled binary for that arch, bootstrap probes the alternate channel homes (`.ade`, `.ade-alpha`, `.ade-beta`) for a working `ade` and uses whichever already serves a compatible RPC; the chosen home is recorded as a `compatibilityWarnings` entry so the UI explains why a non-default home was used.
 5. Pick an existing remote project or register a new remote path; the desktop
    calls `projects.add { rootPath }` against the remote runtime to bind it.
    If the same window starts multiple remote opens concurrently, both preload
    and the main IPC bridge keep only the latest open as the durable binding.
 
-After connecting, the desktop persists the active remote project to `globalState.lastRemoteProjectBinding`. When the app relaunches with no startup project path, the first window restores that binding and reconnects to the same target / project automatically.
+After connecting, the desktop persists the active remote project to `globalState.lastRemoteProjectBinding`. When the app relaunches with no startup project path, the first window restores that binding and reconnects to the same target / project automatically. A user-triggered disconnect records manual intent on the target and suppresses restore/autoconnect until the user presses Connect again; repeated implicit reconnect failures also pause automatic reconnects and surface a "Press Connect to try again" message.
 
 Per-channel layout: builds with `ADE_PACKAGE_CHANNEL=alpha|beta` upload to `~/.ade-alpha/` or `~/.ade-beta/` instead of `~/.ade/` so a remote machine can host stable, beta, and alpha runtimes side by side, and they pass `ADE_DISABLE_RUNTIME_SERVICE_INSTALL=1` so the channel build doesn't fight the stable login service for the socket.
 
@@ -93,7 +102,7 @@ Version skew and capability skew no longer fail the connect outright. The bootst
 
 ## Runtime artifact layout
 
-Desktop distributable builds require `apps/desktop/resources/runtime/` to contain every supported `ade-<platform-arch>` binary and matching `.native.tar.gz` archive. The supported targets are `darwin-arm64`, `darwin-x64`, `linux-arm64`, `linux-x64`.
+Desktop distributable builds require `apps/desktop/resources/runtime/` to contain every supported `ade-<platform-arch>` binary and matching `.native.tar.gz` archive, plus the packaged ADE CLI resources that include `ptyHostWorker.cjs` for remote terminal hosting. The supported targets are `darwin-arm64`, `darwin-x64`, `linux-arm64`, `linux-x64`.
 
 `apps/desktop/scripts/validate-runtime-resources.mjs` is the preflight that fails the package step when artifacts are missing. Release builds populate the resource directory from the runtime-binary CI workflow's artifacts via `materialize-runtime-resources.mjs`. For local same-platform packaging, build into the resource directory directly:
 
@@ -133,7 +142,7 @@ After install, the headless machine can already serve clients. Desktop ADE on a 
 
 ## What works remotely
 
-Remote project bindings route lanes, agent chat, PTYs, terminal IO, file operations, file-watch notifications, git actions, PR actions, PR queue automation, PR AI conflict-resolution sessions, PR issue-resolution launch flows, Path to Merge orchestration, AI PR summaries, issue inventory, and event streaming through the remote runtime. Agent CLI failures (Claude / Codex / Cursor / Droid not installed or not authenticated) surface as inline `AgentCliAuthCard` cards in chat; the install / login buttons open a tracked terminal in the active runtime, so a remote project runs the install or login command on the remote machine.
+Remote project bindings route lanes, agent chat, PTYs, terminal IO, file operations, file-watch notifications, git actions, PR actions, PR queue automation, PR AI conflict-resolution sessions, PR issue-resolution launch flows, Path to Merge orchestration, AI PR summaries, issue inventory, and event streaming through the remote runtime. Remote lane preview URLs are opened through a local TCP forward created by the desktop, so a dev server bound to `127.0.0.1` on the remote can be inspected from the local window. Agent CLI failures (Claude / Codex / Cursor / Droid not installed or not authenticated) surface as inline `AgentCliAuthCard` cards in chat; the install / login buttons open a tracked terminal in the active runtime, so a remote project runs the install or login command on the remote machine.
 
 Local project bindings use the local `ade serve` daemon for the same surfaces — agent chat, session history, PTYs, terminal reads/writes, file operations and watchers, diffs, lanes, PRs, PR queues, PR issue-resolution launch flows, Path to Merge, PR AI conflict-resolution sessions, issue inventory, tests, processes, project config, and most git operations. Electron main still owns desktop-only services that physically require an Electron host.
 
@@ -146,6 +155,9 @@ On desktop, phone pairing and sync status are managed by the local `ade serve` d
 ## Troubleshooting
 
 - `Remote target was not found` — the saved target was removed or the UI has a stale selection. Refresh the target list.
+- `Remote machine was manually disconnected. Connect again to use this remote project.` — the user explicitly disconnected the target; ADE will not implicitly reconnect or restore it until Connect is pressed.
+- `ADE stopped automatic reconnecting after 10 failed attempts. Press Connect to try again.` — implicit reconnects were paused after repeated failures so the renderer does not keep hammering SSH.
+- `SSH server at <host:port> closed the connection before ADE could finish the SSH handshake` — the TCP route opened but the server reset or closed the SSH handshake. Check Remote Login/sshd, firewall rules, and Tailscale SSH policy.
 - `ADE service is not installed ... no bundled ADE service is available` — install or build `ade` on the remote, or use a release build that includes runtime resources for the remote architecture.
 - `Uploaded ADE service version mismatch: expected X, got Y` — the uploaded binary did not report the expected runtime version. Rebuild the static runtime artifacts for the current desktop version.
 - `Remote ADE service does not support multi-project mode` — the remote is running an older ADE before multi-project RPC. Re-bootstrap from a current desktop build.

@@ -58,10 +58,10 @@ describe("listLaneDiffStats", () => {
 
 describe("chat session archive helpers", () => {
   it("lists chats with archived sessions hidden by default", async () => {
-    const calls: Array<{ domain: string; action: string; argsList: unknown[] }> = [];
+    const calls: Array<{ domain: string; action: string; args: Record<string, unknown> | undefined }> = [];
     const connection = {
-      actionList: async (domain: string, action: string, argsList: unknown[]) => {
-        calls.push({ domain, action, argsList });
+      action: async (domain: string, action: string, args?: Record<string, unknown>) => {
+        calls.push({ domain, action, args });
         return [];
       },
     } as unknown as AdeCodeConnection;
@@ -70,8 +70,8 @@ describe("chat session archive helpers", () => {
     await listChatSessions(connection, "lane-1", { includeArchived: true });
 
     expect(calls).toEqual([
-      { domain: "chat", action: "listSessions", argsList: [null, { includeArchived: false }] },
-      { domain: "chat", action: "listSessions", argsList: ["lane-1", { includeArchived: true }] },
+      { domain: "chat", action: "listSessions", args: { includeArchived: false } },
+      { domain: "chat", action: "listSessions", args: { laneId: "lane-1", includeArchived: true } },
     ]);
   });
 

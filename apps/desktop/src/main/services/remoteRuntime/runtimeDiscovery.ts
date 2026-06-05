@@ -152,7 +152,7 @@ export function discoveredRuntimeFromBonjourService(
   const port = servicePort ?? 8787;
   const announcedAddresses = splitCsv(txt.addresses);
   const tailscaleAddress = firstNonEmpty(
-    [txt.tailscaleDnsName, txt.tailscaleIp].filter((value): value is string =>
+    [txt.tailscaleIp, txt.tailscaleDnsName].filter((value): value is string =>
       Boolean(value && isTailscaleRoute(value)),
     ),
   );
@@ -218,7 +218,7 @@ export function discoveredRuntimesFromTailscaleStatus(
         )
       : [];
     const dnsName = normalizeTailscaleDnsName(peer.DNSName);
-    const tailscaleAddress = firstNonEmpty([dnsName, tailscaleIps[0]]);
+    const tailscaleAddress = firstNonEmpty([tailscaleIps[0], dnsName]);
     if (!tailscaleAddress) continue;
 
     const hostName = trimmed(peer.HostName) ?? dnsName;

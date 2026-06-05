@@ -449,6 +449,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "getSessionCapabilities",
     "getSessionSummary",
     "getSlashCommands",
+    "getSubagentTranscript",
     "getTurnFileDiff",
     "getParallelLaunchState",
     "interrupt",
@@ -1022,6 +1023,21 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
           "Terminal service not available.",
         ),
       }),
+    listSessions: (args?: unknown) => {
+      const record = asActionRecord(args);
+      const laneId = typeof record.laneId === "string" && record.laneId.trim()
+        ? record.laneId.trim()
+        : undefined;
+      const options = {
+        ...(typeof record.includeArchived === "boolean" ? { includeArchived: record.includeArchived } : {}),
+        ...(typeof record.includeAutomation === "boolean" ? { includeAutomation: record.includeAutomation } : {}),
+        ...(typeof record.includeIdentity === "boolean" ? { includeIdentity: record.includeIdentity } : {}),
+      };
+      return agentChatService.listSessions(
+        laneId,
+        Object.keys(options).length ? options : undefined,
+      );
+    },
     modelCatalog: (args?: unknown) =>
       agentChatService.getModelCatalog(args && typeof args === "object" ? args as never : undefined),
     codexOpenInCli: async (

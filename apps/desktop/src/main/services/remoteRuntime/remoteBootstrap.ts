@@ -1,7 +1,9 @@
 import crypto from "node:crypto";
+import { spawn } from "node:child_process";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
-import type { Client } from "ssh2";
+import type { Client, ConnectConfig, SFTPWrapper } from "ssh2";
 import type {
   RemoteRuntimeCapabilities,
   RemoteRuntimeConnectResult,
@@ -11,7 +13,7 @@ import type {
   RemoteRuntimeTargetRoute,
 } from "../../../shared/types/remoteRuntime";
 import { RuntimeRpcClient } from "./runtimeRpcClient";
-import { connectSshWithRoute, execSsh, openSshRuntimeTransport } from "./sshTransport";
+import { connectSshWithRoute, execSsh, openSshRuntimeTransport, type ConnectedSshRoute, type OpenSshResolvedConfig } from "./sshTransport";
 import { routeKey } from "./routeUtils";
 import {
   normalizeRemoteTargetRoutes,
@@ -41,22 +43,36 @@ export function normalizeRuntimeVersion(raw: string): string | null {
   return version || null;
 }
 
+const PLACEHOLDER_RUNTIME_VERSION = "0.0.0";
+
 export function selectRemoteRuntimeVersion(args: {
   markerVersion: string | null;
   executableVersion: string | null;
 }): string | null {
-  return args.executableVersion ?? args.markerVersion;
+  if (args.executableVersion && args.executableVersion !== PLACEHOLDER_RUNTIME_VERSION) {
+    return args.executableVersion;
+  }
+  return args.markerVersion ?? args.executableVersion;
 }
 
 export function shouldUploadBundledRuntime(args: {
   localBinaryAvailable: boolean;
   executableVersion: string | null;
+  markerVersion?: string | null;
   appVersion: string;
   localBinarySha256?: string | null;
   remoteBinarySha256?: string | null;
+  remoteBinaryMatchesLocal?: boolean | null;
 }): boolean {
   if (!args.localBinaryAvailable) return false;
-  if (args.executableVersion !== args.appVersion) return true;
+  const installedVersion = selectRemoteRuntimeVersion({
+    markerVersion: args.markerVersion ?? null,
+    executableVersion: args.executableVersion,
+  });
+  if (installedVersion !== args.appVersion) return true;
+  if (args.remoteBinaryMatchesLocal != null) {
+    return !args.remoteBinaryMatchesLocal;
+  }
   if (args.localBinarySha256) {
     return args.remoteBinarySha256 !== args.localBinarySha256;
   }
@@ -83,6 +99,9 @@ type RemoteRuntimeInitializeInfo = {
   capabilities: RemoteRuntimeCapabilities;
   compatibilityWarnings: string[];
 };
+
+type OpenSshUploadConfig = Pick<ConnectConfig, "host" | "port" | "username"> &
+  Partial<Pick<OpenSshResolvedConfig, "identityFile" | "knownHostsPath" | "hostAliases">>;
 
 export function validateRemoteRuntimeInitializeResult(args: {
   result: unknown;
@@ -155,6 +174,8 @@ type RemoteRuntimeLayout = {
   binaryRelative: string;
   versionExpr: string;
   sha256Expr: string;
+  ptyHostWorkerExpr: string;
+  ptyHostWorkerSha256Expr: string;
 };
 
 function normalizeRemoteRuntimeChannel(value: unknown): RemoteRuntimeChannel {
@@ -185,6 +206,8 @@ export function resolveRemoteRuntimeLayout(env: NodeJS.ProcessEnv = process.env)
     binaryRelative: `${homeDirName}/bin/ade`,
     versionExpr: `${binDirExpr}/ade.version`,
     sha256Expr: `${binDirExpr}/ade.sha256`,
+    ptyHostWorkerExpr: `${runtimeDirExpr}/ptyHostWorker.cjs`,
+    ptyHostWorkerSha256Expr: `${runtimeDirExpr}/ptyHostWorker.cjs.sha256`,
   };
 }
 
@@ -209,6 +232,9 @@ export function buildRemoteRuntimeEnvironmentPrefix(args: {
   nativeDepsReady: boolean;
   layout?: RemoteRuntimeLayout;
   disableRuntimeServiceInstall?: boolean;
+  ptyHostWorkerReady?: boolean;
+  ptyHostWorkerNodePath?: string | null;
+  ptyHostWorkerCommandExpr?: string | null;
 }): string {
   const layout = args.layout ?? resolveRemoteRuntimeLayout();
   const parts = [
@@ -224,6 +250,14 @@ export function buildRemoteRuntimeEnvironmentPrefix(args: {
   }
   if (args.nativeDepsReady) {
     parts.push(`NODE_PATH="${layout.runtimeDirExpr}/${args.archLabel}/node_modules${"${NODE_PATH:+:$NODE_PATH}"}"`);
+  }
+  if (args.ptyHostWorkerReady) {
+    if (args.ptyHostWorkerNodePath) {
+      parts.push(`ADE_PTY_HOST_WORKER_PATH="${layout.ptyHostWorkerExpr}"`);
+      parts.push(`ADE_PTY_HOST_WORKER_NODE=${shellQuote(args.ptyHostWorkerNodePath)}`);
+    } else if (args.ptyHostWorkerCommandExpr) {
+      parts.push(`ADE_PTY_HOST_WORKER_COMMAND="${args.ptyHostWorkerCommandExpr}"`);
+    }
   }
   return `${parts.join(" ")} `;
 }
@@ -263,33 +297,772 @@ function bundledNativeDepsPath(resourcesPath: string, archLabel: string): string
   }) ?? null;
 }
 
-function hashRuntimeBinary(localPath: string): string {
-  return crypto.createHash("sha256").update(fs.readFileSync(localPath)).digest("hex");
+function bundledPtyHostWorkerPath(resourcesPath: string, localBinaryPath: string | null): string | null {
+  const candidates = [
+    path.join(resourcesPath, "ade-cli", "ptyHostWorker.cjs"),
+    path.join(resourcesPath, "app.asar.unpacked", "ade-cli", "ptyHostWorker.cjs"),
+  ];
+  if (localBinaryPath) {
+    const localBinaryDir = path.dirname(localBinaryPath);
+    const desktopRuntimeDir = path.resolve(process.cwd(), "resources", "runtime");
+    const repoRuntimeDir = path.resolve(process.cwd(), "apps", "desktop", "resources", "runtime");
+    if (localBinaryDir === desktopRuntimeDir) {
+      candidates.push(path.resolve(process.cwd(), "../ade-cli/dist/ptyHostWorker.cjs"));
+    }
+    if (localBinaryDir === repoRuntimeDir) {
+      candidates.push(path.resolve(process.cwd(), "apps/ade-cli/dist/ptyHostWorker.cjs"));
+    }
+  }
+  return candidates.find((candidate) => {
+    try {
+      return fs.statSync(candidate).isFile();
+    } catch {
+      return false;
+    }
+  }) ?? null;
 }
 
-async function uploadRuntimeBinary(client: Client, layout: RemoteRuntimeLayout, localPath: string, appVersion: string, localBinarySha256: string): Promise<void> {
-  await execSsh(client, `mkdir -p ${layout.binDirExpr}`);
-  await new Promise<void>((resolve, reject) => {
+type LocalArtifactHashCacheEntry = {
+  size: number;
+  mtimeMs: number;
+  ctimeMs: number;
+  sha256: string;
+};
+
+const localArtifactHashCache = new Map<string, LocalArtifactHashCacheEntry>();
+
+function hashRuntimeBinary(localPath: string): string {
+  const stat = fs.statSync(localPath);
+  const cached = localArtifactHashCache.get(localPath);
+  if (
+    cached &&
+    cached.size === stat.size &&
+    cached.mtimeMs === stat.mtimeMs &&
+    cached.ctimeMs === stat.ctimeMs
+  ) {
+    return cached.sha256;
+  }
+  const sha256 = crypto.createHash("sha256").update(fs.readFileSync(localPath)).digest("hex");
+  localArtifactHashCache.set(localPath, {
+    size: stat.size,
+    mtimeMs: stat.mtimeMs,
+    ctimeMs: stat.ctimeMs,
+    sha256,
+  });
+  return sha256;
+}
+
+function fileSizeBytes(localPath: string): number {
+  return fs.statSync(localPath).size;
+}
+
+function remoteUploadTempSuffix(): string {
+  return `upload-${process.pid}-${Date.now()}-${crypto.randomBytes(4).toString("hex")}.tmp`;
+}
+
+function remoteUploadAppendCommand(remoteFileExpr: string): string {
+  return [
+    "umask 077",
+    `cat >> ${remoteFileExpr} & ade_upload_pid=$!`,
+    `( sleep ${REMOTE_ARTIFACT_UPLOAD_WATCHDOG_SECONDS}; kill "$ade_upload_pid" >/dev/null 2>&1 ) & ade_upload_watchdog=$!`,
+    "wait \"$ade_upload_pid\"",
+    "ade_upload_status=$?",
+    "kill \"$ade_upload_watchdog\" >/dev/null 2>&1 || true",
+    "wait \"$ade_upload_watchdog\" 2>/dev/null || true",
+    "exit \"$ade_upload_status\"",
+  ].join("; ");
+}
+
+async function execSshOrThrow(client: Client, command: string, fallback: string): Promise<void> {
+  const result = await execSsh(client, command);
+  if (result.code === 0) return;
+  throw new Error(result.stderr.trim() || result.stdout.trim() || fallback);
+}
+
+async function resolveRemoteUploadPath(client: Client, remoteFileExpr: string): Promise<string> {
+  const result = await execSsh(client, `printf '%s' ${remoteFileExpr}`);
+  if (result.code !== 0) {
+    throw new Error(result.stderr.trim() || result.stdout.trim() || "Unable to resolve remote ADE service artifact path.");
+  }
+  const remotePath = result.stdout.trim();
+  if (!remotePath) {
+    throw new Error("Remote ADE service artifact path resolved to an empty value.");
+  }
+  return remotePath;
+}
+
+function openSftp(client: Client): Promise<SFTPWrapper> {
+  return new Promise((resolve, reject) => {
     client.sftp((error, sftp) => {
       if (error) {
         reject(error);
         return;
       }
-      sftp.fastPut(localPath, layout.binaryRelative, {}, (putError) => {
-        sftp.end();
-        if (putError) reject(putError);
-        else resolve();
-      });
+      resolve(sftp);
     });
   });
-  await execSsh(client, [
-    `chmod 700 ${layout.binDirExpr}`,
-    `chmod +x ${layout.binaryExpr}`,
-    `printf '%s\\n' ${shellQuote(appVersion)} > ${layout.versionExpr}`,
-    `printf '%s\\n' ${shellQuote(localBinarySha256)} > ${layout.sha256Expr}`,
-    `chmod 600 ${layout.versionExpr}`,
-    `chmod 600 ${layout.sha256Expr}`,
-  ].join(" && "));
+}
+
+async function uploadSftpFile(
+  client: Client,
+  localPath: string,
+  remoteFileExpr: string,
+  totalBytes: number,
+): Promise<void> {
+  const remotePath = await resolveRemoteUploadPath(client, remoteFileExpr);
+  const sftp = await openSftp(client);
+  try {
+    await new Promise<void>((resolve, reject) => {
+      let settled = false;
+      let transferredBytes = 0;
+      let timeout: NodeJS.Timeout | null = null;
+      let idleTimeout: NodeJS.Timeout | null = null;
+
+      const uploadProgressSuffix = (): string =>
+        transferredBytes > 0 ? ` after ${transferredBytes} transferred bytes` : "";
+
+      const clearTimers = (): void => {
+        if (timeout) {
+          clearTimeout(timeout);
+          timeout = null;
+        }
+        if (idleTimeout) {
+          clearTimeout(idleTimeout);
+          idleTimeout = null;
+        }
+      };
+
+      const closeSftp = (destroy: boolean): void => {
+        try {
+          if (destroy) sftp.destroy();
+          else sftp.end();
+        } catch {}
+      };
+
+      const settle = (error?: Error | null): void => {
+        if (settled) return;
+        settled = true;
+        clearTimers();
+        if (error) {
+          closeSftp(true);
+          reject(error);
+          return;
+        }
+        resolve();
+      };
+
+      const resetIdleTimer = (): void => {
+        if (idleTimeout) clearTimeout(idleTimeout);
+        idleTimeout = setTimeout(() => {
+          settle(new Error(`Timed out uploading ADE service artifact with SFTP: no transfer progress for ${REMOTE_ARTIFACT_UPLOAD_IDLE_TIMEOUT_MS}ms${uploadProgressSuffix()}.`));
+        }, REMOTE_ARTIFACT_UPLOAD_IDLE_TIMEOUT_MS);
+        idleTimeout.unref?.();
+      };
+
+      timeout = setTimeout(() => {
+        settle(new Error(`Timed out uploading ADE service artifact with SFTP after ${REMOTE_ARTIFACT_UPLOAD_TIMEOUT_MS}ms${uploadProgressSuffix()}.`));
+      }, REMOTE_ARTIFACT_UPLOAD_TIMEOUT_MS);
+      timeout.unref?.();
+      resetIdleTimer();
+
+      sftp.fastPut(localPath, remotePath, {
+        concurrency: 4,
+        chunkSize: 256 * 1024,
+        fileSize: totalBytes,
+        mode: 0o600,
+        step: (total) => {
+          transferredBytes = total;
+          resetIdleTimer();
+        },
+      }, (error) => {
+        if (error) {
+          settle(new Error(`Unable to upload ADE service artifact with SFTP${uploadProgressSuffix()}: ${error.message}`));
+          return;
+        }
+        settle(null);
+      });
+    });
+  } finally {
+    try {
+      sftp.end();
+    } catch {}
+  }
+}
+
+function remoteSha256Expr(fileExpr: string): string {
+  return `(command -v shasum >/dev/null 2>&1 && shasum -a 256 ${fileExpr} || sha256sum ${fileExpr}) | awk '{print $1}'`;
+}
+
+function remoteFileMatchesCommand(fileExpr: string, expectedSize: number, expectedSha256: string): string {
+  return [
+    `test "$(wc -c < ${fileExpr} | tr -d '[:space:]')" = ${shellQuote(String(expectedSize))}`,
+    `test "$(${remoteSha256Expr(fileExpr)})" = ${shellQuote(expectedSha256)}`,
+  ].join(" && ");
+}
+
+const REMOTE_PREFLIGHT_MARKER_PREFIX = "__ade_remote_preflight_";
+
+function remotePreflightSection(field: string, command: string): string {
+  return `printf '\\n${REMOTE_PREFLIGHT_MARKER_PREFIX}${field}__\\n'; ${command}`;
+}
+
+function parseRemotePreflightSections(stdout: string): Record<string, string> {
+  const sections: Record<string, string> = {};
+  const pattern = /^__ade_remote_preflight_([a-z0-9_]+)__$/gm;
+  const matches = Array.from(stdout.matchAll(pattern));
+  for (let index = 0; index < matches.length; index += 1) {
+    const match = matches[index]!;
+    const field = match[1]!;
+    const start = match.index! + match[0].length;
+    const end = matches[index + 1]?.index ?? stdout.length;
+    sections[field] = stdout.slice(start, end).replace(/^\r?\n/u, "").trim();
+  }
+  return sections;
+}
+
+async function readRemoteRuntimeIdentity(
+  client: Client,
+  layout: RemoteRuntimeLayout,
+): Promise<{
+  markerVersion: string | null;
+  executableVersion: string | null;
+  remoteBinarySha256: string | null;
+}> {
+  const result = await execSsh(client, [
+    remotePreflightSection("marker_version", `cat ${layout.versionExpr} 2>/dev/null || true`),
+    remotePreflightSection("marker_sha256", `cat ${layout.sha256Expr} 2>/dev/null || true`),
+    remotePreflightSection("executable_version", `test -x ${layout.binaryExpr} && ${layout.binaryExpr} --version 2>/dev/null || true`),
+  ].join("; "));
+  const sections = parseRemotePreflightSections(result.stdout);
+  return {
+    markerVersion: normalizeRuntimeVersion(sections.marker_version ?? ""),
+    executableVersion: normalizeRuntimeVersion(sections.executable_version ?? ""),
+    remoteBinarySha256: sections.marker_sha256 || null,
+  };
+}
+
+async function readRemoteRuntimeSupportStatus(args: {
+  client: Client;
+  layout: RemoteRuntimeLayout;
+  archLabel: string;
+  appVersion: string;
+  checkNativeDeps: boolean;
+  checkPtyHostWorker: boolean;
+  localPtyHostWorkerSha256: string | null;
+}): Promise<{
+  nativeDepsReady: boolean;
+  nodePath: string | null;
+  ptyHostWorkerReady: boolean;
+}> {
+  const sections = [
+    remotePreflightSection("node_path", "command -v node || true"),
+  ];
+  if (args.checkNativeDeps) {
+    sections.push(remotePreflightSection("native_deps_ready", [
+      `test -d ${args.layout.runtimeDirExpr}/${args.archLabel}/node_modules`,
+      `test "$(cat ${args.layout.runtimeDirExpr}/${args.archLabel}/.ade-version 2>/dev/null)" = ${shellQuote(args.appVersion)}`,
+      "echo ok",
+    ].join(" && ") + " || true"));
+  }
+  if (args.checkPtyHostWorker && args.localPtyHostWorkerSha256) {
+    sections.push(remotePreflightSection("pty_host_worker_ready", [
+      `test -f ${args.layout.ptyHostWorkerExpr}`,
+      `test "$(cat ${args.layout.ptyHostWorkerSha256Expr} 2>/dev/null)" = ${shellQuote(args.localPtyHostWorkerSha256)}`,
+      "echo ok",
+    ].join(" && ") + " || true"));
+  }
+  const result = await execSsh(args.client, sections.join("; "));
+  const parsed = parseRemotePreflightSections(result.stdout);
+  const nodePath = parsed.node_path?.split(/\r?\n/u)[0]?.trim() || null;
+  return {
+    nativeDepsReady: parsed.native_deps_ready === "ok",
+    nodePath,
+    ptyHostWorkerReady: parsed.pty_host_worker_ready === "ok",
+  };
+}
+
+const REMOTE_ARTIFACT_UPLOAD_TIMEOUT_MS = 10 * 60_000;
+const REMOTE_ARTIFACT_UPLOAD_IDLE_TIMEOUT_MS = 45_000;
+const REMOTE_ARTIFACT_UPLOAD_WATCHDOG_SECONDS = Math.ceil(
+  REMOTE_ARTIFACT_UPLOAD_IDLE_TIMEOUT_MS / 1000,
+) + 30;
+const REMOTE_ARTIFACT_UPLOAD_CHUNK_BYTES = 1024 * 1024;
+const REMOTE_ARTIFACT_UPLOAD_NO_PROGRESS_RETRIES = 2;
+
+function openSshArgsForRoute(
+  target: RemoteRuntimeTarget,
+  route: ConnectedSshRoute,
+  connectedConfig: OpenSshUploadConfig | null | undefined,
+  remoteCommand: string,
+): string[] {
+  const args = [
+    "-o",
+    "BatchMode=yes",
+    "-o",
+    "StrictHostKeyChecking=yes",
+  ];
+  const knownHostsPath = connectedConfig?.knownHostsPath?.trim();
+  if (knownHostsPath) {
+    args.push(
+      "-o",
+      `UserKnownHostsFile=${knownHostsPath}`,
+      "-o",
+      "GlobalKnownHostsFile=/dev/null",
+    );
+  }
+  const identityFile =
+    connectedConfig?.identityFile?.trim() || target.sshKeyPath?.trim();
+  if (identityFile) args.push("-i", identityFile);
+  const port = connectedConfig?.port ?? route.port ?? target.port;
+  if (port) args.push("-p", String(port));
+  const user = connectedConfig?.username?.trim() || target.sshUser?.trim();
+  const host = connectedConfig?.host?.trim() || route.hostname;
+  args.push(user ? `${user}@${host}` : host);
+  args.push(remoteCommand);
+  return args;
+}
+
+async function writeTemporaryUploadChunk(chunk: Buffer): Promise<{ path: string; remove: () => Promise<void> }> {
+  const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), "ade-remote-upload-"));
+  const filePath = path.join(dir, "chunk.bin");
+  await fs.promises.writeFile(filePath, chunk, { mode: 0o600 });
+  return {
+    path: filePath,
+    remove: () => fs.promises.rm(dir, { recursive: true, force: true }),
+  };
+}
+
+async function uploadSshChunk(
+  client: Client,
+  target: RemoteRuntimeTarget,
+  route: ConnectedSshRoute,
+  connectedConfig: OpenSshUploadConfig | null | undefined,
+  remoteFileExpr: string,
+  chunk: Buffer,
+  committedBytes: number,
+): Promise<void> {
+  try {
+    await uploadSshChunkViaConnectedClient(client, remoteFileExpr, chunk, committedBytes);
+    return;
+  } catch (error) {
+    if ((error as { wroteToChannel?: boolean }).wroteToChannel) {
+      throw error;
+    }
+    try {
+      await uploadSshChunkViaOpenSsh(target, route, connectedConfig, remoteFileExpr, chunk, committedBytes);
+    } catch (fallbackError) {
+      const primaryMessage = error instanceof Error ? error.message : String(error);
+      const fallbackMessage = fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
+      throw new Error(`Unable to upload ADE service artifact over the existing SSH session: ${primaryMessage}; OpenSSH fallback failed: ${fallbackMessage}`);
+    }
+  }
+}
+
+async function uploadSshChunkViaConnectedClient(
+  client: Client,
+  remoteFileExpr: string,
+  chunk: Buffer,
+  committedBytes: number,
+): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    let settled = false;
+    let wroteToChannel = false;
+    let stderr = "";
+    let exitCode: number | null = null;
+    let exitSignal: string | null = null;
+    let timeout: NodeJS.Timeout | null = null;
+    let idleTimeout: NodeJS.Timeout | null = null;
+    let channelRef: { close?: () => void; destroy?: () => void } | null = null;
+
+    const uploadProgressSuffix = (): string =>
+      committedBytes > 0 ? ` after ${committedBytes} committed bytes` : "";
+
+    const markError = (error: Error): Error => {
+      (error as Error & { wroteToChannel?: boolean }).wroteToChannel = wroteToChannel;
+      return error;
+    };
+
+    const clearTimers = (): void => {
+      if (timeout) {
+        clearTimeout(timeout);
+        timeout = null;
+      }
+      if (idleTimeout) {
+        clearTimeout(idleTimeout);
+        idleTimeout = null;
+      }
+    };
+
+    const closeChannel = (): void => {
+      try {
+        channelRef?.close?.();
+      } catch {}
+      try {
+        channelRef?.destroy?.();
+      } catch {}
+    };
+
+    const settle = (error?: Error | null): void => {
+      if (settled) return;
+      settled = true;
+      clearTimers();
+      if (error) {
+        closeChannel();
+        reject(markError(error));
+        return;
+      }
+      resolve();
+    };
+
+    const resetIdleTimer = (): void => {
+      if (idleTimeout) clearTimeout(idleTimeout);
+      idleTimeout = setTimeout(() => {
+        settle(new Error(`Timed out uploading ADE service artifact: no remote chunk completion for ${REMOTE_ARTIFACT_UPLOAD_IDLE_TIMEOUT_MS}ms${uploadProgressSuffix()}.`));
+      }, REMOTE_ARTIFACT_UPLOAD_IDLE_TIMEOUT_MS);
+      idleTimeout.unref?.();
+    };
+
+    timeout = setTimeout(() => {
+      settle(new Error(`Timed out uploading ADE service artifact after ${REMOTE_ARTIFACT_UPLOAD_TIMEOUT_MS}ms${uploadProgressSuffix()}.`));
+    }, REMOTE_ARTIFACT_UPLOAD_TIMEOUT_MS);
+    timeout.unref?.();
+    resetIdleTimer();
+
+    client.exec(remoteUploadAppendCommand(remoteFileExpr), (error, channel) => {
+      if (error) {
+        settle(new Error(`SSH upload channel failed${uploadProgressSuffix()}: ${error.message}`));
+        return;
+      }
+      channelRef = channel as unknown as { close?: () => void; destroy?: () => void };
+      channel.resume();
+      channel.stderr?.on("data", (data: Buffer | string) => {
+        stderr += data.toString();
+      });
+      channel.on("exit", (code: number | null, signal: string | null) => {
+        exitCode = typeof code === "number" ? code : null;
+        exitSignal = signal ?? null;
+      });
+      channel.on("error", (channelError: Error) => {
+        settle(new Error(`SSH upload channel failed${uploadProgressSuffix()}: ${channelError.message}`));
+      });
+      channel.on("close", () => {
+        if (exitCode && exitCode !== 0) {
+          const detail = stderr.trim() || `remote command exited with code ${exitCode}`;
+          settle(new Error(`Unable to upload ADE service artifact: ${detail}`));
+          return;
+        }
+        if (exitSignal) {
+          const detail = stderr.trim() || `remote command exited with signal ${exitSignal}`;
+          settle(new Error(`Unable to upload ADE service artifact: ${detail}`));
+          return;
+        }
+        settle(null);
+      });
+      const finishWrite = (): void => {
+        try {
+          channel.end();
+        } catch (writeError) {
+          settle(new Error(`SSH upload channel failed${uploadProgressSuffix()}: ${writeError instanceof Error ? writeError.message : String(writeError)}`));
+        }
+      };
+      wroteToChannel = true;
+      if (!channel.write(chunk)) {
+        channel.once("drain", finishWrite);
+      } else {
+        finishWrite();
+      }
+    });
+  });
+}
+
+async function uploadSshChunkViaOpenSsh(
+  target: RemoteRuntimeTarget,
+  route: ConnectedSshRoute,
+  connectedConfig: OpenSshUploadConfig | null | undefined,
+  remoteFileExpr: string,
+  chunk: Buffer,
+  committedBytes: number,
+): Promise<void> {
+  const chunkFile = await writeTemporaryUploadChunk(chunk);
+  const chunkHandle = await fs.promises.open(chunkFile.path, "r");
+  try {
+    await new Promise<void>((resolve, reject) => {
+      let settled = false;
+      const child = spawn("ssh", openSshArgsForRoute(target, route, connectedConfig, remoteUploadAppendCommand(remoteFileExpr)), {
+        stdio: [chunkHandle.fd, "ignore", "pipe"],
+      });
+      let stderr = "";
+      let timeout: NodeJS.Timeout | null = null;
+      let idleTimeout: NodeJS.Timeout | null = null;
+
+      const uploadProgressSuffix = (): string =>
+        committedBytes > 0 ? ` after ${committedBytes} committed bytes` : "";
+
+      const clearTimers = (): void => {
+        if (timeout) {
+          clearTimeout(timeout);
+          timeout = null;
+        }
+        if (idleTimeout) {
+          clearTimeout(idleTimeout);
+          idleTimeout = null;
+        }
+      };
+
+      const resetIdleTimer = (): void => {
+        if (idleTimeout) clearTimeout(idleTimeout);
+        idleTimeout = setTimeout(() => {
+          settle(new Error(`Timed out uploading ADE service artifact: no remote chunk completion for ${REMOTE_ARTIFACT_UPLOAD_IDLE_TIMEOUT_MS}ms${uploadProgressSuffix()}.`));
+        }, REMOTE_ARTIFACT_UPLOAD_IDLE_TIMEOUT_MS);
+        idleTimeout.unref?.();
+      };
+
+      const settle = (error?: Error | null): void => {
+        if (settled) return;
+        settled = true;
+        clearTimers();
+        if (error) {
+          try { child.kill("SIGKILL"); } catch {}
+          reject(error);
+          return;
+        }
+        resolve();
+      };
+
+      timeout = setTimeout(() => {
+        settle(new Error(`Timed out uploading ADE service artifact after ${REMOTE_ARTIFACT_UPLOAD_TIMEOUT_MS}ms${uploadProgressSuffix()}.`));
+      }, REMOTE_ARTIFACT_UPLOAD_TIMEOUT_MS);
+      timeout.unref?.();
+      resetIdleTimer();
+
+      child.stderr?.on("data", (chunk: Buffer | string) => {
+        stderr += chunk.toString();
+      });
+      child.on("error", (error) => {
+        settle(new Error(`SSH upload process failed${uploadProgressSuffix()}: ${error.message}`));
+      });
+      child.on("close", (code, signal) => {
+        if (code && code !== 0) {
+          const detail = stderr.trim() || `ssh exited with code ${code}`;
+          settle(new Error(`Unable to upload ADE service artifact: ${detail}`));
+          return;
+        }
+        if (signal) {
+          const detail = stderr.trim() || `ssh exited with signal ${signal}`;
+          settle(new Error(`Unable to upload ADE service artifact: ${detail}`));
+          return;
+        }
+        settle(null);
+      });
+    });
+  } finally {
+    await chunkHandle.close().catch(() => undefined);
+    await chunkFile.remove();
+  }
+}
+
+async function uploadSshFileInChunks(
+  client: Client,
+  target: RemoteRuntimeTarget,
+  route: ConnectedSshRoute,
+  connectedConfig: OpenSshUploadConfig | null | undefined,
+  localPath: string,
+  remoteFileExpr: string,
+  totalBytes: number,
+): Promise<void> {
+  const readRemoteBytes = async (): Promise<number> => {
+    const result = await execSsh(client, `wc -c < ${remoteFileExpr} | tr -d '[:space:]'`);
+    if (result.code !== 0) {
+      throw new Error(result.stderr.trim() || result.stdout.trim() || "Unable to read remote ADE service artifact upload size.");
+    }
+    const value = Number.parseInt(result.stdout.trim(), 10);
+    if (!Number.isFinite(value) || value < 0 || value > totalBytes) {
+      throw new Error(`Remote ADE service artifact upload reported invalid size ${result.stdout.trim() || "<empty>"}.`);
+    }
+    return value;
+  };
+  const file = await fs.promises.open(localPath, "r");
+  try {
+    const buffer = Buffer.allocUnsafe(REMOTE_ARTIFACT_UPLOAD_CHUNK_BYTES);
+    let committedBytes = 0;
+    let noProgressRetries = 0;
+    while (committedBytes < totalBytes) {
+      const targetBytes = Math.min(REMOTE_ARTIFACT_UPLOAD_CHUNK_BYTES, totalBytes - committedBytes);
+      const { bytesRead } = await file.read(buffer, 0, targetBytes, committedBytes);
+      if (bytesRead <= 0) {
+        throw new Error(`Unable to read ADE service artifact after ${committedBytes} bytes.`);
+      }
+      try {
+        await uploadSshChunk(client, target, route, connectedConfig, remoteFileExpr, buffer.subarray(0, bytesRead), committedBytes);
+      } catch (error) {
+        const remoteBytes = await readRemoteBytes();
+        if (remoteBytes > committedBytes) {
+          committedBytes = remoteBytes;
+          noProgressRetries = 0;
+          continue;
+        }
+        noProgressRetries += 1;
+        if (noProgressRetries <= REMOTE_ARTIFACT_UPLOAD_NO_PROGRESS_RETRIES) {
+          continue;
+        }
+        throw error;
+      }
+      const remoteBytes = committedBytes + bytesRead;
+      const actualRemoteBytes = await readRemoteBytes();
+      if (actualRemoteBytes !== remoteBytes) {
+        if (actualRemoteBytes > committedBytes) {
+          committedBytes = actualRemoteBytes;
+          noProgressRetries = 0;
+          continue;
+        }
+        throw new Error(`Uploaded ADE service artifact stopped at ${actualRemoteBytes} bytes.`);
+      }
+      committedBytes = remoteBytes;
+      noProgressRetries = 0;
+    }
+  } finally {
+    await file.close();
+  }
+}
+
+async function uploadSshFile(
+  client: Client,
+  target: RemoteRuntimeTarget,
+  route: ConnectedSshRoute,
+  connectedConfig: OpenSshUploadConfig | null | undefined,
+  localPath: string,
+  remoteFileExpr: string,
+): Promise<void> {
+  const totalBytes = fileSizeBytes(localPath);
+  const prepareRemoteFile = async (): Promise<void> => {
+    await execSshOrThrow(
+      client,
+      `rm -f ${remoteFileExpr} && umask 077 && : > ${remoteFileExpr} && chmod 600 ${remoteFileExpr}`,
+      "Unable to prepare remote ADE service artifact upload.",
+    );
+  };
+
+  await prepareRemoteFile();
+  try {
+    await uploadSftpFile(client, localPath, remoteFileExpr, totalBytes);
+    return;
+  } catch (sftpError) {
+    await prepareRemoteFile();
+    try {
+      await uploadSshFileInChunks(client, target, route, connectedConfig, localPath, remoteFileExpr, totalBytes);
+    } catch (streamError) {
+      const sftpMessage = sftpError instanceof Error ? sftpError.message : String(sftpError);
+      const streamMessage = streamError instanceof Error ? streamError.message : String(streamError);
+      throw new Error(`Unable to upload ADE service artifact with SFTP: ${sftpMessage}; SSH stream fallback failed: ${streamMessage}`);
+    }
+  }
+}
+
+async function uploadRuntimeBinary(
+  client: Client,
+  target: RemoteRuntimeTarget,
+  route: ConnectedSshRoute,
+  connectedConfig: OpenSshUploadConfig | null | undefined,
+  layout: RemoteRuntimeLayout,
+  localPath: string,
+  appVersion: string,
+  localBinarySha256: string,
+): Promise<void> {
+  const tempSuffix = remoteUploadTempSuffix();
+  const tempExpr = `${layout.binaryExpr}.${tempSuffix}`;
+  await execSshOrThrow(
+    client,
+    `mkdir -p ${layout.binDirExpr} && chmod 700 ${layout.binDirExpr}`,
+    "Unable to create the remote ADE service directory.",
+  );
+  try {
+    await uploadSshFile(client, target, route, connectedConfig, localPath, tempExpr);
+    await execSshOrThrow(client, [
+      remoteFileMatchesCommand(tempExpr, fileSizeBytes(localPath), localBinarySha256),
+      `chmod +x ${tempExpr}`,
+      `mv -f ${tempExpr} ${layout.binaryExpr}`,
+      `printf '%s\\n' ${shellQuote(appVersion)} > ${layout.versionExpr}`,
+      `printf '%s\\n' ${shellQuote(localBinarySha256)} > ${layout.sha256Expr}`,
+      `chmod 600 ${layout.versionExpr}`,
+      `chmod 600 ${layout.sha256Expr}`,
+    ].join(" && "), "Uploaded ADE service did not pass size and checksum verification.");
+  } catch (error) {
+    await execSsh(client, `rm -f ${tempExpr}`).catch(() => undefined);
+    throw error;
+  }
+}
+
+async function uploadNativeDepsBundle(
+  client: Client,
+  target: RemoteRuntimeTarget,
+  route: ConnectedSshRoute,
+  connectedConfig: OpenSshUploadConfig | null | undefined,
+  layout: RemoteRuntimeLayout,
+  archLabel: string,
+  localPath: string,
+  appVersion: string,
+): Promise<void> {
+  const localSha256 = hashRuntimeBinary(localPath);
+  const remoteArchiveExpr = `${layout.runtimeDirExpr}/ade-${archLabel}.native.tar.gz`;
+  const tempSuffix = remoteUploadTempSuffix();
+  const tempExpr = `${remoteArchiveExpr}.${tempSuffix}`;
+  await execSshOrThrow(
+    client,
+    `mkdir -p ${layout.runtimeDirExpr}`,
+    "Unable to create the remote ADE native dependency directory.",
+  );
+  try {
+    await uploadSshFile(client, target, route, connectedConfig, localPath, tempExpr);
+    const extract = await execSsh(
+      client,
+      [
+        remoteFileMatchesCommand(tempExpr, fileSizeBytes(localPath), localSha256),
+        `mv -f ${tempExpr} ${remoteArchiveExpr}`,
+        `rm -rf ${layout.runtimeDirExpr}/${archLabel}`,
+        `mkdir -p ${layout.runtimeDirExpr}/${archLabel}`,
+        `tar -xzf ${remoteArchiveExpr} -C ${layout.runtimeDirExpr}/${archLabel}`,
+        `printf '%s\\n' ${shellQuote(appVersion)} > ${layout.runtimeDirExpr}/${archLabel}/.ade-version`,
+      ].join(" && "),
+      { timeoutMs: REMOTE_ARTIFACT_UPLOAD_TIMEOUT_MS },
+    );
+    if (extract.code !== 0) {
+      throw new Error(extract.stderr.trim() || "Unable to unpack ADE service native dependencies on the remote machine.");
+    }
+  } catch (error) {
+    await execSsh(client, `rm -f ${tempExpr}`).catch(() => undefined);
+    throw error;
+  }
+}
+
+async function uploadPtyHostWorker(
+  client: Client,
+  target: RemoteRuntimeTarget,
+  route: ConnectedSshRoute,
+  connectedConfig: OpenSshUploadConfig | null | undefined,
+  layout: RemoteRuntimeLayout,
+  localPath: string,
+  localSha256: string,
+): Promise<void> {
+  const tempSuffix = remoteUploadTempSuffix();
+  const tempExpr = `${layout.ptyHostWorkerExpr}.${tempSuffix}`;
+  await execSshOrThrow(
+    client,
+    `mkdir -p ${layout.runtimeDirExpr}`,
+    "Unable to create the remote ADE runtime artifact directory.",
+  );
+  try {
+    await uploadSshFile(client, target, route, connectedConfig, localPath, tempExpr);
+    await execSshOrThrow(client, [
+      remoteFileMatchesCommand(tempExpr, fileSizeBytes(localPath), localSha256),
+      `mv -f ${tempExpr} ${layout.ptyHostWorkerExpr}`,
+      `printf '%s\\n' ${shellQuote(localSha256)} > ${layout.ptyHostWorkerSha256Expr}`,
+      `chmod 600 ${layout.ptyHostWorkerExpr}`,
+      `chmod 600 ${layout.ptyHostWorkerSha256Expr}`,
+    ].join(" && "), "Uploaded ADE PTY host worker did not pass size and checksum verification.");
+  } catch (error) {
+    await execSsh(client, `rm -f ${tempExpr}`).catch(() => undefined);
+    throw error;
+  }
 }
 
 async function signUploadedRuntimeBinaryIfNeeded(client: Client, layout: RemoteRuntimeLayout, platform: string): Promise<void> {
@@ -301,33 +1074,6 @@ async function signUploadedRuntimeBinaryIfNeeded(client: Client, layout: RemoteR
       signed.stdout.trim() ||
       "Uploaded ADE service could not be signed on the remote Mac.",
     );
-  }
-}
-
-async function uploadNativeDepsBundle(client: Client, layout: RemoteRuntimeLayout, archLabel: string, localPath: string, appVersion: string): Promise<void> {
-  await execSsh(client, `mkdir -p ${layout.runtimeDirExpr}`);
-  const remoteArchive = `${layout.runtimeDirRelative}/ade-${archLabel}.native.tar.gz`;
-  await new Promise<void>((resolve, reject) => {
-    client.sftp((error, sftp) => {
-      if (error) {
-        reject(error);
-        return;
-      }
-      sftp.fastPut(localPath, remoteArchive, {}, (putError) => {
-        sftp.end();
-        if (putError) reject(putError);
-        else resolve();
-      });
-    });
-  });
-  const extract = await execSsh(client, [
-    `rm -rf ${layout.runtimeDirExpr}/${archLabel}`,
-    `mkdir -p ${layout.runtimeDirExpr}/${archLabel}`,
-    `tar -xzf ${layout.runtimeDirExpr}/ade-${archLabel}.native.tar.gz -C ${layout.runtimeDirExpr}/${archLabel}`,
-    `printf '%s\\n' ${shellQuote(appVersion)} > ${layout.runtimeDirExpr}/${archLabel}/.ade-version`,
-  ].join(" && "));
-  if (extract.code !== 0) {
-    throw new Error(extract.stderr.trim() || "Unable to unpack ADE service native dependencies on the remote machine.");
   }
 }
 
@@ -424,7 +1170,13 @@ export async function bootstrapRemoteRuntime(args: {
   resourcesPath: string;
   appVersion: string;
 }): Promise<{ client: RuntimeRpcClient; result: RemoteRuntimeConnectResult; ssh: Client }> {
-  const { client: ssh, route: connectedRoute } = await connectSshWithRoute(args.target);
+  const {
+    client: ssh,
+    route: connectedRoute,
+    config: connectedConfig,
+    openSshConfig,
+  } = await connectSshWithRoute(args.target);
+  const uploadConnectionConfig = openSshConfig ?? connectedConfig;
   try {
     const uname = await execSsh(ssh, "uname -sm");
     if (uname.code !== 0) {
@@ -434,12 +1186,10 @@ export async function bootstrapRemoteRuntime(args: {
     const preferredLayout = resolveRemoteRuntimeLayout();
     let layout = preferredLayout;
     let runtimeLayoutFallbackReason: string | null = null;
-    const binaryMarkerCheck = await execSsh(ssh, `cat ${layout.versionExpr} 2>/dev/null || true`);
-    let markedRuntimeVersion = normalizeRuntimeVersion(binaryMarkerCheck.stdout);
-    const binaryHashCheck = await execSsh(ssh, `cat ${layout.sha256Expr} 2>/dev/null || true`);
-    let remoteBinarySha256 = binaryHashCheck.stdout.trim() || null;
-    const versionCheck = await execSsh(ssh, `test -x ${layout.binaryExpr} && ${layout.binaryExpr} --version || true`);
-    let executableRuntimeVersion = normalizeRuntimeVersion(versionCheck.stdout);
+    const identity = await readRemoteRuntimeIdentity(ssh, layout);
+    let markedRuntimeVersion = identity.markerVersion;
+    let remoteBinarySha256 = identity.remoteBinarySha256;
+    let executableRuntimeVersion = identity.executableVersion;
     let runtimeVersion = selectRemoteRuntimeVersion({
       markerVersion: markedRuntimeVersion,
       executableVersion: executableRuntimeVersion,
@@ -447,21 +1197,19 @@ export async function bootstrapRemoteRuntime(args: {
     const localBinary = bundledRuntimePath(args.resourcesPath, arch.label);
     const localBinarySha256 = localBinary ? hashRuntimeBinary(localBinary) : null;
     const nativeDepsBundle = bundledNativeDepsPath(args.resourcesPath, arch.label);
+    const localPtyHostWorker = bundledPtyHostWorkerPath(args.resourcesPath, localBinary);
+    const localPtyHostWorkerSha256 = localPtyHostWorker ? hashRuntimeBinary(localPtyHostWorker) : null;
+    let remoteBinaryMatchesLocal: boolean | null = null;
 
     if (!localBinary && !executableRuntimeVersion) {
       for (const candidateLayout of resolveRemoteRuntimeLayoutCandidates().filter((candidate) => candidate.homeDirName !== layout.homeDirName)) {
-        const candidateVersionCheck = await execSsh(
-          ssh,
-          `test -x ${candidateLayout.binaryExpr} && ${candidateLayout.binaryExpr} --version || true`,
-        );
-        const candidateExecutableVersion = normalizeRuntimeVersion(candidateVersionCheck.stdout);
+        const candidateIdentity = await readRemoteRuntimeIdentity(ssh, candidateLayout);
+        const candidateExecutableVersion = candidateIdentity.executableVersion;
         if (!candidateExecutableVersion) continue;
-        const candidateMarkerCheck = await execSsh(ssh, `cat ${candidateLayout.versionExpr} 2>/dev/null || true`);
-        const candidateHashCheck = await execSsh(ssh, `cat ${candidateLayout.sha256Expr} 2>/dev/null || true`);
         layout = candidateLayout;
         executableRuntimeVersion = candidateExecutableVersion;
-        markedRuntimeVersion = normalizeRuntimeVersion(candidateMarkerCheck.stdout);
-        remoteBinarySha256 = candidateHashCheck.stdout.trim() || null;
+        markedRuntimeVersion = candidateIdentity.markerVersion;
+        remoteBinarySha256 = candidateIdentity.remoteBinarySha256;
         runtimeVersion = selectRemoteRuntimeVersion({
           markerVersion: markedRuntimeVersion,
           executableVersion: executableRuntimeVersion,
@@ -472,41 +1220,106 @@ export async function bootstrapRemoteRuntime(args: {
     }
 
     let runtimeUploaded = false;
-    if (localBinary && localBinarySha256 && shouldUploadBundledRuntime({
+    if (localBinary && localBinarySha256 && runtimeVersion === args.appVersion) {
+      if (arch.platform === "darwin") {
+        if (remoteBinarySha256 === localBinarySha256) {
+          const binarySignatureCheck = await execSsh(
+            ssh,
+            `codesign --verify ${layout.binaryExpr} >/dev/null 2>&1 && echo ok || true`,
+          );
+          remoteBinaryMatchesLocal = binarySignatureCheck.stdout.trim() === "ok";
+        } else {
+          remoteBinaryMatchesLocal = false;
+        }
+      } else {
+        const binaryContentCheck = await execSsh(
+          ssh,
+          `${remoteFileMatchesCommand(layout.binaryExpr, fileSizeBytes(localBinary), localBinarySha256)} && echo ok || true`,
+        );
+        remoteBinaryMatchesLocal = binaryContentCheck.stdout.trim() === "ok";
+      }
+    }
+
+    const shouldUploadRuntime = Boolean(localBinary && localBinarySha256 && shouldUploadBundledRuntime({
       localBinaryAvailable: true,
       executableVersion: executableRuntimeVersion,
+      markerVersion: markedRuntimeVersion,
       appVersion: args.appVersion,
       localBinarySha256,
       remoteBinarySha256,
-    })) {
-      await uploadRuntimeBinary(ssh, layout, localBinary, args.appVersion, localBinarySha256);
+      remoteBinaryMatchesLocal,
+    }));
+
+    const uploadBundledRuntime = async (): Promise<void> => {
+      if (!localBinary || !localBinarySha256) return;
+      await uploadRuntimeBinary(ssh, args.target, connectedRoute, uploadConnectionConfig, layout, localBinary, args.appVersion, localBinarySha256);
       await signUploadedRuntimeBinaryIfNeeded(ssh, layout, arch.platform);
       runtimeUploaded = true;
       runtimeVersion = args.appVersion;
+    };
+
+    if (shouldUploadRuntime) {
+      await uploadBundledRuntime();
     }
 
-    let nativeDepsReady = false;
-    if (nativeDepsBundle) {
-      const nativeDepsCheck = await execSsh(ssh, [
-        `test -d ${layout.runtimeDirExpr}/${arch.label}/node_modules`,
-        `test "$(cat ${layout.runtimeDirExpr}/${arch.label}/.ade-version 2>/dev/null)" = ${shellQuote(args.appVersion)}`,
-        "echo ok",
-      ].join(" && ") + " || true");
-      const shouldUploadNativeDeps = runtimeUploaded || nativeDepsCheck.stdout.trim() !== "ok";
+    const supportStatus = await readRemoteRuntimeSupportStatus({
+      client: ssh,
+      layout,
+      archLabel: arch.label,
+      appVersion: args.appVersion,
+      checkNativeDeps: Boolean(nativeDepsBundle) && !runtimeUploaded,
+      checkPtyHostWorker: Boolean(localPtyHostWorkerSha256) && !runtimeUploaded,
+      localPtyHostWorkerSha256,
+    });
+
+    const ensureNativeDepsReady = async (forceUpload: boolean): Promise<boolean> => {
+      if (!nativeDepsBundle) return false;
+      const shouldUploadNativeDeps = forceUpload || !supportStatus.nativeDepsReady;
       if (shouldUploadNativeDeps) {
-        await uploadNativeDepsBundle(ssh, layout, arch.label, nativeDepsBundle, args.appVersion);
+        await uploadNativeDepsBundle(ssh, args.target, connectedRoute, uploadConnectionConfig, layout, arch.label, nativeDepsBundle, args.appVersion);
       }
-      nativeDepsReady = true;
-    }
+      return true;
+    };
 
-    const runtimeEnvPrefix = buildRemoteRuntimeEnvironmentPrefix({
+    let nativeDepsReady = await ensureNativeDepsReady(runtimeUploaded);
+
+    let ptyHostWorkerNodePath: string | null = null;
+    let ptyHostWorkerCommandExpr: string | null = null;
+    const ensurePtyHostWorkerReady = async (forceUpload: boolean): Promise<boolean> => {
+      ptyHostWorkerNodePath = supportStatus.nodePath;
+      if (!ptyHostWorkerNodePath) {
+        ptyHostWorkerCommandExpr = layout.binaryExpr;
+        return true;
+      }
+      if (!localPtyHostWorker || !localPtyHostWorkerSha256) return false;
+      const shouldUploadPtyHostWorker = forceUpload || !supportStatus.ptyHostWorkerReady;
+      if (shouldUploadPtyHostWorker) {
+        await uploadPtyHostWorker(
+          ssh,
+          args.target,
+          connectedRoute,
+          uploadConnectionConfig,
+          layout,
+          localPtyHostWorker,
+          localPtyHostWorkerSha256,
+        );
+      }
+      return true;
+    };
+
+    const ptyHostWorkerReady = await ensurePtyHostWorkerReady(runtimeUploaded);
+
+    let runtimeEnvPrefix = buildRemoteRuntimeEnvironmentPrefix({
       archLabel: arch.label,
       nativeDepsReady,
       layout,
       disableRuntimeServiceInstall: layout.homeDirName !== preferredLayout.homeDirName,
+      ptyHostWorkerReady,
+      ptyHostWorkerNodePath,
+      ptyHostWorkerCommandExpr,
     });
 
-    if (runtimeUploaded) {
+    const verifyUploadedRuntime = async (): Promise<void> => {
       const uploadedVersionCheck = await execSsh(ssh, `${runtimeEnvPrefix}${layout.binaryExpr} --version`);
       const uploadedVersion = normalizeRuntimeVersion(uploadedVersionCheck.stdout);
       if (uploadedVersionCheck.code !== 0 || !uploadedVersion) {
@@ -519,9 +1332,10 @@ export async function bootstrapRemoteRuntime(args: {
         throw new Error(`Uploaded ADE service version mismatch: expected ${args.appVersion}, got ${uploadedVersion}.`);
       }
       runtimeVersion = uploadedVersion;
-    }
+    };
 
     if (runtimeUploaded) {
+      await verifyUploadedRuntime();
       await stopRemoteRuntimeDaemon(ssh, layout, runtimeEnvPrefix);
     }
 

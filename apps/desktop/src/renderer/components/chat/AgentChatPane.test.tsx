@@ -16,8 +16,11 @@ import type {
   TerminalSessionDetail,
 } from "../../../shared/types";
 import { createDynamicCursorCliModelDescriptor, getModelById } from "../../../shared/modelRegistry";
-import { invalidateAiDiscoveryCache } from "../../lib/aiDiscoveryCache";
+import { invalidateAgentChatSessionListCache } from "../../lib/agentChatSessionListCache";
+import { invalidateAgentChatSlashCommandsCache } from "../../lib/agentChatSlashCommandsCache";
+import { getAiStatusCached, invalidateAiDiscoveryCache } from "../../lib/aiDiscoveryCache";
 import { DRAFT_LAUNCH_JOB_STALE_AFTER_MS } from "../../lib/draftLaunchJobs";
+import { invalidateProjectConfigCache } from "../../lib/projectConfigCache";
 import { useAppStore } from "../../state/appStore";
 import {
   rememberRuntimeCatalog,
@@ -639,6 +642,7 @@ function installAdeMocks(options?: {
 function resetChatTestStore() {
   useAppStore.setState({
     project: null,
+    projectBinding: null,
     laneSnapshots: [],
     lanes: [],
     selectedLaneId: null,
@@ -683,7 +687,10 @@ function installMatchMediaMock(): void {
 
 beforeEach(() => {
   installMatchMediaMock();
+  invalidateAgentChatSessionListCache();
+  invalidateAgentChatSlashCommandsCache();
   invalidateAiDiscoveryCache();
+  invalidateProjectConfigCache();
   resetModelPickerRuntimeCatalogForTests();
   window.localStorage.clear();
   window.sessionStorage.clear();
@@ -711,7 +718,10 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  invalidateAgentChatSessionListCache();
+  invalidateAgentChatSlashCommandsCache();
   invalidateAiDiscoveryCache();
+  invalidateProjectConfigCache();
   resetModelPickerRuntimeCatalogForTests();
   Object.defineProperty(window.navigator, "platform", {
     configurable: true,
@@ -785,6 +795,31 @@ function seedDrawerStore() {
     } as any],
     selectedLaneId: "lane-1",
   });
+}
+
+function seedRemoteChatStore() {
+  const rootPath = "/Users/admin/Projects/perf pass";
+  useAppStore.setState({
+    project: { rootPath, displayName: "perf pass" } as any,
+    projectBinding: {
+      kind: "remote",
+      key: "remote:target-1:project-1",
+      targetId: "target-1",
+      projectId: "project-1",
+      runtimeName: "Mac Studio",
+      displayName: "perf pass",
+      rootPath,
+    } as any,
+    lanes: [{
+      id: "lane-1",
+      name: "remote lane",
+      branchRef: "refs/heads/remote-lane",
+      laneType: "worktree",
+      worktreePath: `${rootPath}/.ade/worktrees/remote-lane`,
+    } as any],
+    selectedLaneId: "lane-1",
+  });
+  return rootPath;
 }
 
 function renderDrawerPane() {
@@ -958,6 +993,124 @@ function sessionTabTitles(expectedTitles: string[]) {
     .filter((button) => expectedTitles.includes(button.textContent?.trim() ?? ""));
   return tabs.map((button) => button.textContent?.trim());
 }
+
+describe("AgentChatPane remote startup", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("uses the remote binding root for AI status cache lookups", async () => {
+    const session = buildSession("session-1", { status: "idle" });
+    installAdeMocks({ sessions: [session] });
+    window.ade.ai.getStatus = vi.fn().mockResolvedValue({
+      mode: "subscription",
+      availableProviders: {
+        claude: {
+          binary: { present: false, source: "missing", path: null },
+          auth: { ready: false, mode: "none", detail: null },
+        },
+        codex: true,
+        cursor: false,
+        droid: false,
+      },
+      models: { claude: [], codex: [], cursor: [], droid: [] },
+      features: [],
+      availableModelIds: ["openai/gpt-5.4"],
+    }) as any;
+    const remoteRoot = seedRemoteChatStore();
+    await getAiStatusCached({ projectRoot: remoteRoot });
+    vi.mocked(window.ade.ai.getStatus).mockClear();
+
+    renderPane(session);
+
+    await screen.findByRole("button", { name: /^Select model/ });
+    await Promise.resolve();
+
+    expect(window.ade.ai.getStatus).not.toHaveBeenCalled();
+  });
+
+  it("skips mount-time session delta fetches for remote chats", async () => {
+    const session = buildSession("session-1", { status: "idle" });
+    installAdeMocks({ sessions: [session] });
+    seedRemoteChatStore();
+
+    renderPane(session);
+
+    await screen.findByRole("button", { name: /^Select model/ });
+    await Promise.resolve();
+
+    expect(window.ade.sessions.getDelta).not.toHaveBeenCalled();
+  });
+
+  it("defers unfinished parallel launch recovery on remote draft mount", async () => {
+    vi.useFakeTimers();
+    const { parallelLaunchStateGet } = installAdeMocks({ sessions: [] });
+    seedRemoteChatStore();
+
+    render(
+      <MemoryRouter initialEntries={["/work"]}>
+        <AgentChatPane
+          laneId="lane-1"
+          forceDraftMode
+          embeddedWorkLayout
+        />
+      </MemoryRouter>,
+    );
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(parallelLaunchStateGet).not.toHaveBeenCalled();
+
+    await act(async () => {
+      vi.advanceTimersByTime(14_999);
+      await Promise.resolve();
+    });
+    expect(parallelLaunchStateGet).not.toHaveBeenCalled();
+
+    await act(async () => {
+      vi.advanceTimersByTime(1);
+      await Promise.resolve();
+    });
+    expect(parallelLaunchStateGet).toHaveBeenCalledWith({
+      projectRoot: "/Users/admin/Projects/perf pass",
+      parentLaneId: "lane-1",
+    });
+  });
+
+  it("fetches remote session delta after a turn completes", async () => {
+    const session = buildSession("session-1", { status: "idle" });
+    const mocks = installAdeMocks({ sessions: [session] });
+    vi.mocked(window.ade.sessions.getDelta).mockResolvedValue({ insertions: 4, deletions: 2 } as any);
+    seedRemoteChatStore();
+
+    renderPane(session);
+
+    await screen.findByRole("button", { name: /^Select model/ });
+    expect(window.ade.sessions.getDelta).not.toHaveBeenCalled();
+
+    await act(async () => {
+      mocks.emitChatEvent({
+        sessionId: session.sessionId,
+        timestamp: "2026-06-04T12:00:00.000Z",
+        event: { type: "status", turnStatus: "started", turnId: "turn-1" },
+      } as any);
+    });
+    expect(window.ade.sessions.getDelta).not.toHaveBeenCalled();
+
+    await act(async () => {
+      mocks.emitChatEvent({
+        sessionId: session.sessionId,
+        timestamp: "2026-06-04T12:00:01.000Z",
+        event: { type: "status", turnStatus: "completed", turnId: "turn-1" },
+      } as any);
+    });
+
+    await waitFor(() => {
+      expect(window.ade.sessions.getDelta).toHaveBeenCalledWith(session.sessionId);
+    });
+  });
+});
 
 describe("AgentChatPane companion drawers", () => {
   it("opens and closes the iOS simulator and App Control drawers from chat chrome", async () => {
@@ -1447,10 +1600,11 @@ describe("AgentChatPane submit recovery", () => {
     await clickEnabledModelOption(/Claude Sonnet 4\.6/i);
 
     await waitFor(() => {
-      expect(window.ade.agentChat.slashCommands).toHaveBeenCalledWith({
+      expect(window.ade.agentChat.slashCommands).toHaveBeenCalledWith(expect.objectContaining({
         laneId: "lane-1",
         provider: "claude",
-      });
+        projectRoot: "/tmp/project-under-test",
+      }));
     });
 
     const textbox = await screen.findByRole("textbox");

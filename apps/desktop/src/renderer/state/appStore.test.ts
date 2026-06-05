@@ -309,6 +309,82 @@ describe("appStore", () => {
       expect(useAppStore.getState().projectHydrated).toBe(false);
     });
 
+    it("setProjectBinding removes a stale matching tab root for remote projects", () => {
+      const remoteBinding = {
+        kind: "remote" as const,
+        key: "remote:target-1:project-a",
+        targetId: "target-1",
+        runtimeName: "Mac Studio",
+        projectId: "project-a",
+        rootPath: "/Users/admin/Projects/perf pass",
+        displayName: "perf pass",
+      };
+
+      useAppStore.setState({
+        openProjectTabRoots: ["/Users/arul/ADE", remoteBinding.rootPath],
+      } as any);
+
+      useAppStore.getState().setProjectBinding(remoteBinding);
+
+      expect(useAppStore.getState().projectBinding).toEqual(remoteBinding);
+      expect(useAppStore.getState().openProjectTabRoots).toEqual([
+        "/Users/arul/ADE",
+      ]);
+    });
+
+    it("setProjectBinding preserves a known local tab with the same root as a remote project", () => {
+      const remoteBinding = {
+        kind: "remote" as const,
+        key: "remote:target-1:project-a",
+        targetId: "target-1",
+        runtimeName: "Mac Studio",
+        projectId: "project-a",
+        rootPath: "/Users/arul/Projects/perf pass",
+        displayName: "perf pass",
+      };
+
+      useAppStore.setState({
+        projectInfoByRoot: {
+          [remoteBinding.rootPath]: {
+            rootPath: remoteBinding.rootPath,
+            displayName: "Local perf pass",
+            baseRef: "main",
+          },
+        },
+        openProjectTabRoots: [remoteBinding.rootPath],
+      } as any);
+
+      useAppStore.getState().setProjectBinding(remoteBinding);
+
+      expect(useAppStore.getState().projectBinding).toEqual(remoteBinding);
+      expect(useAppStore.getState().openProjectTabRoots).toEqual([
+        remoteBinding.rootPath,
+      ]);
+    });
+
+    it("setProject does not create a local tab for an active remote binding", () => {
+      const remoteBinding = {
+        kind: "remote" as const,
+        key: "remote:target-1:project-a",
+        targetId: "target-1",
+        runtimeName: "Mac Studio",
+        projectId: "project-a",
+        rootPath: "/Users/admin/Projects/perf pass",
+        displayName: "perf pass",
+      };
+
+      useAppStore.getState().setProjectBinding(remoteBinding);
+      useAppStore.getState().setProject({
+        rootPath: remoteBinding.rootPath,
+        displayName: remoteBinding.displayName,
+        baseRef: "main",
+      } as any);
+
+      expect(useAppStore.getState().projectBinding).toEqual(remoteBinding);
+      expect(useAppStore.getState().openProjectTabRoots).toEqual([]);
+      expect(useAppStore.getState().projectInfoByRoot[remoteBinding.rootPath]).toBeUndefined();
+    });
+
     it("refreshProviderMode auto-elevates when runtime provider signals exist", async () => {
       useAppStore.setState({
         project: { rootPath: "/tmp/provider-mode", displayName: "Provider mode", baseRef: "main" } as any,
@@ -1232,6 +1308,89 @@ describe("appStore", () => {
 
       expect(useAppStore.getState().project?.rootPath).toBe("/remote/b");
       expect(useAppStore.getState().projectBinding).toEqual(bindingB);
+    });
+
+    it("drops stale project-scoped Work and lane caches when opening a remote project", async () => {
+      const binding = {
+        kind: "remote" as const,
+        key: "remote:target-1:project-a",
+        targetId: "target-1",
+        runtimeName: "Remote",
+        projectId: "project-a",
+        rootPath: "/remote/a",
+        displayName: "Project A",
+      };
+      const defaultWorkState = useAppStore.getState().getWorkViewState("/remote/a");
+      (window.ade.remoteRuntime.openProject as any).mockResolvedValueOnce(binding);
+      useAppStore.setState({
+        project: { rootPath: "/local/project", displayName: "Local", baseRef: "main" } as any,
+        selectedLaneId: "local-lane",
+        focusedSessionId: "local-session",
+        workViewByProject: {
+          "/remote/a": {
+            ...defaultWorkState,
+            openItemIds: ["local-session"],
+            activeItemId: "local-session",
+            selectedItemId: "local-session",
+          },
+          "/local/project": {
+            ...defaultWorkState,
+            openItemIds: ["local-session"],
+            activeItemId: "local-session",
+          },
+        },
+        laneWorkViewByScope: {
+          "/remote/a::local-lane": {
+            ...defaultWorkState,
+            openItemIds: ["local-session"],
+          },
+          "/local/project::local-lane": {
+            ...defaultWorkState,
+            openItemIds: ["local-session"],
+          },
+        },
+        laneSelectionByProject: {
+          "/remote/a": { laneId: "local-lane", sessionId: "local-session" },
+          "/local/project": { laneId: "local-lane", sessionId: "local-session" },
+        },
+        laneCacheByProject: {
+          "/remote/a": { lanes: [{ id: "local-lane", name: "Local lane" }] as any[], laneSnapshots: [] },
+          "/local/project": { lanes: [{ id: "local-lane", name: "Local lane" }] as any[], laneSnapshots: [] },
+        },
+        sessionsCacheByProject: {
+          "/remote/a": [{ id: "local-session", laneId: "local-lane" }],
+          "/local/project": [{ id: "local-session", laneId: "local-lane" }],
+        },
+      } as any);
+
+      await useAppStore.getState().switchRemoteProject("target-1", "project-a");
+      await new Promise<void>((resolve) => queueMicrotask(resolve));
+
+      const state = useAppStore.getState();
+      expect(state.project).toEqual({
+        rootPath: "/remote/a",
+        displayName: "Project A",
+        baseRef: "main",
+      });
+      expect(state.selectedLaneId).toBeNull();
+      expect(state.focusedSessionId).toBeNull();
+      expect(state.workViewByProject["/remote/a"]).toBeUndefined();
+      expect(state.laneWorkViewByScope["/remote/a::local-lane"]).toBeUndefined();
+      expect(state.laneSelectionByProject["/remote/a"]).toBeUndefined();
+      expect(state.laneCacheByProject["/remote/a"]).toBeUndefined();
+      expect(state.sessionsCacheByProject["/remote/a"]).toBeUndefined();
+      expect(state.workViewByProject["/local/project"]?.openItemIds).toEqual(["local-session"]);
+      expect(state.laneWorkViewByScope["/local/project::local-lane"]?.openItemIds).toEqual(["local-session"]);
+      expect(state.laneSelectionByProject["/local/project"]).toEqual({
+        laneId: "local-lane",
+        sessionId: "local-session",
+      });
+      expect(state.laneCacheByProject["/local/project"]?.lanes[0]?.id).toBe("local-lane");
+      expect(state.sessionsCacheByProject["/local/project"]).toEqual([
+        { id: "local-session", laneId: "local-lane" },
+      ]);
+      expect(window.ade.lanes.list).toHaveBeenCalled();
+      expect(window.ade.keybindings.get).toHaveBeenCalled();
     });
   });
 });

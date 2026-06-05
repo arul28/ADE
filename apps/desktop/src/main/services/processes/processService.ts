@@ -120,17 +120,15 @@ function checkPortReady(port: number): Promise<boolean> {
     const settle = (ok: boolean) => {
       if (settled) return;
       settled = true;
-      try {
-        socket.destroy();
-      } catch {
-        // ignore
-      }
+      socket.removeAllListeners("connect");
+      socket.removeAllListeners("timeout");
+      try { socket.destroy(); } catch { /* ignore */ }
       resolve(ok);
     };
     socket.setTimeout(600);
     socket.once("connect", () => settle(true));
     socket.once("timeout", () => settle(false));
-    socket.once("error", () => settle(false));
+    socket.on("error", () => settle(false));
   });
 }
 

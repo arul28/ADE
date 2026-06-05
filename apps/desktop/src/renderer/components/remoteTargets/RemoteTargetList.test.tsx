@@ -81,11 +81,17 @@ describe("RemoteTargetList", () => {
     await waitFor(() => expect(screen.getByText("Studio")).toBeTruthy());
     expect(screen.getByText("studio.tailnet.ts.net:8787")).toBeTruthy();
     expect(
-      screen.getByText("Background ADE 0.0.0 | 2 projects advertised"),
+      screen.getByText(/Background ADE 0\.0\.0/),
     ).toBeTruthy();
+    expect(screen.getByText(/2 projects advertised/)).toBeTruthy();
 
-    fireEvent.click(screen.getByRole("button", { name: "Use host" }));
+    const editButton = screen.getByRole("button", { name: "Edit" });
+    expect(editButton.getAttribute("aria-expanded")).toBe("false");
 
+    fireEvent.click(editButton);
+
+    expect(editButton.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByText("Edit Studio")).toBeTruthy();
     expect((screen.getByLabelText("Name") as HTMLInputElement).value).toBe(
       "Studio",
     );
@@ -93,6 +99,11 @@ describe("RemoteTargetList", () => {
       "studio.tailnet.ts.net",
     );
     expect((screen.getByLabelText("Port") as HTMLInputElement).value).toBe("");
+
+    fireEvent.click(editButton);
+
+    expect(editButton.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByText("Edit Studio")).toBeNull();
 
     const savedTarget = {
       id: "target-1",
@@ -142,6 +153,9 @@ describe("RemoteTargetList", () => {
           routes: savedTarget.routes,
         }),
       ),
+    );
+    await waitFor(() =>
+      expect(remoteRuntimeMock.connect).toHaveBeenCalledWith("target-1"),
     );
   });
 
@@ -196,10 +210,156 @@ describe("RemoteTargetList", () => {
       expect(remoteRuntimeMock.connect).toHaveBeenCalledWith("target-1"),
     );
     expect(screen.getByText("Connected")).toBeTruthy();
-    expect(screen.getByText("ADE service 1.0.0 on darwin-arm64.")).toBeTruthy();
+    expect(screen.getByText(/ADE 1\.0\.0 on darwin-arm64/)).toBeTruthy();
     expect(screen.getByText(/RPC capabilities are compatible/i)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Disconnect" })).toBeTruthy();
     expect(screen.queryByText("/remote/ADE")).toBeNull();
     expect(screen.queryByRole("button", { name: "Open" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Disconnect" }));
+    await waitFor(() =>
+      expect(remoteRuntimeMock.disconnect).toHaveBeenCalledWith("target-1", {
+        manual: true,
+      }),
+    );
+    expect(screen.getByText("Not connected")).toBeTruthy();
+  });
+
+  it("does not disconnect when the disconnect confirmation callback rejects it", async () => {
+    const target = {
+      id: "target-1",
+      name: "Mac Studio",
+      hostname: "studio.local",
+      sshUser: "ade",
+      port: 22,
+      sshKeyPath: null,
+      lastSeenArch: "darwin-arm64",
+      runtimeBinaryVersion: "1.0.0",
+      lastConnectedAt: null,
+    };
+    remoteRuntimeMock.listTargets.mockResolvedValue([target]);
+    remoteRuntimeMock.listDiscoveredMachines.mockResolvedValue({
+      machines: [],
+      diagnostics: [],
+    });
+    remoteRuntimeMock.connect.mockResolvedValue({
+      target,
+      arch: "darwin-arm64",
+      version: "1.0.0",
+      projects: [],
+    });
+    const onDisconnectRequested = vi.fn(async () => false);
+    installAdeMock();
+
+    render(
+      <RemoteTargetList onDisconnectRequested={onDisconnectRequested} />,
+    );
+
+    await waitFor(() =>
+      expect(screen.getAllByText("Mac Studio").length).toBeGreaterThan(0),
+    );
+    const connectButton = screen
+      .getAllByRole("button", { name: "Connect" })
+      .find((button) => !button.hasAttribute("disabled"));
+    fireEvent.click(connectButton!);
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Disconnect" })).toBeTruthy(),
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Disconnect" }));
+
+    await waitFor(() =>
+      expect(onDisconnectRequested).toHaveBeenCalledWith(target),
+    );
+    expect(remoteRuntimeMock.disconnect).not.toHaveBeenCalled();
+    expect(screen.getByText("Connected")).toBeTruthy();
+  });
+
+  it("toggles the saved machine edit details from the Edit button", async () => {
+    const target = {
+      id: "target-1",
+      name: "Mac Studio",
+      hostname: "100.75.20.63",
+      sshUser: "admin",
+      port: 22,
+      sshKeyPath: "/Users/arul/.ssh/id_ed25519",
+      lastSeenArch: "darwin-arm64",
+      runtimeBinaryVersion: "1.0.0",
+      lastConnectedAt: null,
+    };
+    remoteRuntimeMock.listTargets.mockResolvedValue([target]);
+    remoteRuntimeMock.listDiscoveredMachines.mockResolvedValue({
+      machines: [],
+      diagnostics: [],
+    });
+    installAdeMock();
+
+    render(<RemoteTargetList />);
+
+    await waitFor(() =>
+      expect(screen.getAllByText("Mac Studio").length).toBeGreaterThan(0),
+    );
+    const editButton = screen.getByRole("button", { name: "Edit" });
+    expect(editButton.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByText("Edit Mac Studio")).toBeNull();
+
+    fireEvent.click(editButton);
+
+    expect(editButton.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByText("Edit Mac Studio")).toBeTruthy();
+    expect((screen.getByLabelText("Host") as HTMLInputElement).value).toBe(
+      "100.75.20.63",
+    );
+
+    fireEvent.click(editButton);
+
+    expect(editButton.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByText("Edit Mac Studio")).toBeNull();
+  });
+
+  it("shows an actionable message when the SSH host-key probe is reset", async () => {
+    const target = {
+      id: "target-1",
+      name: "Mac Studio",
+      hostname: "100.75.20.63",
+      sshUser: "admin",
+      port: 22,
+      sshKeyPath: null,
+      lastSeenArch: null,
+      runtimeBinaryVersion: null,
+      lastConnectedAt: null,
+    };
+    remoteRuntimeMock.listTargets.mockResolvedValue([target]);
+    remoteRuntimeMock.listDiscoveredMachines.mockResolvedValue({
+      machines: [],
+      diagnostics: [],
+    });
+    installAdeMock();
+    remoteRuntimeMock.getSshHostKeyTrust.mockRejectedValue(
+      new Error(
+        "Error invoking remote method 'ade.remoteRuntime.getSshHostKeyTrust': Error: read ECONNRESET",
+      ),
+    );
+
+    render(<RemoteTargetList />);
+
+    await waitFor(() =>
+      expect(screen.getAllByText("Mac Studio").length).toBeGreaterThan(0),
+    );
+    const connectButton = screen
+      .getAllByRole("button", { name: "Connect" })
+      .find((button) => !button.hasAttribute("disabled"));
+    expect(connectButton).toBeTruthy();
+    fireEvent.click(connectButton!);
+
+    await waitFor(() =>
+      expect(
+        screen.getByText(/SSH server closed the connection before ADE could finish the SSH handshake/),
+      ).toBeTruthy(),
+    );
+    expect(screen.queryByText(/Error invoking remote method/)).toBeNull();
+    expect(screen.queryByText(/read ECONNRESET/)).toBeNull();
+    expect(remoteRuntimeMock.connect).not.toHaveBeenCalled();
   });
 
   it("prompts to trust a new machine identity before connecting", async () => {
@@ -289,6 +449,114 @@ describe("RemoteTargetList", () => {
     expect(screen.getByText("Connected")).toBeTruthy();
   });
 
+  it("hides discovered machines that are already saved as SSH targets", async () => {
+    const target = {
+      id: "target-1",
+      name: "Mac Studio",
+      hostname: "aruls-mac-studio.tail7497a6.ts.net",
+      sshUser: null,
+      port: null,
+      sshKeyPath: null,
+      routes: [
+        {
+          hostname: "aruls-mac-studio.tail7497a6.ts.net",
+          port: null,
+          source: "tailscale",
+          lastSucceededAt: null,
+        },
+      ],
+      lastSeenArch: "darwin-arm64",
+      runtimeBinaryVersion: "1.0.0",
+      lastConnectedAt: null,
+    };
+    remoteRuntimeMock.listTargets.mockResolvedValue([target]);
+    remoteRuntimeMock.listDiscoveredMachines.mockResolvedValue({
+      machines: [
+        {
+          id: "tailscale::mac-studio",
+          serviceName: "tailscale-ssh",
+          machineName: "Arul's Mac Studio",
+          hostIdentity: "mac-studio",
+          hostName: "aruls-mac-studio.tail7497a6.ts.net",
+          port: 22,
+          addresses: [],
+          primaryRoute: "aruls-mac-studio.tail7497a6.ts.net",
+          tailscaleAddress: "aruls-mac-studio.tail7497a6.ts.net",
+          runtimeKind: "tailscale-peer",
+          runtimeVersion: null,
+          projectIds: [],
+          projectCount: 0,
+          lastSeenAt: 1234,
+        },
+      ],
+      diagnostics: [],
+    });
+    installAdeMock();
+
+    render(<RemoteTargetList />);
+
+    await waitFor(() =>
+      expect(screen.getAllByText("Mac Studio").length).toBeGreaterThan(0),
+    );
+    expect(screen.queryByText("Arul's Mac Studio")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Use host" })).toBeNull();
+    expect(screen.getByText("Nearby machines are already saved.")).toBeTruthy();
+  });
+
+  it("matches saved Bonjour machines by SSH default port instead of the ADE service port", async () => {
+    const target = {
+      id: "target-1",
+      name: "Studio",
+      hostname: "studio.local",
+      sshUser: null,
+      port: null,
+      sshKeyPath: null,
+      routes: [
+        {
+          hostname: "studio.local",
+          port: null,
+          source: "bonjour",
+          lastSucceededAt: null,
+        },
+      ],
+      lastSeenArch: null,
+      runtimeBinaryVersion: null,
+      lastConnectedAt: null,
+    };
+    remoteRuntimeMock.listTargets.mockResolvedValue([target]);
+    remoteRuntimeMock.listDiscoveredMachines.mockResolvedValue({
+      machines: [
+        {
+          id: "bonjour::studio",
+          serviceName: "ADE Studio",
+          machineName: "Studio",
+          hostIdentity: "studio",
+          hostName: "studio.local",
+          port: 8787,
+          addresses: [],
+          primaryRoute: "studio.local",
+          tailscaleAddress: null,
+          runtimeKind: "daemon",
+          runtimeVersion: "1.0.0",
+          projectIds: [],
+          projectCount: 0,
+          lastSeenAt: 1234,
+        },
+      ],
+      diagnostics: [],
+    });
+    installAdeMock();
+
+    render(<RemoteTargetList />);
+
+    await waitFor(() =>
+      expect(screen.getAllByText("Studio").length).toBeGreaterThan(0),
+    );
+    expect(screen.queryByText("studio.local:8787")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Use host" })).toBeNull();
+    expect(screen.getByText("Nearby machines are already saved.")).toBeTruthy();
+  });
+
   it("surfaces Tailscale discovery diagnostics separately from empty results", async () => {
     remoteRuntimeMock.listTargets.mockResolvedValue([]);
     remoteRuntimeMock.listDiscoveredMachines.mockResolvedValue({
@@ -312,6 +580,6 @@ describe("RemoteTargetList", () => {
         screen.getByText("Tailscale CLI was not found; only LAN discovery ran."),
       ).toBeTruthy(),
     );
-    expect(screen.getByText("No LAN ADE services or Tailscale peers found.")).toBeTruthy();
+    expect(screen.getByText("No saved or detected machines yet.")).toBeTruthy();
   });
 });

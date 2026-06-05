@@ -1442,6 +1442,22 @@ describe("ptyService", () => {
       );
     });
 
+    it("uses a default title when runtime payloads omit one", async () => {
+      const { service, sessionService } = createHarness();
+      await service.create({
+        laneId: "lane-1",
+        cols: 120,
+        rows: 40,
+      } as any);
+      expect(sessionService.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          laneId: "lane-1",
+          title: "Terminal",
+          tracked: true,
+        }),
+      );
+    });
+
     it("rejects terminal launches when the lane worktree does not exist", async () => {
       mocks.existsSyncResults.set("/tmp/test-worktree", false);
       const { service, loadPty } = createHarness();
@@ -4014,6 +4030,19 @@ describe("ptyService", () => {
       );
     });
 
+    it("ignores stale dispose after a PTY already exited", async () => {
+      const { service, mockPty, broadcastExit, sessionService } = createHarness();
+      const { ptyId, sessionId } = await service.create({ laneId: "lane-1", title: "t", cols: 80, rows: 24 });
+      mockPty._emitter.emit("exit", { exitCode: 0 });
+      const endCalls = sessionService.end.mock.calls.length;
+      const exitCalls = broadcastExit.mock.calls.length;
+
+      service.dispose({ ptyId, sessionId });
+
+      expect(sessionService.end).toHaveBeenCalledTimes(endCalls);
+      expect(broadcastExit).toHaveBeenCalledTimes(exitCalls);
+    });
+
     it("marks session as failed when exit code is non-zero", async () => {
       const { service, mockPty, sessionService } = createHarness();
       const { sessionId } = await service.create({ laneId: "lane-1", title: "t", cols: 80, rows: 24 });
@@ -5068,6 +5097,8 @@ describe("ptyService", () => {
         /No running terminal/,
       );
       expect(service.activeForChat({ chatSessionId: "no-such-chat" })).toBeNull();
+      expect(service.activeForChat({})).toBeNull();
+      expect(service.activeForChat(null)).toBeNull();
     });
 
     describe("reattachChatCli", () => {

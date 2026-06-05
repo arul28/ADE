@@ -74,9 +74,10 @@ export async function listChatSessions(
   laneId?: string | null,
   options: { includeArchived?: boolean } = {},
 ): Promise<AgentChatSessionSummary[]> {
-  const listOptions = { includeArchived: options.includeArchived ?? false };
-  const argsList = laneId ? [laneId, listOptions] : [null, listOptions];
-  return await connection.actionList<AgentChatSessionSummary[]>("chat", "listSessions", argsList);
+  return await connection.action<AgentChatSessionSummary[]>("chat", "listSessions", {
+    ...(laneId ? { laneId } : {}),
+    includeArchived: options.includeArchived ?? false,
+  });
 }
 
 export async function archiveChatSession(

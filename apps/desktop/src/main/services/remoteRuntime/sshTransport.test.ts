@@ -1,7 +1,10 @@
 import fs from "node:fs";
 import { createHmac } from "node:crypto";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
+import { PassThrough } from "node:stream";
+import type { Client } from "ssh2";
 import { afterEach, describe, expect, it } from "vitest";
 import type { RemoteRuntimeTarget } from "../../../shared/types/remoteRuntime";
 import {
@@ -9,9 +12,11 @@ import {
   buildSshConfigCandidates,
   buildSshRouteCandidates,
   buildSshUsernameCandidates,
+  execSsh,
   getSshHostKeyTrustForTarget,
   hasKnownSshHostKeyForTarget,
   parseOpenSshHostConfig,
+  scanSshHostKeyForTarget,
   trustSshHostKeyForTarget,
   type ScannedSshHostKey,
 } from "./sshTransport";
@@ -85,8 +90,8 @@ describe("buildSshConfig", () => {
       host: "remote.example.test",
       port: 22,
       username: "ade",
-      readyTimeout: 20_000,
-      keepaliveInterval: 15_000,
+      readyTimeout: 10_000,
+      keepaliveInterval: 0,
       keepaliveCountMax: 3,
       agent: "/tmp/ade-agent.sock",
     });
@@ -140,7 +145,7 @@ describe("buildSshConfig", () => {
   it("builds an admin retry candidate when no SSH user is configured", () => {
     expect(buildSshUsernameCandidates({
       ...target,
-      hostname: "100.75.20.63",
+      hostname: "203.0.113.10",
       sshUser: null,
       port: null,
     }, {
@@ -169,7 +174,7 @@ describe("buildSshConfig", () => {
   it("builds retry configs with distinct SSH usernames", () => {
     const configs = buildSshConfigCandidates({
       ...target,
-      hostname: "100.75.20.63",
+      hostname: "203.0.113.10",
       sshUser: null,
       port: null,
     }, {
@@ -178,13 +183,13 @@ describe("buildSshConfig", () => {
     });
 
     expect(configs.map((config) => config.username)).toEqual(Array.from(new Set([os.userInfo().username, "admin"])));
-    expect(configs.every((config) => config.host === "100.75.20.63" && config.port === 22)).toBe(true);
+    expect(configs.every((config) => config.host === "203.0.113.10" && config.port === 22)).toBe(true);
   });
 
   it("tries saved route fallbacks and prioritizes the last successful route", () => {
     const configs = buildSshConfigCandidates({
       ...target,
-      hostname: "studio.tailnet.ts.net",
+      hostname: "studio.tailnet.example",
       sshUser: null,
       port: null,
       routes: [
@@ -195,7 +200,7 @@ describe("buildSshConfig", () => {
           lastSucceededAt: 200,
         },
         {
-          hostname: "studio.tailnet.ts.net",
+          hostname: "studio.tailnet.example",
           port: null,
           source: "tailscale",
           lastSucceededAt: 100,
@@ -209,11 +214,11 @@ describe("buildSshConfig", () => {
     const usernames = Array.from(new Set([os.userInfo().username, "admin"]));
     expect(configs.map((config) => config.host)).toEqual([
       ...usernames.map(() => "192.168.1.42"),
-      ...usernames.map(() => "studio.tailnet.ts.net"),
+      ...usernames.map(() => "studio.tailnet.example"),
     ]);
     expect(buildSshRouteCandidates({
       ...target,
-      hostname: "studio.tailnet.ts.net",
+      hostname: "studio.tailnet.example",
       routes: [
         {
           hostname: "192.168.1.42",
@@ -224,7 +229,7 @@ describe("buildSshConfig", () => {
       ],
     }).map((route) => route.hostname)).toEqual([
       "192.168.1.42",
-      "studio.tailnet.ts.net",
+      "studio.tailnet.example",
     ]);
   });
 
@@ -478,6 +483,72 @@ describe("buildSshConfig", () => {
     });
   });
 
+  it("explains SSH servers that close before the handshake during host-key scan", async () => {
+    const server = net.createServer((socket) => {
+      socket.destroy();
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolve);
+    });
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      server.close();
+      throw new Error("Expected TCP test server to bind an address.");
+    }
+
+    try {
+      await expect(scanSshHostKeyForTarget({
+        ...target,
+        hostname: "127.0.0.1",
+        port: address.port,
+      }, {
+        env: {},
+        sshConfigPath: null,
+      })).rejects.toThrow(
+        `SSH server at 127.0.0.1:${address.port} closed the connection before ADE could finish the SSH handshake.`,
+      );
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it("times out SSH sockets that never finish the handshake", async () => {
+    const sockets = new Set<net.Socket>();
+    const server = net.createServer((socket) => {
+      sockets.add(socket);
+      socket.once("close", () => {
+        sockets.delete(socket);
+      });
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolve);
+    });
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      server.close();
+      throw new Error("Expected TCP test server to bind an address.");
+    }
+
+    try {
+      await expect(scanSshHostKeyForTarget({
+        ...target,
+        hostname: "127.0.0.1",
+        port: address.port,
+      }, {
+        env: { ADE_REMOTE_SSH_CONNECT_TIMEOUT_MS: "75" } as NodeJS.ProcessEnv,
+        knownHostsPath: null,
+        sshConfigPath: null,
+      })).rejects.toThrow(
+        `Timed out while waiting for the SSH handshake from 127.0.0.1:${address.port}.`,
+      );
+    } finally {
+      for (const socket of sockets) socket.destroy();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
   it("rejects unknown SSH host keys by default", () => {
     const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-ssh-home-"));
     const config = buildSshConfig(target, {
@@ -491,6 +562,39 @@ describe("buildSshConfig", () => {
       homeDir,
       sshConfigPath: null,
     })).toBe(false);
+  });
+});
+
+describe("execSsh", () => {
+  it("times out and closes a remote exec channel that never finishes", async () => {
+    let closed = false;
+    let destroyed = false;
+    const stream = new PassThrough() as PassThrough & {
+      stderr: PassThrough;
+      close: () => void;
+      destroy: () => PassThrough;
+    };
+    stream.stderr = new PassThrough();
+    stream.close = () => {
+      closed = true;
+      stream.emit("close");
+    };
+    const originalDestroy = stream.destroy.bind(stream);
+    stream.destroy = () => {
+      destroyed = true;
+      originalDestroy();
+      return stream;
+    };
+    const client = {
+      exec(_command: string, callback: (error: Error | null, channel: typeof stream) => void) {
+        callback(null, stream);
+      },
+    } as unknown as Client;
+
+    await expect(execSsh(client, "sleep 1000", { timeoutMs: 75 })).rejects.toThrow(
+      "Timed out waiting for SSH command to finish after 75ms.",
+    );
+    expect(closed || destroyed).toBe(true);
   });
 });
 

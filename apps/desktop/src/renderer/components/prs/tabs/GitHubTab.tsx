@@ -19,7 +19,7 @@ import { EmptyState } from "../../ui/EmptyState";
 import { ResizeGutter } from "../../ui/ResizeGutter";
 import { COLORS, LABEL_STYLE, MONO_FONT, SANS_FONT, cardStyle, inlineBadge, outlineButton, primaryButton } from "../../lanes/laneDesignTokens";
 import { LaneAccentDot } from "../../lanes/LaneAccentDot";
-import { useAppStore, useAppStoreApi } from "../../../state/appStore";
+import { selectActiveProjectRoot, useAppStore, useAppStoreApi } from "../../../state/appStore";
 import { PrDetailPane } from "../detail/PrDetailPane";
 import { formatTimestampShort, formatTimeAgoCompact } from "../shared/prFormatters";
 import { PrCiRunningIndicator } from "../shared/prVisuals";
@@ -789,7 +789,7 @@ export function GitHubTab({
     loading: prsContextLoading,
     setViewerLogin: setContextViewerLogin,
   } = usePrs();
-  const projectRoot = useAppStore((s) => s.project?.rootPath ?? null);
+  const projectRoot = useAppStore(selectActiveProjectRoot);
   const refreshLanes = useAppStore((s) => s.refreshLanes);
   const selectLane = useAppStore((s) => s.selectLane);
 
@@ -1342,7 +1342,7 @@ export function GitHubTab({
         ? refreshLanes({ includeStatus: false, includeSnapshots: false })
           .catch(() => {})
           .then(() => {
-            const currentProjectRoot = appStore.getState().project?.rootPath ?? null;
+            const currentProjectRoot = selectActiveProjectRoot(appStore.getState());
             if (createProjectRoot && currentProjectRoot !== createProjectRoot) return;
             appStore.setState((prev) => ({
               lanes: upsertLaneSummary(prev.lanes, result.lane),

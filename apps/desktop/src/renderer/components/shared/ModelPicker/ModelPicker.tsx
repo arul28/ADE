@@ -84,7 +84,7 @@ export const ModelPicker = memo(function ModelPicker({
   const [open, setOpen] = useState(false);
   const [runtimeCatalog, setRuntimeCatalog] = useState<AgentChatModelCatalog | null>(() => getSharedRuntimeCatalog());
   const [refreshingProvider, setRefreshingProvider] = useState<AgentChatModelCatalogRefreshProvider | null>(null);
-  const { recents } = useModelRecents();
+  const { recents } = useModelRecents({ hydrate: open });
 
   const loadRuntimeCatalog = useCallback(async (args: {
     mode: "cached" | "refresh-stale" | "force";

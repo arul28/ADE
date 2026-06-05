@@ -58,6 +58,12 @@ and in tests.
   can tell live siblings from crashed owners. Also owns
   `sendToSession` and `resumeSession` for tracked CLI continuation and
   prompt-free relaunch. ~4,450 lines.
+- `apps/desktop/src/main/services/pty/supervisedPtyHost.ts` and
+  `ptyHostWorker.ts` — isolated node-pty worker host. Local runtimes fork the
+  worker from the built desktop files; remote runtimes can receive
+  `ADE_PTY_HOST_WORKER_PATH` + `ADE_PTY_HOST_WORKER_NODE` or
+  `ADE_PTY_HOST_WORKER_COMMAND` from remote bootstrap so PTYs run through the
+  uploaded worker/static runtime instead of relying on a source checkout.
 - `apps/desktop/src/main/services/pty/ptyService.test.ts` — PTY behavior
   tests. Branch updated.
 - `apps/desktop/src/main/services/sessions/sessionService.ts` — persistence
@@ -203,7 +209,10 @@ Renderer surfaces:
   visible: false }` and stopping any inspect mode). The browser tab is
   not lane-scoped: each ADE window owns its own tabs and active inspect
   state, while all windows share the same `persist:ade-browser`
-  partition for authentication. It still flows selections to the active
+  partition for authentication. On remote-bound Work surfaces, the sidebar is
+  limited to the runtime-backed `git` and `files` tabs and automatically
+  switches away from local-only iOS / App Control / Browser tabs. It still
+  flows selections to the active
   chat through the same dispatch path as the other tool tabs. The active
   Work session picks the sidebar's insertion target
   (`WorkSidebarContextTarget`): chat sessions (`kind: "chat"`) and
@@ -296,7 +305,9 @@ Renderer surfaces:
   `(args: WorkPtyLaunchArgs) => Promise<WorkPtyLaunchResult>`.
 - `apps/desktop/src/renderer/components/terminals/TerminalView.tsx` —
   xterm.js wrapper; WebGL renderer with DOM fallback, fit retries, health
-  counters.
+  counters, and transcript replay mode for disposed chat-CLI sessions so an
+  ended tracked CLI tab can repaint the full retained transcript before falling
+  back to `terminal.preview`.
 - `apps/desktop/src/renderer/components/terminals/workSessionTiling.ts` —
   pure helper that produces the seed `PaneSplit` for the Work grid from
   an ordered list of session IDs. Accepts a `TilingPreset` of
@@ -323,7 +334,10 @@ Renderer surfaces:
   switches it hydrates the destination project's cached rows but marks them
   non-authoritative until the active project refresh returns; cache mirroring
   and open-tab pruning pause during that window so the previous project's
-  sessions cannot poison the new project's Work state. `launchPtySession`
+  sessions cannot poison the new project's Work state. Remote-bound projects
+  use a slower running-session refresh cadence and skip visibility-triggered
+  refreshes unless hidden changes were observed, reducing background SSH
+  chatter. `launchPtySession`
   accepts `WorkPtyLaunchArgs` and returns `WorkPtyLaunchResult`; when
   `disposition` is `"background"` the hook skips `selectLane`,
   `focusSession`, and `openSessionTab` so the launch happens silently

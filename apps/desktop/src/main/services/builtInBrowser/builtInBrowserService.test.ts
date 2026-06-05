@@ -475,19 +475,23 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
 
   it("keeps owned tabs alive while hidden and mutes them until visible", async () => {
     const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
-    service.attachToWindow(fakeBrowserWindow() as unknown as Parameters<typeof service.attachToWindow>[0]);
+    const win = fakeBrowserWindow();
+    service.attachToWindow(win as unknown as Parameters<typeof service.attachToWindow>[0]);
 
     await service.createTab({ url: "https://example.test", activate: true });
     expect(service.getStatus().tabs).toHaveLength(1);
+    expect(win.contentView.children).toHaveLength(0);
     const wc = fakes.webContentsInstances[0];
     expect(wc?.audioMutedCalls.at(-1)).toBe(true);
 
     await service.setBounds({ x: 12, y: 24, width: 640, height: 360, visible: true });
     expect(service.getStatus().tabs).toHaveLength(1);
+    expect(win.contentView.children).toHaveLength(1);
     expect(wc?.audioMutedCalls.at(-1)).toBe(false);
 
     await service.setBounds({ x: 12, y: 24, width: 640, height: 360, visible: false });
     expect(service.getStatus().tabs).toHaveLength(1);
+    expect(win.contentView.children).toHaveLength(0);
     expect(wc?.audioMutedCalls.at(-1)).toBe(true);
   });
 

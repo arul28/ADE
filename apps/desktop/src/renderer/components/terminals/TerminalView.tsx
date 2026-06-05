@@ -6,6 +6,7 @@ import { cn } from "../ui/cn";
 import {
   DEFAULT_TERMINAL_FONT_FAMILY,
   DEFAULT_TERMINAL_PREFERENCES,
+  selectActiveProjectRoot,
   useAppStore,
   type TerminalPreferences,
   type ThemeId,
@@ -83,6 +84,9 @@ type CachedRuntime = {
   pendingHydrationBytes: number;
   frameWriteChunks: string[];
   frameWriteBytes: number;
+  inputWriteChunks: string[];
+  inputWriteBytes: number;
+  inputFlushTimer: ReturnType<typeof setTimeout> | null;
   liveStreamPaused: boolean;
   flushRafId: number | null;
   flushTimer: ReturnType<typeof setTimeout> | null;
@@ -121,6 +125,8 @@ const HYDRATION_VISIBLE_BLANK_BACKFILL_RETRY_MS = 100;
 const HYDRATION_BACKFILL_MAX_ATTEMPTS = 120;
 const MAX_PENDING_HYDRATION_BYTES = 2_000_000;
 const MAX_FRAME_WRITE_BYTES = 1_000_000;
+const MAX_PTY_INPUT_BATCH_BYTES = 16_384;
+const PTY_INPUT_BATCH_MS = 16;
 const EXITED_RUNTIME_KEEPALIVE_MS = 8_000;
 const MIN_VALID_COLS = 20;
 const MIN_VALID_ROWS = 6;
@@ -627,7 +633,7 @@ function disposeStaleRuntimes(activeProjectRoot: string | null, activeProjectRev
   for (const runtime of runtimeCache.values()) {
     const isLiveRuntime = runtime.exitCode == null;
     if (activeProjectRoot == null) {
-      if (runtime.projectRoot != null && !isLiveRuntime) {
+      if (runtime.projectRoot != null && !isLiveRuntime && runtime.refs === 0) {
         teardownRuntime(runtime);
       }
       continue;
@@ -752,9 +758,59 @@ function setRuntimeVisibilityState(runtime: CachedRuntime, visible: boolean) {
   syncRuntimePtyDataStreaming(runtime, wasReceiving);
 }
 
-function writePtyInput(runtime: CachedRuntime, data: string) {
+function clearPtyInputFlushTimer(runtime: CachedRuntime): void {
+  if (runtime.inputFlushTimer) {
+    clearTimeout(runtime.inputFlushTimer);
+    runtime.inputFlushTimer = null;
+  }
+}
+
+function writePtyInputNow(runtime: CachedRuntime, data: string) {
   if (!data || runtime.disposed) return;
   window.ade.pty.write({ ptyId: runtime.ptyId, data }).catch(() => {});
+}
+
+function consumePendingPtyInput(runtime: CachedRuntime): string {
+  clearPtyInputFlushTimer(runtime);
+  if (!runtime.inputWriteChunks.length || runtime.disposed) return "";
+  const data = runtime.inputWriteChunks.join("");
+  runtime.inputWriteChunks.length = 0;
+  runtime.inputWriteBytes = 0;
+  return data;
+}
+
+function flushPendingPtyInput(runtime: CachedRuntime): void {
+  const data = consumePendingPtyInput(runtime);
+  if (!data) return;
+  writePtyInputNow(runtime, data);
+}
+
+function writePtyInput(runtime: CachedRuntime, data: string) {
+  if (!data || runtime.disposed) return;
+  writePtyInputNow(runtime, `${consumePendingPtyInput(runtime)}${data}`);
+}
+
+function shouldFlushPtyInputImmediately(data: string): boolean {
+  return /[\x00-\x1f\x7f]|\x1b/.test(data);
+}
+
+function schedulePtyInputFlush(runtime: CachedRuntime): void {
+  clearPtyInputFlushTimer(runtime);
+  runtime.inputFlushTimer = setTimeout(() => {
+    runtime.inputFlushTimer = null;
+    flushPendingPtyInput(runtime);
+  }, PTY_INPUT_BATCH_MS);
+}
+
+function enqueuePtyInput(runtime: CachedRuntime, data: string) {
+  if (!data || runtime.disposed) return;
+  runtime.inputWriteChunks.push(data);
+  runtime.inputWriteBytes += data.length;
+  if (shouldFlushPtyInputImmediately(data) || runtime.inputWriteBytes >= MAX_PTY_INPUT_BATCH_BYTES) {
+    flushPendingPtyInput(runtime);
+    return;
+  }
+  schedulePtyInputFlush(runtime);
 }
 
 function updateTerminalMouseTrackingModes(runtime: CachedRuntime, data: string): void {
@@ -867,11 +923,13 @@ async function pasteNativeClipboardImageShortcut(runtime: CachedRuntime): Promis
 }
 
 function teardownRuntime(runtime: CachedRuntime) {
+  flushPendingPtyInput(runtime);
   runtime.disposed = true;
   clearDisposeTimer(runtime);
   if (runtime.fitRafId != null) cancelAnimationFrame(runtime.fitRafId);
   if (runtime.flushRafId != null) cancelAnimationFrame(runtime.flushRafId);
   if (runtime.flushTimer) clearTimeout(runtime.flushTimer);
+  clearPtyInputFlushTimer(runtime);
   if (runtime.settleTimer1) clearTimeout(runtime.settleTimer1);
   if (runtime.settleTimer2) clearTimeout(runtime.settleTimer2);
   if (runtime.hydrateTimer) clearTimeout(runtime.hydrateTimer);
@@ -1716,6 +1774,9 @@ function createRuntime(args: {
     pendingHydrationBytes: 0,
     frameWriteChunks: [],
     frameWriteBytes: 0,
+    inputWriteChunks: [],
+    inputWriteBytes: 0,
+    inputFlushTimer: null,
     liveStreamPaused: false,
     flushRafId: null,
     flushTimer: null,
@@ -1834,24 +1895,11 @@ function createRuntime(args: {
     return true;
   });
 
-  // Batch rapid onData events (e.g. paste via context-menu) into single PTY writes
-  let inputBuf: string[] = [];
-  let inputFlushQueued = false;
-
+  // Debounce rapid terminal input into fewer PTY writes. Remote runtimes pay a
+  // full RPC round trip per write, so per-character bursts make typing feel
+  // much slower than a local shell.
   runtime.termDataSub = term.onData((data) => {
-    if (runtime.disposed) return;
-    inputBuf.push(data);
-    if (!inputFlushQueued) {
-      inputFlushQueued = true;
-      queueMicrotask(() => {
-        inputFlushQueued = false;
-        const merged = inputBuf.join("");
-        inputBuf = [];
-        if (merged && !runtime.disposed) {
-          writePtyInput(runtime, merged);
-        }
-      });
-    }
+    enqueuePtyInput(runtime, data);
   });
 
   runtime.ptyDataUnsub = subscribeRuntimePtyData(runtime);
@@ -1930,7 +1978,7 @@ export function TerminalView({
 }) {
   const appTheme = useAppStore((s) => s.theme);
   const terminalPreferences = useAppStore((s) => s.terminalPreferences);
-  const projectRoot = useAppStore((s) => s.project?.rootPath ?? null);
+  const projectRoot = useAppStore(selectActiveProjectRoot);
   const projectRevision = useAppStore((s) => s.projectRevision);
   const runtimeProjectScopeRef = useRef<{
     sessionId: string;

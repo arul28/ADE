@@ -1,4 +1,5 @@
 import { app } from "electron";
+import net from "node:net";
 import type { Client } from "ssh2";
 import type {
   RemoteRuntimeActionRequest,
@@ -6,6 +7,8 @@ import type {
   RemoteRuntimeBufferedEvent,
   RemoteRuntimeConnectResult,
   RemoteRuntimeEventCategory,
+  RemoteRuntimePortForward,
+  RemoteRuntimePortForwardRequest,
   RemoteRuntimeMachineProjectCapability,
   RemoteRuntimeStreamEventsRequest,
   RemoteRuntimeStreamEventsResult,
@@ -16,6 +19,7 @@ import type { AdeActionRegistryEntry } from "../../../shared/types/automations";
 import type { RuntimeRpcClient } from "./runtimeRpcClient";
 import { bootstrapRemoteRuntime, ensureRemoteProject } from "./remoteBootstrap";
 import type { RemoteTargetRegistry } from "./remoteTargetRegistry";
+import { isRetryableRemoteAction } from "./retryableRemoteActions";
 
 type PoolEntry = {
   client: RuntimeRpcClient;
@@ -24,40 +28,57 @@ type PoolEntry = {
   dispose?: (closeClient: boolean, notify?: boolean) => void;
 };
 
+type LocalPortForwardEntry = RemoteRuntimePortForward & {
+  server: net.Server;
+};
+
+function closePoolEntryResources(
+  entry: PoolEntry,
+  closeClient: boolean,
+  forceSshDestroy = false,
+): void {
+  if (closeClient) {
+    try {
+      entry.client.close();
+    } catch {}
+  }
+  try {
+    entry.ssh.end();
+  } catch {}
+  if (forceSshDestroy) {
+    try {
+      (entry.ssh as unknown as { destroy?: () => void }).destroy?.();
+    } catch {}
+  }
+}
+
 type RuntimeEventNotification = {
   subscriptionId: string;
   projectId: string;
   event: RemoteRuntimeBufferedEvent;
 };
 
+type ConnectFailureBackoff = {
+  error: Error;
+  failureCount: number;
+  retryAfterMs: number;
+};
+
+type RemoteConnectionPoolConnectOptions = {
+  bypassFailureBackoff?: boolean;
+};
+
 function isRemoteRuntimeConnectionError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
-  return /remote (?:runtime|ADE service) connection (?:closed|failed)|timed out waiting for method|stream closed|channel closed|connection lost|socket closed/i.test(
+  return /remote (?:runtime|ADE service) connection (?:closed|failed)|timed out waiting for method|stream closed|channel closed|connection lost|socket closed|ECONNRESET|ECONNABORTED|EPIPE|ENOTCONN/i.test(
     message,
   );
 }
 
-const RETRYABLE_REMOTE_ACTION_PREFIXES = [
-  "diagnosticsGet",
-  "get",
-  "list",
-  "oauthGet",
-  "oauthList",
-  "portGet",
-  "portList",
-  "proxyGet",
-  "read",
-  "search",
-] as const;
-
-const RETRYABLE_REMOTE_ACTIONS = new Set([
-  "chat.codexFuzzyFileSearch",
-  "chat.fileSearch",
-  "chat.modelCatalog",
-  "file.quickOpen",
-  "terminal.activeForChat",
-  "terminal.preview",
-]);
+const RETRYABLE_REMOTE_ACTION_RPC_TIMEOUT_MS = 25_000;
+const CONNECT_FAILURE_BASE_BACKOFF_MS = 3_000;
+const CONNECT_FAILURE_MAX_BACKOFF_MS = 15_000;
+const LOCAL_FORWARD_HOST = "127.0.0.1";
 
 /** Project-scoped sync RPCs that are safe to replay after a reconnect. */
 const RETRYABLE_REMOTE_SYNC_METHODS = new Set([
@@ -94,12 +115,64 @@ const MACHINE_PROJECT_CAPABILITY_LABEL: Record<RemoteRuntimeMachineProjectCapabi
 function shouldRetryRemoteRuntimeAction(
   request: RemoteRuntimeActionRequest,
 ): boolean {
-  if (RETRYABLE_REMOTE_ACTIONS.has(`${request.domain}.${request.action}`)) {
-    return true;
+  return isRetryableRemoteAction(request.domain, request.action);
+}
+
+function remoteRuntimeActionCallOptions(
+  request: RemoteRuntimeActionRequest,
+): { timeoutMs?: number } | undefined {
+  return shouldRetryRemoteRuntimeAction(request)
+    ? { timeoutMs: RETRYABLE_REMOTE_ACTION_RPC_TIMEOUT_MS }
+    : undefined;
+}
+
+function normalizeForwardRemoteHost(value: string | null | undefined): string {
+  const trimmed = typeof value === "string" ? value.trim() : "";
+  return trimmed || "127.0.0.1";
+}
+
+function normalizeForwardPort(value: unknown): number {
+  const port = Number(value);
+  if (!Number.isInteger(port) || port < 1 || port > 65_535) {
+    throw new Error(`Remote port must be an integer from 1 to 65535 (received ${String(value)}).`);
   }
-  return RETRYABLE_REMOTE_ACTION_PREFIXES.some((prefix) =>
-    request.action.startsWith(prefix),
-  );
+  return port;
+}
+
+function portForwardKey(targetId: string, remoteHost: string, remotePort: number): string {
+  return `${targetId}\0${remoteHost}\0${remotePort}`;
+}
+
+function destroyAcceptedSocket(socket: net.Socket, error: Error): void {
+  if (socket.listenerCount("error") === 0) {
+    socket.once("error", () => {});
+  }
+  socket.destroy(error);
+}
+
+function snapshotPortForward(entry: LocalPortForwardEntry): RemoteRuntimePortForward {
+  const {
+    targetId,
+    remoteHost,
+    remotePort,
+    localHost,
+    localPort,
+    localUrl,
+    label,
+    createdAt,
+    lastUsedAt,
+  } = entry;
+  return {
+    targetId,
+    remoteHost,
+    remotePort,
+    localHost,
+    localPort,
+    localUrl,
+    label,
+    createdAt,
+    lastUsedAt,
+  };
 }
 
 function assertMachineProjectCapability(entry: PoolEntry, method: string): void {
@@ -113,8 +186,73 @@ function assertMachineProjectCapability(entry: PoolEntry, method: string): void 
   );
 }
 
+function optionalRemoteActionFallbackResult(
+  request: RemoteRuntimeActionRequest,
+): RemoteRuntimeActionResult | null {
+  if (request.domain === "file" && request.action === "refreshGitDecorations") {
+    const args = request.args && typeof request.args === "object" && !Array.isArray(request.args)
+      ? request.args as Record<string, unknown>
+      : {};
+    const workspaceId = typeof args.workspaceId === "string" && args.workspaceId.trim()
+      ? args.workspaceId.trim()
+      : "primary";
+    return {
+      domain: "file",
+      action: "refreshGitDecorations",
+      result: {
+        workspaceId,
+        files: [],
+        directories: [],
+      },
+      statusHints: {
+        optionalActionMissing: true,
+      },
+    };
+  }
+  if (request.domain === "pr" && request.action === "listQueueStates") {
+    return {
+      domain: "pr",
+      action: "listQueueStates",
+      result: [],
+      statusHints: {
+        optionalActionMissing: true,
+      },
+    };
+  }
+  return null;
+}
+
+function isRemoteActionNotCallableMessage(message: string): boolean {
+  return /not callable|not exposed|not available|unknown action/i.test(message);
+}
+
+function isRemoteActionNotCallableError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return isRemoteActionNotCallableMessage(message);
+}
+
+function unsupportedOptionalActionKey(
+  targetId: string,
+  projectId: string,
+  request: RemoteRuntimeActionRequest,
+): string {
+  return `${targetId}\0${projectId}\0${request.domain}.${request.action}`;
+}
+
 export class RemoteConnectionPool {
   private readonly entries = new Map<string, Promise<PoolEntry>>();
+  private readonly localPortForwards = new Map<
+    string,
+    Promise<LocalPortForwardEntry>
+  >();
+  private readonly unsupportedOptionalActionKeys = new Set<string>();
+  private readonly pendingDisconnects = new Set<string>();
+  private readonly resolvedEntryPromises = new Set<Promise<PoolEntry>>();
+  private readonly connectFailureBackoffByTargetId = new Map<
+    string,
+    ConnectFailureBackoff
+  >();
+  private readonly disconnectGenerationByTargetId = new Map<string, number>();
   private readonly evictionListeners = new Set<
     (targetId: string, error: Error) => void
   >();
@@ -126,8 +264,9 @@ export class RemoteConnectionPool {
 
   async connect(
     target: RemoteRuntimeTarget,
+    options: RemoteConnectionPoolConnectOptions = {},
   ): Promise<RemoteRuntimeConnectResult> {
-    return (await this.connectEntry(target)).result;
+    return (await this.connectEntry(target, options)).result;
   }
 
   onEntryEvicted(listener: (targetId: string, error: Error) => void): () => void {
@@ -165,9 +304,20 @@ export class RemoteConnectionPool {
     });
   }
 
-  private async connectEntry(target: RemoteRuntimeTarget): Promise<PoolEntry> {
+  private async connectEntry(
+    target: RemoteRuntimeTarget,
+    options: RemoteConnectionPoolConnectOptions = {},
+  ): Promise<PoolEntry> {
     const existing = this.entries.get(target.id);
-    if (existing) return await existing;
+    if (existing) {
+      this.pendingDisconnects.delete(target.id);
+      return await existing;
+    }
+    if (options.bypassFailureBackoff) {
+      this.connectFailureBackoffByTargetId.delete(target.id);
+    } else {
+      this.assertConnectNotBackingOff(target.id);
+    }
     const pending = bootstrapRemoteRuntime({
       target,
       registry: this.registry,
@@ -177,6 +327,9 @@ export class RemoteConnectionPool {
     let entryPromise: Promise<PoolEntry>;
     entryPromise = pending.then(({ client, ssh, result }) => {
       const entry = { client, ssh, result };
+      this.clearUnsupportedOptionalActionsForTarget(target.id);
+      this.connectFailureBackoffByTargetId.delete(target.id);
+      this.resolvedEntryPromises.add(entryPromise);
       this.attachEntryLifecycle(target.id, entryPromise, entry);
       return entry;
     });
@@ -185,6 +338,9 @@ export class RemoteConnectionPool {
       return await entryPromise;
     } catch (error) {
       this.entries.delete(target.id);
+      this.pendingDisconnects.delete(target.id);
+      this.resolvedEntryPromises.delete(entryPromise);
+      this.noteConnectFailure(target.id, error);
       throw error;
     }
   }
@@ -257,6 +413,133 @@ export class RemoteConnectionPool {
     );
   }
 
+  async ensureLocalPortForward(
+    targetId: string,
+    request: RemoteRuntimePortForwardRequest,
+  ): Promise<RemoteRuntimePortForward> {
+    const remoteHost = normalizeForwardRemoteHost(request.remoteHost);
+    const remotePort = normalizeForwardPort(request.remotePort);
+    const key = portForwardKey(targetId, remoteHost, remotePort);
+    const existing = this.localPortForwards.get(key);
+    if (existing) {
+      const entry = await existing;
+      entry.lastUsedAt = Date.now();
+      return snapshotPortForward(entry);
+    }
+
+    const pending = (async (): Promise<LocalPortForwardEntry> => {
+      const entry = await this.requireEntry(targetId);
+      const createdAt = Date.now();
+      const label =
+        typeof request.label === "string" && request.label.trim()
+          ? request.label.trim()
+          : null;
+      const server = net.createServer(async (socket) => {
+        let activeEntryPromise = this.entries.get(targetId);
+        if (!activeEntryPromise) {
+          destroyAcceptedSocket(socket, new Error(`Remote target is not connected: ${targetId}`));
+          return;
+        }
+        let activeEntry: PoolEntry;
+        try {
+          activeEntry = await activeEntryPromise;
+          const latestEntryPromise = this.entries.get(targetId);
+          if (!latestEntryPromise) {
+            destroyAcceptedSocket(socket, new Error(`Remote target is not connected: ${targetId}`));
+            return;
+          }
+          if (latestEntryPromise !== activeEntryPromise) {
+            activeEntryPromise = latestEntryPromise;
+            activeEntry = await activeEntryPromise;
+          }
+        } catch (error) {
+          destroyAcceptedSocket(
+            socket,
+            error instanceof Error ? error : new Error(String(error)),
+          );
+          return;
+        }
+        activeEntry.ssh.forwardOut(
+          LOCAL_FORWARD_HOST,
+          0,
+          remoteHost,
+          remotePort,
+          (error, stream) => {
+            if (error) {
+              destroyAcceptedSocket(socket, error);
+              return;
+            }
+            const closeBoth = () => {
+              try {
+                socket.destroy();
+              } catch {}
+              try {
+                stream.destroy();
+              } catch {}
+            };
+            socket.once("error", closeBoth);
+            stream.once("error", closeBoth);
+            socket.once("close", closeBoth);
+            stream.once("close", closeBoth);
+            socket.pipe(stream).pipe(socket);
+          },
+        );
+      });
+
+      return await new Promise<LocalPortForwardEntry>((resolve, reject) => {
+        let settled = false;
+        const rejectStart = (error: Error) => {
+          if (settled) return;
+          settled = true;
+          try {
+            server.close();
+          } catch {}
+          reject(error);
+        };
+        server.once("error", rejectStart);
+        server.listen(0, LOCAL_FORWARD_HOST, () => {
+          if (settled) return;
+          server.off("error", rejectStart);
+          const address = server.address();
+          if (!address || typeof address === "string") {
+            rejectStart(new Error("Local remote-preview forward did not bind to a TCP port."));
+            return;
+          }
+          settled = true;
+          const localPort = address.port;
+          const forward: LocalPortForwardEntry = {
+            targetId,
+            remoteHost,
+            remotePort,
+            localHost: LOCAL_FORWARD_HOST,
+            localPort,
+            localUrl: `http://${LOCAL_FORWARD_HOST}:${localPort}`,
+            label,
+            createdAt,
+            lastUsedAt: createdAt,
+            server,
+          };
+          resolve(forward);
+        });
+      });
+    })();
+    this.localPortForwards.set(key, pending);
+    try {
+      const forward = await pending;
+      forward.server.once("close", () => {
+        if (this.localPortForwards.get(key) === pending) {
+          this.localPortForwards.delete(key);
+        }
+      });
+      return snapshotPortForward(forward);
+    } catch (error) {
+      if (this.localPortForwards.get(key) === pending) {
+        this.localPortForwards.delete(key);
+      }
+      throw error;
+    }
+  }
+
   async callSyncForTarget(
     target: RemoteRuntimeTarget,
     projectId: string,
@@ -310,7 +593,18 @@ export class RemoteConnectionPool {
     projectId: string,
     request: RemoteRuntimeActionRequest,
   ): Promise<RemoteRuntimeActionResult> {
-    const value = await entry.client.call("ade/actions/call", {
+    const optionalFallback = optionalRemoteActionFallbackResult(request);
+    const optionalFallbackKey = optionalFallback
+      ? unsupportedOptionalActionKey(entry.result.target.id, projectId, request)
+      : null;
+    if (
+      optionalFallback &&
+      optionalFallbackKey &&
+      this.unsupportedOptionalActionKeys.has(optionalFallbackKey)
+    ) {
+      return optionalFallback;
+    }
+    const params = {
       projectId,
       name: "run_ade_action",
       arguments: {
@@ -322,7 +616,20 @@ export class RemoteConnectionPool {
           : {}),
         ...(request.argsList ? { argsList: request.argsList } : {}),
       },
-    });
+    };
+    const callOptions = remoteRuntimeActionCallOptions(request);
+    let value: unknown;
+    try {
+      value = callOptions
+        ? await entry.client.call("ade/actions/call", params, callOptions)
+        : await entry.client.call("ade/actions/call", params);
+    } catch (error) {
+      if (optionalFallback && optionalFallbackKey && isRemoteActionNotCallableError(error)) {
+        this.unsupportedOptionalActionKeys.add(optionalFallbackKey);
+        return optionalFallback;
+      }
+      throw error;
+    }
 
     if (value && typeof value === "object" && !Array.isArray(value)) {
       const record = value as Record<string, unknown>;
@@ -333,10 +640,15 @@ export class RemoteConnectionPool {
           !Array.isArray(record.error)
             ? (record.error as Record<string, unknown>)
             : {};
+        const message = typeof error.message === "string"
+          ? error.message
+          : "Remote ADE service action failed.";
+        if (optionalFallback && optionalFallbackKey && isRemoteActionNotCallableMessage(message)) {
+          this.unsupportedOptionalActionKeys.add(optionalFallbackKey);
+          return optionalFallback;
+        }
         throw new Error(
-          typeof error.message === "string"
-            ? error.message
-            : "Remote ADE service action failed.",
+          message,
         );
       }
       return {
@@ -484,27 +796,72 @@ export class RemoteConnectionPool {
   }
 
   disconnect(targetId: string): void {
+    this.bumpDisconnectGeneration(targetId);
+    this.closeLocalPortForwardsForTarget(targetId);
     const existing = this.entries.get(targetId);
-    this.entries.delete(targetId);
+    if (!existing) return;
+    if (this.resolvedEntryPromises.has(existing)) {
+      this.entries.delete(targetId);
+      this.resolvedEntryPromises.delete(existing);
+      void existing
+        .then((entry) => {
+          if (entry.dispose) {
+            entry.dispose(true, false);
+            return;
+          }
+          closePoolEntryResources(entry, true, true);
+        })
+        .catch(() => {});
+      return;
+    }
+    this.pendingDisconnects.add(targetId);
     void existing
-      ?.then((entry) => {
+      .then((entry) => {
+        if (!this.pendingDisconnects.delete(targetId)) return;
+        if (this.entries.get(targetId) === existing) {
+          this.entries.delete(targetId);
+        }
+        this.resolvedEntryPromises.delete(existing);
         if (entry.dispose) {
           entry.dispose(true, false);
           return;
         }
-        try {
-          entry.client.close();
-        } catch {}
-        try {
-          entry.ssh.end();
-        } catch {}
+        closePoolEntryResources(entry, true, true);
       })
-      .catch(() => {});
+      .catch(() => {
+        this.pendingDisconnects.delete(targetId);
+        this.resolvedEntryPromises.delete(existing);
+        if (this.entries.get(targetId) === existing) {
+          this.entries.delete(targetId);
+        }
+      });
   }
 
   dispose(): void {
     for (const targetId of [...this.entries.keys()]) {
       this.disconnect(targetId);
+    }
+  }
+
+  private closeLocalPortForwardsForTarget(targetId: string): void {
+    for (const [key, pending] of [...this.localPortForwards.entries()]) {
+      if (!key.startsWith(`${targetId}\0`)) continue;
+      this.localPortForwards.delete(key);
+      void pending
+        .then((entry) => {
+          try {
+            entry.server.close();
+          } catch {}
+        })
+        .catch(() => {});
+    }
+  }
+
+  private clearUnsupportedOptionalActionsForTarget(targetId: string): void {
+    for (const key of [...this.unsupportedOptionalActionKeys]) {
+      if (key.startsWith(`${targetId}\0`)) {
+        this.unsupportedOptionalActionKeys.delete(key);
+      }
     }
   }
 
@@ -520,10 +877,18 @@ export class RemoteConnectionPool {
     options: { retryOnConnectionError: boolean },
   ): Promise<T> {
     const entry = await this.connectEntry(target);
+    const disconnectGeneration =
+      this.disconnectGenerationByTargetId.get(target.id) ?? 0;
     try {
       return await operation(entry);
     } catch (error) {
       if (!isRemoteRuntimeConnectionError(error)) throw error;
+      if (
+        (this.disconnectGenerationByTargetId.get(target.id) ?? 0) !==
+        disconnectGeneration
+      ) {
+        throw error;
+      }
       this.disconnect(target.id);
       const reconnectTarget = this.registry.get(target.id) ?? target;
       const nextEntry = await this.connectEntry(reconnectTarget);
@@ -560,16 +925,11 @@ export class RemoteConnectionPool {
       if (this.entries.get(targetId) === entryPromise) {
         this.entries.delete(targetId);
       }
+      this.resolvedEntryPromises.delete(entryPromise);
       if (cleanedUp) return;
       cleanedUp = true;
-      if (closeClient) {
-        try {
-          entry.client.close();
-        } catch {}
-      }
-      try {
-        entry.ssh.end();
-      } catch {}
+      this.closeLocalPortForwardsForTarget(targetId);
+      closePoolEntryResources(entry, closeClient, true);
       if (notify) notifyEvicted(error);
     };
 
@@ -577,6 +937,43 @@ export class RemoteConnectionPool {
     entry.ssh.once("close", () => evict(true));
     entry.ssh.once("error", (error) => evict(true, true, error instanceof Error ? error : new Error(String(error))));
     entry.dispose = evict;
+  }
+
+  private assertConnectNotBackingOff(targetId: string): void {
+    const backoff = this.connectFailureBackoffByTargetId.get(targetId);
+    if (!backoff) return;
+    const remainingMs = backoff.retryAfterMs - Date.now();
+    if (remainingMs <= 0) {
+      this.connectFailureBackoffByTargetId.delete(targetId);
+      return;
+    }
+    const seconds = Math.max(1, Math.ceil(remainingMs / 1000));
+    throw new Error(
+      `Remote ADE service connection failed recently (${backoff.error.message}). Retrying in ${seconds}s.`,
+    );
+  }
+
+  private noteConnectFailure(targetId: string, error: unknown): void {
+    const normalizedError =
+      error instanceof Error ? error : new Error(String(error));
+    const previous = this.connectFailureBackoffByTargetId.get(targetId);
+    const failureCount = (previous?.failureCount ?? 0) + 1;
+    const backoffMs = Math.min(
+      CONNECT_FAILURE_MAX_BACKOFF_MS,
+      CONNECT_FAILURE_BASE_BACKOFF_MS * 2 ** Math.max(0, failureCount - 1),
+    );
+    this.connectFailureBackoffByTargetId.set(targetId, {
+      error: normalizedError,
+      failureCount,
+      retryAfterMs: Date.now() + backoffMs,
+    });
+  }
+
+  private bumpDisconnectGeneration(targetId: string): void {
+    this.disconnectGenerationByTargetId.set(
+      targetId,
+      (this.disconnectGenerationByTargetId.get(targetId) ?? 0) + 1,
+    );
   }
 }
 
@@ -720,6 +1117,7 @@ async function subscribeToRuntimeEvents(
       ...(isRemoteRuntimeEventCategory(request.category)
         ? { category: request.category }
         : {}),
+      ...(typeof request.replay === "boolean" ? { replay: request.replay } : {}),
     });
     subscriptionId = readSubscriptionId(value);
     for (const notification of pendingNotifications) {

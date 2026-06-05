@@ -19,7 +19,7 @@ import type { AgentChatFileRef } from "../../../shared/types";
 import { inferAttachmentType } from "../../../shared/types";
 import type { BuiltInBrowserTab } from "../../../shared/types/builtInBrowser";
 import { consumePendingBuiltInBrowserNavigation } from "../../lib/openExternal";
-import { useAppStore } from "../../state/appStore";
+import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
 import {
   ADE_BROWSER_VIEW_OCCLUSION_END_EVENT,
   ADE_BROWSER_VIEW_OCCLUSION_START_EVENT,
@@ -623,7 +623,7 @@ export function ChatBuiltInBrowserPanel({
   onAddAttachment,
   onInsertDraft,
 }: ChatBuiltInBrowserPanelProps) {
-  const projectRoot = useAppStore((s) => s.project?.rootPath ?? null);
+  const projectRoot = useAppStore(selectActiveProjectRoot);
   const browserSurfaceRef = useRef<HTMLDivElement | null>(null);
   const browserWebviewsRef = useRef<Map<string, BrowserWebviewElement>>(new Map());
   const browserWebviewAttachCleanupRef = useRef<Map<string, () => void>>(new Map());

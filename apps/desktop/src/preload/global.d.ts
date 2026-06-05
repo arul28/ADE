@@ -829,7 +829,10 @@ declare global {
           id: string,
           project: RemoteRuntimeProjectRecord,
         ) => Promise<RemoteRuntimeLocalWorkCheckResult>;
-        disconnect: (id: string) => Promise<{ disconnected: boolean }>;
+        disconnect: (
+          id: string,
+          options?: { manual?: boolean },
+        ) => Promise<{ disconnected: boolean }>;
       };
       keybindings: {
         get: () => Promise<KeybindingsSnapshot>;

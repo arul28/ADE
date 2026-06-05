@@ -45,6 +45,7 @@ import { copyLaunchPromptToClipboard } from "../../lib/launchPromptClipboard";
 
 const INITIAL_VISIBILITY_CHECK_DELAY_MS = 2_000;
 const VISIBILITY_RETRY_INTERVAL_MS = 3_000;
+const REMOTE_VISIBILITY_RETRY_INTERVAL_MS = 15_000;
 const VISIBILITY_CONNECTED_CACHE_TTL_MS = 60_000;
 const VISIBILITY_DISCONNECTED_CACHE_TTL_MS = 1_500;
 
@@ -109,6 +110,7 @@ export function LinearQuickViewButton({
   onMenuActivate?: () => void;
 } = {}) {
   const project = useAppStore((s) => s.project);
+  const projectBinding = useAppStore((s) => s.projectBinding);
   const lanes = useAppStore((s) => s.lanes);
   const refreshLanes = useAppStore((s) => s.refreshLanes);
   const selectLane = useAppStore((s) => s.selectLane);
@@ -130,14 +132,21 @@ export function LinearQuickViewButton({
   const occludesNativeBrowser = open || batchModalOpen;
   // Remembers each issue's chosen config so "Retry failed" reuses the same model.
   const batchConfigByIssueRef = useRef<Map<string, BatchLaunchIssueConfig>>(new Map());
+  const activeProjectRoot =
+    projectBinding?.kind === "remote" ? projectBinding.rootPath : project?.rootPath;
+  const shouldAutoCheckVisibility = projectBinding?.kind !== "remote";
+  const visibilityRetryIntervalMs =
+    projectBinding?.kind === "remote"
+      ? REMOTE_VISIBILITY_RETRY_INTERVAL_MS
+      : VISIBILITY_RETRY_INTERVAL_MS;
 
   const loadVisibility = useCallback(async (options?: { force?: boolean }): Promise<boolean> => {
     return readLinearVisibilityCached({
-      projectRoot: project?.rootPath,
+      projectRoot: activeProjectRoot,
       reader: window.ade.cto?.getLinearConnectionStatus,
       force: options?.force === true,
     });
-  }, [project?.rootPath]);
+  }, [activeProjectRoot]);
 
   const openLinearSettings = useCallback(() => {
     setConnectionPrompt(null);
@@ -181,11 +190,14 @@ export function LinearQuickViewButton({
   }, [occludesNativeBrowser]);
 
   useEffect(() => {
-    if (variant !== "icon") return;
-    let cancelled = false;
     setVisible(false);
     setOpen(false);
     setQuickView(null);
+  }, [activeProjectRoot]);
+
+  useEffect(() => {
+    if (!shouldAutoCheckVisibility) return;
+    let cancelled = false;
     const timer = window.setTimeout(() => {
       void loadVisibility()
       .then((nextVisible) => {
@@ -199,10 +211,10 @@ export function LinearQuickViewButton({
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [loadVisibility, project?.rootPath, variant]);
+  }, [loadVisibility, shouldAutoCheckVisibility]);
 
   useEffect(() => {
-    if (variant !== "icon") return;
+    if (!shouldAutoCheckVisibility) return;
     let timer: number | null = null;
     let cancelled = false;
     const onBridge = () => {
@@ -228,11 +240,11 @@ export function LinearQuickViewButton({
       if (timer != null) window.clearTimeout(timer);
       window.removeEventListener("ade:runtime-bridge-ready", onBridge);
     };
-  }, [loadVisibility, variant]);
+  }, [loadVisibility, shouldAutoCheckVisibility]);
 
   useEffect(() => {
-    if (variant !== "icon") return;
-    if (!project?.rootPath) return;
+    if (!shouldAutoCheckVisibility) return;
+    if (!activeProjectRoot) return;
     let cancelled = false;
     const refresh = () => {
       void loadVisibility({ force: true })
@@ -248,12 +260,12 @@ export function LinearQuickViewButton({
       cancelled = true;
       window.removeEventListener("focus", refresh);
     };
-  }, [loadVisibility, project?.rootPath, variant]);
+  }, [loadVisibility, activeProjectRoot, shouldAutoCheckVisibility]);
 
   useEffect(() => {
-    if (variant !== "icon") return;
+    if (!shouldAutoCheckVisibility) return;
     if (visible) return;
-    if (!project?.rootPath) return;
+    if (!activeProjectRoot) return;
     let cancelled = false;
     const interval = window.setInterval(() => {
       void loadVisibility().then((v) => {
@@ -262,12 +274,12 @@ export function LinearQuickViewButton({
           window.clearInterval(interval);
         }
       }).catch(() => {});
-    }, VISIBILITY_RETRY_INTERVAL_MS);
+    }, visibilityRetryIntervalMs);
     return () => {
       cancelled = true;
       window.clearInterval(interval);
     };
-  }, [loadVisibility, visible, project?.rootPath, variant]);
+  }, [loadVisibility, visible, activeProjectRoot, visibilityRetryIntervalMs, shouldAutoCheckVisibility]);
 
   const openQuickView = useCallback(() => {
     if (cachedQuickViewRef.current) {
@@ -277,9 +289,9 @@ export function LinearQuickViewButton({
   }, []);
 
   const close = useCallback(() => {
-    clearLinearQuickViewSelection(project?.rootPath);
+    clearLinearQuickViewSelection(activeProjectRoot);
     setOpen(false);
-  }, [project?.rootPath]);
+  }, [activeProjectRoot]);
 
   useEffect(() => {
     if (!open) return;

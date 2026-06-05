@@ -13,7 +13,7 @@ import type {
   TerminalSessionSummary,
 } from "../../../shared/types";
 import { ADE_WORK_PTY_CONTEXT_INSERTED_EVENT } from "../../lib/workPtyContextEvents";
-import { useAppStore } from "../../state/appStore";
+import { useAppStore, type WorkSidebarTab } from "../../state/appStore";
 import { WorkSidebar, type WorkSidebarContextTarget } from "./WorkSidebar";
 
 vi.mock("../chat/ChatIosSimulatorPanel", async () => {
@@ -311,12 +311,13 @@ function installAdeMock(options: {
 }
 
 function renderSidebar(args: {
-  tab: "ios" | "app-control" | "browser";
+  tab: WorkSidebarTab;
   contextTarget: WorkSidebarContextTarget | null;
   contextDisabledReason?: string | null;
   laneId?: string;
   lanes?: LaneSummary[];
   activeSession?: TerminalSessionSummary | null;
+  onTabChange?: (tab: WorkSidebarTab) => void;
 }) {
   return render(
     <MemoryRouter>
@@ -326,7 +327,7 @@ function renderSidebar(args: {
         lanes={args.lanes ?? [lane]}
         activeSession={args.activeSession ?? activeSession}
         tab={args.tab}
-        onTabChange={vi.fn()}
+        onTabChange={args.onTabChange ?? vi.fn()}
         onClose={vi.fn()}
         contextTarget={args.contextTarget}
         contextDisabledReason={args.contextDisabledReason ?? null}
@@ -342,7 +343,7 @@ describe("WorkSidebar context targets", () => {
 
   afterEach(() => {
     cleanup();
-    useAppStore.setState({ project: null } as any);
+    useAppStore.setState({ project: null, projectBinding: null } as any);
     delete (window as unknown as { ade?: unknown }).ade;
     vi.restoreAllMocks();
   });
@@ -566,5 +567,37 @@ describe("WorkSidebar context targets", () => {
         profileProjectRoot: "/repo-two",
       },
     })).not.toThrow();
+  });
+
+  it("only exposes remote-aware tool panes for remote projects", async () => {
+    const onTabChange = vi.fn();
+    useAppStore.setState({
+      projectBinding: {
+        kind: "remote",
+        key: "remote:target-1:project-1",
+        targetId: "target-1",
+        runtimeName: "Mac Studio",
+        projectId: "project-1",
+        rootPath: "/repo",
+        displayName: "Repo",
+      },
+    } as any);
+
+    renderSidebar({
+      tab: "browser",
+      contextTarget: { kind: "chat", sessionId: "chat-1" },
+      onTabChange,
+    });
+
+    expect(screen.getByRole("button", { name: "Git" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Files" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "iOS Sim" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "App Control" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Browser" })).toBeNull();
+    expect(screen.queryByTestId("browser-panel")).toBeNull();
+    await waitFor(() => expect(onTabChange).toHaveBeenCalledWith("git"));
+    expect(window.ade.builtInBrowser.getStatus).not.toHaveBeenCalled();
+    expect(window.ade.iosSimulator.getStatus).not.toHaveBeenCalled();
+    expect(window.ade.appControl.getStatus).not.toHaveBeenCalled();
   });
 });

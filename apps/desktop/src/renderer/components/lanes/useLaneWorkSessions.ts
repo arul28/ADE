@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AgentChatSession, TerminalSessionSummary } from "../../../shared/types";
-import { useAppStore, type WorkDraftKind, type WorkProjectViewState, type WorkViewMode } from "../../state/appStore";
+import { selectActiveProjectRoot, useAppStore, type WorkDraftKind, type WorkProjectViewState, type WorkViewMode } from "../../state/appStore";
 import { listSessionsCached, invalidateSessionListCache } from "../../lib/sessionListCache";
 import { sessionStatusBucket } from "../../lib/terminalAttention";
 import { shouldRefreshSessionListForChatEvent } from "../../lib/chatSessionEvents";
@@ -113,7 +113,7 @@ function isActiveSession(session: TerminalSessionSummary): boolean {
 }
 
 export function useLaneWorkSessions(laneId: string | null) {
-  const projectRoot = useAppStore((state) => state.project?.rootPath ?? null);
+  const projectRoot = useAppStore(selectActiveProjectRoot);
   const lanes = useAppStore((state) => state.lanes);
   const focusSession = useAppStore((state) => state.focusSession);
   const focusedSessionId = useAppStore((state) => state.focusedSessionId);

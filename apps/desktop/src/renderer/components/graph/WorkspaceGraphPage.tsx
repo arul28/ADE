@@ -48,7 +48,7 @@ import type {
   PrWithConflicts,
   IntegrationProposal
 } from "../../../shared/types";
-import { useAppStore } from "../../state/appStore";
+import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
 import {
   buildIntegrationSourcesByLaneId,
   isIntegrationLaneFromMetadata,
@@ -163,7 +163,7 @@ function GraphInner({ active = true }: { active?: boolean }) {
   const [searchParams, setSearchParams] = useSearchParams();
   const reactFlow = useReactFlow<Node<GraphNodeData>, Edge<GraphEdgeData>>();
   const project = useAppStore((s) => s.project);
-  const projectRoot = project?.rootPath ?? null;
+  const projectRoot = useAppStore(selectActiveProjectRoot);
   const isRemoteProject = useAppStore((s) => s.projectBinding?.kind === "remote");
   const lanes = useAppStore((s) => s.lanes);
   const lanesKey = React.useMemo(() => lanes.map((l) => l.id).join(","), [lanes]);
@@ -435,7 +435,7 @@ function GraphInner({ active = true }: { active?: boolean }) {
   React.useEffect(() => {
     if (!active) return;
     void refreshEnvironmentMappings();
-  }, [active, project?.rootPath, refreshEnvironmentMappings]);
+  }, [active, projectRoot, refreshEnvironmentMappings]);
 
   const riskRefreshTimerRef = React.useRef<number | null>(null);
   const dragOriginRef = React.useRef<Map<string, { x: number; y: number }>>(new Map());
@@ -809,7 +809,7 @@ function GraphInner({ active = true }: { active?: boolean }) {
     } catch {
       // ignore
     }
-  }, [project?.rootPath]);
+  }, [projectRoot]);
 
   const scheduleRefreshActivity = React.useCallback((delayMs = 700, options?: { includeOperations?: boolean }) => {
     if (options?.includeOperations !== false) {
@@ -818,7 +818,6 @@ function GraphInner({ active = true }: { active?: boolean }) {
     if (activityRefreshTimerRef.current != null) return;
     activityRefreshTimerRef.current = window.setTimeout(() => {
       activityRefreshTimerRef.current = null;
-      if (document.visibilityState !== "visible") return;
       if (activityRefreshInFlightRef.current) {
         activityRefreshQueuedRef.current = true;
         return;
@@ -840,8 +839,8 @@ function GraphInner({ active = true }: { active?: boolean }) {
 
   React.useEffect(() => {
     if (!active) return;
-    if (!project?.rootPath) return;
-    const rootPath = project.rootPath;
+    if (!projectRoot) return;
+    const rootPath = projectRoot;
     let cancelled = false;
     let riskTimer: number | null = null;
     let activityTimer: number | null = null;
@@ -873,19 +872,19 @@ function GraphInner({ active = true }: { active?: boolean }) {
     }
 
     riskTimer = window.setTimeout(() => {
-      if (cancelled || document.visibilityState !== "visible") return;
+      if (cancelled) return;
       void refreshRiskBatch();
     }, 1_500);
     activityTimer = window.setTimeout(() => {
-      if (cancelled || document.visibilityState !== "visible") return;
+      if (cancelled) return;
       scheduleRefreshActivity(250, { includeOperations: true });
     }, 800);
     syncTimer = window.setTimeout(() => {
-      if (cancelled || document.visibilityState !== "visible") return;
+      if (cancelled) return;
       void refreshLaneSyncStatuses();
     }, 2_500);
     autoRebaseTimer = window.setTimeout(() => {
-      if (cancelled || document.visibilityState !== "visible") return;
+      if (cancelled) return;
       void refreshAutoRebaseStatuses();
     }, 3_500);
 
@@ -896,7 +895,7 @@ function GraphInner({ active = true }: { active?: boolean }) {
       if (syncTimer != null) window.clearTimeout(syncTimer);
       if (autoRebaseTimer != null) window.clearTimeout(autoRebaseTimer);
     };
-  }, [active, project?.rootPath, refreshAutoRebaseStatuses, refreshGraphLanes, refreshLaneSyncStatuses, refreshRiskBatch, reportGraphIssue, scheduleRefreshActivity]);
+  }, [active, projectRoot, refreshAutoRebaseStatuses, refreshGraphLanes, refreshLaneSyncStatuses, refreshRiskBatch, reportGraphIssue, scheduleRefreshActivity]);
 
   React.useEffect(() => {
     if (!active) return;
@@ -959,12 +958,12 @@ function GraphInner({ active = true }: { active?: boolean }) {
 
   React.useEffect(() => {
     if (!active) return;
-    if (!project?.rootPath) {
+    if (!projectRoot) {
       setLoadedGraphPreferences(false);
       skipNextGraphPreferencePersistRootRef.current = null;
       return;
     }
-    const rootPath = project.rootPath;
+    const rootPath = projectRoot;
     let cancelled = false;
     setLoadedGraphPreferences(false);
     void window.ade.graphState
@@ -990,17 +989,17 @@ function GraphInner({ active = true }: { active?: boolean }) {
     return () => {
       cancelled = true;
     };
-  }, [active, project?.rootPath]);
+  }, [active, projectRoot]);
 
   React.useEffect(() => {
     if (!active) return;
-    if (!project?.rootPath || !loadedGraphPreferences) return;
-    if (skipNextGraphPreferencePersistRootRef.current === project.rootPath) {
+    if (!projectRoot || !loadedGraphPreferences) return;
+    if (skipNextGraphPreferencePersistRootRef.current === projectRoot) {
       skipNextGraphPreferencePersistRootRef.current = null;
       return;
     }
-    void window.ade.graphState.set(project.rootPath, createGraphPreferences(viewMode)).catch(() => {});
-  }, [active, loadedGraphPreferences, project?.rootPath, viewMode]);
+    void window.ade.graphState.set(projectRoot, createGraphPreferences(viewMode)).catch(() => {});
+  }, [active, loadedGraphPreferences, projectRoot, viewMode]);
 
   React.useEffect(() => {
     if (!undoToast) return;
@@ -1202,7 +1201,7 @@ function GraphInner({ active = true }: { active?: boolean }) {
       reportGraphIssue("Conflict prediction live updates are unavailable in the graph.", error);
     }
     try {
-      const currentProjectRoot = project?.rootPath ?? null;
+      const currentProjectRoot = projectRoot;
       const isCurrentProjectEvent = (event: { projectRoot?: string | null }) =>
         !event.projectRoot || event.projectRoot === currentProjectRoot;
       unsubPtyData = window.ade.pty.onData((event) => {
@@ -1276,7 +1275,7 @@ function GraphInner({ active = true }: { active?: boolean }) {
         prRefreshTimerRef.current = null;
       }
     };
-  }, [active, project?.rootPath, refreshLaneSyncStatuses, refreshGraphLanes, refreshRiskBatch, refreshAutoRebaseStatuses, reportGraphIssue, scheduleRefreshActivity, scheduleRefreshPrs]);
+  }, [active, projectRoot, refreshLaneSyncStatuses, refreshGraphLanes, refreshRiskBatch, refreshAutoRebaseStatuses, reportGraphIssue, scheduleRefreshActivity, scheduleRefreshPrs]);
 
   const baseGraph = React.useMemo(() => {
     if (!loadedGraphPreferences) {

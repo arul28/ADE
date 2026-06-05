@@ -1123,12 +1123,15 @@ function WorkSidebarToggle({
   open: boolean;
   onToggle?: () => void;
 }) {
+  const isRemoteProject = useAppStore((state) => state.projectBinding?.kind === "remote");
   if (!onToggle) return null;
   return (
     <SmartTooltip
       content={{
         label: open ? "Close Tools pane" : "Open Tools pane",
-        description: "Workspace-level tools alongside this session — Git, Files, iOS Simulator, App Control, and Browser.",
+        description: isRemoteProject
+          ? "Workspace-level tools alongside this remote session — Git and Files."
+          : "Workspace-level tools alongside this session — Git, Files, iOS Simulator, App Control, and Browser.",
       }}
     >
       <button

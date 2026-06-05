@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type CSSProperties, type FormEvent } from "react";
-import { COLORS, LABEL_STYLE, MONO_FONT, SANS_FONT, outlineButton, primaryButton } from "../lanes/laneDesignTokens";
+import { COLORS, LABEL_STYLE, MONO_FONT, outlineButton, primaryButton } from "../lanes/laneDesignTokens";
 import type { RemoteRuntimeTargetInput } from "../../../shared/types";
 
 export type RemoteTargetFormPrefill = Partial<RemoteRuntimeTargetInput> & {
@@ -139,10 +139,7 @@ export function RemoteTargetForm({
           disabled={busy}
         />
       </label>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
-        <div style={{ color: COLORS.textMuted, fontFamily: SANS_FONT, fontSize: 12 }}>
-          ADE connects over SSH and starts `ade rpc --stdio` on the target.
-        </div>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", gap: 12 }}>
         <button
           type="submit"
           disabled={!canSubmit || busy}

@@ -13,7 +13,7 @@ const mockState = vi.hoisted(() => ({
   lastContextLossHandler: null as (() => void) | null,
   ptyDataListeners: new Set<(event: { ptyId: string; sessionId?: string; projectRoot?: string; data: string }) => void>(),
   ptyExitListeners: new Set<(event: { ptyId: string; sessionId?: string; projectRoot?: string; exitCode: number | null }) => void>(),
-  projectRoot: "/project/a",
+  projectRoot: "/project/a" as string | null,
   projectRevision: 0,
   theme: "dark" as const,
   terminalPreferences: {
@@ -45,6 +45,13 @@ class MockIntersectionObserver {
 }
 
 vi.mock("../../state/appStore", () => ({
+  selectActiveProjectRoot: (state: {
+    projectBinding?: { kind?: string; rootPath?: string | null } | null;
+    project?: { rootPath?: string | null } | null;
+  }) => {
+    if (state.projectBinding?.kind === "remote") return state.projectBinding.rootPath?.trim() || null;
+    return state.project?.rootPath?.trim() || null;
+  },
   useAppStore: vi.fn((selector: (state: {
     theme: "dark";
     terminalPreferences: {
@@ -740,6 +747,130 @@ describe("TerminalView", () => {
     expect(terminal?.options.scrollback).toBe(20_000);
   });
 
+  it("batches rapid terminal input before writing to the PTY", async () => {
+    render(<TerminalView ptyId="pty-input-batch" sessionId="session-input-batch" isActive />);
+    await flushAllTimers();
+
+    const terminal = mockState.terminalInstances.at(-1) as {
+      onData: ReturnType<typeof vi.fn>;
+    } | undefined;
+    const onData = terminal?.onData.mock.calls.at(-1)?.[0] as ((data: string) => void) | undefined;
+    expect(onData).toBeTruthy();
+
+    const ptyWrite = window.ade.pty.write as unknown as ReturnType<typeof vi.fn>;
+    ptyWrite.mockClear();
+
+    onData!("p");
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(8);
+    });
+    onData!("w");
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(8);
+    });
+    onData!("d");
+
+    expect(ptyWrite).not.toHaveBeenCalled();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(15);
+    });
+    expect(ptyWrite).not.toHaveBeenCalled();
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(1);
+    });
+
+    expect(ptyWrite).toHaveBeenCalledTimes(1);
+    expect(ptyWrite).toHaveBeenCalledWith({
+      ptyId: "pty-input-batch",
+      data: "pwd",
+    });
+  });
+
+  it("flushes queued terminal input immediately when Enter arrives", async () => {
+    render(<TerminalView ptyId="pty-input-enter" sessionId="session-input-enter" isActive />);
+    await flushAllTimers();
+
+    const terminal = mockState.terminalInstances.at(-1) as {
+      onData: ReturnType<typeof vi.fn>;
+    } | undefined;
+    const onData = terminal?.onData.mock.calls.at(-1)?.[0] as ((data: string) => void) | undefined;
+    expect(onData).toBeTruthy();
+
+    const ptyWrite = window.ade.pty.write as unknown as ReturnType<typeof vi.fn>;
+    ptyWrite.mockClear();
+
+    onData!("pwd");
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(8);
+    });
+    expect(ptyWrite).not.toHaveBeenCalled();
+
+    onData!("\r");
+
+    expect(ptyWrite).toHaveBeenCalledTimes(1);
+    expect(ptyWrite).toHaveBeenCalledWith({
+      ptyId: "pty-input-enter",
+      data: "pwd\r",
+    });
+  });
+
+  it("preserves queued input order inside direct control-key writes", async () => {
+    const platformDescriptor = Object.getOwnPropertyDescriptor(window.navigator, "platform");
+    const originalPlatform = window.navigator.platform;
+    try {
+      Object.defineProperty(window.navigator, "platform", {
+        configurable: true,
+        value: "MacIntel",
+      });
+
+      render(<TerminalView ptyId="pty-input-control" sessionId="session-input-control" isActive />);
+      await flushAllTimers();
+
+      const terminal = mockState.terminalInstances.at(-1) as {
+        attachCustomKeyEventHandler: ReturnType<typeof vi.fn>;
+        onData: ReturnType<typeof vi.fn>;
+      } | undefined;
+      const onData = terminal?.onData.mock.calls.at(-1)?.[0] as ((data: string) => void) | undefined;
+      const keyHandler = terminal?.attachCustomKeyEventHandler.mock.calls.at(-1)?.[0] as ((ev: KeyboardEvent) => boolean) | undefined;
+      expect(onData).toBeTruthy();
+      expect(keyHandler).toBeTruthy();
+
+      const ptyWrite = window.ade.pty.write as unknown as ReturnType<typeof vi.fn>;
+      ptyWrite.mockClear();
+
+      onData!("p");
+      const preventDefault = vi.fn();
+      const handled = keyHandler!({
+        type: "keydown",
+        key: "c",
+        metaKey: true,
+        ctrlKey: false,
+        altKey: false,
+        shiftKey: false,
+        preventDefault,
+      } as unknown as KeyboardEvent);
+
+      expect(handled).toBe(false);
+      expect(preventDefault).toHaveBeenCalledTimes(1);
+      expect(ptyWrite).toHaveBeenCalledTimes(1);
+      expect(ptyWrite).toHaveBeenCalledWith({
+        ptyId: "pty-input-control",
+        data: "p\x03",
+      });
+    } finally {
+      if (platformDescriptor) {
+        Object.defineProperty(window.navigator, "platform", platformDescriptor);
+      } else {
+        Object.defineProperty(window.navigator, "platform", {
+          configurable: true,
+          value: originalPlatform,
+        });
+      }
+    }
+  });
+
   it("writes text paste contents directly to the PTY", async () => {
     render(<TerminalView ptyId="pty-text-paste" sessionId="session-text-paste" isActive />);
     await flushAllTimers();
@@ -1168,6 +1299,43 @@ describe("TerminalView", () => {
     expect(firstTerminal?.dispose).not.toHaveBeenCalled();
     expect(readTranscriptTailMock.mock.calls).toHaveLength(1);
     expect(getTerminalRuntimeSnapshot("session-switch")).not.toBeNull();
+  });
+
+  it("does not tear down a mounted exited runtime while the active project clears", async () => {
+    const view = render(<TerminalView ptyId="pty-project-clear" sessionId="session-project-clear" isActive />);
+    await flushAllTimers();
+
+    const terminal = mockState.terminalInstances.at(-1) as {
+      dispose: ReturnType<typeof vi.fn>;
+    } | undefined;
+    expect(terminal).toBeTruthy();
+
+    for (const listener of mockState.ptyExitListeners) {
+      listener({
+        ptyId: "pty-project-clear",
+        sessionId: "session-project-clear",
+        projectRoot: "/project/a",
+        exitCode: 0,
+      });
+    }
+    await flushPromises();
+    expect(getTerminalRuntimeSnapshot("session-project-clear")?.exitCode).toBe(0);
+
+    mockState.projectRoot = null;
+    mockState.projectRevision += 1;
+    view.rerender(<TerminalView ptyId="pty-project-clear" sessionId="session-project-clear" isActive />);
+    await flushAnimationFrame();
+
+    expect(terminal?.dispose).not.toHaveBeenCalled();
+    expect(getTerminalRuntimeSnapshot("session-project-clear")).not.toBeNull();
+
+    view.unmount();
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(15_100);
+    });
+
+    expect(terminal?.dispose).toHaveBeenCalledTimes(1);
+    expect(getTerminalRuntimeSnapshot("session-project-clear")).toBeNull();
   });
 
   it("hydrates live terminals from serialized snapshots when structured rows are unavailable", async () => {
