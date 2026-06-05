@@ -28,8 +28,6 @@ import {
   CopySimple,
   Brain,
   Image,
-  ImageSquare,
-  Sparkle,
   Code,
   Paperclip,
   Target,
@@ -40,7 +38,6 @@ import type {
   AgentChatEvent,
   AgentChatEventEnvelope,
   AgentChatNoticeDetail,
-  AgentChatSubagentTranscriptMessage,
   ChatSurfaceChipTone,
   FilesWorkspace,
   ChatSurfaceProfile,
@@ -1135,32 +1132,51 @@ function ThinkingDots({ toneClass = "bg-emerald-300/70" }: { toneClass?: string 
   );
 }
 
+// After the turn has been active this long with no terminal event, the
+// indicator adds a quiet "taking longer than usual" note so a long silent wait
+// doesn't read as frozen. Provider overloads (HTTP 529) and transient errors
+// are retried *inside* the model SDK with nothing surfaced to us until they
+// resolve or finally fail — so a long "Thinking" is the only signal we get.
+const LONG_RUNNING_TURN_SECONDS = 30;
+
 /**
  * The single, calm "model is working" indicator (replaces the prior tangle of
  * shimmer-text / emerald + violet dot variants). Three violet pulses + a
  * concise verb + a self-ticking elapsed timer that mutates textContent via a
  * ref — no per-second React commit (t3code / Codex desktop reference).
+ *
+ * Elapsed is anchored to the turn's real start timestamp (wall clock), so
+ * leaving the chat and coming back keeps the true elapsed instead of resetting
+ * to 0 on remount.
  */
-function WorkingIndicator({ activity }: { activity: string | null }) {
+function WorkingIndicator({ activity, startedAt }: { activity: string | null; startedAt: number | null }) {
   const timerRef = useRef<HTMLSpanElement>(null);
+  const [longRunning, setLongRunning] = useState(false);
   useEffect(() => {
-    const start = performance.now();
+    const startMs = startedAt ?? Date.now();
     const el = timerRef.current;
-    if (!el) return;
     let handle = 0;
     const tick = () => {
-      el.textContent = `${Math.floor((performance.now() - start) / 1000)}s`;
+      const elapsedSec = Math.max(0, Math.floor((Date.now() - startMs) / 1000));
+      if (el) el.textContent = `${elapsedSec}s`;
+      setLongRunning(elapsedSec >= LONG_RUNNING_TURN_SECONDS);
       handle = window.setTimeout(tick, 1000);
     };
     tick();
     return () => window.clearTimeout(handle);
-  }, []);
+  }, [startedAt]);
   return (
     <span className="inline-flex items-center gap-2 font-sans text-[length:calc(var(--chat-font-size)*12/14)]">
       <ThinkingDots toneClass="bg-violet-400/70" />
       <span className="font-medium text-fg/55">{activity ?? "Working"}</span>
       <span className="text-fg/28" aria-hidden>·</span>
       <span ref={timerRef} className="tabular-nums text-fg/38">0s</span>
+      {longRunning ? (
+        <>
+          <span className="text-fg/28" aria-hidden>·</span>
+          <span className="text-fg/35">taking longer than usual</span>
+        </>
+      ) : null}
     </span>
   );
 }
@@ -2008,9 +2024,9 @@ function renderEvent(
       <motion.div
         className="flex min-w-0 max-w-full w-full justify-end overflow-visible"
         style={{ transformOrigin: "bottom right" }}
-        initial={playSendEntrance ? { opacity: 0, y: 12, scale: 0.94 } : false}
-        animate={{ opacity: 1, y: 0, scale: 1 }}
-        transition={{ type: "spring", stiffness: 520, damping: 34, mass: 0.8 }}
+        initial={playSendEntrance ? { opacity: 0, y: 14 } : false}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.26, ease: [0.22, 1, 0.36, 1] }}
       >
         <div
           className={cn(
@@ -3367,6 +3383,21 @@ function deriveActiveTurnId(events: AgentChatEventEnvelope[]): string | null {
   return null;
 }
 
+// Wall-clock start time (ms) of the given turn — the earliest event timestamp
+// tagged with that turnId. Used to anchor the working-indicator elapsed timer
+// so it survives remounts (leaving/returning to the chat).
+function deriveTurnStartedAt(events: AgentChatEventEnvelope[], turnId: string | null): number | null {
+  if (!turnId) return null;
+  let startedAt: number | null = null;
+  for (const envelope of events) {
+    if (getEventTurnId(envelope.event) !== turnId) continue;
+    const ts = Date.parse(envelope.timestamp);
+    if (!Number.isFinite(ts)) continue;
+    if (startedAt === null || ts < startedAt) startedAt = ts;
+  }
+  return startedAt;
+}
+
 function getGroupedTurnId(envelope: TranscriptGroupedEnvelope | undefined): string | null {
   if (!envelope) return null;
   if (envelope.event.type === "work_log_group") {
@@ -3675,386 +3706,6 @@ export function reconcileMeasuredScrollTop({
   return scrollTop;
 }
 
-function extractSubagentMessageText(
-  message: import("../../../shared/types").AgentChatSubagentTranscriptMessage,
-): string {
-  if (typeof message.text === "string" && message.text.trim().length > 0) return message.text;
-  const raw = message.message;
-  if (raw && typeof raw === "object") {
-    const content = (raw as { content?: unknown }).content;
-    if (typeof content === "string") return content;
-    if (Array.isArray(content)) {
-      const parts: string[] = [];
-      for (const part of content) {
-        if (part && typeof part === "object") {
-          const text = (part as { text?: unknown }).text;
-          if (typeof text === "string") parts.push(text);
-          const toolName = (part as { name?: unknown }).name;
-          const toolUse = (part as { type?: unknown }).type;
-          if (typeof toolUse === "string" && toolUse === "tool_use" && typeof toolName === "string") {
-            parts.push(`tool: ${toolName}`);
-          }
-        }
-      }
-      if (parts.length) return parts.join("\n");
-    }
-  }
-  return "";
-}
-
-/**
- * Returns the AgentChatEvent embedded in a subagent transcript entry, or null
- * if the entry came from a Claude SDK session message (different shape).
- *
- * Codex/Cursor sessions store the full ADE event (with type/itemId/turnId/…)
- * inside transcript.message so the drill-in can render typed cards. Claude SDK
- * transcripts use the upstream session message shape and fall back to the
- * simpler role+text rendering.
- */
-function readSubagentEvent(
-  transcript: import("../../../shared/types").AgentChatSubagentTranscriptMessage,
-): AgentChatEvent | null {
-  const message = transcript.message;
-  if (!message || typeof message !== "object" || Array.isArray(message)) return null;
-  const candidate = message as { type?: unknown };
-  if (typeof candidate.type !== "string" || candidate.type.length === 0) return null;
-  // The codex transcript pipe stamps `message: event` directly. Anything with
-  // a string `type` is assumed to be an AgentChatEvent. The render switch
-  // below tolerates unknown types by skipping them.
-  return message as AgentChatEvent;
-}
-
-function SubagentTimelineRow({
-  icon,
-  tone,
-  children,
-}: {
-  icon: ReactNode;
-  tone: "violet" | "amber" | "emerald" | "rose" | "cyan" | "fg";
-  children: ReactNode;
-}) {
-  const railClass = {
-    violet: "bg-[color:var(--color-accent,#A78BFA)]/55",
-    amber: "bg-amber-400/55",
-    emerald: "bg-emerald-400/55",
-    rose: "bg-rose-400/55",
-    cyan: "bg-cyan-400/55",
-    fg: "bg-fg/20",
-  }[tone];
-
-  return (
-    <li className="relative flex items-stretch gap-3.5 py-2.5">
-      <div className="relative flex w-5 shrink-0 justify-center">
-        <span aria-hidden className={cn("absolute inset-y-0 left-1/2 -translate-x-1/2 w-px", railClass)} />
-        <span
-          aria-hidden
-          className={cn(
-            "relative z-10 mt-1 inline-flex h-5 w-5 items-center justify-center rounded-full",
-            "bg-[color:var(--chat-surface-bg,#0d0d0d)] ring-1 ring-inset ring-white/10",
-          )}
-        >
-          {icon}
-        </span>
-      </div>
-      <div className="min-w-0 flex-1 pb-1">{children}</div>
-    </li>
-  );
-}
-
-function SubagentReasoningCard({
-  event,
-}: {
-  event: Extract<AgentChatEvent, { type: "reasoning" }>;
-}) {
-  const text = event.text.trim();
-  if (!text) return null;
-  return (
-    <div className="rounded-lg border border-violet-400/15 bg-violet-500/[0.025] px-3.5 py-2">
-      <div className="font-sans text-[10.5px] font-semibold uppercase tracking-[0.08em] text-violet-200/70">
-        Reasoning
-      </div>
-      <div className="mt-1 whitespace-pre-wrap break-words font-sans text-[12.5px] italic leading-[1.55] text-violet-100/85">
-        {text}
-      </div>
-    </div>
-  );
-}
-
-function SubagentTextCard({
-  event,
-}: {
-  event: Extract<AgentChatEvent, { type: "text" }>;
-}) {
-  const text = (event.text ?? "").trim();
-  if (!text) return null;
-  return (
-    <div className="rounded-lg border border-white/[0.06] bg-white/[0.02] px-3.5 py-2.5">
-      <div className="font-sans text-[10.5px] font-semibold uppercase tracking-[0.08em] text-[color:var(--color-accent-bright,#C4B5FD)]/80">
-        Agent
-      </div>
-      <div className="mt-1 whitespace-pre-wrap break-words font-sans text-[13px] leading-[1.55] text-fg/85">
-        {text}
-      </div>
-    </div>
-  );
-}
-
-function SubagentWebSearchCard({
-  event,
-}: {
-  event: Extract<AgentChatEvent, { type: "web_search" }>;
-}) {
-  const isActive = event.status === "running";
-  const tone = event.status === "failed" ? "text-rose-200/85" : "text-fg/80";
-  return (
-    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border border-white/[0.06] bg-white/[0.02] px-3.5 py-2 font-sans text-[12px]">
-      <Globe size={11} weight="regular" className="text-fg/40" />
-      <span className="font-medium text-fg/55">
-        {isActive ? "Searching" : event.status === "failed" ? "Search failed" : "Searched"}
-      </span>
-      <span className={cn("min-w-0 flex-1 truncate", tone)}>{event.query || "(no query)"}</span>
-    </div>
-  );
-}
-
-function SubagentSpawnedRow({
-  event,
-}: {
-  event: Extract<AgentChatEvent, { type: "subagent_started" }>;
-}) {
-  const description = (
-    event as { description?: unknown }
-  ).description as string | undefined;
-  const agentType = (event as { agentType?: unknown }).agentType as string | undefined;
-  const label = (description ?? agentType ?? "subagent").trim() || "subagent";
-  return (
-    <div className="font-sans text-[12px] leading-snug text-fg/55">
-      <span className="text-fg/40">Spawned</span> <span className="text-fg/75">{label}</span>
-    </div>
-  );
-}
-
-function SubagentResultRow({
-  event,
-}: {
-  event: Extract<AgentChatEvent, { type: "subagent_result" }>;
-}) {
-  const summary = ((event as { summary?: unknown }).summary as string | undefined)?.trim()
-    ?? ((event as { description?: unknown }).description as string | undefined)?.trim()
-    ?? "";
-  const status = (event as { status?: unknown }).status as string | undefined;
-  const failed = status === "failed" || status === "error";
-  const stopped = status === "stopped" || status === "cancelled";
-  const borderClass = failed ? "border-red-400/15" : stopped ? "border-amber-400/15" : "border-emerald-400/15";
-  const bgClass = failed ? "bg-red-500/[0.04]" : stopped ? "bg-amber-500/[0.04]" : "bg-emerald-500/[0.04]";
-  const labelColor = failed ? "text-red-200/75" : stopped ? "text-amber-200/75" : "text-emerald-200/75";
-  const textColor = failed ? "text-red-50/90" : stopped ? "text-amber-50/90" : "text-emerald-50/90";
-  const label = failed ? "Failed" : stopped ? "Stopped" : "Final result";
-  return (
-    <div className={`rounded-lg ${borderClass} ${bgClass} px-3.5 py-2`}>
-      <div className={`font-sans text-[10.5px] font-semibold uppercase tracking-[0.08em] ${labelColor}`}>
-        {label}
-      </div>
-      {summary ? (
-        <div className={`mt-1 whitespace-pre-wrap break-words font-sans text-[13px] leading-[1.55] ${textColor}`}>
-          {summary}
-        </div>
-      ) : (
-        <div className="mt-1 font-sans text-[12px] italic text-fg/45">No summary recorded.</div>
-      )}
-    </div>
-  );
-}
-
-function SubagentTimelineCard({
-  event,
-}: {
-  event: AgentChatEvent;
-}) {
-  switch (event.type) {
-    case "reasoning":
-      return (
-        <SubagentTimelineRow icon={<Brain size={11} weight="duotone" className="text-violet-300" />} tone="violet">
-          <SubagentReasoningCard event={event} />
-        </SubagentTimelineRow>
-      );
-    case "text":
-      return (
-        <SubagentTimelineRow
-          icon={<span aria-hidden className="text-[10px] font-bold text-[color:var(--color-accent-bright,#C4B5FD)]">A</span>}
-          tone="violet"
-        >
-          <SubagentTextCard event={event} />
-        </SubagentTimelineRow>
-      );
-    case "plan":
-      return (
-        <SubagentTimelineRow icon={<ListChecks size={11} weight="regular" className="text-violet-300/85" />} tone="violet">
-          <CodexPlanCard event={event} />
-        </SubagentTimelineRow>
-      );
-    case "command":
-      return (
-        <SubagentTimelineRow icon={<Terminal size={11} weight="regular" className="text-fg/55" />} tone={event.status === "failed" ? "rose" : "fg"}>
-          <CommandEventCard event={event} />
-        </SubagentTimelineRow>
-      );
-    case "file_change":
-      return (
-        <SubagentTimelineRow icon={<FileCode size={11} weight="regular" className="text-cyan-300/80" />} tone="cyan">
-          <FileChangeEventCard event={event} />
-        </SubagentTimelineRow>
-      );
-    case "web_search":
-      return (
-        <SubagentTimelineRow icon={<Globe size={11} weight="regular" className="text-fg/55" />} tone="fg">
-          <SubagentWebSearchCard event={event} />
-        </SubagentTimelineRow>
-      );
-    case "codex_image_generation":
-      return (
-        <SubagentTimelineRow icon={<ImageSquare size={11} weight="regular" className="text-fuchsia-300/85" />} tone="violet">
-          <CodexImageGenerationCard event={event} />
-        </SubagentTimelineRow>
-      );
-    case "subagent_started":
-      return (
-        <SubagentTimelineRow icon={<Sparkle size={11} weight="duotone" className="text-fg/45" />} tone="fg">
-          <SubagentSpawnedRow event={event} />
-        </SubagentTimelineRow>
-      );
-    case "subagent_result":
-      return (
-        <SubagentTimelineRow icon={<Check size={11} weight="bold" className="text-emerald-300/85" />} tone="emerald">
-          <SubagentResultRow event={event} />
-        </SubagentTimelineRow>
-      );
-    default:
-      // Skip noisy/internal events (activity, tokens, status, etc.). When in
-      // doubt show a tiny dim row so we know data was recorded but isn't yet
-      // typed — that prevents transcripts from looking falsely empty.
-      return null;
-  }
-}
-
-function SubagentTranscriptView({
-  snapshotName,
-  messages,
-  loading,
-  unsupported,
-  className,
-}: {
-  snapshotName: string;
-  messages: import("../../../shared/types").AgentChatSubagentTranscriptMessage[] | null;
-  loading: boolean;
-  unsupported: boolean;
-  className?: string;
-}) {
-  if (unsupported || messages === null) {
-    return (
-      <div className={cn("flex min-h-0 flex-1 flex-col px-8 pt-12 font-sans", className)}>
-        <p className="text-[13.5px] leading-6 text-fg/70">
-          Transcript not available for this provider yet.
-        </p>
-        {snapshotName ? (
-          <p className="mt-2 max-w-md text-[12px] leading-5 text-fg/40">
-            Activity for{" "}
-            <span className="text-fg/60">{snapshotName}</span>{" "}
-            still streams to the side panel — open it from the toolbar to follow along.
-          </p>
-        ) : null}
-      </div>
-    );
-  }
-
-  // Partition into rich (typed-card) entries and legacy (role+text) entries.
-  // Codex/Cursor transcripts ship the full AgentChatEvent in `message`, so
-  // they render through the typed switch. Claude SDK transcripts have a
-  // different `message` shape and fall back to the role+text layout.
-  const richEntries: Array<{
-    key: string;
-    event: AgentChatEvent;
-  }> = [];
-  const legacyEntries: Array<{
-    key: string;
-    message: import("../../../shared/types").AgentChatSubagentTranscriptMessage;
-  }> = [];
-  for (let i = 0; i < messages.length; i += 1) {
-    const m = messages[i];
-    const key = m.uuid ?? `idx-${i}`;
-    const event = readSubagentEvent(m);
-    if (event) {
-      richEntries.push({ key, event });
-    } else {
-      legacyEntries.push({ key, message: m });
-    }
-  }
-
-  if (richEntries.length === 0 && legacyEntries.length === 0) {
-    return (
-      <div className={cn("flex min-h-0 flex-1 flex-col px-8 pt-12 font-sans", className)}>
-        <p className="text-[13.5px] leading-6 text-fg/55">
-          {loading ? "Listening for the first message…" : "No messages from this subagent yet."}
-        </p>
-      </div>
-    );
-  }
-
-  return (
-    <div
-      className={cn(
-        "flex min-h-0 flex-1 flex-col overflow-y-auto font-sans",
-        className,
-      )}
-    >
-      {richEntries.length ? (
-        <ol className="mx-auto w-full max-w-3xl px-6 pb-6 pt-5">
-          {richEntries.map((entry) => (
-            <SubagentTimelineCard key={entry.key} event={entry.event} />
-          ))}
-        </ol>
-      ) : null}
-      {legacyEntries.length ? (
-        <ol className="mx-auto w-full max-w-3xl px-6 pb-10 pt-2">
-          {legacyEntries.map((entry, index) => {
-            const text = extractSubagentMessageText(entry.message);
-            const role: string = entry.message.type;
-            const isUser = role === "user";
-            const isSystem = role === "system";
-            const roleLabel = isUser ? "you" : isSystem ? "system" : "agent";
-            const accentClass = isUser
-              ? "text-fg/65"
-              : isSystem
-                ? "text-fg/40"
-                : "text-[color:var(--color-accent-bright,#C4B5FD)]";
-
-            return (
-              <li
-                key={entry.key ?? `${index}-${role}`}
-                className="grid grid-cols-[88px_minmax(0,1fr)] gap-x-5 border-b border-white/[0.03] py-3 last:border-b-0"
-              >
-                <div className="pt-1 text-right">
-                  <span className={cn("text-[10.5px] font-medium tracking-[0.04em]", accentClass)}>
-                    {roleLabel}
-                  </span>
-                </div>
-                <div
-                  className={cn(
-                    "min-w-0 whitespace-pre-wrap break-words text-[13px] leading-[1.6]",
-                    isSystem ? "text-fg/55" : "text-fg/85",
-                  )}
-                >
-                  {text || <span className="text-fg/35">No content recorded.</span>}
-                </div>
-              </li>
-            );
-          })}
-        </ol>
-      ) : null}
-    </div>
-  );
-}
-
 function AgentChatMessageListMain({
   events,
   showStreamingIndicator = false,
@@ -4167,6 +3818,10 @@ function AgentChatMessageListMain({
   }
   const latestActivity = useMemo(() => (showStreamingIndicator ? deriveLatestActivity(events) : null), [events, showStreamingIndicator]);
   const activeTurnId = useMemo(() => (showStreamingIndicator ? deriveActiveTurnId(events) : null), [events, showStreamingIndicator]);
+  const activeTurnStartedAt = useMemo(
+    () => (showStreamingIndicator ? deriveTurnStartedAt(events, activeTurnId) : null),
+    [events, showStreamingIndicator, activeTurnId],
+  );
 
   const currentLaneId = typeof (location.state as { laneId?: unknown } | null)?.laneId === "string"
     ? (location.state as { laneId: string }).laneId
@@ -4680,7 +4335,10 @@ function AgentChatMessageListMain({
       animate={{ opacity: 1 }}
       transition={{ duration: 0.12, ease: "easeOut" }}
     >
-      <WorkingIndicator activity={latestActivity ? (ACTIVITY_LABELS[latestActivity.activity] ?? null) : null} />
+      <WorkingIndicator
+        activity={latestActivity ? (ACTIVITY_LABELS[latestActivity.activity] ?? null) : null}
+        startedAt={activeTurnStartedAt}
+      />
     </motion.div>
   ) : null;
 
@@ -4694,11 +4352,16 @@ function AgentChatMessageListMain({
 
   return (
     <div className={cn("relative h-full min-h-0 min-w-0 max-w-full overflow-hidden", className)}>
-      <ChatUserMinimap
-        displayEntries={minimapDisplayEntries}
-        activeDisplayIndex={activeMinimapDisplayIndex}
-        onJumpToRow={jumpToRowFromMinimap}
-      />
+      {/* Bound the user-message minimap to the centered chat column (same width as
+          the transcript + composer) so it sits at the column's right edge instead
+          of overextending to the window edge. */}
+      <div className="pointer-events-none absolute inset-0 z-20 mx-auto w-full max-w-[var(--chat-column,52rem)]">
+        <ChatUserMinimap
+          displayEntries={minimapDisplayEntries}
+          activeDisplayIndex={activeMinimapDisplayIndex}
+          onJumpToRow={jumpToRowFromMinimap}
+        />
+      </div>
       <div
         ref={scrollRef}
         className="ade-chat-timeline-pane h-full min-h-0 min-w-0 overflow-x-hidden overflow-y-auto pl-[length:var(--chat-timeline-pad-x)] pr-[length:var(--chat-timeline-pad-x)] pt-[length:var(--chat-timeline-pad-top)] pb-[length:var(--chat-timeline-pad-bottom)]"
@@ -4709,7 +4372,7 @@ function AgentChatMessageListMain({
         onTouchEnd={handleTouchEnd}
         onTouchCancel={handleTouchEnd}
       >
-        <div ref={contentWrapperRef} className="mx-auto w-full min-w-0 max-w-[var(--chat-column,46rem)] overflow-visible">
+        <div ref={contentWrapperRef} className="mx-auto w-full min-w-0 max-w-[var(--chat-column,52rem)] overflow-visible">
           {rows.length === 0 && !streamingIndicator ? (
             null
           ) : shouldVirtualize ? (
@@ -4754,29 +4417,4 @@ function AgentChatMessageListMain({
   );
 }
 
-type AgentChatMessageListMainProps = Parameters<typeof AgentChatMessageListMain>[0];
-
-export function AgentChatMessageList(
-  props: AgentChatMessageListMainProps & {
-    subagentTranscript?: {
-      messages: AgentChatSubagentTranscriptMessage[] | null;
-      loading: boolean;
-      unsupported: boolean;
-      snapshotName: string;
-    };
-  },
-) {
-  if (props.subagentTranscript) {
-    return (
-      <SubagentTranscriptView
-        snapshotName={props.subagentTranscript.snapshotName}
-        messages={props.subagentTranscript.messages}
-        loading={props.subagentTranscript.loading}
-        unsupported={props.subagentTranscript.unsupported}
-        className={props.className}
-      />
-    );
-  }
-  const { subagentTranscript: _subagentTranscript, ...mainProps } = props;
-  return <AgentChatMessageListMain {...mainProps} />;
-}
+export const AgentChatMessageList = AgentChatMessageListMain;

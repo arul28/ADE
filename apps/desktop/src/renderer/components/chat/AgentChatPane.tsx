@@ -14,6 +14,7 @@ import {
   type AgentChatCursorConfigValue,
   type AgentChatDroidPermissionMode,
   type AgentChatExecutionMode,
+  type AgentChatEvent,
   type AgentChatEventEnvelope,
   type AgentChatEventHistorySnapshot,
   type AgentChatContextAttachment,
@@ -22,6 +23,7 @@ import {
   type AiProviderConnectionStatus,
   type AiRuntimeConnectionStatus,
   type AgentChatSession,
+  type AgentChatSubagentMetadata,
   type AgentChatSubagentTranscriptMessage,
   type AgentChatOpenCodePermissionMode,
   type AgentChatPermissionMode,
@@ -81,6 +83,7 @@ import { CURSOR_AVAILABLE_MODE_IDS } from "../../../shared/cursorModes";
 import { cn } from "../ui/cn";
 import { AgentChatComposer, type ParallelComposerControlSlot } from "./AgentChatComposer";
 import { resolveModelDescriptorWithRuntimeCatalog, descriptorsFromAgentChatModelCatalog } from "../shared/ModelPicker/modelCatalog";
+import { toUsageViewModel, type ContextUsageViewModel } from "./usage/contextUsageModel";
 import { getSharedRuntimeCatalog } from "../shared/ModelPicker/runtimeCatalogCache";
 import { familiesFromStatus } from "../shared/ModelPicker/useProviderAuthStatus";
 import { AgentChatMessageList } from "./AgentChatMessageList";
@@ -258,6 +261,258 @@ function hasSubagentAutoOpenFired(storage: SubagentAutoOpenStorage, sessionId: s
   }
   return true;
 }
+
+function transcriptRecordText(record: Record<string, unknown> | null): string | null {
+  if (!record) return null;
+  for (const key of ["text", "summary", "description", "output", "command", "path", "query"] as const) {
+    const value = record[key];
+    if (typeof value === "string" && value.trim().length > 0) return value.trim();
+  }
+  return null;
+}
+
+function subagentRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function subagentEventTurnId(event: AgentChatEvent): string | null {
+  return "turnId" in event && typeof event.turnId === "string" && event.turnId.trim().length
+    ? event.turnId.trim()
+    : null;
+}
+
+function subagentEventItemId(event: AgentChatEvent): string | null {
+  return "itemId" in event && typeof event.itemId === "string" && event.itemId.trim().length
+    ? event.itemId.trim()
+    : null;
+}
+
+function subagentEventMessageId(event: AgentChatEvent): string | null {
+  return "messageId" in event && typeof event.messageId === "string" && event.messageId.trim().length
+    ? event.messageId.trim()
+    : null;
+}
+
+function stableSubagentMessageId(
+  event: AgentChatEvent,
+  message: AgentChatSubagentTranscriptMessage,
+  index: number,
+): string {
+  const turnId = subagentEventTurnId(event) ?? "no-turn";
+  const itemId = subagentEventItemId(event) ?? subagentEventMessageId(event) ?? message.uuid ?? String(index);
+  return `subagent:${message.sessionId}:${turnId}:${itemId}:${event.type}`;
+}
+
+function normalizeSubagentEvent(
+  event: AgentChatEvent,
+  message: AgentChatSubagentTranscriptMessage,
+  index: number,
+): AgentChatEvent {
+  if (event.type === "text") {
+    return {
+      ...event,
+      messageId: event.messageId ?? stableSubagentMessageId(event, message, index),
+    };
+  }
+  if (event.type === "user_message") {
+    return {
+      ...event,
+      messageId: event.messageId ?? stableSubagentMessageId(event, message, index),
+    };
+  }
+  return event;
+}
+
+function eventFromSubagentTranscriptMessage(
+  message: AgentChatSubagentTranscriptMessage,
+  index: number,
+): AgentChatEvent | null {
+  const record = subagentRecord(message.message);
+  if (typeof record?.type === "string" && record.type.trim().length > 0) {
+    return normalizeSubagentEvent(record as unknown as AgentChatEvent, message, index);
+  }
+  const text = typeof message.text === "string" ? message.text.trim() : transcriptRecordText(record);
+  if (!text) return null;
+  const event: AgentChatEvent = message.type === "user"
+    ? { type: "user_message", text, messageId: message.uuid }
+    : { type: "text", text, messageId: message.uuid };
+  return normalizeSubagentEvent(event, message, index);
+}
+
+function subagentMergeKey(event: AgentChatEvent): string | null {
+  if (event.type !== "text" && event.type !== "reasoning" && event.type !== "command" && event.type !== "file_change") {
+    return null;
+  }
+  const turnId = subagentEventTurnId(event) ?? "no-turn";
+  const itemId = subagentEventItemId(event) ?? subagentEventMessageId(event) ?? "no-item";
+  const suffix = event.type === "file_change"
+    ? `:${event.path}`
+    : event.type === "reasoning" && typeof event.summaryIndex === "number"
+      ? `:${event.summaryIndex}`
+      : "";
+  return `${event.type}:${turnId}:${itemId}${suffix}`;
+}
+
+function isCompletedSubagentEvent(event: AgentChatEvent): boolean {
+  if ((event.type === "command" || event.type === "file_change") && event.status === "running") {
+    return false;
+  }
+  return true;
+}
+
+function mergeAdjacentSubagentEvents(left: AgentChatEvent, right: AgentChatEvent): AgentChatEvent | null {
+  if (subagentMergeKey(left) !== subagentMergeKey(right)) return null;
+  if (left.type === "text" && right.type === "text") {
+    return { ...right, text: `${left.text}${right.text}`, messageId: left.messageId ?? right.messageId };
+  }
+  if (left.type === "reasoning" && right.type === "reasoning") {
+    return { ...right, text: `${left.text}${right.text}` };
+  }
+  if (left.type === "command" && right.type === "command") {
+    if (right.status !== "running") return right;
+    return { ...right, output: `${left.output}${right.output}` };
+  }
+  if (left.type === "file_change" && right.type === "file_change") {
+    if (right.status && right.status !== "running") return right;
+    return { ...right, diff: `${left.diff}${right.diff}` };
+  }
+  return null;
+}
+
+function coalesceSubagentEventEnvelopes(envelopes: AgentChatEventEnvelope[]): AgentChatEventEnvelope[] {
+  const output: AgentChatEventEnvelope[] = [];
+  for (const envelope of envelopes) {
+    const previous = output[output.length - 1];
+    const merged = previous ? mergeAdjacentSubagentEvents(previous.event, envelope.event) : null;
+    if (previous && merged) {
+      output[output.length - 1] = {
+        ...previous,
+        event: merged,
+        timestamp: envelope.timestamp,
+        sequence: envelope.sequence ?? previous.sequence,
+      };
+    } else {
+      output.push(envelope);
+    }
+  }
+  return output;
+}
+
+function buildSubagentEventHistory(args: {
+  sessionId: string | null;
+  subagentId: string;
+  subagentName: string;
+  prompt: string | null;
+  messages: AgentChatSubagentTranscriptMessage[] | null;
+  loading: boolean;
+  unsupported: boolean;
+}): AgentChatEventEnvelope[] {
+  const raw = (args.messages ?? [])
+    .map((message, index) => {
+      const event = eventFromSubagentTranscriptMessage(message, index);
+      if (!event) return null;
+      const mergeKey = subagentMergeKey(event);
+      return {
+        message,
+        event,
+        mergeKey,
+        live: message.uuid.startsWith("codex-live:"),
+        completed: isCompletedSubagentEvent(event),
+      };
+    })
+    .filter((entry): entry is NonNullable<typeof entry> => entry !== null);
+
+  const completedKeys = new Set(
+    raw
+      .filter((entry) => entry.mergeKey && !entry.live && entry.completed)
+      .map((entry) => entry.mergeKey!),
+  );
+
+  const transcriptEntries = raw.filter((entry) => !(entry.live && entry.mergeKey && completedKeys.has(entry.mergeKey)));
+  const prompt = args.prompt?.trim() || null;
+  const hasPromptMessage = prompt
+    ? transcriptEntries.some((entry) => entry.event.type === "user_message")
+    : false;
+
+  let sequence = 0;
+  const timestampFor = (index: number): string =>
+    new Date(Date.UTC(2026, 0, 1, 0, 0, 0, Math.min(index, 999))).toISOString();
+  const envelopes: AgentChatEventEnvelope[] = [];
+  if (prompt && !hasPromptMessage) {
+    envelopes.push({
+      sessionId: args.sessionId ?? args.subagentId,
+      timestamp: timestampFor(sequence),
+      sequence: sequence++,
+      event: {
+        type: "user_message",
+        text: prompt,
+        messageId: `subagent:${args.subagentId}:spawn-prompt`,
+        deliveryState: "delivered",
+        processed: true,
+      },
+      provenance: {
+        messageId: `subagent:${args.subagentId}:spawn-prompt`,
+        threadId: args.subagentId,
+        role: "user",
+        targetKind: "codex_subagent",
+      },
+    });
+  }
+
+  for (const entry of transcriptEntries) {
+    const messageId = entry.message.uuid || subagentMergeKey(entry.event) || `subagent:${args.subagentId}:${sequence}`;
+    envelopes.push({
+      sessionId: args.sessionId ?? args.subagentId,
+      timestamp: timestampFor(sequence),
+      sequence: sequence++,
+      event: entry.event,
+      provenance: {
+        messageId,
+        threadId: args.subagentId,
+        role: entry.message.type === "user" ? "user" : "agent",
+        targetKind: "codex_subagent",
+      },
+    });
+  }
+
+  if (envelopes.length === 0 && args.loading) {
+    envelopes.push({
+      sessionId: args.sessionId ?? args.subagentId,
+      timestamp: timestampFor(sequence),
+      sequence: sequence++,
+      event: {
+        type: "activity",
+        activity: "working",
+        detail: `Loading ${args.subagentName} transcript`,
+      },
+      provenance: {
+        threadId: args.subagentId,
+        role: "agent",
+        targetKind: "codex_subagent",
+      },
+    });
+  }
+  if (envelopes.length === 0 && args.unsupported) {
+    envelopes.push({
+      sessionId: args.sessionId ?? args.subagentId,
+      timestamp: timestampFor(sequence),
+      sequence,
+      event: {
+        type: "error",
+        message: "This runtime did not return a subagent transcript.",
+      },
+      provenance: {
+        threadId: args.subagentId,
+        role: "agent",
+        targetKind: "codex_subagent",
+      },
+    });
+  }
+
+  return coalesceSubagentEventEnvelopes(envelopes);
+}
 const CHAT_HISTORY_READ_MAX_BYTES = 2_000_000;
 const MAX_RETAINED_CHAT_SESSION_HISTORIES = 6;
 const MAX_SELECTED_CHAT_SESSION_EVENTS = 20_000;
@@ -368,8 +623,8 @@ function staleDraftLaunchJobMessage(job: DraftLaunchJob): string {
  * open pane. On a narrow surface it stops reserving so the chat keeps full width
  * (the pane then overlays). Right is preferred over left when space is tight.
  */
-const PANE_RESERVE_RIGHT_PX = 300; // ~18rem pane + margins
-const PANE_RESERVE_LEFT_PX = 284; // ~17rem pane + margins
+const PANE_RESERVE_RIGHT_PX = 276; // 16.5rem pane + 12px gutter
+const PANE_RESERVE_LEFT_PX = 276; // 16.5rem pane + 12px gutter
 const CHAT_MIN_WIDTH_PX = 360; // recenter the chat as soon as a normal screen allows
 function computePaneReserve(
   width: number,
@@ -377,6 +632,9 @@ function computePaneReserve(
   rightOpen: boolean,
 ): { left: string; right: string } {
   if (width <= 0) return { left: "0px", right: "0px" };
+  // Reserve gutter space per side so the chat shifts over to make room for each
+  // open floating pane (no overlap). The panes themselves still fade in/out — the
+  // chat shifting is the intended behavior, independent of the pane animation.
   let right = 0;
   if (rightOpen && width - PANE_RESERVE_RIGHT_PX >= CHAT_MIN_WIDTH_PX) {
     right = PANE_RESERVE_RIGHT_PX;
@@ -3020,19 +3278,14 @@ export function AgentChatPane({
   >(null);
   const [subagentTranscriptLoading, setSubagentTranscriptLoading] = useState(false);
   const [subagentTranscriptUnsupported, setSubagentTranscriptUnsupported] = useState(false);
-
-  // Only take over the middle chat view when there's actually something to show
-  // (transcript content, or still loading). If a subagent has no transcript
-  // (e.g. Codex delegations / unsupported runtimes), we stay in the main chat
-  // instead of showing an ugly empty "Composer paused" takeover.
-  const subagentTakeoverActive = subagentView != null
-    && (subagentTranscriptLoading || (subagentTranscript?.length ?? 0) > 0);
+  const [subagentMetadata, setSubagentMetadata] = useState<AgentChatSubagentMetadata | null>(null);
 
   useEffect(() => {
     if (!subagentView || !selectedSessionId) {
       setSubagentTranscript(null);
       setSubagentTranscriptLoading(false);
       setSubagentTranscriptUnsupported(false);
+      setSubagentMetadata(null);
       return;
     }
 
@@ -3040,6 +3293,7 @@ export function AgentChatPane({
     if (typeof fetchTranscript !== "function") {
       setSubagentTranscript(null);
       setSubagentTranscriptUnsupported(true);
+      setSubagentMetadata(null);
       return;
     }
 
@@ -3058,9 +3312,11 @@ export function AgentChatPane({
         if (result === null) {
           setSubagentTranscriptUnsupported(true);
           setSubagentTranscript(null);
+          setSubagentMetadata(null);
         } else {
           setSubagentTranscriptUnsupported(false);
           setSubagentTranscript(result);
+          setSubagentMetadata(result.find((entry) => entry.subagentMetadata)?.subagentMetadata ?? null);
         }
       } catch (error) {
         // Log so debugging is possible; surface as empty transcript rather than
@@ -3082,6 +3338,37 @@ export function AgentChatPane({
       if (intervalId !== null) window.clearInterval(intervalId);
     };
   }, [subagentView, subagentViewSnapshot?.status, selectedSessionId]);
+
+  useEffect(() => {
+    if (subagentView && !chatActionsOpen) {
+      setSubagentView(null);
+    }
+  }, [chatActionsOpen, subagentView]);
+
+  // Cheap probe for the subagents panel: does this agent actually have a
+  // pullable transcript? It runs the EXACT same fetch the takeover view uses
+  // (just limit:1), so it can never disagree with what the takeover would
+  // render. The panel only replaces the chat when this resolves true —
+  // otherwise it opens an inline details drawer, so the dead "No transcript"
+  // takeover page is now unreachable.
+  const probeSubagentTranscript = useCallback(
+    async (args: { taskId: string; agentId: string | null }): Promise<boolean> => {
+      const fetchTranscript = window.ade?.agentChat?.getSubagentTranscript;
+      if (typeof fetchTranscript !== "function" || !selectedSessionId) return false;
+      try {
+        const result = await fetchTranscript({
+          sessionId: selectedSessionId,
+          agentId: args.agentId ?? args.taskId,
+          taskId: args.taskId,
+          limit: 1,
+        });
+        return Array.isArray(result) && result.length > 0;
+      } catch {
+        return false;
+      }
+    },
+    [selectedSessionId],
+  );
   const selectedTurnDiffSummaries = useMemo(() => deriveTurnDiffSummaries(selectedEvents), [selectedEvents]);
   const selectedTodoItems = useMemo(() => deriveTodoItems(selectedEvents), [selectedEvents]);
   const selectedPendingInputs = selectedSessionId ? (pendingInputsBySession[selectedSessionId] ?? []) : [];
@@ -3503,6 +3790,54 @@ export function AgentChatPane({
     if (selectedSession && !modelSelectionDiffersFromSession) return selectedSession.provider;
     return resolveChatRuntimeProvider(resolveModelDescriptorWithRuntimeCatalog(modelId) ?? getModelById(modelId));
   }, [selectedSession, modelSelectionDiffersFromSession, modelId]);
+  // Provider-agnostic context-usage for the composer dial. Codex pushes a live
+  // CodexThreadTokenUsage (with modelContextWindow); the other runtimes report a
+  // 4-field breakdown on the terminal `done`/`tokens` events. We take the
+  // freshest signal, fall back to the active model's registry context window
+  // when the runtime doesn't report one, and flatten everything into one VM so a
+  // single dial renders for every provider.
+  const selectedUsageViewModel = useMemo<ContextUsageViewModel | null>(() => {
+    let genericUsage:
+      | { inputTokens?: number | null; outputTokens?: number | null; cacheReadTokens?: number | null; cacheWriteTokens?: number | null; reasoningTokens?: number | null; contextWindow?: number | null }
+      | null = null;
+    for (const envelope of selectedEventsForDisplay) {
+      const event = envelope.event;
+      if (event.type === "done" && event.usage) {
+        const u = event.usage;
+        genericUsage = {
+          inputTokens: u.inputTokens ?? null,
+          outputTokens: u.outputTokens ?? null,
+          cacheReadTokens: u.cacheReadTokens ?? null,
+          cacheWriteTokens: u.cacheCreationTokens ?? null,
+          reasoningTokens: u.reasoningTokens ?? null,
+          contextWindow: u.contextWindow ?? null,
+        };
+      } else if (event.type === "tokens") {
+        genericUsage = {
+          inputTokens: event.inputTokens ?? null,
+          outputTokens: event.outputTokens ?? null,
+          cacheReadTokens: event.cacheReadTokens ?? null,
+          cacheWriteTokens: event.cacheWriteTokens ?? null,
+          contextWindow: event.contextWindow ?? null,
+        };
+      }
+    }
+    const provider = sessionProvider ?? selectedSession?.provider ?? "";
+    const descriptor = modelId ? (resolveModelDescriptorWithRuntimeCatalog(modelId) ?? getModelById(modelId)) : null;
+    const fallbackWindow = descriptor?.contextWindow ?? null;
+
+    if (selectedCodexTokenUsage && (provider === "codex" || !genericUsage)) {
+      return toUsageViewModel(
+        { kind: "codex", provider: provider || "codex", usage: selectedCodexTokenUsage },
+        fallbackWindow,
+      );
+    }
+    if (genericUsage) {
+      const { contextWindow, ...rest } = genericUsage;
+      return toUsageViewModel({ kind: "generic", provider, usage: rest, contextWindow }, fallbackWindow);
+    }
+    return null;
+  }, [selectedEventsForDisplay, selectedCodexTokenUsage, selectedSession?.provider, sessionProvider, modelId]);
   const effectiveCursorModeSnapshot = useMemo(() => {
     if (sessionProvider !== "cursor") return null;
     const base = selectedSession?.cursorModeSnapshot ?? buildFallbackCursorModeSnapshot(cursorModeId);
@@ -7540,7 +7875,6 @@ export function AgentChatPane({
     <ChatSubagentsPanel
       snapshots={selectedSubagentSnapshots}
       events={selectedEvents}
-      onInterruptTurn={turnActive ? () => { void interrupt(); } : undefined}
       variant="pane"
       onSelectSubagent={(selection) => {
         setSubagentView({
@@ -7551,6 +7885,9 @@ export function AgentChatPane({
           background: selection.background,
         });
       }}
+      onClearSelectedSubagent={() => setSubagentView(null)}
+      probeSubagentTranscript={probeSubagentTranscript}
+      openSubagentsImmediately={selectedSession?.provider === "codex"}
       selectedTaskId={subagentView?.taskId ?? null}
       goal={selectedSession?.provider === "codex" ? selectedCodexGoal : null}
       goalPending={selectedCodexGoalPending}
@@ -8231,7 +8568,7 @@ export function AgentChatPane({
             allowCliOnlyModels={workDraftKind === "cli"}
             reasoningEffort={reasoningEffort}
             codexFastMode={codexFastMode}
-            codexTokenUsage={selectedCodexTokenUsage}
+            usageViewModel={selectedUsageViewModel}
             draft={draft}
             attachments={attachments}
             contextAttachments={contextAttachments}
@@ -8262,6 +8599,14 @@ export function AgentChatPane({
             permissionModeLocked={permissionModeLocked || identitySessionSettingsBusy || projectTransitionBlocksChat}
             hideNativeControls={hideNativeControls}
             messagePlaceholder={effectiveMessagePlaceholder}
+            inputLockMessage={subagentView
+              ? `Viewing ${subagentMetadata?.label
+                ?? subagentMetadata?.agentNickname
+                ?? subagentView.agentType
+                ?? subagentViewSnapshot?.description
+                ?? subagentView.agentId
+                ?? subagentView.taskId}`
+              : null}
             onExecutionModeChange={handleExecutionModeChange}
             onInteractionModeChange={(value) => { void updateNativeControls({ interactionMode: value }); }}
             onClaudeModeChange={handleClaudeModeChange}
@@ -8616,41 +8961,48 @@ export function AgentChatPane({
       />
   );
 
-  // Composer placeholder shown when the chat is drilled in to a subagent
-  // transcript. Replies always go to the parent session, so disabling input
-  // here matches user expectations and the wireframe brief.
-  const subagentComposerLock = subagentTakeoverActive ? (
-    <div
-      data-chat-appearance-root
-      style={chatAppearanceRootStyle}
-      className={cn(
-        compactShell ? "min-w-0 w-full" : undefined,
-        "flex items-center gap-3 px-4 py-3 font-sans text-[12px]",
-        "border-t border-white/[0.05] bg-white/[0.012]",
-      )}
-    >
-      <span
-        aria-hidden
-        className="inline-flex h-5 w-5 items-center justify-center rounded-full text-fg/30"
-      >
-        <span className="block h-px w-2.5 bg-fg/30" />
-      </span>
-      <span className="min-w-0 flex-1 text-fg/55">
-        Composer paused — viewing a subagent transcript.
-      </span>
-      <button
-        type="button"
-        onClick={() => setSubagentView(null)}
-        className={cn(
-          "shrink-0 rounded-full px-2.5 py-1 text-[11px] font-medium",
-          "text-[color:var(--color-accent-bright,#C4B5FD)]",
-          "transition-colors hover:bg-[color:var(--color-accent,#A78BFA)]/10",
-        )}
-      >
-        Return to main chat
-      </button>
-    </div>
-  ) : null;
+  const subagentThreadIdForView = subagentMetadata?.threadId
+    ?? subagentView?.agentId
+    ?? subagentView?.taskId
+    ?? null;
+  const subagentNameForView = subagentView
+    ? (
+      subagentMetadata?.label
+      ?? subagentMetadata?.agentNickname
+      ?? subagentMetadata?.agentRole
+      ?? subagentMetadata?.name
+      ?? subagentView.agentType
+      ?? subagentViewSnapshot?.description
+      ?? subagentView.agentId
+      ?? subagentView.taskId
+      ?? "Subagent"
+    )
+    : null;
+  const subagentPromptForView = subagentView
+    ? subagentMetadata?.prompt ?? subagentViewSnapshot?.description ?? null
+    : null;
+
+  const subagentEventsForDisplay = useMemo(() => {
+    if (!subagentView) return EMPTY_CHAT_EVENTS;
+    return buildSubagentEventHistory({
+      sessionId: selectedSessionId,
+      subagentId: subagentThreadIdForView ?? subagentView.agentId ?? subagentView.taskId,
+      subagentName: subagentNameForView ?? subagentView.agentType ?? subagentView.agentId ?? subagentView.taskId,
+      prompt: subagentPromptForView,
+      messages: subagentTranscript,
+      loading: subagentTranscriptLoading,
+      unsupported: subagentTranscriptUnsupported,
+    });
+  }, [
+    selectedSessionId,
+    subagentNameForView,
+    subagentPromptForView,
+    subagentThreadIdForView,
+    subagentTranscript,
+    subagentTranscriptLoading,
+    subagentTranscriptUnsupported,
+    subagentView,
+  ]);
 
   // Launch-status banners belong to the new-chat/draft surface only — never
   // above the composer of an already-open chat.
@@ -8682,7 +9034,7 @@ export function AgentChatPane({
             data-testid="draft-launch-job"
             aria-live={isActiveJob ? "polite" : undefined}
             className={cn(
-              "mx-auto flex w-full max-w-[var(--chat-column,46rem)] items-center justify-between gap-3 rounded-lg border px-3 py-1.5 font-sans text-[length:calc(var(--chat-font-size)*11/14)]",
+              "mx-auto flex w-full max-w-[var(--chat-column,52rem)] items-center justify-between gap-3 rounded-lg border px-3 py-1.5 font-sans text-[length:calc(var(--chat-font-size)*11/14)]",
               isFailed && "border-rose-300/20 bg-rose-500/[0.07] text-rose-100/90",
               isReady && "border-emerald-300/18 bg-emerald-500/[0.06] text-emerald-100/85",
               isActiveJob && "border-white/10 bg-white/[0.04] text-fg/70",
@@ -8761,17 +9113,15 @@ export function AgentChatPane({
   const orchestrationRunId = selectedSession?.orchestrationRunId ?? null;
   const orchestrationRole = activeOrchestrationRole;
   const orchestrationPanelOpen = Boolean(orchestrationRunId);
-  // Chat actions is an *info* pane: it floats over the right gutter created by
-  // the centered transcript (Codex / t3 reference) rather than squeezing the
-  // chat. The heavier working panels (App Control, iOS sim, Cursor Cloud,
-  // orchestration) keep the resizable split that pushes the chat column.
   const heavyRightPaneOpen = appPanelOpen || effectiveCursorCloudPaneOpen || orchestrationPanelOpen;
   const supportsSplit = layoutVariant !== "grid-tile";
-  const chatActionsFloating = chatActionsOpen && !heavyRightPaneOpen && supportsSplit;
-  // Reserve gutter space for the open floating panes so the chat re-centers in
-  // the remaining area (3-quadrant rebalance). Heavy split panes don't reserve.
-  const leftPaneActive = prPaneOpen && Boolean(laneId) && supportsSplit;
-  const paneReserve = computePaneReserve(chatAreaWidth, leftPaneActive, chatActionsFloating);
+  const chatActionsFloating = chatActionsOpen && supportsSplit && !heavyRightPaneOpen;
+  const chatActionsRightPaneOpen = chatActionsOpen && !chatActionsFloating;
+  const prFloating = prPaneOpen && Boolean(laneId) && supportsSplit;
+  // The chat reserves gutter space and shifts over to make room for each open
+  // floating pane (no overlap); the panes themselves fade in/out (opacity) — the
+  // two are independent.
+  const paneReserve = computePaneReserve(chatAreaWidth, prFloating, chatActionsFloating);
   const splitChatColStyle: React.CSSProperties | undefined =
     heavyRightPaneOpen && supportsSplit ? { flexGrow: 100 - rightPaneSplit } : undefined;
   const splitRightPaneStyle: React.CSSProperties | undefined =
@@ -8801,37 +9151,31 @@ export function AgentChatPane({
       </div>
     );
 
-  // Floating info-pane overlay (standard layout) — a neutral grey card anchored
-  // to the right gutter, à la the Codex desktop "Environment" pane. Deliberately
-  // NOT provider-tinted (avoids over-coloring the surface).
-  // Panes fade in/out (sliding from the gutters read as disorienting). Compact,
-  // neutral sidebar-colored cards — no purple, no big empty boxes (Codex pane).
-  const FLOATING_PANE_FADE = { duration: 0.16, ease: [0.4, 0, 0.2, 1] as const };
+  const SIDE_PANE_FADE = { duration: 0.16, ease: [0.4, 0, 0.2, 1] as const };
   const FLOATING_PANE_CARD_CLASS =
-    "flex min-h-0 w-full flex-col overflow-hidden rounded-xl border border-white/[0.07] bg-[color:var(--work-sidebar-bg,#161618)] shadow-[0_20px_60px_-30px_rgba(0,0,0,0.8)]";
+    "ade-floating-side-pane flex w-full flex-col overflow-y-auto rounded-xl border border-white/[0.07] bg-[color:var(--work-sidebar-bg,#161618)] shadow-[0_20px_60px_-30px_rgba(0,0,0,0.8)]";
   const renderFloatingPane = (content: React.ReactNode) => (
     <motion.div
       key="floating-right-pane"
-      className="absolute inset-y-3 right-3 z-20 flex min-h-0 w-[min(18rem,calc(100%-1.5rem))]"
+      className="absolute right-3 top-3 z-20 flex max-h-[calc(100%-1.5rem)] w-[min(16.5rem,calc(100%-1.5rem))]"
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
-      transition={FLOATING_PANE_FADE}
+      transition={SIDE_PANE_FADE}
     >
       <div className={FLOATING_PANE_CARD_CLASS}>
         {content}
       </div>
     </motion.div>
   );
-  // Left gutter floating pane (PR) — same compact neutral card, anchored left.
   const renderFloatingLeftPane = (content: React.ReactNode) => (
     <motion.div
       key="floating-left-pane"
-      className="absolute inset-y-3 left-3 z-20 flex min-h-0 w-[min(17rem,calc(100%-1.5rem))]"
+      className="absolute left-3 top-3 z-20 flex max-h-[calc(100%-1.5rem)] w-[min(16.5rem,calc(100%-1.5rem))]"
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
-      transition={FLOATING_PANE_FADE}
+      transition={SIDE_PANE_FADE}
     >
       <div className={FLOATING_PANE_CARD_CLASS}>
         {content}
@@ -8885,7 +9229,7 @@ export function AgentChatPane({
         header={compactShell ? undefined : shellHeader}
         footer={isEmptyState || appPanelOpen
           ? undefined
-          : subagentComposerLock ?? composerWithTypographyRoot}
+          : composerWithTypographyRoot}
         footerClassName={compactShell ? "px-0 pb-0 pt-0" : undefined}
         bodyClassName="flex min-h-0 flex-col overflow-hidden"
       >
@@ -9027,69 +9371,12 @@ export function AgentChatPane({
                         ChatSubagentsPanel; the in-chat banner was removed so
                         the chat header stays clean and goal context lives next
                         to subagents + progress where it belongs. */}
-                    {subagentTakeoverActive ? (
-                      <button
-                        type="button"
-                        onClick={() => setSubagentView(null)}
-                        title="Return to main chat"
-                        className={cn(
-                          "group flex shrink-0 items-center gap-2.5 px-5 py-2 text-left font-sans text-[11.5px]",
-                          "border-b border-white/[0.05] bg-white/[0.012]",
-                          "transition-colors hover:bg-white/[0.025]",
-                        )}
-                      >
-                        <span
-                          aria-hidden
-                          className="inline-flex h-4 w-4 items-center justify-center rounded-full text-fg/35 transition-colors group-hover:bg-white/[0.05] group-hover:text-fg/70"
-                        >
-                          {"←"}
-                        </span>
-                        <span className="text-fg/45 group-hover:text-fg/65">Main</span>
-                        <span aria-hidden className="text-fg/20">{"•"}</span>
-                        <span className="truncate font-medium tracking-[0.005em] text-fg/85">
-                          {subagentView.agentType
-                            ?? subagentViewSnapshot?.description
-                            ?? subagentView.agentId
-                            ?? subagentView.taskId}
-                        </span>
-                        {subagentView.background ? (
-                          <span className="text-[10.5px] tracking-[0.01em] text-fg/30">bg</span>
-                        ) : null}
-                        <span aria-hidden className="text-fg/20">{"•"}</span>
-                        <span
-                          className={cn(
-                            "text-[10.5px] tracking-[0.005em]",
-                            (subagentViewSnapshot?.status ?? subagentView.status) === "running"
-                              && "text-[color:var(--color-accent-bright,#C4B5FD)]",
-                            (subagentViewSnapshot?.status ?? subagentView.status) === "completed"
-                              && "text-emerald-300/75",
-                            (subagentViewSnapshot?.status ?? subagentView.status) === "failed"
-                              && "text-rose-300/80",
-                            (subagentViewSnapshot?.status ?? subagentView.status) === "stopped"
-                              && "text-amber-200/75",
-                          )}
-                        >
-                          {subagentViewSnapshot?.status ?? subagentView.status}
-                        </span>
-                        <span className="ml-auto hidden text-[10px] text-fg/25 group-hover:inline">
-                          press to return
-                        </span>
-                      </button>
-                    ) : null}
                     <AgentChatMessageList
-                      key={subagentTakeoverActive ? `subagent-${subagentView!.taskId}` : selectedSessionId ?? "chat-draft"}
-                      events={selectedEventsForDisplay}
-                      subagentTranscript={subagentTakeoverActive ? {
-                        messages: subagentTranscript,
-                        loading: subagentTranscriptLoading,
-                        unsupported: subagentTranscriptUnsupported,
-                        snapshotName:
-                          subagentView!.agentType
-                          ?? subagentViewSnapshot?.description
-                          ?? subagentView!.agentId
-                          ?? subagentView!.taskId,
-                      } : undefined}
-                      showStreamingIndicator={!subagentTakeoverActive && turnActive && selectedSession?.status !== "ended"}
+                      key={subagentView ? `subagent-${subagentView.taskId}` : selectedSessionId ?? "chat-draft"}
+                      events={subagentView ? subagentEventsForDisplay : selectedEventsForDisplay}
+                      showStreamingIndicator={subagentView
+                        ? subagentTranscriptLoading && subagentEventsForDisplay.length === 0
+                        : turnActive && selectedSession?.status !== "ended"}
                       sessionEnded={selectedSession?.status === "ended"}
                       className="min-h-0 border-0"
                       surfaceMode={surfaceMode}
@@ -9142,19 +9429,20 @@ export function AgentChatPane({
 
                   {rightPaneDivider}
                   <AnimatePresence initial={false}>
-                    {chatActionsOpen && chatActionsFloating
+                    {chatActionsFloating
                       ? renderFloatingPane(chatActionsPanelContent)
                       : null}
                   </AnimatePresence>
-                  {chatActionsOpen && !chatActionsFloating
+                  {chatActionsRightPaneOpen
                     ? renderRightPane(chatActionsPanelContent)
                     : null}
                   <AnimatePresence initial={false}>
-                    {prPaneOpen && laneId && supportsSplit
+                    {prFloating && laneId
                       ? renderFloatingLeftPane(
                           <ChatPrPane
                             laneId={laneId}
                             branchName={laneGitBranch}
+                            chatModelId={selectedSessionModelId ?? modelId}
                             onClose={() => setPrPaneOpen(false)}
                           />,
                         )

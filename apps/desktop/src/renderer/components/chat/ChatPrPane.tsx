@@ -8,7 +8,6 @@ import {
   Check,
   GithubLogo,
   GitPullRequest,
-  X,
   XCircle,
 } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
@@ -103,11 +102,14 @@ function PrDetails({
 export const ChatPrPane = React.memo(function ChatPrPane({
   laneId,
   branchName,
-  onClose,
+  chatModelId,
 }: {
   laneId: string;
   branchName?: string | null;
-  onClose: () => void;
+  /** The active chat session's model — forwarded to the inline creator's AI draft. */
+  chatModelId?: string | null;
+  /** Retained for the caller's toggle wiring; the pane no longer renders its own close affordance (the header PR pill toggles it). */
+  onClose?: () => void;
 }) {
   const navigate = useNavigate();
   const [pr, setPr] = useState<PrSummary | null>(null);
@@ -165,22 +167,7 @@ export const ChatPrPane = React.memo(function ChatPrPane({
 
   return (
     <div className="flex h-full min-h-0 flex-col font-sans">
-      <div className="flex min-h-[42px] shrink-0 items-center justify-between gap-2 border-b border-white/[0.08] px-3">
-        <span className="inline-flex items-center gap-2 text-[12px] font-medium text-fg/70">
-          <GitPullRequest size={13} weight="bold" className="text-violet-300/80" />
-          Pull request
-        </span>
-        <button
-          type="button"
-          onClick={onClose}
-          title="Close pull request pane"
-          aria-label="Close pull request pane"
-          className="inline-flex h-6 w-6 items-center justify-center rounded-md text-fg/45 transition-colors hover:bg-white/[0.05] hover:text-fg/80"
-        >
-          <X size={13} />
-        </button>
-      </div>
-      <div className="min-h-0 flex-1 overflow-y-auto p-3">
+      <div className="min-h-0 flex-1 overflow-y-auto p-3.5">
         {loading ? (
           <p className="px-1 py-6 text-center text-[12px] text-fg/40">Loading…</p>
         ) : pr ? (
@@ -192,7 +179,7 @@ export const ChatPrPane = React.memo(function ChatPrPane({
             onCopy={() => void copyLink()}
           />
         ) : (
-          <ChatPrInlineCreator laneId={laneId} branchName={branchName ?? null} />
+          <ChatPrInlineCreator laneId={laneId} branchName={branchName ?? null} chatModelId={chatModelId ?? null} />
         )}
       </div>
     </div>

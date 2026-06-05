@@ -79,7 +79,7 @@ export function ChatActionsDrawerPanel({
     // Transparent wrapper — the floating pane's own neutral background shows
     // through; we add no surface of our own here.
     <div className="flex h-full min-h-0 flex-col bg-transparent">
-      <div className="flex min-h-[40px] shrink-0 items-stretch border-b border-white/[0.06]">
+      <div className="sticky top-0 z-10 flex min-h-[40px] shrink-0 items-stretch border-b border-white/[0.06] bg-[color:var(--work-sidebar-bg,#161618)]">
         <GlowMenu
           variant="flat"
           neutral

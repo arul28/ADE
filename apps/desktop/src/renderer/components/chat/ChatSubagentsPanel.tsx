@@ -1,9 +1,9 @@
 import { useMemo, useState } from "react";
+import { AnimatePresence, motion } from "motion/react";
 import {
   Check,
   Circle,
   CircleHalf,
-  StopCircle,
   TreeStructure,
   X,
 } from "@phosphor-icons/react";
@@ -90,22 +90,19 @@ function AgentGlyph({
   const cells = identiconCells(id);
   const isRunning = status === "running";
   const dimmed = status === "completed" || status === "stopped";
-  // 3×3 cells inside an 18px box with a 1px gutter.
+  // 3×3 cells inside an 18px circle with a 1px gutter.
   const cell = 4;
   const gap = 1;
   const pad = 2;
 
   return (
     <span className="relative flex h-[18px] w-[18px] shrink-0 items-center justify-center">
+      {/* Running indicator: a slow ring around the round glyph. */}
       {isRunning ? (
         <span
           aria-hidden
-          className="absolute inset-0 rounded-[5px] border motion-safe:animate-spin [animation-duration:3s]"
-          style={{
-            borderColor: "transparent",
-            borderTopColor: color,
-            opacity: 0.7,
-          }}
+          className="absolute -inset-[2px] rounded-full border motion-safe:animate-spin [animation-duration:5s]"
+          style={{ borderColor: "transparent", borderTopColor: color, opacity: 0.7 }}
         />
       ) : null}
       <svg
@@ -113,8 +110,8 @@ function AgentGlyph({
         width={18}
         height={18}
         viewBox="0 0 18 18"
-        className={cn("rounded-[4px]", dimmed && "opacity-55")}
-        style={{ backgroundColor: `color-mix(in srgb, ${color} 14%, transparent)` }}
+        className={cn("rounded-full", dimmed && "opacity-55")}
+        style={{ backgroundColor: `color-mix(in srgb, ${color} 16%, transparent)` }}
       >
         {cells.map((lit, i) => {
           if (!lit) return null;
@@ -262,11 +259,16 @@ function SubagentRow({
   snapshot,
   selected,
   category,
+  expanded,
+  probing,
   onClick,
 }: {
   snapshot: ChatSubagentSnapshot;
   selected: boolean;
   category: GlyphCategory;
+  expanded: boolean;
+  /** True while we're checking whether this agent has a pullable transcript. */
+  probing: boolean;
   onClick: () => void;
 }) {
   const name = meaningfulName(snapshot);
@@ -281,55 +283,97 @@ function SubagentRow({
     ? "text-cyan-100/90"
     : "text-[color:var(--color-accent-bright,#C4B5FD)]";
 
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      title={snapshot.description}
-      data-selected={selected || undefined}
-      className={cn(
-        "group relative flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left",
-        "transition-colors duration-150",
-        "hover:bg-white/[0.04]",
-        selected
-          && "bg-[color:color-mix(in_srgb,var(--color-accent)_10%,transparent)] ring-1 ring-inset ring-[color:color-mix(in_srgb,var(--color-accent)_30%,transparent)]",
-      )}
-    >
-      <AgentGlyph id={snapshot.agentId ?? snapshot.taskId} color={color} status={snapshot.status} />
+  // Tiny "what we know" facts for the inline drawer (agents without a pullable
+  // transcript) — token usage + last tool, nothing heavy.
+  const totalTokens = snapshot.usage?.totalTokens;
+  const toolUses = snapshot.usage?.toolUses;
+  const lastTool = snapshot.lastToolName?.trim();
 
-      <span
+  return (
+    <div>
+      <button
+        type="button"
+        onClick={onClick}
+        title={snapshot.description || "View subagent details"}
+        data-selected={selected || undefined}
         className={cn(
-          "min-w-0 flex-1 truncate font-sans text-[12.5px] leading-5",
-          isRunning && runningLabelTint,
-          isFailed && "text-rose-200/85",
-          isCompleted && "text-fg/55",
-          isStopped && "text-fg/45",
-          !isRunning && !isFailed && !isCompleted && !isStopped && "text-fg/75",
+          "group relative flex w-full items-center gap-2.5 rounded-md px-2 py-1.5 text-left",
+          "transition-colors duration-150",
+          "hover:bg-white/[0.04]",
+          (selected || expanded)
+            && "bg-[color:color-mix(in_srgb,var(--color-accent)_10%,transparent)] ring-1 ring-inset ring-[color:color-mix(in_srgb,var(--color-accent)_30%,transparent)]",
         )}
       >
-        {name}
-        {snapshot.workflowName ? (
-          <span className="ml-1.5 font-sans text-[11px] tracking-[0.01em] text-amber-300/55">
-            {snapshot.workflowName}
-          </span>
-        ) : null}
-      </span>
+        <AgentGlyph id={snapshot.agentId ?? snapshot.taskId} color={color} status={snapshot.status} />
 
-      <span className="flex shrink-0 items-center gap-1.5 font-sans text-[10.5px] tabular-nums">
         <span
           className={cn(
-            "tracking-[0.01em]",
-            isRunning && (category === "background" ? "text-cyan-300/70" : "text-[color:var(--color-accent,#A78BFA)]/80"),
-            isFailed && "text-rose-300/70",
-            isStopped && "text-amber-300/55",
-            isCompleted && "text-fg/35",
+            "min-w-0 flex-1 truncate font-sans text-[12.5px] leading-5",
+            isRunning && runningLabelTint,
+            isFailed && "text-rose-200/85",
+            isCompleted && "text-fg/55",
+            isStopped && "text-fg/45",
+            !isRunning && !isFailed && !isCompleted && !isStopped && "text-fg/75",
           )}
         >
-          {statusLabel}
+          {name}
+          {snapshot.workflowName ? (
+            <span className="ml-1.5 font-sans text-[11px] tracking-[0.01em] text-amber-300/55">
+              {snapshot.workflowName}
+            </span>
+          ) : null}
         </span>
-        {time ? <span className="text-fg/35 group-hover:text-fg/50">{time}</span> : null}
-      </span>
-    </button>
+
+        <span className="flex shrink-0 items-center gap-1.5 font-sans text-[10.5px] tabular-nums">
+          {probing ? (
+            <span
+              aria-hidden
+              className="h-3 w-3 animate-spin rounded-full border border-fg/20 border-t-fg/55 [animation-duration:0.7s]"
+            />
+          ) : null}
+          <span
+            className={cn(
+              "tracking-[0.01em]",
+              isRunning && (category === "background" ? "text-cyan-300/70" : "text-[color:var(--color-accent,#A78BFA)]/80"),
+              isFailed && "text-rose-300/70",
+              isStopped && "text-amber-300/55",
+              isCompleted && "text-fg/35",
+            )}
+          >
+            {statusLabel}
+          </span>
+          {time ? <span className="text-fg/35 group-hover:text-fg/50">{time}</span> : null}
+        </span>
+      </button>
+
+      {/* No pullable transcript → a tiny details drawer slides out beneath the
+          row instead of taking over the chat with an empty page. */}
+      <AnimatePresence initial={false}>
+        {expanded ? (
+          <motion.div
+            key="details-drawer"
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: "auto" }}
+            exit={{ opacity: 0, height: 0 }}
+            transition={{ duration: 0.18, ease: [0.4, 0, 0.2, 1] }}
+            className="overflow-hidden"
+          >
+            <div className="mx-2 mb-1 mt-0.5 space-y-1 rounded-md bg-white/[0.025] px-2.5 py-2 font-sans text-[10.5px] leading-4 text-fg/55">
+              {snapshot.description ? (
+                <div className="break-words text-fg/65">{snapshot.description}</div>
+              ) : null}
+              <div className="flex flex-wrap gap-x-3 gap-y-0.5 tabular-nums text-fg/45">
+                {typeof totalTokens === "number" && totalTokens > 0 ? <span>{totalTokens.toLocaleString()} tokens</span> : null}
+                {typeof toolUses === "number" && toolUses > 0 ? <span>{toolUses} tool{toolUses === 1 ? "" : "s"}</span> : null}
+                {lastTool ? <span>last: {lastTool}</span> : null}
+                {time ? <span>{time}</span> : null}
+              </div>
+              <div className="text-fg/30">No transcript available for this agent.</div>
+            </div>
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
+    </div>
   );
 }
 
@@ -346,8 +390,10 @@ export type SubagentSelection = {
 export function ChatSubagentsPanel({
   snapshots,
   events,
-  onInterruptTurn,
   onSelectSubagent,
+  onClearSelectedSubagent,
+  probeSubagentTranscript,
+  openSubagentsImmediately = false,
   selectedTaskId,
   className,
   variant = "drawer",
@@ -359,8 +405,12 @@ export function ChatSubagentsPanel({
 }: {
   snapshots: ChatSubagentSnapshot[];
   events: AgentChatEventEnvelope[];
-  onInterruptTurn?: () => void;
   onSelectSubagent?: (selection: SubagentSelection) => void;
+  onClearSelectedSubagent?: () => void;
+  /** Probe (same fetch the takeover uses) for whether an agent has a pullable
+   * transcript. Returns true → take over the chat; false → inline drawer. */
+  probeSubagentTranscript?: (args: { taskId: string; agentId: string | null }) => Promise<boolean>;
+  openSubagentsImmediately?: boolean;
   selectedTaskId?: string | null;
   className?: string;
   variant?: "drawer" | "pane";
@@ -371,6 +421,13 @@ export function ChatSubagentsPanel({
   goalPending?: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
+  // Which agent's inline details drawer is open (agents with no transcript).
+  const [expandedTaskId, setExpandedTaskId] = useState<string | null>(null);
+  // Which agent we're currently probing for a transcript (shows a row spinner).
+  const [probingTaskId, setProbingTaskId] = useState<string | null>(null);
+  // Cached probe outcomes per task so repeat clicks are instant. Running agents
+  // are never cached — their transcript can appear after a later poll.
+  const [probeResults, setProbeResults] = useState<Record<string, boolean>>({});
 
   const plan = useMemo(() => derivePlan(events), [events]);
 
@@ -412,15 +469,65 @@ export function ChatSubagentsPanel({
     return parts.join(" · ");
   }, [runningCount, bgRunningCount, completedCount, snapshots.length]);
 
-  const handleSelect = (snap: ChatSubagentSnapshot) => {
-    if (!onSelectSubagent) return;
-    onSelectSubagent({
+  const takeover = (snap: ChatSubagentSnapshot) => {
+    setExpandedTaskId(null);
+    onSelectSubagent?.({
       taskId: snap.taskId,
       agentId: snap.agentId ?? null,
       agentType: snap.agentType ?? null,
       status: snap.status,
       background: snap.background === true,
     });
+  };
+
+  const handleRowClick = (snap: ChatSubagentSnapshot) => {
+    // Clicking the row whose drawer is open closes it.
+    if (expandedTaskId === snap.taskId) {
+      setExpandedTaskId(null);
+      return;
+    }
+    // Already viewing this one's transcript — clicking again returns to parent.
+    if (selectedTaskId === snap.taskId) {
+      onClearSelectedSubagent?.();
+      return;
+    }
+
+    if (openSubagentsImmediately && snap.status === "running") {
+      takeover(snap);
+      return;
+    }
+
+    // Decide takeover-vs-drawer by asking the SAME fetch the takeover uses, so
+    // we never replace the chat with an empty "No transcript" page. Running
+    // agents re-probe every click (their transcript can appear later).
+    const cached = snap.status === "running" ? undefined : probeResults[snap.taskId];
+    if (cached === true) {
+      takeover(snap);
+      return;
+    }
+    if (cached === false) {
+      setExpandedTaskId(snap.taskId);
+      return;
+    }
+    if (!probeSubagentTranscript) {
+      // Can't probe → never risk an empty takeover; show the inline drawer.
+      setExpandedTaskId(snap.taskId);
+      return;
+    }
+
+    setProbingTaskId(snap.taskId);
+    void probeSubagentTranscript({ taskId: snap.taskId, agentId: snap.agentId ?? null })
+      .then((hasTranscript) => {
+        setProbingTaskId((current) => (current === snap.taskId ? null : current));
+        setProbeResults((prev) => ({ ...prev, [snap.taskId]: hasTranscript }));
+        if (hasTranscript) takeover(snap);
+        else setExpandedTaskId(snap.taskId);
+      })
+      .catch(() => {
+        setProbingTaskId((current) => (current === snap.taskId ? null : current));
+        setProbeResults((prev) => ({ ...prev, [snap.taskId]: false }));
+        setExpandedTaskId(snap.taskId);
+      });
   };
 
   const planComplete = plan?.steps.filter((step) => step.status === "completed").length ?? 0;
@@ -431,7 +538,7 @@ export function ChatSubagentsPanel({
   const hasAnything = hasGoal || Boolean(plan) || foreground.length > 0 || background.length > 0;
 
   const body = (
-    <div className="flex min-h-0 flex-1 flex-col font-sans">
+    <div className="flex flex-col font-sans">
       {/* ── Goal (Codex chat goal) ───────────────────────────────── */}
       {hasGoal && goal ? (
         <CodexGoalCard
@@ -498,8 +605,10 @@ export function ChatSubagentsPanel({
                 key={snap.taskId}
                 snapshot={snap}
                 selected={selectedTaskId === snap.taskId}
+                expanded={expandedTaskId === snap.taskId}
+                probing={probingTaskId === snap.taskId}
                 category="subagent"
-                onClick={() => handleSelect(snap)}
+                onClick={() => handleRowClick(snap)}
               />
             ))}
           </div>
@@ -520,8 +629,10 @@ export function ChatSubagentsPanel({
                 key={snap.taskId}
                 snapshot={snap}
                 selected={selectedTaskId === snap.taskId}
+                expanded={expandedTaskId === snap.taskId}
+                probing={probingTaskId === snap.taskId}
                 category="background"
-                onClick={() => handleSelect(snap)}
+                onClick={() => handleRowClick(snap)}
               />
             ))}
           </div>
@@ -536,32 +647,12 @@ export function ChatSubagentsPanel({
         </div>
       ) : null}
 
-      {/* ── Interrupt action — ghost button, no chip ─────────────── */}
-      {onInterruptTurn && runningCount > 0 ? (
-        <div className="mt-auto px-4 pb-3 pt-2">
-          <button
-            type="button"
-            onClick={onInterruptTurn}
-            className={cn(
-              "group inline-flex items-center gap-1.5 rounded-full px-2.5 py-1",
-              "text-[11px] font-medium text-fg/45",
-              "transition-colors hover:text-rose-200/85",
-            )}
-          >
-            <StopCircle size={12} weight="regular" className="text-fg/40 group-hover:text-rose-300/80" />
-            Stop running agents
-          </button>
-        </div>
-      ) : null}
     </div>
   );
 
   if (variant === "pane") {
     return (
-      <div className={cn(
-        "flex h-full min-h-0 flex-col overflow-y-auto font-sans",
-        className,
-      )}>
+      <div className={cn("flex flex-col font-sans", className)}>
         {body}
       </div>
     );

@@ -437,6 +437,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "getClaudeSessionMessages",
     "getChatEventHistory",
     "getContextUsage",
+    "getSubagentTranscript",
     "listClaudeOutputStyles",
     "getSessionCapabilities",
     "getSessionSummary",

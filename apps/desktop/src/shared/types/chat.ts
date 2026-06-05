@@ -275,6 +275,8 @@ export type CodexTokenUsageBreakdown = {
   outputTokens?: number;
   cacheReadTokens?: number;
   cacheWriteTokens?: number;
+  /** Codex `reasoningOutputTokens` (reasoning models) — surfaced in the context-usage tooltip. */
+  reasoningTokens?: number;
   totalTokens?: number;
 };
 
@@ -477,6 +479,10 @@ export type AgentChatEvent =
         outputTokens?: number | null;
         cacheReadTokens?: number | null;
         cacheCreationTokens?: number | null;
+        /** Reasoning/thinking output tokens (Codex/Droid/OpenCode/Claude). */
+        reasoningTokens?: number | null;
+        /** Effective context window for the model that produced this turn, when the runtime reports one. */
+        contextWindow?: number | null;
       };
       costUsd?: number | null;
       // Set only at render time when multiple done events from one cancellation
@@ -1095,6 +1101,20 @@ export type AgentChatClaudeSessionMessage = {
   parentToolUseId: string | null;
   message: unknown;
   text?: string | null;
+  subagentMetadata?: AgentChatSubagentMetadata | null;
+};
+
+export type AgentChatSubagentMetadata = {
+  threadId?: string | null;
+  parentThreadId?: string | null;
+  label?: string | null;
+  agentNickname?: string | null;
+  agentRole?: string | null;
+  name?: string | null;
+  preview?: string | null;
+  prompt?: string | null;
+  model?: string | null;
+  reasoningEffort?: string | null;
 };
 
 export type AgentChatSubagentTranscriptArgs = {

@@ -2,9 +2,9 @@ import { useMemo, useCallback, useEffect, useRef, useState, type CSSProperties }
 import { AnimatePresence, motion } from "motion/react";
 import {
   ArrowClockwise,
+  ArrowUp,
   Chats,
   Code,
-  PaperPlaneTilt,
   SpinnerGap,
 } from "@phosphor-icons/react";
 import type {
@@ -29,6 +29,8 @@ import { ToolLogo } from "./ToolLogos";
 import { AgentChatPane, type AgentChatSessionCreatedOptions } from "../chat/AgentChatPane";
 import { ChatCommandMenu, handleCommandMenuKeyDown, type ChatCommandMenuHandle, type ChatCommandMenuItem } from "../chat/ChatCommandMenu";
 import { ChatComposerShell } from "../chat/ChatComposerShell";
+import { ModelRowLogo } from "../shared/ProviderLogos";
+import { resolveModelDescriptorWithRuntimeCatalog, createUnknownModelPlaceholder } from "../shared/ModelPicker/modelCatalog";
 import { WorkStartSurface } from "./WorkStartSurface";
 import { CliSessionWorkSurfaceHeader } from "./CliSessionWorkSurfaceHeader";
 import { isChatToolType, primarySessionLabel, stripTerminalLabelControls, truncateSessionLabel, formatToolTypeLabel } from "../../lib/sessions";
@@ -303,6 +305,12 @@ function WorkCliContinuationComposer({
 }) {
   const provider = continuationProviderForSession(session);
   const providerLabel = continuationProviderLabel(provider);
+  // Mirror the active chat composer's model pill: resolve the model the session was
+  // launched with (recorded on its resume metadata) so we show the same glyph + name.
+  const modelId = session.resumeMetadata?.launch?.model?.trim() || null;
+  const modelDescriptor = modelId
+    ? (resolveModelDescriptorWithRuntimeCatalog(modelId) ?? createUnknownModelPlaceholder(modelId))
+    : null;
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const commandMenuRef = useRef<ChatCommandMenuHandle | null>(null);
   const [draft, setDraft] = useState("");
@@ -378,24 +386,50 @@ function WorkCliContinuationComposer({
     }
   }, [draft, launchPromptClipboardEnabled, onContinue, sending, session]);
 
+  // Auto-grow from a single-line height (matches the active chat composer): start
+  // thin and expand with the draft, capped so the transcript above keeps the room.
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = "0px";
+    el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
+  }, [draft]);
+
   return (
     <div className="shrink-0">
       <ChatComposerShell
         mode="standard"
-        className="rounded-lg border border-white/[0.08] bg-white/[0.025]"
+        className="mx-auto w-full max-w-[var(--chat-column,46rem)]"
         footer={(
-          <div className="flex min-h-10 flex-wrap items-center justify-between gap-2 px-2.5 py-1.5 text-[10px] text-muted-fg/55">
-            <div className="min-w-0 shrink truncate px-1">
-              <span className="font-medium text-fg/70">{providerLabel}</span>
-            </div>
+          <div className="flex min-h-10 flex-wrap items-center justify-between gap-2 px-2.5 py-1.5">
+            {modelDescriptor ? (
+              <span className="inline-flex min-w-0 max-w-[min(12rem,42vw)] items-center gap-1.5 rounded-md border border-white/[0.06] bg-white/[0.03] px-2 py-1 text-[11px] text-fg/80">
+                <ModelRowLogo
+                  modelFamily={modelDescriptor.family}
+                  cliCommand={modelDescriptor.cliCommand}
+                  modelId={modelDescriptor.id}
+                  providerModelId={modelDescriptor.providerModelId}
+                  size={13}
+                  className="shrink-0"
+                />
+                <span className="min-w-0 truncate font-medium leading-none">{modelDescriptor.displayName}</span>
+              </span>
+            ) : (
+              <span className="min-w-0 shrink truncate px-1 text-[11px] font-medium text-fg/70">{providerLabel}</span>
+            )}
             <button
               type="button"
               disabled={sending || !draft.trim()}
               onClick={() => void submit()}
-              className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md border border-white/[0.08] bg-white/[0.04] px-2 text-[10px] font-medium text-fg/75 transition-colors hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-45"
+              aria-label="Send"
+              className={cn(
+                "inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full transition-all active:scale-[0.97]",
+                sending || !draft.trim()
+                  ? "bg-white/[0.06] text-muted-fg/20"
+                  : "bg-white/90 text-zinc-900 hover:bg-white",
+              )}
             >
-              {sending ? <SpinnerGap size={12} className="animate-spin" /> : <PaperPlaneTilt size={12} weight="fill" />}
-              Send
+              {sending ? <SpinnerGap size={14} className="animate-spin" /> : <ArrowUp size={14} weight="bold" />}
             </button>
           </div>
         )}
@@ -429,7 +463,7 @@ function WorkCliContinuationComposer({
               void submit();
             }
           }}
-          className="block max-h-32 min-h-[3rem] w-full resize-none bg-transparent px-3 py-2.5 text-[13px] leading-relaxed text-fg/88 outline-none placeholder:text-muted-fg/35 disabled:cursor-not-allowed disabled:opacity-60"
+          className="block w-full resize-none overflow-y-auto bg-transparent px-4 py-2.5 text-[length:calc(var(--chat-font-size)*13/14)] leading-[1.6] text-fg/88 outline-none placeholder:text-muted-fg/35 disabled:cursor-not-allowed disabled:opacity-60"
           placeholder={`Type to continue this ${providerLabel} session...`}
           aria-label={`Continue ${providerLabel} session`}
         />
@@ -464,7 +498,6 @@ function ClosedCliSessionSurface({
   const [error, setError] = useState<string | null>(null);
   const [resumeError, setResumeError] = useState<string | null>(null);
   const [resuming, setResuming] = useState(false);
-  const label = primarySessionLabel(session);
   const showComposer = canContinueAgentCliSession(session);
   const exitLabel = terminalExitLabel(session.exitCode);
   const endedTime = session.endedAt
@@ -513,7 +546,7 @@ function ClosedCliSessionSurface({
     || "No transcript was captured for this session.";
 
   return (
-    <div className="flex h-full min-h-0 w-full flex-col overflow-hidden bg-card">
+    <div className="flex h-full min-h-0 w-full flex-col overflow-hidden bg-[color:var(--chat-canvas-bg)]">
       {layoutVariant !== "grid-tile" ? (
         <CliSessionWorkSurfaceHeader
           session={session}
@@ -523,22 +556,19 @@ function ClosedCliSessionSurface({
         />
       ) : null}
       <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden px-4 py-3">
-        <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-white/[0.06] pb-3">
-          <div className="min-w-0">
-            <div className="truncate text-[12px] font-medium text-fg/85">{label}</div>
-            <div className="mt-0.5 text-[10px] text-muted-fg/55">
-              {endedLabel}
-              {exitLabel ? ` · ${exitLabel}` : ""}
-            </div>
+        <div className="flex shrink-0 items-center justify-between gap-2 border-b border-white/[0.06] pb-2">
+          <div className="min-w-0 truncate text-[11px] text-muted-fg/60">
+            {endedLabel}
+            {exitLabel ? ` · ${exitLabel}` : ""}
           </div>
           {showComposer && onResume ? (
             <button
               type="button"
               disabled={resuming}
               onClick={() => void handleResume()}
-              className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md border border-white/[0.08] bg-white/[0.04] px-2 text-[10px] font-medium text-fg/75 transition-colors hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-45"
+              className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md border border-emerald-300/25 bg-emerald-500/[0.12] px-2.5 text-[11px] font-medium text-emerald-100 transition-colors hover:border-emerald-300/40 hover:bg-emerald-500/[0.18] disabled:cursor-not-allowed disabled:opacity-45"
             >
-              {resuming ? <SpinnerGap size={12} className="animate-spin" /> : <ArrowClockwise size={12} />}
+              {resuming ? <SpinnerGap size={13} className="animate-spin" /> : <ArrowClockwise size={13} weight="bold" />}
               Resume
             </button>
           ) : null}

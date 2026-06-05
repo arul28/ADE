@@ -212,11 +212,43 @@ ADE_DEV_RUNTIME_SOCKET_PATH=/tmp/my-ade-dev.sock npm run dev:runtime
 ADE_DESKTOP_BRIDGE_SOCKET_PATH=/tmp/my-bridge.sock npm run dev:desktop
 ```
 
-When launching ADE desktop dev through ADE App Control from a running Alpha/Beta
-ADE window, use an absolute lane cwd and clear packaged-channel environment
-variables inherited from the host app. Otherwise the dev Electron app can reuse
-the Alpha/Beta profile and lose the single-instance lock instead of opening the
-lane build:
+> [!WARNING]
+> Never point `--socket` at a runtime you do not want restarted. In the default
+> `--auto` mode the wrapper **shuts down and recreates** whatever runtime is
+> already listening on that socket whenever its build hash does not match the
+> checkout you are launching — so aiming at the production `~/.ade/sock/ade.sock`
+> or another lane's live runtime will kill it (and any clients attached to it).
+> Point at a fresh per-lane socket (below), or use
+> `npm run dev:desktop:attach -- --socket <path>` to connect to an already-running
+> runtime — attach mode refuses on a build-hash mismatch instead of restarting.
+
+### Run a specific lane worktree
+
+To preview a lane's build without disturbing your installed ADE app or its
+runtime, run `dev:desktop` **from the lane checkout** on its own sockets. Running
+from the worktree makes Vite serve that lane's code, while the wrapper
+auto-resolves project *data* to the primary checkout (as described above), so you
+see the lane's UI backed by your real lanes, PRs, and chats:
+
+```bash
+cd /path/to/ADE/.ade/worktrees/<lane>
+ADE_DESKTOP_BRIDGE_SOCKET_PATH=/tmp/ade-desktop-bridge-<lane>.sock \
+  npm run dev:desktop -- --socket /tmp/ade-runtime-<lane>.sock
+```
+
+The per-lane `--socket` gives the lane build an isolated runtime (and sidesteps
+the warning above — nothing else is listening there); the per-lane bridge socket
+avoids colliding with the installed app's `~/.ade/sock/desktop-bridge.sock`. Set
+`ADE_PROJECT_ROOT=/path/to/other-project` only if you want a different project's
+data. A fresh worktree has no `node_modules` — symlink the root and `apps/desktop`
+`node_modules` from the primary checkout, or run `npm run setup` inside the
+worktree first.
+
+When launching that same flow through ADE App Control from a running Alpha/Beta
+ADE window, also clear the packaged-channel environment variables inherited from
+the host app (and use an absolute lane cwd). Otherwise the dev Electron app can
+reuse the Alpha/Beta profile and lose the single-instance lock instead of opening
+the lane build:
 
 ```bash
 ade --socket app-control launch --force \

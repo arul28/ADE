@@ -19,7 +19,6 @@ import {
   type AgentChatInteractionMode,
   type AgentChatOpenCodePermissionMode,
   type AgentChatSlashCommand,
-  type CodexThreadTokenUsage,
   type ComputerUseOwnerSnapshot,
   type ChatSurfaceMode,
   type AppControlContextItem,
@@ -46,7 +45,8 @@ import type { AuthStatus } from "../shared/ModelPicker/ModelPickerRail";
 import { resolveModelDescriptorWithRuntimeCatalog } from "../shared/ModelPicker/modelCatalog";
 import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPicker";
 import { getPermissionOptions, safetyColors } from "../shared/permissionOptions";
-import { CodexTokenInline } from "./codex/CodexTokenInline";
+import { ContextUsageDial } from "./usage/ContextUsageDial";
+import type { ContextUsageViewModel } from "./usage/contextUsageModel";
 import {
   ChatAttachmentTray,
   CHAT_IMAGE_ATTACHMENT_FOCUS_SELECTOR,
@@ -743,7 +743,7 @@ export function AgentChatComposer({
   allowCliOnlyModels = false,
   reasoningEffort,
   codexFastMode = false,
-  codexTokenUsage = null,
+  usageViewModel = null,
   draft,
   attachments,
   contextAttachments = [],
@@ -772,6 +772,7 @@ export function AgentChatComposer({
   hideNativeControls = false,
   orchestrationRole = null,
   messagePlaceholder,
+  inputLockMessage,
   onModelChange,
   onReasoningEffortChange,
   onCodexFastModeChange,
@@ -870,7 +871,7 @@ export function AgentChatComposer({
   allowCliOnlyModels?: boolean;
   reasoningEffort: string | null;
   codexFastMode?: boolean;
-  codexTokenUsage?: CodexThreadTokenUsage | null;
+  usageViewModel?: ContextUsageViewModel | null;
   draft: string;
   attachments: AgentChatFileRef[];
   contextAttachments?: AgentChatContextAttachment[];
@@ -913,6 +914,7 @@ export function AgentChatComposer({
    */
   orchestrationRole?: OrchestrationRole | null;
   messagePlaceholder?: string;
+  inputLockMessage?: string | null;
   onModelChange: (modelId: string) => void;
   onReasoningEffortChange: (reasoningEffort: string | null) => void;
   onCodexFastModeChange?: (enabled: boolean) => void;
@@ -1079,8 +1081,9 @@ export function AgentChatComposer({
     || appControlContextItems.length > 0
     || builtInBrowserContextItems.length > 0
     || macosVmContextItems.length > 0;
-  const composerInputLocked = Boolean(pendingInput?.blocking);
-  const composerInputLockMessage = getComposerInputLockMessage(pendingInput);
+  const externalInputLockMessage = normalizeComposerLabelText(inputLockMessage ?? "");
+  const composerInputLocked = Boolean(pendingInput?.blocking) || Boolean(externalInputLockMessage);
+  const composerInputLockMessage = externalInputLockMessage || getComposerInputLockMessage(pendingInput);
   const composerInputContextLabel = normalizeComposerLabelText(messagePlaceholder ?? "") || "Chat message";
   const composerInputAccessibleLabel = composerInputLockMessage
     ? `Chat input locked: ${composerInputLockMessage}`
@@ -2913,7 +2916,7 @@ export function AgentChatComposer({
         onOpenLinearSettings={onOpenLinearSettings}
       />
       {showLaunchClipboardNotice && layoutVariant !== "grid-tile" ? (
-        <div className="mx-auto mb-1.5 w-full max-w-[var(--chat-column,46rem)] px-1 font-sans text-[length:calc(var(--chat-font-size)*10/14)] text-muted-fg/45">
+        <div className="mx-auto mb-1.5 w-full max-w-[var(--chat-column,52rem)] px-1 font-sans text-[length:calc(var(--chat-font-size)*10/14)] text-muted-fg/45">
           Prompt copies to clipboard on send.{" "}
           <button
             type="button"
@@ -2941,7 +2944,7 @@ export function AgentChatComposer({
       className={cn(
         layoutVariant === "grid-tile"
           ? "border-0 bg-transparent shadow-none"
-          : "mx-auto w-full max-w-[var(--chat-column,46rem)]",
+          : "mx-auto w-full max-w-[var(--chat-column,52rem)]",
       )}
       pendingBanner={pendingInput ? (
         pendingInput.kind === "plan_approval" ? (
@@ -3582,8 +3585,12 @@ export function AgentChatComposer({
             ) : null}
           </div>
 
-          {!parallelChatMode && sessionProvider === "codex" && codexTokenUsage ? (
-            <CodexTokenInline usage={codexTokenUsage} />
+          {!parallelChatMode && usageViewModel ? (
+            <ContextUsageDial
+              usage={usageViewModel}
+              active={turnActive}
+              modelLabel={resolveModelDescriptorWithRuntimeCatalog(modelId)?.displayName ?? undefined}
+            />
           ) : null}
 
           {/* Right: attachment, commands, proof, context, send */}

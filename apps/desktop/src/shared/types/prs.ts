@@ -343,6 +343,12 @@ export type DraftPrDescriptionArgs = {
   reasoningEffort?: string | null;
   baseBranch?: string;
   closeLinearIssueOnMerge?: boolean;
+  /**
+   * When true, surface real AI failures to the caller (throw) instead of silently
+   * returning the deterministic template. Used by the in-chat "AI draft" button so
+   * the user sees why it failed rather than getting a stub.
+   */
+  requireAi?: boolean;
 };
 
 export type UpdatePrDescriptionArgs = {

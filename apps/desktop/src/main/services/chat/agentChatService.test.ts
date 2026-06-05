@@ -9076,7 +9076,7 @@ describe("createAgentChatService", () => {
       ).toBe("completed");
     });
 
-    it("assigns Agent #N labels to Codex collab agents in turn-spawn order", async () => {
+    it("assigns Codex desktop-style fallback labels to collab agents in turn-spawn order", async () => {
       const events: AgentChatEventEnvelope[] = [];
       const { service } = createService({
         onEvent: (event: AgentChatEventEnvelope) => events.push(event),
@@ -9146,13 +9146,13 @@ describe("createAgentChatService", () => {
         type: "subagent_started",
         taskId: "agent-thread-a",
         agentId: "agent-thread-a",
-        agentType: "Agent #1",
+        agentType: "Sagan",
       });
       expect(startedEvents[1]!.event).toMatchObject({
         type: "subagent_started",
         taskId: "agent-thread-b",
         agentId: "agent-thread-b",
-        agentType: "Agent #2",
+        agentType: "Beauvoir",
       });
     });
 
@@ -9383,6 +9383,115 @@ describe("createAgentChatService", () => {
       expect(fileEvent.path).toBe("src/foo.ts");
       expect(fileEvent.diff).toContain("+bar");
       expect(fileEvent.kind).toBe("modify");
+    });
+
+    it("captures Codex subagent transcript rows from live child-thread notifications", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      mockState.codexResponseOverrides.set("thread/turns/list", () => ({
+        data: [],
+        nextCursor: null,
+        backwardsCursor: null,
+      }));
+      mockState.codexResponseOverrides.set("thread/read", () => ({
+        thread: {
+          id: "agent-thread-live-capture",
+          preview: "Live child output.",
+          model: "gpt-5.4",
+          source: {
+            subAgent: {
+              parentThreadId: "thread-1",
+              agentNickname: "Scout",
+              agentRole: "reviewer",
+            },
+          },
+        },
+      }));
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Spawn a child agent.",
+      }, { awaitDispatch: true });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope =>
+          event.event.type === "status"
+          && event.event.turnStatus === "started"
+          && event.event.turnId === "turn-1",
+      );
+
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "item/started",
+        params: {
+          turnId: "turn-1",
+          item: {
+            id: "collab-live-capture",
+            type: "collabAgentToolCall",
+            tool: "spawnAgent",
+            status: "inProgress",
+            senderThreadId: "thread-main",
+            receiverThreadIds: ["agent-thread-live-capture"],
+            prompt: "Inspect streamed child output.",
+            agentsStates: {},
+          },
+        },
+      });
+
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "turn/started",
+        params: {
+          threadId: "agent-thread-live-capture",
+          turn: { id: "sub-turn-1", status: "inProgress" },
+        },
+      });
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        method: "item/agentMessage/delta",
+        params: {
+          threadId: "agent-thread-live-capture",
+          turnId: "sub-turn-1",
+          itemId: "sub-message-1",
+          delta: "Live child output.",
+        },
+      });
+
+      let transcript: Awaited<ReturnType<typeof service.getSubagentTranscript>> = null;
+      await vi.waitFor(async () => {
+        transcript = await service.getSubagentTranscript({
+          sessionId: session.id,
+          agentId: "agent-thread-live-capture",
+        });
+        expect(transcript).not.toBeNull();
+        expect(transcript!.some((message) => message.text === "Live child output.")).toBe(true);
+        expect(transcript!.find((message) => message.text === "Live child output.")?.subagentMetadata).toMatchObject({
+          threadId: "agent-thread-live-capture",
+          agentNickname: "Scout",
+          agentRole: "reviewer",
+          model: "gpt-5.4",
+        });
+      });
+
+      expect(events.some((event) =>
+        event.event.type === "text"
+        && event.event.text === "Live child output."
+      )).toBe(false);
+      const parentHistory = service.getChatEventHistory(session.id);
+      expect(parentHistory.events.some((event) =>
+        event.event.type === "text"
+        && event.event.text === "Live child output."
+      )).toBe(false);
+      expect(transcript!.map((message) => (message.message as { type: string }).type)).toContain("text");
     });
 
     it("falls back to event-history filter when codex app-server fails on thread/turns/list", async () => {

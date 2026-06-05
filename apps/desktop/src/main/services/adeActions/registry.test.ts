@@ -311,6 +311,7 @@ describe("ADE_ACTION_ALLOWLIST shape", () => {
     const chatActions = ADE_ACTION_ALLOWLIST.chat ?? [];
     expect(chatActions).toContain("ensureCtoSession");
     expect(chatActions).toContain("ensureAgentIdentitySession");
+    expect(chatActions).toContain("getSubagentTranscript");
     expect(chatActions).toContain("modelCatalog");
     expect(ADE_ACTION_ALLOWLIST.cto_state ?? []).toContain("runProjectScan");
   });

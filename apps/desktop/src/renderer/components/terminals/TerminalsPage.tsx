@@ -797,42 +797,45 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         <div
           ref={workContentPaneRef}
           className="min-h-0 min-w-0 flex-1 basis-0 overflow-hidden"
-          style={workSidebarVisible ? { flexGrow: 100 - work.workSidebarWidthPct } : undefined}
+          style={{ flexGrow: 100 - work.workSidebarWidthPct }}
         >
           {workViewArea}
         </div>
+        {/* Resize handle stays a row-level sibling so its width math is correct. */}
+        {workSidebarVisible ? (
+          <div
+            role="separator"
+            aria-orientation="vertical"
+            onMouseDown={handleWorkSidebarResizeMouseDown}
+            className="relative w-[5px] shrink-0 cursor-col-resize bg-white/[0.06] transition-colors hover:bg-[var(--color-accent)]/25 active:bg-[var(--color-accent)]/40"
+          />
+        ) : null}
         <AnimatePresence initial={false}>
           {workSidebarVisible ? (
-            <>
-              <div
-                role="separator"
-                aria-orientation="vertical"
-                onMouseDown={handleWorkSidebarResizeMouseDown}
-                className="relative w-[5px] shrink-0 cursor-col-resize bg-white/[0.06] transition-colors hover:bg-[var(--color-accent)]/25 active:bg-[var(--color-accent)]/40"
+            // The panel slides via animated flex-grow so the content pane grows/
+            // shrinks smoothly with it — no instant reflow / black flash on close.
+            <motion.div
+              key="work-tools-sidebar"
+              ref={workSidebarPaneRef}
+              className="min-h-0 min-w-0 basis-0 overflow-hidden"
+              style={{ maxWidth: "55%" }}
+              initial={{ flexGrow: 0 }}
+              animate={{ flexGrow: work.workSidebarWidthPct }}
+              exit={{ flexGrow: 0 }}
+              transition={{ duration: 0.24, ease: [0.4, 0, 0.2, 1] }}
+            >
+              <WorkSidebar
+                active={active}
+                laneId={activeLaneId}
+                lanes={sortedLanes}
+                activeSession={activeWorkSession}
+                tab={work.workSidebarTab}
+                onTabChange={work.setWorkSidebarTab}
+                onClose={closeWorkSidebar}
+                contextTarget={contextTarget}
+                contextDisabledReason={contextDisabledReason}
               />
-              <motion.div
-                key="work-tools-sidebar"
-                ref={workSidebarPaneRef}
-                className="min-h-0 min-w-[280px] basis-0 overflow-hidden"
-                style={{ flexGrow: work.workSidebarWidthPct, maxWidth: "55%" }}
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                transition={{ duration: 0.14, ease: [0.4, 0, 0.2, 1] }}
-              >
-                <WorkSidebar
-                  active={active}
-                  laneId={activeLaneId}
-                  lanes={sortedLanes}
-                  activeSession={activeWorkSession}
-                  tab={work.workSidebarTab}
-                  onTabChange={work.setWorkSidebarTab}
-                  onClose={closeWorkSidebar}
-                  contextTarget={contextTarget}
-                  contextDisabledReason={contextDisabledReason}
-                />
-              </motion.div>
-            </>
+            </motion.div>
           ) : null}
         </AnimatePresence>
       </div>

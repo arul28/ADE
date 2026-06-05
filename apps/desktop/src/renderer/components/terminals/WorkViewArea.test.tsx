@@ -574,7 +574,7 @@ describe("WorkViewArea", () => {
     const local = within(view.container);
 
     expect(await local.findByLabelText("Continue Claude Code session")).toBeTruthy();
-    expect(local.getAllByText("Existing session").length).toBeGreaterThan(0);
+    expect(local.getAllByTestId("work-cli-session-header").some((header) => header.getAttribute("data-session-id") === "session-active")).toBe(true);
     // Only the active session renders in the single-session work view; the
     // hidden session is never mounted, so its preview/slash hydration never runs.
     expect(local.queryByText("Hidden session")).toBeNull();
