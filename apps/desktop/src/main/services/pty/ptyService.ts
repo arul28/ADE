@@ -536,6 +536,11 @@ function isCliPlaceholderTitle(title: string | null | undefined, toolType: Termi
   return false;
 }
 
+function normalizePtySessionTitle(title: unknown): string {
+  const trimmed = typeof title === "string" ? title.trim() : "";
+  return trimmed.length ? trimmed : "Terminal";
+}
+
 function sanitizeGeneratedCliTitle(raw: string): string {
   let title = stripAnsi(raw)
     .replace(/\p{Extended_Pictographic}/gu, "")
@@ -3398,7 +3403,8 @@ export function createPtyService({
     },
 
     async create(args: PtyCreateArgs): Promise<PtyCreateResult> {
-      const { laneId, title } = args;
+      const { laneId } = args;
+      const title = normalizePtySessionTitle(args.title);
       const chatSessionId = cleanOptionalId(args.chatSessionId);
       const launchContext = resolveLaneLaunchContext({
         laneService,

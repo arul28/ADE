@@ -1442,6 +1442,22 @@ describe("ptyService", () => {
       );
     });
 
+    it("uses a default title when runtime payloads omit one", async () => {
+      const { service, sessionService } = createHarness();
+      await service.create({
+        laneId: "lane-1",
+        cols: 120,
+        rows: 40,
+      } as any);
+      expect(sessionService.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          laneId: "lane-1",
+          title: "Terminal",
+          tracked: true,
+        }),
+      );
+    });
+
     it("rejects terminal launches when the lane worktree does not exist", async () => {
       mocks.existsSyncResults.set("/tmp/test-worktree", false);
       const { service, loadPty } = createHarness();

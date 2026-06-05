@@ -6,6 +6,9 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const repoRoot = path.resolve(packageRoot, "..", "..");
+const desktopPackageJsonPath = path.join(repoRoot, "apps", "desktop", "package.json");
+const cliPackageJsonPath = path.join(packageRoot, "package.json");
 const defaultOutDir = path.join(packageRoot, "dist-static");
 const fuse = "NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2";
 
@@ -89,6 +92,27 @@ async function run(command, args, options = {}) {
   if (stderr) process.stderr.write(stderr);
 }
 
+async function readPackageVersion(packageJsonPath) {
+  try {
+    const raw = await fs.readFile(packageJsonPath, "utf8");
+    const parsed = JSON.parse(raw);
+    return typeof parsed.version === "string" ? parsed.version.trim() : "";
+  } catch {
+    return "";
+  }
+}
+
+async function resolveRuntimeVersion() {
+  const explicit = process.env.ADE_CLI_VERSION?.trim();
+  if (explicit) return explicit;
+
+  const cliVersion = await readPackageVersion(cliPackageJsonPath);
+  if (cliVersion && cliVersion !== "0.0.0") return cliVersion;
+
+  const desktopVersion = await readPackageVersion(desktopPackageJsonPath);
+  return desktopVersion || cliVersion || "0.0.0";
+}
+
 async function assertSeaCapableNodeBinary(binaryPath) {
   const contents = await fs.readFile(binaryPath);
   if (contents.includes(Buffer.from(fuse))) return;
@@ -110,6 +134,21 @@ async function removeSignatureIfNeeded(binaryPath) {
 async function adHocSignIfNeeded(binaryPath) {
   if (process.platform !== "darwin") return;
   await run("codesign", ["--sign", "-", binaryPath]);
+}
+
+async function assertStaticRuntimeVersion(binaryPath, expectedVersion, target) {
+  if (target !== currentTarget()) return;
+  const { stdout } = await execFileAsync(binaryPath, ["--version"], {
+    cwd: packageRoot,
+    env: {
+      ...process.env,
+      ADE_CLI_VERSION: "",
+    },
+  });
+  const actual = stdout.trim().replace(/^ade\s+/i, "");
+  if (actual !== expectedVersion) {
+    throw new Error(`Static ADE runtime version mismatch: expected ${expectedVersion}, got ${actual || "<empty>"}.`);
+  }
 }
 
 async function writeSeaEntry(workDir) {
@@ -221,6 +260,8 @@ async function main() {
   const args = parseArgs(process.argv.slice(2));
   await assertHostOrExplicitBinary(args.target);
   await fs.mkdir(args.outDir, { recursive: true });
+  const runtimeVersion = await resolveRuntimeVersion();
+  process.env.ADE_CLI_VERSION = runtimeVersion;
 
   if (!args.skipBuild) {
     await run(process.platform === "win32" ? "npm.cmd" : "npm", ["run", "build"]);
@@ -263,6 +304,7 @@ async function main() {
   }
   await run(path.join(packageRoot, "node_modules", ".bin", process.platform === "win32" ? "postject.cmd" : "postject"), postjectArgs);
   await adHocSignIfNeeded(binaryPath);
+  await assertStaticRuntimeVersion(binaryPath, runtimeVersion, args.target);
 
   let nativeArchivePath = null;
   if (!args.skipNativeDeps) {
