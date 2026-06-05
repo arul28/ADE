@@ -1125,14 +1125,17 @@ export function registerRuntimeBridge({
 
   ipcMain.handle(
     IPC.remoteRuntimeDisconnect,
-    async (event, arg: { id: string }): Promise<{ disconnected: boolean }> => {
+    async (
+      event,
+      arg: { id: string; manual?: boolean },
+    ): Promise<{ disconnected: boolean }> => {
       const id = typeof arg?.id === "string" ? arg.id.trim() : "";
       if (!id) return { disconnected: false };
       const currentSubscription = runtimeEventSubscriptions.get(event.sender.id);
       if (currentSubscription?.bindingKey.startsWith(`remote:${id}:`)) {
         cleanupRuntimeEventSubscription(event.sender.id);
       }
-      remoteConnectionService.disconnect(id);
+      remoteConnectionService.disconnect(id, { manual: arg.manual !== false });
       return { disconnected: true };
     },
   );

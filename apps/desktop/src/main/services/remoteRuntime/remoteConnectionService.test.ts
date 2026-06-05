@@ -73,4 +73,72 @@ describe("RemoteConnectionService", () => {
     expect(pool.connect).toHaveBeenCalledTimes(1);
     expect(pool.connect).toHaveBeenCalledWith(previouslyConnected);
   });
+
+  it("does not autoconnect a manually disconnected saved target", async () => {
+    const previouslyConnected = target("previously-connected", 1_700_000_000);
+    const registry = {
+      list: vi.fn(() => [previouslyConnected]),
+      get: vi.fn((id: string) =>
+        id === previouslyConnected.id ? previouslyConnected : null,
+      ),
+    } as unknown as RemoteTargetRegistry;
+    const pool = {
+      connect: vi.fn(async (target: RemoteRuntimeTarget) => connectResult(target)),
+      disconnect: vi.fn(),
+      onEntryEvicted: vi.fn(() => () => {}),
+    } as unknown as RemoteConnectionPool;
+
+    const service = new RemoteConnectionService(registry, pool);
+    service.disconnect(previouslyConnected.id, { manual: true });
+    service.startAutoconnect();
+    await Promise.resolve();
+    service.stopAutoconnect();
+
+    expect(pool.disconnect).toHaveBeenCalledWith(previouslyConnected.id);
+    expect(pool.connect).not.toHaveBeenCalled();
+  });
+
+  it("blocks implicit RPC reconnect after manual disconnect until explicit connect", async () => {
+    const previouslyConnected = target("previously-connected", 1_700_000_000);
+    const registry = {
+      list: vi.fn(() => [previouslyConnected]),
+      get: vi.fn((id: string) =>
+        id === previouslyConnected.id ? previouslyConnected : null,
+      ),
+    } as unknown as RemoteTargetRegistry;
+    const actionResult = {
+      domain: "file",
+      action: "read",
+      result: { ok: true },
+      statusHints: {},
+    };
+    const pool = {
+      connect: vi.fn(async (target: RemoteRuntimeTarget) => connectResult(target)),
+      disconnect: vi.fn(),
+      callActionForTarget: vi.fn(async () => actionResult),
+      onEntryEvicted: vi.fn(() => () => {}),
+    } as unknown as RemoteConnectionPool;
+
+    const service = new RemoteConnectionService(registry, pool);
+    service.disconnect(previouslyConnected.id, { manual: true });
+
+    await expect(
+      service.callAction(previouslyConnected.id, "project-1", {
+        domain: "file",
+        action: "read",
+      }),
+    ).rejects.toThrow(/manually disconnected/i);
+    expect(pool.callActionForTarget).not.toHaveBeenCalled();
+
+    await service.connect(previouslyConnected.id);
+    await expect(
+      service.callAction(previouslyConnected.id, "project-1", {
+        domain: "file",
+        action: "read",
+      }),
+    ).resolves.toEqual(actionResult);
+
+    expect(pool.connect).toHaveBeenCalledWith(previouslyConnected);
+    expect(pool.callActionForTarget).toHaveBeenCalledTimes(1);
+  });
 });

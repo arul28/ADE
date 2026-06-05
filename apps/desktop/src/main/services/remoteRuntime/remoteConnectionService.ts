@@ -38,6 +38,10 @@ type RemoteConnectionServiceOptions = {
   pingTimeoutMs?: number;
 };
 
+type RemoteConnectionDisconnectOptions = {
+  manual?: boolean;
+};
+
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -61,6 +65,7 @@ function shouldAutoconnectTarget(target: RemoteRuntimeTarget): boolean {
 
 export class RemoteConnectionService {
   private readonly statusById = new Map<string, StatusPatch>();
+  private readonly manuallyDisconnectedTargetIds = new Set<string>();
   private readonly listeners = new Set<
     (snapshot: RemoteRuntimeConnectionSnapshot) => void
   >();
@@ -100,6 +105,7 @@ export class RemoteConnectionService {
 
   removeTarget(targetId: string): boolean {
     this.disconnect(targetId);
+    this.manuallyDisconnectedTargetIds.delete(targetId);
     this.statusById.delete(targetId);
     const removed = this.registry.remove(targetId);
     this.emit();
@@ -159,6 +165,7 @@ export class RemoteConnectionService {
   startAutoconnect(): void {
     for (const target of this.registry.list()) {
       if (!shouldAutoconnectTarget(target)) continue;
+      if (this.manuallyDisconnectedTargetIds.has(target.id)) continue;
       void this.connect(target.id).catch(() => {});
     }
     if (this.autoconnectTimer) return;
@@ -176,6 +183,7 @@ export class RemoteConnectionService {
 
   async connect(targetId: string): Promise<RemoteRuntimeConnectResult> {
     const target = this.requireTarget(targetId);
+    this.manuallyDisconnectedTargetIds.delete(target.id);
     this.mergeStatus(target.id, {
       state: "connecting",
       lastAttemptedAt: Date.now(),
@@ -205,7 +213,13 @@ export class RemoteConnectionService {
     }
   }
 
-  disconnect(targetId: string): void {
+  disconnect(
+    targetId: string,
+    options: RemoteConnectionDisconnectOptions = {},
+  ): void {
+    if (options.manual) {
+      this.manuallyDisconnectedTargetIds.add(targetId);
+    }
     this.pool.disconnect(targetId);
     this.mergeStatus(targetId, { state: "idle", lastError: null });
   }
@@ -217,7 +231,7 @@ export class RemoteConnectionService {
   }
 
   async projects(targetId: string): Promise<RemoteRuntimeProjectRecord[]> {
-    const target = this.requireTarget(targetId);
+    const target = this.requireTargetForImplicitUse(targetId);
     try {
       const value = await this.pool.projectsForTarget(target);
       const projects = coerceProjects(value);
@@ -241,7 +255,7 @@ export class RemoteConnectionService {
     targetId: string,
     rootPath: string,
   ): Promise<RemoteRuntimeProjectRecord> {
-    const target = this.requireTarget(targetId);
+    const target = this.requireTargetForImplicitUse(targetId);
     try {
       const value = await this.pool.addProjectForTarget(target, rootPath);
       const project = coerceConnectionProject(value);
@@ -261,7 +275,7 @@ export class RemoteConnectionService {
     targetId: string,
     request: RemoteRuntimePortForwardRequest,
   ): Promise<RemoteRuntimePortForward> {
-    const target = this.requireTarget(targetId);
+    const target = this.requireTargetForImplicitUse(targetId);
     await this.pool.connect(target);
     return await this.pool.ensureLocalPortForward(target.id, request);
   }
@@ -356,7 +370,7 @@ export class RemoteConnectionService {
     projectId: string,
     request: RemoteRuntimeActionRequest,
   ): Promise<RemoteRuntimeActionResult> {
-    const target = this.requireTarget(targetId);
+    const target = this.requireTargetForImplicitUse(targetId);
     try {
       const result = await this.pool.callActionForTarget(
         target,
@@ -384,7 +398,7 @@ export class RemoteConnectionService {
     projectId: string,
     request: RemoteRuntimeStreamEventsRequest = {},
   ): Promise<RemoteRuntimeStreamEventsResult> {
-    const target = this.requireTarget(targetId);
+    const target = this.requireTargetForImplicitUse(targetId);
     try {
       const result = await this.pool.streamEventsForTarget(
         target,
@@ -418,6 +432,7 @@ export class RemoteConnectionService {
   ): Promise<void> {
     for (const target of this.registry.list()) {
       if (!shouldAutoconnectTarget(target)) continue;
+      if (this.manuallyDisconnectedTargetIds.has(target.id)) continue;
       const status = this.statusById.get(target.id);
       if (status?.state === "connecting") continue;
       if (status?.state === "connected") {
@@ -444,6 +459,7 @@ export class RemoteConnectionService {
     params: Record<string, unknown>,
     options: { retryOnConnectionError?: boolean } = {},
   ): Promise<unknown> {
+    this.assertImplicitReconnectAllowed(target.id);
     try {
       const result = await this.pool.callMachineForTarget(
         target,
@@ -470,6 +486,19 @@ export class RemoteConnectionService {
     const target = this.registry.get(targetId);
     if (!target) throw new Error("Remote target was not found.");
     return target;
+  }
+
+  private requireTargetForImplicitUse(targetId: string): RemoteRuntimeTarget {
+    const target = this.requireTarget(targetId);
+    this.assertImplicitReconnectAllowed(target.id);
+    return target;
+  }
+
+  private assertImplicitReconnectAllowed(targetId: string): void {
+    if (!this.manuallyDisconnectedTargetIds.has(targetId)) return;
+    throw new Error(
+      "Remote machine was manually disconnected. Connect again to use this remote project.",
+    );
   }
 
   private upsertProject(

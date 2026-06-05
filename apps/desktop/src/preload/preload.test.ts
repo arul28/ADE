@@ -4303,6 +4303,7 @@ describe("preload OAuth bridge", () => {
       });
       expect(invoke).toHaveBeenCalledWith(IPC.remoteRuntimeDisconnect, {
         id: "target-1",
+        manual: true,
       });
 
       await vi.advanceTimersByTimeAsync(20_000);

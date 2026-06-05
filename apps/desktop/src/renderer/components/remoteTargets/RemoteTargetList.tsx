@@ -40,6 +40,9 @@ import {
 
 type RemoteTargetListProps = {
   onConnected?: (result: RemoteRuntimeConnectResult) => void;
+  onDisconnectRequested?: (
+    target: RemoteRuntimeTarget,
+  ) => boolean | Promise<boolean>;
 };
 
 type ConnectTargetOptions = {
@@ -337,7 +340,10 @@ function formatRemoteTargetError(error: unknown): string {
   return message || "Remote connection failed.";
 }
 
-export function RemoteTargetList({ onConnected }: RemoteTargetListProps) {
+export function RemoteTargetList({
+  onConnected,
+  onDisconnectRequested,
+}: RemoteTargetListProps) {
   const [targets, setTargets] = useState<RemoteRuntimeTarget[]>([]);
   const [connectionSnapshot, setConnectionSnapshot] =
     useState<RemoteRuntimeConnectionSnapshot | null>(null);
@@ -699,10 +705,15 @@ export function RemoteTargetList({ onConnected }: RemoteTargetListProps) {
   );
 
   const disconnectTarget = useCallback(async (targetId: string) => {
+    const target = targets.find((entry) => entry.id === targetId) ?? null;
+    if (target && onDisconnectRequested) {
+      const shouldDisconnect = await onDisconnectRequested(target);
+      if (!shouldDisconnect) return;
+    }
     setBusyId(targetId);
     setSelectedId(targetId);
     try {
-      await window.ade.remoteRuntime.disconnect(targetId);
+      await window.ade.remoteRuntime.disconnect(targetId, { manual: true });
       setConnected((current) =>
         current?.target.id === targetId ? null : current,
       );
@@ -733,7 +744,7 @@ export function RemoteTargetList({ onConnected }: RemoteTargetListProps) {
     } finally {
       setBusyId(null);
     }
-  }, []);
+  }, [onDisconnectRequested, targets]);
 
   const removeTarget = useCallback(
     async (targetId: string) => {

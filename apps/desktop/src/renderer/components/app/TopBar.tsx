@@ -42,6 +42,7 @@ import type {
   OpenProjectBinding,
   RecentProjectSummary,
   RemoteRuntimeConnectionSnapshot,
+  RemoteRuntimeTarget,
   SyncRoleSnapshot,
   AppResourceUsageSnapshot,
 } from "../../../shared/types";
@@ -51,6 +52,7 @@ import { HelpMenu } from "../onboarding/HelpMenu";
 import { LinearQuickViewButton } from "./LinearQuickViewButton";
 import { PublishToGitHubDialog } from "../projects/PublishToGitHubDialog";
 import { RemoteTargetList } from "../remoteTargets/RemoteTargetList";
+import { ConfirmDialog, useConfirmDialog } from "../shared/InlineDialogs";
 import { SyncDevicesSection } from "../settings/SyncDevicesSection";
 import { HeaderUsageControl } from "../usage/HeaderUsageControl";
 import { appResourcePressureLevel, getAppResourceUsageCoalesced, resourcePressureDescription } from "../../lib/resourcePressure";
@@ -952,6 +954,11 @@ export function TopBar() {
   );
   const [phoneSyncOpen, setPhoneSyncOpen] = useState(false);
   const [remotePanelOpen, setRemotePanelOpen] = useState(false);
+  const {
+    state: remoteDisconnectConfirmState,
+    confirmAsync: confirmRemoteDisconnect,
+    close: closeRemoteDisconnectConfirm,
+  } = useConfirmDialog();
   const [remoteSnapshot, setRemoteSnapshot] =
     useState<RemoteRuntimeConnectionSnapshot | null>(null);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
@@ -1464,6 +1471,76 @@ export function TopBar() {
     switchProjectToPath,
     switchRemoteProject,
   ]);
+
+  const handleRemoteTargetDisconnectRequested = useCallback(
+    async (target: RemoteRuntimeTarget): Promise<boolean> => {
+      const latestRemoteTabs = openRemoteProjectTabsRef.current;
+      const affectedTabs = latestRemoteTabs.filter(
+        (entry) => entry.targetId === target.id,
+      );
+      const targetName = target.name || target.hostname;
+      const affectedCount = affectedTabs.length;
+      const affectedProjectLines =
+        affectedTabs.length > 0
+          ? affectedTabs.map((entry) => `- ${entry.displayName}`).join("\n")
+          : "";
+      const message =
+        affectedCount > 0
+          ? [
+              `${affectedCount} open project tab${affectedCount === 1 ? "" : "s"} use this remote connection:`,
+              affectedProjectLines,
+              "",
+              "Disconnecting will close those project tabs. ADE will not reconnect to this machine until you connect again.",
+            ].join("\n")
+          : "Disconnecting will stop this remote connection. ADE will not reconnect to this machine until you connect again.";
+
+      const confirmed = await confirmRemoteDisconnect({
+        title: `Disconnect ${targetName}?`,
+        message,
+        confirmLabel: "DISCONNECT",
+        danger: true,
+      });
+      if (!confirmed) return false;
+      if (affectedTabs.length === 0) return true;
+
+      const affectedKeys = new Set(affectedTabs.map((entry) => entry.key));
+      const nextRemoteTabs = latestRemoteTabs.filter(
+        (entry) => !affectedKeys.has(entry.key),
+      );
+      openRemoteProjectTabsRef.current = nextRemoteTabs;
+      setOpenRemoteProjectTabs(nextRemoteTabs);
+
+      const latestState = useAppStore.getState();
+      const latestRemoteBinding =
+        latestState.projectBinding?.kind === "remote"
+          ? latestState.projectBinding
+          : null;
+      if (!latestRemoteBinding || !affectedKeys.has(latestRemoteBinding.key)) {
+        return true;
+      }
+
+      const nextRemoteTab = nextRemoteTabs[0] ?? null;
+      if (nextRemoteTab) {
+        latestState.switchRemoteProject(
+          nextRemoteTab.targetId,
+          nextRemoteTab.projectId,
+        ).catch(() => {});
+        return true;
+      }
+
+      const nextLocalRoot =
+        openProjectTabRootsRef.current[
+          openProjectTabRootsRef.current.length - 1
+        ] ?? null;
+      if (nextLocalRoot) {
+        latestState.switchProjectToPath(nextLocalRoot).catch(() => {});
+      } else {
+        latestState.closeProject().catch(() => {});
+      }
+      return true;
+    },
+    [confirmRemoteDisconnect],
+  );
 
   const handleRelocate = useCallback(
     (oldPath: string) => {
@@ -2347,6 +2424,10 @@ export function TopBar() {
 
       {/* Overlay panels & modals — kept outside the gap-6 wrapper so they
           never participate in flex gap accounting when toggled open. */}
+      <ConfirmDialog
+        state={remoteDisconnectConfirmState}
+        onClose={closeRemoteDisconnectConfirm}
+      />
       {remotePanelOpen ? (
         <div
           className="fixed inset-0 z-[80]"
@@ -2376,7 +2457,9 @@ export function TopBar() {
               <X size={13} weight="regular" />
             </button>
             <div className="p-4 pr-12">
-              <RemoteTargetList />
+              <RemoteTargetList
+                onDisconnectRequested={handleRemoteTargetDisconnectRequested}
+              />
             </div>
           </div>
         </div>

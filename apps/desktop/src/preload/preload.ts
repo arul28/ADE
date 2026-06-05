@@ -3490,12 +3490,18 @@ contextBridge.exposeInMainWorld("ade", {
       project: RemoteRuntimeProjectRecord,
     ): Promise<RemoteRuntimeLocalWorkCheckResult> =>
       ipcRenderer.invoke(IPC.remoteRuntimeCheckLocalWork, { id, project }),
-    disconnect: async (id: string): Promise<{ disconnected: boolean }> => {
+    disconnect: async (
+      id: string,
+      options: { manual?: boolean } = {},
+    ): Promise<{ disconnected: boolean }> => {
       const trimmedId = typeof id === "string" ? id.trim() : "";
+      const manual = options.manual !== false;
       const result = (await ipcRenderer.invoke(IPC.remoteRuntimeDisconnect, {
         id: trimmedId,
+        manual,
       })) as { disconnected: boolean };
       if (
+        manual &&
         result.disconnected &&
         currentProjectBinding?.kind === "remote" &&
         currentProjectBinding.targetId === trimmedId
