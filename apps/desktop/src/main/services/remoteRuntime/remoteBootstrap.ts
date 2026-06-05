@@ -319,8 +319,34 @@ function bundledPtyHostWorkerPath(resourcesPath: string, localBinaryPath: string
   }) ?? null;
 }
 
+type LocalArtifactHashCacheEntry = {
+  size: number;
+  mtimeMs: number;
+  ctimeMs: number;
+  sha256: string;
+};
+
+const localArtifactHashCache = new Map<string, LocalArtifactHashCacheEntry>();
+
 function hashRuntimeBinary(localPath: string): string {
-  return crypto.createHash("sha256").update(fs.readFileSync(localPath)).digest("hex");
+  const stat = fs.statSync(localPath);
+  const cached = localArtifactHashCache.get(localPath);
+  if (
+    cached &&
+    cached.size === stat.size &&
+    cached.mtimeMs === stat.mtimeMs &&
+    cached.ctimeMs === stat.ctimeMs
+  ) {
+    return cached.sha256;
+  }
+  const sha256 = crypto.createHash("sha256").update(fs.readFileSync(localPath)).digest("hex");
+  localArtifactHashCache.set(localPath, {
+    size: stat.size,
+    mtimeMs: stat.mtimeMs,
+    ctimeMs: stat.ctimeMs,
+    sha256,
+  });
+  return sha256;
 }
 
 function fileSizeBytes(localPath: string): number {

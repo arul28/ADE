@@ -763,6 +763,55 @@ describe("bootstrapRemoteRuntime upload flow", () => {
     });
   });
 
+  it("reuses cached local runtime hashes across repeated bootstraps", async () => {
+    const resources = createTempResources("linux-x64");
+    cleanupResources = resources.cleanup;
+    const fakeSsh = createFakeSsh();
+    const registry = createRegistry();
+    connectSshWithRouteMock.mockResolvedValue({
+      client: fakeSsh.ssh,
+      route: uploadRoute,
+    });
+    execSshMock.mockImplementation(async (_client: Client, command: string) => {
+      const remotePath = resolvedRemotePath(command);
+      if (remotePath) return remotePath;
+      if (command === "uname -sm") return ok("Linux x86_64\n");
+      if (command === "cat $HOME/.ade/bin/ade.version 2>/dev/null || true") return ok(`${APP_VERSION}\n`);
+      if (command === "cat $HOME/.ade/bin/ade.sha256 2>/dev/null || true") return ok(`${resources.binarySha256}\n`);
+      if (command === "test -x $HOME/.ade/bin/ade && $HOME/.ade/bin/ade --version || true") return ok(`ade ${APP_VERSION}\n`);
+      if (
+        command.includes("wc -c < $HOME/.ade/bin/ade") &&
+        command.includes("shasum -a 256 $HOME/.ade/bin/ade") &&
+        command.includes("echo ok")
+      ) return ok("ok\n");
+      if (command === "command -v node || true") return ok("\n");
+      return defaultRemoteBootstrapCommand(command);
+    });
+    const readFileSyncSpy = vi.spyOn(fs, "readFileSync");
+    let binaryReadCount = 0;
+    try {
+      await bootstrapRemoteRuntime({
+        target: uploadTarget,
+        registry,
+        resourcesPath: resources.resourcesPath,
+        appVersion: APP_VERSION,
+      });
+      await bootstrapRemoteRuntime({
+        target: uploadTarget,
+        registry,
+        resourcesPath: resources.resourcesPath,
+        appVersion: APP_VERSION,
+      });
+      binaryReadCount = readFileSyncSpy.mock.calls.filter(
+        ([filePath]) => filePath === resources.binaryPath,
+      ).length;
+    } finally {
+      readFileSyncSpy.mockRestore();
+    }
+
+    expect(binaryReadCount).toBe(1);
+  });
+
   it("uploads a same-version runtime when the bundled binary hash changed", async () => {
     const resources = createTempResources();
     cleanupResources = resources.cleanup;
