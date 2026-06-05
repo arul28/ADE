@@ -1640,6 +1640,40 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     expect(invalidateSessionListCache).toHaveBeenCalled();
     expect(listSessionsCachedMock).toHaveBeenCalledWith({ limit: 500 }, undefined);
   });
+
+  it("does not leak unhandled rejections when a background session refresh fails", async () => {
+    let onChangedHandler: (() => void) | null = null;
+    const unhandled = vi.fn();
+    window.addEventListener("unhandledrejection", unhandled);
+    (window as any).ade.sessions.onChanged.mockImplementation((cb: () => void) => {
+      onChangedHandler = cb;
+      return () => {
+        onChangedHandler = null;
+      };
+    });
+
+    try {
+      renderHook(() => useWorkSessions());
+
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, 10));
+      });
+
+      listSessionsCachedMock.mockClear();
+      listSessionsCachedMock.mockRejectedValueOnce(new Error("Remote ADE service connection closed."));
+
+      await act(async () => {
+        onChangedHandler?.();
+        await new Promise((r) => setTimeout(r, 520));
+      });
+
+      expect(invalidateSessionListCache).toHaveBeenCalled();
+      expect(listSessionsCachedMock).toHaveBeenCalledWith({ limit: 500 }, undefined);
+      expect(unhandled).not.toHaveBeenCalled();
+    } finally {
+      window.removeEventListener("unhandledrejection", unhandled);
+    }
+  });
 });
 
 describe("useWorkSessions — grouping defaults and derived tab order", () => {

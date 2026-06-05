@@ -854,7 +854,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
         pendingHiddenSessionRefreshRef.current = true;
         return;
       }
-      void refresh({ showLoading: false });
+      void refresh({ showLoading: false }).catch(() => {});
     }, delayMs);
   }, [isWorkRoute, refresh]);
 
