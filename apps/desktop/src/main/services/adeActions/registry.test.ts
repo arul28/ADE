@@ -348,6 +348,26 @@ describe("ADE_ACTION_ALLOWLIST shape", () => {
     expect(getModelCatalog).toHaveBeenCalledWith({ mode: "cached" });
   });
 
+  it("unwraps chat.listSessions action args before calling the positional chat service API", async () => {
+    const listSessions = vi.fn(async () => []);
+    const runtime = {
+      agentChatService: {
+        listSessions,
+      },
+    } as unknown as Parameters<typeof getAdeActionDomainServices>[0];
+
+    const chat = getAdeActionDomainServices(runtime).chat as {
+      listSessions?: (args?: unknown) => Promise<unknown>;
+    };
+
+    await expect(chat.listSessions?.({
+      laneId: " lane-1 ",
+      includeAutomation: true,
+    })).resolves.toEqual([]);
+    expect(listAllowedAdeActionNames("chat", chat as Record<string, unknown>)).toContain("listSessions");
+    expect(listSessions).toHaveBeenCalledWith("lane-1", { includeAutomation: true });
+  });
+
   it("exposes the browser panel and tab control surface", () => {
     const actions = ADE_ACTION_ALLOWLIST.built_in_browser ?? [];
     for (const name of ["claim", "startSession", "listSessions", "endSession", "showPanel", "navigate", "createTab", "switchTab", "closeTab", "observe", "getTrace", "click", "typeText", "dispatchKey", "scroll", "fill", "clear", "wait"]) {
