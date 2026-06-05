@@ -341,13 +341,62 @@ function ok(stdout = "") {
   return { stdout, stderr: "", code: 0 };
 }
 
+const REMOTE_PREFLIGHT_MARKER_PREFIX = "__ade_remote_preflight_";
+
+function remotePreflightOutput(fields: Record<string, string | null | undefined>): string {
+  return Object.entries(fields)
+    .map(([field, value]) => `\n${REMOTE_PREFLIGHT_MARKER_PREFIX}${field}__\n${value ?? ""}`)
+    .join("");
+}
+
+function isRemoteRuntimeIdentityCommand(command: string, homeDirName = ".ade"): boolean {
+  const home = `$HOME/${homeDirName}`;
+  return (
+    command.includes(`${REMOTE_PREFLIGHT_MARKER_PREFIX}marker_version__`) &&
+    command.includes(`cat ${home}/bin/ade.version 2>/dev/null || true`) &&
+    command.includes(`${REMOTE_PREFLIGHT_MARKER_PREFIX}marker_sha256__`) &&
+    command.includes(`cat ${home}/bin/ade.sha256 2>/dev/null || true`) &&
+    command.includes(`${REMOTE_PREFLIGHT_MARKER_PREFIX}executable_version__`) &&
+    command.includes(`test -x ${home}/bin/ade && ${home}/bin/ade --version 2>/dev/null || true`)
+  );
+}
+
+function remoteRuntimeIdentityOk(args: {
+  markerVersion?: string | null;
+  sha256?: string | null;
+  executableVersion?: string | null;
+}): ReturnType<typeof ok> {
+  return ok(remotePreflightOutput({
+    marker_version: args.markerVersion ?? "",
+    marker_sha256: args.sha256 ?? "",
+    executable_version: args.executableVersion ?? "",
+  }));
+}
+
+function isRemoteRuntimeSupportCommand(command: string): boolean {
+  return command.includes(`${REMOTE_PREFLIGHT_MARKER_PREFIX}node_path__`) &&
+    command.includes("command -v node || true");
+}
+
+function remoteRuntimeSupportOk(args: {
+  nodePath?: string | null;
+  nativeDepsReady?: boolean;
+  ptyHostWorkerReady?: boolean;
+} = {}): ReturnType<typeof ok> {
+  return ok(remotePreflightOutput({
+    node_path: args.nodePath === undefined ? "/usr/local/bin/node" : args.nodePath,
+    native_deps_ready: args.nativeDepsReady ? "ok" : "",
+    pty_host_worker_ready: args.ptyHostWorkerReady ? "ok" : "",
+  }));
+}
+
 function resolvedRemotePath(command: string): ReturnType<typeof ok> | null {
   if (!command.startsWith("printf '%s' ")) return null;
   return ok(command.slice("printf '%s' ".length).replace("$HOME", "/home/ade"));
 }
 
 function defaultRemoteBootstrapCommand(command: string): ReturnType<typeof ok> {
-  if (command === "command -v node || true") return ok("/usr/local/bin/node\n");
+  if (isRemoteRuntimeSupportCommand(command)) return remoteRuntimeSupportOk();
   throw new Error(`Unexpected SSH command: ${command}`);
 }
 
@@ -566,9 +615,7 @@ describe("bootstrapRemoteRuntime upload flow", () => {
       const remotePath = resolvedRemotePath(command);
       if (remotePath) return remotePath;
       if (command === "uname -sm") return ok("Linux x86_64\n");
-      if (command === "cat $HOME/.ade/bin/ade.version 2>/dev/null || true") return ok("");
-      if (command === "cat $HOME/.ade/bin/ade.sha256 2>/dev/null || true") return ok("");
-      if (command === "test -x $HOME/.ade/bin/ade && $HOME/.ade/bin/ade --version || true") return ok("");
+      if (isRemoteRuntimeIdentityCommand(command)) return remoteRuntimeIdentityOk({});
       if (command === "mkdir -p $HOME/.ade/bin && chmod 700 $HOME/.ade/bin") return ok("");
       if (command.match(/^rm -f \$HOME\/\.ade\/bin\/ade\.upload-.* && umask 077 && : > \$HOME\/\.ade\/bin\/ade\.upload-.* && chmod 600 \$HOME\/\.ade\/bin\/ade\.upload-/)) return ok("");
       if (
@@ -604,11 +651,9 @@ describe("bootstrapRemoteRuntime upload flow", () => {
     );
     expect(fakeSsh.exec).not.toHaveBeenCalled();
     expect(spawnMock).not.toHaveBeenCalled();
-    expect(commands.slice(0, 4)).toEqual([
+    expect(commands.slice(0, 2)).toEqual([
       "uname -sm",
-      "cat $HOME/.ade/bin/ade.version 2>/dev/null || true",
-      "cat $HOME/.ade/bin/ade.sha256 2>/dev/null || true",
-      "test -x $HOME/.ade/bin/ade && $HOME/.ade/bin/ade --version || true",
+      expect.stringContaining("__ade_remote_preflight_executable_version__"),
     ]);
     expect(commands).toContain("mkdir -p $HOME/.ade/bin && chmod 700 $HOME/.ade/bin");
     expect(commands.some((command) =>
@@ -664,10 +709,14 @@ describe("bootstrapRemoteRuntime upload flow", () => {
       const remotePath = resolvedRemotePath(command);
       if (remotePath) return remotePath;
       if (command === "uname -sm") return ok("Linux x86_64\n");
-      if (command === "cat $HOME/.ade/bin/ade.version 2>/dev/null || true") return ok(`${APP_VERSION}\n`);
-      if (command === "cat $HOME/.ade/bin/ade.sha256 2>/dev/null || true") return ok(`${resources.binarySha256}\n`);
-      if (command === "test -x $HOME/.ade/bin/ade && $HOME/.ade/bin/ade --version || true") return ok(`ade ${APP_VERSION}\n`);
-      if (command === "command -v node || true") return ok("/usr/local/bin/node\n");
+      if (isRemoteRuntimeIdentityCommand(command)) {
+        return remoteRuntimeIdentityOk({
+          markerVersion: APP_VERSION,
+          sha256: resources.binarySha256,
+          executableVersion: `ade ${APP_VERSION}`,
+        });
+      }
+      if (isRemoteRuntimeSupportCommand(command)) return remoteRuntimeSupportOk({ ptyHostWorkerReady: false });
       if (
         command.includes("wc -c < $HOME/.ade/bin/ade") &&
         command.includes("shasum -a 256 $HOME/.ade/bin/ade") &&
@@ -732,15 +781,19 @@ describe("bootstrapRemoteRuntime upload flow", () => {
       const remotePath = resolvedRemotePath(command);
       if (remotePath) return remotePath;
       if (command === "uname -sm") return ok("Linux x86_64\n");
-      if (command === "cat $HOME/.ade/bin/ade.version 2>/dev/null || true") return ok(`${APP_VERSION}\n`);
-      if (command === "cat $HOME/.ade/bin/ade.sha256 2>/dev/null || true") return ok(`${resources.binarySha256}\n`);
-      if (command === "test -x $HOME/.ade/bin/ade && $HOME/.ade/bin/ade --version || true") return ok(`ade ${APP_VERSION}\n`);
+      if (isRemoteRuntimeIdentityCommand(command)) {
+        return remoteRuntimeIdentityOk({
+          markerVersion: APP_VERSION,
+          sha256: resources.binarySha256,
+          executableVersion: `ade ${APP_VERSION}`,
+        });
+      }
       if (
         command.includes("wc -c < $HOME/.ade/bin/ade") &&
         command.includes("shasum -a 256 $HOME/.ade/bin/ade") &&
         command.includes("echo ok")
       ) return ok("ok\n");
-      if (command === "command -v node || true") return ok("\n");
+      if (isRemoteRuntimeSupportCommand(command)) return remoteRuntimeSupportOk({ nodePath: null });
       return defaultRemoteBootstrapCommand(command);
     });
 
@@ -776,15 +829,19 @@ describe("bootstrapRemoteRuntime upload flow", () => {
       const remotePath = resolvedRemotePath(command);
       if (remotePath) return remotePath;
       if (command === "uname -sm") return ok("Linux x86_64\n");
-      if (command === "cat $HOME/.ade/bin/ade.version 2>/dev/null || true") return ok(`${APP_VERSION}\n`);
-      if (command === "cat $HOME/.ade/bin/ade.sha256 2>/dev/null || true") return ok(`${resources.binarySha256}\n`);
-      if (command === "test -x $HOME/.ade/bin/ade && $HOME/.ade/bin/ade --version || true") return ok(`ade ${APP_VERSION}\n`);
+      if (isRemoteRuntimeIdentityCommand(command)) {
+        return remoteRuntimeIdentityOk({
+          markerVersion: APP_VERSION,
+          sha256: resources.binarySha256,
+          executableVersion: `ade ${APP_VERSION}`,
+        });
+      }
       if (
         command.includes("wc -c < $HOME/.ade/bin/ade") &&
         command.includes("shasum -a 256 $HOME/.ade/bin/ade") &&
         command.includes("echo ok")
       ) return ok("ok\n");
-      if (command === "command -v node || true") return ok("\n");
+      if (isRemoteRuntimeSupportCommand(command)) return remoteRuntimeSupportOk({ nodePath: null });
       return defaultRemoteBootstrapCommand(command);
     });
     const readFileSyncSpy = vi.spyOn(fs, "readFileSync");
@@ -827,9 +884,13 @@ describe("bootstrapRemoteRuntime upload flow", () => {
       const remotePath = resolvedRemotePath(command);
       if (remotePath) return remotePath;
       if (command === "uname -sm") return ok("Linux x86_64\n");
-      if (command === "cat $HOME/.ade/bin/ade.version 2>/dev/null || true") return ok(`${APP_VERSION}\n`);
-      if (command === "cat $HOME/.ade/bin/ade.sha256 2>/dev/null || true") return ok("previous-local-build-sha\n");
-      if (command === "test -x $HOME/.ade/bin/ade && $HOME/.ade/bin/ade --version || true") return ok(`ade ${APP_VERSION}\n`);
+      if (isRemoteRuntimeIdentityCommand(command)) {
+        return remoteRuntimeIdentityOk({
+          markerVersion: APP_VERSION,
+          sha256: "previous-local-build-sha",
+          executableVersion: `ade ${APP_VERSION}`,
+        });
+      }
       if (
         command.includes("wc -c < $HOME/.ade/bin/ade") &&
         command.includes("shasum -a 256 $HOME/.ade/bin/ade") &&
@@ -893,9 +954,13 @@ describe("bootstrapRemoteRuntime upload flow", () => {
       const remotePath = resolvedRemotePath(command);
       if (remotePath) return remotePath;
       if (command === "uname -sm") return ok("Linux x86_64\n");
-      if (command === "cat $HOME/.ade/bin/ade.version 2>/dev/null || true") return ok(`${APP_VERSION}\n`);
-      if (command === "cat $HOME/.ade/bin/ade.sha256 2>/dev/null || true") return ok("previous-local-build-sha\n");
-      if (command === "test -x $HOME/.ade/bin/ade && $HOME/.ade/bin/ade --version || true") return ok("ade 0.0.0\n");
+      if (isRemoteRuntimeIdentityCommand(command)) {
+        return remoteRuntimeIdentityOk({
+          markerVersion: APP_VERSION,
+          sha256: "previous-local-build-sha",
+          executableVersion: "ade 0.0.0",
+        });
+      }
       if (
         command.includes("wc -c < $HOME/.ade/bin/ade") &&
         command.includes("shasum -a 256 $HOME/.ade/bin/ade") &&
@@ -956,9 +1021,7 @@ describe("bootstrapRemoteRuntime upload flow", () => {
       const remotePath = resolvedRemotePath(command);
       if (remotePath) return remotePath;
       if (command === "uname -sm") return ok("Linux x86_64\n");
-      if (command === "cat $HOME/.ade/bin/ade.version 2>/dev/null || true") return ok("");
-      if (command === "cat $HOME/.ade/bin/ade.sha256 2>/dev/null || true") return ok("");
-      if (command === "test -x $HOME/.ade/bin/ade && $HOME/.ade/bin/ade --version || true") return ok("");
+      if (isRemoteRuntimeIdentityCommand(command)) return remoteRuntimeIdentityOk({});
       if (command === "mkdir -p $HOME/.ade/bin && chmod 700 $HOME/.ade/bin") return ok("");
       if (command.match(/^rm -f \$HOME\/\.ade\/bin\/ade\.upload-.* && umask 077 && : > \$HOME\/\.ade\/bin\/ade\.upload-.* && chmod 600 \$HOME\/\.ade\/bin\/ade\.upload-/)) return ok("");
       if (
@@ -1013,9 +1076,7 @@ describe("bootstrapRemoteRuntime upload flow", () => {
       const remotePath = resolvedRemotePath(command);
       if (remotePath) return remotePath;
       if (command === "uname -sm") return ok("Linux x86_64\n");
-      if (command === "cat $HOME/.ade/bin/ade.version 2>/dev/null || true") return ok("");
-      if (command === "cat $HOME/.ade/bin/ade.sha256 2>/dev/null || true") return ok("");
-      if (command === "test -x $HOME/.ade/bin/ade && $HOME/.ade/bin/ade --version || true") return ok("");
+      if (isRemoteRuntimeIdentityCommand(command)) return remoteRuntimeIdentityOk({});
       if (command === "mkdir -p $HOME/.ade/bin && chmod 700 $HOME/.ade/bin") return ok("");
       if (command.match(/^rm -f \$HOME\/\.ade\/bin\/ade\.upload-.* && umask 077 && : > \$HOME\/\.ade\/bin\/ade\.upload-.* && chmod 600 \$HOME\/\.ade\/bin\/ade\.upload-/)) return ok("");
       if (
@@ -1070,9 +1131,7 @@ describe("bootstrapRemoteRuntime upload flow", () => {
       const remotePath = resolvedRemotePath(command);
       if (remotePath) return remotePath;
       if (command === "uname -sm") return ok("Darwin arm64\n");
-      if (command === "cat $HOME/.ade-alpha/bin/ade.version 2>/dev/null || true") return ok("");
-      if (command === "cat $HOME/.ade-alpha/bin/ade.sha256 2>/dev/null || true") return ok("");
-      if (command === "test -x $HOME/.ade-alpha/bin/ade && $HOME/.ade-alpha/bin/ade --version || true") return ok("");
+      if (isRemoteRuntimeIdentityCommand(command, ".ade-alpha")) return remoteRuntimeIdentityOk({});
       if (command === "mkdir -p $HOME/.ade-alpha/bin && chmod 700 $HOME/.ade-alpha/bin") return ok("");
       if (command === "mkdir -p $HOME/.ade-alpha/runtime") return ok("");
       if (command.match(/^rm -f \$HOME\/\.ade-alpha\/bin\/ade\.upload-.* && umask 077 && : > \$HOME\/\.ade-alpha\/bin\/ade\.upload-.* && chmod 600 \$HOME\/\.ade-alpha\/bin\/ade\.upload-/)) return ok("");
@@ -1092,6 +1151,7 @@ describe("bootstrapRemoteRuntime upload flow", () => {
         command.includes("mv -f $HOME/.ade-alpha/bin/ade.upload-") &&
         command.includes("printf '%s\\n' '2.0.0' > $HOME/.ade-alpha/bin/ade.version")
       ) return ok("");
+      if (isRemoteRuntimeSupportCommand(command)) return remoteRuntimeSupportOk({ nativeDepsReady: true });
       if (command.includes("test -d $HOME/.ade-alpha/runtime/darwin-arm64/node_modules")) return ok("ok\n");
       if (
         command.includes("wc -c < $HOME/.ade-alpha/runtime/ade-darwin-arm64.native.tar.gz.upload-") &&
@@ -1146,13 +1206,15 @@ describe("bootstrapRemoteRuntime upload flow", () => {
     });
     execSshMock.mockImplementation(async (_client: Client, command: string) => {
       if (command === "uname -sm") return ok("Linux x86_64\n");
-      if (command === "cat $HOME/.ade-beta/bin/ade.version 2>/dev/null || true") return ok("");
-      if (command === "cat $HOME/.ade-beta/bin/ade.sha256 2>/dev/null || true") return ok("");
-      if (command === "test -x $HOME/.ade-beta/bin/ade && $HOME/.ade-beta/bin/ade --version || true") return ok("");
-      if (command === "test -x $HOME/.ade/bin/ade && $HOME/.ade/bin/ade --version || true") return ok("");
-      if (command === "test -x $HOME/.ade-alpha/bin/ade && $HOME/.ade-alpha/bin/ade --version || true") return ok("ade 1.9.0-alpha.4\n");
-      if (command === "cat $HOME/.ade-alpha/bin/ade.version 2>/dev/null || true") return ok("1.9.0-alpha.4\n");
-      if (command === "cat $HOME/.ade-alpha/bin/ade.sha256 2>/dev/null || true") return ok("old-sha\n");
+      if (isRemoteRuntimeIdentityCommand(command, ".ade-beta")) return remoteRuntimeIdentityOk({});
+      if (isRemoteRuntimeIdentityCommand(command, ".ade")) return remoteRuntimeIdentityOk({});
+      if (isRemoteRuntimeIdentityCommand(command, ".ade-alpha")) {
+        return remoteRuntimeIdentityOk({
+          markerVersion: "1.9.0-alpha.4",
+          sha256: "old-sha",
+          executableVersion: "ade 1.9.0-alpha.4",
+        });
+      }
       return defaultRemoteBootstrapCommand(command);
     });
     initializeMock.mockResolvedValueOnce({
@@ -1201,9 +1263,13 @@ describe("bootstrapRemoteRuntime upload flow", () => {
     });
     execSshMock.mockImplementation(async (_client: Client, command: string) => {
       if (command === "uname -sm") return ok("Linux x86_64\n");
-      if (command === "cat $HOME/.ade-beta/bin/ade.version 2>/dev/null || true") return ok("1.8.0-beta.2\n");
-      if (command === "cat $HOME/.ade-beta/bin/ade.sha256 2>/dev/null || true") return ok("old-beta-sha\n");
-      if (command === "test -x $HOME/.ade-beta/bin/ade && $HOME/.ade-beta/bin/ade --version || true") return ok("ade 1.8.0-beta.2\n");
+      if (isRemoteRuntimeIdentityCommand(command, ".ade-beta")) {
+        return remoteRuntimeIdentityOk({
+          markerVersion: "1.8.0-beta.2",
+          sha256: "old-beta-sha",
+          executableVersion: "ade 1.8.0-beta.2",
+        });
+      }
       if (command === "test -x $HOME/.ade/bin/ade && $HOME/.ade/bin/ade --version || true") return ok("");
       if (command === "test -x $HOME/.ade-alpha/bin/ade && $HOME/.ade-alpha/bin/ade --version || true") return ok("ade 1.9.0-alpha.4\n");
       if (command === "test -d $HOME/.ade-alpha/runtime/linux-x64/node_modules && echo ok || true") return ok("ok\n");
@@ -1267,9 +1333,13 @@ describe("bootstrapRemoteRuntime upload flow", () => {
     });
     execSshMock.mockImplementation(async (_client: Client, command: string) => {
       if (command === "uname -sm") return ok("Linux x86_64\n");
-      if (command === "cat $HOME/.ade-beta/bin/ade.version 2>/dev/null || true") return ok("1.8.0-beta.2\n");
-      if (command === "cat $HOME/.ade-beta/bin/ade.sha256 2>/dev/null || true") return ok("old-beta-sha\n");
-      if (command === "test -x $HOME/.ade-beta/bin/ade && $HOME/.ade-beta/bin/ade --version || true") return ok("ade 1.8.0-beta.2\n");
+      if (isRemoteRuntimeIdentityCommand(command, ".ade-beta")) {
+        return remoteRuntimeIdentityOk({
+          markerVersion: "1.8.0-beta.2",
+          sha256: "old-beta-sha",
+          executableVersion: "ade 1.8.0-beta.2",
+        });
+      }
       if (command === "test -x $HOME/.ade/bin/ade && $HOME/.ade/bin/ade --version || true") return ok("ade 1.9.0\n");
       if (command === "test -d $HOME/.ade/runtime/linux-x64/node_modules && echo ok || true") return ok("ok\n");
       return defaultRemoteBootstrapCommand(command);
@@ -1322,9 +1392,13 @@ describe("bootstrapRemoteRuntime upload flow", () => {
     execSshMock.mockImplementation(async (_client: Client, command: string) => {
       commands.push(command);
       if (command === "uname -sm") return ok("Linux x86_64\n");
-      if (command === "cat $HOME/.ade/bin/ade.version 2>/dev/null || true") return ok("2.0.0\n");
-      if (command === "cat $HOME/.ade/bin/ade.sha256 2>/dev/null || true") return ok(`${resources.binarySha256}\n`);
-      if (command === "test -x $HOME/.ade/bin/ade && $HOME/.ade/bin/ade --version || true") return ok("ade 2.0.0\n");
+      if (isRemoteRuntimeIdentityCommand(command)) {
+        return remoteRuntimeIdentityOk({
+          markerVersion: "2.0.0",
+          sha256: resources.binarySha256,
+          executableVersion: "ade 2.0.0",
+        });
+      }
       if (
         command.includes("wc -c < $HOME/.ade/bin/ade") &&
         command.includes("shasum -a 256 $HOME/.ade/bin/ade") &&

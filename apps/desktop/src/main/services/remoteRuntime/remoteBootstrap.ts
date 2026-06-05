@@ -497,6 +497,87 @@ function remoteFileMatchesCommand(fileExpr: string, expectedSize: number, expect
   ].join(" && ");
 }
 
+const REMOTE_PREFLIGHT_MARKER_PREFIX = "__ade_remote_preflight_";
+
+function remotePreflightSection(field: string, command: string): string {
+  return `printf '\\n${REMOTE_PREFLIGHT_MARKER_PREFIX}${field}__\\n'; ${command}`;
+}
+
+function parseRemotePreflightSections(stdout: string): Record<string, string> {
+  const sections: Record<string, string> = {};
+  const pattern = /^__ade_remote_preflight_([a-z0-9_]+)__$/gm;
+  const matches = Array.from(stdout.matchAll(pattern));
+  for (let index = 0; index < matches.length; index += 1) {
+    const match = matches[index]!;
+    const field = match[1]!;
+    const start = match.index! + match[0].length;
+    const end = matches[index + 1]?.index ?? stdout.length;
+    sections[field] = stdout.slice(start, end).replace(/^\r?\n/u, "").trim();
+  }
+  return sections;
+}
+
+async function readRemoteRuntimeIdentity(
+  client: Client,
+  layout: RemoteRuntimeLayout,
+): Promise<{
+  markerVersion: string | null;
+  executableVersion: string | null;
+  remoteBinarySha256: string | null;
+}> {
+  const result = await execSsh(client, [
+    remotePreflightSection("marker_version", `cat ${layout.versionExpr} 2>/dev/null || true`),
+    remotePreflightSection("marker_sha256", `cat ${layout.sha256Expr} 2>/dev/null || true`),
+    remotePreflightSection("executable_version", `test -x ${layout.binaryExpr} && ${layout.binaryExpr} --version 2>/dev/null || true`),
+  ].join("; "));
+  const sections = parseRemotePreflightSections(result.stdout);
+  return {
+    markerVersion: normalizeRuntimeVersion(sections.marker_version ?? ""),
+    executableVersion: normalizeRuntimeVersion(sections.executable_version ?? ""),
+    remoteBinarySha256: sections.marker_sha256 || null,
+  };
+}
+
+async function readRemoteRuntimeSupportStatus(args: {
+  client: Client;
+  layout: RemoteRuntimeLayout;
+  archLabel: string;
+  appVersion: string;
+  checkNativeDeps: boolean;
+  checkPtyHostWorker: boolean;
+  localPtyHostWorkerSha256: string | null;
+}): Promise<{
+  nativeDepsReady: boolean;
+  nodePath: string | null;
+  ptyHostWorkerReady: boolean;
+}> {
+  const sections = [
+    remotePreflightSection("node_path", "command -v node || true"),
+  ];
+  if (args.checkNativeDeps) {
+    sections.push(remotePreflightSection("native_deps_ready", [
+      `test -d ${args.layout.runtimeDirExpr}/${args.archLabel}/node_modules`,
+      `test "$(cat ${args.layout.runtimeDirExpr}/${args.archLabel}/.ade-version 2>/dev/null)" = ${shellQuote(args.appVersion)}`,
+      "echo ok",
+    ].join(" && ") + " || true"));
+  }
+  if (args.checkPtyHostWorker && args.localPtyHostWorkerSha256) {
+    sections.push(remotePreflightSection("pty_host_worker_ready", [
+      `test -f ${args.layout.ptyHostWorkerExpr}`,
+      `test "$(cat ${args.layout.ptyHostWorkerSha256Expr} 2>/dev/null)" = ${shellQuote(args.localPtyHostWorkerSha256)}`,
+      "echo ok",
+    ].join(" && ") + " || true"));
+  }
+  const result = await execSsh(args.client, sections.join("; "));
+  const parsed = parseRemotePreflightSections(result.stdout);
+  const nodePath = parsed.node_path?.split(/\r?\n/u)[0]?.trim() || null;
+  return {
+    nativeDepsReady: parsed.native_deps_ready === "ok",
+    nodePath,
+    ptyHostWorkerReady: parsed.pty_host_worker_ready === "ok",
+  };
+}
+
 const REMOTE_ARTIFACT_UPLOAD_TIMEOUT_MS = 10 * 60_000;
 const REMOTE_ARTIFACT_UPLOAD_IDLE_TIMEOUT_MS = 45_000;
 const REMOTE_ARTIFACT_UPLOAD_WATCHDOG_SECONDS = Math.ceil(
@@ -1084,12 +1165,10 @@ export async function bootstrapRemoteRuntime(args: {
     const preferredLayout = resolveRemoteRuntimeLayout();
     let layout = preferredLayout;
     let runtimeLayoutFallbackReason: string | null = null;
-    const binaryMarkerCheck = await execSsh(ssh, `cat ${layout.versionExpr} 2>/dev/null || true`);
-    let markedRuntimeVersion = normalizeRuntimeVersion(binaryMarkerCheck.stdout);
-    const binaryHashCheck = await execSsh(ssh, `cat ${layout.sha256Expr} 2>/dev/null || true`);
-    let remoteBinarySha256 = binaryHashCheck.stdout.trim() || null;
-    const versionCheck = await execSsh(ssh, `test -x ${layout.binaryExpr} && ${layout.binaryExpr} --version || true`);
-    let executableRuntimeVersion = normalizeRuntimeVersion(versionCheck.stdout);
+    const identity = await readRemoteRuntimeIdentity(ssh, layout);
+    let markedRuntimeVersion = identity.markerVersion;
+    let remoteBinarySha256 = identity.remoteBinarySha256;
+    let executableRuntimeVersion = identity.executableVersion;
     let runtimeVersion = selectRemoteRuntimeVersion({
       markerVersion: markedRuntimeVersion,
       executableVersion: executableRuntimeVersion,
@@ -1103,18 +1182,13 @@ export async function bootstrapRemoteRuntime(args: {
 
     if (!localBinary && !executableRuntimeVersion) {
       for (const candidateLayout of resolveRemoteRuntimeLayoutCandidates().filter((candidate) => candidate.homeDirName !== layout.homeDirName)) {
-        const candidateVersionCheck = await execSsh(
-          ssh,
-          `test -x ${candidateLayout.binaryExpr} && ${candidateLayout.binaryExpr} --version || true`,
-        );
-        const candidateExecutableVersion = normalizeRuntimeVersion(candidateVersionCheck.stdout);
+        const candidateIdentity = await readRemoteRuntimeIdentity(ssh, candidateLayout);
+        const candidateExecutableVersion = candidateIdentity.executableVersion;
         if (!candidateExecutableVersion) continue;
-        const candidateMarkerCheck = await execSsh(ssh, `cat ${candidateLayout.versionExpr} 2>/dev/null || true`);
-        const candidateHashCheck = await execSsh(ssh, `cat ${candidateLayout.sha256Expr} 2>/dev/null || true`);
         layout = candidateLayout;
         executableRuntimeVersion = candidateExecutableVersion;
-        markedRuntimeVersion = normalizeRuntimeVersion(candidateMarkerCheck.stdout);
-        remoteBinarySha256 = candidateHashCheck.stdout.trim() || null;
+        markedRuntimeVersion = candidateIdentity.markerVersion;
+        remoteBinarySha256 = candidateIdentity.remoteBinarySha256;
         runtimeVersion = selectRemoteRuntimeVersion({
           markerVersion: markedRuntimeVersion,
           executableVersion: executableRuntimeVersion,
@@ -1167,14 +1241,19 @@ export async function bootstrapRemoteRuntime(args: {
       await uploadBundledRuntime();
     }
 
+    const supportStatus = await readRemoteRuntimeSupportStatus({
+      client: ssh,
+      layout,
+      archLabel: arch.label,
+      appVersion: args.appVersion,
+      checkNativeDeps: Boolean(nativeDepsBundle) && !runtimeUploaded,
+      checkPtyHostWorker: Boolean(localPtyHostWorkerSha256) && !runtimeUploaded,
+      localPtyHostWorkerSha256,
+    });
+
     const ensureNativeDepsReady = async (forceUpload: boolean): Promise<boolean> => {
       if (!nativeDepsBundle) return false;
-      const nativeDepsCheck = await execSsh(ssh, [
-        `test -d ${layout.runtimeDirExpr}/${arch.label}/node_modules`,
-        `test "$(cat ${layout.runtimeDirExpr}/${arch.label}/.ade-version 2>/dev/null)" = ${shellQuote(args.appVersion)}`,
-        "echo ok",
-      ].join(" && ") + " || true");
-      const shouldUploadNativeDeps = forceUpload || nativeDepsCheck.stdout.trim() !== "ok";
+      const shouldUploadNativeDeps = forceUpload || !supportStatus.nativeDepsReady;
       if (shouldUploadNativeDeps) {
         await uploadNativeDepsBundle(ssh, args.target, connectedRoute, connectedConfig, layout, arch.label, nativeDepsBundle, args.appVersion);
       }
@@ -1186,19 +1265,13 @@ export async function bootstrapRemoteRuntime(args: {
     let ptyHostWorkerNodePath: string | null = null;
     let ptyHostWorkerCommandExpr: string | null = null;
     const ensurePtyHostWorkerReady = async (forceUpload: boolean): Promise<boolean> => {
-      const nodePathCheck = await execSsh(ssh, "command -v node || true");
-      ptyHostWorkerNodePath = nodePathCheck.stdout.trim().split(/\r?\n/u)[0]?.trim() || null;
+      ptyHostWorkerNodePath = supportStatus.nodePath;
       if (!ptyHostWorkerNodePath) {
         ptyHostWorkerCommandExpr = layout.binaryExpr;
         return true;
       }
       if (!localPtyHostWorker || !localPtyHostWorkerSha256) return false;
-      const ptyHostWorkerCheck = await execSsh(ssh, [
-        `test -f ${layout.ptyHostWorkerExpr}`,
-        `test "$(cat ${layout.ptyHostWorkerSha256Expr} 2>/dev/null)" = ${shellQuote(localPtyHostWorkerSha256)}`,
-        "echo ok",
-      ].join(" && ") + " || true");
-      const shouldUploadPtyHostWorker = forceUpload || ptyHostWorkerCheck.stdout.trim() !== "ok";
+      const shouldUploadPtyHostWorker = forceUpload || !supportStatus.ptyHostWorkerReady;
       if (shouldUploadPtyHostWorker) {
         await uploadPtyHostWorker(
           ssh,
