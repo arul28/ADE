@@ -498,7 +498,7 @@ export function registerRuntimeBridge({
       arg: { id: string },
     ): Promise<RemoteRuntimeConnectResult> => {
       const id = typeof arg?.id === "string" ? arg.id.trim() : "";
-      return await remoteConnectionService.connect(id);
+      return await remoteConnectionService.connect(id, { explicit: true });
     },
   );
 
@@ -645,7 +645,9 @@ export function registerRuntimeBridge({
         if (!target) throw new Error("Remote target was not found.");
         if (!projectId) throw new Error("Remote project is required.");
 
-        const connection = await remoteConnectionService.connect(target.id);
+        const connection = await remoteConnectionService.connect(target.id, {
+          explicit: true,
+        });
         let project =
           connection.projects.find(
             (candidate) => candidate.projectId === projectId,
@@ -695,9 +697,8 @@ export function registerRuntimeBridge({
       const target = id ? remoteConnectionService.getTarget(id) : null;
       if (!target) throw new Error("Remote target was not found.");
       if (!projectId) throw new Error("Remote project is required.");
-      await remoteConnectionService.connect(target.id);
-      return await remoteConnectionPool.listActionRegistryForTarget(
-        target,
+      return await remoteConnectionService.listActionRegistry(
+        target.id,
         projectId,
       );
     },
@@ -799,9 +800,8 @@ export function registerRuntimeBridge({
       if (!projectId) throw new Error("Remote project is required.");
       if (!isRemoteRuntimeSyncMethod(method))
         throw new Error("Remote sync method is not exposed.");
-      await remoteConnectionService.connect(target.id);
-      return await remoteConnectionPool.callSyncForTarget(
-        target,
+      return await remoteConnectionService.callSync(
+        target.id,
         projectId,
         method,
         params,
@@ -1003,8 +1003,8 @@ export function registerRuntimeBridge({
         `remote:${target.id}:${projectId}`,
         `remote:${target.id}:${projectId}:${request.category ?? "*"}:${request.replay === false ? "live" : "replay"}`,
         (onEvent, onEnded) =>
-          remoteConnectionPool.subscribeEventsForTarget(
-            target,
+          remoteConnectionService.subscribeEvents(
+            target.id,
             projectId,
             {
               cursor: request.cursor,

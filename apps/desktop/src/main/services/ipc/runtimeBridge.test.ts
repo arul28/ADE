@@ -647,7 +647,7 @@ describe("registerRuntimeBridge", () => {
       ),
     ).resolves.toEqual(registry);
 
-    expect(remoteConnectMock).toHaveBeenCalledWith(target);
+    expect(remoteConnectMock).not.toHaveBeenCalled();
     expect(remoteListActionRegistryForTargetMock).toHaveBeenCalledWith(
       target,
       "project-1",

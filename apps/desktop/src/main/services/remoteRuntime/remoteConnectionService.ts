@@ -1,4 +1,5 @@
 import type {
+  AdeActionRegistryEntry,
   CloneProjectInput,
   CreateProjectInput,
   ListMyGitHubReposInput,
@@ -11,6 +12,7 @@ import type {
   RemoteRuntimeConnectionState,
   RemoteRuntimeConnectionStatus,
   RemoteRuntimeConnectResult,
+  RemoteRuntimeBufferedEvent,
   RemoteRuntimePortForward,
   RemoteRuntimePortForwardRequest,
   RemoteRuntimeProjectRecord,
@@ -42,8 +44,25 @@ type RemoteConnectionDisconnectOptions = {
   manual?: boolean;
 };
 
+type RemoteConnectionConnectOptions = {
+  explicit?: boolean;
+};
+
+const AUTOMATIC_RECONNECT_FAILURE_LIMIT = 10;
+
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function automaticReconnectStoppedMessage(): string {
+  return `ADE stopped automatic reconnecting after ${AUTOMATIC_RECONNECT_FAILURE_LIMIT} failed attempts. Press Connect to try again.`;
+}
+
+function isImplicitConnectionFailure(error: unknown): boolean {
+  const message = errorMessage(error);
+  return /remote (?:runtime|ADE service) connection (?:closed|failed|was interrupted)|remote ADE service connection failed recently|timed out waiting for method|stream closed|channel closed|connection lost|socket closed|ECONNRESET|ECONNABORTED|EPIPE|ENOTCONN|remote target is not connected/i.test(
+    message,
+  );
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -66,6 +85,11 @@ function shouldAutoconnectTarget(target: RemoteRuntimeTarget): boolean {
 export class RemoteConnectionService {
   private readonly statusById = new Map<string, StatusPatch>();
   private readonly manuallyDisconnectedTargetIds = new Set<string>();
+  private readonly automaticReconnectFailuresByTargetId = new Map<
+    string,
+    number
+  >();
+  private readonly automaticReconnectPausedTargetIds = new Set<string>();
   private readonly listeners = new Set<
     (snapshot: RemoteRuntimeConnectionSnapshot) => void
   >();
@@ -106,6 +130,7 @@ export class RemoteConnectionService {
   removeTarget(targetId: string): boolean {
     this.disconnect(targetId);
     this.manuallyDisconnectedTargetIds.delete(targetId);
+    this.clearAutomaticReconnectBudget(targetId);
     this.statusById.delete(targetId);
     const removed = this.registry.remove(targetId);
     this.emit();
@@ -124,7 +149,10 @@ export class RemoteConnectionService {
   ): Promise<RemoteRuntimeTrustSshHostKeyResult> {
     const fingerprint = fingerprintSha256.trim();
     if (!fingerprint) throw new Error("SSH host key fingerprint is required.");
-    return await trustSshHostKeyForTarget(this.requireTarget(targetId), fingerprint);
+    return await trustSshHostKeyForTarget(
+      this.requireTarget(targetId),
+      fingerprint,
+    );
   }
 
   snapshot(): RemoteRuntimeConnectionSnapshot {
@@ -138,7 +166,9 @@ export class RemoteConnectionService {
           arch: status.arch ?? target.lastSeenArch,
           version: status.version ?? target.runtimeBinaryVersion,
           ...(status.capabilities ? { capabilities: status.capabilities } : {}),
-          ...(status.compatibilityWarnings ? { compatibilityWarnings: status.compatibilityWarnings } : {}),
+          ...(status.compatibilityWarnings
+            ? { compatibilityWarnings: status.compatibilityWarnings }
+            : {}),
           projects: status.projects ?? [],
           lastError: status.lastError ?? null,
           lastAttemptedAt: status.lastAttemptedAt ?? null,
@@ -166,6 +196,7 @@ export class RemoteConnectionService {
     for (const target of this.registry.list()) {
       if (!shouldAutoconnectTarget(target)) continue;
       if (this.manuallyDisconnectedTargetIds.has(target.id)) continue;
+      if (this.automaticReconnectPausedTargetIds.has(target.id)) continue;
       void this.connect(target.id).catch(() => {});
     }
     if (this.autoconnectTimer) return;
@@ -181,9 +212,18 @@ export class RemoteConnectionService {
     this.autoconnectTimer = null;
   }
 
-  async connect(targetId: string): Promise<RemoteRuntimeConnectResult> {
+  async connect(
+    targetId: string,
+    options: RemoteConnectionConnectOptions = {},
+  ): Promise<RemoteRuntimeConnectResult> {
     const target = this.requireTarget(targetId);
-    this.manuallyDisconnectedTargetIds.delete(target.id);
+    const explicit = options.explicit === true;
+    if (explicit) {
+      this.manuallyDisconnectedTargetIds.delete(target.id);
+      this.clearAutomaticReconnectBudget(target.id);
+    } else {
+      this.assertImplicitReconnectAllowed(target.id);
+    }
     this.mergeStatus(target.id, {
       state: "connecting",
       lastAttemptedAt: Date.now(),
@@ -202,11 +242,15 @@ export class RemoteConnectionService {
         lastAttemptedAt: Date.now(),
         lastError: null,
       });
+      this.clearAutomaticReconnectBudget(result.target.id);
       return result;
     } catch (error) {
+      const lastError = explicit
+        ? errorMessage(error)
+        : this.noteAutomaticReconnectFailure(target.id, error);
       this.mergeStatus(target.id, {
         state: "error",
-        lastError: errorMessage(error),
+        lastError,
         lastAttemptedAt: Date.now(),
       });
       throw error;
@@ -240,11 +284,12 @@ export class RemoteConnectionService {
         projects,
         lastError: null,
       });
+      this.clearAutomaticReconnectBudget(targetId);
       return projects;
     } catch (error) {
       this.mergeStatus(targetId, {
         state: "error",
-        lastError: errorMessage(error),
+        lastError: this.recordImplicitFailure(targetId, error),
         lastAttemptedAt: Date.now(),
       });
       throw error;
@@ -260,11 +305,12 @@ export class RemoteConnectionService {
       const value = await this.pool.addProjectForTarget(target, rootPath);
       const project = coerceConnectionProject(value);
       this.upsertProject(targetId, project);
+      this.clearAutomaticReconnectBudget(targetId);
       return project;
     } catch (error) {
       this.mergeStatus(targetId, {
         state: "error",
-        lastError: errorMessage(error),
+        lastError: this.recordImplicitFailure(targetId, error),
         lastAttemptedAt: Date.now(),
       });
       throw error;
@@ -276,8 +322,17 @@ export class RemoteConnectionService {
     request: RemoteRuntimePortForwardRequest,
   ): Promise<RemoteRuntimePortForward> {
     const target = this.requireTargetForImplicitUse(targetId);
-    await this.pool.connect(target);
-    return await this.pool.ensureLocalPortForward(target.id, request);
+    await this.connect(target.id);
+    try {
+      return await this.pool.ensureLocalPortForward(target.id, request);
+    } catch (error) {
+      this.mergeStatus(targetId, {
+        state: "error",
+        lastError: this.recordImplicitFailure(targetId, error),
+        lastAttemptedAt: Date.now(),
+      });
+      throw error;
+    }
   }
 
   async browseDirectories(
@@ -382,11 +437,12 @@ export class RemoteConnectionService {
         lastError: null,
         lastAttemptedAt: Date.now(),
       });
+      this.clearAutomaticReconnectBudget(targetId);
       return result;
     } catch (error) {
       this.mergeStatus(targetId, {
         state: "error",
-        lastError: errorMessage(error),
+        lastError: this.recordImplicitFailure(targetId, error),
         lastAttemptedAt: Date.now(),
       });
       throw error;
@@ -410,11 +466,103 @@ export class RemoteConnectionService {
         lastError: null,
         lastAttemptedAt: Date.now(),
       });
+      this.clearAutomaticReconnectBudget(targetId);
       return result;
     } catch (error) {
       this.mergeStatus(targetId, {
         state: "error",
-        lastError: errorMessage(error),
+        lastError: this.recordImplicitFailure(targetId, error),
+        lastAttemptedAt: Date.now(),
+      });
+      throw error;
+    }
+  }
+
+  async subscribeEvents(
+    targetId: string,
+    projectId: string,
+    request: RemoteRuntimeStreamEventsRequest = {},
+    onEvent: (event: RemoteRuntimeBufferedEvent) => void,
+    onEnded?: () => void,
+  ): Promise<() => void> {
+    const target = this.requireTargetForImplicitUse(targetId);
+    try {
+      const cleanup = await this.pool.subscribeEventsForTarget(
+        target,
+        projectId,
+        request,
+        onEvent,
+        onEnded,
+      );
+      this.mergeStatus(targetId, {
+        state: "connected",
+        lastError: null,
+        lastAttemptedAt: Date.now(),
+      });
+      this.clearAutomaticReconnectBudget(targetId);
+      return cleanup;
+    } catch (error) {
+      this.mergeStatus(targetId, {
+        state: "error",
+        lastError: this.recordImplicitFailure(targetId, error),
+        lastAttemptedAt: Date.now(),
+      });
+      throw error;
+    }
+  }
+
+  async listActionRegistry(
+    targetId: string,
+    projectId: string,
+  ): Promise<AdeActionRegistryEntry[]> {
+    const target = this.requireTargetForImplicitUse(targetId);
+    try {
+      const registry = await this.pool.listActionRegistryForTarget(
+        target,
+        projectId,
+      );
+      this.mergeStatus(targetId, {
+        state: "connected",
+        lastError: null,
+        lastAttemptedAt: Date.now(),
+      });
+      this.clearAutomaticReconnectBudget(targetId);
+      return registry;
+    } catch (error) {
+      this.mergeStatus(targetId, {
+        state: "error",
+        lastError: this.recordImplicitFailure(targetId, error),
+        lastAttemptedAt: Date.now(),
+      });
+      throw error;
+    }
+  }
+
+  async callSync(
+    targetId: string,
+    projectId: string,
+    method: string,
+    params: Record<string, unknown>,
+  ): Promise<unknown> {
+    const target = this.requireTargetForImplicitUse(targetId);
+    try {
+      const result = await this.pool.callSyncForTarget(
+        target,
+        projectId,
+        method,
+        params,
+      );
+      this.mergeStatus(targetId, {
+        state: "connected",
+        lastError: null,
+        lastAttemptedAt: Date.now(),
+      });
+      this.clearAutomaticReconnectBudget(targetId);
+      return result;
+    } catch (error) {
+      this.mergeStatus(targetId, {
+        state: "error",
+        lastError: this.recordImplicitFailure(targetId, error),
         lastAttemptedAt: Date.now(),
       });
       throw error;
@@ -433,13 +581,19 @@ export class RemoteConnectionService {
     for (const target of this.registry.list()) {
       if (!shouldAutoconnectTarget(target)) continue;
       if (this.manuallyDisconnectedTargetIds.has(target.id)) continue;
+      if (this.automaticReconnectPausedTargetIds.has(target.id)) continue;
       const status = this.statusById.get(target.id);
       if (status?.state === "connecting") continue;
       if (status?.state === "connected") {
         try {
-          await this.pool.callMachineForTarget(target, "ping", {}, {
-            timeoutMs: options.pingTimeoutMs,
-          });
+          await this.pool.callMachineForTarget(
+            target,
+            "ping",
+            {},
+            {
+              timeoutMs: options.pingTimeoutMs,
+            },
+          );
           continue;
         } catch {
           this.pool.disconnect(target.id);
@@ -471,11 +625,12 @@ export class RemoteConnectionService {
       if (current?.state !== "connected") {
         this.mergeStatus(target.id, { state: "connected", lastError: null });
       }
+      this.clearAutomaticReconnectBudget(target.id);
       return result;
     } catch (error) {
       this.mergeStatus(target.id, {
         state: "error",
-        lastError: errorMessage(error),
+        lastError: this.recordImplicitFailure(target.id, error),
         lastAttemptedAt: Date.now(),
       });
       throw error;
@@ -495,10 +650,41 @@ export class RemoteConnectionService {
   }
 
   private assertImplicitReconnectAllowed(targetId: string): void {
-    if (!this.manuallyDisconnectedTargetIds.has(targetId)) return;
-    throw new Error(
-      "Remote machine was manually disconnected. Connect again to use this remote project.",
-    );
+    if (this.manuallyDisconnectedTargetIds.has(targetId)) {
+      throw new Error(
+        "Remote machine was manually disconnected. Connect again to use this remote project.",
+      );
+    }
+    if (this.automaticReconnectPausedTargetIds.has(targetId)) {
+      throw new Error(automaticReconnectStoppedMessage());
+    }
+  }
+
+  private clearAutomaticReconnectBudget(targetId: string): void {
+    this.automaticReconnectFailuresByTargetId.delete(targetId);
+    this.automaticReconnectPausedTargetIds.delete(targetId);
+  }
+
+  private recordImplicitFailure(targetId: string, error: unknown): string {
+    if (!isImplicitConnectionFailure(error)) return errorMessage(error);
+    return this.noteAutomaticReconnectFailure(targetId, error);
+  }
+
+  private noteAutomaticReconnectFailure(
+    targetId: string,
+    error: unknown,
+  ): string {
+    if (this.automaticReconnectPausedTargetIds.has(targetId)) {
+      return automaticReconnectStoppedMessage();
+    }
+    const failureCount =
+      (this.automaticReconnectFailuresByTargetId.get(targetId) ?? 0) + 1;
+    this.automaticReconnectFailuresByTargetId.set(targetId, failureCount);
+    if (failureCount >= AUTOMATIC_RECONNECT_FAILURE_LIMIT) {
+      this.automaticReconnectPausedTargetIds.add(targetId);
+      return automaticReconnectStoppedMessage();
+    }
+    return errorMessage(error);
   }
 
   private upsertProject(
