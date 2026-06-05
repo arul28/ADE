@@ -15,6 +15,7 @@ const remoteRegistryGetMock = vi.hoisted(() => vi.fn());
 const remoteRegistryListMock = vi.hoisted(() => vi.fn<[], RemoteRuntimeTarget[]>(() => []));
 const remoteRegistrySaveMock = vi.hoisted(() => vi.fn());
 const remoteRegistryRemoveMock = vi.hoisted(() => vi.fn());
+const remoteRegistryUpdateMock = vi.hoisted(() => vi.fn());
 const remoteConnectMock = vi.hoisted(() => vi.fn());
 const remoteProjectsForTargetMock = vi.hoisted(() => vi.fn());
 const remoteCallActionForTargetMock = vi.hoisted(() => vi.fn());
@@ -76,6 +77,7 @@ vi.mock("../remoteRuntime/remoteTargetRegistry", () => ({
     list: remoteRegistryListMock,
     save: remoteRegistrySaveMock,
     remove: remoteRegistryRemoveMock,
+    update: remoteRegistryUpdateMock,
   })),
 }));
 
@@ -160,6 +162,7 @@ describe("registerRuntimeBridge", () => {
     remoteRegistryListMock.mockReset().mockReturnValue([]);
     remoteRegistrySaveMock.mockReset();
     remoteRegistryRemoveMock.mockReset();
+    remoteRegistryUpdateMock.mockReset();
     remoteConnectMock.mockReset().mockResolvedValue({
       target,
       arch: "darwin-arm64",
@@ -824,7 +827,9 @@ describe("registerRuntimeBridge", () => {
       displayName: "ADE",
     });
 
-    expect(remoteConnectMock).toHaveBeenCalledWith(target);
+    expect(remoteConnectMock).toHaveBeenCalledWith(target, {
+      bypassFailureBackoff: true,
+    });
     expect(remoteProjectsForTargetMock).toHaveBeenCalledWith(target);
     expect(bindRemoteProject).toHaveBeenCalledWith(7, {
       kind: "remote",

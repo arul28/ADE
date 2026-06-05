@@ -453,7 +453,12 @@ describe("App Work route keep-alive", () => {
 
     render(<App />);
 
-    await screen.findByTestId("work-page");
+    await waitFor(() => {
+      const activeWorkPage = screen
+        .getAllByTestId("work-page")
+        .find((node) => node.getAttribute("data-active") === "true");
+      expect(activeWorkPage).toBeTruthy();
+    });
     expect(screen.queryByTestId("lanes-page")).toBeNull();
     expect(lanesLifecycle.mounts).toBe(0);
     expect(lanesLifecycle.unmounts).toBe(0);
@@ -471,7 +476,12 @@ describe("App Work route keep-alive", () => {
 
     render(<App />);
 
-    await screen.findByTestId("work-page");
+    await waitFor(() => {
+      const activeWorkPage = screen
+        .getAllByTestId("work-page")
+        .find((node) => node.getAttribute("data-active") === "true");
+      expect(activeWorkPage).toBeTruthy();
+    });
     expect(screen.queryByTestId("lanes-page")).toBeNull();
     expect(lanesLifecycle.mounts).toBe(0);
     expect(lanesLifecycle.unmounts).toBe(0);

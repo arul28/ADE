@@ -1600,10 +1600,11 @@ describe("AgentChatPane submit recovery", () => {
     await clickEnabledModelOption(/Claude Sonnet 4\.6/i);
 
     await waitFor(() => {
-      expect(window.ade.agentChat.slashCommands).toHaveBeenCalledWith({
+      expect(window.ade.agentChat.slashCommands).toHaveBeenCalledWith(expect.objectContaining({
         laneId: "lane-1",
         provider: "claude",
-      });
+        projectRoot: "/tmp/project-under-test",
+      }));
     });
 
     const textbox = await screen.findByRole("textbox");
