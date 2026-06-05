@@ -309,6 +309,29 @@ describe("appStore", () => {
       expect(useAppStore.getState().projectHydrated).toBe(false);
     });
 
+    it("setProjectBinding removes a matching local tab root for remote projects", () => {
+      const remoteBinding = {
+        kind: "remote" as const,
+        key: "remote:target-1:project-a",
+        targetId: "target-1",
+        runtimeName: "Mac Studio",
+        projectId: "project-a",
+        rootPath: "/Users/admin/Projects/perf pass",
+        displayName: "perf pass",
+      };
+
+      useAppStore.setState({
+        openProjectTabRoots: ["/Users/arul/ADE", remoteBinding.rootPath],
+      } as any);
+
+      useAppStore.getState().setProjectBinding(remoteBinding);
+
+      expect(useAppStore.getState().projectBinding).toEqual(remoteBinding);
+      expect(useAppStore.getState().openProjectTabRoots).toEqual([
+        "/Users/arul/ADE",
+      ]);
+    });
+
     it("refreshProviderMode auto-elevates when runtime provider signals exist", async () => {
       useAppStore.setState({
         project: { rootPath: "/tmp/provider-mode", displayName: "Provider mode", baseRef: "main" } as any,

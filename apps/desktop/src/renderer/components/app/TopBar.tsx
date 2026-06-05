@@ -1074,6 +1074,9 @@ export function TopBar() {
 
   useEffect(() => {
     if (!remoteBinding) return;
+    setOpenProjectTabRoots((prev) =>
+      prev.filter((rootPath) => rootPath !== remoteBinding.rootPath),
+    );
     setOpenRemoteProjectTabs((prev) => {
       const existingIndex = prev.findIndex(
         (entry) => entry.key === remoteBinding.key,
@@ -1125,6 +1128,8 @@ export function TopBar() {
             useAppStore.getState().rememberProjectInfo(tabProject);
           }
           setOpenProjectTabRoots(session.openProjectTabs.map((entry) => entry.rootPath));
+        } else if (session.binding?.kind === "remote" || !session.project) {
+          setOpenProjectTabRoots([]);
         }
       })
       .catch(() => {

@@ -434,6 +434,41 @@ describe("TopBar", () => {
     expect(useAppStore.getState().switchProjectToPath).not.toHaveBeenCalled();
   });
 
+  it("does not render the active remote project as a local project tab", async () => {
+    const remoteBinding = {
+      kind: "remote" as const,
+      key: "remote:target-1:project-a",
+      targetId: "target-1",
+      runtimeName: "Mac Studio",
+      projectId: "project-a",
+      rootPath: "/Users/admin/Projects/perf pass",
+      displayName: "perf pass",
+    };
+    useAppStore.setState({
+      project: {
+        rootPath: remoteBinding.rootPath,
+        displayName: remoteBinding.displayName,
+        baseRef: "main",
+      } as any,
+      projectBinding: remoteBinding,
+      openProjectTabRoots: [remoteBinding.rootPath],
+    } as any);
+    (globalThis.window.ade.app.getWindowSession as any).mockResolvedValueOnce({
+      windowId: 1,
+      project: null,
+      binding: remoteBinding,
+      openProjectTabs: [],
+    });
+
+    render(<TopBar />);
+
+    await waitFor(() => {
+      expect(screen.getByTitle("Mac Studio: /Users/admin/Projects/perf pass")).toBeTruthy();
+      expect(screen.queryByTitle("/Users/admin/Projects/perf pass")).toBeNull();
+      expect(useAppStore.getState().openProjectTabRoots).toEqual([]);
+    });
+  });
+
   it("does not detach again after a project tab is dropped onto an ADE target", async () => {
     render(<TopBar />);
 

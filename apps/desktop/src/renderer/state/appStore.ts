@@ -1023,7 +1023,16 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         [project.rootPath]: project,
       },
     })),
-  setProjectBinding: (projectBinding) => set({ projectBinding }),
+  setProjectBinding: (projectBinding) =>
+    set((prev) => ({
+      projectBinding,
+      openProjectTabRoots:
+        projectBinding?.kind === "remote"
+          ? prev.openProjectTabRoots.filter(
+              (rootPath) => rootPath !== projectBinding.rootPath,
+            )
+          : prev.openProjectTabRoots,
+    })),
   setProjectHydrated: (projectHydrated) => set({ projectHydrated }),
   setShowWelcome: (showWelcome) => set({ showWelcome }),
   clearProjectTransitionError: () => set({ projectTransitionError: null }),
