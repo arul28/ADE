@@ -19,6 +19,7 @@ import type {
   RemoteRuntimeBufferedEvent,
   RemoteRuntimeConnectResult,
   RemoteRuntimeDiscoveryResult,
+  RemoteRuntimeEventCategory,
   RemoteRuntimeEventNotificationPayload,
   RemoteRuntimeLocalWorkCheckResult,
   RemoteRuntimePortForward,
@@ -97,6 +98,33 @@ type RuntimeEventSubscribe = (
 
 function isObjectRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isRemoteRuntimeEventCategory(value: unknown): value is RemoteRuntimeEventCategory {
+  return (
+    value === "orchestrator" ||
+    value === "dag_mutation" ||
+    value === "runtime" ||
+    value === "pty"
+  );
+}
+
+function normalizeRuntimeStreamEventsRequest(value: unknown): RemoteRuntimeStreamEventsRequest {
+  if (!isObjectRecord(value)) return {};
+  const request: RemoteRuntimeStreamEventsRequest = {};
+  if (typeof value.cursor === "number" && Number.isFinite(value.cursor)) {
+    request.cursor = value.cursor;
+  }
+  if (typeof value.limit === "number" && Number.isFinite(value.limit)) {
+    request.limit = value.limit;
+  }
+  if (isRemoteRuntimeEventCategory(value.category)) {
+    request.category = value.category;
+  }
+  if (typeof value.replay === "boolean") {
+    request.replay = value.replay;
+  }
+  return request;
 }
 
 function isRemoteRuntimeSyncMethod(value: string): boolean {
@@ -932,6 +960,7 @@ export function registerRuntimeBridge({
           "Local runtime project is not available for this window.",
         );
       }
+      const request = normalizeRuntimeStreamEventsRequest(arg?.request);
       const requestedRootPath = normalizeLocalRuntimeRootPath(arg?.rootPath);
       if (binding?.kind === "local" || requestedRootPath) {
         const bindingKey =
@@ -942,15 +971,15 @@ export function registerRuntimeBridge({
         ensureRuntimeEventSubscription(
           event.sender,
           bindingKey,
-          `${bindingKey}:${arg?.request?.category ?? "*"}:${arg?.request?.replay === false ? "live" : "replay"}`,
+          `${bindingKey}:${request.category ?? "*"}:${request.replay === false ? "live" : "replay"}`,
           (onEvent, onEnded) =>
             localRuntimeConnectionPool.subscribeEventsForRoot(
               rootPath,
               {
-                cursor: arg?.request?.cursor,
-                limit: arg?.request?.limit,
-                category: arg?.request?.category,
-                replay: arg?.request?.replay,
+                cursor: request.cursor,
+                limit: request.limit,
+                category: request.category,
+                replay: request.replay,
               },
               onEvent,
               onEnded,
@@ -958,13 +987,13 @@ export function registerRuntimeBridge({
         );
         return {
           events: [],
-          nextCursor: arg?.request?.cursor ?? 0,
+          nextCursor: request.cursor ?? 0,
           hasMore: false,
         };
       }
       return await localRuntimeConnectionPool.streamEventsForRoot(
         rootPath,
-        arg?.request ?? {},
+        request,
       );
     },
   );
@@ -986,7 +1015,7 @@ export function registerRuntimeBridge({
       if (!projectId) throw new Error("Remote project id is required.");
       const target = remoteConnectionService.getTarget(id);
       if (!target) throw new Error("Remote target was not found.");
-      const request = arg?.request ?? {};
+      const request = normalizeRuntimeStreamEventsRequest(arg?.request);
       const result = request.replay === false
         ? {
             events: [],

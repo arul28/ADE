@@ -291,15 +291,23 @@ export class RemoteConnectionService {
     targetId: string,
     options: RemoteConnectionDisconnectOptions = {},
   ): void {
+    let persistenceError: unknown = null;
     if (options.manual) {
       this.manuallyDisconnectedTargetIds.add(targetId);
       if (this.registry.get(targetId)) {
-        this.registry.update(targetId, { manuallyDisconnectedAt: Date.now() });
+        try {
+          this.registry.update(targetId, { manuallyDisconnectedAt: Date.now() });
+        } catch (error) {
+          persistenceError = error;
+        }
       }
     }
     this.bumpDisconnectGeneration(targetId);
     this.pool.disconnect(targetId);
     this.mergeStatus(targetId, { state: "idle", lastError: null });
+    if (persistenceError) {
+      throw persistenceError;
+    }
   }
 
   probeSavedConnections(): void {

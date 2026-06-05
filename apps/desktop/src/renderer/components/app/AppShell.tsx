@@ -384,16 +384,18 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     const remoteRuntime = window.ade.remoteRuntime;
     if (!remoteRuntime?.getConnectionSnapshot) return;
     let cancelled = false;
+    let seenLiveUpdate = false;
     void remoteRuntime
       .getConnectionSnapshot()
       .then((snapshot) => {
-        if (!cancelled) setRemoteSnapshot(snapshot);
+        if (!cancelled && !seenLiveUpdate) setRemoteSnapshot(snapshot);
       })
       .catch(() => {
-        if (!cancelled) setRemoteSnapshot(null);
+        if (!cancelled && !seenLiveUpdate) setRemoteSnapshot(null);
       });
     const unsubscribe =
       remoteRuntime.onConnectionSnapshotChanged?.((snapshot) => {
+        seenLiveUpdate = true;
         if (!cancelled) setRemoteSnapshot(snapshot);
       }) ?? (() => {});
     return () => {
@@ -488,6 +490,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
       if (nextProject) {
         setProject(nextProject);
+        setProjectBinding(nextBinding ?? null);
         setShowWelcome(false);
       } else {
         setProject(null);
@@ -778,6 +781,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     const handler = (event: Event) => {
+      if (isRemoteProject) return;
       const detail = (event as CustomEvent<OnboardingStatus>).detail;
       if (!detail) return;
       setOnboardingStatus(detail);
@@ -786,7 +790,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     window.addEventListener(ONBOARDING_STATUS_UPDATED_EVENT, handler);
     return () =>
       window.removeEventListener(ONBOARDING_STATUS_UPDATED_EVENT, handler);
-  }, []);
+  }, [isRemoteProject]);
 
   // Track visited tabs — mark after a short delay so stagger animation can play on first visit
   useEffect(() => {
@@ -935,10 +939,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     return (
       window.ade.github?.onStatusChanged?.((status) => {
+        if (!currentProjectRoot || !shouldLoadShellGithubStatus(location.pathname, isRemoteProject)) {
+          return;
+        }
         setGithubStatus(status);
       }) ?? (() => {})
     );
-  }, []);
+  }, [currentProjectRoot, isRemoteProject, location.pathname]);
 
   useEffect(() => {
     if (!window.ade.feedback?.onUpdate) return;
@@ -951,6 +958,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     if (!project?.rootPath || showWelcome) return;
+    if (isRemoteProject) return;
     if (isOnboardingRoute) return;
     if (onboardingStatusLoading) return;
     if (
@@ -967,6 +975,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     onboardingStatus?.dismissedAt,
     onboardingStatus?.freshProject,
     onboardingStatusLoading,
+    isRemoteProject,
     project?.rootPath,
     showWelcome,
   ]);

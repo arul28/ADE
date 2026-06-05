@@ -524,7 +524,7 @@ describe("registerRuntimeBridge", () => {
     );
     expect(localRuntimeConnectionPool.subscribeEventsForRoot).toHaveBeenCalledWith(
       "/other-repo",
-      { cursor: 2, limit: 10, category: "sync" },
+      { cursor: 2, limit: 10, category: undefined, replay: undefined },
       expect.any(Function),
       expect.any(Function),
     );
@@ -685,6 +685,48 @@ describe("registerRuntimeBridge", () => {
       target,
       "project-1",
       { cursor: 0, limit: 100, category: undefined, replay: false },
+      expect.any(Function),
+      expect.any(Function),
+    );
+  });
+
+  it("normalizes malformed remote event stream requests before forwarding", async () => {
+    remoteRegistryGetMock.mockReturnValue(target);
+    remoteStreamEventsForTargetMock.mockResolvedValue({
+      events: [],
+      nextCursor: 0,
+      hasMore: false,
+    });
+    registerRuntimeBridge({
+      appVersion: "1.0.0",
+      globalStatePath: "/tmp/ade-state.json",
+    });
+
+    await expect(
+      ipcHandlers.get(IPC.remoteRuntimeStreamEvents)?.(
+        eventForSender(sender(202)),
+        {
+          id: "target-1",
+          projectId: "project-1",
+          request: ["invalid"] as any,
+        },
+      ),
+    ).resolves.toEqual({ events: [], nextCursor: 0, hasMore: false });
+
+    expect(remoteStreamEventsForTargetMock).toHaveBeenCalledWith(
+      target,
+      "project-1",
+      {},
+    );
+    expect(remoteSubscribeEventsForTargetMock).toHaveBeenCalledWith(
+      target,
+      "project-1",
+      {
+        cursor: undefined,
+        limit: undefined,
+        category: undefined,
+        replay: undefined,
+      },
       expect.any(Function),
       expect.any(Function),
     );

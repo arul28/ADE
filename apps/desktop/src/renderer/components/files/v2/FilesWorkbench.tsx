@@ -32,7 +32,7 @@ import {
 } from "./editorGroupsStore";
 import { resolveViewerKind } from "./viewerRegistry";
 import { invalidateFileContent, primeFileContent } from "./useFileContent";
-import { forgetRecentFile, getRecentFiles, pruneMissingRootRecentFiles, recordRecentFile } from "./recentFiles";
+import { forgetRecentFile, getRecentFiles, isNestedFilePath, pruneMissingRootRecentFiles, recordRecentFile } from "./recentFiles";
 import { EditorGroups } from "./EditorGroups";
 import { StatusBar } from "./StatusBar";
 import { WarmEmptyState } from "./WarmEmptyState";
@@ -130,7 +130,7 @@ export function FilesWorkbench({
   const visibleRecentFiles = useMemo(
     () => (
       tree.length > 0
-        ? recentFiles.filter((path) => path.includes("/") || knownRootPaths.has(path))
+        ? recentFiles.filter((path) => isNestedFilePath(path) || knownRootPaths.has(path))
         : recentFiles
     ),
     [knownRootPaths, recentFiles, tree.length],

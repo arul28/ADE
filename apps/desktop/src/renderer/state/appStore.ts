@@ -1767,7 +1767,13 @@ const createAppState: StateCreator<AppState> = (set, get) => {
           sessionsCacheByProject,
         };
       });
-      void get().refreshLanes({ includeStatus: false });
+      invalidateAiDiscoveryCache(binding.rootPath);
+      invalidateProjectConfigCache(binding.rootPath);
+      void Promise.allSettled([
+        get().refreshLanes({ includeStatus: false }),
+        get().refreshKeybindings()
+      ]);
+      scheduleProjectHydration();
       return binding;
     } catch (error) {
       if (switchGeneration === remoteProjectSwitchGeneration) {

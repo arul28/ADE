@@ -267,7 +267,7 @@ export function TabNav({ githubStatus }: { githubStatus?: GitHubStatus | null })
       </nav>
 
       {/* Context menu */}
-      {contextMenu && project?.rootPath ? (
+      {contextMenu && activeProjectRoot ? (
         <div
           className="ade-shell-sidebar-menu fixed z-40 min-w-[170px] p-1 shadow-float"
           style={{ left: contextMenu.x, top: contextMenu.y }}
@@ -277,7 +277,7 @@ export function TabNav({ githubStatus }: { githubStatus?: GitHubStatus | null })
             className="ade-shell-sidebar-menu-item block w-full rounded-md px-2 py-1 text-left"
             onClick={() => {
               setContextMenu(null);
-              window.ade.app.revealPath(project.rootPath).catch(() => {});
+              window.ade.app.revealPath(activeProjectRoot).catch(() => {});
             }}
           >
             {revealLabel}

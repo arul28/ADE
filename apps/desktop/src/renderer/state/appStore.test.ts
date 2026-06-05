@@ -1364,6 +1364,7 @@ describe("appStore", () => {
       } as any);
 
       await useAppStore.getState().switchRemoteProject("target-1", "project-a");
+      await new Promise<void>((resolve) => queueMicrotask(resolve));
 
       const state = useAppStore.getState();
       expect(state.project).toEqual({
@@ -1388,6 +1389,8 @@ describe("appStore", () => {
       expect(state.sessionsCacheByProject["/local/project"]).toEqual([
         { id: "local-session", laneId: "local-lane" },
       ]);
+      expect(window.ade.lanes.list).toHaveBeenCalled();
+      expect(window.ade.keybindings.get).toHaveBeenCalled();
     });
   });
 });

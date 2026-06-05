@@ -91,4 +91,24 @@ describe("agentChatSlashCommandsCache", () => {
 
     expect(slashCommands).toHaveBeenCalledTimes(4);
   });
+
+  it("does not repopulate an invalidated key from a stale in-flight request", async () => {
+    let resolveStale: (commands: AgentChatSlashCommand[]) => void = () => {};
+    const stale = new Promise<AgentChatSlashCommand[]>((resolve) => {
+      resolveStale = resolve;
+    });
+    const slashCommands = vi.mocked(window.ade.agentChat.slashCommands);
+    slashCommands
+      .mockReturnValueOnce(stale as any)
+      .mockResolvedValueOnce([command("/fresh")]);
+
+    const pending = getAgentChatSlashCommandsCached({ sessionId: "session-1" });
+    invalidateAgentChatSlashCommandsCache({ sessionId: "session-1" });
+    resolveStale([command("/stale")]);
+
+    await expect(pending).resolves.toEqual([command("/stale")]);
+    await expect(getAgentChatSlashCommandsCached({ sessionId: "session-1" }))
+      .resolves.toEqual([command("/fresh")]);
+    expect(slashCommands).toHaveBeenCalledTimes(2);
+  });
 });

@@ -143,6 +143,13 @@ function portForwardKey(targetId: string, remoteHost: string, remotePort: number
   return `${targetId}\0${remoteHost}\0${remotePort}`;
 }
 
+function destroyAcceptedSocket(socket: net.Socket, error: Error): void {
+  if (socket.listenerCount("error") === 0) {
+    socket.once("error", () => {});
+  }
+  socket.destroy(error);
+}
+
 function snapshotPortForward(entry: LocalPortForwardEntry): RemoteRuntimePortForward {
   const {
     targetId,
@@ -430,7 +437,7 @@ export class RemoteConnectionPool {
       const server = net.createServer(async (socket) => {
         let activeEntryPromise = this.entries.get(targetId);
         if (!activeEntryPromise) {
-          socket.destroy(new Error(`Remote target is not connected: ${targetId}`));
+          destroyAcceptedSocket(socket, new Error(`Remote target is not connected: ${targetId}`));
           return;
         }
         let activeEntry: PoolEntry;
@@ -438,7 +445,7 @@ export class RemoteConnectionPool {
           activeEntry = await activeEntryPromise;
           const latestEntryPromise = this.entries.get(targetId);
           if (!latestEntryPromise) {
-            socket.destroy(new Error(`Remote target is not connected: ${targetId}`));
+            destroyAcceptedSocket(socket, new Error(`Remote target is not connected: ${targetId}`));
             return;
           }
           if (latestEntryPromise !== activeEntryPromise) {
@@ -446,7 +453,10 @@ export class RemoteConnectionPool {
             activeEntry = await activeEntryPromise;
           }
         } catch (error) {
-          socket.destroy(error instanceof Error ? error : new Error(String(error)));
+          destroyAcceptedSocket(
+            socket,
+            error instanceof Error ? error : new Error(String(error)),
+          );
           return;
         }
         activeEntry.ssh.forwardOut(
@@ -456,7 +466,7 @@ export class RemoteConnectionPool {
           remotePort,
           (error, stream) => {
             if (error) {
-              socket.destroy(error);
+              destroyAcceptedSocket(socket, error);
               return;
             }
             const closeBoth = () => {

@@ -2746,9 +2746,18 @@ export function AgentChatPane({
 
   useEffect(() => {
     const api = window.ade?.appControl;
-    if (!api?.getStatus) return;
-    if (!laneToolsVisible) return;
-    if (isRemoteProject && !effectiveAppControlOpen) return;
+    if (!api?.getStatus) {
+      setAppControlAvailable(false);
+      return;
+    }
+    if (!laneToolsVisible) {
+      setAppControlAvailable(false);
+      return;
+    }
+    if (isRemoteProject && !effectiveAppControlOpen) {
+      setAppControlAvailable(false);
+      return;
+    }
     let cancelled = false;
     void api.getStatus()
       .then((status) => {
@@ -3166,32 +3175,32 @@ export function AgentChatPane({
         if (cancelled) return;
         setParallelLaunchBusy(true);
         setParallelLaunchStatus("Cleaning up unfinished parallel launch…");
-        const cleanupIssues = await cleanupTransientParallelLaunchLanes({
-          laneIds: pendingState.createdLaneIds,
-          deleteLane: (args) => window.ade.lanes.delete(args),
-          refreshLanes: refreshLanesStore,
-          onCleanupError: logParallelLaunchCleanupError,
-        });
+        try {
+          const cleanupIssues = await cleanupTransientParallelLaunchLanes({
+            laneIds: pendingState.createdLaneIds,
+            deleteLane: (args) => window.ade.lanes.delete(args),
+            refreshLanes: refreshLanesStore,
+            onCleanupError: logParallelLaunchCleanupError,
+          });
 
-        if (cleanupIssues.length === 0) {
-          await persistParallelLaunchState(null);
-        } else {
-          await persistParallelLaunchState(buildParallelLaunchState({
-            parentLaneId: pendingState.parentLaneId,
-            createdLaneIds: pendingState.createdLaneIds,
-            sentLaneIds: pendingState.sentLaneIds,
-            status: "cleanup_pending",
-            lastError: pendingState.lastError,
-          }));
-          if (!cancelled) {
-            setError(formatParallelLaunchFailureMessage({
-              launchError: "Recovered an unfinished parallel launch from before ADE closed.",
-              cleanupIssues,
+          if (cleanupIssues.length === 0) {
+            await persistParallelLaunchState(null);
+          } else {
+            await persistParallelLaunchState(buildParallelLaunchState({
+              parentLaneId: pendingState.parentLaneId,
+              createdLaneIds: pendingState.createdLaneIds,
+              sentLaneIds: pendingState.sentLaneIds,
+              status: "cleanup_pending",
+              lastError: pendingState.lastError,
             }));
+            if (!cancelled) {
+              setError(formatParallelLaunchFailureMessage({
+                launchError: "Recovered an unfinished parallel launch from before ADE closed.",
+                cleanupIssues,
+              }));
+            }
           }
-        }
-
-        if (!cancelled) {
+        } finally {
           setParallelLaunchBusy(false);
           setParallelLaunchStatus(null);
         }
@@ -3206,6 +3215,8 @@ export function AgentChatPane({
 
     return () => {
       cancelled = true;
+      setParallelLaunchBusy(false);
+      setParallelLaunchStatus(null);
       if (recoveryTimer != null) {
         window.clearTimeout(recoveryTimer);
       }
@@ -4750,8 +4761,7 @@ export function AgentChatPane({
     sessionDeltaTurnActiveRef.current = turnActive;
     if (isRemoteProject) {
       const completedTurn =
-        remoteDeltaArmedSessionsRef.current.has(selectedSessionId)
-        && sameSession
+        sameSession
         && previousTurnActive
         && !turnActive;
       if (!completedTurn) {

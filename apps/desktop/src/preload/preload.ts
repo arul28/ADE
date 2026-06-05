@@ -3524,6 +3524,7 @@ contextBridge.exposeInMainWorld("ade", {
         currentProjectBinding.targetId === trimmedId
       ) {
         rememberProjectBinding(null);
+        clearProjectScopedReadCaches();
       }
       return result;
     },
@@ -4759,7 +4760,11 @@ contextBridge.exposeInMainWorld("ade", {
             { args },
           );
         if (runtime.handled) {
-          return localizeRemoteLanePreviewInfo(binding, runtime.result);
+          const activeBinding = await getProjectRuntimeBinding();
+          if (activeBinding?.kind !== "remote") {
+            return ipcRenderer.invoke(IPC.lanesProxyGetPreviewInfo, args);
+          }
+          return localizeRemoteLanePreviewInfo(activeBinding, runtime.result);
         }
       }
       return ipcRenderer.invoke(IPC.lanesProxyGetPreviewInfo, args);
@@ -4777,7 +4782,12 @@ contextBridge.exposeInMainWorld("ade", {
           await ipcRenderer.invoke(IPC.lanesProxyOpenPreview, args);
           return;
         }
-        const info = await localizeRemoteLanePreviewInfo(binding, runtime.result);
+        const activeBinding = await getProjectRuntimeBinding();
+        if (activeBinding?.kind !== "remote") {
+          await ipcRenderer.invoke(IPC.lanesProxyOpenPreview, args);
+          return;
+        }
+        const info = await localizeRemoteLanePreviewInfo(activeBinding, runtime.result);
         if (!info) throw new Error(`No preview route for lane: ${args.laneId}`);
         await ipcRenderer.invoke(IPC.appOpenExternal, { url: info.previewUrl });
         return;

@@ -134,7 +134,7 @@ export function LinearQuickViewButton({
   const batchConfigByIssueRef = useRef<Map<string, BatchLaunchIssueConfig>>(new Map());
   const activeProjectRoot =
     projectBinding?.kind === "remote" ? projectBinding.rootPath : project?.rootPath;
-  const shouldAutoCheckVisibility = variant === "icon" && projectBinding?.kind !== "remote";
+  const shouldAutoCheckVisibility = projectBinding?.kind !== "remote";
   const visibilityRetryIntervalMs =
     projectBinding?.kind === "remote"
       ? REMOTE_VISIBILITY_RETRY_INTERVAL_MS
@@ -190,11 +190,10 @@ export function LinearQuickViewButton({
   }, [occludesNativeBrowser]);
 
   useEffect(() => {
-    if (variant !== "icon") return;
     setVisible(false);
     setOpen(false);
     setQuickView(null);
-  }, [activeProjectRoot, variant]);
+  }, [activeProjectRoot]);
 
   useEffect(() => {
     if (!shouldAutoCheckVisibility) return;

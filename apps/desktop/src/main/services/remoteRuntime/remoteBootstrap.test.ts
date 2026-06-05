@@ -475,14 +475,14 @@ function createFakeSsh(options: {
   sftpError?: Error;
   sftpTransferError?: Error;
 } = {}) {
-  const exec = vi.fn((command: string, callback: (error: Error | null, channel: PassThrough & { stderr: PassThrough }) => void) => {
+  const exec = vi.fn((command: string, callback: (error: Error | null, channel?: PassThrough & { stderr: PassThrough }) => void) => {
+    if (options.execError) {
+      setImmediate(() => callback(options.execError!));
+      return;
+    }
     const channel = new PassThrough() as PassThrough & { stderr: PassThrough };
     channel.stderr = new PassThrough();
     channel.resume();
-    if (options.execError) {
-      setImmediate(() => callback(options.execError!, channel));
-      return;
-    }
     channel.on("finish", () => {
       setImmediate(() => {
         if (options.channelError) {
@@ -505,8 +505,14 @@ function createFakeSsh(options: {
     end: vi.fn(),
     destroy: vi.fn(),
   });
-  const sftp = vi.fn((callback: (error: Error | undefined, wrapper: typeof sftpWrapper) => void) => {
-    setImmediate(() => callback(options.sftpError, sftpWrapper));
+  const sftp = vi.fn((callback: (error: Error | undefined, wrapper?: typeof sftpWrapper) => void) => {
+    setImmediate(() => {
+      if (options.sftpError) {
+        callback(options.sftpError);
+        return;
+      }
+      callback(undefined, sftpWrapper);
+    });
   });
   const end = vi.fn();
   const ssh = Object.assign(new EventEmitter(), { exec, sftp, end }) as unknown as Client;

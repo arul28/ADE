@@ -37,10 +37,13 @@ export async function getAgentChatSlashCommandsCached(
   }
 
   const promise = window.ade.agentChat.slashCommands(args).then((value) => {
-    slashCommandCache.set(key, {
-      value,
-      expiresAt: Date.now() + ttlMs,
-    });
+    const current = slashCommandCache.get(key);
+    if (current?.promise === promise) {
+      slashCommandCache.set(key, {
+        value,
+        expiresAt: Date.now() + ttlMs,
+      });
+    }
     return value;
   }).catch((error) => {
     const current = slashCommandCache.get(key);

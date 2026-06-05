@@ -42,7 +42,7 @@ export function formatFilesError(err: unknown, fallback = "File operation failed
 export function isUnavailableGitDecorationsError(err: unknown): boolean {
   const message = formatFilesError(err);
   return /file\.refreshGitDecorations/i.test(message)
-    && /not callable|not exposed|unavailable/i.test(message);
+    && /not callable|not exposed|unavailable|not a function|not implemented|not found|no .*handler|missing .*handler|handler missing|does not exist/i.test(message);
 }
 
 export function isMissingWorkspaceRootError(message: string): boolean {

@@ -252,6 +252,12 @@ export function isLaneDeleteProgressActive(progress: LaneDeleteProgress | null |
   return progress?.overallStatus === "running";
 }
 
+function isLaneDeleteProgressHydratable(progress: LaneDeleteProgress | null | undefined): boolean {
+  return progress?.overallStatus === "running"
+    || progress?.overallStatus === "completed"
+    || progress?.overallStatus === "completed_with_warnings";
+}
+
 export function buildLaneSplitColumnsKey(args: {
   laneTilingLayoutSuffix: string;
   gridResetKey: number;
@@ -1730,7 +1736,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     void window.ade.lanes.listDeleteProgress()
       .then((progresses) => {
         if (cancelled) return;
-        const activeProgresses = (Array.isArray(progresses) ? progresses : []).filter(isLaneDeleteProgressActive);
+        const activeProgresses = (Array.isArray(progresses) ? progresses : []).filter(isLaneDeleteProgressHydratable);
         const activeProgressLaneIds = new Set(activeProgresses.map((progress) => progress.laneId));
         const storedActiveLaneIds = getStoredActiveLaneIds();
         const laneIdsWithoutBackendProgress = storedActiveLaneIds.filter((laneId) => !activeProgressLaneIds.has(laneId));

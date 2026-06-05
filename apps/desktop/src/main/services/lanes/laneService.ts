@@ -4553,7 +4553,6 @@ export function createLaneService({
     listDeleteProgress(): LaneDeleteProgress[] {
       pruneDeleteProgressHistory();
       return Array.from(deleteProgressByLaneId.values())
-        .filter((progress) => progress.overallStatus === "running")
         .map(cloneLaneDeleteProgress);
     },
 

@@ -1,7 +1,7 @@
 /* @vitest-environment jsdom */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, renderHook, waitFor } from "@testing-library/react";
+import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 
 // ---------------------------------------------------------------------------
 // Spies used across all tests
@@ -200,6 +200,7 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
   });
 
   afterEach(() => {
+    cleanup();
     setDocumentVisibility("visible");
     delete (window as any).ade;
   });

@@ -108,6 +108,34 @@ describe("RemoteConnectionService", () => {
     expect(pool.connect).not.toHaveBeenCalled();
   });
 
+  it("disconnects the pool even when persisting the manual marker fails", () => {
+    const previouslyConnected = target("previously-connected", 1_700_000_000);
+    const registry = {
+      list: vi.fn(() => [previouslyConnected]),
+      get: vi.fn((id: string) =>
+        id === previouslyConnected.id ? previouslyConnected : null,
+      ),
+      update: vi.fn(() => {
+        throw new Error("disk full");
+      }),
+    } as unknown as RemoteTargetRegistry;
+    const pool = {
+      disconnect: vi.fn(),
+      onEntryEvicted: vi.fn(() => () => {}),
+    } as unknown as RemoteConnectionPool;
+
+    const service = new RemoteConnectionService(registry, pool);
+
+    expect(() => service.disconnect(previouslyConnected.id, { manual: true }))
+      .toThrow(/disk full/i);
+    expect(pool.disconnect).toHaveBeenCalledWith(previouslyConnected.id);
+    expect(service.snapshot().connections[0]).toMatchObject({
+      target: { id: previouslyConnected.id },
+      state: "idle",
+      lastError: null,
+    });
+  });
+
   it("blocks implicit RPC reconnect after manual disconnect until explicit connect", async () => {
     const previouslyConnected = target("previously-connected", 1_700_000_000);
     const registry = {

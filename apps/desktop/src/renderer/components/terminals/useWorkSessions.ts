@@ -354,6 +354,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   const [searchParams] = useSearchParams();
   const appStore = useAppStoreApi();
   const projectRoot = useAppStore(selectActiveProjectRoot);
+  const isRemoteProject = useAppStore((s) => s.projectBinding?.kind === "remote");
   const lanes = useAppStore((s) => s.lanes);
   const focusSession = useAppStore((s) => s.focusSession);
   const selectLane = useAppStore((s) => s.selectLane);
@@ -1077,8 +1078,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       if (event.projectRoot && event.projectRoot !== currentProjectRoot) return;
       markSessionListDirtyOrRefresh(120);
     });
-    const remoteProject = useAppStore.getState().projectBinding?.kind === "remote";
-    const intervalMs = remoteProject
+    const intervalMs = isRemoteProject
       ? REMOTE_RUNNING_SESSION_REFRESH_INTERVAL_MS
       : LOCAL_RUNNING_SESSION_REFRESH_INTERVAL_MS;
     const t = setInterval(() => {
@@ -1094,7 +1094,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       }
       clearInterval(t);
     };
-  }, [isWorkRoute, markSessionListDirtyOrRefresh, projectRoot, scheduleBackgroundRefresh]);
+  }, [isRemoteProject, isWorkRoute, markSessionListDirtyOrRefresh, projectRoot, scheduleBackgroundRefresh]);
 
   useEffect(() => {
     if (!isWorkRoute) return;
@@ -1127,8 +1127,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       if (document.visibilityState !== "visible") return;
       const hadHiddenChanges = pendingHiddenSessionRefreshRef.current;
       pendingHiddenSessionRefreshRef.current = false;
-      const remoteProject = useAppStore.getState().projectBinding?.kind === "remote";
-      if (remoteProject && !hadHiddenChanges) return;
+      if (isRemoteProject && !hadHiddenChanges) return;
       invalidateSessionListCache();
       scheduleBackgroundRefresh(hadHiddenChanges ? 20 : 120);
     };
@@ -1138,7 +1137,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       window.removeEventListener("focus", refreshVisibleWork);
       document.removeEventListener("visibilitychange", refreshVisibleWork);
     };
-  }, [isWorkRoute, scheduleBackgroundRefresh]);
+  }, [isRemoteProject, isWorkRoute, scheduleBackgroundRefresh]);
 
   const filtered = useMemo(() => {
     const needle = q.trim().toLowerCase();
