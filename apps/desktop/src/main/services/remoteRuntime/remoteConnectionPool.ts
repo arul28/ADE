@@ -19,6 +19,7 @@ import type { AdeActionRegistryEntry } from "../../../shared/types/automations";
 import type { RuntimeRpcClient } from "./runtimeRpcClient";
 import { bootstrapRemoteRuntime, ensureRemoteProject } from "./remoteBootstrap";
 import type { RemoteTargetRegistry } from "./remoteTargetRegistry";
+import { isRetryableRemoteAction } from "./retryableRemoteActions";
 
 type PoolEntry = {
   client: RuntimeRpcClient;
@@ -79,31 +80,6 @@ const CONNECT_FAILURE_BASE_BACKOFF_MS = 3_000;
 const CONNECT_FAILURE_MAX_BACKOFF_MS = 15_000;
 const LOCAL_FORWARD_HOST = "127.0.0.1";
 
-const RETRYABLE_REMOTE_ACTION_PREFIXES = [
-  "diagnosticsGet",
-  "get",
-  "list",
-  "oauthGet",
-  "oauthList",
-  "portGet",
-  "portList",
-  "proxyGet",
-  "read",
-  "search",
-] as const;
-
-const RETRYABLE_REMOTE_ACTIONS = new Set([
-  "chat.codexFuzzyFileSearch",
-  "chat.fileSearch",
-  "chat.modelCatalog",
-  "file.listTreeChildren",
-  "file.quickOpen",
-  "file.readFileRange",
-  "file.refreshGitDecorations",
-  "terminal.activeForChat",
-  "terminal.preview",
-]);
-
 /** Project-scoped sync RPCs that are safe to replay after a reconnect. */
 const RETRYABLE_REMOTE_SYNC_METHODS = new Set([
   "sync.getStatus",
@@ -139,12 +115,7 @@ const MACHINE_PROJECT_CAPABILITY_LABEL: Record<RemoteRuntimeMachineProjectCapabi
 function shouldRetryRemoteRuntimeAction(
   request: RemoteRuntimeActionRequest,
 ): boolean {
-  if (RETRYABLE_REMOTE_ACTIONS.has(`${request.domain}.${request.action}`)) {
-    return true;
-  }
-  return RETRYABLE_REMOTE_ACTION_PREFIXES.some((prefix) =>
-    request.action.startsWith(prefix),
-  );
+  return isRetryableRemoteAction(request.domain, request.action);
 }
 
 function remoteRuntimeActionCallOptions(
@@ -456,13 +427,29 @@ export class RemoteConnectionPool {
         typeof request.label === "string" && request.label.trim()
           ? request.label.trim()
           : null;
-      const server = net.createServer((socket) => {
-        const activeEntry = this.entries.get(targetId);
-        if (!activeEntry) {
+      const server = net.createServer(async (socket) => {
+        let activeEntryPromise = this.entries.get(targetId);
+        if (!activeEntryPromise) {
           socket.destroy(new Error(`Remote target is not connected: ${targetId}`));
           return;
         }
-        entry.ssh.forwardOut(
+        let activeEntry: PoolEntry;
+        try {
+          activeEntry = await activeEntryPromise;
+          const latestEntryPromise = this.entries.get(targetId);
+          if (!latestEntryPromise) {
+            socket.destroy(new Error(`Remote target is not connected: ${targetId}`));
+            return;
+          }
+          if (latestEntryPromise !== activeEntryPromise) {
+            activeEntryPromise = latestEntryPromise;
+            activeEntry = await activeEntryPromise;
+          }
+        } catch (error) {
+          socket.destroy(error instanceof Error ? error : new Error(String(error)));
+          return;
+        }
+        activeEntry.ssh.forwardOut(
           LOCAL_FORWARD_HOST,
           0,
           remoteHost,

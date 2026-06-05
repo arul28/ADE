@@ -1280,6 +1280,7 @@ const PROJECT_SWITCHING_MESSAGE =
 
 let openRemoteProjectGeneration = 0;
 let activeRemoteProjectOpenGeneration: number | null = null;
+const MAX_REMOTE_PROJECT_OPEN_REBIND_ATTEMPTS = 5;
 
 function isReadOnlyRuntimeAction(domain: string, action: string): boolean {
   const key = `${domain}.${action}`;
@@ -1346,12 +1347,18 @@ async function callProjectRuntimeActionIfBound<T>(
   if (freshBinding && !isMutatingChatAction && projectRuntimeTransitionDepth > 0) {
     return { handled: false };
   }
-  if (
+  let rebindAttempts = 0;
+  while (
     activeRemoteProjectOpenGeneration !== null &&
     !isMutatingRuntimeAction(domain, action) &&
     await waitForRemoteProjectOpenIfActive()
   ) {
-    return callProjectRuntimeActionIfBound<T>(domain, action, request);
+    rebindAttempts += 1;
+    if (rebindAttempts >= MAX_REMOTE_PROJECT_OPEN_REBIND_ATTEMPTS) {
+      throw new Error(
+        PROJECT_SWITCHING_MESSAGE.replace("changing project state", "reading project state"),
+      );
+    }
   }
   const remote = await callRemoteProjectActionIfBound<T>(
     domain,

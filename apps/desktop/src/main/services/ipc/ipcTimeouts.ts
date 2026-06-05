@@ -1,4 +1,5 @@
 import { IPC } from "../../../shared/ipc";
+import { isRetryableRemoteAction } from "../remoteRuntime/retryableRemoteActions";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
@@ -36,31 +37,6 @@ const LOCAL_RUNTIME_PROJECT_SETUP_TIMEOUT_MS = 150_000;
 const REMOTE_RUNTIME_BOOTSTRAP_TIMEOUT_MS = 10 * 60_000;
 const REMOTE_RUNTIME_RETRYABLE_ACTION_TIMEOUT_MS = 75_000;
 
-const RETRYABLE_REMOTE_ACTION_PREFIXES = [
-  "diagnosticsGet",
-  "get",
-  "list",
-  "oauthGet",
-  "oauthList",
-  "portGet",
-  "portList",
-  "proxyGet",
-  "read",
-  "search",
-] as const;
-
-const RETRYABLE_REMOTE_ACTIONS = new Set([
-  "chat.codexFuzzyFileSearch",
-  "chat.fileSearch",
-  "chat.modelCatalog",
-  "file.listTreeChildren",
-  "file.quickOpen",
-  "file.readFileRange",
-  "file.refreshGitDecorations",
-  "terminal.activeForChat",
-  "terminal.preview",
-]);
-
 function runtimeActionTimeoutMs(args: readonly unknown[]): number | null {
   const payload = args[0];
   const request = isRecord(payload) && isRecord(payload.request) ? payload.request : null;
@@ -75,9 +51,7 @@ function retryableRemoteActionTimeoutMs(args: readonly unknown[]): number | null
   const domain = request?.domain;
   const action = request?.action;
   if (typeof domain !== "string" || typeof action !== "string") return null;
-  const actionKey = `${domain}.${action}`;
-  if (RETRYABLE_REMOTE_ACTIONS.has(actionKey)) return REMOTE_RUNTIME_RETRYABLE_ACTION_TIMEOUT_MS;
-  return RETRYABLE_REMOTE_ACTION_PREFIXES.some((prefix) => action.startsWith(prefix))
+  return isRetryableRemoteAction(domain, action)
     ? REMOTE_RUNTIME_RETRYABLE_ACTION_TIMEOUT_MS
     : null;
 }

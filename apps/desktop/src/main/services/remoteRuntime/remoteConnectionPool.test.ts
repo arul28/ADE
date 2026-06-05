@@ -387,6 +387,72 @@ describe("RemoteConnectionPool", () => {
     }
   });
 
+  it("uses the live SSH entry when a local SSH forward accepts connections", async () => {
+    const upstream = net.createServer((socket) => {
+      socket.once("data", (chunk) => {
+        socket.end(`remote:${chunk.toString("utf8")}`);
+      });
+    });
+    const upstreamPort = await listen(upstream);
+    const firstClient = createClient();
+    const firstSsh = createSsh();
+    bootstrapRemoteRuntimeMock.mockResolvedValueOnce({
+      client: firstClient,
+      ssh: firstSsh,
+      result: connectResult("1.0.0"),
+    });
+    const pool = new RemoteConnectionPool({} as RemoteTargetRegistry, "1.0.0");
+
+    try {
+      await pool.connect(target);
+      const forward = await pool.ensureLocalPortForward(target.id, {
+        remotePort: upstreamPort,
+        label: "preview",
+      });
+      const secondClient = createClient();
+      const secondSsh = createSsh();
+      (
+        pool as unknown as {
+          entries: Map<string, Promise<{
+            client: FakeRuntimeRpcClient;
+            ssh: FakeSshClient;
+            result: RemoteRuntimeConnectResult;
+          }>>;
+        }
+      ).entries.set(target.id, Promise.resolve({
+        client: secondClient,
+        ssh: secondSsh,
+        result: connectResult("1.0.1"),
+      }));
+
+      const response = await new Promise<string>((resolve, reject) => {
+        const socket = net.createConnection({
+          host: forward.localHost,
+          port: forward.localPort,
+        });
+        socket.once("connect", () => socket.write("ok"));
+        socket.once("data", (chunk) => {
+          resolve(chunk.toString("utf8"));
+          socket.end();
+        });
+        socket.once("error", reject);
+      });
+
+      expect(response).toBe("remote:ok");
+      expect(firstSsh.forwardOut).not.toHaveBeenCalled();
+      expect(secondSsh.forwardOut).toHaveBeenCalledWith(
+        "127.0.0.1",
+        0,
+        "127.0.0.1",
+        upstreamPort,
+        expect.any(Function),
+      );
+    } finally {
+      pool.dispose();
+      await closeServer(upstream);
+    }
+  });
+
   it("connects before streaming events and reconnects after disconnect", async () => {
     const firstClient = createClient();
     firstClient.call.mockResolvedValueOnce({
