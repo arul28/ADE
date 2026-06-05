@@ -736,7 +736,6 @@ describe("useLaneWorkSessions — refresh-before-focus ordering", () => {
       openItemIds: ["session-1", "session-2"],
       activeItemId: "session-2",
       selectedItemId: "session-2",
-      viewMode: "grid",
       draftKind: "cli",
       laneFilter: "all",
       statusFilter: "all",
@@ -768,7 +767,6 @@ describe("useLaneWorkSessions — refresh-before-focus ordering", () => {
       ...previousState,
       activeItemId: null,
       selectedItemId: null,
-      viewMode: "tabs",
       draftKind: "chat",
     });
   });

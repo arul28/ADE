@@ -4680,15 +4680,6 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         supportsInterrupt: false,
       }),
       saveTempAttachment: resolvedArg({ path: "/tmp/browser-mock-attachment" }),
-      codex: {
-        openInCli: async (_args: any) => ({
-          binary: "/usr/local/bin/codex",
-          argv: [] as string[],
-          cwd: "/tmp/browser-mock-lane",
-          threadId: "browser-mock-thread",
-          copyThreadIdToClipboard: true,
-        }),
-      },
       getEventHistory: async (arg: {
         sessionId: string;
         maxEvents?: number;

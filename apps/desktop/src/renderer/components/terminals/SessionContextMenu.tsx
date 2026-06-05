@@ -21,6 +21,9 @@ type SessionContextMenuProps = {
   onCopySessionDeepLink?: (session: TerminalSessionSummary) => void;
   onTogglePinned?: (session: TerminalSessionSummary) => void;
   pinnedSessionIds?: string[];
+  /** Session ids currently in any work grid (drives the "Remove from grid" item). */
+  gridSessionIds?: string[];
+  onRemoveFromGrid?: (session: TerminalSessionSummary) => void;
 };
 
 export function SessionContextMenu({
@@ -36,6 +39,8 @@ export function SessionContextMenu({
   onCopySessionDeepLink,
   onTogglePinned,
   pinnedSessionIds,
+  gridSessionIds,
+  onRemoveFromGrid,
 }: SessionContextMenuProps) {
   const [renaming, setRenaming] = useState(false);
   const [draft, setDraft] = useState("");
@@ -208,6 +213,18 @@ export function SessionContextMenu({
           >
             {(pinnedSessionIds ?? []).includes(session.id) ? "Unpin from front" : "Pin to front"}
           </button>
+        ) : null}
+
+        {onRemoveFromGrid && (gridSessionIds ?? []).includes(session.id) ? (
+          <>
+            <div className="my-0.5 h-px bg-border/10" />
+            <button
+              className="flex w-full items-center gap-2 rounded px-3 py-1.5 text-left text-xs hover:bg-muted/40 transition-colors"
+              onClick={() => { onRemoveFromGrid(session); onClose(); }}
+            >
+              Remove from grid
+            </button>
+          </>
         ) : null}
       </div>
     </>

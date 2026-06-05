@@ -77,6 +77,55 @@ function QuickRunItem({
   );
 }
 
+const inlineItemStyle: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 8,
+  width: "100%",
+  padding: "8px 10px",
+  background: "transparent",
+  border: "none",
+  borderRadius: 8,
+  color: COLORS.textSecondary,
+  cursor: "pointer",
+  fontFamily: MONO_FONT,
+  fontSize: 12,
+  fontWeight: 600,
+  textAlign: "left",
+};
+
+/** Dimmed hint row (loading / empty states) for the inline Run list. */
+const inlineHintStyle: React.CSSProperties = {
+  padding: "6px 10px",
+  color: COLORS.textDim,
+  fontFamily: MONO_FONT,
+  fontSize: 11,
+};
+
+/** Plain (non-dropdown) button row for the inline Run list. */
+function QuickRunInlineItem({
+  icon,
+  label,
+  onSelect,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  onSelect: () => void | Promise<void>;
+}) {
+  return (
+    <button
+      type="button"
+      style={inlineItemStyle}
+      onClick={() => void onSelect()}
+      onMouseEnter={(e) => { e.currentTarget.style.background = COLORS.hoverBg; }}
+      onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
+    >
+      {icon}
+      <span style={{ minWidth: 0, flex: 1 }}>{label}</span>
+    </button>
+  );
+}
+
 function isTrustError(err: unknown): boolean {
   return err instanceof Error && err.message.includes("ADE_TRUST_REQUIRED");
 }
@@ -287,5 +336,103 @@ export function QuickRunMenu({
         </DropdownMenu.Content>
       </DropdownMenu.Portal>
     </DropdownMenu.Root>
+  );
+}
+
+/**
+ * Inline (non-dropdown) version of the run actions — used by the chat-actions
+ * "Run" tab so the options are visible directly instead of behind a trigger.
+ */
+export function QuickRunInlineList({ laneId }: { laneId: string | null }) {
+  const navigate = useNavigate();
+  const selectLane = useAppStore((s) => s.selectLane);
+  const [groups, setGroups] = React.useState<ProcessGroupDefinition[]>([]);
+  const [loading, setLoading] = React.useState(false);
+
+  React.useEffect(() => {
+    if (!laneId) return;
+    let cancelled = false;
+    setLoading(true);
+    window.ade.projectConfig
+      .get()
+      .then((snapshot) => { if (!cancelled) setGroups(snapshot.effective.processGroups ?? []); })
+      .catch(() => { if (!cancelled) setGroups([]); })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [laneId]);
+
+  const syncLaneSelection = React.useCallback(() => {
+    if (!laneId) return false;
+    selectLane(laneId);
+    return true;
+  }, [laneId, selectLane]);
+
+  return (
+    <div className="ade-liquid-glass-menu rounded-xl p-2">
+      <div style={menuSectionLabelStyle}>Lane runtime</div>
+      <QuickRunInlineItem icon={<Rocket size={13} />} label="Open Run tab" onSelect={() => { if (syncLaneSelection()) navigate("/project"); }} />
+      <QuickRunInlineItem icon={<Terminal size={13} />} label="Open shell in Work" onSelect={() => { if (laneId) { selectLane(laneId); navigate("/work"); } }} />
+      <QuickRunInlineItem icon={<Play size={13} weight="fill" />} label="Start all commands" onSelect={async () => { if (!syncLaneSelection() || !laneId) return; await startAllWithTrust(laneId); }} />
+      <QuickRunInlineItem icon={<Stop size={13} weight="fill" />} label="Stop all commands" onSelect={async () => { syncLaneSelection(); if (!laneId) return; await window.ade.processes.stopAll({ laneId }); }} />
+      <QuickRunInlineItem icon={<ArrowClockwise size={13} weight="bold" />} label="Restart all commands" onSelect={async () => { syncLaneSelection(); if (!laneId) return; await window.ade.processes.stopAll({ laneId }); await startAllWithTrust(laneId); }} />
+
+      <div style={{ height: 1, margin: "8px 4px", background: COLORS.border }} />
+      <div style={menuSectionLabelStyle}>Process groups</div>
+      {loading ? (
+        <div style={inlineHintStyle}>Loading group actions...</div>
+      ) : groups.length === 0 ? (
+        <div style={inlineHintStyle}>No groups configured.</div>
+      ) : (
+        groups.map((group) => (
+          <React.Fragment key={group.id}>
+            <div style={{ ...menuSectionLabelStyle, paddingTop: 8 }}>{group.name}</div>
+            <QuickRunInlineItem
+              icon={<Play size={13} weight="fill" />}
+              label={`Start ${group.name}`}
+              onSelect={async () => {
+                if (!syncLaneSelection() || !laneId) return;
+                const laneByProcessId = await buildLaneByProcessId(group.id, laneId);
+                if (!laneByProcessId) return;
+                try {
+                  await window.ade.processes.startGroup({ groupId: group.id, laneByProcessId });
+                } catch (err) {
+                  if (isTrustError(err)) {
+                    await window.ade.projectConfig.confirmTrust();
+                    await window.ade.processes.startGroup({ groupId: group.id, laneByProcessId });
+                  } else { throw err; }
+                }
+              }}
+            />
+            <QuickRunInlineItem
+              icon={<Stop size={13} weight="fill" />}
+              label={`Stop ${group.name}`}
+              onSelect={async () => {
+                syncLaneSelection(); if (!laneId) return;
+                const laneByProcessId = await buildLaneByProcessId(group.id, laneId);
+                if (!laneByProcessId) return;
+                await window.ade.processes.stopGroup({ groupId: group.id, laneByProcessId });
+              }}
+            />
+            <QuickRunInlineItem
+              icon={<ArrowClockwise size={13} weight="bold" />}
+              label={`Restart ${group.name}`}
+              onSelect={async () => {
+                syncLaneSelection(); if (!laneId) return;
+                const laneByProcessId = await buildLaneByProcessId(group.id, laneId);
+                if (!laneByProcessId) return;
+                try {
+                  await window.ade.processes.restartGroup({ groupId: group.id, laneByProcessId });
+                } catch (err) {
+                  if (isTrustError(err)) {
+                    await window.ade.projectConfig.confirmTrust();
+                    await window.ade.processes.restartGroup({ groupId: group.id, laneByProcessId });
+                  } else { throw err; }
+                }
+              }}
+            />
+          </React.Fragment>
+        ))
+      )}
+    </div>
   );
 }

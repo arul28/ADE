@@ -24,10 +24,7 @@ export function LaneWorkPane({
 
   useEffect(() => {
     if (!laneId) return;
-    const hasVisibleTerminalSurface =
-      work.viewMode === "grid"
-        ? work.visibleSessions.length > 0
-        : Boolean(work.activeItemId);
+    const hasVisibleTerminalSurface = Boolean(work.activeItemId);
     if (!hasVisibleTerminalSurface) return;
 
     const raf = window.requestAnimationFrame(() => {
@@ -40,7 +37,7 @@ export function LaneWorkPane({
       window.cancelAnimationFrame(raf);
       window.clearTimeout(settleTimer);
     };
-  }, [laneId, work.activeItemId, work.viewMode, visibleSessionIdsKey]);
+  }, [laneId, work.activeItemId, visibleSessionIdsKey]);
 
   if (!laneId) {
     return (
@@ -54,15 +51,12 @@ export function LaneWorkPane({
     <div className="flex h-full min-h-0 flex-col" style={{ background: "var(--color-bg)", fontFamily: SANS_FONT }}>
       <div className="min-h-0 flex-1" data-tour="work.viewArea">
         <WorkViewArea
-          gridLayoutId={work.gridLayoutId}
           lanes={laneList}
           sessions={work.sessions}
           visibleSessions={work.visibleSessions}
           activeItemId={work.activeItemId}
-          viewMode={work.viewMode}
           draftKind={work.draftKind}
           draftLaneId={laneId}
-          setViewMode={work.setViewMode}
           onSelectItem={work.setActiveItemId}
           onCloseItem={work.closeTab}
           onOpenChatSession={work.handleOpenChatSession}

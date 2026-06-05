@@ -1007,12 +1007,33 @@ describe("AgentChatPane companion drawers", () => {
     });
   });
 
-  it("opens the proof drawer and persists split resize from the real divider", async () => {
+  it("opens the proof drawer as a floating info pane (no split divider)", async () => {
     renderDrawerPane();
 
     fireEvent.click(await screen.findByRole("button", { name: "Open chat actions drawer" }));
     fireEvent.click(await screen.findByRole("button", { name: "Proof" }));
     expect(screen.getByText("No artifacts captured yet.")).toBeTruthy();
+
+    // Chat actions is an info pane: it floats over the right gutter created by
+    // the centered transcript, so it does NOT get a resizable split divider.
+    expect(screen.queryByRole("separator")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Close chat actions drawer" }));
+    await waitFor(() => {
+      expect(screen.queryByText("No artifacts captured yet.")).toBeNull();
+    });
+  });
+
+  it("persists split resize from the real divider on a working panel", async () => {
+    renderDrawerPane();
+
+    // App Control is a heavy working panel that keeps the resizable split (and
+    // therefore the drag divider) — unlike the floating chat-actions info pane.
+    await waitFor(() => {
+      expect(screen.getAllByRole("button", { name: "Open App Control drawer" }).length).toBeGreaterThan(0);
+    });
+    fireEvent.click(screen.getAllByRole("button", { name: "Open App Control drawer" })[0]!);
+    expect(screen.getByTestId("app-control-panel").textContent).toBe("App Control panel mounted");
 
     const divider = screen.getByRole("separator", { name: "" });
     const splitParent = divider.parentElement;
@@ -1038,11 +1059,6 @@ describe("AgentChatPane companion drawers", () => {
 
     await waitFor(() => {
       expect(window.sessionStorage.getItem("ade.chat.rightPaneSplit")).toBe("40");
-    });
-
-    fireEvent.click(screen.getByRole("button", { name: "Close chat actions drawer" }));
-    await waitFor(() => {
-      expect(screen.queryByText("No artifacts captured yet.")).toBeNull();
     });
   });
 

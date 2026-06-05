@@ -27,6 +27,8 @@ export function ChatSurfaceShell({
   shellGeometry = "default",
   /** When true, shell grows with content (e.g. settings live preview) instead of filling a fixed-height parent. */
   autoHeight = false,
+  paneReserveLeft = "0px",
+  paneReserveRight = "0px",
 }: {
   mode: ChatSurfaceMode;
   accentColor?: string | null;
@@ -42,6 +44,9 @@ export function ChatSurfaceShell({
   chromeTint?: ChatChromeTint;
   shellGeometry?: ChatShellGeometry;
   autoHeight?: boolean;
+  /** Horizontal space the chat reserves for open floating side panes (CSS length). */
+  paneReserveLeft?: string;
+  paneReserveRight?: string;
 }) {
   const scale = Number.isFinite(contentScale) && contentScale > 0 ? contentScale : 1;
   const scaled = Math.abs(scale - 1) > 0.001;
@@ -76,7 +81,7 @@ export function ChatSurfaceShell({
             "relative w-full min-w-0 max-w-full overflow-hidden px-2 pb-[max(0.5rem,env(safe-area-inset-bottom))] pt-0 sm:px-3 sm:pb-2",
             footerClassName,
           )}
-          style={{ background: "var(--color-bg)" }}
+          style={{ background: "var(--chat-canvas-bg)" }}
         >
           {footer}
         </div>
@@ -104,8 +109,10 @@ export function ChatSurfaceShell({
         )}
         style={{
           ...chatSurfaceVars(mode, accentColor, { chromeTint }),
-          background: "var(--color-bg)",
-        }}
+          background: "var(--chat-canvas-bg)",
+          ["--chat-pane-reserve-left" as string]: paneReserveLeft,
+          ["--chat-pane-reserve-right" as string]: paneReserveRight,
+        } as CSSProperties}
       >
         {scaled ? (
           <div className="flex min-h-0 min-w-0 max-w-full flex-1 flex-col overflow-hidden" style={scaleWrapperStyle}>

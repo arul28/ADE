@@ -713,7 +713,6 @@ describe("appStore", () => {
   describe("getWorkViewState / setWorkViewState", () => {
     it("returns default state when no project root is set", () => {
       const state = useAppStore.getState().getWorkViewState(null);
-      expect(state.viewMode).toBe("tabs");
       expect(state.draftKind).toBe("chat");
       expect(state.statusFilter).toBe("all");
       expect(state.openItemIds).toEqual([]);
@@ -721,23 +720,23 @@ describe("appStore", () => {
 
     it("returns default state for empty string project root", () => {
       const state = useAppStore.getState().getWorkViewState("  ");
-      expect(state.viewMode).toBe("tabs");
+      expect(state.draftKind).toBe("chat");
     });
 
     it("returns default state for undefined project root", () => {
       const state = useAppStore.getState().getWorkViewState(undefined);
-      expect(state.viewMode).toBe("tabs");
+      expect(state.draftKind).toBe("chat");
     });
 
     it("stores and retrieves work view state by project root", () => {
-      useAppStore.getState().setWorkViewState("/project/a", { viewMode: "grid" });
+      useAppStore.getState().setWorkViewState("/project/a", { statusFilter: "running" });
       const state = useAppStore.getState().getWorkViewState("/project/a");
-      expect(state.viewMode).toBe("grid");
+      expect(state.statusFilter).toBe("running");
       expect(state.draftKind).toBe("chat"); // default preserved
     });
 
     it("ignores setWorkViewState for null project root", () => {
-      useAppStore.getState().setWorkViewState(null, { viewMode: "grid" });
+      useAppStore.getState().setWorkViewState(null, { statusFilter: "running" });
       expect(useAppStore.getState().workViewByProject).toEqual({});
     });
 
@@ -773,7 +772,7 @@ describe("appStore", () => {
       expect(updated.workSidebarOpen).toBe(true);
       expect(updated.workSidebarTab).toBe("browser");
       expect(updated.workSidebarWidthPct).toBe(48);
-      expect(updated.viewMode).toBe("tabs");
+      expect(updated.draftKind).toBe("chat");
     });
   });
 
@@ -783,21 +782,21 @@ describe("appStore", () => {
 
   describe("getLaneWorkViewState / setLaneWorkViewState", () => {
     it("returns default state when project root or laneId is missing", () => {
-      expect(useAppStore.getState().getLaneWorkViewState(null, "lane-1").viewMode).toBe("tabs");
-      expect(useAppStore.getState().getLaneWorkViewState("/proj", null).viewMode).toBe("tabs");
-      expect(useAppStore.getState().getLaneWorkViewState(null, null).viewMode).toBe("tabs");
+      expect(useAppStore.getState().getLaneWorkViewState(null, "lane-1").draftKind).toBe("chat");
+      expect(useAppStore.getState().getLaneWorkViewState("/proj", null).draftKind).toBe("chat");
+      expect(useAppStore.getState().getLaneWorkViewState(null, null).draftKind).toBe("chat");
     });
 
     it("stores and retrieves lane-scoped work view state", () => {
-      useAppStore.getState().setLaneWorkViewState("/proj", "lane-1", { viewMode: "grid" });
+      useAppStore.getState().setLaneWorkViewState("/proj", "lane-1", { statusFilter: "running" });
       const state = useAppStore.getState().getLaneWorkViewState("/proj", "lane-1");
-      expect(state.viewMode).toBe("grid");
+      expect(state.statusFilter).toBe("running");
     });
 
     it("keeps separate state per lane", () => {
-      useAppStore.getState().setLaneWorkViewState("/proj", "lane-1", { viewMode: "grid" });
+      useAppStore.getState().setLaneWorkViewState("/proj", "lane-1", { statusFilter: "running" });
       useAppStore.getState().setLaneWorkViewState("/proj", "lane-2", { statusFilter: "ended" });
-      expect(useAppStore.getState().getLaneWorkViewState("/proj", "lane-1").viewMode).toBe("grid");
+      expect(useAppStore.getState().getLaneWorkViewState("/proj", "lane-1").statusFilter).toBe("running");
       expect(useAppStore.getState().getLaneWorkViewState("/proj", "lane-2").statusFilter).toBe("ended");
     });
 
@@ -811,8 +810,8 @@ describe("appStore", () => {
     });
 
     it("ignores set when keys are empty", () => {
-      useAppStore.getState().setLaneWorkViewState("", "lane-1", { viewMode: "grid" });
-      useAppStore.getState().setLaneWorkViewState("/proj", "", { viewMode: "grid" });
+      useAppStore.getState().setLaneWorkViewState("", "lane-1", { statusFilter: "running" });
+      useAppStore.getState().setLaneWorkViewState("/proj", "", { statusFilter: "running" });
       expect(useAppStore.getState().laneWorkViewByScope).toEqual({});
     });
   });

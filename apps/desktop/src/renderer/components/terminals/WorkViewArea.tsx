@@ -1,30 +1,15 @@
 import { useMemo, useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
-import { createPortal } from "react-dom";
 import { AnimatePresence, motion } from "motion/react";
 import {
   ArrowClockwise,
-  CaretDown,
-  CaretRight,
   Chats,
-  Check,
   Code,
-  Columns,
-  DotsSixVertical,
-  Funnel,
-  GitBranch,
-  GridFour,
-  List,
-  Plus,
   PaperPlaneTilt,
-  Rows,
-  SidebarSimple,
   SpinnerGap,
-  X,
 } from "@phosphor-icons/react";
 import type {
   AgentChatSession,
   AgentChatSlashCommand,
-  AppResourceUsageSnapshot,
   ChatTerminalPreviewResult,
   LaneLinearIssue,
   LaneSummary,
@@ -33,42 +18,25 @@ import type {
   TerminalSnapshotCell,
   TerminalSnapshotRow,
 } from "../../../shared/types";
-import { useAppStore, type WorkDraftKind, type WorkViewMode } from "../../state/appStore";
+import { useAppStore, type WorkDraftKind, type WorkGridSet } from "../../state/appStore";
+import { findGridSetForSession } from "../../lib/workGrid";
+import type { DropEdge } from "../ui/paneTreeOps";
+import { WorkGridView, SingleSessionGridDropZone } from "./WorkGridView";
+
+const EMPTY_GRID_SETS: WorkGridSet[] = [];
 import { TerminalView } from "./TerminalView";
 import { ToolLogo } from "./ToolLogos";
-import { SessionLaneHeaderLabel } from "./LaneChip";
 import { AgentChatPane, type AgentChatSessionCreatedOptions } from "../chat/AgentChatPane";
 import { ChatCommandMenu, handleCommandMenuKeyDown, type ChatCommandMenuHandle, type ChatCommandMenuItem } from "../chat/ChatCommandMenu";
 import { ChatComposerShell } from "../chat/ChatComposerShell";
 import { WorkStartSurface } from "./WorkStartSurface";
-import { CliSessionWorkSurfaceHeader, GridTileSessionHeaderActions } from "./CliSessionWorkSurfaceHeader";
+import { CliSessionWorkSurfaceHeader } from "./CliSessionWorkSurfaceHeader";
 import { isChatToolType, primarySessionLabel, stripTerminalLabelControls, truncateSessionLabel, formatToolTypeLabel } from "../../lib/sessions";
-import { sessionNeedsChatTabHighlight, sessionStatusDot } from "../../lib/terminalAttention";
-import type { WorkTabGroup } from "./useWorkSessions";
 import { SmartTooltip } from "../ui/SmartTooltip";
-import { useFloatingPaneEmbeddedChrome, type FloatingPaneEmbeddedChrome } from "../ui/FloatingPane";
-import { PaneTilingLayout, type PaneConfig } from "../ui/PaneTilingLayout";
 import { cn } from "../ui/cn";
 import { launchProfileForTerminalSession, type WorkPtyLaunchArgs, type WorkPtyLaunchResult } from "./cliLaunch";
-import { buildWorkSessionTilingTree, type TilingPreset } from "./workSessionTiling";
-import { laneSurfaceTint } from "../lanes/laneDesignTokens";
 import { useWorkLaneContextMenu } from "./useWorkLaneContextMenu";
 import { copyLaunchPromptToClipboard } from "../../lib/launchPromptClipboard";
-import {
-  appResourcePressureLevel,
-  clampPressureLevel,
-  getAppResourceUsageCoalesced,
-  pressureLevelForThresholds,
-  type ResourcePressureLevel,
-} from "../../lib/resourcePressure";
-
-function isSessionAwaitingInput(session: TerminalSessionSummary): boolean {
-  return sessionNeedsChatTabHighlight({
-    runtimeState: session.runtimeState,
-    toolType: session.toolType,
-    pendingInputItemId: session.pendingInputItemId,
-  });
-}
 
 function isRunningPtySession(
   session: TerminalSessionSummary | null | undefined,
@@ -88,178 +56,6 @@ function isAgentCliSession(session: TerminalSessionSummary): boolean {
     && session.toolType !== "run-shell"
     && !isChatToolType(session.toolType),
   );
-}
-
-type GridTerminalPressureLevel = ResourcePressureLevel;
-
-type GridTerminalRefreshPolicy = {
-  level: GridTerminalPressureLevel;
-  bucketCount: number;
-  pulseMs: number;
-};
-
-const GRID_TERMINAL_PRESSURE_SAMPLE_MS = 1_000;
-const GRID_TERMINAL_RESOURCE_SAMPLE_MS = 2_000;
-const NORMAL_GRID_TERMINAL_REFRESH_POLICY: GridTerminalRefreshPolicy = {
-  level: 0,
-  bucketCount: 1,
-  pulseMs: 0,
-};
-
-function readRendererHeapRatio(): number | null {
-  const perf = performance as Performance & {
-    memory?: {
-      usedJSHeapSize?: number;
-      totalJSHeapSize?: number;
-      jsHeapSizeLimit?: number;
-    };
-  };
-  const memory = perf.memory;
-  const used = memory?.usedJSHeapSize;
-  const limit = memory?.jsHeapSizeLimit;
-  if (
-    typeof used !== "number"
-    || !Number.isFinite(used)
-    || typeof limit !== "number"
-    || !Number.isFinite(limit)
-    || limit <= 0
-  ) {
-    return null;
-  }
-  return used / limit;
-}
-
-function pressureLevelForSignals(args: {
-  driftMs: number;
-  rendererHeapRatio: number | null;
-  usage: AppResourceUsageSnapshot | null;
-}): GridTerminalPressureLevel {
-  const driftLevel = pressureLevelForThresholds(args.driftMs, [80, 180, 350, 700]);
-  const heapLevel = pressureLevelForThresholds(args.rendererHeapRatio, [0.55, 0.68, 0.78, 0.88]);
-  const resourceLevel = appResourcePressureLevel(args.usage);
-  return clampPressureLevel(Math.max(driftLevel, heapLevel, resourceLevel));
-}
-
-function stabilizePressureLevel(
-  previous: GridTerminalPressureLevel,
-  sampled: GridTerminalPressureLevel,
-): GridTerminalPressureLevel {
-  if (sampled >= previous) return sampled;
-  return clampPressureLevel(Math.max(sampled, previous - 1));
-}
-
-function gridTerminalRefreshPolicyForPressure(level: GridTerminalPressureLevel): GridTerminalRefreshPolicy {
-  switch (level) {
-    case 1:
-      return { level, bucketCount: 2, pulseMs: 650 };
-    case 2:
-      return { level, bucketCount: 4, pulseMs: 900 };
-    case 3:
-      return { level, bucketCount: 8, pulseMs: 1_200 };
-    case 4:
-      return { level, bucketCount: 16, pulseMs: 1_600 };
-    default:
-      return NORMAL_GRID_TERMINAL_REFRESH_POLICY;
-  }
-}
-
-function stableBucketForSession(sessionId: string, bucketCount: number): number {
-  if (bucketCount <= 1) return 0;
-  let hash = 2166136261;
-  for (let index = 0; index < sessionId.length; index += 1) {
-    hash ^= sessionId.charCodeAt(index);
-    hash = Math.imul(hash, 16777619);
-  }
-  return (hash >>> 0) % bucketCount;
-}
-
-function shouldStreamGridTerminal(args: {
-  sessionId: string;
-  isActive: boolean;
-  policy: GridTerminalRefreshPolicy;
-  pulse: number;
-}): boolean {
-  if (args.isActive || args.policy.level === 0) return true;
-  const bucket = stableBucketForSession(args.sessionId, args.policy.bucketCount);
-  return bucket === (args.pulse % args.policy.bucketCount);
-}
-
-function useAdaptiveGridTerminalRefresh(enabled: boolean): { policy: GridTerminalRefreshPolicy; pulse: number } {
-  const [policy, setPolicy] = useState<GridTerminalRefreshPolicy>(NORMAL_GRID_TERMINAL_REFRESH_POLICY);
-  const [pulse, setPulse] = useState(0);
-  const latestUsageRef = useRef<AppResourceUsageSnapshot | null>(null);
-
-  useEffect(() => {
-    if (!enabled) {
-      latestUsageRef.current = null;
-      setPolicy(NORMAL_GRID_TERMINAL_REFRESH_POLICY);
-      setPulse(0);
-      return;
-    }
-
-    let disposed = false;
-    let lastTick = performance.now();
-    let lastResourceSampleAt = 0;
-
-    const updatePolicy = (driftMs: number, usage: AppResourceUsageSnapshot | null) => {
-      const sampled = pressureLevelForSignals({
-        driftMs,
-        rendererHeapRatio: readRendererHeapRatio(),
-        usage,
-      });
-      setPolicy((previous) => {
-        const level = stabilizePressureLevel(previous.level, sampled);
-        return level === previous.level ? previous : gridTerminalRefreshPolicyForPressure(level);
-      });
-    };
-
-    const sample = () => {
-      const now = performance.now();
-      if (document.visibilityState !== "visible") {
-        lastTick = now;
-        return;
-      }
-      const driftMs = Math.max(0, now - lastTick - GRID_TERMINAL_PRESSURE_SAMPLE_MS);
-      lastTick = now;
-      updatePolicy(driftMs, latestUsageRef.current);
-
-      if (lastResourceSampleAt > 0 && now - lastResourceSampleAt < GRID_TERMINAL_RESOURCE_SAMPLE_MS) return;
-      lastResourceSampleAt = now;
-      getAppResourceUsageCoalesced()
-        .then((usage) => {
-          if (disposed) return;
-          latestUsageRef.current = usage;
-          updatePolicy(0, usage);
-        })
-        .catch(() => {});
-    };
-
-    sample();
-    const interval = window.setInterval(sample, GRID_TERMINAL_PRESSURE_SAMPLE_MS);
-    const sampleWhenVisible = () => {
-      if (document.visibilityState === "visible") sample();
-    };
-    document.addEventListener("visibilitychange", sampleWhenVisible);
-    return () => {
-      disposed = true;
-      window.clearInterval(interval);
-      document.removeEventListener("visibilitychange", sampleWhenVisible);
-    };
-  }, [enabled]);
-
-  useEffect(() => {
-    if (!enabled || policy.level === 0) {
-      setPulse(0);
-      return;
-    }
-    const interval = window.setInterval(() => {
-      if (document.visibilityState !== "visible") return;
-      setPulse((current) => current + 1);
-    }, policy.pulseMs);
-    return () => window.clearInterval(interval);
-  }, [enabled, policy.level, policy.pulseMs]);
-
-  return { policy, pulse };
 }
 
 function stoppedBySignal(exitCode: number | null | undefined): boolean {
@@ -780,6 +576,11 @@ function SessionSurface({
   onOpenChatSession,
   onContinueCliSession,
   onResumeCliSession,
+  onToggleSessionsPane,
+  sessionsPaneCollapsed,
+  sessionsPaneCount,
+  onToggleToolsPane,
+  toolsPaneOpen,
 }: {
   session: TerminalSessionSummary;
   lanes: LaneSummary[];
@@ -795,6 +596,13 @@ function SessionSurface({
   onOpenChatSession: (session: AgentChatSession, options?: AgentChatSessionCreatedOptions) => void | Promise<void>;
   onContinueCliSession?: (session: TerminalSessionSummary, text: string) => Promise<void> | void;
   onResumeCliSession?: (session: TerminalSessionSummary) => Promise<void> | void;
+  /** Far-left session-list expander (per-surface header now owns it). */
+  onToggleSessionsPane?: () => void;
+  sessionsPaneCollapsed?: boolean;
+  sessionsPaneCount?: number;
+  /** Far-right Tools-pane toggle (per-surface header now owns it). */
+  onToggleToolsPane?: () => void;
+  toolsPaneOpen?: boolean;
 }) {
   const isChat = isChatToolType(session.toolType);
   const surfaceActive = pageActive && isActive;
@@ -812,6 +620,11 @@ function SessionSurface({
         isTileActive={surfaceActive}
         isTileVisible={surfaceVisible}
         shouldAutofocusComposer={surfaceActive && shouldAutofocus}
+        onToggleSessionsPane={onToggleSessionsPane}
+        sessionsPaneCollapsed={sessionsPaneCollapsed}
+        sessionsPaneCount={sessionsPaneCount}
+        onToggleToolsPane={onToggleToolsPane}
+        toolsPaneOpen={toolsPaneOpen}
       />
     );
   }
@@ -827,6 +640,11 @@ function SessionSurface({
               onInfoClick={onInfoClick}
               onContextMenu={onContextMenu}
               onStopRunningSession={onStopRunningSession}
+              onToggleSessionsPane={onToggleSessionsPane}
+              sessionsPaneCollapsed={sessionsPaneCollapsed}
+              sessionsPaneCount={sessionsPaneCount}
+              onToggleToolsPane={onToggleToolsPane}
+              toolsPaneOpen={toolsPaneOpen}
             />
           ) : null}
           <TerminalView
@@ -933,59 +751,6 @@ const MODE_OPTIONS: Array<{
 ];
 
 
-type SessionsPaneToggleProps = {
-  collapsed: boolean;
-  onToggle: () => void;
-  listCount: number;
-  runningCount: number;
-  listLoading: boolean;
-};
-
-function SessionsPaneToggle({
-  collapsed,
-  onToggle,
-  listCount,
-  runningCount,
-  listLoading,
-}: SessionsPaneToggleProps) {
-  let countHint: string;
-  if (listLoading) {
-    countHint = "Loading session list…";
-  } else if (listCount > 0) {
-    countHint = `${listCount} in list${runningCount > 0 ? `, ${runningCount} running` : ""}`;
-  } else {
-    countHint = "Session list is empty.";
-  }
-  const label = collapsed ? "Show sessions" : "Hide sidebar";
-  const description = collapsed
-    ? `Expand the sessions sidebar. ${countHint}`
-    : `Collapse the sessions sidebar. ${countHint}`;
-  return (
-    <SmartTooltip
-      content={{
-        label,
-        description,
-      }}
-    >
-      <button
-        type="button"
-        className="ade-shell-control ade-work-header-side-control inline-flex shrink-0 items-center gap-1 rounded p-0.5 px-1.5 text-[10px] font-medium"
-        data-variant="ghost"
-        data-tour="work.sessionsExpand"
-        title={label}
-        aria-label={label}
-        aria-pressed={!collapsed}
-        onClick={onToggle}
-      >
-        <SidebarSimple size={11} weight="regular" />
-        {!listLoading && listCount > 0 ? (
-          <span className="min-w-[1ch] text-[9px] leading-none tabular-nums text-muted-fg/50">{listCount}</span>
-        ) : null}
-      </button>
-    </SmartTooltip>
-  );
-}
-
 function ModeSwitcherPills({
   draftKind,
   onShowDraftKind,
@@ -1033,434 +798,68 @@ function ModeSwitcherPills({
   );
 }
 
-function WorkPaneEmbeddedChromeLeading({ chrome }: { chrome: FloatingPaneEmbeddedChrome | null }) {
-  if (!chrome?.minimizable) return null;
-  const { onMinimizeToggle, minimized, dragHandleProps } = chrome;
-  return (
-    <div className="flex shrink-0 items-center gap-0.5">
-      {dragHandleProps?.draggable ? (
-        <DotsSixVertical
-          size={10}
-          weight="regular"
-          className="pointer-events-none text-muted-fg/30 shrink-0"
-          aria-hidden
-        />
-      ) : null}
-      <button
-        type="button"
-        className={cn(
-          "ade-work-header-side-control flex w-[var(--ade-work-header-side-h)] shrink-0 items-center justify-center rounded-md transition-colors",
-          minimized ? "text-accent" : "text-muted-fg/50 hover:text-fg"
-        )}
-        onClick={(event) => {
-          event.stopPropagation();
-          onMinimizeToggle();
-        }}
-        onMouseDown={(event) => event.stopPropagation()}
-        title={minimized ? "Expand pane" : "Minimize pane"}
-        aria-label={minimized ? "Expand pane" : "Minimize pane"}
-      >
-        {minimized ? <CaretRight size={12} weight="regular" /> : <CaretDown size={12} weight="regular" />}
-      </button>
-    </div>
-  );
-}
-
-/**
- * Glyph for the workspace-level "Tools" pane: a sidebar panel docked to the
- * right with a stack of mixed content lines inside, plus an active-state
- * indicator bar. Communicates "a side panel that holds many tools" at
- * a glance — distinct from the chat-header Workbench chip (per-chat tools).
- */
-function ToolsPaneGlyph({ open }: { open: boolean }) {
-  return (
-    <span className="relative block h-[14px] w-[16px]" aria-hidden="true">
-      {/* Outer frame */}
-      <span
-        className={cn(
-          "absolute inset-0 rounded-[3px] border transition-colors",
-          open
-            ? "border-sky-300/55 bg-sky-300/10"
-            : "border-current/45 bg-transparent",
-        )}
-      />
-      {/* Active "docked panel" column on the right */}
-      <span
-        className={cn(
-          "absolute right-[1.5px] top-[1.5px] bottom-[1.5px] w-[4px] rounded-[2px] transition-colors",
-          open
-            ? "bg-sky-200/85 shadow-[0_0_8px_rgba(125,211,252,0.35)]"
-            : "bg-current/55",
-        )}
-      />
-      {/* Stacked content rows on the left */}
-      <span
-        className={cn(
-          "absolute left-[2.5px] top-[3px] h-[1.5px] w-[6px] rounded-full transition-colors",
-          open ? "bg-sky-100/80" : "bg-current/70",
-        )}
-      />
-      <span
-        className={cn(
-          "absolute left-[2.5px] top-[6.5px] h-[1.5px] w-[4.5px] rounded-full transition-colors",
-          open ? "bg-sky-100/55" : "bg-current/45",
-        )}
-      />
-      <span
-        className={cn(
-          "absolute left-[2.5px] top-[10px] h-[1.5px] w-[5.5px] rounded-full transition-colors",
-          open ? "bg-sky-100/55" : "bg-current/45",
-        )}
-      />
-    </span>
-  );
-}
-
-function WorkSidebarToggle({
-  open,
-  onToggle,
-}: {
-  open: boolean;
-  onToggle?: () => void;
-}) {
-  if (!onToggle) return null;
-  return (
-    <SmartTooltip
-      content={{
-        label: open ? "Close Tools pane" : "Open Tools pane",
-        description: "Workspace-level tools alongside this session — Git, Files, iOS Simulator, App Control, and Browser.",
-      }}
-    >
-      <button
-        type="button"
-        className={cn(
-          "ade-shell-control ade-work-header-side-control ade-work-tools-toggle inline-flex shrink-0 items-center gap-1 rounded-md border px-1.5",
-          "font-sans text-[9.5px] font-medium transition-colors hover:text-fg/90",
-          open ? "text-fg/90" : "text-muted-fg/75",
-        )}
-        onClick={onToggle}
-        aria-label={open ? "Close Tools pane" : "Open Tools pane"}
-        aria-pressed={open}
-      >
-        <ToolsPaneGlyph open={open} />
-        <span className="leading-none">Tools</span>
-      </button>
-    </SmartTooltip>
-  );
-}
-
-type WorkGlassHeaderProps = {
-  headerAlignClass: string;
-  glassHeaderDragProps: React.HTMLAttributes<HTMLDivElement>;
-  workEmbeddedChrome: FloatingPaneEmbeddedChrome | null;
-  sessionsPaneToggleProps: SessionsPaneToggleProps | null;
-  viewMode: WorkViewMode;
-  setViewMode: (mode: WorkViewMode) => void;
-  showViewModeToggle?: boolean;
-  workSidebarOpen: boolean;
-  onToggleWorkSidebar?: () => void;
-  leftTrailing?: React.ReactNode;
-  center?: React.ReactNode;
-};
-
-function WorkGlassHeader({
-  headerAlignClass,
-  glassHeaderDragProps,
-  workEmbeddedChrome,
-  sessionsPaneToggleProps,
-  viewMode,
-  setViewMode,
-  showViewModeToggle = false,
-  workSidebarOpen,
-  onToggleWorkSidebar,
-  leftTrailing,
-  center,
-}: WorkGlassHeaderProps) {
-  const toolsDockVisible = Boolean(onToggleWorkSidebar);
-  return (
-    <div
-      className={cn(
-        "ade-work-glass-header ade-work-glass-header-flex w-full min-w-0 max-w-full shrink-0 px-2 py-0",
-        headerAlignClass,
-        workEmbeddedChrome?.dragHandleProps?.draggable && "cursor-grab active:cursor-grabbing",
-      )}
-      {...glassHeaderDragProps}
-    >
-      <div
-        className="ade-work-glass-header-left flex min-w-0 shrink-0 items-stretch justify-start gap-1"
-        data-tour="work.focusToolbar"
-      >
-        {sessionsPaneToggleProps ? <SessionsPaneToggle {...sessionsPaneToggleProps} /> : null}
-        <WorkPaneEmbeddedChromeLeading chrome={workEmbeddedChrome} />
-        {showViewModeToggle ? (
-          <ViewModeToggle viewMode={viewMode} setViewMode={setViewMode} />
-        ) : null}
-        <AnimatePresence>{leftTrailing}</AnimatePresence>
-      </div>
-      <div
-        className={cn(
-          "ade-work-glass-header-center min-w-0 flex-1 overflow-hidden",
-          toolsDockVisible && "ade-work-glass-header-center--tools-dock",
-        )}
-      >
-        <div
-          className={cn(
-            "ade-work-tab-strip-scroll scrollbar-none min-w-0 w-full overflow-x-auto overflow-y-hidden",
-            toolsDockVisible && "ade-work-tab-strip-scroll--tools-dock",
-          )}
-        >
-          <div className={cn("ade-work-tab-strip-scroll-inner", headerAlignClass)}>
-            {center}
-            {toolsDockVisible ? <div aria-hidden className="ade-work-tab-strip-scroll-spacer" /> : null}
-          </div>
-        </div>
-        {toolsDockVisible ? (
-          <div className="ade-work-header-tools-dock">
-            <WorkSidebarToggle open={workSidebarOpen} onToggle={onToggleWorkSidebar} />
-          </div>
-        ) : null}
-      </div>
-    </div>
-  );
-}
-
-function placeWorkGlassHeader(
-  header: React.ReactNode,
-  headerMountEl: HTMLElement | null | undefined,
-): React.ReactNode {
-  if (headerMountEl) return createPortal(header, headerMountEl);
-  return header;
-}
-
-type WorkTabProps = {
-  session: TerminalSessionSummary;
-  isActive: boolean;
-  isBusy: boolean;
-  laneColor: string | null;
-  grouped?: boolean;
-  awaiting: boolean;
-  dropEdge?: "before" | "after" | null;
-  onSelect: () => void;
-  onClose: () => void;
-  onContextMenu: (e: React.MouseEvent) => void;
-  dragProps?: {
-    draggable: boolean;
-    onDragStart: (e: React.DragEvent) => void;
-    onDragEnter: (e: React.DragEvent) => void;
-    onDragOver: (e: React.DragEvent) => void;
-    onDragLeave: (e: React.DragEvent) => void;
-    onDrop: (e: React.DragEvent) => void;
-    onDragEnd: (e: React.DragEvent) => void;
-  };
-};
-
-function WorkTab({
-  session,
-  isActive,
-  isBusy,
-  laneColor,
-  grouped = false,
-  awaiting,
-  dropEdge = null,
-  onSelect,
-  onClose,
-  onContextMenu,
-  dragProps,
-}: WorkTabProps) {
-  const dot = sessionStatusDot(session);
-  const primary = primarySessionLabel(session);
-  const trimmedLaneColor = laneColor?.trim() || null;
-  const tabTint = trimmedLaneColor
-    ? `color-mix(in srgb, ${trimmedLaneColor} ${isActive ? 22 : 16}%, transparent)`
-    : isActive
-      ? undefined
-      : "color-mix(in srgb, var(--color-fg) 6%, transparent)";
-  const ring = trimmedLaneColor
-    ? `color-mix(in srgb, ${trimmedLaneColor} ${isActive ? 40 : 34}%, transparent)`
-    : "color-mix(in srgb, var(--color-fg) 18%, transparent)";
-  const cssVars = {
-    "--lane-tab-tint": tabTint,
-    "--lane-tab-active-ring": ring,
-    "--lane-drop-indicator": trimmedLaneColor ?? "color-mix(in srgb, var(--color-fg) 60%, transparent)",
-  } as React.CSSProperties;
-  return (
-    <SmartTooltip
-      wrapperClassName="h-full min-h-0 self-stretch"
-      wrapperStyle={{ display: "flex", alignItems: "center", height: "100%", minHeight: 0 }}
-      content={{
-        label: truncateSessionLabel(primary, 28),
-        description: `Switch to this ${formatToolTypeLabel(session.toolType)} work tab.`,
-        effect: dot.label,
-      }}
-    >
-      <div
-        className={cn(
-          "group/tab ade-work-tab h-full",
-          grouped && "ade-work-tab--grouped",
-          isActive && "ade-work-tab--active",
-          awaiting && "ade-work-tab--awaiting",
-          dropEdge === "before" && "ade-work-tab--drop-before",
-          dropEdge === "after" && "ade-work-tab--drop-after",
-        )}
-        style={cssVars}
-        onContextMenu={onContextMenu}
-        draggable={dragProps?.draggable ?? false}
-        onDragStart={dragProps?.onDragStart}
-        onDragEnter={dragProps?.onDragEnter}
-        onDragOver={dragProps?.onDragOver}
-        onDragLeave={dragProps?.onDragLeave}
-        onDrop={dragProps?.onDrop}
-        onDragEnd={dragProps?.onDragEnd}
-      >
-        <button
-          type="button"
-          role="tab"
-          tabIndex={0}
-          aria-selected={isActive}
-          className="ade-work-tab-select"
-          onClick={onSelect}
-          onKeyDown={(e) => {
-            if (e.key !== "Enter" && e.key !== " ") return;
-            e.preventDefault();
-            onSelect();
-          }}
-        >
-          <ToolLogo toolType={session.toolType} size={grouped ? 11 : 12} className="ade-work-tab-logo shrink-0" />
-          <span className="ade-work-tab-label">
-            {truncateSessionLabel(primary, grouped ? 24 : 26)}
-          </span>
-          <span
-            title={dot.label}
-            aria-hidden
-            className={cn(
-              "ade-work-tab-status pointer-events-none",
-              dot.cls,
-              dot.spinning && "animate-spin",
-            )}
-          />
-        </button>
-        <button
-          type="button"
-          data-close-tab-session-id={session.id}
-          aria-label={`Close ${primary}`}
-          title={isBusy ? "Removing..." : "Remove from Work view"}
-          draggable={false}
-          className="ade-work-tab-close inline-flex items-center justify-center opacity-0 transition-opacity group-hover/tab:opacity-100 focus-visible:opacity-100"
-          style={{
-            padding: 0,
-            border: 0,
-            background: "transparent",
-            cursor: isBusy ? "default" : "pointer",
-            color: "var(--color-muted-fg)",
-          }}
-          onPointerDown={(e) => e.stopPropagation()}
-          onMouseDown={(e) => e.stopPropagation()}
-          onDragStart={(e) => {
-            e.preventDefault();
-            e.stopPropagation();
-          }}
-          onClick={(e) => {
-            e.stopPropagation();
-            if (isBusy) return;
-            onClose();
-          }}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" || e.key === " ") {
-              e.preventDefault();
-              e.stopPropagation();
-              if (isBusy) return;
-              onClose();
-            }
-          }}
-        >
-          <X size={9} />
-        </button>
-      </div>
-    </SmartTooltip>
-  );
-}
-
 export function WorkViewArea({
   pageActive = true,
-  gridLayoutId,
   lanes,
   sessions,
   visibleSessions,
-  tabGroups,
-  tabVisibleSessionIds,
   activeItemId,
-  viewMode,
   draftKind,
   draftLaneId = null,
   draftContextTargetId = null,
   onContinueCliSession,
   onResumeCliSession,
-  setViewMode,
   onSelectItem,
   onCloseItem,
   onOpenChatSession,
   onLaunchPtySession,
   onDraftLaneChange,
   onShowDraftKind,
-  onToggleTabGroupCollapsed,
   closingPtyIds,
   onContextMenu,
   sessionsPaneCollapsed = false,
   onToggleSessionsPane,
   sessionsPaneListCount = 0,
-  sessionsPaneRunningCount = 0,
-  sessionsListLoading = false,
   workSidebarOpen = false,
   onToggleWorkSidebar,
-  headerMountEl = null,
   initialLinearIssueContext = null,
   initialLinearIssueContextSource = "lane_link",
   initialModelId = null,
   onInitialLinearIssueContextConsumed,
   suppressDraftLaunchNavigation = false,
-  onReorderLaneSessions,
-  onOpenSessionInTabsView,
   onGoToLane,
   onInfoClick,
   onStopRunningSession,
+  gridSets = EMPTY_GRID_SETS,
+  onAddSessionToGrid,
+  onCreateGridFromSingle,
+  onRemoveSessionFromGrid,
 }: {
   pageActive?: boolean;
-  gridLayoutId: string;
   lanes: LaneSummary[];
   sessions: TerminalSessionSummary[];
   visibleSessions: TerminalSessionSummary[];
-  tabGroups?: WorkTabGroup[];
-  tabVisibleSessionIds?: string[];
   activeItemId: string | null;
-  viewMode: WorkViewMode;
   draftKind: WorkDraftKind;
   draftLaneId?: string | null;
   draftContextTargetId?: string | null;
-  setViewMode: (mode: WorkViewMode) => void;
   onSelectItem: (sessionId: string) => void;
   onCloseItem: (sessionId: string) => void;
   onOpenChatSession: (session: AgentChatSession, options?: AgentChatSessionCreatedOptions) => void | Promise<void>;
   onLaunchPtySession: (args: WorkPtyLaunchArgs) => Promise<WorkPtyLaunchResult>;
   onDraftLaneChange?: (laneId: string) => void;
   onShowDraftKind: (kind: WorkDraftKind) => void;
-  onToggleTabGroupCollapsed?: (groupId: string) => void;
   closingPtyIds: Set<string>;
   onContextMenu?: (session: TerminalSessionSummary, e: React.MouseEvent) => void;
   onContinueCliSession?: (session: TerminalSessionSummary, text: string) => Promise<void> | void;
   onResumeCliSession?: (session: TerminalSessionSummary) => Promise<void> | void;
-  onReorderLaneSessions?: (laneId: string, movedSessionId: string, targetSessionId: string, edge: "before" | "after") => void;
-  onOpenSessionInTabsView?: (sessionId: string) => void;
   onGoToLane?: (laneId: string) => void;
   /** Whether the work sessions list pane is collapsed. */
   sessionsPaneCollapsed?: boolean;
   onToggleSessionsPane?: () => void;
   sessionsPaneListCount?: number;
-  sessionsPaneRunningCount?: number;
-  sessionsListLoading?: boolean;
   workSidebarOpen?: boolean;
   onToggleWorkSidebar?: () => void;
-  /** When set, the work glass header is portaled into this element (full-width chrome above session split). */
-  headerMountEl?: HTMLElement | null;
   initialLinearIssueContext?: LaneLinearIssue | null;
   initialLinearIssueContextSource?: "manual" | "lane_link";
   initialModelId?: string | null;
@@ -1468,747 +867,149 @@ export function WorkViewArea({
   suppressDraftLaunchNavigation?: boolean;
   onInfoClick?: (session: TerminalSessionSummary, event: React.MouseEvent<HTMLElement>) => void;
   onStopRunningSession?: (session: TerminalSessionSummary) => void;
+  /** Cursor-style grid sets for this project. */
+  gridSets?: WorkGridSet[];
+  /** A session card was dropped onto an existing grid tile. */
+  onAddSessionToGrid?: (draggedSessionId: string, targetSessionId: string, edge: DropEdge) => void;
+  /** A session card was dropped onto a single (non-grid) session — create a grid. */
+  onCreateGridFromSingle?: (draggedSessionId: string, targetSessionId: string, edge: DropEdge) => void;
+  /** A grid tile was dragged out of the grid — pop it back to single view. */
+  onRemoveSessionFromGrid?: (sessionId: string) => void;
 }) {
-  const sessionsPaneToggleProps: SessionsPaneToggleProps | null = onToggleSessionsPane
-    ? {
-      collapsed: sessionsPaneCollapsed,
-      onToggle: onToggleSessionsPane,
-      listCount: sessionsPaneListCount,
-      runningCount: sessionsPaneRunningCount,
-      listLoading: sessionsListLoading,
-    }
-    : null;
-  const workEmbeddedChrome = useFloatingPaneEmbeddedChrome();
-  const glassHeaderDragProps = workEmbeddedChrome?.dragHandleProps ?? {};
-  const { trigger: triggerLaneContextMenu, menu: laneContextMenuPortal } = useWorkLaneContextMenu();
+  const { menu: laneContextMenuPortal } = useWorkLaneContextMenu();
   const sessionsById = useMemo(() => {
     const map = new Map<string, TerminalSessionSummary>();
     for (const session of sessions) map.set(session.id, session);
     return map;
   }, [sessions]);
 
-  const laneColorById = useMemo(() => {
-    const map = new Map<string, string | null>();
-    for (const lane of lanes) map.set(lane.id, lane.color);
-    return map;
-  }, [lanes]);
-
-  const tabVisibleSessions = useMemo(
-    () => (tabVisibleSessionIds ?? visibleSessions.map((session) => session.id))
-      .map((sessionId) => sessionsById.get(sessionId))
-      .filter((session): session is TerminalSessionSummary => session != null),
-    [sessionsById, tabVisibleSessionIds, visibleSessions],
-  );
   const showingDraft = activeItemId == null;
   const activeSession = showingDraft
     ? null
-    : sessionsById.get(activeItemId) ?? tabVisibleSessions[0] ?? visibleSessions[0] ?? null;
-  const handleContextMenu = useCallback((session: TerminalSessionSummary, e: React.MouseEvent): void => {
-    if (onContextMenu) {
-      e.preventDefault();
-      onContextMenu(session, e);
-    }
-  }, [onContextMenu]);
-  const [tilingPreset, setTilingPreset] = useState<TilingPreset>("auto");
-  const gridSessionIdsKey = JSON.stringify(visibleSessions.map((session) => session.id));
-  const gridTree = useMemo(
-    () => buildWorkSessionTilingTree(JSON.parse(gridSessionIdsKey) as string[], tilingPreset),
-    [gridSessionIdsKey, tilingPreset],
-  );
-  const {
-    policy: gridTerminalRefreshPolicy,
-    pulse: gridTerminalRefreshPulse,
-  } = useAdaptiveGridTerminalRefresh(viewMode === "grid" && pageActive);
-  const applyTilingPreset = useCallback(async (preset: TilingPreset) => {
-    const ids = JSON.parse(gridSessionIdsKey) as string[];
-    const nextTree = buildWorkSessionTilingTree(ids, preset);
-    try {
-      await Promise.all([
-        window.ade.tilingTree.set(gridLayoutId, nextTree),
-        window.ade.layout.set(gridLayoutId, {}),
-      ]);
-    } catch {
-      /* persistence is best-effort; UI state update below still applies */
-    }
-    setTilingPreset(preset);
-  }, [gridLayoutId, gridSessionIdsKey]);
-  const tilingPanes = useMemo<Record<string, PaneConfig>>(() => Object.fromEntries(
-    visibleSessions.map((session) => {
-      const dot = sessionStatusDot(session);
-      const isBusy = session.ptyId ? closingPtyIds.has(session.ptyId) : false;
-      const isCliAgentSession = isAgentCliSession(session);
-      const isActive = activeItemId === session.id;
-      const terminalVisible = !isRunningPtySession(session) || shouldStreamGridTerminal({
-        sessionId: session.id,
-        isActive,
-        policy: gridTerminalRefreshPolicy,
-        pulse: gridTerminalRefreshPulse,
-      });
-      const rawLaneColor = laneColorById.get(session.laneId) ?? null;
-      const laneAccentColor = rawLaneColor?.trim() ? rawLaneColor.trim() : null;
-      const openInTabs = () => onOpenSessionInTabsView?.(session.id);
-      const gotoLane = () => onGoToLane?.(session.laneId);
-      return [session.id, {
-        title: truncateSessionLabel(primarySessionLabel(session)),
-        titleContent: (
-          <SessionLaneHeaderLabel
-            sessionTitle={truncateSessionLabel(primarySessionLabel(session))}
-            laneName={session.laneName}
-            laneColor={laneAccentColor}
-            onSessionTitleClick={openInTabs}
-            onLaneClick={gotoLane}
-            onLaneContextMenu={(e) => triggerLaneContextMenu(session.laneId, e)}
-          />
-        ),
-        minimizable: false,
-        laneAccentColor,
-        className: cn("h-full ade-work-glass-tile", isActive && "ade-work-glass-tile-active"),
-        bodyClassName: "overflow-hidden",
-        headerActions: (
-          <>
-            {isCliAgentSession ? (
-              <GridTileSessionHeaderActions
-                session={session}
-                stopping={isBusy}
-                onInfoClick={onInfoClick}
-                onContextMenu={onContextMenu}
-                onStopRunningSession={onStopRunningSession}
-              />
-            ) : (
-              <span
-                title={dot.label}
-                className={`${dot.cls} h-2 w-2 shrink-0${dot.spinning ? " animate-spin" : ""}`}
-              />
-            )}
-            <button
-              type="button"
-              onClick={() => onCloseItem(session.id)}
-              onMouseDown={(e) => e.stopPropagation()}
-              title={isBusy ? "Removing..." : "Remove from Work view"}
-              disabled={isBusy}
-              className="inline-flex h-5 w-5 items-center justify-center text-muted-fg/50 transition-colors hover:text-fg"
-              style={{
-                border: "none",
-                background: "transparent",
-                cursor: isBusy ? "default" : "pointer",
-                opacity: isBusy ? 0.4 : 1,
-              }}
-            >
-              <X size={10} />
-            </button>
-          </>
-        ),
-        onPaneMouseDown: () => onSelectItem(session.id),
-        onPaneContextMenu: (e) => handleContextMenu(session, e),
-        children: (
-          <div className="min-h-0 h-full flex-1 overflow-hidden">
-            <SessionSurface
-              session={session}
-              lanes={lanes}
-              isActive={isActive}
-              pageActive={pageActive}
-              shouldAutofocus={isActive}
-              terminalVisible={terminalVisible}
-              layoutVariant="grid-tile"
-              onInfoClick={onInfoClick}
-              onContextMenu={onContextMenu}
-              onStopRunningSession={onStopRunningSession}
-              stopping={Boolean(session.ptyId && closingPtyIds.has(session.ptyId))}
-              onOpenChatSession={onOpenChatSession}
-              onContinueCliSession={onContinueCliSession}
-              onResumeCliSession={onResumeCliSession}
-            />
-          </div>
-        ),
-      } satisfies PaneConfig];
-    }),
-  ), [
-    activeItemId,
-    closingPtyIds,
-    gridTerminalRefreshPolicy,
-    gridTerminalRefreshPulse,
-    handleContextMenu,
-    lanes,
-    laneColorById,
-    onCloseItem,
-    onContextMenu,
-    onGoToLane,
-    onInfoClick,
-    onOpenChatSession,
-    onOpenSessionInTabsView,
-    onContinueCliSession,
-    onResumeCliSession,
-    onSelectItem,
-    onStopRunningSession,
-    pageActive,
-    triggerLaneContextMenu,
-    visibleSessions,
-  ]);
-  const resolvedTabGroups = tabGroups ?? [];
-  const hasGroupedTabs = resolvedTabGroups.length > 0;
-  const toggleTabGroupCollapsed = onToggleTabGroupCollapsed ?? (() => {});
+    : sessionsById.get(activeItemId) ?? visibleSessions[0] ?? null;
+  /* ---- Single / grid session view ---- */
+  // The focused session decides the view: if it belongs to a grid set we render
+  // the whole set (Cursor-style resizable tiles); otherwise the single session.
+  const activeGridSet = activeSession ? findGridSetForSession(gridSets, activeSession.id) : null;
 
-  const [dragState, setDragState] = useState<{
-    laneId: string;
-    sessionId: string;
-    overIndex: number | null;
-    overEdge: "before" | "after" | null;
-  } | null>(null);
-
-  const buildLaneDragProps = useCallback((args: {
-    laneId: string;
-    sessionId: string;
-    index: number;
-  }): WorkTabProps["dragProps"] => {
-    if (!onReorderLaneSessions) return undefined;
-    return {
-      draggable: true,
-      onDragStart: (e) => {
-        try { e.dataTransfer.setData("text/x-ade-work-tab", args.sessionId); } catch { /* ignore */ }
-        e.dataTransfer.effectAllowed = "move";
-        setDragState({ laneId: args.laneId, sessionId: args.sessionId, overIndex: null, overEdge: null });
-      },
-      onDragEnter: (e) => {
-        if (!dragState || dragState.laneId !== args.laneId) return;
-        e.preventDefault();
-      },
-      onDragOver: (e) => {
-        if (!dragState || dragState.laneId !== args.laneId) return;
-        e.preventDefault();
-        e.dataTransfer.dropEffect = "move";
-        const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-        const edge: "before" | "after" = e.clientX < rect.left + rect.width / 2 ? "before" : "after";
-        setDragState((prev) => (
-          prev && prev.laneId === args.laneId && (prev.overIndex !== args.index || prev.overEdge !== edge)
-            ? { ...prev, overIndex: args.index, overEdge: edge }
-            : prev
-        ));
-      },
-      onDragLeave: () => {
-        setDragState((prev) => (
-          prev && prev.overIndex === args.index ? { ...prev, overIndex: null, overEdge: null } : prev
-        ));
-      },
-      onDrop: (e) => {
-        e.preventDefault();
-        if (!dragState || dragState.laneId !== args.laneId || dragState.sessionId === args.sessionId) return;
-        const targetEdge = dragState.overEdge ?? "before";
-        onReorderLaneSessions(args.laneId, dragState.sessionId, args.sessionId, targetEdge);
-        setDragState(null);
-      },
-      onDragEnd: () => setDragState(null),
-    };
-  }, [dragState, onReorderLaneSessions]);
-
-  const headerAlignClass = "items-stretch";
-  const showViewModeToggle = visibleSessions.length > 1;
-
-  const tabStripCenter = hasGroupedTabs ? (
-    <div className={cn("flex min-h-full w-max flex-row items-stretch gap-2")}>
-      {resolvedTabGroups.map((group) => {
-        const hasActive = group.sessionIds.includes(activeSession?.id ?? "");
-        const isLaneGroup = group.kind === "lane";
-        const laneId = isLaneGroup && group.id.startsWith("lane:") ? group.id.slice("lane:".length) : null;
-        const laneColor = group.laneColor;
-        const someAwaiting = group.sessions.some(isSessionAwaitingInput);
-        const bandColor = laneColor?.trim() || null;
-        const bandTint = bandColor
-          ? laneSurfaceTint(bandColor, "default", 0.08)
-          : laneSurfaceTint(null);
-        const bandCssVars = {
-          "--lane-band-color": bandColor ?? "color-mix(in srgb, var(--color-fg) 28%, transparent)",
-          ...(bandColor ? { "--lane-band-label-color": bandColor } : {}),
-          "--lane-band-bg": bandTint.background,
-          "--lane-band-header-bg": bandColor
-            ? `color-mix(in srgb, ${bandColor} 12%, transparent)`
-            : "transparent",
-        } as React.CSSProperties;
-        const GroupIcon = isLaneGroup ? GitBranch : Funnel;
-        if (group.collapsed) {
-          return (
-            <SmartTooltip
-              key={group.id}
-              content={{
-                label: `Expand ${group.label}`,
-                description: "Show the work tabs in this group.",
-                effect: `${group.sessions.length} session${group.sessions.length === 1 ? "" : "s"} in this group.`,
-              }}
-            >
-              <button
-                type="button"
-                aria-expanded={false}
-                aria-controls={`tab-group-${group.id}`}
-                className={cn(
-                  "ade-work-lane-band ade-work-lane-band--collapsed",
-                  someAwaiting && "ade-work-lane-band--awaiting",
-                  hasActive && "ade-work-lane-band--active",
-                )}
-                style={bandCssVars}
-                onClick={() => toggleTabGroupCollapsed(group.id)}
-                onContextMenu={(e) => {
-                  if (!laneId) return;
-                  triggerLaneContextMenu(laneId, e);
-                }}
-              >
-                <GroupIcon size={11} weight="regular" className="shrink-0" />
-                <span className="ade-work-lane-band-collapsed-label">
-                  {group.label}
-                </span>
-                <span className="ade-work-lane-band-collapsed-count tabular-nums">
-                  {group.sessions.length}
-                </span>
-              </button>
-            </SmartTooltip>
-          );
-        }
-        return (
-          <div
-            key={group.id}
-            className="ade-work-lane-band"
-            style={bandCssVars}
-          >
-            <SmartTooltip
-              content={{
-                label: `Collapse ${group.label}`,
-                description: "Hide the work tabs in this group.",
-                effect: `${group.sessions.length} session${group.sessions.length === 1 ? "" : "s"} in this group.`,
-              }}
-            >
-              <button
-                type="button"
-                aria-expanded
-                aria-controls={`tab-group-${group.id}`}
-                aria-label={`Collapse ${group.label}`}
-                className={cn(
-                  "ade-work-lane-band-collapse",
-                  someAwaiting && "ade-work-lane-band--awaiting",
-                  hasActive && "ade-work-lane-band--active",
-                )}
-                onClick={() => toggleTabGroupCollapsed(group.id)}
-                onContextMenu={(e) => {
-                  if (!laneId) return;
-                  triggerLaneContextMenu(laneId, e);
-                }}
-              >
-                <CaretRight size={9} weight="bold" />
-              </button>
-            </SmartTooltip>
-            <div
-              id={`tab-group-${group.id}`}
-              role="tablist"
-              className="ade-work-lane-band-tabs"
-            >
-              {group.sessions.map((session, index) => {
-                const isActive = activeSession?.id === session.id;
-                const isBusy = session.ptyId ? closingPtyIds.has(session.ptyId) : false;
-                const awaiting = isSessionAwaitingInput(session);
-                const dropEdge = dragState
-                  && laneId
-                  && dragState.laneId === laneId
-                  && dragState.overIndex === index
-                  && dragState.sessionId !== session.id
-                  ? dragState.overEdge
-                  : null;
-                return (
-                  <WorkTab
-                    key={session.id}
-                    session={session}
-                    isActive={isActive}
-                    isBusy={isBusy}
-                    laneColor={laneColor}
-                    grouped
-                    awaiting={awaiting}
-                    dropEdge={dropEdge}
-                    onSelect={() => onSelectItem(session.id)}
-                    onClose={() => onCloseItem(session.id)}
-                    onContextMenu={(e) => handleContextMenu(session, e)}
-                    dragProps={laneId ? buildLaneDragProps({ laneId, sessionId: session.id, index }) : undefined}
-                  />
-                );
-              })}
-            </div>
-          </div>
-        );
-      })}
-      {visibleSessions.length === 0 ? (
-        <SmartTooltip content={{ label: "New Chat", description: "Start a new AI chat session in the current lane." }}>
-          <button
-            type="button"
-            className="ade-work-new-chat-btn inline-flex shrink-0 items-center justify-center"
-            onClick={() => onShowDraftKind("chat")}
-            aria-label="Start a new chat"
-          >
-            <Plus size={12} weight="bold" />
-          </button>
-        </SmartTooltip>
-      ) : null}
-    </div>
-  ) : (
-    <div className="ade-work-tab-strip-roomy w-max">
-      {visibleSessions.map((session, index) => {
-        const isActive = activeSession?.id === session.id;
-        const isBusy = session.ptyId ? closingPtyIds.has(session.ptyId) : false;
-        const laneColor = laneColorById.get(session.laneId) ?? null;
-        const awaiting = isSessionAwaitingInput(session);
-        const dropEdge = dragState
-          && dragState.laneId === session.laneId
-          && dragState.overIndex === index
-          && dragState.sessionId !== session.id
-          ? dragState.overEdge
-          : null;
-        return (
-          <WorkTab
-            key={session.id}
-            session={session}
-            isActive={isActive}
-            isBusy={isBusy}
-            laneColor={laneColor}
-            awaiting={awaiting}
-            dropEdge={dropEdge}
-            onSelect={() => onSelectItem(session.id)}
-            onClose={() => onCloseItem(session.id)}
-            onContextMenu={(e) => handleContextMenu(session, e)}
-            dragProps={buildLaneDragProps({ laneId: session.laneId, sessionId: session.id, index })}
-          />
-        );
-      })}
-      {visibleSessions.length === 0 ? (
-        <SmartTooltip content={{ label: "New Chat", description: "Start a new AI chat session in the current lane." }}>
-          <button
-            type="button"
-            className="ade-work-new-chat-btn inline-flex shrink-0 items-center justify-center"
-            onClick={() => onShowDraftKind("chat")}
-            aria-label="Start a new chat"
-          >
-            <Plus size={11} weight="bold" />
-          </button>
-        </SmartTooltip>
-      ) : null}
-    </div>
+  const renderGridSession = (session: TerminalSessionSummary) => (
+    <SessionSurface
+      session={session}
+      lanes={lanes}
+      isActive
+      pageActive={pageActive}
+      shouldAutofocus={session.id === activeItemId}
+      terminalVisible
+      onInfoClick={onInfoClick}
+      onContextMenu={onContextMenu}
+      onStopRunningSession={onStopRunningSession}
+      stopping={Boolean(session.ptyId && closingPtyIds.has(session.ptyId))}
+      onOpenChatSession={onOpenChatSession}
+      onContinueCliSession={onContinueCliSession}
+      onResumeCliSession={onResumeCliSession}
+      onToggleSessionsPane={onToggleSessionsPane}
+      sessionsPaneCollapsed={sessionsPaneCollapsed}
+      sessionsPaneCount={sessionsPaneListCount}
+      onToggleToolsPane={onToggleWorkSidebar}
+      toolsPaneOpen={workSidebarOpen}
+    />
   );
 
-  if (viewMode === "grid") {
-    return (
-      <div
-        className="flex h-full min-w-0 flex-col"
-        data-ade-grid-terminal-pressure={gridTerminalRefreshPolicy.level}
-        data-ade-grid-terminal-buckets={gridTerminalRefreshPolicy.bucketCount}
-        data-ade-grid-terminal-pulse={gridTerminalRefreshPulse}
+  // Coarse work-area mode — switching sessions stays "single" (no remount), but
+  // the new-chat → real-chat and grid↔single transitions cross-fade with a blur
+  // dissolve (the "new-chat pane dissolves into the chat" showcase moment).
+  const workAreaMode: "grid" | "single" | "empty" = activeGridSet
+    ? "grid"
+    : activeSession
+      ? "single"
+      : "empty";
+  const workAreaContent =
+    workAreaMode === "grid" && activeGridSet ? (
+      <WorkGridView
+        gridSet={activeGridSet}
+        sessions={sessions}
+        lanes={lanes}
+        activeItemId={activeItemId}
+        renderSession={renderGridSession}
+        onFocusSession={onSelectItem}
+        onAddSessionToGrid={(dragged, target, edge) => onAddSessionToGrid?.(dragged, target, edge)}
+        onRemoveFromGrid={(sessionId) => onRemoveSessionFromGrid?.(sessionId)}
+        className="ade-work-grid-tiling h-full min-h-0 px-2 pb-2"
+      />
+    ) : workAreaMode === "single" && activeSession ? (
+      <SingleSessionGridDropZone
+        targetSessionId={activeSession.id}
+        onDropSession={(dragged, edge) => onCreateGridFromSingle?.(dragged, activeSession.id, edge)}
       >
-        {placeWorkGlassHeader(
-          <WorkGlassHeader
-            headerAlignClass={headerAlignClass}
-            glassHeaderDragProps={glassHeaderDragProps}
-            workEmbeddedChrome={workEmbeddedChrome}
-            sessionsPaneToggleProps={sessionsPaneToggleProps}
-            viewMode={viewMode}
-            setViewMode={setViewMode}
-            showViewModeToggle={showViewModeToggle}
-            workSidebarOpen={workSidebarOpen}
-            onToggleWorkSidebar={onToggleWorkSidebar}
-            leftTrailing={visibleSessions.length > 1 ? (
-              <motion.div
-                initial={{ width: 0, opacity: 0 }}
-                animate={{ width: "auto", opacity: 1 }}
-                exit={{ width: 0, opacity: 0 }}
-                transition={{ duration: 0.18, ease: [0.4, 0, 0.2, 1] }}
-                className="overflow-hidden flex items-stretch"
-              >
-                <ArrangeMenu preset={tilingPreset} onSelect={applyTilingPreset} />
-              </motion.div>
-            ) : null}
-            center={tabStripCenter}
-          />,
-          headerMountEl,
-        )}
-
-        {visibleSessions.length === 0 ? (
-          <div className="flex h-full flex-col">
-            <div className="relative z-10 flex shrink-0 items-center justify-center pb-8 pt-6">
-              <ModeSwitcherPills draftKind={draftKind} onShowDraftKind={onShowDraftKind} />
-            </div>
-            <div className="min-h-0 flex-1">
-              <WorkStartSurface
-                draftKind={draftKind}
-                draftLaneId={draftLaneId}
-                draftContextTargetId={draftContextTargetId}
-                lanes={lanes}
-                onOpenChatSession={onOpenChatSession}
-                onLaunchPtySession={onLaunchPtySession}
-                onDraftLaneChange={onDraftLaneChange}
-                initialLinearIssueContext={initialLinearIssueContext}
-                initialLinearIssueContextSource={initialLinearIssueContextSource}
-                initialModelId={initialModelId}
-                onInitialLinearIssueContextConsumed={onInitialLinearIssueContextConsumed}
-                suppressDraftLaunchNavigation={suppressDraftLaunchNavigation}
-              />
-            </div>
-          </div>
-        ) : (
-          <PaneTilingLayout
-            key={`${gridLayoutId}:${tilingPreset}`}
-            layoutId={gridLayoutId}
-            tree={gridTree}
-            panes={tilingPanes}
-            className="ade-work-grid-tiling flex-1 min-h-0 px-2 pb-2"
+        <SessionSurface
+          session={activeSession}
+          lanes={lanes}
+          isActive
+          pageActive={pageActive}
+          terminalVisible
+          onInfoClick={onInfoClick}
+          onContextMenu={onContextMenu}
+          onStopRunningSession={onStopRunningSession}
+          stopping={Boolean(activeSession.ptyId && closingPtyIds.has(activeSession.ptyId))}
+          onOpenChatSession={onOpenChatSession}
+          onContinueCliSession={onContinueCliSession}
+          onResumeCliSession={onResumeCliSession}
+          onToggleSessionsPane={onToggleSessionsPane}
+          sessionsPaneCollapsed={sessionsPaneCollapsed}
+          sessionsPaneCount={sessionsPaneListCount}
+          onToggleToolsPane={onToggleWorkSidebar}
+          toolsPaneOpen={workSidebarOpen}
+        />
+      </SingleSessionGridDropZone>
+    ) : (
+      <div className="flex h-full flex-col">
+        <div className="relative z-10 flex shrink-0 items-center justify-center pb-8 pt-6">
+          <ModeSwitcherPills draftKind={draftKind} onShowDraftKind={onShowDraftKind} />
+        </div>
+        <div className="min-h-0 flex-1">
+          <WorkStartSurface
+            draftKind={draftKind}
+            draftLaneId={draftLaneId}
+            draftContextTargetId={draftContextTargetId}
+            lanes={lanes}
+            onOpenChatSession={onOpenChatSession}
+            onLaunchPtySession={onLaunchPtySession}
+            onDraftLaneChange={onDraftLaneChange}
+            initialLinearIssueContext={initialLinearIssueContext}
+            initialLinearIssueContextSource={initialLinearIssueContextSource}
+            initialModelId={initialModelId}
+            onInitialLinearIssueContextConsumed={onInitialLinearIssueContextConsumed}
+            suppressDraftLaunchNavigation={suppressDraftLaunchNavigation}
           />
-        )}
-        {laneContextMenuPortal}
+        </div>
       </div>
     );
-  }
 
-  /* ---- Tab view ---- */
   const tabBody = (
-    <div className="relative min-h-0 flex-1" style={{ background: "var(--color-bg)" }}>
-      {visibleSessions.map((session) => {
-        const isActive = activeSession?.id === session.id;
-        if (!isActive) return null;
-
-        return (
-          <div
-            key={session.id}
-            className="absolute inset-0"
-            hidden={!isActive}
-          >
-            <SessionSurface
-              session={session}
-              lanes={lanes}
-              isActive={isActive}
-              pageActive={pageActive}
-              terminalVisible={isActive}
-              onInfoClick={onInfoClick}
-              onContextMenu={onContextMenu}
-              onStopRunningSession={onStopRunningSession}
-              stopping={Boolean(session.ptyId && closingPtyIds.has(session.ptyId))}
-              onOpenChatSession={onOpenChatSession}
-              onContinueCliSession={onContinueCliSession}
-              onResumeCliSession={onResumeCliSession}
-            />
-          </div>
-        );
-      })}
-
-      {!activeSession ? (
-        <div className="absolute inset-0 flex flex-col">
-          <div className="relative z-10 flex shrink-0 items-center justify-center pb-8 pt-6">
-            <ModeSwitcherPills draftKind={draftKind} onShowDraftKind={onShowDraftKind} />
-          </div>
-          <div className="min-h-0 flex-1">
-            <WorkStartSurface
-              draftKind={draftKind}
-              draftLaneId={draftLaneId}
-              draftContextTargetId={draftContextTargetId}
-              lanes={lanes}
-              onOpenChatSession={onOpenChatSession}
-              onLaunchPtySession={onLaunchPtySession}
-              onDraftLaneChange={onDraftLaneChange}
-              initialLinearIssueContext={initialLinearIssueContext}
-              initialLinearIssueContextSource={initialLinearIssueContextSource}
-              initialModelId={initialModelId}
-              onInitialLinearIssueContextConsumed={onInitialLinearIssueContextConsumed}
-              suppressDraftLaunchNavigation={suppressDraftLaunchNavigation}
-            />
-          </div>
-        </div>
-      ) : null}
+    <div className="relative min-h-0 flex-1" style={{ background: "var(--chat-canvas-bg)" }}>
+      <AnimatePresence initial={false}>
+        <motion.div
+          key={workAreaMode}
+          className="absolute inset-0"
+          initial={{ opacity: 0, filter: "blur(12px)", scale: 0.992 }}
+          animate={{ opacity: 1, filter: "blur(0px)", scale: 1 }}
+          exit={{ opacity: 0, filter: "blur(12px)", scale: 0.992 }}
+          transition={{ duration: 0.3, ease: [0.4, 0, 0.2, 1] }}
+        >
+          {workAreaContent}
+        </motion.div>
+      </AnimatePresence>
     </div>
   );
 
-  if (!hasGroupedTabs) {
-    return (
-      <div className="flex h-full min-w-0 flex-col">
-        {placeWorkGlassHeader(
-          <WorkGlassHeader
-            headerAlignClass={headerAlignClass}
-            glassHeaderDragProps={glassHeaderDragProps}
-            workEmbeddedChrome={workEmbeddedChrome}
-            sessionsPaneToggleProps={sessionsPaneToggleProps}
-            viewMode={viewMode}
-            setViewMode={setViewMode}
-            showViewModeToggle={showViewModeToggle}
-            workSidebarOpen={workSidebarOpen}
-            onToggleWorkSidebar={onToggleWorkSidebar}
-            center={tabStripCenter}
-          />,
-          headerMountEl,
-        )}
-
-        {tabBody}
-        {laneContextMenuPortal}
-      </div>
-    );
-  }
-
+  // No shared top bar anymore — the focused session's own header carries the
+  // sessions + Tools toggles. Navigation between open sessions happens via the
+  // left session list; the work area shows the focused session.
   return (
     <div className="flex h-full min-w-0 flex-col">
-      {placeWorkGlassHeader(
-        <WorkGlassHeader
-          headerAlignClass={headerAlignClass}
-          glassHeaderDragProps={glassHeaderDragProps}
-          workEmbeddedChrome={workEmbeddedChrome}
-          sessionsPaneToggleProps={sessionsPaneToggleProps}
-          viewMode={viewMode}
-          setViewMode={setViewMode}
-          showViewModeToggle={showViewModeToggle}
-          workSidebarOpen={workSidebarOpen}
-          onToggleWorkSidebar={onToggleWorkSidebar}
-          center={tabStripCenter}
-        />,
-        headerMountEl,
-      )}
-
       {tabBody}
       {laneContextMenuPortal}
     </div>
   );
 }
 
-const TILING_PRESET_OPTIONS: ReadonlyArray<{
-  preset: TilingPreset;
-  label: string;
-  description: string;
-  icon: React.ReactNode;
-}> = [
-  { preset: "auto", label: "Auto", description: "Balanced grid (default).", icon: <GridFour size={10} /> },
-  { preset: "rows", label: "Rows", description: "Stack vertically, one full-width row per session.", icon: <Rows size={10} /> },
-  { preset: "columns", label: "Columns", description: "Side by side, one full-height column per session.", icon: <Columns size={10} /> },
-];
-
-function ArrangeMenu({
-  preset,
-  onSelect,
-}: {
-  preset: TilingPreset;
-  onSelect: (preset: TilingPreset) => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const containerRef = useRef<HTMLDivElement | null>(null);
-  const active = TILING_PRESET_OPTIONS.find((opt) => opt.preset === preset) ?? TILING_PRESET_OPTIONS[0]!;
-
-  useEffect(() => {
-    if (!open) return;
-    const onPointer = (event: MouseEvent) => {
-      if (!containerRef.current) return;
-      if (!containerRef.current.contains(event.target as Node)) setOpen(false);
-    };
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setOpen(false);
-    };
-    document.addEventListener("mousedown", onPointer);
-    document.addEventListener("keydown", onKey);
-    return () => {
-      document.removeEventListener("mousedown", onPointer);
-      document.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
-
-  return (
-    <div
-      ref={containerRef}
-      className="ade-work-arrange-menu-root flex max-w-full min-w-0 shrink-0 items-center gap-1"
-    >
-      <SmartTooltip content={{ label: "Arrange grid layout", description: "Pick a preset shape for the grid: Auto, Rows, or Columns." }}>
-        <button
-          type="button"
-          onClick={() => setOpen((prev) => !prev)}
-          aria-haspopup="menu"
-          aria-expanded={open}
-          className="ade-work-header-side-control ade-liquid-glass-pill inline-flex shrink-0 items-center gap-1 rounded-full px-2 text-[10px] font-medium transition-all"
-          style={{
-            color: "var(--color-muted-fg)",
-            border: "none",
-            cursor: "pointer",
-          }}
-          title="Arrange grid layout"
-        >
-          {active.icon}
-          {active.label}
-          <CaretDown size={9} />
-        </button>
-      </SmartTooltip>
-      <AnimatePresence>
-        {open ? (
-          <motion.div
-            key="arrange-menu"
-            role="menu"
-            initial={{ clipPath: "inset(0 100% 0 0)", opacity: 0.88 }}
-            animate={{ clipPath: "inset(0 0% 0 0)", opacity: 1 }}
-            exit={{ clipPath: "inset(0 100% 0 0)", opacity: 0.88 }}
-            transition={{ duration: 0.2, ease: [0.4, 0, 0.2, 1] }}
-            className="ade-work-arrange-menu ade-liquid-glass-pill z-50 flex min-w-0 max-w-[min(100vw-24px,32rem)] flex-none flex-row flex-nowrap divide-x divide-white/10 overflow-hidden rounded-md"
-          >
-            <div className="flex min-h-0 min-w-0 flex-row flex-nowrap items-center overflow-x-auto scrollbar-none">
-              {TILING_PRESET_OPTIONS.map((opt) => {
-                const isActive = opt.preset === preset;
-                return (
-                  <button
-                    key={opt.preset}
-                    type="button"
-                    role="menuitemradio"
-                    aria-checked={isActive}
-                    onClick={() => {
-                      onSelect(opt.preset);
-                      setOpen(false);
-                    }}
-                    className="ade-work-arrange-menu-item inline-flex shrink-0 items-center gap-1 whitespace-nowrap transition-colors"
-                    style={{
-                      background: "transparent",
-                      color: isActive ? "var(--color-fg)" : "var(--color-muted-fg)",
-                      border: "none",
-                      cursor: "pointer",
-                      textAlign: "left",
-                    }}
-                    title={opt.description}
-                  >
-                    <span className="inline-flex shrink-0 items-center justify-center">{opt.icon}</span>
-                    <span className="shrink-0">{opt.label}</span>
-                    <span className="inline-flex w-2.5 shrink-0 items-center justify-center">
-                      {isActive ? <Check size={10} weight="bold" /> : null}
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
-          </motion.div>
-        ) : null}
-      </AnimatePresence>
-    </div>
-  );
-}
-
-function ViewModeToggle({
-  viewMode,
-  setViewMode,
-}: {
-  viewMode: WorkViewMode;
-  setViewMode: (mode: WorkViewMode) => void;
-}) {
-  return (
-    <div className="ade-work-view-mode-toggle" role="group" aria-label="View mode">
-      {([
-        { mode: "tabs" as const, icon: <List size={10} weight={viewMode === "tabs" ? "bold" : "regular"} />, title: "Tab view", description: "Display sessions as tabs in a single panel." },
-        { mode: "grid" as const, icon: <GridFour size={10} weight={viewMode === "grid" ? "bold" : "regular"} />, title: "Grid view", description: "Display sessions side by side in a tiled grid." },
-      ]).map(({ mode, icon, title, description }) => {
-        const active = viewMode === mode;
-        return (
-          <SmartTooltip
-            key={mode}
-            content={{ label: title, description }}
-            wrapperClassName="ade-work-view-mode-toggle-slot"
-          >
-            <button
-              type="button"
-              aria-pressed={active}
-              aria-label={title}
-              onClick={() => setViewMode(mode)}
-              className="ade-work-view-mode-toggle-btn"
-            >
-              {icon}
-            </button>
-          </SmartTooltip>
-        );
-      })}
-    </div>
-  );
-}

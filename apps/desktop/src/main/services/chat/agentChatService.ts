@@ -6268,25 +6268,6 @@ export function createAgentChatService(args: {
     }
   };
 
-  const getCodexResumeContext = (sessionId: string): {
-    sessionId: string;
-    threadId: string;
-    laneWorktreePath: string;
-    provider: AgentChatProvider;
-  } | null => {
-    const managed = managedSessions.get(sessionId);
-    if (!managed) return null;
-    const { session, laneWorktreePath } = managed;
-    const threadId = session.threadId?.trim() ?? "";
-    if (!threadId.length) return null;
-    return {
-      sessionId,
-      threadId,
-      laneWorktreePath,
-      provider: session.provider,
-    };
-  };
-
   const getChatTranscript = async ({
     sessionId,
     limit = DEFAULT_TRANSCRIPT_READ_LIMIT,
@@ -25476,7 +25457,6 @@ export function createAgentChatService(args: {
     countActiveForLane,
     disposeForLane,
     getChatTranscript,
-    getCodexResumeContext,
     getChatEventHistory,
     ensureIdentitySession,
     approveToolUse,

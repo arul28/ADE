@@ -298,8 +298,6 @@ import type {
   AgentChatLaunchArgs,
   AgentChatLaunchCliArgs,
   AgentChatLaunchCliResult,
-  AgentChatCodexOpenInCliArgs,
-  AgentChatCodexOpenInCliResult,
   AgentChatCodexSetGoalArgs,
   AgentChatCodexSetGoalStatusArgs,
   AgentChatDeleteArgs,
@@ -1202,7 +1200,6 @@ const MUTATING_CHAT_ACTIONS = new Set<string>([
   "setCodexGoal",
   "setCodexGoalStatus",
   "clearCodexGoal",
-  "codexOpenInCli",
 ]);
 
 const READ_ONLY_RUNTIME_ACTION_PREFIXES = [
@@ -5252,12 +5249,6 @@ contextBridge.exposeInMainWorld("ade", {
         agentChatSummaryCache.clear();
         return goal as CodexThreadGoal | null;
       },
-      openInCli: (
-        args: AgentChatCodexOpenInCliArgs,
-      ): Promise<AgentChatCodexOpenInCliResult> =>
-        callProjectRuntimeActionOr("chat", "codexOpenInCli", { args }, () =>
-          ipcRenderer.invoke(IPC.agentChatCodexOpenInCli, args),
-        ),
     },
     readTranscript: (args: {
       sessionId: string;

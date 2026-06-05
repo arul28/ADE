@@ -18,6 +18,14 @@ type GlowMenuProps<T extends string> = {
   onItemClick: (id: T) => void;
   compact?: boolean;
   variant?: "pill" | "flat";
+  /**
+   * Neutral mode drops the per-item saturated color/gradient entirely. Every
+   * tab uses the same muted-grey-→-bright-fg treatment, and the active tab is
+   * marked by a single shared violet indicator that slides between tabs (via
+   * a `layoutId`-animated underline). Existing callers that rely on the
+   * per-item palette are unaffected — they simply omit this flag.
+   */
+  neutral?: boolean;
 };
 
 const itemVariants = {
@@ -64,22 +72,87 @@ function GlowMenuItemFace<T extends string>({
   item,
   active,
   compact,
+  neutral = false,
 }: {
   item: GlowMenuItem<T>;
   active: boolean;
   compact: boolean;
+  neutral?: boolean;
 }) {
   const Icon = item.icon;
   return (
     <>
       <span
         className="transition-colors duration-300"
-        style={{ color: active ? item.color : undefined }}
+        // In neutral mode the icon inherits the row's grey/fg color; only the
+        // palette ("pill"/"flat" legacy) callers tint the active icon.
+        style={{ color: active && !neutral ? item.color : undefined }}
       >
         <Icon size={12} weight={active ? "fill" : "regular"} className="shrink-0" />
       </span>
       <span className={compact ? "sr-only" : "truncate"}>{item.label}</span>
     </>
+  );
+}
+
+// Smooth, ~180ms slide for the neutral active indicator.
+const indicatorTransition: Transition = {
+  type: "spring",
+  stiffness: 520,
+  damping: 38,
+  mass: 0.7,
+};
+
+function NeutralGlowMenu<T extends string>({
+  className,
+  items,
+  activeItem,
+  onItemClick,
+  compact = false,
+}: GlowMenuProps<T>) {
+  // Unique per-instance id so multiple neutral menus don't share an indicator.
+  const layoutId = React.useId();
+  return (
+    <nav className={cn("relative min-w-0 flex-1 overflow-hidden", className)}>
+      <ul className="relative z-10 flex h-full min-w-0 items-stretch gap-0">
+        {items.map((item) => {
+          const active = item.id === activeItem;
+          return (
+            <li key={item.id} className="relative h-full min-w-0 shrink-0">
+              <button
+                type="button"
+                onClick={() => onItemClick(item.id)}
+                className={cn(
+                  "group relative flex h-full min-h-[42px] items-center bg-transparent text-[11px] font-medium leading-none transition-colors duration-150",
+                  compact ? "justify-center px-2.5" : "gap-1.5 px-3",
+                  active
+                    ? "text-fg"
+                    : "text-muted-fg/70 hover:text-fg/90",
+                )}
+                aria-pressed={active}
+                aria-label={item.label}
+                title={item.label}
+              >
+                <GlowMenuItemFace item={item} active={active} compact={compact} neutral />
+                {active ? (
+                  <motion.span
+                    layoutId={layoutId}
+                    aria-hidden
+                    className="pointer-events-none absolute inset-x-1.5 bottom-0 h-[2px] rounded-full"
+                    style={{
+                      // Single restrained violet accent + a soft glow beneath it.
+                      background: "rgb(167,139,250)",
+                      boxShadow: "0 0 8px 0 rgba(167,139,250,0.55)",
+                    }}
+                    transition={indicatorTransition}
+                  />
+                ) : null}
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+    </nav>
   );
 }
 
@@ -90,7 +163,19 @@ export function GlowMenu<T extends string>({
   onItemClick,
   compact = false,
   variant = "pill",
+  neutral = false,
 }: GlowMenuProps<T>) {
+  if (neutral) {
+    return (
+      <NeutralGlowMenu
+        className={className}
+        items={items}
+        activeItem={activeItem}
+        onItemClick={onItemClick}
+        compact={compact}
+      />
+    );
+  }
   const flat = variant === "flat";
   return (
     <motion.nav

@@ -102,7 +102,7 @@ export function WorkStartSurface({
 
   if (!lanes.length) {
     return (
-      <div className="flex h-full items-center justify-center px-6" style={{ background: "var(--color-bg)" }}>
+      <div className="flex h-full items-center justify-center px-6" style={{ background: "var(--chat-canvas-bg)" }}>
         <div className="ade-liquid-glass ade-liquid-glass-menu rounded-lg p-5 text-center">
           {lanesLoading ? (
             <CircleNotch size={18} className="mx-auto mb-2 animate-spin text-muted-fg" />
@@ -121,7 +121,7 @@ export function WorkStartSurface({
   }
 
   return (
-    <div className="flex h-full min-h-0 flex-col" style={{ background: "var(--color-bg)" }}>
+    <div className="flex h-full min-h-0 flex-col" style={{ background: "var(--chat-canvas-bg)" }}>
       <div className="flex w-full min-h-0 flex-1 flex-col overflow-hidden">
         <AgentChatPane
           laneId={selectedLaneId}

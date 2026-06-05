@@ -118,7 +118,6 @@ function normalizeChatShellGeometry(value: unknown): ChatShellGeometry {
 }
 export type TerminalAttentionIndicator = "none" | "running-active" | "running-needs-attention";
 export type MacosVmTabIndicator = "blocker" | "failed" | null;
-export type WorkViewMode = "tabs" | "grid";
 export type WorkSidebarTab = "git" | "files" | "ios" | "app-control" | "browser";
 export type WorkStatusFilter = "all" | "running" | "awaiting-input" | "ended";
 export type WorkDraftKind = "chat" | "cli" | "chat-orchestrator";
@@ -127,11 +126,25 @@ export type WorkSessionListOrganization =
   | "all-lanes-by-status"
   | "by-lane"
   | "by-time";
+/**
+ * A Cursor-style grid: a set of chat/CLI sessions that share the work area in a
+ * resizable split layout. `sessionIds` is the membership (drives the sidebar
+ * grid badge); the actual split geometry persists separately under `layoutId`
+ * via `window.ade.tilingTree`. A session belongs to at most one grid set.
+ */
+export type WorkGridSet = {
+  id: string;
+  layoutId: string;
+  sessionIds: string[];
+};
 export type WorkProjectViewState = {
   openItemIds: string[];
   activeItemId: string | null;
   selectedItemId: string | null;
-  viewMode: WorkViewMode;
+  /** Cursor-style grids. A session is in at most one set. */
+  gridSets: WorkGridSet[];
+  /** The grid set currently shown in the work area (derived-from/synced-with the focused session). */
+  activeGridSetId: string | null;
   draftKind: WorkDraftKind;
   draftLaneId: string | null;
   laneFilter: string;
@@ -188,7 +201,8 @@ function createDefaultWorkProjectViewState(): WorkProjectViewState {
     openItemIds: [],
     activeItemId: null,
     selectedItemId: null,
-    viewMode: "tabs",
+    gridSets: [],
+    activeGridSetId: null,
     draftKind: "chat",
     draftLaneId: null,
     laneFilter: "all",
@@ -239,7 +253,8 @@ function normalizeWorkProjectViewState(value: unknown): WorkProjectViewState {
     openItemIds: normalizeStringArray(candidate.openItemIds),
     activeItemId: normalizeOptionalString(candidate.activeItemId),
     selectedItemId: normalizeOptionalString(candidate.selectedItemId),
-    viewMode: candidate.viewMode === "grid" ? "grid" : "tabs",
+    gridSets: normalizeWorkGridSets(candidate.gridSets),
+    activeGridSetId: normalizeOptionalString(candidate.activeGridSetId),
     draftKind: candidate.draftKind === "cli" || candidate.draftKind === "chat-orchestrator"
       ? candidate.draftKind
       : "chat",
@@ -267,6 +282,31 @@ function normalizeWorkProjectViewState(value: unknown): WorkProjectViewState {
     laneSessionOrder: normalizeLaneSessionOrder(candidate.laneSessionOrder),
     pinnedSessionIds: normalizeStringArray(candidate.pinnedSessionIds),
   };
+}
+
+/** Normalize persisted grid sets: drop empties, dedupe a session into one set. */
+function normalizeWorkGridSets(value: unknown): WorkGridSet[] {
+  if (!Array.isArray(value)) return [];
+  const out: WorkGridSet[] = [];
+  const seenSessionIds = new Set<string>();
+  const seenSetIds = new Set<string>();
+  for (const entry of value) {
+    if (!entry || typeof entry !== "object") continue;
+    const candidate = entry as Partial<WorkGridSet>;
+    const id = typeof candidate.id === "string" ? candidate.id.trim() : "";
+    const layoutId = typeof candidate.layoutId === "string" ? candidate.layoutId.trim() : "";
+    if (!id || !layoutId || seenSetIds.has(id)) continue;
+    const sessionIds = normalizeStringArray(candidate.sessionIds).filter((sid) => {
+      if (seenSessionIds.has(sid)) return false;
+      seenSessionIds.add(sid);
+      return true;
+    });
+    // A "grid" needs at least 2 members; a 0/1-member set collapses to single view.
+    if (sessionIds.length < 2) continue;
+    seenSetIds.add(id);
+    out.push({ id, layoutId, sessionIds });
+  }
+  return out;
 }
 
 function normalizeLaneSessionOrder(value: unknown): Record<string, string[]> {

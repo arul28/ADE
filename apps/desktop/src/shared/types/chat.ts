@@ -1565,25 +1565,3 @@ export type AgentChatGetTurnFileDiffArgs = {
 };
 
 export type AgentChatTurnFileDiff = FileDiff;
-
-export type AgentChatCodexOpenInCliMode = "ade-terminal" | "new-window";
-
-export type AgentChatCodexOpenInCliArgs = {
-  sessionId: string;
-  mode: AgentChatCodexOpenInCliMode;
-};
-
-export type AgentChatCodexOpenInCliResult = {
-  /** Absolute path to the codex binary to invoke (the bundled one by default). */
-  binary: string;
-  /** Argument vector to pass to the binary. Empty when no resume-flag exists. */
-  argv: string[];
-  /** Lane worktree path to `cd` into before invoking. */
-  cwd: string;
-  /** Codex thread to resume. */
-  threadId: string;
-  /** True when no `resume`/`--thread` form was detected; the renderer should copy threadId to clipboard and show a toast. */
-  copyThreadIdToClipboard: boolean;
-  /** Set when mode === "new-window" and a terminal launcher was spawned. */
-  spawnedNewWindow?: boolean;
-};

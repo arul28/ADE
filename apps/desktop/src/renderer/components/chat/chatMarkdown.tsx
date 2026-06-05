@@ -86,22 +86,22 @@ export function buildChatMarkdownComponents(tone: Tone = "sky", overrides: Overr
     ol: ({ children }) => <ol className="mb-3 list-decimal space-y-1 pl-5 last:mb-0">{children}</ol>,
     li: ({ children }) => <li>{children}</li>,
     h1: ({ children }) => (
-      <h1 className={`mb-2 mt-3 font-mono text-[length:calc(var(--chat-font-size)*12/14)] font-bold uppercase tracking-[0.14em] ${accent.headerText} first:mt-0`}>
+      <h1 className="mb-2 mt-5 font-sans text-[length:calc(var(--chat-font-size)*19/14)] font-semibold leading-snug tracking-[-0.015em] text-fg/92 first:mt-0">
         {children}
       </h1>
     ),
     h2: ({ children }) => (
-      <h2 className={`mb-2 mt-3 font-mono text-[length:calc(var(--chat-font-size)*11/14)] font-bold uppercase tracking-[0.14em] ${accent.headerText} first:mt-0`}>
+      <h2 className="mb-2 mt-5 font-sans text-[length:calc(var(--chat-font-size)*16/14)] font-semibold leading-snug tracking-[-0.012em] text-fg/90 first:mt-0">
         {children}
       </h2>
     ),
     h3: ({ children }) => (
-      <h3 className={`mb-2 mt-3 font-mono text-[length:calc(var(--chat-font-size)*10/14)] font-bold uppercase tracking-[0.14em] ${accent.headerText} first:mt-0`}>
+      <h3 className="mb-1.5 mt-4 font-sans text-[length:calc(var(--chat-font-size)*14/14)] font-semibold leading-snug tracking-[-0.008em] text-fg/88 first:mt-0">
         {children}
       </h3>
     ),
     h4: ({ children }) => (
-      <h4 className={`mb-2 mt-3 font-mono text-[length:calc(var(--chat-font-size)*10/14)] font-semibold uppercase tracking-[0.14em] ${accent.headerText} first:mt-0`}>
+      <h4 className="mb-1.5 mt-3 font-sans text-[length:calc(var(--chat-font-size)*12.5/14)] font-semibold leading-snug text-fg/82 first:mt-0">
         {children}
       </h4>
     ),

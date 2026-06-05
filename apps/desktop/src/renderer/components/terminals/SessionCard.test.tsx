@@ -55,7 +55,6 @@ describe("SessionCard orchestration identity", () => {
         lane={lane}
         isSelected={false}
         onSelect={vi.fn()}
-        onInfoClick={vi.fn()}
         onContextMenu={vi.fn()}
       />,
     );

@@ -207,7 +207,6 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       openItemIds: [] as string[],
       activeItemId: null as string | null,
       selectedItemId: null as string | null,
-      viewMode: "tabs" as const,
       draftKind: "chat" as const,
       laneFilter: "all",
       statusFilter: "all" as const,
@@ -374,7 +373,6 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       openItemIds: [] as string[],
       activeItemId: null as string | null,
       selectedItemId: null as string | null,
-      viewMode: "tabs" as const,
       draftKind: "cli" as const,
       laneFilter: "all",
       statusFilter: "all" as const,
@@ -435,7 +433,6 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       openItemIds: ["existing-session"] as string[],
       activeItemId: "existing-session" as string | null,
       selectedItemId: "existing-session" as string | null,
-      viewMode: "tabs" as const,
       draftKind: "cli" as const,
       laneFilter: "all",
       statusFilter: "all" as const,
@@ -497,7 +494,6 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       openItemIds: [] as string[],
       activeItemId: null as string | null,
       selectedItemId: null as string | null,
-      viewMode: "tabs" as const,
       draftKind: "cli" as const,
       laneFilter: "all",
       statusFilter: "all" as const,
@@ -564,7 +560,6 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       openItemIds: ["session-1", "session-2"],
       activeItemId: "session-2",
       selectedItemId: "session-2",
-      viewMode: "grid",
       draftKind: "cli",
       laneFilter: "lane-1",
       statusFilter: "running",
@@ -592,7 +587,6 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       ...previousState,
       activeItemId: null,
       selectedItemId: null,
-      viewMode: "tabs",
       draftKind: "chat",
     });
   });
@@ -615,7 +609,6 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       openItemIds: ["session-a", "session-b"],
       activeItemId: "session-a",
       selectedItemId: "session-a",
-      viewMode: "tabs" as const,
       draftKind: "chat" as const,
       laneFilter: "all",
       statusFilter: "all" as const,
@@ -655,7 +648,6 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       openItemIds: ["session-a"],
       activeItemId: "session-a",
       selectedItemId: "session-a",
-      viewMode: "tabs" as const,
       draftKind: "chat" as const,
       laneFilter: "all",
       statusFilter: "all" as const,
@@ -706,47 +698,6 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     expect(listSessionsCachedMock).toHaveBeenLastCalledWith({ limit: 500 }, undefined);
   });
 
-  it("setActiveItemId leaves the selected lane alone in grid mode", async () => {
-    const sessionA = makeSession("session-a", "lane-a");
-    const sessionB = makeSession("session-b", "lane-b");
-    const workState = {
-      openItemIds: ["session-a", "session-b"],
-      activeItemId: "session-a",
-      selectedItemId: "session-a",
-      viewMode: "grid" as const,
-      draftKind: "chat" as const,
-      laneFilter: "all",
-      statusFilter: "all" as const,
-      search: "",
-      sessionListOrganization: "by-lane" as const,
-      workCollapsedLaneIds: [] as string[],
-      workCollapsedTabGroupIds: [] as string[],
-      workFocusSessionsHidden: false,
-    };
-    fakeAppStoreState = {
-      ...fakeAppStoreState,
-      lanes: [
-        { id: "lane-a", name: "Lane A" },
-        { id: "lane-b", name: "Lane B" },
-      ],
-      workViewByProject: { "/fake/project": workState },
-    };
-    listSessionsCachedMock.mockResolvedValue([sessionA, sessionB]);
-
-    const { result } = renderHook(() => useWorkSessions());
-
-    await waitFor(() => {
-      expect(result.current.sessions).toHaveLength(2);
-    });
-
-    selectLaneSpy.mockClear();
-    act(() => {
-      result.current.setActiveItemId("session-b");
-    });
-
-    expect(selectLaneSpy).not.toHaveBeenCalled();
-  });
-
   it("preserves saved Work filters when a URL targets a specific session", async () => {
     const session = {
       id: "session-1",
@@ -780,7 +731,6 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       openItemIds: [] as string[],
       activeItemId: null as string | null,
       selectedItemId: null as string | null,
-      viewMode: "tabs" as const,
       draftKind: "chat" as const,
       laneFilter: "lane-2",
       statusFilter: "completed" as const,
@@ -855,7 +805,6 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       openItemIds: [] as string[],
       activeItemId: null as string | null,
       selectedItemId: null as string | null,
-      viewMode: "tabs" as const,
       draftKind: "chat" as const,
       laneFilter: "all",
       statusFilter: "all" as const,
@@ -924,7 +873,6 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       openItemIds: [] as string[],
       activeItemId: null as string | null,
       selectedItemId: null as string | null,
-      viewMode: "tabs" as const,
       draftKind: "chat" as const,
       laneFilter: "all",
       statusFilter: "all" as "all" | "running" | "ended",
@@ -1004,7 +952,6 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       openItemIds: [] as string[],
       activeItemId: null as string | null,
       selectedItemId: null as string | null,
-      viewMode: "tabs" as const,
       draftKind: "chat" as const,
       laneFilter: "all",
       statusFilter: "all" as "all" | "running" | "completed",
@@ -1098,7 +1045,6 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
           openItemIds: [],
           activeItemId: null,
           selectedItemId: null,
-          viewMode: "tabs",
           draftKind: "chat",
           laneFilter: "all",
           statusFilter: "running",
@@ -1153,7 +1099,6 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       openItemIds: [] as string[],
       activeItemId: null as string | null,
       selectedItemId: null as string | null,
-      viewMode: "tabs" as const,
       draftKind: "chat" as const,
       laneFilter: "all",
       statusFilter: "all" as "all" | "running" | "completed",
@@ -1232,7 +1177,6 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       openItemIds: ["session-b"],
       activeItemId: "session-b",
       selectedItemId: "session-b",
-      viewMode: "grid" as const,
       draftKind: "chat" as const,
       laneFilter: "all",
       statusFilter: "all" as const,
@@ -1319,7 +1263,6 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       openItemIds: ["session-b"],
       activeItemId: "session-b",
       selectedItemId: "session-b",
-      viewMode: "grid" as const,
       draftKind: "chat" as const,
       laneFilter: "all",
       statusFilter: "all" as const,

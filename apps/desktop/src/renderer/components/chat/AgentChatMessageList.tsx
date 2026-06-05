@@ -56,7 +56,6 @@ import { isPathEqualOrDescendant, isWindowsAbsolutePath, normalizePath } from ".
 import { describeToolIdentifier, replaceInternalToolNames } from "./toolPresentation";
 import { chatChipToneClass } from "./chatSurfaceTheme";
 import {
-  CHAT_ASSISTANT_MESSAGE_CARD_STYLE,
   CHAT_TRANSCRIPT_GLASS_CARD_CLASS,
   CHAT_USER_MESSAGE_CARD_STYLE,
   CHAT_WORK_LOG_CARD_CLASS,
@@ -198,9 +197,10 @@ function approvalToneClass(state: PendingInputResolution | null): string {
 }
 
 function doneStatusToneClass(status: Extract<AgentChatEvent, { type: "done" }>["status"]): string {
-  if (status === "completed") return "border-white/[0.04] bg-[#141220]/60 text-fg/45";
-  if (status === "failed") return "border-red-500/12 bg-red-500/[0.04] text-red-300";
-  return "border-amber-500/12 bg-amber-500/[0.04] text-amber-300";
+  // Text-only tones — no band/box. Interrupted/failed read as a calm tinted line.
+  if (status === "completed") return "text-fg/45";
+  if (status === "failed") return "text-red-300/80";
+  return "text-amber-300/85";
 }
 
 function completionReportToneClass(status: AgentChatCompletionStatus): string {
@@ -346,8 +346,6 @@ const MESSAGE_CARD_STYLE = CHAT_USER_MESSAGE_CARD_STYLE;
 const SURFACE_INLINE_CARD_STYLE: React.CSSProperties = {
   borderColor: "color-mix(in srgb, var(--chat-glass-border) 100%, transparent)",
 };
-
-const ASSISTANT_MESSAGE_CARD_STYLE = CHAT_ASSISTANT_MESSAGE_CARD_STYLE;
 
 function describeUserDeliveryState(event: Extract<AgentChatEvent, { type: "user_message" }>): { label: string; className: string } | null {
   if (event.deliveryState === "failed") {
@@ -1133,6 +1131,36 @@ function ThinkingDots({ toneClass = "bg-emerald-300/70" }: { toneClass?: string 
           style={{ animationDelay: `${index * 0.18}s` }}
         />
       ))}
+    </span>
+  );
+}
+
+/**
+ * The single, calm "model is working" indicator (replaces the prior tangle of
+ * shimmer-text / emerald + violet dot variants). Three violet pulses + a
+ * concise verb + a self-ticking elapsed timer that mutates textContent via a
+ * ref — no per-second React commit (t3code / Codex desktop reference).
+ */
+function WorkingIndicator({ activity }: { activity: string | null }) {
+  const timerRef = useRef<HTMLSpanElement>(null);
+  useEffect(() => {
+    const start = performance.now();
+    const el = timerRef.current;
+    if (!el) return;
+    let handle = 0;
+    const tick = () => {
+      el.textContent = `${Math.floor((performance.now() - start) / 1000)}s`;
+      handle = window.setTimeout(tick, 1000);
+    };
+    tick();
+    return () => window.clearTimeout(handle);
+  }, []);
+  return (
+    <span className="inline-flex items-center gap-2 font-sans text-[length:calc(var(--chat-font-size)*12/14)]">
+      <ThinkingDots toneClass="bg-violet-400/70" />
+      <span className="font-medium text-fg/55">{activity ?? "Working"}</span>
+      <span className="text-fg/28" aria-hidden>·</span>
+      <span ref={timerRef} className="tabular-nums text-fg/38">0s</span>
     </span>
   );
 }
@@ -1937,6 +1965,11 @@ function InlineQuestionRequestCard({
   );
 }
 
+// Tracks which user messages have already played their send-up entrance, so the
+// optimistic→delivered swap (and virtualized re-mounts) don't replay it — that
+// replay read as a flicker once the bubble settled.
+const animatedUserMessageKeys = new Set<string>();
+
 function renderEvent(
   envelope: RenderEnvelope,
   options?: {
@@ -1959,7 +1992,6 @@ function renderEvent(
   }
 ) {
   const event = envelope.event;
-  const activeTurnMotionEnabled = Boolean(options?.turnActive);
 
   /* ── User message ── */
   if (event.type === "user_message") {
@@ -1970,12 +2002,15 @@ function renderEvent(
     if (event.deliveryState === "queued" && event.steerId) {
       return null;
     }
+    const playSendEntrance = !animatedUserMessageKeys.has(envelope.key);
+    if (playSendEntrance) animatedUserMessageKeys.add(envelope.key);
     return (
       <motion.div
-        className="flex min-w-0 max-w-full w-full justify-end overflow-hidden"
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        transition={{ duration: 0.14, ease: "easeOut" }}
+        className="flex min-w-0 max-w-full w-full justify-end overflow-visible"
+        style={{ transformOrigin: "bottom right" }}
+        initial={playSendEntrance ? { opacity: 0, y: 12, scale: 0.94 } : false}
+        animate={{ opacity: 1, y: 0, scale: 1 }}
+        transition={{ type: "spring", stiffness: 520, damping: 34, mass: 0.8 }}
       >
         <div
           className={cn(
@@ -2011,7 +2046,7 @@ function renderEvent(
             const displayText = event.displayText?.trim();
             if (displayText && displayText !== event.text.trim()) {
               return (
-                <div className="space-y-2 text-[length:calc(var(--chat-font-size)*13/14)] leading-[1.7] text-white">
+                <div className="space-y-2 text-[length:var(--chat-font-size)] leading-[1.7] text-white">
                   <div className="whitespace-pre-wrap break-words font-medium">{displayText}</div>
                   <details className="group min-w-0">
                     <summary className="cursor-pointer font-sans text-[length:calc(var(--chat-font-size)*11/14)] font-medium text-white/70 transition-colors hover:text-white">
@@ -2027,13 +2062,13 @@ function renderEvent(
             const parsed = parseLeadingIosContextChips(event.text);
             if (!parsed.chips.length) {
               return (
-                <div className="whitespace-pre-wrap break-words text-[length:calc(var(--chat-font-size)*13/14)] leading-[1.7] text-white">
+                <div className="whitespace-pre-wrap break-words text-[length:var(--chat-font-size)] leading-[1.7] text-white">
                   {event.text}
                 </div>
               );
             }
             return (
-              <div className="whitespace-pre-wrap break-words text-[length:calc(var(--chat-font-size)*13/14)] leading-[1.7] text-white">
+              <div className="whitespace-pre-wrap break-words text-[length:var(--chat-font-size)] leading-[1.7] text-white">
                 <span className="mr-1 inline-flex flex-wrap items-baseline gap-1 align-baseline">
                   {parsed.chips.map((label, idx) => (
                     <span
@@ -2073,21 +2108,9 @@ function renderEvent(
         animate={{ opacity: 1 }}
         transition={{ duration: 0.14, ease: "easeOut" }}
       >
-        <div
-          className={cn(
-            GLASS_CARD_CLASS,
-            "ade-chat-message-card-assistant group relative min-w-0 max-w-[min(104ch,78%)] overflow-hidden px-[length:var(--chat-bubble-assistant-px)] py-[length:var(--chat-bubble-assistant-py)]",
-            activeTurnMotionEnabled && "ade-glow-pulse",
-          )}
-          style={ASSISTANT_MESSAGE_CARD_STYLE}
-        >
-          <div className="absolute top-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-violet-400/25 to-transparent" />
-          {activeTurnMotionEnabled && (
-            <div className="pointer-events-none absolute inset-0 overflow-hidden rounded-[var(--chat-radius-card)]">
-              <div className="absolute inset-0 ade-streaming-shimmer" />
-            </div>
-          )}
-          <div className="absolute right-2 top-1.5 opacity-0 transition-opacity duration-200 group-hover:opacity-100 focus-within:opacity-100">
+        {/* Unbubbled assistant prose — plain markdown on the flat canvas (Codex/t3 reference). */}
+        <div className="group relative min-w-0 max-w-full overflow-visible py-0.5 pr-7 text-[length:var(--chat-font-size)] leading-[1.7]">
+          <div className="absolute right-0 top-0 opacity-0 transition-opacity duration-200 group-hover:opacity-100 focus-within:opacity-100">
             <MessageCopyButton value={event.text} />
           </div>
           <div className="min-w-0">
@@ -3062,61 +3085,9 @@ function renderEvent(
 
   /* ── Done ── */
   if (event.type === "done") {
-    const { label: modelLabel } = resolveModelMeta(event.modelId, event.model);
-    const inputTokens = formatTokenCount(event.usage?.inputTokens);
-    const outputTokens = formatTokenCount(event.usage?.outputTokens);
-    const cacheRead = formatTokenCount(event.usage?.cacheReadTokens);
-    const cacheCreation = formatTokenCount(event.usage?.cacheCreationTokens);
-    const costLabel = typeof event.costUsd === "number" && event.costUsd > 0
-      ? `$${event.costUsd < 0.01 ? event.costUsd.toFixed(4) : event.costUsd.toFixed(2)}`
-      : null;
-    const isCloud = event.runtime === "cloud";
-    const hasUsageData = Boolean(inputTokens || outputTokens || cacheRead || cacheCreation || costLabel || modelLabel);
-    if (event.status === "completed" && !hasUsageData && !isCloud) {
-      return null;
-    }
-    const statusTone = doneStatusToneClass(event.status);
-
-    return (
-      <div className={cn("flex items-center justify-center gap-3 rounded-xl border px-4 py-2 font-sans text-[length:calc(var(--chat-font-size)*10/14)]", statusTone)}>
-        <div className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1">
-          <span className="font-medium text-fg/35 uppercase tracking-wide text-[length:calc(var(--chat-font-size)*9/14)]">Usage</span>
-          {modelLabel ? (
-            <span className="inline-flex items-center gap-1.5 text-fg/30">
-              <ModelGlyph modelId={event.modelId} model={event.model} size={11} className="shrink-0 text-violet-400/40" />
-              <span className="font-medium">{modelLabel}</span>
-            </span>
-          ) : null}
-          {isCloud ? (
-            <span
-              className="inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.14em]"
-              style={{
-                borderColor: "rgba(167,139,250,0.30)",
-                background: "rgba(167,139,250,0.10)",
-                color: "rgba(216,200,255,0.90)",
-              }}
-              title="This turn ran in Cursor Cloud"
-            >
-              <CloudArrowUp size={9} weight="fill" />
-              cloud
-            </span>
-          ) : null}
-          {inputTokens ? <span className="text-fg/25">In <span className="font-medium text-fg/35">{inputTokens}</span></span> : null}
-          {outputTokens ? <span className="text-fg/25">Out <span className="font-medium text-fg/35">{outputTokens}</span></span> : null}
-          {cacheRead ? <span className="text-emerald-400/30">Cache <span className="font-medium text-emerald-400/45">{cacheRead}</span></span> : null}
-          {cacheCreation ? <span className="text-violet-400/30">New cache <span className="font-medium text-violet-400/45">{cacheCreation}</span></span> : null}
-          {costLabel ? <span className="font-medium text-violet-300/35">{costLabel}</span> : null}
-          {event.status !== "completed" ? (
-            <span className="text-[length:calc(var(--chat-font-size)*9/14)] font-medium uppercase tracking-wide text-current">{event.status}</span>
-          ) : null}
-          {(event.subagentStoppedCount ?? 0) > 0 ? (
-            <span className="text-[length:calc(var(--chat-font-size)*9/14)] font-medium text-fg/35">
-              {event.subagentStoppedCount} subagent{event.subagentStoppedCount === 1 ? "" : "s"} stopped
-            </span>
-          ) : null}
-        </div>
-      </div>
-    );
+    // Rendered as the end-of-turn divider by EventRow (see DoneTurnDivider),
+    // which needs the per-turn worked-for duration. Nothing inline here.
+    return null;
   }
 
   /* ── Turn diff summary (minimal inline indicator — detail lives in bottom Tasks panel) ── */
@@ -3317,30 +3288,54 @@ function formatTurnDuration(durationMs: number): string {
   return remSeconds ? `${minutes}m ${remSeconds}s` : `${minutes}m`;
 }
 
-function TurnDivider({ summary }: { summary: TurnSummary }) {
-  if (!summary.ended) return null;
-  const taskLine = summary.taskCount ? `${summary.completedTaskCount}/${summary.taskCount} tasks complete` : null;
-  const agentLine = summary.backgroundAgentCount
-    ? `${summary.backgroundAgentCount} background ${summary.backgroundAgentCount === 1 ? "agent" : "agents"}${
-        summary.activeBackgroundAgentCount > 0 ? ` · ${summary.activeBackgroundAgentCount} still running` : " finished"
-      }`
+/**
+ * End-of-turn divider — a hairline with a plain-text cutout. Shows the wall time
+ * (or the interrupted/failed status + model) plus how long the turn worked. It
+ * is driven by the universal `done` event, so it renders identically for every
+ * runtime (Codex / Claude / Cursor / Droid / OpenCode).
+ */
+function DoneTurnDivider({
+  event,
+  timestamp,
+  durationMs,
+}: {
+  event: Extract<AgentChatEvent, { type: "done" }>;
+  timestamp: string;
+  durationMs: number | null;
+}) {
+  const completed = event.status === "completed";
+  const { label: modelLabel } = resolveModelMeta(event.modelId, event.model);
+  const workedFor = durationMs !== null && durationMs > 1500
+    ? `Worked for ${formatTurnDuration(durationMs)}`
     : null;
-  const label = summary.durationMs !== null
-    ? `Response · Worked for ${formatTurnDuration(summary.durationMs)}`
-    : "Response";
   return (
-    <div className="my-4 flex flex-col items-center gap-1">
-      <div className="flex w-full items-center gap-3">
-        <span className="h-px flex-1 bg-white/[0.05]" />
-        <span className="font-sans text-[length:calc(var(--chat-font-size)*11/14)] text-fg/35">{label}</span>
-        <span className="h-px flex-1 bg-white/[0.05]" />
-      </div>
-      {(taskLine || agentLine) ? (
-        <div className="flex flex-col items-center gap-0.5 font-sans text-[length:calc(var(--chat-font-size)*11/14)] text-fg/40">
-          {taskLine ? <span>· {taskLine}</span> : null}
-          {agentLine ? <span>· {agentLine}</span> : null}
-        </div>
-      ) : null}
+    <div className="my-4 flex items-center gap-3">
+      <span className="h-px flex-1 bg-white/[0.06]" />
+      <span
+        className={cn(
+          "inline-flex shrink-0 items-center gap-2 px-1 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)]",
+          completed ? "text-fg/40" : doneStatusToneClass(event.status),
+        )}
+      >
+        {!completed && modelLabel ? (
+          <span className="inline-flex items-center gap-1.5">
+            <ModelGlyph modelId={event.modelId} model={event.model} size={12} className="shrink-0" />
+            <span className="font-medium">{modelLabel}</span>
+          </span>
+        ) : null}
+        {completed ? (
+          <span>{formatTime(timestamp)}</span>
+        ) : (
+          <span className="font-medium uppercase tracking-wide">{event.status}</span>
+        )}
+        {workedFor ? (
+          <>
+            <span className="opacity-40">·</span>
+            <span>{workedFor}</span>
+          </>
+        ) : null}
+      </span>
+      <span className="h-px flex-1 bg-white/[0.06]" />
     </div>
   );
 }
@@ -3387,6 +3382,7 @@ type EventRowProps = {
   showTurnDivider: boolean;
   turnDividerLabel: string | null;
   turnModel: { label: string; modelId?: string; model?: string } | null;
+  turnEndDurationMs?: number | null;
   onApproval?: (itemId: string, decision: AgentChatApprovalDecision, responseText?: string | null, answers?: Record<string, string | string[]>) => void;
   surfaceMode?: ChatSurfaceMode;
   surfaceProfile?: ChatSurfaceProfile;
@@ -3413,6 +3409,7 @@ const EventRow = React.memo(function EventRow({
   showTurnDivider,
   turnDividerLabel,
   turnModel,
+  turnEndDurationMs,
   onApproval,
   surfaceMode = "standard",
   surfaceProfile = "standard",
@@ -3439,15 +3436,15 @@ const EventRow = React.memo(function EventRow({
   return (
     <div className="min-w-0 max-w-full space-y-3 overflow-hidden">
       {showTurnDivider ? (
-        <div className="my-3 flex items-center gap-4">
-          <span className="h-px flex-1 bg-gradient-to-r from-transparent via-violet-400/[0.08] to-transparent" />
+        <div className="my-4 flex items-center gap-3">
+          <span className="h-px flex-1 bg-white/[0.06]" />
           <span
-            className="ade-liquid-glass-pill inline-flex items-center rounded-full px-3.5 py-1.5 font-sans text-[length:calc(var(--chat-font-size)*10/14)] text-fg/42"
+            className="shrink-0 px-1 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] text-fg/38"
             title={turnModel?.label ?? undefined}
           >
-            <span className="text-fg/35">{turnDividerLabel ?? "Turn"}</span>
+            {turnDividerLabel ?? "Turn"}
           </span>
-          <span className="h-px flex-1 bg-gradient-to-r from-transparent via-violet-400/[0.08] to-transparent" />
+          <span className="h-px flex-1 bg-white/[0.06]" />
         </div>
       ) : null}
       {envelope.event.type === "work_log_group"
@@ -3483,6 +3480,13 @@ const EventRow = React.memo(function EventRow({
             onRevealChatTerminal,
             onRewindFiles,
           })}
+      {envelope.event.type === "done" ? (
+        <DoneTurnDivider
+          event={envelope.event}
+          timestamp={envelope.timestamp}
+          durationMs={turnEndDurationMs ?? null}
+        />
+      ) : null}
     </div>
   );
 });
@@ -4234,6 +4238,24 @@ function AgentChatMessageListMain({
     return nextState;
   }, [events]);
   const turnSummary = useMemo(() => deriveTurnSummary(events, turnModelState), [events, turnModelState]);
+  // Per-turn worked-for duration, keyed by grouped-row index, derived from the
+  // universal `done` event (runtime-agnostic — no reliance on turnId).
+  const turnEndDurationByRowIndex = useMemo(() => {
+    const map = new Map<number, number>();
+    let turnStartMs: number | null = null;
+    for (let i = 0; i < groupedRows.length; i += 1) {
+      const env = groupedRows[i];
+      if (!env) continue;
+      const ts = Date.parse(env.timestamp);
+      if (turnStartMs === null && Number.isFinite(ts)) turnStartMs = ts;
+      if (env.event.type === "done") {
+        const start = turnStartMs ?? ts;
+        map.set(i, Number.isFinite(ts) && Number.isFinite(start) ? Math.max(0, ts - start) : 0);
+        turnStartMs = null;
+      }
+    }
+    return map;
+  }, [groupedRows]);
 
   const handleReviewChanges = useCallback(() => {
     if (!turnSummary?.changedFileCount) return;
@@ -4559,11 +4581,13 @@ function AgentChatMessageListMain({
   /** Renders a single row with turn-divider logic. Used by both paths. */
   const renderRow = useCallback((envelope: TranscriptGroupedEnvelope, index: number, virtualized: boolean) => {
     const currentTurn = getGroupedTurnId(envelope);
-    const previousTurn = getGroupedTurnId(groupedRows[index - 1]);
-    const showTurnDivider = currentTurn && currentTurn !== previousTurn;
-    const turnDividerLabel = showTurnDivider
-      ? formatTime(envelope.timestamp)
-      : null;
+    // Turn dividers render at the END of a turn (the `done` row) for every
+    // runtime; the old start-of-turn boundary divider is disabled.
+    const showTurnDivider = false;
+    const turnDividerLabel: string | null = null;
+    const turnEndDurationMs = envelope.event.type === "done"
+      ? (turnEndDurationByRowIndex.get(index) ?? null)
+      : undefined;
     const turnModel = currentTurn
       ? (turnModelState.map.get(currentTurn) ?? null)
       : turnModelState.lastModel;
@@ -4581,6 +4605,7 @@ function AgentChatMessageListMain({
           showTurnDivider={Boolean(showTurnDivider)}
           turnDividerLabel={turnDividerLabel}
           turnModel={turnModel}
+          turnEndDurationMs={turnEndDurationMs}
           onApproval={handleApproval}
           surfaceMode={surfaceMode}
           surfaceProfile={surfaceProfile}
@@ -4648,8 +4673,6 @@ function AgentChatMessageListMain({
     return Math.max(0, h);
   }, [shouldVirtualize, endIndex, groupedRows.length, rowHeight, timelineRowGapPx]);
 
-  const streamingIndicatorAnimated = showStreamingIndicator
-    && !sessionEnded;
   const streamingIndicator = showStreamingIndicator && !sessionEnded ? (
     <motion.div
       className="w-fit max-w-[min(100%,70ch)] pt-3 pb-2"
@@ -4657,29 +4680,13 @@ function AgentChatMessageListMain({
       animate={{ opacity: 1 }}
       transition={{ duration: 0.12, ease: "easeOut" }}
     >
-      {latestActivity ? (
-        <span
-          className={cn(
-            "font-sans text-[length:calc(var(--chat-font-size)*12/14)] italic",
-            streamingIndicatorAnimated ? "ade-shimmer-text" : "text-fg/45",
-          )}
-        >
-          {formatActivityText(latestActivity.activity, latestActivity.detail)}
-        </span>
-      ) : !streamingIndicatorAnimated ? (
-        <span className="font-sans text-[length:calc(var(--chat-font-size)*12/14)] text-fg/45">
-          Working...
-        </span>
-      ) : (
-        <span className="flex items-center gap-2 font-sans text-[length:calc(var(--chat-font-size)*12/14)] text-fg/35">
-          <ThinkingDots toneClass="bg-fg/35" />
-          <span>Working…</span>
-        </span>
-      )}
+      <WorkingIndicator activity={latestActivity ? (ACTIVITY_LABELS[latestActivity.activity] ?? null) : null} />
     </motion.div>
   ) : null;
 
-  const turnDivider = turnSummary ? <TurnDivider summary={turnSummary} /> : null;
+  // End-of-turn dividers now render inline at each `done` row (DoneTurnDivider),
+  // so there is no separate bottom divider.
+  const turnDivider = null;
 
   // Jump-to-latest pill is only meaningful during an active turn — if nothing
   // is streaming there's no "latest" to catch up to.
@@ -4702,7 +4709,7 @@ function AgentChatMessageListMain({
         onTouchEnd={handleTouchEnd}
         onTouchCancel={handleTouchEnd}
       >
-        <div ref={contentWrapperRef} className="min-w-0 max-w-full overflow-visible">
+        <div ref={contentWrapperRef} className="mx-auto w-full min-w-0 max-w-[var(--chat-column,46rem)] overflow-visible">
           {rows.length === 0 && !streamingIndicator ? (
             null
           ) : shouldVirtualize ? (

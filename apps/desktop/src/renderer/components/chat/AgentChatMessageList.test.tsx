@@ -556,7 +556,7 @@ describe("AgentChatMessageList transcript rendering", () => {
       },
     ]);
 
-    expect(screen.getByText("Usage")).toBeTruthy();
+    // The calm turn footer dropped the full-width "Usage" label — model attribution is the signal.
     expect(screen.getAllByText(/Claude Sonnet 4\.6/).length).toBeGreaterThan(0);
   });
 
@@ -1459,13 +1459,16 @@ describe("AgentChatMessageList transcript rendering", () => {
 
     const streaming = renderMessageList(sharedEvents, { showStreamingIndicator: true });
 
-    expect(streaming.container.textContent).toContain("Running command: npm test");
+    // The single working indicator surfaces the concise activity label, never
+    // the raw tool detail (kept calm — t3code / Codex reference).
+    expect(streaming.container.textContent).toContain("Running command");
+    expect(streaming.container.textContent).not.toContain("npm test");
 
     cleanup();
 
     const transcriptOnly = renderMessageList(sharedEvents, { showStreamingIndicator: false });
 
-    expect(transcriptOnly.container.textContent).not.toContain("Running command: npm test");
+    expect(transcriptOnly.container.textContent).not.toContain("Running command");
   });
 
   it("keeps thinking activity visible after a duplicate started status", () => {
@@ -1503,11 +1506,12 @@ describe("AgentChatMessageList transcript rendering", () => {
       { showStreamingIndicator: true },
     );
 
-    expect(rendered.container.textContent).toContain("Thinking: Thinking through the answer");
-    expect(rendered.container.innerHTML).toContain("ade-shimmer-text");
+    // Single calm working indicator: concise "Thinking" label, no raw detail / shimmer text.
+    expect(rendered.container.textContent).toContain("Thinking");
+    expect(rendered.container.textContent).not.toContain("Thinking through the answer");
   });
 
-  it("keeps the live assistant bubble stable until the turn finishes", () => {
+  it("keeps the live assistant message stable until the turn finishes", () => {
     const live = renderMessageList(
       [
         {
@@ -1524,7 +1528,9 @@ describe("AgentChatMessageList transcript rendering", () => {
       { showStreamingIndicator: true },
     );
 
-    expect(live.container.innerHTML).toContain("ade-glow-pulse");
+    // Assistant prose is unbubbled and calm now — no glow-pulse; the live text
+    // simply renders and stays stable through the turn.
+    expect(live.container.textContent).toContain("Streaming response");
 
     cleanup();
 
@@ -1554,7 +1560,7 @@ describe("AgentChatMessageList transcript rendering", () => {
       { showStreamingIndicator: false },
     );
 
-    expect(settled.container.innerHTML).not.toContain("ade-glow-pulse");
+    expect(settled.container.textContent).toContain("Streaming response");
   });
 
   it("shows streamed live reasoning text instead of only a thinking placeholder", () => {

@@ -104,12 +104,11 @@ import { ChatAppControlPanel } from "./ChatAppControlPanel";
 import { ChatSubagentsPanel } from "./ChatSubagentsPanel";
 import { ChatTasksPanel } from "./ChatTasksPanel";
 import { ChatFileChangesPanel } from "./ChatFileChangesPanel";
-import { CodexOpenInCliButton } from "./codex/CodexOpenInCliButton";
 import { RewindFilesConfirmDialog, type RewindFilesConfirmDialogState } from "./RewindFilesConfirmDialog";
 import { buildRewindPreviewFiles, deriveRewindDiffSummaries } from "./rewindFilesPreview";
 import { ChatCursorCloudPanel, type ChatCursorCloudPanelHandle } from "./ChatCursorCloudPanel";
 import { CursorCloudInlineLaunch, type CursorCloudInlineLaunchHandle } from "./CursorCloudInlineLaunch";
-import { QuickRunMenu } from "../run/QuickRunMenu";
+import { QuickRunInlineList } from "../run/QuickRunMenu";
 import { ChatGitToolbar } from "./ChatGitToolbar";
 import { LaneChip } from "../terminals/LaneChip";
 import { getLaneAccent } from "../lanes/laneColorPalette";
@@ -121,6 +120,8 @@ import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
 import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPicker";
 import { ConfirmDialog, useConfirmDialog } from "../shared/InlineDialogs";
 import { ChatActionsDrawerPanel, type ChatActionsTab } from "./ChatActionsDrawerPanel";
+import { CodexPlanCard } from "./codex/CodexPlanCard";
+import { ChatPrPane } from "./ChatPrPane";
 import { useAppStore } from "../../state/appStore";
 import { buildChatAppearanceRootStyle } from "./chatAppearance";
 import { copyLaunchPromptToClipboard } from "../../lib/launchPromptClipboard";
@@ -338,11 +339,10 @@ function draftLaunchKindLabel(kind: DraftLaunchKind): string {
   return kind === "cli" ? "CLI session" : "chat";
 }
 
-function draftLaunchJobLabel(job: DraftLaunchJob): string {
-  if (job.status === "naming-lane" || job.status === "creating-lane") return "Auto-create lane";
-  if (job.status === "failed") return "Launch failed";
-  if (job.status === "ready") return job.mode === "background" ? "Background launch" : "Ready";
-  return job.draftKind === "cli" ? "CLI launch" : "Chat launch";
+function draftLaunchPromptSnippet(job: DraftLaunchJob): string {
+  const text = job.snapshot.text.trim().replace(/\s+/g, " ");
+  if (!text) return job.title;
+  return text.length > 44 ? `${text.slice(0, 44)}…` : text;
 }
 
 function draftLaunchJobMessage(job: DraftLaunchJob): string {
@@ -359,6 +359,33 @@ function draftLaunchJobMessage(job: DraftLaunchJob): string {
 
 function staleDraftLaunchJobMessage(job: DraftLaunchJob): string {
   return `${draftLaunchJobMessage(job)} Still working. You can hide this status while ADE continues in the background.`;
+}
+
+/**
+ * 3-quadrant reserve. The chat reserves horizontal space for whichever floating
+ * side panes are open (when there is room), so the centered transcript + composer
+ * re-center in the remaining area rather than leaving an empty gutter opposite an
+ * open pane. On a narrow surface it stops reserving so the chat keeps full width
+ * (the pane then overlays). Right is preferred over left when space is tight.
+ */
+const PANE_RESERVE_RIGHT_PX = 300; // ~18rem pane + margins
+const PANE_RESERVE_LEFT_PX = 284; // ~17rem pane + margins
+const CHAT_MIN_WIDTH_PX = 360; // recenter the chat as soon as a normal screen allows
+function computePaneReserve(
+  width: number,
+  leftOpen: boolean,
+  rightOpen: boolean,
+): { left: string; right: string } {
+  if (width <= 0) return { left: "0px", right: "0px" };
+  let right = 0;
+  if (rightOpen && width - PANE_RESERVE_RIGHT_PX >= CHAT_MIN_WIDTH_PX) {
+    right = PANE_RESERVE_RIGHT_PX;
+  }
+  let left = 0;
+  if (leftOpen && width - right - PANE_RESERVE_LEFT_PX >= CHAT_MIN_WIDTH_PX) {
+    left = PANE_RESERVE_LEFT_PX;
+  }
+  return { left: `${left}px`, right: `${right}px` };
 }
 
 type AiStatusSnapshot = AiSettingsStatus & {
@@ -2295,6 +2322,11 @@ export function AgentChatPane({
   onOpenShellSession,
   availableLanes,
   onLaneChange,
+  onToggleSessionsPane,
+  sessionsPaneCollapsed,
+  sessionsPaneCount,
+  onToggleToolsPane,
+  toolsPaneOpen,
 }: {
   laneId: string | null;
   laneLabel?: string | null;
@@ -2335,6 +2367,13 @@ export function AgentChatPane({
   availableLanes?: Array<{ id: string; name: string; color?: string | null; branchRef?: string | null; laneType?: string | null }>;
   /** Callback when lane selection changes in empty state */
   onLaneChange?: (laneId: string) => void;
+  /** Work tab: far-left session-list expander rendered in this chat's header. */
+  onToggleSessionsPane?: () => void;
+  sessionsPaneCollapsed?: boolean;
+  sessionsPaneCount?: number;
+  /** Work tab: far-right Tools-pane toggle rendered in this chat's header. */
+  onToggleToolsPane?: () => void;
+  toolsPaneOpen?: boolean;
 }) {
   const projectRoot = useAppStore((s) => s.project?.rootPath ?? null);
   const projectTransition = useAppStore((s) => s.projectTransition);
@@ -2519,6 +2558,32 @@ export function AgentChatPane({
   const [chatActionsOpen, setChatActionsOpen] = useState(
     () => readChatCompanionUiState(initialCompanionStateKey).chatActionsOpen,
   );
+  // Left PR floating pane (ADE chats only). Session-scoped UI state; not persisted.
+  const [prPaneOpen, setPrPaneOpen] = useState(false);
+  // Auto-open the PR pane when this lane's PR transitions to opened / closed /
+  // merged (otherwise it follows normal toggle rules).
+  const prevPrStateRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!laneId) {
+      prevPrStateRef.current = null;
+      return;
+    }
+    let cancelled = false;
+    window.ade.prs.getForLane(laneId)
+      .then((pr) => { if (!cancelled) prevPrStateRef.current = pr?.state ?? null; })
+      .catch(() => {});
+    const unsubscribe = window.ade.prs.onEvent((event) => {
+      if (event.type !== "prs-updated") return;
+      const nextState = event.prs.find((pr) => pr.laneId === laneId)?.state ?? null;
+      if (nextState !== prevPrStateRef.current) {
+        if (nextState === "open" || nextState === "closed" || nextState === "merged") {
+          setPrPaneOpen(true);
+        }
+        prevPrStateRef.current = nextState;
+      }
+    });
+    return () => { cancelled = true; unsubscribe(); };
+  }, [laneId]);
   const [chatActionsTab, setChatActionsTab] = useState<ChatActionsTab>(
     () => readChatCompanionUiState(initialCompanionStateKey).chatActionsTab,
   );
@@ -2662,6 +2727,18 @@ export function AgentChatPane({
   const [parallelLaunchBusy, setParallelLaunchBusy] = useState(false);
   const [parallelLaunchStatus, setParallelLaunchStatus] = useState<string | null>(null);
   const shellRef = useRef<HTMLElement | null>(null);
+  // Measure the chat surface width to drive the 3-quadrant pane reserve.
+  const [chatAreaWidth, setChatAreaWidth] = useState(0);
+  useEffect(() => {
+    const el = shellRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver((entries) => {
+      const next = entries[0]?.contentRect.width;
+      if (typeof next === "number") setChatAreaWidth(next);
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
   const composerMaxHeightPx = layoutVariant === "grid-tile" ? 144 : null;
   const sessionsRef = useRef<AgentChatSessionSummary[]>(sessions);
   const completionSoundPrevTurnActiveRef = useRef(false);
@@ -2943,6 +3020,13 @@ export function AgentChatPane({
   >(null);
   const [subagentTranscriptLoading, setSubagentTranscriptLoading] = useState(false);
   const [subagentTranscriptUnsupported, setSubagentTranscriptUnsupported] = useState(false);
+
+  // Only take over the middle chat view when there's actually something to show
+  // (transcript content, or still loading). If a subagent has no transcript
+  // (e.g. Codex delegations / unsupported runtimes), we stay in the main chat
+  // instead of showing an ugly empty "Composer paused" takeover.
+  const subagentTakeoverActive = subagentView != null
+    && (subagentTranscriptLoading || (subagentTranscript?.length ?? 0) > 0);
 
   useEffect(() => {
     if (!subagentView || !selectedSessionId) {
@@ -5874,6 +5958,28 @@ export function AgentChatPane({
     suppressDraftLaunchNavigation,
   ]);
 
+  // Robust foreground auto-open: a foreground send (Enter) opens the chat
+  // directly with no status banner. If the inline open was skipped because this
+  // pane remounted mid-launch, this effect opens the ready job from whichever
+  // instance is mounted.
+  useEffect(() => {
+    if (!forceDraft) return;
+    const job = draftLaunchJobs.find(
+      (entry) => entry.mode === "foreground"
+        && entry.status === "ready"
+        && entry.autoOpen
+        && Boolean(entry.laneId && entry.laneName && entry.sessionId),
+    );
+    if (!job) return;
+    openLaunchedDraftSession({
+      laneId: job.laneId!,
+      laneName: job.laneName!,
+      sessionId: job.sessionId!,
+      draftKind: job.draftKind,
+      jobId: job.id,
+    });
+  }, [draftLaunchJobs, forceDraft, openLaunchedDraftSession]);
+
   const resolveDraftLaunchLane = useCallback(async (
     snapshot: DraftLaunchSnapshot,
     onAutoCreateNameResolved?: () => void,
@@ -6151,7 +6257,10 @@ export function AgentChatPane({
         laneName: launch.laneName,
         sessionId: launch.sessionId,
         draftKind: launch.draftKind,
-        autoOpen: false,
+        // Keep autoOpen set for foreground sends so the effect below can open the
+        // chat even if this pane instance remounted during the launch (otherwise
+        // the inline open is skipped and the job sits at "ready").
+        autoOpen: mode === "foreground",
       });
       if (!jobStillVisible) {
         return;
@@ -6596,7 +6705,6 @@ export function AgentChatPane({
             activeItemId: sid,
             selectedItemId: sid,
             draftKind: "chat",
-            viewMode: "tabs",
           });
         }
 
@@ -7663,6 +7771,21 @@ export function AgentChatPane({
       <p className="font-sans text-[13px] text-fg/50">Handoff is not available for this chat.</p>
     </div>
   );
+  // Latest plan the runtime has proposed for this chat (plain scan — not a hook).
+  const latestPlanEvent = (() => {
+    for (let i = selectedEventsForDisplay.length - 1; i >= 0; i--) {
+      const evt = selectedEventsForDisplay[i]?.event;
+      if (evt && evt.type === "plan") return evt;
+    }
+    return null;
+  })();
+  // Re-present the runtime's plan in the info pane (Plan tab) — a calm, readable
+  // companion to the live inline plan card. We never author or mutate the plan.
+  const chatActionsPlanContent = latestPlanEvent ? (
+    <div className="min-h-0 flex-1 overflow-y-auto p-3">
+      <CodexPlanCard event={latestPlanEvent} />
+    </div>
+  ) : null;
   const chatActionsPanelContent = (
     <ChatActionsDrawerPanel
       tab={chatActionsTab}
@@ -7671,6 +7794,18 @@ export function AgentChatPane({
       agentsContent={agentsTabContent}
       proofContent={proofTabContent}
       handoffContent={handoffTabContent}
+      planContent={chatActionsPlanContent}
+      runContent={showWorkspaceChrome && laneId ? (
+        <div className="flex h-full min-h-0 flex-col gap-3 overflow-y-auto p-4">
+          <div>
+            <div className="font-sans text-[length:calc(var(--chat-font-size)*12/14)] font-semibold text-fg/85">Run</div>
+            <p className="mt-1 font-sans text-[length:calc(var(--chat-font-size)*11/14)] leading-relaxed text-muted-fg/55">
+              Start this lane&rsquo;s process groups or open it in the Run / shell view.
+            </p>
+          </div>
+          <QuickRunInlineList laneId={laneId} />
+        </div>
+      ) : undefined}
     />
   );
   const cursorCloudPanelContent = (
@@ -7844,15 +7979,6 @@ export function AgentChatPane({
               </button>
             </SmartTooltip>
           ) : null}
-          {showWorkspaceChrome && laneId ? (
-            <QuickRunMenu
-              laneId={laneId}
-              compact
-              label="Run"
-              align="end"
-              triggerStyle={{ height: 24, padding: "0 8px" }}
-            />
-          ) : null}
           {(showWorkspaceChrome && laneId) || canShowHandoff ? (
             <SmartTooltip
               content={{
@@ -7917,41 +8043,6 @@ export function AgentChatPane({
             </SmartTooltip>
           ) : null}
           {chatTerminalVisible ? <ChatTerminalToggle open={terminalDrawerOpen} onToggle={() => setTerminalDrawerOpen((v) => !v)} /> : null}
-          {selectedSession?.provider === "codex"
-            && selectedSessionId
-            && selectedSession.threadId ? (
-            <CodexOpenInCliButton
-              sessionId={selectedSessionId}
-              onUseAdeTerminal={(args) => {
-                // Open the ADE terminal drawer and write the resume command
-                // into the chat's active terminal pane (plan §D.1). Falls
-                // back to copying the command if the chat doesn't yet have an
-                // active terminal session.
-                setTerminalDrawerOpen(true);
-                const quoted = (parts: string[]) =>
-                  parts.map((p) => `'${p.replace(/'/g, "'\\''")}'`).join(" ");
-                const fullCommand = `cd ${quoted([args.cwd])} && ${quoted([args.binary, ...args.argv])}\r`;
-                void (async () => {
-                  try {
-                    const active = await window.ade.terminal.activeForChat({
-                      chatSessionId: selectedSessionId,
-                    });
-                    if (active?.ptyId) {
-                      await window.ade.terminal.write({
-                        ptyId: active.ptyId,
-                        chatSessionId: selectedSessionId,
-                        data: fullCommand,
-                      });
-                      return;
-                    }
-                  } catch {
-                    // fall through to clipboard
-                  }
-                  await navigator.clipboard.writeText(fullCommand.trimEnd()).catch(() => undefined);
-                })();
-              }}
-            />
-          ) : null}
           {resolvedChips.map((chip) => (
             <span
               key={`${chip.label}:${chip.tone ?? "accent"}`}
@@ -7998,7 +8089,14 @@ export function AgentChatPane({
         showCacheBadge={showClaudeCacheTimer}
         cacheIdleSinceAt={selectedSession?.idleSinceAt ?? null}
         showGitToolbar={showWorkspaceChrome}
+        onTogglePrPane={showWorkspaceChrome && laneId ? () => setPrPaneOpen((v) => !v) : undefined}
+        prPaneOpen={prPaneOpen}
         trailingActions={chatHeaderTrailingActions}
+        onToggleSessionsPane={onToggleSessionsPane}
+        sessionsPaneCollapsed={sessionsPaneCollapsed}
+        sessionsPaneCount={sessionsPaneCount}
+        onToggleToolsPane={onToggleToolsPane}
+        toolsPaneOpen={toolsPaneOpen}
         className="space-y-0 p-0"
       />
 
@@ -8521,7 +8619,7 @@ export function AgentChatPane({
   // Composer placeholder shown when the chat is drilled in to a subagent
   // transcript. Replies always go to the parent session, so disabling input
   // here matches user expectations and the wireframe brief.
-  const subagentComposerLock = subagentView ? (
+  const subagentComposerLock = subagentTakeoverActive ? (
     <div
       data-chat-appearance-root
       style={chatAppearanceRootStyle}
@@ -8554,13 +8652,25 @@ export function AgentChatPane({
     </div>
   ) : null;
 
+  // Launch-status banners belong to the new-chat/draft surface only — never
+  // above the composer of an already-open chat.
+  // Only background launches, auto-create-lane (which starts in lane-creation
+  // states), and failures surface a status banner here — a normal foreground
+  // send (Enter) to the current lane opens the chat directly, no popup.
+  const visibleDraftLaunchJobs = forceDraft
+    ? draftLaunchJobs.filter((job) =>
+        job.mode === "background"
+        || job.status === "failed"
+        || job.status === "naming-lane"
+        || job.status === "creating-lane")
+    : EMPTY_DRAFT_LAUNCH_JOBS;
   const composerWithTypographyRoot = (
     <div
       data-chat-appearance-root
-      style={chatAppearanceRootStyle}
+      style={{ ...chatAppearanceRootStyle, paddingLeft: "var(--chat-pane-reserve-left, 0px)", paddingRight: "var(--chat-pane-reserve-right, 0px)" }}
       className={cn(compactShell ? "min-w-0 w-full" : undefined, "space-y-2")}
     >
-      {draftLaunchJobs.map((job) => {
+      {visibleDraftLaunchJobs.map((job) => {
         const isFailed = job.status === "failed";
         const isReady = job.status === "ready";
         const isActiveJob = !isDraftLaunchJobTerminal(job.status);
@@ -8572,43 +8682,33 @@ export function AgentChatPane({
             data-testid="draft-launch-job"
             aria-live={isActiveJob ? "polite" : undefined}
             className={cn(
-              "flex items-start justify-between gap-3 rounded-lg border px-3 py-2.5 font-sans text-[11px] shadow-[0_10px_40px_rgba(0,0,0,0.10)]",
-              isFailed && "border-rose-300/20 bg-rose-500/[0.08] text-rose-100/90",
-              isReady && "border-emerald-300/20 bg-emerald-500/[0.08] text-emerald-100/90",
-              isActiveJob && "border-white/10 bg-white/[0.045] text-fg/75",
+              "mx-auto flex w-full max-w-[var(--chat-column,46rem)] items-center justify-between gap-3 rounded-lg border px-3 py-1.5 font-sans text-[length:calc(var(--chat-font-size)*11/14)]",
+              isFailed && "border-rose-300/20 bg-rose-500/[0.07] text-rose-100/90",
+              isReady && "border-emerald-300/18 bg-emerald-500/[0.06] text-emerald-100/85",
+              isActiveJob && "border-white/10 bg-white/[0.04] text-fg/70",
             )}
           >
-            <div className="flex min-w-0 items-start gap-2">
+            <div className="flex min-w-0 items-center gap-2">
               {isActiveJob ? (
-                <CircleNotch size={13} weight="bold" className="mt-0.5 shrink-0 animate-spin text-fg/55" aria-hidden />
+                <CircleNotch size={12} weight="bold" className="shrink-0 animate-spin text-fg/55" aria-hidden />
               ) : null}
-              <div className="min-w-0 space-y-0.5 text-left">
-                <div className="flex min-w-0 items-center gap-1.5">
-                  <span className={cn(
-                    "shrink-0 rounded-full border px-1.5 py-px text-[9px] font-medium tracking-normal",
-                    isFailed
-                      ? "border-rose-200/20 bg-rose-200/[0.08] text-rose-50/75"
-                      : isReady
-                        ? "border-emerald-200/20 bg-emerald-200/[0.08] text-emerald-50/75"
-                        : "border-white/10 bg-white/[0.06] text-fg/55",
-                  )}>
-                    {draftLaunchJobLabel(job)}
-                  </span>
-                  <span className="min-w-0 truncate font-medium">{job.title}</span>
-                </div>
-                <div className={cn(
-                  "min-w-0 text-[10px] leading-4 opacity-75",
-                  !isStaleActiveJob && "truncate",
-                )}>
-                  {isStaleActiveJob ? staleDraftLaunchJobMessage(job) : draftLaunchJobMessage(job)}
-                </div>
-              </div>
+              <span className="min-w-0 truncate">
+                {isFailed
+                  ? (job.error ? `Launch failed: ${job.error}` : "Launch failed.")
+                  : isActiveJob
+                    ? (isStaleActiveJob ? staleDraftLaunchJobMessage(job) : draftLaunchJobMessage(job))
+                    : (
+                      <>
+                        Message sent: <span className="text-fg/85">&ldquo;{draftLaunchPromptSnippet(job)}&rdquo;</span>
+                      </>
+                    )}
+              </span>
             </div>
             <div className="flex shrink-0 items-center gap-1">
               {isFailed ? (
                 <button
                   type="button"
-                  className="rounded-md border border-rose-200/20 bg-rose-300/[0.10] px-2 py-0.5 text-[10px] font-medium text-rose-50 transition-colors hover:bg-rose-300/[0.16]"
+                  className="rounded-md px-2 py-0.5 text-[length:calc(var(--chat-font-size)*10.5/14)] font-medium text-rose-50/85 transition-colors hover:bg-rose-300/[0.12]"
                   onClick={() => {
                     restoreDraftLaunchSnapshot(job.snapshot);
                     dismissDraftLaunchJob(job.id);
@@ -8620,7 +8720,7 @@ export function AgentChatPane({
               {canOpen ? (
                 <button
                   type="button"
-                  className="rounded-md border border-emerald-200/20 bg-emerald-300/[0.10] px-2 py-0.5 text-[10px] font-medium text-emerald-50 transition-colors hover:bg-emerald-300/[0.16]"
+                  className="rounded-md px-2 py-0.5 text-[length:calc(var(--chat-font-size)*10.5/14)] font-medium text-emerald-50/90 transition-colors hover:bg-emerald-300/[0.14]"
                   onClick={() => openLaunchedDraftSession({
                     laneId: job.laneId!,
                     laneName: job.laneName!,
@@ -8629,24 +8729,17 @@ export function AgentChatPane({
                     jobId: job.id,
                   })}
                 >
-                  Open
+                  View
                 </button>
               ) : null}
               {(!isActiveJob || isStaleActiveJob) ? (
                 <button
                   type="button"
-                  aria-label={isFailed ? "Dismiss failed launch" : isStaleActiveJob ? "Hide stale launch status" : "Dismiss launch status"}
-                  className={cn(
-                    "grid h-5 w-5 place-items-center rounded-md transition-colors",
-                    isFailed
-                      ? "text-rose-50/70 hover:bg-rose-300/[0.12] hover:text-rose-50"
-                      : isStaleActiveJob
-                        ? "text-fg/45 hover:bg-white/10 hover:text-fg/75"
-                        : "text-fg/55 hover:bg-white/10 hover:text-fg/80",
-                  )}
+                  aria-label={isFailed ? "Dismiss failed launch" : "Dismiss launch status"}
+                  className="grid h-5 w-5 place-items-center rounded-md text-fg/45 transition-colors hover:bg-white/10 hover:text-fg/75"
                   onClick={() => dismissDraftLaunchJob(job.id)}
                 >
-                  <X size={12} weight="bold" aria-hidden />
+                  <X size={11} weight="bold" aria-hidden />
                 </button>
               ) : null}
             </div>
@@ -8668,13 +8761,22 @@ export function AgentChatPane({
   const orchestrationRunId = selectedSession?.orchestrationRunId ?? null;
   const orchestrationRole = activeOrchestrationRole;
   const orchestrationPanelOpen = Boolean(orchestrationRunId);
-  const rightPaneOpen = chatActionsOpen || appPanelOpen || effectiveCursorCloudPaneOpen || orchestrationPanelOpen;
+  // Chat actions is an *info* pane: it floats over the right gutter created by
+  // the centered transcript (Codex / t3 reference) rather than squeezing the
+  // chat. The heavier working panels (App Control, iOS sim, Cursor Cloud,
+  // orchestration) keep the resizable split that pushes the chat column.
+  const heavyRightPaneOpen = appPanelOpen || effectiveCursorCloudPaneOpen || orchestrationPanelOpen;
   const supportsSplit = layoutVariant !== "grid-tile";
+  const chatActionsFloating = chatActionsOpen && !heavyRightPaneOpen && supportsSplit;
+  // Reserve gutter space for the open floating panes so the chat re-centers in
+  // the remaining area (3-quadrant rebalance). Heavy split panes don't reserve.
+  const leftPaneActive = prPaneOpen && Boolean(laneId) && supportsSplit;
+  const paneReserve = computePaneReserve(chatAreaWidth, leftPaneActive, chatActionsFloating);
   const splitChatColStyle: React.CSSProperties | undefined =
-    rightPaneOpen && supportsSplit ? { flexGrow: 100 - rightPaneSplit } : undefined;
+    heavyRightPaneOpen && supportsSplit ? { flexGrow: 100 - rightPaneSplit } : undefined;
   const splitRightPaneStyle: React.CSSProperties | undefined =
-    rightPaneOpen && supportsSplit ? { flexGrow: rightPaneSplit, flexBasis: 0 } : undefined;
-  const rightPaneDivider = rightPaneOpen && supportsSplit ? (
+    heavyRightPaneOpen && supportsSplit ? { flexGrow: rightPaneSplit, flexBasis: 0 } : undefined;
+  const rightPaneDivider = heavyRightPaneOpen && supportsSplit ? (
     <div
       role="separator"
       aria-orientation="vertical"
@@ -8698,6 +8800,44 @@ export function AgentChatPane({
         {content}
       </div>
     );
+
+  // Floating info-pane overlay (standard layout) — a neutral grey card anchored
+  // to the right gutter, à la the Codex desktop "Environment" pane. Deliberately
+  // NOT provider-tinted (avoids over-coloring the surface).
+  // Panes fade in/out (sliding from the gutters read as disorienting). Compact,
+  // neutral sidebar-colored cards — no purple, no big empty boxes (Codex pane).
+  const FLOATING_PANE_FADE = { duration: 0.16, ease: [0.4, 0, 0.2, 1] as const };
+  const FLOATING_PANE_CARD_CLASS =
+    "flex min-h-0 w-full flex-col overflow-hidden rounded-xl border border-white/[0.07] bg-[color:var(--work-sidebar-bg,#161618)] shadow-[0_20px_60px_-30px_rgba(0,0,0,0.8)]";
+  const renderFloatingPane = (content: React.ReactNode) => (
+    <motion.div
+      key="floating-right-pane"
+      className="absolute inset-y-3 right-3 z-20 flex min-h-0 w-[min(18rem,calc(100%-1.5rem))]"
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      transition={FLOATING_PANE_FADE}
+    >
+      <div className={FLOATING_PANE_CARD_CLASS}>
+        {content}
+      </div>
+    </motion.div>
+  );
+  // Left gutter floating pane (PR) — same compact neutral card, anchored left.
+  const renderFloatingLeftPane = (content: React.ReactNode) => (
+    <motion.div
+      key="floating-left-pane"
+      className="absolute inset-y-3 left-3 z-20 flex min-h-0 w-[min(17rem,calc(100%-1.5rem))]"
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      transition={FLOATING_PANE_FADE}
+    >
+      <div className={FLOATING_PANE_CARD_CLASS}>
+        {content}
+      </div>
+    </motion.div>
+  );
 
   // Orchestration plan panel — mounted whenever the active session has a
   // runId. Lead view is fully interactive; worker/validator view is read-only.
@@ -8734,6 +8874,8 @@ export function AgentChatPane({
       <OrchestratorLeadFrame active={false} className="flex h-full min-h-0 w-full min-w-0 flex-col">
       <ChatSurfaceShell
         containerRef={shellRef}
+        paneReserveLeft={paneReserve.left}
+        paneReserveRight={paneReserve.right}
         mode={surfaceMode}
         accentColor={presentation?.accentColor ?? draftAccent}
         contentScale={1}
@@ -8818,7 +8960,7 @@ export function AgentChatPane({
                   {/* Chat column */}
                   <div
                     data-chat-appearance-root
-                    style={{ ...chatAppearanceRootStyle, ...splitChatColStyle }}
+                    style={{ ...chatAppearanceRootStyle, ...splitChatColStyle, paddingLeft: "var(--chat-pane-reserve-left, 0px)", paddingRight: "var(--chat-pane-reserve-right, 0px)" }}
                     className={cn(
                       "flex min-h-0 flex-1 basis-0 flex-col overflow-hidden",
                       layoutVariant === "grid-tile" ? "min-w-0" : "min-w-[280px]",
@@ -8885,7 +9027,7 @@ export function AgentChatPane({
                         ChatSubagentsPanel; the in-chat banner was removed so
                         the chat header stays clean and goal context lives next
                         to subagents + progress where it belongs. */}
-                    {subagentView ? (
+                    {subagentTakeoverActive ? (
                       <button
                         type="button"
                         onClick={() => setSubagentView(null)}
@@ -8935,19 +9077,19 @@ export function AgentChatPane({
                       </button>
                     ) : null}
                     <AgentChatMessageList
-                      key={subagentView ? `subagent-${subagentView.taskId}` : selectedSessionId ?? "chat-draft"}
+                      key={subagentTakeoverActive ? `subagent-${subagentView!.taskId}` : selectedSessionId ?? "chat-draft"}
                       events={selectedEventsForDisplay}
-                      subagentTranscript={subagentView ? {
+                      subagentTranscript={subagentTakeoverActive ? {
                         messages: subagentTranscript,
                         loading: subagentTranscriptLoading,
                         unsupported: subagentTranscriptUnsupported,
                         snapshotName:
-                          subagentView.agentType
+                          subagentView!.agentType
                           ?? subagentViewSnapshot?.description
-                          ?? subagentView.agentId
-                          ?? subagentView.taskId,
+                          ?? subagentView!.agentId
+                          ?? subagentView!.taskId,
                       } : undefined}
-                      showStreamingIndicator={!subagentView && turnActive && selectedSession?.status !== "ended"}
+                      showStreamingIndicator={!subagentTakeoverActive && turnActive && selectedSession?.status !== "ended"}
                       sessionEnded={selectedSession?.status === "ended"}
                       className="min-h-0 border-0"
                       surfaceMode={surfaceMode}
@@ -8999,7 +9141,25 @@ export function AgentChatPane({
                   </div>
 
                   {rightPaneDivider}
-                  {chatActionsOpen ? renderRightPane(chatActionsPanelContent) : null}
+                  <AnimatePresence initial={false}>
+                    {chatActionsOpen && chatActionsFloating
+                      ? renderFloatingPane(chatActionsPanelContent)
+                      : null}
+                  </AnimatePresence>
+                  {chatActionsOpen && !chatActionsFloating
+                    ? renderRightPane(chatActionsPanelContent)
+                    : null}
+                  <AnimatePresence initial={false}>
+                    {prPaneOpen && laneId && supportsSplit
+                      ? renderFloatingLeftPane(
+                          <ChatPrPane
+                            laneId={laneId}
+                            branchName={laneGitBranch}
+                            onClose={() => setPrPaneOpen(false)}
+                          />,
+                        )
+                      : null}
+                  </AnimatePresence>
                   {effectiveIosSimulatorOpen ? renderRightPane(iosSimulatorPanelContent) : null}
                   {effectiveAppControlOpen ? renderRightPane(appControlPanelContent) : null}
                   {effectiveCursorCloudPaneOpen ? renderRightPane(cursorCloudPanelContent) : null}

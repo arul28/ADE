@@ -23,6 +23,13 @@ import { formatPrBadgeLabel } from "../prs/shared/prFormatters";
 
 type ChatGitToolbarProps = {
   laneId: string;
+  /**
+   * When provided (ADE chat surfaces), the PR pill/button toggles this instead
+   * of opening the inline slide-out or navigating to the PRs tab. CLI surfaces
+   * omit it, preserving the original menu behaviour.
+   */
+  onTogglePrPane?: () => void;
+  prPaneOpen?: boolean;
 };
 
 // ---------------------------------------------------------------------------
@@ -100,6 +107,8 @@ function summarizeChecks(checks: PrCheck[]): { passed: number; failed: number; r
 
 export const ChatGitToolbar = React.memo(function ChatGitToolbar({
   laneId,
+  onTogglePrPane,
+  prPaneOpen,
 }: ChatGitToolbarProps) {
   const navigate = useNavigate();
   const runtime = useLaneGitActionRuntimeState(laneId);
@@ -249,15 +258,21 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
   // PR badge
   // -----------------------------------------------------------------------
 
+  // When the chat surface owns a PR floating pane, the pill reflects + toggles
+  // the pane; otherwise it drives the inline slide-out menu.
+  const prPillActive = onTogglePrPane ? Boolean(prPaneOpen) : prMenuOpen;
   const prBadge = useMemo(() => {
     if (!linkedPr) return null;
     const label = formatPrBadgeLabel(linkedPr);
     return (
       <button
         type="button"
-        className={cn(btnBase, "gap-1.5", prMenuOpen && "border-violet-400/25 bg-violet-500/[0.08] text-fg/80")}
-        onClick={() => setPrMenuOpen((open) => !open)}
-        aria-expanded={prMenuOpen}
+        className={cn(btnBase, "gap-1.5", prPillActive && "border-violet-400/25 bg-violet-500/[0.08] text-fg/80")}
+        onClick={() => {
+          if (onTogglePrPane) { onTogglePrPane(); return; }
+          setPrMenuOpen((open) => !open);
+        }}
+        aria-expanded={prPillActive}
         aria-haspopup="menu"
         title={`${label}: ${linkedPr.title}`}
       >
@@ -267,11 +282,11 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
         <CaretRight
           size={9}
           weight="bold"
-          className={cn("text-fg/35 transition-transform duration-150", prMenuOpen && "rotate-90 text-fg/65")}
+          className={cn("text-fg/35 transition-transform duration-150", prPillActive && "rotate-90 text-fg/65")}
         />
       </button>
     );
-  }, [linkedPr, prMenuOpen]);
+  }, [linkedPr, prPillActive, onTogglePrPane]);
 
   // Slide-out panel that appears to the right of the PR badge when toggled.
   const prMenu = useMemo(() => {
@@ -379,12 +394,8 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
 
   return (
     <div className="flex items-center gap-1.5">
-      {/* Dirty count badge */}
-      {dirtyCount > 0 ? (
-        <span className="inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-full px-1 font-mono text-[9px] font-bold bg-amber-500/15 text-amber-300/80">
-          {dirtyCount}
-        </span>
-      ) : null}
+      {/* Files-changed (dirty count) badge intentionally removed from the header —
+          the Git actions pane in the Tools sidebar already surfaces this. */}
 
       {/* PR badge or create button. When the badge is open it expands into a
           slide-out with action buttons + live PR status preview. */}
@@ -396,7 +407,12 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
           </AnimatePresence>
         </div>
       ) : (
-        <button type="button" className={cn(btnBase)} onClick={handlePr} disabled={isBusy}>
+        <button
+          type="button"
+          className={cn(btnBase, onTogglePrPane && prPaneOpen && "border-violet-400/25 bg-violet-500/[0.08] text-fg/80")}
+          onClick={onTogglePrPane ?? handlePr}
+          disabled={isBusy}
+        >
           <GitPullRequest size={10} weight="bold" />
           <span>PR</span>
         </button>

@@ -276,8 +276,6 @@ import type {
   AgentChatArchiveArgs,
   AgentChatCodexClearGoalArgs,
   AgentChatCodexGetGoalArgs,
-  AgentChatCodexOpenInCliArgs,
-  AgentChatCodexOpenInCliResult,
   AgentChatCodexSetGoalArgs,
   AgentChatCodexSetGoalStatusArgs,
   CodexThreadGoal,
@@ -658,12 +656,6 @@ import type { createProjectScaffoldService } from "../projects/projectScaffoldSe
 import type { createAdeCliService } from "../cli/adeCliService";
 import { getErrorMessage, isRecord, nowIso, resolvePathWithinRoot } from "../shared/utils";
 import { quoteWindowsCmdArg } from "../shared/processExecution";
-import { resolveCodexExecutable } from "../ai/codexExecutable";
-import {
-  buildResumeArgv,
-  detectCodexResumeStrategy,
-  spawnInNewTerminalWindow,
-} from "../chat/codexCliLauncher";
 import { sanitizeResumeTargetId } from "../../utils/terminalSessionSignals";
 import { probeLocalhostPort } from "../probeLocalhostPort";
 import type { ProcessRegistryService } from "../runtime/processRegistryService";
@@ -6773,52 +6765,6 @@ export function registerIpc({
     const { service } = ensureOrchestration();
     await service.release(arg.runId);
     return { ok: true };
-  });
-
-  ipcMain.handle(IPC.agentChatCodexOpenInCli, async (
-    event,
-    arg: AgentChatCodexOpenInCliArgs,
-  ): Promise<AgentChatCodexOpenInCliResult> => {
-    assertTrustedAppControlSender(event, IPC.agentChatCodexOpenInCli);
-    if (arg?.mode === "new-window") {
-      assertAppControlRateLimit(event, IPC.agentChatCodexOpenInCli, { windowMs: 10_000, max: 10 });
-    }
-
-    const ctx = getCtx();
-    const sessionId = typeof arg?.sessionId === "string" ? arg.sessionId.trim() : "";
-    const mode = arg?.mode === "new-window" ? "new-window" : "ade-terminal";
-    if (!sessionId) {
-      throw new Error("agentChat.codex.openInCli requires a sessionId");
-    }
-    if (!ctx.agentChatService) {
-      throw new Error("Open in Codex CLI is unavailable until a project is loaded in this window.");
-    }
-    const resumeCtx = ctx.agentChatService.getCodexResumeContext(sessionId);
-    if (!resumeCtx) {
-      throw new Error(`No resumable Codex thread for session ${sessionId}`);
-    }
-    if (resumeCtx.provider !== "codex") {
-      throw new Error("Open-in-CLI is only supported for Codex sessions");
-    }
-    const resolved = resolveCodexExecutable();
-    const strategy = await detectCodexResumeStrategy(resolved.path);
-    const argv = buildResumeArgv(strategy, resumeCtx.threadId);
-    const result: AgentChatCodexOpenInCliResult = {
-      binary: resolved.path,
-      argv,
-      cwd: resumeCtx.laneWorktreePath,
-      threadId: resumeCtx.threadId,
-      copyThreadIdToClipboard: strategy.copyThreadIdToClipboard,
-    };
-    if (mode === "new-window") {
-      spawnInNewTerminalWindow({
-        binary: resolved.path,
-        argv,
-        cwd: resumeCtx.laneWorktreePath,
-      });
-      result.spawnedNewWindow = true;
-    }
-    return result;
   });
 
   ipcMain.handle(IPC.computerUseListArtifacts, async (_event, arg: ComputerUseArtifactListArgs = {}): Promise<ComputerUseArtifactView[]> => {

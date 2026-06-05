@@ -80,8 +80,6 @@ import type {
   AgentChatArchiveArgs,
   AgentChatCodexClearGoalArgs,
   AgentChatCodexGetGoalArgs,
-  AgentChatCodexOpenInCliArgs,
-  AgentChatCodexOpenInCliResult,
   AgentChatCodexSetGoalArgs,
   AgentChatCodexSetGoalStatusArgs,
   AgentChatCreateArgs,
@@ -1417,9 +1415,6 @@ declare global {
           clearGoal: (
             args: AgentChatCodexClearGoalArgs,
           ) => Promise<CodexThreadGoal | null>;
-          openInCli: (
-            args: AgentChatCodexOpenInCliArgs,
-          ) => Promise<AgentChatCodexOpenInCliResult>;
         };
       };
       computerUse: {
