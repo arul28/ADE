@@ -554,8 +554,11 @@ import type {
   IosSimulatorDragArgs,
   IosSimulatorEventPayload,
   IosSimulatorListPreviewsArgs,
+  IosSimulatorEnsurePreviewWorkspaceArgs,
+  IosSimulatorEnsurePreviewWorkspaceResult,
   IosSimulatorOpenPreviewWorkspaceArgs,
   IosSimulatorPreviewCapability,
+  IosSimulatorPreviewMatch,
   IosSimulatorPreviewTarget,
   IosSimulatorRenderPreviewArgs,
   IosSimulatorRenderPreviewResult,
@@ -1470,6 +1473,12 @@ declare global {
         listPreviewTargets: (
           args?: IosSimulatorListPreviewsArgs,
         ) => Promise<IosSimulatorPreviewTarget[]>;
+        resolvePreviewMatch: (
+          args?: IosSimulatorListPreviewsArgs,
+        ) => Promise<IosSimulatorPreviewMatch>;
+        ensurePreviewWorkspace: (
+          args?: IosSimulatorEnsurePreviewWorkspaceArgs,
+        ) => Promise<IosSimulatorEnsurePreviewWorkspaceResult>;
         renderPreview: (
           args: IosSimulatorRenderPreviewArgs,
         ) => Promise<IosSimulatorRenderPreviewResult>;

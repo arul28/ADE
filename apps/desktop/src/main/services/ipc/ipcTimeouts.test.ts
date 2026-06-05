@@ -37,6 +37,19 @@ describe("ipcInvokeTimeoutMs", () => {
     expect(ipcInvokeTimeoutMs(IPC.macosVmProvision)).toBe(120 * 60_000);
   });
 
+  it("extends iOS Preview Lab matching and workspace readiness timeouts", () => {
+    expect(ipcInvokeTimeoutMs(IPC.iosSimulatorResolvePreviewMatch)).toBe(2 * 60_000);
+    expect(ipcInvokeTimeoutMs(IPC.iosSimulatorEnsurePreviewWorkspace)).toBe(2 * 60_000);
+    expect(ipcInvokeTimeoutMs(IPC.localRuntimeCallAction, [{
+      request: { domain: "ios_simulator", action: "ensurePreviewWorkspace", args: {} },
+    }])).toBe(2 * 60_000);
+    expect(ipcInvokeTimeoutMs(IPC.remoteRuntimeCallAction, [{
+      id: "target-1",
+      projectId: "project-1",
+      request: { domain: "ios_simulator", action: "resolvePreviewMatch", args: {} },
+    }])).toBe(2 * 60_000);
+  });
+
   it("lets macOS VM start include first-run provisioning", () => {
     expect(ipcInvokeTimeoutMs(IPC.macosVmStart)).toBe(120 * 60_000);
   });

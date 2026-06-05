@@ -276,6 +276,8 @@ ade proof list --arg ownerKind=chat --arg ownerId=session-id
 ade ios-sim devices --text
 ade --socket ios-sim apps --text
 ade --socket ios-sim launch --target target-id --text
+ade --socket ios-sim preview-match --source apps/ios/ADE/Views/Home.swift --line 42 --text
+ade --socket ios-sim preview-ensure --source apps/ios/ADE/Views/Home.swift --line 42 --text
 ade --socket ios-sim preview-render --source apps/ios/ADE/Views/Home.swift --index 0 --text
 ade --socket app-control launch --command "npm run dev" --text
 ade --socket app-control focus --text

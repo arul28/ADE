@@ -7142,6 +7142,12 @@ export function registerIpc({
   ipcMain.handle(IPC.iosSimulatorListPreviewTargets, async (_event, arg = {}) =>
     ensureIosSimulator().listPreviewTargets(arg));
 
+  ipcMain.handle(IPC.iosSimulatorResolvePreviewMatch, async (_event, arg = {}) =>
+    ensureIosSimulator().resolvePreviewMatch(arg));
+
+  ipcMain.handle(IPC.iosSimulatorEnsurePreviewWorkspace, async (_event, arg = {}) =>
+    ensureIosSimulator().ensurePreviewWorkspace(arg));
+
   ipcMain.handle(IPC.iosSimulatorRenderPreview, async (_event, arg) => ensureIosSimulator().renderPreview(arg));
 
   ipcMain.handle(IPC.iosSimulatorOpenPreviewWorkspace, async (_event, arg = {}) =>

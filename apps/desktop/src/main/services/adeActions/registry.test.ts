@@ -65,6 +65,13 @@ describe("isAllowedAdeAction", () => {
     expect(isCtoOnlyAdeAction("chat", "launchCli")).toBe(false);
   });
 
+  it("exposes iOS Preview Lab matching and workspace readiness to generic actions", () => {
+    expect(isAllowedAdeAction("ios_simulator", "resolvePreviewMatch")).toBe(true);
+    expect(isAllowedAdeAction("ios_simulator", "ensurePreviewWorkspace")).toBe(true);
+    expect(isCtoOnlyAdeAction("ios_simulator", "resolvePreviewMatch")).toBe(false);
+    expect(isCtoOnlyAdeAction("ios_simulator", "ensurePreviewWorkspace")).toBe(false);
+  });
+
   it("rejects an unknown action on a known domain", () => {
     expect(isAllowedAdeAction("git", "rmRf")).toBe(false);
     expect(isAllowedAdeAction("issue", "deleteAllIssues")).toBe(false);

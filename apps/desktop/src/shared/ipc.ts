@@ -271,6 +271,8 @@ export const IPC = {
   iosSimulatorInspectPoint: "ade.iosSimulator.inspectPoint",
   iosSimulatorGetPreviewCapability: "ade.iosSimulator.getPreviewCapability",
   iosSimulatorListPreviewTargets: "ade.iosSimulator.listPreviewTargets",
+  iosSimulatorResolvePreviewMatch: "ade.iosSimulator.resolvePreviewMatch",
+  iosSimulatorEnsurePreviewWorkspace: "ade.iosSimulator.ensurePreviewWorkspace",
   iosSimulatorRenderPreview: "ade.iosSimulator.renderPreview",
   iosSimulatorOpenPreviewWorkspace: "ade.iosSimulator.openPreviewWorkspace",
   iosSimulatorStartStream: "ade.iosSimulator.startStream",

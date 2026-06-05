@@ -566,8 +566,11 @@ import type {
   IosSimulatorDragArgs,
   IosSimulatorEventPayload,
   IosSimulatorListPreviewsArgs,
+  IosSimulatorEnsurePreviewWorkspaceArgs,
+  IosSimulatorEnsurePreviewWorkspaceResult,
   IosSimulatorOpenPreviewWorkspaceArgs,
   IosSimulatorPreviewCapability,
+  IosSimulatorPreviewMatch,
   IosSimulatorPreviewTarget,
   IosSimulatorRenderPreviewArgs,
   IosSimulatorRenderPreviewResult,
@@ -1222,6 +1225,7 @@ const READ_ONLY_RUNTIME_ACTIONS = new Set([
   "chat.fileSearch",
   "chat.modelCatalog",
   "file.quickOpen",
+  "ios_simulator.resolvePreviewMatch",
   "terminal.activeForChat",
   "terminal.preview",
 ]);
@@ -5427,6 +5431,24 @@ contextBridge.exposeInMainWorld("ade", {
         "listPreviewTargets",
         { args },
         () => ipcRenderer.invoke(IPC.iosSimulatorListPreviewTargets, args),
+      ),
+    resolvePreviewMatch: async (
+      args: IosSimulatorListPreviewsArgs = {},
+    ): Promise<IosSimulatorPreviewMatch> =>
+      callProjectRuntimeActionOr(
+        "ios_simulator",
+        "resolvePreviewMatch",
+        { args },
+        () => ipcRenderer.invoke(IPC.iosSimulatorResolvePreviewMatch, args),
+      ),
+    ensurePreviewWorkspace: async (
+      args: IosSimulatorEnsurePreviewWorkspaceArgs = {},
+    ): Promise<IosSimulatorEnsurePreviewWorkspaceResult> =>
+      callProjectRuntimeActionOr(
+        "ios_simulator",
+        "ensurePreviewWorkspace",
+        { args },
+        () => ipcRenderer.invoke(IPC.iosSimulatorEnsurePreviewWorkspace, args),
       ),
     renderPreview: async (
       args: IosSimulatorRenderPreviewArgs,

@@ -26,6 +26,10 @@ const RUNTIME_ACTION_CHANNEL: Record<string, Record<string, string>> = {
     importBranch: IPC.lanesImportBranch,
     delete: IPC.lanesDelete,
   },
+  ios_simulator: {
+    resolvePreviewMatch: IPC.iosSimulatorResolvePreviewMatch,
+    ensurePreviewWorkspace: IPC.iosSimulatorEnsurePreviewWorkspace,
+  },
 };
 
 const LOCAL_RUNTIME_PROJECT_SETUP_TIMEOUT_MS = 150_000;
@@ -89,6 +93,8 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
     case IPC.iosSimulatorSelectPoint:
     case IPC.iosSimulatorGetPreviewCapability:
     case IPC.iosSimulatorListPreviewTargets:
+    case IPC.iosSimulatorResolvePreviewMatch:
+    case IPC.iosSimulatorEnsurePreviewWorkspace:
     case IPC.iosSimulatorRenderPreview:
       return 2 * 60_000;
     case IPC.iosSimulatorOpenPreviewWorkspace:
