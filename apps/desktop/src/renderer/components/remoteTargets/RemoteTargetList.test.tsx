@@ -81,10 +81,11 @@ describe("RemoteTargetList", () => {
     await waitFor(() => expect(screen.getByText("Studio")).toBeTruthy());
     expect(screen.getByText("studio.tailnet.ts.net:8787")).toBeTruthy();
     expect(
-      screen.getByText("Background ADE 0.0.0 | 2 projects advertised"),
+      screen.getByText(/Background ADE 0\.0\.0/),
     ).toBeTruthy();
+    expect(screen.getByText(/2 projects advertised/)).toBeTruthy();
 
-    fireEvent.click(screen.getByRole("button", { name: "Use host" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add" }));
 
     expect((screen.getByLabelText("Name") as HTMLInputElement).value).toBe(
       "Studio",
@@ -196,10 +197,17 @@ describe("RemoteTargetList", () => {
       expect(remoteRuntimeMock.connect).toHaveBeenCalledWith("target-1"),
     );
     expect(screen.getByText("Connected")).toBeTruthy();
-    expect(screen.getByText("ADE service 1.0.0 on darwin-arm64.")).toBeTruthy();
+    expect(screen.getByText(/ADE 1\.0\.0 on darwin-arm64/)).toBeTruthy();
     expect(screen.getByText(/RPC capabilities are compatible/i)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Disconnect" })).toBeTruthy();
     expect(screen.queryByText("/remote/ADE")).toBeNull();
     expect(screen.queryByRole("button", { name: "Open" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Disconnect" }));
+    await waitFor(() =>
+      expect(remoteRuntimeMock.disconnect).toHaveBeenCalledWith("target-1"),
+    );
+    expect(screen.getByText("Not connected")).toBeTruthy();
   });
 
   it("shows an actionable message when the SSH host-key probe is reset", async () => {
@@ -385,7 +393,7 @@ describe("RemoteTargetList", () => {
     );
     expect(screen.queryByText("Arul's Mac Studio")).toBeNull();
     expect(screen.queryByRole("button", { name: "Use host" })).toBeNull();
-    expect(screen.getByText("Nearby machines are already saved above.")).toBeTruthy();
+    expect(screen.getByText("Nearby machines are already saved.")).toBeTruthy();
   });
 
   it("surfaces Tailscale discovery diagnostics separately from empty results", async () => {
@@ -411,6 +419,6 @@ describe("RemoteTargetList", () => {
         screen.getByText("Tailscale CLI was not found; only LAN discovery ran."),
       ).toBeTruthy(),
     );
-    expect(screen.getByText("No LAN ADE services or Tailscale peers found.")).toBeTruthy();
+    expect(screen.getByText("No saved or detected machines yet.")).toBeTruthy();
   });
 });
