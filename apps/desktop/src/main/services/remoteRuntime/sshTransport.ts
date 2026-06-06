@@ -20,6 +20,13 @@ export type SshExecResult = {
 };
 
 const MAX_SSH_EXEC_OUTPUT_BYTES = 8 * 1024 * 1024;
+const DEFAULT_SSH_EXEC_TIMEOUT_MS = 30_000;
+const MIN_SSH_EXEC_TIMEOUT_MS = 50;
+
+type ExecSshOptions = {
+  timeoutMs?: number;
+  env?: NodeJS.ProcessEnv;
+};
 
 type OpenSshHostConfig = {
   hostName?: string;
@@ -38,6 +45,22 @@ export type BuildSshConfigOptions = {
 };
 
 export type ConnectedSshRoute = RemoteRuntimeTargetRoute;
+
+export type OpenSshResolvedConfig = {
+  host: string;
+  port: number;
+  username: string;
+  identityFile: string | null;
+  knownHostsPath: string | null;
+  hostAliases: string[];
+};
+
+export type ConnectedSshSession = {
+  client: Client;
+  route: ConnectedSshRoute;
+  config: ConnectConfig;
+  openSshConfig: OpenSshResolvedConfig;
+};
 
 type KnownHostEntry = {
   marker: string | null;
@@ -79,6 +102,8 @@ const DEFAULT_IDENTITY_FILES = [
   "id_ecdsa_sk",
   "id_rsa",
 ];
+const DEFAULT_SSH_CONNECT_ATTEMPT_TIMEOUT_MS = 10_000;
+const MIN_SSH_CONNECT_ATTEMPT_TIMEOUT_MS = 50;
 
 function stripInlineComment(line: string): string {
   const hashIndex = line.indexOf("#");
@@ -533,17 +558,12 @@ export async function trustSshHostKeyForTarget(
   };
 }
 
-export function buildSshConfig(target: RemoteRuntimeTarget, options: BuildSshConfigOptions = {}): ConnectConfig {
+function resolveOpenSshConfig(
+  target: RemoteRuntimeTarget,
+  options: BuildSshConfigOptions = {},
+): OpenSshResolvedConfig {
   const hostConfig = readOpenSshHostConfig(target, options);
   const endpoint = resolveSshEndpoint(target, options);
-  const config: ConnectConfig = {
-    host: endpoint.host,
-    port: endpoint.port,
-    username: endpoint.username,
-    readyTimeout: 20_000,
-    keepaliveInterval: 15_000,
-    keepaliveCountMax: 3,
-  };
   const identityFile = target.sshKeyPath
     ?? (hostConfig.identityFile ? expandSshPath(hostConfig.identityFile, {
       host: endpoint.host,
@@ -552,17 +572,56 @@ export function buildSshConfig(target: RemoteRuntimeTarget, options: BuildSshCon
       homeDir: endpoint.homeDir,
     }) : null)
     ?? firstReadableDefaultIdentity(endpoint.homeDir);
-  if (identityFile) {
-    config.privateKey = fs.readFileSync(identityFile);
+  return {
+    host: endpoint.host,
+    port: endpoint.port,
+    username: endpoint.username,
+    identityFile,
+    knownHostsPath: endpoint.knownHostsPath,
+    hostAliases: endpoint.hostAliases,
+  };
+}
+
+export function buildSshConfig(target: RemoteRuntimeTarget, options: BuildSshConfigOptions = {}): ConnectConfig {
+  const endpoint = resolveOpenSshConfig(target, options);
+  const env = options.env ?? process.env;
+  const config: ConnectConfig = {
+    host: endpoint.host,
+    port: endpoint.port,
+    username: endpoint.username,
+    readyTimeout: sshConnectAttemptTimeoutMs(env),
+    // Runtime RPC calls and artifact uploads have their own timeouts. SSH-level
+    // keepalives can starve behind large channel writes and close otherwise
+    // healthy uploads, so keep the transport-level probe disabled.
+    keepaliveInterval: 0,
+    keepaliveCountMax: 3,
+  };
+  if (endpoint.identityFile) {
+    config.privateKey = fs.readFileSync(endpoint.identityFile);
   }
   const knownHostEntries = readKnownHostEntries(endpoint.knownHostsPath);
   const candidates = knownHostCandidates(endpoint.hostAliases, endpoint.port);
   config.hostVerifier = (key: Buffer) => knownHostsAllowKey(knownHostEntries, candidates, key);
-  const env = options.env ?? process.env;
   if (env.SSH_AUTH_SOCK) {
     config.agent = env.SSH_AUTH_SOCK;
   }
   return config;
+}
+
+function sshConnectAttemptTimeoutMs(env: NodeJS.ProcessEnv): number {
+  const raw = env.ADE_REMOTE_SSH_CONNECT_TIMEOUT_MS;
+  const parsed = raw == null ? NaN : Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed >= MIN_SSH_CONNECT_ATTEMPT_TIMEOUT_MS
+    ? parsed
+    : DEFAULT_SSH_CONNECT_ATTEMPT_TIMEOUT_MS;
+}
+
+function sshExecTimeoutMs(options: ExecSshOptions = {}): number {
+  const raw = options.timeoutMs ?? options.env?.ADE_REMOTE_SSH_EXEC_TIMEOUT_MS ?? process.env.ADE_REMOTE_SSH_EXEC_TIMEOUT_MS;
+  const parsed = raw == null ? NaN : typeof raw === "number" ? raw : Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed >= MIN_SSH_EXEC_TIMEOUT_MS
+    ? parsed
+    : DEFAULT_SSH_EXEC_TIMEOUT_MS;
 }
 
 function uniqueUsernames(values: Array<string | null | undefined>): string[] {
@@ -683,41 +742,223 @@ function isSshAuthenticationFailure(error: unknown): boolean {
     (typeof candidate.message === "string" && /authentication/i.test(candidate.message));
 }
 
+function sshEndpointLabel(config: ConnectConfig): string {
+  const host = typeof config.host === "string" && config.host.trim()
+    ? config.host.trim()
+    : "remote host";
+  const port = typeof config.port === "number" && Number.isFinite(config.port)
+    ? config.port
+    : 22;
+  return `${host}:${port}`;
+}
+
+function copySshErrorMetadata(source: unknown, target: Error): Error {
+  if (!source || typeof source !== "object") return target;
+  const candidate = source as {
+    code?: unknown;
+    errno?: unknown;
+    syscall?: unknown;
+    level?: unknown;
+  };
+  for (const key of ["code", "errno", "syscall", "level"] as const) {
+    if (candidate[key] !== undefined) {
+      Object.defineProperty(target, key, {
+        configurable: true,
+        enumerable: false,
+        value: candidate[key],
+      });
+    }
+  }
+  Object.defineProperty(target, "cause", {
+    configurable: true,
+    enumerable: false,
+    value: source,
+  });
+  return target;
+}
+
+function normalizeSshConnectError(
+  error: unknown,
+  fallback: string,
+  config: ConnectConfig,
+): Error {
+  const source = error instanceof Error
+    ? error
+    : new Error(String(error ?? fallback));
+  const message = source.message || fallback;
+  const endpoint = sshEndpointLabel(config);
+  const sourceMetadata = source as Error & { code?: unknown };
+  const code = typeof sourceMetadata.code === "string"
+    ? sourceMetadata.code
+    : "";
+
+  if (
+    code === "ECONNRESET" ||
+    /(?:^|\s)ECONNRESET(?:\s|$)|connection reset|connection closed by remote host|socket closed|connection lost before handshake/i.test(message) ||
+    /closed before (?:it became ready|ADE could complete the SSH handshake)/i.test(fallback)
+  ) {
+    return copySshErrorMetadata(
+      source,
+      new Error(
+        `SSH server at ${endpoint} closed the connection before ADE could finish the SSH handshake. ` +
+          "Check that Remote Login/sshd is enabled on the remote machine and that its firewall or Tailscale SSH policy allows this client.",
+      ),
+    );
+  }
+
+  if (/timed out while waiting for handshake|handshake.*timed out|ready timeout/i.test(message)) {
+    return copySshErrorMetadata(
+      source,
+      new Error(
+        `Timed out while waiting for the SSH handshake from ${endpoint}. ` +
+          "Check that the machine is online, reachable over this route, and accepting SSH connections.",
+      ),
+    );
+  }
+
+  if (isLocalPortUnavailableError(source)) {
+    return copySshErrorMetadata(
+      source,
+      new Error(
+        `macOS could not allocate a local TCP port for SSH to ${endpoint}. ` +
+          "Quit apps that are rapidly opening network connections and try again.",
+      ),
+    );
+  }
+
+  return source;
+}
+
+function isLocalPortUnavailableError(error: unknown): boolean {
+  if (!error || typeof error !== "object") return false;
+  const candidate = error as { code?: unknown; message?: unknown };
+  return candidate.code === "EADDRNOTAVAIL" ||
+    candidate.code === "EADDRINUSE" ||
+    (typeof candidate.message === "string" && /EADDRNOTAVAIL|EADDRINUSE|can't assign requested address|address already in use/i.test(candidate.message));
+}
+
 function connectSshWithConfig(config: ConnectConfig): Promise<Client> {
   return new Promise((resolve, reject) => {
     const client = new Client();
-    client.once("ready", () => resolve(client));
-    client.once("error", reject);
-    client.connect(config);
+    let settled = false;
+    let connectTimer: NodeJS.Timeout | null = null;
+    const connectTimeoutMs =
+      typeof config.readyTimeout === "number" && Number.isFinite(config.readyTimeout)
+        ? Math.max(MIN_SSH_CONNECT_ATTEMPT_TIMEOUT_MS, config.readyTimeout)
+        : DEFAULT_SSH_CONNECT_ATTEMPT_TIMEOUT_MS;
+    const clearConnectTimer = (): void => {
+      if (!connectTimer) return;
+      clearTimeout(connectTimer);
+      connectTimer = null;
+    };
+    const destroyClient = (): void => {
+      try {
+        client.end();
+      } catch {}
+      try {
+        (client as unknown as { destroy?: () => void }).destroy?.();
+      } catch {}
+      try {
+        (client as unknown as { _sock?: { destroy?: () => void } })._sock?.destroy?.();
+      } catch {}
+    };
+    const cleanupConnectListeners = (options: { keepErrorListener?: boolean } = {}): void => {
+      clearConnectTimer();
+      client.off("ready", onReady);
+      if (!options.keepErrorListener) {
+        client.off("error", onError);
+      }
+      client.off("close", onClose);
+      client.off("end", onEnd);
+    };
+    const fail = (error: unknown, fallback: string): void => {
+      if (settled) return;
+      settled = true;
+      // ssh2 may emit a late socket error after close/end during a failed
+      // connect attempt. Keep onError attached as a sink so the late error is
+      // contained after the promise has already rejected.
+      cleanupConnectListeners({ keepErrorListener: true });
+      destroyClient();
+      reject(normalizeSshConnectError(error, fallback, config));
+    };
+    const onTimeout = (): void => {
+      const timeoutError = new Error(
+        `Timed out while waiting for handshake after ${connectTimeoutMs}ms.`,
+      );
+      fail(timeoutError, "Timed out while waiting for handshake.");
+    };
+    const onReady = (): void => {
+      if (settled) return;
+      settled = true;
+      cleanupConnectListeners();
+      // ssh2 can surface transport resets after ready and before the remote
+      // pool attaches its lifecycle listener. Keep a durable listener so those
+      // errors remain contained instead of becoming process-level exceptions.
+      client.on("error", () => {});
+      resolve(client);
+    };
+    const onError = (error: Error): void => {
+      fail(error, "SSH connection failed.");
+    };
+    const onClose = (): void => {
+      fail(null, "SSH connection closed before it became ready.");
+    };
+    const onEnd = (): void => {
+      fail(null, "SSH connection ended before it became ready.");
+    };
+    client.once("ready", onReady);
+    client.on("error", onError);
+    client.once("close", onClose);
+    client.once("end", onEnd);
+    connectTimer = setTimeout(onTimeout, connectTimeoutMs);
+    connectTimer.unref?.();
+    try {
+      client.connect(config);
+    } catch (error) {
+      fail(error, "SSH connection failed.");
+    }
   });
 }
 
 function buildSshConnectionCandidates(
   target: RemoteRuntimeTarget,
   options: BuildSshConfigOptions = {},
-): Array<{ config: ConnectConfig; route: ConnectedSshRoute }> {
+): Array<{
+  config: ConnectConfig;
+  openSshConfig: OpenSshResolvedConfig;
+  route: ConnectedSshRoute;
+}> {
   return buildSshRouteCandidates(target).flatMap((route) => {
     const routeTarget = targetForRoute(target, route);
-    return buildSshUsernameCandidates(routeTarget, options).map((username) => ({
-      config: buildSshConfig(routeTarget, {
+    return buildSshUsernameCandidates(routeTarget, options).map((username) => {
+      const candidateOptions = {
         ...options,
         usernameOverride: username,
-      }),
-      route,
-    }));
+      };
+      return {
+        config: buildSshConfig(routeTarget, candidateOptions),
+        openSshConfig: resolveOpenSshConfig(routeTarget, candidateOptions),
+        route,
+      };
+    });
   });
 }
 
 export async function connectSshWithRoute(
   target: RemoteRuntimeTarget,
-): Promise<{ client: Client; route: ConnectedSshRoute }> {
+): Promise<ConnectedSshSession> {
   const configs = buildSshConnectionCandidates(target);
   let lastError: unknown = null;
   for (let index = 0; index < configs.length; index += 1) {
     const candidate = configs[index]!;
     try {
       const client = await connectSshWithConfig(candidate.config);
-      return { client, route: candidate.route };
+      return {
+        client,
+        route: candidate.route,
+        config: candidate.config,
+        openSshConfig: candidate.openSshConfig,
+      };
     } catch (error) {
       lastError = error;
       if (index >= configs.length - 1) break;
@@ -738,41 +979,76 @@ export async function connectSsh(target: RemoteRuntimeTarget): Promise<Client> {
   return (await connectSshWithRoute(target)).client;
 }
 
-export function execSsh(client: Client, command: string): Promise<SshExecResult> {
+export function execSsh(client: Client, command: string, options: ExecSshOptions = {}): Promise<SshExecResult> {
   return new Promise((resolve, reject) => {
     client.exec(command, (error, stream) => {
       if (error) {
         reject(error);
         return;
       }
+      let settled = false;
       let stdout = "";
       let stderr = "";
       let stdoutBytes = 0;
       let stderrBytes = 0;
       let code: number | null = null;
+      let timeout: NodeJS.Timeout | null = null;
+      const closeStream = (): void => {
+        try {
+          stream.close();
+        } catch {}
+        try {
+          (stream as unknown as { destroy?: () => void }).destroy?.();
+        } catch {}
+      };
+      const clearTimer = (): void => {
+        if (!timeout) return;
+        clearTimeout(timeout);
+        timeout = null;
+      };
+      const settle = (callback: () => void): void => {
+        if (settled) return;
+        settled = true;
+        clearTimer();
+        callback();
+      };
+      const fail = (failure: Error): void => {
+        settle(() => {
+          closeStream();
+          reject(failure);
+        });
+      };
+      const timeoutMs = sshExecTimeoutMs(options);
+      timeout = setTimeout(() => {
+        fail(new Error(`Timed out waiting for SSH command to finish after ${timeoutMs}ms.`));
+      }, timeoutMs);
+      timeout.unref?.();
       stream.on("data", (chunk: Buffer) => {
+        if (settled) return;
         stdoutBytes += chunk.byteLength;
         if (stdoutBytes > MAX_SSH_EXEC_OUTPUT_BYTES) {
-          reject(new Error(`SSH command stdout exceeded ${MAX_SSH_EXEC_OUTPUT_BYTES} bytes.`));
-          stream.close();
+          fail(new Error(`SSH command stdout exceeded ${MAX_SSH_EXEC_OUTPUT_BYTES} bytes.`));
           return;
         }
         stdout += chunk.toString("utf8");
       });
       stream.stderr.on("data", (chunk: Buffer) => {
+        if (settled) return;
         stderrBytes += chunk.byteLength;
         if (stderrBytes > MAX_SSH_EXEC_OUTPUT_BYTES) {
-          reject(new Error(`SSH command stderr exceeded ${MAX_SSH_EXEC_OUTPUT_BYTES} bytes.`));
-          stream.close();
+          fail(new Error(`SSH command stderr exceeded ${MAX_SSH_EXEC_OUTPUT_BYTES} bytes.`));
           return;
         }
         stderr += chunk.toString("utf8");
       });
       stream.on("exit", (exitCode: number | null) => {
+        if (settled) return;
         code = exitCode;
       });
-      stream.on("close", () => resolve({ stdout, stderr, code }));
-      stream.on("error", reject);
+      stream.on("close", () => {
+        settle(() => resolve({ stdout, stderr, code }));
+      });
+      stream.on("error", (streamError: Error) => fail(streamError));
     });
   });
 }

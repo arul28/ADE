@@ -65,6 +65,18 @@ describe("isAllowedAdeAction", () => {
     expect(isCtoOnlyAdeAction("chat", "launchCli")).toBe(false);
   });
 
+  it("exposes iOS Preview Lab matching and workspace readiness to generic actions", () => {
+    expect(isAllowedAdeAction("ios_simulator", "resolvePreviewMatch")).toBe(true);
+    expect(isAllowedAdeAction("ios_simulator", "ensurePreviewWorkspace")).toBe(true);
+    expect(isCtoOnlyAdeAction("ios_simulator", "resolvePreviewMatch")).toBe(false);
+    expect(isCtoOnlyAdeAction("ios_simulator", "ensurePreviewWorkspace")).toBe(false);
+  });
+
+  it("exposes subagent transcript reads through the chat runtime action surface", () => {
+    expect(isAllowedAdeAction("chat", "getSubagentTranscript")).toBe(true);
+    expect(isCtoOnlyAdeAction("chat", "getSubagentTranscript")).toBe(false);
+  });
+
   it("rejects an unknown action on a known domain", () => {
     expect(isAllowedAdeAction("git", "rmRf")).toBe(false);
     expect(isAllowedAdeAction("issue", "deleteAllIssues")).toBe(false);
@@ -334,6 +346,26 @@ describe("ADE_ACTION_ALLOWLIST shape", () => {
     });
     expect(listAllowedAdeActionNames("chat", chat as Record<string, unknown>)).toContain("modelCatalog");
     expect(getModelCatalog).toHaveBeenCalledWith({ mode: "cached" });
+  });
+
+  it("unwraps chat.listSessions action args before calling the positional chat service API", async () => {
+    const listSessions = vi.fn(async () => []);
+    const runtime = {
+      agentChatService: {
+        listSessions,
+      },
+    } as unknown as Parameters<typeof getAdeActionDomainServices>[0];
+
+    const chat = getAdeActionDomainServices(runtime).chat as {
+      listSessions?: (args?: unknown) => Promise<unknown>;
+    };
+
+    await expect(chat.listSessions?.({
+      laneId: " lane-1 ",
+      includeAutomation: true,
+    })).resolves.toEqual([]);
+    expect(listAllowedAdeActionNames("chat", chat as Record<string, unknown>)).toContain("listSessions");
+    expect(listSessions).toHaveBeenCalledWith("lane-1", { includeAutomation: true });
   });
 
   it("exposes the browser panel and tab control surface", () => {
@@ -630,6 +662,32 @@ describe("runtime session actions", () => {
       ptyId: "pty-1",
       pid: 123,
       attachedLinearIssueIds: ["issue-1"],
+    });
+  });
+
+  it("forwards remote subagent transcript reads through chat actions", async () => {
+    const transcript = [{ role: "assistant", content: "subagent output" }];
+    const getSubagentTranscript = vi.fn(async () => transcript);
+    const runtime = {
+      agentChatService: {
+        getSubagentTranscript,
+      },
+    } as unknown as Parameters<typeof getAdeActionDomainServices>[0];
+    const chatService = getAdeActionDomainServices(runtime).chat as {
+      getSubagentTranscript: (args: {
+        sessionId: string;
+        subagentId: string;
+      }) => Promise<Array<{ role: string; content: string }>>;
+    } & Record<string, unknown>;
+
+    expect(listAllowedAdeActionNames("chat", chatService)).toContain("getSubagentTranscript");
+    await expect(chatService.getSubagentTranscript({
+      sessionId: "chat-1",
+      subagentId: "subagent-1",
+    })).resolves.toEqual(transcript);
+    expect(getSubagentTranscript).toHaveBeenCalledWith({
+      sessionId: "chat-1",
+      subagentId: "subagent-1",
     });
   });
 

@@ -536,6 +536,11 @@ function isCliPlaceholderTitle(title: string | null | undefined, toolType: Termi
   return false;
 }
 
+function normalizePtySessionTitle(title: unknown): string {
+  const trimmed = typeof title === "string" ? title.trim() : "";
+  return trimmed.length ? trimmed : "Terminal";
+}
+
 function sanitizeGeneratedCliTitle(raw: string): string {
   let title = stripAnsi(raw)
     .replace(/\p{Extended_Pictographic}/gu, "")
@@ -3398,7 +3403,8 @@ export function createPtyService({
     },
 
     async create(args: PtyCreateArgs): Promise<PtyCreateResult> {
-      const { laneId, title } = args;
+      const { laneId } = args;
+      const title = normalizePtySessionTitle(args.title);
       const chatSessionId = cleanOptionalId(args.chatSessionId);
       const launchContext = resolveLaneLaunchContext({
         laneService,
@@ -4278,8 +4284,8 @@ export function createPtyService({
         });
     },
 
-    activeForChat(args: ChatTerminalActiveForChatArgs): ChatTerminalSession | null {
-      const chatSessionId = cleanOptionalId(args.chatSessionId);
+    activeForChat(args?: Partial<ChatTerminalActiveForChatArgs> | null): ChatTerminalSession | null {
+      const chatSessionId = cleanOptionalId(args?.chatSessionId);
       if (!chatSessionId) return null;
       const chatCli = activeChatCliEntryFor(chatSessionId);
       if (chatCli) {
@@ -4708,6 +4714,8 @@ export function createPtyService({
         if (!sessionId) return;
         const session = sessionService.get(sessionId);
         if (!session) return;
+        if (session.status && session.status !== "running") return;
+        if (session.ptyId && session.ptyId !== ptyId) return;
         if (
           ownerPid != null
           && session.ownerPid != null

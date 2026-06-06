@@ -98,6 +98,22 @@ describe("ChatTerminalDrawer", () => {
     expect(onToggle).toHaveBeenCalledTimes(2);
   });
 
+  it("does not restore terminal tabs while the drawer is closed", async () => {
+    render(
+      <ChatTerminalDrawer
+        open={false}
+        onToggle={vi.fn()}
+        laneId="lane-1"
+        chatSessionId="chat-1"
+        autoCreateOnOpen={false}
+      />,
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(window.ade.terminal.list).not.toHaveBeenCalled();
+    expect(window.ade.appControl.getStatus).not.toHaveBeenCalled();
+  });
+
   it("switches restored terminal tabs", async () => {
     vi.mocked(window.ade.terminal.list).mockResolvedValueOnce([
       {

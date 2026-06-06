@@ -2,9 +2,9 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "rea
 import { useClickOutside } from "../../hooks/useClickOutside";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { Group, Panel } from "react-resizable-panels";
-import { Check, CaretDown, FileCode, GitPullRequest, Stack, Link, ArrowsOutSimple, ArrowsInSimple, PushPin, Plus, MagnifyingGlass, Terminal, X, ArrowSquareOut, Info, ArrowCounterClockwise, UsersThree, CircleNotch } from "@phosphor-icons/react";
+import { Check, CaretDown, FileCode, Stack, Link, ArrowsOutSimple, ArrowsInSimple, PushPin, Plus, MagnifyingGlass, Terminal, X, ArrowSquareOut, Info, ArrowCounterClockwise, UsersThree, CircleNotch } from "@phosphor-icons/react";
 import { BranchIcon, LaneIcon } from "../ui/vcsIcons";
-import { useAppStore, useAppStoreApi, type LaneInspectorTab } from "../../state/appStore";
+import { selectActiveProjectRoot, useAppStore, useAppStoreApi, type LaneInspectorTab } from "../../state/appStore";
 import { buildIntegrationSourcesByLaneId } from "../../lib/integrationLanes";
 import { EmptyState } from "../ui/EmptyState";
 import { Button } from "../ui/Button";
@@ -34,6 +34,7 @@ import { LaneContextMenu } from "./LaneContextMenu";
 import { getLaneAccent } from "./laneColorPalette";
 import { LaneRebaseBanner } from "./LaneRebaseBanner";
 import { LinearIssueBadge } from "./LinearIssueBadge";
+import { LanePrBadgePopover } from "./LanePrBadgePopover";
 import { HelpChip } from "../onboarding/HelpChip";
 import { useOnboardingStore } from "../../state/onboardingStore";
 import { useDialogBus } from "../../lib/useDialogBus";
@@ -73,7 +74,6 @@ import {
   type LaneBranchOption
 } from "./laneUtils";
 import { buildPrsRouteSearch } from "../prs/prsRouteState";
-import { formatPrBadgeLabel } from "../prs/shared/prFormatters";
 import { getProjectConfigCached } from "../../lib/projectConfigCache";
 import { getGitHubSnapshotCoalesced, listPrsCoalesced, refreshPrsCoalesced, warmPrSurfaceCoalesced } from "../../lib/prReadCache";
 import { logRendererDebugEvent } from "../../lib/debugLog";
@@ -218,13 +218,6 @@ function DeferredLanePane({
   return ready ? <>{children}</> : null;
 }
 
-function lanePrTagColor(state: PrSummary["state"]): string {
-  if (state === "merged") return COLORS.success;
-  if (state === "closed") return COLORS.danger;
-  if (state === "draft") return COLORS.warning;
-  return COLORS.accent;
-}
-
 function mergePrSummariesById(current: PrSummary[], refreshed: PrSummary[]): PrSummary[] {
   if (refreshed.length === 0) return current;
   const refreshedById = new Map(refreshed.map((pr) => [pr.id, pr] as const));
@@ -249,6 +242,10 @@ function isTrustedGitHubUrl(rawUrl: string): boolean {
 }
 
 export function isLaneDeleteProgressActive(progress: LaneDeleteProgress | null | undefined): boolean {
+  return progress?.overallStatus === "running";
+}
+
+function isLaneDeleteProgressHydratable(progress: LaneDeleteProgress | null | undefined): boolean {
   return progress?.overallStatus === "running"
     || progress?.overallStatus === "completed"
     || progress?.overallStatus === "completed_with_warnings";
@@ -459,7 +456,24 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   const clearLaneInspectorTab = useAppStore((s) => s.clearLaneInspectorTab);
   const setLaneWorkViewState = useAppStore((s) => s.setLaneWorkViewState);
   const keybindings = useAppStore((s) => s.keybindings);
-  const project = useAppStore((s) => s.project);
+  const projectBinding = useAppStore((s) => s.projectBinding);
+  const activeProjectRoot = useAppStore(selectActiveProjectRoot);
+  const createLaneRuntimeCopy = useMemo(() => {
+    if (projectBinding?.kind !== "remote") {
+      return {
+        label: "Local Mac",
+        description: "Use this ADE runtime and local worktree.",
+      };
+    }
+    const runtimeName = projectBinding.runtimeName.trim();
+    return {
+      label: runtimeName || "Remote runtime",
+      description: "Use this connected remote ADE runtime and remote worktree.",
+    };
+  }, [projectBinding]);
+  const getActiveProjectRoot = useCallback(() => {
+    return selectActiveProjectRoot(appStore.getState());
+  }, [appStore]);
   const activeTourId = useOnboardingStore((s) => s.activeTourId);
   const suppressTourDistractions = activeTourId === "first-journey";
 
@@ -520,7 +534,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   const [attachDescription, setAttachDescription] = useState("");
   const [attachBusy, setAttachBusy] = useState(false);
   const [attachError, setAttachError] = useState<string | null>(null);
-  const canCreateLane = Boolean(project?.rootPath);
+  const canCreateLane = Boolean(activeProjectRoot);
   const [adoptBusy, setAdoptBusy] = useState(false);
   const [adoptError, setAdoptError] = useState<string | null>(null);
   const [adoptConfirmOpen, setAdoptConfirmOpen] = useState(false);
@@ -578,7 +592,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   const pendingLaneDeleteRefreshIdsRef = useRef<Set<string>>(new Set());
   const laneDeleteRefreshTimerRef = useRef<number | null>(null);
   const hydratedLaneDeleteProgressProjectRef = useRef<string | null>(null);
-  const deleteProgressProjectRootRef = useRef<string | null>(project?.rootPath ?? null);
+  const deleteProgressProjectRootRef = useRef<string | null>(activeProjectRoot);
   const activeLanePresenceSignatureRef = useRef<string | null>(null);
   // Refs for the onDeleteEvent IPC handler. Capturing high-churn values
   // (selectedLaneId, lanesById, managedLaneIds, manageOpen) in refs lets the
@@ -613,15 +627,19 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   const consumedCommitDeepLinkSignatureRef = useRef<string | null>(null);
 
   useEffect(() => {
-    logRendererDebugEvent("renderer.lanes.page_mount");
+    logRendererDebugEvent("renderer.lanes.page_mount", {
+      projectRoot: activeProjectRoot,
+    });
     return () => {
-      logRendererDebugEvent("renderer.lanes.page_unmount");
+      logRendererDebugEvent("renderer.lanes.page_unmount", {
+        projectRoot: activeProjectRoot,
+      });
     };
-  }, []);
+  }, [activeProjectRoot]);
 
   useEffect(() => {
     if (!active) return;
-    const projectRoot = project?.rootPath ?? null;
+    const projectRoot = activeProjectRoot;
     const previousProjectRoot = deleteProgressProjectRootRef.current;
     deleteProgressProjectRootRef.current = projectRoot;
     hydratedLaneDeleteProgressProjectRef.current = null;
@@ -634,7 +652,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     if (previousProjectRoot !== projectRoot) {
       setDeleteProgressByLaneId({});
     }
-  }, [project?.rootPath, setDeleteProgressByLaneId]);
+  }, [activeProjectRoot, setDeleteProgressByLaneId]);
 
   const laneSnapshotByLaneId = useMemo(
     () => new Map(laneSnapshots.map((snapshot) => [snapshot.lane.id, snapshot] as const)),
@@ -804,14 +822,14 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     if (!syncApi?.setActiveLanePresence) {
       return;
     }
-    const laneIds = active && project?.rootPath ? [...visibleLaneIds] : [];
+    const laneIds = active && activeProjectRoot ? [...visibleLaneIds] : [];
     const signature = laneIds.join("\0");
     if (activeLanePresenceSignatureRef.current === signature) {
       return;
     }
     activeLanePresenceSignatureRef.current = signature;
     void syncApi.setActiveLanePresence({ laneIds }).catch(() => {});
-  }, [active, project?.rootPath, visibleLaneIds]);
+  }, [active, activeProjectRoot, visibleLaneIds]);
 
   useEffect(() => {
     const syncApi = window.ade.sync;
@@ -906,7 +924,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
 
   const refreshAutoRebaseEnabled = useCallback(async () => {
     try {
-      const snapshot = await getProjectConfigCached({ projectRoot: project?.rootPath ?? null });
+      const snapshot = await getProjectConfigCached({ projectRoot: activeProjectRoot });
       const enabled =
         typeof snapshot.effective.git?.autoRebaseOnHeadChange === "boolean"
           ? snapshot.effective.git.autoRebaseOnHeadChange
@@ -915,7 +933,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     } catch {
       setAutoRebaseEnabled(false);
     }
-  }, [project?.rootPath]);
+  }, [activeProjectRoot]);
 
   const refreshIntegrationProposals = useCallback(async () => {
     try {
@@ -928,10 +946,10 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
 
   const refreshLanePrTags = useCallback(async (options?: { refreshMapped?: boolean }) => {
     const requestId = ++lanePrTagsRequestRef.current;
-    const startedRoot = appStore.getState().project?.rootPath ?? null;
+    const startedRoot = getActiveProjectRoot();
     const stillCurrent = () =>
       requestId === lanePrTagsRequestRef.current
-      && (appStore.getState().project?.rootPath ?? null) === startedRoot;
+      && getActiveProjectRoot() === startedRoot;
     try {
       const prs = await listPrsCoalesced({ projectRoot: startedRoot });
       if (!stillCurrent()) return;
@@ -956,25 +974,25 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
       if (!stillCurrent()) return;
       setLanePrTags([]);
     }
-  }, [appStore]);
+  }, [getActiveProjectRoot]);
 
   const refreshLaneGithubPrTags = useCallback(async (options?: { force?: boolean }) => {
     const requestId = ++laneGithubPrTagsRequestRef.current;
-    const startedRoot = appStore.getState().project?.rootPath ?? null;
+    const startedRoot = getActiveProjectRoot();
     try {
       const snapshot = await getGitHubSnapshotCoalesced(
         { force: options?.force === true },
         { projectRoot: startedRoot },
       );
       if (requestId !== laneGithubPrTagsRequestRef.current) return;
-      if ((appStore.getState().project?.rootPath ?? null) !== startedRoot) return;
+      if (getActiveProjectRoot() !== startedRoot) return;
       setLaneGithubPrTags(snapshot.repoPullRequests);
     } catch {
       if (requestId !== laneGithubPrTagsRequestRef.current) return;
-      if ((appStore.getState().project?.rootPath ?? null) !== startedRoot) return;
+      if (getActiveProjectRoot() !== startedRoot) return;
       // Keep the last usable GitHub snapshot visible on transient refresh failures.
     }
-  }, [appStore]);
+  }, [getActiveProjectRoot]);
 
   const scheduleLaneDeleteRefresh = useCallback(() => {
     if (laneDeleteRefreshTimerRef.current != null) return;
@@ -1117,27 +1135,27 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
       void refreshIntegrationProposals();
     }, 140);
     return () => window.clearTimeout(timer);
-  }, [active, refreshIntegrationProposals, project?.rootPath]);
+  }, [active, refreshIntegrationProposals, activeProjectRoot]);
 
   useEffect(() => {
     lanePrTagsRequestRef.current += 1;
     laneGithubPrTagsRequestRef.current += 1;
     setLanePrTags([]);
     setLaneGithubPrTags([]);
-    if (!active || !project?.rootPath) {
+    if (!active || !activeProjectRoot) {
       return;
     }
     void refreshLanePrTags({ refreshMapped: true });
     void refreshLaneGithubPrTags({ force: true });
     void warmPrSurfaceCoalesced({
-      projectRoot: project.rootPath,
+      projectRoot: activeProjectRoot,
       includeGithubSnapshot: false,
     });
     return () => {
       lanePrTagsRequestRef.current += 1;
       laneGithubPrTagsRequestRef.current += 1;
     };
-  }, [active, refreshLanePrTags, refreshLaneGithubPrTags, project?.rootPath, lanePrBranchSignature]);
+  }, [active, refreshLanePrTags, refreshLaneGithubPrTags, activeProjectRoot, lanePrBranchSignature]);
 
   useEffect(() => {
     if (!active) return;
@@ -1165,7 +1183,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   }, []);
 
   useEffect(() => {
-    const projectRoot = project?.rootPath ?? null;
+    const projectRoot = activeProjectRoot;
     if (laneVisiblePrRefreshProjectRootRef.current !== projectRoot) {
       laneVisiblePrRefreshProjectRootRef.current = projectRoot;
       laneVisiblePrRefreshRequestedAtRef.current.clear();
@@ -1190,7 +1208,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     const timer = window.setTimeout(() => {
       void window.ade.prs.refresh({ prIds })
         .then((refreshed) => {
-          if ((appStore.getState().project?.rootPath ?? null) !== startedRoot) return;
+          if (getActiveProjectRoot() !== startedRoot) return;
           if (refreshed.length === 0) return;
           setLanePrTags((current) => mergePrSummariesById(current, refreshed));
         })
@@ -1202,8 +1220,8 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     return () => window.clearTimeout(timer);
   }, [
     active,
-    appStore,
-    project?.rootPath,
+    getActiveProjectRoot,
+    activeProjectRoot,
     visibleLaneIds,
     lanePrByLaneId,
     lanePrTags,
@@ -1239,7 +1257,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
         void refreshRuntimeOnly().catch(() => {});
       }, delayMs));
     };
-    const currentProjectRoot = project?.rootPath ?? null;
+    const currentProjectRoot = activeProjectRoot;
     const isCurrentProjectEvent = (event: { projectRoot?: string | null }) =>
       !event.projectRoot || event.projectRoot === currentProjectRoot;
     const unsubPtyData = window.ade.pty.onData((event) => {
@@ -1276,7 +1294,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
       }
       window.clearInterval(intervalId);
     };
-  }, [active, project?.rootPath, refreshLanes]);
+  }, [active, activeProjectRoot, refreshLanes]);
 
   useEffect(() => {
     hasActiveLaneRuntimeRef.current = laneSnapshots.some((snapshot) =>
@@ -1690,7 +1708,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   ]);
 
   useEffect(() => {
-    const projectRoot = project?.rootPath ?? null;
+    const projectRoot = activeProjectRoot;
     if (!projectRoot) return;
     if (hydratedLaneDeleteProgressProjectRef.current === projectRoot) return;
     hydratedLaneDeleteProgressProjectRef.current = projectRoot;
@@ -1711,7 +1729,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     void window.ade.lanes.listDeleteProgress()
       .then((progresses) => {
         if (cancelled) return;
-        const activeProgresses = (Array.isArray(progresses) ? progresses : []).filter(isLaneDeleteProgressActive);
+        const activeProgresses = (Array.isArray(progresses) ? progresses : []).filter(isLaneDeleteProgressHydratable);
         const activeProgressLaneIds = new Set(activeProgresses.map((progress) => progress.laneId));
         const storedActiveLaneIds = getStoredActiveLaneIds();
         const laneIdsWithoutBackendProgress = storedActiveLaneIds.filter((laneId) => !activeProgressLaneIds.has(laneId));
@@ -1756,13 +1774,12 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     return () => {
       cancelled = true;
     };
-  }, [active, appStore, project?.rootPath, moveAwayFromDeletingLanes, queueLaneDeleteRefresh, setDeleteProgressByLaneId]);
+  }, [active, activeProjectRoot, appStore, moveAwayFromDeletingLanes, queueLaneDeleteRefresh, setDeleteProgressByLaneId]);
 
   const deleteManagedLanes = async () => {
     const targets = isBatchManage ? managedLanes : managedLane ? [managedLane] : [];
     const actionable = targets.filter((l) => l.laneType !== "primary");
     if (actionable.length === 0) return;
-    if (deleteConfirmText.trim().toLowerCase() !== deletePhrase.toLowerCase()) return;
 
     const deleteArgsByLaneId = new Map<string, DeleteLaneArgs>();
     for (const lane of actionable) {
@@ -1895,7 +1912,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     setActiveLaneIds(mergeUnique([laneId], pinned));
     selectLane(laneId);
     setStackGraphHeaderOpen(false);
-    setLaneWorkViewState(project?.rootPath ?? null, laneId, (prev) => ({
+    setLaneWorkViewState(activeProjectRoot, laneId, (prev) => ({
       ...prev,
       draftKind: "chat",
       viewMode: "tabs",
@@ -1908,7 +1925,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
       requestedAt: Date.now(),
     });
     navigate(`/lanes?laneId=${encodeURIComponent(laneId)}`);
-  }, [deletingLaneIds, lanesById, navigate, pinnedLaneIds, project?.rootPath, selectLane, setLaneWorkViewState]);
+  }, [activeProjectRoot, deletingLaneIds, lanesById, navigate, pinnedLaneIds, selectLane, setLaneWorkViewState]);
 
   // Open a specific agent (chat or CLI) in the Work tab of its lane, from any
   // of the inline lane dashboards (stack drawer, graph card, lane list row).
@@ -1919,7 +1936,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     setActiveLaneIds(mergeUnique([laneId], pinned));
     selectLane(laneId);
     setStackGraphHeaderOpen(false);
-    setLaneWorkViewState(project?.rootPath ?? null, laneId, (prev) => ({
+    setLaneWorkViewState(activeProjectRoot, laneId, (prev) => ({
       ...prev,
       viewMode: "tabs",
       openItemIds: prev.openItemIds.includes(agent.sessionId)
@@ -1929,7 +1946,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
       selectedItemId: agent.sessionId,
     }));
     navigate(openAgentInWorkTabPath(laneId, agent.sessionId));
-  }, [deletingLaneIds, lanesById, navigate, pinnedLaneIds, project?.rootPath, selectLane, setLaneWorkViewState]);
+  }, [activeProjectRoot, deletingLaneIds, lanesById, navigate, pinnedLaneIds, selectLane, setLaneWorkViewState]);
 
   const removeSplitLane = useCallback((laneId: string) => {
     if (pinnedLaneIds.has(laneId)) return;
@@ -3953,18 +3970,9 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
                 />
               ) : null}
               {!isDeleting && lanePr ? (
-                <button
-                  type="button"
-                  className="shrink-0"
-                  style={{
-                    ...inlineBadge(lanePrTagColor(lanePr.state), { fontSize: 9 }),
-                    gap: 4,
-                    cursor: "pointer",
-                    borderRadius: 6,
-                  }}
-                  title={`${formatPrBadgeLabel(lanePr)}: ${lanePr.title}`}
-                  onClick={(event) => {
-                    event.stopPropagation();
+                <LanePrBadgePopover
+                  pr={lanePr}
+                  onActivate={() => {
                     if (lanePr.linkedPrId) {
                       navigate(`/prs${buildPrsRouteSearch({
                         activeTab: "normal",
@@ -3978,11 +3986,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
                       void window.ade?.app?.openExternal?.(lanePr.githubUrl);
                     }
                   }}
-                  onMouseDown={(event) => event.stopPropagation()}
-                >
-                  <GitPullRequest size={10} weight="bold" />
-                  {formatPrBadgeLabel(lanePr)}
-                </button>
+                />
               ) : null}
               {!isDeleting && devicesOpen.length > 0 ? (
                 <span
@@ -4420,7 +4424,9 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
           // longer the canonical destination for opening a lane.
           navigate("/project");
         }}
-        projectRoot={project?.rootPath ?? null}
+        localRuntimeLabel={createLaneRuntimeCopy.label}
+        localRuntimeDescription={createLaneRuntimeCopy.description}
+        projectRoot={activeProjectRoot}
         createBranches={createBranches}
         lanes={lanes}
         onSubmit={handleCreateSubmit}

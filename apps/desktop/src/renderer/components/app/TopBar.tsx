@@ -42,6 +42,7 @@ import type {
   OpenProjectBinding,
   RecentProjectSummary,
   RemoteRuntimeConnectionSnapshot,
+  RemoteRuntimeTarget,
   SyncRoleSnapshot,
   AppResourceUsageSnapshot,
 } from "../../../shared/types";
@@ -51,6 +52,7 @@ import { HelpMenu } from "../onboarding/HelpMenu";
 import { LinearQuickViewButton } from "./LinearQuickViewButton";
 import { PublishToGitHubDialog } from "../projects/PublishToGitHubDialog";
 import { RemoteTargetList } from "../remoteTargets/RemoteTargetList";
+import { ConfirmDialog, useConfirmDialog } from "../shared/InlineDialogs";
 import { SyncDevicesSection } from "../settings/SyncDevicesSection";
 import { HeaderUsageControl } from "../usage/HeaderUsageControl";
 import { appResourcePressureLevel, getAppResourceUsageCoalesced, resourcePressureDescription } from "../../lib/resourcePressure";
@@ -952,6 +954,11 @@ export function TopBar() {
   );
   const [phoneSyncOpen, setPhoneSyncOpen] = useState(false);
   const [remotePanelOpen, setRemotePanelOpen] = useState(false);
+  const {
+    state: remoteDisconnectConfirmState,
+    confirmAsync: confirmRemoteDisconnect,
+    close: closeRemoteDisconnectConfirm,
+  } = useConfirmDialog();
   const [remoteSnapshot, setRemoteSnapshot] =
     useState<RemoteRuntimeConnectionSnapshot | null>(null);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
@@ -1004,6 +1011,7 @@ export function TopBar() {
     hasGitHubRemote === false &&
     hasOrigin === false;
   const connectedRemoteCount = remoteSnapshot?.connectedCount ?? 0;
+  const remoteStatusCount = Math.max(connectedRemoteCount, openRemoteProjectTabs.length);
   const remoteConnected = connectedRemoteCount > 0;
   const syncConnected = isSyncConnected(syncSnapshot);
   const showSyncControl = workspaceProjectOpen;
@@ -1073,6 +1081,11 @@ export function TopBar() {
 
   useEffect(() => {
     if (!remoteBinding) return;
+    setOpenProjectTabRoots((prev) =>
+      useAppStore.getState().projectInfoByRoot[remoteBinding.rootPath]
+        ? prev
+        : prev.filter((rootPath) => rootPath !== remoteBinding.rootPath),
+    );
     setOpenRemoteProjectTabs((prev) => {
       const existingIndex = prev.findIndex(
         (entry) => entry.key === remoteBinding.key,
@@ -1124,6 +1137,8 @@ export function TopBar() {
             useAppStore.getState().rememberProjectInfo(tabProject);
           }
           setOpenProjectTabRoots(session.openProjectTabs.map((entry) => entry.rootPath));
+        } else if (session.binding?.kind === "remote" || !session.project) {
+          setOpenProjectTabRoots([]);
         }
       })
       .catch(() => {
@@ -1459,6 +1474,99 @@ export function TopBar() {
     switchRemoteProject,
   ]);
 
+  const confirmAndCloseRemoteTargetTabs = useCallback(
+    async (
+      target: RemoteRuntimeTarget,
+      action: "disconnect" | "remove",
+    ): Promise<boolean> => {
+      const latestRemoteTabs = openRemoteProjectTabsRef.current;
+      const affectedTabs = latestRemoteTabs.filter(
+        (entry) => entry.targetId === target.id,
+      );
+      const targetName = target.name || target.hostname;
+      const affectedCount = affectedTabs.length;
+      const affectedProjectLines =
+        affectedTabs.length > 0
+          ? affectedTabs.map((entry) => `- ${entry.displayName}`).join("\n")
+          : "";
+      const verb = action === "remove" ? "Removing" : "Disconnecting";
+      const reconnectCopy = action === "remove"
+        ? "Add the machine again to reconnect."
+        : "ADE will not reconnect to this machine until you connect again.";
+      const message =
+        affectedCount > 0
+          ? [
+              `${affectedCount} open project tab${affectedCount === 1 ? "" : "s"} use this remote connection:`,
+              affectedProjectLines,
+              "",
+              `${verb} will close those project tabs. ${reconnectCopy}`,
+            ].join("\n")
+          : action === "remove"
+            ? "Removing this machine will delete its saved SSH details."
+            : "Disconnecting will stop this remote connection. ADE will not reconnect to this machine until you connect again.";
+
+      const confirmed = await confirmRemoteDisconnect({
+        title: action === "remove"
+          ? `Remove ${targetName}?`
+          : `Disconnect ${targetName}?`,
+        message,
+        confirmLabel: action === "remove" ? "REMOVE" : "DISCONNECT",
+        danger: true,
+      });
+      if (!confirmed) return false;
+      if (affectedTabs.length === 0) return true;
+
+      const affectedKeys = new Set(affectedTabs.map((entry) => entry.key));
+      const nextRemoteTabs = latestRemoteTabs.filter(
+        (entry) => !affectedKeys.has(entry.key),
+      );
+      openRemoteProjectTabsRef.current = nextRemoteTabs;
+      setOpenRemoteProjectTabs(nextRemoteTabs);
+
+      const latestState = useAppStore.getState();
+      const latestRemoteBinding =
+        latestState.projectBinding?.kind === "remote"
+          ? latestState.projectBinding
+          : null;
+      if (!latestRemoteBinding || !affectedKeys.has(latestRemoteBinding.key)) {
+        return true;
+      }
+
+      const nextRemoteTab = nextRemoteTabs[0] ?? null;
+      if (nextRemoteTab) {
+        latestState.switchRemoteProject(
+          nextRemoteTab.targetId,
+          nextRemoteTab.projectId,
+        ).catch(() => {});
+        return true;
+      }
+
+      const nextLocalRoot =
+        openProjectTabRootsRef.current[
+          openProjectTabRootsRef.current.length - 1
+        ] ?? null;
+      if (nextLocalRoot) {
+        latestState.switchProjectToPath(nextLocalRoot).catch(() => {});
+      } else {
+        latestState.closeProject().catch(() => {});
+      }
+      return true;
+    },
+    [confirmRemoteDisconnect],
+  );
+
+  const handleRemoteTargetDisconnectRequested = useCallback(
+    (target: RemoteRuntimeTarget): Promise<boolean> =>
+      confirmAndCloseRemoteTargetTabs(target, "disconnect"),
+    [confirmAndCloseRemoteTargetTabs],
+  );
+
+  const handleRemoteTargetRemoveRequested = useCallback(
+    (target: RemoteRuntimeTarget): Promise<boolean> =>
+      confirmAndCloseRemoteTargetTabs(target, "remove"),
+    [confirmAndCloseRemoteTargetTabs],
+  );
+
   const handleRelocate = useCallback(
     (oldPath: string) => {
       setRelocatingPath(oldPath);
@@ -1779,7 +1887,11 @@ export function TopBar() {
         return (
           <div className="flex flex-col gap-0.5">
             <LinearQuickViewButton variant="menu-row" onMenuActivate={options?.onActivate} />
-            <HeaderUsageControl variant="menu-row" onMenuActivate={options?.onActivate} />
+            <HeaderUsageControl
+              variant="menu-row"
+              onMenuActivate={options?.onActivate}
+              deferInitialRead={Boolean(remoteBinding)}
+            />
             {remoteChip}
             {mobileChip}
           </div>
@@ -1791,12 +1903,13 @@ export function TopBar() {
           <LinearQuickViewButton />
           {remoteChip}
           {mobileChip}
-          <HeaderUsageControl />
+          <HeaderUsageControl deferInitialRead={Boolean(remoteBinding)} />
         </>
       );
     },
     [
       phoneSyncOpen,
+      remoteBinding,
       remoteConnected,
       remotePanelOpen,
       showSyncControl,
@@ -1858,22 +1971,42 @@ export function TopBar() {
           <>
             {openRemoteProjectTabs.map((remoteTab) => {
               const isCurrentRemote = remoteBinding?.key === remoteTab.key;
+              const remoteTabConnection =
+                remoteSnapshot?.connections.find(
+                  (entry) => entry.target.id === remoteTab.targetId,
+                ) ?? null;
+              const remoteTabState = remoteTabConnection?.state ?? "idle";
+              const remoteTabConnected = remoteTabState === "connected";
+              const remoteTabConnecting = remoteTabState === "connecting";
+              const remoteTabDisconnected =
+                remoteTabState === "error" || remoteTabState === "idle";
+              const remoteTabStatusLabel = remoteTabConnected
+                ? "Connected"
+                : remoteTabConnecting
+                  ? "Reconnecting"
+                  : "Disconnected";
               return (
                 <div
                   key={remoteTab.key}
                   role="button"
                   tabIndex={0}
                   data-state={isCurrentRemote ? "active" : undefined}
+                  data-remote-state={remoteTabState}
                   aria-current={isCurrentRemote ? "true" : undefined}
                   className={cn(
                     "ade-shell-project-tab group inline-flex w-[clamp(128px,16vw,220px)] max-w-[220px] min-w-0 shrink-0 items-center gap-1.5 px-2.5",
                     "font-semibold transition-[background-color,color,border-color,box-shadow,opacity] duration-150",
-                    "cursor-pointer border border-warning/40",
+                    "cursor-pointer border",
+                    remoteTabConnected
+                      ? "border-warning/40"
+                      : remoteTabConnecting
+                        ? "border-amber-400/60"
+                        : "border-red-400/60",
                   )}
                   style={
                     { WebkitAppRegion: "no-drag" } as React.CSSProperties
                   }
-                  title={`${remoteTab.runtimeName}: ${remoteTab.rootPath}`}
+                  title={`${remoteTab.runtimeName}: ${remoteTab.rootPath} (${remoteTabStatusLabel})`}
                   onClick={() => handleSwitchRemoteProject(remoteTab)}
                   onKeyDown={(event) => {
                     if (event.key === "Enter" || event.key === " ") {
@@ -1892,12 +2025,28 @@ export function TopBar() {
                   <span className="min-w-0 flex-1 truncate text-center text-[12px]">
                     {remoteTab.displayName}
                   </span>
-                  <DesktopTower
-                    size={11}
-                    weight="duotone"
-                    className="shrink-0 text-warning"
-                    aria-label={`Remote: ${remoteTab.runtimeName}`}
-                  />
+                  {remoteTabConnecting ? (
+                    <CircleNotch
+                      size={11}
+                      weight="bold"
+                      className="shrink-0 animate-spin text-amber-300"
+                      aria-label={`Reconnecting: ${remoteTab.runtimeName}`}
+                    />
+                  ) : remoteTabDisconnected ? (
+                    <WarningCircle
+                      size={11}
+                      weight="fill"
+                      className="shrink-0 text-red-300"
+                      aria-label={`Disconnected: ${remoteTab.runtimeName}`}
+                    />
+                  ) : (
+                    <DesktopTower
+                      size={11}
+                      weight="duotone"
+                      className="shrink-0 text-warning"
+                      aria-label={`Remote: ${remoteTab.runtimeName}`}
+                    />
+                  )}
                   <button
                     type="button"
                     className={cn(
@@ -2145,14 +2294,14 @@ export function TopBar() {
           onClick={handleOpenNew}
           disabled={isProjectBusy}
           title={
-            connectedRemoteCount > 0
-              ? `${connectedRemoteCount} remote device${connectedRemoteCount === 1 ? "" : "s"} available`
+            remoteStatusCount > 0
+              ? `${remoteStatusCount} remote device${remoteStatusCount === 1 ? "" : "s"} available`
               : "Open another project"
           }
           style={
             {
               WebkitAppRegion: "no-drag",
-              ...(connectedRemoteCount > 0
+              ...(remoteStatusCount > 0
                 ? {
                     color: "#FBBF24",
                     borderColor: "rgba(245,158,11,0.58)",
@@ -2336,6 +2485,15 @@ export function TopBar() {
 
       {/* Overlay panels & modals — kept outside the gap-6 wrapper so they
           never participate in flex gap accounting when toggled open. */}
+      {typeof document !== "undefined"
+        ? createPortal(
+            <ConfirmDialog
+              state={remoteDisconnectConfirmState}
+              onClose={closeRemoteDisconnectConfirm}
+            />,
+            document.body,
+          )
+        : null}
       {remotePanelOpen ? (
         <div
           className="fixed inset-0 z-[80]"
@@ -2350,42 +2508,25 @@ export function TopBar() {
             )}
             role="dialog"
             aria-modal="true"
-            aria-labelledby="remote-connections-title"
+            aria-label="Remote machines"
             tabIndex={-1}
             onClick={(event) => event.stopPropagation()}
             onKeyDown={handleRemotePanelKeyDown}
           >
-            <div className="sticky top-0 z-10 flex items-center justify-between border-b border-white/10 bg-[color:var(--ade-shell-surface,#121019)] px-4 py-3">
-              <div className="flex min-w-0 items-center gap-2">
-                <DesktopTower
-                  size={16}
-                  weight="regular"
-                  className="shrink-0 text-[#FBBF24]"
-                />
-                <div className="min-w-0">
-                  <div
-                    id="remote-connections-title"
-                    className="truncate text-[13px] font-semibold"
-                  >
-                    Remote machines
-                  </div>
-                  <div className="truncate text-[11px] text-white/55">
-                    {connectedRemoteCount} connected
-                  </div>
-                </div>
-              </div>
-              <button
-                type="button"
-                className="ade-shell-control inline-flex h-7 w-7 items-center justify-center rounded-md"
-                data-variant="ghost"
-                onClick={() => setRemotePanelOpen(false)}
-                title="Close remote machines"
-              >
-                <X size={13} weight="regular" />
-              </button>
-            </div>
-            <div className="p-4">
-              <RemoteTargetList />
+            <button
+              type="button"
+              className="ade-shell-control absolute right-3 top-3 z-10 inline-flex h-7 w-7 items-center justify-center rounded-md"
+              data-variant="ghost"
+              onClick={() => setRemotePanelOpen(false)}
+              title="Close remote machines"
+            >
+              <X size={13} weight="regular" />
+            </button>
+            <div className="p-4 pr-12">
+              <RemoteTargetList
+                onDisconnectRequested={handleRemoteTargetDisconnectRequested}
+                onRemoveRequested={handleRemoteTargetRemoveRequested}
+              />
             </div>
           </div>
         </div>

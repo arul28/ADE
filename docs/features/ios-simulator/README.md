@@ -75,7 +75,14 @@ force shutdown is requested.
    and `idb_companion` are installed. Missing idb does not block the live view;
    it only blocks direct control and accessibility-backed inspection.
 
-8. **Shutdown.** `shutdown({ force? })` stops live-view status, releases the
+8. **Preview Lab.** `listPreviewTargets()` discovers nearby `#Preview` and
+   `PreviewProvider` definitions. `resolvePreviewMatch()` ranks the best target
+   for the selected source file, using inspector label/component metadata only
+   as naming hints when a preview needs to be created. `ensurePreviewWorkspace()`
+   opens this lane's iOS project in Xcode when needed and waits for Preview Lab
+   readiness before `renderPreview()` drives Xcode MCP.
+
+9. **Shutdown.** `shutdown({ force? })` stops live-view status, releases the
    active session, stops idb companion work, clears window parking follow state,
    and emits `session-released`.
 
@@ -91,6 +98,9 @@ ade --socket ios-sim stream-status --text
 ade --socket ios-sim snapshot --text
 ade --socket ios-sim select --x 120 --y 420 --text
 ade --socket ios-sim tap --x 120 --y 420 --text
+ade --socket ios-sim preview-match --source apps/ios/ADE/Views/Home.swift --line 42 --text
+ade --socket ios-sim preview-ensure --source apps/ios/ADE/Views/Home.swift --line 42 --text
+ade --socket ios-sim preview-render --source apps/ios/ADE/Views/Home.swift --index 0 --text
 ade --socket ios-sim shutdown --text
 ```
 

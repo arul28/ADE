@@ -16,7 +16,7 @@ import { buildWorkSessionTilingTree } from "./workSessionTiling";
 import type { DropEdge } from "../ui/paneTreeOps";
 import { sortLanesForTabs } from "../lanes/laneUtils";
 import { invalidateSessionListCache } from "../../lib/sessionListCache";
-import { useAppStore, type WorkDraftKind } from "../../state/appStore";
+import { selectActiveProjectRoot, useAppStore, type WorkDraftKind } from "../../state/appStore";
 import { ADE_OPEN_BUILT_IN_BROWSER_EVENT } from "../../lib/openExternal";
 import {
   ADE_WORK_SIDEBAR_BROWSER_RESIZE_END_EVENT,
@@ -107,7 +107,7 @@ async function allSettledWithConcurrency<T>(
 
 export function TerminalsPage({ active = true }: { active?: boolean }) {
   const work = useWorkSessions({ active });
-  const projectRoot = useAppStore((s) => s.project?.rootPath ?? null);
+  const projectRoot = useAppStore(selectActiveProjectRoot);
   const selectedLaneId = useAppStore((s) => s.selectedLaneId);
   const sortedLanes = useMemo(() => sortLanesForTabs(work.lanes), [work.lanes]);
 

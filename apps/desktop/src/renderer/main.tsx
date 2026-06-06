@@ -62,7 +62,16 @@ function readRendererMemory() {
   };
 }
 
+function isBenignWindowError(message: string): boolean {
+  return message === "ResizeObserver loop completed with undelivered notifications."
+    || message === "ResizeObserver loop limit exceeded";
+}
+
 window.addEventListener("error", (event) => {
+  if (isBenignWindowError(event.message)) {
+    event.preventDefault();
+    return;
+  }
   logRendererDebugEvent("renderer.window_error", {
     message: event.message,
     filename: event.filename,

@@ -18,6 +18,7 @@ export function OnboardingBootstrap() {
   const showWelcome = useAppStore((s) => s.showWelcome);
   const isNewTabOpen = useAppStore((s) => s.isNewTabOpen);
   const project = useAppStore((s) => s.project);
+  const projectBinding = useAppStore((s) => s.projectBinding);
 
   const hydrated = useOnboardingStore((s) => s.hydrated);
   const hydrate = useOnboardingStore((s) => s.hydrate);
@@ -35,13 +36,14 @@ export function OnboardingBootstrap() {
   const workTourAutoFiredRef = useRef(false);
   const filesTourAutoFiredRef = useRef(false);
   const runTourAutoFiredRef = useRef(false);
+  const isRemoteProject = projectBinding?.kind === "remote";
 
   // Hydrate once.
   useEffect(() => {
-    if (!hydrated) {
+    if (!hydrated && !isRemoteProject) {
       void hydrate();
     }
-  }, [hydrated, hydrate]);
+  }, [hydrated, hydrate, isRemoteProject]);
 
   const hasActiveProject =
     projectHydrated === true &&

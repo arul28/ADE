@@ -1930,12 +1930,16 @@ function coerceGithubConfig(value: unknown): ProjectConfigFile["github"] {
   const prTranscriptGistsEnabled = rawTranscriptGists
     ? asBool(rawTranscriptGists.enabled)
     : null;
+  const autoMapByBranch = asBool(value.autoMapByBranch);
   const github: NonNullable<ProjectConfigFile["github"]> = {};
   if (prPollingIntervalSeconds != null) {
     github.prPollingIntervalSeconds = prPollingIntervalSeconds;
   }
   if (prTranscriptGistsEnabled != null) {
     github.prTranscriptGists = { enabled: prTranscriptGistsEnabled };
+  }
+  if (autoMapByBranch != null) {
+    github.autoMapByBranch = autoMapByBranch;
   }
   return Object.keys(github).length ? github : undefined;
 }
@@ -1953,6 +1957,10 @@ function mergeGithubConfig(
   const prTranscriptGistsEnabled = local?.prTranscriptGists?.enabled ?? shared?.prTranscriptGists?.enabled;
   if (prTranscriptGistsEnabled != null) {
     github.prTranscriptGists = { enabled: prTranscriptGistsEnabled };
+  }
+  const autoMapByBranch = local?.autoMapByBranch ?? shared?.autoMapByBranch;
+  if (autoMapByBranch != null) {
+    github.autoMapByBranch = autoMapByBranch;
   }
   return Object.keys(github).length ? github : undefined;
 }

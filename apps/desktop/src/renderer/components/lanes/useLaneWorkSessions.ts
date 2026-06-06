@@ -114,7 +114,7 @@ function isActiveSession(session: TerminalSessionSummary): boolean {
 }
 
 export function useLaneWorkSessions(laneId: string | null) {
-  const projectRoot = useAppStore((state) => state.project?.rootPath ?? null);
+  const projectRoot = useAppStore(selectActiveProjectRoot);
   const lanes = useAppStore((state) => state.lanes);
   const focusSession = useAppStore((state) => state.focusSession);
   const focusedSessionId = useAppStore((state) => state.focusedSessionId);

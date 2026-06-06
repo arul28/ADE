@@ -1,4 +1,5 @@
 import type { Client } from "ssh2";
+import net from "node:net";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   RemoteRuntimeConnectResult,
@@ -38,7 +39,9 @@ type SshListener = (...args: unknown[]) => void;
 
 type FakeSshClient = Client & {
   emitOnce(event: "close" | "error", ...args: unknown[]): void;
+  destroy: ReturnType<typeof vi.fn>;
   end: ReturnType<typeof vi.fn>;
+  forwardOut: ReturnType<typeof vi.fn>;
   once: ReturnType<typeof vi.fn>;
 };
 
@@ -127,10 +130,24 @@ function createSsh(): FakeSshClient {
   const listeners = new Map<string, SshListener[]>();
   const fake = {} as {
     emitOnce?: FakeSshClient["emitOnce"];
+    destroy?: ReturnType<typeof vi.fn>;
     end?: ReturnType<typeof vi.fn>;
+    forwardOut?: ReturnType<typeof vi.fn>;
     once?: ReturnType<typeof vi.fn>;
   };
+  fake.destroy = vi.fn();
   fake.end = vi.fn();
+  fake.forwardOut = vi.fn((
+    _sourceHost: string,
+    _sourcePort: number,
+    destinationHost: string,
+    destinationPort: number,
+    callback: (error: Error | undefined, stream?: net.Socket) => void,
+  ) => {
+    const stream = net.createConnection({ host: destinationHost, port: destinationPort });
+    stream.once("connect", () => callback(undefined, stream));
+    stream.once("error", (error) => callback(error));
+  });
   fake.once = vi.fn((event: string, callback: SshListener): FakeSshClient => {
     const existing = listeners.get(event) ?? [];
     existing.push(callback);
@@ -145,6 +162,31 @@ function createSsh(): FakeSshClient {
     }
   };
   return fake as unknown as FakeSshClient;
+}
+
+function listen(server: net.Server): Promise<number> {
+  return new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      server.off("error", reject);
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        reject(new Error("server did not bind to a TCP port"));
+        return;
+      }
+      resolve(address.port);
+    });
+  });
+}
+
+function closeServer(server: net.Server): Promise<void> {
+  return new Promise((resolve) => {
+    if (!server.listening) {
+      resolve();
+      return;
+    }
+    server.close(() => resolve());
+  });
 }
 
 describe("RemoteConnectionPool", () => {
@@ -207,7 +249,40 @@ describe("RemoteConnectionPool", () => {
 
     expect(client.close).toHaveBeenCalledTimes(1);
     expect(ssh.end).toHaveBeenCalledTimes(1);
+    expect(ssh.destroy).toHaveBeenCalledTimes(1);
     expect(onEvicted).not.toHaveBeenCalled();
+  });
+
+  it("reuses an in-flight bootstrap when reconnect follows disconnect", async () => {
+    const client = createClient();
+    const ssh = createSsh();
+    type BootstrapResolve = (value: {
+      client: RuntimeRpcClient;
+      ssh: Client;
+      result: RemoteRuntimeConnectResult;
+    }) => void;
+    let resolveBootstrap: BootstrapResolve | undefined;
+    bootstrapRemoteRuntimeMock.mockReturnValueOnce(new Promise((resolve) => {
+      resolveBootstrap = resolve;
+    }));
+    const pool = new RemoteConnectionPool({} as RemoteTargetRegistry, "1.0.0");
+
+    const firstConnect = pool.connect(target);
+    pool.disconnect(target.id);
+    const secondConnect = pool.connect(target);
+
+    expect(bootstrapRemoteRuntimeMock).toHaveBeenCalledTimes(1);
+    const resolveBootstrapNow = resolveBootstrap as BootstrapResolve;
+    resolveBootstrapNow({
+      client,
+      ssh,
+      result: connectResult("1.0.0"),
+    });
+
+    await expect(firstConnect).resolves.toMatchObject({ version: "1.0.0" });
+    await expect(secondConnect).resolves.toMatchObject({ version: "1.0.0" });
+    expect(client.close).not.toHaveBeenCalled();
+    expect(ssh.end).not.toHaveBeenCalled();
   });
 
   it("evicts cached entries and closes the RPC client after SSH closes", async () => {
@@ -225,6 +300,7 @@ describe("RemoteConnectionPool", () => {
 
     expect(firstClient.close).toHaveBeenCalledTimes(1);
     expect(firstSsh.end).toHaveBeenCalledTimes(1);
+    expect(firstSsh.destroy).toHaveBeenCalledTimes(1);
 
     bootstrapRemoteRuntimeMock.mockResolvedValueOnce({
       client: createClient(),
@@ -236,6 +312,145 @@ describe("RemoteConnectionPool", () => {
       version: "1.0.1",
     });
     expect(bootstrapRemoteRuntimeMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("opens a reusable local SSH forward and closes it on disconnect", async () => {
+    const upstream = net.createServer((socket) => {
+      socket.once("data", (chunk) => {
+        socket.end(`remote:${chunk.toString("utf8")}`);
+      });
+    });
+    const upstreamPort = await listen(upstream);
+    const client = createClient();
+    const ssh = createSsh();
+    bootstrapRemoteRuntimeMock.mockResolvedValueOnce({
+      client,
+      ssh,
+      result: connectResult("1.0.0"),
+    });
+    const pool = new RemoteConnectionPool({} as RemoteTargetRegistry, "1.0.0");
+
+    try {
+      await pool.connect(target);
+      const [firstForward, secondForward] = await Promise.all([
+        pool.ensureLocalPortForward(target.id, {
+          remotePort: upstreamPort,
+          label: "preview",
+        }),
+        pool.ensureLocalPortForward(target.id, {
+          remotePort: upstreamPort,
+          label: "preview",
+        }),
+      ]);
+
+      expect(secondForward.localPort).toBe(firstForward.localPort);
+      expect(ssh.forwardOut).not.toHaveBeenCalled();
+
+      const response = await new Promise<string>((resolve, reject) => {
+        const socket = net.createConnection({
+          host: firstForward.localHost,
+          port: firstForward.localPort,
+        });
+        socket.once("connect", () => socket.write("ok"));
+        socket.once("data", (chunk) => {
+          resolve(chunk.toString("utf8"));
+          socket.end();
+        });
+        socket.once("error", reject);
+      });
+
+      expect(response).toBe("remote:ok");
+      expect(ssh.forwardOut).toHaveBeenCalledWith(
+        "127.0.0.1",
+        0,
+        "127.0.0.1",
+        upstreamPort,
+        expect.any(Function),
+      );
+
+      pool.disconnect(target.id);
+      await Promise.resolve();
+      await expect(new Promise<void>((resolve, reject) => {
+        const socket = net.createConnection({
+          host: firstForward.localHost,
+          port: firstForward.localPort,
+        });
+        socket.once("connect", () => {
+          socket.destroy();
+          resolve();
+        });
+        socket.once("error", reject);
+      })).rejects.toBeTruthy();
+    } finally {
+      pool.dispose();
+      await closeServer(upstream);
+    }
+  });
+
+  it("uses the live SSH entry when a local SSH forward accepts connections", async () => {
+    const upstream = net.createServer((socket) => {
+      socket.once("data", (chunk) => {
+        socket.end(`remote:${chunk.toString("utf8")}`);
+      });
+    });
+    const upstreamPort = await listen(upstream);
+    const firstClient = createClient();
+    const firstSsh = createSsh();
+    bootstrapRemoteRuntimeMock.mockResolvedValueOnce({
+      client: firstClient,
+      ssh: firstSsh,
+      result: connectResult("1.0.0"),
+    });
+    const pool = new RemoteConnectionPool({} as RemoteTargetRegistry, "1.0.0");
+
+    try {
+      await pool.connect(target);
+      const forward = await pool.ensureLocalPortForward(target.id, {
+        remotePort: upstreamPort,
+        label: "preview",
+      });
+      const secondClient = createClient();
+      const secondSsh = createSsh();
+      (
+        pool as unknown as {
+          entries: Map<string, Promise<{
+            client: FakeRuntimeRpcClient;
+            ssh: FakeSshClient;
+            result: RemoteRuntimeConnectResult;
+          }>>;
+        }
+      ).entries.set(target.id, Promise.resolve({
+        client: secondClient,
+        ssh: secondSsh,
+        result: connectResult("1.0.1"),
+      }));
+
+      const response = await new Promise<string>((resolve, reject) => {
+        const socket = net.createConnection({
+          host: forward.localHost,
+          port: forward.localPort,
+        });
+        socket.once("connect", () => socket.write("ok"));
+        socket.once("data", (chunk) => {
+          resolve(chunk.toString("utf8"));
+          socket.end();
+        });
+        socket.once("error", reject);
+      });
+
+      expect(response).toBe("remote:ok");
+      expect(firstSsh.forwardOut).not.toHaveBeenCalled();
+      expect(secondSsh.forwardOut).toHaveBeenCalledWith(
+        "127.0.0.1",
+        0,
+        "127.0.0.1",
+        upstreamPort,
+        expect.any(Function),
+      );
+    } finally {
+      pool.dispose();
+      await closeServer(upstream);
+    }
   });
 
   it("connects before streaming events and reconnects after disconnect", async () => {
@@ -390,6 +605,77 @@ describe("RemoteConnectionPool", () => {
     expect(secondClient.call).toHaveBeenCalledWith("projects.list", {});
   });
 
+  it("backs off new SSH bootstraps after a connect failure", async () => {
+    bootstrapRemoteRuntimeMock.mockRejectedValueOnce(
+      new Error("kex_exchange_identification: read: Connection reset by peer"),
+    );
+    const pool = new RemoteConnectionPool({} as RemoteTargetRegistry, "1.0.0");
+
+    await expect(pool.connect(target)).rejects.toThrow(
+      /kex_exchange_identification/i,
+    );
+    await expect(pool.connect(target)).rejects.toThrow(/Retrying in \d+s/i);
+    expect(bootstrapRemoteRuntimeMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("lets an explicit connect bypass a stale bootstrap backoff", async () => {
+    bootstrapRemoteRuntimeMock.mockRejectedValueOnce(
+      new Error("kex_exchange_identification: read: Connection reset by peer"),
+    );
+    const pool = new RemoteConnectionPool({} as RemoteTargetRegistry, "1.0.0");
+
+    await expect(pool.connect(target)).rejects.toThrow(
+      /kex_exchange_identification/i,
+    );
+    await expect(pool.connect(target)).rejects.toThrow(/Retrying in \d+s/i);
+
+    bootstrapRemoteRuntimeMock.mockResolvedValueOnce({
+      client: createClient(),
+      ssh: createSsh(),
+      result: connectResult("1.0.1"),
+    });
+
+    await expect(
+      pool.connect(target, { bypassFailureBackoff: true }),
+    ).resolves.toMatchObject({ version: "1.0.1" });
+    expect(bootstrapRemoteRuntimeMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not reconnect a retryable request after an explicit disconnect during the request", async () => {
+    const firstClient = createClient();
+    const firstSsh = createSsh();
+    let rejectCall!: (error: Error) => void;
+    firstClient.call.mockImplementationOnce(
+      () =>
+        new Promise((_resolve, reject) => {
+          rejectCall = reject;
+        }),
+    );
+    bootstrapRemoteRuntimeMock.mockResolvedValueOnce({
+      client: firstClient,
+      ssh: firstSsh,
+      result: connectResult("1.0.0"),
+    });
+    const pool = new RemoteConnectionPool(
+      { get: () => null } as unknown as RemoteTargetRegistry,
+      "1.0.0",
+    );
+
+    const pending = pool.callActionForTarget(target, "project-1", {
+      domain: "lane",
+      action: "list",
+    });
+    while (firstClient.call.mock.calls.length === 0) {
+      await Promise.resolve();
+    }
+    pool.disconnect(target.id);
+    rejectCall(new Error("Remote runtime connection closed."));
+
+    await expect(pending).rejects.toThrow(/connection closed/i);
+    expect(firstSsh.end).toHaveBeenCalledTimes(1);
+    expect(bootstrapRemoteRuntimeMock).toHaveBeenCalledTimes(1);
+  });
+
   it("does not replay non-idempotent machine calls after a connection interruption", async () => {
     const firstClient = createClient();
     firstClient.call.mockRejectedValueOnce(
@@ -490,11 +776,11 @@ describe("RemoteConnectionPool", () => {
     expect(secondClient.call).not.toHaveBeenCalled();
   });
 
-  it("retries read-only project actions once after reconnecting", async () => {
+  it("retries read-only project actions once after ECONNRESET", async () => {
     const firstClient = createClient();
     const firstSsh = createSsh();
     firstClient.call.mockRejectedValueOnce(
-      new Error("Remote runtime connection failed: stream closed"),
+      new Error("read ECONNRESET"),
     );
     bootstrapRemoteRuntimeMock.mockResolvedValueOnce({
       client: firstClient,
@@ -538,7 +824,7 @@ describe("RemoteConnectionPool", () => {
         domain: "lane",
         action: "list",
       },
-    });
+    }, { timeoutMs: 25_000 });
     expect(secondClient.call).toHaveBeenCalledTimes(1);
     expect(secondClient.call).toHaveBeenCalledWith("ade/actions/call", {
       projectId: "project-1",
@@ -547,7 +833,156 @@ describe("RemoteConnectionPool", () => {
         domain: "lane",
         action: "list",
       },
+    }, { timeoutMs: 25_000 });
+  });
+
+  it("retries file git decoration refresh once after ECONNRESET", async () => {
+    const firstClient = createClient();
+    const firstSsh = createSsh();
+    firstClient.call.mockRejectedValueOnce(new Error("read ECONNRESET"));
+    bootstrapRemoteRuntimeMock.mockResolvedValueOnce({
+      client: firstClient,
+      ssh: firstSsh,
+      result: connectResult("1.0.0"),
     });
+    const secondClient = createClient();
+    secondClient.call.mockResolvedValueOnce({
+      ok: true,
+      domain: "file",
+      action: "refreshGitDecorations",
+      result: { workspaceId: "primary", files: [], directories: [] },
+      statusHints: { reconnected: true },
+    });
+    bootstrapRemoteRuntimeMock.mockResolvedValueOnce({
+      client: secondClient,
+      ssh: createSsh(),
+      result: connectResult("1.0.1"),
+    });
+    const pool = new RemoteConnectionPool({ get: () => null } as unknown as RemoteTargetRegistry, "1.0.0");
+
+    await expect(
+      pool.callActionForTarget(target, "project-1", {
+        domain: "file",
+        action: "refreshGitDecorations",
+        args: { workspaceId: "primary", forceFresh: true },
+      }),
+    ).resolves.toEqual({
+      domain: "file",
+      action: "refreshGitDecorations",
+      result: { workspaceId: "primary", files: [], directories: [] },
+      statusHints: { reconnected: true },
+    });
+
+    expect(firstSsh.end).toHaveBeenCalledTimes(1);
+    expect(bootstrapRemoteRuntimeMock).toHaveBeenCalledTimes(2);
+    expect(secondClient.call).toHaveBeenCalledWith("ade/actions/call", {
+      projectId: "project-1",
+      name: "run_ade_action",
+      arguments: {
+        domain: "file",
+        action: "refreshGitDecorations",
+        args: { workspaceId: "primary", forceFresh: true },
+      },
+    }, { timeoutMs: 25_000 });
+  });
+
+  it("falls back to empty git decorations when an older runtime lacks that optional action", async () => {
+    const client = createClient();
+    client.call.mockRejectedValueOnce(new Error("Action 'file.refreshGitDecorations' is not callable."));
+    bootstrapRemoteRuntimeMock.mockResolvedValueOnce({
+      client,
+      ssh: createSsh(),
+      result: connectResult("0.9.0"),
+    });
+    const pool = new RemoteConnectionPool({ get: () => null } as unknown as RemoteTargetRegistry, "1.0.0");
+
+    await expect(
+      pool.callActionForTarget(target, "project-1", {
+        domain: "file",
+        action: "refreshGitDecorations",
+        args: { workspaceId: "primary", forceFresh: true },
+      }),
+    ).resolves.toEqual({
+      domain: "file",
+      action: "refreshGitDecorations",
+      result: { workspaceId: "primary", files: [], directories: [] },
+      statusHints: { optionalActionMissing: true },
+    });
+
+    await expect(
+      pool.callActionForTarget(target, "project-1", {
+        domain: "file",
+        action: "refreshGitDecorations",
+        args: { workspaceId: "primary", forceFresh: true },
+      }),
+    ).resolves.toEqual({
+      domain: "file",
+      action: "refreshGitDecorations",
+      result: { workspaceId: "primary", files: [], directories: [] },
+      statusHints: { optionalActionMissing: true },
+    });
+
+    expect(client.call).toHaveBeenCalledTimes(1);
+    expect(client.call).toHaveBeenCalledWith("ade/actions/call", {
+      projectId: "project-1",
+      name: "run_ade_action",
+      arguments: {
+        domain: "file",
+        action: "refreshGitDecorations",
+        args: { workspaceId: "primary", forceFresh: true },
+      },
+    }, { timeoutMs: 25_000 });
+  });
+
+  it("falls back to empty PR queue states when an older runtime lacks that optional action", async () => {
+    const client = createClient();
+    client.call.mockResolvedValueOnce({
+      ok: false,
+      error: { message: "Action 'pr.listQueueStates' is not callable." },
+    });
+    bootstrapRemoteRuntimeMock.mockResolvedValueOnce({
+      client,
+      ssh: createSsh(),
+      result: connectResult("0.9.0"),
+    });
+    const pool = new RemoteConnectionPool({ get: () => null } as unknown as RemoteTargetRegistry, "1.0.0");
+
+    await expect(
+      pool.callActionForTarget(target, "project-1", {
+        domain: "pr",
+        action: "listQueueStates",
+        args: { includeCompleted: true, limit: 50 },
+      }),
+    ).resolves.toEqual({
+      domain: "pr",
+      action: "listQueueStates",
+      result: [],
+      statusHints: { optionalActionMissing: true },
+    });
+
+    await expect(
+      pool.callActionForTarget(target, "project-1", {
+        domain: "pr",
+        action: "listQueueStates",
+        args: { includeCompleted: true, limit: 50 },
+      }),
+    ).resolves.toEqual({
+      domain: "pr",
+      action: "listQueueStates",
+      result: [],
+      statusHints: { optionalActionMissing: true },
+    });
+
+    expect(client.call).toHaveBeenCalledTimes(1);
+    expect(client.call).toHaveBeenCalledWith("ade/actions/call", {
+      projectId: "project-1",
+      name: "run_ade_action",
+      arguments: {
+        domain: "pr",
+        action: "listQueueStates",
+        args: { includeCompleted: true, limit: 50 },
+      },
+    }, { timeoutMs: 25_000 });
   });
 
   it("lists remote ADE actions as grouped registry entries", async () => {
@@ -651,7 +1086,7 @@ describe("RemoteConnectionPool", () => {
         domain: "lane",
         action: "list",
       },
-    });
+    }, { timeoutMs: 25_000 });
   });
 
   it("calls project-scoped sync methods on the connected runtime", async () => {
@@ -808,6 +1243,7 @@ describe("RemoteConnectionPool", () => {
         cursor: 5,
         limit: 10,
         category: "pty",
+        replay: false,
       },
       onEvent,
     );
@@ -817,6 +1253,7 @@ describe("RemoteConnectionPool", () => {
       cursor: 5,
       limit: 10,
       category: "pty",
+      replay: false,
     });
     expect(onEvent).toHaveBeenCalledTimes(1);
     expect(onEvent).toHaveBeenCalledWith({

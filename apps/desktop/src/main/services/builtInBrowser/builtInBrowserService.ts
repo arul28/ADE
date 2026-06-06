@@ -626,15 +626,19 @@ function createBuiltInBrowserWindowService(args: {
     }
   };
 
-  const removeTabViewsFromWindow = (): void => {
+  const removeTabViewFromWindow = (tab: BrowserTabState): void => {
     if (!win || win.isDestroyed()) return;
+    if (!tab.view) return;
+    try {
+      win.contentView.removeChildView(tab.view);
+    } catch {
+      // ignore stale view/window links
+    }
+  };
+
+  const removeTabViewsFromWindow = (): void => {
     for (const tab of tabs) {
-      if (!tab.view) continue;
-      try {
-        win.contentView.removeChildView(tab.view);
-      } catch {
-        // ignore stale view/window links
-      }
+      removeTabViewFromWindow(tab);
     }
   };
 
@@ -1202,13 +1206,20 @@ function createBuiltInBrowserWindowService(args: {
         applyTabLifecycle(tab, visible && tab.id === activeTabId);
         continue;
       }
+      const isActive = tab.id === activeTabId;
+      const shouldAttach = visible && isActive;
+      if (!shouldAttach) {
+        tab.view.setVisible(false);
+        removeTabViewFromWindow(tab);
+        applyTabLifecycle(tab, false);
+        continue;
+      }
       if (!win.contentView.children.includes(tab.view)) {
         win.contentView.addChildView(tab.view);
       }
-      const isActive = tab.id === activeTabId;
-      if (isActive) tab.view.setBounds(electronRect);
-      tab.view.setVisible(visible && isActive);
-      applyTabLifecycle(tab, visible && isActive);
+      tab.view.setBounds(electronRect);
+      tab.view.setVisible(true);
+      applyTabLifecycle(tab, true);
     }
   };
 

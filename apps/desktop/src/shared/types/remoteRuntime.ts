@@ -21,6 +21,7 @@ export type RemoteRuntimeTarget = {
   lastSeenArch: string | null;
   runtimeBinaryVersion: string | null;
   lastConnectedAt: number | null;
+  manuallyDisconnectedAt?: number | null;
 };
 
 export type RemoteRuntimeTargetInput = {
@@ -78,6 +79,24 @@ export type RemoteRuntimeConnectResult = {
   capabilities?: RemoteRuntimeCapabilities;
   compatibilityWarnings?: string[];
   projects: RemoteRuntimeProjectRecord[];
+};
+
+export type RemoteRuntimePortForwardRequest = {
+  remoteHost?: string | null;
+  remotePort: number;
+  label?: string | null;
+};
+
+export type RemoteRuntimePortForward = {
+  targetId: string;
+  remoteHost: string;
+  remotePort: number;
+  localHost: string;
+  localPort: number;
+  localUrl: string;
+  label: string | null;
+  createdAt: number;
+  lastUsedAt: number;
 };
 
 export type RemoteRuntimeSshHostKeyIdentity = {
@@ -177,6 +196,7 @@ export type RemoteRuntimeStreamEventsRequest = {
   cursor?: number;
   limit?: number;
   category?: RemoteRuntimeEventCategory;
+  replay?: boolean;
 };
 
 export type RemoteRuntimeStreamEventsResult = {

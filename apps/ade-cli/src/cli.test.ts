@@ -9,6 +9,7 @@ import {
   findProjectRoots,
   formatOutput,
   graphWaitState,
+  inferFormatter,
   isEphemeralRuntimeSocketPath,
   isFailedServiceManagerResult,
   machineRuntimeMismatchReason,
@@ -66,6 +67,16 @@ function baseResolveOpts(): Omit<
     text: false,
     timeoutMs: 15_000,
   };
+}
+
+function expectExecutePlan(
+  plan: ReturnType<typeof buildCliPlan>,
+): Extract<ReturnType<typeof buildCliPlan>, { kind: "execute" }> {
+  expect(plan.kind).toBe("execute");
+  if (plan.kind !== "execute") {
+    throw new Error(`Expected execute plan, got ${plan.kind}`);
+  }
+  return plan;
 }
 
 describe("ADE CLI", () => {
@@ -261,6 +272,12 @@ describe("ADE CLI", () => {
     expect(buildCliPlan(["rpc", "stdio", "--trace"])).toEqual({
       kind: "rpc-stdio",
       rest: ["--trace"],
+    });
+  });
+
+  it("recognizes the hidden PTY host worker entrypoint", () => {
+    expect(buildCliPlan(["__ade-pty-host-worker"])).toEqual({
+      kind: "pty-host-worker",
     });
   });
 
@@ -856,6 +873,37 @@ describe("ADE CLI", () => {
         argsList: ["chat-2"],
       },
     });
+  });
+
+  it("maps chat list filters to the listSessions action", () => {
+    const plan = buildCliPlan([
+      "chat",
+      "list",
+      "--lane",
+      "lane-1",
+      "--include-automation",
+      "--include-identity",
+      "--no-archived",
+    ]);
+    expect(plan.kind).toBe("execute");
+    if (plan.kind !== "execute") return;
+    expect(plan.steps[0]?.params).toEqual({
+      name: "run_ade_action",
+      arguments: {
+        domain: "chat",
+        action: "listSessions",
+        args: {
+          laneId: "lane-1",
+          includeAutomation: true,
+          includeIdentity: true,
+          includeArchived: false,
+        },
+      },
+    });
+
+    expect(() =>
+      buildCliPlan(["chat", "list", "--include-archived", "--no-archived"]),
+    ).toThrow(/Use either --include-archived or --no-archived/);
   });
 
   it("requires a chat session id for chat show", () => {
@@ -4045,6 +4093,87 @@ describe("ADE CLI", () => {
         args: { projectRoot: "/tmp/app" },
       },
     });
+  });
+
+  it("ios-sim preview-match resolves the best preview target from source and element context", () => {
+    const plan = expectExecutePlan(buildCliPlan([
+      "ios-sim",
+      "preview-match",
+      "--source",
+      "Views/HomeView.swift",
+      "--line",
+      "44",
+      "--label",
+      "Settings",
+      "--component-id",
+      "settings-row",
+      "--project-root",
+      "/tmp/app",
+    ]));
+    expect(plan.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "ios_simulator",
+        action: "resolvePreviewMatch",
+        args: {
+          projectRoot: "/tmp/app",
+          sourceFile: "Views/HomeView.swift",
+          sourceLine: 44,
+          elementLabel: "Settings",
+          componentId: "settings-row",
+        },
+      },
+    });
+  });
+
+  it("ios-sim preview-ensure opens or checks the Preview Lab workspace", () => {
+    const plan = expectExecutePlan(buildCliPlan([
+      "ios-sim",
+      "preview-ensure",
+      "--source",
+      "Views/HomeView.swift",
+      "--line",
+      "12",
+      "--no-open",
+      "--timeout-ms",
+      "5000",
+    ]));
+    expect(plan.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "ios_simulator",
+        action: "ensurePreviewWorkspace",
+        args: {
+          sourceFile: "Views/HomeView.swift",
+          sourceLine: 12,
+          openIfNeeded: false,
+          timeoutMs: 5000,
+        },
+      },
+    });
+  });
+
+  it("formats preview-match and preview-ensure text as Preview Lab output", () => {
+    const matchPlan = expectExecutePlan(buildCliPlan(["ios-sim", "preview-match", "--source", "Views/HomeView.swift"]));
+    const ensurePlan = expectExecutePlan(buildCliPlan(["ios-sim", "preview-ensure"]));
+    expect(inferFormatter(matchPlan)).toBe("ios-sim-preview");
+    expect(inferFormatter(ensurePlan)).toBe("ios-sim-preview");
+
+    const output = formatOutput({
+      status: "missing-preview",
+      confidence: "none",
+      target: null,
+      selectedSourceFile: "apps/ios/ADE/Views/HomeView.swift",
+      selectedSourceLine: 42,
+      suggestedSourceFile: "apps/ios/ADE/Views/HomePreviews.swift",
+      suggestedSourceFilePath: "apps/ios/ADE/Views/HomePreviews.swift",
+      suggestedTitle: "Home Preview",
+      reason: "No #Preview was found near HomeView.swift.",
+    }, {
+      text: true,
+      pretty: false,
+    } as any, "ios-sim-preview");
+    expect(output).toContain("ADE iOS Preview match");
+    expect(output).toMatch(/status\s+missing-preview/);
+    expect(output).toMatch(/suggested file\s+apps\/ios\/ADE\/Views\/HomePreviews\.swift/);
   });
 
   it("ios-sim preview-render requires a source file and forwards render options", () => {

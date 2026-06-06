@@ -5,10 +5,12 @@ import { createSupervisedPtyLoader, type HostedPty } from "./supervisedPtyHost";
 
 const mocks = vi.hoisted(() => ({
   fork: vi.fn(),
+  spawn: vi.fn(),
 }));
 
 vi.mock("node:child_process", () => ({
   fork: mocks.fork,
+  spawn: mocks.spawn,
 }));
 
 type FakeChild = EventEmitter & {
@@ -68,10 +70,12 @@ function spawnOptions(): IWindowsPtyForkOptions {
 describe("createSupervisedPtyLoader", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.unstubAllEnvs();
   });
 
   afterEach(() => {
     vi.useRealTimers();
+    vi.unstubAllEnvs();
   });
 
   it("queues PTY operations until the host confirms spawn", async () => {
@@ -99,6 +103,32 @@ describe("createSupervisedPtyLoader", () => {
       expect.objectContaining({ type: "spawn" }),
       expect.objectContaining({ type: "write", data: "echo queued\r" }),
     ]);
+  });
+
+  it("can launch the worker through an internal ADE command instead of node fork", () => {
+    const child = createFakeChild();
+    mocks.spawn.mockReturnValueOnce(child);
+    vi.stubEnv("ADE_PTY_HOST_WORKER_COMMAND", "/Users/example/.ade/bin/ade");
+    vi.stubEnv("ADE_PTY_HOST_WORKER_NODE", "");
+    const loader = createSupervisedPtyLoader({ logger: createLogger() as any });
+
+    loader().spawn("/bin/zsh", [], spawnOptions());
+
+    expect(mocks.spawn).toHaveBeenCalledWith(
+      "/Users/example/.ade/bin/ade",
+      ["__ade-pty-host-worker"],
+      expect.objectContaining({
+        stdio: ["ignore", "pipe", "pipe", "ipc"],
+        env: expect.objectContaining({
+          ADE_PTY_HOST: "1",
+        }),
+      }),
+    );
+    expect(mocks.fork).not.toHaveBeenCalled();
+    expect(child.sent[0]).toEqual(expect.objectContaining({
+      type: "spawn",
+      command: "/bin/zsh",
+    }));
   });
 
   it("converts host process exit into PTY exits and restarts on the next spawn", async () => {

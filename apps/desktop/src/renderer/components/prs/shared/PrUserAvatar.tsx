@@ -20,8 +20,8 @@ export const PrUserAvatar = memo(function PrUserAvatar({
         height={size}
         className="shrink-0 rounded-full"
         style={{
-          border: `1.5px solid ${COLORS.accentBorder}`,
-          boxShadow: `0 0 0 1px ${COLORS.pageBg}`,
+          border: `1px solid color-mix(in srgb, var(--color-fg) 12%, transparent)`,
+          boxShadow: `0 0 0 1px ${COLORS.prSurface}`,
         }}
       />
     );

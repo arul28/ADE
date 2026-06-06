@@ -613,4 +613,143 @@ describe("iosSimulatorService Xcode preview parsing", () => {
       fs.rmSync(projectRoot, { recursive: true, force: true });
     }
   });
+
+  it("resolves an exact Preview Lab match for the selected Swift file", async () => {
+    const projectRoot = fs.mkdtempSync(`${os.tmpdir()}/ade-ios-preview-match-`);
+    const iosDir = path.join(projectRoot, "apps", "ios", "ADE", "Views");
+    fs.mkdirSync(iosDir, { recursive: true });
+    fs.writeFileSync(path.join(iosDir, "ContentView.swift"), `
+import SwiftUI
+
+struct ContentView: View {
+  var body: some View {
+    Button("Continue") {}
+  }
+}
+
+#Preview("Content loaded") {
+  ContentView()
+}
+`, "utf8");
+    const service = createIosSimulatorService({
+      projectRoot,
+      logger: noopLogger,
+    });
+
+    try {
+      const match = await service.resolvePreviewMatch({
+        sourceFile: "ContentView.swift",
+        sourceLine: 5,
+        elementLabel: "Continue",
+      });
+
+      expect(match).toMatchObject({
+        status: "matched",
+        confidence: "exact",
+        selectedSourceFile: "apps/ios/ADE/Views/ContentView.swift",
+      });
+      expect(match.target).toMatchObject({
+        title: "Content loaded",
+        sourceFile: "apps/ios/ADE/Views/ContentView.swift",
+        previewDefinitionIndexInFile: 0,
+      });
+    } finally {
+      service.dispose();
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("prefers the preview closest to the selected source line in a multi-preview file", async () => {
+    const projectRoot = fs.mkdtempSync(`${os.tmpdir()}/ade-ios-preview-line-match-`);
+    const iosDir = path.join(projectRoot, "apps", "ios", "ADE", "Views");
+    fs.mkdirSync(iosDir, { recursive: true });
+    const swift = `
+import SwiftUI
+
+struct ContentView: View {
+  var body: some View {
+    Text("Content")
+  }
+}
+
+#Preview("Root") {
+  ContentView()
+}
+
+
+
+
+
+
+#Preview("Model picker") {
+  ContentView()
+}
+`;
+    fs.writeFileSync(path.join(iosDir, "ContentView.swift"), swift, "utf8");
+    const modelPickerLine = swift.slice(0, swift.indexOf("#Preview(\"Model picker\")")).split(/\r?\n/).length;
+    const service = createIosSimulatorService({
+      projectRoot,
+      logger: noopLogger,
+    });
+
+    try {
+      const match = await service.resolvePreviewMatch({
+        sourceFile: "ContentView.swift",
+        sourceLine: modelPickerLine,
+        elementLabel: "Model picker",
+      });
+
+      expect(match).toMatchObject({
+        status: "matched",
+        confidence: "exact",
+      });
+      expect(match.target).toMatchObject({
+        title: "Model picker",
+        previewDefinitionIndexInFile: 1,
+      });
+    } finally {
+      service.dispose();
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("suggests a sidecar when selected Swift source has no nearby preview", async () => {
+    const projectRoot = fs.mkdtempSync(`${os.tmpdir()}/ade-ios-preview-missing-target-`);
+    const iosDir = path.join(projectRoot, "apps", "ios", "ADE", "Views");
+    fs.mkdirSync(iosDir, { recursive: true });
+    fs.writeFileSync(path.join(iosDir, "ContentView.swift"), `
+import SwiftUI
+
+struct ContentView: View {
+  var body: some View {
+    Button("Continue") {}
+  }
+}
+`, "utf8");
+    const service = createIosSimulatorService({
+      projectRoot,
+      logger: noopLogger,
+    });
+
+    try {
+      const match = await service.resolvePreviewMatch({
+        sourceFile: "ContentView.swift",
+        sourceLine: 5,
+        elementLabel: "Continue",
+      });
+
+      expect(match).toMatchObject({
+        status: "missing-preview",
+        confidence: "none",
+        selectedSourceFile: "apps/ios/ADE/Views/ContentView.swift",
+        suggestedTitle: "Continue Preview",
+        suggestedSourceFile: "apps/ios/ADE/Views/ContentPreviews.swift",
+        suggestedSourceFilePath: "apps/ios/ADE/Views/ContentPreviews.swift",
+      });
+      expect(match.target).toBeNull();
+    } finally {
+      service.dispose();
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
 });

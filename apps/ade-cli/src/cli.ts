@@ -17,6 +17,10 @@ import {
   CliDeeplinkUsageError,
   runDeeplinkCommand,
 } from "./commands/deeplinks";
+import {
+  CliSkillUsageError,
+  runSkillCommand,
+} from "./commands/skill";
 import { buildDeeplink } from "../../desktop/src/shared/deeplinks";
 import {
   AUTOMATIONS_COMING_SOON_MESSAGE,
@@ -55,6 +59,7 @@ import { MACOS_VM_PHASES } from "../../desktop/src/shared/types/macosVm";
 import type { AdeServiceCommand } from "./serviceManager/common";
 import { normalizeAdeRuntimeRole, resolveAdeDefaultRole } from "./runtimeRoles";
 import type { AdeRuntime } from "./bootstrap";
+import { reseedBundledAdeSkillsForCli } from "./bootstrap";
 import { EncryptedFileCredentialStore } from "./services/credentials/credentialStore";
 
 type JsonObject = Record<string, unknown>;
@@ -163,9 +168,11 @@ type CliPlan =
   | { kind: "runtime"; rest: string[] }
   | { kind: "serve"; rest: string[] }
   | { kind: "rpc-stdio"; rest: string[] }
+  | { kind: "pty-host-worker" }
   | { kind: "init"; targetPath: string | null }
   | { kind: "cursor-cloud"; rest: string[] }
-  | { kind: "deeplink"; rest: string[] };
+  | { kind: "deeplink"; rest: string[] }
+  | { kind: "skill"; rest: string[] };
 
 type CliConnection = {
   mode: "desktop-socket" | "runtime-socket" | "headless";
@@ -426,6 +433,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade link lane | session | branch | pr | linear-issue
                                                      Build a shareable deeplink (copies to clipboard)
     $ ade linear install                            Register ADE as Linear's "Open in coding tool" target
+    $ ade skill list | show <name>                  Browse ADE's bundled agent skills (no daemon)
     $ ade runtime start | stop | status             Manage the machine runtime daemon
     $ ade serve                                     Run the ADE runtime daemon in foreground
     $ ade rpc --stdio                               Speak ADE JSON-RPC over stdin/stdout
@@ -714,6 +722,36 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
     --source, --file <p>   Swift file to rank nearby previews.
     --line <n>             Optional source line.
 `,
+  "preview-match": `${ADE_BANNER}
+  iOS Simulator: preview-match
+
+  Resolves the best Preview Lab target for the current simulator/source context.
+  Aliases: match-preview, resolve-preview.
+
+    $ ade --socket ios-sim preview-match --source apps/ios/ADE/Views/Home.swift --line 42 --text
+
+  Flags:
+    --project-root <path>  ADE project root.
+    --source, --file <p>   Selected Swift file.
+    --line <n>             Optional source line.
+    --label <text>         Visible element label used for a suggested preview title.
+    --component-id <id>    ADEInspector component id used for a suggested preview.
+`,
+  "preview-ensure": `${ADE_BANNER}
+  iOS Simulator: preview-ensure
+
+  Opens this lane's iOS project in Xcode when needed and waits briefly for
+  Xcode MCP Preview Lab readiness. Aliases: ensure-preview, preview-workspace.
+
+    $ ade --socket ios-sim preview-ensure --text
+
+  Flags:
+    --project-root <path>  ADE project root.
+    --source, --file <p>   Optional Swift file context.
+    --line <n>             Optional source line.
+    --no-open              Check readiness without opening Xcode.
+    --timeout-ms <n>       Wait time for Xcode readiness; default 12000.
+`,
   "preview-render": `${ADE_BANNER}
   iOS Simulator: preview-render
 
@@ -851,6 +889,10 @@ const IOS_SIMULATOR_HELP_ALIASES: Record<string, string> = {
   "preview-doctor": "preview-status",
   "preview-list": "previews",
   "list-previews": "previews",
+  "match-preview": "preview-match",
+  "resolve-preview": "preview-match",
+  "ensure-preview": "preview-ensure",
+  "preview-workspace": "preview-ensure",
   "render-preview": "preview-render",
   preview: "preview-render",
   "open-preview-workspace": "preview-open",
@@ -923,6 +965,23 @@ const HELP_BY_COMMAND: Record<string, string> = {
   Flags:
     --ade           Emit the custom "ade://" form. Defaults to the https mirror.
     --no-clipboard  Print the URL but do not copy it to the system clipboard.
+`,
+  skill: `${ADE_BANNER}
+  ADE Skills
+
+  Browse ADE's bundled, version-locked agent skills directly from the bundled
+  resources. This is a local command that does NOT require the runtime daemon —
+  it is the tamper-proof backstop for agents that can't natively discover
+  ADE's skills.
+
+    $ ade skill list                                List bundled skills (JSON: name, description, path)
+    $ ade skill list --text                         One "name — description" line per skill
+    $ ade skill show <name>                         Print a skill's SKILL.md (JSON: name, description, content, path)
+    $ ade skill show <name> --text                  Print just the skill's markdown body
+
+  Flags:
+    --text          Human-readable output.
+    --json          Structured JSON output (default).
 `,
   runtime: `${ADE_BANNER}
   ADE Runtime
@@ -1209,7 +1268,8 @@ const HELP_BY_COMMAND: Record<string, string> = {
   Chat commands use ADE agent chat sessions. Live provider-backed chat normally
   requires an attached runtime because the daemon owns provider/session state.
 
-    $ ade chat list --text                          List chat sessions
+    $ ade chat list --lane <lane> --text            List chat sessions
+    $ ade chat list --include-automation --no-archived --text
     $ ade chat create --lane <lane> --provider codex --model <model> [--fast]
     $ ade chat create --from-linear-issue ENG-431   Start a chat with an attached issue + kickoff (alias: --linear-issue-json)
     $ ade chat send <session> --text "next step"    Send a message
@@ -1283,6 +1343,8 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade ios-sim inspect --x 120 --y 420 --text   Inspect a point in the simulator
     $ ade ios-sim preview-status --text           Xcode MCP readiness for Preview Lab
     $ ade ios-sim previews --source <file> --text  List nearby #Preview definitions
+    $ ade ios-sim preview-match --source <file>    Resolve best Preview Lab match
+    $ ade ios-sim preview-ensure --text            Open/wait for Xcode Preview Lab
     $ ade ios-sim preview-render --source <file>   Render a SwiftUI preview through Xcode MCP
 
   Live view:
@@ -5723,7 +5785,30 @@ function buildChatPlan(args: string[]): CliPlan {
       ...base,
       ...(sessionId ? { sessionId } : {}),
     });
-  if (sub === "list" || sub === "ls")
+  if (sub === "list" || sub === "ls") {
+    const includeArchived = readFlag(args, ["--archived", "--include-archived"]);
+    const excludeArchived = readFlag(args, [
+      "--active",
+      "--no-archived",
+      "--exclude-archived",
+    ]);
+    if (includeArchived && excludeArchived) {
+      throw new CliUsageError(
+        "Use either --include-archived or --no-archived, not both.",
+      );
+    }
+    const laneId = readLaneId(args);
+    const input = collectGenericObjectArgs(args, {
+      ...(laneId ? { laneId } : {}),
+      ...(includeArchived ? { includeArchived: true } : {}),
+      ...(excludeArchived ? { includeArchived: false } : {}),
+      ...(readFlag(args, ["--automation", "--include-automation"])
+        ? { includeAutomation: true }
+        : {}),
+      ...(readFlag(args, ["--identity", "--include-identity"])
+        ? { includeIdentity: true }
+        : {}),
+    });
     return {
       kind: "execute",
       label: "chat list",
@@ -5732,10 +5817,11 @@ function buildChatPlan(args: string[]): CliPlan {
           "result",
           "chat",
           "listSessions",
-          collectGenericObjectArgs(args),
+          input,
         ),
       ],
     };
+  }
   if (sub === "show" || sub === "status")
     return {
       kind: "execute",
@@ -6811,6 +6897,54 @@ function buildIosSimulatorPlan(args: string[]): CliPlan {
             projectRoot: readValue(args, ["--project-root", "--root"]),
             sourceFile: readValue(args, ["--source", "--file"]),
             sourceLine: readNumberOption(args, ["--line"]),
+          }),
+        ),
+      ],
+    };
+  }
+  if (
+    sub === "preview-match" ||
+    sub === "match-preview" ||
+    sub === "resolve-preview"
+  ) {
+    return {
+      kind: "execute",
+      label: "iOS simulator preview match",
+      steps: [
+        actionStep(
+          "result",
+          "ios_simulator",
+          "resolvePreviewMatch",
+          collectGenericObjectArgs(args, {
+            projectRoot: readValue(args, ["--project-root", "--root"]),
+            sourceFile: readValue(args, ["--source", "--file"]),
+            sourceLine: readNumberOption(args, ["--line"]),
+            elementLabel: readValue(args, ["--label"]),
+            componentId: readValue(args, ["--component-id", "--component"]),
+          }),
+        ),
+      ],
+    };
+  }
+  if (
+    sub === "preview-ensure" ||
+    sub === "ensure-preview" ||
+    sub === "preview-workspace"
+  ) {
+    return {
+      kind: "execute",
+      label: "iOS simulator preview workspace",
+      steps: [
+        actionStep(
+          "result",
+          "ios_simulator",
+          "ensurePreviewWorkspace",
+          collectGenericObjectArgs(args, {
+            projectRoot: readValue(args, ["--project-root", "--root"]),
+            sourceFile: readValue(args, ["--source", "--file"]),
+            sourceLine: readNumberOption(args, ["--line"]),
+            openIfNeeded: readFlag(args, ["--no-open"]) ? false : undefined,
+            timeoutMs: readNumberOption(args, ["--timeout-ms"]),
           }),
         ),
       ],
@@ -10301,6 +10435,7 @@ function buildCliPlan(command: string[]): CliPlan {
     project: "projects",
     quota: "usage",
     quotas: "usage",
+    skills: "skill",
   };
   const primaryHelpKey = aliases[primary] ?? primary;
   if (hasHelpFlag(args)) {
@@ -10338,6 +10473,9 @@ function buildCliPlan(command: string[]): CliPlan {
   if (primary === "version" || primary === "--version" || primary === "-v") {
     return { kind: "help", text: `ade ${VERSION}\n` };
   }
+  if (primary === "__ade-pty-host-worker") {
+    return { kind: "pty-host-worker" };
+  }
   if (primary === "code") {
     const rest = args;
     return { kind: "ade-code", rest };
@@ -10349,6 +10487,10 @@ function buildCliPlan(command: string[]): CliPlan {
     // Deeplink-related subcommands. We need the verb back so the inner
     // dispatcher can branch on it; reconstruct rest accordingly.
     return { kind: "deeplink", rest: [primary, ...args] };
+  }
+  if (primary === "skill" || primary === "skills") {
+    // Local (non-RPC) bundled-agent-skill browser; no daemon required.
+    return { kind: "skill", rest: args };
   }
   if (primary === "linear") {
     // `ade linear install` is the deeplink installer; every other `ade linear`
@@ -13945,6 +14087,28 @@ function formatIosSimPreview(value: unknown): string {
     );
   }
   const record = isRecord(value) ? value : {};
+  if (typeof record.status === "string" && "confidence" in record) {
+    const target = isRecord(record.target) ? record.target : null;
+    return renderKeyValues("ADE iOS Preview match", [
+      ["status", record.status],
+      ["confidence", record.confidence],
+      [
+        "selected",
+        record.selectedSourceFile
+          ? `${record.selectedSourceFile}${record.selectedSourceLine ? `:${record.selectedSourceLine}` : ""}`
+          : null,
+      ],
+      [
+        "target",
+        target
+          ? `${target.title ?? "Preview"} · ${target.sourceFilePath ?? target.sourceFile ?? "unknown"}`
+          : null,
+      ],
+      ["suggested file", record.suggestedSourceFilePath ?? record.suggestedSourceFile],
+      ["suggested title", record.suggestedTitle],
+      ["reason", record.reason],
+    ]);
+  }
   const capability = isRecord(record.capability) ? record.capability : record;
   const steps = Array.isArray(capability.setupSteps)
     ? capability.setupSteps.join("; ")
@@ -14917,6 +15081,8 @@ function inferFormatter(
   if (
     label === "ios simulator preview status" ||
     label === "ios simulator previews" ||
+    label === "ios simulator preview match" ||
+    label === "ios simulator preview workspace" ||
     label === "ios simulator preview render" ||
     label === "ios simulator preview open"
   )
@@ -15232,6 +15398,20 @@ async function runCli(
       output: plan.text.endsWith("\n") ? plan.text : `${plan.text}\n`,
       exitCode: 0,
     };
+  // Ensure ADE's bundled skills are seeded into the home-level dirs every runtime
+  // discovers, but only on the paths that actually launch an agent/runtime/skill —
+  // cheap commands like `ade help` and `ade --version` must not pay the scan/hash
+  // cost (cheap no-op when already current).
+  if (
+    plan.kind === "skill" ||
+    plan.kind === "ade-code" ||
+    plan.kind === "runtime" ||
+    plan.kind === "serve" ||
+    (plan.kind === "execute" &&
+      /^(agent spawn|chat create|shell start cli)\b/.test(plan.label))
+  ) {
+    reseedBundledAdeSkillsForCli();
+  }
   const originalConsole = {
     log: console.log,
     info: console.info,
@@ -15266,6 +15446,17 @@ async function runCli(
       await runNativeRpcStdio(parsed.options);
       return { output: "", exitCode: 0 };
     }
+    if (plan.kind === "pty-host-worker") {
+      await import("../../desktop/src/main/services/pty/ptyHostWorker");
+      await new Promise<void>((resolve) => {
+        if (typeof process.send !== "function") {
+          resolve();
+          return;
+        }
+        process.once("disconnect", resolve);
+      });
+      return { output: "", exitCode: 0 };
+    }
     if (plan.kind === "desktop") {
       const result = await runDesktopCommand(plan.rest);
       return {
@@ -15279,6 +15470,20 @@ async function runCli(
         return { output: result.output, exitCode: result.exitCode };
       } catch (error) {
         if (error instanceof CliDeeplinkUsageError) {
+          throw new CliUsageError(error.message);
+        }
+        throw error;
+      }
+    }
+    if (plan.kind === "skill") {
+      try {
+        // The global parser folds --text/--json into parsed.options.text;
+        // forward that choice to the local skill command (default = JSON).
+        const rest = [...plan.rest, parsed.options.text ? "--text" : "--json"];
+        const result = runSkillCommand(rest);
+        return { output: result.output, exitCode: result.exitCode };
+      } catch (error) {
+        if (error instanceof CliSkillUsageError) {
           throw new CliUsageError(error.message);
         }
         throw error;
@@ -15418,6 +15623,7 @@ export {
   findProjectRoots,
   formatOutput,
   graphWaitState,
+  inferFormatter,
   isEphemeralRuntimeSocketPath,
   isFailedServiceManagerResult,
   machineRuntimeMismatchReason,

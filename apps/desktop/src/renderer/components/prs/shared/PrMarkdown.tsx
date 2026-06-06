@@ -22,6 +22,7 @@ import {
 import { HighlightedCode } from "../../chat/CodeHighlighter";
 import { COLORS } from "../../lanes/laneDesignTokens";
 import { normalizeEscapedMarkdownNewlines } from "../../../../shared/prMarkdownText";
+import { PrMermaid } from "./PrMermaid";
 
 type PrMarkdownTone = "neutral" | "sky" | "amber";
 type MarkdownRoot = Parameters<typeof findAndReplace>[0];
@@ -241,6 +242,11 @@ function openExternalUrl(url: string | undefined) {
 
 /* ── Image with click-to-open ──────────────────────────────────────── */
 
+// Anchored to the start (after an optional leading emoji) and limited to the
+// real CodeRabbit/bot action labels, so legitimate screenshots whose alt merely
+// contains words like "open in" or "resolve" are NOT replaced by a chip.
+const AI_ACTION_BADGE_RE = /^\s*[^\w\s]*\s*(fix (in|all)|prompt (for|to))\b/i;
+
 function PrImage({
   src,
   alt,
@@ -250,6 +256,12 @@ function PrImage({
   alt?: string;
   title?: string;
 }) {
+  const [errored, setErrored] = useState(false);
+  // react-markdown reuses img instances positionally, so reset the error flag
+  // when the source changes (e.g. a corrected URL in the editor preview).
+  useEffect(() => {
+    setErrored(false);
+  }, [src]);
   const handleClick = useCallback(
     (event: MouseEvent<HTMLImageElement>) => {
       event.preventDefault();
@@ -258,12 +270,51 @@ function PrImage({
     [src],
   );
   if (!src) return null;
+  // ADE's branded "Open in ADE" footer references an external SVG mark that the
+  // renderer CSP blocks (→ blank, wrong logo). Swap it for the bundled app logo,
+  // rendered small + inline so it sits cleanly next to the footer text.
+  if (src.includes("ade-app.dev") && src.includes("ade-mark")) {
+    return (
+      <img
+        src="./logo.png"
+        alt={alt ?? "ADE"}
+        style={{ height: 18, width: "auto", display: "inline-block", verticalAlign: "middle", borderRadius: 3 }}
+      />
+    );
+  }
+  const altText = (alt ?? "").trim();
+  // Bot "AI action" badges (CodeRabbit's "Fix in Claude", "Prompt for AI Agents",
+  // etc.) ship as bright remote badge images whose baked-in text is unreadable.
+  // Render the alt text as a clean, legible chip; an enclosing link still fires.
+  if (altText && AI_ACTION_BADGE_RE.test(altText)) {
+    return (
+      <span
+        className="my-1 inline-flex items-center rounded-[6px] px-2 py-0.5 align-middle text-[11px] font-medium"
+        style={{ color: COLORS.accent, background: COLORS.accentSubtle, border: `1px solid ${COLORS.accentBorder}` }}
+      >
+        {altText}
+      </span>
+    );
+  }
+  // A broken/blocked image degrades to its alt text (or nothing) instead of the
+  // browser's broken-image glyph.
+  if (errored) {
+    return altText
+      ? <span className="text-[11px]" style={{ color: COLORS.textMuted }}>{altText}</span>
+      : null;
+  }
   return (
     <img
       src={src}
-      alt={alt ?? ""}
+      alt={altText}
       title={title}
       loading="lazy"
+      // GitHub's camo / private-user-images hosts 403 image requests that carry
+      // a referrer from a non-github origin (here the renderer's app:/file:
+      // origin). Suppressing the referrer makes the signed-URL fetch succeed,
+      // which is why GitHub itself serves these with referrer stripped.
+      referrerPolicy="no-referrer"
+      onError={() => setErrored(true)}
       onClick={handleClick}
       className="my-2 block max-w-full cursor-zoom-in rounded-[6px] border"
       style={{ borderColor: COLORS.border, maxHeight: 520 }}
@@ -447,7 +498,8 @@ function buildPrOverrides({
         {children}
       </PrLink>
     ),
-    // Route fenced code blocks through the shared Shiki highlighter.
+    // Route fenced code blocks through the shared Shiki highlighter, except
+    // ```mermaid fences, which render as actual diagrams.
     pre: ({ children }) => {
       const first = Array.isArray(children) ? children[0] : children;
       if (
@@ -462,11 +514,14 @@ function buildPrOverrides({
         const match = /language-([\w-]+)/.exec(className);
         const language = match ? match[1] : "text";
         const codeText = extractLinkText(props?.children).replace(/\n$/, "");
+        if (language === "mermaid") {
+          return <PrMermaid source={codeText} />;
+        }
         return <HighlightedCode code={codeText} language={language} />;
       }
       return (
         <pre
-          className={`${mb} overflow-auto rounded-[6px] border p-3 font-mono text-[11px] leading-5 last:mb-0`}
+          className={`${mb} max-w-full overflow-x-auto rounded-[6px] border p-3 font-mono text-[11px] leading-5 last:mb-0`}
           style={{ borderColor: COLORS.border, background: "rgba(0,0,0,0.25)" }}
         >
           {children}
@@ -474,6 +529,12 @@ function buildPrOverrides({
       );
     },
     code: ({ className, children }) => {
+      // Defensive: if a ```mermaid fence is ever routed straight through `code`
+      // (instead of `pre > code`), still render the diagram rather than raw
+      // source. The `pre` override normally intercepts this first.
+      if (className && /language-mermaid\b/.test(className)) {
+        return <PrMermaid source={extractLinkText(children).replace(/\n$/, "")} />;
+      }
       // Fenced blocks are handled by `pre`. Inline code stays small & mono.
       if (className && /language-/.test(className)) {
         return <code className={className}>{children}</code>;
@@ -590,7 +651,7 @@ export const PrMarkdown = memo(function PrMarkdown({
 
   return (
     <div
-      className={`pr-md-root text-[13px] leading-[1.55] ${dense ? "pr-md-dense" : ""}`}
+      className={`pr-md-root min-w-0 max-w-full text-[13px] leading-[1.55] ${dense ? "pr-md-dense" : ""}`}
       style={{ color: COLORS.textPrimary }}
     >
       <ReactMarkdown

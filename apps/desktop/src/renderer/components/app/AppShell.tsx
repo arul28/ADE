@@ -1,10 +1,14 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
+  ArrowCounterClockwise,
   ArrowSquareOut,
   CheckCircle,
+  CircleNotch,
   GitBranch,
   GithubLogo,
   GitPullRequest,
+  LinkSimple,
+  PlugsConnected,
   WarningCircle,
   XCircle,
 } from "@phosphor-icons/react";
@@ -21,7 +25,7 @@ import {
 } from "./prToastPresentation";
 import { TabBackground } from "../ui/TabBackground";
 import { LaneAccentDot } from "../lanes/LaneAccentDot";
-import { useAppStore } from "../../state/appStore";
+import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
 import { Button } from "../ui/Button";
 import type {
   AiSettingsStatus,
@@ -31,6 +35,7 @@ import type {
   PrEventPayload,
   ProjectInfo,
   OpenProjectBinding,
+  RemoteRuntimeConnectionSnapshot,
   TerminalSessionSummary,
 } from "../../../shared/types";
 import {
@@ -62,9 +67,34 @@ type PrToast = {
   event: Extract<PrEventPayload, { type: "pr-notification" }>;
 };
 
+type AutoLinkToast = {
+  id: string;
+  event: Extract<PrEventPayload, { type: "pr-auto-linked" }>;
+  undoing?: boolean;
+  undoFailed?: boolean;
+};
+
 function primaryTabPath(pathname: string): string {
   const roots = ["/project", "/lanes", "/files", "/work", "/graph", "/prs", "/history", "/automations", "/cto", "/vm", "/settings"];
   return roots.find((root) => pathname === root || pathname.startsWith(`${root}/`)) ?? pathname;
+}
+
+function shouldLoadShellGithubStatus(pathname: string, isRemoteProject: boolean): boolean {
+  if (!isRemoteProject) return true;
+  return pathname === "/prs"
+    || pathname.startsWith("/prs/")
+    || pathname === "/settings"
+    || pathname.startsWith("/settings/");
+}
+
+function shouldLoadShellAiStatus(pathname: string, isRemoteProject: boolean): boolean {
+  if (!isRemoteProject) return true;
+  return pathname === "/work"
+    || pathname.startsWith("/work/")
+    || pathname === "/lanes"
+    || pathname.startsWith("/lanes/")
+    || pathname === "/settings"
+    || pathname.startsWith("/settings/");
 }
 
 const PROJECT_ROUTE_STORAGE_PREFIX = "ade:project-route:";
@@ -122,6 +152,14 @@ type LinearWorkflowToast = {
     LinearWorkflowEventPayload,
     { type: "linear-workflow-notification" }
   >;
+};
+
+type RemoteConnectionNotice = {
+  key: string;
+  state: "connecting" | "error" | "idle";
+  badge: string;
+  title: string;
+  body: string;
 };
 
 type StaleCliNotice = {
@@ -238,6 +276,13 @@ function getPrToastIcon(kind: PrToast["event"]["kind"]) {
   return GitPullRequest;
 }
 
+function cleanRemoteConnectionError(message: string | null): string {
+  return (message ?? "")
+    .replace(/^Error invoking remote method '[^']+':\s*/i, "")
+    .replace(/^Error:\s*/i, "")
+    .trim();
+}
+
 export function AppShell({ children }: { children: React.ReactNode }) {
   const location = useLocation();
   const navigate = useNavigate();
@@ -252,6 +297,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const keybindings = useAppStore((s) => s.keybindings);
   const lanes = useAppStore((s) => s.lanes);
   const project = useAppStore((s) => s.project);
+  const projectBinding = useAppStore((s) => s.projectBinding);
   const projectRevision = useAppStore((s) => s.projectRevision);
   const setShowWelcome = useAppStore((s) => s.setShowWelcome);
   const showWelcome = useAppStore((s) => s.showWelcome);
@@ -271,6 +317,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     if (timer != null) window.clearTimeout(timer);
     toastTimersRef.current.delete(id);
   };
+  const [autoLinkToasts, setAutoLinkToasts] = useState<AutoLinkToast[]>([]);
+  const autoLinkToastTimersRef = useRef<Map<string, number>>(new Map());
+  const dismissAutoLinkToast = (id: string) => {
+    setAutoLinkToasts((prev) => prev.filter((t) => t.id !== id));
+    const timer = autoLinkToastTimersRef.current.get(id);
+    if (timer != null) window.clearTimeout(timer);
+    autoLinkToastTimersRef.current.delete(id);
+  };
   const [linearWorkflowToasts, setLinearWorkflowToasts] = useState<
     LinearWorkflowToast[]
   >([]);
@@ -278,6 +332,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [staleCliNotice, setStaleCliNotice] =
     useState<StaleCliNotice | null>(null);
   const dismissedStaleCliNoticeKeyRef = useRef<string | null>(null);
+  const [remoteSnapshot, setRemoteSnapshot] =
+    useState<RemoteRuntimeConnectionSnapshot | null>(null);
+  const [dismissedRemoteNoticeKey, setDismissedRemoteNoticeKey] =
+    useState<string | null>(null);
   const [aiFailure, setAiFailure] = useState<AiBannerState | null>(null);
   const [aiMockProvider, setAiMockProvider] = useState<{
     createdAt: string;
@@ -294,7 +352,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const dismissedGithubBannerRoots = useAppStore((s) => s.dismissedGithubBannerRoots);
   const dismissMissingAiBanner = useAppStore((s) => s.dismissMissingAiBanner);
   const dismissGithubBanner = useAppStore((s) => s.dismissGithubBanner);
-  const currentProjectRoot = project?.rootPath ?? null;
+  const currentProjectRoot = useAppStore(selectActiveProjectRoot);
+  const activeRemoteBinding =
+    projectBinding?.kind === "remote" ? projectBinding : null;
+  const isRemoteProject = projectBinding?.kind === "remote";
   const missingAiBannerDismissed = Boolean(
     currentProjectRoot && dismissedMissingAiBannerRoots[currentProjectRoot],
   );
@@ -309,11 +370,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   githubBannerDismissedRef.current = githubBannerDismissed;
   const isOnboardingRoute = location.pathname === "/onboarding";
   const isLanesRoute = location.pathname.startsWith("/lanes");
+  const isWorkRoute = location.pathname === "/work" || location.pathname.startsWith("/work/");
+  const isWorkAdjacentRoute = isWorkRoute || isLanesRoute;
   const isLanesRouteRef = useRef(isLanesRoute);
   const shouldTrackTerminalAttention =
-    Boolean(project?.rootPath) &&
+    Boolean(currentProjectRoot) &&
     !showWelcome &&
-    (location.pathname === "/work" || location.pathname === "/lanes");
+    isWorkAdjacentRoute;
 
   useEffect(() => {
     isLanesRouteRef.current = isLanesRoute;
@@ -322,17 +385,41 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     logRendererDebugEvent("renderer.route_change", {
       pathname: location.pathname,
-      projectRoot: project?.rootPath ?? null,
+      projectRoot: currentProjectRoot,
       showWelcome,
     });
     console.info(
       `renderer.route_change ${JSON.stringify({
         pathname: location.pathname,
-        projectRoot: project?.rootPath ?? null,
+        projectRoot: currentProjectRoot,
         showWelcome,
       })}`,
     );
-  }, [location.pathname, project?.rootPath, showWelcome]);
+  }, [currentProjectRoot, location.pathname, showWelcome]);
+
+  useEffect(() => {
+    const remoteRuntime = window.ade.remoteRuntime;
+    if (!remoteRuntime?.getConnectionSnapshot) return;
+    let cancelled = false;
+    let seenLiveUpdate = false;
+    void remoteRuntime
+      .getConnectionSnapshot()
+      .then((snapshot) => {
+        if (!cancelled && !seenLiveUpdate) setRemoteSnapshot(snapshot);
+      })
+      .catch(() => {
+        if (!cancelled && !seenLiveUpdate) setRemoteSnapshot(null);
+      });
+    const unsubscribe =
+      remoteRuntime.onConnectionSnapshotChanged?.((snapshot) => {
+        seenLiveUpdate = true;
+        if (!cancelled) setRemoteSnapshot(snapshot);
+      }) ?? (() => {});
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, []);
 
   useEffect(() => {
     disposeTerminalRuntimesForProjectChange(project?.rootPath ?? null, projectRevision);
@@ -397,12 +484,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       const welcomeChanged = currentShowWelcome === hasStoredProject;
 
       if (remoteBinding) {
+        setProjectBinding(remoteBinding);
         setProject({
           rootPath: remoteBinding.rootPath,
           displayName: remoteBinding.displayName,
           baseRef: "main",
         });
-        setProjectBinding(remoteBinding);
         setShowWelcome(false);
         clearScheduledRefreshes();
         void refreshLanes({ includeStatus: false });
@@ -420,6 +507,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
       if (nextProject) {
         setProject(nextProject);
+        setProjectBinding(nextBinding ?? null);
         setShowWelcome(false);
       } else {
         setProject(null);
@@ -604,13 +692,18 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }, [setTerminalAttention, shouldTrackTerminalAttention]);
 
   useEffect(() => {
-    if (!project?.rootPath || showWelcome) {
+    const projectRoot = project?.rootPath ?? null;
+    const shouldCheckStaleCliNotice =
+      Boolean(projectRoot) &&
+      !showWelcome &&
+      (!isRemoteProject || isWorkAdjacentRoute);
+    if (!shouldCheckStaleCliNotice) {
       setStaleCliNotice(null);
       dismissedStaleCliNoticeKeyRef.current = null;
       return;
     }
 
-    const projectRoot = project.rootPath;
+    if (!projectRoot) return;
     let cancelled = false;
     let refreshTimer: number | null = null;
 
@@ -672,11 +765,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       window.removeEventListener("focus", onFocus);
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
-  }, [project?.rootPath, showWelcome]);
+  }, [isRemoteProject, isWorkAdjacentRoute, project?.rootPath, showWelcome]);
 
   useEffect(() => {
     let cancelled = false;
-    if (!project?.rootPath || showWelcome) {
+    if (!project?.rootPath || showWelcome || isRemoteProject) {
       setOnboardingStatus(null);
       setOnboardingStatusLoading(false);
       return () => {
@@ -701,10 +794,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     return () => {
       cancelled = true;
     };
-  }, [project?.rootPath, showWelcome]);
+  }, [isRemoteProject, project?.rootPath, showWelcome]);
 
   useEffect(() => {
     const handler = (event: Event) => {
+      if (isRemoteProject) return;
       const detail = (event as CustomEvent<OnboardingStatus>).detail;
       if (!detail) return;
       setOnboardingStatus(detail);
@@ -713,7 +807,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     window.addEventListener(ONBOARDING_STATUS_UPDATED_EVENT, handler);
     return () =>
       window.removeEventListener(ONBOARDING_STATUS_UPDATED_EVENT, handler);
-  }, []);
+  }, [isRemoteProject]);
 
   // Track visited tabs — mark after a short delay so stagger animation can play on first visit
   useEffect(() => {
@@ -741,7 +835,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }, [project?.rootPath]);
 
   useEffect(() => {
-    const projectRoot = project?.rootPath ?? null;
+    const projectRoot = currentProjectRoot;
     if (!projectRoot || showWelcome) return;
 
     if (lastRouteSaveProjectRootRef.current !== projectRoot) {
@@ -751,11 +845,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
     const route = serializeLocationRoute(location);
     if (route) writeStoredProjectRoute(projectRoot, route);
-  }, [location, project?.rootPath, showWelcome]);
+  }, [location, currentProjectRoot, showWelcome]);
 
   useEffect(() => {
     let cancelled = false;
-    if (!currentProjectRoot) {
+    if (!currentProjectRoot || !shouldLoadShellAiStatus(location.pathname, isRemoteProject)) {
       setAiStatus(null);
       setAiStatusLoaded(false);
       return;
@@ -767,6 +861,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     let refreshSerial = 0;
     let lastChatEventRefreshAt = 0;
     let lastKnownHasProvider = hasConfiguredAiProvider(cachedStatus);
+    const chatEventSubscriptionStartedAt = Date.now();
     const refreshAiStatus = (options: { force?: boolean } = {}) => {
       if (document.visibilityState !== "visible") return;
       const serial = ++refreshSerial;
@@ -798,6 +893,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     window.addEventListener("focus", onFocus);
     document.addEventListener("visibilitychange", onVisibilityChange);
     const unsubscribeChatEvents = window.ade.agentChat.onEvent((envelope) => {
+      if (isRemoteProject) {
+        const eventTimestamp = Date.parse(envelope.timestamp);
+        if (Number.isFinite(eventTimestamp) && eventTimestamp < chatEventSubscriptionStartedAt - 10_000) {
+          return;
+        }
+      }
       if (lastKnownHasProvider && !shouldRefreshAiStatusForChatEvent(envelope)) return;
       const now = Date.now();
       if (now - lastChatEventRefreshAt < AI_STATUS_CHAT_EVENT_REFRESH_MIN_GAP_MS) return;
@@ -818,11 +919,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       window.removeEventListener(AI_STATUS_CACHE_INVALIDATED_EVENT, onAiStatusCacheInvalidated);
       unsubscribeChatEvents();
     };
-  }, [currentProjectRoot]);
+  }, [currentProjectRoot, isRemoteProject, location.pathname]);
 
   useEffect(() => {
     let cancelled = false;
-    if (!currentProjectRoot) {
+    if (!currentProjectRoot || !shouldLoadShellGithubStatus(location.pathname, isRemoteProject)) {
       githubStatusProjectRootRef.current = null;
       setGithubStatus(null);
       return;
@@ -847,7 +948,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       cancelled = true;
       window.clearTimeout(githubTimer);
     };
-  }, [currentProjectRoot]);
+  }, [currentProjectRoot, isRemoteProject, location.pathname]);
 
   // Refresh the GitHub banner the moment Settings saves/clears a token, so the
   // shell does not lag behind the Settings UI (the original "banner stays up
@@ -855,10 +956,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     return (
       window.ade.github?.onStatusChanged?.((status) => {
+        if (!currentProjectRoot || !shouldLoadShellGithubStatus(location.pathname, isRemoteProject)) {
+          return;
+        }
         setGithubStatus(status);
       }) ?? (() => {})
     );
-  }, []);
+  }, [currentProjectRoot, isRemoteProject, location.pathname]);
 
   useEffect(() => {
     if (!window.ade.feedback?.onUpdate) return;
@@ -871,6 +975,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     if (!project?.rootPath || showWelcome) return;
+    if (isRemoteProject) return;
     if (isOnboardingRoute) return;
     if (onboardingStatusLoading) return;
     if (
@@ -887,6 +992,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     onboardingStatus?.dismissedAt,
     onboardingStatus?.freshProject,
     onboardingStatusLoading,
+    isRemoteProject,
     project?.rootPath,
     showWelcome,
   ]);
@@ -961,6 +1067,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }, [commandPaletteBinding]);
 
   useEffect(() => {
+    const newId = (): string =>
+      globalThis.crypto?.randomUUID
+        ? globalThis.crypto.randomUUID()
+        : `${Date.now()}-${Math.random()}`;
+
     const dismiss = (id: string) => {
       setPrToasts((prev) => prev.filter((toast) => toast.id !== id));
       const timer = toastTimersRef.current.get(id);
@@ -968,11 +1079,23 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       toastTimersRef.current.delete(id);
     };
 
+    const dismissAutoLink = (id: string) => {
+      setAutoLinkToasts((prev) => prev.filter((toast) => toast.id !== id));
+      const timer = autoLinkToastTimersRef.current.get(id);
+      if (timer != null) window.clearTimeout(timer);
+      autoLinkToastTimersRef.current.delete(id);
+    };
+
     const unsub = window.ade.prs.onEvent((event) => {
+      if (event.type === "pr-auto-linked") {
+        const id = newId();
+        setAutoLinkToasts((prev) => [{ id, event }, ...prev].slice(0, 4));
+        const timer = window.setTimeout(() => dismissAutoLink(id), 18_000);
+        autoLinkToastTimersRef.current.set(id, timer);
+        return;
+      }
       if (event.type !== "pr-notification") return;
-      const id = globalThis.crypto?.randomUUID
-        ? globalThis.crypto.randomUUID()
-        : `${Date.now()}-${Math.random()}`;
+      const id = newId();
       setPrToasts((prev) => [{ id, event }, ...prev].slice(0, 4));
       const timer = window.setTimeout(() => dismiss(id), 18_000);
       toastTimersRef.current.set(id, timer);
@@ -984,6 +1107,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         window.clearTimeout(timer);
       }
       toastTimersRef.current.clear();
+      for (const timer of autoLinkToastTimersRef.current.values()) {
+        window.clearTimeout(timer);
+      }
+      autoLinkToastTimersRef.current.clear();
     };
   }, []);
 
@@ -1021,6 +1148,58 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const staleCliNoticeDismissKey =
     staleCliNotice && currentProjectRoot
       ? `${currentProjectRoot}:${staleCliNotice.count}:${staleCliNotice.oldestStartedAt}`
+      : null;
+  const activeRemoteConnection =
+    activeRemoteBinding && remoteSnapshot
+      ? remoteSnapshot.connections.find(
+          (entry) => entry.target.id === activeRemoteBinding.targetId,
+        ) ?? null
+      : null;
+  const remoteConnectionNotice = useMemo<RemoteConnectionNotice | null>(() => {
+    if (!activeRemoteBinding || !remoteSnapshot) return null;
+    const state = activeRemoteConnection?.state ?? "idle";
+    if (state === "connected") return null;
+    const lastError = cleanRemoteConnectionError(
+      activeRemoteConnection?.lastError ?? null,
+    );
+    const key = [
+      activeRemoteBinding.key,
+      state,
+      activeRemoteConnection?.lastAttemptedAt ?? 0,
+      lastError,
+    ].join(":");
+    if (state === "connecting") {
+      return {
+        key,
+        state,
+        badge: "Reconnecting",
+        title: `Reconnecting to ${activeRemoteBinding.runtimeName}`,
+        body: "ADE is restoring the remote session. The project stays open while it retries.",
+      };
+    }
+    if (state === "error") {
+      return {
+        key,
+        state,
+        badge: "Disconnected",
+        title: `${activeRemoteBinding.runtimeName} is unreachable`,
+        body: lastError
+          ? `${lastError} ADE will keep trying to reconnect while this project is open.`
+          : "ADE will keep trying to reconnect while this project is open.",
+      };
+    }
+    return {
+      key,
+      state,
+      badge: "Disconnected",
+      title: `${activeRemoteBinding.runtimeName} is not connected`,
+      body: "ADE will try to reconnect when the remote project needs runtime data.",
+    };
+  }, [activeRemoteBinding, activeRemoteConnection, remoteSnapshot]);
+  const visibleRemoteConnectionNotice =
+    remoteConnectionNotice &&
+    remoteConnectionNotice.key !== dismissedRemoteNoticeKey
+      ? remoteConnectionNotice
       : null;
   return (
     <div className="h-screen w-screen text-fg overflow-hidden flex flex-col bg-bg">
@@ -1203,8 +1382,99 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               children
             )}
           </div>
-          {staleCliNotice || prToasts.length > 0 ? (
+          {visibleRemoteConnectionNotice || staleCliNotice || prToasts.length > 0 || autoLinkToasts.length > 0 ? (
             <div className="pointer-events-none absolute bottom-2 right-2 z-[95] flex w-[min(380px,calc(100vw-20px))] flex-col gap-1.5">
+              {visibleRemoteConnectionNotice ? (
+                <div
+                  className={cn(
+                    "pointer-events-auto overflow-hidden rounded-xl border bg-card/95 px-3 py-3 shadow-float backdrop-blur",
+                    visibleRemoteConnectionNotice.state === "connecting"
+                      ? "border-amber-500/25"
+                      : "border-red-500/25",
+                  )}
+                >
+                  <div className="flex items-start gap-3">
+                    <div
+                      className={cn(
+                        "mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border",
+                        visibleRemoteConnectionNotice.state === "connecting"
+                          ? "border-amber-500/30 bg-amber-500/12"
+                          : "border-red-500/30 bg-red-500/12",
+                      )}
+                    >
+                      {visibleRemoteConnectionNotice.state === "connecting" ? (
+                        <CircleNotch
+                          size={16}
+                          weight="bold"
+                          className="animate-spin text-amber-300"
+                        />
+                      ) : (
+                        <WarningCircle
+                          size={16}
+                          weight="fill"
+                          className="text-red-300"
+                        />
+                      )}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <span
+                            className={cn(
+                              "inline-flex items-center rounded-full border px-2 py-1 text-[10px] font-medium",
+                              visibleRemoteConnectionNotice.state === "connecting"
+                                ? "border-amber-500/30 bg-amber-500/10 text-amber-300"
+                                : "border-red-500/30 bg-red-500/10 text-red-300",
+                            )}
+                          >
+                            {visibleRemoteConnectionNotice.badge}
+                          </span>
+                          <div className="mt-2 line-clamp-2 text-[13px] font-semibold leading-tight text-fg">
+                            {visibleRemoteConnectionNotice.title}
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          className="shrink-0 rounded p-1 text-muted-fg transition-colors hover:bg-fg/[0.05] hover:text-fg"
+                          onClick={() =>
+                            setDismissedRemoteNoticeKey(
+                              visibleRemoteConnectionNotice.key,
+                            )
+                          }
+                          aria-label="Dismiss remote connection notice"
+                          title="Dismiss"
+                        >
+                          ×
+                        </button>
+                      </div>
+                      <div className="mt-2 line-clamp-3 text-[12px] leading-relaxed text-muted-fg">
+                        {visibleRemoteConnectionNotice.body}
+                      </div>
+                      <div className="mt-3 flex justify-end">
+                        <button
+                          type="button"
+                          className={cn(
+                            "inline-flex h-8 items-center gap-1.5 rounded-md px-3 text-[11px] font-medium text-[#0F0D14] transition-colors hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-60",
+                            visibleRemoteConnectionNotice.state === "connecting"
+                              ? "bg-amber-300"
+                              : "bg-red-300",
+                          )}
+                          disabled={visibleRemoteConnectionNotice.state === "connecting"}
+                          onClick={() => {
+                            if (!activeRemoteBinding) return;
+                            void window.ade.remoteRuntime
+                              .connect(activeRemoteBinding.targetId)
+                              .catch(() => {});
+                          }}
+                        >
+                          <PlugsConnected size={12} weight="bold" />
+                          Retry now
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              ) : null}
               {staleCliNotice ? (
                 <div className="pointer-events-auto overflow-hidden rounded-xl border border-amber-500/25 bg-card/95 px-3 py-3 shadow-float backdrop-blur">
                   <div className="flex items-start gap-3">
@@ -1402,6 +1672,115 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                           >
                             <ArrowSquareOut size={12} />
                             Open on GitHub
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+              {autoLinkToasts.map((toast) => {
+                const toastLane =
+                  lanes.find((lane) => lane.id === toast.event.laneId) ?? null;
+                const laneName = toastLane?.name ?? toast.event.laneName;
+                const laneColor = toastLane?.color ?? null;
+                return (
+                  <div
+                    key={toast.id}
+                    className="pointer-events-auto overflow-hidden rounded-xl border border-[#A78BFA]/25 bg-card/95 px-3 py-3 shadow-float backdrop-blur"
+                  >
+                    <div className="flex items-start gap-3">
+                      <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[#A78BFA]/15">
+                        <LinkSimple
+                          size={16}
+                          weight="bold"
+                          className="text-[#A78BFA]"
+                        />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="min-w-0">
+                            <div className="text-[13px] font-semibold leading-tight text-fg">
+                              Auto-linked PR #{toast.event.prNumber}
+                            </div>
+                            <div className="mt-1 flex items-center gap-1.5 text-[11px] text-muted-fg">
+                              <span className="truncate">to</span>
+                              {laneColor ? (
+                                <LaneAccentDot lane={{ color: laneColor }} size={7} />
+                              ) : null}
+                              <span
+                                className="truncate font-medium"
+                                style={laneColor ? { color: laneColor } : undefined}
+                              >
+                                {laneName}
+                              </span>
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            className="shrink-0 rounded p-1 text-muted-fg transition-colors hover:bg-fg/[0.05] hover:text-fg"
+                            onClick={() => dismissAutoLinkToast(toast.id)}
+                            aria-label="Dismiss notification"
+                            title="Dismiss"
+                          >
+                            ×
+                          </button>
+                        </div>
+                        <div className="mt-2 line-clamp-2 text-[12px] leading-relaxed text-muted-fg">
+                          {toast.event.prTitle}
+                        </div>
+                        {toast.undoFailed ? (
+                          <div className="mt-2 text-[11px] font-medium text-red-400">
+                            Couldn't undo the link. Try again.
+                          </div>
+                        ) : null}
+                        <div className="mt-3 flex justify-end gap-2">
+                          <button
+                            type="button"
+                            disabled={toast.undoing}
+                            className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border/60 bg-transparent px-3 text-[11px] font-medium text-fg/85 transition-colors hover:border-fg/20 hover:bg-fg/[0.04] hover:text-fg disabled:opacity-60"
+                            onClick={() => {
+                              if (!toast.event.prId) {
+                                dismissAutoLinkToast(toast.id);
+                                return;
+                              }
+                              setAutoLinkToasts((prev) =>
+                                prev.map((t) =>
+                                  t.id === toast.id
+                                    ? { ...t, undoing: true, undoFailed: false }
+                                    : t,
+                                ),
+                              );
+                              void window.ade.prs
+                                .delete({
+                                  prId: toast.event.prId,
+                                  closeOnGitHub: false,
+                                  archiveLane: false,
+                                })
+                                .then(
+                                  () => dismissAutoLinkToast(toast.id),
+                                  (error) => {
+                                    console.error(
+                                      `Failed to undo auto-link for PR #${toast.event.prNumber} (${toast.event.prId})`,
+                                      error,
+                                    );
+                                    setAutoLinkToasts((prev) =>
+                                      prev.map((t) =>
+                                        t.id === toast.id
+                                          ? { ...t, undoing: false, undoFailed: true }
+                                          : t,
+                                      ),
+                                    );
+                                  },
+                                );
+                            }}
+                          >
+                            {toast.undoing ? (
+                              <CircleNotch size={12} className="animate-spin" />
+                            ) : (
+                              <ArrowCounterClockwise size={12} />
+                            )}
+                            {toast.undoFailed ? "Retry undo" : "Undo"}
                           </button>
                         </div>
                       </div>

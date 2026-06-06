@@ -15,9 +15,12 @@ import type {
   IosScreenSnapshot,
   IosScreenSnapshotArgs,
   IosSimulatorClaimArgs,
+  IosSimulatorEnsurePreviewWorkspaceArgs,
+  IosSimulatorEnsurePreviewWorkspaceResult,
   IosSimulatorOpenPreviewWorkspaceArgs,
   IosSimulatorListPreviewsArgs,
   IosSimulatorPreviewCapability,
+  IosSimulatorPreviewMatch,
   IosSimulatorPreviewTarget,
   IosSimulatorPreviewWindow,
   IosSimulatorRenderPreviewArgs,
@@ -747,6 +750,61 @@ function previewProximity(projectRoot: string, previewFile: string, selectedFile
   return "project";
 }
 
+function humanizeSwiftName(name: string): string {
+  const spaced = name
+    .replace(/(?:View|Screen|Controller|Coordinator)$/u, "")
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/[_-]+/g, " ")
+    .trim();
+  return spaced || name;
+}
+
+function titleCaseWords(value: string): string {
+  return value
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(" ");
+}
+
+function previewSearchText(value: string | null | undefined): string {
+  return value?.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim() ?? "";
+}
+
+function previewContextTerms(args: Pick<IosSimulatorListPreviewsArgs, "elementLabel" | "componentId">): string[] {
+  const values = [
+    args.elementLabel,
+    args.componentId?.split(/[\\/]/).filter(Boolean).pop(),
+  ];
+  return Array.from(new Set(values.map(previewSearchText).filter((term) => term.length >= 3)));
+}
+
+function previewSuggestionForSource(
+  projectRoot: string,
+  selectedFile: string | null,
+  args: Pick<IosSimulatorListPreviewsArgs, "elementLabel" | "componentId">,
+): Pick<IosSimulatorPreviewMatch, "suggestedTitle" | "suggestedSourceFile" | "suggestedSourceFilePath"> {
+  if (!selectedFile) {
+    return {
+      suggestedTitle: null,
+      suggestedSourceFile: null,
+      suggestedSourceFilePath: null,
+    };
+  }
+  const rawIdentity = args.elementLabel?.trim()
+    || args.componentId?.split(/[\\/]/).filter(Boolean).pop()?.trim()
+    || humanizeSwiftName(path.basename(selectedFile, ".swift"));
+  const title = `${titleCaseWords(humanizeSwiftName(rawIdentity))} Preview`;
+  const selectedDir = path.dirname(selectedFile);
+  const selectedBase = path.basename(selectedFile, ".swift").replace(/View$/u, "");
+  const suggestedFile = path.join(selectedDir, `${selectedBase}Previews.swift`);
+  return {
+    suggestedTitle: title,
+    suggestedSourceFile: relativeToRoot(projectRoot, suggestedFile),
+    suggestedSourceFilePath: sourceFilePathForXcode(projectRoot, suggestedFile),
+  };
+}
+
 function inferSwiftUITabItems(projectRoot: string | null | undefined): InferredSwiftUITabItem[] {
   if (!projectRoot) return [];
   const root = path.resolve(projectRoot);
@@ -1061,8 +1119,12 @@ async function waitForTcpPort(host: string, port: number, timeoutMs: number): Pr
   while (Date.now() < deadline) {
     const connected = await new Promise<boolean>((resolve) => {
       const socket = net.createConnection({ host, port });
+      let settled = false;
       const finish = (ok: boolean) => {
+        if (settled) return;
+        settled = true;
         socket.removeAllListeners();
+        socket.on("error", () => {});
         socket.destroy();
         resolve(ok);
       };
@@ -2368,6 +2430,11 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       .sort((a, b) => b.score - a.score)[0]?.window ?? windows[0] ?? null;
   };
 
+  const previewWorkspaceOpenPath = (projectRoot: string): string => {
+    const projectPath = path.join(projectRoot, ADE_IOS_PROJECT);
+    return fs.existsSync(projectPath) ? projectPath : path.join(projectRoot, "apps", "ios");
+  };
+
   const getPreviewCapability = async (previewArgs: IosSimulatorListPreviewsArgs = {}): Promise<IosSimulatorPreviewCapability> => {
     const projectRoot = resolveProjectRoot(previewArgs.projectRoot);
     const [xcodeVersion, mcpbridgeAvailable, xcodeRunning] = await Promise.all([
@@ -2411,6 +2478,10 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
   const listPreviewTargets = async (previewArgs: IosSimulatorListPreviewsArgs = {}): Promise<IosSimulatorPreviewTarget[]> => {
     const projectRoot = resolveProjectRoot(previewArgs.projectRoot);
     const selectedFile = resolveSwiftSourceFile(projectRoot, previewArgs.sourceFile);
+    const selectedSourceLine = previewArgs.sourceLine != null && Number.isFinite(previewArgs.sourceLine)
+      ? Math.max(1, Math.round(previewArgs.sourceLine))
+      : null;
+    const contextTerms = previewContextTerms(previewArgs);
     const swiftFiles = collectSwiftFiles(projectRoot);
     const filesWithPreviews = swiftFiles
       .map((filePath) => {
@@ -2438,27 +2509,165 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       if (selectedParts.some((part) => part && fileParts.includes(part) && /Views|Work|Lanes|PRs|Files|Cto/i.test(part))) score += 40;
       return score;
     };
+    const scoreDefinition = (filePath: string, definition: SwiftPreviewDefinition): number => {
+      let score = scoreFile(filePath) * 1_000;
+      if (selectedFile && selectedSourceLine && path.resolve(filePath) === path.resolve(selectedFile)) {
+        score += Math.max(0, 600 - Math.min(600, Math.abs(definition.line - selectedSourceLine)));
+      }
+      const title = previewSearchText(definition.title);
+      for (const term of contextTerms) {
+        if (title.includes(term)) score += 250;
+      }
+      return score;
+    };
     return filesWithPreviews
-      .sort((a, b) => scoreFile(b.filePath) - scoreFile(a.filePath) || a.filePath.localeCompare(b.filePath))
       .flatMap(({ filePath, definitions }) => {
         const proximity = previewProximity(projectRoot, filePath, selectedFile);
         return definitions.map((definition) => {
           const sourceFile = relativeToRoot(projectRoot, filePath);
           const sourceFilePath = sourceFilePathForXcode(projectRoot, filePath);
           return {
-            id: targetId(["preview", sourceFilePath, String(definition.index)]),
-            title: definition.title,
-            sourceFile,
-            sourceFilePath,
-            absoluteSourceFile: filePath,
-            sourceLine: definition.line,
-            previewDefinitionIndexInFile: definition.index,
-            kind: definition.kind,
-            proximity,
+            score: scoreDefinition(filePath, definition),
+            target: {
+              id: targetId(["preview", sourceFilePath, String(definition.index)]),
+              title: definition.title,
+              sourceFile,
+              sourceFilePath,
+              absoluteSourceFile: filePath,
+              sourceLine: definition.line,
+              previewDefinitionIndexInFile: definition.index,
+              kind: definition.kind,
+              proximity,
+            },
           };
         });
       })
+      .sort((a, b) =>
+        b.score - a.score
+        || a.target.sourceFile.localeCompare(b.target.sourceFile)
+        || a.target.sourceLine - b.target.sourceLine)
+      .map((entry) => entry.target)
       .slice(0, 50);
+  };
+
+  const resolvePreviewMatch = async (previewArgs: IosSimulatorListPreviewsArgs = {}): Promise<IosSimulatorPreviewMatch> => {
+    const projectRoot = resolveProjectRoot(previewArgs.projectRoot);
+    const rawSourceFile = previewArgs.sourceFile?.trim() ?? "";
+    const selectedFile = resolveSwiftSourceFile(projectRoot, previewArgs.sourceFile);
+    const selectedSourceFile = selectedFile ? relativeToRoot(projectRoot, selectedFile) : rawSourceFile || null;
+    const selectedSourceLine = previewArgs.sourceLine != null && Number.isFinite(previewArgs.sourceLine)
+      ? Math.max(1, Math.round(previewArgs.sourceLine))
+      : null;
+    const suggestion = previewSuggestionForSource(projectRoot, selectedFile, previewArgs);
+
+    if (!rawSourceFile && !selectedFile) {
+      return {
+        status: "no-context",
+        target: null,
+        confidence: "none",
+        reason: "Select an inspectable simulator element before opening a screen in Preview Lab.",
+        selectedSourceFile: null,
+        selectedSourceLine,
+        ...suggestion,
+      };
+    }
+    if (rawSourceFile && !selectedFile) {
+      return {
+        status: "missing-source",
+        target: null,
+        confidence: "none",
+        reason: `ADE could not resolve the selected Swift source file: ${rawSourceFile}.`,
+        selectedSourceFile,
+        selectedSourceLine,
+        ...suggestion,
+      };
+    }
+
+    const targets = await listPreviewTargets(previewArgs);
+    const target = targets[0] ?? null;
+    if (!target) {
+      return {
+        status: "missing-preview",
+        target: null,
+        confidence: "none",
+        reason: selectedSourceFile
+          ? `No #Preview or PreviewProvider was found near ${selectedSourceFile}.`
+          : "No renderable #Preview or PreviewProvider was found for the selected simulator context.",
+        selectedSourceFile,
+        selectedSourceLine,
+        ...suggestion,
+      };
+    }
+
+    const confidence = target.proximity === "selected-file"
+      ? "exact"
+      : target.proximity === "feature-file"
+        ? "nearby"
+        : "fallback";
+    const reason = confidence === "exact"
+      ? `Matched a preview in the selected source file ${target.sourceFile}.`
+      : confidence === "nearby"
+        ? `Matched the nearest feature preview ${target.sourceFile}.`
+        : `Using a project preview fallback from ${target.sourceFile}; create a closer preview if this does not represent the selected screen.`;
+    return {
+      status: "matched",
+      target,
+      confidence,
+      reason,
+      selectedSourceFile,
+      selectedSourceLine,
+      ...suggestion,
+    };
+  };
+
+  const ensurePreviewWorkspace = async (
+    ensureArgs: IosSimulatorEnsurePreviewWorkspaceArgs = {},
+  ): Promise<IosSimulatorEnsurePreviewWorkspaceResult> => {
+    const projectRoot = resolveProjectRoot(ensureArgs.projectRoot);
+    const openPath = previewWorkspaceOpenPath(projectRoot);
+    const openIfNeeded = ensureArgs.openIfNeeded !== false;
+    const rawTimeoutMs = Number(ensureArgs.timeoutMs ?? 12_000);
+    const timeoutMs = Number.isFinite(rawTimeoutMs)
+      ? Math.max(1_000, Math.min(30_000, Math.round(rawTimeoutMs)))
+      : 12_000;
+    let opened = false;
+    let capability = await getPreviewCapability(ensureArgs);
+    const canOpen = process.platform === "darwin" && Boolean(capability.xcodeVersion) && capability.mcpbridgeAvailable;
+
+    if (!capability.supported && openIfNeeded && canOpen) {
+      spawnProcess("open", ["-a", "Xcode", openPath], { detached: true, stdio: "ignore" }).unref();
+      opened = true;
+      await delay(750);
+    }
+
+    if (!openIfNeeded) {
+      return {
+        ok: capability.supported,
+        opened,
+        path: openPath,
+        capability,
+        error: capability.supported
+          ? null
+          : capability.error ?? capability.setupSteps[0] ?? "Xcode Preview rendering is not ready.",
+      };
+    }
+
+    const deadline = Date.now() + timeoutMs;
+    while (!capability.supported && canOpen && Date.now() < deadline) {
+      await delay(1_000);
+      capability = await getPreviewCapability(ensureArgs);
+      if (capability.supported) break;
+    }
+
+    return {
+      ok: capability.supported,
+      opened,
+      path: openPath,
+      capability,
+      error: capability.supported
+        ? null
+        : capability.error ?? capability.setupSteps[0] ?? "Xcode Preview rendering is not ready.",
+    };
   };
 
   const renderPreview = async (renderArgs: IosSimulatorRenderPreviewArgs): Promise<IosSimulatorRenderPreviewResult> => {
@@ -2473,7 +2682,14 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       throw new Error(`Swift source file was not found: ${rawSourceFilePath}. Run \`ade --socket ios-sim snapshot --text\` to confirm the current simulator screen, then \`ade --socket ios-sim previews --source <swift-file> --text\` with a real Swift file before running \`ade --socket ios-sim preview-render --source <swift-file> --text\`.`);
     }
     const sourceFilePath = sourceFilePathForXcode(projectRoot, resolvedSourceFile);
-    const capability = await getPreviewCapability({ projectRoot });
+    const capability = renderArgs.manageXcode === false
+      ? await getPreviewCapability({ projectRoot })
+      : (await ensurePreviewWorkspace({
+          projectRoot,
+          sourceFile: rawSourceFilePath,
+          openIfNeeded: true,
+          timeoutMs: 12_000,
+        })).capability;
     const selectedWindow = renderArgs.tabIdentifier
       ? capability.xcodeWindows.find((window) => window.tabIdentifier === renderArgs.tabIdentifier) ?? null
       : capability.selectedWindow;
@@ -2554,8 +2770,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
 
   const openPreviewWorkspace = async (openArgs: IosSimulatorOpenPreviewWorkspaceArgs = {}): Promise<{ ok: true; path: string }> => {
     const projectRoot = resolveProjectRoot(openArgs.projectRoot);
-    const projectPath = path.join(projectRoot, ADE_IOS_PROJECT);
-    const openPath = fs.existsSync(projectPath) ? projectPath : path.join(projectRoot, "apps", "ios");
+    const openPath = previewWorkspaceOpenPath(projectRoot);
     if (process.platform !== "darwin") throw new Error("Xcode preview setup is only available on macOS.");
     spawnProcess("open", ["-a", "Xcode", openPath], { detached: true, stdio: "ignore" }).unref();
     return { ok: true, path: openPath };
@@ -3461,6 +3676,8 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     inspectPoint,
     getPreviewCapability,
     listPreviewTargets,
+    resolvePreviewMatch,
+    ensurePreviewWorkspace,
     renderPreview,
     openPreviewWorkspace,
     startStream,

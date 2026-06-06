@@ -36,6 +36,13 @@ let mockAutoRebaseStatuses: Array<{
 }> = [];
 
 vi.mock("../../state/appStore", () => ({
+  selectActiveProjectRoot: (state: {
+    projectBinding?: { kind?: string; rootPath?: string | null } | null;
+    project?: { rootPath?: string | null } | null;
+  }) => {
+    if (state.projectBinding?.kind === "remote") return state.projectBinding.rootPath?.trim() || null;
+    return state.project?.rootPath?.trim() || null;
+  },
   useAppStore: (selector: (state: typeof mockStoreState) => unknown) => selector(mockStoreState),
 }));
 
@@ -646,6 +653,28 @@ describe("LaneGitActionsPane rescue action", () => {
         stashRef: "stash@{0}",
         stashOid: "oid-copy",
       });
+    });
+  });
+
+  it("closes advanced git actions on Escape and Refresh", async () => {
+    const user = userEvent.setup();
+
+    renderPane();
+
+    await user.click(await screen.findByRole("button", { name: /more/i }));
+    expect(screen.getByRole("button", { name: /fetch only/i })).toBeTruthy();
+
+    await user.keyboard("{Escape}");
+    await waitFor(() => {
+      expect(screen.queryByRole("button", { name: /fetch only/i })).toBeNull();
+    });
+
+    await user.click(screen.getByRole("button", { name: /more/i }));
+    expect(screen.getByRole("button", { name: /fetch only/i })).toBeTruthy();
+
+    await user.click(screen.getByRole("button", { name: /refresh git state/i }));
+    await waitFor(() => {
+      expect(screen.queryByRole("button", { name: /fetch only/i })).toBeNull();
     });
   });
 

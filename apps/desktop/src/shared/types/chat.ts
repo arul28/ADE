@@ -1617,6 +1617,7 @@ export type AgentChatSlashCommandsArgs = {
   sessionId?: string;
   laneId?: string | null;
   provider?: AgentChatProvider | null;
+  projectRoot?: string | null;
 };
 
 export type AgentChatClaudeOutputStylesArgs = {

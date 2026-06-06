@@ -356,15 +356,22 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "dismissIntegrationCleanup",
     "draftDescription",
     "getActionRuns",
+    "getActionRunsByGithub",
     "getActivity",
+    "getActivityByGithub",
     "getChecks",
+    "getChecksByGithub",
     "getComments",
+    "getCommentsByGithub",
     "getCommits",
+    "getCommitsByGithub",
     "getConflictAnalysis",
     "getDetail",
+    "getDetailByGithub",
     "getDeployments",
     "getForLane",
     "getFiles",
+    "getFilesByGithub",
     "getGithubSnapshot",
     "getIntegrationResolutionState",
     "getMergeContext",
@@ -374,7 +381,9 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "getQueueState",
     "getAiSummary",
     "getReviewThreads",
+    "getReviewThreadsByGithub",
     "getReviews",
+    "getReviewsByGithub",
     "getStatus",
     "land",
     "landQueueNext",
@@ -417,6 +426,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "rebaseResolutionStart",
     "submitReview",
     "updateBody",
+    "updateComment",
     "updateDescription",
     "updateIntegrationProposal",
     "updateTitle",
@@ -442,6 +452,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "getSessionCapabilities",
     "getSessionSummary",
     "getSlashCommands",
+    "getSubagentTranscript",
     "getTurnFileDiff",
     "getParallelLaunchState",
     "interrupt",
@@ -676,7 +687,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   tiling_tree: ["get", "set"],
   graph_state: ["get", "set"],
   computer_use_artifacts: ["getOwnerSnapshot", "getBackendStatus", "ingest", "listArtifacts", "readArtifactPreview", "routeArtifact", "updateArtifactReview"],
-  ios_simulator: ["getStatus", "claim", "listDevices", "listLaunchTargets", "launch", "attachToChatSession", "shutdown", "screenshot", "getScreenSnapshot", "getInspectorSnapshot", "inspectPoint", "getPreviewCapability", "listPreviewTargets", "renderPreview", "openPreviewWorkspace", "startStream", "stopStream", "getStreamStatus", "tap", "typeText", "drag", "swipe", "selectPoint"],
+  ios_simulator: ["getStatus", "claim", "listDevices", "listLaunchTargets", "launch", "attachToChatSession", "shutdown", "screenshot", "getScreenSnapshot", "getInspectorSnapshot", "inspectPoint", "getPreviewCapability", "listPreviewTargets", "resolvePreviewMatch", "ensurePreviewWorkspace", "renderPreview", "openPreviewWorkspace", "startStream", "stopStream", "getStreamStatus", "tap", "typeText", "drag", "swipe", "selectPoint"],
   app_control: ["getStatus", "claim", "launch", "launchInTerminal", "connect", "stop", "focusWindow", "minimizeWindow", "screenshot", "getSnapshot", "inspectPoint", "selectPoint", "click", "typeText", "scroll", "dispatchKey", "listTargets", "attachToTarget", "readTerminal", "writeTerminal", "signalTerminal"],
   built_in_browser: [...BUILT_IN_BROWSER_DESKTOP_BRIDGE_METHODS],
   // Note: detachLane is intentionally NOT in this allowlist — it lives on
@@ -1015,6 +1026,21 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
           "Terminal service not available.",
         ),
       }),
+    listSessions: (args?: unknown) => {
+      const record = asActionRecord(args);
+      const laneId = typeof record.laneId === "string" && record.laneId.trim()
+        ? record.laneId.trim()
+        : undefined;
+      const options = {
+        ...(typeof record.includeArchived === "boolean" ? { includeArchived: record.includeArchived } : {}),
+        ...(typeof record.includeAutomation === "boolean" ? { includeAutomation: record.includeAutomation } : {}),
+        ...(typeof record.includeIdentity === "boolean" ? { includeIdentity: record.includeIdentity } : {}),
+      };
+      return agentChatService.listSessions(
+        laneId,
+        Object.keys(options).length ? options : undefined,
+      );
+    },
     modelCatalog: (args?: unknown) =>
       agentChatService.getModelCatalog(args && typeof args === "object" ? args as never : undefined),
     setParallelLaunchState: (args?: AgentChatSetParallelLaunchStateArgs) => {

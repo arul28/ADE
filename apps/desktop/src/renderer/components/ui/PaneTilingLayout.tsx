@@ -6,6 +6,7 @@ import { FloatingPane } from "./FloatingPane";
 import { useDockLayout } from "./DockLayoutState";
 import { cn } from "./cn";
 import { logRendererDebugEvent } from "../../lib/debugLog";
+import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
 import {
   collectLeafIds,
   detectDropEdge,
@@ -91,6 +92,7 @@ export function PaneTilingLayout({
    */
   onLeafDraggedOut?: (paneId: string) => void;
 }) {
+  const projectRoot = useAppStore(selectActiveProjectRoot);
   const { layout, loaded, saveLayout } = useDockLayout(layoutId, {});
 
   /* ---- Mutable tree state (Phase D) ---- */
@@ -409,12 +411,13 @@ export function PaneTilingLayout({
     lastReadyLogSignatureRef.current = signature;
     logRendererDebugEvent("renderer.pane_layout.ready", {
       layoutId,
+      projectRoot,
       loaded,
       treeLoaded,
       liveLeafCount,
       paneCount,
     });
-  }, [layoutId, loaded, treeLoaded, liveLeafCount, paneCount]);
+  }, [layoutId, projectRoot, loaded, treeLoaded, liveLeafCount, paneCount]);
 
   const renderNode = (
     node: PaneLeaf | PaneSplit,

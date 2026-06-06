@@ -95,13 +95,15 @@ import {
   AppStoreProvider,
   createProjectAppStore,
   hydrateProjectAppStore,
+  selectActiveProjectRoot,
   useAppStore,
   type AppStoreApi,
 } from "../../state/appStore";
 import { getDirtyFileTextForWindow } from "../../lib/dirtyWorkspaceBuffers";
 import { getAiStatusCached } from "../../lib/aiDiscoveryCache";
 import { dispatchWorkSurfaceRevealed } from "../terminals/workSurfaceVisibility";
-import type { AppNavigationRequest, ProjectInfo } from "../../../shared/types";
+import { ADE_OPEN_BUILT_IN_BROWSER_EVENT } from "../../lib/openExternal";
+import type { AppNavigationRequest, OpenProjectBinding, ProjectInfo } from "../../../shared/types";
 
 // Use path-based routes on http(s) (Vite in Chrome, Cursor Simple Browser, etc.).
 // Use hash routes for non-http(s) surfaces (e.g. packaged Electron `file://`) where
@@ -251,6 +253,25 @@ const WARM_PROJECT_SURFACE_LIMIT = 8;
 const EMPTY_PROJECT_TAB_ROOTS: string[] = [];
 const EMPTY_PROJECT_INFO_BY_ROOT: Record<string, ProjectInfo> = {};
 
+function localProjectBindingForProject(project: ProjectInfo): OpenProjectBinding {
+  return {
+    kind: "local",
+    key: `local:${project.rootPath}`,
+    rootPath: project.rootPath,
+    displayName: project.displayName,
+  };
+}
+
+function bindingForProject(
+  project: ProjectInfo,
+  activeProjectBinding: OpenProjectBinding | null,
+): OpenProjectBinding {
+  if (activeProjectBinding?.rootPath === project.rootPath) {
+    return activeProjectBinding;
+  }
+  return localProjectBindingForProject(project);
+}
+
 function projectRouteStorageKey(projectRoot: string): string {
   return `${PROJECT_ROUTE_STORAGE_PREFIX}${projectRoot}`;
 }
@@ -295,6 +316,44 @@ function writeStoredProjectRoute(projectRoot: string, route: string): void {
   }
 }
 
+type ProjectSurfaceEntry = {
+  surfaceKey: string;
+  project: ProjectInfo;
+  binding: OpenProjectBinding;
+};
+
+function browserEventProjectRoot(value: unknown): string | null | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  if ("profileProjectRoot" in record) {
+    const root = record.profileProjectRoot;
+    return typeof root === "string" && root.trim().length > 0 ? root : null;
+  }
+  return browserEventProjectRoot(record.status);
+}
+
+function browserEventMatchesProject(event: unknown, projectRoot: string | null): boolean {
+  const root = browserEventProjectRoot(event);
+  if (root === undefined) return projectRoot == null;
+  if (!projectRoot) return root === null;
+  return root === projectRoot;
+}
+
+function hideBuiltInBrowserView(projectRoot: string | null): void {
+  const browser = window.ade?.builtInBrowser;
+  if (!browser) return;
+  const scope = projectRoot ? { projectRoot } : {};
+  void browser.stopInspect(scope).catch(() => {});
+  void browser.setBounds({
+    ...scope,
+    x: 0,
+    y: 0,
+    width: 0,
+    height: 0,
+    visible: false,
+  }).catch(() => {});
+}
+
 function projectNameFromRoot(rootPath: string | null | undefined): string | null {
   if (!rootPath) return null;
   const segments = rootPath.split(/[\\/]/).filter(Boolean);
@@ -321,6 +380,9 @@ function ProjectTransitionVeil({ label }: { label: string }) {
 }
 
 function ProjectRouteContent({ active, route }: { active: boolean; route: string }) {
+  const navigate = useNavigate();
+  const projectRoot = useAppStore(selectActiveProjectRoot);
+  const setWorkViewState = useAppStore((s) => s.setWorkViewState);
   const workSurfaceRef = React.useRef<HTMLDivElement | null>(null);
   const lanesSurfaceRef = React.useRef<HTMLDivElement | null>(null);
   const isWorkRoute = isWorkRoutePath(route.split(/[?#]/, 1)[0] || "/work");
@@ -344,6 +406,39 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
     if (!isLanesRoute) return;
     setLanesRoute(route);
   }, [isLanesRoute, route]);
+
+  React.useEffect(() => {
+    if (active && isWorkRoute) return;
+    hideBuiltInBrowserView(projectRoot);
+  }, [active, isWorkRoute, projectRoot]);
+
+  React.useEffect(() => {
+    if (!active || !projectRoot) return;
+    const revealWorkBrowser = () => {
+      setWorkViewState(projectRoot, {
+        viewMode: "tabs",
+        workSidebarOpen: true,
+        workSidebarTab: "browser",
+      });
+      if (!isWorkRoute) navigate("/work");
+    };
+    const handleBrowserEvent = (event: unknown) => {
+      if (
+        event
+        && typeof event === "object"
+        && (event as { type?: unknown }).type === "open-request"
+        && browserEventMatchesProject(event, projectRoot)
+      ) {
+        revealWorkBrowser();
+      }
+    };
+    window.addEventListener(ADE_OPEN_BUILT_IN_BROWSER_EVENT, revealWorkBrowser);
+    const unsubscribeBrowserEvents = window.ade?.builtInBrowser?.onEvent?.(handleBrowserEvent) ?? null;
+    return () => {
+      window.removeEventListener(ADE_OPEN_BUILT_IN_BROWSER_EVENT, revealWorkBrowser);
+      unsubscribeBrowserEvents?.();
+    };
+  }, [active, isWorkRoute, navigate, projectRoot, setWorkViewState]);
 
   React.useEffect(() => {
     const node = workSurfaceRef.current;
@@ -484,11 +579,13 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
 function ProjectSurface({
   active,
   project,
+  projectBinding,
   route,
   store,
 }: {
   active: boolean;
   project: ProjectInfo;
+  projectBinding: OpenProjectBinding;
   route: string;
   store: AppStoreApi;
 }) {
@@ -497,16 +594,11 @@ function ProjectSurface({
   React.useEffect(() => {
     hydrateProjectAppStore(store, {
       project,
-      projectBinding: {
-        kind: "local",
-        key: `local:${project.rootPath}`,
-        rootPath: project.rootPath,
-        displayName: project.displayName,
-      },
+      projectBinding,
       projectHydrated: true,
       showWelcome: false,
     });
-  }, [project, store]);
+  }, [project, projectBinding, store]);
 
   React.useEffect(() => {
     if (!active || !isWorkRoutePath(route.split(/[?#]/, 1)[0] || "/work")) return;
@@ -568,6 +660,7 @@ function ProjectTabHost() {
   const location = useLocation();
   const navigate = useNavigate();
   const activeProject = useAppStore((s) => s.project);
+  const activeProjectBinding = useAppStore((s) => s.projectBinding);
   const projectHydrated = useAppStore((s) => s.projectHydrated);
   const showWelcome = useAppStore((s) => s.showWelcome);
   const projectTransition = useAppStore((s) => s.projectTransition);
@@ -593,10 +686,13 @@ function ProjectTabHost() {
   })));
   const storesRef = React.useRef(new Map<string, AppStoreApi>());
   const lruRef = React.useRef<string[]>([]);
-  const [routesByRoot, setRoutesByRoot] = React.useState<Record<string, string>>({});
-  const activeRoot = !showWelcome && activeProject?.rootPath ? activeProject.rootPath : null;
-  const previousActiveRootRef = React.useRef<string | null>(null);
-  const pendingNavigationRef = React.useRef<{ root: string; route: string } | null>(null);
+  const [routesBySurfaceKey, setRoutesBySurfaceKey] = React.useState<Record<string, string>>({});
+  const activeBinding = !showWelcome && activeProject?.rootPath
+    ? bindingForProject(activeProject, activeProjectBinding)
+    : null;
+  const activeSurfaceKey = activeBinding?.key ?? null;
+  const previousActiveSurfaceKeyRef = React.useRef<string | null>(null);
+  const pendingNavigationRef = React.useRef<{ surfaceKey: string; route: string } | null>(null);
 
   React.useEffect(() => {
     for (const store of storesRef.current.values()) {
@@ -605,12 +701,15 @@ function ProjectTabHost() {
   }, [rootPrefs]);
 
   React.useEffect(() => {
-    if (!activeRoot) return;
-    lruRef.current = [activeRoot, ...lruRef.current.filter((root) => root !== activeRoot)];
-  }, [activeRoot]);
+    if (!activeSurfaceKey) return;
+    lruRef.current = [
+      activeSurfaceKey,
+      ...lruRef.current.filter((key) => key !== activeSurfaceKey),
+    ];
+  }, [activeSurfaceKey]);
 
   React.useEffect(() => {
-    if (!activeRoot) return;
+    if (!activeSurfaceKey) return;
     const preload = () => {
       void preloadTerminalsPage().catch(() => undefined);
       void preloadLanesPage().catch(() => undefined);
@@ -627,85 +726,105 @@ function ProjectTabHost() {
     }
     const handle = window.setTimeout(preload, 150);
     return () => window.clearTimeout(handle);
-  }, [activeRoot]);
+  }, [activeSurfaceKey]);
 
   React.useEffect(() => {
-    const previousRoot = previousActiveRootRef.current;
-    if (previousRoot === activeRoot) return;
+    const previousSurfaceKey = previousActiveSurfaceKeyRef.current;
+    if (previousSurfaceKey === activeSurfaceKey) return;
     const currentRoute = serializeProjectRoute(location);
-    if (previousRoot && currentRoute) {
-      writeStoredProjectRoute(previousRoot, currentRoute);
-      setRoutesByRoot((prev) => ({ ...prev, [previousRoot]: currentRoute }));
+    if (previousSurfaceKey && currentRoute) {
+      writeStoredProjectRoute(previousSurfaceKey, currentRoute);
+      setRoutesBySurfaceKey((prev) => ({ ...prev, [previousSurfaceKey]: currentRoute }));
     }
-    previousActiveRootRef.current = activeRoot;
-    if (!activeRoot) return;
+    previousActiveSurfaceKeyRef.current = activeSurfaceKey;
+    if (!activeSurfaceKey) return;
     const shouldKeepInitialRoute =
       currentRoute &&
       currentRoute !== "/project" &&
       currentRoute !== "/onboarding";
-    if (!previousRoot && shouldKeepInitialRoute) {
-      writeStoredProjectRoute(activeRoot, currentRoute);
-      setRoutesByRoot((prev) => (prev[activeRoot] === currentRoute ? prev : { ...prev, [activeRoot]: currentRoute }));
+    if (!previousSurfaceKey && shouldKeepInitialRoute) {
+      writeStoredProjectRoute(activeSurfaceKey, currentRoute);
+      setRoutesBySurfaceKey((prev) => (prev[activeSurfaceKey] === currentRoute ? prev : { ...prev, [activeSurfaceKey]: currentRoute }));
       return;
     }
-    const nextRoute = routesByRoot[activeRoot] ?? readStoredProjectRoute(activeRoot) ?? "/work";
-    pendingNavigationRef.current = { root: activeRoot, route: nextRoute };
+    const nextRoute = routesBySurfaceKey[activeSurfaceKey] ?? readStoredProjectRoute(activeSurfaceKey) ?? "/work";
+    pendingNavigationRef.current = { surfaceKey: activeSurfaceKey, route: nextRoute };
     if (currentRoute !== nextRoute) {
       navigate(nextRoute, { replace: true });
     }
-  }, [activeRoot, location, navigate, routesByRoot]);
+  }, [activeSurfaceKey, location, navigate, routesBySurfaceKey]);
 
   React.useEffect(() => {
-    if (!activeRoot) return;
+    if (!activeSurfaceKey) return;
     const route = serializeProjectRoute(location);
     if (!route) return;
     const pending = pendingNavigationRef.current;
-    if (pending?.root === activeRoot && pending.route !== route) return;
-    if (pending?.root === activeRoot && pending.route === route) {
+    if (pending?.surfaceKey === activeSurfaceKey && pending.route !== route) return;
+    if (pending?.surfaceKey === activeSurfaceKey && pending.route === route) {
       pendingNavigationRef.current = null;
     }
-    writeStoredProjectRoute(activeRoot, route);
-    setRoutesByRoot((prev) => (prev[activeRoot] === route ? prev : { ...prev, [activeRoot]: route }));
-  }, [activeRoot, location]);
+    writeStoredProjectRoute(activeSurfaceKey, route);
+    setRoutesBySurfaceKey((prev) => (prev[activeSurfaceKey] === route ? prev : { ...prev, [activeSurfaceKey]: route }));
+  }, [activeSurfaceKey, location]);
 
-  const projects = React.useMemo(() => {
-    const roots = openProjectTabRoots.length > 0
+  const projectEntries = React.useMemo<ProjectSurfaceEntry[]>(() => {
+    const entries: ProjectSurfaceEntry[] = [];
+    const activeRemoteRoot =
+      activeProjectBinding?.kind === "remote" ? activeProjectBinding.rootPath : null;
+    const rootsFromTabs = openProjectTabRoots.length > 0
       ? openProjectTabRoots
-      : activeProject?.rootPath
+      : activeProject?.rootPath && !activeRemoteRoot
         ? [activeProject.rootPath]
         : [];
-    return roots
-      .map((root) => projectInfoByRoot[root] ?? (activeProject?.rootPath === root ? activeProject : null))
-      .filter((project): project is ProjectInfo => project != null);
-  }, [activeProject, openProjectTabRoots, projectInfoByRoot]);
+    for (const root of rootsFromTabs) {
+      const project = projectInfoByRoot[root] ?? (
+        activeProject?.rootPath === root && !activeRemoteRoot ? activeProject : null
+      );
+      if (!project) continue;
+      const binding = localProjectBindingForProject(project);
+      entries.push({ surfaceKey: binding.key, project, binding });
+    }
+    if (activeProject && activeBinding && !entries.some((entry) => entry.surfaceKey === activeBinding.key)) {
+      entries.unshift({
+        surfaceKey: activeBinding.key,
+        project: activeProject,
+        binding: activeBinding,
+      });
+    }
+    return entries;
+  }, [activeBinding, activeProject, activeProjectBinding, openProjectTabRoots, projectInfoByRoot]);
 
   const mountedProjects = React.useMemo(() => {
     const lru = lruRef.current;
-    const openSet = new Set(projects.map((project) => project.rootPath));
-    const ordered = [...projects].sort((left, right) => {
-      const leftIndex = lru.indexOf(left.rootPath);
-      const rightIndex = lru.indexOf(right.rootPath);
+    const openSet = new Set(projectEntries.map((entry) => entry.surfaceKey));
+    const ordered = [...projectEntries].sort((left, right) => {
+      const leftIndex = lru.indexOf(left.surfaceKey);
+      const rightIndex = lru.indexOf(right.surfaceKey);
       return (leftIndex < 0 ? Number.MAX_SAFE_INTEGER : leftIndex)
         - (rightIndex < 0 ? Number.MAX_SAFE_INTEGER : rightIndex);
     });
     const warm = ordered.slice(0, WARM_PROJECT_SURFACE_LIMIT);
-    if (activeProject && openSet.has(activeProject.rootPath) && !warm.some((project) => project.rootPath === activeProject.rootPath)) {
+    if (activeSurfaceKey && openSet.has(activeSurfaceKey) && !warm.some((entry) => entry.surfaceKey === activeSurfaceKey)) {
       warm.pop();
-      warm.unshift(activeProject);
+      const activeEntry = projectEntries.find((entry) => entry.surfaceKey === activeSurfaceKey);
+      if (activeEntry) warm.unshift(activeEntry);
     }
     return warm;
-  }, [activeProject, projects]);
+  }, [activeSurfaceKey, projectEntries]);
 
-  for (const project of mountedProjects) {
-    if (!storesRef.current.has(project.rootPath)) {
-      storesRef.current.set(project.rootPath, createProjectAppStore(project));
+  for (const entry of mountedProjects) {
+    if (!storesRef.current.has(entry.surfaceKey)) {
+      storesRef.current.set(entry.surfaceKey, createProjectAppStore(
+        entry.project,
+        entry.binding,
+      ));
     }
   }
 
   React.useEffect(() => {
-    const mountedRoots = new Set(mountedProjects.map((project) => project.rootPath));
-    for (const root of storesRef.current.keys()) {
-      if (!mountedRoots.has(root)) storesRef.current.delete(root);
+    const mountedKeys = new Set(mountedProjects.map((entry) => entry.surfaceKey));
+    for (const key of storesRef.current.keys()) {
+      if (!mountedKeys.has(key)) storesRef.current.delete(key);
     }
   }, [mountedProjects]);
 
@@ -740,16 +859,18 @@ function ProjectTabHost() {
 
   return (
     <div className="relative h-full min-h-0 w-full">
-      {mountedProjects.map((project) => {
-        const store = storesRef.current.get(project.rootPath);
+      {mountedProjects.map((entry) => {
+        const { binding: projectBinding, project, surfaceKey } = entry;
+        const store = storesRef.current.get(surfaceKey);
         if (!store) return null;
-        const liveRoute = project.rootPath === activeRoot ? serializeProjectRoute(location) : null;
-        const route = liveRoute ?? routesByRoot[project.rootPath] ?? readStoredProjectRoute(project.rootPath) ?? "/work";
+        const liveRoute = surfaceKey === activeSurfaceKey ? serializeProjectRoute(location) : null;
+        const route = liveRoute ?? routesBySurfaceKey[surfaceKey] ?? readStoredProjectRoute(surfaceKey) ?? "/work";
         return (
           <ProjectSurface
-            key={project.rootPath}
-            active={project.rootPath === activeRoot}
+            key={surfaceKey}
+            active={surfaceKey === activeSurfaceKey}
             project={project}
+            projectBinding={projectBinding}
             route={route}
             store={store}
           />
@@ -894,7 +1015,7 @@ function BrowserHashRouteBridge() {
 
 export function App() {
   const theme = useAppStore((s) => s.theme);
-  const projectRoot = useAppStore((s) => s.project?.rootPath ?? null);
+  const projectRoot = useAppStore(selectActiveProjectRoot);
 
   React.useEffect(() => {
     const w = window as Window & { __ADE_GET_DIRTY_FILE_TEXT__?: (p: string) => string | undefined };

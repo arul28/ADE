@@ -3827,26 +3827,6 @@ function AgentChatMessageListMain({
     ? (location.state as { laneId: string }).laneId
     : null;
 
-  useEffect(() => {
-    let cancelled = false;
-    const listWorkspaces = window.ade?.files?.listWorkspaces;
-    if (typeof listWorkspaces !== "function") return;
-    listWorkspaces()
-      .then((workspaces) => {
-        if (!cancelled) {
-          setFilesWorkspaces(workspaces);
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setFilesWorkspaces([]);
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
   const openWorkspacePath = useCallback(async (path: string | WorkspacePathLocation) => {
     let resolvedWorkspaces = filesWorkspaces;
     let target = resolveFilesNavigationTarget({

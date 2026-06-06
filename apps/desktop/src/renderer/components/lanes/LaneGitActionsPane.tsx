@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowDown, ArrowLeft, ArrowsClockwise, CaretDown, CaretRight, Check, Folder, Stack, Trash, Upload, Warning } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
-import { useAppStore } from "../../state/appStore";
+import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
 import { getProjectConfigCached } from "../../lib/projectConfigCache";
 import { modifierKeyLabel } from "../../lib/platform";
 import { cn } from "../ui/cn";
@@ -601,7 +601,7 @@ export function LaneGitActionsPane({
   const lanes = useAppStore((s) => s.lanes);
   const refreshLanes = useAppStore((s) => s.refreshLanes);
   const selectLane = useAppStore((s) => s.selectLane);
-  const projectRoot = useAppStore((s) => s.project?.rootPath ?? null);
+  const projectRoot = useAppStore(selectActiveProjectRoot);
 
   const lane = useMemo(() => lanes.find((entry) => entry.id === laneId) ?? null, [lanes, laneId]);
   const parentLane = useMemo(() => {
@@ -798,6 +798,21 @@ export function LaneGitActionsPane({
       setCommitTimelineKey((prev) => prev + 1);
     }
   };
+
+  useEffect(() => {
+    setShowAdvanced(false);
+  }, [laneId]);
+
+  useEffect(() => {
+    if (!showAdvanced) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      setShowAdvanced(false);
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [showAdvanced]);
 
   const refreshAutoRebaseStatus = useCallback(async (targetLaneId: string | null = laneId) => {
     if (!targetLaneId) {
@@ -2224,6 +2239,7 @@ export function LaneGitActionsPane({
             }}>
               <button
                 type="button"
+                aria-label="Refresh git state"
                 style={{
                   display: "inline-flex",
                   alignItems: "center",
@@ -2237,7 +2253,10 @@ export function LaneGitActionsPane({
                   borderRadius: 6,
                   flexShrink: 0,
                 }}
-                onClick={() => refreshAll({ fetchRemote: true }).catch(() => {})}
+                onClick={() => {
+                  setShowAdvanced(false);
+                  refreshAll({ fetchRemote: true }).catch(() => {});
+                }}
               >
                 <ArrowsClockwise size={13} className={cn(loading && "animate-spin")} />
               </button>

@@ -5,7 +5,7 @@ import type {
   TerminalToolType,
 } from "../../../shared/types";
 import { listSessionsCached } from "../../lib/sessionListCache";
-import { useAppStore } from "../../state/appStore";
+import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
 
 /** Unified live state for an agent row, glanceable at a list level. */
 export type LaneAgentActivity = "working" | "awaiting-input" | "idle" | "ended";
@@ -103,14 +103,21 @@ export function buildLaneAgents(
   cliSessions: TerminalSessionSummary[],
 ): LaneAgent[] {
   const agents: LaneAgent[] = [];
+  const chatSessionIds = new Set<string>();
   for (const summary of chatSessions) {
     if (summary.archivedAt) continue;
+    if (chatSessionIds.has(summary.sessionId)) continue;
+    chatSessionIds.add(summary.sessionId);
     agents.push(chatAgentFrom(summary));
   }
+  const cliSessionIds = new Set<string>();
   for (const summary of cliSessions) {
     if (summary.archivedAt) continue;
     if (SHELL_TOOL_TYPES.has(summary.toolType ?? "shell")) continue;
     if (summary.chatSessionId) continue; // child terminal of a chat — not a standalone agent
+    if (chatSessionIds.has(summary.id)) continue; // persisted chat session mirrored through sessions.list
+    if (cliSessionIds.has(summary.id)) continue;
+    cliSessionIds.add(summary.id);
     agents.push(cliAgentFrom(summary));
   }
   // Live agents first (working → awaiting → idle), ended last; within a bucket,
@@ -134,7 +141,7 @@ export function buildLaneAgents(
  */
 export function useLaneAgents(laneIds: string[]): Map<string, LaneAgent[]> {
   const [byLane, setByLane] = useState<Map<string, LaneAgent[]>>(new Map());
-  const projectRoot = useAppStore((state) => state.project?.rootPath ?? null);
+  const projectRoot = useAppStore(selectActiveProjectRoot);
   const laneKey = useMemo(() => [...laneIds].sort().join(","), [laneIds]);
   const refreshTimerRef = useRef<number | null>(null);
   const refreshInFlightRef = useRef(false);
@@ -149,7 +156,6 @@ export function useLaneAgents(laneIds: string[]): Map<string, LaneAgent[]> {
     try {
       do {
         refreshQueuedRef.current = false;
-        if (document.visibilityState !== "visible") return;
 
         const ids = laneKey ? laneKey.split(",") : [];
         if (!ids.length) {

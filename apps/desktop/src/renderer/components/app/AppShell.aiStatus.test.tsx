@@ -6,6 +6,7 @@ import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentChatEventEnvelope, AiSettingsStatus } from "../../../shared/types";
 import { getAiStatusCached, invalidateAiDiscoveryCache } from "../../lib/aiDiscoveryCache";
+import { listSessionsCached } from "../../lib/sessionListCache";
 import { useAppStore } from "../../state/appStore";
 import { AppShell } from "./AppShell";
 
@@ -82,6 +83,7 @@ function resetStore() {
 
 describe("AppShell AI provider status", () => {
   const getStatusMock = vi.fn();
+  const githubGetStatusMock = vi.fn();
   let chatEventListener: ((envelope: AgentChatEventEnvelope) => void) | null = null;
 
   beforeEach(() => {
@@ -90,6 +92,9 @@ describe("AppShell AI provider status", () => {
     resetStore();
     invalidateAiDiscoveryCache();
     getStatusMock.mockReset();
+    githubGetStatusMock.mockReset();
+    vi.mocked(listSessionsCached).mockClear();
+    githubGetStatusMock.mockResolvedValue(null);
     chatEventListener = null;
     Object.defineProperty(window, "ade", {
       configurable: true,
@@ -117,13 +122,14 @@ describe("AppShell AI provider status", () => {
           onUpdate: vi.fn(() => () => {}),
         },
         github: {
-          getStatus: vi.fn(async () => null),
+          getStatus: githubGetStatusMock,
           onStatusChanged: vi.fn(() => () => {}),
         },
         keybindings: {
           get: vi.fn(async () => null),
         },
         lanes: {
+          list: vi.fn(async () => []),
           listSnapshots: vi.fn(async () => []),
         },
         onboarding: {
@@ -223,5 +229,167 @@ describe("AppShell AI provider status", () => {
       force: true,
       refreshOpenCodeInventory: false,
     });
+  });
+
+  it("skips shell GitHub auth discovery on remote Work startup", async () => {
+    getStatusMock.mockResolvedValue(makeAiStatus(true));
+    useAppStore.setState({
+      project,
+      projectBinding: {
+        kind: "remote",
+        key: "remote:target-1:project-1",
+        targetId: "target-1",
+        projectId: "project-1",
+        runtimeName: "Mac Studio",
+        displayName: "perf pass",
+        rootPath: "/Users/admin/Projects/perf pass",
+      },
+      projectHydrated: true,
+      showWelcome: false,
+    } as any);
+
+    render(
+      <MemoryRouter initialEntries={["/work"]}>
+        <AppShell>
+          <div>Work content</div>
+        </AppShell>
+      </MemoryRouter>,
+    );
+
+    await act(async () => {
+      vi.advanceTimersByTime(60_000);
+      await Promise.resolve();
+    });
+
+    expect(githubGetStatusMock).not.toHaveBeenCalled();
+  });
+
+  it("loads shell GitHub auth discovery on remote PR routes", async () => {
+    getStatusMock.mockResolvedValue(makeAiStatus(true));
+    useAppStore.setState({
+      project,
+      projectBinding: {
+        kind: "remote",
+        key: "remote:target-1:project-1",
+        targetId: "target-1",
+        projectId: "project-1",
+        runtimeName: "Mac Studio",
+        displayName: "perf pass",
+        rootPath: "/Users/admin/Projects/perf pass",
+      },
+      projectHydrated: true,
+      showWelcome: false,
+    } as any);
+
+    render(
+      <MemoryRouter initialEntries={["/prs"]}>
+        <AppShell>
+          <div>PR content</div>
+        </AppShell>
+      </MemoryRouter>,
+    );
+
+    await act(async () => {
+      vi.advanceTimersByTime(12_000);
+      await Promise.resolve();
+    });
+
+    expect(githubGetStatusMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("skips remote shell AI and stale-session polling on Files routes", async () => {
+    const remoteRoot = "/Users/admin/Projects/perf pass";
+    const remoteProject = { rootPath: remoteRoot, displayName: "perf pass", baseRef: "main" } as any;
+    const remoteBinding = {
+      kind: "remote",
+      key: "remote:target-1:project-1",
+      targetId: "target-1",
+      projectId: "project-1",
+      runtimeName: "Mac Studio",
+      displayName: "perf pass",
+      rootPath: remoteRoot,
+    } as any;
+    const refreshProviderMode = vi.fn(async () => undefined);
+    (window.ade.app.getWindowSession as any).mockResolvedValue({
+      project: remoteProject,
+      binding: remoteBinding,
+    });
+    useAppStore.setState({
+      project: remoteProject,
+      projectBinding: remoteBinding,
+      projectHydrated: true,
+      showWelcome: false,
+      refreshProviderMode,
+    } as any);
+
+    render(
+      <MemoryRouter initialEntries={["/files"]}>
+        <AppShell>
+          <div>Files content</div>
+        </AppShell>
+      </MemoryRouter>,
+    );
+
+    await act(async () => {
+      vi.advanceTimersByTime(60_000);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(getStatusMock).not.toHaveBeenCalled();
+    expect(listSessionsCached).not.toHaveBeenCalled();
+  });
+
+  it("ignores stale auth-related chat history while remote AI status is cached", async () => {
+    vi.setSystemTime(new Date("2026-06-04T12:00:00.000Z"));
+    getStatusMock.mockResolvedValue(makeAiStatus(true));
+    const remoteRoot = "/Users/admin/Projects/perf pass";
+    const remoteProject = { rootPath: remoteRoot, displayName: "perf pass", baseRef: "main" } as any;
+    const remoteBinding = {
+      kind: "remote",
+      key: "remote:target-1:project-1",
+      targetId: "target-1",
+      projectId: "project-1",
+      runtimeName: "Mac Studio",
+      displayName: "perf pass",
+      rootPath: remoteRoot,
+    } as any;
+    await getAiStatusCached({ projectRoot: remoteRoot });
+    getStatusMock.mockClear();
+    (window.ade.app.getWindowSession as any).mockResolvedValue({
+      project: remoteProject,
+      binding: remoteBinding,
+    });
+    useAppStore.setState({
+      project: remoteProject,
+      projectBinding: remoteBinding,
+      projectHydrated: true,
+      showWelcome: false,
+    } as any);
+
+    render(
+      <MemoryRouter initialEntries={["/work"]}>
+        <AppShell>
+          <div>Work content</div>
+        </AppShell>
+      </MemoryRouter>,
+    );
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+    await act(async () => {
+      chatEventListener?.({
+        sessionId: "session-1",
+        timestamp: "2026-06-04T11:59:00.000Z",
+        event: {
+          type: "error",
+          message: "not authenticated",
+        },
+      });
+      await Promise.resolve();
+    });
+
+    expect(getStatusMock).not.toHaveBeenCalled();
   });
 });

@@ -138,7 +138,8 @@ export const SessionCard = React.memo(function SessionCard({
   gridBadge?: "active" | "inactive" | null;
 }) {
   const dot = sessionStatusDot(session);
-  const delta = useSessionDelta(session.id, true);
+  const isRemoteProject = useAppStore((s) => s.projectBinding?.kind === "remote");
+  const delta = useSessionDelta(session.id, !isRemoteProject || isSelected);
   const primaryText = primarySessionLabel(session);
   const previewLine = getPreviewLine(session, primaryText);
   const staleAgeHours = getStaleRunningCliSessionAgeHours(session);

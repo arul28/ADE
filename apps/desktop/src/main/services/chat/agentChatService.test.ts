@@ -1957,11 +1957,10 @@ describe("createAgentChatService", () => {
       });
 
       const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as { systemPrompt?: { append?: string } } | undefined;
-      expect(opts?.systemPrompt?.append).toContain("default control plane");
-      expect(opts?.systemPrompt?.append).toContain("only normal reason to skip ADE CLI");
-      expect(opts?.systemPrompt?.append).toContain("ade lanes list");
-      expect(opts?.systemPrompt?.append).toContain("ADE proof drawer");
-      expect(opts?.systemPrompt?.append).toContain("clean up old, stale, or finished processes");
+      expect(opts?.systemPrompt?.append).toContain("control plane for ADE state");
+      expect(opts?.systemPrompt?.append).toContain("read the matching `ade-*` skill");
+      expect(opts?.systemPrompt?.append).toContain("ade help <command>");
+      expect(opts?.systemPrompt?.append).toContain("clean up processes you start");
     });
 
     it("rebuilds the Claude query with the per-turn reasoning effort, not the stale warm-query effort (FIX 3)", async () => {
@@ -2119,10 +2118,10 @@ describe("createAgentChatService", () => {
         .find((payload) => payload.includes("Inspect the repo and report the chat wiring."));
 
       expect(userTurnPayload).toContain("[ADE launch directive]");
-      expect(userTurnPayload).not.toContain("only normal reason to skip ADE CLI");
+      expect(userTurnPayload).not.toContain("control plane for ADE state");
       expect(userTurnPayload).not.toContain("ade actions list --text");
       const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as { systemPrompt?: { append?: string } } | undefined;
-      expect(opts?.systemPrompt?.append).toContain("only normal reason to skip ADE CLI");
+      expect(opts?.systemPrompt?.append).toContain("control plane for ADE state");
     });
 
     it("keeps Claude SDK setting sources and skills enabled without output-style plugins", async () => {
@@ -3277,10 +3276,10 @@ describe("createAgentChatService", () => {
       expect(firstUserContent).toContain(tmpRoot);
       expect(firstUserContent).toContain("Read-only inspection outside that worktree is allowed");
       expect(firstUserContent).toContain("mutating commands only inside that worktree");
-      expect(firstUserContent).toContain("only normal reason to skip ADE CLI");
+      expect(firstUserContent).toContain("control plane for ADE state");
       expect(firstUserContent).toContain("ade actions list --text");
       expect(secondUserContent).not.toContain("[ADE launch directive]");
-      expect(secondUserContent).toContain("only normal reason to skip ADE CLI");
+      expect(secondUserContent).toContain("control plane for ADE state");
     });
 
     it("starts Codex sessions without ADE-owned tool server injection", async () => {
@@ -3316,7 +3315,7 @@ describe("createAgentChatService", () => {
       } | undefined;
       const textInput = turnParams?.input?.map((entry) => String(entry.text ?? "")).join("\n") ?? "";
       expect(turnParams?.collaborationMode?.settings?.developer_instructions).toBe("system prompt");
-      expect(textInput).not.toContain("only normal reason to skip ADE CLI");
+      expect(textInput).not.toContain("control plane for ADE state");
       expect(textInput).not.toContain("ade actions list --text");
       expect(textInput).toContain("Inspect the repo and fix the lane launch bug.");
     });

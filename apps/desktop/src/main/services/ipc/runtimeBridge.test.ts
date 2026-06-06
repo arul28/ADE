@@ -12,15 +12,19 @@ const browserWindowFromWebContents = vi.hoisted(() => vi.fn());
 const browserWindowFromId = vi.hoisted(() => vi.fn());
 const browserWindowGetAllWindows = vi.hoisted(() => vi.fn(() => []));
 const remoteRegistryGetMock = vi.hoisted(() => vi.fn());
-const remoteRegistryListMock = vi.hoisted(() => vi.fn(() => []));
+const remoteRegistryListMock = vi.hoisted(() => vi.fn<[], RemoteRuntimeTarget[]>(() => []));
 const remoteRegistrySaveMock = vi.hoisted(() => vi.fn());
 const remoteRegistryRemoveMock = vi.hoisted(() => vi.fn());
+const remoteRegistryUpdateMock = vi.hoisted(() => vi.fn());
 const remoteConnectMock = vi.hoisted(() => vi.fn());
 const remoteProjectsForTargetMock = vi.hoisted(() => vi.fn());
 const remoteCallActionForTargetMock = vi.hoisted(() => vi.fn());
 const remoteCallSyncForTargetMock = vi.hoisted(() => vi.fn());
+const remoteEnsureLocalPortForwardMock = vi.hoisted(() => vi.fn());
 const remoteListActionRegistryForTargetMock = vi.hoisted(() => vi.fn());
 const remoteCallMachineForTargetMock = vi.hoisted(() => vi.fn());
+const remoteStreamEventsForTargetMock = vi.hoisted(() => vi.fn());
+const remoteSubscribeEventsForTargetMock = vi.hoisted(() => vi.fn());
 const remoteDisconnectMock = vi.hoisted(() => vi.fn());
 const hasKnownSshHostKeyForTargetMock = vi.hoisted(() => vi.fn(() => false));
 const getSshHostKeyTrustForTargetMock = vi.hoisted(() => vi.fn());
@@ -73,6 +77,7 @@ vi.mock("../remoteRuntime/remoteTargetRegistry", () => ({
     list: remoteRegistryListMock,
     save: remoteRegistrySaveMock,
     remove: remoteRegistryRemoveMock,
+    update: remoteRegistryUpdateMock,
   })),
 }));
 
@@ -82,8 +87,11 @@ vi.mock("../remoteRuntime/remoteConnectionPool", () => ({
     projectsForTarget: remoteProjectsForTargetMock,
     callActionForTarget: remoteCallActionForTargetMock,
     callSyncForTarget: remoteCallSyncForTargetMock,
+    ensureLocalPortForward: remoteEnsureLocalPortForwardMock,
     listActionRegistryForTarget: remoteListActionRegistryForTargetMock,
     callMachineForTarget: remoteCallMachineForTargetMock,
+    streamEventsForTarget: remoteStreamEventsForTargetMock,
+    subscribeEventsForTarget: remoteSubscribeEventsForTargetMock,
     disconnect: remoteDisconnectMock,
     onEntryEvicted: vi.fn(() => () => {}),
   })),
@@ -154,6 +162,7 @@ describe("registerRuntimeBridge", () => {
     remoteRegistryListMock.mockReset().mockReturnValue([]);
     remoteRegistrySaveMock.mockReset();
     remoteRegistryRemoveMock.mockReset();
+    remoteRegistryUpdateMock.mockReset();
     remoteConnectMock.mockReset().mockResolvedValue({
       target,
       arch: "darwin-arm64",
@@ -163,8 +172,11 @@ describe("registerRuntimeBridge", () => {
     remoteProjectsForTargetMock.mockReset();
     remoteCallActionForTargetMock.mockReset();
     remoteCallSyncForTargetMock.mockReset();
+    remoteEnsureLocalPortForwardMock.mockReset();
     remoteListActionRegistryForTargetMock.mockReset();
     remoteCallMachineForTargetMock.mockReset();
+    remoteStreamEventsForTargetMock.mockReset();
+    remoteSubscribeEventsForTargetMock.mockReset().mockResolvedValue(vi.fn());
     remoteDisconnectMock.mockReset();
     hasKnownSshHostKeyForTargetMock.mockReset().mockReturnValue(false);
     getSshHostKeyTrustForTargetMock.mockReset().mockResolvedValue({
@@ -188,6 +200,39 @@ describe("registerRuntimeBridge", () => {
       },
     });
     browserWindowFromWebContents.mockReturnValue({ id: 7 });
+  });
+
+  it("does not start saved remote autoconnect when disabled for dev/test runs", async () => {
+    const previous = process.env.ADE_DISABLE_REMOTE_AUTOCONNECT;
+    process.env.ADE_DISABLE_REMOTE_AUTOCONNECT = "1";
+    vi.useFakeTimers();
+    remoteRegistryListMock.mockReturnValue([
+      { ...target, lastConnectedAt: Date.now() },
+    ]);
+
+    try {
+      registerRuntimeBridge({
+        appVersion: "1.0.0",
+        globalStatePath: "/tmp/ade-state.json",
+        localRuntimeConnectionPool: {} as any,
+        getWindowSession: () => ({
+          windowId: 7,
+          project: null,
+          binding: localBinding("/repo"),
+        }),
+      });
+
+      await vi.runOnlyPendingTimersAsync();
+
+      expect(remoteConnectMock).not.toHaveBeenCalled();
+    } finally {
+      if (previous === undefined) {
+        delete process.env.ADE_DISABLE_REMOTE_AUTOCONNECT;
+      } else {
+        process.env.ADE_DISABLE_REMOTE_AUTOCONNECT = previous;
+      }
+      vi.useRealTimers();
+    }
   });
 
   it("forwards local project runtime actions with renderer client metadata for file watches", async () => {
@@ -479,7 +524,7 @@ describe("registerRuntimeBridge", () => {
     );
     expect(localRuntimeConnectionPool.subscribeEventsForRoot).toHaveBeenCalledWith(
       "/other-repo",
-      { cursor: 2, limit: 10, category: "sync" },
+      { cursor: 2, limit: 10, category: undefined, replay: undefined },
       expect.any(Function),
       expect.any(Function),
     );
@@ -520,7 +565,7 @@ describe("registerRuntimeBridge", () => {
       ),
     ).resolves.toMatchObject({ result: { ptyId: "pty-1" } });
 
-    expect(remoteConnectMock).toHaveBeenCalledWith(target);
+    expect(remoteConnectMock).not.toHaveBeenCalled();
     expect(remoteCallActionForTargetMock).toHaveBeenCalledWith(
       target,
       "project-1",
@@ -528,6 +573,51 @@ describe("registerRuntimeBridge", () => {
         domain: "pty",
         action: "create",
         args: { startupCommand: "codex login" },
+      },
+    );
+  });
+
+  it("creates remote port forwards through the selected target", async () => {
+    remoteRegistryGetMock.mockReturnValue(target);
+    remoteEnsureLocalPortForwardMock.mockResolvedValue({
+      targetId: "target-1",
+      remoteHost: "127.0.0.1",
+      remotePort: 3000,
+      localHost: "127.0.0.1",
+      localPort: 49152,
+      localUrl: "http://127.0.0.1:49152",
+      label: "preview",
+      createdAt: 1,
+      lastUsedAt: 1,
+    });
+    registerRuntimeBridge({
+      appVersion: "1.0.0",
+      globalStatePath: "/tmp/ade-state.json",
+    });
+
+    await expect(
+      ipcHandlers.get(IPC.remoteRuntimeEnsurePortForward)?.(
+        eventForSender(sender(202)),
+        {
+          id: " target-1 ",
+          request: {
+            remoteHost: " 127.0.0.1 ",
+            remotePort: 3000,
+            label: " preview ",
+          },
+        },
+      ),
+    ).resolves.toMatchObject({
+      localUrl: "http://127.0.0.1:49152",
+    });
+
+    expect(remoteConnectMock).toHaveBeenCalledWith(target);
+    expect(remoteEnsureLocalPortForwardMock).toHaveBeenCalledWith(
+      target.id,
+      {
+        remoteHost: "127.0.0.1",
+        remotePort: 3000,
+        label: "preview",
       },
     );
   });
@@ -560,11 +650,119 @@ describe("registerRuntimeBridge", () => {
       ),
     ).resolves.toEqual(registry);
 
-    expect(remoteConnectMock).toHaveBeenCalledWith(target);
+    expect(remoteConnectMock).not.toHaveBeenCalled();
     expect(remoteListActionRegistryForTargetMock).toHaveBeenCalledWith(
       target,
       "project-1",
     );
+  });
+
+  it("opens remote event subscriptions without replaying buffered history", async () => {
+    remoteRegistryGetMock.mockReturnValue(target);
+    remoteStreamEventsForTargetMock.mockResolvedValue({
+      events: [{ id: 1, timestamp: "now", category: "runtime", payload: { type: "stale" } }],
+      nextCursor: 1,
+      hasMore: false,
+    });
+    registerRuntimeBridge({
+      appVersion: "1.0.0",
+      globalStatePath: "/tmp/ade-state.json",
+    });
+
+    await expect(
+      ipcHandlers.get(IPC.remoteRuntimeStreamEvents)?.(
+        eventForSender(sender(202)),
+        {
+          id: "target-1",
+          projectId: "project-1",
+          request: { cursor: 0, limit: 100, replay: false },
+        },
+      ),
+    ).resolves.toEqual({ events: [], nextCursor: 0, hasMore: false });
+
+    expect(remoteStreamEventsForTargetMock).not.toHaveBeenCalled();
+    expect(remoteSubscribeEventsForTargetMock).toHaveBeenCalledWith(
+      target,
+      "project-1",
+      { cursor: 0, limit: 100, category: undefined, replay: false },
+      expect.any(Function),
+      expect.any(Function),
+    );
+  });
+
+  it("normalizes malformed remote event stream requests before forwarding", async () => {
+    remoteRegistryGetMock.mockReturnValue(target);
+    remoteStreamEventsForTargetMock.mockResolvedValue({
+      events: [],
+      nextCursor: 0,
+      hasMore: false,
+    });
+    registerRuntimeBridge({
+      appVersion: "1.0.0",
+      globalStatePath: "/tmp/ade-state.json",
+    });
+
+    await expect(
+      ipcHandlers.get(IPC.remoteRuntimeStreamEvents)?.(
+        eventForSender(sender(202)),
+        {
+          id: "target-1",
+          projectId: "project-1",
+          request: ["invalid"] as any,
+        },
+      ),
+    ).resolves.toEqual({ events: [], nextCursor: 0, hasMore: false });
+
+    expect(remoteStreamEventsForTargetMock).toHaveBeenCalledWith(
+      target,
+      "project-1",
+      {},
+    );
+    expect(remoteSubscribeEventsForTargetMock).toHaveBeenCalledWith(
+      target,
+      "project-1",
+      {
+        cursor: undefined,
+        limit: undefined,
+        category: undefined,
+        replay: undefined,
+      },
+      expect.any(Function),
+      expect.any(Function),
+    );
+  });
+
+  it("cleans a remote event subscription before disconnecting that target", async () => {
+    const cleanup = vi.fn();
+    remoteRegistryGetMock.mockReturnValue(target);
+    remoteSubscribeEventsForTargetMock.mockResolvedValue(cleanup);
+    registerRuntimeBridge({
+      appVersion: "1.0.0",
+      globalStatePath: "/tmp/ade-state.json",
+    });
+    const webContents = sender(202);
+
+    await expect(
+      ipcHandlers.get(IPC.remoteRuntimeStreamEvents)?.(
+        eventForSender(webContents),
+        {
+          id: "target-1",
+          projectId: "project-1",
+          request: { cursor: 0, limit: 100, replay: false },
+        },
+      ),
+    ).resolves.toEqual({ events: [], nextCursor: 0, hasMore: false });
+    await Promise.resolve();
+
+    await expect(
+      ipcHandlers.get(IPC.remoteRuntimeDisconnect)?.(
+        eventForSender(webContents),
+        { id: "target-1" },
+      ),
+    ).resolves.toEqual({ disconnected: true });
+
+    expect(cleanup).toHaveBeenCalledTimes(1);
+    expect(remoteDisconnectMock).toHaveBeenCalledWith("target-1");
   });
 
   it("rejects unexposed sync methods before calling local or remote runtimes", async () => {
@@ -671,7 +869,9 @@ describe("registerRuntimeBridge", () => {
       displayName: "ADE",
     });
 
-    expect(remoteConnectMock).toHaveBeenCalledWith(target);
+    expect(remoteConnectMock).toHaveBeenCalledWith(target, {
+      bypassFailureBackoff: true,
+    });
     expect(remoteProjectsForTargetMock).toHaveBeenCalledWith(target);
     expect(bindRemoteProject).toHaveBeenCalledWith(7, {
       kind: "remote",

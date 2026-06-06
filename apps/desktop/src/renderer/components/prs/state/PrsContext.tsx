@@ -36,7 +36,7 @@ import { buildPrAiResolutionContextKey } from "../../../../shared/types";
 import { getModelById, resolveProviderGroupForModel, type ModelProviderGroup } from "../../../../shared/modelRegistry";
 import { parsePrsRouteState, resolvePrsActiveTab } from "../prsRouteState";
 import { resolveRouteRebaseSelection } from "../shared/rebaseNeedUtils";
-import { useAppStore } from "../../../state/appStore";
+import { selectActiveProjectRoot, useAppStore } from "../../../state/appStore";
 import { refreshPrsCoalesced } from "../../../lib/prReadCache";
 
 type PrTab = "normal" | "queue" | "integration" | "rebase";
@@ -216,6 +216,15 @@ function prsContextCacheKey(projectRoot?: string | null): string {
 function readPrsContextWarmCache(projectRoot?: string | null): PrsContextWarmCache | null {
   if (PRS_CONTEXT_CACHE_DISABLED) return null;
   return prsContextWarmCacheByProject.get(prsContextCacheKey(projectRoot)) ?? null;
+}
+
+async function listWorkflowQueueStates(): Promise<QueueLandingState[]> {
+  try {
+    return await window.ade.prs.listQueueStates({ includeCompleted: true, limit: 50 });
+  } catch (err) {
+    console.warn("[PrsContext] Failed to load workflow queue states:", err);
+    return [];
+  }
 }
 
 function readBoolLs(key: string, fallback: boolean): boolean {
@@ -420,7 +429,7 @@ function diffPrIds(prev: PrWithConflicts[], next: PrWithConflicts[]): string[] {
 }
 
 export function PrsProvider({ active = true, children }: { active?: boolean; children: React.ReactNode }) {
-  const projectRoot = useAppStore((state) => state.project?.rootPath ?? null);
+  const projectRoot = useAppStore(selectActiveProjectRoot);
   const cacheKey = prsContextCacheKey(projectRoot);
   const warmCache = useMemo(() => readPrsContextWarmCache(projectRoot), [projectRoot]);
   const warmCacheHydratedAtRef = React.useRef(warmCache?.dataLoadedAt ?? warmCache?.cachedAt ?? 0);
@@ -814,7 +823,7 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
       window.ade.prs.listWithConflicts({ includeConflictAnalysis: shouldLoadWorkflowState }),
       window.ade.lanes.list({ includeStatus: false }),
       shouldLoadWorkflowState
-        ? window.ade.prs.listQueueStates({ includeCompleted: true, limit: 50 })
+        ? listWorkflowQueueStates()
         : Promise.resolve([] as QueueLandingState[]),
     ]);
     const changedPrIds = diffPrIds(prsRef.current, prList);
@@ -1493,16 +1502,13 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
   useEffect(() => {
     if (!active || activeTab === "normal") return;
     let cancelled = false;
-    window.ade.prs.listQueueStates({ includeCompleted: true, limit: 50 })
+    listWorkflowQueueStates()
       .then((states) => {
         if (cancelled) return;
         setQueueStates((prev) => {
           const next = Object.fromEntries(states.map((state) => [state.groupId, state] as const));
           return jsonEqual(prev, next) ? prev : next;
         });
-      })
-      .catch((err) => {
-        console.warn("[PrsContext] Failed to load workflow queue states:", err);
       });
     return () => {
       cancelled = true;

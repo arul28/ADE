@@ -75,6 +75,28 @@ function makeProps(overrides: Partial<DialogProps> = {}): DialogProps {
 }
 
 describe("CreateLaneDialog VM-lane gate", () => {
+  it("describes the default runtime as the local Mac", () => {
+    render(<CreateLaneDialog {...makeProps()} />);
+
+    expect(screen.getByText("Local Mac")).toBeTruthy();
+    expect(screen.getByText("Use this ADE runtime and local worktree.")).toBeTruthy();
+  });
+
+  it("uses the provided runtime copy for a remote project", () => {
+    render(
+      <CreateLaneDialog
+        {...makeProps({
+          localRuntimeLabel: "Mac Studio",
+          localRuntimeDescription: "Use this connected remote ADE runtime and remote worktree.",
+        })}
+      />,
+    );
+
+    expect(screen.getByText("Mac Studio")).toBeTruthy();
+    expect(screen.getByText("Use this connected remote ADE runtime and remote worktree.")).toBeTruthy();
+    expect(screen.queryByText("Use this ADE runtime and local worktree.")).toBeNull();
+  });
+
   it("disables the Mac VM radio and shows the setup CTA when no VM exists", () => {
     const onOpenVmTab = vi.fn();
     const onOpenChange = vi.fn();

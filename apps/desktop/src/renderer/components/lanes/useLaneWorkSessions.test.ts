@@ -58,6 +58,12 @@ vi.mock("../../lib/sessions", () => ({
 }));
 
 vi.mock("../../state/appStore", () => ({
+  selectActiveProjectRoot: (state: Record<string, unknown>) => {
+    const binding = state.projectBinding as { kind?: string; rootPath?: string | null } | null | undefined;
+    if (binding?.kind === "remote") return binding.rootPath?.trim() || null;
+    const project = state.project as { rootPath?: string | null } | null | undefined;
+    return project?.rootPath?.trim() || null;
+  },
   useAppStore: vi.fn((selector: (state: Record<string, unknown>) => unknown) => {
     const fakeState: Record<string, unknown> = {
       project: { rootPath: fakeProjectRoot },

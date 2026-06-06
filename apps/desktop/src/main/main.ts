@@ -1446,6 +1446,8 @@ app.whenReady().then(async () => {
     options: { emit?: boolean; foreground?: boolean } = {},
   ): void => {
     const normalizedRoot = projectRoot ? normalizeProjectRoot(projectRoot) : null;
+    const previousRemoteBinding =
+      windowId != null ? (windowProjectBindings.get(windowId) ?? null) : null;
     if (windowId != null) {
       windowProjectRoots.set(windowId, normalizedRoot);
       windowProjectBindings.delete(windowId);
@@ -1475,6 +1477,15 @@ app.whenReady().then(async () => {
             error: error instanceof Error ? error.message : String(error),
           });
         });
+      }
+    }
+    if (previousRemoteBinding) {
+      const remainingRemoteBinding =
+        Array.from(windowProjectBindings.values()).at(-1) ?? null;
+      if (remainingRemoteBinding) {
+        persistLastRemoteProjectBinding(remainingRemoteBinding);
+      } else {
+        clearLastRemoteProjectBinding();
       }
     }
     if (options.emit !== false) {
@@ -2512,6 +2523,14 @@ app.whenReady().then(async () => {
         payload: { type: "pr_event", event },
       });
     };
+
+    // Wire auto-map-by-branch: the PR service emits Undo-able toasts through the
+    // PR event channel, and a freshly created worktree lane triggers a
+    // best-effort auto-map of any existing open PR on its branch (Trigger #1).
+    prService.setEventEmitter(emitPrEvent);
+    laneService.setOnWorktreeLaneCreated((lane) => {
+      void prService.tryAutoMapLaneByBranch(lane.id);
+    });
 
     const prPollingService = createPrPollingService({
       logger,

@@ -230,14 +230,14 @@ describe("buildTrackedCliStartupCommand", () => {
     it("adds the dangerous bypass flag for full-auto", () => {
       const command = buildTrackedCliStartupCommand({ provider: "codex", permissionMode: "full-auto" });
       expect(command).toContain("codex --no-alt-screen --dangerously-bypass-approvals-and-sandbox");
-      expect(command).not.toContain("only normal reason to skip ADE CLI");
+      expect(command).not.toContain("control plane for ADE state");
     });
 
     it("adds supported workspace-write defaults for default", () => {
       const command = buildTrackedCliStartupCommand({ provider: "codex", permissionMode: "default" });
       expect(command).toContain("codex --no-alt-screen --sandbox workspace-write --ask-for-approval on-request");
       expect(command).not.toContain("mcp_servers.linear");
-      expect(command).not.toContain("only normal reason to skip ADE CLI");
+      expect(command).not.toContain("control plane for ADE state");
     });
 
     it("does not synthesize Codex MCP server config for any permission preset", () => {
@@ -254,19 +254,19 @@ describe("buildTrackedCliStartupCommand", () => {
       expect(command).toContain("codex --no-alt-screen");
       expect(command).not.toContain("--full-auto");
       expect(command).not.toContain("mcp_servers.linear");
-      expect(command).not.toContain("only normal reason to skip ADE CLI");
+      expect(command).not.toContain("control plane for ADE state");
     });
 
     it("adds untrusted approval and workspace-write sandbox for edit", () => {
       const command = buildTrackedCliStartupCommand({ provider: "codex", permissionMode: "edit" });
       expect(command).toContain("codex --no-alt-screen --sandbox workspace-write --ask-for-approval untrusted");
-      expect(command).not.toContain("only normal reason to skip ADE CLI");
+      expect(command).not.toContain("control plane for ADE state");
     });
 
     it("adds on-request approval and read-only sandbox for plan", () => {
       const command = buildTrackedCliStartupCommand({ provider: "codex", permissionMode: "plan" });
       expect(command).toContain("codex --no-alt-screen --sandbox read-only --ask-for-approval on-request");
-      expect(command).not.toContain("only normal reason to skip ADE CLI");
+      expect(command).not.toContain("control plane for ADE state");
     });
 
     it("uses the selected lane worktree to seed skill roots", () => {

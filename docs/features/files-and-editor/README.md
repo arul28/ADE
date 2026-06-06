@@ -100,13 +100,15 @@ Renderer:
 - `apps/desktop/src/renderer/components/files/v2/FilesWorkbench.tsx` —
   Files tab shell: workspace chrome, activity bar, explorer, editor
   groups, Monaco edit host, diff/conflict surfaces, quick open, text
-  search, trust warnings, and file-type viewers. Accepts optional
-  `preferredLaneId` and `embedded` props so the same component can mount
-  inside the Work right-edge sidebar.
+  search, trust warnings, read-only workspace gating, recent-file pruning,
+  optional Git-decoration fallback, and file-type viewers. Accepts optional
+  `preferredLaneId` and `embedded` props so the same component can mount inside
+  the Work right-edge sidebar.
 - `apps/desktop/src/renderer/components/files/FilesExplorer.tsx` —
   virtualized file tree (`@tanstack/react-virtual`), inline rename/create,
-  explorer search, and context-menu wiring; git status coloring uses
-  helpers from `filePresentation.tsx`.
+  explorer search, mutation-disabled create buttons for read-only workspaces,
+  and context-menu wiring; git status coloring uses helpers from
+  `filePresentation.tsx`.
 - `apps/desktop/src/renderer/components/files/filePresentation.tsx` —
   file-type icons and `changeStatus*` helpers shared with the explorer.
 - `apps/desktop/src/renderer/components/files/monacoModelRegistry.ts`
@@ -253,7 +255,10 @@ populated by a single `git status --porcelain=v2` call. The first tree
 paint should not block on a fresh status scan: renderers can call
 `files.refreshGitDecorations({ forceFresh: true })` after the structure
 loads and apply the returned flat file statuses plus ancestor directory
-rollups without refetching the tree.
+rollups without refetching the tree. Remote runtimes that do not expose the
+optional `file.refreshGitDecorations` action are treated as decoration-missing,
+not tree-load failures; the remote connection pool returns an empty decoration
+set with an optional-action hint.
 
 ## Large-file and range reads
 
@@ -314,6 +319,9 @@ For deeper detail on the watcher + trust boundary, see
   from a bound local/remote runtime surfaces to the tab instead of
   retrying against the desktop main process, which could point at a
   different host or workspace.
+- `FilesWorkspace.isReadOnlyByDefault` is enforced in the renderer as well as
+  the service layer: Monaco opens read-only, create / rename / delete controls
+  are disabled, and mutation attempts surface `This workspace is read-only.`
 - File watcher subscriptions are per sender (BrowserWindow /
   webContents). Closing a window calls `stopAllForSender` to tear
   down every subscription for that window.

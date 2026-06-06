@@ -93,6 +93,41 @@ function makeSyncSnapshot(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function makeRemoteConnectionSnapshot(
+  targetId: string,
+  name = "Mac Studio",
+  overrides: Record<string, unknown> = {},
+) {
+  const state = overrides.state ?? "connected";
+  return {
+    connections: [
+      {
+        target: {
+          id: targetId,
+          name,
+          hostname: "studio.local",
+          sshUser: "admin",
+          port: 22,
+          sshKeyPath: null,
+          routes: [],
+          lastSeenArch: "darwin-arm64",
+          runtimeBinaryVersion: "1.0.0-beta.1",
+          lastConnectedAt: 1_700_000_000,
+        },
+        state,
+        arch: "darwin-arm64",
+        version: "1.0.0-beta.1",
+        projects: [],
+        lastError: overrides.lastError ?? null,
+        lastAttemptedAt: overrides.lastAttemptedAt ?? null,
+        connectedAt: state === "connected" ? 1_700_000_000 : null,
+      },
+    ],
+    connectedCount: state === "connected" ? 1 : 0,
+    updatedAt: 1_700_000_000,
+  };
+}
+
 function resetStore() {
   useAppStore.setState({
     project: { rootPath: "/Users/arul/ADE", name: "ADE" } as any,
@@ -116,6 +151,8 @@ function resetStore() {
     cancelNewTab: vi.fn(),
     projectTransition: null,
     projectTransitionError: null,
+    openProjectTabRoots: [],
+    projectInfoByRoot: {},
     clearProjectTransitionError: vi.fn(),
     switchProjectToPath: vi.fn(async () => undefined),
     switchRemoteProject: vi.fn(async (targetId: string, projectId: string) => ({
@@ -313,6 +350,8 @@ describe("TopBar", () => {
   });
 
   it("renders a remote project tab without local sync polling", async () => {
+    (globalThis.window.ade.remoteRuntime.getConnectionSnapshot as any)
+      .mockResolvedValue(makeRemoteConnectionSnapshot("studio"));
     useAppStore.setState({
       project: { rootPath: "/srv/ade/remote-app", displayName: "Remote App", baseRef: "main" },
       projectBinding: {
@@ -330,14 +369,48 @@ describe("TopBar", () => {
 
     render(<TopBar />);
 
-    expect(await screen.findByTitle("Mac Studio: /srv/ade/remote-app")).toBeTruthy();
+    expect(await screen.findByTitle("Mac Studio: /srv/ade/remote-app (Connected)")).toBeTruthy();
     expect(screen.getByText("Remote App")).toBeTruthy();
     expect(screen.getByLabelText("Remote: Mac Studio")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Remote, connected" })).toBeTruthy();
     expect(globalThis.window.ade.sync.getStatus).not.toHaveBeenCalled();
     expect(screen.queryByTitle("Connect a phone to this machine")).toBeNull();
   });
 
+  it("marks a remote project tab disconnected when the target snapshot is errored", async () => {
+    (globalThis.window.ade.remoteRuntime.getConnectionSnapshot as any)
+      .mockResolvedValue(
+        makeRemoteConnectionSnapshot("studio", "Mac Studio", {
+          state: "error",
+          lastError: "Remote ADE service connection was interrupted.",
+          lastAttemptedAt: 1_700_000_001,
+        }),
+      );
+    useAppStore.setState({
+      project: { rootPath: "/srv/ade/remote-app", displayName: "Remote App", baseRef: "main" },
+      projectBinding: {
+        kind: "remote",
+        key: "remote:studio:project-1",
+        targetId: "studio",
+        runtimeName: "Mac Studio",
+        projectId: "project-1",
+        rootPath: "/srv/ade/remote-app",
+        displayName: "Remote App",
+      },
+      projectHydrated: true,
+      showWelcome: false,
+    } as any);
+
+    render(<TopBar />);
+
+    expect(await screen.findByTitle("Mac Studio: /srv/ade/remote-app (Disconnected)")).toBeTruthy();
+    expect(screen.getByLabelText("Disconnected: Mac Studio")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Remote, not connected" })).toBeTruthy();
+  });
+
   it("keeps local tabs visible when a remote project is active", async () => {
+    (globalThis.window.ade.remoteRuntime.getConnectionSnapshot as any)
+      .mockResolvedValue(makeRemoteConnectionSnapshot("studio"));
     render(<TopBar />);
 
     const localTab = await screen.findByTitle("/Users/arul/ADE");
@@ -359,7 +432,7 @@ describe("TopBar", () => {
       } as any);
     });
 
-    expect(await screen.findByTitle("Mac Studio: /srv/ade/remote-app")).toBeTruthy();
+    expect(await screen.findByTitle("Mac Studio: /srv/ade/remote-app (Connected)")).toBeTruthy();
     expect(screen.getByTitle("/Users/arul/ADE")).toBeTruthy();
 
     fireEvent.click(localTab);
@@ -431,6 +504,83 @@ describe("TopBar", () => {
 
     expect(globalThis.window.ade.app.closeWindow).toHaveBeenCalledWith(2);
     expect(useAppStore.getState().switchProjectToPath).not.toHaveBeenCalled();
+  });
+
+  it("does not render the active remote project as a local project tab", async () => {
+    const remoteBinding = {
+      kind: "remote" as const,
+      key: "remote:target-1:project-a",
+      targetId: "target-1",
+      runtimeName: "Mac Studio",
+      projectId: "project-a",
+      rootPath: "/Users/admin/Projects/perf pass",
+      displayName: "perf pass",
+    };
+    (globalThis.window.ade.remoteRuntime.getConnectionSnapshot as any)
+      .mockResolvedValue(makeRemoteConnectionSnapshot("target-1"));
+    useAppStore.setState({
+      project: {
+        rootPath: remoteBinding.rootPath,
+        displayName: remoteBinding.displayName,
+        baseRef: "main",
+      } as any,
+      projectBinding: remoteBinding,
+      openProjectTabRoots: [remoteBinding.rootPath],
+    } as any);
+    (globalThis.window.ade.app.getWindowSession as any).mockResolvedValueOnce({
+      windowId: 1,
+      project: null,
+      binding: remoteBinding,
+      openProjectTabs: [],
+    });
+
+    render(<TopBar />);
+
+    await waitFor(() => {
+      expect(screen.getByTitle("Mac Studio: /Users/admin/Projects/perf pass (Connected)")).toBeTruthy();
+      expect(screen.queryByTitle("/Users/admin/Projects/perf pass")).toBeNull();
+      expect(useAppStore.getState().openProjectTabRoots).toEqual([]);
+    });
+  });
+
+  it("keeps a known local tab when a remote project has the same root path", async () => {
+    const remoteBinding = {
+      kind: "remote" as const,
+      key: "remote:target-1:project-a",
+      targetId: "target-1",
+      runtimeName: "Mac Studio",
+      projectId: "project-a",
+      rootPath: "/Users/arul/Projects/perf pass",
+      displayName: "perf pass",
+    };
+    (globalThis.window.ade.remoteRuntime.getConnectionSnapshot as any)
+      .mockResolvedValue(makeRemoteConnectionSnapshot("target-1"));
+    useAppStore.setState({
+      project: {
+        rootPath: remoteBinding.rootPath,
+        displayName: remoteBinding.displayName,
+        baseRef: "main",
+      } as any,
+      projectBinding: remoteBinding,
+      projectInfoByRoot: {
+        [remoteBinding.rootPath]: {
+          rootPath: remoteBinding.rootPath,
+          displayName: "Local perf pass",
+          baseRef: "main",
+        },
+      },
+      openProjectTabRoots: [remoteBinding.rootPath],
+    } as any);
+
+    render(<TopBar />);
+
+    expect(
+      await screen.findByTitle("Mac Studio: /Users/arul/Projects/perf pass (Connected)"),
+    ).toBeTruthy();
+    expect(screen.getByTitle("/Users/arul/Projects/perf pass")).toBeTruthy();
+    expect(useAppStore.getState().openProjectTabRoots).toEqual([
+      remoteBinding.rootPath,
+    ]);
   });
 
   it("does not detach again after a project tab is dropped onto an ADE target", async () => {
@@ -549,12 +699,18 @@ describe("TopBar", () => {
 
       fireEvent.click(await screen.findByTitle("Manage remote machines"));
 
-      expect(await screen.findByText("Remote machines")).toBeTruthy();
+      expect(
+        await screen.findByRole("dialog", { name: "Remote machines" }),
+      ).toBeTruthy();
       await waitFor(() => expect(events).toEqual(["start"]));
 
       fireEvent.click(screen.getByTitle("Close remote machines"));
 
-      await waitFor(() => expect(screen.queryByText("Remote machines")).toBeNull());
+      await waitFor(() =>
+        expect(
+          screen.queryByRole("dialog", { name: "Remote machines" }),
+        ).toBeNull(),
+      );
       expect(events).toEqual(["start", "end"]);
     } finally {
       window.removeEventListener(ADE_BROWSER_VIEW_OCCLUSION_START_EVENT, onStart);
@@ -1035,6 +1191,51 @@ describe("TopBar", () => {
         await flushMicrotasks(2);
       });
       expect(getLinearConnectionStatus.mock.calls.length).toBeGreaterThan(callsBefore);
+      expect(screen.queryByRole("button", { name: /linear quick view/i })).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not run automatic hidden Linear checks on remote projects", async () => {
+    vi.useFakeTimers();
+    useAppStore.setState({
+      project: null,
+      projectBinding: {
+        kind: "remote",
+        key: "remote:target-1:project-1",
+        targetId: "target-1",
+        runtimeName: "Mac Studio",
+        projectId: "project-1",
+        rootPath: "/Users/admin/Projects/perf pass",
+        displayName: "perf pass",
+      },
+    } as any);
+    const getLinearConnectionStatus = vi.fn(async () => ({
+      tokenStored: true,
+      connected: false,
+      viewerId: null,
+      viewerName: null,
+      checkedAt: "2026-04-22T01:00:00.000Z",
+      authMode: "manual",
+      oauthAvailable: true,
+      tokenExpiresAt: null,
+      message: "Linear connection check is still starting.",
+    }));
+    globalThis.window.ade.cto = {
+      getLinearConnectionStatus,
+    } as any;
+
+    try {
+      render(<TopBar />);
+
+      await act(async () => {
+        window.dispatchEvent(new Event("ade:runtime-bridge-ready"));
+        window.dispatchEvent(new Event("focus"));
+        vi.advanceTimersByTime(30_000);
+        await flushMicrotasks(2);
+      });
+      expect(getLinearConnectionStatus).not.toHaveBeenCalled();
       expect(screen.queryByRole("button", { name: /linear quick view/i })).toBeNull();
     } finally {
       vi.useRealTimers();

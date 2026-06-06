@@ -12,6 +12,7 @@ import {
   defaultFilesWorkspaceId,
   filesSessionKey,
   formatFilesError,
+  isUnavailableGitDecorationsError,
   mergeTreePreservingLoadedChildren,
   replaceTreeNodeChildren,
 } from "../treeHelpers";
@@ -31,7 +32,7 @@ import {
 } from "./editorGroupsStore";
 import { resolveViewerKind } from "./viewerRegistry";
 import { invalidateFileContent, primeFileContent } from "./useFileContent";
-import { getRecentFiles, recordRecentFile } from "./recentFiles";
+import { forgetRecentFile, getRecentFiles, isNestedFilePath, pruneMissingRootRecentFiles, recordRecentFile } from "./recentFiles";
 import { EditorGroups } from "./EditorGroups";
 import { StatusBar } from "./StatusBar";
 import { WarmEmptyState } from "./WarmEmptyState";
@@ -139,6 +140,21 @@ export function FilesWorkbench({
     () => new Set(Object.values(groupsState.groups).flatMap((g) => g.tabs.map((t) => t.path))).size,
     [groupsState.groups],
   );
+  const knownRootPaths = useMemo(() => new Set(tree.map((node) => node.path)), [tree]);
+  const recentFiles = getRecentFiles(sessionKey);
+  const visibleRecentFiles = useMemo(
+    () => (
+      tree.length > 0
+        ? recentFiles.filter((path) => isNestedFilePath(path) || knownRootPaths.has(path))
+        : recentFiles
+    ),
+    [knownRootPaths, recentFiles, tree.length],
+  );
+
+  useEffect(() => {
+    if (tree.length === 0) return;
+    pruneMissingRootRecentFiles(sessionKey, knownRootPaths);
+  }, [knownRootPaths, sessionKey, tree.length]);
 
   /* ---- Workspace resolution ---- */
   useEffect(() => {
@@ -183,7 +199,13 @@ export function FilesWorkbench({
         return merged;
       });
       setError(null);
-      const decorations = await window.ade.files.refreshGitDecorations({ workspaceId: reqId, forceFresh: true });
+      let decorations = null;
+      try {
+        decorations = await window.ade.files.refreshGitDecorations({ workspaceId: reqId, forceFresh: true });
+      } catch (decorationError) {
+        if (!isUnavailableGitDecorationsError(decorationError)) throw decorationError;
+      }
+      if (!decorations) return;
       if (workspaceIdRef.current !== reqId) return;
       setTree((prev) => {
         const decorated = applyGitStatusToTree(prev, decorations);
@@ -450,29 +472,42 @@ export function FilesWorkbench({
   const renamePath = useCallback(
     async (sourcePath: string, destinationPath: string) => {
       if (!workspaceId) return;
-      await window.ade.files.rename({ workspaceId, oldPath: sourcePath, newPath: destinationPath }).catch((err) => {
+      if (!canEdit) {
+        setError("This workspace is read-only.");
+        return;
+      }
+      try {
+        await window.ade.files.rename({ workspaceId, oldPath: sourcePath, newPath: destinationPath });
+      } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
-      });
+        return;
+      }
+      forgetRecentFile(sessionKey, sourcePath);
       closeOpenTabsUnder(sourcePath); // old path/tabs are stale after rename
       await refreshRoot();
     },
-    [workspaceId, refreshRoot, closeOpenTabsUnder],
+    [workspaceId, canEdit, sessionKey, refreshRoot, closeOpenTabsUnder],
   );
 
   const deletePath = useCallback(
     async (path: string) => {
       if (!workspaceId) return;
+      if (!canEdit) {
+        setError("This workspace is read-only.");
+        return;
+      }
       const ok = window.confirm(`Delete "${path}"? This cannot be undone.`);
       if (!ok) return;
       try {
         await window.ade.files.delete({ workspaceId, path });
+        forgetRecentFile(sessionKey, path);
         closeOpenTabsUnder(path);
         await refreshRoot();
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
       }
     },
-    [workspaceId, refreshRoot, closeOpenTabsUnder],
+    [workspaceId, canEdit, sessionKey, refreshRoot, closeOpenTabsUnder],
   );
 
   const dirForNode = (menu: FilesExplorerContextMenuEvent): string =>
@@ -487,20 +522,24 @@ export function FilesWorkbench({
       items.push({ type: "item", label: "Open", onClick: () => void openFile(path, { preview: false }) });
       items.push({ type: "separator" });
     }
-    items.push({ type: "item", label: "New File…", icon: <FilePlus size={14} />, onClick: () => setOverlay({ kind: "create", create: "file", baseDir }) });
-    items.push({ type: "item", label: "New Folder…", icon: <FolderPlus size={14} />, onClick: () => setOverlay({ kind: "create", create: "directory", baseDir }) });
+    items.push({ type: "item", label: "New File…", icon: <FilePlus size={14} />, onClick: () => setOverlay({ kind: "create", create: "file", baseDir }), disabled: !canEdit });
+    items.push({ type: "item", label: "New Folder…", icon: <FolderPlus size={14} />, onClick: () => setOverlay({ kind: "create", create: "directory", baseDir }), disabled: !canEdit });
     items.push({ type: "separator" });
-    items.push({ type: "item", label: "Rename…", icon: <PencilSimple size={14} />, onClick: () => setInlineRename({ path, nonce: ++renameNonceRef.current }) });
-    items.push({ type: "item", label: "Delete", icon: <Trash size={14} />, danger: true, onClick: () => void deletePath(path) });
+    items.push({ type: "item", label: "Rename…", icon: <PencilSimple size={14} />, onClick: () => setInlineRename({ path, nonce: ++renameNonceRef.current }), disabled: !canEdit });
+    items.push({ type: "item", label: "Delete", icon: <Trash size={14} />, danger: true, onClick: () => void deletePath(path), disabled: !canEdit });
     items.push({ type: "separator" });
     items.push({ type: "item", label: "Copy Path", icon: <Copy size={14} />, onClick: () => void window.ade.app.writeClipboardText?.(path) });
     items.push({ type: "item", label: "Reveal in Finder", icon: <ArrowSquareOut size={14} />, onClick: () => void window.ade.app.openPathInEditor?.({ rootPath, relativePath: path, target: "finder" }).catch(() => {}) });
     return items;
-  }, [treeMenu, openFile, deletePath, rootPath]);
+  }, [treeMenu, openFile, canEdit, deletePath, rootPath]);
 
   const createInWorkspace = useCallback(
     async (kind: "file" | "directory", baseDir: string, name: string) => {
       if (!workspaceId) return;
+      if (!canEdit) {
+        setError("This workspace is read-only.");
+        return;
+      }
       const rel = baseDir ? `${baseDir}/${name}` : name;
       try {
         if (kind === "file") await window.ade.files.createFile({ workspaceId, path: rel });
@@ -511,7 +550,7 @@ export function FilesWorkbench({
         setError(err instanceof Error ? err.message : String(err));
       }
     },
-    [workspaceId, refreshRoot, openFile],
+    [workspaceId, canEdit, refreshRoot, openFile],
   );
 
   // Files-scoped keybindings: ⌘P / ⌘⇧F both open the unified in-depth search.
@@ -599,6 +638,7 @@ export function FilesWorkbench({
               onContextMenu={setTreeMenu}
               onRenamePath={renamePath}
               onInlineRenameSettled={() => setInlineRename(null)}
+              canMutate={canEdit}
               compact={embedded}
             />
           </div>
@@ -609,7 +649,7 @@ export function FilesWorkbench({
               workspaceName={workspace?.name ?? null}
               branch={branch}
               dirtyCount={dirtyPaths.size}
-              recents={getRecentFiles(sessionKey)}
+              recents={visibleRecentFiles}
               onOpen={(path) => void openFile(path, { preview: false })}
               onSearch={() => setOverlay({ kind: "search", query: "" })}
               modifierKey={modifierKeyLabel}

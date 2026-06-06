@@ -63,10 +63,14 @@ For SwiftUI preview work:
 ```bash
 ade --socket ios-sim preview-status --text
 ade --socket ios-sim previews --source <swift-file> --text
+ade --socket ios-sim preview-match --source <swift-file> --line <n> --text
+ade --socket ios-sim preview-ensure --source <swift-file> --line <n> --text
 ade --socket ios-sim preview-render --source <swift-file> --index <n> --text
 ```
 
-Add a preview only when no useful nearby preview already exists. Preview fixtures must not require live sync, keychain, network, push, sockets, or production databases.
+Start with `preview-match` when the selected simulator element exposes Swift source context; pass its `sourceFile` and optional `sourceLine`, plus `--label` / `--component-id` only as hints for naming a missing-preview suggestion. If it returns a usable target, render that target before changing code. Use `preview-ensure` when Xcode Preview Lab is not ready; it opens this lane's iOS project in Xcode and waits for MCP readiness.
+
+Add or refine a preview only when no useful nearby preview exists or the match is too far from the selected element. Preview fixtures must not require live sync, keychain, network, push, sockets, or production databases.
 
 ## Gotchas
 

@@ -107,6 +107,15 @@
   --color-diff-add: #22c55e;
   --color-diff-del: #ef4444;
   --color-diff-hunk: #3b82f6;
+  /* Muted "passed/green" for PR checks — desaturated so green reads as a quiet
+     status, not a neon highlight. Resolves per-theme via var() at use time. */
+  --color-check-pass: color-mix(in srgb, var(--color-success) 60%, var(--color-muted-fg));
+
+  /* PRs tab surfaces (premium overhaul): neutral near-black tab + thread cards,
+     faintly-violet floating side panels. */
+  --pr-surface: rgb(15, 16, 16);
+  --pr-thread-card: rgb(23, 23, 24);
+  --pr-panel-card: rgb(24, 23, 43);
 
   /* App shell primitives (shared contract for TopBar + sidebar) */
   --shell-header-height: 32px;
@@ -249,6 +258,10 @@
   --color-diff-add: #16a34a;
   --color-diff-del: #dc2626;
   --color-diff-hunk: #2563eb;
+  /* PRs tab surfaces — light-theme equivalents. */
+  --pr-surface: var(--color-bg);
+  --pr-thread-card: var(--color-card);
+  --pr-panel-card: color-mix(in srgb, var(--color-accent) 6%, var(--color-card));
 
   --shell-header-bg: color-mix(in srgb, var(--color-surface-raised) 90%, var(--color-bg));
   --shell-header-fg: var(--color-fg);

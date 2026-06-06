@@ -21,7 +21,7 @@ import type {
   TerminalSessionSummary,
   TerminalToolType,
 } from "../../../shared/types";
-import { useAppStore, type WorkDraftKind, type WorkSidebarTab } from "../../state/appStore";
+import { selectActiveProjectRoot, useAppStore, type WorkDraftKind, type WorkSidebarTab } from "../../state/appStore";
 import {
   formatAppControlContextForPrompt,
   formatBuiltInBrowserContextForPrompt,
@@ -78,6 +78,12 @@ const WORK_SIDEBAR_TABS: Array<GlowMenuItem<WorkSidebarTab>> = [
     color: "#22d3ee",
   },
 ];
+
+const REMOTE_WORK_SIDEBAR_TAB_IDS = new Set<WorkSidebarTab>(["git", "files"]);
+
+function isRemoteWorkSidebarTab(tab: WorkSidebarTab): boolean {
+  return REMOTE_WORK_SIDEBAR_TAB_IDS.has(tab);
+}
 
 export type WorkSidebarContextTarget =
   | { kind: "chat"; sessionId: string }
@@ -213,9 +219,17 @@ export function WorkSidebar({
   const [appControlSession, setAppControlSession] = useState<AppControlSession | null>(null);
   const [iosSession, setIosSession] = useState<IosSimulatorSession | null>(null);
   const [browserStatus, setBrowserStatus] = useState<BuiltInBrowserStatus | null>(null);
-  const projectRoot = useAppStore((s) => s.project?.rootPath ?? null);
+  const projectRoot = useAppStore(selectActiveProjectRoot);
+  const isRemoteProject = useAppStore((state) => state.projectBinding?.kind === "remote");
   const sidebarRef = useRef<HTMLElement | null>(null);
   const [compactTabs, setCompactTabs] = useState(false);
+  const sidebarTabs = useMemo(
+    () => isRemoteProject
+      ? WORK_SIDEBAR_TABS.filter((item) => isRemoteWorkSidebarTab(item.id))
+      : WORK_SIDEBAR_TABS,
+    [isRemoteProject],
+  );
+  const effectiveTab: WorkSidebarTab = isRemoteProject && !isRemoteWorkSidebarTab(tab) ? "git" : tab;
 
   const activeLane = useMemo(
     () => (laneId ? lanes.find((lane) => lane.id === laneId) ?? null : null),
@@ -230,6 +244,12 @@ export function WorkSidebar({
   }, [laneId]);
 
   useEffect(() => {
+    if (isRemoteProject && !isRemoteWorkSidebarTab(tab)) {
+      onTabChange("git");
+    }
+  }, [isRemoteProject, onTabChange, tab]);
+
+  useEffect(() => {
     const el = sidebarRef.current;
     if (!el) return undefined;
     const update = () => {
@@ -242,20 +262,20 @@ export function WorkSidebar({
     return () => observer.disconnect();
   }, []);
 
-  const previousBrowserTabRef = useRef(tab === "browser");
+  const previousBrowserTabRef = useRef(effectiveTab === "browser");
   useEffect(() => {
     const wasBrowser = previousBrowserTabRef.current;
-    const isBrowser = active && tab === "browser";
+    const isBrowser = active && effectiveTab === "browser";
     if (wasBrowser && !isBrowser) hideBuiltInBrowserView(projectRoot);
     previousBrowserTabRef.current = isBrowser;
     return () => {
       if (previousBrowserTabRef.current) hideBuiltInBrowserView(projectRoot);
     };
-  }, [active, projectRoot, tab]);
+  }, [active, effectiveTab, projectRoot]);
 
   useEffect(() => {
     if (!active) return undefined;
-    if (tab !== "browser") return undefined;
+    if (effectiveTab !== "browser") return undefined;
     const browser = window.ade?.builtInBrowser;
     if (!browser?.getStatus || !browser.onEvent) return undefined;
     let cancelled = false;
@@ -278,11 +298,11 @@ export function WorkSidebar({
       cancelled = true;
       unsubscribe();
     };
-  }, [active, projectRoot, tab]);
+  }, [active, effectiveTab, projectRoot]);
 
   useEffect(() => {
     if (!active) return undefined;
-    if (tab !== "app-control") return undefined;
+    if (effectiveTab !== "app-control") return undefined;
     const appControl = window.ade?.appControl;
     if (!appControl?.getStatus || !appControl.onEvent) return undefined;
     let cancelled = false;
@@ -304,11 +324,11 @@ export function WorkSidebar({
       cancelled = true;
       unsubscribe();
     };
-  }, [active, tab]);
+  }, [active, effectiveTab]);
 
   useEffect(() => {
     if (!active) return undefined;
-    if (tab !== "ios") return undefined;
+    if (effectiveTab !== "ios") return undefined;
     const iosSimulator = window.ade?.iosSimulator;
     if (!iosSimulator?.getStatus || !iosSimulator.onEvent) return undefined;
     let cancelled = false;
@@ -330,14 +350,14 @@ export function WorkSidebar({
       cancelled = true;
       unsubscribe();
     };
-  }, [active, tab]);
+  }, [active, effectiveTab]);
 
   function resolveToolAttributionReason(): string | null {
     if (!laneId) return null;
-    if (tab === "app-control" && appControlSession?.laneId && appControlSession.laneId !== laneId) {
+    if (effectiveTab === "app-control" && appControlSession?.laneId && appControlSession.laneId !== laneId) {
       return laneMismatchMessage("App Control", appControlSession.laneId, laneId, lanes);
     }
-    if (tab === "ios" && iosSession?.laneId && iosSession.laneId !== laneId) {
+    if (effectiveTab === "ios" && iosSession?.laneId && iosSession.laneId !== laneId) {
       return laneMismatchMessage("iOS Simulator", iosSession.laneId, laneId, lanes);
     }
     return null;
@@ -459,7 +479,7 @@ export function WorkSidebar({
 
   const content = useMemo(() => {
     if (!active) return null;
-    if (tab === "browser") {
+    if (effectiveTab === "browser") {
       return (
         <div className="flex h-full min-h-0 flex-col">
           {warningReason ? <WarningBanner message={warningReason} /> : null}
@@ -483,7 +503,7 @@ export function WorkSidebar({
       );
     }
 
-    if (tab === "git") {
+    if (effectiveTab === "git") {
       const hasDiffSelection = Boolean(selectedPath || selectedCommit);
       return (
         <div className="flex h-full min-h-0 flex-col">
@@ -530,11 +550,11 @@ export function WorkSidebar({
       );
     }
 
-    if (tab === "files") {
+    if (effectiveTab === "files") {
       return <FilesTab preferredLaneId={laneId} embedded />;
     }
 
-    const panel = tab === "ios" ? (
+    const panel = effectiveTab === "ios" ? (
       <ChatIosSimulatorPanel
         sessionId={panelSessionId}
         laneId={laneId}
@@ -578,7 +598,7 @@ export function WorkSidebar({
     selectedMode,
     selectedPath,
     active,
-    tab,
+    effectiveTab,
   ]);
 
   return (
@@ -590,11 +610,11 @@ export function WorkSidebar({
         <GlowMenu
           variant="flat"
           className="min-w-0"
-          items={WORK_SIDEBAR_TABS}
-          activeItem={tab}
+          items={sidebarTabs}
+          activeItem={effectiveTab}
           compact={compactTabs}
           onItemClick={(nextTab) => {
-            if (tab === "browser" && nextTab !== "browser") hideBuiltInBrowserView(projectRoot);
+            if (effectiveTab === "browser" && nextTab !== "browser") hideBuiltInBrowserView(projectRoot);
             onTabChange(nextTab);
           }}
         />
@@ -603,7 +623,7 @@ export function WorkSidebar({
           className="ade-shell-control inline-flex w-9 shrink-0 items-center justify-center self-stretch rounded-none border-l border-white/[0.08] text-muted-fg/70 transition-colors hover:bg-white/[0.04] hover:text-fg"
           data-variant="ghost"
           onClick={() => {
-            if (tab === "browser") hideBuiltInBrowserView(projectRoot);
+            if (effectiveTab === "browser") hideBuiltInBrowserView(projectRoot);
             onClose();
           }}
           title="Close Tools sidebar"

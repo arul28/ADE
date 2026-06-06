@@ -243,9 +243,11 @@ import type {
   PrCommit,
   PrActionRun,
   PrActivityEvent,
+  PrGithubCoords,
   CleanupPrBranchArgs,
   CleanupPrBranchResult,
   AddPrCommentArgs,
+  UpdatePrCommentArgs,
   ReplyToPrReviewThreadArgs,
   ResolvePrReviewThreadArgs,
   PrDeployment,
@@ -565,8 +567,11 @@ import type {
   IosSimulatorDragArgs,
   IosSimulatorEventPayload,
   IosSimulatorListPreviewsArgs,
+  IosSimulatorEnsurePreviewWorkspaceArgs,
+  IosSimulatorEnsurePreviewWorkspaceResult,
   IosSimulatorOpenPreviewWorkspaceArgs,
   IosSimulatorPreviewCapability,
+  IosSimulatorPreviewMatch,
   IosSimulatorPreviewTarget,
   IosSimulatorRenderPreviewArgs,
   IosSimulatorRenderPreviewResult,
@@ -653,8 +658,10 @@ import type {
   RemoteRuntimeConnectionSnapshot,
   RemoteRuntimeConnectResult,
   RemoteRuntimeDiscoveryResult,
+  RemoteRuntimeEventCategory,
   RemoteRuntimeEventNotificationPayload,
   RemoteRuntimeLocalWorkCheckResult,
+  RemoteRuntimePortForward,
   RemoteRuntimeProjectRecord,
   RemoteRuntimeSshHostKeyTrustStatus,
   RemoteRuntimeStreamEventsRequest,
@@ -993,6 +1000,7 @@ let projectBindingGeneration = 0;
 let projectBindingVersion = 0;
 let projectBindingRefreshPromise: Promise<OpenProjectBinding | null> | null = null;
 let projectRuntimeTransitionDepth = 0;
+let activeRemoteProjectOpenPromise: Promise<OpenProjectBinding> | null = null;
 
 function rememberProjectBinding(binding: OpenProjectBinding | null): void {
   const previousKey = currentProjectBinding?.key ?? null;
@@ -1132,6 +1140,33 @@ async function callRemoteProjectActionIfBound<T>(
   return { handled: true, result: response.result as T };
 }
 
+function isValidPreviewTargetPort(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= 65_535;
+}
+
+async function localizeRemoteLanePreviewInfo(
+  binding: Extract<OpenProjectBinding, { kind: "remote" }>,
+  info: LanePreviewInfo | null,
+): Promise<LanePreviewInfo | null> {
+  if (!info) return null;
+  if (!isValidPreviewTargetPort(info.targetPort)) return info;
+  const forward = (await ipcRenderer.invoke(IPC.remoteRuntimeEnsurePortForward, {
+    id: binding.targetId,
+    request: {
+      remoteHost: "127.0.0.1",
+      remotePort: info.targetPort,
+      label: `${binding.displayName}:${info.laneId}`,
+    },
+  })) as RemoteRuntimePortForward;
+  return {
+    ...info,
+    hostname: forward.localHost,
+    previewUrl: forward.localUrl,
+    proxyPort: forward.localPort,
+    active: true,
+  };
+}
+
 async function callLocalProjectActionIfBound<T>(
   domain: string,
   action: string,
@@ -1220,6 +1255,7 @@ const READ_ONLY_RUNTIME_ACTIONS = new Set([
   "chat.fileSearch",
   "chat.modelCatalog",
   "file.quickOpen",
+  "ios_simulator.resolvePreviewMatch",
   "terminal.activeForChat",
   "terminal.preview",
 ]);
@@ -1244,6 +1280,7 @@ const PROJECT_SWITCHING_MESSAGE =
 
 let openRemoteProjectGeneration = 0;
 let activeRemoteProjectOpenGeneration: number | null = null;
+const MAX_REMOTE_PROJECT_OPEN_REBIND_ATTEMPTS = 5;
 
 function isReadOnlyRuntimeAction(domain: string, action: string): boolean {
   const key = `${domain}.${action}`;
@@ -1275,7 +1312,19 @@ function shouldBypassProjectRuntimeDuringTransition(domain: string, action: stri
         : "changing project state";
     throw new Error(PROJECT_SWITCHING_MESSAGE.replace("changing project state", label));
   }
-  return activeRemoteProjectOpenGeneration !== null;
+  return false;
+}
+
+async function waitForRemoteProjectOpenIfActive(): Promise<boolean> {
+  const generation = activeRemoteProjectOpenGeneration;
+  const promise = activeRemoteProjectOpenPromise;
+  if (generation == null || !promise) return false;
+  try {
+    await promise;
+  } catch {
+    return false;
+  }
+  return activeRemoteProjectOpenGeneration !== generation;
 }
 
 async function callProjectRuntimeActionIfBound<T>(
@@ -1297,6 +1346,19 @@ async function callProjectRuntimeActionIfBound<T>(
   // their IPC fallback instead of binding to a possibly-stale runtime.
   if (freshBinding && !isMutatingChatAction && projectRuntimeTransitionDepth > 0) {
     return { handled: false };
+  }
+  let rebindAttempts = 0;
+  while (
+    activeRemoteProjectOpenGeneration !== null &&
+    !isMutatingRuntimeAction(domain, action) &&
+    await waitForRemoteProjectOpenIfActive()
+  ) {
+    rebindAttempts += 1;
+    if (rebindAttempts >= MAX_REMOTE_PROJECT_OPEN_REBIND_ATTEMPTS) {
+      throw new Error(
+        PROJECT_SWITCHING_MESSAGE.replace("changing project state", "reading project state"),
+      );
+    }
   }
   const remote = await callRemoteProjectActionIfBound<T>(
     domain,
@@ -1578,8 +1640,15 @@ let remoteRuntimeEventBindingKey: string | null = null;
 let remoteRuntimeEventGeneration = -1;
 let remoteRuntimeEventEpoch: string | null = null;
 let remoteRuntimeEventStartedAtMs = 0;
+let remoteRuntimeEventReplaySuppressed = false;
+let remoteRuntimeEmptyPollCount = 0;
 let remoteRuntimeSeenEventBindingKey: string | null = null;
 const remoteRuntimeSeenEventIds = new Set<number>();
+const LOCAL_RUNTIME_EVENT_IDLE_POLL_MS = 750;
+const REMOTE_RUNTIME_EVENT_ACTIVE_POLL_MS = 750;
+const REMOTE_RUNTIME_EVENT_INITIAL_IDLE_POLL_MS = 2_500;
+const REMOTE_RUNTIME_EVENT_IDLE_POLL_MS = 5_000;
+const REMOTE_RUNTIME_EVENT_CATCH_UP_POLL_MS = 50;
 
 function clearPendingRemoteRuntimeEventPoll(): void {
   if (!remoteRuntimeEventTimer) return;
@@ -1590,6 +1659,10 @@ function clearPendingRemoteRuntimeEventPoll(): void {
 function resetRemoteRuntimeEventDedup(bindingKey: string | null): void {
   remoteRuntimeSeenEventBindingKey = bindingKey;
   remoteRuntimeSeenEventIds.clear();
+}
+
+function resetRemoteRuntimeEmptyPolls(): void {
+  remoteRuntimeEmptyPollCount = 0;
 }
 
 function shouldDispatchRemoteRuntimeEvent(
@@ -1693,6 +1766,8 @@ async function pollRemoteRuntimeEvents(): Promise<void> {
   if (remoteRuntimeEventInFlight || !hasRemoteRuntimeEventSubscribers()) return;
   remoteRuntimeEventInFlight = true;
   let nextDelayMs: number | null = null;
+  let pollingBindingKey: string | null = null;
+  let pollingGeneration = projectBindingGeneration;
   try {
     const binding = await getProjectRuntimeBinding();
     if (!binding) {
@@ -1701,6 +1776,8 @@ async function pollRemoteRuntimeEvents(): Promise<void> {
       remoteRuntimeEventGeneration = projectBindingGeneration;
       remoteRuntimeEventEpoch = null;
       remoteRuntimeEventStartedAtMs = 0;
+      remoteRuntimeEventReplaySuppressed = false;
+      resetRemoteRuntimeEmptyPolls();
       resetRemoteRuntimeEventDedup(null);
       return;
     }
@@ -1715,14 +1792,19 @@ async function pollRemoteRuntimeEvents(): Promise<void> {
       remoteRuntimeEventEpoch = null;
       remoteRuntimeEventStartedAtMs =
         binding.kind === "local" ? Date.now() : 0;
+      remoteRuntimeEventReplaySuppressed = binding.kind === "remote";
+      resetRemoteRuntimeEmptyPolls();
       resetRemoteRuntimeEventDedup(binding.key);
     }
 
-    const pollingBindingKey = binding.key;
-    const pollingGeneration = projectBindingGeneration;
+    pollingBindingKey = binding.key;
+    pollingGeneration = projectBindingGeneration;
     const request = {
       cursor: remoteRuntimeEventCursor,
       limit: 100,
+      ...(binding.kind === "remote" && remoteRuntimeEventReplaySuppressed && remoteRuntimeEventCursor === 0
+        ? { replay: false }
+        : {}),
     } satisfies RemoteRuntimeStreamEventsRequest;
     const batch =
       binding.kind === "remote"
@@ -1755,6 +1837,8 @@ async function pollRemoteRuntimeEvents(): Promise<void> {
       remoteRuntimeEventEpoch = batchEpoch;
       if (epochChanged) {
         remoteRuntimeEventCursor = 0;
+        remoteRuntimeEventReplaySuppressed = binding.kind === "remote";
+        resetRemoteRuntimeEmptyPolls();
         resetRemoteRuntimeEventDedup(binding.key);
         nextDelayMs = 0;
         return;
@@ -1778,10 +1862,35 @@ async function pollRemoteRuntimeEvents(): Promise<void> {
       if (!shouldDispatchRemoteRuntimeEvent(binding.key, event)) continue;
       dispatchRemoteRuntimeEventPayload(event.payload);
     }
-    nextDelayMs = batch.hasMore ? 50 : 750;
+    if (batch.hasMore) {
+      resetRemoteRuntimeEmptyPolls();
+      nextDelayMs = REMOTE_RUNTIME_EVENT_CATCH_UP_POLL_MS;
+    } else if (batch.events.length > 0) {
+      resetRemoteRuntimeEmptyPolls();
+      nextDelayMs =
+        binding.kind === "remote"
+          ? REMOTE_RUNTIME_EVENT_ACTIVE_POLL_MS
+          : LOCAL_RUNTIME_EVENT_IDLE_POLL_MS;
+    } else if (binding.kind === "remote") {
+      remoteRuntimeEmptyPollCount += 1;
+      nextDelayMs =
+        remoteRuntimeEmptyPollCount <= 1
+          ? REMOTE_RUNTIME_EVENT_INITIAL_IDLE_POLL_MS
+          : REMOTE_RUNTIME_EVENT_IDLE_POLL_MS;
+    } else {
+      nextDelayMs = LOCAL_RUNTIME_EVENT_IDLE_POLL_MS;
+    }
   } catch (error) {
-    console.warn("ADE runtime event polling failed", error);
-    nextDelayMs = 2_000;
+    const stalePoll =
+      pollingBindingKey != null &&
+      (currentProjectBinding?.key !== pollingBindingKey ||
+        projectBindingGeneration !== pollingGeneration);
+    if (stalePoll) {
+      nextDelayMs = 0;
+    } else {
+      console.warn("ADE runtime event polling failed", error);
+      nextDelayMs = 2_000;
+    }
   } finally {
     remoteRuntimeEventInFlight = false;
     if (
@@ -1800,6 +1909,7 @@ function handleRemoteRuntimeEventNotification(value: unknown): void {
   const payload = toRemoteRuntimeEventNotificationPayload(value);
   const binding = currentProjectBinding;
   if (!payload || !binding || payload.bindingKey !== binding.key) return;
+  resetRemoteRuntimeEmptyPolls();
   const eventTime = Date.parse(payload.event.timestamp);
   if (
     binding.kind === "local" &&
@@ -1825,6 +1935,17 @@ function toRemoteRuntimeEventNotificationPayload(
   return { bindingKey, event };
 }
 
+function isRemoteRuntimeEventCategory(
+  value: unknown,
+): value is RemoteRuntimeEventCategory {
+  return (
+    value === "orchestrator" ||
+    value === "dag_mutation" ||
+    value === "runtime" ||
+    value === "pty"
+  );
+}
+
 function toRemoteRuntimeBufferedEvent(
   value: unknown,
 ): RemoteRuntimeBufferedEvent | null {
@@ -1832,7 +1953,7 @@ function toRemoteRuntimeBufferedEvent(
   if (typeof value.id !== "number" || !Number.isFinite(value.id)) return null;
   if (typeof value.timestamp !== "string") return null;
   const category = value.category;
-  if (category !== "runtime" && category !== "pty") {
+  if (!isRemoteRuntimeEventCategory(category)) {
     return null;
   }
   const payload = isRecord(value.payload) ? value.payload : {};
@@ -3336,11 +3457,13 @@ contextBridge.exposeInMainWorld("ade", {
         const generation = ++openRemoteProjectGeneration;
         activeRemoteProjectOpenGeneration = generation;
         rememberProjectBinding(null);
+        const openPromise = ipcRenderer.invoke(IPC.remoteRuntimeOpenProject, {
+          id,
+          projectId,
+        }) as Promise<OpenProjectBinding>;
+        activeRemoteProjectOpenPromise = openPromise;
         try {
-          const binding = (await ipcRenderer.invoke(IPC.remoteRuntimeOpenProject, {
-            id,
-            projectId,
-          })) as OpenProjectBinding;
+          const binding = await openPromise;
           if (generation === openRemoteProjectGeneration) {
             rememberProjectBinding(binding);
             activeRemoteProjectOpenGeneration = null;
@@ -3352,6 +3475,10 @@ contextBridge.exposeInMainWorld("ade", {
             activeRemoteProjectOpenGeneration = null;
           }
           throw error;
+        } finally {
+          if (generation === openRemoteProjectGeneration) {
+            activeRemoteProjectOpenPromise = null;
+          }
         }
       });
     },
@@ -3380,8 +3507,27 @@ contextBridge.exposeInMainWorld("ade", {
       project: RemoteRuntimeProjectRecord,
     ): Promise<RemoteRuntimeLocalWorkCheckResult> =>
       ipcRenderer.invoke(IPC.remoteRuntimeCheckLocalWork, { id, project }),
-    disconnect: async (id: string): Promise<{ disconnected: boolean }> =>
-      ipcRenderer.invoke(IPC.remoteRuntimeDisconnect, { id }),
+    disconnect: async (
+      id: string,
+      options: { manual?: boolean } = {},
+    ): Promise<{ disconnected: boolean }> => {
+      const trimmedId = typeof id === "string" ? id.trim() : "";
+      const manual = options.manual !== false;
+      const result = (await ipcRenderer.invoke(IPC.remoteRuntimeDisconnect, {
+        id: trimmedId,
+        manual,
+      })) as { disconnected: boolean };
+      if (
+        manual &&
+        result.disconnected &&
+        currentProjectBinding?.kind === "remote" &&
+        currentProjectBinding.targetId === trimmedId
+      ) {
+        rememberProjectBinding(null);
+        clearProjectScopedReadCaches();
+      }
+      return result;
+    },
   },
   keybindings: {
     get: async (): Promise<KeybindingsSnapshot> =>
@@ -4604,13 +4750,28 @@ contextBridge.exposeInMainWorld("ade", {
     },
     proxyGetPreviewInfo: async (
       args: GetPreviewInfoArgs,
-    ): Promise<LanePreviewInfo | null> =>
-      callProjectRuntimeActionOr("lane", "proxyGetPreviewInfo", { args }, () =>
-        ipcRenderer.invoke(IPC.lanesProxyGetPreviewInfo, args),
-      ),
+    ): Promise<LanePreviewInfo | null> => {
+      const binding = await getProjectRuntimeBinding();
+      if (binding?.kind === "remote") {
+        const runtime =
+          await callProjectRuntimeActionIfBound<LanePreviewInfo | null>(
+            "lane",
+            "proxyGetPreviewInfo",
+            { args },
+          );
+        if (runtime.handled) {
+          const activeBinding = await getProjectRuntimeBinding();
+          if (activeBinding?.kind !== "remote") {
+            return ipcRenderer.invoke(IPC.lanesProxyGetPreviewInfo, args);
+          }
+          return localizeRemoteLanePreviewInfo(activeBinding, runtime.result);
+        }
+      }
+      return ipcRenderer.invoke(IPC.lanesProxyGetPreviewInfo, args);
+    },
     proxyOpenPreview: async (args: OpenPreviewArgs): Promise<void> => {
       const binding = await getProjectRuntimeBinding();
-      if (binding) {
+      if (binding?.kind === "remote") {
         const runtime =
           await callProjectRuntimeActionIfBound<LanePreviewInfo | null>(
             "lane",
@@ -4621,7 +4782,12 @@ contextBridge.exposeInMainWorld("ade", {
           await ipcRenderer.invoke(IPC.lanesProxyOpenPreview, args);
           return;
         }
-        const info = runtime.result;
+        const activeBinding = await getProjectRuntimeBinding();
+        if (activeBinding?.kind !== "remote") {
+          await ipcRenderer.invoke(IPC.lanesProxyOpenPreview, args);
+          return;
+        }
+        const info = await localizeRemoteLanePreviewInfo(activeBinding, runtime.result);
         if (!info) throw new Error(`No preview route for lane: ${args.laneId}`);
         await ipcRenderer.invoke(IPC.appOpenExternal, { url: info.previewUrl });
         return;
@@ -5425,6 +5591,24 @@ contextBridge.exposeInMainWorld("ade", {
         "listPreviewTargets",
         { args },
         () => ipcRenderer.invoke(IPC.iosSimulatorListPreviewTargets, args),
+      ),
+    resolvePreviewMatch: async (
+      args: IosSimulatorListPreviewsArgs = {},
+    ): Promise<IosSimulatorPreviewMatch> =>
+      callProjectRuntimeActionOr(
+        "ios_simulator",
+        "resolvePreviewMatch",
+        { args },
+        () => ipcRenderer.invoke(IPC.iosSimulatorResolvePreviewMatch, args),
+      ),
+    ensurePreviewWorkspace: async (
+      args: IosSimulatorEnsurePreviewWorkspaceArgs = {},
+    ): Promise<IosSimulatorEnsurePreviewWorkspaceResult> =>
+      callProjectRuntimeActionOr(
+        "ios_simulator",
+        "ensurePreviewWorkspace",
+        { args },
+        () => ipcRenderer.invoke(IPC.iosSimulatorEnsurePreviewWorkspace, args),
       ),
     renderPreview: async (
       args: IosSimulatorRenderPreviewArgs,
@@ -7444,9 +7628,49 @@ contextBridge.exposeInMainWorld("ade", {
       callPrReadRuntimeActionOr("getActivity", { arg: prId }, () =>
         ipcRenderer.invoke(IPC.prsGetActivity, { prId }),
       ),
+    getDetailByGithub: async (coords: PrGithubCoords): Promise<PrDetail> =>
+      callPrReadRuntimeActionOr("getDetailByGithub", { arg: coords }, () =>
+        ipcRenderer.invoke(IPC.prsGetDetailByGithub, coords),
+      ),
+    getFilesByGithub: async (coords: PrGithubCoords): Promise<PrFile[]> =>
+      callPrReadRuntimeActionOr("getFilesByGithub", { arg: coords }, () =>
+        ipcRenderer.invoke(IPC.prsGetFilesByGithub, coords),
+      ),
+    getCommitsByGithub: async (coords: PrGithubCoords): Promise<PrCommit[]> =>
+      callPrReadRuntimeActionOr("getCommitsByGithub", { arg: coords }, () =>
+        ipcRenderer.invoke(IPC.prsGetCommitsByGithub, coords),
+      ),
+    getActionRunsByGithub: async (coords: PrGithubCoords): Promise<PrActionRun[]> =>
+      callPrReadRuntimeActionOr("getActionRunsByGithub", { arg: coords }, () =>
+        ipcRenderer.invoke(IPC.prsGetActionRunsByGithub, coords),
+      ),
+    getActivityByGithub: async (coords: PrGithubCoords): Promise<PrActivityEvent[]> =>
+      callPrReadRuntimeActionOr("getActivityByGithub", { arg: coords }, () =>
+        ipcRenderer.invoke(IPC.prsGetActivityByGithub, coords),
+      ),
+    getChecksByGithub: async (coords: PrGithubCoords): Promise<PrCheck[]> =>
+      callPrReadRuntimeActionOr("getChecksByGithub", { arg: coords }, () =>
+        ipcRenderer.invoke(IPC.prsGetChecksByGithub, coords),
+      ),
+    getReviewsByGithub: async (coords: PrGithubCoords): Promise<PrReview[]> =>
+      callPrReadRuntimeActionOr("getReviewsByGithub", { arg: coords }, () =>
+        ipcRenderer.invoke(IPC.prsGetReviewsByGithub, coords),
+      ),
+    getCommentsByGithub: async (coords: PrGithubCoords): Promise<PrComment[]> =>
+      callPrReadRuntimeActionOr("getCommentsByGithub", { arg: coords }, () =>
+        ipcRenderer.invoke(IPC.prsGetCommentsByGithub, coords),
+      ),
+    getReviewThreadsByGithub: async (coords: PrGithubCoords): Promise<PrReviewThread[]> =>
+      callPrReadRuntimeActionOr("getReviewThreadsByGithub", { arg: coords }, () =>
+        ipcRenderer.invoke(IPC.prsGetReviewThreadsByGithub, coords),
+      ),
     addComment: async (args: AddPrCommentArgs): Promise<PrComment> =>
       callProjectRuntimeActionOr("pr", "addComment", { args }, () =>
         ipcRenderer.invoke(IPC.prsAddComment, args),
+      ),
+    updateComment: async (args: UpdatePrCommentArgs): Promise<PrComment> =>
+      callProjectRuntimeActionOr("pr", "updateComment", { args }, () =>
+        ipcRenderer.invoke(IPC.prsUpdateComment, args),
       ),
     replyToReviewThread: async (
       args: ReplyToPrReviewThreadArgs,

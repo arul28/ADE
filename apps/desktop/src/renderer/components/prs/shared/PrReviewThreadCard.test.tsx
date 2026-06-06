@@ -237,4 +237,31 @@ describe("PrReviewThreadCard", () => {
     const card = container.querySelector("[data-pr-review-thread-card]") as HTMLElement;
     expect(card.style.outline).toContain("2px solid");
   });
+
+  describe("when the PR is unmapped (laneId is null)", () => {
+    it("hides Reply / Resolve / Ask-AI write affordances but stays readable", () => {
+      renderCard({}, { laneId: null });
+      // Thread content remains visible and the read-only diff link survives.
+      expect(screen.getByText(/please tighten this logic/i)).toBeTruthy();
+      expect(screen.getByRole("button", { name: /view file diff/i })).toBeTruthy();
+      // Write affordances are gone.
+      expect(screen.queryByRole("button", { name: /^reply$/i })).toBeNull();
+      expect(screen.queryByRole("button", { name: /resolve/i })).toBeNull();
+      expect(screen.queryByRole("button", { name: /unresolve/i })).toBeNull();
+      expect(screen.queryByRole("button", { name: /ask ai to fix/i })).toBeNull();
+      expect(screen.queryByRole("button", { name: /add reaction/i })).toBeNull();
+    });
+
+    it("no-ops the 'r' and 'x' keyboard shortcuts without calling bridges", async () => {
+      const { container } = renderCard({}, { laneId: null });
+      const card = container.querySelector("[data-pr-review-thread-card]") as HTMLElement;
+
+      fireEvent.keyDown(card, { key: "r" });
+      expect(screen.queryByPlaceholderText(/reply/i)).toBeNull();
+
+      fireEvent.keyDown(card, { key: "x" });
+      await Promise.resolve();
+      expect(setReviewThreadResolved).not.toHaveBeenCalled();
+    });
+  });
 });

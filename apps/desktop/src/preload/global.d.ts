@@ -361,6 +361,7 @@ import type {
   PrCheck,
   PrCommit,
   PrComment,
+  PrGithubCoords,
   CleanupPrBranchArgs,
   CleanupPrBranchResult,
   PrConflictAnalysis,
@@ -394,6 +395,7 @@ import type {
   ResumeQueueAutomationArgs,
   StartQueueAutomationArgs,
   AddPrCommentArgs,
+  UpdatePrCommentArgs,
   UpdatePrTitleArgs,
   UpdatePrBodyArgs,
   SetPrLabelsArgs,
@@ -553,8 +555,11 @@ import type {
   IosSimulatorDragArgs,
   IosSimulatorEventPayload,
   IosSimulatorListPreviewsArgs,
+  IosSimulatorEnsurePreviewWorkspaceArgs,
+  IosSimulatorEnsurePreviewWorkspaceResult,
   IosSimulatorOpenPreviewWorkspaceArgs,
   IosSimulatorPreviewCapability,
+  IosSimulatorPreviewMatch,
   IosSimulatorPreviewTarget,
   IosSimulatorRenderPreviewArgs,
   IosSimulatorRenderPreviewResult,
@@ -825,7 +830,10 @@ declare global {
           id: string,
           project: RemoteRuntimeProjectRecord,
         ) => Promise<RemoteRuntimeLocalWorkCheckResult>;
-        disconnect: (id: string) => Promise<{ disconnected: boolean }>;
+        disconnect: (
+          id: string,
+          options?: { manual?: boolean },
+        ) => Promise<{ disconnected: boolean }>;
       };
       keybindings: {
         get: () => Promise<KeybindingsSnapshot>;
@@ -1469,6 +1477,12 @@ declare global {
         listPreviewTargets: (
           args?: IosSimulatorListPreviewsArgs,
         ) => Promise<IosSimulatorPreviewTarget[]>;
+        resolvePreviewMatch: (
+          args?: IosSimulatorListPreviewsArgs,
+        ) => Promise<IosSimulatorPreviewMatch>;
+        ensurePreviewWorkspace: (
+          args?: IosSimulatorEnsurePreviewWorkspaceArgs,
+        ) => Promise<IosSimulatorEnsurePreviewWorkspaceResult>;
         renderPreview: (
           args: IosSimulatorRenderPreviewArgs,
         ) => Promise<IosSimulatorRenderPreviewResult>;
@@ -2005,7 +2019,23 @@ declare global {
         getCommits: (prId: string) => Promise<PrCommit[]>;
         getActionRuns: (prId: string) => Promise<PrActionRun[]>;
         getActivity: (prId: string) => Promise<PrActivityEvent[]>;
+        getDetailByGithub: (coords: PrGithubCoords) => Promise<PrDetail>;
+        getFilesByGithub: (coords: PrGithubCoords) => Promise<PrFile[]>;
+        getCommitsByGithub: (coords: PrGithubCoords) => Promise<PrCommit[]>;
+        getActionRunsByGithub: (
+          coords: PrGithubCoords,
+        ) => Promise<PrActionRun[]>;
+        getActivityByGithub: (
+          coords: PrGithubCoords,
+        ) => Promise<PrActivityEvent[]>;
+        getChecksByGithub: (coords: PrGithubCoords) => Promise<PrCheck[]>;
+        getReviewsByGithub: (coords: PrGithubCoords) => Promise<PrReview[]>;
+        getCommentsByGithub: (coords: PrGithubCoords) => Promise<PrComment[]>;
+        getReviewThreadsByGithub: (
+          coords: PrGithubCoords,
+        ) => Promise<PrReviewThread[]>;
         addComment: (args: AddPrCommentArgs) => Promise<PrComment>;
+        updateComment: (args: UpdatePrCommentArgs) => Promise<PrComment>;
         replyToReviewThread: (
           args: ReplyToPrReviewThreadArgs,
         ) => Promise<PrReviewThreadComment>;
