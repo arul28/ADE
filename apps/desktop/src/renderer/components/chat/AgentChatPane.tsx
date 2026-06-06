@@ -3470,6 +3470,50 @@ export function AgentChatPane({
   const [subagentTranscriptUnsupported, setSubagentTranscriptUnsupported] = useState(false);
   const [subagentMetadata, setSubagentMetadata] = useState<AgentChatSubagentMetadata | null>(null);
 
+  // Drill-in (subagent takeover) view-model. Computed here, before any early
+  // return, so the useMemo below is an unconditional hook (react-hooks rules).
+  const subagentThreadIdForView = subagentMetadata?.threadId
+    ?? subagentView?.agentId
+    ?? subagentView?.taskId
+    ?? null;
+  const subagentNameForView = subagentView
+    ? (
+      subagentMetadata?.label
+      ?? subagentMetadata?.agentNickname
+      ?? subagentMetadata?.agentRole
+      ?? subagentMetadata?.name
+      ?? subagentView.agentType
+      ?? subagentViewSnapshot?.description
+      ?? subagentView.agentId
+      ?? subagentView.taskId
+      ?? "Subagent"
+    )
+    : null;
+  const subagentPromptForView = subagentView
+    ? subagentMetadata?.prompt ?? subagentViewSnapshot?.description ?? null
+    : null;
+  const subagentEventsForDisplay = useMemo(() => {
+    if (!subagentView) return EMPTY_CHAT_EVENTS;
+    return buildSubagentEventHistory({
+      sessionId: selectedSessionId,
+      subagentId: subagentThreadIdForView ?? subagentView.agentId ?? subagentView.taskId,
+      subagentName: subagentNameForView ?? subagentView.agentType ?? subagentView.agentId ?? subagentView.taskId,
+      prompt: subagentPromptForView,
+      messages: subagentTranscript,
+      loading: subagentTranscriptLoading,
+      unsupported: subagentTranscriptUnsupported,
+    });
+  }, [
+    selectedSessionId,
+    subagentNameForView,
+    subagentPromptForView,
+    subagentThreadIdForView,
+    subagentTranscript,
+    subagentTranscriptLoading,
+    subagentTranscriptUnsupported,
+    subagentView,
+  ]);
+
   useEffect(() => {
     if (!subagentView || !selectedSessionId) {
       setSubagentTranscript(null);
@@ -9249,48 +9293,9 @@ export function AgentChatPane({
       />
   );
 
-  const subagentThreadIdForView = subagentMetadata?.threadId
-    ?? subagentView?.agentId
-    ?? subagentView?.taskId
-    ?? null;
-  const subagentNameForView = subagentView
-    ? (
-      subagentMetadata?.label
-      ?? subagentMetadata?.agentNickname
-      ?? subagentMetadata?.agentRole
-      ?? subagentMetadata?.name
-      ?? subagentView.agentType
-      ?? subagentViewSnapshot?.description
-      ?? subagentView.agentId
-      ?? subagentView.taskId
-      ?? "Subagent"
-    )
-    : null;
-  const subagentPromptForView = subagentView
-    ? subagentMetadata?.prompt ?? subagentViewSnapshot?.description ?? null
-    : null;
-
-  const subagentEventsForDisplay = useMemo(() => {
-    if (!subagentView) return EMPTY_CHAT_EVENTS;
-    return buildSubagentEventHistory({
-      sessionId: selectedSessionId,
-      subagentId: subagentThreadIdForView ?? subagentView.agentId ?? subagentView.taskId,
-      subagentName: subagentNameForView ?? subagentView.agentType ?? subagentView.agentId ?? subagentView.taskId,
-      prompt: subagentPromptForView,
-      messages: subagentTranscript,
-      loading: subagentTranscriptLoading,
-      unsupported: subagentTranscriptUnsupported,
-    });
-  }, [
-    selectedSessionId,
-    subagentNameForView,
-    subagentPromptForView,
-    subagentThreadIdForView,
-    subagentTranscript,
-    subagentTranscriptLoading,
-    subagentTranscriptUnsupported,
-    subagentView,
-  ]);
+  // subagentThreadIdForView / subagentNameForView / subagentPromptForView and the
+  // subagentEventsForDisplay useMemo are computed earlier (with the subagent state
+  // cluster) so the hook is never called after the `if (!laneId) return` guard.
 
   // Launch-status banners belong to the new-chat/draft surface only — never
   // above the composer of an already-open chat.
