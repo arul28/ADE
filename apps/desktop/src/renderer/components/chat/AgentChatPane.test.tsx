@@ -3599,12 +3599,12 @@ describe("AgentChatPane submit recovery", () => {
         expect.objectContaining({ id: "created-session", laneId: "lane-created" }),
         { activate: false, source: "draft-launch" },
       );
-      expect(screen.getByText(/Launched chat in background-lane/i)).toBeTruthy();
+      expect(screen.getByText(/Launch this in the background\./i)).toBeTruthy();
       expect(screen.getByRole("button", { name: "Dismiss launch status" })).toBeTruthy();
     });
     expect(screen.getByTestId("location").textContent).toBe("/work");
 
-    fireEvent.click(screen.getByRole("button", { name: "Open" }));
+    fireEvent.click(screen.getByRole("button", { name: "View" }));
     await waitFor(() => {
       expect(screen.getByTestId("location").textContent).toBe("/work?laneId=lane-created&sessionId=created-session");
     });
@@ -3942,7 +3942,7 @@ describe("AgentChatPane submit recovery", () => {
 
     resolveSuggestedName("still-editable-lane");
     await waitFor(() => {
-      expect(screen.getByText(/Launched chat in auto-created-lane/i)).toBeTruthy();
+      expect(screen.getByText(/Launch this and let me keep typing\./i)).toBeTruthy();
       expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("Next thought while it launches.");
     });
   });
@@ -4005,7 +4005,7 @@ describe("AgentChatPane submit recovery", () => {
     });
 
     await waitFor(() => {
-      expect(screen.getByText(/Launched chat in remounted-lane/i)).toBeTruthy();
+      expect(screen.getByText(/Keep this launch visible\./i)).toBeTruthy();
       expect(screen.getByRole("button", { name: "Dismiss launch status" })).toBeTruthy();
     });
   });
@@ -4056,7 +4056,7 @@ describe("AgentChatPane submit recovery", () => {
     renderAutoCreateDraftPane();
 
     expect(await screen.findByText(/Still working\. You can hide this status/i)).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Hide stale launch status" }));
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss launch status" }));
 
     await waitFor(() => {
       expect(screen.queryByTestId("draft-launch-job")).toBeNull();
@@ -4108,7 +4108,7 @@ describe("AgentChatPane submit recovery", () => {
       });
     });
 
-    fireEvent.click(await screen.findByRole("button", { name: "Hide stale launch status" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Dismiss launch status" }));
     await waitFor(() => {
       expect(screen.queryByTestId("draft-launch-job")).toBeNull();
     });
@@ -4360,8 +4360,8 @@ describe("AgentChatPane submit recovery", () => {
       expect(createLane).toHaveBeenCalledTimes(2);
       expect(create).toHaveBeenCalledTimes(2);
       expect(send).toHaveBeenCalledTimes(2);
-      expect(screen.getByText(/Launched chat in first-lane/i)).toBeTruthy();
-      expect(screen.getByText(/Launched chat in second-lane/i)).toBeTruthy();
+      expect(screen.getByText(/First auto lane\./i)).toBeTruthy();
+      expect(screen.getByText(/Second auto lane\./i)).toBeTruthy();
     });
   });
 
@@ -4834,7 +4834,7 @@ describe("AgentChatPane submit recovery", () => {
         tracked: true,
         disposition: "background",
       }));
-      expect(screen.getByText(/Launched CLI session in background-cli-lane/i)).toBeTruthy();
+      expect(screen.getByText(/Launch this CLI session in the background\./i)).toBeTruthy();
       expect(screen.getByRole("button", { name: "Dismiss launch status" })).toBeTruthy();
     });
     const launchArgs = onLaunchCliSession.mock.calls[0]?.[0];
@@ -4844,7 +4844,7 @@ describe("AgentChatPane submit recovery", () => {
     expect(send).not.toHaveBeenCalled();
     expect(screen.getByTestId("location").textContent).toBe("/work");
 
-    fireEvent.click(screen.getByRole("button", { name: "Open" }));
+    fireEvent.click(screen.getByRole("button", { name: "View" }));
     await waitFor(() => {
       expect(screen.getByTestId("location").textContent).toBe("/work?laneId=lane-created&sessionId=terminal-created");
     });

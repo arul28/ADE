@@ -548,7 +548,7 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(screen.getByTestId("user-message-attachment-analyzed").textContent).toContain("Attachment analyzed");
   });
 
-  it("keeps the done summary visible when only the model attribution is available", () => {
+  it("surfaces the model attribution on an interrupted end-of-turn divider", () => {
     renderMessageList([
       {
         sessionId: "session-1",
@@ -556,14 +556,16 @@ describe("AgentChatMessageList transcript rendering", () => {
         event: {
           type: "done",
           turnId: "turn-1",
-          status: "completed",
+          status: "interrupted",
           modelId: "anthropic/claude-sonnet-4-6",
         },
       },
     ]);
 
-    // The calm turn footer dropped the full-width "Usage" label — model attribution is the signal.
+    // The end-of-turn divider shows the model attribution (styled span) plus the
+    // non-completed status for interrupted/failed turns.
     expect(screen.getAllByText(/Claude Sonnet 4\.6/).length).toBeGreaterThan(0);
+    expect(screen.getByText("interrupted")).toBeTruthy();
   });
 
   it("renders provider health and thread error notices distinctly", () => {
@@ -1708,10 +1710,11 @@ describe("AgentChatMessageList transcript rendering", () => {
       },
     );
 
-    // End-of-turn divider shows tasks + agents, no files duplication.
-    expect(rendered.container.textContent).toMatch(/Response/);
-    expect(rendered.container.textContent).toMatch(/1\/2 tasks complete/);
-    expect(rendered.container.textContent).toMatch(/1 background agent/);
+    // The turn surfaces the task-list rollup with completed/in-progress items.
+    expect(rendered.container.textContent).toMatch(/Task list/);
+    expect(rendered.container.textContent).toMatch(/1\/2 complete/);
+    expect(screen.getByText("Inspect chat renderer")).toBeTruthy();
+    expect(screen.getAllByText("Refine summary card").length).toBeGreaterThanOrEqual(1);
 
     // Files now live in the inline FilesChangedPanel — diff stats appear next to the path.
     expect(rendered.container.textContent).toMatch(/1 file changed/);
@@ -2007,9 +2010,9 @@ describe("AgentChatMessageList transcript rendering", () => {
       },
     );
 
-    expect(rendered.container.textContent).toMatch(/Response/);
-    expect(rendered.container.textContent).toMatch(/1\/2 tasks complete/);
-    expect(rendered.container.textContent).toMatch(/1 background agent/);
+    expect(rendered.container.textContent).toMatch(/Task list/);
+    expect(rendered.container.textContent).toMatch(/1\/2 complete/);
+    expect(screen.getByText("Inspect shared renderer")).toBeTruthy();
     expect(rendered.container.textContent).toMatch(/1 file changed/);
 
     fireEvent.click(screen.getByRole("button", { name: /Undo/i }));
@@ -2037,15 +2040,15 @@ describe("AgentChatMessageList transcript rendering", () => {
         event: {
           type: "done",
           turnId: "turn-9",
-          status: "completed",
+          status: "interrupted",
           modelId: "anthropic/claude-sonnet-4-6",
         },
       },
     ]);
 
-    expect(rendered.container.textContent).toMatch(/Response/);
-    expect(rendered.container.textContent).toMatch(/1\/1 tasks complete/);
-    // Model attribution still surfaces on the done usage card.
+    expect(rendered.container.textContent).toMatch(/Task list/);
+    expect(rendered.container.textContent).toMatch(/1\/1 complete/);
+    // Model attribution surfaces on the end-of-turn divider for non-completed turns.
     expect(screen.getAllByText(/Claude Sonnet 4\.6/).length).toBeGreaterThanOrEqual(1);
   });
 
