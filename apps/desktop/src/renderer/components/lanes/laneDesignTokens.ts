@@ -19,6 +19,10 @@ export const COLORS = {
   textMuted: "var(--color-muted-fg)",
   textDim: "color-mix(in srgb, var(--color-muted-fg) 88%, var(--color-bg) 12%)",
   success: "var(--color-success)",
+  checkPass: "var(--color-check-pass)",
+  prSurface: "var(--pr-surface)",
+  threadCard: "var(--pr-thread-card)",
+  panelCard: "var(--pr-panel-card)",
   danger: "var(--color-error)",
   warning: "var(--color-warning)",
   info: "var(--color-info)",
@@ -199,6 +203,21 @@ export function recessedStyle(overrides?: CSSProperties): CSSProperties {
     border: "1px solid color-mix(in srgb, var(--color-border) 75%, transparent)",
     borderRadius: 12,
     padding: 12,
+    ...overrides,
+  };
+}
+
+/**
+ * Neutral elevated surface for floating side-rail panes (Linear-style): a hair
+ * lighter than the page background — NOT tinted purple — with a hairline border
+ * and a soft drop shadow so the pane reads as floating. Theme-aware.
+ */
+export function floatingPane(overrides?: CSSProperties): CSSProperties {
+  return {
+    background: "var(--pr-panel-card)",
+    border: "1px solid color-mix(in srgb, var(--color-border) 70%, transparent)",
+    borderRadius: RADII.lg,
+    boxShadow: "var(--shadow-panel)",
     ...overrides,
   };
 }

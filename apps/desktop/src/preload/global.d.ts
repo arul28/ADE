@@ -362,6 +362,7 @@ import type {
   PrCheck,
   PrCommit,
   PrComment,
+  PrGithubCoords,
   CleanupPrBranchArgs,
   CleanupPrBranchResult,
   PrConflictAnalysis,
@@ -395,6 +396,7 @@ import type {
   ResumeQueueAutomationArgs,
   StartQueueAutomationArgs,
   AddPrCommentArgs,
+  UpdatePrCommentArgs,
   UpdatePrTitleArgs,
   UpdatePrBodyArgs,
   SetPrLabelsArgs,
@@ -2018,7 +2020,23 @@ declare global {
         getCommits: (prId: string) => Promise<PrCommit[]>;
         getActionRuns: (prId: string) => Promise<PrActionRun[]>;
         getActivity: (prId: string) => Promise<PrActivityEvent[]>;
+        getDetailByGithub: (coords: PrGithubCoords) => Promise<PrDetail>;
+        getFilesByGithub: (coords: PrGithubCoords) => Promise<PrFile[]>;
+        getCommitsByGithub: (coords: PrGithubCoords) => Promise<PrCommit[]>;
+        getActionRunsByGithub: (
+          coords: PrGithubCoords,
+        ) => Promise<PrActionRun[]>;
+        getActivityByGithub: (
+          coords: PrGithubCoords,
+        ) => Promise<PrActivityEvent[]>;
+        getChecksByGithub: (coords: PrGithubCoords) => Promise<PrCheck[]>;
+        getReviewsByGithub: (coords: PrGithubCoords) => Promise<PrReview[]>;
+        getCommentsByGithub: (coords: PrGithubCoords) => Promise<PrComment[]>;
+        getReviewThreadsByGithub: (
+          coords: PrGithubCoords,
+        ) => Promise<PrReviewThread[]>;
         addComment: (args: AddPrCommentArgs) => Promise<PrComment>;
+        updateComment: (args: UpdatePrCommentArgs) => Promise<PrComment>;
         replyToReviewThread: (
           args: ReplyToPrReviewThreadArgs,
         ) => Promise<PrReviewThreadComment>;

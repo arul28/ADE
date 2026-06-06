@@ -992,6 +992,12 @@ export function createLaneService({
 
   let activeMacosVmHooks: LaneMacosVmHooks | null = macosVmHooks ?? null;
 
+  // Late-bound hook fired after a worktree lane is successfully created. Used by
+  // the PR service to auto-map an existing open PR on the lane's branch. Set via
+  // `setOnWorktreeLaneCreated` because the PR service is constructed after the
+  // lane service. Best-effort: failures are swallowed, never blocking creation.
+  let onWorktreeLaneCreated: ((lane: LaneSummary) => void | Promise<void>) | null = null;
+
   const emitPlacementChanged = async (event: LanePlacementChangedEvent): Promise<void> => {
     if (!onPlacementChanged) return;
     try {
@@ -2429,6 +2435,20 @@ export function createLaneService({
       linearIssueLinks: getLaneLinearIssueLinks(laneId),
     });
     if (linearIssue) notifyLinearIssueLinked(summary, linearIssue);
+
+    // Trigger #1: best-effort auto-map of an existing open PR on this lane's
+    // branch. Fire-and-forget so it never blocks (or throws into) creation.
+    if (onWorktreeLaneCreated) {
+      void Promise.resolve()
+        .then(() => onWorktreeLaneCreated?.(summary))
+        .catch((error) => {
+          logger.warn("laneService.worktree_lane_created_hook_failed", {
+            laneId: summary.id,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
+    }
+
     return summary;
   };
 
@@ -5029,6 +5049,14 @@ export function createLaneService({
 
     setMacosVmHooks(hooks: LaneMacosVmHooks | null): void {
       activeMacosVmHooks = hooks ?? null;
+    },
+
+    /**
+     * Late-bind a best-effort hook fired after a worktree lane is created. Used
+     * by the PR service to auto-map an existing open PR on the new lane's branch.
+     */
+    setOnWorktreeLaneCreated(hook: ((lane: LaneSummary) => void | Promise<void>) | null): void {
+      onWorktreeLaneCreated = hook ?? null;
     },
 
     /**

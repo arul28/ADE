@@ -1425,6 +1425,12 @@ export type ProjectConfigFile = {
     prTranscriptGists?: {
       enabled?: boolean;
     };
+    /**
+     * Automatically map open/draft same-repo GitHub PRs to the matching ADE
+     * worktree lane by branch (defaults to true). Disable to require manual
+     * linking.
+     */
+    autoMapByBranch?: boolean;
   };
   git?: {
     autoRebaseOnHeadChange?: boolean;
@@ -1465,6 +1471,8 @@ export type EffectiveProjectConfig = {
     prTranscriptGists?: {
       enabled: boolean;
     };
+    /** Auto-map same-repo PRs to lanes by branch. Defaults to true. */
+    autoMapByBranch?: boolean;
   };
   git: {
     autoRebaseOnHeadChange: boolean;

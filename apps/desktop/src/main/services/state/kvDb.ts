@@ -2724,6 +2724,12 @@ function migrate(db: MigrationDb) {
   db.run("create index if not exists idx_review_runs_project_created on review_runs(project_id, created_at desc)");
   db.run("create index if not exists idx_review_runs_lane_created on review_runs(lane_id, created_at desc)");
   db.run("create index if not exists idx_review_runs_project_status on review_runs(project_id, status)");
+  // PR-target review runs post an "ADE review underway" issue comment on kickoff
+  // (from MAIN, so it survives renderer reloads) and edit it in place on every
+  // terminal path. These additive columns persist that comment id + PR id so the
+  // edit can happen later. Guarded by safeAddColumn so existing DBs upgrade in place.
+  safeAddColumn(db, "alter table review_runs add column underway_comment_id text");
+  safeAddColumn(db, "alter table review_runs add column underway_pr_id text");
 
   db.run(`
     create table if not exists review_findings (

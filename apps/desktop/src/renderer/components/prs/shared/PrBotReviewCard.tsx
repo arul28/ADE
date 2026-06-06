@@ -2,11 +2,12 @@ import { memo, useMemo, useState, type CSSProperties } from "react";
 import { CaretRight, Robot } from "@phosphor-icons/react";
 
 import type { PrReview } from "../../../../shared/types";
-import { COLORS, SANS_FONT, cardStyle, inlineBadge } from "../../lanes/laneDesignTokens";
+import { COLORS, SANS_FONT, inlineBadge } from "../../lanes/laneDesignTokens";
 import { formatTimeAgo } from "./prFormatters";
 import { PrMarkdown } from "./PrMarkdown";
+import { PrUserAvatar } from "./PrUserAvatar";
 
-export type BotProvider = "greptile" | "seer" | "coderabbit" | "claude" | "sourcery";
+export type BotProvider = "greptile" | "seer" | "coderabbit" | "claude" | "sourcery" | "cursor";
 
 type ProviderVisual = {
   label: string;
@@ -20,6 +21,7 @@ const PROVIDERS: Record<BotProvider, ProviderVisual> = {
   coderabbit: { label: "CodeRabbit", accent: COLORS.entryCli, initial: "R" },
   claude: { label: "Claude", accent: COLORS.info, initial: "C" },
   sourcery: { label: "Sourcery", accent: COLORS.warning, initial: "Y" },
+  cursor: { label: "Cursor", accent: COLORS.accent, initial: "C" },
 };
 
 const DETECTION_PATTERNS: Array<{ provider: BotProvider; test: (login: string) => boolean }> = [
@@ -28,6 +30,7 @@ const DETECTION_PATTERNS: Array<{ provider: BotProvider; test: (login: string) =
   { provider: "coderabbit", test: (l) => l.startsWith("coderabbit") },
   { provider: "claude", test: (l) => l === "claude" || l.startsWith("claude-") || l.startsWith("anthropic-") },
   { provider: "sourcery", test: (l) => l.startsWith("sourcery") },
+  { provider: "cursor", test: (l) => l.startsWith("cursor") },
 ];
 
 export function detectBotProvider(authorLogin: string): BotProvider | null {
@@ -90,20 +93,23 @@ export const PrBotReviewCard = memo(function PrBotReviewCard({
   const accent = visual?.accent ?? COLORS.textSecondary;
   const body = review.body ?? "";
 
-  const severities = useMemo(() => extractSeverities(body), [body]);
-  const issueCount = useMemo(() => extractIssueCount(body), [body]);
-  const confidence = useMemo(() => extractConfidence(body), [body]);
+  // Only mine free-text heuristics for KNOWN structured providers, so prose in
+  // an unrecognized bot's review can't produce bogus severity/issue badges.
+  const severities = useMemo(() => (provider ? extractSeverities(body) : []), [provider, body]);
+  const issueCount = useMemo(() => (provider ? extractIssueCount(body) : null), [provider, body]);
+  const confidence = useMemo(() => (provider ? extractConfidence(body) : null), [provider, body]);
 
   const summaryParts: string[] = [visual?.label ?? review.reviewer];
   if (confidence) summaryParts.push(confidence);
   if (issueCount !== null) summaryParts.push(`${issueCount} ${issueCount === 1 ? "issue" : "issues"}`);
 
-  const containerStyle: CSSProperties = cardStyle({
+  const containerStyle: CSSProperties = {
     padding: 0,
     borderRadius: 12,
-    borderLeft: `3px solid ${accent}`,
     overflow: "hidden",
-  });
+    background: COLORS.threadCard,
+    border: "none",
+  };
 
   return (
     <div
@@ -118,17 +124,21 @@ export const PrBotReviewCard = memo(function PrBotReviewCard({
         className="flex w-full items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-white/[0.04]"
         style={{ fontFamily: SANS_FONT, color: COLORS.textPrimary }}
       >
-        <span
-          aria-hidden
-          className="flex h-6 w-6 shrink-0 items-center justify-center rounded-[6px] text-[11px] font-semibold"
-          style={{
-            background: `${accent}18`,
-            color: accent,
-            border: `1px solid ${accent}30`,
-          }}
-        >
-          {visual ? visual.initial : <Robot size={12} weight="bold" />}
-        </span>
+        {review.reviewerAvatarUrl ? (
+          <PrUserAvatar user={{ login: review.reviewer, avatarUrl: review.reviewerAvatarUrl }} size={24} />
+        ) : (
+          <span
+            aria-hidden
+            className="flex h-6 w-6 shrink-0 items-center justify-center rounded-[6px] text-[11px] font-semibold"
+            style={{
+              background: `${accent}18`,
+              color: accent,
+              border: `1px solid ${accent}30`,
+            }}
+          >
+            {visual ? visual.initial : <Robot size={12} weight="bold" />}
+          </span>
+        )}
         <div className="flex min-w-0 flex-1 flex-col gap-0.5">
           <div className="flex items-center gap-2 text-[12px] font-medium">
             <span className="truncate" style={{ color: COLORS.textPrimary }}>

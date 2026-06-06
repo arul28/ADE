@@ -77,7 +77,9 @@ function createInMemoryAdeDb(): { db: AdeDb; raw: Database } {
       created_at text not null,
       started_at text not null,
       ended_at text,
-      updated_at text not null
+      updated_at text not null,
+      underway_comment_id text,
+      underway_pr_id text
     )
   `);
   raw.run(`
@@ -515,6 +517,31 @@ function createHarness(args: {
     destination: input.destination,
     findings: input.findings,
   }));
+  let underwayCommentSeq = 0;
+  const addComment = vi.fn(async (input: { prId: string; body: string }) => ({
+    id: `underway-comment-${(underwayCommentSeq += 1)}`,
+    author: "ade[bot]",
+    authorAvatarUrl: null,
+    body: input.body,
+    source: "issue" as const,
+    url: `https://github.com/ade-dev/ade/pull/80#issuecomment-${underwayCommentSeq}`,
+    path: null,
+    line: null,
+    createdAt: "2026-04-06T10:00:00.000Z",
+    updatedAt: "2026-04-06T10:00:00.000Z",
+  }));
+  const updateComment = vi.fn(async (input: { prId: string; commentId: string; body: string }) => ({
+    id: input.commentId,
+    author: "ade[bot]",
+    authorAvatarUrl: null,
+    body: input.body,
+    source: "issue" as const,
+    url: `https://github.com/ade-dev/ade/pull/80#issuecomment-${input.commentId}`,
+    path: null,
+    line: null,
+    createdAt: "2026-04-06T10:00:00.000Z",
+    updatedAt: "2026-04-06T10:05:00.000Z",
+  }));
 
   mockMaterializer.materialize.mockResolvedValue(makeMaterializedTarget({
     targetLabel: args.targetLabel,
@@ -620,6 +647,8 @@ function createHarness(args: {
         },
       ]),
       publishReviewPublication,
+      addComment,
+      updateComment,
     } as any : undefined,
   });
 
@@ -643,6 +672,8 @@ function createHarness(args: {
     interrupt,
     runSessionTurn,
     publishReviewPublication,
+    addComment,
+    updateComment,
     start: (config?: Partial<ReviewRunConfig>) => service.startRun({
       target,
       config: makeConfig({
@@ -1515,6 +1546,105 @@ describe("reviewService", () => {
     expect(detail?.findings.filter((finding) => finding.publicationState === "published")).toHaveLength(publicationArgs.findings.length);
     expect(detail?.publications).toHaveLength(1);
     expect(detail?.artifacts.some((artifact) => artifact.artifactType === "publication_request")).toBe(true);
+  });
+
+  describe("ADE review underway comment", () => {
+    const prDestination: ReviewPublicationDestination = {
+      kind: "github_pr_review",
+      prId: "pr-80",
+      repoOwner: "ade-dev",
+      repoName: "ade",
+      prNumber: 80,
+      githubUrl: "https://github.com/ade-dev/ade/pull/80",
+    };
+
+    function makePrHarness(extra?: { config?: Partial<ReviewRunConfig>; outputs?: Array<string | ((prompt: string) => string)> }) {
+      return createHarness({
+        publicationTarget: prDestination,
+        targetLabel: "PR #80 feature/pr-80 -> main",
+        target: { mode: "pr", laneId: "lane-review", prId: "pr-80" },
+        config: extra?.config,
+        outputs: extra?.outputs ?? [
+          makeOutput("Diff-risk found one issue.", [makeFinding()]),
+          makeOutput("Cross-file clear.", []),
+          makeOutput("Checks clear.", []),
+          makeOutput("Security clear.", []),
+          makeOutput("UI clear.", []),
+        ],
+      });
+    }
+
+    it("posts an underway comment on kickoff and edits it on completion", async () => {
+      const harness = makePrHarness({ config: { publishBehavior: "auto_publish" } });
+
+      const run = await harness.start();
+      await waitFor(
+        () => harness.service.listRuns(),
+        (runs) => runs.some((entry) => entry.id === run.id && entry.status === "completed"),
+      );
+
+      // Kickoff posted the underway comment exactly once, with the in-progress body.
+      expect(harness.addComment).toHaveBeenCalledTimes(1);
+      const posted = harness.addComment.mock.calls[0]?.[0];
+      expect(posted.prId).toBe("pr-80");
+      expect(posted.body).toContain("ADE is reviewing this PR");
+
+      // Comment id + pr id were persisted on the run row.
+      const persisted = mapExecRows(
+        harness.raw.exec("select underway_comment_id, underway_pr_id from review_runs where id = ?", [run.id]),
+      )[0];
+      expect(String(persisted?.underway_comment_id)).toBe("underway-comment-1");
+      expect(String(persisted?.underway_pr_id)).toBe("pr-80");
+
+      // Completion edited that same comment with the canonical summary.
+      expect(harness.updateComment).toHaveBeenCalledTimes(1);
+      const edited = harness.updateComment.mock.calls[0]?.[0];
+      expect(edited.commentId).toBe("underway-comment-1");
+      expect(edited.prId).toBe("pr-80");
+      expect(edited.body).toContain("## ADE review");
+      expect(edited.body).not.toContain("ADE is reviewing this PR");
+    });
+
+    it("edits the underway comment with a no-issues body when there are no findings", async () => {
+      const harness = makePrHarness({
+        outputs: [
+          makeOutput("Diff-risk clear.", []),
+          makeOutput("Cross-file clear.", []),
+          makeOutput("Checks clear.", []),
+          makeOutput("Security clear.", []),
+          makeOutput("UI clear.", []),
+        ],
+      });
+
+      const run = await harness.start();
+      await waitFor(
+        () => harness.service.listRuns(),
+        (runs) => runs.some((entry) => entry.id === run.id && entry.status === "completed"),
+      );
+
+      expect(harness.addComment).toHaveBeenCalledTimes(1);
+      expect(harness.updateComment).toHaveBeenCalledTimes(1);
+      const edited = harness.updateComment.mock.calls[0]?.[0];
+      expect(edited.commentId).toBe("underway-comment-1");
+      expect(edited.body).toContain("no issues found");
+    });
+
+    it("edits the underway comment with a did-not-complete body when all reviewers fail", async () => {
+      const harness = makePrHarness();
+      harness.runSessionTurn.mockRejectedValue(new Error("model unavailable"));
+
+      const run = await harness.start();
+      await waitFor(
+        () => harness.service.listRuns(),
+        (runs) => runs.some((entry) => entry.id === run.id && entry.status === "failed"),
+      );
+
+      expect(harness.addComment).toHaveBeenCalledTimes(1);
+      expect(harness.updateComment).toHaveBeenCalledTimes(1);
+      const edited = harness.updateComment.mock.calls[0]?.[0];
+      expect(edited.commentId).toBe("underway-comment-1");
+      expect(edited.body).toContain("did not complete");
+    });
   });
 
   it("reruns a saved multi-pass review through the same shared engine", async () => {

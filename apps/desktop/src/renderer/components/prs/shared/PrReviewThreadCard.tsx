@@ -13,6 +13,7 @@ import {
 import { useNavigate } from "react-router-dom";
 import {
   ArrowSquareOut,
+  CaretRight,
   CheckCircle,
   ChatCircleDots,
   Sparkle,
@@ -423,6 +424,11 @@ export const PrReviewThreadCard = memo(
     const containerStyle: CSSProperties = cardStyle({
       padding: 0,
       borderRadius: 12,
+      background: COLORS.threadCard,
+      border: "none",
+      backdropFilter: "none",
+      WebkitBackdropFilter: "none",
+      boxShadow: "none",
       outline: focused ? `2px solid ${COLORS.accent}` : "none",
       outlineOffset: focused ? 1 : 0,
     });
@@ -443,22 +449,23 @@ export const PrReviewThreadCard = memo(
           onKeyUp={(e) => {
             if (e.key === "Enter" || e.key === " ") setExpanded(true);
           }}
-          className="flex w-full cursor-pointer items-center gap-3 px-3 py-2 text-left transition-colors hover:bg-white/[0.04]"
+          className="flex w-full cursor-pointer items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-white/[0.04]"
           style={containerStyle}
         >
-          <CheckCircle
-            size={14}
-            weight={localResolved ? "fill" : "regular"}
-            style={{ color: localResolved ? COLORS.success : COLORS.textMuted }}
-          />
-          <span
-            className="flex-1 truncate text-[12px]"
-            style={{ color: COLORS.textSecondary, fontFamily: SANS_FONT }}
-          >
-            <span style={{ color: COLORS.textPrimary, fontWeight: 500 }}>{chip.label}</span>
-            <span> · {thread.comments.length} {thread.comments.length === 1 ? "comment" : "comments"}</span>
-            {fileLabel ? <span> · {fileLabel}</span> : null}
-          </span>
+          <CaretRight size={12} weight="bold" style={{ color: COLORS.textMuted, flexShrink: 0 }} />
+          <AvatarStack comments={thread.comments} />
+          <div className="flex min-w-0 flex-1 flex-col">
+            <span
+              className="truncate text-[12px] font-medium"
+              style={{ color: COLORS.textPrimary, fontFamily: SANS_FONT }}
+            >
+              {fileLabel ?? "Conversation"}
+            </span>
+            <span className="text-[11px]" style={{ color: COLORS.textMuted }}>
+              {thread.comments.length} {thread.comments.length === 1 ? "comment" : "comments"}
+            </span>
+          </div>
+          <span style={inlineBadge(chip.color, { padding: "2px 8px", marginRight: 2 })}>{chip.label}</span>
         </div>
       );
     }

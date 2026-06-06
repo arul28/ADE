@@ -2,7 +2,7 @@ import { memo, useRef, type CSSProperties } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { GitCommit } from "@phosphor-icons/react";
 
-import { COLORS, MONO_FONT } from "../../lanes/laneDesignTokens";
+import { COLORS, MONO_FONT, SANS_FONT } from "../../lanes/laneDesignTokens";
 import { relativeWhen } from "../../../lib/format";
 
 export type PrCommitRailCommit = {
@@ -38,32 +38,27 @@ export const PrCommitRail = memo(function PrCommitRail({
       data-testid="pr-commit-rail"
       className={`flex w-full flex-col ${isPane ? "min-h-0 flex-1" : "h-full"}`}
       style={{
-        background: isPane
-          ? `color-mix(in srgb, ${COLORS.accent} 4%, ${COLORS.cardBg})`
-          : COLORS.cardBg,
+        background: isPane ? "transparent" : COLORS.cardBg,
         borderRight: isPane ? undefined : `1px solid ${COLORS.border}`,
       }}
     >
       <div
-        className="flex shrink-0 items-center gap-1 px-2.5"
+        className="flex shrink-0 items-center gap-1.5 px-3"
         style={{
-          borderBottom: `1px solid ${isPane ? COLORS.accentBorder : COLORS.border}`,
-          height: 36,
-          background: isPane
-            ? `linear-gradient(135deg, color-mix(in srgb, ${COLORS.accent} 10%, transparent) 0%, transparent 100%)`
-            : undefined,
+          borderBottom: `1px solid ${COLORS.border}`,
+          height: 34,
         }}
       >
-        <GitCommit size={12} weight="bold" style={{ color: COLORS.textMuted }} />
+        <GitCommit size={13} weight="bold" style={{ color: COLORS.textMuted }} />
         <span
-          className="text-[10px] font-bold uppercase tracking-[1px]"
-          style={{ color: COLORS.textDim, fontFamily: MONO_FONT }}
+          className="text-[11px] font-medium"
+          style={{ color: COLORS.textSecondary, fontFamily: SANS_FONT }}
         >
           Commits
         </span>
         <span
-          className="ml-auto text-[10px]"
-          style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}
+          className="ml-auto text-[11px]"
+          style={{ color: COLORS.textDim, fontFamily: SANS_FONT, fontVariantNumeric: "tabular-nums" }}
         >
           {commits.length}
         </span>
@@ -188,7 +183,7 @@ function CommitRow({
         </span>
         <span
           className="ml-auto text-[10px]"
-          style={{ color: COLORS.textDim, fontFamily: MONO_FONT }}
+          style={{ color: COLORS.textDim, fontFamily: SANS_FONT }}
         >
           {relativeWhen(commit.authoredAt)}
         </span>

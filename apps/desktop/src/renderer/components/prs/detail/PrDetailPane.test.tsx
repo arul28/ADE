@@ -836,7 +836,9 @@ describe("PrDetailPane", () => {
 
     await waitFor(() => {
       expect(listSnapshots).toHaveBeenCalledWith({ prId: "pr-80" });
-      expect(screen.getByText("Cached snapshot check")).toBeTruthy();
+      // Passing checks collapse into the header CI badge (Linear-style); the
+      // snapshot's single passing check hydrates as "1/1 passed".
+      expect(screen.getByTestId("pr-header-ci-badge").textContent).toContain("passed");
     });
 
     const rails = await screen.findByTestId("pr-detail-timeline-rails");
@@ -1465,7 +1467,7 @@ describe("PrDetailPane", () => {
     expect(await screen.findByTestId("pr-detail-timeline-rails")).toBeTruthy();
     expect(screen.getByTestId("pr-comment-composer")).toBeTruthy();
     expect(screen.getByTestId("pr-detail-metadata-actions")).toBeTruthy();
-    expect(screen.getByRole("button", { name: /request ai review/i })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /ade review/i })).toBeTruthy();
 
     const mergeButton = screen.getByTestId("pr-merge-primary-button");
     expect((mergeButton as HTMLButtonElement).disabled).toBe(false);
@@ -2113,7 +2115,6 @@ describe("PrDetailPane", () => {
   });
 
   it("renders review activity bodies as markdown instead of raw source text", async () => {
-    const user = userEvent.setup();
     renderPane({
       checks: [makeCheck()],
       reviewThreads: [],
@@ -2126,11 +2127,129 @@ describe("PrDetailPane", () => {
       ],
     });
 
-    const botReviewToggle = await screen.findByRole("button", { name: /coderabbit/i });
-    await user.click(botReviewToggle);
+    // Bot reviews that carry a body now render expanded by default (Linear-style),
+    // so the markdown body is visible without toggling the card open.
+    await screen.findByRole("button", { name: /coderabbit/i });
 
     expect(await screen.findByText("Actionable comments posted: 3")).toBeTruthy();
     expect(screen.queryByText(/\*\*Actionable comments posted: 3\*\*/)).toBeNull();
     expect(screen.getByText("Prompt for AI Agents")).toBeTruthy();
+  });
+
+  it("routes detail fetches to coordinate endpoints and shows the create/map banner for an unmapped PR", async () => {
+    const coords = { repoOwner: "ade-dev", repoName: "ade", githubPrNumber: 200 };
+    const getDetailByGithub = vi.fn().mockResolvedValue({
+      prId: "gh:ade-dev/ade#200",
+      body: "Unmapped PR body",
+      labels: [],
+      assignees: [],
+      requestedReviewers: [],
+      author: { login: "octocat", avatarUrl: null },
+      isDraft: false,
+      milestone: null,
+      linkedIssues: [],
+    });
+    const getFilesByGithub = vi.fn().mockResolvedValue([]);
+    const getCommitsByGithub = vi.fn().mockResolvedValue([]);
+    const getActionRunsByGithub = vi.fn().mockResolvedValue([]);
+    const getActivityByGithub = vi.fn().mockResolvedValue([]);
+    const getReviewThreadsByGithub = vi.fn().mockResolvedValue([]);
+    // Row-based variants must NOT be called for an unmapped PR.
+    const getDetail = vi.fn().mockResolvedValue(null);
+    const loadConvergenceState = vi.fn();
+    const onCreateLane = vi.fn();
+
+    mockUsePrs.mockReturnValue({
+      convergenceStatesByPrId: {},
+      detailReviewThreads: [],
+      loadConvergenceState,
+      saveConvergenceState: vi.fn(),
+      resetConvergenceState: vi.fn(),
+      rebaseNeeds: [],
+      resolverModel: "openai/gpt-5.4",
+      resolverReasoningLevel: "high",
+      resolverPermissionMode: "guarded_edit",
+      setResolverModel: vi.fn(),
+      setResolverReasoningLevel: vi.fn(),
+      setResolverPermissionMode: vi.fn(),
+      dismissedAiSummaries: {},
+      timelineFiltersByPrId: {},
+      detailAiSummary: null,
+      detailDeployments: [],
+      detailLiveDataPrId: null,
+      viewerLogin: "octocat",
+      setTimelineFilters: vi.fn(),
+      setAiSummaryDismissed: vi.fn(),
+      regeneratePrAiSummary: vi.fn(),
+    });
+
+    Object.assign(window, {
+      ade: {
+        prs: {
+          getDetail,
+          getFiles: vi.fn().mockResolvedValue([]),
+          getCommits: vi.fn().mockResolvedValue([]),
+          getActionRuns: vi.fn().mockResolvedValue([]),
+          getActivity: vi.fn().mockResolvedValue([]),
+          getReviewThreads: vi.fn().mockResolvedValue([]),
+          getDetailByGithub,
+          getFilesByGithub,
+          getCommitsByGithub,
+          getActionRunsByGithub,
+          getActivityByGithub,
+          getReviewThreadsByGithub,
+          getChecks: vi.fn().mockResolvedValue([]),
+          getStatus: vi.fn().mockResolvedValue(null),
+          onAiResolutionEvent: vi.fn(() => () => {}),
+        },
+        app: { openExternal: vi.fn(), writeClipboardText: vi.fn() },
+        lanes: { list: vi.fn().mockResolvedValue([]) },
+        git: { getSyncStatus: vi.fn() },
+        sessions: { get: vi.fn() },
+      },
+    });
+
+    render(
+      <MemoryRouter>
+        <PrDetailPane
+          pr={makePr({ id: "gh:ade-dev/ade#200", laneId: "" })}
+          status={null}
+          checks={[]}
+          reviews={[]}
+          comments={[]}
+          detailBusy={false}
+          lanes={[]}
+          mergeMethod="squash"
+          onRefresh={vi.fn().mockResolvedValue(undefined)}
+          onNavigate={vi.fn()}
+          unmapped
+          githubCoords={coords}
+          unmappedAffordance={{
+            linkableLanes: [],
+            selectedLaneId: "",
+            onSelectLane: vi.fn(),
+            onLink: vi.fn(),
+            linkBusy: false,
+            canCreateLane: true,
+            onCreateLane,
+            scope: "repo",
+          }}
+        />
+      </MemoryRouter>,
+    );
+
+    // Coordinate endpoints are used; the row-based getDetail is never called.
+    await waitFor(() => {
+      expect(getDetailByGithub).toHaveBeenCalledWith(coords);
+    });
+    expect(getDetail).not.toHaveBeenCalled();
+    // Lane-dependent convergence load is skipped for unmapped PRs.
+    expect(loadConvergenceState).not.toHaveBeenCalled();
+
+    // The create/map banner renders and wires the create-lane action.
+    const banner = await screen.findByTestId("pr-unmapped-affordance");
+    const user = userEvent.setup();
+    await user.click(within(banner).getByRole("button", { name: /create lane from pr branch/i }));
+    expect(onCreateLane).toHaveBeenCalled();
   });
 });

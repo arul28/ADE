@@ -1180,6 +1180,15 @@ export function createHeadlessGitHubService(
         })
       ).data ?? null;
     },
+    async updateIssueComment(owner, name, commentId, body) {
+      return (
+        await apiRequest<GitHubIssueComment>({
+          method: "PATCH",
+          path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/issues/comments/${commentId}`,
+          body: { body },
+        })
+      ).data ?? null;
+    },
     async setIssueLabels(owner, name, number, labels) {
       const { data } = await apiRequest<GitHubLabel[]>({
           method: "PUT",

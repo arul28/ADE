@@ -1083,6 +1083,17 @@ export function createGithubService({
     return data ?? null;
   };
 
+  // Edits an existing issue comment in place. `commentId` is the GitHub issue
+  // comment id (NOT the PR number) returned by addIssueComment.
+  const updateIssueComment = async (owner: string, name: string, commentId: number, body: string): Promise<GitHubIssueComment | null> => {
+    const { data } = await apiRequest<GitHubIssueComment>({
+      method: "PATCH",
+      path: `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/issues/comments/${commentId}`,
+      body: { body },
+    });
+    return data ?? null;
+  };
+
   const setIssueLabels = async (owner: string, name: string, number: number, labels: string[]): Promise<GitHubLabel[]> => {
     const { data } = await apiRequest<GitHubLabel[]>({
       method: "PUT",
@@ -1369,6 +1380,7 @@ export function createGithubService({
     // Issue-domain action helpers (exposed via `issue` domain in the
     // automations action registry).
     addIssueComment,
+    updateIssueComment,
     setIssueLabels,
     closeIssue,
     reopenIssue,

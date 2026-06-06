@@ -194,6 +194,25 @@ export type PrEventPayload =
       reviewStatus: PrReviewStatus;
     }
   | {
+      // Emitted when a GitHub PR is automatically mapped to an ADE lane by
+      // branch (same-repo head, exactly one matching lane). Carries enough
+      // context for the renderer to show an "Auto-linked PR #<n> -> <lane>"
+      // toast with an Undo action. Undo routes through the existing
+      // `prs.delete` unmap path, which records suppression so the next poll
+      // does not re-bind the same pair.
+      type: "pr-auto-linked";
+      timestamp: string;
+      prId: string;
+      laneId: string;
+      laneName: string;
+      prNumber: number;
+      prTitle: string;
+      repoOwner: string;
+      repoName: string;
+      headBranch: string;
+      githubUrl: string;
+    }
+  | {
       type: "queue-step";
       groupId: string;
       prId: string;
@@ -1099,6 +1118,21 @@ export type PrStrategy =
 // PR Detail Overhaul Types
 // --------------------------------
 
+/**
+ * GitHub coordinates that uniquely identify a pull request without a local DB
+ * row. Used by the coordinate-based detail fetches so the PRs tab can render the
+ * full detail view for PRs that are not mapped to an ADE lane.
+ *
+ * For fork / external-scope PRs these always point at the BASE repo's pulls
+ * endpoint (`repoOwner`/`repoName` are the base repo, `githubPrNumber` is the
+ * base-repo PR number).
+ */
+export type PrGithubCoords = {
+  repoOwner: string;
+  repoName: string;
+  githubPrNumber: number;
+};
+
 /** Full PR detail fetched from GitHub API with body, labels, assignees, etc. */
 export type PrDetail = {
   prId: string;
@@ -1209,6 +1243,12 @@ export type AddPrCommentArgs = {
   prId: string;
   body: string;
   inReplyToCommentId?: string;
+};
+
+export type UpdatePrCommentArgs = {
+  prId: string;
+  commentId: string;
+  body: string;
 };
 
 export type UpdatePrTitleArgs = {

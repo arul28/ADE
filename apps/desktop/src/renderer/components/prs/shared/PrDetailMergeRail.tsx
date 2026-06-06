@@ -144,29 +144,23 @@ export const PrDetailMergeRail = memo(function PrDetailMergeRail({
     return (
       <div
         data-testid="pr-detail-merge-rail"
-        className="w-full shrink-0"
-        style={{
-          background: COLORS.cardBg,
-          borderLeft: `1px solid ${COLORS.border}`,
-        }}
+        className="w-full"
+        style={{ background: "transparent" }}
       >
-        <div
-          className="shrink-0"
-          style={{ borderTop: `1px solid ${COLORS.border}` }}
-        >
+        <div className="shrink-0">
           {isMerged ? (
             <div
               className="px-3 py-2.5"
               style={{
-                background: "color-mix(in srgb, #8957e5 16%, transparent)",
-                borderBottom: `1px solid color-mix(in srgb, #8957e5 28%, transparent)`,
+                background: `color-mix(in srgb, ${COLORS.accent} 14%, var(--color-card))`,
+                borderBottom: `1px solid color-mix(in srgb, ${COLORS.accent} 26%, transparent)`,
               }}
               data-testid="pr-merge-merged-banner"
             >
               <div className="flex items-start gap-2">
-                <GitMerge size={15} weight="fill" style={{ color: "#bc8cff", marginTop: 1, flexShrink: 0 }} />
+                <GitMerge size={15} weight="fill" style={{ color: COLORS.accent, marginTop: 1, flexShrink: 0 }} />
                 <div className="min-w-0">
-                  <div className="text-[11px] font-semibold leading-snug" style={{ color: "#d2a8ff", fontFamily: SANS_FONT }}>
+                  <div className="text-[11px] font-semibold leading-snug" style={{ color: COLORS.textPrimary, fontFamily: SANS_FONT }}>
                     Merged and closed
                   </div>
                   <div className="mt-1 text-[10px] leading-snug" style={{ color: COLORS.textMuted, fontFamily: SANS_FONT }}>
@@ -257,16 +251,11 @@ export const PrDetailMergeRail = memo(function PrDetailMergeRail({
   return (
     <div
       data-testid="pr-detail-merge-rail"
-      className="flex h-full min-h-0 w-full flex-col justify-end overflow-hidden"
-      style={{
-        background: COLORS.cardBg,
-        borderLeft: `1px solid ${COLORS.border}`,
-      }}
+      className="flex w-full flex-col overflow-hidden"
+      style={{ background: "transparent" }}
     >
-      <div
-        className="max-h-full shrink-0 overflow-y-auto"
-        style={{ borderTop: `1px solid ${COLORS.border}` }}
-      >
+      <div className="overflow-y-auto">
+
         <div className="px-3 py-3">
           {blockers.length > 0 ? (
               <div data-testid="pr-merge-blocked">

@@ -50,6 +50,7 @@ import type { createAgentChatService } from "../chat/agentChatService";
 import type { createSessionService } from "../sessions/sessionService";
 import type { createSessionDeltaService } from "../sessions/sessionDeltaService";
 import type { createPrService } from "../prs/prService";
+import { buildPublishedReviewSummaryBody } from "../prs/prService";
 import type { createIssueInventoryService } from "../prs/issueInventoryService";
 import type { createTestService } from "../tests/testService";
 import { createReviewTargetMaterializer } from "./reviewTargetMaterializer";
@@ -81,6 +82,8 @@ type ReviewRunRow = {
   started_at: string;
   ended_at: string | null;
   updated_at: string;
+  underway_comment_id: string | null;
+  underway_pr_id: string | null;
 };
 
 type ReviewFindingRow = {
@@ -580,6 +583,47 @@ function buildContextArtifactHints(args: {
     lines.push(`- validation_signals artifact id: ${args.artifactIds.validationArtifactId}`);
   }
   return lines;
+}
+
+// Initial body posted to a PR when an ADE review kicks off. Kept concise and
+// branded — a heading plus an in-progress note. This same comment is edited in
+// place when the run reaches a terminal state, so it never stays stuck here.
+function buildAdeReviewUnderwayBody(targetLabel: string): string {
+  return [
+    "## ADE review",
+    "",
+    `Target: ${targetLabel}`,
+    "",
+    "⏳ ADE is reviewing this PR…",
+    "",
+    "_This comment will update with the result when the review finishes._",
+  ].join("\n").trim();
+}
+
+// Terminal body for a PR-target review that produced no actionable findings.
+function buildAdeReviewNoFindingsBody(targetLabel: string): string {
+  return [
+    "## ADE review",
+    "",
+    `Target: ${targetLabel}`,
+    "",
+    "✅ ADE review complete — no issues found.",
+  ].join("\n").trim();
+}
+
+// Terminal body for a PR-target review that failed or was cancelled before it
+// could produce a result.
+function buildAdeReviewIncompleteBody(targetLabel: string, reason: "failed" | "cancelled"): string {
+  const note = reason === "cancelled"
+    ? "ADE review was cancelled before it completed."
+    : "ADE review did not complete.";
+  return [
+    "## ADE review",
+    "",
+    `Target: ${targetLabel}`,
+    "",
+    `⚠️ ${note}`,
+  ].join("\n").trim();
 }
 
 function buildReadOnlyInspectionInstructions(args: {
@@ -1590,7 +1634,7 @@ export function createReviewService({
   sessionDeltaService: Pick<ReturnType<typeof createSessionDeltaService>, "listRecentLaneSessionDeltas">;
   testService: Pick<ReturnType<typeof createTestService>, "listRuns" | "getLogTail" | "listSuites">;
   issueInventoryService: Pick<ReturnType<typeof createIssueInventoryService>, "getInventory">;
-  prService?: Pick<ReturnType<typeof createPrService>, "getReviewSnapshot" | "getChecks" | "publishReviewPublication">;
+  prService?: Pick<ReturnType<typeof createPrService>, "getReviewSnapshot" | "getChecks" | "publishReviewPublication" | "addComment" | "updateComment">;
   onEvent?: (event: ReviewEventPayload) => void;
 }) {
   const materializer = createReviewTargetMaterializer({ laneService, prService });
@@ -1654,6 +1698,8 @@ export function createReviewService({
     chat_session_id: string | null;
     ended_at: string | null;
     updated_at: string;
+    underway_comment_id: string | null;
+    underway_pr_id: string | null;
   }>): void {
     const sets: string[] = [];
     const params: Array<string | number | null> = [];
@@ -1664,6 +1710,59 @@ export function createReviewService({
     if (sets.length === 0) return;
     params.push(runId, projectId);
     db.run(`update review_runs set ${sets.join(", ")} where id = ? and project_id = ?`, params);
+  }
+
+  // Posts the "ADE review underway" issue comment for a PR-target run and
+  // persists the returned comment id + PR id on the run row. Runs from MAIN so
+  // the id survives renderer navigation/reload. Best-effort: a failure to post
+  // (e.g. no GitHub auth) must never block the actual review.
+  async function postUnderwayComment(args: {
+    runId: string;
+    prId: string;
+    targetLabel: string;
+  }): Promise<void> {
+    if (!prService) return;
+    try {
+      const comment = await prService.addComment({
+        prId: args.prId,
+        body: buildAdeReviewUnderwayBody(args.targetLabel),
+      });
+      const commentId = comment.id?.trim();
+      if (!commentId) return;
+      updateRun(args.runId, {
+        underway_comment_id: commentId,
+        underway_pr_id: args.prId,
+        updated_at: nowIso(),
+      });
+    } catch (error) {
+      logger.warn("review.underway_comment_post_failed", {
+        runId: args.runId,
+        prId: args.prId,
+        error: getErrorMessage(error),
+      });
+    }
+  }
+
+  // Edits the persisted underway comment in place with the terminal body. Reads
+  // the comment id back from the run row (it may have been persisted in an
+  // earlier step). No-op when there's no underway comment. Best-effort: failures
+  // are logged, never thrown, so they don't mask the run's real outcome.
+  async function finalizeUnderwayComment(runId: string, body: string): Promise<void> {
+    if (!prService) return;
+    const row = getRunRow(runId);
+    const commentId = row?.underway_comment_id?.trim();
+    const prId = row?.underway_pr_id?.trim();
+    if (!commentId || !prId) return;
+    try {
+      await prService.updateComment({ prId, commentId, body });
+    } catch (error) {
+      logger.warn("review.underway_comment_update_failed", {
+        runId,
+        prId,
+        commentId,
+        error: getErrorMessage(error),
+      });
+    }
   }
 
   function insertRun(run: ReviewRun): void {
@@ -2397,6 +2496,18 @@ export function createReviewService({
         updated_at: nowIso(),
       });
 
+      // PR-target runs immediately post an "ADE review underway" comment from
+      // MAIN and persist its id, so every terminal path below can edit it in
+      // place (and so it survives renderer reloads). Best-effort — never blocks.
+      if (run.target.mode === "pr") {
+        await postUnderwayComment({
+          runId,
+          prId: run.target.prId,
+          targetLabel: materialized.targetLabel,
+        });
+      }
+      if (disposed) return;
+
       let diffBundleArtifactId: string | null = null;
       for (const artifact of materialized.artifacts) {
         if (disposed) return;
@@ -2418,6 +2529,7 @@ export function createReviewService({
           ended_at: endedAt,
           updated_at: endedAt,
         });
+        await finalizeUnderwayComment(runId, buildAdeReviewNoFindingsBody(materialized.targetLabel));
         emit({ type: "run-completed", runId, laneId: run.laneId, status: "completed" });
         emit({ type: "runs-updated", runId, laneId: run.laneId, status: "completed" });
         return;
@@ -2555,6 +2667,7 @@ export function createReviewService({
           ended_at: endedAt,
           updated_at: endedAt,
         });
+        await finalizeUnderwayComment(runId, buildAdeReviewIncompleteBody(materialized.targetLabel, "cancelled"));
         emit({ type: "run-completed", runId, laneId: run.laneId, status: "cancelled" });
         emit({ type: "runs-updated", runId, laneId: run.laneId, status: "cancelled" });
         return;
@@ -2591,6 +2704,7 @@ export function createReviewService({
           ended_at: endedAt,
           updated_at: endedAt,
         });
+        await finalizeUnderwayComment(runId, buildAdeReviewIncompleteBody(materialized.targetLabel, "cancelled"));
         emit({ type: "run-completed", runId, laneId: run.laneId, status: "cancelled" });
         emit({ type: "runs-updated", runId, laneId: run.laneId, status: "cancelled" });
         return;
@@ -2628,6 +2742,7 @@ export function createReviewService({
             ended_at: endedAt,
             updated_at: endedAt,
           });
+          await finalizeUnderwayComment(runId, buildAdeReviewIncompleteBody(materialized.targetLabel, "failed"));
           emit({ type: "run-completed", runId, laneId: run.laneId, status: "failed" });
           emit({ type: "runs-updated", runId, laneId: run.laneId, status: "failed" });
           return;
@@ -2745,11 +2860,13 @@ export function createReviewService({
           ended_at: endedAt,
           updated_at: endedAt,
         });
+        await finalizeUnderwayComment(runId, buildAdeReviewIncompleteBody(materialized.targetLabel, "cancelled"));
         emit({ type: "run-completed", runId, laneId: run.laneId, status: "cancelled" });
         emit({ type: "runs-updated", runId, laneId: run.laneId, status: "cancelled" });
         return;
       }
       const publishableFindings = findings.filter((finding) => finding.suppressionMatch == null);
+      let publication: ReviewPublication | null = null;
       const suppressedCount = findings.length - publishableFindings.length;
       if (suppressedCount > 0) {
         insertArtifact(runId, {
@@ -2784,7 +2901,7 @@ export function createReviewService({
           },
         });
       } else {
-        await publishRun({
+        publication = await publishRun({
           runId,
           targetLabel: materialized.targetLabel,
           summary: finalSummary,
@@ -2811,6 +2928,28 @@ export function createReviewService({
         ended_at: endedAt,
         updated_at: endedAt,
       });
+      // Edit the underway comment with the terminal result. On normal completion
+      // this becomes the canonical top-level summary, reusing the SAME builder the
+      // published review uses so the format matches. To avoid duplicating content,
+      // anchored findings that were posted as inline review comments are passed as
+      // `inlineFindings` (the builder only reports their count) while
+      // summary-only findings are listed in full — mirroring the published review
+      // exactly. We derive the split from the publication result when available.
+      if (cancelledDuringPublish) {
+        await finalizeUnderwayComment(runId, buildAdeReviewIncompleteBody(materialized.targetLabel, "cancelled"));
+      } else if (publishableFindings.length === 0) {
+        await finalizeUnderwayComment(runId, buildAdeReviewNoFindingsBody(materialized.targetLabel));
+      } else {
+        const inlineFindingIds = new Set((publication?.inlineComments ?? []).map((comment) => comment.findingId));
+        const inlineFindings = publishableFindings.filter((finding) => inlineFindingIds.has(finding.id));
+        const summaryFindings = publishableFindings.filter((finding) => !inlineFindingIds.has(finding.id));
+        await finalizeUnderwayComment(runId, buildPublishedReviewSummaryBody({
+          targetLabel: materialized.targetLabel,
+          summary: finalSummary,
+          inlineFindings,
+          summaryFindings,
+        }));
+      }
       const finalStatus = cancelledDuringPublish ? "cancelled" : "completed";
       emit({ type: "run-completed", runId, laneId: run.laneId, status: finalStatus });
       emit({ type: "runs-updated", runId, laneId: run.laneId, status: finalStatus });
@@ -2823,6 +2962,10 @@ export function createReviewService({
         ended_at: endedAt,
         updated_at: endedAt,
       });
+      // Edit the underway comment (if any) to a terminal "did not complete"
+      // message so it never stays stuck on the in-progress body. Uses the run
+      // row's persisted target label since `materialized` may be out of scope.
+      await finalizeUnderwayComment(runId, buildAdeReviewIncompleteBody(getRunRow(runId)?.target_label ?? "this PR", "failed"));
       logger.warn("review.run_failed", {
         runId,
         projectRoot,

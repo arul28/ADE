@@ -23,20 +23,65 @@ vi.mock("../state/PrsContext", () => ({
   usePrs: () => mockUsePrs(),
 }));
 
+type MockUnmappedAffordance = {
+  linkableLanes: Array<{ id: string; name: string }>;
+  selectedLaneId: string;
+  onSelectLane: (laneId: string) => void;
+  onLink: () => void;
+  linkBusy: boolean;
+  canCreateLane: boolean;
+  onCreateLane: () => void;
+  scope: "repo" | "external";
+};
+
 vi.mock("../detail/PrDetailPane", () => ({
   PrDetailPane: ({
     pr,
     queueContext,
     onUnmap,
+    unmapped,
+    unmappedAffordance,
   }: {
     pr: { id: string };
     queueContext?: { groupId: string } | null;
     onUnmap?: () => void;
+    unmapped?: boolean;
+    unmappedAffordance?: MockUnmappedAffordance | null;
   }) => (
-    <div data-testid="pr-detail-pane">
+    <div data-testid="pr-detail-pane" data-unmapped={unmapped ? "true" : "false"}>
       {pr.id}
       {queueContext ? <span data-testid="queue-context">{queueContext.groupId}</span> : null}
       {onUnmap ? <button type="button" onClick={onUnmap}>Unmap from lane</button> : null}
+      {unmappedAffordance ? (
+        <div data-testid="pr-unmapped-affordance">
+          {unmappedAffordance.canCreateLane ? (
+            <button type="button" onClick={unmappedAffordance.onCreateLane}>
+              Create lane from PR branch
+            </button>
+          ) : null}
+          {unmappedAffordance.linkableLanes.length > 0 ? (
+            <>
+              <select
+                aria-label="Select lane to map"
+                value={unmappedAffordance.selectedLaneId}
+                onChange={(event) => unmappedAffordance.onSelectLane(event.target.value)}
+              >
+                <option value="">Map to lane…</option>
+                {unmappedAffordance.linkableLanes.map((lane) => (
+                  <option key={lane.id} value={lane.id}>{lane.name}</option>
+                ))}
+              </select>
+              <button
+                type="button"
+                disabled={!unmappedAffordance.selectedLaneId || unmappedAffordance.linkBusy}
+                onClick={unmappedAffordance.onLink}
+              >
+                Map
+              </button>
+            </>
+          ) : null}
+        </div>
+      ) : null}
     </div>
   ),
 }));
@@ -791,6 +836,84 @@ describe("GitHubTab", () => {
       expect(screen.getByText("Unlinked PR")).not.toBeNull();
     });
     expect(screen.getAllByText("unmapped").length).toBeGreaterThan(0);
+  });
+
+  it("renders the full PR detail pane (with create/map affordance) for a selected unmapped PR", async () => {
+    const user = userEvent.setup();
+    const snapshotWithUnlinked: GitHubPrSnapshot = {
+      ...snapshot,
+      repoPullRequests: [
+        makeGitHubPr({
+          id: "repo-unlinked",
+          githubPrNumber: 200,
+          githubUrl: "https://github.com/ade-dev/ade/pull/200",
+          title: "Unlinked PR",
+          headBranch: "feature/no-lane",
+          linkedPrId: null,
+          linkedLaneId: null,
+          linkedLaneName: null,
+          adeKind: null,
+          createdAt: "2026-03-13T12:00:00.000Z",
+          updatedAt: "2026-03-13T12:05:00.000Z",
+        }),
+      ],
+    };
+    (window.ade.prs.getGitHubSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(snapshotWithUnlinked);
+    // No lane owns the PR head branch → the "Create lane from PR branch" action
+    // is offered (and there is no matching lane to map to).
+    renderTab({ lanes: [] });
+
+    await user.click(await screen.findByText("Unlinked PR"));
+
+    // The full detail pane renders (not the legacy read-only gate), keyed by a
+    // stable synthetic id derived from the GitHub coordinates.
+    const pane = await screen.findByTestId("pr-detail-pane");
+    expect(pane.getAttribute("data-unmapped")).toBe("true");
+    expect(pane.textContent).toContain("gh:ade-dev/ade#200");
+
+    // The create/map affordance is present (no read-only gate).
+    const affordance = within(pane).getByTestId("pr-unmapped-affordance");
+    expect(within(affordance).getByRole("button", { name: /create lane from pr branch/i })).toBeTruthy();
+  });
+
+  it("maps an unmapped PR to a lane via the in-pane affordance", async () => {
+    const user = userEvent.setup();
+    const snapshotWithUnlinked: GitHubPrSnapshot = {
+      ...snapshot,
+      repoPullRequests: [
+        makeGitHubPr({
+          id: "repo-unlinked",
+          githubPrNumber: 200,
+          githubUrl: "https://github.com/ade-dev/ade/pull/200",
+          title: "Unlinked PR",
+          headBranch: "feature/lane-match",
+          linkedPrId: null,
+          linkedLaneId: null,
+          linkedLaneName: null,
+          adeKind: null,
+          createdAt: "2026-03-13T12:00:00.000Z",
+          updatedAt: "2026-03-13T12:05:00.000Z",
+        }),
+      ],
+    };
+    (window.ade.prs.getGitHubSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(snapshotWithUnlinked);
+    renderTab({
+      lanes: [makeLaneSummary({ id: "lane-match", name: "Matching lane", branchRef: "refs/heads/feature/lane-match" })],
+    });
+
+    await user.click(await screen.findByText("Unlinked PR"));
+    const pane = await screen.findByTestId("pr-detail-pane");
+    const affordance = within(pane).getByTestId("pr-unmapped-affordance");
+
+    await user.selectOptions(within(affordance).getByLabelText("Select lane to map"), "lane-match");
+    await user.click(within(affordance).getByRole("button", { name: /^map$/i }));
+
+    await waitFor(() => {
+      expect(window.ade.prs.linkToLane).toHaveBeenCalledWith({
+        laneId: "lane-match",
+        prUrlOrNumber: "https://github.com/ade-dev/ade/pull/200",
+      });
+    });
   });
 
   it("opens a preflight dialog for an unmapped PR branch", async () => {

@@ -1,5 +1,5 @@
 import React from "react";
-import { ArrowSquareOut, ChatText, CheckCircle, GitBranch, GitMerge, GithubLogo, Link, Warning, XCircle } from "@phosphor-icons/react";
+import { ArrowSquareOut, ChatText, CheckCircle, GitBranch, GitMerge, GithubLogo, Warning, XCircle } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
 import { Group, Panel } from "react-resizable-panels";
 import { useVirtualizer } from "@tanstack/react-virtual";
@@ -17,11 +17,11 @@ import type {
 } from "../../../../shared/types";
 import { EmptyState } from "../../ui/EmptyState";
 import { ResizeGutter } from "../../ui/ResizeGutter";
-import { COLORS, LABEL_STYLE, MONO_FONT, SANS_FONT, cardStyle, inlineBadge, outlineButton, primaryButton } from "../../lanes/laneDesignTokens";
+import { COLORS, LABEL_STYLE, MONO_FONT, SANS_FONT, inlineBadge, outlineButton, primaryButton } from "../../lanes/laneDesignTokens";
 import { LaneAccentDot } from "../../lanes/LaneAccentDot";
 import { selectActiveProjectRoot, useAppStore, useAppStoreApi } from "../../../state/appStore";
-import { PrDetailPane } from "../detail/PrDetailPane";
-import { formatTimestampShort, formatTimeAgoCompact } from "../shared/prFormatters";
+import { PrDetailPane, type UnmappedAffordance } from "../detail/PrDetailPane";
+import { formatTimeAgoCompact } from "../shared/prFormatters";
 import { PrCiRunningIndicator } from "../shared/prVisuals";
 import { usePrs } from "../state/PrsContext";
 import type { PrDetailRouteTab } from "../prsRouteState";
@@ -396,6 +396,46 @@ function sameGitHubPr(left: GitHubPrListItem, right: GitHubPrListItem): boolean 
     && Number(left.githubPrNumber) === Number(right.githubPrNumber);
 }
 
+/**
+ * Stable synthetic PR id for an unmapped GitHub PR (no ADE lane / DB row).
+ * Mirrors the backend's `syntheticGithubPrId` so the same coordinate-based
+ * fetches that the pane issues resolve consistently. Must be deterministic
+ * across renders — it keys both per-id effects in the pane and the React `key`.
+ */
+function syntheticUnmappedPrId(item: GitHubPrListItem): string {
+  return `gh:${item.repoOwner}/${item.repoName}#${item.githubPrNumber}`;
+}
+
+/**
+ * Build a referentially-stable synthetic `PrWithConflicts` for an unmapped
+ * GitHub PR so it can flow through the full `PrDetailPane`. `laneId` is empty
+ * (no lane) and the id is derived deterministically from the GitHub item.
+ */
+function buildSyntheticUnmappedPr(item: GitHubPrListItem, projectId: string): PrWithConflicts {
+  return {
+    id: syntheticUnmappedPrId(item),
+    laneId: "",
+    projectId,
+    repoOwner: item.repoOwner,
+    repoName: item.repoName,
+    githubPrNumber: item.githubPrNumber,
+    githubUrl: item.githubUrl,
+    githubNodeId: null,
+    title: item.title,
+    state: item.state,
+    baseBranch: item.baseBranch ?? "",
+    headBranch: item.headBranch ?? "",
+    checksStatus: "none",
+    reviewStatus: "none",
+    additions: 0,
+    deletions: 0,
+    lastSyncedAt: null,
+    createdAt: item.createdAt,
+    updatedAt: item.updatedAt,
+    conflictAnalysis: null,
+  };
+}
+
 function patchSnapshotWithMappedPr(
   snapshot: GitHubPrSnapshot,
   item: GitHubPrListItem,
@@ -420,224 +460,6 @@ function patchSnapshotWithMappedPr(
     repoPullRequests: patchItems(snapshot.repoPullRequests),
     externalPullRequests: patchItems(snapshot.externalPullRequests),
   };
-}
-
-function GitHubReadOnlyPane({
-  item,
-  lanes,
-  linkingBusy,
-  linkLaneId,
-  onLinkLaneChange,
-  onLink,
-  unlinkBusy,
-  onUnlink,
-  onCreateLaneFromPrBranch,
-}: {
-  item: GitHubPrListItem;
-  lanes: LaneSummary[];
-  linkingBusy: boolean;
-  linkLaneId: string;
-  onLinkLaneChange: (laneId: string) => void;
-  onLink: () => Promise<void>;
-  unlinkBusy: boolean;
-  onUnlink: () => Promise<void>;
-  onCreateLaneFromPrBranch: () => void;
-}) {
-  const linkableLanes = React.useMemo(
-    () => lanes.filter((lane) => {
-      if (lane.archivedAt || lane.laneType === "primary") return false;
-      const headBranch = branchNameFromRef(item.headBranch);
-      if (!headBranch) return true;
-      return branchNameFromRef(lane.branchRef) === headBranch;
-    }),
-    [item.headBranch, lanes],
-  );
-
-  const linkedLaneColor = useLaneColorById(item.linkedLaneId ?? null);
-  const showCreateLaneFromPrBranch = canCreateLaneFromPrBranch(item, lanes);
-
-  const sc = stateColor(item.state);
-
-  return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "auto", padding: 20, gap: 16, backdropFilter: "blur(20px)" }}>
-      <div style={cardStyle({ background: "rgba(255,255,255,0.035)", border: "1px solid rgba(255,255,255,0.07)" })}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
-          <div style={{ minWidth: 0 }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
-              <span style={stateBadgeStyle(item)}>{item.state}</span>
-              <AdeKindBadge kind={item.adeKind} />
-              {item.scope === "external" ? <span style={inlineBadge(COLORS.textMuted)}>external</span> : null}
-            </div>
-            <div style={{ fontSize: 20, fontWeight: 700, color: COLORS.textPrimary, fontFamily: SANS_FONT }}>
-              {item.title}
-            </div>
-            <div style={{ marginTop: 6, display: "flex", alignItems: "center", gap: 8 }}>
-              {item.author ? (
-                <img
-                  src={`https://avatars.githubusercontent.com/${item.author}?size=32`}
-                  alt=""
-                  style={{ width: 18, height: 18, borderRadius: "50%", border: "1px solid rgba(255,255,255,0.08)" }}
-                  onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
-                />
-              ) : null}
-              <span style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textMuted }}>
-                {item.author ?? "unknown"}
-              </span>
-              <span style={{ color: COLORS.textDim }}>in</span>
-              <span style={{ fontFamily: MONO_FONT, fontSize: 11, color: COLORS.textMuted }}>
-                {item.repoOwner}/{item.repoName}
-              </span>
-              <span style={{ fontFamily: MONO_FONT, fontSize: 11, color: sc.text }}>
-                #{item.githubPrNumber}
-              </span>
-            </div>
-          </div>
-          <button
-            type="button"
-            onClick={() => void window.ade.app.openExternal(item.githubUrl)}
-            style={outlineButton({ flexShrink: 0, borderRadius: 10, gap: 8 })}
-          >
-            <GithubLogo size={14} weight="fill" /> View on GitHub
-          </button>
-        </div>
-      </div>
-
-      <div style={{ ...cardStyle({ background: "rgba(255,255,255,0.035)", border: "1px solid rgba(255,255,255,0.07)" }), display: "grid", gap: 12 }}>
-        <div>
-          <div style={LABEL_STYLE}>ADE Status</div>
-          {item.linkedPrId ? (
-            <div style={{ display: "grid", gap: 10, marginTop: 4 }}>
-              <div style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textSecondary }}>
-                Linked to{" "}
-                <span
-                  style={{
-                    fontFamily: MONO_FONT,
-                    color: linkedLaneColor ?? COLORS.accent,
-                    display: "inline-flex",
-                    alignItems: "center",
-                    gap: 4,
-                    verticalAlign: "middle",
-                  }}
-                >
-                  {linkedLaneColor ? <LaneAccentDot lane={{ color: linkedLaneColor }} size={7} /> : null}
-                  {item.linkedLaneName ?? item.linkedLaneId ?? "lane"}
-                </span>
-              </div>
-              <button
-                type="button"
-                disabled={unlinkBusy}
-                onClick={() => void onUnlink()}
-                style={outlineButton({
-                  width: "fit-content",
-                  height: 30,
-                  padding: "0 10px",
-                  color: COLORS.warning,
-                  borderColor: "color-mix(in srgb, var(--color-warning) 38%, transparent)",
-                  opacity: unlinkBusy ? 0.55 : 1,
-                })}
-              >
-                {unlinkBusy ? "Unmapping..." : "Unmap from lane"}
-              </button>
-            </div>
-          ) : item.scope === "external" ? (
-            <div style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textSecondary, lineHeight: 1.6, marginTop: 4 }}>
-              Unmapped pull request, not linked to an ADE lane.
-            </div>
-          ) : (
-            <div style={{ display: "grid", gap: 10 }}>
-              <div style={{
-                display: "flex",
-                alignItems: "flex-start",
-                gap: 10,
-                padding: "10px 12px",
-                borderRadius: 10,
-                background: "rgba(245,158,11,0.06)",
-                border: "1px solid rgba(245,158,11,0.12)",
-                marginTop: 4,
-              }}>
-                <Warning size={16} weight="fill" style={{ marginTop: 2, flexShrink: 0, color: COLORS.warning }} />
-                <div style={{ fontFamily: SANS_FONT, fontSize: 12, lineHeight: 1.6, color: "#FBBF24" }}>
-                  This PR exists on GitHub but is not linked to an ADE lane.
-                </div>
-              </div>
-              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                {showCreateLaneFromPrBranch ? (
-                  <button
-                    type="button"
-                    onClick={onCreateLaneFromPrBranch}
-                    style={primaryButton({ borderRadius: 8, whiteSpace: "nowrap" })}
-                  >
-                    <GitBranch size={14} /> Create lane from PR branch
-                  </button>
-                ) : null}
-                <select
-                  value={linkLaneId}
-                  onChange={(event) => onLinkLaneChange(event.target.value)}
-                  aria-label="Select lane to link"
-                  style={{
-                    flex: 1,
-                    height: 34,
-                    background: COLORS.recessedBg,
-                    border: `1px solid ${COLORS.border}`,
-                    color: COLORS.textPrimary,
-                    fontFamily: SANS_FONT,
-                    fontSize: 12,
-                    padding: "0 10px",
-                    borderRadius: 8,
-                  }}
-                >
-                  <option value="">Select matching lane to link</option>
-                  {linkableLanes.map((lane) => (
-                    <option key={lane.id} value={lane.id}>
-                      {lane.name}
-                    </option>
-                  ))}
-                </select>
-                <button
-                  type="button"
-                  disabled={!linkLaneId || linkingBusy}
-                  onClick={() => void onLink()}
-                  aria-label={linkingBusy ? "Linking lane to pull request" : "Link selected lane to pull request"}
-                  style={primaryButton({ opacity: !linkLaneId || linkingBusy ? 0.5 : 1, borderRadius: 8 })}
-                >
-                  <Link size={14} /> {linkingBusy ? "Linking..." : "Link"}
-                </button>
-              </div>
-            </div>
-          )}
-        </div>
-
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 12 }}>
-          <div>
-            <div style={LABEL_STYLE}>Head</div>
-            <div style={{ fontFamily: MONO_FONT, fontSize: 12, color: COLORS.textSecondary, marginTop: 2 }}>{item.headBranch ?? "---"}</div>
-          </div>
-          <div>
-            <div style={LABEL_STYLE}>Base</div>
-            <div style={{ fontFamily: MONO_FONT, fontSize: 12, color: COLORS.textSecondary, marginTop: 2 }}>{item.baseBranch ?? "---"}</div>
-          </div>
-          <div>
-            <div style={LABEL_STYLE}>Author</div>
-            <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 2 }}>
-              {item.author ? (
-                <img
-                  src={`https://avatars.githubusercontent.com/${item.author}?size=24`}
-                  alt=""
-                  style={{ width: 16, height: 16, borderRadius: "50%" }}
-                  onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
-                />
-              ) : null}
-              <span style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textSecondary }}>{item.author ?? "---"}</span>
-            </div>
-          </div>
-          <div>
-            <div style={LABEL_STYLE}>Updated</div>
-            <div style={{ fontFamily: MONO_FONT, fontSize: 12, color: COLORS.textSecondary, marginTop: 2 }}>{formatTimestampShort(item.updatedAt)}</div>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
 }
 
 function CreateLaneFromPrBranchDialog({
@@ -1170,6 +992,55 @@ export function GitHubTab({
     },
     [prs, selectedItem],
   );
+
+  // For an unmapped selected PR (no linkedPrId) build a referentially-stable
+  // synthetic PR so it can render through the full PrDetailPane. Memoized on the
+  // stable synthetic id so the object identity (and React key) stays constant
+  // across renders while the same PR is selected.
+  const syntheticUnmappedId = selectedItem && !selectedItem.linkedPrId
+    ? syntheticUnmappedPrId(selectedItem)
+    : null;
+  const selectedUnmappedPr = React.useMemo(
+    (): PrWithConflicts | null => {
+      if (!selectedItem || selectedItem.linkedPrId) return null;
+      const fallbackProjectId = prs[0]?.projectId ?? "cached-github-snapshot";
+      return buildSyntheticUnmappedPr(selectedItem, fallbackProjectId);
+    },
+    // syntheticUnmappedId keys identity; prs[0]?.projectId is captured at build time.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [syntheticUnmappedId, selectedItem, prs],
+  );
+  const selectedDisplayPr = selectedLinkedPr ?? selectedUnmappedPr;
+
+  const selectedGithubCoords = React.useMemo(
+    (): { repoOwner: string; repoName: string; githubPrNumber: number } | null =>
+      selectedItem
+        ? {
+            repoOwner: selectedItem.repoOwner,
+            repoName: selectedItem.repoName,
+            githubPrNumber: selectedItem.githubPrNumber,
+          }
+        : null,
+    [selectedItem],
+  );
+
+  // Lanes whose branch matches the unmapped PR's head branch (the same gate the
+  // legacy read-only pane used) — offered in the in-pane "Map to lane" select.
+  const linkableLanesForSelected = React.useMemo(
+    () => {
+      if (!selectedItem) return [] as Array<{ id: string; name: string }>;
+      const headBranch = branchNameFromRef(selectedItem.headBranch);
+      return lanes
+        .filter((lane) => {
+          if (lane.archivedAt || lane.laneType === "primary") return false;
+          if (!headBranch) return true;
+          return branchNameFromRef(lane.branchRef) === headBranch;
+        })
+        .map((lane) => ({ id: lane.id, name: lane.name }));
+    },
+    [lanes, selectedItem],
+  );
+
   const selectedQueueContext = React.useMemo(() => {
     if (!selectedLinkedPr) return null;
     const mergeContext = mergeContextByPrId[selectedLinkedPr.id];
@@ -1370,6 +1241,29 @@ export function GitHubTab({
     }
   }, [appStore, createLaneItem, loadSnapshot, onRefreshAll, onSelectPr, projectRoot, refreshLanes, selectLane]);
 
+  // Create/map controls surfaced inside PrDetailPane for an unmapped selected PR.
+  const unmappedAffordance = React.useMemo((): UnmappedAffordance | null => {
+    if (!selectedItem || selectedItem.linkedPrId) return null;
+    return {
+      linkableLanes: linkableLanesForSelected,
+      selectedLaneId: linkLaneId,
+      onSelectLane: setLinkLaneId,
+      onLink: () => { void handleLink(); },
+      linkBusy: linkingItemId === selectedItem.id,
+      canCreateLane: canCreateLaneFromPrBranch(selectedItem, lanes),
+      onCreateLane: () => handleOpenCreateLaneFromPrBranch(selectedItem),
+      scope: selectedItem.scope,
+    };
+  }, [
+    handleLink,
+    handleOpenCreateLaneFromPrBranch,
+    lanes,
+    linkLaneId,
+    linkableLanesForSelected,
+    linkingItemId,
+    selectedItem,
+  ]);
+
   if (error && !snapshot) {
     return (
       <EmptyState title="GitHub" description={error}>
@@ -1527,21 +1421,23 @@ export function GitHubTab({
             className="min-h-0 min-w-0"
             style={{ overflow: "hidden" }}
           >
-            {selectedItem && selectedLinkedPr ? (
+            {selectedItem && selectedDisplayPr ? (
               <PrDetailPane
-                key={selectedLinkedPr.id}
-                pr={selectedLinkedPr}
-                status={detailStatus}
-                checks={detailChecks}
-                reviews={detailReviews}
-                comments={detailComments}
+                key={selectedDisplayPr.id}
+                pr={selectedDisplayPr}
+                status={selectedLinkedPr ? detailStatus : null}
+                checks={selectedLinkedPr ? detailChecks : []}
+                reviews={selectedLinkedPr ? detailReviews : []}
+                comments={selectedLinkedPr ? detailComments : []}
                 snapshotHydration={
-                  detailSnapshot?.prId === selectedLinkedPr.id
-                    ? detailSnapshot
-                    : detailSnapshotsByPrId[selectedLinkedPr.id] ?? null
+                  selectedLinkedPr
+                    ? (detailSnapshot?.prId === selectedDisplayPr.id
+                        ? detailSnapshot
+                        : detailSnapshotsByPrId[selectedDisplayPr.id] ?? null)
+                    : null
                 }
-                snapshotHydrationOwnedByContext
-                liveDetailReady={detailLiveDataPrId === selectedLinkedPr.id}
+                snapshotHydrationOwnedByContext={Boolean(selectedLinkedPr)}
+                liveDetailReady={Boolean(selectedLinkedPr) && detailLiveDataPrId === selectedDisplayPr.id}
                 detailBusy={detailBusy}
                 lanes={lanes}
                 mergeMethod={mergeMethod}
@@ -1552,20 +1448,11 @@ export function GitHubTab({
                 onOpenQueueView={onOpenQueueView}
                 initialDetailTab={selectedDetailTab}
                 onDetailTabChange={onDetailTabChange}
-                onUnmap={() => handleUnlink(selectedItem)}
-                unmapBusy={unlinkingPrId === selectedLinkedPr.id}
-              />
-            ) : selectedItem ? (
-              <GitHubReadOnlyPane
-                item={selectedItem}
-                lanes={lanes}
-                linkingBusy={linkingItemId === selectedItem.id}
-                linkLaneId={linkLaneId}
-                onLinkLaneChange={setLinkLaneId}
-                onLink={handleLink}
-                unlinkBusy={unlinkingPrId === selectedItem.linkedPrId}
-                onUnlink={() => handleUnlink(selectedItem)}
-                onCreateLaneFromPrBranch={() => handleOpenCreateLaneFromPrBranch(selectedItem)}
+                onUnmap={selectedItem.linkedPrId ? () => handleUnlink(selectedItem) : undefined}
+                unmapBusy={Boolean(selectedItem.linkedPrId) && unlinkingPrId === selectedItem.linkedPrId}
+                unmapped={!selectedItem.linkedPrId}
+                githubCoords={selectedItem.linkedPrId ? null : selectedGithubCoords}
+                unmappedAffordance={selectedItem.linkedPrId ? null : unmappedAffordance}
               />
             ) : (
               <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%" }}>

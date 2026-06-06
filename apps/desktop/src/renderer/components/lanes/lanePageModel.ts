@@ -1,5 +1,13 @@
 import { branchNameFromLaneRef } from "../../../shared/laneBaseResolution";
-import type { GitHubPrListItem, LaneListSnapshot, LaneSummary, PrSummary } from "../../../shared/types";
+import type {
+  GitHubPrListItem,
+  LaneListSnapshot,
+  LaneSummary,
+  PrChecksStatus,
+  PrLabel,
+  PrReviewStatus,
+  PrSummary,
+} from "../../../shared/types";
 import type { CreateLaneMode } from "./CreateLaneDialog";
 import { mergeUnique } from "./laneUtils";
 
@@ -22,6 +30,20 @@ export type LaneTabPrTag = {
   githubUrl: string;
   title: string;
   state: PrSummary["state"];
+  // Optional richer fields used to render the hover popover card. Populated when
+  // available from the mapped PrSummary and/or the GitHub list item; merged in
+  // `selectLaneTabPrTag` so the card gets the richest data across both sources.
+  baseBranch?: string | null;
+  headBranch?: string | null;
+  checksStatus?: PrChecksStatus;
+  reviewStatus?: PrReviewStatus;
+  additions?: number;
+  deletions?: number;
+  mergeConflicts?: boolean | null;
+  behindBaseBy?: number | null;
+  updatedAt?: string;
+  labels?: PrLabel[];
+  author?: string | null;
 };
 
 export const VISIBLE_LANE_PR_REFRESH_LIMIT = 4;
@@ -258,6 +280,15 @@ function toLaneTabPrTagFromPrSummary(pr: PrSummary): LaneTabPrTag {
     githubUrl: pr.githubUrl,
     title: pr.title,
     state: pr.state,
+    baseBranch: pr.baseBranch,
+    headBranch: pr.headBranch,
+    checksStatus: pr.checksStatus,
+    reviewStatus: pr.reviewStatus,
+    additions: pr.additions,
+    deletions: pr.deletions,
+    mergeConflicts: pr.mergeConflicts,
+    behindBaseBy: pr.behindBaseBy,
+    updatedAt: pr.updatedAt,
   };
 }
 
@@ -271,6 +302,35 @@ function toLaneTabPrTagFromGithubItem(pr: GitHubPrListItem, laneId: string): Lan
     githubUrl: pr.githubUrl,
     title: pr.title,
     state: pr.isDraft ? "draft" : pr.state,
+    baseBranch: pr.baseBranch,
+    headBranch: pr.headBranch,
+    updatedAt: pr.updatedAt,
+    labels: pr.labels,
+    author: pr.author,
+  };
+}
+
+/**
+ * Cross-merge the two PR data sources into one tag: labels/author typically come
+ * only from the GitHub list item, while diff/checks/reviews come only from the
+ * mapped PrSummary. The base tag's own state/url/title win; the secondary source
+ * only fills in fields the base is missing.
+ */
+function mergeLaneTabPrTags(base: LaneTabPrTag, secondary: LaneTabPrTag | null): LaneTabPrTag {
+  if (!secondary) return base;
+  return {
+    ...base,
+    baseBranch: base.baseBranch ?? secondary.baseBranch,
+    headBranch: base.headBranch ?? secondary.headBranch,
+    checksStatus: base.checksStatus ?? secondary.checksStatus,
+    reviewStatus: base.reviewStatus ?? secondary.reviewStatus,
+    additions: base.additions ?? secondary.additions,
+    deletions: base.deletions ?? secondary.deletions,
+    mergeConflicts: base.mergeConflicts ?? secondary.mergeConflicts,
+    behindBaseBy: base.behindBaseBy ?? secondary.behindBaseBy,
+    updatedAt: base.updatedAt ?? secondary.updatedAt,
+    labels: base.labels ?? secondary.labels,
+    author: base.author ?? secondary.author,
   };
 }
 
@@ -317,12 +377,20 @@ export function selectLaneTabPrTag(
   const mappedPr = selectLanePrTag(lane, prs);
   const githubPr = selectGithubLanePrTag(lane, githubPrs);
   if (mappedPr) {
+    // The PrSummary carries diff/checks/reviews; the matching GitHub item carries
+    // labels/author. Merge so the popover card has the richest data available.
+    const githubTag = githubPr ? toLaneTabPrTagFromGithubItem(githubPr, lane.id) : null;
     const terminalGithubPr = selectTerminalGithubUpdateForPr(mappedPr, githubPrs);
-    if (terminalGithubPr) return toLaneTabPrTagFromGithubItem(terminalGithubPr, lane.id);
-    if (githubPr && shouldPreferGithubPrTag(mappedPr, githubPr)) {
-      return toLaneTabPrTagFromGithubItem(githubPr, lane.id);
+    if (terminalGithubPr) {
+      return mergeLaneTabPrTags(
+        toLaneTabPrTagFromGithubItem(terminalGithubPr, lane.id),
+        toLaneTabPrTagFromPrSummary(mappedPr),
+      );
     }
-    return toLaneTabPrTagFromPrSummary(mappedPr);
+    if (githubTag && shouldPreferGithubPrTag(mappedPr, githubPr!)) {
+      return mergeLaneTabPrTags(githubTag, toLaneTabPrTagFromPrSummary(mappedPr));
+    }
+    return mergeLaneTabPrTags(toLaneTabPrTagFromPrSummary(mappedPr), githubTag);
   }
   return githubPr ? toLaneTabPrTagFromGithubItem(githubPr, lane.id) : null;
 }

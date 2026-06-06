@@ -12,6 +12,7 @@ import {
 import { useVirtualizer } from "@tanstack/react-virtual";
 import {
   ChatCircle,
+  CaretRight,
   CheckCircle,
   GitCommit,
   GitPullRequest,
@@ -36,6 +37,7 @@ import { relativeWhen } from "../../../lib/format";
 import { PrMarkdown } from "./PrMarkdown";
 import { PrReviewThreadCard } from "./PrReviewThreadCard";
 import { PrBotReviewCard, detectBotProvider } from "./PrBotReviewCard";
+import { PrUserAvatar } from "./PrUserAvatar";
 import { PrAiSummaryCard } from "./PrAiSummaryCard";
 
 /* ══════════════════ Types ══════════════════ */
@@ -68,6 +70,8 @@ export type PrTimelineProps = {
   onDismissSummary?: () => void;
   /** Fired (debounced) with the id of the top-most visible event as the user scrolls. */
   onVisibleEventChange?: (eventId: string | null) => void;
+  /** Rendered at the very bottom of the scrollable thread (e.g. the comment composer). */
+  footer?: ReactNode;
 };
 
 export type PrTimelineRef = {
@@ -176,6 +180,39 @@ function useNearViewport(
 
 /* ══════════════════ Main component ══════════════════ */
 
+type TimelineRenderItem =
+  | { kind: "event"; id: string; event: PrTimelineEvent }
+  | {
+      kind: "resolved-group";
+      id: string;
+      threads: Array<Extract<PrTimelineEvent, { type: "review_thread" }>>;
+    };
+
+/** Fold runs of 2+ consecutive resolved review threads into one summary item. */
+function buildRenderItems(events: PrTimelineEvent[]): TimelineRenderItem[] {
+  const out: TimelineRenderItem[] = [];
+  let run: Array<Extract<PrTimelineEvent, { type: "review_thread" }>> = [];
+  const flush = () => {
+    if (run.length === 0) return;
+    if (run.length >= 2) {
+      out.push({ kind: "resolved-group", id: `resolved-group:${run[0]!.id}`, threads: run });
+    } else {
+      out.push({ kind: "event", id: run[0]!.id, event: run[0]! });
+    }
+    run = [];
+  };
+  for (const e of events) {
+    if (e.type === "review_thread" && e.isResolved) {
+      run.push(e);
+      continue;
+    }
+    flush();
+    out.push({ kind: "event", id: e.id, event: e });
+  }
+  flush();
+  return out;
+}
+
 export const PrTimeline = forwardRef<PrTimelineRef, PrTimelineProps>(function PrTimeline(
   {
     events,
@@ -190,6 +227,7 @@ export const PrTimeline = forwardRef<PrTimelineRef, PrTimelineProps>(function Pr
     onRegenerateSummary: _onRegenerateSummary,
     onDismissSummary,
     onVisibleEventChange,
+    footer,
   },
   ref,
 ) {
@@ -198,23 +236,35 @@ export const PrTimeline = forwardRef<PrTimelineRef, PrTimelineProps>(function Pr
     [events, filters, viewerLogin],
   );
 
+  const renderItems = useMemo(() => buildRenderItems(filtered), [filtered]);
+
   const unresolvedIds = useMemo(() => collectUnresolvedThreadIds(filtered), [filtered]);
 
   const parentRef = useRef<HTMLDivElement | null>(null);
-  const getItemKey = useCallback((index: number) => filtered[index]?.id ?? index, [filtered]);
+  const getItemKey = useCallback((index: number) => renderItems[index]?.id ?? index, [renderItems]);
   const virtualizer = useVirtualizer({
-    count: filtered.length,
+    count: renderItems.length,
     getScrollElement: () => parentRef.current,
     getItemKey,
     estimateSize: () => 120,
     overscan: 4,
   });
 
+  // Map every event id (and folded resolved-thread ids + group ids) to its index
+  // in `renderItems` — the virtualizer counts renderItems, so a `filtered` index
+  // would scroll/jump to the wrong row once any 2+ resolved run folds.
   const indexById = useMemo(() => {
     const map = new Map<string, number>();
-    filtered.forEach((event, idx) => map.set(event.id, idx));
+    renderItems.forEach((item, idx) => {
+      if (item.kind === "event") {
+        map.set(item.event.id, idx);
+      } else {
+        map.set(item.id, idx);
+        for (const t of item.threads) map.set(t.id, idx);
+      }
+    });
     return map;
-  }, [filtered]);
+  }, [renderItems]);
 
   const [focusedEventId, setFocusedEventId] = useState<string | null>(null);
 
@@ -312,8 +362,8 @@ export const PrTimeline = forwardRef<PrTimelineRef, PrTimelineProps>(function Pr
       }
       const topItem =
         items.find((item) => item.start + item.size > scrollTop) ?? items[0]!;
-      const event = filtered[topItem.index];
-      const id = event?.id ?? null;
+      const ri = renderItems[topItem.index];
+      const id = ri && ri.kind === "event" ? ri.event.id : null;
       if (id !== lastReportedVisibleIdRef.current) {
         lastReportedVisibleIdRef.current = id;
         onVisibleEventChange(id);
@@ -328,13 +378,13 @@ export const PrTimeline = forwardRef<PrTimelineRef, PrTimelineProps>(function Pr
       if (timer) clearTimeout(timer);
       root.removeEventListener("scroll", onScroll);
     };
-  }, [filtered, onVisibleEventChange, virtualizer]);
+  }, [renderItems, onVisibleEventChange, virtualizer]);
 
   return (
     <div
       data-testid="pr-timeline"
       className="flex h-full w-full min-h-0 flex-col"
-      style={{ background: COLORS.pageBg }}
+      style={{ background: COLORS.prSurface }}
     >
       {summary ? (
         <div
@@ -364,11 +414,28 @@ export const PrTimeline = forwardRef<PrTimelineRef, PrTimelineProps>(function Pr
         ) : (
           <div style={{ height: virtualizer.getTotalSize(), position: "relative" }}>
             {virtualizer.getVirtualItems().map((virtualRow) => {
-              const event = filtered[virtualRow.index]!;
+              const item = renderItems[virtualRow.index]!;
+              if (item.kind === "resolved-group") {
+                return (
+                  <ResolvedGroupRow
+                    key={item.id}
+                    item={item}
+                    index={virtualRow.index}
+                    start={virtualRow.start}
+                    measure={virtualizer.measureElement}
+                    prId={prId}
+                    laneId={laneId}
+                    repoOwner={repoOwner}
+                    repoName={repoName}
+                    viewerLogin={viewerLogin}
+                    focusedEventId={focusedEventId}
+                  />
+                );
+              }
               return (
                 <TimelineRow
-                  key={event.id}
-                  event={event}
+                  key={item.id}
+                  event={item.event}
                   index={virtualRow.index}
                   start={virtualRow.start}
                   measure={virtualizer.measureElement}
@@ -385,6 +452,7 @@ export const PrTimeline = forwardRef<PrTimelineRef, PrTimelineProps>(function Pr
             })}
           </div>
         )}
+        {footer}
       </div>
     </div>
   );
@@ -475,6 +543,111 @@ function TimelineRow(props: TimelineRowProps) {
   );
 }
 
+function ResolvedGroupRow(props: {
+  item: Extract<TimelineRenderItem, { kind: "resolved-group" }>;
+  index: number;
+  start: number;
+  measure: (node: HTMLElement | null) => void;
+  prId: string;
+  laneId: string | null;
+  repoOwner: string;
+  repoName: string;
+  viewerLogin: string | null;
+  focusedEventId: string | null;
+}) {
+  const { item, index, start, measure } = props;
+  const rowRef = useRef<HTMLDivElement | null>(null);
+  const setRef = useCallback(
+    (node: HTMLDivElement | null) => {
+      rowRef.current = node;
+      measure(node);
+    },
+    [measure],
+  );
+  return (
+    <div
+      ref={setRef}
+      data-index={index}
+      data-resolved-group="true"
+      style={{ position: "absolute", top: 0, left: 0, width: "100%", transform: `translateY(${start}px)`, paddingBottom: 12 }}
+    >
+      <ResolvedThreadGroup
+        threads={item.threads}
+        prId={props.prId}
+        laneId={props.laneId}
+        repoOwner={props.repoOwner}
+        repoName={props.repoName}
+        viewerLogin={props.viewerLogin}
+        focusedEventId={props.focusedEventId}
+      />
+    </div>
+  );
+}
+
+function ResolvedThreadGroup({
+  threads,
+  prId,
+  laneId,
+  repoOwner,
+  repoName,
+  viewerLogin,
+  focusedEventId,
+}: {
+  threads: Array<Extract<PrTimelineEvent, { type: "review_thread" }>>;
+  prId: string;
+  laneId: string | null;
+  repoOwner: string;
+  repoName: string;
+  viewerLogin: string | null;
+  focusedEventId: string | null;
+}) {
+  const [open, setOpen] = useState(false);
+  const containsFocused = focusedEventId != null && threads.some((t) => t.id === focusedEventId);
+  const expanded = open || containsFocused;
+  return (
+    <div
+      data-testid="pr-timeline-resolved-group"
+      style={{ background: COLORS.threadCard, borderRadius: 12, overflow: "hidden" }}
+    >
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={expanded}
+        className="flex w-full items-center gap-2.5 px-4 py-2.5 text-left transition-colors hover:bg-white/[0.04]"
+        style={{ background: "transparent", border: "none", cursor: "pointer" }}
+      >
+        <CaretRight
+          size={12}
+          weight="bold"
+          className="shrink-0 transition-transform"
+          style={{ color: COLORS.textMuted, transform: expanded ? "rotate(90deg)" : "rotate(0deg)" }}
+        />
+        <CheckCircle size={14} weight="fill" style={{ color: COLORS.checkPass, flexShrink: 0 }} />
+        <span className="flex-1 text-[12px] font-medium" style={{ color: COLORS.textPrimary }}>
+          {threads.length} resolved conversations
+        </span>
+      </button>
+      {expanded ? (
+        <div className="flex flex-col gap-1.5 px-2 pb-2">
+          {threads.map((t) => (
+            <PrReviewThreadCard
+              key={t.id}
+              thread={buildPrReviewThreadFromEvent(t)}
+              prId={prId}
+              laneId={laneId}
+              repoOwner={repoOwner}
+              repoName={repoName}
+              viewerLogin={viewerLogin}
+              focused={t.id === focusedEventId}
+              onFocus={() => {}}
+            />
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 /* ══════════════════ Row content by type ══════════════════ */
 
 type TimelineRowContentProps = {
@@ -505,7 +678,7 @@ function TimelineRowContent({
       return <PrOpenedBanner event={event} />;
     case "description":
       return (
-        <Card icon={<ChatCircle size={12} weight="fill" />} author={event.author} ts={event.timestamp}>
+        <Card author={event.author} avatarUrl={event.avatarUrl} ts={event.timestamp}>
           {near && event.body ? (
             <PrMarkdown repoOwner={repoOwner} repoName={repoName} dense>
               {event.body}
@@ -524,6 +697,7 @@ function TimelineRowContent({
             review={buildPrReviewFromEvent(event)}
             repoOwner={repoOwner}
             repoName={repoName}
+            defaultOpen={Boolean(event.body)}
           />
         ) : (
           <BodySkeleton height={96} />
@@ -532,6 +706,7 @@ function TimelineRowContent({
       return (
         <PrReviewCard
           author={event.author}
+          avatarUrl={event.avatarUrl}
           state={event.state}
           body={event.body}
           timestamp={event.timestamp}
@@ -558,8 +733,8 @@ function TimelineRowContent({
     case "issue_comment":
       return (
         <Card
-          icon={event.isBot ? <Robot size={12} weight="bold" /> : <ChatCircle size={12} weight="regular" />}
           author={event.author}
+          avatarUrl={event.avatarUrl}
           ts={event.timestamp}
         >
           {near && event.body ? (
@@ -776,52 +951,42 @@ function CommitDivider({
   event: Extract<PrTimelineEvent, { type: "commit_push" }>;
   focused: boolean;
 }) {
+  // Force-pushes are noise — render them as a slim centered divider rather than a
+  // full commit row (no duplicated "force-pushed" / sha clutter).
+  if (event.forcePushed) {
+    return (
+      <div data-testid="pr-timeline-commit-divider" className="flex items-center gap-3 px-2 py-2">
+        <div className="h-px flex-1" style={{ background: COLORS.borderMuted }} />
+        <span className="flex shrink-0 items-center gap-1.5 text-[11px]" style={{ color: COLORS.textMuted }}>
+          <GitCommit size={12} weight="bold" />
+          Force-pushed
+          <span style={{ color: COLORS.textDim }}>· {relativeWhen(event.timestamp)}</span>
+        </span>
+        <div className="h-px flex-1" style={{ background: COLORS.borderMuted }} />
+      </div>
+    );
+  }
   return (
     <div
       data-testid="pr-timeline-commit-divider"
+      className="flex items-center gap-2.5 px-2 py-1.5"
       style={{
-        display: "flex",
-        alignItems: "center",
-        gap: 10,
-        padding: "8px 12px",
-        background: focused ? COLORS.accentSubtle : COLORS.recessedBg,
-        borderTop: `1px solid ${focused ? COLORS.accentBorder : COLORS.borderMuted}`,
-        borderBottom: `1px solid ${COLORS.borderMuted}`,
+        background: focused ? COLORS.accentSubtle : "transparent",
+        borderLeft: focused ? `2px solid ${COLORS.accent}` : "2px solid transparent",
         borderRadius: 6,
       }}
     >
-      <span
-        style={{
-          width: 22,
-          height: 22,
-          borderRadius: 6,
-          display: "inline-flex",
-          alignItems: "center",
-          justifyContent: "center",
-          background: focused ? COLORS.accentSubtle : "transparent",
-          border: `1px solid ${focused ? COLORS.accentBorder : COLORS.borderMuted}`,
-          color: focused ? COLORS.accent : COLORS.textMuted,
-          flexShrink: 0,
-        }}
-      >
-        <GitCommit size={12} weight="bold" />
+      <GitCommit
+        size={13}
+        weight="bold"
+        style={{ color: focused ? COLORS.accent : COLORS.textDim, flexShrink: 0 }}
+      />
+      <span className="truncate text-[12px]" style={{ color: COLORS.textSecondary }}>
+        {event.subject || "Commit"}
       </span>
-      <div style={{ minWidth: 0, flex: 1 }}>
-        <div className="flex items-center gap-2">
-          <span style={{ color: COLORS.textPrimary, fontSize: 12, fontWeight: 600 }}>
-            {event.subject || "Commit"}
-          </span>
-          {event.forcePushed ? (
-            <span style={{ color: COLORS.warning, fontFamily: MONO_FONT, fontSize: 10 }}>
-              force-pushed
-            </span>
-          ) : null}
-        </div>
-        <div className="mt-0.5 flex items-center gap-2 text-[10px]" style={{ color: COLORS.textMuted, fontFamily: MONO_FONT }}>
-          <span>{event.shortSha}</span>
-          <span>by {event.author ?? "unknown"}</span>
-        </div>
-      </div>
+      <span className="ml-auto shrink-0 text-[10px]" style={{ color: COLORS.textDim, fontFamily: MONO_FONT }}>
+        {event.shortSha}
+      </span>
       <Timestamp ts={event.timestamp} />
     </div>
   );
@@ -830,32 +995,31 @@ function CommitDivider({
 /* ══════════════════ Small building blocks ══════════════════ */
 
 function Card({
-  icon,
   author,
+  avatarUrl,
   ts,
   children,
 }: {
-  icon: ReactNode;
   author: string | null;
+  avatarUrl?: string | null;
   ts: string;
   children: ReactNode;
 }) {
   return (
     <div
-      className="flex flex-col gap-1.5 px-3 py-2.5"
+      className="flex flex-col gap-2 px-4 py-3"
       style={{
-        background: `color-mix(in srgb, ${COLORS.accent} 6%, ${COLORS.cardBg})`,
-        border: `1px solid ${COLORS.accentBorder}`,
-        borderRadius: 8,
-        boxShadow: `0 1px 2px color-mix(in srgb, ${COLORS.accent} 8%, transparent)`,
+        background: COLORS.threadCard,
+        border: "none",
+        borderRadius: 12,
       }}
     >
-      <div className="flex items-center gap-1.5 text-[11px]" style={{ color: COLORS.textMuted }}>
-        <span style={{ color: COLORS.textMuted }}>{icon}</span>
-        <span style={{ color: COLORS.textPrimary }}>{author ?? "unknown"}</span>
+      <div className="flex items-center gap-2 text-[12px]">
+        <PrUserAvatar user={{ login: author ?? "unknown", avatarUrl: avatarUrl ?? null }} size={22} />
+        <span style={{ color: COLORS.textPrimary, fontWeight: 500 }}>{author ?? "unknown"}</span>
         <Timestamp ts={ts} />
       </div>
-      <div>{children}</div>
+      <div className="min-w-0">{children}</div>
     </div>
   );
 }
@@ -919,6 +1083,7 @@ function reviewStateLabel(state: string): string {
 
 function PrReviewCard({
   author,
+  avatarUrl,
   state,
   body,
   timestamp,
@@ -927,6 +1092,7 @@ function PrReviewCard({
   near,
 }: {
   author: string | null;
+  avatarUrl?: string | null;
   state: string;
   body: string | null;
   timestamp: string;
@@ -936,14 +1102,15 @@ function PrReviewCard({
 }) {
   return (
     <div
-      className="flex flex-col gap-1.5 px-3 py-2.5"
-      style={{ background: COLORS.cardBg, border: `1px solid ${COLORS.border}` }}
+      className="flex flex-col gap-2 px-4 py-3"
+      style={{ background: COLORS.threadCard, border: "none", borderRadius: 12 }}
       data-testid="pr-timeline-review-card"
     >
-      <div className="flex items-center gap-1.5 text-[11px]">
+      <div className="flex items-center gap-2 text-[12px]">
+        <PrUserAvatar user={{ login: author ?? "reviewer", avatarUrl: avatarUrl ?? null }} size={22} />
+        <span style={{ color: COLORS.textPrimary, fontWeight: 500 }}>{author ?? "reviewer"}</span>
         <CheckCircle size={12} weight="bold" style={{ color: reviewStateColor(state) }} />
-        <span style={{ color: COLORS.textPrimary }}>{author ?? "reviewer"}</span>
-        <span style={{ color: reviewStateColor(state) }}>· {reviewStateLabel(state)}</span>
+        <span style={{ color: reviewStateColor(state) }}>{reviewStateLabel(state)}</span>
         <Timestamp ts={timestamp} />
       </div>
       {body ? (

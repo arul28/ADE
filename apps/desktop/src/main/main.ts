@@ -2524,6 +2524,14 @@ app.whenReady().then(async () => {
       });
     };
 
+    // Wire auto-map-by-branch: the PR service emits Undo-able toasts through the
+    // PR event channel, and a freshly created worktree lane triggers a
+    // best-effort auto-map of any existing open PR on its branch (Trigger #1).
+    prService.setEventEmitter(emitPrEvent);
+    laneService.setOnWorktreeLaneCreated((lane) => {
+      void prService.tryAutoMapLaneByBranch(lane.id);
+    });
+
     const prPollingService = createPrPollingService({
       logger,
       prService,

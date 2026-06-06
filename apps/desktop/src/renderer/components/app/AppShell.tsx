@@ -1,11 +1,13 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
+  ArrowCounterClockwise,
   ArrowSquareOut,
   CheckCircle,
   CircleNotch,
   GitBranch,
   GithubLogo,
   GitPullRequest,
+  LinkSimple,
   PlugsConnected,
   WarningCircle,
   XCircle,
@@ -63,6 +65,12 @@ import { buildPrsRouteSearch, type PrDetailRouteTab } from "../prs/prsRouteState
 type PrToast = {
   id: string;
   event: Extract<PrEventPayload, { type: "pr-notification" }>;
+};
+
+type AutoLinkToast = {
+  id: string;
+  event: Extract<PrEventPayload, { type: "pr-auto-linked" }>;
+  undoing?: boolean;
 };
 
 function primaryTabPath(pathname: string): string {
@@ -307,6 +315,14 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     const timer = toastTimersRef.current.get(id);
     if (timer != null) window.clearTimeout(timer);
     toastTimersRef.current.delete(id);
+  };
+  const [autoLinkToasts, setAutoLinkToasts] = useState<AutoLinkToast[]>([]);
+  const autoLinkToastTimersRef = useRef<Map<string, number>>(new Map());
+  const dismissAutoLinkToast = (id: string) => {
+    setAutoLinkToasts((prev) => prev.filter((t) => t.id !== id));
+    const timer = autoLinkToastTimersRef.current.get(id);
+    if (timer != null) window.clearTimeout(timer);
+    autoLinkToastTimersRef.current.delete(id);
   };
   const [linearWorkflowToasts, setLinearWorkflowToasts] = useState<
     LinearWorkflowToast[]
@@ -1050,6 +1066,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }, [commandPaletteBinding]);
 
   useEffect(() => {
+    const newId = (): string =>
+      globalThis.crypto?.randomUUID
+        ? globalThis.crypto.randomUUID()
+        : `${Date.now()}-${Math.random()}`;
+
     const dismiss = (id: string) => {
       setPrToasts((prev) => prev.filter((toast) => toast.id !== id));
       const timer = toastTimersRef.current.get(id);
@@ -1057,11 +1078,23 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       toastTimersRef.current.delete(id);
     };
 
+    const dismissAutoLink = (id: string) => {
+      setAutoLinkToasts((prev) => prev.filter((toast) => toast.id !== id));
+      const timer = autoLinkToastTimersRef.current.get(id);
+      if (timer != null) window.clearTimeout(timer);
+      autoLinkToastTimersRef.current.delete(id);
+    };
+
     const unsub = window.ade.prs.onEvent((event) => {
+      if (event.type === "pr-auto-linked") {
+        const id = newId();
+        setAutoLinkToasts((prev) => [{ id, event }, ...prev].slice(0, 4));
+        const timer = window.setTimeout(() => dismissAutoLink(id), 18_000);
+        autoLinkToastTimersRef.current.set(id, timer);
+        return;
+      }
       if (event.type !== "pr-notification") return;
-      const id = globalThis.crypto?.randomUUID
-        ? globalThis.crypto.randomUUID()
-        : `${Date.now()}-${Math.random()}`;
+      const id = newId();
       setPrToasts((prev) => [{ id, event }, ...prev].slice(0, 4));
       const timer = window.setTimeout(() => dismiss(id), 18_000);
       toastTimersRef.current.set(id, timer);
@@ -1073,6 +1106,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         window.clearTimeout(timer);
       }
       toastTimersRef.current.clear();
+      for (const timer of autoLinkToastTimersRef.current.values()) {
+        window.clearTimeout(timer);
+      }
+      autoLinkToastTimersRef.current.clear();
     };
   }, []);
 
@@ -1344,7 +1381,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               children
             )}
           </div>
-          {visibleRemoteConnectionNotice || staleCliNotice || prToasts.length > 0 ? (
+          {visibleRemoteConnectionNotice || staleCliNotice || prToasts.length > 0 || autoLinkToasts.length > 0 ? (
             <div className="pointer-events-none absolute bottom-2 right-2 z-[95] flex w-[min(380px,calc(100vw-20px))] flex-col gap-1.5">
               {visibleRemoteConnectionNotice ? (
                 <div
@@ -1634,6 +1671,104 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                           >
                             <ArrowSquareOut size={12} />
                             Open on GitHub
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+              {autoLinkToasts.map((toast) => {
+                const toastLane =
+                  lanes.find((lane) => lane.id === toast.event.laneId) ?? null;
+                const laneName = toastLane?.name ?? toast.event.laneName;
+                const laneColor = toastLane?.color ?? null;
+                return (
+                  <div
+                    key={toast.id}
+                    className="pointer-events-auto overflow-hidden rounded-xl border border-[#A78BFA]/25 bg-card/95 px-3 py-3 shadow-float backdrop-blur"
+                  >
+                    <div className="flex items-start gap-3">
+                      <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[#A78BFA]/15">
+                        <LinkSimple
+                          size={16}
+                          weight="bold"
+                          className="text-[#A78BFA]"
+                        />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="min-w-0">
+                            <div className="text-[13px] font-semibold leading-tight text-fg">
+                              Auto-linked PR #{toast.event.prNumber}
+                            </div>
+                            <div className="mt-1 flex items-center gap-1.5 text-[11px] text-muted-fg">
+                              <span className="truncate">to</span>
+                              {laneColor ? (
+                                <LaneAccentDot lane={{ color: laneColor }} size={7} />
+                              ) : null}
+                              <span
+                                className="truncate font-medium"
+                                style={laneColor ? { color: laneColor } : undefined}
+                              >
+                                {laneName}
+                              </span>
+                            </div>
+                          </div>
+                          <button
+                            type="button"
+                            className="shrink-0 rounded p-1 text-muted-fg transition-colors hover:bg-fg/[0.05] hover:text-fg"
+                            onClick={() => dismissAutoLinkToast(toast.id)}
+                            aria-label="Dismiss notification"
+                            title="Dismiss"
+                          >
+                            ×
+                          </button>
+                        </div>
+                        <div className="mt-2 line-clamp-2 text-[12px] leading-relaxed text-muted-fg">
+                          {toast.event.prTitle}
+                        </div>
+                        <div className="mt-3 flex justify-end gap-2">
+                          <button
+                            type="button"
+                            disabled={toast.undoing}
+                            className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border/60 bg-transparent px-3 text-[11px] font-medium text-fg/85 transition-colors hover:border-fg/20 hover:bg-fg/[0.04] hover:text-fg disabled:opacity-60"
+                            onClick={() => {
+                              if (!toast.event.prId) {
+                                dismissAutoLinkToast(toast.id);
+                                return;
+                              }
+                              setAutoLinkToasts((prev) =>
+                                prev.map((t) =>
+                                  t.id === toast.id ? { ...t, undoing: true } : t,
+                                ),
+                              );
+                              void window.ade.prs
+                                .delete({
+                                  prId: toast.event.prId,
+                                  closeOnGitHub: false,
+                                  archiveLane: false,
+                                })
+                                .then(
+                                  () => dismissAutoLinkToast(toast.id),
+                                  () => {
+                                    setAutoLinkToasts((prev) =>
+                                      prev.map((t) =>
+                                        t.id === toast.id
+                                          ? { ...t, undoing: false }
+                                          : t,
+                                      ),
+                                    );
+                                  },
+                                );
+                            }}
+                          >
+                            {toast.undoing ? (
+                              <CircleNotch size={12} className="animate-spin" />
+                            ) : (
+                              <ArrowCounterClockwise size={12} />
+                            )}
+                            Undo
                           </button>
                         </div>
                       </div>
