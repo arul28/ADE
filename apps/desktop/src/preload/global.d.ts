@@ -142,6 +142,7 @@ import type {
   AgentChatTurnFileDiff,
   AgentChatSubagentSnapshot,
   AgentChatSubagentListArgs,
+  AgentChatKillDroidWorkerArgs,
   AgentChatUpdateSessionArgs,
   AutomationsEventPayload,
   AutomationManualTriggerRequest,
@@ -1391,6 +1392,9 @@ declare global {
         listSubagents: (
           args: AgentChatSubagentListArgs,
         ) => Promise<AgentChatSubagentSnapshot[]>;
+        killDroidWorker: (
+          args: AgentChatKillDroidWorkerArgs,
+        ) => Promise<void>;
         getSessionCapabilities: (
           args: AgentChatSessionCapabilitiesArgs,
         ) => Promise<AgentChatSessionCapabilities>;

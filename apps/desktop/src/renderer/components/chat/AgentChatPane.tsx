@@ -46,6 +46,7 @@ import {
   type TerminalSessionDetail,
   type TerminalToolType,
 } from "../../../shared/types";
+import { resolveSubagentCapability } from "../../../shared/subagentCapabilities";
 import {
   buildChatContextAttachmentPrompt,
   makeLinearIssueContextAttachment,
@@ -118,6 +119,8 @@ import { getLaneAccent } from "../lanes/laneColorPalette";
 import { openLaneInLanesTabPath } from "../../lib/laneNavigation";
 import { ChatTerminalDrawer, ChatTerminalToggle } from "./ChatTerminalDrawer";
 import { deriveChatSubagentSnapshots, deriveTodoItems, deriveTurnDiffSummaries } from "./chatExecutionSummary";
+import { deriveMissionSnapshot } from "./chatMission";
+import { MissionControlPanel } from "./MissionControlPanel";
 import { derivePendingInputRequests, type DerivedPendingInput } from "./pendingInput";
 import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
 import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPicker";
@@ -325,20 +328,106 @@ function normalizeSubagentEvent(
   return event;
 }
 
-function eventFromSubagentTranscriptMessage(
+function claudeToolResultText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((block) => {
+        if (typeof block === "string") return block;
+        const record = subagentRecord(block);
+        return record && typeof record.text === "string" ? record.text : "";
+      })
+      .filter((value) => value.length > 0)
+      .join("\n");
+  }
+  return "";
+}
+
+/**
+ * Expand an Anthropic/Claude message ({ role, content[, type:"message"] }) into
+ * real transcript events. The Claude Agent SDK's getSubagentMessages returns the
+ * raw Anthropic message, whose content blocks (text / thinking / tool_use /
+ * tool_result) are the actual subagent transcript — so we surface each block as
+ * the matching chat event instead of dropping the whole message into one opaque
+ * row.
+ */
+function expandClaudeTranscriptMessage(
+  record: Record<string, unknown>,
+  message: AgentChatSubagentTranscriptMessage,
+): AgentChatEvent[] {
+  const role = typeof record.role === "string" ? record.role : message.type;
+  const content = record.content;
+  const out: AgentChatEvent[] = [];
+  const pushText = (value: string, id: string): void => {
+    const trimmed = value.trim();
+    if (!trimmed) return;
+    out.push(role === "user"
+      ? { type: "user_message", text: trimmed, messageId: id }
+      : { type: "text", text: trimmed, messageId: id });
+  };
+
+  if (typeof content === "string") {
+    pushText(content, message.uuid);
+  } else if (Array.isArray(content)) {
+    content.forEach((block, blockIndex) => {
+      const b = subagentRecord(block);
+      if (!b) return;
+      const blockType = typeof b.type === "string" ? b.type : "";
+      const id = `${message.uuid}:${blockIndex}`;
+      if (blockType === "text" && typeof b.text === "string") {
+        pushText(b.text, id);
+      } else if (blockType === "thinking" && typeof b.thinking === "string" && b.thinking.trim().length > 0) {
+        out.push({ type: "reasoning", text: b.thinking, itemId: id });
+      } else if (blockType === "tool_use") {
+        out.push({
+          type: "tool_call",
+          tool: typeof b.name === "string" && b.name.length > 0 ? b.name : "tool",
+          args: b.input ?? {},
+          itemId: typeof b.id === "string" && b.id.length > 0 ? b.id : id,
+        });
+      } else if (blockType === "tool_result") {
+        out.push({
+          type: "tool_result",
+          tool: "",
+          result: claudeToolResultText(b.content),
+          itemId: typeof b.tool_use_id === "string" && b.tool_use_id.length > 0 ? b.tool_use_id : id,
+          status: b.is_error === true ? "failed" : "completed",
+        });
+      }
+    });
+  }
+
+  // Nothing structured extracted but the SDK still gave us flat text.
+  if (out.length === 0 && typeof message.text === "string" && message.text.trim().length > 0) {
+    pushText(message.text, message.uuid);
+  }
+  return out;
+}
+
+function eventsFromSubagentTranscriptMessage(
   message: AgentChatSubagentTranscriptMessage,
   index: number,
-): AgentChatEvent | null {
+): AgentChatEvent[] {
   const record = subagentRecord(message.message);
-  if (typeof record?.type === "string" && record.type.trim().length > 0) {
-    return normalizeSubagentEvent(record as unknown as AgentChatEvent, message, index);
+  // Anthropic/Claude message shape — expand its content blocks. This MUST come
+  // before the generic passthrough below: Anthropic messages carry type:"message",
+  // which would otherwise be mistaken for an already-formed chat event and render
+  // as a blank "event" row.
+  if (record && (record.type === "message" || record.role === "assistant" || record.role === "user")) {
+    const expanded = expandClaudeTranscriptMessage(record, message)
+      .map((event, subIndex) => normalizeSubagentEvent(event, message, index + subIndex));
+    if (expanded.length > 0) return expanded;
+  }
+  // Runtime already handed us a formed chat event (codex / event-history path).
+  if (typeof record?.type === "string" && record.type.trim().length > 0 && record.type !== "message") {
+    return [normalizeSubagentEvent(record as unknown as AgentChatEvent, message, index)];
   }
   const text = typeof message.text === "string" ? message.text.trim() : transcriptRecordText(record);
-  if (!text) return null;
+  if (!text) return [];
   const event: AgentChatEvent = message.type === "user"
     ? { type: "user_message", text, messageId: message.uuid }
     : { type: "text", text, messageId: message.uuid };
-  return normalizeSubagentEvent(event, message, index);
+  return [normalizeSubagentEvent(event, message, index)];
 }
 
 function subagentMergeKey(event: AgentChatEvent): string | null {
@@ -410,19 +499,14 @@ function buildSubagentEventHistory(args: {
   unsupported: boolean;
 }): AgentChatEventEnvelope[] {
   const raw = (args.messages ?? [])
-    .map((message, index) => {
-      const event = eventFromSubagentTranscriptMessage(message, index);
-      if (!event) return null;
-      const mergeKey = subagentMergeKey(event);
-      return {
+    .flatMap((message, index) =>
+      eventsFromSubagentTranscriptMessage(message, index).map((event) => ({
         message,
         event,
-        mergeKey,
+        mergeKey: subagentMergeKey(event),
         live: message.uuid.startsWith("codex-live:"),
         completed: isCompletedSubagentEvent(event),
-      };
-    })
-    .filter((entry): entry is NonNullable<typeof entry> => entry !== null);
+      })));
 
   const completedKeys = new Set(
     raw
@@ -462,7 +546,14 @@ function buildSubagentEventHistory(args: {
   }
 
   for (const entry of transcriptEntries) {
-    const messageId = entry.message.uuid || subagentMergeKey(entry.event) || `subagent:${args.subagentId}:${sequence}`;
+    // Prefer the event's own id so multiple blocks from one Anthropic message
+    // (text + tool calls + results) get distinct provenance instead of colliding
+    // on the shared message uuid.
+    const messageId = subagentEventItemId(entry.event)
+      ?? subagentEventMessageId(entry.event)
+      ?? entry.message.uuid
+      ?? subagentMergeKey(entry.event)
+      ?? `subagent:${args.subagentId}:${sequence}`;
     envelopes.push({
       sessionId: args.sessionId ?? args.subagentId,
       timestamp: timestampFor(sequence),
@@ -626,21 +717,39 @@ function staleDraftLaunchJobMessage(job: DraftLaunchJob): string {
 const PANE_RESERVE_RIGHT_PX = 276; // 16.5rem pane + 12px gutter
 const PANE_RESERVE_LEFT_PX = 276; // 16.5rem pane + 12px gutter
 const CHAT_MIN_WIDTH_PX = 360; // recenter the chat as soon as a normal screen allows
+// The centered chat column's default width (`--chat-column`, 52rem @ 16px root).
+// Used to tell whether a floating pane already fits in the chat's side margin.
+const CHAT_COLUMN_PX = 832;
+/**
+ * Reserve gutter space for the floating panes — but ONLY when they'd otherwise
+ * overlap the centered chat column. When the window is wide enough that a pane
+ * fits in the chat's natural side margin, reserve nothing so the chat does NOT
+ * shift (the pane just overlays the empty margin). When the window is too narrow
+ * for the pane to fit beside the column, reserve the pane's width so the chat
+ * shifts over instead of being covered. Right is preferred over left when tight.
+ */
 function computePaneReserve(
   width: number,
   leftOpen: boolean,
   rightOpen: boolean,
 ): { left: string; right: string } {
   if (width <= 0) return { left: "0px", right: "0px" };
-  // Reserve gutter space per side so the chat shifts over to make room for each
-  // open floating pane (no overlap). The panes themselves still fade in/out — the
-  // chat shifting is the intended behavior, independent of the pane animation.
+  // Free space on each side of the centered column at full width.
+  const naturalSideMargin = Math.max(0, (width - CHAT_COLUMN_PX) / 2);
   let right = 0;
-  if (rightOpen && width - PANE_RESERVE_RIGHT_PX >= CHAT_MIN_WIDTH_PX) {
+  if (
+    rightOpen
+    && naturalSideMargin < PANE_RESERVE_RIGHT_PX // pane wouldn't fit in the margin → shift
+    && width - PANE_RESERVE_RIGHT_PX >= CHAT_MIN_WIDTH_PX
+  ) {
     right = PANE_RESERVE_RIGHT_PX;
   }
   let left = 0;
-  if (leftOpen && width - right - PANE_RESERVE_LEFT_PX >= CHAT_MIN_WIDTH_PX) {
+  if (
+    leftOpen
+    && naturalSideMargin < PANE_RESERVE_LEFT_PX
+    && width - right - PANE_RESERVE_LEFT_PX >= CHAT_MIN_WIDTH_PX
+  ) {
     left = PANE_RESERVE_LEFT_PX;
   }
   return { left: `${left}px`, right: `${right}px` };
@@ -1126,6 +1235,8 @@ function summarizeNativeControls(
 
 function droidPermissionModeToLegacyPermissionMode(mode: AgentChatDroidPermissionMode): AgentChatPermissionMode {
   if (mode === "read-only") return "plan";
+  // AGI orchestrator is read-only at the top level → closest legacy mode is plan.
+  if (mode === "agi") return "plan";
   if (mode === "auto-low") return "edit";
   if (mode === "auto-medium") return "default";
   return "full-auto";
@@ -1296,6 +1407,7 @@ const HANDOFF_DROID_MODES: Array<{ value: AgentChatDroidPermissionMode; label: s
   { value: "auto-low", label: "Auto low" },
   { value: "auto-medium", label: "Auto medium" },
   { value: "auto-high", label: "Auto high" },
+  { value: "agi", label: "AGI (orchestrator)" },
 ];
 
 const handoffSelectCls = cn(
@@ -2497,7 +2609,7 @@ const DEFAULT_CHAT_COMPANION_UI_STATE: ChatCompanionUiState = {
 };
 
 function parseChatActionsTab(value: unknown): ChatActionsTab {
-  if (value === "agents" || value === "proof" || value === "handoff") return value;
+  if (value === "agents" || value === "proof" || value === "handoff" || value === "missions") return value;
   return "agents";
 }
 
@@ -3242,6 +3354,57 @@ export function AgentChatPane({
     return sawUsageEvent ? usageFromEvents : (selectedSession?.codexTokenUsage ?? null);
   }, [selectedEventsForDisplay, selectedSession?.codexTokenUsage]);
   const selectedSubagentSnapshots = useMemo(() => deriveChatSubagentSnapshots(selectedEvents), [selectedEvents]);
+  // Per-runtime subagent capability — the single source of truth for whether
+  // clicking a subagent takes over the chat (full transcript) or only opens the
+  // inline drawer. Computed from the provider with the same shared resolver the
+  // service uses, so renderer and main agree without an IPC round-trip.
+  const selectedSubagentCapability = useMemo(
+    () => resolveSubagentCapability(selectedSession?.provider ?? null),
+    [selectedSession?.provider],
+  );
+  // Droid AGI mission state (Missions tab). Null unless the session is a Droid
+  // orchestrator run that has surfaced mission events — non-AGI chats stay null
+  // and the Missions tab never appears.
+  const selectedMission = useMemo(() => deriveMissionSnapshot(selectedEvents), [selectedEvents]);
+  // Last message the user actually sent in this chat — fed to the composer so
+  // ArrowUp on line 1 recalls it (terminal-style).
+  const lastSentUserMessage = useMemo(() => {
+    for (let i = selectedEvents.length - 1; i >= 0; i -= 1) {
+      const event = selectedEvents[i]?.event;
+      if (event?.type === "user_message") {
+        const text = userMessageVisibleText(event).trim();
+        if (text) return text;
+      }
+    }
+    return null;
+  }, [selectedEvents]);
+  const [killingWorkerIds, setKillingWorkerIds] = useState<ReadonlySet<string>>(() => new Set());
+  const killDroidWorker = useCallback(
+    (workerSessionId: string) => {
+      if (!selectedSessionId || !workerSessionId) return;
+      const killWorker = window.ade?.agentChat?.killDroidWorker;
+      if (typeof killWorker !== "function") return;
+      setKillingWorkerIds((prev) => {
+        const next = new Set(prev);
+        next.add(workerSessionId);
+        return next;
+      });
+      void killWorker({ sessionId: selectedSessionId, workerSessionId })
+        .catch((killError) => {
+          // eslint-disable-next-line no-console
+          console.error("agentChat.killDroidWorker failed", killError);
+        })
+        .finally(() => {
+          setKillingWorkerIds((prev) => {
+            if (!prev.has(workerSessionId)) return prev;
+            const next = new Set(prev);
+            next.delete(workerSessionId);
+            return next;
+          });
+        });
+    },
+    [selectedSessionId],
+  );
   // The pane is runtime-agnostic — Codex emits subagent_started/progress/result
   // events for delegation and collabToolCall items (spawn_agent, etc.) just
   // like Claude. Gate on whether we have anything to display: snapshots OR an
@@ -3254,7 +3417,16 @@ export function AgentChatPane({
   // breadcrumb status in sync as the agent transitions running → completed.
   const subagentViewSnapshot = useMemo(() => {
     if (!subagentView) return null;
-    return selectedSubagentSnapshots.find((s) => s.taskId === subagentView.taskId) ?? null;
+    // Match by taskId OR agentId: when a subagent completes, its snapshot id can
+    // resolve from taskId to agentId (placeholder adoption), which previously made
+    // the view "lose" its snapshot and auto-clear — i.e. the transcript vanished
+    // the moment the subagent ended. Matching either id keeps the drill-in alive
+    // after completion so you can still read a finished subagent's transcript.
+    return selectedSubagentSnapshots.find((s) =>
+      s.taskId === subagentView.taskId
+      || (subagentView.taskId != null && s.agentId === subagentView.taskId)
+      || (subagentView.agentId != null && (s.agentId === subagentView.agentId || s.taskId === subagentView.agentId)),
+    ) ?? null;
   }, [subagentView, selectedSubagentSnapshots]);
   // Indicates at least one background subagent is currently running; used to
   // surface a small dot on the panel toggle when the panel is collapsed.
@@ -3454,6 +3626,15 @@ export function AgentChatPane({
     } catch {
       /* localStorage unavailable; fall back to in-memory ref */
     }
+    // Don't consume the once-per-session auto-open until we can actually surface
+    // the agents panel. If the chat-actions pane is already open (possibly on a
+    // different tab), leave the user where they are and retry when it next closes
+    // — otherwise the flag gets burned without the agents panel ever opening,
+    // which is exactly why subagents sometimes didn't auto-open (it was runtime-
+    // independent; it depended on whether the pane happened to be open already).
+    if (chatActionsOpen) {
+      return;
+    }
     subagentAutoOpenedSessionsRef.current.add(selectedSessionId);
     try {
       window.localStorage.setItem(
@@ -3463,13 +3644,11 @@ export function AgentChatPane({
     } catch {
       /* best-effort persistence */
     }
-    if (!chatActionsOpen) {
-      setChatActionsTab("agents");
-      setIosSimulatorOpen(false);
-      setAppControlOpen(false);
-      setCursorCloudPaneOpen(false);
-      setChatActionsOpen(true);
-    }
+    setChatActionsTab("agents");
+    setIosSimulatorOpen(false);
+    setAppControlOpen(false);
+    setCursorCloudPaneOpen(false);
+    setChatActionsOpen(true);
   }, [chatActionsOpen, selectedSessionId, selectedSubagentSnapshots.length]);
 
   const persistParallelLaunchState = useCallback(async (state: AgentChatParallelLaunchState | null) => {
@@ -7887,7 +8066,7 @@ export function AgentChatPane({
       }}
       onClearSelectedSubagent={() => setSubagentView(null)}
       probeSubagentTranscript={probeSubagentTranscript}
-      openSubagentsImmediately={selectedSession?.provider === "codex"}
+      capability={selectedSubagentCapability}
       selectedTaskId={subagentView?.taskId ?? null}
       goal={selectedSession?.provider === "codex" ? selectedCodexGoal : null}
       goalPending={selectedCodexGoalPending}
@@ -8129,6 +8308,15 @@ export function AgentChatPane({
       onTabChange={setChatActionsTab}
       onClose={() => setChatActionsOpen(false)}
       agentsContent={agentsTabContent}
+      missionsContent={selectedMission ? (
+        <div className="h-full min-h-0 overflow-y-auto">
+          <MissionControlPanel
+            mission={selectedMission}
+            onKillWorker={killDroidWorker}
+            killingWorkerIds={killingWorkerIds}
+          />
+        </div>
+      ) : undefined}
       proofContent={proofTabContent}
       handoffContent={handoffTabContent}
       planContent={chatActionsPlanContent}
@@ -8570,6 +8758,7 @@ export function AgentChatPane({
             codexFastMode={codexFastMode}
             usageViewModel={selectedUsageViewModel}
             draft={draft}
+            lastSentUserMessage={lastSentUserMessage}
             attachments={attachments}
             contextAttachments={contextAttachments}
             allowAttachmentOnlySubmit={workDraftKind === "cli"}
@@ -9122,6 +9311,16 @@ export function AgentChatPane({
   // floating pane (no overlap); the panes themselves fade in/out (opacity) — the
   // two are independent.
   const paneReserve = computePaneReserve(chatAreaWidth, prFloating, chatActionsFloating);
+  // When a pane doesn't force the chat to shift (reserve 0), center it within its
+  // side margin so all three zones (left pane / chat / right pane) read as
+  // centered in their quadrant. When it does shift the chat, pin it to the edge.
+  const SIDE_PANE_WIDTH_PX = 264; // 16.5rem
+  const centeredPaneOffsetPx = Math.max(
+    12,
+    Math.round(((chatAreaWidth - CHAT_COLUMN_PX) / 2 - SIDE_PANE_WIDTH_PX) / 2),
+  );
+  const rightPaneOffsetPx = paneReserve.right === "0px" ? centeredPaneOffsetPx : 12;
+  const leftPaneOffsetPx = paneReserve.left === "0px" ? centeredPaneOffsetPx : 12;
   const splitChatColStyle: React.CSSProperties | undefined =
     heavyRightPaneOpen && supportsSplit ? { flexGrow: 100 - rightPaneSplit } : undefined;
   const splitRightPaneStyle: React.CSSProperties | undefined =
@@ -9157,7 +9356,8 @@ export function AgentChatPane({
   const renderFloatingPane = (content: React.ReactNode) => (
     <motion.div
       key="floating-right-pane"
-      className="absolute right-3 top-3 z-20 flex max-h-[calc(100%-1.5rem)] w-[min(16.5rem,calc(100%-1.5rem))]"
+      className="absolute top-3 z-20 flex max-h-[calc(100%-1.5rem)] w-[min(16.5rem,calc(100%-1.5rem))]"
+      style={{ right: `${rightPaneOffsetPx}px` }}
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
@@ -9171,7 +9371,8 @@ export function AgentChatPane({
   const renderFloatingLeftPane = (content: React.ReactNode) => (
     <motion.div
       key="floating-left-pane"
-      className="absolute left-3 top-3 z-20 flex max-h-[calc(100%-1.5rem)] w-[min(16.5rem,calc(100%-1.5rem))]"
+      className="absolute top-3 z-20 flex max-h-[calc(100%-1.5rem)] w-[min(16.5rem,calc(100%-1.5rem))]"
+      style={{ left: `${leftPaneOffsetPx}px` }}
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}

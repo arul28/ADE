@@ -368,43 +368,13 @@ export function AppearanceSection() {
           </div>
 
           <div>
-            <div style={{ ...LABEL_STYLE, marginBottom: 8 }}>Live preview</div>
-            <div
-              style={{
-                border: `1px solid ${COLORS.border}`,
-                background: COLORS.recessedBg,
-                padding: 14,
-                overflowX: "auto",
-                maxWidth: "100%",
-              }}
-            >
-              <ChatAppearancePreview
-                theme={theme}
-                chatFontSizePx={chatFontSizePx}
-                transcriptDensity={chatTranscriptDensity}
-                chromeTint={chatChromeTint}
-                shellGeometry={chatShellGeometry}
-              />
-            </div>
-          </div>
-        </div>
-      </section>
-
-      <section>
-        <div style={sectionLabelStyle}>Chat & notifications</div>
-        <div style={{ ...cardStyle(), display: "flex", flexDirection: "column", gap: 20 }}>
-          <div>
             <div id="code-block-copy-position-label" style={{ ...LABEL_STYLE, marginBottom: 8 }}>
               Code block copy button
             </div>
             <div style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted, marginBottom: 10, lineHeight: 1.5 }}>
               Where the copy control sits on code blocks in chat. Auto-float tracks the top of the viewport while you scroll a long block.
             </div>
-            <div
-              role="radiogroup"
-              aria-labelledby="code-block-copy-position-label"
-              style={{ display: "flex", flexWrap: "wrap", gap: 8 }}
-            >
+            <div role="radiogroup" aria-labelledby="code-block-copy-position-label" style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
               {CODE_BLOCK_COPY_POSITION_IDS.map((id) => {
                 const meta = COPY_POSITION_META[id];
                 const selected = codeBlockCopyButtonPosition === id;
@@ -428,15 +398,65 @@ export function AppearanceSection() {
                     }}
                   >
                     <span style={{ fontSize: 11, fontWeight: 700 }}>{meta.label}</span>
-                    <span style={{ fontSize: 9, fontWeight: 400, opacity: 0.7, color: COLORS.textMuted }}>
-                      {meta.hint}
-                    </span>
+                    <span style={{ fontSize: 9, fontWeight: 400, opacity: 0.7, color: COLORS.textMuted }}>{meta.hint}</span>
                   </button>
                 );
               })}
             </div>
           </div>
 
+          <div>
+            <div style={{ ...LABEL_STYLE, marginBottom: 8 }}>User message minimap</div>
+            <div style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted, marginBottom: 10, lineHeight: 1.5 }}>
+              Compact strip on the agent chat timeline to jump between your prompts in long threads. Hover for previews.
+            </div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+              <button
+                type="button"
+                aria-pressed={chatUserMinimapEnabled}
+                onClick={() => setChatUserMinimapEnabled(true)}
+                style={{ ...pillToggleStyle(chatUserMinimapEnabled), height: 36, minWidth: 100, padding: "0 14px" }}
+              >
+                Show
+              </button>
+              <button
+                type="button"
+                aria-pressed={!chatUserMinimapEnabled}
+                onClick={() => setChatUserMinimapEnabled(false)}
+                style={{ ...pillToggleStyle(!chatUserMinimapEnabled), height: 36, minWidth: 100, padding: "0 14px" }}
+              >
+                Hide
+              </button>
+            </div>
+          </div>
+
+          <div>
+            <div style={{ ...LABEL_STYLE, marginBottom: 8 }}>Live preview</div>
+            <div
+              style={{
+                border: `1px solid ${COLORS.border}`,
+                background: COLORS.recessedBg,
+                padding: 14,
+                overflowX: "auto",
+                maxWidth: "100%",
+              }}
+            >
+              <ChatAppearancePreview
+                theme={theme}
+                chatFontSizePx={chatFontSizePx}
+                transcriptDensity={chatTranscriptDensity}
+                chromeTint={chatChromeTint}
+                shellGeometry={chatShellGeometry}
+                chatUserMinimapEnabled={chatUserMinimapEnabled}
+              />
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <div style={sectionLabelStyle}>Chat & notifications</div>
+        <div style={{ ...cardStyle(), display: "flex", flexDirection: "column", gap: 20 }}>
           <div>
             <label
               id="chat-launch-clipboard"
@@ -490,40 +510,6 @@ export function AppearanceSection() {
             ) : null}
           </div>
 
-          <div>
-            <div style={{ ...LABEL_STYLE, marginBottom: 8 }}>User message minimap</div>
-            <div style={{ fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted, marginBottom: 10, lineHeight: 1.5 }}>
-              Compact strip on the agent chat timeline to jump between your prompts in long threads. Hover for previews.
-            </div>
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
-              <button
-                type="button"
-                aria-pressed={chatUserMinimapEnabled}
-                onClick={() => setChatUserMinimapEnabled(true)}
-                style={{
-                  ...pillToggleStyle(chatUserMinimapEnabled),
-                  height: 36,
-                  minWidth: 100,
-                  padding: "0 14px",
-                }}
-              >
-                Show
-              </button>
-              <button
-                type="button"
-                aria-pressed={!chatUserMinimapEnabled}
-                onClick={() => setChatUserMinimapEnabled(false)}
-                style={{
-                  ...pillToggleStyle(!chatUserMinimapEnabled),
-                  height: 36,
-                  minWidth: 100,
-                  padding: "0 14px",
-                }}
-              >
-                Hide
-              </button>
-            </div>
-          </div>
 
           <div>
             <label htmlFor={agentSoundSelectId} style={{ ...LABEL_STYLE, marginBottom: 8, display: "block" }}>

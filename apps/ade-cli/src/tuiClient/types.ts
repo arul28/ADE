@@ -117,6 +117,10 @@ export type SetupPaneRow = {
 
 export type { SubagentSnapshot, ChatInfoPlan, ChatInfoPlanStep } from "../../../desktop/src/shared/chatSubagents";
 import type { SubagentSnapshot, ChatInfoPlan } from "../../../desktop/src/shared/chatSubagents";
+import type { SubagentCapability } from "../../../desktop/src/shared/subagentCapabilities";
+import type { MissionSnapshot } from "../../../desktop/src/renderer/components/chat/chatMission";
+
+export type { MissionSnapshot } from "../../../desktop/src/renderer/components/chat/chatMission";
 
 export type ChatInfoSnapshot = {
   provider: AdeCodeProvider;
@@ -129,6 +133,10 @@ export type ChatInfoSnapshot = {
   snapshots: SubagentSnapshot[];
   inspectedSubagentId?: string | null;
   streaming: boolean;
+  /** Per-runtime subagent capability — drives takeover-vs-inline + which stat fields show. */
+  capability: SubagentCapability;
+  /** Droid AGI mission snapshot (null for non-AGI sessions). */
+  mission: MissionSnapshot | null;
 };
 
 export type ModelPickerRightPaneSelection =

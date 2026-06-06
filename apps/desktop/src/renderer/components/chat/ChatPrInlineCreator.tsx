@@ -211,7 +211,10 @@ export const ChatPrInlineCreator = React.memo(function ChatPrInlineCreator({
           with its color on top, branch indented below) but immutable. */}
       <div className="flex flex-col gap-1.5">
         <span className={sectionLabel}>Source lane and branch</span>
-        <div className="flex min-h-[40px] items-center gap-2 rounded-lg border border-white/[0.05] bg-white/[0.02] px-2.5 py-1.5">
+        <div
+          className="flex min-h-[40px] items-center gap-1.5 rounded-[6px] bg-white/[0.02] px-2 py-1"
+          style={{ border: "1px solid var(--work-pane-border)" }}
+        >
           <LaneLogoMark color={sourceColor} size={12} />
           <div className="flex min-w-0 flex-1 flex-col leading-[1.2]">
             <span className="truncate text-[12px] font-semibold" style={{ color: sourceColor }} title={laneName}>

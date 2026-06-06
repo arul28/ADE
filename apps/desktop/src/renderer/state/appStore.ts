@@ -31,7 +31,10 @@ export type TerminalPreferences = {
 };
 export const DEFAULT_TERMINAL_PREFERENCES: TerminalPreferences = {
   fontFamily: DEFAULT_TERMINAL_FONT_FAMILY,
-  fontSize: 12.5,
+  // Integer so device cell metrics stay whole — a fractional 12.5 gave the
+  // xterm.js WebGL renderer fractional cell widths that crowd glyphs (spaces
+  // collapse) and dash box-drawing borders for TUI clients (e.g. `ade code`).
+  fontSize: 13,
   lineHeight: 1.25,
   scrollback: 10_000,
 };
@@ -482,6 +485,9 @@ type PersistedUserPreferences = {
   chatTranscriptDensity: ChatTranscriptDensity;
   chatChromeTint: ChatChromeTint;
   chatShellGeometry: ChatShellGeometry;
+  /** Set true the first time the user changes the chat font size; locks the
+   *  large-screen auto-size so it never overrides their choice again. */
+  userOverrodeChatFontSize: boolean;
 };
 
 function coerceTheme(value: unknown): ThemeId | null {
@@ -513,6 +519,7 @@ function readUnifiedUserPreferences(): PersistedUserPreferences | null {
       chatTranscriptDensity: normalizeChatTranscriptDensity(parsed.chatTranscriptDensity),
       chatChromeTint: coercePersistedChatChromeTint(parsed as Record<string, unknown>),
       chatShellGeometry: normalizeChatShellGeometry(parsed.chatShellGeometry),
+      userOverrodeChatFontSize: parsed.userOverrodeChatFontSize === true,
     };
   } catch {
     return null;
@@ -556,6 +563,7 @@ function readLegacyUserPreferences(): PersistedUserPreferences {
     chatTranscriptDensity: "comfortable",
     chatChromeTint: "colored",
     chatShellGeometry: "default",
+    userOverrodeChatFontSize: false,
   };
 }
 
@@ -585,6 +593,7 @@ function persistUserPreferencesFrom(state: {
   chatTranscriptDensity: ChatTranscriptDensity;
   chatChromeTint: ChatChromeTint;
   chatShellGeometry: ChatShellGeometry;
+  userOverrodeChatFontSize: boolean;
 }) {
   persistUserPreferences({
     theme: state.theme,
@@ -603,6 +612,7 @@ function persistUserPreferencesFrom(state: {
     chatTranscriptDensity: state.chatTranscriptDensity,
     chatChromeTint: state.chatChromeTint,
     chatShellGeometry: state.chatShellGeometry,
+    userOverrodeChatFontSize: state.userOverrodeChatFontSize,
   });
 }
 
@@ -758,7 +768,9 @@ export type AppState = {
   setAgentTurnCompletionSound: (sound: AgentTurnCompletionSound) => void;
   setAgentTurnCompletionSoundVolume: (volume: number) => void;
   setAgentTurnCompletionSoundQuietWhenFocused: (quiet: boolean) => void;
+  userOverrodeChatFontSize: boolean;
   setChatFontSizePx: (px: number) => void;
+  applyAutoSizeChatFontOnLargeScreenIfNotOverridden: () => void;
   setChatUserMinimapEnabled: (enabled: boolean) => void;
   setChatTranscriptDensity: (density: ChatTranscriptDensity) => void;
   setChatChromeTint: (tint: ChatChromeTint) => void;
@@ -939,6 +951,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   agentTurnCompletionSoundVolume: initialUserPreferences.agentTurnCompletionSoundVolume,
   agentTurnCompletionSoundQuietWhenFocused: initialUserPreferences.agentTurnCompletionSoundQuietWhenFocused,
   chatFontSizePx: initialUserPreferences.chatFontSizePx,
+  userOverrodeChatFontSize: initialUserPreferences.userOverrodeChatFontSize,
   chatUserMinimapEnabled: initialUserPreferences.chatUserMinimapEnabled,
   chatTranscriptDensity: initialUserPreferences.chatTranscriptDensity,
   chatChromeTint: initialUserPreferences.chatChromeTint,
@@ -1115,8 +1128,22 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   setChatFontSizePx: (px) =>
     set((prev) => {
       const value = normalizeChatFontSizePx(px);
-      persistUserPreferencesFrom({ ...prev, chatFontSizePx: value });
-      return { chatFontSizePx: value };
+      // Any manual change permanently locks the large-screen auto-size.
+      persistUserPreferencesFrom({ ...prev, chatFontSizePx: value, userOverrodeChatFontSize: true });
+      return { chatFontSizePx: value, userOverrodeChatFontSize: true };
+    }),
+  applyAutoSizeChatFontOnLargeScreenIfNotOverridden: () =>
+    set((prev) => {
+      if (prev.userOverrodeChatFontSize) return {};
+      const isLargeScreen = typeof window !== "undefined"
+        && typeof window.matchMedia === "function"
+        && window.matchMedia("(min-width: 1600px)").matches;
+      // Large screens read better at 16px; normal screens keep the 14px default.
+      // This is an auto-size, so it never sets userOverrodeChatFontSize.
+      const target = normalizeChatFontSizePx(isLargeScreen ? 16 : DEFAULT_CHAT_FONT_SIZE_PX);
+      if (target === prev.chatFontSizePx) return {};
+      persistUserPreferencesFrom({ ...prev, chatFontSizePx: target });
+      return { chatFontSizePx: target };
     }),
   setChatUserMinimapEnabled: (enabled) =>
     set((prev) => {
@@ -1149,8 +1176,9 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         ...prev,
         theme: nextTheme,
         chatFontSizePx: nextFont,
+        userOverrodeChatFontSize: false,
       });
-      return { theme: nextTheme, chatFontSizePx: nextFont };
+      return { theme: nextTheme, chatFontSizePx: nextFont, userOverrodeChatFontSize: false };
     }),
   setTerminalPreferences: (next) =>
     set((prev) => {

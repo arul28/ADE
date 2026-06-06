@@ -2,6 +2,7 @@ import type {
   AgentChatEvent,
   AgentChatEventEnvelope,
   AgentChatSessionSummary,
+  AgentChatSubagentTranscriptMessage,
 } from "./types/chat";
 
 export type SubagentSnapshot = {
@@ -18,6 +19,10 @@ export type SubagentSnapshot = {
   startedAt?: string | null;
   endedAt?: string | null;
   tokens?: number;
+  /** Tool invocations the subagent made (Codex/OpenCode report this). */
+  toolUses?: number;
+  /** USD cost when the runtime reports a per-subagent figure (OpenCode). */
+  costUsd?: number;
   durationMs?: number;
   lastToolName?: string;
 };
@@ -269,6 +274,8 @@ export function subagentSnapshotsFromEvents(events: AgentChatEventEnvelope[]): S
       startedAt,
       endedAt,
       tokens: typeof usage.totalTokens === "number" ? usage.totalTokens : typeof event.tokens === "number" ? event.tokens : existing?.tokens,
+      toolUses: typeof usage.toolUses === "number" ? usage.toolUses : existing?.toolUses,
+      costUsd: typeof usage.costUsd === "number" ? usage.costUsd : existing?.costUsd,
       durationMs: typeof usage.durationMs === "number" ? usage.durationMs : fallbackDurationMs,
       lastToolName: typeof event.lastToolName === "string" ? event.lastToolName : existing?.lastToolName,
     };
@@ -441,6 +448,11 @@ function syntheticTextEvent(
   sequence: number,
   turnId: string | null | undefined,
   text: string,
+  // Distinct per synthetic line. Without it, every synthetic transcript line
+  // shares the snapshot turnId and no itemId, so the render-line coalescer fuses
+  // them into one separator-less blob ("…Task: XStarted.", message runs jammed
+  // together). A unique itemId keeps each line its own rendered paragraph.
+  itemId?: string,
 ): AgentChatEventEnvelope {
   return {
     sessionId,
@@ -450,6 +462,7 @@ function syntheticTextEvent(
       type: "text",
       text,
       ...(turnId ? { turnId } : {}),
+      ...(itemId ? { itemId } : {}),
     },
   };
 }
@@ -474,6 +487,7 @@ export function buildSubagentTranscriptEvents(args: {
     }
   }
 
+  let lineSeq = 0;
   const transcript: AgentChatEventEnvelope[] = [
     syntheticTextEvent(
       sessionId,
@@ -481,6 +495,7 @@ export function buildSubagentTranscriptEvents(args: {
       -2,
       args.snapshot.turnId,
       `Viewing ${args.snapshot.kind === "teammate" ? "teammate" : args.snapshot.background ? "background agent" : "agent"} transcript. Select Main chat in Chat Info to return.\nTask: ${args.snapshot.name}`,
+      `subagent-line:${lineSeq++}`,
     ),
   ];
 
@@ -489,7 +504,7 @@ export function buildSubagentTranscriptEvents(args: {
     if (isLifecycleEventForSnapshot(event, args.snapshot)) {
       const text = lifecycleText(event, args.snapshot);
       if (text) {
-        transcript.push(syntheticTextEvent(sessionId, envelope.timestamp, envelope.sequence ?? 0, args.snapshot.turnId, text));
+        transcript.push(syntheticTextEvent(sessionId, envelope.timestamp, envelope.sequence ?? 0, args.snapshot.turnId, text, `subagent-line:${lineSeq++}`));
       }
       continue;
     }
@@ -507,8 +522,56 @@ export function buildSubagentTranscriptEvents(args: {
       -1,
       args.snapshot.turnId,
       args.snapshot.summary || "No detailed transcript rows were recorded for this agent.",
+      `subagent-line:${lineSeq++}`,
     ));
   }
 
+  return transcript;
+}
+
+/**
+ * Convert a REAL daemon-backed subagent transcript (Codex app-server threads /
+ * OpenCode child-session messages) into synthetic display envelopes for the
+ * takeover view. Used when a `canViewFullTranscript` subagent is inspected;
+ * falls back to {@link buildSubagentTranscriptEvents} when the daemon returns
+ * null. The transcript messages are claude-session shaped, so we flatten each
+ * one's `text` into a role-prefixed text event (tool internals aren't exposed
+ * by the upstream message shape).
+ */
+export function subagentTranscriptMessagesToEvents(args: {
+  messages: AgentChatSubagentTranscriptMessage[];
+  snapshot: SubagentSnapshot;
+  sessionId: string;
+}): AgentChatEventEnvelope[] {
+  const { messages, snapshot, sessionId } = args;
+  const startTs = snapshot.startedAt ?? new Date(0).toISOString();
+  let lineSeq = 0;
+  const transcript: AgentChatEventEnvelope[] = [
+    syntheticTextEvent(
+      sessionId,
+      startTs,
+      -2,
+      snapshot.turnId,
+      `Viewing ${snapshot.kind === "teammate" ? "teammate" : snapshot.background ? "background agent" : "agent"} transcript. Select Main chat in Chat Info to return.\nTask: ${snapshot.name}`,
+      `subagent-line:${lineSeq++}`,
+    ),
+  ];
+  for (const message of messages) {
+    const text = typeof message.text === "string" ? message.text.trim() : "";
+    if (!text) continue;
+    const rolePrefix = message.type === "user" ? "user › " : message.type === "system" ? "system › " : "";
+    transcript.push(syntheticTextEvent(sessionId, startTs, lineSeq, snapshot.turnId, `${rolePrefix}${text}`, `subagent-line:${lineSeq}`));
+    lineSeq += 1;
+  }
+  if (transcript.length === 1) {
+    transcript.push(syntheticTextEvent(
+      sessionId,
+      snapshot.endedAt ?? startTs,
+      -1,
+      snapshot.turnId,
+      snapshot.summary || "No transcript rows were returned for this agent.",
+      `subagent-line:${lineSeq++}`,
+    ));
+  }
   return transcript;
 }

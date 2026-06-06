@@ -356,6 +356,7 @@ import type {
   AgentChatTurnFileDiff,
   AgentChatSubagentSnapshot,
   AgentChatSubagentListArgs,
+  AgentChatKillDroidWorkerArgs,
   AgentChatUpdateSessionArgs,
   KeybindingOverride,
   KeybindingsSnapshot,
@@ -5184,6 +5185,12 @@ contextBridge.exposeInMainWorld("ade", {
     ): Promise<AgentChatSubagentSnapshot[]> =>
       callProjectRuntimeActionOr("chat", "listSubagents", { args }, () =>
         ipcRenderer.invoke(IPC.agentChatListSubagents, args),
+      ),
+    killDroidWorker: async (
+      args: AgentChatKillDroidWorkerArgs,
+    ): Promise<void> =>
+      callProjectRuntimeActionOr("chat", "killDroidWorker", { args }, () =>
+        ipcRenderer.invoke(IPC.agentChatKillDroidWorker, args),
       ),
     getSessionCapabilities: async (
       args: AgentChatSessionCapabilitiesArgs,

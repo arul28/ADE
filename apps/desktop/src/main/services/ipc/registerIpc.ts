@@ -317,6 +317,7 @@ import type {
   AgentChatSessionSummary,
   AgentChatSubagentSnapshot,
   AgentChatSubagentListArgs,
+  AgentChatKillDroidWorkerArgs,
   AgentChatSessionCapabilities,
   AgentChatSessionCapabilitiesArgs,
   AgentChatSteerArgs,
@@ -6355,6 +6356,11 @@ export function registerIpc({
   ipcMain.handle(IPC.agentChatListSubagents, async (_event, arg: AgentChatSubagentListArgs): Promise<AgentChatSubagentSnapshot[]> => {
     const ctx = ensureAgentChatContext();
     return ctx.agentChatService.listSubagents(arg);
+  });
+
+  ipcMain.handle(IPC.agentChatKillDroidWorker, async (_event, arg: AgentChatKillDroidWorkerArgs): Promise<void> => {
+    const ctx = ensureAgentChatContext();
+    return ctx.agentChatService.killDroidWorker(arg);
   });
 
   ipcMain.handle(IPC.agentChatGetSessionCapabilities, async (_event, arg: AgentChatSessionCapabilitiesArgs): Promise<AgentChatSessionCapabilities> => {

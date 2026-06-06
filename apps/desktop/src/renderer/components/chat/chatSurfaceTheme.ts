@@ -19,6 +19,8 @@ export const PROVIDER_CHAT_ACCENTS: Record<string, string> = {
   codex: "#E7E5E4",
   openai: "#E7E5E4",
   cursor: "#A78BFA",
+  droid: "#8B5CF6",
+  factory: "#8B5CF6",
   opencode: "#2563EB",
   google: "#F59E0B",
   gemini: "#F59E0B",

@@ -445,6 +445,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "getTurnFileDiff",
     "getParallelLaunchState",
     "interrupt",
+    "killDroidWorker",
     "launchCli",
     "launchHeadless",
     "listClaudePlugins",

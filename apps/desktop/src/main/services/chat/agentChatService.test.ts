@@ -4903,14 +4903,17 @@ describe("createAgentChatService", () => {
     it("returns default capabilities for unknown session", () => {
       const { service } = createService();
       const caps = service.getSessionCapabilities({ sessionId: "unknown-id" });
-      expect(caps).toEqual({
+      expect(caps).toMatchObject({
         supportsSubagentInspection: false,
         supportsSubagentControl: false,
         supportsReviewMode: false,
       });
+      // Unknown session → the no-op subagent descriptor (nothing listable).
+      expect(caps.subagent.canList).toBe(false);
+      expect(caps.subagent.canViewFullTranscript).toBe(false);
     });
 
-    it("returns capabilities for a opencode session (no subagent or review support)", async () => {
+    it("returns capabilities for a opencode session (subagent inspection + transcript, no review)", async () => {
       const { service } = createService();
       const session = await service.createSession({
         laneId: "lane-1",
@@ -4920,7 +4923,10 @@ describe("createAgentChatService", () => {
       });
 
       const caps = service.getSessionCapabilities({ sessionId: session.id });
-      expect(caps.supportsSubagentInspection).toBe(false);
+      // OpenCode child sessions are real sessions → listable with full transcript.
+      expect(caps.supportsSubagentInspection).toBe(true);
+      expect(caps.subagent.canList).toBe(true);
+      expect(caps.subagent.canViewFullTranscript).toBe(true);
       expect(caps.supportsSubagentControl).toBe(false);
       expect(caps.supportsReviewMode).toBe(false);
     });
@@ -4935,10 +4941,27 @@ describe("createAgentChatService", () => {
 
       const caps = service.getSessionCapabilities({ sessionId: session.id });
       expect(caps.supportsSubagentInspection).toBe(true);
+      expect(caps.subagent.canViewFullTranscript).toBe(true);
+      // Claude consolidates multiple subagent kinds into one list.
+      expect(caps.subagent.kinds.length).toBeGreaterThan(1);
       // supportsSubagentControl is true when a Claude runtime is initialized,
       // which createSession does eagerly for Claude sessions via ensureClaudeSessionRuntime.
       expect(caps.supportsSubagentControl).toBe(true);
       expect(caps.supportsReviewMode).toBe(false);
+    });
+
+    it("returns a cursor capability that lists subagents but cannot take over a transcript", async () => {
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "",
+        modelId: "cursor/auto",
+      });
+
+      const caps = service.getSessionCapabilities({ sessionId: session.id });
+      expect(caps.subagent.canList).toBe(true);
+      expect(caps.subagent.canViewFullTranscript).toBe(false);
     });
   });
 

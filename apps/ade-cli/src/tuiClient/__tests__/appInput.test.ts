@@ -65,6 +65,7 @@ import {
 } from "../app";
 import { clampTerminalPaneCols } from "../components/TerminalPane";
 import type { ChatInfoSnapshot } from "../types";
+import { resolveSubagentCapability } from "../../../../desktop/src/shared/subagentCapabilities";
 import type { AgentChatSession, AgentChatSessionSummary } from "../../../../desktop/src/shared/types/chat";
 import type { LaneSummary } from "../../../../desktop/src/shared/types/lanes";
 import type { ChatTerminalSession } from "../../../../desktop/src/shared/types/sessions";
@@ -392,6 +393,8 @@ describe("right pane context defaults", () => {
       snapshots: [],
       inspectedSubagentId: null,
       streaming: false,
+      capability: resolveSubagentCapability("claude"),
+      mission: null,
     };
   }
 
@@ -885,8 +888,10 @@ describe("pane width helpers", () => {
     expect(clampTerminalPaneCols(Number.POSITIVE_INFINITY)).toBe(20);
   });
 
-  it("does not further cap chat text when both side panes already narrow the center", () => {
-    expect(resolveChatWrapWidth(72, true, 34)).toBe(72);
+  it("reserves a right gutter when the details pane is open so chat text does not hug the border", () => {
+    expect(resolveChatWrapWidth(72, true, 34)).toBe(70); // open pane → 2-col gutter
+    expect(resolveChatWrapWidth(72, true, 0)).toBe(72); // closed pane → no gutter
+    expect(resolveChatWrapWidth(24, true, 34)).toBe(24); // gutter never underflows the min
   });
 });
 

@@ -155,6 +155,7 @@ import type {
   AgentChatSetClaudeOutputStyleArgs,
   AgentChatSlashCommand,
   AgentChatSlashCommandsArgs,
+  AgentChatKillDroidWorkerArgs,
   AgentChatSubagentListArgs,
   AgentChatSubagentMetadata,
   AgentChatSubagentSnapshot,
@@ -260,6 +261,7 @@ import { buildAdeCliAgentGuidance } from "../../../shared/adeCliGuidance";
 import { getAdeAgentSkillRootsForPrompt } from "../../../shared/agentSkillRoots";
 import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
 import { extractLeadingSlashCommand, isProviderSlashCommandInput } from "../../../shared/chatSlashCommands";
+import { resolveSubagentCapability } from "../../../shared/subagentCapabilities";
 import { stripAnsi } from "../../utils/ansiStrip";
 import type { createCtoStateService } from "../cto/ctoStateService";
 import type { createWorkerAgentService } from "../cto/workerAgentService";
@@ -2949,6 +2951,18 @@ function taskParentToolUseId(item: Record<string, unknown>): string | null {
  * stream — the SubagentStart hook also has it, but downstream `task_started`
  * system messages do not. Stashing it lets us enrich those envelopes.
  */
+/**
+ * The Claude Agent SDK's subagent-spawning tool was historically named `Task`;
+ * newer SDK builds type its input as `AgentInput` and emit the tool under the
+ * name `Agent` at invocation time (while `system:init` tool lists and permission
+ * denials may still say `Task`). Match both so subagent-type enrichment keeps
+ * working across SDK versions. (Verified against @anthropic-ai/claude-agent-sdk
+ * 0.2.139: `AgentInput` with `subagent_type`/`run_in_background`/`name`.)
+ */
+function isClaudeSubagentToolName(toolName: string | null | undefined): boolean {
+  return toolName === "Task" || toolName === "Agent";
+}
+
 function extractTaskToolInput(input: unknown): {
   subagentType?: string;
   name?: string;
@@ -3947,7 +3961,7 @@ const VALID_CODEX_APPROVAL_POLICIES = new Set(["untrusted", "on-request", "on-fa
 const VALID_CODEX_SANDBOXES = new Set(["read-only", "workspace-write", "danger-full-access"]);
 const VALID_CODEX_CONFIG_SOURCES = new Set(["flags", "config-toml"]);
 const VALID_OPENCODE_PERMISSION_MODES = new Set(["plan", "edit", "full-auto", "config-toml"]);
-const VALID_DROID_PERMISSION_MODES = new Set(["read-only", "auto-low", "auto-medium", "auto-high"]);
+const VALID_DROID_PERMISSION_MODES = new Set(["read-only", "auto-low", "auto-medium", "auto-high", "agi"]);
 
 function normalizePersistedEnum<T extends string>(value: unknown, validSet: Set<string>): T | undefined {
   if (typeof value !== "string") return undefined;
@@ -4770,6 +4784,10 @@ function resolveDroidSdkAutonomyLevel(
   const mode = resolveSessionDroidPermissionMode(session, "auto-low");
   switch (mode) {
     case "read-only":
+      return "off";
+    case "agi":
+      // Orchestrator runs read-only at the top level; workers carry their own
+      // autonomy, so the lead session stays at "off".
       return "off";
     case "auto-low":
       return "low";
@@ -6095,11 +6113,20 @@ export function createAgentChatService(args: {
     return Array.from(toolNames).sort((a, b) => a.localeCompare(b));
   };
 
-  const deriveSessionCapabilities = (managed: ManagedChatSession | null): AgentChatSessionCapabilities => ({
-    supportsSubagentInspection: Boolean(managed && (managed.session.provider === "claude" || managed.session.provider === "codex")),
-    supportsSubagentControl: Boolean(managed && managed.runtime?.kind === "claude"),
-    supportsReviewMode: Boolean(managed && managed.session.provider === "codex"),
-  });
+  const deriveSessionCapabilities = (managed: ManagedChatSession | null): AgentChatSessionCapabilities => {
+    const provider = managed?.session.provider ?? null;
+    const runtimeKind = managed?.runtime?.kind ?? null;
+    const subagent = resolveSubagentCapability(provider, runtimeKind);
+    return {
+      // `subagent.canList` is the new source of truth (covers every runtime that
+      // surfaces subagents). The legacy boolean is kept for back-compat and now
+      // simply mirrors it.
+      supportsSubagentInspection: Boolean(managed) && subagent.canList,
+      supportsSubagentControl: Boolean(managed && managed.runtime?.kind === "claude"),
+      supportsReviewMode: Boolean(managed && provider === "codex"),
+      subagent,
+    };
+  };
 
   const getClaudeQueryControl = (
     sessionQuery: ClaudeQuery | null | undefined,
@@ -11502,7 +11529,7 @@ export function createAgentChatService(args: {
                   openClaudeToolUses.set(itemId, { toolName });
                   // Stash Task-tool input so the system:task_* envelopes that
                   // arrive later can be enriched with agentType.
-                  if (toolName === "Task" && typeof block.id === "string" && block.id.length) {
+                  if (isClaudeSubagentToolName(toolName) && typeof block.id === "string" && block.id.length) {
                     const taskInput = extractTaskToolInput(block.input);
                     if (taskInput) runtime.taskToolInputByToolUseId.set(block.id, taskInput);
                   }
@@ -11689,7 +11716,7 @@ export function createAgentChatService(args: {
                 // Stash Task-tool input so the system:task_* envelopes that
                 // arrive later can be enriched with agentType. Stream-event
                 // path: input arrives via input_json_delta and lands in `raw`.
-                if (meta.toolName === "Task" && meta.toolUseId) {
+                if (isClaudeSubagentToolName(meta.toolName) && meta.toolUseId) {
                   const taskInput = extractTaskToolInput(parsed);
                   if (taskInput) runtime.taskToolInputByToolUseId.set(meta.toolUseId, taskInput);
                 }
@@ -12681,6 +12708,17 @@ export function createAgentChatService(args: {
       }
 
       let stepNumber = 0;
+      // Per-child (subagent) usage accumulator for this turn. OpenCode child
+      // sessions stream their own `step-finish` parts (tagged with the child's
+      // sessionID); we sum their tokens/cost here and attach the running total to
+      // the subagent progress/result events so the subagent drawer can show
+      // usage the way Codex/Claude do.
+      const childUsageBySession = new Map<string, { totalTokens: number; costUsd: number }>();
+      const childUsageEvent = (childId: string): { totalTokens: number; costUsd?: number } | undefined => {
+        const acc = childUsageBySession.get(childId);
+        if (!acc || acc.totalTokens <= 0) return undefined;
+        return { totalTokens: acc.totalTokens, ...(acc.costUsd > 0 ? { costUsd: acc.costUsd } : {}) };
+      };
       for await (const event of eventStream) {
         const resolveSessionId = (): string | null => {
           switch (event.type) {
@@ -12773,6 +12811,7 @@ export function createAgentChatService(args: {
                 parentToolUseId: null,
                 description: childDescription,
                 summary: formatSummary(),
+                ...(childUsageEvent(childKey) ? { usage: childUsageEvent(childKey) } : {}),
                 turnId,
               });
             } else {
@@ -12783,10 +12822,38 @@ export function createAgentChatService(args: {
                 parentToolUseId: null,
                 status: "completed",
                 summary: formatSummary(),
+                ...(childUsageEvent(childKey) ? { usage: childUsageEvent(childKey) } : {}),
                 turnId,
               });
               runtime.subagentSessionIds.delete(childKey);
             }
+            continue;
+          }
+        }
+
+        // Accumulate per-child (subagent) usage from the child's own
+        // `step-finish` parts. These belong to a child session, so they fall
+        // outside the parent-session filter below; catch them here first. The
+        // running total rides along on the next subagent progress/result event.
+        if (event.type === "message.part.updated") {
+          const childPart = event.properties.part;
+          if (
+            childPart.type === "step-finish"
+            && childPart.sessionID
+            && childPart.sessionID !== runtime.handle.sessionId
+            && runtime.subagentSessionIds.has(childPart.sessionID)
+          ) {
+            const prev = childUsageBySession.get(childPart.sessionID) ?? { totalTokens: 0, costUsd: 0 };
+            const t = childPart.tokens;
+            const stepTokens = (t.input ?? 0) + (t.output ?? 0) + (t.reasoning ?? 0)
+              + (t.cache?.read ?? 0) + (t.cache?.write ?? 0);
+            childUsageBySession.set(childPart.sessionID, {
+              totalTokens: prev.totalTokens + stepTokens,
+              costUsd: prev.costUsd + (typeof childPart.cost === "number" ? childPart.cost : 0),
+            });
+            // Don't emit here — the running total rides along on the next child
+            // session.updated (progress) / session.deleted (result) event via
+            // childUsageEvent(), so we avoid empty-summary "dead" progress events.
             continue;
           }
         }
@@ -18873,7 +18940,13 @@ export function createAgentChatService(args: {
     modelId: string,
   ): DroidSdkSessionSettings => {
     const reasoningEffort = normalizeDroidSdkReasoningEffort(managed.session.reasoningEffort);
-    const interactionMode = resolveDroidSdkInteractionMode(managed.session);
+    // AGI (orchestrator) is a Droid-specific permission mode, not part of the
+    // generic interaction-mode enum — resolve it from droidPermissionMode and
+    // let it win over the plan→spec mapping.
+    const interactionMode: DroidSdkSessionSettings["interactionMode"] =
+      resolveSessionDroidPermissionMode(managed.session, "auto-low") === "agi"
+        ? "agi"
+        : resolveDroidSdkInteractionMode(managed.session);
     return {
       modelId,
       autonomyLevel: resolveDroidSdkAutonomyLevel(managed.session),
@@ -24275,6 +24348,17 @@ export function createAgentChatService(args: {
     return getTrackedSubagents(sessionId);
   };
 
+  // Terminate a single Droid AGI mission worker (Missions tab). Only valid for a
+  // live Droid orchestrator session; other runtimes have no worker concept.
+  const killDroidWorker = async ({ sessionId, workerSessionId }: AgentChatKillDroidWorkerArgs): Promise<void> => {
+    const managed = managedSessions.get(sessionId.trim());
+    const runtime = managed?.runtime?.kind === "droid" ? managed.runtime : null;
+    if (!runtime) throw new Error("No active Droid session to terminate a worker for.");
+    const id = workerSessionId.trim();
+    if (!id) throw new Error("workerSessionId is required.");
+    await runtime.sdk.killWorker(id);
+  };
+
   const getSessionCapabilities = ({ sessionId }: AgentChatSessionCapabilitiesArgs): AgentChatSessionCapabilities => {
     const managed = managedSessions.get(sessionId) ?? null;
     return deriveSessionCapabilities(managed);
@@ -26152,6 +26236,7 @@ export function createAgentChatService(args: {
     getClaudeSessionInfo,
     getClaudeSessionMessages,
     getSubagentTranscript,
+    killDroidWorker,
     getContextUsage,
     rewindFiles,
     codexFuzzyFileSearch,

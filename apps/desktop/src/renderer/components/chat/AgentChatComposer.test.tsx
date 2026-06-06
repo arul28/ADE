@@ -579,6 +579,7 @@ describe("AgentChatComposer", () => {
       "auto-low",
       "auto-medium",
       "auto-high",
+      "agi",
     ]);
     expect(screen.queryByRole("combobox", { name: "Permissions" })).toBeNull();
 

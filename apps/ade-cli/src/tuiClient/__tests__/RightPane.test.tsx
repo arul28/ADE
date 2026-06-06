@@ -25,10 +25,12 @@ function stripAnsi(text: string): string {
 }
 
 import type { ChatInfoSnapshot } from "../types";
+import { resolveSubagentCapability } from "../../../../desktop/src/shared/subagentCapabilities";
 
 function chatInfo(overrides: Partial<ChatInfoSnapshot> = {}): ChatInfoSnapshot {
+  const provider = overrides.provider ?? "codex";
   return {
-    provider: "codex",
+    provider,
     modelLabel: "gpt-5.5-high",
     laneLabel: "fixing-cli-send-error",
     contextPercent: 42,
@@ -46,6 +48,8 @@ function chatInfo(overrides: Partial<ChatInfoSnapshot> = {}): ChatInfoSnapshot {
     },
     snapshots: [],
     inspectedSubagentId: null,
+    capability: resolveSubagentCapability(provider),
+    mission: null,
     ...overrides,
   };
 }
@@ -86,7 +90,8 @@ describe("RightPane chat info", () => {
     expect(frame).toContain("Ship CLI parity");
     expect(frame).toContain("CHATS");
     expect(frame).toContain("delegated");
-    expect(frame).toContain("↑↓ focus · ↵ swap · esc → main");
+    // Codex can view full subagent transcripts → Enter takes over the main chat.
+    expect(frame).toContain("↑↓ focus · ↵ open thread · esc → main");
     expect(frame).not.toContain("Errors");
     expect(frame).not.toContain("Activity");
     expect(frame).not.toContain("tab · cycle");

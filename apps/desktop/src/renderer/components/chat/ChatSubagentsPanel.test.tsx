@@ -4,8 +4,16 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import type * as React from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentChatEventEnvelope } from "../../../shared/types";
+import { SUBAGENT_CAPABILITIES } from "../../../shared/subagentCapabilities";
 import type { ChatSubagentSnapshot } from "./chatExecutionSummary";
 import { ChatSubagentsPanel, type SubagentSelection } from "./ChatSubagentsPanel";
+
+// Real per-runtime descriptors so the tests exercise the actual capability
+// matrix: codex = takeover + immediate-for-running; claude = takeover via probe;
+// cursor = drawer-only (no transcript, no probe, never takeover).
+const CODEX_CAP = SUBAGENT_CAPABILITIES.codex;
+const CLAUDE_CAP = SUBAGENT_CAPABILITIES.claude;
+const CURSOR_CAP = SUBAGENT_CAPABILITIES.cursor;
 
 vi.mock("motion/react", () => ({
   AnimatePresence: ({ children }: { children: React.ReactNode }) => <>{children}</>,
@@ -98,6 +106,7 @@ describe("ChatSubagentsPanel (pane variant)", () => {
         snapshots={[baseSnapshot]}
         events={[]}
         variant="pane"
+        capability={CLAUDE_CAP}
         onSelectSubagent={onSelectSubagent}
         probeSubagentTranscript={probeSubagentTranscript}
       />,
@@ -114,7 +123,7 @@ describe("ChatSubagentsPanel (pane variant)", () => {
     expect(arg.background).toBe(true);
   });
 
-  it("takes over immediately without probing when configured for live subagents", () => {
+  it("takes over immediately without probing for running agents on a rich-metadata runtime (codex)", () => {
     const onSelectSubagent = vi.fn<[SubagentSelection], void>();
     const probeSubagentTranscript = vi.fn().mockResolvedValue(false);
 
@@ -123,9 +132,9 @@ describe("ChatSubagentsPanel (pane variant)", () => {
         snapshots={[baseSnapshot]}
         events={[]}
         variant="pane"
+        capability={CODEX_CAP}
         onSelectSubagent={onSelectSubagent}
         probeSubagentTranscript={probeSubagentTranscript}
-        openSubagentsImmediately
       />,
     );
 
@@ -155,9 +164,9 @@ describe("ChatSubagentsPanel (pane variant)", () => {
         snapshots={[completedSnapshot]}
         events={[]}
         variant="pane"
+        capability={CODEX_CAP}
         onSelectSubagent={onSelectSubagent}
         probeSubagentTranscript={probeSubagentTranscript}
-        openSubagentsImmediately
       />,
     );
 
@@ -166,7 +175,7 @@ describe("ChatSubagentsPanel (pane variant)", () => {
     await waitFor(() => expect(probeSubagentTranscript).toHaveBeenCalledTimes(1));
     expect(onSelectSubagent).not.toHaveBeenCalled();
     expect(
-      await screen.findByText(/No transcript available for this agent\./i),
+      await screen.findByText(/No transcript recorded for this agent\./i),
     ).toBeTruthy();
   });
 
@@ -181,10 +190,10 @@ describe("ChatSubagentsPanel (pane variant)", () => {
         events={[]}
         variant="pane"
         selectedTaskId="task-1"
+        capability={CODEX_CAP}
         onSelectSubagent={onSelectSubagent}
         onClearSelectedSubagent={onClearSelectedSubagent}
         probeSubagentTranscript={probeSubagentTranscript}
-        openSubagentsImmediately
       />,
     );
 
@@ -195,7 +204,7 @@ describe("ChatSubagentsPanel (pane variant)", () => {
     expect(probeSubagentTranscript).not.toHaveBeenCalled();
   });
 
-  it("opens an inline details drawer (no takeover) when the agent has no transcript", async () => {
+  it("opens an inline details drawer (no takeover) when a transcript-capable runtime has nothing to pull yet", async () => {
     const onSelectSubagent = vi.fn<[SubagentSelection], void>();
     const probeSubagentTranscript = vi.fn().mockResolvedValue(false);
 
@@ -204,6 +213,7 @@ describe("ChatSubagentsPanel (pane variant)", () => {
         snapshots={[baseSnapshot]}
         events={[]}
         variant="pane"
+        capability={CLAUDE_CAP}
         onSelectSubagent={onSelectSubagent}
         probeSubagentTranscript={probeSubagentTranscript}
       />,
@@ -211,9 +221,37 @@ describe("ChatSubagentsPanel (pane variant)", () => {
 
     fireEvent.click(screen.getByTitle("Audit chat renderer"));
 
+    // baseSnapshot is still running → the capable-runtime footer says the
+    // transcript can still appear on a later poll.
     expect(
-      await screen.findByText(/No transcript available for this agent\./i),
+      await screen.findByText(/Transcript not ready yet\./i),
     ).toBeTruthy();
+    expect(onSelectSubagent).not.toHaveBeenCalled();
+  });
+
+  it("never probes or takes over for a runtime with no transcript capability (cursor)", async () => {
+    const onSelectSubagent = vi.fn<[SubagentSelection], void>();
+    const probeSubagentTranscript = vi.fn().mockResolvedValue(true);
+
+    render(
+      <ChatSubagentsPanel
+        snapshots={[baseSnapshot]}
+        events={[]}
+        variant="pane"
+        capability={CURSOR_CAP}
+        onSelectSubagent={onSelectSubagent}
+        probeSubagentTranscript={probeSubagentTranscript}
+      />,
+    );
+
+    fireEvent.click(screen.getByTitle("Audit chat renderer"));
+
+    // Drawer opens immediately; the transcript probe is never even attempted,
+    // and the chat is never taken over.
+    expect(
+      await screen.findByText(/Live details only/i),
+    ).toBeTruthy();
+    expect(probeSubagentTranscript).not.toHaveBeenCalled();
     expect(onSelectSubagent).not.toHaveBeenCalled();
   });
 
@@ -238,6 +276,7 @@ describe("ChatSubagentsPanel (pane variant)", () => {
         snapshots={[baseSnapshot]}
         events={[]}
         variant="pane"
+        capability={CURSOR_CAP}
         probeSubagentTranscript={probeSubagentTranscript}
       />,
     );
@@ -245,13 +284,13 @@ describe("ChatSubagentsPanel (pane variant)", () => {
     const row = screen.getByTitle("Audit chat renderer");
     fireEvent.click(row);
     expect(
-      await screen.findByText(/No transcript available for this agent\./i),
+      await screen.findByText(/Live details only/i),
     ).toBeTruthy();
 
-    // Second click closes the drawer (handled before any re-probe).
+    // Second click closes the drawer.
     fireEvent.click(row);
     await waitFor(() =>
-      expect(screen.queryByText(/No transcript available for this agent\./i)).toBeNull(),
+      expect(screen.queryByText(/Live details only/i)).toBeNull(),
     );
   });
 });

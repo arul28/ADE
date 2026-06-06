@@ -4674,10 +4674,18 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       fileSearch: resolvedArg([]),
       getTurnFileDiff: resolvedArg(null),
       listSubagents: resolvedArg([]),
+      killDroidWorker: resolvedArg(undefined),
       getSessionCapabilities: resolvedArg({
-        supportsModelSwitch: false,
-        supportsSteer: false,
-        supportsInterrupt: false,
+        supportsSubagentInspection: false,
+        supportsSubagentControl: false,
+        supportsReviewMode: false,
+        subagent: {
+          canList: false,
+          canViewFullTranscript: false,
+          statsFields: [],
+          kinds: [],
+          hasRichMetadata: false,
+        },
       }),
       saveTempAttachment: resolvedArg({ path: "/tmp/browser-mock-attachment" }),
       getEventHistory: async (arg: {

@@ -6,11 +6,11 @@ import { providerChatAccent } from "../chat/chatSurfaceTheme";
 import { ChatWorkLogBlock } from "../chat/ChatWorkLogBlock";
 import type { ChatWorkLogEntry } from "../chat/chatTranscriptRows";
 import {
-  CHAT_ASSISTANT_MESSAGE_CARD_STYLE,
   CHAT_TRANSCRIPT_GLASS_CARD_CLASS,
   CHAT_USER_MESSAGE_CARD_STYLE,
 } from "../chat/chatTranscriptChrome";
-import { ClaudeLogo, CodexLogo, OpenCodeLogo } from "../terminals/ToolLogos";
+import { ClaudeLogo, CodexLogo, CursorAgentLogo, OpenCodeLogo } from "../terminals/ToolLogos";
+import { DroidLogo } from "../shared/ProviderLogos";
 import { cn } from "../ui/cn";
 import type { ChatChromeTint, ChatShellGeometry, ChatTranscriptDensity, ThemeId } from "../../state/appStore";
 
@@ -84,12 +84,16 @@ export type ChatAppearancePreviewProps = {
   transcriptDensity: ChatTranscriptDensity;
   chromeTint: ChatChromeTint;
   shellGeometry: ChatShellGeometry;
+  /** When true, draw the user-message minimap rail in each preview column. */
+  chatUserMinimapEnabled?: boolean;
 };
 
 const PREVIEW_PROVIDER_META = {
   codex: { name: "Codex", Logo: CodexLogo },
   claude: { name: "Claude", Logo: ClaudeLogo },
   opencode: { name: "OpenCode", Logo: OpenCodeLogo },
+  cursor: { name: "Cursor", Logo: CursorAgentLogo },
+  droid: { name: "Droid", Logo: DroidLogo },
 } as const;
 
 type PreviewProviderKey = keyof typeof PREVIEW_PROVIDER_META;
@@ -102,6 +106,8 @@ const PREVIEW_USAGE_MODEL: Record<
   codex: { Logo: CodexLogo, label: "gpt-5.5" },
   claude: { Logo: ClaudeLogo, label: "Claude Opus 4.7" },
   opencode: { Logo: OpenCodeLogo, label: "local · runtime" },
+  cursor: { Logo: CursorAgentLogo, label: "cursor · auto" },
+  droid: { Logo: DroidLogo, label: "droid · factory" },
 };
 
 /** Mirrors `event.type === "done"` usage footer in `AgentChatMessageList` (completed turn). */
@@ -187,18 +193,39 @@ function PreviewColumn({
 }
 
 /** Identical transcript in each preview column: user prompt, markdown reply, tool/file rows, real-style usage row. */
+/** Static stand-in for the live ChatUserMinimap rail (dots = user turns), so the
+ *  appearance toggle has something to reflect without the real scroll/store wiring. */
+function PreviewMinimapRail() {
+  return (
+    <div className="pointer-events-none absolute right-1 top-1/2 z-10 flex -translate-y-1/2 flex-col items-center gap-1.5">
+      {[0, 1].map((i) => (
+        <span
+          key={i}
+          className={cn(
+            "h-2 w-[3px] rounded-full",
+            i === 1 ? "bg-[color:var(--color-accent,#A78BFA)]/80" : "bg-fg/25",
+          )}
+        />
+      ))}
+    </div>
+  );
+}
+
 function SharedAppearanceTranscript({
   rootStyle,
   provider,
   chromeTint,
+  chatUserMinimapEnabled,
 }: {
   rootStyle: React.CSSProperties;
   provider: PreviewProviderKey;
   chromeTint: ChatChromeTint;
+  chatUserMinimapEnabled?: boolean;
 }) {
   const neu = chromeTint === "neutral";
   return (
-    <div data-chat-appearance-root style={rootStyle} className={transcriptPaneClass}>
+    <div data-chat-appearance-root style={rootStyle} className={cn(transcriptPaneClass, "relative")}>
+      {chatUserMinimapEnabled ? <PreviewMinimapRail /> : null}
       <div className="flex min-w-0 w-full justify-end">
         <div
           className={cn(
@@ -214,21 +241,10 @@ function SharedAppearanceTranscript({
         </div>
       </div>
 
+      {/* Assistant text is unbubbled — matches the real chat (AgentChatMessageList):
+          bare markdown on the canvas, no card / accent line. */}
       <div className="flex min-w-0 w-full justify-start">
-        <div
-          className={cn(
-            CHAT_TRANSCRIPT_GLASS_CARD_CLASS,
-            "ade-chat-message-card-assistant group relative min-w-0 w-full max-w-[min(104ch,100%)] px-[length:var(--chat-bubble-assistant-px)] py-[length:var(--chat-bubble-assistant-py)]",
-          )}
-          style={CHAT_ASSISTANT_MESSAGE_CARD_STYLE}
-        >
-          <div
-            className={
-              neu
-                ? "absolute left-0 right-0 top-0 h-px bg-gradient-to-r from-transparent via-white/14 to-transparent"
-                : "absolute left-0 right-0 top-0 h-px bg-gradient-to-r from-transparent via-violet-400/25 to-transparent"
-            }
-          />
+        <div className="group relative min-w-0 w-full max-w-[min(104ch,100%)] overflow-visible py-0.5 pr-7">
           <ChatMarkdown tone={neu ? "neutral" : "sky"}>{SAMPLE_ASSISTANT_MARKDOWN}</ChatMarkdown>
         </div>
       </div>
@@ -260,16 +276,22 @@ function SharedAppearanceTranscript({
   );
 }
 
+const PREVIEW_COLUMNS: ReadonlyArray<{ provider: PreviewProviderKey; fallbackAccent: string }> = [
+  { provider: "codex", fallbackAccent: "#E7E5E4" },
+  { provider: "claude", fallbackAccent: "#D97706" },
+  { provider: "opencode", fallbackAccent: "#2563EB" },
+  { provider: "cursor", fallbackAccent: "#A78BFA" },
+  { provider: "droid", fallbackAccent: "#8B5CF6" },
+];
+
 export function ChatAppearancePreview({
   theme,
   chatFontSizePx,
   transcriptDensity,
   chromeTint,
   shellGeometry,
+  chatUserMinimapEnabled = false,
 }: ChatAppearancePreviewProps) {
-  const codexAccent = providerChatAccent("codex") ?? "#E7E5E4";
-  const claudeAccent = providerChatAccent("claude") ?? "#D97706";
-  const opencodeAccent = providerChatAccent("opencode") ?? "#2563EB";
   const rootStyle = buildChatAppearanceRootStyle({
     chatFontSizePx,
     transcriptDensity,
@@ -278,32 +300,26 @@ export function ChatAppearancePreview({
   return (
     <div
       data-theme={theme}
-      className="grid w-full min-w-0 grid-cols-1 items-start gap-3 lg:grid-cols-[repeat(3,minmax(0,1fr))]"
+      // 5 runtimes: 1-up on narrow, 2-up at lg, 3-up at xl (5 wraps cleanly; forcing
+      // 5 across would make each column unreadably narrow).
+      className="grid w-full min-w-0 grid-cols-1 items-start gap-3 lg:grid-cols-[repeat(2,minmax(0,1fr))] xl:grid-cols-[repeat(3,minmax(0,1fr))]"
     >
-      <PreviewColumn
-        provider="codex"
-        accentColor={codexAccent}
-        shellGeometry={shellGeometry}
-        chromeTint={chromeTint}
-      >
-        <SharedAppearanceTranscript rootStyle={rootStyle} provider="codex" chromeTint={chromeTint} />
-      </PreviewColumn>
-      <PreviewColumn
-        provider="claude"
-        accentColor={claudeAccent}
-        shellGeometry={shellGeometry}
-        chromeTint={chromeTint}
-      >
-        <SharedAppearanceTranscript rootStyle={rootStyle} provider="claude" chromeTint={chromeTint} />
-      </PreviewColumn>
-      <PreviewColumn
-        provider="opencode"
-        accentColor={opencodeAccent}
-        shellGeometry={shellGeometry}
-        chromeTint={chromeTint}
-      >
-        <SharedAppearanceTranscript rootStyle={rootStyle} provider="opencode" chromeTint={chromeTint} />
-      </PreviewColumn>
+      {PREVIEW_COLUMNS.map(({ provider, fallbackAccent }) => (
+        <PreviewColumn
+          key={provider}
+          provider={provider}
+          accentColor={providerChatAccent(provider) ?? fallbackAccent}
+          shellGeometry={shellGeometry}
+          chromeTint={chromeTint}
+        >
+          <SharedAppearanceTranscript
+            rootStyle={rootStyle}
+            provider={provider}
+            chromeTint={chromeTint}
+            chatUserMinimapEnabled={chatUserMinimapEnabled}
+          />
+        </PreviewColumn>
+      ))}
     </div>
   );
 }

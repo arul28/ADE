@@ -18,6 +18,9 @@ import type { AgentChatModelCatalog, AgentChatModelInfo } from "../../../../desk
 import type { AiSettingsStatus } from "../../../../desktop/src/shared/types/config";
 import { useHoveredHitId } from "../hitTestRegistry";
 import { diffLineKind, type DiffLineKind } from "../format";
+import type { SubagentCapability } from "../../../../desktop/src/shared/subagentCapabilities";
+import { missionFeatureCounts, orderMissionFeatures } from "../../../../desktop/src/renderer/components/chat/chatMission";
+import type { MissionSnapshot } from "../types";
 import type { HelpRow } from "../helpIndex";
 import { useShimmerTick } from "../spinTick";
 import {
@@ -585,6 +588,39 @@ function rosterRowDetail(snapshot: SubagentSnapshot): string | null {
   return unique.length ? unique.join(" · ") : null;
 }
 
+// Per-runtime stat chips for the selected subagent's inline detail line. Only
+// the fields the runtime's capability advertises and that the snapshot actually
+// carries are shown (durationMs already prints on the row, so it is omitted here
+// to avoid duplication). Kept to a single line so the click line-math — which
+// accounts for exactly one detail line on the selected row — stays correct.
+function subagentStatChips(snapshot: SubagentSnapshot, capability: SubagentCapability): string {
+  const fields = new Set(capability.statsFields);
+  const chips: string[] = [];
+  if (fields.has("tokens") && typeof snapshot.tokens === "number" && snapshot.tokens > 0) {
+    chips.push(`${compactNumber(snapshot.tokens)} tok`);
+  }
+  if (fields.has("toolUses") && typeof snapshot.toolUses === "number" && snapshot.toolUses > 0) {
+    chips.push(`${snapshot.toolUses} tool${snapshot.toolUses === 1 ? "" : "s"}`);
+  }
+  if (fields.has("cost") && typeof snapshot.costUsd === "number" && snapshot.costUsd > 0) {
+    chips.push(`$${snapshot.costUsd < 0.1 ? snapshot.costUsd.toFixed(4) : snapshot.costUsd.toFixed(2)}`);
+  }
+  return chips.join(" · ");
+}
+
+// Detail line content for the SELECTED subagent row. Matches the click line-math
+// condition exactly (`lastToolName || summary` raw truthiness) so the rendered
+// line count never drifts from `subagentPaneSelectableLineOffsets`.
+function selectedRosterDetail(snapshot: SubagentSnapshot, capability: SubagentCapability): string | null {
+  const rawHasDetail = Boolean(snapshot.lastToolName || snapshot.summary);
+  if (!rawHasDetail) return null;
+  const chips = subagentStatChips(snapshot, capability);
+  const text = rosterRowDetail(snapshot);
+  return [chips, text].filter((part) => part && part.length > 0).join(" · ")
+    || (typeof snapshot.summary === "string" ? snapshot.summary : null)
+    || "…";
+}
+
 function ChatInfoSectionHead({ title, hint, color, width }: { title: string; hint?: string; color: string; width?: number }) {
   // Section header with a hairline rule that fills the gap to the hint, so each
   // block reads as a titled card divider rather than a bare label.
@@ -718,6 +754,7 @@ function ChatInfoRoster({
 
   const ROSTER_CAPACITY = 5;
   const subagentSelectedIndex = mainSelected ? -1 : selected - 1;
+  const selectedSnapshot = !mainSelected ? (snapshotRows[subagentSelectedIndex]?.snapshot ?? null) : null;
   const window = rosterWindow(snapshotRows.length, Math.max(0, subagentSelectedIndex), ROSTER_CAPACITY);
   const visibleSlice = snapshotRows.slice(window.start, window.end);
   const hiddenBefore = window.start;
@@ -758,7 +795,10 @@ function ChatInfoRoster({
               ? theme.color.tool
               : theme.agentStatusColor(kind);
             const inspected = info.inspectedSubagentId === row.snapshot.id;
-            const detail = rosterRowDetail(row.snapshot);
+            // Only the selected row shows the (single) detail line, now enriched
+            // with the runtime's capability stat chips. Keeping it to one line
+            // preserves the click line-math.
+            const detail = isSelected ? selectedRosterDetail(row.snapshot, info.capability) : null;
             return (
               <Box key={row.key} flexDirection="column">
                 {showSection ? <RosterSectionHead section={row.section} /> : null}
@@ -770,7 +810,7 @@ function ChatInfoRoster({
                   </Text>
                   <Text color={theme.color.t4} dimColor>{`  ${formatElapsed(row.snapshot.durationMs ?? null)}`}</Text>
                 </Box>
-                {isSelected && detail ? (
+                {detail ? (
                   <Text color={theme.color.t4} dimColor wrap="truncate-end">
                     {`     › ${endTruncate(detail, Math.max(8, inner - 8))}`}
                   </Text>
@@ -784,10 +824,38 @@ function ChatInfoRoster({
         </>
       )}
       <Box marginTop={1}>
-        <Text color={theme.color.t4} dimColor>↑↓ focus · ↵ swap · esc → main</Text>
+        <Text color={theme.color.t4} dimColor>{rosterFooterHint(info, mainSelected, selectedSnapshot)}</Text>
       </Box>
+      {info.mission ? <ChatInfoMissionBlock mission={info.mission} width={width} brandColor={brandColor} /> : null}
     </Box>
   );
+}
+
+// Footer hint reflects the runtime capability: only Codex/OpenCode
+// (canViewFullTranscript) can take over the main chat with the real child
+// transcript; Cursor/Droid keep the row selected with inline detail. Droid
+// adds a kill hint when a running worker is selected.
+function rosterFooterHint(
+  info: ChatInfoSnapshot,
+  mainSelected: boolean,
+  selectedSnapshot: SubagentSnapshot | null,
+): string {
+  const parts = ["↑↓ focus"];
+  if (mainSelected) {
+    parts.push("↵ stay");
+  } else if (info.capability.canViewFullTranscript) {
+    parts.push("↵ open thread");
+  }
+  if (
+    info.provider === "droid"
+    && selectedSnapshot
+    && selectedSnapshot.kind === "subagent"
+    && selectedSnapshot.status === "running"
+  ) {
+    parts.push("^k kill");
+  }
+  parts.push("esc → main");
+  return parts.join(" · ");
 }
 
 // Section heading for the roster — matches the 2-line allowance built into
@@ -801,6 +869,61 @@ function RosterSectionHead({ section }: { section: SubagentPaneRow["section"] })
   return (
     <Box marginTop={1}>
       <Text color={color} dimColor>{label}</Text>
+    </Box>
+  );
+}
+
+const MISSION_STATE_LABEL: Record<string, string> = {
+  awaiting_input: "awaiting input",
+  initializing: "initializing",
+  running: "running",
+  paused: "paused",
+  orchestrator_turn: "orchestrator turn",
+  completed: "completed",
+};
+
+function missionFeatureGlyphColor(status: string): { glyph: string; color: string } {
+  if (status === "completed") return { glyph: theme.agentStatusGlyph("ok"), color: theme.agentStatusColor("ok") };
+  if (status === "in_progress") return { glyph: theme.rail, color: theme.color.violet };
+  if (status === "cancelled") return { glyph: "✗", color: theme.color.t5 };
+  return { glyph: "○", color: theme.color.t4 };
+}
+
+// Droid AGI Missions surface. Rendered BELOW the roster so it never shifts the
+// roster's first-row offset (`subagentPaneTop`), keeping the mouse-click
+// line-math intact. Mission events are full-state snapshots (see chatMission),
+// so this just renders the latest derived state + ordered feature checklist.
+const MISSION_FEATURE_CAP = 6;
+function ChatInfoMissionBlock({ mission, width, brandColor }: { mission: MissionSnapshot; width: number; brandColor: string }) {
+  const inner = Math.max(10, width - 4);
+  const features = orderMissionFeatures(mission.features);
+  const counts = missionFeatureCounts(mission.features);
+  const stateLabel = mission.state ? (MISSION_STATE_LABEL[mission.state] ?? mission.state) : null;
+  const visible = features.slice(0, MISSION_FEATURE_CAP);
+  const hiddenAfter = features.length - visible.length;
+  const hint = counts.total
+    ? `${counts.completed}/${counts.total}${counts.inProgress ? ` · ${counts.inProgress} active` : ""}`
+    : (stateLabel ?? "");
+  return (
+    <Box flexDirection="column">
+      <ChatInfoSectionHead title="MISSION" hint={hint} color={brandColor} width={width} />
+      {stateLabel ? <Text color={theme.color.t4} dimColor>{` state · ${stateLabel}`}</Text> : null}
+      {features.length === 0 ? (
+        <Text color={theme.color.t4} dimColor>{" no features yet"}</Text>
+      ) : (
+        visible.map((feature) => {
+          const { glyph, color } = missionFeatureGlyphColor(feature.status);
+          return (
+            <Box key={feature.id} flexDirection="row">
+              <Text color={color}>{` ${glyph}`}</Text>
+              <Text color={feature.status === "completed" ? theme.color.t4 : theme.color.t2} wrap="truncate-end">
+                {` ${endTruncate(feature.description, Math.max(8, inner - 4))}`}
+              </Text>
+            </Box>
+          );
+        })
+      )}
+      {hiddenAfter > 0 ? <Text color={theme.color.t4} dimColor>{`  ↓ ${hiddenAfter} more`}</Text> : null}
     </Box>
   );
 }

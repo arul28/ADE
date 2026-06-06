@@ -1,4 +1,8 @@
-import type { AgentChatEvent } from "../../../shared/types";
+import type {
+  AgentChatEvent,
+  AgentChatMissionFeature,
+  AgentChatMissionProgressEntry,
+} from "../../../shared/types";
 
 type SdkRecord = Record<string, unknown>;
 
@@ -100,6 +104,62 @@ function usageFrom(record: SdkRecord | null): DroidSdkEventMapperState["latestUs
     ...(cacheCreationTokens != null ? { cacheCreationTokens } : {}),
   };
   return Object.keys(usage).length ? usage : null;
+}
+
+// Map a Droid SDK MissionFeature[] payload to ADE's mission feature snapshots.
+function readMissionFeatures(value: unknown): AgentChatMissionFeature[] {
+  if (!Array.isArray(value)) return [];
+  const out: AgentChatMissionFeature[] = [];
+  for (const item of value) {
+    const record = asRecord(item);
+    if (!record) continue;
+    const id = readString(record.id);
+    if (!id) continue;
+    const description = readString(record.description) ?? readString(record.title) ?? "";
+    const status = readString(record.status) ?? "pending";
+    const skillName = readString(record.skillName);
+    const milestone = readString(record.milestone);
+    const currentWorkerSessionId = readString(record.currentWorkerSessionId);
+    const completedWorkerSessionId = readString(record.completedWorkerSessionId);
+    const workerSessionIds = Array.isArray(record.workerSessionIds)
+      ? record.workerSessionIds.filter((v): v is string => typeof v === "string" && v.length > 0)
+      : undefined;
+    out.push({
+      id,
+      description,
+      status,
+      ...(skillName ? { skillName } : {}),
+      ...(milestone ? { milestone } : {}),
+      ...(currentWorkerSessionId ? { currentWorkerSessionId } : {}),
+      ...(completedWorkerSessionId ? { completedWorkerSessionId } : {}),
+      ...(workerSessionIds && workerSessionIds.length ? { workerSessionIds } : {}),
+    });
+  }
+  return out;
+}
+
+// Flatten a Droid SDK ProgressLogEntry[] into readable progress rows. Entries
+// are a discriminated union; we extract the common, useful fields generically.
+function readMissionProgress(value: unknown): AgentChatMissionProgressEntry[] {
+  if (!Array.isArray(value)) return [];
+  const out: AgentChatMissionProgressEntry[] = [];
+  for (const item of value) {
+    const record = asRecord(item);
+    if (!record) continue;
+    const type = readString(record.type) ?? readString(record.entryType) ?? "entry";
+    const text = readString(record.message) ?? readString(record.text) ?? readString(record.summary);
+    const workerSessionId = readString(record.workerSessionId);
+    const featureId = readString(record.featureId);
+    const timestamp = readString(record.timestamp) ?? readString(record.createdAt);
+    out.push({
+      type,
+      ...(text ? { text } : {}),
+      ...(workerSessionId ? { workerSessionId } : {}),
+      ...(featureId ? { featureId } : {}),
+      ...(timestamp ? { timestamp } : {}),
+    });
+  }
+  return out;
 }
 
 export function mapDroidSdkMessageToChatEvents(
@@ -211,6 +271,48 @@ export function mapDroidSdkMessageToChatEvents(
         ...(usage.cacheCreationTokens != null ? { cacheWriteTokens: usage.cacheCreationTokens } : {}),
       }];
     }
+    case "mission_worker_started": {
+      // AGI orchestrator spawned a worker sub-session — surface it as a subagent.
+      const workerSessionId = readString(record.workerSessionId);
+      if (!workerSessionId) return [];
+      return [{
+        type: "subagent_started",
+        taskId: workerSessionId,
+        parentToolUseId: null,
+        description: `Worker ${workerSessionId.slice(-6)}`,
+        turnId,
+      }];
+    }
+    case "mission_worker_completed": {
+      const workerSessionId = readString(record.workerSessionId);
+      if (!workerSessionId) return [];
+      const exitCode = readNumber(record.exitCode);
+      const ok = exitCode === 0 || exitCode == null;
+      // Droid exposes no inline worker transcript, so the exit code is the most
+      // useful terminal signal — carry it in the summary for the subagent drawer.
+      const summary = exitCode == null ? "Worker finished" : `Worker exited (code ${exitCode})`;
+      return [{
+        type: "subagent_result",
+        taskId: workerSessionId,
+        parentToolUseId: null,
+        status: ok ? "completed" : "failed",
+        summary,
+        finalSummary: summary,
+        turnId,
+      }];
+    }
+    case "mission_state_changed": {
+      const state = readString(record.state);
+      if (!state) return [];
+      return [{ type: "mission_state", state, turnId }];
+    }
+    case "mission_features_changed": {
+      return [{ type: "mission_features", features: readMissionFeatures(record.features), turnId }];
+    }
+    case "mission_progress_entry": {
+      return [{ type: "mission_progress", entries: readMissionProgress(record.progressLog), turnId }];
+    }
+    case "mission_heartbeat":
     case "session_title_updated":
     case "settings_updated":
     case "permission_resolved":

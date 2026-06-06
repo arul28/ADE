@@ -3,6 +3,8 @@ import type {
   AgentChatSessionSummary,
 } from "../../../desktop/src/shared/types/chat";
 import { latestPlan } from "../../../desktop/src/shared/chatSubagents";
+import { resolveSubagentCapability } from "../../../desktop/src/shared/subagentCapabilities";
+import { deriveMissionSnapshot } from "../../../desktop/src/renderer/components/chat/chatMission";
 import type {
   AdeCodeProvider,
   ChatInfoSnapshot,
@@ -45,8 +47,9 @@ export function deriveChatInfoSnapshot(args: {
   streaming: boolean;
   inspectedSubagentId?: string | null;
 }): ChatInfoSnapshot {
+  const provider = (args.activeSession?.provider ?? args.provider) as AdeCodeProvider;
   return {
-    provider: (args.activeSession?.provider ?? args.provider) as AdeCodeProvider,
+    provider,
     modelLabel: args.modelLabel,
     laneLabel: args.laneLabel,
     contextPercent: args.tokenStats?.percent ?? null,
@@ -56,5 +59,10 @@ export function deriveChatInfoSnapshot(args: {
     snapshots: args.snapshots,
     inspectedSubagentId: args.inspectedSubagentId ?? null,
     streaming: args.streaming,
+    // Single source of truth for takeover-vs-inline + which stat fields render.
+    // Resolved from the session provider (runtimeKind isn't surfaced on the TUI
+    // session summary, and the 4 shared runtimes map 1:1 from provider).
+    capability: resolveSubagentCapability(provider),
+    mission: deriveMissionSnapshot(args.events),
   };
 }

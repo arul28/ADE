@@ -229,6 +229,7 @@ export const IPC = {
   agentChatFileSearch: "ade.agentChat.fileSearch",
   agentChatSaveTempAttachment: "ade.agentChat.saveTempAttachment",
   agentChatListSubagents: "ade.agentChat.listSubagents",
+  agentChatKillDroidWorker: "ade.agentChat.killDroidWorker",
   agentChatGetSessionCapabilities: "ade.agentChat.getSessionCapabilities",
   agentChatGetTurnFileDiff: "ade.agentChat.getTurnFileDiff",
   agentChatGetEventHistory: "ade.agentChat.getEventHistory",

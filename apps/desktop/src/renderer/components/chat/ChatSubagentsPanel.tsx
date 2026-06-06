@@ -12,6 +12,7 @@ import type { ChatSubagentSnapshot } from "./chatExecutionSummary";
 import { derivePlan } from "./chatExecutionSummary";
 import type { ChatInfoPlanStep } from "../../../shared/chatSubagents";
 import type { AgentChatEventEnvelope, CodexThreadGoal } from "../../../shared/types";
+import type { SubagentCapability } from "../../../shared/subagentCapabilities";
 import { BottomDrawerSection } from "./BottomDrawerSection";
 import { CodexGoalCard } from "./codex/CodexGoalCard";
 
@@ -255,12 +256,32 @@ function elapsedText(snapshot: ChatSubagentSnapshot): string | null {
   return formatDurationMs(elapsedMs);
 }
 
+// A runtime can emit more than one *kind* of subagent (Claude surfaces five via
+// `taskType`). They all live in one list; a small chip discriminates the
+// non-default kinds so the consolidation stays legible. `subagent` (the default)
+// and `background` (its own section) get no chip. Workflow runs prefer their
+// workflow name, which the row renders separately.
+function kindBadge(snapshot: ChatSubagentSnapshot): string | null {
+  if (snapshot.workflowName) return null; // workflowName chip covers this row
+  switch (snapshot.taskType) {
+    case "local_workflow":
+      return "workflow";
+    case "cron":
+      return "scheduled";
+    case "other":
+      return "task";
+    default:
+      return null;
+  }
+}
+
 function SubagentRow({
   snapshot,
   selected,
   category,
   expanded,
   probing,
+  canViewFullTranscript,
   onClick,
 }: {
   snapshot: ChatSubagentSnapshot;
@@ -269,9 +290,13 @@ function SubagentRow({
   expanded: boolean;
   /** True while we're checking whether this agent has a pullable transcript. */
   probing: boolean;
+  /** Whether this runtime can surface a full child transcript (drives the
+   * drawer's "transcript not ready yet" vs "live details only" footer). */
+  canViewFullTranscript: boolean;
   onClick: () => void;
 }) {
   const name = meaningfulName(snapshot);
+  const kindLabel = kindBadge(snapshot);
   const color = agentColor(snapshot.agentId ?? snapshot.taskId);
   const isRunning = snapshot.status === "running";
   const isCompleted = snapshot.status === "completed";
@@ -287,7 +312,12 @@ function SubagentRow({
   // transcript) — token usage + last tool, nothing heavy.
   const totalTokens = snapshot.usage?.totalTokens;
   const toolUses = snapshot.usage?.toolUses;
+  const costUsd = snapshot.usage?.costUsd;
   const lastTool = snapshot.lastToolName?.trim();
+  // Latest progress/result text (e.g. Cursor's task `text`, OpenCode's diff
+  // summary) — shown only when it adds something beyond the description.
+  const summaryRaw = (snapshot.finalSummary ?? snapshot.summary)?.trim();
+  const summaryText = summaryRaw && summaryRaw !== snapshot.description?.trim() ? summaryRaw : null;
 
   return (
     <div>
@@ -320,6 +350,10 @@ function SubagentRow({
           {snapshot.workflowName ? (
             <span className="ml-1.5 font-sans text-[11px] tracking-[0.01em] text-amber-300/55">
               {snapshot.workflowName}
+            </span>
+          ) : kindLabel ? (
+            <span className="ml-1.5 rounded-sm bg-white/[0.05] px-1 py-px font-sans text-[9.5px] uppercase tracking-[0.05em] text-fg/40">
+              {kindLabel}
             </span>
           ) : null}
         </span>
@@ -362,13 +396,27 @@ function SubagentRow({
               {snapshot.description ? (
                 <div className="break-words text-fg/65">{snapshot.description}</div>
               ) : null}
+              {summaryText ? (
+                <div className="break-words text-fg/50">{summaryText}</div>
+              ) : null}
               <div className="flex flex-wrap gap-x-3 gap-y-0.5 tabular-nums text-fg/45">
                 {typeof totalTokens === "number" && totalTokens > 0 ? <span>{totalTokens.toLocaleString()} tokens</span> : null}
+                {typeof costUsd === "number" && Number.isFinite(costUsd) && costUsd > 0 ? <span>${costUsd < 0.1 ? costUsd.toFixed(4) : costUsd.toFixed(2)}</span> : null}
                 {typeof toolUses === "number" && toolUses > 0 ? <span>{toolUses} tool{toolUses === 1 ? "" : "s"}</span> : null}
                 {lastTool ? <span>last: {lastTool}</span> : null}
                 {time ? <span>{time}</span> : null}
               </div>
-              <div className="text-fg/30">No transcript available for this agent.</div>
+              {/* Honest, runtime-aware footer: capable runtimes whose transcript
+                  isn't ready yet say so (it can appear on a later poll); runtimes
+                  that never expose a child transcript (e.g. Cursor) don't pretend
+                  one is missing — the drawer above IS the detail. */}
+              {canViewFullTranscript ? (
+                <div className="text-fg/30">
+                  {snapshot.status === "running" ? "Transcript not ready yet." : "No transcript recorded for this agent."}
+                </div>
+              ) : (
+                <div className="text-fg/30">Live details only — this runtime doesn't expose a full transcript.</div>
+              )}
             </div>
           </motion.div>
         ) : null}
@@ -393,7 +441,7 @@ export function ChatSubagentsPanel({
   onSelectSubagent,
   onClearSelectedSubagent,
   probeSubagentTranscript,
-  openSubagentsImmediately = false,
+  capability = null,
   selectedTaskId,
   className,
   variant = "drawer",
@@ -410,7 +458,11 @@ export function ChatSubagentsPanel({
   /** Probe (same fetch the takeover uses) for whether an agent has a pullable
    * transcript. Returns true → take over the chat; false → inline drawer. */
   probeSubagentTranscript?: (args: { taskId: string; agentId: string | null }) => Promise<boolean>;
-  openSubagentsImmediately?: boolean;
+  /** Per-runtime subagent capability — the single source of truth for whether a
+   * subagent click can take over the chat (full transcript) or only opens the
+   * inline drawer, and whether running agents take over immediately. Null →
+   * treated as no transcript (drawer-only). See `shared/subagentCapabilities`. */
+  capability?: SubagentCapability | null;
   selectedTaskId?: string | null;
   className?: string;
   variant?: "drawer" | "pane";
@@ -447,9 +499,8 @@ export function ChatSubagentsPanel({
       if (snap.status === "running") running += 1;
       else if (snap.status === "completed") completed += 1;
     }
-    const orderRunning = (snap: ChatSubagentSnapshot) => (snap.status === "running" ? 0 : 1);
-    fg.sort((a, b) => orderRunning(a) - orderRunning(b));
-    bg.sort((a, b) => orderRunning(a) - orderRunning(b));
+    // Preserve the incoming spawn order (newest-first, fixed at spawn) — do NOT
+    // re-sort by running/status, which would make rows jump as agents complete.
     return {
       foreground: fg,
       background: bg,
@@ -480,6 +531,15 @@ export function ChatSubagentsPanel({
     });
   };
 
+  // Capability gates the click behavior. Runtimes that can't surface a child
+  // transcript (Cursor, Droid, LM Studio) NEVER take over the chat — clicking a
+  // row only opens the inline details drawer. Codex (rich metadata + a
+  // guaranteed live thread) takes over immediately for running agents; Claude /
+  // OpenCode probe first so a still-warming subagent falls back to the drawer
+  // instead of an empty takeover page.
+  const canTakeover = capability?.canViewFullTranscript ?? false;
+  const immediateForRunning = canTakeover && (capability?.hasRichMetadata ?? false);
+
   const handleRowClick = (snap: ChatSubagentSnapshot) => {
     // Clicking the row whose drawer is open closes it.
     if (expandedTaskId === snap.taskId) {
@@ -492,7 +552,13 @@ export function ChatSubagentsPanel({
       return;
     }
 
-    if (openSubagentsImmediately && snap.status === "running") {
+    // No full transcript for this runtime → always the inline drawer, no probe.
+    if (!canTakeover) {
+      setExpandedTaskId(snap.taskId);
+      return;
+    }
+
+    if (immediateForRunning && snap.status === "running") {
       takeover(snap);
       return;
     }
@@ -607,6 +673,7 @@ export function ChatSubagentsPanel({
                 selected={selectedTaskId === snap.taskId}
                 expanded={expandedTaskId === snap.taskId}
                 probing={probingTaskId === snap.taskId}
+                canViewFullTranscript={canTakeover}
                 category="subagent"
                 onClick={() => handleRowClick(snap)}
               />
@@ -631,6 +698,7 @@ export function ChatSubagentsPanel({
                 selected={selectedTaskId === snap.taskId}
                 expanded={expandedTaskId === snap.taskId}
                 probing={probingTaskId === snap.taskId}
+                canViewFullTranscript={canTakeover}
                 category="background"
                 onClick={() => handleRowClick(snap)}
               />

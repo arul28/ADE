@@ -789,7 +789,7 @@ function ModeSwitcherPills({
   onShowDraftKind: (kind: WorkDraftKind) => void;
 }) {
   return (
-    <div className="ade-liquid-glass-pill inline-flex items-center gap-1 rounded-full p-1.5">
+    <div className="ade-liquid-glass-pill inline-flex items-center gap-1 rounded-full p-1">
       {MODE_OPTIONS.map((opt) => {
         const active = opt.kind === "chat"
           ? draftKind === "chat" || draftKind === "chat-orchestrator"
@@ -807,7 +807,7 @@ function ModeSwitcherPills({
             <button
               type="button"
               className={cn(
-                "inline-flex min-h-[48px] items-center gap-2.5 rounded-full px-5 py-2.5 text-[14px] font-medium transition-all",
+                "inline-flex min-h-[36px] items-center gap-2 rounded-full px-4 py-2 text-[12px] font-medium transition-all",
                 active && "ade-work-tab-active",
               )}
               style={{
@@ -818,7 +818,7 @@ function ModeSwitcherPills({
               }}
               onClick={() => onShowDraftKind(opt.kind)}
             >
-              <Icon size={18} weight="regular" className="shrink-0 opacity-80" />
+              <Icon size={14} weight="regular" className="shrink-0 opacity-80" />
               {opt.label}
             </button>
           </SmartTooltip>

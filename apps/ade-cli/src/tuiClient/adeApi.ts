@@ -21,6 +21,7 @@ import type {
   AgentChatEventEnvelope,
   AgentChatFileRef,
   AgentChatInteractionMode,
+  AgentChatKillDroidWorkerArgs,
   AgentChatModelCatalog,
   AgentChatModelCatalogArgs,
   AgentChatModelInfo,
@@ -32,6 +33,10 @@ import type {
   AgentChatSlashCommand,
   AgentChatSlashCommandsArgs,
   AgentChatSteerResult,
+  AgentChatSubagentListArgs,
+  AgentChatSubagentSnapshot,
+  AgentChatSubagentTranscriptArgs,
+  AgentChatSubagentTranscriptMessage,
   CodexThreadGoal,
 } from "../../../desktop/src/shared/types/chat";
 import type { AiSettingsStatus, OpenCodeRuntimeSnapshot } from "../../../desktop/src/shared/types/config";
@@ -516,6 +521,52 @@ export async function interruptChat(connection: AdeCodeConnection, sessionId: st
   await connection.action("chat", "interrupt", { sessionId });
 }
 
+/**
+ * Pull a subagent's real child transcript from the daemon. Only meaningful for
+ * runtimes with `canViewFullTranscript` (Codex app-server threads, OpenCode
+ * child sessions); other runtimes return `null`/`[]` and the caller falls back
+ * to the locally-reconstructed transcript. Mirrors the desktop takeover path.
+ */
+export async function getSubagentTranscript(
+  connection: AdeCodeConnection,
+  args: AgentChatSubagentTranscriptArgs,
+): Promise<AgentChatSubagentTranscriptMessage[] | null> {
+  return await connection.action<AgentChatSubagentTranscriptMessage[] | null>(
+    "chat",
+    "getSubagentTranscript",
+    {
+      sessionId: args.sessionId,
+      agentId: args.agentId,
+      ...(args.taskId != null ? { taskId: args.taskId } : {}),
+      ...(args.laneId != null ? { laneId: args.laneId } : {}),
+      ...(typeof args.limit === "number" ? { limit: args.limit } : {}),
+      ...(typeof args.offset === "number" ? { offset: args.offset } : {}),
+    },
+  );
+}
+
+/** Daemon-backed roster of subagents for a session (richer than event-derived snapshots). */
+export async function listSubagents(
+  connection: AdeCodeConnection,
+  args: AgentChatSubagentListArgs,
+): Promise<AgentChatSubagentSnapshot[]> {
+  const result = await connection.action<AgentChatSubagentSnapshot[] | null>("chat", "listSubagents", {
+    sessionId: args.sessionId,
+  });
+  return Array.isArray(result) ? result : [];
+}
+
+/** Kill a single Droid AGI mission worker (only spawned in AGI orchestrator mode). */
+export async function killDroidWorker(
+  connection: AdeCodeConnection,
+  args: AgentChatKillDroidWorkerArgs,
+): Promise<void> {
+  await connection.action("chat", "killDroidWorker", {
+    sessionId: args.sessionId,
+    workerSessionId: args.workerSessionId,
+  });
+}
+
 export async function renameChat(connection: AdeCodeConnection, sessionId: string, title: string): Promise<AgentChatSession> {
   return await connection.action("chat", "updateSession", {
     sessionId,
@@ -686,6 +737,10 @@ export function latestTokenStats(
       cacheReadTokens = readCacheReadTokens(usage) ?? cacheReadTokens;
       cacheCreationTokens = typeof usage?.cacheCreationTokens === "number" ? usage.cacheCreationTokens : cacheCreationTokens;
       costUsd = typeof event.costUsd === "number" ? event.costUsd : costUsd;
+      // Parity with desktop's contextUsageModel: the non-Codex runtimes attach the
+      // effective context window to the terminal `done` event, so honor it for the
+      // dial when present (runtime-reported window beats the registry fallback).
+      if (typeof usage?.contextWindow === "number") eventLimit = usage.contextWindow;
     }
     if (event.type === "system_notice" && event.noticeKind === "rate_limit") {
       const detail = typeof event.detail === "string" ? event.detail : "";

@@ -7,6 +7,7 @@ import type { CtoCapabilityMode } from "./cto";
 import type { FileDiff } from "./git";
 import type { LaneLinearIssue, SessionLinearIssueLink } from "./lanes";
 import type { OrchestrationContextItem, OrchestrationRole } from "./orchestration";
+import type { SubagentCapability } from "../subagentCapabilities";
 
 export type AgentChatProvider = "codex" | "claude" | "cursor" | "droid" | "opencode" | (string & {});
 
@@ -169,7 +170,7 @@ export type AgentChatCodexApprovalPolicy = "untrusted" | "on-request" | "on-fail
 export type AgentChatCodexSandbox = "read-only" | "workspace-write" | "danger-full-access";
 export type AgentChatCodexConfigSource = "flags" | "config-toml";
 export type AgentChatOpenCodePermissionMode = "plan" | "edit" | "full-auto" | "config-toml";
-export type AgentChatDroidPermissionMode = "read-only" | "auto-low" | "auto-medium" | "auto-high";
+export type AgentChatDroidPermissionMode = "read-only" | "auto-low" | "auto-medium" | "auto-high" | "agi";
 
 export type AgentChatNoticeDetailMetric = {
   label: string;
@@ -566,6 +567,8 @@ export type AgentChatEvent =
         totalTokens?: number;
         toolUses?: number;
         durationMs?: number;
+        /** USD cost, when the runtime reports a per-subagent figure (OpenCode). */
+        costUsd?: number;
       };
       lastToolName?: string;
       taskType?: "subagent" | "background" | "local_workflow" | "cron" | "other";
@@ -585,6 +588,8 @@ export type AgentChatEvent =
         totalTokens?: number;
         toolUses?: number;
         durationMs?: number;
+        /** USD cost, when the runtime reports a per-subagent figure (OpenCode). */
+        costUsd?: number;
       };
       taskType?: "subagent" | "background" | "local_workflow" | "cron" | "other";
       workflowName?: string;
@@ -621,6 +626,26 @@ export type AgentChatEvent =
         toolUses?: number;
         durationMs?: number;
       };
+      turnId?: string;
+    }
+  // ── Droid AGI mission events (orchestrator mode) ──────────────────────────
+  // Emitted only when a Droid session runs in AGI/orchestrator mode. They drive
+  // the Missions tab; non-AGI runtimes never emit them.
+  | {
+      type: "mission_state";
+      state: AgentChatMissionState;
+      turnId?: string;
+    }
+  | {
+      type: "mission_features";
+      /** The full current feature checklist (replaces, not appends). */
+      features: AgentChatMissionFeature[];
+      turnId?: string;
+    }
+  | {
+      type: "mission_progress";
+      /** The full current progress log (replaces, not appends). */
+      entries: AgentChatMissionProgressEntry[];
       turnId?: string;
     }
   | {
@@ -1004,6 +1029,8 @@ export type AgentChatSubagentSnapshot = {
     totalTokens?: number;
     toolUses?: number;
     durationMs?: number;
+    /** USD cost, when the runtime reports a per-subagent figure (OpenCode). */
+    costUsd?: number;
   };
 };
 
@@ -1011,10 +1038,61 @@ export type AgentChatSubagentListArgs = {
   sessionId: string;
 };
 
+// ── Droid AGI mission types ────────────────────────────────────────────────
+// Mirror @factory/droid-sdk 0.2.0 MissionState / FeatureStatus / MissionFeature.
+export type AgentChatMissionState =
+  | "awaiting_input"
+  | "initializing"
+  | "running"
+  | "paused"
+  | "orchestrator_turn"
+  | "completed"
+  | (string & {});
+
+export type AgentChatMissionFeatureStatus =
+  | "pending"
+  | "in_progress"
+  | "completed"
+  | "cancelled"
+  | (string & {});
+
+export type AgentChatMissionFeature = {
+  id: string;
+  description: string;
+  status: AgentChatMissionFeatureStatus;
+  skillName?: string | null;
+  milestone?: string | null;
+  /** Worker session currently executing this feature (maps to a subagent row). */
+  currentWorkerSessionId?: string | null;
+  workerSessionIds?: string[];
+  completedWorkerSessionId?: string | null;
+};
+
+export type AgentChatMissionProgressEntry = {
+  /** ProgressLogEntryType, e.g. "worker_started" | "worker_completed" | ... */
+  type: string;
+  text?: string | null;
+  workerSessionId?: string | null;
+  featureId?: string | null;
+  timestamp?: string | null;
+};
+
+/** Args for killing an individual Droid AGI mission worker. */
+export type AgentChatKillDroidWorkerArgs = {
+  sessionId: string;
+  workerSessionId: string;
+};
+
 export type AgentChatSessionCapabilities = {
   supportsSubagentInspection: boolean;
   supportsSubagentControl: boolean;
   supportsReviewMode: boolean;
+  /**
+   * Per-runtime subagent capability descriptor — the single source of truth the
+   * renderer branches on (list vs takeover vs inline-drawer, which stat fields
+   * to show). See `shared/subagentCapabilities.ts`.
+   */
+  subagent: SubagentCapability;
 };
 
 export type AgentChatSessionCapabilitiesArgs = {

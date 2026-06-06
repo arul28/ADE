@@ -31,6 +31,8 @@ export type ChatSubagentSnapshot = {
     totalTokens?: number;
     toolUses?: number;
     durationMs?: number;
+    /** USD cost, when the runtime reports a per-subagent figure (OpenCode). */
+    costUsd?: number;
   };
 };
 
@@ -219,11 +221,10 @@ export function deriveChatSubagentSnapshots(events: AgentChatEventEnvelope[]): C
     }
   }
 
-  return [...snapshots.values()].sort((left, right) => {
-    if (left.status === "running" && right.status !== "running") return -1;
-    if (right.status === "running" && left.status !== "running") return 1;
-    return compareIsoDesc(left.updatedAt, right.updatedAt);
-  });
+  // Stable order: newest-spawned subagent at the top, and it stays put. Sorting
+  // on startedAt (fixed at spawn) — NOT updatedAt/status — keeps the list from
+  // reshuffling every time a tool result streams in from any subagent.
+  return [...snapshots.values()].sort((left, right) => compareIsoDesc(left.startedAt, right.startedAt));
 }
 
 export function deriveTurnDiffSummaries(events: AgentChatEventEnvelope[]): TurnDiffSummary[] {

@@ -1,8 +1,8 @@
 import type { ReactNode } from "react";
-import { ArrowBendUpRight, Cube, ListChecks, Play, TreeStructure, X } from "@phosphor-icons/react";
+import { ArrowBendUpRight, Cube, ListChecks, Play, Rocket, TreeStructure, X } from "@phosphor-icons/react";
 import { GlowMenu, type GlowMenuItem } from "../ui/GlowMenu";
 
-export type ChatActionsTab = "agents" | "proof" | "handoff" | "plan" | "run";
+export type ChatActionsTab = "agents" | "proof" | "handoff" | "plan" | "run" | "missions";
 
 // The drawer tabs use GlowMenu's `neutral` mode, which renders every tab with
 // the same muted-grey-→-bright-fg treatment plus one shared violet indicator.
@@ -39,6 +39,16 @@ const RUN_TAB: GlowMenuItem<ChatActionsTab> = {
   ...NEUTRAL_INDICATOR,
 };
 
+// Missions tab — surfaced only for Droid AGI orchestrator sessions that have an
+// active mission (feature checklist / state / progress). Leads the strip so the
+// orchestrator's plan is the first thing you see.
+const MISSIONS_TAB: GlowMenuItem<ChatActionsTab> = {
+  id: "missions",
+  label: "Missions",
+  icon: Rocket,
+  ...NEUTRAL_INDICATOR,
+};
+
 export function ChatActionsDrawerPanel({
   tab,
   onTabChange,
@@ -48,6 +58,7 @@ export function ChatActionsDrawerPanel({
   handoffContent,
   planContent,
   runContent,
+  missionsContent,
 }: {
   tab: ChatActionsTab;
   onTabChange: (tab: ChatActionsTab) => void;
@@ -57,18 +68,25 @@ export function ChatActionsDrawerPanel({
   handoffContent: ReactNode;
   planContent?: ReactNode;
   runContent?: ReactNode;
+  missionsContent?: ReactNode;
 }) {
   const tabs = [
+    ...(missionsContent ? [MISSIONS_TAB] : []),
     ...(planContent ? [PLAN_TAB] : []),
     ...CHAT_ACTIONS_TABS,
     ...(runContent ? [RUN_TAB] : []),
   ];
   // Fall back off tabs that aren't currently available.
   const activeTab: ChatActionsTab =
-    (tab === "plan" && !planContent) || (tab === "run" && !runContent) ? "agents" : tab;
+    (tab === "plan" && !planContent)
+    || (tab === "run" && !runContent)
+    || (tab === "missions" && !missionsContent)
+      ? "agents"
+      : tab;
   const bodyByTab: Record<ChatActionsTab, ReactNode> = {
     plan: planContent,
     run: runContent,
+    missions: missionsContent,
     agents: agentsContent,
     proof: proofContent,
     handoff: handoffContent,

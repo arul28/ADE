@@ -562,6 +562,7 @@ const DROID_PERMISSION_OPTIONS: Array<{ value: AgentChatDroidPermissionMode; lab
   { value: "auto-low", label: "Auto low", detail: "Passes --auto low for safe file edits and low-risk operations." },
   { value: "auto-medium", label: "Auto medium", detail: "Passes --auto medium for local development operations such as builds, tests, and package installs." },
   { value: "auto-high", label: "Auto high", detail: "Passes --auto high for broad automation. Use only in trusted workspaces." },
+  { value: "agi", label: "AGI (orchestrator)", detail: "Droid decomposes the task into a mission and spawns worker subagents (read-only at the top level). Workers appear in the subagents panel." },
 ];
 
 function cursorModeLabel(modeId: string): string {
@@ -745,6 +746,7 @@ export function AgentChatComposer({
   codexFastMode = false,
   usageViewModel = null,
   draft,
+  lastSentUserMessage = null,
   attachments,
   contextAttachments = [],
   allowAttachmentOnlySubmit = false,
@@ -873,6 +875,8 @@ export function AgentChatComposer({
   codexFastMode?: boolean;
   usageViewModel?: ContextUsageViewModel | null;
   draft: string;
+  /** Last message the user sent in this chat — recalled by ArrowUp on line 1. */
+  lastSentUserMessage?: string | null;
   attachments: AgentChatFileRef[];
   contextAttachments?: AgentChatContextAttachment[];
   allowAttachmentOnlySubmit?: boolean;
@@ -2508,6 +2512,27 @@ export function AgentChatComposer({
       if (atPromptStart && focusLastImageAttachment()) {
         event.preventDefault();
         return;
+      }
+      // Terminal-style recall: ArrowUp on the first line fills the last message
+      // you sent (so you can re-run or tweak it). Skipped for multi-line drafts
+      // (so ArrowUp still navigates between lines) and when nothing was sent yet.
+      if (target instanceof HTMLTextAreaElement) {
+        const recall = lastSentUserMessage?.trim() ?? "";
+        const isMultiLine = target.value.indexOf("\n") !== -1;
+        const onFirstLine = target.selectionStart === target.selectionEnd
+          && target.value.slice(0, target.selectionStart).indexOf("\n") === -1;
+        if (recall && !isMultiLine && onFirstLine && recall !== draft) {
+          event.preventDefault();
+          onDraftChange(recall);
+          requestAnimationFrame(() => {
+            const el = textareaRef.current;
+            if (el) {
+              el.focus({ preventScroll: true });
+              el.selectionStart = el.selectionEnd = el.value.length;
+            }
+          });
+          return;
+        }
       }
     }
 
