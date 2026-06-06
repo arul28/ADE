@@ -6984,10 +6984,13 @@ export function createPrService({
         logger.warn("prs.auto_map_snapshot_failed", { error: getErrorMessage(error) });
         return 0;
       });
-    if (
-      autoMappedCount > 0
-      || backfillLanePrRowsFromGithubPulls(repoPullRequestsRaw, repo, metadata.lanes) > 0
-    ) {
+    // The legacy backfill also maps PRs to lanes by branch, so it must honor the
+    // same opt-out as the strict auto-map above — otherwise merely opening/syncing
+    // the GitHub tab would map a PR the user chose not to auto-link.
+    const backfilled =
+      autoMapByBranchEnabled() &&
+      backfillLanePrRowsFromGithubPulls(repoPullRequestsRaw, repo, metadata.lanes) > 0;
+    if (autoMappedCount > 0 || backfilled) {
       metadata = await loadGithubSnapshotMetadata();
     }
     const repoPullRequests = repoPullRequestsRaw.map((rawPr) => toGitHubItem(rawPr, "repo"));
