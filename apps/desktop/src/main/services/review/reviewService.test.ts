@@ -79,7 +79,9 @@ function createInMemoryAdeDb(): { db: AdeDb; raw: Database } {
       ended_at text,
       updated_at text not null,
       underway_comment_id text,
-      underway_pr_id text
+      underway_pr_id text,
+      underway_repo_owner text,
+      underway_repo_name text
     )
   `);
   raw.run(`
@@ -542,6 +544,9 @@ function createHarness(args: {
     createdAt: "2026-04-06T10:00:00.000Z",
     updatedAt: "2026-04-06T10:05:00.000Z",
   }));
+  const updateCommentByGithub = vi.fn(
+    async (_input: { repoOwner: string; repoName: string; commentId: string; body: string }) => {},
+  );
 
   mockMaterializer.materialize.mockResolvedValue(makeMaterializedTarget({
     targetLabel: args.targetLabel,
@@ -649,6 +654,7 @@ function createHarness(args: {
       publishReviewPublication,
       addComment,
       updateComment,
+      updateCommentByGithub,
     } as any : undefined,
   });
 
@@ -674,6 +680,7 @@ function createHarness(args: {
     publishReviewPublication,
     addComment,
     updateComment,
+    updateCommentByGithub,
     start: (config?: Partial<ReviewRunConfig>) => service.startRun({
       target,
       config: makeConfig({
@@ -1597,10 +1604,13 @@ describe("reviewService", () => {
       expect(String(persisted?.underway_pr_id)).toBe("pr-80");
 
       // Completion edited that same comment with the canonical summary.
-      expect(harness.updateComment).toHaveBeenCalledTimes(1);
-      const edited = harness.updateComment.mock.calls[0]?.[0];
+      // Finalized via coordinates (survives an unmap mid-review), not the
+      // row-based updateComment path.
+      expect(harness.updateCommentByGithub).toHaveBeenCalledTimes(1);
+      const edited = harness.updateCommentByGithub.mock.calls[0]?.[0];
       expect(edited.commentId).toBe("underway-comment-1");
-      expect(edited.prId).toBe("pr-80");
+      expect(edited.repoOwner).toBe("ade-dev");
+      expect(edited.repoName).toBe("ade");
       expect(edited.body).toContain("## ADE review");
       expect(edited.body).not.toContain("ADE is reviewing this PR");
     });
@@ -1624,9 +1634,10 @@ describe("reviewService", () => {
 
       expect(harness.addComment).toHaveBeenCalledTimes(1);
       expect(harness.addComment.mock.calls[0]?.[0]?.body).toContain("ADE is reviewing this PR");
-      expect(harness.updateComment).toHaveBeenCalledTimes(1);
-      const edited = harness.updateComment.mock.calls[0]?.[0];
+      expect(harness.updateCommentByGithub).toHaveBeenCalledTimes(1);
+      const edited = harness.updateCommentByGithub.mock.calls[0]?.[0];
       expect(edited.commentId).toBe("underway-comment-1");
+      expect(edited.repoOwner).toBe("ade-dev");
       expect(edited.body).toContain("no issues found");
       expect(edited.body).not.toContain("ADE is reviewing this PR");
     });
@@ -1643,9 +1654,10 @@ describe("reviewService", () => {
 
       expect(harness.addComment).toHaveBeenCalledTimes(1);
       expect(harness.addComment.mock.calls[0]?.[0]?.body).toContain("ADE is reviewing this PR");
-      expect(harness.updateComment).toHaveBeenCalledTimes(1);
-      const edited = harness.updateComment.mock.calls[0]?.[0];
+      expect(harness.updateCommentByGithub).toHaveBeenCalledTimes(1);
+      const edited = harness.updateCommentByGithub.mock.calls[0]?.[0];
       expect(edited.commentId).toBe("underway-comment-1");
+      expect(edited.repoOwner).toBe("ade-dev");
       expect(edited.body).toContain("did not complete");
       expect(edited.body).not.toContain("ADE is reviewing this PR");
     });

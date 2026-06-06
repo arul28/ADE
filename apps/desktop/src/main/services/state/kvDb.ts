@@ -2730,6 +2730,10 @@ function migrate(db: MigrationDb) {
   // edit can happen later. Guarded by safeAddColumn so existing DBs upgrade in place.
   safeAddColumn(db, "alter table review_runs add column underway_comment_id text");
   safeAddColumn(db, "alter table review_runs add column underway_pr_id text");
+  // Repo coordinates of the underway comment, so it can be finalized even if the
+  // PR row is deleted (unmapped) while the review is still running.
+  safeAddColumn(db, "alter table review_runs add column underway_repo_owner text");
+  safeAddColumn(db, "alter table review_runs add column underway_repo_name text");
 
   db.run(`
     create table if not exists review_findings (

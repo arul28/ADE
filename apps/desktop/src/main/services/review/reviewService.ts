@@ -84,6 +84,8 @@ type ReviewRunRow = {
   updated_at: string;
   underway_comment_id: string | null;
   underway_pr_id: string | null;
+  underway_repo_owner: string | null;
+  underway_repo_name: string | null;
 };
 
 type ReviewFindingRow = {
@@ -1634,7 +1636,7 @@ export function createReviewService({
   sessionDeltaService: Pick<ReturnType<typeof createSessionDeltaService>, "listRecentLaneSessionDeltas">;
   testService: Pick<ReturnType<typeof createTestService>, "listRuns" | "getLogTail" | "listSuites">;
   issueInventoryService: Pick<ReturnType<typeof createIssueInventoryService>, "getInventory">;
-  prService?: Pick<ReturnType<typeof createPrService>, "getReviewSnapshot" | "getChecks" | "publishReviewPublication" | "addComment" | "updateComment">;
+  prService?: Pick<ReturnType<typeof createPrService>, "getReviewSnapshot" | "getChecks" | "publishReviewPublication" | "addComment" | "updateComment" | "updateCommentByGithub">;
   onEvent?: (event: ReviewEventPayload) => void;
 }) {
   const materializer = createReviewTargetMaterializer({ laneService, prService });
@@ -1700,6 +1702,8 @@ export function createReviewService({
     updated_at: string;
     underway_comment_id: string | null;
     underway_pr_id: string | null;
+    underway_repo_owner: string | null;
+    underway_repo_name: string | null;
   }>): void {
     const sets: string[] = [];
     const params: Array<string | number | null> = [];
@@ -1729,9 +1733,14 @@ export function createReviewService({
       });
       const commentId = comment.id?.trim();
       if (!commentId) return;
+      // Capture the repo from the posted comment's URL so the comment can be
+      // finalized later even if the PR row is unmapped (deleted) mid-review.
+      const repoMatch = comment.url?.match(/github\.com\/([^/]+)\/([^/]+)\//);
       updateRun(args.runId, {
         underway_comment_id: commentId,
         underway_pr_id: args.prId,
+        underway_repo_owner: repoMatch?.[1] ?? null,
+        underway_repo_name: repoMatch?.[2] ?? null,
         updated_at: nowIso(),
       });
     } catch (error) {
@@ -1753,8 +1762,16 @@ export function createReviewService({
     const commentId = row?.underway_comment_id?.trim();
     const prId = row?.underway_pr_id?.trim();
     if (!commentId || !prId) return;
+    const repoOwner = row?.underway_repo_owner?.trim();
+    const repoName = row?.underway_repo_name?.trim();
     try {
-      await prService.updateComment({ prId, commentId, body });
+      if (repoOwner && repoName && prService.updateCommentByGithub) {
+        // Coordinate-based edit — works even if the PR row was unmapped (deleted)
+        // mid-review, which the row-based updateComment cannot survive.
+        await prService.updateCommentByGithub({ repoOwner, repoName, commentId, body });
+      } else {
+        await prService.updateComment({ prId, commentId, body });
+      }
     } catch (error) {
       logger.warn("review.underway_comment_update_failed", {
         runId,
@@ -2945,7 +2962,14 @@ export function createReviewService({
       } else if (publishableFindings.length === 0) {
         await finalizeUnderwayComment(runId, buildAdeReviewNoFindingsBody(materialized.targetLabel));
       } else {
-        const inlineFindingIds = new Set((publication?.inlineComments ?? []).map((comment) => comment.findingId));
+        // Only treat findings as posted-inline when GitHub actually accepted the
+        // publication — a failed/skipped publish keeps every finding in the
+        // summary body (otherwise the summary omits findings that never posted).
+        const inlineFindingIds = new Set(
+          publication?.status === "published"
+            ? (publication?.inlineComments ?? []).map((comment) => comment.findingId)
+            : [],
+        );
         const inlineFindings = publishableFindings.filter((finding) => inlineFindingIds.has(finding.id));
         const summaryFindings = publishableFindings.filter((finding) => !inlineFindingIds.has(finding.id));
         await finalizeUnderwayComment(runId, buildPublishedReviewSummaryBody({

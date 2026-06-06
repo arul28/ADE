@@ -8371,6 +8371,24 @@ export function createPrService({
       return comment;
     },
 
+    /**
+     * Row-independent issue-comment edit by GitHub coordinates. Lets callers
+     * finalize a comment they posted even if the PR's local row was deleted
+     * (e.g. unmapped mid-review). In-process only — NOT IPC-exposed — so the
+     * authz scoping that `updateComment` performs against a live row does not
+     * apply; callers must supply coordinates for a comment they own.
+     */
+    async updateCommentByGithub(args: {
+      repoOwner: string;
+      repoName: string;
+      commentId: string;
+      body: string;
+    }): Promise<void> {
+      const commentId = Number(args.commentId);
+      if (!Number.isInteger(commentId) || commentId <= 0) throw new Error("Invalid comment id.");
+      await githubService.updateIssueComment(args.repoOwner, args.repoName, commentId, args.body);
+    },
+
     async updateComment(args: UpdatePrCommentArgs): Promise<PrComment> {
       const row = requireRow(args.prId);
       const repo = repoFromRow(row);
