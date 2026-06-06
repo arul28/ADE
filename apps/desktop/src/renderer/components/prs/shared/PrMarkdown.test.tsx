@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 import { PrMarkdown } from "./PrMarkdown";
 
@@ -15,6 +15,21 @@ vi.mock("../../chat/CodeHighlighter.tsx", () => ({
       {code}
     </div>
   ),
+}));
+
+// Mermaid is lazy-loaded + heavy; mock it so the test stays deterministic and
+// fast. We only assert that a ```mermaid fence routes *through* the diagram
+// renderer (not the raw code highlighter) and surfaces the produced SVG.
+const mermaidParse = vi.fn(async (_src: string) => true);
+const mermaidRender = vi.fn(async (id: string, _src: string) => ({
+  svg: `<svg data-mermaid-id="${id}"><g>diagram</g></svg>`,
+}));
+vi.mock("mermaid", () => ({
+  default: {
+    initialize: vi.fn(),
+    parse: mermaidParse,
+    render: mermaidRender,
+  },
 }));
 
 const BASE_PROPS = { repoOwner: "acme", repoName: "ade" } as const;
@@ -72,6 +87,87 @@ describe("PrMarkdown", () => {
     const thead = table.querySelector("thead");
     expect(thead).toBeTruthy();
     expect(thead?.className).toContain("pr-md-thead");
+  });
+
+  it("renders a GFM table like the mintlify Project/Status/Preview/Updated layout", () => {
+    const markdown = [
+      "| Project | Status | Preview | Updated |",
+      "| --- | --- | --- | --- |",
+      "| ADE | Ready | [link](https://example.test/p) | 2m ago |",
+    ].join("\n");
+
+    render(<PrMarkdown {...BASE_PROPS}>{markdown}</PrMarkdown>);
+
+    const table = screen.getByRole("table");
+    expect(table).toBeTruthy();
+    // All four column headers should be present (table parsed by remark-gfm and
+    // survived the sanitizer allowlist for table/thead/tr/th/td).
+    for (const name of ["Project", "Status", "Preview", "Updated"]) {
+      expect(screen.getByRole("columnheader", { name })).toBeTruthy();
+    }
+    // Cells get visible borders via a border utility class so the grid reads.
+    const cell = table.querySelector("td");
+    expect(cell?.className).toContain("border-b");
+  });
+
+  it("renders a ```mermaid fence as a diagram, not raw code", async () => {
+    const markdown = ["```mermaid", "graph TD; A-->B;", "```"].join("\n");
+
+    const { container } = render(<PrMarkdown {...BASE_PROPS}>{markdown}</PrMarkdown>);
+
+    // The diagram SVG (from the mocked mermaid.render) should appear…
+    await waitFor(() => {
+      expect(container.querySelector(".pr-md-mermaid svg")).toBeTruthy();
+    });
+    // …and the source should NOT be rendered as a raw highlighted code block.
+    expect(screen.queryByTestId("highlighted-code")).toBeNull();
+    expect(mermaidRender).toHaveBeenCalled();
+    // Source passed to mermaid is the fence body (trailing newline trimmed).
+    expect(mermaidRender.mock.calls[0]?.[1]).toContain("graph TD; A-->B;");
+  });
+
+  it("falls back to raw source when mermaid fails to parse", async () => {
+    mermaidParse.mockRejectedValueOnce(new Error("Parse error"));
+    const markdown = ["```mermaid", "not a real diagram", "```"].join("\n");
+
+    const { container } = render(<PrMarkdown {...BASE_PROPS}>{markdown}</PrMarkdown>);
+
+    await waitFor(() => {
+      expect(container.querySelector(".pr-md-mermaid-fallback")).toBeTruthy();
+    });
+    expect(screen.getByText(/not a real diagram/i)).toBeTruthy();
+  });
+
+  it("renders a comment-body image (markdown) with the expected src and no referrer", () => {
+    const src = "https://github.com/user-attachments/assets/abc-123.png";
+    const markdown = `![diagram screenshot](${src})`;
+
+    render(<PrMarkdown {...BASE_PROPS}>{markdown}</PrMarkdown>);
+
+    const img = screen.getByRole("img", { name: /diagram screenshot/i }) as HTMLImageElement;
+    expect(img.getAttribute("src")).toBe(src);
+    // referrer is suppressed so GitHub's camo/private-user-images hosts serve it.
+    expect(img.getAttribute("referrerpolicy")).toBe("no-referrer");
+  });
+
+  it("renders a raw HTML <img> embedded in a comment body", () => {
+    const src = "https://github.com/user-attachments/assets/raw-html.png";
+    const markdown = `<img width="600" alt="html screenshot" src="${src}">`;
+
+    render(<PrMarkdown {...BASE_PROPS}>{markdown}</PrMarkdown>);
+
+    const img = screen.getByRole("img", { name: /html screenshot/i }) as HTMLImageElement;
+    expect(img.getAttribute("src")).toBe(src);
+  });
+
+  it("renders the image inside a linked image ([![]()]())", () => {
+    const markdown =
+      "[![thumb](https://example.test/thumb.png)](https://example.test/full.png)";
+
+    render(<PrMarkdown {...BASE_PROPS}>{markdown}</PrMarkdown>);
+
+    const img = screen.getByRole("img", { name: /thumb/i }) as HTMLImageElement;
+    expect(img.getAttribute("src")).toBe("https://example.test/thumb.png");
   });
 
   it("routes fenced diff blocks through the shared CodeHighlighter", () => {

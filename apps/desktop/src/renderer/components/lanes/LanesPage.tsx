@@ -2,7 +2,7 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "rea
 import { useClickOutside } from "../../hooks/useClickOutside";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { Group, Panel } from "react-resizable-panels";
-import { Check, CaretDown, FileCode, GitPullRequest, Stack, Link, ArrowsOutSimple, ArrowsInSimple, PushPin, Plus, MagnifyingGlass, Terminal, X, ArrowSquareOut, Info, ArrowCounterClockwise, UsersThree, CircleNotch } from "@phosphor-icons/react";
+import { Check, CaretDown, FileCode, Stack, Link, ArrowsOutSimple, ArrowsInSimple, PushPin, Plus, MagnifyingGlass, Terminal, X, ArrowSquareOut, Info, ArrowCounterClockwise, UsersThree, CircleNotch } from "@phosphor-icons/react";
 import { BranchIcon, LaneIcon } from "../ui/vcsIcons";
 import { selectActiveProjectRoot, useAppStore, useAppStoreApi, type LaneInspectorTab } from "../../state/appStore";
 import { buildIntegrationSourcesByLaneId } from "../../lib/integrationLanes";
@@ -34,6 +34,7 @@ import { LaneContextMenu } from "./LaneContextMenu";
 import { getLaneAccent } from "./laneColorPalette";
 import { LaneRebaseBanner } from "./LaneRebaseBanner";
 import { LinearIssueBadge } from "./LinearIssueBadge";
+import { LanePrBadgePopover } from "./LanePrBadgePopover";
 import { HelpChip } from "../onboarding/HelpChip";
 import { useOnboardingStore } from "../../state/onboardingStore";
 import { useDialogBus } from "../../lib/useDialogBus";
@@ -73,7 +74,6 @@ import {
   type LaneBranchOption
 } from "./laneUtils";
 import { buildPrsRouteSearch } from "../prs/prsRouteState";
-import { formatPrBadgeLabel } from "../prs/shared/prFormatters";
 import { getProjectConfigCached } from "../../lib/projectConfigCache";
 import { getGitHubSnapshotCoalesced, listPrsCoalesced, refreshPrsCoalesced, warmPrSurfaceCoalesced } from "../../lib/prReadCache";
 import { logRendererDebugEvent } from "../../lib/debugLog";
@@ -216,13 +216,6 @@ function DeferredLanePane({
   }, [cacheKey, delayMs]);
 
   return ready ? <>{children}</> : null;
-}
-
-function lanePrTagColor(state: PrSummary["state"]): string {
-  if (state === "merged") return COLORS.success;
-  if (state === "closed") return COLORS.danger;
-  if (state === "draft") return COLORS.warning;
-  return COLORS.accent;
 }
 
 function mergePrSummariesById(current: PrSummary[], refreshed: PrSummary[]): PrSummary[] {
@@ -3977,18 +3970,9 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
                 />
               ) : null}
               {!isDeleting && lanePr ? (
-                <button
-                  type="button"
-                  className="shrink-0"
-                  style={{
-                    ...inlineBadge(lanePrTagColor(lanePr.state), { fontSize: 9 }),
-                    gap: 4,
-                    cursor: "pointer",
-                    borderRadius: 6,
-                  }}
-                  title={`${formatPrBadgeLabel(lanePr)}: ${lanePr.title}`}
-                  onClick={(event) => {
-                    event.stopPropagation();
+                <LanePrBadgePopover
+                  pr={lanePr}
+                  onActivate={() => {
                     if (lanePr.linkedPrId) {
                       navigate(`/prs${buildPrsRouteSearch({
                         activeTab: "normal",
@@ -4002,11 +3986,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
                       void window.ade?.app?.openExternal?.(lanePr.githubUrl);
                     }
                   }}
-                  onMouseDown={(event) => event.stopPropagation()}
-                >
-                  <GitPullRequest size={10} weight="bold" />
-                  {formatPrBadgeLabel(lanePr)}
-                </button>
+                />
               ) : null}
               {!isDeleting && devicesOpen.length > 0 ? (
                 <span

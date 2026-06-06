@@ -13,6 +13,7 @@ import {
 import { useNavigate } from "react-router-dom";
 import {
   ArrowSquareOut,
+  CaretRight,
   CheckCircle,
   ChatCircleDots,
   Sparkle,
@@ -162,17 +163,21 @@ function CommentRow({
   prId,
   repoOwner,
   repoName,
+  canReact,
   onReact,
 }: {
   comment: PrReviewThreadComment;
   prId: string;
   repoOwner: string;
   repoName: string;
+  /** Reactions mutate via row-based PR endpoints; gated off for unmapped PRs. */
+  canReact: boolean;
   onReact: (commentId: string, content: PrReactionContent) => void;
 }) {
   const [pickerOpen, setPickerOpen] = useState(false);
   const reactions = getCommentReactions(comment as ReactionCommentLite);
   const grouped = aggregateReactions(reactions);
+  const hasReactions = grouped.length > 0;
 
   return (
     <div className="flex flex-col gap-1.5 py-2" data-pr-thread-comment>
@@ -188,61 +193,83 @@ function CommentRow({
           {comment.body}
         </PrMarkdown>
       ) : null}
-      <div className="flex items-center gap-1.5">
-        {grouped.map((r) => (
-          <button
-            key={r.content}
-            type="button"
-            onClick={() => onReact(comment.id, r.content)}
-            className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] transition-colors hover:bg-white/[0.04]"
-            style={{
-              borderColor: COLORS.border,
-              background: COLORS.recessedBg,
-              color: COLORS.textSecondary,
-              fontFamily: SANS_FONT,
-            }}
-          >
-            <span>{REACTION_LABELS[r.content]}</span>
-            <span>{r.count}</span>
-          </button>
-        ))}
-        <div className="relative">
-          <button
-            type="button"
-            onClick={() => setPickerOpen((v) => !v)}
-            aria-label="Add reaction"
-            aria-haspopup="true"
-            aria-expanded={pickerOpen}
-            className="inline-flex h-[22px] w-[22px] items-center justify-center rounded-full border text-[11px] transition-colors hover:bg-white/[0.04]"
-            style={{ borderColor: COLORS.border, color: COLORS.textMuted }}
-          >
-            +
-          </button>
-          {pickerOpen ? (
-            <div
-              role="menu"
-              className="ade-liquid-glass-menu absolute left-0 top-[26px] z-20 flex items-center gap-0.5 px-1 py-1"
-              data-pr-reaction-picker
-              data-pr-id={prId}
-            >
-              {REACTION_OPTIONS.map((opt) => (
-                <button
-                  key={opt.content}
-                  type="button"
-                  onClick={() => {
-                    onReact(comment.id, opt.content);
-                    setPickerOpen(false);
-                  }}
-                  aria-label={`React ${opt.content}`}
-                  className="inline-flex h-[22px] w-[22px] items-center justify-center rounded-[4px] text-[13px] transition-colors hover:bg-white/[0.08]"
+      {/* Existing reactions stay visible read-only when unmapped; only the
+          add/toggle affordances are gated. */}
+      {canReact || hasReactions ? (
+        <div className="flex items-center gap-1.5">
+          {grouped.map((r) =>
+            canReact ? (
+              <button
+                key={r.content}
+                type="button"
+                onClick={() => onReact(comment.id, r.content)}
+                className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] transition-colors hover:bg-white/[0.04]"
+                style={{
+                  borderColor: COLORS.border,
+                  background: COLORS.recessedBg,
+                  color: COLORS.textSecondary,
+                  fontFamily: SANS_FONT,
+                }}
+              >
+                <span>{REACTION_LABELS[r.content]}</span>
+                <span>{r.count}</span>
+              </button>
+            ) : (
+              <span
+                key={r.content}
+                className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px]"
+                style={{
+                  borderColor: COLORS.border,
+                  background: COLORS.recessedBg,
+                  color: COLORS.textSecondary,
+                  fontFamily: SANS_FONT,
+                }}
+              >
+                <span>{REACTION_LABELS[r.content]}</span>
+                <span>{r.count}</span>
+              </span>
+            ),
+          )}
+          {canReact ? (
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setPickerOpen((v) => !v)}
+                aria-label="Add reaction"
+                aria-haspopup="true"
+                aria-expanded={pickerOpen}
+                className="inline-flex h-[22px] w-[22px] items-center justify-center rounded-full border text-[11px] transition-colors hover:bg-white/[0.04]"
+                style={{ borderColor: COLORS.border, color: COLORS.textMuted }}
+              >
+                +
+              </button>
+              {pickerOpen ? (
+                <div
+                  role="menu"
+                  className="ade-liquid-glass-menu absolute left-0 top-[26px] z-20 flex items-center gap-0.5 px-1 py-1"
+                  data-pr-reaction-picker
+                  data-pr-id={prId}
                 >
-                  {opt.label}
-                </button>
-              ))}
+                  {REACTION_OPTIONS.map((opt) => (
+                    <button
+                      key={opt.content}
+                      type="button"
+                      onClick={() => {
+                        onReact(comment.id, opt.content);
+                        setPickerOpen(false);
+                      }}
+                      aria-label={`React ${opt.content}`}
+                      className="inline-flex h-[22px] w-[22px] items-center justify-center rounded-[4px] text-[13px] transition-colors hover:bg-white/[0.08]"
+                    >
+                      {opt.label}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
             </div>
           ) : null}
         </div>
-      </div>
+      ) : null}
     </div>
   );
 }
@@ -264,6 +291,10 @@ export const PrReviewThreadCard = memo(
     },
     ref,
   ) {
+    // Unmapped PRs (no lane row) carry a synthetic `gh:owner/repo#num` prId;
+    // the thread-mutation bridges are all row-based and fail with "PR not
+    // found" against it. Gate every write affordance on having a real lane.
+    const canMutate = Boolean(laneId);
     const collapsedByDefault = thread.isResolved || thread.isOutdated;
     const [expanded, setExpanded] = useState(!collapsedByDefault);
     const [replyOpen, setReplyOpen] = useState(false);
@@ -403,10 +434,12 @@ export const PrReviewThreadCard = memo(
         const target = event.target as HTMLElement;
         if (target.tagName === "TEXTAREA" || target.tagName === "INPUT") return;
         if (event.key === "r") {
+          if (!canMutate) return;
           event.preventDefault();
           setExpanded(true);
           setReplyOpen(true);
         } else if (event.key === "x") {
+          if (!canMutate) return;
           event.preventDefault();
           void handleResolveToggle();
         } else if (event.key === "]" || event.key === "n") {
@@ -417,12 +450,17 @@ export const PrReviewThreadCard = memo(
           onPrev?.();
         }
       },
-      [handleResolveToggle, onNext, onPrev],
+      [canMutate, handleResolveToggle, onNext, onPrev],
     );
 
     const containerStyle: CSSProperties = cardStyle({
       padding: 0,
       borderRadius: 12,
+      background: COLORS.threadCard,
+      border: "none",
+      backdropFilter: "none",
+      WebkitBackdropFilter: "none",
+      boxShadow: "none",
       outline: focused ? `2px solid ${COLORS.accent}` : "none",
       outlineOffset: focused ? 1 : 0,
     });
@@ -443,22 +481,23 @@ export const PrReviewThreadCard = memo(
           onKeyUp={(e) => {
             if (e.key === "Enter" || e.key === " ") setExpanded(true);
           }}
-          className="flex w-full cursor-pointer items-center gap-3 px-3 py-2 text-left transition-colors hover:bg-white/[0.04]"
+          className="flex w-full cursor-pointer items-center gap-3 px-4 py-3 text-left transition-colors hover:bg-white/[0.04]"
           style={containerStyle}
         >
-          <CheckCircle
-            size={14}
-            weight={localResolved ? "fill" : "regular"}
-            style={{ color: localResolved ? COLORS.success : COLORS.textMuted }}
-          />
-          <span
-            className="flex-1 truncate text-[12px]"
-            style={{ color: COLORS.textSecondary, fontFamily: SANS_FONT }}
-          >
-            <span style={{ color: COLORS.textPrimary, fontWeight: 500 }}>{chip.label}</span>
-            <span> · {thread.comments.length} {thread.comments.length === 1 ? "comment" : "comments"}</span>
-            {fileLabel ? <span> · {fileLabel}</span> : null}
-          </span>
+          <CaretRight size={12} weight="bold" style={{ color: COLORS.textMuted, flexShrink: 0 }} />
+          <AvatarStack comments={thread.comments} />
+          <div className="flex min-w-0 flex-1 flex-col">
+            <span
+              className="truncate text-[12px] font-medium"
+              style={{ color: COLORS.textPrimary, fontFamily: SANS_FONT }}
+            >
+              {fileLabel ?? "Conversation"}
+            </span>
+            <span className="text-[11px]" style={{ color: COLORS.textMuted }}>
+              {thread.comments.length} {thread.comments.length === 1 ? "comment" : "comments"}
+            </span>
+          </div>
+          <span style={inlineBadge(chip.color, { padding: "2px 8px", marginRight: 2 })}>{chip.label}</span>
         </div>
       );
     }
@@ -516,6 +555,7 @@ export const PrReviewThreadCard = memo(
                 prId={prId}
                 repoOwner={repoOwner}
                 repoName={repoName}
+                canReact={canMutate}
                 onReact={handleReact}
               />
             </div>
@@ -537,7 +577,7 @@ export const PrReviewThreadCard = memo(
           </div>
         ) : null}
 
-        {replyOpen ? (
+        {canMutate && replyOpen ? (
           <div className="flex flex-col gap-2 border-t px-4 py-3" style={{ borderColor: COLORS.border }}>
             <textarea
               value={replyValue}
@@ -582,61 +622,69 @@ export const PrReviewThreadCard = memo(
           </div>
         ) : null}
 
-        <div
-          className="flex flex-wrap items-center gap-2 border-t px-4 py-2"
-          style={{ borderColor: COLORS.border, background: "rgba(255,255,255,0.01)" }}
-        >
-          {thread.path ? (
-            <button
-              type="button"
-              onClick={handleViewDiff}
-              style={outlineButton({ height: 26, fontSize: 11, padding: "0 10px" })}
-            >
-              <ArrowSquareOut size={11} weight="regular" />
-              View file diff
-            </button>
-          ) : null}
-          <button
-            type="button"
-            onClick={() => setReplyOpen((v) => !v)}
-            style={outlineButton({ height: 26, fontSize: 11, padding: "0 10px" })}
+        {thread.path || canMutate ? (
+          <div
+            className="flex flex-wrap items-center gap-2 border-t px-4 py-2"
+            style={{ borderColor: COLORS.border, background: "rgba(255,255,255,0.01)" }}
           >
-            <ChatCircleDots size={11} weight="regular" />
-            Reply
-          </button>
-          <button
-            type="button"
-            onClick={handleResolveToggle}
-            disabled={busy === "resolve"}
-            style={outlineButton({
-              height: 26,
-              fontSize: 11,
-              padding: "0 10px",
-              color: localResolved ? COLORS.textSecondary : COLORS.success,
-              opacity: busy === "resolve" ? 0.6 : 1,
-            })}
-          >
-            <CheckCircle size={11} weight={localResolved ? "fill" : "regular"} />
-            {localResolved ? "Unresolve" : "Resolve"}
-          </button>
-          <button
-            type="button"
-            onClick={handleAskAiFix}
-            disabled={busy === "fix"}
-            style={outlineButton({
-              height: 26,
-              fontSize: 11,
-              padding: "0 10px",
-              color: COLORS.accent,
-              borderColor: COLORS.accentBorder,
-              background: COLORS.accentSubtle,
-              opacity: busy === "fix" ? 0.6 : 1,
-            })}
-          >
-            <Sparkle size={11} weight="regular" />
-            {busy === "fix" ? "Launching…" : "Ask AI to fix"}
-          </button>
-        </div>
+            {thread.path ? (
+              <button
+                type="button"
+                onClick={handleViewDiff}
+                style={outlineButton({ height: 26, fontSize: 11, padding: "0 10px" })}
+              >
+                <ArrowSquareOut size={11} weight="regular" />
+                View file diff
+              </button>
+            ) : null}
+            {/* Reply / Resolve / Ask-AI mutate the PR through row-based
+                endpoints; hidden for unmapped PRs (no lane row). */}
+            {canMutate ? (
+              <>
+                <button
+                  type="button"
+                  onClick={() => setReplyOpen((v) => !v)}
+                  style={outlineButton({ height: 26, fontSize: 11, padding: "0 10px" })}
+                >
+                  <ChatCircleDots size={11} weight="regular" />
+                  Reply
+                </button>
+                <button
+                  type="button"
+                  onClick={handleResolveToggle}
+                  disabled={busy === "resolve"}
+                  style={outlineButton({
+                    height: 26,
+                    fontSize: 11,
+                    padding: "0 10px",
+                    color: localResolved ? COLORS.textSecondary : COLORS.success,
+                    opacity: busy === "resolve" ? 0.6 : 1,
+                  })}
+                >
+                  <CheckCircle size={11} weight={localResolved ? "fill" : "regular"} />
+                  {localResolved ? "Unresolve" : "Resolve"}
+                </button>
+                <button
+                  type="button"
+                  onClick={handleAskAiFix}
+                  disabled={busy === "fix"}
+                  style={outlineButton({
+                    height: 26,
+                    fontSize: 11,
+                    padding: "0 10px",
+                    color: COLORS.accent,
+                    borderColor: COLORS.accentBorder,
+                    background: COLORS.accentSubtle,
+                    opacity: busy === "fix" ? 0.6 : 1,
+                  })}
+                >
+                  <Sparkle size={11} weight="regular" />
+                  {busy === "fix" ? "Launching…" : "Ask AI to fix"}
+                </button>
+              </>
+            ) : null}
+          </div>
+        ) : null}
       </div>
     );
   }),

@@ -1837,6 +1837,68 @@ describe("prService.getActionRuns", () => {
   });
 });
 
+describe("prService coordinate-based detail (unmapped PRs)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("fetches detail / files / commits / action runs purely from GitHub without a DB row", async () => {
+    // No row exists for these coordinates — db.get always returns null so any
+    // accidental requireRow() call would throw "PR not found".
+    const db = makeMockDb();
+    db.get.mockImplementation(() => null);
+    db.all.mockImplementation(() => []);
+
+    const githubService = makeGithubService({
+      apiRequest: vi.fn(async (args: { path: string }) => {
+        if (args.path === "/repos/up-owner/up-repo/pulls/77") {
+          return {
+            data: makeGitHubPull({
+              number: 77,
+              body: "Unmapped body",
+              head: { ref: "fork-feature", sha: "head-sha" },
+            }),
+          };
+        }
+        if (args.path === "/repos/up-owner/up-repo/pulls/77/files") {
+          return { data: [{ filename: "a.ts", status: "modified", additions: 1, deletions: 0 }] };
+        }
+        if (args.path === "/repos/up-owner/up-repo/pulls/77/commits") {
+          return { data: [{ sha: "abcdef1", commit: { message: "fix", author: { date: "2026-01-01T00:00:00Z" } } }] };
+        }
+        if (args.path === "/repos/up-owner/up-repo/actions/runs") {
+          return { data: { workflow_runs: [] } };
+        }
+        if (/\/commits\/.+\/check-runs/.test(args.path)) {
+          return { data: { check_runs: [] } };
+        }
+        throw new Error(`Unexpected GitHub API path: ${args.path}`);
+      }),
+    });
+    const { service } = buildService({ db, githubService });
+    const coords = { repoOwner: "up-owner", repoName: "up-repo", githubPrNumber: 77 };
+
+    const detail = await service.getDetailByGithub(coords);
+    expect(detail.body).toBe("Unmapped body");
+    // Synthetic stable id derived from coordinates.
+    expect(detail.prId).toBe("gh:up-owner/up-repo#77");
+
+    const files = await service.getFilesByGithub(coords);
+    expect(files).toEqual([
+      { filename: "a.ts", status: "modified", additions: 1, deletions: 0, patch: null, previousFilename: null },
+    ]);
+
+    const commits = await service.getCommitsByGithub(coords);
+    expect(commits).toHaveLength(1);
+    expect(commits[0]?.shortSha).toBe("abcdef1");
+
+    const runs = await service.getActionRunsByGithub(coords);
+    expect(runs).toEqual([]);
+
+    // requireRow would have thrown; reaching here proves the row was never required.
+  });
+});
+
 describe("prService merge contexts", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -3936,5 +3998,327 @@ describe("prService.createIntegrationLane", () => {
         // allowDirtyWorktree intentionally omitted
       }),
     ).rejects.toThrow(/Uncommitted changes/);
+  });
+});
+
+describe("prService.updateComment", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("PATCHes the issue comment by id and maps the response", async () => {
+    const db = makeMockDb();
+    installPullRequestRowStore(db, [makePrRow()]);
+    const githubService = makeGithubService({
+      apiRequest: vi.fn(async (request: { method?: string }) => {
+        // The ownership pre-check GETs the comment to confirm it belongs to the
+        // target PR; the PATCH then performs the edit.
+        if (request.method === "GET") {
+          return {
+            data: {
+              id: 555,
+              issue_url: "https://api.github.com/repos/test-owner/test-repo/issues/90",
+            },
+          };
+        }
+        return {
+          data: {
+            id: 555,
+            user: { login: "ade[bot]", avatar_url: "https://avatars/ade" },
+            body: "Edited body",
+            html_url: "https://github.com/test-owner/test-repo/pull/90#issuecomment-555",
+            created_at: "2026-01-01T00:00:00Z",
+            updated_at: "2026-01-02T00:00:00Z",
+          },
+        };
+      }),
+    });
+    const { service } = buildService({ db, githubService });
+
+    const result = await service.updateComment({ prId: "pr-row-1", commentId: "555", body: "Edited body" });
+
+    expect(githubService.apiRequest).toHaveBeenCalledWith(
+      expect.objectContaining({
+        method: "PATCH",
+        path: "/repos/test-owner/test-repo/issues/comments/555",
+        body: { body: "Edited body" },
+      }),
+    );
+    expect(result.id).toBe("555");
+    expect(result.body).toBe("Edited body");
+    expect(result.source).toBe("issue");
+    expect(result.url).toBe("https://github.com/test-owner/test-repo/pull/90#issuecomment-555");
+  });
+
+  it("rejects a comment that belongs to a different PR without PATCHing", async () => {
+    const db = makeMockDb();
+    installPullRequestRowStore(db, [makePrRow()]);
+    const githubService = makeGithubService({
+      apiRequest: vi.fn(async () => ({
+        data: {
+          id: 555,
+          issue_url: "https://api.github.com/repos/test-owner/test-repo/issues/91",
+        },
+      })),
+    });
+    const { service } = buildService({ db, githubService });
+
+    await expect(
+      service.updateComment({ prId: "pr-row-1", commentId: "555", body: "Edited body" }),
+    ).rejects.toThrow("Comment does not belong to the target PR.");
+    expect(githubService.apiRequest).not.toHaveBeenCalledWith(
+      expect.objectContaining({ method: "PATCH" }),
+    );
+  });
+
+  it("rejects an invalid comment id without calling GitHub", async () => {
+    const db = makeMockDb();
+    installPullRequestRowStore(db, [makePrRow()]);
+    const githubService = makeGithubService({ apiRequest: vi.fn() });
+    const { service } = buildService({ db, githubService });
+
+    await expect(
+      service.updateComment({ prId: "pr-row-1", commentId: "not-a-number", body: "x" }),
+    ).rejects.toThrow("Invalid comment id.");
+    expect(githubService.apiRequest).not.toHaveBeenCalled();
+  });
+
+  it("throws when the PR row is unknown without calling GitHub", async () => {
+    const db = makeMockDb();
+    installPullRequestRowStore(db, []);
+    const githubService = makeGithubService({ apiRequest: vi.fn() });
+    const { service } = buildService({ db, githubService });
+
+    await expect(
+      service.updateComment({ prId: "missing", commentId: "1", body: "x" }),
+    ).rejects.toThrow();
+    expect(githubService.apiRequest).not.toHaveBeenCalled();
+  });
+});
+
+describe("prService auto-map by branch", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const AUTO_BRANCH = "my-feature";
+
+  // Same-repo open PR whose head branch matches makeFakeLane()'s branch.
+  function makeAutoMapPull(overrides?: Partial<Record<string, unknown>>) {
+    return makeGitHubPull({
+      number: 777,
+      title: "Auto-map candidate",
+      html_url: "https://github.com/test-owner/test-repo/pull/777",
+      head: {
+        ref: AUTO_BRANCH,
+        user: { login: REPO.owner },
+        repo: { owner: { login: REPO.owner }, name: REPO.name },
+      },
+      ...overrides,
+    });
+  }
+
+  // GitHub mock that serves the branch lookup (list) and the per-PR fetch +
+  // body PATCH that linkToLane performs. `ignoreInserts` controls whether a row
+  // already exists for the PR.
+  function makeAutoMapGithub(pulls: any[]) {
+    return makeGithubService({
+      getStatus: vi.fn(async () => makeGithubStatus()),
+      apiRequest: vi.fn(async (args: { method?: string; path: string }) => {
+        const method = args.method ?? "GET";
+        if (method === "GET" && /\/pulls\/\d+$/.test(args.path)) {
+          const num = Number(args.path.split("/").pop());
+          return { data: pulls.find((p) => Number(p.number) === num) ?? makeAutoMapPull() };
+        }
+        if (method === "GET" && args.path === `/repos/${REPO.owner}/${REPO.name}/pulls`) {
+          return { data: pulls };
+        }
+        if (method === "PATCH") {
+          return { data: {} };
+        }
+        return { data: {} };
+      }),
+    });
+  }
+
+  function autoMapService(service: ReturnType<typeof buildService>["service"]) {
+    return service as typeof service & {
+      tryAutoMapLaneByBranch: (laneId: string) => Promise<void>;
+      setEventEmitter: (emit: (event: unknown) => void) => void;
+    };
+  }
+
+  it("links on an exact single same-repo branch match and emits an auto-link event", async () => {
+    const db = makeMockDb();
+    installPullRequestRowStore(db, []);
+    const githubService = makeAutoMapGithub([makeAutoMapPull()]);
+    const laneService = makeLaneService([makeFakeLane()]);
+    const { service } = buildService({ db, githubService, laneService });
+    const events: any[] = [];
+    autoMapService(service).setEventEmitter((e) => events.push(e));
+
+    await autoMapService(service).tryAutoMapLaneByBranch(LANE_ID);
+
+    expect(db.run).toHaveBeenCalledWith(
+      expect.stringContaining("insert into pull_requests("),
+      expect.arrayContaining([LANE_ID, REPO.owner, REPO.name, 777]),
+    );
+    expect(events).toEqual([
+      expect.objectContaining({
+        type: "pr-auto-linked",
+        prNumber: 777,
+        laneId: LANE_ID,
+        laneName: "my-feature",
+      }),
+    ]);
+    // The toast's Undo path keys off prId; it must be the real linked row id,
+    // never an empty string (otherwise Undo silently no-ops).
+    expect(typeof events[0].prId).toBe("string");
+    expect(events[0].prId.length).toBeGreaterThan(0);
+  });
+
+  it("skips a fork PR (different head repo)", async () => {
+    const db = makeMockDb();
+    installPullRequestRowStore(db, []);
+    const forkPull = makeAutoMapPull({
+      head: {
+        ref: AUTO_BRANCH,
+        user: { login: "fork-owner" },
+        repo: { owner: { login: "fork-owner" }, name: "fork-repo" },
+      },
+    });
+    const githubService = makeAutoMapGithub([forkPull]);
+    const laneService = makeLaneService([makeFakeLane()]);
+    const { service } = buildService({ db, githubService, laneService });
+
+    await autoMapService(service).tryAutoMapLaneByBranch(LANE_ID);
+
+    expect(db.run.mock.calls.some(([sql]: [unknown]) =>
+      String(sql).includes("insert into pull_requests("))).toBe(false);
+  });
+
+  it("skips when two lanes match the head branch", async () => {
+    const db = makeMockDb();
+    installPullRequestRowStore(db, []);
+    const githubService = makeAutoMapGithub([makeAutoMapPull()]);
+    const laneService = makeLaneService([
+      makeFakeLane(),
+      makeFakeLane({ id: "lane-dup", name: "dup", branchRef: "refs/heads/my-feature" }),
+    ]);
+    const { service } = buildService({ db, githubService, laneService });
+
+    await autoMapService(service).tryAutoMapLaneByBranch(LANE_ID);
+
+    expect(db.run.mock.calls.some(([sql]: [unknown]) =>
+      String(sql).includes("insert into pull_requests("))).toBe(false);
+  });
+
+  it("skips the primary lane", async () => {
+    const db = makeMockDb();
+    installPullRequestRowStore(db, []);
+    const githubService = makeAutoMapGithub([makeAutoMapPull()]);
+    const laneService = makeLaneService([
+      makeFakeLane({ id: "lane-primary", laneType: "primary" }),
+    ]);
+    const { service } = buildService({ db, githubService, laneService });
+
+    await autoMapService(service).tryAutoMapLaneByBranch("lane-primary");
+
+    expect(db.run.mock.calls.some(([sql]: [unknown]) =>
+      String(sql).includes("insert into pull_requests("))).toBe(false);
+  });
+
+  it("skips a lane already mapped to a PR", async () => {
+    const db = makeMockDb();
+    // Existing row on the same lane + branch => lane is already mapped.
+    installPullRequestRowStore(db, [
+      makePrRow({ id: "pr-existing", github_pr_number: 12, head_branch: AUTO_BRANCH }),
+    ]);
+    const githubService = makeAutoMapGithub([makeAutoMapPull()]);
+    const laneService = makeLaneService([makeFakeLane()]);
+    const { service } = buildService({ db, githubService, laneService });
+
+    await autoMapService(service).tryAutoMapLaneByBranch(LANE_ID);
+
+    expect(db.run.mock.calls.some(([sql]: [unknown]) =>
+      String(sql).includes("insert into pull_requests("))).toBe(false);
+  });
+
+  it("skips a PR already mapped to any lane", async () => {
+    const db = makeMockDb();
+    // Existing row for PR #777 on a *different* lane => PR already mapped.
+    installPullRequestRowStore(db, [
+      makePrRow({ id: "pr-777", lane_id: "other-lane", github_pr_number: 777, head_branch: "other" }),
+    ]);
+    const githubService = makeAutoMapGithub([makeAutoMapPull()]);
+    const laneService = makeLaneService([makeFakeLane()]);
+    const { service } = buildService({ db, githubService, laneService });
+
+    await autoMapService(service).tryAutoMapLaneByBranch(LANE_ID);
+
+    expect(db.run.mock.calls.some(([sql]: [unknown]) =>
+      String(sql).includes("insert into pull_requests("))).toBe(false);
+  });
+
+  it("skips a suppressed (previously-unmapped) pair", async () => {
+    const db = makeMockDb();
+    const rows: any[] = [];
+    // Custom store: pull_requests empty; pr_auto_link_ignores has (777, LANE_ID).
+    db.get.mockImplementation((sql: string, params: unknown[] = []) => {
+      const text = String(sql);
+      if (text.includes("from pull_requests")) {
+        if (text.includes("lower(repo_owner)") && text.includes("github_pr_number")) {
+          const [, owner, name, prNumber] = params;
+          return rows.find((r) =>
+            String(r.repo_owner).toLowerCase() === String(owner).toLowerCase()
+            && String(r.repo_name).toLowerCase() === String(name).toLowerCase()
+            && Number(r.github_pr_number) === Number(prNumber)) ?? null;
+        }
+        return null;
+      }
+      return null;
+    });
+    db.all.mockImplementation((sql: string) => {
+      const text = String(sql);
+      if (text.includes("from pr_auto_link_ignores")) {
+        return [{
+          project_id: "proj-1",
+          repo_owner: REPO.owner,
+          repo_name: REPO.name,
+          github_pr_number: 777,
+          lane_id: LANE_ID,
+          head_branch: AUTO_BRANCH,
+          created_at: "2026-01-01T00:00:00Z",
+        }];
+      }
+      if (text.includes("from pull_requests")) return rows;
+      return [];
+    });
+    db.run.mockImplementation((sql: string) => {
+      if (String(sql).includes("insert into pull_requests(")) rows.push({});
+      return undefined;
+    });
+    const githubService = makeAutoMapGithub([makeAutoMapPull()]);
+    const laneService = makeLaneService([makeFakeLane()]);
+    const { service } = buildService({ db, githubService, laneService });
+
+    await autoMapService(service).tryAutoMapLaneByBranch(LANE_ID);
+
+    expect(rows.length).toBe(0);
+  });
+
+  it("records suppression on local unmap so auto-map will not re-bind", async () => {
+    const db = makeMockDb();
+    installPullRequestRowStore(db, [
+      makePrRow({ id: "pr-row-1", github_pr_number: 777, head_branch: AUTO_BRANCH }),
+    ]);
+    const { service } = buildService({ db });
+
+    await service.delete({ prId: "pr-row-1", closeOnGitHub: false, archiveLane: false });
+
+    expect(db.run).toHaveBeenCalledWith(
+      expect.stringContaining("insert or replace into pr_auto_link_ignores("),
+      expect.arrayContaining([REPO.owner, REPO.name, 777, LANE_ID, AUTO_BRANCH]),
+    );
   });
 });

@@ -4,6 +4,7 @@ import { buildPrsRouteSearch, parsePrsRouteState, type ParsedPrsRouteState } fro
 import type {
   LaneSummary,
   MergeMethod,
+  PrActionRun,
   PrActivityEvent,
   PrAiSummary,
   PrCheck,
@@ -18,15 +19,14 @@ import type {
   PrWithConflicts,
 } from "../../../../shared/types";
 import { PrTimeline, type PrTimelineFilters, type PrTimelineRef } from "../shared/PrTimeline";
-import { PrDetailLeftRail } from "../shared/PrDetailLeftRail";
-import type { PrCommitRailCommit } from "../shared/PrCommitRail";
-import { PrDetailRightRail } from "../shared/PrDetailRightRail";
-import type { ReviewerRequest } from "../shared/PrDetailRightMetadataRail";
+import { PrCommitRail, type PrCommitRailCommit } from "../shared/PrCommitRail";
+import { PrDetailMergeRail } from "../shared/PrDetailMergeRail";
+import { PrDetailRightMetadataRail, type ReviewerRequest } from "../shared/PrDetailRightMetadataRail";
 import { PrCommentComposer } from "../shared/PrCommentComposer";
 import { deriveParticipants } from "../shared/prMergeRailUtils";
 import { PrCommandPalettes, type PaletteKind } from "../shared/PrCommandPalettes";
 import type { PrReviewEvent } from "../shared/PrReviewSubmitModal";
-import { COLORS } from "../../lanes/laneDesignTokens";
+import { COLORS, floatingPane } from "../../lanes/laneDesignTokens";
 
 export type PrDetailTimelineRailsRef = {
   scrollToEventId: (id: string) => void;
@@ -79,8 +79,11 @@ type Props = {
   actionBusy: boolean;
   onAddComment: () => void;
   deepLink: { eventId: string | null; threadId: string | null; commitSha: string | null };
+  actionRuns: PrActionRun[];
   onSelectCheck?: (check: PrCheck) => void;
   onOpenChecksTab?: () => void;
+  onRerunChecks?: () => void;
+  onOpenFilesTab?: () => void;
   mergeMethod: MergeMethod;
   showReviewerEditor: boolean;
   setShowReviewerEditor: (value: boolean) => void;
@@ -124,17 +127,29 @@ function threadFirstCommentBody(thread: PrReviewThread): string | null {
 }
 
 function threadTimestamp(thread: PrReviewThread): string {
-  return thread.updatedAt ?? thread.createdAt ?? new Date(0).toISOString();
+  // Anchor a thread to its FIRST comment (when it started), not its last —
+  // otherwise a recently-replied-to old thread jumps to the bottom of the feed.
+  return (
+    thread.comments?.[0]?.createdAt
+    ?? thread.createdAt
+    ?? thread.updatedAt
+    ?? new Date(0).toISOString()
+  );
 }
 
-function stableSortByTs<T extends { timestamp: string }>(events: T[]): T[] {
+function stableSortByTs<T extends { timestamp: string; id: string }>(events: T[]): T[] {
   return [...events].sort((a, b) => {
     const ta = Date.parse(a.timestamp);
     const tb = Date.parse(b.timestamp);
-    if (Number.isNaN(ta) && Number.isNaN(tb)) return 0;
-    if (Number.isNaN(ta)) return -1;
-    if (Number.isNaN(tb)) return 1;
-    return ta - tb;
+    const aValid = !Number.isNaN(ta);
+    const bValid = !Number.isNaN(tb);
+    // Undated events sink to the END (chronological feeds read top→bottom);
+    // ties break deterministically by id so order is stable across renders.
+    if (!aValid && !bValid) return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+    if (!aValid) return 1;
+    if (!bValid) return -1;
+    if (ta !== tb) return ta - tb;
+    return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
   });
 }
 
@@ -157,22 +172,9 @@ export function buildTimelineEvents(args: {
 }): PrTimelineEvent[] {
   const events: PrTimelineEvent[] = [];
 
-  events.push({
-    id: `opened:${args.pr.id}`,
-    type: "pr_opened",
-    timestamp: args.pr.createdAt ?? new Date(0).toISOString(),
-    author: args.detail?.author?.login ?? null,
-    avatarUrl: args.detail?.author?.avatarUrl ?? null,
-    title: args.pr.title,
-    githubPrNumber: args.pr.githubPrNumber,
-    repoOwner: args.pr.repoOwner,
-    repoName: args.pr.repoName,
-    baseBranch: args.pr.baseBranch,
-    headBranch: args.pr.headBranch,
-    isDraft: args.detail?.isDraft ?? args.pr.state === "draft",
-    additions: args.pr.additions,
-    deletions: args.pr.deletions,
-  });
+  // PR-opened banner intentionally omitted — the PR state (open/draft/merged/
+  // closed) now lives as a tag in the detail header, so the feed starts with the
+  // description like GitHub.
 
   // Description as first comment-like event.
   if (args.detail?.body) {
@@ -257,7 +259,7 @@ export function buildTimelineEvents(args: {
     events.push({
       id: `commit:${commit.sha}`,
       type: "commit_push",
-      timestamp: commit.committedDate || args.pr.updatedAt || new Date(0).toISOString(),
+      timestamp: commit.committedDate || args.pr.createdAt || new Date(0).toISOString(),
       author: commit.author.login ?? commit.author.name ?? null,
       avatarUrl: null,
       sha: commit.sha,
@@ -270,7 +272,7 @@ export function buildTimelineEvents(args: {
 
   // Reviews
   for (const review of args.reviews) {
-    const ts = review.submittedAt ?? args.pr.updatedAt ?? new Date(0).toISOString();
+    const ts = review.submittedAt ?? args.pr.createdAt ?? new Date(0).toISOString();
     events.push({
       id: `review:${review.reviewer}:${ts}`,
       type: "review",
@@ -457,8 +459,11 @@ export const PrDetailTimelineRails = forwardRef<PrDetailTimelineRailsRef, Props>
       actionBusy,
       onAddComment,
       deepLink,
+      actionRuns,
       onSelectCheck,
       onOpenChecksTab,
+      onRerunChecks,
+      onOpenFilesTab,
       mergeMethod,
       showReviewerEditor,
       setShowReviewerEditor,
@@ -522,30 +527,6 @@ export const PrDetailTimelineRails = forwardRef<PrDetailTimelineRailsRef, Props>
         }
       },
       [events],
-    );
-
-    const handleOpenExternal = useCallback((url: string) => {
-      if (!url) return;
-      try {
-        const parsed = new URL(url);
-        if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return;
-      } catch {
-        return;
-      }
-      const opener = window.ade?.app?.openExternal;
-      if (opener) {
-        void opener(url).catch((err: unknown) => {
-          console.warn("[PrDetailTimelineRails] openExternal failed", { url, err });
-        });
-      }
-    }, []);
-
-    const handleOpenLog = useCallback(
-      (check: PrCheck) => {
-        if (!check.detailsUrl) return;
-        handleOpenExternal(check.detailsUrl);
-      },
-      [handleOpenExternal],
     );
 
     const paletteCommits = useMemo(
@@ -631,63 +612,90 @@ export const PrDetailTimelineRails = forwardRef<PrDetailTimelineRailsRef, Props>
       <div
         className="grid h-full min-h-0 w-full"
         style={{
-          gridTemplateColumns: "220px minmax(0, 1fr) 260px",
+          gridTemplateColumns: "248px minmax(0, 1fr) 312px",
           gridTemplateRows: "minmax(0, 1fr)",
-          background: COLORS.pageBg,
+          gap: 8,
+          padding: 8,
+          background: COLORS.prSurface,
         }}
         data-testid="pr-detail-timeline-rails"
       >
-        <div className="min-h-0">
-          <PrDetailLeftRail
-            commits={commits}
-            activeSha={activeCommitSha}
-            onSelectCommit={handleSelectCommit}
-            checks={checks}
-            onOpenLog={handleOpenLog}
-            onSelectCheck={onSelectCheck}
-            onOpenChecksTab={onOpenChecksTab}
-          />
+        {/* LEFT: commits (top) + merge (bottom) as floating panes */}
+        <div className="flex min-h-0 flex-col gap-2 overflow-hidden">
+          <div
+            className="flex min-h-0 flex-1 flex-col overflow-hidden"
+            style={floatingPane({ padding: 0 })}
+          >
+            <PrCommitRail
+              layout="pane"
+              commits={commits}
+              activeSha={activeCommitSha}
+              onSelectCommit={handleSelectCommit}
+            />
+          </div>
+          <div
+            className="flex shrink-0 flex-col overflow-hidden"
+            style={floatingPane({ padding: 0, maxHeight: "52%" })}
+          >
+            <div className="min-h-0 overflow-y-auto">
+              <PrDetailMergeRail
+                pr={pr}
+                status={status}
+                checks={checks}
+                reviews={reviews}
+                mergeMethod={mergeMethod}
+                actionBusy={actionBusy}
+                onMerge={onMerge}
+                onDeleteBranch={onDeleteBranch}
+                deleteBranchBusy={deleteBranchBusy}
+                onOpenManageLane={onOpenManageLane}
+                onClose={onClose}
+                onReopen={onReopen}
+              />
+            </div>
+          </div>
         </div>
 
         <div className="flex min-h-0 flex-col">
-          <div className="min-h-0 flex-1">
-            <PrTimeline
-              ref={timelineRef}
-              events={events}
-              prId={pr.id}
-              laneId={pr.laneId}
-              repoOwner={pr.repoOwner}
-              repoName={pr.repoName}
-              viewerLogin={viewerLogin}
-              filters={filters}
-              onFiltersChange={onFiltersChange}
-              summary={summaryForTimeline}
-              onRegenerateSummary={onRegenerateAiSummary}
-              onDismissSummary={onDismissAiSummary}
-              onVisibleEventChange={handleVisibleEventChange}
-            />
-          </div>
-          <PrCommentComposer
-            value={commentDraft}
-            onChange={setCommentDraft}
-            busy={actionBusy}
-            onSubmit={onAddComment}
+          <PrTimeline
+            ref={timelineRef}
+            events={events}
+            prId={pr.id}
+            laneId={pr.laneId}
+            repoOwner={pr.repoOwner}
+            repoName={pr.repoName}
+            viewerLogin={viewerLogin}
+            filters={filters}
+            onFiltersChange={onFiltersChange}
+            summary={summaryForTimeline}
+            onRegenerateSummary={onRegenerateAiSummary}
+            onDismissSummary={onDismissAiSummary}
+            onVisibleEventChange={handleVisibleEventChange}
+            footer={
+              <PrCommentComposer
+                value={commentDraft}
+                onChange={setCommentDraft}
+                repoOwner={pr.repoOwner}
+                repoName={pr.repoName}
+                busy={actionBusy}
+                onSubmit={onAddComment}
+                lockedMessage={pr.laneId ? undefined : "Map this PR to a lane to comment"}
+              />
+            }
           />
         </div>
 
         <div className="min-h-0">
-          <PrDetailRightRail
+          <PrDetailRightMetadataRail
             pr={pr}
+            lane={lane}
             detail={detail}
             status={status}
-            checks={checks}
             reviews={reviews}
-            comments={comments}
             participants={participants}
-            mergeMethod={mergeMethod}
-            actionBusy={actionBusy}
-            lane={lane}
-            onOpenManageLane={onOpenManageLane}
+            checks={checks}
+            actionRuns={actionRuns}
+            files={files}
             showReviewerEditor={showReviewerEditor}
             setShowReviewerEditor={setShowReviewerEditor}
             reviewerInput={reviewerInput}
@@ -696,14 +704,14 @@ export const PrDetailTimelineRails = forwardRef<PrDetailTimelineRailsRef, Props>
             setShowLabelEditor={setShowLabelEditor}
             labelInput={labelInput}
             setLabelInput={setLabelInput}
-            onMerge={onMerge}
             onRequestReviewers={onRequestReviewers}
             onSetLabels={onSetLabels}
-            onDeleteBranch={onDeleteBranch}
-            deleteBranchBusy={deleteBranchBusy}
-            onClose={onClose}
-            onReopen={onReopen}
+            actionBusy={actionBusy}
             onSubmitReview={onSubmitReview}
+            onSelectCheck={onSelectCheck}
+            onOpenChecksTab={onOpenChecksTab}
+            onRerunChecks={onRerunChecks}
+            onOpenFilesTab={onOpenFilesTab}
           />
         </div>
 

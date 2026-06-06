@@ -243,9 +243,11 @@ import type {
   PrCommit,
   PrActionRun,
   PrActivityEvent,
+  PrGithubCoords,
   CleanupPrBranchArgs,
   CleanupPrBranchResult,
   AddPrCommentArgs,
+  UpdatePrCommentArgs,
   ReplyToPrReviewThreadArgs,
   ResolvePrReviewThreadArgs,
   PrDeployment,
@@ -7628,9 +7630,49 @@ contextBridge.exposeInMainWorld("ade", {
       callPrReadRuntimeActionOr("getActivity", { arg: prId }, () =>
         ipcRenderer.invoke(IPC.prsGetActivity, { prId }),
       ),
+    getDetailByGithub: async (coords: PrGithubCoords): Promise<PrDetail> =>
+      callPrReadRuntimeActionOr("getDetailByGithub", { arg: coords }, () =>
+        ipcRenderer.invoke(IPC.prsGetDetailByGithub, coords),
+      ),
+    getFilesByGithub: async (coords: PrGithubCoords): Promise<PrFile[]> =>
+      callPrReadRuntimeActionOr("getFilesByGithub", { arg: coords }, () =>
+        ipcRenderer.invoke(IPC.prsGetFilesByGithub, coords),
+      ),
+    getCommitsByGithub: async (coords: PrGithubCoords): Promise<PrCommit[]> =>
+      callPrReadRuntimeActionOr("getCommitsByGithub", { arg: coords }, () =>
+        ipcRenderer.invoke(IPC.prsGetCommitsByGithub, coords),
+      ),
+    getActionRunsByGithub: async (coords: PrGithubCoords): Promise<PrActionRun[]> =>
+      callPrReadRuntimeActionOr("getActionRunsByGithub", { arg: coords }, () =>
+        ipcRenderer.invoke(IPC.prsGetActionRunsByGithub, coords),
+      ),
+    getActivityByGithub: async (coords: PrGithubCoords): Promise<PrActivityEvent[]> =>
+      callPrReadRuntimeActionOr("getActivityByGithub", { arg: coords }, () =>
+        ipcRenderer.invoke(IPC.prsGetActivityByGithub, coords),
+      ),
+    getChecksByGithub: async (coords: PrGithubCoords): Promise<PrCheck[]> =>
+      callPrReadRuntimeActionOr("getChecksByGithub", { arg: coords }, () =>
+        ipcRenderer.invoke(IPC.prsGetChecksByGithub, coords),
+      ),
+    getReviewsByGithub: async (coords: PrGithubCoords): Promise<PrReview[]> =>
+      callPrReadRuntimeActionOr("getReviewsByGithub", { arg: coords }, () =>
+        ipcRenderer.invoke(IPC.prsGetReviewsByGithub, coords),
+      ),
+    getCommentsByGithub: async (coords: PrGithubCoords): Promise<PrComment[]> =>
+      callPrReadRuntimeActionOr("getCommentsByGithub", { arg: coords }, () =>
+        ipcRenderer.invoke(IPC.prsGetCommentsByGithub, coords),
+      ),
+    getReviewThreadsByGithub: async (coords: PrGithubCoords): Promise<PrReviewThread[]> =>
+      callPrReadRuntimeActionOr("getReviewThreadsByGithub", { arg: coords }, () =>
+        ipcRenderer.invoke(IPC.prsGetReviewThreadsByGithub, coords),
+      ),
     addComment: async (args: AddPrCommentArgs): Promise<PrComment> =>
       callProjectRuntimeActionOr("pr", "addComment", { args }, () =>
         ipcRenderer.invoke(IPC.prsAddComment, args),
+      ),
+    updateComment: async (args: UpdatePrCommentArgs): Promise<PrComment> =>
+      callProjectRuntimeActionOr("pr", "updateComment", { args }, () =>
+        ipcRenderer.invoke(IPC.prsUpdateComment, args),
       ),
     replyToReviewThread: async (
       args: ReplyToPrReviewThreadArgs,

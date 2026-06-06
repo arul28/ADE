@@ -18,6 +18,7 @@ import type {
   PrSnapshotHydration,
   PrChecksStatus,
   PrReviewStatus,
+  PrGithubCoords,
 } from "../../../../shared/types";
 import { DEFAULT_PR_TIMELINE_FILTERS, type PrTimelineFilters } from "../shared/PrTimeline";
 import type { PaletteKind } from "../shared/PrCommandPalettes";
@@ -28,7 +29,7 @@ import { DEFAULT_PIPELINE_SETTINGS } from "../../../../shared/types";
 import { defaultPrIssueResolutionScope, getPrIssueResolutionAvailability } from "../../../../shared/prIssueResolution";
 import { COLORS, MONO_FONT, SANS_FONT, LABEL_STYLE, cardStyle, inlineBadge, outlineButton, primaryButton, dangerButton } from "../../lanes/laneDesignTokens";
 import { AdeDiffViewer } from "../../shared/AdeDiffViewer";
-import { PrCiRunningIndicator } from "../shared/prVisuals";
+import { PrCiRunningIndicator, getPrStateBadge, InlinePrBadge } from "../shared/prVisuals";
 import { PrIssueResolverModal } from "../shared/PrIssueResolverModal";
 import { PrConvergencePanel } from "../shared/PrConvergencePanel";
 import type { IssueInventoryItem as PanelIssueItem, ConvergenceStatus as PanelConvergence, AutoConvergeWaitState } from "../shared/PrConvergencePanel";
@@ -211,7 +212,115 @@ type PrDetailPaneProps = {
   onDetailTabChange?: (tab: DetailTab) => void;
   onUnmap?: () => void;
   unmapBusy?: boolean;
+  /**
+   * When set, the PR is NOT mapped to an ADE lane. The pane routes all detail
+   * fetches through the coordinate-based endpoints (which never require a DB
+   * row) and shows a create/map affordance instead of lane-dependent controls.
+   */
+  githubCoords?: PrGithubCoords | null;
+  unmapped?: boolean;
+  /**
+   * Create-lane / map-to-lane controls surfaced as an in-pane banner when the
+   * PR is unmapped. Provided by GitHubTab so this pane stays presentational.
+   */
+  unmappedAffordance?: UnmappedAffordance | null;
 };
+
+/** Create/map controls for an unmapped GitHub PR, surfaced as an in-pane banner. */
+export type UnmappedAffordance = {
+  /** Lanes whose branch matches (or could match) the PR head; for the link select. */
+  linkableLanes: Array<{ id: string; name: string }>;
+  selectedLaneId: string;
+  onSelectLane: (laneId: string) => void;
+  onLink: () => void;
+  linkBusy: boolean;
+  /** Whether the "create lane from PR branch" action is offered for this PR. */
+  canCreateLane: boolean;
+  onCreateLane: () => void;
+  scope: "repo" | "external";
+};
+
+/**
+ * In-pane banner shown for unmapped PRs. Replaces the legacy read-only gate:
+ * the full detail view renders as usual and this banner offers the create-lane
+ * / map-to-lane actions instead.
+ */
+function UnmappedPrBanner({ affordance }: { affordance: UnmappedAffordance }) {
+  return (
+    <div
+      data-testid="pr-unmapped-affordance"
+      style={{
+        display: "flex",
+        alignItems: "center",
+        flexWrap: "wrap",
+        gap: 10,
+        padding: "10px 20px",
+        background: "color-mix(in srgb, var(--color-warning) 6%, transparent)",
+        borderBottom: "1px solid color-mix(in srgb, var(--color-warning) 18%, transparent)",
+        fontFamily: SANS_FONT,
+        fontSize: 12,
+      }}
+    >
+      <span style={{ display: "inline-flex", alignItems: "center", gap: 8, color: "#FBBF24", flex: "1 1 240px", minWidth: 0 }}>
+        <GithubLogo size={15} weight="fill" style={{ flexShrink: 0 }} />
+        <span>
+          {affordance.scope === "external"
+            ? "This pull request comes from a fork and is not mapped to an ADE lane."
+            : "This pull request is not mapped to an ADE lane."}
+        </span>
+      </span>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+        {affordance.canCreateLane ? (
+          <button
+            type="button"
+            onClick={affordance.onCreateLane}
+            style={primaryButton({ height: 30, padding: "0 10px", borderRadius: 8, whiteSpace: "nowrap" })}
+          >
+            <BranchIcon size={14} /> Create lane from PR branch
+          </button>
+        ) : null}
+        {affordance.linkableLanes.length > 0 ? (
+          <>
+            <select
+              value={affordance.selectedLaneId}
+              onChange={(event) => affordance.onSelectLane(event.target.value)}
+              aria-label="Select lane to map"
+              style={{
+                height: 30,
+                background: COLORS.recessedBg,
+                border: `1px solid ${COLORS.border}`,
+                color: COLORS.textPrimary,
+                fontFamily: SANS_FONT,
+                fontSize: 12,
+                padding: "0 8px",
+                borderRadius: 8,
+              }}
+            >
+              <option value="">Map to lane…</option>
+              {affordance.linkableLanes.map((lane) => (
+                <option key={lane.id} value={lane.id}>{lane.name}</option>
+              ))}
+            </select>
+            <button
+              type="button"
+              disabled={!affordance.selectedLaneId || affordance.linkBusy}
+              onClick={affordance.onLink}
+              aria-label={affordance.linkBusy ? "Mapping lane to pull request" : "Map selected lane to pull request"}
+              style={primaryButton({
+                height: 30,
+                padding: "0 10px",
+                borderRadius: 8,
+                opacity: !affordance.selectedLaneId || affordance.linkBusy ? 0.5 : 1,
+              })}
+            >
+              {affordance.linkBusy ? "Mapping…" : "Map"}
+            </button>
+          </>
+        ) : null}
+      </div>
+    </div>
+  );
+}
 
 export function PrDetailPane({
   pr,
@@ -235,6 +344,9 @@ export function PrDetailPane({
   onDetailTabChange,
   onUnmap,
   unmapBusy = false,
+  githubCoords = null,
+  unmapped = false,
+  unmappedAffordance = null,
 }: PrDetailPaneProps) {
   const {
     convergenceStatesByPrId,
@@ -596,6 +708,50 @@ export function PrDetailPane({
     }
   }, [applySnapshotHydration, pr.id, snapshotHydration]);
 
+  // For unmapped PRs there is no DB row, so every detail fetch must route
+  // through the coordinate-based endpoints. A ref keeps the coords stable across
+  // renders so the per-PR fetch helpers below don't churn their identity.
+  const isUnmapped = unmapped && Boolean(githubCoords);
+  const coordsRef = React.useRef<PrGithubCoords | null>(githubCoords);
+  coordsRef.current = githubCoords;
+
+  // Each helper picks the row-based call for mapped PRs and the coordinate-based
+  // call for unmapped PRs. Identity is stable (deps: pr.id, isUnmapped).
+  const fetchDetail = React.useCallback((): Promise<PrDetail> =>
+    isUnmapped && coordsRef.current
+      ? window.ade.prs.getDetailByGithub(coordsRef.current)
+      : window.ade.prs.getDetail(pr.id),
+  [isUnmapped, pr.id]);
+  const fetchFiles = React.useCallback((): Promise<PrFile[]> =>
+    isUnmapped && coordsRef.current
+      ? window.ade.prs.getFilesByGithub(coordsRef.current)
+      : window.ade.prs.getFiles(pr.id),
+  [isUnmapped, pr.id]);
+  const fetchCommits = React.useCallback((): Promise<PrCommit[]> => {
+    if (isUnmapped && coordsRef.current) return window.ade.prs.getCommitsByGithub(coordsRef.current);
+    return typeof window.ade.prs.getCommits === "function" ? window.ade.prs.getCommits(pr.id) : Promise.resolve([]);
+  }, [isUnmapped, pr.id]);
+  const fetchActionRuns = React.useCallback((): Promise<PrActionRun[]> =>
+    isUnmapped && coordsRef.current
+      ? window.ade.prs.getActionRunsByGithub(coordsRef.current)
+      : window.ade.prs.getActionRuns(pr.id),
+  [isUnmapped, pr.id]);
+  const fetchActivity = React.useCallback((): Promise<PrActivityEvent[]> =>
+    isUnmapped && coordsRef.current
+      ? window.ade.prs.getActivityByGithub(coordsRef.current)
+      : window.ade.prs.getActivity(pr.id),
+  [isUnmapped, pr.id]);
+  const fetchChecks = React.useCallback((): Promise<PrCheck[]> =>
+    isUnmapped && coordsRef.current
+      ? window.ade.prs.getChecksByGithub(coordsRef.current)
+      : window.ade.prs.getChecks(pr.id),
+  [isUnmapped, pr.id]);
+  const fetchReviewThreadsApi = React.useCallback((): Promise<PrReviewThread[]> =>
+    isUnmapped && coordsRef.current
+      ? window.ade.prs.getReviewThreadsByGithub(coordsRef.current)
+      : window.ade.prs.getReviewThreads(pr.id),
+  [isUnmapped, pr.id]);
+
   const loadDetail = React.useCallback(async (options: { hydrateSnapshot?: boolean; forceLive?: boolean } = {}) => {
     const requestId = ++detailLoadSeqRef.current;
     try {
@@ -613,27 +769,25 @@ export function PrDetailPane({
         if (requestId === detailLoadSeqRef.current) apply(value);
         return value;
       };
-      const detailPromise = window.ade.prs.getDetail(pr.id)
+      const detailPromise = fetchDetail()
         .then(applyIfCurrent((value) => {
           liveDetailLoadedForPrRef.current = pr.id;
           setDetail(value);
         }))
         .catch(() => null);
-      const filesPromise = window.ade.prs.getFiles(pr.id)
+      const filesPromise = fetchFiles()
         .then(applyIfCurrent((value) => {
           liveFilesLoadedForPrRef.current = pr.id;
           setFiles(value);
         }))
         .catch(() => []);
-      const commitsPromise = (typeof window.ade.prs.getCommits === "function"
-        ? window.ade.prs.getCommits(pr.id)
-            .then(applyIfCurrent((value) => {
-              liveCommitsLoadedForPrRef.current = pr.id;
-              setCommits(value);
-            }))
-            .catch(() => [])
-        : Promise.resolve([]));
-      const actionRunsPromise = window.ade.prs.getActionRuns(pr.id)
+      const commitsPromise = fetchCommits()
+        .then(applyIfCurrent((value) => {
+          liveCommitsLoadedForPrRef.current = pr.id;
+          setCommits(value);
+        }))
+        .catch(() => []);
+      const actionRunsPromise = fetchActionRuns()
         .then(applyIfCurrent((value) => setActionRuns(value)))
         .catch(() => []);
       await Promise.allSettled([detailPromise, filesPromise, commitsPromise, actionRunsPromise]);
@@ -644,16 +798,16 @@ export function PrDetailPane({
         snapshotPrefillPendingRef.current = false;
       }
     }
-  }, [applySnapshotHydration, pr.id]);
+  }, [applySnapshotHydration, fetchActionRuns, fetchCommits, fetchDetail, fetchFiles, pr.id]);
 
   const refreshReviewThreads = React.useCallback(async () => {
     const requestId = detailLoadSeqRef.current;
-    const threads = await window.ade.prs.getReviewThreads(pr.id).catch(() => null);
+    const threads = await fetchReviewThreadsApi().catch(() => null);
     if (threads && requestId === detailLoadSeqRef.current) {
       setReviewThreads(threads);
     }
     return threads;
-  }, [pr.id]);
+  }, [fetchReviewThreadsApi]);
 
   // Load detail on PR change
   React.useEffect(() => {
@@ -706,17 +860,20 @@ export function PrDetailPane({
     const requestId = ++convergenceLoadSeqRef.current;
     const cachedRuntime = cachedConvergenceRuntimeRef.current;
     applyConvergenceRuntime(cachedRuntime);
-    void loadConvergenceState(pr.id, { force: true })
-      .then((runtime) => {
-        if (requestId !== convergenceLoadSeqRef.current) return;
-        applyConvergenceRuntime(runtime);
-      })
-      .catch(() => {
-        if (requestId !== convergenceLoadSeqRef.current) return;
-        if (!cachedRuntime) {
-          applyConvergenceRuntime(null);
-        }
-      });
+    // Convergence runtime is resolved via a DB row; skip for unmapped PRs.
+    if (pr.laneId) {
+      void loadConvergenceState(pr.id, { force: true })
+        .then((runtime) => {
+          if (requestId !== convergenceLoadSeqRef.current) return;
+          applyConvergenceRuntime(runtime);
+        })
+        .catch(() => {
+          if (requestId !== convergenceLoadSeqRef.current) return;
+          if (!cachedRuntime) {
+            applyConvergenceRuntime(null);
+          }
+        });
+    }
 
     snapshotPrefillPendingRef.current = true;
     void loadDetail({ hydrateSnapshot: true });
@@ -768,7 +925,7 @@ export function PrDetailPane({
       ? DETAIL_BACKGROUND_ACTIVITY_DELAY_MS
       : 0;
     const timeoutId = window.setTimeout(() => {
-      window.ade.prs.getActivity(pr.id).then((events) => {
+      fetchActivity().then((events) => {
         if (!cancelled) setActivity(events);
       }).catch(() => {});
     }, delay);
@@ -776,7 +933,7 @@ export function PrDetailPane({
       cancelled = true;
       window.clearTimeout(timeoutId);
     };
-  }, [activeTab, deepLinkState.eventId, pr.id]);
+  }, [activeTab, deepLinkState.eventId, fetchActivity, pr.id]);
 
   // Poll checks + actionRuns + reviewThreads every 60s so the
   // Path to Merge readiness panel stays fresh without requiring a manual refresh.
@@ -786,12 +943,12 @@ export function PrDetailPane({
     let cancelled = false;
     const id = window.setInterval(() => {
       const activityPromise = activeTab === "overview"
-        ? window.ade.prs.getActivity(pr.id)
+        ? fetchActivity()
         : Promise.resolve(null);
       Promise.allSettled([
-        window.ade.prs.getChecks(pr.id),
-        window.ade.prs.getActionRuns(pr.id),
-        window.ade.prs.getReviewThreads(pr.id),
+        fetchChecks(),
+        fetchActionRuns(),
+        fetchReviewThreadsApi(),
         activityPromise,
       ]).then(([checksResult, arResult, thrResult, actResult]) => {
         if (cancelled) return;
@@ -807,7 +964,7 @@ export function PrDetailPane({
       cancelled = true;
       window.clearInterval(id);
     };
-  }, [activeTab, pr.id]);
+  }, [activeTab, fetchActionRuns, fetchActivity, fetchChecks, fetchReviewThreadsApi, pr.id]);
 
   React.useEffect(() => {
     if (!issueResolverCopyNotice) return;
@@ -854,7 +1011,7 @@ export function PrDetailPane({
       setCommentDraft("");
       activityFetchKeyRef.current = null;
       setActivity([]);
-      const activityPromise = window.ade.prs.getActivity(pr.id)
+      const activityPromise = fetchActivity()
         .then((events) => setActivity(events))
         .catch(() => undefined);
       await Promise.all([
@@ -1132,9 +1289,10 @@ export function PrDetailPane({
     return { state, currentRound: displayRound, maxRounds: c.maxRounds };
   }, []);
 
-  // Sync inventory and load pipeline settings on convergence tab open
+  // Sync inventory and load pipeline settings on convergence tab open.
+  // All of these resolve via a DB row, so skip entirely for unmapped PRs.
   React.useEffect(() => {
-    if (activeTab === "convergence") {
+    if (activeTab === "convergence" && pr.laneId) {
       const runId = ++convergenceTabLoadSeqRef.current;
       const capturedPrId = pr.id;
       void loadConvergenceState(capturedPrId, { force: true }).then((runtime) => {
@@ -1148,7 +1306,7 @@ export function PrDetailPane({
         pipelineSettingsRef.current = s;
       }).catch(() => undefined);
     }
-  }, [activeTab, applyConvergenceRuntime, loadConvergenceState, syncInventory, pr.id, pr.state]);
+  }, [activeTab, applyConvergenceRuntime, loadConvergenceState, syncInventory, pr.id, pr.laneId, pr.state]);
 
   // Auto-converge: hybrid polling (checks complete + comment stabilization)
   // After agent session completes, polls every 60s. Triggers next round when:
@@ -1194,7 +1352,7 @@ export function PrDetailPane({
     const sessionDetailPromise = typeof window.ade?.sessions?.get === "function"
       ? window.ade.sessions.get(sessionId).catch(() => null)
       : Promise.resolve(null);
-    const syncStatusPromise = typeof window.ade?.git?.getSyncStatus === "function"
+    const syncStatusPromise = pr.laneId && typeof window.ade?.git?.getSyncStatus === "function"
       ? window.ade.git.getSyncStatus({ laneId: pr.laneId }).catch(() => null)
       : Promise.resolve(null);
     const laneListPromise = typeof window.ade?.lanes?.list === "function"
@@ -2017,7 +2175,7 @@ export function PrDetailPane({
     overview: COLORS.accent,
     convergence: COLORS.accent,
     files: COLORS.info,
-    checks: COLORS.success,
+    checks: COLORS.checkPass,
   };
 
   const isTerminalPr = pr.state === "merged" || pr.state === "closed";
@@ -2032,19 +2190,40 @@ export function PrDetailPane({
     [convergenceChecks, actionRuns],
   );
 
+  const headerChecks = React.useMemo(() => buildUnifiedChecks(checks, actionRuns), [checks, actionRuns]);
+  const headerCi = React.useMemo(() => {
+    if (headerChecks.length === 0) return null;
+    let passing = 0;
+    let failing = 0;
+    let pending = 0;
+    for (const item of headerChecks) {
+      if (item.status !== "completed") pending += 1;
+      else if (item.conclusion === "success") passing += 1;
+      else if (item.conclusion === "neutral" || item.conclusion === "skipped") { /* neutral — not pass/fail */ }
+      else failing += 1;
+    }
+    if (failing > 0) {
+      return { color: COLORS.danger, label: `${failing} failed`, icon: <XCircle size={12} weight="fill" /> };
+    }
+    if (pending > 0) {
+      return { color: COLORS.info, label: `${pending} running`, icon: <CircleNotch size={12} className="animate-spin" /> };
+    }
+    return { color: COLORS.checkPass, label: `${passing}/${headerChecks.length} passed`, icon: <CheckCircle size={12} weight="fill" /> };
+  }, [headerChecks]);
+
   const DETAIL_TABS: Array<{ id: DetailTab; label: string; icon: React.ElementType; count?: number }> = [
     { id: "overview", label: "Overview", icon: Eye },
     { id: "convergence", label: "Path to Merge", icon: Sparkle, count: newIssueCount > 0 ? newIssueCount : undefined },
     { id: "files", label: "Files", icon: Code, count: files.length },
-    { id: "checks", label: "CI / Checks", icon: Play, count: buildUnifiedChecks(checks, actionRuns).length },
+    { id: "checks", label: "CI / Checks", icon: Play, count: headerChecks.length },
   ];
 
   const overviewRailsActive = activeTab === "overview";
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0, minWidth: 0, overflow: "hidden", background: COLORS.pageBg }}>
+    <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0, minWidth: 0, overflow: "hidden", background: COLORS.prSurface }}>
       {/* ===== HEADER ===== */}
-      <div style={{ padding: "18px 20px 0", borderBottom: `1px solid ${COLORS.border}`, flexShrink: 0, background: `linear-gradient(180deg, rgba(167,139,250,0.04) 0%, transparent 100%)` }}>
+      <div style={{ padding: "18px 20px 0", borderBottom: `1px solid ${COLORS.border}`, flexShrink: 0, background: COLORS.prSurface }}>
         {/* Title row */}
         <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12 }}>
           <div style={{ minWidth: 0, flex: 1 }}>
@@ -2074,14 +2253,19 @@ export function PrDetailPane({
                 <span style={{ fontSize: 18, fontWeight: 700, color: COLORS.textPrimary, fontFamily: SANS_FONT, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", letterSpacing: "-0.01em" }}>
                   {pr.title}
                 </span>
-                <button
-                  type="button"
-                  onClick={() => { setTitleDraft(pr.title); setEditingTitle(true); }}
-                  style={{ background: "none", border: "none", cursor: "pointer", padding: 2, color: COLORS.textMuted, flexShrink: 0, opacity: 0.6 }}
-                  title="Edit title"
-                >
-                  <PencilSimple size={14} />
-                </button>
+                <span style={{ flexShrink: 0 }}>
+                  <InlinePrBadge {...getPrStateBadge(pr.state)} />
+                </span>
+                {pr.laneId ? (
+                  <button
+                    type="button"
+                    onClick={() => { setTitleDraft(pr.title); setEditingTitle(true); }}
+                    style={{ background: "none", border: "none", cursor: "pointer", padding: 2, color: COLORS.textMuted, flexShrink: 0, opacity: 0.6 }}
+                    title="Edit title"
+                  >
+                    <PencilSimple size={14} />
+                  </button>
+                ) : null}
               </div>
             )}
             <div style={{ marginTop: 6, display: "flex", alignItems: "center", gap: 8 }}>
@@ -2096,6 +2280,25 @@ export function PrDetailPane({
                 <BranchIcon size={12} style={{ color: COLORS.info }} />
                 <span style={{ fontFamily: MONO_FONT, fontSize: 11, color: COLORS.info }}>{pr.baseBranch}</span>
               </span>
+              {headerCi ? (
+                <button
+                  type="button"
+                  onClick={() => setActiveTab("checks")}
+                  title="View CI / Checks"
+                  style={{
+                    display: "inline-flex", alignItems: "center", gap: 5,
+                    padding: "2px 8px", borderRadius: 6, cursor: "pointer",
+                    fontFamily: SANS_FONT, fontSize: 11, fontWeight: 500,
+                    color: headerCi.color,
+                    background: `color-mix(in srgb, ${headerCi.color} 12%, transparent)`,
+                    border: `1px solid color-mix(in srgb, ${headerCi.color} 28%, transparent)`,
+                  }}
+                  data-testid="pr-header-ci-badge"
+                >
+                  {headerCi.icon}
+                  {headerCi.label}
+                </button>
+              ) : null}
             </div>
           </div>
         </div>
@@ -2178,12 +2381,29 @@ export function PrDetailPane({
                 <LaneIcon size={14} /> Graph
               </button>
             ) : null}
-            <button type="button" onClick={() => void window.ade.prs.openInGitHub(pr.id)} style={outlineButton({ height: 30, padding: "0 10px" })}>
+            <button
+              type="button"
+              onClick={() => {
+                // Open the PR's GitHub URL directly. `openInGitHub(pr.id)`
+                // resolves via a DB row and would fail for unmapped PRs.
+                if (pr.githubUrl) {
+                  void window.ade.app.openExternal(pr.githubUrl);
+                } else {
+                  void window.ade.prs.openInGitHub(pr.id);
+                }
+              }}
+              style={outlineButton({ height: 30, padding: "0 10px" })}
+            >
               <GithubLogo size={14} /> GitHub
             </button>
           </div>
         </div>
       </div>
+
+      {/* ===== UNMAPPED PR AFFORDANCE ===== */}
+      {!pr.laneId && unmappedAffordance ? (
+        <UnmappedPrBanner affordance={unmappedAffordance} />
+      ) : null}
 
       {/* ===== ERROR BAR ===== */}
       {actionError && (
@@ -2240,8 +2460,11 @@ export function PrDetailPane({
             actionBusy={actionBusy}
             onAddComment={handleAddComment}
             deepLink={deepLinkState}
+            actionRuns={actionRuns}
             onSelectCheck={handleSelectCheckFromRail}
             onOpenChecksTab={handleOpenChecksTab}
+            onRerunChecks={pr.laneId ? handleRerunChecks : undefined}
+            onOpenFilesTab={() => setActiveTab("files")}
             mergeMethod={mergeMethod}
             showReviewerEditor={showReviewerEditor}
             setShowReviewerEditor={setShowReviewerEditor}
@@ -2254,12 +2477,12 @@ export function PrDetailPane({
             onMerge={handleMerge}
             onRequestReviewers={handleRequestReviewers}
             onSetLabels={handleSetLabels}
-            onDeleteBranch={handleDeleteBranch}
+            onDeleteBranch={pr.laneId ? handleDeleteBranch : undefined}
             deleteBranchBusy={actionBusy}
             lane={laneForPr}
             onOpenManageLane={handleOpenManageLane}
-            onClose={handleClosePr}
-            onReopen={handleReopenPr}
+            onClose={pr.laneId ? handleClosePr : undefined}
+            onReopen={pr.laneId ? handleReopenPr : undefined}
             onSubmitReview={handleSubmitReview}
           />
         )}
@@ -2364,7 +2587,7 @@ export function PrDetailPane({
           <ChecksTab
             checks={checks} actionRuns={actionRuns}
             actionBusy={actionBusy}
-            onRerunChecks={handleRerunChecks}
+            onRerunChecks={pr.laneId ? handleRerunChecks : undefined}
             showIssueResolverAction={issueResolutionAvailability.hasAnyActionableIssues}
             onOpenIssueResolver={handleOpenIssueResolver}
             focusedCheckId={focusedCheckId}
@@ -2522,7 +2745,7 @@ function ChecksTab({
   checks: PrCheck[];
   actionRuns: PrActionRun[];
   actionBusy: boolean;
-  onRerunChecks: () => void;
+  onRerunChecks?: () => void;
   showIssueResolverAction: boolean;
   onOpenIssueResolver: () => void;
   focusedCheckId?: string | null;
@@ -2554,15 +2777,19 @@ function ChecksTab({
       onFocusedCheckConsumed?.();
     });
 
-    const highlightTimer = window.setTimeout(() => {
-      setHighlightedCheckId((current) => (current === focusedCheckId ? null : current));
-    }, 2400);
-
     return () => {
       window.cancelAnimationFrame(frame);
-      window.clearTimeout(highlightTimer);
     };
   }, [focusedCheckId, onFocusedCheckConsumed, unifiedChecks]);
+
+  // Auto-clear the highlight ring on its own timer — keeping it here meant the
+  // focus effect's cleanup (fired when onFocusedCheckConsumed nulls focusedCheckId)
+  // cancelled the timer, leaving the ring stuck on.
+  React.useEffect(() => {
+    if (!highlightedCheckId) return;
+    const timer = window.setTimeout(() => setHighlightedCheckId(null), 2400);
+    return () => window.clearTimeout(timer);
+  }, [highlightedCheckId]);
 
   const passing = unifiedChecks.filter(c => c.conclusion === "success").length;
   const failing = unifiedChecks.filter(c => c.conclusion === "failure").length;
@@ -2604,9 +2831,11 @@ function ChecksTab({
                 <Sparkle size={14} weight="fill" /> Resolve issues with agent
               </button>
             )}
-            <button type="button" disabled={actionBusy} onClick={onRerunChecks} style={outlineButton({ height: 30, color: COLORS.warning, borderColor: "color-mix(in srgb, var(--color-warning) 40%, transparent)" })}>
-              <ArrowsClockwise size={14} /> Re-run Failed
-            </button>
+            {onRerunChecks ? (
+              <button type="button" disabled={actionBusy} onClick={onRerunChecks} style={outlineButton({ height: 30, color: COLORS.warning, borderColor: "color-mix(in srgb, var(--color-warning) 40%, transparent)" })}>
+                <ArrowsClockwise size={14} /> Re-run Failed
+              </button>
+            ) : null}
           </div>
         </div>
         {total > 0 && (

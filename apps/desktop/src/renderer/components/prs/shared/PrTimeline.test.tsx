@@ -68,6 +68,7 @@ import type {
 import {
   PrTimeline,
   applyTimelineFilters,
+  buildRenderItems,
   DEFAULT_PR_TIMELINE_FILTERS,
   type PrTimelineRef,
   type PrTimelineFilters,
@@ -257,6 +258,81 @@ describe("applyTimelineFilters", () => {
     };
     expect(applyTimelineFilters([opened], mineOnly, "alice").map((e) => e.id)).toEqual(["opened:pr-1"]);
     expect(applyTimelineFilters([opened], botsOnly, "alice").map((e) => e.id)).toEqual(["opened:pr-1"]);
+  });
+});
+
+function makeThread(id: string, isResolved: boolean): PrTimelineEvent {
+  return makeEvent({
+    id,
+    type: "review_thread",
+    threadId: id,
+    path: "a.ts",
+    line: 1,
+    startLine: null,
+    isResolved,
+    isOutdated: false,
+    commentCount: 1,
+    firstCommentBody: id,
+  });
+}
+
+describe("buildRenderItems", () => {
+  it("folds a run of 2+ consecutive resolved threads into one resolved-group", () => {
+    const items = buildRenderItems([
+      makeThread("r1", true),
+      makeThread("r2", true),
+      makeThread("r3", true),
+    ]);
+    expect(items).toHaveLength(1);
+    const group = items[0]!;
+    expect(group.kind).toBe("resolved-group");
+    if (group.kind !== "resolved-group") throw new Error("expected resolved-group");
+    expect(group.threads.map((t) => t.id)).toEqual(["r1", "r2", "r3"]);
+    // Group id is derived from the first folded thread so it stays stable.
+    expect(group.id).toBe("resolved-group:r1");
+  });
+
+  it("leaves a single resolved thread as a plain event (no fold)", () => {
+    const items = buildRenderItems([makeThread("solo", true)]);
+    expect(items).toHaveLength(1);
+    expect(items[0]!.kind).toBe("event");
+    expect(items[0]!.id).toBe("solo");
+  });
+
+  it("does not fold an unresolved thread sandwiched between resolved ones — it breaks the run", () => {
+    const items = buildRenderItems([
+      makeThread("r1", true),
+      makeThread("r2", true),
+      makeThread("open", false),
+      makeThread("r3", true),
+      makeThread("r4", true),
+    ]);
+    // Two folded groups around the unresolved event in the middle.
+    expect(items.map((i) => i.kind)).toEqual(["resolved-group", "event", "resolved-group"]);
+    expect(items[1]!.kind === "event" && items[1]!.event.id).toBe("open");
+    if (items[0]!.kind !== "resolved-group" || items[2]!.kind !== "resolved-group") {
+      throw new Error("expected resolved-group bookends");
+    }
+    expect(items[0]!.threads.map((t) => t.id)).toEqual(["r1", "r2"]);
+    expect(items[2]!.threads.map((t) => t.id)).toEqual(["r3", "r4"]);
+  });
+
+  it("flushes a trailing resolved run after a non-thread event", () => {
+    const items = buildRenderItems([
+      makeEvent({
+        type: "commit_push",
+        id: "c1",
+        sha: "a".repeat(40),
+        shortSha: "aaaaaaa",
+        subject: "commit",
+        commitCount: 1,
+        forcePushed: false,
+      }),
+      makeThread("r1", true),
+      makeThread("r2", true),
+    ]);
+    expect(items.map((i) => i.kind)).toEqual(["event", "resolved-group"]);
+    expect(items[0]!.id).toBe("c1");
   });
 });
 
@@ -473,6 +549,51 @@ describe("PrTimeline", () => {
     expect(banner.textContent).toContain("main");
     expect(banner.textContent).toContain("+240");
     expect(banner.textContent).toContain("-18");
+  });
+
+  it("collapses 2+ consecutive resolved threads into a foldable group instead of separate cards", () => {
+    render(
+      <PrTimeline
+        events={[makeThread("r1", true), makeThread("r2", true)]}
+        prId="pr-1"
+        laneId={null}
+        repoOwner="acme"
+        repoName="ade"
+        viewerLogin="alice"
+        filters={{ ...DEFAULT_PR_TIMELINE_FILTERS, showResolved: true }}
+        onFiltersChange={() => {}}
+      />,
+    );
+    const group = screen.getByTestId("pr-timeline-resolved-group");
+    expect(group.textContent).toContain("2 resolved conversations");
+    // Folded threads stay hidden until the group is expanded.
+    expect(screen.queryAllByTestId("review-thread-card")).toHaveLength(0);
+  });
+
+  it("focusing a folded thread expands its group so the thread renders (indexById maps to the group)", () => {
+    const ref = createRef<PrTimelineRef>();
+    render(
+      <PrTimeline
+        ref={ref}
+        events={[makeThread("r1", true), makeThread("r2", true)]}
+        prId="pr-1"
+        laneId={null}
+        repoOwner="acme"
+        repoName="ade"
+        viewerLogin="alice"
+        filters={{ ...DEFAULT_PR_TIMELINE_FILTERS, showResolved: true }}
+        onFiltersChange={() => {}}
+      />,
+    );
+    expect(screen.queryAllByTestId("review-thread-card")).toHaveLength(0);
+    // scrollToEventId/focusEvent must resolve a *folded* thread id via indexById;
+    // focusing it expands the containing group and reveals the cards.
+    act(() => ref.current!.focusEvent("r2"));
+    const ids = screen
+      .getAllByTestId("review-thread-card")
+      .map((c) => c.getAttribute("data-thread-id"));
+    expect(ids).toContain("r1");
+    expect(ids).toContain("r2");
   });
 
   it("renders commit pushes as compact dividers without unresolved floating chip", () => {

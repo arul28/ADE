@@ -57,6 +57,7 @@ import type {
   PrCommit,
   PrConflictAnalysis,
   PrCreationStrategy,
+  PrEventPayload,
   PrGroupMemberRole,
   PrHealth,
   PrLaneSummary,
@@ -90,6 +91,7 @@ import type {
   UpdateIntegrationProposalArgs,
   UpdatePrDescriptionArgs,
   AddPrCommentArgs,
+  UpdatePrCommentArgs,
   UpdatePrTitleArgs,
   UpdatePrBodyArgs,
   SetPrLabelsArgs,
@@ -105,6 +107,7 @@ import type {
   GitHubPrSnapshot,
   PrDetail,
   PrFile,
+  PrGithubCoords,
   PrReviewSnapshot,
   PrActionRun,
   PrActionJob,
@@ -282,6 +285,195 @@ function branchNameFromRef(ref: string): string {
   return branchNameFromLaneRef(ref);
 }
 
+/**
+ * Synthetic, stable id for an unmapped GitHub PR (no DB row). Used as the
+ * `PrDetail.prId` for coordinate-based fetches so the renderer can key per-PR
+ * state without a real row id. Mirrors the renderer's stable-id derivation.
+ */
+function syntheticGithubPrId(coords: PrGithubCoords): string {
+  return `gh:${coords.repoOwner}/${coords.repoName}#${coords.githubPrNumber}`;
+}
+
+/**
+ * Build the unified PR activity timeline from already-fetched comments,
+ * reviews, checks, and raw GitHub timeline entries. Pure — shared by both the
+ * row-based `getActivity` and the coordinate-based `getActivityByCoords`.
+ */
+function buildActivityEvents(
+  comments: PrComment[],
+  reviews: PrReview[],
+  checks: PrCheck[],
+  timelineEvents: any[],
+): PrActivityEvent[] {
+  const events: PrActivityEvent[] = [];
+  const seenIds = new Set<string>();
+
+  for (const c of comments) {
+    const id = `comment-${c.id}`;
+    seenIds.add(id);
+    events.push({
+      id,
+      type: "comment",
+      author: c.author,
+      avatarUrl: c.authorAvatarUrl || null,
+      body: c.body,
+      timestamp: c.createdAt || "",
+      metadata: { source: c.source, path: c.path, line: c.line, url: c.url }
+    });
+  }
+
+  for (const r of reviews) {
+    const id = `review-${r.reviewer}-${r.submittedAt || ""}`;
+    seenIds.add(id);
+    events.push({
+      id,
+      type: "review",
+      author: r.reviewer,
+      avatarUrl: r.reviewerAvatarUrl || null,
+      body: r.body,
+      timestamp: r.submittedAt || "",
+      metadata: { state: r.state }
+    });
+  }
+
+  for (const [i, ch] of checks.entries()) {
+    // Name alone isn't unique (re-runs / duplicate display names), and these ids
+    // double as React keys downstream — disambiguate with startedAt or the index.
+    const id = `ci-${ch.name}-${ch.startedAt ?? i}`;
+    seenIds.add(id);
+    events.push({
+      id,
+      type: "ci_run",
+      author: "github-actions",
+      avatarUrl: null,
+      body: `${ch.name}: ${ch.conclusion ?? ch.status}`,
+      timestamp: ch.startedAt || ch.completedAt || "",
+      metadata: {
+        status: ch.status,
+        conclusion: ch.conclusion,
+        detailsUrl: ch.detailsUrl
+      }
+    });
+  }
+
+  // Process GitHub timeline events for deployments, force-pushes, commits, etc.
+  for (const entry of timelineEvents) {
+    const eventType = asString(entry?.event);
+    const nodeId = asString(entry?.node_id || entry?.id);
+    if (!eventType || !nodeId) continue;
+
+    if (eventType === "deployed") {
+      const id = `deploy-${nodeId}`;
+      if (seenIds.has(id)) continue;
+      seenIds.add(id);
+      const env = asString(entry?.deployment?.environment)
+        || asString(entry?.deployment_environment)
+        || asString(entry?.environment);
+      const creator = asString(entry?.actor?.login)
+        || asString(entry?.performed_via_github_app?.name)
+        || asString(entry?.deployment?.creator?.login);
+      events.push({
+        id,
+        type: "deployment",
+        author: creator || "github-actions",
+        avatarUrl: asString(entry?.actor?.avatar_url) || asString(entry?.deployment?.creator?.avatar_url) || null,
+        body: env ? `Deployed to **${env}**` : "Deployed",
+        timestamp: asString(entry?.created_at) || asString(entry?.deployment?.created_at) || "",
+        metadata: {
+          environment: env,
+          url: asString(entry?.deployment?.url) || null,
+          statusesUrl: asString(entry?.deployment?.statuses_url) || null,
+        }
+      });
+    } else if (eventType === "head_ref_force_pushed") {
+      const id = `force-push-${nodeId}`;
+      if (seenIds.has(id)) continue;
+      seenIds.add(id);
+      const actor = asString(entry?.actor?.login);
+      const beforeSha = asString(entry?.before_commit_sha).slice(0, 7);
+      const afterSha = asString(entry?.after_commit_sha).slice(0, 7);
+      events.push({
+        id,
+        type: "force_push",
+        author: actor || "unknown",
+        avatarUrl: asString(entry?.actor?.avatar_url) || null,
+        body: beforeSha && afterSha
+          ? `Force-pushed branch from ${beforeSha} to ${afterSha}`
+          : "Force-pushed branch",
+        timestamp: asString(entry?.created_at) || "",
+        metadata: {
+          beforeSha: asString(entry?.before_commit_sha),
+          afterSha: asString(entry?.after_commit_sha),
+        }
+      });
+    } else if (eventType === "committed") {
+      const sha = asString(entry?.sha).slice(0, 7);
+      const id = `commit-${sha || nodeId}`;
+      if (seenIds.has(id)) continue;
+      seenIds.add(id);
+      events.push({
+        id,
+        type: "commit",
+        author: asString(entry?.author?.name || entry?.committer?.name) || "unknown",
+        avatarUrl: null,
+        body: asString(entry?.message?.split("\n")[0]),
+        timestamp: asString(entry?.author?.date || entry?.committer?.date) || "",
+        metadata: {
+          sha: asString(entry?.sha),
+          shortSha: sha,
+          url: asString(entry?.html_url),
+        }
+      });
+    } else if (eventType === "labeled" || eventType === "unlabeled") {
+      const id = `label-${nodeId}`;
+      if (seenIds.has(id)) continue;
+      seenIds.add(id);
+      const labelName = asString(entry?.label?.name);
+      events.push({
+        id,
+        type: "label",
+        author: asString(entry?.actor?.login) || "unknown",
+        avatarUrl: asString(entry?.actor?.avatar_url) || null,
+        body: `${eventType === "labeled" ? "Added" : "Removed"} label: ${labelName}`,
+        timestamp: asString(entry?.created_at) || "",
+        metadata: {
+          action: eventType,
+          label: labelName,
+          color: asString(entry?.label?.color),
+        }
+      });
+    } else if (eventType === "review_requested") {
+      const id = `review-req-${nodeId}`;
+      if (seenIds.has(id)) continue;
+      seenIds.add(id);
+      const reviewer = asString(entry?.requested_reviewer?.login);
+      events.push({
+        id,
+        type: "review_request",
+        author: asString(entry?.actor?.login) || "unknown",
+        avatarUrl: asString(entry?.actor?.avatar_url) || null,
+        body: reviewer ? `Requested review from ${reviewer}` : "Requested a review",
+        timestamp: asString(entry?.created_at) || "",
+        metadata: { reviewer }
+      });
+    }
+  }
+
+  // Sort descending by timestamp. Date.parse can return NaN for malformed
+  // timestamps, which would make the comparator non-deterministic — coerce
+  // non-finite values to 0 and fall back to a stable id tiebreak on ties.
+  events.sort((a, b) => {
+    const aTsRaw = a.timestamp ? Date.parse(a.timestamp) : 0;
+    const bTsRaw = b.timestamp ? Date.parse(b.timestamp) : 0;
+    const aTs = Number.isFinite(aTsRaw) ? aTsRaw : 0;
+    const bTs = Number.isFinite(bTsRaw) ? bTsRaw : 0;
+    if (aTs !== bTs) return bTs - aTs;
+    return a.id.localeCompare(b.id);
+  });
+
+  return events;
+}
+
 function normalizeGroupMemberRole(raw: string): PrGroupMemberRole {
   if (raw === "source" || raw === "integration" || raw === "target") return raw;
   return "source";
@@ -399,7 +591,7 @@ function formatPublishedFindingLocation(finding: ReviewFinding): string {
   return "general";
 }
 
-function buildPublishedReviewSummaryBody(args: {
+export function buildPublishedReviewSummaryBody(args: {
   targetLabel: string;
   summary: string | null;
   inlineFindings: ReviewFinding[];
@@ -964,6 +1156,10 @@ export function createPrService({
     checks_status, review_status, additions, deletions, last_synced_at,
     created_at, updated_at, creation_strategy, merge_conflicts, behind_base_by`;
   let agentChatService: ReturnType<typeof createAgentChatService> | null = null;
+  // Late-bound PR event emitter. main.ts constructs `emitPrEvent` after the PR
+  // service (the polling service needs the service first), so it is injected via
+  // `setEventEmitter`. Used to surface auto-map toasts to the renderer.
+  let emitPrEvent: ((event: PrEventPayload) => void) | null = null;
 
   const acquireLaneMutationLock = (args: {
     lane: LaneSummary;
@@ -1991,6 +2187,210 @@ export function createPrService({
       `,
       [projectId, args.repoOwner, args.repoName, Number(args.githubPrNumber), args.laneId],
     );
+  };
+
+  // ---------------------------------------------------------------------------
+  // Safe auto-mapping of GitHub PRs to ADE lanes by branch.
+  //
+  // A single shared guard helper used by BOTH triggers (lane created on a
+  // branch that already has an open PR, and a PR opened outside ADE on a branch
+  // that already has a lane). All guards are enforced here so the two code paths
+  // behave identically. Auto-map is strictly best-effort: any failure is logged
+  // and swallowed so it can never break lane creation or PR polling.
+  // ---------------------------------------------------------------------------
+
+  const autoMapByBranchEnabled = (): boolean => {
+    try {
+      // Default ON: only disabled when the project explicitly sets
+      // `github.autoMapByBranch = false`.
+      const configured = projectConfigService.getEffective()?.github?.autoMapByBranch;
+      return configured !== false;
+    } catch {
+      return true;
+    }
+  };
+
+  /**
+   * Normalized, candidate PR fields extracted from a raw GitHub pull payload.
+   * `null` when the PR cannot possibly auto-map (closed/merged, fork head, or
+   * missing branch/number).
+   */
+  type AutoMapPrCandidate = {
+    prNumber: number;
+    headBranch: string;
+    title: string;
+    githubUrl: string;
+  };
+
+  const autoMapCandidateFromRawPull = (rawPr: any, repo: GitHubRepoRef): AutoMapPrCandidate | null => {
+    // Guard #1: only open/draft PRs (never merged/closed).
+    if (rawPr?.merged_at) return null;
+    const state = asString(rawPr?.state).toLowerCase();
+    if (state && state !== "open") return null;
+
+    // Guard #2: same-repo head only (never a fork).
+    if (!rawPullHasSameRepoHead(rawPr, repo)) return null;
+
+    const headBranch = rawPullHeadBranch(rawPr);
+    if (!headBranch) return null;
+    const prNumber = asNumber(rawPr?.number);
+    if (!prNumber) return null;
+
+    return {
+      prNumber,
+      headBranch,
+      title: asString(rawPr?.title) || `PR #${prNumber}`,
+      githubUrl: asString(rawPr?.html_url)
+        || `https://github.com/${repo.owner}/${repo.name}/pull/${prNumber}`,
+    };
+  };
+
+  /**
+   * Core guard + link routine shared by both triggers. Returns the lane it
+   * linked to (for logging/toast) or null when any guard short-circuits.
+   *
+   * Guards #1 (state) and #2 (same-repo) are applied by the candidate builders
+   * before reaching here; #3-#6 are applied below.
+   */
+  const autoMapPrToLane = async (
+    candidate: AutoMapPrCandidate,
+    repo: GitHubRepoRef,
+    lanes: LaneSummary[],
+  ): Promise<LaneSummary | null> => {
+    if (!autoMapByBranchEnabled()) return null;
+
+    // Guard #5: PR not already mapped to any lane.
+    if (getRowForRepoPr(repo.owner, repo.name, candidate.prNumber)) return null;
+
+    // Guard #3: exactly one non-archived worktree lane whose head branch
+    // matches the PR head branch. Zero or >1 → do nothing.
+    const matches = lanes.filter((lane) =>
+      !lane.archivedAt
+      && normalizeBranchName(branchNameFromRef(lane.branchRef)) === candidate.headBranch,
+    );
+    if (matches.length !== 1) return null;
+    const lane = matches[0];
+
+    // Guard #4a: never the primary lane.
+    if (lane.laneType === "primary") return null;
+
+    // Guard #4b: lane not already mapped to a PR (its head-branch PR row).
+    if (getRowForLaneBranch(lane.id, candidate.headBranch)) return null;
+
+    // Guard #6: suppression — skip pairs the user previously unmapped. The
+    // unmap path (`deletePr` local-unmap) records the (repo, prNumber, laneId)
+    // tuple in `pr_auto_link_ignores`; a *different* PR number on the same
+    // branch later is not suppressed.
+    const ignored = listAutoLinkIgnores(repo);
+    if (ignored.has(autoLinkIgnoreKey({
+      owner: repo.owner,
+      repo: repo.name,
+      prNumber: candidate.prNumber,
+      laneId: lane.id,
+    }))) {
+      return null;
+    }
+
+    // Link through the canonical path so every existing side-effect fires
+    // (body footer, Linear cards, transcript gists, hot refresh). Use the
+    // returned summary's id for the toast so Undo always has a valid prId to
+    // unmap — re-querying the row could race and yield an empty prId, leaving
+    // the Undo action a silent no-op.
+    const linked = await linkToLane({ laneId: lane.id, prUrlOrNumber: String(candidate.prNumber) });
+
+    try {
+      emitPrEvent?.({
+        type: "pr-auto-linked",
+        timestamp: nowIso(),
+        prId: linked.id,
+        laneId: lane.id,
+        laneName: lane.name,
+        prNumber: candidate.prNumber,
+        prTitle: candidate.title,
+        repoOwner: repo.owner,
+        repoName: repo.name,
+        headBranch: candidate.headBranch,
+        githubUrl: candidate.githubUrl,
+      });
+    } catch (error) {
+      logger.warn("prs.auto_map_event_emit_failed", {
+        prNumber: candidate.prNumber,
+        laneId: lane.id,
+        error: getErrorMessage(error),
+      });
+    }
+
+    logger.info("prs.auto_mapped_by_branch", {
+      prNumber: candidate.prNumber,
+      laneId: lane.id,
+      headBranch: candidate.headBranch,
+    });
+    return lane;
+  };
+
+  /**
+   * Trigger #2 (PR refresh/discovery): given the raw pulls already loaded during
+   * a snapshot refresh, auto-map any eligible same-repo open/draft PR to its
+   * single matching lane. Cheap + idempotent: guards no-op once a pair is
+   * mapped or suppressed, so it is safe to run on every poll. Returns the count
+   * of newly auto-mapped PRs so callers can refresh derived metadata.
+   */
+  const autoMapRawPullsByBranch = async (
+    rawPulls: any[],
+    repo: GitHubRepoRef,
+    lanes: LaneSummary[],
+  ): Promise<number> => {
+    if (!autoMapByBranchEnabled()) return 0;
+    let mapped = 0;
+    for (const rawPr of rawPulls) {
+      const candidate = autoMapCandidateFromRawPull(rawPr, repo);
+      if (!candidate) continue;
+      try {
+        const lane = await autoMapPrToLane(candidate, repo, lanes);
+        if (lane) mapped += 1;
+      } catch (error) {
+        logger.warn("prs.auto_map_by_branch_failed", {
+          prNumber: candidate.prNumber,
+          headBranch: candidate.headBranch,
+          error: getErrorMessage(error),
+        });
+      }
+    }
+    return mapped;
+  };
+
+  /**
+   * Trigger #1 (lane created/branch-set): after a worktree lane is created on
+   * branch B, look up the project's open same-repo PRs and auto-map a single
+   * head==B match. Best-effort: never throws into lane creation.
+   */
+  const tryAutoMapLaneByBranch = async (laneId: string): Promise<void> => {
+    if (!autoMapByBranchEnabled()) return;
+    try {
+      const lanes = await laneService.list({ includeArchived: true, includeStatus: false });
+      const lane = lanes.find((entry) => entry.id === laneId) ?? null;
+      if (!lane || lane.archivedAt || lane.laneType === "primary") return;
+      const branch = normalizeBranchName(branchNameFromRef(lane.branchRef));
+      if (!branch) return;
+
+      const repo = await githubService.getRepoOrThrow();
+      const rawPulls = await fetchAllPages<any>({
+        path: `/repos/${repo.owner}/${repo.name}/pulls`,
+        query: {
+          state: "open",
+          head: `${repo.owner}:${branch}`,
+          sort: "updated",
+          direction: "desc",
+        },
+        maxPages: 1,
+      });
+      await autoMapRawPullsByBranch(rawPulls, repo, lanes);
+    } catch (error) {
+      logger.warn("prs.auto_map_lane_created_failed", {
+        laneId,
+        error: getErrorMessage(error),
+      });
+    }
   };
 
   const backfillLanePrRowsFromGithubPulls = (rawPulls: any[], repo: GitHubRepoRef, lanes: LaneSummary[]): number => {
@@ -3176,7 +3576,7 @@ export function createPrService({
           originalStartLine: Number.isFinite(Number(node?.originalStartLine)) ? Number(node?.originalStartLine) : null,
           diffSide: diffSideRaw === "LEFT" || diffSideRaw === "RIGHT" ? diffSideRaw : null,
           url: latestComment?.url ?? null,
-          createdAt: asString(node?.createdAt) || latestComment?.createdAt || null,
+          createdAt: asString(node?.createdAt) || comments[0]?.createdAt || latestComment?.createdAt || null,
           updatedAt: asString(node?.updatedAt) || latestComment?.updatedAt || null,
           comments,
         });
@@ -3435,11 +3835,9 @@ export function createPrService({
     };
   };
 
-  const getChecks = async (prId: string): Promise<PrCheck[]> => {
-    const row = getRow(prId);
-    if (!row) throw new Error(`PR not found: ${prId}`);
-    const repo: GitHubRepoRef = { owner: row.repo_owner, name: row.repo_name };
-    const pr = await fetchPr(repo, Number(row.github_pr_number));
+  const getChecksByCoords = async (coords: PrGithubCoords): Promise<PrCheck[]> => {
+    const repo: GitHubRepoRef = { owner: coords.repoOwner, name: coords.repoName };
+    const pr = await fetchPr(repo, Number(coords.githubPrNumber));
     const headSha = asString(pr?.head?.sha);
     if (!headSha) return [];
     const [combinedStatus, checkRuns] = await Promise.all([
@@ -3486,18 +3884,33 @@ export function createPrService({
     return out;
   };
 
+  /** Resolve a row into the GitHub coordinates the byCoords helpers consume. */
+  const coordsFromRow = (row: PullRequestRow): PrGithubCoords => ({
+    repoOwner: row.repo_owner,
+    repoName: row.repo_name,
+    githubPrNumber: Number(row.github_pr_number),
+  });
+
+  const getChecks = async (prId: string): Promise<PrCheck[]> => {
+    const row = getRow(prId);
+    if (!row) throw new Error(`PR not found: ${prId}`);
+    return await getChecksByCoords(coordsFromRow(row));
+  };
+
+  const getReviewsByCoords = async (coords: PrGithubCoords): Promise<PrReview[]> => {
+    const repo: GitHubRepoRef = { owner: coords.repoOwner, name: coords.repoName };
+    return await fetchReviews(repo, Number(coords.githubPrNumber));
+  };
+
   const getReviews = async (prId: string): Promise<PrReview[]> => {
     const row = getRow(prId);
     if (!row) throw new Error(`PR not found: ${prId}`);
-    const repo: GitHubRepoRef = { owner: row.repo_owner, name: row.repo_name };
-    return await fetchReviews(repo, Number(row.github_pr_number));
+    return await getReviewsByCoords(coordsFromRow(row));
   };
 
-  const getComments = async (prId: string): Promise<PrComment[]> => {
-    const row = getRow(prId);
-    if (!row) throw new Error(`PR not found: ${prId}`);
-    const repo: GitHubRepoRef = { owner: row.repo_owner, name: row.repo_name };
-    const prNumber = Number(row.github_pr_number);
+  const getCommentsByCoords = async (coords: PrGithubCoords): Promise<PrComment[]> => {
+    const repo: GitHubRepoRef = { owner: coords.repoOwner, name: coords.repoName };
+    const prNumber = Number(coords.githubPrNumber);
 
     const [issueComments, reviewComments] = await Promise.all([
       fetchIssueComments(repo, prNumber).catch(() => []),
@@ -3512,12 +3925,22 @@ export function createPrService({
     });
   };
 
-  const getDetailSnapshot = async (prId: string): Promise<PrDetail> => {
-    const row = requireRow(prId);
-    const repo = repoFromRow(row);
+  const getComments = async (prId: string): Promise<PrComment[]> => {
+    const row = getRow(prId);
+    if (!row) throw new Error(`PR not found: ${prId}`);
+    return await getCommentsByCoords(coordsFromRow(row));
+  };
+
+  /**
+   * Coordinate-based PR detail fetch. `prId` is the synthetic id the renderer
+   * uses to key the row in `PrDetail.prId` — it has no DB row. We never call
+   * `requireRow` here so unmapped PRs can load.
+   */
+  const getDetailSnapshotByCoords = async (coords: PrGithubCoords, prId: string): Promise<PrDetail> => {
+    const repo: GitHubRepoRef = { owner: coords.repoOwner, name: coords.repoName };
     const { data } = await githubService.apiRequest<any>({
       method: "GET",
-      path: `/repos/${repo.owner}/${repo.name}/pulls/${Number(row.github_pr_number)}`
+      path: `/repos/${repo.owner}/${repo.name}/pulls/${Number(coords.githubPrNumber)}`
     });
     return {
       prId,
@@ -3533,11 +3956,15 @@ export function createPrService({
     };
   };
 
-  const getFilesSnapshot = async (prId: string): Promise<PrFile[]> => {
+  const getDetailSnapshot = async (prId: string): Promise<PrDetail> => {
     const row = requireRow(prId);
-    const repo = repoFromRow(row);
+    return await getDetailSnapshotByCoords(coordsFromRow(row), prId);
+  };
+
+  const getFilesSnapshotByCoords = async (coords: PrGithubCoords): Promise<PrFile[]> => {
+    const repo: GitHubRepoRef = { owner: coords.repoOwner, name: coords.repoName };
     const data = await fetchAllPages<any>({
-      path: `/repos/${repo.owner}/${repo.name}/pulls/${Number(row.github_pr_number)}/files`
+      path: `/repos/${repo.owner}/${repo.name}/pulls/${Number(coords.githubPrNumber)}/files`
     });
     return data.map((f: any) => ({
       filename: asString(f?.filename) || "",
@@ -3547,6 +3974,11 @@ export function createPrService({
       patch: asString(f?.patch) || null,
       previousFilename: asString(f?.previous_filename) || null
     }));
+  };
+
+  const getFilesSnapshot = async (prId: string): Promise<PrFile[]> => {
+    const row = requireRow(prId);
+    return await getFilesSnapshotByCoords(coordsFromRow(row));
   };
 
   const getReviewSnapshot = async (prId: string): Promise<PrReviewSnapshot> => {
@@ -3713,11 +4145,11 @@ export function createPrService({
    */
   const COMMIT_CHECK_STATUS_BUDGET_MS = 8_000;
   const COMMIT_CHECK_STATUS_CONCURRENCY = 5;
-  const getCommitsSnapshot = async (prId: string): Promise<PrCommit[]> => {
-    const row = requireRow(prId);
-    const repo = repoFromRow(row);
+  const getCommitsSnapshotByCoords = async (coords: PrGithubCoords): Promise<PrCommit[]> => {
+    const repo: GitHubRepoRef = { owner: coords.repoOwner, name: coords.repoName };
+    const prId = String(coords.githubPrNumber);
     const list = await fetchAllPages<any>({
-      path: `/repos/${repo.owner}/${repo.name}/pulls/${Number(row.github_pr_number)}/commits`,
+      path: `/repos/${repo.owner}/${repo.name}/pulls/${Number(coords.githubPrNumber)}/commits`,
     });
     const capped = list.slice(-30);
     const baseCommits: PrCommit[] = capped.map((entry) => {
@@ -3769,6 +4201,92 @@ export function createPrService({
       ...commit,
       checkStatus: results[i] ?? "none",
     }));
+  };
+
+  const getCommitsSnapshot = async (prId: string): Promise<PrCommit[]> => {
+    const row = requireRow(prId);
+    return await getCommitsSnapshotByCoords(coordsFromRow(row));
+  };
+
+  const getActionRunsByCoords = async (coords: PrGithubCoords): Promise<PrActionRun[]> => {
+    const repo: GitHubRepoRef = { owner: coords.repoOwner, name: coords.repoName };
+    const pr = await fetchPr(repo, Number(coords.githubPrNumber));
+    const headSha = asString(pr?.head?.sha);
+    if (!headSha) return [];
+
+    const { data: runsData } = await githubService.apiRequest<any>({
+      method: "GET",
+      path: `/repos/${repo.owner}/${repo.name}/actions/runs`,
+      query: { head_sha: headSha, per_page: PR_ACTION_RUNS_LIMIT }
+    });
+    const rawRuns: any[] = Array.isArray(runsData?.workflow_runs)
+      ? runsData.workflow_runs.slice(0, PR_ACTION_RUNS_LIMIT)
+      : [];
+
+    const runs: PrActionRun[] = await Promise.all(
+      rawRuns.map(async (run: any, index): Promise<PrActionRun> => {
+        const runId = Number(run?.id);
+        let jobs: PrActionJob[] = [];
+        if (runId > 0 && index < PR_ACTION_RUN_JOBS_LIMIT) {
+          try {
+            const { data: jobsData } = await githubService.apiRequest<any>({
+              method: "GET",
+              path: `/repos/${repo.owner}/${repo.name}/actions/runs/${runId}/jobs`,
+              query: { per_page: 100 }
+            });
+            const rawJobs: any[] = Array.isArray(jobsData?.jobs) ? jobsData.jobs : [];
+            jobs = rawJobs.map((j: any): PrActionJob => ({
+              id: Number(j?.id) || 0,
+              name: asString(j?.name) || "",
+              status: toJobStatus(j?.status),
+              conclusion: toJobConclusion(j?.conclusion),
+              startedAt: asString(j?.started_at) || null,
+              completedAt: asString(j?.completed_at) || null,
+              steps: Array.isArray(j?.steps)
+                ? j.steps.map((st: any): PrActionStep => ({
+                    name: asString(st?.name) || "",
+                    status: toJobStatus(st?.status),
+                    conclusion: toJobConclusion(st?.conclusion),
+                    number: Number(st?.number) || 0,
+                    startedAt: asString(st?.started_at) || null,
+                    completedAt: asString(st?.completed_at) || null
+                  }))
+                : []
+            }));
+          } catch {
+            // Jobs fetch failed; return empty jobs array
+          }
+        }
+        return {
+          id: runId,
+          name: asString(run?.name) || "",
+          status: toRunStatus(run?.status),
+          conclusion: toRunConclusion(run?.conclusion),
+          headSha,
+          htmlUrl: asString(run?.html_url) || "",
+          createdAt: asString(run?.created_at) || "",
+          updatedAt: asString(run?.updated_at) || "",
+          jobs
+        };
+      })
+    );
+    return runs;
+  };
+
+  const getActivityByCoords = async (coords: PrGithubCoords): Promise<PrActivityEvent[]> => {
+    const repo: GitHubRepoRef = { owner: coords.repoOwner, name: coords.repoName };
+    const prNumber = Number(coords.githubPrNumber);
+
+    const [comments, reviews, checks, timelineEvents] = await Promise.all([
+      getCommentsByCoords(coords).catch(() => [] as PrComment[]),
+      getReviewsByCoords(coords).catch(() => [] as PrReview[]),
+      getChecksByCoords(coords).catch(() => [] as PrCheck[]),
+      fetchAllPages<any>({
+        path: `/repos/${repo.owner}/${repo.name}/issues/${prNumber}/timeline`
+      }).catch(() => [] as any[])
+    ]);
+
+    return buildActivityEvents(comments, reviews, checks, timelineEvents);
   };
 
   const refreshSnapshotData = async (prId: string): Promise<void> => {
@@ -6457,7 +6975,22 @@ export function createPrService({
       metadata.pullRequestRows,
       { skipBranchesWithLocalRows: options.includeExternalClosed !== true },
     );
-    if (backfillLanePrRowsFromGithubPulls(repoPullRequestsRaw, repo, metadata.lanes) > 0) {
+    // Trigger #2: strict same-repo branch auto-map (emits an Undo-able toast)
+    // runs first so the user-facing path takes precedence. Best-effort — never
+    // throws into snapshot building. The legacy backfill below then adopts any
+    // remaining rows the strict helper deliberately skipped.
+    const autoMappedCount = await autoMapRawPullsByBranch(repoPullRequestsRaw, repo, metadata.lanes)
+      .catch((error) => {
+        logger.warn("prs.auto_map_snapshot_failed", { error: getErrorMessage(error) });
+        return 0;
+      });
+    // The legacy backfill also maps PRs to lanes by branch, so it must honor the
+    // same opt-out as the strict auto-map above — otherwise merely opening/syncing
+    // the GitHub tab would map a PR the user chose not to auto-link.
+    const backfilled =
+      autoMapByBranchEnabled() &&
+      backfillLanePrRowsFromGithubPulls(repoPullRequestsRaw, repo, metadata.lanes) > 0;
+    if (autoMappedCount > 0 || backfilled) {
       metadata = await loadGithubSnapshotMetadata();
     }
     const repoPullRequests = repoPullRequestsRaw.map((rawPr) => toGitHubItem(rawPr, "repo"));
@@ -7704,6 +8237,22 @@ export function createPrService({
       agentChatService = svc;
     },
 
+    /**
+     * Late-bind the PR event emitter (main.ts builds it after the service so the
+     * polling service can be constructed). Enables auto-map toasts.
+     */
+    setEventEmitter(emit: (event: PrEventPayload) => void): void {
+      emitPrEvent = emit;
+    },
+
+    /**
+     * Trigger #1: best-effort auto-map of a freshly created worktree lane to a
+     * single matching open same-repo PR on its head branch. Never throws.
+     */
+    async tryAutoMapLaneByBranch(laneId: string): Promise<void> {
+      await tryAutoMapLaneByBranch(laneId);
+    },
+
     async refreshSnapshots(args: { prId?: string } = {}): Promise<{ refreshedCount: number }> {
       const rows = args.prId ? [requireRow(args.prId)] : listRows();
       for (const row of rows) {
@@ -7740,68 +8289,11 @@ export function createPrService({
 
     async getActionRuns(prId: string): Promise<PrActionRun[]> {
       const row = requireRow(prId);
-      const repo = repoFromRow(row);
-      const pr = await fetchPr(repo, Number(row.github_pr_number));
-      const headSha = asString(pr?.head?.sha);
-      if (!headSha) return [];
+      return await getActionRunsByCoords(coordsFromRow(row));
+    },
 
-      const { data: runsData } = await githubService.apiRequest<any>({
-        method: "GET",
-        path: `/repos/${repo.owner}/${repo.name}/actions/runs`,
-        query: { head_sha: headSha, per_page: PR_ACTION_RUNS_LIMIT }
-      });
-      const rawRuns: any[] = Array.isArray(runsData?.workflow_runs)
-        ? runsData.workflow_runs.slice(0, PR_ACTION_RUNS_LIMIT)
-        : [];
-
-      const runs: PrActionRun[] = await Promise.all(
-        rawRuns.map(async (run: any, index): Promise<PrActionRun> => {
-          const runId = Number(run?.id);
-          let jobs: PrActionJob[] = [];
-          if (runId > 0 && index < PR_ACTION_RUN_JOBS_LIMIT) {
-            try {
-              const { data: jobsData } = await githubService.apiRequest<any>({
-                method: "GET",
-                path: `/repos/${repo.owner}/${repo.name}/actions/runs/${runId}/jobs`,
-                query: { per_page: 100 }
-              });
-              const rawJobs: any[] = Array.isArray(jobsData?.jobs) ? jobsData.jobs : [];
-              jobs = rawJobs.map((j: any): PrActionJob => ({
-                id: Number(j?.id) || 0,
-                name: asString(j?.name) || "",
-                status: toJobStatus(j?.status),
-                conclusion: toJobConclusion(j?.conclusion),
-                startedAt: asString(j?.started_at) || null,
-                completedAt: asString(j?.completed_at) || null,
-                steps: Array.isArray(j?.steps)
-                  ? j.steps.map((st: any): PrActionStep => ({
-                      name: asString(st?.name) || "",
-                      status: toJobStatus(st?.status),
-                      conclusion: toJobConclusion(st?.conclusion),
-                      number: Number(st?.number) || 0,
-                      startedAt: asString(st?.started_at) || null,
-                      completedAt: asString(st?.completed_at) || null
-                    }))
-                  : []
-              }));
-            } catch {
-              // Jobs fetch failed; return empty jobs array
-            }
-          }
-          return {
-            id: runId,
-            name: asString(run?.name) || "",
-            status: toRunStatus(run?.status),
-            conclusion: toRunConclusion(run?.conclusion),
-            headSha,
-            htmlUrl: asString(run?.html_url) || "",
-            createdAt: asString(run?.created_at) || "",
-            updatedAt: asString(run?.updated_at) || "",
-            jobs
-          };
-        })
-      );
-      return runs;
+    async getActionRunsByGithub(coords: PrGithubCoords): Promise<PrActionRun[]> {
+      return await getActionRunsByCoords(coords);
     },
 
     async getActivity(prId: string): Promise<PrActivityEvent[]> {
@@ -7818,167 +8310,43 @@ export function createPrService({
         }).catch(() => [] as any[])
       ]);
 
-      const events: PrActivityEvent[] = [];
-      const seenIds = new Set<string>();
-
-      for (const c of comments) {
-        const id = `comment-${c.id}`;
-        seenIds.add(id);
-        events.push({
-          id,
-          type: "comment",
-          author: c.author,
-          avatarUrl: c.authorAvatarUrl || null,
-          body: c.body,
-          timestamp: c.createdAt || "",
-          metadata: { source: c.source, path: c.path, line: c.line, url: c.url }
-        });
-      }
-
-      for (const r of reviews) {
-        const id = `review-${r.reviewer}-${r.submittedAt || ""}`;
-        seenIds.add(id);
-        events.push({
-          id,
-          type: "review",
-          author: r.reviewer,
-          avatarUrl: r.reviewerAvatarUrl || null,
-          body: r.body,
-          timestamp: r.submittedAt || "",
-          metadata: { state: r.state }
-        });
-      }
-
-      for (const ch of checks) {
-        const id = `ci-${ch.name}`;
-        seenIds.add(id);
-        events.push({
-          id,
-          type: "ci_run",
-          author: "github-actions",
-          avatarUrl: null,
-          body: `${ch.name}: ${ch.conclusion ?? ch.status}`,
-          timestamp: ch.startedAt || ch.completedAt || "",
-          metadata: {
-            status: ch.status,
-            conclusion: ch.conclusion,
-            detailsUrl: ch.detailsUrl
-          }
-        });
-      }
-
-      // Process GitHub timeline events for deployments, force-pushes, commits, etc.
-      for (const entry of timelineEvents) {
-        const eventType = asString(entry?.event);
-        const nodeId = asString(entry?.node_id || entry?.id);
-        if (!eventType || !nodeId) continue;
-
-        if (eventType === "deployed") {
-          const id = `deploy-${nodeId}`;
-          if (seenIds.has(id)) continue;
-          seenIds.add(id);
-          const env = asString(entry?.deployment?.environment)
-            || asString(entry?.deployment_environment)
-            || asString(entry?.environment);
-          const creator = asString(entry?.actor?.login)
-            || asString(entry?.performed_via_github_app?.name)
-            || asString(entry?.deployment?.creator?.login);
-          events.push({
-            id,
-            type: "deployment",
-            author: creator || "github-actions",
-            avatarUrl: asString(entry?.actor?.avatar_url) || asString(entry?.deployment?.creator?.avatar_url) || null,
-            body: env ? `Deployed to **${env}**` : "Deployed",
-            timestamp: asString(entry?.created_at) || asString(entry?.deployment?.created_at) || "",
-            metadata: {
-              environment: env,
-              url: asString(entry?.deployment?.url) || null,
-              statusesUrl: asString(entry?.deployment?.statuses_url) || null,
-            }
-          });
-        } else if (eventType === "head_ref_force_pushed") {
-          const id = `force-push-${nodeId}`;
-          if (seenIds.has(id)) continue;
-          seenIds.add(id);
-          const actor = asString(entry?.actor?.login);
-          const beforeSha = asString(entry?.before_commit_sha).slice(0, 7);
-          const afterSha = asString(entry?.after_commit_sha).slice(0, 7);
-          events.push({
-            id,
-            type: "force_push",
-            author: actor || "unknown",
-            avatarUrl: asString(entry?.actor?.avatar_url) || null,
-            body: beforeSha && afterSha
-              ? `Force-pushed branch from ${beforeSha} to ${afterSha}`
-              : "Force-pushed branch",
-            timestamp: asString(entry?.created_at) || "",
-            metadata: {
-              beforeSha: asString(entry?.before_commit_sha),
-              afterSha: asString(entry?.after_commit_sha),
-            }
-          });
-        } else if (eventType === "committed") {
-          const sha = asString(entry?.sha).slice(0, 7);
-          const id = `commit-${sha || nodeId}`;
-          if (seenIds.has(id)) continue;
-          seenIds.add(id);
-          events.push({
-            id,
-            type: "commit",
-            author: asString(entry?.author?.name || entry?.committer?.name) || "unknown",
-            avatarUrl: null,
-            body: asString(entry?.message?.split("\n")[0]),
-            timestamp: asString(entry?.author?.date || entry?.committer?.date) || "",
-            metadata: {
-              sha: asString(entry?.sha),
-              shortSha: sha,
-              url: asString(entry?.html_url),
-            }
-          });
-        } else if (eventType === "labeled" || eventType === "unlabeled") {
-          const id = `label-${nodeId}`;
-          if (seenIds.has(id)) continue;
-          seenIds.add(id);
-          const labelName = asString(entry?.label?.name);
-          events.push({
-            id,
-            type: "label",
-            author: asString(entry?.actor?.login) || "unknown",
-            avatarUrl: asString(entry?.actor?.avatar_url) || null,
-            body: `${eventType === "labeled" ? "Added" : "Removed"} label: ${labelName}`,
-            timestamp: asString(entry?.created_at) || "",
-            metadata: {
-              action: eventType,
-              label: labelName,
-              color: asString(entry?.label?.color),
-            }
-          });
-        } else if (eventType === "review_requested") {
-          const id = `review-req-${nodeId}`;
-          if (seenIds.has(id)) continue;
-          seenIds.add(id);
-          const reviewer = asString(entry?.requested_reviewer?.login);
-          events.push({
-            id,
-            type: "review_request",
-            author: asString(entry?.actor?.login) || "unknown",
-            avatarUrl: asString(entry?.actor?.avatar_url) || null,
-            body: reviewer ? `Requested review from ${reviewer}` : "Requested a review",
-            timestamp: asString(entry?.created_at) || "",
-            metadata: { reviewer }
-          });
-        }
-      }
-
-      // Sort descending by timestamp
-      events.sort((a, b) => {
-        const aTs = a.timestamp ? Date.parse(a.timestamp) : 0;
-        const bTs = b.timestamp ? Date.parse(b.timestamp) : 0;
-        return bTs - aTs;
-      });
-
-      return events;
+      return buildActivityEvents(comments, reviews, checks, timelineEvents);
     },
+
+    async getActivityByGithub(coords: PrGithubCoords): Promise<PrActivityEvent[]> {
+      return await getActivityByCoords(coords);
+    },
+
+    async getDetailByGithub(coords: PrGithubCoords): Promise<PrDetail> {
+      const prId = syntheticGithubPrId(coords);
+      return await getDetailSnapshotByCoords(coords, prId);
+    },
+
+    async getFilesByGithub(coords: PrGithubCoords): Promise<PrFile[]> {
+      return await getFilesSnapshotByCoords(coords);
+    },
+
+    async getCommitsByGithub(coords: PrGithubCoords): Promise<PrCommit[]> {
+      return await getCommitsSnapshotByCoords(coords);
+    },
+
+    async getChecksByGithub(coords: PrGithubCoords): Promise<PrCheck[]> {
+      return await getChecksByCoords(coords);
+    },
+
+    async getReviewsByGithub(coords: PrGithubCoords): Promise<PrReview[]> {
+      return await getReviewsByCoords(coords);
+    },
+
+    async getCommentsByGithub(coords: PrGithubCoords): Promise<PrComment[]> {
+      return await getCommentsByCoords(coords);
+    },
+
+    async getReviewThreadsByGithub(coords: PrGithubCoords): Promise<PrReviewThread[]> {
+      const repo: GitHubRepoRef = { owner: coords.repoOwner, name: coords.repoName };
+      return await fetchReviewThreads(repo, Number(coords.githubPrNumber));
+    },
+
 
     async addComment(args: AddPrCommentArgs): Promise<PrComment> {
       const row = requireRow(args.prId);
@@ -7990,6 +8358,61 @@ export function createPrService({
       });
       const comment: PrComment = {
         id: String(data?.id ?? ""),
+        author: asString(data?.user?.login) || "",
+        authorAvatarUrl: asString(data?.user?.avatar_url) || null,
+        body: asString(data?.body) || null,
+        source: "issue",
+        url: asString(data?.html_url) || null,
+        path: null,
+        line: null,
+        createdAt: asString(data?.created_at) || null,
+        updatedAt: asString(data?.updated_at) || null
+      };
+      return comment;
+    },
+
+    /**
+     * Row-independent issue-comment edit by GitHub coordinates. Lets callers
+     * finalize a comment they posted even if the PR's local row was deleted
+     * (e.g. unmapped mid-review). In-process only — NOT IPC-exposed — so the
+     * authz scoping that `updateComment` performs against a live row does not
+     * apply; callers must supply coordinates for a comment they own.
+     */
+    async updateCommentByGithub(args: {
+      repoOwner: string;
+      repoName: string;
+      commentId: string;
+      body: string;
+    }): Promise<void> {
+      const commentId = Number(args.commentId);
+      if (!Number.isInteger(commentId) || commentId <= 0) throw new Error("Invalid comment id.");
+      await githubService.updateIssueComment(args.repoOwner, args.repoName, commentId, args.body);
+    },
+
+    async updateComment(args: UpdatePrCommentArgs): Promise<PrComment> {
+      const row = requireRow(args.prId);
+      const repo = repoFromRow(row);
+      // Validate the comment id and confirm it belongs to this PR before
+      // patching — `commentId` is caller-supplied, and GitHub's issue-comment
+      // PATCH endpoint is repo-scoped (any comment id in the repo would
+      // otherwise be editable).
+      const commentId = Number(args.commentId);
+      if (!Number.isInteger(commentId) || commentId <= 0) throw new Error("Invalid comment id.");
+      const { data: existing } = await githubService.apiRequest<any>({
+        method: "GET",
+        path: `/repos/${repo.owner}/${repo.name}/issues/comments/${commentId}`,
+      });
+      const issueUrl = asString(existing?.issue_url);
+      if (!issueUrl.endsWith(`/issues/${Number(row.github_pr_number)}`)) {
+        throw new Error("Comment does not belong to the target PR.");
+      }
+      const { data } = await githubService.apiRequest<any>({
+        method: "PATCH",
+        path: `/repos/${repo.owner}/${repo.name}/issues/comments/${commentId}`,
+        body: { body: args.body }
+      });
+      const comment: PrComment = {
+        id: String(data?.id ?? args.commentId),
         author: asString(data?.user?.login) || "",
         authorAvatarUrl: asString(data?.user?.avatar_url) || null,
         body: asString(data?.body) || null,
@@ -8362,12 +8785,25 @@ export function createPrService({
         summaryFindings,
       });
 
+      // The canonical top-level "## ADE review" summary is the edited issue
+      // comment posted/maintained by the review service (reviewService's
+      // underway comment). To avoid two competing top-level summaries on the PR,
+      // the published *review* carries the inline anchored findings only and a
+      // brief deferral note for its body. The full summaryBody is still persisted
+      // on the returned publication record for local history. Summary-only
+      // findings (which have no inline anchor) are appended here so they are not
+      // lost — they live in the top-level comment, but we keep a compact note in
+      // the review body too when there's no top-level comment to rely on.
+      const reviewBody = inlineComments.length > 0
+        ? "ADE review — see the top-level **## ADE review** comment for the full summary. Inline findings are attached below."
+        : summaryBody;
+
       try {
         const result = await submitReviewRequest(
           {
             prId: args.destination.prId,
             event: "COMMENT",
-            body: summaryBody,
+            body: reviewBody,
             comments: inlineComments.map((comment) => ({
               path: comment.path,
               position: comment.position,

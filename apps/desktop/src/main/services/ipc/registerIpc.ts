@@ -246,6 +246,7 @@ import type {
   PrCheck,
   PrCommit,
   PrComment,
+  PrGithubCoords,
   PrReviewThread,
   PrHealth,
   PrMergeContext,
@@ -9156,7 +9157,55 @@ export function registerIpc({
     const ctx = ensurePrReadContext();
     return ctx.prService.getActivity(args.prId);
   });
+  ipcMain.handle(IPC.prsGetDetailByGithub, (_e, coords: PrGithubCoords) => {
+    return ensurePrReadContext().prService.getDetailByGithub(coords);
+  });
+  ipcMain.handle(IPC.prsGetFilesByGithub, (_e, coords: PrGithubCoords) => {
+    return ensurePrReadContext().prService.getFilesByGithub(coords);
+  });
+  ipcMain.handle(IPC.prsGetCommitsByGithub, (_e, coords: PrGithubCoords): Promise<PrCommit[]> | PrCommit[] => {
+    return ensurePrReadContext().prService.getCommitsByGithub(coords);
+  });
+  ipcMain.handle(IPC.prsGetActionRunsByGithub, (_e, coords: PrGithubCoords) => {
+    return ensurePrReadContext().prService.getActionRunsByGithub(coords);
+  });
+  ipcMain.handle(IPC.prsGetActivityByGithub, (_e, coords: PrGithubCoords) => {
+    return ensurePrReadContext().prService.getActivityByGithub(coords);
+  });
+  ipcMain.handle(IPC.prsGetChecksByGithub, async (_e, coords: PrGithubCoords): Promise<PrCheck[]> => {
+    try {
+      return await ensurePrReadContext().prService.getChecksByGithub(coords);
+    } catch (err) {
+      if (err instanceof Error && err.message.includes("PR not found")) return [];
+      throw err;
+    }
+  });
+  ipcMain.handle(IPC.prsGetReviewsByGithub, async (_e, coords: PrGithubCoords): Promise<PrReview[]> => {
+    try {
+      return await ensurePrReadContext().prService.getReviewsByGithub(coords);
+    } catch (err) {
+      if (err instanceof Error && err.message.includes("PR not found")) return [];
+      throw err;
+    }
+  });
+  ipcMain.handle(IPC.prsGetCommentsByGithub, async (_e, coords: PrGithubCoords): Promise<PrComment[]> => {
+    try {
+      return await ensurePrReadContext().prService.getCommentsByGithub(coords);
+    } catch (err) {
+      if (err instanceof Error && err.message.includes("PR not found")) return [];
+      throw err;
+    }
+  });
+  ipcMain.handle(IPC.prsGetReviewThreadsByGithub, async (_e, coords: PrGithubCoords): Promise<PrReviewThread[]> => {
+    try {
+      return await ensurePrReadContext().prService.getReviewThreadsByGithub(coords);
+    } catch (err) {
+      if (err instanceof Error && err.message.includes("PR not found")) return [];
+      throw err;
+    }
+  });
   ipcMain.handle(IPC.prsAddComment, (_e, args) => ensurePrReadContext().prService.addComment(args));
+  ipcMain.handle(IPC.prsUpdateComment, (_e, args) => ensurePrReadContext().prService.updateComment(args));
   ipcMain.handle(IPC.prsReplyToReviewThread, (_e, args: ReplyToPrReviewThreadArgs) => ensurePrReadContext().prService.replyToReviewThread(args));
   ipcMain.handle(IPC.prsResolveReviewThread, (_e, args: ResolvePrReviewThreadArgs) => ensurePrReadContext().prService.resolveReviewThread(args));
   ipcMain.handle(IPC.prsUpdateTitle, (_e, args) => ensurePrReadContext().prService.updateTitle(args));

@@ -1,25 +1,35 @@
 import { memo, useCallback, type KeyboardEvent } from "react";
-import { PaperPlaneTilt } from "@phosphor-icons/react";
+import { LockSimple, PaperPlaneTilt } from "@phosphor-icons/react";
 
 import { ChatComposerShell } from "../../chat/ChatComposerShell";
+import { COLORS, SANS_FONT } from "../../lanes/laneDesignTokens";
 import { cn } from "../../ui/cn";
+import { PrMarkdownEditor } from "./PrMarkdownEditor";
 
 export type PrCommentComposerProps = {
   value: string;
   onChange: (value: string) => void;
   onSubmit: () => void;
+  repoOwner: string;
+  repoName: string;
   busy?: boolean;
   placeholder?: string;
+  /** When set, the composer is disabled and shows this message instead (e.g. unmapped PRs). */
+  lockedMessage?: string;
 };
 
 export const PrCommentComposer = memo(function PrCommentComposer({
   value,
   onChange,
   onSubmit,
+  repoOwner,
+  repoName,
   busy = false,
   placeholder = "Leave a comment…",
+  lockedMessage,
 }: PrCommentComposerProps) {
-  const canSubmit = !busy && value.trim().length > 0;
+  const locked = Boolean(lockedMessage);
+  const canSubmit = !busy && !locked && value.trim().length > 0;
 
   const handleKeyDown = useCallback(
     (event: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -40,38 +50,50 @@ export const PrCommentComposer = memo(function PrCommentComposer({
           "linear-gradient(180deg, transparent 0%, color-mix(in srgb, var(--color-bg) 72%, transparent) 26%, var(--color-bg) 100%)",
       }}
     >
-      <ChatComposerShell mode="standard" className="rounded-[18px]">
-        <div className="flex items-end gap-2 px-3 py-2.5">
-          <textarea
+      <ChatComposerShell mode="standard" className="overflow-hidden rounded-[18px]">
+        <div className="flex flex-col">
+          <PrMarkdownEditor
             value={value}
-            onChange={(event) => onChange(event.target.value)}
-            onKeyDown={handleKeyDown}
+            onChange={onChange}
+            repoOwner={repoOwner}
+            repoName={repoName}
             placeholder={placeholder}
-            rows={1}
-            disabled={busy}
-            aria-label="PR comment"
-            className={cn(
-              "block max-h-32 min-h-[2.5rem] w-full flex-1 resize-none bg-transparent py-1 font-sans text-[13px] leading-[1.55] text-fg/88 outline-none placeholder:text-muted-fg/35",
-              busy ? "cursor-not-allowed opacity-60" : "",
-            )}
+            disabled={busy || locked}
+            minHeight={60}
+            maxHeight={220}
+            ariaLabel="PR comment"
+            onKeyDown={handleKeyDown}
           />
-          <button
-            type="button"
-            disabled={!canSubmit}
-            onClick={() => {
-              if (!canSubmit) return;
-              onSubmit();
-            }}
-            aria-label="Post comment"
-            className={cn(
-              "inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border transition-all",
-              canSubmit
-                ? "border-accent/30 bg-accent/12 text-accent hover:border-accent/45 hover:bg-accent/18 active:scale-[0.97]"
-                : "border-white/[0.04] bg-white/[0.02] text-muted-fg/20",
-            )}
+          <div
+            className="flex items-center justify-between gap-2 px-3 py-2"
+            style={{ borderTop: `1px solid ${COLORS.border}` }}
           >
-            <PaperPlaneTilt size={14} weight="fill" />
-          </button>
+            <span
+              className="inline-flex items-center gap-1.5 text-[11px]"
+              style={{ color: COLORS.textDim, fontFamily: SANS_FONT }}
+            >
+              {locked ? <LockSimple size={11} /> : null}
+              {locked ? lockedMessage : "Markdown supported · ⏎ to send"}
+            </span>
+            <button
+              type="button"
+              disabled={!canSubmit}
+              onClick={() => {
+                if (!canSubmit) return;
+                onSubmit();
+              }}
+              aria-label="Post comment"
+              className={cn(
+                "inline-flex h-8 items-center gap-1.5 rounded-lg border px-3 text-[12px] font-medium transition-all",
+                canSubmit
+                  ? "border-accent/30 bg-accent/12 text-accent hover:border-accent/45 hover:bg-accent/18 active:scale-[0.97]"
+                  : "cursor-not-allowed border-white/[0.04] bg-white/[0.02] text-muted-fg/20",
+              )}
+            >
+              <PaperPlaneTilt size={13} weight="fill" />
+              Comment
+            </button>
+          </div>
         </div>
       </ChatComposerShell>
     </div>
