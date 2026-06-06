@@ -63,6 +63,11 @@ ios-signing/
 /apps/desktop/.ade
 /.ade/shipLane/
 /.ade/logs/
+
+# Root AI hand-off specs (orchestrator/agent hand-offs, not read at runtime)
+/goal.md
+/codexGoal.md
+/*-next-agent-prompt.md
 /.playwright-mcp
 /.codex-derived-data
 package-lock.json

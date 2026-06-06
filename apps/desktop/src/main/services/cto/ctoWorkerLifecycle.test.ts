@@ -1069,8 +1069,8 @@ describe("workerAdapterRuntimeService (file group)", () => {
         timeoutMs: 300000,
       });
       const firstCall = runSessionTurn.mock.calls[0] as unknown as [{ text: string }] | undefined;
-      expect(firstCall?.[0]?.text).toContain("## ADE CLI");
-      expect(firstCall?.[0]?.text).toContain("only normal reason to skip ADE CLI");
+      expect(firstCall?.[0]?.text).toContain("## ADE");
+      expect(firstCall?.[0]?.text).toContain("control plane for ADE state");
       expect(result.effectiveSurface).toBe("unified_chat");
       expect(result.continuation).toMatchObject({
         surface: "unified_chat",

@@ -6,6 +6,7 @@ import * as nodePty from "node-pty";
 import { createFileLogger, type Logger } from "../../desktop/src/main/services/logging/logger";
 import { openKvDb, type AdeDb } from "../../desktop/src/main/services/state/kvDb";
 import { detectDefaultBaseRef, toProjectInfo, upsertProjectRow } from "../../desktop/src/main/services/projects/projectService";
+import { reseedAdeSkills } from "../../desktop/src/main/services/skills/skillReseedService";
 import {
   createAdeProjectService,
   initializeOrRepairAdeProject,
@@ -378,7 +379,28 @@ function inferAgentSkillsRootForCliEntry(cliEntry: string | null): string | null
   return null;
 }
 
+let adeSkillsReseededForCli = false;
+
+/**
+ * Materialize ADE's bundled `ade-*` skills into the home-level skill dirs every
+ * runtime natively discovers, so agents ADE spawns pick them up via the runtime's
+ * own progressive disclosure. Cheap no-op once on-disk copies are current;
+ * best-effort so an unwritable home dir never blocks the CLI.
+ */
+export function reseedBundledAdeSkillsForCli(): void {
+  if (adeSkillsReseededForCli) return;
+  if (process.env.ADE_DISABLE_SKILL_RESEED === "1" || process.env.VITEST) return;
+  adeSkillsReseededForCli = true;
+  try {
+    const bundledRoot = inferAgentSkillsRootForCliEntry(resolveCurrentAdeCliEntry());
+    if (bundledRoot) reseedAdeSkills({ bundledRoot });
+  } catch {
+    /* best-effort: skill re-seeding must never break agent launch */
+  }
+}
+
 function createHeadlessAdeCliAgentEnv(baseEnv: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  reseedBundledAdeSkillsForCli();
   const next: NodeJS.ProcessEnv = { ...baseEnv };
   const nextPath = augmentProcessPathWithShellAndKnownCliDirs({
     env: next,

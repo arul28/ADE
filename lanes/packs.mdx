@@ -1,156 +1,48 @@
 ---
-title: "Lane Packs"
-description: "Lane Packs are auto-generated, versioned context bundles that travel with each lane — giving every agent session instant orientation on the lane's intent, touched files, and current state."
+title: "Lane Context"
+description: "How ADE scopes context to a lane — lane and session state plus selected artifacts — while agents inspect the repository directly for product and architecture knowledge."
 icon: "cube"
 ---
 
-## What is a Lane Pack?
+## How lane context works
 
-A Lane Pack is a structured lane briefing, versioned on each commit, that captures the lane's intent, touched files, and recent checkpoints.
+ADE keeps the context it injects local to the work being done. When an agent starts in a lane, it receives:
 
----
+- **Lane and session state** — the lane's branch, base, intent (as you have set it), and the current session's metadata.
+- **Selected artifacts** — any artifacts you have attached to the session, plus worker run details when the session belongs to a worker run.
+- **Explicit instructions** — the prompt you send and any standing instructions for the lane.
 
-## What is in a Lane Pack?
-
-| Section | Description |
-|---------|-------------|
-| **Intent** | The stated goal of this lane. ADE generates an initial version from the branch name and early commits. You can edit this to be more specific. |
-| **Coding Criteria** | Acceptance criteria and constraints the agent should respect — definition of done, style requirements, testing expectations. |
-| **Touched Files** | Every file modified since the lane branched from its base. Agents use this to scope their work and avoid modifying unrelated files. |
-| **Recent Checkpoints** | The last N session boundaries with their commit SHAs, diffs, and outcomes. This tells the agent what was already done and whether it succeeded. |
-| **Current Diff Summary** | A narrative description of what has changed and why, derived from the actual diff. More useful than a raw diff for agent orientation. |
-| **Active Conflicts** | If this lane has merge conflicts with other lanes, the conflict summary is included so the agent knows about unresolved issues. |
-
-### Example Pack (Simplified)
-
-```markdown
-<!-- ade:pack type=lane id=lane-abc123 generated=2026-04-01T14:30:00Z version=5 -->
-
-<!-- section: intent -->
-Add a refresh token endpoint to the auth service and update the existing
-login flow to return both access and refresh tokens.
-
-<!-- section: criteria -->
-- All existing auth tests must pass
-- New refresh token endpoint needs integration tests
-- No changes to the public API surface of existing endpoints
-
-<!-- section: touched-files -->
-- src/auth/refreshToken.ts (created)
-- src/auth/refreshToken.test.ts (created)
-- src/api/routes/auth.ts (modified)
-- src/api/middleware/tokenValidator.ts (modified)
-
-<!-- section: diff-summary -->
-Added `refreshToken()` function implementing JWT refresh with rotation.
-Extended the `/auth/login` response to include a refresh token. Updated
-tokenValidator middleware to accept both access and refresh tokens.
-```
-
----
-
-## Pack Freshness
-
-ADE regenerates the Lane Pack automatically after each committed checkpoint. The freshness system ensures agents always have accurate context.
-
-### How freshness works
-
-| Indicator | Meaning |
-|-----------|---------|
-| **Green** | Pack was regenerated after the most recent commit. Fully fresh. |
-| **Amber** | Pack is one or more sessions stale — commits have happened since the last regeneration. Agents injected with this pack may have outdated context. |
-| **Red** | Pack generation failed or the pack is missing. Agent sessions will start without lane-specific context. |
-
-### Triggering a refresh
-
-Lane Packs refresh automatically on commit. You can also trigger a manual refresh:
-
-- **Packs sub-tab** — click the **Regenerate** button in the right inspector's Packs sub-tab
-- **Agent request** — ask the agent: *"Regenerate the lane pack"* (the agent calls the pack refresh ADE CLI tool)
-
-<Tip>
-If the freshness indicator turns amber, regenerate the pack before starting a new agent session. Agents with stale packs may repeat work that was already done or miss recent changes.
-</Tip>
-
----
-
-## Context Injection
-
-When an agent starts in a lane, ADE prepends the Lane Pack as a system context block before the agent's first prompt. This happens automatically — you do not need to copy-paste context or tell the agent what to do.
-
-The injection order follows a priority stack:
-
-1. **Lane Pack** (highest priority) — the specific work context for this lane
-2. **Feature Pack** (if the lane is linked to a Linear issue) — cross-lane awareness and original requirements
-3. **Project Pack** (base layer) — project-wide architecture, conventions, and risk signals
-4. **Conflict Pack** (if active conflicts exist) — both sides of any unresolved merge conflicts
-
-More specific context always takes precedence. If the Lane Pack and Project Pack contain conflicting guidance (e.g., the project convention is tabs but this lane is converting to spaces), the Lane Pack wins.
+ADE does **not** auto-generate or auto-inject PRD, architecture, or "project context" summaries. When an agent needs product or architecture knowledge, it inspects the repository directly — reading the actual files, history, and configuration — rather than relying on a generated summary that can drift out of date.
 
 <Note>
-The context stack is assembled at session start and does not update mid-session. If the Lane Pack is refreshed while a session is running, the agent continues with the version from session start. Start a new session to pick up a refreshed pack.
+This is a deliberate design choice. Generated summaries go stale the moment the code changes; direct repo inspection is always current. ADE injects the minimum lane/session context an agent needs to orient, and trusts the agent to read the repo for everything else.
 </Note>
 
 ---
 
-## Editing the Intent
+## Editing the lane intent
 
-The intent section tells agents what this lane exists to accomplish. ADE generates an initial intent from the branch name and early commits, but refine it to be specific.
+The lane intent is a short statement of what the lane exists to accomplish. ADE derives an initial intent from the branch name and early commits; refine it to be specific — a precise intent meaningfully improves agent behavior.
 
 Weak: `Fix auth`
 
 Strong: `Add a refresh token endpoint (POST /auth/refresh) that validates, rotates, and returns a new access/refresh token pair. The login endpoint must also return a refresh token.`
 
-Edit the intent in the right inspector's Packs sub-tab. Changes take effect on the next regeneration.
+Edit the intent in the right inspector. The intent is also used to pre-fill PR titles and descriptions.
 
 ---
 
-## Pack Storage
+## Audit and replay artifacts
 
-Lane Packs are stored as Markdown files in your project's `.ade` directory:
+ADE stores a small set of compatibility artifacts under `.ade/artifacts/packs/` for audit and replay. These are records of what happened — not context that is prepended to agent prompts:
 
-```
-.ade/
-  artifacts/
-    packs/
-      lanes/
-        <lane-id>/
-          current.md        ← the latest pack
-          history/
-            <timestamp>.md  ← previous versions
-```
+| Artifact | Purpose |
+|----------|---------|
+| **Conflict Pack** | Resolution context created when a conflict is detected between two lanes — the conflicting file regions, each lane's intent, and suggested resolution strategies. Provided to the resolver agent. |
+| **Plan Pack** | A versioned coding plan generated during a Worker run's Planning phase — the goal, steps, assumptions, risks, and executor assignments. |
+| **Worker run Pack** | A deterministic snapshot of a worker run at a point in time — plan, completed steps, artifacts, interventions, and cost — used for resume, audit, and replay. |
 
-Pack files are plain Markdown with stable section markers. You can read them in any text editor, diff them across versions, or use them outside ADE. History files are retained for 30 days by default (configurable in **Settings > Context > Pack History Retention**).
-
----
-
-## Packs and Stacked Lanes
-
-In a stacked lane setup, each lane has its own Lane Pack. Child lanes inherit awareness of the parent lane's intent through the stack topology — but each pack is independently generated from that lane's specific diff and state.
-
-This means an agent working in a child lane knows:
-- What the child lane is specifically doing (from its own Lane Pack)
-- What the parent lane is doing (from the stack context included in the pack)
-- The full project context (from the Project Pack)
-
----
-
-## Troubleshooting
-
-<AccordionGroup>
-  <Accordion title="Pack shows amber freshness but I just committed" icon="clock">
-    Pack regeneration runs asynchronously after a commit. Wait a few seconds, then check again. If it stays amber, trigger a manual refresh from the Packs sub-tab.
-  </Accordion>
-  <Accordion title="Agent is ignoring the lane context" icon="robot">
-    Verify the pack exists and is fresh in the Packs sub-tab. If the pack is empty or missing, the agent may have started without lane-specific context. Regenerate the pack and start a new session.
-  </Accordion>
-  <Accordion title="Intent does not match what I am doing" icon="pen">
-    ADE infers the intent from branch names and commits, which may not capture your actual goal. Edit the intent manually in the Packs sub-tab — a precise intent significantly improves agent behavior.
-  </Accordion>
-  <Accordion title="Pack generation failed" icon="circle-exclamation">
-    Check ADE's developer logs (**Settings > Developer > Log file**). Pack generation requires access to the lane's worktree and git history. If the worktree is in a broken state (e.g., mid-rebase), resolve the git state first, then regenerate.
-  </Accordion>
-</AccordionGroup>
+These files are plain Markdown / JSON. You can read them in any editor, diff them across versions, or use them outside ADE.
 
 ---
 

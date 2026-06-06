@@ -7,7 +7,7 @@ icon: "lightbulb"
 <CardGroup cols={3}>
   <Card title="Lane" icon="code-branch" href="#lane">Isolated worktree + environment.</Card>
   <Card title="Stack" icon="layer-group" href="#stack">Chained lanes for stacked PRs.</Card>
-  <Card title="Pack" icon="box" href="#pack">Durable agent context bundle.</Card>
+  <Card title="Pack" icon="box" href="#runtime-context">Audit/replay artifact under `.ade/artifacts/packs/`.</Card>
   <Card title="Checkpoint" icon="bookmark" href="#checkpoint">Immutable execution snapshot.</Card>
   <Card title="Session" icon="rectangle-terminal" href="#session">Terminal session with metadata.</Card>
   <Card title="CTO" icon="robot" href="#cto">Always-on orchestrator agent.</Card>
@@ -252,7 +252,7 @@ When an AI agent is running inside ADE (whether via Claude CLI, Codex CLI, or th
     Spawn a new Claude CLI or Codex CLI session in a lane, with a prompt and a budget limit. This is how the CTO delegates work to workers.
   </Accordion>
   <Accordion title="Pack management" icon="box">
-    Read, write, and refresh context packs. Agents can update their own lane pack with new context they have discovered.
+    Read and write the audit/replay packs under `.ade/artifacts/packs/` (Conflict Pack, Plan Pack, Worker run Pack). These are records of work for audit and replay — they are not prepended to agent prompts.
   </Accordion>
   <Accordion title="Worker run management" icon="bullseye">
     Create worker runs, update step status, add artifacts, create interventions, and report progress back to the Worker run coordinator.
@@ -271,7 +271,7 @@ Sessions are authenticated by role: `orchestrator`, `agent`, `external`, or `eva
 The **Job Engine** is ADE's background task scheduler that handles work that should happen automatically, without user interaction.
 
 Current job types:
-- **Lane pack refresh** — triggered when a lane's files change significantly, to keep the lane's context pack current
+- **Conflict pack refresh** — regenerates the audit Conflict Pack for a lane pair when their overlapping changes shift, so resolver context stays accurate
 - **Conflict prediction** — periodically runs merge simulations between all active lane pairs to surface potential conflicts early
 - **Rebase suggestion generation** — detects when upstream branches have moved and generates rebase suggestions for downstream lanes
 - **Automation execution** — receives trigger events and executes the appropriate automation rules
@@ -363,7 +363,6 @@ Project
 ├── Primary Lane
 ├── Worktree Lanes (1..n)
 │   ├── Sessions (terminal + agent)
-│   ├── Pack (context bundle)
 │   ├── Checkpoints (immutable snapshots)
 │   └── Conflicts ↔ other lanes
 │
@@ -386,7 +385,7 @@ Project
 │
 └── Job Engine
     ├── Conflict prediction
-    ├── Pack refresh
+    ├── Conflict pack refresh
     └── Automation execution
 ```
 
@@ -402,7 +401,7 @@ Project
 | **Worktree Lane** | A lane backed by `git worktree add`, managed by ADE under `.ade/worktrees/`. |
 | **Attached Lane** | An externally created worktree imported into ADE for tracking. |
 | **Stack** | A chain of lanes in a stacked PR topology. |
-| **Pack** | A durable context bundle injected into agent prompts. |
+| **Pack** | An audit/replay artifact stored under `.ade/artifacts/packs/` (Conflict Pack, Plan Pack, Worker run Pack). Records work for audit and replay; not injected into agent prompts. |
 | **Checkpoint** | An immutable snapshot of lane state at a session or commit boundary. |
 | **Session** | A PTY terminal session with metadata, transcript, and delta tracking. |
 | **CTO** | Always-on project-aware AI agent at the top of the agent org chart. |
@@ -412,7 +411,7 @@ Project
 | **Automation execution surface** | `agent-session`, `worker run`, or `built-in-task`; each determines where results are stored and how much workflow structure is available. |
 | **Intervention** | A worker run pause point requiring human input to continue. |
 | **ADE CLI** | The native action surface for agents — a local `ade` binary plus a JSON-RPC 2.0 server exposed by the desktop app at `.ade/ade.sock`. |
-| **Job Engine** | ADE's background scheduler for pack refresh, conflict prediction, and automation execution. |
+| **Job Engine** | ADE's background scheduler for conflict prediction, conflict pack refresh, and automation execution. |
 | **PR Convergence** | ADE's automated loop for resolving PR issues (review comments, CI failures) through AI-driven rounds until the PR is ready to merge. |
 | **Path to Merge** | The dedicated convergence workspace tab inside each PR detail view. |
 | **Conflict** | A predicted or actual merge conflict between two lanes. |
