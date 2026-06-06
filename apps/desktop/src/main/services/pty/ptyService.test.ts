@@ -312,6 +312,7 @@ function createHarness(overrides: {
     get: vi.fn((id: string) => sessionStore.get(id) ?? null),
     setSummary: vi.fn(),
     setLastOutputPreview: vi.fn(),
+    touchSessionActivity: vi.fn(),
     setResumeCommand: vi.fn((sessionId: string, resumeCommand: string | null) => {
       const session = sessionStore.get(sessionId);
       if (!session) return;

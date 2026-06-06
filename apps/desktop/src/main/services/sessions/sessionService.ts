@@ -1002,6 +1002,19 @@ export function createSessionService({ db }: { db: AdeDb }) {
       );
     },
 
+    /**
+     * Refresh only the activity timestamp (not the preview text). Lets the PTY
+     * layer record that a session is still producing output even when the
+     * derived preview line is blank or unchanged (spinners, repeated status
+     * lines), so the stale-session detector does not treat live work as idle.
+     */
+    touchSessionActivity(sessionId: string, at: string = new Date().toISOString()): void {
+      db.run(
+        "update terminal_sessions set last_output_at = ? where id = ?",
+        [at, sessionId]
+      );
+    },
+
     setSummary(sessionId: string, summary: string | null): void {
       db.run("update terminal_sessions set summary = ? where id = ?", [summary, sessionId]);
     },
