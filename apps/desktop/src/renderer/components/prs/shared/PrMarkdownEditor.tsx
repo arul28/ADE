@@ -16,7 +16,7 @@ import { PrMarkdown } from "./PrMarkdown";
 
 type EditorMode = "write" | "preview";
 
-type ToolbarAction =
+export type ToolbarAction =
   | "bold"
   | "italic"
   | "code"
@@ -43,10 +43,10 @@ export type PrMarkdownEditorProps = {
   onKeyDown?: (event: KeyboardEvent<HTMLTextAreaElement>) => void;
 };
 
-type Applied = { value: string; selStart: number; selEnd: number };
+export type Applied = { value: string; selStart: number; selEnd: number };
 
 /** Apply a markdown transform around the current textarea selection. */
-function applyAction(textarea: HTMLTextAreaElement, action: ToolbarAction): Applied {
+export function applyAction(textarea: HTMLTextAreaElement, action: ToolbarAction): Applied {
   const { value } = textarea;
   const start = textarea.selectionStart ?? value.length;
   const end = textarea.selectionEnd ?? value.length;

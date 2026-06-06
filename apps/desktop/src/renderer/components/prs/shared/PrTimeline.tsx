@@ -180,7 +180,7 @@ function useNearViewport(
 
 /* ══════════════════ Main component ══════════════════ */
 
-type TimelineRenderItem =
+export type TimelineRenderItem =
   | { kind: "event"; id: string; event: PrTimelineEvent }
   | {
       kind: "resolved-group";
@@ -189,7 +189,7 @@ type TimelineRenderItem =
     };
 
 /** Fold runs of 2+ consecutive resolved review threads into one summary item. */
-function buildRenderItems(events: PrTimelineEvent[]): TimelineRenderItem[] {
+export function buildRenderItems(events: PrTimelineEvent[]): TimelineRenderItem[] {
   const out: TimelineRenderItem[] = [];
   let run: Array<Extract<PrTimelineEvent, { type: "review_thread" }>> = [];
   const flush = () => {
