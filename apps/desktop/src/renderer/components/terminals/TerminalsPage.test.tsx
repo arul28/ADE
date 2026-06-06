@@ -393,7 +393,8 @@ describe("TerminalsPage chat session activation", () => {
       type: "open-request",
       status: { profileProjectRoot: "/repo-one" },
     });
-    expect(workMocks.currentWork.setViewMode).not.toHaveBeenCalled();
+    // (work-tab viewMode/grid was removed by this lane's overhaul; the remote
+    // guard now just suppresses the browser-sidebar open.)
     expect(workMocks.currentWork.setWorkSidebarTab).not.toHaveBeenCalled();
   });
 

@@ -553,10 +553,15 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   }
 
   const workSidebarVisible = active && work.workSidebarOpen;
+  const isRemoteProject = useAppStore((s) => s.projectBinding?.kind === "remote");
   const { setWorkSidebarTab, showDraftKind } = work;
   useEffect(() => {
     if (!active) return;
     const openBrowserSidebar = () => {
+      // Remote projects don't host the built-in browser, so ignore open-requests
+      // (preserves main's remote-runtime hardening; the old viewMode switch is
+      // dropped with the work-tab grid).
+      if (isRemoteProject) return;
       setWorkSidebarTab("browser");
     };
     window.addEventListener(ADE_OPEN_BUILT_IN_BROWSER_EVENT, openBrowserSidebar);
@@ -580,7 +585,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       window.removeEventListener("ade:work:stop-orchestrator-chat", stopOrchestratorChat);
       unsubscribeBrowserEvents?.();
     };
-  }, [active, projectRoot, setWorkSidebarTab, showDraftKind]);
+  }, [active, isRemoteProject, projectRoot, setWorkSidebarTab, showDraftKind]);
 
   const toggleSessionsPane = useCallback(() => {
     work.setWorkFocusSessionsHidden(!work.workFocusSessionsHidden);

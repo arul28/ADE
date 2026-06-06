@@ -415,8 +415,9 @@ function ProjectRouteContent({ active, route }: { active: boolean; route: string
   React.useEffect(() => {
     if (!active || !projectRoot) return;
     const revealWorkBrowser = () => {
+      // The work-tab `viewMode` (tabs/grid) was the old grid this lane's overhaul
+      // replaces; just open the browser sidebar.
       setWorkViewState(projectRoot, {
-        viewMode: "tabs",
         workSidebarOpen: true,
         workSidebarTab: "browser",
       });

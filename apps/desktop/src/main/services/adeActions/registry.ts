@@ -452,7 +452,6 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "getSessionCapabilities",
     "getSessionSummary",
     "getSlashCommands",
-    "getSubagentTranscript",
     "getTurnFileDiff",
     "getParallelLaunchState",
     "interrupt",
