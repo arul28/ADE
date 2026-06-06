@@ -356,7 +356,7 @@ export const PrDetailRightMetadataRail = memo(function PrDetailRightMetadataRail
 
       <RightCard
         title="Reviewers"
-        action={<EditLink active={showReviewerEditor} label="Request" onClick={() => setShowReviewerEditor(!showReviewerEditor)} />}
+        action={pr.laneId ? <EditLink active={showReviewerEditor} label="Request" onClick={() => setShowReviewerEditor(!showReviewerEditor)} /> : undefined}
       >
         {requestedReviewers.length || requestedTeams.length ? (
           <>
