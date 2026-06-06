@@ -229,6 +229,17 @@ function normalizeOwnerProcessStartedAt(startedAt: unknown): string | null {
   return normalized.length ? normalized : null;
 }
 
+/**
+ * Normalize a persisted timestamp column to a valid ISO string or null, so
+ * downstream idle-age math never keys off an empty/garbage string (which would
+ * otherwise show a misleading floored age instead of "no activity recorded").
+ */
+function normalizeIsoTimestamp(value: unknown): string | null {
+  const text = typeof value === "string" ? value.trim() : "";
+  if (!text) return null;
+  return Number.isFinite(Date.parse(text)) ? text : null;
+}
+
 export function createSessionService({ db }: { db: AdeDb }) {
   const changeListeners = new Set<(event: TerminalSessionChangedEvent) => void>();
 
@@ -320,7 +331,7 @@ export function createSessionService({ db }: { db: AdeDb }) {
       goal: row.goal ?? null,
       toolType,
       summary: row.summary ?? null,
-      lastActivityAt: row.lastActivityAt ?? null,
+      lastActivityAt: normalizeIsoTimestamp(row.lastActivityAt),
       runtimeState: runtimeStateFromStatus(row.status),
       resumeMetadata,
       resumeCommand: deriveResumeMetadataCommand(resumeMetadata, row.resumeCommand, toolType),

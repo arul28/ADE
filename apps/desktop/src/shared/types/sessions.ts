@@ -87,7 +87,10 @@ export type TerminalSessionSummary = {
   lastOutputPreview: string | null;
   /**
    * ISO timestamp of the session's most recent output/activity
-   * (terminal_sessions.last_output_at). Null when it has never produced output.
+   * (terminal_sessions.last_output_at). Null when it has never produced output;
+   * optional so optimistic/partial UI constructions need not supply it. The DB
+   * boundary normalizes it to a valid ISO string or null, and consumers treat
+   * undefined/null/empty identically, so the extra state is harmless.
    * Used to detect sessions that are old *and untouched*, vs. old-but-active.
    */
   lastActivityAt?: string | null;

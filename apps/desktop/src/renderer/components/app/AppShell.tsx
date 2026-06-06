@@ -1197,6 +1197,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       }) ?? 24
     : 0;
   const dismissStaleCliNotice = useCallback(() => {
+    // Intentionally re-arms (resets) the snooze from the dismiss moment, not
+    // just the first-show moment: "if dismissed, don't show again for an hour"
+    // is measured from the dismissal. The show-time arming in
+    // refreshStaleCliNotice is what keeps the once-per-hour cadence alive
+    // across restarts when the user never dismisses; the two are complementary,
+    // not a bug.
     if (currentProjectRoot) snoozeStaleCliNotice(currentProjectRoot);
     staleCliNoticeActiveRef.current = false;
     setStaleCliNotice(null);

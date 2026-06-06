@@ -57,6 +57,7 @@ function makeSession(overrides: Partial<TerminalSessionSummary> = {}): TerminalS
     headShaStart: null,
     headShaEnd: null,
     lastOutputPreview: null,
+    lastActivityAt: null,
     summary: null,
     runtimeState: "running",
     resumeCommand: null,
@@ -179,14 +180,17 @@ describe("SessionListPane", () => {
     expect(within(row!).getByText("Ran the latest command").className).not.toContain("font-semibold");
   });
 
-  it("marks old running CLI and shell sessions", () => {
+  it("marks idle CLI and shell sessions", () => {
     const staleSession = makeSession({
       id: "session-stale-shell",
       laneId: "lane-known",
       laneName: "Known Lane",
       toolType: "shell",
       title: "Old shell",
+      // No activity recorded → idle age falls back to startedAt, which is far
+      // enough in the past to clear the 24h idle threshold.
       startedAt: "2026-04-20T10:00:00.000Z",
+      lastActivityAt: null,
       status: "running",
       runtimeState: "waiting-input",
     });
@@ -195,7 +199,7 @@ describe("SessionListPane", () => {
       sessionsGroupedByLane: new Map([[staleSession.laneId, [staleSession]]]),
     });
 
-    expect(screen.getByLabelText("Old running session")).toBeTruthy();
+    expect(screen.getByLabelText("Idle session")).toBeTruthy();
   });
 
   it("collapses and expands child shell sections under a chat parent", () => {
