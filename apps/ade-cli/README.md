@@ -311,6 +311,8 @@ ade link branch owner/repo my-branch --pr 42
 ade link pr owner/repo 42 --ade
 ade link linear-issue ADE-123 --branch arul/ade-123-fix
 ade linear install
+ade skill list --text
+ade skill show ade-browser --text
 ```
 
 Use typed commands first. They validate common arguments and provide stable JSON fields or readable text summaries. Use `ade help <command> <subcommand>` for exact flags, `ade actions list --text` to discover the full service-backed action catalog, and `ade actions run <domain.action>` only when there is no typed command for the workflow yet.
