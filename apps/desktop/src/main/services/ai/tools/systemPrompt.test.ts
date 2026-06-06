@@ -160,7 +160,7 @@ describe("buildCodingAgentSystemPrompt", () => {
 
       expect(result).toContain("orchestration **LEAD**");
       expect(result).toContain("/repo/apps/desktop/resources/agent-skills");
-      expect(result).toContain("ADE_AGENT_SKILLS_DIRS");
+      expect(result).toContain("read the matching `ade-*` skill");
       expect(result).toContain("ade-orchestrator/SKILL.md");
       expect(result).toContain("Lead planning quality contract");
       expect(result).toContain("out-of-scope / non-goals");
@@ -288,9 +288,9 @@ describe("buildCodingAgentSystemPrompt", () => {
   it("always includes operating loop, editing rules, and verification rules", () => {
     const result = buildCodingAgentSystemPrompt({ cwd: "/x" });
     expect(result).toContain("## Operating Loop");
-    expect(result).toContain("## ADE CLI");
-    expect(result).toContain("only normal reason to skip ADE CLI");
-    expect(result).toContain("ADE exposes Agent Skills from project, user, runtime, and bundled ADE skill roots");
+    expect(result).toContain("## ADE");
+    expect(result).toContain("read the matching `ade-*` skill");
+    expect(result).toContain("Your ADE capabilities ship as Agent Skills");
     expect(result).toContain("ade-ios-simulator");
     expect(result).toContain("ade-cli-control-plane");
     expect(result).toContain("ade-orchestrator");

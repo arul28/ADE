@@ -17,6 +17,10 @@ import {
   CliDeeplinkUsageError,
   runDeeplinkCommand,
 } from "./commands/deeplinks";
+import {
+  CliSkillUsageError,
+  runSkillCommand,
+} from "./commands/skill";
 import { buildDeeplink } from "../../desktop/src/shared/deeplinks";
 import {
   AUTOMATIONS_COMING_SOON_MESSAGE,
@@ -55,6 +59,7 @@ import { MACOS_VM_PHASES } from "../../desktop/src/shared/types/macosVm";
 import type { AdeServiceCommand } from "./serviceManager/common";
 import { normalizeAdeRuntimeRole, resolveAdeDefaultRole } from "./runtimeRoles";
 import type { AdeRuntime } from "./bootstrap";
+import { reseedBundledAdeSkillsForCli } from "./bootstrap";
 import { EncryptedFileCredentialStore } from "./services/credentials/credentialStore";
 
 type JsonObject = Record<string, unknown>;
@@ -166,7 +171,8 @@ type CliPlan =
   | { kind: "pty-host-worker" }
   | { kind: "init"; targetPath: string | null }
   | { kind: "cursor-cloud"; rest: string[] }
-  | { kind: "deeplink"; rest: string[] };
+  | { kind: "deeplink"; rest: string[] }
+  | { kind: "skill"; rest: string[] };
 
 type CliConnection = {
   mode: "desktop-socket" | "runtime-socket" | "headless";
@@ -427,6 +433,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade link lane | session | branch | pr | linear-issue
                                                      Build a shareable deeplink (copies to clipboard)
     $ ade linear install                            Register ADE as Linear's "Open in coding tool" target
+    $ ade skill list | show <name>                  Browse ADE's bundled agent skills (no daemon)
     $ ade runtime start | stop | status             Manage the machine runtime daemon
     $ ade serve                                     Run the ADE runtime daemon in foreground
     $ ade rpc --stdio                               Speak ADE JSON-RPC over stdin/stdout
@@ -958,6 +965,23 @@ const HELP_BY_COMMAND: Record<string, string> = {
   Flags:
     --ade           Emit the custom "ade://" form. Defaults to the https mirror.
     --no-clipboard  Print the URL but do not copy it to the system clipboard.
+`,
+  skill: `${ADE_BANNER}
+  ADE Skills
+
+  Browse ADE's bundled, version-locked agent skills directly from the bundled
+  resources. This is a local command that does NOT require the runtime daemon —
+  it is the tamper-proof backstop for agents that can't natively discover
+  ADE's skills.
+
+    $ ade skill list                                List bundled skills (JSON: name, description, path)
+    $ ade skill list --text                         One "name — description" line per skill
+    $ ade skill show <name>                         Print a skill's SKILL.md (JSON: name, description, content, path)
+    $ ade skill show <name> --text                  Print just the skill's markdown body
+
+  Flags:
+    --text          Human-readable output.
+    --json          Structured JSON output (default).
 `,
   runtime: `${ADE_BANNER}
   ADE Runtime
@@ -10411,6 +10435,7 @@ function buildCliPlan(command: string[]): CliPlan {
     project: "projects",
     quota: "usage",
     quotas: "usage",
+    skills: "skill",
   };
   const primaryHelpKey = aliases[primary] ?? primary;
   if (hasHelpFlag(args)) {
@@ -10462,6 +10487,10 @@ function buildCliPlan(command: string[]): CliPlan {
     // Deeplink-related subcommands. We need the verb back so the inner
     // dispatcher can branch on it; reconstruct rest accordingly.
     return { kind: "deeplink", rest: [primary, ...args] };
+  }
+  if (primary === "skill" || primary === "skills") {
+    // Local (non-RPC) bundled-agent-skill browser; no daemon required.
+    return { kind: "skill", rest: args };
   }
   if (primary === "linear") {
     // `ade linear install` is the deeplink installer; every other `ade linear`
@@ -15369,6 +15398,20 @@ async function runCli(
       output: plan.text.endsWith("\n") ? plan.text : `${plan.text}\n`,
       exitCode: 0,
     };
+  // Ensure ADE's bundled skills are seeded into the home-level dirs every runtime
+  // discovers, but only on the paths that actually launch an agent/runtime/skill —
+  // cheap commands like `ade help` and `ade --version` must not pay the scan/hash
+  // cost (cheap no-op when already current).
+  if (
+    plan.kind === "skill" ||
+    plan.kind === "ade-code" ||
+    plan.kind === "runtime" ||
+    plan.kind === "serve" ||
+    (plan.kind === "execute" &&
+      /^(agent spawn|chat create|shell start cli)\b/.test(plan.label))
+  ) {
+    reseedBundledAdeSkillsForCli();
+  }
   const originalConsole = {
     log: console.log,
     info: console.info,
@@ -15427,6 +15470,20 @@ async function runCli(
         return { output: result.output, exitCode: result.exitCode };
       } catch (error) {
         if (error instanceof CliDeeplinkUsageError) {
+          throw new CliUsageError(error.message);
+        }
+        throw error;
+      }
+    }
+    if (plan.kind === "skill") {
+      try {
+        // The global parser folds --text/--json into parsed.options.text;
+        // forward that choice to the local skill command (default = JSON).
+        const rest = [...plan.rest, parsed.options.text ? "--text" : "--json"];
+        const result = runSkillCommand(rest);
+        return { output: result.output, exitCode: result.exitCode };
+      } catch (error) {
+        if (error instanceof CliSkillUsageError) {
           throw new CliUsageError(error.message);
         }
         throw error;

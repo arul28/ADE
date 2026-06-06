@@ -623,7 +623,7 @@ describe("sendChatMessage", () => {
         ],
       },
     ]);
-    expect(JSON.stringify(calls)).not.toContain("only normal reason to skip ADE CLI");
+    expect(JSON.stringify(calls)).not.toContain("control plane for ADE state");
     expect(JSON.stringify(calls)).not.toContain("ade actions list --text");
   });
 });
