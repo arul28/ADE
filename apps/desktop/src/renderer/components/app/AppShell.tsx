@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowCounterClockwise,
   ArrowSquareOut,
@@ -54,6 +54,10 @@ import {
   shouldRefreshAiStatusForChatEvent,
 } from "../../lib/aiProviderStatus";
 import { getStaleRunningCliSessionAgeHours, isRunOwnedSession } from "../../lib/sessions";
+import {
+  isStaleCliNoticeSnoozed,
+  snoozeStaleCliNotice,
+} from "../../lib/staleCliNoticeSnooze";
 import { summarizeTerminalAttention } from "../../lib/terminalAttention";
 import { getStoredZoomLevel, displayZoomToLevel } from "../../lib/zoom";
 import { ONBOARDING_STATUS_UPDATED_EVENT } from "../../lib/onboardingStatusEvents";
@@ -162,9 +166,18 @@ type RemoteConnectionNotice = {
   body: string;
 };
 
+type StaleCliNoticeLane = {
+  laneId: string;
+  laneName: string;
+  count: number;
+};
+
 type StaleCliNotice = {
   count: number;
-  oldestStartedAt: string;
+  /** Oldest last-activity (or startedAt fallback) among the stale sessions. */
+  oldestActivityAt: string;
+  /** Per-lane breakdown so the notice can show which lanes hold stale sessions. */
+  lanes: StaleCliNoticeLane[];
 };
 
 const EMPTY_TERMINAL_ATTENTION = {
@@ -306,6 +319,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const closeProject = useAppStore((s) => s.closeProject);
   const selectLane = useAppStore((s) => s.selectLane);
   const setLaneInspectorTab = useAppStore((s) => s.setLaneInspectorTab);
+  const setWorkViewState = useAppStore((s) => s.setWorkViewState);
   const [commandOpen, setCommandOpen] = useState(false);
   const visitedTabsRef = useRef(new Set<string>());
   const isFirstVisit = !visitedTabsRef.current.has(location.pathname);
@@ -331,7 +345,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const linearToastTimersRef = useRef<Map<string, number>>(new Map());
   const [staleCliNotice, setStaleCliNotice] =
     useState<StaleCliNotice | null>(null);
-  const dismissedStaleCliNoticeKeyRef = useRef<string | null>(null);
+  // Whether a stale-CLI notice is currently displayed. Lets refreshes keep an
+  // already-visible notice updated without re-tripping the once-per-hour snooze,
+  // and prevents the snooze from hiding a notice the user is actively looking at.
+  const staleCliNoticeActiveRef = useRef(false);
   const [remoteSnapshot, setRemoteSnapshot] =
     useState<RemoteRuntimeConnectionSnapshot | null>(null);
   const [dismissedRemoteNoticeKey, setDismissedRemoteNoticeKey] =
@@ -699,7 +716,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       (!isRemoteProject || isWorkAdjacentRoute);
     if (!shouldCheckStaleCliNotice) {
       setStaleCliNotice(null);
-      dismissedStaleCliNoticeKeyRef.current = null;
+      staleCliNoticeActiveRef.current = false;
       return;
     }
 
@@ -710,6 +727,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     // Prevent cross-project stale notice carryover while the first refresh is
     // pending for the new project.
     setStaleCliNotice(null);
+    staleCliNoticeActiveRef.current = false;
+
+    const sessionActivityMs = (session: TerminalSessionSummary): number => {
+      const activityMs = session.lastActivityAt ? Date.parse(session.lastActivityAt) : Number.NaN;
+      return Number.isFinite(activityMs) ? activityMs : Date.parse(session.startedAt);
+    };
 
     const refreshStaleCliNotice = async () => {
       if (document.visibilityState !== "visible") return;
@@ -722,20 +745,47 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             if (isRunOwnedSession(session)) return false;
             return getStaleRunningCliSessionAgeHours(session, nowMs) != null;
           })
-          .sort((left, right) => Date.parse(left.startedAt) - Date.parse(right.startedAt));
+          .sort((left, right) => sessionActivityMs(left) - sessionActivityMs(right));
 
         if (!stale.length) {
           setStaleCliNotice(null);
+          staleCliNoticeActiveRef.current = false;
           return;
         }
 
-        const oldestStartedAt = stale[0]?.startedAt ?? new Date(nowMs).toISOString();
-        const noticeKey = `${projectRoot}:${stale.length}:${oldestStartedAt}`;
-        if (dismissedStaleCliNoticeKeyRef.current === noticeKey) {
+        const oldest = stale[0];
+        const oldestActivityAt =
+          oldest?.lastActivityAt ?? oldest?.startedAt ?? new Date(nowMs).toISOString();
+
+        const laneMap = new Map<string, StaleCliNoticeLane>();
+        for (const session of stale) {
+          const existing = laneMap.get(session.laneId);
+          if (existing) existing.count += 1;
+          else
+            laneMap.set(session.laneId, {
+              laneId: session.laneId,
+              laneName: session.laneName || session.laneId,
+              count: 1,
+            });
+        }
+        const lanesBreakdown = [...laneMap.values()].sort((a, b) => b.count - a.count);
+        const notice: StaleCliNotice = { count: stale.length, oldestActivityAt, lanes: lanesBreakdown };
+
+        // Already showing a notice for this project? Keep it fresh without
+        // re-tripping the snooze. Otherwise gate on the per-project hourly
+        // snooze, and arm the snooze the moment we first show it so the
+        // once-per-hour cadence survives restarts / project re-opens.
+        if (staleCliNoticeActiveRef.current) {
+          setStaleCliNotice(notice);
+          return;
+        }
+        if (isStaleCliNoticeSnoozed(projectRoot, nowMs)) {
           setStaleCliNotice(null);
           return;
         }
-        setStaleCliNotice({ count: stale.length, oldestStartedAt });
+        snoozeStaleCliNotice(projectRoot, nowMs);
+        staleCliNoticeActiveRef.current = true;
+        setStaleCliNotice(notice);
       } catch {
         // best effort
       }
@@ -1141,14 +1191,16 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const staleCliNoticeAgeHours = staleCliNotice
     ? getStaleRunningCliSessionAgeHours({
         status: "running",
-        startedAt: staleCliNotice.oldestStartedAt,
+        startedAt: staleCliNotice.oldestActivityAt,
         toolType: "shell",
-      }) ?? 12
+        lastActivityAt: staleCliNotice.oldestActivityAt,
+      }) ?? 24
     : 0;
-  const staleCliNoticeDismissKey =
-    staleCliNotice && currentProjectRoot
-      ? `${currentProjectRoot}:${staleCliNotice.count}:${staleCliNotice.oldestStartedAt}`
-      : null;
+  const dismissStaleCliNotice = useCallback(() => {
+    if (currentProjectRoot) snoozeStaleCliNotice(currentProjectRoot);
+    staleCliNoticeActiveRef.current = false;
+    setStaleCliNotice(null);
+  }, [currentProjectRoot]);
   const activeRemoteConnection =
     activeRemoteBinding && remoteSnapshot
       ? remoteSnapshot.connections.find(
@@ -1485,40 +1537,69 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                       <div className="flex items-start justify-between gap-2">
                         <div className="min-w-0">
                           <span className="inline-flex items-center rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-[10px] font-medium text-amber-300">
-                            Running sessions
+                            Idle sessions
                           </span>
                           <div className="mt-2 text-[13px] font-semibold leading-tight text-fg">
-                            {staleCliNotice.count} old CLI or shell process{staleCliNotice.count === 1 ? "" : "es"} still running
+                            {staleCliNotice.count} CLI or shell session{staleCliNotice.count === 1 ? "" : "s"} sitting idle
                           </div>
                         </div>
                         <button
                           type="button"
                           className="shrink-0 rounded p-1 text-muted-fg transition-colors hover:bg-fg/[0.05] hover:text-fg"
-                          onClick={() => {
-                            if (staleCliNoticeDismissKey) {
-                              dismissedStaleCliNoticeKeyRef.current = staleCliNoticeDismissKey;
-                            }
-                            setStaleCliNotice(null);
-                          }}
-                          aria-label="Dismiss old running sessions notice"
-                          title="Dismiss"
+                          onClick={dismissStaleCliNotice}
+                          aria-label="Dismiss idle sessions notice"
+                          title="Dismiss for an hour"
                         >
                           ×
                         </button>
                       </div>
                       <div className="mt-2 text-[12px] leading-relaxed text-muted-fg">
-                        The oldest has been open for about {staleCliNoticeAgeHours} hours. Review running sessions and close anything no longer in use.
+                        No activity for about {staleCliNoticeAgeHours} hours. Close anything you're done with to free up memory.
                       </div>
+                      {staleCliNotice.lanes.length > 0 ? (
+                        <div className="mt-2 flex flex-wrap items-center gap-1">
+                          {staleCliNotice.lanes.slice(0, 4).map((noticeLane) => {
+                            const laneColor =
+                              lanes.find((lane) => lane.id === noticeLane.laneId)?.color ?? null;
+                            return (
+                              <span
+                                key={noticeLane.laneId}
+                                className="inline-flex max-w-full items-center gap-1 rounded-full border border-fg/10 bg-fg/[0.04] px-1.5 py-0.5 text-[10px] text-muted-fg"
+                                title={`${noticeLane.count} idle session${noticeLane.count === 1 ? "" : "s"} in ${noticeLane.laneName}`}
+                              >
+                                <span
+                                  className="h-1.5 w-1.5 shrink-0 rounded-full"
+                                  style={{ backgroundColor: laneColor ?? "currentColor" }}
+                                />
+                                <span className="max-w-[120px] truncate">{noticeLane.laneName}</span>
+                                {noticeLane.count > 1 ? (
+                                  <span className="shrink-0 tabular-nums text-muted-fg/70">×{noticeLane.count}</span>
+                                ) : null}
+                              </span>
+                            );
+                          })}
+                          {staleCliNotice.lanes.length > 4 ? (
+                            <span className="text-[10px] text-muted-fg/70">
+                              +{staleCliNotice.lanes.length - 4} more
+                            </span>
+                          ) : null}
+                        </div>
+                      ) : null}
                       <div className="mt-3 flex justify-end">
                         <button
                           type="button"
                           className="inline-flex h-8 items-center gap-1.5 rounded-md bg-amber-300 px-3 text-[11px] font-medium text-[#0F0D14] transition-colors hover:brightness-110"
                           onClick={() => {
-                            navigate("/work?status=running");
-                            if (staleCliNoticeDismissKey) {
-                              dismissedStaleCliNoticeKeyRef.current = staleCliNoticeDismissKey;
+                            if (currentProjectRoot) {
+                              // Reset the lane filter too so stale sessions across
+                              // *all* lanes are visible, not just the active one.
+                              setWorkViewState(currentProjectRoot, {
+                                statusFilter: "running",
+                                laneFilter: "all",
+                              });
                             }
-                            setStaleCliNotice(null);
+                            navigate("/work");
+                            dismissStaleCliNotice();
                           }}
                         >
                           View processes

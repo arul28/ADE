@@ -46,6 +46,7 @@ type SessionRow = {
   headShaStart: string | null;
   headShaEnd: string | null;
   lastOutputPreview: string | null;
+  lastActivityAt: string | null;
   summary: string | null;
   resumeCommand: string | null;
   resumeMetadataJson: string | null;
@@ -87,6 +88,7 @@ const SESSION_COLUMNS = `
   s.head_sha_start as headShaStart,
   s.head_sha_end as headShaEnd,
   s.last_output_preview as lastOutputPreview,
+  s.last_output_at as lastActivityAt,
   s.summary as summary,
   s.resume_command as resumeCommand,
   s.resume_metadata_json as resumeMetadataJson,
@@ -318,6 +320,7 @@ export function createSessionService({ db }: { db: AdeDb }) {
       goal: row.goal ?? null,
       toolType,
       summary: row.summary ?? null,
+      lastActivityAt: row.lastActivityAt ?? null,
       runtimeState: runtimeStateFromStatus(row.status),
       resumeMetadata,
       resumeCommand: deriveResumeMetadataCommand(resumeMetadata, row.resumeCommand, toolType),

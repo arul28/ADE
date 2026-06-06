@@ -42,20 +42,30 @@ export function isRunOwnedSession(session: Pick<TerminalSessionSummary, "toolTyp
   return isRunOwnedToolType(session.toolType);
 }
 
-export const STALE_RUNNING_CLI_SESSION_MS = 12 * 60 * 60 * 1_000;
+export const STALE_RUNNING_CLI_SESSION_MS = 24 * 60 * 60 * 1_000;
+const STALE_RUNNING_CLI_SESSION_HOURS = STALE_RUNNING_CLI_SESSION_MS / (60 * 60 * 1_000);
 
+/**
+ * Returns how many hours a running CLI/shell session has been *idle* (no output),
+ * or null if it is not stale. Staleness keys off the last activity timestamp —
+ * not when the session started — so an old session that is still actively
+ * producing output is never flagged; only genuinely untouched ones are. Falls
+ * back to startedAt when no activity timestamp has been recorded yet.
+ */
 export function getStaleRunningCliSessionAgeHours(
-  session: Pick<TerminalSessionSummary, "status" | "startedAt" | "toolType">,
+  session: Pick<TerminalSessionSummary, "status" | "startedAt" | "toolType" | "lastActivityAt">,
   nowMs: number = Date.now(),
 ): number | null {
   if (session.status !== "running") return null;
   if (isRunOwnedSession(session)) return null;
   if (isChatToolType(session.toolType)) return null;
+  const lastActivityMs = session.lastActivityAt ? Date.parse(session.lastActivityAt) : Number.NaN;
   const startedMs = Date.parse(session.startedAt);
-  if (!Number.isFinite(startedMs)) return null;
-  const ageMs = nowMs - startedMs;
-  if (ageMs < STALE_RUNNING_CLI_SESSION_MS) return null;
-  return Math.max(12, Math.floor(ageMs / (60 * 60 * 1_000)));
+  const referenceMs = Number.isFinite(lastActivityMs) ? lastActivityMs : startedMs;
+  if (!Number.isFinite(referenceMs)) return null;
+  const idleMs = nowMs - referenceMs;
+  if (idleMs < STALE_RUNNING_CLI_SESSION_MS) return null;
+  return Math.max(STALE_RUNNING_CLI_SESSION_HOURS, Math.floor(idleMs / (60 * 60 * 1_000)));
 }
 
 export function defaultSessionLabel(toolType: string | null | undefined): string {
@@ -114,6 +124,7 @@ export function buildOptimisticChatSessionSummary(args: {
     headShaStart: null,
     headShaEnd: null,
     lastOutputPreview: null,
+    lastActivityAt: args.session.lastActivityAt ?? null,
     summary: null,
     runtimeState: isEnded ? "exited" : args.session.status === "active" ? "running" : "idle",
     resumeCommand: null,

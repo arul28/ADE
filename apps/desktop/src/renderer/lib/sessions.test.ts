@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
+import type { TerminalSessionSummary } from "../../shared/types";
 import {
   canBulkDeleteSession,
   canBulkStopSession,
+  getStaleRunningCliSessionAgeHours,
   isChatToolType,
   normalizeSessionLabel,
   preferredSessionLabel,
@@ -112,5 +114,66 @@ describe("session labels", () => {
   it("removes Claude fullscreen chrome from persisted terminal summaries", () => {
     const label = "Ran Say exactly: patched exit works (FAIL, exit code 143, \u001b7\u001b8╭───Claude Codev2.1.141────)";
     expect(normalizeSessionLabel(label)).toBe("Ran Say exactly: patched exit works (STOPPED, exit code 143)");
+  });
+});
+
+describe("getStaleRunningCliSessionAgeHours", () => {
+  const HOUR = 60 * 60 * 1_000;
+  const NOW = Date.parse("2026-06-06T00:00:00.000Z");
+
+  const session = (overrides: Partial<TerminalSessionSummary>): TerminalSessionSummary =>
+    ({
+      status: "running",
+      toolType: "shell",
+      startedAt: new Date(NOW - 100 * HOUR).toISOString(),
+      lastActivityAt: null,
+      ...overrides,
+    }) as TerminalSessionSummary;
+
+  it("flags a non-chat session whose last activity is 24h+ ago", () => {
+    const result = getStaleRunningCliSessionAgeHours(
+      session({ lastActivityAt: new Date(NOW - 30 * HOUR).toISOString() }),
+      NOW,
+    );
+    expect(result).toBe(30);
+  });
+
+  it("does NOT flag an old session that is still actively producing output", () => {
+    // Started 100h ago, but produced output 2h ago — not stale.
+    const result = getStaleRunningCliSessionAgeHours(
+      session({ lastActivityAt: new Date(NOW - 2 * HOUR).toISOString() }),
+      NOW,
+    );
+    expect(result).toBeNull();
+  });
+
+  it("uses a 24h threshold (23h idle is not yet stale)", () => {
+    expect(
+      getStaleRunningCliSessionAgeHours(
+        session({ lastActivityAt: new Date(NOW - 23 * HOUR).toISOString() }),
+        NOW,
+      ),
+    ).toBeNull();
+    expect(
+      getStaleRunningCliSessionAgeHours(
+        session({ lastActivityAt: new Date(NOW - 25 * HOUR).toISOString() }),
+        NOW,
+      ),
+    ).toBe(25);
+  });
+
+  it("falls back to startedAt when there is no activity timestamp yet", () => {
+    const result = getStaleRunningCliSessionAgeHours(
+      session({ startedAt: new Date(NOW - 40 * HOUR).toISOString(), lastActivityAt: null }),
+      NOW,
+    );
+    expect(result).toBe(40);
+  });
+
+  it("never flags chat, run-owned, or non-running sessions", () => {
+    const idle = new Date(NOW - 50 * HOUR).toISOString();
+    expect(getStaleRunningCliSessionAgeHours(session({ toolType: "claude-chat", lastActivityAt: idle }), NOW)).toBeNull();
+    expect(getStaleRunningCliSessionAgeHours(session({ toolType: "run-shell", lastActivityAt: idle }), NOW)).toBeNull();
+    expect(getStaleRunningCliSessionAgeHours(session({ status: "detached", lastActivityAt: idle }), NOW)).toBeNull();
   });
 });

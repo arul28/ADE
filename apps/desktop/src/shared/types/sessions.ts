@@ -85,6 +85,12 @@ export type TerminalSessionSummary = {
   headShaStart: string | null;
   headShaEnd: string | null;
   lastOutputPreview: string | null;
+  /**
+   * ISO timestamp of the session's most recent output/activity
+   * (terminal_sessions.last_output_at). Null when it has never produced output.
+   * Used to detect sessions that are old *and untouched*, vs. old-but-active.
+   */
+  lastActivityAt?: string | null;
   summary: string | null;
   runtimeState: TerminalRuntimeState;
   pendingInputItemId?: string | null;
