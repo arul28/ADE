@@ -2506,7 +2506,13 @@ export function createReviewService({
           targetLabel: materialized.targetLabel,
         });
       }
-      if (disposed) return;
+      if (disposed) {
+        // Cancelled while/just after the underway comment posted — finalize it so
+        // GitHub doesn't show "ADE is reviewing…" forever (the early return below
+        // otherwise bypasses every finalizeUnderwayComment path).
+        await finalizeUnderwayComment(runId, buildAdeReviewIncompleteBody(materialized.targetLabel, "cancelled"));
+        return;
+      }
 
       let diffBundleArtifactId: string | null = null;
       for (const artifact of materialized.artifacts) {

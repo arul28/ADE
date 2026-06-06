@@ -336,8 +336,10 @@ function buildActivityEvents(
     });
   }
 
-  for (const ch of checks) {
-    const id = `ci-${ch.name}`;
+  for (const [i, ch] of checks.entries()) {
+    // Name alone isn't unique (re-runs / duplicate display names), and these ids
+    // double as React keys downstream — disambiguate with startedAt or the index.
+    const id = `ci-${ch.name}-${ch.startedAt ?? i}`;
     seenIds.add(id);
     events.push({
       id,

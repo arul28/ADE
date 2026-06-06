@@ -13,17 +13,23 @@ let mermaidPromise: Promise<MermaidModule> | null = null;
 
 async function loadMermaid(): Promise<MermaidModule> {
   if (!mermaidPromise) {
-    mermaidPromise = import("mermaid").then((mod) => {
-      const mermaid = mod.default;
-      mermaid.initialize({
-        startOnLoad: false,
-        theme: "dark",
-        securityLevel: "strict",
-        // Keep diagrams from overflowing thread cards; the wrapper scrolls.
-        fontFamily: "inherit",
+    mermaidPromise = import("mermaid")
+      .then((mod) => {
+        const mermaid = mod.default;
+        mermaid.initialize({
+          startOnLoad: false,
+          theme: "dark",
+          securityLevel: "strict",
+          // Keep diagrams from overflowing thread cards; the wrapper scrolls.
+          fontFamily: "inherit",
+        });
+        return mermaid;
+      })
+      .catch((err) => {
+        // Don't cache a rejected promise — reset so a later render can retry.
+        mermaidPromise = null;
+        throw err;
       });
-      return mermaid;
-    });
   }
   return mermaidPromise;
 }
