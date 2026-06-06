@@ -459,11 +459,16 @@ function buildActivityEvents(
     }
   }
 
-  // Sort descending by timestamp
+  // Sort descending by timestamp. Date.parse can return NaN for malformed
+  // timestamps, which would make the comparator non-deterministic — coerce
+  // non-finite values to 0 and fall back to a stable id tiebreak on ties.
   events.sort((a, b) => {
-    const aTs = a.timestamp ? Date.parse(a.timestamp) : 0;
-    const bTs = b.timestamp ? Date.parse(b.timestamp) : 0;
-    return bTs - aTs;
+    const aTsRaw = a.timestamp ? Date.parse(a.timestamp) : 0;
+    const bTsRaw = b.timestamp ? Date.parse(b.timestamp) : 0;
+    const aTs = Number.isFinite(aTsRaw) ? aTsRaw : 0;
+    const bTs = Number.isFinite(bTsRaw) ? bTsRaw : 0;
+    if (aTs !== bTs) return bTs - aTs;
+    return a.id.localeCompare(b.id);
   });
 
   return events;
@@ -2287,14 +2292,17 @@ export function createPrService({
     }
 
     // Link through the canonical path so every existing side-effect fires
-    // (body footer, Linear cards, transcript gists, hot refresh).
-    await linkToLane({ laneId: lane.id, prUrlOrNumber: String(candidate.prNumber) });
+    // (body footer, Linear cards, transcript gists, hot refresh). Use the
+    // returned summary's id for the toast so Undo always has a valid prId to
+    // unmap — re-querying the row could race and yield an empty prId, leaving
+    // the Undo action a silent no-op.
+    const linked = await linkToLane({ laneId: lane.id, prUrlOrNumber: String(candidate.prNumber) });
 
     try {
       emitPrEvent?.({
         type: "pr-auto-linked",
         timestamp: nowIso(),
-        prId: getRowForRepoPr(repo.owner, repo.name, candidate.prNumber)?.id ?? "",
+        prId: linked.id,
         laneId: lane.id,
         laneName: lane.name,
         prNumber: candidate.prNumber,
@@ -8363,9 +8371,23 @@ export function createPrService({
     async updateComment(args: UpdatePrCommentArgs): Promise<PrComment> {
       const row = requireRow(args.prId);
       const repo = repoFromRow(row);
+      // Validate the comment id and confirm it belongs to this PR before
+      // patching — `commentId` is caller-supplied, and GitHub's issue-comment
+      // PATCH endpoint is repo-scoped (any comment id in the repo would
+      // otherwise be editable).
+      const commentId = Number(args.commentId);
+      if (!Number.isInteger(commentId) || commentId <= 0) throw new Error("Invalid comment id.");
+      const { data: existing } = await githubService.apiRequest<any>({
+        method: "GET",
+        path: `/repos/${repo.owner}/${repo.name}/issues/comments/${commentId}`,
+      });
+      const issueUrl = asString(existing?.issue_url);
+      if (!issueUrl.endsWith(`/issues/${Number(row.github_pr_number)}`)) {
+        throw new Error("Comment does not belong to the target PR.");
+      }
       const { data } = await githubService.apiRequest<any>({
         method: "PATCH",
-        path: `/repos/${repo.owner}/${repo.name}/issues/comments/${args.commentId}`,
+        path: `/repos/${repo.owner}/${repo.name}/issues/comments/${commentId}`,
         body: { body: args.body }
       });
       const comment: PrComment = {

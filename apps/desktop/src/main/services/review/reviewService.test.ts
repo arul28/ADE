@@ -1623,10 +1623,12 @@ describe("reviewService", () => {
       );
 
       expect(harness.addComment).toHaveBeenCalledTimes(1);
+      expect(harness.addComment.mock.calls[0]?.[0]?.body).toContain("ADE is reviewing this PR");
       expect(harness.updateComment).toHaveBeenCalledTimes(1);
       const edited = harness.updateComment.mock.calls[0]?.[0];
       expect(edited.commentId).toBe("underway-comment-1");
       expect(edited.body).toContain("no issues found");
+      expect(edited.body).not.toContain("ADE is reviewing this PR");
     });
 
     it("edits the underway comment with a did-not-complete body when all reviewers fail", async () => {
@@ -1640,10 +1642,12 @@ describe("reviewService", () => {
       );
 
       expect(harness.addComment).toHaveBeenCalledTimes(1);
+      expect(harness.addComment.mock.calls[0]?.[0]?.body).toContain("ADE is reviewing this PR");
       expect(harness.updateComment).toHaveBeenCalledTimes(1);
       const edited = harness.updateComment.mock.calls[0]?.[0];
       expect(edited.commentId).toBe("underway-comment-1");
       expect(edited.body).toContain("did not complete");
+      expect(edited.body).not.toContain("ADE is reviewing this PR");
     });
   });
 

@@ -75,6 +75,7 @@ import type {
   LandQueueNextArgs,
   PauseQueueAutomationArgs,
   PipelineSettings,
+  PrGithubCoords,
   PrConvergenceStatePatch,
   LaneEnvInitConfig,
   LaneEnvInitProgress,
@@ -1162,6 +1163,16 @@ function parseChatModelCatalogArgs(value: Record<string, unknown>): AgentChatMod
 
 function requirePrId(value: Record<string, unknown>, action: string): string {
   return requireString(value.prId, `${action} requires prId.`);
+}
+
+function requirePrGithubCoords(value: Record<string, unknown>, action: string): PrGithubCoords {
+  const repoOwner = requireString(value.repoOwner, `${action} requires repoOwner.`);
+  const repoName = requireString(value.repoName, `${action} requires repoName.`);
+  const githubPrNumber = asOptionalNumber(value.githubPrNumber);
+  if (githubPrNumber == null || !Number.isInteger(githubPrNumber) || githubPrNumber <= 0) {
+    throw new Error(`${action} requires a positive integer githubPrNumber.`);
+  }
+  return { repoOwner, repoName, githubPrNumber };
 }
 
 function parseCreatePrArgs(value: Record<string, unknown>): CreatePrFromLaneArgs {
@@ -2845,6 +2856,19 @@ function registerPrAndDeeplinkRemoteCommands({ args, register }: RemoteCommandRe
   register("prs.getActionRuns", { viewerAllowed: true }, async (payload) => args.prService.getActionRuns(requirePrId(payload, "prs.getActionRuns")));
   register("prs.getActivity", { viewerAllowed: true }, async (payload) => args.prService.getActivity(requirePrId(payload, "prs.getActivity")));
   register("prs.getDeployments", { viewerAllowed: true }, async (payload) => args.prService.getDeployments(requirePrId(payload, "prs.getDeployments")));
+  // Coordinate-based PR reads for PRs that are not mapped to an ADE lane (no DB
+  // row). The preload sends these `*ByGithub` runtime actions before falling
+  // back to IPC, so the socket runtime must register them alongside the
+  // row-based reads. Args are GitHub coordinates: { repoOwner, repoName, githubPrNumber }.
+  register("prs.getDetailByGithub", { viewerAllowed: true }, async (payload) => args.prService.getDetailByGithub(requirePrGithubCoords(payload, "prs.getDetailByGithub")));
+  register("prs.getFilesByGithub", { viewerAllowed: true }, async (payload) => args.prService.getFilesByGithub(requirePrGithubCoords(payload, "prs.getFilesByGithub")));
+  register("prs.getCommitsByGithub", { viewerAllowed: true }, async (payload) => args.prService.getCommitsByGithub(requirePrGithubCoords(payload, "prs.getCommitsByGithub")));
+  register("prs.getActionRunsByGithub", { viewerAllowed: true }, async (payload) => args.prService.getActionRunsByGithub(requirePrGithubCoords(payload, "prs.getActionRunsByGithub")));
+  register("prs.getActivityByGithub", { viewerAllowed: true }, async (payload) => args.prService.getActivityByGithub(requirePrGithubCoords(payload, "prs.getActivityByGithub")));
+  register("prs.getChecksByGithub", { viewerAllowed: true }, async (payload) => args.prService.getChecksByGithub(requirePrGithubCoords(payload, "prs.getChecksByGithub")));
+  register("prs.getReviewsByGithub", { viewerAllowed: true }, async (payload) => args.prService.getReviewsByGithub(requirePrGithubCoords(payload, "prs.getReviewsByGithub")));
+  register("prs.getCommentsByGithub", { viewerAllowed: true }, async (payload) => args.prService.getCommentsByGithub(requirePrGithubCoords(payload, "prs.getCommentsByGithub")));
+  register("prs.getReviewThreadsByGithub", { viewerAllowed: true }, async (payload) => args.prService.getReviewThreadsByGithub(requirePrGithubCoords(payload, "prs.getReviewThreadsByGithub")));
   register("prs.createFromLane", { viewerAllowed: true, queueable: true }, async (payload) => args.prService.createFromLane(parseCreatePrArgs(payload)));
   register("prs.createQueue", { viewerAllowed: true, queueable: true }, async (payload) => args.prService.createQueuePrs(parseCreateQueuePrsArgs(payload)));
   register("prs.linkToLane", { viewerAllowed: true, queueable: true }, async (payload) => args.prService.linkToLane(parseLinkPrToLaneArgs(payload)));

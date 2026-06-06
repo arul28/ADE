@@ -4010,16 +4010,28 @@ describe("prService.updateComment", () => {
     const db = makeMockDb();
     installPullRequestRowStore(db, [makePrRow()]);
     const githubService = makeGithubService({
-      apiRequest: vi.fn(async () => ({
-        data: {
-          id: 555,
-          user: { login: "ade[bot]", avatar_url: "https://avatars/ade" },
-          body: "Edited body",
-          html_url: "https://github.com/test-owner/test-repo/pull/90#issuecomment-555",
-          created_at: "2026-01-01T00:00:00Z",
-          updated_at: "2026-01-02T00:00:00Z",
-        },
-      })),
+      apiRequest: vi.fn(async (request: { method?: string }) => {
+        // The ownership pre-check GETs the comment to confirm it belongs to the
+        // target PR; the PATCH then performs the edit.
+        if (request.method === "GET") {
+          return {
+            data: {
+              id: 555,
+              issue_url: "https://api.github.com/repos/test-owner/test-repo/issues/90",
+            },
+          };
+        }
+        return {
+          data: {
+            id: 555,
+            user: { login: "ade[bot]", avatar_url: "https://avatars/ade" },
+            body: "Edited body",
+            html_url: "https://github.com/test-owner/test-repo/pull/90#issuecomment-555",
+            created_at: "2026-01-01T00:00:00Z",
+            updated_at: "2026-01-02T00:00:00Z",
+          },
+        };
+      }),
     });
     const { service } = buildService({ db, githubService });
 
@@ -4038,14 +4050,49 @@ describe("prService.updateComment", () => {
     expect(result.url).toBe("https://github.com/test-owner/test-repo/pull/90#issuecomment-555");
   });
 
-  it("throws when the PR row is unknown", async () => {
+  it("rejects a comment that belongs to a different PR without PATCHing", async () => {
+    const db = makeMockDb();
+    installPullRequestRowStore(db, [makePrRow()]);
+    const githubService = makeGithubService({
+      apiRequest: vi.fn(async () => ({
+        data: {
+          id: 555,
+          issue_url: "https://api.github.com/repos/test-owner/test-repo/issues/91",
+        },
+      })),
+    });
+    const { service } = buildService({ db, githubService });
+
+    await expect(
+      service.updateComment({ prId: "pr-row-1", commentId: "555", body: "Edited body" }),
+    ).rejects.toThrow("Comment does not belong to the target PR.");
+    expect(githubService.apiRequest).not.toHaveBeenCalledWith(
+      expect.objectContaining({ method: "PATCH" }),
+    );
+  });
+
+  it("rejects an invalid comment id without calling GitHub", async () => {
+    const db = makeMockDb();
+    installPullRequestRowStore(db, [makePrRow()]);
+    const githubService = makeGithubService({ apiRequest: vi.fn() });
+    const { service } = buildService({ db, githubService });
+
+    await expect(
+      service.updateComment({ prId: "pr-row-1", commentId: "not-a-number", body: "x" }),
+    ).rejects.toThrow("Invalid comment id.");
+    expect(githubService.apiRequest).not.toHaveBeenCalled();
+  });
+
+  it("throws when the PR row is unknown without calling GitHub", async () => {
     const db = makeMockDb();
     installPullRequestRowStore(db, []);
-    const { service } = buildService({ db });
+    const githubService = makeGithubService({ apiRequest: vi.fn() });
+    const { service } = buildService({ db, githubService });
 
     await expect(
       service.updateComment({ prId: "missing", commentId: "1", body: "x" }),
     ).rejects.toThrow();
+    expect(githubService.apiRequest).not.toHaveBeenCalled();
   });
 });
 
@@ -4124,6 +4171,10 @@ describe("prService auto-map by branch", () => {
         laneName: "my-feature",
       }),
     ]);
+    // The toast's Undo path keys off prId; it must be the real linked row id,
+    // never an empty string (otherwise Undo silently no-ops).
+    expect(typeof events[0].prId).toBe("string");
+    expect(events[0].prId.length).toBeGreaterThan(0);
   });
 
   it("skips a fork PR (different head repo)", async () => {

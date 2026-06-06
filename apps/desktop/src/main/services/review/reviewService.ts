@@ -2499,20 +2499,16 @@ export function createReviewService({
       // PR-target runs immediately post an "ADE review underway" comment from
       // MAIN and persist its id, so every terminal path below can edit it in
       // place (and so it survives renderer reloads). Best-effort — never blocks.
-      if (run.target.mode === "pr") {
+      // Skip if the run was cancelled during materialize — otherwise we'd drop a
+      // fresh "underway" comment on a run the user already stopped.
+      if (run.target.mode === "pr" && !cancelledRuns.has(runId)) {
         await postUnderwayComment({
           runId,
           prId: run.target.prId,
           targetLabel: materialized.targetLabel,
         });
       }
-      if (disposed) {
-        // Cancelled while/just after the underway comment posted — finalize it so
-        // GitHub doesn't show "ADE is reviewing…" forever (the early return below
-        // otherwise bypasses every finalizeUnderwayComment path).
-        await finalizeUnderwayComment(runId, buildAdeReviewIncompleteBody(materialized.targetLabel, "cancelled"));
-        return;
-      }
+      if (disposed) return;
 
       let diffBundleArtifactId: string | null = null;
       for (const artifact of materialized.artifacts) {
@@ -2923,8 +2919,11 @@ export function createReviewService({
       if (disposed) return;
       const severitySummary = tallySeveritySummary(findings);
       const endedAt = nowIso();
-      const cancelledDuringPublish = cancelledRuns.has(runId);
-      if (cancelledDuringPublish) cancelledRuns.delete(runId);
+      const cancelRequested = cancelledRuns.has(runId);
+      if (cancelRequested) cancelledRuns.delete(runId);
+      // A cancel that lands after GitHub already accepted the published review must
+      // NOT relabel it "cancelled" — keep the published-summary path below.
+      const cancelledDuringPublish = cancelRequested && publication?.status !== "published";
       updateRun(runId, {
         status: cancelledDuringPublish ? "cancelled" : "completed",
         summary: finalSummary,
@@ -2986,6 +2985,15 @@ export function createReviewService({
       });
       emit({ type: "runs-updated", runId, laneId: row?.lane_id ?? "", status: "failed" });
     } finally {
+      // Safety net for every disposal window: if no terminal path ran (the run row
+      // is still "running"), close out the underway comment so GitHub never stays
+      // stuck on "ADE is reviewing…". No-ops when no comment was posted.
+      if (getRunRow(runId)?.status === "running") {
+        await finalizeUnderwayComment(
+          runId,
+          buildAdeReviewIncompleteBody(getRunRow(runId)?.target_label ?? "this PR", "cancelled"),
+        );
+      }
       activeRuns.delete(runId);
       cancelledRuns.delete(runId);
     }

@@ -71,6 +71,7 @@ type AutoLinkToast = {
   id: string;
   event: Extract<PrEventPayload, { type: "pr-auto-linked" }>;
   undoing?: boolean;
+  undoFailed?: boolean;
 };
 
 function primaryTabPath(pathname: string): string {
@@ -1728,6 +1729,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                         <div className="mt-2 line-clamp-2 text-[12px] leading-relaxed text-muted-fg">
                           {toast.event.prTitle}
                         </div>
+                        {toast.undoFailed ? (
+                          <div className="mt-2 text-[11px] font-medium text-red-400">
+                            Couldn't undo the link. Try again.
+                          </div>
+                        ) : null}
                         <div className="mt-3 flex justify-end gap-2">
                           <button
                             type="button"
@@ -1740,7 +1746,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                               }
                               setAutoLinkToasts((prev) =>
                                 prev.map((t) =>
-                                  t.id === toast.id ? { ...t, undoing: true } : t,
+                                  t.id === toast.id
+                                    ? { ...t, undoing: true, undoFailed: false }
+                                    : t,
                                 ),
                               );
                               void window.ade.prs
@@ -1751,11 +1759,15 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                                 })
                                 .then(
                                   () => dismissAutoLinkToast(toast.id),
-                                  () => {
+                                  (error) => {
+                                    console.error(
+                                      `Failed to undo auto-link for PR #${toast.event.prNumber} (${toast.event.prId})`,
+                                      error,
+                                    );
                                     setAutoLinkToasts((prev) =>
                                       prev.map((t) =>
                                         t.id === toast.id
-                                          ? { ...t, undoing: false }
+                                          ? { ...t, undoing: false, undoFailed: true }
                                           : t,
                                       ),
                                     );
@@ -1768,7 +1780,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                             ) : (
                               <ArrowCounterClockwise size={12} />
                             )}
-                            Undo
+                            {toast.undoFailed ? "Retry undo" : "Undo"}
                           </button>
                         </div>
                       </div>
