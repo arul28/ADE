@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AgentChatSession, TerminalSessionSummary } from "../../../shared/types";
-import { selectActiveProjectRoot, useAppStore, type WorkDraftKind, type WorkProjectViewState, type WorkViewMode } from "../../state/appStore";
+import { selectActiveProjectRoot, useAppStore, type WorkDraftKind, type WorkProjectViewState } from "../../state/appStore";
 import { listSessionsCached, invalidateSessionListCache } from "../../lib/sessionListCache";
 import { sessionStatusBucket } from "../../lib/terminalAttention";
 import { shouldRefreshSessionListForChatEvent } from "../../lib/chatSessionEvents";
@@ -17,7 +17,8 @@ const EMPTY_WORK_STATE: WorkProjectViewState = {
   openItemIds: [],
   activeItemId: null,
   selectedItemId: null,
-  viewMode: "tabs",
+  gridSets: [],
+  activeGridSetId: null,
   draftKind: "chat",
   draftLaneId: null,
   laneFilter: "all",
@@ -562,15 +563,10 @@ export function useLaneWorkSessions(laneId: string | null) {
     openSessionTab(session.id);
   }, [focusedSessionId, laneId, openSessionTab, sessionsById]);
 
-  const setViewMode = useCallback((nextMode: WorkViewMode) => {
-    setViewState({ viewMode: nextMode });
-  }, [setViewState]);
-
   const showDraftKind = useCallback((nextKind: WorkDraftKind) => {
     setViewState((prev) => ({
       ...prev,
       draftKind: nextKind,
-      viewMode: "tabs",
       activeItemId: null,
       selectedItemId: null,
     }));
@@ -758,9 +754,7 @@ export function useLaneWorkSessions(laneId: string | null) {
     visibleSessions,
     gridLayoutId,
     activeItemId: laneViewState.activeItemId,
-    viewMode: laneViewState.viewMode,
     draftKind: laneViewState.draftKind,
-    setViewMode,
     showDraftKind,
     setActiveItemId,
     closeTab,

@@ -2,6 +2,7 @@ import * as React from "react";
 import type { Icon } from "@phosphor-icons/react";
 import { motion, type Transition } from "motion/react";
 import { cn } from "./cn";
+import { SmartTooltip } from "./SmartTooltip";
 
 export type GlowMenuItem<T extends string = string> = {
   id: T;
@@ -18,6 +19,18 @@ type GlowMenuProps<T extends string> = {
   onItemClick: (id: T) => void;
   compact?: boolean;
   variant?: "pill" | "flat";
+  /**
+   * Neutral mode drops the per-item saturated color/gradient entirely AND goes
+   * ICON-ONLY (no text labels), because its only caller is the narrow ~18rem
+   * floating chat-actions drawer where labels get truncated. Every tab renders
+   * just its logo with a muted-grey-→-bright-fg treatment; the label survives as
+   * a hover tooltip + aria-label. The active tab is marked by a single shared
+   * violet indicator that slides between tabs (via a `layoutId`-animated
+   * underline). Existing callers that rely on the per-item palette + labels are
+   * unaffected — they simply omit this flag. (`compact` is ignored here since
+   * neutral is already label-free.)
+   */
+  neutral?: boolean;
 };
 
 const itemVariants = {
@@ -74,12 +87,84 @@ function GlowMenuItemFace<T extends string>({
     <>
       <span
         className="transition-colors duration-300"
+        // Palette ("pill"/"flat") callers tint the active icon with the item's
+        // color. (Neutral mode no longer routes through this face — it's
+        // icon-only and rendered inline by NeutralGlowMenu.)
         style={{ color: active ? item.color : undefined }}
       >
         <Icon size={12} weight={active ? "fill" : "regular"} className="shrink-0" />
       </span>
       <span className={compact ? "sr-only" : "truncate"}>{item.label}</span>
     </>
+  );
+}
+
+// Smooth, ~180ms slide for the neutral active indicator.
+const indicatorTransition: Transition = {
+  type: "spring",
+  stiffness: 520,
+  damping: 38,
+  mass: 0.7,
+};
+
+function NeutralGlowMenu<T extends string>({
+  className,
+  items,
+  activeItem,
+  onItemClick,
+}: GlowMenuProps<T>) {
+  // Unique per-instance id so multiple neutral menus don't share an indicator.
+  const layoutId = React.useId();
+  return (
+    // Neutral mode is ICON-ONLY: the floating drawer pane that uses it is too
+    // narrow (~18rem) for text labels, so each tab renders just its logo. The
+    // label is preserved via a hover tooltip (SmartTooltip) + aria-label. Tabs
+    // are evenly distributed so all 4–5 fit comfortably without truncation.
+    <nav className={cn("relative min-w-0 flex-1 overflow-hidden", className)}>
+      <ul className="relative z-10 flex h-full min-w-0 items-stretch justify-around gap-0">
+        {items.map((item) => {
+          const active = item.id === activeItem;
+          const Icon = item.icon;
+          return (
+            <li key={item.id} className="relative flex h-full min-w-0 flex-1 shrink-0 justify-center">
+              <SmartTooltip
+                content={{ label: item.label, description: `Show ${item.label}` }}
+                side="bottom"
+                wrapperClassName="h-full"
+                wrapperStyle={{ display: "flex" }}
+              >
+                <button
+                  type="button"
+                  onClick={() => onItemClick(item.id)}
+                  className={cn(
+                    "group relative flex h-full min-h-[42px] w-9 items-center justify-center bg-transparent leading-none transition-colors duration-150",
+                    active ? "text-fg" : "text-muted-fg/70 hover:text-fg/90",
+                  )}
+                  aria-pressed={active}
+                  aria-label={item.label}
+                  title={item.label}
+                >
+                  <Icon size={16} weight={active ? "fill" : "regular"} className="shrink-0" />
+                  {active ? (
+                    <motion.span
+                      layoutId={layoutId}
+                      aria-hidden
+                      className="pointer-events-none absolute inset-x-1 bottom-0 h-[2px] rounded-full"
+                      style={{
+                        // Single restrained violet accent + a soft glow beneath it.
+                        background: "rgb(167,139,250)",
+                        boxShadow: "0 0 8px 0 rgba(167,139,250,0.55)",
+                      }}
+                      transition={indicatorTransition}
+                    />
+                  ) : null}
+                </button>
+              </SmartTooltip>
+            </li>
+          );
+        })}
+      </ul>
+    </nav>
   );
 }
 
@@ -90,7 +175,18 @@ export function GlowMenu<T extends string>({
   onItemClick,
   compact = false,
   variant = "pill",
+  neutral = false,
 }: GlowMenuProps<T>) {
+  if (neutral) {
+    return (
+      <NeutralGlowMenu
+        className={className}
+        items={items}
+        activeItem={activeItem}
+        onItemClick={onItemClick}
+      />
+    );
+  }
   const flat = variant === "flat";
   return (
     <motion.nav

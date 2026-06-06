@@ -19,7 +19,6 @@ import {
   type AgentChatInteractionMode,
   type AgentChatOpenCodePermissionMode,
   type AgentChatSlashCommand,
-  type CodexThreadTokenUsage,
   type ComputerUseOwnerSnapshot,
   type ChatSurfaceMode,
   type AppControlContextItem,
@@ -46,7 +45,8 @@ import type { AuthStatus } from "../shared/ModelPicker/ModelPickerRail";
 import { resolveModelDescriptorWithRuntimeCatalog } from "../shared/ModelPicker/modelCatalog";
 import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPicker";
 import { getPermissionOptions, safetyColors } from "../shared/permissionOptions";
-import { CodexTokenInline } from "./codex/CodexTokenInline";
+import { ContextUsageDial } from "./usage/ContextUsageDial";
+import type { ContextUsageViewModel } from "./usage/contextUsageModel";
 import {
   ChatAttachmentTray,
   CHAT_IMAGE_ATTACHMENT_FOCUS_SELECTOR,
@@ -562,6 +562,7 @@ const DROID_PERMISSION_OPTIONS: Array<{ value: AgentChatDroidPermissionMode; lab
   { value: "auto-low", label: "Auto low", detail: "Passes --auto low for safe file edits and low-risk operations." },
   { value: "auto-medium", label: "Auto medium", detail: "Passes --auto medium for local development operations such as builds, tests, and package installs." },
   { value: "auto-high", label: "Auto high", detail: "Passes --auto high for broad automation. Use only in trusted workspaces." },
+  { value: "agi", label: "AGI (orchestrator)", detail: "Droid decomposes the task into a mission and spawns worker subagents (read-only at the top level). Workers appear in the subagents panel." },
 ];
 
 function cursorModeLabel(modeId: string): string {
@@ -743,8 +744,9 @@ export function AgentChatComposer({
   allowCliOnlyModels = false,
   reasoningEffort,
   codexFastMode = false,
-  codexTokenUsage = null,
+  usageViewModel = null,
   draft,
+  lastSentUserMessage = null,
   attachments,
   contextAttachments = [],
   allowAttachmentOnlySubmit = false,
@@ -772,6 +774,7 @@ export function AgentChatComposer({
   hideNativeControls = false,
   orchestrationRole = null,
   messagePlaceholder,
+  inputLockMessage,
   onModelChange,
   onReasoningEffortChange,
   onCodexFastModeChange,
@@ -870,8 +873,10 @@ export function AgentChatComposer({
   allowCliOnlyModels?: boolean;
   reasoningEffort: string | null;
   codexFastMode?: boolean;
-  codexTokenUsage?: CodexThreadTokenUsage | null;
+  usageViewModel?: ContextUsageViewModel | null;
   draft: string;
+  /** Last message the user sent in this chat — recalled by ArrowUp on line 1. */
+  lastSentUserMessage?: string | null;
   attachments: AgentChatFileRef[];
   contextAttachments?: AgentChatContextAttachment[];
   allowAttachmentOnlySubmit?: boolean;
@@ -913,6 +918,7 @@ export function AgentChatComposer({
    */
   orchestrationRole?: OrchestrationRole | null;
   messagePlaceholder?: string;
+  inputLockMessage?: string | null;
   onModelChange: (modelId: string) => void;
   onReasoningEffortChange: (reasoningEffort: string | null) => void;
   onCodexFastModeChange?: (enabled: boolean) => void;
@@ -1079,8 +1085,9 @@ export function AgentChatComposer({
     || appControlContextItems.length > 0
     || builtInBrowserContextItems.length > 0
     || macosVmContextItems.length > 0;
-  const composerInputLocked = Boolean(pendingInput?.blocking);
-  const composerInputLockMessage = getComposerInputLockMessage(pendingInput);
+  const externalInputLockMessage = normalizeComposerLabelText(inputLockMessage ?? "");
+  const composerInputLocked = Boolean(pendingInput?.blocking) || Boolean(externalInputLockMessage);
+  const composerInputLockMessage = externalInputLockMessage || getComposerInputLockMessage(pendingInput);
   const composerInputContextLabel = normalizeComposerLabelText(messagePlaceholder ?? "") || "Chat message";
   const composerInputAccessibleLabel = composerInputLockMessage
     ? `Chat input locked: ${composerInputLockMessage}`
@@ -1104,7 +1111,6 @@ export function AgentChatComposer({
     && launchPromptClipboardNoticeEnabled
     && !composerInputLocked
     && draft.trim().length > 0;
-  const showLaunchClipboardHelper = showLaunchClipboardNotice && composerFocused;
 
   const resizeTextarea = useCallback(() => {
     if (useRichComposer) return;
@@ -2456,16 +2462,11 @@ export function AgentChatComposer({
     parallelModelSlots,
   ]);
 
+  // Clean composer: no provider-tinted glow border (that produced the bright
+  // "highlighted" outline). Only the orchestrator's special mode keeps a glow.
   const composerGlowColor = useMemo(() => {
-    if (orchestratorModeActive) return "rgba(217, 70, 239, 0.36)";
-    const provider = sessionProvider ?? (modelId ? "anthropic" : null);
-    if (!provider) return null;
-    if (provider === "anthropic") return "rgba(249, 115, 22, 0.25)";
-    if (provider === "openai") return "rgba(255, 255, 255, 0.15)";
-    if (provider === "cursor") return "rgba(59, 130, 246, 0.25)";
-    if (provider === "opencode") return "rgba(255, 255, 255, 0.12)";
-    return null;
-  }, [orchestratorModeActive, sessionProvider, modelId]);
+    return orchestratorModeActive ? "rgba(217, 70, 239, 0.36)" : null;
+  }, [orchestratorModeActive]);
 
   /* ── Keyboard handler for composer input ── */
   const handleKeyDown = (event: React.KeyboardEvent<HTMLElement>) => {
@@ -2511,6 +2512,27 @@ export function AgentChatComposer({
       if (atPromptStart && focusLastImageAttachment()) {
         event.preventDefault();
         return;
+      }
+      // Terminal-style recall: ArrowUp on the first line fills the last message
+      // you sent (so you can re-run or tweak it). Skipped for multi-line drafts
+      // (so ArrowUp still navigates between lines) and when nothing was sent yet.
+      if (target instanceof HTMLTextAreaElement) {
+        const recall = lastSentUserMessage?.trim() ?? "";
+        const isMultiLine = target.value.indexOf("\n") !== -1;
+        const onFirstLine = target.selectionStart === target.selectionEnd
+          && target.value.slice(0, target.selectionStart).indexOf("\n") === -1;
+        if (recall && !isMultiLine && onFirstLine && recall !== draft) {
+          event.preventDefault();
+          onDraftChange(recall);
+          requestAnimationFrame(() => {
+            const el = textareaRef.current;
+            if (el) {
+              el.focus({ preventScroll: true });
+              el.selectionStart = el.selectionEnd = el.value.length;
+            }
+          });
+          return;
+        }
       }
     }
 
@@ -2774,7 +2796,10 @@ export function AgentChatComposer({
 
   // Idle composer motion keeps the GPU busy; keep the animated beam to active
   // turns and explicit orchestration mode.
-  const composerBeamActive = isActive
+  // BorderBeam disabled — the traveling beam around the composer read as
+  // distracting chrome. (Orchestrator mode keeps its own separate glow.)
+  const composerBeamActive = false
+    && isActive
     && layoutVariant !== "grid-tile"
     && !iosSimulatorOpen
     && (turnActive || orchestratorModeActive);
@@ -2915,6 +2940,18 @@ export function AgentChatComposer({
         }}
         onOpenLinearSettings={onOpenLinearSettings}
       />
+      {showLaunchClipboardNotice && layoutVariant !== "grid-tile" ? (
+        <div className="mx-auto mb-1.5 w-full max-w-[var(--chat-column,52rem)] px-1 font-sans text-[length:calc(var(--chat-font-size)*10/14)] text-muted-fg/45">
+          Prompt copies to clipboard on send.{" "}
+          <button
+            type="button"
+            className="text-fg/70 underline decoration-white/20 underline-offset-2 transition-colors hover:text-fg"
+            onClick={onOpenLaunchPromptClipboardSettings}
+          >
+            Setting
+          </button>
+        </div>
+      ) : null}
       <BorderBeam
         size="md"
         colorVariant={composerBeamVariant}
@@ -2930,7 +2967,9 @@ export function AgentChatComposer({
       glowColor={composerGlowColor}
       orchestratorActive={orchestratorModeActive}
       className={cn(
-        layoutVariant === "grid-tile" ? "border-0 bg-transparent shadow-none" : "",
+        layoutVariant === "grid-tile"
+          ? "border-0 bg-transparent shadow-none"
+          : "mx-auto w-full max-w-[var(--chat-column,52rem)]",
       )}
       pendingBanner={pendingInput ? (
         pendingInput.kind === "plan_approval" ? (
@@ -3361,11 +3400,6 @@ export function AgentChatComposer({
       }
       footer={
         <div className="ade-chat-composer-footer flex flex-col gap-2 px-2 py-1 sm:px-2.5">
-          {showLaunchClipboardNotice ? (
-            <div className="px-1 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] text-muted-fg/45">
-              After submission your prompt will auto copy to clipboard.
-            </div>
-          ) : null}
           {parallelChatMode ? (
             <div className="rounded-xl border border-[color:color-mix(in_srgb,var(--chat-accent)_22%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_06%,transparent)] p-3">
               <div className="flex items-start justify-between gap-2">
@@ -3576,8 +3610,12 @@ export function AgentChatComposer({
             ) : null}
           </div>
 
-          {!parallelChatMode && sessionProvider === "codex" && codexTokenUsage ? (
-            <CodexTokenInline usage={codexTokenUsage} />
+          {!parallelChatMode && usageViewModel ? (
+            <ContextUsageDial
+              usage={usageViewModel}
+              active={turnActive}
+              modelLabel={resolveModelDescriptorWithRuntimeCatalog(modelId)?.displayName ?? undefined}
+            />
           ) : null}
 
           {/* Right: attachment, commands, proof, context, send */}
@@ -4109,18 +4147,6 @@ export function AgentChatComposer({
               onPaste={handlePaste}
             />
           )}
-          {showLaunchClipboardHelper ? (
-            <div className="px-4 pb-2 font-sans text-[10.5px] leading-snug text-muted-fg/55">
-              Prompt will be copied to clipboard after Send.{" "}
-              <button
-                type="button"
-                className="text-fg/70 underline decoration-white/20 underline-offset-2 transition-colors hover:text-fg"
-                onClick={onOpenLaunchPromptClipboardSettings}
-              >
-                Setting
-              </button>
-            </div>
-          ) : null}
         </div>
       </div>
       </ChatComposerShell>

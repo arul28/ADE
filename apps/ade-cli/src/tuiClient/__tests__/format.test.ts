@@ -788,6 +788,46 @@ describe("renderChatLines", () => {
     expect(lines[0]?.header).toBeUndefined();
   });
 
+  it("keeps concurrent interleaved messages separate and intact, and filters codex-subagent text", () => {
+    const session = {
+      sessionId: "s1", laneId: "lane-1", provider: "codex", model: "gpt-5.5", status: "idle",
+      startedAt: "2026-01-01T12:00:00.000Z", endedAt: null, lastActivityAt: "2026-01-01T12:00:00.000Z",
+      lastOutputPreview: null, summary: null,
+    } as const;
+    // Parent message "A" and a concurrent message "B" stream interleaved by
+    // timestamp, plus a codex-subagent message that must not reach the parent
+    // transcript. Each delta carries its own leading space.
+    const lines = renderChatLines({
+      activeSession: session,
+      notices: [],
+      events: [
+        { sessionId: "s1", timestamp: "2026-01-01T12:00:01.000Z", sequence: 1,
+          event: { type: "text", text: "Planning the", messageId: "msg-A", turnId: "t1", itemId: "iA" } },
+        { sessionId: "s1", timestamp: "2026-01-01T12:00:01.100Z", sequence: 2,
+          event: { type: "text", text: "Reading the", messageId: "msg-B", turnId: "t1", itemId: "iB" } },
+        { sessionId: "s1", timestamp: "2026-01-01T12:00:01.200Z", sequence: 3,
+          event: { type: "text", text: " architecture pass.", messageId: "msg-A", turnId: "t1", itemId: "iA" } },
+        { sessionId: "s1", timestamp: "2026-01-01T12:00:01.300Z", sequence: 4,
+          event: { type: "text", text: " renderer files.", messageId: "msg-B", turnId: "t1", itemId: "iB" } },
+        { sessionId: "s1", timestamp: "2026-01-01T12:00:01.400Z", sequence: 5,
+          event: { type: "text", text: "Subagent secret leak.", messageId: "codex-subagent:x:y:z:text", turnId: "t1", itemId: "iC" } },
+      ],
+    });
+    const assistant = lines.filter((l) => l.tone === "assistant");
+    // No single line scrambles the two messages together (the old identity-blind
+    // bug fused interleaved deltas — losing word boundaries at the seams).
+    for (const line of assistant) {
+      expect(line.body.includes("architecture") && line.body.includes("renderer")).toBe(false);
+    }
+    // Re-joining each message's fragments (kept attributed by messageId) yields
+    // the original, fully-spaced text — proving the pipeline never drops spaces.
+    const joinById = (id: string) => assistant.filter((l) => l.messageId === id).map((l) => l.body).join("");
+    expect(joinById("msg-A")).toBe("Planning the architecture pass.");
+    expect(joinById("msg-B")).toBe("Reading the renderer files.");
+    // codex-subagent content never reaches the parent transcript.
+    expect(assistant.map((l) => l.body).join("\n")).not.toContain("Subagent secret leak");
+  });
+
   it("does not coalesce assistant text across a tool call", () => {
     const session = {
       sessionId: "s1",

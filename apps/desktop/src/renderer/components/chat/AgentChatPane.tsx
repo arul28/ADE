@@ -14,6 +14,7 @@ import {
   type AgentChatCursorConfigValue,
   type AgentChatDroidPermissionMode,
   type AgentChatExecutionMode,
+  type AgentChatEvent,
   type AgentChatEventEnvelope,
   type AgentChatEventHistorySnapshot,
   type AgentChatContextAttachment,
@@ -22,6 +23,7 @@ import {
   type AiProviderConnectionStatus,
   type AiRuntimeConnectionStatus,
   type AgentChatSession,
+  type AgentChatSubagentMetadata,
   type AgentChatSubagentTranscriptMessage,
   type AgentChatOpenCodePermissionMode,
   type AgentChatPermissionMode,
@@ -44,6 +46,7 @@ import {
   type TerminalSessionDetail,
   type TerminalToolType,
 } from "../../../shared/types";
+import { resolveSubagentCapability } from "../../../shared/subagentCapabilities";
 import {
   buildChatContextAttachmentPrompt,
   makeLinearIssueContextAttachment,
@@ -81,6 +84,7 @@ import { CURSOR_AVAILABLE_MODE_IDS } from "../../../shared/cursorModes";
 import { cn } from "../ui/cn";
 import { AgentChatComposer, type ParallelComposerControlSlot } from "./AgentChatComposer";
 import { resolveModelDescriptorWithRuntimeCatalog, descriptorsFromAgentChatModelCatalog } from "../shared/ModelPicker/modelCatalog";
+import { toUsageViewModel, type ContextUsageViewModel } from "./usage/contextUsageModel";
 import { getSharedRuntimeCatalog } from "../shared/ModelPicker/runtimeCatalogCache";
 import { familiesFromStatus } from "../shared/ModelPicker/useProviderAuthStatus";
 import { AgentChatMessageList } from "./AgentChatMessageList";
@@ -104,23 +108,26 @@ import { ChatAppControlPanel } from "./ChatAppControlPanel";
 import { ChatSubagentsPanel } from "./ChatSubagentsPanel";
 import { ChatTasksPanel } from "./ChatTasksPanel";
 import { ChatFileChangesPanel } from "./ChatFileChangesPanel";
-import { CodexOpenInCliButton } from "./codex/CodexOpenInCliButton";
 import { RewindFilesConfirmDialog, type RewindFilesConfirmDialogState } from "./RewindFilesConfirmDialog";
 import { buildRewindPreviewFiles, deriveRewindDiffSummaries } from "./rewindFilesPreview";
 import { ChatCursorCloudPanel, type ChatCursorCloudPanelHandle } from "./ChatCursorCloudPanel";
 import { CursorCloudInlineLaunch, type CursorCloudInlineLaunchHandle } from "./CursorCloudInlineLaunch";
-import { QuickRunMenu } from "../run/QuickRunMenu";
+import { QuickRunInlineList } from "../run/QuickRunMenu";
 import { ChatGitToolbar } from "./ChatGitToolbar";
 import { LaneChip } from "../terminals/LaneChip";
 import { getLaneAccent } from "../lanes/laneColorPalette";
 import { openLaneInLanesTabPath } from "../../lib/laneNavigation";
 import { ChatTerminalDrawer, ChatTerminalToggle } from "./ChatTerminalDrawer";
 import { deriveChatSubagentSnapshots, deriveTodoItems, deriveTurnDiffSummaries } from "./chatExecutionSummary";
+import { deriveMissionSnapshot } from "./chatMission";
+import { MissionControlPanel } from "./MissionControlPanel";
 import { derivePendingInputRequests, type DerivedPendingInput } from "./pendingInput";
 import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
 import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPicker";
 import { ConfirmDialog, useConfirmDialog } from "../shared/InlineDialogs";
 import { ChatActionsDrawerPanel, type ChatActionsTab } from "./ChatActionsDrawerPanel";
+import { CodexPlanCard } from "./codex/CodexPlanCard";
+import { ChatPrPane } from "./ChatPrPane";
 import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
 import { buildChatAppearanceRootStyle } from "./chatAppearance";
 import { copyLaunchPromptToClipboard } from "../../lib/launchPromptClipboard";
@@ -264,6 +271,346 @@ function hasSubagentAutoOpenFired(storage: SubagentAutoOpenStorage, sessionId: s
   }
   return true;
 }
+
+function transcriptRecordText(record: Record<string, unknown> | null): string | null {
+  if (!record) return null;
+  for (const key of ["text", "summary", "description", "output", "command", "path", "query"] as const) {
+    const value = record[key];
+    if (typeof value === "string" && value.trim().length > 0) return value.trim();
+  }
+  return null;
+}
+
+function subagentRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function subagentEventTurnId(event: AgentChatEvent): string | null {
+  return "turnId" in event && typeof event.turnId === "string" && event.turnId.trim().length
+    ? event.turnId.trim()
+    : null;
+}
+
+function subagentEventItemId(event: AgentChatEvent): string | null {
+  return "itemId" in event && typeof event.itemId === "string" && event.itemId.trim().length
+    ? event.itemId.trim()
+    : null;
+}
+
+function subagentEventMessageId(event: AgentChatEvent): string | null {
+  return "messageId" in event && typeof event.messageId === "string" && event.messageId.trim().length
+    ? event.messageId.trim()
+    : null;
+}
+
+function stableSubagentMessageId(
+  event: AgentChatEvent,
+  message: AgentChatSubagentTranscriptMessage,
+  index: number,
+): string {
+  const turnId = subagentEventTurnId(event) ?? "no-turn";
+  const itemId = subagentEventItemId(event) ?? subagentEventMessageId(event) ?? message.uuid ?? String(index);
+  return `subagent:${message.sessionId}:${turnId}:${itemId}:${event.type}`;
+}
+
+function normalizeSubagentEvent(
+  event: AgentChatEvent,
+  message: AgentChatSubagentTranscriptMessage,
+  index: number,
+): AgentChatEvent {
+  if (event.type === "text") {
+    return {
+      ...event,
+      messageId: event.messageId ?? stableSubagentMessageId(event, message, index),
+    };
+  }
+  if (event.type === "user_message") {
+    return {
+      ...event,
+      messageId: event.messageId ?? stableSubagentMessageId(event, message, index),
+    };
+  }
+  return event;
+}
+
+function claudeToolResultText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((block) => {
+        if (typeof block === "string") return block;
+        const record = subagentRecord(block);
+        return record && typeof record.text === "string" ? record.text : "";
+      })
+      .filter((value) => value.length > 0)
+      .join("\n");
+  }
+  return "";
+}
+
+/**
+ * Expand an Anthropic/Claude message ({ role, content[, type:"message"] }) into
+ * real transcript events. The Claude Agent SDK's getSubagentMessages returns the
+ * raw Anthropic message, whose content blocks (text / thinking / tool_use /
+ * tool_result) are the actual subagent transcript — so we surface each block as
+ * the matching chat event instead of dropping the whole message into one opaque
+ * row.
+ */
+function expandClaudeTranscriptMessage(
+  record: Record<string, unknown>,
+  message: AgentChatSubagentTranscriptMessage,
+): AgentChatEvent[] {
+  const role = typeof record.role === "string" ? record.role : message.type;
+  const content = record.content;
+  const out: AgentChatEvent[] = [];
+  const pushText = (value: string, id: string): void => {
+    const trimmed = value.trim();
+    if (!trimmed) return;
+    out.push(role === "user"
+      ? { type: "user_message", text: trimmed, messageId: id }
+      : { type: "text", text: trimmed, messageId: id });
+  };
+
+  if (typeof content === "string") {
+    pushText(content, message.uuid);
+  } else if (Array.isArray(content)) {
+    content.forEach((block, blockIndex) => {
+      const b = subagentRecord(block);
+      if (!b) return;
+      const blockType = typeof b.type === "string" ? b.type : "";
+      const id = `${message.uuid}:${blockIndex}`;
+      if (blockType === "text" && typeof b.text === "string") {
+        pushText(b.text, id);
+      } else if (blockType === "thinking" && typeof b.thinking === "string" && b.thinking.trim().length > 0) {
+        out.push({ type: "reasoning", text: b.thinking, itemId: id });
+      } else if (blockType === "tool_use") {
+        out.push({
+          type: "tool_call",
+          tool: typeof b.name === "string" && b.name.length > 0 ? b.name : "tool",
+          args: b.input ?? {},
+          itemId: typeof b.id === "string" && b.id.length > 0 ? b.id : id,
+        });
+      } else if (blockType === "tool_result") {
+        out.push({
+          type: "tool_result",
+          tool: "",
+          result: claudeToolResultText(b.content),
+          itemId: typeof b.tool_use_id === "string" && b.tool_use_id.length > 0 ? b.tool_use_id : id,
+          status: b.is_error === true ? "failed" : "completed",
+        });
+      }
+    });
+  }
+
+  // Nothing structured extracted but the SDK still gave us flat text.
+  if (out.length === 0 && typeof message.text === "string" && message.text.trim().length > 0) {
+    pushText(message.text, message.uuid);
+  }
+  return out;
+}
+
+function eventsFromSubagentTranscriptMessage(
+  message: AgentChatSubagentTranscriptMessage,
+  index: number,
+): AgentChatEvent[] {
+  const record = subagentRecord(message.message);
+  // Anthropic/Claude message shape — expand its content blocks. This MUST come
+  // before the generic passthrough below: Anthropic messages carry type:"message",
+  // which would otherwise be mistaken for an already-formed chat event and render
+  // as a blank "event" row.
+  if (record && (record.type === "message" || record.role === "assistant" || record.role === "user")) {
+    const expanded = expandClaudeTranscriptMessage(record, message)
+      .map((event, subIndex) => normalizeSubagentEvent(event, message, index + subIndex));
+    if (expanded.length > 0) return expanded;
+  }
+  // Runtime already handed us a formed chat event (codex / event-history path).
+  if (typeof record?.type === "string" && record.type.trim().length > 0 && record.type !== "message") {
+    return [normalizeSubagentEvent(record as unknown as AgentChatEvent, message, index)];
+  }
+  const text = typeof message.text === "string" ? message.text.trim() : transcriptRecordText(record);
+  if (!text) return [];
+  const event: AgentChatEvent = message.type === "user"
+    ? { type: "user_message", text, messageId: message.uuid }
+    : { type: "text", text, messageId: message.uuid };
+  return [normalizeSubagentEvent(event, message, index)];
+}
+
+function subagentMergeKey(event: AgentChatEvent): string | null {
+  if (event.type !== "text" && event.type !== "reasoning" && event.type !== "command" && event.type !== "file_change") {
+    return null;
+  }
+  const turnId = subagentEventTurnId(event) ?? "no-turn";
+  const itemId = subagentEventItemId(event) ?? subagentEventMessageId(event) ?? "no-item";
+  const suffix = event.type === "file_change"
+    ? `:${event.path}`
+    : event.type === "reasoning" && typeof event.summaryIndex === "number"
+      ? `:${event.summaryIndex}`
+      : "";
+  return `${event.type}:${turnId}:${itemId}${suffix}`;
+}
+
+function isCompletedSubagentEvent(event: AgentChatEvent): boolean {
+  if ((event.type === "command" || event.type === "file_change") && event.status === "running") {
+    return false;
+  }
+  return true;
+}
+
+function mergeAdjacentSubagentEvents(left: AgentChatEvent, right: AgentChatEvent): AgentChatEvent | null {
+  if (subagentMergeKey(left) !== subagentMergeKey(right)) return null;
+  if (left.type === "text" && right.type === "text") {
+    return { ...right, text: `${left.text}${right.text}`, messageId: left.messageId ?? right.messageId };
+  }
+  if (left.type === "reasoning" && right.type === "reasoning") {
+    return { ...right, text: `${left.text}${right.text}` };
+  }
+  if (left.type === "command" && right.type === "command") {
+    if (right.status !== "running") return right;
+    return { ...right, output: `${left.output}${right.output}` };
+  }
+  if (left.type === "file_change" && right.type === "file_change") {
+    if (right.status && right.status !== "running") return right;
+    return { ...right, diff: `${left.diff}${right.diff}` };
+  }
+  return null;
+}
+
+function coalesceSubagentEventEnvelopes(envelopes: AgentChatEventEnvelope[]): AgentChatEventEnvelope[] {
+  const output: AgentChatEventEnvelope[] = [];
+  for (const envelope of envelopes) {
+    const previous = output[output.length - 1];
+    const merged = previous ? mergeAdjacentSubagentEvents(previous.event, envelope.event) : null;
+    if (previous && merged) {
+      output[output.length - 1] = {
+        ...previous,
+        event: merged,
+        timestamp: envelope.timestamp,
+        sequence: envelope.sequence ?? previous.sequence,
+      };
+    } else {
+      output.push(envelope);
+    }
+  }
+  return output;
+}
+
+function buildSubagentEventHistory(args: {
+  sessionId: string | null;
+  subagentId: string;
+  subagentName: string;
+  prompt: string | null;
+  messages: AgentChatSubagentTranscriptMessage[] | null;
+  loading: boolean;
+  unsupported: boolean;
+}): AgentChatEventEnvelope[] {
+  const raw = (args.messages ?? [])
+    .flatMap((message, index) =>
+      eventsFromSubagentTranscriptMessage(message, index).map((event) => ({
+        message,
+        event,
+        mergeKey: subagentMergeKey(event),
+        live: message.uuid.startsWith("codex-live:"),
+        completed: isCompletedSubagentEvent(event),
+      })));
+
+  const completedKeys = new Set(
+    raw
+      .filter((entry) => entry.mergeKey && !entry.live && entry.completed)
+      .map((entry) => entry.mergeKey!),
+  );
+
+  const transcriptEntries = raw.filter((entry) => !(entry.live && entry.mergeKey && completedKeys.has(entry.mergeKey)));
+  const prompt = args.prompt?.trim() || null;
+  const hasPromptMessage = prompt
+    ? transcriptEntries.some((entry) => entry.event.type === "user_message")
+    : false;
+
+  let sequence = 0;
+  const timestampFor = (index: number): string =>
+    new Date(Date.UTC(2026, 0, 1, 0, 0, 0, Math.min(index, 999))).toISOString();
+  const envelopes: AgentChatEventEnvelope[] = [];
+  if (prompt && !hasPromptMessage) {
+    envelopes.push({
+      sessionId: args.sessionId ?? args.subagentId,
+      timestamp: timestampFor(sequence),
+      sequence: sequence++,
+      event: {
+        type: "user_message",
+        text: prompt,
+        messageId: `subagent:${args.subagentId}:spawn-prompt`,
+        deliveryState: "delivered",
+        processed: true,
+      },
+      provenance: {
+        messageId: `subagent:${args.subagentId}:spawn-prompt`,
+        threadId: args.subagentId,
+        role: "user",
+        targetKind: "codex_subagent",
+      },
+    });
+  }
+
+  for (const entry of transcriptEntries) {
+    // Prefer the event's own id so multiple blocks from one Anthropic message
+    // (text + tool calls + results) get distinct provenance instead of colliding
+    // on the shared message uuid.
+    const messageId = subagentEventItemId(entry.event)
+      ?? subagentEventMessageId(entry.event)
+      ?? entry.message.uuid
+      ?? subagentMergeKey(entry.event)
+      ?? `subagent:${args.subagentId}:${sequence}`;
+    envelopes.push({
+      sessionId: args.sessionId ?? args.subagentId,
+      timestamp: timestampFor(sequence),
+      sequence: sequence++,
+      event: entry.event,
+      provenance: {
+        messageId,
+        threadId: args.subagentId,
+        role: entry.message.type === "user" ? "user" : "agent",
+        targetKind: "codex_subagent",
+      },
+    });
+  }
+
+  if (envelopes.length === 0 && args.loading) {
+    envelopes.push({
+      sessionId: args.sessionId ?? args.subagentId,
+      timestamp: timestampFor(sequence),
+      sequence: sequence++,
+      event: {
+        type: "activity",
+        activity: "working",
+        detail: `Loading ${args.subagentName} transcript`,
+      },
+      provenance: {
+        threadId: args.subagentId,
+        role: "agent",
+        targetKind: "codex_subagent",
+      },
+    });
+  }
+  if (envelopes.length === 0 && args.unsupported) {
+    envelopes.push({
+      sessionId: args.sessionId ?? args.subagentId,
+      timestamp: timestampFor(sequence),
+      sequence,
+      event: {
+        type: "error",
+        message: "This runtime did not return a subagent transcript.",
+      },
+      provenance: {
+        threadId: args.subagentId,
+        role: "agent",
+        targetKind: "codex_subagent",
+      },
+    });
+  }
+
+  return coalesceSubagentEventEnvelopes(envelopes);
+}
 const CHAT_HISTORY_READ_MAX_BYTES = 2_000_000;
 const MAX_RETAINED_CHAT_SESSION_HISTORIES = 6;
 const MAX_SELECTED_CHAT_SESSION_EVENTS = 20_000;
@@ -345,11 +692,10 @@ function draftLaunchKindLabel(kind: DraftLaunchKind): string {
   return kind === "cli" ? "CLI session" : "chat";
 }
 
-function draftLaunchJobLabel(job: DraftLaunchJob): string {
-  if (job.status === "naming-lane" || job.status === "creating-lane") return "Auto-create lane";
-  if (job.status === "failed") return "Launch failed";
-  if (job.status === "ready") return job.mode === "background" ? "Background launch" : "Ready";
-  return job.draftKind === "cli" ? "CLI launch" : "Chat launch";
+function draftLaunchPromptSnippet(job: DraftLaunchJob): string {
+  const text = job.snapshot.text.trim().replace(/\s+/g, " ");
+  if (!text) return job.title;
+  return text.length > 44 ? `${text.slice(0, 44)}…` : text;
 }
 
 function draftLaunchJobMessage(job: DraftLaunchJob): string {
@@ -366,6 +712,54 @@ function draftLaunchJobMessage(job: DraftLaunchJob): string {
 
 function staleDraftLaunchJobMessage(job: DraftLaunchJob): string {
   return `${draftLaunchJobMessage(job)} Still working. You can hide this status while ADE continues in the background.`;
+}
+
+/**
+ * 3-quadrant reserve. The chat reserves horizontal space for whichever floating
+ * side panes are open (when there is room), so the centered transcript + composer
+ * re-center in the remaining area rather than leaving an empty gutter opposite an
+ * open pane. On a narrow surface it stops reserving so the chat keeps full width
+ * (the pane then overlays). Right is preferred over left when space is tight.
+ */
+const PANE_RESERVE_RIGHT_PX = 276; // 16.5rem pane + 12px gutter
+const PANE_RESERVE_LEFT_PX = 276; // 16.5rem pane + 12px gutter
+const CHAT_MIN_WIDTH_PX = 360; // recenter the chat as soon as a normal screen allows
+// The centered chat column's default width (`--chat-column`, 52rem @ 16px root).
+// Used to tell whether a floating pane already fits in the chat's side margin.
+const CHAT_COLUMN_PX = 832;
+/**
+ * Reserve gutter space for the floating panes — but ONLY when they'd otherwise
+ * overlap the centered chat column. When the window is wide enough that a pane
+ * fits in the chat's natural side margin, reserve nothing so the chat does NOT
+ * shift (the pane just overlays the empty margin). When the window is too narrow
+ * for the pane to fit beside the column, reserve the pane's width so the chat
+ * shifts over instead of being covered. Right is preferred over left when tight.
+ */
+function computePaneReserve(
+  width: number,
+  leftOpen: boolean,
+  rightOpen: boolean,
+): { left: string; right: string } {
+  if (width <= 0) return { left: "0px", right: "0px" };
+  // Free space on each side of the centered column at full width.
+  const naturalSideMargin = Math.max(0, (width - CHAT_COLUMN_PX) / 2);
+  let right = 0;
+  if (
+    rightOpen
+    && naturalSideMargin < PANE_RESERVE_RIGHT_PX // pane wouldn't fit in the margin → shift
+    && width - PANE_RESERVE_RIGHT_PX >= CHAT_MIN_WIDTH_PX
+  ) {
+    right = PANE_RESERVE_RIGHT_PX;
+  }
+  let left = 0;
+  if (
+    leftOpen
+    && naturalSideMargin < PANE_RESERVE_LEFT_PX
+    && width - right - PANE_RESERVE_LEFT_PX >= CHAT_MIN_WIDTH_PX
+  ) {
+    left = PANE_RESERVE_LEFT_PX;
+  }
+  return { left: `${left}px`, right: `${right}px` };
 }
 
 type AiStatusSnapshot = AiSettingsStatus & {
@@ -848,6 +1242,8 @@ function summarizeNativeControls(
 
 function droidPermissionModeToLegacyPermissionMode(mode: AgentChatDroidPermissionMode): AgentChatPermissionMode {
   if (mode === "read-only") return "plan";
+  // AGI orchestrator is read-only at the top level → closest legacy mode is plan.
+  if (mode === "agi") return "plan";
   if (mode === "auto-low") return "edit";
   if (mode === "auto-medium") return "default";
   return "full-auto";
@@ -1018,6 +1414,7 @@ const HANDOFF_DROID_MODES: Array<{ value: AgentChatDroidPermissionMode; label: s
   { value: "auto-low", label: "Auto low" },
   { value: "auto-medium", label: "Auto medium" },
   { value: "auto-high", label: "Auto high" },
+  { value: "agi", label: "AGI (orchestrator)" },
 ];
 
 const handoffSelectCls = cn(
@@ -2219,7 +2616,7 @@ const DEFAULT_CHAT_COMPANION_UI_STATE: ChatCompanionUiState = {
 };
 
 function parseChatActionsTab(value: unknown): ChatActionsTab {
-  if (value === "agents" || value === "proof" || value === "handoff") return value;
+  if (value === "agents" || value === "proof" || value === "handoff" || value === "missions") return value;
   return "agents";
 }
 
@@ -2302,6 +2699,11 @@ export function AgentChatPane({
   onOpenShellSession,
   availableLanes,
   onLaneChange,
+  onToggleSessionsPane,
+  sessionsPaneCollapsed,
+  sessionsPaneCount,
+  onToggleToolsPane,
+  toolsPaneOpen,
 }: {
   laneId: string | null;
   laneLabel?: string | null;
@@ -2342,6 +2744,13 @@ export function AgentChatPane({
   availableLanes?: Array<{ id: string; name: string; color?: string | null; branchRef?: string | null; laneType?: string | null }>;
   /** Callback when lane selection changes in empty state */
   onLaneChange?: (laneId: string) => void;
+  /** Work tab: far-left session-list expander rendered in this chat's header. */
+  onToggleSessionsPane?: () => void;
+  sessionsPaneCollapsed?: boolean;
+  sessionsPaneCount?: number;
+  /** Work tab: far-right Tools-pane toggle rendered in this chat's header. */
+  onToggleToolsPane?: () => void;
+  toolsPaneOpen?: boolean;
 }) {
   const projectRoot = useAppStore(selectActiveProjectRoot);
   const projectTransition = useAppStore((s) => s.projectTransition);
@@ -2527,6 +2936,32 @@ export function AgentChatPane({
   const [chatActionsOpen, setChatActionsOpen] = useState(
     () => readChatCompanionUiState(initialCompanionStateKey).chatActionsOpen,
   );
+  // Left PR floating pane (ADE chats only). Session-scoped UI state; not persisted.
+  const [prPaneOpen, setPrPaneOpen] = useState(false);
+  // Auto-open the PR pane when this lane's PR transitions to opened / closed /
+  // merged (otherwise it follows normal toggle rules).
+  const prevPrStateRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!laneId) {
+      prevPrStateRef.current = null;
+      return;
+    }
+    let cancelled = false;
+    window.ade.prs.getForLane(laneId)
+      .then((pr) => { if (!cancelled) prevPrStateRef.current = pr?.state ?? null; })
+      .catch(() => {});
+    const unsubscribe = window.ade.prs.onEvent((event) => {
+      if (event.type !== "prs-updated") return;
+      const nextState = event.prs.find((pr) => pr.laneId === laneId)?.state ?? null;
+      if (nextState !== prevPrStateRef.current) {
+        if (nextState === "open" || nextState === "closed" || nextState === "merged") {
+          setPrPaneOpen(true);
+        }
+        prevPrStateRef.current = nextState;
+      }
+    });
+    return () => { cancelled = true; unsubscribe(); };
+  }, [laneId]);
   const [chatActionsTab, setChatActionsTab] = useState<ChatActionsTab>(
     () => readChatCompanionUiState(initialCompanionStateKey).chatActionsTab,
   );
@@ -2670,6 +3105,18 @@ export function AgentChatPane({
   const [parallelLaunchBusy, setParallelLaunchBusy] = useState(false);
   const [parallelLaunchStatus, setParallelLaunchStatus] = useState<string | null>(null);
   const shellRef = useRef<HTMLElement | null>(null);
+  // Measure the chat surface width to drive the 3-quadrant pane reserve.
+  const [chatAreaWidth, setChatAreaWidth] = useState(0);
+  useEffect(() => {
+    const el = shellRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver((entries) => {
+      const next = entries[0]?.contentRect.width;
+      if (typeof next === "number") setChatAreaWidth(next);
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
   const composerMaxHeightPx = layoutVariant === "grid-tile" ? 144 : null;
   const sessionsRef = useRef<AgentChatSessionSummary[]>(sessions);
   const completionSoundPrevTurnActiveRef = useRef(false);
@@ -2925,6 +3372,57 @@ export function AgentChatPane({
     return sawUsageEvent ? usageFromEvents : (selectedSession?.codexTokenUsage ?? null);
   }, [selectedEventsForDisplay, selectedSession?.codexTokenUsage]);
   const selectedSubagentSnapshots = useMemo(() => deriveChatSubagentSnapshots(selectedEvents), [selectedEvents]);
+  // Per-runtime subagent capability — the single source of truth for whether
+  // clicking a subagent takes over the chat (full transcript) or only opens the
+  // inline drawer. Computed from the provider with the same shared resolver the
+  // service uses, so renderer and main agree without an IPC round-trip.
+  const selectedSubagentCapability = useMemo(
+    () => resolveSubagentCapability(selectedSession?.provider ?? null),
+    [selectedSession?.provider],
+  );
+  // Droid AGI mission state (Missions tab). Null unless the session is a Droid
+  // orchestrator run that has surfaced mission events — non-AGI chats stay null
+  // and the Missions tab never appears.
+  const selectedMission = useMemo(() => deriveMissionSnapshot(selectedEvents), [selectedEvents]);
+  // Last message the user actually sent in this chat — fed to the composer so
+  // ArrowUp on line 1 recalls it (terminal-style).
+  const lastSentUserMessage = useMemo(() => {
+    for (let i = selectedEvents.length - 1; i >= 0; i -= 1) {
+      const event = selectedEvents[i]?.event;
+      if (event?.type === "user_message") {
+        const text = userMessageVisibleText(event).trim();
+        if (text) return text;
+      }
+    }
+    return null;
+  }, [selectedEvents]);
+  const [killingWorkerIds, setKillingWorkerIds] = useState<ReadonlySet<string>>(() => new Set());
+  const killDroidWorker = useCallback(
+    (workerSessionId: string) => {
+      if (!selectedSessionId || !workerSessionId) return;
+      const killWorker = window.ade?.agentChat?.killDroidWorker;
+      if (typeof killWorker !== "function") return;
+      setKillingWorkerIds((prev) => {
+        const next = new Set(prev);
+        next.add(workerSessionId);
+        return next;
+      });
+      void killWorker({ sessionId: selectedSessionId, workerSessionId })
+        .catch((killError) => {
+          // eslint-disable-next-line no-console
+          console.error("agentChat.killDroidWorker failed", killError);
+        })
+        .finally(() => {
+          setKillingWorkerIds((prev) => {
+            if (!prev.has(workerSessionId)) return prev;
+            const next = new Set(prev);
+            next.delete(workerSessionId);
+            return next;
+          });
+        });
+    },
+    [selectedSessionId],
+  );
   // The pane is runtime-agnostic — Codex emits subagent_started/progress/result
   // events for delegation and collabToolCall items (spawn_agent, etc.) just
   // like Claude. Gate on whether we have anything to display: snapshots OR an
@@ -2937,7 +3435,16 @@ export function AgentChatPane({
   // breadcrumb status in sync as the agent transitions running → completed.
   const subagentViewSnapshot = useMemo(() => {
     if (!subagentView) return null;
-    return selectedSubagentSnapshots.find((s) => s.taskId === subagentView.taskId) ?? null;
+    // Match by taskId OR agentId: when a subagent completes, its snapshot id can
+    // resolve from taskId to agentId (placeholder adoption), which previously made
+    // the view "lose" its snapshot and auto-clear — i.e. the transcript vanished
+    // the moment the subagent ended. Matching either id keeps the drill-in alive
+    // after completion so you can still read a finished subagent's transcript.
+    return selectedSubagentSnapshots.find((s) =>
+      s.taskId === subagentView.taskId
+      || (subagentView.taskId != null && s.agentId === subagentView.taskId)
+      || (subagentView.agentId != null && (s.agentId === subagentView.agentId || s.taskId === subagentView.agentId)),
+    ) ?? null;
   }, [subagentView, selectedSubagentSnapshots]);
   // Indicates at least one background subagent is currently running; used to
   // surface a small dot on the panel toggle when the panel is collapsed.
@@ -2961,12 +3468,58 @@ export function AgentChatPane({
   >(null);
   const [subagentTranscriptLoading, setSubagentTranscriptLoading] = useState(false);
   const [subagentTranscriptUnsupported, setSubagentTranscriptUnsupported] = useState(false);
+  const [subagentMetadata, setSubagentMetadata] = useState<AgentChatSubagentMetadata | null>(null);
+
+  // Drill-in (subagent takeover) view-model. Computed here, before any early
+  // return, so the useMemo below is an unconditional hook (react-hooks rules).
+  const subagentThreadIdForView = subagentMetadata?.threadId
+    ?? subagentView?.agentId
+    ?? subagentView?.taskId
+    ?? null;
+  const subagentNameForView = subagentView
+    ? (
+      subagentMetadata?.label
+      ?? subagentMetadata?.agentNickname
+      ?? subagentMetadata?.agentRole
+      ?? subagentMetadata?.name
+      ?? subagentView.agentType
+      ?? subagentViewSnapshot?.description
+      ?? subagentView.agentId
+      ?? subagentView.taskId
+      ?? "Subagent"
+    )
+    : null;
+  const subagentPromptForView = subagentView
+    ? subagentMetadata?.prompt ?? subagentViewSnapshot?.description ?? null
+    : null;
+  const subagentEventsForDisplay = useMemo(() => {
+    if (!subagentView) return EMPTY_CHAT_EVENTS;
+    return buildSubagentEventHistory({
+      sessionId: selectedSessionId,
+      subagentId: subagentThreadIdForView ?? subagentView.agentId ?? subagentView.taskId,
+      subagentName: subagentNameForView ?? subagentView.agentType ?? subagentView.agentId ?? subagentView.taskId,
+      prompt: subagentPromptForView,
+      messages: subagentTranscript,
+      loading: subagentTranscriptLoading,
+      unsupported: subagentTranscriptUnsupported,
+    });
+  }, [
+    selectedSessionId,
+    subagentNameForView,
+    subagentPromptForView,
+    subagentThreadIdForView,
+    subagentTranscript,
+    subagentTranscriptLoading,
+    subagentTranscriptUnsupported,
+    subagentView,
+  ]);
 
   useEffect(() => {
     if (!subagentView || !selectedSessionId) {
       setSubagentTranscript(null);
       setSubagentTranscriptLoading(false);
       setSubagentTranscriptUnsupported(false);
+      setSubagentMetadata(null);
       return;
     }
 
@@ -2974,6 +3527,7 @@ export function AgentChatPane({
     if (typeof fetchTranscript !== "function") {
       setSubagentTranscript(null);
       setSubagentTranscriptUnsupported(true);
+      setSubagentMetadata(null);
       return;
     }
 
@@ -2992,9 +3546,11 @@ export function AgentChatPane({
         if (result === null) {
           setSubagentTranscriptUnsupported(true);
           setSubagentTranscript(null);
+          setSubagentMetadata(null);
         } else {
           setSubagentTranscriptUnsupported(false);
           setSubagentTranscript(result);
+          setSubagentMetadata(result.find((entry) => entry.subagentMetadata)?.subagentMetadata ?? null);
         }
       } catch (error) {
         // Log so debugging is possible; surface as empty transcript rather than
@@ -3016,6 +3572,37 @@ export function AgentChatPane({
       if (intervalId !== null) window.clearInterval(intervalId);
     };
   }, [subagentView, subagentViewSnapshot?.status, selectedSessionId]);
+
+  useEffect(() => {
+    if (subagentView && !chatActionsOpen) {
+      setSubagentView(null);
+    }
+  }, [chatActionsOpen, subagentView]);
+
+  // Cheap probe for the subagents panel: does this agent actually have a
+  // pullable transcript? It runs the EXACT same fetch the takeover view uses
+  // (just limit:1), so it can never disagree with what the takeover would
+  // render. The panel only replaces the chat when this resolves true —
+  // otherwise it opens an inline details drawer, so the dead "No transcript"
+  // takeover page is now unreachable.
+  const probeSubagentTranscript = useCallback(
+    async (args: { taskId: string; agentId: string | null }): Promise<boolean> => {
+      const fetchTranscript = window.ade?.agentChat?.getSubagentTranscript;
+      if (typeof fetchTranscript !== "function" || !selectedSessionId) return false;
+      try {
+        const result = await fetchTranscript({
+          sessionId: selectedSessionId,
+          agentId: args.agentId ?? args.taskId,
+          taskId: args.taskId,
+          limit: 1,
+        });
+        return Array.isArray(result) && result.length > 0;
+      } catch {
+        return false;
+      }
+    },
+    [selectedSessionId],
+  );
   const selectedTurnDiffSummaries = useMemo(() => deriveTurnDiffSummaries(selectedEvents), [selectedEvents]);
   const selectedTodoItems = useMemo(() => deriveTodoItems(selectedEvents), [selectedEvents]);
   const selectedPendingInputs = selectedSessionId ? (pendingInputsBySession[selectedSessionId] ?? []) : [];
@@ -3101,6 +3688,15 @@ export function AgentChatPane({
     } catch {
       /* localStorage unavailable; fall back to in-memory ref */
     }
+    // Don't consume the once-per-session auto-open until we can actually surface
+    // the agents panel. If the chat-actions pane is already open (possibly on a
+    // different tab), leave the user where they are and retry when it next closes
+    // — otherwise the flag gets burned without the agents panel ever opening,
+    // which is exactly why subagents sometimes didn't auto-open (it was runtime-
+    // independent; it depended on whether the pane happened to be open already).
+    if (chatActionsOpen) {
+      return;
+    }
     subagentAutoOpenedSessionsRef.current.add(selectedSessionId);
     try {
       window.localStorage.setItem(
@@ -3110,13 +3706,11 @@ export function AgentChatPane({
     } catch {
       /* best-effort persistence */
     }
-    if (!chatActionsOpen) {
-      setChatActionsTab("agents");
-      setIosSimulatorOpen(false);
-      setAppControlOpen(false);
-      setCursorCloudPaneOpen(false);
-      setChatActionsOpen(true);
-    }
+    setChatActionsTab("agents");
+    setIosSimulatorOpen(false);
+    setAppControlOpen(false);
+    setCursorCloudPaneOpen(false);
+    setChatActionsOpen(true);
   }, [chatActionsOpen, selectedSessionId, selectedSubagentSnapshots.length]);
 
   const persistParallelLaunchState = useCallback(async (state: AgentChatParallelLaunchState | null) => {
@@ -3452,6 +4046,54 @@ export function AgentChatPane({
     if (selectedSession && !modelSelectionDiffersFromSession) return selectedSession.provider;
     return resolveChatRuntimeProvider(resolveModelDescriptorWithRuntimeCatalog(modelId) ?? getModelById(modelId));
   }, [selectedSession, modelSelectionDiffersFromSession, modelId]);
+  // Provider-agnostic context-usage for the composer dial. Codex pushes a live
+  // CodexThreadTokenUsage (with modelContextWindow); the other runtimes report a
+  // 4-field breakdown on the terminal `done`/`tokens` events. We take the
+  // freshest signal, fall back to the active model's registry context window
+  // when the runtime doesn't report one, and flatten everything into one VM so a
+  // single dial renders for every provider.
+  const selectedUsageViewModel = useMemo<ContextUsageViewModel | null>(() => {
+    let genericUsage:
+      | { inputTokens?: number | null; outputTokens?: number | null; cacheReadTokens?: number | null; cacheWriteTokens?: number | null; reasoningTokens?: number | null; contextWindow?: number | null }
+      | null = null;
+    for (const envelope of selectedEventsForDisplay) {
+      const event = envelope.event;
+      if (event.type === "done" && event.usage) {
+        const u = event.usage;
+        genericUsage = {
+          inputTokens: u.inputTokens ?? null,
+          outputTokens: u.outputTokens ?? null,
+          cacheReadTokens: u.cacheReadTokens ?? null,
+          cacheWriteTokens: u.cacheCreationTokens ?? null,
+          reasoningTokens: u.reasoningTokens ?? null,
+          contextWindow: u.contextWindow ?? null,
+        };
+      } else if (event.type === "tokens") {
+        genericUsage = {
+          inputTokens: event.inputTokens ?? null,
+          outputTokens: event.outputTokens ?? null,
+          cacheReadTokens: event.cacheReadTokens ?? null,
+          cacheWriteTokens: event.cacheWriteTokens ?? null,
+          contextWindow: event.contextWindow ?? null,
+        };
+      }
+    }
+    const provider = sessionProvider ?? selectedSession?.provider ?? "";
+    const descriptor = modelId ? (resolveModelDescriptorWithRuntimeCatalog(modelId) ?? getModelById(modelId)) : null;
+    const fallbackWindow = descriptor?.contextWindow ?? null;
+
+    if (selectedCodexTokenUsage && (provider === "codex" || !genericUsage)) {
+      return toUsageViewModel(
+        { kind: "codex", provider: provider || "codex", usage: selectedCodexTokenUsage },
+        fallbackWindow,
+      );
+    }
+    if (genericUsage) {
+      const { contextWindow, ...rest } = genericUsage;
+      return toUsageViewModel({ kind: "generic", provider, usage: rest, contextWindow }, fallbackWindow);
+    }
+    return null;
+  }, [selectedEventsForDisplay, selectedCodexTokenUsage, selectedSession?.provider, sessionProvider, modelId]);
   const effectiveCursorModeSnapshot = useMemo(() => {
     if (sessionProvider !== "cursor") return null;
     const base = selectedSession?.cursorModeSnapshot ?? buildFallbackCursorModeSnapshot(cursorModeId);
@@ -5966,6 +6608,28 @@ export function AgentChatPane({
     suppressDraftLaunchNavigation,
   ]);
 
+  // Robust foreground auto-open: a foreground send (Enter) opens the chat
+  // directly with no status banner. If the inline open was skipped because this
+  // pane remounted mid-launch, this effect opens the ready job from whichever
+  // instance is mounted.
+  useEffect(() => {
+    if (!forceDraft) return;
+    const job = draftLaunchJobs.find(
+      (entry) => entry.mode === "foreground"
+        && entry.status === "ready"
+        && entry.autoOpen
+        && Boolean(entry.laneId && entry.laneName && entry.sessionId),
+    );
+    if (!job) return;
+    openLaunchedDraftSession({
+      laneId: job.laneId!,
+      laneName: job.laneName!,
+      sessionId: job.sessionId!,
+      draftKind: job.draftKind,
+      jobId: job.id,
+    });
+  }, [draftLaunchJobs, forceDraft, openLaunchedDraftSession]);
+
   const resolveDraftLaunchLane = useCallback(async (
     snapshot: DraftLaunchSnapshot,
     onAutoCreateNameResolved?: () => void,
@@ -6245,7 +6909,10 @@ export function AgentChatPane({
         laneName: launch.laneName,
         sessionId: launch.sessionId,
         draftKind: launch.draftKind,
-        autoOpen: false,
+        // Keep autoOpen set for foreground sends so the effect below can open the
+        // chat even if this pane instance remounted during the launch (otherwise
+        // the inline open is skipped and the job sits at "ready").
+        autoOpen: mode === "foreground",
       });
       if (!jobStillVisible) {
         return;
@@ -6695,7 +7362,6 @@ export function AgentChatPane({
             activeItemId: sid,
             selectedItemId: sid,
             draftKind: "chat",
-            viewMode: "tabs",
           });
         }
 
@@ -7531,7 +8197,6 @@ export function AgentChatPane({
     <ChatSubagentsPanel
       snapshots={selectedSubagentSnapshots}
       events={selectedEvents}
-      onInterruptTurn={turnActive ? () => { void interrupt(); } : undefined}
       variant="pane"
       onSelectSubagent={(selection) => {
         setSubagentView({
@@ -7542,6 +8207,9 @@ export function AgentChatPane({
           background: selection.background,
         });
       }}
+      onClearSelectedSubagent={() => setSubagentView(null)}
+      probeSubagentTranscript={probeSubagentTranscript}
+      capability={selectedSubagentCapability}
       selectedTaskId={subagentView?.taskId ?? null}
       goal={selectedSession?.provider === "codex" ? selectedCodexGoal : null}
       goalPending={selectedCodexGoalPending}
@@ -7762,14 +8430,50 @@ export function AgentChatPane({
       <p className="font-sans text-[13px] text-fg/50">Handoff is not available for this chat.</p>
     </div>
   );
+  // Latest plan the runtime has proposed for this chat (plain scan — not a hook).
+  const latestPlanEvent = (() => {
+    for (let i = selectedEventsForDisplay.length - 1; i >= 0; i--) {
+      const evt = selectedEventsForDisplay[i]?.event;
+      if (evt && evt.type === "plan") return evt;
+    }
+    return null;
+  })();
+  // Re-present the runtime's plan in the info pane (Plan tab) — a calm, readable
+  // companion to the live inline plan card. We never author or mutate the plan.
+  const chatActionsPlanContent = latestPlanEvent ? (
+    <div className="min-h-0 flex-1 overflow-y-auto p-3">
+      <CodexPlanCard event={latestPlanEvent} />
+    </div>
+  ) : null;
   const chatActionsPanelContent = (
     <ChatActionsDrawerPanel
       tab={chatActionsTab}
       onTabChange={setChatActionsTab}
       onClose={() => setChatActionsOpen(false)}
       agentsContent={agentsTabContent}
+      missionsContent={selectedMission ? (
+        <div className="h-full min-h-0 overflow-y-auto">
+          <MissionControlPanel
+            mission={selectedMission}
+            onKillWorker={killDroidWorker}
+            killingWorkerIds={killingWorkerIds}
+          />
+        </div>
+      ) : undefined}
       proofContent={proofTabContent}
       handoffContent={handoffTabContent}
+      planContent={chatActionsPlanContent}
+      runContent={showWorkspaceChrome && laneId ? (
+        <div className="flex h-full min-h-0 flex-col gap-3 overflow-y-auto p-4">
+          <div>
+            <div className="font-sans text-[length:calc(var(--chat-font-size)*12/14)] font-semibold text-fg/85">Run</div>
+            <p className="mt-1 font-sans text-[length:calc(var(--chat-font-size)*11/14)] leading-relaxed text-muted-fg/55">
+              Start this lane&rsquo;s process groups or open it in the Run / shell view.
+            </p>
+          </div>
+          <QuickRunInlineList laneId={laneId} />
+        </div>
+      ) : undefined}
     />
   );
   const cursorCloudPanelContent = (
@@ -7943,15 +8647,6 @@ export function AgentChatPane({
               </button>
             </SmartTooltip>
           ) : null}
-          {showWorkspaceChrome && laneId ? (
-            <QuickRunMenu
-              laneId={laneId}
-              compact
-              label="Run"
-              align="end"
-              triggerStyle={{ height: 24, padding: "0 8px" }}
-            />
-          ) : null}
           {(showWorkspaceChrome && laneId) || canShowHandoff ? (
             <SmartTooltip
               content={{
@@ -8016,41 +8711,6 @@ export function AgentChatPane({
             </SmartTooltip>
           ) : null}
           {chatTerminalVisible ? <ChatTerminalToggle open={terminalDrawerOpen} onToggle={() => setTerminalDrawerOpen((v) => !v)} /> : null}
-          {selectedSession?.provider === "codex"
-            && selectedSessionId
-            && selectedSession.threadId ? (
-            <CodexOpenInCliButton
-              sessionId={selectedSessionId}
-              onUseAdeTerminal={(args) => {
-                // Open the ADE terminal drawer and write the resume command
-                // into the chat's active terminal pane (plan §D.1). Falls
-                // back to copying the command if the chat doesn't yet have an
-                // active terminal session.
-                setTerminalDrawerOpen(true);
-                const quoted = (parts: string[]) =>
-                  parts.map((p) => `'${p.replace(/'/g, "'\\''")}'`).join(" ");
-                const fullCommand = `cd ${quoted([args.cwd])} && ${quoted([args.binary, ...args.argv])}\r`;
-                void (async () => {
-                  try {
-                    const active = await window.ade.terminal.activeForChat({
-                      chatSessionId: selectedSessionId,
-                    });
-                    if (active?.ptyId) {
-                      await window.ade.terminal.write({
-                        ptyId: active.ptyId,
-                        chatSessionId: selectedSessionId,
-                        data: fullCommand,
-                      });
-                      return;
-                    }
-                  } catch {
-                    // fall through to clipboard
-                  }
-                  await navigator.clipboard.writeText(fullCommand.trimEnd()).catch(() => undefined);
-                })();
-              }}
-            />
-          ) : null}
           {resolvedChips.map((chip) => (
             <span
               key={`${chip.label}:${chip.tone ?? "accent"}`}
@@ -8097,7 +8757,14 @@ export function AgentChatPane({
         showCacheBadge={showClaudeCacheTimer}
         cacheIdleSinceAt={selectedSession?.idleSinceAt ?? null}
         showGitToolbar={showWorkspaceChrome}
+        onTogglePrPane={showWorkspaceChrome && laneId ? () => setPrPaneOpen((v) => !v) : undefined}
+        prPaneOpen={prPaneOpen}
         trailingActions={chatHeaderTrailingActions}
+        onToggleSessionsPane={onToggleSessionsPane}
+        sessionsPaneCollapsed={sessionsPaneCollapsed}
+        sessionsPaneCount={sessionsPaneCount}
+        onToggleToolsPane={onToggleToolsPane}
+        toolsPaneOpen={toolsPaneOpen}
         className="space-y-0 p-0"
       />
 
@@ -8232,8 +8899,9 @@ export function AgentChatPane({
             allowCliOnlyModels={workDraftKind === "cli"}
             reasoningEffort={reasoningEffort}
             codexFastMode={codexFastMode}
-            codexTokenUsage={selectedCodexTokenUsage}
+            usageViewModel={selectedUsageViewModel}
             draft={draft}
+            lastSentUserMessage={lastSentUserMessage}
             attachments={attachments}
             contextAttachments={contextAttachments}
             allowAttachmentOnlySubmit={workDraftKind === "cli"}
@@ -8263,6 +8931,14 @@ export function AgentChatPane({
             permissionModeLocked={permissionModeLocked || identitySessionSettingsBusy || projectTransitionBlocksChat}
             hideNativeControls={hideNativeControls}
             messagePlaceholder={effectiveMessagePlaceholder}
+            inputLockMessage={subagentView
+              ? `Viewing ${subagentMetadata?.label
+                ?? subagentMetadata?.agentNickname
+                ?? subagentView.agentType
+                ?? subagentViewSnapshot?.description
+                ?? subagentView.agentId
+                ?? subagentView.taskId}`
+              : null}
             onExecutionModeChange={handleExecutionModeChange}
             onInteractionModeChange={(value) => { void updateNativeControls({ interactionMode: value }); }}
             onClaudeModeChange={handleClaudeModeChange}
@@ -8617,49 +9293,29 @@ export function AgentChatPane({
       />
   );
 
-  // Composer placeholder shown when the chat is drilled in to a subagent
-  // transcript. Replies always go to the parent session, so disabling input
-  // here matches user expectations and the wireframe brief.
-  const subagentComposerLock = subagentView ? (
-    <div
-      data-chat-appearance-root
-      style={chatAppearanceRootStyle}
-      className={cn(
-        compactShell ? "min-w-0 w-full" : undefined,
-        "flex items-center gap-3 px-4 py-3 font-sans text-[12px]",
-        "border-t border-white/[0.05] bg-white/[0.012]",
-      )}
-    >
-      <span
-        aria-hidden
-        className="inline-flex h-5 w-5 items-center justify-center rounded-full text-fg/30"
-      >
-        <span className="block h-px w-2.5 bg-fg/30" />
-      </span>
-      <span className="min-w-0 flex-1 text-fg/55">
-        Composer paused — viewing a subagent transcript.
-      </span>
-      <button
-        type="button"
-        onClick={() => setSubagentView(null)}
-        className={cn(
-          "shrink-0 rounded-full px-2.5 py-1 text-[11px] font-medium",
-          "text-[color:var(--color-accent-bright,#C4B5FD)]",
-          "transition-colors hover:bg-[color:var(--color-accent,#A78BFA)]/10",
-        )}
-      >
-        Return to main chat
-      </button>
-    </div>
-  ) : null;
+  // subagentThreadIdForView / subagentNameForView / subagentPromptForView and the
+  // subagentEventsForDisplay useMemo are computed earlier (with the subagent state
+  // cluster) so the hook is never called after the `if (!laneId) return` guard.
 
+  // Launch-status banners belong to the new-chat/draft surface only — never
+  // above the composer of an already-open chat.
+  // Only background launches, auto-create-lane (which starts in lane-creation
+  // states), and failures surface a status banner here — a normal foreground
+  // send (Enter) to the current lane opens the chat directly, no popup.
+  const visibleDraftLaunchJobs = forceDraft
+    ? draftLaunchJobs.filter((job) =>
+        job.mode === "background"
+        || job.status === "failed"
+        || job.status === "naming-lane"
+        || job.status === "creating-lane")
+    : EMPTY_DRAFT_LAUNCH_JOBS;
   const composerWithTypographyRoot = (
     <div
       data-chat-appearance-root
-      style={chatAppearanceRootStyle}
+      style={{ ...chatAppearanceRootStyle, paddingLeft: "var(--chat-pane-reserve-left, 0px)", paddingRight: "var(--chat-pane-reserve-right, 0px)" }}
       className={cn(compactShell ? "min-w-0 w-full" : undefined, "space-y-2")}
     >
-      {draftLaunchJobs.map((job) => {
+      {visibleDraftLaunchJobs.map((job) => {
         const isFailed = job.status === "failed";
         const isReady = job.status === "ready";
         const isActiveJob = !isDraftLaunchJobTerminal(job.status);
@@ -8671,43 +9327,33 @@ export function AgentChatPane({
             data-testid="draft-launch-job"
             aria-live={isActiveJob ? "polite" : undefined}
             className={cn(
-              "flex items-start justify-between gap-3 rounded-lg border px-3 py-2.5 font-sans text-[11px] shadow-[0_10px_40px_rgba(0,0,0,0.10)]",
-              isFailed && "border-rose-300/20 bg-rose-500/[0.08] text-rose-100/90",
-              isReady && "border-emerald-300/20 bg-emerald-500/[0.08] text-emerald-100/90",
-              isActiveJob && "border-white/10 bg-white/[0.045] text-fg/75",
+              "mx-auto flex w-full max-w-[var(--chat-column,52rem)] items-center justify-between gap-3 rounded-lg border px-3 py-1.5 font-sans text-[length:calc(var(--chat-font-size)*11/14)]",
+              isFailed && "border-rose-300/20 bg-rose-500/[0.07] text-rose-100/90",
+              isReady && "border-emerald-300/18 bg-emerald-500/[0.06] text-emerald-100/85",
+              isActiveJob && "border-white/10 bg-white/[0.04] text-fg/70",
             )}
           >
-            <div className="flex min-w-0 items-start gap-2">
+            <div className="flex min-w-0 items-center gap-2">
               {isActiveJob ? (
-                <CircleNotch size={13} weight="bold" className="mt-0.5 shrink-0 animate-spin text-fg/55" aria-hidden />
+                <CircleNotch size={12} weight="bold" className="shrink-0 animate-spin text-fg/55" aria-hidden />
               ) : null}
-              <div className="min-w-0 space-y-0.5 text-left">
-                <div className="flex min-w-0 items-center gap-1.5">
-                  <span className={cn(
-                    "shrink-0 rounded-full border px-1.5 py-px text-[9px] font-medium tracking-normal",
-                    isFailed
-                      ? "border-rose-200/20 bg-rose-200/[0.08] text-rose-50/75"
-                      : isReady
-                        ? "border-emerald-200/20 bg-emerald-200/[0.08] text-emerald-50/75"
-                        : "border-white/10 bg-white/[0.06] text-fg/55",
-                  )}>
-                    {draftLaunchJobLabel(job)}
-                  </span>
-                  <span className="min-w-0 truncate font-medium">{job.title}</span>
-                </div>
-                <div className={cn(
-                  "min-w-0 text-[10px] leading-4 opacity-75",
-                  !isStaleActiveJob && "truncate",
-                )}>
-                  {isStaleActiveJob ? staleDraftLaunchJobMessage(job) : draftLaunchJobMessage(job)}
-                </div>
-              </div>
+              <span className="min-w-0 truncate">
+                {isFailed
+                  ? (job.error ? `Launch failed: ${job.error}` : "Launch failed.")
+                  : isActiveJob
+                    ? (isStaleActiveJob ? staleDraftLaunchJobMessage(job) : draftLaunchJobMessage(job))
+                    : (
+                      <>
+                        Message sent: <span className="text-fg/85">&ldquo;{draftLaunchPromptSnippet(job)}&rdquo;</span>
+                      </>
+                    )}
+              </span>
             </div>
             <div className="flex shrink-0 items-center gap-1">
               {isFailed ? (
                 <button
                   type="button"
-                  className="rounded-md border border-rose-200/20 bg-rose-300/[0.10] px-2 py-0.5 text-[10px] font-medium text-rose-50 transition-colors hover:bg-rose-300/[0.16]"
+                  className="rounded-md px-2 py-0.5 text-[length:calc(var(--chat-font-size)*10.5/14)] font-medium text-rose-50/85 transition-colors hover:bg-rose-300/[0.12]"
                   onClick={() => {
                     restoreDraftLaunchSnapshot(job.snapshot);
                     dismissDraftLaunchJob(job.id);
@@ -8719,7 +9365,7 @@ export function AgentChatPane({
               {canOpen ? (
                 <button
                   type="button"
-                  className="rounded-md border border-emerald-200/20 bg-emerald-300/[0.10] px-2 py-0.5 text-[10px] font-medium text-emerald-50 transition-colors hover:bg-emerald-300/[0.16]"
+                  className="rounded-md px-2 py-0.5 text-[length:calc(var(--chat-font-size)*10.5/14)] font-medium text-emerald-50/90 transition-colors hover:bg-emerald-300/[0.14]"
                   onClick={() => openLaunchedDraftSession({
                     laneId: job.laneId!,
                     laneName: job.laneName!,
@@ -8728,24 +9374,17 @@ export function AgentChatPane({
                     jobId: job.id,
                   })}
                 >
-                  Open
+                  View
                 </button>
               ) : null}
               {(!isActiveJob || isStaleActiveJob) ? (
                 <button
                   type="button"
-                  aria-label={isFailed ? "Dismiss failed launch" : isStaleActiveJob ? "Hide stale launch status" : "Dismiss launch status"}
-                  className={cn(
-                    "grid h-5 w-5 place-items-center rounded-md transition-colors",
-                    isFailed
-                      ? "text-rose-50/70 hover:bg-rose-300/[0.12] hover:text-rose-50"
-                      : isStaleActiveJob
-                        ? "text-fg/45 hover:bg-white/10 hover:text-fg/75"
-                        : "text-fg/55 hover:bg-white/10 hover:text-fg/80",
-                  )}
+                  aria-label={isFailed ? "Dismiss failed launch" : "Dismiss launch status"}
+                  className="grid h-5 w-5 place-items-center rounded-md text-fg/45 transition-colors hover:bg-white/10 hover:text-fg/75"
                   onClick={() => dismissDraftLaunchJob(job.id)}
                 >
-                  <X size={12} weight="bold" aria-hidden />
+                  <X size={11} weight="bold" aria-hidden />
                 </button>
               ) : null}
             </div>
@@ -8767,13 +9406,30 @@ export function AgentChatPane({
   const orchestrationRunId = selectedSession?.orchestrationRunId ?? null;
   const orchestrationRole = activeOrchestrationRole;
   const orchestrationPanelOpen = Boolean(orchestrationRunId);
-  const rightPaneOpen = chatActionsOpen || appPanelOpen || effectiveCursorCloudPaneOpen || orchestrationPanelOpen;
+  const heavyRightPaneOpen = appPanelOpen || effectiveCursorCloudPaneOpen || orchestrationPanelOpen;
   const supportsSplit = layoutVariant !== "grid-tile";
+  const chatActionsFloating = chatActionsOpen && supportsSplit && !heavyRightPaneOpen;
+  const chatActionsRightPaneOpen = chatActionsOpen && !chatActionsFloating;
+  const prFloating = prPaneOpen && Boolean(laneId) && supportsSplit;
+  // The chat reserves gutter space and shifts over to make room for each open
+  // floating pane (no overlap); the panes themselves fade in/out (opacity) — the
+  // two are independent.
+  const paneReserve = computePaneReserve(chatAreaWidth, prFloating, chatActionsFloating);
+  // When a pane doesn't force the chat to shift (reserve 0), center it within its
+  // side margin so all three zones (left pane / chat / right pane) read as
+  // centered in their quadrant. When it does shift the chat, pin it to the edge.
+  const SIDE_PANE_WIDTH_PX = 264; // 16.5rem
+  const centeredPaneOffsetPx = Math.max(
+    12,
+    Math.round(((chatAreaWidth - CHAT_COLUMN_PX) / 2 - SIDE_PANE_WIDTH_PX) / 2),
+  );
+  const rightPaneOffsetPx = paneReserve.right === "0px" ? centeredPaneOffsetPx : 12;
+  const leftPaneOffsetPx = paneReserve.left === "0px" ? centeredPaneOffsetPx : 12;
   const splitChatColStyle: React.CSSProperties | undefined =
-    rightPaneOpen && supportsSplit ? { flexGrow: 100 - rightPaneSplit } : undefined;
+    heavyRightPaneOpen && supportsSplit ? { flexGrow: 100 - rightPaneSplit } : undefined;
   const splitRightPaneStyle: React.CSSProperties | undefined =
-    rightPaneOpen && supportsSplit ? { flexGrow: rightPaneSplit, flexBasis: 0 } : undefined;
-  const rightPaneDivider = rightPaneOpen && supportsSplit ? (
+    heavyRightPaneOpen && supportsSplit ? { flexGrow: rightPaneSplit, flexBasis: 0 } : undefined;
+  const rightPaneDivider = heavyRightPaneOpen && supportsSplit ? (
     <div
       role="separator"
       aria-orientation="vertical"
@@ -8797,6 +9453,40 @@ export function AgentChatPane({
         {content}
       </div>
     );
+
+  const SIDE_PANE_FADE = { duration: 0.16, ease: [0.4, 0, 0.2, 1] as const };
+  const FLOATING_PANE_CARD_CLASS =
+    "ade-floating-side-pane flex w-full flex-col overflow-y-auto rounded-xl border border-white/[0.07] bg-[color:var(--work-sidebar-bg,#161618)] shadow-[0_20px_60px_-30px_rgba(0,0,0,0.8)]";
+  const renderFloatingPane = (content: React.ReactNode) => (
+    <motion.div
+      key="floating-right-pane"
+      className="absolute top-3 z-20 flex max-h-[calc(100%-1.5rem)] w-[min(16.5rem,calc(100%-1.5rem))]"
+      style={{ right: `${rightPaneOffsetPx}px` }}
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      transition={SIDE_PANE_FADE}
+    >
+      <div className={FLOATING_PANE_CARD_CLASS}>
+        {content}
+      </div>
+    </motion.div>
+  );
+  const renderFloatingLeftPane = (content: React.ReactNode) => (
+    <motion.div
+      key="floating-left-pane"
+      className="absolute top-3 z-20 flex max-h-[calc(100%-1.5rem)] w-[min(16.5rem,calc(100%-1.5rem))]"
+      style={{ left: `${leftPaneOffsetPx}px` }}
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      transition={SIDE_PANE_FADE}
+    >
+      <div className={FLOATING_PANE_CARD_CLASS}>
+        {content}
+      </div>
+    </motion.div>
+  );
 
   // Orchestration plan panel — mounted whenever the active session has a
   // runId. Lead view is fully interactive; worker/validator view is read-only.
@@ -8833,6 +9523,8 @@ export function AgentChatPane({
       <OrchestratorLeadFrame active={false} className="flex h-full min-h-0 w-full min-w-0 flex-col">
       <ChatSurfaceShell
         containerRef={shellRef}
+        paneReserveLeft={paneReserve.left}
+        paneReserveRight={paneReserve.right}
         mode={surfaceMode}
         accentColor={presentation?.accentColor ?? draftAccent}
         contentScale={1}
@@ -8842,7 +9534,7 @@ export function AgentChatPane({
         header={compactShell ? undefined : shellHeader}
         footer={isEmptyState || appPanelOpen
           ? undefined
-          : subagentComposerLock ?? composerWithTypographyRoot}
+          : composerWithTypographyRoot}
         footerClassName={compactShell ? "px-0 pb-0 pt-0" : undefined}
         bodyClassName="flex min-h-0 flex-col overflow-hidden"
       >
@@ -8917,7 +9609,7 @@ export function AgentChatPane({
                   {/* Chat column */}
                   <div
                     data-chat-appearance-root
-                    style={{ ...chatAppearanceRootStyle, ...splitChatColStyle }}
+                    style={{ ...chatAppearanceRootStyle, ...splitChatColStyle, paddingLeft: "var(--chat-pane-reserve-left, 0px)", paddingRight: "var(--chat-pane-reserve-right, 0px)" }}
                     className={cn(
                       "flex min-h-0 flex-1 basis-0 flex-col overflow-hidden",
                       layoutVariant === "grid-tile" ? "min-w-0" : "min-w-[280px]",
@@ -8984,69 +9676,12 @@ export function AgentChatPane({
                         ChatSubagentsPanel; the in-chat banner was removed so
                         the chat header stays clean and goal context lives next
                         to subagents + progress where it belongs. */}
-                    {subagentView ? (
-                      <button
-                        type="button"
-                        onClick={() => setSubagentView(null)}
-                        title="Return to main chat"
-                        className={cn(
-                          "group flex shrink-0 items-center gap-2.5 px-5 py-2 text-left font-sans text-[11.5px]",
-                          "border-b border-white/[0.05] bg-white/[0.012]",
-                          "transition-colors hover:bg-white/[0.025]",
-                        )}
-                      >
-                        <span
-                          aria-hidden
-                          className="inline-flex h-4 w-4 items-center justify-center rounded-full text-fg/35 transition-colors group-hover:bg-white/[0.05] group-hover:text-fg/70"
-                        >
-                          {"←"}
-                        </span>
-                        <span className="text-fg/45 group-hover:text-fg/65">Main</span>
-                        <span aria-hidden className="text-fg/20">{"•"}</span>
-                        <span className="truncate font-medium tracking-[0.005em] text-fg/85">
-                          {subagentView.agentType
-                            ?? subagentViewSnapshot?.description
-                            ?? subagentView.agentId
-                            ?? subagentView.taskId}
-                        </span>
-                        {subagentView.background ? (
-                          <span className="text-[10.5px] tracking-[0.01em] text-fg/30">bg</span>
-                        ) : null}
-                        <span aria-hidden className="text-fg/20">{"•"}</span>
-                        <span
-                          className={cn(
-                            "text-[10.5px] tracking-[0.005em]",
-                            (subagentViewSnapshot?.status ?? subagentView.status) === "running"
-                              && "text-[color:var(--color-accent-bright,#C4B5FD)]",
-                            (subagentViewSnapshot?.status ?? subagentView.status) === "completed"
-                              && "text-emerald-300/75",
-                            (subagentViewSnapshot?.status ?? subagentView.status) === "failed"
-                              && "text-rose-300/80",
-                            (subagentViewSnapshot?.status ?? subagentView.status) === "stopped"
-                              && "text-amber-200/75",
-                          )}
-                        >
-                          {subagentViewSnapshot?.status ?? subagentView.status}
-                        </span>
-                        <span className="ml-auto hidden text-[10px] text-fg/25 group-hover:inline">
-                          press to return
-                        </span>
-                      </button>
-                    ) : null}
                     <AgentChatMessageList
                       key={subagentView ? `subagent-${subagentView.taskId}` : selectedSessionId ?? "chat-draft"}
-                      events={selectedEventsForDisplay}
-                      subagentTranscript={subagentView ? {
-                        messages: subagentTranscript,
-                        loading: subagentTranscriptLoading,
-                        unsupported: subagentTranscriptUnsupported,
-                        snapshotName:
-                          subagentView.agentType
-                          ?? subagentViewSnapshot?.description
-                          ?? subagentView.agentId
-                          ?? subagentView.taskId,
-                      } : undefined}
-                      showStreamingIndicator={!subagentView && turnActive && selectedSession?.status !== "ended"}
+                      events={subagentView ? subagentEventsForDisplay : selectedEventsForDisplay}
+                      showStreamingIndicator={subagentView
+                        ? subagentTranscriptLoading && subagentEventsForDisplay.length === 0
+                        : turnActive && selectedSession?.status !== "ended"}
                       sessionEnded={selectedSession?.status === "ended"}
                       className="min-h-0 border-0"
                       surfaceMode={surfaceMode}
@@ -9098,7 +9733,26 @@ export function AgentChatPane({
                   </div>
 
                   {rightPaneDivider}
-                  {chatActionsOpen ? renderRightPane(chatActionsPanelContent) : null}
+                  <AnimatePresence initial={false}>
+                    {chatActionsFloating
+                      ? renderFloatingPane(chatActionsPanelContent)
+                      : null}
+                  </AnimatePresence>
+                  {chatActionsRightPaneOpen
+                    ? renderRightPane(chatActionsPanelContent)
+                    : null}
+                  <AnimatePresence initial={false}>
+                    {prFloating && laneId
+                      ? renderFloatingLeftPane(
+                          <ChatPrPane
+                            laneId={laneId}
+                            branchName={laneGitBranch}
+                            chatModelId={selectedSessionModelId ?? modelId}
+                            onClose={() => setPrPaneOpen(false)}
+                          />,
+                        )
+                      : null}
+                  </AnimatePresence>
                   {effectiveIosSimulatorOpen ? renderRightPane(iosSimulatorPanelContent) : null}
                   {effectiveAppControlOpen ? renderRightPane(appControlPanelContent) : null}
                   {effectiveCursorCloudPaneOpen ? renderRightPane(cursorCloudPanelContent) : null}

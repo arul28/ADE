@@ -5,6 +5,7 @@ import type { LaneSummary } from "../../../desktop/src/shared/types/lanes";
 import { highlightCode, type HighlightedToken } from "./highlightCache";
 import { glyphFor } from "./theme";
 import type { LocalNotice } from "./types";
+import { isCodexSubagentMessageId, shouldMergeAssistantText } from "./assistantTextIdentity";
 
 export type { HighlightedToken } from "./highlightCache";
 
@@ -56,6 +57,12 @@ export type RenderedChatLine = {
   header?: string;
   body: string;
   blocks?: AssistantMarkdownBlock[];
+  // Carried on assistant-text lines so coalesceLines only fuses deltas from the
+  // SAME streamed message — concurrent parent + subagent messages interleave by
+  // timestamp and must not be concatenated into one scrambled paragraph.
+  messageId?: string;
+  turnId?: string;
+  itemId?: string;
 };
 
 type TimelineEntry =
@@ -468,11 +475,18 @@ export function renderChatLines(args: {
       continue;
     }
     if (event.type === "text") {
+      // Codex subagent child content is namespaced `codex-subagent:` and belongs
+      // in the subagent transcript, not the parent chat — mirror desktop, which
+      // filters these out of the parent transcript via provenance.
+      if (isCodexSubagentMessageId(event.messageId)) continue;
       lines.push({
         id,
         tone: "assistant",
         body: event.text,
         blocks: parseAssistantMarkdown(event.text),
+        messageId: event.messageId,
+        turnId: event.turnId,
+        itemId: event.itemId,
       });
       continue;
     }
@@ -785,9 +799,21 @@ function coalesceLines(lines: RenderedChatLine[]): RenderedChatLine[] {
       && line.tone === "assistant"
       && last.tone === "assistant"
       && headerSpeakerKey(line.header) === headerSpeakerKey(last.header)
+      // Only fuse deltas from the SAME streamed message. Without this, the
+      // interleaved deltas of concurrent parent + subagent messages (sorted by
+      // timestamp) collapse into one scrambled paragraph.
+      && shouldMergeAssistantText(last, line)
     ) {
       const body = smartConcat(last.body, line.body);
-      out[out.length - 1] = { ...last, body, blocks: parseAssistantMarkdown(body) };
+      out[out.length - 1] = {
+        ...last,
+        body,
+        blocks: parseAssistantMarkdown(body),
+        // Preserve the message identity so a later delta still matches.
+        messageId: last.messageId ?? line.messageId,
+        turnId: last.turnId ?? line.turnId,
+        itemId: last.itemId ?? line.itemId,
+      };
       continue;
     }
     out.push(line);

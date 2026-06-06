@@ -75,9 +75,8 @@ export function ChatComposerShell({
         />
       ) : null}
       <div className="pointer-events-none absolute inset-0 overflow-hidden rounded-[var(--chat-radius-shell)]">
-        <div className="absolute inset-x-8 top-0 h-px bg-gradient-to-r from-transparent via-white/20 to-transparent" />
-        <div className="absolute left-6 top-0 h-24 w-32 rounded-full bg-[radial-gradient(circle,rgba(255,255,255,0.10)_0%,transparent_72%)] opacity-70 blur-2xl" />
-        <div className="absolute bottom-[-3rem] right-[-2rem] h-24 w-36 rounded-full bg-[radial-gradient(circle,var(--chat-liquid-sheen)_0%,transparent_70%)] opacity-80 blur-3xl" />
+        <div className="absolute left-6 top-0 h-24 w-32 rounded-full bg-[radial-gradient(circle,rgba(255,255,255,0.05)_0%,transparent_72%)] opacity-50 blur-2xl" />
+        <div className="absolute bottom-[-3rem] right-[-2rem] h-24 w-36 rounded-full bg-[radial-gradient(circle,var(--chat-liquid-sheen)_0%,transparent_70%)] opacity-50 blur-3xl" />
       </div>
       {pendingBanner ? <div className="relative min-w-0 max-w-full border-b border-[color:var(--chat-panel-border)]">{pendingBanner}</div> : null}
       {trays ? <div className="relative min-w-0 max-w-full border-b border-[color:var(--chat-panel-border)]">{trays}</div> : null}

@@ -215,6 +215,18 @@ export function mapCursorSdkMessageToChatEvents(
           if (isCursorTaskTerminalStatus(status)) {
             out.push(makeResultEvent(status));
             meta.taskStatusMap.delete(runId);
+          } else if (text) {
+            // Cursor exposes no child transcript, so live `task` text is the only
+            // interior signal we get — surface it as progress for the subagent
+            // drawer (the panel never takes over a Cursor subagent).
+            out.push(tagRuntime({
+              type: "subagent_progress" as const,
+              taskId: runId,
+              ...(agentId ? { agentId } : {}),
+              parentToolUseId: null,
+              summary: text,
+              turnId,
+            }, runtime));
           }
         }
       }

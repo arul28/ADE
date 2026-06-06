@@ -579,6 +579,7 @@ describe("AgentChatComposer", () => {
       "auto-low",
       "auto-medium",
       "auto-high",
+      "agi",
     ]);
     expect(screen.queryByRole("combobox", { name: "Permissions" })).toBeNull();
 
@@ -1337,11 +1338,11 @@ describe("AgentChatComposer", () => {
       launchPromptClipboardEnabled: true,
     });
 
-    expect(screen.getByText("After submission your prompt will auto copy to clipboard.")).toBeTruthy();
+    expect(screen.getByText(/Prompt copies to clipboard on send/)).toBeTruthy();
 
     view.rerender(<AgentChatComposer {...buildComposerProps({ turnActive: false, draft: "" })} />);
 
-    expect(screen.queryByText("After submission your prompt will auto copy to clipboard.")).toBeNull();
+    expect(screen.queryByText(/Prompt copies to clipboard on send/)).toBeNull();
   });
 
   it("uses a contextual accessible name for active turn textareas", () => {
@@ -1381,7 +1382,7 @@ describe("AgentChatComposer", () => {
     })).toBeTruthy();
   });
 
-  it("shows the launch clipboard helper only while typing and keeps the enabled footer visible", () => {
+  it("shows the launch clipboard notice with an inline Setting control while draft text is present", () => {
     const onOpenLaunchPromptClipboardSettings = vi.fn();
     renderComposer({
       draft: "Recoverable launch prompt",
@@ -1390,24 +1391,15 @@ describe("AgentChatComposer", () => {
       onOpenLaunchPromptClipboardSettings,
     });
 
-    expect(screen.queryByText(/Prompt will be copied to clipboard after Send\./)).toBeNull();
-    expect(screen.getByText("After submission your prompt will auto copy to clipboard.")).toBeTruthy();
+    expect(screen.getByText(/Prompt copies to clipboard on send/)).toBeTruthy();
 
-    const textarea = screen.getByRole("textbox");
-    fireEvent.focus(textarea);
-
-    expect(screen.getByText(/Prompt will be copied to clipboard after Send\./)).toBeTruthy();
     const settingButton = screen.getByRole("button", { name: "Setting" });
-    fireEvent.blur(textarea, { relatedTarget: settingButton });
-    fireEvent.focus(settingButton);
-    expect(screen.getByText(/Prompt will be copied to clipboard after Send\./)).toBeTruthy();
-
     fireEvent.click(settingButton);
     expect(onOpenLaunchPromptClipboardSettings).toHaveBeenCalledTimes(1);
 
-    fireEvent.blur(settingButton);
-    expect(screen.queryByText(/Prompt will be copied to clipboard after Send\./)).toBeNull();
-    expect(screen.getByText("After submission your prompt will auto copy to clipboard.")).toBeTruthy();
+    // The notice stays visible (no focus gating) and keeps the inline Setting control.
+    expect(screen.getByText(/Prompt copies to clipboard on send/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Setting" })).toBeTruthy();
   });
 
   it("hides the launch clipboard helper when the setting is disabled", () => {
@@ -1419,8 +1411,7 @@ describe("AgentChatComposer", () => {
 
     fireEvent.focus(screen.getByRole("textbox"));
 
-    expect(screen.queryByText(/Prompt will be copied to clipboard after Send\./)).toBeNull();
-    expect(screen.queryByText("After submission your prompt will auto copy to clipboard.")).toBeNull();
+    expect(screen.queryByText(/Prompt copies to clipboard on send/)).toBeNull();
   });
 
   it("hides the launch clipboard helper when the reminder setting is disabled", () => {
@@ -1433,8 +1424,7 @@ describe("AgentChatComposer", () => {
 
     fireEvent.focus(screen.getByRole("textbox"));
 
-    expect(screen.queryByText(/Prompt will be copied to clipboard after Send\./)).toBeNull();
-    expect(screen.queryByText("After submission your prompt will auto copy to clipboard.")).toBeNull();
+    expect(screen.queryByText(/Prompt copies to clipboard on send/)).toBeNull();
   });
 
   it("focuses the grid composer when the tile becomes active", () => {

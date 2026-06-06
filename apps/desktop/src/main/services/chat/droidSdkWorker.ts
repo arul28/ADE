@@ -47,6 +47,20 @@ function coerceReasoning(value: DroidSdkReasoningEffort | null | undefined): Dro
   return value?.trim() ? value as DroidSdkTypes.ReasoningEffort : undefined;
 }
 
+function toDroidInteractionMode(
+  sdk: DroidSdkModule,
+  mode: DroidSdkSessionSettings["interactionMode"],
+): DroidSdkTypes.DroidInteractionMode {
+  switch (mode) {
+    case "spec":
+      return sdk.DroidInteractionMode.Spec;
+    case "agi":
+      return sdk.DroidInteractionMode.AGI;
+    default:
+      return sdk.DroidInteractionMode.Auto;
+  }
+}
+
 function sessionOptions(
   sdk: DroidSdkModule,
   init: DroidSdkWorkerInit,
@@ -57,9 +71,7 @@ function sessionOptions(
     execPath: init.droidPath,
     modelId: settings.modelId,
     autonomyLevel: settings.autonomyLevel as DroidSdkTypes.AutonomyLevel,
-    interactionMode: settings.interactionMode === "spec"
-      ? sdk.DroidInteractionMode.Spec
-      : sdk.DroidInteractionMode.Auto,
+    interactionMode: toDroidInteractionMode(sdk, settings.interactionMode),
     reasoningEffort: coerceReasoning(settings.reasoningEffort),
     specModeModelId: settings.specModeModelId?.trim() || undefined,
     specModeReasoningEffort: coerceReasoning(settings.specModeReasoningEffort),
@@ -69,15 +81,80 @@ function sessionOptions(
   };
 }
 
+// AGI mission proposals (ProposeMission confirmations) carry the orchestrator's
+// plan in `details.proposal`, which may be a markdown string or a structured
+// object. Render a readable summary so the user approves the mission with full
+// context instead of an opaque "propose_mission" prompt.
+function renderMissionProposal(proposal: unknown): string {
+  if (typeof proposal === "string") return proposal.trim();
+  if (proposal && typeof proposal === "object") {
+    const record = proposal as Record<string, unknown>;
+    const parts = [record.title, record.summary, record.description, record.objective, record.goal]
+      .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+      .map((value) => value.trim());
+    if (parts.length) return parts.join("\n\n");
+    try {
+      return JSON.stringify(proposal, null, 2);
+    } catch {
+      return "";
+    }
+  }
+  return "";
+}
+
 function summarizePermission(params: DroidSdkTypes.RequestPermissionRequestParams): DroidSdkPermissionRequest {
   const toolUses = Array.isArray(params.toolUses) ? params.toolUses : [];
   const first = toolUses[0];
   const toolUse = first?.toolUse;
   const details = first?.details as Record<string, unknown> | undefined;
+  const detailType = typeof details?.type === "string" ? details.type : "";
+  const optionList = (params.options ?? []).map((option) => ({
+    label: option.label,
+    value: String(option.value),
+  }));
+  const toolUseIdList = toolUses
+    .map((entry) => entry.toolUse?.id)
+    .filter((id): id is string => typeof id === "string" && id.length > 0);
+
+  // Mission-proposal confirmation: surface the actual plan.
+  if (detailType === "propose_mission") {
+    const proposalText = renderMissionProposal(details?.proposal);
+    const truncated = proposalText.length > 2000 ? `${proposalText.slice(0, 2000)}…` : proposalText;
+    return {
+      id: toolUse?.id ?? `droid-mission-${Date.now()}`,
+      title: typeof details?.title === "string" && details.title.trim().length
+        ? details.title.trim()
+        : "Droid mission proposal",
+      summary: truncated || "Droid proposed a mission. Approve to let it decompose the work and run worker subagents.",
+      toolName: "propose_mission",
+      toolInput: details?.proposal,
+      toolUseIds: toolUseIdList,
+      options: optionList,
+      raw: params,
+    };
+  }
+
+  // Start-mission-run confirmation: explain what approving begins.
+  if (detailType === "start_mission_run") {
+    const running = typeof details?.runningMissionCount === "number" ? details.runningMissionCount : 0;
+    return {
+      id: toolUse?.id ?? `droid-mission-run-${Date.now()}`,
+      title: "Start mission run",
+      summary: running > 0
+        ? `Begin executing the approved mission (${running} mission${running === 1 ? "" : "s"} already running).`
+        : "Begin executing the approved mission.",
+      toolName: "start_mission_run",
+      toolInput: details,
+      toolUseIds: toolUseIdList,
+      options: optionList,
+      raw: params,
+    };
+  }
+
   const toolName = typeof toolUse?.name === "string" && toolUse.name.trim().length
     ? toolUse.name.trim()
-    : typeof details?.type === "string" && details.type.trim().length
-      ? details.type.trim()
+    : detailType.length
+      ? detailType
       : "tool";
   const title =
     typeof details?.title === "string" && details.title.trim().length
@@ -95,13 +172,8 @@ function summarizePermission(params: DroidSdkTypes.RequestPermissionRequestParam
     summary,
     toolName,
     toolInput: toolUse?.input,
-    toolUseIds: toolUses
-      .map((entry) => entry.toolUse?.id)
-      .filter((id): id is string => typeof id === "string" && id.length > 0),
-    options: (params.options ?? []).map((option) => ({
-      label: option.label,
-      value: String(option.value),
-    })),
+    toolUseIds: toolUseIdList,
+    options: optionList,
     raw: params,
   };
 }
@@ -198,7 +270,7 @@ async function applySettings(settings: DroidSdkSessionSettings): Promise<void> {
   await session.updateSettings({
     modelId: settings.modelId,
     autonomyLevel: settings.autonomyLevel as DroidSdkTypes.AutonomyLevel,
-    interactionMode: sdk.DroidInteractionMode.Auto,
+    interactionMode: toDroidInteractionMode(sdk, settings.interactionMode),
     reasoningEffort: coerceReasoning(settings.reasoningEffort),
   });
 }
@@ -269,6 +341,23 @@ async function sendPrompt(payload: DroidSdkWorkerRequest & { type: "send" }): Pr
   }
 }
 
+// Terminate a single AGI mission worker. killWorkerSession lives only on the
+// low-level DroidClient — DroidSession (what createSession/resumeSession return)
+// exposes no public getter at @factory/droid-sdk 0.2.0 — so reach the underlying
+// client via its (TS-private, runtime-present) `_client` field.
+async function killWorker(workerSessionId: string): Promise<void> {
+  if (!session) throw new Error("Droid SDK worker is not initialized.");
+  const id = workerSessionId?.trim();
+  if (!id) return;
+  const client = (session as unknown as {
+    _client?: { killWorkerSession?: (params: { workerSessionId: string }) => Promise<unknown> };
+  })._client;
+  if (!client || typeof client.killWorkerSession !== "function") {
+    throw new Error("This Droid SDK build does not expose killWorkerSession.");
+  }
+  await client.killWorkerSession({ workerSessionId: id });
+}
+
 async function cancelRun(): Promise<void> {
   for (const [, resolve] of permissionWaiters) resolve({ selectedOption: "cancel" });
   permissionWaiters.clear();
@@ -297,6 +386,9 @@ async function dispatch(req: DroidSdkWorkerRequest): Promise<unknown> {
       return buildReady();
     case "cancel":
       await cancelRun();
+      return {};
+    case "kill_worker":
+      await killWorker(req.payload.workerSessionId);
       return {};
     case "dispose":
       await dispose();

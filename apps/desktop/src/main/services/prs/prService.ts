@@ -4432,6 +4432,14 @@ export function createPrService({
       };
     };
 
+    // When the caller demands AI (the in-chat "AI draft" button), surface a clear
+    // error instead of silently falling through to the deterministic template.
+    if (args.requireAi && (providerMode === "guest" || !aiIntegrationService)) {
+      throw new Error(
+        "AI drafting is unavailable — connect a model provider in Settings → AI Connections.",
+      );
+    }
+
     if (providerMode !== "guest" && aiIntegrationService) {
       const prompt = [
         "You are ADE's PR drafting assistant. Keep content factual and concise.",
@@ -4465,6 +4473,9 @@ export function createPrService({
           laneId,
           error: error instanceof Error ? error.message : String(error)
         });
+        if (args.requireAi) {
+          throw new Error(`AI draft failed: ${error instanceof Error ? error.message : String(error)}`);
+        }
       }
     }
 

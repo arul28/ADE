@@ -1,12 +1,14 @@
 import React, { useCallback, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { CaretDown, CaretRight, Funnel, MagnifyingGlass, Plus, Square, Terminal, Trash, X } from "@phosphor-icons/react";
+import { AnimatePresence, motion } from "motion/react";
 import { BranchIcon, LaneIcon } from "../ui/vcsIcons";
 import type { LaneSummary, TerminalSessionSummary } from "../../../shared/types";
 import { SessionCard } from "./SessionCard";
 import { LaneCombobox } from "./LaneCombobox";
 import { sortLanesForTabs } from "../lanes/laneUtils";
-import type { WorkDraftKind, WorkSessionListOrganization } from "../../state/appStore";
+import type { WorkDraftKind, WorkGridSet, WorkSessionListOrganization } from "../../state/appStore";
+import { findGridSetForSession } from "../../lib/workGrid";
 import { iconGlyph } from "../graph/graphHelpers";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { cn } from "../ui/cn";
@@ -16,6 +18,7 @@ import { canBulkDeleteSession, canBulkStopSession } from "../../lib/sessions";
 import { useWorkLaneContextMenu } from "./useWorkLaneContextMenu";
 
 
+const EMPTY_GRID_SETS: WorkGridSet[] = [];
 const FILTER_OPTION_GRID_CLASS = "grid min-w-0 flex-1 gap-0.5 [grid-template-columns:repeat(auto-fit,minmax(2.4rem,1fr))]";
 const FILTER_OPTION_BUTTON_CLASS = "ade-chat-drawer-row min-w-0 truncate rounded-md px-1.5 py-1 text-center text-[10px] font-medium";
 
@@ -75,7 +78,7 @@ function StickyGroupHeader({
         type="button"
         className={cn(
           "ade-lane-group-header sticky top-0 z-10 flex w-full items-center text-left transition-colors backdrop-blur-xl cursor-pointer select-none",
-          isLane ? "gap-1.5 rounded-lg px-2.5 py-1.5" : "gap-1.5 rounded-md px-2 py-1.5",
+          isLane ? "gap-1.5 rounded-lg px-3 py-2" : "gap-1.5 rounded-md px-2 py-1.5",
           laneTint.text ? "hover:brightness-[1.03]" : "hover:bg-white/[0.04]",
         )}
         style={{
@@ -93,7 +96,7 @@ function StickyGroupHeader({
         data-section-id={sectionId}
       >
         {isLane ? (
-          <div className="flex w-full min-w-0 items-center gap-1">
+          <div className="flex w-full min-w-0 items-center gap-1.5">
             {collapsed ? (
               <CaretRight size={12} className="shrink-0 text-muted-fg/35" />
             ) : (
@@ -101,28 +104,28 @@ function StickyGroupHeader({
             )}
             {icon}
             <span
-              className="ade-lane-group-header-lane ade-lane-branch-inline-lane min-w-0 flex-1 truncate text-[13px] font-semibold leading-tight text-fg/90"
+              className="ade-lane-group-header-lane ade-lane-branch-inline-lane min-w-0 max-w-[60%] shrink truncate text-[13px] font-semibold leading-tight text-fg/90"
               style={laneLabelColor ? { color: laneLabelColor } : undefined}
               title={label}
             >
               {label}
             </span>
-            <div className="flex shrink-0 items-center gap-1">
-              {showBranchCluster ? (
-                <div
-                  className="ade-lane-group-header-branch ade-lane-branch-inline-branch flex min-w-0 max-w-[5.5rem] items-center gap-0.5 overflow-hidden"
-                  style={{ color: "var(--color-muted-fg)" }}
-                >
-                  <BranchIcon size={11} weight="regular" className="shrink-0 opacity-60" />
-                  <span className="min-w-0 truncate text-[11px] font-medium leading-tight text-muted-fg/75" title={branchText}>
-                    {branchText}
-                  </span>
-                </div>
-              ) : null}
-              <span className="shrink-0 rounded-full bg-white/[0.08] px-1.5 py-px text-[10px] font-semibold tabular-nums text-muted-fg/60">
-                {count}
-              </span>
-            </div>
+            {/* Branch sits immediately right of the lane name and expands to fill
+                whatever space is free, truncating only when it runs out. */}
+            {showBranchCluster ? (
+              <div
+                className="ade-lane-group-header-branch ade-lane-branch-inline-branch flex min-w-0 flex-1 items-center gap-0.5 overflow-hidden"
+                style={{ color: "var(--color-muted-fg)" }}
+              >
+                <BranchIcon size={10} weight="regular" className="shrink-0 opacity-55" />
+                <span className="min-w-0 truncate text-[10px] font-medium leading-tight text-muted-fg/70" title={branchText}>
+                  {branchText}
+                </span>
+              </div>
+            ) : null}
+            <span className="ml-auto shrink-0 rounded-full bg-white/[0.08] px-1.5 py-px text-[10px] font-semibold tabular-nums text-muted-fg/60">
+              {count}
+            </span>
           </div>
         ) : (
           <>
@@ -144,16 +147,23 @@ function StickyGroupHeader({
           </>
         )}
       </button>
-      {!collapsed && count > 0 ? (
-        <div
-          className={cn(
-            "space-y-px pb-0.5",
-            isLane && "mt-1 pl-2.5",
-          )}
-        >
-          {children}
-        </div>
-      ) : null}
+      {/* Children slide out/retract smoothly; the header stays put (no reflow jump). */}
+      <AnimatePresence initial={false}>
+        {!collapsed && count > 0 ? (
+          <motion.div
+            key="lane-group-body"
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: "auto", opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
+            style={{ overflow: "hidden" }}
+          >
+            <div className={cn("space-y-px pb-0.5", isLane && "mt-1 pl-2.5")}>
+              {children}
+            </div>
+          </motion.div>
+        ) : null}
+      </AnimatePresence>
     </div>
   );
 }
@@ -177,7 +187,6 @@ export const SessionListPane = React.memo(function SessionListPane({
   onClearSelection,
   onBulkClose,
   onBulkDelete,
-  onInfoClick,
   onContextMenu,
   sessionListOrganization,
   setSessionListOrganization,
@@ -186,6 +195,8 @@ export const SessionListPane = React.memo(function SessionListPane({
   workCollapsedSectionIds,
   toggleWorkSectionCollapsed,
   sessionsGroupedByLane,
+  gridSets = EMPTY_GRID_SETS,
+  activeItemId = null,
 }: {
   lanes: LaneSummary[];
   runningFiltered: TerminalSessionSummary[];
@@ -198,6 +209,8 @@ export const SessionListPane = React.memo(function SessionListPane({
   setQ: (v: string) => void;
   selectedSessionId: string | null;
   selectedSessionIds?: Set<string>;
+  gridSets?: WorkGridSet[];
+  activeItemId?: string | null;
   draftKind: WorkDraftKind;
   showingDraft: boolean;
   onShowDraftKind: (kind: WorkDraftKind) => void;
@@ -205,7 +218,6 @@ export const SessionListPane = React.memo(function SessionListPane({
   onClearSelection?: () => void;
   onBulkClose?: () => void;
   onBulkDelete?: () => void;
-  onInfoClick: (session: TerminalSessionSummary, e: React.MouseEvent) => void;
   onContextMenu: (session: TerminalSessionSummary, e: React.MouseEvent) => void;
   sessionListOrganization: WorkSessionListOrganization;
   setSessionListOrganization: (v: WorkSessionListOrganization) => void;
@@ -368,6 +380,15 @@ export const SessionListPane = React.memo(function SessionListPane({
   // tab tour can anchor at a real session. We track whether we've already
   // emitted the anchor across the whole list (not per-section).
   let sessionItemAnchorEmitted = false;
+  // The "active" grid is the set containing the focused session; its members'
+  // badges are highlighted, members of other grids are greyed.
+  const activeGridSetId = findGridSetForSession(gridSets, activeItemId)?.id ?? null;
+  const gridBadgeFor = (sessionId: string): "active" | "inactive" | null => {
+    const set = findGridSetForSession(gridSets, sessionId);
+    if (!set) return null;
+    return set.id === activeGridSetId ? "active" : "inactive";
+  };
+
   const renderCardCore = (session: TerminalSessionSummary, options?: { compact?: boolean }) => {
     const isFirst = !sessionItemAnchorEmitted;
     if (isFirst) sessionItemAnchorEmitted = true;
@@ -379,12 +400,12 @@ export const SessionListPane = React.memo(function SessionListPane({
         isSelected={selectedSessionId === session.id}
         isMultiSelected={selectedSessionIds?.has(session.id) ?? false}
         onSelect={(id, event) => onSelectSession(id, event, renderedSessionIds)}
-        onInfoClick={(e) => onInfoClick(session, e)}
         onContextMenu={(e) => {
           e.preventDefault();
           onContextMenu(session, e);
         }}
         compact={options?.compact}
+        gridBadge={gridBadgeFor(session.id)}
       />
     );
     if (!isFirst) return card;
@@ -589,25 +610,6 @@ export const SessionListPane = React.memo(function SessionListPane({
               onChange={(e) => setQ(e.target.value)}
             />
           </div>
-          <SmartTooltip content={{ label: "New Chat", description: "Start a new AI chat session." }}>
-            <button
-              type="button"
-              className="ade-session-list-toolbar-new-chat inline-flex h-7 shrink-0 items-center gap-1 rounded-lg px-2 text-[10px] font-medium transition-colors"
-              style={{
-                border: "1px solid rgba(168,130,255,0.35)",
-                background: "rgba(168,130,255,0.08)",
-                color: "rgba(168,130,255,0.9)",
-                cursor: "pointer",
-                whiteSpace: "nowrap",
-              }}
-              onClick={() => onShowDraftKind("chat")}
-              aria-label="Start a new chat"
-              data-tour="work.newSession"
-            >
-              <Plus size={10} weight="bold" />
-              <span className="ade-session-list-toolbar-new-chat-label">New Chat</span>
-            </button>
-          </SmartTooltip>
           <SmartTooltip content={{ label: "Filters", description: "Toggle the filter panel to organize sessions by lane or time." }}>
             <button
               type="button"
@@ -628,6 +630,25 @@ export const SessionListPane = React.memo(function SessionListPane({
                   className="absolute right-1 top-1 h-1.5 w-1.5 rounded-full bg-[var(--color-accent)] shadow-[0_0_8px_var(--color-accent)]"
                 />
               ) : null}
+            </button>
+          </SmartTooltip>
+          <SmartTooltip content={{ label: "New Chat", description: "Start a new AI chat session." }}>
+            <button
+              type="button"
+              className="ade-session-list-toolbar-new-chat inline-flex h-7 shrink-0 items-center gap-1 rounded-lg px-2 text-[10px] font-medium transition-colors"
+              style={{
+                border: "1px solid rgba(168,130,255,0.35)",
+                background: "rgba(168,130,255,0.08)",
+                color: "rgba(168,130,255,0.9)",
+                cursor: "pointer",
+                whiteSpace: "nowrap",
+              }}
+              onClick={() => onShowDraftKind("chat")}
+              aria-label="Start a new chat"
+              data-tour="work.newSession"
+            >
+              <Plus size={10} weight="bold" />
+              <span className="ade-session-list-toolbar-new-chat-label">New Chat</span>
             </button>
           </SmartTooltip>
         </div>

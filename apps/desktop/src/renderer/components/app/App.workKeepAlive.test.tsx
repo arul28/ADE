@@ -301,10 +301,11 @@ describe("App Work route keep-alive", () => {
     await waitFor(() => {
       expect(window.location.pathname).toBe("/work");
     });
+    // viewMode (the old tabs/grid switch) was removed by the work-tab overhaul;
+    // revealing the browser just opens the sidebar.
     expect(appStoreState.setWorkViewState).toHaveBeenCalledWith(
       "/fake/project",
       expect.objectContaining({
-        viewMode: "tabs",
         workSidebarOpen: true,
         workSidebarTab: "browser",
       }),

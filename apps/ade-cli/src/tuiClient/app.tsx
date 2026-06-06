@@ -62,7 +62,9 @@ import {
   getOpenCodeRuntimeDiagnostics,
   getSlashCommands,
   getStoredApiKeyProviders,
+  getSubagentTranscript,
   interruptChat,
+  killDroidWorker,
   latestGoal,
   latestTokenStats,
   listLaneDiffStats,
@@ -139,6 +141,7 @@ import { latestExpandableFailureId, renderObject, summarizeDiffChanges } from ".
 import { startTuiHeartbeat, type TuiHeartbeat } from "./heartbeat";
 import { isImageFilePath, latestOpenableImageTarget, readClipboardImageAttachment, readImageDimensions } from "./imageTargets";
 import { appendReservedTuiEvent, dedupeTuiEvents, reserveTuiEventDedupKey, syncTuiEventDedupKeys } from "./eventDedup";
+import { coalesceTextDeltaEnvelopes } from "./assistantTextIdentity";
 import { loadAdeCodeState, saveAdeCodeProjectState, scopedAdeCodeState } from "./state";
 import { SpinTickProvider } from "./spinTick";
 import { ACTIVE_SESSION_PLACEHOLDER, buildLinearToolRequest } from "./linearCommands";
@@ -174,6 +177,7 @@ import {
   buildSubagentTranscriptEvents,
   subagentIndexForPaneLine,
   subagentPaneContentFromRightPane,
+  subagentTranscriptMessagesToEvents,
   type SubagentPaneRow,
 } from "./subagentPane";
 import { readClaudeStatusLineConfig, runClaudeStatusLineCommand } from "./statusline";
@@ -232,7 +236,11 @@ type DrawerChatAction = "new-chat";
 // (~40fps) instead of one render per token. Lifecycle edges (turn start/stop,
 // done, user messages, subagent/error) force an immediate flush so the spinner,
 // interrupt flags, and right pane stay responsive.
-const CHAT_EVENT_FLUSH_MS = 24;
+// Token deltas are batched into one render per interval. A slightly longer window
+// lets more same-message deltas coalesce per flush (see coalesceTextDeltaEnvelopes)
+// — fewer, larger renders means far less per-token transcript re-wrap/flicker,
+// while staying well within smooth-streaming range for text.
+const CHAT_EVENT_FLUSH_MS = 48;
 
 function isChatFlushEdge(eventType: string): boolean {
   // Only the event types that drive an immediate side-effect below (spinner /
@@ -2342,6 +2350,9 @@ function useTerminalMouseTracking(): void {
 const DRAWER_PANE_MIN_WIDTH = 32;
 const DRAWER_PANE_MAX_WIDTH = 48;
 const MIN_CENTER_PANE_WIDTH = 24;
+// Breathing room between wrapped chat text and the right pane's left border so
+// prose doesn't butt right up against the divider when the pane is open.
+const CHAT_RIGHT_GUTTER = 2;
 const MIN_RIGHT_PANE_WIDTH = 30;
 const RIGHT_PANE_MAX_WIDTH = 42;
 const MODEL_PICKER_RIGHT_PANE_MAX_WIDTH = 64;
@@ -2357,8 +2368,12 @@ function safeCenterWidth(centerWidth: number): number {
   return Math.max(MIN_CENTER_PANE_WIDTH, finiteFloor(centerWidth, MIN_CENTER_PANE_WIDTH));
 }
 
-export function resolveChatWrapWidth(centerWidth: number, _drawerOpen: boolean, _rightPaneWidth: number): number {
-  return safeCenterWidth(centerWidth);
+export function resolveChatWrapWidth(centerWidth: number, _drawerOpen: boolean, rightPaneWidth: number): number {
+  const safe = safeCenterWidth(centerWidth);
+  // Reserve a small gutter only when the right pane is open; never underflow the
+  // minimum center width.
+  const gutter = rightPaneWidth > 0 ? CHAT_RIGHT_GUTTER : 0;
+  return Math.max(MIN_CENTER_PANE_WIDTH, safe - gutter);
 }
 
 export function resolveTerminalPaneWidth(centerWidth: number): number {
@@ -2657,6 +2672,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
   const [drawerScrollOffsetRows, setDrawerScrollOffsetRows] = useState(0);
   const [rightPaneScrollOffsetRows, setRightPaneScrollOffsetRows] = useState(0);
   const [inspectedSubagentId, setInspectedSubagentId] = useState<string | null>(null);
+  // Real daemon-backed child transcript for the inspected subagent (Codex/OpenCode);
+  // keyed by subagent id so a stale fetch never bleeds into a different agent. Null
+  // ⇒ fall back to the locally-reconstructed transcript.
+  const [realSubagentTranscript, setRealSubagentTranscript] = useState<{ id: string; status: SubagentSnapshot["status"]; envelopes: AgentChatEventEnvelope[] } | null>(null);
   const [mentionSuggestions, setMentionSuggestions] = useState<MentionSuggestion[]>([]);
   const [mentionIndex, setMentionIndex] = useState(0);
   const [selectedMentions, setSelectedMentions] = useState<MentionSuggestion[]>([]);
@@ -2762,6 +2781,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
   const lastChatByLaneWriteTimerRef = useRef<NodeJS.Timeout | null>(null);
   const pendingNewChatTitleRef = useRef<string | null>(null);
   const lastUserOpenedPaneRef = useRef<RightPaneContent["kind"] | null>(null);
+  // Sessions for which the chat-info pane has already auto-opened on its first
+  // subagent (once per session, mirroring desktop's subagent auto-open).
+  const subagentAutoOpenedSessionsRef = useRef<Set<string>>(new Set());
   const userDismissedRightPaneRef = useRef(false);
   const activeSessionRef = useRef<AgentChatSessionSummary | null>(null);
   const sessionsRef = useRef<AgentChatSessionSummary[]>([]);
@@ -3432,6 +3454,30 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     selectFooterControl,
     subagentPaneCommandAvailable,
   ]);
+  // Auto-open the chat-info pane the first time a subagent appears for a session
+  // (once per session), mirroring the desktop subagent auto-open. Unlike a
+  // manual open, this does NOT steal focus from the composer — the pane simply
+  // appears alongside the chat. Respects an explicit user dismissal and never
+  // stomps a different pane the user opened.
+  useEffect(() => {
+    const sessionId = activeSessionId;
+    if (!sessionId || !subagentPaneCommandAvailable) return;
+    if (subagentSnapshots.length === 0) return;
+    if (subagentAutoOpenedSessionsRef.current.has(sessionId)) return;
+    if (userDismissedRightPaneRef.current) return;
+    // chat-info already visible → agents are already shown; consume the flag.
+    if (rightOpen && rightPane.kind === "chat-info") {
+      subagentAutoOpenedSessionsRef.current.add(sessionId);
+      return;
+    }
+    // A different pane is intentionally open → don't stomp it; retry when it
+    // next changes (this effect re-runs on rightPane.kind / rightOpen).
+    if (rightOpen) return;
+    setRightPane({ kind: "chat-info", info: chatInfoRef.current });
+    setRightSelectionIndex(0);
+    setRightOpen(true);
+    subagentAutoOpenedSessionsRef.current.add(sessionId);
+  }, [activeSessionId, rightOpen, rightPane.kind, subagentPaneCommandAvailable, subagentSnapshots.length]);
   const promptHistory = useMemo(() => events
     .map((envelope) => envelope.event)
     .filter((event): event is Extract<AgentChatEventEnvelope["event"], { type: "user_message" }> => event.type === "user_message")
@@ -3694,11 +3740,49 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     if (!rightOpen || rightPane.kind !== "chat-info" || !inspectedSubagentId) return null;
     return subagentSnapshots.find((snapshot) => snapshot.id === inspectedSubagentId) ?? null;
   }, [inspectedSubagentId, rightOpen, rightPane.kind, subagentSnapshots]);
-  const displayEvents = useMemo(() => (
-    selectedAgentSnapshot
-      ? buildSubagentTranscriptEvents({ events, activeSession, snapshot: selectedAgentSnapshot })
-      : events
-  ), [activeSession, events, selectedAgentSnapshot]);
+  const displayEvents = useMemo(() => {
+    if (!selectedAgentSnapshot) return events;
+    // Prefer the real daemon-backed child transcript when we've fetched it for
+    // THIS subagent (Codex/OpenCode); otherwise reconstruct locally from the
+    // parent event stream (also the path for Cursor/Droid, which have none).
+    if (realSubagentTranscript && realSubagentTranscript.id === selectedAgentSnapshot.id) {
+      return realSubagentTranscript.envelopes;
+    }
+    return buildSubagentTranscriptEvents({ events, activeSession, snapshot: selectedAgentSnapshot });
+  }, [activeSession, events, realSubagentTranscript, selectedAgentSnapshot]);
+  // Fetch the real child transcript for the inspected subagent when the runtime
+  // can produce one (Codex app-server threads / OpenCode child sessions). Falls
+  // back silently to local reconstruction on null/empty/error.
+  useEffect(() => {
+    const snapshot = selectedAgentSnapshot;
+    if (!snapshot) {
+      if (realSubagentTranscript) setRealSubagentTranscript(null);
+      return;
+    }
+    const conn = connectionRef.current;
+    const sessionId = activeSessionId;
+    if (!conn || !sessionId || !chatInfo.capability.canViewFullTranscript) return;
+    // Re-fetch when the subagent's status changes (e.g. running → completed) so a
+    // transcript first fetched mid-run is refreshed once the agent finishes,
+    // rather than caching a partial transcript forever.
+    if (realSubagentTranscript?.id === snapshot.id && realSubagentTranscript.status === snapshot.status) return;
+    let cancelled = false;
+    void getSubagentTranscript(conn, {
+      sessionId,
+      agentId: snapshot.id,
+      laneId: activeLane?.id ?? null,
+    })
+      .then((messages) => {
+        if (cancelled || !messages || messages.length === 0) return;
+        setRealSubagentTranscript({
+          id: snapshot.id,
+          status: snapshot.status,
+          envelopes: subagentTranscriptMessagesToEvents({ messages, snapshot, sessionId }),
+        });
+      })
+      .catch(() => { /* keep the locally-reconstructed transcript */ });
+    return () => { cancelled = true; };
+  }, [activeLane?.id, activeSessionId, chatInfo.capability.canViewFullTranscript, realSubagentTranscript, selectedAgentSnapshot]);
   const displayNotices = useMemo(() => (selectedAgentSnapshot ? [] : notices), [notices, selectedAgentSnapshot]);
   // Aggregate the transcript exactly once per render and thread the result into
   // every consumer (scroll math, selection rows, selectable text, and ChatView
@@ -5934,10 +6018,16 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     // after these envelopes were buffered (e.g. /clear armed the timer), drop the
     // stale ones so they don't re-materialize in the cleared transcript.
     const clearedAtValue = clearedAtRef.current;
-    const pending = clearedAtValue
+    const filtered = clearedAtValue
       ? buffered.filter((envelope) => envelope.timestamp > clearedAtValue)
       : buffered;
-    if (pending.length === 0) return;
+    if (filtered.length === 0) return;
+    // Coalesce the burst of streamed text deltas into per-message envelopes BEFORE
+    // they hit React state. This is the single biggest flood reducer: a turn that
+    // streams thousands of tokens otherwise grows `events` by one entry per token,
+    // forcing the transcript to re-aggregate + re-wrap on every flush. Applied
+    // once here so the per-session map and the active-session buffer stay in sync.
+    const pending = coalesceTextDeltaEnvelopes(filtered);
 
     // (1) Per-session transcript map — append all buffered envelopes for each
     // affected session in a single deduped update. Previously this ran one O(n)
@@ -10468,11 +10558,12 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       return;
     }
 
+    const killWorkerKey = key.ctrl && !key.meta && input.toLowerCase() === "k";
     if (
       pane === "details"
       && rightOpen
       && rightPane.kind === "chat-info"
-      && (key.upArrow || key.downArrow || key.return)
+      && (key.upArrow || key.downArrow || key.return || killWorkerKey)
     ) {
       const subagentContent = subagentPaneContentFromRightPane(rightPane);
       if (!subagentContent) return;
@@ -10480,15 +10571,42 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         .filter((row): row is Extract<SubagentPaneRow, { kind: "snapshot" }> => row.kind === "snapshot");
       // Selection: 0 = main row; 1..N = subagent rows.
       const selectableCount = snapshotRows.length + 1;
+      const selectedRow = rightSelectionIndex > 0 ? snapshotRows[rightSelectionIndex - 1] : null;
+      const selectedSnapshot: SubagentSnapshot | null = selectedRow ? selectedRow.snapshot : null;
+      // ^k — stop the selected Droid AGI worker. The Droid worker subagent id IS
+      // its workerSessionId (see droidSdkEventMapper.mission_worker_started).
+      if (killWorkerKey) {
+        const conn = connectionRef.current;
+        const sessionId = activeSessionId;
+        if (
+          conn
+          && sessionId
+          && chatInfoRef.current.provider === "droid"
+          && selectedSnapshot
+          && selectedSnapshot.kind === "subagent"
+          && selectedSnapshot.status === "running"
+        ) {
+          const workerSessionId = selectedSnapshot.id;
+          void killDroidWorker(conn, { sessionId, workerSessionId })
+            .then(() => addNotice(`Stopping worker ${workerSessionId.slice(-6)}…`, "info"))
+            .catch((err) => addNotice(`Failed to stop worker: ${err instanceof Error ? err.message : String(err)}`, "error"));
+        }
+        return;
+      }
       if (key.upArrow || key.downArrow) {
         const delta = key.upArrow ? -1 : 1;
         setRightSelectionIndex((index) => (index + delta + selectableCount) % selectableCount);
         return;
       }
       if (key.return) {
-        const row = rightSelectionIndex > 0 ? snapshotRows[rightSelectionIndex - 1] : null;
-        const snapshot: SubagentSnapshot | null = row ? row.snapshot : null;
-        setInspectedSubagentId(snapshot?.id ?? null);
+        // Capability gate: only runtimes with a real child transcript
+        // (Codex/OpenCode) take over the main chat. Cursor/Droid keep the row
+        // selected with its inline detail shown; selecting "main" (row 0) always
+        // returns to the parent chat.
+        if (selectedSnapshot && !chatInfoRef.current.capability.canViewFullTranscript) {
+          return;
+        }
+        setInspectedSubagentId(selectedSnapshot?.id ?? null);
         setChatScrollOffset(0);
         return;
       }

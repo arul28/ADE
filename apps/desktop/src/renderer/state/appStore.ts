@@ -31,7 +31,10 @@ export type TerminalPreferences = {
 };
 export const DEFAULT_TERMINAL_PREFERENCES: TerminalPreferences = {
   fontFamily: DEFAULT_TERMINAL_FONT_FAMILY,
-  fontSize: 12.5,
+  // Integer so device cell metrics stay whole — a fractional 12.5 gave the
+  // xterm.js WebGL renderer fractional cell widths that crowd glyphs (spaces
+  // collapse) and dash box-drawing borders for TUI clients (e.g. `ade code`).
+  fontSize: 13,
   lineHeight: 1.25,
   scrollback: 10_000,
 };
@@ -118,7 +121,6 @@ function normalizeChatShellGeometry(value: unknown): ChatShellGeometry {
 }
 export type TerminalAttentionIndicator = "none" | "running-active" | "running-needs-attention";
 export type MacosVmTabIndicator = "blocker" | "failed" | null;
-export type WorkViewMode = "tabs" | "grid";
 export type WorkSidebarTab = "git" | "files" | "ios" | "app-control" | "browser";
 export type WorkStatusFilter = "all" | "running" | "awaiting-input" | "ended";
 export type WorkDraftKind = "chat" | "cli" | "chat-orchestrator";
@@ -127,11 +129,25 @@ export type WorkSessionListOrganization =
   | "all-lanes-by-status"
   | "by-lane"
   | "by-time";
+/**
+ * A Cursor-style grid: a set of chat/CLI sessions that share the work area in a
+ * resizable split layout. `sessionIds` is the membership (drives the sidebar
+ * grid badge); the actual split geometry persists separately under `layoutId`
+ * via `window.ade.tilingTree`. A session belongs to at most one grid set.
+ */
+export type WorkGridSet = {
+  id: string;
+  layoutId: string;
+  sessionIds: string[];
+};
 export type WorkProjectViewState = {
   openItemIds: string[];
   activeItemId: string | null;
   selectedItemId: string | null;
-  viewMode: WorkViewMode;
+  /** Cursor-style grids. A session is in at most one set. */
+  gridSets: WorkGridSet[];
+  /** The grid set currently shown in the work area (derived-from/synced-with the focused session). */
+  activeGridSetId: string | null;
   draftKind: WorkDraftKind;
   draftLaneId: string | null;
   laneFilter: string;
@@ -188,7 +204,8 @@ function createDefaultWorkProjectViewState(): WorkProjectViewState {
     openItemIds: [],
     activeItemId: null,
     selectedItemId: null,
-    viewMode: "tabs",
+    gridSets: [],
+    activeGridSetId: null,
     draftKind: "chat",
     draftLaneId: null,
     laneFilter: "all",
@@ -239,7 +256,8 @@ function normalizeWorkProjectViewState(value: unknown): WorkProjectViewState {
     openItemIds: normalizeStringArray(candidate.openItemIds),
     activeItemId: normalizeOptionalString(candidate.activeItemId),
     selectedItemId: normalizeOptionalString(candidate.selectedItemId),
-    viewMode: candidate.viewMode === "grid" ? "grid" : "tabs",
+    gridSets: normalizeWorkGridSets(candidate.gridSets),
+    activeGridSetId: normalizeOptionalString(candidate.activeGridSetId),
     draftKind: candidate.draftKind === "cli" || candidate.draftKind === "chat-orchestrator"
       ? candidate.draftKind
       : "chat",
@@ -267,6 +285,31 @@ function normalizeWorkProjectViewState(value: unknown): WorkProjectViewState {
     laneSessionOrder: normalizeLaneSessionOrder(candidate.laneSessionOrder),
     pinnedSessionIds: normalizeStringArray(candidate.pinnedSessionIds),
   };
+}
+
+/** Normalize persisted grid sets: drop empties, dedupe a session into one set. */
+function normalizeWorkGridSets(value: unknown): WorkGridSet[] {
+  if (!Array.isArray(value)) return [];
+  const out: WorkGridSet[] = [];
+  const seenSessionIds = new Set<string>();
+  const seenSetIds = new Set<string>();
+  for (const entry of value) {
+    if (!entry || typeof entry !== "object") continue;
+    const candidate = entry as Partial<WorkGridSet>;
+    const id = typeof candidate.id === "string" ? candidate.id.trim() : "";
+    const layoutId = typeof candidate.layoutId === "string" ? candidate.layoutId.trim() : "";
+    if (!id || !layoutId || seenSetIds.has(id)) continue;
+    const sessionIds = normalizeStringArray(candidate.sessionIds).filter((sid) => {
+      if (seenSessionIds.has(sid)) return false;
+      seenSessionIds.add(sid);
+      return true;
+    });
+    // A "grid" needs at least 2 members; a 0/1-member set collapses to single view.
+    if (sessionIds.length < 2) continue;
+    seenSetIds.add(id);
+    out.push({ id, layoutId, sessionIds });
+  }
+  return out;
 }
 
 function normalizeLaneSessionOrder(value: unknown): Record<string, string[]> {
@@ -465,6 +508,9 @@ type PersistedUserPreferences = {
   chatTranscriptDensity: ChatTranscriptDensity;
   chatChromeTint: ChatChromeTint;
   chatShellGeometry: ChatShellGeometry;
+  /** Set true the first time the user changes the chat font size; locks the
+   *  large-screen auto-size so it never overrides their choice again. */
+  userOverrodeChatFontSize: boolean;
 };
 
 function coerceTheme(value: unknown): ThemeId | null {
@@ -496,6 +542,7 @@ function readUnifiedUserPreferences(): PersistedUserPreferences | null {
       chatTranscriptDensity: normalizeChatTranscriptDensity(parsed.chatTranscriptDensity),
       chatChromeTint: coercePersistedChatChromeTint(parsed as Record<string, unknown>),
       chatShellGeometry: normalizeChatShellGeometry(parsed.chatShellGeometry),
+      userOverrodeChatFontSize: parsed.userOverrodeChatFontSize === true,
     };
   } catch {
     return null;
@@ -539,6 +586,7 @@ function readLegacyUserPreferences(): PersistedUserPreferences {
     chatTranscriptDensity: "comfortable",
     chatChromeTint: "colored",
     chatShellGeometry: "default",
+    userOverrodeChatFontSize: false,
   };
 }
 
@@ -568,6 +616,7 @@ function persistUserPreferencesFrom(state: {
   chatTranscriptDensity: ChatTranscriptDensity;
   chatChromeTint: ChatChromeTint;
   chatShellGeometry: ChatShellGeometry;
+  userOverrodeChatFontSize: boolean;
 }) {
   persistUserPreferences({
     theme: state.theme,
@@ -586,6 +635,7 @@ function persistUserPreferencesFrom(state: {
     chatTranscriptDensity: state.chatTranscriptDensity,
     chatChromeTint: state.chatChromeTint,
     chatShellGeometry: state.chatShellGeometry,
+    userOverrodeChatFontSize: state.userOverrodeChatFontSize,
   });
 }
 
@@ -741,7 +791,9 @@ export type AppState = {
   setAgentTurnCompletionSound: (sound: AgentTurnCompletionSound) => void;
   setAgentTurnCompletionSoundVolume: (volume: number) => void;
   setAgentTurnCompletionSoundQuietWhenFocused: (quiet: boolean) => void;
+  userOverrodeChatFontSize: boolean;
   setChatFontSizePx: (px: number) => void;
+  applyAutoSizeChatFontOnLargeScreenIfNotOverridden: () => void;
   setChatUserMinimapEnabled: (enabled: boolean) => void;
   setChatTranscriptDensity: (density: ChatTranscriptDensity) => void;
   setChatChromeTint: (tint: ChatChromeTint) => void;
@@ -929,6 +981,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   agentTurnCompletionSoundVolume: initialUserPreferences.agentTurnCompletionSoundVolume,
   agentTurnCompletionSoundQuietWhenFocused: initialUserPreferences.agentTurnCompletionSoundQuietWhenFocused,
   chatFontSizePx: initialUserPreferences.chatFontSizePx,
+  userOverrodeChatFontSize: initialUserPreferences.userOverrodeChatFontSize,
   chatUserMinimapEnabled: initialUserPreferences.chatUserMinimapEnabled,
   chatTranscriptDensity: initialUserPreferences.chatTranscriptDensity,
   chatChromeTint: initialUserPreferences.chatChromeTint,
@@ -1119,8 +1172,22 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   setChatFontSizePx: (px) =>
     set((prev) => {
       const value = normalizeChatFontSizePx(px);
-      persistUserPreferencesFrom({ ...prev, chatFontSizePx: value });
-      return { chatFontSizePx: value };
+      // Any manual change permanently locks the large-screen auto-size.
+      persistUserPreferencesFrom({ ...prev, chatFontSizePx: value, userOverrodeChatFontSize: true });
+      return { chatFontSizePx: value, userOverrodeChatFontSize: true };
+    }),
+  applyAutoSizeChatFontOnLargeScreenIfNotOverridden: () =>
+    set((prev) => {
+      if (prev.userOverrodeChatFontSize) return {};
+      const isLargeScreen = typeof window !== "undefined"
+        && typeof window.matchMedia === "function"
+        && window.matchMedia("(min-width: 1600px)").matches;
+      // Large screens read better at 16px; normal screens keep the 14px default.
+      // This is an auto-size, so it never sets userOverrodeChatFontSize.
+      const target = normalizeChatFontSizePx(isLargeScreen ? 16 : DEFAULT_CHAT_FONT_SIZE_PX);
+      if (target === prev.chatFontSizePx) return {};
+      persistUserPreferencesFrom({ ...prev, chatFontSizePx: target });
+      return { chatFontSizePx: target };
     }),
   setChatUserMinimapEnabled: (enabled) =>
     set((prev) => {
@@ -1153,8 +1220,9 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         ...prev,
         theme: nextTheme,
         chatFontSizePx: nextFont,
+        userOverrodeChatFontSize: false,
       });
-      return { theme: nextTheme, chatFontSizePx: nextFont };
+      return { theme: nextTheme, chatFontSizePx: nextFont, userOverrodeChatFontSize: false };
     }),
   setTerminalPreferences: (next) =>
     set((prev) => {

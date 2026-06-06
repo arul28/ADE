@@ -91,7 +91,6 @@ const workMocks = vi.hoisted(() => {
     sessions: [],
     visibleSessions: [],
     tabGroups: [],
-    tabVisibleSessionIds: [],
     runningFiltered: [],
     awaitingInputFiltered: [],
     endedFiltered: [],
@@ -100,9 +99,10 @@ const workMocks = vi.hoisted(() => {
     sessionsGroupedByLane: [],
     loading: false,
     gridLayoutId: "work-grid",
+    gridSets: [],
+    setGridSets: vi.fn(),
     activeItemId: null,
     selectedSessionId: null,
-    viewMode: "tabs",
     draftKind: "chat",
     draftLaneId: null,
     filterLaneId: "all",
@@ -119,7 +119,6 @@ const workMocks = vi.hoisted(() => {
     closingPtyIds: new Set<string>(),
     setSelectedSessionId: vi.fn(),
     setActiveItemId: vi.fn(),
-    setViewMode: vi.fn(),
     closeTab: vi.fn(),
     launchPtySession: vi.fn(),
     setDraftLaneId: vi.fn(),
@@ -357,14 +356,12 @@ describe("TerminalsPage chat session activation", () => {
       type: "open-request",
       status: { profileProjectRoot: "/repo-two" },
     });
-    expect(workMocks.currentWork.setViewMode).not.toHaveBeenCalled();
     expect(workMocks.currentWork.setWorkSidebarTab).not.toHaveBeenCalled();
 
     browserEventListener.current?.({
       type: "open-request",
       status: { profileProjectRoot: "/repo-one" },
     });
-    expect(workMocks.currentWork.setViewMode).toHaveBeenCalledWith("tabs");
     expect(workMocks.currentWork.setWorkSidebarTab).toHaveBeenCalledWith("browser");
   });
 
@@ -396,7 +393,8 @@ describe("TerminalsPage chat session activation", () => {
       type: "open-request",
       status: { profileProjectRoot: "/repo-one" },
     });
-    expect(workMocks.currentWork.setViewMode).not.toHaveBeenCalled();
+    // (work-tab viewMode/grid was removed by this lane's overhaul; the remote
+    // guard now just suppresses the browser-sidebar open.)
     expect(workMocks.currentWork.setWorkSidebarTab).not.toHaveBeenCalled();
   });
 

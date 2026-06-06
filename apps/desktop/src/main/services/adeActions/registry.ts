@@ -18,8 +18,6 @@ import type { ComputerUseOwnerSnapshotArgs } from "../../../shared/types/compute
 import type {
   AgentChatFileSearchArgs,
   AgentChatFileSearchResult,
-  AgentChatCodexOpenInCliArgs,
-  AgentChatCodexOpenInCliResult,
   AgentChatGetTurnFileDiffArgs,
   AgentChatLaunchCliArgs,
   AgentChatLaunchCliResult,
@@ -83,12 +81,6 @@ import { launchRebaseResolutionChat } from "../prs/prRebaseResolver";
 import { mapPermissionModeForModelFamily } from "../prs/resolverUtils";
 import { getErrorMessage, isRecord, nowIso } from "../shared/utils";
 import { parseLinearGraphQLInput } from "../cto/linearGraphQLInput";
-import { resolveCodexExecutable } from "../ai/codexExecutable";
-import {
-  buildResumeArgv,
-  detectCodexResumeStrategy,
-  spawnInNewTerminalWindow,
-} from "../chat/codexCliLauncher";
 import { launchAgentChatCli } from "../chat/agentChatCliLaunch";
 import { createApnsBridgeService } from "../notifications/apnsBridgeService";
 import { deleteTerminalSessionWithRuntimeCleanup } from "../sessions/deleteTerminalSession";
@@ -455,14 +447,15 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "getClaudeSessionMessages",
     "getChatEventHistory",
     "getContextUsage",
+    "getSubagentTranscript",
     "listClaudeOutputStyles",
     "getSessionCapabilities",
     "getSessionSummary",
     "getSlashCommands",
-    "getSubagentTranscript",
     "getTurnFileDiff",
     "getParallelLaunchState",
     "interrupt",
+    "killDroidWorker",
     "launchCli",
     "launchHeadless",
     "listClaudePlugins",
@@ -472,7 +465,6 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "modelCatalog",
     "approveToolUse",
     "codexFuzzyFileSearch",
-    "codexOpenInCli",
     "fileSearch",
     "handoffSession",
     "respondToInput",
@@ -1050,41 +1042,6 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
     },
     modelCatalog: (args?: unknown) =>
       agentChatService.getModelCatalog(args && typeof args === "object" ? args as never : undefined),
-    codexOpenInCli: async (
-      args?: AgentChatCodexOpenInCliArgs,
-    ): Promise<AgentChatCodexOpenInCliResult> => {
-      const sessionId =
-        typeof args?.sessionId === "string" ? args.sessionId.trim() : "";
-      if (!sessionId) {
-        throw new Error("chat.codexOpenInCli requires a sessionId");
-      }
-      const resumeCtx = agentChatService.getCodexResumeContext(sessionId);
-      if (!resumeCtx) {
-        throw new Error(`No resumable Codex thread for session ${sessionId}`);
-      }
-      if (resumeCtx.provider !== "codex") {
-        throw new Error("Open-in-CLI is only supported for Codex sessions");
-      }
-      const resolved = resolveCodexExecutable();
-      const strategy = await detectCodexResumeStrategy(resolved.path);
-      const argv = buildResumeArgv(strategy, resumeCtx.threadId);
-      const result: AgentChatCodexOpenInCliResult = {
-        binary: resolved.path,
-        argv,
-        cwd: resumeCtx.laneWorktreePath,
-        threadId: resumeCtx.threadId,
-        copyThreadIdToClipboard: strategy.copyThreadIdToClipboard,
-      };
-      if (args?.mode === "new-window") {
-        spawnInNewTerminalWindow({
-          binary: resolved.path,
-          argv,
-          cwd: resumeCtx.laneWorktreePath,
-        });
-        result.spawnedNewWindow = true;
-      }
-      return result;
-    },
     setParallelLaunchState: (args?: AgentChatSetParallelLaunchStateArgs) => {
       const parentLaneId = requireNonEmptyString(args?.parentLaneId, "parentLaneId");
       const key = agentChatParallelLaunchStateKey(runtime.projectRoot, parentLaneId);

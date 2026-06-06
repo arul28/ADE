@@ -20,6 +20,13 @@ This builds the ADE CLI, refreshes the shared dev runtime when needed, launches
 the Electron desktop app, and points desktop at that runtime. For renderer-only
 UI work, see [apps/desktop/README.md](apps/desktop/README.md).
 
+`npm run dev` also works from a lane checkout under `.ade/worktrees/<lane>`. To
+run a lane build **in isolation** — its own runtime + bridge sockets, without
+restarting your installed app's runtime — follow
+[Run a specific lane worktree](README.md#run-a-specific-lane-worktree) in the root
+README. Key rule: never aim `dev:desktop --socket` at a runtime you do not want
+`--auto` to shut down; use a fresh per-lane `/tmp/ade-runtime-<lane>.sock`.
+
 ## Before Submitting
 
 - Run the smallest relevant checks for your change first

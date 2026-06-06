@@ -11,6 +11,7 @@ import {
   type RenderedChatLine,
 } from "./format";
 import { workEventItemId, workEventParentItemId } from "./workEventIds";
+import { shouldMergeAssistantText } from "./assistantTextIdentity";
 
 export type WorkToolStatus = "running" | "ok" | "failed";
 
@@ -68,38 +69,10 @@ function turnIdOf(event: AgentChatEvent): string | null {
 
 type AssistantTextEvent = Extract<AgentChatEvent, { type: "text" }>;
 
-function textIdentity(event: AssistantTextEvent): string | null {
-  const messageId = event.messageId?.trim();
-  return messageId?.length ? messageId : null;
-}
-
-function turnAndItemMatch(
-  a: { turnId?: string; itemId?: string },
-  b: { turnId?: string; itemId?: string },
-): boolean {
-  const aTurnId = a.turnId ?? null;
-  const bTurnId = b.turnId ?? null;
-  if (!aTurnId || !bTurnId || aTurnId !== bTurnId) return false;
-  const aItemId = a.itemId ?? null;
-  const bItemId = b.itemId ?? null;
-  return !aItemId || !bItemId || aItemId === bItemId;
-}
-
-function shouldMergeAssistantTextEvents(previous: AssistantTextEvent, next: AssistantTextEvent): boolean {
-  const previousIdentity = textIdentity(previous);
-  const nextIdentity = textIdentity(next);
-
-  if (previousIdentity || nextIdentity) {
-    if (previousIdentity && nextIdentity) {
-      return previousIdentity === nextIdentity;
-    }
-    return turnAndItemMatch(previous, next);
-  }
-
-  if (turnAndItemMatch(previous, next)) return true;
-
-  return !previous.turnId && !next.turnId && !previous.itemId && !next.itemId;
-}
+// Identity logic now lives in the shared assistantTextIdentity module so the
+// buffer-level delta coalescer (app.tsx) and the render-line coalescer
+// (format.ts) decide message membership identically.
+const shouldMergeAssistantTextEvents = shouldMergeAssistantText;
 
 function safeMs(value: string): number {
   const parsed = Date.parse(value);
@@ -290,6 +263,11 @@ const SILENCED_EVENT_TYPES = new Set<AgentChatEvent["type"]>([
   "codex_goal_updated",
   "codex_goal_cleared",
   "pending_input_resolved",
+  // Droid AGI mission lifecycle drives the Missions section in the chat-info
+  // pane (see chatMission), not the transcript — keep it out of the timeline.
+  "mission_state",
+  "mission_features",
+  "mission_progress",
 ]);
 
 function isSubagentTimelineEvent(event: AgentChatEvent): boolean {
@@ -348,6 +326,10 @@ function runtimeActivityFromEvent(id: string, event: AgentChatEvent): RuntimeAct
       status: "running",
     };
   }
+  // Subagent lifecycle stays as compact, detail-free markers in the center
+  // transcript — the live task text, summaries, persona, and per-runtime stats
+  // all surface in the subagent (chat-info) pane instead, so the parent
+  // transcript isn't polluted by child chatter (see ChatInfoRoster).
   if (event.type === "subagent_started" || event.type === "subagent.started") {
     return {
       id,

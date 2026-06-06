@@ -155,7 +155,9 @@ import type {
   AgentChatSetClaudeOutputStyleArgs,
   AgentChatSlashCommand,
   AgentChatSlashCommandsArgs,
+  AgentChatKillDroidWorkerArgs,
   AgentChatSubagentListArgs,
+  AgentChatSubagentMetadata,
   AgentChatSubagentSnapshot,
   AgentChatSurface,
   AgentChatSteerArgs,
@@ -259,6 +261,7 @@ import { buildAdeCliAgentGuidance } from "../../../shared/adeCliGuidance";
 import { getAdeAgentSkillRootsForPrompt } from "../../../shared/agentSkillRoots";
 import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
 import { extractLeadingSlashCommand, isProviderSlashCommandInput } from "../../../shared/chatSlashCommands";
+import { resolveSubagentCapability } from "../../../shared/subagentCapabilities";
 import { stripAnsi } from "../../utils/ansiStrip";
 import type { createCtoStateService } from "../cto/ctoStateService";
 import type { createWorkerAgentService } from "../cto/workerAgentService";
@@ -522,6 +525,28 @@ type PendingCodexApproval = {
   questionResponseKind?: "native_request_user_input";
 };
 
+type CodexSubagentThreadState = {
+  threadId: string;
+  parentThreadId: string | null;
+  parentTurnId: string | null;
+  parentToolUseId: string | null;
+  prompt: string | null;
+  label: string;
+  background: boolean;
+  status: "running" | "completed" | "failed" | "stopped";
+  model: string | null;
+  reasoningEffort: string | null;
+  metadata: AgentChatSubagentMetadata | null;
+  metadataRequested: boolean;
+  metadataInFlight: boolean;
+  activeTurnId: string | null;
+  itemTurnIdByItemId: Map<string, string>;
+  commandOutputByItemId: Map<string, string>;
+  fileDeltaByItemId: Map<string, string>;
+  fileChangesByItemId: Map<string, Array<{ path: string; kind: "create" | "modify" | "delete" }>>;
+  transcriptKeys: Set<string>;
+};
+
 type PendingClaudeApproval = {
   kind: "approval" | "question";
   questionIds?: string[];
@@ -559,6 +584,8 @@ type CodexRuntime = {
     background: boolean;
     parentToolUseId: string | null;
   }>;
+  codexSubagentThreads: Map<string, CodexSubagentThreadState>;
+  codexSubagentThreadIdsByParentItemId: Map<string, Set<string>>;
   /**
    * Per-turn 1-based index assigned to each new codex collab agent threadId
    * the first time it is announced (`subagent_started`). Used to surface
@@ -2924,6 +2951,18 @@ function taskParentToolUseId(item: Record<string, unknown>): string | null {
  * stream — the SubagentStart hook also has it, but downstream `task_started`
  * system messages do not. Stashing it lets us enrich those envelopes.
  */
+/**
+ * The Claude Agent SDK's subagent-spawning tool was historically named `Task`;
+ * newer SDK builds type its input as `AgentInput` and emit the tool under the
+ * name `Agent` at invocation time (while `system:init` tool lists and permission
+ * denials may still say `Task`). Match both so subagent-type enrichment keeps
+ * working across SDK versions. (Verified against @anthropic-ai/claude-agent-sdk
+ * 0.2.139: `AgentInput` with `subagent_type`/`run_in_background`/`name`.)
+ */
+function isClaudeSubagentToolName(toolName: string | null | undefined): boolean {
+  return toolName === "Task" || toolName === "Agent";
+}
+
 function extractTaskToolInput(input: unknown): {
   subagentType?: string;
   name?: string;
@@ -3922,7 +3961,7 @@ const VALID_CODEX_APPROVAL_POLICIES = new Set(["untrusted", "on-request", "on-fa
 const VALID_CODEX_SANDBOXES = new Set(["read-only", "workspace-write", "danger-full-access"]);
 const VALID_CODEX_CONFIG_SOURCES = new Set(["flags", "config-toml"]);
 const VALID_OPENCODE_PERMISSION_MODES = new Set(["plan", "edit", "full-auto", "config-toml"]);
-const VALID_DROID_PERMISSION_MODES = new Set(["read-only", "auto-low", "auto-medium", "auto-high"]);
+const VALID_DROID_PERMISSION_MODES = new Set(["read-only", "auto-low", "auto-medium", "auto-high", "agi"]);
 
 function normalizePersistedEnum<T extends string>(value: unknown, validSet: Set<string>): T | undefined {
   if (typeof value !== "string") return undefined;
@@ -4745,6 +4784,10 @@ function resolveDroidSdkAutonomyLevel(
   const mode = resolveSessionDroidPermissionMode(session, "auto-low");
   switch (mode) {
     case "read-only":
+      return "off";
+    case "agi":
+      // Orchestrator runs read-only at the top level; workers carry their own
+      // autonomy, so the lead session stays at "off".
       return "off";
     case "auto-low":
       return "low";
@@ -6070,11 +6113,20 @@ export function createAgentChatService(args: {
     return Array.from(toolNames).sort((a, b) => a.localeCompare(b));
   };
 
-  const deriveSessionCapabilities = (managed: ManagedChatSession | null): AgentChatSessionCapabilities => ({
-    supportsSubagentInspection: Boolean(managed && (managed.session.provider === "claude" || managed.session.provider === "codex")),
-    supportsSubagentControl: Boolean(managed && managed.runtime?.kind === "claude"),
-    supportsReviewMode: Boolean(managed && managed.session.provider === "codex"),
-  });
+  const deriveSessionCapabilities = (managed: ManagedChatSession | null): AgentChatSessionCapabilities => {
+    const provider = managed?.session.provider ?? null;
+    const runtimeKind = managed?.runtime?.kind ?? null;
+    const subagent = resolveSubagentCapability(provider, runtimeKind);
+    return {
+      // `subagent.canList` is the new source of truth (covers every runtime that
+      // surfaces subagents). The legacy boolean is kept for back-compat and now
+      // simply mirrors it.
+      supportsSubagentInspection: Boolean(managed) && subagent.canList,
+      supportsSubagentControl: Boolean(managed && managed.runtime?.kind === "claude"),
+      supportsReviewMode: Boolean(managed && provider === "codex"),
+      subagent,
+    };
+  };
 
   const getClaudeQueryControl = (
     sessionQuery: ClaudeQuery | null | undefined,
@@ -6266,25 +6318,6 @@ export function createAgentChatService(args: {
     } catch {
       return [];
     }
-  };
-
-  const getCodexResumeContext = (sessionId: string): {
-    sessionId: string;
-    threadId: string;
-    laneWorktreePath: string;
-    provider: AgentChatProvider;
-  } | null => {
-    const managed = managedSessions.get(sessionId);
-    if (!managed) return null;
-    const { session, laneWorktreePath } = managed;
-    const threadId = session.threadId?.trim() ?? "";
-    if (!threadId.length) return null;
-    return {
-      sessionId,
-      threadId,
-      laneWorktreePath,
-      provider: session.provider,
-    };
   };
 
   const getChatTranscript = async ({
@@ -6540,6 +6573,10 @@ export function createAgentChatService(args: {
     return merged;
   };
 
+  function isCodexSubagentTranscriptEnvelope(entry: AgentChatEventEnvelope): boolean {
+    return entry.provenance?.targetKind === "codex_subagent";
+  }
+
   /**
    * Return the recent, ordered event history for a chat session.
    *
@@ -6592,16 +6629,22 @@ export function createAgentChatService(args: {
     const bufferExisting = eventHistoryBySession.get(trimmedId) ?? [];
     const transcriptHistory = readTranscriptEnvelopesForSessionId(trimmedId);
     let merged = mergeEnvelopeStreams(transcriptHistory.envelopes, bufferExisting);
-    const mergedLength = merged.length;
+    const mergedLengthBeforeResponseCap = merged.length;
     if (merged.length > CHAT_EVENT_HISTORY_RESPONSE_MAX_PER_SESSION) {
       merged = merged.slice(-CHAT_EVENT_HISTORY_RESPONSE_MAX_PER_SESSION);
     }
     eventHistoryBySession.set(trimmedId, merged.slice(-CHAT_EVENT_HISTORY_BUFFER_MAX_PER_SESSION));
 
+    const parentVisibleMerged = merged.filter((entry) => !isCodexSubagentTranscriptEnvelope(entry));
+    const parentVisibleLength = parentVisibleMerged.length;
     const transcriptTruncated = transcriptHistory.truncated;
-    const windowTruncated = mergedLength > maxEvents;
+    const windowTruncated =
+      mergedLengthBeforeResponseCap > CHAT_EVENT_HISTORY_RESPONSE_MAX_PER_SESSION
+      || parentVisibleLength > maxEvents;
     const truncated = transcriptTruncated || windowTruncated;
-    const windowed = windowTruncated ? merged.slice(-maxEvents) : merged;
+    const windowed = parentVisibleLength > maxEvents
+      ? parentVisibleMerged.slice(-maxEvents)
+      : parentVisibleMerged;
     return {
       sessionId: trimmedId,
       events: windowed,
@@ -8361,6 +8404,116 @@ export function createAgentChatService(args: {
       // ignore chat transcript write failures
     }
   };
+
+  function roleForSubagentEvent(event: AgentChatEvent): AgentChatSubagentTranscriptMessage["type"] {
+    if (event.type === "user_message") return "user";
+    if (event.type === "text") return "assistant";
+    return "system";
+  }
+
+  function textForSubagentEvent(event: AgentChatEvent): string | null {
+    if (event.type === "user_message" || event.type === "text" || event.type === "reasoning") {
+      return event.text;
+    }
+    if (event.type === "command") return event.output || event.command;
+    if (event.type === "file_change") return event.path;
+    if (event.type === "web_search") return event.query;
+    if (event.type === "subagent_result") return event.summary;
+    if (event.type === "subagent_progress") return event.summary;
+    if (event.type === "subagent_started") return event.description;
+    return null;
+  }
+
+  function codexSubagentMetadataForThread(
+    runtime: CodexRuntime | null,
+    threadId: string,
+  ): AgentChatSubagentMetadata | null {
+    const state = runtime?.codexSubagentThreads.get(threadId) ?? null;
+    if (!state) return null;
+    return {
+      threadId: state.threadId,
+      parentThreadId: state.parentThreadId,
+      label: state.metadata?.label ?? state.label,
+      agentNickname: state.metadata?.agentNickname ?? null,
+      agentRole: state.metadata?.agentRole ?? null,
+      name: state.metadata?.name ?? null,
+      preview: state.metadata?.preview ?? null,
+      prompt: state.metadata?.prompt ?? state.prompt,
+      model: state.metadata?.model ?? state.model,
+      reasoningEffort: state.metadata?.reasoningEffort ?? state.reasoningEffort,
+    };
+  }
+
+  function transcriptMessageWithMetadata(
+    message: AgentChatSubagentTranscriptMessage,
+    metadata: AgentChatSubagentMetadata | null,
+  ): AgentChatSubagentTranscriptMessage {
+    return metadata ? { ...message, subagentMetadata: metadata } : message;
+  }
+
+  function codexSubagentTranscriptMessageKey(
+    threadId: string,
+    message: AgentChatSubagentTranscriptMessage,
+  ): string {
+    const event = message.message as { itemId?: unknown; turnId?: unknown; type?: unknown } | null;
+    const itemId = typeof event?.itemId === "string" && event.itemId.trim().length ? event.itemId.trim() : null;
+    const turnId = typeof event?.turnId === "string" && event.turnId.trim().length ? event.turnId.trim() : null;
+    const eventType = typeof event?.type === "string" && event.type.trim().length ? event.type.trim() : message.type;
+    return message.uuid || `${threadId}:${turnId ?? "no-turn"}:${itemId ?? "no-item"}:${eventType}:${message.text ?? ""}`;
+  }
+
+  function recordCodexSubagentTranscriptMessages(
+    managed: ManagedChatSession,
+    runtime: CodexRuntime,
+    threadId: string,
+    messages: AgentChatSubagentTranscriptMessage[],
+  ): void {
+    const state = runtime.codexSubagentThreads.get(threadId);
+    for (const message of messages) {
+      const event = message.message as AgentChatEvent | null;
+      if (!event || typeof event !== "object" || Array.isArray(event) || typeof (event as { type?: unknown }).type !== "string") {
+        continue;
+      }
+      const key = codexSubagentTranscriptMessageKey(threadId, message);
+      if (state?.transcriptKeys.has(key)) continue;
+      state?.transcriptKeys.add(key);
+      const envelope: AgentChatEventEnvelope = {
+        sessionId: managed.session.id,
+        timestamp: nowIso(),
+        event,
+        sequence: ++managed.eventSequence,
+        provenance: {
+          messageId: key,
+          threadId,
+          role: message.type === "user" ? "user" : "agent",
+          targetKind: "codex_subagent",
+          sourceSessionId: managed.session.id,
+          laneId: managed.session.laneId,
+        },
+      };
+      writeTranscript(managed, envelope);
+      recordChatEventInHistory(envelope);
+    }
+  }
+
+  function codexSubagentEnvelopeToTranscriptMessage(
+    envelope: AgentChatEventEnvelope,
+    metadata: AgentChatSubagentMetadata | null,
+  ): AgentChatSubagentTranscriptMessage | null {
+    if (!isCodexSubagentTranscriptEnvelope(envelope)) return null;
+    const threadId = envelope.provenance?.threadId;
+    if (typeof threadId !== "string" || !threadId.trim().length) return null;
+    const event = envelope.event;
+    const text = textForSubagentEvent(event);
+    return transcriptMessageWithMetadata({
+      type: roleForSubagentEvent(event),
+      uuid: envelope.provenance?.messageId ?? `${envelope.sequence ?? envelope.timestamp}:${event.type}`,
+      sessionId: threadId,
+      parentToolUseId: null,
+      message: event,
+      ...(text ? { text } : {}),
+    }, metadata);
+  }
 
   const setSessionPreview = (managed: ManagedChatSession, candidate: string): void => {
     const next = normalizePreview(candidate);
@@ -11376,7 +11529,7 @@ export function createAgentChatService(args: {
                   openClaudeToolUses.set(itemId, { toolName });
                   // Stash Task-tool input so the system:task_* envelopes that
                   // arrive later can be enriched with agentType.
-                  if (toolName === "Task" && typeof block.id === "string" && block.id.length) {
+                  if (isClaudeSubagentToolName(toolName) && typeof block.id === "string" && block.id.length) {
                     const taskInput = extractTaskToolInput(block.input);
                     if (taskInput) runtime.taskToolInputByToolUseId.set(block.id, taskInput);
                   }
@@ -11563,7 +11716,7 @@ export function createAgentChatService(args: {
                 // Stash Task-tool input so the system:task_* envelopes that
                 // arrive later can be enriched with agentType. Stream-event
                 // path: input arrives via input_json_delta and lands in `raw`.
-                if (meta.toolName === "Task" && meta.toolUseId) {
+                if (isClaudeSubagentToolName(meta.toolName) && meta.toolUseId) {
                   const taskInput = extractTaskToolInput(parsed);
                   if (taskInput) runtime.taskToolInputByToolUseId.set(meta.toolUseId, taskInput);
                 }
@@ -12555,6 +12708,17 @@ export function createAgentChatService(args: {
       }
 
       let stepNumber = 0;
+      // Per-child (subagent) usage accumulator for this turn. OpenCode child
+      // sessions stream their own `step-finish` parts (tagged with the child's
+      // sessionID); we sum their tokens/cost here and attach the running total to
+      // the subagent progress/result events so the subagent drawer can show
+      // usage the way Codex/Claude do.
+      const childUsageBySession = new Map<string, { totalTokens: number; costUsd: number }>();
+      const childUsageEvent = (childId: string): { totalTokens: number; costUsd?: number } | undefined => {
+        const acc = childUsageBySession.get(childId);
+        if (!acc || acc.totalTokens <= 0) return undefined;
+        return { totalTokens: acc.totalTokens, ...(acc.costUsd > 0 ? { costUsd: acc.costUsd } : {}) };
+      };
       for await (const event of eventStream) {
         const resolveSessionId = (): string | null => {
           switch (event.type) {
@@ -12647,6 +12811,7 @@ export function createAgentChatService(args: {
                 parentToolUseId: null,
                 description: childDescription,
                 summary: formatSummary(),
+                ...(childUsageEvent(childKey) ? { usage: childUsageEvent(childKey) } : {}),
                 turnId,
               });
             } else {
@@ -12657,10 +12822,38 @@ export function createAgentChatService(args: {
                 parentToolUseId: null,
                 status: "completed",
                 summary: formatSummary(),
+                ...(childUsageEvent(childKey) ? { usage: childUsageEvent(childKey) } : {}),
                 turnId,
               });
               runtime.subagentSessionIds.delete(childKey);
             }
+            continue;
+          }
+        }
+
+        // Accumulate per-child (subagent) usage from the child's own
+        // `step-finish` parts. These belong to a child session, so they fall
+        // outside the parent-session filter below; catch them here first. The
+        // running total rides along on the next subagent progress/result event.
+        if (event.type === "message.part.updated") {
+          const childPart = event.properties.part;
+          if (
+            childPart.type === "step-finish"
+            && childPart.sessionID
+            && childPart.sessionID !== runtime.handle.sessionId
+            && runtime.subagentSessionIds.has(childPart.sessionID)
+          ) {
+            const prev = childUsageBySession.get(childPart.sessionID) ?? { totalTokens: 0, costUsd: 0 };
+            const t = childPart.tokens;
+            const stepTokens = (t.input ?? 0) + (t.output ?? 0) + (t.reasoning ?? 0)
+              + (t.cache?.read ?? 0) + (t.cache?.write ?? 0);
+            childUsageBySession.set(childPart.sessionID, {
+              totalTokens: prev.totalTokens + stepTokens,
+              costUsd: prev.costUsd + (typeof childPart.cost === "number" ? childPart.cost : 0),
+            });
+            // Don't emit here — the running total rides along on the next child
+            // session.updated (progress) / session.deleted (result) event via
+            // childUsageEvent(), so we avoid empty-summary "dead" progress events.
             continue;
           }
         }
@@ -13928,12 +14121,22 @@ export function createAgentChatService(args: {
     summary: string;
   };
 
+  const CODEX_SUBAGENT_FALLBACK_NAMES = [
+    "Sagan",
+    "Beauvoir",
+    "Kuhn",
+    "Boole",
+    "Hopper",
+    "Turing",
+    "Lovelace",
+    "Curie",
+  ];
+
   /**
    * Assigns (and remembers) a 1-based codex collab-agent index for the given
-   * threadId within the given turn. The Codex app-server wire format does not
-   * carry a human-friendly name for parallel agents — we surface them as
-   * `Agent #N` to mirror the official codex desktop reference and keep the raw
-   * threadId in the snapshot's agentId for filtering / drill-in.
+   * threadId within the given turn. Prefer app-server metadata when available;
+   * until it arrives, use deterministic Codex-desktop-style names instead of
+   * leaking raw "Agent #N" placeholders into the drill-in UI.
    */
   const assignCodexAgentLabel = (
     runtime: CodexRuntime,
@@ -13946,11 +14149,14 @@ export function createAgentChatService(args: {
       perTurn = new Map<string, number>();
       runtime.codexAgentIndexByTurn.set(key, perTurn);
     }
+    const nameForIndex = (index: number): string =>
+      CODEX_SUBAGENT_FALLBACK_NAMES[(index - 1) % CODEX_SUBAGENT_FALLBACK_NAMES.length]
+      ?? `Agent #${index}`;
     const existing = perTurn.get(threadId);
-    if (existing !== undefined) return `Agent #${existing}`;
+    if (existing !== undefined) return nameForIndex(existing);
     const next = perTurn.size + 1;
     perTurn.set(threadId, next);
-    return `Agent #${next}`;
+    return nameForIndex(next);
   };
 
   const normalizeCodexCollabToolName = (value: unknown): string => {
@@ -14062,6 +14268,395 @@ export function createAgentChatService(args: {
 
   const codexCollabItemHasFailure = (item: Record<string, unknown>): boolean =>
     item.success === false || item.error != null;
+
+  function firstRecordString(record: Record<string, unknown> | null, keys: string[]): string | null {
+    if (!record) return null;
+    for (const key of keys) {
+      const value = stringOrNull(record[key]);
+      if (value) return value;
+    }
+    return null;
+  }
+
+  function firstNestedRecordString(record: Record<string, unknown> | null, keys: string[]): string | null {
+    if (!record) return null;
+    const direct = firstRecordString(record, keys);
+    if (direct) return direct;
+    for (const value of Object.values(record)) {
+      const nested = asRecord(value);
+      const nestedValue = firstRecordString(nested, keys);
+      if (nestedValue) return nestedValue;
+    }
+    return null;
+  }
+
+  function codexSubagentDisplayLabel(metadata: AgentChatSubagentMetadata, fallback: string): string {
+    return [
+      metadata.agentNickname,
+      metadata.agentRole,
+      metadata.name,
+      metadata.preview,
+      metadata.prompt,
+      fallback,
+    ].find((value): value is string => typeof value === "string" && value.trim().length > 0)?.trim() ?? fallback;
+  }
+
+  function normalizeCodexSubagentThreadMetadata(
+    value: unknown,
+    state: CodexSubagentThreadState,
+  ): AgentChatSubagentMetadata {
+    const root = asRecord(value);
+    const thread: Record<string, unknown> = asRecord(root?.thread) ?? root ?? {};
+    const source = asRecord(thread.source ?? thread.threadSource ?? thread.thread_source);
+    const sourceNested = asRecord(source?.subAgent ?? source?.subagent ?? source?.thread_spawn ?? source?.threadSpawn);
+    const sourceRecord: Record<string, unknown> | null = sourceNested ?? source;
+    const metadata: AgentChatSubagentMetadata = {
+      threadId: firstRecordString(thread, ["id", "threadId", "thread_id"]) ?? state.threadId,
+      parentThreadId: firstNestedRecordString(sourceRecord, ["parentThreadId", "parent_thread_id"]) ?? state.parentThreadId,
+      agentNickname: firstNestedRecordString(sourceRecord, ["agentNickname", "agent_nickname"]) ?? firstRecordString(thread, ["agentNickname", "agent_nickname"]),
+      agentRole: firstNestedRecordString(sourceRecord, ["agentRole", "agent_role"]) ?? firstRecordString(thread, ["agentRole", "agent_role"]),
+      name: firstRecordString(thread, ["name", "title"]),
+      preview: firstRecordString(thread, ["preview", "summary"]),
+      prompt: state.prompt,
+      model: firstRecordString(thread, ["model", "modelId", "model_id"]) ?? state.model,
+      reasoningEffort: firstRecordString(thread, ["reasoningEffort", "reasoning_effort"]) ?? state.reasoningEffort,
+    };
+    return {
+      ...metadata,
+      label: codexSubagentDisplayLabel(metadata, state.label),
+    };
+  }
+
+  function registerCodexSubagentThread(
+    managed: ManagedChatSession,
+    runtime: CodexRuntime,
+    args: {
+      threadId: string;
+      parentToolUseId: string | null;
+      parentTurnId: string | null | undefined;
+      prompt: string | null;
+      background: boolean;
+      label: string;
+      status?: CodexSubagentThreadState["status"];
+      model?: string | null;
+      reasoningEffort?: string | null;
+    },
+  ): CodexSubagentThreadState {
+    const existing = runtime.codexSubagentThreads.get(args.threadId);
+    const state: CodexSubagentThreadState = existing ?? {
+      threadId: args.threadId,
+      parentThreadId: managed.session.threadId ?? null,
+      parentTurnId: args.parentTurnId ?? null,
+      parentToolUseId: args.parentToolUseId,
+      prompt: args.prompt,
+      label: args.label,
+      background: args.background,
+      status: args.status ?? "running",
+      model: args.model ?? null,
+      reasoningEffort: args.reasoningEffort ?? null,
+      metadata: null,
+      metadataRequested: false,
+      metadataInFlight: false,
+      activeTurnId: null,
+      itemTurnIdByItemId: new Map<string, string>(),
+      commandOutputByItemId: new Map<string, string>(),
+      fileDeltaByItemId: new Map<string, string>(),
+      fileChangesByItemId: new Map<string, Array<{ path: string; kind: "create" | "modify" | "delete" }>>(),
+      transcriptKeys: new Set<string>(),
+    };
+    state.parentThreadId = state.parentThreadId ?? managed.session.threadId ?? null;
+    state.parentTurnId = args.parentTurnId ?? state.parentTurnId;
+    state.parentToolUseId = args.parentToolUseId ?? state.parentToolUseId;
+    state.prompt = args.prompt ?? state.prompt;
+    state.label = state.metadata?.label ?? args.label ?? state.label;
+    state.background = args.background;
+    state.status = args.status ?? state.status;
+    state.model = args.model ?? state.model;
+    state.reasoningEffort = args.reasoningEffort ?? state.reasoningEffort;
+    runtime.codexSubagentThreads.set(args.threadId, state);
+    if (args.parentToolUseId) {
+      const byParent = runtime.codexSubagentThreadIdsByParentItemId.get(args.parentToolUseId) ?? new Set<string>();
+      byParent.add(args.threadId);
+      runtime.codexSubagentThreadIdsByParentItemId.set(args.parentToolUseId, byParent);
+    }
+    return state;
+  }
+
+  function refreshCodexSubagentThreadMetadata(
+    managed: ManagedChatSession,
+    runtime: CodexRuntime,
+    threadId: string,
+  ): void {
+    const state = runtime.codexSubagentThreads.get(threadId);
+    if (!state || state.metadataInFlight || state.metadataRequested) return;
+    state.metadataRequested = true;
+    state.metadataInFlight = true;
+    void runtime.request("thread/read", { threadId, includeTurns: false }, { timeoutMs: 5_000 })
+      .then((response) => {
+        const latest = runtime.codexSubagentThreads.get(threadId);
+        if (!latest) return;
+        const metadata = normalizeCodexSubagentThreadMetadata(response, latest);
+        const previousLabel = latest.label;
+        latest.metadata = metadata;
+        latest.label = metadata.label ?? latest.label;
+        latest.parentThreadId = metadata.parentThreadId ?? latest.parentThreadId;
+        latest.model = metadata.model ?? latest.model;
+        latest.reasoningEffort = metadata.reasoningEffort ?? latest.reasoningEffort;
+        if (latest.label !== previousLabel) {
+          emitChatEvent(managed, {
+            type: "subagent_progress",
+            taskId: threadId,
+            agentId: threadId,
+            agentType: latest.label,
+            parentToolUseId: latest.parentToolUseId,
+            description: latest.prompt ?? latest.label,
+            summary: metadata.preview ?? metadata.prompt ?? latest.label,
+            turnId: latest.parentTurnId ?? undefined,
+          });
+        }
+        logger.debug("agent_chat.codex_subagent_metadata_loaded", {
+          sessionId: managed.session.id,
+          threadId,
+          label: latest.label,
+          agentNickname: metadata.agentNickname,
+          agentRole: metadata.agentRole,
+          model: metadata.model,
+        });
+      })
+      .catch((error) => {
+        logger.debug("agent_chat.codex_subagent_metadata_read_failed", {
+          sessionId: managed.session.id,
+          threadId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      })
+      .finally(() => {
+        const latest = runtime.codexSubagentThreads.get(threadId);
+        if (latest) latest.metadataInFlight = false;
+      });
+  }
+
+  function codexLiveTranscriptMessage(
+    threadId: string,
+    event: AgentChatEvent,
+    role: AgentChatSubagentTranscriptMessage["type"],
+    text?: string | null,
+  ): AgentChatSubagentTranscriptMessage {
+    return {
+      type: role,
+      uuid: `codex-live:${threadId}:${(event as { turnId?: unknown }).turnId ?? "no-turn"}:${(event as { itemId?: unknown }).itemId ?? "no-item"}:${event.type}:${randomUUID()}`,
+      sessionId: threadId,
+      parentToolUseId: null,
+      message: event,
+      ...(text ? { text } : {}),
+    };
+  }
+
+  function recordCodexSubagentItem(
+    managed: ManagedChatSession,
+    runtime: CodexRuntime,
+    state: CodexSubagentThreadState,
+    item: Record<string, unknown>,
+    eventKind: "started" | "completed",
+    turnIdHint?: string | null,
+  ): void {
+    const itemId = typeof item.id === "string" && item.id.trim().length ? item.id.trim() : null;
+    const turnId = turnIdHint ?? (itemId ? state.itemTurnIdByItemId.get(itemId) ?? null : null) ?? state.activeTurnId;
+    if (itemId && turnId) {
+      if (eventKind === "started") state.itemTurnIdByItemId.set(itemId, turnId);
+      if (eventKind === "completed") state.itemTurnIdByItemId.delete(itemId);
+    }
+    const messages = codexThreadItemToTranscriptMessages(item, state.threadId, turnId, 0)
+      .map((message) => transcriptMessageWithMetadata(message, codexSubagentMetadataForThread(runtime, state.threadId)));
+    recordCodexSubagentTranscriptMessages(managed, runtime, state.threadId, messages);
+  }
+
+  function handleCodexSubagentNotification(
+    managed: ManagedChatSession,
+    runtime: CodexRuntime,
+    threadId: string,
+    method: string,
+    params: Record<string, unknown>,
+  ): boolean {
+    const state = runtime.codexSubagentThreads.get(threadId);
+    if (!state) return false;
+    const turnIdFromParams = extractCodexTurnId(params);
+
+    if (method === "turn/started") {
+      const turn = asRecord(params.turn);
+      const turnId = stringOrNull(turn?.id) ?? turnIdFromParams;
+      state.activeTurnId = turnId ?? null;
+      return true;
+    }
+
+    if (method === "turn/completed") {
+      const turn = asRecord(params.turn);
+      const turnId = stringOrNull(turn?.id) ?? turnIdFromParams ?? state.activeTurnId;
+      state.activeTurnId = null;
+      state.status = String(turn?.status ?? "").toLowerCase() === "failed" ? "failed" : state.status;
+      recordCodexSubagentTranscriptMessages(managed, runtime, threadId, [
+        transcriptMessageWithMetadata(codexLiveTranscriptMessage(threadId, {
+          type: "status",
+          turnStatus: state.status === "failed" ? "failed" : "completed",
+          ...(turnId ? { turnId } : {}),
+        }, "system"), codexSubagentMetadataForThread(runtime, threadId)),
+      ]);
+      return true;
+    }
+
+    if (method === "turn/aborted" || method === "codex/event/turn_aborted") {
+      const turnId = turnIdFromParams ?? state.activeTurnId;
+      state.activeTurnId = null;
+      state.status = "stopped";
+      recordCodexSubagentTranscriptMessages(managed, runtime, threadId, [
+        transcriptMessageWithMetadata(codexLiveTranscriptMessage(threadId, {
+          type: "status",
+          turnStatus: "interrupted",
+          ...(turnId ? { turnId } : {}),
+        }, "system"), codexSubagentMetadataForThread(runtime, threadId)),
+      ]);
+      return true;
+    }
+
+    if (method === "item/agentMessage/delta") {
+      const delta = typeof params.delta === "string" ? params.delta : "";
+      if (!delta.length) return true;
+      const itemId = stringOrNull(params.itemId);
+      const turnId = turnIdFromParams ?? (itemId ? state.itemTurnIdByItemId.get(itemId) ?? null : null) ?? state.activeTurnId;
+      const messageId = itemId
+        ? `codex-subagent:${threadId}:${turnId ?? "no-turn"}:${itemId}:text`
+        : `codex-subagent:${threadId}:${turnId ?? "no-turn"}:text`;
+      recordCodexSubagentTranscriptMessages(managed, runtime, threadId, [
+        transcriptMessageWithMetadata(codexLiveTranscriptMessage(threadId, {
+          type: "text",
+          text: delta,
+          messageId,
+          ...(turnId ? { turnId } : {}),
+          ...(itemId ? { itemId } : {}),
+        }, "assistant", delta), codexSubagentMetadataForThread(runtime, threadId)),
+      ]);
+      return true;
+    }
+
+    if (method === "item/reasoning/summaryTextDelta" || method === "item/reasoning/textDelta") {
+      const delta = typeof params.delta === "string" ? params.delta : "";
+      if (!delta.length) return true;
+      const itemId = stringOrNull(params.itemId);
+      const turnId = turnIdFromParams ?? (itemId ? state.itemTurnIdByItemId.get(itemId) ?? null : null) ?? state.activeTurnId;
+      recordCodexSubagentTranscriptMessages(managed, runtime, threadId, [
+        transcriptMessageWithMetadata(codexLiveTranscriptMessage(threadId, {
+          type: "reasoning",
+          text: delta,
+          ...(turnId ? { turnId } : {}),
+          ...(itemId ? { itemId } : {}),
+          summaryIndex: typeof params.summaryIndex === "number" ? params.summaryIndex : undefined,
+        }, "system", delta), codexSubagentMetadataForThread(runtime, threadId)),
+      ]);
+      return true;
+    }
+
+    if (method === "item/commandExecution/outputDelta") {
+      const itemId = stringOrNull(params.itemId) ?? randomUUID();
+      const delta = typeof params.delta === "string" ? params.delta : "";
+      const turnId = turnIdFromParams ?? state.itemTurnIdByItemId.get(itemId) ?? state.activeTurnId;
+      const next = `${state.commandOutputByItemId.get(itemId) ?? ""}${delta}`;
+      state.commandOutputByItemId.set(itemId, next);
+      recordCodexSubagentTranscriptMessages(managed, runtime, threadId, [
+        transcriptMessageWithMetadata(codexLiveTranscriptMessage(threadId, {
+          type: "command",
+          command: "command",
+          cwd: managed.laneWorktreePath,
+          output: delta,
+          itemId,
+          status: "running",
+          ...(turnId ? { turnId } : {}),
+        }, "system", delta), codexSubagentMetadataForThread(runtime, threadId)),
+      ]);
+      return true;
+    }
+
+    if (method === "item/fileChange/outputDelta") {
+      const itemId = stringOrNull(params.itemId) ?? randomUUID();
+      const delta = typeof params.delta === "string" ? params.delta : "";
+      const turnId = turnIdFromParams ?? state.itemTurnIdByItemId.get(itemId) ?? state.activeTurnId;
+      const next = `${state.fileDeltaByItemId.get(itemId) ?? ""}${delta}`;
+      state.fileDeltaByItemId.set(itemId, next);
+      const knownChanges = state.fileChangesByItemId.get(itemId) ?? [];
+      const events = knownChanges.length
+        ? knownChanges.map((change) => ({
+            type: "file_change" as const,
+            path: change.path,
+            kind: change.kind,
+            diff: delta,
+            itemId,
+            status: "running" as const,
+            ...(turnId ? { turnId } : {}),
+          }))
+        : [{
+            type: "file_change" as const,
+            path: "(pending file)",
+            kind: "modify" as const,
+            diff: delta,
+            itemId,
+            status: "running" as const,
+            ...(turnId ? { turnId } : {}),
+          }];
+      recordCodexSubagentTranscriptMessages(
+        managed,
+        runtime,
+        threadId,
+        events.map((event) => transcriptMessageWithMetadata(
+          codexLiveTranscriptMessage(threadId, event, "system", event.path),
+          codexSubagentMetadataForThread(runtime, threadId),
+        )),
+      );
+      return true;
+    }
+
+    if (method === "item/started" || method === "codex/event/item_started") {
+      const item = asRecord(params.item) ?? params;
+      const itemId = stringOrNull(item.id);
+      const itemType = stringOrNull(item.type);
+      if (itemId && turnIdFromParams) state.itemTurnIdByItemId.set(itemId, turnIdFromParams);
+      if (itemId && itemType === "fileChange") {
+        const changes = Array.isArray(item.changes) ? item.changes : [];
+        state.fileChangesByItemId.set(itemId, changes
+          .map((change) => {
+            const record = asRecord(change);
+            const filePath = stringOrNull(record?.path);
+            if (!filePath) return null;
+            return {
+              path: filePath,
+              kind: mapFileChangeKind(record?.kind ?? record?.type),
+            };
+          })
+          .filter((entry): entry is { path: string; kind: "create" | "modify" | "delete" } => entry !== null));
+      }
+      recordCodexSubagentItem(managed, runtime, state, item, "started", turnIdFromParams);
+      return true;
+    }
+
+    if (method === "item/completed" || method === "codex/event/item_completed") {
+      const item = asRecord(params.item) ?? params;
+      const itemId = stringOrNull(item.id);
+      if (itemId && stringOrNull(item.type) === "fileChange") {
+        state.fileChangesByItemId.delete(itemId);
+        state.fileDeltaByItemId.delete(itemId);
+      }
+      if (itemId && stringOrNull(item.type) === "commandExecution") {
+        state.commandOutputByItemId.delete(itemId);
+      }
+      recordCodexSubagentItem(managed, runtime, state, item, "completed", turnIdFromParams);
+      return true;
+    }
+
+    logger.debug("agent_chat.codex_subagent_notification_unhandled", {
+      sessionId: managed.session.id,
+      threadId,
+      method,
+    });
+    return true;
+  }
 
   const handleCodexItemEvent = (
     managed: ManagedChatSession,
@@ -14284,6 +14879,8 @@ export function createAgentChatService(args: {
       const prompt = typeof item.prompt === "string" ? item.prompt : "";
       const receiverIds = readCodexCollabReceiverIds(item);
       const agentsStates = normalizeCodexCollabAgentStates(item.agentsStates ?? item.agents_states);
+      const collabModel = stringOrNull(item.model);
+      const collabReasoningEffort = stringOrNull(item.reasoningEffort ?? item.reasoning_effort);
 
       if (tool === "spawn_agent" && eventKind === "started") {
         const taskIds = receiverIds.length ? receiverIds : [itemId];
@@ -14304,6 +14901,17 @@ export function createAgentChatService(args: {
           const agentType = receiverIds.length
             ? assignCodexAgentLabel(runtime, turnId, taskId)
             : undefined;
+          const threadState = registerCodexSubagentThread(managed, runtime, {
+            threadId: taskId,
+            parentToolUseId: itemId,
+            parentTurnId: turnId,
+            prompt: prompt.slice(0, 120) || "Parallel agent",
+            background,
+            label: agentType ?? "Parallel agent",
+            model: collabModel,
+            reasoningEffort: collabReasoningEffort,
+          });
+          refreshCodexSubagentThreadMetadata(managed, runtime, threadState.threadId);
           emitChatEvent(managed, {
             type: "subagent_started",
             taskId,
@@ -14328,6 +14936,8 @@ export function createAgentChatService(args: {
           const summary = readCodexCollabFailureSummary(item);
           for (const taskId of failedTaskIds) {
             const existing = runtime.activeSubagents.get(taskId) ?? runtime.activeSubagents.get(itemId);
+            const threadState = runtime.codexSubagentThreads.get(taskId);
+            if (threadState) threadState.status = spawnStatus;
             runtime.activeSubagents.delete(taskId);
             if (taskId !== itemId) runtime.activeSubagents.delete(itemId);
             emitChatEvent(managed, {
@@ -14360,6 +14970,17 @@ export function createAgentChatService(args: {
                 parentToolUseId: placeholder.parentToolUseId ?? itemId,
               });
               const agentType = assignCodexAgentLabel(runtime, turnId, taskId);
+              const threadState = registerCodexSubagentThread(managed, runtime, {
+                threadId: taskId,
+                parentToolUseId: placeholder.parentToolUseId ?? itemId,
+                parentTurnId: turnId,
+                prompt: placeholder.description,
+                background: placeholder.background,
+                label: agentType,
+                model: collabModel,
+                reasoningEffort: collabReasoningEffort,
+              });
+              refreshCodexSubagentThreadMetadata(managed, runtime, threadState.threadId);
               emitChatEvent(managed, {
                 type: "subagent_started",
                 taskId,
@@ -14394,6 +15015,7 @@ export function createAgentChatService(args: {
           const agentThreadId = agentState.threadId || itemId;
           const existing = runtime.activeSubagents.get(agentThreadId);
           const subagentStatus = mapCodexCollabAgentStatus(agentState.status);
+          const threadState = runtime.codexSubagentThreads.get(agentThreadId);
           if (!subagentStatus) {
             emitChatEvent(managed, {
               type: "subagent_progress",
@@ -14404,6 +15026,7 @@ export function createAgentChatService(args: {
             });
             continue;
           }
+          if (threadState) threadState.status = subagentStatus;
           runtime.activeSubagents.delete(agentThreadId);
           emitChatEvent(managed, {
             type: "subagent_result",
@@ -14420,6 +15043,8 @@ export function createAgentChatService(args: {
         const targetIds = receiverIds.length ? receiverIds : [itemId];
         for (const targetId of targetIds) {
           const existing = runtime.activeSubagents.get(targetId);
+          const threadState = runtime.codexSubagentThreads.get(targetId);
+          if (threadState) threadState.status = "stopped";
           runtime.activeSubagents.delete(targetId);
           emitChatEvent(managed, {
             type: "subagent_result",
@@ -14601,6 +15226,9 @@ export function createAgentChatService(args: {
       && managed.session.threadId
       && threadIdFromParams !== managed.session.threadId
     ) {
+      if (handleCodexSubagentNotification(managed, runtime, threadIdFromParams, method, params)) {
+        return;
+      }
       logger.debug("agent_chat.codex_ignored_foreign_thread_notification", {
         sessionId: managed.session.id,
         method,
@@ -15339,6 +15967,8 @@ export function createAgentChatService(args: {
       planningApprovalGuardByTurnId: new Map<string, boolean>(),
       pendingTurnPlanningApprovalGuarded: null,
       activeSubagents: new Map(),
+      codexSubagentThreads: new Map(),
+      codexSubagentThreadIdsByParentItemId: new Map(),
       codexAgentIndexByTurn: new Map<string, Map<string, number>>(),
       interruptedTurnIds: new Set<string>(),
       ignoredTurnIds: new Set<string>(),
@@ -18310,7 +18940,13 @@ export function createAgentChatService(args: {
     modelId: string,
   ): DroidSdkSessionSettings => {
     const reasoningEffort = normalizeDroidSdkReasoningEffort(managed.session.reasoningEffort);
-    const interactionMode = resolveDroidSdkInteractionMode(managed.session);
+    // AGI (orchestrator) is a Droid-specific permission mode, not part of the
+    // generic interaction-mode enum — resolve it from droidPermissionMode and
+    // let it win over the plan→spec mapping.
+    const interactionMode: DroidSdkSessionSettings["interactionMode"] =
+      resolveSessionDroidPermissionMode(managed.session, "auto-low") === "agi"
+        ? "agi"
+        : resolveDroidSdkInteractionMode(managed.session);
     return {
       modelId,
       autonomyLevel: resolveDroidSdkAutonomyLevel(managed.session),
@@ -23712,6 +24348,17 @@ export function createAgentChatService(args: {
     return getTrackedSubagents(sessionId);
   };
 
+  // Terminate a single Droid AGI mission worker (Missions tab). Only valid for a
+  // live Droid orchestrator session; other runtimes have no worker concept.
+  const killDroidWorker = async ({ sessionId, workerSessionId }: AgentChatKillDroidWorkerArgs): Promise<void> => {
+    const managed = managedSessions.get(sessionId.trim());
+    const runtime = managed?.runtime?.kind === "droid" ? managed.runtime : null;
+    if (!runtime) throw new Error("No active Droid session to terminate a worker for.");
+    const id = workerSessionId.trim();
+    if (!id) throw new Error("workerSessionId is required.");
+    await runtime.sdk.killWorker(id);
+  };
+
   const getSessionCapabilities = ({ sessionId }: AgentChatSessionCapabilitiesArgs): AgentChatSessionCapabilities => {
     const managed = managedSessions.get(sessionId) ?? null;
     return deriveSessionCapabilities(managed);
@@ -24219,7 +24866,6 @@ export function createAgentChatService(args: {
   const fetchCodexSubagentTranscriptFromAppServer = async (
     runtime: CodexRuntime,
     threadId: string,
-    options: { limit?: number; offset?: number } = {},
   ): Promise<AgentChatSubagentTranscriptMessage[] | null> => {
     type CodexTurnsListResponse = {
       data?: Array<{ id?: unknown; items?: unknown; startedAt?: unknown }>;
@@ -24248,7 +24894,11 @@ export function createAgentChatService(args: {
           for (let idx = 0; idx < items.length; idx++) {
             const item = items[idx];
             if (!item || typeof item !== "object" || Array.isArray(item)) continue;
-            collected.push(...codexThreadItemToTranscriptMessages(item as Record<string, unknown>, threadId, turnId, idx));
+            const metadata = codexSubagentMetadataForThread(runtime, threadId);
+            collected.push(
+              ...codexThreadItemToTranscriptMessages(item as Record<string, unknown>, threadId, turnId, idx)
+                .map((message) => transcriptMessageWithMetadata(message, metadata)),
+            );
           }
         }
         cursor = typeof response?.nextCursor === "string" ? response.nextCursor : null;
@@ -24267,9 +24917,80 @@ export function createAgentChatService(args: {
 
     if (collected.length === 0) return null;
 
-    const sliced = options.offset !== undefined ? collected.slice(options.offset) : collected;
-    return options.limit !== undefined ? sliced.slice(0, options.limit) : sliced;
+    return collected;
   };
+
+  function sliceTranscriptMessages(
+    messages: AgentChatSubagentTranscriptMessage[],
+    options: { limit?: number; offset?: number },
+  ): AgentChatSubagentTranscriptMessage[] {
+    const sliced = options.offset !== undefined ? messages.slice(options.offset) : messages;
+    return options.limit !== undefined ? sliced.slice(0, options.limit) : sliced;
+  }
+
+  function mergeSubagentTranscriptMessages(
+    left: AgentChatSubagentTranscriptMessage[],
+    right: AgentChatSubagentTranscriptMessage[],
+  ): AgentChatSubagentTranscriptMessage[] {
+    if (!left.length) return right.slice();
+    if (!right.length) return left.slice();
+    const byKey = new Map<string, AgentChatSubagentTranscriptMessage>();
+    const order: string[] = [];
+    const messageSignalLength = (message: AgentChatSubagentTranscriptMessage): number => {
+      if (typeof message.text === "string") return message.text.length;
+      const record = asRecord(message.message);
+      return [
+        stringOrNull(record?.text),
+        stringOrNull(record?.output),
+        stringOrNull(record?.diff),
+        stringOrNull(record?.summary),
+      ].join("").length;
+    };
+    const messageStatus = (message: AgentChatSubagentTranscriptMessage): string | null => {
+      const record = asRecord(message.message);
+      return stringOrNull(record?.status);
+    };
+    const preferTranscriptMessage = (
+      existing: AgentChatSubagentTranscriptMessage,
+      next: AgentChatSubagentTranscriptMessage,
+    ): boolean => {
+      if (next.subagentMetadata && !existing.subagentMetadata) return true;
+      const existingStatus = messageStatus(existing);
+      const nextStatus = messageStatus(next);
+      if (existingStatus === "running" && nextStatus && nextStatus !== "running") return true;
+      return messageSignalLength(next) > messageSignalLength(existing);
+    };
+    const add = (message: AgentChatSubagentTranscriptMessage) => {
+      const key = message.uuid || `${message.sessionId}:${message.type}:${message.text ?? JSON.stringify(message.message)}`;
+      if (byKey.has(key)) {
+        const existing = byKey.get(key)!;
+        byKey.set(key, preferTranscriptMessage(existing, message) ? message : existing);
+        return;
+      }
+      byKey.set(key, message);
+      order.push(key);
+    };
+    left.forEach(add);
+    right.forEach(add);
+    return order.map((key) => byKey.get(key)!).filter(Boolean);
+  }
+
+  function readCapturedCodexSubagentTranscript(
+    sessionId: string,
+    threadId: string,
+    runtime: CodexRuntime | null,
+  ): AgentChatSubagentTranscriptMessage[] {
+    const metadata = codexSubagentMetadataForThread(runtime, threadId);
+    const persisted = readFullTranscriptEnvelopesForSessionId(sessionId);
+    const buffered = eventHistoryBySession.get(sessionId) ?? [];
+    return mergeEnvelopeStreams(persisted, buffered)
+      .filter((envelope) =>
+        isCodexSubagentTranscriptEnvelope(envelope)
+        && envelope.provenance?.threadId === threadId
+      )
+      .map((envelope) => codexSubagentEnvelopeToTranscriptMessage(envelope, metadata))
+      .filter((entry): entry is AgentChatSubagentTranscriptMessage => entry !== null);
+  }
 
   /**
    * Fetch the transcript of a subagent run within an existing chat session.
@@ -24371,20 +25092,42 @@ export function createAgentChatService(args: {
       || runtimeKind === "cursor"
       || (runtimeKind === null && (provider === "codex" || provider === "cursor"));
 
-    // When the codex runtime is live we can ask the app-server directly for
-    // the subagent's own thread. This matches the Codex desktop app behaviour
-    // and surfaces every reasoning/command/file_change/web_search item, not
-    // just ADE's aggregated `subagent_*` envelopes on the parent stream.
-    if (managed?.runtime?.kind === "codex") {
+    const codexManaged = managed?.runtime?.kind === "codex" ? managed : null;
+    const codexRuntime = codexManaged?.runtime?.kind === "codex" ? codexManaged.runtime : null;
+    if (codexManaged && codexRuntime) {
+      refreshCodexSubagentThreadMetadata(codexManaged, codexRuntime, normalizedAgentId);
+    }
+
+    const capturedCodexTranscript = treatAsCodexLike
+      ? readCapturedCodexSubagentTranscript(normalizedSessionId, normalizedAgentId, codexRuntime)
+      : [];
+
+    // When the Codex runtime is live we also ask the app-server directly for
+    // the subagent's own thread. Captured live rows remain the first source
+    // of truth because older Codex builds may stream child-thread content but
+    // return an empty turn list for those threads.
+    if (codexRuntime) {
       const liveTranscript = await fetchCodexSubagentTranscriptFromAppServer(
-        managed.runtime,
+        codexRuntime,
         normalizedAgentId,
-        {
+      );
+      const mergedTranscript = mergeSubagentTranscriptMessages(
+        capturedCodexTranscript,
+        liveTranscript ?? [],
+      );
+      if (mergedTranscript.length > 0) {
+        return sliceTranscriptMessages(mergedTranscript, {
           ...(normalizedLimit !== undefined ? { limit: normalizedLimit } : {}),
           ...(normalizedOffset !== undefined ? { offset: normalizedOffset } : {}),
-        },
-      );
-      if (liveTranscript) return liveTranscript;
+        });
+      }
+    }
+
+    if (capturedCodexTranscript.length > 0) {
+      return sliceTranscriptMessages(capturedCodexTranscript, {
+        ...(normalizedLimit !== undefined ? { limit: normalizedLimit } : {}),
+        ...(normalizedOffset !== undefined ? { offset: normalizedOffset } : {}),
+      });
     }
 
     if (treatAsCodexLike) {
@@ -24392,6 +25135,7 @@ export function createAgentChatService(args: {
       const matchKey: "taskId" | "agentId" =
         runtimeKind === "cursor" || provider === "cursor" ? "agentId" : "taskId";
       const matched: AgentChatSubagentTranscriptMessage[] = [];
+      const metadata = provider === "codex" ? codexSubagentMetadataForThread(codexRuntime, normalizedAgentId) : null;
       for (const envelope of envelopes) {
         const event = envelope.event as Record<string, unknown> & { type: string };
         const candidate = event[matchKey];
@@ -24406,14 +25150,14 @@ export function createAgentChatService(args: {
           event.type === "subagent_result" || event.type === "subagent.completed"
             ? "assistant"
             : "system";
-        matched.push({
+        matched.push(transcriptMessageWithMetadata({
           type: role,
           uuid: `${envelope.sequence ?? envelope.timestamp}:${event.type}`,
           sessionId: normalizedSessionId,
           parentToolUseId: typeof event.parentToolUseId === "string" ? event.parentToolUseId : null,
           message: event,
           ...(text.length ? { text } : {}),
-        });
+        }, metadata));
       }
       const sliced = normalizedOffset !== undefined ? matched.slice(normalizedOffset) : matched;
       return normalizedLimit !== undefined ? sliced.slice(0, normalizedLimit) : sliced;
@@ -25476,7 +26220,6 @@ export function createAgentChatService(args: {
     countActiveForLane,
     disposeForLane,
     getChatTranscript,
-    getCodexResumeContext,
     getChatEventHistory,
     ensureIdentitySession,
     approveToolUse,
@@ -25493,6 +26236,7 @@ export function createAgentChatService(args: {
     getClaudeSessionInfo,
     getClaudeSessionMessages,
     getSubagentTranscript,
+    killDroidWorker,
     getContextUsage,
     rewindFiles,
     codexFuzzyFileSearch,

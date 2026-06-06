@@ -1,0 +1,60 @@
+/* @vitest-environment jsdom */
+import { describe, it, expect } from "vitest";
+import { render } from "@testing-library/react";
+import { ContextUsageDial } from "./ContextUsageDial";
+import type { ContextUsageViewModel } from "./contextUsageModel";
+
+function vm(partial: Partial<ContextUsageViewModel>): ContextUsageViewModel {
+  return {
+    provider: "codex",
+    contextWindow: 200_000,
+    usedTokens: 100_000,
+    inputTokens: 100_000,
+    outputTokens: 500,
+    cacheReadTokens: null,
+    cacheWriteTokens: null,
+    reasoningTokens: null,
+    totalTokens: null,
+    ratio: 0.5,
+    windowSource: "runtime",
+    ...partial,
+  };
+}
+
+describe("ContextUsageDial", () => {
+  it("renders the integer percentage inside the ring", () => {
+    const { getByText, container } = render(<ContextUsageDial usage={vm({ ratio: 0.52 })} />);
+    expect(getByText("52")).toBeTruthy();
+    expect(container.querySelector("svg")).toBeTruthy();
+  });
+
+  it("uses the sky color below 70%", () => {
+    const { container } = render(<ContextUsageDial usage={vm({ ratio: 0.5 })} />);
+    expect(container.querySelector('circle[stroke="#38bdf8"]')).toBeTruthy();
+  });
+
+  it("uses the rose color when nearing the limit", () => {
+    const { container } = render(<ContextUsageDial usage={vm({ ratio: 0.95 })} />);
+    expect(container.querySelector('circle[stroke="#fb7185"]')).toBeTruthy();
+  });
+
+  it("falls back to a tokens-only readout when the window is unknown", () => {
+    const { getByText, container } = render(
+      <ContextUsageDial usage={vm({ ratio: null, contextWindow: null, usedTokens: 12_000 })} />,
+    );
+    expect(getByText("12.0k")).toBeTruthy();
+    expect(container.querySelector("svg")).toBeNull();
+  });
+
+  it("renders nothing when there is no usage to show", () => {
+    const { container } = render(
+      <ContextUsageDial usage={vm({ ratio: null, contextWindow: null, usedTokens: null })} />,
+    );
+    expect(container.firstChild).toBeNull();
+  });
+
+  it("exposes the percentage on the accessible label", () => {
+    const { container } = render(<ContextUsageDial usage={vm({ ratio: 0.42 })} />);
+    expect(container.querySelector('[aria-label="Context usage: 42% full"]')).toBeTruthy();
+  });
+});

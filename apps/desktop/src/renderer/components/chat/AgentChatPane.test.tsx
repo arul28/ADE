@@ -1160,12 +1160,33 @@ describe("AgentChatPane companion drawers", () => {
     });
   });
 
-  it("opens the proof drawer and persists split resize from the real divider", async () => {
+  it("opens the proof drawer as a floating info pane (no split divider)", async () => {
     renderDrawerPane();
 
     fireEvent.click(await screen.findByRole("button", { name: "Open chat actions drawer" }));
     fireEvent.click(await screen.findByRole("button", { name: "Proof" }));
     expect(screen.getByText("No artifacts captured yet.")).toBeTruthy();
+
+    // Chat actions is an info pane: it floats over the right gutter created by
+    // the centered transcript, so it does NOT get a resizable split divider.
+    expect(screen.queryByRole("separator")).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Close chat actions drawer" }));
+    await waitFor(() => {
+      expect(screen.queryByText("No artifacts captured yet.")).toBeNull();
+    });
+  });
+
+  it("persists split resize from the real divider on a working panel", async () => {
+    renderDrawerPane();
+
+    // App Control is a heavy working panel that keeps the resizable split (and
+    // therefore the drag divider) — unlike the floating chat-actions info pane.
+    await waitFor(() => {
+      expect(screen.getAllByRole("button", { name: "Open App Control drawer" }).length).toBeGreaterThan(0);
+    });
+    fireEvent.click(screen.getAllByRole("button", { name: "Open App Control drawer" })[0]!);
+    expect(screen.getByTestId("app-control-panel").textContent).toBe("App Control panel mounted");
 
     const divider = screen.getByRole("separator", { name: "" });
     const splitParent = divider.parentElement;
@@ -1191,11 +1212,6 @@ describe("AgentChatPane companion drawers", () => {
 
     await waitFor(() => {
       expect(window.sessionStorage.getItem("ade.chat.rightPaneSplit")).toBe("40");
-    });
-
-    fireEvent.click(screen.getByRole("button", { name: "Close chat actions drawer" }));
-    await waitFor(() => {
-      expect(screen.queryByText("No artifacts captured yet.")).toBeNull();
     });
   });
 
@@ -3583,12 +3599,12 @@ describe("AgentChatPane submit recovery", () => {
         expect.objectContaining({ id: "created-session", laneId: "lane-created" }),
         { activate: false, source: "draft-launch" },
       );
-      expect(screen.getByText(/Launched chat in background-lane/i)).toBeTruthy();
+      expect(screen.getByText(/Launch this in the background\./i)).toBeTruthy();
       expect(screen.getByRole("button", { name: "Dismiss launch status" })).toBeTruthy();
     });
     expect(screen.getByTestId("location").textContent).toBe("/work");
 
-    fireEvent.click(screen.getByRole("button", { name: "Open" }));
+    fireEvent.click(screen.getByRole("button", { name: "View" }));
     await waitFor(() => {
       expect(screen.getByTestId("location").textContent).toBe("/work?laneId=lane-created&sessionId=created-session");
     });
@@ -3926,7 +3942,7 @@ describe("AgentChatPane submit recovery", () => {
 
     resolveSuggestedName("still-editable-lane");
     await waitFor(() => {
-      expect(screen.getByText(/Launched chat in auto-created-lane/i)).toBeTruthy();
+      expect(screen.getByText(/Launch this and let me keep typing\./i)).toBeTruthy();
       expect((screen.getByRole("textbox") as HTMLTextAreaElement).value).toBe("Next thought while it launches.");
     });
   });
@@ -3989,7 +4005,7 @@ describe("AgentChatPane submit recovery", () => {
     });
 
     await waitFor(() => {
-      expect(screen.getByText(/Launched chat in remounted-lane/i)).toBeTruthy();
+      expect(screen.getByText(/Keep this launch visible\./i)).toBeTruthy();
       expect(screen.getByRole("button", { name: "Dismiss launch status" })).toBeTruthy();
     });
   });
@@ -4040,7 +4056,7 @@ describe("AgentChatPane submit recovery", () => {
     renderAutoCreateDraftPane();
 
     expect(await screen.findByText(/Still working\. You can hide this status/i)).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Hide stale launch status" }));
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss launch status" }));
 
     await waitFor(() => {
       expect(screen.queryByTestId("draft-launch-job")).toBeNull();
@@ -4092,7 +4108,7 @@ describe("AgentChatPane submit recovery", () => {
       });
     });
 
-    fireEvent.click(await screen.findByRole("button", { name: "Hide stale launch status" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Dismiss launch status" }));
     await waitFor(() => {
       expect(screen.queryByTestId("draft-launch-job")).toBeNull();
     });
@@ -4344,8 +4360,8 @@ describe("AgentChatPane submit recovery", () => {
       expect(createLane).toHaveBeenCalledTimes(2);
       expect(create).toHaveBeenCalledTimes(2);
       expect(send).toHaveBeenCalledTimes(2);
-      expect(screen.getByText(/Launched chat in first-lane/i)).toBeTruthy();
-      expect(screen.getByText(/Launched chat in second-lane/i)).toBeTruthy();
+      expect(screen.getByText(/First auto lane\./i)).toBeTruthy();
+      expect(screen.getByText(/Second auto lane\./i)).toBeTruthy();
     });
   });
 
@@ -4818,7 +4834,7 @@ describe("AgentChatPane submit recovery", () => {
         tracked: true,
         disposition: "background",
       }));
-      expect(screen.getByText(/Launched CLI session in background-cli-lane/i)).toBeTruthy();
+      expect(screen.getByText(/Launch this CLI session in the background\./i)).toBeTruthy();
       expect(screen.getByRole("button", { name: "Dismiss launch status" })).toBeTruthy();
     });
     const launchArgs = onLaunchCliSession.mock.calls[0]?.[0];
@@ -4828,7 +4844,7 @@ describe("AgentChatPane submit recovery", () => {
     expect(send).not.toHaveBeenCalled();
     expect(screen.getByTestId("location").textContent).toBe("/work");
 
-    fireEvent.click(screen.getByRole("button", { name: "Open" }));
+    fireEvent.click(screen.getByRole("button", { name: "View" }));
     await waitFor(() => {
       expect(screen.getByTestId("location").textContent).toBe("/work?laneId=lane-created&sessionId=terminal-created");
     });

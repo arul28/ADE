@@ -6,11 +6,11 @@ import {
   useAppStore,
   useAppStoreApi,
   type WorkDraftKind,
+  type WorkGridSet,
   type WorkProjectViewState,
   type WorkSidebarTab,
   type WorkSessionListOrganization,
   type WorkStatusFilter,
-  type WorkViewMode,
 } from "../../state/appStore";
 import { listSessionsCached, invalidateSessionListCache } from "../../lib/sessionListCache";
 import { sessionStatusBucket } from "../../lib/terminalAttention";
@@ -29,7 +29,8 @@ const DEFAULT_PROJECT_WORK_STATE: WorkProjectViewState = {
   openItemIds: [],
   activeItemId: null,
   selectedItemId: null,
-  viewMode: "tabs",
+  gridSets: [],
+  activeGridSetId: null,
   draftKind: "chat",
   draftLaneId: null,
   laneFilter: "all",
@@ -50,6 +51,7 @@ const DEFAULT_PROJECT_WORK_STATE: WorkProjectViewState = {
 const OPTIMISTIC_PTY_SESSION_TTL_MS = 2 * 60 * 1000;
 const EMPTY_STRING_ARRAY: string[] = [];
 const EMPTY_LANE_SESSION_ORDER: Record<string, string[]> = {};
+const EMPTY_GRID_SETS: WorkGridSet[] = [];
 
 type WorkTabGroupKind = "lane" | "status" | "time";
 type WorkTabGroupLane = Pick<LaneSummary, "id" | "name" | "laneType" | "createdAt" | "color">;
@@ -407,7 +409,6 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   const openItemIds = projectViewState.openItemIds;
   const activeItemId = projectViewState.activeItemId;
   const selectedSessionId = projectViewState.selectedItemId;
-  const viewMode = projectViewState.viewMode;
   const draftKind = projectViewState.draftKind;
   const draftLaneId = projectViewState.draftLaneId;
   const filterLaneId = projectViewState.laneFilter;
@@ -436,12 +437,12 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
 
   const selectLaneForActiveTab = useCallback(
     (sessionId: string | null) => {
-      if (!sessionId || viewMode === "grid") return;
+      if (!sessionId) return;
       const session = sessionsById.get(sessionId);
       if (!session) return;
       selectLane(session.laneId);
     },
-    [selectLane, sessionsById, viewMode],
+    [selectLane, sessionsById],
   );
 
   const openSessions = useMemo(() => {
@@ -471,9 +472,13 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
 
   const tabVisibleSessionIds = tabGroupModel.sessionIds;
 
-  const setViewMode = useCallback(
-    (nextMode: WorkViewMode) => {
-      setProjectViewState({ viewMode: nextMode });
+  const gridSets = projectViewState.gridSets ?? EMPTY_GRID_SETS;
+  const setGridSets = useCallback(
+    (next: WorkGridSet[] | ((prev: WorkGridSet[]) => WorkGridSet[])) => {
+      setProjectViewState((prev) => ({
+        ...prev,
+        gridSets: typeof next === "function" ? next(prev.gridSets ?? []) : next,
+      }));
     },
     [setProjectViewState],
   );
@@ -483,7 +488,6 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       setProjectViewState((prev) => ({
         ...prev,
         draftKind: nextKind,
-        viewMode: "tabs",
         activeItemId: null,
         selectedItemId: null,
       }));
@@ -1408,6 +1412,8 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     runningSessions,
     visibleSessions,
     gridLayoutId,
+    gridSets,
+    setGridSets,
     selectedSession,
     loading,
 
@@ -1449,8 +1455,6 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     openItemIds,
     activeItemId,
     setActiveItemId,
-    viewMode,
-    setViewMode,
     draftKind,
     draftLaneId,
     setDraftLaneId,

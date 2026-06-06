@@ -34,6 +34,9 @@
 :root,
 [data-theme="dark"] {
   --color-bg: #0C0B10;
+  /* Neutral codex-style canvas (shared by the chat surface + work-tab chrome so
+     there is no color split). rgb(15, 15, 17). */
+  --chat-canvas-bg: #0f0f11;
   --color-fg: #F0F0F2;
   --color-surface: #16141E;
   --color-card: #1A1830;
@@ -179,10 +182,10 @@
   --shell-status-attention: #fbbf24;
 
   /* Work tab (sessions + view panes) */
-  --work-chrome-surface: var(--color-card);
+  --work-chrome-surface: var(--chat-canvas-bg, var(--color-card));
   --work-pane-border: rgba(255, 255, 255, 0.06);
   --work-pane-header-bg: rgba(255, 255, 255, 0.03);
-  --work-sidebar-bg: rgba(255, 255, 255, 0.025);
+  --work-sidebar-bg: #161618;
 
   /* Work tab combobox / popover */
   --work-popover-bg: rgba(22, 20, 30, 0.96);
@@ -198,6 +201,7 @@
 
 [data-theme="light"] {
   --color-bg: #f5f3f0;
+  --chat-canvas-bg: #f5f3f0;
   --color-fg: #1a1a1e;
   --color-surface: #faf8f5;
   --color-card: #ffffff;
@@ -2641,6 +2645,15 @@ button:active, [role="button"]:active {
     0 0 0 1px color-mix(in srgb, var(--chat-liquid-highlight, var(--chat-glass-sheen)) 26%, transparent);
 }
 
+/* Composer chrome: drop the bright liquid-glass border + outer ring so the
+   prompt box reads as a clean, calm surface (no white outline). */
+[data-chat-composer-mode] {
+  border-color: rgba(255, 255, 255, 0.05);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.04),
+    0 18px 44px -30px rgba(0, 0, 0, 0.72);
+}
+
 .ade-liquid-glass-menu {
   border-radius: 16px;
   border: 1px solid var(--work-popover-border, var(--chat-panel-border));
@@ -2671,9 +2684,16 @@ button:active, [role="button"]:active {
 }
 
 .ade-chat-timeline-pane {
-  background:
-    radial-gradient(circle at top, color-mix(in srgb, var(--chat-liquid-sheen, var(--chat-glass-sheen)) 50%, transparent) 0%, transparent 26%),
-    linear-gradient(180deg, color-mix(in srgb, var(--color-bg) 96%, var(--chat-panel-bg-strong) 4%) 0%, color-mix(in srgb, var(--color-bg) 92%, var(--chat-panel-bg) 8%) 100%);
+  /* Flat, calm canvas — no gradient/sheen, a touch lighter than the chrome
+     (Codex reference). Scrollbar fully hidden: the message-history indicator,
+     jump-to-latest pill, and obvious scroll affordance make it redundant. */
+  background: var(--chat-canvas-bg);
+  scrollbar-width: none; /* Firefox */
+}
+.ade-chat-timeline-pane::-webkit-scrollbar {
+  display: none; /* WebKit/Blink */
+  width: 0;
+  height: 0;
 }
 
 .ade-chat-message-card-user {
@@ -3402,21 +3422,14 @@ button:active, [role="button"]:active {
 }
 
 .ade-session-list-toolbar-search {
+  /* Search stays visible at every sidebar width — never collapse it. */
   flex: 1 1 auto;
-  min-width: 0;
+  min-width: 3.25rem;
 }
 
-@container session-list-toolbar (max-width: 240px) {
-  .ade-session-list-toolbar-search {
-    display: none;
-  }
-
-  .ade-session-list-toolbar-row {
-    justify-content: space-between;
-  }
-}
-
-@container session-list-toolbar (max-width: 130px) {
+/* On narrow widths, collapse the New Chat button to its icon instead of hiding
+   the search bar. */
+@container session-list-toolbar (max-width: 220px) {
   .ade-session-list-toolbar-new-chat-label {
     display: none;
   }

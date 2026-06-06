@@ -300,8 +300,6 @@ import type {
   AgentChatLaunchArgs,
   AgentChatLaunchCliArgs,
   AgentChatLaunchCliResult,
-  AgentChatCodexOpenInCliArgs,
-  AgentChatCodexOpenInCliResult,
   AgentChatCodexSetGoalArgs,
   AgentChatCodexSetGoalStatusArgs,
   AgentChatDeleteArgs,
@@ -360,6 +358,7 @@ import type {
   AgentChatTurnFileDiff,
   AgentChatSubagentSnapshot,
   AgentChatSubagentListArgs,
+  AgentChatKillDroidWorkerArgs,
   AgentChatUpdateSessionArgs,
   KeybindingOverride,
   KeybindingsSnapshot,
@@ -1237,7 +1236,6 @@ const MUTATING_CHAT_ACTIONS = new Set<string>([
   "setCodexGoal",
   "setCodexGoalStatus",
   "clearCodexGoal",
-  "codexOpenInCli",
 ]);
 
 const READ_ONLY_RUNTIME_ACTION_PREFIXES = [
@@ -5354,6 +5352,12 @@ contextBridge.exposeInMainWorld("ade", {
       callProjectRuntimeActionOr("chat", "listSubagents", { args }, () =>
         ipcRenderer.invoke(IPC.agentChatListSubagents, args),
       ),
+    killDroidWorker: async (
+      args: AgentChatKillDroidWorkerArgs,
+    ): Promise<void> =>
+      callProjectRuntimeActionOr("chat", "killDroidWorker", { args }, () =>
+        ipcRenderer.invoke(IPC.agentChatKillDroidWorker, args),
+      ),
     getSessionCapabilities: async (
       args: AgentChatSessionCapabilitiesArgs,
     ): Promise<AgentChatSessionCapabilities> =>
@@ -5418,12 +5422,6 @@ contextBridge.exposeInMainWorld("ade", {
         agentChatSummaryCache.clear();
         return goal as CodexThreadGoal | null;
       },
-      openInCli: (
-        args: AgentChatCodexOpenInCliArgs,
-      ): Promise<AgentChatCodexOpenInCliResult> =>
-        callProjectRuntimeActionOr("chat", "codexOpenInCli", { args }, () =>
-          ipcRenderer.invoke(IPC.agentChatCodexOpenInCli, args),
-        ),
     },
     readTranscript: (args: {
       sessionId: string;

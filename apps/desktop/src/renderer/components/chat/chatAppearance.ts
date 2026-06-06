@@ -46,7 +46,7 @@ export function transcriptBubblePaddingPx(density: ChatTranscriptDensity): {
     case "spacious":
       return { userX: 20, userY: 14, assistantX: 26, assistantY: 22 };
     default:
-      return { userX: 16, userY: 10, assistantX: 20, assistantY: 16 };
+      return { userX: 16, userY: 8, assistantX: 20, assistantY: 16 };
   }
 }
 

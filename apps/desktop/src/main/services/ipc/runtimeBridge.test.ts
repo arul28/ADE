@@ -448,7 +448,7 @@ describe("registerRuntimeBridge", () => {
 
   it("forwards local action registry listing through the authorized local runtime root", async () => {
     const registry = [
-      { domain: "chat", actions: [{ name: "codexOpenInCli" }] },
+      { domain: "chat", actions: [{ name: "launchCli" }] },
       { domain: "git", actions: [{ name: "status" }] },
     ];
     const localRuntimeConnectionPool = {
@@ -624,7 +624,7 @@ describe("registerRuntimeBridge", () => {
 
   it("forwards remote project action registry listing through the selected target and project", async () => {
     const registry = [
-      { domain: "chat", actions: [{ name: "codexOpenInCli" }] },
+      { domain: "chat", actions: [{ name: "launchCli" }] },
       { domain: "git", actions: [{ name: "status" }] },
     ];
     remoteRegistryGetMock.mockReturnValue(target);

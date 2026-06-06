@@ -229,6 +229,11 @@ export function CliSessionWorkSurfaceHeader({
   onInfoClick,
   onContextMenu,
   onStopRunningSession,
+  onToggleSessionsPane,
+  sessionsPaneCollapsed,
+  sessionsPaneCount,
+  onToggleToolsPane,
+  toolsPaneOpen,
 }: {
   session: TerminalSessionSummary;
   lanes: LaneSummary[];
@@ -237,6 +242,11 @@ export function CliSessionWorkSurfaceHeader({
   onInfoClick?: SessionMouseHandler;
   onContextMenu?: SessionMouseHandler;
   onStopRunningSession?: (session: TerminalSessionSummary) => void;
+  onToggleSessionsPane?: () => void;
+  sessionsPaneCollapsed?: boolean;
+  sessionsPaneCount?: number;
+  onToggleToolsPane?: () => void;
+  toolsPaneOpen?: boolean;
 }) {
   const navigate = useNavigate();
   const lane = lanes.find((entry) => entry.id === session.laneId) ?? null;
@@ -269,6 +279,11 @@ export function CliSessionWorkSurfaceHeader({
       showCacheBadge={showCache}
       cacheIdleSinceAt={session.chatIdleSinceAt}
       showGitToolbar
+      onToggleSessionsPane={onToggleSessionsPane}
+      sessionsPaneCollapsed={sessionsPaneCollapsed}
+      sessionsPaneCount={sessionsPaneCount}
+      onToggleToolsPane={onToggleToolsPane}
+      toolsPaneOpen={toolsPaneOpen}
       trailingActions={
         <>
           <SessionStatusDot session={session} />

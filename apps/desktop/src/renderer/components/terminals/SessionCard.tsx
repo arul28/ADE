@@ -1,5 +1,5 @@
 import React from "react";
-import { Info, WarningCircle } from "@phosphor-icons/react";
+import { GridFour, WarningCircle } from "@phosphor-icons/react";
 import type { LaneSummary, TerminalSessionSummary } from "../../../shared/types";
 import type { OrchestrationRole } from "../../../shared/types/orchestration";
 import { sessionStatusDot, sanitizeTerminalInlineText } from "../../lib/terminalAttention";
@@ -9,12 +9,12 @@ import {
   preferredSessionLabel,
 } from "../../lib/sessions";
 import { relativeTimeCompact } from "../../lib/format";
+import { GRID_SESSION_DND_MIME } from "../../lib/workGrid";
 import { useAppStore } from "../../state/appStore";
 import { useSessionDelta } from "./useSessionDelta";
 import { cn } from "../ui/cn";
 import { MONO_FONT } from "../lanes/laneDesignTokens";
 import { ToolLogo } from "./ToolLogos";
-import { SmartTooltip } from "../ui/SmartTooltip";
 import { ClaudeCacheTtlBadge } from "../shared/ClaudeCacheTtlBadge";
 import { shouldShowClaudeCacheTtl } from "../../lib/claudeCacheTtl";
 
@@ -124,18 +124,19 @@ export const SessionCard = React.memo(function SessionCard({
   isSelected,
   isMultiSelected,
   onSelect,
-  onInfoClick,
   onContextMenu,
   compact = false,
+  gridBadge = null,
 }: {
   session: TerminalSessionSummary;
   lane: LaneSummary | null;
   isSelected: boolean;
   isMultiSelected?: boolean;
   onSelect: (id: string, event: React.MouseEvent) => void;
-  onInfoClick: (e: React.MouseEvent) => void;
   onContextMenu: (e: React.MouseEvent) => void;
   compact?: boolean;
+  /** Grid membership indicator: "active" = in the currently-viewed grid, "inactive" = in another grid, null = not gridded. */
+  gridBadge?: "active" | "inactive" | null;
 }) {
   const dot = sessionStatusDot(session);
   const isRemoteProject = useAppStore((s) => s.projectBinding?.kind === "remote");
@@ -168,29 +169,38 @@ export const SessionCard = React.memo(function SessionCard({
   const orchestrationLabel = session.orchestrationRole
     ? orchestrationRoleA11yLabel(session.orchestrationRole, session.orchestrationTag ?? null)
     : null;
+  const isActiveGrid = gridBadge === "active";
+  const gridLabel = isActiveGrid ? "In the active grid" : "In another grid";
 
   return (
-    <div className="group relative" onContextMenu={onContextMenu}>
+    <div
+      className="group relative"
+      onContextMenu={onContextMenu}
+      draggable
+      onDragStart={(event) => {
+        // Source for the Cursor-style work grid: drop onto a session / the work
+        // area to add this chat or CLI session to a grid.
+        event.dataTransfer.setData(GRID_SESSION_DND_MIME, session.id);
+        event.dataTransfer.effectAllowed = "copyMove";
+      }}
+    >
       <button
         type="button"
         className={cn(
-          "relative w-full overflow-hidden text-left transition-all duration-100 rounded-lg border-l-2",
+          "relative w-full overflow-hidden text-left transition-all duration-100 rounded-lg",
           useLaneGlow
-            ? "border-l-transparent"
+            ? ""
             : isHighlighted
-              ? "border-l-accent bg-white/[0.06] hover:bg-white/[0.07]"
-              : "border-l-transparent bg-transparent hover:bg-white/[0.03]",
+              ? "bg-white/[0.06] hover:bg-white/[0.07]"
+              : "bg-transparent hover:bg-white/[0.03]",
           isMultiSelected && "ring-1 ring-accent/35",
         )}
         style={{
-          borderTop: highlightedBorder,
-          borderRight: highlightedBorder,
-          borderBottom: highlightedBorder,
+          border: highlightedBorder,
           ...(useLaneGlow
             ? {
                 background: laneTint ?? undefined,
                 boxShadow: `inset 0 0 0 1px ${laneRing}`,
-                borderLeftColor: laneAccent ?? undefined,
               }
             : {}),
         }}
@@ -234,11 +244,23 @@ export const SessionCard = React.memo(function SessionCard({
                     <WarningCircle size={11} weight="fill" />
                   </span>
                 ) : null}
+                {gridBadge ? (
+                  <span
+                    className={cn(
+                      "inline-flex shrink-0 items-center justify-center",
+                      isActiveGrid ? "text-violet-300" : "text-muted-fg/40",
+                    )}
+                    title={gridLabel}
+                    aria-label={gridLabel}
+                  >
+                    <GridFour size={11} weight={isActiveGrid ? "fill" : "bold"} />
+                  </span>
+                ) : null}
                 <span
                   title={dot.label}
                   className={cn(
                     "shrink-0 rounded-full",
-                    compact ? "h-2.5 w-2.5" : "h-3 w-3",
+                    compact ? "h-2 w-2" : "h-2.5 w-2.5",
                     dot.cls,
                     dot.spinning && "animate-spin",
                   )}
@@ -304,21 +326,6 @@ export const SessionCard = React.memo(function SessionCard({
           </div>
         </div>
       </button>
-
-      {/* Hover actions — bottom-right so they don’t compete with title row */}
-      <div className="absolute bottom-1.5 right-1.5 z-10 flex items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
-        <SmartTooltip content={{ label: "Session details", description: "View session info and management actions." }}>
-          <button
-            type="button"
-            className="inline-flex items-center justify-center h-5 w-5 rounded-full border border-white/[0.08] bg-white/[0.06] text-muted-fg/60 hover:text-fg hover:bg-white/[0.10] transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-accent/60 focus-visible:ring-offset-1 focus-visible:ring-offset-transparent"
-            onMouseDown={(e) => { e.stopPropagation(); }}
-            onClick={(e) => { e.stopPropagation(); onInfoClick(e); }}
-            aria-label="Session details"
-          >
-            <Info size={10} weight="regular" />
-          </button>
-        </SmartTooltip>
-      </div>
     </div>
   );
 });

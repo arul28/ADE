@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { AnimatePresence, motion } from "motion/react";
 import { PaneTilingLayout, type PaneConfig, type PaneSplit } from "../ui/PaneTilingLayout";
 import { useWorkSessions } from "./useWorkSessions";
 import { SessionListPane } from "./SessionListPane";
@@ -10,6 +11,9 @@ import type { AgentChatSession, TerminalSessionSummary } from "../../../shared/t
 import { buildDeeplink } from "../../../shared/deeplinks";
 import type { AgentChatSessionCreatedOptions } from "../chat/AgentChatPane";
 import { canBulkDeleteSession, canBulkStopSession, formatToolTypeLabel, isChatToolType } from "../../lib/sessions";
+import { addSessionBesideTarget, removeSessionFromGrids } from "../../lib/workGrid";
+import { buildWorkSessionTilingTree } from "./workSessionTiling";
+import type { DropEdge } from "../ui/paneTreeOps";
 import { sortLanesForTabs } from "../lanes/laneUtils";
 import { invalidateSessionListCache } from "../../lib/sessionListCache";
 import { selectActiveProjectRoot, useAppStore, type WorkDraftKind } from "../../state/appStore";
@@ -115,7 +119,6 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   const [selectionAnchorId, setSelectionAnchorId] = useState<string | null>(null);
   const workContentPaneRef = useRef<HTMLDivElement | null>(null);
   const workSidebarPaneRef = useRef<HTMLDivElement | null>(null);
-  const [workHeaderMount, setWorkHeaderMount] = useState<HTMLDivElement | null>(null);
   const unifiedChromeRef = useRef<HTMLDivElement | null>(null);
   const sessionsPaneRoRef = useRef<ResizeObserver | null>(null);
 
@@ -549,14 +552,16 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     contextDisabledReason = null;
   }
 
-  const workSidebarVisible = active && work.workSidebarOpen && work.viewMode !== "grid";
-  const { setViewMode, setWorkSidebarTab, showDraftKind } = work;
-  const isRemoteProject = useAppStore((state) => state.projectBinding?.kind === "remote");
+  const workSidebarVisible = active && work.workSidebarOpen;
+  const isRemoteProject = useAppStore((s) => s.projectBinding?.kind === "remote");
+  const { setWorkSidebarTab, showDraftKind } = work;
   useEffect(() => {
     if (!active) return;
     const openBrowserSidebar = () => {
+      // Remote projects don't host the built-in browser, so ignore open-requests
+      // (preserves main's remote-runtime hardening; the old viewMode switch is
+      // dropped with the work-tab grid).
       if (isRemoteProject) return;
-      setViewMode("tabs");
       setWorkSidebarTab("browser");
     };
     window.addEventListener(ADE_OPEN_BUILT_IN_BROWSER_EVENT, openBrowserSidebar);
@@ -580,7 +585,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       window.removeEventListener("ade:work:stop-orchestrator-chat", stopOrchestratorChat);
       unsubscribeBrowserEvents?.();
     };
-  }, [active, isRemoteProject, projectRoot, setViewMode, setWorkSidebarTab, showDraftKind]);
+  }, [active, isRemoteProject, projectRoot, setWorkSidebarTab, showDraftKind]);
 
   const toggleSessionsPane = useCallback(() => {
     work.setWorkFocusSessionsHidden(!work.workFocusSessionsHidden);
@@ -591,6 +596,76 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   const closeWorkSidebar = useCallback(() => {
     work.setWorkSidebarOpen(false);
   }, [work]);
+
+  // --- Cursor-style work grid: membership mutations ---
+  // A session card dropped onto an existing grid tile. PaneTilingLayout already
+  // spliced the dragged session into the tree at the hovered edge; here we only
+  // update the grid set's membership and focus the dropped session.
+  const handleAddSessionToGrid = useCallback((draggedId: string, targetId: string, _edge: DropEdge) => {
+    if (draggedId === targetId) return;
+    work.setGridSets((prev) => addSessionBesideTarget(prev, {
+      sessionId: draggedId,
+      targetSessionId: targetId,
+      projectRoot,
+    }).gridSets);
+    work.openSessionTab(draggedId);
+    work.setActiveItemId(draggedId);
+  }, [work, projectRoot]);
+
+  // A session card dropped onto a single (non-grid) session — create a new grid
+  // from the pair, seeding the split tree to honor the drop edge.
+  const handleCreateGridFromSingle = useCallback((draggedId: string, targetId: string, edge: DropEdge) => {
+    if (draggedId === targetId) return;
+    const placeAfter = edge === "right" || edge === "bottom";
+    const { gridSets: next, gridSetId } = addSessionBesideTarget(work.gridSets, {
+      sessionId: draggedId,
+      targetSessionId: targetId,
+      projectRoot,
+      placeAfterTarget: placeAfter,
+    });
+    const set = next.find((entry) => entry.id === gridSetId);
+    if (set) {
+      const preset = edge === "left" || edge === "right" ? "columns" : "rows";
+      const tree: PaneSplit = buildWorkSessionTilingTree(set.sessionIds, preset);
+      window.ade.tilingTree.set(set.layoutId, tree).catch(() => {});
+    }
+    work.setGridSets(next);
+    work.openSessionTab(draggedId);
+    work.setActiveItemId(draggedId);
+  }, [work, projectRoot]);
+
+  // Remove a session from any grid it belongs to (right-click / drag-out) and
+  // open it as a single session.
+  const handleRemoveSessionFromGrid = useCallback((sessionId: string) => {
+    work.setGridSets((prev) => removeSessionFromGrids(prev, sessionId));
+    work.openSessionTab(sessionId);
+    work.setActiveItemId(sessionId);
+  }, [work]);
+
+  const gridSessionIds = useMemo(
+    () => work.gridSets.flatMap((set) => set.sessionIds),
+    [work.gridSets],
+  );
+
+  // Keep grid membership in sync with live sessions: drop members that no longer
+  // exist (closed/deleted) and dissolve any set that falls below two tiles.
+  const setGridSets = work.setGridSets;
+  useEffect(() => {
+    if (work.loading || work.sessions.length === 0) return;
+    const liveIds = new Set(work.sessions.map((s) => s.id));
+    setGridSets((prev) => {
+      let changed = false;
+      const next = prev
+        .map((set) => {
+          const filtered = set.sessionIds.filter((id) => liveIds.has(id));
+          if (filtered.length !== set.sessionIds.length) changed = true;
+          return { ...set, sessionIds: filtered };
+        })
+        .filter((set) => set.sessionIds.length >= 2);
+      if (next.length !== prev.length) changed = true;
+      return changed ? next : prev;
+    });
+  }, [work.sessions, work.loading, setGridSets]);
   const handleStopRunningSession = useCallback((session: TerminalSessionSummary) => {
     if (!session.ptyId) return;
     work.stopRuntime(session.ptyId, session.id).catch((err: unknown) => {
@@ -656,25 +731,19 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     () => (
       <WorkViewArea
         pageActive={active}
-        gridLayoutId={work.gridLayoutId}
         lanes={sortedLanes}
         sessions={work.sessions}
         visibleSessions={work.visibleSessions}
-        tabGroups={work.tabGroups}
-        tabVisibleSessionIds={work.tabVisibleSessionIds}
         activeItemId={work.activeItemId}
-        viewMode={work.viewMode}
         draftKind={work.draftKind}
         draftLaneId={work.draftLaneId}
         draftContextTargetId={draftContextTargetId}
-        setViewMode={work.setViewMode}
         onSelectItem={work.setActiveItemId}
         onCloseItem={work.closeTab}
         onOpenChatSession={handleOpenChatSession}
         onLaunchPtySession={work.launchPtySession}
         onDraftLaneChange={work.setDraftLaneId}
         onShowDraftKind={work.showDraftKind}
-        onToggleTabGroupCollapsed={work.toggleWorkTabGroupCollapsed}
         closingPtyIds={work.closingPtyIds}
         onContextMenu={handleContextMenu}
         onContinueCliSession={handleContinueCliSession}
@@ -682,50 +751,40 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         sessionsPaneCollapsed={work.workFocusSessionsHidden}
         onToggleSessionsPane={toggleSessionsPane}
         sessionsPaneListCount={work.filtered.length}
-        sessionsPaneRunningCount={work.runningSessions.length}
-        headerMountEl={work.workFocusSessionsHidden ? null : workHeaderMount}
-        sessionsListLoading={work.loading}
         workSidebarOpen={work.workSidebarOpen}
         onToggleWorkSidebar={toggleWorkSidebar}
         onInfoClick={handleInfoClick}
         onStopRunningSession={handleStopRunningSession}
-        onReorderLaneSessions={work.reorderLaneSessions}
-        onOpenSessionInTabsView={(sessionId) => {
-          work.setViewMode("tabs");
-          work.openSessionTab(sessionId);
-          work.setActiveItemId(sessionId);
-        }}
         onGoToLane={handleGoToLaneById}
+        gridSets={work.gridSets}
+        onAddSessionToGrid={handleAddSessionToGrid}
+        onCreateGridFromSingle={handleCreateGridFromSingle}
+        onRemoveSessionFromGrid={handleRemoveSessionFromGrid}
       />
     ),
     [
       sortedLanes,
       active,
-      work.gridLayoutId,
+      work.gridSets,
+      handleAddSessionToGrid,
+      handleCreateGridFromSingle,
+      handleRemoveSessionFromGrid,
       work.sessions,
       work.visibleSessions,
-      work.tabGroups,
-      work.tabVisibleSessionIds,
       work.activeItemId,
-      work.viewMode,
       work.draftKind,
       work.draftLaneId,
       draftContextTargetId,
       work.setDraftLaneId,
       work.showDraftKind,
-      work.setViewMode,
       work.setActiveItemId,
       work.closeTab,
       work.launchPtySession,
-      work.toggleWorkTabGroupCollapsed,
       work.closingPtyIds,
       work.filtered.length,
-      work.runningSessions.length,
-      work.loading,
       work.workFocusSessionsHidden,
       work.workSidebarOpen,
       toggleSessionsPane,
-      workHeaderMount,
       toggleWorkSidebar,
       handleOpenChatSession,
       handleContinueCliSession,
@@ -733,8 +792,6 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       handleContextMenu,
       handleInfoClick,
       handleStopRunningSession,
-      work.reorderLaneSessions,
-      work.openSessionTab,
       handleGoToLaneById,
     ],
   );
@@ -745,22 +802,32 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         <div
           ref={workContentPaneRef}
           className="min-h-0 min-w-0 flex-1 basis-0 overflow-hidden"
-          style={workSidebarVisible ? { flexGrow: 100 - work.workSidebarWidthPct } : undefined}
+          style={{ flexGrow: 100 - work.workSidebarWidthPct }}
         >
           {workViewArea}
         </div>
+        {/* Resize handle stays a row-level sibling so its width math is correct. */}
         {workSidebarVisible ? (
-          <>
-            <div
-              role="separator"
-              aria-orientation="vertical"
-              onMouseDown={handleWorkSidebarResizeMouseDown}
-              className="relative w-[5px] shrink-0 cursor-col-resize bg-white/[0.06] transition-colors hover:bg-[var(--color-accent)]/25 active:bg-[var(--color-accent)]/40"
-            />
-            <div
+          <div
+            role="separator"
+            aria-orientation="vertical"
+            onMouseDown={handleWorkSidebarResizeMouseDown}
+            className="relative w-[5px] shrink-0 cursor-col-resize bg-white/[0.06] transition-colors hover:bg-[var(--color-accent)]/25 active:bg-[var(--color-accent)]/40"
+          />
+        ) : null}
+        <AnimatePresence initial={false}>
+          {workSidebarVisible ? (
+            // The panel slides via animated flex-grow so the content pane grows/
+            // shrinks smoothly with it — no instant reflow / black flash on close.
+            <motion.div
+              key="work-tools-sidebar"
               ref={workSidebarPaneRef}
-              className="min-h-0 min-w-[280px] basis-0 overflow-hidden"
-              style={{ flexGrow: work.workSidebarWidthPct, maxWidth: "55%" }}
+              className="min-h-0 min-w-0 basis-0 overflow-hidden"
+              style={{ maxWidth: "55%" }}
+              initial={{ flexGrow: 0 }}
+              animate={{ flexGrow: work.workSidebarWidthPct }}
+              exit={{ flexGrow: 0 }}
+              transition={{ duration: 0.24, ease: [0.4, 0, 0.2, 1] }}
             >
               <WorkSidebar
                 active={active}
@@ -773,9 +840,9 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
                 contextTarget={contextTarget}
                 contextDisabledReason={contextDisabledReason}
               />
-            </div>
-          </>
-        ) : null}
+            </motion.div>
+          ) : null}
+        </AnimatePresence>
       </div>
     ),
     [
@@ -816,6 +883,8 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
             setQ={work.setQ}
             selectedSessionId={work.selectedSessionId}
             selectedSessionIds={selectedSessionIds}
+            gridSets={work.gridSets}
+            activeItemId={work.activeItemId}
             draftKind={work.draftKind}
             showingDraft={work.activeItemId == null}
             onShowDraftKind={work.showDraftKind}
@@ -826,7 +895,6 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
             }}
             onBulkClose={handleBulkCloseSelected}
             onBulkDelete={handleBulkDeleteSelected}
-            onInfoClick={handleInfoClick}
             onContextMenu={handleContextMenu}
             sessionListOrganization={work.sessionListOrganization}
             setSessionListOrganization={work.setSessionListOrganization}
@@ -881,7 +949,8 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         </div>
       ) : (
         <div ref={unifiedChromeRef} className="ade-work-unified-chrome flex min-h-0 flex-1 flex-col">
-          <div ref={setWorkHeaderMount} className="ade-work-unified-top-chrome shrink-0" />
+          {/* Legacy top tab/grid bar removed — each chat/CLI surface owns its own
+              header (far-left sessions toggle + far-right Tools toggle). */}
           <PaneTilingLayout
             layoutId="work:tiling:v3"
             tree={TERMINALS_TILING_TREE}
@@ -909,6 +978,8 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         }}
         onTogglePinned={(session) => work.togglePinnedSession(session.id)}
         pinnedSessionIds={work.pinnedSessionIds}
+        gridSessionIds={gridSessionIds}
+        onRemoveFromGrid={(session) => handleRemoveSessionFromGrid(session.id)}
         onRename={(session, newTitle) => {
           setSessionActionError(null);
           const renamePromise = isChatToolType(session.toolType)

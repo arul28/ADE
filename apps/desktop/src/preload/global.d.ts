@@ -80,8 +80,6 @@ import type {
   AgentChatArchiveArgs,
   AgentChatCodexClearGoalArgs,
   AgentChatCodexGetGoalArgs,
-  AgentChatCodexOpenInCliArgs,
-  AgentChatCodexOpenInCliResult,
   AgentChatCodexSetGoalArgs,
   AgentChatCodexSetGoalStatusArgs,
   AgentChatCreateArgs,
@@ -144,6 +142,7 @@ import type {
   AgentChatTurnFileDiff,
   AgentChatSubagentSnapshot,
   AgentChatSubagentListArgs,
+  AgentChatKillDroidWorkerArgs,
   AgentChatUpdateSessionArgs,
   AutomationsEventPayload,
   AutomationManualTriggerRequest,
@@ -1401,6 +1400,9 @@ declare global {
         listSubagents: (
           args: AgentChatSubagentListArgs,
         ) => Promise<AgentChatSubagentSnapshot[]>;
+        killDroidWorker: (
+          args: AgentChatKillDroidWorkerArgs,
+        ) => Promise<void>;
         getSessionCapabilities: (
           args: AgentChatSessionCapabilitiesArgs,
         ) => Promise<AgentChatSessionCapabilities>;
@@ -1425,9 +1427,6 @@ declare global {
           clearGoal: (
             args: AgentChatCodexClearGoalArgs,
           ) => Promise<CodexThreadGoal | null>;
-          openInCli: (
-            args: AgentChatCodexOpenInCliArgs,
-          ) => Promise<AgentChatCodexOpenInCliResult>;
         };
       };
       computerUse: {

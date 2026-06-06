@@ -84,7 +84,7 @@ export function FloatingPane({
   onDragStart?: () => void;
   onDragOverRaw?: (e: React.DragEvent) => void;
   onDragEnd?: () => void;
-  onDrop?: () => void;
+  onDrop?: (e: React.DragEvent) => void;
   onDragLeave?: () => void;
   onPaneMouseDown?: (e: React.MouseEvent<HTMLDivElement>) => void;
   onPaneContextMenu?: (e: React.MouseEvent<HTMLDivElement>) => void;
@@ -116,7 +116,7 @@ export function FloatingPane({
 
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
-    onDrop?.();
+    onDrop?.(e);
   };
 
   const handleDragEnd = () => {

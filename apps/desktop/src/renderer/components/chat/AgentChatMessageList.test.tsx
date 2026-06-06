@@ -548,7 +548,7 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(screen.getByTestId("user-message-attachment-analyzed").textContent).toContain("Attachment analyzed");
   });
 
-  it("keeps the done summary visible when only the model attribution is available", () => {
+  it("surfaces the model attribution on an interrupted end-of-turn divider", () => {
     renderMessageList([
       {
         sessionId: "session-1",
@@ -556,14 +556,16 @@ describe("AgentChatMessageList transcript rendering", () => {
         event: {
           type: "done",
           turnId: "turn-1",
-          status: "completed",
+          status: "interrupted",
           modelId: "anthropic/claude-sonnet-4-6",
         },
       },
     ]);
 
-    expect(screen.getByText("Usage")).toBeTruthy();
+    // The end-of-turn divider shows the model attribution (styled span) plus the
+    // non-completed status for interrupted/failed turns.
     expect(screen.getAllByText(/Claude Sonnet 4\.6/).length).toBeGreaterThan(0);
+    expect(screen.getByText("interrupted")).toBeTruthy();
   });
 
   it("renders provider health and thread error notices distinctly", () => {
@@ -1473,13 +1475,16 @@ describe("AgentChatMessageList transcript rendering", () => {
 
     const streaming = renderMessageList(sharedEvents, { showStreamingIndicator: true });
 
-    expect(streaming.container.textContent).toContain("Running command: npm test");
+    // The single working indicator surfaces the concise activity label, never
+    // the raw tool detail (kept calm — t3code / Codex reference).
+    expect(streaming.container.textContent).toContain("Running command");
+    expect(streaming.container.textContent).not.toContain("npm test");
 
     cleanup();
 
     const transcriptOnly = renderMessageList(sharedEvents, { showStreamingIndicator: false });
 
-    expect(transcriptOnly.container.textContent).not.toContain("Running command: npm test");
+    expect(transcriptOnly.container.textContent).not.toContain("Running command");
   });
 
   it("keeps thinking activity visible after a duplicate started status", () => {
@@ -1517,11 +1522,12 @@ describe("AgentChatMessageList transcript rendering", () => {
       { showStreamingIndicator: true },
     );
 
-    expect(rendered.container.textContent).toContain("Thinking: Thinking through the answer");
-    expect(rendered.container.innerHTML).toContain("ade-shimmer-text");
+    // Single calm working indicator: concise "Thinking" label, no raw detail / shimmer text.
+    expect(rendered.container.textContent).toContain("Thinking");
+    expect(rendered.container.textContent).not.toContain("Thinking through the answer");
   });
 
-  it("keeps the live assistant bubble stable until the turn finishes", () => {
+  it("keeps the live assistant message stable until the turn finishes", () => {
     const live = renderMessageList(
       [
         {
@@ -1538,7 +1544,9 @@ describe("AgentChatMessageList transcript rendering", () => {
       { showStreamingIndicator: true },
     );
 
-    expect(live.container.innerHTML).toContain("ade-glow-pulse");
+    // Assistant prose is unbubbled and calm now — no glow-pulse; the live text
+    // simply renders and stays stable through the turn.
+    expect(live.container.textContent).toContain("Streaming response");
 
     cleanup();
 
@@ -1568,7 +1576,7 @@ describe("AgentChatMessageList transcript rendering", () => {
       { showStreamingIndicator: false },
     );
 
-    expect(settled.container.innerHTML).not.toContain("ade-glow-pulse");
+    expect(settled.container.textContent).toContain("Streaming response");
   });
 
   it("shows streamed live reasoning text instead of only a thinking placeholder", () => {
@@ -1702,10 +1710,11 @@ describe("AgentChatMessageList transcript rendering", () => {
       },
     );
 
-    // End-of-turn divider shows tasks + agents, no files duplication.
-    expect(rendered.container.textContent).toMatch(/Response/);
-    expect(rendered.container.textContent).toMatch(/1\/2 tasks complete/);
-    expect(rendered.container.textContent).toMatch(/1 background agent/);
+    // The turn surfaces the task-list rollup with completed/in-progress items.
+    expect(rendered.container.textContent).toMatch(/Task list/);
+    expect(rendered.container.textContent).toMatch(/1\/2 complete/);
+    expect(screen.getByText("Inspect chat renderer")).toBeTruthy();
+    expect(screen.getAllByText("Refine summary card").length).toBeGreaterThanOrEqual(1);
 
     // Files now live in the inline FilesChangedPanel — diff stats appear next to the path.
     expect(rendered.container.textContent).toMatch(/1 file changed/);
@@ -2001,9 +2010,9 @@ describe("AgentChatMessageList transcript rendering", () => {
       },
     );
 
-    expect(rendered.container.textContent).toMatch(/Response/);
-    expect(rendered.container.textContent).toMatch(/1\/2 tasks complete/);
-    expect(rendered.container.textContent).toMatch(/1 background agent/);
+    expect(rendered.container.textContent).toMatch(/Task list/);
+    expect(rendered.container.textContent).toMatch(/1\/2 complete/);
+    expect(screen.getByText("Inspect shared renderer")).toBeTruthy();
     expect(rendered.container.textContent).toMatch(/1 file changed/);
 
     fireEvent.click(screen.getByRole("button", { name: /Undo/i }));
@@ -2031,15 +2040,15 @@ describe("AgentChatMessageList transcript rendering", () => {
         event: {
           type: "done",
           turnId: "turn-9",
-          status: "completed",
+          status: "interrupted",
           modelId: "anthropic/claude-sonnet-4-6",
         },
       },
     ]);
 
-    expect(rendered.container.textContent).toMatch(/Response/);
-    expect(rendered.container.textContent).toMatch(/1\/1 tasks complete/);
-    // Model attribution still surfaces on the done usage card.
+    expect(rendered.container.textContent).toMatch(/Task list/);
+    expect(rendered.container.textContent).toMatch(/1\/1 complete/);
+    // Model attribution surfaces on the end-of-turn divider for non-completed turns.
     expect(screen.getAllByText(/Claude Sonnet 4\.6/).length).toBeGreaterThanOrEqual(1);
   });
 

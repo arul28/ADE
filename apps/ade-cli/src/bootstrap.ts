@@ -48,8 +48,8 @@ import { createProcessService } from "../../desktop/src/main/services/processes/
 import { augmentProcessPathWithShellAndKnownCliDirs, setPathEnvValue } from "../../desktop/src/main/services/ai/cliExecutableResolver";
 import { createAgentChatService } from "../../desktop/src/main/services/chat/agentChatService";
 import type { createPrService } from "../../desktop/src/main/services/prs/prService";
-import type { createPrSummaryService } from "../../desktop/src/main/services/prs/prSummaryService";
-import type { createQueueLandingService } from "../../desktop/src/main/services/prs/queueLandingService";
+import { createPrSummaryService } from "../../desktop/src/main/services/prs/prSummaryService";
+import { createQueueLandingService } from "../../desktop/src/main/services/prs/queueLandingService";
 import { createIssueInventoryService } from "../../desktop/src/main/services/prs/issueInventoryService";
 import { createPathToMergeOrchestrator } from "../../desktop/src/main/services/prs/pathToMergeOrchestrator";
 import { createCtoStateService } from "../../desktop/src/main/services/cto/ctoStateService";
@@ -116,6 +116,7 @@ import type { BuiltInBrowserDesktopBridgeClient } from "./services/builtInBrowse
 import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
 import type { createFileService } from "../../desktop/src/main/services/files/fileService";
 import type { AppNavigationRequest, AppNavigationResult, PortLease } from "../../desktop/src/shared/types";
+import type { PrEventPayload } from "../../desktop/src/shared/types/prs";
 import {
   createAutomationService,
   type AutomationAdeActionRegistry,
@@ -1139,6 +1140,45 @@ export async function createAdeRuntime(args: {
         automationService,
       })
     : null;
+
+  // PR queue-landing + AI-summary services. These live on dedicated services
+  // (not on prService), so without wiring them here the runtime `pr` domain
+  // omits `listQueueStates`/queue-automation/summary actions and the desktop's
+  // `pr.listQueueStates` call over the local runtime fails with "is not
+  // callable". Mirror the desktop main-process wiring (see main.ts) so the PRs
+  // tab loads against the local runtime.
+  const emitPrEvent = (event: PrEventPayload): void => {
+    pushEvent("runtime", { type: "pr_event", event });
+  };
+  const queueLandingService = createQueueLandingService({
+    db,
+    logger,
+    projectId,
+    prService: headlessLinearServices.prService,
+    laneService,
+    conflictService,
+    emitEvent: emitPrEvent,
+    onStateChanged: (state) => {
+      const hotPrIds = new Set<string>();
+      const currentEntry = state.entries[state.currentPosition];
+      const nextEntry = state.entries[state.currentPosition + 1];
+      if (state.activePrId) hotPrIds.add(state.activePrId);
+      if (currentEntry?.prId) hotPrIds.add(currentEntry.prId);
+      if (nextEntry?.prId) hotPrIds.add(nextEntry.prId);
+      if (hotPrIds.size > 0) {
+        headlessLinearServices.prService.markHotRefresh(Array.from(hotPrIds));
+      }
+    },
+  });
+  queueLandingService.init();
+  const prSummaryService = createPrSummaryService({
+    db,
+    logger,
+    projectRoot,
+    prService: headlessLinearServices.prService,
+    aiIntegrationService,
+  });
+
   const usageTrackingService = createUsageTrackingService({
     logger,
     pollIntervalMs: 120_000,
@@ -1300,6 +1340,8 @@ export async function createAdeRuntime(args: {
     linearCredentialService: headlessLinearServices.linearCredentialService,
     linearOAuthService,
     prService: headlessLinearServices.prService,
+    queueLandingService,
+    prSummaryService,
     fileService: headlessLinearServices.fileService,
     flowPolicyService: headlessLinearServices.flowPolicyService,
     linearDispatcherService: headlessLinearServices.linearDispatcherService,

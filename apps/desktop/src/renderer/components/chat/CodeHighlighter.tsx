@@ -326,12 +326,7 @@ export const HighlightedCode = React.memo(function HighlightedCode({
 
   return (
     <div className={`group relative my-3 rounded-[10px] border border-[color:var(--chat-code-border)] bg-[var(--chat-code-bg)] ${outerOverflowClass}`.trim()}>
-      {copyButtonPosition !== "auto" && (
-        <CodeCopyButton code={trimmedCode} position={copyButtonPosition} />
-      )}
-      {copyButtonPosition === "auto" && (
-        <CodeCopyButton code={trimmedCode} position={copyButtonPosition} />
-      )}
+      <CodeCopyButton code={trimmedCode} position={copyButtonPosition} />
       <div className="overflow-x-auto whitespace-pre-wrap break-words px-4 py-3">
         {isDiff ? (
           <DiffCodeBlock code={trimmedCode} />

@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowSquareOut, Copy, FilePlus, FolderPlus, PencilSimple, Trash } from "@phosphor-icons/react";
+import { ArrowSquareOut, Copy, FilePlus, FolderPlus, LockOpen, PencilSimple, Trash } from "@phosphor-icons/react";
 import type { FileTreeNode, FilesWorkspace } from "../../../../shared/types";
 import { useAppStore } from "../../../state/appStore";
 import { createMonacoModelRegistry } from "../monacoModelRegistry";
@@ -81,7 +81,22 @@ export function FilesWorkbench({
   const [workspaceId, setWorkspaceId] = useState<string>(initialWorkspaceId);
   const workspace = useMemo(() => workspaces.find((w) => w.id === workspaceId) ?? null, [workspaces, workspaceId]);
   const rootPath = workspace?.rootPath ?? projectRootPath;
-  const canEdit = workspace ? !workspace.isReadOnlyByDefault : false;
+  // Per-workspace, session-only "edit anyway" override. The primary lane is
+  // read-only-by-default (edit-protected), and there was no way to edit its files
+  // from the Files tab; this lets you opt in for the session without permanently
+  // flipping the lane's protection.
+  const [editOverrides, setEditOverrides] = useState<Set<string>>(() => new Set());
+  const editOverride = workspaceId ? editOverrides.has(workspaceId) : false;
+  const canEdit = workspace ? (!workspace.isReadOnlyByDefault || editOverride) : false;
+  const showEnableEditing = Boolean(workspace?.isReadOnlyByDefault) && !editOverride;
+  const enableEditingForWorkspace = () => {
+    if (!workspaceId) return;
+    setEditOverrides((prev) => {
+      const next = new Set(prev);
+      next.add(workspaceId);
+      return next;
+    });
+  };
   const branch = workspace?.branchRef?.replace("refs/heads/", "") ?? null;
   const theme: EditorThemeMode = "dark";
   // Session (tabs/layout) follows the ACTIVE workspace's lane, so switching the
@@ -586,6 +601,18 @@ export function FilesWorkbench({
         >
           {!embedded ? (
             <WorkspacePicker workspaces={workspaces} workspaceId={workspaceId} onChange={setWorkspaceId} />
+          ) : null}
+          {showEnableEditing ? (
+            <button
+              type="button"
+              onClick={enableEditingForWorkspace}
+              className="mx-2 mb-2 mt-1 flex shrink-0 items-center justify-center gap-1.5 rounded-md border px-2 py-1.5 font-sans text-[11px] font-medium text-fg/75 transition-colors hover:bg-white/[0.06]"
+              style={{ borderColor: COLORS.border }}
+              title="This workspace is read-only by default (edit-protected). Enable editing for this session."
+            >
+              <LockOpen size={13} weight="bold" />
+              Enable editing
+            </button>
           ) : null}
           <div className="min-h-0 flex-1">
             <FilesExplorer

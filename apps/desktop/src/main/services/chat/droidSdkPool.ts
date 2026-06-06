@@ -39,6 +39,7 @@ export type DroidSdkPooled = {
   sendPrompt: (payload: DroidSdkSendPrompt) => Promise<unknown>;
   updateSettings: (settings: DroidSdkSessionSettings) => Promise<DroidSdkReady>;
   cancel: () => Promise<void>;
+  killWorker: (workerSessionId: string) => Promise<void>;
   dispose: () => void;
 };
 
@@ -151,6 +152,7 @@ async function createDroidSdkConnection(args: Parameters<typeof acquireDroidSdkC
     sendPrompt: (payload) => pooled.request("send", payload),
     updateSettings: (settings) => pooled.request<DroidSdkReady>("settings_update", settings),
     cancel: () => pooled.request("cancel"),
+    killWorker: (workerSessionId) => pooled.request("kill_worker", { workerSessionId }),
     dispose: () => {
       for (const [, waiter] of pending) waiter.reject(new Error("Droid SDK worker disposed."));
       pending.clear();

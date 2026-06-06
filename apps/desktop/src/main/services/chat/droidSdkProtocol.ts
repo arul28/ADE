@@ -1,5 +1,8 @@
 export type DroidSdkAutonomyLevel = "off" | "low" | "medium" | "high";
-export type DroidSdkInteractionMode = "auto" | "spec";
+// `agi` puts Droid in orchestrator mode: it decomposes a mission into features
+// and spawns worker sub-sessions (surfaced to ADE as subagents) while keeping
+// read-only tools at the top level.
+export type DroidSdkInteractionMode = "auto" | "spec" | "agi";
 export type DroidSdkReasoningEffort =
   | "none"
   | "dynamic"
@@ -108,6 +111,7 @@ export type DroidSdkWorkerRequest =
   | { type: "settings_update"; requestId: string; payload: DroidSdkSessionSettings }
   | { type: "cancel"; requestId: string }
   | { type: "dispose"; requestId: string }
+  | { type: "kill_worker"; requestId: string; payload: { workerSessionId: string } }
   | { type: "permission_response"; requestId: string; payload: DroidSdkPermissionDecision }
   | { type: "ask_user_response"; requestId: string; payload: DroidSdkAskUserResponse };
 

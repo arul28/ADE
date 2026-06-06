@@ -1,12 +1,9 @@
 /* @vitest-environment jsdom */
 
-import { useState, type ReactNode } from "react";
 import type * as ReactNamespace from "react";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TerminalSessionSummary } from "../../../shared/types";
-import { collectLeafIds } from "../ui/paneTreeOps";
-import { FloatingPane } from "../ui/FloatingPane";
 import { isChatToolType } from "../../lib/sessions";
 import { WorkViewArea } from "./WorkViewArea";
 
@@ -121,38 +118,6 @@ vi.mock("./WorkStartSurface", () => ({
   WorkStartSurface: () => <div data-testid="work-start-surface" />,
 }));
 
-vi.mock("../ui/PaneTilingLayout", () => ({
-  PaneTilingLayout: ({
-    layoutId,
-    tree,
-    panes,
-  }: {
-    layoutId: string;
-    tree: unknown;
-    panes: Record<string, { children: ReactNode; onPaneMouseDown?: () => void }>;
-  }) => {
-    latestPaneTilingLayoutProps = { layoutId, tree, panes };
-    return (
-      <div data-testid="pane-tiling-layout">
-        {Object.entries(panes).map(([paneId, pane]) => (
-          <div
-            key={paneId}
-            data-testid={`pane-tiling-layout-pane:${paneId}`}
-            onMouseDown={pane.onPaneMouseDown}
-          >
-            {pane.children}
-          </div>
-        ))}
-      </div>
-    );
-  },
-}));
-
-let latestPaneTilingLayoutProps: {
-  layoutId: string;
-  tree: unknown;
-  panes: Record<string, { children: ReactNode; onPaneMouseDown?: () => void }>;
-} | null = null;
 const terminalPreviewMock = vi.fn();
 const slashCommandsMock = vi.fn();
 const modelsMock = vi.fn();
@@ -162,7 +127,6 @@ const resourceUsageMock = vi.fn();
 const resolvePtyLaunch = async () => ({ sessionId: "test-session", ptyId: "test-pty", pid: null });
 
 beforeEach(() => {
-  latestPaneTilingLayoutProps = null;
   chatPaneLifecycle.mounts.clear();
   chatPaneLifecycle.unmounts.clear();
   terminalPreviewMock.mockReset();
@@ -315,7 +279,6 @@ describe("WorkViewArea", () => {
   it("shows only Chat and CLI start modes on the empty Work surface", () => {
     render(
       <WorkViewArea
-        gridLayoutId="work:grid:test"
         lanes={[{
           id: "lane-1",
           name: "Lane 1",
@@ -336,18 +299,13 @@ describe("WorkViewArea", () => {
         }]}
         sessions={[]}
         visibleSessions={[]}
-        tabGroups={[]}
-        tabVisibleSessionIds={[]}
         activeItemId={null}
-        viewMode="tabs"
         draftKind="chat"
-        setViewMode={() => {}}
         onSelectItem={() => {}}
         onCloseItem={() => {}}
         onOpenChatSession={() => {}}
         onLaunchPtySession={resolvePtyLaunch}
         onShowDraftKind={() => {}}
-        onToggleTabGroupCollapsed={() => {}}
         closingPtyIds={new Set()}
       />,
     );
@@ -361,7 +319,6 @@ describe("WorkViewArea", () => {
   it("keeps the Chat start mode selected for orchestrator drafts", () => {
     render(
       <WorkViewArea
-        gridLayoutId="work:grid:test"
         lanes={[{
           id: "lane-1",
           name: "Lane 1",
@@ -382,18 +339,13 @@ describe("WorkViewArea", () => {
         }]}
         sessions={[]}
         visibleSessions={[]}
-        tabGroups={[]}
-        tabVisibleSessionIds={[]}
         activeItemId={null}
-        viewMode="tabs"
         draftKind="chat-orchestrator"
-        setViewMode={() => {}}
         onSelectItem={() => {}}
         onCloseItem={() => {}}
         onOpenChatSession={() => {}}
         onLaunchPtySession={async () => ({ ptyId: "pty-1", sessionId: "sess-1", pid: 1234 })}
         onShowDraftKind={() => {}}
-        onToggleTabGroupCollapsed={() => {}}
         closingPtyIds={new Set()}
       />,
     );
@@ -407,7 +359,6 @@ describe("WorkViewArea", () => {
 
     render(
       <WorkViewArea
-        gridLayoutId="work:grid:test"
         lanes={[{
           id: "lane-1",
           name: "Lane 1",
@@ -428,18 +379,13 @@ describe("WorkViewArea", () => {
         }]}
         sessions={[session]}
         visibleSessions={[session]}
-        tabGroups={[]}
-        tabVisibleSessionIds={[session.id]}
         activeItemId={null}
-        viewMode="tabs"
         draftKind="chat"
-        setViewMode={() => {}}
         onSelectItem={() => {}}
         onCloseItem={() => {}}
         onOpenChatSession={() => {}}
         onLaunchPtySession={resolvePtyLaunch}
         onShowDraftKind={() => {}}
-        onToggleTabGroupCollapsed={() => {}}
         closingPtyIds={new Set()}
       />,
     );
@@ -448,270 +394,11 @@ describe("WorkViewArea", () => {
     expect(screen.queryByText("Session ended")).toBeNull();
   });
 
-  it("minimizes and expands through embedded floating-pane chrome", () => {
-    const session = makeSession();
-
-    function EmbeddedWorkPane() {
-      const [minimized, setMinimized] = useState(false);
-      return (
-        <FloatingPane
-          id="work-pane"
-          title="Work"
-          minimized={minimized}
-          onMinimizeToggle={() => setMinimized((current) => !current)}
-          hideHeaderWhenExpanded
-        >
-          <WorkViewArea
-            gridLayoutId="work:grid:test"
-            lanes={[{
-              id: "lane-1",
-              name: "Lane 1",
-              laneType: "worktree",
-              baseRef: "main",
-              branchRef: "lane-1",
-              worktreePath: "/tmp/lane-1",
-              parentLaneId: null,
-              childCount: 0,
-              stackDepth: 0,
-              parentStatus: null,
-              isEditProtected: false,
-              status: { dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false },
-              color: null,
-              icon: null,
-              tags: [],
-              createdAt: "2026-04-06T12:00:00.000Z",
-            }]}
-            sessions={[session]}
-            visibleSessions={[session]}
-            tabGroups={[]}
-            tabVisibleSessionIds={[session.id]}
-            activeItemId={null}
-            viewMode="tabs"
-            draftKind="chat"
-            setViewMode={() => {}}
-            onSelectItem={() => {}}
-            onCloseItem={() => {}}
-            onOpenChatSession={() => {}}
-            onLaunchPtySession={resolvePtyLaunch}
-            onShowDraftKind={() => {}}
-            onToggleTabGroupCollapsed={() => {}}
-            closingPtyIds={new Set()}
-          />
-        </FloatingPane>
-      );
-    }
-
-    const view = render(<EmbeddedWorkPane />);
-    const local = within(view.container);
-    const pane = () => view.container.querySelector('[data-pane-id="work-pane"]') as HTMLElement;
-
-    expect(local.getByTestId("work-start-surface")).toBeTruthy();
-    fireEvent.click(local.getByLabelText("Minimize pane"));
-
-    expect(pane().getAttribute("data-minimized")).toBe("true");
-    fireEvent.click(local.getByLabelText("Expand pane"));
-
-    expect(pane().getAttribute("data-minimized")).toBe("false");
-    expect(local.getByTestId("work-start-surface")).toBeTruthy();
-    expect(local.getByLabelText("Minimize pane")).toBeTruthy();
-  });
-
-  it("closes an ended work tab from the tab strip", () => {
-    const session = makeSession();
-    const onCloseItem = vi.fn();
-    const onSelectItem = vi.fn();
-
-    const view = render(
-      <WorkViewArea
-        gridLayoutId="work:grid:test"
-        lanes={[{
-          id: "lane-1",
-          name: "Lane 1",
-          laneType: "worktree",
-          baseRef: "main",
-          branchRef: "lane-1",
-          worktreePath: "/tmp/lane-1",
-          parentLaneId: null,
-          childCount: 0,
-          stackDepth: 0,
-          parentStatus: null,
-          isEditProtected: false,
-          status: { dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false },
-          color: null,
-          icon: null,
-          tags: [],
-          createdAt: "2026-04-06T12:00:00.000Z",
-        }]}
-        sessions={[session]}
-        visibleSessions={[session]}
-        tabGroups={[]}
-        tabVisibleSessionIds={[session.id]}
-        activeItemId={session.id}
-        viewMode="tabs"
-        draftKind="chat"
-        setViewMode={() => {}}
-        onSelectItem={onSelectItem}
-        onCloseItem={onCloseItem}
-        onOpenChatSession={() => {}}
-        onLaunchPtySession={resolvePtyLaunch}
-        onShowDraftKind={() => {}}
-        onToggleTabGroupCollapsed={() => {}}
-        closingPtyIds={new Set()}
-      />,
-    );
-
-    const tab = view.getByRole("tab", { name: "Existing session" });
-    const closeButton = view.getByRole("button", { name: "Close Existing session" });
-    expect(closeButton.closest('[role="tab"]')).toBeNull();
-    fireEvent.mouseDown(closeButton);
-    fireEvent.click(closeButton);
-
-    expect(onCloseItem).toHaveBeenCalledTimes(1);
-    expect(onCloseItem).toHaveBeenCalledWith("session-1");
-    expect(onSelectItem).not.toHaveBeenCalled();
-
-    fireEvent.click(tab);
-    expect(onSelectItem).toHaveBeenCalledTimes(1);
-  });
-
-  it("keeps every running terminal tile mounted in grid mode", () => {
-    const first = makeRunningSession("session-1", "pty-1");
-    const second = makeRunningSession("session-2", "pty-2");
-
-    render(
-      <WorkViewArea
-        gridLayoutId="work:grid:test"
-        lanes={[{
-          id: "lane-1",
-          name: "Lane 1",
-          laneType: "worktree",
-          baseRef: "main",
-          branchRef: "lane-1",
-          worktreePath: "/tmp/lane-1",
-          parentLaneId: null,
-          childCount: 0,
-          stackDepth: 0,
-          parentStatus: null,
-          isEditProtected: false,
-          status: { dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false },
-          color: null,
-          icon: null,
-          tags: [],
-          createdAt: "2026-04-06T12:00:00.000Z",
-        }]}
-        sessions={[first, second]}
-        visibleSessions={[first, second]}
-        tabGroups={[]}
-        tabVisibleSessionIds={[first.id, second.id]}
-        activeItemId={first.id}
-        viewMode="grid"
-        draftKind="chat"
-        setViewMode={() => {}}
-        onSelectItem={() => {}}
-        onCloseItem={() => {}}
-        onOpenChatSession={() => {}}
-        onLaunchPtySession={resolvePtyLaunch}
-        onShowDraftKind={() => {}}
-        onToggleTabGroupCollapsed={() => {}}
-        closingPtyIds={new Set()}
-      />,
-    );
-
-    expect(screen.getAllByTestId("terminal-view")).toHaveLength(2);
-    expect(screen.getAllByTestId("terminal-view").map((node) => node.getAttribute("data-visible"))).toEqual(["true", "true"]);
-  });
-
-  it("cools background grid terminal streams under app pressure but keeps the focused terminal live", async () => {
-    resourceUsageMock.mockResolvedValue({
-      sampledAt: "2026-04-06T12:00:00.000Z",
-      processCount: 8,
-      cpuPercent: 96,
-      mainCpuPercent: 12,
-      rendererCpuPercent: 96,
-      memoryMB: 7_000,
-      mainMemoryMB: 400,
-      rendererMemoryMB: 2_200,
-      activePtyCount: 24,
-      ptyProcessCount: 36,
-      ptyCpuPercent: 96,
-      ptyMemoryMB: 4_400,
-      freeMemoryMB: 600,
-      totalMemoryMB: 16_000,
-    });
-    const sessions = Array.from({ length: 24 }, (_unused, index) => (
-      makeRunningSession(`session-${index + 1}`, `pty-${index + 1}`)
-    ));
-    const lane = {
-      id: "lane-1",
-      name: "Lane 1",
-      laneType: "worktree" as const,
-      baseRef: "main",
-      branchRef: "lane-1",
-      worktreePath: "/tmp/lane-1",
-      parentLaneId: null,
-      childCount: 0,
-      stackDepth: 0,
-      parentStatus: null,
-      isEditProtected: false,
-      status: { dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false },
-      color: null,
-      icon: null,
-      tags: [],
-      createdAt: "2026-04-06T12:00:00.000Z",
-    };
-
-    const renderGrid = (activeItemId: string) => (
-      <WorkViewArea
-        gridLayoutId="work:grid:test"
-        lanes={[lane]}
-        sessions={sessions}
-        visibleSessions={sessions}
-        tabGroups={[]}
-        tabVisibleSessionIds={sessions.map((session) => session.id)}
-        activeItemId={activeItemId}
-        viewMode="grid"
-        draftKind="chat"
-        setViewMode={() => {}}
-        onSelectItem={() => {}}
-        onCloseItem={() => {}}
-        onOpenChatSession={() => {}}
-        onLaunchPtySession={resolvePtyLaunch}
-        onShowDraftKind={() => {}}
-        onToggleTabGroupCollapsed={() => {}}
-        closingPtyIds={new Set()}
-      />
-    );
-
-    const view = render(renderGrid("session-1"));
-
-    let cooledSessionId: string | null = null;
-    await waitFor(() => {
-      const terminals = within(view.container).getAllByTestId("terminal-view");
-      expect(terminals).toHaveLength(sessions.length);
-      expect(terminals.find((node) => node.getAttribute("data-session-id") === "session-1")?.getAttribute("data-visible")).toBe("true");
-      cooledSessionId = terminals.find((node) => (
-        node.getAttribute("data-session-id") !== "session-1"
-        && node.getAttribute("data-visible") === "false"
-      ))?.getAttribute("data-session-id") ?? null;
-      expect(cooledSessionId).toBeTruthy();
-    });
-
-    view.rerender(renderGrid(cooledSessionId!));
-
-    await waitFor(() => {
-      const focused = within(view.container).getAllByTestId("terminal-view")
-        .find((node) => node.getAttribute("data-session-id") === cooledSessionId);
-      expect(focused?.getAttribute("data-active")).toBe("true");
-      expect(focused?.getAttribute("data-visible")).toBe("true");
-    });
-  });
-
   it("adds the CLI session header above agent PTY sessions", () => {
     const session = { ...makeRunningSession("session-1", "pty-1"), toolType: "claude" as const };
 
     const view = render(
       <WorkViewArea
-        gridLayoutId="work:grid:test"
         lanes={[{
           id: "lane-1",
           name: "Lane 1",
@@ -732,18 +419,13 @@ describe("WorkViewArea", () => {
         }]}
         sessions={[session]}
         visibleSessions={[session]}
-        tabGroups={[]}
-        tabVisibleSessionIds={[session.id]}
         activeItemId={session.id}
-        viewMode="tabs"
         draftKind="chat"
-        setViewMode={() => {}}
         onSelectItem={() => {}}
         onCloseItem={() => {}}
         onOpenChatSession={() => {}}
         onLaunchPtySession={resolvePtyLaunch}
         onShowDraftKind={() => {}}
-        onToggleTabGroupCollapsed={() => {}}
         closingPtyIds={new Set()}
       />,
     );
@@ -801,7 +483,6 @@ describe("WorkViewArea", () => {
 
     const view = render(
       <WorkViewArea
-        gridLayoutId="work:grid:test"
         lanes={[{
           id: "lane-1",
           name: "Lane 1",
@@ -822,18 +503,13 @@ describe("WorkViewArea", () => {
         }]}
         sessions={[session]}
         visibleSessions={[session]}
-        tabGroups={[]}
-        tabVisibleSessionIds={[session.id]}
         activeItemId={session.id}
-        viewMode="tabs"
         draftKind="chat"
-        setViewMode={() => {}}
         onSelectItem={() => {}}
         onCloseItem={() => {}}
         onOpenChatSession={() => {}}
         onLaunchPtySession={resolvePtyLaunch}
         onShowDraftKind={() => {}}
-        onToggleTabGroupCollapsed={() => {}}
         closingPtyIds={new Set()}
       />,
     );
@@ -882,30 +558,26 @@ describe("WorkViewArea", () => {
 
     const view = render(
       <WorkViewArea
-        gridLayoutId="work:grid:test"
         lanes={[]}
         sessions={[activeSession, hiddenSession]}
         visibleSessions={[activeSession, hiddenSession]}
-        tabGroups={[]}
-        tabVisibleSessionIds={[activeSession.id, hiddenSession.id]}
         activeItemId={activeSession.id}
-        viewMode="tabs"
         draftKind="chat"
-        setViewMode={() => {}}
         onSelectItem={() => {}}
         onCloseItem={() => {}}
         onOpenChatSession={() => {}}
         onLaunchPtySession={resolvePtyLaunch}
         onShowDraftKind={() => {}}
-        onToggleTabGroupCollapsed={() => {}}
         closingPtyIds={new Set()}
       />,
     );
     const local = within(view.container);
 
     expect(await local.findByLabelText("Continue Claude Code session")).toBeTruthy();
-    expect(local.getAllByText("Existing session").length).toBeGreaterThan(0);
-    expect(local.getByText("Hidden session")).toBeTruthy();
+    expect(local.getAllByTestId("work-cli-session-header").some((header) => header.getAttribute("data-session-id") === "session-active")).toBe(true);
+    // Only the active session renders in the single-session work view; the
+    // hidden session is never mounted, so its preview/slash hydration never runs.
+    expect(local.queryByText("Hidden session")).toBeNull();
     expect(terminalPreviewMock).toHaveBeenCalledTimes(1);
     expect(terminalPreviewMock).toHaveBeenCalledWith({ terminalId: "session-active", maxBytes: 160_000 });
     expect(slashCommandsMock).toHaveBeenCalledTimes(1);
@@ -984,22 +656,16 @@ describe("WorkViewArea", () => {
 
     const view = render(
       <WorkViewArea
-        gridLayoutId="work:grid:test"
         lanes={[]}
         sessions={[session]}
         visibleSessions={[session]}
-        tabGroups={[]}
-        tabVisibleSessionIds={[session.id]}
         activeItemId={session.id}
-        viewMode="tabs"
         draftKind="chat"
-        setViewMode={() => {}}
         onSelectItem={() => {}}
         onCloseItem={() => {}}
         onOpenChatSession={() => {}}
         onLaunchPtySession={resolvePtyLaunch}
         onShowDraftKind={() => {}}
-        onToggleTabGroupCollapsed={() => {}}
         closingPtyIds={new Set()}
       />,
     );
@@ -1073,22 +739,16 @@ describe("WorkViewArea", () => {
 
     const view = render(
       <WorkViewArea
-        gridLayoutId="work:grid:test"
         lanes={[]}
         sessions={[session]}
         visibleSessions={[session]}
-        tabGroups={[]}
-        tabVisibleSessionIds={[session.id]}
         activeItemId={session.id}
-        viewMode="tabs"
         draftKind="chat"
-        setViewMode={() => {}}
         onSelectItem={() => {}}
         onCloseItem={() => {}}
         onOpenChatSession={() => {}}
         onLaunchPtySession={resolvePtyLaunch}
         onShowDraftKind={() => {}}
-        onToggleTabGroupCollapsed={() => {}}
         closingPtyIds={new Set()}
       />,
     );
@@ -1126,22 +786,16 @@ describe("WorkViewArea", () => {
 
     const view = render(
       <WorkViewArea
-        gridLayoutId="work:grid:test"
         lanes={[]}
         sessions={[session]}
         visibleSessions={[session]}
-        tabGroups={[]}
-        tabVisibleSessionIds={[session.id]}
         activeItemId={session.id}
-        viewMode="tabs"
         draftKind="chat"
-        setViewMode={() => {}}
         onSelectItem={() => {}}
         onCloseItem={() => {}}
         onOpenChatSession={() => {}}
         onLaunchPtySession={resolvePtyLaunch}
         onShowDraftKind={() => {}}
-        onToggleTabGroupCollapsed={() => {}}
         closingPtyIds={new Set()}
       />,
     );
@@ -1201,22 +855,16 @@ describe("WorkViewArea", () => {
 
     const view = render(
       <WorkViewArea
-        gridLayoutId="work:grid:test"
         lanes={[]}
         sessions={[session]}
         visibleSessions={[session]}
-        tabGroups={[]}
-        tabVisibleSessionIds={[session.id]}
         activeItemId={session.id}
-        viewMode="tabs"
         draftKind="chat"
-        setViewMode={() => {}}
         onSelectItem={() => {}}
         onCloseItem={() => {}}
         onOpenChatSession={() => {}}
         onLaunchPtySession={resolvePtyLaunch}
         onShowDraftKind={() => {}}
-        onToggleTabGroupCollapsed={() => {}}
         closingPtyIds={new Set()}
       />,
     );
@@ -1245,7 +893,6 @@ describe("WorkViewArea", () => {
 
     const view = render(
       <WorkViewArea
-        gridLayoutId="work:grid:test"
         lanes={[{
           id: "lane-1",
           name: "Lane 1",
@@ -1266,18 +913,13 @@ describe("WorkViewArea", () => {
         }]}
         sessions={[session]}
         visibleSessions={[session]}
-        tabGroups={[]}
-        tabVisibleSessionIds={[session.id]}
         activeItemId={session.id}
-        viewMode="tabs"
         draftKind="chat"
-        setViewMode={() => {}}
         onSelectItem={() => {}}
         onCloseItem={() => {}}
         onOpenChatSession={() => {}}
         onLaunchPtySession={resolvePtyLaunch}
         onShowDraftKind={() => {}}
-        onToggleTabGroupCollapsed={() => {}}
         closingPtyIds={new Set()}
         onContinueCliSession={onContinue}
         onResumeCliSession={onResume}
@@ -1310,22 +952,16 @@ describe("WorkViewArea", () => {
     };
     const view = render(
       <WorkViewArea
-        gridLayoutId="work:grid:test"
         lanes={[]}
         sessions={[session]}
         visibleSessions={[session]}
-        tabGroups={[]}
-        tabVisibleSessionIds={[session.id]}
         activeItemId={session.id}
-        viewMode="tabs"
         draftKind="chat"
-        setViewMode={() => {}}
         onSelectItem={() => {}}
         onCloseItem={() => {}}
         onOpenChatSession={() => {}}
         onLaunchPtySession={resolvePtyLaunch}
         onShowDraftKind={() => {}}
-        onToggleTabGroupCollapsed={() => {}}
         closingPtyIds={new Set()}
       />,
     );
@@ -1354,22 +990,16 @@ describe("WorkViewArea", () => {
 
     render(
       <WorkViewArea
-        gridLayoutId="work:grid:test"
         lanes={[]}
         sessions={[session]}
         visibleSessions={[session]}
-        tabGroups={[]}
-        tabVisibleSessionIds={[session.id]}
         activeItemId={session.id}
-        viewMode="tabs"
         draftKind="chat"
-        setViewMode={() => {}}
         onSelectItem={() => {}}
         onCloseItem={() => {}}
         onOpenChatSession={() => {}}
         onLaunchPtySession={resolvePtyLaunch}
         onShowDraftKind={() => {}}
-        onToggleTabGroupCollapsed={() => {}}
         closingPtyIds={new Set()}
       />,
     );
@@ -1384,238 +1014,6 @@ describe("WorkViewArea", () => {
     expect(await screen.findByText("/status")).toBeTruthy();
   });
 
-  it("keeps the grid tiling tree stable when refreshed session objects keep the same ids", () => {
-    const first = makeRunningSession("session-1", "pty-1");
-    const second = makeRunningSession("session-2", "pty-2");
-
-    const view = render(
-      <WorkViewArea
-        gridLayoutId="work:grid:test"
-        lanes={[{
-          id: "lane-1",
-          name: "Lane 1",
-          laneType: "worktree",
-          baseRef: "main",
-          branchRef: "lane-1",
-          worktreePath: "/tmp/lane-1",
-          parentLaneId: null,
-          childCount: 0,
-          stackDepth: 0,
-          parentStatus: null,
-          isEditProtected: false,
-          status: { dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false },
-          color: null,
-          icon: null,
-          tags: [],
-          createdAt: "2026-04-06T12:00:00.000Z",
-        }]}
-        sessions={[first, second]}
-        visibleSessions={[first, second]}
-        tabGroups={[]}
-        tabVisibleSessionIds={[first.id, second.id]}
-        activeItemId={first.id}
-        viewMode="grid"
-        draftKind="chat"
-        setViewMode={() => {}}
-        onSelectItem={() => {}}
-        onCloseItem={() => {}}
-        onOpenChatSession={() => {}}
-        onLaunchPtySession={resolvePtyLaunch}
-        onShowDraftKind={() => {}}
-        onToggleTabGroupCollapsed={() => {}}
-        closingPtyIds={new Set()}
-      />,
-    );
-    const initialTree = latestPaneTilingLayoutProps?.tree;
-
-    const refreshedFirst = { ...first, lastOutputPreview: "new output" };
-    const refreshedSecond = { ...second, summary: "updated summary" };
-    view.rerender(
-      <WorkViewArea
-        gridLayoutId="work:grid:test"
-        lanes={[{
-          id: "lane-1",
-          name: "Lane 1",
-          laneType: "worktree",
-          baseRef: "main",
-          branchRef: "lane-1",
-          worktreePath: "/tmp/lane-1",
-          parentLaneId: null,
-          childCount: 0,
-          stackDepth: 0,
-          parentStatus: null,
-          isEditProtected: false,
-          status: { dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false },
-          color: null,
-          icon: null,
-          tags: [],
-          createdAt: "2026-04-06T12:00:00.000Z",
-        }]}
-        sessions={[refreshedFirst, refreshedSecond]}
-        visibleSessions={[refreshedFirst, refreshedSecond]}
-        tabGroups={[]}
-        tabVisibleSessionIds={[first.id, second.id]}
-        activeItemId={first.id}
-        viewMode="grid"
-        draftKind="chat"
-        setViewMode={() => {}}
-        onSelectItem={() => {}}
-        onCloseItem={() => {}}
-        onOpenChatSession={() => {}}
-        onLaunchPtySession={resolvePtyLaunch}
-        onShowDraftKind={() => {}}
-        onToggleTabGroupCollapsed={() => {}}
-        closingPtyIds={new Set()}
-      />,
-    );
-
-    expect(latestPaneTilingLayoutProps?.tree).toBe(initialTree);
-  });
-
-  it("keeps chat tiles mounted across metadata-only grid refreshes", () => {
-    vi.mocked(isChatToolType).mockImplementation((toolType) => toolType === "codex-chat");
-    const first = makeChatSession("chat-1");
-    const second = makeChatSession("chat-2");
-
-    const view = render(
-      <WorkViewArea
-        gridLayoutId="work:grid:test"
-        lanes={[{
-          id: "lane-1",
-          name: "Lane 1",
-          laneType: "worktree",
-          baseRef: "main",
-          branchRef: "lane-1",
-          worktreePath: "/tmp/lane-1",
-          parentLaneId: null,
-          childCount: 0,
-          stackDepth: 0,
-          parentStatus: null,
-          isEditProtected: false,
-          status: { dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false },
-          color: null,
-          icon: null,
-          tags: [],
-          createdAt: "2026-04-06T12:00:00.000Z",
-        }]}
-        sessions={[first, second]}
-        visibleSessions={[first, second]}
-        tabGroups={[]}
-        tabVisibleSessionIds={[first.id, second.id]}
-        activeItemId={first.id}
-        viewMode="grid"
-        draftKind="chat"
-        setViewMode={() => {}}
-        onSelectItem={() => {}}
-        onCloseItem={() => {}}
-        onOpenChatSession={() => {}}
-        onLaunchPtySession={resolvePtyLaunch}
-        onShowDraftKind={() => {}}
-        onToggleTabGroupCollapsed={() => {}}
-        closingPtyIds={new Set()}
-      />,
-    );
-
-    const refreshedFirst = { ...first, lastOutputPreview: "new output" };
-    const refreshedSecond = { ...second, summary: "updated summary" };
-    view.rerender(
-      <WorkViewArea
-        gridLayoutId="work:grid:test"
-        lanes={[{
-          id: "lane-1",
-          name: "Lane 1",
-          laneType: "worktree",
-          baseRef: "main",
-          branchRef: "lane-1",
-          worktreePath: "/tmp/lane-1",
-          parentLaneId: null,
-          childCount: 0,
-          stackDepth: 0,
-          parentStatus: null,
-          isEditProtected: false,
-          status: { dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false },
-          color: null,
-          icon: null,
-          tags: [],
-          createdAt: "2026-04-06T12:00:00.000Z",
-        }]}
-        sessions={[refreshedFirst, refreshedSecond]}
-        visibleSessions={[refreshedFirst, refreshedSecond]}
-        tabGroups={[]}
-        tabVisibleSessionIds={[first.id, second.id]}
-        activeItemId={first.id}
-        viewMode="grid"
-        draftKind="chat"
-        setViewMode={() => {}}
-        onSelectItem={() => {}}
-        onCloseItem={() => {}}
-        onOpenChatSession={() => {}}
-        onLaunchPtySession={resolvePtyLaunch}
-        onShowDraftKind={() => {}}
-        onToggleTabGroupCollapsed={() => {}}
-        closingPtyIds={new Set()}
-      />,
-    );
-
-    expect(chatPaneLifecycle.mounts.get("chat-1")).toBe(1);
-    expect(chatPaneLifecycle.mounts.get("chat-2")).toBe(1);
-    expect(chatPaneLifecycle.unmounts.get("chat-1")).toBeUndefined();
-    expect(chatPaneLifecycle.unmounts.get("chat-2")).toBeUndefined();
-  });
-
-  it("marks every chat tile visible in grid mode while only the selected tile is active", () => {
-    vi.mocked(isChatToolType).mockImplementation((toolType) => toolType === "codex-chat");
-    const first = makeChatSession("chat-1");
-    const second = makeChatSession("chat-2");
-
-    const view = render(
-      <WorkViewArea
-        gridLayoutId="work:grid:test"
-        lanes={[{
-          id: "lane-1",
-          name: "Lane 1",
-          laneType: "worktree",
-          baseRef: "main",
-          branchRef: "lane-1",
-          worktreePath: "/tmp/lane-1",
-          parentLaneId: null,
-          childCount: 0,
-          stackDepth: 0,
-          parentStatus: null,
-          isEditProtected: false,
-          status: { dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false },
-          color: null,
-          icon: null,
-          tags: [],
-          createdAt: "2026-04-06T12:00:00.000Z",
-        }]}
-        sessions={[first, second]}
-        visibleSessions={[first, second]}
-        tabGroups={[]}
-        tabVisibleSessionIds={[first.id, second.id]}
-        activeItemId={first.id}
-        viewMode="grid"
-        draftKind="chat"
-        setViewMode={() => {}}
-        onSelectItem={() => {}}
-        onCloseItem={() => {}}
-        onOpenChatSession={() => {}}
-        onLaunchPtySession={resolvePtyLaunch}
-        onShowDraftKind={() => {}}
-        onToggleTabGroupCollapsed={() => {}}
-        closingPtyIds={new Set()}
-      />,
-    );
-
-    const tiles = within(view.container).getAllByTestId("agent-chat-pane");
-    const firstTile = tiles.find((el) => el.getAttribute("data-session-id") === "chat-1");
-    const secondTile = tiles.find((el) => el.getAttribute("data-session-id") === "chat-2");
-    expect(firstTile?.getAttribute("data-tile-active")).toBe("true");
-    expect(firstTile?.getAttribute("data-tile-visible")).toBe("true");
-    expect(secondTile?.getAttribute("data-tile-active")).toBe("false");
-    expect(secondTile?.getAttribute("data-tile-visible")).toBe("true");
-  });
-
   it("keeps chat panes mounted but inactive while the Work page is parked", () => {
     vi.mocked(isChatToolType).mockImplementation((toolType) => toolType === "codex-chat");
     const session = makeChatSession("chat-1");
@@ -1623,7 +1021,6 @@ describe("WorkViewArea", () => {
     const view = render(
       <WorkViewArea
         pageActive={false}
-        gridLayoutId="work:grid:test"
         lanes={[{
           id: "lane-1",
           name: "Lane 1",
@@ -1644,18 +1041,13 @@ describe("WorkViewArea", () => {
         }]}
         sessions={[session]}
         visibleSessions={[session]}
-        tabGroups={[]}
-        tabVisibleSessionIds={[session.id]}
         activeItemId={session.id}
-        viewMode="tabs"
         draftKind="chat"
-        setViewMode={() => {}}
         onSelectItem={() => {}}
         onCloseItem={() => {}}
         onOpenChatSession={() => {}}
         onLaunchPtySession={resolvePtyLaunch}
         onShowDraftKind={() => {}}
-        onToggleTabGroupCollapsed={() => {}}
         closingPtyIds={new Set()}
       />,
     );
@@ -1674,7 +1066,6 @@ describe("WorkViewArea", () => {
 
     const view = render(
       <WorkViewArea
-        gridLayoutId="work:grid:test"
         lanes={[{
           id: "lane-1",
           name: "Lane 1",
@@ -1695,18 +1086,13 @@ describe("WorkViewArea", () => {
         }]}
         sessions={[first, second]}
         visibleSessions={[first, second]}
-        tabGroups={[]}
-        tabVisibleSessionIds={[first.id, second.id]}
         activeItemId={first.id}
-        viewMode="tabs"
         draftKind="chat"
-        setViewMode={() => {}}
         onSelectItem={() => {}}
         onCloseItem={() => {}}
         onOpenChatSession={() => {}}
         onLaunchPtySession={resolvePtyLaunch}
         onShowDraftKind={() => {}}
-        onToggleTabGroupCollapsed={() => {}}
         closingPtyIds={new Set()}
       />,
     );
@@ -1721,7 +1107,6 @@ describe("WorkViewArea", () => {
 
     view.rerender(
       <WorkViewArea
-        gridLayoutId="work:grid:test"
         lanes={[{
           id: "lane-1",
           name: "Lane 1",
@@ -1742,18 +1127,13 @@ describe("WorkViewArea", () => {
         }]}
         sessions={[first, second]}
         visibleSessions={[first, second]}
-        tabGroups={[]}
-        tabVisibleSessionIds={[first.id, second.id]}
         activeItemId={second.id}
-        viewMode="tabs"
         draftKind="chat"
-        setViewMode={() => {}}
         onSelectItem={() => {}}
         onCloseItem={() => {}}
         onOpenChatSession={() => {}}
         onLaunchPtySession={resolvePtyLaunch}
         onShowDraftKind={() => {}}
-        onToggleTabGroupCollapsed={() => {}}
         closingPtyIds={new Set()}
       />,
     );
@@ -1769,69 +1149,12 @@ describe("WorkViewArea", () => {
     expect(chatPaneLifecycle.unmounts.get("chat-2")).toBeUndefined();
   });
 
-  it("keeps active chat mounted when its tab group is collapsed", () => {
-    vi.mocked(isChatToolType).mockImplementation((toolType) => toolType === "codex-chat");
-    const session = makeChatSession("chat-1");
-
-    const view = render(
-      <WorkViewArea
-        gridLayoutId="work:grid:test"
-        lanes={[{
-          id: "lane-1",
-          name: "Lane 1",
-          laneType: "worktree",
-          baseRef: "main",
-          branchRef: "lane-1",
-          worktreePath: "/tmp/lane-1",
-          parentLaneId: null,
-          childCount: 0,
-          stackDepth: 0,
-          parentStatus: null,
-          isEditProtected: false,
-          status: { dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false },
-          color: null,
-          icon: null,
-          tags: [],
-          createdAt: "2026-04-06T12:00:00.000Z",
-        }]}
-        sessions={[session]}
-        visibleSessions={[session]}
-        tabGroups={[{
-          id: "lane:lane-1",
-          label: "Lane 1",
-          kind: "lane",
-          laneColor: null,
-          collapsed: true,
-          sessionIds: [session.id],
-          sessions: [session],
-        }]}
-        tabVisibleSessionIds={[]}
-        activeItemId={session.id}
-        viewMode="tabs"
-        draftKind="chat"
-        setViewMode={() => {}}
-        onSelectItem={() => {}}
-        onCloseItem={() => {}}
-        onOpenChatSession={() => {}}
-        onLaunchPtySession={resolvePtyLaunch}
-        onShowDraftKind={() => {}}
-        onToggleTabGroupCollapsed={() => {}}
-        closingPtyIds={new Set()}
-      />,
-    );
-
-    expect(within(view.container).getByTestId("agent-chat-pane")).toBeTruthy();
-    expect(chatPaneLifecycle.mounts.get("chat-1")).toBe(1);
-    expect(chatPaneLifecycle.unmounts.get("chat-1")).toBeUndefined();
-  });
-
   it("parks hidden terminal tiles in tabs mode while switching active tab", () => {
     const first = makeRunningSession("session-1", "pty-1");
     const second = makeRunningSession("session-2", "pty-2");
 
     const view = render(
       <WorkViewArea
-        gridLayoutId="work:grid:test"
         lanes={[{
           id: "lane-1",
           name: "Lane 1",
@@ -1852,18 +1175,13 @@ describe("WorkViewArea", () => {
         }]}
         sessions={[first, second]}
         visibleSessions={[first, second]}
-        tabGroups={[]}
-        tabVisibleSessionIds={[first.id, second.id]}
         activeItemId={first.id}
-        viewMode="tabs"
         draftKind="chat"
-        setViewMode={() => {}}
         onSelectItem={() => {}}
         onCloseItem={() => {}}
         onOpenChatSession={() => {}}
         onLaunchPtySession={resolvePtyLaunch}
         onShowDraftKind={() => {}}
-        onToggleTabGroupCollapsed={() => {}}
         closingPtyIds={new Set()}
       />,
     );
@@ -1874,7 +1192,6 @@ describe("WorkViewArea", () => {
 
     view.rerender(
       <WorkViewArea
-        gridLayoutId="work:grid:test"
         lanes={[{
           id: "lane-1",
           name: "Lane 1",
@@ -1895,18 +1212,13 @@ describe("WorkViewArea", () => {
         }]}
         sessions={[first, second]}
         visibleSessions={[first, second]}
-        tabGroups={[]}
-        tabVisibleSessionIds={[first.id, second.id]}
         activeItemId={second.id}
-        viewMode="tabs"
         draftKind="chat"
-        setViewMode={() => {}}
         onSelectItem={() => {}}
         onCloseItem={() => {}}
         onOpenChatSession={() => {}}
         onLaunchPtySession={resolvePtyLaunch}
         onShowDraftKind={() => {}}
-        onToggleTabGroupCollapsed={() => {}}
         closingPtyIds={new Set()}
       />,
     );
@@ -1916,97 +1228,4 @@ describe("WorkViewArea", () => {
     expect(terminal.getAttribute("data-active")).toBe("true");
   });
 
-  it("preserves unusual session ids when building the grid tiling tree", () => {
-    const session = makeRunningSession("session\u0000with-delimiter", "pty-1");
-
-    render(
-      <WorkViewArea
-        gridLayoutId="work:grid:test"
-        lanes={[{
-          id: "lane-1",
-          name: "Lane 1",
-          laneType: "worktree",
-          baseRef: "main",
-          branchRef: "lane-1",
-          worktreePath: "/tmp/lane-1",
-          parentLaneId: null,
-          childCount: 0,
-          stackDepth: 0,
-          parentStatus: null,
-          isEditProtected: false,
-          status: { dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false },
-          color: null,
-          icon: null,
-          tags: [],
-          createdAt: "2026-04-06T12:00:00.000Z",
-        }]}
-        sessions={[session]}
-        visibleSessions={[session]}
-        tabGroups={[]}
-        tabVisibleSessionIds={[session.id]}
-        activeItemId={session.id}
-        viewMode="grid"
-        draftKind="chat"
-        setViewMode={() => {}}
-        onSelectItem={() => {}}
-        onCloseItem={() => {}}
-        onOpenChatSession={() => {}}
-        onLaunchPtySession={resolvePtyLaunch}
-        onShowDraftKind={() => {}}
-        onToggleTabGroupCollapsed={() => {}}
-        closingPtyIds={new Set()}
-      />,
-    );
-
-    expect(collectLeafIds(latestPaneTilingLayoutProps?.tree as Parameters<typeof collectLeafIds>[0])).toEqual([session.id]);
-  });
-
-  it("selects a tiled session when its body is clicked in grid mode", () => {
-    const first = makeRunningSession("session-1", "pty-1");
-    const second = makeRunningSession("session-2", "pty-2");
-    const onSelectItem = vi.fn();
-
-    const view = render(
-      <WorkViewArea
-        gridLayoutId="work:grid:test"
-        lanes={[{
-          id: "lane-1",
-          name: "Lane 1",
-          laneType: "worktree",
-          baseRef: "main",
-          branchRef: "lane-1",
-          worktreePath: "/tmp/lane-1",
-          parentLaneId: null,
-          childCount: 0,
-          stackDepth: 0,
-          parentStatus: null,
-          isEditProtected: false,
-          status: { dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false },
-          color: null,
-          icon: null,
-          tags: [],
-          createdAt: "2026-04-06T12:00:00.000Z",
-        }]}
-        sessions={[first, second]}
-        visibleSessions={[first, second]}
-        tabGroups={[]}
-        tabVisibleSessionIds={[first.id, second.id]}
-        activeItemId={first.id}
-        viewMode="grid"
-        draftKind="chat"
-        setViewMode={() => {}}
-        onSelectItem={onSelectItem}
-        onCloseItem={() => {}}
-        onOpenChatSession={() => {}}
-        onLaunchPtySession={resolvePtyLaunch}
-        onShowDraftKind={() => {}}
-        onToggleTabGroupCollapsed={() => {}}
-        closingPtyIds={new Set()}
-      />,
-    );
-
-    expect(latestPaneTilingLayoutProps?.layoutId).toBe("work:grid:test");
-    fireEvent.mouseDown(within(view.container).getByTestId("pane-tiling-layout-pane:session-2"));
-    expect(onSelectItem).toHaveBeenCalledWith("session-2");
-  });
 });

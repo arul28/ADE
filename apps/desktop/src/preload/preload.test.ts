@@ -1384,7 +1384,7 @@ describe("preload OAuth bridge", () => {
       displayName: "Project",
     };
     const registry = [
-      { domain: "chat", actions: [{ name: "codexOpenInCli" }] },
+      { domain: "chat", actions: [{ name: "launchCli" }] },
       { domain: "git", actions: [{ name: "status" }] },
     ];
     const invoke = vi.fn(async (channel: string, payload?: unknown) => {
@@ -3149,67 +3149,6 @@ describe("preload OAuth bridge", () => {
       },
     });
     expect(invoke).not.toHaveBeenCalledWith(IPC.agentChatSlashCommands, input);
-  });
-
-  it("routes Codex open-in-CLI setup through a remote project runtime when bound", async () => {
-    const binding = {
-      kind: "remote",
-      key: "remote:target-1:project-1",
-      targetId: "target-1",
-      runtimeName: "Remote",
-      projectId: "project-1",
-      rootPath: "/remote/project",
-      displayName: "Project",
-    };
-    const input = { sessionId: "session-1", mode: "ade-terminal" };
-    const result = {
-      binary: "/usr/local/bin/codex",
-      argv: ["resume", "thread-1"],
-      cwd: "/remote/project/.ade/worktrees/lane",
-      threadId: "thread-1",
-      copyThreadIdToClipboard: false,
-    };
-    const invoke = vi.fn(async (channel: string) => {
-      if (channel === IPC.appGetWindowSession) {
-        return { windowId: 1, project: null, binding };
-      }
-      if (channel === IPC.remoteRuntimeCallAction) {
-        return { ok: true, domain: "chat", action: "codexOpenInCli", result, statusHints: {} };
-      }
-      return undefined;
-    });
-    const on = vi.fn();
-    const removeListener = vi.fn();
-    const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
-      (globalThis as any).__bridgeName = name;
-      (globalThis as any).__adeBridge = value;
-    });
-
-    vi.doMock("electron", () => ({
-      contextBridge: { exposeInMainWorld },
-      ipcRenderer: { invoke, on, removeListener },
-      webFrame: {
-        getZoomLevel: vi.fn(() => 0),
-        setZoomLevel: vi.fn(),
-        getZoomFactor: vi.fn(() => 1),
-      },
-    }));
-
-    await import("./preload");
-
-    const bridge = (globalThis as any).__adeBridge;
-    await expect(bridge.agentChat.codex.openInCli(input)).resolves.toEqual(result);
-
-    expect(invoke).toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, {
-      id: "target-1",
-      projectId: "project-1",
-      request: {
-        domain: "chat",
-        action: "codexOpenInCli",
-        args: input,
-      },
-    });
-    expect(invoke).not.toHaveBeenCalledWith(IPC.agentChatCodexOpenInCli, input);
   });
 
   it("routes CLI agent launches through a remote project runtime when bound", async () => {

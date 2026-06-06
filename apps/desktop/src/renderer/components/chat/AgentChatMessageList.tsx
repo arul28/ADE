@@ -28,8 +28,6 @@ import {
   CopySimple,
   Brain,
   Image,
-  ImageSquare,
-  Sparkle,
   Code,
   Paperclip,
   Target,
@@ -40,7 +38,6 @@ import type {
   AgentChatEvent,
   AgentChatEventEnvelope,
   AgentChatNoticeDetail,
-  AgentChatSubagentTranscriptMessage,
   ChatSurfaceChipTone,
   FilesWorkspace,
   ChatSurfaceProfile,
@@ -56,7 +53,6 @@ import { isPathEqualOrDescendant, isWindowsAbsolutePath, normalizePath } from ".
 import { describeToolIdentifier, replaceInternalToolNames } from "./toolPresentation";
 import { chatChipToneClass } from "./chatSurfaceTheme";
 import {
-  CHAT_ASSISTANT_MESSAGE_CARD_STYLE,
   CHAT_TRANSCRIPT_GLASS_CARD_CLASS,
   CHAT_USER_MESSAGE_CARD_STYLE,
   CHAT_WORK_LOG_CARD_CLASS,
@@ -198,9 +194,10 @@ function approvalToneClass(state: PendingInputResolution | null): string {
 }
 
 function doneStatusToneClass(status: Extract<AgentChatEvent, { type: "done" }>["status"]): string {
-  if (status === "completed") return "border-white/[0.04] bg-[#141220]/60 text-fg/45";
-  if (status === "failed") return "border-red-500/12 bg-red-500/[0.04] text-red-300";
-  return "border-amber-500/12 bg-amber-500/[0.04] text-amber-300";
+  // Text-only tones — no band/box. Interrupted/failed read as a calm tinted line.
+  if (status === "completed") return "text-fg/45";
+  if (status === "failed") return "text-red-300/80";
+  return "text-amber-300/85";
 }
 
 function completionReportToneClass(status: AgentChatCompletionStatus): string {
@@ -346,8 +343,6 @@ const MESSAGE_CARD_STYLE = CHAT_USER_MESSAGE_CARD_STYLE;
 const SURFACE_INLINE_CARD_STYLE: React.CSSProperties = {
   borderColor: "color-mix(in srgb, var(--chat-glass-border) 100%, transparent)",
 };
-
-const ASSISTANT_MESSAGE_CARD_STYLE = CHAT_ASSISTANT_MESSAGE_CARD_STYLE;
 
 function describeUserDeliveryState(event: Extract<AgentChatEvent, { type: "user_message" }>): { label: string; className: string } | null {
   if (event.deliveryState === "failed") {
@@ -1133,6 +1128,55 @@ function ThinkingDots({ toneClass = "bg-emerald-300/70" }: { toneClass?: string 
           style={{ animationDelay: `${index * 0.18}s` }}
         />
       ))}
+    </span>
+  );
+}
+
+// After the turn has been active this long with no terminal event, the
+// indicator adds a quiet "taking longer than usual" note so a long silent wait
+// doesn't read as frozen. Provider overloads (HTTP 529) and transient errors
+// are retried *inside* the model SDK with nothing surfaced to us until they
+// resolve or finally fail — so a long "Thinking" is the only signal we get.
+const LONG_RUNNING_TURN_SECONDS = 30;
+
+/**
+ * The single, calm "model is working" indicator (replaces the prior tangle of
+ * shimmer-text / emerald + violet dot variants). Three violet pulses + a
+ * concise verb + a self-ticking elapsed timer that mutates textContent via a
+ * ref — no per-second React commit (t3code / Codex desktop reference).
+ *
+ * Elapsed is anchored to the turn's real start timestamp (wall clock), so
+ * leaving the chat and coming back keeps the true elapsed instead of resetting
+ * to 0 on remount.
+ */
+function WorkingIndicator({ activity, startedAt }: { activity: string | null; startedAt: number | null }) {
+  const timerRef = useRef<HTMLSpanElement>(null);
+  const [longRunning, setLongRunning] = useState(false);
+  useEffect(() => {
+    const startMs = startedAt ?? Date.now();
+    const el = timerRef.current;
+    let handle = 0;
+    const tick = () => {
+      const elapsedSec = Math.max(0, Math.floor((Date.now() - startMs) / 1000));
+      if (el) el.textContent = `${elapsedSec}s`;
+      setLongRunning(elapsedSec >= LONG_RUNNING_TURN_SECONDS);
+      handle = window.setTimeout(tick, 1000);
+    };
+    tick();
+    return () => window.clearTimeout(handle);
+  }, [startedAt]);
+  return (
+    <span className="inline-flex items-center gap-2 font-sans text-[length:calc(var(--chat-font-size)*12/14)]">
+      <ThinkingDots toneClass="bg-violet-400/70" />
+      <span className="font-medium text-fg/55">{activity ?? "Working"}</span>
+      <span className="text-fg/28" aria-hidden>·</span>
+      <span ref={timerRef} className="tabular-nums text-fg/38">0s</span>
+      {longRunning ? (
+        <>
+          <span className="text-fg/28" aria-hidden>·</span>
+          <span className="text-fg/35">taking longer than usual</span>
+        </>
+      ) : null}
     </span>
   );
 }
@@ -1937,6 +1981,11 @@ function InlineQuestionRequestCard({
   );
 }
 
+// Tracks which user messages have already played their send-up entrance, so the
+// optimistic→delivered swap (and virtualized re-mounts) don't replay it — that
+// replay read as a flicker once the bubble settled.
+const animatedUserMessageKeys = new Set<string>();
+
 function renderEvent(
   envelope: RenderEnvelope,
   options?: {
@@ -1959,7 +2008,6 @@ function renderEvent(
   }
 ) {
   const event = envelope.event;
-  const activeTurnMotionEnabled = Boolean(options?.turnActive);
 
   /* ── User message ── */
   if (event.type === "user_message") {
@@ -1970,12 +2018,15 @@ function renderEvent(
     if (event.deliveryState === "queued" && event.steerId) {
       return null;
     }
+    const playSendEntrance = !animatedUserMessageKeys.has(envelope.key);
+    if (playSendEntrance) animatedUserMessageKeys.add(envelope.key);
     return (
       <motion.div
-        className="flex min-w-0 max-w-full w-full justify-end overflow-hidden"
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        transition={{ duration: 0.14, ease: "easeOut" }}
+        className="flex min-w-0 max-w-full w-full justify-end overflow-visible"
+        style={{ transformOrigin: "bottom right" }}
+        initial={playSendEntrance ? { opacity: 0, y: 14 } : false}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.26, ease: [0.22, 1, 0.36, 1] }}
       >
         <div
           className={cn(
@@ -2011,7 +2062,7 @@ function renderEvent(
             const displayText = event.displayText?.trim();
             if (displayText && displayText !== event.text.trim()) {
               return (
-                <div className="space-y-2 text-[length:calc(var(--chat-font-size)*13/14)] leading-[1.7] text-white">
+                <div className="space-y-2 text-[length:var(--chat-font-size)] leading-[1.7] text-white">
                   <div className="whitespace-pre-wrap break-words font-medium">{displayText}</div>
                   <details className="group min-w-0">
                     <summary className="cursor-pointer font-sans text-[length:calc(var(--chat-font-size)*11/14)] font-medium text-white/70 transition-colors hover:text-white">
@@ -2027,13 +2078,13 @@ function renderEvent(
             const parsed = parseLeadingIosContextChips(event.text);
             if (!parsed.chips.length) {
               return (
-                <div className="whitespace-pre-wrap break-words text-[length:calc(var(--chat-font-size)*13/14)] leading-[1.7] text-white">
+                <div className="whitespace-pre-wrap break-words text-[length:var(--chat-font-size)] leading-[1.7] text-white">
                   {event.text}
                 </div>
               );
             }
             return (
-              <div className="whitespace-pre-wrap break-words text-[length:calc(var(--chat-font-size)*13/14)] leading-[1.7] text-white">
+              <div className="whitespace-pre-wrap break-words text-[length:var(--chat-font-size)] leading-[1.7] text-white">
                 <span className="mr-1 inline-flex flex-wrap items-baseline gap-1 align-baseline">
                   {parsed.chips.map((label, idx) => (
                     <span
@@ -2073,21 +2124,9 @@ function renderEvent(
         animate={{ opacity: 1 }}
         transition={{ duration: 0.14, ease: "easeOut" }}
       >
-        <div
-          className={cn(
-            GLASS_CARD_CLASS,
-            "ade-chat-message-card-assistant group relative min-w-0 max-w-[min(104ch,78%)] overflow-hidden px-[length:var(--chat-bubble-assistant-px)] py-[length:var(--chat-bubble-assistant-py)]",
-            activeTurnMotionEnabled && "ade-glow-pulse",
-          )}
-          style={ASSISTANT_MESSAGE_CARD_STYLE}
-        >
-          <div className="absolute top-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-violet-400/25 to-transparent" />
-          {activeTurnMotionEnabled && (
-            <div className="pointer-events-none absolute inset-0 overflow-hidden rounded-[var(--chat-radius-card)]">
-              <div className="absolute inset-0 ade-streaming-shimmer" />
-            </div>
-          )}
-          <div className="absolute right-2 top-1.5 opacity-0 transition-opacity duration-200 group-hover:opacity-100 focus-within:opacity-100">
+        {/* Unbubbled assistant prose — plain markdown on the flat canvas (Codex/t3 reference). */}
+        <div className="group relative min-w-0 max-w-full overflow-visible py-0.5 pr-7 text-[length:var(--chat-font-size)] leading-[1.7]">
+          <div className="absolute right-0 top-0 opacity-0 transition-opacity duration-200 group-hover:opacity-100 focus-within:opacity-100">
             <MessageCopyButton value={event.text} />
           </div>
           <div className="min-w-0">
@@ -3062,61 +3101,9 @@ function renderEvent(
 
   /* ── Done ── */
   if (event.type === "done") {
-    const { label: modelLabel } = resolveModelMeta(event.modelId, event.model);
-    const inputTokens = formatTokenCount(event.usage?.inputTokens);
-    const outputTokens = formatTokenCount(event.usage?.outputTokens);
-    const cacheRead = formatTokenCount(event.usage?.cacheReadTokens);
-    const cacheCreation = formatTokenCount(event.usage?.cacheCreationTokens);
-    const costLabel = typeof event.costUsd === "number" && event.costUsd > 0
-      ? `$${event.costUsd < 0.01 ? event.costUsd.toFixed(4) : event.costUsd.toFixed(2)}`
-      : null;
-    const isCloud = event.runtime === "cloud";
-    const hasUsageData = Boolean(inputTokens || outputTokens || cacheRead || cacheCreation || costLabel || modelLabel);
-    if (event.status === "completed" && !hasUsageData && !isCloud) {
-      return null;
-    }
-    const statusTone = doneStatusToneClass(event.status);
-
-    return (
-      <div className={cn("flex items-center justify-center gap-3 rounded-xl border px-4 py-2 font-sans text-[length:calc(var(--chat-font-size)*10/14)]", statusTone)}>
-        <div className="flex flex-wrap items-center justify-center gap-x-3 gap-y-1">
-          <span className="font-medium text-fg/35 uppercase tracking-wide text-[length:calc(var(--chat-font-size)*9/14)]">Usage</span>
-          {modelLabel ? (
-            <span className="inline-flex items-center gap-1.5 text-fg/30">
-              <ModelGlyph modelId={event.modelId} model={event.model} size={11} className="shrink-0 text-violet-400/40" />
-              <span className="font-medium">{modelLabel}</span>
-            </span>
-          ) : null}
-          {isCloud ? (
-            <span
-              className="inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.14em]"
-              style={{
-                borderColor: "rgba(167,139,250,0.30)",
-                background: "rgba(167,139,250,0.10)",
-                color: "rgba(216,200,255,0.90)",
-              }}
-              title="This turn ran in Cursor Cloud"
-            >
-              <CloudArrowUp size={9} weight="fill" />
-              cloud
-            </span>
-          ) : null}
-          {inputTokens ? <span className="text-fg/25">In <span className="font-medium text-fg/35">{inputTokens}</span></span> : null}
-          {outputTokens ? <span className="text-fg/25">Out <span className="font-medium text-fg/35">{outputTokens}</span></span> : null}
-          {cacheRead ? <span className="text-emerald-400/30">Cache <span className="font-medium text-emerald-400/45">{cacheRead}</span></span> : null}
-          {cacheCreation ? <span className="text-violet-400/30">New cache <span className="font-medium text-violet-400/45">{cacheCreation}</span></span> : null}
-          {costLabel ? <span className="font-medium text-violet-300/35">{costLabel}</span> : null}
-          {event.status !== "completed" ? (
-            <span className="text-[length:calc(var(--chat-font-size)*9/14)] font-medium uppercase tracking-wide text-current">{event.status}</span>
-          ) : null}
-          {(event.subagentStoppedCount ?? 0) > 0 ? (
-            <span className="text-[length:calc(var(--chat-font-size)*9/14)] font-medium text-fg/35">
-              {event.subagentStoppedCount} subagent{event.subagentStoppedCount === 1 ? "" : "s"} stopped
-            </span>
-          ) : null}
-        </div>
-      </div>
-    );
+    // Rendered as the end-of-turn divider by EventRow (see DoneTurnDivider),
+    // which needs the per-turn worked-for duration. Nothing inline here.
+    return null;
   }
 
   /* ── Turn diff summary (minimal inline indicator — detail lives in bottom Tasks panel) ── */
@@ -3317,30 +3304,54 @@ function formatTurnDuration(durationMs: number): string {
   return remSeconds ? `${minutes}m ${remSeconds}s` : `${minutes}m`;
 }
 
-function TurnDivider({ summary }: { summary: TurnSummary }) {
-  if (!summary.ended) return null;
-  const taskLine = summary.taskCount ? `${summary.completedTaskCount}/${summary.taskCount} tasks complete` : null;
-  const agentLine = summary.backgroundAgentCount
-    ? `${summary.backgroundAgentCount} background ${summary.backgroundAgentCount === 1 ? "agent" : "agents"}${
-        summary.activeBackgroundAgentCount > 0 ? ` · ${summary.activeBackgroundAgentCount} still running` : " finished"
-      }`
+/**
+ * End-of-turn divider — a hairline with a plain-text cutout. Shows the wall time
+ * (or the interrupted/failed status + model) plus how long the turn worked. It
+ * is driven by the universal `done` event, so it renders identically for every
+ * runtime (Codex / Claude / Cursor / Droid / OpenCode).
+ */
+function DoneTurnDivider({
+  event,
+  timestamp,
+  durationMs,
+}: {
+  event: Extract<AgentChatEvent, { type: "done" }>;
+  timestamp: string;
+  durationMs: number | null;
+}) {
+  const completed = event.status === "completed";
+  const { label: modelLabel } = resolveModelMeta(event.modelId, event.model);
+  const workedFor = durationMs !== null && durationMs > 1500
+    ? `Worked for ${formatTurnDuration(durationMs)}`
     : null;
-  const label = summary.durationMs !== null
-    ? `Response · Worked for ${formatTurnDuration(summary.durationMs)}`
-    : "Response";
   return (
-    <div className="my-4 flex flex-col items-center gap-1">
-      <div className="flex w-full items-center gap-3">
-        <span className="h-px flex-1 bg-white/[0.05]" />
-        <span className="font-sans text-[length:calc(var(--chat-font-size)*11/14)] text-fg/35">{label}</span>
-        <span className="h-px flex-1 bg-white/[0.05]" />
-      </div>
-      {(taskLine || agentLine) ? (
-        <div className="flex flex-col items-center gap-0.5 font-sans text-[length:calc(var(--chat-font-size)*11/14)] text-fg/40">
-          {taskLine ? <span>· {taskLine}</span> : null}
-          {agentLine ? <span>· {agentLine}</span> : null}
-        </div>
-      ) : null}
+    <div className="my-4 flex items-center gap-3">
+      <span className="h-px flex-1 bg-white/[0.06]" />
+      <span
+        className={cn(
+          "inline-flex shrink-0 items-center gap-2 px-1 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)]",
+          completed ? "text-fg/40" : doneStatusToneClass(event.status),
+        )}
+      >
+        {!completed && modelLabel ? (
+          <span className="inline-flex items-center gap-1.5">
+            <ModelGlyph modelId={event.modelId} model={event.model} size={12} className="shrink-0" />
+            <span className="font-medium">{modelLabel}</span>
+          </span>
+        ) : null}
+        {completed ? (
+          <span>{formatTime(timestamp)}</span>
+        ) : (
+          <span className="font-medium uppercase tracking-wide">{event.status}</span>
+        )}
+        {workedFor ? (
+          <>
+            <span className="opacity-40">·</span>
+            <span>{workedFor}</span>
+          </>
+        ) : null}
+      </span>
+      <span className="h-px flex-1 bg-white/[0.06]" />
     </div>
   );
 }
@@ -3372,6 +3383,21 @@ function deriveActiveTurnId(events: AgentChatEventEnvelope[]): string | null {
   return null;
 }
 
+// Wall-clock start time (ms) of the given turn — the earliest event timestamp
+// tagged with that turnId. Used to anchor the working-indicator elapsed timer
+// so it survives remounts (leaving/returning to the chat).
+function deriveTurnStartedAt(events: AgentChatEventEnvelope[], turnId: string | null): number | null {
+  if (!turnId) return null;
+  let startedAt: number | null = null;
+  for (const envelope of events) {
+    if (getEventTurnId(envelope.event) !== turnId) continue;
+    const ts = Date.parse(envelope.timestamp);
+    if (!Number.isFinite(ts)) continue;
+    if (startedAt === null || ts < startedAt) startedAt = ts;
+  }
+  return startedAt;
+}
+
 function getGroupedTurnId(envelope: TranscriptGroupedEnvelope | undefined): string | null {
   if (!envelope) return null;
   if (envelope.event.type === "work_log_group") {
@@ -3387,6 +3413,7 @@ type EventRowProps = {
   showTurnDivider: boolean;
   turnDividerLabel: string | null;
   turnModel: { label: string; modelId?: string; model?: string } | null;
+  turnEndDurationMs?: number | null;
   onApproval?: (itemId: string, decision: AgentChatApprovalDecision, responseText?: string | null, answers?: Record<string, string | string[]>) => void;
   surfaceMode?: ChatSurfaceMode;
   surfaceProfile?: ChatSurfaceProfile;
@@ -3413,6 +3440,7 @@ const EventRow = React.memo(function EventRow({
   showTurnDivider,
   turnDividerLabel,
   turnModel,
+  turnEndDurationMs,
   onApproval,
   surfaceMode = "standard",
   surfaceProfile = "standard",
@@ -3439,15 +3467,15 @@ const EventRow = React.memo(function EventRow({
   return (
     <div className="min-w-0 max-w-full space-y-3 overflow-hidden">
       {showTurnDivider ? (
-        <div className="my-3 flex items-center gap-4">
-          <span className="h-px flex-1 bg-gradient-to-r from-transparent via-violet-400/[0.08] to-transparent" />
+        <div className="my-4 flex items-center gap-3">
+          <span className="h-px flex-1 bg-white/[0.06]" />
           <span
-            className="ade-liquid-glass-pill inline-flex items-center rounded-full px-3.5 py-1.5 font-sans text-[length:calc(var(--chat-font-size)*10/14)] text-fg/42"
+            className="shrink-0 px-1 font-sans text-[length:calc(var(--chat-font-size)*10.5/14)] text-fg/38"
             title={turnModel?.label ?? undefined}
           >
-            <span className="text-fg/35">{turnDividerLabel ?? "Turn"}</span>
+            {turnDividerLabel ?? "Turn"}
           </span>
-          <span className="h-px flex-1 bg-gradient-to-r from-transparent via-violet-400/[0.08] to-transparent" />
+          <span className="h-px flex-1 bg-white/[0.06]" />
         </div>
       ) : null}
       {envelope.event.type === "work_log_group"
@@ -3483,6 +3511,13 @@ const EventRow = React.memo(function EventRow({
             onRevealChatTerminal,
             onRewindFiles,
           })}
+      {envelope.event.type === "done" ? (
+        <DoneTurnDivider
+          event={envelope.event}
+          timestamp={envelope.timestamp}
+          durationMs={turnEndDurationMs ?? null}
+        />
+      ) : null}
     </div>
   );
 });
@@ -3671,386 +3706,6 @@ export function reconcileMeasuredScrollTop({
   return scrollTop;
 }
 
-function extractSubagentMessageText(
-  message: import("../../../shared/types").AgentChatSubagentTranscriptMessage,
-): string {
-  if (typeof message.text === "string" && message.text.trim().length > 0) return message.text;
-  const raw = message.message;
-  if (raw && typeof raw === "object") {
-    const content = (raw as { content?: unknown }).content;
-    if (typeof content === "string") return content;
-    if (Array.isArray(content)) {
-      const parts: string[] = [];
-      for (const part of content) {
-        if (part && typeof part === "object") {
-          const text = (part as { text?: unknown }).text;
-          if (typeof text === "string") parts.push(text);
-          const toolName = (part as { name?: unknown }).name;
-          const toolUse = (part as { type?: unknown }).type;
-          if (typeof toolUse === "string" && toolUse === "tool_use" && typeof toolName === "string") {
-            parts.push(`tool: ${toolName}`);
-          }
-        }
-      }
-      if (parts.length) return parts.join("\n");
-    }
-  }
-  return "";
-}
-
-/**
- * Returns the AgentChatEvent embedded in a subagent transcript entry, or null
- * if the entry came from a Claude SDK session message (different shape).
- *
- * Codex/Cursor sessions store the full ADE event (with type/itemId/turnId/…)
- * inside transcript.message so the drill-in can render typed cards. Claude SDK
- * transcripts use the upstream session message shape and fall back to the
- * simpler role+text rendering.
- */
-function readSubagentEvent(
-  transcript: import("../../../shared/types").AgentChatSubagentTranscriptMessage,
-): AgentChatEvent | null {
-  const message = transcript.message;
-  if (!message || typeof message !== "object" || Array.isArray(message)) return null;
-  const candidate = message as { type?: unknown };
-  if (typeof candidate.type !== "string" || candidate.type.length === 0) return null;
-  // The codex transcript pipe stamps `message: event` directly. Anything with
-  // a string `type` is assumed to be an AgentChatEvent. The render switch
-  // below tolerates unknown types by skipping them.
-  return message as AgentChatEvent;
-}
-
-function SubagentTimelineRow({
-  icon,
-  tone,
-  children,
-}: {
-  icon: ReactNode;
-  tone: "violet" | "amber" | "emerald" | "rose" | "cyan" | "fg";
-  children: ReactNode;
-}) {
-  const railClass = {
-    violet: "bg-[color:var(--color-accent,#A78BFA)]/55",
-    amber: "bg-amber-400/55",
-    emerald: "bg-emerald-400/55",
-    rose: "bg-rose-400/55",
-    cyan: "bg-cyan-400/55",
-    fg: "bg-fg/20",
-  }[tone];
-
-  return (
-    <li className="relative flex items-stretch gap-3.5 py-2.5">
-      <div className="relative flex w-5 shrink-0 justify-center">
-        <span aria-hidden className={cn("absolute inset-y-0 left-1/2 -translate-x-1/2 w-px", railClass)} />
-        <span
-          aria-hidden
-          className={cn(
-            "relative z-10 mt-1 inline-flex h-5 w-5 items-center justify-center rounded-full",
-            "bg-[color:var(--chat-surface-bg,#0d0d0d)] ring-1 ring-inset ring-white/10",
-          )}
-        >
-          {icon}
-        </span>
-      </div>
-      <div className="min-w-0 flex-1 pb-1">{children}</div>
-    </li>
-  );
-}
-
-function SubagentReasoningCard({
-  event,
-}: {
-  event: Extract<AgentChatEvent, { type: "reasoning" }>;
-}) {
-  const text = event.text.trim();
-  if (!text) return null;
-  return (
-    <div className="rounded-lg border border-violet-400/15 bg-violet-500/[0.025] px-3.5 py-2">
-      <div className="font-sans text-[10.5px] font-semibold uppercase tracking-[0.08em] text-violet-200/70">
-        Reasoning
-      </div>
-      <div className="mt-1 whitespace-pre-wrap break-words font-sans text-[12.5px] italic leading-[1.55] text-violet-100/85">
-        {text}
-      </div>
-    </div>
-  );
-}
-
-function SubagentTextCard({
-  event,
-}: {
-  event: Extract<AgentChatEvent, { type: "text" }>;
-}) {
-  const text = (event.text ?? "").trim();
-  if (!text) return null;
-  return (
-    <div className="rounded-lg border border-white/[0.06] bg-white/[0.02] px-3.5 py-2.5">
-      <div className="font-sans text-[10.5px] font-semibold uppercase tracking-[0.08em] text-[color:var(--color-accent-bright,#C4B5FD)]/80">
-        Agent
-      </div>
-      <div className="mt-1 whitespace-pre-wrap break-words font-sans text-[13px] leading-[1.55] text-fg/85">
-        {text}
-      </div>
-    </div>
-  );
-}
-
-function SubagentWebSearchCard({
-  event,
-}: {
-  event: Extract<AgentChatEvent, { type: "web_search" }>;
-}) {
-  const isActive = event.status === "running";
-  const tone = event.status === "failed" ? "text-rose-200/85" : "text-fg/80";
-  return (
-    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border border-white/[0.06] bg-white/[0.02] px-3.5 py-2 font-sans text-[12px]">
-      <Globe size={11} weight="regular" className="text-fg/40" />
-      <span className="font-medium text-fg/55">
-        {isActive ? "Searching" : event.status === "failed" ? "Search failed" : "Searched"}
-      </span>
-      <span className={cn("min-w-0 flex-1 truncate", tone)}>{event.query || "(no query)"}</span>
-    </div>
-  );
-}
-
-function SubagentSpawnedRow({
-  event,
-}: {
-  event: Extract<AgentChatEvent, { type: "subagent_started" }>;
-}) {
-  const description = (
-    event as { description?: unknown }
-  ).description as string | undefined;
-  const agentType = (event as { agentType?: unknown }).agentType as string | undefined;
-  const label = (description ?? agentType ?? "subagent").trim() || "subagent";
-  return (
-    <div className="font-sans text-[12px] leading-snug text-fg/55">
-      <span className="text-fg/40">Spawned</span> <span className="text-fg/75">{label}</span>
-    </div>
-  );
-}
-
-function SubagentResultRow({
-  event,
-}: {
-  event: Extract<AgentChatEvent, { type: "subagent_result" }>;
-}) {
-  const summary = ((event as { summary?: unknown }).summary as string | undefined)?.trim()
-    ?? ((event as { description?: unknown }).description as string | undefined)?.trim()
-    ?? "";
-  const status = (event as { status?: unknown }).status as string | undefined;
-  const failed = status === "failed" || status === "error";
-  const stopped = status === "stopped" || status === "cancelled";
-  const borderClass = failed ? "border-red-400/15" : stopped ? "border-amber-400/15" : "border-emerald-400/15";
-  const bgClass = failed ? "bg-red-500/[0.04]" : stopped ? "bg-amber-500/[0.04]" : "bg-emerald-500/[0.04]";
-  const labelColor = failed ? "text-red-200/75" : stopped ? "text-amber-200/75" : "text-emerald-200/75";
-  const textColor = failed ? "text-red-50/90" : stopped ? "text-amber-50/90" : "text-emerald-50/90";
-  const label = failed ? "Failed" : stopped ? "Stopped" : "Final result";
-  return (
-    <div className={`rounded-lg ${borderClass} ${bgClass} px-3.5 py-2`}>
-      <div className={`font-sans text-[10.5px] font-semibold uppercase tracking-[0.08em] ${labelColor}`}>
-        {label}
-      </div>
-      {summary ? (
-        <div className={`mt-1 whitespace-pre-wrap break-words font-sans text-[13px] leading-[1.55] ${textColor}`}>
-          {summary}
-        </div>
-      ) : (
-        <div className="mt-1 font-sans text-[12px] italic text-fg/45">No summary recorded.</div>
-      )}
-    </div>
-  );
-}
-
-function SubagentTimelineCard({
-  event,
-}: {
-  event: AgentChatEvent;
-}) {
-  switch (event.type) {
-    case "reasoning":
-      return (
-        <SubagentTimelineRow icon={<Brain size={11} weight="duotone" className="text-violet-300" />} tone="violet">
-          <SubagentReasoningCard event={event} />
-        </SubagentTimelineRow>
-      );
-    case "text":
-      return (
-        <SubagentTimelineRow
-          icon={<span aria-hidden className="text-[10px] font-bold text-[color:var(--color-accent-bright,#C4B5FD)]">A</span>}
-          tone="violet"
-        >
-          <SubagentTextCard event={event} />
-        </SubagentTimelineRow>
-      );
-    case "plan":
-      return (
-        <SubagentTimelineRow icon={<ListChecks size={11} weight="regular" className="text-violet-300/85" />} tone="violet">
-          <CodexPlanCard event={event} />
-        </SubagentTimelineRow>
-      );
-    case "command":
-      return (
-        <SubagentTimelineRow icon={<Terminal size={11} weight="regular" className="text-fg/55" />} tone={event.status === "failed" ? "rose" : "fg"}>
-          <CommandEventCard event={event} />
-        </SubagentTimelineRow>
-      );
-    case "file_change":
-      return (
-        <SubagentTimelineRow icon={<FileCode size={11} weight="regular" className="text-cyan-300/80" />} tone="cyan">
-          <FileChangeEventCard event={event} />
-        </SubagentTimelineRow>
-      );
-    case "web_search":
-      return (
-        <SubagentTimelineRow icon={<Globe size={11} weight="regular" className="text-fg/55" />} tone="fg">
-          <SubagentWebSearchCard event={event} />
-        </SubagentTimelineRow>
-      );
-    case "codex_image_generation":
-      return (
-        <SubagentTimelineRow icon={<ImageSquare size={11} weight="regular" className="text-fuchsia-300/85" />} tone="violet">
-          <CodexImageGenerationCard event={event} />
-        </SubagentTimelineRow>
-      );
-    case "subagent_started":
-      return (
-        <SubagentTimelineRow icon={<Sparkle size={11} weight="duotone" className="text-fg/45" />} tone="fg">
-          <SubagentSpawnedRow event={event} />
-        </SubagentTimelineRow>
-      );
-    case "subagent_result":
-      return (
-        <SubagentTimelineRow icon={<Check size={11} weight="bold" className="text-emerald-300/85" />} tone="emerald">
-          <SubagentResultRow event={event} />
-        </SubagentTimelineRow>
-      );
-    default:
-      // Skip noisy/internal events (activity, tokens, status, etc.). When in
-      // doubt show a tiny dim row so we know data was recorded but isn't yet
-      // typed — that prevents transcripts from looking falsely empty.
-      return null;
-  }
-}
-
-function SubagentTranscriptView({
-  snapshotName,
-  messages,
-  loading,
-  unsupported,
-  className,
-}: {
-  snapshotName: string;
-  messages: import("../../../shared/types").AgentChatSubagentTranscriptMessage[] | null;
-  loading: boolean;
-  unsupported: boolean;
-  className?: string;
-}) {
-  if (unsupported || messages === null) {
-    return (
-      <div className={cn("flex min-h-0 flex-1 flex-col px-8 pt-12 font-sans", className)}>
-        <p className="text-[13.5px] leading-6 text-fg/70">
-          Transcript not available for this provider yet.
-        </p>
-        {snapshotName ? (
-          <p className="mt-2 max-w-md text-[12px] leading-5 text-fg/40">
-            Activity for{" "}
-            <span className="text-fg/60">{snapshotName}</span>{" "}
-            still streams to the side panel — open it from the toolbar to follow along.
-          </p>
-        ) : null}
-      </div>
-    );
-  }
-
-  // Partition into rich (typed-card) entries and legacy (role+text) entries.
-  // Codex/Cursor transcripts ship the full AgentChatEvent in `message`, so
-  // they render through the typed switch. Claude SDK transcripts have a
-  // different `message` shape and fall back to the role+text layout.
-  const richEntries: Array<{
-    key: string;
-    event: AgentChatEvent;
-  }> = [];
-  const legacyEntries: Array<{
-    key: string;
-    message: import("../../../shared/types").AgentChatSubagentTranscriptMessage;
-  }> = [];
-  for (let i = 0; i < messages.length; i += 1) {
-    const m = messages[i];
-    const key = m.uuid ?? `idx-${i}`;
-    const event = readSubagentEvent(m);
-    if (event) {
-      richEntries.push({ key, event });
-    } else {
-      legacyEntries.push({ key, message: m });
-    }
-  }
-
-  if (richEntries.length === 0 && legacyEntries.length === 0) {
-    return (
-      <div className={cn("flex min-h-0 flex-1 flex-col px-8 pt-12 font-sans", className)}>
-        <p className="text-[13.5px] leading-6 text-fg/55">
-          {loading ? "Listening for the first message…" : "No messages from this subagent yet."}
-        </p>
-      </div>
-    );
-  }
-
-  return (
-    <div
-      className={cn(
-        "flex min-h-0 flex-1 flex-col overflow-y-auto font-sans",
-        className,
-      )}
-    >
-      {richEntries.length ? (
-        <ol className="mx-auto w-full max-w-3xl px-6 pb-6 pt-5">
-          {richEntries.map((entry) => (
-            <SubagentTimelineCard key={entry.key} event={entry.event} />
-          ))}
-        </ol>
-      ) : null}
-      {legacyEntries.length ? (
-        <ol className="mx-auto w-full max-w-3xl px-6 pb-10 pt-2">
-          {legacyEntries.map((entry, index) => {
-            const text = extractSubagentMessageText(entry.message);
-            const role: string = entry.message.type;
-            const isUser = role === "user";
-            const isSystem = role === "system";
-            const roleLabel = isUser ? "you" : isSystem ? "system" : "agent";
-            const accentClass = isUser
-              ? "text-fg/65"
-              : isSystem
-                ? "text-fg/40"
-                : "text-[color:var(--color-accent-bright,#C4B5FD)]";
-
-            return (
-              <li
-                key={entry.key ?? `${index}-${role}`}
-                className="grid grid-cols-[88px_minmax(0,1fr)] gap-x-5 border-b border-white/[0.03] py-3 last:border-b-0"
-              >
-                <div className="pt-1 text-right">
-                  <span className={cn("text-[10.5px] font-medium tracking-[0.04em]", accentClass)}>
-                    {roleLabel}
-                  </span>
-                </div>
-                <div
-                  className={cn(
-                    "min-w-0 whitespace-pre-wrap break-words text-[13px] leading-[1.6]",
-                    isSystem ? "text-fg/55" : "text-fg/85",
-                  )}
-                >
-                  {text || <span className="text-fg/35">No content recorded.</span>}
-                </div>
-              </li>
-            );
-          })}
-        </ol>
-      ) : null}
-    </div>
-  );
-}
-
 function AgentChatMessageListMain({
   events,
   showStreamingIndicator = false,
@@ -4163,6 +3818,10 @@ function AgentChatMessageListMain({
   }
   const latestActivity = useMemo(() => (showStreamingIndicator ? deriveLatestActivity(events) : null), [events, showStreamingIndicator]);
   const activeTurnId = useMemo(() => (showStreamingIndicator ? deriveActiveTurnId(events) : null), [events, showStreamingIndicator]);
+  const activeTurnStartedAt = useMemo(
+    () => (showStreamingIndicator ? deriveTurnStartedAt(events, activeTurnId) : null),
+    [events, showStreamingIndicator, activeTurnId],
+  );
 
   const currentLaneId = typeof (location.state as { laneId?: unknown } | null)?.laneId === "string"
     ? (location.state as { laneId: string }).laneId
@@ -4214,6 +3873,24 @@ function AgentChatMessageListMain({
     return nextState;
   }, [events]);
   const turnSummary = useMemo(() => deriveTurnSummary(events, turnModelState), [events, turnModelState]);
+  // Per-turn worked-for duration, keyed by grouped-row index, derived from the
+  // universal `done` event (runtime-agnostic — no reliance on turnId).
+  const turnEndDurationByRowIndex = useMemo(() => {
+    const map = new Map<number, number>();
+    let turnStartMs: number | null = null;
+    for (let i = 0; i < groupedRows.length; i += 1) {
+      const env = groupedRows[i];
+      if (!env) continue;
+      const ts = Date.parse(env.timestamp);
+      if (turnStartMs === null && Number.isFinite(ts)) turnStartMs = ts;
+      if (env.event.type === "done") {
+        const start = turnStartMs ?? ts;
+        map.set(i, Number.isFinite(ts) && Number.isFinite(start) ? Math.max(0, ts - start) : 0);
+        turnStartMs = null;
+      }
+    }
+    return map;
+  }, [groupedRows]);
 
   const handleReviewChanges = useCallback(() => {
     if (!turnSummary?.changedFileCount) return;
@@ -4539,11 +4216,13 @@ function AgentChatMessageListMain({
   /** Renders a single row with turn-divider logic. Used by both paths. */
   const renderRow = useCallback((envelope: TranscriptGroupedEnvelope, index: number, virtualized: boolean) => {
     const currentTurn = getGroupedTurnId(envelope);
-    const previousTurn = getGroupedTurnId(groupedRows[index - 1]);
-    const showTurnDivider = currentTurn && currentTurn !== previousTurn;
-    const turnDividerLabel = showTurnDivider
-      ? formatTime(envelope.timestamp)
-      : null;
+    // Turn dividers render at the END of a turn (the `done` row) for every
+    // runtime; the old start-of-turn boundary divider is disabled.
+    const showTurnDivider = false;
+    const turnDividerLabel: string | null = null;
+    const turnEndDurationMs = envelope.event.type === "done"
+      ? (turnEndDurationByRowIndex.get(index) ?? null)
+      : undefined;
     const turnModel = currentTurn
       ? (turnModelState.map.get(currentTurn) ?? null)
       : turnModelState.lastModel;
@@ -4561,6 +4240,7 @@ function AgentChatMessageListMain({
           showTurnDivider={Boolean(showTurnDivider)}
           turnDividerLabel={turnDividerLabel}
           turnModel={turnModel}
+          turnEndDurationMs={turnEndDurationMs}
           onApproval={handleApproval}
           surfaceMode={surfaceMode}
           surfaceProfile={surfaceProfile}
@@ -4628,8 +4308,6 @@ function AgentChatMessageListMain({
     return Math.max(0, h);
   }, [shouldVirtualize, endIndex, groupedRows.length, rowHeight, timelineRowGapPx]);
 
-  const streamingIndicatorAnimated = showStreamingIndicator
-    && !sessionEnded;
   const streamingIndicator = showStreamingIndicator && !sessionEnded ? (
     <motion.div
       className="w-fit max-w-[min(100%,70ch)] pt-3 pb-2"
@@ -4637,29 +4315,16 @@ function AgentChatMessageListMain({
       animate={{ opacity: 1 }}
       transition={{ duration: 0.12, ease: "easeOut" }}
     >
-      {latestActivity ? (
-        <span
-          className={cn(
-            "font-sans text-[length:calc(var(--chat-font-size)*12/14)] italic",
-            streamingIndicatorAnimated ? "ade-shimmer-text" : "text-fg/45",
-          )}
-        >
-          {formatActivityText(latestActivity.activity, latestActivity.detail)}
-        </span>
-      ) : !streamingIndicatorAnimated ? (
-        <span className="font-sans text-[length:calc(var(--chat-font-size)*12/14)] text-fg/45">
-          Working...
-        </span>
-      ) : (
-        <span className="flex items-center gap-2 font-sans text-[length:calc(var(--chat-font-size)*12/14)] text-fg/35">
-          <ThinkingDots toneClass="bg-fg/35" />
-          <span>Working…</span>
-        </span>
-      )}
+      <WorkingIndicator
+        activity={latestActivity ? (ACTIVITY_LABELS[latestActivity.activity] ?? null) : null}
+        startedAt={activeTurnStartedAt}
+      />
     </motion.div>
   ) : null;
 
-  const turnDivider = turnSummary ? <TurnDivider summary={turnSummary} /> : null;
+  // End-of-turn dividers now render inline at each `done` row (DoneTurnDivider),
+  // so there is no separate bottom divider.
+  const turnDivider = null;
 
   // Jump-to-latest pill is only meaningful during an active turn — if nothing
   // is streaming there's no "latest" to catch up to.
@@ -4667,11 +4332,16 @@ function AgentChatMessageListMain({
 
   return (
     <div className={cn("relative h-full min-h-0 min-w-0 max-w-full overflow-hidden", className)}>
-      <ChatUserMinimap
-        displayEntries={minimapDisplayEntries}
-        activeDisplayIndex={activeMinimapDisplayIndex}
-        onJumpToRow={jumpToRowFromMinimap}
-      />
+      {/* Bound the user-message minimap to the centered chat column (same width as
+          the transcript + composer) so it sits at the column's right edge instead
+          of overextending to the window edge. */}
+      <div className="pointer-events-none absolute inset-0 z-20 mx-auto w-full max-w-[var(--chat-column,52rem)]">
+        <ChatUserMinimap
+          displayEntries={minimapDisplayEntries}
+          activeDisplayIndex={activeMinimapDisplayIndex}
+          onJumpToRow={jumpToRowFromMinimap}
+        />
+      </div>
       <div
         ref={scrollRef}
         className="ade-chat-timeline-pane h-full min-h-0 min-w-0 overflow-x-hidden overflow-y-auto pl-[length:var(--chat-timeline-pad-x)] pr-[length:var(--chat-timeline-pad-x)] pt-[length:var(--chat-timeline-pad-top)] pb-[length:var(--chat-timeline-pad-bottom)]"
@@ -4682,7 +4352,7 @@ function AgentChatMessageListMain({
         onTouchEnd={handleTouchEnd}
         onTouchCancel={handleTouchEnd}
       >
-        <div ref={contentWrapperRef} className="min-w-0 max-w-full overflow-visible">
+        <div ref={contentWrapperRef} className="mx-auto w-full min-w-0 max-w-[var(--chat-column,52rem)] overflow-visible">
           {rows.length === 0 && !streamingIndicator ? (
             null
           ) : shouldVirtualize ? (
@@ -4727,29 +4397,4 @@ function AgentChatMessageListMain({
   );
 }
 
-type AgentChatMessageListMainProps = Parameters<typeof AgentChatMessageListMain>[0];
-
-export function AgentChatMessageList(
-  props: AgentChatMessageListMainProps & {
-    subagentTranscript?: {
-      messages: AgentChatSubagentTranscriptMessage[] | null;
-      loading: boolean;
-      unsupported: boolean;
-      snapshotName: string;
-    };
-  },
-) {
-  if (props.subagentTranscript) {
-    return (
-      <SubagentTranscriptView
-        snapshotName={props.subagentTranscript.snapshotName}
-        messages={props.subagentTranscript.messages}
-        loading={props.subagentTranscript.loading}
-        unsupported={props.subagentTranscript.unsupported}
-        className={props.className}
-      />
-    );
-  }
-  const { subagentTranscript: _subagentTranscript, ...mainProps } = props;
-  return <AgentChatMessageListMain {...mainProps} />;
-}
+export const AgentChatMessageList = AgentChatMessageListMain;

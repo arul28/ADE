@@ -8,6 +8,7 @@ export {
   selectedSubagentSnapshot,
   subagentIndexForPaneLine,
   subagentPaneSelectableLineOffsets,
+  subagentTranscriptMessagesToEvents,
 } from "../../../desktop/src/shared/chatSubagents";
 export type {
   SubagentPaneRow,

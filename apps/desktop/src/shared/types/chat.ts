@@ -7,6 +7,7 @@ import type { CtoCapabilityMode } from "./cto";
 import type { FileDiff } from "./git";
 import type { LaneLinearIssue, SessionLinearIssueLink } from "./lanes";
 import type { OrchestrationContextItem, OrchestrationRole } from "./orchestration";
+import type { SubagentCapability } from "../subagentCapabilities";
 
 export type AgentChatProvider = "codex" | "claude" | "cursor" | "droid" | "opencode" | (string & {});
 
@@ -169,7 +170,7 @@ export type AgentChatCodexApprovalPolicy = "untrusted" | "on-request" | "on-fail
 export type AgentChatCodexSandbox = "read-only" | "workspace-write" | "danger-full-access";
 export type AgentChatCodexConfigSource = "flags" | "config-toml";
 export type AgentChatOpenCodePermissionMode = "plan" | "edit" | "full-auto" | "config-toml";
-export type AgentChatDroidPermissionMode = "read-only" | "auto-low" | "auto-medium" | "auto-high";
+export type AgentChatDroidPermissionMode = "read-only" | "auto-low" | "auto-medium" | "auto-high" | "agi";
 
 export type AgentChatNoticeDetailMetric = {
   label: string;
@@ -275,6 +276,8 @@ export type CodexTokenUsageBreakdown = {
   outputTokens?: number;
   cacheReadTokens?: number;
   cacheWriteTokens?: number;
+  /** Codex `reasoningOutputTokens` (reasoning models) — surfaced in the context-usage tooltip. */
+  reasoningTokens?: number;
   totalTokens?: number;
 };
 
@@ -477,6 +480,10 @@ export type AgentChatEvent =
         outputTokens?: number | null;
         cacheReadTokens?: number | null;
         cacheCreationTokens?: number | null;
+        /** Reasoning/thinking output tokens (Codex/Droid/OpenCode/Claude). */
+        reasoningTokens?: number | null;
+        /** Effective context window for the model that produced this turn, when the runtime reports one. */
+        contextWindow?: number | null;
       };
       costUsd?: number | null;
       // Set only at render time when multiple done events from one cancellation
@@ -560,6 +567,8 @@ export type AgentChatEvent =
         totalTokens?: number;
         toolUses?: number;
         durationMs?: number;
+        /** USD cost, when the runtime reports a per-subagent figure (OpenCode). */
+        costUsd?: number;
       };
       lastToolName?: string;
       taskType?: "subagent" | "background" | "local_workflow" | "cron" | "other";
@@ -579,6 +588,8 @@ export type AgentChatEvent =
         totalTokens?: number;
         toolUses?: number;
         durationMs?: number;
+        /** USD cost, when the runtime reports a per-subagent figure (OpenCode). */
+        costUsd?: number;
       };
       taskType?: "subagent" | "background" | "local_workflow" | "cron" | "other";
       workflowName?: string;
@@ -615,6 +626,26 @@ export type AgentChatEvent =
         toolUses?: number;
         durationMs?: number;
       };
+      turnId?: string;
+    }
+  // ── Droid AGI mission events (orchestrator mode) ──────────────────────────
+  // Emitted only when a Droid session runs in AGI/orchestrator mode. They drive
+  // the Missions tab; non-AGI runtimes never emit them.
+  | {
+      type: "mission_state";
+      state: AgentChatMissionState;
+      turnId?: string;
+    }
+  | {
+      type: "mission_features";
+      /** The full current feature checklist (replaces, not appends). */
+      features: AgentChatMissionFeature[];
+      turnId?: string;
+    }
+  | {
+      type: "mission_progress";
+      /** The full current progress log (replaces, not appends). */
+      entries: AgentChatMissionProgressEntry[];
       turnId?: string;
     }
   | {
@@ -998,6 +1029,8 @@ export type AgentChatSubagentSnapshot = {
     totalTokens?: number;
     toolUses?: number;
     durationMs?: number;
+    /** USD cost, when the runtime reports a per-subagent figure (OpenCode). */
+    costUsd?: number;
   };
 };
 
@@ -1005,10 +1038,61 @@ export type AgentChatSubagentListArgs = {
   sessionId: string;
 };
 
+// ── Droid AGI mission types ────────────────────────────────────────────────
+// Mirror @factory/droid-sdk 0.2.0 MissionState / FeatureStatus / MissionFeature.
+export type AgentChatMissionState =
+  | "awaiting_input"
+  | "initializing"
+  | "running"
+  | "paused"
+  | "orchestrator_turn"
+  | "completed"
+  | (string & {});
+
+export type AgentChatMissionFeatureStatus =
+  | "pending"
+  | "in_progress"
+  | "completed"
+  | "cancelled"
+  | (string & {});
+
+export type AgentChatMissionFeature = {
+  id: string;
+  description: string;
+  status: AgentChatMissionFeatureStatus;
+  skillName?: string | null;
+  milestone?: string | null;
+  /** Worker session currently executing this feature (maps to a subagent row). */
+  currentWorkerSessionId?: string | null;
+  workerSessionIds?: string[];
+  completedWorkerSessionId?: string | null;
+};
+
+export type AgentChatMissionProgressEntry = {
+  /** ProgressLogEntryType, e.g. "worker_started" | "worker_completed" | ... */
+  type: string;
+  text?: string | null;
+  workerSessionId?: string | null;
+  featureId?: string | null;
+  timestamp?: string | null;
+};
+
+/** Args for killing an individual Droid AGI mission worker. */
+export type AgentChatKillDroidWorkerArgs = {
+  sessionId: string;
+  workerSessionId: string;
+};
+
 export type AgentChatSessionCapabilities = {
   supportsSubagentInspection: boolean;
   supportsSubagentControl: boolean;
   supportsReviewMode: boolean;
+  /**
+   * Per-runtime subagent capability descriptor — the single source of truth the
+   * renderer branches on (list vs takeover vs inline-drawer, which stat fields
+   * to show). See `shared/subagentCapabilities.ts`.
+   */
+  subagent: SubagentCapability;
 };
 
 export type AgentChatSessionCapabilitiesArgs = {
@@ -1095,6 +1179,20 @@ export type AgentChatClaudeSessionMessage = {
   parentToolUseId: string | null;
   message: unknown;
   text?: string | null;
+  subagentMetadata?: AgentChatSubagentMetadata | null;
+};
+
+export type AgentChatSubagentMetadata = {
+  threadId?: string | null;
+  parentThreadId?: string | null;
+  label?: string | null;
+  agentNickname?: string | null;
+  agentRole?: string | null;
+  name?: string | null;
+  preview?: string | null;
+  prompt?: string | null;
+  model?: string | null;
+  reasoningEffort?: string | null;
 };
 
 export type AgentChatSubagentTranscriptArgs = {
@@ -1566,25 +1664,3 @@ export type AgentChatGetTurnFileDiffArgs = {
 };
 
 export type AgentChatTurnFileDiff = FileDiff;
-
-export type AgentChatCodexOpenInCliMode = "ade-terminal" | "new-window";
-
-export type AgentChatCodexOpenInCliArgs = {
-  sessionId: string;
-  mode: AgentChatCodexOpenInCliMode;
-};
-
-export type AgentChatCodexOpenInCliResult = {
-  /** Absolute path to the codex binary to invoke (the bundled one by default). */
-  binary: string;
-  /** Argument vector to pass to the binary. Empty when no resume-flag exists. */
-  argv: string[];
-  /** Lane worktree path to `cd` into before invoking. */
-  cwd: string;
-  /** Codex thread to resume. */
-  threadId: string;
-  /** True when no `resume`/`--thread` form was detected; the renderer should copy threadId to clipboard and show a toast. */
-  copyThreadIdToClipboard: boolean;
-  /** Set when mode === "new-window" and a terminal launcher was spawned. */
-  spawnedNewWindow?: boolean;
-};

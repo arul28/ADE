@@ -68,12 +68,29 @@ export function PaneTilingLayout({
   layoutId,
   tree,
   panes,
-  className
+  className,
+  acceptExternalDropMime,
+  onExternalDrop,
+  onLeafDraggedOut,
 }: {
   layoutId: string;
   tree: PaneSplit;
   panes: Record<string, PaneConfig>;
   className?: string;
+  /**
+   * When set, panes accept HTML5 drops carrying this mime (e.g. a session card
+   * dragged from the sidebar). The dragged payload is spliced into the tree at
+   * the hovered edge and `onExternalDrop` is fired so the parent can update its
+   * membership model.
+   */
+  acceptExternalDropMime?: string;
+  onExternalDrop?: (payload: string, targetPaneId: string, edge: DropEdge) => void;
+  /**
+   * Fired when a pane is dragged and released outside of any pane (e.g. onto the
+   * sidebar / empty space). Used by the work grid to pop a tile out into single
+   * view.
+   */
+  onLeafDraggedOut?: (paneId: string) => void;
 }) {
   const projectRoot = useAppStore(selectActiveProjectRoot);
   const { layout, loaded, saveLayout } = useDockLayout(layoutId, {});
@@ -313,19 +330,49 @@ export function PaneTilingLayout({
     setDragSourceId(paneId);
   }, []);
 
+  const hasExternalDrag = useCallback(
+    (e: React.DragEvent): boolean =>
+      Boolean(acceptExternalDropMime) && e.dataTransfer.types.includes(acceptExternalDropMime as string),
+    [acceptExternalDropMime],
+  );
+
   const handleDragOverRaw = useCallback(
     (paneId: string, e: React.DragEvent) => {
-      if (!dragSourceId || dragSourceId === paneId) return;
+      const external = !dragSourceId && hasExternalDrag(e);
+      if (!external && (!dragSourceId || dragSourceId === paneId)) return;
       setDropTargetId(paneId);
 
       const paneEl = (e.currentTarget as HTMLElement).closest("[data-pane-id]") as HTMLElement | null;
       if (paneEl) {
         const rect = paneEl.getBoundingClientRect();
-        const edge = detectDropEdge(rect, e.clientX, e.clientY);
+        let edge = detectDropEdge(rect, e.clientX, e.clientY);
+        // External adds can't "swap" — a center hover becomes a right-split.
+        if (external && edge === "center") edge = "right";
         setDropEdge(edge);
       }
     },
-    [dragSourceId]
+    [dragSourceId, hasExternalDrag]
+  );
+
+  const handlePaneDrop = useCallback(
+    (paneId: string, e: React.DragEvent) => {
+      if (dragSourceId || !hasExternalDrag(e) || !onExternalDrop) return;
+      const payload = e.dataTransfer.getData(acceptExternalDropMime as string).trim();
+      if (!payload || payload === paneId) {
+        setDropTargetId(null);
+        setDropEdge(null);
+        return;
+      }
+      const edge: DropEdge = dropEdge && dropEdge !== "center" ? dropEdge : "right";
+      // Splice the new leaf at the hovered edge and persist so the parent's
+      // membership update doesn't re-place it in the largest leaf.
+      const split = splitPaneAtEdge(liveTree, paneId, payload, edge);
+      persistTree(split);
+      onExternalDrop(payload, paneId, edge);
+      setDropTargetId(null);
+      setDropEdge(null);
+    },
+    [acceptExternalDropMime, dragSourceId, dropEdge, hasExternalDrag, liveTree, onExternalDrop, persistTree],
   );
 
   const handleDragEnd = useCallback(() => {
@@ -339,15 +386,14 @@ export function PaneTilingLayout({
         const split = splitPaneAtEdge(liveTree, dropTargetId, dragSourceId, dropEdge);
         persistTree(split);
       }
+    } else if (dragSourceId && !dropTargetId) {
+      // Released outside every pane — pop this tile out of the grid.
+      onLeafDraggedOut?.(dragSourceId);
     }
     setDragSourceId(null);
     setDropTargetId(null);
     setDropEdge(null);
-  }, [dragSourceId, dropTargetId, dropEdge, liveTree, persistTree]);
-
-  const handleDrop = useCallback(() => {
-    // The actual operation happens in handleDragEnd
-  }, []);
+  }, [dragSourceId, dropTargetId, dropEdge, liveTree, persistTree, onLeafDraggedOut]);
 
   const handleDragLeave = useCallback(() => {
     setDropEdge(null);
@@ -413,7 +459,7 @@ export function PaneTilingLayout({
           onDragStart={() => handleDragStart(paneId)}
           onDragOverRaw={(e) => handleDragOverRaw(paneId, e)}
           onDragEnd={handleDragEnd}
-          onDrop={handleDrop}
+          onDrop={(e) => handlePaneDrop(paneId, e)}
           onDragLeave={handleDragLeave}
           onPaneMouseDown={config.onPaneMouseDown}
           onPaneContextMenu={config.onPaneContextMenu}

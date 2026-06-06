@@ -998,9 +998,9 @@ describe("RemoteConnectionPool", () => {
         },
         {
           domain: "chat",
-          action: "codexOpenInCli",
-          name: "chat.codexOpenInCli",
-          usage: "ade actions run chat.codexOpenInCli",
+          action: "launchCli",
+          name: "chat.launchCli",
+          usage: "ade actions run chat.launchCli",
         },
         {
           domain: "git",
@@ -1022,7 +1022,7 @@ describe("RemoteConnectionPool", () => {
     ).resolves.toEqual([
       {
         domain: "chat",
-        actions: [{ name: "codexOpenInCli" }],
+        actions: [{ name: "launchCli" }],
       },
       {
         domain: "git",

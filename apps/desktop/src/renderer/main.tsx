@@ -7,6 +7,7 @@ import geistVariableUrl from "../../node_modules/geist/dist/fonts/geist-sans/Gei
 import geistMonoVariableUrl from "../../node_modules/geist/dist/fonts/geist-mono/GeistMono-Variable.woff2?url";
 import { App } from "./components/app/App";
 import { RendererErrorBoundary } from "./components/app/RendererErrorBoundary";
+import { useAppStore } from "./state/appStore";
 import { logRendererDebugEvent } from "./lib/debugLog";
 import { initPerfRuntime } from "./perf/harness";
 
@@ -162,6 +163,14 @@ window.addEventListener("beforeunload", () => {
 
 if (document.visibilityState === "visible") {
   startWatchdog();
+}
+
+// One-time: on large screens default the chat font up (14 → 16) unless the user
+// has set it themselves. Runs before first paint; any manual change locks it.
+try {
+  useAppStore.getState().applyAutoSizeChatFontOnLargeScreenIfNotOverridden();
+} catch {
+  // non-fatal — fall back to the persisted/default font size
 }
 
 createRoot(document.getElementById("root")!).render(

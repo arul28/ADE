@@ -729,7 +729,9 @@ describe("TerminalView", () => {
     const terminal = mockState.terminalInstances.at(-1) as {
       options: Record<string, unknown>;
     } | undefined;
-    expect(terminal?.options.fontSize).toBe(12.5);
+    // fontSize is rounded to an integer (fractional cell metrics dashed box-drawing
+    // borders / crowded glyphs in the WebGL renderer), so 12.5 → 13.
+    expect(terminal?.options.fontSize).toBe(13);
     expect(terminal?.options.lineHeight).toBe(1.25);
     expect(terminal?.options.scrollback).toBe(10_000);
 

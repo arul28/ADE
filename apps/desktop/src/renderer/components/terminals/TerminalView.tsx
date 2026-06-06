@@ -550,7 +550,9 @@ function applyRuntimeVisualOptions(
   try {
     runtime.term.options.theme = args.theme ? { ...args.theme } : undefined;
     runtime.term.options.fontFamily = args.preferences.fontFamily || DEFAULT_TERMINAL_FONT_FAMILY;
-    runtime.term.options.fontSize = args.preferences.fontSize;
+    // Integer cell metrics — see the ctor note: fractional sizes crowd glyphs and
+    // dash box-drawing strokes in the WebGL renderer.
+    runtime.term.options.fontSize = Math.round(args.preferences.fontSize);
     runtime.term.options.lineHeight = args.preferences.lineHeight;
     // Replay mode owns its own scrollback budget so the flattened transcript
     // stays available; ordinary preference updates must not clobber it.
@@ -1722,8 +1724,17 @@ function createRuntime(args: {
     documentOverride: document,
     scrollback: args.preferences.scrollback,
     fontFamily: args.preferences.fontFamily || DEFAULT_TERMINAL_FONT_FAMILY,
-    fontSize: args.preferences.fontSize,
+    // Round to an integer so device cell metrics aren't fractional. Fractional
+    // font sizes give the WebGL renderer fractional cell widths, which crowds
+    // glyphs (inter-word spaces visually collapse) and breaks pixel alignment of
+    // box-drawing strokes (│ ─ render "dashed"). This is what makes TUI clients
+    // like `ade code` look low-res / jammed inside the terminal pane.
+    fontSize: Math.round(args.preferences.fontSize),
     lineHeight: args.preferences.lineHeight,
+    // Lift only near-invisible glyphs to a visible contrast floor so the dim
+    // box-drawing borders survive WebGL anti-aliasing without washing out the
+    // intended dim/comment palette.
+    minimumContrastRatio: 1.1,
     theme: args.theme
   });
 
