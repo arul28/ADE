@@ -64,7 +64,7 @@ ios-signing/
 /.ade/shipLane/
 /.ade/logs/
 
-# Root AI hand-off specs (orchestrator/agent hand-offs, not read at runtime)
+# Ephemeral orchestrator/agent hand-off files created during setup — not meant for version control
 /goal.md
 /codexGoal.md
 /*-next-agent-prompt.md

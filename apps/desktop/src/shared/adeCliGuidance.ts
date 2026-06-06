@@ -43,7 +43,7 @@ export function buildAdeBootstrapGuidance(
 ): string {
   return [
     "## ADE",
-    "You're working inside ADE, a local-first dev environment (lanes, chats, terminals, PRs, proof/artifacts, app & iOS-simulator & browser control). The `ade` CLI is your control plane for ADE state — it is not in your training data, so don't guess at it.",
+    "You're working inside ADE, a local-first dev environment (lanes, chats, terminals, PRs, proof/artifacts, app & iOS-simulator & browser control). The `ade` CLI is your control plane for ADE state — it is not in your training data, so consult `ade help <command>` rather than guessing command syntax.",
     "Your ADE capabilities ship as Agent Skills. When a task touches an ADE area (lanes/git, PRs, proof & screenshots, the built-in browser, iOS simulator, app control, Linear, deeplinks), read the matching `ade-*` skill before acting; otherwise ignore them.",
     `Skills: ${adeBundledAgentSkills.map((name) => `\`${name}\``).join(", ")}.`,
     formatAdeAgentSkillRootsForPrompt(skillRoots),

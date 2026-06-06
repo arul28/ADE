@@ -179,7 +179,7 @@ function buildCtoEnvironmentKnowledge(): string {
   "  - Example: 'Launch a chat with opus' → spawnChat({ modelId: 'anthropic/claude-opus-4-7', ... }). 'Open a terminal' → createTerminal. 'Run npm test' → createTerminal({ startupCommand: 'npm test' }).",
   "",
   "Tool calling convention:",
-  "  - Use the `ade` CLI per the ADE CLI operating guidance in your doctrine (prefer typed commands with `--text`; `ade help <command>` for exact flags).",
+  "  - Use the `ade` CLI per the ADE CLI operating guidance in your doctrine.",
   "  - If a tool from the manifest below is not in your immediate tool list, use the closest ADE CLI command or report the missing capability clearly.",
   "",
   "## PR Lifecycle in ADE",

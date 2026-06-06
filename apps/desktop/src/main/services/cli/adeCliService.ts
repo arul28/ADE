@@ -549,9 +549,17 @@ export function createAdeCliService(args: CreateAdeCliServiceArgs) {
     && !process.env.VITEST
   ) {
     try {
-      reseedAdeSkills({ bundledRoot: bundledAgentSkillsRoot });
-    } catch {
-      /* best-effort: skill re-seeding must never block desktop startup */
+      reseedAdeSkills({
+        bundledRoot: bundledAgentSkillsRoot,
+        version: process.env.npm_package_version,
+      });
+    } catch (error) {
+      // best-effort: skill re-seeding must never block desktop startup, but
+      // surface the failure so it can be debugged.
+      args.logger.warn("ade_cli.skill_reseed_failed", {
+        bundledRoot: bundledAgentSkillsRoot,
+        error: error instanceof Error ? error.message : String(error),
+      });
     }
   }
   const envSnapshot = args.env ?? process.env;

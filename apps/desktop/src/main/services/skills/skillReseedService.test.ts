@@ -79,6 +79,22 @@ describe("reseedAdeSkills", () => {
     expect(fs.readFileSync(path.join(dest, "SKILL.md"), "utf8")).toBe("# linked");
   });
 
+  it("seeds every target dir independently when given multiple targets", () => {
+    writeSkill(bundled, "ade-browser", "# browser");
+    const target1 = path.join(tmp, "home", ".claude", "skills");
+    const target2 = path.join(tmp, "home", ".agents", "skills");
+
+    const result = reseedAdeSkills({
+      bundledRoot: bundled,
+      targetDirs: [target1, target2],
+      version: "1",
+    });
+
+    expect(result.targetsWritten).toEqual([target1, target2]);
+    expect(fs.existsSync(path.join(target1, "ade-browser", "SKILL.md"))).toBe(true);
+    expect(fs.existsSync(path.join(target2, "ade-browser", "SKILL.md"))).toBe(true);
+  });
+
   it("prunes ADE-managed skills that are no longer bundled, on a content change", () => {
     writeSkill(bundled, "ade-old", "# old");
     reseedAdeSkills({ bundledRoot: bundled, targetDirs: [target], version: "1" });

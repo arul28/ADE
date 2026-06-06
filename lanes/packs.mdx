@@ -34,7 +34,7 @@ Edit the intent in the right inspector. The intent is also used to pre-fill PR t
 
 ## Audit and replay artifacts
 
-ADE stores a small set of compatibility artifacts under `.ade/artifacts/packs/` for audit and replay. These are records of what happened — not context that is prepended to agent prompts:
+ADE stores a small set of compatibility artifacts under `.ade/artifacts/packs/` for audit and replay. These are records of what happened — they are not automatically prepended to all agent prompts as ambient context, but specific packs are explicitly provided to the relevant agent when needed (for example, the Conflict Pack is handed to the resolver agent when resolving a merge conflict):
 
 | Artifact | Purpose |
 |----------|---------|

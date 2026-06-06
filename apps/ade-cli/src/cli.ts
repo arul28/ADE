@@ -15398,6 +15398,20 @@ async function runCli(
       output: plan.text.endsWith("\n") ? plan.text : `${plan.text}\n`,
       exitCode: 0,
     };
+  // Ensure ADE's bundled skills are seeded into the home-level dirs every runtime
+  // discovers, but only on the paths that actually launch an agent/runtime/skill —
+  // cheap commands like `ade help` and `ade --version` must not pay the scan/hash
+  // cost (cheap no-op when already current).
+  if (
+    plan.kind === "skill" ||
+    plan.kind === "ade-code" ||
+    plan.kind === "runtime" ||
+    plan.kind === "serve" ||
+    (plan.kind === "execute" &&
+      /^(agent spawn|chat create|shell start cli)\b/.test(plan.label))
+  ) {
+    reseedBundledAdeSkillsForCli();
+  }
   const originalConsole = {
     log: console.log,
     info: console.info,
@@ -15548,9 +15562,6 @@ async function main(): Promise<void> {
   console.log = writeDiagnostic;
   console.info = writeDiagnostic;
   console.warn = writeDiagnostic;
-  // Ensure ADE's bundled skills are seeded into the home-level dirs every runtime
-  // discovers before any agent is spawned (cheap no-op when already current).
-  reseedBundledAdeSkillsForCli();
   try {
     const result = await runCli(process.argv.slice(2));
     await writeProcessOutput(process.stdout, result.output);
