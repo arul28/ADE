@@ -518,6 +518,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   const createBaseSourceRef = useRef<NewLaneBaseSource>(DEFAULT_NEW_LANE_BASE_SOURCE);
   const createBaseSourceUserPickedRef = useRef(false);
   const createBaseBranchesLoadSeqRef = useRef(0);
+  const createBaseSourceSaveInFlightRef = useRef(false);
   const [createBaseBranch, setCreateBaseBranch] = useState("");
   const [createImportBranch, setCreateImportBranch] = useState("");
   const [createChildBaseBranch, setCreateChildBaseBranch] = useState("");
@@ -2806,6 +2807,40 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     setCreateBaseBranch(v);
   }, []);
 
+  const persistCreateBaseSourceConfig = useCallback(() => {
+    if (createBaseSourceSaveInFlightRef.current) return;
+    createBaseSourceSaveInFlightRef.current = true;
+    let lastSavedSource: NewLaneBaseSource | null = null;
+
+    void (async () => {
+      try {
+        while (lastSavedSource !== createBaseSourceRef.current) {
+          const source: NewLaneBaseSource = createBaseSourceRef.current;
+          const snapshot = await window.ade.projectConfig.get();
+          const currentGit = snapshot.local.git ?? {};
+          await window.ade.projectConfig.save({
+            shared: snapshot.shared,
+            local: {
+              ...snapshot.local,
+              git: {
+                ...currentGit,
+                newLaneBaseSource: source,
+              },
+            },
+          });
+          lastSavedSource = source;
+        }
+      } catch (saveError) {
+        setCreateError(saveError instanceof Error ? saveError.message : String(saveError));
+      } finally {
+        createBaseSourceSaveInFlightRef.current = false;
+        if (lastSavedSource !== createBaseSourceRef.current) {
+          persistCreateBaseSourceConfig();
+        }
+      }
+    })();
+  }, []);
+
   const handleSetCreateBaseSource = useCallback((source: NewLaneBaseSource) => {
     createBaseSourceRef.current = source;
     createBaseSourceUserPickedRef.current = true;
@@ -2842,24 +2877,8 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     } else {
       setCreateBranchesLoading(false);
     }
-    window.ade.projectConfig.get()
-      .then((snapshot) => {
-        const currentGit = snapshot.local.git ?? {};
-        return window.ade.projectConfig.save({
-          shared: snapshot.shared,
-          local: {
-            ...snapshot.local,
-            git: {
-              ...currentGit,
-              newLaneBaseSource: source,
-            },
-          },
-        });
-      })
-      .catch((saveError) => {
-        setCreateError(saveError instanceof Error ? saveError.message : String(saveError));
-      });
-  }, [lanes]);
+    persistCreateBaseSourceConfig();
+  }, [lanes, persistCreateBaseSourceConfig]);
 
   const handleSetCreateLinearIssue = useCallback((issue: LaneLinearIssue | null) => {
     setCreateSelectedLinearIssue(issue);

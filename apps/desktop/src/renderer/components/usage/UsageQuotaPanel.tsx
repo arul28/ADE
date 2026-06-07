@@ -159,10 +159,13 @@ function ageMsFromIso(iso: string | undefined, nowMs: number): number {
   return nowMs - parsed;
 }
 
+let lastPanelCostRefreshAttemptAtMs = Number.NEGATIVE_INFINITY;
+
 function shouldRefreshPanelSnapshot(snapshot: UsageSnapshot | null, nowMs: number): boolean {
   if (!snapshot) return true;
   if (ageMsFromIso(snapshot.lastPolledAt, nowMs) > STALE_REFRESH_THRESHOLD_MS) return true;
-  return ageMsFromIso(snapshot.costsLastPolledAt, nowMs) > STALE_REFRESH_THRESHOLD_MS;
+  if (ageMsFromIso(snapshot.costsLastPolledAt, nowMs) <= STALE_REFRESH_THRESHOLD_MS) return false;
+  return nowMs - lastPanelCostRefreshAttemptAtMs > STALE_REFRESH_THRESHOLD_MS;
 }
 
 function usePrefersReducedMotion(): boolean {
@@ -225,6 +228,7 @@ export function UsageQuotaPanel({
 
       if (shouldRefreshPanelSnapshot(current, Date.now())) {
         try {
+          lastPanelCostRefreshAttemptAtMs = Date.now();
           const fresh = await bridge.refresh();
           if (!cancelled && fresh) applySnapshot(fresh);
         } catch {

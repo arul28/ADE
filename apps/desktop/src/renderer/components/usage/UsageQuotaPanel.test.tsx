@@ -73,23 +73,29 @@ describe("UsageQuotaPanel refresh freshness", () => {
     window.ade = originalAde;
   });
 
-  it("refreshes a fresh provider-only snapshot so local cost history loads", async () => {
+  it("refreshes a fresh provider-only snapshot once so local cost history loads without a retry loop", async () => {
     const providerOnlySnapshot = makeSnapshot({
       costs: [],
       lastPolledAt: new Date().toISOString(),
     });
-    const fullSnapshot = makeSnapshot({
-      ...providerOnlySnapshot,
-      costsLastPolledAt: new Date().toISOString(),
-    });
     vi.mocked(window.ade.usage.getSnapshot).mockResolvedValue(providerOnlySnapshot);
-    vi.mocked(window.ade.usage.refresh).mockResolvedValue(fullSnapshot);
+    vi.mocked(window.ade.usage.refresh).mockResolvedValue(providerOnlySnapshot);
 
-    render(<UsageQuotaPanel />);
+    const { unmount } = render(<UsageQuotaPanel />);
 
     await waitFor(() => {
       expect(window.ade.usage.refresh).toHaveBeenCalledTimes(1);
     });
+
+    unmount();
+    render(<UsageQuotaPanel />);
+    expect(await screen.findByText("Codex")).toBeTruthy();
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(window.ade.usage.refresh).toHaveBeenCalledTimes(1);
   });
 
   it("shows signed-out state when usage polling reports missing credentials", async () => {
