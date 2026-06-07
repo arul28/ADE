@@ -289,7 +289,7 @@ function createRuntime() {
         resumed: true,
         reusedExistingRuntime: false,
       })),
-      dispose: vi.fn(),
+      dispose: vi.fn(() => ({ disposed: true, reason: "disposed" })),
       writeBySessionId: vi.fn((sessionId: string, data: string): boolean => {
         void sessionId;
         void data;
@@ -990,7 +990,7 @@ describe("adeRpcServer", () => {
       id: 7,
       method: "pty.dispose",
       params: { args: { ptyId: "pty-1", sessionId: "session-1" } },
-    })).resolves.toBeNull();
+    })).resolves.toEqual({ disposed: true, reason: "disposed" });
     expect(runtime.ptyService.dispose).toHaveBeenCalledWith({ ptyId: "pty-1", sessionId: "session-1" });
 
     const listed = await handler({

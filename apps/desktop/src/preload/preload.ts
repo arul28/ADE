@@ -405,6 +405,7 @@ import type {
   RecentProjectSummary,
   PtyCreateArgs,
   PtyCreateResult,
+  PtyDisposeResult,
   PtyResumeSessionArgs,
   PtyResumeSessionResult,
   PtySendToSessionArgs,
@@ -6236,13 +6237,14 @@ contextBridge.exposeInMainWorld("ade", {
     dispose: async (arg: {
       ptyId: string;
       sessionId?: string;
-    }): Promise<void> => {
-      const runtime = await callProjectRuntimeActionIfBound<void>(
+    }): Promise<PtyDisposeResult> => {
+      const runtime = await callProjectRuntimeActionIfBound<PtyDisposeResult>(
         "pty",
         "dispose",
         { args: arg },
       );
-      if (!runtime.handled) await ipcRenderer.invoke(IPC.ptyDispose, arg);
+      if (runtime.handled) return runtime.result;
+      return await ipcRenderer.invoke(IPC.ptyDispose, arg);
     },
     setDataSubscriptions: setPtyDataSubscriptions,
     onData: subscribePtyDataEvents,

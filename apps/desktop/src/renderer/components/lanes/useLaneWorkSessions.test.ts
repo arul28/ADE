@@ -469,6 +469,79 @@ describe("useLaneWorkSessions — refresh-before-focus ordering", () => {
     expect(result.current.sessions.map((session) => session.id)).toContain("new-pty-session");
   });
 
+  it("keeps a stopped lane runtime closed when a stale refresh returns the old running row", async () => {
+    const runningSession = {
+      ...makeSession("session-stop", "lane-1", "Running Codex"),
+      ptyId: "pty-stop",
+      toolType: "codex",
+      runtimeState: "running",
+    } as any;
+    listSessionsCachedMock
+      .mockResolvedValueOnce([runningSession])
+      .mockResolvedValueOnce([runningSession]);
+
+    const { result } = renderHook(() => useLaneWorkSessions("lane-1"));
+
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 10));
+    });
+
+    expect(result.current.sessions[0]?.ptyId).toBe("pty-stop");
+
+    await act(async () => {
+      await result.current.closePtySession("pty-stop");
+      await new Promise((r) => setTimeout(r, 0));
+    });
+
+    expect((window as any).ade.pty.dispose).toHaveBeenCalledWith({
+      ptyId: "pty-stop",
+      sessionId: "session-stop",
+    });
+    expect(result.current.sessions[0]).toMatchObject({
+      id: "session-stop",
+      ptyId: null,
+      status: "disposed",
+      runtimeState: "killed",
+      exitCode: null,
+    });
+  });
+
+  it("restores a lane runtime row when dispose reports that a peer still owns it", async () => {
+    const runningSession = {
+      ...makeSession("session-peer", "lane-1", "Running Codex"),
+      ptyId: "pty-peer",
+      toolType: "codex",
+      runtimeState: "running",
+    } as any;
+    listSessionsCachedMock
+      .mockResolvedValueOnce([runningSession])
+      .mockResolvedValueOnce([runningSession]);
+    (window as any).ade.pty.dispose.mockResolvedValueOnce({
+      disposed: false,
+      reason: "owned-by-peer",
+    });
+
+    const { result } = renderHook(() => useLaneWorkSessions("lane-1"));
+
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 10));
+    });
+
+    expect(result.current.sessions[0]?.ptyId).toBe("pty-peer");
+
+    await act(async () => {
+      await result.current.closePtySession("pty-peer");
+      await new Promise((r) => setTimeout(r, 0));
+    });
+
+    expect(result.current.sessions[0]).toMatchObject({
+      id: "session-peer",
+      ptyId: "pty-peer",
+      status: "running",
+      runtimeState: "running",
+    });
+  });
+
   it("launchPtySession: opens immediately when another refresh is already running", async () => {
     const callOrder: string[] = [];
     let refreshCallCount = 0;

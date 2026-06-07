@@ -85,7 +85,8 @@ function preferPositiveMetric(primary: number | null | undefined, fallback: numb
 
 export function resourcePressureDescription(usage: AppResourceUsageSnapshot | null): string {
   const details = [
-    usage?.activePtyCount ? `${usage.activePtyCount} live terminal${usage.activePtyCount === 1 ? "" : "s"}` : null,
+    usage?.activePtyCount ? `${usage.activePtyCount} live ADE runtime${usage.activePtyCount === 1 ? "" : "s"}` : null,
+    usage?.ptyProcessCount ? `${usage.ptyProcessCount} agent process${usage.ptyProcessCount === 1 ? "" : "es"}` : null,
     formatPercent(preferPositiveMetric(usage?.ptyCpuPercent, usage?.cpuPercent)),
     formatMemory(preferPositiveMetric(usage?.ptyMemoryMB, usage?.memoryMB)),
   ].filter((part): part is string => Boolean(part));

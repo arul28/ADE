@@ -223,6 +223,8 @@ export type UsageWindow = {
   resetsAt: string;
   resetsInMs: number;
   windowDurationMs?: number;
+  /** Pace of this specific window (ahead/behind a steady burn). Computed per-window. */
+  pacing?: UsagePacing;
 };
 
 export type UsagePacingStatus =
@@ -253,6 +255,28 @@ export type UsagePacing = {
 };
 
 export type UsagePacingByProvider = Partial<Record<UsageProvider, UsagePacing>>;
+
+/**
+ * Per-provider freshness/health for the most recent poll. Lets the UI keep
+ * showing last-good numbers while signalling a quiet retry, instead of wiping
+ * data and surfacing a raw error string.
+ *
+ * - `ok`       — this poll returned fresh windows.
+ * - `stale`    — this poll failed, but we are still showing carried-forward data.
+ * - `unauthed` — no credentials for this provider (sign-in required).
+ * - `error`    — this poll failed and there is no prior data to fall back to.
+ */
+export type UsageProviderState = "ok" | "stale" | "unauthed" | "error";
+
+export type UsageProviderStatus = {
+  state: UsageProviderState;
+  /** ISO timestamp of the last poll that returned real windows, if any. */
+  lastSuccessAt: string | null;
+  /** Friendly, log-free reason for a non-ok state (e.g. "Couldn't reach Claude"). */
+  message?: string;
+};
+
+export type UsageProviderStatusMap = Partial<Record<UsageProvider, UsageProviderStatus>>;
 
 export type CostTokenBreakdown = {
   input: number;
@@ -286,12 +310,16 @@ export type UsageSnapshot = {
   windows: UsageWindow[];
   pacing: UsagePacing;
   pacingByProvider?: UsagePacingByProvider;
+  /** Per-provider freshness/health for the latest poll (drives quiet-retry UI). */
+  providerStatus?: UsageProviderStatusMap;
   costs: CostSnapshot[];
   /** Local runtime usage that can be attributed specifically to ADE-originated sessions. */
   adeCosts?: CostSnapshot[];
   extraUsage: ExtraUsage[];
   /** Per-provider daily token usage for the last 7 calendar days, oldest first. */
   dailyUsage7d?: Partial<Record<UsageProvider, number[]>>;
+  /** ISO timestamp of the last poll that included local cost/history scans. */
+  costsLastPolledAt?: string;
   lastPolledAt: string;
   errors: string[];
 };

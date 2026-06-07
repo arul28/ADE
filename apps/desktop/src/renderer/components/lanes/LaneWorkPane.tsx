@@ -63,6 +63,9 @@ export function LaneWorkPane({
           onLaunchPtySession={work.launchPtySession}
           onContinueCliSession={work.continueCliSession}
           onShowDraftKind={work.showDraftKind}
+          onStopRunningSession={(session) => {
+            if (session.ptyId) void work.closePtySession(session.ptyId);
+          }}
           suppressDraftLaunchNavigation
           closingPtyIds={work.closingPtyIds}
           initialLinearIssueContext={initialLinearIssueContext}

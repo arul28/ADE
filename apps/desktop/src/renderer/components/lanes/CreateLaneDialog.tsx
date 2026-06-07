@@ -8,6 +8,7 @@ import type {
   LaneEnvInitProgress,
   LaneTemplate,
   LaneRuntimePlacement,
+  NewLaneBaseSource,
 } from "../../../shared/types";
 import type { LaneBranchOption } from "./laneUtils";
 import { LaneEnvInitProgressPanel } from "./LaneEnvInitProgress";
@@ -20,6 +21,7 @@ import { linearIssueBranchName } from "../../../shared/linearIssueBranch";
 import { branchExistsForLinearIssue, issueProjectLabel } from "./linearIssueDisplay";
 import { LinearMark, LinearPriorityIcon, LinearStateIcon, LINEAR_BRAND } from "./linearBrand";
 import { LinearIssueSelectModal } from "../app/LinearIssueSelectModal";
+import { listNewLaneBaseOptions } from "./newLaneBaseSource";
 import {
   SECTION_CLASS_NAME,
   LABEL_CLASS_NAME,
@@ -93,6 +95,8 @@ export function CreateLaneDialog({
   setCreateMode,
   createParentLaneId,
   setCreateParentLaneId,
+  createBaseSource,
+  setCreateBaseSource,
   createBaseBranch,
   setCreateBaseBranch,
   createImportBranch,
@@ -142,6 +146,8 @@ export function CreateLaneDialog({
   setCreateMode: (v: CreateLaneMode) => void;
   createParentLaneId: string;
   setCreateParentLaneId: (v: string) => void;
+  createBaseSource: NewLaneBaseSource;
+  setCreateBaseSource: (v: NewLaneBaseSource) => void;
   createBaseBranch: string;
   setCreateBaseBranch: (v: string) => void;
   createImportBranch: string;
@@ -197,7 +203,14 @@ export function CreateLaneDialog({
   loadingBranches?: boolean;
   loadingBranchPullRequests?: boolean;
 }) {
-  const localBranches = createBranches.filter((b) => !b.isRemote);
+  const baseBranchOptions = React.useMemo(
+    () => listNewLaneBaseOptions(createBranches, createBaseSource),
+    [createBaseSource, createBranches],
+  );
+  const selectedBaseBranchValid = React.useMemo(
+    () => !!createBaseBranch && baseBranchOptions.some((option) => option.ref === createBaseBranch),
+    [baseBranchOptions, createBaseBranch],
+  );
   const allBranches = createBranches;
   const selectedTemplate = templates.find((t) => t.id === selectedTemplateId) ?? null;
   const usedColors = React.useMemo(() => colorsInUse(lanes), [lanes]);
@@ -280,7 +293,7 @@ export function CreateLaneDialog({
     : (busy
       || !createLaneName.trim()
       || (createMode === "child" && !createParentLaneId)
-      || (createMode === "primary" && !createBaseBranch)
+      || (createMode === "primary" && (!selectedBaseBranchValid || loadingBranches))
       || (createMode === "existing" && !createImportBranch)
       || selectedLinearBranchConflict
       || vmRuntimeBlocked);
@@ -413,37 +426,58 @@ export function CreateLaneDialog({
           {/* Contextual field for selected mode */}
           <div className="mt-3">
             {createMode === "primary" ? (
-              localBranches.length > 0 ? (
-                <>
-                  <select
-                    value={createBaseBranch}
-                    onChange={(e) => setCreateBaseBranch(e.target.value)}
-                    className={SELECT_CLASS_NAME + " !mt-0"}
-                    disabled={busy || laneCreated}
-                    aria-label="Base branch"
-                    data-tour="lanes.createDialog.branchBase"
-                  >
-                    {localBranches.map((b) => (
-                      <option key={b.name} value={b.name}>
-                        {b.name}{b.isCurrent ? " (current)" : ""}
-                      </option>
-                    ))}
-                  </select>
-                  {createBaseBranch ? (
-                    <div className="mt-1.5 text-[11px] text-muted-fg/60">
-                      Base: {createBaseBranch} — rebase suggestions will track this branch
-                    </div>
-                  ) : null}
-                </>
-              ) : loadingBranches ? (
-                <div className="rounded-lg border border-dashed border-white/[0.08] bg-black/10 px-3 py-2 text-xs text-muted-fg">
-                  Loading branches...
+              <>
+                <div className="mb-2 grid grid-cols-2 gap-2">
+                  {(["remote", "local"] as const).map((source) => {
+                    const active = createBaseSource === source;
+                    return (
+                      <button
+                        key={source}
+                        type="button"
+                        className={`${CARD_CLASS_NAME} ${active ? CARD_ACTIVE_CLASS_NAME : ""} !p-2 text-left`}
+                        disabled={busy || laneCreated}
+                        onClick={() => setCreateBaseSource(source)}
+                      >
+                        <div className="text-xs font-semibold text-fg">{source === "remote" ? "Remote" : "Local"}</div>
+                        <div className="mt-0.5 text-[10px] text-muted-fg/70">
+                          {source === "remote" ? "Use fetched upstream" : "Use your local branch tip"}
+                        </div>
+                      </button>
+                    );
+                  })}
                 </div>
-              ) : (
-                <div className="rounded-lg border border-dashed border-white/[0.08] bg-black/10 px-3 py-2 text-xs text-muted-fg">
-                  No local branches found.
-                </div>
-              )
+                {baseBranchOptions.length > 0 ? (
+                  <>
+                    <select
+                      value={createBaseBranch}
+                      onChange={(e) => setCreateBaseBranch(e.target.value)}
+                      className={SELECT_CLASS_NAME + " !mt-0"}
+                      disabled={busy || laneCreated}
+                      aria-label="Base branch"
+                      data-tour="lanes.createDialog.branchBase"
+                    >
+                      {baseBranchOptions.map((option) => (
+                        <option key={option.ref} value={option.ref}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                    {createBaseBranch ? (
+                      <div className="mt-1.5 text-[11px] text-muted-fg/60">
+                        Base: {createBaseBranch} — rebase suggestions will track this ref
+                      </div>
+                    ) : null}
+                  </>
+                ) : loadingBranches ? (
+                  <div className="rounded-lg border border-dashed border-white/[0.08] bg-black/10 px-3 py-2 text-xs text-muted-fg">
+                    Loading branches...
+                  </div>
+                ) : (
+                  <div className="rounded-lg border border-dashed border-white/[0.08] bg-black/10 px-3 py-2 text-xs text-muted-fg">
+                    No {createBaseSource === "remote" ? "remote-tracking refs" : "local branches"} found.
+                  </div>
+                )}
+              </>
             ) : null}
 
             {createMode === "existing" ? (

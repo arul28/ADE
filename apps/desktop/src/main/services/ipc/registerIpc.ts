@@ -389,6 +389,7 @@ import type {
   RecentProjectSummary,
   PtyCreateArgs,
   PtyCreateResult,
+  PtyDisposeResult,
   PtyResumeSessionArgs,
   PtyResumeSessionResult,
   PtySendToSessionArgs,
@@ -6062,10 +6063,20 @@ export function registerIpc({
         });
       }
     }
-    return ptyService.enrichSessions([session])[0] ?? {
+    let enriched = ptyService.enrichSessions([session])[0] ?? {
       ...session,
       runtimeState: ptyService.getRuntimeState(session.id, session.status)
     };
+    if (enriched.status === "running" && isChatToolType(enriched.toolType)) {
+      try {
+        const chat = await ctx.agentChatService?.getSessionSummary(enriched.id);
+        if (chat) enriched = projectChatOntoSession(enriched, chat);
+      } catch {
+        // Detail reads should still return the persisted session if chat state
+        // hydration fails during runtime restart/recovery.
+      }
+    }
+    return enriched;
   });
 
   ipcMain.handle(IPC.sessionsDelete, async (_event, arg: DeleteSessionArgs): Promise<void> => {
@@ -7566,8 +7577,8 @@ export function registerIpc({
     requirePtyService().resize(arg);
   });
 
-  ipcMain.handle(IPC.ptyDispose, async (_event, arg: { ptyId: string; sessionId?: string }): Promise<void> => {
-    requirePtyService().dispose(arg);
+  ipcMain.handle(IPC.ptyDispose, async (_event, arg: { ptyId: string; sessionId?: string }): Promise<PtyDisposeResult> => {
+    return requirePtyService().dispose(arg);
   });
 
   ipcMain.handle(IPC.terminalList, async (_event, arg) =>

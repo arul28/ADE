@@ -1679,7 +1679,9 @@ export function createGitOperationsService({
       const localNames = new Set(localBranches.keys());
       const dedupedRemotes = remoteBranches.filter((branch) => {
         const localCandidate = localBranchNameFromRemoteRef(branch.name);
-        return !localNames.has(localCandidate);
+        if (!localNames.has(localCandidate)) return true;
+        const local = localBranches.get(localCandidate);
+        return local?.upstream !== branch.name;
       });
 
       const sortedLocals = Array.from(localBranches.values()).sort((a, b) => {

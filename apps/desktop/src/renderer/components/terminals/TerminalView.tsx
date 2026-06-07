@@ -100,6 +100,7 @@ type CachedRuntime = {
   inputEnabled: boolean;
   active: boolean;
   visible: boolean;
+  bracketedPasteMode: boolean;
   mouseTrackingModes: Set<number>;
   shiftMouseBridgeCleanup: (() => void) | null;
   shiftMouseCleanup: (() => void) | null;
@@ -136,6 +137,9 @@ const INVALID_FIT_RETRY_MS = 90;
 const RENDERER_RESET_COOLDOWN_MS = 250;
 const TERMINAL_RENDERER_STORAGE_KEY = "ade.terminalRenderer";
 const TERMINAL_CTRL_V = "\x16";
+const TERMINAL_BRACKETED_PASTE_START = "\x1b[200~";
+const TERMINAL_BRACKETED_PASTE_END = "\x1b[201~";
+const TERMINAL_BRACKETED_PASTE_MODE = 2004;
 const TERMINAL_LINK_PATTERN = /(?:https?:\/\/[^\s<>"'`]+|(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?(?:\/[^\s<>"'`]*)?)/gi;
 const TERMINAL_MOUSE_TRACKING_EVENT_MODES = new Set([1000, 1002, 1003]);
 const runtimeCache = new Map<string, CachedRuntime>();
@@ -183,7 +187,8 @@ function terminalWebglRendererEnabled(): boolean {
     // Storage can be unavailable in hardened/browser-like environments; still
     // honor the Linux renderer fallback below.
   }
-  if (stored != null) return stored !== "dom";
+  if (stored === "dom") return false;
+  if (stored === "webgl") return true;
   const platform = window.navigator?.platform?.toLowerCase() ?? "";
   const userAgent = window.navigator?.userAgent?.toLowerCase() ?? "";
   if (platform.includes("linux") || userAgent.includes("linux")) return false;
@@ -815,11 +820,15 @@ function enqueuePtyInput(runtime: CachedRuntime, data: string) {
   schedulePtyInputFlush(runtime);
 }
 
-function updateTerminalMouseTrackingModes(runtime: CachedRuntime, data: string): void {
+function updateTerminalInputModes(runtime: CachedRuntime, data: string): void {
   for (const match of data.matchAll(/\x1b\[\?([0-9;]+)([hl])/g)) {
     const action = match[2];
     for (const rawParam of match[1].split(";")) {
       const mode = Number(rawParam);
+      if (mode === TERMINAL_BRACKETED_PASTE_MODE) {
+        runtime.bracketedPasteMode = action === "h";
+        continue;
+      }
       if (!TERMINAL_MOUSE_TRACKING_EVENT_MODES.has(mode)) continue;
       if (action === "h") {
         runtime.mouseTrackingModes.add(mode);
@@ -1025,6 +1034,7 @@ function doFit(runtime: CachedRuntime, forcePtyResize = false) {
   // Hide cursor before fit to prevent ghost cursor artifact at stale position
   const cursorLayer = runtime.host.querySelector<HTMLElement>(".xterm-cursor-layer");
   if (cursorLayer) cursorLayer.style.visibility = "hidden";
+  clearTextureAtlas(runtime);
 
   try {
     runtime.fit.fit();
@@ -1217,7 +1227,7 @@ function handleRuntimePtyData(runtime: CachedRuntime, ev: PtyDataEvent) {
     pauseRuntimePtyStream(runtime);
     return;
   }
-  updateTerminalMouseTrackingModes(runtime, ev.data);
+  updateTerminalInputModes(runtime, ev.data);
 
   if (!runtime.hydrationCompleted) {
     runtime.pendingHydrationChunks.push(ev.data);
@@ -1337,6 +1347,7 @@ function flushHydrationData(
 
   const merged = appendPending ? `${stabilizedTail}${pending.slice(overlap)}` : stabilizedTail;
   if (merged.length) {
+    updateTerminalInputModes(runtime, merged);
     try {
       runtime.term.write(merged);
       if (hasRenderableTerminalText(merged)) {
@@ -1801,6 +1812,7 @@ function createRuntime(args: {
     inputEnabled: true,
     active: true,
     visible: true,
+    bracketedPasteMode: false,
     mouseTrackingModes: new Set(),
     shiftMouseBridgeCleanup: null,
     shiftMouseCleanup: null,
@@ -1879,7 +1891,9 @@ function createRuntime(args: {
     // Shift+Enter should insert a newline in tools like Claude/Codex prompts.
     if (ev.shiftKey && ev.key === "Enter") {
       ev.preventDefault();
-      writePtyInput(runtime, "\n");
+      writePtyInput(runtime, runtime.bracketedPasteMode
+        ? `${TERMINAL_BRACKETED_PASTE_START}\n${TERMINAL_BRACKETED_PASTE_END}`
+        : "\n");
       return false;
     }
 
@@ -2086,6 +2100,7 @@ export function TerminalView({
     startHydration(runtime);
 
     const obs = new ResizeObserver(() => {
+      clearTextureAtlas(runtime);
       schedule();
     });
     obs.observe(el);

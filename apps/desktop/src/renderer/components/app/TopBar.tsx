@@ -387,6 +387,8 @@ function ResourcePressureIndicator({ usage }: { usage: AppResourceUsageSnapshot 
   const description = resourcePressureDescription(usage);
   return (
     <SmartTooltip
+      forceEnabled
+      side="bottom"
       content={{
         label: "ADE is under load",
         description,

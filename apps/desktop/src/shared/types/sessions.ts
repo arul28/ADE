@@ -167,6 +167,11 @@ export type PtyCreateResult = {
   pid: number | null;
 };
 
+export type PtyDisposeResult = {
+  disposed: boolean;
+  reason: "disposed" | "orphaned" | "missing" | "not-running" | "session-mismatch" | "owned-by-peer" | "already-disposed";
+};
+
 export type PtySendToSessionArgs = {
   sessionId: string;
   text: string;

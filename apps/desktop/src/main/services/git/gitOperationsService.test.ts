@@ -1569,10 +1569,10 @@ describe("gitOperationsService.listBranches annotations", () => {
     }
   });
 
-  it("dedupes a remote ref when its local counterpart already exists", async () => {
+  it("dedupes a remote ref when its local counterpart tracks it", async () => {
     mockGit.runGitOrThrow.mockResolvedValue(
       [
-        "refs/heads/feature/dup\tfeature/dup\t*\t",
+        "refs/heads/feature/dup\tfeature/dup\t*\torigin/feature/dup",
         "refs/remotes/origin/feature/dup\torigin/feature/dup\t \t",
       ].join("\n"),
     );
@@ -1581,6 +1581,20 @@ describe("gitOperationsService.listBranches annotations", () => {
     const branches = await service.listBranches({ laneId: "lane-1" });
     expect(branches.filter((b) => b.name === "feature/dup")).toHaveLength(1);
     expect(branches.find((b) => b.name === "origin/feature/dup")).toBeUndefined();
+  });
+
+  it("keeps a remote counterpart when the local branch has no upstream", async () => {
+    mockGit.runGitOrThrow.mockResolvedValue(
+      [
+        "refs/heads/feature/untracked\tfeature/untracked\t*\t",
+        "refs/remotes/origin/feature/untracked\torigin/feature/untracked\t \t",
+      ].join("\n"),
+    );
+    const { service } = makeServiceWithLanes({});
+
+    const branches = await service.listBranches({ laneId: "lane-1" });
+    expect(branches.find((b) => b.name === "feature/untracked")).toBeDefined();
+    expect(branches.find((b) => b.name === "origin/feature/untracked")).toBeDefined();
   });
 
   it("filters refs/remotes/.../HEAD entries out of the result", async () => {

@@ -1899,7 +1899,7 @@ export function createHeadlessLinearServices(
         "PTY-backed run commands are unavailable in headless Linear services.",
       );
     },
-    dispose: () => {},
+    dispose: () => ({ disposed: false as const, reason: "missing" as const }),
     onData: () => () => {},
     onExit: () => () => {},
   };

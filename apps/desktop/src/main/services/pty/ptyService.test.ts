@@ -3669,7 +3669,7 @@ describe("ptyService", () => {
       });
     });
 
-    it("does not end persisted agent chat rows just because there is no PTY", () => {
+    it("keeps persisted agent chat rows resumable but idle when there is no PTY", () => {
       const { service } = createHarness();
       const enriched = service.enrichSessions([{
         id: "chat-session",
@@ -3682,7 +3682,7 @@ describe("ptyService", () => {
       expect(enriched[0]).toMatchObject({
         id: "chat-session",
         status: "running",
-        runtimeState: "running",
+        runtimeState: "idle",
       });
     });
 

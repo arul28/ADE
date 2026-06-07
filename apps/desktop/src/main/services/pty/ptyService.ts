@@ -24,6 +24,7 @@ import type {
   PtyExitEvent,
   PtyCreateArgs,
   PtyCreateResult,
+  PtyDisposeResult,
   PtyResumeSessionArgs,
   PtyResumeSessionResult,
   PtySendToSessionArgs,
@@ -4690,6 +4691,10 @@ export function createPtyService({
         const runningWithoutReachablePty = !live
           && row.status === "running"
           && !isPersistedChatToolType(row.toolType ?? null);
+        const idlePersistedChatRuntime = !live
+          && row.status === "running"
+          && isPersistedChatToolType(row.toolType ?? null)
+          && computeRuntimeState(row.id, row.status) === "running";
         const isDetachedFromThisRuntime = ownedByLivePeer || runningWithoutReachablePty;
         const fallbackStatus = live ? "running" : row.status;
         return {
@@ -4707,7 +4712,11 @@ export function createPtyService({
                   status: "detached" as const,
                 }
               : {}),
-          runtimeState: isDetachedFromThisRuntime ? "exited" : computeRuntimeState(row.id, fallbackStatus),
+          runtimeState: isDetachedFromThisRuntime
+            ? "exited"
+            : idlePersistedChatRuntime
+              ? "idle"
+              : computeRuntimeState(row.id, fallbackStatus),
           chatSessionId: live
             ? terminalChatSessions.get(row.id) ?? live[1].chatSessionId ?? row.chatSessionId ?? null
             : terminalChatSessions.get(row.id) ?? row.chatSessionId ?? null,
@@ -4715,14 +4724,14 @@ export function createPtyService({
       });
     },
 
-    dispose({ ptyId, sessionId }: { ptyId: string; sessionId?: string }): void {
+    dispose({ ptyId, sessionId }: { ptyId: string; sessionId?: string }): PtyDisposeResult {
       const entry = ptys.get(ptyId);
       if (!entry) {
-        if (!sessionId) return;
+        if (!sessionId) return { disposed: false, reason: "missing" };
         const session = sessionService.get(sessionId);
-        if (!session) return;
-        if (session.status && session.status !== "running") return;
-        if (session.ptyId && session.ptyId !== ptyId) return;
+        if (!session) return { disposed: false, reason: "missing" };
+        if (session.status && session.status !== "running") return { disposed: false, reason: "not-running" };
+        if (session.ptyId && session.ptyId !== ptyId) return { disposed: false, reason: "session-mismatch" };
         if (
           ownerPid != null
           && session.ownerPid != null
@@ -4735,7 +4744,7 @@ export function createPtyService({
             ownerPid: session.ownerPid,
             currentPid: ownerPid,
           });
-          return;
+          return { disposed: false, reason: "owned-by-peer" };
         }
         // The renderer can outlive the pty map (for example after app restart). Allow closing by session id
         // so stale sessions do not get stuck in a "running" state forever.
@@ -4766,9 +4775,9 @@ export function createPtyService({
           }
         }
         logger.warn("pty.dispose_orphaned", { ptyId, sessionId });
-        return;
+        return { disposed: true, reason: "orphaned" };
       }
-      if (entry.disposed) return;
+      if (entry.disposed) return { disposed: false, reason: "already-disposed" };
       entry.disposed = true;
       if (entry.aiTitleTimer) {
         clearTimeout(entry.aiTitleTimer);
@@ -4808,7 +4817,7 @@ export function createPtyService({
       ptys.delete(ptyId);
 
       if (!entry.tracked) {
-        return;
+        return { disposed: true, reason: "disposed" };
       }
 
       try {
@@ -4816,6 +4825,7 @@ export function createPtyService({
       } catch {
         // ignore
       }
+      return { disposed: true, reason: "disposed" };
     },
 
     disposeAll(): void {

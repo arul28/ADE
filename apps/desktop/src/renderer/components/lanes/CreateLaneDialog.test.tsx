@@ -36,7 +36,9 @@ function makeProps(overrides: Partial<DialogProps> = {}): DialogProps {
     setCreateMode: vi.fn(),
     createParentLaneId: "",
     setCreateParentLaneId: vi.fn(),
-    createBaseBranch: "main",
+    createBaseSource: "remote",
+    setCreateBaseSource: vi.fn(),
+    createBaseBranch: "origin/main",
     setCreateBaseBranch: vi.fn(),
     createImportBranch: "",
     setCreateImportBranch: vi.fn(),
@@ -51,7 +53,7 @@ function makeProps(overrides: Partial<DialogProps> = {}): DialogProps {
     onOpenVmTab: vi.fn(),
     onOpenVmLaneInWork: vi.fn(),
     createBranches: [
-      { name: "main", isRemote: false, isCurrent: true, lastCommitAuthor: "x", lastCommitDate: "" } as any,
+      { name: "main", isRemote: false, isCurrent: true, upstream: "origin/main", lastCommitAuthor: "x", lastCommitDate: "" } as any,
     ],
     lanes: [],
     onSubmit: vi.fn(),
@@ -218,5 +220,44 @@ describe("CreateLaneDialog VM-lane gate", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Close Connect Linear issue backdrop" }));
     expect(await screen.findByText("Lane name")).toBeTruthy();
+  });
+
+  it("keeps the base-source selector visible when the selected source has no options", () => {
+    render(
+      <CreateLaneDialog
+        {...makeProps({
+          createBaseSource: "remote",
+          createBaseBranch: "",
+          createBranches: [
+            { name: "main", isRemote: false, isCurrent: true, upstream: null } as any,
+          ],
+        })}
+      />,
+    );
+
+    expect(screen.getByText("Use fetched upstream")).toBeTruthy();
+    expect(screen.getByText("Use your local branch tip")).toBeTruthy();
+    expect(screen.getByText("No remote-tracking refs found.")).toBeTruthy();
+  });
+
+  it("disables submit while the selected base branch is stale for the current source", () => {
+    const onSubmit = vi.fn();
+    render(
+      <CreateLaneDialog
+        {...makeProps({
+          onSubmit,
+          createBaseSource: "local",
+          createBaseBranch: "origin/main",
+          createBranches: [
+            { name: "main", isRemote: false, isCurrent: true, upstream: "origin/main", lastCommitAuthor: "x", lastCommitDate: "" } as any,
+          ],
+        })}
+      />,
+    );
+
+    const submit = screen.getByRole("button", { name: "Create from origin/main" }) as HTMLButtonElement;
+    expect(submit.disabled).toBe(true);
+    fireEvent.click(submit);
+    expect(onSubmit).not.toHaveBeenCalled();
   });
 });
