@@ -169,7 +169,7 @@ export function SessionContextMenu({
             disabled={deletingSessionId === session.id}
             onClick={() => { onStopAndDelete(session); onClose(); }}
           >
-            {deletingSessionId === session.id ? "Deleting..." : "Stop and delete"}
+            {deletingSessionId === session.id ? "Deleting…" : "Stop & delete"}
           </button>
         ) : null}
 
@@ -179,7 +179,7 @@ export function SessionContextMenu({
             disabled={deletingSessionId === session.id}
             onClick={() => { onDeleteChat(session); onClose(); }}
           >
-            {deletingSessionId === session.id ? "Deleting..." : "Delete chat"}
+            {deletingSessionId === session.id ? "Deleting…" : "Delete chat"}
           </button>
         ) : null}
 
@@ -189,7 +189,7 @@ export function SessionContextMenu({
             disabled={deletingSessionId === session.id}
             onClick={() => { onDeleteSession(session); onClose(); }}
           >
-            {deletingSessionId === session.id ? "Deleting..." : "Delete session"}
+            {deletingSessionId === session.id ? "Deleting…" : "Delete session"}
           </button>
         ) : null}
 

@@ -293,7 +293,7 @@ export function SessionInfoPopover({
             </SmartTooltip>
           ) : null}
           {session.status === "running" && session.ptyId && !isChat ? (
-            <SmartTooltip content={{ label: "Stop and delete", description: "Stop the runtime and permanently delete this session." }}>
+            <SmartTooltip content={{ label: "Stop & delete", description: "Stop the runtime and permanently delete this session." }}>
               <Button
                 variant="danger"
                 size="sm"
