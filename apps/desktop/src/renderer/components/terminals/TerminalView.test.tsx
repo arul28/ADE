@@ -442,7 +442,19 @@ describe("TerminalView", () => {
 
   it("uses the WebGL renderer by default on supported platforms", async () => {
     vi.useRealTimers();
+    const platformDescriptor = Object.getOwnPropertyDescriptor(window.navigator, "platform");
+    const userAgentDescriptor = Object.getOwnPropertyDescriptor(window.navigator, "userAgent");
+    const originalPlatform = window.navigator.platform;
+    const originalUserAgent = window.navigator.userAgent;
     try {
+      Object.defineProperty(window.navigator, "platform", {
+        configurable: true,
+        value: "MacIntel",
+      });
+      Object.defineProperty(window.navigator, "userAgent", {
+        configurable: true,
+        value: "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/537.36",
+      });
       render(<TerminalView ptyId="pty-webgl-default" sessionId="session-webgl-default" isActive />);
 
       await waitFor(
@@ -454,6 +466,22 @@ describe("TerminalView", () => {
         { timeout: 10_000 },
       );
     } finally {
+      if (platformDescriptor) {
+        Object.defineProperty(window.navigator, "platform", platformDescriptor);
+      } else {
+        Object.defineProperty(window.navigator, "platform", {
+          configurable: true,
+          value: originalPlatform,
+        });
+      }
+      if (userAgentDescriptor) {
+        Object.defineProperty(window.navigator, "userAgent", userAgentDescriptor);
+      } else {
+        Object.defineProperty(window.navigator, "userAgent", {
+          configurable: true,
+          value: originalUserAgent,
+        });
+      }
       vi.useFakeTimers();
     }
   });
