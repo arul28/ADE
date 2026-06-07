@@ -171,6 +171,7 @@ type MockSessionListPaneProps = {
   onSelectSession: (id: string, event: React.MouseEvent, visibleSessionIds: string[]) => void;
   onBulkDelete?: () => void;
   onBulkStopAndDelete?: () => void;
+  onContextMenu: (session: TerminalSessionSummary, event: React.MouseEvent) => void;
 };
 
 const sessionListPaneProps = vi.hoisted(() => ({
@@ -225,13 +226,20 @@ vi.mock("./SessionListPane", () => ({
     return (
       <div data-testid="session-list-pane">
         {visibleSessions.map((session) => (
-          <button
-            key={session.id}
-            type="button"
-            onClick={(event) => props.onSelectSession(session.id, event, visibleSessionIds)}
-          >
-            select {session.id}
-          </button>
+          <React.Fragment key={session.id}>
+            <button
+              type="button"
+              onClick={(event) => props.onSelectSession(session.id, event, visibleSessionIds)}
+            >
+              select {session.id}
+            </button>
+            <button
+              type="button"
+              onClick={(event) => props.onContextMenu(session, event)}
+            >
+              context menu {session.id}
+            </button>
+          </React.Fragment>
         ))}
         <button type="button" onClick={() => props.onBulkDelete?.()}>
           bulk delete
@@ -256,7 +264,18 @@ vi.mock("./WorkSidebar", () => ({
 }));
 
 vi.mock("./SessionContextMenu", () => ({
-  SessionContextMenu: () => null,
+  SessionContextMenu: (props: {
+    menu: { session: TerminalSessionSummary } | null;
+    onStopAndDelete: (session: TerminalSessionSummary) => void;
+  }) => {
+    if (!props.menu) return null;
+    const session = props.menu.session;
+    return (
+      <button type="button" onClick={() => props.onStopAndDelete(session)}>
+        context stop and delete {session.id}
+      </button>
+    );
+  },
 }));
 
 vi.mock("./SessionInfoPopover", () => ({
@@ -519,6 +538,85 @@ describe("TerminalsPage chat session activation", () => {
     expect(workMocks.currentWork.removeSessionFromList).not.toHaveBeenCalledWith("shell-running");
     expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining("Delete 2 selected sessions?"));
     confirmSpy.mockRestore();
+  });
+
+  it("stops and deletes a single running CLI session via the context menu", async () => {
+    const runningCli = workMocks.makeTerminalSession("cli-single", "lane-primary", "codex");
+    const sessionDelete = vi.fn().mockResolvedValue(undefined);
+    const agentChatDelete = vi.fn().mockResolvedValue(undefined);
+
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      value: {
+        agentChat: { delete: agentChatDelete },
+        builtInBrowser: { onEvent: vi.fn(() => vi.fn()) },
+        sessions: { delete: sessionDelete },
+      },
+    });
+    workMocks.currentWork = {
+      ...workMocks.baseWork,
+      sessions: [runningCli],
+      visibleSessions: [runningCli],
+      runningFiltered: [runningCli],
+      runningSessions: [runningCli],
+      filtered: [runningCli],
+      sessionsGroupedByLane: new Map([["lane-primary", [runningCli]]]),
+      closingPtyIds: new Set<string>(),
+    };
+
+    render(<TerminalsPage />);
+
+    // Open the context menu for the session, then trigger stop-and-delete.
+    fireEvent.click(await screen.findByRole("button", { name: "context menu cli-single" }));
+    fireEvent.click(await screen.findByRole("button", { name: "context stop and delete cli-single" }));
+
+    // The styled confirmation dialog must gate the destructive single-session action.
+    fireEvent.click(await screen.findByRole("button", { name: "Stop & delete" }));
+
+    await waitFor(() => {
+      // The session-delete service stops the runtime and removes the record in one call;
+      // the chat-delete path must not be touched for a non-chat session.
+      expect(sessionDelete).toHaveBeenCalledWith({ sessionId: "cli-single" });
+      expect(workMocks.currentWork.removeSessionFromList).toHaveBeenCalledWith("cli-single");
+      expect(workMocks.currentWork.closeTab).toHaveBeenCalledWith("cli-single");
+    });
+    expect(agentChatDelete).not.toHaveBeenCalled();
+  });
+
+  it("does not delete when the stop-and-delete confirmation is dismissed", async () => {
+    const runningCli = workMocks.makeTerminalSession("cli-cancel", "lane-primary", "codex");
+    const sessionDelete = vi.fn().mockResolvedValue(undefined);
+
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      value: {
+        agentChat: { delete: vi.fn() },
+        builtInBrowser: { onEvent: vi.fn(() => vi.fn()) },
+        sessions: { delete: sessionDelete },
+      },
+    });
+    workMocks.currentWork = {
+      ...workMocks.baseWork,
+      sessions: [runningCli],
+      visibleSessions: [runningCli],
+      runningFiltered: [runningCli],
+      runningSessions: [runningCli],
+      filtered: [runningCli],
+      sessionsGroupedByLane: new Map([["lane-primary", [runningCli]]]),
+      closingPtyIds: new Set<string>(),
+    };
+
+    render(<TerminalsPage />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "context menu cli-cancel" }));
+    fireEvent.click(await screen.findByRole("button", { name: "context stop and delete cli-cancel" }));
+    fireEvent.click(await screen.findByRole("button", { name: "CANCEL" }));
+
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: "Stop & delete" })).toBeNull(),
+    );
+    expect(sessionDelete).not.toHaveBeenCalled();
+    expect(workMocks.currentWork.removeSessionFromList).not.toHaveBeenCalled();
   });
 
   it("stops and deletes a mixed selection of running CLI and chat sessions", async () => {
