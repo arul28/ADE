@@ -407,7 +407,7 @@ async function summarizeChatSessionForRemote(
     ...(session.modelId ? { modelId: session.modelId } : {}),
     ...(session.sessionProfile ? { sessionProfile: session.sessionProfile } : {}),
     reasoningEffort: session.reasoningEffort ?? null,
-    codexFastMode: session.codexFastMode === true,
+    fastMode: session.fastMode === true,
     executionMode: session.executionMode ?? null,
 	    ...(session.permissionMode ? { permissionMode: session.permissionMode } : {}),
 	    ...(session.interactionMode !== undefined ? { interactionMode: session.interactionMode } : {}),
@@ -752,7 +752,9 @@ function parseAgentChatCreateArgs(value: Record<string, unknown>): AgentChatCrea
   if ("codexApprovalPolicy" in value) parsed.codexApprovalPolicy = value.codexApprovalPolicy == null ? undefined : asTrimmedString(value.codexApprovalPolicy) as AgentChatCreateArgs["codexApprovalPolicy"];
   if ("codexSandbox" in value) parsed.codexSandbox = value.codexSandbox == null ? undefined : asTrimmedString(value.codexSandbox) as AgentChatCreateArgs["codexSandbox"];
   if ("codexConfigSource" in value) parsed.codexConfigSource = value.codexConfigSource == null ? undefined : asTrimmedString(value.codexConfigSource) as AgentChatCreateArgs["codexConfigSource"];
-  if ("codexFastMode" in value) parsed.codexFastMode = asOptionalBoolean(value.codexFastMode);
+  if ("fastMode" in value || "codexFastMode" in value) {
+    parsed.fastMode = asOptionalBoolean(value.fastMode ?? value.codexFastMode);
+  }
   if ("opencodePermissionMode" in value) parsed.opencodePermissionMode = value.opencodePermissionMode == null ? undefined : asTrimmedString(value.opencodePermissionMode) as AgentChatCreateArgs["opencodePermissionMode"];
   if ("droidPermissionMode" in value) parsed.droidPermissionMode = value.droidPermissionMode == null ? undefined : (asTrimmedString(value.droidPermissionMode) ?? undefined) as AgentChatCreateArgs["droidPermissionMode"];
   if ("cursorModeId" in value) parsed.cursorModeId = value.cursorModeId == null ? null : asTrimmedString(value.cursorModeId) ?? null;
@@ -872,7 +874,9 @@ function parseAgentChatUpdateSessionArgs(value: Record<string, unknown>): AgentC
   if ("codexApprovalPolicy" in value) parsed.codexApprovalPolicy = value.codexApprovalPolicy == null ? undefined : asTrimmedString(value.codexApprovalPolicy) as AgentChatUpdateSessionArgs["codexApprovalPolicy"];
   if ("codexSandbox" in value) parsed.codexSandbox = value.codexSandbox == null ? undefined : asTrimmedString(value.codexSandbox) as AgentChatUpdateSessionArgs["codexSandbox"];
   if ("codexConfigSource" in value) parsed.codexConfigSource = value.codexConfigSource == null ? undefined : asTrimmedString(value.codexConfigSource) as AgentChatUpdateSessionArgs["codexConfigSource"];
-  if ("codexFastMode" in value) parsed.codexFastMode = asOptionalBoolean(value.codexFastMode);
+  if ("fastMode" in value || "codexFastMode" in value) {
+    parsed.fastMode = asOptionalBoolean(value.fastMode ?? value.codexFastMode);
+  }
   if ("opencodePermissionMode" in value) parsed.opencodePermissionMode = value.opencodePermissionMode == null ? undefined : asTrimmedString(value.opencodePermissionMode) as AgentChatUpdateSessionArgs["opencodePermissionMode"];
   if ("droidPermissionMode" in value) parsed.droidPermissionMode = value.droidPermissionMode == null ? undefined : asTrimmedString(value.droidPermissionMode) as AgentChatUpdateSessionArgs["droidPermissionMode"];
   if ("cursorModeId" in value) parsed.cursorModeId = value.cursorModeId == null ? null : asTrimmedString(value.cursorModeId) ?? null;

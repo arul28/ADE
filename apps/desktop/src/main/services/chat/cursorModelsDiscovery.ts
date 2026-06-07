@@ -372,7 +372,18 @@ function normalizeCursorReasoningValue(value: unknown): string | null {
 
 function normalizeCursorServiceTierValue(value: unknown): string | null {
   const normalized = normalizeCursorMetadataText(value);
-  return normalized === "fast" ? "fast" : null;
+  if (normalized === "fast") return "fast";
+  if ([
+    "standard",
+    "default",
+    "regular",
+    "base",
+    "normal",
+    "slow",
+  ].includes(normalized)) {
+    return "standard";
+  }
+  return null;
 }
 
 function normalizeCursorParameterDefinitions(value: unknown): CursorModelParameterDefinition[] | undefined {
@@ -931,19 +942,26 @@ export function resolveCursorSdkModelSelectionParams(args: {
   if (!row) return undefined;
   const reasoning = normalizeCursorMetadataText(args.reasoningEffort);
   const wantsFast = args.fastMode === true;
+  const wantsStandard = args.fastMode === false;
   const out = new Map<string, string>();
-  const applyParams = (params: readonly CursorModelParameterValue[]): void => {
-    for (const param of params) {
-      if (param.id.trim() && param.value.trim()) out.set(param.id.trim(), param.value.trim());
-    }
-  };
-
   const reasoningParameterIds = new Set(
     (row.parameters ?? []).filter(isReasoningParameterLike).map((entry) => entry.id),
   );
   const serviceTierParameterIds = new Set(
     (row.parameters ?? []).filter(isServiceTierParameterLike).map((entry) => entry.id),
   );
+  const applyParams = (
+    params: readonly CursorModelParameterValue[],
+    options: { preserveExistingReasoning?: boolean } = {},
+  ): void => {
+    for (const param of params) {
+      const id = param.id.trim();
+      const value = param.value.trim();
+      if (!id || !value) continue;
+      if (options.preserveExistingReasoning && reasoningParameterIds.has(id) && out.has(id)) continue;
+      out.set(id, value);
+    }
+  };
 
   if (reasoning) {
     const matchingVariant = (row.variants ?? []).find((variant) => {
@@ -953,7 +971,7 @@ export function resolveCursorSdkModelSelectionParams(args: {
         && normalizeCursorMetadataText(param.value) === reasoning,
       ) || label.includes(reasoning);
     });
-    if (matchingVariant) applyParams(matchingVariant.params);
+    if (matchingVariant) applyParams(matchingVariant.params, { preserveExistingReasoning: true });
     for (const parameter of row.parameters ?? []) {
       if (!reasoningParameterIds.has(parameter.id)) continue;
       const value = parameter.values.find((entry) =>
@@ -972,12 +990,36 @@ export function resolveCursorSdkModelSelectionParams(args: {
         && normalizeCursorServiceTierValue(param.value) === "fast",
       ) || label.includes("fast");
     });
-    if (matchingVariant) applyParams(matchingVariant.params);
+    if (matchingVariant) applyParams(matchingVariant.params, { preserveExistingReasoning: true });
     for (const parameter of row.parameters ?? []) {
       if (!serviceTierParameterIds.has(parameter.id)) continue;
       const value = parameter.values.find((entry) =>
         normalizeCursorServiceTierValue(entry.value) === "fast"
         || normalizeCursorServiceTierValue(entry.displayName) === "fast",
+      );
+      if (value) out.set(parameter.id, value.value);
+    }
+  }
+
+  if (wantsStandard) {
+    const matchingVariant = (row.variants ?? []).find((variant) => {
+      const label = normalizeCursorMetadataText(`${variant.displayName} ${variant.description ?? ""}`);
+      const hasFastParam = variant.params.some((param) =>
+        serviceTierParameterIds.has(param.id)
+        && normalizeCursorServiceTierValue(param.value) === "fast"
+      );
+      const hasStandardParam = variant.params.some((param) =>
+        serviceTierParameterIds.has(param.id)
+        && normalizeCursorServiceTierValue(param.value) === "standard"
+      );
+      return hasStandardParam || (!hasFastParam && /\b(standard|default|regular|base|normal|slow)\b/.test(label));
+    });
+    if (matchingVariant) applyParams(matchingVariant.params, { preserveExistingReasoning: true });
+    for (const parameter of row.parameters ?? []) {
+      if (!serviceTierParameterIds.has(parameter.id)) continue;
+      const value = parameter.values.find((entry) =>
+        normalizeCursorServiceTierValue(entry.value) === "standard"
+        || normalizeCursorServiceTierValue(entry.displayName) === "standard"
       );
       if (value) out.set(parameter.id, value.value);
     }

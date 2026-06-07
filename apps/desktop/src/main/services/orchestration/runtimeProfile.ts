@@ -27,7 +27,7 @@ export function resolveOrchestrationModel(
     provider: "claude",
     modelId: "claude-sonnet-4-6",
     reasoningEffort: null,
-    codexFastMode: false,
+    fastMode: false,
     routingKey: "fallback",
   };
 }

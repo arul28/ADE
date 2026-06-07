@@ -1972,8 +1972,7 @@ export function createAutomationService({
       const promptText = typeof interpolated === "string" ? interpolated : rawPrompt;
       const { modelId, modelDescriptor, providerGroup } = resolveAutomationModelDescriptor(rule, action);
       const resolvedChat = resolveChatProviderForDescriptor(modelDescriptor);
-      const codexFastMode = providerGroup === "codex"
-        && action.codexFastMode === true
+      const fastMode = action.fastMode === true
         && modelSupportsFastMode(modelDescriptor);
       const permissionConfig = buildPermissionConfig(rule, { publishPhase: false }, action);
       const permissionMode = resolveProviderPermissionMode(providerGroup, permissionConfig);
@@ -1994,7 +1993,7 @@ export function createAutomationService({
           sessionProfile: "workflow",
           reasoningEffort,
           permissionMode,
-          ...(codexFastMode ? { codexFastMode: true } : {}),
+          ...(fastMode ? { fastMode: true } : {}),
           ...(providerGroup === "cursor" ? { cursorModeId: cursorModeIdForPermissionMode(permissionMode) } : {}),
           ...(providerGroup === "codex" && permissionConfig.providers?.codexSandbox
             ? { codexSandbox: permissionConfig.providers.codexSandbox }
@@ -2340,8 +2339,7 @@ export function createAutomationService({
       ? "plan"
       : resolveProviderPermissionMode(providerGroup, permissionConfig);
     const reasoningEffort = args.rule.execution?.session?.reasoningEffort ?? args.rule.modelConfig?.thinkingLevel ?? null;
-    const codexFastMode = providerGroup === "codex"
-      && args.rule.execution?.session?.codexFastMode === true
+    const fastMode = args.rule.execution?.session?.fastMode === true
       && modelSupportsFastMode(modelDescriptor);
     const timeoutMs = Math.max(
       15_000,
@@ -2359,7 +2357,7 @@ export function createAutomationService({
         sessionProfile: "workflow",
         reasoningEffort,
         permissionMode,
-        ...(codexFastMode ? { codexFastMode: true } : {}),
+        ...(fastMode ? { fastMode: true } : {}),
         ...(providerGroup === "cursor" ? { cursorModeId: cursorModeIdForPermissionMode(permissionMode) } : {}),
         ...(providerGroup === "codex" && !verificationRequired && !dryRun && permissionConfig.providers?.codexSandbox
           ? { codexSandbox: permissionConfig.providers.codexSandbox }

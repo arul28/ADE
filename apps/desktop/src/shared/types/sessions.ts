@@ -44,6 +44,9 @@ export type TerminalResumeLaunchConfig = {
   permissionMode?: AgentChatPermissionMode | null;
   model?: string | null;
   reasoningEffort?: string | null;
+  fastMode?: boolean | null;
+  /** @deprecated Use fastMode. Accepted for resume metadata written before the fast-mode rename. */
+  codexFastMode?: boolean | null;
   claudePermissionMode?: AgentChatClaudePermissionMode | null;
   codexApprovalPolicy?: AgentChatCodexApprovalPolicy | null;
   codexSandbox?: AgentChatCodexSandbox | null;

@@ -4180,13 +4180,16 @@ export function createPtyService({
 
       const { session: resumableSession, provider } = await resolveEndedResumeSession(sessionId, session);
       const overrides = resumeLaunchOverrides(args);
+      const launchMetadata = resumableSession.resumeMetadata?.launch;
       const openCodeReplayCommand = provider === "opencode"
         && resumableSession.resumeMetadata?.provider === "opencode"
         && openCodeSupportsReplayResume()
         ? buildOpenCodeReplayResumeCommand({
             permissionMode: overrides.permissionMode ?? resumableSession.resumeMetadata.launch.permissionMode ?? null,
             targetId: sanitizeResumeTargetId(resumableSession.resumeMetadata.targetId ?? null),
-            model: overrides.model,
+            model: overrides.model ?? launchMetadata?.model ?? null,
+            reasoningEffort: overrides.reasoningEffort ?? launchMetadata?.reasoningEffort ?? null,
+            fastMode: launchMetadata?.fastMode ?? launchMetadata?.codexFastMode ?? null,
             prompt: text,
           })
         : null;

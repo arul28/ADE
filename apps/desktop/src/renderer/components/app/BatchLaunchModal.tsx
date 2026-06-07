@@ -215,7 +215,7 @@ function makeInitialConfig(defaultModelId: string, kickoffPrompt: string): PerIs
   return {
     modelId: defaultModelId,
     reasoningEffort: null,
-    codexFastMode: false,
+    fastMode: false,
     // Seed the kickoff prompt with the default so the textarea is editable
     // in-place (rather than only showing it as a placeholder).
     kickoffPrompt,
@@ -337,7 +337,7 @@ export function BatchLaunchModal({
           ...makeInitialConfig(seedModel, kickoffPrompt),
           sessionType: defaultSessionType,
           reasoningEffort: defaultEffort,
-          codexFastMode: defaultFast,
+          fastMode: defaultFast,
           permissionMode: defaultPermission,
         };
       }
@@ -444,7 +444,7 @@ export function BatchLaunchModal({
           ...state,
           modelId: defaultModel,
           reasoningEffort: defaultEffort,
-          codexFastMode: defaultFast,
+          fastMode: defaultFast,
           sessionType: defaultSessionType,
           permissionMode: defaultPermission,
         };
@@ -536,7 +536,7 @@ export function BatchLaunchModal({
             surfaceKey="batch-launch-default"
             compact
             fastModeActive={defaultFast}
-            onFastModeToggle={(next) => { setDefaultFast(next); applyDefaultField("codexFastMode", next); }}
+            onFastModeToggle={(next) => { setDefaultFast(next); applyDefaultField("fastMode", next); }}
             fastModeSupported={batchLaunchSupportsFastMode(defaultModel)}
           />
           <ReasoningEffortPicker
@@ -628,8 +628,8 @@ export function BatchLaunchModal({
                       onChange={(modelId) => patchIssue(issue.id, { modelId })}
                       surfaceKey={`batch-launch-${issue.id}`}
                       compact
-                      fastModeActive={state.codexFastMode}
-                      onFastModeToggle={(next) => patchIssue(issue.id, { codexFastMode: next })}
+                      fastModeActive={state.fastMode}
+                      onFastModeToggle={(next) => patchIssue(issue.id, { fastMode: next })}
                       fastModeSupported={batchLaunchSupportsFastMode(state.modelId)}
                     />
                     <ReasoningEffortPicker

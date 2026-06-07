@@ -1,5 +1,7 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { LaneLinearIssue, LaneSummary } from "../../shared/types";
+import { createDynamicCursorCliModelDescriptor } from "../../shared/modelRegistry";
+import { descriptorsFromAgentChatModelCatalog, resetRuntimeCatalogDescriptorCacheForTests } from "../components/shared/ModelPicker/modelCatalog";
 import {
   defaultKickoffPrompt,
   findIssueConflicts,
@@ -7,6 +9,10 @@ import {
   type BatchLaunchDeps,
   type BatchLaunchIssueConfig,
 } from "./linearBatchLaunch";
+
+afterEach(() => {
+  resetRuntimeCatalogDescriptorCacheForTests();
+});
 
 /** A no-op CLI launch dep for chat-focused tests (BatchLaunchDeps requires it). */
 function makeLaunchCli(): BatchLaunchDeps["launchCli"] {
@@ -41,7 +47,7 @@ function makeConfig(overrides: Partial<BatchLaunchIssueConfig> = {}): BatchLaunc
   return {
     modelId: "anthropic/claude-opus-4-8",
     reasoningEffort: null,
-    codexFastMode: false,
+    fastMode: false,
     kickoffPrompt: "",
     branchOverride: "",
     ...overrides,
@@ -59,6 +65,59 @@ function makeLane(overrides: Partial<LaneSummary> = {}): LaneSummary {
     status: { dirty: false, ahead: 0, behind: 0, remoteBehind: -1, rebaseInProgress: false },
     ...overrides,
   } as LaneSummary;
+}
+
+function seedCursorRuntimeDescriptor(): { modelId: string; concreteFastModel: string } {
+  const concreteFastModel = "claude-opus-4-7-thinking-medium-fast";
+  const descriptor = createDynamicCursorCliModelDescriptor("claude-opus-4-7-thinking", "Opus 4.7 1M Thinking", {
+    reasoningTiers: ["low", "medium"],
+    serviceTiers: ["fast"],
+    cursorAvailability: { cli: true, sdk: false },
+    cursorCliVariants: [
+      { modelId: "claude-opus-4-7-thinking-low", reasoningEffort: "low", fastMode: false },
+      { modelId: "claude-opus-4-7-thinking-low-fast", reasoningEffort: "low", fastMode: true },
+      { modelId: "claude-opus-4-7-thinking-medium", reasoningEffort: "medium", fastMode: false },
+      { modelId: concreteFastModel, reasoningEffort: "medium", fastMode: true },
+    ],
+  });
+  descriptorsFromAgentChatModelCatalog({
+    fetchedAt: "2026-06-07T00:00:00.000Z",
+    groups: [{
+      key: "cursor",
+      displayName: "Cursor",
+      providers: [{
+        key: "cursor",
+        displayName: "Cursor",
+        badgeColor: "#8B5CF6",
+        modelCount: 1,
+        subsections: [{
+          key: "cursor",
+          label: "Cursor",
+          models: [{
+            id: descriptor.id,
+            runtimeModelId: descriptor.providerModelId,
+            provider: "cursor",
+            providerKey: "cursor",
+            groupKey: "cursor",
+            displayName: descriptor.displayName,
+            isDefault: true,
+            isAvailable: true,
+            reasoningEfforts: [
+              { effort: "low", description: "low reasoning" },
+              { effort: "medium", description: "medium reasoning" },
+            ],
+            serviceTiers: ["fast"],
+            supportsReasoning: true,
+            supportsTools: true,
+            family: "cursor",
+            cursorAvailability: { cli: true, sdk: false },
+            cursorCliVariants: descriptor.cursorCliVariants,
+          }],
+        }],
+      }],
+    }],
+  });
+  return { modelId: descriptor.id, concreteFastModel };
 }
 
 describe("findIssueConflicts", () => {
@@ -313,6 +372,63 @@ describe("runBatchLaunch", () => {
     });
     expect(launchCli.mock.calls[0]?.[0]?.kickoffPrompt).not.toMatch(/[A-Z]{2,}-\d+/);
     expect(result.createdSessionIds).toEqual(["cli-1"]);
+  });
+
+  it("passes fast mode through to CLI launches for fast-capable models", async () => {
+    const createLane = vi.fn(async (args: { linearIssue: { id: string } }) => ({ id: `lane-${args.linearIssue.id}` }));
+    const launch = vi.fn(async () => ({ id: "sess" }));
+    const launchCli = vi.fn(async () => ({ sessionId: "cli-1" }));
+
+    await runBatchLaunch(
+      [
+        {
+          issue: makeIssue({ id: "a", identifier: "ENG-7" }),
+          config: makeConfig({
+            modelId: "openai/gpt-5.4",
+            sessionType: "cli",
+            fastMode: true,
+          }),
+        },
+      ],
+      { createLane, launch, launchCli },
+      { onItem: vi.fn() },
+    );
+
+    expect(launch).not.toHaveBeenCalled();
+    expect(launchCli).toHaveBeenCalledWith(expect.objectContaining({
+      fastMode: true,
+      model: "gpt-5.4",
+      provider: "codex",
+    }));
+  });
+
+  it("resolves Cursor batch CLI launches to the concrete fast variant", async () => {
+    const { modelId, concreteFastModel } = seedCursorRuntimeDescriptor();
+    const createLane = vi.fn(async (args: { linearIssue: { id: string } }) => ({ id: `lane-${args.linearIssue.id}` }));
+    const launch = vi.fn(async () => ({ id: "sess" }));
+    const launchCli = vi.fn(async () => ({ sessionId: "cli-1" }));
+
+    await runBatchLaunch(
+      [
+        {
+          issue: makeIssue({ id: "a", identifier: "ENG-7" }),
+          config: makeConfig({
+            modelId,
+            sessionType: "cli",
+            reasoningEffort: "medium",
+            fastMode: true,
+          }),
+        },
+      ],
+      { createLane, launch, launchCli },
+      { onItem: vi.fn() },
+    );
+
+    expect(launch).not.toHaveBeenCalled();
+    expect(launchCli).toHaveBeenCalledWith(expect.objectContaining({
+      model: concreteFastModel,
+      provider: "cursor",
+    }));
   });
 
   it("records every concurrent delayed CLI launch by its returned terminal session id", async () => {

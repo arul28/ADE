@@ -2861,7 +2861,7 @@ describe("ptyService", () => {
             provider: "opencode",
             targetKind: "session",
             targetId: "ses_abc",
-            launch: { permissionMode: "plan" },
+            launch: { permissionMode: "plan", fastMode: true },
           },
         });
         sessionService.end({
@@ -2886,7 +2886,7 @@ describe("ptyService", () => {
         const spawn = (loadPty.mock.results[0]?.value as any).spawn;
         const spawnArgs = spawn.mock.calls.map((call: any[]) => call[1]).flat();
         expect(spawnArgs.some((line: string) =>
-          line.includes("opencode run --interactive --agent plan --model lmstudio/openai/gpt-oss-20b --session ses_abc --replay --replay-limit 40 --")
+          line.includes("opencode run --interactive --agent plan --model lmstudio/openai/gpt-oss-20b --variant fast --session ses_abc --replay --replay-limit 40 --")
           && line.includes("continue from the freeze frame")
           && line.includes("\"question\":\"allow\"")
         )).toBe(true);

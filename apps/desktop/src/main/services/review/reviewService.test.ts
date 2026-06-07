@@ -930,7 +930,7 @@ describe("reviewService", () => {
         makeOutput("No cross-file findings.", []),
         makeOutput("No checks findings.", []),
       ],
-      config: { codexFastMode: true },
+      config: { fastMode: true },
     });
 
     const run = await harness.start();
@@ -940,7 +940,7 @@ describe("reviewService", () => {
     );
 
     expect(harness.createSession).toHaveBeenCalledWith(expect.objectContaining({
-      codexFastMode: true,
+      fastMode: true,
       permissionMode: "plan",
       surface: "automation",
     }));

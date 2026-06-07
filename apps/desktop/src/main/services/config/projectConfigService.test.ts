@@ -762,7 +762,7 @@ describe("projectConfigService - automation execution", () => {
               laneMode: "nope",
               laneNamePreset: "issue-title",
               laneNameTemplate: "Should be dropped",
-              session: { codexFastMode: true },
+              session: { fastMode: true },
             },
           },
           {
@@ -792,7 +792,7 @@ describe("projectConfigService - automation execution", () => {
                     type: "agent-session",
                     prompt: "Summarize",
                     modelConfig: { modelId: "openai/gpt-5.5", thinkingLevel: "high" },
-                    codexFastMode: true,
+                    fastMode: true,
                     permissionConfig: { providers: { codex: "full-auto", codexSandbox: "danger-full-access" } },
                   },
                 ],
@@ -852,7 +852,7 @@ describe("projectConfigService - automation execution", () => {
       kind: "agent-session",
       laneMode: "reuse",
       laneNamePreset: "issue-title",
-      session: { codexFastMode: true },
+      session: { fastMode: true },
     });
     expect(presetRule.execution?.laneNameTemplate).toBeUndefined();
     expect(requireTriggerLaneRule.execution).toMatchObject({
@@ -870,7 +870,7 @@ describe("projectConfigService - automation execution", () => {
           {
             type: "agent-session",
             modelConfig: { modelId: "openai/gpt-5.5", thinkingLevel: "high" },
-            codexFastMode: true,
+            fastMode: true,
             permissionConfig: { providers: { codex: "full-auto", codexSandbox: "danger-full-access" } },
           },
         ],

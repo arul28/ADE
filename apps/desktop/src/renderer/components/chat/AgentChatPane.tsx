@@ -1038,7 +1038,7 @@ type LastLaunchConfig = {
   version: 1;
   modelId: string;
   reasoningEffort: string | null;
-  codexFastMode: boolean;
+  fastMode: boolean;
   executionMode: AgentChatExecutionMode;
   controls: NativeControlState;
   updatedAt: string;
@@ -1049,7 +1049,7 @@ type ComposerDraftStorageSnapshot = {
   text: string;
   modelId: string;
   reasoningEffort: string | null;
-  codexFastMode: boolean;
+  fastMode: boolean;
   executionMode: AgentChatExecutionMode;
   controls: NativeControlState;
   attachments: AgentChatFileRef[];
@@ -1065,7 +1065,7 @@ type ComposerDraftStorageSnapshot = {
 type ParallelModelRowState = NativeControlState & {
   modelId: string;
   reasoningEffort: string | null;
-  codexFastMode: boolean;
+  fastMode: boolean;
   executionMode: AgentChatExecutionMode;
 };
 
@@ -1190,7 +1190,7 @@ function runtimeFacingModelId(desc: ModelDescriptor | null | undefined, registry
 }
 
 function nativeControlSliceFromParallelSlot(slot: ParallelModelRowState): NativeControlState {
-  const { modelId: _, reasoningEffort: _re, codexFastMode: _cfm, executionMode: _em, ...native } = slot;
+  const { modelId: _, reasoningEffort: _re, fastMode: _fm, executionMode: _em, ...native } = slot;
   return native;
 }
 
@@ -1198,7 +1198,7 @@ function cloneParallelSlotFromComposer(args: {
   native: NativeControlState;
   modelId: string;
   reasoningEffort: string | null;
-  codexFastMode: boolean;
+  fastMode: boolean;
   executionMode: AgentChatExecutionMode;
 }): ParallelModelRowState {
   return {
@@ -1206,7 +1206,7 @@ function cloneParallelSlotFromComposer(args: {
     cursorConfigValues: { ...args.native.cursorConfigValues },
     modelId: args.modelId,
     reasoningEffort: args.reasoningEffort,
-    codexFastMode: args.codexFastMode,
+    fastMode: args.fastMode,
     executionMode: args.executionMode,
   };
 }
@@ -1902,12 +1902,16 @@ function normalizeCursorConfigValues(value: unknown): Record<string, AgentChatCu
   return { ...value } as Record<string, AgentChatCursorConfigValue>;
 }
 
+function readStoredFastMode(value: Record<string, unknown>): boolean {
+  return value.fastMode === true || value.codexFastMode === true;
+}
+
 type LaunchConfigSessionSource = Pick<
   AgentChatSessionSummary,
   | "model"
   | "modelId"
   | "reasoningEffort"
-  | "codexFastMode"
+  | "fastMode"
   | "executionMode"
   | "permissionMode"
   | "interactionMode"
@@ -1989,7 +1993,7 @@ function buildLastLaunchConfig(
     version: 1,
     modelId,
     reasoningEffort: source.reasoningEffort ?? null,
-    codexFastMode: modelSupportsFastMode(desc) && source.codexFastMode === true,
+    fastMode: modelSupportsFastMode(desc) && source.fastMode === true,
     executionMode: pickStringEnum(source.executionMode, EXECUTION_MODES, "focused"),
     controls: nativeControlsFromLaunchSource(source, defaults),
     updatedAt,
@@ -2014,7 +2018,7 @@ function normalizeStoredLaunchConfig(
     reasoningEffort: typeof value.reasoningEffort === "string" && value.reasoningEffort.trim().length
       ? value.reasoningEffort.trim()
       : null,
-    codexFastMode: modelSupportsFastMode(desc) && value.codexFastMode === true,
+    fastMode: modelSupportsFastMode(desc) && readStoredFastMode(value),
     executionMode: pickStringEnum(value.executionMode, EXECUTION_MODES, "focused"),
     controls,
     updatedAt: typeof value.updatedAt === "string" && value.updatedAt.trim().length
@@ -2250,7 +2254,7 @@ function normalizeStoredComposerDraft(
     text: typeof value.text === "string" ? value.text : "",
     modelId,
     reasoningEffort: nonEmptyString(value.reasoningEffort),
-    codexFastMode: modelSupportsFastMode(desc) && value.codexFastMode === true,
+    fastMode: modelSupportsFastMode(desc) && readStoredFastMode(value),
     executionMode: pickStringEnum(value.executionMode, EXECUTION_MODES, "focused"),
     controls: nativeControlsFromLaunchSource(
       isRecord(value.controls) ? value.controls : {},
@@ -2923,7 +2927,7 @@ export function AgentChatPane({
   const [modelId, setModelId] = useState<string>("");
   const [runtimeCatalogVersion, setRuntimeCatalogVersion] = useState(0);
   const [reasoningEffort, setReasoningEffort] = useState<string | null>(null);
-  const [codexFastMode, setCodexFastMode] = useState(false);
+  const [fastMode, setFastMode] = useState(false);
   const [executionMode, setExecutionMode] = useState<AgentChatExecutionMode>("focused");
   const [interactionMode, setInteractionMode] = useState<AgentChatInteractionMode>(initialNativeControls.interactionMode);
   // Seed availableModelIds, aiStatus, and providerConnections synchronously
@@ -3146,7 +3150,7 @@ export function AgentChatPane({
   const [handoffBusy, setHandoffBusy] = useState(false);
   const [handoffModelId, setHandoffModelId] = useState("");
   const [handoffReasoningEffort, setHandoffReasoningEffort] = useState<string | null>(null);
-  const [handoffCodexFastMode, setHandoffCodexFastMode] = useState(false);
+  const [handoffFastMode, setHandoffFastMode] = useState(false);
   const [handoffClaudePermissionMode, setHandoffClaudePermissionMode] = useState<AgentChatClaudePermissionMode>(
     initialNativeControls.claudePermissionMode,
   );
@@ -3215,8 +3219,8 @@ export function AgentChatPane({
   } | null>(null);
   const nativeControlUpdateCounterRef = useRef(0);
   const reasoningEffortUpdateCounterRef = useRef(0);
-  const codexFastModeUpdateCounterRef = useRef(0);
-  const pendingCodexFastModeUpdateRef = useRef<{ sessionId: string; updateId: number; promise: Promise<void> } | null>(null);
+  const fastModeUpdateCounterRef = useRef(0);
+  const pendingFastModeUpdateRef = useRef<{ sessionId: string; updateId: number; promise: Promise<void> } | null>(null);
   const pendingEventQueueRef = useRef<AgentChatEventEnvelope[]>([]);
   const eventsBySessionRef = useRef<Record<string, AgentChatEventEnvelope[]>>({});
   const eventFlushTimerRef = useRef<number | null>(null);
@@ -4272,7 +4276,7 @@ export function AgentChatPane({
       tiers,
       preferred: config.reasoningEffort,
     }));
-    setCodexFastMode(modelSupportsFastMode(desc) && config.codexFastMode);
+    setFastMode(modelSupportsFastMode(desc) && config.fastMode);
     setExecutionMode(config.executionMode);
     setInteractionMode(config.controls.interactionMode);
     setClaudePermissionMode(config.controls.claudePermissionMode);
@@ -4304,7 +4308,7 @@ export function AgentChatPane({
       setDroidPermissionMode(initialNativeControls.droidPermissionMode);
       setCursorModeId(initialNativeControls.cursorModeId);
       setCursorConfigValues(initialNativeControls.cursorConfigValues);
-      setCodexFastMode(false);
+      setFastMode(false);
       return;
     }
     const nextModelId = session.modelId ?? resolveRegistryModelId(session.model);
@@ -4312,7 +4316,7 @@ export function AgentChatPane({
       setModelId(nextModelId);
     }
     setReasoningEffort(session.reasoningEffort ?? null);
-    setCodexFastMode(session.codexFastMode === true);
+    setFastMode(session.fastMode === true);
     setExecutionMode(session.executionMode ?? "focused");
     setInteractionMode(session.interactionMode ?? initialNativeControls.interactionMode);
     setClaudePermissionMode(session.claudePermissionMode ?? initialNativeControls.claudePermissionMode);
@@ -4361,6 +4365,19 @@ export function AgentChatPane({
     : messagePlaceholder;
   const chipsJson = JSON.stringify(presentation?.chips ?? []);
   const resolvedChips = useMemo(() => JSON.parse(chipsJson) as ChatSurfaceChip[], [chipsJson]);
+  const headerChips = useMemo<ChatSurfaceChip[]>(() => {
+    const hasServiceTier = selectedSession?.provider === "codex"
+      && Object.prototype.hasOwnProperty.call(selectedSession, "codexServiceTier");
+    if (!hasServiceTier) return resolvedChips;
+    const serviceTier = selectedSession?.codexServiceTier?.trim().toLowerCase() || "default";
+    return [
+      ...resolvedChips,
+      {
+        label: `Tier: ${serviceTier}`,
+        tone: serviceTier === "fast" ? "info" : "muted",
+      },
+    ];
+  }, [resolvedChips, selectedSession?.codexServiceTier, selectedSession?.provider]);
 
   // Keep configured models selectable unless a caller explicitly constrains
   // this surface. Unconstrained sessions keep their active model visible even
@@ -5298,7 +5315,7 @@ export function AgentChatPane({
   useEffect(() => {
     if (chatActionsHandoffActive && !prevHandoffOpenRef.current) {
       setHandoffReasoningEffort(reasoningEffort ?? null);
-      setHandoffCodexFastMode(codexFastMode);
+      setHandoffFastMode(fastMode);
       setHandoffClaudePermissionMode(claudePermissionMode);
       setHandoffCodexApprovalPolicy(codexApprovalPolicy);
       setHandoffCodexSandbox(codexSandbox);
@@ -6168,7 +6185,7 @@ export function AgentChatPane({
           version: 1,
           modelId: saved.modelId,
           reasoningEffort: saved.reasoningEffort,
-          codexFastMode: saved.codexFastMode,
+          fastMode: saved.fastMode,
           executionMode: saved.executionMode,
           controls: saved.controls,
           updatedAt: saved.updatedAt,
@@ -6207,7 +6224,7 @@ export function AgentChatPane({
       text: draft,
       modelId,
       reasoningEffort,
-      codexFastMode,
+      fastMode,
       executionMode,
       controls: {
         ...currentNativeControls,
@@ -6241,7 +6258,7 @@ export function AgentChatPane({
     appControlContextItems,
     attachments,
     builtInBrowserContextItems,
-    codexFastMode,
+    fastMode,
     companionStateKey,
     composerDraftStorageKeyValue,
     contextAttachments,
@@ -6263,18 +6280,18 @@ export function AgentChatPane({
         native: currentNativeControls,
         modelId,
         reasoningEffort,
-        codexFastMode,
+        fastMode,
         executionMode,
       }),
       cloneParallelSlotFromComposer({
         native: currentNativeControls,
         modelId,
         reasoningEffort,
-        codexFastMode,
+        fastMode,
         executionMode,
       }),
     ]);
-  }, [parallelChatMode, parallelModelSlots.length, currentNativeControls, modelId, reasoningEffort, codexFastMode, executionMode]);
+  }, [parallelChatMode, parallelModelSlots.length, currentNativeControls, modelId, reasoningEffort, fastMode, executionMode]);
 
   const buildNativeControlPayload = useCallback((provider: ChatRuntimeProviderKey) => {
     return {
@@ -6369,7 +6386,7 @@ export function AgentChatPane({
       }
       const launchModelId = options.launchState?.modelId ?? modelId;
       const launchReasoningEffort = options.launchState?.reasoningEffort ?? reasoningEffort;
-      const launchCodexFastMode = options.launchState?.codexFastMode ?? codexFastMode;
+      const launchFastMode = options.launchState?.fastMode ?? fastMode;
       const launchExecutionMode = options.launchState?.executionMode ?? executionMode;
       const baseNativeControls = options.launchState?.nativeControls ?? currentNativeControls;
       const desc = resolveModelDescriptorWithRuntimeCatalog(launchModelId) ?? getModelById(launchModelId);
@@ -6403,7 +6420,7 @@ export function AgentChatPane({
         modelId: launchModelId,
         sessionProfile,
         reasoningEffort: launchReasoningEffort,
-        ...(modelSupportsFastMode(desc) ? { codexFastMode: launchCodexFastMode } : {}),
+        ...(modelSupportsFastMode(desc) ? { fastMode: launchFastMode } : {}),
         ...nativeControlPayload,
         ...orchestratorOverrides,
       });
@@ -6444,7 +6461,7 @@ export function AgentChatPane({
         model: created.model,
         modelId: created.modelId ?? launchModelId,
         reasoningEffort: launchReasoningEffort,
-        codexFastMode: modelSupportsFastMode(desc) && launchCodexFastMode,
+        fastMode: modelSupportsFastMode(desc) && launchFastMode,
         executionMode: launchExecutionMode,
         permissionMode: nativeControlPayload.permissionMode,
         interactionMode: launchControls.interactionMode,
@@ -6478,7 +6495,7 @@ export function AgentChatPane({
       if (options.notify) notifySessionCreated(created, options.notifyOptions);
       if (targetLaneId === laneId) void refreshSessions({ force: true }).catch(() => {});
       return created;
-  }, [codexFastMode, constrainedModelSelectionError, currentNativeControls, executionMode, initialNativeControls, laneId, lastLaunchConfigStorageKey, modelId, notifySessionCreated, patchSessionSummary, reasoningEffort, refreshSessions, touchSession, workDraftKind]);
+  }, [fastMode, constrainedModelSelectionError, currentNativeControls, executionMode, initialNativeControls, laneId, lastLaunchConfigStorageKey, modelId, notifySessionCreated, patchSessionSummary, reasoningEffort, refreshSessions, touchSession, workDraftKind]);
 
   const createSession = useCallback(async (): Promise<string | null> => {
     if (createSessionPromiseRef.current) {
@@ -6533,7 +6550,7 @@ export function AgentChatPane({
       draft,
       modelId,
       reasoningEffort,
-      codexFastMode,
+      fastMode,
       executionMode,
       interactionMode,
       nativeControls: {
@@ -6554,7 +6571,7 @@ export function AgentChatPane({
     appControlContextItems,
     attachments,
     builtInBrowserContextItems,
-    codexFastMode,
+    fastMode,
     contextAttachments,
     currentNativeControls,
     draft,
@@ -6623,7 +6640,7 @@ export function AgentChatPane({
         version: 1,
         modelId: snapshot.modelId,
         reasoningEffort: snapshot.reasoningEffort,
-        codexFastMode: snapshot.codexFastMode,
+        fastMode: snapshot.fastMode,
         executionMode: snapshot.executionMode,
         controls: snapshot.nativeControls,
         updatedAt: new Date().toISOString(),
@@ -6857,10 +6874,16 @@ export function AgentChatPane({
     }
     const provider = desc.family === "cursor" ? "cursor" : resolveCliProviderForModel(desc) ?? "opencode";
     const runtimeModel = getRuntimeModelRefForDescriptor(desc, provider);
+    const supportsFastMode = modelSupportsFastMode(desc);
+    const launchFastMode = supportsFastMode
+      ? prepared.fastMode
+      : provider === "claude"
+        ? false
+        : undefined;
     const launchModel = desc.family === "cursor"
       ? resolveCursorCliModelVariant(desc, {
           reasoningEffort: prepared.reasoningEffort,
-          fastMode: prepared.codexFastMode,
+          fastMode: supportsFastMode && prepared.fastMode,
         })
       : runtimeModel;
     const permissionMode = cliPermissionModeFromNativeControls(provider, prepared.nativeControls);
@@ -6877,6 +6900,9 @@ export function AgentChatPane({
       ...(cliSessionId ? { sessionId: cliSessionId } : {}),
       model: launchModel,
       reasoningEffort: prepared.reasoningEffort,
+      ...((provider === "codex" || provider === "claude" || provider === "opencode") && launchFastMode !== undefined
+        ? { fastMode: launchFastMode }
+        : {}),
       initialPrompt: cliPrompt,
       laneWorktreePath: targetLane.worktreePath ?? projectRoot,
     });
@@ -7082,7 +7108,9 @@ export function AgentChatPane({
         targetModelId: handoffModelId,
         mode,
         reasoningEffort: handoffReasoningEffort,
-        ...(handoffTargetProvider === "codex" ? { codexFastMode: handoffCodexFastMode } : {}),
+        ...(handoffTargetProvider === "codex" || handoffTargetProvider === "opencode"
+          ? { fastMode: handoffFastMode }
+          : {}),
         claudePermissionMode: handoffClaudePermissionMode,
         codexApprovalPolicy: handoffCodexApprovalPolicy,
         codexSandbox: handoffCodexSandbox,
@@ -7108,7 +7136,7 @@ export function AgentChatPane({
     handoffClaudePermissionMode,
     handoffCodexApprovalPolicy,
     handoffCodexConfigSource,
-    handoffCodexFastMode,
+    handoffFastMode,
     handoffCodexSandbox,
     handoffCursorConfigValues,
     handoffCursorModeId,
@@ -7379,7 +7407,7 @@ export function AgentChatPane({
             modelId: slot.modelId,
             sessionProfile: resolveChatSessionProfile(),
             reasoningEffort: slot.reasoningEffort,
-            ...(modelSupportsFastMode(desc) ? { codexFastMode: slot.codexFastMode } : {}),
+            ...(modelSupportsFastMode(desc) ? { fastMode: slot.fastMode } : {}),
             ...buildNativeControlPayloadForSlot(slot, provider),
           });
           sessionByLane.set(childLane.id, created.id);
@@ -7568,10 +7596,10 @@ export function AgentChatPane({
         return;
       }
     }
-    const pendingCodexFastModeUpdate = pendingCodexFastModeUpdateRef.current;
-    if (selectedSessionId && pendingCodexFastModeUpdate?.sessionId === selectedSessionId) {
+    const pendingFastModeUpdate = pendingFastModeUpdateRef.current;
+    if (selectedSessionId && pendingFastModeUpdate?.sessionId === selectedSessionId) {
       try {
-        await pendingCodexFastModeUpdate.promise;
+        await pendingFastModeUpdate.promise;
       } catch {
         return;
       }
@@ -7700,10 +7728,10 @@ export function AgentChatPane({
         Boolean(selectedSessionId)
         && Boolean(selectedSessionModelId)
         && selectedSessionModelId !== modelId;
-      const selectedCodexFastModeChanged =
+      const selectedFastModeChanged =
         Boolean(selectedSessionId)
         && selectedSession?.provider === "codex"
-        && (selectedSession.codexFastMode === true) !== codexFastMode;
+        && (selectedSession.fastMode === true) !== fastMode;
       const selectedAttachments = isLiteralSlashCommand ? [] : attachmentsSnapshot;
       const selectedContextAttachments = isLiteralSlashCommand ? [] : contextAttachmentsSnapshot;
       const optimisticEnvelope = (nextSessionId: string): AgentChatEventEnvelope => ({
@@ -7724,7 +7752,7 @@ export function AgentChatPane({
 
       if (sessionId && !turnActive && (
         selectedModelChanged
-        || selectedCodexFastModeChanged
+        || selectedFastModeChanged
         || hasComputerUseSelectionChanged
         || shouldPromoteLightSession
       )) {
@@ -7735,7 +7763,7 @@ export function AgentChatPane({
           sessionId,
           modelId,
           reasoningEffort,
-          ...(modelSupportsFastMode(desc) ? { codexFastMode } : {}),
+          ...(modelSupportsFastMode(desc) ? { fastMode } : {}),
           ...buildNativeControlPayload(provider),
         });
         void refreshSessions().catch(() => {});
@@ -7863,7 +7891,7 @@ export function AgentChatPane({
     attachments,
     buildNativeControlPayload,
     busy,
-    codexFastMode,
+    fastMode,
     constrainedModelSelectionError,
     copyPromptForLaunch,
     createSession,
@@ -8149,52 +8177,52 @@ export function AgentChatPane({
     sessionMutationKind,
   ]);
 
-  const handleCodexFastModeChange = useCallback((enabled: boolean) => {
-    const previousFastMode = codexFastMode;
+  const handleFastModeChange = useCallback((enabled: boolean) => {
+    const previousFastMode = fastMode;
     if (!selectedSessionId) {
       draftLaunchConfigTouchedKeyRef.current = draftLaunchConfigScopeKey;
     }
-    setCodexFastMode(enabled);
+    setFastMode(enabled);
     if (!selectedSessionId) return;
     if (isPersistentIdentitySurface && sessionMutationKind) return;
 
-    const updateId = ++codexFastModeUpdateCounterRef.current;
+    const updateId = ++fastModeUpdateCounterRef.current;
     const targetSessionId = selectedSessionId;
-    patchSessionSummary(targetSessionId, { codexFastMode: enabled });
+    patchSessionSummary(targetSessionId, { fastMode: enabled });
     const updatePromise = window.ade.agentChat.updateSession({
       sessionId: targetSessionId,
-      codexFastMode: enabled,
+      fastMode: enabled,
     }).then((updatedSession) => {
-      if (updateId !== codexFastModeUpdateCounterRef.current) return;
-      const reconciled = updatedSession.codexFastMode === true;
-      patchSessionSummary(targetSessionId, { codexFastMode: reconciled });
+      if (updateId !== fastModeUpdateCounterRef.current) return;
+      const reconciled = updatedSession.fastMode === true;
+      patchSessionSummary(targetSessionId, { fastMode: reconciled });
       if (selectedSessionIdRef.current === targetSessionId) {
-        setCodexFastMode(reconciled);
+        setFastMode(reconciled);
       }
       void refreshSessions().catch(() => {});
     }).catch((err) => {
-      if (updateId === codexFastModeUpdateCounterRef.current
+      if (updateId === fastModeUpdateCounterRef.current
         && selectedSessionIdRef.current === targetSessionId) {
-        setCodexFastMode(previousFastMode);
-        patchSessionSummary(targetSessionId, { codexFastMode: previousFastMode });
+        setFastMode(previousFastMode);
+        patchSessionSummary(targetSessionId, { fastMode: previousFastMode });
       }
       void refreshSessions().catch(() => {});
       setError(err instanceof Error ? err.message : String(err));
       throw err;
     }).finally(() => {
-      const pending = pendingCodexFastModeUpdateRef.current;
+      const pending = pendingFastModeUpdateRef.current;
       if (pending?.sessionId === targetSessionId && pending.updateId === updateId) {
-        pendingCodexFastModeUpdateRef.current = null;
+        pendingFastModeUpdateRef.current = null;
       }
     });
-    pendingCodexFastModeUpdateRef.current = {
+    pendingFastModeUpdateRef.current = {
       sessionId: targetSessionId,
       updateId,
       promise: updatePromise,
     };
     void updatePromise.catch(() => {});
   }, [
-    codexFastMode,
+    fastMode,
     draftLaunchConfigScopeKey,
     isPersistentIdentitySurface,
     patchSessionSummary,
@@ -8414,13 +8442,13 @@ export function AgentChatPane({
                   type="button"
                   className={cn(
                     "mt-1 inline-flex h-8 items-center gap-1.5 rounded-md border px-2.5 font-sans text-[11px] font-semibold transition-colors",
-                    handoffCodexFastMode
+                    handoffFastMode
                       ? "border-amber-300/28 bg-amber-400/12 text-amber-100"
                       : "border-white/[0.08] bg-white/[0.03] text-muted-fg/62 hover:bg-white/[0.06] hover:text-fg/78",
                   )}
-                  aria-pressed={handoffCodexFastMode}
+                  aria-pressed={handoffFastMode}
                   aria-label="Fast mode for handoff"
-                  onClick={() => setHandoffCodexFastMode((current) => !current)}
+                  onClick={() => setHandoffFastMode((current) => !current)}
                 >
                   <Lightning size={12} weight="fill" />
                   Fast
@@ -8809,7 +8837,7 @@ export function AgentChatPane({
             </SmartTooltip>
           ) : null}
           {chatTerminalVisible ? <ChatTerminalToggle open={terminalDrawerOpen} onToggle={() => setTerminalDrawerOpen((v) => !v)} /> : null}
-          {resolvedChips.map((chip) => (
+          {headerChips.map((chip) => (
             <span
               key={`${chip.label}:${chip.tone ?? "accent"}`}
               className={cn(
@@ -8996,7 +9024,7 @@ export function AgentChatPane({
             }}
             allowCliOnlyModels={workDraftKind === "cli"}
             reasoningEffort={reasoningEffort}
-            codexFastMode={codexFastMode}
+            fastMode={fastMode}
             usageViewModel={selectedUsageViewModel}
             draft={draft}
             lastSentUserMessage={lastSentUserMessage}
@@ -9140,7 +9168,7 @@ export function AgentChatPane({
                 sessionId: selectedSessionId,
                 modelId: nextModelId,
                 reasoningEffort: snapshot.nextReasoningEffort,
-                ...(modelSupportsFastMode(snapshot.nextDesc) ? { codexFastMode } : {}),
+                ...(modelSupportsFastMode(snapshot.nextDesc) ? { fastMode } : {}),
                 ...nextNativeControlPayload,
               }).then((updatedSession) => {
                 applyModelSelectionSnapshot(snapshot);
@@ -9149,7 +9177,7 @@ export function AgentChatPane({
                   model: updatedSession.model,
                   modelId: updatedSession.modelId,
                   reasoningEffort: updatedSession.reasoningEffort ?? null,
-                  codexFastMode: updatedSession.codexFastMode === true,
+                  fastMode: updatedSession.fastMode === true,
                   permissionMode: updatedSession.permissionMode,
                   interactionMode: updatedSession.interactionMode ?? null,
                   claudePermissionMode: updatedSession.claudePermissionMode,
@@ -9182,7 +9210,7 @@ export function AgentChatPane({
               });
             }}
             onReasoningEffortChange={handleReasoningEffortChange}
-            onCodexFastModeChange={handleCodexFastModeChange}
+            onFastModeChange={handleFastModeChange}
             onDraftChange={updateComposerDraft}
             onClearDraft={() => updateComposerDraft("")}
             onSubmit={() => {
@@ -9332,7 +9360,7 @@ export function AgentChatPane({
                   native: nativeControlsRef.current,
                   modelId,
                   reasoningEffort,
-                  codexFastMode,
+                  fastMode,
                   executionMode,
                 }),
               ]);
@@ -9376,8 +9404,8 @@ export function AgentChatPane({
             onParallelSlotReasoningChange={(index, effort) => {
               patchParallelSlot(index, { reasoningEffort: effort });
             }}
-            onParallelSlotCodexFastModeChange={(index, enabled) => {
-              patchParallelSlot(index, { codexFastMode: enabled });
+            onParallelSlotFastModeChange={(index, enabled) => {
+              patchParallelSlot(index, { fastMode: enabled });
             }}
             parallelLaunchBusy={parallelLaunchBusy}
             parallelLaunchStatus={parallelLaunchStatus}

@@ -288,6 +288,8 @@ export function buildTrackedCliStartupCommand(args: {
   model?: string | null;
   /** Optional reasoning effort for fresh launches when the runtime supports it. */
   reasoningEffort?: string | null;
+  /** Optional fast-mode override for runtimes that expose a fast tier. */
+  fastMode?: boolean | null;
   /** Optional user prompt to submit with the fresh launch. */
   initialPrompt?: string | null;
   /** Active lane worktree used to make ADE skill roots lane-aware. */
@@ -306,6 +308,8 @@ export function buildTrackedCliLaunchCommand(args: {
   model?: string | null;
   /** Optional reasoning effort for fresh launches when the runtime supports it. */
   reasoningEffort?: string | null;
+  /** Optional fast-mode override for runtimes that expose a fast tier. */
+  fastMode?: boolean | null;
   /** Optional user prompt to submit with the fresh launch. */
   initialPrompt?: string | null;
   /** Active lane worktree used to make ADE skill roots lane-aware. */
@@ -333,6 +337,7 @@ export function buildTrackedCliLaunchCommand(args: {
     if (reasoningEffort) {
       commandArgs.push("--effort", reasoningEffort);
     }
+    commandArgs.push(...claudeFastModeSettingsFlags(args.fastMode));
     const guidance = buildAdeCliAgentGuidance(skillRoots);
     commandArgs.push("--append-system-prompt", guidance);
     commandArgs.push(...permissionModeToClaudeFlag(permissionMode));
@@ -360,6 +365,7 @@ export function buildTrackedCliLaunchCommand(args: {
       "--no-alt-screen",
       ...modelToCliFlag(codexModel),
       ...codexReasoningEffortFlags(args.reasoningEffort),
+      ...codexServiceTierFlags(args.fastMode),
       ...permissionModeToCodexFlags(permissionMode),
     ];
     const usePromptArg = codexModel === "gpt-5.3-codex";
@@ -423,6 +429,8 @@ export function buildTrackedCliLaunchCommand(args: {
   const opencode = buildOpenCodeCommandParts({
     permissionMode,
     model: args.model,
+    reasoningEffort: args.reasoningEffort,
+    fastMode: args.fastMode,
     prompt: workTabCliPrompt(initialPrompt, skillRoots),
   });
   const opencodeEnv = withAdeAgentSkillEnv(opencode.env, skillRoots);
@@ -482,6 +490,22 @@ export function resolveCodexCliModelForLaunch(model: string | null | undefined):
 export function codexReasoningEffortFlags(reasoningEffort: string | null | undefined): string[] {
   const effort = normalizeCliFlagValue(reasoningEffort);
   return effort ? ["-c", `model_reasoning_effort="${effort}"`] : [];
+}
+
+export function codexServiceTierFlags(fastMode: boolean | null | undefined): string[] {
+  if (fastMode === true) {
+    return ["-c", "service_tier=\"fast\"", "-c", "features.fast_mode=true"];
+  }
+  if (fastMode === false) {
+    return ["-c", "service_tier=\"default\""];
+  }
+  return [];
+}
+
+export function claudeFastModeSettingsFlags(fastMode: boolean | null | undefined): string[] {
+  if (fastMode === true) return ["--settings", JSON.stringify({ fastMode: true })];
+  if (fastMode === false) return ["--settings", JSON.stringify({ fastMode: false })];
+  return [];
 }
 
 function workTabCliPrompt(initialPrompt: string | null, skillRoots: readonly string[]): string {
@@ -633,21 +657,42 @@ function normalizeOpenCodeCliModel(model: string | null | undefined): string | n
   return `${decoded.openCodeProviderId}/${decoded.openCodeModelId}`;
 }
 
+function openCodeVariantForLaunch(args: {
+  reasoningEffort?: string | null;
+  fastMode?: boolean | null;
+}): string | null {
+  if (args.fastMode === true) return "fast";
+  return normalizeCliFlagValue(args.reasoningEffort);
+}
+
 function buildOpenCodeCommandParts(args: {
   permissionMode: AgentChatPermissionMode | null | undefined;
   model?: string | null;
+  reasoningEffort?: string | null;
+  fastMode?: boolean | null;
   prompt?: string;
   resumeTarget?: string | null;
   continueLast?: boolean;
 }): { args: string[]; startupCommand: string; env?: Record<string, string> } {
-  const commandArgs = [...permissionModeToOpenCodeArgs(args.permissionMode)];
+  const variant = openCodeVariantForLaunch(args);
+  const commandArgs = [
+    ...(variant ? ["run", "--interactive"] : []),
+    ...permissionModeToOpenCodeArgs(args.permissionMode),
+  ];
   commandArgs.push(...modelToCliFlag(normalizeOpenCodeCliModel(args.model)));
+  if (variant) commandArgs.push("--variant", variant);
   if (args.resumeTarget) {
     commandArgs.push("--session", args.resumeTarget);
   } else if (args.continueLast) {
     commandArgs.push("--continue");
   }
-  if (args.prompt) commandArgs.push("--prompt", args.prompt);
+  if (args.prompt) {
+    if (variant) {
+      commandArgs.push("--", args.prompt);
+    } else {
+      commandArgs.push("--prompt", args.prompt);
+    }
+  }
   const config = openCodeConfigEnv(args.permissionMode);
   return {
     args: commandArgs,
@@ -661,11 +706,14 @@ export const OPENCODE_RESUME_REPLAY_LIMIT = 40;
 export function buildOpenCodeReplayResumeCommand(args: {
   permissionMode: AgentChatPermissionMode | null | undefined;
   model?: string | null;
+  reasoningEffort?: string | null;
+  fastMode?: boolean | null;
   prompt: string;
   resumeTarget?: string | null;
   continueLast?: boolean;
   replayLimit?: number | null;
 }): string {
+  const variant = openCodeVariantForLaunch(args);
   const commandArgs = [
     "opencode",
     "run",
@@ -673,6 +721,7 @@ export function buildOpenCodeReplayResumeCommand(args: {
     ...permissionModeToOpenCodeArgs(args.permissionMode),
     ...modelToCliFlag(normalizeOpenCodeCliModel(args.model)),
   ];
+  if (variant) commandArgs.push("--variant", variant);
   if (args.resumeTarget) {
     commandArgs.push("--session", args.resumeTarget);
   } else if (args.continueLast) {
@@ -691,6 +740,7 @@ export function buildTrackedCliResumeCommand(
   overrides: {
     model?: string | null;
     reasoningEffort?: string | null;
+    fastMode?: boolean | null;
     permissionMode?: AgentChatPermissionMode | null;
     prompt?: string | null;
   } = {},
@@ -700,6 +750,9 @@ export function buildTrackedCliResumeCommand(
   const reasoningEffort = overrides.reasoningEffort !== undefined
     ? overrides.reasoningEffort
     : metadata.launch.reasoningEffort;
+  const fastMode = overrides.fastMode !== undefined
+    ? overrides.fastMode
+    : metadata.launch.fastMode ?? metadata.launch.codexFastMode;
   const prompt = normalizeCliFlagValue(overrides.prompt);
   validateLaunchProfilePermissionMode(metadata.provider, permissionMode);
 
@@ -710,6 +763,7 @@ export function buildTrackedCliResumeCommand(
     if (claudeModel) parts.push("--model", claudeModel);
     const claudeReasoningEffort = normalizeCliFlagValue(reasoningEffort);
     if (claudeReasoningEffort) parts.push("--effort", claudeReasoningEffort);
+    parts.push(...claudeFastModeSettingsFlags(fastMode));
     parts.push("--resume");
     if (targetId) parts.push(targetId);
     if (prompt) parts.push(prompt);
@@ -722,6 +776,7 @@ export function buildTrackedCliResumeCommand(
       "--no-alt-screen",
       ...modelToCliFlag(model),
       ...codexReasoningEffortFlags(reasoningEffort),
+      ...codexServiceTierFlags(fastMode),
       ...permissionModeToCodexFlags(permissionMode),
     ];
     parts.push("resume");
@@ -761,6 +816,8 @@ export function buildTrackedCliResumeCommand(
   const opencode = buildOpenCodeCommandParts({
     permissionMode,
     model,
+    reasoningEffort,
+    fastMode,
     ...(prompt ? { prompt } : {}),
     resumeTarget: targetId || null,
     continueLast: !targetId,

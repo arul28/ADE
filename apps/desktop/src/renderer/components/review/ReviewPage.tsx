@@ -99,7 +99,7 @@ type LaunchDraft = {
   headCommit: string;
   modelId: string;
   reasoningEffort: string;
-  codexFastMode: boolean;
+  fastMode: boolean;
 };
 
 const DEFAULT_REVIEW_LAUNCH_MODEL_ID = getDefaultModelDescriptor("codex")?.id ?? "openai/gpt-5.4";
@@ -833,7 +833,7 @@ function buildTargetConfig(
         dirtyOnly: false,
         modelId: draft.modelId.trim(),
         reasoningEffort: draft.reasoningEffort.trim() || null,
-        codexFastMode: draft.codexFastMode,
+        fastMode: draft.fastMode,
         publishBehavior: "local_only",
       },
     };
@@ -848,7 +848,7 @@ function buildTargetConfig(
         dirtyOnly: false,
         modelId: draft.modelId.trim(),
         reasoningEffort: draft.reasoningEffort.trim() || null,
-        codexFastMode: draft.codexFastMode,
+        fastMode: draft.fastMode,
         publishBehavior: "local_only",
       },
     };
@@ -862,7 +862,7 @@ function buildTargetConfig(
       dirtyOnly: true,
       modelId: draft.modelId.trim(),
       reasoningEffort: draft.reasoningEffort.trim() || null,
-      codexFastMode: draft.codexFastMode,
+      fastMode: draft.fastMode,
       publishBehavior: "local_only",
     },
   };
@@ -903,7 +903,7 @@ export function ReviewPage({ active = true }: { active?: boolean } = {}) {
     headCommit: "",
     modelId: DEFAULT_REVIEW_LAUNCH_MODEL_ID,
     reasoningEffort: DEFAULT_REVIEW_REASONING_EFFORT,
-    codexFastMode: false,
+    fastMode: false,
   }));
   const recommendedModelHydratedRef = React.useRef(false);
 
@@ -1596,10 +1596,10 @@ export function ReviewPage({ active = true }: { active?: boolean } = {}) {
         <ReviewLaunchModelControls
           modelId={launchDraft.modelId}
           reasoningEffort={launchDraft.reasoningEffort}
-          codexFastMode={launchDraft.codexFastMode}
+          fastMode={launchDraft.fastMode}
           onModelChange={(value) => updateDraft("modelId", value)}
           onReasoningEffortChange={(value) => updateDraft("reasoningEffort", value)}
-          onCodexFastModeChange={(value) => updateDraft("codexFastMode", value)}
+          onFastModeChange={(value) => updateDraft("fastMode", value)}
           disabled={launching}
         />
         <p className="text-[13px] text-[#C5D2E6]">
@@ -1709,10 +1709,10 @@ export function ReviewPage({ active = true }: { active?: boolean } = {}) {
                   <ReviewLaunchModelControls
                     modelId={selectedRun.config.modelId}
                     reasoningEffort={selectedRun.config.reasoningEffort ?? DEFAULT_REVIEW_REASONING_EFFORT}
-                    codexFastMode={selectedRun.config.codexFastMode ?? false}
+                    fastMode={selectedRun.config.fastMode ?? false}
                     onModelChange={() => undefined}
                     onReasoningEffortChange={() => undefined}
-                    onCodexFastModeChange={() => undefined}
+                    onFastModeChange={() => undefined}
                     disabled
                   />
                 </div>

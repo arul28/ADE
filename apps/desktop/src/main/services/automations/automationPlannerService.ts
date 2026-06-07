@@ -752,7 +752,9 @@ function normalizeDraft(args: {
         ...(prompt ? { prompt } : {}),
         ...(safeTrim(action?.sessionTitle) ? { sessionTitle: safeTrim(action?.sessionTitle) } : {}),
         ...(actionModelConfig ? { modelConfig: actionModelConfig } : {}),
-        ...(typeof action?.codexFastMode === "boolean" ? { codexFastMode: action.codexFastMode } : {}),
+        ...(typeof (action?.fastMode ?? action?.codexFastMode) === "boolean"
+          ? { fastMode: Boolean(action?.fastMode ?? action?.codexFastMode) }
+          : {}),
         ...(actionPermissionConfig ? { permissionConfig: actionPermissionConfig } : {}),
       });
       continue;
@@ -859,8 +861,8 @@ function normalizeDraft(args: {
                   ...(safeTrim(requestedExecution.session?.reasoningEffort)
                     ? { reasoningEffort: safeTrim(requestedExecution.session?.reasoningEffort) }
                     : {}),
-                  ...(typeof requestedExecution.session?.codexFastMode === "boolean"
-                    ? { codexFastMode: requestedExecution.session.codexFastMode }
+                  ...(typeof (requestedExecution.session?.fastMode ?? requestedExecution.session?.codexFastMode) === "boolean"
+                    ? { fastMode: Boolean(requestedExecution.session?.fastMode ?? requestedExecution.session?.codexFastMode) }
                     : {}),
                 },
               }

@@ -413,7 +413,8 @@ type PersistedChatState = {
   modelId?: string;
   sessionProfile?: "light" | "workflow";
   reasoningEffort?: string | null;
-  codexFastMode?: boolean;
+  fastMode?: boolean;
+  codexServiceTier?: string | null;
   executionMode?: AgentChatExecutionMode | null;
   interactionMode?: AgentChatInteractionMode | null;
   claudePermissionMode?: AgentChatClaudePermissionMode;
@@ -2054,8 +2055,12 @@ function normalizeReasoningEffort(value: unknown): string | null {
 
 type CodexServiceTier = "fast";
 
-function normalizeCodexFastMode(value: unknown): boolean {
+function normalizeFastMode(value: unknown): boolean {
   return value === true;
+}
+
+function readLegacyFastMode(record: Record<string, unknown>): boolean {
+  return normalizeFastMode(record.fastMode ?? record.codexFastMode);
 }
 
 function catalogDescriptorInfoKey(
@@ -2202,13 +2207,20 @@ function sessionSupportsFastMode(
     || cachedCursorSdkParamsSupportFastMode(session);
 }
 
-function sessionSupportsCodexFastMode(session: AgentChatSession): boolean {
+function sessionSupportsCodexServiceTier(session: AgentChatSession): boolean {
   return session.provider === "codex" && sessionSupportsFastMode(session);
+}
+
+function sessionEffectiveFastMode(
+  session: AgentChatSession,
+  catalog?: AgentChatModelCatalog | null,
+): boolean {
+  return session.fastMode === true && sessionSupportsFastMode(session, catalog);
 }
 
 function codexServiceTierArgs(session: AgentChatSession): { serviceTier: CodexServiceTier | null } {
   // JSON-RPC needs an explicit null to clear any app-server/config default.
-  const serviceTier = session.codexFastMode === true && sessionSupportsCodexFastMode(session) ? "fast" : null;
+  const serviceTier = session.fastMode === true && sessionSupportsCodexServiceTier(session) ? "fast" : null;
   return { serviceTier };
 }
 
@@ -3835,6 +3847,7 @@ type CodexThreadLifecycleResponse = {
   approvalPolicy?: unknown;
   sandbox?: unknown;
   reasoningEffort?: unknown;
+  serviceTier?: unknown;
 };
 
 const CODEX_SANDBOX_CAMEL_CASE_ALIASES: Record<string, AgentChatCodexSandbox> = {
@@ -3889,6 +3902,10 @@ function applyCodexEffectiveThreadState(
   } = {},
 ): void {
   if (!response) return;
+
+  if (Object.prototype.hasOwnProperty.call(response, "serviceTier")) {
+    managed.session.codexServiceTier = normalizeCodexServiceTier(response.serviceTier);
+  }
 
   const requestedCodexPolicy = options.requestedCodexPolicy ?? null;
   const approvalPolicy = normalizePersistedCodexApprovalPolicy(response.approvalPolicy);
@@ -8001,7 +8018,8 @@ export function createAgentChatService(args: {
       ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
       ...(managed.session.sessionProfile ? { sessionProfile: managed.session.sessionProfile } : {}),
       ...(managed.session.reasoningEffort ? { reasoningEffort: managed.session.reasoningEffort } : {}),
-      ...(managed.session.codexFastMode === true ? { codexFastMode: true } : {}),
+      ...(managed.session.fastMode === true ? { fastMode: true } : {}),
+      ...(managed.session.codexServiceTier !== undefined ? { codexServiceTier: managed.session.codexServiceTier } : {}),
         ...(managed.session.executionMode ? { executionMode: managed.session.executionMode } : {}),
         ...(managed.session.interactionMode ? { interactionMode: managed.session.interactionMode } : {}),
         ...(managed.session.claudePermissionMode ? { claudePermissionMode: managed.session.claudePermissionMode } : {}),
@@ -8150,7 +8168,9 @@ export function createAgentChatService(args: {
         : resolveModelIdFromStoredValue(model, provider);
       const sessionProfile = normalizeSessionProfile(record.sessionProfile);
       const reasoningEffort = normalizeReasoningEffort(record.reasoningEffort);
-      const codexFastMode = normalizeCodexFastMode(record.codexFastMode);
+      const fastMode = readLegacyFastMode(record as Record<string, unknown>);
+      const hasCodexServiceTier = Object.prototype.hasOwnProperty.call(record, "codexServiceTier");
+      const codexServiceTier = hasCodexServiceTier ? normalizeCodexServiceTier(record.codexServiceTier) : undefined;
       const executionMode = normalizePersistedExecutionMode(record.executionMode);
         const permissionMode = normalizePersistedPermissionMode(record.permissionMode);
         const claudePermissionMode = normalizePersistedClaudePermissionMode(record.claudePermissionMode);
@@ -8276,7 +8296,8 @@ export function createAgentChatService(args: {
         ...(modelId ? { modelId } : {}),
         ...(sessionProfile ? { sessionProfile } : {}),
         ...(reasoningEffort ? { reasoningEffort } : {}),
-        ...(codexFastMode ? { codexFastMode: true } : {}),
+        ...(fastMode ? { fastMode: true } : {}),
+        ...(hasCodexServiceTier ? { codexServiceTier } : {}),
         ...(executionMode ? { executionMode } : {}),
           ...(interactionMode ? { interactionMode } : {}),
           ...(claudePermissionMode ? { claudePermissionMode } : {}),
@@ -9871,7 +9892,7 @@ export function createAgentChatService(args: {
         ...(hydratedModelId ? { modelId: hydratedModelId } : {}),
         ...(persisted?.sessionProfile ? { sessionProfile: persisted.sessionProfile } : {}),
         reasoningEffort: persisted?.reasoningEffort ?? null,
-        codexFastMode: persisted?.codexFastMode === true,
+        fastMode: persisted?.fastMode === true,
         executionMode: persisted?.executionMode ?? null,
           interactionMode: persisted?.interactionMode ?? null,
           ...(persisted?.claudePermissionMode ? { claudePermissionMode: persisted.claudePermissionMode } : {}),
@@ -10443,15 +10464,15 @@ export function createAgentChatService(args: {
     if (/^\/fast(?:\s|$)/i.test(slashText)) {
       const fastArgs = slashText.replace(/^\/fast(?:\s+|$)/i, "").trim().toLowerCase();
       const supported = managedSessionSupportsFastMode(managed);
-      const current = managed.session.codexFastMode === true && supported;
+      const current = managed.session.fastMode === true && supported;
       if (!supported) {
-        delete managed.session.codexFastMode;
+        delete managed.session.fastMode;
         completeInlineCodexSlash("Fast mode is not available for this model.");
         return;
       }
       if (!fastArgs || fastArgs === "toggle") {
         const enabled = !current;
-        managed.session.codexFastMode = enabled;
+        managed.session.fastMode = enabled;
         if (runtime.threadResumed) {
           runtime.threadResumed = false;
           runtime.canAttachResumedTurnStart = false;
@@ -10466,7 +10487,7 @@ export function createAgentChatService(args: {
       if (fastArgs === "on" || fastArgs === "off") {
         const enabled = fastArgs === "on";
         const changed = current !== enabled;
-        managed.session.codexFastMode = enabled;
+        managed.session.fastMode = enabled;
         if (changed && runtime.threadResumed) {
           runtime.threadResumed = false;
           runtime.canAttachResumedTurnStart = false;
@@ -12672,7 +12693,7 @@ export function createAgentChatService(args: {
           ? managed.session.reasoningEffort
           : null;
       const openCodeVariant =
-        managed.session.codexFastMode === true && modelSupportsFastMode(runtime.modelDescriptor)
+        managed.session.fastMode === true && modelSupportsFastMode(runtime.modelDescriptor)
           ? "fast"
           : openCodeReasoningVariant;
       const openCodeAgent = runtime.permissionMode === "config-toml"
@@ -16560,6 +16581,7 @@ export function createAgentChatService(args: {
       settings: {
         outputStyle,
         enabledPlugins: CLAUDE_SESSION_DISABLED_PLUGINS,
+        fastMode: sessionEffectiveFastMode(managed.session),
       },
       ...(pluginPaths.length ? { plugins: pluginPaths.map((pluginPath) => ({ type: "local" as const, path: pluginPath })) } : {}),
       permissionMode: claudePermissionMode as any,
@@ -17519,11 +17541,12 @@ export function createAgentChatService(args: {
     title,
     sessionProfile,
     reasoningEffort,
-      codexFastMode: requestedCodexFastMode,
-      interactionMode: requestedInteractionMode,
-      claudePermissionMode: requestedClaudePermissionMode,
-      claudeOutputStyle: requestedClaudeOutputStyle,
-      codexApprovalPolicy: requestedCodexApprovalPolicy,
+    fastMode: requestedFastModeArg,
+    codexFastMode: requestedLegacyFastModeArg,
+    interactionMode: requestedInteractionMode,
+    claudePermissionMode: requestedClaudePermissionMode,
+    claudeOutputStyle: requestedClaudeOutputStyle,
+    codexApprovalPolicy: requestedCodexApprovalPolicy,
     codexSandbox: requestedCodexSandbox,
     codexConfigSource: requestedCodexConfigSource,
     opencodePermissionMode: requestedOpenCodePermissionModeArg,
@@ -17544,6 +17567,7 @@ export function createAgentChatService(args: {
     orchestrationStepId: requestedOrchestrationStepId,
     orchestrationBundlePath: requestedOrchestrationBundlePath,
   }: AgentChatCreateArgs): Promise<AgentChatSession> => {
+    const requestedFastMode = requestedFastModeArg ?? requestedLegacyFastModeArg;
     const launchContext = resolveLaneLaunchContext({
       laneService,
       projectRoot,
@@ -17627,6 +17651,11 @@ export function createAgentChatService(args: {
           rawEffort,
           resolvedDescriptor,
         );
+    const initialFastMode = requestedFastMode === true
+      && (
+        effectiveProvider !== "claude"
+        || (resolvedDescriptor ? modelSupportsFastMode(resolvedDescriptor) : true)
+      );
     const normalizedCursorModeId = typeof requestedCursorModeId === "string"
       ? (requestedCursorModeId.trim() || null)
       : requestedCursorModeId === null
@@ -17765,7 +17794,7 @@ export function createAgentChatService(args: {
         ...(resolvedModelId ? { modelId: resolvedModelId } : {}),
         sessionProfile: sessionProfile ?? "workflow",
         ...(normalizedReasoningEffort ? { reasoningEffort: normalizedReasoningEffort } : {}),
-          ...(requestedCodexFastMode === true ? { codexFastMode: true } : {}),
+          ...(initialFastMode ? { fastMode: true } : {}),
           ...nativePermissionFields,
           ...(isOrchestrationInteractionMode(effectiveInteractionMode)
             ? { interactionMode: effectiveInteractionMode }
@@ -17946,8 +17975,8 @@ export function createAgentChatService(args: {
       modelId: targetDescriptor.id,
       sessionProfile: managed.session.sessionProfile,
       reasoningEffort: targetReasoningEffort,
-      codexFastMode: modelSupportsFastMode(targetDescriptor)
-        ? args.codexFastMode ?? managed.session.codexFastMode === true
+      fastMode: modelSupportsFastMode(targetDescriptor)
+        ? args.fastMode ?? args.codexFastMode ?? managed.session.fastMode === true
         : undefined,
       claudePermissionMode: args.claudePermissionMode ?? managed.session.claudePermissionMode,
       codexApprovalPolicy: args.codexApprovalPolicy ?? managed.session.codexApprovalPolicy,
@@ -18325,13 +18354,13 @@ export function createAgentChatService(args: {
   ].join(":");
 
   const resolveCursorSdkModelParamsForSession = (
-    session: Pick<AgentChatSession, "reasoningEffort" | "codexFastMode">,
+    session: Pick<AgentChatSession, "reasoningEffort" | "fastMode">,
     modelSdkId: string,
   ): Array<{ id: string; value: string }> | undefined =>
     resolveCursorSdkModelSelectionParams({
       modelSdkId,
       reasoningEffort: session.reasoningEffort,
-      fastMode: session.codexFastMode === true,
+      fastMode: session.fastMode === true,
     });
 
   const cursorModelParamsForLog = (
@@ -21192,29 +21221,73 @@ export function createAgentChatService(args: {
     });
   };
 
-  const maybeHandleInlineFastSlash = (prepared: PreparedSendMessage): boolean => {
+  const applyClaudeFastModeSettingToRuntime = async (
+    managed: ManagedChatSession,
+    fastMode: boolean,
+  ): Promise<void> => {
+    if (managed.runtime?.kind !== "claude") return;
+    if (managed.runtime.query) {
+      const control = getClaudeQueryControl(managed.runtime.query);
+      if (typeof control.applyFlagSettings === "function") {
+        try {
+          await control.applyFlagSettings({ fastMode });
+        } catch (fastErr) {
+          logger.warn("agent_chat.claude_set_fast_mode_failed", {
+            sessionId: managed.session.id,
+            fastMode,
+            error: String(fastErr),
+          });
+          if (!managed.runtime.busy) {
+            resetClaudeQuerySession(managed, managed.runtime, "session_reset");
+          } else {
+            managed.runtime.pendingSessionReset = true;
+            managed.runtime.pendingSessionResetClearSdkSessionId = false;
+          }
+        }
+      } else if (!managed.runtime.busy) {
+        resetClaudeQuerySession(managed, managed.runtime, "session_reset");
+      } else {
+        managed.runtime.pendingSessionReset = true;
+        managed.runtime.pendingSessionResetClearSdkSessionId = false;
+      }
+    } else if (managed.runtime.warmQuery || managed.runtime.warmupDone) {
+      resetClaudeQuerySession(managed, managed.runtime, "session_reset");
+    }
+  };
+
+  const maybeHandleInlineFastSlash = async (prepared: PreparedSendMessage): Promise<boolean> => {
     const slashText = prepared.submittedText.trim();
     if (!/^\/fast(?:\s|$)/i.test(slashText)) return false;
     const fastArgs = slashText.replace(/^\/fast(?:\s+|$)/i, "").trim().toLowerCase();
     const managed = prepared.managed;
+    const prevClaudeFastModeSetting = managed.session.provider === "claude"
+      ? sessionEffectiveFastMode(managed.session)
+      : false;
     const supported = managedSessionSupportsFastMode(managed);
-    const current = managed.session.codexFastMode === true && supported;
+    const current = managed.session.fastMode === true && supported;
     let message: string;
     if (!supported) {
-      delete managed.session.codexFastMode;
+      delete managed.session.fastMode;
       message = "Fast mode is not available for this model.";
     } else if (!fastArgs || fastArgs === "toggle") {
       const enabled = !current;
-      managed.session.codexFastMode = enabled;
+      managed.session.fastMode = enabled;
       message = `Fast mode is ${enabled ? "on" : "off"}.`;
     } else if (fastArgs === "status") {
       message = `Fast mode is ${current ? "on" : "off"}.`;
     } else if (fastArgs === "on" || fastArgs === "off") {
       const enabled = fastArgs === "on";
-      managed.session.codexFastMode = enabled;
+      managed.session.fastMode = enabled;
       message = `Fast mode is ${enabled ? "on" : "off"}.`;
     } else {
       message = "Usage: /fast [on|off|status].";
+    }
+
+    const nextClaudeFastModeSetting = managed.session.provider === "claude"
+      ? sessionEffectiveFastMode(managed.session)
+      : false;
+    if (nextClaudeFastModeSetting !== prevClaudeFastModeSetting) {
+      await applyClaudeFastModeSettingToRuntime(managed, nextClaudeFastModeSetting);
     }
 
     const turnId = randomUUID();
@@ -21274,7 +21347,10 @@ export function createAgentChatService(args: {
         })
       : null;
 
-    if (prepared.managed.session.provider !== "codex" && maybeHandleInlineFastSlash(prepared)) {
+    if (
+      prepared.managed.session.provider !== "codex"
+      && await maybeHandleInlineFastSlash(prepared)
+    ) {
       if (dispatchPromise) await dispatchPromise;
       return;
     }
@@ -22429,6 +22505,17 @@ export function createAgentChatService(args: {
     const pendingInputItemId = sessionHasPendingInput
       ? latestPendingInputItemIdForSession(row.id, liveManaged)
       : null;
+    const hasLiveCodexServiceTier = liveSession
+      ? Object.prototype.hasOwnProperty.call(liveSession, "codexServiceTier")
+      : false;
+    const hasPersistedCodexServiceTier = persisted
+      ? Object.prototype.hasOwnProperty.call(persisted, "codexServiceTier")
+      : false;
+    const codexServiceTier = hasLiveCodexServiceTier
+      ? liveSession?.codexServiceTier ?? null
+      : hasPersistedCodexServiceTier
+        ? persisted?.codexServiceTier ?? null
+        : undefined;
     return {
       sessionId: row.id,
       laneId: row.laneId,
@@ -22439,7 +22526,8 @@ export function createAgentChatService(args: {
       title: row.title ?? null,
       goal: row.goal ?? null,
       reasoningEffort: liveSession?.reasoningEffort ?? persisted?.reasoningEffort ?? null,
-      codexFastMode: (liveSession?.codexFastMode ?? persisted?.codexFastMode) === true,
+      fastMode: (liveSession?.fastMode ?? persisted?.fastMode) === true,
+      ...(codexServiceTier !== undefined ? { codexServiceTier } : {}),
       executionMode: liveSession?.executionMode ?? persisted?.executionMode ?? null,
       interactionMode: liveSession?.interactionMode ?? persisted?.interactionMode ?? null,
         ...(liveSession?.claudePermissionMode || persisted?.claudePermissionMode
@@ -23909,7 +23997,8 @@ export function createAgentChatService(args: {
     manuallyNamed,
     modelId,
     reasoningEffort,
-    codexFastMode,
+    fastMode: requestedFastModeArg,
+    codexFastMode: requestedLegacyFastModeArg,
     interactionMode,
     claudePermissionMode,
     codexApprovalPolicy,
@@ -23921,6 +24010,7 @@ export function createAgentChatService(args: {
     cursorConfigValues,
     permissionMode,
   }: AgentChatUpdateSessionArgs): Promise<AgentChatSession> => {
+    const fastMode = requestedFastModeArg ?? requestedLegacyFastModeArg;
     const managed = ensureManagedSession(sessionId);
     const chatConfig = resolveChatConfig();
     const isIdentitySession = Boolean(managed.session.identityKey);
@@ -23931,10 +24021,13 @@ export function createAgentChatService(args: {
     const prevCodexApprovalPolicy = managed.session.codexApprovalPolicy;
     const prevCodexSandbox = managed.session.codexSandbox;
     const prevCodexConfigSource = managed.session.codexConfigSource;
-    const prevCodexFastMode = managed.session.codexFastMode === true;
+    const prevFastMode = managed.session.fastMode === true;
     const prevClaudeTurnPermissionMode = managed.session.provider === "claude"
       ? resolveClaudeTurnPermissionMode(managed)
       : null;
+    const prevClaudeFastModeSetting = managed.session.provider === "claude"
+      ? sessionEffectiveFastMode(managed.session)
+      : false;
 
     if (modelId !== undefined) {
       const nextModelId = String(modelId ?? "").trim();
@@ -23994,7 +24087,7 @@ export function createAgentChatService(args: {
       managed.session.modelId = descriptor.id;
       managed.session.model = nextModel;
       if (nextProvider === "claude") {
-        delete managed.session.codexFastMode;
+        delete managed.session.fastMode;
       }
       managed.session.capabilityMode = inferCapabilityMode(nextProvider);
       if (previousProvider !== nextProvider || previousProvider === "codex") {
@@ -24114,12 +24207,26 @@ export function createAgentChatService(args: {
       managed.session.codexConfigSource = codexConfigSource;
     }
 
-    if (codexFastMode !== undefined) {
-      if (normalizeCodexFastMode(codexFastMode)) {
-        managed.session.codexFastMode = true;
+    if (fastMode !== undefined) {
+      if (normalizeFastMode(fastMode)) {
+        managed.session.fastMode = true;
       } else {
-        delete managed.session.codexFastMode;
+        delete managed.session.fastMode;
       }
+    }
+    if (
+      managed.session.provider === "claude"
+      && managed.session.fastMode === true
+      && !sessionSupportsFastMode(managed.session)
+    ) {
+      delete managed.session.fastMode;
+    }
+
+    const nextClaudeFastModeSetting = managed.session.provider === "claude"
+      ? sessionEffectiveFastMode(managed.session)
+      : false;
+    if (nextClaudeFastModeSetting !== prevClaudeFastModeSetting) {
+      await applyClaudeFastModeSettingToRuntime(managed, nextClaudeFastModeSetting);
     }
 
     if (opencodePermissionMode !== undefined && !permissionsPinned) {
@@ -24220,9 +24327,9 @@ export function createAgentChatService(args: {
       }
     }
     if (
-      codexFastMode !== undefined
+      fastMode !== undefined
       && managed.runtime?.kind === "codex"
-      && (managed.session.codexFastMode === true) !== prevCodexFastMode
+      && (managed.session.fastMode === true) !== prevFastMode
     ) {
       managed.runtime.threadResumed = false;
     }

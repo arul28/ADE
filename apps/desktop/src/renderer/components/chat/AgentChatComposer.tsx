@@ -99,7 +99,7 @@ function readOrchestrationModelSelectionMetadata(
         ...(typeof r.reasoningEffort === "string" || r.reasoningEffort === null
           ? { reasoningEffort: r.reasoningEffort as string | null }
           : {}),
-        ...(typeof r.codexFastMode === "boolean" ? { codexFastMode: r.codexFastMode } : {}),
+        ...(typeof r.fastMode === "boolean" ? { fastMode: r.fastMode } : {}),
       };
     }
   }
@@ -743,7 +743,7 @@ export function AgentChatComposer({
   onRuntimeCatalogRefreshed,
   allowCliOnlyModels = false,
   reasoningEffort,
-  codexFastMode = false,
+  fastMode = false,
   usageViewModel = null,
   draft,
   lastSentUserMessage = null,
@@ -777,7 +777,7 @@ export function AgentChatComposer({
   inputLockMessage,
   onModelChange,
   onReasoningEffortChange,
-  onCodexFastModeChange,
+  onFastModeChange,
   onDraftChange,
   onClearDraft,
   onSubmit,
@@ -832,7 +832,7 @@ export function AgentChatComposer({
   onParallelRemoveModel,
   onParallelSlotModelChange,
   onParallelSlotReasoningChange,
-  onParallelSlotCodexFastModeChange,
+  onParallelSlotFastModeChange,
   parallelLaunchBusy = false,
   parallelLaunchStatus = null,
   parallelControlSlot = null,
@@ -872,7 +872,7 @@ export function AgentChatComposer({
   onRuntimeCatalogRefreshed?: (provider: AgentChatModelCatalogRefreshProvider) => void;
   allowCliOnlyModels?: boolean;
   reasoningEffort: string | null;
-  codexFastMode?: boolean;
+  fastMode?: boolean;
   usageViewModel?: ContextUsageViewModel | null;
   draft: string;
   /** Last message the user sent in this chat — recalled by ArrowUp on line 1. */
@@ -921,7 +921,7 @@ export function AgentChatComposer({
   inputLockMessage?: string | null;
   onModelChange: (modelId: string) => void;
   onReasoningEffortChange: (reasoningEffort: string | null) => void;
-  onCodexFastModeChange?: (enabled: boolean) => void;
+  onFastModeChange?: (enabled: boolean) => void;
   onDraftChange: (value: string) => void;
   onClearDraft?: () => void;
   onSubmit: () => void;
@@ -985,14 +985,14 @@ export function AgentChatComposer({
   sessionId?: string | null;
   parallelChatMode?: boolean;
   onParallelChatModeChange?: (enabled: boolean) => void;
-  parallelModelSlots?: Array<{ modelId: string; reasoningEffort: string | null; codexFastMode?: boolean }>;
+  parallelModelSlots?: Array<{ modelId: string; reasoningEffort: string | null; fastMode?: boolean }>;
   parallelConfiguringIndex?: number | null;
   onParallelConfiguringIndexChange?: (index: number | null) => void;
   onParallelAddModel?: () => void;
   onParallelRemoveModel?: (index: number) => void;
   onParallelSlotModelChange?: (index: number, modelId: string) => void;
   onParallelSlotReasoningChange?: (index: number, effort: string | null) => void;
-  onParallelSlotCodexFastModeChange?: (index: number, enabled: boolean) => void;
+  onParallelSlotFastModeChange?: (index: number, enabled: boolean) => void;
   parallelLaunchBusy?: boolean;
   parallelLaunchStatus?: string | null;
   parallelControlSlot?: ParallelComposerControlSlot | null;
@@ -1846,8 +1846,8 @@ export function AgentChatComposer({
   );
   const fastModeActive =
     parallelChatMode && parallelConfiguringIndex != null
-      ? parallelModelSlots[parallelConfiguringIndex]?.codexFastMode === true
-      : codexFastMode === true;
+      ? parallelModelSlots[parallelConfiguringIndex]?.fastMode === true
+      : fastMode === true;
 
   const claudeSelectionMode = cpmUse === "plan" || im === "plan"
     ? "plan"
@@ -3567,7 +3567,7 @@ export function AgentChatComposer({
                   triggerClassName={COMPOSER_MODEL_TRIGGER}
                   fastModeActive={fastModeActive}
                   fastModeSupported={fastModeSupported}
-                  onFastModeToggle={(next) => onParallelSlotCodexFastModeChange?.(parallelConfiguringIndex, next)}
+                  onFastModeToggle={(next) => onParallelSlotFastModeChange?.(parallelConfiguringIndex, next)}
                 />
                 <ReasoningEffortPicker
                   modelId={parallelModelSlots[parallelConfiguringIndex]!.modelId}
@@ -3596,7 +3596,7 @@ export function AgentChatComposer({
                   triggerClassName={COMPOSER_MODEL_TRIGGER}
                   fastModeActive={fastModeActive}
                   fastModeSupported={fastModeSupported}
-                  onFastModeToggle={onCodexFastModeChange}
+                  onFastModeToggle={onFastModeChange}
                 />
                 <ReasoningEffortPicker
                   modelId={modelId}

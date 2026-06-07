@@ -18,7 +18,7 @@ where the machinery lives.
 | `apps/desktop/src/main/services/ai/codexExecutable.ts` / `droidExecutable.ts` | CLI resolution for runtimes that still need an external binary (looks on PATH, in the app bundle, then in configured install paths where supported). Claude uses the bundled Claude Agent SDK binary; Cursor and Droid run through embedded SDKs (`@cursor/sdk`, `@factory/droid-sdk`). |
 | `apps/desktop/src/main/services/ai/tools/systemPrompt.ts` | Adjusts the system prompt per mode (`chat`, `coding`, `planning`) and permission mode. |
 | `apps/desktop/src/main/services/chat/droidSdkPool.ts`, `droidSdkWorker.ts`, `droidSdkProtocol.ts`, `droidSdkEventMapper.ts` | Droid SDK adapter. `droidSdkPool` forks `droidSdkWorker.cjs` (one per session), brokers prompt sends, permission requests, ask-user prompts, and settings updates via the JSON-line protocol in `droidSdkProtocol`. `droidSdkEventMapper` translates Droid SDK events into the canonical `AgentChatEventEnvelope` shape; the per-session mapper state (`createDroidSdkEventMapperState`) tracks streaming text/thinking item ids, in-flight tool-use names, and the latest usage breakdown. |
-| `apps/desktop/src/main/services/chat/droidModelsDiscovery.ts` | Droid model discovery: probes the live SDK via `createSession({ execPath })` to read `initResult.availableModels`, normalizes `supportedReasoningEfforts` and `tier`/`promoLabel` into `reasoningTiers`/`serviceTiers`, and emits `droid/<id>` descriptors via `createDynamicDroidCliModelDescriptor`. Custom (`~/.factory/config.json`) models are merged in. The legacy `DROID_DEFAULT_MODEL_IDS` constant has been removed — the SDK is the only source. |
+| `apps/desktop/src/main/services/chat/droidModelsDiscovery.ts` | Droid model discovery: probes the live SDK via `createSession({ execPath })` to read `initResult.availableModels`, normalizes `supportedReasoningEfforts` into `reasoningTiers`, and emits `droid/<id>` descriptors via `createDynamicDroidCliModelDescriptor`. Droid fast choices are distinct model IDs, not ADE `serviceTiers`; custom (`~/.factory/config.json`) models are merged in. The legacy `DROID_DEFAULT_MODEL_IDS` constant has been removed — the SDK is the only source. |
 
 ## Supported providers
 
@@ -50,6 +50,7 @@ type ModelDescriptor = {
   maxOutputTokens: number;
   capabilities: { tools, vision, reasoning, streaming };
   reasoningTiers?: string[];
+  serviceTiers?: string[]; // optional provider service tiers, currently "fast"
   color: string;
   providerRoute: string;
   providerModelId: string;
@@ -187,23 +188,39 @@ directive so resumed/continued sessions keep the same boundary.
 service tiers a model accepts (today only `"fast"`). The composer's
 **Fast** toggle (a yellow Lightning chip next to the model picker)
 shows whenever `modelSupportsFastMode(descriptor)` is true for the
-selected model, independent of provider. `AgentChatSession` carries the
-legacy-named `codexFastMode?: boolean`; Codex forwards it as
-`serviceTier: "fast" | null` on every `turn/start` and `thread/start`
-JSON-RPC call (an explicit `null` clears any app-server default), while
-Cursor SDK sessions resolve it through `cursorModelsDiscovery` into the
-matching model parameter. Work CLI launches use the Cursor descriptor's
-fast alias (`*-fast`) when the same flag is enabled. The flag persists
-with the session, survives reload through `PersistedChatState`, and is
-forwarded to remote devices through the sync command service.
+selected model, independent of provider. `AgentChatSession` carries
+`fastMode?: boolean`; the deprecated persisted/input alias
+`codexFastMode` is still accepted at boundaries for old rows and remote
+clients.
+
+Codex forwards Fast as `serviceTier: "fast" | null` on every
+`turn/start` and `thread/start` JSON-RPC call (an explicit `null` clears
+any app-server default). Claude Opus descriptors advertise
+`serviceTiers: ["fast"]`; Claude chat sends the effective flag through
+the Agent SDK `settings.fastMode` layer, and Claude CLI launches/resumes
+pass `--settings '{"fastMode":true|false}'` so ADE can explicitly
+override user/project Claude settings when the chip is on or off. Claude
+non-Opus rows do not advertise Fast, and ADE leaves Claude's native
+`/fast` slash command to the runtime instead of intercepting it.
+
+Cursor SDK sessions resolve the flag through `cursorModelsDiscovery`
+into the matching model parameter. Work CLI launches use the Cursor
+descriptor's fast alias (`*-fast`) when the same flag is enabled. The
+flag persists with the session, survives reload through
+`PersistedChatState`, and is forwarded to remote devices through the
+sync command service.
 Parallel-model rows track Fast mode per slot
-(`ParallelModelRowState.codexFastMode`) so launching multiple
+(`ParallelModelRowState.fastMode`) so launching multiple
 fast-capable runs side-by-side can mix Fast and Standard turns. Codex
 discovery populates `serviceTiers` from app-server-reported
 `additionalSpeedTiers` / `serviceTiers` rows; the static registry
 pre-marks the GPT 5.4 / 5.5 Codex CLI entries. Cursor discovery
 populates `serviceTiers` from SDK/CLI parameters and folds CLI
-`*-fast` rows into their base descriptors as aliases.
+`*-fast` rows into their base descriptors as aliases. OpenCode maps Fast
+to the provider variant `fast` for both chat and Work CLI launches.
+Droid does not populate `serviceTiers`: Factory exposes fast choices as
+concrete model IDs such as `claude-opus-4-6-fast`, so ADE launches that
+selected model instead of showing an independent Fast toggle.
 
 Codex plan mode uses the native app-server planning flow. ADE passes its
 runtime guidance as an ordinary system-context input item and keeps

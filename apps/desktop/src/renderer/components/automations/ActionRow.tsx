@@ -42,7 +42,7 @@ export type ActionRowValue = {
   prompt?: string;
   sessionTitle?: string;
   modelConfig?: ModelConfig;
-  codexFastMode?: boolean;
+  fastMode?: boolean;
   permissionConfig?: AutomationPermissionConfig;
   // Create lane
   laneNameTemplate?: string;

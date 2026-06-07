@@ -75,8 +75,8 @@ export const ChatModelSelectionPendingCard = memo(function ChatModelSelectionPen
   const [reasoningEffort, setReasoningEffort] = useState<string | null>(
     suggested?.reasoningEffort ?? null,
   );
-  const [codexFastMode, setCodexFastMode] = useState<boolean>(
-    Boolean(suggested?.codexFastMode),
+  const [fastMode, setFastMode] = useState<boolean>(
+    Boolean(suggested?.fastMode),
   );
 
   // When the user picks a different model, infer the new provider from the
@@ -100,10 +100,10 @@ export const ChatModelSelectionPendingCard = memo(function ChatModelSelectionPen
       provider,
       modelId,
       ...(reasoningEffort !== null ? { reasoningEffort } : {}),
-      ...(codexFastMode ? { codexFastMode: true } : {}),
+      ...(fastMode ? { fastMode: true } : {}),
     };
     onConfirm(selection);
-  }, [provider, modelId, reasoningEffort, codexFastMode, onConfirm]);
+  }, [provider, modelId, reasoningEffort, fastMode, onConfirm]);
 
   const headerLabel = useMemo(() => {
     if (!metadata) return "Pick a model";
@@ -149,9 +149,9 @@ export const ChatModelSelectionPendingCard = memo(function ChatModelSelectionPen
           disabled={responding}
           hidePermissionRail
           compact
-          fastModeActive={codexFastMode}
+          fastModeActive={fastMode}
           fastModeSupported={fastModeSupported}
-          {...(fastModeSupported ? { onFastModeToggle: setCodexFastMode } : {})}
+          {...(fastModeSupported ? { onFastModeToggle: setFastMode } : {})}
         />
         <ReasoningEffortPicker
           modelId={modelId}

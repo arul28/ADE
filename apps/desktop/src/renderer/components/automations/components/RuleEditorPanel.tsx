@@ -333,7 +333,7 @@ function draftToActionRows(draft: AutomationRuleDraft): ActionRowValue[] {
       kind: "agent-session",
       prompt: draft.prompt ?? "",
       sessionTitle: execution.session?.title ?? "",
-      codexFastMode: execution.session?.codexFastMode === true,
+      fastMode: execution.session?.fastMode === true,
     });
   } else if (execution?.kind === "built-in") {
     for (const action of execution.builtIn?.actions ?? []) {
@@ -359,7 +359,7 @@ function draftToActionRows(draft: AutomationRuleDraft): ActionRowValue[] {
           prompt: action.prompt ?? "",
           sessionTitle: action.sessionTitle ?? "",
           modelConfig: action.modelConfig,
-          codexFastMode: action.codexFastMode === true,
+          fastMode: action.fastMode === true,
           permissionConfig: action.permissionConfig,
           ...actionRuntimeOptions(action),
         });
@@ -381,7 +381,7 @@ function applyActionRowsToDraft(draft: AutomationRuleDraft, rows: ActionRowValue
       ? draft.execution.session ?? {}
       : {};
     const previousSessionWithoutFastMode = { ...previousSession };
-    delete previousSessionWithoutFastMode.codexFastMode;
+    delete previousSessionWithoutFastMode.fastMode;
     return {
       ...draft,
       execution: {
@@ -390,7 +390,7 @@ function applyActionRowsToDraft(draft: AutomationRuleDraft, rows: ActionRowValue
         session: {
           ...previousSessionWithoutFastMode,
           title: first.sessionTitle || null,
-          ...(first.codexFastMode === true ? { codexFastMode: true } : {}),
+          ...(first.fastMode === true ? { fastMode: true } : {}),
         },
       },
       ...(first.modelConfig ? { modelConfig: first.modelConfig } : {}),
@@ -451,7 +451,7 @@ function rowToAutomationAction(row: ActionRowValue): AutomationAction {
         type: "agent-session",
         ...rowRuntimeOptions(row),
         ...(row.modelConfig ? { modelConfig: row.modelConfig } : {}),
-        ...(row.codexFastMode === true ? { codexFastMode: true } : {}),
+        ...(row.fastMode === true ? { fastMode: true } : {}),
         ...(row.permissionConfig ? { permissionConfig: row.permissionConfig } : {}),
         ...(row.prompt ? { prompt: row.prompt } : {}),
         ...(row.sessionTitle ? { sessionTitle: row.sessionTitle } : {}),
@@ -493,7 +493,7 @@ function automationActionToDraftAction(
         type: "agent-session",
         ...rowRuntimeOptions(actionToRow(action)),
         ...(action.modelConfig ? { modelConfig: action.modelConfig } : {}),
-        ...(action.codexFastMode === true ? { codexFastMode: true } : {}),
+        ...(action.fastMode === true ? { fastMode: true } : {}),
         ...(action.permissionConfig ? { permissionConfig: action.permissionConfig } : {}),
         ...(action.prompt ? { prompt: action.prompt } : {}),
         ...(action.sessionTitle ? { sessionTitle: action.sessionTitle } : {}),

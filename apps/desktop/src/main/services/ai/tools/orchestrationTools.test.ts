@@ -433,7 +433,7 @@ describe("spawnAgent tool", () => {
               provider,
               modelId: `${provider}-model`,
               reasoningEffort: provider === "codex" ? "high" : null,
-              codexFastMode: provider === "codex",
+              fastMode: provider === "codex",
             },
           },
         }],
@@ -519,7 +519,7 @@ describe("requestPlanApproval and model routing tools", () => {
       provider: "codex",
       modelId: "gpt-5.4",
       reasoningEffort: "high",
-      codexFastMode: true,
+      fastMode: true,
     };
     const onAskUser = vi.fn(async () => ({
       answer: JSON.stringify(selection),

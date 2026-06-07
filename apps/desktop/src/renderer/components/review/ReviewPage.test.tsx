@@ -628,7 +628,7 @@ describe("ReviewPage", () => {
     const [{ config }] = (window.ade.review as any).startRun.mock.calls[0];
     expect(config).toMatchObject({
       modelId: "openai/gpt-5.5",
-      codexFastMode: true,
+      fastMode: true,
     });
   });
 

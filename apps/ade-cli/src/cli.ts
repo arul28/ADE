@@ -3501,8 +3501,8 @@ function readChatLaunchConfig(args: string[]): JsonObject {
     "permissionMode",
     readValue(args, ["--permission-mode", "--permissions"]),
   );
-  if (fastRequested) config.codexFastMode = true;
-  if (standardRequested) config.codexFastMode = false;
+  if (fastRequested) config.fastMode = true;
+  if (standardRequested) config.fastMode = false;
   return config;
 }
 
@@ -5926,7 +5926,7 @@ function buildChatPlan(args: string[]): CliPlan {
         "Use either --fast/--codex-fast or --standard/--no-fast/--no-codex-fast, not both.",
       );
     }
-    const codexFastMode: boolean | undefined = fastRequested
+    const fastMode: boolean | undefined = fastRequested
       ? true
       : standardRequested
         ? false
@@ -5977,7 +5977,7 @@ function buildChatPlan(args: string[]): CliPlan {
         ]),
         title: readValue(args, ["--title"]),
         surface: readValue(args, ["--surface"]) ?? "work",
-        ...(codexFastMode !== undefined ? { codexFastMode } : {}),
+        ...(fastMode !== undefined ? { fastMode } : {}),
         ...(createRuntimeMode ? { runtimeMode: createRuntimeMode } : {}),
       }),
     );
@@ -9413,7 +9413,7 @@ function automationsExampleText(): string {
         laneNamePreset: "issue-num-title",
         session: {
           title: "Issue fix",
-          codexFastMode: true,
+          fastMode: true,
         },
       },
       prompt: "Investigate and propose a fix for {{trigger.issue.title}}.",

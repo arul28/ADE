@@ -37,7 +37,7 @@ export type DraftLaunchSnapshot = {
   draft: string;
   modelId: string;
   reasoningEffort: string | null;
-  codexFastMode: boolean;
+  fastMode: boolean;
   executionMode: AgentChatExecutionMode;
   interactionMode: AgentChatInteractionMode;
   nativeControls: NativeControlState;

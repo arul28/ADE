@@ -6645,7 +6645,7 @@ export function registerIpc({
       provider: routedSelection.provider,
       model: routedSelection.modelId,
       reasoningEffort: routedSelection.reasoningEffort ?? null,
-      codexFastMode: routedSelection.codexFastMode,
+      fastMode: routedSelection.fastMode,
       interactionMode,
       surface: "work",
       ...applyOrchestrationPermissionProfile(routedSelection.provider),
@@ -6662,7 +6662,7 @@ export function registerIpc({
       provider: routedSelection.provider,
       modelId: routedSelection.modelId,
       reasoningEffort: routedSelection.reasoningEffort ?? null,
-      codexFastMode: routedSelection.codexFastMode,
+      fastMode: routedSelection.fastMode,
       resolvedAt: spawnedAt,
       routingKey: routedSelection.routingKey,
     };

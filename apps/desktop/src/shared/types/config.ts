@@ -725,7 +725,9 @@ export type AutomationAction = {
   retry?: number;
   /** Optional model override for agent-session actions inside a built-in chain. */
   modelConfig?: ModelConfig;
-  /** Optional Codex fast-mode override for agent-session actions inside a built-in chain. */
+  /** Optional fast-mode override for agent-session actions inside a built-in chain. */
+  fastMode?: boolean;
+  /** @deprecated Use fastMode. Accepted while reading older project configs. */
   codexFastMode?: boolean;
   /** Optional permission override for agent-session actions inside a built-in chain. */
   permissionConfig?: AiPermissionSettings;
@@ -782,6 +784,8 @@ export type AutomationExecution = {
   session?: {
     title?: string | null;
     reasoningEffort?: string | null;
+    fastMode?: boolean;
+    /** @deprecated Use fastMode. Accepted while reading older project configs. */
     codexFastMode?: boolean;
   };
   /**

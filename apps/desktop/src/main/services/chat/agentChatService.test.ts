@@ -2151,6 +2151,7 @@ describe("createAgentChatService", () => {
         settings?: {
           enabledPlugins?: Record<string, boolean>;
           outputStyle?: string;
+          fastMode?: boolean;
         };
         skills?: string;
       } | undefined;
@@ -2159,6 +2160,7 @@ describe("createAgentChatService", () => {
       expect(opts?.promptSuggestions).toBe(false);
       expect(opts?.settings).toEqual(expect.objectContaining({
         outputStyle: "Default",
+        fastMode: false,
         enabledPlugins: expect.objectContaining({
           "learning-output-style@claude-code-plugins": false,
           "learning-output-style@claude-plugins-official": false,
@@ -2166,6 +2168,99 @@ describe("createAgentChatService", () => {
           "explanatory-output-style@claude-plugins-official": false,
         }),
       }));
+    });
+
+    it("passes Claude fast mode through SDK flag settings for Opus sessions", async () => {
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send: vi.fn(),
+        stream: vi.fn(async function* () {
+          return;
+        }),
+        close: vi.fn(),
+        sessionId: "sdk-session-fast",
+      } as any);
+
+      const { service } = createService();
+      await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "claude-opus-4-8",
+        modelId: "anthropic/claude-opus-4-8",
+        fastMode: true,
+      });
+
+      await vi.waitFor(() => {
+        expect(claudeSdkCreateSessionCompat).toHaveBeenCalled();
+      });
+
+      const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as {
+        settings?: { fastMode?: boolean };
+      } | undefined;
+      expect(opts?.settings?.fastMode).toBe(true);
+    });
+
+    it("uses updated Claude fast mode on the next SDK query", async () => {
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        ...makeDefaultClaudeSession(),
+      } as any);
+
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "claude-opus-4-8",
+        modelId: "anthropic/claude-opus-4-8",
+      });
+
+      await service.updateSession({
+        sessionId: session.id,
+        fastMode: true,
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Start the Claude query.",
+      }, { awaitDispatch: true });
+
+      const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls.at(-1)?.[0] as {
+        settings?: { fastMode?: boolean };
+      } | undefined;
+      expect(opts?.settings?.fastMode).toBe(true);
+    });
+
+    it("handles Claude /fast commands inline and persists the ADE fast setting", async () => {
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        ...makeDefaultClaudeSession(),
+      } as any);
+
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "claude-opus-4-8",
+        modelId: "anthropic/claude-opus-4-8",
+      });
+
+      await vi.waitFor(() => {
+        expect(claudeSdkCreateSessionCompat).toHaveBeenCalled();
+      });
+      vi.mocked(claudeSdkCreateSessionCompat).mockClear();
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "/fast on",
+      }, { awaitDispatch: true });
+
+      expect(claudeSdkCreateSessionCompat).not.toHaveBeenCalled();
+      expect((await service.getSessionSummary(session.id))?.fastMode).toBe(true);
+      expect(readPersistedChatState(session.id).fastMode).toBe(true);
+      expect(events.some((event) =>
+        event.event.type === "system_notice"
+        && event.event.message === "Fast mode is on."
+      )).toBe(true);
     });
 
     it("passes discovered local Claude plugins to SDK sessions", async () => {
@@ -11353,6 +11448,44 @@ describe("createAgentChatService", () => {
         agent: expect.stringMatching(/^ade-/),
       }));
     });
+
+    it("sends the fast variant for supported OpenCode models when enabled", async () => {
+      vi.mocked(streamText).mockImplementation(() => ({
+        fullStream: (async function* () {
+          yield { type: "finish", usage: {} };
+        })(),
+      } as any));
+      replaceDynamicOpenCodeModelDescriptors([
+        createDynamicOpenCodeModelDescriptor("", {
+          displayName: "GPT 5.4",
+          capabilities: { tools: true, vision: false, reasoning: true, streaming: true },
+          openCodeProviderId: "openai",
+          openCodeModelId: "gpt-5.4",
+          serviceTiers: ["fast"],
+        }),
+      ]);
+
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "opencode",
+        model: "",
+        modelId: "opencode/openai/gpt-5.4",
+        fastMode: true,
+      });
+
+      expect(session.fastMode).toBe(true);
+
+      await service.sendMessage({ sessionId: session.id, text: "Use OpenCode fast mode." }, { awaitDispatch: true });
+
+      const openCodeState = [...mockState.openCodeSessions.values()][0]!;
+      await vi.waitFor(() => {
+        expect(openCodeState.promptBodies.length).toBeGreaterThan(0);
+      });
+      expect(openCodeState.promptBodies.at(-1)).toEqual(expect.objectContaining({
+        variant: "fast",
+      }));
+    });
   });
 
   // --------------------------------------------------------------------------
@@ -11933,15 +12066,19 @@ describe("createAgentChatService", () => {
     });
 
     it("sends fast service tier for supported Codex models when enabled", async () => {
+      mockState.codexResponseOverrides.set("thread/start", (payload) => ({
+        thread: { id: "thread-fast" },
+        serviceTier: (payload.params as { serviceTier?: unknown } | undefined)?.serviceTier ?? null,
+      }));
       const { service } = createService();
       const session = await service.createSession({
         laneId: "lane-1",
         provider: "codex",
         model: "gpt-5.5",
-        codexFastMode: true,
+        fastMode: true,
       });
 
-      expect(session.codexFastMode).toBe(true);
+      expect(session.fastMode).toBe(true);
 
       await service.sendMessage({
         sessionId: session.id,
@@ -11957,8 +12094,12 @@ describe("createAgentChatService", () => {
       const turnStartRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "turn/start");
       expect((turnStartRequest?.params as { serviceTier?: unknown } | undefined)?.serviceTier).toBe("fast");
 
-      expect((await service.getSessionSummary(session.id))?.codexFastMode).toBe(true);
-      expect(readPersistedChatState(session.id).codexFastMode).toBe(true);
+      const summary = await service.getSessionSummary(session.id);
+      expect(summary?.fastMode).toBe(true);
+      expect(summary?.codexServiceTier).toBe("fast");
+      const persisted = readPersistedChatState(session.id);
+      expect(persisted.fastMode).toBe(true);
+      expect(persisted.codexServiceTier).toBe("fast");
     });
 
     it("handles /fast commands inline and applies fast tier to the next app-server turn", async () => {
@@ -11978,8 +12119,8 @@ describe("createAgentChatService", () => {
       }, { awaitDispatch: true });
 
       expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(false);
-      expect((await service.getSessionSummary(session.id))?.codexFastMode).toBe(true);
-      expect(readPersistedChatState(session.id).codexFastMode).toBe(true);
+      expect((await service.getSessionSummary(session.id))?.fastMode).toBe(true);
+      expect(readPersistedChatState(session.id).fastMode).toBe(true);
       expect(events.some((event) =>
         event.event.type === "system_notice"
         && event.event.message === "Fast mode is on."
@@ -12031,15 +12172,60 @@ describe("createAgentChatService", () => {
       }, { awaitDispatch: true });
 
       expect(mockState.cursorSdkSendCalls).toHaveLength(0);
-      expect((await service.getSessionSummary(session.id))?.codexFastMode).toBe(true);
-      expect(readPersistedChatState(session.id).codexFastMode).toBe(true);
+      expect((await service.getSessionSummary(session.id))?.fastMode).toBe(true);
+      expect(readPersistedChatState(session.id).fastMode).toBe(true);
       expect(events.some((event) =>
         event.event.type === "system_notice"
         && event.event.message === "Fast mode is on."
       )).toBe(true);
     });
 
+    it("passes standard Cursor SDK params when fast mode is off", async () => {
+      process.env.CURSOR_API_KEY = "crsr_test";
+      cursorModelsListMock.mockResolvedValue([
+        {
+          id: "composer-2.5",
+          displayName: "Composer 2.5",
+          parameters: [
+            {
+              id: "speed",
+              displayName: "Speed",
+              values: [
+                { value: "standard", displayName: "Standard" },
+                { value: "fast", displayName: "Fast" },
+              ],
+            },
+          ],
+        },
+      ]);
+      const { service } = createService();
+      await service.getModelCatalog({ mode: "force", refreshProvider: "cursor" });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2.5",
+        modelId: "cursor/composer-2.5",
+        fastMode: false,
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Use standard Cursor tier.",
+      }, { awaitDispatch: true });
+
+      expect(mockState.cursorSdkAcquireCalls.at(-1)).toEqual(expect.objectContaining({
+        modelParams: [{ id: "speed", value: "standard" }],
+      }));
+      expect(mockState.cursorSdkSendCalls.at(-1)).toEqual(expect.objectContaining({
+        modelParams: [{ id: "speed", value: "standard" }],
+      }));
+    });
+
     it("explicitly clears Codex service tier when fast mode is off", async () => {
+      mockState.codexResponseOverrides.set("thread/start", (payload) => ({
+        thread: { id: "thread-default" },
+        serviceTier: (payload.params as { serviceTier?: unknown } | undefined)?.serviceTier ?? null,
+      }));
       const { service } = createService();
       const session = await service.createSession({
         laneId: "lane-1",
@@ -12060,7 +12246,10 @@ describe("createAgentChatService", () => {
       expect((threadStartRequest?.params as { serviceTier?: unknown } | undefined)?.serviceTier).toBeNull();
       const turnStartRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "turn/start");
       expect((turnStartRequest?.params as { serviceTier?: unknown } | undefined)?.serviceTier).toBeNull();
-      expect((await service.getSessionSummary(session.id))?.codexFastMode).toBe(false);
+      const summary = await service.getSessionSummary(session.id);
+      expect(summary?.fastMode).toBe(false);
+      expect(summary?.codexServiceTier).toBeNull();
+      expect(readPersistedChatState(session.id).codexServiceTier).toBeNull();
     });
 
     it("preserves fast mode selection on unsupported Codex models while sending standard tier", async () => {
@@ -12069,7 +12258,7 @@ describe("createAgentChatService", () => {
         laneId: "lane-1",
         provider: "codex",
         model: "gpt-5.4-mini",
-        codexFastMode: true,
+        fastMode: true,
       });
 
       await service.sendMessage({
@@ -12085,7 +12274,7 @@ describe("createAgentChatService", () => {
       expect((threadStartRequest?.params as { serviceTier?: unknown } | undefined)?.serviceTier).toBeNull();
       const turnStartRequest = mockState.codexRequestPayloads.find((payload) => payload.method === "turn/start");
       expect((turnStartRequest?.params as { serviceTier?: unknown } | undefined)?.serviceTier).toBeNull();
-      expect((await service.getSessionSummary(session.id))?.codexFastMode).toBe(true);
+      expect((await service.getSessionSummary(session.id))?.fastMode).toBe(true);
     });
 
     it("routes Codex /goal pause and resume commands to app-server goal RPCs", async () => {
@@ -13415,7 +13604,7 @@ describe("createAgentChatService", () => {
         laneId: "lane-1",
         provider: "codex",
         model: "gpt-5.5",
-        codexFastMode: true,
+        fastMode: true,
       });
 
       const updated = await service.updateSession({
@@ -13424,9 +13613,9 @@ describe("createAgentChatService", () => {
       });
 
       expect(updated.provider).toBe("claude");
-      expect(updated.codexFastMode).toBeUndefined();
-      expect((await service.getSessionSummary(session.id))?.codexFastMode).toBe(false);
-      expect(readPersistedChatState(session.id).codexFastMode).toBeUndefined();
+      expect(updated.fastMode).toBeUndefined();
+      expect((await service.getSessionSummary(session.id))?.fastMode).toBe(false);
+      expect(readPersistedChatState(session.id).fastMode).toBeUndefined();
     });
 
     it("re-resumes Codex threads when fast mode changes mid-session", async () => {
@@ -13461,9 +13650,9 @@ describe("createAgentChatService", () => {
       mockState.codexRequestPayloads = [];
       const updated = await service.updateSession({
         sessionId: session.id,
-        codexFastMode: true,
+        fastMode: true,
       });
-      expect(updated.codexFastMode).toBe(true);
+      expect(updated.fastMode).toBe(true);
 
       await service.sendMessage({
         sessionId: session.id,

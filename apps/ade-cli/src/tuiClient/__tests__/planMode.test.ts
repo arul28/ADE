@@ -10,7 +10,7 @@ function baseModelState(overrides: Partial<AdeCodeModelState>): AdeCodeModelStat
     modelId: null,
     displayName: "GPT-5.5",
     reasoningEffort: "medium",
-    codexFastMode: false,
+    fastMode: false,
     permissionMode: "default",
     interactionMode: "default",
     claudePermissionMode: "default",

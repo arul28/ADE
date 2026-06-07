@@ -275,6 +275,8 @@ export type AutomationDraftAction =
       sessionTitle?: string;
       targetLaneId?: string | null;
       modelConfig?: ModelConfig;
+      fastMode?: boolean;
+      /** @deprecated Use fastMode. */
       codexFastMode?: boolean;
       permissionConfig?: AiPermissionSettings;
     })
