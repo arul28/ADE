@@ -2182,6 +2182,21 @@ describe("fetchJsonWithRetry", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  it("does not retry a 429 with an empty or non-JSON body", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 429,
+      json: async () => {
+        throw new SyntaxError("Unexpected end of JSON input");
+      },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const res = await fetchJsonWithRetry("https://example.test/usage", {}, { attempts: 2, backoffMs: 0 });
+    expect(res).toEqual({ ok: false, status: 429, data: null });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it("does not retry a 409 conflict", async () => {
     const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 409, json: async () => ({}) });
     vi.stubGlobal("fetch", fetchMock);

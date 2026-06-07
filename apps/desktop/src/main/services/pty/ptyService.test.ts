@@ -3730,6 +3730,19 @@ describe("ptyService", () => {
       );
     });
 
+    it("does not kill a live PTY when the supplied session id belongs to another session", async () => {
+      const { service, mockPty, sessionService, broadcastExit } = createHarness();
+      const first = await service.create({ laneId: "lane-1", title: "first", cols: 80, rows: 24 });
+      const second = await service.create({ laneId: "lane-1", title: "second", cols: 80, rows: 24 });
+
+      const result = service.dispose({ ptyId: second.ptyId, sessionId: first.sessionId });
+
+      expect(result).toEqual({ disposed: false, reason: "session-mismatch" });
+      expect(mockPty.kill).not.toHaveBeenCalled();
+      expect(sessionService.end).not.toHaveBeenCalled();
+      expect(broadcastExit).not.toHaveBeenCalled();
+    });
+
     it("handles disposing an already-disposed PTY gracefully", async () => {
       const { service } = createHarness();
       const { ptyId } = await service.create({ laneId: "lane-1", title: "d", cols: 80, rows: 24 });

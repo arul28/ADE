@@ -163,7 +163,12 @@ async function fetchJson(
       ...(init?.body != null ? { body: init.body } : {}),
       signal: controller.signal,
     });
-    const data = await resp.json();
+    let data: unknown = null;
+    try {
+      data = await resp.json();
+    } catch {
+      data = null;
+    }
     return { ok: resp.ok, status: resp.status, data };
   } finally {
     clearTimeout(timer);

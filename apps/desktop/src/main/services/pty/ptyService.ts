@@ -4777,6 +4777,9 @@ export function createPtyService({
         logger.warn("pty.dispose_orphaned", { ptyId, sessionId });
         return { disposed: true, reason: "orphaned" };
       }
+      if (sessionId && entry.sessionId !== sessionId) {
+        return { disposed: false, reason: "session-mismatch" };
+      }
       if (entry.disposed) return { disposed: false, reason: "already-disposed" };
       entry.disposed = true;
       if (entry.aiTitleTimer) {
