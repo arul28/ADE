@@ -279,6 +279,14 @@ export function CliSessionWorkSurfaceHeader({
       showCacheBadge={showCache}
       cacheIdleSinceAt={session.chatIdleSinceAt}
       showGitToolbar
+      onContextMenu={
+        onContextMenu
+          ? (event) => {
+              event.preventDefault();
+              onContextMenu(session, event);
+            }
+          : undefined
+      }
       onToggleSessionsPane={onToggleSessionsPane}
       sessionsPaneCollapsed={sessionsPaneCollapsed}
       sessionsPaneCount={sessionsPaneCount}

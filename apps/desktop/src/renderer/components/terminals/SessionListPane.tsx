@@ -187,6 +187,7 @@ export const SessionListPane = React.memo(function SessionListPane({
   onClearSelection,
   onBulkClose,
   onBulkDelete,
+  onBulkStopAndDelete,
   onContextMenu,
   sessionListOrganization,
   setSessionListOrganization,
@@ -218,6 +219,7 @@ export const SessionListPane = React.memo(function SessionListPane({
   onClearSelection?: () => void;
   onBulkClose?: () => void;
   onBulkDelete?: () => void;
+  onBulkStopAndDelete?: () => void;
   onContextMenu: (session: TerminalSessionSummary, e: React.MouseEvent) => void;
   sessionListOrganization: WorkSessionListOrganization;
   setSessionListOrganization: (v: WorkSessionListOrganization) => void;
@@ -732,6 +734,18 @@ export const SessionListPane = React.memo(function SessionListPane({
                 >
                   <Trash size={10} />
                   Delete {selectedDeletableCount}
+                </button>
+              </SmartTooltip>
+            ) : null}
+            {selectedRunningCount > 0 ? (
+              <SmartTooltip content={{ label: "Stop & delete selected", description: "Stop running runtimes, then permanently delete every selected session." }}>
+                <button
+                  type="button"
+                  className="inline-flex h-6 items-center gap-1 rounded-md border border-red-500/30 bg-red-500/15 px-2 text-[10px] font-medium text-red-200"
+                  onClick={onBulkStopAndDelete}
+                >
+                  <Trash size={10} />
+                  Stop &amp; delete {selectedCount}
                 </button>
               </SmartTooltip>
             ) : null}

@@ -12,6 +12,7 @@ type SessionContextMenuProps = {
   menu: SessionContextMenuState;
   onClose: () => void;
   onStopRuntime: (args: { ptyId: string; sessionId: string }) => void;
+  onStopAndDelete: (session: TerminalSessionSummary) => void;
   onDeleteChat: (session: TerminalSessionSummary) => void;
   onDeleteSession: (session: TerminalSessionSummary) => void;
   deletingSessionId: string | null;
@@ -30,6 +31,7 @@ export function SessionContextMenu({
   menu,
   onClose,
   onStopRuntime,
+  onStopAndDelete,
   onDeleteChat,
   onDeleteSession,
   deletingSessionId,
@@ -158,6 +160,16 @@ export function SessionContextMenu({
             onClick={() => { onStopRuntime({ ptyId: session.ptyId!, sessionId: session.id }); onClose(); }}
           >
             Stop runtime
+          </button>
+        ) : null}
+
+        {isRunning && session.ptyId && !isChat ? (
+          <button
+            className="flex w-full items-center gap-2 rounded px-3 py-1.5 text-left text-xs text-red-300 hover:bg-red-500/10 transition-colors"
+            disabled={deletingSessionId === session.id}
+            onClick={() => { onStopAndDelete(session); onClose(); }}
+          >
+            {deletingSessionId === session.id ? "Deleting..." : "Stop and delete"}
           </button>
         ) : null}
 

@@ -7,6 +7,7 @@ import { WorkViewArea } from "./WorkViewArea";
 import { WorkSidebar, type WorkSidebarContextTarget } from "./WorkSidebar";
 import { SessionContextMenu, type SessionContextMenuState } from "./SessionContextMenu";
 import { SessionInfoPopover, type InfoPopoverState } from "./SessionInfoPopover";
+import { ConfirmDialog, useConfirmDialog } from "../shared/InlineDialogs";
 import type { AgentChatSession, TerminalSessionSummary } from "../../../shared/types";
 import { buildDeeplink } from "../../../shared/deeplinks";
 import type { AgentChatSessionCreatedOptions } from "../chat/AgentChatPane";
@@ -117,6 +118,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   const [deletingSessionId, setDeletingSessionId] = useState<string | null>(null);
   const [selectedSessionIds, setSelectedSessionIds] = useState<Set<string>>(new Set());
   const [selectionAnchorId, setSelectionAnchorId] = useState<string | null>(null);
+  const stopAndDeleteConfirm = useConfirmDialog();
   const workContentPaneRef = useRef<HTMLDivElement | null>(null);
   const workSidebarPaneRef = useRef<HTMLDivElement | null>(null);
   const unifiedChromeRef = useRef<HTMLDivElement | null>(null);
@@ -324,6 +326,45 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     [work],
   );
 
+  const handleStopAndDeleteSession = useCallback(
+    (session: TerminalSessionSummary) => {
+      void (async () => {
+        const label = (session.goal ?? session.title).trim() || "this session";
+        const confirmed = await stopAndDeleteConfirm.confirmAsync({
+          title: "Stop and delete session",
+          message: `Stop the runtime for "${label}" and permanently delete it?\n\nThis terminates the running process and removes the saved session from ADE.`,
+          confirmLabel: "Stop & delete",
+          danger: true,
+        });
+        if (!confirmed) return;
+
+        setSessionActionError(null);
+        setDeletingSessionId(session.id);
+        // The session-delete service stops a running runtime before removing the
+        // record, so a single call covers both steps for CLI and shell sessions.
+        try {
+          await window.ade.sessions.delete({ sessionId: session.id });
+          invalidateSessionListCache();
+          work.removeSessionFromList(session.id);
+          work.closeTab(session.id);
+          setContextMenu((current) => (current?.session.id === session.id ? null : current));
+          setInfoPopover((current) => (current?.session.id === session.id ? null : current));
+          await work.refresh({ showLoading: false, force: true }).catch((refreshErr: unknown) => {
+            console.error("[TerminalsPage] refresh after stop-and-delete failed", { sessionId: session.id, refreshErr });
+          });
+        } catch (err: unknown) {
+          const message = err instanceof Error ? err.message : String(err);
+          console.error("[TerminalsPage] stop-and-delete session failed", { sessionId: session.id, err });
+          setSessionActionError(`Stop and delete failed: ${message}`);
+          window.setTimeout(() => setSessionActionError(null), 6000);
+        } finally {
+          setDeletingSessionId((current) => (current === session.id ? null : current));
+        }
+      })();
+    },
+    [stopAndDeleteConfirm, work],
+  );
+
   const selectedSessions = useMemo(
     () => selectableSessions.filter((session) => selectedSessionIds.has(session.id)),
     [selectableSessions, selectedSessionIds],
@@ -416,6 +457,66 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         setDeletingSessionId((current) => (current === "bulk" ? null : current));
       });
   }, [selectedSessions, work]);
+
+  const handleBulkStopAndDeleteSelected = useCallback(() => {
+    void (async () => {
+      // Operates on the entire selection: chats delete directly, while running
+      // CLI/shell sessions are stopped and then deleted by the session-delete
+      // service. This is what makes a mixed selection deletable in one action.
+      const targets = selectedSessions;
+      if (!targets.length) return;
+      const runningCount = targets.filter(canBulkStopSession).length;
+      const confirmed = await stopAndDeleteConfirm.confirmAsync({
+        title: "Stop and delete sessions",
+        message: `Stop ${runningCount} running runtime${runningCount === 1 ? "" : "s"} and permanently delete ${targets.length} selected session${targets.length === 1 ? "" : "s"}?\n\nThis terminates running CLI and shell processes, then removes every selected session from ADE.`,
+        confirmLabel: "Stop & delete",
+        danger: true,
+      });
+      if (!confirmed) return;
+
+      setSessionActionError(null);
+      setDeletingSessionId("bulk");
+      try {
+        const results = await allSettledWithConcurrency(
+          targets,
+          BULK_SESSION_DELETE_CONCURRENCY,
+          async (session) => {
+            if (isChatToolType(session.toolType)) {
+              await window.ade.agentChat.delete({ sessionId: session.id });
+              return;
+            }
+            await window.ade.sessions.delete({ sessionId: session.id });
+          },
+        );
+        const failed = results.filter((result) => result.status === "rejected").length;
+        const succeededIds = targets
+          .filter((_, index) => results[index]?.status === "fulfilled")
+          .map((session) => session.id);
+        for (const sessionId of succeededIds) {
+          work.removeSessionFromList(sessionId);
+          work.closeTab(sessionId);
+        }
+        setSelectedSessionIds(new Set());
+        setSelectionAnchorId(null);
+        setContextMenu(null);
+        setInfoPopover(null);
+        invalidateSessionListCache();
+        await work.refresh({ showLoading: false, force: true }).catch((refreshErr: unknown) => {
+          console.error("[TerminalsPage] refresh after bulk stop-and-delete failed", { refreshErr });
+        });
+        if (failed > 0) {
+          setSessionActionError(`Stop and delete failed for ${failed} selected session${failed === 1 ? "" : "s"}.`);
+          window.setTimeout(() => setSessionActionError(null), 6000);
+        }
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        setSessionActionError(`Stop and delete failed: ${message}`);
+        window.setTimeout(() => setSessionActionError(null), 6000);
+      } finally {
+        setDeletingSessionId((current) => (current === "bulk" ? null : current));
+      }
+    })();
+  }, [selectedSessions, stopAndDeleteConfirm, work]);
 
   const handleContinueCliSession = useCallback(
     async (session: TerminalSessionSummary, text: string) => {
@@ -895,6 +996,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
             }}
             onBulkClose={handleBulkCloseSelected}
             onBulkDelete={handleBulkDeleteSelected}
+            onBulkStopAndDelete={handleBulkStopAndDeleteSelected}
             onContextMenu={handleContextMenu}
             sessionListOrganization={work.sessionListOrganization}
             setSessionListOrganization={work.setSessionListOrganization}
@@ -926,6 +1028,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       selectedSessionIds,
       handleBulkCloseSelected,
       handleBulkDeleteSelected,
+      handleBulkStopAndDeleteSelected,
       handleInfoClick,
       handleContextMenu,
       workViewWithSidebar,
@@ -964,6 +1067,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         menu={contextMenu}
         onClose={() => setContextMenu(null)}
         onStopRuntime={({ ptyId, sessionId }) => work.stopRuntime(ptyId, sessionId).catch(() => {})}
+        onStopAndDelete={handleStopAndDeleteSession}
         onDeleteChat={handleDeleteChat}
         onDeleteSession={handleDeleteSession}
         deletingSessionId={deletingSessionId}
@@ -1005,12 +1109,15 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         popover={infoPopover}
         onClose={() => setInfoPopover(null)}
         onStopRuntime={({ ptyId, sessionId }) => work.stopRuntime(ptyId, sessionId).catch(() => {})}
+        onStopAndDelete={handleStopAndDeleteSession}
         onDeleteChat={handleDeleteChat}
         onDeleteSession={handleDeleteSession}
         onGoToLane={handleGoToLane}
         closingPtyIds={work.closingPtyIds}
         deletingSessionId={deletingSessionId}
       />
+
+      <ConfirmDialog state={stopAndDeleteConfirm.state} onClose={stopAndDeleteConfirm.close} />
     </div>
   );
 }

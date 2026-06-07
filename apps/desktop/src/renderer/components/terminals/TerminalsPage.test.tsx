@@ -170,6 +170,7 @@ type MockSessionListPaneProps = {
   endedFiltered: TerminalSessionSummary[];
   onSelectSession: (id: string, event: React.MouseEvent, visibleSessionIds: string[]) => void;
   onBulkDelete?: () => void;
+  onBulkStopAndDelete?: () => void;
 };
 
 const sessionListPaneProps = vi.hoisted(() => ({
@@ -234,6 +235,9 @@ vi.mock("./SessionListPane", () => ({
         ))}
         <button type="button" onClick={() => props.onBulkDelete?.()}>
           bulk delete
+        </button>
+        <button type="button" onClick={() => props.onBulkStopAndDelete?.()}>
+          bulk stop and delete
         </button>
       </div>
     );
@@ -515,5 +519,51 @@ describe("TerminalsPage chat session activation", () => {
     expect(workMocks.currentWork.removeSessionFromList).not.toHaveBeenCalledWith("shell-running");
     expect(confirmSpy).toHaveBeenCalledWith(expect.stringContaining("Delete 2 selected sessions?"));
     confirmSpy.mockRestore();
+  });
+
+  it("stops and deletes a mixed selection of running CLI and chat sessions", async () => {
+    const runningCli = workMocks.makeTerminalSession("cli-running", "lane-primary", "codex");
+    const runningChat = workMocks.makeTerminalSession("chat-running", "lane-primary", "codex-chat", {
+      ptyId: null,
+    });
+    const agentChatDelete = vi.fn().mockResolvedValue(undefined);
+    const sessionDelete = vi.fn().mockResolvedValue(undefined);
+
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      value: {
+        agentChat: { delete: agentChatDelete },
+        builtInBrowser: { onEvent: vi.fn(() => vi.fn()) },
+        sessions: { delete: sessionDelete },
+      },
+    });
+    workMocks.currentWork = {
+      ...workMocks.baseWork,
+      sessions: [runningCli, runningChat],
+      visibleSessions: [runningCli, runningChat],
+      runningFiltered: [runningCli, runningChat],
+      runningSessions: [runningCli, runningChat],
+      filtered: [runningCli, runningChat],
+      sessionsGroupedByLane: new Map([["lane-primary", [runningCli, runningChat]]]),
+      closingPtyIds: new Set<string>(),
+    };
+
+    render(<TerminalsPage />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "select cli-running" }), { metaKey: true });
+    fireEvent.click(await screen.findByRole("button", { name: "select chat-running" }), { metaKey: true });
+    fireEvent.click(await screen.findByRole("button", { name: "bulk stop and delete" }));
+
+    // The styled confirmation dialog gates the destructive action.
+    fireEvent.click(await screen.findByRole("button", { name: "Stop & delete" }));
+
+    await waitFor(() => {
+      // The running CLI session is stopped+deleted via the session-delete service,
+      // and the chat is removed via the chat delete flow — both in one action.
+      expect(sessionDelete).toHaveBeenCalledWith({ sessionId: "cli-running" });
+      expect(agentChatDelete).toHaveBeenCalledWith({ sessionId: "chat-running" });
+      expect(workMocks.currentWork.removeSessionFromList).toHaveBeenCalledWith("cli-running");
+      expect(workMocks.currentWork.removeSessionFromList).toHaveBeenCalledWith("chat-running");
+    });
   });
 });
