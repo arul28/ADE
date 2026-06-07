@@ -579,6 +579,40 @@ describe("useLaneWorkSessions — refresh-before-focus ordering", () => {
     });
   });
 
+  it("restores a lane runtime row when dispose reports a session mismatch", async () => {
+    const runningSession = {
+      ...makeSession("session-mismatch", "lane-1", "Running Codex"),
+      ptyId: "pty-stale",
+      toolType: "codex",
+      runtimeState: "running",
+    } as any;
+    listSessionsCachedMock
+      .mockResolvedValueOnce([runningSession])
+      .mockRejectedValueOnce(new Error("refresh failed"));
+    (window as any).ade.pty.dispose.mockResolvedValueOnce({
+      disposed: false,
+      reason: "session-mismatch",
+    });
+
+    const { result } = renderHook(() => useLaneWorkSessions("lane-1"));
+
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 10));
+    });
+
+    await act(async () => {
+      await result.current.closePtySession("pty-stale");
+      await new Promise((r) => setTimeout(r, 0));
+    });
+
+    expect(result.current.sessions[0]).toMatchObject({
+      id: "session-mismatch",
+      ptyId: "pty-stale",
+      status: "running",
+      runtimeState: "running",
+    });
+  });
+
   it("launchPtySession: opens immediately when another refresh is already running", async () => {
     const callOrder: string[] = [];
     let refreshCallCount = 0;

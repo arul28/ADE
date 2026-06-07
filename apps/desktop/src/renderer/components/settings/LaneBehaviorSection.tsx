@@ -36,6 +36,7 @@ export function LaneBehaviorSection() {
   const navigate = useNavigate();
   const [autoRebaseDraft, setAutoRebaseDraft] = useState(false);
   const [newLaneBaseSource, setNewLaneBaseSource] = useState<NewLaneBaseSource>(DEFAULT_NEW_LANE_BASE_SOURCE);
+  const [newLaneBaseSourceChanged, setNewLaneBaseSourceChanged] = useState(false);
   const [cleanup, setCleanup] = useState<LaneCleanupConfig>({});
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
@@ -51,6 +52,7 @@ export function LaneBehaviorSection() {
         : null;
     setAutoRebaseDraft(localAutoRebase ?? effectiveAutoRebase ?? false);
     setNewLaneBaseSource(effectiveNewLaneBaseSource(snapshot));
+    setNewLaneBaseSourceChanged(false);
 
     const effectiveCleanup = snapshot.effective.laneCleanup ?? {};
     const localCleanup = snapshot.local.laneCleanup ?? {};
@@ -68,15 +70,22 @@ export function LaneBehaviorSection() {
     try {
       const snapshot = await window.ade.projectConfig.get();
       const currentGit = isRecord(snapshot.local.git) ? snapshot.local.git : {};
+      const hasLocalNewLaneBaseSource =
+        currentGit.newLaneBaseSource === "local" || currentGit.newLaneBaseSource === "remote";
+      const nextGit = {
+        ...currentGit,
+        autoRebaseOnHeadChange: autoRebaseDraft,
+      };
+      if (newLaneBaseSourceChanged || hasLocalNewLaneBaseSource) {
+        nextGit.newLaneBaseSource = newLaneBaseSource;
+      } else {
+        delete nextGit.newLaneBaseSource;
+      }
       await window.ade.projectConfig.save({
         shared: snapshot.shared,
         local: {
           ...snapshot.local,
-          git: {
-            ...currentGit,
-            autoRebaseOnHeadChange: autoRebaseDraft,
-            newLaneBaseSource,
-          },
+          git: nextGit,
           laneCleanup: cleanup,
         },
       });
@@ -127,7 +136,11 @@ export function LaneBehaviorSection() {
                 <button
                   key={source}
                   type="button"
-                  onClick={() => setNewLaneBaseSource(source)}
+                  onClick={() => {
+                    if (source === newLaneBaseSource) return;
+                    setNewLaneBaseSource(source);
+                    setNewLaneBaseSourceChanged(true);
+                  }}
                   style={{
                     ...outlineButton({ height: 56, padding: "8px 10px", borderRadius: 8 }),
                     justifyContent: "flex-start",

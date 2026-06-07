@@ -1359,7 +1359,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       try {
         const result = await window.ade.pty.dispose({ ptyId, ...(sessionId ? { sessionId } : {}) });
         if (result?.disposed === false) {
-          if (result.reason === "owned-by-peer") {
+          if (result.reason === "owned-by-peer" || result.reason === "session-mismatch") {
             forgetStoppedRuntime(sessionId);
             restorePtyClosed(previousSessions);
           } else {

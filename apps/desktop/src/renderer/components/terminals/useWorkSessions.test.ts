@@ -545,6 +545,42 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     expect(listSessionsCachedMock).toHaveBeenCalledWith({ limit: 500 }, { force: true });
   });
 
+  it("restores a runtime row when dispose reports a session mismatch", async () => {
+    const stalePtySession = makeSession("session-mismatch", "lane-1", {
+      ptyId: "pty-stale",
+      toolType: "codex",
+      runtimeState: "running",
+    });
+    listSessionsCachedMock.mockResolvedValue([stalePtySession]);
+    (window as any).ade.pty.dispose.mockResolvedValueOnce({
+      disposed: false,
+      reason: "session-mismatch",
+    });
+
+    const { result } = renderHook(() => useWorkSessions());
+
+    await waitFor(() => {
+      expect(result.current.sessions[0]?.id).toBe("session-mismatch");
+    });
+
+    listSessionsCachedMock.mockClear();
+    listSessionsCachedMock.mockRejectedValueOnce(new Error("refresh failed"));
+
+    await act(async () => {
+      await result.current.stopRuntime("pty-stale", "session-mismatch");
+    });
+
+    await waitFor(() => {
+      expect(result.current.sessions[0]).toMatchObject({
+        id: "session-mismatch",
+        ptyId: "pty-stale",
+        status: "running",
+        runtimeState: "running",
+      });
+    });
+    expect(listSessionsCachedMock).toHaveBeenCalledWith({ limit: 500 }, { force: true });
+  });
+
   it("launchPtySession can start a terminal in the background without changing the active tab", async () => {
     const workState = {
       openItemIds: ["existing-session"] as string[],

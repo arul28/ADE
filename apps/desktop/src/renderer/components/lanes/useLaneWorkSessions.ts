@@ -815,7 +815,7 @@ export function useLaneWorkSessions(laneId: string | null) {
     try {
       const result = await window.ade.pty.dispose({ ptyId, ...(sessionId ? { sessionId } : {}) });
       if (result?.disposed === false) {
-        if (result.reason === "owned-by-peer") {
+        if (result.reason === "owned-by-peer" || result.reason === "session-mismatch") {
           if (sessionId) stoppedRuntimeSessionsRef.current.delete(sessionId);
           restorePreviousSessions();
         } else {
