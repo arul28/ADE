@@ -1,7 +1,8 @@
 import { useEffect, useState, type CSSProperties } from "react";
 import { useNavigate } from "react-router-dom";
 import { COLORS, MONO_FONT, SANS_FONT, LABEL_STYLE, cardStyle, outlineButton, primaryButton, recessedStyle } from "../lanes/laneDesignTokens";
-import type { LaneCleanupConfig } from "../../../shared/types";
+import type { LaneCleanupConfig, NewLaneBaseSource } from "../../../shared/types";
+import { DEFAULT_NEW_LANE_BASE_SOURCE, effectiveNewLaneBaseSource } from "../lanes/newLaneBaseSource";
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
@@ -34,6 +35,9 @@ const miniLabel: CSSProperties = {
 export function LaneBehaviorSection() {
   const navigate = useNavigate();
   const [autoRebaseDraft, setAutoRebaseDraft] = useState(false);
+  const [newLaneBaseSource, setNewLaneBaseSource] = useState<NewLaneBaseSource>(DEFAULT_NEW_LANE_BASE_SOURCE);
+  const [initialNewLaneBaseSource, setInitialNewLaneBaseSource] =
+    useState<NewLaneBaseSource>(DEFAULT_NEW_LANE_BASE_SOURCE);
   const [cleanup, setCleanup] = useState<LaneCleanupConfig>({});
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
@@ -48,6 +52,9 @@ export function LaneBehaviorSection() {
         ? snapshot.effective.git.autoRebaseOnHeadChange
         : null;
     setAutoRebaseDraft(localAutoRebase ?? effectiveAutoRebase ?? false);
+    const initialSource = effectiveNewLaneBaseSource(snapshot);
+    setNewLaneBaseSource(initialSource);
+    setInitialNewLaneBaseSource(initialSource);
 
     const effectiveCleanup = snapshot.effective.laneCleanup ?? {};
     const localCleanup = snapshot.local.laneCleanup ?? {};
@@ -65,14 +72,23 @@ export function LaneBehaviorSection() {
     try {
       const snapshot = await window.ade.projectConfig.get();
       const currentGit = isRecord(snapshot.local.git) ? snapshot.local.git : {};
+      const hasLocalNewLaneBaseSource =
+        currentGit.newLaneBaseSource === "local" || currentGit.newLaneBaseSource === "remote";
+      const sourceDiffersFromInitial = newLaneBaseSource !== initialNewLaneBaseSource;
+      const nextGit = {
+        ...currentGit,
+        autoRebaseOnHeadChange: autoRebaseDraft,
+      };
+      if (sourceDiffersFromInitial || hasLocalNewLaneBaseSource) {
+        nextGit.newLaneBaseSource = newLaneBaseSource;
+      } else {
+        delete nextGit.newLaneBaseSource;
+      }
       await window.ade.projectConfig.save({
         shared: snapshot.shared,
         local: {
           ...snapshot.local,
-          git: {
-            ...currentGit,
-            autoRebaseOnHeadChange: autoRebaseDraft,
-          },
+          git: nextGit,
           laneCleanup: cleanup,
         },
       });
@@ -108,6 +124,46 @@ export function LaneBehaviorSection() {
       {error ? <div style={{ ...messageStyle(COLORS.danger), marginBottom: 12 }}>{error}</div> : null}
 
       <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        {/* New lane base */}
+        <div style={cardStyle({ borderRadius: 12 })}>
+          <div style={{ marginBottom: 10 }}>
+            <div style={{ fontSize: 13, fontWeight: 600, color: COLORS.textPrimary }}>New lane base</div>
+            <div style={{ marginTop: 4, fontSize: 11, color: COLORS.textMuted, lineHeight: 1.5 }}>
+              Choose whether new root lanes and chat auto-created lanes start from the fetched remote branch or your local branch tip.
+            </div>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+            {(["remote", "local"] as const).map((source) => {
+              const active = newLaneBaseSource === source;
+              return (
+                <button
+                  key={source}
+                  type="button"
+                  onClick={() => {
+                    if (source === newLaneBaseSource) return;
+                    setNewLaneBaseSource(source);
+                  }}
+                  style={{
+                    ...outlineButton({ height: 56, padding: "8px 10px", borderRadius: 8 }),
+                    justifyContent: "flex-start",
+                    textAlign: "left",
+                    borderColor: active ? COLORS.accent : COLORS.outlineBorder,
+                    background: active ? `${COLORS.accent}12` : COLORS.recessedBg,
+                    color: active ? COLORS.textPrimary : COLORS.textMuted,
+                  }}
+                >
+                  <div>
+                    <div style={{ fontSize: 12, fontWeight: 700 }}>{source === "remote" ? "Remote" : "Local"}</div>
+                    <div style={{ marginTop: 2, fontSize: 10, color: COLORS.textDim }}>
+                      {source === "remote" ? "Start from fetched upstream" : "Start from local branch"}
+                    </div>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
         {/* Auto-rebase */}
         <div style={cardStyle({ borderRadius: 12 })}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>

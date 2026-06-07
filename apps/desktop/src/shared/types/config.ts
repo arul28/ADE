@@ -304,6 +304,8 @@ export type ConfigLaneTemplate = {
  */
 export const NO_DEFAULT_LANE_TEMPLATE = "__ade_none__";
 
+export type NewLaneBaseSource = "local" | "remote";
+
 /** IPC args for listing templates */
 export type ListLaneTemplatesArgs = Record<string, never>;
 
@@ -1434,6 +1436,7 @@ export type ProjectConfigFile = {
   };
   git?: {
     autoRebaseOnHeadChange?: boolean;
+    newLaneBaseSource?: NewLaneBaseSource;
   };
   ai?: AiConfig;
   /** Default lane environment initialization config */
@@ -1476,6 +1479,7 @@ export type EffectiveProjectConfig = {
   };
   git: {
     autoRebaseOnHeadChange: boolean;
+    newLaneBaseSource: NewLaneBaseSource;
   };
   ai?: AiConfig;
   /** Default lane environment initialization config */

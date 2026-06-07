@@ -21,6 +21,8 @@ import type {
   UsageProvider,
   UsageWindow,
   UsagePacing,
+  UsageProviderStatus,
+  UsageProviderStatusMap,
   CostSnapshot,
   CostTokenBreakdown,
   ExtraUsage,
@@ -161,11 +163,63 @@ async function fetchJson(
       ...(init?.body != null ? { body: init.body } : {}),
       signal: controller.signal,
     });
-    const data = await resp.json();
+    let data: unknown = null;
+    try {
+      data = await resp.json();
+    } catch {
+      data = null;
+    }
     return { ok: resp.ok, status: resp.status, data };
   } finally {
     clearTimeout(timer);
   }
+}
+
+const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+// Only genuine *server*/transport faults are retried. We deliberately do NOT
+// retry any 4xx — a 429 means "back off, you're rate-limited", so retrying it
+// amplifies load and sustains the throttle (CodexBar and the pre-retry code
+// issue one request per poll and stay under the limit). 401 keeps its dedicated
+// token-refresh path; 409/429/etc. return immediately and rely on carry-forward.
+const RETRYABLE_STATUS = new Set([500, 502, 503, 504]);
+
+type RetryOptions = {
+  attempts?: number;
+  perAttemptTimeoutMs?: number;
+  /** Base backoff; attempt N waits backoffMs * 3^(N-1). Set 0 to disable (tests). */
+  backoffMs?: number;
+  init?: { method?: string; body?: string };
+};
+
+/**
+ * fetchJson with a single bounded retry for transient server / network faults
+ * (5xx, plus network/timeout aborts). Any 4xx — including 429 (rate-limit) and
+ * 409 — returns on the first try so we never hammer a throttled endpoint; a
+ * thrown error on the final attempt propagates to the caller.
+ */
+async function fetchJsonWithRetry(
+  url: string,
+  headers: Record<string, string>,
+  opts: RetryOptions = {},
+): Promise<{ ok: boolean; status: number; data: unknown }> {
+  const attempts = Math.max(1, opts.attempts ?? 2);
+  const timeoutMs = opts.perAttemptTimeoutMs ?? 8_000;
+  const backoffMs = opts.backoffMs ?? 400;
+  let last: { ok: boolean; status: number; data: unknown } | null = null;
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    if (attempt > 0 && backoffMs > 0) {
+      await delay(backoffMs * 3 ** (attempt - 1));
+    }
+    try {
+      const result = await fetchJson(url, headers, timeoutMs, opts.init);
+      last = result;
+      if (result.ok || !RETRYABLE_STATUS.has(result.status)) return result;
+    } catch (err) {
+      if (attempt === attempts - 1) throw err;
+    }
+  }
+  return last ?? { ok: false, status: 0, data: null };
 }
 
 // ── Window Helpers ───────────────────────────────────────────────
@@ -353,7 +407,7 @@ async function pollClaudeUsage(logger: Logger): Promise<{ windows: UsageWindow[]
   }
 
   try {
-    const result = await fetchJson(CLAUDE_USAGE_URL, {
+    const result = await fetchJsonWithRetry(CLAUDE_USAGE_URL, {
       Authorization: `Bearer ${creds.accessToken}`,
       "anthropic-beta": "oauth-2025-04-20",
     });
@@ -365,7 +419,7 @@ async function pollClaudeUsage(logger: Logger): Promise<{ windows: UsageWindow[]
         clearClaudeCredentialCache();
         const refreshed = await refreshClaudeCredentials(creds.refreshToken);
         if (refreshed) {
-          const retry = await fetchJson(CLAUDE_USAGE_URL, {
+          const retry = await fetchJsonWithRetry(CLAUDE_USAGE_URL, {
             Authorization: `Bearer ${refreshed.accessToken}`,
             "anthropic-beta": "oauth-2025-04-20",
           });
@@ -411,11 +465,16 @@ async function pollCodexUsage(logger: Logger): Promise<{ windows: UsageWindow[];
   // the token is truly dead, and tokens often remain valid well past the
   // local last_refresh timestamp.
   try {
-    const result = await fetchJson(CODEX_USAGE_URL, {
+    const result = await fetchJsonWithRetry(CODEX_USAGE_URL, {
       Authorization: `Bearer ${creds.accessToken}`,
     });
 
-    if (result.ok && result.data && typeof result.data === "object") {
+    if (!result.ok) {
+      errors.push(`codex: API returned ${result.status}`);
+      if (result.status >= 400 && result.status < 500 && result.status !== 401) {
+        return { windows, errors };
+      }
+    } else if (result.data && typeof result.data === "object") {
       windows.push(...parseCodexRateLimitWindows(result.data as Record<string, unknown>));
       if (windows.length > 0) return { windows, errors };
     }
@@ -1636,6 +1695,95 @@ function calculatePacingByProvider(windows: UsageWindow[]): UsageSnapshot["pacin
   return out;
 }
 
+const PROVIDER_DISPLAY_NAME: Record<UsageProvider, string> = {
+  claude: "Claude",
+  codex: "Codex",
+  cursor: "Cursor",
+};
+
+function filterUnexpiredCarriedWindows(prevWindows: UsageWindow[], polledAt: string): UsageWindow[] {
+  const nowMs = Date.parse(polledAt);
+  if (!Number.isFinite(nowMs)) return prevWindows;
+  return prevWindows
+    .filter((window) => {
+      const resetMs = Date.parse(window.resetsAt);
+      return !Number.isFinite(resetMs) || resetMs > nowMs;
+    })
+    .map((window) => {
+      const resetMs = Date.parse(window.resetsAt);
+      if (!Number.isFinite(resetMs)) return window;
+      const resetsInMs = Math.max(0, resetMs - nowMs);
+      return resetsInMs === window.resetsInMs ? window : { ...window, resetsInMs };
+    });
+}
+
+/**
+ * Reconcile a provider's freshly-polled windows against the last snapshot so a
+ * transient failure never blanks good data. When the poll yields nothing, we
+ * carry forward the previous windows and mark the provider `stale` (or
+ * `unauthed`/`error` when there is no fallback). Returns the windows to render
+ * plus the per-provider status and the timestamp of the last real success.
+ */
+function buildProviderWindows(
+  provider: UsageProvider,
+  freshWindows: UsageWindow[],
+  errors: string[],
+  prevWindows: UsageWindow[],
+  prevLastSuccessAt: string | null,
+  polledAt: string,
+): { windows: UsageWindow[]; status: UsageProviderStatus; lastSuccessAt: string | null } {
+  if (freshWindows.length > 0) {
+    return {
+      windows: freshWindows,
+      status: { state: "ok", lastSuccessAt: polledAt },
+      lastSuccessAt: polledAt,
+    };
+  }
+
+  const name = PROVIDER_DISPLAY_NAME[provider] ?? provider;
+  const unauthed = errors.some((entry) => /no credentials/i.test(entry));
+  // A 401/403 means we reached the API but auth was rejected (expired token,
+  // failed refresh) — that's "reconnect", not "couldn't reach".
+  const authExpired = errors.some((entry) => /\b(401|403)\b|authentication|invalid.*credential/i.test(entry));
+
+  if (unauthed || authExpired) {
+    return {
+      windows: [],
+      status: {
+        state: unauthed ? "unauthed" : "error",
+        lastSuccessAt: prevLastSuccessAt,
+        message: unauthed ? undefined : `${name} sign-in expired — reconnect`,
+      },
+      lastSuccessAt: prevLastSuccessAt,
+    };
+  }
+
+  const carriedWindows = filterUnexpiredCarriedWindows(prevWindows, polledAt);
+  if (carriedWindows.length > 0) {
+    return {
+      windows: carriedWindows,
+      status: {
+        state: "stale",
+        lastSuccessAt: prevLastSuccessAt,
+        message: `Couldn't refresh ${name} — showing last reading`,
+      },
+      lastSuccessAt: prevLastSuccessAt,
+    };
+  }
+
+  return {
+    windows: [],
+    status: {
+      state: "error",
+      lastSuccessAt: prevLastSuccessAt,
+      message: prevWindows.length > 0
+        ? `Couldn't refresh ${name} — last reading expired`
+        : `Couldn't reach ${name} — retrying`,
+    },
+    lastSuccessAt: prevLastSuccessAt,
+  };
+}
+
 // ── Service Factory ──────────────────────────────────────────────
 
 export type UsageTrackingService = ReturnType<typeof createUsageTrackingService>;
@@ -1683,6 +1831,17 @@ export function createUsageTrackingService({
   let cachedCosts: CostSnapshot[] = lastSnapshot?.costs ?? [];
   let cachedAdeCosts: CostSnapshot[] = lastSnapshot?.adeCosts ?? [];
   let cachedDaily7d: Partial<Record<UsageProvider, number[]>> = lastSnapshot?.dailyUsage7d ?? {};
+  // Track the last poll that returned real windows per provider so carried-forward
+  // (stale) data can still report when it was genuinely fresh.
+  const providerLastSuccess: Partial<Record<UsageProvider, string>> = {};
+  for (const provider of ["claude", "codex"] as const) {
+    const cachedStatus = lastSnapshot?.providerStatus?.[provider];
+    if (cachedStatus?.lastSuccessAt) {
+      providerLastSuccess[provider] = cachedStatus.lastSuccessAt;
+    } else if (lastSnapshot && lastSnapshot.windows.some((w) => w.provider === provider)) {
+      providerLastSuccess[provider] = lastSnapshot.lastPolledAt;
+    }
+  }
   const githubStatsCache = new Map<string, { fetchedAtMs: number; stats: GitHubActivityStats }>();
   const githubStatsInFlight = new Map<string, Promise<GitHubActivityStats>>();
   let pollTimer: ReturnType<typeof setInterval> | null = null;
@@ -1706,6 +1865,7 @@ export function createUsageTrackingService({
     windows: [],
     pacing: emptyPacing(),
     pacingByProvider: {},
+    providerStatus: {},
     costs: [],
     adeCosts: [],
     extraUsage: [],
@@ -1848,23 +2008,59 @@ export function createUsageTrackingService({
           includeCosts ? pollCosts() : Promise.resolve(cachedCostResult()),
         ]);
 
-        allWindows = [...claudeResult.windows, ...codexResult.windows];
         errors.push(...claudeResult.errors, ...codexResult.errors);
+
+        // Reconcile each provider against the last snapshot so a transient
+        // failure (409/timeout) carries forward good data instead of wiping it.
+        const polledAt = nowIso();
+        const prevWindows = lastSnapshot?.windows ?? [];
+        const providerStatus: UsageProviderStatusMap = {};
+        const mergedRaw: UsageWindow[] = [];
+        for (const [provider, result] of [
+          ["claude", claudeResult],
+          ["codex", codexResult],
+        ] as const) {
+          const merged = buildProviderWindows(
+            provider,
+            result.windows,
+            result.errors,
+            prevWindows.filter((w) => w.provider === provider),
+            providerLastSuccess[provider] ?? null,
+            polledAt,
+          );
+          if (merged.lastSuccessAt) providerLastSuccess[provider] = merged.lastSuccessAt;
+          providerStatus[provider] = merged.status;
+          mergedRaw.push(...merged.windows);
+        }
+
+        // Refresh countdowns on carried-forward windows and attach per-window
+        // pacing so both the 5-hour and weekly bars can show ahead/behind.
+        allWindows = mergedRaw.map((window) => {
+          const withReset: UsageWindow = { ...window, resetsInMs: computeResetsInMs(window.resetsAt) };
+          return { ...withReset, pacing: calculatePacingForWindow(withReset) };
+        });
 
         const pacing = calculatePacing(allWindows);
         const pacingByProvider = calculatePacingByProvider(allWindows);
         const extraUsage: ExtraUsage[] = [];
         if (claudeResult.extraUsage) extraUsage.push(claudeResult.extraUsage);
+        else if (providerStatus.claude?.state === "stale") {
+          const previousClaudeExtra = lastSnapshot?.extraUsage.find((extra) => extra.provider === "claude");
+          if (previousClaudeExtra) extraUsage.push(previousClaudeExtra);
+        }
+        const costsLastPolledAt = includeCosts ? polledAt : lastSnapshot?.costsLastPolledAt;
 
         const snapshot: UsageSnapshot = {
           windows: allWindows,
           pacing,
           pacingByProvider,
+          providerStatus,
           costs: costResult.costs,
           adeCosts: costResult.adeCosts,
           extraUsage,
           dailyUsage7d: { ...cachedDaily7d },
-          lastPolledAt: nowIso(),
+          ...(costsLastPolledAt ? { costsLastPolledAt } : {}),
+          lastPolledAt: polledAt,
           errors,
         };
 
@@ -2045,7 +2241,9 @@ export const _testing = {
   calculatePacing,
   calculatePacingByProvider,
   calculatePacingForWindow,
+  buildProviderWindows,
   fetchJson,
+  fetchJsonWithRetry,
   findRecentFiles,
   findJsonlFiles,
   resolveTokenPrice,

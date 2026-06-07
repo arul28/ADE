@@ -63,6 +63,12 @@ export function LaneWorkPane({
           onLaunchPtySession={work.launchPtySession}
           onContinueCliSession={work.continueCliSession}
           onShowDraftKind={work.showDraftKind}
+          onStopRunningSession={(session) => {
+            if (!session.ptyId) return;
+            void work.closePtySession(session.ptyId).catch((error) => {
+              console.warn("[LaneWorkPane] Failed to stop running session", error);
+            });
+          }}
           suppressDraftLaunchNavigation
           closingPtyIds={work.closingPtyIds}
           initialLinearIssueContext={initialLinearIssueContext}

@@ -35,6 +35,13 @@ import { getLaneAccent } from "./laneColorPalette";
 import { LaneRebaseBanner } from "./LaneRebaseBanner";
 import { LinearIssueBadge } from "./LinearIssueBadge";
 import { LanePrBadgePopover } from "./LanePrBadgePopover";
+import {
+  DEFAULT_NEW_LANE_BASE_SOURCE,
+  effectiveNewLaneBaseSource,
+  fetchNewLaneBaseBranches,
+  listNewLaneBaseOptions,
+  selectDefaultNewLaneBaseRef,
+} from "./newLaneBaseSource";
 import { HelpChip } from "../onboarding/HelpChip";
 import { useOnboardingStore } from "../../state/onboardingStore";
 import { useDialogBus } from "../../lib/useDialogBus";
@@ -98,7 +105,8 @@ import type {
   RebaseScope,
   IntegrationProposal,
   LaneDeleteProgress,
-  LaneTemplate
+  LaneTemplate,
+  NewLaneBaseSource,
 } from "../../../shared/types";
 import { eventMatchesBinding, getEffectiveBinding } from "../../lib/keybindings";
 import { SmartTooltip } from "../ui/SmartTooltip";
@@ -506,6 +514,12 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   const [createVmStatusLoading, setCreateVmStatusLoading] = useState(false);
   const [createVmStatusError, setCreateVmStatusError] = useState<string | null>(null);
   const [createVmRuntimeAuthConfirmed, setCreateVmRuntimeAuthConfirmed] = useState(readMacosVmRuntimeAuthConfirmed);
+  const [createBaseSource, setCreateBaseSource] = useState<NewLaneBaseSource>(DEFAULT_NEW_LANE_BASE_SOURCE);
+  const createBaseSourceRef = useRef<NewLaneBaseSource>(DEFAULT_NEW_LANE_BASE_SOURCE);
+  const createBaseSourceUserPickedRef = useRef(false);
+  const createBaseBranchesLoadSeqRef = useRef(0);
+  const createBaseSourceSaveInFlightRef = useRef(false);
+  const createBaseSourceSavePendingRef = useRef<NewLaneBaseSource | null>(null);
   const [createBaseBranch, setCreateBaseBranch] = useState("");
   const [createImportBranch, setCreateImportBranch] = useState("");
   const [createChildBaseBranch, setCreateChildBaseBranch] = useState("");
@@ -2225,6 +2239,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   const resetCreateDialogState = useCallback(() => {
     createEnvInitLaneIdRef.current = null;
     createBaseBranchUserPickedRef.current = false;
+    createBaseBranchesLoadSeqRef.current += 1;
     setLaneCreated(false);
     setCreateLaneName("");
     setCreateParentLaneId("");
@@ -2259,6 +2274,9 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     setCreateVmStatusLoading(false);
     setCreateVmRuntimeAuthConfirmed(readMacosVmRuntimeAuthConfirmed());
     setCreateVmSetupDetail(null);
+    setCreateBaseSource(DEFAULT_NEW_LANE_BASE_SOURCE);
+    createBaseSourceRef.current = DEFAULT_NEW_LANE_BASE_SOURCE;
+    createBaseSourceUserPickedRef.current = false;
     setCreateBaseBranch("");
     setCreateImportBranch("");
     setCreateChildBaseBranch("");
@@ -2273,25 +2291,41 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     createBaseBranchUserPickedRef.current = false;
     const primary = lanes.find((l) => l.laneType === "primary");
     if (primary) {
-      // Fetch remotes first so remote-only branches (pushed from other machines) appear.
+      const loadSeq = ++createBaseBranchesLoadSeqRef.current;
       setCreateBranchesLoading(true);
-      window.ade.git.fetch({ laneId: primary.id })
-        .catch(() => {})
-        .then(() => window.ade.git.listBranches({ laneId: primary.id }))
-        .then((branches) => {
-          if (!branches) return;
+      window.ade.projectConfig.get()
+        .catch(() => null)
+        .then(async (snapshot) => {
+          const baseSource = effectiveNewLaneBaseSource(snapshot);
+          const selectedBaseSource = createBaseSourceUserPickedRef.current
+            ? createBaseSourceRef.current
+            : baseSource;
+          if (!createBaseSourceUserPickedRef.current) {
+            createBaseSourceRef.current = baseSource;
+            setCreateBaseSource(baseSource);
+          }
+          const branches = await fetchNewLaneBaseBranches({
+            source: selectedBaseSource,
+            fetchRemoteBranches: () => window.ade.git.fetch({ laneId: primary.id }),
+            listBranches: () => window.ade.git.listBranches({ laneId: primary.id }),
+          });
+          if (createBaseBranchesLoadSeqRef.current !== loadSeq) return;
           setCreateBranches(branches);
-          // Default new root lanes to the project's base branch. Users can still
-          // pick the current primary checkout explicitly when they want that.
           if (!createBaseBranchUserPickedRef.current) {
-            const defaultBranch = branches.find((b) => !b.isRemote && b.name === primary.baseRef)
-              ?? branches.find((b) => b.isCurrent && !b.isRemote)
-              ?? branches.find((b) => !b.isRemote);
-            if (defaultBranch) setCreateBaseBranch(defaultBranch.name);
+            const defaultBaseRef = selectDefaultNewLaneBaseRef({
+              branches,
+              source: createBaseSourceUserPickedRef.current
+                ? createBaseSourceRef.current
+                : selectedBaseSource,
+              primaryBaseRef: primary.baseRef,
+            });
+            if (defaultBaseRef) setCreateBaseBranch(defaultBaseRef);
           }
         })
         .catch(() => {})
-        .finally(() => setCreateBranchesLoading(false));
+        .finally(() => {
+          if (createBaseBranchesLoadSeqRef.current === loadSeq) setCreateBranchesLoading(false);
+        });
 
       // Capture git user.name so the picker can resolve `mine` / `author:me`.
       window.ade.git.getUserIdentity({ laneId: primary.id })
@@ -2774,6 +2808,84 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     setCreateBaseBranch(v);
   }, []);
 
+  const persistCreateBaseSourceConfig = useCallback(() => {
+    if (createBaseSourceSaveInFlightRef.current) return;
+    if (!createBaseSourceSavePendingRef.current) return;
+    createBaseSourceSaveInFlightRef.current = true;
+    let failed = false;
+
+    void (async () => {
+      try {
+        while (createBaseSourceSavePendingRef.current) {
+          const source: NewLaneBaseSource = createBaseSourceSavePendingRef.current;
+          const snapshot = await window.ade.projectConfig.get();
+          const currentGit = snapshot.local.git ?? {};
+          await window.ade.projectConfig.save({
+            shared: snapshot.shared,
+            local: {
+              ...snapshot.local,
+              git: {
+                ...currentGit,
+                newLaneBaseSource: source,
+              },
+            },
+          });
+          if (createBaseSourceSavePendingRef.current === source) {
+            createBaseSourceSavePendingRef.current = null;
+          }
+        }
+      } catch (saveError) {
+        failed = true;
+        setCreateError(saveError instanceof Error ? saveError.message : String(saveError));
+      } finally {
+        createBaseSourceSaveInFlightRef.current = false;
+        if (!failed && createBaseSourceSavePendingRef.current) {
+          persistCreateBaseSourceConfig();
+        }
+      }
+    })();
+  }, []);
+
+  const handleSetCreateBaseSource = useCallback((source: NewLaneBaseSource) => {
+    createBaseSourceRef.current = source;
+    createBaseSourceUserPickedRef.current = true;
+    createBaseBranchUserPickedRef.current = false;
+    const loadSeq = ++createBaseBranchesLoadSeqRef.current;
+    setCreateBaseSource(source);
+    setCreateBaseBranch("");
+    setCreateBranches([]);
+    const primary = lanes.find((l) => l.laneType === "primary");
+    if (primary) {
+      setCreateBranchesLoading(true);
+      fetchNewLaneBaseBranches({
+        source,
+        fetchRemoteBranches: () => window.ade.git.fetch({ laneId: primary.id }),
+        listBranches: () => window.ade.git.listBranches({ laneId: primary.id }),
+        })
+        .then((branches) => {
+          if (createBaseSourceRef.current !== source || createBaseBranchesLoadSeqRef.current !== loadSeq) return;
+          setCreateBranches(branches);
+          if (!createBaseBranchUserPickedRef.current) {
+            setCreateBaseBranch(selectDefaultNewLaneBaseRef({
+              branches,
+              source,
+              primaryBaseRef: primary.baseRef,
+            }));
+          }
+        })
+        .catch(() => {})
+        .finally(() => {
+          if (createBaseSourceRef.current === source && createBaseBranchesLoadSeqRef.current === loadSeq) {
+            setCreateBranchesLoading(false);
+          }
+        });
+    } else {
+      setCreateBranchesLoading(false);
+    }
+    createBaseSourceSavePendingRef.current = source;
+    persistCreateBaseSourceConfig();
+  }, [lanes, persistCreateBaseSourceConfig]);
+
   const handleSetCreateLinearIssue = useCallback((issue: LaneLinearIssue | null) => {
     setCreateSelectedLinearIssue(issue);
     if (!issue) return;
@@ -2844,7 +2956,16 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     const name = createLaneName.trim();
     if (!name || createBusy) return;
     if (createMode === "child" && !createParentLaneId) return;
-    if (createMode === "primary" && !createBaseBranch) return;
+    if (createMode === "primary") {
+      const validBaseBranch = listNewLaneBaseOptions(createBranches, createBaseSource)
+        .some((option) => option.ref === createBaseBranch);
+      if (createBranchesLoading || !validBaseBranch) {
+        setCreateError(createBranchesLoading
+          ? "Still loading base branches. Try again in a moment."
+          : "Choose a valid base branch for the selected source.");
+        return;
+      }
+    }
     if (createMode === "existing" && !createImportBranch) return;
     if (createSelectedLinearIssue && createMode === "existing") {
       setCreateError("Detach the Linear issue before importing an existing branch.");
@@ -2986,12 +3107,16 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     createLaneName,
     createMode,
     createParentLaneId,
+    createBaseSource,
     createBaseBranch,
+    createBranches,
+    createBranchesLoading,
     createImportBranch,
     createChildBaseBranch,
     lanes,
     createBusy,
     createRuntimePlacement,
+    createVmRuntimeAuthConfirmed,
     createVmRuntimeAvailable,
     createVmRuntimeUnavailableReason,
     navigate,
@@ -4399,6 +4524,8 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
         setCreateMode={setCreateMode}
         createParentLaneId={createParentLaneId}
         setCreateParentLaneId={setCreateParentLaneId}
+        createBaseSource={createBaseSource}
+        setCreateBaseSource={handleSetCreateBaseSource}
         createBaseBranch={createBaseBranch}
         setCreateBaseBranch={handleSetCreateBaseBranch}
         createImportBranch={createImportBranch}

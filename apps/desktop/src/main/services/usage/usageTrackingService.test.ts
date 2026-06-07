@@ -39,7 +39,10 @@ const {
   parseClaudeWindows,
   parseCodexRateLimitWindows,
   calculatePacingByProvider,
+  buildProviderWindows,
+  fetchJsonWithRetry,
   collectAdeUsageStats,
+  pollCodexUsage,
   pollCodexViaCliRpc,
   resolveTokenPrice,
   resetDynamicTokenPricingForTest,
@@ -857,6 +860,77 @@ describe("pollCodexViaCliRpc", () => {
       "usage.poll.codex_cli_rpc_non_zero_exit",
       expect.objectContaining({ exitCode: 1, stderr: "codex said no\n" }),
     );
+  });
+
+  it("preserves Codex HTTP auth failures when CLI fallback cannot return windows", async () => {
+    const tmpDir = makeTmpDir();
+    const originalCodexHome = process.env.CODEX_HOME;
+    fs.writeFileSync(path.join(tmpDir, "auth.json"), JSON.stringify({
+      tokens: { access_token: "expired-token" },
+    }));
+    process.env.CODEX_HOME = tmpDir;
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: false,
+      status: 401,
+      json: async () => ({}),
+    }));
+    const fake = createFakeCodexChild({
+      closeCode: 1,
+      stderr: "rpc unavailable\n",
+    });
+    mockState.resolveCodexExecutable.mockReturnValue({
+      path: "codex.exe",
+      source: "path",
+    });
+    mockState.spawn.mockReturnValue(fake.child);
+
+    try {
+      const logger = createLogger();
+      const result = await pollCodexUsage(logger as any);
+
+      expect(result.windows).toEqual([]);
+      expect(result.errors).toContain("codex: API returned 401");
+      expect(result.errors).toContain("codex: CLI RPC exited with non-zero code");
+    } finally {
+      if (originalCodexHome === undefined) {
+        delete process.env.CODEX_HOME;
+      } else {
+        process.env.CODEX_HOME = originalCodexHome;
+      }
+      vi.unstubAllGlobals();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("does not spawn the CLI fallback for non-auth Codex 4xx responses", async () => {
+    const tmpDir = makeTmpDir();
+    const originalCodexHome = process.env.CODEX_HOME;
+    fs.writeFileSync(path.join(tmpDir, "auth.json"), JSON.stringify({
+      tokens: { access_token: "rate-limited-token" },
+    }));
+    process.env.CODEX_HOME = tmpDir;
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: false,
+      status: 429,
+      json: async () => ({}),
+    }));
+
+    try {
+      const logger = createLogger();
+      const result = await pollCodexUsage(logger as any);
+
+      expect(result.windows).toEqual([]);
+      expect(result.errors).toEqual(["codex: API returned 429"]);
+      expect(mockState.spawn).not.toHaveBeenCalled();
+    } finally {
+      if (originalCodexHome === undefined) {
+        delete process.env.CODEX_HOME;
+      } else {
+        process.env.CODEX_HOME = originalCodexHome;
+      }
+      vi.unstubAllGlobals();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 });
 
@@ -1882,5 +1956,262 @@ describe("findJsonlFiles", () => {
 
     expect(files).toEqual([smallPath]);
     fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+});
+
+describe("buildProviderWindows", () => {
+  const win = (percentUsed: number) => ({
+    provider: "claude" as const,
+    windowType: "weekly" as const,
+    percentUsed,
+    resetsAt: "2026-01-01T00:00:00Z",
+    resetsInMs: 1,
+  });
+
+  it("marks ok and stamps lastSuccessAt when fresh windows arrive", () => {
+    const fresh = [win(10)];
+    const result = buildProviderWindows("claude", fresh, [], [], null, "2026-06-07T00:00:00Z");
+    expect(result.status.state).toBe("ok");
+    expect(result.status.lastSuccessAt).toBe("2026-06-07T00:00:00Z");
+    expect(result.lastSuccessAt).toBe("2026-06-07T00:00:00Z");
+    expect(result.windows).toBe(fresh);
+  });
+
+  it("carries forward previous windows as stale on an empty/failed poll", () => {
+    const prev = [{ ...win(42), resetsAt: "2026-06-08T00:00:00Z" }];
+    const result = buildProviderWindows(
+      "claude",
+      [],
+      ["claude: API returned 409"],
+      prev,
+      "2026-06-06T00:00:00Z",
+      "2026-06-07T00:00:00Z",
+    );
+    expect(result.status.state).toBe("stale");
+    expect(result.windows).toHaveLength(1);
+    expect(result.windows[0]?.percentUsed).toBe(42);
+    // lastSuccessAt is preserved from the previous success, not the failed poll.
+    expect(result.status.lastSuccessAt).toBe("2026-06-06T00:00:00Z");
+    expect(result.status.message).toContain("Claude");
+  });
+
+  it("drops carried windows that have passed their reset boundary", () => {
+    const result = buildProviderWindows(
+      "claude",
+      [],
+      ["claude: API returned 409"],
+      [
+        { ...win(99), resetsAt: "2026-06-06T23:59:00Z", resetsInMs: 0 },
+        { ...win(12), resetsAt: "2026-06-07T00:30:00Z", resetsInMs: 30 * 60 * 1000 },
+      ],
+      "2026-06-06T00:00:00Z",
+      "2026-06-07T00:00:00Z",
+    );
+
+    expect(result.status.state).toBe("stale");
+    expect(result.windows).toHaveLength(1);
+    expect(result.windows[0]?.percentUsed).toBe(12);
+    expect(result.windows[0]?.resetsInMs).toBe(30 * 60 * 1000);
+  });
+
+  it("reports an error instead of carrying only expired windows", () => {
+    const result = buildProviderWindows(
+      "codex",
+      [],
+      ["codex: API returned 500"],
+      [{ ...win(88), provider: "codex" as const, resetsAt: "2026-06-06T23:59:00Z", resetsInMs: 0 }],
+      "2026-06-06T00:00:00Z",
+      "2026-06-07T00:00:00Z",
+    );
+
+    expect(result.status.state).toBe("error");
+    expect(result.status.message).toMatch(/expired/i);
+    expect(result.windows).toEqual([]);
+  });
+
+  it("reports unauthed when there is no fallback and credentials are missing", () => {
+    const result = buildProviderWindows("codex", [], ["codex: no credentials found"], [], null, "t");
+    expect(result.status.state).toBe("unauthed");
+    expect(result.windows).toEqual([]);
+  });
+
+  it("clears previous windows when credentials disappear", () => {
+    const prev = [win(42)];
+    const result = buildProviderWindows(
+      "codex",
+      [],
+      ["codex: no credentials found"],
+      prev,
+      "2026-06-06T00:00:00Z",
+      "2026-06-07T00:00:00Z",
+    );
+    expect(result.status.state).toBe("unauthed");
+    expect(result.status.lastSuccessAt).toBe("2026-06-06T00:00:00Z");
+    expect(result.windows).toEqual([]);
+  });
+
+  it("reports error (not unauthed) when there is no fallback and the call failed", () => {
+    const result = buildProviderWindows("codex", [], ["codex: API returned 500"], [], null, "t");
+    expect(result.status.state).toBe("error");
+    expect(result.status.message).toMatch(/couldn't reach/i);
+  });
+
+  it("frames a 401/expired-token failure as reconnect, not unreachable", () => {
+    const result = buildProviderWindows("claude", [], ["claude: API returned 401"], [], null, "t");
+    expect(result.status.state).toBe("error");
+    expect(result.status.message).toMatch(/sign-in expired|reconnect/i);
+  });
+});
+
+describe("usage reliability: non-destructive merge", () => {
+  const futureIso = (ms: number) => new Date(Date.now() + ms).toISOString();
+
+  it("keeps the last-good windows when a provider poll fails (no flicker)", async () => {
+    const logger = createLogger();
+    const weeklyMs = 3 * 24 * 60 * 60 * 1000;
+    const claudeWindow = {
+      provider: "claude" as const,
+      windowType: "weekly" as const,
+      percentUsed: 40,
+      resetsAt: futureIso(weeklyMs),
+      resetsInMs: weeklyMs,
+    };
+    const claudeExtraUsage = {
+      provider: "claude" as const,
+      isEnabled: true,
+      usedCreditsUsd: 12,
+      monthlyLimitUsd: 100,
+      utilization: 12,
+      currency: "usd",
+    };
+    const pollClaudeUsage = vi
+      .fn()
+      .mockResolvedValueOnce({ windows: [claudeWindow], extraUsage: claudeExtraUsage, errors: [] })
+      .mockResolvedValueOnce({ windows: [], extraUsage: null, errors: ["claude: API returned 409"] });
+    const service = createUsageTrackingService({
+      logger,
+      dependencies: {
+        pollClaudeUsage,
+        pollCodexUsage: vi.fn(async () => ({ windows: [], errors: [] })),
+      },
+    });
+
+    const first = await service.poll({ includeCosts: false });
+    expect(first.windows.filter((w) => w.provider === "claude")).toHaveLength(1);
+    expect(first.extraUsage).toEqual([claudeExtraUsage]);
+    expect(first.providerStatus?.claude?.state).toBe("ok");
+
+    const second = await service.poll({ includeCosts: false });
+    const claudeWindows = second.windows.filter((w) => w.provider === "claude");
+    expect(claudeWindows).toHaveLength(1);
+    expect(claudeWindows[0]?.percentUsed).toBe(40);
+    expect(second.extraUsage).toEqual([claudeExtraUsage]);
+    expect(second.providerStatus?.claude?.state).toBe("stale");
+    expect(second.providerStatus?.claude?.lastSuccessAt).toBe(first.lastPolledAt);
+
+    service.dispose();
+  });
+
+  it("attaches per-window pacing for both the 5-hour and weekly windows", async () => {
+    const logger = createLogger();
+    const fiveHourMs = 2 * 60 * 60 * 1000; // 60% of the 5h window elapsed
+    const weeklyMs = 3 * 24 * 60 * 60 * 1000;
+    const service = createUsageTrackingService({
+      logger,
+      dependencies: {
+        pollClaudeUsage: vi.fn(async () => ({
+          windows: [
+            { provider: "claude" as const, windowType: "five_hour" as const, percentUsed: 80, resetsAt: futureIso(fiveHourMs), resetsInMs: fiveHourMs },
+            { provider: "claude" as const, windowType: "weekly" as const, percentUsed: 8, resetsAt: futureIso(weeklyMs), resetsInMs: weeklyMs },
+          ],
+          extraUsage: null,
+          errors: [],
+        })),
+        pollCodexUsage: vi.fn(async () => ({ windows: [], errors: [] })),
+      },
+    });
+
+    const snap = await service.poll({ includeCosts: false });
+    const five = snap.windows.find((w) => w.windowType === "five_hour");
+    const weekly = snap.windows.find((w) => w.windowType === "weekly");
+    expect(five?.pacing).toBeDefined();
+    expect(weekly?.pacing).toBeDefined();
+    // 80% used with only ~60% of the 5h window elapsed → burning ahead of pace.
+    expect(five?.pacing?.deltaPercent ?? 0).toBeGreaterThan(0);
+
+    service.dispose();
+  });
+});
+
+describe("fetchJsonWithRetry", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("retries a transient 5xx and then succeeds", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: false, status: 503, json: async () => ({}) })
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({ five_hour: { percent_used: 5 } }) });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const res = await fetchJsonWithRetry("https://example.test/usage", {}, { attempts: 2, backoffMs: 0 });
+    expect(res.ok).toBe(true);
+    expect(res.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("retries a network/timeout abort and then succeeds", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("The operation was aborted"))
+      .mockResolvedValueOnce({ ok: true, status: 200, json: async () => ({}) });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const res = await fetchJsonWithRetry("https://example.test/usage", {}, { attempts: 2, backoffMs: 0 });
+    expect(res.ok).toBe(true);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("does NOT retry a 429 — backs off instead of amplifying the throttle", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 429, json: async () => ({}) });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const res = await fetchJsonWithRetry("https://example.test/usage", {}, { attempts: 2, backoffMs: 0 });
+    expect(res.status).toBe(429);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not retry a 429 with an empty or non-JSON body", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: false,
+      status: 429,
+      json: async () => {
+        throw new SyntaxError("Unexpected end of JSON input");
+      },
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const res = await fetchJsonWithRetry("https://example.test/usage", {}, { attempts: 2, backoffMs: 0 });
+    expect(res).toEqual({ ok: false, status: 429, data: null });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not retry a 409 conflict", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 409, json: async () => ({}) });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const res = await fetchJsonWithRetry("https://example.test/usage", {}, { attempts: 2, backoffMs: 0 });
+    expect(res.status).toBe(409);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not retry a non-transient 401 (defers to the refresh path)", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 401, json: async () => ({}) });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const res = await fetchJsonWithRetry("https://example.test/usage", {}, { attempts: 2, backoffMs: 0 });
+    expect(res.status).toBe(401);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 });

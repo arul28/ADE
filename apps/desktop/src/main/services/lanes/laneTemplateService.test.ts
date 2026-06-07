@@ -34,7 +34,7 @@ function makeEffective(overrides: Partial<EffectiveProjectConfig> = {}): Effecti
     testSuites: [],
     laneOverlayPolicies: [],
     automations: [],
-    git: { autoRebaseOnHeadChange: false },
+    git: { autoRebaseOnHeadChange: false, newLaneBaseSource: "remote" },
     ...overrides,
   };
 }

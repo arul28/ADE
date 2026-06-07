@@ -38,6 +38,7 @@ const EMPTY_WORK_STATE: WorkProjectViewState = {
 
 const laneSessionsCacheByScope = new Map<string, TerminalSessionSummary[]>();
 const OPTIMISTIC_PTY_SESSION_TTL_MS = 2 * 60 * 1000;
+const STOPPED_RUNTIME_GUARD_TTL_MS = 12_000;
 
 export function __clearLaneWorkSessionCacheForTests(): void {
   laneSessionsCacheByScope.clear();
@@ -56,6 +57,12 @@ type QueuedRefresh = {
 type PendingOptimisticSession = {
   session: TerminalSessionSummary;
   createdAtMs: number;
+};
+
+type StoppedRuntimeSession = {
+  ptyId: string;
+  endedAt: string;
+  expiresAtMs: number;
 };
 
 function compareSessionsByStartedAtDesc(left: TerminalSessionSummary, right: TerminalSessionSummary): number {
@@ -139,6 +146,8 @@ export function useLaneWorkSessions(laneId: string | null) {
   const scopeKeyRef = useRef("");
   const sessionIdsRef = useRef<Set<string>>(new Set());
   const pendingOptimisticSessionsRef = useRef<Map<string, PendingOptimisticSession>>(new Map());
+  const sessionsRef = useRef<TerminalSessionSummary[]>([]);
+  const stoppedRuntimeSessionsRef = useRef<Map<string, StoppedRuntimeSession>>(new Map());
 
   const currentLane = useMemo(
     () => (laneId ? lanes.find((lane) => lane.id === laneId) ?? null : null),
@@ -247,6 +256,37 @@ export function useLaneWorkSessions(laneId: string | null) {
           }
           rows.sort(compareSessionsByStartedAtDesc);
         }
+        const stoppedRuntimeSessions = stoppedRuntimeSessionsRef.current;
+        if (stoppedRuntimeSessions.size > 0) {
+          const now = Date.now();
+          for (const [sessionId, stopped] of [...stoppedRuntimeSessions.entries()]) {
+            if (stopped.expiresAtMs <= now) stoppedRuntimeSessions.delete(sessionId);
+          }
+          if (stoppedRuntimeSessions.size > 0) {
+            for (let index = 0; index < rows.length; index += 1) {
+              const row = rows[index];
+              if (!row) continue;
+              const stopped = stoppedRuntimeSessions.get(row.id);
+              if (!stopped) continue;
+              if (row.status !== "running") {
+                stoppedRuntimeSessions.delete(row.id);
+                continue;
+              }
+              if (row.ptyId && row.ptyId !== stopped.ptyId) {
+                stoppedRuntimeSessions.delete(row.id);
+                continue;
+              }
+              rows[index] = {
+                ...row,
+                ptyId: null,
+                status: "disposed",
+                runtimeState: "killed",
+                endedAt: row.endedAt ?? stopped.endedAt,
+                exitCode: null,
+              };
+            }
+          }
+        }
         const nextSessions = rows;
         setSessions(nextSessions);
         if (requestedScopeKey) {
@@ -318,6 +358,7 @@ export function useLaneWorkSessions(laneId: string | null) {
 
   useEffect(() => {
     sessionIdsRef.current = new Set(sessions.map((session) => session.id));
+    sessionsRef.current = sessions;
   }, [sessions]);
 
   const upsertSessionSnapshot = useCallback((session: TerminalSessionSummary) => {
@@ -731,21 +772,72 @@ export function useLaneWorkSessions(laneId: string | null) {
   }, [focusSession, openSessionTab, refresh, selectLane, upsertSessionSnapshot]);
 
   const closePtySession = useCallback(async (ptyId: string) => {
+    const matchedSession = sessionsRef.current.find((session) => session.ptyId === ptyId) ?? null;
+    const sessionId = matchedSession?.id ?? null;
+    const previousSessions = sessionsRef.current.filter((session) =>
+      session.ptyId === ptyId || (sessionId != null && session.id === sessionId),
+    );
+    const restorePreviousSessions = () => {
+      if (previousSessions.length === 0) return;
+      const previousById = new Map(previousSessions.map((session) => [session.id, session] as const));
+      setSessions((prev) => prev.map((session) => previousById.get(session.id) ?? session));
+    };
+    const endedAt = new Date().toISOString();
     setClosingPtyIds((prev) => {
       const next = new Set(prev);
       next.add(ptyId);
       return next;
     });
+    invalidateSessionListCache();
+    setSessions((prev) =>
+      prev.map((session) =>
+        session.ptyId === ptyId || (sessionId != null && session.id === sessionId)
+          ? {
+              ...session,
+              ptyId: null,
+              status: "disposed" as const,
+              runtimeState: "killed" as const,
+              endedAt,
+              exitCode: null,
+            }
+          : session,
+      ),
+    );
+    const rememberStoppedRuntime = () => {
+      if (!sessionId) return;
+      stoppedRuntimeSessionsRef.current.set(sessionId, {
+        ptyId,
+        endedAt,
+        expiresAtMs: Date.now() + STOPPED_RUNTIME_GUARD_TTL_MS,
+      });
+    };
+    let disposeError: unknown = null;
     try {
-      await window.ade.pty.dispose({ ptyId });
+      const result = await window.ade.pty.dispose({ ptyId, ...(sessionId ? { sessionId } : {}) });
+      if (result?.disposed === false) {
+        if (result.reason === "owned-by-peer" || result.reason === "session-mismatch") {
+          if (sessionId) stoppedRuntimeSessionsRef.current.delete(sessionId);
+          restorePreviousSessions();
+        } else {
+          rememberStoppedRuntime();
+        }
+      } else {
+        rememberStoppedRuntime();
+      }
+    } catch (error) {
+      disposeError = error;
+      if (sessionId) stoppedRuntimeSessionsRef.current.delete(sessionId);
+      restorePreviousSessions();
     } finally {
       setClosingPtyIds((prev) => {
         const next = new Set(prev);
         next.delete(ptyId);
         return next;
       });
+      invalidateSessionListCache();
       await refresh({ showLoading: false, force: true });
     }
+    if (disposeError) throw disposeError;
   }, [refresh]);
 
   return {

@@ -98,6 +98,33 @@ function shouldApplyCachedSnapshot(
   return nextTimestamp == null || currentTimestamp == null || nextTimestamp >= currentTimestamp;
 }
 
+function formatUpdatedAgo(snapshot: UsageSnapshot | null, nowMs: number): string {
+  const t = snapshot ? Date.parse(snapshot.lastPolledAt) : Number.NaN;
+  if (!Number.isFinite(t)) return "";
+  const sec = Math.max(0, Math.round((nowMs - t) / 1000));
+  if (sec < 5) return "updated just now";
+  if (sec < 60) return `updated ${sec}s ago`;
+  const min = Math.round(sec / 60);
+  if (min < 60) return `updated ${min}m ago`;
+  const hr = Math.round(min / 60);
+  if (hr < 24) return `updated ${hr}h ago`;
+  return `updated ${Math.round(hr / 24)}d ago`;
+}
+
+// A quiet, non-destructive warning: data is being shown, but the last refresh
+// for one or more providers failed (stale) or has nothing yet (error).
+function usageWarning(snapshot: UsageSnapshot | null): { warn: boolean; detail: string | null } {
+  const statuses = snapshot?.providerStatus;
+  if (!statuses) return { warn: false, detail: null };
+  const issues: string[] = [];
+  for (const [provider, status] of Object.entries(statuses)) {
+    if (status && (status.state === "stale" || status.state === "error")) {
+      issues.push(status.message ?? `${PROVIDER_LABEL[provider as UsageProvider] ?? provider} unavailable`);
+    }
+  }
+  return { warn: issues.length > 0, detail: issues.length > 0 ? issues.join(" · ") : null };
+}
+
 function HeaderProviderUsageChip({
   provider,
   usage,
@@ -136,6 +163,15 @@ export function HeaderUsageControl({
   const snapshotRef = useRef<UsageSnapshot | null>(null);
 
   const [refreshing, setRefreshing] = useState(false);
+  const [nowMs, setNowMs] = useState(() => Date.now());
+
+  // Tick the "updated Xs ago" label only while the popup is open.
+  useEffect(() => {
+    if (!open) return;
+    setNowMs(Date.now());
+    const timer = window.setInterval(() => setNowMs(Date.now()), 5_000);
+    return () => window.clearInterval(timer);
+  }, [open]);
 
   const applySnapshot = useCallback((nextSnapshot: UsageSnapshot | null) => {
     snapshotRef.current = nextSnapshot;
@@ -254,7 +290,9 @@ export function HeaderUsageControl({
     })),
     [detectedProviders, snapshot],
   );
-  const hasErrors = (snapshot?.errors.length ?? 0) > 0;
+  const warning = useMemo(() => usageWarning(snapshot), [snapshot]);
+  const hasErrors = warning.warn;
+  const updatedAgo = formatUpdatedAgo(snapshot, nowMs);
 
   const titleParts = providersWithUsage.map(
     ({ provider, usage }) => `${PROVIDER_LABEL[provider]} ${formatUsageTitle(usage)}`,
@@ -367,7 +405,25 @@ export function HeaderUsageControl({
                   Usage
                 </div>
               </div>
-              <div className="flex items-center gap-1">
+              <div className="flex items-center gap-2">
+                {updatedAgo ? (
+                  <span className="flex items-center gap-1.5 text-[10.5px] tabular-nums text-fg/40">
+                    <span>{updatedAgo}</span>
+                    {warning.warn ? (
+                      <span
+                        className="h-1.5 w-1.5 rounded-full bg-amber-400/80"
+                        title={warning.detail ?? "Some usage couldn't be refreshed"}
+                        aria-label={warning.detail ?? "Some usage couldn't be refreshed"}
+                      />
+                    ) : (
+                      <span
+                        className="h-1.5 w-1.5 rounded-full bg-emerald-400/70"
+                        title="Usage is up to date"
+                        aria-hidden
+                      />
+                    )}
+                  </span>
+                ) : null}
                 <button
                   type="button"
                   className="ade-shell-control inline-flex h-7 w-7 items-center justify-center rounded-md"

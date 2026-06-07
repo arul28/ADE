@@ -44,4 +44,19 @@ describe("resourcePressure", () => {
     expect(pressureLevelForThresholds(70, [30, 50, 70, 90])).toBe(3);
     expect(pressureLevelForThresholds(null, [30, 50, 70, 90])).toBe(0);
   });
+
+  it("describes runtime pressure by agent processes as well as ADE runtime count", () => {
+    const usage = makeUsage({
+      activePtyCount: 4,
+      ptyProcessCount: 9,
+      ptyCpuPercent: 71,
+      ptyMemoryMB: 1536,
+    });
+
+    const description = resourcePressureDescription(usage);
+    expect(description).toContain("4 live ADE runtimes");
+    expect(description).toContain("9 agent processes");
+    expect(description).toContain("71% CPU");
+    expect(description).toContain("1.5 GB");
+  });
 });

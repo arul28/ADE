@@ -132,6 +132,11 @@ import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
 import { buildChatAppearanceRootStyle } from "./chatAppearance";
 import { copyLaunchPromptToClipboard } from "../../lib/launchPromptClipboard";
 import { LaneAccentDot } from "../lanes/LaneAccentDot";
+import {
+  effectiveNewLaneBaseSource,
+  fetchNewLaneBaseBranches,
+  selectDefaultNewLaneBaseRef,
+} from "../lanes/newLaneBaseSource";
 import { LaneCombobox, AUTO_CREATE_LANE_OPTION_ID } from "../terminals/LaneCombobox";
 import {
   buildTrackedCliLaunchCommand,
@@ -142,6 +147,7 @@ import {
 } from "../terminals/cliLaunch";
 import { ClaudeCacheTtlBadge } from "../shared/ClaudeCacheTtlBadge";
 import { WorkSurfaceHeader } from "../work/WorkSurfaceHeader";
+import { branchNameFromRef } from "../prs/shared/laneBranchTargets";
 import { shouldShowClaudeCacheTtl } from "../../lib/claudeCacheTtl";
 import {
   invalidateAgentChatSessionListCache,
@@ -191,6 +197,8 @@ const LAST_MODEL_ID_KEY = "ade.chat.lastModelId";
 const LAST_REASONING_KEY_PREFIX = "ade.chat.lastReasoningEffort";
 const LAST_LAUNCH_CONFIG_KEY_PREFIX = "ade.chat.lastLaunchConfig.v1";
 const COMPOSER_DRAFT_STORAGE_KEY_PREFIX = "ade.chat.composerDraft.v1";
+const WORK_START_DRAFT_COMPANION_STATE_KEY = "draft:work-start";
+const WORK_START_DRAFT_LAUNCH_SCOPE_ID = "work-start";
 const COMPOSER_DRAFT_WRITE_DEBOUNCE_MS = 350;
 const SUBAGENT_AUTOOPEN_FIRED_KEY_PREFIX = "ade.chat.subagentAutoOpenFired";
 const SUBAGENT_AUTOOPEN_FIRED_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -650,6 +658,36 @@ function createTemporaryAutoLaneName(date = new Date()): string {
     `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}`,
     `${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`,
   ].join("-");
+}
+
+const AUTO_LANE_NAME_SUGGEST_TIMEOUT_MS = 3_500;
+
+async function suggestAutoLaneName(args: {
+  laneId: string;
+  prompt: string;
+  modelId: string;
+}): Promise<string> {
+  const fallbackName = createTemporaryAutoLaneName();
+  let timeoutId: ReturnType<typeof setTimeout> | null = null;
+  try {
+    const suggested = await Promise.race([
+      window.ade.agentChat.suggestLaneName({
+        laneId: args.laneId,
+        prompt: args.prompt,
+        modelId: args.modelId,
+        fallbackName,
+      }),
+      new Promise<string>((resolve) => {
+        timeoutId = setTimeout(() => resolve(fallbackName), AUTO_LANE_NAME_SUGGEST_TIMEOUT_MS);
+      }),
+    ]);
+    return suggested.trim() || fallbackName;
+  } catch (error) {
+    console.warn("draft launch lane name suggestion failed; using fallback name", error);
+    return fallbackName;
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+  }
 }
 
 export type AgentChatSessionCreatedOptions = {
@@ -2802,17 +2840,32 @@ export function AgentChatPane({
   const showWorkspaceChrome = !hideWorkspaceChrome;
   const modelSwitchPolicy = presentation?.modelSwitchPolicy ?? "same-family-after-launch";
   const workDraftStorageKind = normalizeWorkDraftStorageKind(workDraftKind);
+  const isWorkDraftComposer = forceDraft && embeddedWorkLayout && !lockSessionId && !initialSessionId;
+  const draftLaunchConfigLaneScopeId = isWorkDraftComposer ? WORK_START_DRAFT_LAUNCH_SCOPE_ID : laneId;
+  const initialWorkDraftLaneIdRef = useRef<string | null>(isWorkDraftComposer ? laneId : null);
+  const legacyWorkDraftLaneId = isWorkDraftComposer ? initialWorkDraftLaneIdRef.current : null;
   const initialNativeControls = useMemo(() => defaultNativeControls(surfaceProfile), [surfaceProfile]);
-  const lastLaunchConfigStorageKeys = useMemo(() => launchConfigStorageKeys({
-    projectRoot,
-    laneId,
-    surfaceProfile,
-    workDraftKind: workDraftStorageKind,
-  }), [laneId, projectRoot, surfaceProfile, workDraftStorageKind]);
+  const lastLaunchConfigStorageKeys = useMemo(() => {
+    const primary = launchConfigStorageKeys({
+      projectRoot,
+      laneId: draftLaunchConfigLaneScopeId,
+      surfaceProfile,
+      workDraftKind: workDraftStorageKind,
+    });
+    const legacy = legacyWorkDraftLaneId
+      ? launchConfigStorageKeys({
+          projectRoot,
+          laneId: legacyWorkDraftLaneId,
+          surfaceProfile,
+          workDraftKind: workDraftStorageKind,
+        })
+      : [];
+    return [...new Set([...primary, ...legacy])];
+  }, [draftLaunchConfigLaneScopeId, legacyWorkDraftLaneId, projectRoot, surfaceProfile, workDraftStorageKind]);
   const lastLaunchConfigStorageKey = lastLaunchConfigStorageKeys[0]!;
   const draftLaunchConfigScopeKey = useMemo(
-    () => `${projectRoot ?? "project"}:${laneId ?? "no-lane"}:${surfaceProfile}:${workDraftStorageKind}`,
-    [laneId, projectRoot, surfaceProfile, workDraftStorageKind],
+    () => `${projectRoot ?? "project"}:${draftLaunchConfigLaneScopeId ?? "no-lane"}:${surfaceProfile}:${workDraftStorageKind}`,
+    [draftLaunchConfigLaneScopeId, projectRoot, surfaceProfile, workDraftStorageKind],
   );
   const draftLaunchJobsScopeKey = useMemo(
     () => [
@@ -2844,7 +2897,11 @@ export function AgentChatPane({
     }, 15 * 1000);
     return () => window.clearInterval(intervalId);
   }, [hasActiveDraftLaunchJobs]);
-  const initialCompanionStateKey = lockSessionId ?? initialSessionId ?? (laneId ? `draft:${laneId}` : "draft");
+  const initialCompanionStateKey = lockSessionId
+    ?? initialSessionId
+    ?? (isWorkDraftComposer
+      ? WORK_START_DRAFT_COMPANION_STATE_KEY
+      : laneId ? `draft:${laneId}` : "draft");
   const [sessions, setSessions] = useState<AgentChatSessionSummary[]>([]);
   const [archivedSessions, setArchivedSessions] = useState<AgentChatSessionSummary[]>([]);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(lockSessionId ?? initialSessionId ?? null);
@@ -3050,16 +3107,35 @@ export function AgentChatPane({
     document.addEventListener("mousemove", onMove);
     document.addEventListener("mouseup", onUp);
   }, [rightPaneSplit]);
-  const companionStateKey = selectedSessionId ?? (laneId ? `draft:${laneId}` : "draft");
-  const composerDraftStorageKeyValues = useMemo(() => composerDraftStorageKeys({
-    projectRoot,
-    companionStateKey,
-    surfaceProfile,
-    workDraftKind: workDraftStorageKind,
-  }), [companionStateKey, projectRoot, surfaceProfile, workDraftStorageKind]);
+  const companionStateKey = selectedSessionId
+    ?? (isWorkDraftComposer
+      ? WORK_START_DRAFT_COMPANION_STATE_KEY
+      : laneId ? `draft:${laneId}` : "draft");
+  const legacyWorkDraftCompanionStateKey =
+    companionStateKey === WORK_START_DRAFT_COMPANION_STATE_KEY && legacyWorkDraftLaneId
+      ? `draft:${legacyWorkDraftLaneId}`
+      : null;
+  const composerDraftStorageKeyValues = useMemo(() => {
+    const primary = composerDraftStorageKeys({
+      projectRoot,
+      companionStateKey,
+      surfaceProfile,
+      workDraftKind: workDraftStorageKind,
+    });
+    const legacy = legacyWorkDraftCompanionStateKey
+      ? composerDraftStorageKeys({
+          projectRoot,
+          companionStateKey: legacyWorkDraftCompanionStateKey,
+          surfaceProfile,
+          workDraftKind: workDraftStorageKind,
+        })
+      : [];
+    return [...new Set([...primary, ...legacy])];
+  }, [companionStateKey, legacyWorkDraftCompanionStateKey, projectRoot, surfaceProfile, workDraftStorageKind]);
   const composerDraftStorageKeyValue = composerDraftStorageKeyValues[0]!;
   const companionHydrationKeyRef = useRef<string | null>(initialCompanionStateKey);
   const composerDraftHydratingRef = useRef(false);
+  const composerDraftHydratingTextRef = useRef<string | null>(null);
   const [sessionDelta, setSessionDelta] = useState<{ insertions: number; deletions: number } | null>(null);
   const [sessionMutationKind, setSessionMutationKind] = useState<"model" | "permission" | "computer-use" | null>(null);
   const [promptSuggestion, setPromptSuggestion] = useState<string | null>(null);
@@ -6071,7 +6147,11 @@ export function AgentChatPane({
     prevDraftKeyRef.current = companionStateKey;
     const saved = readLatestComposerDraftSnapshot(composerDraftStorageKeyValues, initialNativeControls);
     composerDraftHydratingRef.current = true;
+    composerDraftHydratingTextRef.current = saved?.text ?? null;
     if (saved) {
+      for (const storageKey of composerDraftStorageKeyValues) {
+        writeComposerDraftSnapshot(storageKey, saved);
+      }
       draftsPerSessionRef.current.set(companionStateKey, saved.text);
       setDraft(saved.text);
       setAttachments(saved.attachments);
@@ -6117,7 +6197,9 @@ export function AgentChatPane({
   useEffect(() => {
     if (composerDraftHydratingRef.current) {
       composerDraftHydratingRef.current = false;
-      return;
+      const hydratedText = composerDraftHydratingTextRef.current;
+      composerDraftHydratingTextRef.current = null;
+      if (draft === hydratedText) return;
     }
     draftsPerSessionRef.current.set(companionStateKey, draft);
     const snapshot: ComposerDraftStorageSnapshot = {
@@ -6640,14 +6722,31 @@ export function AgentChatPane({
         ?? availableLanes?.find((candidate) => candidate.name.trim().toLowerCase() === "primary")
         ?? null;
       if (!primaryLane) throw new Error("Auto-create requires a primary lane.");
-      const laneName = await window.ade.agentChat.suggestLaneName({
+      const laneName = await suggestAutoLaneName({
         laneId: primaryLane.id,
         prompt: buildDraftLaunchNamingSeed(snapshot),
         modelId: snapshot.modelId,
-        fallbackName: createTemporaryAutoLaneName(),
       });
       onAutoCreateNameResolved?.();
-      const createdLane = await window.ade.lanes.create({ name: laneName, parentLaneId: primaryLane.id });
+      const projectConfigSnapshot = await getProjectConfigCached({ projectRoot, force: true }).catch(() => null);
+      const baseSource = effectiveNewLaneBaseSource(projectConfigSnapshot);
+      const branches = await fetchNewLaneBaseBranches({
+        source: baseSource,
+        fetchRemoteBranches: () => window.ade.git.fetch({ laneId: primaryLane.id }),
+        listBranches: () => window.ade.git.listBranches({ laneId: primaryLane.id }),
+      });
+      const primaryLaneSummary = lanes.find((candidate) => candidate.id === primaryLane.id) ?? null;
+      const primaryBaseRef = primaryLaneSummary?.baseRef ?? (branchNameFromRef(primaryLane.branchRef) || "main");
+      const selectedBaseBranch = selectDefaultNewLaneBaseRef({
+        branches,
+        source: baseSource,
+        primaryBaseRef,
+      });
+      const baseBranch = selectedBaseBranch;
+      const createdLane = await window.ade.lanes.create({
+        name: laneName,
+        ...(baseBranch ? { baseBranch } : {}),
+      });
       await refreshLanesStore().catch((refreshError: unknown) => {
         console.warn("draft launch lane refresh failed", refreshError);
       });
@@ -7252,11 +7351,10 @@ export function AgentChatPane({
             issueCount ? `${issueCount} issue${issueCount === 1 ? "" : "s"}` : null,
           ].filter(Boolean).join(" · ");
         }
-        const baseName = await window.ade.agentChat.suggestLaneName({
+        const baseName = await suggestAutoLaneName({
           laneId,
           prompt: namingSeed,
           modelId: parallelModelSlots[0]!.modelId,
-          fallbackName: createTemporaryAutoLaneName(),
         });
         setParallelLaunchStatus(`Creating ${parallelModelSlots.length} child lanes…`);
 

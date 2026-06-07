@@ -261,7 +261,39 @@ function terminalHeightFor(element: HTMLElement): number {
   return 180;
 }
 
+function installLocalStorageShim() {
+  let nativeLocalStorage: Storage | undefined;
+  try {
+    nativeLocalStorage = window.localStorage;
+  } catch {
+    nativeLocalStorage = undefined;
+  }
+  if (nativeLocalStorage) return;
+
+  const values = new Map<string, string>();
+  const shim = {
+    get length() {
+      return values.size;
+    },
+    clear: vi.fn(() => values.clear()),
+    getItem: vi.fn((key: string) => values.get(String(key)) ?? null),
+    key: vi.fn((index: number) => Array.from(values.keys())[index] ?? null),
+    removeItem: vi.fn((key: string) => {
+      values.delete(String(key));
+    }),
+    setItem: vi.fn((key: string, value: string) => {
+      values.set(String(key), String(value));
+    }),
+  } as unknown as Storage;
+
+  Object.defineProperty(window, "localStorage", {
+    configurable: true,
+    value: shim,
+  });
+}
+
 beforeAll(() => {
+  installLocalStorageShim();
   vi.stubGlobal("ResizeObserver", MockResizeObserver);
   vi.stubGlobal("IntersectionObserver", MockIntersectionObserver);
   // xterm WebGL path needs a getContext("webgl") that succeeds in jsdom / headless CI.
@@ -408,6 +440,52 @@ describe("TerminalView", () => {
     }
   });
 
+  it("uses the WebGL renderer by default on supported platforms", async () => {
+    vi.useRealTimers();
+    const platformDescriptor = Object.getOwnPropertyDescriptor(window.navigator, "platform");
+    const userAgentDescriptor = Object.getOwnPropertyDescriptor(window.navigator, "userAgent");
+    const originalPlatform = window.navigator.platform;
+    const originalUserAgent = window.navigator.userAgent;
+    try {
+      Object.defineProperty(window.navigator, "platform", {
+        configurable: true,
+        value: "MacIntel",
+      });
+      Object.defineProperty(window.navigator, "userAgent", {
+        configurable: true,
+        value: "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) AppleWebKit/537.36",
+      });
+      render(<TerminalView ptyId="pty-webgl-default" sessionId="session-webgl-default" isActive />);
+
+      await waitFor(
+        () => {
+          const runtime = getTerminalRuntimeSnapshot("session-webgl-default");
+          expect(runtime?.renderer).toBe("webgl");
+          expect(mockState.lastContextLossHandler).toBeTruthy();
+        },
+        { timeout: 10_000 },
+      );
+    } finally {
+      if (platformDescriptor) {
+        Object.defineProperty(window.navigator, "platform", platformDescriptor);
+      } else {
+        Object.defineProperty(window.navigator, "platform", {
+          configurable: true,
+          value: originalPlatform,
+        });
+      }
+      if (userAgentDescriptor) {
+        Object.defineProperty(window.navigator, "userAgent", userAgentDescriptor);
+      } else {
+        Object.defineProperty(window.navigator, "userAgent", {
+          configurable: true,
+          value: originalUserAgent,
+        });
+      }
+      vi.useFakeTimers();
+    }
+  });
+
   it("uses the DOM renderer when explicitly opted out", async () => {
     vi.useRealTimers();
     try {
@@ -505,7 +583,7 @@ describe("TerminalView", () => {
     vi.useRealTimers();
     const platformDescriptor = Object.getOwnPropertyDescriptor(window.navigator, "platform");
     const originalPlatform = window.navigator.platform;
-    const getItemSpy = vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => {
+    const getItemSpy = vi.spyOn(window.localStorage, "getItem").mockImplementation(() => {
       throw new Error("storage unavailable");
     });
     try {
@@ -582,6 +660,7 @@ describe("TerminalView", () => {
 
     const resizeSpy = (window as any).ade.pty.resize as ReturnType<typeof vi.fn>;
     const terminal = mockState.terminalInstances.at(-1) as {
+      clearTextureAtlas: ReturnType<typeof vi.fn>;
       focus: ReturnType<typeof vi.fn>;
     } | undefined;
 
@@ -592,10 +671,12 @@ describe("TerminalView", () => {
     });
     expect(terminal?.focus).not.toHaveBeenCalled();
 
+    terminal?.clearTextureAtlas.mockClear();
     mockState.nextFitDims = { cols: 140, rows: 44 };
     triggerResizeObserver();
     await flushAnimationFrame();
 
+    expect(terminal?.clearTextureAtlas).toHaveBeenCalled();
     expect(resizeSpy).toHaveBeenLastCalledWith({
       ptyId: "pty-visible",
       cols: 140,
@@ -1008,6 +1089,113 @@ describe("TerminalView", () => {
         });
       }
     }
+  });
+
+  it("sends Shift+Enter as a bracketed-paste newline only while the terminal requests bracketed paste mode", async () => {
+    render(<TerminalView ptyId="pty-shift-enter" sessionId="session-shift-enter" isActive />);
+    await flushAllTimers();
+
+    const terminal = mockState.terminalInstances.at(-1) as {
+      attachCustomKeyEventHandler: ReturnType<typeof vi.fn>;
+    } | undefined;
+    const keyHandler = terminal?.attachCustomKeyEventHandler.mock.calls.at(-1)?.[0] as ((ev: KeyboardEvent) => boolean) | undefined;
+    expect(keyHandler).toBeTruthy();
+
+    const ptyWrite = window.ade.pty.write as unknown as ReturnType<typeof vi.fn>;
+    ptyWrite.mockClear();
+
+    const pressShiftEnter = () => {
+      const preventDefault = vi.fn();
+      const handled = keyHandler!({
+        type: "keydown",
+        key: "Enter",
+        metaKey: false,
+        ctrlKey: false,
+        altKey: false,
+        shiftKey: true,
+        preventDefault,
+      } as unknown as KeyboardEvent);
+      expect(handled).toBe(false);
+      expect(preventDefault).toHaveBeenCalledTimes(1);
+    };
+
+    pressShiftEnter();
+    expect(ptyWrite).toHaveBeenLastCalledWith({
+      ptyId: "pty-shift-enter",
+      data: "\n",
+    });
+
+    for (const listener of mockState.ptyDataListeners) {
+      listener({
+        ptyId: "pty-shift-enter",
+        sessionId: "session-shift-enter",
+        projectRoot: "/project/a",
+        data: "\x1b[?2004h",
+      });
+    }
+
+    pressShiftEnter();
+    expect(ptyWrite).toHaveBeenLastCalledWith({
+      ptyId: "pty-shift-enter",
+      data: "\x1b[200~\n\x1b[201~",
+    });
+
+    for (const listener of mockState.ptyDataListeners) {
+      listener({
+        ptyId: "pty-shift-enter",
+        sessionId: "session-shift-enter",
+        projectRoot: "/project/a",
+        data: "\x1b[?2004l",
+      });
+    }
+
+    pressShiftEnter();
+    expect(ptyWrite).toHaveBeenLastCalledWith({
+      ptyId: "pty-shift-enter",
+      data: "\n",
+    });
+    expect(ptyWrite).toHaveBeenCalledTimes(3);
+  });
+
+  it("restores bracketed paste mode from transcript hydration before handling Shift+Enter", async () => {
+    const previewMock = window.ade.terminal.preview as unknown as ReturnType<typeof vi.fn>;
+    previewMock.mockResolvedValue({
+      terminalId: "session-shift-enter-hydrated",
+      session: null,
+      source: "transcript",
+      snapshot: null,
+      transcript: "\x1b[?2004hCodex ready\n",
+      capturedAt: new Date().toISOString(),
+    });
+
+    render(<TerminalView ptyId="pty-shift-enter-hydrated" sessionId="session-shift-enter-hydrated" isActive />);
+    await flushAllTimers();
+
+    const terminal = mockState.terminalInstances.at(-1) as {
+      attachCustomKeyEventHandler: ReturnType<typeof vi.fn>;
+    } | undefined;
+    const keyHandler = terminal?.attachCustomKeyEventHandler.mock.calls.at(-1)?.[0] as ((ev: KeyboardEvent) => boolean) | undefined;
+    expect(keyHandler).toBeTruthy();
+
+    const ptyWrite = window.ade.pty.write as unknown as ReturnType<typeof vi.fn>;
+    ptyWrite.mockClear();
+    const preventDefault = vi.fn();
+    const handled = keyHandler!({
+      type: "keydown",
+      key: "Enter",
+      metaKey: false,
+      ctrlKey: false,
+      altKey: false,
+      shiftKey: true,
+      preventDefault,
+    } as unknown as KeyboardEvent);
+
+    expect(handled).toBe(false);
+    expect(preventDefault).toHaveBeenCalledTimes(1);
+    expect(ptyWrite).toHaveBeenCalledWith({
+      ptyId: "pty-shift-enter-hydrated",
+      data: "\x1b[200~\n\x1b[201~",
+    });
   });
 
   it("forwards Shift+mouse selection gestures while terminal mouse tracking is active", async () => {

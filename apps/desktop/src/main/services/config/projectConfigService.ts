@@ -152,6 +152,10 @@ function asComputeBackend(value: unknown): "local" | "vps" | "daytona" | undefin
   return COMPUTE_BACKEND_SCHEMA.parse(value);
 }
 
+function asNewLaneBaseSource(value: unknown): "local" | "remote" | undefined {
+  return value === "local" || value === "remote" ? value : undefined;
+}
+
 function coerceOrchestratorHookConfig(value: unknown): { command: string; timeoutMs?: number } | null {
   if (typeof value === "string") {
     const command = value.trim();
@@ -2009,10 +2013,15 @@ function coerceConfigFile(value: unknown): ProjectConfigFile {
 
   const github = coerceGithubConfig(value.github);
 
-  const git =
-    isRecord(value.git) && asBool(value.git.autoRebaseOnHeadChange) != null
-      ? { autoRebaseOnHeadChange: asBool(value.git.autoRebaseOnHeadChange) }
-      : undefined;
+  const git = (() => {
+    if (!isRecord(value.git)) return undefined;
+    const autoRebaseOnHeadChange = asBool(value.git.autoRebaseOnHeadChange);
+    const newLaneBaseSource = asNewLaneBaseSource(value.git.newLaneBaseSource);
+    const out: NonNullable<ProjectConfigFile["git"]> = {};
+    if (autoRebaseOnHeadChange != null) out.autoRebaseOnHeadChange = autoRebaseOnHeadChange;
+    if (newLaneBaseSource) out.newLaneBaseSource = newLaneBaseSource;
+    return Object.keys(out).length ? out : undefined;
+  })();
 
   const providersRaw = isRecord(value.providers)
     ? { ...(value.providers as Record<string, unknown>) }
@@ -2515,7 +2524,8 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
     providerMode,
     ...(mergedGithub ? { github: mergedGithub } : {}),
     git: {
-      autoRebaseOnHeadChange: mergedGit?.autoRebaseOnHeadChange ?? false
+      autoRebaseOnHeadChange: mergedGit?.autoRebaseOnHeadChange ?? false,
+      newLaneBaseSource: mergedGit?.newLaneBaseSource ?? "remote",
     },
     ...(effectiveAi ? { ai: effectiveAi } : {}),
     ...(mergedProviders ? { providers: mergedProviders } : {}),

@@ -49,6 +49,7 @@ const DEFAULT_PROJECT_WORK_STATE: WorkProjectViewState = {
 };
 
 const OPTIMISTIC_PTY_SESSION_TTL_MS = 2 * 60 * 1000;
+const STOPPED_RUNTIME_GUARD_TTL_MS = 12_000;
 const EMPTY_STRING_ARRAY: string[] = [];
 const EMPTY_LANE_SESSION_ORDER: Record<string, string[]> = {};
 const EMPTY_GRID_SETS: WorkGridSet[] = [];
@@ -343,6 +344,12 @@ type PendingOptimisticSession = {
   createdAtMs: number;
 };
 
+type StoppedRuntimeSession = {
+  ptyId: string;
+  endedAt: string;
+  expiresAtMs: number;
+};
+
 type UseWorkSessionsOptions = {
   active?: boolean;
 };
@@ -367,9 +374,11 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   const [sessions, setSessions] = useState<TerminalSessionSummary[]>([]);
   const [loading, setLoading] = useState(false);
   const [closingPtyIds, setClosingPtyIds] = useState<Set<string>>(new Set());
+  const sessionsRef = useRef<TerminalSessionSummary[]>([]);
   const refreshInFlightRef = useRef(false);
   const refreshQueuedRef = useRef<QueuedRefresh | null>(null);
   const pendingOptimisticSessionsRef = useRef<Map<string, PendingOptimisticSession>>(new Map());
+  const stoppedRuntimeSessionsRef = useRef<Map<string, StoppedRuntimeSession>>(new Map());
   const hasRunningSessionsRef = useRef(false);
   const backgroundRefreshTimerRef = useRef<number | null>(null);
   const pendingHiddenSessionRefreshRef = useRef(false);
@@ -815,6 +824,37 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
         }
         rows.sort(compareSessionsByStartedAtDesc);
       }
+      const stoppedRuntimeSessions = stoppedRuntimeSessionsRef.current;
+      if (stoppedRuntimeSessions.size > 0) {
+        const now = Date.now();
+        for (const [sessionId, stopped] of [...stoppedRuntimeSessions.entries()]) {
+          if (stopped.expiresAtMs <= now) stoppedRuntimeSessions.delete(sessionId);
+        }
+        if (stoppedRuntimeSessions.size > 0) {
+          for (let index = 0; index < rows.length; index += 1) {
+            const row = rows[index];
+            if (!row) continue;
+            const stopped = stoppedRuntimeSessions.get(row.id);
+            if (!stopped) continue;
+            if (row.status !== "running") {
+              stoppedRuntimeSessions.delete(row.id);
+              continue;
+            }
+            if (row.ptyId && row.ptyId !== stopped.ptyId) {
+              stoppedRuntimeSessions.delete(row.id);
+              continue;
+            }
+            rows[index] = {
+              ...row,
+              ptyId: null,
+              status: "disposed",
+              runtimeState: "killed",
+              endedAt: row.endedAt ?? stopped.endedAt,
+              exitCode: null,
+            };
+          }
+        }
+      }
       setSessions(rows);
       hasLoadedOnceRef.current = true;
       hasAuthoritativeSessionsRef.current = true;
@@ -956,6 +996,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   }, [isWorkRoute]);
 
   useEffect(() => {
+    sessionsRef.current = sessions;
     hasRunningSessionsRef.current = sessions.some((s) => s.status === "running");
   }, [sessions]);
 
@@ -1262,59 +1303,96 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     });
   }, [projectRoot, sessions, setProjectViewState]);
 
-  const markPtyClosed = (ptyId: string) => {
+  const rememberStoppedRuntime = (ptyId: string, sessionId: string | undefined, endedAt: string) => {
+    if (!sessionId) return;
+    stoppedRuntimeSessionsRef.current.set(sessionId, {
+      ptyId,
+      endedAt,
+      expiresAtMs: Date.now() + STOPPED_RUNTIME_GUARD_TTL_MS,
+    });
+  };
+
+  const forgetStoppedRuntime = (sessionId: string | undefined) => {
+    if (!sessionId) return;
+    stoppedRuntimeSessionsRef.current.delete(sessionId);
+  };
+
+  const restorePtyClosed = (previousSessions: readonly TerminalSessionSummary[]) => {
+    if (previousSessions.length === 0) return;
+    const previousById = new Map(previousSessions.map((session) => [session.id, session] as const));
+    setSessions((prev) => prev.map((session) => previousById.get(session.id) ?? session));
+  };
+
+  const markPtyClosed = (ptyId: string, sessionId?: string): string => {
+    const endedAt = new Date().toISOString();
     setSessions((prev) =>
       prev.map((session) =>
-        session.ptyId === ptyId
+        session.ptyId === ptyId || (sessionId != null && session.id === sessionId)
           ? {
               ...session,
               ptyId: null,
               status: "disposed" as const,
               runtimeState: "killed" as const,
-              endedAt: new Date().toISOString(),
+              endedAt,
               exitCode: null,
             }
           : session,
       ),
     );
+    return endedAt;
   };
 
   const stopRuntime = useCallback(
     async (ptyId: string, sessionId?: string) => {
+      const previousSessions = sessionsRef.current.filter((session) =>
+        session.ptyId === ptyId || (sessionId != null && session.id === sessionId),
+      );
       setClosingPtyIds((prev) => {
         const next = new Set(prev);
         next.add(ptyId);
         return next;
       });
-      markPtyClosed(ptyId);
+      invalidateSessionListCache();
+      const endedAt = markPtyClosed(ptyId, sessionId);
 
-      // Optimistically mark the session as disposed so the UI updates
-      // immediately instead of waiting for a full session list refresh.
-      if (sessionId) {
-        setSessions((prev) =>
-          prev.map((s) => (s.id === sessionId ? { ...s, status: "disposed" as const } : s)),
-        );
-      }
-
+      let disposeError: unknown = null;
       try {
-        await window.ade.pty.dispose({ ptyId, ...(sessionId ? { sessionId } : {}) });
+        const result = await window.ade.pty.dispose({ ptyId, ...(sessionId ? { sessionId } : {}) });
+        if (result?.disposed === false) {
+          if (result.reason === "owned-by-peer" || result.reason === "session-mismatch") {
+            forgetStoppedRuntime(sessionId);
+            restorePtyClosed(previousSessions);
+          } else {
+            rememberStoppedRuntime(ptyId, sessionId, endedAt);
+          }
+        } else {
+          rememberStoppedRuntime(ptyId, sessionId, endedAt);
+        }
+      } catch (error) {
+        disposeError = error;
+        forgetStoppedRuntime(sessionId);
+        restorePtyClosed(previousSessions);
       } finally {
         setClosingPtyIds((prev) => {
           const next = new Set(prev);
           next.delete(ptyId);
           return next;
         });
-        // Reconcile with the real backend state in the background.
-        scheduleBackgroundRefresh();
+        invalidateSessionListCache();
+        // Reconcile with the real backend state using a forced read; otherwise
+        // an older in-flight session list can briefly resurrect the stopped PTY.
+        void refresh({ showLoading: false, force: true }).catch(() => {});
       }
+      if (disposeError) throw disposeError;
     },
-    [scheduleBackgroundRefresh],
+    [refresh],
   );
 
   const stopAllRuntimes = useCallback(async () => {
-    const ptyIds = runningSessions.map((session) => session.ptyId).filter((id): id is string => Boolean(id));
     await Promise.allSettled([
-      ...ptyIds.map((id) => stopRuntime(id)),
+      ...runningSessions
+        .filter((session) => Boolean(session.ptyId))
+        .map((session) => stopRuntime(session.ptyId as string, session.id)),
     ]);
   }, [runningSessions, stopRuntime]);
 

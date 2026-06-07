@@ -435,6 +435,152 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     expect(workState.selectedItemId).toBe("new-pty-session");
   });
 
+  it("keeps a stopped runtime closed when a stale refresh returns the old running row", async () => {
+    const staleRunningSession = makeSession("session-stop", "lane-1", {
+      ptyId: "pty-stop",
+      toolType: "codex",
+      runtimeState: "running",
+    });
+    listSessionsCachedMock.mockResolvedValue([staleRunningSession]);
+
+    const { result } = renderHook(() => useWorkSessions());
+
+    await waitFor(() => {
+      expect(result.current.sessions[0]?.id).toBe("session-stop");
+    });
+
+    listSessionsCachedMock.mockClear();
+    listSessionsCachedMock.mockResolvedValue([staleRunningSession]);
+
+    await act(async () => {
+      await result.current.stopRuntime("pty-stop", "session-stop");
+    });
+
+    await waitFor(() => {
+      expect(listSessionsCachedMock).toHaveBeenCalledWith({ limit: 500 }, { force: true });
+    });
+    expect((window as any).ade.pty.dispose).toHaveBeenCalledWith({
+      ptyId: "pty-stop",
+      sessionId: "session-stop",
+    });
+    expect(result.current.sessions[0]).toMatchObject({
+      id: "session-stop",
+      ptyId: null,
+      status: "disposed",
+      runtimeState: "killed",
+      exitCode: null,
+    });
+  });
+
+  it("restores a runtime row when dispose reports that a peer still owns it", async () => {
+    const peerOwnedSession = makeSession("session-peer", "lane-1", {
+      ptyId: "pty-peer",
+      toolType: "codex",
+      runtimeState: "running",
+    });
+    listSessionsCachedMock.mockResolvedValue([peerOwnedSession]);
+    (window as any).ade.pty.dispose.mockResolvedValueOnce({
+      disposed: false,
+      reason: "owned-by-peer",
+    });
+
+    const { result } = renderHook(() => useWorkSessions());
+
+    await waitFor(() => {
+      expect(result.current.sessions[0]?.id).toBe("session-peer");
+    });
+
+    listSessionsCachedMock.mockClear();
+    listSessionsCachedMock.mockRejectedValueOnce(new Error("refresh failed"));
+
+    await act(async () => {
+      await result.current.stopRuntime("pty-peer", "session-peer");
+    });
+
+    await waitFor(() => {
+      expect(result.current.sessions[0]).toMatchObject({
+        id: "session-peer",
+        ptyId: "pty-peer",
+        status: "running",
+        runtimeState: "running",
+      });
+    });
+    expect(listSessionsCachedMock).toHaveBeenCalledWith({ limit: 500 }, { force: true });
+  });
+
+  it("keeps a runtime row stopped when dispose reports the pty is already gone", async () => {
+    const missingPtySession = makeSession("session-missing", "lane-1", {
+      ptyId: "pty-missing",
+      toolType: "codex",
+      runtimeState: "running",
+    });
+    listSessionsCachedMock.mockResolvedValue([missingPtySession]);
+    (window as any).ade.pty.dispose.mockResolvedValueOnce({
+      disposed: false,
+      reason: "missing",
+    });
+
+    const { result } = renderHook(() => useWorkSessions());
+
+    await waitFor(() => {
+      expect(result.current.sessions[0]?.id).toBe("session-missing");
+    });
+
+    listSessionsCachedMock.mockClear();
+    listSessionsCachedMock.mockRejectedValueOnce(new Error("refresh failed"));
+
+    await act(async () => {
+      await result.current.stopRuntime("pty-missing", "session-missing");
+    });
+
+    await waitFor(() => {
+      expect(result.current.sessions[0]).toMatchObject({
+        id: "session-missing",
+        ptyId: null,
+        status: "disposed",
+        runtimeState: "killed",
+        exitCode: null,
+      });
+    });
+    expect(listSessionsCachedMock).toHaveBeenCalledWith({ limit: 500 }, { force: true });
+  });
+
+  it("restores a runtime row when dispose reports a session mismatch", async () => {
+    const stalePtySession = makeSession("session-mismatch", "lane-1", {
+      ptyId: "pty-stale",
+      toolType: "codex",
+      runtimeState: "running",
+    });
+    listSessionsCachedMock.mockResolvedValue([stalePtySession]);
+    (window as any).ade.pty.dispose.mockResolvedValueOnce({
+      disposed: false,
+      reason: "session-mismatch",
+    });
+
+    const { result } = renderHook(() => useWorkSessions());
+
+    await waitFor(() => {
+      expect(result.current.sessions[0]?.id).toBe("session-mismatch");
+    });
+
+    listSessionsCachedMock.mockClear();
+    listSessionsCachedMock.mockRejectedValueOnce(new Error("refresh failed"));
+
+    await act(async () => {
+      await result.current.stopRuntime("pty-stale", "session-mismatch");
+    });
+
+    await waitFor(() => {
+      expect(result.current.sessions[0]).toMatchObject({
+        id: "session-mismatch",
+        ptyId: "pty-stale",
+        status: "running",
+        runtimeState: "running",
+      });
+    });
+    expect(listSessionsCachedMock).toHaveBeenCalledWith({ limit: 500 }, { force: true });
+  });
+
   it("launchPtySession can start a terminal in the background without changing the active tab", async () => {
     const workState = {
       openItemIds: ["existing-session"] as string[],
