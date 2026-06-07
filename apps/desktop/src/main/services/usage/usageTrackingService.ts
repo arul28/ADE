@@ -466,6 +466,9 @@ async function pollCodexUsage(logger: Logger): Promise<{ windows: UsageWindow[];
 
     if (!result.ok) {
       errors.push(`codex: API returned ${result.status}`);
+      if (result.status >= 400 && result.status < 500 && result.status !== 401) {
+        return { windows, errors };
+      }
     } else if (result.data && typeof result.data === "object") {
       windows.push(...parseCodexRateLimitWindows(result.data as Record<string, unknown>));
       if (windows.length > 0) return { windows, errors };

@@ -519,6 +519,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   const createBaseSourceUserPickedRef = useRef(false);
   const createBaseBranchesLoadSeqRef = useRef(0);
   const createBaseSourceSaveInFlightRef = useRef(false);
+  const createBaseSourceSavePendingRef = useRef<NewLaneBaseSource | null>(null);
   const [createBaseBranch, setCreateBaseBranch] = useState("");
   const [createImportBranch, setCreateImportBranch] = useState("");
   const [createChildBaseBranch, setCreateChildBaseBranch] = useState("");
@@ -2809,13 +2810,14 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
 
   const persistCreateBaseSourceConfig = useCallback(() => {
     if (createBaseSourceSaveInFlightRef.current) return;
+    if (!createBaseSourceSavePendingRef.current) return;
     createBaseSourceSaveInFlightRef.current = true;
-    let lastSavedSource: NewLaneBaseSource | null = null;
+    let failed = false;
 
     void (async () => {
       try {
-        while (lastSavedSource !== createBaseSourceRef.current) {
-          const source: NewLaneBaseSource = createBaseSourceRef.current;
+        while (createBaseSourceSavePendingRef.current) {
+          const source: NewLaneBaseSource = createBaseSourceSavePendingRef.current;
           const snapshot = await window.ade.projectConfig.get();
           const currentGit = snapshot.local.git ?? {};
           await window.ade.projectConfig.save({
@@ -2828,13 +2830,16 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
               },
             },
           });
-          lastSavedSource = source;
+          if (createBaseSourceSavePendingRef.current === source) {
+            createBaseSourceSavePendingRef.current = null;
+          }
         }
       } catch (saveError) {
+        failed = true;
         setCreateError(saveError instanceof Error ? saveError.message : String(saveError));
       } finally {
         createBaseSourceSaveInFlightRef.current = false;
-        if (lastSavedSource !== createBaseSourceRef.current) {
+        if (!failed && createBaseSourceSavePendingRef.current) {
           persistCreateBaseSourceConfig();
         }
       }
@@ -2877,6 +2882,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     } else {
       setCreateBranchesLoading(false);
     }
+    createBaseSourceSavePendingRef.current = source;
     persistCreateBaseSourceConfig();
   }, [lanes, persistCreateBaseSourceConfig]);
 

@@ -901,6 +901,37 @@ describe("pollCodexViaCliRpc", () => {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
   });
+
+  it("does not spawn the CLI fallback for non-auth Codex 4xx responses", async () => {
+    const tmpDir = makeTmpDir();
+    const originalCodexHome = process.env.CODEX_HOME;
+    fs.writeFileSync(path.join(tmpDir, "auth.json"), JSON.stringify({
+      tokens: { access_token: "rate-limited-token" },
+    }));
+    process.env.CODEX_HOME = tmpDir;
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: false,
+      status: 429,
+      json: async () => ({}),
+    }));
+
+    try {
+      const logger = createLogger();
+      const result = await pollCodexUsage(logger as any);
+
+      expect(result.windows).toEqual([]);
+      expect(result.errors).toEqual(["codex: API returned 429"]);
+      expect(mockState.spawn).not.toHaveBeenCalled();
+    } finally {
+      if (originalCodexHome === undefined) {
+        delete process.env.CODEX_HOME;
+      } else {
+        process.env.CODEX_HOME = originalCodexHome;
+      }
+      vi.unstubAllGlobals();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
 });
 
 // ── Service Integration ──────────────────────────────────────────
