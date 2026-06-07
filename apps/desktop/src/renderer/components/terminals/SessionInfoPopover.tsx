@@ -79,6 +79,7 @@ export function SessionInfoPopover({
   popover,
   onClose,
   onStopRuntime,
+  onStopAndDelete,
   onDeleteChat,
   onDeleteSession,
   onGoToLane,
@@ -88,6 +89,7 @@ export function SessionInfoPopover({
   popover: InfoPopoverState;
   onClose: () => void;
   onStopRuntime: (args: { ptyId: string; sessionId: string }) => void;
+  onStopAndDelete: (session: TerminalSessionSummary) => void;
   onDeleteChat: (session: TerminalSessionSummary) => void;
   onDeleteSession: (session: TerminalSessionSummary) => void;
   onGoToLane: (session: TerminalSessionSummary) => void;
@@ -287,6 +289,19 @@ export function SessionInfoPopover({
               >
                 <Square size={14} weight="regular" />
                 {closingPtyIds.has(session.ptyId) ? "Stopping..." : "Stop runtime"}
+              </Button>
+            </SmartTooltip>
+          ) : null}
+          {session.status === "running" && session.ptyId && !isChat ? (
+            <SmartTooltip content={{ label: "Stop & delete", description: "Stop the runtime and permanently delete this session." }}>
+              <Button
+                variant="danger"
+                size="sm"
+                disabled={deletingSessionId === session.id}
+                onClick={() => onStopAndDelete(session)}
+              >
+                <Trash size={14} weight="regular" />
+                {deletingSessionId === session.id ? "Deleting…" : "Stop & delete"}
               </Button>
             </SmartTooltip>
           ) : null}

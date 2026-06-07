@@ -1,9 +1,9 @@
 /* @vitest-environment jsdom */
 
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import type { ComponentProps } from "react";
 import { MemoryRouter } from "react-router-dom";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { LaneSummary, TerminalSessionSummary } from "../../../shared/types";
 import { SessionListPane } from "./SessionListPane";
 
@@ -99,6 +99,10 @@ function renderPane(props: Partial<ComponentProps<typeof SessionListPane>> = {})
 }
 
 describe("SessionListPane", () => {
+  afterEach(() => {
+    cleanup();
+  });
+
   it("renders by-lane sessions whose lane is missing from the cached lane list", () => {
     renderPane();
 
@@ -337,5 +341,69 @@ describe("SessionListPane", () => {
     expect(onBulkClose).toHaveBeenCalledTimes(1);
     expect(onBulkDelete).toHaveBeenCalledTimes(1);
     expect(onClearSelection).toHaveBeenCalledTimes(1);
+  });
+
+  it("offers stop & delete only when the selection includes a running runtime", () => {
+    const onBulkStopAndDelete = vi.fn();
+    const running = makeSession({
+      id: "session-running",
+      laneId: "lane-known",
+      laneName: "Known Lane",
+      title: "Running shell",
+      toolType: "shell",
+      status: "running",
+    });
+    const chat = makeSession({
+      id: "session-chat",
+      laneId: "lane-known",
+      laneName: "Known Lane",
+      title: "Active chat",
+      toolType: "codex-chat",
+      status: "running",
+      ptyId: null,
+    });
+
+    renderPane({
+      runningFiltered: [running, chat],
+      selectedSessionIds: new Set([running.id, chat.id]),
+      sessionsGroupedByLane: new Map([[running.laneId, [running, chat]]]),
+      onBulkStopAndDelete,
+    });
+
+    // Mixed selection: the whole selection (both sessions) is targeted.
+    const stopAndDelete = screen.getByRole("button", { name: /stop & delete 2/i });
+    fireEvent.click(stopAndDelete);
+    expect(onBulkStopAndDelete).toHaveBeenCalledTimes(1);
+  });
+
+  it("hides stop & delete when nothing in the selection needs stopping", () => {
+    const endedShell = makeSession({
+      id: "session-ended",
+      laneId: "lane-known",
+      laneName: "Known Lane",
+      title: "Ended shell",
+      toolType: "shell",
+      status: "disposed",
+      runtimeState: "exited",
+    });
+    const chat = makeSession({
+      id: "session-chat",
+      laneId: "lane-known",
+      laneName: "Known Lane",
+      title: "Active chat",
+      toolType: "codex-chat",
+      status: "running",
+      ptyId: null,
+    });
+
+    renderPane({
+      runningFiltered: [chat],
+      endedFiltered: [endedShell],
+      selectedSessionIds: new Set([endedShell.id, chat.id]),
+      sessionsGroupedByLane: new Map([[chat.laneId, [chat, endedShell]]]),
+      onBulkStopAndDelete: vi.fn(),
+    });
+
+    expect(screen.queryByRole("button", { name: /stop & delete/i })).toBeNull();
   });
 });

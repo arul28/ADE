@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import type { MouseEvent as ReactMouseEvent, ReactNode } from "react";
 import { SidebarSimple } from "@phosphor-icons/react";
 import { ChatGitToolbar } from "../chat/ChatGitToolbar";
 import { LaneChip } from "../terminals/LaneChip";
@@ -141,6 +141,12 @@ export type WorkSurfaceHeaderProps = {
   onToggleToolsPane?: () => void;
   toolsPaneOpen?: boolean;
   className?: string;
+  /**
+   * Right-click handler for the whole header row. CLI session surfaces wire this
+   * to open the session context menu (parity with right-clicking a sidebar card);
+   * chat surfaces omit it.
+   */
+  onContextMenu?: (event: ReactMouseEvent<HTMLElement>) => void;
   /** data-testid for integration tests. */
   testId?: string;
 };
@@ -170,6 +176,7 @@ export function WorkSurfaceHeader({
   onToggleToolsPane,
   toolsPaneOpen = false,
   className,
+  onContextMenu,
   testId,
 }: WorkSurfaceHeaderProps) {
   // When this header is the title row of a grid tile (FloatingPane with hidden
@@ -178,7 +185,7 @@ export function WorkSurfaceHeader({
   const embeddedChrome = useFloatingPaneEmbeddedChrome();
   const tileDragProps = embeddedChrome?.dragHandleProps ?? null;
   return (
-    <div className={cn(WORK_SURFACE_HEADER_CLASS, className)} data-testid={testId}>
+    <div className={cn(WORK_SURFACE_HEADER_CLASS, className)} data-testid={testId} onContextMenu={onContextMenu}>
       <div className="flex items-center gap-2">
         {onToggleSessionsPane ? (
           <WorkHeaderSidebarToggle
