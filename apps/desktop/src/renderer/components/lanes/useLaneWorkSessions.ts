@@ -803,18 +803,26 @@ export function useLaneWorkSessions(laneId: string | null) {
           : session,
       ),
     );
+    const rememberStoppedRuntime = () => {
+      if (!sessionId) return;
+      stoppedRuntimeSessionsRef.current.set(sessionId, {
+        ptyId,
+        endedAt,
+        expiresAtMs: Date.now() + STOPPED_RUNTIME_GUARD_TTL_MS,
+      });
+    };
     let disposeError: unknown = null;
     try {
       const result = await window.ade.pty.dispose({ ptyId, ...(sessionId ? { sessionId } : {}) });
       if (result?.disposed === false) {
-        if (sessionId) stoppedRuntimeSessionsRef.current.delete(sessionId);
-        restorePreviousSessions();
-      } else if (sessionId) {
-        stoppedRuntimeSessionsRef.current.set(sessionId, {
-          ptyId,
-          endedAt,
-          expiresAtMs: Date.now() + STOPPED_RUNTIME_GUARD_TTL_MS,
-        });
+        if (result.reason === "owned-by-peer") {
+          if (sessionId) stoppedRuntimeSessionsRef.current.delete(sessionId);
+          restorePreviousSessions();
+        } else {
+          rememberStoppedRuntime();
+        }
+      } else {
+        rememberStoppedRuntime();
       }
     } catch (error) {
       disposeError = error;

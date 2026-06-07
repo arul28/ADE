@@ -542,6 +542,43 @@ describe("useLaneWorkSessions — refresh-before-focus ordering", () => {
     });
   });
 
+  it("keeps a lane runtime row stopped when dispose reports the pty is already gone", async () => {
+    const runningSession = {
+      ...makeSession("session-missing", "lane-1", "Running Codex"),
+      ptyId: "pty-missing",
+      toolType: "codex",
+      runtimeState: "running",
+    } as any;
+    listSessionsCachedMock
+      .mockResolvedValueOnce([runningSession])
+      .mockRejectedValueOnce(new Error("refresh failed"));
+    (window as any).ade.pty.dispose.mockResolvedValueOnce({
+      disposed: false,
+      reason: "missing",
+    });
+
+    const { result } = renderHook(() => useLaneWorkSessions("lane-1"));
+
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 10));
+    });
+
+    expect(result.current.sessions[0]?.ptyId).toBe("pty-missing");
+
+    await act(async () => {
+      await result.current.closePtySession("pty-missing");
+      await new Promise((r) => setTimeout(r, 0));
+    });
+
+    expect(result.current.sessions[0]).toMatchObject({
+      id: "session-missing",
+      ptyId: null,
+      status: "disposed",
+      runtimeState: "killed",
+      exitCode: null,
+    });
+  });
+
   it("launchPtySession: opens immediately when another refresh is already running", async () => {
     const callOrder: string[] = [];
     let refreshCallCount = 0;

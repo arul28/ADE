@@ -508,6 +508,43 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     expect(listSessionsCachedMock).toHaveBeenCalledWith({ limit: 500 }, { force: true });
   });
 
+  it("keeps a runtime row stopped when dispose reports the pty is already gone", async () => {
+    const missingPtySession = makeSession("session-missing", "lane-1", {
+      ptyId: "pty-missing",
+      toolType: "codex",
+      runtimeState: "running",
+    });
+    listSessionsCachedMock.mockResolvedValue([missingPtySession]);
+    (window as any).ade.pty.dispose.mockResolvedValueOnce({
+      disposed: false,
+      reason: "missing",
+    });
+
+    const { result } = renderHook(() => useWorkSessions());
+
+    await waitFor(() => {
+      expect(result.current.sessions[0]?.id).toBe("session-missing");
+    });
+
+    listSessionsCachedMock.mockClear();
+    listSessionsCachedMock.mockRejectedValueOnce(new Error("refresh failed"));
+
+    await act(async () => {
+      await result.current.stopRuntime("pty-missing", "session-missing");
+    });
+
+    await waitFor(() => {
+      expect(result.current.sessions[0]).toMatchObject({
+        id: "session-missing",
+        ptyId: null,
+        status: "disposed",
+        runtimeState: "killed",
+        exitCode: null,
+      });
+    });
+    expect(listSessionsCachedMock).toHaveBeenCalledWith({ limit: 500 }, { force: true });
+  });
+
   it("launchPtySession can start a terminal in the background without changing the active tab", async () => {
     const workState = {
       openItemIds: ["existing-session"] as string[],
