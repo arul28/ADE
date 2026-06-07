@@ -145,4 +145,34 @@ describe("LaneBehaviorSection", () => {
       newLaneBaseSource: "remote",
     });
   });
+
+  it("does not create a local base-source override when toggled back before saving", async () => {
+    const projectConfig = renderLaneBehaviorSection(makeSnapshot({
+      shared: { git: { newLaneBaseSource: "local" } },
+      local: { git: { autoRebaseOnHeadChange: false } },
+      effective: {
+        version: 1,
+        processes: [],
+        stackButtons: [],
+        processGroups: [],
+        testSuites: [],
+        laneOverlayPolicies: [],
+        automations: [],
+        git: {
+          autoRebaseOnHeadChange: false,
+          newLaneBaseSource: "local",
+        },
+      },
+    }));
+
+    await waitFor(() => expect(projectConfig.get).toHaveBeenCalledTimes(1));
+    fireEvent.click(screen.getByRole("button", { name: /Remote/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Local/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(projectConfig.save).toHaveBeenCalledTimes(1));
+    expect(projectConfig.save.mock.calls[0]?.[0].local.git).toEqual({
+      autoRebaseOnHeadChange: false,
+    });
+  });
 });
