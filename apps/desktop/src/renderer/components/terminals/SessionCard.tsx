@@ -237,9 +237,9 @@ export const SessionCard = React.memo(function SessionCard({
                 ) : null}
                 {staleAgeHours != null ? (
                   <span
-                    className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full border border-amber-500/30 bg-amber-500/10 text-amber-300"
-                    aria-label="Old running session"
-                    title={`Old running session. This CLI or shell session has been running for about ${staleAgeHours} hours. Stop the runtime if it is no longer being used.`}
+                    className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full border border-amber-500/40 bg-amber-500/15 text-amber-300"
+                    aria-label="Idle session"
+                    title={`This CLI or shell session has had no activity for about ${staleAgeHours} hours. Consider closing it to clean up memory if it is no longer in use.`}
                   >
                     <WarningCircle size={11} weight="fill" />
                   </span>

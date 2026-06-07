@@ -2761,6 +2761,13 @@ export function createPtyService({
     const now = Date.now();
     if (now - entry.lastPreviewWriteAt < 900) return;
     entry.lastPreviewWriteAt = now;
+    // Refresh the activity timestamp on every throttled output tick — even when
+    // the derived preview line is blank or unchanged — so a tracked session
+    // emitting steady but non-preview-changing output (spinners, repeated
+    // status lines) is not wrongly flagged idle by the stale-session detector.
+    if (entry.tracked) {
+      sessionService.touchSessionActivity(entry.sessionId, new Date(now).toISOString());
+    }
     flushPreview(entry);
   };
 

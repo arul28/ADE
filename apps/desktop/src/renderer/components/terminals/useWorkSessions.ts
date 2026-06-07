@@ -1369,6 +1369,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
         headShaStart: null,
         headShaEnd: null,
         lastOutputPreview: null,
+        lastActivityAt: null,
         summary: null,
         runtimeState: "running",
         resumeCommand: null,

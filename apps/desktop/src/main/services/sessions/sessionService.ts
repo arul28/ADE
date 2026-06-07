@@ -46,6 +46,7 @@ type SessionRow = {
   headShaStart: string | null;
   headShaEnd: string | null;
   lastOutputPreview: string | null;
+  lastActivityAt: string | null;
   summary: string | null;
   resumeCommand: string | null;
   resumeMetadataJson: string | null;
@@ -87,6 +88,7 @@ const SESSION_COLUMNS = `
   s.head_sha_start as headShaStart,
   s.head_sha_end as headShaEnd,
   s.last_output_preview as lastOutputPreview,
+  s.last_output_at as lastActivityAt,
   s.summary as summary,
   s.resume_command as resumeCommand,
   s.resume_metadata_json as resumeMetadataJson,
@@ -227,6 +229,17 @@ function normalizeOwnerProcessStartedAt(startedAt: unknown): string | null {
   return normalized.length ? normalized : null;
 }
 
+/**
+ * Normalize a persisted timestamp column to a valid ISO string or null, so
+ * downstream idle-age math never keys off an empty/garbage string (which would
+ * otherwise show a misleading floored age instead of "no activity recorded").
+ */
+function normalizeIsoTimestamp(value: unknown): string | null {
+  const text = typeof value === "string" ? value.trim() : "";
+  if (!text) return null;
+  return Number.isFinite(Date.parse(text)) ? text : null;
+}
+
 export function createSessionService({ db }: { db: AdeDb }) {
   const changeListeners = new Set<(event: TerminalSessionChangedEvent) => void>();
 
@@ -318,6 +331,7 @@ export function createSessionService({ db }: { db: AdeDb }) {
       goal: row.goal ?? null,
       toolType,
       summary: row.summary ?? null,
+      lastActivityAt: normalizeIsoTimestamp(row.lastActivityAt),
       runtimeState: runtimeStateFromStatus(row.status),
       resumeMetadata,
       resumeCommand: deriveResumeMetadataCommand(resumeMetadata, row.resumeCommand, toolType),
@@ -985,6 +999,19 @@ export function createSessionService({ db }: { db: AdeDb }) {
       db.run(
         "update terminal_sessions set last_output_preview = ?, last_output_at = ? where id = ?",
         [preview, new Date().toISOString(), sessionId]
+      );
+    },
+
+    /**
+     * Refresh only the activity timestamp (not the preview text). Lets the PTY
+     * layer record that a session is still producing output even when the
+     * derived preview line is blank or unchanged (spinners, repeated status
+     * lines), so the stale-session detector does not treat live work as idle.
+     */
+    touchSessionActivity(sessionId: string, at: string = new Date().toISOString()): void {
+      db.run(
+        "update terminal_sessions set last_output_at = ? where id = ?",
+        [at, sessionId]
       );
     },
 

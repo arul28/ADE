@@ -145,9 +145,13 @@ clearly even when the primary single-selection points elsewhere.
 A small amber warning pip with a tooltip appears next to the title
 when `getStaleRunningCliSessionAgeHours(session)` returns a value —
 i.e. the session is still `running`, is not chat-typed, is not a
-run-owned shell, and has been running for at least 12 hours. The
-tooltip reports the rounded age so the user can decide whether to
-close it.
+run-owned shell, and has been *idle* (no new output) for at least 24
+hours. Idleness is measured from the session's last activity
+(`lastActivityAt`, sourced from `terminal_sessions.last_output_at`),
+falling back to `startedAt` when no output has been recorded — so an
+old session that is still actively producing output is never flagged,
+only genuinely untouched ones are. The tooltip reports the rounded
+idle age so the user can decide whether to close it.
 
 ## Work view: `WorkViewArea.tsx`
 

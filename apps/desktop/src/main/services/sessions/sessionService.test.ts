@@ -1133,4 +1133,35 @@ describe("sessionService resume metadata", () => {
 
     activeDisposers.push(async () => db.close());
   });
+
+  it("touchSessionActivity refreshes only the activity timestamp", async () => {
+    const projectRoot = makeProjectRoot("ade-session-service-");
+    const dbPath = path.join(projectRoot, ".ade", "ade.db");
+    const db = await openKvDb(dbPath, createLogger() as any);
+    insertProjectGraph(db);
+    const service = createSessionService({ db });
+
+    service.create({
+      sessionId: "session-touch",
+      laneId: "lane-1",
+      ptyId: "pty-touch",
+      tracked: true,
+      title: "Spinner shell",
+      startedAt: "2026-03-17T00:10:00.000Z",
+      transcriptPath: path.join(projectRoot, "session-touch.log"),
+      toolType: "shell",
+    });
+    // No output yet → no recorded activity.
+    expect(service.get("session-touch")?.lastActivityAt ?? null).toBeNull();
+
+    service.touchSessionActivity("session-touch", "2026-03-18T08:00:00.000Z");
+
+    const touched = service.get("session-touch");
+    // Activity timestamp advances even though the preview text never changed —
+    // this is what keeps steady-output sessions from being flagged idle.
+    expect(touched?.lastActivityAt).toBe("2026-03-18T08:00:00.000Z");
+    expect(touched?.lastOutputPreview).toBeNull();
+
+    activeDisposers.push(async () => db.close());
+  });
 });
