@@ -946,6 +946,28 @@ describe("reviewService", () => {
     }));
   });
 
+  it("launches with fast mode for a legacy config carrying only codexFastMode", async () => {
+    const harness = createHarness({
+      outputs: [
+        makeOutput("No direct findings.", []),
+        makeOutput("No cross-file findings.", []),
+        makeOutput("No checks findings.", []),
+      ],
+      // Pre-rename runs persisted only the deprecated codexFastMode flag.
+      config: { codexFastMode: true, fastMode: undefined },
+    });
+
+    const run = await harness.start();
+    await waitFor(
+      () => harness.service.listRuns(),
+      (runs) => runs.some((entry) => entry.id === run.id && entry.status === "completed"),
+    );
+
+    expect(harness.createSession).toHaveBeenCalledWith(expect.objectContaining({
+      fastMode: true,
+    }));
+  });
+
   it("caps the prompt manifest for large diffs", async () => {
     const changedFiles = Array.from({ length: 120 }, (_, index) => makeChangedFile({
       filePath: `src/file-${index}.ts`,

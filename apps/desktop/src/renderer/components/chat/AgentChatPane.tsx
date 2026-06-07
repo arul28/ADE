@@ -8189,10 +8189,19 @@ export function AgentChatPane({
     const updateId = ++fastModeUpdateCounterRef.current;
     const targetSessionId = selectedSessionId;
     patchSessionSummary(targetSessionId, { fastMode: enabled });
-    const updatePromise = window.ade.agentChat.updateSession({
-      sessionId: targetSessionId,
-      fastMode: enabled,
-    }).then((updatedSession) => {
+    // Serialize the IPC writes: chain off any in-flight fast-mode update for the
+    // same session so two rapid toggles persist in order. The prior mutation
+    // already surfaced its own error, so swallow it here before issuing ours.
+    const previousUpdate = pendingFastModeUpdateRef.current?.sessionId === targetSessionId
+      ? pendingFastModeUpdateRef.current.promise
+      : null;
+    const updatePromise = Promise.resolve(previousUpdate)
+      .catch(() => {})
+      .then(() => window.ade.agentChat.updateSession({
+        sessionId: targetSessionId,
+        fastMode: enabled,
+      }))
+      .then((updatedSession) => {
       if (updateId !== fastModeUpdateCounterRef.current) return;
       const reconciled = updatedSession.fastMode === true;
       patchSessionSummary(targetSessionId, { fastMode: reconciled });

@@ -2228,6 +2228,52 @@ describe("createAgentChatService", () => {
       expect(opts?.settings?.fastMode).toBe(true);
     });
 
+    it("preserves Claude fast mode when switching to a fast-capable Claude model", async () => {
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        ...makeDefaultClaudeSession(),
+      } as any);
+
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "claude-opus-4-8",
+        modelId: "anthropic/claude-opus-4-8",
+        fastMode: true,
+      });
+
+      // Opus 4.7 also supports fast mode, so the toggle should survive the switch.
+      await service.updateSession({
+        sessionId: session.id,
+        modelId: "anthropic/claude-opus-4-7",
+      });
+
+      expect((await service.getSessionSummary(session.id))?.fastMode).toBe(true);
+    });
+
+    it("clears Claude fast mode when switching to a non-fast Claude model", async () => {
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        ...makeDefaultClaudeSession(),
+      } as any);
+
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "claude-opus-4-8",
+        modelId: "anthropic/claude-opus-4-8",
+        fastMode: true,
+      });
+
+      // Sonnet 4.6 has no "fast" service tier, so the toggle must be dropped.
+      await service.updateSession({
+        sessionId: session.id,
+        modelId: "anthropic/claude-sonnet-4-6",
+      });
+
+      expect((await service.getSessionSummary(session.id))?.fastMode).not.toBe(true);
+    });
+
     it("handles Claude /fast commands inline and persists the ADE fast setting", async () => {
       vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
         ...makeDefaultClaudeSession(),

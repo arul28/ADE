@@ -3501,8 +3501,15 @@ function readChatLaunchConfig(args: string[]): JsonObject {
     "permissionMode",
     readValue(args, ["--permission-mode", "--permissions"]),
   );
-  if (fastRequested) config.fastMode = true;
-  if (standardRequested) config.fastMode = false;
+  if (fastRequested) {
+    config.fastMode = true;
+    // Mirror to the deprecated alias so older daemons (pre-rename) still see --fast.
+    config.codexFastMode = true;
+  }
+  if (standardRequested) {
+    config.fastMode = false;
+    config.codexFastMode = false;
+  }
   return config;
 }
 
@@ -5977,7 +5984,7 @@ function buildChatPlan(args: string[]): CliPlan {
         ]),
         title: readValue(args, ["--title"]),
         surface: readValue(args, ["--surface"]) ?? "work",
-        ...(fastMode !== undefined ? { fastMode } : {}),
+        ...(fastMode !== undefined ? { fastMode, codexFastMode: fastMode } : {}),
         ...(createRuntimeMode ? { runtimeMode: createRuntimeMode } : {}),
       }),
     );

@@ -661,6 +661,7 @@ function openCodeVariantForLaunch(args: {
   reasoningEffort?: string | null;
   fastMode?: boolean | null;
 }): string | null {
+  // Fast mode takes priority: when enabled, the "fast" variant supersedes any reasoningEffort variant.
   if (args.fastMode === true) return "fast";
   return normalizeCliFlagValue(args.reasoningEffort);
 }

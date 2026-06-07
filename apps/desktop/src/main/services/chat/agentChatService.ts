@@ -24086,7 +24086,7 @@ export function createAgentChatService(args: {
       managed.session.provider = nextProvider;
       managed.session.modelId = descriptor.id;
       managed.session.model = nextModel;
-      if (nextProvider === "claude") {
+      if (nextProvider === "claude" && !modelSupportsFastMode(descriptor)) {
         delete managed.session.fastMode;
       }
       managed.session.capabilityMode = inferCapabilityMode(nextProvider);

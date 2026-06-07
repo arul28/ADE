@@ -2268,7 +2268,7 @@ export function createReviewService({
         model: args.model,
         modelId: args.descriptorId,
         reasoningEffort: args.run.config.reasoningEffort,
-        fastMode: args.run.config.fastMode === true,
+        fastMode: (args.run.config.fastMode ?? args.run.config.codexFastMode) === true,
         permissionMode: "plan",
         sessionProfile: "workflow",
         surface: "automation",

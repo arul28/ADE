@@ -1709,7 +1709,7 @@ export function ReviewPage({ active = true }: { active?: boolean } = {}) {
                   <ReviewLaunchModelControls
                     modelId={selectedRun.config.modelId}
                     reasoningEffort={selectedRun.config.reasoningEffort ?? DEFAULT_REVIEW_REASONING_EFFORT}
-                    fastMode={selectedRun.config.fastMode ?? false}
+                    fastMode={(selectedRun.config.fastMode ?? selectedRun.config.codexFastMode) ?? false}
                     onModelChange={() => undefined}
                     onReasoningEffortChange={() => undefined}
                     onFastModeChange={() => undefined}

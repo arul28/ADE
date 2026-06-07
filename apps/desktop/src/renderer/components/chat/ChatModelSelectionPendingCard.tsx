@@ -12,7 +12,7 @@
  * `respondToInput` IPC call.
  */
 
-import { memo, useCallback, useMemo, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import {
   type ModelSelection,
   type OrchestrationModelSelectionMetadata,
@@ -79,6 +79,15 @@ export const ChatModelSelectionPendingCard = memo(function ChatModelSelectionPen
     Boolean(suggested?.fastMode),
   );
 
+  const descriptor = getModelById(modelId);
+  const fastModeSupported = modelSupportsFastMode(descriptor);
+
+  // Clear fast mode when the picked model doesn't support it, so a stale toggle
+  // can't be submitted after switching to an unsupported model.
+  useEffect(() => {
+    if (!fastModeSupported && fastMode) setFastMode(false);
+  }, [fastModeSupported, fastMode]);
+
   // When the user picks a different model, infer the new provider from the
   // model registry so the dispatched ModelSelection stays internally
   // consistent (provider + modelId always agree).
@@ -100,10 +109,10 @@ export const ChatModelSelectionPendingCard = memo(function ChatModelSelectionPen
       provider,
       modelId,
       ...(reasoningEffort !== null ? { reasoningEffort } : {}),
-      ...(fastMode ? { fastMode: true } : {}),
+      ...(fastMode && fastModeSupported ? { fastMode: true } : {}),
     };
     onConfirm(selection);
-  }, [provider, modelId, reasoningEffort, fastMode, onConfirm]);
+  }, [provider, modelId, reasoningEffort, fastMode, fastModeSupported, onConfirm]);
 
   const headerLabel = useMemo(() => {
     if (!metadata) return "Pick a model";
@@ -114,9 +123,6 @@ export const ChatModelSelectionPendingCard = memo(function ChatModelSelectionPen
 
   // TODO: pass inferProviderFamily(initialProvider) to the picker rail so it
   // highlights the right column once ModelPicker supports an initialFamily prop.
-
-  const descriptor = getModelById(modelId);
-  const fastModeSupported = modelSupportsFastMode(descriptor);
 
   return (
     <div
