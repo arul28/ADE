@@ -515,7 +515,7 @@ describe("useLaneWorkSessions — refresh-before-focus ordering", () => {
     } as any;
     listSessionsCachedMock
       .mockResolvedValueOnce([runningSession])
-      .mockResolvedValueOnce([runningSession]);
+      .mockRejectedValueOnce(new Error("refresh failed"));
     (window as any).ade.pty.dispose.mockResolvedValueOnce({
       disposed: false,
       reason: "owned-by-peer",

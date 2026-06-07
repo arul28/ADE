@@ -374,6 +374,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   const [sessions, setSessions] = useState<TerminalSessionSummary[]>([]);
   const [loading, setLoading] = useState(false);
   const [closingPtyIds, setClosingPtyIds] = useState<Set<string>>(new Set());
+  const sessionsRef = useRef<TerminalSessionSummary[]>([]);
   const refreshInFlightRef = useRef(false);
   const refreshQueuedRef = useRef<QueuedRefresh | null>(null);
   const pendingOptimisticSessionsRef = useRef<Map<string, PendingOptimisticSession>>(new Map());
@@ -995,6 +996,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   }, [isWorkRoute]);
 
   useEffect(() => {
+    sessionsRef.current = sessions;
     hasRunningSessionsRef.current = sessions.some((s) => s.status === "running");
   }, [sessions]);
 
@@ -1315,6 +1317,12 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     stoppedRuntimeSessionsRef.current.delete(sessionId);
   };
 
+  const restorePtyClosed = (previousSessions: readonly TerminalSessionSummary[]) => {
+    if (previousSessions.length === 0) return;
+    const previousById = new Map(previousSessions.map((session) => [session.id, session] as const));
+    setSessions((prev) => prev.map((session) => previousById.get(session.id) ?? session));
+  };
+
   const markPtyClosed = (ptyId: string, sessionId?: string): string => {
     const endedAt = new Date().toISOString();
     setSessions((prev) =>
@@ -1336,6 +1344,9 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
 
   const stopRuntime = useCallback(
     async (ptyId: string, sessionId?: string) => {
+      const previousSessions = sessionsRef.current.filter((session) =>
+        session.ptyId === ptyId || (sessionId != null && session.id === sessionId),
+      );
       setClosingPtyIds((prev) => {
         const next = new Set(prev);
         next.add(ptyId);
@@ -1344,10 +1355,19 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       invalidateSessionListCache();
       const endedAt = markPtyClosed(ptyId, sessionId);
 
+      let disposeError: unknown = null;
       try {
         const result = await window.ade.pty.dispose({ ptyId, ...(sessionId ? { sessionId } : {}) });
-        if (result?.disposed === false) forgetStoppedRuntime(sessionId);
-        else rememberStoppedRuntime(ptyId, sessionId, endedAt);
+        if (result?.disposed === false) {
+          forgetStoppedRuntime(sessionId);
+          restorePtyClosed(previousSessions);
+        } else {
+          rememberStoppedRuntime(ptyId, sessionId, endedAt);
+        }
+      } catch (error) {
+        disposeError = error;
+        forgetStoppedRuntime(sessionId);
+        restorePtyClosed(previousSessions);
       } finally {
         setClosingPtyIds((prev) => {
           const next = new Set(prev);
@@ -1359,6 +1379,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
         // an older in-flight session list can briefly resurrect the stopped PTY.
         void refresh({ showLoading: false, force: true }).catch(() => {});
       }
+      if (disposeError) throw disposeError;
     },
     [refresh],
   );

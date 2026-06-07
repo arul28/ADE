@@ -772,7 +772,16 @@ export function useLaneWorkSessions(laneId: string | null) {
   }, [focusSession, openSessionTab, refresh, selectLane, upsertSessionSnapshot]);
 
   const closePtySession = useCallback(async (ptyId: string) => {
-    const sessionId = sessionsRef.current.find((session) => session.ptyId === ptyId)?.id ?? null;
+    const matchedSession = sessionsRef.current.find((session) => session.ptyId === ptyId) ?? null;
+    const sessionId = matchedSession?.id ?? null;
+    const previousSessions = sessionsRef.current.filter((session) =>
+      session.ptyId === ptyId || (sessionId != null && session.id === sessionId),
+    );
+    const restorePreviousSessions = () => {
+      if (previousSessions.length === 0) return;
+      const previousById = new Map(previousSessions.map((session) => [session.id, session] as const));
+      setSessions((prev) => prev.map((session) => previousById.get(session.id) ?? session));
+    };
     const endedAt = new Date().toISOString();
     setClosingPtyIds((prev) => {
       const next = new Set(prev);
@@ -794,10 +803,12 @@ export function useLaneWorkSessions(laneId: string | null) {
           : session,
       ),
     );
+    let disposeError: unknown = null;
     try {
       const result = await window.ade.pty.dispose({ ptyId, ...(sessionId ? { sessionId } : {}) });
       if (result?.disposed === false) {
         if (sessionId) stoppedRuntimeSessionsRef.current.delete(sessionId);
+        restorePreviousSessions();
       } else if (sessionId) {
         stoppedRuntimeSessionsRef.current.set(sessionId, {
           ptyId,
@@ -805,6 +816,10 @@ export function useLaneWorkSessions(laneId: string | null) {
           expiresAtMs: Date.now() + STOPPED_RUNTIME_GUARD_TTL_MS,
         });
       }
+    } catch (error) {
+      disposeError = error;
+      if (sessionId) stoppedRuntimeSessionsRef.current.delete(sessionId);
+      restorePreviousSessions();
     } finally {
       setClosingPtyIds((prev) => {
         const next = new Set(prev);
@@ -814,6 +829,7 @@ export function useLaneWorkSessions(laneId: string | null) {
       invalidateSessionListCache();
       await refresh({ showLoading: false, force: true });
     }
+    if (disposeError) throw disposeError;
   }, [refresh]);
 
   return {

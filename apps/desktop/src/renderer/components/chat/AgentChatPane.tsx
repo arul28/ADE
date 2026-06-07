@@ -3111,7 +3111,10 @@ export function AgentChatPane({
     ?? (isWorkDraftComposer
       ? WORK_START_DRAFT_COMPANION_STATE_KEY
       : laneId ? `draft:${laneId}` : "draft");
-  const legacyWorkDraftCompanionStateKey = legacyWorkDraftLaneId ? `draft:${legacyWorkDraftLaneId}` : null;
+  const legacyWorkDraftCompanionStateKey =
+    companionStateKey === WORK_START_DRAFT_COMPANION_STATE_KEY && legacyWorkDraftLaneId
+      ? `draft:${legacyWorkDraftLaneId}`
+      : null;
   const composerDraftStorageKeyValues = useMemo(() => {
     const primary = composerDraftStorageKeys({
       projectRoot,

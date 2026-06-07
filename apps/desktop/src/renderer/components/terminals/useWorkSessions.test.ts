@@ -491,7 +491,7 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     });
 
     listSessionsCachedMock.mockClear();
-    listSessionsCachedMock.mockResolvedValue([peerOwnedSession]);
+    listSessionsCachedMock.mockRejectedValueOnce(new Error("refresh failed"));
 
     await act(async () => {
       await result.current.stopRuntime("pty-peer", "session-peer");
