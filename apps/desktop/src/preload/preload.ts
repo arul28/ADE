@@ -5512,6 +5512,7 @@ contextBridge.exposeInMainWorld("ade", {
         () => ipcRenderer.invoke(ipcChannel, args),
       ),
     subscribeRuntimeOrchestrationEvents: registerRemoteOrchestrationEventCallback,
+    parseLegacyEvent: toOrchestrationRuntimeEvent,
     ipcRenderer,
   }),
   computerUse: {

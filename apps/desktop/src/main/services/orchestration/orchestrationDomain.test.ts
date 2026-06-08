@@ -128,6 +128,13 @@ describe("orchestrationDomain", () => {
     expect(h.agentChatService.createSession).not.toHaveBeenCalled();
   });
 
+  it("rejects a runId that would escape the bundle root before any work", async () => {
+    await expect(
+      h.service.spawnAgent({ ...SPAWN_ARG, runId: "../../etc/passwd" }),
+    ).rejects.toThrow(/invalid orchestration runId/);
+    expect(h.orchestrationService.getManifestForRun).not.toHaveBeenCalled();
+  });
+
   it("spawnAgent throws when the plan is not approved", async () => {
     // currentPhase "planning" with no planApprovedAt => not approved.
     h.orchestrationService.getManifestForRun.mockReturnValue(

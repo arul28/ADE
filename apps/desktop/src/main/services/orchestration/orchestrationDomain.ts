@@ -44,6 +44,12 @@ export type OrchestrationDomainDeps = {
 
 type RunCreateArgs = Omit<OrchestrationRunCreateRequest, "bundleRoot"> & { laneId: string };
 
+// Run ids are minted by the orchestration service as `R-<ts>-<rand>` /
+// `run-<escaped>` — single path segments of `[A-Za-z0-9_-]`. Reject anything
+// else so a crafted `runId` (e.g. `../../etc`) can't escape the bundle root
+// when composed into a filesystem path at the IPC/daemon boundary.
+const SAFE_RUN_ID = /^[A-Za-z0-9_-]+$/;
+
 /**
  * The orchestration action domain — the single source of truth shared by the
  * daemon's `run_ade_action` registry and the desktop in-process IPC handlers.
@@ -53,8 +59,12 @@ type RunCreateArgs = Omit<OrchestrationRunCreateRequest, "bundleRoot"> & { laneI
 export function createOrchestrationDomainService(deps: OrchestrationDomainDeps) {
   const { orchestrationService: service, laneService, agentChatService } = deps;
 
-  const bundlePathFor = (laneId: string, runId: string): string =>
-    path.join(laneService.getLaneWorktreePath(laneId), ".ade", "orchestration", runId);
+  const bundlePathFor = (laneId: string, runId: string): string => {
+    if (!SAFE_RUN_ID.test(runId)) {
+      throw new Error(`invalid orchestration runId: ${JSON.stringify(runId)}`);
+    }
+    return path.join(laneService.getLaneWorktreePath(laneId), ".ade", "orchestration", runId);
+  };
 
   return {
     runCreate: async (arg: RunCreateArgs) => {

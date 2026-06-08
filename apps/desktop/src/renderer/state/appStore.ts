@@ -268,10 +268,12 @@ function normalizeWorkProjectViewState(value: unknown): WorkProjectViewState {
     activeGridSetId: normalizeOptionalString(candidate.activeGridSetId),
     draftKind: candidate.draftKind === "cli" ? "cli" : "chat",
     // Legacy persisted state stored orchestrator as a third draftKind
-    // ("chat-orchestrator"); migrate it onto the orthogonal boolean.
+    // ("chat-orchestrator"); migrate it onto the orthogonal boolean. CLI mode
+    // forces orchestrator off, so never resolve both at once.
     orchestratorEnabled:
-      candidate.orchestratorEnabled === true
-      || (candidate as { draftKind?: unknown }).draftKind === "chat-orchestrator",
+      candidate.draftKind !== "cli"
+      && (candidate.orchestratorEnabled === true
+        || (candidate as { draftKind?: unknown }).draftKind === "chat-orchestrator"),
     draftLaneId: normalizeOptionalString(candidate.draftLaneId),
     laneFilter: normalizeOptionalString(candidate.laneFilter) ?? "all",
     statusFilter:

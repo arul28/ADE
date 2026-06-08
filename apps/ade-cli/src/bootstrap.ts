@@ -1401,6 +1401,7 @@ export async function createAdeRuntime(args: {
       swallow(() => runtimeDiagnosticsService.dispose());
       swallow(() => oauthRedirectService.dispose());
       void laneProxyService.dispose().catch(() => {});
+      void orchestrationService?.dispose().catch(() => {});
       swallow(() => portAllocationService.dispose());
       swallow(() => iosSimulatorService?.dispose());
       swallow(() => appControlService?.dispose());
