@@ -436,7 +436,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade linear install                            Register ADE as Linear's "Open in coding tool" target
     $ ade skill list | show <name>                  Browse ADE's bundled agent skills (local)
     $ ade brain start | stop | status               Manage the background ADE brain
-    $ ade runtime run --socket <path> --no-sync     Run a manual runtime for dev/test work
+    $ ade runtime run --socket <path>               Run a manual runtime for dev/test work
     $ ade rpc --stdio                               Speak ADE JSON-RPC over stdin/stdout
     $ ade init [path]                               Register a project with this machine brain
     $ ade projects list                             List projects registered on this machine
@@ -990,15 +990,15 @@ const HELP_BY_COMMAND: Record<string, string> = {
   Run an explicit manual runtime, or use compatibility endpoint commands for
   older scripts. Prefer "ade brain" for the automated always-on service.
 
-    $ ade runtime run --socket /tmp/ade-dev.sock --no-sync
-    $ ADE_HOME=/tmp/ade-dev ade runtime run --socket /tmp/ade-dev.sock --no-sync
+    $ ade runtime run --socket /tmp/ade-dev.sock
     $ ade runtime status --text
     $ ade runtime start
     $ ade runtime stop
 
   Notes:
     "run" starts a foreground manual runtime on the selected endpoint.
-    Use --no-sync for dev runtimes that share a project DB with a brain.
+    Manual runtimes always run with sync off so they cannot claim brain
+    authority.
     "start" and "stop" are compatibility endpoint commands; use "ade brain"
     for service-managed lifecycle commands.
 `,
@@ -1032,7 +1032,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
   Flags:
     --socket <path>         Local RPC endpoint to listen on.
     --port <n>              Also listen for local TCP JSON-RPC on 127.0.0.1:n.
-    --no-sync               Disable machine sync discovery for this runtime run.
+    --no-sync               Disable machine sync discovery for this foreground brain process.
     --install-service       Register the per-user login service and exit.
     --uninstall-service     Remove the per-user login service and exit.
     --service-status        Print per-user login service status and exit.
@@ -10536,6 +10536,10 @@ function buildCliPlan(command: string[]): CliPlan {
     const runtimeArgs = [...args];
     const sub = firstStandalonePositional(runtimeArgs) ?? "status";
     if (sub === "run" || sub === "foreground") {
+      const syncDisabled = readFlag([...runtimeArgs], ["--no-sync"]);
+      if (!syncDisabled) {
+        runtimeArgs.push("--no-sync");
+      }
       return { kind: "serve", rest: runtimeArgs };
     }
     return { kind: "runtime", rest: args };

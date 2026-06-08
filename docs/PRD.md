@@ -38,7 +38,7 @@ ADE is the control plane. It owns ADE Browser automation for its built-in projec
 | --- | --- | --- |
 | Brain | The always-on, machine-owned ADE process for one channel. Hosts every project; desktop, `ade code`, and iOS attach as clients. Installable as a launchd / systemd / Windows login service. | [remote-runtime/README.md](./features/remote-runtime/README.md) |
 | Runtime | ADE execution machinery: processes/services that open DBs and run agents, PTYs, git, and orchestration. A runtime process can host the brain role; manual/headless runtimes can exist for isolated commands and tests. | [remote-runtime/README.md](./features/remote-runtime/README.md) |
-| Manual runtime | A foreground runtime process started explicitly with `ade runtime run --socket <path>`. Used for dev/test work instead of the automated stable/beta/alpha brain service. | [remote-runtime/README.md](./features/remote-runtime/README.md) |
+| Manual runtime | A foreground runtime process started explicitly with `ade runtime run --socket <path>`. Sync is always off; used for dev/test work instead of the automated stable/beta/alpha brain service. | [remote-runtime/README.md](./features/remote-runtime/README.md) |
 | Project | One repo entry in the brain's project registry. Identified by stable hash of root path; addressed in the multi-project RPC by `projectId`. | [remote-runtime/README.md](./features/remote-runtime/README.md) |
 | Lane | Isolated git worktree + per-lane process pool + agent session for one task. | [lanes/README.md](./features/lanes/README.md) |
 | Stack | Dependency chain of lanes → stacked PRs. | [lanes/stacking.md](./features/lanes/stacking.md) |
@@ -54,7 +54,7 @@ ADE is the control plane. It owns ADE Browser automation for its built-in projec
 | --- | --- |
 | Brain | The always-on, machine-owned ADE process for one channel. It carries the local RPC endpoint, sync websocket, project catalog, pairing authority, and executor authority. Some existing code/protocol fields still say `host` or `brain_*`. |
 | Runtime | ADE execution machinery: processes/services that open DBs and run agents, PTYs, git, and orchestration. A runtime process can host the brain role, but "brain" names authority/lifecycle, not a category of launchable runtimes. |
-| Manual runtime | A foreground runtime process started explicitly with `ade runtime run --socket <path>`. Use a separate `ADE_HOME` for full machine-state isolation and `--no-sync` when sharing a project DB with an existing brain. |
+| Manual runtime | A foreground runtime process started explicitly with `ade runtime run --socket <path>`. Sync is always off so it cannot claim brain authority; use a separate `ADE_HOME` when you also want full machine-state isolation. |
 | Machine | A physical computer with a stable per-channel ADE identity and project catalog. |
 | Channel | A release lane: stable, beta, alpha, or dev. Each channel isolates state under its own ADE home. |
 | ADE home | The machine state root for a channel (`~/.ade`, `~/.ade-beta`, `~/.ade-alpha`, or a dev override). Holds project catalog, secrets, runtime resources, and endpoints. |

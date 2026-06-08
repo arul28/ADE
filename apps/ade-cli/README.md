@@ -7,7 +7,7 @@
 The `ade` binary has three operating modes:
 
 - **Attached brain** — the ADE brain listens on `$ADE_HOME/sock/ade.sock` (POSIX) or `\\.\pipe\ade-runtime` (Windows). All other CLI commands and clients open that local endpoint and speak ADE JSON-RPC.
-- **Manual runtime** (`ade runtime run`) — a foreground execution process on an explicit endpoint. Use this for dev/test work when you do not want to use the automated stable/beta/alpha brain service.
+- **Manual runtime** (`ade runtime run`) — a foreground execution process on an explicit endpoint. Sync is always off; use this for dev/test work when you do not want to use the automated stable/beta/alpha brain service.
 - **Headless** (`--headless` or `ade code --embedded`) — the CLI builds an in-process `AdeRuntime` for one project and answers the same JSON-RPC surface directly. Used for one-shot commands and as a fallback when no machine brain is available.
 - **`ade rpc --stdio`** — attaches to the local machine brain and bridges its JSON-RPC over stdio. This is the transport the desktop's remote runtime feature spawns over SSH.
 
@@ -119,10 +119,10 @@ The service manager builds the launch command from the current `ade` binary path
 
 ## Internal process command
 
-To make your own runtime, run `ade runtime run` on an explicit endpoint. Use a separate `ADE_HOME` for full machine-state isolation, and add `--no-sync` when the manual runtime shares a project DB with an existing brain.
+To make your own runtime, run `ade runtime run` on an explicit endpoint. Sync is always off so the manual runtime cannot claim brain authority; use a separate `ADE_HOME` when you also want full machine-state isolation.
 
 ```bash
-ADE_HOME=/tmp/ade-dev-runtime ade runtime run --socket /tmp/ade-dev-runtime.sock --no-sync
+ADE_HOME=/tmp/ade-dev-runtime ade runtime run --socket /tmp/ade-dev-runtime.sock
 ade --socket /tmp/ade-dev-runtime.sock projects list --text
 ade code --socket /tmp/ade-dev-runtime.sock
 ```

@@ -156,7 +156,7 @@ Deep reference: [ARCHITECTURE.md](docs/ARCHITECTURE.md).
 | --- | --- |
 | Brain | The always-on, machine-owned ADE process for one channel. It carries the sync websocket, project catalog, local RPC endpoint, and executor authority. |
 | Runtime | ADE execution machinery: processes/services that open DBs and run agents, PTYs, git, and orchestration. A runtime process can host the brain role, but "brain" is the authority/lifecycle term. |
-| Manual runtime | A foreground runtime process started explicitly with `ade runtime run --socket <path>`. Use it for dev/test work instead of the automated stable/beta/alpha brain service. |
+| Manual runtime | A foreground runtime process started explicitly with `ade runtime run --socket <path>`. Sync is always off; use it for dev/test work instead of the automated stable/beta/alpha brain service. |
 | Machine | A physical computer with a per-channel ADE home and stable sync device identity. |
 | Channel | A release lane such as stable, beta, alpha, or dev. Each channel has its own ADE home. |
 | Client | A surface that attaches to the brain: desktop, `ade code`, ADE Mobile, or an SSH-bound desktop window. |
