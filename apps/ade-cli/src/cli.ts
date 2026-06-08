@@ -436,6 +436,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade linear install                            Register ADE as Linear's "Open in coding tool" target
     $ ade skill list | show <name>                  Browse ADE's bundled agent skills (local)
     $ ade brain start | stop | status               Manage the background ADE brain
+    $ ade runtime run --socket <path> --no-sync     Run a manual runtime for dev/test work
     $ ade rpc --stdio                               Speak ADE JSON-RPC over stdin/stdout
     $ ade init [path]                               Register a project with this machine brain
     $ ade projects list                             List projects registered on this machine
@@ -986,17 +987,20 @@ const HELP_BY_COMMAND: Record<string, string> = {
   runtime: `${ADE_BANNER}
   ADE Runtime Compatibility
 
-  Compatibility surface for scripts that still call the lifecycle command
-  "runtime". Prefer "ade brain" for the always-on machine service.
+  Run an explicit manual runtime, or use compatibility endpoint commands for
+  older scripts. Prefer "ade brain" for the automated always-on service.
 
+    $ ade runtime run --socket /tmp/ade-dev.sock --no-sync
+    $ ADE_HOME=/tmp/ade-dev ade runtime run --socket /tmp/ade-dev.sock --no-sync
     $ ade runtime status --text
     $ ade runtime start
     $ ade runtime stop
 
   Notes:
-    "start" launches the background brain if it is missing.
-    "stop" shuts down the runtime on the selected endpoint.
-    Use "ade brain" for service-managed lifecycle commands.
+    "run" starts a foreground manual runtime on the selected endpoint.
+    Use --no-sync for dev runtimes that share a project DB with a brain.
+    "start" and "stop" are compatibility endpoint commands; use "ade brain"
+    for service-managed lifecycle commands.
 `,
   brain: `${ADE_BANNER}
   ADE Brain
@@ -10529,6 +10533,11 @@ function buildCliPlan(command: string[]): CliPlan {
     }
   }
   if (primary === "runtime") {
+    const runtimeArgs = [...args];
+    const sub = firstStandalonePositional(runtimeArgs) ?? "status";
+    if (sub === "run" || sub === "foreground") {
+      return { kind: "serve", rest: runtimeArgs };
+    }
     return { kind: "runtime", rest: args };
   }
   if (primary === "brain") {
@@ -12681,7 +12690,7 @@ async function runRuntimeCommand(
           packageChannel: runtimeInfo.packageChannel,
           projectRoot: runtimeInfo.projectRoot,
           pid: runtimeInfo.pid,
-          message: "ADE brain runtime is running.",
+          message: "ADE runtime endpoint is running.",
         };
       } finally {
         client.close();
@@ -12715,7 +12724,7 @@ async function runRuntimeCommand(
         packageChannel: runtimeInfo?.packageChannel ?? null,
         projectRoot: runtimeInfo?.projectRoot ?? null,
         pid: runtimeInfo?.pid ?? null,
-        message: "ADE brain runtime is running.",
+        message: "ADE runtime endpoint is running.",
       };
     } finally {
       client.close();
@@ -12739,7 +12748,7 @@ async function runRuntimeCommand(
         ok: true,
         running: false,
         socketPath,
-        message: "ADE brain runtime stopped.",
+        message: "ADE runtime endpoint stopped.",
       };
     } catch (error) {
       return {

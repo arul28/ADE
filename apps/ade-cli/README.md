@@ -1,12 +1,13 @@
 # ADE CLI
 
-`apps/ade-cli` owns the `ade` command, the ADE brain/runtime, and the terminal `ade code` client. The **brain** is the always-on, machine-owned ADE process for one channel; it is the source of truth for lanes, agent chats, work sessions, PR state, process state, sync, proof artifacts, and the project catalog on a machine. Desktop ADE, `ade code`, the iOS app, and SSH-attached desktops all attach to it.
+`apps/ade-cli` owns the `ade` command, the ADE brain, manual runtime entry points, and the terminal `ade code` client. The **brain** is the always-on, machine-owned ADE process for one channel; it is the source of truth for lanes, agent chats, work sessions, PR state, process state, sync, proof artifacts, and the project catalog on a machine. Desktop ADE, `ade code`, the iOS app, and SSH-attached desktops all attach to it. A **manual runtime** is an explicit foreground execution process you start for dev/test work instead of using the automated brain service.
 
 ## Modes
 
 The `ade` binary has three operating modes:
 
 - **Attached brain** — the ADE brain listens on `$ADE_HOME/sock/ade.sock` (POSIX) or `\\.\pipe\ade-runtime` (Windows). All other CLI commands and clients open that local endpoint and speak ADE JSON-RPC.
+- **Manual runtime** (`ade runtime run`) — a foreground execution process on an explicit endpoint. Use this for dev/test work when you do not want to use the automated stable/beta/alpha brain service.
 - **Headless** (`--headless` or `ade code --embedded`) — the CLI builds an in-process `AdeRuntime` for one project and answers the same JSON-RPC surface directly. Used for one-shot commands and as a fallback when no machine brain is available.
 - **`ade rpc --stdio`** — attaches to the local machine brain and bridges its JSON-RPC over stdio. This is the transport the desktop's remote runtime feature spawns over SSH.
 
@@ -84,7 +85,7 @@ Three ways to put `ade` on a machine:
 
 ## Service manager
 
-The ADE runtime runs as a per-user login service. The implementations live in `src/serviceManager/`.
+The ADE brain runs as a per-user login service. The implementations live in `src/serviceManager/`.
 
 | Platform | Backend | Service path |
 | --- | --- | --- |
@@ -118,11 +119,12 @@ The service manager builds the launch command from the current `ade` binary path
 
 ## Internal process command
 
-The implementation still has a low-level foreground process command for tests, service-manager internals, and debugging. Product docs and user workflows should prefer `ade brain`.
+To make your own runtime, run `ade runtime run` on an explicit endpoint. Use a separate `ADE_HOME` for full machine-state isolation, and add `--no-sync` when the manual runtime shares a project DB with an existing brain.
 
 ```bash
-ade brain status --text
-ade brain restart
+ADE_HOME=/tmp/ade-dev-runtime ade runtime run --socket /tmp/ade-dev-runtime.sock --no-sync
+ade --socket /tmp/ade-dev-runtime.sock projects list --text
+ade code --socket /tmp/ade-dev-runtime.sock
 ```
 
 ## Brain lifecycle

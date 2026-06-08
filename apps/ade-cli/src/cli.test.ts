@@ -276,6 +276,18 @@ describe("ADE CLI", () => {
       rest: ["status"],
     });
     expect(
+      buildCliPlan(["runtime", "run", "--socket", "/tmp/ade.sock", "--no-sync"]),
+    ).toEqual({
+      kind: "serve",
+      rest: ["--socket", "/tmp/ade.sock", "--no-sync"],
+    });
+    expect(
+      buildCliPlan(["runtime", "--socket", "/tmp/ade.sock", "run", "--no-sync"]),
+    ).toEqual({
+      kind: "serve",
+      rest: ["--socket", "/tmp/ade.sock", "--no-sync"],
+    });
+    expect(
       buildCliPlan(["runtime", "start", "--socket", "/tmp/ade.sock"]),
     ).toEqual({
       kind: "runtime",

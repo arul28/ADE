@@ -2,7 +2,7 @@
 
 Remote commands are the execution channel for controllers. A controller
 (another desktop acting as a peer, or the iOS app) sends a `command`
-envelope to the ADE brain; the brain's runtime
+envelope to the ADE brain; the brain's in-process services
 resolves it through `syncRemoteCommandService`, runs the underlying
 action against its in-process services, and replies with `command_ack`
 and then `command_result`.
@@ -240,7 +240,7 @@ Each action has a dedicated parse function (e.g. `parseCreateLaneArgs`,
    `requireService`.
 3. Coerces optional fields through `asTrimmedString`, `asOptionalNumber`,
    `asOptionalBoolean`, `asStringArray`.
-4. Returns the typed args object expected by the brain's runtime service.
+4. Returns the typed args object expected by the brain's in-process service.
 
 Helpers (`asTrimmedString`, `asStringArray`, `requireString`, etc.) live
 at the top of the file. A non-conforming args object causes the parser
@@ -249,7 +249,7 @@ error reaches the controller as `command_result.error.message`.
 
 ## Handler bodies
 
-Handlers are thin glue onto the brain's runtime services. Most look like:
+Handlers are thin glue onto the brain's in-process services. Most look like:
 
 ```ts
 register("lanes.create",
@@ -347,7 +347,7 @@ therefore see up-to-date presence without a separate query.
 
 ## Service dependencies
 
-`createSyncRemoteCommandService` takes a long list of optional brain/runtime
+`createSyncRemoteCommandService` takes a long list of optional runtime
 services:
 
 ```ts
@@ -375,7 +375,7 @@ Optional services that are missing cause their dependent actions to
 throw `"<service> not available."` at call time. The `requireService`
 helper centralises that check. This pattern lets a narrower runtime
 construct only the services it can actually back without crashing at
-command registration — useful for headless brain/runtime setups that, for
+command registration — useful for headless/manual runtime setups that, for
 example, intentionally skip the chat service.
 
 ## Supported-action discovery
@@ -473,7 +473,7 @@ see the chat README for the passive/active contract.
   reconnect. Be aware when reasoning about "why did this lane
   disappear" — check the command queue, not just the local DB.
 - **`prs.createFromLane` requires the brain's GitHub token.** On a
-  headless brain/runtime with no `ADE_GITHUB_TOKEN` /
+  headless/manual runtime with no `ADE_GITHUB_TOKEN` /
   `GITHUB_TOKEN` / `GH_TOKEN`, the command fails with a clear
   error before reaching GitHub. This is deliberate fail-fast behavior.
 - **`work.runQuickCommand` always creates a PTY.** There is no
@@ -501,7 +501,7 @@ see the chat README for the passive/active contract.
   `createFile`, `createDirectory`, `rename`, or `deletePath` request.
   The brain's `MOBILE_MUTATING_FILE_ACTIONS` set mirrors this list so
   a hostile controller cannot bypass it.
-- **`requireService` throws lazily.** A brain/runtime missing a service does
+- **`requireService` throws lazily.** A runtime missing a service does
   not cause registration to fail; it causes the first invocation of
   a command that needs that service to fail with a specific message.
   Tests should exercise each command path rather than assume

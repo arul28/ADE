@@ -141,7 +141,7 @@ ade actions list --text   # discover every service action
 Local-first, on purpose. The center of ADE is the **brain** — the always-on, machine-owned ADE process for a channel. The brain owns the project catalog, sync websocket, and executor authority; desktop, `ade code`, the iOS app, and SSH-attached desktop windows attach to it as clients. Runtime state lives under `.ade/` inside each project (SQLite db, worktree checkouts, proof artifacts, encrypted secrets) and machine-wide state lives under `~/.ade` or `~/.ade-<channel>`. When desktop is running, its Electron main process also hosts a **desktop bridge endpoint** at `~/.ade/sock/desktop-bridge.sock` (override: `ADE_DESKTOP_BRIDGE_SOCKET_PATH`) so the brain can proxy `ade browser …` calls into the Electron-only `WebContentsView` APIs it can't reach under `ELECTRON_RUN_AS_NODE=1`.
 
 ```text
-apps/ade-cli   ADE brain/runtime + `ade` CLI + `ade code` terminal client
+apps/ade-cli   ADE brain + manual runtime entry points + `ade` CLI + `ade code` terminal client
 apps/desktop   Electron client — multi-window, attaches to a local brain or SSH-bound runtime
 apps/ios       SwiftUI controller that pairs with an ADE machine over WebSocket
 apps/web       Public website and download surface
@@ -155,7 +155,8 @@ Deep reference: [ARCHITECTURE.md](docs/ARCHITECTURE.md).
 | Term | Meaning |
 | --- | --- |
 | Brain | The always-on, machine-owned ADE process for one channel. It carries the sync websocket, project catalog, local RPC endpoint, and executor authority. |
-| Runtime | An ADE execution process. The normal brain is a runtime; short-lived/headless runtimes can also exist for isolated commands and tests. |
+| Runtime | ADE execution machinery: processes/services that open DBs and run agents, PTYs, git, and orchestration. A runtime process can host the brain role, but "brain" is the authority/lifecycle term. |
+| Manual runtime | A foreground runtime process started explicitly with `ade runtime run --socket <path>`. Use it for dev/test work instead of the automated stable/beta/alpha brain service. |
 | Machine | A physical computer with a per-channel ADE home and stable sync device identity. |
 | Channel | A release lane such as stable, beta, alpha, or dev. Each channel has its own ADE home. |
 | Client | A surface that attaches to the brain: desktop, `ade code`, ADE Mobile, or an SSH-bound desktop window. |
