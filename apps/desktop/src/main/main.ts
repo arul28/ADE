@@ -1058,8 +1058,7 @@ app.whenReady().then(async () => {
     recentProjects: cleanedRecentProjects,
   });
   const shouldAttemptRuntimeServiceInstall =
-    machineStateMigration.didRun
-    && app.isPackaged
+    app.isPackaged
     && process.env.NODE_ENV !== "test"
     && process.env.ADE_DISABLE_RUNTIME_SERVICE_INSTALL !== "1";
   const shouldShowRuntimeMigrationNotice =
@@ -1206,8 +1205,6 @@ app.whenReady().then(async () => {
           error: error instanceof Error ? error.message : String(error),
         });
       });
-  } else if (!machineStateMigration.didRun) {
-    localRuntimePool.noteServiceInstallSkipped("Background service migration already completed.");
   } else if (process.env.ADE_DISABLE_RUNTIME_SERVICE_INSTALL === "1") {
     localRuntimePool.noteServiceInstallSkipped("Background service installation is disabled by ADE_DISABLE_RUNTIME_SERVICE_INSTALL.");
     if (machineStateMigration.didRun && app.isPackaged && packagedChannel) {
