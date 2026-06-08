@@ -207,11 +207,18 @@ async function writeManifest(bundleRoot, target, packages) {
   await fs.writeFile(path.join(bundleRoot, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
 }
 
+// Targets shipped as the production brain, where cr-sqlite is mandatory. A
+// missing extension for one of these would silently re-ship the exact
+// crsql_internal_sync_bit crash this packaging step exists to prevent, so it's
+// a hard build failure rather than a warning. Other targets (not yet vendored)
+// warn-and-skip until their extension is added.
+const CRSQLITE_REQUIRED_TARGETS = new Set(["darwin-arm64"]);
+
 function crsqliteExtensionFileName(target) {
   const { platform } = targetParts(target);
   if (platform === "darwin") return "crsqlite.dylib";
   if (platform === "linux") return "crsqlite.so";
-  return "crsqlite.so";
+  throw new Error(`No cr-sqlite extension filename mapping for platform '${platform}' (target ${target}).`);
 }
 
 async function copyCrsqliteExtension(bundleRoot, target) {
@@ -225,6 +232,13 @@ async function copyCrsqliteExtension(bundleRoot, target) {
   const fileName = crsqliteExtensionFileName(target);
   const source = path.join(packageRoot, "..", "desktop", "vendor", "crsqlite", target, fileName);
   if (!(await exists(source))) {
+    if (CRSQLITE_REQUIRED_TARGETS.has(target)) {
+      throw new Error(
+        `[package-native-deps] no cr-sqlite extension vendored for required target ${target} (${source}); ` +
+          `the installed brain would crash on every CRR write. Add crsqlite for this target under ` +
+          `apps/desktop/vendor/crsqlite/${target}/.`,
+      );
+    }
     process.stderr.write(
       `[package-native-deps] WARNING: no cr-sqlite extension vendored for ${target} ` +
         `(${source}); the installed brain on this target will lack CRDT sync.\n`,
