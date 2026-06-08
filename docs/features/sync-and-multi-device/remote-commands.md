@@ -12,6 +12,12 @@ Source file: `apps/ade-cli/src/services/sync/syncRemoteCommandService.ts`
 `apps/desktop/src/main/services/sync/syncRemoteCommandService.ts` is a
 one-line re-export of the canonical module.
 
+Compatibility note: a few wire envelopes and service identifiers still
+carry legacy names, notably `brain_status` and `syncHostService`, so old
+mobile and desktop builds can keep syncing. Current ADE terminology is
+runtime, machine, controller, and sync authority; legacy names in this
+document describe protocol compatibility, not user-facing concepts.
+
 ## Shape
 
 ### Invocation
@@ -31,7 +37,7 @@ A controller sends:
 }
 ```
 
-The host responds in two envelopes:
+The runtime responds in two envelopes:
 
 ```ts
 // command_ack — receipt and preliminary disposition
@@ -71,29 +77,29 @@ type SyncRemoteCommandDescriptor = {
 
 type SyncRemoteCommandPolicy = {
   viewerAllowed: boolean;       // can a read-only controller invoke?
-  requiresApproval?: boolean;   // host prompts operator before executing
+  requiresApproval?: boolean;   // runtime prompts operator before executing
   localOnly?: boolean;          // never sent over the wire; local-only
   queueable?: boolean;          // queue locally if offline, replay on reconnect
 };
 ```
 
-The scope label matters because the daemon hosts **multiple projects**
+The scope label matters because the daemon serves **multiple projects**
 at once. `runtime`-scoped commands (machine-wide diagnostics, project
 catalog reads, settings) run without a project binding. `project`-scoped
 commands (everything that mutates lane / chat / PR state inside a
-project) require the host to have an active project AND the caller to
-have bundled a matching `projectId` on the envelope. The host enforces
+project) require the runtime to have an active project AND the caller to
+have bundled a matching `projectId` on the envelope. The runtime enforces
 this with explicit error codes:
 
-- `code: missing_project` — host has a project open but the command did
+- `code: missing_project` — runtime has a project open but the command did
   not include `projectId`. Re-select the project on the controller and
   retry.
-- `code: project_not_open` — caller asked for a project the host does
+- `code: project_not_open` — caller asked for a project the runtime does
   not currently have open. Drive a `project_switch_request` first.
 
-Controllers read `SyncRemoteCommandDescriptor`s from the host (via the
+Controllers read `SyncRemoteCommandDescriptor`s from the runtime (via the
 `getSupportedActions` / `getDescriptors` surface) and gate UI
-accordingly — the host policy and scope are always authoritative.
+accordingly — the runtime policy and scope are always authoritative.
 
 ## Registry
 
@@ -124,15 +130,15 @@ Listed in order of appearance in the registry:
 - `listTemplates`, `getDefaultTemplate`
 - `initEnv`, `getEnvStatus`, `applyTemplate`
 - `presence.announce`, `presence.release` — controller marks a lane
-  as currently open / no longer open; the host decorates
+  as currently open / no longer open; the runtime decorates
   `LaneSummary.devicesOpen` with a 60 s TTL and fans out updates via
-  `brain_status`.
+  the runtime-status broadcast (`brain_status`, legacy wire name).
 
 `lanes.reparent` accepts `{ laneId, newParentLaneId,
 stackBaseBranchRef? }`. The optional base ref is trimmed before
-dispatch; when present, the host resolves it in the project repo
+dispatch; when present, the runtime resolves it in the project repo
 preferring `origin/<branch>`, persists it as the lane's `base_ref`,
-and rebases the lane onto that resolved branch. When omitted, the host
+and rebases the lane onto that resolved branch. When omitted, the runtime
 uses the selected parent lane's current branch.
 
 **Work** (`work.*`)
@@ -149,7 +155,7 @@ uses the selected parent lane's current branch.
 `chat.modelCatalog` accepts `{ mode?, refreshProvider? }` where `mode`
 is `"cached" | "refresh-stale" | "force"` (default `"cached"`) and
 `refreshProvider` is `"opencode" | "cursor" | "droid" | "lmstudio" |
-"ollama"`. The host returns the full provider-grouped catalog used by
+"ollama"`. The runtime returns the full provider-grouped catalog used by
 the desktop and TUI ModelPickers and the iOS Work model sheet; only
 explicit `force` / `refresh-stale` calls trigger a runtime probe.
 
@@ -235,7 +241,7 @@ Each action has a dedicated parse function (e.g. `parseCreateLaneArgs`,
    `requireService`.
 3. Coerces optional fields through `asTrimmedString`, `asOptionalNumber`,
    `asOptionalBoolean`, `asStringArray`.
-4. Returns the typed args object expected by the host service.
+4. Returns the typed args object expected by the runtime service.
 
 Helpers (`asTrimmedString`, `asStringArray`, `requireString`, etc.) live
 at the top of the file. A non-conforming args object causes the parser
@@ -244,7 +250,7 @@ error reaches the controller as `command_result.error.message`.
 
 ## Handler bodies
 
-Handlers are thin glue onto host services. Most look like:
+Handlers are thin glue onto runtime services. Most look like:
 
 ```ts
 register("lanes.create",
@@ -327,13 +333,13 @@ A handful have more logic:
   legacy desktop banner. `defer` clamps the requested minutes to
   `[5, 7 days]` before computing the absolute `until` ISO string.
 - **`lanes.presence.announce` / `lanes.presence.release`** — handled
-  in `syncHostService` directly (not in the remote command
-  registry); the host upserts a per-lane `DeviceMarker` map and
+  in the legacy-named `syncHostService` directly (not in the remote
+  command registry); the runtime upserts a per-lane `DeviceMarker` map and
   decorates outgoing `LaneSummary` payloads with `devicesOpen`.
 
 ### Lane response decoration
 
-`syncHostService` wraps command results for `lanes.list`,
+The legacy-named `syncHostService` wraps command results for `lanes.list`,
 `lanes.getDetail`, `lanes.refreshSnapshots`, `lanes.getChildren`,
 `lanes.create`, `lanes.createChild`, `lanes.createFromUnstaged`,
 `lanes.importBranch`, `lanes.attach`, and `lanes.adoptAttached` to
@@ -342,7 +348,7 @@ therefore see up-to-date presence without a separate query.
 
 ## Service dependencies
 
-`createSyncRemoteCommandService` takes a long list of optional host
+`createSyncRemoteCommandService` takes a long list of optional runtime
 services:
 
 ```ts
@@ -385,7 +391,8 @@ execute(payload: SyncCommandPayload): Promise<unknown>;
 ```
 
 Controllers typically read descriptors at connection time, cache
-them, and refresh on `brain_status` changes. The iOS Lanes /
+them, and refresh on runtime-status broadcasts (`brain_status`, legacy
+wire name). The iOS Lanes /
 Files / Work / PRs tabs use this to render action buttons only for
 commands the current runtime supports under the current policy.
 
@@ -443,32 +450,32 @@ issue, this flag drives whether `prService` injects `Fixes IDENT`
 (closes the issue when the PR merges) or `Refs IDENT` (links
 without closing) into the PR body via `ensureLinearPrReference`.
 
-`brain_status` envelopes carry the host's `LinearConnectionStatus`,
+Runtime-status (`brain_status`) envelopes carry the runtime's `LinearConnectionStatus`,
 which now includes optional `organizationId`, `organizationName`,
 `organizationUrlKey`, and `organizationLogoUrl` fields populated by
-the host when the Linear workspace is connected. Controllers use
+the runtime when the Linear workspace is connected. Controllers use
 these to render the workspace brand on Linear-related surfaces
 without fetching them separately.
 
 `parseChatModelsArgs` accepts `{ provider, activateRuntime? }`. When
 `chat.create` is missing an explicit model, `resolveChatCreateArgs`
 forwards `activateRuntime: true` only for the `opencode` provider so
-the host actually launches the OpenCode probe server before resolving
+the runtime actually launches the OpenCode probe server before resolving
 a default model. All other providers use passive (cache-only) resolution;
 see the chat README for the passive/active contract.
 
 ## Gotchas
 
-- **`chat.models` returns the host's model catalog.** A controller
-  must not hardcode model IDs. The host is authoritative about
+- **`chat.models` returns the runtime's model catalog.** A controller
+  must not hardcode model IDs. The runtime is authoritative about
   which models are wired up, which providers have credentials, and
   what the default model is.
 - **`lanes.delete` and `lanes.archive` are queueable.** A
   disconnected controller can enqueue deletes that replay on
   reconnect. Be aware when reasoning about "why did this lane
   disappear" — check the command queue, not just the local DB.
-- **`prs.createFromLane` requires the host's GitHub token.** On a
-  headless `ade serve` host with no `ADE_GITHUB_TOKEN` /
+- **`prs.createFromLane` requires the runtime's GitHub token.** On a
+  headless `ade serve` runtime with no `ADE_GITHUB_TOKEN` /
   `GITHUB_TOKEN` / `GH_TOKEN`, the command fails with a clear
   error before reaching GitHub. This is deliberate fail-fast behavior.
 - **`work.runQuickCommand` always creates a PTY.** There is no
@@ -477,13 +484,13 @@ see the chat README for the passive/active contract.
   `work.stopRuntime`. A daemon configured without a real PTY service
   (rare; only used in some headless test harnesses) will surface
   `pty service not available` for this command.
-- **`work.startCliSession` provider list is host-controlled.** The
+- **`work.startCliSession` provider list is runtime-controlled.** The
   controller cannot pass `command` / `args` / `startupCommand`
-  overrides — the host derives those from the provider name through
+  overrides — the runtime derives those from the provider name through
   `buildTrackedCliLaunchCommand`. To add a new provider you extend
   `apps/desktop/src/shared/cliLaunch.ts` and the
   `parseCliProvider` allowlist together; a phone client that hardcodes
-  the new id without a host update will get a "requires provider"
+  the new id without a runtime update will get a "requires provider"
   error.
 - **`files.writeTextAtomic` does not invoke git hooks or editors.**
   It writes atomically to the lane worktree and that is all.
@@ -494,9 +501,9 @@ see the chat README for the passive/active contract.
   `ensureMobileFileMutationsAllowed`, checking
   `FilesWorkspace.mobileReadOnly` before sending a `writeText`,
   `createFile`, `createDirectory`, `rename`, or `deletePath` request.
-  The host's `MOBILE_MUTATING_FILE_ACTIONS` set mirrors this list so
+  The runtime's `MOBILE_MUTATING_FILE_ACTIONS` set mirrors this list so
   a hostile controller cannot bypass it.
-- **`requireService` throws lazily.** A host missing a service does
+- **`requireService` throws lazily.** A runtime missing a service does
   not cause registration to fail; it causes the first invocation of
   a command that needs that service to fail with a specific message.
   Tests should exercise each command path rather than assume

@@ -10804,10 +10804,7 @@ function buildAdeCodeArgs(rest: string[], options: GlobalOptions): string[] {
   ];
 }
 
-async function runAdeCode(
-  rest: string[],
-  options: GlobalOptions,
-): Promise<{ output: string; exitCode: number }> {
+function resolveAdeCodeModulePath(): string {
   const sourceModule = path.join(
     CLI_PACKAGE_ROOT,
     "src",
@@ -10817,7 +10814,32 @@ async function runAdeCode(
   const builtModule = CLI_ENTRY_PATH
     ? path.join(path.dirname(CLI_ENTRY_PATH), "tuiClient", "cli.mjs")
     : path.join(CLI_PACKAGE_ROOT, "dist", "tuiClient", "cli.mjs");
-  const modulePath = fs.existsSync(builtModule) ? builtModule : sourceModule;
+  const runtimeRoot =
+    process.env.ADE_RUNTIME_ROOT?.trim() ||
+    process.env.ADE_RESOLVED_RUNTIME_ROOT?.trim() ||
+    null;
+  const runtimeModule = runtimeRoot
+    ? path.join(runtimeRoot, "tuiClient", "cli.mjs")
+    : null;
+  const candidates = [
+    runtimeModule,
+    builtModule,
+    isSourceCliEntryPath(CLI_ENTRY_PATH) ? sourceModule : null,
+  ].filter((candidate): candidate is string => Boolean(candidate));
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  throw new Error(
+    "ADE Code TUI module is missing. Run `npm --prefix apps/ade-cli run build` " +
+      "or reinstall ADE so the packaged runtime includes tuiClient/cli.mjs.",
+  );
+}
+
+async function runAdeCode(
+  rest: string[],
+  options: GlobalOptions,
+): Promise<{ output: string; exitCode: number }> {
+  const modulePath = resolveAdeCodeModulePath();
   const { runAdeCodeCli } = await import(pathToFileURL(modulePath).href);
   const exitCode = await runAdeCodeCli(buildAdeCodeArgs(rest, options));
   return { output: "", exitCode };
@@ -15792,6 +15814,7 @@ export {
   parseCliArgs,
   readRuntimeIdleExitMs,
   renderLaneGraph,
+  resolveAdeCodeModulePath,
   resolveRoots,
   runCli,
   summarizeExecution,

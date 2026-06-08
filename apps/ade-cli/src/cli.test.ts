@@ -16,6 +16,7 @@ import {
   parseCliArgs,
   readRuntimeIdleExitMs,
   renderLaneGraph,
+  resolveAdeCodeModulePath,
   resolveRoots,
   shouldAutoRegisterProjectForPlan,
   shouldEnforceMachineRuntimeBuildCompatibility,
@@ -514,6 +515,26 @@ describe("ADE CLI", () => {
       if (previousWorkspace === undefined)
         delete process.env.ADE_WORKSPACE_ROOT;
       else process.env.ADE_WORKSPACE_ROOT = previousWorkspace;
+    }
+  });
+
+  it("resolves ade code from packaged runtime resources", () => {
+    const runtimeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-code-runtime-"));
+    const modulePath = path.join(runtimeRoot, "tuiClient", "cli.mjs");
+    fs.mkdirSync(path.dirname(modulePath), { recursive: true });
+    fs.writeFileSync(modulePath, "export async function runAdeCodeCli() { return 0; }\n");
+    try {
+      withEnv(
+        {
+          ADE_RUNTIME_ROOT: runtimeRoot,
+          ADE_RESOLVED_RUNTIME_ROOT: undefined,
+        },
+        () => {
+          expect(resolveAdeCodeModulePath()).toBe(modulePath);
+        },
+      );
+    } finally {
+      fs.rmSync(runtimeRoot, { recursive: true, force: true });
     }
   });
 

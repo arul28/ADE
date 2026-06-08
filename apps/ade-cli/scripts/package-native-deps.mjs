@@ -207,6 +207,16 @@ async function writeManifest(bundleRoot, target, packages) {
   await fs.writeFile(path.join(bundleRoot, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
 }
 
+async function copyBuiltTuiClient(bundleRoot) {
+  const source = path.join(packageRoot, "dist", "tuiClient", "cli.mjs");
+  if (!(await exists(source))) {
+    throw new Error("Missing built ADE Code TUI module. Run `npm run build` before packaging native runtime dependencies.");
+  }
+  const destination = path.join(bundleRoot, "tuiClient", "cli.mjs");
+  await fs.mkdir(path.dirname(destination), { recursive: true });
+  await fs.copyFile(source, destination);
+}
+
 async function chmodRuntimeExecutables(bundleRoot, target) {
   const executablePaths = [
     path.join(bundleRoot, "node_modules", "opencode-ai", "bin", "opencode.exe"),
@@ -260,6 +270,7 @@ async function main() {
       copied.push(packageName);
     }
   }
+  await copyBuiltTuiClient(bundleRoot);
   await chmodRuntimeExecutables(bundleRoot, args.target);
   await writeManifest(bundleRoot, args.target, copied);
 

@@ -207,6 +207,8 @@ function __adeSeaResolveRuntimeRoot() {
 }
 var __adeSeaRuntimeRoot = __adeSeaResolveRuntimeRoot();
 if (__adeSeaRuntimeRoot) {
+  process.env.ADE_RESOLVED_RUNTIME_ROOT = __adeSeaRuntimeRoot;
+  if (!process.env.ADE_RUNTIME_ROOT) process.env.ADE_RUNTIME_ROOT = __adeSeaRuntimeRoot;
   var __adeSeaRuntimeNodeModules = __adeSeaPath.join(__adeSeaRuntimeRoot, "node_modules");
   var __adeSeaNodePath = process.env.NODE_PATH || "";
   var __adeSeaNodePathParts = __adeSeaNodePath.split(__adeSeaPath.delimiter).filter(Boolean);
