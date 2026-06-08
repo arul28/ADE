@@ -123,9 +123,9 @@ Requirements: Windows x64, git on `PATH`, Node 22+ for headless CLI workflows.
 
 ```bash
 ade desktop
-ade runtime status --text
-ade runtime start
-ade runtime stop
+ade brain status --text
+ade brain start
+ade brain stop
 ade doctor --json
 ade code
 ade lanes create --name fix-checkout-flow
@@ -138,17 +138,62 @@ ade actions list --text   # discover every service action
 
 ## Architecture
 
-Local-first, on purpose. The center of ADE is the **machine runtime** — a single per-machine `ade serve` service that owns projects, lanes, agent chats, work sessions, processes, sync, and proof artifacts. Desktop, the terminal client, the iOS app, and SSH-attached desktop windows all attach to it as clients. Runtime state lives under `.ade/` inside each project (SQLite db, worktree checkouts, proof artifacts, encrypted secrets) and the machine-wide local endpoint lives under `~/.ade/sock/ade.sock`. When desktop is running, its Electron main process also hosts a **desktop bridge endpoint** at `~/.ade/sock/desktop-bridge.sock` (override: `ADE_DESKTOP_BRIDGE_SOCKET_PATH`) so the runtime can proxy `ade browser …` calls into the Electron-only `WebContentsView` APIs it can't reach under `ELECTRON_RUN_AS_NODE=1`.
+Local-first, on purpose. The center of ADE is the **brain** — the always-on, machine-owned ADE process for a channel. The brain owns the project catalog, sync websocket, and executor authority; desktop, `ade code`, the iOS app, and SSH-attached desktop windows attach to it as clients. Runtime state lives under `.ade/` inside each project (SQLite db, worktree checkouts, proof artifacts, encrypted secrets) and machine-wide state lives under `~/.ade` or `~/.ade-<channel>`. When desktop is running, its Electron main process also hosts a **desktop bridge endpoint** at `~/.ade/sock/desktop-bridge.sock` (override: `ADE_DESKTOP_BRIDGE_SOCKET_PATH`) so the brain can proxy `ade browser …` calls into the Electron-only `WebContentsView` APIs it can't reach under `ELECTRON_RUN_AS_NODE=1`.
 
 ```text
-apps/ade-cli   ADE runtime (`ade serve`) + `ade` CLI + `ade code` terminal client
-apps/desktop   Electron client — multi-window, attaches to a local or SSH-bound runtime
+apps/ade-cli   ADE brain + manual runtime entry points + `ade` CLI + `ade code` terminal client
+apps/desktop   Electron client — multi-window, attaches to a local brain or SSH-bound runtime
 apps/ios       SwiftUI controller that pairs with an ADE machine over WebSocket
 apps/web       Public website and download surface
 docs/          Product and engineering docs
 ```
 
 Deep reference: [ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
+## Glossary
+
+| Term | Meaning |
+| --- | --- |
+| Brain | The always-on, machine-owned ADE process for one channel. It carries the sync websocket, project catalog, local RPC endpoint, and executor authority. |
+| Runtime | ADE execution machinery: processes/services that open DBs and run agents, PTYs, git, and orchestration. A runtime process can host the brain role, but "brain" is the authority/lifecycle term. |
+| Manual runtime | A foreground runtime process started explicitly with `ade runtime run --socket <path>`. Sync is always off; use it for dev/test work instead of the automated stable/beta/alpha brain service. |
+| Machine | A physical computer with a per-channel ADE home and stable sync device identity. |
+| Channel | A release lane such as stable, beta, alpha, or dev. Each channel has its own ADE home. |
+| Client | A surface that attaches to the brain: desktop, `ade code`, ADE Mobile, or an SSH-bound desktop window. |
+| Project | A registered repo with one ADE database at `<project>/.ade/ade.db`. |
+| Lane | A task worktree under `.ade/worktrees/` that shares the project database. |
+| Catalog | The machine-level project list served by the brain to clients and ADE Mobile. |
+
+### Brain vs. manual runtime
+
+This table describes the current code behavior.
+
+| Capability | Brain | Manual runtime |
+| --- | --- | --- |
+| Lifecycle | Always-on login service for an ADE channel; Desktop can install/repair it in packaged builds. | Foreground process started explicitly with `ade runtime run --socket <path>`. |
+| Owner | Machine / ADE install. | User or developer who launched it. |
+| Sync | Yes. | No; `ade runtime run` forces sync off. |
+| Mobile websocket | Yes. | No. |
+| Phone pairing / PIN | Yes. | No. |
+| Mobile/machine catalog authority | Yes. | No; it may expose registry data to explicitly attached clients, but ADE Mobile ignores manual runtimes. |
+| Runs agents, PTYs, git, lanes, PR work | Yes. | Yes. |
+| Clients | Desktop, `ade code`, and ADE Mobile attach to it; SSH-bound desktop windows attach to the remote machine's ADE transport. | Only clients explicitly pointed at its endpoint attach to it. |
+| Survives client close | Yes, when service-owned. Desktop/TUI fallback spawns still exist for recovery and dev paths. | Only while that foreground process is still running. |
+
+### How to test changes from a lane
+
+| Change you made | What to run/test | Why |
+| --- | --- | --- |
+| iOS UI/client-only change | Build the iOS app from the lane and connect it to an existing ADE brain. | The phone is a client; UI-only work does not require a new brain. |
+| iOS sync protocol, project catalog, pairing, or remote-command change | Rebuild/restart the target brain from the lane, then build the iOS app from the same lane. | The phone and brain both need the new contract. |
+| Desktop renderer UI change | Run/build Desktop from the lane and let it attach to the channel brain. | Renderer code is client-side unless it depends on new brain APIs. |
+| Desktop main/preload/runtime-bridge change | Run/build Desktop from the lane; rebuild/restart the brain only if the runtime RPC contract or brain behavior changed. | Electron main is a client/bridge, but some handlers route through the brain. |
+| `ade code` / TUI UI change | Build/run `ade code` from the lane and attach to the existing brain. | The TUI is a client of the brain. |
+| TUI command that depends on new RPC or shared types | Rebuild/restart the brain from the lane, then run the lane's `ade code`. | Both sides of the RPC contract must match. |
+| Brain, sync, project catalog, pairing, agents, PTYs, lanes, PR workflows, or CLI runtime service change | Rebuild the ADE CLI/brain from the lane and restart the target brain before testing clients. | These live in the always-on process; existing installed brains keep running old code. |
+| Manual runtime behavior | Start `ade runtime run --socket <path>` from the lane and point a client at that endpoint. | Manual runtimes are standalone and sync is always off. |
+| Remote runtime / SSH transport change | Test with a remote target using the lane-built desktop/runtime artifacts. | SSH-bound windows talk to the remote ADE transport, not the local mobile brain. |
+| Docs or web-only change | Run the docs/web preview or static checks for that surface. | No ADE brain/client lifecycle is involved. |
 
 ## Develop
 
@@ -266,15 +311,75 @@ npm run dev:stop
 npm run dev:code             # tests TUI wrapper creating the dev runtime
 ```
 
-Local packaged builds:
+### Rebuild ADE Alpha or Beta locally
+
+Use these commands when you need a local packaged macOS channel build without
+waiting for the GitHub release workflow.
 
 ```bash
 npm run package:alpha        # current checkout -> ADE Alpha.app, ade-alpha, ~/.ade-alpha
 npm run package:beta         # origin/main -> ADE Beta.app, ade-beta, ~/.ade-beta
 ```
 
-These are unsigned local macOS app builds under `apps/desktop/release-alpha` and `apps/desktop/release-beta`. Beta fetches `origin/main`, fast-forwards the local `main` checkout when possible, and builds that checkout as `ADE Beta`. It does not create a packaging worktree. These builds do not replace the production `ADE.app`, production `ade`, or `~/.ade` runtime/state. Alpha and Beta also use separate Electron profile directories (`ade-desktop-alpha` / `ade-desktop-beta`) so their browser storage and window state do not collide with dev or stable.
-Local channel packages include this Mac's runtime binary. Release builds still require the full cross-platform runtime artifact set used by remote runtime bootstrap.
+`package:alpha` builds exactly the checkout you are in. `package:beta` is
+release-like: it fetches `origin/main`, fast-forwards the local `main` checkout
+when possible, and builds that checkout as `ADE Beta`. It does not create a
+packaging worktree.
+
+To smoke-test the Beta channel from a PR branch before it lands on `main`, pass
+the branch checkout explicitly:
+
+```bash
+node scripts/package-channel.mjs beta --repo "$PWD" --skip-install
+```
+
+Local channel outputs:
+
+```text
+apps/desktop/release-alpha/mac-arm64/ADE Alpha.app
+apps/desktop/release-alpha/ADE-Alpha-local.zip
+apps/desktop/release-beta/mac-arm64/ADE Beta.app
+apps/desktop/release-beta/ADE-Beta-local.zip
+```
+
+Install the build you want to test by replacing the matching app in
+`/Applications`:
+
+```bash
+rm -rf "/Applications/ADE Beta.app"
+ditto "apps/desktop/release-beta/mac-arm64/ADE Beta.app" "/Applications/ADE Beta.app"
+xattr -dr com.apple.quarantine "/Applications/ADE Beta.app" 2>/dev/null || true
+```
+
+Use `ADE Alpha.app` and `release-alpha` for Alpha. If the Dock already has an
+ADE Alpha/Beta icon, remove and re-pin it after installing from `/Applications`;
+Dock icons keep the exact bundle path they were pinned from, so an old icon can
+launch a stale `apps/desktop/release-*` build even after `/Applications` was
+updated.
+
+Launching a packaged channel build should install or repair that channel's
+always-on brain service:
+
+```bash
+launchctl print gui/$(id -u)/com.ade.runtime.beta
+ls -l ~/Library/LaunchAgents/com.ade.runtime.beta.plist ~/.ade-beta/sock/ade.sock
+```
+
+Set or rotate the channel's mobile pairing PIN from the Desktop Mobile control,
+or from the CLI against that channel home:
+
+```bash
+ADE_PACKAGE_CHANNEL=beta ADE_HOME="$HOME/.ade-beta" ade brain pin generate
+ADE_PACKAGE_CHANNEL=beta ADE_HOME="$HOME/.ade-beta" ade brain pin set 123456
+```
+
+For Alpha, use `com.ade.runtime.alpha` and `~/.ade-alpha`. These builds do not
+replace the production `ADE.app`, production `ade`, or `~/.ade` runtime/state.
+Alpha and Beta also use separate Electron profile directories
+(`ade-desktop-alpha` / `ade-desktop-beta`) so browser storage and window state
+do not collide with dev or stable. Local channel packages include this Mac's
+runtime binary. Release builds still require the full cross-platform runtime
+artifact set used by remote runtime bootstrap.
 
 Validate with `npm --prefix apps/desktop run typecheck` and `npm run test:desktop:sharded` for the full desktop suite. The desktop test suite is large, so run the smallest relevant subset first.
 

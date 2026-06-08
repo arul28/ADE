@@ -328,7 +328,6 @@ function buildChannel(repoRoot, channel, options) {
     ADE_CLI_VERSION: appVersion,
     ADE_DESKTOP_APP_NAME: config.productName,
     ADE_HOME: config.adeHome,
-    ADE_DISABLE_RUNTIME_SERVICE_INSTALL: "1",
     ADE_RUNTIME_RESOURCES_ALLOW_HOST_ONLY: "1",
   };
 
@@ -355,7 +354,6 @@ function buildChannel(repoRoot, channel, options) {
     `-c.mac.extendInfo.LSEnvironment.ADE_PACKAGE_CHANNEL=${channel}`,
     `-c.mac.extendInfo.LSEnvironment.ADE_DESKTOP_APP_NAME=${config.productName}`,
     `-c.mac.extendInfo.LSEnvironment.ADE_HOME=${config.adeHome}`,
-    "-c.mac.extendInfo.LSEnvironment.ADE_DISABLE_RUNTIME_SERVICE_INSTALL=1",
     `-c.mac.extendInfo.NSAppleEventsUsageDescription=${APPLE_EVENTS_USAGE_DESCRIPTION}`,
   ], { cwd: desktopRoot, env, dryRun: options.dryRun });
 

@@ -323,16 +323,33 @@ describe("TopBar", () => {
     }
   });
 
-  it("does not poll phone sync before a project is open", async () => {
-    useAppStore.setState({ project: null } as any);
+  it("shows phone sync before a project is open without immediate polling", async () => {
+    useAppStore.setState({ project: null, projectHydrated: true, showWelcome: true } as any);
 
     render(<TopBar />);
 
+    expect(screen.getByRole("button", { name: "Mobile, not connected" })).toBeTruthy();
+    expect(globalThis.window.ade.sync.getStatus).not.toHaveBeenCalled();
     await waitFor(() => {
       expect(globalThis.window.ade.project.listRecent).toHaveBeenCalled();
     });
-    expect(screen.queryByText("1 phone connected to ADE Desktop")).toBeNull();
-    expect(globalThis.window.ade.sync.getStatus).not.toHaveBeenCalled();
+  });
+
+  it("keeps the phone sync drawer open before a project is open", async () => {
+    useAppStore.setState({ project: null, projectHydrated: true, showWelcome: true } as any);
+
+    render(<TopBar />);
+
+    const mobileButton = screen.getByTitle("Connect a phone to this machine");
+    fireEvent.click(mobileButton);
+
+    await act(async () => {
+      await flushMicrotasks(2);
+    });
+
+    expect(screen.getByText("Connect to the ADE mobile app")).toBeTruthy();
+    expect(screen.getByTestId("sync-devices-section")).toBeTruthy();
+    expect(mobileButton.getAttribute("aria-expanded")).toBe("true");
   });
 
   it("does not render recent projects as tabs before a project is open", async () => {

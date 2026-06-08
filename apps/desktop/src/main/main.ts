@@ -1058,8 +1058,7 @@ app.whenReady().then(async () => {
     recentProjects: cleanedRecentProjects,
   });
   const shouldAttemptRuntimeServiceInstall =
-    machineStateMigration.didRun
-    && app.isPackaged
+    app.isPackaged
     && process.env.NODE_ENV !== "test"
     && process.env.ADE_DISABLE_RUNTIME_SERVICE_INSTALL !== "1";
   const shouldShowRuntimeMigrationNotice =
@@ -1186,7 +1185,13 @@ app.whenReady().then(async () => {
   const mobileSyncHandoffLeaseTimers = new Map<string, ReturnType<typeof setTimeout>>();
   const mobileSyncPreparationPromises = new Map<string, Promise<SyncProjectSwitchResultPayload>>();
   const localRuntimeLogger = createFileLogger(path.join(app.getPath("userData"), "local-runtime.jsonl"));
-  const localRuntimePool = new LocalRuntimeConnectionPool(app.getVersion(), localRuntimeLogger);
+  const shouldRepairRuntimeServiceOnFallback =
+    app.isPackaged
+    && process.env.NODE_ENV !== "test"
+    && process.env.ADE_DISABLE_RUNTIME_SERVICE_INSTALL !== "1";
+  const localRuntimePool = new LocalRuntimeConnectionPool(app.getVersion(), localRuntimeLogger, {
+    preferServiceRepair: shouldRepairRuntimeServiceOnFallback,
+  });
   if (shouldAttemptRuntimeServiceInstall) {
     void localRuntimePool.installServiceBestEffort()
       .then(() => {
@@ -1200,8 +1205,6 @@ app.whenReady().then(async () => {
           error: error instanceof Error ? error.message : String(error),
         });
       });
-  } else if (!machineStateMigration.didRun) {
-    localRuntimePool.noteServiceInstallSkipped("Background service migration already completed.");
   } else if (process.env.ADE_DISABLE_RUNTIME_SERVICE_INSTALL === "1") {
     localRuntimePool.noteServiceInstallSkipped("Background service installation is disabled by ADE_DISABLE_RUNTIME_SERVICE_INSTALL.");
     if (machineStateMigration.didRun && app.isPackaged && packagedChannel) {

@@ -52,7 +52,7 @@ export function DownloadPage() {
         title: "macOS",
         icon: <Apple className="h-5 w-5" />,
         note: "Current beta release target: DMG and ZIP from GitHub Releases.",
-        hint: "ADE for computers bundles the app, ade CLI, ade code, and the background brain.",
+        hint: "ADE for computers bundles the app, ade CLI, ade code, and the background ADE brain.",
         actionHref: LINKS.releases,
         actionLabel: "Download from releases"
       },
@@ -104,7 +104,7 @@ export function DownloadPage() {
         <Reveal delay={0.1}>
           <p className="mt-5 max-w-2xl text-pretty text-base leading-relaxed text-muted-fg sm:text-lg">
             Get ADE for your computer from GitHub Releases, or build from source. The computer install includes the app,
-            ade CLI, ade code, and the background brain. ADE runs in Guest Mode without accounts, and can optionally
+            ade CLI, ade code, and the background ADE brain. ADE runs in Guest Mode without accounts, and can optionally
             enable hosted or BYOK LLM providers.
           </p>
         </Reveal>

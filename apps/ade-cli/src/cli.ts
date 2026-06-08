@@ -260,6 +260,10 @@ function isSourceCheckoutCliEntryPath(modulePath: string): boolean {
   );
 }
 
+function isPackagedElectronCliRuntime(): boolean {
+  return Boolean(process.versions.electron) && !isSourceCheckoutCliEntryPath(CLI_ENTRY_PATH);
+}
+
 function automationsCliEnabled(): boolean {
   const override = readAutomationsEnvOverride(process.env);
   if (override !== null) return override;
@@ -422,9 +426,9 @@ const ADE_BANNER = String.raw`
 const TOP_LEVEL_HELP = `${ADE_BANNER}
   Agent-focused command-line interface for ADE.
 
-  ADE CLI commands operate through the machine ADE runtime by default.
-  If the runtime is not running, the CLI starts it, registers the selected
-  project, and routes project actions through that runtime.
+  ADE CLI commands operate through the machine ADE brain by default.
+  The brain is the always-on ADE process for this machine: it owns the project
+  catalog, sync endpoint, and execution authority for the channel.
 
     $ ade help <command...>                         Display help for a command
     $ ade auth status                               Check local ADE CLI readiness
@@ -435,13 +439,13 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
                                                      Build a shareable deeplink (copies to clipboard)
     $ ade linear install                            Register ADE as Linear's "Open in coding tool" target
     $ ade skill list | show <name>                  Browse ADE's bundled agent skills (local)
-    $ ade runtime start | stop | status             Manage the machine runtime
-    $ ade serve                                     Run the ADE runtime in foreground
+    $ ade brain start | stop | status               Manage the background ADE brain
+    $ ade runtime run --socket <path>               Run a manual runtime for dev/test work
     $ ade rpc --stdio                               Speak ADE JSON-RPC over stdin/stdout
-    $ ade init [path]                               Register a project with this machine runtime
+    $ ade init [path]                               Register a project with this machine brain
     $ ade projects list                             List projects registered on this machine
     $ ade sync status | pin generate                Manage machine sync and phone pairing
-    $ ade doctor                                    Inspect project, runtime, and tool availability
+    $ ade doctor                                    Inspect project, brain, runtime, and tool availability
     $ ade lanes list | show | create | child        Work with lanes and lane stacks
     $ ade git status | commit | push | stash        Run ADE-aware git operations
     $ ade operations status | wait                  Poll operation/test/chat/run status
@@ -476,7 +480,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
   Global options:
     --project-root <path>   ADE project root. Inside .ade/worktrees/<lane>, this resolves to the parent project.
     --workspace-root <path> Lane/worktree to treat as the active workspace.
-    --headless              Skip the machine runtime service and run an in-process ADE runtime.
+    --headless              Skip the machine brain and run an in-process ADE runtime.
     --socket                Require a live ADE endpoint; fail instead of falling back to headless.
     --json                  Print machine-readable JSON. This is the default output mode.
     --text                  Print a compact human-readable summary when a formatter exists.
@@ -922,7 +926,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
   ADE Desktop
 
   Launch the installed ADE desktop app. The desktop app attaches to the normal
-  machine runtime and starts it if needed.
+  machine brain and starts it if needed.
 
     $ ade desktop
     $ ade desktop open
@@ -971,7 +975,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
   ADE Skills
 
   Browse ADE's bundled, version-locked agent skills directly from the bundled
-  resources. This is a local command that does NOT require the machine runtime —
+  resources. This is a local command that does NOT require the machine brain —
   it is the tamper-proof backstop for agents that can't natively discover
   ADE's skills.
 
@@ -985,32 +989,38 @@ const HELP_BY_COMMAND: Record<string, string> = {
     --json          Structured JSON output (default).
 `,
   runtime: `${ADE_BANNER}
-  ADE Runtime
+  ADE Runtime Compatibility
 
-  Manage the normal machine ADE runtime used by desktop, ade code, and
-  runtime-backed CLI commands.
+  Run an explicit manual runtime, or use compatibility endpoint commands for
+  older scripts. Prefer "ade brain" for the automated always-on service.
 
+    $ ade runtime run --socket /tmp/ade-dev.sock
     $ ade runtime status --text
     $ ade runtime start
     $ ade runtime stop
 
   Notes:
-    "start" launches the runtime in the background if it is missing.
-    "stop" shuts down the runtime on the selected endpoint.
-    Use "ade serve" when you want to run the runtime in the foreground.
+    "run" starts a foreground manual runtime on the selected endpoint.
+    Manual runtimes always run with sync off so they cannot claim brain
+    authority.
+    "start" and "stop" are compatibility endpoint commands; use "ade brain"
+    for service-managed lifecycle commands.
 `,
   brain: `${ADE_BANNER}
-  ADE Runtime Legacy Alias
+  ADE Brain
 
-  Legacy alias kept for existing scripts. Prefer "ade runtime" for lifecycle
-  commands and "ade sync pin" for phone pairing.
+  Manage the always-on, machine-owned ADE brain for this channel. The brain is
+  the background ADE process that carries the local RPC endpoint, sync
+  websocket, project catalog, and executor authority. Clients attach to it.
 
-    $ ade runtime status --text
-    $ ade runtime start
-    $ ade runtime stop
-    $ ade sync pin generate
-    $ ade sync pin set 123456
-    $ ade sync pin clear
+    $ ade brain status --text
+    $ ade brain show --text
+    $ ade brain start
+    $ ade brain stop
+    $ ade brain restart
+    $ ade brain pin generate
+    $ ade brain pin set 123456
+    $ ade brain pin clear
 
   Notes:
     "start" enables and loads the login service.
@@ -1018,19 +1028,15 @@ const HELP_BY_COMMAND: Record<string, string> = {
     Pairing PIN commands are aliases for the machine sync PIN.
 `,
   serve: `${ADE_BANNER}
-  ADE Runtime
+  ADE Internal Brain Process
 
-  Runs the machine-scoped ADE runtime in the foreground. The runtime listens on
-  the local endpoint and can lazily serve any project registered with "ade init".
-
-    $ ade serve
-    $ ade serve --socket ~/.ade/sock/ade.sock
-    $ ade serve --port 8787
+  Internal/debug command that runs the brain process in the foreground. Most
+  users should use "ade brain start", "ade brain stop", and "ade brain status".
 
   Flags:
-    --socket <path>         Local endpoint to listen on.
+    --socket <path>         Local RPC endpoint to listen on.
     --port <n>              Also listen for local TCP JSON-RPC on 127.0.0.1:n.
-    --no-sync               Disable machine sync discovery for this runtime run.
+    --no-sync               Disable machine sync discovery for this foreground brain process.
     --install-service       Register the per-user login service and exit.
     --uninstall-service     Remove the per-user login service and exit.
     --service-status        Print per-user login service status and exit.
@@ -1038,8 +1044,8 @@ const HELP_BY_COMMAND: Record<string, string> = {
   rpc: `${ADE_BANNER}
   ADE JSON-RPC
 
-  Attaches to the machine ADE runtime and speaks ADE JSON-RPC over stdio.
-  If the runtime is not running, ADE starts it before accepting requests. This
+  Attaches to the machine ADE brain and speaks ADE JSON-RPC over stdio.
+  If the brain is not running, ADE starts it before accepting requests. This
   mode is used by SSH transports.
 
     $ ade rpc --stdio
@@ -1047,7 +1053,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
   init: `${ADE_BANNER}
   ADE Project Init
 
-  Registers a project with this machine runtime and creates its .ade directory
+  Registers a project with this machine brain and creates its .ade directory
   if needed.
 
     $ ade init
@@ -1228,7 +1234,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
   Run tab
 
   Run tab commands mirror ADE process definitions and runtime state. They use
-  the machine ADE runtime when live process state is needed.
+  the machine ADE brain when live process state is needed.
 
     $ ade run defs --text                           List configured run commands
     $ ade run ps --lane <lane> --text               List process runtime state
@@ -10410,7 +10416,10 @@ function hasHelpFlag(args: string[]): boolean {
   return false;
 }
 
-function buildCliPlan(command: string[]): CliPlan {
+function buildCliPlan(
+  command: string[],
+  options: Pick<GlobalOptions, "socketPath"> = { socketPath: null },
+): CliPlan {
   const args = [...command];
   if (args[0] === "--version" || args[0] === "-v") {
     return { kind: "help", text: `ade ${VERSION}\n` };
@@ -10531,6 +10540,22 @@ function buildCliPlan(command: string[]): CliPlan {
     }
   }
   if (primary === "runtime") {
+    const runtimeArgs = [...args];
+    const sub = firstStandalonePositional(runtimeArgs) ?? "status";
+    if (sub === "run" || sub === "foreground") {
+      const socketPath = readValue([...runtimeArgs], ["--socket"]) ?? options.socketPath;
+      if (!socketPath) {
+        throw new CliUsageError("ade runtime run requires --socket <path>.");
+      }
+      if (!readValue([...runtimeArgs], ["--socket"])) {
+        runtimeArgs.push("--socket", socketPath);
+      }
+      const syncDisabled = readFlag([...runtimeArgs], ["--no-sync"]);
+      if (!syncDisabled) {
+        runtimeArgs.push("--no-sync");
+      }
+      return { kind: "serve", rest: runtimeArgs };
+    }
     return { kind: "runtime", rest: args };
   }
   if (primary === "brain") {
@@ -10800,14 +10825,12 @@ function buildAdeCodeArgs(rest: string[], options: GlobalOptions): string[] {
           "--require-socket",
         ]
       : []),
+    ...(isPackagedElectronCliRuntime() ? ["--prefer-service-repair"] : []),
     ...rest,
   ];
 }
 
-async function runAdeCode(
-  rest: string[],
-  options: GlobalOptions,
-): Promise<{ output: string; exitCode: number }> {
+function resolveAdeCodeModulePath(): string {
   const sourceModule = path.join(
     CLI_PACKAGE_ROOT,
     "src",
@@ -10817,7 +10840,32 @@ async function runAdeCode(
   const builtModule = CLI_ENTRY_PATH
     ? path.join(path.dirname(CLI_ENTRY_PATH), "tuiClient", "cli.mjs")
     : path.join(CLI_PACKAGE_ROOT, "dist", "tuiClient", "cli.mjs");
-  const modulePath = fs.existsSync(builtModule) ? builtModule : sourceModule;
+  const runtimeRoot =
+    process.env.ADE_RUNTIME_ROOT?.trim() ||
+    process.env.ADE_RESOLVED_RUNTIME_ROOT?.trim() ||
+    null;
+  const runtimeModule = runtimeRoot
+    ? path.join(runtimeRoot, "tuiClient", "cli.mjs")
+    : null;
+  const candidates = [
+    runtimeModule,
+    builtModule,
+    isSourceCliEntryPath(CLI_ENTRY_PATH) ? sourceModule : null,
+  ].filter((candidate): candidate is string => Boolean(candidate));
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  throw new Error(
+    "ADE Code TUI module is missing. Run `npm --prefix apps/ade-cli run build` " +
+      "or reinstall ADE so the packaged runtime includes tuiClient/cli.mjs.",
+  );
+}
+
+async function runAdeCode(
+  rest: string[],
+  options: GlobalOptions,
+): Promise<{ output: string; exitCode: number }> {
+  const modulePath = resolveAdeCodeModulePath();
   const { runAdeCodeCli } = await import(pathToFileURL(modulePath).href);
   const exitCode = await runAdeCodeCli(buildAdeCodeArgs(rest, options));
   return { output: "", exitCode };
@@ -12480,6 +12528,61 @@ function isRuntimeShutdownCloseError(error: unknown): boolean {
   return message.includes("socket closed") || message.includes("runtime endpoint closed");
 }
 
+function shouldRepairMachineRuntimeServiceBeforeSpawn(
+  socketPath: string,
+  socketPathOverride?: string | null,
+): boolean {
+  return !socketPathOverride?.trim()
+    && process.env.ADE_DISABLE_RUNTIME_SERVICE_INSTALL !== "1"
+    && isPackagedElectronCliRuntime()
+    && !socketPath.startsWith("tcp://")
+    && !isAdeRuntimeNamedPipePath(socketPath)
+    && !isEphemeralRuntimeSocketPath(socketPath);
+}
+
+async function repairMachineRuntimeServiceConnection(args: {
+  socketPath: string;
+  options: GlobalOptions;
+  expectedBuildHash: string | null;
+  enforceBuildCompatibility: boolean;
+}): Promise<SocketJsonRpcClient | null> {
+  let client: SocketJsonRpcClient | null = null;
+  try {
+    const { installRuntimeService, uninstallRuntimeService } = await import("./serviceManager");
+    const result = installRuntimeService();
+    if (!result.ok) return null;
+    client = await SocketJsonRpcClient.connect(
+      args.socketPath,
+      args.options.timeoutMs,
+      "ADE runtime endpoint",
+    );
+    const runtimeInfo = await initializeMachineRuntimeDaemon(
+      client,
+      args.options,
+    );
+    const mismatch = machineRuntimeMismatchReason(
+      runtimeInfo,
+      args.expectedBuildHash,
+      args.options.role,
+      { enforceBuildCompatibility: args.enforceBuildCompatibility },
+    );
+    if (mismatch) {
+      uninstallRuntimeService();
+      client.close();
+      return null;
+    }
+    const repaired = client;
+    client = null;
+    return repaired;
+  } catch {
+    return null;
+  } finally {
+    try {
+      client?.close();
+    } catch {}
+  }
+}
+
 async function spawnMachineRuntimeDaemon(
   socketPath: string,
   options: GlobalOptions,
@@ -12535,6 +12638,19 @@ async function connectMachineRuntimeDaemon(
   const expectedBuildHash = isTcpSocket || !enforceBuildCompatibility
     ? null
     : await resolveExpectedMachineRuntimeBuildHash();
+  const preferServiceRepair = shouldRepairMachineRuntimeServiceBeforeSpawn(
+    socketPath,
+    socketPathOverride,
+  );
+  const repairServiceConnection = async (): Promise<SocketJsonRpcClient | null> => {
+    if (!preferServiceRepair) return null;
+    return repairMachineRuntimeServiceConnection({
+      socketPath,
+      options,
+      expectedBuildHash,
+      enforceBuildCompatibility,
+    });
+  };
   try {
     const client = await SocketJsonRpcClient.connect(
       socketPath,
@@ -12559,6 +12675,8 @@ async function connectMachineRuntimeDaemon(
         );
       }
       await shutdownMachineRuntimeDaemon(client);
+      const repaired = await repairServiceConnection();
+      if (repaired) return repaired;
       const spawned = await spawnMachineRuntimeDaemon(socketPath, options);
       if (!spawned) {
         throw new Error(
@@ -12591,6 +12709,8 @@ async function connectMachineRuntimeDaemon(
     return client;
   } catch (firstError) {
     if (!allowSpawn) throw firstError;
+    const repaired = await repairServiceConnection();
+    if (repaired) return repaired;
     const spawned = await spawnMachineRuntimeDaemon(socketPath, options);
     if (!spawned) throw firstError;
     try {
@@ -12661,7 +12781,7 @@ async function runRuntimeCommand(
           packageChannel: runtimeInfo.packageChannel,
           projectRoot: runtimeInfo.projectRoot,
           pid: runtimeInfo.pid,
-          message: "ADE runtime is running.",
+          message: "ADE runtime endpoint is running.",
         };
       } finally {
         client.close();
@@ -12695,7 +12815,7 @@ async function runRuntimeCommand(
         packageChannel: runtimeInfo?.packageChannel ?? null,
         projectRoot: runtimeInfo?.projectRoot ?? null,
         pid: runtimeInfo?.pid ?? null,
-        message: "ADE runtime is running.",
+        message: "ADE runtime endpoint is running.",
       };
     } finally {
       client.close();
@@ -12719,7 +12839,7 @@ async function runRuntimeCommand(
         ok: true,
         running: false,
         socketPath,
-        message: "ADE runtime stopped.",
+        message: "ADE runtime endpoint stopped.",
       };
     } catch (error) {
       return {
@@ -12745,7 +12865,7 @@ async function runRuntimeCommand(
   }
 
   throw new CliUsageError(
-    "runtime supports status, start, stop, install-service, uninstall-service, or service-status.",
+    "runtime supports status, start, stop, install-service, uninstall-service, or service-status. Prefer ade brain for the service-managed lifecycle.",
   );
 }
 
@@ -12824,13 +12944,13 @@ async function runBrainCommand(
       stopped,
       started,
       message: started.ok
-        ? "ADE runtime restarted."
+        ? "ADE brain restarted."
         : started.message,
     };
   }
 
   throw new CliUsageError(
-    "Legacy runtime alias supports status, start, stop, restart, or pin. Prefer ade runtime.",
+    "brain supports status, show, start, stop, restart, or pin.",
   );
 }
 
@@ -12961,7 +13081,7 @@ async function runServe(
     const { getRuntimeServiceStatus } = await import("./serviceManager");
     return getRuntimeServiceStatus();
   }
-  const removeRuntimeProcessErrorBoundary = installRuntimeProcessErrorBoundary("ade serve");
+  const removeRuntimeProcessErrorBoundary = installRuntimeProcessErrorBoundary("ADE brain");
   const [
     { resolveMachineAdeLayout },
     { ProjectRegistry },
@@ -12994,7 +13114,7 @@ async function runServe(
       ).projectId;
     } catch (error) {
       process.stderr.write(
-        `ade serve could not register ADE_PROJECT_ROOT for phone sync: ${
+        `ADE brain could not register ADE_PROJECT_ROOT for phone sync: ${
           error instanceof Error ? error.message : String(error)
         }\n`,
       );
@@ -13232,13 +13352,13 @@ async function runServe(
       : scopeRegistry.resolveActiveSyncHost();
     void syncHostStartup.catch((error: unknown) => {
       process.stderr.write(
-        `ade serve sync host failed: ${error instanceof Error ? error.message : String(error)}\n`,
+        `ADE brain sync host failed: ${error instanceof Error ? error.message : String(error)}\n`,
       );
     });
   }
 
   process.stderr.write(
-    `ade serve listening on ${socketPath}${tcpUrl ? ` and ${tcpUrl}` : ""}\n`,
+    `ADE brain listening on ${socketPath}${tcpUrl ? ` and ${tcpUrl}` : ""}\n`,
   );
 
   const stopParentMonitor = monitorRuntimeParentProcess(finish);
@@ -15546,7 +15666,7 @@ async function runCli(
   argv: string[],
 ): Promise<{ output: string; exitCode: number }> {
   const parsed = parseCliArgs(argv);
-  const plan = buildCliPlan(parsed.command);
+  const plan = buildCliPlan(parsed.command, parsed.options);
   if (plan.kind === "help")
     return {
       output: plan.text.endsWith("\n") ? plan.text : `${plan.text}\n`,
@@ -15792,6 +15912,7 @@ export {
   parseCliArgs,
   readRuntimeIdleExitMs,
   renderLaneGraph,
+  resolveAdeCodeModulePath,
   resolveRoots,
   runCli,
   summarizeExecution,

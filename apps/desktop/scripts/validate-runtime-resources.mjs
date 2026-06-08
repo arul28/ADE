@@ -1,11 +1,14 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const desktopRoot = path.resolve(scriptDir, "..");
 const runtimeRoot = path.join(desktopRoot, "resources", "runtime");
 const allTargets = ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64"];
+const execFileAsync = promisify(execFile);
 
 function currentTarget() {
   const platform = process.platform === "darwin" ? "darwin" : process.platform === "linux" ? "linux" : process.platform;
@@ -44,13 +47,22 @@ async function validateExecutable(filePath, label) {
   }
 }
 
+async function validateNativeArchive(filePath, target) {
+  await statFile(filePath, `remote ADE service native dependency archive ${target}`);
+  const { stdout } = await execFileAsync("tar", ["-tzf", filePath]);
+  const entries = stdout.split(/\r?\n/);
+  if (!entries.some((entry) => entry.startsWith("./node_modules/"))) {
+    fail(`Remote runtime native archive for ${target} does not contain ./node_modules/: ${filePath}`);
+  }
+  if (!entries.includes("./tuiClient/cli.mjs")) {
+    fail(`Remote runtime native archive for ${target} does not contain ./tuiClient/cli.mjs: ${filePath}`);
+  }
+}
+
 async function main() {
   for (const target of targets) {
     await validateExecutable(path.join(runtimeRoot, `ade-${target}`), `remote ADE service binary ${target}`);
-    await statFile(
-      path.join(runtimeRoot, `ade-${target}.native.tar.gz`),
-      `remote ADE service native dependency archive ${target}`,
-    );
+    await validateNativeArchive(path.join(runtimeRoot, `ade-${target}.native.tar.gz`), target);
   }
 
   const mode = process.env.ADE_RUNTIME_RESOURCES_ALLOW_HOST_ONLY === "1" ? "host-only local" : "full";

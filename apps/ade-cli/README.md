@@ -1,16 +1,17 @@
 # ADE CLI
 
-`apps/ade-cli` owns the `ade` command, the per-machine ADE runtime, and the terminal `ade code` client. The machine runtime is the source of truth for lanes, agent chats, work sessions, PR state, process state, sync, and proof artifacts on a machine. Desktop ADE, `ade code`, the iOS app, and SSH-attached desktops all attach to it.
+`apps/ade-cli` owns the `ade` command, the ADE brain, manual runtime entry points, and the terminal `ade code` client. The **brain** is the always-on, machine-owned ADE process for one channel; it is the source of truth for lanes, agent chats, work sessions, PR state, process state, sync, proof artifacts, and the project catalog on a machine. Desktop ADE, `ade code`, the iOS app, and SSH-attached desktops all attach to it. A **manual runtime** is an explicit foreground execution process you start for dev/test work instead of using the automated brain service.
 
 ## Modes
 
 The `ade` binary has three operating modes:
 
-- **Attached runtime** — the ADE runtime (`ade serve`) listens on `~/.ade/sock/ade.sock` (POSIX) or `\\.\pipe\ade-runtime` (Windows). All other CLI commands and clients open that local endpoint and speak ADE JSON-RPC.
-- **Headless** (`--headless` or `ade code --embedded`) — the CLI builds an in-process `AdeRuntime` for one project and answers the same JSON-RPC surface directly. Used for one-shot commands and as a fallback when no machine-runtime endpoint is available.
-- **`ade rpc --stdio`** — attaches to the local machine runtime and bridges its JSON-RPC over stdio. This is the transport the desktop's remote runtime feature spawns over SSH.
+- **Attached brain** — the ADE brain listens on `$ADE_HOME/sock/ade.sock` (POSIX) or `\\.\pipe\ade-runtime` (Windows). All other CLI commands and clients open that local endpoint and speak ADE JSON-RPC.
+- **Manual runtime** (`ade runtime run`) — a foreground execution process on an explicit endpoint. Sync is always off; use this for dev/test work when you do not want to use the automated stable/beta/alpha brain service.
+- **Headless** (`--headless` or `ade code --embedded`) — the CLI builds an in-process `AdeRuntime` for one project and answers the same JSON-RPC surface directly. Used for one-shot commands and as a fallback when no machine brain is available.
+- **`ade rpc --stdio`** — attaches to the local machine brain and bridges its JSON-RPC over stdio. This is the transport the desktop's remote runtime feature spawns over SSH.
 
-Default routing for typed commands: prefer the machine-runtime endpoint if reachable; auto-spawn `ade serve` in the background if the endpoint does not exist; fall back to headless for commands that don't need shared live state. Add `--socket` to require the endpoint, or `--headless` to force in-process execution.
+Default routing for typed commands: prefer the machine brain endpoint if reachable; auto-start the brain when the endpoint does not exist; fall back to headless for commands that don't need shared live state. Add `--socket` to require a specific endpoint, or `--headless` to force in-process execution.
 
 ## Machine layout
 
@@ -18,10 +19,10 @@ Default routing for typed commands: prefer the machine-runtime endpoint if reach
 
 | Path | Purpose |
 | --- | --- |
-| `~/.ade/` | Per-machine ADE state root. |
-| `~/.ade/sock/ade.sock` | ADE runtime local endpoint (POSIX). |
+| `~/.ade/` | Per-machine ADE state root for the stable channel. |
+| `$ADE_HOME/sock/ade.sock` | ADE brain local endpoint (POSIX). |
 | `\\.\pipe\ade-runtime` | ADE runtime named-pipe endpoint (Windows). |
-| `~/.ade/projects.json` | Project registry. |
+| `$ADE_HOME/projects.json` | Project catalog. |
 | `~/.ade/secrets/` | Machine credential store (`credentials.safe.enc` for desktop safeStorage, `credentials.json.enc` plus `.machine-key` for headless fallback storage, and per-store `*.lock` files). |
 | `~/.ade/bin/ade` | Bundled static runtime binary (release installs / remote uploads). |
 | `~/.ade/runtime/<platform-arch>/` | Native node modules for that runtime binary. |
@@ -84,7 +85,7 @@ Three ways to put `ade` on a machine:
 
 ## Service manager
 
-The ADE runtime runs as a per-user login service. The implementations live in `src/serviceManager/`.
+The ADE brain runs as a per-user login service. The implementations live in `src/serviceManager/`.
 
 | Platform | Backend | Service path |
 | --- | --- | --- |
@@ -97,52 +98,52 @@ The default service label is `com.ade.runtime`; channel builds override it via `
 Manage the service from the CLI:
 
 ```bash
-ade serve --install-service       # write the plist/unit/task and start it
-ade serve --uninstall-service     # stop and remove it
-ade serve --service-status        # JSON: { ok, installed, running, path, message }
+ade brain start                   # enable/load the login service
+ade brain stop                    # disable/unload the login service
+ade brain status --text           # endpoint state, service state, sync state
+ade brain restart                 # re-exec after an app update
 
-# Runtime wrappers (same backend):
+# Compatibility wrappers (same backend):
 ade runtime install-service
 ade runtime uninstall-service
 ade runtime service-status --text
 ade runtime status --text
 
 # Phone pairing:
-ade sync pin generate
-ade sync pin set --pin 123456
-ade sync pin clear
+ade brain pin generate
+ade brain pin set 123456
+ade brain pin clear
 ```
 
-`resolveAdeServeCommand()` builds the service command from the current `ade` binary path so the installed service launches the same ADE channel that ran the install. After a packaged app update, ADE refreshes this service so the runtime re-execs the updated bundled CLI instead of leaving clients attached to an older build hash.
+The service manager builds the launch command from the current `ade` binary path so the installed service launches the same ADE channel that ran the install. After a packaged app update, ADE refreshes this service so the brain re-execs the updated bundled CLI instead of leaving clients attached to an older build hash.
 
-## Foreground runtime
+## Internal process command
 
-`ade serve` runs the ADE runtime in the foreground. Use it for development or when the system service is disabled.
+To make your own runtime, run `ade runtime run` on an explicit endpoint. Sync is always off so the manual runtime cannot claim brain authority; use a separate `ADE_HOME` when you also want full machine-state isolation.
 
 ```bash
-ade serve
-ade serve --socket ~/.ade/sock/ade.sock
-ade serve --port 8787              # also accept JSON-RPC on 127.0.0.1:8787
-ade serve --no-sync                # disable the phone sync service for this run
+ADE_HOME=/tmp/ade-dev-runtime ade runtime run --socket /tmp/ade-dev-runtime.sock
+ade --socket /tmp/ade-dev-runtime.sock projects list --text
+ade code --socket /tmp/ade-dev-runtime.sock
 ```
 
-## Runtime lifecycle
+## Brain lifecycle
 
-Prefer `ade serve --install-service`, `ade serve --uninstall-service`, and `ade serve --service-status` for runtime lifecycle automation. Use `ade runtime status --text` for a compact endpoint and sync health check, and `ade sync pin ...` for phone pairing:
+Prefer `ade brain start`, `ade brain stop`, `ade brain status`, and `ade brain restart` for user-facing lifecycle control. Use `ade brain pin ...` for phone pairing:
 
 ```bash
-ade runtime status --text          # endpoint state, service state, sync state
-ade serve --install-service        # refresh the login service after an update
-ade sync pin generate              # generate a phone pairing PIN
-ade sync pin set --pin 123456
-ade sync pin clear
+ade brain status --text            # endpoint state, service state, sync state
+ade brain restart                  # refresh the login service after an update
+ade brain pin generate             # generate a phone pairing PIN
+ade brain pin set 123456
+ade brain pin clear
 ```
 
-Older command aliases remain available for scripts, but docs and examples use the runtime/sync vocabulary.
+Older `ade runtime ...` and `ade sync pin ...` command aliases remain available for scripts, but docs and examples use the brain vocabulary.
 
 ## Project registry
 
-The ADE runtime owns a per-machine project registry at `~/.ade/projects.json` (`ProjectRegistry` in `src/services/projects/projectRegistry.ts`). A project record carries a stable `projectId` (`project_<sha256(rootPath)[..24]>`), root path, display name, `addedAt`, `lastOpenedAt`, and the resolved git origin URL.
+The ADE brain owns a per-machine project catalog at `$ADE_HOME/projects.json` (`ProjectRegistry` in `src/services/projects/projectRegistry.ts`). A project record carries a stable `projectId` (`project_<sha256(rootPath)[..24]>`), root path, display name, `addedAt`, `lastOpenedAt`, and the resolved git origin URL.
 
 Manage the registry through typed CLI commands:
 
@@ -205,7 +206,7 @@ The `sync.connectToBrain`, `sync.disconnectFromBrain`, and `sync.transferBrainTo
 `ade code` launches the terminal-native ADE Work chat (Ink + React, in `src/tuiClient/`). Default behavior:
 
 ```bash
-ade code                           # attach to the machine runtime, auto-spawn it if missing
+ade code                           # attach to the machine brain, auto-spawn it if missing
 ade code --embedded                # force the in-process embedded runtime
 ade code --print-state             # smoke-test the connection and exit
 ade --socket /path/to/ade.sock code   # attach to a specific local endpoint
@@ -218,19 +219,20 @@ See `docs/features/ade-code/README.md` for the full attach/embedded handshake, s
 
 ## `ade rpc --stdio`
 
-`ade rpc --stdio` attaches to the local machine runtime (auto-spawning it if needed) and bridges its JSON-RPC over stdio. The remote-runtime path on the desktop runs `ade rpc --stdio` over an SSH `exec` channel; see `docs/features/remote-runtime/internal-architecture.md` for the protocol shape and bootstrap sequence.
+`ade rpc --stdio` attaches to the local machine brain (auto-spawning it if needed) and bridges its JSON-RPC over stdio. The remote-runtime path on the desktop runs `ade rpc --stdio` over an SSH `exec` channel; see `docs/features/remote-runtime/internal-architecture.md` for the protocol shape and bootstrap sequence.
 
 ## `ade desktop`
 
-`ade desktop` opens the installed ADE app from the terminal. On macOS it runs `open -a "ADE"` (or `ADE Beta` / `ADE Alpha` based on `ADE_PACKAGE_CHANNEL` / `ADE_DESKTOP_APP_NAME`). The desktop attaches to the same machine runtime; if the runtime is not running, the desktop spawns and waits for it via `LocalRuntimeConnectionPool`.
+`ade desktop` opens the installed ADE app from the terminal. On macOS it runs `open -a "ADE"` (or `ADE Beta` / `ADE Alpha` based on `ADE_PACKAGE_CHANNEL` / `ADE_DESKTOP_APP_NAME`). The desktop attaches to the same machine brain; if the brain is not running, the desktop spawns and waits for it via `LocalRuntimeConnectionPool`.
 
 ## CLI surface (selected)
 
 ```bash
 ade desktop
-ade serve --service-status
-ade serve --install-service
-ade serve --uninstall-service
+ade brain status --text
+ade brain start
+ade brain stop
+ade brain restart
 ade auth status
 ade doctor --json
 ade projects list --text
@@ -328,7 +330,7 @@ Use typed commands first. They validate common arguments and provide stable JSON
 
 Output modes are explicit: `--text` for human-readable summaries, `--json` (default for piped output) for stable JSON, and `--pretty` for pretty-printed JSON.
 
-`--socket` requires the ADE runtime endpoint and fails fast when it is missing. Without `--socket`, the CLI auto-attaches when reachable and falls back to headless for commands that can run that way.
+`--socket` requires a specific ADE local endpoint and fails fast when it is missing. Without `--socket`, the CLI auto-attaches to the brain when reachable and falls back to headless for commands that can run that way.
 
 ## `ade auth` and `ade doctor`
 

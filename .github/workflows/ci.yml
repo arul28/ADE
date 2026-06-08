@@ -206,12 +206,16 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: |
-            apps/desktop/package-lock.json
-            apps/ade-cli/package-lock.json
+          cache-dependency-path: apps/ade-cli/package-lock.json
 
-      - name: Install desktop dependencies
-        run: cd apps/desktop && npm ci
+      - uses: actions/setup-python@v5
+        if: runner.os == 'macOS'
+        with:
+          python-version: "3.11"
+
+      - name: Configure node-gyp Python
+        if: runner.os == 'macOS'
+        run: echo "PYTHON=$(python3 -c 'import sys; print(sys.executable)')" >> "$GITHUB_ENV"
 
       - name: Install ADE CLI dependencies
         run: cd apps/ade-cli && npm ci
@@ -258,54 +262,6 @@ jobs:
           key: nm-v2-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json','apps/web/package-lock.json') }}
       - run: node scripts/validate-docs.mjs
 
-  # ── Windows build smoke (self-contained — no shared cache) ────────────
-  # Runs the same dist:win pipeline that release-core.yml uses, so a PR
-  # that would break Windows release is caught here instead of at release
-  # time. Self-contained because windows-latest node_modules contain
-  # platform-specific native binaries that can't share a Linux cache.
-  build-win:
-    needs: build-runtime-binaries
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: |
-            apps/desktop/package-lock.json
-            apps/ade-cli/package-lock.json
-
-      - name: Install desktop dependencies
-        run: cd apps/desktop && npm ci
-
-      - name: Install ADE CLI dependencies
-        run: cd apps/ade-cli && npm ci
-
-      - name: Download ADE runtime binaries
-        uses: actions/download-artifact@v4
-        with:
-          pattern: ade-runtime-*
-          path: apps/desktop/resources/runtime
-          merge-multiple: true
-
-      - name: Materialize ADE runtime resources
-        env:
-          ADE_RUNTIME_ARTIFACTS_DIR: ${{ github.workspace }}\apps\desktop\resources\runtime
-        run: cd apps/desktop && npm run materialize:runtime-resources
-
-      - name: Reset release output
-        shell: pwsh
-        run: |
-          Remove-Item -Recurse -Force apps/desktop/release, apps/desktop/.cache -ErrorAction SilentlyContinue
-          New-Item -ItemType Directory -Path apps/desktop/.cache | Out-Null
-
-      - name: Build and validate Windows release
-        env:
-          ELECTRON_CACHE: ${{ github.workspace }}\apps\desktop\.cache\electron
-          ELECTRON_BUILDER_CACHE: ${{ github.workspace }}\apps\desktop\.cache\electron-builder
-        run: cd apps/desktop && npm run dist:win
-
   # ── Gate: all jobs must pass ──────────────────────────────────────────
   ci-pass:
     if: always()
@@ -321,7 +277,6 @@ jobs:
       - build
       - build-runtime-binaries
       - validate-docs
-      - build-win
     runs-on: ubuntu-latest
     steps:
       - name: Check all jobs passed

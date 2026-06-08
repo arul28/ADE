@@ -197,6 +197,9 @@ async function assertRemoteRuntimeBundle(resourcesPath, description) {
     if (!stdout.split(/\r?\n/).some((entry) => entry.startsWith("./node_modules/"))) {
       throw new Error(`[release:mac] Remote runtime native archive for ${target} does not contain ./node_modules/: ${nativeArchivePath}`);
     }
+    if (!stdout.split(/\r?\n/).includes("./tuiClient/cli.mjs")) {
+      throw new Error(`[release:mac] Remote runtime native archive for ${target} does not contain ./tuiClient/cli.mjs: ${nativeArchivePath}`);
+    }
   }
   if (allowHostOnlyRuntimeResources) {
     console.warn(

@@ -379,6 +379,9 @@ async function assertRemoteRuntimeBundle(resourcesPath) {
     if (!stdout.split(/\r?\n/).some((entry) => entry.startsWith("./node_modules/"))) {
       fail(`Remote runtime native archive for ${target} does not contain ./node_modules/: ${nativeArchivePath}`);
     }
+    if (!stdout.split(/\r?\n/).includes("./tuiClient/cli.mjs")) {
+      fail(`Remote runtime native archive for ${target} does not contain ./tuiClient/cli.mjs: ${nativeArchivePath}`);
+    }
   }
 }
 

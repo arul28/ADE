@@ -26,8 +26,22 @@ const childProcess = vi.hoisted(() => {
   };
 });
 
+const runtimeService = vi.hoisted(() => ({
+  installRuntimeService: vi.fn(() => ({
+    ok: false,
+    serviceName: "com.ade.runtime",
+    action: "install" as const,
+    path: null as string | null,
+    message: "not installed",
+  })),
+}));
+
 vi.mock("node:child_process", () => ({
   spawn: childProcess.spawn,
+}));
+
+vi.mock("../../serviceManager", () => ({
+  installRuntimeService: runtimeService.installRuntimeService,
 }));
 
 const embedded = vi.hoisted(() => {
@@ -132,6 +146,14 @@ describe("connectToAde embedded mode", () => {
     childProcess.spawn.mockClear();
     childProcess.child.unref.mockClear();
     childProcess.spawn.mockImplementation(() => childProcess.child);
+    runtimeService.installRuntimeService.mockClear();
+    runtimeService.installRuntimeService.mockReturnValue({
+      ok: false,
+      serviceName: "com.ade.runtime",
+      action: "install",
+      path: null,
+      message: "not installed",
+    });
   });
 
   afterEach(() => {
@@ -432,6 +454,47 @@ describe("connectToAde embedded mode", () => {
     });
     expect((spawnCall?.[2] as { env?: Record<string, string> } | undefined)?.env?.ADE_RUNTIME_BUILD_HASH).toBeUndefined();
     expect(childProcess.child.unref).toHaveBeenCalledTimes(1);
+    expect(client.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("repairs the packaged service before spawning an unmanaged machine daemon", async () => {
+    useMissingMachineSocket();
+    runtimeService.installRuntimeService.mockReturnValue({
+      ok: true,
+      serviceName: "com.ade.runtime",
+      action: "install",
+      path: "/tmp/com.ade.runtime.plist",
+      message: "installed",
+    });
+    const client = mockAttachedClient();
+
+    const connection = await connectToAde({ project, preferServiceRepair: true });
+    try {
+      expect(connection.mode).toBe("attached");
+    } finally {
+      await connection.close();
+    }
+
+    expect(runtimeService.installRuntimeService).toHaveBeenCalledTimes(1);
+    expect(childProcess.spawn).not.toHaveBeenCalled();
+    expect(client.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("falls back to spawning when packaged service repair fails", async () => {
+    const socketPath = useMissingMachineSocket();
+    const client = mockAttachedClient();
+
+    const connection = await connectToAde({ project, preferServiceRepair: true });
+    try {
+      expect(connection.mode).toBe("attached");
+    } finally {
+      await connection.close();
+    }
+
+    expect(runtimeService.installRuntimeService).toHaveBeenCalledTimes(1);
+    expect(childProcess.spawn).toHaveBeenCalledTimes(1);
+    const spawnCall = childProcess.spawn.mock.calls[0] as unknown[] | undefined;
+    expect(spawnCall?.[1]).toEqual(expect.arrayContaining(["serve", "--socket", socketPath]));
     expect(client.close).toHaveBeenCalledTimes(1);
   });
 

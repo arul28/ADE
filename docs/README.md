@@ -2,13 +2,13 @@
 
 Navigation map for the internal docs. **Start with [PRD.md](./PRD.md).**
 
-The mental model up front: ADE is a **per-machine ADE runtime** (`apps/ade-cli/`, run as `ade serve`) that owns projects, lanes, agent chats, work sessions, processes, sync, and proof. The desktop app, the terminal `ade code` client, the iOS app, and SSH-attached desktop windows are all peer **clients** of that runtime. Read the entry-point docs in that order:
+The mental model up front: ADE has a **brain** — the always-on, machine-owned ADE process for one channel. The brain owns projects, lanes, agent chats, work sessions, processes, sync, proof, and the machine project catalog. The desktop app, the terminal `ade code` client, the iOS app, and SSH-attached desktop windows are **clients** that attach to it. Read the entry-point docs in that order:
 
 ## Reading order
 
-1. [**PRD.md**](./PRD.md) — product scope, runtime + clients model, concepts, feature index.
-2. [**ARCHITECTURE.md**](./ARCHITECTURE.md) — apps, runtime/client topology, data plane, IPC, services catalog, security, build/test/deploy.
-3. [**features/**](./features/) — per-feature subfolders, each with a `README.md` + detail docs. Start with `remote-runtime/`, `ade-code/`, and `sync-and-multi-device/` for the runtime+clients picture.
+1. [**PRD.md**](./PRD.md) — product scope, brain role, runtime machinery, clients model, concepts, feature index.
+2. [**ARCHITECTURE.md**](./ARCHITECTURE.md) — apps, brain/client topology, data plane, IPC, services catalog, security, build/test/deploy.
+3. [**features/**](./features/) — per-feature subfolders, each with a `README.md` + detail docs. Start with `remote-runtime/`, `ade-code/`, and `sync-and-multi-device/` for the brain+clients picture.
 4. [**playbooks/**](./playbooks/) — operational workflows agents can follow directly.
 
 ## Layout

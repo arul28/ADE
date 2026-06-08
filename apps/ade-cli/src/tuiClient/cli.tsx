@@ -12,6 +12,7 @@ type CliOptions = {
   workspaceRoot: string | null;
   laneHint: string | null;
   socketPath: string | null;
+  preferServiceRepair: boolean;
 };
 
 function readRequiredFlagValue(argv: string[], index: number, flag: string): string {
@@ -32,6 +33,7 @@ export function parseArgs(argv: string[]): CliOptions {
     workspaceRoot: null,
     laneHint: null,
     socketPath: null,
+    preferServiceRepair: false,
   };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
@@ -39,6 +41,7 @@ export function parseArgs(argv: string[]): CliOptions {
     else if (arg === "--print-state") options.printState = true;
     else if (arg === "--embedded") options.forceEmbedded = true;
     else if (arg === "--require-socket") options.requireSocket = true;
+    else if (arg === "--prefer-service-repair") options.preferServiceRepair = true;
     else if (arg === "--project-root") {
       options.projectRoot = readRequiredFlagValue(argv, i, arg);
       i += 1;
@@ -120,6 +123,7 @@ async function printState(options: CliOptions): Promise<void> {
     forceEmbedded: options.forceEmbedded,
     requireSocket: options.requireSocket,
     socketPath: options.socketPath,
+    preferServiceRepair: options.preferServiceRepair,
   });
   try {
     const lanes = await listLanes(connection);
@@ -161,6 +165,7 @@ export async function runAdeCodeCli(argv: string[] = process.argv.slice(2)): Pro
       forceEmbedded={options.forceEmbedded}
       requireSocket={options.requireSocket}
       socketPath={options.socketPath}
+      preferServiceRepair={options.preferServiceRepair}
     />,
     { exitOnCtrlC: false },
   );

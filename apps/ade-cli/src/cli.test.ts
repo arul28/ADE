@@ -16,6 +16,7 @@ import {
   parseCliArgs,
   readRuntimeIdleExitMs,
   renderLaneGraph,
+  resolveAdeCodeModulePath,
   resolveRoots,
   shouldAutoRegisterProjectForPlan,
   shouldEnforceMachineRuntimeBuildCompatibility,
@@ -258,9 +259,46 @@ describe("ADE CLI", () => {
       label: "sync pin generate",
       steps: [{ key: "result", method: "sync.generatePin" }],
     });
+    expect(buildCliPlan(["brain", "pin", "set", "123456"])).toEqual({
+      kind: "execute",
+      label: "sync pin set",
+      steps: [
+        { key: "result", method: "sync.setPin", params: { pin: "123456" } },
+      ],
+    });
+    expect(buildCliPlan(["brain", "pin", "clear"])).toEqual({
+      kind: "execute",
+      label: "sync pin clear",
+      steps: [{ key: "result", method: "sync.clearPin" }],
+    });
     expect(buildCliPlan(["runtime", "status"])).toEqual({
       kind: "runtime",
       rest: ["status"],
+    });
+    expect(() => buildCliPlan(["runtime", "run"])).toThrow(
+      "ade runtime run requires --socket <path>.",
+    );
+    expect(
+      buildCliPlan(["runtime", "run", "--socket", "/tmp/ade.sock"]),
+    ).toEqual({
+      kind: "serve",
+      rest: ["--socket", "/tmp/ade.sock", "--no-sync"],
+    });
+    expect(
+      buildCliPlan(["runtime", "--socket", "/tmp/ade.sock", "run", "--no-sync"]),
+    ).toEqual({
+      kind: "serve",
+      rest: ["--socket", "/tmp/ade.sock", "--no-sync"],
+    });
+    const parsedRuntimeRun = parseCliArgs([
+      "--socket",
+      "/tmp/global.sock",
+      "runtime",
+      "run",
+    ]);
+    expect(buildCliPlan(parsedRuntimeRun.command, parsedRuntimeRun.options)).toEqual({
+      kind: "serve",
+      rest: ["--socket", "/tmp/global.sock", "--no-sync"],
     });
     expect(
       buildCliPlan(["runtime", "start", "--socket", "/tmp/ade.sock"]),
@@ -514,6 +552,26 @@ describe("ADE CLI", () => {
       if (previousWorkspace === undefined)
         delete process.env.ADE_WORKSPACE_ROOT;
       else process.env.ADE_WORKSPACE_ROOT = previousWorkspace;
+    }
+  });
+
+  it("resolves ade code from packaged runtime resources", () => {
+    const runtimeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-code-runtime-"));
+    const modulePath = path.join(runtimeRoot, "tuiClient", "cli.mjs");
+    fs.mkdirSync(path.dirname(modulePath), { recursive: true });
+    fs.writeFileSync(modulePath, "export async function runAdeCodeCli() { return 0; }\n");
+    try {
+      withEnv(
+        {
+          ADE_RUNTIME_ROOT: runtimeRoot,
+          ADE_RESOLVED_RUNTIME_ROOT: undefined,
+        },
+        () => {
+          expect(resolveAdeCodeModulePath()).toBe(modulePath);
+        },
+      );
+    } finally {
+      fs.rmSync(runtimeRoot, { recursive: true, force: true });
     }
   });
 

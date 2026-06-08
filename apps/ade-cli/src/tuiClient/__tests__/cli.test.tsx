@@ -43,6 +43,10 @@ describe("ade code CLI entrypoint", () => {
     );
   });
 
+  it("accepts packaged service-repair opt-in", () => {
+    expect(parseArgs(["--prefer-service-repair"]).preferServiceRepair).toBe(true);
+  });
+
   it("passes Ctrl+C handling through to ADE Code instead of Ink", async () => {
     await expect(runAdeCodeCli(["--embedded"])).resolves.toBe(0);
 
