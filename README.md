@@ -357,8 +357,30 @@ Dock icons keep the exact bundle path they were pinned from, so an old icon can
 launch a stale `apps/desktop/release-*` build even after `/Applications` was
 updated.
 
+Replacing the app bundle does not replace a brain process that is already
+running for that channel. Before restarting the channel brain, close or finish
+any active ADE Desktop, ADE Code, agent, or mobile sessions that depend on it.
+Then restart and verify the channel brain through the CLI:
+
+```bash
+ADE_PACKAGE_CHANNEL=beta ADE_HOME="$HOME/.ade-beta" ade brain status --text
+ADE_PACKAGE_CHANNEL=beta ADE_HOME="$HOME/.ade-beta" ade brain restart --text
+ADE_PACKAGE_CHANNEL=beta ADE_HOME="$HOME/.ade-beta" ade doctor --text
+ADE_PACKAGE_CHANNEL=beta ADE_HOME="$HOME/.ade-beta" ade sync status --text
+```
+
+For Alpha, use `ADE_PACKAGE_CHANNEL=alpha` and `ADE_HOME="$HOME/.ade-alpha"`.
+Do not kill ADE brain processes directly during normal testing; the channel
+brain owns the mobile sync websocket and may have desktop, terminal, or phone
+clients attached. If you intentionally leave an old incompatible brain running,
+the packaged desktop may preserve it and launch a private no-sync fallback
+runtime for the desktop window, which means the Mobile drawer will not be using
+that fallback's sync service.
+
 Launching a packaged channel build should install or repair that channel's
-always-on brain service:
+always-on brain service. Official auto-updates also refresh this service on the
+first launch after an update, and the installed service is expected to report the
+same runtime build hash as the packaged desktop CLI:
 
 ```bash
 launchctl print gui/$(id -u)/com.ade.runtime.beta

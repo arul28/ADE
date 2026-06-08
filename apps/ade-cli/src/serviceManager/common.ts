@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { createHash } from "node:crypto";
 import path from "node:path";
 import type { SpawnSyncOptions } from "node:child_process";
 
@@ -71,6 +72,76 @@ function runtimeEnvironment(): Record<string, string> | undefined {
   return Object.keys(env).length > 0 ? env : undefined;
 }
 
+function fileSha256(filePath: string): string | null {
+  try {
+    return createHash("sha256").update(fs.readFileSync(filePath)).digest("hex");
+  } catch {
+    return null;
+  }
+}
+
+function resolveCliPackageRoot(entryPath: string): string | null {
+  const seen = new Set<string>();
+  const starts = [entryPath ? path.dirname(entryPath) : null, process.cwd()];
+  for (const start of starts) {
+    if (!start) continue;
+    let cursor = path.resolve(start);
+    while (!seen.has(cursor)) {
+      seen.add(cursor);
+      const packageJson = path.join(cursor, "package.json");
+      const srcCli = path.join(cursor, "src", "cli.ts");
+      if (fs.existsSync(packageJson) && fs.existsSync(srcCli)) {
+        return cursor;
+      }
+      const parent = path.dirname(cursor);
+      if (parent === cursor) break;
+      cursor = parent;
+    }
+  }
+  return null;
+}
+
+function resolveCliDistPath(entryPath: string): string | null {
+  const packageRoot = resolveCliPackageRoot(entryPath);
+  if (!packageRoot) return null;
+  const distPath = path.join(packageRoot, "dist", "cli.cjs");
+  return fs.existsSync(distPath) ? distPath : null;
+}
+
+export function resolveAdeServiceCommandBuildHash(command: AdeServiceCommand): string | null {
+  const firstArg = command.args[0] ? path.resolve(command.args[0]) : "";
+  if (
+    command.command === process.execPath
+    && command.args.length === 1
+    && command.args[0] === "serve"
+  ) {
+    const entry = typeof process.argv[1] === "string" && process.argv[1].trim()
+      ? path.resolve(process.argv[1])
+      : "";
+    const distPath = resolveCliDistPath(entry);
+    if (distPath) return fileSha256(distPath);
+  }
+  if (command.command === process.execPath && firstArg && fs.existsSync(firstArg)) {
+    return fileSha256(firstArg);
+  }
+  if (fs.existsSync(command.command)) {
+    return fileSha256(path.resolve(command.command));
+  }
+  return null;
+}
+
+function withRuntimeBuildHash(command: AdeServiceCommand): AdeServiceCommand {
+  const buildHash = resolveAdeServiceCommandBuildHash(command);
+  if (!buildHash) return command;
+  return {
+    ...command,
+    env: {
+      ...(command.env ?? {}),
+      ADE_RUNTIME_BUILD_HASH: buildHash,
+    },
+  };
+}
+
 export function shellQuote(value: string): string {
   return `'${value.replace(/'/g, "'\\''")}'`;
 }
@@ -101,24 +172,24 @@ export function resolveAdeServeCommand(): AdeServiceCommand {
     : "";
   const isNodeScript = /\.(?:cjs|mjs|js|ts)$/i.test(entry) && fs.existsSync(entry);
   if (isNodeScript) {
-    return {
+    return withRuntimeBuildHash({
       command: process.execPath,
       args: [entry, "serve"],
       env: runtimeEnvironment(),
-    };
+    });
   }
   if (entry && fs.existsSync(entry)) {
-    return {
+    return withRuntimeBuildHash({
       command: entry,
       args: ["serve"],
       env: runtimeEnvironment(),
-    };
+    });
   }
-  return {
+  return withRuntimeBuildHash({
     command: process.execPath,
     args: ["serve"],
     env: runtimeEnvironment(),
-  };
+  });
 }
 
 export function renderCommand(command: AdeServiceCommand): string {
