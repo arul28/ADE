@@ -791,9 +791,7 @@ function ModeSwitcherPills({
   return (
     <div className="ade-liquid-glass-pill inline-flex items-center gap-1 rounded-full p-1">
       {MODE_OPTIONS.map((opt) => {
-        const active = opt.kind === "chat"
-          ? draftKind === "chat" || draftKind === "chat-orchestrator"
-          : draftKind === opt.kind;
+        const active = draftKind === opt.kind;
         const Icon = opt.Icon;
         return (
           <SmartTooltip
@@ -835,6 +833,7 @@ export function WorkViewArea({
   visibleSessions,
   activeItemId,
   draftKind,
+  orchestratorEnabled = false,
   draftLaneId = null,
   draftContextTargetId = null,
   onContinueCliSession,
@@ -871,6 +870,8 @@ export function WorkViewArea({
   visibleSessions: TerminalSessionSummary[];
   activeItemId: string | null;
   draftKind: WorkDraftKind;
+  /** Orthogonal orchestrator flag for the chat draft (forwarded to the composer). */
+  orchestratorEnabled?: boolean;
   draftLaneId?: string | null;
   draftContextTargetId?: string | null;
   onSelectItem: (sessionId: string) => void;
@@ -999,6 +1000,7 @@ export function WorkViewArea({
         <div className="min-h-0 flex-1">
           <WorkStartSurface
             draftKind={draftKind}
+            orchestratorEnabled={orchestratorEnabled}
             draftLaneId={draftLaneId}
             draftContextTargetId={draftContextTargetId}
             lanes={lanes}

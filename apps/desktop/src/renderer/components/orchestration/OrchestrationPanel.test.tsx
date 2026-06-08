@@ -366,7 +366,19 @@ describe("OrchestrationPanel preload integration", () => {
     });
 
     (window as any).ade = {
-      orchestration: createOrchestrationBridge({ invoke, on, removeListener }),
+      orchestration: createOrchestrationBridge({
+        callAction: (_action, args, ipcChannel) => invoke(ipcChannel, args),
+        subscribeRuntimeOrchestrationEvents: () => () => {},
+        parseLegacyEvent: (payload) => {
+          if (!payload || typeof payload !== "object") return null;
+          const p = payload as Record<string, unknown>;
+          if (typeof p.runId !== "string" || !p.runId) return null;
+          if (typeof p.etag !== "string") return null;
+          if (typeof p.kind !== "string") return null;
+          return p as unknown as OrchestrationEventPayload;
+        },
+        ipcRenderer: { invoke, on, removeListener },
+      }),
     };
 
     expect((window as any).ade?.orchestration?.bundleRead).toEqual(expect.any(Function));

@@ -9,7 +9,8 @@ const selectLane = vi.fn();
 const agentChatPaneProps = vi.hoisted(() => ({
   latest: null as null | {
     laneId: string | null;
-    workDraftKind?: "chat" | "cli" | "chat-orchestrator";
+    workDraftKind?: "chat" | "cli";
+    orchestratorEnabled?: boolean;
     draftContextTargetId?: string | null;
     onOpenShellSession?: (laneId: string) => void | Promise<void>;
     onLaunchCliSession?: unknown;
@@ -25,7 +26,8 @@ vi.mock("../../state/appStore", () => ({
 vi.mock("../chat/AgentChatPane", () => ({
   AgentChatPane: (props: {
     laneId: string | null;
-    workDraftKind?: "chat" | "cli" | "chat-orchestrator";
+    workDraftKind?: "chat" | "cli";
+    orchestratorEnabled?: boolean;
     draftContextTargetId?: string | null;
     onOpenShellSession?: (laneId: string) => void | Promise<void>;
     onLaunchCliSession?: unknown;

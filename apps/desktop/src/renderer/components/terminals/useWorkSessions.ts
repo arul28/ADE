@@ -32,6 +32,7 @@ const DEFAULT_PROJECT_WORK_STATE: WorkProjectViewState = {
   gridSets: [],
   activeGridSetId: null,
   draftKind: "chat",
+  orchestratorEnabled: false,
   draftLaneId: null,
   laneFilter: "all",
   statusFilter: "all",
@@ -419,6 +420,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   const activeItemId = projectViewState.activeItemId;
   const selectedSessionId = projectViewState.selectedItemId;
   const draftKind = projectViewState.draftKind;
+  const orchestratorEnabled = projectViewState.orchestratorEnabled;
   const draftLaneId = projectViewState.draftLaneId;
   const filterLaneId = projectViewState.laneFilter;
   const filterStatus = projectViewState.statusFilter;
@@ -497,6 +499,23 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       setProjectViewState((prev) => ({
         ...prev,
         draftKind: nextKind,
+        // CLI has no orchestrator form — switching to it forces the flag off
+        // (lane/model/prompt persist via the shared draft bucket).
+        orchestratorEnabled: nextKind === "cli" ? false : prev.orchestratorEnabled,
+        activeItemId: null,
+        selectedItemId: null,
+      }));
+    },
+    [setProjectViewState],
+  );
+
+  const setOrchestratorEnabled = useCallback(
+    (enabled: boolean) => {
+      setProjectViewState((prev) => ({
+        ...prev,
+        orchestratorEnabled: enabled,
+        // Orchestrator only exists for chat drafts; enabling it implies chat mode.
+        draftKind: enabled ? "chat" : prev.draftKind,
         activeItemId: null,
         selectedItemId: null,
       }));
@@ -1535,6 +1554,8 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     activeItemId,
     setActiveItemId,
     draftKind,
+    orchestratorEnabled,
+    setOrchestratorEnabled,
     draftLaneId,
     setDraftLaneId,
     showDraftKind,

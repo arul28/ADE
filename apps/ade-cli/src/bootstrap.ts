@@ -48,6 +48,7 @@ import {
 import { createProcessService } from "../../desktop/src/main/services/processes/processService";
 import { augmentProcessPathWithShellAndKnownCliDirs, setPathEnvValue } from "../../desktop/src/main/services/ai/cliExecutableResolver";
 import { createAgentChatService } from "../../desktop/src/main/services/chat/agentChatService";
+import { createOrchestrationService } from "../../desktop/src/main/services/orchestration/orchestrationService";
 import type { createPrService } from "../../desktop/src/main/services/prs/prService";
 import { createPrSummaryService } from "../../desktop/src/main/services/prs/prSummaryService";
 import { createQueueLandingService } from "../../desktop/src/main/services/prs/queueLandingService";
@@ -206,6 +207,7 @@ export type AdeRuntime = {
   testService: ReturnType<typeof createTestService>;
   aiIntegrationService?: ReturnType<typeof createAiIntegrationService> | null;
   agentChatService?: ReturnType<typeof createAgentChatService> | null;
+  orchestrationService?: ReturnType<typeof createOrchestrationService> | null;
   prService?: ReturnType<typeof createPrService>;
   prSummaryService?: ReturnType<typeof createPrSummaryService> | null;
   queueLandingService?: ReturnType<typeof createQueueLandingService> | null;
@@ -993,9 +995,24 @@ export async function createAdeRuntime(args: {
   });
 
   let automationServiceRef: ReturnType<typeof createAutomationService> | null = null;
+
+  const orchestrationService = createOrchestrationService({
+    resolveLaneWorktree: (laneId: string): string | undefined => {
+      try {
+        return laneService.getLaneWorktreePath(laneId);
+      } catch {
+        return undefined;
+      }
+    },
+  });
+  orchestrationService.on("event", (payload) => {
+    pushEvent("orchestrator", payload as unknown as Record<string, unknown>);
+  });
+
   let agentChatService = headlessLinearServices.agentChatService as unknown as ReturnType<typeof createAgentChatService> | null;
   if (resolvedArgs.chatRuntime === "agent") {
     agentChatService = createAgentChatService({
+      getOrchestrationService: () => orchestrationService,
       projectRoot,
       adeDir: paths.adeDir,
       transcriptsDir: paths.transcriptsDir,
@@ -1331,6 +1348,7 @@ export async function createAdeRuntime(args: {
     reviewService,
     aiIntegrationService,
     agentChatService,
+    orchestrationService,
     issueInventoryService,
     pathToMergeOrchestrator,
     ctoStateService,
@@ -1383,6 +1401,7 @@ export async function createAdeRuntime(args: {
       swallow(() => runtimeDiagnosticsService.dispose());
       swallow(() => oauthRedirectService.dispose());
       void laneProxyService.dispose().catch(() => {});
+      void orchestrationService?.dispose().catch(() => {});
       swallow(() => portAllocationService.dispose());
       swallow(() => iosSimulatorService?.dispose());
       swallow(() => appControlService?.dispose());

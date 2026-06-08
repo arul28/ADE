@@ -20,6 +20,7 @@ const EMPTY_WORK_STATE: WorkProjectViewState = {
   gridSets: [],
   activeGridSetId: null,
   draftKind: "chat",
+  orchestratorEnabled: false,
   draftLaneId: null,
   laneFilter: "all",
   statusFilter: "all",
@@ -608,6 +609,8 @@ export function useLaneWorkSessions(laneId: string | null) {
     setViewState((prev) => ({
       ...prev,
       draftKind: nextKind,
+      // CLI has no orchestrator form — switching to it forces the flag off.
+      orchestratorEnabled: nextKind === "cli" ? false : prev.orchestratorEnabled,
       activeItemId: null,
       selectedItemId: null,
     }));
@@ -848,6 +851,7 @@ export function useLaneWorkSessions(laneId: string | null) {
     gridLayoutId,
     activeItemId: laneViewState.activeItemId,
     draftKind: laneViewState.draftKind,
+    orchestratorEnabled: laneViewState.orchestratorEnabled,
     showDraftKind,
     setActiveItemId,
     closeTab,
