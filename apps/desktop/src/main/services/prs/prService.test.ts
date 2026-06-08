@@ -239,6 +239,7 @@ interface BuildServiceOpts {
   db?: any;
   conflictService?: any;
   projectConfigService?: any;
+  aiIntegrationService?: any;
 }
 
 function buildService(opts: BuildServiceOpts = {}) {
@@ -281,6 +282,7 @@ function buildService(opts: BuildServiceOpts = {}) {
     githubService,
     conflictService: opts.conflictService,
     projectConfigService: opts.projectConfigService ?? makeProjectConfigService(),
+    ...(opts.aiIntegrationService ? { aiIntegrationService: opts.aiIntegrationService } : {}),
     openExternal: vi.fn(async () => {}),
   });
 
@@ -2783,6 +2785,78 @@ describe("prService.land", () => {
     expect(result.success).toBe(false);
     expect(result.error).toMatch(/merge conflicts/i);
     expect(githubService.apiRequest).not.toHaveBeenCalledWith(expect.objectContaining({ method: "PUT" }));
+  });
+});
+
+describe("prService.draftDescription", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  const makeAi = (impl?: () => unknown) =>
+    ({ draftPrDescription: vi.fn(impl ?? (() => undefined)) }) as any;
+
+  // Regression: the in-chat "AI draft" button (requireAi) must run the real AI
+  // path using the chat's own model even though the stored providerMode is the
+  // default "guest" — providerMode is NOT derived from live CLI auth, so a chat
+  // running on a connected runtime would otherwise be wrongly refused.
+  it("runs the AI path on the chat's model when requireAi is set, even in guest providerMode", async () => {
+    // NB: this file mocks extractFirstJsonObject → null, so parsePrDraftJson
+    // always falls back to using the raw model text as the body. We assert the
+    // call shape (the regression) and that the AI output reaches the draft.
+    const aiIntegrationService = makeAi(async () => ({ text: "Drafted by the chat model." }));
+    const { service } = buildService({ aiIntegrationService });
+
+    const draft = await (service as any).draftDescription({
+      laneId: LANE_ID,
+      requireAi: true,
+      model: "openai/gpt-5.5",
+    });
+
+    expect(aiIntegrationService.draftPrDescription).toHaveBeenCalledTimes(1);
+    expect(aiIntegrationService.draftPrDescription.mock.calls[0][0]).toMatchObject({
+      laneId: LANE_ID,
+      model: "openai/gpt-5.5",
+    });
+    expect(draft.body).toContain("Drafted by the chat model.");
+  });
+
+  it("surfaces a precise error (not the misleading provider message) when no AI service exists", async () => {
+    const { service } = buildService();
+
+    await expect(
+      (service as any).draftDescription({ laneId: LANE_ID, requireAi: true }),
+    ).rejects.toThrow(/open this lane in the desktop app to draft with AI/);
+  });
+
+  it("returns the deterministic template (no AI call) when requireAi is not set in guest mode", async () => {
+    const aiIntegrationService = makeAi();
+    const { service } = buildService({ aiIntegrationService });
+
+    const draft = await (service as any).draftDescription({ laneId: LANE_ID });
+
+    expect(aiIntegrationService.draftPrDescription).not.toHaveBeenCalled();
+    expect(draft.body).toContain("## Summary");
+  });
+
+  it("treats an empty (non-throwing) model response as a failure when requireAi is set", async () => {
+    const aiIntegrationService = makeAi(async () => ({ text: "   " }));
+    const { service } = buildService({ aiIntegrationService });
+
+    await expect(
+      (service as any).draftDescription({ laneId: LANE_ID, requireAi: true }),
+    ).rejects.toThrow(/AI draft failed: the model returned an empty response\./);
+  });
+
+  it("rethrows AI failures as an explicit draft error when requireAi is set", async () => {
+    const aiIntegrationService = makeAi(async () => {
+      throw new Error("No AI provider is available.");
+    });
+    const { service } = buildService({ aiIntegrationService });
+
+    await expect(
+      (service as any).draftDescription({ laneId: LANE_ID, requireAi: true }),
+    ).rejects.toThrow(/AI draft failed: No AI provider is available\./);
   });
 });
 

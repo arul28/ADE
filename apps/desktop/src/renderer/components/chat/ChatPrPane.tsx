@@ -126,6 +126,14 @@ export const ChatPrPane = React.memo(function ChatPrPane({
     }
   }, [laneId]);
 
+  // The inline creator hands us the freshly-created PR the moment createFromLane
+  // resolves — swap to the details view instantly rather than waiting for the
+  // next GitHub polling round-trip (`prs-updated`) to refresh the row. (The
+  // creator only renders once `loading` is false, so no setLoading needed here.)
+  const handleCreated = useCallback((created: PrSummary) => {
+    setPr(created);
+  }, []);
+
   useEffect(() => { void refresh(); }, [refresh]);
 
   useEffect(() => {
@@ -179,7 +187,12 @@ export const ChatPrPane = React.memo(function ChatPrPane({
             onCopy={() => void copyLink()}
           />
         ) : (
-          <ChatPrInlineCreator laneId={laneId} branchName={branchName ?? null} chatModelId={chatModelId ?? null} />
+          <ChatPrInlineCreator
+            laneId={laneId}
+            branchName={branchName ?? null}
+            chatModelId={chatModelId ?? null}
+            onCreated={handleCreated}
+          />
         )}
       </div>
     </div>

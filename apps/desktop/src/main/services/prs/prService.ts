@@ -4432,15 +4432,20 @@ export function createPrService({
       };
     };
 
-    // When the caller demands AI (the in-chat "AI draft" button), surface a clear
-    // error instead of silently falling through to the deterministic template.
-    if (args.requireAi && (providerMode === "guest" || !aiIntegrationService)) {
+    // The in-chat "AI draft" button sets requireAi. The chat is already running on
+    // a live runtime, so the coarse stored providerMode — which stays "guest" until
+    // the user explicitly enables subscription mode in Settings → AI Connections,
+    // and is NOT derived from active CLI auth — must NOT gate it. We attempt the
+    // real AI path using the chat's own model and let aiIntegrationService.executeTask
+    // perform the authoritative auth/runtime detection, surfacing a precise error
+    // only when no provider is genuinely reachable.
+    if (args.requireAi && !aiIntegrationService) {
       throw new Error(
-        "AI drafting is unavailable — connect a model provider in Settings → AI Connections.",
+        "AI drafting is unavailable in this mode — open this lane in the desktop app to draft with AI.",
       );
     }
 
-    if (providerMode !== "guest" && aiIntegrationService) {
+    if (aiIntegrationService && (providerMode !== "guest" || args.requireAi)) {
       const prompt = [
         "You are ADE's PR drafting assistant. Keep content factual and concise.",
         "Return JSON only with shape: {\"title\": string, \"body\": string}.",
@@ -4467,6 +4472,13 @@ export function createPrService({
             title: defaultTitle,
             body: `${draft.text.trim()}\n`
           });
+        }
+
+        // requireAi promises a real AI draft, never a stub template — so an empty
+        // (but non-throwing) model response is itself a failure to surface. The
+        // catch below adds the "AI draft failed:" prefix.
+        if (args.requireAi) {
+          throw new Error("the model returned an empty response.");
         }
       } catch (error) {
         logger.warn("prs.draft.ai_failed", {
