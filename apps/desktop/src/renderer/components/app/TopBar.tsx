@@ -1216,7 +1216,7 @@ export function TopBar() {
     let started = false;
     let startupTimer: number | null = null;
     let disposeSyncEvents: (() => void) | null = null;
-    if (!project?.rootPath || remoteBinding) {
+    if (!showSyncControl) {
       setSyncSnapshot(null);
       setPhoneSyncOpen(false);
       return () => {
@@ -1268,9 +1268,10 @@ export function TopBar() {
     };
     // Background projects don't broadcast sync-status events (main.ts filters
     // them to the active project), so we re-run this effect on rootPath change
-    // and let the delayed startup check pick up the current state. Focus and
-    // explicit drawer opens still refresh immediately.
-  }, [phoneSyncOpen, project?.rootPath, remoteBinding]);
+    // and let the delayed startup check pick up the current state. With no
+    // project open, sync calls fall back to the machine-level brain service.
+    // Focus and explicit drawer opens still refresh immediately.
+  }, [phoneSyncOpen, project?.rootPath, showSyncControl]);
 
   const checkForActiveWorkloads = useCallback(
     async (projectRootPath: string): Promise<boolean> => {

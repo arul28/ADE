@@ -335,6 +335,23 @@ describe("TopBar", () => {
     });
   });
 
+  it("keeps the phone sync drawer open before a project is open", async () => {
+    useAppStore.setState({ project: null, projectHydrated: true, showWelcome: true } as any);
+
+    render(<TopBar />);
+
+    const mobileButton = screen.getByTitle("Connect a phone to this machine");
+    fireEvent.click(mobileButton);
+
+    await act(async () => {
+      await flushMicrotasks(2);
+    });
+
+    expect(screen.getByText("Connect to the ADE mobile app")).toBeTruthy();
+    expect(screen.getByTestId("sync-devices-section")).toBeTruthy();
+    expect(mobileButton.getAttribute("aria-expanded")).toBe("true");
+  });
+
   it("does not render recent projects as tabs before a project is open", async () => {
     useAppStore.setState({ project: null } as any);
 
