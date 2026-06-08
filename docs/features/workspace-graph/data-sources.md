@@ -6,7 +6,7 @@ The renderer stages data loading in layers so the canvas is
 interactive before every overlay finishes.
 
 Every data feed below is served by the **active ADE runtime** for the
-window's project binding (local daemon for local-bound windows,
+window's project binding (local machine runtime for local-bound windows,
 SSH-attached remote runtime for remote-bound windows). The renderer
 goes through `apps/desktop/src/preload/preload.ts`, which prefers the
 runtime route via `callProjectRuntimeActionOr(...)` and falls back to

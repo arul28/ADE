@@ -73,6 +73,7 @@ export function createSyncPeerService(args: SyncPeerServiceArgs) {
     syncLag: null,
     lastRemoteDbVersion: 0,
     brainDeviceId: null,
+    hostDeviceId: null,
     hostName: null,
     error: null,
     message: null,
@@ -278,6 +279,7 @@ export function createSyncPeerService(args: SyncPeerServiceArgs) {
     status.latencyMs = null;
     status.syncLag = null;
     status.brainDeviceId = null;
+    status.hostDeviceId = null;
     status.hostName = null;
     status.message = message;
     status.error = error;
@@ -300,6 +302,7 @@ export function createSyncPeerService(args: SyncPeerServiceArgs) {
         status.message = `Connected to host ${payload.brain.deviceName}.`;
         status.error = null;
         status.brainDeviceId = payload.brain.deviceId;
+        status.hostDeviceId = payload.brain.deviceId;
         status.hostName = payload.brain.deviceName;
         if (connectionDraft) {
           connectionDraft.lastRemoteDbVersion = latestRemoteDbVersion;
@@ -380,6 +383,7 @@ export function createSyncPeerService(args: SyncPeerServiceArgs) {
         const payload = envelope.payload as SyncBrainStatusPayload;
         latestBrainStatus = payload;
         status.brainDeviceId = payload.brain.deviceId;
+        status.hostDeviceId = payload.brain.deviceId;
         status.hostName = payload.brain.deviceName;
         const localDeviceId = args.deviceRegistryService.getLocalDeviceId();
         const localPeer = payload.connectedPeers.find((peer) => peer.deviceId === localDeviceId) ?? null;

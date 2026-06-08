@@ -45,6 +45,8 @@ export function isLaunchdPrintRunning(output: string): boolean {
 
 export function renderLaunchdPlist(command: AdeServiceCommand, homeDir = os.homedir()): string {
   const envEntries = Object.entries(command.env ?? {});
+  const adeHome = command.env?.ADE_HOME?.trim() || process.env.ADE_HOME?.trim() || path.join(homeDir, ".ade");
+  const runtimeLogDir = path.join(adeHome, "runtime");
   const envBlock = envEntries.length
     ? [
         "  <key>EnvironmentVariables</key>",
@@ -70,9 +72,9 @@ ${plistArray([command.command, ...command.args]).split("\n").map((line) => `  ${
   <key>KeepAlive</key>
   <true/>
   <key>StandardOutPath</key>
-  <string>${escapeXml(path.join(homeDir, ".ade", "runtime", "launchd.out.log"))}</string>
+  <string>${escapeXml(path.join(runtimeLogDir, "launchd.out.log"))}</string>
   <key>StandardErrorPath</key>
-  <string>${escapeXml(path.join(homeDir, ".ade", "runtime", "launchd.err.log"))}</string>`,
+  <string>${escapeXml(path.join(runtimeLogDir, "launchd.err.log"))}</string>`,
     envBlock,
     `</dict>
 </plist>
@@ -86,9 +88,10 @@ export function installLaunchdService(deps: LaunchdServiceManagerDeps = {}): Ser
   const homeDir = deps.homeDir ?? os.homedir();
   const servicePath = launchAgentPath(homeDir);
   const command = deps.command ?? resolveAdeServeCommand();
+  const adeHome = command.env?.ADE_HOME?.trim() || process.env.ADE_HOME?.trim() || path.join(homeDir, ".ade");
   fs.mkdirSync(path.dirname(servicePath), { recursive: true });
   const plist = renderLaunchdPlist(command, homeDir);
-  fs.mkdirSync(path.join(homeDir, ".ade", "runtime"), { recursive: true });
+  fs.mkdirSync(path.join(adeHome, "runtime"), { recursive: true });
   fs.writeFileSync(servicePath, plist, "utf8");
   run("launchctl", ["unload", servicePath], { stdio: "ignore" });
   const load = run("launchctl", ["load", servicePath], { encoding: "utf8" });

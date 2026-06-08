@@ -11,10 +11,11 @@ filtering before exposing the final list.
 | Path | Role |
 |---|---|
 | `apps/ade-cli/src/adeRpcServer.ts` | Private ADE action RPC. Defines action specs, session identity, role-based filtering, the executor, and lane-scoped ADE guidance / skill-root env for worker CLI launches. `create_pr_from_lane` returns the PR payload plus GitHub and ADE PR URLs when they can be derived. |
-| `apps/ade-cli/src/bootstrap.ts` | Builds `AdeRuntime` from desktop services for headless CLI execution. |
-| `apps/ade-cli/src/cli.ts` | User-facing `ade` command, text/JSON formatters, command plans, and socket/headless client wiring. |
+| `apps/ade-cli/src/multiProjectRpcServer.ts` | Machine-runtime JSON-RPC surface. Owns `projects.*`, runtime events, sync methods, and project-scoped `ade/actions/*` dispatch by `projectId`. |
+| `apps/ade-cli/src/bootstrap.ts` | Builds per-project `AdeRuntime` scopes for the machine runtime, SSH stdio runtime, and explicit headless CLI execution. |
+| `apps/ade-cli/src/cli.ts` | User-facing `ade` command, text/JSON formatters, command plans, runtime-socket client wiring, and explicit headless fallback. |
 | `apps/ade-cli/src/jsonrpc.ts` | JSON-RPC server and socket transport helpers. |
-| `apps/desktop/src/main/main.ts` | Creates the per-project ADE RPC socket server and binds `createAdeRpcRequestHandler`. |
+| `apps/desktop/src/main/services/localRuntime/localRuntimeConnectionPool.ts` | Desktop-side client for the local machine runtime at `~/.ade/sock/ade.sock`; registers projects and dispatches runtime-backed actions. |
 | `apps/desktop/src/main/services/ai/tools/` | In-process tool implementations (universal, workflow, CTO operator, Linear). |
 | `apps/desktop/src/main/services/agentTools/agentToolsService.ts` | External CLI detection (Claude Code, Codex, Cursor, Aider, Continue). |
 | `apps/desktop/src/main/services/cli/adeCliService.ts` | Desktop-side CLI install / status / uninstall. Resolves the launcher target (`$HOME/.local/bin/ade` on POSIX, `%LOCALAPPDATA%\ADE\bin\ade.cmd` on Windows) and, on POSIX install, appends a marked `export PATH=...` block to the user's shell rc when the install dir isn't already on `$PATH`. |
@@ -46,41 +47,30 @@ provider adapter:
 CLI-wrapped providers and ordinary shell sessions invoke ADE through the
 `ade` command:
 
-1. If ADE desktop is running, the CLI connects to the per-project
-   `.ade/ade.sock` socket.
-2. If desktop is not running, `--headless` bootstraps the same services
-   from the project directory.
-3. The CLI sends private ADE JSON-RPC methods such as
-   `ade/actions/list` and `ade/actions/call`.
-4. `apps/ade-cli/src/adeRpcServer.ts` filters actions by caller role and
-   dispatches to desktop services.
+1. By default, the CLI connects to the machine runtime endpoint at
+   `~/.ade/sock/ade.sock` and starts `ade serve` if the endpoint is
+   missing.
+2. If `--headless` is passed, the CLI bootstraps the same project
+   services directly from the project directory for one command.
+3. The CLI sends machine-runtime JSON-RPC methods such as
+   `projects.add`, `ade/actions/list`, and `ade/actions/call`.
+4. `apps/ade-cli/src/multiProjectRpcServer.ts` resolves the project
+   scope by `projectId`; `apps/ade-cli/src/adeRpcServer.ts` filters
+   actions by caller role and dispatches to runtime-owned services.
 
-## Socket server
+## Machine runtime endpoint
 
-In `main.ts`:
+`ade serve` listens on the machine ADE endpoint:
 
-```ts
-const rpcSocketServer = net.createServer((conn) => {
-  const transport: JsonRpcTransport = {
-    onData(callback) { conn.on("data", callback); },
-    write(data) { conn.write(data); },
-    close() { if (!conn.destroyed) conn.destroy(); },
-  };
-  const rpcHandler = createAdeRpcRequestHandler({
-    runtime: rpcRuntime,
-    serverVersion: app.getVersion(),
-  });
-  const stop = startJsonRpcServer(rpcHandler, transport, { nonFatal: true });
-  // ... cleanup wiring
-});
-rpcSocketServer.listen(rpcSocketPath);
+```text
+~/.ade/sock/ade.sock
 ```
 
 Key properties:
 
-- **Per-project sockets.** When `ADE_RPC_SOCKET_PATH` is set, the first
-  project context uses the env path; subsequent contexts append a
-  base64-encoded project-root hash suffix to avoid EADDRINUSE.
+- **Machine endpoint.** The normal endpoint is resolved from the
+  machine ADE home. `ADE_RPC_SOCKET_PATH` can override it for tests,
+  dev launches, and compatibility scripts.
 - **Stale socket cleanup.** On startup, the service attempts to
   `unlink` the socket in case a prior crash left it.
 - **Active connection tracking.** Each connection is registered so the
@@ -123,11 +113,11 @@ context environment variables. The `identity.role` field in
 `ade/initialize` is compatibility metadata for older clients; it does
 not grant access by itself. Direct headless CLI mode sets
 `ADE_DEFAULT_ROLE` from `--role`, and socket-backed launchers restart
-stale daemons when the daemon's reported `runtimeInfo.defaultRole`
+stale runtimes when the runtime's reported `runtimeInfo.defaultRole`
 does not match the requested role.
 
 The initialize response advertises the runtime contract used by clients
-to detect stale daemons:
+to detect stale runtimes:
 
 ```json
 {
@@ -237,8 +227,8 @@ The `ade` command has two runtime modes:
 
 | Mode | When | Behavior |
 |---|---|---|
-| Socket-backed | ADE desktop is running for the project. | Connects to `.ade/ade.sock` and calls desktop-owned services. |
-| Headless | `--headless` is passed or the socket is unavailable. | Bootstraps the project services directly from `apps/ade-cli/src/bootstrap.ts`. |
+| Runtime-backed | Default for normal CLI use. | Connects to `~/.ade/sock/ade.sock`, registers the project when needed, and calls runtime-owned services. |
+| Headless | `--headless` is passed. | Bootstraps the project services directly from `apps/ade-cli/src/bootstrap.ts` for one command. |
 
 Both modes expose the same action protocol and output formatters. Agent
 prompts should prefer documented commands such as `ade lanes list`,

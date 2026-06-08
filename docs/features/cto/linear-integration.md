@@ -46,9 +46,9 @@ Detailed wiring lives in [`../linear-integration/README.md`](../linear-integrati
 - `apps/desktop/src/shared/types/cto.ts` — `CtoGetLinearIssueCommentsArgs` and `CtoLinearIssueComment` types for the issue-comment thread surface.
 - `apps/desktop/src/shared/linearWorkflowPresets.ts` — visual plan translation.
 
-### Runtime daemon
+### ADE runtime
 
-- `apps/ade-cli/src/headlessLinearServices.ts` — instantiates the full Linear service stack inside the `ade serve` runtime daemon. The daemon is first-class for Linear, not a read-only stub: it can intake issues, dispatch worker runs / runs / employee sessions, and close out tickets with the same code path the desktop renderer drives.
+- `apps/ade-cli/src/headlessLinearServices.ts` — instantiates the full Linear service stack inside the `ade serve` runtime. The runtime is first-class for Linear, not a read-only stub: it can intake issues, dispatch worker runs / runs / employee sessions, and close out tickets with the same code path the desktop renderer drives.
 
 ## Connection model
 
@@ -170,10 +170,10 @@ The LinearSyncPanel debounces follow-up refreshes so active sync stays observabl
   - From absolute paths to external files (temporary screenshots, e.g. Ghost OS captures).
   - From broker-managed computer-use artifacts (see `../computer-use/README.md`).
 
-## Runtime daemon parity
+## ADE runtime parity
 
 `headlessLinearServices.ts` instantiates the same services inside the
-`ade serve` runtime daemon:
+`ade serve` runtime:
 
 - `linearClient`, `linearIssueTracker`, `linearTemplateService`, `linearWorkflowFileService`.
 - `flowPolicyService`, `linearRoutingService`, `linearIntakeService`, `linearOutboundService`, `linearCloseoutService`.

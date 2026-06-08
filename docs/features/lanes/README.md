@@ -15,7 +15,7 @@ redirect service that makes multi-lane auth practical.
 
 Lane lifecycle (create / attach / rename / archive / delete / rebase /
 branch-switch / port + proxy + OAuth + diagnostics) is owned by the **ADE
-runtime daemon** (`ade serve` listening on `~/.ade/sock/ade.sock`), not by
+ADE runtime** (`ade serve` listening on `~/.ade/sock/ade.sock`), not by
 the Electron main process. The renderer's `window.ade.lanes.*` calls go
 through `apps/desktop/src/preload/preload.ts`, which routes every
 runtime-backed method through `LocalRuntimeConnectionPool` for
@@ -36,7 +36,7 @@ or remote) regardless of what window B is bound to.
 ## Source file map
 
 Core services. The canonical lane lifecycle now runs in the **ADE
-runtime daemon**; the desktop main-process services below remain as
+ADE runtime**; the desktop main-process services below remain as
 either fallback targets or thin desktop-side helpers.
 
 Runtime services (`apps/ade-cli/src/services/lanes/` and friends):
@@ -420,7 +420,7 @@ refusal, duplicate-owner refusal, stale-PR cleanup).
 ## IPC surface
 
 Registered as runtime actions on the `lane` domain (served by the local
-or remote ADE runtime daemon) and as legacy in-process IPC handlers in
+or remote ADE runtime) and as legacy in-process IPC handlers in
 `apps/desktop/src/main/services/ipc/registerIpc.ts` for the fallback
 path. Exposed through `apps/desktop/src/preload/preload.ts`, which
 prefers the runtime route. Remote-bound desktop windows execute every

@@ -2,7 +2,7 @@
 
 `ade code` is a terminal-native client for the same **Work** agent chat surface the Electron app exposes in `AgentChatPane`. It targets agents and operators who prefer a shell-first workflow: Ink + React render the TUI, while chat transcripts, slash commands, lane navigation, model picks, and ADE actions all flow through the same JSON-RPC contracts the desktop uses.
 
-It is a client. The runtime, lanes, chats, transcripts, PRs, processes, and proof artifacts live in the per-machine `ade serve` daemon. `ade code` attaches to that daemon, drives a single project scope, and renders incoming events.
+It is a client. The runtime, lanes, chats, transcripts, PRs, processes, and proof artifacts live in the per-machine ADE runtime (`ade serve`). `ade code` attaches to that runtime, drives a single project scope, and renders incoming events.
 
 ## Browser mirror (development)
 
@@ -26,7 +26,7 @@ Point Cursor’s browser inspector at the served page for layout debugging. The 
 | `apps/ade-cli/src/tuiClient/app.tsx` | Primary Ink/React surface: navigation, composer, drawers, right pane, session lifecycle, slash command dispatch. Owns the `Ctrl+Y` "copy ADE deeplink" handler which resolves the focused lane / PR row through `buildDeeplinkForRow` and copies the canonical `ade://...` URL to the system clipboard. Also backs `/skills` by listing Agent Skill roots from project, user, inherited, and bundled ADE locations, independent of the active provider. |
 | `apps/ade-cli/src/tuiClient/deeplinkRow.ts` | Pure helper used by the `Ctrl+Y` keybinding. Maps the focused lane or PR row (including parsing a GitHub PR URL when the right pane only carries the URL) onto a `DeeplinkTarget` and returns the built `ade://` URL. Tested in `tuiClient/__tests__/deeplinkKeybind.test.ts`. |
 | `apps/ade-cli/src/commands/deeplinks.ts` | `ade open`, `ade link`, and `ade linear install` subcommands. Shares the parser + builder with the desktop main process so URLs round-trip across both surfaces. See [features/deeplinks/README.md](../deeplinks/README.md). |
-| `apps/ade-cli/src/tuiClient/connection.ts` | Resolves attached vs embedded mode, runs the `ade/initialize` handshake, registers the project with `projects.add`, wraps subsequent requests with `projectId`. Computes the daemon's expected SHA-256 build hash from the resolved CLI entrypoint and compares it against the runtime's reported `runtimeInfo.buildHash` / `defaultRole` / `projectRoot`; a mismatch throws `StaleAdeSocketError`, optionally shuts the stale daemon down, and lets `spawnDaemon` start a compatible one (with `ADE_DEFAULT_ROLE=cto` in the spawned env). `initializeEmbeddedCto` injects a trusted `cto` role only when `ADE_DEFAULT_ROLE` is not already set to a valid value. |
+| `apps/ade-cli/src/tuiClient/connection.ts` | Resolves attached vs embedded mode, runs the `ade/initialize` handshake, registers the project with `projects.add`, wraps subsequent requests with `projectId`. Computes the expected SHA-256 build hash from the resolved CLI entrypoint and compares it against the runtime's reported `runtimeInfo.buildHash` / `defaultRole` / `projectRoot`; a mismatch throws `StaleAdeSocketError`, optionally shuts the stale runtime process down, and lets `spawnDaemon` start a compatible one (with `ADE_DEFAULT_ROLE=cto` in the spawned env). `initializeEmbeddedCto` injects a trusted `cto` role only when `ADE_DEFAULT_ROLE` is not already set to a valid value. |
 | `apps/ade-cli/src/runtimeRoles.ts` | `ADE_RUNTIME_ROLES` (`cto`, `orchestrator`, `agent`, `external`, `evaluator`), `normalizeAdeRuntimeRole`, and `resolveAdeDefaultRole`. Shared by `cli.ts`, `adeRpcServer.ts`, `multiProjectRpcServer.ts`, and `tuiClient/connection.ts` so role parsing stays consistent across surfaces. |
 | `apps/ade-cli/src/tuiClient/jsonRpcClient.ts` | Socket client: connect, request/response, `chat/event` notifications. |
 | `apps/ade-cli/src/tuiClient/commands.ts` / `linearCommands.ts` | Slash command catalog and routing. `commands.ts` ships `/lane delete` (right-pane confirmation form that destroys the active lane), `/effort` (reasoning-effort-only picker, a narrower companion to `/model`), and provider-agnostic `/skills` for Agent Skill discovery. `linearCommands.ts` requires a sub-command — bare `/linear` returns the usage hint instead of silently picking `workflows`. It also routes the session/lane attachment verbs (`attach` / `detach` / `issues` → `lane` domain session-scoped or lane-scoped actions) and the issue write-bridge verbs (`comment` / `set-state` / `assign` / `label` → `linear_issue_tracker` domain), reusing `--issue-id` / `--linear-issue-json` / attachment flags (`source`, `includeInPr`, `closeOnMerge`, `role`) parsing shared with the typed `ade linear` CLI commands in `cli.ts`. |
@@ -64,7 +64,7 @@ Point Cursor’s browser inspector at the served page for layout debugging. The 
 
 ### Attached (default)
 
-`ade code` opens a Unix-domain or named-pipe socket connection to the runtime daemon. Resolution order in `connectToAde`:
+`ade code` opens a Unix-domain or named-pipe connection to the ADE runtime. Resolution order in `connectToAde`:
 
 1. `--socket /path/to/sock` on the parent `ade` process (also reads `ADE_RPC_SOCKET_PATH`).
 2. The machine socket from `resolveMachineAdeLayout()` (`~/.ade/sock/ade.sock` or `\\.\pipe\ade-runtime`).
@@ -75,7 +75,7 @@ Point Cursor’s browser inspector at the served page for layout debugging. The 
 
 ### Embedded
 
-`ade code --embedded` (or `ade --headless code`) skips the daemon and builds an `AdeRuntime` in-process via `loadEmbeddedAdeCli()`, which dynamic-imports `bootstrap` and `adeRpcServer` from the `ade-cli` package itself. Used for headless or development environments where Electron / `ade serve` is not present. This mode is single-project, single-process: closing the TUI tears the runtime down.
+`ade code --embedded` (or `ade --headless code`) skips the machine runtime and builds an `AdeRuntime` in-process via `loadEmbeddedAdeCli()`, which dynamic-imports `bootstrap` and `adeRpcServer` from the `ade-cli` package itself. Used for headless or development environments where `ade serve` is not present. This mode is single-project, single-process: closing the TUI tears the runtime down.
 
 `forceEmbedded` and `requireSocket` are mutually exclusive — `connectToAde` rejects the combination.
 
@@ -111,11 +111,11 @@ Both modes run the same handshake before the TUI mounts:
 role comes from `ADE_DEFAULT_ROLE` and the rest of the ADE context env.
 Direct headless CLI sets that env role from `--role` (defaulting to
 `cto`). `ade code` injects `cto` only for an embedded runtime or a
-freshly spawned daemon when no valid explicit role exists. Socket
+freshly spawned runtime when no valid explicit role exists. Socket
 clients then read `runtimeInfo.buildHash`, `runtimeInfo.defaultRole`,
 `runtimeInfo.projectRoot`, and `runtimeInfo.pid` to detect stale local
-daemons via `attachedRuntimeMismatchReason`; a mismatch raises
-`StaleAdeSocketError`, optionally shuts the stale daemon down, and
+runtime processes via `attachedRuntimeMismatchReason`; a mismatch raises
+`StaleAdeSocketError`, optionally shuts the stale runtime down, and
 falls through to `spawnDaemon`. `capabilities.actions.listChanged` is
 currently `false`, so the action list is static after initialization
 and there is no `ade/actions/list_changed` notification stream.
@@ -237,12 +237,12 @@ Lane resolution at launch goes through helpers in `tuiClient/project.ts`:
 2. `chooseTuiLaunchLane(lanes, context, lastLaneId)` — the actual TUI entry point. If the context lane is explicit (a `--lane` hint, or the user invoked `ade code` from inside a non-primary lane's worktree / attached root), that wins. Otherwise the persisted `AdeCodeState.lastLaneId` from `~/.ade/` wins so reopening the TUI returns to the previously focused lane. Falls back to the context choice when there is no persisted lane.
 3. `resolveTuiChatRefreshTarget(...)` — while the drawer is open in **chats** mode, `drawerBrowsingChatId` can preview a highlighted session in the centre pane (without committing it) until the user presses `↵`.
 
-Lane selection persists `lastLaneId` and updates the daemon's session state so the same lane is reflected in desktop and iOS clients attached to the same runtime.
+Lane selection persists `lastLaneId` and updates the runtime's session state so the same lane is reflected in desktop and iOS clients attached to the same runtime.
 
 ## Launch
 
 ```bash
-ade code                                 # attached to the machine daemon for the current project
+ade code                                 # attached to the machine runtime for the current project
 ade code --print-state                   # smoke-test: print mode + socket and exit
 ade code --embedded                      # in-process runtime fallback
 ade --project-root /repo code            # bind to a different project
@@ -284,8 +284,8 @@ See [features/deeplinks/README.md](../deeplinks/README.md) for the full URL gram
 
 ## Related docs
 
-- [ADE CLI](../../../apps/ade-cli/README.md) — runtime daemon, install paths, service manager, full CLI surface.
+- [ADE CLI](../../../apps/ade-cli/README.md) — ADE runtime, install paths, service manager, full CLI surface.
 - [Chat feature](../chat/README.md) — in-app Work chat architecture (service + renderer); same agent chat backend.
-- [Remote runtime](../remote-runtime/README.md) — how the same runtime daemon is reached over SSH.
+- [Remote runtime](../remote-runtime/README.md) — how the same ADE runtime is reached over SSH.
 - [Deeplinks](../deeplinks/README.md) — `ade://` and `https://ade-app.dev/open` URL grammar shared across desktop, ADE Code, iOS, and the marketing site.
 - [System overview](../../ARCHITECTURE.md) — CLI / terminal client placement in the system diagram.

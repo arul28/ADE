@@ -14,44 +14,114 @@ struct WorkActivityIndicator: View {
 
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
+  /// Anchors the "· Ns" elapsed label to when the streaming turn began. Held in
+  /// `@State` so it survives transcript re-renders; only re-derived when the
+  /// transcript actually changes (via `onAppear` / `onChange`), never per-frame.
+  ///
+  /// The seconds counter itself is computed from a `TimelineView(.periodic)`
+  /// clock rather than a stored `Timer.publish().autoconnect()`. The latter is
+  /// recreated on every struct re-init (which, while streaming, can happen
+  /// faster than once a second), and `.onReceive` re-subscribes to the fresh
+  /// publisher each time — resetting its interval so the tick may never fire.
+  /// `TimelineView` is immune to that, auto-pauses off-screen, and writes no
+  /// per-tick `@State` so it can't trigger a transcript re-render storm.
+  @State private var turnStart: Date?
+
   @ViewBuilder
   var body: some View {
     if isStreaming {
       let presentation = Self.derivePresentation(from: transcript)
 
-      HStack(spacing: 10) {
-        WorkActivityPulseDot(reduceMotion: reduceMotion, tint: presentation.tint)
+      // Re-rendering only this leaf view once a second; the elapsed value is a
+      // pure function of `context.date`, so no @State is mutated on tick.
+      TimelineView(.periodic(from: .now, by: 1)) { context in
+        let elapsed = elapsedSeconds(at: context.date)
 
-        VStack(alignment: .leading, spacing: 1) {
-          Text(presentation.label)
+        HStack(spacing: 10) {
+          // The lone streaming animation in the transcript: three staggered
+          // violet dots (static under Reduce Motion).
+          WorkThinkingDots()
+            .frame(height: 6)
+
+          Text(tailLabel(for: presentation, elapsed: elapsed))
             .font(.caption.weight(.semibold))
             .foregroundStyle(presentation.tint)
             .tracking(0.3)
+            .lineLimit(1)
+            .truncationMode(.tail)
+
           if let detail = presentation.detail {
             Text(detail)
               .font(.caption2.monospaced())
-              .foregroundStyle(ADEColor.textSecondary)
+              .foregroundStyle(ADEColor.textMuted)
               .lineLimit(1)
               .truncationMode(.middle)
           }
-        }
 
-        Spacer(minLength: 0)
+          Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(presentation.accessibilityLabel)
       }
-      .padding(.horizontal, 12)
-      .padding(.vertical, 9)
-      .frame(maxWidth: .infinity, alignment: .leading)
-      .background(
-        RoundedRectangle(cornerRadius: 12, style: .continuous)
-          .fill(ADEColor.surfaceBackground.opacity(0.55))
-      )
-      .overlay(
-        RoundedRectangle(cornerRadius: 12, style: .continuous)
-          .stroke(presentation.tint.opacity(0.18), lineWidth: 0.5)
-      )
-      .accessibilityElement(children: .combine)
-      .accessibilityLabel(presentation.accessibilityLabel)
+      .onAppear { syncTurnStart() }
+      .onChange(of: transcript.count) { _, _ in syncTurnStart() }
     }
+  }
+
+  /// Whole seconds elapsed since the anchored turn start. Clamped at 0 so a
+  /// future-dated anchor (host clock skew) can't render a negative counter.
+  private func elapsedSeconds(at now: Date) -> Int {
+    guard let turnStart else { return 0 }
+    return max(0, Int(now.timeIntervalSince(turnStart)))
+  }
+
+  /// "Thinking · 4s" / "Working · 42s · taking longer than usual".
+  private func tailLabel(for presentation: Presentation, elapsed: Int) -> String {
+    var label = presentation.label
+    if elapsed > 0 {
+      label += " · \(elapsed)s"
+    }
+    if elapsed >= 30 {
+      label += " · taking longer than usual"
+    }
+    return label
+  }
+
+  /// Anchor the elapsed clock to the most recent active-turn start. Falls back
+  /// to the latest envelope timestamp so the counter still advances even when a
+  /// discrete `status: started` boundary wasn't emitted.
+  private func syncTurnStart() {
+    let anchor = Self.activeTurnStartTimestamp(from: transcript)
+    guard let anchor, let date = workActivityTimestamp(anchor) else {
+      if turnStart == nil {
+        turnStart = Date()
+      }
+      return
+    }
+    if turnStart == nil || abs(date.timeIntervalSince(turnStart ?? date)) > 1.5 {
+      turnStart = date
+    }
+  }
+
+  /// Timestamp of the last user message / turn-start boundary, i.e. when the
+  /// currently-streaming turn began.
+  static func activeTurnStartTimestamp(from transcript: [WorkChatEnvelope]) -> String? {
+    for envelope in transcript.reversed() {
+      switch envelope.event {
+      case .userMessage:
+        return envelope.timestamp
+      case .status(let turnStatus, _, _):
+        if ["started", "active", "running"].contains(turnStatus.lowercased()) {
+          return envelope.timestamp
+        }
+      default:
+        continue
+      }
+    }
+    return transcript.last?.timestamp
   }
 
   struct Presentation: Equatable {
@@ -200,33 +270,22 @@ struct WorkActivityIndicator: View {
   }
 }
 
-private struct WorkActivityPulseDot: View {
-  let reduceMotion: Bool
-  let tint: Color
-
-  @State private var pulsing = false
-
-  var body: some View {
-    ZStack {
-      if !reduceMotion {
-        Circle()
-          .fill(tint.opacity(0.35))
-          .frame(width: 14, height: 14)
-          .scaleEffect(pulsing ? 1.6 : 0.9)
-          .opacity(pulsing ? 0 : 0.7)
-          .animation(
-            .easeOut(duration: 1.1).repeatForever(autoreverses: false),
-            value: pulsing
-          )
-      }
-      Circle()
-        .fill(tint)
-        .frame(width: 8, height: 8)
-        .overlay(
-          Circle().stroke(.white.opacity(0.25), lineWidth: 0.5)
-        )
-    }
-    .frame(width: 14, height: 14)
-    .onAppear { pulsing = true }
-  }
+/// Parse an ISO-8601 timestamp (with or without fractional seconds) into a
+/// `Date` for elapsed-time math. Returns nil on host quirks so callers can fall
+/// back gracefully.
+private func workActivityTimestamp(_ iso: String) -> Date? {
+  if let date = workActivityIsoFormatter.date(from: iso) { return date }
+  return workActivityIsoFallbackFormatter.date(from: iso)
 }
+
+private let workActivityIsoFormatter: ISO8601DateFormatter = {
+  let formatter = ISO8601DateFormatter()
+  formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+  return formatter
+}()
+
+private let workActivityIsoFallbackFormatter: ISO8601DateFormatter = {
+  let formatter = ISO8601DateFormatter()
+  formatter.formatOptions = [.withInternetDateTime]
+  return formatter
+}()

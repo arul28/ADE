@@ -75,6 +75,35 @@ function normalizePlatform(value: unknown): SyncPeerPlatform {
   return "unknown";
 }
 
+let cachedDeviceDisplayName: string | null = null;
+
+/**
+ * Resolve the human-facing device name from the OS. On macOS this is the
+ * ComputerName the user sets in System Settings (e.g. "Arul's Mac Studio"),
+ * read via `scutil --get ComputerName`. `os.hostname()` returns the network
+ * hostname instead (e.g. "Mac.lan"), which is not what the user recognizes.
+ * Falls back to `os.hostname()` on non-darwin platforms or any failure
+ * (scutil missing, sandboxed, empty value). Never throws.
+ */
+export function resolveDeviceDisplayName(): string {
+  if (cachedDeviceDisplayName != null) return cachedDeviceDisplayName;
+  const fallback = os.hostname();
+  if (process.platform !== "darwin") {
+    cachedDeviceDisplayName = fallback;
+    return fallback;
+  }
+  try {
+    const computerName = execFileSync("scutil", ["--get", "ComputerName"], {
+      encoding: "utf8",
+      timeout: 2_000,
+    }).trim();
+    cachedDeviceDisplayName = computerName.length > 0 ? computerName : fallback;
+  } catch {
+    cachedDeviceDisplayName = fallback;
+  }
+  return cachedDeviceDisplayName;
+}
+
 function readJsonArray(raw: string | null | undefined): string[] {
   return safeJsonParse<string[]>(raw, []).filter((value) => typeof value === "string" && value.trim().length > 0);
 }
@@ -104,6 +133,8 @@ function mapClusterStateRow(row: ClusterStateRow | null): SyncClusterState | nul
     clusterId: String(row.cluster_id),
     brainDeviceId: String(row.brain_device_id),
     brainEpoch: Number(row.brain_epoch ?? 0),
+    hostDeviceId: String(row.brain_device_id),
+    hostEpoch: Number(row.brain_epoch ?? 0),
     updatedAt: String(row.updated_at),
     updatedByDeviceId: String(row.updated_by_device_id),
   };
@@ -221,7 +252,7 @@ export function createDeviceRegistryService(args: DeviceRegistryServiceArgs) {
       metadata.tailscaleDnsName = network.tailscaleDnsName;
     }
     return {
-      name: os.hostname(),
+      name: resolveDeviceDisplayName(),
       platform: mapPlatform(process.platform),
       deviceType: "desktop" as SyncPeerDeviceType,
       ipAddresses: network.lanIpAddresses,
@@ -300,7 +331,10 @@ export function createDeviceRegistryService(args: DeviceRegistryServiceArgs) {
     return upsertDeviceRecord({
       deviceId: localDeviceId,
       siteId: localSiteId,
-      name: existing?.name ?? defaults.name,
+      // Prefer the freshly-resolved OS device name (ComputerName on macOS) so a
+      // stale or hand-edited stored name doesn't keep winning. Bonjour
+      // `deviceName` and the pairing identity carry this real device name.
+      name: defaults.name,
       platform: existing?.platform ?? defaults.platform,
       deviceType: existing?.deviceType ?? defaults.deviceType,
       lastSeenAt: nowIso(),

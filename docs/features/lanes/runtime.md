@@ -19,7 +19,7 @@ services in `apps/ade-cli/`. The renderer's `window.ade.lanes.*` APIs
 that touch this subsystem (`initEnv`, `getEnvStatus`, `port.*`,
 `proxy.*`, `oauth.*`, `diagnostics.*`) are routed through preload's
 `callProjectRuntimeActionOr("lane", …)` helper, which prefers the
-runtime daemon and only falls back to in-process handlers when no
+ADE runtime and only falls back to in-process handlers when no
 runtime is bound.
 
 For remote-bound windows the listening sockets, the `*.localhost`
@@ -29,7 +29,7 @@ URLs reflect that hostname.
 ## Services
 
 Services keyed by workstream. Code paths shown for the desktop
-fallback target; the runtime daemon hosts the canonical instances.
+fallback target; the ADE runtime hosts the canonical instances.
 
 | Service | Workstream | Responsibility |
 |---------|-----------|----------------|

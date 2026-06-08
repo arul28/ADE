@@ -1,6 +1,6 @@
 # Remote Runtime Internal Architecture
 
-Remote runtime support is built on the same JSON-RPC runtime the local `ade serve` daemon answers. The desktop chooses a runtime binding for each window; the renderer APIs stay stable while preload decides whether to call the local runtime daemon or a remote SSH-backed runtime. Both bindings speak the same wire protocol.
+Remote runtime support is built on the same JSON-RPC runtime the local ADE runtime answers. The desktop chooses a runtime binding for each window; the renderer APIs stay stable while preload decides whether to call the local machine runtime or a remote SSH-backed runtime. Both bindings speak the same wire protocol.
 
 ## Runtime bindings
 
@@ -29,13 +29,17 @@ sync.getPin   sync.setPin   sync.clearPin
 sync.setActiveLanePresence
 ```
 
+The `connectToBrain`, `disconnectFromBrain`, and `transferBrainToLocal`
+method names are legacy wire identifiers. New documentation should use
+runtime connection, runtime disconnection, and sync authority transfer.
+
 Project-scoped operations are routed through `ade/actions/call` and carry `params.projectId`. The ade-cli multi-project RPC handler (`createMultiProjectRpcRequestHandler`) looks up the per-project service scope via `ProjectScopeRegistry.get(projectId)` and forwards the request to the cached single-project handler created from `createAdeRpcRequestHandler({ runtime, … })`.
 
 `ade/initialize` advertises `runtimeInfo.multiProject: true`, `runtimeInfo.packageChannel` (when set on the daemon environment), and `capabilities.projects: true`. Clients use the multi-project flag to decide whether to send `projectId` per request (multi-project runtime) or treat the runtime as already bound to one project (embedded `ade code --embedded`). `validateRemoteRuntimeInitializeResult` enforces both top-level capabilities, normalizes the per-method `capabilities.machineProjects` flags (`browseDirectories`, `getDetail`, `getWorkSummary`, `getDefaultParentDir`, `create`, `clone`, `listMyGitHubRepos`), and turns version mismatch / channel mismatch / missing capabilities into a `RemoteRuntimeInitializeInfo.compatibilityWarnings` array instead of throwing. Those warnings flow back to `bootstrapRemoteRuntime`, are returned on `RemoteRuntimeConnectResult.compatibilityWarnings`, and are surfaced inline under the remote target's connection chip.
 
 `RemoteRuntimeCapabilities` (in `apps/desktop/src/shared/types/remoteRuntime.ts`) is the structured shape both the connect result and the connection status carry. `RemoteConnectionPool.assertMachineProjectCapability` maps `projects.*` RPC method names to the matching capability flag and rejects the call with a self-describing message before it leaves the desktop when the remote did not advertise that capability — the connection stays open for everything else.
 
-Runtime event streaming uses `ade/actions/call` with `name: "stream_events"` for one-shot pulls, and `runtimeEvents.subscribe` (with `runtime/event` notifications) for live streaming. For remote bindings the desktop reconnects the SSH transport before re-subscribing, matching normal remote action behavior after disconnects. The initial remote subscription starts with `replay: false` when the cursor is still zero, so opening a remote project does not flood the renderer with buffered history before live events arrive; catch-up polls still use a short delay while idle remote polls back off. For local bindings, preload polls the local daemon through `localRuntimeStreamEvents` so daemon-owned chat, terminal, pty, lane, file-watch, process, and test events are delivered through the same renderer fanout used by remote projects.
+Runtime event streaming uses `ade/actions/call` with `name: "stream_events"` for one-shot pulls, and `runtimeEvents.subscribe` (with `runtime/event` notifications) for live streaming. For remote bindings the desktop reconnects the SSH transport before re-subscribing, matching normal remote action behavior after disconnects. The initial remote subscription starts with `replay: false` when the cursor is still zero, so opening a remote project does not flood the renderer with buffered history before live events arrive; catch-up polls still use a short delay while idle remote polls back off. For local bindings, preload polls the local runtime through `localRuntimeStreamEvents` so runtime-owned chat, terminal, pty, lane, file-watch, process, and test events are delivered through the same renderer fanout used by remote projects.
 
 Each `stream_events` response carries a per-runtime `eventEpoch` UUID minted when the daemon's `eventBuffer` is constructed. The preload event pump compares it against the last seen epoch for the active binding; if it changes (daemon restart, ssh reconnect to a fresh process) the cursor and dedup set reset and the next poll starts from `cursor=0`. The `startedAtMs` "drop events older than the pump start" filter is only applied to **local** bindings — remote pumps rely on the epoch reset instead, so older events backfilled after a reconnect are still delivered.
 
@@ -88,17 +92,17 @@ Channel layout: `resolveRemoteRuntimeLayout` reads `ADE_PACKAGE_CHANNEL` for the
 
 ## Local-vs-remote work warning
 
-Before opening a remote project, `remoteRuntimeCheckLocalWork` compares the remote project's git origin with local projects. It checks both recent desktop projects and projects known to the local runtime daemon's project registry, then runs `git status --porcelain` on matches. Dirty matches produce the `RemoteProjectOpenDialog` confirmation in the remote target UI, listing the matching local clones and their changed file counts.
+Before opening a remote project, `remoteRuntimeCheckLocalWork` compares the remote project's git origin with local projects. It checks both recent desktop projects and projects known to the local runtime's project registry, then runs `git status --porcelain` on matches. Dirty matches produce the `RemoteProjectOpenDialog` confirmation in the remote target UI, listing the matching local clones and their changed file counts.
 
 ## Sync command scoping
 
-The sync WebSocket host is owned by the `ade serve` daemon in normal desktop operation. `ProjectScopeRegistry.ensureSyncHost` elects the most-recently-opened registered project as the active sync host and re-elects when projects are added or removed.
+The sync WebSocket service is owned by the `ade serve` runtime in normal desktop operation. `ProjectScopeRegistry.ensureSyncHost` selects the most-recently-opened registered project as the active sync project and refreshes that selection when projects are added or removed.
 
 Desktop sync Settings IPC first talks to the active runtime for status, discovery, device registry, and PIN operations. Local project windows use `LocalRuntimeConnectionPool`; remote project windows use `RemoteConnectionPool`. The old desktop-host path is guarded by `ADE_ENABLE_DESKTOP_SYNC_HOST=1` for diagnostics and migration debugging.
 
-The sync command registry labels descriptors as `runtime` or `project` scope. Project-bound hosts reject project-scoped commands that arrive without a matching `projectId`, while runtime-scoped commands operate on the daemon as a whole. This keeps mobile/controller commands explicit in the multi-project runtime.
+The sync command registry labels descriptors as `runtime` or `project` scope. Project-bound runtimes reject project-scoped commands that arrive without a matching `projectId`, while runtime-scoped commands operate on the ADE runtime as a whole. This keeps mobile/controller commands explicit in the multi-project runtime.
 
-## Local daemon routing
+## Local runtime routing
 
 Local desktop windows go through the runtime binding. `callProjectRuntimeActionOr` and `callProjectRuntimeSyncOr` in `apps/desktop/src/preload/preload.ts` call the active local or remote runtime when a binding exists; legacy Electron IPC handlers are used only when no runtime route is bound or for desktop-only side effects. File actions are strict once a local or remote runtime is bound, which prevents a failed runtime-bound file write/read from being retried against the desktop's local filesystem when the bound project is owned by a daemon or remote host. Usage and budget reads use the remote runtime only for remote-bound windows; local-bound windows keep using desktop usage IPC. During `project.switchToPath`, preload temporarily binds local runtime calls to the requested root and main-process `runtimeBridge.ts` honors the explicit `rootPath` over the window session binding for local action, sync, and event-stream calls. During `remoteRuntime.openProject`, preload clears the binding while the switch is in flight; mutating runtime actions and mutating sync calls fail with the "Project is switching" message instead of refreshing or writing through a stale binding, while read-only project calls can wait for the active remote open and retry against the new binding.
 

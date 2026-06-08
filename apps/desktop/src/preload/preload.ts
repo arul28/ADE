@@ -1269,6 +1269,8 @@ const MUTATING_SYNC_METHODS = new Set([
   "sync.setPin",
   "sync.generatePin",
   "sync.clearPin",
+  "sync.setRuntimeName",
+  "sync.clearRuntimeName",
   "sync.updateLocalDevice",
   "sync.setActiveLanePresence",
   "modelPicker.setFavorites",
@@ -3801,6 +3803,18 @@ contextBridge.exposeInMainWorld("ade", {
     clearPin: async (): Promise<SyncRoleSnapshot> =>
       callProjectRuntimeSyncOr("sync.clearPin", {}, () =>
         ipcRenderer.invoke(IPC.syncClearPin),
+      ),
+    getRuntimeName: async (): Promise<{ runtimeName: string | null }> =>
+      callProjectRuntimeSyncOr("sync.getRuntimeName", {}, () =>
+        ipcRenderer.invoke(IPC.syncGetRuntimeName),
+      ),
+    setRuntimeName: async (name: string): Promise<SyncRoleSnapshot> =>
+      callProjectRuntimeSyncOr("sync.setRuntimeName", { name }, () =>
+        ipcRenderer.invoke(IPC.syncSetRuntimeName, name),
+      ),
+    clearRuntimeName: async (): Promise<SyncRoleSnapshot> =>
+      callProjectRuntimeSyncOr("sync.clearRuntimeName", {}, () =>
+        ipcRenderer.invoke(IPC.syncClearRuntimeName),
       ),
     setActiveLanePresence: async (args: { laneIds: string[] }): Promise<void> =>
       callProjectRuntimeSyncOr("sync.setActiveLanePresence", args, () =>

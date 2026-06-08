@@ -20,7 +20,7 @@ Conflict prediction (`git merge-tree` runs), pairwise risk
 computation, the prediction job engine, AI proposal preparation /
 dispatch / apply, and external CLI resolver runs all execute inside
 the **active ADE runtime** for the window's project binding — the
-local daemon for local-bound windows or the SSH-attached remote
+local machine runtime for local-bound windows or the SSH-attached remote
 runtime for remote-bound windows. The renderer routes
 `window.ade.conflicts.*` calls through
 `callProjectRuntimeActionOr("conflicts", …)` in
@@ -35,7 +35,7 @@ proposal action.
 
 ## Source file map
 
-Service files (canonical implementations live in the runtime daemon;
+Service files (canonical implementations live in the ADE runtime;
 the paths below are the desktop fallback targets that share the
 behavior):
 

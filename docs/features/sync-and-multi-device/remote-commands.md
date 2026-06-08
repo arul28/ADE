@@ -2,7 +2,7 @@
 
 Remote commands are the execution channel for controllers. A controller
 (another desktop acting as a peer, or the iOS app) sends a `command`
-envelope to the host (the `ade serve` runtime daemon); the host
+envelope to the ADE runtime (`ade serve`); the runtime
 resolves it through `syncRemoteCommandService`, runs the underlying
 action against its in-process services, and replies with `command_ack`
 and then `command_result`.
@@ -257,7 +257,7 @@ A handful have more logic:
 - **`work.runQuickCommand`** — constructs a `PtyCreateArgs`, calls
   `ptyService.create`, and returns the PTY handle for the controller
   to subscribe to via `terminal_subscribe`.
-- **`work.startCliSession`** — host-side mobile CLI launcher used by
+- **`work.startCliSession`** — runtime-side mobile CLI launcher used by
   the iOS Work "new session" surface. Args are validated through
   `parseStartCliSessionArgs`,
   which restricts `provider` to the allowlist
@@ -267,10 +267,10 @@ A handful have more logic:
   `initialInput` at 20 KB. Provider-specific argv, env, and shell
   preambles come from `buildTrackedCliLaunchCommand` in
   `apps/desktop/src/shared/cliLaunch.ts`
-  — the same module the desktop Work tab uses — so the host owns the
+  — the same module the desktop Work tab uses — so the runtime owns the
   startup-command shape and a phone cannot smuggle in a free-form
   shell command (the `shell` provider takes no startup payload at all).
-  The host resolves the requested lane worktree before building that
+  The runtime resolves the requested lane worktree before building that
   launch payload, so ADE guidance and `ADE_AGENT_SKILLS_DIRS` prefer
   lane-local `.claude` / `.agents` / `.ade` / `.codex` skill dirs and
   bundled ADE resources instead of whichever project root the daemon
@@ -289,10 +289,10 @@ A handful have more logic:
   without an extra round-trip. The command-result journal persists
   only the returned session handle and summary, not the `initialInput`
   text, so reconnect replay does not leak the user's prompt into the
-  host-side ledger.
+  runtime-side ledger.
 - **`work.sendToSession`** — sends text to an existing durable Work
-  CLI session. If the PTY is live, the host writes into it; if the
-  process ended and the session is resumable, the host starts the
+  CLI session. If the PTY is live, the runtime writes into it; if the
+  process ended and the session is resumable, the runtime starts the
   provider continuation internally and attaches the runtime to the
   same session id.
 - **`work.stopRuntime`** — looks up the session's PTY id and disposes
@@ -387,7 +387,7 @@ execute(payload: SyncCommandPayload): Promise<unknown>;
 Controllers typically read descriptors at connection time, cache
 them, and refresh on `brain_status` changes. The iOS Lanes /
 Files / Work / PRs tabs use this to render action buttons only for
-commands the current host supports under the current policy.
+commands the current runtime supports under the current policy.
 
 ## Logging
 
@@ -402,7 +402,7 @@ can be sensitive.
 - **Changeset sync** remains the channel for state reads. A
   controller observes the effect of a command through replicated
   `lanes`, `sessions`, `linear_workflow_runs`, etc. rows arriving
-  after the host finishes the command.
+  after the runtime finishes the command.
 - **Terminal sub-protocol** pairs with `work.runQuickCommand`,
   `work.startCliSession`, `work.sendToSession`, and `work.stopRuntime`. The controller
   invokes the command, then sends `terminal_subscribe` with the
@@ -410,7 +410,7 @@ can be sensitive.
 - **Chat sub-protocol** pairs with `chat.create` / `chat.send` +
   `chat_subscribe`. Same pattern: create / send the message through
   a command, subscribe to the transcript stream for incremental
-  events. `chat.send` waits for the host-side dispatch acknowledgement
+  events. `chat.send` waits for the runtime-side dispatch acknowledgement
   before returning `ok`, so the phone does not clear its local echo
   while the desktop is still preparing the turn.
 - **File access sub-protocol** (`file_request` / `file_response`) is
@@ -427,7 +427,7 @@ can be sensitive.
 Steers accept `sessionId`, `text`, and `attachments`. Controllers
 (phones and desktop peers) can therefore attach files/images and
 specify reasoning / execution / interaction modes remotely; the
-host-side `agentChatService` consumes the same shape end-to-end.
+runtime-side `agentChatService` consumes the same shape end-to-end.
 
 ## Lane and PR Linear-issue payload shape
 
@@ -501,7 +501,7 @@ see the chat README for the passive/active contract.
   a command that needs that service to fail with a specific message.
   Tests should exercise each command path rather than assume
   "registered means callable."
-- **Policy is host-declared, not controller-configurable.** The
-  controller cannot opt itself into commands the host marked
+- **Policy is runtime-declared, not controller-configurable.** The
+  controller cannot opt itself into commands the runtime marked
   non-viewer-allowed. If a phone needs an action that is policy-gated,
-  the fix is a host-side policy change, not a client workaround.
+  the fix is a runtime-side policy change, not a client workaround.

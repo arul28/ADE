@@ -233,6 +233,22 @@ export function SyncDevicesSection() {
     setNotice("PIN generated.");
   }), [runAction]);
 
+  const handleSetRuntimeName = useCallback((name: string) => runAction(async () => {
+    const trimmed = name.trim();
+    if (trimmed) {
+      await window.ade.sync.setRuntimeName(trimmed);
+      setNotice("Machine name updated.");
+    } else {
+      await window.ade.sync.clearRuntimeName();
+      setNotice("Machine name cleared.");
+    }
+  }), [runAction]);
+
+  const handleClearRuntimeName = useCallback(() => runAction(async () => {
+    await window.ade.sync.clearRuntimeName();
+    setNotice("Machine name cleared.");
+  }), [runAction]);
+
   const handleRenameLocal = useCallback((name: string) => runAction(async () => {
     if (!name.trim()) throw new Error("Name cannot be empty.");
     await window.ade.sync.updateLocalDevice({ name: name.trim() });
@@ -264,7 +280,7 @@ export function SyncDevicesSection() {
   const phones = devices.filter((device) => !device.isLocal && device.deviceType === "phone");
   const phonesConnected = phones.filter((d) => d.connectionState === "connected").length;
   const phonesOffline = phones.length - phonesConnected;
-  const isLocalHost = status.role === "brain";
+  const isLocalHost = status.runtimeRole === "host" || status.role === "brain";
   const hasTailscaleAddress = Boolean(status.localDevice.tailscaleIp);
   const showTailnetDiscovery = shouldShowTailnetDiscoveryPanel(status.tailnetDiscovery);
 
@@ -281,10 +297,13 @@ export function SyncDevicesSection() {
           connectInfo={status.pairingConnectInfo}
           pin={status.pairingPin}
           pinConfigured={status.pairingPinConfigured}
+          runtimeName={status.runtimeName}
           busy={busy}
           onSavePin={handleSetPin}
           onGeneratePin={handleGeneratePin}
           onClearPin={handleClearPin}
+          onSaveRuntimeName={handleSetRuntimeName}
+          onClearRuntimeName={handleClearRuntimeName}
         />
       ) : (
         <ViewerPairingNotice />
@@ -339,7 +358,7 @@ export function SyncDevicesSection() {
 }
 
 function isPhoneSyncReady(status: SyncRoleSnapshot): boolean {
-  return status.role === "brain" && Boolean(status.pairingConnectInfo);
+  return (status.runtimeRole === "host" || status.role === "brain") && Boolean(status.pairingConnectInfo);
 }
 
 function StatusBar({ connected, peerCount, ready }: { connected: boolean; peerCount: number; ready: boolean }) {
@@ -415,7 +434,7 @@ function tailnetStatusCopy(status: SyncTailnetDiscoveryStatus, args: {
         color: COLORS.success,
         title: "Phones can connect through Tailscale",
         detail: [
-          "The runtime address list includes this machine's normal Tailscale address, so pairing can work without extra setup.",
+          "The machine address list includes this machine's normal Tailscale address, so pairing can work without extra setup.",
           "Only the optional stable shortcut is blocked by Tailscale policy.",
         ].join(" "),
         canRetry: false,
@@ -439,7 +458,7 @@ function tailnetStatusCopy(status: SyncTailnetDiscoveryStatus, args: {
         label: "Published",
         color: COLORS.success,
         title: `Published as ${host}`,
-        detail: "Phones on this tailnet can find this host automatically.",
+        detail: "Phones on this tailnet can find this machine automatically.",
         canRetry: true,
       };
     case "pending_approval":
@@ -478,8 +497,8 @@ function tailnetStatusCopy(status: SyncTailnetDiscoveryStatus, args: {
       return {
         label: "Not active",
         color: COLORS.textMuted,
-        title: args.isLocalHost ? `Not published as ${host}` : "Only the host machine publishes tailnet discovery",
-        detail: status.error || "Start phone sync hosting to publish tailnet discovery.",
+        title: args.isLocalHost ? `Not published as ${host}` : "Only the host runtime publishes tailnet discovery",
+        detail: status.error || "Start the ADE runtime to publish tailnet discovery.",
         canRetry: false,
       };
   }
@@ -539,18 +558,24 @@ function PairPhoneCard({
   connectInfo,
   pin,
   pinConfigured,
+  runtimeName,
   busy,
   onSavePin,
   onGeneratePin,
   onClearPin,
+  onSaveRuntimeName,
+  onClearRuntimeName,
 }: {
   connectInfo: SyncPairingConnectInfo | null;
   pin: string | null;
   pinConfigured: boolean;
+  runtimeName: string | null;
   busy: boolean;
   onSavePin: (pin: string) => Promise<void>;
   onGeneratePin: () => Promise<void>;
   onClearPin: () => Promise<void>;
+  onSaveRuntimeName: (name: string) => Promise<void>;
+  onClearRuntimeName: () => Promise<void>;
 }) {
   const [editing, setEditing] = useState(false);
   const [pinError, setPinError] = useState<string | null>(null);
@@ -585,7 +610,7 @@ function PairPhoneCard({
         }}
       >
         <div style={{ ...panelStyle, gap: 10 }}>
-          <div style={LABEL_STYLE}>Runtime address</div>
+          <div style={LABEL_STYLE}>Machine address</div>
           <div style={{ color: COLORS.textPrimary, fontFamily: MONO_FONT, fontSize: 15, overflowWrap: "break-word" }}>
             {primaryEndpoint}
           </div>
@@ -594,6 +619,13 @@ function PairPhoneCard({
           </div>
           <EndpointList connectInfo={connectInfo} />
         </div>
+
+        <HostNameEditor
+          runtimeName={runtimeName}
+          busy={busy}
+          onSave={onSaveRuntimeName}
+          onClear={onClearRuntimeName}
+        />
 
         <div style={{ display: "grid", gap: 10 }}>
           {editing ? (
@@ -633,9 +665,65 @@ function PairPhoneCard({
         {pinMissing
           ? "No PIN set. Phones cannot pair."
           : pin
-            ? "Select this runtime on your phone and enter this PIN to pair."
-            : "Select this runtime on your phone and enter the saved PIN, or set a new one."}
+            ? "Select this machine on your phone and enter this PIN to pair."
+            : "Select this machine on your phone and enter the saved PIN, or set a new one."}
       </div>
+    </div>
+  );
+}
+
+function HostNameEditor({
+  runtimeName,
+  busy,
+  onSave,
+  onClear,
+}: {
+  runtimeName: string | null;
+  busy: boolean;
+  onSave: (name: string) => Promise<void> | void;
+  onClear: () => Promise<void> | void;
+}) {
+  const [name, setName] = useState(runtimeName ?? "");
+
+  useEffect(() => {
+    setName(runtimeName ?? "");
+  }, [runtimeName]);
+
+  const trimmed = name.trim();
+  const current = (runtimeName ?? "").trim();
+  const dirty = trimmed !== current;
+
+  return (
+    <div style={{ ...panelStyle, gap: 10 }}>
+      <div style={LABEL_STYLE}>Name this machine</div>
+      <div style={{ display: "grid", gridTemplateColumns: "minmax(160px, 1fr) auto", gap: 8, alignItems: "center" }}>
+        <input
+          value={name}
+          onChange={(event) => setName(event.target.value)}
+          style={inputStyle}
+          placeholder="e.g. MacBook"
+          disabled={busy}
+        />
+        <button
+          type="button"
+          style={primaryButton({ opacity: busy || !dirty ? 0.5 : 1 })}
+          disabled={busy || !dirty}
+          onClick={() => void onSave(name)}
+        >
+          Save
+        </button>
+      </div>
+      <div style={helperTextStyle}>Name this machine for easy identification</div>
+      {current ? (
+        <button
+          type="button"
+          style={outlineButton({ justifySelf: "start" })}
+          disabled={busy}
+          onClick={() => void onClear()}
+        >
+          Clear name
+        </button>
+      ) : null}
     </div>
   );
 }
@@ -643,7 +731,7 @@ function PairPhoneCard({
 function EndpointList({ connectInfo }: { connectInfo: SyncPairingConnectInfo | null }) {
   const candidates = connectInfo?.addressCandidates ?? [];
   if (candidates.length === 0) {
-    return <div style={helperTextStyle}>No runtime addresses are published yet.</div>;
+    return <div style={helperTextStyle}>No machine addresses are published yet.</div>;
   }
   return (
     <div style={{ display: "grid", gap: 6 }}>
@@ -674,10 +762,10 @@ function ViewerPairingNotice() {
   return (
     <div style={cardStyle({ display: "grid", gap: 10 })}>
       <div style={{ color: COLORS.textPrimary, fontFamily: SANS_FONT, fontSize: 15, fontWeight: 600 }}>
-        Phone pairing lives on the host
+        Phone pairing lives on the host runtime
       </div>
       <div style={helperTextStyle}>
-        Open Sync settings on the host machine to set the phone PIN and copy a runtime address.
+        Open Sync settings on the machine running the host runtime to set the phone PIN and copy a machine address.
       </div>
     </div>
   );

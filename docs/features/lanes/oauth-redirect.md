@@ -10,7 +10,7 @@ hardened in ways tests now pin directly. Treat it with care.
 
 Source files:
 
-- Canonical implementation lives alongside the runtime daemon's lane
+- Canonical implementation lives alongside the ADE runtime's lane
   isolation services and is exercised through the same code that
   `apps/desktop/src/main/services/lanes/oauthRedirectService.ts`
   retains as a fallback target. The desktop file (and its companion

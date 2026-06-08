@@ -2690,6 +2690,29 @@ final class DatabaseService {
       }
     }
 
+    // Older schemas shipped a `unified_memories` + `unified_memories_fts` (FTS5)
+    // search index that has since been removed. On an upgraded install the
+    // orphaned FTS virtual table lingers, dragging its shadow tables along.
+    // Drop the removed tables outright (dropping an FTS5 virtual table also
+    // removes its shadow tables). Best-effort: `listEligibleCrrTables` already
+    // skips shadow tables, so a failed drop here can never block connect.
+    for orphan in DatabaseService.droppedIncomingSyncTables where hasTable(named: orphan) {
+      try? dropCrrTriggers(for: orphan)
+      try? exec("drop table if exists \(quoteIdentifier(orphan))")
+      try? exec("drop table if exists \(quoteIdentifier("\(orphan)__crsql_clock"))")
+      try? exec("drop table if exists \(quoteIdentifier("\(orphan)__crsql_pks"))")
+      if hasTable(named: "crsql_master") {
+        _ = try? execute("delete from crsql_master where tbl_name = ?") { statement in
+          try bindText(orphan, to: statement, index: 1)
+        }
+      }
+      if hasTable(named: "crsql_changes") {
+        _ = try? execute("delete from crsql_changes where [table] = ?") { statement in
+          try bindText(orphan, to: statement, index: 1)
+        }
+      }
+    }
+
     for tableName in listEligibleCrrTables() {
       if hasTable(named: "\(tableName)__crsql_clock") {
         continue
@@ -2832,13 +2855,28 @@ final class DatabaseService {
          and name not like '%__crsql_clock'
          and name not like '%__crsql_pks'
     """
-    return query(sql) { statement in
+    let rows = query(sql) { statement in
       (
         name: stringValue(statement, index: 0) ?? "",
         sql: stringValue(statement, index: 1) ?? ""
       )
-    }.filter { row in
+    }
+    // A virtual table (e.g. FTS5) auto-creates hidden "shadow" tables —
+    // `<vtab>_data`, `<vtab>_idx`, `<vtab>_docsize`, `<vtab>_config`,
+    // `<vtab>_content`. Those are ordinary `type='table'` rows with primary
+    // keys, so they slip past the filters above, but SQLite forbids
+    // `CREATE TRIGGER` on a shadow table ("cannot create triggers on shadow
+    // table") — which is exactly what broke first connect. Mirror SQLite's own
+    // `<vtab>_<suffix>` rule and never register CRR on a shadow table.
+    let virtualTableNames = rows
+      .filter { $0.sql.lowercased().hasPrefix("create virtual table") }
+      .map(\.name)
+    func isShadowTable(_ name: String) -> Bool {
+      virtualTableNames.contains { name.hasPrefix("\($0)_") }
+    }
+    return rows.filter { row in
       !row.sql.lowercased().hasPrefix("create virtual table")
+        && !isShadowTable(row.name)
         && !DatabaseService.excludedCrrTables.contains(row.name)
         && tableHasPrimaryKey(row.name)
     }.map(\.name)

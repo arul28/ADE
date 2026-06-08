@@ -1,6 +1,6 @@
 # Computer-Use Backends
 
-Backend discovery runs on the runtime host that owns the project (the runtime daemon's `commandExists("ghost")` / `commandExists("agent-browser")` checks reflect that machine's `PATH`). ADE's job is to discover backends locally to that runtime, report their readiness, and ingest their output. ADE does not wrap or replace the backends themselves.
+Backend discovery runs on the runtime machine that owns the project (the ADE runtime's `commandExists("ghost")` / `commandExists("agent-browser")` checks reflect that machine's `PATH`). ADE's job is to discover backends locally to that runtime, report their readiness, and ingest their output. ADE does not wrap or replace the backends themselves.
 
 This doc describes the historical Ghost OS / agent-browser / local-fallback model. The current shipping broker (`computerUseArtifactBrokerService.getBackendStatus`) reports the same backend names but the policy + readiness machinery (`buildComputerUseSettingsSnapshot`, `buildGhostOsCheck`, capability matrix) was retired with the proof rebuild and the Settings > Computer Use panel was folded into Integrations. Use this doc for context on backend semantics, not for the current operator UI.
 

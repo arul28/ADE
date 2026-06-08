@@ -2806,6 +2806,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
     bootstrapToken: null,
     pairingPin: null,
     pairingPinConfigured: false,
+    runtimeName: null,
     pairingConnectInfo: null,
     connectedPeers: [],
     tailnetDiscovery: {
@@ -3507,6 +3508,9 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       setPin: resolvedArg(BROWSER_MOCK_SYNC_SNAPSHOT),
       generatePin: resolved(BROWSER_MOCK_SYNC_SNAPSHOT),
       clearPin: resolved(BROWSER_MOCK_SYNC_SNAPSHOT),
+      getRuntimeName: resolved({ runtimeName: null }),
+      setRuntimeName: resolvedArg(BROWSER_MOCK_SYNC_SNAPSHOT),
+      clearRuntimeName: resolved(BROWSER_MOCK_SYNC_SNAPSHOT),
       setActiveLanePresence: resolvedArg(undefined),
       onEvent: () => () => {},
     },

@@ -357,6 +357,7 @@ func workRuntimeModeOptions(provider: String) -> [WorkRuntimeModeOption] {
       WorkRuntimeModeOption(id: "auto-low", title: "Auto low"),
       WorkRuntimeModeOption(id: "auto-medium", title: "Auto medium"),
       WorkRuntimeModeOption(id: "auto-high", title: "Auto high"),
+      WorkRuntimeModeOption(id: "agi", title: "AGI (orchestrator)"),
     ]
   default:
     return []
@@ -390,6 +391,7 @@ func workRuntimeModeLabel(provider: String, mode: String) -> String {
     case "auto-low": return "Auto low"
     case "auto-medium": return "Auto medium"
     case "auto-high": return "Auto high"
+    case "agi": return "AGI (orchestrator)"
     default: return mode.isEmpty ? "Auto low" : mode.capitalized
     }
   default:
@@ -401,6 +403,7 @@ func workRuntimeModeTint(_ mode: String) -> Color {
   switch mode {
   case "full-auto", "auto-high": return ADEColor.danger
   case "edit", "auto", "ask", "auto-low", "auto-medium": return ADEColor.warning
+  case "agi": return ADEColor.purpleAccent
   case "plan", "read-only": return ADEColor.accent
   default: return ADEColor.textSecondary
   }
@@ -498,6 +501,12 @@ func workRuntimeWireFields(provider: String, mode: String) -> WorkRuntimeWireFie
     fields.droidPermissionMode = mode.isEmpty ? "auto-low" : mode
     switch fields.droidPermissionMode {
     case "read-only":
+      fields.permissionMode = "plan"
+    case "agi":
+      // AGI puts Droid in orchestrator mode: it decomposes a mission into
+      // features and spawns workers while keeping read-only tools at the top
+      // level, so the companion permission mode is "plan" (desktop parity:
+      // AgentChatPane maps AGI -> plan, autonomy off).
       fields.permissionMode = "plan"
     case "auto-medium":
       fields.permissionMode = "default"
@@ -772,36 +781,6 @@ func isCodeChangeToolName(_ tool: String) -> Bool {
     "writefile", "editfile",
   ]
   return writeNames.contains(suffix)
-}
-
-/// Past-/present-tense verb describing a tool's run, mirroring the desktop
-/// `describeToolVerb` helper. Used in the collapsed `Last: …` breadcrumb and
-/// the row labels inside the expanded panel.
-func describeToolVerb(_ tool: String, status: WorkToolCardStatus) -> String {
-  let suffix = toolNameSuffix(tool)
-  let isShell = ["bash", "shell", "exec_command", "execcommand"].contains(suffix)
-  let isRead = ["read", "readfile", "read_file", "cat",
-                "list", "listdir", "ls", "lsdir",
-                "glob", "find_files", "findfiles",
-                "grep", "search"].contains(suffix)
-  let isWeb = ["webfetch", "web_fetch", "websearch", "web_search", "fetch"].contains(suffix)
-  switch status {
-  case .running:
-    if isShell { return "Running command…" }
-    if isRead { return "Reading…" }
-    if isWeb { return "Fetching…" }
-    return "Running…"
-  case .completed:
-    if isShell { return "Command run complete" }
-    if isRead { return "Read complete" }
-    if isWeb { return "Fetch complete" }
-    return "Complete"
-  case .failed:
-    if isShell { return "Command failed" }
-    if isRead { return "Read failed" }
-    if isWeb { return "Fetch failed" }
-    return "Failed"
-  }
 }
 
 func fileExtension(for mimeType: String?, fallback: String) -> String {

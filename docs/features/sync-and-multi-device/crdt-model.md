@@ -11,8 +11,8 @@ the schema implications that fall out of the CRR retrofit.
 The entire CRDT layer lives inside the shared DB adapter:
 `apps/desktop/src/main/services/state/kvDb.ts` exposes an `AdeDb` with
 an `AdeDb.sync` object. The same module is consumed both by the
-Electron main process and by the **ade-cli runtime daemon** (`ade
-serve`); both open the same `.ade/ade.db` and use the same `AdeDb.sync`
+Electron main process and by the **ADE runtime** (`ade serve`);
+both open the same `.ade/ade.db` and use the same `AdeDb.sync`
 surface, so a change in either place is wire-compatible with the other.
 
 Every other service talks to plain SQLite (`run`, `get`, `all`,

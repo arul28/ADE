@@ -2,7 +2,7 @@
 
 Navigation map for the internal docs. **Start with [PRD.md](./PRD.md).**
 
-The mental model up front: ADE is a **per-machine runtime daemon** (`apps/ade-cli/`, run as `ade serve`) that owns projects, lanes, chats, processes, sync, and proof. The desktop app, the terminal `ade code` client, the iOS app, and SSH-attached desktop windows are all peer **clients** of that runtime. Read the entry-point docs in that order:
+The mental model up front: ADE is a **per-machine ADE runtime** (`apps/ade-cli/`, run as `ade serve`) that owns projects, lanes, agent chats, work sessions, processes, sync, and proof. The desktop app, the terminal `ade code` client, the iOS app, and SSH-attached desktop windows are all peer **clients** of that runtime. Read the entry-point docs in that order:
 
 ## Reading order
 
@@ -37,7 +37,7 @@ docs/
     ├── onboarding-and-settings/           # first-run, schema, settings tabs
     ├── project-home/                      # welcome + per-lane dashboard
     ├── pull-requests/                     # stacking, queue, conflict simulation
-    ├── remote-runtime/                    # local daemon + SSH remote machines
+    ├── remote-runtime/                    # local runtime + SSH remote machines
     ├── sync-and-multi-device/             # cr-sqlite CRDT, iOS, remote commands
     ├── terminals-and-sessions/            # PTY, sessions, processes, UI surfaces
     └── workspace-graph/                   # React Flow canvas + data sources

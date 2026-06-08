@@ -803,6 +803,18 @@ export class LocalRuntimeConnectionPool {
     return await this.callSyncForRoot<SyncRoleSnapshot>(rootPath, "sync.clearPin");
   }
 
+  async syncRuntimeNameForRoot(rootPath: string): Promise<{ runtimeName: string | null }> {
+    return await this.callSyncForRoot<{ runtimeName: string | null }>(rootPath, "sync.getRuntimeName");
+  }
+
+  async setSyncRuntimeNameForRoot(rootPath: string, name: string): Promise<SyncRoleSnapshot> {
+    return await this.callSyncForRoot<SyncRoleSnapshot>(rootPath, "sync.setRuntimeName", { name });
+  }
+
+  async clearSyncRuntimeNameForRoot(rootPath: string): Promise<SyncRoleSnapshot> {
+    return await this.callSyncForRoot<SyncRoleSnapshot>(rootPath, "sync.clearRuntimeName");
+  }
+
   async callActionForRoot(
     rootPath: string,
     request: RemoteRuntimeActionRequest,
@@ -1147,7 +1159,8 @@ export class LocalRuntimeConnectionPool {
   private isolatedRuntimeSocketPath(primarySocketPath: string): string {
     const buildHash = computeLocalRuntimeBuildHash()?.slice(0, 12) ?? "runtime";
     const version = this.appVersion.replace(/[^a-zA-Z0-9_.-]+/g, "-") || "version";
-    const runtimeName = `ade-cto-${version}-${buildHash}.sock`;
+    const socketKey = createHash("sha256").update(`${version}:${buildHash}`).digest("hex").slice(0, 8);
+    const runtimeName = `i-${socketKey}.sock`;
     if (isAdeRuntimeNamedPipePath(primarySocketPath)) {
       return `${primarySocketPath}-${version}-${buildHash}`;
     }
@@ -1183,7 +1196,7 @@ export class LocalRuntimeConnectionPool {
       });
     }
     await unlinkSocketIfNotListening(socketPath);
-    const child = this.spawnRuntime(socketPath);
+    const child = this.spawnRuntime(socketPath, { ...this.options, disableSync: true });
     try {
       await waitForSocket(socketPath);
       const client = await this.connectClient(socketPath);
@@ -1269,10 +1282,13 @@ export class LocalRuntimeConnectionPool {
     return client;
   }
 
-  private spawnRuntime(socketPath: string): ChildProcess {
+  private spawnRuntime(
+    socketPath: string,
+    options: { disableSync?: boolean } = this.options,
+  ): ChildProcess {
     const cliPath = resolveCliScriptPath();
-    const args = buildLocalRuntimeServeArgs(cliPath, socketPath, this.options);
-    this.logger.info("local_runtime.spawn", { cliPath, socketPath, disableSync: this.options.disableSync === true });
+    const args = buildLocalRuntimeServeArgs(cliPath, socketPath, options);
+    this.logger.info("local_runtime.spawn", { cliPath, socketPath, disableSync: options.disableSync === true });
     const env = buildLocalRuntimeNodeEnv(this.appVersion);
     env.ADE_RUNTIME_PARENT_PID = String(process.pid);
     const buildHash = computeLocalRuntimeBuildHash(cliPath);

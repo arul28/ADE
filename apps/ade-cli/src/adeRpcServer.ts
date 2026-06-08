@@ -5399,6 +5399,16 @@ export function createAdeRpcRequestHandler(args: {
       if (method === "sync.clearPin") {
         return await syncService.clearPin();
       }
+      if (method === "sync.getRuntimeName") {
+        return { runtimeName: syncService.getRuntimeName() };
+      }
+      if (method === "sync.setRuntimeName") {
+        const name = typeof params.name === "string" ? params.name : "";
+        return await syncService.setRuntimeName(name);
+      }
+      if (method === "sync.clearRuntimeName") {
+        return await syncService.clearRuntimeName();
+      }
       if (method === "sync.setActiveLanePresence") {
         const laneIds = Array.isArray(params.laneIds)
           ? params.laneIds.filter((laneId): laneId is string => typeof laneId === "string")

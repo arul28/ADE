@@ -851,18 +851,30 @@ struct ModelPickerListRow: View {
     }
   }
 
+  private var rowSelectionEffort: String? {
+    guard !supportedTiers.isEmpty else { return nil }
+    let normalizedCurrent = currentReasoningEffort
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+      .lowercased()
+    if supportedTiers.contains(normalizedCurrent) {
+      return normalizedCurrent
+    }
+    return supportedTiers.first(where: { $0 == "medium" })
+      ?? supportedTiers.first(where: { $0 == "low" })
+      ?? supportedTiers.first
+  }
+
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
 	      Button {
-	        guard supportedTiers.isEmpty else { return }
-	        onSelect(nil)
+	        onSelect(rowSelectionEffort)
       } label: {
         headerRow
           .frame(maxWidth: .infinity, alignment: .leading)
           .contentShape(Rectangle())
 	      }
 	      .buttonStyle(.plain)
-	      .disabled(isBusy || !model.isAvailable || !supportedTiers.isEmpty)
+	      .disabled(isBusy || !model.isAvailable)
 
       if !supportedTiers.isEmpty {
         reasoningPills(tiers: supportedTiers)

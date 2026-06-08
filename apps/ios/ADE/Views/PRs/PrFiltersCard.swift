@@ -4,16 +4,15 @@ import SwiftUI
 /// compact sort menu chip — no wrapping card, no count header, no @author
 /// line, no tri-toggle sort. Matches the PRs-tab design spec.
 struct PrGitHubFiltersCard: View {
-  @Binding var statusFilter: PrGitHubStatusFilter
   @Binding var scopeFilter: PrGitHubScopeFilter
   @Binding var sortOption: PrGitHubSortOption
   let counts: PrGitHubFilterCounts
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 8) {
-      // Scope first — "All / ADE / External" is the primary axis users
-      // think about ("show me my work" vs "show me everything"). State
-      // (Open/Draft/Merged/Closed) is the secondary refinement.
+    // Secondary, advanced refinements only. The primary Open/Merged/Closed
+    // status axis is the always-visible headline category tabs; here we keep
+    // just the scope (All / ADE / External) control and the sort menu.
+    HStack(spacing: 8) {
       PrScopeChipRow {
         ForEach(PrGitHubScopeFilter.allCases) { filter in
           PrGlassChip(
@@ -28,25 +27,9 @@ struct PrGitHubFiltersCard: View {
         }
       }
 
-      HStack(spacing: 8) {
-        PrScopeChipRow {
-          ForEach(PrGitHubStatusFilter.allCases) { filter in
-            PrGlassChip(
-              label: statusLabel(filter),
-              count: statusCount(filter),
-              tint: statusTint(filter),
-              isActive: statusFilter == filter,
-              icon: statusIcon(filter)
-            ) {
-              statusFilter = filter
-            }
-          }
-        }
+      Spacer(minLength: 0)
 
-        Spacer(minLength: 0)
-
-        sortMenu
-      }
+      sortMenu
     }
   }
 
@@ -97,46 +80,6 @@ struct PrGitHubFiltersCard: View {
     )
   }
 
-  private func statusLabel(_ filter: PrGitHubStatusFilter) -> String {
-    switch filter {
-    case .open: return "Open"
-    case .draft: return "Draft"
-    case .merged: return "Merged"
-    case .closed: return "Closed"
-    case .all: return "All"
-    }
-  }
-
-  private func statusIcon(_ filter: PrGitHubStatusFilter) -> String {
-    switch filter {
-    case .open: return "arrow.triangle.pull"
-    case .draft: return "pencil.and.outline"
-    case .merged: return "arrow.merge"
-    case .closed: return "xmark.circle"
-    case .all: return "circle.dashed"
-    }
-  }
-
-  private func statusTint(_ filter: PrGitHubStatusFilter) -> Color {
-    switch filter {
-    case .open: return PrsGlass.openTop
-    case .draft: return PrsGlass.draftTop
-    case .merged: return PrsGlass.mergedTop
-    case .closed: return PrsGlass.closedTop
-    case .all: return PrsGlass.accentTop
-    }
-  }
-
-  private func statusCount(_ filter: PrGitHubStatusFilter) -> Int {
-    switch filter {
-    case .open: return counts.open
-    case .draft: return counts.draft
-    case .merged: return counts.merged
-    case .closed: return counts.closed
-    case .all: return counts.all
-    }
-  }
-
   private func scopeLabel(_ filter: PrGitHubScopeFilter) -> String {
     switch filter {
     case .all: return "All"
@@ -167,6 +110,67 @@ struct PrGitHubFiltersCard: View {
     case .ade: return counts.ade
     case .external: return counts.external
     }
+  }
+}
+
+// MARK: - GitHub category headline tabs (Open / Merged / Closed)
+//
+// The primary top-level control for the GitHub surface, mirroring desktop's
+// GitHubTab filter tabs: three underline tabs in a fixed order with a mono
+// count badge each. Active tab gets its category tint on the label + a 2pt
+// underline; inactive tabs are muted. Open folds draft in.
+
+struct PrGitHubCategoryTabs: View {
+  @Binding var selection: PrGitHubCategory
+  let counts: PrGitHubCategoryCounts
+
+  var body: some View {
+    HStack(spacing: 0) {
+      ForEach(PrGitHubCategory.allCases) { category in
+        tab(for: category)
+      }
+      Spacer(minLength: 0)
+    }
+    .accessibilityElement(children: .contain)
+    .accessibilityLabel("Pull request status")
+  }
+
+  @ViewBuilder
+  private func tab(for category: PrGitHubCategory) -> some View {
+    let isActive = selection == category
+    let tint = category.tint
+    let count = counts.count(for: category)
+    Button {
+      withAnimation(.easeInOut(duration: 0.18)) {
+        selection = category
+      }
+    } label: {
+      VStack(spacing: 6) {
+        HStack(spacing: 5) {
+          if let icon = category.icon {
+            Image(systemName: icon)
+              .font(.system(size: 10, weight: .bold))
+              .foregroundStyle(isActive ? tint : PrsGlass.textMuted)
+          }
+          Text(category.title)
+            .font(.system(size: 12.5, weight: isActive ? .semibold : .regular))
+            .foregroundStyle(isActive ? tint : PrsGlass.textSecondary)
+          Text("\(count)")
+            .font(.system(size: 10, weight: .bold, design: .monospaced))
+            .foregroundStyle(isActive ? tint.opacity(0.85) : PrsGlass.textMuted.opacity(0.8))
+        }
+        .padding(.horizontal, 12)
+        .padding(.top, 8)
+
+        Rectangle()
+          .fill(isActive ? tint : Color.clear)
+          .frame(height: 2)
+      }
+      .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .accessibilityLabel("\(category.title), \(count) pull requests")
+    .accessibilityAddTraits(isActive ? [.isSelected] : [])
   }
 }
 

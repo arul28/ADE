@@ -240,7 +240,20 @@ describe("ADE CLI", () => {
     expect(buildCliPlan(["-v"])).toEqual(version);
   });
 
-  it("builds runtime daemon and stdio RPC commands", () => {
+  it("builds brain, runtime, and stdio RPC commands", () => {
+    expect(buildCliPlan(["brain", "status"])).toEqual({
+      kind: "brain",
+      rest: ["status"],
+    });
+    expect(buildCliPlan(["brain", "restart"])).toEqual({
+      kind: "brain",
+      rest: ["restart"],
+    });
+    expect(buildCliPlan(["brain", "pin", "generate"])).toEqual({
+      kind: "execute",
+      label: "sync pin generate",
+      steps: [{ key: "result", method: "sync.generatePin" }],
+    });
     expect(buildCliPlan(["runtime", "status"])).toEqual({
       kind: "runtime",
       rest: ["status"],

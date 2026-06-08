@@ -338,7 +338,13 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(workRuntimeModeOptions(provider: "codex").map(\.id), ["default", "plan", "full-auto", "config-toml"])
     XCTAssertEqual(workRuntimeModeOptions(provider: "opencode").map(\.id), ["plan", "edit", "full-auto"])
     XCTAssertEqual(workRuntimeModeOptions(provider: "cursor").map(\.id), ["agent", "ask", "plan", "full-auto"])
-    XCTAssertEqual(workRuntimeModeOptions(provider: "droid").map(\.id), ["read-only", "auto-low", "auto-medium", "auto-high"])
+    XCTAssertEqual(workRuntimeModeOptions(provider: "droid").map(\.id), ["read-only", "auto-low", "auto-medium", "auto-high", "agi"])
+
+    // Droid AGI (orchestrator) mode maps to droidPermissionMode="agi" with a
+    // read-only/plan top-level permission mode (desktop parity).
+    let droidAgi = workRuntimeWireFields(provider: "droid", mode: "agi")
+    XCTAssertEqual(droidAgi.droidPermissionMode, "agi")
+    XCTAssertEqual(droidAgi.permissionMode, "plan")
 
     let claudeAuto = workRuntimeWireFields(provider: "claude", mode: "auto")
     XCTAssertEqual(claudeAuto.permissionMode, "auto")
@@ -800,7 +806,7 @@ final class ADETests: XCTestCase {
       lastResolvedAt: "2026-05-10T10:00:00.000Z"
     )
 
-    XCTAssertEqual(host.id, "device-1::local|_ade-sync._tcp.|ADE Sync studio")
+    XCTAssertEqual(host.id, "device-1")
     XCTAssertEqual(host.hostName, "studio")
     XCTAssertEqual(host.hostIdentity, "device-1")
     XCTAssertEqual(host.port, 8787)
@@ -900,7 +906,7 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(displayed.savedHosts[0].tailscaleAddress, "macbook.tailnet.ts.net")
     XCTAssertEqual(
       syncDiscoveredHostDetailText(host: displayed.savedHosts[0], detailPrefix: "Saved"),
-      "Background ADE 0.0.0 · 2 projects: ADE, Website · Saved: 192.168.1.240"
+      "ADE brain 0.0.0 · Saved"
     )
   }
 
@@ -909,7 +915,7 @@ final class ADETests: XCTestCase {
       id: "stale-device",
       serviceName: "ADE Sync stale",
       hostName: "MacBook-Pro-567.local",
-      hostIdentity: "stale-device",
+      hostIdentity: "machine-1",
       port: 8787,
       addresses: ["MacBook-Pro-567.local", "192.168.1.249"],
       tailscaleAddress: "100.75.21.10",
@@ -924,7 +930,7 @@ final class ADETests: XCTestCase {
       id: "fresh-device",
       serviceName: "ADE Sync fresh",
       hostName: "lappy",
-      hostIdentity: "fresh-device",
+      hostIdentity: "machine-1",
       port: 8787,
       addresses: ["192.168.1.249"],
       tailscaleAddress: "100.75.21.10",
@@ -951,7 +957,7 @@ final class ADETests: XCTestCase {
       id: "pair-service",
       serviceName: "ADE Pair",
       hostName: "MacBook-Pro-567.local",
-      hostIdentity: "machine-pair-service",
+      hostIdentity: "machine-1",
       port: 8787,
       addresses: ["192.168.1.249"],
       tailscaleAddress: nil,
@@ -966,7 +972,7 @@ final class ADETests: XCTestCase {
       id: "runtime-service",
       serviceName: "ADE Runtime",
       hostName: "lappy",
-      hostIdentity: "machine-runtime-service",
+      hostIdentity: "machine-1",
       port: 8790,
       addresses: ["192.168.1.249"],
       tailscaleAddress: nil,

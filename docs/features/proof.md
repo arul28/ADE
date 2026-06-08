@@ -10,7 +10,7 @@ The result: one interface for all models, no backend matrix, no coverage math. A
 
 ## Runtime ownership
 
-Proof storage and the broker are owned by the runtime daemon (`ade serve`) that owns the project. Artifacts on disk live under the runtime host's `.ade/artifacts/computer-use/` directory; the SQLite rows live in that runtime's `.ade/ade.db`. For local projects that is the user's machine; for remote projects it is the remote host. The desktop renderer and the headless ADE CLI both call into the broker over JSON-RPC; nothing about the proof pipeline lives in the renderer or in a separate host process.
+Proof storage and the broker are owned by the ADE runtime (`ade serve`) that owns the project. Artifacts on disk live under the runtime machine's `.ade/artifacts/computer-use/` directory; the SQLite rows live in that runtime's `.ade/ade.db`. For local projects that is the user's machine; for remote projects it is the remote machine. The desktop renderer and the headless ADE CLI both call into the broker over JSON-RPC; nothing about the proof pipeline lives in the renderer or in a separate host process.
 
 That means: proof captured during a remote-runtime session lives on the remote host. The desktop drawer fetches preview bytes through the same SSH-tunneled JSON-RPC channel as the rest of the remote project surface; raw artifact files are not synced back to the desktop machine, and proof is only viewable while the runtime that captured it is reachable.
 
@@ -155,7 +155,7 @@ A good proof set is three to eight captures with captions a reviewer can read in
 
 Headless-browser screenshots *are* supported — use `ade proof attach` with the output file path.
 
-`proof capture`, `proof record`, `proof environment`, `proof launch`, and `proof interact` set `preferHeadless: true` on the CLI plan: the connection layer drops to headless mode unless `--socket` is explicitly passed. This lets agent subprocesses capture proof without depending on the desktop socket being live; visual proof state still flows back to the broker on the next reconcile.
+`proof capture`, `proof record`, `proof environment`, `proof launch`, and `proof interact` set `preferHeadless: true` on the CLI plan: the connection layer drops to headless mode unless `--socket` is explicitly passed. This lets agent subprocesses capture proof without depending on the machine runtime endpoint being live; visual proof state still flows back to the broker on the next reconcile.
 
 ---
 
@@ -168,7 +168,7 @@ Headless-browser screenshots *are* supported — use `ade proof attach` with the
       ▼
   ade proof capture --caption "…"
       │
-      │  JSON-RPC over .ade/ade.sock (runtime daemon)
+      │  JSON-RPC over ~/.ade/sock/ade.sock when socket-backed
       ▼
   proof action (runtime: ade serve)
       │

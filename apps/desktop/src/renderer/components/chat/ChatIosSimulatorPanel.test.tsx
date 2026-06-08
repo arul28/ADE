@@ -1043,7 +1043,7 @@ describe("ChatIosSimulatorPanel", () => {
 
     await waitFor(() => {
       expect(onInsertDraft).toHaveBeenCalledWith(expect.stringContaining("No renderable #Preview was found"));
-      expect(onInsertDraft).toHaveBeenCalledWith(expect.stringContaining("ade --socket ios-sim preview-match"));
+      expect(onInsertDraft).toHaveBeenCalledWith(expect.stringContaining("ade ios-sim preview-match"));
       expect(api.renderPreview).not.toHaveBeenCalled();
     });
   });

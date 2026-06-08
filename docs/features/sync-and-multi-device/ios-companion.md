@@ -1,16 +1,39 @@
 # iOS Companion
 
 The ADE iOS app is a native SwiftUI companion that acts as a
-**controller** for an ADE runtime daemon (`ade serve`). The daemon may
-be running on a Mac that also has the desktop app open or on a headless
-host — the phone does not care, and the desktop renderer is just
-another controller of the same daemon. The phone never runs agents; it
-reads synced state from a local SQLite DB and sends execution commands
-to the daemon over WebSocket.
+**controller** for an ADE runtime (`ade serve`). The runtime may be running
+on a Mac that also has the desktop app open or on a headless machine —
+the phone does not care, and the desktop renderer is just another
+client of the same runtime. The phone never runs agents; it reads synced
+state from a local SQLite DB and sends execution commands to the runtime
+over WebSocket.
 
 This doc summarises the architecture at a level useful for understanding
 the sync surface. For the full roadmap, see Phase 6 and Phase 7 plans in
 the repo's `docs/final-plan/`.
+
+## Connect Your Phone
+
+ADE Mobile connects to a **machine**, not to a desktop window. The
+machine is shown by its computer name, with LAN and Tailscale routes
+kept as connection details behind the row.
+
+1. On the computer, open ADE Settings > Sync > Pair a phone, or run
+   `ade sync pin generate` from the CLI.
+2. On the phone, open Settings > Pairing and choose the machine from
+   Nearby machines. Manual entry is still available for a machine
+   address and port when discovery is unavailable.
+3. Enter the 6-digit PIN. The phone receives a durable per-device
+   secret and stores it in Keychain, so future reconnects do not ask
+   for the PIN again.
+4. Pick a project from the machine catalog. Today ADE may reconnect
+   internally to the selected project's sync port, but the user-facing
+   model stays machine -> projects.
+
+The same machine token works across LAN and Tailscale routes and across
+that machine's project ports. `siteId` remains an internal per-project
+database/runtime detail and must not be used as the visible identity of
+a saved machine.
 
 ## Project layout
 
@@ -134,9 +157,9 @@ Phase 7).
 
 ### Connection status UI
 
-Host connection status is surfaced through a single shared component,
+Machine connection status is surfaced through a single shared component,
 `ADEConnectionDot` (in `Views/Components/ADEDesignSystem.swift`). It
-renders a colored dot, a state label, and the truncated host name when
+renders a colored dot, a state label, and the truncated machine name when
 connected, and acts as a 44pt button that opens Settings.
 
 All visible connection affordances read from `SyncConnectionHealth`
@@ -148,7 +171,7 @@ that used to be tangled together:
 
 - `transport: SyncTransportHealth` — `disconnected` / `connecting` /
   `connected` / `unreachable`. `RemoteConnectionState.syncing` collapses
-  into `connected` because the socket is alive while the host streams a
+  into `connected` because the connection is alive while the runtime streams a
   catchup batch; only `RemoteConnectionState.error` maps to
   `unreachable`.
 - `load: SyncLoadHealth` — `normal` / `strained`. `strained` is set
@@ -156,7 +179,7 @@ that used to be tangled together:
   i.e. recent request timeouts have caused the phone to back off
   background work.
 - `lastFailureMessage` — surfaced only when transport is `unreachable`,
-  so a stale error from a previous socket does not bleed into the UI
+  so a stale error from a previous connection does not bleed into the UI
   while the phone is happily disconnected or reconnecting.
 
 Tint mapping (resolved by `SettingsConnectionPresentation.statusTint`,
@@ -182,7 +205,7 @@ hydrating cards inside each screen body.
 
 `ProjectHomeView` is the exception: with the navigation bar hidden
 (brand-mark hero only) it surfaces the same connection state through
-an inline "Attached to <host>" banner above the open-project button.
+an inline "Attached to <machine>" banner above the open-project button.
 The banner uses the same `SyncConnectionHealth` mapping as
 `ADEConnectionDot` (success when connected and not strained, warning
 when connecting or strained, danger when unreachable, muted when
@@ -207,9 +230,9 @@ otherwise. The legacy "Syncing" label was removed — syncing is just
 a connected transport doing work.
 
 Accessibility: the dot's `accessibilityLabel` describes load strain
-("Connected to <host>. Host is responding slowly"), explicit syncing
-work ("Connected to <host>. Syncing changes"), or plain "Connected to
-<host>" when neither applies; for transport `unreachable` it appends
+("Connected to <machine>. Machine is responding slowly"), explicit syncing
+work ("Connected to <machine>. Syncing changes"), or plain "Connected to
+<machine>" when neither applies; for transport `unreachable` it appends
 the trimmed `lastFailureMessage`. `accessibilityHint` is "Opens
 settings to pair or reconnect", and
 `accessibilityShowsLargeContentViewer()` keeps it reachable from
@@ -285,11 +308,12 @@ Source: `apps/ios/ADE/Services/SyncService.swift`.
 ### Connection lifecycle
 
 1. App launch: read pairing secret from Keychain. Read the stored
-   connection draft (host, port, QR payload v2 address candidates).
+   connection draft (machine identity, port, QR payload v2 address
+   candidates).
 2. Open WebSocket connection. `reconnectIfPossible` is guarded so
    overlapping wake-ups never stack TCP/WebSocket attempts.
-3. Send local `db_version`; `hello_ok` includes the host's current
-   project catalog when the host supports project switching.
+3. Send local `db_version`; `hello_ok` includes the runtime's current
+   project catalog when the runtime supports project switching.
 4. If no active project is selected, show the native project home
    instead of hydrating lane/file/PR surfaces against the wrong row.
 5. After the active project row exists locally, receive catchup
@@ -298,10 +322,10 @@ Source: `apps/ios/ADE/Services/SyncService.swift`.
 6. Enter continuous bidirectional sync.
 7. On disconnect: automatic reconnection with exponential backoff.
 8. After pairing completes, the phone announces currently-open lanes
-   via `lanes.presence.announce` so the host decorates
+   via `lanes.presence.announce` so the runtime decorates
    `LaneSummary.devicesOpen` for other controllers; the phone calls
    `lanes.presence.release` when the user leaves a lane surface and
-   re-announces on a 30 s heartbeat (host-side TTL is 60 s).
+   re-announces on a 30 s heartbeat (runtime-side TTL is 60 s).
 
 ### Message types
 
@@ -310,20 +334,20 @@ Implemented envelope types on iOS:
 | Type | Direction | Purpose |
 |---|---|---|
 | `hello` / `hello_ok` / `hello_error` | Bidirectional | Handshake |
-| `pairing_request` / `pairing_result` | Phone → host / host → phone | 6-digit PIN pairing |
-| `project_catalog_request` / `project_catalog` | Phone → host / host → phone | Refresh recent/available machine projects |
-| `project_switch_request` / `project_switch_result` | Phone → host / host → phone | Prepare a sync connection for a selected machine project |
+| `pairing_request` / `pairing_result` | Phone → runtime / runtime → phone | 6-digit PIN pairing |
+| `project_catalog_request` / `project_catalog` | Phone → runtime / runtime → phone | Refresh recent/available machine projects |
+| `project_switch_request` / `project_switch_result` | Phone → runtime / runtime → phone | Prepare a sync connection for a selected machine project |
 | `changeset_batch` | Bidirectional | cr-sqlite changeset batch |
 | `changeset_ack` | Bidirectional | Per-batch apply confirmation (or error code); the sender retransmits on timeout |
-| `command` | Phone → host | Execution request |
-| `command_ack` | Host → phone | Command receipt |
-| `command_result` | Host → phone | Execution result or error |
+| `command` | Phone → runtime | Execution request |
+| `command_ack` | Runtime → phone | Command receipt |
+| `command_result` | Runtime → phone | Execution result or error |
 | `file_request` / `file_response` | Bidirectional | On-demand file access |
-| `terminal_subscribe` / `terminal_unsubscribe` / `terminal_data` | Phone ↔ host | Terminal streaming; `unsubscribe` is sent when a Work terminal screen disappears so the phone stops accumulating buffer for off-screen sessions |
-| `terminal_input` / `terminal_resize` | Phone → host | Raw input bytes and viewport size changes for a subscribed live PTY |
-| `chat_subscribe` / `chat_event` | Phone → host / host → phone | Agent chat transcript streaming |
+| `terminal_subscribe` / `terminal_unsubscribe` / `terminal_data` | Phone ↔ runtime | Terminal streaming; `unsubscribe` is sent when a Work terminal screen disappears so the phone stops accumulating buffer for off-screen sessions |
+| `terminal_input` / `terminal_resize` | Phone → runtime | Raw input bytes and viewport size changes for a subscribed live PTY |
+| `chat_subscribe` / `chat_event` | Phone → runtime / runtime → phone | Agent chat transcript streaming |
 | `heartbeat` | Bidirectional | Connection health (30s) |
-| `brain_status` | Host → phone | Cluster authority broadcast |
+| `brain_status` | Runtime → phone | Legacy-named cluster authority broadcast |
 
 Gzip decompression uses the system `zlib` module. `unwrapSyncCommandResponse`
 turns a raw response dict into either the `result` value or throws an
@@ -332,7 +356,7 @@ turns a raw response dict into either the `result` value or throws an
 ### Offline behavior
 
 - All synced state is available offline from the local DB.
-- Execution commands queue locally and replay on reconnect. The host
+- Execution commands queue locally and replay on reconnect. The runtime
   deduplicates retried commands by `commandId` through a TTL'd cache
   + persisted journal, so a replay returns the cached
   `command_ack` / `command_result` instead of running twice.
@@ -350,7 +374,7 @@ turn. Live updates will keep syncing."* because warmup-heavy turns
 routinely outlast the 30 s default without indicating a transport
 failure.
 
-A request timeout no longer unconditionally drops the socket. Inbound
+A request timeout no longer unconditionally drops the connection. Inbound
 traffic on the WebSocket is timestamped via `lastInboundMessageAt`
 (set whenever any envelope arrives — heartbeats, change batches,
 results, anything), and the timeout path consults
@@ -358,11 +382,11 @@ results, anything), and the timeout path consults
 silenceThreshold:)` before tearing down. The default silence
 threshold is `SyncSocketTiming.requestTimeoutReconnectSilenceSeconds
 = 12 s`. If any envelope arrived within the last 12 seconds, the
-phone keeps the socket and lets the user retry; only when the socket
+phone keeps the connection and lets the user retry; only when the connection
 has actually been silent for the full window does the timeout escalate
 to a reconnect. This avoids cycling a healthy connection while one
 slow command is in flight, and falls back to "reconnect" when
-`lastInboundMessageAt` is `nil` (fresh socket / never received
+`lastInboundMessageAt` is `nil` (fresh connection / never received
 anything).
 
 `InitialHydrationGate` polls for the project row at 200ms intervals up
@@ -376,42 +400,44 @@ yet arrived in the catchup batch.
 
 - Stores the paired device secret produced after a successful PIN
   pairing.
-- Stores connection draft metadata (host, port, last remote db
+- Stores connection draft metadata (machine identity, route, port, last remote db
   version) so reconnects resume cleanly. The legacy
   `lastBrainDeviceId` draft field has been removed — connections now
-  resolve an address candidate from the host's device registry.
-- Per-host token shelf: in addition to the legacy
+  resolve an address candidate from the runtime's device registry.
+- Per-machine token shelf: in addition to the legacy
   single-token `connection-token` slot, tokens may be saved against a
-  derived `connection-token.<hostKey>` account where `hostKey` is
-  `device:<hostIdentity>`, `route:<host>:<port>`, or
-  `name:<hostName>:<port>`. `SyncService` keeps a parallel
+  derived `connection-token.<machineKey>` account where `machineKey` is
+  `machine:<hostIdentity>`, `site:<legacySiteId>`,
+  `route:<address>:<port>`, or `name:<hostName>:<port>`.
+  `SyncService` keeps a parallel
   `ade.sync.hostProfiles` `UserDefaults` blob so a phone that has
   paired with multiple machines can re-resolve the right token when
-  the host initiates a project switch without re-bundling
-  credentials. When discovered routes re-key a saved profile, the
-  token migrates to the new `hostKey` and the old-key slot is cleared
-  so the keychain does not accumulate orphaned per-route tokens.
+  the runtime initiates a project switch without re-bundling
+  credentials. When discovery exposes a stable machine identity, the
+  token migrates to the new machine key and legacy `site:` / route /
+  name slots are cleared so the keychain does not accumulate orphaned
+  aliases.
 - Uses iOS Keychain Services API (`SecItemAdd` / `SecItemCopyMatching`
   / `SecItemUpdate` / `SecItemDelete`).
 
 ### PIN pairing flow
 
-1. User opens Settings > Sync on the host machine and sets a 6-digit
-   PIN. The host writes the PIN under `~/.ade/secrets` (chmod `0600`)
+1. User opens Settings > Sync on the machine and sets a 6-digit
+   PIN. The runtime writes the PIN under `~/.ade/secrets` (chmod `0600`)
    and surfaces it on the Settings > Sync sheet for the duration the
    user wants to accept pairings.
 2. Phone opens Settings > Pairing, either scans the machine QR (which
-   carries address candidates + port only) or enters host/port
+   carries address candidates + port only) or enters machine address/port
    manually, then types the same PIN the user set.
-3. Phone sends a `pairing_request` envelope with the PIN. The host's
+3. Phone sends a `pairing_request` envelope with the PIN. The runtime's
    `syncPairingStore.pairPeer` validates against `syncPinStore`; the
    failure codes are `invalid_pin`, `pin_not_set`, or `pairing_failed`.
-4. On success the host persists a per-device record and returns a
+4. On success the runtime persists a per-device record and returns a
    secret. The phone stores it in Keychain and subsequent connections
    authenticate with the paired secret, not the PIN.
 
 `SettingsPinSheet` on iOS mirrors the desktop PIN sheet and handles
-the entry UX. If the user misreads the digits, the host applies
+the entry UX. If the user misreads the digits, the runtime applies
 per-IP rate limiting (5 failures → 10-minute cooldown).
 
 ### Background App Refresh
@@ -423,10 +449,10 @@ per-IP rate limiting (5 failures → 10-minute cooldown).
 
 ### Push Notifications (APNs)
 
-ADE delivers push notifications from the desktop host to the iOS app
+ADE delivers push notifications from the runtime to the iOS app
 over Apple Push Notification service. The full stack is implemented:
 
-**Desktop host side** (`apps/desktop/src/main/services/notifications/`):
+**Runtime side** (`apps/desktop/src/main/services/notifications/`):
 
 - `apnsService.ts` — HTTP/2 APNs client using `node:http2` + JWT
   signed with `node:crypto` (ES256). No native binary dependency.
@@ -500,7 +526,7 @@ over Apple Push Notification service. The full stack is implemented:
   and `.timeSensitive` (iOS 15+) at first launch.
   Token registration calls
   `SyncService.shared?.registerPushToken(hex, kind: .alert, ...)` which
-  transmits the token to the desktop host via the sync command surface.
+  transmits the token to the runtime via the sync command surface.
 
 - `NotificationCategories.swift` — declares ten
   `UNNotificationCategory` / `UNNotificationAction` values matching
@@ -538,7 +564,7 @@ over Apple Push Notification service. The full stack is implemented:
   `Date`), and `perSessionOverrides` keyed by `sessionId`
   (`muted`, `awaitingInputOnly`). Persisted as JSON in the App Group
   `UserDefaults` at key `ade.notifications.prefs`.
-- Synced to the desktop host so the host can gate APNs sends by
+- Synced to the runtime so the runtime can gate APNs sends by
   device preferences without requiring an extra round-trip.
 - `NotificationsCenterView.swift` — unified notifications settings
   screen with category toggles, quiet-hours picker
@@ -577,8 +603,8 @@ as the system-header suffix (`ADE · <lane>`). Because
 focus-lane change forces the coordinator to end the existing activity
 and request a new one, so the header always matches the lane the user
 is watching. Push-to-start (iOS 17.2+) and per-activity update tokens
-are collected via `pushTokenUpdates` and forwarded to the host through
-`LiveActivityHost.sendPushToken`. The host sends `liveactivity` APNs
+are collected via `pushTokenUpdates` and forwarded to the runtime through
+`LiveActivityHost.sendPushToken`. The runtime sends `liveactivity` APNs
 pushes to the update tokens via `notificationEventBus` whenever an
 attention-eligible event fires.
 
@@ -604,7 +630,7 @@ Three widget / control surfaces are registered by `ADEWidgetBundle`:
 - `ADEControlWidget` (iOS 18+) — Control Center "Open ADE" button
   and "Mute ADE" toggle. The mute toggle persists a window via
   `ADEMutePreferences.setMute(until:)` and forwards the ISO timestamp
-  to the desktop host via the intent command bridge
+  to the runtime via the intent command bridge
   (`ADEIntentCommandRegistry` / `ADESyncIntentBridge`).
 
 Shared DTOs live in `apps/ios/ADE/Shared/ADESharedModels.swift`:
@@ -669,12 +695,12 @@ push-controllers built from UIKit) matches the SwiftUI chrome.
 
 Before the tabs render, `ProjectHomeView` can take over the root screen
 when no active project is selected or the user taps the Projects toolbar
-button. It merges the host-provided catalog with projects already present
+button. It merges the runtime-provided catalog with projects already present
 in the local replicated DB, marks cached/unavailable rows, and requests a
 fresh bootstrap connection for the selected machine project through
 `project_switch_request`. Each tile renders `MobileProjectSummary.iconDataUrl`
-when the host's `projectIconResolver` found a favicon for the project,
-falling back to the brand glyph otherwise. The host pre-renders icons
+when the runtime's `projectIconResolver` found a favicon for the project,
+falling back to the brand glyph otherwise. The runtime pre-renders icons
 to a 64×64 PNG via Electron `nativeImage` before they reach the phone,
 so the iOS side can decode them with stock UIImage.
 
@@ -695,9 +721,9 @@ duplicate. Project list dedup runs as a final pass
 
 | Tab | Icon | Desktop equivalent | Capabilities |
 |---|---|---|---|
-| **Lanes** | `square.stack.3d.up` | `/lanes` | Full lane surface: search/filter chips, open/create/attach/manage, multi-attach for unregistered worktrees, stack canvas, git/diff/rebase/conflicts, template-backed environment setup progress, lane-scoped sessions and AI chats. `devicesOpen` presence chips show which other devices currently have the lane open. The lane gear opens `LaneAdvancedScreen`, a single page that groups Manage / Switch branch / Stash and the destructive git escape hatches (rebase lane, rebase descendants, rebase + push, force push) with an inline description per row and an offline disabled banner. The commit sheet (`LaneCommitSheet`) renders staged + unstaged file lists with per-file stage / unstage / discard / restore / open-diff / open-files actions, a "Suggest" AI button gated by host capability, and a setup-hint card surfaced when the host returns "AI commit messages are off". |
+| **Lanes** | `square.stack.3d.up` | `/lanes` | Full lane surface: search/filter chips, open/create/attach/manage, multi-attach for unregistered worktrees, stack canvas, git/diff/rebase/conflicts, template-backed environment setup progress, lane-scoped sessions and AI chats. `devicesOpen` presence chips show which other devices currently have the lane open. The lane gear opens `LaneAdvancedScreen`, a single page that groups Manage / Switch branch / Stash and the destructive git escape hatches (rebase lane, rebase descendants, rebase + push, force push) with an inline description per row and an offline disabled banner. The commit sheet (`LaneCommitSheet`) renders staged + unstaged file lists with per-file stage / unstage / discard / restore / open-diff / open-files actions, a "Suggest" AI button gated by runtime capability, and a setup-hint card surfaced when the runtime returns "AI commit messages are off". |
 | **Files** | `doc.text` | `/files` | Lane-backed workspace picker, live file tree/search/read, protected-workspace read-only parity. `mobileReadOnly` on the workspace payload gates mutating file actions on the phone via `ensureMobileFileMutationsAllowed`; quick-open and text-search result lists cap visible rows at 40 and ask the user to refine when more matches exist. |
-| **Work** | `terminal` | `/work` | Terminal + chat session list, cached history with persisted lane names, output streaming, character-by-character terminal input (Termius-style: each typed glyph forwards a single `terminal_input` byte and the field clears so PTY echo is the only source of truth), Ctrl-C forwarding for subscribed live PTYs, in-app CLI session launcher (Claude / Codex / Cursor / OpenCode / Droid / shell), message-to-continue on ended agent CLI rows, session pinning, live chat-event push from the host (no polling lag once subscribed). The new-session screen (`WorkNewChatScreen`) toggles between **ADE chat** and **CLI session** via a segmented picker; in CLI mode a `workCliProviderOptions` row picker exposes each supported provider explicitly. CLI mode submits `work.startCliSession` with the chosen provider, permission mode (Claude additionally supports `auto`), an optional `reasoningEffort`, and an optional opening message. For most providers the host types the opening message into the spawned PTY; for Codex the opening message is forwarded as the final argv positional through `buildTrackedCliLaunchCommand`, so the prompt is treated as a real first turn instead of a typed shell line. The terminal viewer (`WorkTerminalEmulatorView`) is a UIKit-backed monospaced screen that drives a `WorkTerminalScreen` model, computes its viewport in (cols, rows) from the rendered glyph cell, forwards each viewport change as `terminal_resize`, and unsubscribes via `terminal_unsubscribe` when the screen disappears. The earlier "activity feed" section was retired — running chats are surfaced through the session list and a Work tab badge bound to `SyncService.runningChatSessionCount`. |
+| **Work** | `terminal` | `/work` | Terminal + chat session list, cached history with persisted lane names, output streaming, character-by-character terminal input (Termius-style: each typed glyph forwards a single `terminal_input` byte and the field clears so PTY echo is the only source of truth), Ctrl-C forwarding for subscribed live PTYs, in-app CLI session launcher (Claude / Codex / Cursor / OpenCode / Droid / shell), message-to-continue on ended agent CLI rows, session pinning, live chat-event push from the runtime (no polling lag once subscribed). The new-session screen (`WorkNewChatScreen`) toggles between **ADE chat** and **CLI session** via a segmented picker; in CLI mode a `workCliProviderOptions` row picker exposes each supported provider explicitly. CLI mode submits `work.startCliSession` with the chosen provider, permission mode (Claude additionally supports `auto`), an optional `reasoningEffort`, and an optional opening message. For most providers the runtime types the opening message into the spawned PTY; for Codex the opening message is forwarded as the final argv positional through `buildTrackedCliLaunchCommand`, so the prompt is treated as a real first turn instead of a typed shell line. The terminal viewer (`WorkTerminalEmulatorView`) is a UIKit-backed monospaced screen that drives a `WorkTerminalScreen` model, computes its viewport in (cols, rows) from the rendered glyph cell, forwards each viewport change as `terminal_resize`, and unsubscribes via `terminal_unsubscribe` when the screen disappears. The earlier "activity feed" section was retired — running chats are surfaced through the session list and a Work tab badge bound to `SyncService.runningChatSessionCount`. |
 | **PRs** | `arrow.triangle.pull` | `/prs` | PR list/detail driven by `prs.getMobileSnapshot`: stack visibility (`PrStackSheet`), create-PR wizard (`CreatePrWizardView`) gated by per-lane eligibility, workflow cards (queue / integration / rebase) rendered from `PrWorkflowCard`, per-PR action capabilities. |
 | **CTO** | `brain.head.profile` | `/cto` | CTO snapshot: Chat / Team / Workflows segments, with the mobile workflows screen mirroring the desktop workflow policy/dashboard and preserving the shared glass navigation chrome. Drills into per-worker chat sessions via `CtoSessionDestinationView`. |
 | **Settings** | `gearshape` | `/settings` (sync subset) | PIN pairing (`SettingsPinSheet`), notification preferences (`NotificationsCenterView`), quiet hours, per-session overrides, appearance, diagnostics, connection header with QR payload and address candidates, reconnect, forget. `ConnectionSettingsView` binds to `SettingsConnectionPresentationModel`, which feeds plain `SettingsConnectionSnapshot` / `SettingsPairingSnapshot` / `SettingsDiagnosticsSnapshot` DTOs into the section views (`SettingsConnectionHeader`, `SettingsPairingSection`, `SettingsDiagnosticsSection`) instead of having them reach into `SyncService` directly. `sendTestPush` is now `async` and returns a `SyncSendTestPushResult` (`ok`, `message`); the Notifications section renders that message verbatim so APNs-not-configured / in-app-only / wire failure cases all surface to the user. |
@@ -714,24 +740,25 @@ All lane, file, Work, and PR projections are scoped through
 `Database.currentProjectId()`. The iOS app stores the active project id
 in `UserDefaults`, mirrors it into `DatabaseService`, and falls back to
 the project home if no selected project row has arrived yet. Project
-switches reset the remote DB version. The host machine runs at most one
-sync host at a time — pinned to the active project — so when the phone
-asks the host to switch projects, the host activates the requested
-project locally, returns `connection: null`, and the phone reuses its
-existing pairing credentials to reconnect against the now-active host.
-If the host is offline at switch time, it still records the requested
-project as active and the phone reconnects when the host returns.
+switches reset the remote DB version. The machine runtime runs at most
+one active sync project at a time, so when the phone asks the runtime to
+switch projects, the runtime activates the requested project locally,
+returns `connection: null`, and the phone reuses its
+existing pairing credentials to reconnect against the now-active project
+endpoint. If the runtime is offline at switch time, it still records the
+requested project as active and the phone reconnects when the machine
+returns.
 
-Before tearing down the old socket on a project switch, `SyncService`
+Before tearing down the old connection on a project switch, `SyncService`
 calls `resetChatEventState(clearHistory: false)` and
 `resetTerminalSubscriptionState(clearHistory: true)` so chat /
 terminal subscriptions bound to the previous project's session ids
 are dropped. Without this reset, the phone would resubscribe to stale
 ids after reconnect and either leak foreign chat events into the new
-project view or collide with newly-assigned session ids on the host.
+project view or collide with newly-assigned session ids on the runtime.
 
 Rather than reconstructing lane detail surfaces client-side from
-primitive rows, the iOS app persists richer projections the host
+primitive rows, the iOS app persists richer projections the runtime
 sends:
 
 - Lane list snapshots (`LaneListSnapshot`) with runtime bucket
@@ -745,11 +772,11 @@ sends:
 - Environment-init progress (`LaneEnvInitProgress`) returned by
   `lanes.initEnv`, `lanes.templates.apply`, and `lanes.getEnvStatus`;
   `LaneCreateSheet` switches from the form to a progress panel when a
-  template-backed create starts host-side setup.
+  template-backed create starts runtime-side setup.
 - `LaneSummary.devicesOpen` lists the devices currently on a lane,
-  decorated by the host from `lanes.presence.announce` events.
+  decorated by the runtime from `lanes.presence.announce` events.
 
-The host produces these via `lanes.refreshSnapshots` and
+The runtime produces these via `lanes.refreshSnapshots` and
 `lanes.getDetail` remote commands. The phone calls the command, stores
 the result, and reads from the local store afterward so reconnects and
 offline usage remain fast.
@@ -804,21 +831,21 @@ The iOS PRs tab consumes a single aggregate command,
   `PrIntegrationWorkflowCard`, `PrRebaseWorkflowCard` rendered by
   `PrWorkflowCards.swift`.
 - `live: boolean` — false signals the phone should render a
-  "host offline" banner.
+  "machine offline" banner.
 
 The PR list's GitHub browser uses the same GitHub snapshot shape as
 desktop: `repoPullRequests` and `externalPullRequests` are combined so
 external PRs involving the viewer can populate list/detail fallback
 cards instead of collapsing to unknown placeholders.
 
-## Command policy from the host
+## Command policy from the runtime
 
-The host exposes command-policy metadata
+The runtime exposes command-policy metadata
 (`SyncRemoteCommandDescriptor.policy` with `viewerAllowed`,
 `requiresApproval`, `localOnly`, `queueable`) through the sync command
 surface. The phone reads these descriptors and gates UI actions
 against them instead of relying on hardcoded mobile assumptions. A
-host that disables a command via policy change is immediately
+runtime that disables a command via policy change is immediately
 reflected in the phone's UI on the next descriptor read.
 
 ## Implementation status (phone specifics)
@@ -833,7 +860,7 @@ reflected in the phone's UI on the next descriptor read.
 | Project home + machine project switching | Implemented |
 | Lanes tab | Implemented to live machine parity (with `devicesOpen`, multi-attach, stack canvas, stack-position/base-branch editing in Manage Lane, and template environment progress) |
 | Files tab | Implemented with `mobileReadOnly` workspace gate and capped search/quick-open result rendering |
-| Work tab | Implemented; live chat-event push from host, subscribed terminal input/resize control with `terminal_unsubscribe` on view disappear, in-app CLI session launcher (`work.startCliSession`), message-to-continue on ended agent CLI rows |
+| Work tab | Implemented; live chat-event push from runtime, subscribed terminal input/resize control with `terminal_unsubscribe` on view disappear, in-app CLI session launcher (`work.startCliSession`), message-to-continue on ended agent CLI rows |
 | PRs tab | Implemented; driven by `prs.getMobileSnapshot` |
 | Settings tab (pairing / appearance / diagnostics) | Implemented |
 | CTO / Automations / Graph / History tabs | Planned |
@@ -846,22 +873,22 @@ reflected in the phone's UI on the next descriptor read.
 
 ## Gotchas
 
-- **Phones never host.** Any future feature that needs to run on the
+- **Phones never become the runtime.** Any future feature that needs to run on the
   phone should be implemented as a controller operation that sends a
-  command to the host. Agent processes, PTYs, worktrees, and workers
-  are all host-side.
+  command to the runtime. Agent processes, PTYs, worktrees, and workers
+  are all runtime-side.
 - **The phone's local DB is authoritative for reads.** If a read
-  looks stale, the fix is on the host push side (make sure the table
+  looks stale, the fix is on the runtime push side (make sure the table
   is a CRR, make sure writes land in a table the phone reads), not
-  on the phone. Avoid adding host-only caches that the phone has no
+  on the phone. Avoid adding runtime-only caches that the phone has no
   way to observe.
 - **Project selection gates hydration.** A phone paired to a machine can
   know about multiple machine projects, but lane/file/Work/PR reads must
   stay scoped to the active project id. If a switch fails, roll back the
-  active project id, host profile, token, and remote DB version together.
+  active project id, machine profile, token, and remote DB version together.
 - **Keychain items survive app uninstall on some iOS builds.**
   Pairing forget should both clear Keychain and clear the draft row;
-  the Settings tab's "Forget host" does both.
+  the Settings tab's "Forget machine" flow does both.
 - **The ADE iOS bootstrap SQL is generated.** When desktop `kvDb.ts`
   schema changes, regenerate `DatabaseBootstrap.sql`. Schema drift
   between desktop and iOS breaks the first-launch bootstrap, and
@@ -875,24 +902,24 @@ reflected in the phone's UI on the next descriptor read.
   `RemoteModels.IntegrationProposal`. Missing any leg makes synced PR
   workflow cards lose their adopted-lane/drift state.
 - **`InitialHydrationGate` can fire its 15s timeout on slow links.**
-  The visible symptom is "The host returned incomplete ... data."
+  The visible symptom is "The machine returned incomplete ... data."
   Bumping the timeout globally is not recommended; instead improve
-  the host's catchup responsiveness or let the user retry.
+  the runtime's catchup responsiveness or let the user retry.
 - **Per-command latency matters more than throughput.** The phone
   often submits one command at a time (user tapped "merge"). Keep
-  command handlers on the host responsive; bulk operations should
+  command handlers on the runtime responsive; bulk operations should
   be batched into a single command with a single reply rather than
   rapid-fire command storms.
-- **A request timeout is not the same as a dead socket.** The 30 s
+- **A request timeout is not the same as a dead connection.** The 30 s
   `SyncRequestTimeout` only forces a reconnect when
   `syncShouldReconnectAfterRequestTimeout` agrees — that helper
   consults `lastInboundMessageAt` and the 12 s
   `requestTimeoutReconnectSilenceSeconds` window. If anything has
   arrived on the WebSocket recently (heartbeats, change batches, a
   result), the timeout surfaces to the caller without dropping the
-  socket. New transport-affecting code should bump
+  connection. New transport-affecting code should bump
   `lastInboundMessageAt` on inbound traffic and treat that timestamp
-  as the source of truth for "is this socket actually alive".
+  as the source of truth for "is this connection actually alive".
 - **Connection UI must use `SyncConnectionHealth`, not the raw state.**
   `RemoteConnectionState.syncing` is just transport `connected` doing
   catchup work, and `RemoteConnectionState.error` carries failure text
@@ -901,16 +928,16 @@ reflected in the phone's UI on the next descriptor read.
   load-strain and transport failure stay distinct from each other and
   from background sync work.
 - **Chat streaming is push, with polling as fallback.** Once a phone
-  sends `chat_subscribe`, the host fans out `chat_event` envelopes in
-  real time from `agentChatService.subscribeToEvents`. The host still
+  sends `chat_subscribe`, the runtime fans out `chat_event` envelopes in
+  real time from `agentChatService.subscribeToEvents`. The runtime still
   runs its polling path on reconnect / catchup to fill any gap; the
   phone de-duplicates per-event keys so a push and a catchup poll
   covering the same event produce one rendered message.
 - **Chat subscribe requests a 2 MB snapshot window.** The phone sends
   `chat_subscribe` with `maxBytes: 2_000_000`
   (`syncChatSubscriptionMaxBytes`) so the initial snapshot can carry
-  long transcripts without the host truncating prematurely. When the
-  host still responds with `truncated: true`, the phone calls
+  long transcripts without the runtime truncating prematurely. When the
+  runtime still responds with `truncated: true`, the phone calls
   `mergeChatEventHistory` instead of `replaceChatEventHistory`: the
   existing cached events are unioned with the truncated snapshot,
   deduplicated by `id`, and re-sorted by `(timestamp, sequence)`.
@@ -924,23 +951,23 @@ reflected in the phone's UI on the next descriptor read.
   `parseWorkChatTranscript` (`WorkTranscriptParser.swift`) now fall back
   to the `messageId` from `chat_event` when no `itemId` is present, so
   streaming assistant-text fragments merge into the same transcript row
-  even when the host only surfaces a `messageId`. `buildWorkChatMessages`
+  even when the runtime only surfaces a `messageId`. `buildWorkChatMessages`
   (`WorkErrorAndMessageHelpers.swift`) tracks a
   `previousEnvelopeWasAssistantText` flag and allows merging into the
   previous assistant bubble when either (a) the text event has an
   `itemId` or (b) the immediately preceding envelope was also assistant
   text. This keeps the iOS Work chat from fanning a single assistant
   turn into many tiny rows.
-- **CLI launcher provider IDs are host-validated.** The Work
+- **CLI launcher provider IDs are runtime-validated.** The Work
   new-session screen sends `provider` strings that
   `parseCliProvider` matches verbatim against
   `claude | codex | cursor | droid | opencode | shell`. The phone
   has no way to pass arbitrary `command` / `startupCommand` payloads
   — those come from the shared
   `apps/desktop/src/shared/cliLaunch.ts`. Adding a sixth provider
-  means updating both the host registry and the phone's
+  means updating both the runtime registry and the phone's
   `workCliProviderOptions` together. `SyncStartCliSessionArgs` also
-  carries an optional `reasoningEffort` field that the host forwards
+  carries an optional `reasoningEffort` field that the runtime forwards
   to `buildTrackedCliLaunchCommand`, so the phone can launch a Codex
   / Claude CLI session at a non-default effort tier without going
   through the desktop.
@@ -955,7 +982,7 @@ reflected in the phone's UI on the next descriptor read.
 - **Pending-input item id flows out through chat summaries.** Both
   `AgentChatSessionSummary.pendingInputItemId` and
   `TerminalSessionSummary.pendingInputItemId` are populated by the
-  host whenever a session is in `awaitingInput`, derived from the
+  runtime whenever a session is in `awaitingInput`, derived from the
   live runtime's pending input map and (as fallback) from the recent
   event history. iOS reads it into `AgentSnapshot.pendingInputItemId`
   and `AttentionItem.itemId`, which is the value the AppIntents-backed
@@ -977,23 +1004,23 @@ reflected in the phone's UI on the next descriptor read.
   `UserDefaults` payload. The same pruning happens on the desktop
   side in `normalizeNotificationPreferences` to keep both ends in
   agreement after a round-trip.
-- **The runtime daemon's iOS sync wants `ADE_PROJECT_ROOT` for
+- **The runtime's iOS sync wants `ADE_PROJECT_ROOT` for
   preferred project.** `ade serve` reads `ADE_PROJECT_ROOT` and
   pre-registers the project through `ProjectRegistry.add` so the sync
-  host opens with that project as the preferred one
+  runtime opens with that project as the preferred one
   (`scopeRegistry.ensureSyncHost(preferredSyncProjectId)`). Without
-  it, the daemon still starts the host but does not pin a project,
+  it, the runtime still starts but does not pin a project,
   and the phone has to wait for the desktop to switch projects before
   it can issue project-scoped commands.
 - **Continuing an ended agent CLI row goes through `work.sendToSession`.**
   The phone keeps the transcript visible, collects the user's next
-  message, and sends it with the durable `sessionId`. The host writes
+  message, and sends it with the durable `sessionId`. The runtime writes
   to a live PTY when present, or starts the provider continuation
   internally and attaches the new PTY to the same session row.
 - **`WorkTerminalEmulatorView` drives a monospaced grid, not a free
-  text view.** The viewport reported back to the host is in (cols,
+  text view.** The viewport reported back to the runtime is in (cols,
   rows) inferred from the rendered glyph cell, not pixel dimensions.
-  The emulator unsubscribes the host stream on `onDisappear` so a
+  The emulator unsubscribes the runtime stream on `onDisappear` so a
   user paging through the session list does not accumulate buffer
   bytes for off-screen sessions; `restoreTerminalSubscriptions`
   re-subscribes on reconnect for any session id still tracked in
@@ -1002,7 +1029,7 @@ reflected in the phone's UI on the next descriptor read.
   recent CLI output available without letting an off-screen PTY grow
   the mobile buffer indefinitely.
 - **Lane presence is best-effort with a TTL.** The phone
-  re-announces on a 30 s cadence; the host prunes stale entries at
+  re-announces on a 30 s cadence; the runtime prunes stale entries at
   60 s. A phone that crashes without sending `lanes.presence.release`
   will disappear from `devicesOpen` one cycle later, not instantly.
 - **`mobileReadOnly` is an additional gate on top of

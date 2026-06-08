@@ -37,6 +37,7 @@
             "pages": [
               "welcome",
               "key-concepts",
+              "architecture",
               "quickstart"
             ]
           },

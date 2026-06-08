@@ -61,6 +61,7 @@ import {
 import { createSyncPairingStore } from "./syncPairingStore";
 import { createSyncPeerService } from "./syncPeerService";
 import { createSyncPinStore } from "./syncPinStore";
+import { createSyncRuntimeNameStore } from "./syncRuntimeNameStore";
 import { DEFAULT_SYNC_HOST_PORT } from "./syncProtocol";
 import { createSyncRemoteCommandService, type SyncRemoteCommandService } from "./syncRemoteCommandService";
 import type { ModelPickerStore } from "../modelPickerStore";
@@ -161,6 +162,7 @@ const DRAFT_FILE = "sync-peer-draft.json";
 const TOKEN_FILE = "sync-bootstrap-token";
 const PIN_FILE = "sync-pin.json";
 const PAIRED_DEVICES_FILE = "sync-paired-devices.json";
+const RUNTIME_NAME_FILE = "sync-runtime-name.json";
 
 function readPairingRecords(filePath: string): Record<string, unknown> {
   try {
@@ -233,6 +235,7 @@ const CHAT_TOOL_TYPES = new Set(["codex-chat", "claude-chat", "opencode-chat"]);
 const SYNC_HOST_PORT_RETRY_WINDOW = 12;
 const LOCAL_LANE_PRESENCE_HEARTBEAT_MS = 30_000;
 const TRANSFER_READINESS_CACHE_MS = 15_000;
+const STALE_BRAIN_LAST_SEEN_MS = 5 * 60_000;
 
 function generatePairingPin(): string {
   return randomInt(0, 1_000_000).toString().padStart(6, "0");
@@ -396,6 +399,7 @@ export function createSyncService(args: SyncServiceArgs) {
   const draftPath = path.join(pairingStateDir, DRAFT_FILE);
   const tokenPath = path.join(pairingStateDir, TOKEN_FILE);
   const pinPath = path.join(pairingStateDir, PIN_FILE);
+  const runtimeNamePath = path.join(pairingStateDir, RUNTIME_NAME_FILE);
   const pairingSecretsPath = path.join(pairingStateDir, PAIRED_DEVICES_FILE);
   migrateLegacySyncSecretFile({
     legacyPath: path.join(layout.secretsDir, DRAFT_FILE),
@@ -424,6 +428,7 @@ export function createSyncService(args: SyncServiceArgs) {
   fs.mkdirSync(path.dirname(draftPath), { recursive: true });
 
   const pinStore = createSyncPinStore({ filePath: pinPath });
+  const runtimeNameStore = createSyncRuntimeNameStore({ filePath: runtimeNamePath });
   const pairingStore = createSyncPairingStore({
     filePath: pairingSecretsPath,
     pinStore,
@@ -650,6 +655,7 @@ export function createSyncService(args: SyncServiceArgs) {
         dispatchDeeplinkUrl: args.dispatchDeeplinkUrl,
         computerUseArtifactBrokerService: args.computerUseArtifactBrokerService,
         pinStore,
+        runtimeNameStore,
         bootstrapTokenPath: tokenPath,
         pairingSecretsPath,
         port: attemptedPort,
@@ -725,6 +731,19 @@ export function createSyncService(args: SyncServiceArgs) {
       };
     };
 
+  const isStaleNonLocalBrainCluster = (
+    cluster: NonNullable<ReturnType<typeof deviceRegistryService.getClusterState>>,
+    localDeviceId: string,
+  ): boolean => {
+    if (cluster.brainDeviceId === localDeviceId) return false;
+    const brain = deviceRegistryService.getDevice(cluster.brainDeviceId);
+    if (!brain) return true;
+    const lastSeenRaw = brain.lastSeenAt ?? brain.updatedAt;
+    const lastSeenMs = Date.parse(lastSeenRaw);
+    if (!Number.isFinite(lastSeenMs)) return true;
+    return Date.now() - lastSeenMs > STALE_BRAIN_LAST_SEEN_MS;
+  };
+
   const refreshRoleState = async (): Promise<void> => {
     if (disposed) return;
     if (refreshRunning) {
@@ -747,8 +766,21 @@ export function createSyncService(args: SyncServiceArgs) {
               updatedByDeviceId: localDevice.deviceId,
             });
           }
-        } else if (!cluster && !savedDraft) {
-          cluster = deviceRegistryService.bootstrapLocalBrainIfNeeded();
+        } else if (!savedDraft) {
+          if (!cluster) {
+            cluster = deviceRegistryService.bootstrapLocalBrainIfNeeded();
+          } else if (isStaleNonLocalBrainCluster(cluster, localDevice.deviceId)) {
+            deviceRegistryService.touchLocalDevice({
+              lastSeenAt: nowIso(),
+              lastHost: localDevice.lastHost,
+              lastPort: localDevice.lastPort ?? DEFAULT_SYNC_HOST_PORT,
+            });
+            cluster = deviceRegistryService.setClusterState({
+              brainDeviceId: localDevice.deviceId,
+              brainEpoch: (cluster?.brainEpoch ?? 0) + 1,
+              updatedByDeviceId: localDevice.deviceId,
+            });
+          }
         }
         const isLocalBrain = forceHostRole || (cluster
           ? cluster.brainDeviceId === localDevice.deviceId
@@ -791,6 +823,7 @@ export function createSyncService(args: SyncServiceArgs) {
     const devices = deviceRegistryService.listDevices();
     const cluster = deviceRegistryService.getClusterState();
     const currentBrainId = cluster?.brainDeviceId ?? null;
+    const currentHostId = cluster?.hostDeviceId ?? currentBrainId;
     const peerStates = hostService
       ? hostService.getPeerStates()
       : (syncPeerService.getLatestBrainStatus()?.connectedPeers ?? []);
@@ -803,6 +836,7 @@ export function createSyncService(args: SyncServiceArgs) {
         ...device,
         isLocal,
         isBrain: device.deviceId === currentBrainId,
+        isHost: device.deviceId === currentHostId,
         connectionState: isLocal ? "self" : peer ? "connected" : "disconnected",
         connectedAt: peer?.connectedAt ?? null,
         lastAppliedAt: peer?.lastAppliedAt ?? null,
@@ -936,6 +970,7 @@ export function createSyncService(args: SyncServiceArgs) {
         ? cluster.brainDeviceId === localDevice.deviceId
         : !savedDraft && !syncPeerService.isConnected());
       const role = isLocalBrain ? "brain" : "viewer";
+      const runtimeRole = isLocalBrain ? "host" : "viewer";
       const crdtSyncAvailable = isCrdtSyncAvailable();
       const canHostPhonePairing = role === "brain" && hostStartupEnabled && crdtSyncAvailable;
       const client = syncPeerService.getStatus();
@@ -945,29 +980,45 @@ export function createSyncService(args: SyncServiceArgs) {
           : client.state === "connected"
             ? "brain"
             : "standalone";
+      const runtimeMode =
+        runtimeRole === "viewer"
+          ? "viewer"
+          : client.state === "connected"
+            ? "host"
+            : "standalone";
+      const connectedPeers = (
+        hostService
+          ? hostService.getPeerStates()
+          : (syncPeerService.getLatestBrainStatus()?.connectedPeers ?? [])
+      ).map((peer) => ({
+        ...peer,
+        isHost: Boolean(peer.isHost ?? peer.isBrain),
+      }));
       return {
         mode,
         role,
+        runtimeMode,
+        runtimeRole,
         localDevice,
         currentBrain,
+        currentRuntime: currentBrain,
         clusterState: cluster,
         bootstrapToken:
           canHostPhonePairing ? readToken() : null,
         pairingPin: canHostPhonePairing ? pinStore.getPin() : null,
         pairingPinConfigured: canHostPhonePairing ? pinStore.hasPin() : false,
+        runtimeName: runtimeNameStore.getRuntimeName(),
         pairingConnectInfo:
           canHostPhonePairing
             ? buildPairingConnectInfo({ localDevice })
             : null,
-        connectedPeers: hostService
-          ? hostService.getPeerStates()
-          : (syncPeerService.getLatestBrainStatus()?.connectedPeers ?? []),
+        connectedPeers,
         tailnetDiscovery: canHostPhonePairing && hostService
           ? hostService.getTailnetDiscoveryStatus()
           : createInactiveTailnetDiscoveryStatus(
               canHostPhonePairing
-                ? "Tailnet discovery is waiting for the machine sync host to start."
-                : "Tailnet discovery is only published by the host machine.",
+                ? "Tailnet discovery is waiting for the ADE runtime to start."
+                : "Tailnet discovery is only published by the host ADE runtime.",
             ),
         client,
         transferReadiness: options?.includeTransferReadiness === false
@@ -1060,7 +1111,7 @@ export function createSyncService(args: SyncServiceArgs) {
       assertPhonePairingAvailable();
       const current = await service.getStatus();
       if (current.role !== "brain") {
-        throw new Error("Phone pairing PINs can only be managed on the host machine.");
+        throw new Error("Phone pairing PINs can only be managed on the host ADE runtime.");
       }
       pinStore.setPin(pin);
       const snapshot = await service.getStatus();
@@ -1076,9 +1127,37 @@ export function createSyncService(args: SyncServiceArgs) {
       assertPhonePairingAvailable();
       const current = await service.getStatus();
       if (current.role !== "brain") {
-        throw new Error("Phone pairing PINs can only be managed on the host machine.");
+        throw new Error("Phone pairing PINs can only be managed on the host ADE runtime.");
       }
       pinStore.clearPin();
+      const snapshot = await service.getStatus();
+      args.onStatusChanged?.(snapshot);
+      return snapshot;
+    },
+
+    getRuntimeName(): string | null {
+      return runtimeNameStore.getRuntimeName();
+    },
+
+    async setRuntimeName(name: string): Promise<SyncRoleSnapshot> {
+      assertPhonePairingAvailable();
+      const current = await service.getStatus();
+      if (current.role !== "brain") {
+        throw new Error("The machine name can only be set on the host ADE runtime.");
+      }
+      runtimeNameStore.setRuntimeName(name);
+      const snapshot = await service.getStatus();
+      args.onStatusChanged?.(snapshot);
+      return snapshot;
+    },
+
+    async clearRuntimeName(): Promise<SyncRoleSnapshot> {
+      assertPhonePairingAvailable();
+      const current = await service.getStatus();
+      if (current.role !== "brain") {
+        throw new Error("The machine name can only be set on the host ADE runtime.");
+      }
+      runtimeNameStore.clearRuntimeName();
       const snapshot = await service.getStatus();
       args.onStatusChanged?.(snapshot);
       return snapshot;

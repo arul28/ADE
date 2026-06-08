@@ -35,7 +35,7 @@ snapshot (the most recent run) is what lives in the `process_runtime` table.
 
 ## Source file map
 
-Service files. Same sources back the runtime daemon and the limited
+Service files. Same sources back the ADE runtime and the limited
 desktop in-process path used before a binding exists, in diagnostics,
 and in tests.
 

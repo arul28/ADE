@@ -21,16 +21,16 @@ const sections: Section[] = [
   {
     title: "What the iOS app collects",
     body: [
-      "The iOS app (bundle ID com.ade.ios) handles only what is needed to pair with a desktop host and receive notifications:",
+      "The iOS app (bundle ID com.ade.ios) handles only what is needed to pair with an ADE machine and receive notifications:",
       {
         list: [
-          "A pairing identifier and the host address you scan or enter, stored on the device.",
-          "An Apple Push Notification (APNs) device token, sent only to the desktop host you have paired with.",
+          "A pairing identifier and the machine address you scan or enter, stored on the device.",
+          "An Apple Push Notification (APNs) device token, sent only to the ADE machine you have paired with.",
           "Camera access, used solely on-device for QR code pairing. Frames are not stored or transmitted.",
-          "Local network discovery (Bonjour, _ade-sync._tcp) to find your own desktop host on the same network.",
+          "Local network discovery (Bonjour, _ade-sync._tcp) to find your own ADE machine on the same network.",
         ],
       },
-      "There are no analytics SDKs, no third-party trackers, no account system, and no remote logging in the iOS app. The app does not transmit source code, files, or AI prompts to any ADE-operated server — all traffic flows to the desktop host you paired with, over your local network or your own VPN.",
+      "There are no analytics SDKs, no third-party trackers, no account system, and no remote logging in the iOS app. The app does not transmit source code, files, or AI prompts to any ADE-operated server — all traffic flows to the ADE machine you paired with, over your local network or your own VPN.",
     ],
   },
   {
@@ -64,7 +64,7 @@ const sections: Section[] = [
   {
     title: "Retention",
     body: [
-      "Pairing identifiers and push tokens persist on the iOS device until you uninstall the app or unpair from the host. Desktop data persists on your local disk and is yours to keep, move, or delete. Data sent to AI providers is governed by each provider's retention policy.",
+      "Pairing identifiers and push tokens persist on the iOS device until you uninstall the app or unpair from the machine. Computer data persists on your local disk and is yours to keep, move, or delete. Data sent to AI providers is governed by each provider's retention policy.",
     ],
   },
   {

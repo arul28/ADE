@@ -148,10 +148,10 @@ iOS — inbound deeplinks + Send-to-Mac:
   the iOS "Send to your Mac" payload as the `deeplinks.open` sync
   command and feeds the URL through `handleDeeplinkUrl` so the desktop
   dispatches it through the same parser as an OS-routed `open ade://...`,
-  with main scoping delivery to the paired sync host's project root.
+  with main scoping delivery to the paired sync service's project root.
 - `apps/ade-cli/src/services/sync/syncHostService.ts` — exposes the same
-  `deeplinks.open` command from the runtime daemon so a phone paired
-  directly to a headless host can still bounce a URL out to the host.
+  `deeplinks.open` command from the ADE runtime so a phone paired
+  directly to a headless runtime can still bounce a URL out through that runtime.
 
 ## URL semantics
 

@@ -9,7 +9,7 @@ container, and the iOS Simulator service correlates that snapshot with
 a fresh simctl screenshot to produce `IosScreenSnapshot` and
 `IosElementContextItem` values.
 
-Snapshot reads happen inside whichever runtime daemon owns the active
+Snapshot reads happen inside whichever ADE runtime owns the active
 simulator session. Because the simulator is macOS-only, that runtime
 is always a Mac (local or remote-Mac); the renderer is purely a viewer
 over the resulting elements.

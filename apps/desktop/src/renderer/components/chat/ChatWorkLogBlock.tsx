@@ -204,7 +204,7 @@ function terminalizePrompt(args: {
   if (args.sessionId) lines.push("", `Chat session: \`${args.sessionId}\``);
   lines.push(
     "",
-    "Use ADE socket terminal/app-control commands where helpful, for example `ade --socket terminal list --chat-session <id> --text`, `ade --socket terminal read --chat-session <id> --text`, or `ade --socket app-control launch --command \"<command>\" --text`.",
+    "Use ADE CLI terminal/app-control commands where helpful, for example `ade terminal list --chat-session <id> --text`, `ade terminal read --chat-session <id> --text`, or `ade app-control launch --command \"<command>\" --text`.",
     "After it is running, verify the localhost URL and keep the process logs readable from the chat terminal.",
   );
   return lines.join("\n");

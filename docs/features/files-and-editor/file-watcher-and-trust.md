@@ -6,7 +6,7 @@ changes propagate to open editor tabs without racing against user
 edits.
 
 The canonical file services run inside the **active ADE runtime**
-(local daemon for local-bound windows, SSH-attached remote runtime for
+(local machine runtime for local-bound windows, SSH-attached remote runtime for
 remote-bound windows). The desktop main process also hosts the same
 services as fallback targets for the legacy IPC path; both code paths
 share the same source files and behavior. Remote-bound windows
@@ -221,7 +221,7 @@ lanes.
 
 ## IPC surface
 
-The primary route is the runtime daemon's `file` action domain.
+The primary route is the ADE runtime's `file` action domain.
 `preload.ts` routes through the remote runtime first and then through
 `callLocalProjectActionStrictIfBound("file", …)` for local-bound
 windows. A bound runtime failure is returned to the caller; the

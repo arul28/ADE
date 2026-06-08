@@ -48,7 +48,7 @@ export default defineConfig([
     // @opencode-ai/sdk is ESM-only (no "require" export); force-inline it so
     // the CJS runtime bundle does not emit a bare require() that packaged
     // Electron-as-node cannot resolve.
-    noExternal: ["@opencode-ai/sdk"],
+    noExternal: ["@opencode-ai/sdk", "yaml"],
     outExtension: () => ({
       js: ".cjs"
     }),

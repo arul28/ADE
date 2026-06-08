@@ -13,7 +13,7 @@ icon: "lightbulb"
   <Card title="CTO" icon="robot" href="#cto">Always-on orchestrator agent.</Card>
   <Card title="Worker run" icon="bullseye" href="#worker-run">Structured multi-step AI unit.</Card>
   <Card title="Automation" icon="bolt" href="#automation">Trigger-driven execution rule.</Card>
-  <Card title="Worker" icon="user-gear" href="#worker-employee-agent">Scoped sub-agent that writes code.</Card>
+  <Card title="Worker" icon="user-gear" href="#worker">Scoped sub-agent that writes code.</Card>
   <Card title="ADE CLI" icon="plug" href="#ade-cli-and-actions">Native action surface for agents.</Card>
   <Card title="Job Engine" icon="gears" href="#job-engine">Background task scheduler.</Card>
   <Card title="PR Convergence" icon="code-pull-request" href="#pr-convergence">Automated PR-to-merge loop.</Card>
@@ -213,9 +213,9 @@ Agent-session outputs appear in **Automations → History**. Worker run outputs 
 
 ---
 
-## Worker / Employee Agent
+## Worker
 
-A **Worker** (also called an **Employee Agent**) is a sub-agent spawned by the CTO or by a Worker run to handle a specific, scoped task. Workers are the agents that actually write code.
+A **Worker** is a sub-agent spawned by the CTO or by a Worker run to handle a specific, scoped task. Workers are the agents that actually write code.
 
 Worker characteristics:
 - Run in a **specific lane** with a scoped working directory
@@ -234,9 +234,9 @@ ADE supports parallel workers — multiple workers executing different plan step
 
 ## ADE CLI and Actions
 
-**ADE CLI** is the native action surface agents use to operate ADE. The desktop app exposes a private ADE RPC socket at `.ade/ade.sock`, and `ade` falls back to a headless local runtime when the desktop socket is unavailable.
+**ADE CLI** is the native action surface agents use to operate ADE. `ade serve` exposes the per-machine runtime endpoint at `~/.ade/sock/ade.sock`, and `ade` can run one-off commands in headless mode when you explicitly bypass the machine runtime.
 
-When an AI agent is running inside ADE (whether via Claude CLI, Codex CLI, or the in-process API), it can run `ade` commands — which hit the desktop socket when available and fall back to the headless runtime — to perform operations that go beyond simple text generation:
+When an AI agent is running inside ADE (whether via Claude CLI, Codex CLI, or a local provider route), it can run `ade` commands against the same runtime surface as the desktop app and `ade code` to perform operations that go beyond simple text generation:
 
 <AccordionGroup>
   <Accordion title="Git operations" icon="git-alt">
@@ -406,11 +406,11 @@ Project
 | **Session** | A PTY terminal session with metadata, transcript, and delta tracking. |
 | **CTO** | Always-on project-aware AI agent at the top of the agent org chart. |
 | **Worker run** | A structured multi-step AI execution unit with full lifecycle and audit trail. |
-| **Worker / Employee Agent** | A sub-agent spawned by the CTO or a Worker run to handle a specific task. |
+| **Worker** | A sub-agent spawned by the CTO or a Worker run to handle a specific task. |
 | **Automation** | A trigger → executor rule that fires an agent in response to an event. |
 | **Automation execution surface** | `agent-session`, `worker run`, or `built-in-task`; each determines where results are stored and how much workflow structure is available. |
 | **Intervention** | A worker run pause point requiring human input to continue. |
-| **ADE CLI** | The native action surface for agents — a local `ade` binary plus a JSON-RPC 2.0 server exposed by the desktop app at `.ade/ade.sock`. |
+| **ADE CLI** | The native action surface for agents: a local `ade` binary that talks to the machine runtime at `~/.ade/sock/ade.sock` or runs explicit headless one-off commands. |
 | **Job Engine** | ADE's background scheduler for conflict prediction, conflict pack refresh, and automation execution. |
 | **PR Convergence** | ADE's automated loop for resolving PR issues (review comments, CI failures) through AI-driven rounds until the PR is ready to merge. |
 | **Path to Merge** | The dedicated convergence workspace tab inside each PR detail view. |

@@ -82,6 +82,12 @@ function patchSyncMethods(ade: any) {
     bridgePost("/sync", { method: "sync.generatePin" });
   ade.sync.clearPin = async () =>
     bridgePost("/sync", { method: "sync.clearPin" });
+  ade.sync.getRuntimeName = async () =>
+    bridgePost("/sync", { method: "sync.getRuntimeName" });
+  ade.sync.setRuntimeName = async (name: string) =>
+    bridgePost("/sync", { method: "sync.setRuntimeName", params: { name } });
+  ade.sync.clearRuntimeName = async () =>
+    bridgePost("/sync", { method: "sync.clearRuntimeName" });
 }
 
 function patchLinearMethods(ade: any) {

@@ -135,6 +135,10 @@ struct WorkSessionDestinationView: View {
   @State var sending = false
   @State var errorMessage: String?
   @State var announcedLaneId: String?
+  /// Lane→PR resolved asynchronously for the header overflow menu's "Open PR"
+  /// item. Nil until resolved (or when the lane has no cached PR), which keeps
+  /// that menu item disabled with a "No PR yet" hint.
+  @State var laneOpenPr: PullRequestListItem?
   @State var lastSessionRowRefreshAt = Date.distantPast
   @State var lastTranscriptRemoteRefreshAt = Date.distantPast
   @State var lastCanonicalTranscriptRefreshAt = Date.distantPast
@@ -189,20 +193,45 @@ struct WorkSessionDestinationView: View {
     workChatSupportsManualSteerDispatch(session: session, summary: chatSummary)
   }
 
-  /// Trailing nav-bar control scoped to the session's lane. The visible branch
-  /// icon keeps it distinct from in-transcript overflow menus.
+  /// Lane id the header menu acts on. Resolved against the loaded lane list so
+  /// the PR lookup and lane navigation share one canonical id; empty when no
+  /// session is available yet (menu is then hidden).
+  var headerMenuLaneId: String {
+    guard let session = session ?? initialSession else { return "" }
+    return resolvedWorkNavigationLaneId(for: session, lanes: lanes)
+  }
+
+  /// Trailing nav-bar overflow menu scoped to the session's lane: jump to the
+  /// lane's PR (when one is cached) or open the lane itself.
   @ViewBuilder
   var sessionHeaderTrailingControls: some View {
     if let session, showsLaneActions {
-      Button(action: openSessionLane) {
-        Image(systemName: "arrow.triangle.branch")
+      Menu {
+        Button {
+          openLaneOpenPr()
+        } label: {
+          if let laneOpenPr {
+            Label("Open PR #\(laneOpenPr.githubPrNumber)", systemImage: "arrow.triangle.pull")
+          } else {
+            Label("Open PR (No PR yet)", systemImage: "arrow.triangle.pull")
+          }
+        }
+        .disabled(laneOpenPr == nil)
+
+        Button {
+          openSessionLane()
+        } label: {
+          Label("Open lane", systemImage: "arrow.triangle.branch")
+        }
+      } label: {
+        Image(systemName: "ellipsis")
           .font(.system(size: 14, weight: .semibold))
           .foregroundStyle(ADEColor.textSecondary)
           .frame(width: 34, height: 34)
           .contentShape(Rectangle())
       }
       .buttonStyle(.glass)
-      .accessibilityLabel("Open lane \(session.laneName)")
+      .accessibilityLabel("Session actions for lane \(session.laneName)")
     } else {
       EmptyView()
     }
@@ -247,6 +276,9 @@ struct WorkSessionDestinationView: View {
       }
       .task(id: session?.laneId ?? initialSession?.laneId ?? "") {
         await syncLanePresence()
+      }
+      .task(id: headerMenuLaneId) {
+        await resolveLaneOpenPr(for: headerMenuLaneId)
       }
       .task(id: pollingKey) {
         await pollIfNeeded()

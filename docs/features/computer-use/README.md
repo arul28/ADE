@@ -8,7 +8,7 @@ See [`../proof.md`](../proof.md) for the user-facing CLI surface (`ade proof cap
 
 ## Runtime ownership
 
-The artifact broker is owned by the runtime daemon that owns the project. Ingest, link, list, review, route, backend status, and event emission all happen inside `ade serve` for that project. Artifacts live under that runtime's `.ade/artifacts/computer-use/` directory:
+The artifact broker is owned by the ADE runtime that owns the project. Ingest, link, list, review, route, backend status, and event emission all happen inside `ade serve` for that project. Artifacts live under that runtime's `.ade/artifacts/computer-use/` directory:
 
 - **Local runtime:** artifacts on the user's machine, under the local project root.
 - **Remote runtime:** artifacts on the remote host, under the remote project root. The desktop renderer reads previews through `ade.proof.readArtifactPreview` over the same SSH-tunneled JSON-RPC that backs the rest of the remote project surface; raw artifact bytes are not synced back to the desktop machine.
@@ -41,7 +41,7 @@ Channel constants live under `ade.proof.*` (renamed from the old `ade.computerUs
 - `ade.proof.readArtifactPreview`
 - `ade.proof.event` (push)
 
-Each channel routes renderer → preload → runtime daemon → broker. For local projects the preload bridge talks to the local `ade serve`; for remote projects it tunnels the same JSON-RPC payload over the SSH connection in `apps/desktop/src/main/services/remoteRuntime/runtimeRpcClient.ts`. The broker on the receiving runtime executes the action and emits `ade.proof.event` back along the same channel.
+Each channel routes renderer → preload → ADE runtime → broker. For local projects the preload bridge talks to the local `ade serve`; for remote projects it tunnels the same JSON-RPC payload over the SSH connection in `apps/desktop/src/main/services/remoteRuntime/runtimeRpcClient.ts`. The broker on the receiving runtime executes the action and emits `ade.proof.event` back along the same channel.
 
 The `ade-cli` headless surface registers the same broker and exposes the equivalent JSON-RPC tools (`screenshot_environment`, `record_environment`, `ingest_computer_use_artifacts`, `list_computer_use_artifacts`) via `apps/ade-cli/src/adeRpcServer.ts`, so a chat agent's `ade proof capture` and the desktop renderer's review drawer go through the same broker instance.
 

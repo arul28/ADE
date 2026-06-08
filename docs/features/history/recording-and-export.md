@@ -7,7 +7,7 @@ history-adjacent features, and how the export flow converts rows to
 CSV/JSON.
 
 The operationService and gitOperationsService both run inside the
-**active ADE runtime** (local daemon for local-bound windows,
+**active ADE runtime** (local machine runtime for local-bound windows,
 SSH-attached remote runtime for remote-bound windows). The same source
 files are also loaded by the desktop main process for the legacy
 in-process IPC fallback path. Export-to-disk is split: the runtime

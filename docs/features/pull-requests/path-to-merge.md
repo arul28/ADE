@@ -6,7 +6,7 @@ It is a native TypeScript port of the `/shipLane` Claude skill state
 machine — `apps/.claude/commands/shipLane.md` is the source of truth for
 the phase delays, terminal-state gate, conflict-strategy switch, and
 force-finalize semantics; this implementation mirrors them in-process so
-the **active ADE runtime** (local daemon for local-bound windows,
+the **active ADE runtime** (local machine runtime for local-bound windows,
 SSH-attached remote runtime for remote-bound windows) can run several
 PtM loops in parallel without spawning agents per phase. For
 remote-bound windows the loop runs on the remote machine — the merge
@@ -14,12 +14,12 @@ ladder, gh CLI invocations, and resolver agent dispatches all execute
 on the remote host.
 
 Source: `apps/desktop/src/main/services/prs/pathToMergeOrchestrator.ts`
-(used by the runtime daemon and the desktop fallback IPC path alike).
+(used by the ADE runtime and the desktop fallback IPC path alike).
 
 ## Wiring and lifecycle
 
 `createPathToMergeOrchestrator(deps)` is built once during runtime
-daemon boot (and during desktop main-process boot for the fallback
+runtime boot (and during desktop main-process boot for the fallback
 path) alongside the rest of the PR services. Right after construction,
 `setImmediate(() => resumeFromPersistedState())` rearms any loops that
 were live when the runtime last shut down. The orchestrator is exposed
@@ -191,7 +191,7 @@ otherwise.
 
 ## Persistence and resume
 
-`resumeFromPersistedState()` runs on runtime daemon boot (and on
+`resumeFromPersistedState()` runs on ADE runtime boot (and on
 desktop main-process boot for the fallback path). It iterates every PR
 via `prService.listAll()` and rearms a `warming`-phase wake-up for any
 whose convergence runtime is still flagged as live

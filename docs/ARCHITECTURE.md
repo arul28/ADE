@@ -6,11 +6,45 @@ Consolidated technical reference for the ADE (Agentic Development Environment) s
 
 ## 1. System at a Glance
 
-ADE is a local-first development control plane that orchestrates AI-assisted software engineering across parallel worktrees. The center of the system is a **per-machine ADE runtime daemon** (`apps/ade-cli/`, started with `ade serve`). The daemon hosts every project on that machine through a project registry and exposes a multi-project JSON-RPC surface on a Unix socket / Windows named pipe at `~/.ade/sock/ade.sock`. Desktop, the terminal `ade code` client, the iOS app, and SSH-attached desktop windows are all peer **clients** that bind to a runtime — local or remote — and invoke runtime-owned actions through that one surface.
+ADE is a local-first development control plane that orchestrates AI-assisted software engineering across parallel worktrees. The center of the system is a **per-machine ADE runtime** (`apps/ade-cli/`, started with `ade serve`). The machine runtime hosts every project on that machine through a project registry and exposes a multi-project JSON-RPC surface on a Unix socket / Windows named pipe at `~/.ade/sock/ade.sock`. Desktop, the terminal `ade code` client, the iOS app, and SSH-attached desktop windows are all peer **clients** that bind to a runtime — local or remote — and invoke runtime-owned actions through that one surface.
 
-The runtime owns everything that needs to survive a client closing: worktree-per-lane git isolation, a multi-provider AI runtime, a work-tab orchestration layer for multi-phase plans, a Linear-integrated CTO agent acting as a team lead, worker delegation, a pipeline builder for visual automations, stacked pull requests with conflict simulation, computer-use proofs, the sync host that replicates projects to other devices, and the per-machine credential store and agent registry. Nothing leaves the user's machine by default: AI work runs through user-authenticated CLIs (Claude Code, Codex), local API-key routes (OpenCode server), or local model endpoints (Ollama, LM Studio, vLLM).
+The runtime owns everything that needs to survive a client closing: worktree-per-lane git isolation, multi-provider agent chat, work-session orchestration, a Linear-integrated CTO agent acting as a team lead, worker delegation, a pipeline builder for visual automations, stacked pull requests with conflict simulation, computer-use proofs, the sync service that replicates projects to other devices, and the per-machine credential store and agent registry. Nothing leaves the user's machine by default: AI work runs through user-authenticated CLIs (Claude Code, Codex), local API-key routes (OpenCode server), or local model endpoints (Ollama, LM Studio, vLLM).
 
 ADE ships as four runtime/client packages plus the marketing site:
+
+### Runtime topology
+
+```mermaid
+flowchart TB
+  subgraph LocalMachine["One ADE install on a machine"]
+    Desktop["Electron desktop app<br/>apps/desktop"]
+    Code["ADE Code TUI<br/>ade code"]
+    Shell["ade CLI<br/>typed commands"]
+    Runtime["Machine ADE runtime<br/>ade serve<br/>~/.ade/sock/ade.sock"]
+    Bridge["Desktop bridge<br/>~/.ade/sock/desktop-bridge.sock"]
+  end
+
+  Desktop -->|"runtime RPC"| Runtime
+  Code -->|"runtime RPC"| Runtime
+  Shell -->|"runtime RPC"| Runtime
+  Runtime -->|"Electron-only actions"| Bridge
+  Bridge -->|"WebContentsView, screenshots, browser state"| Desktop
+
+  subgraph ProjectState["Project .ade state"]
+    Database[".ade/ade.db<br/>SQLite + cr-sqlite"]
+    Lanes[".ade/worktrees/*<br/>lane worktrees"]
+    Artifacts[".ade/artifacts + cache<br/>proof, transcripts, packs"]
+  end
+
+  Runtime --> Database
+  Runtime --> Lanes
+  Runtime --> Artifacts
+
+  IOS["iOS app<br/>controller client"] <-->|"sync WebSocket<br/>changesets + commands"| Runtime
+
+  DesktopRemote["Desktop window<br/>SSH-bound client"] <-->|"ade rpc --stdio"| RemoteRuntime["Remote machine runtime<br/>ade serve or uploaded ade-* binary"]
+  RemoteRuntime --> RemoteProject["Remote project .ade state"]
+```
 
 ```
                               ┌───────────────────────────────┐
@@ -20,11 +54,11 @@ ADE ships as four runtime/client packages plus the marketing site:
                 ┌───────────────────────────────────────────────┐
                 │            apps/ade-cli (RUNTIME)             │
                 │  ─────────────────────────────────────────────│
-                │  `ade serve` daemon                            │
+                │  `ade serve` machine runtime                   │
                 │   - listens on ~/.ade/sock/ade.sock            │
                 │   - login service (launchd / systemd / Win)    │
                 │   - multi-project RPC + project registry       │
-                │   - sync host (cr-sqlite over WebSocket)       │
+                │   - sync service (cr-sqlite over WebSocket)    │
                 │   - credential store, agent registry           │
                 │   - dispatches CLI runtimes:                   │
                 │       claude · codex · opencode · cursor       │
@@ -49,7 +83,8 @@ ADE ships as four runtime/client packages plus the marketing site:
         │                  │ │              │ │          │ │ runtime binary)  │
         └──────────────────┘ └──────────────┘ └──────────┘ └──────────────────┘
                               All clients share the runtime's view of
-                                projects, lanes, chats, processes, sync.
+                                projects, lanes, agent chats, work sessions,
+                                processes, sync.
                                             │
                                             ▼
                                 ┌─────────────────────────┐
@@ -58,7 +93,7 @@ ADE ships as four runtime/client packages plus the marketing site:
                                 └─────────────────────────┘
 ```
 
-Live runtime state is replicated between paired devices through cr-sqlite changesets carried over WebSocket; the **sync host runs inside the runtime daemon**, not in the desktop app. The iOS app pairs with a runtime — typically the user's primary desktop-class machine. A second desktop on the same network is also a client of that runtime, not a peer host. A desktop window can be re-pointed at a runtime on a remote machine over SSH; the binding is per-window, so the same Electron process can drive a local project in one window and an SSH-bound project in another. The remote path starts `ade rpc --stdio` on the remote and routes runtime actions through the same multi-project JSON-RPC surface. See [features/remote-runtime/README.md](./features/remote-runtime/README.md).
+Live runtime state is replicated between paired devices through cr-sqlite changesets carried over WebSocket; the **sync service runs inside the ADE runtime**, not in the desktop app. The iOS app pairs with a machine — typically the user's primary desktop-class machine. A second desktop on the same network is also a client of that runtime, not a peer host. A desktop window can be re-pointed at a runtime on a remote machine over SSH; the binding is per-window, so the same Electron process can drive a local project in one window and an SSH-bound project in another. The remote path starts `ade rpc --stdio` on the remote and routes runtime actions through the same multi-project JSON-RPC surface. See [features/remote-runtime/README.md](./features/remote-runtime/README.md).
 
 Source code crosses machines through plain git. ADE does not own a git server.
 
@@ -68,25 +103,25 @@ Product positioning and workflows live in [`docs/PRD.md`](../docs/PRD.md). This 
 
 ## 2. Apps & Processes
 
-### 2.1 ADE runtime daemon (`apps/ade-cli/`)
+### 2.1 ADE runtime (`apps/ade-cli/`)
 
 `apps/ade-cli/` is the runtime — the per-machine source of truth — and the `ade` CLI surface. It ships as one Node binary that runs in several modes.
 
 **Run modes:**
 
-- **Daemon (`ade serve`)** — the normal mode. Boots the multi-project JSON-RPC server, hosts the per-project services on demand, and listens on `~/.ade/sock/ade.sock` (Windows: a named pipe under `\\.\pipe\ade-<hash>`, with the hash derived in `apps/desktop/src/shared/adeRuntimeIpc.ts`). Installable / removable as a login service with `ade serve --install-service` / `--uninstall-service` (per-platform installers in `apps/ade-cli/src/serviceManager/`).
-- **Single-session CLI** — `ade <command>` connects to the local daemon over the machine socket, dispatches one project-scoped action, and exits. With `--headless`, the CLI bootstraps a project's services directly from the repository instead of going through a daemon — used in CI and for one-off scripts.
+- **Machine runtime (`ade serve`)** — the normal mode. Boots the multi-project JSON-RPC server, hosts the per-project services on demand, and listens on `~/.ade/sock/ade.sock` (Windows: a named pipe under `\\.\pipe\ade-<hash>`, with the hash derived in `apps/desktop/src/shared/adeRuntimeIpc.ts`). Installable / removable as a login service with `ade serve --install-service` / `--uninstall-service` (per-platform installers in `apps/ade-cli/src/serviceManager/`).
+- **Single-session CLI** — `ade <command>` connects to the local runtime over the machine endpoint, dispatches one project-scoped action, and exits. With `--headless`, the CLI bootstraps a project's services directly from the repository instead of going through the machine runtime — used in CI and for one-off scripts.
 - **SSH stdio bridge (`ade rpc --stdio`)** — runs a single-session JSON-RPC runtime over stdin/stdout. This is what desktop's `RemoteConnectionPool` execs over SSH after `bootstrapRemoteRuntime` has uploaded a matching `ade-<platform-arch>` binary. Exits when the SSH channel closes.
-- **Terminal client (`ade code`)** — launches the Ink + React Work chat (`apps/ade-cli/src/tuiClient/`). Defaults to attaching to `~/.ade/sock/ade.sock` and will start `ade serve` if the socket is missing. `ade --socket /path code` requires a specific socket; `ade code --embedded` keeps the legacy in-process fallback explicit.
+- **Terminal client (`ade code`)** — launches the Ink + React Work chat (`apps/ade-cli/src/tuiClient/`). Defaults to attaching to `~/.ade/sock/ade.sock` and will start `ade serve` if the endpoint is missing. `ade --socket /path code` requires a specific endpoint; `ade code --embedded` keeps the legacy in-process fallback explicit.
 
-**Multi-project RPC.** The daemon exposes runtime-scoped methods (`projects.list/add/remove/touch`, `sync.*`, `runtime/info`, `machineInfo.get`, `runtimeEvents.subscribe/unsubscribe`) directly. Project-scoped operations dispatch through `ade/actions/call` with a `projectId`. Per-project services are spun up lazily by `ProjectScopeRegistry` (`apps/ade-cli/src/services/projects/projectScope.ts`) which calls `createAdeRuntime({ projectRoot, ... })` the first time a project is touched. The project registry (`projectRegistry.ts`) is the durable list of known projects; `machineLayout.ts` resolves machine-wide paths under `~/.ade/`. Wire formats live in `apps/ade-cli/src/multiProjectRpcServer.ts`.
+**Multi-project RPC.** The runtime exposes runtime-scoped methods (`projects.list/add/remove/touch`, `sync.*`, `runtime/info`, `machineInfo.get`, `runtimeEvents.subscribe/unsubscribe`) directly. Project-scoped operations dispatch through `ade/actions/call` with a `projectId`. Per-project services are spun up lazily by `ProjectScopeRegistry` (`apps/ade-cli/src/services/projects/projectScope.ts`) which calls `createAdeRuntime({ projectRoot, ... })` the first time a project is touched. The project registry (`projectRegistry.ts`) is the durable list of known projects; `machineLayout.ts` resolves machine-wide paths under `~/.ade/`. Wire formats live in `apps/ade-cli/src/multiProjectRpcServer.ts`.
 
 **Runtime-side services** (under `apps/ade-cli/src/services/`):
 
 | Directory | Role |
 |-----------|------|
 | `projects/` | Project registry, project scope (per-project runtime), machine layout. |
-| `sync/` | Sync host, peer client, device registry, pairing store, PIN store, sync protocol, remote command service, Tailscale CLI resolver. The sync host now lives here; desktop's old in-process host is disabled by default (env-gated `ADE_ENABLE_DESKTOP_SYNC_HOST=1` for diagnostics only). |
+| `sync/` | Sync service, peer client, device registry, pairing store, PIN store, sync protocol, remote command service, Tailscale CLI resolver. The sync service now lives here; desktop's old in-process sync host is disabled by default (env-gated `ADE_ENABLE_DESKTOP_SYNC_HOST=1` for diagnostics only). |
 | `credentials/` | Per-machine credential store. |
 | `agentRegistry.ts` | Per-machine agent registry. |
 
@@ -94,7 +129,7 @@ Product positioning and workflows live in [`docs/PRD.md`](../docs/PRD.md). This 
 
 **Session identity.** The runtime resolves caller role from ADE context env vars and command flags. Role vocabulary: `cto`, `orchestrator`, `agent`, `external`, `evaluator`.
 
-**Action surface.** First-class command families cover lanes (including `ade lanes link-linear-issue` / `detach-linear-issue` for post-creation Linear issue linking, and `ade lanes create-from-linear` / `batch-create-from-linear` to spin up one or many issue lanes — optionally launching a chat with `--start-chat`), git, diffs, files, PRs, path-to-merge, runs, shells, chats (including `ade chat create --from-linear-issue <id>`, `ade chat attach-linear-issue` / `detach-linear-issue` / `linear-issues` for session-scoped issue attachment), agents, CTO, Linear (the write bridge an attached CLI agent uses: `ade linear attach` / `detach` / `issues` / `issue` / `comment` / `set-state` / `assign` / `label`, with `--this-session` resolving the issue id from `$ADE_LINEAR_ISSUE_IDS` so a launched agent needs no Linear token — see [features/linear-integration/README.md](./features/linear-integration/README.md#session-scoped-issue-attachment-and-cli-context-injection)), tests, proof, settings, the iOS Simulator (`ade ios-sim` / `ade ios` / `ade simulator` — see [features/ios-simulator/README.md](./features/ios-simulator/README.md)), the Cursor Cloud bridge (`ade cursor cloud agents | runs | artifacts | repos | models | me` — talks directly to `@cursor/sdk` without going through the ADE socket), the App Control bridge for Electron apps (`ade app-control` / `ade app` / `ade electron` — `launch`, `connect`, `stop`, `status`, `screenshot`, `snapshot`, `inspect`, `select`, `click`, `type`, `scroll`, `key`, `targets`, `attach`, `logs`, `terminal write`, `terminal signal` — see [features/computer-use/app-control.md](./features/computer-use/app-control.md)), the chat-scoped terminal (`ade terminal list` / `read` / `write` / `signal` / `active`), and a generic `ade actions run <domain.action>` escape hatch for every registered ADE service action. The action allow-list adds three domains for these surfaces: `app_control` (every public method on `AppControlService`), `terminal` (`list`, `read`, `write`, `signal`, `activeForChat` against `ptyService`), and named iOS Simulator actions for launch, live view, inspection, input, and Preview Lab workflows.
+**Action surface.** First-class command families cover lanes (including `ade lanes link-linear-issue` / `detach-linear-issue` for post-creation Linear issue linking, and `ade lanes create-from-linear` / `batch-create-from-linear` to spin up one or many issue lanes — optionally launching an agent chat with `--start-chat`), git, diffs, files, PRs, path-to-merge, runs, shells, chats (including `ade chat create --from-linear-issue <id>`, `ade chat attach-linear-issue` / `detach-linear-issue` / `linear-issues` for session-scoped issue attachment), agents, CTO, Linear (the write bridge an attached CLI agent uses: `ade linear attach` / `detach` / `issues` / `issue` / `comment` / `set-state` / `assign` / `label`, with `--this-session` resolving the issue id from `$ADE_LINEAR_ISSUE_IDS` so a launched agent needs no Linear token — see [features/linear-integration/README.md](./features/linear-integration/README.md#session-scoped-issue-attachment-and-cli-context-injection)), tests, proof, settings, the iOS Simulator (`ade ios-sim` / `ade ios` / `ade simulator` — see [features/ios-simulator/README.md](./features/ios-simulator/README.md)), the Cursor Cloud bridge (`ade cursor cloud agents | runs | artifacts | repos | models | me` — talks directly to `@cursor/sdk` without going through the ADE runtime endpoint), the App Control bridge for Electron apps (`ade app-control` / `ade app` / `ade electron` — `launch`, `connect`, `stop`, `status`, `screenshot`, `snapshot`, `inspect`, `select`, `click`, `type`, `scroll`, `key`, `targets`, `attach`, `logs`, `terminal write`, `terminal signal` — see [features/computer-use/app-control.md](./features/computer-use/app-control.md)), the chat-scoped terminal (`ade terminal list` / `read` / `write` / `signal` / `active`), and a generic `ade actions run <domain.action>` escape hatch for every registered ADE service action. The action allow-list adds three domains for these surfaces: `app_control` (every public method on `AppControlService`), `terminal` (`list`, `read`, `write`, `signal`, `activeForChat` against `ptyService`), and named iOS Simulator actions for launch, live view, inspection, input, and Preview Lab workflows.
 
 **Proof subcommands** — `ade proof capture` (alias of `screenshot`), `ade proof attach <path>`, `ade proof record`, `ade proof launch`, `ade proof interact`, `ade proof list/status/environment/ingest`. `attach` infers the artifact kind from the file extension and routes through `ingest_computer_use_artifacts` with `backendStyle: "manual"`. Capture-style commands set `preferHeadless: true` on the plan so the connection layer drops to headless mode unless `--socket` is explicitly requested. All proof subcommands accept `--owner-kind` / `--owner-id` (with `chat` and `pr` aliases) to layer an explicit owner on top of the inferred session identity.
 
@@ -112,19 +147,19 @@ Use `ADE_VERSION=vX.Y.Z` for a pinned release or `ADE_INSTALL_DIR` to choose the
 
 **Windows packaging.** The installer lays down `ade-cli-windows-wrapper.cmd` plus an `ade-cli-install-path.cmd` helper alongside the bundled Electron Node runtime. The helper installs `%LOCALAPPDATA%\ADE\bin\ade.cmd`, updates the user PATH when needed, and then `ade` works from a new normal Windows shell without a global Node install. See §14.4 for the packaging flow.
 
-**Desktop bridge socket.** The runtime daemon runs `apps/ade-cli/dist/cli.cjs` under `ELECTRON_RUN_AS_NODE=1`, so it has no access to renderer-side Electron APIs (`WebContentsView`, `nativeImage`, `session`, …). A small set of services own real desktop UI and therefore cannot live in the daemon — most notably `BuiltInBrowserService`, which drives the Browser pane's `WebContentsView`. The desktop main process hosts those services and exposes them to the daemon over a side-channel JSON-RPC Unix-domain socket / named pipe.
+**Desktop bridge endpoint.** The ADE runtime runs `apps/ade-cli/dist/cli.cjs` under `ELECTRON_RUN_AS_NODE=1`, so it has no access to renderer-side Electron APIs (`WebContentsView`, `nativeImage`, `session`, …). A small set of services own real desktop UI and therefore cannot live in the runtime — most notably `BuiltInBrowserService`, which drives the Browser pane's `WebContentsView`. The desktop main process hosts those services and exposes them to the runtime over a side-channel JSON-RPC Unix-domain socket / named pipe.
 
-The socket path is resolved by `apps/ade-cli/src/services/projects/machineLayout.ts`: `<adeHome>/sock/desktop-bridge.sock` on macOS / Linux (e.g. `~/.ade/sock/desktop-bridge.sock` stable, `~/.ade-beta/sock/desktop-bridge.sock` beta), and `\\.\pipe\ade-desktop-bridge[-<channel-suffix>]` on Windows. `ADE_DESKTOP_BRIDGE_SOCKET_PATH` overrides it for dev launches against a non-default ADE home. The server lives in `apps/desktop/src/main/services/builtInBrowser/desktopBridgeServer.ts`, wired up from `main.ts` right after `builtInBrowserService` is constructed and torn down with it on app shutdown. The daemon-side proxy is `apps/ade-cli/src/services/builtInBrowser/desktopBridgeClient.ts`; `createAdeRuntime` in `bootstrap.ts` assigns it to `runtime.builtInBrowserService` so the existing action registry slot resolves transparently (skipped when `runtimeProfile === "chat"`). Both sides share the same method allowlist: `getStatus, showPanel, setBounds, navigate, createTab, switchTab, closeTab, reload, goBack, goForward, stop, startSession, listSessions, endSession, observe, getTrace, click, typeText, dispatchKey, scroll, fill, clear, wait, startInspect, stopInspect, captureScreenshot, selectPoint, selectCurrent, clearSelection, claim`.
+The endpoint path is resolved by `apps/ade-cli/src/services/projects/machineLayout.ts`: `<adeHome>/sock/desktop-bridge.sock` on macOS / Linux (e.g. `~/.ade/sock/desktop-bridge.sock` stable, `~/.ade-beta/sock/desktop-bridge.sock` beta), and `\\.\pipe\ade-desktop-bridge[-<channel-suffix>]` on Windows. `ADE_DESKTOP_BRIDGE_SOCKET_PATH` overrides it for dev launches against a non-default ADE home. The server lives in `apps/desktop/src/main/services/builtInBrowser/desktopBridgeServer.ts`, wired up from `main.ts` right after `builtInBrowserService` is constructed and torn down with it on app shutdown. The runtime-side proxy is `apps/ade-cli/src/services/builtInBrowser/desktopBridgeClient.ts`; `createAdeRuntime` in `bootstrap.ts` assigns it to `runtime.builtInBrowserService` so the existing action registry slot resolves transparently (skipped when `runtimeProfile === "chat"`). Both sides share the same method allowlist: `getStatus, showPanel, setBounds, navigate, createTab, switchTab, closeTab, reload, goBack, goForward, stop, startSession, listSessions, endSession, observe, getTrace, click, typeText, dispatchKey, scroll, fill, clear, wait, startInspect, stopInspect, captureScreenshot, selectPoint, selectCurrent, clearSelection, claim`.
 
-Today only the `built_in_browser` domain rides this bridge; the pattern is generic and other Electron-only domains can be added the same way. The client lazy-connects on first call and reconnects on the next call after any failure. When no desktop is running, each call surfaces a clear `Desktop browser bridge not running at <path>. Open ADE Desktop with a project to enable \`ade browser\` commands.` error and every other runtime domain stays functional. This is distinct from the legacy desktop-socket mode (a pre-multi-project pattern where the desktop renderer hosted RPC and the CLI dialed in): the daemon still owns the full action surface — the bridge is narrowly scoped to services that physically require an Electron renderer host.
+Today only the `built_in_browser` domain rides this bridge; the pattern is generic and other Electron-only domains can be added the same way. The client lazy-connects on first call and reconnects on the next call after any failure. When no desktop is running, each call surfaces a clear `Desktop browser bridge not running at <path>. Open ADE Desktop with a project to enable \`ade browser\` commands.` error and every other runtime domain stays functional. This is distinct from the retired renderer-hosted RPC mode used before the multi-project runtime: the ADE runtime still owns the full action surface, and the bridge is narrowly scoped to services that physically require an Electron renderer host.
 
 ### 2.2 Electron desktop client (`apps/desktop/`)
 
-The desktop app is a **client of the runtime**. It owns a trusted main process, a narrow typed preload bridge, the React renderer, and the shared TypeScript contracts that the whole monorepo (including the ADE CLI runtime) consumes — but the data plane it operates on lives in the runtime daemon.
+The desktop app is a **client of the runtime**. It owns a trusted main process, a narrow typed preload bridge, the React renderer, and the shared TypeScript contracts that the whole monorepo (including the ADE CLI runtime) consumes — but the data plane it operates on lives in the ADE runtime.
 
 | Directory | Role |
 |-----------|------|
-| `apps/desktop/src/main/` | Node process with full OS access. Hosts windows, registers IPC handlers, routes runtime-backed APIs through local/remote runtime pools, spawns the local runtime daemon when needed, and owns Electron-only services that cannot run inside the daemon. Entry: `main.ts`. |
+| `apps/desktop/src/main/` | Node process with full OS access. Hosts windows, registers IPC handlers, routes runtime-backed APIs through local/remote runtime pools, spawns the local ADE runtime when needed, and owns Electron-only services that cannot run inside the runtime. Entry: `main.ts`. |
 | `apps/desktop/src/preload/` | Typed bridge. Entry: `preload.ts`. Uses `contextBridge.exposeInMainWorld("ade", { ... })`. Runtime-backed APIs route through `LocalRuntimeConnectionPool` (local) or `RemoteConnectionPool` (SSH-bound window); file APIs are strict once a local/remote runtime is bound, while usage/budget reads only route to runtime for remote-bound windows. During project switches, mutating runtime/sync calls are blocked, read-only calls avoid refreshing stale bindings, active remote opens can be awaited before retrying reads, and remote lane preview URLs are localized through desktop-owned TCP forwards. |
 | `apps/desktop/src/renderer/` | React 18 SPA. No Node access, no filesystem access, no direct process/network. Everything goes through `window.ade`. Entry: `main.tsx`. |
 | `apps/desktop/src/shared/` | Types, IPC channel constants (`ipc.ts`), model registry (`modelRegistry.ts`), keybindings, and other DTOs. Imported by both desktop and `apps/ade-cli`. New runtime-facing types live in `shared/types/remoteRuntime.ts` and `shared/types/core.ts`. |
@@ -136,7 +171,7 @@ The desktop app is a **client of the runtime**. It owns a trusted main process, 
 
 **Runtime binding pools.**
 
-- `apps/desktop/src/main/services/localRuntime/localRuntimeConnectionPool.ts` — desktop-side client for the local `ade serve` daemon. Spawns or attaches to the machine socket, registers local projects with `projects.add`, dispatches local runtime actions, applies short per-call timeouts for project registration / file actions / event polling, emits a `local_runtime.action_slow` warning log when an action call exceeds 500 ms or throws (the log breaks the total into `ensureProjectMs` / `connectMs` / `daemonCallMs` so a stalled renderer call is debuggable before the IPC timeout fires), and best-effort installs the background service in packaged builds. Local project windows use this binding consistently outside unit tests.
+- `apps/desktop/src/main/services/localRuntime/localRuntimeConnectionPool.ts` — desktop-side client for the local `ade serve` runtime. Spawns or attaches to the machine endpoint, registers local projects with `projects.add`, dispatches local runtime actions, applies short per-call timeouts for project registration / file actions / event polling, emits a `local_runtime.action_slow` warning log when an action call exceeds 500 ms or throws (the log breaks the total into `ensureProjectMs` / `connectMs` / `daemonCallMs` so a stalled renderer call is debuggable before the IPC timeout fires), and best-effort installs the background service in packaged builds. Local project windows use this binding consistently outside unit tests.
 - `apps/desktop/src/main/services/remoteRuntime/` — SSH-bound runtime pool. `remoteTargetRegistry.ts` stores saved machines under `~/.ade/secrets/remote-machines.json` (manual host plus an optional `routes[]` of Tailscale / Bonjour / manual addresses with per-route `lastSucceededAt` and manual-disconnect state); `sshTransport.ts` handles ssh-agent / key based transport with bounded connect/exec timeouts, normalized handshake errors, disabled SSH keepalives, and alternate routes ranked by most-recent success; `remoteBootstrap.ts` does first-connect runtime upload + version/hash negotiation against the bundled `ade-<platform-arch>` binary, native deps, and PTY host worker, falls back across alternate ADE channel homes (`.ade`, `.ade-alpha`, `.ade-beta`) when the preferred home has no compatible runtime, treats version / channel / capability skew as `compatibilityWarnings` instead of fatal errors, and records which route succeeded; `remoteConnectionPool.ts` keeps the per-window remote runtime binding alive, gates `projects.*` runtime calls against the connection's `capabilities.machineProjects` flags (missing capabilities reject the call with a self-describing error), reconnects safely on read-only actions (`get*/list*/read*/search*/diagnosticsGet*` and a small allowlist), owns local TCP forwards for remote preview ports, memoizes optional-action fallbacks, and emits eviction notifications when SSH or the JSON-RPC client closes; `remoteConnectionService.ts` listens for those evictions, marks targets as `error`, preserves explicit manual disconnects, pauses automatic reconnect after repeated implicit failures, surfaces the capabilities + compatibility warnings on every `RemoteRuntimeConnectionStatus`, and re-probes saved connections on `powerMonitor.resume` / `unlock-screen`; `runtimeRpcClient.ts` is the JSON-RPC client (per-call timeouts tear the connection down so the pool reconnects rather than dangling the request, and remote errors are now formatted with the original method name plus the JSON-RPC `code` / `message` / `data` for clearer diagnostics); `runtimeDiscovery.ts` runs Bonjour + Tailscale in parallel and returns `{ machines, diagnostics }` so a missing or stuck `tailscale` CLI does not silently swallow LAN discovery.
 
 Build outputs (configured in `apps/desktop/tsup.config.ts`):
@@ -149,16 +184,16 @@ Build outputs (configured in `apps/desktop/tsup.config.ts`):
 
 ### 2.3 ADE Code terminal client (`ade code`)
 
-Terminal-native **Work** chat client (Ink + React) for agents and power users who live in a shell, built into `apps/ade-cli/src/tuiClient/`. It is a peer of the desktop client, not a wrapper around it: it speaks the same multi-project JSON-RPC surface and binds to a runtime daemon the same way.
+Terminal-native **Work** chat client (Ink + React) for agents and power users who live in a shell, built into `apps/ade-cli/src/tuiClient/`. It is a peer of the desktop client, not a wrapper around it: it speaks the same multi-project JSON-RPC surface and binds to an ADE runtime the same way.
 
 - **Attached mode** (default): connects to `~/.ade/sock/ade.sock`, or to an explicit socket passed on the parent `ade` invocation. Starts `ade serve` if the socket is missing.
-- **Embedded mode**: `--embedded` / `--headless` runs the shared `apps/ade-cli` services in-process without going through a daemon. Used when no daemon is reachable.
+- **Embedded mode**: `--embedded` / `--headless` runs the shared `apps/ade-cli` services in-process without going through a machine runtime. Used when no runtime is reachable.
 
 Shared chat DTOs are imported from `apps/desktop/src/shared/types/*` (never the renderer barrel) so `npm run typecheck` in `apps/ade-cli` covers both typed commands and the TUI. Entry: `apps/ade-cli/src/tuiClient/cli.tsx` → `apps/ade-cli/dist/tuiClient/cli.mjs`, loaded by `ade code`. The built TUI bundle is intended to run in isolation: tsup bundles its Ink/xterm/highlight dependencies and injects ESM shims for `__dirname` / `__filename`; both `apps/ade-cli/scripts/verify-built-cli.mjs` and the desktop artifact validators smoke-import it and run `runAdeCodeCli(["--help"])`. The TUI can hand off to a desktop window via the `app/navigate` JSON-RPC method when a desktop client is attached to the same runtime.
 
 ### 2.4 iOS client (`apps/ios/`)
 
-Native SwiftUI app acting as a controller. It pairs with a runtime daemon over WebSocket and reads live state from a local cr-sqlite-backed SQLite database that mirrors the project's `ade.db`. The phone never runs agents.
+Native SwiftUI app acting as a controller. It pairs with an ADE machine over WebSocket and reads live state from a local cr-sqlite-backed SQLite database that mirrors the project's `ade.db`. The phone never runs agents.
 
 - Stack: native SwiftUI + `SQLite3` C API + iOS system SQLite.
 - CRDT: pure-SQL CRR emulation layer (trigger-based change tracking) since iOS blocks `sqlite3_load_extension()`/`sqlite3_auto_extension()`. Changesets are wire-compatible with desktop cr-sqlite.
@@ -182,7 +217,7 @@ The `/open` route is the HTTPS half of the ADE deeplink scheme (`https://ade-app
 
 ADE uses Node's native `node:sqlite` driver (no better-sqlite3 dependency) with a vendored cr-sqlite loadable extension:
 
-- **Engine source**: `apps/desktop/src/main/services/state/kvDb.ts` (schema bootstrap, CRR enablement, sync API) and `crsqliteExtension.ts` (extension loader). Both the desktop main process and the ADE CLI runtime import the same engine module from here; they do not maintain parallel schemas. The database is owned by whichever process opened it first for a given project; in normal desktop operation that owner is the runtime daemon, while desktop in-process users are limited to pre-binding flows, diagnostics, tests, and Electron-only work.
+- **Engine source**: `apps/desktop/src/main/services/state/kvDb.ts` (schema bootstrap, CRR enablement, sync API) and `crsqliteExtension.ts` (extension loader). Both the desktop main process and the ADE CLI runtime import the same engine module from here; they do not maintain parallel schemas. The database is owned by whichever process opened it first for a given project; in normal desktop operation that owner is the ADE runtime, while desktop in-process users are limited to pre-binding flows, diagnostics, tests, and Electron-only work.
 - **Database file**: `<project_root>/.ade/ade.db`.
 - **WAL mode** handles durability; `flushNow()` is a no-op.
 - **CRRs**: eligible tables are marked via `SELECT crsql_as_crr('table_name')` at startup. Virtual/internal tables (`sqlite_%`, `crsql_%`) are excluded. Marking is dynamic — new tables are picked up automatically unless excluded.
@@ -468,7 +503,7 @@ Renderer telemetry events flow back to main: `renderer.route_change`, `renderer.
 
 ## 6. Services Catalog (Desktop Client Main Process)
 
-Most services described here live under `apps/desktop/src/main/services/<domain>/` in the desktop client's main process. Some are runtime delegations: they front a runtime-owned subsystem (project registry, sync host, agent registry, credential store, multi-project RPC) through a thin local or remote pool. The runtime-side equivalents live under `apps/ade-cli/src/services/`. Summary:
+Most services described here live under `apps/desktop/src/main/services/<domain>/` in the desktop client's main process. Some are runtime delegations: they front a runtime-owned subsystem (project registry, sync service, agent registry, credential store, multi-project RPC) through a thin local or remote pool. The runtime-side equivalents live under `apps/ade-cli/src/services/`. Summary:
 
 | Domain | Key files | Role |
 |--------|-----------|------|
@@ -510,8 +545,8 @@ Most services described here live under `apps/desktop/src/main/services/<domain>
 | `sessions/` | `sessionService.ts`, `sessionDeltaService.ts` | Terminal session CRUD, post-session delta computation. |
 | `shared/` | `utils.ts`, `imageDimensions.ts`, `queueRebase.ts`, `packLegacyUtils.ts`, `transcriptInsights.ts` | Cross-domain utilities, including shared record guards and PNG/JPEG dimension parsing used by App Control and iOS Simulator capture paths. |
 | `state/` | `kvDb.ts`, `crsqliteExtension.ts`, `globalState.ts`, `projectState.ts`, `onConflictAudit.ts` | SQLite schema + open, CRR extension loader, global state file, per-project state init. `globalState.upsertRecentProject` accepts `preserveRecentOrder` so reactivating an already-known project (by app focus, deep link, etc.) refreshes its `lastOpenedAt` in place instead of jumping it to the front of the recents list. `model_picker_favorites` and `model_picker_recents` are per-project CRR tables shared by desktop, TUI, and iOS; they are primary-key-only so CRR can convert them, with the recents cap enforced in `modelPickerStore.ts`. `AdeDb.sync.discardUnpublishedChangesForTables(tableNames)` lets a service clear local CRR state for specific tables without leaking those clears to sync peers — it records the cleared tables and `through_db_version` in the local-only `local_crr_change_suppressions` table, and `exportChangesSince` filters local-site rows for those tables at or below that version on the way out. The local-only excluded set (still kept out of replication) includes that suppression table itself, the snapshot caches, `pr_auto_link_ignores`, `pull_request_ai_summaries`, and `runtime_processes`. `crsql_changes` DELETE statements run through a helper that swallows the read-only-table error the cr-sqlite extension raises when a CRR-managed table is wiped, with a `db.crr_changes_cleanup_skipped` warn log instead of failing the migration. |
-| `sync/` | `syncService.ts`, `syncHostService.ts`, `syncPeerService.ts`, `syncRemoteCommandService.ts`, `syncProtocol.ts`, `deviceRegistryService.ts`, `syncPairingStore.ts` | **Thin delegation to the runtime daemon's sync host.** The authoritative sync host now lives in `apps/ade-cli/src/services/sync/`; the desktop main-process instances default to a non-host viewer role for legacy state and tests. The old in-process host is disabled unless `ADE_ENABLE_DESKTOP_SYNC_HOST=1` (diagnostics only). Wire formats — WebSocket envelope, remote command routing, device registry, pairing secrets — are the same across both implementations. Viewer joins clear the local `devices` + `sync_cluster_state` rows and then call `db.sync.discardUnpublishedChangesForTables(["devices", "sync_cluster_state"])` so the resulting DELETE rows do not leak back to other peers; the peer client follows up with `syncPeerService.acknowledgeLocalDbVersion()` to advance the outbound cursor past the suppressed range. |
-| `notifications/` | `apnsService.ts`, `apnsBridgeService.ts`, `notificationMapper.ts`, `notificationEventBus.ts` | APNs HTTP/2 client (ES256 JWT, key persisted via Electron `safeStorage` on the desktop or `EncryptedFileCredentialStore` under `.ade/secrets/` in the headless daemon), pure domain-event → `MappedNotification` mapping (13 categories / 4 families), event bus routing to APNs alert pushes + Live Activity update pushes + in-app WS delivery, filtered by per-device `NotificationPreferences`. `apnsBridgeService.ts` is the `notifications_apns` ADE action domain (`getStatus`, `saveConfig`, `uploadKey`, `clearKey`, `sendTestPush`) so the same Settings flow works whether the active project is local-bound or SSH-bound. |
+| `sync/` | `syncService.ts`, `syncHostService.ts`, `syncPeerService.ts`, `syncRemoteCommandService.ts`, `syncProtocol.ts`, `deviceRegistryService.ts`, `syncPairingStore.ts` | **Thin delegation to the ADE runtime's sync service.** The authoritative sync service now lives in `apps/ade-cli/src/services/sync/`; the desktop main-process instances default to a non-host viewer role for legacy state and tests. The old in-process host is disabled unless `ADE_ENABLE_DESKTOP_SYNC_HOST=1` (diagnostics only). Wire formats — WebSocket envelope, remote command routing, device registry, pairing secrets — are the same across both implementations. Viewer joins clear the local `devices` + `sync_cluster_state` rows and then call `db.sync.discardUnpublishedChangesForTables(["devices", "sync_cluster_state"])` so the resulting DELETE rows do not leak back to other peers; the peer client follows up with `syncPeerService.acknowledgeLocalDbVersion()` to advance the outbound cursor past the suppressed range. |
+| `notifications/` | `apnsService.ts`, `apnsBridgeService.ts`, `notificationMapper.ts`, `notificationEventBus.ts` | APNs HTTP/2 client (ES256 JWT, key persisted via Electron `safeStorage` on the desktop or `EncryptedFileCredentialStore` under `.ade/secrets/` in a headless runtime), pure domain-event → `MappedNotification` mapping (13 categories / 4 families), event bus routing to APNs alert pushes + Live Activity update pushes + in-app WS delivery, filtered by per-device `NotificationPreferences`. `apnsBridgeService.ts` is the `notifications_apns` ADE action domain (`getStatus`, `saveConfig`, `uploadKey`, `clearKey`, `sendTestPush`) so the same Settings flow works whether the active project is local-bound or SSH-bound. |
 | `tests/` | `testService.ts` | Test-suite execution + run history. |
 | `updates/` | `autoUpdateService.ts` | Electron auto-update wrapper around `electron-updater`. Owns the renderer-visible `AutoUpdateSnapshot` (`idle \| checking \| downloading \| ready \| installing \| error`), uses `compareUpdateVersions` (SemVer-aware) to dedupe / supersede staged installers and to reconcile `pendingInstallUpdate` against the running version on next boot. Packaged builds schedule startup/periodic checks; source/dev launches construct the service without auto-check timers so missing `app-update.yml` never surfaces as a renderer error. `quitAndInstall()` is async: it re-runs `checkForUpdates({ allowReady: true })` to confirm the staged build is still latest, and only then flips to `installing` and calls `updater.quitAndInstall(false, true)`. |
 | `usage/` | `usageTrackingService.ts`, `budgetCapService.ts`, `ledgers/localUsageLedgers.ts` | Token/cost accounting, budget enforcement. `usageTrackingService.ts` owns polling, aggregation, pacing, GitHub stats, and cache orchestration; local provider ledger scanners live under `usage/ledgers/`. Budget caps can match a rule scope while `usd-per-run` evaluates usage records keyed to the active run id. Threshold state is shared at module level across all `createUsageTrackingService` instances so multiple project contexts don't fire duplicate threshold events; `main.ts` adds a final IPC-level dedup gate with a 10-minute TTL per `provider:threshold:resetCycle` key. |
@@ -825,7 +860,7 @@ Renderer surfaces:
 
 ## 13. Multi-Device Sync
 
-The sync subsystem is **owned by the ADE runtime daemon** (`apps/ade-cli/src/services/sync/`). When a project is opened, its scope creates a sync service inside the runtime; that runtime is the host. The desktop client and iOS client both connect to the same host. Desktop's old in-process host code path is disabled by default and only re-enabled with `ADE_ENABLE_DESKTOP_SYNC_HOST=1` for diagnostics.
+The sync subsystem is **owned by the ADE runtime** (`apps/ade-cli/src/services/sync/`). When a project is opened, its scope creates a sync service inside the runtime; that runtime is the sync authority. The desktop client and iOS client both connect to the same service. Desktop's old in-process host code path is disabled by default and only re-enabled with `ADE_ENABLE_DESKTOP_SYNC_HOST=1` for diagnostics.
 
 ### 13.1 cr-sqlite CRDT + WebSocket
 
@@ -834,13 +869,13 @@ The sync subsystem is **owned by the ADE runtime daemon** (`apps/ade-cli/src/ser
 - **Merge**: last-writer-wins per column. Each device has a unique site ID; Lamport timestamps per column.
 - **Sync API** (`AdeDb.sync`): `getSiteId`, `getDbVersion`, `exportChangesSince(version)`, `applyChanges(changes)`, `discardUnpublishedChangesForTables(tableNames)`.
 - **Suppression**: `discardUnpublishedChangesForTables` writes a per-table, per-site high-water mark into the local-only `local_crr_change_suppressions` table. Subsequent `exportChangesSince` calls drop local-site rows for those tables at or below that mark, so a local wipe (e.g. clearing `devices` and `sync_cluster_state` when joining another host as a viewer) cannot leak back as DELETE rows. The viewer-join path follows the wipe with `syncPeerService.acknowledgeLocalDbVersion()` to advance the outbound cursor past the suppressed range.
-- **Transport**: WebSocket on port 8787 (configurable); JSON-framed changesets + zlib compression for large batches; 30s ping/pong. The same envelope channel carries project catalog and project-switch handoff messages before the phone reconnects to a project-specific sync host.
+- **Transport**: WebSocket on port 8787 (configurable); JSON-framed changesets + zlib compression for large batches; 30s ping/pong. The same envelope channel carries project catalog and project-switch handoff messages before the phone reconnects to a project-specific sync service endpoint.
 
 ### 13.2 Device model
 
-- **Host**: a runtime daemon on one reachable machine owns live execution side effects (agents, PTYs, processes) for a given project. Stored in the synced `sync_cluster_state` singleton row (`brain_device_id` is the legacy internal column name; user-facing language is "host"). Transfer requires a clean preflight (no running turns, live PTYs, running processes). CTO history and idle chats are durable and survive handoff.
-- **Controllers**: other connected devices (phones always; a second desktop optionally). Controllers read synced state and send commands to the host runtime.
-- **Independent desktops**: a second Mac can run its own runtime daemon and work independently through git without joining an ADE sync session. The tracked `.ade/` scaffold/config layer makes a clone look like an ADE project immediately.
+- **Sync authority**: a runtime on one reachable machine owns live execution side effects (agents, PTYs, processes) for a given project. Stored in the synced `sync_cluster_state` singleton row (`brain_device_id` is the legacy internal column name). Transfer requires a clean preflight (no running turns, live PTYs, running processes). CTO history and idle chats are durable and survive handoff.
+- **Controllers**: other connected devices (phones always; a second desktop optionally). Controllers read synced state and send commands to the authority runtime.
+- **Independent desktops**: a second Mac can run its own ADE runtime and work independently through git without joining an ADE sync session. The tracked `.ade/` scaffold/config layer makes a clone look like an ADE project immediately.
 
 ### 13.3 iOS companion sync model
 
@@ -886,9 +921,9 @@ Related sync docs: [Sync and multi-device](./features/sync-and-multi-device/READ
 ```
 ADE/
 ├── apps/
-│   ├── ade-cli/        # ADE runtime daemon (`ade serve`), `ade` CLI, `ade code` terminal client
+│   ├── ade-cli/        # ADE runtime (`ade serve`), `ade` CLI, `ade code` terminal client
 │   ├── desktop/        # Electron client (multi-window; local + SSH-bound runtime bindings)
-│   ├── ios/            # Native SwiftUI controller (WebSocket to runtime daemon)
+│   ├── ios/            # Native SwiftUI controller (WebSocket to ADE machine)
 │   └── web/            # Marketing + download landing (Vite + React)
 ├── docs/
 │   ├── PRD.md

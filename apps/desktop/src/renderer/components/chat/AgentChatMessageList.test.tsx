@@ -333,7 +333,7 @@ describe("AgentChatMessageList transcript rendering", () => {
     fireEvent.click(logsButton);
 
     await waitFor(() => {
-      expect(onInsertDraft).toHaveBeenCalledWith(expect.stringContaining("ade --socket terminal read"));
+      expect(onInsertDraft).toHaveBeenCalledWith(expect.stringContaining("ade terminal read"));
     });
     expect(onInsertDraft).toHaveBeenCalledWith(expect.stringContaining("http://localhost:5173/"));
     expect(onInsertDraft).toHaveBeenCalledWith(expect.stringContaining("npm run dev"));

@@ -31,6 +31,17 @@ struct WorkReasoningCard: View {
     isLive ? ADEColor.purpleAccent : ADEColor.textSecondary
   }
 
+  /// First non-empty line of the reasoning, used as the collapsed one-liner
+  /// preview (desktop shows a truncated peek next to the "Thought" label).
+  private var previewText: String? {
+    guard let bodyText else { return nil }
+    for line in bodyText.split(separator: "\n", omittingEmptySubsequences: true) {
+      let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+      if !trimmed.isEmpty { return trimmed }
+    }
+    return nil
+  }
+
   var body: some View {
     HStack(alignment: .top, spacing: 0) {
       VStack(alignment: .leading, spacing: 6) {
@@ -43,11 +54,10 @@ struct WorkReasoningCard: View {
             .textSelection(.enabled)
             .padding(.horizontal, 12)
             .padding(.vertical, 10)
-            .background(ADEColor.surfaceBackground.opacity(0.4), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-            .glassEffect(in: .rect(cornerRadius: 12))
+            .background(ADEColor.recessedBackground.opacity(0.6), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             .overlay(
               RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .stroke(ADEColor.glassBorder, lineWidth: 0.5)
+                .stroke(ADEColor.glassBorder, lineWidth: 1)
             )
             .transition(.opacity.combined(with: .move(edge: .top)))
         }
@@ -56,6 +66,10 @@ struct WorkReasoningCard: View {
     }
   }
 
+  /// Single collapsed one-liner: caret + brain + "Thinking"/"Thought" + a
+  /// truncated preview. No pulsing brain, no thinking-dots loop — the lone
+  /// streaming animation lives in the tail WorkActivityIndicator so we don't
+  /// stack repeating loops across the transcript.
   private var compactPill: some View {
     Button {
       withAnimation(ADEMotion.quick(reduceMotion: reduceMotion)) {
@@ -64,34 +78,26 @@ struct WorkReasoningCard: View {
     } label: {
       HStack(spacing: 8) {
         Image(systemName: "chevron.right")
-          .font(.system(size: 12, weight: .bold))
+          .font(.system(size: 11, weight: .bold))
           .foregroundStyle(ADEColor.textMuted)
           .rotationEffect(isExpanded ? .degrees(90) : .degrees(0))
         Image(systemName: "brain.head.profile")
-          .font(.system(size: 14, weight: .semibold))
+          .font(.system(size: 13, weight: .semibold))
           .foregroundStyle(headerTint)
-          .symbolEffect(
-            .pulse,
-            options: .repeating,
-            isActive: isLive && !reduceMotion
-          )
         Text(headerTitle)
-          .font(.subheadline.weight(.semibold))
-          .foregroundStyle(ADEColor.textPrimary)
-        if isLive {
-          WorkThinkingDots()
-            .frame(height: 6)
+          .font(.caption.weight(.semibold))
+          .foregroundStyle(ADEColor.textSecondary)
+        if !isExpanded, let previewText {
+          Text(previewText)
+            .font(.caption2)
+            .foregroundStyle(ADEColor.textMuted)
+            .lineLimit(1)
+            .truncationMode(.tail)
         }
       }
-      .padding(.horizontal, 12)
-      .padding(.vertical, 7)
-      .background(ADEColor.surfaceBackground.opacity(0.85), in: Capsule(style: .continuous))
-      .glassEffect()
-      .overlay(
-        Capsule(style: .continuous)
-          .stroke(ADEColor.glassBorder.opacity(0.9), lineWidth: 1)
-      )
-      .contentShape(Capsule())
+      .padding(.horizontal, 10)
+      .padding(.vertical, 5)
+      .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
     .accessibilityLabel("\(isLive ? "Reasoning in progress." : "Reasoning.") Tap to \(isExpanded ? "collapse" : "expand").")

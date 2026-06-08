@@ -143,7 +143,7 @@ export const buildCursorSdkSystemPrompt = (
     blocks.push(
       [
         "## ADE CLI primer",
-        "Lane shells have an `ade` command that drives the same project DB and live desktop socket. The `ade cursor cloud` subcommands (e.g. `agents list`, `agents create`, `agents send`, `agents cancel`) mirror the SDK surface above. Run `ade <command> --help` for full flags.",
+        "Lane shells have an `ade` command that drives the same project DB through the machine runtime endpoint. The `ade cursor cloud` subcommands (e.g. `agents list`, `agents create`, `agents send`, `agents cancel`) mirror the SDK surface above. Run `ade <command> --help` for full flags.",
         cliT.value,
       ].join("\n"),
     );

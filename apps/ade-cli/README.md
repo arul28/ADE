@@ -1,16 +1,16 @@
 # ADE CLI
 
-`apps/ade-cli` owns the `ade` command, the per-machine ADE runtime daemon, and the terminal `ade code` client. The runtime daemon is the source of truth for lanes, chats, PR state, process state, sync, and proof artifacts on a machine. Desktop ADE, `ade code`, the iOS app, and SSH-attached desktops all attach to it.
+`apps/ade-cli` owns the `ade` command, the per-machine ADE runtime, and the terminal `ade code` client. The machine runtime is the source of truth for lanes, agent chats, work sessions, PR state, process state, sync, and proof artifacts on a machine. Desktop ADE, `ade code`, the iOS app, and SSH-attached desktops all attach to it.
 
 ## Modes
 
 The `ade` binary has three operating modes:
 
-- **Socket** — the runtime daemon (`ade serve`) listens on `~/.ade/sock/ade.sock` (POSIX) or `\\.\pipe\ade-runtime` (Windows). All other CLI commands and clients open that socket and speak ADE JSON-RPC.
-- **Headless** (`--headless` or `ade code --embedded`) — the CLI builds an in-process `AdeRuntime` for one project and answers the same JSON-RPC surface directly. Used for one-shot commands and as a fallback when no socket is available.
-- **`ade rpc --stdio`** — attaches to the local runtime daemon and bridges its JSON-RPC over stdio. This is the transport the desktop's remote runtime feature spawns over SSH.
+- **Attached runtime** — the ADE runtime (`ade serve`) listens on `~/.ade/sock/ade.sock` (POSIX) or `\\.\pipe\ade-runtime` (Windows). All other CLI commands and clients open that local endpoint and speak ADE JSON-RPC.
+- **Headless** (`--headless` or `ade code --embedded`) — the CLI builds an in-process `AdeRuntime` for one project and answers the same JSON-RPC surface directly. Used for one-shot commands and as a fallback when no machine-runtime endpoint is available.
+- **`ade rpc --stdio`** — attaches to the local machine runtime and bridges its JSON-RPC over stdio. This is the transport the desktop's remote runtime feature spawns over SSH.
 
-Default routing for typed commands: prefer the socket if reachable; auto-spawn `ade serve` in the background if the socket does not exist; fall back to headless for commands that don't need shared live state. Add `--socket` to require the daemon, or `--headless` to force in-process execution.
+Default routing for typed commands: prefer the machine-runtime endpoint if reachable; auto-spawn `ade serve` in the background if the endpoint does not exist; fall back to headless for commands that don't need shared live state. Add `--socket` to require the endpoint, or `--headless` to force in-process execution.
 
 ## Machine layout
 
@@ -19,13 +19,13 @@ Default routing for typed commands: prefer the socket if reachable; auto-spawn `
 | Path | Purpose |
 | --- | --- |
 | `~/.ade/` | Per-machine ADE state root. |
-| `~/.ade/sock/ade.sock` | Runtime daemon socket (POSIX). |
-| `\\.\pipe\ade-runtime` | Runtime daemon named pipe (Windows). |
+| `~/.ade/sock/ade.sock` | ADE runtime local endpoint (POSIX). |
+| `\\.\pipe\ade-runtime` | ADE runtime named-pipe endpoint (Windows). |
 | `~/.ade/projects.json` | Project registry. |
 | `~/.ade/secrets/` | Machine credential store (`credentials.safe.enc` for desktop safeStorage, `credentials.json.enc` plus `.machine-key` for headless fallback storage, and per-store `*.lock` files). |
 | `~/.ade/bin/ade` | Bundled static runtime binary (release installs / remote uploads). |
 | `~/.ade/runtime/<platform-arch>/` | Native node modules for that runtime binary. |
-| `~/.ade/runtime/launchd.{out,err}.log` | Daemon stdout/stderr when running as a login service on macOS. |
+| `~/.ade/runtime/launchd.{out,err}.log` | Runtime stdout/stderr when running as a login service on macOS. |
 
 Per-project state stays under `<project>/.ade/` and is governed by `projectConfigService` (see `docs/features/onboarding-and-settings/configuration-schema.md`).
 
@@ -37,7 +37,7 @@ ADE Beta.app   -> ade-beta   -> ~/.ade-beta   -> ade-desktop-beta
 ADE Alpha.app  -> ade-alpha  -> ~/.ade-alpha  -> ade-desktop-alpha
 ```
 
-Source dev launches use the temp dev socket and `ade-desktop-dev` Electron profile instead of the installed app profile.
+Source dev launches use the temp dev endpoint and `ade-desktop-dev` Electron profile instead of the installed app profile.
 
 ## Install paths
 
@@ -84,15 +84,15 @@ Three ways to put `ade` on a machine:
 
 ## Service manager
 
-The runtime daemon runs as a per-user login service. The implementations live in `src/serviceManager/`.
+The ADE runtime runs as a per-user login service. The implementations live in `src/serviceManager/`.
 
 | Platform | Backend | Service path |
 | --- | --- | --- |
 | macOS | launchd `LaunchAgent` | `~/Library/LaunchAgents/com.ade.runtime.plist` |
-| Linux | `systemctl --user` | `~/.config/systemd/user/ade-runtime.service` |
+| Linux | `systemctl --user` | `~/.config/systemd/user/<ADE_RUNTIME_SERVICE_NAME>.service` |
 | Windows | `schtasks.exe ONLOGON` | scheduled task `ADE Runtime` |
 
-The default service label is `com.ade.runtime`; channel builds override it via `ADE_PACKAGE_CHANNEL=alpha|beta` (`com.ade.runtime.alpha`, `com.ade.runtime.beta`). `ADE_RUNTIME_SERVICE_NAME` overrides the label outright. macOS also writes `~/.ade/runtime/launchd.{out,err}.log`.
+The default service label is `com.ade.runtime`; channel builds override it via `ADE_PACKAGE_CHANNEL=alpha|beta` (`com.ade.runtime.alpha`, `com.ade.runtime.beta`). `ADE_RUNTIME_SERVICE_NAME` overrides the label outright and is used for both launchd and systemd unit names. macOS writes `launchd.{out,err}.log` under `ADE_HOME/runtime/`.
 
 Manage the service from the CLI:
 
@@ -101,41 +101,48 @@ ade serve --install-service       # write the plist/unit/task and start it
 ade serve --uninstall-service     # stop and remove it
 ade serve --service-status        # JSON: { ok, installed, running, path, message }
 
-# Aliases on the runtime command (same backend):
+# Runtime wrappers (same backend):
 ade runtime install-service
 ade runtime uninstall-service
 ade runtime service-status --text
+ade runtime status --text
+
+# Phone pairing:
+ade sync pin generate
+ade sync pin set --pin 123456
+ade sync pin clear
 ```
 
-`resolveAdeServeCommand()` builds the service command from the current `ade` binary path so the installed service launches the same ADE channel that ran the install.
+`resolveAdeServeCommand()` builds the service command from the current `ade` binary path so the installed service launches the same ADE channel that ran the install. After a packaged app update, ADE refreshes this service so the runtime re-execs the updated bundled CLI instead of leaving clients attached to an older build hash.
 
-## Foreground daemon
+## Foreground runtime
 
-`ade serve` runs the runtime in the foreground. Use it for development or when the system service is disabled.
+`ade serve` runs the ADE runtime in the foreground. Use it for development or when the system service is disabled.
 
 ```bash
 ade serve
 ade serve --socket ~/.ade/sock/ade.sock
 ade serve --port 8787              # also accept JSON-RPC on 127.0.0.1:8787
-ade serve --no-sync                # disable phone-sync host for this run
+ade serve --no-sync                # disable the phone sync service for this run
 ```
 
-## Runtime control
+## Runtime lifecycle
 
-`ade runtime` is the typed wrapper for daemon lifecycle commands:
+Prefer `ade serve --install-service`, `ade serve --uninstall-service`, and `ade serve --service-status` for runtime lifecycle automation. Use `ade runtime status --text` for a compact endpoint and sync health check, and `ade sync pin ...` for phone pairing:
 
 ```bash
-ade runtime status --text          # is the daemon up, which socket
-ade runtime start                  # spawn it in the background if missing
-ade runtime stop                   # graceful shutdown via JSON-RPC
-ade runtime install-service        # delegates to ade serve --install-service
+ade runtime status --text          # endpoint state, service state, sync state
+ade serve --install-service        # refresh the login service after an update
+ade sync pin generate              # generate a phone pairing PIN
+ade sync pin set --pin 123456
+ade sync pin clear
 ```
 
-`ade runtime start` is idempotent: it spawns `ade serve` detached and returns once the runtime answers `ade/initialize`. `ade runtime stop` calls the daemon's `shutdown` method.
+Older command aliases remain available for scripts, but docs and examples use the runtime/sync vocabulary.
 
 ## Project registry
 
-The runtime daemon owns a per-machine project registry at `~/.ade/projects.json` (`ProjectRegistry` in `src/services/projects/projectRegistry.ts`). A project record carries a stable `projectId` (`project_<sha256(rootPath)[..24]>`), root path, display name, `addedAt`, `lastOpenedAt`, and the resolved git origin URL.
+The ADE runtime owns a per-machine project registry at `~/.ade/projects.json` (`ProjectRegistry` in `src/services/projects/projectRegistry.ts`). A project record carries a stable `projectId` (`project_<sha256(rootPath)[..24]>`), root path, display name, `addedAt`, `lastOpenedAt`, and the resolved git origin URL.
 
 Manage the registry through typed CLI commands:
 
@@ -181,7 +188,9 @@ sync.setActiveLanePresence
 
 **Project-scoped** — every other request must carry `params.projectId`. `ade/actions/call` (and the legacy ADE action / tool catalog underneath it) is dispatched into the per-project `ProjectScope` returned by `ProjectScopeRegistry.get(projectId)`.
 
-`ade/initialize` advertises `runtimeInfo.multiProject: true` and `capabilities.projects: true`. Clients use that to switch between sending `projectId` per request (multi-project runtime) and the legacy per-process binding (embedded runtime). Sync is hosted by the daemon for the most-recently-opened registered project; `ProjectScopeRegistry.ensureSyncHost` re-elects a host when projects are added or removed.
+`ade/initialize` advertises `runtimeInfo.multiProject: true` and `capabilities.projects: true`. Clients use that to switch between sending `projectId` per request (multi-project runtime) and the legacy per-process binding (embedded runtime). Sync is owned by the sync service for the most-recently-opened registered project; `ProjectScopeRegistry.ensureSyncHost` refreshes the active sync project when projects are added or removed.
+
+The `sync.connectToBrain`, `sync.disconnectFromBrain`, and `sync.transferBrainToLocal` RPC names are legacy wire identifiers. New prose should call this runtime connection, disconnection, and sync authority transfer.
 
 ## Credentials
 
@@ -196,10 +205,10 @@ sync.setActiveLanePresence
 `ade code` launches the terminal-native ADE Work chat (Ink + React, in `src/tuiClient/`). Default behavior:
 
 ```bash
-ade code                           # attach to the machine daemon, auto-spawn it if missing
+ade code                           # attach to the machine runtime, auto-spawn it if missing
 ade code --embedded                # force the in-process embedded runtime
 ade code --print-state             # smoke-test the connection and exit
-ade --socket /path/to/ade.sock code   # attach to a specific socket
+ade --socket /path/to/ade.sock code   # attach to a specific local endpoint
 ade --project-root /repo code      # bind to a specific project root
 ```
 
@@ -209,19 +218,19 @@ See `docs/features/ade-code/README.md` for the full attach/embedded handshake, s
 
 ## `ade rpc --stdio`
 
-`ade rpc --stdio` attaches to the local runtime daemon (auto-spawning it if needed) and bridges its JSON-RPC over stdio. The remote-runtime path on the desktop runs `ade rpc --stdio` over an SSH `exec` channel; see `docs/features/remote-runtime/internal-architecture.md` for the protocol shape and bootstrap sequence.
+`ade rpc --stdio` attaches to the local machine runtime (auto-spawning it if needed) and bridges its JSON-RPC over stdio. The remote-runtime path on the desktop runs `ade rpc --stdio` over an SSH `exec` channel; see `docs/features/remote-runtime/internal-architecture.md` for the protocol shape and bootstrap sequence.
 
 ## `ade desktop`
 
-`ade desktop` opens the installed ADE app from the terminal. On macOS it runs `open -a "ADE"` (or `ADE Beta` / `ADE Alpha` based on `ADE_PACKAGE_CHANNEL` / `ADE_DESKTOP_APP_NAME`). The desktop attaches to the same machine runtime; if the daemon is not running, the desktop spawns and waits for it via `LocalRuntimeConnectionPool`.
+`ade desktop` opens the installed ADE app from the terminal. On macOS it runs `open -a "ADE"` (or `ADE Beta` / `ADE Alpha` based on `ADE_PACKAGE_CHANNEL` / `ADE_DESKTOP_APP_NAME`). The desktop attaches to the same machine runtime; if the runtime is not running, the desktop spawns and waits for it via `LocalRuntimeConnectionPool`.
 
 ## CLI surface (selected)
 
 ```bash
 ade desktop
-ade runtime status --text
-ade runtime start
-ade runtime stop
+ade serve --service-status
+ade serve --install-service
+ade serve --uninstall-service
 ade auth status
 ade doctor --json
 ade projects list --text
@@ -236,7 +245,7 @@ ade lanes batch-create-from-linear --linear-issues-json '[{"id":"...","identifie
 ade chat attach-linear-issue <session> --issue-id ENG-431
 ade chat create --from-linear-issue ENG-431
 ade linear attach --this-session --issue-id ENG-431   # attach to the current CLI session ($ADE_CHAT_SESSION_ID)
-ade linear comment "Pushed a fix; CI running"          # write back to the session's attached issue over the daemon bridge
+ade linear comment "Pushed a fix; CI running"          # write back through the attached runtime
 ade linear set-state ENG-431 <state-id>
 ade --role cto linear quick-view --text
 ade --role cto linear search-issues --query "auth" --state-type started,unstarted --first 50
@@ -319,7 +328,7 @@ Use typed commands first. They validate common arguments and provide stable JSON
 
 Output modes are explicit: `--text` for human-readable summaries, `--json` (default for piped output) for stable JSON, and `--pretty` for pretty-printed JSON.
 
-`--socket` requires the daemon and fails fast when it is missing. Without `--socket`, the CLI auto-attaches when reachable and falls back to headless for commands that can run that way.
+`--socket` requires the ADE runtime endpoint and fails fast when it is missing. Without `--socket`, the CLI auto-attaches when reachable and falls back to headless for commands that can run that way.
 
 ## `ade auth` and `ade doctor`
 
@@ -328,7 +337,7 @@ ADE CLI auth is local project access, not a separate cloud login. `ade auth stat
 `ade doctor` reports local-only readiness metadata by default:
 
 - CLI version, Node/runtime version, project root, workspace root, `.ade` initialization, and config file presence.
-- Machine socket path, whether the socket exists, and whether this invocation is using `runtime-socket`, `desktop-socket`, or `headless` mode.
+- Machine endpoint path, whether the endpoint exists, and whether this invocation is using an attached runtime, desktop bridge, or headless mode.
 - RPC tool count, ADE action count, and action counts by domain.
 - Git repository readiness and GitHub readiness signals from local remotes, `gh` availability, and token environment presence.
 - Linear readiness from the active project's `.ade/secrets` credential store (`linear.token.v1`), a legacy project-scoped encrypted token file, or headless environment variables.
@@ -359,7 +368,7 @@ npm run dev:runtime
 npm run dev:stop
 ```
 
-The dev scripts are the same runtime daemon, just running from source against a temporary socket so a packaged ADE on the same machine is not affected:
+The dev scripts run the same ADE runtime from source against a temporary endpoint so a packaged ADE on the same machine is not affected:
 
 ```text
 /tmp/ade-runtime-dev.sock
@@ -373,7 +382,7 @@ so initial lane selection matches `ade code` launched directly from the lane.
 Full matrix:
 
 ```bash
-npm run dev:desktop          # desktop only; dev socket; desktop may auto-create runtime
+npm run dev:desktop          # desktop only; dev endpoint; desktop may auto-create runtime
 npm run dev:desktop:attach   # desktop only; fail unless dev runtime is already running
 npm run dev:desktop:clean    # desktop only; clear Vite cache before launch
 npm run dev:code             # terminal TUI only; starts dev runtime if missing
@@ -391,7 +400,7 @@ npm run package:alpha        # current checkout -> ADE Alpha.app, ade-alpha, ~/.
 npm run package:beta         # origin/main -> ADE Beta.app, ade-beta, ~/.ade-beta
 ```
 
-Use these when you want a production-shaped local app without going through the GitHub release workflow. Alpha builds from the current checkout under `apps/desktop/release-alpha`; beta fetches `origin/main`, fast-forwards the local `main` checkout when possible, and writes artifacts under `apps/desktop/release-beta`. Use the dev scripts when you want Vite/Electron live reload, the temp dev socket, and the dev-only Electron profile. Local channel packages include the host runtime binary for the build machine. GitHub release builds use and validate the full cross-platform runtime artifact set.
+Use these when you want a production-shaped local app without going through the GitHub release workflow. Alpha builds from the current checkout under `apps/desktop/release-alpha`; beta fetches `origin/main`, fast-forwards the local `main` checkout when possible, and writes artifacts under `apps/desktop/release-beta`. Use the dev scripts when you want Vite/Electron live reload, the temp dev endpoint, and the dev-only Electron profile. Local channel packages include the current machine's runtime binary. GitHub release builds use and validate the full cross-platform runtime artifact set.
 
 The `prs path-to-merge` and `prs pipeline save` commands persist a partial `PipelineSettings` patch via `issue_inventory.savePipelineSettings` before launching the resolver. The Path to Merge orchestrator reads these from saved settings, so the same flags work either way:
 

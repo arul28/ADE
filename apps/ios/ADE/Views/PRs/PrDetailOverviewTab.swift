@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 // MARK: - Overview tab (rebuilt)
 //
@@ -309,6 +310,630 @@ struct PrOverviewTab: View {
         .disabled(!isLive)
       }
       .prGlassCard(cornerRadius: 18)
+    }
+  }
+}
+
+// MARK: - Unified Overview thread (desktop parity)
+//
+// Folds the former Overview + Activity tabs into ONE top→bottom thread:
+//   1. (optional) Unmapped banner — create-lane / map-to-lane CTAs
+//   2. Summary content (merge signals, AI summary, checks/commits/files)
+//      via the existing `PrOverviewTab`
+//   3. PR description (body) as the first feed card
+//   4. Chronological event feed (commits / reviews / comments / deploys / …)
+//   5. Review threads (unresolved + collapsed resolved)
+//   6. Chat composer (locked when the PR is unmapped)
+//   7. Inline merge rail (terminal states + blockers + merge/close actions)
+//
+// It reuses the existing `PrOverviewTab`, `PrActivityTimelineList`,
+// `PrReviewThreadCard`, `PrReplyComposerInline`, and the shared merge-gate
+// derivation so no data fetching or rendering is duplicated.
+
+struct PrUnifiedOverviewThread: View {
+  // Summary / overview content
+  let pr: PullRequestListItem
+  let snapshot: PullRequestSnapshot?
+  let aiSummary: AiReviewSummary?
+  let isLive: Bool
+  let isAiSummaryLoading: Bool
+  let groupMembers: [PrGroupMemberSummary]
+  let onNavigate: (PrOverviewNavTarget) -> Void
+  let onRegenerateAiSummary: () -> Void
+  let onOpenStack: (String, String?) -> Void
+  let onArchiveLane: () -> Void
+  let onDeleteBranch: () -> Void
+
+  // Thread content
+  let timeline: [PrTimelineEvent]
+  let reviewThreads: [PrReviewThread]
+  let descriptionBody: String?
+  let descriptionAuthor: String?
+
+  // Composer
+  @Binding var commentInput: String
+  let canAddComment: Bool
+  let isMapped: Bool
+  let onSubmitComment: () -> Void
+  let onReplyToThread: (String, String) -> Void
+  let onSetThreadResolved: (String, Bool) -> Void
+
+  // Unmapped affordance
+  let canAutoMap: Bool
+  let onAutoMap: () -> Void
+  let onOpenInGitHub: () -> Void
+
+  // Inline merge rail
+  let mergeRail: PrOverviewMergeRailModel
+
+  @State private var focusedThreadId: String?
+  @State private var replyDraft: [String: String] = [:]
+
+  private var sortedThreads: [PrReviewThread] {
+    reviewThreads.sorted {
+      if $0.isResolved != $1.isResolved { return !$0.isResolved && $1.isResolved }
+      let l = prParsedDate($0.updatedAt ?? $0.createdAt) ?? .distantPast
+      let r = prParsedDate($1.updatedAt ?? $1.createdAt) ?? .distantPast
+      return l > r
+    }
+  }
+  private var unresolvedThreads: [PrReviewThread] { sortedThreads.filter { !$0.isResolved } }
+  private var resolvedThreads: [PrReviewThread] { sortedThreads.filter { $0.isResolved } }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 16) {
+      if !isMapped {
+        PrUnmappedThreadBanner(
+          canAutoMap: canAutoMap,
+          onAutoMap: onAutoMap,
+          onOpenInGitHub: onOpenInGitHub
+        )
+      }
+
+      // Summary cards (AI summary pinned near top, merge signals, checks).
+      PrOverviewTab(
+        pr: pr,
+        snapshot: snapshot,
+        aiSummary: aiSummary,
+        isLive: isLive,
+        isAiSummaryLoading: isAiSummaryLoading,
+        groupMembers: groupMembers,
+        onNavigate: onNavigate,
+        onRegenerateAiSummary: onRegenerateAiSummary,
+        onOpenStack: onOpenStack,
+        onArchiveLane: onArchiveLane,
+        onDeleteBranch: onDeleteBranch
+      )
+
+      // Description (PR body) — the first card of the chronological thread.
+      if let body = descriptionBody?.trimmingCharacters(in: .whitespacesAndNewlines), !body.isEmpty {
+        PrThreadDescriptionCard(author: descriptionAuthor, text: body)
+      }
+
+      // Chronological event feed.
+      if !timeline.isEmpty {
+        PrActivityTimelineList(events: timeline)
+      }
+
+      // Review threads.
+      if !unresolvedThreads.isEmpty {
+        threadSectionHeader(title: "Threads", trailing: "\(unresolvedThreads.count) unresolved")
+        ForEach(unresolvedThreads) { thread in
+          PrReviewThreadCard(
+            thread: thread,
+            isLive: isLive,
+            isFocused: focusedThreadId == thread.id,
+            replyDraft: Binding(
+              get: { replyDraft[thread.id] ?? "" },
+              set: { replyDraft[thread.id] = $0 }
+            ),
+            onFocus: { focusedThreadId = thread.id },
+            onReply: { body in
+              onReplyToThread(thread.id, body)
+              replyDraft[thread.id] = ""
+            },
+            onResolve: { resolved in onSetThreadResolved(thread.id, resolved) }
+          )
+        }
+      }
+
+      if !resolvedThreads.isEmpty {
+        PrCollapsibleResolvedSection(
+          threads: resolvedThreads,
+          isLive: isLive,
+          onReopen: { threadId in onSetThreadResolved(threadId, false) }
+        )
+      }
+
+      // Chat composer — locked when the PR is unmapped.
+      if isMapped {
+        PrReplyComposer(
+          text: $commentInput,
+          placeholder: focusedThreadId != nil ? "Reply…" : "Comment on PR…",
+          isLive: isLive && canAddComment,
+          onSend: {
+            if let focusedThreadId {
+              onReplyToThread(focusedThreadId, commentInput)
+              commentInput = ""
+            } else {
+              onSubmitComment()
+            }
+          },
+          onClearFocus: focusedThreadId != nil ? { focusedThreadId = nil } : nil
+        )
+        if !canAddComment {
+          Text("Posting comments requires a machine that exposes PR comment actions to mobile.")
+            .font(.caption)
+            .foregroundStyle(ADEColor.textSecondary)
+        }
+      } else {
+        PrLockedComposerBar()
+      }
+
+      // Inline merge rail.
+      PrOverviewMergeRail(model: mergeRail)
+
+      Color.clear
+        .frame(height: 88)
+        .accessibilityHidden(true)
+    }
+  }
+
+  @ViewBuilder
+  private func threadSectionHeader(title: String, trailing: String?) -> some View {
+    HStack(alignment: .firstTextBaseline, spacing: 6) {
+      Text(title.uppercased())
+        .font(.system(size: 10, weight: .bold))
+        .tracking(1.0)
+        .foregroundStyle(ADEColor.textSecondary)
+      Spacer(minLength: 8)
+      if let trailing {
+        Text(trailing)
+          .font(.system(size: 11, weight: .semibold, design: .monospaced))
+          .foregroundStyle(ADEColor.textMuted)
+      }
+    }
+    .padding(.horizontal, 4)
+  }
+}
+
+/// PR description rendered as the first card of the thread.
+private struct PrThreadDescriptionCard: View {
+  let author: String?
+  let text: String
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 8) {
+      HStack(spacing: 6) {
+        Image(systemName: "text.alignleft")
+          .font(.system(size: 10, weight: .bold))
+          .foregroundStyle(PrGlassPalette.purpleBright)
+        Text("DESCRIPTION")
+          .font(.system(size: 10, weight: .bold))
+          .tracking(1.0)
+          .foregroundStyle(ADEColor.textSecondary)
+        Spacer(minLength: 0)
+        if let author, !author.isEmpty {
+          Text("@\(author)")
+            .font(.system(size: 10, weight: .semibold))
+            .foregroundStyle(ADEColor.textMuted)
+        }
+      }
+      Text(text)
+        .font(.system(size: 13))
+        .foregroundStyle(ADEColor.textPrimary)
+        .lineSpacing(3)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+    .padding(14)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .prGlassCard(cornerRadius: 16)
+  }
+}
+
+/// Amber banner shown at the top of the thread when the PR is not mapped to an
+/// ADE lane. Primary action is auto-map ("Create lane from PR branch", gated on
+/// host support); the secondary action opens the PR on GitHub. (Linking to an
+/// existing lane lives on the root unmapped-PR sheet.)
+private struct PrUnmappedThreadBanner: View {
+  let canAutoMap: Bool
+  let onAutoMap: () -> Void
+  let onOpenInGitHub: () -> Void
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 12) {
+      HStack(alignment: .top, spacing: 10) {
+        Image(systemName: "exclamationmark.triangle.fill")
+          .font(.system(size: 14))
+          .foregroundStyle(PrGlassPalette.warning)
+          .padding(.top, 1)
+        VStack(alignment: .leading, spacing: 3) {
+          Text("Not mapped to a lane")
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundStyle(ADEColor.textPrimary)
+          Text("Create a lane from this PR's branch to track and act on it inside ADE.")
+            .font(.system(size: 11.5))
+            .foregroundStyle(ADEColor.textSecondary)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+        Spacer(minLength: 0)
+      }
+
+      HStack(spacing: 8) {
+        if canAutoMap {
+          Button(action: onAutoMap) {
+            Label("Create lane from PR branch", systemImage: "arrow.triangle.branch")
+              .font(.system(size: 12, weight: .semibold))
+              .foregroundStyle(.white)
+              .frame(maxWidth: .infinity)
+              .padding(.vertical, 9)
+              .background(PrGlassPalette.accentGradient, in: RoundedRectangle(cornerRadius: 11, style: .continuous))
+          }
+          .buttonStyle(.plain)
+        }
+        Button(action: onOpenInGitHub) {
+          Label("Open in GitHub", systemImage: "arrow.up.right.square")
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundStyle(PrGlassPalette.purpleBright)
+            .frame(maxWidth: canAutoMap ? nil : .infinity)
+            .padding(.horizontal, canAutoMap ? 12 : 0)
+            .padding(.vertical, 9)
+            .background(
+              RoundedRectangle(cornerRadius: 11, style: .continuous)
+                .fill(PrGlassPalette.purple.opacity(0.14))
+            )
+            .overlay(
+              RoundedRectangle(cornerRadius: 11, style: .continuous)
+                .strokeBorder(PrGlassPalette.purple.opacity(0.35), lineWidth: 0.5)
+            )
+        }
+        .buttonStyle(.plain)
+      }
+    }
+    .padding(14)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .prGlassCard(cornerRadius: 16, tint: PrGlassPalette.warning.opacity(0.5), shadow: false)
+  }
+}
+
+/// Locked comment composer shown when the PR is unmapped (desktop parity).
+private struct PrLockedComposerBar: View {
+  var body: some View {
+    HStack(spacing: 10) {
+      Image(systemName: "lock.fill")
+        .font(.system(size: 13))
+        .foregroundStyle(ADEColor.textMuted)
+      Text("Map this PR to a lane to comment")
+        .font(.system(size: 12))
+        .foregroundStyle(ADEColor.textSecondary)
+      Spacer(minLength: 0)
+    }
+    .padding(.horizontal, 14)
+    .padding(.vertical, 12)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .background(
+      RoundedRectangle(cornerRadius: 22, style: .continuous)
+        .fill(Color.white.opacity(0.04))
+    )
+    .overlay(
+      RoundedRectangle(cornerRadius: 22, style: .continuous)
+        .strokeBorder(Color.white.opacity(0.08), lineWidth: 0.5)
+    )
+  }
+}
+
+// MARK: - Inline merge rail (unified thread bottom)
+
+/// Drives the inline merge rail at the bottom of the unified Overview thread.
+/// Mirrors desktop's `PrDetailMergeRail`: terminal states, a derived blockers
+/// list, a merge split-button, a close action, and a copyable command-line
+/// instruction. Built from the already-fetched PR status / checks / reviews.
+struct PrOverviewMergeRailModel {
+  enum Phase {
+    case merged
+    case closed
+    case active
+  }
+
+  let phase: Phase
+  let prNumber: Int
+  /// Merge-gate summary (green/amber/red) for the active state.
+  let gate: PrMergeGateInfo
+  /// Bulleted blocker reasons when merging is blocked.
+  let blockers: [String]
+  let isDraft: Bool
+  let canMerge: Bool
+  let canClose: Bool
+  let canDeleteBranch: Bool
+  let canReopen: Bool
+  let isBusy: Bool
+  let mergeMethod: PrMergeMethodOption
+
+  let onMerge: () -> Void
+  let onChangeMethod: () -> Void
+  let onClose: () -> Void
+  let onReopen: () -> Void
+  let onDeleteBranch: () -> Void
+
+  var commandLine: String {
+    "gh pr merge \(prNumber) --\(mergeMethod.rawValue)"
+  }
+}
+
+struct PrOverviewMergeRail: View {
+  let model: PrOverviewMergeRailModel
+
+  @State private var showCommandLine = false
+  @State private var confirmClose = false
+  @State private var confirmDelete = false
+  @State private var copiedCommand = false
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 12) {
+      PrEyebrow(text: "Merge", tint: ADEColor.textSecondary)
+
+      switch model.phase {
+      case .merged:
+        mergedSection
+      case .closed:
+        closedSection
+      case .active:
+        activeSection
+      }
+    }
+    .padding(16)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .prGlassCard(cornerRadius: 18)
+  }
+
+  // MARK: Terminal: merged
+
+  private var mergedSection: some View {
+    VStack(alignment: .leading, spacing: 12) {
+      statusLine(icon: "checkmark.seal.fill", tint: ADEColor.success, title: "Merged and closed")
+      if model.canDeleteBranch {
+        if confirmDelete {
+          confirmRow(
+            message: "Delete the branch?",
+            confirmTitle: "Delete branch",
+            tint: ADEColor.danger,
+            onConfirm: { confirmDelete = false; model.onDeleteBranch() },
+            onCancel: { confirmDelete = false }
+          )
+        } else {
+          secondaryButton(title: "Delete branch", icon: "trash", tint: ADEColor.danger) {
+            confirmDelete = true
+          }
+        }
+      }
+    }
+  }
+
+  // MARK: Terminal: closed
+
+  private var closedSection: some View {
+    VStack(alignment: .leading, spacing: 12) {
+      statusLine(icon: "xmark.circle.fill", tint: ADEColor.danger, title: "This PR is closed")
+      if model.canReopen {
+        secondaryButton(title: "Reopen pull request", icon: "arrow.uturn.up", tint: ADEColor.accent) {
+          model.onReopen()
+        }
+      }
+    }
+  }
+
+  // MARK: Active (open / draft)
+
+  private var activeSection: some View {
+    VStack(alignment: .leading, spacing: 12) {
+      // Mergeability status line.
+      switch model.gate.tone {
+      case .green:
+        statusLine(icon: "checkmark.seal.fill", tint: ADEColor.success, title: "Ready to merge")
+      case .amber:
+        statusLine(icon: "clock.fill", tint: ADEColor.warning, title: model.isDraft ? "Draft — not ready" : "Checking…")
+      case .red:
+        VStack(alignment: .leading, spacing: 8) {
+          statusLine(icon: "exclamationmark.octagon.fill", tint: ADEColor.danger, title: "Merging is blocked")
+          if !model.blockers.isEmpty {
+            VStack(alignment: .leading, spacing: 5) {
+              ForEach(Array(model.blockers.enumerated()), id: \.offset) { _, blocker in
+                HStack(alignment: .top, spacing: 7) {
+                  Circle()
+                    .fill(ADEColor.danger.opacity(0.7))
+                    .frame(width: 5, height: 5)
+                    .padding(.top, 5)
+                  Text(blocker)
+                    .font(.system(size: 12))
+                    .foregroundStyle(ADEColor.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                }
+              }
+            }
+            .padding(.leading, 2)
+          }
+        }
+      }
+
+      // Merge split-button (primary action + method menu).
+      HStack(spacing: 8) {
+        Button {
+          if model.canMerge && !model.isBusy { model.onMerge() }
+        } label: {
+          HStack(spacing: 8) {
+            if model.isBusy {
+              ProgressView().controlSize(.small).tint(.white)
+            } else {
+              Image(systemName: "arrow.triangle.merge")
+                .font(.system(size: 13, weight: .bold))
+            }
+            Text(model.mergeMethod.shortTitle)
+              .font(.system(size: 14, weight: .bold))
+          }
+          .foregroundStyle(.white)
+          .frame(maxWidth: .infinity)
+          .padding(.vertical, 13)
+          .background(
+            RoundedRectangle(cornerRadius: 13, style: .continuous)
+              .fill(
+                LinearGradient(
+                  colors: [ADEColor.success, ADEColor.success.opacity(0.82)],
+                  startPoint: .top, endPoint: .bottom
+                )
+              )
+          )
+          .opacity(model.canMerge && !model.isBusy ? 1 : 0.5)
+        }
+        .buttonStyle(.plain)
+        .disabled(!model.canMerge || model.isBusy)
+
+        Button(action: model.onChangeMethod) {
+          Image(systemName: "chevron.up.chevron.down")
+            .font(.system(size: 13, weight: .bold))
+            .foregroundStyle(ADEColor.textSecondary)
+            .frame(width: 44, height: 46)
+            .background(
+              RoundedRectangle(cornerRadius: 13, style: .continuous)
+                .fill(Color.white.opacity(0.06))
+            )
+            .overlay(
+              RoundedRectangle(cornerRadius: 13, style: .continuous)
+                .strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5)
+            )
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Change merge method")
+      }
+
+      // Close pull request (two-tap confirm).
+      if model.canClose {
+        if confirmClose {
+          confirmRow(
+            message: "Close this PR?",
+            confirmTitle: "Close PR",
+            tint: ADEColor.danger,
+            onConfirm: { confirmClose = false; model.onClose() },
+            onCancel: { confirmClose = false }
+          )
+        } else {
+          secondaryButton(title: "Close pull request", icon: "xmark.circle", tint: ADEColor.danger) {
+            confirmClose = true
+          }
+        }
+      }
+
+      // Command-line instructions disclosure.
+      commandLineDisclosure
+    }
+  }
+
+  // MARK: Pieces
+
+  private func statusLine(icon: String, tint: Color, title: String) -> some View {
+    HStack(spacing: 9) {
+      Image(systemName: icon)
+        .font(.system(size: 14, weight: .semibold))
+        .foregroundStyle(tint)
+      Text(title)
+        .font(.system(size: 14, weight: .semibold))
+        .foregroundStyle(tint)
+      Spacer(minLength: 0)
+    }
+  }
+
+  private func secondaryButton(title: String, icon: String, tint: Color, action: @escaping () -> Void) -> some View {
+    Button(action: action) {
+      HStack(spacing: 7) {
+        Image(systemName: icon).font(.system(size: 12, weight: .semibold))
+        Text(title).font(.system(size: 13, weight: .semibold))
+        Spacer(minLength: 0)
+      }
+      .foregroundStyle(tint)
+      .padding(.horizontal, 13)
+      .padding(.vertical, 11)
+      .background(
+        RoundedRectangle(cornerRadius: 12, style: .continuous)
+          .fill(tint.opacity(0.10))
+      )
+      .overlay(
+        RoundedRectangle(cornerRadius: 12, style: .continuous)
+          .strokeBorder(tint.opacity(0.30), lineWidth: 0.5)
+      )
+    }
+    .buttonStyle(.plain)
+  }
+
+  private func confirmRow(
+    message: String,
+    confirmTitle: String,
+    tint: Color,
+    onConfirm: @escaping () -> Void,
+    onCancel: @escaping () -> Void
+  ) -> some View {
+    HStack(spacing: 8) {
+      Text(message)
+        .font(.system(size: 12, weight: .semibold))
+        .foregroundStyle(ADEColor.textPrimary)
+      Spacer(minLength: 0)
+      Button("Cancel", action: onCancel)
+        .font(.system(size: 12, weight: .semibold))
+        .foregroundStyle(ADEColor.textSecondary)
+        .buttonStyle(.plain)
+      Button(confirmTitle, action: onConfirm)
+        .font(.system(size: 12, weight: .bold))
+        .foregroundStyle(tint)
+        .buttonStyle(.plain)
+    }
+    .padding(.horizontal, 13)
+    .padding(.vertical, 11)
+    .background(
+      RoundedRectangle(cornerRadius: 12, style: .continuous)
+        .fill(tint.opacity(0.10))
+    )
+  }
+
+  private var commandLineDisclosure: some View {
+    VStack(alignment: .leading, spacing: 8) {
+      Button {
+        withAnimation(.easeInOut(duration: 0.18)) { showCommandLine.toggle() }
+      } label: {
+        HStack(spacing: 6) {
+          Image(systemName: showCommandLine ? "chevron.down" : "chevron.right")
+            .font(.system(size: 9, weight: .bold))
+          Text("View command line instructions")
+            .font(.system(size: 11.5, weight: .medium))
+          Spacer(minLength: 0)
+        }
+        .foregroundStyle(ADEColor.textMuted)
+      }
+      .buttonStyle(.plain)
+
+      if showCommandLine {
+        HStack(spacing: 8) {
+          Text(model.commandLine)
+            .font(.system(size: 11.5, design: .monospaced))
+            .foregroundStyle(ADEColor.textSecondary)
+            .lineLimit(1)
+            .truncationMode(.middle)
+          Spacer(minLength: 0)
+          Button {
+            UIPasteboard.general.string = model.commandLine
+            copiedCommand = true
+            ADEHaptics.success()
+          } label: {
+            Image(systemName: copiedCommand ? "checkmark" : "doc.on.doc")
+              .font(.system(size: 11, weight: .semibold))
+              .foregroundStyle(copiedCommand ? ADEColor.success : ADEColor.textSecondary)
+          }
+          .buttonStyle(.plain)
+        }
+        .padding(.horizontal, 11)
+        .padding(.vertical, 9)
+        .background(
+          RoundedRectangle(cornerRadius: 10, style: .continuous)
+            .fill(Color.black.opacity(0.25))
+        )
+      }
     }
   }
 }

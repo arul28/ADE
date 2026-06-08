@@ -31,9 +31,9 @@ The runtime is organized around one contract: the CTO tab should be usable as a 
 - `linearCloseoutService.ts` — success/failure Linear state transitions, comments, proof attachment.
 - `linearOutboundService.ts` — outbound Linear writes (state, comments, assignees).
 
-### Runtime daemon parity
+### ADE runtime parity
 
-- `apps/ade-cli/src/headlessLinearServices.ts` — wires the same CTO Linear services (client, tracker, template, workflow file, flow policy, routing, intake, outbound, closeout, dispatcher, sync, ingress) into the `ade serve` runtime daemon, plus a headless `workerHeartbeatService`, `workerTaskSessionService`, and the supporting `fileService` / `processService` / `prService` / `automationSecretService` instances the dispatcher needs to actually launch targets. The CTO is no longer "desktop-only" — every Linear capability runs identically inside the daemon, so a headless host can intake issues, dispatch worker runs, and close out tickets with the same code path the desktop renderer drives.
+- `apps/ade-cli/src/headlessLinearServices.ts` — wires the same CTO Linear services (client, tracker, template, workflow file, flow policy, routing, intake, outbound, closeout, dispatcher, sync, ingress) into the `ade serve` runtime, plus a headless `workerHeartbeatService`, `workerTaskSessionService`, and the supporting `fileService` / `processService` / `prService` / `automationSecretService` instances the dispatcher needs to actually launch targets. The CTO is no longer "desktop-only" — every Linear capability runs identically inside the runtime, so a headless runtime can intake issues, dispatch worker runs, and close out tickets with the same code path the desktop renderer drives.
 
 ### Renderer (apps/desktop/src/renderer/components/cto/)
 
@@ -148,7 +148,7 @@ The environment knowledge block inside the system prompt teaches intent-to-tool 
 - Linear sync short-circuits when no workflows are enabled and no runs are active.
 - Ingress only auto-starts when realtime config is actually present.
 - Management surfaces (Team, Workflows, Settings) hydrate lazily without weakening persistent identity.
-- The `ade serve` runtime daemon uses the same Linear services as the desktop renderer; the CTO is not a desktop-only feature.
+- The `ade serve` runtime uses the same Linear services as the desktop renderer; the CTO is not a desktop-only feature.
 - Worker adapter type is one of `claude-local`, `codex-local`, or `process`. There are no other adapter types — anything that needs to wrap an external service does so as a `process` adapter.
 
 ## Gotchas and fragile areas

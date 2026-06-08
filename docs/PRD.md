@@ -1,6 +1,6 @@
 # ADE — Product Requirements
 
-ADE is a **per-machine local-first runtime daemon** for AI-assisted software engineering. The runtime owns projects, git-worktree lanes of work, multi-provider AI chat, a persistent CTO agent, worker delegation, pipeline automations, PR stacking, conflict simulation, computer-use proofs, and multi-device sync. Three first-party clients attach to it as peers: the **Electron desktop app** (multi-window, one window per project, optionally bound to a remote runtime over SSH), the **`ade code` terminal client**, and the **iOS app**. The same `ade` CLI is also used directly from any shell.
+ADE is a **per-machine local-first ADE runtime** for AI-assisted software engineering. The runtime owns projects, git-worktree lanes of work, multi-provider agent chat, work sessions, a persistent CTO agent, worker delegation, pipeline automations, PR stacking, conflict simulation, computer-use proofs, and multi-device sync. Three first-party clients attach to it as peers: the **Electron desktop app** (multi-window, one window per project, optionally bound to a remote runtime over SSH), the **`ade code` terminal client**, and the **iOS app**. The same `ade` CLI is also used directly from any shell.
 
 This doc is the entry point. Every major feature and concept is linked to its detailed breakdown in [`features/`](./features/). For how the pieces fit together, read [ARCHITECTURE.md](./ARCHITECTURE.md) next.
 
@@ -8,14 +8,14 @@ This doc is the entry point. Every major feature and concept is linked to its de
 
 ## What ADE Is
 
-ADE is a single-user development control plane that runs as a **runtime daemon on each machine** (`apps/ade-cli/`, started with `ade serve`, listening on `~/.ade/sock/ade.sock`, installable as a login service via launchd / systemd / Windows). The daemon hosts **multiple projects** through a project registry; project-scoped operations dispatch through the multi-project JSON-RPC surface (`projects.*`, `sync.*`, `ade/actions/call` with a `projectId`).
+ADE is a single-user development control plane that runs an **ADE runtime on each machine** (`apps/ade-cli/`, started with `ade serve`, listening on `~/.ade/sock/ade.sock`, installable as a login service via launchd / systemd / Windows). The machine runtime hosts **multiple projects** through a project registry; project-scoped operations dispatch through the multi-project JSON-RPC surface (`projects.*`, `sync.*`, `ade/actions/call` with a `projectId`).
 
 The clients of that runtime are equal:
 
 - **Electron desktop** (`apps/desktop/`) — multi-window UI. Local windows attach to the local runtime through `LocalRuntimeConnectionPool`. Windows can also be bound to a remote machine over SSH; that path runs `ade rpc --stdio` on the remote and routes runtime-backed APIs through `RemoteConnectionPool`. Runtime-bound windows do not retry project work against desktop-local handlers; the remaining in-process services are for pre-binding desktop flows, Electron-only side effects, diagnostics, and tests.
-- **ADE Code (`ade code`)** — terminal-native Work chat (Ink + React) in `apps/ade-cli/src/tuiClient/`. Defaults to attaching to the machine socket; starts `ade serve` if missing. `--embedded` keeps the legacy in-process fallback explicit.
-- **iOS app** (`apps/ios/`) — SwiftUI controller; connects to the runtime over WebSocket. The phone never runs agents.
-- **SSH-attached desktop** — a desktop window pointed at a remote runtime is the same client as a local window; the runtime daemon is what differs.
+- **ADE Code (`ade code`)** — terminal-native Work chat (Ink + React) in `apps/ade-cli/src/tuiClient/`. Defaults to attaching to the machine-runtime endpoint; starts `ade serve` if missing. `--embedded` keeps the legacy in-process fallback explicit.
+- **iOS app** (`apps/ios/`) — SwiftUI controller; pairs with an ADE machine over WebSocket. The phone never runs agents.
+- **SSH-attached desktop** — a desktop window pointed at a remote runtime is the same client as a local window; the runtime machine is what differs.
 
 The primary unit of work inside any project is a **lane**: an isolated git worktree + per-lane process pool + agent session. Many lanes run concurrently — each with its own chat, its own processes, its own PR. Lanes compose into **stacks** (dependency chains) and can be delegated to CTO workers or automation rules when the work needs durable routing.
 
@@ -25,7 +25,7 @@ Layered on top, all owned by the runtime:
 - **Computer use** — control plane that fans out to Computer Use, agent-browser, or local fallback for UI automation proofs.
 - **ADE browser** — project-scoped built-in browser with persistent project profiles, tab/session ownership, hidden-tab agent actions, diagnostics, traces, and explicit proof promotion.
 - **Linear** — first-class two-way integration owned by the CTO agent.
-- **Multi-device sync** — cr-sqlite CRDT replication, owned by the runtime daemon. The iOS app and any controller desktops connect through the same sync host.
+- **Multi-device sync** — cr-sqlite CRDT replication, owned by the sync service inside the ADE runtime. The iOS app and any controller desktops connect through the same sync service.
 - **Remote runtime** — the desktop ships per-platform `ade-<platform-arch>` binaries plus native deps under `apps/desktop/resources/runtime/`; `bootstrapRemoteRuntime` uploads them on first SSH connect. Headless installs use `curl … install.sh | sh`.
 
 ADE is the control plane. It owns ADE Browser automation for its built-in project browser, while OS-level computer-use still runs through dedicated backends and ADE normalizes their artifacts.
@@ -36,7 +36,7 @@ ADE is the control plane. It owns ADE Browser automation for its built-in projec
 
 | Concept | Summary | Doc |
 | --- | --- | --- |
-| Runtime | The per-machine ADE daemon (`ade serve`, `~/.ade/sock/ade.sock`). Hosts every project; desktop, `ade code`, and iOS attach as clients. Installable as a launchd / systemd / Windows login service. | [remote-runtime/README.md](./features/remote-runtime/README.md) |
+| Machine runtime | The per-machine ADE runtime (`ade serve`, `~/.ade/sock/ade.sock`). Hosts every project; desktop, `ade code`, and iOS attach as clients. Installable as a launchd / systemd / Windows login service. | [remote-runtime/README.md](./features/remote-runtime/README.md) |
 | Project | One repo entry in the runtime's project registry. Identified by stable hash of root path; addressed in the multi-project RPC by `projectId`. | [remote-runtime/README.md](./features/remote-runtime/README.md) |
 | Lane | Isolated git worktree + per-lane process pool + agent session for one task. | [lanes/README.md](./features/lanes/README.md) |
 | Stack | Dependency chain of lanes → stacked PRs. | [lanes/stacking.md](./features/lanes/stacking.md) |
@@ -46,14 +46,42 @@ ADE is the control plane. It owns ADE Browser automation for its built-in projec
 | Session | PTY-backed terminal session pinned to a lane. | [terminals-and-sessions/README.md](./features/terminals-and-sessions/README.md) |
 | Proof | Normalized computer-use artifact (screenshot, recording, network log). | [computer-use/artifact-broker.md](./features/computer-use/artifact-broker.md) |
 
+## Glossary
+
+| Term | Meaning |
+| --- | --- |
+| ADE runtime | The `ade serve` service plus runtime-side project, lane, agent chat, work session, sync, and proof services. |
+| Machine runtime | The ADE runtime running on a specific machine and reachable at that machine's ADE endpoint. |
+| Remote runtime | A machine runtime reached over SSH by a desktop window through `ade rpc --stdio`. |
+| Desktop bridge | Narrow Electron-main side channel for services that require real Electron UI APIs, such as ADE Browser. |
+| Sync service | Runtime-owned WebSocket + cr-sqlite service that pairs controllers, replicates ADE DB state, routes mobile commands, and manages phone PIN pairing. |
+| Client | A UI or CLI surface attached to an ADE runtime: desktop, `ade code`, iOS, or an SSH-attached desktop window. |
+| Controller | A client that reads runtime state and sends commands without running agents itself; the iOS app is always a controller. |
+| Project | A registered repository root known to a machine runtime and addressed by `projectId`. |
+| Lane | A task-scoped git worktree with its own process pool, agent chat, work sessions, and PR flow. |
+| Worktree | The filesystem checkout backing a lane, usually under `.ade/worktrees/<lane-id>/`. |
+| Stack | A dependency chain of lanes that maps to stacked PRs. |
+| Work session | A tracked chat, agent CLI, shell, or PTY session associated with a lane or project surface. |
+| Agent chat | A structured multi-provider chat session that can call ADE tools, stream events, and attach to a lane. |
+| Terminal session | A PTY-backed work session with transcript, runtime state, and optional chat ownership. |
+| Agent | A model-backed operator with persona, provider/model, tool tier, budget, and session log. |
+| CTO | The persistent project-level agent that coordinates workers, Linear workflows, and plans. |
+| Worker | A delegated agent launched by the CTO or automation rules for scoped execution. |
+| Proof | A normalized artifact proving UI or workflow execution: screenshot, recording, trace, or log. |
+| Remote target | A saved SSH-reachable machine that can host a remote runtime. |
+| Remote project | A project registered with the remote target's machine runtime. |
+| CRDT / CRR | The cr-sqlite replication model used for synced ADE database tables. |
+| Project registry | The machine-runtime catalog at `~/.ade/projects.json` that maps root paths to stable `projectId`s. |
+| Brain | Legacy terminology for the machine runtime or sync authority. Keep it only when naming compatibility commands, legacy RPC methods, or internal fields such as `brain_device_id`. |
+
 ---
 
 ## Feature Index
 
 ### Runtime and clients
 
-- [**Remote Runtime**](./features/remote-runtime/README.md) — The per-machine ADE daemon. Multi-project registry, machine socket, login-service install, SSH bootstrap of the cross-platform `ade-<platform-arch>` runtime binaries shipped under `apps/desktop/resources/runtime/`. Owns sync.
-- [**ADE Code**](./features/ade-code/README.md) — Terminal-native Work chat (Ink + React) inside `apps/ade-cli`. Default attaches to the machine socket and starts `ade serve` if missing. Same JSON-RPC surface as the desktop app and the iOS controller.
+- [**Remote Runtime**](./features/remote-runtime/README.md) — Remote access to an ADE runtime. Multi-project registry, machine endpoint, login-service install, SSH bootstrap of the cross-platform `ade-<platform-arch>` runtime binaries shipped under `apps/desktop/resources/runtime/`. Owns sync.
+- [**ADE Code**](./features/ade-code/README.md) — Terminal-native Work chat (Ink + React) inside `apps/ade-cli`. Default attaches to the machine-runtime endpoint and starts `ade serve` if missing. Same JSON-RPC surface as the desktop app and the iOS controller.
 
 ### Work execution
 
@@ -95,10 +123,10 @@ For the system-wide picture — runtime + clients, processes, data plane, IPC, s
 
 Quick pointers:
 
-- **Runtime daemon**: `apps/ade-cli/` — `ade serve` is the per-machine source of truth for projects, lanes, chats, processes, sync, and proof. Socket: `~/.ade/sock/ade.sock`. Login-service installers: `apps/ade-cli/src/serviceManager/installLaunchd.ts` (macOS), `installSystemd.ts` (Linux), `installWindows.ts` (Windows). Multi-project RPC: `apps/ade-cli/src/multiProjectRpcServer.ts`. Project registry/scope: `apps/ade-cli/src/services/projects/`. Sync host: `apps/ade-cli/src/services/sync/`. Credentials, agent registry, runtime-side service surfaces: `apps/ade-cli/src/services/`.
+- **ADE runtime**: `apps/ade-cli/` — `ade serve` is the per-machine source of truth for projects, lanes, agent chats, work sessions, processes, sync, and proof. Endpoint: `~/.ade/sock/ade.sock`. Login-service installers: `apps/ade-cli/src/serviceManager/installLaunchd.ts` (macOS), `installSystemd.ts` (Linux), `installWindows.ts` (Windows). Multi-project RPC: `apps/ade-cli/src/multiProjectRpcServer.ts`. Project registry/scope: `apps/ade-cli/src/services/projects/`. Sync service: `apps/ade-cli/src/services/sync/`. Credentials, agent registry, runtime-side service surfaces: `apps/ade-cli/src/services/`.
 - **Desktop client**: `apps/desktop/` — Electron main + preload + renderer. Multi-window. `LocalRuntimeConnectionPool` (`apps/desktop/src/main/services/localRuntime/`) speaks to the local runtime; `RemoteConnectionPool` (`apps/desktop/src/main/services/remoteRuntime/`) speaks to a runtime over SSH after `bootstrapRemoteRuntime` uploads the bundled `ade-<platform-arch>` binary. `preload.ts` routes runtime-backed APIs through those pools. In-process desktop services remain only for flows that have no runtime binding yet, Electron-only side effects, diagnostics, and tests.
 - **Terminal client**: `apps/ade-cli/src/tuiClient/` — `ade code` Ink + React Work chat.
-- **iOS client**: `apps/ios/` — SwiftUI controller over WebSocket to the runtime daemon.
+- **iOS client**: `apps/ios/` — SwiftUI controller over WebSocket to the ADE runtime's sync service.
 - **Renderer components**: `apps/desktop/src/renderer/components/<feature>/`.
 - **Shared types + IPC contract**: `apps/desktop/src/shared/` (consumed by the desktop client and re-imported by the ADE CLI runtime). New runtime-facing types: `apps/desktop/src/shared/types/remoteRuntime.ts`, `core.ts`.
 - **Data**: SQLite + cr-sqlite. `.ade/` per project (the runtime owns these files regardless of which client is attached), `~/.ade/` global.
@@ -119,7 +147,7 @@ The source of truth is always the code. Docs may lag on specific code paths — 
 Fragile areas flagged across the docs (read docs before editing):
 - Multi-project RPC + project scope/registry (`apps/ade-cli/src/multiProjectRpcServer.ts`, `services/projects/`) — every runtime call lives or dies here; getting `projectId` routing wrong silently corrupts cross-project state.
 - Local vs. remote runtime pools (`apps/desktop/src/main/services/localRuntime/`, `remoteRuntime/`) — desktop binding switching, SSH bootstrap upload, version negotiation against bundled `ade-<platform-arch>` binaries.
-- Sync host inside the runtime daemon (`apps/ade-cli/src/services/sync/`) — desktop's old in-process sync host is disabled by default and only re-enabled with `ADE_ENABLE_DESKTOP_SYNC_HOST=1` for diagnostics; do not assume desktop owns sync.
+- Sync service inside the ADE runtime (`apps/ade-cli/src/services/sync/`) — desktop's old in-process sync host is disabled by default and only re-enabled with `ADE_ENABLE_DESKTOP_SYNC_HOST=1` for diagnostics; do not assume desktop owns sync.
 - Multi-window shell + `app/navigate` JSON-RPC handoff (desktop main `main.ts`, runtime side in `apps/ade-cli/src/adeRpcServer.ts`) — TUI/external controllers can drive desktop window navigation.
 - CTO pipeline builder — recent work, custom flat/nested target-chain translation.
 - PTY / sessions / processes services — rewritten this branch.
