@@ -47,7 +47,9 @@ vi.mock("@lobehub/icons", () => {
 import {
   AgentChatMessageList,
   calculateVirtualWindow,
+  calculateVirtualWindowAnchoredToEnd,
   deriveTurnModelState,
+  formatElapsedSeconds,
   reconcileMeasuredScrollTop,
   shouldAbsorbProgrammaticScrollEvent,
   shouldStickToBottomAfterScroll,
@@ -1244,6 +1246,45 @@ describe("AgentChatMessageList transcript rendering", () => {
     expect(updated.offsetTop).toBeGreaterThan(baseline.offsetTop);
   });
 
+  it("anchors the follow-bottom window to the last row regardless of stale estimates", () => {
+    const win = calculateVirtualWindowAnchoredToEnd({
+      rowCount: 100,
+      containerHeight: 240,
+      rowHeight: () => 80,
+      rowGap: 0,
+    });
+    // The tail must always be mounted so the streaming indicator stays flush.
+    expect(win.endIndex).toBe(100);
+    // Window must cover the viewport (240 / 80 = 3 rows) plus overscan.
+    expect(win.startIndex).toBeLessThan(100 - 3);
+    // offsetTop + rendered estimate must reconstruct totalHeight exactly so
+    // there is no phantom gap below the rendered rows.
+    const renderedEstimate = (100 - win.startIndex) * 80;
+    expect(win.offsetTop + renderedEstimate).toBe(win.totalHeight);
+  });
+
+  it("keeps the anchored window valid when the viewport is taller than the content", () => {
+    const win = calculateVirtualWindowAnchoredToEnd({
+      rowCount: 3,
+      containerHeight: 2000,
+      rowHeight: () => 80,
+      rowGap: 0,
+    });
+    expect(win.startIndex).toBe(0);
+    expect(win.endIndex).toBe(3);
+    expect(win.offsetTop).toBe(0);
+  });
+
+  it("formats turn elapsed time as working-for seconds then minutes", () => {
+    expect(formatElapsedSeconds(0)).toBe("0s");
+    expect(formatElapsedSeconds(42)).toBe("42s");
+    expect(formatElapsedSeconds(59)).toBe("59s");
+    expect(formatElapsedSeconds(60)).toBe("1m 00s");
+    expect(formatElapsedSeconds(65)).toBe("1m 05s");
+    expect(formatElapsedSeconds(793)).toBe("13m 13s");
+    expect(formatElapsedSeconds(-5)).toBe("0s");
+  });
+
   it("does not vertically clip virtualized transcript rows while heights settle", () => {
     const originalResizeObserver = globalThis.ResizeObserver;
     class ResizeObserverStub {
@@ -1479,6 +1520,10 @@ describe("AgentChatMessageList transcript rendering", () => {
     // the raw tool detail (kept calm — t3code / Codex reference).
     expect(streaming.container.textContent).toContain("Running command");
     expect(streaming.container.textContent).not.toContain("npm test");
+    // Elapsed reads as "working for <duration>" so the timer is attributed to
+    // the whole turn, not the current sub-action. The space before the digits
+    // guards against JSX collapsing "working for " into "working for0s".
+    expect(streaming.container.textContent).toMatch(/working for \d/);
 
     cleanup();
 
