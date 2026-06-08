@@ -311,15 +311,75 @@ npm run dev:stop
 npm run dev:code             # tests TUI wrapper creating the dev runtime
 ```
 
-Local packaged builds:
+### Rebuild ADE Alpha or Beta locally
+
+Use these commands when you need a local packaged macOS channel build without
+waiting for the GitHub release workflow.
 
 ```bash
 npm run package:alpha        # current checkout -> ADE Alpha.app, ade-alpha, ~/.ade-alpha
 npm run package:beta         # origin/main -> ADE Beta.app, ade-beta, ~/.ade-beta
 ```
 
-These are unsigned local macOS app builds under `apps/desktop/release-alpha` and `apps/desktop/release-beta`. Beta fetches `origin/main`, fast-forwards the local `main` checkout when possible, and builds that checkout as `ADE Beta`. It does not create a packaging worktree. These builds do not replace the production `ADE.app`, production `ade`, or `~/.ade` runtime/state. Alpha and Beta also use separate Electron profile directories (`ade-desktop-alpha` / `ade-desktop-beta`) so their browser storage and window state do not collide with dev or stable.
-Local channel packages include this Mac's runtime binary. Release builds still require the full cross-platform runtime artifact set used by remote runtime bootstrap.
+`package:alpha` builds exactly the checkout you are in. `package:beta` is
+release-like: it fetches `origin/main`, fast-forwards the local `main` checkout
+when possible, and builds that checkout as `ADE Beta`. It does not create a
+packaging worktree.
+
+To smoke-test the Beta channel from a PR branch before it lands on `main`, pass
+the branch checkout explicitly:
+
+```bash
+node scripts/package-channel.mjs beta --repo "$PWD" --skip-install
+```
+
+Local channel outputs:
+
+```text
+apps/desktop/release-alpha/mac-arm64/ADE Alpha.app
+apps/desktop/release-alpha/ADE-Alpha-local.zip
+apps/desktop/release-beta/mac-arm64/ADE Beta.app
+apps/desktop/release-beta/ADE-Beta-local.zip
+```
+
+Install the build you want to test by replacing the matching app in
+`/Applications`:
+
+```bash
+rm -rf "/Applications/ADE Beta.app"
+ditto "apps/desktop/release-beta/mac-arm64/ADE Beta.app" "/Applications/ADE Beta.app"
+xattr -dr com.apple.quarantine "/Applications/ADE Beta.app" 2>/dev/null || true
+```
+
+Use `ADE Alpha.app` and `release-alpha` for Alpha. If the Dock already has an
+ADE Alpha/Beta icon, remove and re-pin it after installing from `/Applications`;
+Dock icons keep the exact bundle path they were pinned from, so an old icon can
+launch a stale `apps/desktop/release-*` build even after `/Applications` was
+updated.
+
+Launching a packaged channel build should install or repair that channel's
+always-on brain service:
+
+```bash
+launchctl print gui/$(id -u)/com.ade.runtime.beta
+ls -l ~/Library/LaunchAgents/com.ade.runtime.beta.plist ~/.ade-beta/sock/ade.sock
+```
+
+Set or rotate the channel's mobile pairing PIN from the Desktop Mobile control,
+or from the CLI against that channel home:
+
+```bash
+ADE_PACKAGE_CHANNEL=beta ADE_HOME="$HOME/.ade-beta" ade brain pin generate
+ADE_PACKAGE_CHANNEL=beta ADE_HOME="$HOME/.ade-beta" ade brain pin set 123456
+```
+
+For Alpha, use `com.ade.runtime.alpha` and `~/.ade-alpha`. These builds do not
+replace the production `ADE.app`, production `ade`, or `~/.ade` runtime/state.
+Alpha and Beta also use separate Electron profile directories
+(`ade-desktop-alpha` / `ade-desktop-beta`) so browser storage and window state
+do not collide with dev or stable. Local channel packages include this Mac's
+runtime binary. Release builds still require the full cross-platform runtime
+artifact set used by remote runtime bootstrap.
 
 Validate with `npm --prefix apps/desktop run typecheck` and `npm run test:desktop:sharded` for the full desktop suite. The desktop test suite is large, so run the smallest relevant subset first.
 

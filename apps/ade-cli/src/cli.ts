@@ -260,6 +260,10 @@ function isSourceCheckoutCliEntryPath(modulePath: string): boolean {
   );
 }
 
+function isPackagedElectronCliRuntime(): boolean {
+  return Boolean(process.versions.electron) && !isSourceCheckoutCliEntryPath(CLI_ENTRY_PATH);
+}
+
 function automationsCliEnabled(): boolean {
   const override = readAutomationsEnvOverride(process.env);
   if (override !== null) return override;
@@ -10412,7 +10416,10 @@ function hasHelpFlag(args: string[]): boolean {
   return false;
 }
 
-function buildCliPlan(command: string[]): CliPlan {
+function buildCliPlan(
+  command: string[],
+  options: Pick<GlobalOptions, "socketPath"> = { socketPath: null },
+): CliPlan {
   const args = [...command];
   if (args[0] === "--version" || args[0] === "-v") {
     return { kind: "help", text: `ade ${VERSION}\n` };
@@ -10536,8 +10543,12 @@ function buildCliPlan(command: string[]): CliPlan {
     const runtimeArgs = [...args];
     const sub = firstStandalonePositional(runtimeArgs) ?? "status";
     if (sub === "run" || sub === "foreground") {
-      if (!readValue([...runtimeArgs], ["--socket"])) {
+      const socketPath = readValue([...runtimeArgs], ["--socket"]) ?? options.socketPath;
+      if (!socketPath) {
         throw new CliUsageError("ade runtime run requires --socket <path>.");
+      }
+      if (!readValue([...runtimeArgs], ["--socket"])) {
+        runtimeArgs.push("--socket", socketPath);
       }
       const syncDisabled = readFlag([...runtimeArgs], ["--no-sync"]);
       if (!syncDisabled) {
@@ -10814,6 +10825,7 @@ function buildAdeCodeArgs(rest: string[], options: GlobalOptions): string[] {
           "--require-socket",
         ]
       : []),
+    ...(isPackagedElectronCliRuntime() ? ["--prefer-service-repair"] : []),
     ...rest,
   ];
 }
@@ -12522,7 +12534,7 @@ function shouldRepairMachineRuntimeServiceBeforeSpawn(
 ): boolean {
   return !socketPathOverride?.trim()
     && process.env.ADE_DISABLE_RUNTIME_SERVICE_INSTALL !== "1"
-    && Boolean(process.versions.electron)
+    && isPackagedElectronCliRuntime()
     && !socketPath.startsWith("tcp://")
     && !isAdeRuntimeNamedPipePath(socketPath)
     && !isEphemeralRuntimeSocketPath(socketPath);
@@ -12536,7 +12548,7 @@ async function repairMachineRuntimeServiceConnection(args: {
 }): Promise<SocketJsonRpcClient | null> {
   let client: SocketJsonRpcClient | null = null;
   try {
-    const { installRuntimeService } = await import("./serviceManager");
+    const { installRuntimeService, uninstallRuntimeService } = await import("./serviceManager");
     const result = installRuntimeService();
     if (!result.ok) return null;
     client = await SocketJsonRpcClient.connect(
@@ -12555,6 +12567,7 @@ async function repairMachineRuntimeServiceConnection(args: {
       { enforceBuildCompatibility: args.enforceBuildCompatibility },
     );
     if (mismatch) {
+      uninstallRuntimeService();
       client.close();
       return null;
     }
@@ -15653,7 +15666,7 @@ async function runCli(
   argv: string[],
 ): Promise<{ output: string; exitCode: number }> {
   const parsed = parseCliArgs(argv);
-  const plan = buildCliPlan(parsed.command);
+  const plan = buildCliPlan(parsed.command, parsed.options);
   if (plan.kind === "help")
     return {
       output: plan.text.endsWith("\n") ? plan.text : `${plan.text}\n`,

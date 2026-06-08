@@ -480,6 +480,24 @@ describe("connectToAde embedded mode", () => {
     expect(client.close).toHaveBeenCalledTimes(1);
   });
 
+  it("falls back to spawning when packaged service repair fails", async () => {
+    const socketPath = useMissingMachineSocket();
+    const client = mockAttachedClient();
+
+    const connection = await connectToAde({ project, preferServiceRepair: true });
+    try {
+      expect(connection.mode).toBe("attached");
+    } finally {
+      await connection.close();
+    }
+
+    expect(runtimeService.installRuntimeService).toHaveBeenCalledTimes(1);
+    expect(childProcess.spawn).toHaveBeenCalledTimes(1);
+    const spawnCall = childProcess.spawn.mock.calls[0] as unknown[] | undefined;
+    expect(spawnCall?.[1]).toEqual(expect.arrayContaining(["serve", "--socket", socketPath]));
+    expect(client.close).toHaveBeenCalledTimes(1);
+  });
+
   it("keeps the script entrypoint argv shape when a CLI script is resolved", async () => {
     const socketPath = useMissingMachineSocket();
     const entrypointDir = fs.mkdtempSync(

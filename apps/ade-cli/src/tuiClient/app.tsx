@@ -642,6 +642,7 @@ type AdeCodeAppProps = {
   forceEmbedded?: boolean;
   requireSocket?: boolean;
   socketPath?: string | null;
+  preferServiceRepair?: boolean;
 };
 
 type RefreshStateOptions = {
@@ -2566,7 +2567,7 @@ function resolveCenterPaneWidth(columns: number, drawerOpen: boolean, rightPaneW
   );
 }
 
-export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }: AdeCodeAppProps) {
+export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, preferServiceRepair }: AdeCodeAppProps) {
   const { exit } = useApp();
   const [columns, rows] = useTerminalDimensions();
   useTerminalAlternateScreen();
@@ -5941,7 +5942,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     let cancelled = false;
     void (async () => {
       try {
-        const conn = await connectToAde({ project, forceEmbedded, requireSocket, socketPath });
+        const conn = await connectToAde({ project, forceEmbedded, requireSocket, socketPath, preferServiceRepair });
         if (cancelled) {
           await conn.close();
           return;
@@ -5996,7 +5997,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       connectionRef.current = null;
       void conn?.close().catch(() => {});
     };
-  }, [forceEmbedded, project, requireSocket, signalActiveTerminalForExit, signalActiveTerminalForExitSync, socketPath]);
+  }, [forceEmbedded, preferServiceRepair, project, requireSocket, signalActiveTerminalForExit, signalActiveTerminalForExitSync, socketPath]);
 
   // Stable handle to the latest refreshState so the chat-event subscription can
   // call it without listing refreshState as a dependency (its identity churns on
@@ -6383,6 +6384,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
             forceEmbedded: false,
             requireSocket: true,
             socketPath,
+            preferServiceRepair,
           });
           if (attached.mode !== "attached") {
             await attached.close().catch(() => {});
@@ -6407,7 +6409,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       })();
     }, 3_000);
     return () => clearInterval(timer);
-  }, [addNotice, connection, connectionLost, forceEmbedded, mode, project, refreshState, socketPath, streaming]);
+  }, [addNotice, connection, connectionLost, forceEmbedded, mode, preferServiceRepair, project, refreshState, socketPath, streaming]);
 
   const ensureActiveSession = useCallback(async (): Promise<string | null> => {
     const conn = connectionRef.current;
@@ -7901,7 +7903,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         addNotice(result.message ?? "Desktop route unavailable; launched ADE.", "info");
         for (let attempt = 0; attempt < 8; attempt += 1) {
           await delay(750);
-          const attached = await connectToAde({ project, forceEmbedded: false, socketPath }).catch(() => null);
+          const attached = await connectToAde({ project, forceEmbedded: false, socketPath, preferServiceRepair }).catch(() => null);
           if (!attached || attached.mode !== "attached") {
             await attached?.close().catch(() => {});
             continue;
@@ -7924,7 +7926,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         addNotice(result.message ?? "Desktop route unavailable from this runtime.", "error");
       }
     }
-  }, [activeSession?.provider, addNotice, applyLocalModelArg, displaySessions, loadProviderModels, modelState.provider, pendingSteers, project, refreshAiSetupStatus, refreshState, requestAppExit, scheduleModelStateCommit, sendClaudeModelCommandToTerminal, setChatScrollOffset, socketPath]);
+  }, [activeSession?.provider, addNotice, applyLocalModelArg, displaySessions, loadProviderModels, modelState.provider, pendingSteers, preferServiceRepair, project, refreshAiSetupStatus, refreshState, requestAppExit, scheduleModelStateCommit, sendClaudeModelCommandToTerminal, setChatScrollOffset, socketPath]);
 
   const submitRightForm = useCallback(async (
     form: Extract<RightPaneContent, { kind: "form" }>,

@@ -1016,7 +1016,7 @@ export function TopBar() {
   const remoteStatusCount = Math.max(connectedRemoteCount, openRemoteProjectTabs.length);
   const remoteConnected = connectedRemoteCount > 0;
   const syncConnected = isSyncConnected(syncSnapshot);
-  const showSyncControl = workspaceProjectOpen;
+  const showSyncControl = projectHydrated === true && !remoteBinding;
 
   useEffect(() => {
     openProjectTabRootsRef.current = openProjectTabRoots;

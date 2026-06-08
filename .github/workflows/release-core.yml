@@ -272,12 +272,7 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: |
-            apps/desktop/package-lock.json
-            apps/ade-cli/package-lock.json
-
-      - name: Install desktop dependencies
-        run: cd apps/desktop && npm ci
+          cache-dependency-path: apps/ade-cli/package-lock.json
 
       - name: Install ADE CLI dependencies
         run: cd apps/ade-cli && npm ci
@@ -285,7 +280,7 @@ jobs:
       - name: Stamp runtime release version
         env:
           ADE_RELEASE_TAG: ${{ inputs.release_tag }}
-        run: cd apps/desktop && npm run version:release
+        run: node apps/desktop/scripts/set-release-version.mjs
 
       - name: Build ADE runtime binary
         run: cd apps/ade-cli && npm run build:static -- --target ${{ matrix.target }}

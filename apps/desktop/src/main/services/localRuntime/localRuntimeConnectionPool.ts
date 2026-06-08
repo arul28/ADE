@@ -361,10 +361,24 @@ function isCompatibleRuntimeVersion(args: {
 
 class LocalRuntimeCompatibilityError extends Error {
   readonly pid: number | null;
-  constructor(message: string, pid: number | null = null) {
+  readonly runtimeVersion: string | null;
+  readonly runtimeBuildHash: string | null;
+  readonly runtimeDefaultRole: string | null;
+  constructor(
+    message: string,
+    runtimeInfo: {
+      pid?: number | null;
+      version?: string | null;
+      buildHash?: string | null;
+      defaultRole?: string | null;
+    } = {},
+  ) {
     super(message);
     this.name = "LocalRuntimeCompatibilityError";
-    this.pid = pid;
+    this.pid = runtimeInfo.pid ?? null;
+    this.runtimeVersion = runtimeInfo.version ?? null;
+    this.runtimeBuildHash = runtimeInfo.buildHash ?? null;
+    this.runtimeDefaultRole = runtimeInfo.defaultRole ?? null;
   }
 }
 
@@ -1201,6 +1215,18 @@ export class LocalRuntimeConnectionPool {
       this.ownedRuntimeChild = null;
       return { client, child: null, socketPath };
     } catch (error) {
+      if (error instanceof LocalRuntimeCompatibilityError) {
+        this.logger.warn("local_runtime.service_repair_connect_failed", {
+          socketPath,
+          reason,
+          error: error.message,
+          runtimePid: error.pid,
+          runtimeVersion: error.runtimeVersion,
+          runtimeBuildHash: error.runtimeBuildHash,
+          runtimeDefaultRole: error.runtimeDefaultRole,
+        });
+        return null;
+      }
       this.logger.warn("local_runtime.service_repair_connect_failed", {
         socketPath,
         reason,
@@ -1290,7 +1316,7 @@ export class LocalRuntimeConnectionPool {
       closeRuntimeClient(client);
       throw new LocalRuntimeCompatibilityError(
         `ADE service version ${runtimeInfo.version} does not match desktop version ${this.appVersion}.`,
-        runtimeInfo.pid,
+        runtimeInfo,
       );
     }
     if (expectedBuildHash && runtimeInfo.buildHash !== expectedBuildHash) {
@@ -1303,7 +1329,7 @@ export class LocalRuntimeConnectionPool {
       closeRuntimeClient(client);
       throw new LocalRuntimeCompatibilityError(
         "ADE service build does not match the packaged desktop runtime.",
-        runtimeInfo.pid,
+        runtimeInfo,
       );
     }
     if (runtimeInfo.defaultRole !== "cto") {
@@ -1316,7 +1342,7 @@ export class LocalRuntimeConnectionPool {
       closeRuntimeClient(client);
       throw new LocalRuntimeCompatibilityError(
         `ADE service default role ${runtimeInfo.defaultRole ?? "missing"} does not match desktop role cto.`,
-        runtimeInfo.pid,
+        runtimeInfo,
       );
     }
     this.activeClient = client;

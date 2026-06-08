@@ -290,6 +290,16 @@ describe("ADE CLI", () => {
       kind: "serve",
       rest: ["--socket", "/tmp/ade.sock", "--no-sync"],
     });
+    const parsedRuntimeRun = parseCliArgs([
+      "--socket",
+      "/tmp/global.sock",
+      "runtime",
+      "run",
+    ]);
+    expect(buildCliPlan(parsedRuntimeRun.command, parsedRuntimeRun.options)).toEqual({
+      kind: "serve",
+      rest: ["--socket", "/tmp/global.sock", "--no-sync"],
+    });
     expect(
       buildCliPlan(["runtime", "start", "--socket", "/tmp/ade.sock"]),
     ).toEqual({

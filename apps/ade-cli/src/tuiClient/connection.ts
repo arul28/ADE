@@ -664,11 +664,9 @@ export async function connectToAde(args: {
   const machineSocketPath = resolveMachineAdeLayout().socketPath;
   const socketPath = explicitSocketPath ?? machineSocketPath;
   const preferServiceRepair =
-    args.preferServiceRepair ?? (
-      !explicitSocketPath
-      && process.env.ADE_DISABLE_RUNTIME_SERVICE_INSTALL !== "1"
-      && Boolean(process.versions.electron)
-    );
+    args.preferServiceRepair === true
+    && !explicitSocketPath
+    && process.env.ADE_DISABLE_RUNTIME_SERVICE_INSTALL !== "1";
 
   if (args.forceEmbedded && args.requireSocket) {
     throw new Error("Cannot use embedded mode when an ADE socket is required.");
