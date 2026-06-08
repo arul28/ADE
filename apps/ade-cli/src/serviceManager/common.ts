@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { createHash } from "node:crypto";
 import path from "node:path";
 import type { SpawnSyncOptions } from "node:child_process";
 
@@ -71,6 +72,89 @@ function runtimeEnvironment(): Record<string, string> | undefined {
   return Object.keys(env).length > 0 ? env : undefined;
 }
 
+function fileSha256(filePath: string): string | null {
+  let fd: number | null = null;
+  try {
+    fd = fs.openSync(filePath, "r");
+    const hash = createHash("sha256");
+    const buffer = Buffer.allocUnsafe(1024 * 1024);
+    for (;;) {
+      const bytesRead = fs.readSync(fd, buffer, 0, buffer.length, null);
+      if (bytesRead === 0) break;
+      hash.update(bytesRead === buffer.length ? buffer : buffer.subarray(0, bytesRead));
+    }
+    return hash.digest("hex");
+  } catch {
+    return null;
+  } finally {
+    if (fd != null) {
+      try { fs.closeSync(fd); } catch {}
+    }
+  }
+}
+
+function resolveCliPackageRoot(entryPath: string): string | null {
+  const seen = new Set<string>();
+  const starts = entryPath ? [path.dirname(entryPath)] : [process.cwd()];
+  for (const start of starts) {
+    if (!start) continue;
+    let cursor = path.resolve(start);
+    while (!seen.has(cursor)) {
+      seen.add(cursor);
+      const packageJson = path.join(cursor, "package.json");
+      const srcCli = path.join(cursor, "src", "cli.ts");
+      if (fs.existsSync(packageJson) && fs.existsSync(srcCli)) {
+        return cursor;
+      }
+      const parent = path.dirname(cursor);
+      if (parent === cursor) break;
+      cursor = parent;
+    }
+  }
+  return null;
+}
+
+function resolveCliDistPath(entryPath: string): string | null {
+  const packageRoot = resolveCliPackageRoot(entryPath);
+  if (!packageRoot) return null;
+  const distPath = path.join(packageRoot, "dist", "cli.cjs");
+  return fs.existsSync(distPath) ? distPath : null;
+}
+
+export function resolveAdeServiceCommandBuildHash(command: AdeServiceCommand): string | null {
+  const firstArg = command.args[0] ? path.resolve(command.args[0]) : "";
+  const isNodeServeFallback =
+    command.command === process.execPath
+    && command.args.length === 1
+    && command.args[0] === "serve";
+  if (isNodeServeFallback) {
+    const entry = typeof process.argv[1] === "string" && process.argv[1].trim()
+      ? path.resolve(process.argv[1])
+      : "";
+    const distPath = resolveCliDistPath(entry);
+    return distPath ? fileSha256(distPath) : null;
+  }
+  if (command.command === process.execPath && firstArg && fs.existsSync(firstArg)) {
+    return fileSha256(firstArg);
+  }
+  if (command.command !== process.execPath && fs.existsSync(command.command)) {
+    return fileSha256(path.resolve(command.command));
+  }
+  return null;
+}
+
+function withRuntimeBuildHash(command: AdeServiceCommand): AdeServiceCommand {
+  const buildHash = resolveAdeServiceCommandBuildHash(command);
+  if (!buildHash) return command;
+  return {
+    ...command,
+    env: {
+      ...(command.env ?? {}),
+      ADE_RUNTIME_BUILD_HASH: buildHash,
+    },
+  };
+}
+
 export function shellQuote(value: string): string {
   return `'${value.replace(/'/g, "'\\''")}'`;
 }
@@ -101,24 +185,24 @@ export function resolveAdeServeCommand(): AdeServiceCommand {
     : "";
   const isNodeScript = /\.(?:cjs|mjs|js|ts)$/i.test(entry) && fs.existsSync(entry);
   if (isNodeScript) {
-    return {
+    return withRuntimeBuildHash({
       command: process.execPath,
       args: [entry, "serve"],
       env: runtimeEnvironment(),
-    };
+    });
   }
   if (entry && fs.existsSync(entry)) {
-    return {
+    return withRuntimeBuildHash({
       command: entry,
       args: ["serve"],
       env: runtimeEnvironment(),
-    };
+    });
   }
-  return {
+  return withRuntimeBuildHash({
     command: process.execPath,
     args: ["serve"],
     env: runtimeEnvironment(),
-  };
+  });
 }
 
 export function renderCommand(command: AdeServiceCommand): string {
