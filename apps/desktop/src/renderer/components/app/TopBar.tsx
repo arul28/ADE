@@ -1053,17 +1053,15 @@ export function TopBar() {
   useEffect(() => {
     const rootPath = project?.rootPath ?? null;
     if (!rootPath) {
-      // Only wipe local tabs when the user has explicitly closed the project
-      // (welcome screen visible, no remote binding, no transition in flight).
-      // Otherwise we'd nuke other tabs whenever `project` is briefly null mid
-      // open/switch/close.
-      if (
-        !remoteBinding &&
-        projectTransition == null &&
-        showWelcome === true
-      ) {
-        setOpenProjectTabRoots([]);
-      }
+      // Do NOT wipe the tab list here. `project` goes briefly null on every
+      // remote bind/unbind: `bindWindowToRemoteProject` emits
+      // projectChanged(null) and projectBindingChanged(remote) as two separate
+      // IPC messages, so the renderer momentarily sees
+      // project==null && !remoteBinding && showWelcome==true even though the
+      // window is just switching to a remote project — and wiping here would
+      // delete every local tab (any path). A genuine close already clears the
+      // list authoritatively in closeProject() (appStore), so this effect only
+      // needs to ADD the current local root, never remove.
       return;
     }
     if (remoteBinding) {
@@ -1079,7 +1077,7 @@ export function TopBar() {
     setOpenProjectTabRoots((prev) =>
       prev.includes(rootPath) ? prev : [...prev, rootPath],
     );
-  }, [project?.rootPath, remoteBinding, projectTransition, showWelcome]);
+  }, [project?.rootPath, remoteBinding, projectTransition]);
 
   useEffect(() => {
     if (!remoteBinding) return;
@@ -1138,8 +1136,23 @@ export function TopBar() {
           for (const tabProject of session.openProjectTabs) {
             useAppStore.getState().rememberProjectInfo(tabProject);
           }
-          setOpenProjectTabRoots(session.openProjectTabs.map((entry) => entry.rootPath));
-        } else if (session.binding?.kind === "remote" || !session.project) {
+          // Merge, don't replace. The main-process snapshot
+          // (projectsForWindowTabs) drops any tab root whose context was
+          // evicted while idle, so a remount could otherwise lose a local tab
+          // that the renderer still has. Restored roots come first; keep any
+          // extra local roots the renderer already knows about.
+          const restored = session.openProjectTabs.map((entry) => entry.rootPath);
+          setOpenProjectTabRoots((prev) => {
+            const merged = [...restored];
+            for (const root of prev) {
+              if (!merged.includes(root)) merged.push(root);
+            }
+            return merged;
+          });
+        } else if (!session.binding && !session.project) {
+          // Only wipe on a genuinely empty session. A remote-bound window with
+          // an empty snapshot must NOT clear local tabs — that's the reload
+          // variant of the disappearing-tab bug.
           setOpenProjectTabRoots([]);
         }
       })

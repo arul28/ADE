@@ -600,6 +600,108 @@ describe("TopBar", () => {
     ]);
   });
 
+  it("keeps a different-path local tab when the project briefly goes null during a remote bind", async () => {
+    // Repro of the disappearing-local-tab bug: binding a window to a remote
+    // project emits projectChanged(null) and projectBindingChanged(remote) as
+    // two separate IPC messages, so the renderer momentarily sees
+    // project==null && !remoteBinding && showWelcome==true with no transition
+    // in flight. That transient must NOT wipe the (different-path) local tab.
+    (globalThis.window.ade.remoteRuntime.getConnectionSnapshot as any)
+      .mockResolvedValue(makeRemoteConnectionSnapshot("target-1"));
+
+    render(<TopBar />);
+
+    // The active local project becomes a tab on mount.
+    expect(await screen.findByTitle("/Users/arul/ADE")).toBeTruthy();
+    expect(useAppStore.getState().openProjectTabRoots).toEqual(["/Users/arul/ADE"]);
+
+    // Step 1: the transient projectChanged(null) lands (no transition).
+    await act(async () => {
+      useAppStore.setState({
+        project: null,
+        projectBinding: null,
+        showWelcome: true,
+        projectTransition: null,
+      } as any);
+    });
+    expect(useAppStore.getState().openProjectTabRoots).toEqual(["/Users/arul/ADE"]);
+
+    // Step 2: the remote binding (a DIFFERENT path) lands.
+    const remoteBinding = {
+      kind: "remote" as const,
+      key: "remote:target-1:project-a",
+      targetId: "target-1",
+      runtimeName: "Mac Studio",
+      projectId: "project-a",
+      rootPath: "/srv/ade/remote-app",
+      displayName: "Remote App",
+    };
+    await act(async () => {
+      useAppStore.setState({
+        project: {
+          rootPath: remoteBinding.rootPath,
+          displayName: remoteBinding.displayName,
+          baseRef: "main",
+        },
+        projectBinding: remoteBinding,
+        showWelcome: false,
+      } as any);
+    });
+
+    // The different-path local tab survives, and the remote tab renders.
+    expect(useAppStore.getState().openProjectTabRoots).toEqual(["/Users/arul/ADE"]);
+    expect(screen.getByTitle("/Users/arul/ADE")).toBeTruthy();
+    expect(
+      await screen.findByTitle("Mac Studio: /srv/ade/remote-app (Connected)"),
+    ).toBeTruthy();
+  });
+
+  it("keeps existing local tabs when a remote-bound window restores with an empty tab snapshot", async () => {
+    // Reload variant: a remote-bound window's main-process tab snapshot can be
+    // momentarily empty (projectsForWindowTabs drops idle/evicted roots). The
+    // restore must merge, not wipe, so a different-path local tab is preserved.
+    const remoteBinding = {
+      kind: "remote" as const,
+      key: "remote:target-1:project-a",
+      targetId: "target-1",
+      runtimeName: "Mac Studio",
+      projectId: "project-a",
+      rootPath: "/srv/ade/remote-app",
+      displayName: "Remote App",
+    };
+    (globalThis.window.ade.remoteRuntime.getConnectionSnapshot as any)
+      .mockResolvedValue(makeRemoteConnectionSnapshot("target-1"));
+    useAppStore.setState({
+      project: {
+        rootPath: remoteBinding.rootPath,
+        displayName: remoteBinding.displayName,
+        baseRef: "main",
+      } as any,
+      projectBinding: remoteBinding,
+      projectInfoByRoot: {
+        "/Users/arul/ADE": {
+          rootPath: "/Users/arul/ADE",
+          displayName: "ADE",
+          baseRef: "main",
+        },
+      },
+      openProjectTabRoots: ["/Users/arul/ADE"],
+    } as any);
+    (globalThis.window.ade.app.getWindowSession as any).mockResolvedValueOnce({
+      windowId: 1,
+      project: null,
+      binding: remoteBinding,
+      openProjectTabs: [],
+    });
+
+    render(<TopBar />);
+
+    await waitFor(() => {
+      expect(useAppStore.getState().openProjectTabRoots).toEqual(["/Users/arul/ADE"]);
+    });
+    expect(screen.getByTitle("/Users/arul/ADE")).toBeTruthy();
+  });
+
   it("does not detach again after a project tab is dropped onto an ADE target", async () => {
     render(<TopBar />);
 
@@ -1214,7 +1316,11 @@ describe("TopBar", () => {
     }
   });
 
-  it("does not run automatic hidden Linear checks on remote projects", async () => {
+  it("runs automatic Linear checks on remote projects but hides the button when the remote isn't connected", async () => {
+    // A remote-bound project surfaces the REMOTE machine's Linear connection:
+    // getLinearConnectionStatus routes to the remote daemon, so the auto-check
+    // runs just like a local project. When that remote check reports the
+    // workspace is not connected, the quick-view button stays hidden.
     vi.useFakeTimers();
     useAppStore.setState({
       project: null,
@@ -1252,7 +1358,7 @@ describe("TopBar", () => {
         vi.advanceTimersByTime(30_000);
         await flushMicrotasks(2);
       });
-      expect(getLinearConnectionStatus).not.toHaveBeenCalled();
+      expect(getLinearConnectionStatus).toHaveBeenCalled();
       expect(screen.queryByRole("button", { name: /linear quick view/i })).toBeNull();
     } finally {
       vi.useRealTimers();

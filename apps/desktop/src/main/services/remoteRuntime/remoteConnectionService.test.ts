@@ -475,7 +475,56 @@ describe("RemoteConnectionService", () => {
     expect(pool.connect).toHaveBeenCalledTimes(10);
   });
 
-  it("does not spend the reconnect budget on ordinary remote action errors", async () => {
+  it("keeps the connection healthy and spends no budget on ordinary remote action errors", async () => {
+    const previouslyConnected = target("previously-connected", 1_700_000_000);
+    const registry = {
+      list: vi.fn(() => [previouslyConnected]),
+      get: vi.fn((id: string) =>
+        id === previouslyConnected.id ? previouslyConnected : null,
+      ),
+    } as unknown as RemoteTargetRegistry;
+    let succeed = true;
+    const pool = {
+      connect: vi.fn(async (target: RemoteRuntimeTarget) =>
+        connectResult(target),
+      ),
+      disconnect: vi.fn(),
+      callActionForTarget: vi.fn(async () => {
+        if (succeed) {
+          return { domain: "file", action: "read", result: { ok: true }, statusHints: {} };
+        }
+        throw new Error("Action 'pr.listQueueStates' is not callable.");
+      }),
+      onEntryEvicted: vi.fn(() => () => {}),
+    } as unknown as RemoteConnectionPool;
+
+    const service = new RemoteConnectionService(registry, pool);
+    // Establish a healthy connection via a successful call.
+    await service.callAction(previouslyConnected.id, "project-1", {
+      domain: "file",
+      action: "read",
+    });
+    expect(service.snapshot().connections[0]?.state).toBe("connected");
+
+    succeed = false;
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      await expect(
+        service.callAction(previouslyConnected.id, "project-1", {
+          domain: "pr",
+          action: "listQueueStates",
+        }),
+      ).rejects.toThrow(/not callable/i);
+    }
+
+    // An application-level error came back over a live channel — the host is
+    // reachable, so the connection must stay connected (no "unreachable" toast,
+    // no reconnect loop) and the auto-reconnect budget is untouched.
+    expect(pool.callActionForTarget).toHaveBeenCalledTimes(11);
+    expect(service.snapshot().connections[0]?.state).toBe("connected");
+    expect(service.snapshot().connections[0]?.lastError).toBeNull();
+  });
+
+  it("does not flag the remote unreachable when adding a project fails with a host-side error", async () => {
     const previouslyConnected = target("previously-connected", 1_700_000_000);
     const registry = {
       list: vi.fn(() => [previouslyConnected]),
@@ -488,31 +537,65 @@ describe("RemoteConnectionService", () => {
         connectResult(target),
       ),
       disconnect: vi.fn(),
-      callActionForTarget: vi.fn(async () => {
-        throw new Error("Action 'pr.listQueueStates' is not callable.");
+      addProjectForTarget: vi.fn(async () => {
+        throw new Error(
+          "no such function: crsql_internal_sync_bit [sql=delete from process_definitions where project_id = ?]",
+        );
       }),
       onEntryEvicted: vi.fn(() => () => {}),
     } as unknown as RemoteConnectionPool;
 
     const service = new RemoteConnectionService(registry, pool);
-    for (let attempt = 0; attempt < 10; attempt += 1) {
-      await expect(
-        service.callAction(previouslyConnected.id, "project-1", {
-          domain: "pr",
-          action: "listQueueStates",
-        }),
-      ).rejects.toThrow(/not callable/i);
-    }
+    await service.connect(previouslyConnected.id, { explicit: true });
+    expect(service.snapshot().connections[0]?.state).toBe("connected");
 
     await expect(
-      service.callAction(previouslyConnected.id, "project-1", {
-        domain: "pr",
-        action: "listQueueStates",
+      service.addProject(previouslyConnected.id, "/repo/versic"),
+    ).rejects.toThrow(/crsql_internal_sync_bit/i);
+
+    expect(service.snapshot().connections[0]?.state).toBe("connected");
+    expect(service.snapshot().connections[0]?.lastError).toBeNull();
+  });
+
+  it("flips to error when a remote call fails with a transport-level error", async () => {
+    const previouslyConnected = target("previously-connected", 1_700_000_000);
+    const registry = {
+      list: vi.fn(() => [previouslyConnected]),
+      get: vi.fn((id: string) =>
+        id === previouslyConnected.id ? previouslyConnected : null,
+      ),
+    } as unknown as RemoteTargetRegistry;
+    let succeed = true;
+    const pool = {
+      connect: vi.fn(async (target: RemoteRuntimeTarget) =>
+        connectResult(target),
+      ),
+      disconnect: vi.fn(),
+      callActionForTarget: vi.fn(async () => {
+        if (succeed) {
+          return { domain: "file", action: "read", result: { ok: true }, statusHints: {} };
+        }
+        throw new Error("remote ADE service connection closed");
       }),
-    ).rejects.toThrow(/not callable/i);
-    expect(pool.callActionForTarget).toHaveBeenCalledTimes(11);
+      onEntryEvicted: vi.fn(() => () => {}),
+    } as unknown as RemoteConnectionPool;
+
+    const service = new RemoteConnectionService(registry, pool);
+    await service.callAction(previouslyConnected.id, "project-1", {
+      domain: "file",
+      action: "read",
+    });
+
+    succeed = false;
+    await expect(
+      service.callAction(previouslyConnected.id, "project-1", {
+        domain: "file",
+        action: "read",
+      }),
+    ).rejects.toThrow(/connection closed/i);
+    expect(service.snapshot().connections[0]?.state).toBe("error");
     expect(service.snapshot().connections[0]?.lastError).toMatch(
-      /not callable/i,
+      /connection closed/i,
     );
   });
 });

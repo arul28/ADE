@@ -42,6 +42,12 @@ export function LinearSection() {
   // active project changes so the autolink commands target the right repo and
   // Linear workspace instead of a stale previously-loaded project.
   const projectRoot = useAppStore(selectActiveProjectRoot);
+  // Linear OAuth uses a 127.0.0.1 loopback callback server. When the project is
+  // bound to a remote runtime that server runs on the remote host, but the
+  // browser opens locally and redirects to localhost on THIS machine — so the
+  // callback never arrives. Steer remote sessions to the API-key path, which
+  // routes cleanly to the remote machine's credential store.
+  const isRemoteRuntime = useAppStore((s) => s.projectBinding?.kind === "remote");
   const [connection, setConnection] = useState<LinearConnectionStatus | null>(null);
   const [projects, setProjects] = useState<CtoLinearProject[]>([]);
   const [githubRepo, setGithubRepo] = useState<{ owner: string; name: string } | null>(null);
@@ -331,6 +337,10 @@ export function LinearSection() {
     const cto = window.ade?.cto;
     const openExternal = window.ade?.app?.openExternal;
     if (!cto || validatingRef.current || oauthStartingRef.current) return;
+    if (isRemoteRuntime) {
+      setError("Browser sign-in isn't available over a remote connection. Use an API key instead.");
+      return;
+    }
     if (!openExternal) {
       setOauthSessionIdState(null);
       setOauthStartingState(false);
@@ -351,7 +361,7 @@ export function LinearSection() {
       setOauthStartingState(false);
       setError(err instanceof Error ? err.message : "Unable to start OAuth.");
     }
-  }, [invalidateLoadRequests, setOauthSessionIdState, setOauthStartingState]);
+  }, [invalidateLoadRequests, setOauthSessionIdState, setOauthStartingState, isRemoteRuntime]);
 
   const handleDisconnect = useCallback(async () => {
     if (!window.ade?.cto) return;
@@ -425,16 +435,18 @@ export function LinearSection() {
               </div>
             </div>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-end", flexWrap: "wrap", gap: 8 }}>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => void handleStartOAuth()}
-                disabled={oauthStarting || validating || connection?.oauthAvailable === false}
-              >
-                {oauthStarting ? <CircleNotch size={12} className="animate-spin" /> : null}
-                {oauthStarting ? "Waiting for Linear..." : "Reconnect current workspace"}
-              </Button>
+              {!isRemoteRuntime ? (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void handleStartOAuth()}
+                  disabled={oauthStarting || validating || connection?.oauthAvailable === false}
+                >
+                  {oauthStarting ? <CircleNotch size={12} className="animate-spin" /> : null}
+                  {oauthStarting ? "Waiting for Linear..." : "Reconnect current workspace"}
+                </Button>
+              ) : null}
               <button
                 type="button"
                 onClick={() => void handleDisconnect()}
@@ -555,7 +567,8 @@ export function LinearSection() {
                 size="md"
                 variant="primary"
                 onClick={() => void handleStartOAuth()}
-                disabled={oauthStarting || validating || connection?.oauthAvailable === false}
+                disabled={oauthStarting || validating || connection?.oauthAvailable === false || isRemoteRuntime}
+                title={isRemoteRuntime ? "Browser sign-in isn't available over a remote connection — use an API key below." : undefined}
                 style={{
                   background: LINEAR_BRAND,
                   width: "100%",
@@ -571,7 +584,11 @@ export function LinearSection() {
                 )}
                 {oauthStarting ? "Waiting for Linear..." : "Sign in with Linear"}
               </Button>
-              {connection?.oauthAvailable === false ? (
+              {isRemoteRuntime ? (
+                <div style={{ fontSize: 10, fontFamily: SANS_FONT, color: COLORS.textDim }}>
+                  Browser sign-in isn&rsquo;t available over a remote connection. Use an API key below — it&rsquo;s saved on the remote machine.
+                </div>
+              ) : connection?.oauthAvailable === false ? (
                 <div style={{ fontSize: 10, fontFamily: SANS_FONT, color: COLORS.textDim }}>
                   Browser sign-in is not available in this ADE build.
                 </div>

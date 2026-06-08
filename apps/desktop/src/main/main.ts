@@ -1535,7 +1535,12 @@ app.whenReady().then(async () => {
     if (!activeProjectRoot || !rootsBoundToWindows().has(activeProjectRoot)) {
       setForegroundProject(firstOpenWindowProjectRoot());
     }
-    emitProjectChangedToWindow(windowId, null);
+    // Do NOT emit a standalone projectChanged(null) before the remote binding.
+    // It would reach the renderer as a separate IPC message and momentarily put
+    // the window into project==null && !remoteBinding && showWelcome==true,
+    // which used to wipe the open-tab lists (see TopBar). The binding-changed
+    // event below fully drives the remote view (AppShell.applyProjectState) and
+    // sets the remote window title itself, so the null precursor is redundant.
     emitProjectBindingChangedToWindow(windowId, binding);
   };
 
@@ -5933,7 +5938,9 @@ app.whenReady().then(async () => {
         await switchProjectFromDialog(args.projectRoot!);
       });
     } else if (restoredRemoteBinding) {
-      emitProjectChangedToWindow(win.id, null);
+      // Binding-changed alone drives the remote view and title; skip the
+      // standalone projectChanged(null) precursor so the renderer never sees a
+      // transient "no project" state that would clear restored tabs.
       emitProjectBindingChangedToWindow(win.id, restoredRemoteBinding);
     } else {
       emitProjectChangedToWindow(win.id, null);

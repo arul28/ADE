@@ -207,6 +207,36 @@ async function writeManifest(bundleRoot, target, packages) {
   await fs.writeFile(path.join(bundleRoot, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
 }
 
+function crsqliteExtensionFileName(target) {
+  const { platform } = targetParts(target);
+  if (platform === "darwin") return "crsqlite.dylib";
+  if (platform === "linux") return "crsqlite.so";
+  return "crsqlite.so";
+}
+
+async function copyCrsqliteExtension(bundleRoot, target) {
+  // The brain (this runtime) is the default sync host and needs cr-sqlite to
+  // run CRDT replication to paired peers. The desktop app bundle ships it, but
+  // the static/headless install only gets this native tarball — so without
+  // copying it here the installed brain has no CRR engine and every write to a
+  // CRR table crashes on crsql_internal_sync_bit. Mirror the desktop vendor
+  // layout (vendor/crsqlite/<target>/) so crsqliteExtension.ts resolves it from
+  // <ADE_HOME>/runtime/<target>/.
+  const fileName = crsqliteExtensionFileName(target);
+  const source = path.join(packageRoot, "..", "desktop", "vendor", "crsqlite", target, fileName);
+  if (!(await exists(source))) {
+    process.stderr.write(
+      `[package-native-deps] WARNING: no cr-sqlite extension vendored for ${target} ` +
+        `(${source}); the installed brain on this target will lack CRDT sync.\n`,
+    );
+    return false;
+  }
+  const destination = path.join(bundleRoot, "vendor", "crsqlite", target, fileName);
+  await fs.mkdir(path.dirname(destination), { recursive: true });
+  await fs.copyFile(source, destination);
+  return true;
+}
+
 async function copyBuiltTuiClient(bundleRoot) {
   const source = path.join(packageRoot, "dist", "tuiClient", "cli.mjs");
   if (!(await exists(source))) {
@@ -271,6 +301,7 @@ async function main() {
     }
   }
   await copyBuiltTuiClient(bundleRoot);
+  await copyCrsqliteExtension(bundleRoot, args.target);
   await chmodRuntimeExecutables(bundleRoot, args.target);
   await writeManifest(bundleRoot, args.target, copied);
 
