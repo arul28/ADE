@@ -13,6 +13,7 @@ import { BranchIcon } from "../ui/vcsIcons";
 import { LaneCombobox } from "../terminals/LaneCombobox";
 import { LaneLogoMark, laneDisplayColor } from "../terminals/LaneChip";
 import { useAppStore } from "../../state/appStore";
+import type { PrSummary } from "../../../shared/types";
 import { branchNameFromRef, resolveLaneBaseBranch } from "../prs/shared/laneBranchTargets";
 import {
   buildLinearPrReference,
@@ -35,8 +36,9 @@ import {
  * inject Linear magic words or the "Open in ADE" deeplink footer here — prService
  * owns those trailers on create (idempotently), so the editable fields stay clean.
  *
- * On success we do NOT navigate: ChatPrPane's `prs.onEvent` subscription swaps to
- * the live PR-details panel automatically.
+ * On success we do NOT navigate: we hand the freshly-created PR up via `onCreated`
+ * so ChatPrPane swaps to the live PR-details panel immediately (the subsequent
+ * `prs.onEvent` poll just enriches the same row with checks/review state).
  */
 
 const sectionLabel = "block text-[10px] font-semibold uppercase tracking-[0.08em] text-fg/45";
@@ -50,11 +52,18 @@ export const ChatPrInlineCreator = React.memo(function ChatPrInlineCreator({
   laneId,
   branchName,
   chatModelId,
+  onCreated,
 }: {
   laneId: string;
   branchName?: string | null;
   /** The active chat session's model — the AI draft runs on this exact model. */
   chatModelId?: string | null;
+  /**
+   * Called the instant `createFromLane` resolves, with the freshly-created PR.
+   * The parent swaps to the live PR-details view immediately instead of waiting
+   * for the next GitHub polling round-trip (`prs-updated`) to arrive.
+   */
+  onCreated?: (pr: PrSummary) => void;
 }) {
   const navigate = useNavigate();
   const lanes = useAppStore((s) => s.lanes);
@@ -180,7 +189,7 @@ export const ChatPrInlineCreator = React.memo(function ChatPrInlineCreator({
         linearIssue && !title.trim()
           ? buildLinearPrTitle(linearIssue)
           : title.trim() || lane?.name || branchName || "PR";
-      await window.ade.prs.createFromLane({
+      const created = await window.ade.prs.createFromLane({
         laneId,
         title: resolvedTitle,
         body,
@@ -188,13 +197,22 @@ export const ChatPrInlineCreator = React.memo(function ChatPrInlineCreator({
         ...(linearIssue ? { closeLinearIssueOnMerge: true } : {}),
         ...(resolvedBaseBranch ? { baseBranch: resolvedBaseBranch } : {}),
       });
-      // Success: ChatPrPane's prs.onEvent subscription swaps to the details view
-      // automatically, so we leave busy=true until this unmounts.
+      // createFromLane has already persisted the PR row and returns the full
+      // summary — hand it straight to the parent so it swaps to the details view
+      // in real time. We deliberately leave busy=true: onCreated unmounts this
+      // creator, and the later `prs-updated` poll just enriches the same PR.
+      // Production always returns a PrSummary; only the web-preview mock can
+      // resolve null — recover the button in that case rather than spinning.
+      if (created) {
+        onCreated?.(created);
+      } else {
+        setBusy(false);
+      }
     } catch (err: unknown) {
       setError(cleanError(err));
       setBusy(false);
     }
-  }, [body, branchName, lane?.name, laneId, linearIssue, resolvedBaseBranch, title]);
+  }, [body, branchName, lane?.name, laneId, linearIssue, onCreated, resolvedBaseBranch, title]);
 
   // The full composer (queue / integration + multi-lane ordering) lives in the
   // PRs tab; this just hands off with the lane pre-selected.
