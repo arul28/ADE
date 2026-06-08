@@ -52,7 +52,7 @@ export function DownloadPage() {
         title: "macOS",
         icon: <Apple className="h-5 w-5" />,
         note: "Current beta release target: DMG and ZIP from GitHub Releases.",
-        hint: "ADE for computers bundles the app, ade CLI, ade code, and the background ADE runtime.",
+        hint: "ADE for computers bundles the app, ade CLI, ade code, and the background ADE brain.",
         actionHref: LINKS.releases,
         actionLabel: "Download from releases"
       },
@@ -104,7 +104,7 @@ export function DownloadPage() {
         <Reveal delay={0.1}>
           <p className="mt-5 max-w-2xl text-pretty text-base leading-relaxed text-muted-fg sm:text-lg">
             Get ADE for your computer from GitHub Releases, or build from source. The computer install includes the app,
-            ade CLI, ade code, and the background ADE runtime. ADE runs in Guest Mode without accounts, and can optionally
+            ade CLI, ade code, and the background ADE brain. ADE runs in Guest Mode without accounts, and can optionally
             enable hosted or BYOK LLM providers.
           </p>
         </Reveal>
@@ -227,7 +227,7 @@ export function DownloadPage() {
             <div className="mt-8 grid gap-4 text-sm text-muted-fg md:grid-cols-2">
               <Card tone="solid" className="p-4 shadow-glass-sm">
                 Official macOS releases are intended to be signed and notarized so ADE can open normally, keep using
-                in-app updates, and refresh the bundled runtime after an update. Older beta artifacts may still need the
+                in-app updates, and refresh the bundled brain after an update. Older beta artifacts may still need the
                 legacy Gatekeeper workaround.
               </Card>
               <Card tone="solid" className="p-4 shadow-glass-sm">

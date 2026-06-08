@@ -259,6 +259,18 @@ describe("ADE CLI", () => {
       label: "sync pin generate",
       steps: [{ key: "result", method: "sync.generatePin" }],
     });
+    expect(buildCliPlan(["brain", "pin", "set", "123456"])).toEqual({
+      kind: "execute",
+      label: "sync pin set",
+      steps: [
+        { key: "result", method: "sync.setPin", params: { pin: "123456" } },
+      ],
+    });
+    expect(buildCliPlan(["brain", "pin", "clear"])).toEqual({
+      kind: "execute",
+      label: "sync pin clear",
+      steps: [{ key: "result", method: "sync.clearPin" }],
+    });
     expect(buildCliPlan(["runtime", "status"])).toEqual({
       kind: "runtime",
       rest: ["status"],

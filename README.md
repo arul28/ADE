@@ -123,9 +123,9 @@ Requirements: Windows x64, git on `PATH`, Node 22+ for headless CLI workflows.
 
 ```bash
 ade desktop
-ade runtime status --text
-ade runtime start
-ade runtime stop
+ade brain status --text
+ade brain start
+ade brain stop
 ade doctor --json
 ade code
 ade lanes create --name fix-checkout-flow
@@ -138,17 +138,30 @@ ade actions list --text   # discover every service action
 
 ## Architecture
 
-Local-first, on purpose. The center of ADE is the **machine runtime** — a single per-machine `ade serve` service that owns projects, lanes, agent chats, work sessions, processes, sync, and proof artifacts. Desktop, the terminal client, the iOS app, and SSH-attached desktop windows all attach to it as clients. Runtime state lives under `.ade/` inside each project (SQLite db, worktree checkouts, proof artifacts, encrypted secrets) and the machine-wide local endpoint lives under `~/.ade/sock/ade.sock`. When desktop is running, its Electron main process also hosts a **desktop bridge endpoint** at `~/.ade/sock/desktop-bridge.sock` (override: `ADE_DESKTOP_BRIDGE_SOCKET_PATH`) so the runtime can proxy `ade browser …` calls into the Electron-only `WebContentsView` APIs it can't reach under `ELECTRON_RUN_AS_NODE=1`.
+Local-first, on purpose. The center of ADE is the **brain** — the always-on, machine-owned ADE process for a channel. The brain owns the project catalog, sync websocket, and executor authority; desktop, `ade code`, the iOS app, and SSH-attached desktop windows attach to it as clients. Runtime state lives under `.ade/` inside each project (SQLite db, worktree checkouts, proof artifacts, encrypted secrets) and machine-wide state lives under `~/.ade` or `~/.ade-<channel>`. When desktop is running, its Electron main process also hosts a **desktop bridge endpoint** at `~/.ade/sock/desktop-bridge.sock` (override: `ADE_DESKTOP_BRIDGE_SOCKET_PATH`) so the brain can proxy `ade browser …` calls into the Electron-only `WebContentsView` APIs it can't reach under `ELECTRON_RUN_AS_NODE=1`.
 
 ```text
-apps/ade-cli   ADE runtime (`ade serve`) + `ade` CLI + `ade code` terminal client
-apps/desktop   Electron client — multi-window, attaches to a local or SSH-bound runtime
+apps/ade-cli   ADE brain/runtime + `ade` CLI + `ade code` terminal client
+apps/desktop   Electron client — multi-window, attaches to a local brain or SSH-bound runtime
 apps/ios       SwiftUI controller that pairs with an ADE machine over WebSocket
 apps/web       Public website and download surface
 docs/          Product and engineering docs
 ```
 
 Deep reference: [ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
+## Glossary
+
+| Term | Meaning |
+| --- | --- |
+| Brain | The always-on, machine-owned ADE process for one channel. It carries the sync websocket, project catalog, local RPC endpoint, and executor authority. |
+| Runtime | An ADE execution process. The normal brain is a runtime; short-lived/headless runtimes can also exist for isolated commands and tests. |
+| Machine | A physical computer with a per-channel ADE home and stable sync device identity. |
+| Channel | A release lane such as stable, beta, alpha, or dev. Each channel has its own ADE home. |
+| Client | A surface that attaches to the brain: desktop, `ade code`, ADE Mobile, or an SSH-bound desktop window. |
+| Project | A registered repo with one ADE database at `<project>/.ade/ade.db`. |
+| Lane | A task worktree under `.ade/worktrees/` that shares the project database. |
+| Catalog | The machine-level project list served by the brain to clients and ADE Mobile. |
 
 ## Develop
 
