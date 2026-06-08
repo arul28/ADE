@@ -251,7 +251,6 @@ function applyPackagedChannelDefaults(): void {
   process.env.ADE_PACKAGE_CHANNEL = process.env.ADE_PACKAGE_CHANNEL || channel;
   process.env.ADE_DESKTOP_APP_NAME = process.env.ADE_DESKTOP_APP_NAME || (channel === "alpha" ? "ADE Alpha" : "ADE Beta");
   process.env.ADE_HOME = process.env.ADE_HOME || path.join(os.homedir(), `.ade-${channel}`);
-  process.env.ADE_DISABLE_RUNTIME_SERVICE_INSTALL = process.env.ADE_DISABLE_RUNTIME_SERVICE_INSTALL || "1";
 }
 
 applyPackagedChannelDefaults();
@@ -1824,6 +1823,25 @@ app.whenReady().then(async () => {
     updaterCacheDir: app.isPackaged ? resolveAutoUpdaterCacheDir() : undefined,
     autoCheckEnabled: app.isPackaged,
   });
+  const shouldRefreshRuntimeServiceAfterUpdate =
+    app.isPackaged
+    && process.env.NODE_ENV !== "test"
+    && process.env.ADE_DISABLE_RUNTIME_SERVICE_INSTALL !== "1"
+    && autoUpdateService.getSnapshot().recentlyInstalled != null;
+  if (shouldRefreshRuntimeServiceAfterUpdate && !shouldAttemptRuntimeServiceInstall) {
+    void localRuntimePool.installServiceBestEffort()
+      .then(() => {
+        const status = localRuntimePool.getStatus().serviceInstall;
+        if (status.state === "installed") {
+          markMachineStateMigrationComplete({ layout: machineAdeLayout });
+        }
+      })
+      .catch((error) => {
+        localRuntimeLogger.warn("local_runtime.service_update_refresh_failed", {
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+  }
 
   const initContextForProjectRoot = async ({
     projectRoot,
@@ -3537,7 +3555,7 @@ app.whenReady().then(async () => {
       hostStartupEnabled: syncHostAutoStart,
       phonePairingStateDir: machineAdeLayout.secretsDir,
       hostDiscoveryEnabled: isMobileSyncHostContext,
-      forceHostRole: true,
+      forceHostRole: false,
       notificationEventBus,
       projectCatalogProvider: {
         listProjects: listMobileSyncProjects,

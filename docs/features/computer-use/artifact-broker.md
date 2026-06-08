@@ -2,11 +2,11 @@
 
 The broker is the normalization layer after external computer-use execution has happened. External tools perform the actual clicks, keystrokes, and captures. The broker ingests their output, stores it canonically, links it to owners (runs, chats, PRs, Linear issues), and tracks review and publication state.
 
-The broker runs inside the runtime daemon (`ade serve`) that owns the project. Artifacts are written to that runtime host's `.ade/artifacts/computer-use/` directory; database rows live in that runtime's `.ade/ade.db`. Renderer reads/writes flow through `window.ade.proof.*` → preload → runtime JSON-RPC → broker; the desktop main process is no longer the owner of this state.
+The broker runs inside the ADE runtime (`ade serve`) that owns the project. Artifacts are written to that runtime machine's `.ade/artifacts/computer-use/` directory; database rows live in that runtime's `.ade/ade.db`. Renderer reads/writes flow through `window.ade.proof.*` → preload → runtime JSON-RPC → broker; the desktop main process is no longer the owner of this state.
 
 ## Source file map
 
-- `apps/desktop/src/main/services/computerUse/computerUseArtifactBrokerService.ts` — the service. `createComputerUseArtifactBrokerService(args)` is the entry point. Loaded by both the runtime daemon's project scope and the desktop's local-project services.
+- `apps/desktop/src/main/services/computerUse/computerUseArtifactBrokerService.ts` — the service. `createComputerUseArtifactBrokerService(args)` is the entry point. Loaded by both the ADE runtime's project scope and the desktop's local-project services.
 - `apps/desktop/src/main/services/computerUse/agentBrowserArtifactAdapter.ts` — payload parser for agent-browser output.
 - `apps/desktop/src/main/services/computerUse/localComputerUse.ts` — storage helpers (`createComputerUseArtifactPath`, `toProjectArtifactUri`).
 - `apps/desktop/src/main/services/computerUse/syntheticToolResult.ts` — Claude-compaction tool-result stubs.

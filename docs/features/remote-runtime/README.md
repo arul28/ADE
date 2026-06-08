@@ -1,8 +1,8 @@
 # Remote Runtime
 
-The desktop app connects to an `ade serve` daemon running on a remote machine over SSH. The remote project lives on that machine; lanes, PTYs, git, agent chat, and PR actions all run there. The local desktop is the controller — it spawns no project services of its own for a remote binding.
+The desktop app connects to an ADE runtime (`ade serve`) running on a remote machine over SSH. The remote project lives on that machine; lanes, PTYs, git, agent chat, and PR actions all run there. The local desktop is the controller — it spawns no project services of its own for a remote binding.
 
-The wire transport is the same JSON-RPC the local daemon answers. The remote-runtime layer just wraps it in an SSH `exec` channel running `ade rpc --stdio`.
+The wire transport is the same JSON-RPC the local machine runtime answers. The remote-runtime layer just wraps it in an SSH `exec` channel running `ade rpc --stdio`.
 
 ## Source file map
 
@@ -24,8 +24,8 @@ The wire transport is the same JSON-RPC the local daemon answers. The remote-run
   per-window remote-open generation guards so a slow earlier remote-project
   open cannot overwrite the latest window binding.
 - `apps/desktop/src/main/services/localRuntime/localRuntimeConnectionPool.ts` —
-  the local daemon connection used by desktop IPC, event streaming, sync
-  Settings, and local-work checks. Spawns `ade serve` if the machine socket is
+  the local runtime connection used by desktop IPC, event streaming, sync
+  Settings, and local-work checks. Spawns `ade serve` if the machine endpoint is
   not listening; tracks the per-user login service install/health state; applies
   short per-call timeouts for project registration, file actions, and event
   polling so renderer IPC calls do not wait for the desktop handler timeout.
@@ -47,7 +47,7 @@ The wire transport is the same JSON-RPC the local daemon answers. The remote-run
   local or remote runtime is bound. During a
   project switch, preload records a pending local binding for the target root
   and includes `rootPath` on local runtime action/sync/event calls so early
-  renderer requests hit the destination daemon project instead of the previous
+  renderer requests hit the destination runtime project instead of the previous
   window session binding. During remote project opens, preload clears the
   current binding, tracks the newest open generation, waits for active remote
   opens before retrying read-only project calls, blocks mutating action/sync
@@ -89,11 +89,11 @@ When opening a remote project, ADE checks local projects with the same git origi
 
 After connecting, the desktop persists the active remote project to `globalState.lastRemoteProjectBinding`. When the app relaunches with no startup project path, the first window restores that binding and reconnects to the same target / project automatically. A user-triggered disconnect records manual intent on the target and suppresses restore/autoconnect until the user presses Connect again; repeated implicit reconnect failures also pause automatic reconnects and surface a "Press Connect to try again" message.
 
-Per-channel layout: builds with `ADE_PACKAGE_CHANNEL=alpha|beta` upload to `~/.ade-alpha/` or `~/.ade-beta/` instead of `~/.ade/` so a remote machine can host stable, beta, and alpha runtimes side by side, and they pass `ADE_DISABLE_RUNTIME_SERVICE_INSTALL=1` so the channel build doesn't fight the stable login service for the socket.
+Per-channel layout: builds with `ADE_PACKAGE_CHANNEL=alpha|beta` upload to `~/.ade-alpha/` or `~/.ade-beta/` instead of `~/.ade/` so a remote machine can host stable, beta, and alpha runtimes side by side. Remote compatibility launches keep `ADE_DISABLE_RUNTIME_SERVICE_INSTALL=1` so remote probes do not fight the user's login service.
 
 ## Compatibility warnings
 
-Version skew and capability skew no longer fail the connect outright. The bootstrap performs the JSON-RPC `ade/initialize` handshake, normalizes the `capabilities.machineProjects` flags returned by the remote daemon, and reports the result as `RemoteRuntimeCapabilities` plus a `compatibilityWarnings` array on the `RemoteRuntimeConnectResult`. The renderer's remote target panel displays each warning inline under the connection chip. Warnings cover:
+Version skew and capability skew no longer fail the connect outright. The bootstrap performs the JSON-RPC `ade/initialize` handshake, normalizes the `capabilities.machineProjects` flags returned by the remote runtime, and reports the result as `RemoteRuntimeCapabilities` plus a `compatibilityWarnings` array on the `RemoteRuntimeConnectResult`. The renderer's remote target panel displays each warning inline under the connection chip. Warnings cover:
 
 - Runtime version mismatch (`Remote ADE service reported X; local ADE is Y. ADE will connect because the RPC capabilities are compatible.`).
 - Remote package channel mismatch (e.g. desktop is `beta`, remote runtime advertises `stable`).
@@ -144,13 +144,13 @@ After install, the headless machine can already serve clients. Desktop ADE on a 
 
 Remote project bindings route lanes, agent chat, PTYs, terminal IO, file operations, file-watch notifications, git actions, PR actions, PR queue automation, PR AI conflict-resolution sessions, PR issue-resolution launch flows, Path to Merge orchestration, AI PR summaries, issue inventory, and event streaming through the remote runtime. Remote lane preview URLs are opened through a local TCP forward created by the desktop, so a dev server bound to `127.0.0.1` on the remote can be inspected from the local window. Agent CLI failures (Claude / Codex / Cursor / Droid not installed or not authenticated) surface as inline `AgentCliAuthCard` cards in chat; the install / login buttons open a tracked terminal in the active runtime, so a remote project runs the install or login command on the remote machine.
 
-Local project bindings use the local `ade serve` daemon for the same surfaces — agent chat, session history, PTYs, terminal reads/writes, file operations and watchers, diffs, lanes, PRs, PR queues, PR issue-resolution launch flows, Path to Merge, PR AI conflict-resolution sessions, issue inventory, tests, processes, project config, and most git operations. Electron main still owns desktop-only services that physically require an Electron host.
+Local project bindings use the local ADE runtime for the same surfaces — agent chat, session history, PTYs, terminal reads/writes, file operations and watchers, diffs, lanes, PRs, PR queues, PR issue-resolution launch flows, Path to Merge, PR AI conflict-resolution sessions, issue inventory, tests, processes, project config, and most git operations. Electron main still owns desktop-only services that physically require an Electron host.
 
 ## Mobile reachability
 
-iOS does not SSH into a machine. The phone connects to the runtime daemon's sync WebSocket advertised on the LAN or over a Tailscale tailnet. Install Tailscale on the phone and the ADE machine when they are not on the same local network.
+iOS does not SSH into a machine. The phone pairs with an ADE machine and connects to that runtime's sync WebSocket advertised on the LAN or over a Tailscale tailnet. Install Tailscale on the phone and the ADE machine when they are not on the same local network.
 
-On desktop, phone pairing and sync status are managed by the local `ade serve` daemon. The legacy in-process desktop sync host is disabled by default and can be re-enabled only for diagnostics with `ADE_ENABLE_DESKTOP_SYNC_HOST=1`.
+On desktop, phone pairing and sync status are managed by the local ADE runtime's sync service. The legacy in-process desktop sync host is disabled by default and can be re-enabled only for diagnostics with `ADE_ENABLE_DESKTOP_SYNC_HOST=1`.
 
 ## Troubleshooting
 
@@ -162,7 +162,7 @@ On desktop, phone pairing and sync status are managed by the local `ade serve` d
 - `Uploaded ADE service version mismatch: expected X, got Y` — the uploaded binary did not report the expected runtime version. Rebuild the static runtime artifacts for the current desktop version.
 - `Remote ADE service does not support multi-project mode` — the remote is running an older ADE before multi-project RPC. Re-bootstrap from a current desktop build.
 - `Remote ADE service could not start a compatible RPC runtime. Tried ...` — every alternate ADE home (`.ade`, `.ade-alpha`, `.ade-beta`) failed to start. The error lists each home and the underlying reason. Install or rebuild `ade` on the remote machine for the desktop's target architecture.
-- `Remote ADE service <version> does not support <capability>.` — the remote daemon connected but is missing a specific `machineProjects` capability the renderer just called (e.g. `cloning remote projects`). Update ADE on that machine.
+- `Remote ADE service <version> does not support <capability>.` — the remote runtime connected but is missing a specific `machineProjects` capability the renderer just called (e.g. `cloning remote projects`). Update ADE on that machine.
 - `Remote ADE service method <method> failed (code N): <message> Details: ...` — the runtime RPC client now surfaces the JSON-RPC error `code`, `message`, and `data` together so a remote handler failure (e.g. a missing project capability or a service action error) is no longer reported as a generic `Remote ADE service request failed.` string.
 - `Remote ADE service connection failed: timed out waiting for method ...` — the RPC client timed out and tore the connection down deliberately so the pool can rebuild it. Retry the action; the pool will reconnect using the latest known route.
 - "Tailscale CLI was not found / timed out / failed" warning under the discovered-machines list — surfaced from `discoverLanRuntimes` diagnostics. LAN (Bonjour) discovery still ran; install or unblock `tailscale` to add tailnet peers.
@@ -171,6 +171,6 @@ On desktop, phone pairing and sync status are managed by the local `ade serve` d
 ## Related docs
 
 - [Internal architecture](./internal-architecture.md) — protocol shape, bootstrap sequence, sync command scoping.
-- [ADE CLI](../../../apps/ade-cli/README.md) — runtime modes, service manager, machine layout.
+- [ADE CLI](../../../apps/ade-cli/README.md) — runtime modes, service manager, machine layout, and legacy compatibility command names.
 - [ADE Code](../ade-code/README.md) — terminal client that uses the same runtime.
-- [Sync and Multi-Device](../sync-and-multi-device/README.md) — phone pairing and multi-device sync (hosted by the same daemon).
+- [Sync and Multi-Device](../sync-and-multi-device/README.md) — phone pairing and multi-device sync (hosted by the same runtime).

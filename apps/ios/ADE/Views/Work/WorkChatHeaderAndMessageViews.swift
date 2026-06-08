@@ -89,6 +89,10 @@ struct WorkSessionHeader: View {
 struct WorkChatMessageBubble: View {
   let message: WorkChatMessage
   @State private var assistantLineBudget = workAssistantMessageInitialLineBudget
+  /// Measured column width, used to cap the user bubble at ~82% (desktop's
+  /// `max-width`). Probed via a zero-impact background GeometryReader so the
+  /// bubble still shrinks to its content for short replies.
+  @State private var columnWidth: CGFloat = 0
 
   /// Provider string for the current chat session (e.g. "claude", "codex", "cursor").
   /// Injected via `.environment(\.workChatProvider, ...)` by the session view.
@@ -115,9 +119,37 @@ struct WorkChatMessageBubble: View {
     )
   }
 
+  /// Desktop's `--chat-user-bubble-gradient`: a 135° sweep that starts at the
+  /// (slightly lightened) provider accent, eases into #7c3aed (violet), then
+  /// settles on #4c1d95 (deep violet). Replicated with explicit color mixes so
+  /// the per-runtime accent still tints the bubble while every message shares
+  /// the same violet base.
+  private var userBubbleGradient: LinearGradient {
+    LinearGradient(
+      stops: [
+        .init(color: workMixColors(accent, Color.white, 0.08), location: 0.0),
+        .init(color: workMixColors(accent, workViolet, 0.40), location: 0.5),
+        .init(color: workMixColors(accent, workDeepViolet, 0.42), location: 1.0),
+      ],
+      startPoint: .topLeading,
+      endPoint: .bottomTrailing
+    )
+  }
+
+  private var userBubbleBorder: Color {
+    // accent at ~26% over a faint white edge — matches the desktop bubble's
+    // `--chat-user-border-accent-mix`.
+    workMixColors(accent, Color.white, 0.14).opacity(0.45)
+  }
+
+  private var workViolet: Color { Color(red: 0x7c / 255.0, green: 0x3a / 255.0, blue: 0xed / 255.0) }
+  private var workDeepViolet: Color { Color(red: 0x4c / 255.0, green: 0x1d / 255.0, blue: 0x95 / 255.0) }
+
   private var assistantRow: some View {
-    // Model name intentionally absent here. Usage / composer show model; the
-    // turn line is time-only.
+    // Desktop parity: the agent answer is plain markdown prose on the flat
+    // canvas — NO card, NO border, NO background. Just left-aligned text that
+    // reads like a document. The truncation / "Show more" affordance stays but
+    // unstyled so it doesn't reintroduce a boxed feel.
     let preview = workAssistantMessagePreview(
       message.markdown,
       lineBudget: assistantLineBudget,
@@ -129,6 +161,7 @@ struct WorkChatMessageBubble: View {
         Text(preview.text)
           .font(.body)
           .foregroundStyle(ADEColor.textPrimary)
+          .lineSpacing(5)
           .tint(ADEColor.accent)
           .frame(maxWidth: .infinity, alignment: .leading)
           .textSelection(.enabled)
@@ -140,7 +173,7 @@ struct WorkChatMessageBubble: View {
       }
 
       if preview.isTruncated {
-        HStack(spacing: 8) {
+        HStack(spacing: 12) {
           Text("\(preview.visibleLineCount) of \(preview.totalLineCount) lines")
             .font(.caption2.weight(.semibold))
             .foregroundStyle(ADEColor.textMuted)
@@ -152,10 +185,10 @@ struct WorkChatMessageBubble: View {
           } label: {
             Label("Copy full", systemImage: "doc.on.doc")
               .labelStyle(.titleAndIcon)
+              .font(.caption2.weight(.semibold))
           }
-          .buttonStyle(.glass)
-          .tint(ADEColor.textSecondary)
-          .controlSize(.mini)
+          .buttonStyle(.plain)
+          .foregroundStyle(ADEColor.textSecondary)
 
           if assistantLineBudget < min(preview.totalLineCount, workAssistantMessageMaxLineBudget) {
             Button {
@@ -166,22 +199,14 @@ struct WorkChatMessageBubble: View {
             } label: {
               Label("Show more", systemImage: "chevron.down")
                 .labelStyle(.titleAndIcon)
+                .font(.caption2.weight(.semibold))
             }
-            .buttonStyle(.glass)
-            .tint(ADEColor.accent)
-            .controlSize(.mini)
+            .buttonStyle(.plain)
+            .foregroundStyle(ADEColor.accent)
           }
         }
       }
     }
-      .padding(.horizontal, 14)
-      .padding(.vertical, 12)
-      .frame(maxWidth: .infinity, alignment: .leading)
-      .background(ADEColor.cardBackground.opacity(0.55), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-      .overlay(
-        RoundedRectangle(cornerRadius: 14, style: .continuous)
-          .stroke(accent.opacity(0.16), lineWidth: 0.6)
-      )
       .frame(maxWidth: .infinity, alignment: .leading)
     .contextMenu {
       Button {
@@ -203,28 +228,57 @@ struct WorkChatMessageBubble: View {
   }
 
   private var userRow: some View {
+    // Desktop parity: the user message is the ONLY bubble — right-aligned, an
+    // accent→violet 135° gradient, white text, inset top highlight + soft
+    // drop shadow. Capped at ~82% of the measured column width so short replies
+    // stay compact while long ones wrap rather than clip.
     HStack(alignment: .top, spacing: 8) {
-      Spacer(minLength: 32)
+      Spacer(minLength: 0)
       VStack(alignment: .trailing, spacing: 4) {
         if let deliveryBadge {
           // Delivery badges only render when a non-default state applies
           // (queued/sending/failed). Successful deliveries stay silent.
           WorkDeliveryBadge(state: deliveryBadge)
         }
-        WorkMarkdownRenderer(markdown: message.markdown)
-          .padding(.horizontal, 12)
+        Text(message.markdown)
+          .font(.body)
+          .foregroundStyle(Color.white)
+          .lineSpacing(5)
+          .multilineTextAlignment(.leading)
+          .fixedSize(horizontal: false, vertical: true)
+          .textSelection(.enabled)
+          .padding(.horizontal, 16)
           .padding(.vertical, 8)
-          .background(ADEColor.accentDeep.opacity(0.22), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+          .background(userBubbleGradient, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
           .overlay(
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-              .stroke(ADEColor.accent.opacity(0.30), lineWidth: 0.5)
+            // Subtle inset top highlight — the desktop bubble's soft sheen.
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+              .fill(
+                LinearGradient(
+                  colors: [Color.white.opacity(0.14), .clear],
+                  startPoint: .top,
+                  endPoint: .center
+                )
+              )
+              .allowsHitTesting(false)
           )
-          // Cap the bubble at ~78% of available width so short messages stay
-          // compact but long ones still wrap rather than clipping.
-          .frame(maxWidth: 320, alignment: .trailing)
+          .overlay(
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+              .stroke(userBubbleBorder, lineWidth: 0.8)
+          )
+          .shadow(color: accent.opacity(0.34), radius: 12, y: 5)
+          .frame(maxWidth: columnWidth > 0 ? columnWidth * 0.82 : 320, alignment: .trailing)
           .fixedSize(horizontal: false, vertical: true)
       }
     }
+    .frame(maxWidth: .infinity)
+    .background(
+      GeometryReader { geo in
+        Color.clear
+          .onAppear { columnWidth = geo.size.width }
+          .onChange(of: geo.size.width) { _, newValue in columnWidth = newValue }
+      }
+    )
     .contextMenu {
       Button {
         UIPasteboard.general.string = message.markdown
@@ -286,6 +340,26 @@ struct WorkChatMessageBubble: View {
       .accessibilityLabel("Written by \(label)")
     }
   }
+}
+
+/// Linearly blend two colors in sRGB. `fraction` is the weight of `other`
+/// (0 → all `base`, 1 → all `other`), matching CSS `color-mix` semantics where
+/// `mix(base X%, other …)` means `other` gets `1 - X` weight. Resolves both
+/// colors against the dark trait so the violet base stays consistent.
+func workMixColors(_ base: Color, _ other: Color, _ fraction: Double) -> Color {
+  let traits = UITraitCollection(userInterfaceStyle: .dark)
+  let a = UIColor(base).resolvedColor(with: traits)
+  let b = UIColor(other).resolvedColor(with: traits)
+  var (ar, ag, ab, aa): (CGFloat, CGFloat, CGFloat, CGFloat) = (0, 0, 0, 0)
+  var (br, bg, bb, ba): (CGFloat, CGFloat, CGFloat, CGFloat) = (0, 0, 0, 0)
+  a.getRed(&ar, green: &ag, blue: &ab, alpha: &aa)
+  b.getRed(&br, green: &bg, blue: &bb, alpha: &ba)
+  let t = CGFloat(max(0, min(1, fraction)))
+  return Color(
+    red: Double(ar + (br - ar) * t),
+    green: Double(ag + (bg - ag) * t),
+    blue: Double(ab + (bb - ab) * t)
+  )
 }
 
 let workAssistantMessageInitialLineBudget = 48
@@ -382,13 +456,20 @@ func workChatAccessibilityPreview(_ markdown: String) -> String {
 struct WorkTurnSeparatorView: View {
   let separator: WorkTurnSeparator
 
+  private var accent: Color {
+    ADEColor.chatSurfaceAccent(modelId: separator.modelId, provider: separator.provider)
+  }
+
   var body: some View {
-    HStack(spacing: 8) {
-      Spacer(minLength: 0)
-      Text(workTurnSeparatorTimeLabel(separator.time))
-        .font(.caption2.monospacedDigit())
-        .foregroundStyle(ADEColor.textMuted)
-      Spacer(minLength: 0)
+    HStack(spacing: 10) {
+      hairline
+      HStack(spacing: 6) {
+        runtimeGlyph
+        Text(workTurnSeparatorTimeLabel(separator.time))
+          .font(.caption2.monospacedDigit())
+          .foregroundStyle(ADEColor.textMuted)
+      }
+      hairline
     }
     .frame(maxWidth: .infinity)
     .padding(.vertical, 4)
@@ -397,6 +478,30 @@ struct WorkTurnSeparatorView: View {
       "New turn at \(workTurnSeparatorTimeLabel(separator.time))"
         + (separator.modelLabel.isEmpty ? "" : ". Model: \(separator.modelLabel)")
     )
+  }
+
+  /// Small per-runtime mark — the bundled provider logo when one exists,
+  /// otherwise a tinted dot in the chat-surface accent. Keeps the divider
+  /// quietly themed to whichever runtime drove the turn.
+  @ViewBuilder
+  private var runtimeGlyph: some View {
+    if let asset = providerAssetName(separator.provider) {
+      Image(asset)
+        .resizable()
+        .scaledToFit()
+        .frame(width: 11, height: 11)
+        .opacity(0.85)
+    } else {
+      Circle()
+        .fill(accent.opacity(0.7))
+        .frame(width: 5, height: 5)
+    }
+  }
+
+  private var hairline: some View {
+    Rectangle()
+      .fill(ADEColor.glassBorder)
+      .frame(height: 0.6)
   }
 }
 

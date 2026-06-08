@@ -15,7 +15,6 @@ struct PrDetailView: View {
   @State private var activityEvents: [PrActivityEvent] = []
   @State private var deployments: [PrDeployment] = []
   @State private var aiSummary: AiReviewSummary?
-  @State private var isAiSummaryLoading: Bool = false
   @State private var issueInventory: IssueInventorySnapshot?
   @State private var pipelineSettings: PipelineSettings?
   @State private var groupMembers: [PrGroupMemberSummary] = []
@@ -26,7 +25,6 @@ struct PrDetailView: View {
   @State private var commentInput = ""
   @State private var errorMessage: String?
   @State private var actionMessage: String?
-  @State private var busyAction: String?
   @State private var cleanupChoice: PrCleanupChoice = .archive
   @State private var cleanupConfirmationPresented = false
   @State private var filesWorkspaceId: String?
@@ -34,14 +32,42 @@ struct PrDetailView: View {
   @State private var editorSheet: PrDetailEditorSheet?
   @State private var mergeMethodSheetPresented: Bool = false
   @State private var aiResolution: AiResolutionState?
-  @State private var isAiResolverBusy: Bool = false
   @State private var aiResolverSheetPresented: Bool = false
   @State private var actionsSheetPresented: Bool = false
   @State private var hasLoadedLiveSidecars = false
   @State private var hasAttemptedInitialLoad = false
-  /// True while a `prs.pathToMerge.start` or `prs.pathToMerge.stop` round-trip
-  /// is in flight. Used to disable the convergence toggle and show a spinner.
-  @State private var isPathToMergeBusy: Bool = false
+  @State private var hasSeededFromWarmCache = false
+
+  /// How long a warm detail cache entry is considered fresh. Within this window
+  /// a `localStateRevision` bump renders from cache without re-firing the cold
+  /// sidecar fan-out. The pull-to-refresh and explicit retry paths bypass this.
+  private static let detailFreshnessWindow: TimeInterval = 25
+
+  // MARK: - Durable per-control busy keys
+  //
+  // Detail actions are keyed on the durable `SyncService.prActionsInFlight`
+  // registry so their spinners survive a tab switch + remount. Each control gets
+  // a distinct key off the route `prId` so spinners are localized to the right
+  // button instead of a single global banner.
+
+  /// Main action funnel key (merge/close/reopen/comment/edit/etc.).
+  private var detailActionKey: String { "pr-detail:\(prId)" }
+  /// AI conflict-resolver key.
+  private var aiResolverKey: String { "pr-ai-resolver:\(prId)" }
+  /// Path-to-Merge convergence toggle key.
+  private var pathToMergeKey: String { "pr-path-to-merge:\(prId)" }
+  /// AI review-summary regeneration key.
+  private var aiSummaryKey: String { "pr-ai-summary:\(prId)" }
+
+  /// In-flight label of the main detail action, if any (durable across tab
+  /// switches via the service registry).
+  private var detailBusyLabel: String? {
+    syncService.prActionLabel(forKey: detailActionKey)
+  }
+  private var isDetailBusy: Bool { detailBusyLabel != nil }
+  private var isAiResolverBusy: Bool { syncService.isPrActionInFlight(key: aiResolverKey) }
+  private var isPathToMergeBusy: Bool { syncService.isPrActionInFlight(key: pathToMergeKey) }
+  private var isAiSummaryLoading: Bool { syncService.isPrActionInFlight(key: aiSummaryKey) }
 
   private var prsStatus: SyncDomainStatus {
     syncService.status(for: .prs)
@@ -52,7 +78,7 @@ struct PrDetailView: View {
   }
 
   private var canRunPrActions: Bool {
-    isLive && busyAction == nil && hasActionablePrId
+    isLive && !isDetailBusy && hasActionablePrId
   }
 
   private var canOpenCurrentPrInGitHub: Bool {
@@ -218,19 +244,117 @@ struct PrDetailView: View {
   }
 
   private var showsStickyActionBar: Bool {
-    // The Activity tab has its own comment/reply composer at the end of the
-    // content. A global merge bar in the same bottom slot hides that composer
-    // on phone-sized screens.
-    hasPrDetailData && selectedTab != .activity
+    // The unified Overview thread carries its own comment composer + inline
+    // merge rail at the bottom (desktop parity), so a global sticky merge bar
+    // in the same slot would cover the composer. Keep the sticky bar only on
+    // the non-thread tabs (Path / Files / Checks).
+    hasPrDetailData && selectedTab != .overview && selectedTab != .activity
+  }
+
+  /// Whether the current PR is mapped to an ADE lane. Drives the unmapped
+  /// banner + locked composer in the unified Overview thread.
+  private var isCurrentPrMapped: Bool {
+    !currentPr.laneId.isEmpty
+  }
+
+  private var canAutoMapCurrentPr: Bool {
+    isLive && !isDetailBusy && syncService.supportsRemoteAction("prs.createLaneFromPrBranch")
+      && !currentPr.repoOwner.isEmpty && !currentPr.repoName.isEmpty
+      && currentPr.githubPrNumber > 0
+  }
+
+  /// Bulleted merge-blocker reasons derived from the already-fetched PR status /
+  /// checks / reviews. Mirrors desktop's `PrDetailMergeRail` blocker list.
+  private var mergeBlockers: [String] {
+    var reasons: [String] = []
+    if isCurrentPrDraft {
+      reasons.append("PR is a draft")
+    }
+    let status = snapshot?.status
+    if status?.mergeConflicts == true {
+      reasons.append("Merge conflicts with the base branch")
+    }
+    let behind = status?.behindBaseBy ?? 0
+    if behind > 0 {
+      reasons.append("Behind base by \(behind) commit\(behind == 1 ? "" : "s")")
+    }
+    let failing = (snapshot?.checks ?? []).filter { check in
+      check.status == "completed"
+        && check.conclusion != nil
+        && check.conclusion != "success"
+        && check.conclusion != "neutral"
+        && check.conclusion != "skipped"
+    }.count
+    if failing > 0 {
+      reasons.append("\(failing) failing required check\(failing == 1 ? "" : "s")")
+    }
+    let pending = (snapshot?.checks ?? []).filter { $0.status.lowercased() != "completed" }.count
+    if pending > 0 {
+      reasons.append("\(pending) pending required check\(pending == 1 ? "" : "s")")
+    }
+    let changesRequested = (snapshot?.reviews ?? []).filter { $0.state == "changes_requested" }
+    if !changesRequested.isEmpty {
+      let reviewers = changesRequested.map { $0.reviewer }.filter { !$0.isEmpty }.prefix(3).joined(separator: ", ")
+      reasons.append(reviewers.isEmpty ? "Changes requested" : "Changes requested by \(reviewers)")
+    }
+    let missingApprovals = max(reviewsNeeded - reviewsHave, 0)
+    if missingApprovals > 0 {
+      reasons.append("\(missingApprovals) approval\(missingApprovals == 1 ? "" : "s") still required")
+    }
+    if unresolvedThreadCount > 0 {
+      reasons.append("\(unresolvedThreadCount) unresolved review thread\(unresolvedThreadCount == 1 ? "" : "s")")
+    }
+    if let blocked = capabilities?.mergeBlockedReason?.trimmingCharacters(in: .whitespacesAndNewlines),
+       !blocked.isEmpty, reasons.isEmpty {
+      reasons.append(blocked)
+    }
+    return reasons
+  }
+
+  /// Builds the inline merge-rail model for the unified Overview thread.
+  private var overviewMergeRailModel: PrOverviewMergeRailModel {
+    let state = snapshot?.status?.state ?? currentPr.state
+    let phase: PrOverviewMergeRailModel.Phase = {
+      if state == "merged" { return .merged }
+      if state == "closed" { return .closed }
+      return .active
+    }()
+    return PrOverviewMergeRailModel(
+      phase: phase,
+      repoOwner: currentPr.repoOwner,
+      repoName: currentPr.repoName,
+      prNumber: currentPr.githubPrNumber,
+      gate: mergeGateInfo,
+      blockers: mergeBlockers,
+      isDraft: isCurrentPrDraft,
+      canMerge: canRunPrActions
+        && (capabilities?.canMerge ?? actionAvailability.mergeEnabled)
+        && (mergeGateInfo.tone == .green || canAttemptBlockedMerge),
+      canClose: canRunPrActions && shouldShowCloseAction,
+      canDeleteBranch: !currentPr.laneId.isEmpty,
+      canReopen: canRunPrActions && shouldShowReopenAction,
+      isBusy: isDetailBusy,
+      mergeMethod: mergeMethod,
+      onMerge: { presentMergeMethodPicker() },
+      onChangeMethod: { mergeMethodSheetPresented = true },
+      onClose: { closeCurrentPr() },
+      onReopen: { reopenCurrentPr() },
+      onDeleteBranch: {
+        cleanupChoice = .deleteBranch
+        cleanupConfirmationPresented = true
+      }
+    )
   }
 
   private var behindBaseBy: Int {
     snapshot?.status?.behindBaseBy ?? 0
   }
 
-  /// Set of sub-tabs shown in the detail picker.
+  /// Set of sub-tabs shown in the detail picker. The Activity tab is folded
+  /// into the unified Overview thread (desktop parity), so it no longer appears
+  /// as its own tab.
   private var visibleTabs: [PrDetailTab] {
-    [.overview, .convergence, .files, .checks, .activity]
+    [.overview, .convergence, .files, .checks]
   }
 
   private func tabTitle(_ tab: PrDetailTab) -> String {
@@ -271,11 +395,14 @@ struct PrDetailView: View {
 
   var body: some View {
     List {
-      if let busyAction {
+      // Durable in-flight banner: reads the label from the service registry so
+      // a merge/close/comment started here keeps showing a spinner even if the
+      // user switches tabs and returns.
+      if let detailBusyLabel {
         HStack(spacing: 10) {
           ProgressView()
             .tint(ADEColor.accent)
-          Text(busyAction)
+          Text(detailBusyLabel)
             .font(.subheadline)
             .foregroundStyle(ADEColor.textSecondary)
           Spacer(minLength: 0)
@@ -330,7 +457,9 @@ struct PrDetailView: View {
         PrMergeGateCard(info: mergeGateInfo) {
           switch mergeGateInfo.target {
           case .checks: selectedTab = .checks
-          case .reviews: selectedTab = .activity
+          // Reviews now live inside the unified Overview thread (Activity folded
+          // in), so the merge-gate "reviews" target lands on Overview.
+          case .reviews: selectedTab = .overview
           case .overview: selectedTab = .overview
           }
         }
@@ -340,8 +469,10 @@ struct PrDetailView: View {
           .prListRow()
 
         switch selectedTab {
-      case .overview:
-        PrOverviewTab(
+      case .overview, .activity:
+        // Unified Overview thread — folds the former Activity tab in. `.activity`
+        // is routed here too so any persisted/legacy selection still renders.
+        PrUnifiedOverviewThread(
           pr: currentPr,
           snapshot: snapshot,
           aiSummary: aiSummary,
@@ -363,7 +494,25 @@ struct PrDetailView: View {
           onDeleteBranch: {
             cleanupChoice = .deleteBranch
             cleanupConfirmationPresented = true
-          }
+          },
+          timeline: buildPullRequestTimeline(
+            pr: currentPr,
+            snapshot: snapshot ?? PullRequestSnapshot(detail: nil, status: nil, checks: [], reviews: [], comments: [], files: []),
+            activity: activityEvents
+          ),
+          reviewThreads: reviewThreads,
+          descriptionBody: snapshot?.detail?.body,
+          descriptionAuthor: snapshot?.detail?.author.login ?? githubItem?.author,
+          commentInput: $commentInput,
+          canAddComment: canAddComment,
+          isMapped: isCurrentPrMapped,
+          onSubmitComment: submitComment,
+          onReplyToThread: replyToThread,
+          onSetThreadResolved: setThreadResolved,
+          canAutoMap: canAutoMapCurrentPr,
+          onAutoMap: autoMapCurrentPr,
+          onOpenInGitHub: { openGitHub(urlString: currentPr.githubUrl) },
+          mergeRail: overviewMergeRailModel
         )
         .prListRow()
       case .convergence:
@@ -429,30 +578,6 @@ struct PrDetailView: View {
           onStopAiResolver: stopAiResolver
         )
         .prListRow()
-      case .activity:
-        PrActivityTab(
-          timeline: buildPullRequestTimeline(
-            pr: currentPr,
-            snapshot: snapshot ?? PullRequestSnapshot(detail: nil, status: nil, checks: [], reviews: [], comments: [], files: []),
-            activity: activityEvents
-          ),
-          reviewThreads: reviewThreads,
-          reviews: snapshot?.reviews ?? [],
-          requestedReviewers: snapshot?.detail?.requestedReviewers ?? [],
-          authorLogin: snapshot?.detail?.author.login,
-          requiredApprovals: max(reviewsNeeded, 1),
-          commentInput: $commentInput,
-          canAddComment: canAddComment,
-          isLive: canRunPrActions,
-          aiResolution: aiResolution,
-          isAiResolverBusy: isAiResolverBusy,
-          onSubmitComment: submitComment,
-          onReplyToThread: replyToThread,
-          onSetThreadResolved: setThreadResolved,
-          onLaunchAiResolver: { aiResolverSheetPresented = true },
-          onStopAiResolver: stopAiResolver
-        )
-        .prListRow()
       }
       }
     }
@@ -477,10 +602,22 @@ struct PrDetailView: View {
     }
     .adeNavigationZoomTransition(id: transitionNamespace == nil ? nil : "pr-container-\(prId)", in: transitionNamespace)
     .task(id: syncService.localStateRevision) {
-      await reload(includeLiveSidecars: shouldFetchPrDetailLiveSidecars(
+      // Seed from the warm cache first so an instant render is shown and, when
+      // the cached entry is fresh, `hasLoadedLiveSidecars` is set BEFORE the
+      // gate below evaluates. Doing this inside `.task` (rather than relying on
+      // `.onAppear` firing first) makes the ordering deterministic.
+      seedFromWarmCacheIfNeeded()
+      // Freshness gate lives in `seedFromWarmCacheIfNeeded`: a FRESH warm-cache
+      // seed sets `hasLoadedLiveSidecars`, which makes `needLiveSidecars` false
+      // here so this revision-driven reload skips the cold sidecar fan-out (8+
+      // network calls) and only refreshes the cheap local projection. A stale
+      // (or absent) warm entry leaves `hasLoadedLiveSidecars` false, so we do a
+      // full refresh and never let stale data mask fresh server state.
+      let needLiveSidecars = shouldFetchPrDetailLiveSidecars(
         hasLoadedLiveSidecars: hasLoadedLiveSidecars,
         refreshRemote: false
-      ))
+      )
+      await reload(includeLiveSidecars: needLiveSidecars)
     }
     .sheet(isPresented: $cleanupConfirmationPresented) {
       PrCleanupConfirmationSheet(
@@ -925,9 +1062,18 @@ struct PrDetailView: View {
         }
       } label: {
         HStack(spacing: 8) {
-          Image(systemName: symbol)
-            .font(.system(size: 14, weight: .bold))
-          Text(label)
+          // Inline spinner mirrors the per-button pattern from PrRebaseScreen so
+          // the decisive bottom action shows local progress while its durable
+          // round-trip runs.
+          if isDetailBusy {
+            ProgressView()
+              .controlSize(.small)
+              .tint(isPrimary ? .white : (isAmber ? ADEColor.warning : ADEColor.danger))
+          } else {
+            Image(systemName: symbol)
+              .font(.system(size: 14, weight: .bold))
+          }
+          Text(isDetailBusy ? (detailBusyLabel ?? label) : label)
             .font(.system(size: 15, weight: .bold))
             .lineLimit(1)
             .fixedSize(horizontal: true, vertical: false)
@@ -1106,8 +1252,69 @@ struct PrDetailView: View {
 
     if shouldFetchLiveSidecars {
       hasLoadedLiveSidecars = true
+      // Persist a warm entry once a full live load lands so re-opening the PR
+      // (or re-entering the tab) renders instantly from cache while the
+      // freshness gate decides whether to refetch.
+      storeWarmCache()
     }
     hasAttemptedInitialLoad = true
+  }
+
+  /// Seed local detail state from the service warm cache on first appearance so
+  /// the screen renders immediately instead of flashing the skeleton while the
+  /// `.task` reload runs. Only seeds once per view lifetime, before any fresh
+  /// load has populated state.
+  @MainActor
+  private func seedFromWarmCacheIfNeeded() {
+    guard !hasSeededFromWarmCache, !hasPrDetailData else { return }
+    hasSeededFromWarmCache = true
+    guard let entry = syncService.prDetailWarmEntry(for: prId) else { return }
+    pr = entry.pr
+    githubItem = entry.githubItem
+    snapshot = entry.snapshot
+    reviewThreads = entry.reviewThreads
+    actionRuns = entry.actionRuns
+    activityEvents = entry.activityEvents
+    deployments = entry.deployments
+    aiSummary = entry.aiSummary
+    issueInventory = entry.issueInventory
+    pipelineSettings = entry.pipelineSettings
+    groupMembers = entry.groupMembers
+    capabilities = entry.capabilities
+    // Treat the cache as a successful prior load so the UI shows content (not
+    // the skeleton/unavailable states) while the background refresh runs.
+    hasAttemptedInitialLoad = true
+    // Only suppress the cold sidecar fan-out when the cached entry is still
+    // FRESH. A stale entry seeds the visuals for an instant render but leaves
+    // `hasLoadedLiveSidecars == false`, so the `.task` below performs a full
+    // refresh instead of letting stale data permanently mask fresh server
+    // state. This is the single place the freshness window is enforced.
+    if syncService.prDetailWarmEntryIsFresh(for: prId, within: Self.detailFreshnessWindow) {
+      hasLoadedLiveSidecars = true
+    }
+  }
+
+  /// Snapshot the current fully-loaded detail state into the service warm cache.
+  @MainActor
+  private func storeWarmCache() {
+    syncService.storePrDetailWarmEntry(
+      PrDetailWarmEntry(
+        pr: pr,
+        githubItem: githubItem,
+        snapshot: snapshot,
+        reviewThreads: reviewThreads,
+        actionRuns: actionRuns,
+        activityEvents: activityEvents,
+        deployments: deployments,
+        aiSummary: aiSummary,
+        issueInventory: issueInventory,
+        pipelineSettings: pipelineSettings,
+        groupMembers: groupMembers,
+        capabilities: capabilities,
+        loadedAt: Date()
+      ),
+      for: prId
+    )
   }
 
   @MainActor
@@ -1128,24 +1335,38 @@ struct PrDetailView: View {
       }
   }
 
+  /// Main detail-action funnel. Routes through the durable service registry
+  /// keyed by `detailActionKey` so the spinner + completion survive a tab switch
+  /// + remount: the remote round-trip runs at the service level and COMPLETES
+  /// regardless of this view's lifecycle. The view-side success/error toast and
+  /// reload only run when the view is still alive — acceptable for ephemeral
+  /// feedback; the durable part is the in-flight state and the work itself.
   @MainActor
   private func runPrAction(_ label: String, action: @escaping () async throws -> Void, onSuccess: @escaping @MainActor () -> Void = {}) {
-    Task { @MainActor in
-      busyAction = label
-      errorMessage = nil
-      actionMessage = nil
-      do {
+    let service = syncService
+    let key = detailActionKey
+    let actionablePrId = effectivePrId
+    errorMessage = nil
+    actionMessage = nil
+    service.runDurablePrAction(
+      key: key,
+      label: label,
+      operation: {
         try await action()
+        // Refresh remote snapshots at the service level so the result lands
+        // even if the view is gone by the time the round-trip completes.
+        try? await service.refreshPullRequestSnapshots(prId: actionablePrId)
+      },
+      onSuccess: {
         onSuccess()
-        await reload(refreshRemote: true)
+        Task { await reload(includeLiveSidecars: true) }
         actionMessage = "\(label) finished."
-      } catch {
-        let message = error.localizedDescription
-        await reload(refreshRemote: false)
-        errorMessage = message
+      },
+      onFailure: { error in
+        Task { await reload(includeLiveSidecars: true) }
+        errorMessage = error.localizedDescription
       }
-      busyAction = nil
-    }
+    )
   }
 
   private func mergeCurrentPr() {
@@ -1158,6 +1379,26 @@ struct PrDetailView: View {
 
   private func reopenCurrentPr() {
     runPrAction("Reopening pull request") { try await syncService.reopenPullRequest(prId: effectivePrId) }
+  }
+
+  /// Auto-map the current (unmapped) PR: create a lane from its head branch via
+  /// the durable action wrapper so the spinner survives a tab switch. On a
+  /// blocking conflict the message surfaces through the standard failure path.
+  private func autoMapCurrentPr() {
+    let owner = currentPr.repoOwner
+    let repo = currentPr.repoName
+    let number = currentPr.githubPrNumber
+    guard !owner.isEmpty, !repo.isEmpty else { return }
+    runPrAction("Creating lane from PR branch") {
+      let result = try await syncService.createLaneFromPrBranch(
+        repoOwner: owner,
+        repoName: repo,
+        githubPrNumber: number
+      )
+      if let conflict = result.preflight.blockingConflict {
+        throw PrAutoMapError.blocked(conflict.message)
+      }
+    }
   }
 
   private func requestReviewers() {
@@ -1186,12 +1427,15 @@ struct PrDetailView: View {
 
   private func startAiResolver(model: String?, reasoningEffort: String?) {
     guard !isAiResolverBusy else { return }
+    let service = syncService
+    let key = aiResolverKey
+    let actionablePrId = effectivePrId
+    let token = service.beginPrAction(key: key, label: "Starting AI resolver")
     Task { @MainActor in
-      isAiResolverBusy = true
-      defer { isAiResolverBusy = false }
+      defer { service.endPrAction(key: key, token: token) }
       do {
-        let state = try await syncService.startPrAiResolution(
-          prId: effectivePrId,
+        let state = try await service.startPrAiResolution(
+          prId: actionablePrId,
           model: model,
           reasoningEffort: reasoningEffort
         )
@@ -1205,11 +1449,14 @@ struct PrDetailView: View {
 
   private func stopAiResolver() {
     guard !isAiResolverBusy else { return }
+    let service = syncService
+    let key = aiResolverKey
+    let actionablePrId = effectivePrId
+    let token = service.beginPrAction(key: key, label: "Stopping AI resolver")
     Task { @MainActor in
-      isAiResolverBusy = true
-      defer { isAiResolverBusy = false }
+      defer { service.endPrAction(key: key, token: token) }
       do {
-        try await syncService.stopPrAiResolution(prId: effectivePrId)
+        try await service.stopPrAiResolution(prId: actionablePrId)
         if let current = aiResolution {
           aiResolution = AiResolutionState(
             prId: current.prId,
@@ -1234,11 +1481,14 @@ struct PrDetailView: View {
   /// without waiting for the next sync push.
   private func startPathToMerge() {
     guard !isPathToMergeBusy else { return }
+    let service = syncService
+    let key = pathToMergeKey
+    let actionablePrId = effectivePrId
+    let token = service.beginPrAction(key: key, label: "Starting Path to Merge")
     Task { @MainActor in
-      isPathToMergeBusy = true
-      defer { isPathToMergeBusy = false }
+      defer { service.endPrAction(key: key, token: token) }
       do {
-        let result = try await syncService.startPathToMerge(prId: effectivePrId)
+        let result = try await service.startPathToMerge(prId: actionablePrId)
         applyConvergenceRuntime(result.runtime)
         if !result.scheduled {
           errorMessage = result.blockedBy?.message ?? "Path to Merge is blocked by another lane task."
@@ -1256,11 +1506,14 @@ struct PrDetailView: View {
   /// reflects the canonical post-stop state, including any pause reason.
   private func stopPathToMerge() {
     guard !isPathToMergeBusy else { return }
+    let service = syncService
+    let key = pathToMergeKey
+    let actionablePrId = effectivePrId
+    let token = service.beginPrAction(key: key, label: "Stopping Path to Merge")
     Task { @MainActor in
-      isPathToMergeBusy = true
-      defer { isPathToMergeBusy = false }
+      defer { service.endPrAction(key: key, token: token) }
       do {
-        let result = try await syncService.stopPathToMerge(prId: effectivePrId, reason: "Stopped from iOS.")
+        let result = try await service.stopPathToMerge(prId: actionablePrId, reason: "Stopped from iOS.")
         if let runtime = result.runtime {
           applyConvergenceRuntime(runtime)
         }
@@ -1284,12 +1537,15 @@ struct PrDetailView: View {
   }
 
   private func refreshAiSummary() {
+    guard canRunPrActions, !isAiSummaryLoading else { return }
+    let service = syncService
+    let key = aiSummaryKey
+    let actionablePrId = effectivePrId
+    let token = service.beginPrAction(key: key, label: "Regenerating AI summary")
     Task { @MainActor in
-      guard canRunPrActions else { return }
-      isAiSummaryLoading = true
-      defer { isAiSummaryLoading = false }
+      defer { service.endPrAction(key: key, token: token) }
       do {
-        let summary = try await syncService.fetchPullRequestAiSummary(prId: effectivePrId)
+        let summary = try await service.fetchPullRequestAiSummary(prId: actionablePrId)
         aiSummary = summary
       } catch {
         errorMessage = error.localizedDescription
@@ -1512,22 +1768,26 @@ struct PrDetailView: View {
 
   private func performCleanup() async {
     guard let laneId = pr?.laneId, !laneId.isEmpty else { return }
-    busyAction = cleanupChoice == .archive ? "Archiving lane" : "Deleting lane and branch"
+    let choice = cleanupChoice
+    let token = syncService.beginPrAction(
+      key: detailActionKey,
+      label: choice == .archive ? "Archiving lane" : "Deleting lane and branch"
+    )
+    defer { syncService.endPrAction(key: detailActionKey, token: token) }
     errorMessage = nil
     actionMessage = nil
     do {
-      switch cleanupChoice {
+      switch choice {
       case .archive:
         try await syncService.archiveLane(laneId)
       case .deleteBranch:
         try await syncService.deleteLane(laneId, deleteBranch: true, deleteRemoteBranch: true)
       }
-      actionMessage = cleanupChoice == .archive ? "Lane archived." : "Lane and branch cleanup requested."
+      actionMessage = choice == .archive ? "Lane archived." : "Lane and branch cleanup requested."
     } catch {
       errorMessage = error.localizedDescription
     }
     await reload(refreshRemote: true)
-    busyAction = nil
   }
 
   private func openGitHub(urlString: String) {

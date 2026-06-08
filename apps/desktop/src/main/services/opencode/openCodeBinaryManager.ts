@@ -1,6 +1,7 @@
 // OpenCode binary resolution with bundled fallback
 import { accessSync, constants } from "node:fs";
 import { delimiter, dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   augmentProcessPathWithShellAndKnownCliDirs,
   resolveExecutableFromKnownLocations,
@@ -15,6 +16,11 @@ export type OpenCodeBinaryInfo = {
 };
 
 let cachedInfo: OpenCodeBinaryInfo | null = null;
+
+const moduleDir =
+  typeof __dirname === "string"
+    ? __dirname
+    : dirname(fileURLToPath(import.meta.url));
 
 const OPENCODE_PLATFORM_PACKAGES: Partial<Record<NodeJS.Platform, Partial<Record<NodeJS.Architecture, string>>>> = {
   darwin: {
@@ -67,14 +73,12 @@ function collectBundledNodeModulesRoots(env: NodeJS.ProcessEnv): string[] {
   roots.push(join(process.cwd(), "node_modules"));
   roots.push(join(process.cwd(), "apps", "desktop", "node_modules"));
 
-  if (typeof __dirname === "string") {
-    let current = __dirname;
-    for (;;) {
-      roots.push(join(current, "node_modules"));
-      const next = dirname(current);
-      if (next === current) break;
-      current = next;
-    }
+  let current = moduleDir;
+  for (;;) {
+    roots.push(join(current, "node_modules"));
+    const next = dirname(current);
+    if (next === current) break;
+    current = next;
   }
 
   return unique(roots);

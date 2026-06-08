@@ -24,16 +24,16 @@ directories. Onboarding writes to both.
 
 | Scope | Location | Owner | Contents |
 |---|---|---|---|
-| Machine | `~/.ade/` (`ADE_HOME` overrides; channel builds use `~/.ade-alpha/` / `~/.ade-beta/`) | `ade serve` runtime daemon | Runtime socket (`sock/ade.sock`), project registry (`projects.json`), encrypted credential store (`secrets/`), bundled binary (`bin/ade`), native runtime deps (`runtime/<arch>/`), service log files. |
+| Machine | `~/.ade/` (`ADE_HOME` overrides; channel builds use `~/.ade-alpha/` / `~/.ade-beta/`) | ADE runtime (`ade serve`) | Runtime endpoint (`sock/ade.sock`), project registry (`projects.json`), encrypted credential store (`secrets/`), bundled binary (`bin/ade`), native runtime deps (`runtime/<arch>/`), service log files. |
 | Project (shared) | `<project>/.ade/ade.yaml` | `projectConfigService` | Version-controlled team config: processes, stacks, tests, automations, lane templates, AI mode, providers, Linear sync. |
 | Project (local) | `<project>/.ade/local.yaml` | `projectConfigService` | Per-user, gitignored: ports, env vars, local-only processes. |
 | Project (data) | `<project>/.ade/` | various services | Lanes, attachments, kvDb, generated assets. The shared `.ade/.gitignore` whitelists only authored files. |
 
-The runtime daemon is the seam that ties machine and project scope
+The ADE runtime is the seam that ties machine and project scope
 together: it owns `~/.ade/projects.json`, lazily builds an `AdeRuntime`
 per project root on first project-scoped JSON-RPC call, and is the
-single host through which desktop, `ade code`, and SSH-attached
-desktops see live lanes / chats / processes.
+single runtime through which desktop, `ade code`, and SSH-attached
+desktops see live lanes, agent chats, work sessions, and processes.
 
 ## Source file map
 
@@ -188,7 +188,7 @@ Renderer — settings:
 - `apps/desktop/src/renderer/components/settings/GeneralSection.tsx`
   — project setup re-entry, the compact `AdeCliSection`, and the
   project health / repair surface. Setup status comes from
-  `ade.onboarding.getStatus`; runtime daemon health lives in the
+  `ade.onboarding.getStatus`; ADE runtime health lives in the
   `AboutSection`, and AI provider controls live in AI Connections.
 - `apps/desktop/src/renderer/components/settings/AppearanceSection.tsx`
   — theme and chat appearance preferences. Renders `ChatAppearancePreview`
@@ -201,8 +201,8 @@ Renderer — settings:
   health warnings, structure repair, and integrity-check controls.
 - `apps/desktop/src/renderer/components/settings/AboutSection.tsx`
   — installed ADE version, packaged/dev badge, latest GitHub release
-  lookup, release notes link, manual update check button, and runtime
-  daemon install / health status when available.
+  lookup, release notes link, manual update check button, and ADE runtime
+  install / health status when available.
 - `apps/desktop/src/renderer/components/settings/AdeCliSection.tsx`
   — surfaces `window.ade.adeCli.getStatus()` / `installForUser()`.
   Status carries `terminalInstalled`, `agentPathReady`,
@@ -299,7 +299,10 @@ Auto-update (top-bar control, not a settings tab):
   the same SemVer comparator (so `>=` target counts as installed,
   even if the running build is one ahead), populates
   `recentlyInstalledUpdate` with the actual running version, and
-  cleans up the updater cache directory.
+  cleans up the updater cache directory. On packaged launches with a
+  recently installed update, the desktop refreshes the per-user runtime
+  service so `ade serve` re-execs the updated bundled CLI and clients
+  do not fall back to an isolated build-mismatch runtime.
 - `apps/desktop/src/renderer/components/app/AutoUpdateControl.tsx` —
   the small badge in the app shell top bar. Shows "Checking for
   updates" / "Downloading vX.Y.Z (NN%)" / "Install update vX.Y.Z" /
@@ -333,20 +336,20 @@ Onboarding covers two layers.
 Driven by `LocalRuntimeConnectionPool` on desktop launch and surfaced in
 the General settings tab via `AdeCliSection`:
 
-1. Bring up the runtime daemon. The pool tries to attach to
+1. Bring up the ADE runtime. The pool tries to attach to
    `~/.ade/sock/ade.sock`; if that fails it spawns
    `ade serve --socket <path>` from the bundled CLI and waits for the
-   socket. Compatibility is checked at `initialize` time using both the
+   endpoint. Compatibility is checked at `initialize` time using both the
    reported version and a SHA-256 build hash of the CLI script
    (`ADE_RUNTIME_BUILD_HASH` is set by `apps/ade-cli/src/cli.ts` before
-   spawning the daemon, and `LocalRuntimeConnectionPool.connectClient`
+   spawning the runtime, and `LocalRuntimeConnectionPool.connectClient`
    compares the runtime's `buildHash` against the desktop's expected
    value). A dev build that reports the placeholder version `0.0.0` is
    accepted when its build hash matches the bundled CLI. Mismatches
    are surfaced as a `LocalRuntimeCompatibilityError`; the pool
    terminates the stale runtime process when the handshake reported a
-   pid, unlinks the stale socket, and then lets the normal spawn path
-   start a compatible daemon.
+   pid, unlinks the stale endpoint, and then lets the normal spawn path
+   start a compatible runtime.
 2. Register the runtime as a per-user login service so it survives
    reboots. `installServiceBestEffort()` runs `ade serve --install-service`
    once per session; the implementation lives in
@@ -390,7 +393,7 @@ Current behavior:
 ### Headless install
 
 For machines without a desktop install (CI workers, remote
-SSH-attached runtimes), the runtime daemon and `ade` CLI install via
+SSH-attached runtimes), the ADE runtime and `ade` CLI install via
 `curl -fsSL .../install.sh | sh`. The script downloads the static
 `ade-<platform-arch>` binary plus its native dependency archive, drops
 the binary in `$ADE_INSTALL_DIR` (or `~/.local/bin`), extracts native

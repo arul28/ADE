@@ -258,6 +258,191 @@ func repoScopedGitHubPullRequests(from snapshot: GitHubPrSnapshot?) -> [GitHubPr
   snapshot?.repoPullRequests ?? []
 }
 
+// MARK: - GitHub PR list filter/sort/count (free functions)
+//
+// These mirror the predicates that used to live as private methods on
+// `PRsTabView`. Pulling them out lets the view precompute a memoized
+// `PrGitHubDerivedList` once per (snapshot + filter) change in `.onChange`,
+// instead of re-filtering / re-sorting / making 7 count passes on every render.
+
+func prMatchesGitHubStatus(_ item: GitHubPrListItem, status: PrGitHubStatusFilter) -> Bool {
+  switch status {
+  case .all:
+    return true
+  case .open:
+    return item.state == "open" && !item.isDraft
+  case .draft:
+    return item.isDraft
+  case .merged:
+    return item.state == "merged"
+  case .closed:
+    return item.state == "closed"
+  }
+}
+
+/// Category match for the three headline tabs (desktop parity): Open folds in
+/// draft (state open OR draft), Merged/Closed match 1:1.
+///
+/// We key strictly on `state` (NOT the raw `isDraft` flag): a PR that was a
+/// draft when it closed/merged resolves to state "closed"/"merged" but still
+/// carries `isDraft == true`, so folding `isDraft` into Open would put it in
+/// BOTH Open and Closed (duplicate rows + count drift). Desktop uses the same
+/// state-only predicate (GitHubTab `matchesFilter`).
+func prMatchesGitHubCategory(_ item: GitHubPrListItem, category: PrGitHubCategory) -> Bool {
+  switch category {
+  case .open:
+    return item.state == "open" || item.state == "draft"
+  case .merged:
+    return item.state == "merged"
+  case .closed:
+    return item.state == "closed"
+  }
+}
+
+func prMatchesGitHubScope(_ item: GitHubPrListItem, scope: PrGitHubScopeFilter) -> Bool {
+  switch scope {
+  case .all:
+    return true
+  case .ade:
+    return item.adeKind != nil || item.linkedPrId != nil || item.linkedLaneId != nil
+  case .external:
+    return item.adeKind == nil && item.linkedPrId == nil && item.linkedLaneId == nil
+  }
+}
+
+func prMatchesGitHubSearch(_ item: GitHubPrListItem, query: String) -> Bool {
+  guard !query.isEmpty else { return true }
+  let haystack = [
+    item.title,
+    item.author,
+    item.repoOwner,
+    item.repoName,
+    item.baseBranch,
+    item.headBranch,
+    item.linkedLaneName,
+    item.adeKind,
+    item.workflowDisplayState,
+    "#\(item.githubPrNumber)",
+    "\(item.githubPrNumber)",
+  ]
+  .compactMap { $0?.lowercased() }
+  .joined(separator: " ")
+  return haystack.contains(query) || item.labels.contains { $0.name.lowercased().contains(query) }
+}
+
+/// Precompute the filtered/sorted GitHub PR list + filter counts + repo/external
+/// partition in a single pass set. Recomputed in `.onChange` of the snapshot or
+/// filter inputs — never inside a render. `prParsedDate` is cached, so sort
+/// comparisons reuse parsed dates instead of re-parsing strings each compare.
+func prComputeGitHubDerivedList(
+  items: [GitHubPrListItem],
+  query rawQuery: String,
+  status: PrGitHubStatusFilter,
+  scope: PrGitHubScopeFilter,
+  sort: PrGitHubSortOption,
+  category: PrGitHubCategory? = nil
+) -> PrGitHubDerivedList {
+  let query = rawQuery.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+
+  // Single pass: filter for the visible list, and accumulate the scope/status
+  // count breakdowns the filter chips need. The previous implementation made
+  // seven independent `.filter` passes over the whole list per render.
+  var filtered: [GitHubPrListItem] = []
+  filtered.reserveCapacity(items.count)
+
+  var openCount = 0
+  var draftCount = 0
+  var mergedCount = 0
+  var closedCount = 0
+  var scopedAllCount = 0
+  var adeCount = 0
+  var externalCount = 0
+  var linkedCount = 0
+  // Headline three-tab counts (Open folds draft in), scoped by the active scope.
+  var categoryOpenCount = 0
+  var categoryMergedCount = 0
+  var categoryClosedCount = 0
+
+  for item in items {
+    let inScope = prMatchesGitHubScope(item, scope: scope)
+    // When a category is supplied (the three-tab headline selector), the
+    // primary list filter folds draft into open. Otherwise fall back to the
+    // richer 5-way status filter.
+    let inStatus = category.map { prMatchesGitHubCategory(item, category: $0) }
+      ?? prMatchesGitHubStatus(item, status: status)
+
+    // Counts shown on the filter chips: status counts are scoped by the active
+    // scope; scope counts (ade/external) are scoped by the active status.
+    if inScope {
+      scopedAllCount += 1
+      if prMatchesGitHubStatus(item, status: .open) { openCount += 1 }
+      if prMatchesGitHubStatus(item, status: .draft) { draftCount += 1 }
+      if prMatchesGitHubStatus(item, status: .merged) { mergedCount += 1 }
+      if prMatchesGitHubStatus(item, status: .closed) { closedCount += 1 }
+      // Reuse the exact category predicate so the tab counts can never disagree
+      // with the rendered list (the closed/merged-draft edge included).
+      if prMatchesGitHubCategory(item, category: .open) { categoryOpenCount += 1 }
+      if prMatchesGitHubCategory(item, category: .merged) { categoryMergedCount += 1 }
+      if prMatchesGitHubCategory(item, category: .closed) { categoryClosedCount += 1 }
+    }
+    if inStatus {
+      if prMatchesGitHubScope(item, scope: .ade) { adeCount += 1 }
+      if prMatchesGitHubScope(item, scope: .external) { externalCount += 1 }
+    }
+
+    if item.linkedPrId != nil || item.linkedLaneId != nil || item.adeKind != nil {
+      linkedCount += 1
+    }
+
+    if inStatus && inScope && prMatchesGitHubSearch(item, query: query) {
+      filtered.append(item)
+    }
+  }
+
+  // Sort with precomputed comparable keys so date strings parse at most once
+  // per item instead of on every comparison.
+  switch sort {
+  case .updated:
+    let keyed = filtered.map { ($0, prParsedDate($0.updatedAt) ?? .distantPast) }
+    filtered = keyed.sorted { $0.1 > $1.1 }.map(\.0)
+  case .created:
+    let keyed = filtered.map { ($0, prParsedDate($0.createdAt) ?? .distantPast) }
+    filtered = keyed.sorted { $0.1 > $1.1 }.map(\.0)
+  case .number:
+    filtered.sort { lhs, rhs in
+      if lhs.repoOwner == rhs.repoOwner && lhs.repoName == rhs.repoName {
+        return lhs.githubPrNumber > rhs.githubPrNumber
+      }
+      return "\(lhs.repoOwner)/\(lhs.repoName)" < "\(rhs.repoOwner)/\(rhs.repoName)"
+    }
+  }
+
+  let repoItems = filtered.filter { $0.scope != "external" }
+  let externalItems = filtered.filter { $0.scope == "external" }
+
+  return PrGitHubDerivedList(
+    filtered: filtered,
+    repoItems: repoItems,
+    externalItems: externalItems,
+    counts: PrGitHubFilterCounts(
+      open: openCount,
+      draft: draftCount,
+      merged: mergedCount,
+      closed: closedCount,
+      all: scopedAllCount,
+      ade: adeCount,
+      external: externalCount
+    ),
+    categoryCounts: PrGitHubCategoryCounts(
+      open: categoryOpenCount,
+      merged: categoryMergedCount,
+      closed: categoryClosedCount
+    ),
+    allCount: items.count,
+    linkedCount: linkedCount
+  )
+}
+
 func prDetailRouteListItem(
   from items: [PullRequestListItem],
   prId: String,

@@ -2,7 +2,7 @@
 
 This doc describes the pre-rebuild `Settings > Computer Use` panel and its policy/readiness model. That panel was removed with the proof rebuild; readiness now appears inside the broader `IntegrationsSettingsSection`, and `ComputerUsePolicy` (with its `off`/`auto`/`enabled` modes, `allowLocalFallback`, etc.) is gone. Use this doc for historical context on what the matrix used to express.
 
-The active broker still runs inside the runtime daemon that owns the project (`computerUseArtifactBrokerService.getBackendStatus` reflects backends installed on the runtime host's `PATH`).
+The active broker still runs inside the ADE runtime that owns the project (`computerUseArtifactBrokerService.getBackendStatus` reflects backends installed on the runtime machine's `PATH`).
 
 ## Source file map
 

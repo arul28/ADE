@@ -921,6 +921,9 @@ declare global {
         setPin: (pin: string) => Promise<SyncRoleSnapshot>;
         generatePin: () => Promise<SyncRoleSnapshot>;
         clearPin: () => Promise<SyncRoleSnapshot>;
+        getRuntimeName: () => Promise<{ runtimeName: string | null }>;
+        setRuntimeName: (name: string) => Promise<SyncRoleSnapshot>;
+        clearRuntimeName: () => Promise<SyncRoleSnapshot>;
         setActiveLanePresence: (args: { laneIds: string[] }) => Promise<void>;
         onEvent: (cb: (event: SyncStatusEventPayload) => void) => () => void;
       };

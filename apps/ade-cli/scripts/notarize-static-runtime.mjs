@@ -138,6 +138,25 @@ async function signNativeArchiveIfPresent(binaryPath, identity) {
   }
 }
 
+async function stapleBinaryIfSupported(binaryPath) {
+  let stapled = false;
+  try {
+    console.log(`[runtime:notarize] Stapling ${binaryPath}`);
+    await run("xcrun", ["stapler", "staple", binaryPath]);
+    stapled = true;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.warn(
+      "[runtime:notarize] Notarization was accepted, but stapling the raw runtime binary failed. " +
+        "Continuing because stapler may reject non-bundle executables; desktop app notarization " +
+        `will validate the packaged runtime payload. Original error: ${message}`,
+      );
+  }
+  if (stapled) {
+    await run("spctl", ["--assess", "--type", "execute", "--verbose=4", binaryPath]);
+  }
+}
+
 function buildNotarytoolArgs(zipPath) {
   if (hasEnv("APPLE_API_KEY") && hasEnv("APPLE_API_KEY_ID") && hasEnv("APPLE_API_ISSUER")) {
     return [
@@ -207,9 +226,7 @@ try {
   console.log(`[runtime:notarize] Submitting ${path.basename(binaryPath)} to notarytool`);
   await run("xcrun", buildNotarytoolArgs(zipPath));
 
-  console.log(`[runtime:notarize] Stapling ${binaryPath}`);
-  await run("xcrun", ["stapler", "staple", binaryPath]);
-  await run("spctl", ["--assess", "--type", "execute", "--verbose=4", binaryPath]);
+  await stapleBinaryIfSupported(binaryPath);
 } finally {
   await fs.rm(workDir, { recursive: true, force: true });
 }

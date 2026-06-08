@@ -86,6 +86,9 @@ const RUNTIME_METHODS = new Set([
   "sync.setPin",
   "sync.generatePin",
   "sync.clearPin",
+  "sync.getRuntimeName",
+  "sync.setRuntimeName",
+  "sync.clearRuntimeName",
   "sync.setActiveLanePresence",
 ]);
 
@@ -638,6 +641,19 @@ export function createMultiProjectRpcRequestHandler(
 
     if (method === "sync.clearPin") {
       return await (await getSyncService()).clearPin();
+    }
+
+    if (method === "sync.getRuntimeName") {
+      return { runtimeName: (await getSyncService()).getRuntimeName() };
+    }
+
+    if (method === "sync.setRuntimeName") {
+      const name = typeof params.name === "string" ? params.name : "";
+      return await (await getSyncService()).setRuntimeName(name);
+    }
+
+    if (method === "sync.clearRuntimeName") {
+      return await (await getSyncService()).clearRuntimeName();
     }
 
     if (method === "sync.setActiveLanePresence") {

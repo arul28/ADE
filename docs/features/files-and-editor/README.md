@@ -38,7 +38,7 @@ Runtime services back the canonical implementation. The desktop
 targets for the legacy IPC path.
 
 - `apps/desktop/src/main/services/localRuntime/localRuntimeConnectionPool.ts`
-  — local daemon project registration, file action dispatch, and event
+  — local runtime project registration, file action dispatch, and event
   polling; file actions use a bounded per-call timeout before the
   desktop IPC handler timeout can fire.
 - `apps/desktop/src/main/services/remoteRuntime/runtimeRpcClient.ts` —
@@ -280,7 +280,7 @@ The preload bridge (`apps/desktop/src/preload/preload.ts`) exposes
 `window.ade.files` and `window.ade.diff`; nothing from `node:fs` or
 `node:path` leaks into the renderer. All path resolution for file
 writes and workspace roots happens server-side — inside the active
-runtime daemon for runtime-routed calls and inside the desktop main
+ADE runtime for runtime-routed calls and inside the desktop main
 process for the fallback IPC path — through `resolvePathWithinRoot`,
 which refuses `..` escapes, null bytes, and `.git` internals. Remote
 runtimes apply the same path-safety primitives on the remote host, so

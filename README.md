@@ -138,12 +138,12 @@ ade actions list --text   # discover every service action
 
 ## Architecture
 
-Local-first, on purpose. The center of ADE is the **runtime daemon** — a single per-machine `ade` service that owns projects, lanes, chats, processes, sync, and proof artifacts. Desktop, the terminal client, the iOS app, and SSH-attached desktop windows all attach to it as clients. Runtime state lives under `.ade/` inside each project (SQLite db, worktree checkouts, proof artifacts, encrypted secrets) and the machine-wide socket lives under `~/.ade/sock/ade.sock`. When desktop is running, its Electron main process also hosts a **bridge socket** at `~/.ade/sock/desktop-bridge.sock` (override: `ADE_DESKTOP_BRIDGE_SOCKET_PATH`) so the headless daemon can proxy `ade browser …` calls into the Electron-only `WebContentsView` APIs it can't reach under `ELECTRON_RUN_AS_NODE=1`.
+Local-first, on purpose. The center of ADE is the **machine runtime** — a single per-machine `ade serve` service that owns projects, lanes, agent chats, work sessions, processes, sync, and proof artifacts. Desktop, the terminal client, the iOS app, and SSH-attached desktop windows all attach to it as clients. Runtime state lives under `.ade/` inside each project (SQLite db, worktree checkouts, proof artifacts, encrypted secrets) and the machine-wide local endpoint lives under `~/.ade/sock/ade.sock`. When desktop is running, its Electron main process also hosts a **desktop bridge endpoint** at `~/.ade/sock/desktop-bridge.sock` (override: `ADE_DESKTOP_BRIDGE_SOCKET_PATH`) so the runtime can proxy `ade browser …` calls into the Electron-only `WebContentsView` APIs it can't reach under `ELECTRON_RUN_AS_NODE=1`.
 
 ```text
-apps/ade-cli   ADE runtime daemon (`ade serve`) + `ade` CLI + `ade code` terminal client
+apps/ade-cli   ADE runtime (`ade serve`) + `ade` CLI + `ade code` terminal client
 apps/desktop   Electron client — multi-window, attaches to a local or SSH-bound runtime
-apps/ios       SwiftUI controller that attaches to a runtime over WebSocket
+apps/ios       SwiftUI controller that pairs with an ADE machine over WebSocket
 apps/web       Public website and download surface
 docs/          Product and engineering docs
 ```
@@ -194,9 +194,9 @@ npm run dev:vite             # mock-only: synthetic window.ade, fast shell
 ADE_PROJECT_ROOT=/path/to/project npm run dev:vite:live   # mock + live runtime bridge (Linear, sync, lanes)
 ```
 
-`dev:vite:live` starts the ADE dev runtime, a localhost HTTP bridge to the runtime socket, and Vite with a proxy so the browser can call real backend methods on top of the mock. Set `ADE_PROJECT_ROOT` to your primary project checkout (where `.ade/` and secrets live), especially when working from a lane worktree. Full details: [apps/desktop/README.md](apps/desktop/README.md).
+`dev:vite:live` starts the ADE dev runtime, a localhost HTTP bridge to the runtime endpoint, and Vite with a proxy so the browser can call real backend methods on top of the mock. Set `ADE_PROJECT_ROOT` to your primary project checkout (where `.ade/` and secrets live), especially when working from a lane worktree. Full details: [apps/desktop/README.md](apps/desktop/README.md).
 
-The dev commands intentionally use a temp socket and a separate Electron profile so they do not collide with the installed ADE app:
+The dev commands intentionally use a temp endpoint and a separate Electron profile so they do not collide with the installed ADE app:
 
 ```text
 /tmp/ade-runtime-dev.sock
@@ -213,19 +213,19 @@ ADE_DESKTOP_BRIDGE_SOCKET_PATH=/tmp/my-bridge.sock npm run dev:desktop
 ```
 
 > [!WARNING]
-> Never point `--socket` at a runtime you do not want restarted. In the default
+> Never point `--socket` at an ADE runtime you do not want restarted. In the default
 > `--auto` mode the wrapper **shuts down and recreates** whatever runtime is
-> already listening on that socket whenever its build hash does not match the
+> already listening on that endpoint whenever its build hash does not match the
 > checkout you are launching — so aiming at the production `~/.ade/sock/ade.sock`
 > or another lane's live runtime will kill it (and any clients attached to it).
-> Point at a fresh per-lane socket (below), or use
+> Point at a fresh per-lane endpoint (below), or use
 > `npm run dev:desktop:attach -- --socket <path>` to connect to an already-running
 > runtime — attach mode refuses on a build-hash mismatch instead of restarting.
 
 ### Run a specific lane worktree
 
 To preview a lane's build without disturbing your installed ADE app or its
-runtime, run `dev:desktop` **from the lane checkout** on its own sockets. Running
+runtime, run `dev:desktop` **from the lane checkout** on its own endpoints. Running
 from the worktree makes Vite serve that lane's code, while the wrapper
 auto-resolves project *data* to the primary checkout (as described above), so you
 see the lane's UI backed by your real lanes, PRs, and chats:
@@ -237,7 +237,7 @@ ADE_DESKTOP_BRIDGE_SOCKET_PATH=/tmp/ade-desktop-bridge-<lane>.sock \
 ```
 
 The per-lane `--socket` gives the lane build an isolated runtime (and sidesteps
-the warning above — nothing else is listening there); the per-lane bridge socket
+the warning above — nothing else is listening there); the per-lane bridge endpoint
 avoids colliding with the installed app's `~/.ade/sock/desktop-bridge.sock`. Set
 `ADE_PROJECT_ROOT=/path/to/other-project` only if you want a different project's
 data. A fresh worktree has no `node_modules` — symlink the root and `apps/desktop`
@@ -274,7 +274,7 @@ npm run package:beta         # origin/main -> ADE Beta.app, ade-beta, ~/.ade-bet
 ```
 
 These are unsigned local macOS app builds under `apps/desktop/release-alpha` and `apps/desktop/release-beta`. Beta fetches `origin/main`, fast-forwards the local `main` checkout when possible, and builds that checkout as `ADE Beta`. It does not create a packaging worktree. These builds do not replace the production `ADE.app`, production `ade`, or `~/.ade` runtime/state. Alpha and Beta also use separate Electron profile directories (`ade-desktop-alpha` / `ade-desktop-beta`) so their browser storage and window state do not collide with dev or stable.
-Local channel packages include the host runtime binary for this Mac. Release builds still require the full cross-platform runtime artifact set used by remote runtime bootstrap.
+Local channel packages include this Mac's runtime binary. Release builds still require the full cross-platform runtime artifact set used by remote runtime bootstrap.
 
 Validate with `npm --prefix apps/desktop run typecheck` and `npm run test:desktop:sharded` for the full desktop suite. The desktop test suite is large, so run the smallest relevant subset first.
 

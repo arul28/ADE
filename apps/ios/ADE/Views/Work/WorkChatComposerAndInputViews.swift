@@ -130,13 +130,27 @@ struct WorkComposerChipStrip: View {
   let onSelectRuntimeMode: ((String) -> Void)?
   let onSelectEffort: ((String) -> Void)?
 
+  /// Width below which the access / reasoning controls collapse from the full
+  /// segmented chip rows to a single dot-only Menu button — mirroring the
+  /// desktop composer's ≤560px container query (tuned down for the phone, where
+  /// the full strip still wants to leave room for the model pill + Send button).
+  private let collapseThreshold: CGFloat = 360
+
+  /// Live measurement of the strip's available width, fed by a background
+  /// GeometryReader so the collapse decision tracks rotation / split-view.
+  @State private var availableWidth: CGFloat = 0
+
+  private var isCollapsed: Bool {
+    availableWidth > 0 && availableWidth <= collapseThreshold
+  }
+
   var body: some View {
     ScrollView(.horizontal, showsIndicators: false) {
       HStack(spacing: 10) {
         if let chatSummary {
-          accessPill(summary: chatSummary)
+          accessControl(summary: chatSummary)
           modelPill(summary: chatSummary)
-          effortPill(summary: chatSummary)
+          effortControl(summary: chatSummary)
         }
 
         if queuedSteerCount > 0 {
@@ -149,6 +163,120 @@ struct WorkComposerChipStrip: View {
       .padding(.horizontal, 2)
     }
     .frame(maxWidth: .infinity, alignment: .leading)
+    .background(
+      GeometryReader { proxy in
+        Color.clear
+          .onAppear { availableWidth = proxy.size.width }
+          .onChange(of: proxy.size.width) { _, newValue in
+            availableWidth = newValue
+          }
+      }
+    )
+  }
+
+  /// Access/permission control: full segmented chips above the threshold, a
+  /// single tone-dot Menu button below it (label + caret hidden, color encodes
+  /// the safety tier via `workRuntimeModeTint`).
+  @ViewBuilder
+  private func accessControl(summary: AgentChatSessionSummary) -> some View {
+    if isCollapsed {
+      collapsedAccessControl(summary: summary)
+    } else {
+      accessPill(summary: summary)
+    }
+  }
+
+  /// Reasoning-effort control: full per-tier chips above the threshold, a single
+  /// dot-plus-glyph Menu button below it.
+  @ViewBuilder
+  private func effortControl(summary: AgentChatSessionSummary) -> some View {
+    if isCollapsed {
+      collapsedEffortControl(summary: summary)
+    } else {
+      effortPill(summary: summary)
+    }
+  }
+
+  @ViewBuilder
+  private func collapsedAccessControl(summary: AgentChatSessionSummary) -> some View {
+    let options = workRuntimeModeOptions(provider: summary.provider)
+    let currentMode = workInitialRuntimeMode(summary)
+    let tint = workRuntimeModeTint(currentMode)
+    let label = workRuntimeModeLabel(provider: summary.provider, mode: currentMode)
+
+    if options.isEmpty || onSelectRuntimeMode == nil {
+      collapsedDotButton(tint: tint, glyph: nil)
+        .accessibilityLabel("Access mode: \(label)")
+    } else {
+      Menu {
+        Picker("Access mode", selection: Binding(
+          get: { currentMode },
+          set: { onSelectRuntimeMode?($0) }
+        )) {
+          ForEach(options) { option in
+            Text(option.title).tag(option.id)
+          }
+        }
+      } label: {
+        collapsedDotButton(tint: tint, glyph: nil)
+      }
+      .accessibilityLabel("Access mode: \(label). Tap to change.")
+    }
+  }
+
+  @ViewBuilder
+  private func collapsedEffortControl(summary: AgentChatSessionSummary) -> some View {
+    if let onSelectEffort,
+       let tiers = ADEColor.reasoningTiers(for: summary.modelId ?? summary.model),
+       !tiers.isEmpty {
+      let current = (summary.reasoningEffort ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+      let menuTiers: [String] = {
+        if !current.isEmpty && !tiers.contains(where: { $0.lowercased() == current.lowercased() }) {
+          return tiers + [current]
+        }
+        return tiers
+      }()
+      Menu {
+        Picker("Reasoning effort", selection: Binding(
+          get: { current },
+          set: { onSelectEffort($0) }
+        )) {
+          ForEach(menuTiers, id: \.self) { option in
+            Text(option.capitalized).tag(option)
+          }
+        }
+      } label: {
+        collapsedDotButton(
+          tint: ADEColor.accent,
+          glyph: current.isEmpty ? nil : String(current.prefix(1)).uppercased()
+        )
+      }
+      .accessibilityLabel("Reasoning effort\(current.isEmpty ? "" : ": \(current)"). Tap to change.")
+    }
+  }
+
+  /// Compact ~1.5rem square showing just the tone dot (and an optional short
+  /// glyph), mirroring the desktop collapsed permission control.
+  private func collapsedDotButton(tint: Color, glyph: String?) -> some View {
+    ZStack {
+      if let glyph {
+        Text(glyph)
+          .font(.system(size: 10, weight: .bold))
+          .foregroundStyle(tint)
+      } else {
+        Circle()
+          .fill(tint)
+          .frame(width: 8, height: 8)
+      }
+    }
+    .frame(width: 28, height: 28)
+    .background(tint.opacity(0.1), in: Capsule(style: .continuous))
+    .overlay(
+      Capsule(style: .continuous)
+        .stroke(tint.opacity(0.35), lineWidth: 0.5)
+    )
+    .frame(minWidth: 44, minHeight: 44)
+    .contentShape(Rectangle())
   }
 
   /// Reasoning-effort chip tuned to the active model. Each model advertises

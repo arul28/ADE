@@ -116,7 +116,7 @@ Click any session to open its transcript in read-only view. Click **Resume** to 
     If ADE tool calls fail consistently:
 
     1. Run `ade doctor --project-root <path>` in a terminal to check CLI readiness and see per-domain action counts.
-    2. Confirm the desktop socket is being used — `ade doctor --json` reports whether it is operating in `desktop-socket` or `headless` mode.
+    2. Confirm the machine runtime endpoint is reachable — `ade doctor --json` reports `runtimeEndpoint.available: true` when the CLI can attach.
     3. Check the chat session transcript for the specific tool's error payload; ADE surfaces the RPC error message inline.
   </Accordion>
   <Accordion title="The agent created a PR on the wrong branch">

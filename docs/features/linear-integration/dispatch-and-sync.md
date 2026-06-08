@@ -9,7 +9,7 @@ Every component below — ingress HTTP server, relay long-poller,
 reconciliation timer, dispatcher loop, closeout service, retry queue,
 delegation queue, and outbound API client — runs inside the runtime
 daemon (`ade serve`) that owns the project. For local projects the
-local daemon hosts them; for remote projects the remote runtime hosts
+local runtime hosts them; for remote projects the remote runtime hosts
 them. The headless ADE CLI in `headlessLinearServices.ts` constructs
 the same services so Linear can drive chats / PRs without
 the desktop UI running. PR creation paths are local-by-default because

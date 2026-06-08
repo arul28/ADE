@@ -210,16 +210,33 @@ private struct SettingsConnectionQuickAction: View {
       .accessibilityLabel("Disconnect from machine")
 
     case .connecting:
-      HStack(spacing: 6) {
-        ProgressView().controlSize(.mini)
-        Text("Connecting")
-          .font(.caption.weight(.medium))
-          .foregroundStyle(ADEColor.textSecondary)
+      HStack(spacing: 8) {
+        HStack(spacing: 6) {
+          ProgressView().controlSize(.mini)
+          Text("Connecting")
+            .font(.caption.weight(.medium))
+            .foregroundStyle(ADEColor.textSecondary)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(ADEColor.textSecondary.opacity(0.1), in: Capsule())
+        .glassEffect()
+
+        // Always offer a way out of a connect attempt — `disconnect()` cancels
+        // the in-flight attempt so the user is never stuck watching a spinner.
+        Button {
+          onDisconnect()
+        } label: {
+          Text("Cancel")
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(ADEColor.textSecondary)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+        }
+        .buttonStyle(.plain)
+        .background(ADEColor.textSecondary.opacity(0.1), in: Capsule())
+        .accessibilityLabel("Cancel connecting")
       }
-      .padding(.horizontal, 10)
-      .padding(.vertical, 7)
-      .background(ADEColor.textSecondary.opacity(0.1), in: Capsule())
-      .glassEffect()
 
     case .error, .disconnected:
       if canReconnectToSavedHost {

@@ -122,8 +122,8 @@ describe("launchd service rendering", () => {
     expect(plist).toContain("<string>/opt/ADE &amp; deps</string>");
     expect(plist).toContain("<key>ADE_HOME</key>");
     expect(plist).toContain("<string>/Users/example/&apos;ade&apos;</string>");
-    expect(plist).toContain(`<string>${path.join("/Users/example", ".ade", "runtime", "launchd.out.log")}</string>`);
-    expect(plist).toContain(`<string>${path.join("/Users/example", ".ade", "runtime", "launchd.err.log")}</string>`);
+    expect(plist).toContain("<string>/Users/example/&apos;ade&apos;/runtime/launchd.out.log</string>");
+    expect(plist).toContain("<string>/Users/example/&apos;ade&apos;/runtime/launchd.err.log</string>");
   });
 });
 
@@ -177,7 +177,7 @@ describe("launchd service install", () => {
 describe("systemd service rendering", () => {
   it("renders the user service path under the home directory", () => {
     expect(systemdServicePath("/home/example")).toBe(
-      path.join("/home/example", ".config", "systemd", "user", "ade-runtime.service"),
+      path.join("/home/example", ".config", "systemd", "user", `${ADE_RUNTIME_SERVICE_NAME}.service`),
     );
   });
 
@@ -191,7 +191,7 @@ describe("systemd service rendering", () => {
       },
     });
 
-    expect(unit).toContain("Description=ADE service daemon");
+    expect(unit).toContain("Description=ADE runtime service");
     expect(unit).toContain("Type=simple");
     expect(unit).toContain("ExecStart='/opt/ADE CLI/node' '/opt/ade/cli.cjs' 'serve'");
     expect(unit).toContain("Restart=always");
@@ -234,7 +234,8 @@ describe("systemd service install", () => {
     expect(fs.readFileSync(targetPath, "utf8")).toBe(renderSystemdUnit(serviceCommand));
     expect(calls).toEqual([
       { command: "systemctl", args: ["--user", "daemon-reload"] },
-      { command: "systemctl", args: ["--user", "enable", "--now", "ade-runtime.service"] },
+      { command: "systemctl", args: ["--user", "enable", "--now", `${ADE_RUNTIME_SERVICE_NAME}.service`] },
+      { command: "systemctl", args: ["--user", "restart", `${ADE_RUNTIME_SERVICE_NAME}.service`] },
     ]);
   });
 
@@ -268,7 +269,27 @@ describe("systemd service install", () => {
     expect(result.message).toBe("enable failed");
     expect(calls.map((call) => call.args)).toEqual([
       ["--user", "daemon-reload"],
-      ["--user", "enable", "--now", "ade-runtime.service"],
+      ["--user", "enable", "--now", `${ADE_RUNTIME_SERVICE_NAME}.service`],
+    ]);
+  });
+
+  it("surfaces restart failures after enabling the user unit", () => {
+    const homeDir = makeTempHome("ade-systemd-restart-fail-");
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const spawnSync = spawnSequence(calls, [
+      { status: 0, stdout: "", stderr: "" },
+      { status: 0, stdout: "", stderr: "" },
+      { status: 1, stdout: "", stderr: "restart failed" },
+    ]);
+
+    const result = installSystemdService({ command: serviceCommand, spawnSync, homeDir });
+
+    expect(result.ok).toBe(false);
+    expect(result.message).toBe("restart failed");
+    expect(calls.map((call) => call.args)).toEqual([
+      ["--user", "daemon-reload"],
+      ["--user", "enable", "--now", `${ADE_RUNTIME_SERVICE_NAME}.service`],
+      ["--user", "restart", `${ADE_RUNTIME_SERVICE_NAME}.service`],
     ]);
   });
 });

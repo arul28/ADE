@@ -24,7 +24,7 @@ struct SettingsPairingSection: View {
           SettingsPairActionRow(
             icon: "keyboard",
             title: "Enter machine details",
-            subtitle: "Runtime address and port"
+            subtitle: "Machine address and port"
           ) {
             presentedSheet = .manual
           }
@@ -208,14 +208,14 @@ func syncDiscoveredHostsForDisplay(
 ) -> (savedHosts: [DiscoveredSyncHost], liveHosts: [DiscoveredSyncHost]) {
   let coalescedLiveHosts = syncCoalescedLiveDiscoveredHosts(liveHosts)
   let saved = savedHosts.map { savedHost in
-    guard let liveHost = coalescedLiveHosts.first(where: { syncDiscoveredHostsReferToSameMachine(savedHost, $0) }) else {
+    guard let liveHost = coalescedLiveHosts.first(where: { syncDiscoveredHostsReferToSameRuntime(savedHost, $0) }) else {
       return savedHost
     }
     return syncMergeSavedDiscoveredHost(savedHost, withLiveHost: liveHost)
   }
   let live = coalescedLiveHosts.filter { liveHost in
     !savedHosts.contains { savedHost in
-      syncDiscoveredHostsReferToSameMachine(savedHost, liveHost)
+      syncDiscoveredHostsReferToSameRuntime(savedHost, liveHost)
     }
   }
   return (savedHosts: saved, liveHosts: live)
@@ -239,43 +239,59 @@ func syncCoalescedLiveDiscoveredHosts(_ hosts: [DiscoveredSyncHost]) -> [Discove
   return orderedKeys.compactMap { byKey[$0] }
 }
 
-func syncDiscoveredHostDetailText(host: DiscoveredSyncHost, detailPrefix: String?) -> String {
-  let route = syncDiscoveredHostPrimaryRoute(host: host, detailPrefix: detailPrefix)
-  let prefix = detailPrefix ?? syncDiscoveredHostInferredRoutePrefix(host: host, route: route)
-  let routeText = prefix.map { "\($0): \(route)" } ?? route
-  let projectList = syncDiscoveredHostProjectListText(host: host)
+/// Friendly, transport-free detail line for a machine row. Shows human facts —
+/// the advertised brain/app label plus an availability/status word — and never
+/// an IP, port, "LAN", or "Tailscale". `statusLabel` is the friendly word shown
+/// last (e.g. "Available now" for a live row, "Saved" for a saved row); pass
+/// `nil` to omit it.
+func syncDiscoveredHostDetailText(host: DiscoveredSyncHost, detailPrefix statusLabel: String?) -> String {
   var parts: [String] = []
-  if let runtimeText = syncRuntimeText(kind: host.runtimeKind, version: host.runtimeVersion) {
+  // Lead with the machine's human label when one is advertised. When unnamed,
+  // fall back to the brain/app kind. No project/IP/transport text here; the
+  // pairing target is the computer, not a single project socket.
+  if let name = syncTrimmedNonEmpty(host.runtimeName) {
+    parts.append(name)
+  } else if let runtimeText = syncRuntimeText(kind: host.runtimeKind, version: host.runtimeVersion) {
     parts.append(runtimeText)
   }
-  if let projectList {
-    parts.append(projectList)
-  } else if let projectCount = host.projectCount {
-    parts.append(projectCount == 1 ? "1 project" : "\(projectCount) projects")
+  if let status = syncTrimmedNonEmpty(statusLabel) {
+    parts.append(status)
   }
-  parts.append(routeText)
+  // Always leave the user with at least one human fact, even for a bare row.
+  if parts.isEmpty {
+    parts.append("ADE machine")
+  }
   return parts.joined(separator: " · ")
 }
 
-private func syncDiscoveredHostProjectListText(host: DiscoveredSyncHost) -> String? {
-  let labels = syncUniqueNonEmptyStrings(host.projectNames.isEmpty ? host.projectIds : host.projectNames)
-  guard !labels.isEmpty else { return nil }
-  let visible = labels.prefix(3).joined(separator: ", ")
-  let remaining = labels.count - min(labels.count, 3)
-  let count = host.projectCount ?? labels.count
-  let countText = count == 1 ? "1 project" : "\(count) projects"
-  return remaining > 0 ? "\(countText): \(visible), +\(remaining)" : "\(countText): \(visible)"
-}
-
-private func syncDiscoveredHostsReferToSameMachine(
+private func syncDiscoveredHostsReferToSameRuntime(
   _ left: DiscoveredSyncHost,
   _ right: DiscoveredSyncHost
 ) -> Bool {
   if let leftIdentity = syncTrimmedNonEmpty(left.hostIdentity),
      let rightIdentity = syncTrimmedNonEmpty(right.hostIdentity) {
-    return leftIdentity == rightIdentity
+    return leftIdentity.caseInsensitiveCompare(rightIdentity) == .orderedSame
   }
-  return left.id == right.id
+  if left.id == right.id {
+    return true
+  }
+  return syncMachineMergeKey(left) == syncMachineMergeKey(right)
+}
+
+/// A single normalized key identifying one ADE machine regardless of which
+/// transport or project port currently reached it. Used to coalesce saved +
+/// live rows into one row per computer.
+private func syncMachineMergeKey(_ host: DiscoveredSyncHost) -> String {
+  if let identity = syncTrimmedNonEmpty(host.hostIdentity) {
+    return "machine:\(identity.lowercased())"
+  }
+  if let route = syncDiscoveredHostDisplayPrimaryRouteKey(host) {
+    return "route:\(route)"
+  }
+  if let name = syncTrimmedNonEmpty(host.hostName)?.lowercased() {
+    return "name:\(name)"
+  }
+  return "id:\(host.id)"
 }
 
 private func syncExistingDiscoveredHostDisplayKey(
@@ -283,22 +299,26 @@ private func syncExistingDiscoveredHostDisplayKey(
   in orderedKeys: [String],
   byKey: [String: DiscoveredSyncHost]
 ) -> String? {
+  // Identified machines are keyed exactly by deviceId — never fuzzy-merge them
+  // into a different identified computer that happens to share a route.
+  if syncTrimmedNonEmpty(host.hostIdentity) != nil { return nil }
   guard let hostRoute = syncDiscoveredHostDisplayPrimaryRouteKey(host) else { return nil }
   return orderedKeys.first { key in
     guard let existing = byKey[key] else { return false }
+    if syncTrimmedNonEmpty(existing.hostIdentity) != nil { return false }
     return syncDiscoveredHostDisplayPrimaryRouteKey(existing) == hostRoute
   }
 }
 
 private func syncDiscoveredHostDisplayKey(_ host: DiscoveredSyncHost) -> String {
-  if let route = syncDiscoveredHostDisplayPrimaryRouteKey(host) {
-    return "route:\(route):\(host.port)"
-  }
   if let identity = syncTrimmedNonEmpty(host.hostIdentity) {
-    return "identity:\(identity)"
+    return "machine:\(identity.lowercased())"
+  }
+  if let route = syncDiscoveredHostDisplayPrimaryRouteKey(host) {
+    return "route:\(route)"
   }
   if let name = syncTrimmedNonEmpty(host.hostName)?.lowercased() {
-    return "name:\(name):\(host.port)"
+    return "name:\(name)"
   }
   return "id:\(host.id)"
 }
@@ -337,9 +357,11 @@ private func syncMergeLiveDiscoveredHost(
     serviceName: syncTrimmedNonEmpty(preferred.serviceName) ?? fallback.serviceName,
     hostName: syncTrimmedNonEmpty(preferred.hostName) ?? fallback.hostName,
     hostIdentity: syncTrimmedNonEmpty(preferred.hostIdentity) ?? syncTrimmedNonEmpty(fallback.hostIdentity),
+    siteId: syncTrimmedNonEmpty(preferred.siteId) ?? syncTrimmedNonEmpty(fallback.siteId),
     port: preferred.port > 0 ? preferred.port : fallback.port,
     addresses: syncUniqueNonEmptyStrings(preferred.addresses + fallback.addresses),
     tailscaleAddress: syncTrimmedNonEmpty(preferred.tailscaleAddress) ?? syncTrimmedNonEmpty(fallback.tailscaleAddress),
+    runtimeName: syncTrimmedNonEmpty(preferred.runtimeName) ?? syncTrimmedNonEmpty(fallback.runtimeName),
     runtimeKind: syncTrimmedNonEmpty(preferred.runtimeKind) ?? syncTrimmedNonEmpty(fallback.runtimeKind),
     runtimeVersion: syncTrimmedNonEmpty(preferred.runtimeVersion) ?? syncTrimmedNonEmpty(fallback.runtimeVersion),
     projectIds: syncUniqueNonEmptyStrings(preferred.projectIds + fallback.projectIds),
@@ -347,6 +369,7 @@ private func syncMergeLiveDiscoveredHost(
     projectCount: max(preferred.projectCount ?? 0, fallback.projectCount ?? 0) > 0
       ? max(preferred.projectCount ?? 0, fallback.projectCount ?? 0)
       : nil,
+    pairingPinConfigured: preferred.pairingPinConfigured ?? fallback.pairingPinConfigured,
     lastResolvedAt: max(preferred.lastResolvedAt, fallback.lastResolvedAt)
   )
 }
@@ -374,14 +397,17 @@ private func syncMergeSavedDiscoveredHost(
     serviceName: syncTrimmedNonEmpty(savedHost.serviceName) ?? liveHost.serviceName,
     hostName: syncTrimmedNonEmpty(savedHost.hostName) ?? liveHost.hostName,
     hostIdentity: syncTrimmedNonEmpty(savedHost.hostIdentity) ?? syncTrimmedNonEmpty(liveHost.hostIdentity),
+    siteId: syncTrimmedNonEmpty(savedHost.siteId) ?? syncTrimmedNonEmpty(liveHost.siteId),
     port: savedHost.port > 0 ? savedHost.port : liveHost.port,
     addresses: syncUniqueNonEmptyStrings(savedHost.addresses + liveHost.addresses),
     tailscaleAddress: syncTrimmedNonEmpty(savedHost.tailscaleAddress) ?? syncTrimmedNonEmpty(liveHost.tailscaleAddress),
+    runtimeName: syncTrimmedNonEmpty(savedHost.runtimeName) ?? syncTrimmedNonEmpty(liveHost.runtimeName),
     runtimeKind: syncTrimmedNonEmpty(savedHost.runtimeKind) ?? syncTrimmedNonEmpty(liveHost.runtimeKind),
     runtimeVersion: syncTrimmedNonEmpty(savedHost.runtimeVersion) ?? syncTrimmedNonEmpty(liveHost.runtimeVersion),
     projectIds: syncUniqueNonEmptyStrings(savedHost.projectIds + liveHost.projectIds),
     projectNames: syncUniqueNonEmptyStrings(savedHost.projectNames + liveHost.projectNames),
     projectCount: savedHost.projectCount ?? liveHost.projectCount,
+    pairingPinConfigured: savedHost.pairingPinConfigured ?? liveHost.pairingPinConfigured,
     lastResolvedAt: max(savedHost.lastResolvedAt, liveHost.lastResolvedAt)
   )
 }
@@ -391,34 +417,14 @@ private func syncRuntimeText(kind: String?, version: String?) -> String? {
   let label: String
   switch kind.lowercased() {
   case "daemon", "headless":
-    label = "Background ADE"
+    label = "ADE brain"
   case "desktop", "desktop-embedded":
     label = "ADE app"
   default:
-    label = "ADE service"
+    label = "ADE brain"
   }
   guard let version = syncTrimmedNonEmpty(version) else { return label }
   return "\(label) \(version)"
-}
-
-private func syncDiscoveredHostPrimaryRoute(host: DiscoveredSyncHost, detailPrefix: String?) -> String {
-  if let tailscaleAddress = syncTrimmedNonEmpty(host.tailscaleAddress),
-     detailPrefix?.localizedCaseInsensitiveContains("tailscale") == true {
-    return tailscaleAddress
-  }
-  return host.addresses.first { address in
-    !syncIsLoopbackAddress(address) && !syncIsTailscaleRoute(address)
-  } ?? syncTrimmedNonEmpty(host.tailscaleAddress) ?? host.addresses.first ?? "No route"
-}
-
-private func syncDiscoveredHostInferredRoutePrefix(host: DiscoveredSyncHost, route: String) -> String? {
-  if syncIsTailscaleRoute(route) {
-    return "Tailscale"
-  }
-  if host.tailscaleAddress.map(syncIsTailscaleRoute) == true {
-    return "LAN + Tailscale"
-  }
-  return nil
 }
 
 private func syncTrimmedNonEmpty(_ value: String?) -> String? {
@@ -587,7 +593,7 @@ struct ManualEntrySheet: View {
           Text("Reach your machine directly")
             .font(.headline)
             .foregroundStyle(ADEColor.textPrimary)
-          Text("Use a runtime address from ADE sync status or Tailscale.")
+          Text("Use a machine address from ADE Sync settings or Tailscale.")
             .font(.caption)
             .foregroundStyle(ADEColor.textSecondary)
 

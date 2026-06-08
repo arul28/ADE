@@ -280,6 +280,8 @@ enum ADEColor {
     "codex": 0xE7E5E4,
     "openai": 0xE7E5E4,
     "cursor": 0xA78BFA,
+    "droid": 0x8B5CF6,
+    "factory": 0x8B5CF6,
     "opencode": 0x2563EB,
     "google": 0xF59E0B,
     "gemini": 0xF59E0B,

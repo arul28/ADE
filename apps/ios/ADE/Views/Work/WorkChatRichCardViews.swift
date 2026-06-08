@@ -8,6 +8,64 @@ import AVKit
 /// apps/desktop/src/renderer/components/chat/AgentChatMessageList.tsx:802.
 let workToolResultTruncateLimit = 500
 
+/// Shared status glyph for work-log rows. Desktop parity:
+/// completed = emerald check, failed = red x-circle, running = violet dot.
+///
+/// The running dot is intentionally STATIC (not a per-row `repeatForever`
+/// pulse): the lone streaming animation lives in the tail
+/// `WorkActivityIndicator`, so painting a pulsing dot on every running row
+/// would reintroduce the stacked-loop jank this overhaul removes. Reduce Motion
+/// has no extra effect because nothing here animates.
+struct WorkToolStatusGlyph: View {
+  let status: WorkToolCardStatus
+
+  var body: some View {
+    switch status {
+    case .completed:
+      Image(systemName: "checkmark.circle.fill")
+        .font(.system(size: 11, weight: .semibold))
+        .foregroundStyle(ADEColor.success)
+    case .failed:
+      Image(systemName: "xmark.circle.fill")
+        .font(.system(size: 11, weight: .semibold))
+        .foregroundStyle(ADEColor.danger)
+    case .running:
+      Circle()
+        .fill(ADEColor.purpleAccent)
+        .frame(width: 7, height: 7)
+        .overlay(Circle().stroke(ADEColor.purpleAccent.opacity(0.35), lineWidth: 2).scaleEffect(1.5))
+    }
+  }
+}
+
+/// Flat reference chip (file / PR link) used inside expanded tool and event
+/// cards. Replaces the former liquid-glass `.buttonStyle(.glass)` chips — a
+/// plain tinted fill + hairline border keeps the transcript de-glassed while
+/// still reading as a tappable affordance.
+struct WorkReferenceChip: View {
+  let label: String
+  let systemImage: String
+  let tint: Color
+  let action: () -> Void
+
+  var body: some View {
+    Button(action: action) {
+      Label(label, systemImage: systemImage)
+        .font(.caption.weight(.semibold))
+        .foregroundStyle(tint)
+        .lineLimit(1)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(tint.opacity(0.10), in: Capsule(style: .continuous))
+        .overlay(
+          Capsule(style: .continuous)
+            .stroke(tint.opacity(0.28), lineWidth: 1)
+        )
+    }
+    .buttonStyle(.plain)
+  }
+}
+
 struct WorkToolCardView: View {
   let toolCard: WorkToolCardModel
   let references: WorkNavigationTargets
@@ -37,27 +95,24 @@ struct WorkToolCardView: View {
                 .font(.caption2.weight(.semibold))
                 .foregroundStyle(ADEColor.textMuted)
               ScrollView(.horizontal, showsIndicators: false) {
-                ADEGlassGroup(spacing: 8) {
+                HStack(spacing: 8) {
                   ForEach(references.filePaths.prefix(3), id: \.self) { path in
-                    Button {
-                      onOpenFile(path)
-                    } label: {
-                      Label(workReferenceLabel(for: path), systemImage: "doc.text")
-                        .font(.caption.weight(.semibold))
-                    }
-                    .buttonStyle(.glass)
+                    WorkReferenceChip(
+                      label: workReferenceLabel(for: path),
+                      systemImage: "doc.text",
+                      tint: ADEColor.textSecondary,
+                      action: { onOpenFile(path) }
+                    )
                     .accessibilityLabel("Open file \(path) in Files")
                   }
 
                   ForEach(references.pullRequestNumbers.prefix(3), id: \.self) { number in
-                    Button {
-                      onOpenPr(number)
-                    } label: {
-                      Label("PR #\(number)", systemImage: "arrow.triangle.pull")
-                        .font(.caption.weight(.semibold))
-                    }
-                    .buttonStyle(.glass)
-                    .tint(ADEColor.accent)
+                    WorkReferenceChip(
+                      label: "PR #\(number)",
+                      systemImage: "arrow.triangle.pull",
+                      tint: ADEColor.accent,
+                      action: { onOpenPr(number) }
+                    )
                     .accessibilityLabel("Open PR number \(number)")
                   }
                 }
@@ -90,11 +145,10 @@ struct WorkToolCardView: View {
     }
     .padding(.horizontal, 12)
     .padding(.vertical, isExpanded ? 12 : 8)
-    .background(ADEColor.surfaceBackground.opacity(0.6), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-    .glassEffect(in: .rect(cornerRadius: 14))
+    .background(ADEColor.cardBackground.opacity(0.45), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
     .overlay(
       RoundedRectangle(cornerRadius: 14, style: .continuous)
-        .stroke(ADEColor.glassBorder, lineWidth: 0.5)
+        .stroke(ADEColor.glassBorder, lineWidth: 1)
     )
     .accessibilityElement(children: .combine)
     .accessibilityLabel("\(toolDisplayName(toolCard.toolName)), \(toolCard.status.rawValue)")
@@ -113,14 +167,9 @@ struct WorkToolCardView: View {
   /// no duration chip — just a status dot, the tool name, and the chevron.
   private var collapsedHeader: some View {
     HStack(spacing: 10) {
-      Circle()
-        .fill(statusTint)
-        .frame(width: 7, height: 7)
-      Image(systemName: "hammer.fill")
-        .font(.system(size: 11, weight: .semibold))
-        .foregroundStyle(ADEColor.textMuted)
-      Text(toolDisplayName(toolCard.toolName))
-        .font(.caption.weight(.semibold))
+      WorkToolStatusGlyph(status: toolCard.status)
+      Text(toolDisplayName(toolCard.toolName).lowercased())
+        .font(.caption.monospaced().weight(.semibold))
         .foregroundStyle(ADEColor.textPrimary)
         .lineLimit(1)
         .truncationMode(.middle)
@@ -217,11 +266,10 @@ struct WorkToolCallsPanelView: View {
     }
     .padding(.horizontal, 14)
     .padding(.vertical, 10)
-    .background(ADEColor.surfaceBackground.opacity(0.85), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-    .glassEffect(in: .rect(cornerRadius: 14))
+    .background(ADEColor.cardBackground.opacity(0.4), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
     .overlay(
       RoundedRectangle(cornerRadius: 14, style: .continuous)
-        .strokeBorder(ADEColor.glassBorder.opacity(0.9), lineWidth: 1)
+        .strokeBorder(ADEColor.glassBorder, lineWidth: 1)
     )
     .accessibilityElement(children: .contain)
     .accessibilityLabel("Tool calls cluster, \(group.count) calls, \(isExpanded ? "expanded" : "collapsed")")
@@ -229,22 +277,34 @@ struct WorkToolCallsPanelView: View {
 
   private var header: some View {
     Button(action: onToggle) {
-      HStack(alignment: .center, spacing: 10) {
+      HStack(alignment: .center, spacing: 8) {
         Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
-          .font(.system(size: 12, weight: .bold))
+          .font(.system(size: 11, weight: .bold))
           .foregroundStyle(ADEColor.textMuted)
-        Circle()
-          .fill(headerDotTint)
-          .frame(width: 7, height: 7)
-        Text("Tool calls (\(group.count))")
+        Text("Tool calls")
           .font(.subheadline.weight(.semibold))
           .foregroundStyle(ADEColor.textPrimary)
-        if !isExpanded, let breadcrumb = lastBreadcrumb {
-          Text("· \(breadcrumb)")
-            .font(.caption)
-            .foregroundStyle(ADEColor.textMuted)
+        Text("\(group.count)")
+          .font(.caption2.weight(.bold).monospacedDigit())
+          .foregroundStyle(ADEColor.textMuted)
+          .padding(.horizontal, 5)
+          .padding(.vertical, 1)
+          .background(ADEColor.textMuted.opacity(0.14), in: Capsule(style: .continuous))
+        // Collapsed: a one-line peek at the latest entry — status glyph, mono
+        // kind-slug, then the arg text, matching desktop's work-log header.
+        if !isExpanded, let latest = group.latest {
+          WorkToolStatusGlyph(status: latest.status)
+          Text(memberSlug(latest))
+            .font(.caption2.monospaced().weight(.semibold))
+            .foregroundStyle(ADEColor.textSecondary)
             .lineLimit(1)
-            .truncationMode(.middle)
+          if let target = memberTarget(latest), !target.isEmpty {
+            Text(target)
+              .font(.caption2.monospaced())
+              .foregroundStyle(ADEColor.textMuted)
+              .lineLimit(1)
+              .truncationMode(.middle)
+          }
         }
         Spacer(minLength: 0)
       }
@@ -256,7 +316,6 @@ struct WorkToolCallsPanelView: View {
   private func memberRow(_ member: WorkToolGroupMember) -> some View {
     let memberId = member.id
     let expanded = expandedMemberIds.contains(memberId)
-    let verb = memberVerb(member)
     let target = memberTarget(member)
 
     Button {
@@ -267,12 +326,10 @@ struct WorkToolCallsPanelView: View {
       }
     } label: {
       VStack(alignment: .leading, spacing: 4) {
-        HStack(alignment: .firstTextBaseline, spacing: 10) {
-          Circle()
-            .fill(rowDotTint(member.status))
-            .frame(width: 5, height: 5)
-          Text(verb)
-            .font(.caption.weight(.semibold))
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+          WorkToolStatusGlyph(status: member.status)
+          Text(memberSlug(member))
+            .font(.caption.monospaced().weight(.semibold))
             .foregroundStyle(rowVerbColor(member.status))
           if let target, !target.isEmpty {
             Text(target)
@@ -305,36 +362,22 @@ struct WorkToolCallsPanelView: View {
     .buttonStyle(.plain)
   }
 
-  // MARK: – Header helpers
-
-  private var headerDotTint: Color {
-    if group.hasRunning { return ADEColor.warning }
-    if group.members.contains(where: { $0.status == .failed }) { return ADEColor.danger }
-    return ADEColor.textMuted.opacity(0.5)
-  }
-
-  private var lastBreadcrumb: String? {
-    guard let latest = group.latest else { return nil }
-    let verb = memberVerb(latest)
-    if let target = memberTarget(latest), !target.isEmpty {
-      return "Last: \(verb) \(target)"
-    }
-    return "Last: \(verb)"
-  }
-
   // MARK: – Member helpers
 
-  private func memberVerb(_ member: WorkToolGroupMember) -> String {
+  /// Mono "kind-slug" shown beside the status glyph — the lowercased tool name
+  /// (`read`, `bash`, `edit`) rather than a prose verb, matching the desktop
+  /// work-log row which leads with the raw tool kind.
+  private func memberSlug(_ member: WorkToolGroupMember) -> String {
     switch member {
     case .tool(let card):
-      return describeToolVerb(card.toolName, status: card.status)
-    case .command(let card):
-      return describeToolVerb("bash", status: card.status)
+      return toolDisplayName(card.toolName).lowercased()
+    case .command:
+      return "bash"
     case .fileChange(let card):
       switch card.kind.lowercased() {
-      case "create": return card.status == .running ? "Creating…" : "Created"
-      case "delete": return card.status == .running ? "Deleting…" : "Deleted"
-      default: return card.status == .running ? "Editing…" : "Edited"
+      case "create": return "create"
+      case "delete": return "delete"
+      default: return "edit"
       }
     }
   }
@@ -369,14 +412,6 @@ struct WorkToolCallsPanelView: View {
     }
   }
 
-  private func rowDotTint(_ status: WorkToolCardStatus) -> Color {
-    switch status {
-    case .running: return ADEColor.warning
-    case .failed: return ADEColor.danger
-    case .completed: return ADEColor.textMuted.opacity(0.5)
-    }
-  }
-
   private func rowVerbColor(_ status: WorkToolCardStatus) -> Color {
     switch status {
     case .failed: return ADEColor.danger
@@ -394,6 +429,11 @@ struct WorkChangedFilesPanelView: View {
   let onToggle: () -> Void
   let onUndo: (() -> Void)?
 
+  // Desktop parity: the "N files changed" panel is OPEN by default. The cluster
+  // is the headline of the turn's work, so the file rows + stats show without a
+  // tap. Open/closed state is owned by the parent (`isExpanded`/`onToggle`) so
+  // it survives the row scrolling out of and back into the lazy stack — the
+  // call site seeds it open by default.
   @State private var expandedFileIds: Set<String> = []
 
   var body: some View {
@@ -413,10 +453,10 @@ struct WorkChangedFilesPanelView: View {
     }
     .padding(.horizontal, 12)
     .padding(.vertical, 8)
-    .background(ADEColor.surfaceBackground.opacity(0.35), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    .background(ADEColor.cardBackground.opacity(0.4), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
     .overlay(
       RoundedRectangle(cornerRadius: 12, style: .continuous)
-        .strokeBorder(ADEColor.glassBorder.opacity(0.6), lineWidth: 0.5)
+        .strokeBorder(ADEColor.glassBorder, lineWidth: 1)
     )
     .accessibilityElement(children: .contain)
     .accessibilityLabel("Files changed cluster, \(group.count) files, \(isExpanded ? "expanded" : "collapsed")")
@@ -482,10 +522,10 @@ struct WorkChangedFilesPanelView: View {
             .lineLimit(1)
             .truncationMode(.middle)
           Spacer(minLength: 4)
-          if file.kind.lowercased() != "modify" {
-            Text(file.kind.capitalized)
-              .font(.caption2)
-              .foregroundStyle(ADEColor.textMuted)
+          if let kindLabel = fileKindLabel(file.kind) {
+            Text(kindLabel)
+              .font(.caption2.weight(.semibold))
+              .foregroundStyle(file.kind.lowercased() == "delete" ? ADEColor.danger.opacity(0.8) : ADEColor.textMuted)
           }
           if file.additions > 0 {
             Text("+\(file.additions)")
@@ -540,7 +580,7 @@ struct WorkChangedFilesPanelView: View {
   private func diffLineTint(_ line: String) -> Color {
     if line.hasPrefix("+") && !line.hasPrefix("+++") { return ADEColor.success.opacity(0.9) }
     if line.hasPrefix("-") && !line.hasPrefix("---") { return ADEColor.danger.opacity(0.9) }
-    if line.hasPrefix("@@") { return ADEColor.accent.opacity(0.7) }
+    if line.hasPrefix("@@") { return ADEColor.purpleAccent.opacity(0.8) }
     return ADEColor.textSecondary
   }
 
@@ -551,6 +591,17 @@ struct WorkChangedFilesPanelView: View {
       if !ext.isEmpty && ext.count <= 4 { return ext }
     }
     return "FILE"
+  }
+
+  /// Past-tense kind label for non-modify changes — "Created" / "Deleted".
+  /// Returns nil for plain edits so modify rows stay clean.
+  private func fileKindLabel(_ kind: String) -> String? {
+    switch kind.lowercased() {
+    case "create", "add": return "Created"
+    case "delete", "remove": return "Deleted"
+    case "rename": return "Renamed"
+    default: return nil
+    }
   }
 }
 
@@ -756,11 +807,10 @@ struct WorkCommandCardView: View {
       }
     }
     .padding(14)
-    .background(ADEColor.surfaceBackground.opacity(0.7), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
-    .glassEffect(in: .rect(cornerRadius: 18))
+    .background(ADEColor.cardBackground.opacity(0.45), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
     .overlay(
-      RoundedRectangle(cornerRadius: 18, style: .continuous)
-        .stroke(ADEColor.glassBorder, lineWidth: 0.5)
+      RoundedRectangle(cornerRadius: 16, style: .continuous)
+        .stroke(ADEColor.glassBorder, lineWidth: 1)
     )
     .accessibilityElement(children: .combine)
     .accessibilityLabel("Command, \(card.status.rawValue). Tap to \(isExpanded ? "collapse" : "expand") output.")
@@ -845,7 +895,11 @@ struct WorkFileChangeCardView: View {
       }
     }
     .padding(14)
-    .background(ADEColor.surfaceBackground.opacity(0.7), in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+    .background(ADEColor.cardBackground.opacity(0.45), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+    .overlay(
+      RoundedRectangle(cornerRadius: 16, style: .continuous)
+        .stroke(ADEColor.glassBorder, lineWidth: 1)
+    )
   }
 
   var statusTint: Color {
@@ -866,11 +920,9 @@ struct WorkFileChangeCardView: View {
 }
 
 struct WorkEventCardView: View {
-  @Environment(\.accessibilityReduceMotion) var reduceMotion
   let card: WorkEventCardModel
   var onOpenFile: ((String) -> Void)? = nil
   var onOpenPr: ((Int) -> Void)? = nil
-  @State var isAnimating = false
 
   var navigationTargets: WorkNavigationTargets? {
     guard card.kind == "completionReport" else { return nil }
@@ -952,8 +1004,6 @@ struct WorkEventCardView: View {
           .foregroundStyle(card.tint.color)
           .frame(width: 28, height: 28)
           .background(card.tint.color.opacity(0.14), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-          .scaleEffect(card.kind == "activity" && isAnimating && !reduceMotion ? 1.08 : 1.0)
-          .animation(card.kind == "activity" ? ADEMotion.pulse(reduceMotion: reduceMotion) : .default, value: isAnimating)
         VStack(alignment: .leading, spacing: 4) {
           Text(card.title)
             .font(.subheadline.weight(.semibold))
@@ -994,26 +1044,24 @@ struct WorkEventCardView: View {
 
       if let navigationTargets {
         ScrollView(.horizontal, showsIndicators: false) {
-          ADEGlassGroup(spacing: 8) {
+          HStack(spacing: 8) {
             ForEach(navigationTargets.filePaths.prefix(6), id: \.self) { path in
-              Button {
-                onOpenFile?(path)
-              } label: {
-                Label(workReferenceLabel(for: path), systemImage: "doc.text")
-                  .font(.caption.weight(.semibold))
-              }
-              .buttonStyle(.glass)
+              WorkReferenceChip(
+                label: workReferenceLabel(for: path),
+                systemImage: "doc.text",
+                tint: ADEColor.textSecondary,
+                action: { onOpenFile?(path) }
+              )
               .disabled(onOpenFile == nil)
               .accessibilityLabel("Open file \(path)")
             }
             ForEach(navigationTargets.pullRequestNumbers.prefix(6), id: \.self) { number in
-              Button {
-                onOpenPr?(number)
-              } label: {
-                Label("PR #\(number)", systemImage: "arrow.triangle.pull")
-                  .font(.caption.weight(.semibold))
-              }
-              .buttonStyle(.glass)
+              WorkReferenceChip(
+                label: "PR #\(number)",
+                systemImage: "arrow.triangle.pull",
+                tint: ADEColor.accent,
+                action: { onOpenPr?(number) }
+              )
               .disabled(onOpenPr == nil)
               .accessibilityLabel("Open pull request \(number)")
             }
@@ -1022,17 +1070,13 @@ struct WorkEventCardView: View {
       }
     }
     .padding(12)
-    .background(ADEColor.surfaceBackground.opacity(0.35), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    .background(ADEColor.cardBackground.opacity(0.4), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
     .overlay(
       RoundedRectangle(cornerRadius: 14, style: .continuous)
-        .stroke(ADEColor.border.opacity(0.14), lineWidth: 0.5)
+        .stroke(ADEColor.glassBorder, lineWidth: 1)
     )
     .accessibilityElement(children: .combine)
     .accessibilityLabel([card.title, card.body, card.bullets.joined(separator: ", ")].compactMap { $0 }.joined(separator: ". "))
-    .onAppear {
-      guard card.kind == "activity", !reduceMotion else { return }
-      isAnimating = true
-    }
   }
 }
 
@@ -1081,12 +1125,11 @@ struct WorkProposedPlanCard: View {
     .padding(14)
     .background(
       RoundedRectangle(cornerRadius: 16, style: .continuous)
-        .fill(ADEColor.surfaceBackground.opacity(0.08))
+        .fill(ADEColor.cardBackground.opacity(0.45))
     )
-    .glassEffect(in: .rect(cornerRadius: 16))
     .overlay(
       RoundedRectangle(cornerRadius: 16, style: .continuous)
-        .stroke(ADEColor.brandClaude.opacity(0.22), lineWidth: 0.75)
+        .stroke(ADEColor.brandClaude.opacity(0.22), lineWidth: 1)
     )
     .accessibilityElement(children: .combine)
     .accessibilityLabel(accessibilitySummary)

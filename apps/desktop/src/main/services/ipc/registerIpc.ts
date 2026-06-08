@@ -4531,6 +4531,31 @@ export function registerIpc({
     return await (await requireSyncService()).clearPin();
   });
 
+  ipcMain.handle(IPC.syncGetRuntimeName, async (event): Promise<{ runtimeName: string | null }> => {
+    const runtimeName = await tryLocalRuntimeSync(event, (pool, rootPath) =>
+      pool.syncRuntimeNameForRoot(rootPath)
+    );
+    if (runtimeName) return runtimeName;
+    return { runtimeName: (await requireSyncService()).getRuntimeName() };
+  });
+
+  ipcMain.handle(IPC.syncSetRuntimeName, async (event, name: string): Promise<SyncRoleSnapshot> => {
+    const normalizedName = typeof name === "string" ? name : "";
+    const runtimeStatus = await tryLocalRuntimeSync(event, (pool, rootPath) =>
+      pool.setSyncRuntimeNameForRoot(rootPath, normalizedName)
+    );
+    if (runtimeStatus) return runtimeStatus;
+    return await (await requireSyncService()).setRuntimeName(normalizedName);
+  });
+
+  ipcMain.handle(IPC.syncClearRuntimeName, async (event): Promise<SyncRoleSnapshot> => {
+    const runtimeStatus = await tryLocalRuntimeSync(event, (pool, rootPath) =>
+      pool.clearSyncRuntimeNameForRoot(rootPath)
+    );
+    if (runtimeStatus) return runtimeStatus;
+    return await (await requireSyncService()).clearRuntimeName();
+  });
+
   ipcMain.handle(
     IPC.syncSetActiveLanePresence,
     async (event, arg: { laneIds?: string[] | null }): Promise<void> => {

@@ -226,7 +226,7 @@ export function AboutSection() {
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
             <div>
               <div style={{ fontSize: 13, fontWeight: 700, fontFamily: SANS_FONT, color: COLORS.textPrimary }}>
-                Runtime daemon service
+                ADE runtime service
               </div>
               <div style={{ marginTop: 5, fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted, lineHeight: 1.5 }}>
                 Connection: {info.localRuntime.connectionState}. Install: {info.localRuntime.serviceInstall.message ?? "No install status."}

@@ -13,6 +13,11 @@ struct ConnectionDraft: Codable, Equatable {
 struct HostConnectionProfile: Codable, Equatable {
   var hostIdentity: String?
   var hostName: String?
+  /// Internal per-connection DB/runtime identity. Saved machine rows and
+  /// keychain tokens are keyed by `hostIdentity`/deviceId; `siteId` is retained
+  /// to migrate older runtime-keyed pairings and reconnect to the selected
+  /// project port.
+  var siteId: String?
   var port: Int
   var authKind: String
   var pairedDeviceId: String?
@@ -27,6 +32,7 @@ struct HostConnectionProfile: Codable, Equatable {
   init(
     hostIdentity: String? = nil,
     hostName: String? = nil,
+    siteId: String? = nil,
     port: Int,
     authKind: String,
     pairedDeviceId: String?,
@@ -40,6 +46,7 @@ struct HostConnectionProfile: Codable, Equatable {
   ) {
     self.hostIdentity = hostIdentity
     self.hostName = hostName
+    self.siteId = siteId
     self.port = port
     self.authKind = authKind
     self.pairedDeviceId = pairedDeviceId
@@ -137,14 +144,25 @@ struct DiscoveredSyncHost: Codable, Equatable, Identifiable {
   var serviceName: String
   var hostName: String
   var hostIdentity: String?
+  /// Internal per-connection DB/runtime identity advertised in Bonjour TXT.
+  /// The primary user-facing identity is `hostIdentity`/deviceId, so multiple
+  /// project ports from one machine collapse into one machine row.
+  var siteId: String? = nil
   var port: Int
   var addresses: [String]
   var tailscaleAddress: String?
+  /// Optional brain label advertised in Bonjour TXT (`runtimeName`).
+  var runtimeName: String? = nil
   var runtimeKind: String? = nil
   var runtimeVersion: String? = nil
   var projectIds: [String] = []
   var projectNames: [String] = []
   var projectCount: Int? = nil
+  /// Whether the machine advertises that a pairing PIN is already configured.
+  /// Sourced from the Bonjour TXT key `pairingPinConfigured`. `nil` means the
+  /// machine did not advertise the key (older host) — fall back to the reactive
+  /// `pin_not_set` pairing error in that case.
+  var pairingPinConfigured: Bool? = nil
   var lastResolvedAt: String
 }
 

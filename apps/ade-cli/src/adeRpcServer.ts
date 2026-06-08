@@ -5399,6 +5399,19 @@ export function createAdeRpcRequestHandler(args: {
       if (method === "sync.clearPin") {
         return await syncService.clearPin();
       }
+      if (method === "sync.getRuntimeName") {
+        return { runtimeName: syncService.getRuntimeName() };
+      }
+      if (method === "sync.setRuntimeName") {
+        if (typeof params.name !== "string") {
+          throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "name must be a string");
+        }
+        const name = params.name;
+        return await syncService.setRuntimeName(name);
+      }
+      if (method === "sync.clearRuntimeName") {
+        return await syncService.clearRuntimeName();
+      }
       if (method === "sync.setActiveLanePresence") {
         const laneIds = Array.isArray(params.laneIds)
           ? params.laneIds.filter((laneId): laneId is string => typeof laneId === "string")

@@ -1,7 +1,7 @@
 # Conflict detection
 
 The conflict prediction engine runs inside the **active ADE runtime**
-(local daemon or SSH-attached remote runtime) using the implementation
+(local machine runtime or SSH-attached remote runtime) using the implementation
 in `apps/desktop/src/main/services/conflicts/conflictService.ts` (the
 desktop fallback target also points at the same source). It runs
 `git merge-tree` on the host that owns the worktrees to predict

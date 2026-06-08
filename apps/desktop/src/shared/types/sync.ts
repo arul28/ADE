@@ -57,6 +57,7 @@ export type SyncPeerConnectionState = SyncPeerMetadata & {
   syncLag: number;
   // Legacy internal/wire flag. User-facing copy should say "host".
   isBrain: boolean;
+  isHost?: boolean;
   isAuthenticated: boolean;
 };
 
@@ -66,6 +67,10 @@ export type SyncConnectionState = "disconnected" | "connecting" | "connected" | 
 export type SyncRole = "brain" | "viewer";
 
 export type SyncMode = "standalone" | "brain" | "viewer";
+
+export type SyncRuntimeRole = "host" | "viewer";
+
+export type SyncRuntimeMode = "standalone" | "host" | "viewer";
 
 export type SyncDeviceRecord = {
   deviceId: string;
@@ -88,6 +93,8 @@ export type SyncClusterState = {
   // Legacy storage field name for the current host machine.
   brainDeviceId: string;
   brainEpoch: number;
+  hostDeviceId?: string;
+  hostEpoch?: number;
   updatedAt: string;
   updatedByDeviceId: string;
 };
@@ -112,6 +119,7 @@ export type SyncClientStatus = {
   lastRemoteDbVersion: number;
   // Legacy internal naming. This points to the current host device.
   brainDeviceId: string | null;
+  hostDeviceId?: string | null;
   // User-facing display field for the current host name.
   hostName: string | null;
   error: string | null;
@@ -151,6 +159,7 @@ export type SyncDeviceRuntimeState = SyncDeviceRecord & {
   isLocal: boolean;
   // Legacy internal/wire flag. User-facing copy should say "host".
   isBrain: boolean;
+  isHost?: boolean;
   connectionState: "self" | "connected" | "disconnected";
   connectedAt: string | null;
   lastAppliedAt: string | null;
@@ -181,13 +190,19 @@ export type SyncTailnetDiscoveryStatus = {
 export type SyncRoleSnapshot = {
   mode: SyncMode;
   role: SyncRole;
+  runtimeMode?: SyncRuntimeMode;
+  runtimeRole?: SyncRuntimeRole;
   localDevice: SyncDeviceRecord;
   // Legacy internal naming for the current host device.
   currentBrain: SyncDeviceRecord | null;
+  currentRuntime?: SyncDeviceRecord | null;
   clusterState: SyncClusterState | null;
   bootstrapToken: string | null;
   pairingPin: string | null;
   pairingPinConfigured: boolean;
+  /// Optional human name for THIS runtime (one per socket/`siteId`), set so two
+  /// runtimes on the same machine are distinguishable. Null when unset.
+  runtimeName: string | null;
   pairingConnectInfo: SyncPairingConnectInfo | null;
   connectedPeers: SyncPeerConnectionState[];
   tailnetDiscovery: SyncTailnetDiscoveryStatus;
@@ -470,7 +485,10 @@ export type SyncChatUnsubscribePayload = {
 export type SyncChatEventPayload = AgentChatEventEnvelope;
 
 export type SyncBrainStatusPayload = {
+  // Legacy wire field. New consumers can read host/runtime instead.
   brain: SyncPeerMetadata;
+  host?: SyncPeerMetadata;
+  runtime?: SyncPeerMetadata;
   connectedPeers: SyncPeerConnectionState[];
   metrics: {
     connectedPeerCount: number;
@@ -688,6 +706,8 @@ export type SyncRemoteCommandAction =
   | "prs.createFromLane"
   | "prs.createQueue"
   | "prs.linkToLane"
+  | "prs.preflightCreateLaneFromPrBranch"
+  | "prs.createLaneFromPrBranch"
   | "prs.draftDescription"
   | "prs.land"
   | "prs.close"

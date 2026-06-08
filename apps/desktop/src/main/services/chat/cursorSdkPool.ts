@@ -3,6 +3,7 @@ import { randomUUID, createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import type { Logger } from "../logging/logger";
 import type {
   CursorSdkCloudArtifactDescriptor,
@@ -83,6 +84,10 @@ const pools = new Map<string, {
 }>();
 const pendingInits = new Map<string, Promise<CursorSdkPooled>>();
 const STALE_INIT_RETRY_LIMIT = 2;
+const moduleDir =
+  typeof __dirname === "string"
+    ? __dirname
+    : path.dirname(fileURLToPath(import.meta.url));
 
 function hashKey(value: string): string {
   return createHash("sha256").update(value).digest("hex").slice(0, 16);
@@ -90,7 +95,7 @@ function hashKey(value: string): string {
 
 function resolveWorkerPath(): string {
   const candidates = [
-    path.join(__dirname, "cursorSdkWorker.cjs"),
+    path.join(moduleDir, "cursorSdkWorker.cjs"),
     path.join(process.cwd(), "dist", "main", "cursorSdkWorker.cjs"),
   ];
   for (const candidate of candidates) {

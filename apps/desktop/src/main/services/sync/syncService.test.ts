@@ -523,7 +523,6 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
       computerUseArtifactBrokerService: {} as any,
       agentChatService: { listSessions: async () => [] } as any,
       processService: { listRuntime: () => [] } as any,
-      forceHostRole: true,
       hostStartupEnabled: true,
     });
 
@@ -853,34 +852,44 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
     expect(service.getHostService()?.getPort()).toBe(8788);
   }, 30_000);
 
-  describe("forceHostRole", () => {
-    it("ignores a persisted viewer-style saved draft and reports role 'brain'", async () => {
-      const projectRoot = makeProjectRoot("ade-sync-service-force-draft-");
-      const appPairingDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-sync-service-force-draft-app-"));
-      // Pre-seed a saved draft + bootstrap token on disk so readSavedDraft would
-      // return a non-null draft pointing at a remote brain in the absence of forceHostRole.
-      fs.writeFileSync(path.join(appPairingDir, "sync-bootstrap-token"), "force-draft-token\n", "utf8");
-      fs.writeFileSync(
-        path.join(appPairingDir, "sync-peer-draft.json"),
-        JSON.stringify({
-          host: "10.0.0.9",
-          port: 8787,
-          authKind: "paired",
-          pairedDeviceId: "remote-brain",
-          lastRemoteDbVersion: 0,
-        }),
-        "utf8",
-      );
+  describe("cooperative brain election", () => {
+    it("leaves a fresh remote brain cluster row untouched", async () => {
+      const projectRoot = makeProjectRoot("ade-sync-service-fresh-remote-cluster-");
       const db = await openKvDb(
         path.join(projectRoot, ".ade", "ade.db"),
         createLogger() as any,
+      );
+      const now = new Date().toISOString();
+      db.run(
+        `insert into devices(
+          device_id, site_id, name, platform, device_type, created_at, updated_at, last_seen_at, last_host, last_port, tailscale_ip, ip_addresses_json, metadata_json
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          "remote-brain",
+          "remote-site",
+          "Remote host",
+          "macOS",
+          "desktop",
+          now,
+          now,
+          now,
+          "10.0.0.9",
+          8787,
+          null,
+          JSON.stringify(["10.0.0.9"]),
+          JSON.stringify({}),
+        ],
+      );
+      db.run(
+        `insert into sync_cluster_state(cluster_id, brain_device_id, brain_epoch, updated_at, updated_by_device_id)
+         values (?, ?, ?, ?, ?)`,
+        ["default", "remote-brain", 5, now, "remote-brain"],
       );
 
       const service = createSyncService({
         db,
         logger: createLogger() as any,
         projectRoot,
-        phonePairingStateDir: appPairingDir,
         fileService: { dispose: () => {} } as any,
         laneService: { list: async () => [] } as any,
         prService: {} as any,
@@ -889,8 +898,6 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
         computerUseArtifactBrokerService: {} as any,
         agentChatService: { listSessions: async () => [] } as any,
         processService: { listRuntime: () => [] } as any,
-        hostStartupEnabled: true,
-        forceHostRole: true,
       } as any);
 
       activeDisposers.push(async () => {
@@ -900,17 +907,20 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
 
       await service.initialize();
       const status = await service.getStatus();
-      expect(status.role).toBe("brain");
-      expect(status.clusterState?.brainDeviceId).toBe(status.localDevice.deviceId);
+      expect(status.role).toBe("viewer");
+      expect(status.clusterState?.brainDeviceId).toBe("remote-brain");
+      expect(status.clusterState?.brainEpoch).toBe(5);
+      expect(createSyncHostServiceMock).not.toHaveBeenCalled();
     }, 30_000);
 
-    it("reassigns the cluster brainDeviceId to the local device on init", async () => {
-      const projectRoot = makeProjectRoot("ade-sync-service-force-cluster-");
+    it("reassigns a stale remote brain cluster row to the local device", async () => {
+      const projectRoot = makeProjectRoot("ade-sync-service-stale-remote-cluster-");
       const db = await openKvDb(
         path.join(projectRoot, ".ade", "ade.db"),
         createLogger() as any,
       );
-      // Seed a remote-brain cluster row so refreshRoleState must override it.
+      // Seed an old remote-brain cluster row so refreshRoleState repairs the
+      // singleton brain instead of leaving the machine viewer-only forever.
       const now = "2026-04-01T00:00:00.000Z";
       db.run(
         `insert into devices(
@@ -950,7 +960,6 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
         computerUseArtifactBrokerService: {} as any,
         agentChatService: { listSessions: async () => [] } as any,
         processService: { listRuntime: () => [] } as any,
-        forceHostRole: true,
       } as any);
 
       activeDisposers.push(async () => {

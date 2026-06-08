@@ -10,6 +10,7 @@ struct ConnectionSettingsView: View {
   @StateObject private var presentationModel = SettingsConnectionPresentationModel()
   @State private var presentedSheet: SettingsPairSheetRoute?
   @State private var pinPreset: PinPreset?
+  @State private var pinSetupRoute: PinSetupRoute?
 
   private var colorSchemeChoice: ADEColorSchemeChoice {
     ADEColorSchemeChoice(rawValue: colorSchemeRaw) ?? .system
@@ -83,8 +84,25 @@ struct ConnectionSettingsView: View {
         presentedPairingSheet(route)
       }
       .sheet(item: $pinPreset) { preset in
-        SettingsPinSheet(preset: preset, syncService: syncService)
-          .presentationDetents([.large])
+        SettingsPinSheet(
+          preset: preset,
+          syncService: syncService,
+          onNeedsPinSetup: { route in
+            pinPreset = nil
+            pinSetupRoute = route
+          }
+        )
+        .presentationDetents([.large])
+      }
+      .sheet(item: $pinSetupRoute) { route in
+        SettingsPinSetupSheet(
+          route: route,
+          onTryAgain: { preset in
+            pinSetupRoute = nil
+            pinPreset = preset
+          }
+        )
+        .presentationDetents([.large])
       }
       .preferredColorScheme(colorSchemeChoice.preferredColorScheme)
       .onAppear {

@@ -7,7 +7,7 @@ system encodes that as a hard invariant: `laneId` is required on
 spawn cwd, and provider continuation will not cross lanes.
 
 The lane gate runs inside the **active ADE runtime** for the window's
-project binding (local daemon for local-bound windows, SSH-attached
+project binding (local machine runtime for local-bound windows, SSH-attached
 remote runtime for remote-bound windows). For remote-bound windows
 the lane gate executes on the remote host — `resolveLaneLaunchContext`
 calls `fs.realpathSync` against the remote filesystem and refuses to

@@ -13,8 +13,11 @@ const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const appDir = path.resolve(scriptDir, "..");
 const releaseDir = path.join(appDir, "release");
 const DEFAULT_MAX_APP_ASAR_BYTES = 900 * 1024 * 1024;
-const DEFAULT_MAX_UNPACKED_BYTES = 600 * 1024 * 1024;
+// Universal macOS builds intentionally carry dual-arch agent runtimes
+// (Codex/OpenCode/Claude SDK) in the unpacked payload.
+const DEFAULT_MAX_UNPACKED_BYTES = 1280 * 1024 * 1024;
 const REMOTE_RUNTIME_TARGETS = ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64"];
+const allowHostOnlyRuntimeResources = process.env.ADE_RUNTIME_RESOURCES_ALLOW_HOST_ONLY === "1";
 const bundledAgentSkills = [
   "ade-cli-control-plane",
   "ade-ios-simulator",
@@ -40,6 +43,12 @@ function readFlag(name) {
 
 function hasFlag(name) {
   return process.argv.slice(2).includes(name);
+}
+
+function currentTarget() {
+  const platform = process.platform === "darwin" ? "darwin" : process.platform === "linux" ? "linux" : process.platform;
+  const arch = process.arch === "x64" ? "x64" : process.arch === "arm64" ? "arm64" : process.arch;
+  return `${platform}-${arch}`;
 }
 
 function resolveAbsolute(input) {
@@ -176,8 +185,9 @@ async function assertExecutable(targetPath, description) {
 
 async function assertRemoteRuntimeBundle(resourcesPath, description) {
   const runtimeRoot = path.join(resourcesPath, "runtime");
+  const expectedTargets = allowHostOnlyRuntimeResources ? [currentTarget()] : REMOTE_RUNTIME_TARGETS;
   await assertPathExists(runtimeRoot, `remote runtime bundle directory for ${description}`);
-  for (const target of REMOTE_RUNTIME_TARGETS) {
+  for (const target of expectedTargets) {
     const binaryPath = path.join(runtimeRoot, `ade-${target}`);
     const nativeArchivePath = path.join(runtimeRoot, `ade-${target}.native.tar.gz`);
     await assertPathExists(binaryPath, `remote runtime binary ${target} for ${description}`);
@@ -187,6 +197,12 @@ async function assertRemoteRuntimeBundle(resourcesPath, description) {
     if (!stdout.split(/\r?\n/).some((entry) => entry.startsWith("./node_modules/"))) {
       throw new Error(`[release:mac] Remote runtime native archive for ${target} does not contain ./node_modules/: ${nativeArchivePath}`);
     }
+  }
+  if (allowHostOnlyRuntimeResources) {
+    console.warn(
+      `[release:mac] Host-only local package mode is enabled; validated remote runtime artifacts for ${currentTarget()} only. ` +
+        "Release builds still require the full runtime artifact set."
+    );
   }
   const runtimeEntries = await fs.readdir(runtimeRoot, { withFileTypes: true });
   const stagingDirectories = runtimeEntries
@@ -209,6 +225,31 @@ async function assertBundledOpenCodeRuntime(nodeModulesPath, description) {
     await assertPathExists(binaryPath, `bundled OpenCode runtime binary for ${description}`);
     await assertExecutable(binaryPath, `bundled OpenCode runtime binary for ${description}`);
   }
+}
+
+function assertAppAsarContains(appAsarPath, relativePaths, description) {
+  const entries = new Set(asar.listPackage(appAsarPath));
+  const missing = relativePaths.filter((relativePath) => !entries.has(`/${relativePath}`));
+  if (missing.length > 0) {
+    throw new Error(
+      `[release:mac] Missing startup runtime module(s) in app.asar for ${description}: ${missing.join(", ")}`
+    );
+  }
+}
+
+function assertPackagedStartupModules(appAsarPath, description) {
+  assertAppAsarContains(appAsarPath, [
+    "node_modules/electron-updater/out/main.js",
+    "node_modules/fs-extra/lib/fs/index.js",
+    "node_modules/graceful-fs/graceful-fs.js",
+    "node_modules/jsonfile/index.js",
+    "node_modules/universalify/index.js",
+  ], description);
+}
+
+function pathReferencesPackedAsar(targetPath) {
+  const normalized = targetPath.split(path.sep).join("/");
+  return normalized.split("/").some((segment) => segment.endsWith(".asar") && !segment.endsWith(".asar.unpacked"));
 }
 
 async function findFirstNodeAddon(rootPath) {
@@ -375,6 +416,7 @@ async function validatePackagedRuntime(appPath, description) {
   await assertPathExists(executablePath, "packaged app executable");
   await assertPathExists(appAsarPath, "app.asar payload");
   await assertPathExists(unpackedPath, "unpacked runtime payload");
+  assertPackagedStartupModules(appAsarPath, description);
   await assertPathExists(adeCliPath, "bundled ADE CLI entry");
   await assertPathExists(adeCliBootstrapPath, "bundled ADE CLI bootstrap entry");
   await assertPathExists(adeCliPtyHostWorkerPath, "bundled ADE CLI PTY host worker");
@@ -429,9 +471,14 @@ async function validatePackagedRuntime(appPath, description) {
   if (typeof payload?.claudeExecutablePath !== "string" || payload.claudeExecutablePath.trim().length === 0) {
     throw new Error("[release:mac] Packaged smoke did not report a Claude executable path");
   }
-  if (payload.claudeExecutablePath.includes("app.asar")) {
+  if (payload?.claudeExecutableSource !== "bundled") {
     throw new Error(
-      `[release:mac] Packaged smoke resolved Claude to an asar-backed path instead of the system CLI: ${payload.claudeExecutablePath}`
+      `[release:mac] Packaged smoke expected bundled Claude, got ${String(payload?.claudeExecutableSource)} at ${payload.claudeExecutablePath}`
+    );
+  }
+  if (pathReferencesPackedAsar(payload.claudeExecutablePath)) {
+    throw new Error(
+      `[release:mac] Packaged smoke resolved Claude to a packed app.asar path instead of app.asar.unpacked: ${payload.claudeExecutablePath}`
     );
   }
   if (!payload?.claudeStartup || typeof payload.claudeStartup !== "object") {

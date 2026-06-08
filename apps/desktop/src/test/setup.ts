@@ -79,6 +79,9 @@ const claudeConfigDir = path.join(os.tmpdir(), "ade-vitest-claude-config");
 fs.mkdirSync(path.join(claudeConfigDir, "debug"), { recursive: true });
 
 process.env.CLAUDE_CONFIG_DIR = claudeConfigDir;
+// Desktop sync-host unit tests use bootstrap-token clients and loopback port
+// blockers; keep that harness on the explicit local-only sync bind mode.
+process.env.ADE_SYNC_BIND_HOST = "127.0.0.1";
 
 // jsdom doesn't implement scrollTo on elements; stub it globally for tests.
 if (typeof Element !== "undefined" && !Element.prototype.scrollTo) {
@@ -104,6 +107,52 @@ if (typeof window !== "undefined" && typeof window.matchMedia !== "function") {
   });
 }
 
+function createMemoryStorage(): Storage {
+  const values = new Map<string, string>();
+  return {
+    get length() {
+      return values.size;
+    },
+    clear() {
+      values.clear();
+    },
+    getItem(key: string) {
+      return values.get(String(key)) ?? null;
+    },
+    key(index: number) {
+      return [...values.keys()][index] ?? null;
+    },
+    removeItem(key: string) {
+      values.delete(String(key));
+    },
+    setItem(key: string, value: string) {
+      values.set(String(key), String(value));
+    },
+  };
+}
+
+function ensureUsableLocalStorage(): void {
+  if (typeof window === "undefined") return;
+  try {
+    const storage = window.localStorage;
+    storage.setItem("__ade_vitest_local_storage_probe__", "1");
+    storage.removeItem("__ade_vitest_local_storage_probe__");
+    return;
+  } catch {
+    const storage = createMemoryStorage();
+    Object.defineProperty(window, "localStorage", {
+      configurable: true,
+      value: storage,
+    });
+    Object.defineProperty(globalThis, "localStorage", {
+      configurable: true,
+      value: storage,
+    });
+  }
+}
+
+ensureUsableLocalStorage();
+
 function ensureWritableWindowAde(): void {
   if (typeof window === "undefined") return;
   const descriptor = Object.getOwnPropertyDescriptor(window, "ade");
@@ -116,6 +165,14 @@ function ensureWritableWindowAde(): void {
 }
 
 beforeEach(() => {
+  ensureUsableLocalStorage();
+  if (typeof window !== "undefined") {
+    try {
+      window.localStorage.clear();
+    } catch {
+      // Storage may remain unavailable in a few non-jsdom unit tests.
+    }
+  }
   ensureWritableWindowAde();
 });
 

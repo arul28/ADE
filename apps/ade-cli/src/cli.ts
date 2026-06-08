@@ -166,6 +166,7 @@ type CliPlan =
   | { kind: "ade-code"; rest: string[] }
   | { kind: "desktop"; rest: string[] }
   | { kind: "runtime"; rest: string[] }
+  | { kind: "brain"; rest: string[] }
   | { kind: "serve"; rest: string[] }
   | { kind: "rpc-stdio"; rest: string[] }
   | { kind: "pty-host-worker" }
@@ -421,8 +422,8 @@ const ADE_BANNER = String.raw`
 const TOP_LEVEL_HELP = `${ADE_BANNER}
   Agent-focused command-line interface for ADE.
 
-  ADE CLI commands operate through the machine ADE runtime daemon by default.
-  If the daemon is not running, the CLI starts it, registers the selected
+  ADE CLI commands operate through the machine ADE runtime by default.
+  If the runtime is not running, the CLI starts it, registers the selected
   project, and routes project actions through that runtime.
 
     $ ade help <command...>                         Display help for a command
@@ -433,14 +434,14 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade link lane | session | branch | pr | linear-issue
                                                      Build a shareable deeplink (copies to clipboard)
     $ ade linear install                            Register ADE as Linear's "Open in coding tool" target
-    $ ade skill list | show <name>                  Browse ADE's bundled agent skills (no daemon)
-    $ ade runtime start | stop | status             Manage the machine runtime daemon
-    $ ade serve                                     Run the ADE runtime daemon in foreground
+    $ ade skill list | show <name>                  Browse ADE's bundled agent skills (local)
+    $ ade runtime start | stop | status             Manage the machine runtime
+    $ ade serve                                     Run the ADE runtime in foreground
     $ ade rpc --stdio                               Speak ADE JSON-RPC over stdin/stdout
     $ ade init [path]                               Register a project with this machine runtime
     $ ade projects list                             List projects registered on this machine
     $ ade sync status | pin generate                Manage machine sync and phone pairing
-    $ ade doctor                                    Inspect project, socket, runtime, and tool availability
+    $ ade doctor                                    Inspect project, runtime, and tool availability
     $ ade lanes list | show | create | child        Work with lanes and lane stacks
     $ ade git status | commit | push | stash        Run ADE-aware git operations
     $ ade operations status | wait                  Poll operation/test/chat/run status
@@ -475,8 +476,8 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
   Global options:
     --project-root <path>   ADE project root. Inside .ade/worktrees/<lane>, this resolves to the parent project.
     --workspace-root <path> Lane/worktree to treat as the active workspace.
-    --headless              Skip the runtime daemon and run an in-process ADE runtime.
-    --socket                Require a live ADE socket; fail instead of falling back to headless.
+    --headless              Skip the machine runtime service and run an in-process ADE runtime.
+    --socket                Require a live ADE endpoint; fail instead of falling back to headless.
     --json                  Print machine-readable JSON. This is the default output mode.
     --text                  Print a compact human-readable summary when a formatter exists.
     --timeout-ms <ms>       Per-request timeout. Long agent/PR workflows may need several minutes.
@@ -970,7 +971,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
   ADE Skills
 
   Browse ADE's bundled, version-locked agent skills directly from the bundled
-  resources. This is a local command that does NOT require the runtime daemon —
+  resources. This is a local command that does NOT require the machine runtime —
   it is the tamper-proof backstop for agents that can't natively discover
   ADE's skills.
 
@@ -986,32 +987,50 @@ const HELP_BY_COMMAND: Record<string, string> = {
   runtime: `${ADE_BANNER}
   ADE Runtime
 
-  Manage the normal machine ADE runtime daemon used by desktop, ade code, and
-  socket-backed CLI commands.
+  Manage the normal machine ADE runtime used by desktop, ade code, and
+  runtime-backed CLI commands.
 
     $ ade runtime status --text
     $ ade runtime start
     $ ade runtime stop
 
   Notes:
-    "start" launches the daemon in the background if it is missing.
-    "stop" shuts down the daemon on the selected socket.
+    "start" launches the runtime in the background if it is missing.
+    "stop" shuts down the runtime on the selected endpoint.
     Use "ade serve" when you want to run the runtime in the foreground.
 `,
-  serve: `${ADE_BANNER}
-  ADE Runtime Daemon
+  brain: `${ADE_BANNER}
+  ADE Runtime Legacy Alias
 
-  Runs the machine-scoped ADE runtime in the foreground. The daemon listens on
-  a local socket and can lazily serve any project registered with "ade init".
+  Legacy alias kept for existing scripts. Prefer "ade runtime" for lifecycle
+  commands and "ade sync pin" for phone pairing.
+
+    $ ade runtime status --text
+    $ ade runtime start
+    $ ade runtime stop
+    $ ade sync pin generate
+    $ ade sync pin set 123456
+    $ ade sync pin clear
+
+  Notes:
+    "start" enables and loads the login service.
+    "stop" disables and unloads the login service.
+    Pairing PIN commands are aliases for the machine sync PIN.
+`,
+  serve: `${ADE_BANNER}
+  ADE Runtime
+
+  Runs the machine-scoped ADE runtime in the foreground. The runtime listens on
+  the local endpoint and can lazily serve any project registered with "ade init".
 
     $ ade serve
     $ ade serve --socket ~/.ade/sock/ade.sock
     $ ade serve --port 8787
 
   Flags:
-    --socket <path>         Unix socket or Windows named pipe to listen on.
+    --socket <path>         Local endpoint to listen on.
     --port <n>              Also listen for local TCP JSON-RPC on 127.0.0.1:n.
-    --no-sync               Disable machine sync discovery for this daemon run.
+    --no-sync               Disable machine sync discovery for this runtime run.
     --install-service       Register the per-user login service and exit.
     --uninstall-service     Remove the per-user login service and exit.
     --service-status        Print per-user login service status and exit.
@@ -1019,8 +1038,8 @@ const HELP_BY_COMMAND: Record<string, string> = {
   rpc: `${ADE_BANNER}
   ADE JSON-RPC
 
-  Attaches to the machine runtime daemon and speaks ADE JSON-RPC over stdio.
-  If the daemon is not running, ADE starts it before accepting requests. This
+  Attaches to the machine ADE runtime and speaks ADE JSON-RPC over stdio.
+  If the runtime is not running, ADE starts it before accepting requests. This
   mode is used by SSH transports.
 
     $ ade rpc --stdio
@@ -1037,7 +1056,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
   projects: `${ADE_BANNER}
   ADE projects
 
-  Manage the machine-scoped ADE project registry used by the runtime daemon.
+  Manage the machine-scoped ADE project registry used by the ADE runtime.
 
     $ ade projects list --text
     $ ade projects add /path/to/project
@@ -1054,8 +1073,8 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade code                                      Start the TUI for the current project
     $ ade code --print-state                       Smoke-test attach/embed state
     $ ade code --embedded                          Force the embedded runtime fallback
-    $ ade code --require-socket                    Fail instead of starting an embedded runtime when no socket exists
-    $ ade code --socket /tmp/ade.sock              Attach to a specific runtime socket
+    $ ade code --require-socket                    Fail instead of starting an embedded runtime when no runtime endpoint exists
+    $ ade code --socket /tmp/ade.sock              Attach to a specific local endpoint
     $ ade code --lane <id|name|branch>             Launch focused on a specific lane
     $ ade --project-root <path> code                Launch against a specific ADE project
 
@@ -1209,7 +1228,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
   Run tab
 
   Run tab commands mirror ADE process definitions and runtime state. They use
-  the machine runtime daemon when live process state is needed.
+  the machine ADE runtime when live process state is needed.
 
     $ ade run defs --text                           List configured run commands
     $ ade run ps --lane <lane> --text               List process runtime state
@@ -1266,7 +1285,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
   Work chats
 
   Chat commands use ADE agent chat sessions. Live provider-backed chat normally
-  requires an attached runtime because the daemon owns provider/session state.
+  requires an attached runtime because it owns provider/session state.
 
     $ ade chat list --lane <lane> --text            List chat sessions
     $ ade chat list --include-automation --no-archived --text
@@ -1297,7 +1316,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
   Prefer screenshots/images, screen recordings, and browser captures/traces.
   Console logs are supporting diagnostics, not a replacement for visual proof.
   Local screenshot/video fallback is macOS-only and runs headless by default
-  unless --socket is explicitly requested. Runtime socket mode has the best
+  unless --socket is explicitly requested. Attached runtime mode has the best
   parity for shared proof state.
 
     $ ade proof status --text                       Show proof backend capabilities
@@ -1313,7 +1332,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
 
   iOS simulator commands build, launch, mirror, inspect, and control the ADE
   drawer simulator. Aliases: \`ade ios\` and \`ade simulator\` route to the same
-  surface. For drawer/shared session state, prefer runtime socket mode
+  surface. For drawer/shared session state, prefer attached runtime mode
   (--socket) so launch/select/tap operate on the same long-lived ADE service.
   Launch opens Simulator by default and ADE shows it in the drawer. Optional
   simulator control tools enable tap, drag, type, and inspect actions.
@@ -1481,7 +1500,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
   ADE browser
 
   Browser commands control ADE's project-scoped built-in browser pane. Use
-  desktop socket mode so CLI calls, chat link clicks, terminal localhost links,
+  desktop bridge mode so CLI calls, chat link clicks, terminal localhost links,
   and the Work sidebar share the browser for the active project only. Browser
   tabs, cookies, and storage are isolated between separate projects.
   The browser is project-scoped, not lane-scoped. Ownership is per tab/session:
@@ -1632,7 +1651,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
   Linear workflows
 
   Daemon bridge (for an agent running inside a tracked ADE CLI session):
-  these commands route over the ADE daemon to the desktop runtime, which holds
+  these commands route over the ADE runtime to the desktop runtime, which holds
   the Linear credentials — the CLI never needs a Linear token. When ADE launches
   an agent with an attached issue it injects \$ADE_CHAT_SESSION_ID and
   \$ADE_LINEAR_ISSUE_IDS, so the agent can read and write its issue with no ids.
@@ -9665,7 +9684,7 @@ function buildLinearPlan(args: string[]): CliPlan {
   // --- Daemon-bridge commands for a CLI-session agent ---
   // These let an agent running inside a tracked ADE CLI session read and write
   // its attached Linear issue without holding Linear credentials: every call is
-  // routed over the daemon to the desktop runtime, which owns the creds. The
+  // routed over the ADE runtime to the desktop runtime, which owns the creds. The
   // issue id defaults to the session's first attached issue ($ADE_LINEAR_ISSUE_IDS)
   // so an agent can run `ade linear comment "done"` with no id.
   if (
@@ -10331,6 +10350,7 @@ const VALUE_CARRIER_FLAGS: ReadonlySet<string> = new Set([
   "--stack-base-branch",
   "--stack-id",
   "--scheme",
+  "--socket",
   "--start-point",
   "--start-x",
   "--start-y",
@@ -10496,7 +10516,7 @@ function buildCliPlan(command: string[]): CliPlan {
     return { kind: "deeplink", rest: [primary, ...args] };
   }
   if (primary === "skill" || primary === "skills") {
-    // Local (non-RPC) bundled-agent-skill browser; no daemon required.
+    // Local (non-RPC) bundled-agent-skill browser; no runtime required.
     return { kind: "skill", rest: args };
   }
   if (primary === "linear") {
@@ -10512,6 +10532,13 @@ function buildCliPlan(command: string[]): CliPlan {
   }
   if (primary === "runtime") {
     return { kind: "runtime", rest: args };
+  }
+  if (primary === "brain") {
+    const sub = firstStandalonePositional([...args]) ?? "status";
+    if (sub === "pin") {
+      return buildSyncPlan(args);
+    }
+    return { kind: "brain", rest: args };
   }
   if (primary === "serve") {
     return { kind: "serve", rest: args };
@@ -11173,12 +11200,12 @@ function buildReadinessSnapshot(args: {
       socketMode: connection.mode,
       message:
         connection.mode === "runtime-socket"
-          ? "Connected to ADE runtime daemon socket."
+          ? "Connected to ADE runtime endpoint."
           : desktopSocketAvailable
             ? "Connected to legacy ADE desktop socket."
             : socketExists
               ? "Socket path exists but CLI is running in headless mode; the socket may be stale or unavailable."
-              : "No live ADE socket was detected.",
+              : "No live ADE runtime endpoint was detected.",
     },
     actions: {
       rpcActionCount: rpcActions.length,
@@ -11310,14 +11337,14 @@ class SocketJsonRpcClient {
       this.rejectAll(error instanceof Error ? error : new Error(String(error))),
     );
     socket.on("close", () =>
-      this.failConnection(new Error("ADE socket closed.")),
+      this.failConnection(new Error("ADE runtime endpoint closed.")),
     );
   }
 
   static async connect(
     socketPath: string,
     timeoutMs: number,
-    label = "ADE socket",
+    label = "ADE endpoint",
   ): Promise<SocketJsonRpcClient> {
     const socket = await connectSocket(socketPath, timeoutMs, label);
     return new SocketJsonRpcClient(socket, timeoutMs);
@@ -11420,7 +11447,7 @@ class SocketJsonRpcClient {
     } catch (error) {
       this.rejectAll(
         new Error(
-          `Failed to parse ADE socket response: ${error instanceof Error ? error.message : String(error)}`,
+          `Failed to parse ADE endpoint response: ${error instanceof Error ? error.message : String(error)}`,
         ),
       );
       return;
@@ -11856,6 +11883,9 @@ Usage:
   ade sync pin generate
   ade sync pin set <6-digit-pin>
   ade sync pin clear
+  ade sync name <name>              Name this runtime for easy identification
+  ade sync name get
+  ade sync name clear
 `,
     };
   }
@@ -11928,6 +11958,35 @@ Usage:
       };
     }
     throw new CliUsageError(`Unsupported sync pin action: ${action}`);
+  }
+  if (sub === "name") {
+    // `ade sync name <name>` names THIS runtime for easy identification (so two
+    // runtimes on one machine are distinguishable on the phone). `get`/`clear`
+    // read/remove it; a bare value (or `set <name>`) sets it.
+    const action = firstPositional(args) ?? "get";
+    if (action === "get" || action === "show") {
+      return {
+        kind: "execute",
+        label: "sync name get",
+        steps: [{ key: "result", method: "sync.getRuntimeName" }],
+      };
+    }
+    if (action === "clear" || action === "remove") {
+      return {
+        kind: "execute",
+        label: "sync name clear",
+        steps: [{ key: "result", method: "sync.clearRuntimeName" }],
+      };
+    }
+    const name =
+      action === "set"
+        ? requireValue(readValue(args, ["--name"]) ?? firstPositional(args), "name")
+        : action;
+    return {
+      kind: "execute",
+      label: "sync name set",
+      steps: [{ key: "result", method: "sync.setRuntimeName", params: { name } }],
+    };
   }
   throw new CliUsageError(`Unsupported sync command: ${sub}`);
 }
@@ -12086,7 +12145,7 @@ async function createConnection(
   }
 
   if (options.requireSocket) {
-    throw new Error(`ADE socket is not available at ${legacySocketPath}.`);
+    throw new Error(`ADE endpoint is not available at ${legacySocketPath}.`);
   }
 
   const previousRole = process.env.ADE_DEFAULT_ROLE;
@@ -12408,13 +12467,17 @@ async function shutdownMachineRuntimeDaemon(
   try {
     await client.request("shutdown");
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (!message.includes("socket closed")) throw error;
+    if (!isRuntimeShutdownCloseError(error)) throw error;
   } finally {
     try {
       client.close();
     } catch {}
   }
+}
+
+function isRuntimeShutdownCloseError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes("socket closed") || message.includes("runtime endpoint closed");
 }
 
 async function spawnMachineRuntimeDaemon(
@@ -12464,7 +12527,7 @@ async function connectMachineRuntimeDaemon(
   connectOptions: { allowSpawn?: boolean } = {},
 ): Promise<SocketJsonRpcClient> {
   const socketPath = await resolveMachineRuntimeSocketPath(socketPathOverride);
-  const label = "ADE runtime daemon socket";
+  const label = "ADE runtime endpoint";
   const allowSpawn = connectOptions.allowSpawn ?? !options.requireSocket;
   const isTcpSocket = socketPath.startsWith("tcp://");
   const enforceBuildCompatibility =
@@ -12492,14 +12555,14 @@ async function connectMachineRuntimeDaemon(
       if (!allowSpawn || isTcpSocket) {
         client.close();
         throw new Error(
-          `ADE runtime daemon ${mismatch}.`,
+          `ADE runtime ${mismatch}.`,
         );
       }
       await shutdownMachineRuntimeDaemon(client);
       const spawned = await spawnMachineRuntimeDaemon(socketPath, options);
       if (!spawned) {
         throw new Error(
-          `ADE runtime daemon ${mismatch}.`,
+          `ADE runtime ${mismatch}.`,
         );
       }
       const restarted = await SocketJsonRpcClient.connect(
@@ -12520,7 +12583,7 @@ async function connectMachineRuntimeDaemon(
       if (restartedMismatch) {
         await shutdownMachineRuntimeDaemon(restarted);
         throw new Error(
-          `ADE runtime daemon ${restartedMismatch}.`,
+          `ADE runtime ${restartedMismatch}.`,
         );
       }
       return restarted;
@@ -12549,7 +12612,7 @@ async function connectMachineRuntimeDaemon(
       if (mismatch) {
         await shutdownMachineRuntimeDaemon(client);
         throw new Error(
-          `ADE runtime daemon ${mismatch}.`,
+          `ADE runtime ${mismatch}.`,
         );
       }
       return client;
@@ -12561,7 +12624,7 @@ async function connectMachineRuntimeDaemon(
           ? secondError.message
           : String(secondError);
       throw new Error(
-        `Unable to attach to ADE runtime daemon at ${socketPath}: ${secondMessage} (initial attempt: ${firstMessage})`,
+        `Unable to attach to ADE runtime at ${socketPath}: ${secondMessage} (initial attempt: ${firstMessage})`,
       );
     }
   }
@@ -12572,7 +12635,7 @@ async function runRuntimeCommand(
   options: GlobalOptions,
 ): Promise<unknown> {
   const args = [...rest];
-  const sub = firstPositional(args) ?? "status";
+  const sub = firstStandalonePositional(args) ?? "status";
   const socketOverride = readValue(args, ["--socket"]);
   const socketPath = await resolveMachineRuntimeSocketPath(socketOverride);
 
@@ -12581,7 +12644,7 @@ async function runRuntimeCommand(
       const client = await SocketJsonRpcClient.connect(
         socketPath,
         Math.min(options.timeoutMs, 3_000),
-        "ADE runtime daemon socket",
+        "ADE runtime endpoint",
       );
       try {
         const runtimeInfo = await initializeMachineRuntimeDaemon(
@@ -12598,7 +12661,7 @@ async function runRuntimeCommand(
           packageChannel: runtimeInfo.packageChannel,
           projectRoot: runtimeInfo.projectRoot,
           pid: runtimeInfo.pid,
-          message: "ADE runtime daemon is running.",
+          message: "ADE runtime is running.",
         };
       } finally {
         client.close();
@@ -12632,7 +12695,7 @@ async function runRuntimeCommand(
         packageChannel: runtimeInfo?.packageChannel ?? null,
         projectRoot: runtimeInfo?.projectRoot ?? null,
         pid: runtimeInfo?.pid ?? null,
-        message: "ADE runtime daemon is running.",
+        message: "ADE runtime is running.",
       };
     } finally {
       client.close();
@@ -12644,7 +12707,7 @@ async function runRuntimeCommand(
       const client = await SocketJsonRpcClient.connect(
         socketPath,
         Math.min(options.timeoutMs, 3_000),
-        "ADE runtime daemon socket",
+        "ADE runtime endpoint",
       );
       try {
         await initializeMachineRuntimeDaemon(client, options).catch(() => null);
@@ -12656,7 +12719,7 @@ async function runRuntimeCommand(
         ok: true,
         running: false,
         socketPath,
-        message: "ADE runtime daemon stopped.",
+        message: "ADE runtime stopped.",
       };
     } catch (error) {
       return {
@@ -12683,6 +12746,91 @@ async function runRuntimeCommand(
 
   throw new CliUsageError(
     "runtime supports status, start, stop, install-service, uninstall-service, or service-status.",
+  );
+}
+
+async function readBrainSyncStatus(
+  options: GlobalOptions,
+  socketOverride: string | null,
+): Promise<unknown | null> {
+  let client: SocketJsonRpcClient | null = null;
+  try {
+    client = await connectMachineRuntimeDaemon(options, socketOverride, {
+      allowSpawn: false,
+    });
+    return await client.request("sync.getStatus", {
+      includeTransferReadiness: false,
+    });
+  } catch {
+    return null;
+  } finally {
+    try {
+      client?.close();
+    } catch {}
+  }
+}
+
+async function runBrainCommand(
+  rest: string[],
+  options: GlobalOptions,
+): Promise<unknown> {
+  const args = [...rest];
+  const sub = firstPositional(args) ?? "status";
+  const socketOverride = readValue(args, ["--socket"]);
+
+  if (sub === "status" || sub === "show") {
+    const [{ getRuntimeServiceStatus }] = await Promise.all([
+      import("./serviceManager"),
+    ]);
+    const service = getRuntimeServiceStatus();
+    const runtime = await runRuntimeCommand(
+      ["status", ...(socketOverride ? ["--socket", socketOverride] : [])],
+      options,
+    );
+    const sync = isRecord(runtime) && runtime.running === true
+      ? await readBrainSyncStatus(options, socketOverride)
+      : null;
+    const pairing = isRecord(sync) ? sync.pairingConnectInfo : null;
+    return {
+      ok: service.ok && (!isRecord(runtime) || runtime.ok !== false),
+      service,
+      runtime,
+      sync,
+      port: isRecord(pairing) ? pairing.port ?? null : null,
+      connectedPeers: isRecord(sync) ? sync.connectedPeers ?? null : null,
+      message: isRecord(runtime) && typeof runtime.message === "string"
+        ? runtime.message
+        : service.message,
+    };
+  }
+
+  if (sub === "start") {
+    const { installRuntimeService } = await import("./serviceManager");
+    return installRuntimeService();
+  }
+
+  if (sub === "stop") {
+    const { uninstallRuntimeService } = await import("./serviceManager");
+    return uninstallRuntimeService();
+  }
+
+  if (sub === "restart") {
+    const { installRuntimeService, uninstallRuntimeService } = await import("./serviceManager");
+    const stopped = uninstallRuntimeService();
+    const started = installRuntimeService();
+    return {
+      ok: stopped.ok && started.ok,
+      action: "restart",
+      stopped,
+      started,
+      message: started.ok
+        ? "ADE runtime restarted."
+        : started.message,
+    };
+  }
+
+  throw new CliUsageError(
+    "Legacy runtime alias supports status, start, stop, restart, or pin. Prefer ade runtime.",
   );
 }
 
@@ -12748,15 +12896,14 @@ async function runNativeRpcStdio(options: GlobalOptions): Promise<void> {
         return null;
       }
       if (!client) {
-        throw new Error("ADE runtime daemon is not connected.");
+        throw new Error("ADE runtime is not connected.");
       }
       try {
         return await client.request(method, request.params);
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
         if (
           (method === "shutdown" || method === "exit") &&
-          message.includes("socket closed")
+          isRuntimeShutdownCloseError(error)
         ) {
           return {};
         }
@@ -12880,7 +13027,7 @@ async function runServe(
       enabled: syncEnabled,
       hostStartupEnabled: true,
       hostDiscoveryEnabled: true,
-      forceHostRole: true,
+      forceHostRole: false,
       runtimeKind: "headless",
       appVersion: VERSION,
       localDeviceIdPath: path.join(layout.secretsDir, "sync-device-id"),
@@ -14882,7 +15029,7 @@ function formatTextOutput(
           ["project", isRecord(value) ? value.projectRoot : null],
           ["workspace", isRecord(value) ? value.workspaceRoot : null],
           ["project initialized", project.projectInitialized],
-          ["runtime socket", desktop.socketAvailable],
+          ["runtime endpoint", desktop.socketAvailable],
           ["socket path", desktop.socketPath],
           ["rpc actions", actions.rpcActionCount],
           ["service actions", actions.actionCount],
@@ -15412,6 +15559,7 @@ async function runCli(
   if (
     plan.kind === "skill" ||
     plan.kind === "ade-code" ||
+    plan.kind === "brain" ||
     plan.kind === "runtime" ||
     plan.kind === "serve" ||
     (plan.kind === "execute" &&
@@ -15434,7 +15582,7 @@ async function runCli(
   console.warn = writeDiagnostic;
   try {
     if (plan.kind === "cursor-cloud") {
-      // Cursor Cloud talks to @cursor/sdk directly. No ADE socket / no headless
+      // Cursor Cloud talks to @cursor/sdk directly. No ADE runtime endpoint / no headless
       // RPC. The function handles its own --json/--text/--compact parsing on
       // the remaining tokens.
       try {
@@ -15498,6 +15646,13 @@ async function runCli(
     }
     if (plan.kind === "runtime") {
       const result = await runRuntimeCommand(plan.rest, parsed.options);
+      return {
+        output: formatOutput(result, parsed.options, undefined),
+        exitCode: isRecord(result) && result.ok === false ? 1 : 0,
+      };
+    }
+    if (plan.kind === "brain") {
+      const result = await runBrainCommand(plan.rest, parsed.options);
       return {
         output: formatOutput(result, parsed.options, undefined),
         exitCode: isRecord(result) && result.ok === false ? 1 : 0,

@@ -86,7 +86,7 @@ Related pages for the broader "home" experience:
   [../onboarding-and-settings/first-run.md](../onboarding-and-settings/first-run.md).
 
 Backing services. The canonical lifecycle services run inside the
-**active runtime** (local daemon or SSH-attached remote runtime); the
+**active runtime** (local machine runtime or SSH-attached remote runtime); the
 desktop main process keeps the same files as fallback targets for the
 in-process IPC path. The pre-binding scaffold services
 (`projectBrowserService`, `projectScaffoldService`,

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import * as nodePty from "node-pty";
 import { createFileLogger, type Logger } from "../../desktop/src/main/services/logging/logger";
 import { openKvDb, type AdeDb } from "../../desktop/src/main/services/state/kvDb";
@@ -277,16 +278,19 @@ function isSourceCheckoutRuntimeModule(modulePath: string): boolean {
   return /[/\\]apps[/\\]ade-cli[/\\](?:src|dist)[/\\]bootstrap\.(?:ts|js|cjs)$/i.test(modulePath);
 }
 
+const currentModulePath =
+  typeof __filename === "string" ? __filename : fileURLToPath(import.meta.url);
+
 function automationsEnabledForHeadlessRuntime(): boolean {
   const override = readAutomationsEnvOverride(process.env);
   if (override !== null) return override;
-  return isSourceCheckoutRuntimeModule(__filename);
+  return isSourceCheckoutRuntimeModule(currentModulePath);
 }
 
 function macosVmEnabledForHeadlessRuntime(): boolean {
   const override = readMacosVmEnvOverride(process.env);
   if (override !== null) return override;
-  return isSourceCheckoutRuntimeModule(__filename);
+  return isSourceCheckoutRuntimeModule(currentModulePath);
 }
 
 function resolveCurrentAdeCliEntry(): string | null {
@@ -1266,7 +1270,7 @@ export async function createAdeRuntime(args: {
       processService,
       hostStartupEnabled: resolvedArgs.syncRuntime.hostStartupEnabled ?? true,
       hostDiscoveryEnabled: resolvedArgs.syncRuntime.hostDiscoveryEnabled ?? true,
-      forceHostRole: resolvedArgs.syncRuntime.forceHostRole ?? true,
+      forceHostRole: resolvedArgs.syncRuntime.forceHostRole ?? false,
       projectCatalogProvider: resolvedArgs.syncRuntime.projectCatalogProvider,
       remoteCommandExecutor: resolvedArgs.syncRuntime.remoteCommandExecutor,
       getModelPickerStore: () => getSharedModelPickerStore(db),
@@ -1362,7 +1366,7 @@ export async function createAdeRuntime(args: {
     builtInBrowserService: builtInBrowserBridge,
     macosVmService,
     eventBuffer,
-    isPackaged: !isSourceCheckoutRuntimeModule(__filename),
+    isPackaged: !isSourceCheckoutRuntimeModule(currentModulePath),
     dispose: () => {
       const swallow = (fn: () => void) => { try { fn(); } catch { /* ignore */ } };
       if (staleSessionReconcileTimer) {

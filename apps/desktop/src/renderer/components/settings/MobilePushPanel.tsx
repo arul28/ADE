@@ -487,7 +487,7 @@ export function MobilePushPanel() {
       {error ? <div style={errorStyle}>{error}</div> : null}
       {!bridgeAvailable ? (
         <div style={errorStyle}>
-          The mobile push bridge isn&rsquo;t wired in this build. Reinstall the desktop app from the latest source.
+          The mobile push bridge isn&rsquo;t wired in this build. Reinstall ADE from the latest source.
         </div>
       ) : null}
 
@@ -505,7 +505,7 @@ export function MobilePushPanel() {
                 Mobile push
               </div>
               <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted, marginTop: 2 }}>
-                Direct APNs from this desktop · keys stored encrypted in Electron safeStorage
+                Direct APNs from this machine · keys stored encrypted in Electron safeStorage
               </div>
             </div>
           </div>
@@ -732,7 +732,7 @@ export function MobilePushPanel() {
           >
             <Warning size={11} weight="bold" style={{ verticalAlign: "middle", marginRight: 6 }} />
             Tests are also disabled until your iPhone registers an APNs token — that happens within seconds of
-            the iOS app launching and pairing with this desktop.
+            the iOS app launching and pairing with this machine.
           </div>
         )}
       </div>

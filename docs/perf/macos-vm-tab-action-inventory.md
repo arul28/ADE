@@ -308,7 +308,7 @@ Signed Lume / compatible IPSW continuation:
 | cli.macos-vm.start | Start/create from CLI | measured | `apps/ade-cli/src/cli.ts`, `macosVmService.ts` | Fresh retry headless CLI created from cached Sequoia IPSW and started the VM through ADE after the default-create and VNC password argument fixes |
 | cli.macos-vm.screenshot | Capture screenshot from CLI | measured | `apps/ade-cli/src/cli.ts`, `macosVmService.ts` | Fresh retry CLI capture wrote visible direct-VNC PNG artifacts and exited cleanly after the RFB socket teardown fix |
 | cli.macos-vm.select-click-type | Select/click/type from CLI | measured | `apps/ade-cli/src/cli.ts`, `macosVmService.ts` | Select/click/type returned `ok` through direct VNC on the fresh retry VM; stale built CLI showed the original `0,0` click bug until rebuilt |
-| cli.runtime-daemon.cleanup | Avoid stale runtime daemon/socket processes during repeated dev Electron restarts | blocked | `apps/ade-cli/src/cli.ts`, dev launcher | Multiple stale `ade-cli serve` processes were left after Electron restarts and had to be killed before trusting socket/CLI probes |
+| cli.runtime-cleanup | Avoid stale ADE runtime endpoint processes during repeated dev Electron restarts | blocked | `apps/ade-cli/src/cli.ts`, dev launcher | Multiple stale `ade-cli serve` processes were left after Electron restarts and had to be killed before trusting endpoint/CLI probes |
 
 ## Focused validation
 

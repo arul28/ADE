@@ -423,4 +423,40 @@ extension WorkSessionDestinationView {
     let laneId = resolvedWorkNavigationLaneId(for: currentSession, lanes: lanes)
     syncService.requestedLaneNavigation = LaneNavigationRequest(laneId: laneId)
   }
+
+  /// Resolve the lane's primary cached PR for the header overflow menu. Runs
+  /// inside a `.task(id: headerMenuLaneId)`, so SwiftUI cancels and replaces it
+  /// whenever the lane changes. We clear any stale PR up front and re-check the
+  /// task identity (cancellation + still-current lane) after the await so a
+  /// slow lookup for a previous lane can never surface its PR on a new lane.
+  @MainActor
+  func resolveLaneOpenPr(for laneId: String) async {
+    laneOpenPr = nil
+    let trimmed = laneId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return }
+
+    let resolved: PullRequestListItem?
+    do {
+      let items = try await syncService.fetchPullRequestListItems(laneId: trimmed)
+      // Prefer an open PR over a closed/merged one when a lane has several.
+      resolved = items.first { $0.state.lowercased() == "open" } ?? items.first
+    } catch {
+      resolved = nil
+    }
+
+    let stillCurrent = headerMenuLaneId.trimmingCharacters(in: .whitespacesAndNewlines) == trimmed
+    guard !Task.isCancelled, stillCurrent else { return }
+    laneOpenPr = resolved
+  }
+
+  /// Navigate to the resolved lane PR. No-op (rather than crash) if the PR was
+  /// cleared between menu render and tap.
+  func openLaneOpenPr() {
+    guard let pr = laneOpenPr else { return }
+    syncService.requestedPrNavigation = PrNavigationRequest(
+      prId: pr.id,
+      prNumber: pr.githubPrNumber,
+      laneId: pr.laneId
+    )
+  }
 }

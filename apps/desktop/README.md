@@ -6,7 +6,7 @@ Electron client for ADE. The renderer is also runnable in a regular browser for 
 
 | Surface | Command | `window.ade` source | Backend |
 |--------|---------|---------------------|---------|
-| **Desktop dev** | `npm run dev` (repo root) | Electron preload → main IPC → runtime socket | Full |
+| **Desktop dev** | `npm run dev` (repo root) | Electron preload → main IPC → ADE runtime endpoint | Full |
 | **Browser preview (mock)** | `npm run dev:vite` | `browserMock.ts` only | Synthetic demo data |
 | **Browser preview (live)** | `npm run dev:vite:live` | Mock + runtime bridge patches | Partial live (see below) |
 
@@ -26,7 +26,7 @@ Browser tab
             └─ Vite proxy
                  └─ browser-runtime-bridge.mjs (127.0.0.1:18765)
                       └─ JSON-RPC → /tmp/ade-runtime-dev.sock
-                           └─ ade serve (same daemon as desktop dev)
+                           └─ ade serve (same dev runtime as desktop dev)
 ```
 
 The mock stays the fallback for everything the bridge does not override. UI work that only reads mock data still works with `dev:vite` alone.
@@ -35,7 +35,7 @@ The mock stays the fallback for everything the bridge does not override. UI work
 
 > This section covers the **browser preview** of the renderer. For the full
 > Electron app, use `npm run dev` from the repo root — or, to run a specific lane
-> build in isolation (its own runtime + bridge sockets), see
+> build in isolation (its own runtime + bridge endpoints), see
 > [Run a specific lane worktree](../../README.md#run-a-specific-lane-worktree) in
 > the root README. Do not aim `dev:desktop --socket` at a runtime you do not want
 > `--auto` to shut down (e.g. the production `~/.ade/sock/ade.sock`).
@@ -109,6 +109,10 @@ When the bridge attaches, these `window.ade` methods call the real runtime inste
 | **Sync / mobile** | `sync.getStatus`, `refreshDiscovery`, `listDevices`, `updateLocalDevice`, `connectToBrain`, `disconnectFromBrain`, `forgetDevice`, `getTransferReadiness`, `transferBrainToLocal`, `getPin`, `setPin`, `generatePin`, `clearPin` |
 | **Lanes** | `lanes.create`, `lanes.list` (e.g. Linear quick view → create lane) |
 
+The `connectToBrain`, `disconnectFromBrain`, and `transferBrainToLocal`
+method names are legacy wire/API names; prose should call these runtime
+connection, runtime disconnection, and sync authority transfer.
+
 Linear must already be connected in that project (Settings → Linear, or token in encrypted store under `.ade/secrets`). The bridge uses the same credentials as desktop dev.
 
 ## Still mock-only in the browser
@@ -143,7 +147,7 @@ ADE_PROJECT_ROOT=/path/to/your/project npm run export:browser-mock-ade
 | Variable | Purpose |
 |----------|---------|
 | `ADE_PROJECT_ROOT` | Project opened by the bridge and snapshot export (primary checkout, not lane worktree) |
-| `ADE_DEV_RUNTIME_SOCKET_PATH` | Dev runtime socket (default `/tmp/ade-runtime-dev.sock`) |
+| `ADE_DEV_RUNTIME_SOCKET_PATH` | Dev runtime endpoint path (default `/tmp/ade-runtime-dev.sock`) |
 | `ADE_BROWSER_BRIDGE_PORT` | Bridge HTTP port (default `18765`) |
 
 ## Related files

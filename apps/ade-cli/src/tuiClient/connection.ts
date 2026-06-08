@@ -451,8 +451,12 @@ function attachedRuntimeMismatchReason(
 function spawnDaemon(socketPath: string): boolean {
   const cliEntrypoint = resolveCliEntrypoint();
   const buildHash = computeCliEntrypointBuildHash();
+  const nodeArgs =
+    cliEntrypoint && path.extname(cliEntrypoint) === ".ts"
+      ? process.execArgv.filter((arg) => !arg.startsWith("--inspect"))
+      : [];
   const daemonArgs = cliEntrypoint
-    ? [cliEntrypoint, "serve", "--socket", socketPath]
+    ? [...nodeArgs, cliEntrypoint, "serve", "--socket", socketPath]
     : ["serve", "--socket", socketPath];
   const env: NodeJS.ProcessEnv = {
     ...process.env,

@@ -1,5 +1,6 @@
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { getAgentSkillRootCandidates } from "../../../shared/agentSkillRoots";
 import {
   ancestorConfigRoots,
@@ -26,6 +27,11 @@ export type ResolvedClaudeSlashCommandInvocation = {
   argumentsText: string;
 };
 
+const moduleDir =
+  typeof __dirname === "string"
+    ? __dirname
+    : path.dirname(fileURLToPath(import.meta.url));
+
 function claudeRootsByPrecedence(cwd: string): string[] {
   return ancestorConfigRoots(cwd, ".claude");
 }
@@ -42,7 +48,7 @@ function skillRootsByPrecedence(cwd: string): string[] {
 
   for (const root of getAgentSkillRootCandidates({
     cwd,
-    dirname: __dirname,
+    dirname: moduleDir,
     home: os.homedir(),
     includeDeepSourceFallbacks: true,
   })) addRoot(root);

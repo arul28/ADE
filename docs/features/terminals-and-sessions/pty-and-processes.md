@@ -7,7 +7,7 @@ terminal/session system:
 - `apps/desktop/src/main/services/sessions/sessionService.ts`
 - `apps/desktop/src/main/services/processes/processService.ts`
 
-These services run inside the **active ADE runtime** (local daemon for
+These services run inside the **active ADE runtime** (local machine runtime for
 local-bound windows, SSH-attached remote runtime for remote-bound
 windows). The same source files are also loaded by the desktop main
 process for tests, diagnostics, and flows without a runtime binding;
@@ -20,7 +20,7 @@ back over SSH, and per-process readiness checks (TCP port probes) hit
 ports on the remote host as well.
 
 All three are large and carry a lot of cross-wiring through the
-runtime daemon's project boot and `registerIpc.ts`. Re-read them before
+ADE runtime's project boot and `registerIpc.ts`. Re-read them before
 any non-trivial change. The most recent structural shift was in
 `processService`: runtime entries are now keyed by `runId` so a single
 `(laneId, processId)` pair can have multiple concurrent and historical
@@ -305,7 +305,7 @@ recovery pass marks a row dead while the PTY is still healthy.
 ### Session-id writes and resizes
 
 `ptyService.writeBySessionId(sessionId, data)` and
-`ptyService.resizeBySessionId(sessionId, cols, rows)` are the host-side
+`ptyService.resizeBySessionId(sessionId, cols, rows)` are the runtime-side
 entry points for controller devices that know the ADE session id but not
 the current in-memory `ptyId`. Both scan the live PTY map for an
 undisposed entry matching the session id and return `false` when the
@@ -317,7 +317,7 @@ state `running`, and schedules the idle transition. `resizeBySessionId`
 clamps the requested dimensions with the normal PTY dimension guard
 before calling `pty.resize`.
 
-The sync host only calls these methods after the peer has subscribed to
+The sync service only calls these methods after the peer has subscribed to
 the same session with `terminal_subscribe`; unsubscribed
 `terminal_input` / `terminal_resize` envelopes are ignored. This keeps
 mobile terminal control tied to the visible Work surface instead of

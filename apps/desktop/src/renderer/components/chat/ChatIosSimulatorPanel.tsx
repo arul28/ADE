@@ -1983,13 +1983,13 @@ export function ChatIosSimulatorPanel({
         ? `- Step 5b: If no matching preview exists, add one in ${match.suggestedSourceFile}${match.suggestedTitle ? ` named ${JSON.stringify(match.suggestedTitle)}` : ""}. Prefer a lightweight harness with bindings, env objects, no-op callbacks, fake state, and no live sync/network dependencies.`
         : "- Step 5b: If no matching preview exists, add one (prefer a `<Feature>Previews.swift` sidecar; use a lightweight harness with bindings, env objects, no-op callbacks, fake state).";
       requestedWork = [
-        "- Step 1: Identify the screen that is currently open in the live iOS Simulator. Start with `ade --socket ios-sim status --text` and `ade --socket ios-sim snapshot --text` so you are using ADE's current simulator session, not a guessed route.",
+        "- Step 1: Identify the screen that is currently open in the live iOS Simulator. Start with `ade ios-sim status --text` and `ade ios-sim snapshot --text` so you are using ADE's current simulator session, not a guessed route.",
         "- Step 2: If the simulator is not running, there is no active simulator session, or ADE cannot capture a current screen/snapshot, stop and warn the user with the exact blocker. Do not guess from stale code.",
         "- Step 3: Use the simulator snapshot, attached screenshot, visible labels, navigation title, inspector packets, and SwiftUI file search to find the matching screen in code.",
-        "- Step 4: Resolve ADE's current preview match with `ade --socket ios-sim preview-match --source <swift-file> --text`, then check nearby definitions with `ade --socket ios-sim previews --source <swift-file> --text`.",
+        "- Step 4: Resolve ADE's current preview match with `ade ios-sim preview-match --source <swift-file> --text`, then check nearby definitions with `ade ios-sim previews --source <swift-file> --text`.",
         "- Step 5a: If a matching preview already exists, use it. Do not add a duplicate preview just because the first search was imperfect.",
         suggestedPreviewLine,
-        "- Step 6: Finish by opening/rendering the chosen preview through ADE CLI with `ade --socket ios-sim preview-render --source <file> --index <previewDefinitionIndexInFile> --text` so the result lands in ADE's Preview surface.",
+        "- Step 6: Finish by opening/rendering the chosen preview through ADE CLI with `ade ios-sim preview-render --source <file> --index <previewDefinitionIndexInFile> --text` so the result lands in ADE's Preview surface.",
         "- Report back with the screen you identified, the file:line of the preview that was used or added, and the `ade ios-sim preview-render` result.",
       ];
     } else if (action === "add-realistic-mocks") {
@@ -2027,7 +2027,7 @@ export function ChatIosSimulatorPanel({
       previewCapability?.setupSteps.length ? `- Setup gaps: ${previewCapability.setupSteps.join("; ")}` : "- Xcode preview setup appears ready or was not checked.",
       "",
       "Visual evidence:",
-      attachmentPaths.simulator ? `- Real simulator screenshot attached: ${attachmentPaths.simulator}` : "- Real simulator screenshot is not attached; use `ade --socket ios-sim snapshot --text` before making code changes.",
+      attachmentPaths.simulator ? `- Real simulator screenshot attached: ${attachmentPaths.simulator}` : "- Real simulator screenshot is not attached; use `ade ios-sim snapshot --text` before making code changes.",
       attachmentPaths.preview ? `- Current Xcode preview snapshot attached: ${attachmentPaths.preview}` : "- Current Xcode preview snapshot is not attached.",
       visibleContext ? `- Selected visible element: ${JSON.stringify(visibleContext, null, 2)}` : "- No simulator element is currently selected; identify the current screen from the live simulator snapshot before searching code.",
       "",

@@ -16,7 +16,7 @@ headless ADE CLI run the same pipeline.
 The full Linear stack — credential service, GraphQL client, issue tracker,
 template service, workflow file loader, flow policy, routing, intake,
 outbound, dispatcher, sync, ingress, and closeout — runs inside the
-runtime daemon that owns the project. The desktop renderer is a viewer
+ADE runtime that owns the project. The desktop renderer is a viewer
 over `window.ade.cto.linear*` IPC channels, and the headless ADE CLI
 hosts the same services through `apps/ade-cli/src/headlessLinearServices.ts`
 so Linear-driven workflows can run in `ade serve` without the desktop

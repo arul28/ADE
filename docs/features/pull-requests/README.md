@@ -18,7 +18,7 @@ This folder documents:
 PR mutations, GitHub polling, queue landing, integration proposal
 simulation, the Path-to-Merge orchestrator, and the issue/rebase
 resolver agent dispatch all run inside the **active ADE runtime**
-(local daemon for local-bound windows, SSH-attached remote runtime
+(local machine runtime for local-bound windows, SSH-attached remote runtime
 for remote-bound windows). The renderer's `window.ade.prs.*` surface
 in `apps/desktop/src/preload/preload.ts` is the routing boundary:
 remote-bound windows route PR service work through the remote runtime,

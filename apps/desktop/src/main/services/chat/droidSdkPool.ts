@@ -2,6 +2,7 @@ import { fork, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import type { Logger } from "../logging/logger";
 import type {
   DroidSdkAskUserRequest,
@@ -47,10 +48,14 @@ let droidSdkGenCounter = 0;
 const pools = new Map<string, { ref: number; generation: number; pooled: DroidSdkPooled }>();
 const pendingInits = new Map<string, Promise<DroidSdkPooled>>();
 const STALE_INIT_RETRY_LIMIT = 2;
+const moduleDir =
+  typeof __dirname === "string"
+    ? __dirname
+    : path.dirname(fileURLToPath(import.meta.url));
 
 function resolveWorkerPath(): string {
   const candidates = [
-    path.join(__dirname, "droidSdkWorker.cjs"),
+    path.join(moduleDir, "droidSdkWorker.cjs"),
     path.join(process.cwd(), "dist", "main", "droidSdkWorker.cjs"),
   ];
   for (const candidate of candidates) {

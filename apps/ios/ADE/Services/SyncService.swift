@@ -429,6 +429,19 @@ func syncIsTailscaleRoute(_ address: String) -> Bool {
 struct SyncReconnectState {
   private(set) var attempts = 0
 
+  /// Maximum number of automatic reconnect attempts before the loop gives up and
+  /// the UI flips to a terminal "can't reach this machine" state. With the 1s→16s
+  /// exponential backoff this is roughly a minute of trying, which is enough to
+  /// ride out a brief network blip but short enough that a genuinely-offline
+  /// machine resolves to a clear failure instead of looping silently forever.
+  static let maxAutomaticAttempts = 7
+
+  /// True once the automatic reconnect loop has burned through its attempt budget.
+  /// Callers stop rescheduling and surface a terminal error instead.
+  var isExhausted: Bool {
+    attempts >= Self.maxAutomaticAttempts
+  }
+
   mutating func nextDelayNanoseconds() -> UInt64 {
     let exponent = min(attempts, 4)
     let seconds = UInt64(1 << exponent)
@@ -522,6 +535,8 @@ func syncDiscoveredHostsEqualForPresentation(
     && left.serviceName == right.serviceName
     && left.hostName == right.hostName
     && left.hostIdentity == right.hostIdentity
+    && left.siteId == right.siteId
+    && left.runtimeName == right.runtimeName
     && left.port == right.port
     && left.addresses == right.addresses
     && left.tailscaleAddress == right.tailscaleAddress
@@ -530,6 +545,7 @@ func syncDiscoveredHostsEqualForPresentation(
     && left.projectIds == right.projectIds
     && left.projectNames == right.projectNames
     && left.projectCount == right.projectCount
+    && left.pairingPinConfigured == right.pairingPinConfigured
 }
 
 func syncDiscoveredHostListsEqualForPresentation(
@@ -941,6 +957,12 @@ final class SyncService: ObservableObject {
   @Published private(set) var lastSyncAt: Date?
   @Published private(set) var currentAddress: String?
   @Published private(set) var lastError: String?
+  /// Host error CODE from the most recent pairing attempt (e.g. `pin_not_set`),
+  /// preserved alongside the friendly `lastError` string so the PIN flow can
+  /// branch on the code — routing a no-PIN machine to the "Set a PIN" screen —
+  /// rather than parsing a localized message. Cleared whenever a fresh pairing
+  /// attempt begins or a connection succeeds.
+  @Published private(set) var lastPairingErrorCode: String?
   @Published private(set) var prefersReducedSyncLoad = false
   @Published private(set) var terminalBufferRevision = 0
   @Published private(set) var chatEventNotificationRevision = 0
@@ -956,6 +978,29 @@ final class SyncService: ObservableObject {
   @Published var requestedFilesNavigation: FilesNavigationRequest?
   @Published var requestedLaneNavigation: LaneNavigationRequest?
   @Published var requestedPrNavigation: PrNavigationRequest?
+
+  // MARK: - Durable PR action / detail state
+  //
+  // PR list, detail, and in-flight-action state used to live entirely in the
+  // PRs views as `@State`. That had two fatal flaws: (1) switching tabs tore
+  // the views down, cancelling in-flight action Tasks and dropping their
+  // success/error feedback, and (2) re-entering the tab re-ran every reload
+  // cold. SyncService is a `@MainActor ObservableObject` that outlives every
+  // tab, so durable PR-action + detail-cache state lives here. Views READ from
+  // these published values; the service OWNS the Task lifecycle.
+
+  /// In-flight PR actions keyed by a stable string (prId, or
+  /// `"<scope>:<id>"` for queue/integration/root actions). The views read this
+  /// to render per-row / per-control spinners that survive a tab switch +
+  /// remount. Owned exclusively by `beginPrAction`/`endPrAction`.
+  @Published private(set) var prActionsInFlight: [String: PrInFlightAction] = [:]
+
+  /// Warm cache of fully-loaded PR detail snapshots keyed by prId. Lets the
+  /// detail screen render INSTANTLY on re-open / tab re-entry while a freshness
+  /// gated background refresh runs. Bumped via `localStateRevision` on the
+  /// view side; the entry's `loadedAt` gates whether the refresh actually
+  /// re-fetches the sidecar fan-out.
+  @Published private(set) var prDetailCache: [String: PrDetailWarmEntry] = [:]
 
   var connectionHealth: SyncConnectionHealth {
     syncConnectionHealth(
@@ -1560,6 +1605,7 @@ final class SyncService: ObservableObject {
     let profile = HostConnectionProfile(
       hostIdentity: connection.hostIdentity.deviceId,
       hostName: connection.hostIdentity.name,
+      siteId: syncNonEmpty(connection.hostIdentity.siteId),
       port: connection.port,
       authKind: resolvedAuthKind,
       pairedDeviceId: resolvedPairedDeviceId,
@@ -1942,14 +1988,57 @@ final class SyncService: ObservableObject {
   }
 
   private func profileStorageKey(_ profile: HostConnectionProfile) -> String? {
-    [
-      profile.hostIdentity,
-      profile.lastHostDeviceId,
-      profile.hostName.map { "\($0):\(profile.port)" },
-      profile.lastSuccessfulAddress.map { "\($0):\(profile.port)" },
-    ]
-      .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
-      .first { !$0.isEmpty }
+    // Key saved machines by machine identity, not by the per-project/per-DB
+    // runtime `siteId` when a stable device identity exists. For older hosts that
+    // do not advertise identity yet, include route-specific data so two machines
+    // with the same display name do not collapse into one token entry.
+    if let identity = syncNonEmpty(profile.hostIdentity) ?? syncNonEmpty(profile.lastHostDeviceId) {
+      return "machine:\(identity.lowercased())"
+    }
+    if let address = syncNonEmpty(profile.lastSuccessfulAddress) {
+      return "machine:addr:\(address.lowercased()):\(profile.port)"
+    }
+    if let siteId = syncNonEmpty(profile.siteId) {
+      return "machine:site:\(siteId.lowercased())"
+    }
+    if let hostName = syncNonEmpty(profile.hostName) {
+      return "machine:name:\(hostName.lowercased()):\(profile.port)"
+    }
+    return nil
+  }
+
+  private func legacyProfileStorageKeys(_ profile: HostConnectionProfile) -> [String] {
+    let current = profileStorageKey(profile)
+    var keys: [String] = []
+    func appendLegacyKey(_ value: String?) {
+      guard let trimmed = syncNonEmpty(value) else { return }
+      keys.append(trimmed)
+      let lowered = trimmed.lowercased()
+      if lowered != trimmed {
+        keys.append(lowered)
+      }
+    }
+    if let siteId = syncNonEmpty(profile.siteId) {
+      keys.append("site:\(siteId.lowercased())")
+      keys.append("machine:\(siteId.lowercased())")
+      appendLegacyKey(siteId)
+    }
+    if let hostName = syncNonEmpty(profile.hostName) {
+      keys.append("name:\(hostName.lowercased()):\(profile.port)")
+      keys.append("machine:\(hostName.lowercased())")
+      appendLegacyKey("\(hostName):\(profile.port)")
+    }
+    if let last = syncNonEmpty(profile.lastSuccessfulAddress) {
+      keys.append("addr:\(last):\(profile.port)")
+      keys.append("machine:\(last.lowercased())")
+      appendLegacyKey("\(last):\(profile.port)")
+    }
+    appendLegacyKey(profile.hostIdentity)
+    appendLegacyKey(profile.lastHostDeviceId)
+    var seen = Set<String>()
+    return keys.filter { key in
+      key != current && seen.insert(key).inserted
+    }
   }
 
   private func profileHasTailnetRoute(_ profile: HostConnectionProfile) -> Bool {
@@ -2058,16 +2147,31 @@ final class SyncService: ObservableObject {
 
   private func migrateTokenIfNeeded(for profile: HostConnectionProfile) {
     guard let key = profileStorageKey(profile),
-          keychain.loadToken(hostKey: key) == nil,
-          let legacyToken = keychain.loadToken() else {
+          keychain.loadToken(hostKey: key) == nil else {
       return
     }
-    keychain.saveToken(legacyToken, hostKey: key)
+    for legacyKey in legacyProfileStorageKeys(profile) {
+      if let legacyToken = keychain.loadToken(hostKey: legacyKey) {
+        keychain.saveToken(legacyToken, hostKey: key)
+        keychain.clearToken(hostKey: legacyKey)
+        return
+      }
+    }
+    if let legacyToken = keychain.loadToken() {
+      keychain.saveToken(legacyToken, hostKey: key)
+    }
   }
 
   private func storedTokenForSavedProfile(_ profile: HostConnectionProfile) -> String? {
-    guard let key = profileStorageKey(profile) else { return nil }
-    return keychain.loadToken(hostKey: key)
+    if let key = profileStorageKey(profile), let token = keychain.loadToken(hostKey: key) {
+      return token
+    }
+    for legacyKey in legacyProfileStorageKeys(profile) {
+      if let token = keychain.loadToken(hostKey: legacyKey) {
+        return token
+      }
+    }
+    return nil
   }
 
   private func mostRecentSavedProfileWithCredentials() -> HostConnectionProfile? {
@@ -2081,6 +2185,15 @@ final class SyncService: ObservableObject {
     guard let profile else { return nil }
     if let key = profileStorageKey(profile), let token = keychain.loadToken(hostKey: key) {
       return token
+    }
+    for legacyKey in legacyProfileStorageKeys(profile) {
+      if let token = keychain.loadToken(hostKey: legacyKey) {
+        if let key = profileStorageKey(profile) {
+          keychain.saveToken(token, hostKey: key)
+          keychain.clearToken(hostKey: legacyKey)
+        }
+        return token
+      }
     }
     if activeHostProfile == profile {
       return keychain.loadToken()
@@ -2127,11 +2240,18 @@ final class SyncService: ObservableObject {
     let identity = profile.hostIdentity?.trimmingCharacters(in: .whitespacesAndNewlines)
     let displayName = profile.hostName?.trimmingCharacters(in: .whitespacesAndNewlines)
     let routeId = tailscaleAddress ?? addresses.first ?? "saved"
+    // ONE machine = ONE saved row. The id keys off `profileStorageKey`, which
+    // prefers the machine identity/device name and retains older site/route
+    // keys only as migration aliases. A machine reachable over LAN and
+    // Tailscale still collapses to one row; `reconnect(toSavedHost:)` resolves
+    // the profile back by matching `"saved-\(key)"`.
+    let stableKey = profileStorageKey(profile) ?? (identity?.isEmpty == false ? identity! : routeId)
     return DiscoveredSyncHost(
-      id: "saved-\(identity?.isEmpty == false ? identity! : routeId)",
+      id: "saved-\(stableKey)",
       serviceName: "Saved ADE machine",
       hostName: displayName?.isEmpty == false ? displayName! : routeId,
       hostIdentity: identity?.isEmpty == false ? identity : nil,
+      siteId: syncNonEmpty(profile.siteId),
       port: profile.port,
       addresses: addresses,
       tailscaleAddress: tailscaleAddress,
@@ -2421,6 +2541,7 @@ final class SyncService: ObservableObject {
     code: String,
     hostIdentity: String? = nil,
     hostName: String? = nil,
+    siteId: String? = nil,
     candidateAddresses: [String] = [],
     tailscaleAddress: String? = nil
   ) async {
@@ -2431,6 +2552,7 @@ final class SyncService: ObservableObject {
       connectionState = .error
       return
     }
+    lastPairingErrorCode = nil
     let connectAttemptGeneration: UInt64
     do {
       cancelReconnectLoop()
@@ -2534,9 +2656,16 @@ final class SyncService: ObservableObject {
         throw CancellationError()
       }
       guard let payload = raw as? [String: Any], (payload["ok"] as? Bool) == true else {
-        throw NSError(domain: "ADE", code: 2, userInfo: [
-          NSLocalizedDescriptionKey: friendlyPairingFailureMessage(raw)
-        ])
+        let failure = friendlyPairingFailure(raw)
+        var userInfo: [String: Any] = [NSLocalizedDescriptionKey: failure.message]
+        // Preserve the host's error CODE (e.g. `pin_not_set`, `invalid_pin`)
+        // on the NSError — mirroring how `hello_error` carries `ADEErrorCode`
+        // — so the PIN sheet can branch on the code (route to the "Set a PIN"
+        // screen) rather than parsing a localized red string.
+        if let code = failure.code {
+          userInfo["ADEErrorCode"] = code
+        }
+        throw NSError(domain: "ADE", code: 2, userInfo: userInfo)
       }
       guard let secret = payload["secret"] as? String else {
         throw NSError(domain: "ADE", code: 3, userInfo: [NSLocalizedDescriptionKey: "Pairing secret missing from response."])
@@ -2545,6 +2674,7 @@ final class SyncService: ObservableObject {
       let profile = HostConnectionProfile(
         hostIdentity: hostIdentity,
         hostName: hostName,
+        siteId: syncNonEmpty(siteId),
         port: preferredPort,
         authKind: "paired",
         pairedDeviceId: pairedDeviceId,
@@ -2559,9 +2689,6 @@ final class SyncService: ObservableObject {
         },
         tailscaleAddress: normalizedTailscaleAddress ?? addressCandidates.first(where: syncIsTailscaleRoute)
       )
-      keychain.saveToken(secret)
-      keychain.saveToken(secret, hostKey: profileStorageKey(profile))
-      saveProfile(profile)
       currentAddress = preferredAddress
       try await hello(
         host: preferredAddress,
@@ -2572,6 +2699,8 @@ final class SyncService: ObservableObject {
         expectedHostIdentity: hostIdentity,
         connectAttemptGeneration: connectAttemptGeneration
       )
+      keychain.saveToken(secret)
+      keychain.saveToken(secret, hostKey: profileStorageKey(activeHostProfile ?? profile))
     } catch {
       guard isCurrentConnectAttempt(connectAttemptGeneration) else { return }
       let friendlyMessage = SyncUserFacingError.message(for: error)
@@ -2580,23 +2709,29 @@ final class SyncService: ObservableObject {
       setAutoReconnectPausedByUser(true)
       teardownSocket(reason: friendlyMessage)
       lastError = friendlyMessage
+      lastPairingErrorCode = (error as NSError).userInfo["ADEErrorCode"] as? String
       connectionState = .error
       setDomainStatus(SyncDomain.allCases, phase: .failed, error: friendlyMessage)
     }
   }
 
-  private func friendlyPairingFailureMessage(_ raw: Any) -> String {
+  /// Stable host pairing error code surfaced when a machine has no PIN set yet.
+  /// The PIN sheet branches on this (via `ADEErrorCode`) to route the user to the
+  /// friendly "Set a PIN" screen instead of showing a dead-end red string.
+  static let pairingPinNotSetCode = "pin_not_set"
+
+  private func friendlyPairingFailure(_ raw: Any) -> (message: String, code: String?) {
     let error = (raw as? [String: Any])?["error"] as? [String: Any]
     let code = error?["code"] as? String
     let message = error?["message"] as? String
 
     switch code {
     case "invalid_pin":
-      return "Incorrect PIN."
+      return ("Incorrect PIN.", code)
     case "pin_not_set":
-      return "No PIN set on that machine. Set one in ADE's Sync settings on the machine."
+      return ("No PIN set on that machine yet.", code)
     default:
-      return message ?? "Pairing failed."
+      return (message ?? "Pairing failed.", code)
     }
   }
 
@@ -2619,6 +2754,11 @@ final class SyncService: ObservableObject {
       let profileToClear = activeHostProfile ?? loadProfile()
       if let key = profileToClear.flatMap({ profileStorageKey($0) }) {
         keychain.clearToken(hostKey: key)
+        if let profileToClear {
+          for legacyKey in legacyProfileStorageKeys(profileToClear) {
+            keychain.clearToken(hostKey: legacyKey)
+          }
+        }
         var profiles = loadSavedProfilesRaw()
         profiles.removeValue(forKey: key)
         saveSavedProfiles(profiles)
@@ -2641,6 +2781,65 @@ final class SyncService: ObservableObject {
     lastError = nil
     setDomainStatus(SyncDomain.allCases, phase: .disconnected)
     settingsPresented = true
+  }
+
+  /// Remove a saved machine from the recents list: drop its keyed profile from
+  /// the saved-profiles store and clear its keychain pairing token. Mirrors the
+  /// `clearCredentials` branch of `disconnect`, but for an arbitrary saved row
+  /// rather than the active connection. If the removed row IS the active /
+  /// last-used profile, this also tears down the live connection and clears the
+  /// active pairing so the header drops to "no paired machine".
+  func removeSavedHost(_ host: DiscoveredSyncHost) {
+    let profiles = loadSavedProfilesRaw()
+    let matchedKey = profiles.first { _, profile in
+      savedProfileMatchesDiscoveredHost(host, profile: profile)
+    }?.key
+    guard let key = matchedKey else { return }
+
+    let removedWasActive: Bool = {
+      guard let activeKey = (activeHostProfile ?? loadProfile()).flatMap({ profileStorageKey($0) }) else {
+        return false
+      }
+      return activeKey == key
+    }()
+
+    if removedWasActive {
+      // Tear down the live socket and clear the active pairing before pruning the
+      // store entry so we don't leave a dangling active profile pointing at a
+      // removed machine.
+      disconnect(clearCredentials: true)
+      remoteProjectCatalog = []
+      refreshProjectCatalog()
+      lastError = nil
+      setDomainStatus(SyncDomain.allCases, phase: .disconnected)
+    }
+
+    keychain.clearToken(hostKey: key)
+    if let removedProfile = profiles[key] {
+      for legacyKey in legacyProfileStorageKeys(removedProfile) {
+        keychain.clearToken(hostKey: legacyKey)
+      }
+    }
+    var remaining = loadSavedProfilesRaw()
+    remaining.removeValue(forKey: key)
+    saveSavedProfiles(remaining)
+    objectWillChange.send()
+  }
+
+  /// Match a saved `HostConnectionProfile` to a `DiscoveredSyncHost` row using the
+  /// same precedence the reconnect path uses: device identity first, then the
+  /// `"saved-<storageKey>"` row id, then address / name overlap.
+  private func savedProfileMatchesDiscoveredHost(
+    _ host: DiscoveredSyncHost,
+    profile: HostConnectionProfile
+  ) -> Bool {
+    if let identity = host.hostIdentity?.trimmingCharacters(in: .whitespacesAndNewlines), !identity.isEmpty {
+      return profile.hostIdentity == identity || profile.lastHostDeviceId == identity
+    }
+    if host.id.hasPrefix("saved-"), let key = profileStorageKey(profile) {
+      return host.id == "saved-\(key)"
+    }
+    return matchesDiscoveredHost(host, profile: profile)
   }
 
   func refreshLaneSnapshots() async throws {
@@ -3073,6 +3272,98 @@ final class SyncService: ObservableObject {
       args["model"] = model
     }
     return try await sendDecodableCommand(action: "prs.aiReviewSummary", args: args, as: AiReviewSummary.self)
+  }
+
+  // MARK: - Durable PR in-flight action registry
+
+  /// Register an in-flight PR action. Returns an opaque token that must be
+  /// passed back to ``endPrAction(key:token:)`` to clear the entry. If another
+  /// action is already registered under `key` it is replaced — the latest
+  /// label wins, which matches the "one decisive action per control" model.
+  ///
+  /// The registry only tracks presentation state (label + start time); the
+  /// caller still owns running the async work. Use
+  /// ``runDurablePrAction(key:label:operation:onSuccess:onFailure:)`` to get the
+  /// service to also own the Task so it COMPLETES regardless of view lifecycle.
+  @discardableResult
+  func beginPrAction(key: String, label: String) -> UUID {
+    let token = UUID()
+    prActionsInFlight[key] = PrInFlightAction(token: token, key: key, label: label, startedAt: Date())
+    return token
+  }
+
+  /// Clear an in-flight entry. No-ops unless the stored token matches `token`,
+  /// so a stale completion can't wipe a newer action that reused the same key.
+  func endPrAction(key: String, token: UUID) {
+    guard prActionsInFlight[key]?.token == token else { return }
+    prActionsInFlight[key] = nil
+  }
+
+  /// True while any action is registered under `key`.
+  func isPrActionInFlight(key: String) -> Bool {
+    prActionsInFlight[key] != nil
+  }
+
+  /// Label of the action registered under `key`, if any.
+  func prActionLabel(forKey key: String) -> String? {
+    prActionsInFlight[key]?.label
+  }
+
+  /// Run a PR action whose lifecycle is owned by the service, not the view.
+  ///
+  /// This is the heart of the durable-loading fix: the underlying `operation`
+  /// runs inside a detached-from-the-view `Task` that the service spawns, so a
+  /// tab switch (which tears the view down) can NEVER cancel it. The in-flight
+  /// entry is registered before the await and cleared in `defer`, so the
+  /// spinner the views read from `prActionsInFlight[key]` survives remounts and
+  /// disappears exactly when the work finishes.
+  ///
+  /// - Parameters:
+  ///   - key: stable registry key (prId, or `"<scope>:<id>"`).
+  ///   - label: human-readable in-flight label (e.g. "Merging pull request").
+  ///   - operation: the async work to perform.
+  ///   - onSuccess: invoked on the main actor after `operation` succeeds.
+  ///   - onFailure: invoked on the main actor with the thrown error.
+  func runDurablePrAction(
+    key: String,
+    label: String,
+    operation: @escaping () async throws -> Void,
+    onSuccess: @escaping @MainActor () -> Void = {},
+    onFailure: @escaping @MainActor (Error) -> Void = { _ in }
+  ) {
+    // Replacing the entry under `key` (begin) implicitly supersedes any prior
+    // label for the same control. We do NOT cancel the prior Task — letting
+    // both complete is safer than orphaning half-applied remote work.
+    let token = beginPrAction(key: key, label: label)
+    Task { @MainActor in
+      defer { endPrAction(key: key, token: token) }
+      do {
+        try await operation()
+        onSuccess()
+      } catch {
+        onFailure(error)
+      }
+    }
+  }
+
+  // MARK: - PR detail warm cache
+
+  /// Store a fully-loaded detail entry for `prId`. Stamps `loadedAt` so the
+  /// freshness gate can decide whether a later revision bump should refetch.
+  func storePrDetailWarmEntry(_ entry: PrDetailWarmEntry, for prId: String) {
+    prDetailCache[prId] = entry
+  }
+
+  /// Cached detail entry for `prId`, if any.
+  func prDetailWarmEntry(for prId: String) -> PrDetailWarmEntry? {
+    prDetailCache[prId]
+  }
+
+  /// True when the cached entry for `prId` is younger than `window` seconds, so
+  /// a revision-driven reload can skip the cold sidecar fan-out.
+  func prDetailWarmEntryIsFresh(for prId: String, within window: TimeInterval) -> Bool {
+    guard let entry = prDetailCache[prId] else { return false }
+    return Date().timeIntervalSince(entry.loadedAt) < window
   }
 
   func status(for domain: SyncDomain) -> SyncDomainStatus {
@@ -4364,6 +4655,46 @@ final class SyncService: ObservableObject {
     ])
   }
 
+  /// Dry-run the create-lane-from-PR-branch (auto-map) flow. Resolves the PR's
+  /// head branch and reports whether a lane can be created, or what conflict is
+  /// blocking it, without mutating any state. ``lane``/``pr`` are null in the
+  /// preflight payload, so only ``preflight`` is decoded.
+  func preflightCreateLaneFromPrBranch(
+    repoOwner: String,
+    repoName: String,
+    githubPrNumber: Int
+  ) async throws -> PrAutoMapPreflightResult {
+    try await sendDecodableCommand(
+      action: "prs.preflightCreateLaneFromPrBranch",
+      args: [
+        "repoOwner": repoOwner,
+        "repoName": repoName,
+        "githubPrNumber": githubPrNumber,
+      ],
+      as: PrAutoMapPreflightResult.self
+    )
+  }
+
+  /// Create a lane from a PR's head branch (auto-map). Returns the resolved
+  /// preflight plus the newly created ``lane``. The UI should refresh the PR
+  /// list afterward to pick up the new mapping.
+  @discardableResult
+  func createLaneFromPrBranch(
+    repoOwner: String,
+    repoName: String,
+    githubPrNumber: Int
+  ) async throws -> PrAutoMapCreateResult {
+    try await sendDecodableCommand(
+      action: "prs.createLaneFromPrBranch",
+      args: [
+        "repoOwner": repoOwner,
+        "repoName": repoName,
+        "githubPrNumber": githubPrNumber,
+      ],
+      as: PrAutoMapCreateResult.self
+    )
+  }
+
   func updatePullRequestBody(prId: String, body: String) async throws {
     _ = try await sendCommand(action: "prs.updateBody", args: [
       "prId": prId,
@@ -5334,7 +5665,7 @@ final class SyncService: ObservableObject {
       domain: "ADE",
       code: 24,
       userInfo: [
-        NSLocalizedDescriptionKey: "No ADE machine address is available. Choose a discovered machine or enter the runtime address manually.",
+        NSLocalizedDescriptionKey: "No ADE machine address is available. Choose a discovered machine or enter the address manually.",
       ]
     )
   }
@@ -5642,12 +5973,46 @@ final class SyncService: ObservableObject {
   private func scheduleReconnectIfNeeded(after delayNanoseconds: UInt64) {
     let profile = loadProfile()
     guard allowAutoReconnect, !autoReconnectPausedByUser, profile != nil, tokenForProfile(profile) != nil else { return }
+    // Cap the silent retry loop. Once the attempt budget is spent we stop
+    // re-arming and surface a real "can't reach this machine" terminal state
+    // instead of churning forever. A later live discovery or a user-initiated
+    // reconnect resets the counter and re-enables the loop.
+    if reconnectState.isExhausted {
+      enterUnreachableTerminalState(for: profile)
+      return
+    }
     reconnectTask?.cancel()
     reconnectTask = Task { @MainActor in
       try? await Task.sleep(nanoseconds: delayNanoseconds)
       guard !Task.isCancelled else { return }
       await reconnectIfPossible()
     }
+  }
+
+  /// Flip to the terminal unreachable state: stop the reconnect loop, clear the
+  /// in-flight / awaiting flags so nothing silently re-arms, and surface a
+  /// friendly `connectionState = .error` (which maps to
+  /// `SyncTransportHealth.unreachable` and lights the header error banner).
+  private func enterUnreachableTerminalState(for profile: HostConnectionProfile?) {
+    reconnectTask?.cancel()
+    reconnectTask = nil
+    networkPathReconnectTask?.cancel()
+    networkPathReconnectTask = nil
+    reconnectConnectInFlight = false
+    autoReconnectAwaitingLiveDiscovery = false
+    let machineName = syncTrimmedNonEmptyName(profile?.hostName)
+      ?? syncTrimmedNonEmptyName(hostName)
+      ?? "this machine"
+    lastError = "Can't reach \(machineName)."
+    connectionState = .error
+    setDomainStatus(SyncDomain.allCases, phase: .failed, error: lastError)
+  }
+
+  private func syncTrimmedNonEmptyName(_ value: String?) -> String? {
+    guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else {
+      return nil
+    }
+    return trimmed
   }
 
   private func cancelReconnectLoop() {
@@ -5726,44 +6091,84 @@ final class SyncService: ObservableObject {
     return next
   }
 
+  /// The stable machine key used to group discovered hosts into one visible row.
+  /// `siteId` is intentionally not part of this key: it is a per-connection
+  /// database/runtime detail, while the phone pairs with a computer.
+  private func syncMachineIdentityKey(_ host: DiscoveredSyncHost) -> String? {
+    if let identity = syncNonEmpty(host.hostIdentity) {
+      return "machine:\(identity.lowercased())"
+    }
+    return nil
+  }
+
+  private func syncLooksLikeIpAddress(_ value: String) -> Bool {
+    let host = syncNormalizedRouteHost(value)
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+      .lowercased()
+    if host.contains(":") { return true }
+    let parts = host.split(separator: ".")
+    return parts.count == 4 && parts.allSatisfy { UInt8(String($0)) != nil }
+  }
+
+  private func syncDiscoveredHostWithMachineId(_ host: DiscoveredSyncHost) -> DiscoveredSyncHost {
+    guard let identity = syncNonEmpty(host.hostIdentity), host.id != identity else { return host }
+    var next = host
+    next.id = identity
+    return next
+  }
+
+  private func syncNonEmpty(_ value: String?) -> String? {
+    guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else {
+      return nil
+    }
+    return trimmed
+  }
+
   private func applyDiscoveredHosts(_ hosts: [DiscoveredSyncHost]) {
-    var mergedByIdentity: [String: DiscoveredSyncHost] = [:]
-    var noIdentity: [DiscoveredSyncHost] = []
+    // Group by computer, not by per-project/per-DB runtime identity. The same
+    // machine may advertise multiple project ports or transports; the phone
+    // should show and save one machine row with all usable routes.
+    var mergedByMachine: [String: DiscoveredSyncHost] = [:]
+    var orderedMachineKeys: [String] = []
+    var noMachineKey: [DiscoveredSyncHost] = []
     for host in hosts {
-      guard let identity = host.hostIdentity?.trimmingCharacters(in: .whitespacesAndNewlines), !identity.isEmpty else {
-        noIdentity.append(host)
+      guard let machineKey = syncMachineIdentityKey(host) else {
+        noMachineKey.append(host)
         continue
       }
-      if let existing = mergedByIdentity[identity] {
+      if let existing = mergedByMachine[machineKey] {
         let preferred = host.lastResolvedAt >= existing.lastResolvedAt ? host : existing
         let fallback = host.lastResolvedAt >= existing.lastResolvedAt ? existing : host
+        let mergedIdentity = syncNonEmpty(preferred.hostIdentity) ?? syncNonEmpty(fallback.hostIdentity)
         let addresses = deduplicatedAddresses(preferred.addresses + fallback.addresses)
         let tailscale = preferred.tailscaleAddress ?? fallback.tailscaleAddress
         let port = preferred.port > 0 ? preferred.port : fallback.port
         let mergedName = preferred.hostName.isEmpty ? fallback.hostName : preferred.hostName
-        mergedByIdentity[identity] = DiscoveredSyncHost(
-          id: identity,
+        mergedByMachine[machineKey] = DiscoveredSyncHost(
+          id: mergedIdentity ?? existing.id,
           serviceName: existing.serviceName,
           hostName: mergedName,
-          hostIdentity: identity,
+          hostIdentity: mergedIdentity,
+          siteId: syncNonEmpty(preferred.siteId) ?? syncNonEmpty(fallback.siteId),
           port: port,
           addresses: addresses,
           tailscaleAddress: tailscale,
+          runtimeName: syncNonEmpty(preferred.runtimeName) ?? syncNonEmpty(fallback.runtimeName),
           runtimeKind: preferred.runtimeKind ?? fallback.runtimeKind,
           runtimeVersion: preferred.runtimeVersion ?? fallback.runtimeVersion,
           projectIds: deduplicatedStrings(preferred.projectIds + fallback.projectIds),
           projectNames: deduplicatedStrings(preferred.projectNames + fallback.projectNames),
           projectCount: preferred.projectCount ?? fallback.projectCount,
+          pairingPinConfigured: preferred.pairingPinConfigured ?? fallback.pairingPinConfigured,
           lastResolvedAt: host.lastResolvedAt > existing.lastResolvedAt ? host.lastResolvedAt : existing.lastResolvedAt
         )
       } else {
-        var tagged = host
-        tagged.id = identity
-        mergedByIdentity[identity] = tagged
+        mergedByMachine[machineKey] = syncDiscoveredHostWithMachineId(host)
+        orderedMachineKeys.append(machineKey)
       }
     }
-    let identifiedHosts = Array(mergedByIdentity.values)
-    let anonymousHosts = mergeAnonymousDiscoveredHosts(noIdentity)
+    let identifiedHosts = orderedMachineKeys.compactMap { mergedByMachine[$0] }
+    let anonymousHosts = mergeAnonymousDiscoveredHosts(noMachineKey)
     let filteredNoIdentity = anonymousHosts.filter { host in
       !shouldSuppressAnonymousTailnetHost(host, identifiedHosts: identifiedHosts)
     }
@@ -5837,19 +6242,34 @@ final class SyncService: ObservableObject {
   ) -> DiscoveredSyncHost {
     let preferred = right.lastResolvedAt >= left.lastResolvedAt ? right : left
     let fallback = right.lastResolvedAt >= left.lastResolvedAt ? left : right
+    // Preserve the device identity only when both sides agree (or one is
+    // absent). These rows are keyed by address+port, so two genuinely different
+    // machines momentarily sharing a transient route must NOT inherit a single
+    // identity — drop it in that (rare) case rather than pick a wrong one.
+    let leftIdentity = syncNonEmpty(left.hostIdentity)
+    let rightIdentity = syncNonEmpty(right.hostIdentity)
+    let mergedIdentity: String?
+    if let leftIdentity, let rightIdentity {
+      mergedIdentity = leftIdentity == rightIdentity ? leftIdentity : nil
+    } else {
+      mergedIdentity = leftIdentity ?? rightIdentity
+    }
     return DiscoveredSyncHost(
       id: preferred.id,
       serviceName: preferred.serviceName.isEmpty ? fallback.serviceName : preferred.serviceName,
       hostName: preferred.hostName.isEmpty ? fallback.hostName : preferred.hostName,
-      hostIdentity: nil,
+      hostIdentity: mergedIdentity,
+      siteId: syncNonEmpty(preferred.siteId) ?? syncNonEmpty(fallback.siteId),
       port: preferred.port > 0 ? preferred.port : fallback.port,
       addresses: deduplicatedAddresses(preferred.addresses + fallback.addresses),
       tailscaleAddress: preferred.tailscaleAddress ?? fallback.tailscaleAddress,
+      runtimeName: syncNonEmpty(preferred.runtimeName) ?? syncNonEmpty(fallback.runtimeName),
       runtimeKind: preferred.runtimeKind ?? fallback.runtimeKind,
       runtimeVersion: preferred.runtimeVersion ?? fallback.runtimeVersion,
       projectIds: deduplicatedStrings(preferred.projectIds + fallback.projectIds),
       projectNames: deduplicatedStrings(preferred.projectNames + fallback.projectNames),
       projectCount: preferred.projectCount ?? fallback.projectCount,
+      pairingPinConfigured: preferred.pairingPinConfigured ?? fallback.pairingPinConfigured,
       lastResolvedAt: max(preferred.lastResolvedAt, fallback.lastResolvedAt)
     )
   }
@@ -5877,6 +6297,9 @@ final class SyncService: ObservableObject {
         // The profile was re-keyed; drop the token stored under the old key so
         // it is not orphaned in the keychain indefinitely.
         keychain.clearToken(hostKey: key)
+        for legacyKey in legacyProfileStorageKeys(updated) {
+          keychain.clearToken(hostKey: legacyKey)
+        }
       }
       changed = true
     }
@@ -6120,6 +6543,7 @@ final class SyncService: ObservableObject {
     let brain = payload["brain"] as? [String: Any]
     let remoteHostIdentity = brain?["deviceId"] as? String
     let remoteHostName = brain?["deviceName"] as? String
+    let remoteHostSiteId = brain?["siteId"] as? String
     let incomingHostIdentity = syncNormalizedCommandScopeValue(remoteHostIdentity)
       ?? syncNormalizedCommandScopeValue(expectedHostIdentity)
     if activeProjectId != nil,
@@ -6233,6 +6657,7 @@ final class SyncService: ObservableObject {
     currentAddress = connectedHost
     refreshReducedSyncLoad()
     lastError = nil
+    lastPairingErrorCode = nil
     lastSyncAt = Date()
     saveRemoteCommandDescriptors(commandDescriptors)
     uploadSavedNotificationPreferences()
@@ -6260,6 +6685,7 @@ final class SyncService: ObservableObject {
     let profile = HostConnectionProfile(
       hostIdentity: remoteHostIdentity ?? activeHostProfile?.hostIdentity ?? expectedHostIdentity,
       hostName: remoteHostName ?? activeHostProfile?.hostName,
+      siteId: syncNormalizedCommandScopeValue(remoteHostSiteId) ?? activeHostProfile?.siteId,
       port: port,
       authKind: authKind,
       pairedDeviceId: pairedDeviceId ?? activeHostProfile?.pairedDeviceId,
@@ -7514,7 +7940,7 @@ final class SyncService: ObservableObject {
 
 // MARK: - Push notifications, Live Activities, and remote commands (WS6)
 
-/// Kinds of remote commands the iOS client sends to the desktop host.
+/// Kinds of remote commands the iOS client sends to the ADE brain.
 ///
 /// Each case maps to a verb on the desktop `syncRemoteCommandService` and the
 /// notification-bus router. Keep this enum in sync with the action switch
@@ -8191,6 +8617,13 @@ func syncDiscoveredHostFromBonjour(
     .compactMap(syncNormalizedCommandScopeValue)
     .first ?? serviceName
   let hostIdentity = syncNormalizedCommandScopeValue(txtRecord["deviceId"])
+  // Internal per-connection database/runtime identity. The discovered-host
+  // list is grouped by `deviceId`/machine name instead; `siteId` is retained so
+  // the selected connection can migrate older pairings and reconnect to the
+  // current project port.
+  let siteId = syncNormalizedCommandScopeValue(txtRecord["siteId"])
+  // Optional brain/runtime label (empty string when unset on the host).
+  let runtimeName = txtRecord["runtimeName"]?.trimmingCharacters(in: .whitespacesAndNewlines)
   let runtimeKind = txtRecord["runtimeKind"]?.trimmingCharacters(in: .whitespacesAndNewlines)
   let runtimeVersion = txtRecord["runtimeVersion"]?.trimmingCharacters(in: .whitespacesAndNewlines)
   let projectIds = txtRecord["projects"]?
@@ -8202,6 +8635,15 @@ func syncDiscoveredHostFromBonjour(
     .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
     .filter { !$0.isEmpty } ?? []
   let projectCount = txtRecord["projectCount"].flatMap { Int($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+  let pairingPinConfigured: Bool? = txtRecord["pairingPinConfigured"]
+    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+    .flatMap { value in
+      switch value {
+      case "true", "1", "yes": return true
+      case "false", "0", "no": return false
+      default: return nil
+      }
+    }
   let tailscaleDnsName = txtRecord["tailscaleDnsName"]?.trimmingCharacters(in: .whitespacesAndNewlines)
   let tailscaleIp = txtRecord["tailscaleIp"]?.trimmingCharacters(in: .whitespacesAndNewlines)
   let tailscaleAddress = [tailscaleDnsName, tailscaleIp]
@@ -8210,9 +8652,11 @@ func syncDiscoveredHostFromBonjour(
       return value
     }
     .first
+  // Identify the visible row by the machine. The Bonjour service key remains a
+  // fallback for legacy rows that do not advertise a device identity.
   let id: String
   if let hostIdentity, !hostIdentity.isEmpty {
-    id = "\(hostIdentity)::\(serviceKey)"
+    id = hostIdentity
   } else {
     id = serviceKey
   }
@@ -8229,14 +8673,17 @@ func syncDiscoveredHostFromBonjour(
     serviceName: serviceName,
     hostName: hostName,
     hostIdentity: hostIdentity,
+    siteId: siteId?.isEmpty == false ? siteId : nil,
     port: port,
     addresses: nonLoopback + loopback,
     tailscaleAddress: tailscaleAddress,
+    runtimeName: runtimeName?.isEmpty == false ? runtimeName : nil,
     runtimeKind: runtimeKind?.isEmpty == false ? runtimeKind : nil,
     runtimeVersion: runtimeVersion?.isEmpty == false ? runtimeVersion : nil,
     projectIds: projectIds,
     projectNames: projectNames,
     projectCount: projectCount,
+    pairingPinConfigured: pairingPinConfigured,
     lastResolvedAt: lastResolvedAt
   )
 }
@@ -8570,4 +9017,57 @@ private func gunzip(_ data: Data) throws -> Data {
     throw NSError(domain: "ADE", code: 10, userInfo: [NSLocalizedDescriptionKey: "Unable to decode compressed sync payload."])
   }
   return output
+}
+
+// MARK: - PR auto-map (create lane from PR branch)
+
+/// A conflict that blocks creating a lane from a PR's head branch (e.g. the
+/// branch is already checked out in an existing lane/worktree). Mirrors the
+/// desktop `CreateLaneFromPrBranchPreflight.blockingConflict` shape. All
+/// detail fields beyond ``code``/``message`` are optional for lenient decoding.
+struct PrAutoMapBlock: Decodable, Equatable {
+  let code: String
+  let message: String
+  let laneId: String?
+  let laneName: String?
+  let worktreePath: String?
+}
+
+/// Resolved preflight for the create-lane-from-PR-branch (auto-map) flow.
+/// Mirrors desktop `CreateLaneFromPrBranchPreflight`. Every field beyond the
+/// request identity is optional so a slightly different host payload (or a
+/// blocked status with missing branch info) won't throw on decode.
+struct PrAutoMapPreflight: Decodable, Equatable {
+  let repoOwner: String
+  let repoName: String
+  let githubPrNumber: Int
+  let githubUrl: String
+  let title: String?
+  let headBranch: String?
+  let headSha: String?
+  let headRepoOwner: String?
+  let headRepoName: String?
+  let remoteBranch: String?
+  let importBranchRef: String?
+  let targetLaneName: String?
+  let baseBranch: String?
+  let canCreate: Bool
+  /// "ready" | "blocked"
+  let status: String
+  let blockingConflict: PrAutoMapBlock?
+  let blockingConflicts: [PrAutoMapBlock]?
+}
+
+/// Result of `prs.preflightCreateLaneFromPrBranch`. The host also returns
+/// `lane`/`pr` (both null in preflight); only ``preflight`` is decoded.
+struct PrAutoMapPreflightResult: Decodable, Equatable {
+  let preflight: PrAutoMapPreflight
+}
+
+/// Result of `prs.createLaneFromPrBranch`. Decodes the resolved ``preflight``
+/// and the newly created ``lane``. The host's `pr` field is intentionally not
+/// decoded to avoid coupling to PrSummary; the UI refreshes the PR list after.
+struct PrAutoMapCreateResult: Decodable, Equatable {
+  let preflight: PrAutoMapPreflight
+  let lane: LaneSummary
 }

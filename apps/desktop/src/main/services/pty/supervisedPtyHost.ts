@@ -3,6 +3,7 @@ import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { fileURLToPath } from "node:url";
 import type { IPty, IWindowsPtyForkOptions } from "node-pty";
 import type * as ptyNs from "node-pty";
 import type { Logger } from "../logging/logger";
@@ -84,8 +85,12 @@ function hostErrorToError(prefix: string, payload?: HostErrorPayload): Error {
 function resolvePtyHostWorkerPath(): string {
   const configured = process.env.ADE_PTY_HOST_WORKER_PATH?.trim();
   if (configured) return configured;
+  const moduleDir =
+    typeof __dirname === "string"
+      ? __dirname
+      : path.dirname(fileURLToPath(import.meta.url));
   const candidates = [
-    path.join(__dirname, "ptyHostWorker.cjs"),
+    path.join(moduleDir, "ptyHostWorker.cjs"),
     path.join(process.cwd(), "dist", "main", "ptyHostWorker.cjs"),
     path.join(process.cwd(), "dist", "ptyHostWorker.cjs"),
     path.join(process.cwd(), "apps", "desktop", "dist", "main", "ptyHostWorker.cjs"),

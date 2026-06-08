@@ -52,7 +52,7 @@ describe("ProjectScopeRegistry", () => {
         enabled: true,
         hostStartupEnabled: true,
         hostDiscoveryEnabled: true,
-        forceHostRole: true,
+        forceHostRole: false,
         runtimeKind: "daemon",
         appVersion: "test",
         localDeviceIdPath: "/tmp/ade-sync-device",
@@ -119,7 +119,7 @@ describe("ProjectScopeRegistry", () => {
         enabled: true,
         hostStartupEnabled: true,
         hostDiscoveryEnabled: true,
-        forceHostRole: true,
+        forceHostRole: false,
         runtimeKind: "daemon",
       },
     });
@@ -165,7 +165,7 @@ describe("ProjectScopeRegistry", () => {
         enabled: true,
         hostStartupEnabled: true,
         hostDiscoveryEnabled: true,
-        forceHostRole: true,
+        forceHostRole: false,
         runtimeKind: "daemon",
       },
     });
@@ -217,7 +217,7 @@ describe("ProjectScopeRegistry", () => {
         enabled: true,
         hostStartupEnabled: true,
         hostDiscoveryEnabled: true,
-        forceHostRole: true,
+        forceHostRole: false,
         runtimeKind: "daemon",
       },
     });
@@ -261,7 +261,7 @@ describe("ProjectScopeRegistry", () => {
         enabled: true,
         hostStartupEnabled: true,
         hostDiscoveryEnabled: true,
-        forceHostRole: true,
+        forceHostRole: false,
         runtimeKind: "daemon",
       },
     });

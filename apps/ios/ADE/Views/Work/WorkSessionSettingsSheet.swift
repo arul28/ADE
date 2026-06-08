@@ -86,6 +86,17 @@ struct WorkSessionSettingsSheet: View {
         WorkRuntimeOption(id: "edit", title: "Edit", subtitle: "Normal edit loop."),
         WorkRuntimeOption(id: "full-auto", title: "Full auto", subtitle: "Let the agent operate freely."),
       ]
+    case "droid", "factory":
+      // Route Droid/Factory through the shared per-runtime mode catalog so the
+      // sheet exposes Read-only/Auto low/Auto medium/Auto high/AGI, matching the
+      // New Chat composer and desktop. AGI maps to the orchestrator mode.
+      return workRuntimeModeOptions(provider: summary.provider).map { option in
+        WorkRuntimeOption(
+          id: option.id,
+          title: option.title,
+          subtitle: workDroidRuntimeSubtitle(option.id)
+        )
+      }
     default:
       return []
     }
@@ -352,5 +363,18 @@ struct WorkSessionSettingsSheet: View {
         await loadModels()
       }
     }
+  }
+}
+
+/// Per-mode descriptions for the Droid/Factory access-mode cards in the
+/// session-settings sheet. Mirrors the desktop run-mode subtitles.
+private func workDroidRuntimeSubtitle(_ mode: String) -> String {
+  switch mode {
+  case "read-only": return "Inspect only; no edits or commands."
+  case "auto-low": return "Auto-approve low-risk actions."
+  case "auto-medium": return "Auto-approve up to medium-risk actions."
+  case "auto-high": return "Auto-approve high-risk actions."
+  case "agi": return "Orchestrator mode (plans and delegates to workers)."
+  default: return "Switch this session to \(mode.capitalized)."
   }
 }

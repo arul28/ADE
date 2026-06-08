@@ -1,6 +1,7 @@
 import type { DetectedAuth } from "./authDetector";
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { resolveExecutableFromKnownLocations } from "./cliExecutableResolver";
 
 export type CodexExecutableResolution = {
@@ -22,6 +23,10 @@ const CODEX_PLATFORM_PACKAGES: Partial<Record<NodeJS.Platform, Partial<Record<No
     x64: "codex-win32-x64",
   },
 };
+const moduleDir =
+  typeof __dirname === "string"
+    ? __dirname
+    : path.dirname(fileURLToPath(import.meta.url));
 
 function findCodexAuthPath(auth?: DetectedAuth[]): string | null {
   for (const entry of auth ?? []) {
@@ -80,7 +85,7 @@ function collectBundledCodexRoots(env: NodeJS.ProcessEnv): string[] {
 
   roots.push(path.join(process.cwd(), "node_modules", "@openai"));
 
-  let current = __dirname;
+  let current = moduleDir;
   for (;;) {
     roots.push(path.join(current, "node_modules", "@openai"));
     const next = path.dirname(current);

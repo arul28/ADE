@@ -259,6 +259,10 @@ private struct ProjectHomeView: View {
     }
   }
 
+  private var canShowProjectRows: Bool {
+    syncService.connectionState == .connected || syncService.connectionState == .syncing
+  }
+
   var body: some View {
     NavigationStack {
       ZStack(alignment: .top) {
@@ -354,7 +358,7 @@ private struct ProjectHomeView: View {
         .foregroundStyle(ADEColor.textMuted)
         .tracking(0.8)
 
-      if syncService.projects.isEmpty {
+      if !canShowProjectRows || syncService.projects.isEmpty {
         emptyProjects
       } else {
         LazyVStack(spacing: 8) {
@@ -408,7 +412,7 @@ private struct ProjectHomeView: View {
     switch syncService.connectionState {
     case .connected, .syncing: return "No projects on machine"
     case .connecting: return "Connecting to machine"
-    case .error, .disconnected: return "Connect ADE machine"
+    case .error, .disconnected: return "Connect to a machine running ADE"
     }
   }
 
@@ -416,8 +420,10 @@ private struct ProjectHomeView: View {
     switch syncService.connectionState {
     case .connected, .syncing:
       return "Open a project on \(syncService.hostName ?? "your machine")"
-    case .connecting, .error, .disconnected:
-      return syncService.hostName ?? "Pair a machine to see your projects"
+    case .connecting:
+      return syncService.hostName ?? "Projects appear after this iPhone connects"
+    case .error, .disconnected:
+      return "Connect first before you can see projects"
     }
   }
 }

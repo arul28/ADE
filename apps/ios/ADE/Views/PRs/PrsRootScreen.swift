@@ -24,7 +24,6 @@ struct PRsTabView: View {
   @State private var isLoadingExternalHistory = false
   @State private var errorMessage: String?
   @State private var actionMessage: String?
-  @State private var busyAction: String?
   @State private var createPresented = false
   @State private var stackPresentation: PrStackPresentation?
   @State private var refreshFeedbackToken = 0
@@ -33,36 +32,42 @@ struct PRsTabView: View {
   @State private var lastPrsLiveSnapshotAttempt = Date.distantPast
   @State private var selectedPrTransitionId: String?
   @State private var laneContextLaneId: String?
-  @State private var rootActionTask: Task<Void, Never>?
-  @State private var rootActionRunId: String?
+  /// Memoized GitHub-list derivations (filter/sort/counts). Recomputed only
+  /// when the snapshot or a filter input changes — see `recomputeGitHubDerived`
+  /// — instead of on every `body` pass.
+  @State private var githubDerived: PrGitHubDerivedList = .empty
   @State private var githubDetailRequest: PrGitHubLaneLinkRequest?
   @State private var laneLinkRequest: PrGitHubLaneLinkRequest?
   @State private var pendingLaneLinkRequest: PrGitHubLaneLinkRequest?
+  @State private var autoMapRequest: PrAutoMapRequest?
+  @State private var autoMapPreflight: PrAutoMapPreflight?
+  @State private var autoMapPreflightLoading = false
+  @State private var autoMapBlockingMessage: String?
   @SceneStorage("ade.prs.rootSurface") private var rootSurfaceRawValue = PrRootSurface.github.rawValue
   @SceneStorage("ade.prs.workflowFilter") private var workflowFilterRawValue = PrWorkflowKindFilter.all.rawValue
   @SceneStorage("ade.prs.githubStatusFilter") private var githubStatusFilterRawValue = PrGitHubStatusFilter.open.rawValue
+  /// Primary headline selector for the GitHub surface (desktop parity): three
+  /// status categories — Open (folds draft), Merged, Closed.
+  @SceneStorage("ade.prs.githubCategory") private var githubCategoryRawValue = PrGitHubCategory.open.rawValue
   @SceneStorage("ade.prs.githubScopeFilter") private var githubScopeFilterRawValue = PrGitHubScopeFilter.all.rawValue
   @SceneStorage("ade.prs.githubSort") private var githubSortRawValue = PrGitHubSortOption.updated.rawValue
   @State private var searchText = ""
   @State private var filtersExpanded = false
 
   private var hasActiveFilters: Bool {
+    // Status is now driven by the always-visible category tabs, so only the
+    // secondary scope + sort controls count as "active advanced filters".
     selectedGitHubScopeFilter.wrappedValue != .all
-      || selectedGitHubStatusFilter.wrappedValue != .open
       || selectedGitHubSort.wrappedValue != .updated
   }
 
   /// Compact one-liner shown when filters are collapsed but non-default,
-  /// e.g. "ADE-linked · Merged · sort newest".
+  /// e.g. "ADE-linked · sort newest".
   private var activeFilterSummary: String {
     var parts: [String] = []
     let scope = selectedGitHubScopeFilter.wrappedValue
     if scope != .all {
       parts.append(scope == .ade ? "ADE-linked" : "External")
-    }
-    let status = selectedGitHubStatusFilter.wrappedValue
-    if status != .open {
-      parts.append(status.rawValue.capitalized)
     }
     let sort = selectedGitHubSort.wrappedValue
     if sort != .updated {
@@ -104,6 +109,15 @@ struct PRsTabView: View {
     )
   }
 
+  /// Primary three-way category selector (Open / Merged / Closed). Folds draft
+  /// into Open. Drives both the headline tabs and the list derivation.
+  private var selectedGitHubCategory: Binding<PrGitHubCategory> {
+    Binding(
+      get: { PrGitHubCategory(rawValue: githubCategoryRawValue) ?? .open },
+      set: { githubCategoryRawValue = $0.rawValue }
+    )
+  }
+
   private var selectedGitHubScopeFilter: Binding<PrGitHubScopeFilter> {
     Binding(
       get: { PrGitHubScopeFilter(rawValue: githubScopeFilterRawValue) ?? .all },
@@ -129,62 +143,76 @@ struct PRsTabView: View {
     }
   }
 
-  private var allGitHubPrs: [GitHubPrListItem] {
-    repoScopedGitHubPullRequests(from: githubSnapshot)
+  /// Total repo-scoped GitHub PR count (pre-filter). Cheap pass-through; the
+  /// expensive derivations are memoized in `githubDerived`.
+  private var allGitHubPrsCount: Int {
+    githubDerived.allCount
   }
 
   private var githubSnapshotNeedsExternalHistory: Bool {
-    selectedGitHubStatusFilter.wrappedValue != .open
+    selectedGitHubCategory.wrappedValue != .open
   }
 
   private var githubSnapshotShouldIncludeExternalClosed: Bool {
     githubExternalHistoryLoaded || githubSnapshotNeedsExternalHistory
   }
 
+  /// Memoized filtered + sorted GitHub PR list (see `githubDerived`).
   private var filteredGitHubPrs: [GitHubPrListItem] {
-    let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-    let status = selectedGitHubStatusFilter.wrappedValue
-    let scope = selectedGitHubScopeFilter.wrappedValue
-    let sort = selectedGitHubSort.wrappedValue
-    return allGitHubPrs
-      .filter { item in
-        matchesGitHubStatus(item, status: status)
-          && matchesGitHubScope(item, scope: scope)
-          && matchesGitHubSearch(item, query: query)
-      }
-      .sorted { lhs, rhs in
-        switch sort {
-        case .updated:
-          return (prParsedDate(lhs.updatedAt) ?? .distantPast) > (prParsedDate(rhs.updatedAt) ?? .distantPast)
-        case .created:
-          return (prParsedDate(lhs.createdAt) ?? .distantPast) > (prParsedDate(rhs.createdAt) ?? .distantPast)
-        case .number:
-          if lhs.repoOwner == rhs.repoOwner && lhs.repoName == rhs.repoName {
-            return lhs.githubPrNumber > rhs.githubPrNumber
-          }
-          return "\(lhs.repoOwner)/\(lhs.repoName)" < "\(rhs.repoOwner)/\(rhs.repoName)"
-        }
-      }
+    githubDerived.filtered
   }
 
   private var githubFilterCounts: PrGitHubFilterCounts {
-    let scope = selectedGitHubScopeFilter.wrappedValue
-    let status = selectedGitHubStatusFilter.wrappedValue
-    let scopedItems = allGitHubPrs.filter { matchesGitHubScope($0, scope: scope) }
-    let statusItems = allGitHubPrs.filter { matchesGitHubStatus($0, status: status) }
-    return PrGitHubFilterCounts(
-      open: scopedItems.filter { matchesGitHubStatus($0, status: .open) }.count,
-      draft: scopedItems.filter { matchesGitHubStatus($0, status: .draft) }.count,
-      merged: scopedItems.filter { matchesGitHubStatus($0, status: .merged) }.count,
-      closed: scopedItems.filter { matchesGitHubStatus($0, status: .closed) }.count,
-      all: scopedItems.count,
-      ade: statusItems.filter { matchesGitHubScope($0, scope: .ade) }.count,
-      external: statusItems.filter { matchesGitHubScope($0, scope: .external) }.count
+    githubDerived.counts
+  }
+
+  /// Recompute the memoized GitHub-list derivations. Called from `.onChange`
+  /// of the snapshot + every filter/search input, so a `body` pass never pays
+  /// the filter/sort/count cost.
+  private func recomputeGitHubDerived() {
+    let next = prComputeGitHubDerivedList(
+      items: repoScopedGitHubPullRequests(from: githubSnapshot),
+      query: searchText,
+      status: selectedGitHubStatusFilter.wrappedValue,
+      scope: selectedGitHubScopeFilter.wrappedValue,
+      sort: selectedGitHubSort.wrappedValue,
+      category: selectedGitHubCategory.wrappedValue
     )
+    if githubDerived != next {
+      githubDerived = next
+    }
+  }
+
+  /// Stable registry key for root-level workflow actions (queue / integration /
+  /// create / link). These share one in-flight banner, so one key is correct.
+  private static let rootActionKey = "prs.root"
+
+  /// Label of the in-flight root action, if any. Read from the durable service
+  /// registry so the banner survives a tab switch + remount.
+  private var rootActionInFlightLabel: String? {
+    syncService.prActionLabel(forKey: Self.rootActionKey)
+  }
+
+  private var isRootActionInFlight: Bool {
+    rootActionInFlightLabel != nil
   }
 
   private var canLinkGitHubPullRequests: Bool {
-    isLive && busyAction == nil && syncService.supportsRemoteAction("prs.linkToLane")
+    isLive && !isRootActionInFlight && syncService.supportsRemoteAction("prs.linkToLane")
+  }
+
+  /// Gate for the auto-map ("Create lane from PR branch") affordance. Mirrors
+  /// the link gate but on the auto-map remote action so older hosts that don't
+  /// expose it simply hide the button (no crash) and keep the link flow.
+  private var canAutoMapGitHubPullRequests: Bool {
+    isLive && !isRootActionInFlight && syncService.supportsRemoteAction("prs.createLaneFromPrBranch")
+  }
+
+  /// Per-category counts for the three headline tabs, scoped by the active
+  /// scope filter (ADE / External / All). Memoized in `githubDerived` so a
+  /// `body` pass never re-scans the snapshot.
+  private var githubCategoryCounts: PrGitHubCategoryCounts {
+    githubDerived.categoryCounts
   }
 
   /// Prefer the unified `PrMobileSnapshot.workflowCards` payload when available; fall back to the
@@ -254,7 +282,7 @@ struct PRsTabView: View {
   }
 
   private var canRunWorkflowActions: Bool {
-    isLive && busyAction == nil
+    isLive && !isRootActionInFlight
   }
 
   private var prsProjectionReloadKey: Int? {
@@ -280,7 +308,7 @@ struct PRsTabView: View {
   }
 
   private var linkedPrCount: Int {
-    allGitHubPrs.filter { $0.linkedPrId != nil || $0.linkedLaneId != nil || $0.adeKind != nil }.count
+    githubDerived.linkedCount
   }
 
   var body: some View {
@@ -329,11 +357,30 @@ struct PRsTabView: View {
             .prListRow()
           }
 
-          if let busyAction {
+          // In-flight banner reads from the DURABLE service registry, so it
+          // survives a tab switch + remount — the action keeps running at the
+          // service level even while this view is gone.
+          if let rootActionInFlightLabel {
             HStack(spacing: 10) {
               ProgressView()
                 .tint(ADEColor.accent)
-              Text(busyAction)
+              Text(rootActionInFlightLabel)
+                .font(.subheadline)
+                .foregroundStyle(ADEColor.textSecondary)
+              Spacer(minLength: 0)
+            }
+            .adeGlassCard(cornerRadius: 12, padding: 12)
+            .prListRow()
+          }
+
+          // External-history fetch indicator. `loadGitHubExternalHistoryIfNeeded`
+          // used to fetch silently when switching off the Open filter; surface a
+          // lightweight row so the user knows closed/merged history is loading.
+          if isLoadingExternalHistory {
+            HStack(spacing: 10) {
+              ProgressView()
+                .tint(ADEColor.accent)
+              Text("Loading closed & merged history…")
                 .font(.subheadline)
                 .foregroundStyle(ADEColor.textSecondary)
               Spacer(minLength: 0)
@@ -356,7 +403,7 @@ struct PRsTabView: View {
 
           PrsSurfaceToggle(
             selection: selectedRootSurface,
-            repoPrCount: allGitHubPrs.count,
+            repoPrCount: allGitHubPrsCount,
             workflowCount: workflowCards.count
           )
           .padding(.top, 2)
@@ -402,17 +449,29 @@ struct PRsTabView: View {
         guard prNavigationRequestKey != nil else { return }
         await handleRequestedPrNavigation()
       }
+      .onChange(of: githubCategoryRawValue) { _, _ in
+        guard selectedGitHubCategory.wrappedValue != .open else { return }
+        Task { await loadGitHubExternalHistoryIfNeeded() }
+      }
       .onChange(of: githubStatusFilterRawValue) { _, _ in
         guard selectedGitHubStatusFilter.wrappedValue != .open else { return }
         Task { await loadGitHubExternalHistoryIfNeeded() }
       }
+      // Memoize the GitHub-list derivations: recompute only when the snapshot
+      // or a filter/search input actually changes, never inside a body pass.
+      .onChange(of: githubSnapshot) { _, _ in recomputeGitHubDerived() }
+      .onChange(of: searchText) { _, _ in recomputeGitHubDerived() }
+      .onChange(of: githubCategoryRawValue) { _, _ in recomputeGitHubDerived() }
+      .onChange(of: githubStatusFilterRawValue) { _, _ in recomputeGitHubDerived() }
+      .onChange(of: githubScopeFilterRawValue) { _, _ in recomputeGitHubDerived() }
+      .onChange(of: githubSortRawValue) { _, _ in recomputeGitHubDerived() }
+      .onAppear { recomputeGitHubDerived() }
       .refreshable {
         await refreshFromPullGesture()
       }
-      .onDisappear {
-        rootActionTask?.cancel()
-        rootActionTask = nil
-      }
+      // NOTE: We intentionally do NOT cancel any action task on disappear.
+      // Root PR actions now run at the service level (`runDurablePrAction`), so
+      // switching tabs must not abort in-flight queue / integration / link work.
       .navigationDestination(for: String.self) { prId in
         PrDetailView(
           prId: prId,
@@ -431,9 +490,17 @@ struct PRsTabView: View {
         PrGitHubReadDetailSheet(
           item: request.item,
           canLink: canLinkGitHubPullRequests,
+          canAutoMap: canAutoMapGitHubPullRequests,
           onLink: {
             pendingLaneLinkRequest = request
             githubDetailRequest = nil
+          },
+          onAutoMap: {
+            let item = request.item
+            githubDetailRequest = nil
+            // Defer the auto-map sheet to after the read sheet dismisses so the
+            // two don't fight for the presentation slot.
+            DispatchQueue.main.async { presentAutoMap(for: item) }
           },
           onOpenGitHub: {
             openGitHub(urlString: request.item.githubUrl)
@@ -461,6 +528,19 @@ struct PRsTabView: View {
         } onOpenGitHub: {
           openGitHub(urlString: request.item.githubUrl)
         }
+      }
+      .sheet(item: $autoMapRequest) { request in
+        PrAutoMapSheet(
+          item: request.item,
+          preflight: autoMapPreflight,
+          loading: autoMapPreflightLoading,
+          blockingMessage: autoMapBlockingMessage,
+          canCreate: canAutoMapGitHubPullRequests
+            && (autoMapPreflight?.canCreate ?? false)
+            && autoMapBlockingMessage == nil,
+          onCreate: { confirmAutoMap(for: request.item) },
+          onCancel: { autoMapRequest = nil }
+        )
       }
     }
   }
@@ -700,9 +780,17 @@ struct PRsTabView: View {
 
   @ViewBuilder
   private var githubSurfaceRows: some View {
+    // Headline three-category selector (Open / Merged / Closed) — the primary
+    // top-level control, mirroring desktop's GitHubTab. Always visible; the
+    // scope + sort live in the collapsible advanced filters below.
+    PrGitHubCategoryTabs(
+      selection: selectedGitHubCategory,
+      counts: githubCategoryCounts
+    )
+    .prListRow()
+
     if filtersExpanded {
       PrGitHubFiltersCard(
-        statusFilter: selectedGitHubStatusFilter,
         scopeFilter: selectedGitHubScopeFilter,
         sortOption: selectedGitHubSort,
         counts: githubFilterCounts
@@ -777,8 +865,8 @@ struct PRsTabView: View {
     }
 
     if githubSnapshot != nil {
-      let repoItems = filteredGitHubPrs.filter { $0.scope != "external" }
-      let externalItems = filteredGitHubPrs.filter { $0.scope == "external" }
+      let repoItems = githubDerived.repoItems
+      let externalItems = githubDerived.externalItems
       let repoSectionTitle: String = {
         if let repo = githubSnapshot?.repo {
           return "\(repo.owner)/\(repo.name)"
@@ -868,8 +956,14 @@ struct PRsTabView: View {
           githubDetailRequest = PrGitHubLaneLinkRequest(item: item)
         }
         .tint(ADEColor.warning)
+        if canAutoMapGitHubPullRequests {
+          Button("Create lane") {
+            presentAutoMap(for: item)
+          }
+          .tint(ADEColor.success)
+        }
         if canLinkGitHubPullRequests {
-          Button("Link") {
+          Button("Map") {
             laneLinkRequest = PrGitHubLaneLinkRequest(item: item)
           }
           .tint(ADEColor.tintPRs)
@@ -1051,32 +1145,6 @@ struct PRsTabView: View {
     return groups
   }
 
-  private func matchesGitHubStatus(_ item: GitHubPrListItem, status: PrGitHubStatusFilter) -> Bool {
-    switch status {
-    case .all:
-      return true
-    case .open:
-      return item.state == "open" && !item.isDraft
-    case .draft:
-      return item.isDraft
-    case .merged:
-      return item.state == "merged"
-    case .closed:
-      return item.state == "closed"
-    }
-  }
-
-  private func matchesGitHubScope(_ item: GitHubPrListItem, scope: PrGitHubScopeFilter) -> Bool {
-    switch scope {
-    case .all:
-      return true
-    case .ade:
-      return item.adeKind != nil || item.linkedPrId != nil || item.linkedLaneId != nil
-    case .external:
-      return item.adeKind == nil && item.linkedPrId == nil && item.linkedLaneId == nil
-    }
-  }
-
   private func matchesCachedPrStatus(_ item: PullRequestListItem, status: PrGitHubStatusFilter) -> Bool {
     switch status {
     case .all:
@@ -1118,26 +1186,6 @@ struct PRsTabView: View {
     .compactMap { $0?.lowercased() }
     .joined(separator: " ")
     return haystack.contains(query)
-  }
-
-  private func matchesGitHubSearch(_ item: GitHubPrListItem, query: String) -> Bool {
-    guard !query.isEmpty else { return true }
-    let haystack = [
-      item.title,
-      item.author,
-      item.repoOwner,
-      item.repoName,
-      item.baseBranch,
-      item.headBranch,
-      item.linkedLaneName,
-      item.adeKind,
-      item.workflowDisplayState,
-      "#\(item.githubPrNumber)",
-      "\(item.githubPrNumber)",
-    ]
-    .compactMap { $0?.lowercased() }
-    .joined(separator: " ")
-    return haystack.contains(query) || item.labels.contains { $0.name.lowercased().contains(query) }
   }
 
   private var laneContextNotice: ADENoticeCard? {
@@ -1335,7 +1383,6 @@ struct PRsTabView: View {
   ) async -> Bool {
     await performPrRootAction(
       "Creating pull request",
-      cancelExisting: true,
       operation: {
         try await syncService.createPullRequest(
           laneId: laneId,
@@ -1358,7 +1405,6 @@ struct PRsTabView: View {
   private func handleCreateQueuePrs(_ request: CreateQueuePrsRequest) async -> Bool {
     await performPrRootAction(
       "Creating queue PRs",
-      cancelExisting: true,
       operation: {
         _ = try await syncService.createQueuePrs(
           laneIds: request.laneIds,
@@ -1381,7 +1427,6 @@ struct PRsTabView: View {
   private func handleCreateIntegrationPr(_ request: CreateIntegrationRequest) async -> Bool {
     await performPrRootAction(
       "Creating integration PR",
-      cancelExisting: true,
       operation: {
         let proposal = try await syncService.simulateIntegration(
           sourceLaneIds: request.sourceLaneIds,
@@ -1413,76 +1458,149 @@ struct PRsTabView: View {
     )
   }
 
+  /// Fire-and-forget root workflow action (queue / integration / link / merge /
+  /// rebase). The in-flight entry + Task lifecycle live on `SyncService`, so the
+  /// work COMPLETES and the spinner persists even if the user switches tabs and
+  /// tears this view down. The view-side closures only run if the view is still
+  /// alive — that's fine, they merely surface the ephemeral success/error toast.
   private func runPrRootAction(
     _ label: String,
     operation: @escaping () async throws -> Void,
     onSuccess: @escaping @MainActor () -> Void = {}
   ) {
-    rootActionTask?.cancel()
-    let task = Task { @MainActor in
-      _ = await performPrRootAction(label, operation: operation, onSuccess: onSuccess)
-    }
-    rootActionTask = task
+    let service = syncService
+    errorMessage = nil
+    actionMessage = nil
+    service.runDurablePrAction(
+      key: Self.rootActionKey,
+      label: label,
+      operation: {
+        try await operation()
+        // Refresh remote state at the service level so the list reflects the
+        // result regardless of whether this view is still mounted.
+        try? await service.refreshPullRequestSnapshots()
+        try? await service.refreshLaneSnapshots()
+      },
+      onSuccess: {
+        onSuccess()
+        Task { await reload() }
+        actionMessage = "\(label) finished."
+      },
+      onFailure: { error in
+        Task { await reload() }
+        errorMessage = error.localizedDescription
+      }
+    )
   }
 
+  // MARK: - Auto-map (create lane from PR branch)
+
+  /// Open the auto-map confirmation sheet for an unmapped PR and kick off a
+  /// preflight so the sheet can show the target lane name / a blocking
+  /// conflict before the user commits. Preflight is best-effort: a failure
+  /// just leaves the sheet in its can't-confirm state with the error noted.
+  private func presentAutoMap(for item: GitHubPrListItem) {
+    autoMapBlockingMessage = nil
+    autoMapPreflight = nil
+    autoMapPreflightLoading = canAutoMapGitHubPullRequests
+    autoMapRequest = PrAutoMapRequest(item: item)
+    guard canAutoMapGitHubPullRequests else { return }
+    let service = syncService
+    let target = item
+    Task { @MainActor in
+      do {
+        let result = try await service.preflightCreateLaneFromPrBranch(
+          repoOwner: target.repoOwner,
+          repoName: target.repoName,
+          githubPrNumber: target.githubPrNumber
+        )
+        // Ignore a stale completion if the user moved on to another PR.
+        guard autoMapRequest?.item.id == target.id else { return }
+        autoMapPreflight = result.preflight
+        autoMapBlockingMessage = result.preflight.blockingConflict?.message
+      } catch {
+        guard autoMapRequest?.item.id == target.id else { return }
+        autoMapBlockingMessage = error.localizedDescription
+      }
+      autoMapPreflightLoading = false
+    }
+  }
+
+  /// Commit the auto-map: create a lane from the PR's head branch via the
+  /// durable action wrapper (spinner survives a tab switch), then refresh the
+  /// list and navigate to the now-mapped PR. A blocking conflict surfaces its
+  /// message instead of navigating.
+  private func confirmAutoMap(for item: GitHubPrListItem) {
+    autoMapRequest = nil
+    runPrRootAction(
+      "Creating lane from PR branch",
+      operation: {
+        let result = try await syncService.createLaneFromPrBranch(
+          repoOwner: item.repoOwner,
+          repoName: item.repoName,
+          githubPrNumber: item.githubPrNumber
+        )
+        if let conflict = result.preflight.blockingConflict {
+          throw PrAutoMapError.blocked(conflict.message)
+        }
+      },
+      onSuccess: {
+        // The durable wrapper kicks off a refresh, but it isn't awaited before
+        // this fires — so re-pull the list ourselves and only then navigate to
+        // the freshly-mapped PR (matched by repo + number).
+        Task { await navigateToMappedPr(for: item) }
+      }
+    )
+  }
+
+  /// After an auto-map, refresh the list then locate the now-mapped PR row and
+  /// push its detail. Best-effort: silently no-ops if the mapping hasn't
+  /// surfaced yet.
+  @MainActor
+  private func navigateToMappedPr(for item: GitHubPrListItem) async {
+    await reload()
+    let repoItems = repoScopedGitHubPullRequests(from: githubSnapshot)
+    if let mapped = repoItems.first(where: {
+      $0.repoOwner == item.repoOwner
+        && $0.repoName == item.repoName
+        && $0.githubPrNumber == item.githubPrNumber
+        && $0.linkedPrId != nil
+    }), let prId = mapped.linkedPrId {
+      selectedPrTransitionId = prId
+      path.append(prId)
+    }
+  }
+
+  /// Awaitable root action used by the create-PR wizard handlers, which need the
+  /// success/failure result to dismiss their sheet. The in-flight entry is
+  /// registered on the durable service registry (so the banner survives a tab
+  /// switch), but the caller still awaits the outcome here so the sheet can
+  /// respond. The underlying remote work is what must not be cancelled — and it
+  /// isn't, because the create flows complete their `sendCommand` round-trips
+  /// before this returns; this awaits inside a sheet the user is actively in.
   @MainActor
   @discardableResult
   private func performPrRootAction(
     _ label: String,
-    cancelExisting: Bool = false,
     operation: @escaping () async throws -> Void,
     onSuccess: @escaping @MainActor () -> Void = {}
   ) async -> Bool {
-    if cancelExisting {
-      rootActionTask?.cancel()
-      rootActionTask = nil
-    }
-    let runId = UUID().uuidString
-    rootActionRunId = runId
-    busyAction = label
+    let token = syncService.beginPrAction(key: Self.rootActionKey, label: label)
+    defer { syncService.endPrAction(key: Self.rootActionKey, token: token) }
     errorMessage = nil
     actionMessage = nil
     do {
       try await operation()
-      guard rootActionRunId == runId, !Task.isCancelled else {
-        clearPrRootActionIfCurrent(runId)
-        return false
-      }
       onSuccess()
-      guard rootActionRunId == runId, !Task.isCancelled else {
-        clearPrRootActionIfCurrent(runId)
-        return false
-      }
       await reload(refreshRemote: true)
-      guard rootActionRunId == runId, !Task.isCancelled else {
-        clearPrRootActionIfCurrent(runId)
-        return false
-      }
       actionMessage = "\(label) finished."
-      clearPrRootActionIfCurrent(runId)
       return true
     } catch {
-      guard rootActionRunId == runId, !Task.isCancelled else {
-        clearPrRootActionIfCurrent(runId)
-        return false
-      }
       let message = error.localizedDescription
       await reload(refreshRemote: false)
-      guard rootActionRunId == runId, !Task.isCancelled else {
-        clearPrRootActionIfCurrent(runId)
-        return false
-      }
       errorMessage = message
-      clearPrRootActionIfCurrent(runId)
       return false
     }
-  }
-
-  @MainActor
-  private func clearPrRootActionIfCurrent(_ runId: String) {
-    guard rootActionRunId == runId else { return }
-    busyAction = nil
-    rootActionRunId = nil
   }
 
   private func openGitHub(urlString: String) {
@@ -1632,7 +1750,9 @@ private struct PrGitHubReadDetailSheet: View {
   @Environment(\.dismiss) private var dismiss
   let item: GitHubPrListItem
   let canLink: Bool
+  var canAutoMap: Bool = false
   let onLink: () -> Void
+  var onAutoMap: (() -> Void)? = nil
   let onOpenGitHub: () -> Void
 
   private var stateLabel: String {
@@ -1730,12 +1850,30 @@ private struct PrGitHubReadDetailSheet: View {
         .prGlassCard(cornerRadius: 14, tint: PrGlassPalette.purple.opacity(0.55), shadow: false)
 
         VStack(spacing: 10) {
-          Button {
-            onLink()
-          } label: {
-            Label("Link to lane", systemImage: "link")
+          // Primary auto-map CTA: create a lane straight from the PR branch.
+          // Hidden entirely on hosts that don't expose the action so older
+          // machines fall back to the link flow with no dead control.
+          if canAutoMap, let onAutoMap {
+            Button {
+              onAutoMap()
+            } label: {
+              Label("Create lane from PR branch", systemImage: "arrow.triangle.branch")
+            }
+            .buttonStyle(PrGlassPrimaryButtonStyle())
           }
-          .buttonStyle(PrGlassPrimaryButtonStyle())
+
+          // When the auto-map CTA is present it owns the primary slot, so the
+          // link flow renders as the secondary (outline) action; otherwise the
+          // link button stays primary (legacy behavior).
+          Group {
+            if canAutoMap, onAutoMap != nil {
+              Button { onLink() } label: { Label("Map to lane…", systemImage: "link") }
+                .buttonStyle(PrGlassOutlineButtonStyle())
+            } else {
+              Button { onLink() } label: { Label("Link to lane", systemImage: "link") }
+                .buttonStyle(PrGlassPrimaryButtonStyle())
+            }
+          }
           .disabled(!canLink)
 
           Button {
@@ -1746,6 +1884,107 @@ private struct PrGitHubReadDetailSheet: View {
           .buttonStyle(PrGlassOutlineButtonStyle())
         }
         .padding(.top, 4)
+      }
+      .padding(16)
+    }
+  }
+}
+
+// MARK: - Auto-map confirmation sheet (create lane from PR branch)
+//
+// Mirrors desktop's `CreateLaneFromPrBranchDialog`: a compact summary of the
+// resolved preflight (PR, source branch, target lane, base branch) plus a
+// blocking-conflict banner and a primary "Create lane" action.
+
+private struct PrAutoMapSheet: View {
+  @Environment(\.dismiss) private var dismiss
+  let item: GitHubPrListItem
+  let preflight: PrAutoMapPreflight?
+  let loading: Bool
+  let blockingMessage: String?
+  let canCreate: Bool
+  let onCreate: () -> Void
+  let onCancel: () -> Void
+
+  private var sourceBranch: String {
+    preflight?.remoteBranch ?? preflight?.headBranch ?? item.headBranch ?? "—"
+  }
+
+  private var targetLane: String {
+    if let name = preflight?.targetLaneName, !name.isEmpty { return name }
+    let branch = (item.headBranch ?? "").replacingOccurrences(of: "refs/heads/", with: "")
+    return branch.isEmpty ? "New lane" : branch
+  }
+
+  private var baseBranch: String {
+    preflight?.baseBranch ?? item.baseBranch ?? "—"
+  }
+
+  var body: some View {
+    PrLiquidSheetShell(
+      title: "Create lane from PR branch",
+      trailingLabel: "Cancel",
+      onTrailing: {
+        onCancel()
+        dismiss()
+      }
+    ) {
+      VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: 8) {
+          HStack(spacing: 8) {
+            Text("#\(item.githubPrNumber)")
+              .font(.system(size: 18, weight: .bold, design: .monospaced))
+              .foregroundStyle(PrGlassPalette.purpleBright)
+            Spacer(minLength: 0)
+          }
+          Text(item.title)
+            .font(.system(size: 15, weight: .semibold))
+            .foregroundStyle(PrsGlass.textPrimary)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+
+        if loading {
+          HStack(spacing: 10) {
+            ProgressView().tint(PrGlassPalette.purpleBright)
+            Text("Checking branch ownership and PR head…")
+              .font(.system(size: 12))
+              .foregroundStyle(PrsGlass.textSecondary)
+            Spacer(minLength: 0)
+          }
+        } else {
+          VStack(spacing: 8) {
+            PrGlassMonoRow(eyebrow: "Source branch", value: sourceBranch, icon: "arrow.triangle.branch")
+            PrGlassMonoRow(eyebrow: "Target lane", value: targetLane, icon: "rectangle.stack")
+            PrGlassMonoRow(eyebrow: "Base branch", value: baseBranch, icon: "arrow.down.to.line")
+          }
+        }
+
+        if let blockingMessage, !blockingMessage.isEmpty {
+          HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "exclamationmark.triangle.fill")
+              .font(.system(size: 13))
+              .foregroundStyle(PrGlassPalette.danger)
+              .padding(.top, 1)
+            Text(blockingMessage)
+              .font(.system(size: 12))
+              .foregroundStyle(PrGlassPalette.danger)
+              .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+          }
+          .padding(12)
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .prGlassCard(cornerRadius: 12, tint: PrGlassPalette.danger.opacity(0.55), shadow: false)
+        }
+
+        Button {
+          onCreate()
+          dismiss()
+        } label: {
+          Label("Create lane", systemImage: "arrow.triangle.branch")
+        }
+        .buttonStyle(PrGlassPrimaryButtonStyle())
+        .disabled(!canCreate)
+        .opacity(canCreate ? 1 : 0.5)
       }
       .padding(16)
     }

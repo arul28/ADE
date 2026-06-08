@@ -40,6 +40,7 @@ import type {
   CommitIntegrationArgs,
   CreateQueuePrsArgs,
   CreateLaneArgs,
+  CreateLaneFromPrBranchArgs,
   CreateLaneFromUnstagedArgs,
   CreatePrFromLaneArgs,
   CreateIntegrationLaneForProposalArgs,
@@ -1221,6 +1222,16 @@ function parseLinkPrToLaneArgs(value: Record<string, unknown>): LinkPrToLaneArgs
     laneId: requireString(value.laneId, "prs.linkToLane requires laneId."),
     prUrlOrNumber: requireString(value.prUrlOrNumber, "prs.linkToLane requires prUrlOrNumber."),
   };
+}
+
+function parseCreateLaneFromPrBranchArgs(value: Record<string, unknown>): CreateLaneFromPrBranchArgs {
+  const repoOwner = requireString(value.repoOwner, "prs.createLaneFromPrBranch requires repoOwner.");
+  const repoName = requireString(value.repoName, "prs.createLaneFromPrBranch requires repoName.");
+  const githubPrNumber = asOptionalNumber(value.githubPrNumber);
+  if (githubPrNumber == null || !Number.isInteger(githubPrNumber) || githubPrNumber <= 0) {
+    throw new Error("prs.createLaneFromPrBranch requires a positive integer githubPrNumber.");
+  }
+  return { repoOwner, repoName, githubPrNumber };
 }
 
 function parseDraftPrDescriptionArgs(value: Record<string, unknown>): DraftPrDescriptionArgs {
@@ -2876,6 +2887,8 @@ function registerPrAndDeeplinkRemoteCommands({ args, register }: RemoteCommandRe
   register("prs.createFromLane", { viewerAllowed: true, queueable: true }, async (payload) => args.prService.createFromLane(parseCreatePrArgs(payload)));
   register("prs.createQueue", { viewerAllowed: true, queueable: true }, async (payload) => args.prService.createQueuePrs(parseCreateQueuePrsArgs(payload)));
   register("prs.linkToLane", { viewerAllowed: true, queueable: true }, async (payload) => args.prService.linkToLane(parseLinkPrToLaneArgs(payload)));
+  register("prs.preflightCreateLaneFromPrBranch", { viewerAllowed: true }, async (payload) => args.prService.preflightCreateLaneFromPrBranch(parseCreateLaneFromPrBranchArgs(payload)));
+  register("prs.createLaneFromPrBranch", { viewerAllowed: true, queueable: true }, async (payload) => args.prService.createLaneFromPrBranch(parseCreateLaneFromPrBranchArgs(payload)));
   register("prs.draftDescription", { viewerAllowed: true, queueable: true }, async (payload) =>
     args.prService.draftDescription(parseDraftPrDescriptionArgs(payload)));
   register("prs.land", { viewerAllowed: true, queueable: true }, async (payload) => args.prService.land(parseLandPrArgs(payload)));

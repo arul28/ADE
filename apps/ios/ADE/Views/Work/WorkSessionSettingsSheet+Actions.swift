@@ -62,6 +62,7 @@ extension WorkSessionSettingsSheet {
     var codexSandbox: String?
     var codexConfigSource: String?
     var opencodePermissionMode: String?
+    var droidPermissionMode: String?
     var cursorModeId: String?
     var runtimeChanged = false
 
@@ -103,6 +104,13 @@ extension WorkSessionSettingsSheet {
         opencodePermissionMode = selectedRuntimeMode
         permissionMode = selectedRuntimeMode
       }
+    case "droid", "factory":
+      if selectedRuntimeMode != initialRuntimeMode {
+        runtimeChanged = true
+        let wire = workRuntimeWireFields(provider: "droid", mode: selectedRuntimeMode)
+        droidPermissionMode = wire.droidPermissionMode
+        permissionMode = wire.permissionMode
+      }
     case "cursor":
       if !selectedCursorModeId.isEmpty && selectedCursorModeId != initialCursorModeId {
         runtimeChanged = true
@@ -132,6 +140,7 @@ extension WorkSessionSettingsSheet {
         codexSandbox: codexSandbox,
         codexConfigSource: codexConfigSource,
         opencodePermissionMode: opencodePermissionMode,
+        droidPermissionMode: droidPermissionMode,
         cursorModeId: cursorModeId,
         manuallyNamed: titleChanged ? true : nil
       )

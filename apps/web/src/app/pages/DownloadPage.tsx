@@ -52,7 +52,7 @@ export function DownloadPage() {
         title: "macOS",
         icon: <Apple className="h-5 w-5" />,
         note: "Current beta release target: DMG and ZIP from GitHub Releases.",
-        hint: "Recommended on Apple Silicon and Intel.",
+        hint: "ADE for computers bundles the app, ade CLI, ade code, and the background brain.",
         actionHref: LINKS.releases,
         actionLabel: "Download from releases"
       },
@@ -78,8 +78,8 @@ export function DownloadPage() {
         key: "ios" as const,
         title: "iOS",
         icon: <Smartphone className="h-5 w-5" />,
-        note: "The companion app is available to current TestFlight testers while the App Store listing is prepared.",
-        hint: "Mobile release notes cover remote review, approvals, and push state.",
+        note: "ADE Mobile is available to current TestFlight testers while the App Store listing is prepared.",
+        hint: "Pair once with an ADE machine, then review, approve, and follow push state from the phone.",
         actionHref: LINKS.changelog,
         actionLabel: "Read mobile release notes"
       }
@@ -103,8 +103,9 @@ export function DownloadPage() {
         </Reveal>
         <Reveal delay={0.1}>
           <p className="mt-5 max-w-2xl text-pretty text-base leading-relaxed text-muted-fg sm:text-lg">
-            Get the latest desktop build from GitHub Releases, or build from source. ADE runs in Guest Mode without
-            accounts, and can optionally enable hosted or BYOK LLM providers.
+            Get ADE for your computer from GitHub Releases, or build from source. The computer install includes the app,
+            ade CLI, ade code, and the background brain. ADE runs in Guest Mode without accounts, and can optionally
+            enable hosted or BYOK LLM providers.
           </p>
         </Reveal>
 
@@ -220,13 +221,14 @@ export function DownloadPage() {
             <SectionHeading
               eyebrow={<span className="inline-flex items-center gap-2"><span className="h-1.5 w-1.5 rounded-full bg-accent" />Notes</span>}
               title="A couple heads-ups."
-              description="Desktop builds ship via GitHub Releases. Cloud features are optional, and hosted output is treated as suggestions."
+              description="Computer builds ship via GitHub Releases. Cloud features are optional, and hosted output is treated as suggestions."
               size="md"
             />
             <div className="mt-8 grid gap-4 text-sm text-muted-fg md:grid-cols-2">
               <Card tone="solid" className="p-4 shadow-glass-sm">
-                Official macOS releases are intended to be signed and notarized so ADE can open normally and keep using
-                in-app updates. Older beta artifacts may still need the legacy Gatekeeper workaround.
+                Official macOS releases are intended to be signed and notarized so ADE can open normally, keep using
+                in-app updates, and refresh the bundled brain after an update. Older beta artifacts may still need the
+                legacy Gatekeeper workaround.
               </Card>
               <Card tone="solid" className="p-4 shadow-glass-sm">
                 Cloud features are optional. ADE is designed to keep the repo authoritative and treat hosted results as

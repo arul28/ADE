@@ -89,6 +89,71 @@ enum PrGitHubStatusFilter: String, CaseIterable, Identifiable {
   }
 }
 
+/// The three primary GitHub status categories shown as the headline selector,
+/// mirroring desktop's GitHubTab. `open` folds `draft` in (state == open OR
+/// draft). Order + colors match desktop: Open (#60A5FA), Merged (#4ADE80),
+/// Closed (#A1A1AA).
+enum PrGitHubCategory: String, CaseIterable, Identifiable {
+  case open
+  case merged
+  case closed
+
+  var id: String { rawValue }
+
+  var title: String {
+    switch self {
+    case .open: return "Open"
+    case .merged: return "Merged"
+    case .closed: return "Closed"
+    }
+  }
+
+  /// Accent color per desktop's `stateColor`/`FILTER_COLORS`.
+  var tint: Color {
+    switch self {
+    case .open: return Color(red: 0x60 / 255, green: 0xA5 / 255, blue: 0xFA / 255)
+    case .merged: return Color(red: 0x4A / 255, green: 0xDE / 255, blue: 0x80 / 255)
+    case .closed: return Color(red: 0xA1 / 255, green: 0xA1 / 255, blue: 0xAA / 255)
+    }
+  }
+
+  var icon: String? {
+    switch self {
+    case .open: return "arrow.triangle.pull"
+    case .merged: return "arrow.merge"
+    case .closed: return "xmark.circle"
+    }
+  }
+
+  /// Bridge to the richer 5-way status filter used by the existing derivation
+  /// pipeline. `open` keeps the `.open` filter (draft is folded in by the
+  /// category-aware matcher); merged/closed map 1:1.
+  var statusFilter: PrGitHubStatusFilter {
+    switch self {
+    case .open: return .open
+    case .merged: return .merged
+    case .closed: return .closed
+    }
+  }
+}
+
+/// Per-category counts for the three headline tabs. Open folds draft in.
+struct PrGitHubCategoryCounts: Equatable {
+  let open: Int
+  let merged: Int
+  let closed: Int
+
+  func count(for category: PrGitHubCategory) -> Int {
+    switch category {
+    case .open: return open
+    case .merged: return merged
+    case .closed: return closed
+    }
+  }
+
+  static let zero = PrGitHubCategoryCounts(open: 0, merged: 0, closed: 0)
+}
+
 enum PrGitHubScopeFilter: String, CaseIterable, Identifiable {
   case all
   case ade
@@ -135,6 +200,27 @@ struct PrGitHubLaneLinkRequest: Identifiable {
   let item: GitHubPrListItem
 
   var id: String { item.id }
+}
+
+/// Drives the "Create lane from PR branch" (auto-map) confirmation surface.
+/// Holds the source GitHub item plus the (optional) resolved preflight so the
+/// sheet can show the target lane name / blocking conflict before committing.
+struct PrAutoMapRequest: Identifiable {
+  let item: GitHubPrListItem
+
+  var id: String { "automap:\(item.id)" }
+}
+
+/// Surfaces an auto-map blocking conflict as a thrown error so the durable
+/// action wrapper routes it through the standard failure path (toast + reload).
+enum PrAutoMapError: LocalizedError {
+  case blocked(String)
+
+  var errorDescription: String? {
+    switch self {
+    case .blocked(let message): return message
+    }
+  }
 }
 
 enum PrReviewEventOption: String, CaseIterable, Identifiable {
@@ -288,4 +374,67 @@ struct PrRebaseWorkflowItem: Identifiable {
 enum PrCleanupChoice {
   case archive
   case deleteBranch
+}
+
+// MARK: - Durable PR action / detail state (lives on SyncService)
+
+/// A single in-flight PR action tracked durably on `SyncService` so its
+/// spinner survives a tab switch + view remount. The `token` disambiguates
+/// completions when the same `key` is reused for a newer action.
+struct PrInFlightAction: Identifiable, Equatable {
+  let token: UUID
+  let key: String
+  let label: String
+  let startedAt: Date
+
+  var id: String { key }
+}
+
+/// A fully-loaded PR detail snapshot + sidecars cached on `SyncService` so
+/// re-opening a PR (or re-entering the PRs tab) renders instantly while a
+/// freshness-gated background refresh runs. `loadedAt` drives the freshness
+/// gate. Not `Equatable` (its members are large + some are not Equatable),
+/// which is fine — it is read imperatively, never diffed in a view body.
+struct PrDetailWarmEntry {
+  var pr: PullRequestListItem?
+  var githubItem: GitHubPrListItem?
+  var snapshot: PullRequestSnapshot?
+  var reviewThreads: [PrReviewThread]
+  var actionRuns: [PrActionRun]
+  var activityEvents: [PrActivityEvent]
+  var deployments: [PrDeployment]
+  var aiSummary: AiReviewSummary?
+  var issueInventory: IssueInventorySnapshot?
+  var pipelineSettings: PipelineSettings?
+  var groupMembers: [PrGroupMemberSummary]
+  var capabilities: PrActionCapabilities?
+  var loadedAt: Date
+}
+
+/// Precomputed, memoized derivations of the GitHub PR list. Recomputing the
+/// filter/sort/count passes inside `body`-read computed properties was a major
+/// lag source: every SwiftUI render re-filtered the full snapshot, re-sorted
+/// with date-string parsing, and made seven extra full passes for the counts.
+/// This struct is rebuilt only when its inputs change (snapshot or filters),
+/// not on every render.
+struct PrGitHubDerivedList: Equatable {
+  var filtered: [GitHubPrListItem]
+  var repoItems: [GitHubPrListItem]
+  var externalItems: [GitHubPrListItem]
+  var counts: PrGitHubFilterCounts
+  /// Scope-filtered counts for the three headline tabs (Open/Merged/Closed),
+  /// memoized here so a `body` pass never re-scans the snapshot.
+  var categoryCounts: PrGitHubCategoryCounts
+  var allCount: Int
+  var linkedCount: Int
+
+  static let empty = PrGitHubDerivedList(
+    filtered: [],
+    repoItems: [],
+    externalItems: [],
+    counts: PrGitHubFilterCounts(open: 0, draft: 0, merged: 0, closed: 0, all: 0, ade: 0, external: 0),
+    categoryCounts: .zero,
+    allCount: 0,
+    linkedCount: 0
+  )
 }

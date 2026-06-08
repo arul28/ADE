@@ -96,6 +96,7 @@ import type {
 } from "../../../../desktop/src/shared/types/sync";
 import { DEFAULT_NOTIFICATION_PREFERENCES, normalizeNotificationPreferences } from "../../../../desktop/src/shared/types/sync";
 import type { SyncPinStore } from "./syncPinStore";
+import type { SyncRuntimeNameStore } from "./syncRuntimeNameStore";
 import { DEFAULT_SYNC_COMPRESSION_THRESHOLD_BYTES, DEFAULT_SYNC_HOST_PORT, encodeSyncEnvelope, mapPlatform, parseSyncEnvelope, wsDataToText } from "./syncProtocol";
 import { resolveTailscaleCliPath } from "./resolveTailscaleCliPath";
 import { createSyncRemoteCommandService, type SyncRemoteCommandService } from "./syncRemoteCommandService";
@@ -124,7 +125,23 @@ const SYNC_MDNS_SERVICE_TYPE = "ade-sync";
 const MAX_PROJECT_CATALOG_ENVELOPE_BYTES = 768 * 1024;
 const BONJOUR_PROJECT_TXT_ENTRY_LIMIT = 24;
 const BONJOUR_PROJECT_NAME_MAX_LENGTH = 48;
-const SYNC_HOST_BIND_HOST: string = "127.0.0.1";
+// Bind the sync host on all interfaces by default so phones on the same
+// wifi/LAN can reach it without Tailscale. 0.0.0.0 is a superset of loopback,
+// so local TUI/desktop clients (and the unix RPC socket, which is separate)
+// keep working unchanged. Operators who want the old loopback-only posture can
+// set ADE_SYNC_BIND_HOST=127.0.0.1; that mode also relaxes the PIN requirement
+// for new bootstrap-token devices (see the hello handler) since loopback is
+// already a trust boundary.
+const SYNC_HOST_BIND_HOST: string = process.env.ADE_SYNC_BIND_HOST?.trim() || "0.0.0.0";
+const SYNC_HOST_BIND_HOST_NORMALIZED = SYNC_HOST_BIND_HOST.toLowerCase();
+// When the host is bound to loopback only, the OS already restricts connections
+// to local processes, so first-pairing can fall back to the historical
+// bootstrap-token behaviour. Any non-loopback bind (the LAN default) must gate
+// new devices behind the PIN flow.
+const SYNC_HOST_BIND_LOOPBACK_ONLY: boolean =
+  SYNC_HOST_BIND_HOST_NORMALIZED === "127.0.0.1"
+  || SYNC_HOST_BIND_HOST_NORMALIZED === "::1"
+  || SYNC_HOST_BIND_HOST_NORMALIZED === "localhost";
 export const SYNC_TAILNET_DISCOVERY_SERVICE_NAME = "svc:ade-sync";
 export const SYNC_TAILNET_DISCOVERY_SERVICE_PORT = DEFAULT_SYNC_HOST_PORT;
 export type SyncRuntimeKind = "desktop-embedded" | "headless" | "remote-stdio" | "desktop" | "daemon" | "remote";
@@ -342,6 +359,7 @@ type SyncHostServiceArgs = {
   dispatchDeeplinkUrl?: (url: string) => Promise<{ ok: boolean; message?: string }>;
   computerUseArtifactBrokerService: ReturnType<typeof createComputerUseArtifactBrokerService>;
   pinStore: SyncPinStore;
+  runtimeNameStore?: SyncRuntimeNameStore;
   bootstrapTokenPath?: string;
   pairingSecretsPath?: string;
   port?: number;
@@ -461,6 +479,7 @@ function toSyncPeerConnectionState(peer: PeerState, currentServerDbVersion: numb
     latencyMs: peer.latencyMs,
     syncLag: Math.max(0, currentServerDbVersion - peer.lastKnownServerDbVersion),
     isBrain: false,
+    isHost: false,
     isAuthenticated: peer.authenticated,
   };
 }
@@ -1226,6 +1245,9 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   };
   let bonjourProjectRefreshInFlight = false;
   let tailnetServeSignature: string | null = null;
+  // Port the last `tailscale serve` was published for, so teardown can target
+  // the exact per-node listener (`serve --tcp=<port> off`) instead of a constant.
+  let tailnetServePort: number | null = null;
   let tailnetServeLastFailureSignature: string | null = null;
   let tailnetServePublishSequence = 0;
   let tailnetServeActivePublishToken = 0;
@@ -1459,7 +1481,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   const publishLanDiscovery = (port: number, options?: { force?: boolean }): void => {
     if (disposed) return;
     // Loopback-bound hosts are intentionally not advertised on the LAN; remote reachability is handled by explicit/tailnet paths.
-    if (SYNC_HOST_BIND_HOST !== "0.0.0.0" && SYNC_HOST_BIND_HOST !== "::") {
+    if (SYNC_HOST_BIND_LOOPBACK_ONLY) {
       unpublishLanDiscovery();
       return;
     }
@@ -1494,6 +1516,13 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       addresses: addressesCsv,
       tailscaleIp: localDevice?.tailscaleIp ?? "",
       tailscaleDnsName: tailscaleDnsName.endsWith(".ts.net") ? tailscaleDnsName : "",
+      // Advertise whether a pairing PIN exists so a phone can decide, pre-pair,
+      // whether to show the PIN-entry screen or a "set a PIN on your Mac first"
+      // prompt. Stringified because Bonjour TXT values are strings.
+      pairingPinConfigured: args.pinStore.hasPin() ? "true" : "false",
+      // Human name for THIS runtime (one per socket/siteId), so the phone can
+      // tell two runtimes on the same machine apart. Empty string when unset.
+      runtimeName: args.runtimeNameStore?.getRuntimeName() ?? "",
     };
     const signature = JSON.stringify({ hostName, port, txt });
     const alreadyPublished = bonjourPort === port && bonjourSignature === signature;
@@ -1601,7 +1630,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       updateTailnetDiscoveryStatus({
         state: "disabled",
         serviceName: SYNC_TAILNET_DISCOVERY_SERVICE_NAME,
-        servicePort: SYNC_TAILNET_DISCOVERY_SERVICE_PORT,
+        servicePort: port,
         target: null,
         updatedAt: nowIso(),
         error: "Tailnet discovery is disabled for this background project context.",
@@ -1613,7 +1642,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       updateTailnetDiscoveryStatus({
         state: "unavailable",
         serviceName: SYNC_TAILNET_DISCOVERY_SERVICE_NAME,
-        servicePort: SYNC_TAILNET_DISCOVERY_SERVICE_PORT,
+        servicePort: port,
         target: null,
         updatedAt: nowIso(),
         error: "Tailscale Serve discovery is not available in this ADE process.",
@@ -1622,17 +1651,24 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       return;
     }
     const cli = resolveTailscaleCliPath();
-    const signature = `${SYNC_TAILNET_DISCOVERY_SERVICE_NAME}:${SYNC_TAILNET_DISCOVERY_SERVICE_PORT}->${port}`;
+    // Plain per-node `tailscale serve` on the REAL dynamic socket port. The
+    // tagged-node Service form (`--service=...`) requires the node to be tagged
+    // and fails with "service hosts must be tagged nodes" on ordinary devices,
+    // and it also pinned the listener to a constant port (8787) that never
+    // matched the live socket. Per-node serve works on any node and targets the
+    // actual port phones must connect to.
+    const signature = `serve:${port}`;
     if (tailnetServeSignature === signature && !options?.force) return;
     if (tailnetServeLastFailureSignature === signature && !options?.force) return;
     const publishToken = ++tailnetServePublishSequence;
     tailnetServeActivePublishToken = publishToken;
     tailnetServeSignature = signature;
+    tailnetServePort = port;
     const target = `tcp://127.0.0.1:${port}`;
     updateTailnetDiscoveryStatus({
       state: "publishing",
       serviceName: SYNC_TAILNET_DISCOVERY_SERVICE_NAME,
-      servicePort: SYNC_TAILNET_DISCOVERY_SERVICE_PORT,
+      servicePort: port,
       target,
       updatedAt: nowIso(),
       error: null,
@@ -1640,9 +1676,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     });
     const cliArgs = [
       "serve",
-      "--yes",
-      `--service=${SYNC_TAILNET_DISCOVERY_SERVICE_NAME}`,
-      `--tcp=${SYNC_TAILNET_DISCOVERY_SERVICE_PORT}`,
+      "--bg",
+      `--tcp=${port}`,
       target,
     ];
     void execFileAsync(cli, cliArgs, { timeout: 10_000 })
@@ -1655,7 +1690,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         updateTailnetDiscoveryStatus({
           state: looksLikePendingTailnetApproval(outputText) ? "pending_approval" : "published",
           serviceName: SYNC_TAILNET_DISCOVERY_SERVICE_NAME,
-          servicePort: SYNC_TAILNET_DISCOVERY_SERVICE_PORT,
+          servicePort: port,
           target,
           updatedAt: nowIso(),
           error: null,
@@ -1663,7 +1698,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         });
         args.logger.info("sync_host.tailnet_discovery_published", {
           service: SYNC_TAILNET_DISCOVERY_SERVICE_NAME,
-          servicePort: SYNC_TAILNET_DISCOVERY_SERVICE_PORT,
+          servicePort: port,
           target,
           stdout: stdoutText || null,
           stderr: stderrText || null,
@@ -1688,7 +1723,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
               ? "pending_approval"
               : "failed",
           serviceName: SYNC_TAILNET_DISCOVERY_SERVICE_NAME,
-          servicePort: SYNC_TAILNET_DISCOVERY_SERVICE_PORT,
+          servicePort: port,
           target,
           updatedAt: nowIso(),
           error: code === "ENOENT" ? "Tailscale CLI was not found." : errorMessage,
@@ -1696,7 +1731,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         });
         const logPayload = {
           service: SYNC_TAILNET_DISCOVERY_SERVICE_NAME,
-          servicePort: SYNC_TAILNET_DISCOVERY_SERVICE_PORT,
+          servicePort: port,
           target,
           error: errorMessage,
           code,
@@ -1714,11 +1749,15 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     if (!tailnetServeSignature) return;
     tailnetServeActivePublishToken = ++tailnetServePublishSequence;
     tailnetServeSignature = null;
+    // Tear down the exact per-node listener we published. Fall back to the live
+    // socket port if we somehow lost track of it.
+    const servePort = tailnetServePort ?? SYNC_TAILNET_DISCOVERY_SERVICE_PORT;
+    tailnetServePort = null;
     if (!shouldAttemptTailnetServiceAdvertise()) {
       updateTailnetDiscoveryStatus({
         state: "unavailable",
         serviceName: SYNC_TAILNET_DISCOVERY_SERVICE_NAME,
-        servicePort: SYNC_TAILNET_DISCOVERY_SERVICE_PORT,
+        servicePort: servePort,
         target: null,
         updatedAt: nowIso(),
         error: null,
@@ -1728,15 +1767,16 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     }
     const cli = resolveTailscaleCliPath();
     try {
+      // Plain per-node teardown matching the `serve --bg --tcp=<port>` form.
       await execFileAsync(
         cli,
-        ["serve", "--yes", `--service=${SYNC_TAILNET_DISCOVERY_SERVICE_NAME}`, "off"],
+        ["serve", `--tcp=${servePort}`, "off"],
         { timeout: 10_000 },
       );
       updateTailnetDiscoveryStatus({
         state: "disabled",
         serviceName: SYNC_TAILNET_DISCOVERY_SERVICE_NAME,
-        servicePort: SYNC_TAILNET_DISCOVERY_SERVICE_PORT,
+        servicePort: servePort,
         target: null,
         updatedAt: nowIso(),
         error: null,
@@ -1744,7 +1784,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       });
       args.logger.info("sync_host.tailnet_discovery_unpublished", {
         service: SYNC_TAILNET_DISCOVERY_SERVICE_NAME,
-        servicePort: SYNC_TAILNET_DISCOVERY_SERVICE_PORT,
+        servicePort: servePort,
       });
     } catch (error: unknown) {
       const errorMessage = error instanceof Error ? error.message : String(error);
@@ -1752,7 +1792,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       updateTailnetDiscoveryStatus({
         state: code === "ENOENT" ? "unavailable" : "disabled",
         serviceName: SYNC_TAILNET_DISCOVERY_SERVICE_NAME,
-        servicePort: SYNC_TAILNET_DISCOVERY_SERVICE_PORT,
+        servicePort: servePort,
         target: null,
         updatedAt: nowIso(),
         error: code === "ENOENT" ? "Tailscale CLI was not found." : errorMessage,
@@ -1760,7 +1800,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       });
       args.logger.warn("sync_host.tailnet_discovery_unpublish_failed", {
         service: SYNC_TAILNET_DISCOVERY_SERVICE_NAME,
-        servicePort: SYNC_TAILNET_DISCOVERY_SERVICE_PORT,
+        servicePort: servePort,
         error: errorMessage,
         code,
       });
@@ -2022,6 +2062,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     if (disposed) {
       return {
         brain: brainMetadata,
+        host: brainMetadata,
+        runtime: brainMetadata,
         connectedPeers: [],
         metrics: {
           connectedPeerCount: 0,
@@ -2044,6 +2086,14 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       .filter((peer): peer is SyncPeerConnectionState => peer != null);
     return {
       brain: {
+        ...brainMetadata,
+        dbVersion,
+      },
+      host: {
+        ...brainMetadata,
+        dbVersion,
+      },
+      runtime: {
         ...brainMetadata,
         dbVersion,
       },
@@ -2812,10 +2862,36 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         return;
       }
       let authenticatedPairingRecord: SyncPairingRecord | null = null;
+      // Return semantics: `true` means authentication FAILED -> the caller below
+      // sends a `hello_error` (auth_failed) and closes the socket (4003).
+      // `false` means the device is authenticated.
       const authFailed = (() => {
         if (hello.auth?.kind === "bootstrap") {
+          // The bootstrap token is a shared, plaintext, never-rotating secret.
+          // Once the sync host is bound to the LAN (the new 0.0.0.0 default),
+          // anyone who can read it off disk / a previous handshake could pair a
+          // brand-new device with NO PIN check. That is unacceptable: the PIN is
+          // the security boundary for first pairing.
+          //
+          // So a bootstrap-token hello may ONLY authenticate a device that has
+          // ALREADY completed PIN pairing (has a pairing record). Unknown
+          // devices are rejected here and must go through `pairing_request`,
+          // which verifies the 6-digit PIN via pinStore. This preserves
+          // legitimate already-paired reconnects (which use the token) while
+          // forcing every new device through the PIN gate.
           if (!safeStringEquals(bootstrapToken, hello.auth.token)) return true;
-          return pairingStore.hasPairingRecord(hello.peer.deviceId);
+          const alreadyPaired = pairingStore.hasPairingRecord(hello.peer.deviceId);
+          if (SYNC_HOST_BIND_LOOPBACK_ONLY) {
+            // Loopback-only hosts (ADE_SYNC_BIND_HOST=127.0.0.1) are already a
+            // trust boundary — only local processes can connect — so retain the
+            // historical bootstrap-token behaviour there.
+            return false;
+          }
+          // LAN-bound default: bootstrap is reconnect-only. A device must already
+          // be paired; unknown devices must pair via the PIN flow. Existing
+          // paired phones from older releases may not have a host PIN configured
+          // yet, and should still be able to reconnect with their stored token.
+          return !alreadyPaired;
         }
         if (hello.auth?.kind === "paired") {
           if (hello.auth.deviceId !== hello.peer.deviceId) return true;
@@ -3326,7 +3402,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         updateTailnetDiscoveryStatus({
           state: "disabled",
           serviceName: SYNC_TAILNET_DISCOVERY_SERVICE_NAME,
-          servicePort: SYNC_TAILNET_DISCOVERY_SERVICE_PORT,
+          servicePort: typeof address === "object" && address ? address.port : SYNC_TAILNET_DISCOVERY_SERVICE_PORT,
           target: null,
           updatedAt: nowIso(),
           error: "Tailnet discovery is disabled for this background project context.",

@@ -87,6 +87,7 @@ const RETRYABLE_REMOTE_SYNC_METHODS = new Set([
   "sync.listDevices",
   "sync.getTransferReadiness",
   "sync.getPin",
+  "sync.getRuntimeName",
   "sync.setActiveLanePresence",
   "modelPicker.getFavorites",
   "modelPicker.getRecents",

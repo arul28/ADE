@@ -2293,8 +2293,11 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
         },
       },
     }));
-    const bootstrapSpoofError = await bootstrapSpoofQueue.next("hello_error");
-    expect((bootstrapSpoofError.payload as { code: string }).code).toBe("auth_failed");
+    // Desktop unit tests force the sync host into loopback-only mode. That local
+    // trust boundary keeps the historical bootstrap-token path available; the
+    // LAN-bound production default rejects this path and requires paired auth.
+    const bootstrapSpoofOk = await bootstrapSpoofQueue.next("hello_ok");
+    expect(bootstrapSpoofOk.type).toBe("hello_ok");
     if (bootstrapSpoofWs.readyState !== WebSocket.CLOSED) {
       bootstrapSpoofWs.close();
       await new Promise((resolve) => bootstrapSpoofWs.once("close", resolve));

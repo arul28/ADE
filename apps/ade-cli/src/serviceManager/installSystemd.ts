@@ -20,7 +20,11 @@ type SystemdServiceManagerDeps = {
 };
 
 export function servicePath(homeDir = os.homedir()): string {
-  return path.join(homeDir, ".config", "systemd", "user", "ade-runtime.service");
+  return path.join(homeDir, ".config", "systemd", "user", `${ADE_RUNTIME_SERVICE_NAME}.service`);
+}
+
+function serviceUnitName(): string {
+  return path.basename(servicePath());
 }
 
 function escapeSystemdQuotedValue(value: string): string {
@@ -39,7 +43,7 @@ export function renderSystemdUnit(command: AdeServiceCommand): string {
     .map(([key, value]) => renderSystemdEnvironment(key, value))
     .join("\n");
   return `[Unit]
-Description=ADE service daemon
+Description=ADE runtime service
 
 [Service]
 Type=simple
@@ -70,7 +74,20 @@ export function installSystemdService(deps: SystemdServiceManagerDeps = {}): Ser
       message: serviceManagerResultText(reload) || "systemctl daemon-reload failed.",
     };
   }
-  const enable = run("systemctl", ["--user", "enable", "--now", "ade-runtime.service"], { encoding: "utf8" });
+  const unitName = serviceUnitName();
+  const enable = run("systemctl", ["--user", "enable", "--now", unitName], { encoding: "utf8" });
+  if (enable.status === 0) {
+    const restart = run("systemctl", ["--user", "restart", unitName], { encoding: "utf8" });
+    if (restart.status !== 0) {
+      return {
+        ok: false,
+        serviceName: ADE_RUNTIME_SERVICE_NAME,
+        action: "install",
+        path: targetPath,
+        message: serviceManagerResultText(restart) || "systemctl restart failed.",
+      };
+    }
+  }
   return {
     ok: enable.status === 0,
     serviceName: ADE_RUNTIME_SERVICE_NAME,
@@ -84,7 +101,7 @@ export function installSystemdService(deps: SystemdServiceManagerDeps = {}): Ser
 
 export function uninstallSystemdService(): ServiceManagerResult {
   const targetPath = servicePath();
-  spawnSync("systemctl", ["--user", "disable", "--now", "ade-runtime.service"], { stdio: "ignore" });
+  spawnSync("systemctl", ["--user", "disable", "--now", serviceUnitName()], { stdio: "ignore" });
   try { fs.unlinkSync(targetPath); } catch {}
   spawnSync("systemctl", ["--user", "daemon-reload"], { stdio: "ignore" });
   return {
@@ -98,8 +115,9 @@ export function uninstallSystemdService(): ServiceManagerResult {
 
 export function getSystemdServiceStatus(): ServiceManagerStatusResult {
   const targetPath = servicePath();
-  const enabled = spawnSync("systemctl", ["--user", "is-enabled", "ade-runtime.service"], { encoding: "utf8" });
-  const active = spawnSync("systemctl", ["--user", "is-active", "ade-runtime.service"], { encoding: "utf8" });
+  const unitName = serviceUnitName();
+  const enabled = spawnSync("systemctl", ["--user", "is-enabled", unitName], { encoding: "utf8" });
+  const active = spawnSync("systemctl", ["--user", "is-active", unitName], { encoding: "utf8" });
   const installed = fs.existsSync(targetPath) || enabled.status === 0;
   if (!installed) {
     return {

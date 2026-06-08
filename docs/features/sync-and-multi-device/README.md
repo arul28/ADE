@@ -1,61 +1,62 @@
 # Sync and Multi-Device
 
-ADE syncs live runtime state across a host ADE machine and any connected
+ADE syncs live runtime state across an ADE machine runtime and any connected
 controllers (other Macs, iPhones) using **cr-sqlite** as a CRDT-backed
 replication layer over a **WebSocket** transport. The design is local-first,
 peer-to-peer, and has zero cloud dependency — two machines on the same LAN
 (or Tailscale tailnet) converge their application state directly.
 
-This README covers the sync model, the host/controller role split, what
+This README covers the sync model, the runtime/controller role split, what
 does and does not travel, and the layers that implement it. Deep-dives:
 
 - `crdt-model.md` — cr-sqlite CRR retrofit, schema implications, merge
   semantics, and the iOS pure-SQL emulation layer.
 - `ios-companion.md` — the iPhone controller path: SwiftUI app, native
-  SQLite, pairing, tab structure, command routing from phone to host.
+  SQLite, pairing, tab structure, command routing from phone to runtime.
 - `remote-commands.md` — the `syncRemoteCommandService` registry that
-  turns controller actions into host-executed mutations.
+  turns client actions into runtime-executed mutations.
 
-## Where the host actually runs
+## Where the sync authority runs
 
-The sync host is owned by the **ADE runtime daemon** in `apps/ade-cli/`
-(the `ade serve` process). The desktop renderer is just another client
-of that daemon — it talks to it through the local runtime connection
-pool, exactly the same way `ade code` and the iOS app do.
+The sync authority is the machine-owned `ade serve` runtime in
+`apps/ade-cli/`. The desktop renderer is just another client of that
+runtime — it attaches through the local runtime connection pool, exactly
+the same way `ade code` and the iOS app do.
 
 This is the inversion to internalise: the desktop is no longer the
-host. A desktop window that is bound to a remote runtime is therefore
-not the host either; the remote `ade serve` on that machine owns the
-host role for projects opened on it.
+sync authority. A desktop window that is bound to a remote runtime is therefore
+not the authority either; the remote `ade serve` on that machine owns the
+authority role for projects opened on it.
 
 The legacy in-process desktop sync host still exists in source for
 diagnostics. It is **disabled by default** and only activates when
 `ADE_ENABLE_DESKTOP_SYNC_HOST=1` is set (and the kill-switch
 `ADE_DISABLE_SYNC_HOST=1` is not set). Production builds and dev
-sessions both leave it off; everything below describes the daemon-hosted
+sessions both leave it off; everything below describes the runtime-hosted
 path unless explicitly noted.
 
 ## Who participates
 
-- **Host** — the per-machine `ade serve` runtime daemon. It owns agent
+- **Machine runtime** — the per-channel, per-machine `ade serve` runtime. It owns agent
   execution, PTYs, worktrees, worker heartbeats, the orchestrator, and
-  the sync WebSocket server. There is one daemon per machine; it can
-  hold **multiple** open projects at once and a phone picks which one to
-  bind to via the project catalog.
-- **Desktop renderer** — a controller of the local daemon over the
+  the sync WebSocket server. It can hold **multiple** open projects at
+  once, with one active sync project port at a time; a phone picks which
+  project to bind to via the machine project catalog and reconnects
+  internally when it switches projects.
+- **Desktop renderer** — a client of the local runtime over the
   runtime IPC bridge. The same renderer can also bind to a remote
-  daemon (the remote-runtime feature), in which case sync state lives
+  runtime (the remote-runtime feature), in which case sync state lives
   on the remote machine.
-- **iOS app** — controller-only, always. Connects to a daemon over
+- **iOS app** — client/controller-only, always. Connects to a runtime over
   WebSocket using the same `SyncEnvelope` protocol the desktop uses
   internally.
 - **Cluster state** — a singleton `sync_cluster_state` row with
-  `brain_device_id` and `brain_epoch` tracks which device currently
-  owns execution within a cluster.
+  the legacy columns `brain_device_id` and `brain_epoch` tracks which
+  device currently owns execution within a cluster.
 
-The name `brain_*` remains in the database and protocol as a legacy
-internal identifier; it is not user-facing. UI and current docs all
-say "host".
+The older terms "brain" and "host" still appear in code, schema, and
+protocol types. In the current product vocabulary, they refer to the
+same thing: the runtime that is the current **sync authority**.
 
 ## What syncs, what does not
 
@@ -76,7 +77,7 @@ Two disconnected desktops do **not** have a shared live session. They
 converge code through Git and they converge the narrow tracked ADE
 scaffold through Git, but live chat/process state converges
 only when they join the same sync cluster (i.e. point at the same
-running daemon).
+running sync authority).
 
 ## Architecture layers
 
@@ -89,21 +90,22 @@ running daemon).
                           │
                           ▼
 ┌──────────────────────────────────────────────────────────────────┐
-│ Desktop runtime IPC bridge (renderer → main → daemon)            │
+│ Desktop runtime IPC bridge (renderer → main → runtime)           │
 │   - sync.* preload calls route through                           │
 │     callProjectRuntimeSyncOr(method, params, fallback)           │
 │   - prefers the remote runtime if the window is bound,           │
-│     otherwise the local runtime daemon                           │
+│     otherwise the local runtime                                  │
 └──────────────────────────────────────────────────────────────────┘
                           │
                           ▼
 ┌──────────────────────────────────────────────────────────────────┐
-│ ade-cli runtime daemon (`ade serve`)                             │
+│ ade-cli machine runtime (`ade serve`)                            │
 │   - syncService — orchestrator, draft persistence, pin store     │
 │   - syncHostService — WebSocket server, peers, project catalog   │
 │   - syncRemoteCommandService — registry of executable actions    │
 │   - deviceRegistryService — devices + cluster_state singleton    │
 │   - hosts MULTIPLE projects per machine                          │
+│   - exposes per-project sync ports behind one machine catalog     │
 └──────────────────────────────────────────────────────────────────┘
                           │
                           ▼
@@ -111,7 +113,7 @@ running daemon).
 │ Sync transport (ws)                                              │
 │   - SyncEnvelope: hello, pairing, changeset_batch,               │
 │     changeset_ack, heartbeat, file_request/response,             │
-│     terminal_*, chat_*, brain_status,                            │
+│     terminal_*, chat_*, brain_status (legacy name),              │
 │     project_catalog/project_switch,                              │
 │     command / command_ack / command_result                       │
 │   - JSON payloads; gzip+base64 above threshold (4 KB default)    │
@@ -120,7 +122,7 @@ running daemon).
                           ▼
 ┌──────────────────────────────────────────────────────────────────┐
 │ cr-sqlite CRDT layer                                             │
-│   - desktop/daemon: loadable .dylib extension, crsql_as_crr()    │
+│   - desktop/runtime: loadable .dylib extension, crsql_as_crr()   │
 │   - iOS: pure-SQL emulation in Database.swift                    │
 │   - AdeDb.sync: getSiteId, getDbVersion,                         │
 │     exportChangesSince, applyChanges                             │
@@ -131,18 +133,19 @@ running daemon).
 
 The canonical sync implementation lives in the **ade-cli** runtime
 package. The desktop tree only contains thin re-export proxies plus the
-legacy fallback; do not edit the desktop copies expecting the daemon to
+legacy fallback; do not edit the desktop copies expecting the runtime to
 see your change.
 
 Canonical files (`apps/ade-cli/src/services/sync/`):
 
-- `syncService.ts` (~1,160 lines) — orchestrator that wires the host,
+- `syncService.ts` (~1,160 lines) — orchestrator that wires the runtime,
   peer client, device registry, draft persistence, pin store, and the
   per-project / per-runtime configuration. Builds the
-  `projectCatalogProvider` so a daemon hosting multiple projects can
+  `projectCatalogProvider` so a runtime hosting multiple projects can
   hand a phone a catalog and react to `project_switch_request`. Accepts
-  `forceHostRole: true` for the phone-sync surface so legacy
-  desktop-to-desktop viewer state cannot demote the daemon's host role.
+  `forceHostRole` only as a legacy override; normal callers leave it
+  false so a second runtime becomes a viewer instead of stealing the
+  sync authority role.
 - `syncHostService.ts` (~3,260 lines) — the WebSocket server. Owns
   connection acceptance, hello/pairing handshakes, per-peer state,
   changeset fan-out + ack tracking, terminal/chat subscription
@@ -151,9 +154,9 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   per-IP pairing rate limiter, and the Tailscale Serve / mDNS
   publication paths. Runtime kind is one of `desktop-embedded`,
   `headless`, `remote-stdio`, `desktop`, `daemon`, or `remote`.
-- `syncPeerService.ts` (~580 lines) — WebSocket **client**. The host
-  can run this too when it joins another host as a peer (handoff
-  rehearsal, controller-to-host swap). On iOS, an equivalent Swift
+- `syncPeerService.ts` (~580 lines) — WebSocket **client**. The runtime
+  can run this too when it joins another runtime as a peer (handoff
+  rehearsal, controller-to-authority swap). On iOS, an equivalent Swift
   implementation lives in `apps/ios/ADE/Services/SyncService.swift`.
 - `syncProtocol.ts` (~150 lines) — envelope encode/decode with gzip
   threshold (`DEFAULT_SYNC_COMPRESSION_THRESHOLD_BYTES = 4 * 1024`).
@@ -163,37 +166,37 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   `prs.getMobileSnapshot`, `lanes.presence.*`, `work.runQuickCommand`,
   `work.startCliSession`, `modelPicker.*`, …). Each registration carries a
   `SyncRemoteCommandDescriptor` with a **scope** label of
-  `"runtime"` or `"project"`. The host rejects a `project`-scoped
+  `"runtime"` or `"project"`. The runtime rejects a `project`-scoped
   command when no project is open or when the caller did not bundle a
   matching `projectId` (see *Scope enforcement* below). Mobile /
   controller CLI launches resolve the target lane worktree before
   building provider argv/env so Agent Skill roots and
   `ADE_AGENT_SKILLS_DIRS` stay lane-aware.
   Model-picker commands read/write the same per-project CRR-backed
-  favorites/recents store as desktop and the TUI; the sync host falls
+  favorites/recents store as desktop and the TUI; the sync service falls
   back to the DB-wired shared store when no explicit accessor is
   injected, so iOS never reads an empty process stub in production.
   Lane reparent commands parse the optional `stackBaseBranchRef`
-  override and forward it to the host lane service so controllers can
+  override and forward it to the runtime lane service so controllers can
   pick a specific branch to stack onto instead of always using the
   selected parent lane's branch.
 - `deviceRegistryService.ts` (~670 lines) — synced `devices` table and
-  `sync_cluster_state` singleton. When the local daemon joins another
-  host as a viewer (`syncService.connect`), it wipes its existing
+  `sync_cluster_state` singleton. When the local runtime joins another
+  runtime as a viewer (`syncService.connect`), it wipes its existing
   `devices` and `sync_cluster_state` rows and then calls
   `db.sync.discardUnpublishedChangesForTables(["devices",
   "sync_cluster_state"])` so the resulting CRR DELETE rows are
   suppressed from outbound changesets. `syncService.connect` then calls
   `syncPeerService.acknowledgeLocalDbVersion()` to advance the
   outbound cursor past the suppressed range, ensuring a fresh viewer
-  cannot accidentally erase the host's registry. See
+  cannot accidentally erase the authority runtime's registry. See
   `crdt-model.md` for the underlying suppression mechanism.
 - `syncPairingStore.ts` — validates `pairing_request` envelopes
   against `syncPinStore`, mints the durable per-device secret, and
   persists it into the `paired_devices` row (SQLite).
 - `syncPinStore.ts` — on-disk storage for the user-set 6-digit
   pairing PIN at `~/.ade/secrets/sync-pin.json`, chmodded `0600`. The
-  host never rotates the PIN; the operator sets or clears it from
+  runtime never rotates the PIN; the operator sets or clears it from
   Settings > Sync.
 - `resolveTailscaleCliPath.ts` — Tailscale CLI discovery used for the
   tailnet `tailscale serve` publication path.
@@ -204,10 +207,10 @@ Every file in this directory is a one-line re-export of the canonical
 ade-cli module, e.g. `syncHostService.ts` reads `export * from
 "../../../../../ade-cli/src/services/sync/syncHostService";`. They exist
 so the desktop's internal imports keep resolving while the canonical
-implementation lives in the runtime daemon. The legacy in-process host
+implementation lives in the ADE runtime. The legacy in-process host
 path in `apps/desktop/src/main/main.ts` (gated by
 `ADE_ENABLE_DESKTOP_SYNC_HOST=1`) calls these re-exports and runs an
-embedded host *inside* the Electron main process — kept only for
+embedded runtime *inside* the Electron main process — kept only for
 diagnostics. The unit tests next to the proxies still exercise the same
 canonical code through the re-export.
 
@@ -218,9 +221,9 @@ which:
 
 1. Resolves the active project binding. If the window is bound to a
    remote runtime, the call goes over `IPC.remoteRuntimeCallSync` to
-   the remote daemon.
+   the remote runtime.
 2. Otherwise, it calls `IPC.localRuntimeCallSync` against the local
-   daemon. In-process sync IPC is used only when no runtime binding is
+   runtime. In-process sync IPC is used only when no runtime binding is
    available, such as tests or diagnostics.
 
 During project transitions, mutating sync methods (`sync.setPin`,
@@ -231,6 +234,9 @@ calls can still refresh after the new binding is established. Remote sync calls
 replay only for the explicit retry-safe allowlist (status/discovery/device/PIN reads,
 lane-presence announce, and model-picker reads); other sync mutations surface
 connection errors rather than being replayed after reconnect.
+
+`sync.connectToBrain` is a legacy API name. New docs should call this a
+runtime connection or sync authority connection.
 
 The shared protocol DTOs (`SyncEnvelope`, controller-originated
 `terminal_input` / `terminal_resize`, the mobile CLI launcher payload —
@@ -255,24 +261,24 @@ iOS service files (`apps/ios/ADE/Services/`):
   reparent payload building with the optional stack base-branch
   override, project home/catalog state, active-project scoping,
   unregistered-worktree discovery, and APNs push-token registration
-  to the host.
+  to the runtime.
 - `KeychainService.swift` — iOS Keychain Services for paired device
-  secrets (per-host token shelf included).
+  secrets (per-machine token shelf included).
 - `LiveActivityCoordinator.swift` — owns the single workspace
   `Activity<ADESessionAttributes>` lifecycle and forwards
-  push-to-start / per-activity update tokens to the host.
+  push-to-start / per-activity update tokens to the runtime.
 
 Notification services (`apps/desktop/src/main/services/notifications/`):
 
 - `apnsService.ts` — HTTP/2 APNs client, ES256 JWT signing,
   `ApnsKeyStore` (`.p8` persisted via Electron `safeStorage` in the
   desktop process or an `EncryptedFileCredentialStore` rooted at
-  `.ade/secrets/` when the daemon runs headless on a remote machine),
+  `.ade/secrets/` when the runtime runs headless on a remote machine),
   `Http2ApnsTransport` (injectable via `ApnsTransport` for tests).
 - `apnsBridgeService.ts` — exposes the `notifications_apns` ADE action
   domain (`getStatus`, `saveConfig`, `uploadKey`, `clearKey`,
   `sendTestPush`) so a desktop window bound to a remote runtime
-  configures APNs against the remote daemon instead of the local
+  configures APNs against the remote runtime instead of the local
   Electron process. ade-cli `bootstrap.ts` constructs the service +
   key store and re-applies any persisted config on startup so push
   works without a desktop attached.
@@ -297,29 +303,32 @@ iOS notification / widget files (under `apps/ios/`):
   `ADE/Resources/DatabaseBootstrap.sql` (generated from desktop
   `kvDb.ts`).
 
-## Multi-project hosts and project switching
+## Multi-project runtimes and project switching
 
-A daemon hosts **every** project the user has opened on that machine
-(within retention) and exposes them as a single catalog. The phone
-flow:
+The machine runtime knows **every** project the user has opened on that machine
+(within retention) and exposes them as a single catalog. The current
+mobile transport is still per-active-project behind that machine: the
+phone pairs with the machine once, sees the catalog, and reconnects to
+the selected project's sync port when the user switches projects. The
+phone flow:
 
-1. Phone connects and sends `hello`. The host responds with
+1. Phone connects and sends `hello`. The runtime responds with
    `hello_ok` containing the current project catalog (when supported).
 2. The phone renders the catalog as a project home — recent projects
    marked available/cached/unavailable, with `MobileProjectSummary`
-   metadata (icon, lane snippets) supplied by the daemon.
+   metadata (icon, lane snippets) supplied by the runtime.
 3. The user taps a project → phone sends `project_switch_request`.
-   The daemon's `prepareProjectConnection` runs, the daemon activates
+   The runtime's `prepareProjectConnection` runs, the runtime activates
    that project locally, and returns a `project_switch_result` with
    either a fresh `connection` payload or `connection: null` (the
    phone should reuse its existing pairing credentials and reconnect
-   against the now-active host).
-4. After the host acknowledges the switch, `completeProjectConnection`
-   runs so the daemon can persist the new active project.
+   against the now-active project endpoint).
+4. After the runtime acknowledges the switch, `completeProjectConnection`
+   runs so the runtime can persist the new active project.
 
 Project catalog snapshots are also chunked
 (`MAX_PROJECT_CATALOG_ENVELOPE_BYTES = 768 KB`,
-`maxProjectCatalogChunkBytes = 192 KB`) so a daemon with many projects
+`maxProjectCatalogChunkBytes = 192 KB`) so a runtime with many projects
 streams the catalog in `project_catalog_chunk` envelopes.
 
 ## Scope enforcement
@@ -329,14 +338,14 @@ labels every command as `"runtime"` (machine-wide; doesn't need a
 project binding) or `"project"` (must run inside an open project).
 At dispatch time:
 
-- If the command is `project`-scoped and the host has a `hostProjectId`
-  but the caller did not include `requestedProjectId`, the host rejects
+- If the command is `project`-scoped and the runtime has a `hostProjectId`
+  but the caller did not include `requestedProjectId`, the runtime rejects
   the command with `"requires projectId"` (`code: missing_project`).
-- If the command is `project`-scoped and the host has no project open,
-  the host rejects it with `"requires an open project on this ADE
+- If the command is `project`-scoped and the runtime has no project open,
+  the runtime rejects it with `"requires an open project on this ADE
   machine"` (`code: project_not_open`).
 
-A phone bound to a daemon-hosted catalog therefore must complete the
+A phone bound to a runtime-hosted catalog therefore must complete the
 `project_switch` handshake before invoking project-scoped commands.
 
 ## Device registry and cluster state
@@ -357,34 +366,34 @@ metadata. Fields (see `SyncDeviceRecord`):
 | `ip_addresses` (JSON array) | LAN IPs |
 | `metadata_json` | Future-safe extension bag |
 
-Host authority is separate: `sync_cluster_state` is a singleton row
+Sync authority is separate: `sync_cluster_state` is a singleton row
 keyed on `cluster_id = "default"` with `brain_device_id`,
 `brain_epoch`, `updated_at`, `updated_by_device_id`.
 
-## Host selection and transfer
+## Sync authority selection and transfer
 
-Host designation is an explicit user action in Settings > Sync. Only
-one host owns execution at a time. Phones are controller-only and
-never elect to host.
+Sync authority designation is an explicit user action in Settings > Sync. Only
+one runtime owns execution at a time. Phones are controller-only and
+never elect themselves.
 
 Transfer:
 
 1. Preflight blockers — running chat turns, live PTYs, running managed
    processes. CTO history/idle threads and idle/ended chats are treated as durable synced state
    and survive a handoff.
-2. Final sync flush on the old host.
+2. Final sync flush on the old authority runtime.
 3. `sync_cluster_state.brain_device_id` rewrites, `brain_epoch`
    increments.
-4. New host starts its host lifecycle. Old host demotes.
+4. New authority runtime starts its sync lifecycle. Old authority runtime demotes.
 
 A second desktop that simply pulls the repo without joining a sync
 cluster is its own local ADE machine for execution — that is not the
-same as being part of the cluster. Multi-host active-active execution
+same as being part of the cluster. Multi-runtime active-active execution
 is not supported.
 
 ## Device discovery
 
-- **Machine-to-machine**: manual host/port/bootstrap-token entry in
+- **Machine-to-machine**: manual address/port/bootstrap-token entry in
   Settings > Sync. The machine bootstrap token lives under
   `~/.ade/secrets` and legacy project-local tokens are migrated there
   on startup.
@@ -392,41 +401,41 @@ is not supported.
   distinguishes `authKind: "bootstrap" | "paired"` and may carry a
   `pairedDeviceId` instead of a raw `token`. When a phone follows a
   desktop project switch, `prepareProjectConnection` returns the
-  payload, `completeProjectConnection` runs after the host has
+  payload, `completeProjectConnection` runs after the runtime has
   acknowledged the switch, and the iOS client falls back to its
-  per-host saved token (keyed by host identity / route / name in
+  per-machine saved token (keyed by machine identity / route / name in
   `KeychainService.tokenAccount`) when the desktop did not bundle a
   fresh credential.
-- **Phone pairing**: user-set **6-digit PIN** stored on the host at
+- **Phone pairing**: user-set **6-digit PIN** stored on the runtime at
   `~/.ade/secrets/sync-pin.json`. The PIN is owned by the human
-  operator — the host does not rotate it, does not time-expire it,
+  operator — the runtime does not rotate it, does not time-expire it,
   and does not mint a one-shot code. The phone enters the same digits
-  the user typed on the host's Settings > Sync > Phone pairing sheet.
+  the user typed in the machine's Settings > Sync > Phone pairing sheet.
   Failed PIN attempts increment a per-IP counter; after 5 failures
-  the host rejects further attempts from that IP for 10 minutes
+  the runtime rejects further attempts from that IP for 10 minutes
   (`PAIR_FAILURE_THRESHOLD = 5`, `PAIR_COOLDOWN_MS = 10 * 60_000` in
   `syncHostService.ts`).
 - **QR payload**: `SyncPairingQrPayload` is **version 2**. It carries
-  host identity, port, and address candidates only — it no longer
+  machine identity, port, and address candidates only — it no longer
   embeds a pairing code or expiry. The phone still needs the PIN
   manually.
-- **Address candidates**: the host advertises LAN IPs, the saved
+- **Address candidates**: the runtime advertises LAN IPs, the saved
   `lastHost` (when it matches the current set), the Tailscale IP, and
   `127.0.0.1` (`SyncAddressCandidateKind` includes `loopback`).
 - **mDNS**: `publishLanDiscovery` builds a TXT record whose
   `addresses` CSV includes the Tailscale IP alongside LAN IPs. It also
   advertises `runtimeKind`, `runtimeVersion`, `projects`, and
   `projectCount`, so mobile can show a machine-first picker before it
-  hydrates the full project catalog over the paired WebSocket. The host
+  hydrates the full project catalog over the paired WebSocket. The runtime
   keeps a signature of `{ hostName, port, txt }` and re-publishes the
   announcement only when the signature changes, to avoid churn while IP
-  addresses fluctuate. On macOS the host also forks a `dns-sd -R
+  addresses fluctuate. On macOS the runtime also forks a `dns-sd -R
   <serviceName> _ade-sync._tcp local <port> ...` child
   (`publishNativeLanDiscovery`) so the native mDNSResponder advertises
   the service alongside the Node-side `bonjour-service` registration —
-  iOS Bonjour browsers see the host even when the userland advertiser
+  iOS Bonjour browsers see the machine even when the userland advertiser
   is throttled. The native child is killed on shutdown
-  (`stopNativeLanDiscovery`). On startup the host also runs
+  (`stopNativeLanDiscovery`). On startup the runtime also runs
   `parseNativeLanDiscoveryProcessList` to detect orphaned `dns-sd -R`
   processes from a previous ADE session that crashed without cleanup,
   and kills them before starting its own advertisement.
@@ -436,7 +445,7 @@ is not supported.
   `sync-paired-devices.json`. On upgrade, legacy per-project copies
   under `<project>/.ade/secrets/` are copied or merged into the machine
   store, with paired devices deduped by `deviceId`.
-- **Tailscale Serve tailnet discovery**: when the daemon sees a usable
+- **Tailscale Serve tailnet discovery**: when the runtime sees a usable
   `tailscale` CLI (via `ADE_TAILSCALE_CLI` or the macOS default
   `/Applications/Tailscale.app/Contents/MacOS/Tailscale`), it publishes
   the sync WebSocket port on the tailnet under the service name
@@ -445,7 +454,7 @@ is not supported.
   flows out through `SyncRoleSnapshot.tailnetDiscovery`
   (`SyncTailnetDiscoveryStatus`: `disabled | publishing | published |
   pending_approval | unavailable | failed`) plus `error` / `stderr`
-  tails. The host tracks a `tailnetServeSignature` so re-publishing
+  tails. The runtime tracks a `tailnetServeSignature` so re-publishing
   is a no-op when the `(serviceName, port, target)` tuple hasn't
   changed.
 
@@ -491,18 +500,18 @@ consecutive missed heartbeats; mobile peers get a wider grace window
 (`MOBILE_SYNC_HEARTBEAT_MISS_LIMIT = 6`) because iOS can briefly suspend
 foreground networking during app and route transitions. Reconnection
 resumes from the last-known `db_version` so no changesets are lost.
-Host-side batching keeps every row for a given `db_version` in the same
+Runtime-side batching keeps every row for a given `db_version` in the same
 `changeset_batch`; otherwise an ack for a partial transaction would
 advance the receiver past unsent rows.
 
 `changeset_batch` envelopes carry a `batchId`; legacy batches without
 one are decoded with a deterministic fallback so older desktops can
 still sync. The receiver replies with a `changeset_ack` once
-`applyChanges` commits (or with an error code on failure). The host and
+`applyChanges` commits (or with an error code on failure). The runtime and
 phone keep outbound batches pending until the ack lands, retransmitting
 on timeout so a dropped wifi blip cannot lose a batch.
 `pendingChangesetPeerCount` is surfaced through `brain_status` for
-diagnostics.
+diagnostics; `brain_status` is a legacy envelope name.
 
 Mobile-originated `command` envelopes are deduplicated through a
 short-lived `mobileCommandResultCache` (TTL 30 minutes, 512 entries)
@@ -521,18 +530,17 @@ payload.
 |---|---|---|
 | Changeset sync | Bidirectional cr-sqlite row exchange | All devices |
 | File access | On-demand file reads, listings, writes | iOS Files, desktop remote viewing |
-| Terminal stream/control | Subscribe to PTY output from host; send input bytes and viewport resize events back to the subscribed PTY | iOS Work tab |
-| Chat stream | Agent chat transcript events (subscribe snapshot + live `chat_event` push from the host's `agentChatService.subscribeToEvents` fan-out; polling survives as the reconnect-catchup path) | iOS Work tab, controller chat |
-| Command routing | Send named actions (`chat.send`, `lanes.create`, `git.push`, `prs.getMobileSnapshot`, etc.) | All non-host devices |
-| Project switching | `project_catalog` + `project_switch_request/result` for multi-project daemons | iOS project home |
-| Brain status | Host broadcasts cluster/version status | All devices |
-| Lane presence | Controllers call `lanes.presence.announce` / `lanes.presence.release`; the host decorates `LaneSummary.devicesOpen` for 60 s TTL | iOS Lanes tab; desktop host presence heartbeat |
+| Terminal stream/control | Subscribe to PTY output from the runtime; send input bytes and viewport resize events back to the subscribed PTY | iOS Work tab |
+| Chat stream | Agent chat transcript events (subscribe snapshot + live `chat_event` push from the runtime's `agentChatService.subscribeToEvents` fan-out; polling survives as the reconnect-catchup path) | iOS Work tab, controller chat |
+| Command routing | Send named actions (`chat.send`, `lanes.create`, `git.push`, `prs.getMobileSnapshot`, etc.) | Controller devices |
+| Project switching | `project_catalog` + `project_switch_request/result` for multi-project runtimes | iOS project home |
+| Runtime status | Runtime broadcasts cluster/version status (`brain_status` is the legacy envelope name) | All devices |
+| Lane presence | Controllers call `lanes.presence.announce` / `lanes.presence.release`; the runtime decorates `LaneSummary.devicesOpen` for 60 s TTL | iOS Lanes tab; desktop runtime presence heartbeat |
 
 ## Command routing and execution isolation
 
 Controllers never run agent processes. CTO heartbeats and worker
-activations are host-exclusive
-(host = the daemon).
+activations are runtime-exclusive.
 
 Two categories of controller write:
 
@@ -540,7 +548,7 @@ Two categories of controller write:
   locally, propagates through cr-sqlite changesets.
 - **Execution** (create worktree, run a terminal command, create a
   PR, send a chat message): issued as a `command` envelope to the
-  host, which runs it and replies with `command_ack` + `command_result`.
+  runtime, which runs it and replies with `command_ack` + `command_result`.
   State changes the command produced flow back through normal
   changeset sync.
 
@@ -556,10 +564,10 @@ Every command action has a `SyncRemoteCommandPolicy`:
 ```
 
 Plus a scope (`runtime` or `project`) on the descriptor. The
-host-declared policy and scope are the authority: the iOS app reads
+runtime-declared policy and scope are the authority: the iOS app reads
 descriptors over the wire and gates UI actions accordingly. Hardcoded
-mobile assumptions would be stale after a host-side policy change, so
-the phone trusts the host.
+mobile assumptions would be stale after a runtime-side policy change, so
+the phone trusts the runtime.
 
 See `remote-commands.md` for the full action set and the runtime /
 project scope split.
@@ -569,38 +577,38 @@ project scope split.
 - **Pairing**: two independent paths. Machine-to-machine pairing uses
   the shared bootstrap token from the machine secrets directory.
   Phone pairing uses a **user-set 6-digit PIN** stored in
-  `~/.ade/secrets/sync-pin.json` on the host. The host never auto-rotates
+  `~/.ade/secrets/sync-pin.json` on the runtime machine. The runtime never auto-rotates
   or TTLs the PIN; the user sets it through Settings > Sync and clears
   it when they want to stop accepting new pairings. The PIN unlocks
   generation of a durable per-device secret that the phone stores in
   its Keychain; subsequent connections use that paired secret, not the
   PIN.
-- **Rate limiting**: the host tracks failed `pairing_request` attempts
+- **Rate limiting**: the runtime tracks failed `pairing_request` attempts
   per remote IP. Five failures put that IP into a 10-minute cooldown
   during which new pairing requests are rejected without touching the
   PIN store.
 - **Secrets never sync.** `.ade/local.secret.yaml` (provider API keys,
   ADE CLI configs) is per-machine. Linear tokens stay in the active
-  project's host-local `.ade/secrets`; GitHub tokens and AI provider
-  tokens stay on the host.
+  project's machine-local `.ade/secrets`; GitHub tokens and AI provider
+  tokens stay on the runtime machine.
 - **Transport**: WebSocket auth via PIN / paired secret / bootstrap
   token on every connection. Tailscale WireGuard encryption applies
   when over tailnet; LAN connections rely on pairing token validation.
-  TLS is not enforced for localhost/LAN; the host listens on all
+  TLS is not enforced for localhost/LAN; the runtime listens on all
   interfaces (intended for trusted LAN and tailnets).
 - **Secret isolation**: each device stores its own pairing secret in
   its OS keychain.
-- **Execution isolation**: the daemon runs agents; controllers do not.
+- **Execution isolation**: the ADE runtime runs agents; controllers do not.
 
 ## Current implementation status
 
 | Component | Status |
 |---|---|
-| Sync host owned by `ade serve` runtime daemon | Implemented |
+| Sync service owned by `ade serve` runtime | Implemented |
 | Desktop in-process sync host | Disabled by default (`ADE_ENABLE_DESKTOP_SYNC_HOST=1` for diagnostics) |
-| Multi-project host + `project_switch` handshake | Implemented |
+| Multi-project runtime + `project_switch` handshake | Implemented |
 | `SyncRemoteCommandDescriptor.scope` (`runtime` / `project`) gating | Implemented |
-| cr-sqlite extension loading (desktop/daemon) | Implemented |
+| cr-sqlite extension loading (desktop/runtime) | Implemented |
 | Pure-SQL CRR emulation (iOS) | Implemented |
 | CRR marking for eligible tables | Implemented (dynamic startup) |
 | Changeset extraction/application | Implemented |
@@ -611,10 +619,10 @@ project scope split.
 | Chat stream sub-protocol | Implemented |
 | Device registry table | Implemented |
 | Desktop peer client + manual connect | Implemented |
-| Host election + transfer | Implemented |
+| Sync authority transfer | Implemented |
 | Shared ADE scaffold portability for desktop clones | Implemented |
 | PIN-based phone pairing + per-device secrets | Implemented |
-| Live chat-event push from host | Implemented |
+| Live chat-event push from runtime | Implemented |
 | Mobile project catalog + project switch handoff | Implemented |
 | Lane presence decoration (`devicesOpen`) | Implemented |
 | PR mobile snapshot (`prs.getMobileSnapshot`) | Implemented |
@@ -626,19 +634,19 @@ project scope split.
 
 ## Gotchas
 
-- **The daemon owns sync. Desktop is a client.** A desktop window bound
-  to a remote runtime is *not* the host for that project; the remote
-  daemon is. Code that wants the sync host must reach into the
+- **The runtime owns sync. Desktop is a client.** A desktop window bound
+  to a remote runtime is *not* the sync authority for that project; the remote
+  runtime is. Code that wants the sync service must reach into the
   runtime IPC bridge, not into the renderer or the Electron main
   process.
 - **`ADE_ENABLE_DESKTOP_SYNC_HOST` is a diagnostics escape hatch.** If
-  you turn it on, both an in-process host and the daemon's host can be
+  you turn it on, both an in-process host and the standing runtime can be
   alive simultaneously on the same machine — that's intentional for
   comparing behaviors, but production builds should never run with
   that flag set.
-- **Project-scoped commands need `projectId`.** A daemon hosting
+- **Project-scoped commands need `projectId`.** A runtime hosting
   multiple projects has no implicit "current project". Forward the
-  active `projectId` on every project-scoped command or the host
+  active `projectId` on every project-scoped command or the runtime
   rejects with `code: missing_project`.
 - **CRR retrofit strips non-PK UNIQUE constraints.** Upserts on
   synced tables must target the primary key only. Use explicit
@@ -646,25 +654,25 @@ project scope split.
 - **Bootstrap token must match on every connection.** A changed token
   invalidates all existing connections until paired devices are
   re-provisioned.
-- **The host listens on all interfaces.** Treat the current posture as
+- **The runtime listens on all interfaces.** Treat the current posture as
   trusted-LAN/tailnet only; TLS is not enforced for localhost/LAN.
   Revocation works per paired device via Settings > Sync > Forget.
 - **The pairing PIN is user-managed, not ADE-managed.** There is no
-  expiry and no rotation. A host that leaves the PIN set is
+  expiry and no rotation. A machine that leaves the PIN set is
   perpetually pairable by anyone on the network who knows the digits
   (subject to the per-IP rate limiter). Clearing the PIN from
   Settings > Sync is how you stop accepting new pairings; already-paired
   devices keep their per-device secret and remain connected.
-- **`brain_*` is legacy naming.** In new code prefer "host" / "cluster
-  owner" nomenclature; database column names are kept for
-  compatibility.
+- **`brain_*` is legacy naming.** In new docs and code comments prefer
+  "sync authority" or "machine runtime"; existing database column names
+  are kept for compatibility.
 - **iOS and desktop do not share the cr-sqlite binary.** iOS uses a
   pure-SQL emulation because Apple platforms reject
   `sqlite3_load_extension()` and `sqlite3_auto_extension()`. Changeset
   wire format is identical; cr-sqlite feature parity is **not**
   guaranteed — any desktop-only cr-sqlite feature that ADE grows to
   depend on must also be implementable in SQL triggers on iOS.
-- **iOS sends unpacked primary keys; the desktop daemon repacks
+- **iOS sends unpacked primary keys; the desktop/runtime path repacks
   them.** The iOS emulation captures `crsql_changes.pk` as the raw
   scalar (a string, integer, or already-bytes value) instead of the
   cr-sqlite packed type-tagged byte string desktop emits. On the
@@ -681,7 +689,7 @@ project scope split.
   rows, plus rows for tables that no longer exist locally, before
   opening the apply transaction. A batch that contains only ignored
   tables is a no-op and preserves the local database version.
-- **Controller command queues replay on reconnect.** If the host
+- **Controller command queues replay on reconnect.** If the runtime
   advertises `chat.send` as queueable and the user sends while the
   desktop is reconnecting, the iOS app stores the command locally with
   a queued delivery state and replays on reconnect. Do not assume

@@ -14,6 +14,7 @@ struct WorkChatSessionView: View {
   let optimisticPendingSteers: [WorkPendingSteerModel]
   let localEchoMessages: [WorkLocalEchoMessage]
   @Binding var expandedToolCardIds: Set<String>
+  @Binding var collapsedChangedFileGroupIds: Set<String>
   @Binding var artifactContent: [String: WorkLoadedArtifactContent]
   @Binding var fullscreenImage: WorkFullscreenImage?
   let artifactRefreshInFlight: Bool
@@ -265,11 +266,16 @@ struct WorkChatSessionView: View {
             systemImage: "chevron.up.circle"
           )
           .font(.footnote.weight(.semibold))
+          .foregroundStyle(ADEColor.accent)
           .frame(maxWidth: .infinity)
+          .padding(.vertical, 8)
+          .background(ADEColor.cardBackground.opacity(0.4), in: Capsule(style: .continuous))
+          .overlay(
+            Capsule(style: .continuous)
+              .stroke(ADEColor.glassBorder, lineWidth: 1)
+          )
         }
-        .buttonStyle(.glass)
-        .tint(ADEColor.accent)
-        .controlSize(.small)
+        .buttonStyle(.plain)
         .accessibilityLabel("Load earlier messages")
       }
 
@@ -425,7 +431,7 @@ struct WorkChatSessionView: View {
       }
       .scrollIndicators(.hidden)
       .scrollDismissesKeyboard(.interactively)
-      .adeScreenBackground()
+      .background(workChatCanvasBackground.ignoresSafeArea())
       .adeNavigationGlass()
       .safeAreaInset(edge: .bottom, spacing: 0) {
         composerInset(proxy: proxy)
@@ -534,13 +540,22 @@ struct WorkChatSessionView: View {
   }
 }
 
+/// Flat transcript canvas. Desktop parity: a single dark #0f0f11 fill behind
+/// the agent prose — no card, no gradient. Light mode keeps the app's warm
+/// paper tone so the chat doesn't look out of place there.
+let workChatCanvasBackground = Color(uiColor: UIColor { traits in
+  traits.userInterfaceStyle == .dark
+    ? UIColor(red: 0x0f / 255.0, green: 0x0f / 255.0, blue: 0x11 / 255.0, alpha: 1)
+    : UIColor(red: 0xf5 / 255.0, green: 0xf3 / 255.0, blue: 0xf0 / 255.0, alpha: 1)
+})
+
 private struct WorkChatNavigationBackdrop: View {
   var body: some View {
     LinearGradient(
       colors: [
-        ADEColor.pageBackground,
-        ADEColor.pageBackground.opacity(0.96),
-        ADEColor.pageBackground.opacity(0)
+        workChatCanvasBackground,
+        workChatCanvasBackground.opacity(0.96),
+        workChatCanvasBackground.opacity(0)
       ],
       startPoint: .top,
       endPoint: .bottom
@@ -555,9 +570,9 @@ private struct WorkChatComposerBackdrop: View {
   var body: some View {
     LinearGradient(
       colors: [
-        ADEColor.pageBackground.opacity(0),
-        ADEColor.pageBackground.opacity(0.94),
-        ADEColor.pageBackground
+        workChatCanvasBackground.opacity(0),
+        workChatCanvasBackground.opacity(0.94),
+        workChatCanvasBackground
       ],
       startPoint: .top,
       endPoint: .bottom
