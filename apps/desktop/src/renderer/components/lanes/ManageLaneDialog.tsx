@@ -12,6 +12,8 @@ import {
   Eye,
   Cube,
   CheckCircle,
+  Check,
+  Cloud,
   X,
   Minus,
   TreeStructure,
@@ -25,6 +27,23 @@ import type {
   LaneDeleteStepName,
   LaneSummary
 } from "../../../shared/types";
+
+/** Independent delete targets shown as a checklist. */
+export type LaneDeleteSelection = {
+  worktree: boolean;
+  localBranch: boolean;
+  remoteBranch: boolean;
+};
+
+export const EMPTY_LANE_DELETE_SELECTION: LaneDeleteSelection = {
+  worktree: false,
+  localBranch: false,
+  remoteBranch: false,
+};
+
+function laneDeleteSelectionHasAny(selection: LaneDeleteSelection): boolean {
+  return selection.worktree || selection.localBranch || selection.remoteBranch;
+}
 import { LaneDialogShell } from "./LaneDialogShell";
 import {
   LABEL_CLASS_NAME,
@@ -190,15 +209,11 @@ export function ManageLaneDialog({
   managedLane,
   managedLanes,
   allLanes,
-  deleteMode,
-  setDeleteMode,
-  deleteRemoteName,
-  setDeleteRemoteName,
+  deleteSelection,
+  setDeleteSelection,
   deleteForce,
   setDeleteForce,
-  deleteConfirmText,
-  setDeleteConfirmText,
-  deletePhrase,
+  chatSessionCount,
   laneActionBusy,
   laneActionStatus,
   laneActionError,
@@ -214,15 +229,11 @@ export function ManageLaneDialog({
   managedLane: LaneSummary | null;
   managedLanes?: LaneSummary[];
   allLanes: LaneSummary[];
-  deleteMode: "worktree" | "local_branch" | "remote_branch";
-  setDeleteMode: (v: "worktree" | "local_branch" | "remote_branch") => void;
-  deleteRemoteName: string;
-  setDeleteRemoteName: (v: string) => void;
+  deleteSelection: LaneDeleteSelection;
+  setDeleteSelection: (v: LaneDeleteSelection) => void;
   deleteForce: boolean;
   setDeleteForce: (v: boolean) => void;
-  deleteConfirmText: string;
-  setDeleteConfirmText: (v: string) => void;
-  deletePhrase: string;
+  chatSessionCount?: number;
   laneActionBusy: boolean;
   laneActionStatus: string | null;
   laneActionError: string | null;
@@ -241,26 +252,12 @@ export function ManageLaneDialog({
   const singleLane = !isBatch ? lanes[0] ?? null : null;
 
   const isAttached = !isBatch && lanes[0]?.laneType === "attached";
-  const hasNonAttached = lanes.some((l) => l.laneType !== "attached" && l.laneType !== "primary");
-  const isMixed = hasAttached && hasNonAttached;
   const singleLaneId = singleLane?.id ?? null;
   const singleLaneType = singleLane?.laneType ?? null;
-  let worktreeDeleteLabel: string;
-  let localDeleteLabel: string;
-  let remoteDeleteLabel: string;
-  if (isMixed) {
-    worktreeDeleteLabel = "Unlink + folder";
-    localDeleteLabel = "+ local branches";
-    remoteDeleteLabel = "+ remote too";
-  } else if (hasAttached) {
-    worktreeDeleteLabel = "Unlink only";
-    localDeleteLabel = "+ local branch";
-    remoteDeleteLabel = "+ local & remote";
-  } else {
-    worktreeDeleteLabel = "Worktree only";
-    localDeleteLabel = "+ local branch";
-    remoteDeleteLabel = "+ remote too";
-  }
+  const worktreeRowTitle = hasAttached ? "Unlink from ADE" : "Worktree";
+  const worktreeRowHint = hasAttached
+    ? "Stops ADE managing this lane. Keeps the folder + branch."
+    : "Removes the working folder and ADE registration.";
 
   const [deleteRisk, setDeleteRisk] = useState<LaneDeleteRisk | null>(null);
   const [deleteProgress, setDeleteProgress] = useState<LaneDeleteProgress | null>(null);
@@ -276,9 +273,10 @@ export function ManageLaneDialog({
       .filter((t) => t.show)
       .map(({ show: _, ...tab }) => tab);
   }, [singleLaneType]);
+  // Manage Lane always opens on Delete — it's the first tab and the action
+  // users reach for most. Other tabs (appearance, restack, archive) are opt-in.
   const defaultTab = React.useMemo((): ManageLaneTab => {
-    const preferredOrder: ManageLaneTab[] = ["appearance", "stack", "archive", "delete"];
-    return preferredOrder.find((id) => tabDefs.some((tab) => tab.id === id)) ?? tabDefs[0]?.id ?? "archive";
+    return tabDefs.some((tab) => tab.id === "delete") ? "delete" : tabDefs[0]?.id ?? "archive";
   }, [tabDefs]);
 
   // Reset transient state when dialog closes or active lane changes.
@@ -323,16 +321,38 @@ export function ManageLaneDialog({
     };
   }, [open, singleLaneId]);
 
-  const requiresTypeConfirm =
-    isBatch ||
-    !deleteRisk ||
-    deleteForce ||
-    deleteRisk.dirty ||
-    deleteMode === "remote_branch" ||
-    (deleteMode === "local_branch" && deleteRisk.hasUnpushedCommits);
-
-  const confirmMatch = !requiresTypeConfirm || deleteConfirmText.trim().toLowerCase() === deletePhrase.toLowerCase();
+  const hasDeleteSelection = laneDeleteSelectionHasAny(deleteSelection);
   const showStaticBusy = laneActionBusy && !deleteProgress;
+
+  // Local/remote branch deletion can't happen while the worktree still has the
+  // branch checked out, and any delete here tears the worktree down regardless —
+  // so picking a branch implies the worktree, and clearing the worktree clears
+  // the branches. This keeps the checklist in a state git can actually execute.
+  const toggleDeleteTarget = (key: keyof LaneDeleteSelection, next: boolean) => {
+    if (key === "worktree") {
+      setDeleteSelection(
+        next
+          ? { ...deleteSelection, worktree: true }
+          : EMPTY_LANE_DELETE_SELECTION,
+      );
+      return;
+    }
+    setDeleteSelection({
+      ...deleteSelection,
+      [key]: next,
+      worktree: next ? true : deleteSelection.worktree,
+    });
+  };
+
+  const allTargetsSelected =
+    deleteSelection.worktree && deleteSelection.localBranch && deleteSelection.remoteBranch;
+  const toggleSelectAll = () => {
+    setDeleteSelection(
+      allTargetsSelected
+        ? EMPTY_LANE_DELETE_SELECTION
+        : { worktree: true, localBranch: true, remoteBranch: true },
+    );
+  };
 
   useEffect(() => {
     if (tabDefs.some((tab) => tab.id === activeTab)) return;
@@ -440,70 +460,31 @@ export function ManageLaneDialog({
                 </div>
               ) : null}
 
-              <div data-tour="lanes.manageDialog.tabs" className="mt-4 grid gap-2 sm:grid-cols-3">
-                {([
-                  { value: "worktree" as const, label: worktreeDeleteLabel },
-                  { value: "local_branch" as const, label: localDeleteLabel },
-                  { value: "remote_branch" as const, label: remoteDeleteLabel },
-                ]).map((opt) => (
-                  <button
-                    key={opt.value}
-                    type="button"
-                    disabled={laneActionBusy}
-                    onClick={() => setDeleteMode(opt.value)}
-                    className={`rounded-lg border px-3 py-2.5 text-left text-xs font-medium transition-all ${
-                      deleteMode === opt.value
-                        ? "border-red-400/35 bg-red-500/15 text-red-100 shadow-sm ring-1 ring-red-400/20"
-                        : "border-white/[0.08] bg-black/20 text-muted-fg hover:border-white/[0.14] hover:text-fg"
-                    }`}
-                  >
-                    {opt.label}
-                  </button>
-                ))}
-              </div>
+              <DeleteTargetChecklist
+                selection={deleteSelection}
+                allSelected={allTargetsSelected}
+                disabled={laneActionBusy}
+                onToggle={toggleDeleteTarget}
+                onToggleAll={toggleSelectAll}
+                worktreeTitle={worktreeRowTitle}
+                worktreeHint={worktreeRowHint}
+                risk={deleteRisk}
+                lane={singleLane}
+              />
 
               {singleLane ? (
                 <PreflightPanel
                   risk={deleteRisk}
-                  deleteMode={deleteMode}
-                  remoteName={deleteRemoteName}
+                  selection={deleteSelection}
                   lane={singleLane}
+                  chatSessionCount={chatSessionCount}
                 />
-              ) : null}
-
-              {deleteMode === "remote_branch" ? (
-                <div className="mt-3">
-                  <span className={LABEL_CLASS_NAME}>Remote</span>
-                  <input
-                    value={deleteRemoteName}
-                    onChange={(event) => setDeleteRemoteName(event.target.value)}
-                    disabled={laneActionBusy}
-                    className={INPUT_CLASS_NAME}
-                    placeholder="origin"
-                  />
-                </div>
               ) : null}
 
               <label className="mt-3 flex items-center gap-2 text-xs text-muted-fg/80 cursor-pointer select-none">
                 <input type="checkbox" checked={deleteForce} onChange={(event) => setDeleteForce(event.target.checked)} disabled={laneActionBusy} className="rounded accent-red-400" />
                 Force delete
               </label>
-
-              {requiresTypeConfirm ? (
-                <div className="mt-3">
-                  <span className={LABEL_CLASS_NAME}>
-                    Confirm <span className="normal-case tracking-normal text-red-300">{deletePhrase}</span>
-                  </span>
-                  <input
-                    data-tour="lanes.manageDialog.confirm"
-                    value={deleteConfirmText}
-                    onChange={(event) => setDeleteConfirmText(event.target.value)}
-                    disabled={laneActionBusy}
-                    className={`${INPUT_CLASS_NAME} ${confirmMatch ? "!border-red-500/30" : ""}`}
-                    placeholder={deletePhrase}
-                  />
-                </div>
-              ) : null}
 
               {deleteProgress ? (
                 <DeleteProgressStrip progress={deleteProgress} />
@@ -530,7 +511,7 @@ export function ManageLaneDialog({
                   variant="primary"
                   data-tour="lanes.manageDialog.delete"
                   className="bg-red-600 hover:bg-red-500"
-                  disabled={laneActionBusy || !confirmMatch}
+                  disabled={laneActionBusy || !hasDeleteSelection}
                   onClick={onDelete}
                 >
                   {laneActionBusy && laneActionKind === "delete" ? <CircleNotch size={13} className="animate-spin" /> : <Trash size={13} />}
@@ -553,31 +534,171 @@ function formatBranchLabel(ref: string): string {
   return ref.trim().replace(/^refs\/heads\//, "").replace(/^origin\//, "");
 }
 
+function DeleteCheckbox({ checked, indeterminate = false }: { checked: boolean; indeterminate?: boolean }) {
+  const active = checked || indeterminate;
+  return (
+    <span
+      aria-hidden
+      className={`flex h-[18px] w-[18px] shrink-0 items-center justify-center rounded-[5px] border transition-colors ${
+        active ? "border-red-400/70 bg-red-500/80 text-white" : "border-white/25 bg-white/[0.04]"
+      }`}
+    >
+      {checked ? <Check size={12} weight="bold" /> : indeterminate ? <Minus size={12} weight="bold" /> : null}
+    </span>
+  );
+}
+
+function DeleteTargetChecklist({
+  selection,
+  allSelected,
+  disabled,
+  onToggle,
+  onToggleAll,
+  worktreeTitle,
+  worktreeHint,
+  risk,
+  lane,
+}: {
+  selection: LaneDeleteSelection;
+  allSelected: boolean;
+  disabled: boolean;
+  onToggle: (key: keyof LaneDeleteSelection, next: boolean) => void;
+  onToggleAll: () => void;
+  worktreeTitle: string;
+  worktreeHint: string;
+  risk: LaneDeleteRisk | null;
+  lane: LaneSummary | null;
+}) {
+  const branchRef = risk?.branchRef ?? lane?.branchRef ?? null;
+  const branchLabel = branchRef ? formatBranchLabel(branchRef) : null;
+  const someSelected = selection.worktree || selection.localBranch || selection.remoteBranch;
+
+  const rows: { key: keyof LaneDeleteSelection; icon: React.ReactNode; title: string; hint: string; mono?: boolean }[] = [
+    {
+      key: "worktree",
+      icon: <Cube size={15} weight="duotone" />,
+      title: worktreeTitle,
+      hint: worktreeHint,
+    },
+    {
+      key: "localBranch",
+      icon: <BranchIcon size={14} />,
+      title: "Local branch",
+      hint: branchLabel ?? "Delete the git branch on this machine",
+      mono: Boolean(branchLabel),
+    },
+    {
+      key: "remoteBranch",
+      icon: <Cloud size={15} weight="duotone" />,
+      title: "Remote branch",
+      hint: branchLabel ? `origin · ${branchLabel}` : "Delete the branch on the remote",
+      mono: Boolean(branchLabel),
+    },
+  ];
+
+  return (
+    <div
+      data-tour="lanes.manageDialog.tabs"
+      className="mt-4 overflow-hidden rounded-xl border border-white/[0.08] bg-black/25"
+    >
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={onToggleAll}
+        aria-pressed={allSelected}
+        className="flex w-full items-center gap-3 border-b border-white/[0.06] bg-white/[0.02] px-3 py-2.5 text-left transition-colors hover:bg-white/[0.04] disabled:cursor-not-allowed disabled:opacity-60"
+      >
+        <DeleteCheckbox checked={allSelected} indeterminate={someSelected && !allSelected} />
+        <div className="min-w-0 flex-1">
+          <div className="text-xs font-semibold text-fg">Select everything</div>
+          <div className="text-[11px] text-muted-fg/60">Worktree, local &amp; remote branch</div>
+        </div>
+        {allSelected ? (
+          <span className="shrink-0 rounded-full bg-red-500/15 px-2 py-0.5 text-[10px] font-medium text-red-200">All</span>
+        ) : null}
+      </button>
+
+      <div className="divide-y divide-white/[0.04]">
+        {rows.map((row) => {
+          const checked = selection[row.key];
+          return (
+            <button
+              key={row.key}
+              type="button"
+              role="checkbox"
+              aria-checked={checked}
+              disabled={disabled}
+              onClick={() => onToggle(row.key, !checked)}
+              className={`flex w-full items-center gap-3 px-3 py-2.5 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
+                checked ? "bg-red-500/[0.08]" : "hover:bg-white/[0.03]"
+              }`}
+            >
+              <DeleteCheckbox checked={checked} />
+              <span
+                className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border ${
+                  checked
+                    ? "border-red-400/30 bg-red-500/15 text-red-200"
+                    : "border-white/[0.08] bg-white/[0.03] text-muted-fg/70"
+                }`}
+              >
+                {row.icon}
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className={`block text-xs font-medium ${checked ? "text-red-100" : "text-fg"}`}>{row.title}</span>
+                <span className={`block truncate text-[11px] text-muted-fg/60 ${row.mono ? "font-mono" : ""}`}>{row.hint}</span>
+              </span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+type DeleteRemovalItem = { icon: React.ReactNode; label: React.ReactNode; hint?: string };
+
 function buildDeleteRemovalPreview(
-  deleteMode: "worktree" | "local_branch" | "remote_branch",
+  selection: LaneDeleteSelection,
   lane: LaneSummary,
   risk: LaneDeleteRisk | null,
-  remoteName: string,
-): { icon: React.ReactNode; label: string; hint?: string }[] {
-  const items: { icon: React.ReactNode; label: string; hint?: string }[] = [];
+): DeleteRemovalItem[] {
+  const items: DeleteRemovalItem[] = [];
   const branchRef = risk?.branchRef ?? lane.branchRef ?? null;
   const branchLabel = branchRef ? formatBranchLabel(branchRef) : null;
+  const laneColor = lane.color ?? null;
+  const laneColorStyle = laneColor ? { color: laneColor } : undefined;
 
-  if (lane.laneType === "attached") {
-    if (deleteMode === "worktree") {
+  if (selection.worktree) {
+    if (lane.laneType === "attached") {
       items.push({
         icon: <ArrowSquareOut size={12} className="text-red-300/80" />,
         label: "Unlink from ADE (keep branch)",
       });
+    } else {
+      items.push({
+        icon: (
+          <LaneIcon
+            size={13}
+            weight="duotone"
+            className={laneColor ? "shrink-0" : "shrink-0 text-red-300/80"}
+            style={laneColorStyle}
+          />
+        ),
+        label: (
+          <span className="flex min-w-0 flex-col">
+            <span className="font-semibold" style={laneColorStyle}>
+              {lane.name}
+            </span>
+            {lane.worktreePath ? (
+              <span className="break-all text-[11px] text-muted-fg/55">{lane.worktreePath}</span>
+            ) : null}
+          </span>
+        ),
+      });
     }
-  } else if (lane.worktreePath) {
-    items.push({
-      icon: <Cube size={12} className="text-red-300/80" />,
-      label: lane.worktreePath,
-    });
   }
 
-  if ((deleteMode === "local_branch" || deleteMode === "remote_branch") && branchLabel) {
+  if (selection.localBranch && branchLabel) {
     const unpushed =
       risk?.hasUnpushedCommits && risk.unpushedCommitCount > 0
         ? ` · ${risk.unpushedCommitCount} unpushed`
@@ -588,11 +709,10 @@ function buildDeleteRemovalPreview(
     });
   }
 
-  if (deleteMode === "remote_branch" && branchLabel) {
-    const remote = remoteName.trim() || "origin";
+  if (selection.remoteBranch && branchLabel) {
     items.push({
-      icon: <BranchIcon size={12} className="text-red-300/80" />,
-      label: `Remote · ${remote}/${branchLabel}`,
+      icon: <Cloud size={12} className="text-red-300/80" />,
+      label: `Remote · origin/${branchLabel}`,
       hint: risk && !risk.remoteBranchExists ? "Not on remote yet" : undefined,
     });
   }
@@ -602,14 +722,14 @@ function buildDeleteRemovalPreview(
 
 function PreflightPanel({
   risk,
-  deleteMode,
-  remoteName,
-  lane
+  selection,
+  lane,
+  chatSessionCount,
 }: {
   risk: LaneDeleteRisk | null;
-  deleteMode: "worktree" | "local_branch" | "remote_branch";
-  remoteName: string;
+  selection: LaneDeleteSelection;
   lane: LaneSummary;
+  chatSessionCount?: number;
 }) {
   const willStop: { icon: React.ReactNode; label: string }[] = [];
   if (risk && risk.runningProcessCount > 0) {
@@ -618,10 +738,11 @@ function PreflightPanel({
       label: `${risk.runningProcessCount} running ${risk.runningProcessCount === 1 ? "process" : "processes"}`
     });
   }
-  if (risk && risk.activeChatCount > 0) {
+  const chatCount = chatSessionCount ?? 0;
+  if (chatCount > 0) {
     willStop.push({
       icon: <ChatCircle size={12} className="text-accent" />,
-      label: `${risk.activeChatCount} chat ${risk.activeChatCount === 1 ? "session" : "sessions"}`
+      label: `${chatCount} chat ${chatCount === 1 ? "session" : "sessions"}`
     });
   }
   if (risk && risk.activePtyCount > 0) {
@@ -637,7 +758,9 @@ function PreflightPanel({
     });
   }
 
-  const willRemove = buildDeleteRemovalPreview(deleteMode, lane, risk, remoteName);
+  const willRemove = buildDeleteRemovalPreview(selection, lane, risk);
+
+  if (willStop.length === 0 && willRemove.length === 0) return null;
 
   return (
     <div className="mt-3 rounded-lg border border-white/[0.08] bg-black/30 px-3 py-2.5">
@@ -650,9 +773,7 @@ function PreflightPanel({
             </li>
           ))}
         </ul>
-      ) : (
-        <div className="text-[11px] text-muted-fg/65">Nothing running on this lane.</div>
-      )}
+      ) : null}
       {willRemove.length > 0 ? (
         <>
           <div className={`text-[10px] uppercase tracking-wide text-muted-fg/50 ${willStop.length > 0 ? "mt-2.5" : ""} mb-1.5`}>
@@ -661,10 +782,10 @@ function PreflightPanel({
           <ul className="space-y-1.5">
             {willRemove.map((item, i) => (
               <li key={`remove-${i}`} className="flex items-start gap-2 text-xs text-red-200/85">
-                {item.icon}
-                <span className="min-w-0 break-all">
+                <span className="mt-0.5 flex h-3.5 w-3.5 items-center justify-center">{item.icon}</span>
+                <span className="flex min-w-0 flex-1 items-baseline gap-1 break-all">
                   {item.label}
-                  {item.hint ? <span className="text-muted-fg/60"> ({item.hint})</span> : null}
+                  {item.hint ? <span className="text-muted-fg/60">({item.hint})</span> : null}
                 </span>
               </li>
             ))}

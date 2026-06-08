@@ -1,7 +1,11 @@
 import { memo, useCallback, useState } from "react";
 
 import type { DeleteLaneArgs, LaneSummary } from "../../../../shared/types";
-import { ManageLaneDialog } from "../../lanes/ManageLaneDialog";
+import {
+  ManageLaneDialog,
+  EMPTY_LANE_DELETE_SELECTION,
+  type LaneDeleteSelection,
+} from "../../lanes/ManageLaneDialog";
 import { useAppStore } from "../../../state/appStore";
 
 export type PrManageLaneDialogHostProps = {
@@ -18,16 +22,12 @@ export const PrManageLaneDialogHost = memo(function PrManageLaneDialogHost({
   const lanes = useAppStore((state) => state.lanes ?? []);
   const refreshLanes = useAppStore((state) => state.refreshLanes);
 
-  const [deleteMode, setDeleteMode] = useState<"worktree" | "local_branch" | "remote_branch">("worktree");
-  const [deleteRemoteName, setDeleteRemoteName] = useState("origin");
-  const [deleteForce, setDeleteForce] = useState(false);
-  const [deleteConfirmText, setDeleteConfirmText] = useState("");
+  const [deleteSelection, setDeleteSelection] = useState<LaneDeleteSelection>(EMPTY_LANE_DELETE_SELECTION);
+  const [deleteForce, setDeleteForce] = useState(true);
   const [laneActionBusy, setLaneActionBusy] = useState(false);
   const [laneActionStatus, setLaneActionStatus] = useState<string | null>(null);
   const [laneActionError, setLaneActionError] = useState<string | null>(null);
   const [laneActionKind, setLaneActionKind] = useState<"delete" | "archive" | "adopt" | null>(null);
-
-  const deletePhrase = lane ? `delete ${lane.name}` : "";
 
   const runLaneAction = useCallback(async (
     fn: () => Promise<void>,
@@ -60,24 +60,20 @@ export const PrManageLaneDialogHost = memo(function PrManageLaneDialogHost({
 
   const handleDelete = useCallback(async () => {
     if (!lane || lane.laneType === "primary") return;
-    if (deleteConfirmText.trim().toLowerCase() !== deletePhrase.toLowerCase()) return;
+    if (!deleteSelection.worktree && !deleteSelection.localBranch && !deleteSelection.remoteBranch) return;
 
     const args: DeleteLaneArgs = { laneId: lane.id, force: deleteForce };
-    if (deleteMode === "worktree") {
-      args.deleteBranch = false;
-    } else {
-      args.deleteBranch = true;
-      if (deleteMode === "remote_branch") {
-        args.deleteRemoteBranch = true;
-        args.remoteName = deleteRemoteName.trim() || "origin";
-      }
+    args.deleteBranch = deleteSelection.localBranch || deleteSelection.remoteBranch;
+    if (deleteSelection.remoteBranch) {
+      args.deleteRemoteBranch = true;
+      args.remoteName = "origin";
     }
 
     await runLaneAction(async () => {
       await window.ade.lanes.delete(args);
     }, "Deleting lane…", "delete");
-    setDeleteConfirmText("");
-  }, [deleteConfirmText, deleteForce, deleteMode, deletePhrase, deleteRemoteName, lane, runLaneAction]);
+    setDeleteSelection(EMPTY_LANE_DELETE_SELECTION);
+  }, [deleteForce, deleteSelection, lane, runLaneAction]);
 
   if (!open || !lane) return null;
 
@@ -87,15 +83,10 @@ export const PrManageLaneDialogHost = memo(function PrManageLaneDialogHost({
       onOpenChange={onOpenChange}
       managedLane={lane}
       allLanes={lanes}
-      deleteMode={deleteMode}
-      setDeleteMode={setDeleteMode}
-      deleteRemoteName={deleteRemoteName}
-      setDeleteRemoteName={setDeleteRemoteName}
+      deleteSelection={deleteSelection}
+      setDeleteSelection={setDeleteSelection}
       deleteForce={deleteForce}
       setDeleteForce={setDeleteForce}
-      deleteConfirmText={deleteConfirmText}
-      setDeleteConfirmText={setDeleteConfirmText}
-      deletePhrase={deletePhrase}
       laneActionBusy={laneActionBusy}
       laneActionStatus={laneActionStatus}
       laneActionError={laneActionError}
