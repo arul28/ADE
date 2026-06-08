@@ -84,6 +84,7 @@ import { parseLinearGraphQLInput } from "../cto/linearGraphQLInput";
 import { launchAgentChatCli } from "../chat/agentChatCliLaunch";
 import { createApnsBridgeService } from "../notifications/apnsBridgeService";
 import { deleteTerminalSessionWithRuntimeCleanup } from "../sessions/deleteTerminalSession";
+import { createOrchestrationDomainService } from "../orchestration/orchestrationDomain";
 
 export const ADE_ACTION_DOMAIN_NAMES = [
   "lane",
@@ -134,6 +135,7 @@ export const ADE_ACTION_DOMAIN_NAMES = [
   "review",
   "issue",
   "notifications_apns",
+  "orchestration",
 ] as const;
 
 export type AdeActionDomain = (typeof ADE_ACTION_DOMAIN_NAMES)[number];
@@ -743,6 +745,22 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "clearKey",
     "sendTestPush",
   ],
+  orchestration: [
+    "runCreate",
+    "bundleRead",
+    "manifestReadSection",
+    "manifestPatch",
+    "planAppend",
+    "planWrite",
+    "assetRegister",
+    "claimTask",
+    "releaseTask",
+    "runList",
+    "spawnAgent",
+    "agentInject",
+    "subscribe",
+    "unsubscribe",
+  ],
 };
 
 type AutomationsDomainService = {
@@ -845,6 +863,18 @@ type OpaqueService = Record<string, unknown>;
 
 function toService(value: unknown): OpaqueService | null {
   return (value ?? null) as OpaqueService | null;
+}
+
+function buildOrchestrationDomainService(runtime: AdeRuntime): OpaqueService | null {
+  const orchestrationService = runtime.orchestrationService;
+  const laneService = runtime.laneService;
+  const agentChatService = runtime.agentChatService;
+  if (!orchestrationService || !laneService || !agentChatService) return null;
+  return createOrchestrationDomainService({
+    orchestrationService,
+    laneService: { getLaneWorktreePath: (laneId: string) => laneService.getLaneWorktreePath(laneId) },
+    agentChatService,
+  }) as unknown as OpaqueService;
 }
 
 type CachedApnsBridgeDomainService = {
@@ -2861,6 +2891,7 @@ export function getAdeActionDomainServices(
     automations: automationsEnabled ? toService(buildAutomationsDomainService(runtime)) : null,
     review: toService(runtime.reviewService),
     issue: toService(buildIssueDomainService(runtime)),
+    orchestration: toService(buildOrchestrationDomainService(runtime)),
     get notifications_apns() {
       return toService(getApnsBridgeDomainService(runtime));
     },

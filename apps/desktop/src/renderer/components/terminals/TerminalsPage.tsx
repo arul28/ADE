@@ -655,7 +655,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
 
   const workSidebarVisible = active && work.workSidebarOpen;
   const isRemoteProject = useAppStore((s) => s.projectBinding?.kind === "remote");
-  const { setWorkSidebarTab, showDraftKind } = work;
+  const { setWorkSidebarTab, setOrchestratorEnabled } = work;
   useEffect(() => {
     if (!active) return;
     const openBrowserSidebar = () => {
@@ -669,14 +669,14 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     const unsubscribeBrowserEvents = window.ade?.builtInBrowser?.onEvent?.((event) => {
       if (event.type === "open-request" && browserEventMatchesProject(event, projectRoot)) openBrowserSidebar();
     }) ?? null;
-    // The composer's "+" menu fires `ade:work:start-orchestrator-chat` to
-    // ask TerminalsPage to switch to the orchestrator-lead draft (parallel
-    // entry point to the SessionListPane "Orchestrator" pill).
+    // The composer's "+" menu fires `ade:work:start-orchestrator-chat` to flip
+    // the orthogonal orchestrator flag on the shared chat draft (keeps prompt /
+    // model / lane intact); the stop event clears it back to a normal chat.
     const startOrchestratorChat = () => {
-      showDraftKind("chat-orchestrator");
+      setOrchestratorEnabled(true);
     };
     const stopOrchestratorChat = () => {
-      showDraftKind("chat");
+      setOrchestratorEnabled(false);
     };
     window.addEventListener("ade:work:start-orchestrator-chat", startOrchestratorChat);
     window.addEventListener("ade:work:stop-orchestrator-chat", stopOrchestratorChat);
@@ -686,7 +686,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       window.removeEventListener("ade:work:stop-orchestrator-chat", stopOrchestratorChat);
       unsubscribeBrowserEvents?.();
     };
-  }, [active, isRemoteProject, projectRoot, setWorkSidebarTab, showDraftKind]);
+  }, [active, isRemoteProject, projectRoot, setWorkSidebarTab, setOrchestratorEnabled]);
 
   const toggleSessionsPane = useCallback(() => {
     work.setWorkFocusSessionsHidden(!work.workFocusSessionsHidden);
@@ -837,6 +837,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         visibleSessions={work.visibleSessions}
         activeItemId={work.activeItemId}
         draftKind={work.draftKind}
+        orchestratorEnabled={work.orchestratorEnabled}
         draftLaneId={work.draftLaneId}
         draftContextTargetId={draftContextTargetId}
         onSelectItem={work.setActiveItemId}
@@ -874,6 +875,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       work.visibleSessions,
       work.activeItemId,
       work.draftKind,
+      work.orchestratorEnabled,
       work.draftLaneId,
       draftContextTargetId,
       work.setDraftLaneId,

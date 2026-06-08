@@ -366,7 +366,11 @@ describe("OrchestrationPanel preload integration", () => {
     });
 
     (window as any).ade = {
-      orchestration: createOrchestrationBridge({ invoke, on, removeListener }),
+      orchestration: createOrchestrationBridge({
+        callAction: (_action, args, ipcChannel) => invoke(ipcChannel, args),
+        subscribeRuntimeOrchestrationEvents: () => () => {},
+        ipcRenderer: { invoke, on, removeListener },
+      }),
     };
 
     expect((window as any).ade?.orchestration?.bundleRead).toEqual(expect.any(Function));

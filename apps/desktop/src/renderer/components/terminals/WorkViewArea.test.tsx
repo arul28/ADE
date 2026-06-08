@@ -340,7 +340,8 @@ describe("WorkViewArea", () => {
         sessions={[]}
         visibleSessions={[]}
         activeItemId={null}
-        draftKind="chat-orchestrator"
+        draftKind="chat"
+        orchestratorEnabled
         onSelectItem={() => {}}
         onCloseItem={() => {}}
         onOpenChatSession={() => {}}

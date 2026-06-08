@@ -123,7 +123,7 @@ export type TerminalAttentionIndicator = "none" | "running-active" | "running-ne
 export type MacosVmTabIndicator = "blocker" | "failed" | null;
 export type WorkSidebarTab = "git" | "files" | "ios" | "app-control" | "browser";
 export type WorkStatusFilter = "all" | "running" | "awaiting-input" | "ended";
-export type WorkDraftKind = "chat" | "cli" | "chat-orchestrator";
+export type WorkDraftKind = "chat" | "cli";
 /** How sessions are grouped in the Work sidebar list. */
 export type WorkSessionListOrganization =
   | "all-lanes-by-status"
@@ -149,6 +149,13 @@ export type WorkProjectViewState = {
   /** The grid set currently shown in the work area (derived-from/synced-with the focused session). */
   activeGridSetId: string | null;
   draftKind: WorkDraftKind;
+  /**
+   * Whether the new-chat composer launches an orchestrator (lead) run. This is
+   * an orthogonal flag on the single unified draft — not a third `draftKind` —
+   * so toggling chat↔cli↔orchestrator never splits the prompt/model/lane state.
+   * CLI mode forces this off (orchestrator has no CLI form).
+   */
+  orchestratorEnabled: boolean;
   draftLaneId: string | null;
   laneFilter: string;
   statusFilter: WorkStatusFilter;
@@ -207,6 +214,7 @@ function createDefaultWorkProjectViewState(): WorkProjectViewState {
     gridSets: [],
     activeGridSetId: null,
     draftKind: "chat",
+    orchestratorEnabled: false,
     draftLaneId: null,
     laneFilter: "all",
     statusFilter: "all",
@@ -258,9 +266,12 @@ function normalizeWorkProjectViewState(value: unknown): WorkProjectViewState {
     selectedItemId: normalizeOptionalString(candidate.selectedItemId),
     gridSets: normalizeWorkGridSets(candidate.gridSets),
     activeGridSetId: normalizeOptionalString(candidate.activeGridSetId),
-    draftKind: candidate.draftKind === "cli" || candidate.draftKind === "chat-orchestrator"
-      ? candidate.draftKind
-      : "chat",
+    draftKind: candidate.draftKind === "cli" ? "cli" : "chat",
+    // Legacy persisted state stored orchestrator as a third draftKind
+    // ("chat-orchestrator"); migrate it onto the orthogonal boolean.
+    orchestratorEnabled:
+      candidate.orchestratorEnabled === true
+      || (candidate as { draftKind?: unknown }).draftKind === "chat-orchestrator",
     draftLaneId: normalizeOptionalString(candidate.draftLaneId),
     laneFilter: normalizeOptionalString(candidate.laneFilter) ?? "all",
     statusFilter:

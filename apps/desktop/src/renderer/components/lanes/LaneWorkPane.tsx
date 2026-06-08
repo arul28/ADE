@@ -56,6 +56,7 @@ export function LaneWorkPane({
           visibleSessions={work.visibleSessions}
           activeItemId={work.activeItemId}
           draftKind={work.draftKind}
+          orchestratorEnabled={work.orchestratorEnabled}
           draftLaneId={laneId}
           onSelectItem={work.setActiveItemId}
           onCloseItem={work.closeTab}

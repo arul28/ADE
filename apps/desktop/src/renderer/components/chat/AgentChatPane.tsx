@@ -1069,15 +1069,17 @@ type ParallelModelRowState = NativeControlState & {
   executionMode: AgentChatExecutionMode;
 };
 
-type WorkDraftLaunchKind = "chat" | "cli" | "chat-orchestrator";
+type WorkDraftLaunchKind = "chat" | "cli";
 type WorkDraftStorageKind = WorkDraftLaunchKind | "work-start";
 
-function normalizeWorkDraftStorageKind(workDraftKind: WorkDraftLaunchKind): WorkDraftStorageKind {
-  return workDraftKind === "chat" || workDraftKind === "cli" ? "work-start" : workDraftKind;
+// Orchestrator is an orthogonal boolean now, so every launch kind shares the
+// single "work-start" bucket — prompt/model/lane persist across chat↔cli↔orchestrator.
+function normalizeWorkDraftStorageKind(): WorkDraftStorageKind {
+  return "work-start";
 }
 
 function resolveWorkDraftStorageKind(workDraftKind: WorkDraftLaunchKind | WorkDraftStorageKind): WorkDraftStorageKind {
-  return workDraftKind === "work-start" ? "work-start" : normalizeWorkDraftStorageKind(workDraftKind);
+  return workDraftKind === "work-start" ? "work-start" : normalizeWorkDraftStorageKind();
 }
 
 function launchConfigStorageKey(scope: {
@@ -2359,7 +2361,7 @@ function resolveCliRegistryModelId(provider: "codex" | "claude" | "cursor" | "dr
 
 function cursorModelAllowedForDraftKind(
   descriptor: ModelDescriptor | null | undefined,
-  workDraftKind: "chat" | "cli" | "chat-orchestrator",
+  workDraftKind: "chat" | "cli",
 ): boolean {
   if (descriptor?.family !== "cursor") return true;
   const availability = descriptor.cursorAvailability;
@@ -2370,7 +2372,7 @@ function cursorModelAllowedForDraftKind(
 
 function filterCursorModelIdsForDraftKind(
   modelIds: string[],
-  workDraftKind: "chat" | "cli" | "chat-orchestrator",
+  workDraftKind: "chat" | "cli",
 ): string[] {
   return modelIds.filter((modelId) => {
     const descriptor = resolveModelDescriptorWithRuntimeCatalog(modelId) ?? getModelById(modelId);
@@ -2737,6 +2739,7 @@ export function AgentChatPane({
   onInitialLinearIssueContextConsumed,
   onSessionCreated,
   workDraftKind = "chat",
+  orchestratorEnabled = false,
   onLaunchCliSession,
   onOpenShellSession,
   availableLanes,
@@ -2779,7 +2782,14 @@ export function AgentChatPane({
   initialModelId?: string | null;
   onInitialLinearIssueContextConsumed?: () => void;
   onSessionCreated?: (session: AgentChatSession, options?: AgentChatSessionCreatedOptions) => void | Promise<void>;
-  workDraftKind?: "chat" | "cli" | "chat-orchestrator";
+  workDraftKind?: "chat" | "cli";
+  /**
+   * Orthogonal orchestrator flag: when true the chat draft launches an
+   * orchestrator-lead run. Independent of `workDraftKind` so toggling
+   * chat↔cli↔orchestrator never splits prompt/model/lane draft state. CLI
+   * surfaces force this off (orchestrator has no CLI form).
+   */
+  orchestratorEnabled?: boolean;
   onLaunchCliSession?: (args: WorkPtyLaunchArgs) => Promise<WorkPtyLaunchResult>;
   onOpenShellSession?: (laneId: string) => void | Promise<void>;
   /** Available lanes for the lane selector in empty state (full `LaneSummary` includes `branchRef` for branch sublines in the menu). */
@@ -2843,7 +2853,7 @@ export function AgentChatPane({
   const isPersistentIdentitySurface = surfaceProfile === "persistent_identity";
   const showWorkspaceChrome = !hideWorkspaceChrome;
   const modelSwitchPolicy = presentation?.modelSwitchPolicy ?? "same-family-after-launch";
-  const workDraftStorageKind = normalizeWorkDraftStorageKind(workDraftKind);
+  const workDraftStorageKind = normalizeWorkDraftStorageKind();
   const isWorkDraftComposer = forceDraft && embeddedWorkLayout && !lockSessionId && !initialSessionId;
   const draftLaunchConfigLaneScopeId = isWorkDraftComposer ? WORK_START_DRAFT_LAUNCH_SCOPE_ID : laneId;
   const initialWorkDraftLaneIdRef = useRef<string | null>(isWorkDraftComposer ? laneId : null);
@@ -4356,7 +4366,7 @@ export function AgentChatPane({
   const assistantLabel = presentation?.assistantLabel?.trim()
     || resolveAssistantLabel(selectedModelDesc, selectedSession?.provider);
   const defaultMessagePlaceholder =
-    workDraftKind === "chat-orchestrator" && !selectedSessionId
+    orchestratorEnabled && !selectedSessionId
       ? "Describe the orchestration goal..."
       : "Type to vibecode...";
   const messagePlaceholder = presentation?.messagePlaceholder?.trim() || defaultMessagePlaceholder;
@@ -6410,7 +6420,7 @@ export function AgentChatPane({
       // Orchestrator-lead draft: force the interactionMode so the lead chat
       // boots with the orchestrator skill + tool gates (`goal.md` §10.1).
       const orchestratorOverrides: Partial<Parameters<typeof window.ade.agentChat.create>[0]> =
-        workDraftKind === "chat-orchestrator"
+        orchestratorEnabled
           ? { interactionMode: "orchestrator-lead" as AgentChatInteractionMode }
           : {};
       const created = await window.ade.agentChat.create({
@@ -6429,7 +6439,7 @@ export function AgentChatPane({
       // so the bundle path is persisted alongside the new chat (workers will
       // pick it up from the manifest). If it fails, stop before sending the
       // first prompt so a half-created lead chat cannot start working.
-      if (workDraftKind === "chat-orchestrator") {
+      if (orchestratorEnabled) {
         try {
           const runCreate = await window.ade.orchestration.runCreate({
             laneId: targetLaneId,
@@ -6495,7 +6505,7 @@ export function AgentChatPane({
       if (options.notify) notifySessionCreated(created, options.notifyOptions);
       if (targetLaneId === laneId) void refreshSessions({ force: true }).catch(() => {});
       return created;
-  }, [fastMode, constrainedModelSelectionError, currentNativeControls, executionMode, initialNativeControls, laneId, lastLaunchConfigStorageKey, modelId, notifySessionCreated, patchSessionSummary, reasoningEffort, refreshSessions, touchSession, workDraftKind]);
+  }, [fastMode, constrainedModelSelectionError, currentNativeControls, executionMode, initialNativeControls, laneId, lastLaunchConfigStorageKey, modelId, notifySessionCreated, orchestratorEnabled, patchSessionSummary, reasoningEffort, refreshSessions, touchSession, workDraftKind]);
 
   const createSession = useCallback(async (): Promise<string | null> => {
     if (createSessionPromiseRef.current) {
@@ -6940,7 +6950,7 @@ export function AgentChatPane({
     if (parallelLaunchBusy || projectTransitionBlocksChat) {
       return;
     }
-    if (kind === "chat" && (selectedSessionId || (workDraftKind !== "chat" && workDraftKind !== "chat-orchestrator"))) return;
+    if (kind === "chat" && (selectedSessionId || workDraftKind !== "chat")) return;
     if (kind === "cli" && (!isWorkCliLaunchDraft || !onLaunchCliSession)) return;
     if (!modelId) {
       setError("Select a model first");
@@ -7810,7 +7820,7 @@ export function AgentChatPane({
           const sendInteractionMode: AgentChatInteractionMode | null =
             sessionProvider === "claude"
               ? (
-                workDraftKind === "chat-orchestrator" || selectedSession?.interactionMode === "orchestrator-lead"
+                orchestratorEnabled || selectedSession?.interactionMode === "orchestrator-lead"
                   ? "orchestrator-lead"
                   : interactionMode
               )
@@ -7946,6 +7956,7 @@ export function AgentChatPane({
     builtInBrowserContextItems,
     macosVmContextItems,
     workDraftKind,
+    orchestratorEnabled,
   ]);
 
   const openRewindConfirmDialog = useCallback((state: RewindFilesConfirmDialogState): Promise<boolean> => {
@@ -9013,7 +9024,7 @@ export function AgentChatPane({
 
   const activeOrchestrationRole = selectedSession?.orchestrationRole ?? null;
   const isOrchestratorLead = selectedSession?.interactionMode === "orchestrator-lead";
-  const isOrchestratorDraft = forceDraft && workDraftKind === "chat-orchestrator" && selectedSessionId == null;
+  const isOrchestratorDraft = forceDraft && orchestratorEnabled && selectedSessionId == null;
 
   const composerElement = (
       <AgentChatComposer

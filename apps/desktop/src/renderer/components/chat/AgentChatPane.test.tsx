@@ -978,7 +978,8 @@ function renderAutoCreateDraftPane(args?: {
     session: AgentChatSession,
     options?: AgentChatSessionCreatedOptions,
   ) => void | Promise<void>;
-  workDraftKind?: "chat" | "cli" | "chat-orchestrator";
+  workDraftKind?: "chat" | "cli";
+  orchestratorEnabled?: boolean;
   onLaunchCliSession?: React.ComponentProps<typeof AgentChatPane>["onLaunchCliSession"];
   onLaneChange?: React.ComponentProps<typeof AgentChatPane>["onLaneChange"];
   lanes?: any[];
@@ -1018,6 +1019,7 @@ function renderAutoCreateDraftPane(args?: {
                 forceDraftMode
                 embeddedWorkLayout
                 workDraftKind={args?.workDraftKind}
+                orchestratorEnabled={args?.orchestratorEnabled}
                 availableLanes={lanes}
                 onLaneChange={args?.onLaneChange ?? vi.fn()}
                 onSessionCreated={args?.onSessionCreated}
@@ -1035,7 +1037,7 @@ function renderAutoCreateDraftPane(args?: {
 function composerDraftStorageKeyForTest(args: {
   projectRoot: string;
   companionStateKey: string;
-  workDraftKind?: "work-start" | "chat" | "cli" | "chat-orchestrator";
+  workDraftKind?: "work-start" | "chat" | "cli";
 }) {
   return [
     "ade.chat.composerDraft.v1",
@@ -1049,7 +1051,7 @@ function composerDraftStorageKeyForTest(args: {
 function draftLaunchJobsScopeKeyForTest(args: {
   projectRoot: string;
   laneId: string;
-  workDraftKind?: "work-start" | "chat-orchestrator";
+  workDraftKind?: "work-start";
 }) {
   return [
     "draft-launch-jobs",
@@ -3699,7 +3701,7 @@ describe("AgentChatPane submit recovery", () => {
   it("keeps orchestrator lead mode on the first Claude draft send", async () => {
     const { send, create } = installAdeMocks({ sessions: [], includeClaudeModel: true });
 
-    renderAutoCreateDraftPane({ workDraftKind: "chat-orchestrator" });
+    renderAutoCreateDraftPane({ orchestratorEnabled: true });
 
     const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
     const claudeLabel = getModelById("anthropic/claude-sonnet-4-6")?.displayName ?? "Claude Sonnet 4.6";
@@ -3733,7 +3735,7 @@ describe("AgentChatPane submit recovery", () => {
     vi.mocked(window.ade.orchestration.runCreate).mockRejectedValueOnce(new Error("disk full"));
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     try {
-      renderAutoCreateDraftPane({ workDraftKind: "chat-orchestrator" });
+      renderAutoCreateDraftPane({ orchestratorEnabled: true });
 
       const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
       const claudeLabel = getModelById("anthropic/claude-sonnet-4-6")?.displayName ?? "Claude Sonnet 4.6";
