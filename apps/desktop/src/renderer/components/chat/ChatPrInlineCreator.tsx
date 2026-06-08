@@ -61,9 +61,11 @@ export const ChatPrInlineCreator = React.memo(function ChatPrInlineCreator({
   /**
    * Called the instant `createFromLane` resolves, with the freshly-created PR.
    * The parent swaps to the live PR-details view immediately instead of waiting
-   * for the next GitHub polling round-trip (`prs-updated`) to arrive.
+   * for the next GitHub polling round-trip (`prs-updated`) to arrive. Required:
+   * the success path relies on the parent unmounting this creator, so omitting
+   * it would leave the button stuck "Creating…".
    */
-  onCreated?: (pr: PrSummary) => void;
+  onCreated: (pr: PrSummary) => void;
 }) {
   const navigate = useNavigate();
   const lanes = useAppStore((s) => s.lanes);
@@ -204,7 +206,7 @@ export const ChatPrInlineCreator = React.memo(function ChatPrInlineCreator({
       // Production always returns a PrSummary; only the web-preview mock can
       // resolve null — recover the button in that case rather than spinning.
       if (created) {
-        onCreated?.(created);
+        onCreated(created);
       } else {
         setBusy(false);
       }

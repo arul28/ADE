@@ -128,10 +128,10 @@ export const ChatPrPane = React.memo(function ChatPrPane({
 
   // The inline creator hands us the freshly-created PR the moment createFromLane
   // resolves — swap to the details view instantly rather than waiting for the
-  // next GitHub polling round-trip (`prs-updated`) to refresh the row.
+  // next GitHub polling round-trip (`prs-updated`) to refresh the row. (The
+  // creator only renders once `loading` is false, so no setLoading needed here.)
   const handleCreated = useCallback((created: PrSummary) => {
     setPr(created);
-    setLoading(false);
   }, []);
 
   useEffect(() => { void refresh(); }, [refresh]);
