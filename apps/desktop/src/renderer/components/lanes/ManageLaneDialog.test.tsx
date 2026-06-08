@@ -3,7 +3,11 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { LaneDeleteRisk, LaneSummary } from "../../../shared/types";
-import { ManageLaneDialog } from "./ManageLaneDialog";
+import {
+  ManageLaneDialog,
+  EMPTY_LANE_DELETE_SELECTION,
+  type LaneDeleteSelection,
+} from "./ManageLaneDialog";
 
 afterEach(cleanup);
 
@@ -57,15 +61,11 @@ function makeProps(overrides: Partial<DialogProps> = {}): DialogProps {
     managedLane: lane,
     managedLanes: undefined,
     allLanes: [lane],
-    deleteMode: "worktree",
-    setDeleteMode: vi.fn(),
-    deleteRemoteName: "origin",
-    setDeleteRemoteName: vi.fn(),
-    deleteForce: false,
+    deleteSelection: EMPTY_LANE_DELETE_SELECTION,
+    setDeleteSelection: vi.fn(),
+    deleteForce: true,
     setDeleteForce: vi.fn(),
-    deleteConfirmText: "delete Manage tabs",
-    setDeleteConfirmText: vi.fn(),
-    deletePhrase: "delete Manage tabs",
+    chatSessionCount: 0,
     laneActionBusy: false,
     laneActionStatus: null,
     laneActionError: null,
@@ -105,13 +105,13 @@ describe("ManageLaneDialog tabs", () => {
     vi.clearAllMocks();
   });
 
-  it("opens on the first non-destructive tab for a single lane", () => {
+  it("opens on the delete tab by default for a single lane", () => {
     render(<ManageLaneDialog {...makeProps()} />);
 
-    expect(selectedTabLabel()).toBe("Appearance");
+    expect(selectedTabLabel()).toBe("Delete");
   });
 
-  it("opens on archive for batch lane management", () => {
+  it("opens on the delete tab for batch lane management", () => {
     const firstLane = makeLane({ id: "lane-1", name: "First lane" });
     const secondLane = makeLane({ id: "lane-2", name: "Second lane" });
 
@@ -125,7 +125,7 @@ describe("ManageLaneDialog tabs", () => {
       />,
     );
 
-    expect(selectedTabLabel()).toBe("Archive");
+    expect(selectedTabLabel()).toBe("Delete");
   });
 
   it("does not reset the selected tab when the lane object refreshes", () => {
@@ -146,80 +146,29 @@ describe("ManageLaneDialog tabs", () => {
   });
 
   it("shows active chat sessions in the delete preflight", async () => {
-    (window as any).ade.lanes.getDeleteRisk.mockResolvedValueOnce({
-      ...deleteRisk,
-      activeChatCount: 1,
-    });
-
-    render(<ManageLaneDialog {...makeProps()} />);
-
-    fireEvent.click(screen.getByRole("tab", { name: "Delete" }));
+    render(<ManageLaneDialog {...makeProps({ chatSessionCount: 1 })} />);
 
     await waitFor(() => {
       expect(screen.getByText("1 chat session")).toBeTruthy();
     });
   });
 
-  it("allows a clean worktree-only delete without hidden confirmation text", async () => {
-    const onDelete = vi.fn();
-    render(
-      <ManageLaneDialog
-        {...makeProps({
-          deleteConfirmText: "",
-          onDelete,
-        })}
-      />,
-    );
-
-    fireEvent.click(screen.getByRole("tab", { name: "Delete" }));
+  it("disables the delete button when nothing is selected", async () => {
+    render(<ManageLaneDialog {...makeProps({ deleteSelection: EMPTY_LANE_DELETE_SELECTION })} />);
 
     const deleteButton = await screen.findByRole("button", { name: /delete lane/i });
-    await waitFor(() => {
-      expect((deleteButton as HTMLButtonElement).disabled).toBe(false);
-    });
-
-    fireEvent.click(deleteButton);
-
-    expect(onDelete).toHaveBeenCalledTimes(1);
+    expect((deleteButton as HTMLButtonElement).disabled).toBe(true);
   });
 
-  it("requires typed confirmation for a dirty lane delete", async () => {
-    (window as any).ade.lanes.getDeleteRisk.mockResolvedValueOnce({
-      ...deleteRisk,
-      dirty: true,
-    });
+  it("enables delete once a target is selected and fires onDelete", async () => {
     const onDelete = vi.fn();
-    const { rerender } = render(
-      <ManageLaneDialog
-        {...makeProps({
-          deleteConfirmText: "",
-          onDelete,
-        })}
-      />,
-    );
-
-    fireEvent.click(screen.getByRole("tab", { name: "Delete" }));
+    const selection: LaneDeleteSelection = { worktree: true, localBranch: false, remoteBranch: false };
+    render(<ManageLaneDialog {...makeProps({ deleteSelection: selection, onDelete })} />);
 
     const deleteButton = await screen.findByRole("button", { name: /delete lane/i });
-    await waitFor(() => {
-      expect((deleteButton as HTMLButtonElement).disabled).toBe(true);
-    });
+    expect((deleteButton as HTMLButtonElement).disabled).toBe(false);
 
-    rerender(
-      <ManageLaneDialog
-        {...makeProps({
-          deleteConfirmText: "delete Manage tabs",
-          onDelete,
-        })}
-      />,
-    );
-
-    fireEvent.click(screen.getByRole("tab", { name: "Delete" }));
-    await waitFor(() => {
-      expect((screen.getByRole("button", { name: /delete lane/i }) as HTMLButtonElement).disabled).toBe(false);
-    });
-
-    fireEvent.click(screen.getByRole("button", { name: /delete lane/i }));
+    fireEvent.click(deleteButton);
 
     expect(onDelete).toHaveBeenCalledTimes(1);
   });

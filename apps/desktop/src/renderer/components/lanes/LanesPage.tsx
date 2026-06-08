@@ -29,7 +29,7 @@ import { QuickRunMenu } from "../run/QuickRunMenu";
 import { CreateLaneDialog, type CreateLaneMode, type CreateLaneSetupStep } from "./CreateLaneDialog";
 import { AttachLaneDialog } from "./AttachLaneDialog";
 import { MultiAttachWorktreeDialog } from "./MultiAttachWorktreeDialog";
-import { ManageLaneDialog } from "./ManageLaneDialog";
+import { ManageLaneDialog, EMPTY_LANE_DELETE_SELECTION, type LaneDeleteSelection } from "./ManageLaneDialog";
 import { LaneContextMenu } from "./LaneContextMenu";
 import { getLaneAccent } from "./laneColorPalette";
 import { LaneRebaseBanner } from "./LaneRebaseBanner";
@@ -560,10 +560,8 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
       return false;
     }
   });
-  const [deleteMode, setDeleteMode] = useState<"worktree" | "local_branch" | "remote_branch">("worktree");
-  const [deleteRemoteName, setDeleteRemoteName] = useState("origin");
-  const [deleteForce, setDeleteForce] = useState(false);
-  const [deleteConfirmText, setDeleteConfirmText] = useState("");
+  const [deleteSelection, setDeleteSelection] = useState<LaneDeleteSelection>(EMPTY_LANE_DELETE_SELECTION);
+  const [deleteForce, setDeleteForce] = useState(true);
   const [laneActionBusy, setLaneActionBusy] = useState(false);
   const [laneActionStatus, setLaneActionStatus] = useState<string | null>(null);
   const [laneActionError, setLaneActionError] = useState<string | null>(null);
@@ -876,11 +874,6 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     [managedLaneIds, lanesById],
   );
   const isBatchManage = managedLanes.length > 1;
-  const deletePhrase = isBatchManage
-    ? `delete ${managedLanes.length} lanes`
-    : managedLane
-      ? `delete ${managedLane.name}`
-      : "";
   const selectedAttachedLane = managedLane?.laneType === "attached" ? managedLane : null;
   const shouldShowAdoptHint = Boolean(selectedAttachedLane && !adoptHintDismissed);
   const adoptTargetLane = adoptTargetLaneId ? lanesById.get(adoptTargetLaneId) ?? null : null;
@@ -1798,14 +1791,10 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     const deleteArgsByLaneId = new Map<string, DeleteLaneArgs>();
     for (const lane of actionable) {
       const args: DeleteLaneArgs = { laneId: lane.id, force: deleteForce };
-      if (deleteMode === "worktree") {
-        args.deleteBranch = false;
-      } else {
-        args.deleteBranch = true;
-        if (deleteMode === "remote_branch") {
-          args.deleteRemoteBranch = true;
-          args.remoteName = deleteRemoteName.trim() || "origin";
-        }
+      args.deleteBranch = deleteSelection.localBranch;
+      if (deleteSelection.remoteBranch) {
+        args.deleteRemoteBranch = true;
+        args.remoteName = "origin";
       }
       deleteArgsByLaneId.set(lane.id, args);
     }
@@ -1827,7 +1816,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     setLaneActionKind(null);
     laneDeleteWarningMessagesRef.current.clear();
     setLaneActionError(null);
-    setDeleteConfirmText("");
+    setDeleteSelection(EMPTY_LANE_DELETE_SELECTION);
     moveAwayFromDeletingLanes(laneIds);
 
     void (async () => {
@@ -1888,10 +1877,8 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     if (manageable.length === 0) return;
     setManagedLaneIds(manageable);
     setLaneActionError(null);
-    setDeleteForce(false);
-    setDeleteMode("worktree");
-    setDeleteRemoteName("origin");
-    setDeleteConfirmText("");
+    setDeleteForce(true);
+    setDeleteSelection(EMPTY_LANE_DELETE_SELECTION);
     setManageOpen(true);
   }, [lanesById, deletingLaneIds]);
 
@@ -2387,10 +2374,8 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     if (!lane || lane.laneType === "primary" || deletingLaneIds.has(targetId)) return;
     setManagedLaneIds([targetId]);
     setLaneActionError(null);
-    setDeleteForce(false);
-    setDeleteMode("worktree");
-    setDeleteRemoteName("origin");
-    setDeleteConfirmText("");
+    setDeleteForce(true);
+    setDeleteSelection(EMPTY_LANE_DELETE_SELECTION);
     setManageOpen(true);
     setPulsingLaneId(targetId);
     // Scrub the action param so refreshes don't re-open.
@@ -3158,10 +3143,8 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     setManagedLaneIds([laneId]);
     setLaneActionError(null);
     setAdoptError(null);
-    setDeleteForce(false);
-    setDeleteMode("worktree");
-    setDeleteRemoteName("origin");
-    setDeleteConfirmText("");
+    setDeleteForce(true);
+    setDeleteSelection(EMPTY_LANE_DELETE_SELECTION);
     setManageOpen(true);
   }, [deletingLaneIds, selectLane]);
 
@@ -4488,15 +4471,11 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
         managedLane={managedLane}
         managedLanes={managedLanes}
         allLanes={lanes}
-        deleteMode={deleteMode}
-        setDeleteMode={setDeleteMode}
-        deleteRemoteName={deleteRemoteName}
-        setDeleteRemoteName={setDeleteRemoteName}
+        deleteSelection={deleteSelection}
+        setDeleteSelection={setDeleteSelection}
         deleteForce={deleteForce}
         setDeleteForce={setDeleteForce}
-        deleteConfirmText={deleteConfirmText}
-        setDeleteConfirmText={setDeleteConfirmText}
-        deletePhrase={deletePhrase}
+        chatSessionCount={managedLane ? (laneRuntimeById.get(managedLane.id)?.sessionCount ?? 0) : undefined}
         laneActionBusy={laneActionBusy}
         laneActionStatus={laneActionStatus}
         laneActionError={laneActionError}
