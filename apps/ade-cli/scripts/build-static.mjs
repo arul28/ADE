@@ -273,6 +273,8 @@ async function main() {
   await fs.rm(workDir, { recursive: true, force: true });
   await fs.mkdir(workDir, { recursive: true });
   const seaEntryPath = await writeSeaEntry(workDir);
+  const sourceNodeBinary = process.env.ADE_STATIC_NODE_BINARY || process.execPath;
+  await assertSeaCapableNodeBinary(sourceNodeBinary);
 
   const seaConfigPath = path.join(workDir, "sea-config.json");
   const blobPath = path.join(workDir, "ade.blob");
@@ -284,10 +286,8 @@ async function main() {
     useSnapshot: false,
   };
   await fs.writeFile(seaConfigPath, `${JSON.stringify(seaConfig, null, 2)}\n`, "utf8");
-  await run(process.execPath, ["--experimental-sea-config", seaConfigPath]);
+  await run(sourceNodeBinary, ["--experimental-sea-config", seaConfigPath]);
 
-  const sourceNodeBinary = process.env.ADE_STATIC_NODE_BINARY || process.execPath;
-  await assertSeaCapableNodeBinary(sourceNodeBinary);
   const binaryName = `ade-${args.target}${process.platform === "win32" ? ".exe" : ""}`;
   const binaryPath = path.join(args.outDir, binaryName);
   await fs.copyFile(sourceNodeBinary, binaryPath);

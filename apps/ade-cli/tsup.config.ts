@@ -27,6 +27,7 @@ const tuiNoExternal = [
   /^highlight\.js(?:\/.*)?$/,
 ];
 const packageRoot = path.dirname(fileURLToPath(import.meta.url));
+const cliNodeModules = path.join(packageRoot, "node_modules");
 const packageJson = JSON.parse(readFileSync(path.join(packageRoot, "package.json"), "utf8")) as { version?: string };
 const version = process.env.ADE_CLI_VERSION?.trim() || packageJson.version || "0.0.0";
 
@@ -48,12 +49,13 @@ export default defineConfig([
     // @opencode-ai/sdk is ESM-only (no "require" export); force-inline it so
     // the CJS runtime bundle does not emit a bare require() that packaged
     // Electron-as-node cannot resolve.
-    noExternal: ["@opencode-ai/sdk", "yaml"],
+    noExternal: ["@factory/droid-sdk", "@opencode-ai/sdk", "yaml"],
     outExtension: () => ({
       js: ".cjs"
     }),
     external,
     esbuildOptions(options) {
+      options.nodePaths = Array.from(new Set([cliNodeModules, ...(options.nodePaths ?? [])]));
       options.define = {
         ...(options.define ?? {}),
         __ADE_VERSION__: JSON.stringify(version),
@@ -92,6 +94,7 @@ export default defineConfig([
     }),
     external,
     esbuildOptions(options) {
+      options.nodePaths = Array.from(new Set([cliNodeModules, ...(options.nodePaths ?? [])]));
       options.define = {
         ...(options.define ?? {}),
         __ADE_VERSION__: JSON.stringify(version),

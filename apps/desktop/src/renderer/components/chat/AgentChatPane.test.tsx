@@ -5945,8 +5945,10 @@ describe("AgentChatPane submit recovery", () => {
     fireEvent.change(screen.getByRole("textbox"), { target: { value: "Fix the login bug" } });
     fireEvent.click(await screen.findByRole("button", { name: /Send to lanes/i }));
 
-    expect(await screen.findByText(/Lane 2 failed to send\./i)).toBeTruthy();
-    expect(screen.getByText(/Cleanup could not delete lane lane-child-1/i)).toBeTruthy();
+    await waitFor(() => expect(send).toHaveBeenCalledTimes(2), { timeout: 5000 });
+    await waitFor(() => expect(deleteLane).toHaveBeenCalledTimes(2), { timeout: 5000 });
+    expect(await screen.findByText(/Lane 2 failed to send\./i, {}, { timeout: 5000 })).toBeTruthy();
+    expect(await screen.findByText(/Cleanup could not delete lane lane-child-1/i, {}, { timeout: 5000 })).toBeTruthy();
     expect(deleteLane).toHaveBeenNthCalledWith(1, { laneId: "lane-child-1", force: true });
     expect(deleteLane).toHaveBeenNthCalledWith(2, { laneId: "lane-child-2", force: true });
     expect(errorSpy).toHaveBeenCalledWith(

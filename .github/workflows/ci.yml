@@ -208,6 +208,15 @@ jobs:
           cache: npm
           cache-dependency-path: apps/ade-cli/package-lock.json
 
+      - uses: actions/setup-python@v5
+        if: runner.os == 'macOS'
+        with:
+          python-version: "3.11"
+
+      - name: Configure node-gyp Python
+        if: runner.os == 'macOS'
+        run: echo "PYTHON=$(python3 -c 'import sys; print(sys.executable)')" >> "$GITHUB_ENV"
+
       - name: Install ADE CLI dependencies
         run: cd apps/ade-cli && npm ci
 
