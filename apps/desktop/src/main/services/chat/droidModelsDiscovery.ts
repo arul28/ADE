@@ -16,7 +16,6 @@ export type DroidExecHelpModelRow = {
   /** True when sourced from ~/.factory/config.json (vibeproxy / custom proxy). */
   customProxy?: boolean;
   reasoningTiers?: string[];
-  serviceTiers?: string[];
   capabilities?: Partial<ModelCapabilities>;
 };
 type DroidCliModelDiscoveryMode = "probe" | "cached-or-fallback";
@@ -198,14 +197,6 @@ function normalizeDroidReasoningEfforts(value: unknown, defaultValue: unknown): 
   return out.length ? out : undefined;
 }
 
-function normalizeDroidServiceTiers(model: Record<string, unknown>): string[] | undefined {
-  const out: string[] = [];
-  const tier = typeof model.tier === "string" ? model.tier.trim().toLowerCase() : "";
-  const promo = typeof model.promoLabel === "string" ? model.promoLabel.trim().toLowerCase() : "";
-  if (tier === "fast" || /\bfast\b/.test(promo)) out.push("fast");
-  return out.length ? out : undefined;
-}
-
 function readSdkModelRows(initResult: unknown): DroidExecHelpModelRow[] {
   const record = initResult && typeof initResult === "object" ? initResult as Record<string, unknown> : null;
   const raw = Array.isArray(record?.availableModels) ? record.availableModels : [];
@@ -230,13 +221,11 @@ function readSdkModelRows(initResult: unknown): DroidExecHelpModelRow[] {
       model.supportedReasoningEfforts,
       model.defaultReasoningEffort,
     );
-    const serviceTiers = normalizeDroidServiceTiers(model);
     rows.push({
       id,
       displayName,
       customProxy: model.isCustom === true,
       ...(reasoningTiers?.length ? { reasoningTiers } : {}),
-      ...(serviceTiers?.length ? { serviceTiers } : {}),
       capabilities: {
         vision: model.noImageSupport !== true,
         reasoning: Boolean(reasoningTiers?.length),
@@ -335,7 +324,6 @@ export async function discoverDroidCliModelDescriptors(
     descriptors.push(createDynamicDroidCliModelDescriptor(trimmed, row.displayName, {
       customProxy: row.customProxy,
       ...(row.reasoningTiers?.length ? { reasoningTiers: row.reasoningTiers } : {}),
-      ...(row.serviceTiers?.length ? { serviceTiers: row.serviceTiers } : {}),
       ...(row.capabilities ? { capabilities: row.capabilities } : {}),
     }));
   }

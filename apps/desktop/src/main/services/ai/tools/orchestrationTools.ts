@@ -188,9 +188,9 @@ function createSpawnAgentTool(
           provider: z.string(),
           modelId: z.string(),
           reasoningEffort: z.string().nullable().optional(),
-          codexFastMode: z.boolean().optional(),
+          fastMode: z.boolean().optional(),
         })
-        .partial({ reasoningEffort: true, codexFastMode: true })
+        .partial({ reasoningEffort: true, fastMode: true })
         .optional(),
     }),
     execute: async (input) => {
@@ -231,7 +231,7 @@ function createSpawnAgentTool(
             provider: routedSelection.provider,
             model: routedSelection.modelId,
             reasoningEffort: routedSelection.reasoningEffort ?? null,
-            codexFastMode: routedSelection.codexFastMode,
+            fastMode: routedSelection.fastMode,
             interactionMode,
             surface: "work",
             ...applyOrchestrationPermissionProfile(routedSelection.provider),
@@ -266,7 +266,7 @@ function createSpawnAgentTool(
               provider: routedSelection.provider,
               modelId: routedSelection.modelId,
               reasoningEffort: routedSelection.reasoningEffort ?? null,
-              codexFastMode: routedSelection.codexFastMode,
+              fastMode: routedSelection.fastMode,
               resolvedAt: spawnedAt,
               routingKey: routedSelection.routingKey,
             },
@@ -1025,9 +1025,9 @@ function createAskUserForModelSelectionTool(
           provider: z.string(),
           modelId: z.string(),
           reasoningEffort: z.string().nullable().optional(),
-          codexFastMode: z.boolean().optional(),
+          fastMode: z.boolean().optional(),
         })
-        .partial({ reasoningEffort: true, codexFastMode: true })
+        .partial({ reasoningEffort: true, fastMode: true })
         .optional(),
     }),
     execute: async (input) => {

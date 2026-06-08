@@ -362,6 +362,39 @@ function seedReasoningCursorRuntimeModelCatalog(): { modelId: string; concreteMo
   return { modelId: model.id, concreteModel };
 }
 
+function seedFastOpenCodeRuntimeModelCatalog(): string {
+  const modelId = "opencode/openai/gpt-5.4";
+  rememberRuntimeCatalog({
+    fetchedAt: "2026-05-22T00:00:00.000Z",
+    groups: [{
+      key: "opencode",
+      displayName: "OpenCode",
+      providers: [{
+        key: "opencode",
+        displayName: "OpenCode",
+        badgeColor: "#10B981",
+        modelCount: 1,
+        subsections: [{
+          key: "opencode",
+          label: "OpenCode",
+          models: [{
+            id: modelId,
+            runtimeModelId: "openai/gpt-5.4",
+            provider: "opencode",
+            providerKey: "opencode",
+            groupKey: "opencode",
+            displayName: "GPT 5.4",
+            isDefault: true,
+            isAvailable: true,
+            serviceTiers: ["fast"],
+          }],
+        }],
+      }],
+    }],
+  } as AgentChatModelCatalog, { mode: "cached" });
+  return modelId;
+}
+
 function buildPendingInputTranscript(sessionId: string): string {
   return `${JSON.stringify({
     sessionId,
@@ -697,8 +730,42 @@ function installMatchMediaMock(): void {
   });
 }
 
+function createWindowStorageShim(): Storage {
+  const values = new Map<string, string>();
+  return {
+    get length() {
+      return values.size;
+    },
+    clear: vi.fn(() => values.clear()),
+    getItem: vi.fn((key: string) => values.get(key) ?? null),
+    key: vi.fn((index: number) => [...values.keys()][index] ?? null),
+    removeItem: vi.fn((key: string) => {
+      values.delete(key);
+    }),
+    setItem: vi.fn((key: string, value: string) => {
+      values.set(key, String(value));
+    }),
+  };
+}
+
+function installStorageMocks(): void {
+  if (!window.localStorage) {
+    Object.defineProperty(window, "localStorage", {
+      configurable: true,
+      value: createWindowStorageShim(),
+    });
+  }
+  if (!window.sessionStorage) {
+    Object.defineProperty(window, "sessionStorage", {
+      configurable: true,
+      value: createWindowStorageShim(),
+    });
+  }
+}
+
 beforeEach(() => {
   installMatchMediaMock();
+  installStorageMocks();
   invalidateAgentChatSessionListCache();
   invalidateAgentChatSlashCommandsCache();
   invalidateAiDiscoveryCache();
@@ -1381,7 +1448,7 @@ describe("AgentChatPane submit recovery", () => {
       version: 1,
       modelId: "openai/gpt-5.4",
       reasoningEffort: "xhigh",
-      codexFastMode: true,
+      fastMode: true,
       executionMode: "focused",
       updatedAt: "2026-05-20T12:00:00.000Z",
       controls: {
@@ -1415,7 +1482,7 @@ describe("AgentChatPane submit recovery", () => {
       expect(create).toHaveBeenCalledWith(expect.objectContaining({
         modelId: "openai/gpt-5.4",
         reasoningEffort: "xhigh",
-        codexFastMode: true,
+        fastMode: true,
         permissionMode: "full-auto",
         codexApprovalPolicy: "never",
         codexSandbox: "danger-full-access",
@@ -1428,7 +1495,7 @@ describe("AgentChatPane submit recovery", () => {
     const previous = buildSession("previous-session", {
       status: "idle",
       reasoningEffort: "high",
-      codexFastMode: true,
+      fastMode: true,
       permissionMode: "full-auto",
       codexApprovalPolicy: "never",
       codexSandbox: "danger-full-access",
@@ -1446,7 +1513,7 @@ describe("AgentChatPane submit recovery", () => {
       version: 1,
       modelId: "openai/gpt-5.4",
       reasoningEffort: "xhigh",
-      codexFastMode: false,
+      fastMode: false,
       executionMode: "focused",
       updatedAt: "2026-05-20T12:00:00.000Z",
       controls: {
@@ -1481,7 +1548,7 @@ describe("AgentChatPane submit recovery", () => {
       expect(create).toHaveBeenCalledWith(expect.objectContaining({
         modelId: "openai/gpt-5.4",
         reasoningEffort: "high",
-        codexFastMode: true,
+        fastMode: true,
         permissionMode: "full-auto",
         codexApprovalPolicy: "never",
         codexSandbox: "danger-full-access",
@@ -1522,7 +1589,7 @@ describe("AgentChatPane submit recovery", () => {
       version: 1,
       modelId: "openai/gpt-5.4",
       reasoningEffort: "xhigh",
-      codexFastMode: false,
+      fastMode: false,
       executionMode: "focused",
       updatedAt: "2026-05-20T12:00:00.000Z",
       controls: {
@@ -2436,7 +2503,7 @@ describe("AgentChatPane submit recovery", () => {
   it("waits for Codex fast mode updates before sending the next turn", async () => {
     const session = buildSession("session-1", {
       status: "idle",
-      codexFastMode: false,
+      fastMode: false,
     });
     const sessions = [session];
     const resolveUpdates: Array<() => void> = [];
@@ -2444,7 +2511,7 @@ describe("AgentChatPane submit recovery", () => {
       resolveUpdates.push(() => {
         sessions[0] = {
           ...sessions[0]!,
-          codexFastMode: args.codexFastMode ?? sessions[0]!.codexFastMode,
+          fastMode: args.fastMode ?? sessions[0]!.fastMode,
         };
         resolve(sessions[0]);
       });
@@ -2461,7 +2528,7 @@ describe("AgentChatPane submit recovery", () => {
     await waitFor(() => {
       expect(updateSession).toHaveBeenCalledWith(expect.objectContaining({
         sessionId: session.sessionId,
-        codexFastMode: true,
+        fastMode: true,
       }));
     });
 
@@ -3879,7 +3946,7 @@ describe("AgentChatPane submit recovery", () => {
       text: "Persist this Work draft.",
       modelId: "openai/gpt-5.4",
       reasoningEffort: null,
-      codexFastMode: false,
+      fastMode: false,
       executionMode: "focused",
       controls: {},
       attachments: [{ path: "/tmp/project-under-test/spec.md", type: "file" }],
@@ -3916,7 +3983,7 @@ describe("AgentChatPane submit recovery", () => {
       text: "Persisted with visual context.",
       modelId: "openai/gpt-5.4",
       reasoningEffort: null,
-      codexFastMode: false,
+      fastMode: false,
       executionMode: "focused",
       controls: {},
       attachments: [],
@@ -4165,7 +4232,7 @@ describe("AgentChatPane submit recovery", () => {
             draft: "Recover from a stuck launch.",
             modelId: "openai/gpt-5.4",
             reasoningEffort: null,
-            codexFastMode: false,
+            fastMode: false,
             executionMode: "focused",
             interactionMode: "native",
             nativeControls: {},
@@ -4642,7 +4709,7 @@ describe("AgentChatPane submit recovery", () => {
       text: "Keep the prompt but not the CLI-only model.",
       modelId: cliOnlyId,
       reasoningEffort: null,
-      codexFastMode: false,
+      fastMode: false,
       executionMode: "focused",
       controls: {},
       attachments: [],
@@ -4680,7 +4747,7 @@ describe("AgentChatPane submit recovery", () => {
       version: 1,
       modelId: "openai/gpt-5.4",
       reasoningEffort: "medium",
-      codexFastMode: false,
+      fastMode: false,
       executionMode: "focused",
       updatedAt: "2026-05-26T12:00:00.000Z",
       controls: {
@@ -4726,8 +4793,10 @@ describe("AgentChatPane submit recovery", () => {
     });
     const launchArgs = onLaunchCliSession.mock.calls[0]?.[0];
     expect(launchArgs.args).toEqual(expect.arrayContaining(["--sandbox", "read-only", "--ask-for-approval", "on-request"]));
+    expect(launchArgs.args).toEqual(expect.arrayContaining(["-c", "service_tier=\"default\""]));
     expect(launchArgs.args).not.toContain("workspace-write");
     expect(launchArgs.startupCommand).toContain("codex --no-alt-screen");
+    expect(launchArgs.startupCommand).toContain("service_tier");
     expect(launchArgs.startupCommand).toContain("--sandbox read-only --ask-for-approval on-request");
   });
 
@@ -4748,7 +4817,7 @@ describe("AgentChatPane submit recovery", () => {
       version: 1,
       modelId: "openai/gpt-5.4",
       reasoningEffort: "medium",
-      codexFastMode: false,
+      fastMode: false,
       executionMode: "focused",
       updatedAt: "2026-05-26T12:00:00.000Z",
       controls: {
@@ -4815,7 +4884,7 @@ describe("AgentChatPane submit recovery", () => {
       version: 1,
       modelId,
       reasoningEffort: null,
-      codexFastMode: true,
+      fastMode: true,
       executionMode: "focused",
       updatedAt: "2026-05-26T12:00:00.000Z",
       controls: {
@@ -4860,6 +4929,137 @@ describe("AgentChatPane submit recovery", () => {
     expect(launchArgs.args).toEqual(expect.arrayContaining([expect.stringContaining("Run Cursor in fast mode.")]));
   });
 
+  it("uses the OpenCode fast variant when launching a fast Work draft CLI session", async () => {
+    const modelId = seedFastOpenCodeRuntimeModelCatalog();
+    installAdeMocks({ sessions: [] });
+    useAppStore.setState({
+      project: { rootPath: "/tmp/project-under-test" } as any,
+    });
+    const onLaunchCliSession = vi.fn().mockResolvedValue({ sessionId: "terminal-1", ptyId: "pty-1" });
+    const launchConfigKey = [
+      "ade.chat.lastLaunchConfig.v1",
+      "/tmp/project-under-test",
+      "lane-1",
+      "standard",
+      "cli",
+    ].map(encodeURIComponent).join(":");
+    window.localStorage.setItem(launchConfigKey, JSON.stringify({
+      version: 1,
+      modelId,
+      reasoningEffort: null,
+      fastMode: true,
+      executionMode: "focused",
+      updatedAt: "2026-05-26T12:00:00.000Z",
+      controls: {
+        interactionMode: "default",
+        claudePermissionMode: "default",
+        codexApprovalPolicy: "on-request",
+        codexSandbox: "workspace-write",
+        codexConfigSource: "flags",
+        opencodePermissionMode: "edit",
+        droidPermissionMode: "auto-low",
+        cursorModeId: "agent",
+        cursorConfigValues: {},
+      },
+    }));
+
+    render(
+      <MemoryRouter>
+        <AgentChatPane
+          laneId="lane-1"
+          forceDraftMode
+          embeddedWorkLayout
+          workDraftKind="cli"
+          onLaunchCliSession={onLaunchCliSession}
+        />
+      </MemoryRouter>,
+    );
+
+    expect((await screen.findByRole("button", { name: /Fast mode/i })).getAttribute("aria-pressed")).toBe("true");
+
+    const textbox = await screen.findByRole("textbox");
+    fireEvent.change(textbox, { target: { value: "Run OpenCode in fast mode." } });
+    fireEvent.click(await screen.findByRole("button", { name: "Send" }));
+
+    await waitFor(() => {
+      expect(onLaunchCliSession).toHaveBeenCalledWith(expect.objectContaining({
+        profile: "opencode",
+        tracked: true,
+      }));
+    });
+    const launchArgs = onLaunchCliSession.mock.calls[0]?.[0];
+    expect(launchArgs.startupCommand).toContain("opencode run --interactive");
+    expect(launchArgs.startupCommand).toContain("--variant fast");
+    expect(launchArgs.args).toEqual(expect.arrayContaining([expect.stringContaining("Run OpenCode in fast mode.")]));
+  });
+
+  it("does not forward stale fast mode when launching an unsupported Claude CLI model", async () => {
+    installAdeMocks({ sessions: [] });
+    useAppStore.setState({
+      project: { rootPath: "/tmp/project-under-test" } as any,
+    });
+    const onLaunchCliSession = vi.fn().mockResolvedValue({ sessionId: "terminal-1", ptyId: "pty-1" });
+    const launchConfigKey = [
+      "ade.chat.lastLaunchConfig.v1",
+      "/tmp/project-under-test",
+      "lane-1",
+      "standard",
+      "cli",
+    ].map(encodeURIComponent).join(":");
+    window.localStorage.setItem(launchConfigKey, JSON.stringify({
+      version: 1,
+      modelId: "anthropic/claude-sonnet-4-6",
+      reasoningEffort: null,
+      fastMode: true,
+      executionMode: "focused",
+      updatedAt: "2026-05-26T12:00:00.000Z",
+      controls: {
+        interactionMode: "default",
+        claudePermissionMode: "default",
+        codexApprovalPolicy: "on-request",
+        codexSandbox: "workspace-write",
+        codexConfigSource: "flags",
+        opencodePermissionMode: "edit",
+        droidPermissionMode: "auto-low",
+        cursorModeId: "agent",
+        cursorConfigValues: {},
+      },
+    }));
+
+    render(
+      <MemoryRouter>
+        <AgentChatPane
+          laneId="lane-1"
+          forceDraftMode
+          embeddedWorkLayout
+          workDraftKind="cli"
+          onLaunchCliSession={onLaunchCliSession}
+        />
+      </MemoryRouter>,
+    );
+
+    await screen.findByRole("button", { name: /current: Claude Sonnet 4\.6/i });
+    expect(screen.queryByRole("button", { name: /Fast mode/i })).toBeNull();
+
+    const textbox = await screen.findByRole("textbox");
+    fireEvent.change(textbox, { target: { value: "Run Claude without stale fast mode." } });
+    fireEvent.click(await screen.findByRole("button", { name: "Send" }));
+
+    await waitFor(() => {
+      expect(onLaunchCliSession).toHaveBeenCalledWith(expect.objectContaining({
+        profile: "claude",
+        tracked: true,
+      }));
+    });
+    const launchArgs = onLaunchCliSession.mock.calls[0]?.[0];
+    expect(launchArgs.args).toEqual(expect.arrayContaining([
+      "--settings",
+      JSON.stringify({ fastMode: false }),
+    ]));
+    expect(launchArgs.startupCommand).toContain("fastMode");
+    expect(launchArgs.startupCommand).not.toContain("\"fastMode\":true");
+  });
+
   it("uses the concrete Cursor CLI variant for Work draft reasoning and fast controls", async () => {
     const { modelId, concreteModel } = seedReasoningCursorRuntimeModelCatalog();
     installAdeMocks({ sessions: [], cursorModels: [{ id: modelId }] });
@@ -4878,7 +5078,7 @@ describe("AgentChatPane submit recovery", () => {
       version: 1,
       modelId,
       reasoningEffort: "medium",
-      codexFastMode: true,
+      fastMode: true,
       executionMode: "focused",
       updatedAt: "2026-05-26T12:00:00.000Z",
       controls: {

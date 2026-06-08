@@ -140,6 +140,102 @@ describe("launchAgentChatCli orchestration policy", () => {
   });
 });
 
+describe("launchAgentChatCli Codex fast mode", () => {
+  it("passes explicit service tier flags to Codex CLI launches", async () => {
+    const deps = makeDeps();
+
+    await launchAgentChatCli(
+      makeArgs({ provider: "codex", fastMode: false }),
+      deps,
+    );
+
+    let createArg = deps.create.mock.calls[0]?.[0] as PtyCreateArgs;
+    expect(createArg.args).toEqual(expect.arrayContaining([
+      "-c",
+      "service_tier=\"default\"",
+    ]));
+
+    await launchAgentChatCli(
+      makeArgs({ provider: "codex", fastMode: true }),
+      deps,
+    );
+
+    createArg = deps.create.mock.calls[1]?.[0] as PtyCreateArgs;
+    expect(createArg.args).toEqual(expect.arrayContaining([
+      "-c",
+      "service_tier=\"fast\"",
+      "-c",
+      "features.fast_mode=true",
+    ]));
+  });
+
+  it("honors the deprecated codexFastMode alias when fastMode is absent", async () => {
+    const deps = makeDeps();
+
+    await launchAgentChatCli(
+      makeArgs({ provider: "codex", codexFastMode: true }),
+      deps,
+    );
+
+    const createArg = deps.create.mock.calls[0]?.[0] as PtyCreateArgs;
+    expect(createArg.args).toEqual(expect.arrayContaining([
+      "-c",
+      "service_tier=\"fast\"",
+      "-c",
+      "features.fast_mode=true",
+    ]));
+  });
+});
+
+describe("launchAgentChatCli Claude fast mode", () => {
+  it("passes explicit fast settings to Claude CLI launches", async () => {
+    const deps = makeDeps();
+
+    await launchAgentChatCli(
+      makeArgs({
+        provider: "claude",
+        model: "anthropic/claude-opus-4-8",
+        fastMode: true,
+      }),
+      deps,
+    );
+
+    const createArg = deps.create.mock.calls[0]?.[0] as PtyCreateArgs;
+    expect(createArg.args).toEqual(expect.arrayContaining([
+      "--settings",
+      JSON.stringify({ fastMode: true }),
+    ]));
+    expect(createArg.startupCommand).toContain("fastMode");
+  });
+});
+
+describe("launchAgentChatCli OpenCode fast mode", () => {
+  it("passes fast mode as an OpenCode CLI variant", async () => {
+    const deps = makeDeps();
+
+    await launchAgentChatCli(
+      makeArgs({
+        provider: "opencode",
+        model: "opencode/openai/gpt-5.4",
+        fastMode: true,
+      }),
+      deps,
+    );
+
+    const createArg = deps.create.mock.calls[0]?.[0] as PtyCreateArgs;
+    expect(createArg.command).toBe("opencode");
+    expect(createArg.args).toEqual(expect.arrayContaining([
+      "run",
+      "--interactive",
+      "--model",
+      "openai/gpt-5.4",
+      "--variant",
+      "fast",
+    ]));
+    expect(createArg.startupCommand).toContain("--variant fast");
+  });
+});
+
 describe("launchAgentChatCli attached issue ids", () => {
   it("returns the durable terminal session before delayed kickoff input readiness", async () => {
     const deps = makeDeps();

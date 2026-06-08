@@ -341,6 +341,38 @@ describe("automationPlannerService.validateDraft", () => {
     });
   });
 
+  it("falls back to a boolean codexFastMode when an agent-session fastMode is non-boolean", () => {
+    const { planner } = getPlanner({ suites: [] });
+    const draft = createDraft({
+      name: "Legacy fast mode action",
+      triggers: [{ type: "github.issue_opened" }],
+      trigger: { type: "github.issue_opened" },
+      execution: { kind: "built-in" } as any,
+      actions: [
+        {
+          type: "agent-session",
+          prompt: "Investigate.",
+          // A malformed/legacy payload: fastMode is not a boolean, but the
+          // deprecated codexFastMode carries the real flag.
+          fastMode: "yes",
+          codexFastMode: true,
+        } as any,
+      ],
+      legacyActions: [
+        {
+          type: "agent-session",
+          prompt: "Investigate.",
+          fastMode: "yes",
+          codexFastMode: true,
+        } as any,
+      ],
+    } as any);
+
+    const res = planner.validateDraft({ draft, confirmations: [] });
+    expect(res.ok).toBe(true);
+    expect((res.normalized?.actions[0] as any).fastMode).toBe(true);
+  });
+
   it("defaults the create-lane name template to trigger.issue.title when blank", () => {
     const { planner } = getPlanner({ suites: [] });
     const draft = createDraft({

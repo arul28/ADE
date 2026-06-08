@@ -341,14 +341,11 @@ export async function getAvailableModels(
 ): Promise<AgentChatModelInfo[]> {
   return await connection.action<AgentChatModelInfo[]>("chat", "getAvailableModels", {
     provider,
-    // cursor + droid only report their live "fast" service tiers when their
-    // runtime is probed — loadAvailableModels gates serviceTiers on
-    // activateRuntime for these two (droid via discoverDroidSdkModelDescriptors'
-    // "probe" mode). Without probing droid, the TUI's model list carried no
-    // droid service tiers, so the fast toggle stayed disabled on droid models
-    // the desktop chat picker shows it on. codex is intentionally NOT here: its
-    // tiers come from the app-server, which loadAvailableModels always queries
-    // regardless of activateRuntime.
+    // Cursor needs a live probe for SDK/CLI service tiers. Droid is also probed
+    // here for live model/reasoning inventory, but Droid fast choices are model
+    // IDs such as `claude-opus-4-6-fast`, not a separate service-tier toggle.
+    // Codex is intentionally NOT here: its tiers come from the app-server, which
+    // loadAvailableModels always queries regardless of activateRuntime.
     activateRuntime: provider === "cursor" || provider === "droid",
   });
 }
@@ -382,7 +379,7 @@ export async function createChatSession(args: {
   provider?: ModelProviderGroup;
   modelId?: string | null;
   reasoningEffort?: string | null;
-  codexFastMode?: boolean;
+  fastMode?: boolean;
   permissionMode?: AgentChatPermissionMode;
   interactionMode?: AgentChatInteractionMode;
   claudePermissionMode?: AgentChatClaudePermissionMode;
@@ -416,7 +413,7 @@ export async function createChatSession(args: {
     ...(modelId ? { modelId } : {}),
     ...(args.title?.trim() ? { title: args.title.trim() } : {}),
     ...(reasoningEffort ? { reasoningEffort } : {}),
-    ...(args.codexFastMode === true ? { codexFastMode: true } : {}),
+    ...(args.fastMode === true ? { fastMode: true } : {}),
     ...(args.permissionMode ? { permissionMode: args.permissionMode } : {}),
     ...(provider === "claude" && args.interactionMode ? { interactionMode: args.interactionMode } : {}),
     ...(provider === "claude" && args.claudePermissionMode ? { claudePermissionMode: args.claudePermissionMode } : {}),
@@ -588,7 +585,7 @@ export async function updateChatModel(args: {
   sessionId: string;
   modelId?: string | null;
   reasoningEffort?: string | null;
-  codexFastMode?: boolean;
+  fastMode?: boolean;
   permissionMode?: AgentChatPermissionMode;
   interactionMode?: AgentChatInteractionMode;
   claudePermissionMode?: AgentChatClaudePermissionMode;
@@ -604,7 +601,7 @@ export async function updateChatModel(args: {
     sessionId: args.sessionId,
     ...(args.modelId !== undefined ? { modelId: args.modelId } : {}),
     ...(args.reasoningEffort !== undefined ? { reasoningEffort: args.reasoningEffort } : {}),
-    ...(args.codexFastMode !== undefined ? { codexFastMode: args.codexFastMode } : {}),
+    ...(args.fastMode !== undefined ? { fastMode: args.fastMode } : {}),
     ...(args.permissionMode !== undefined ? { permissionMode: args.permissionMode } : {}),
     ...(args.interactionMode !== undefined ? { interactionMode: args.interactionMode } : {}),
     ...(args.claudePermissionMode !== undefined ? { claudePermissionMode: args.claudePermissionMode } : {}),

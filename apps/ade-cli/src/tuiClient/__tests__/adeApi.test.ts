@@ -376,7 +376,7 @@ describe("createChatSession", () => {
       provider: "codex",
       modelId: "openai/gpt-5.5",
       reasoningEffort: "high",
-      codexFastMode: true,
+      fastMode: true,
       permissionMode: "plan",
       codexApprovalPolicy: "on-request",
       codexSandbox: "read-only",
@@ -388,7 +388,7 @@ describe("createChatSession", () => {
       model: "gpt-5.5",
       modelId: "openai/gpt-5.5",
       reasoningEffort: "high",
-      codexFastMode: true,
+      fastMode: true,
       permissionMode: "plan",
       codexApprovalPolicy: "on-request",
       codexSandbox: "read-only",
@@ -418,14 +418,14 @@ describe("createChatSession", () => {
       laneId: "lane-1",
       provider: "cursor",
       modelId: "cursor/composer-2.5",
-      codexFastMode: true,
+      fastMode: true,
     });
 
     expect(calls[0]?.args).toEqual(expect.objectContaining({
       provider: "cursor",
       model: "composer-2.5",
       modelId: "cursor/composer-2.5",
-      codexFastMode: true,
+      fastMode: true,
     }));
   });
 });

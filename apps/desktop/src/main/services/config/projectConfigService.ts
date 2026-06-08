@@ -543,7 +543,7 @@ function coerceAutomationAction(value: unknown): AutomationAction | null {
   const prompt = asString(value.prompt);
   const sessionTitle = asString(value.sessionTitle);
   const modelConfig = coerceModelConfig(value.modelConfig);
-  const codexFastMode = asBool(value.codexFastMode);
+  const fastMode = asBool(value.fastMode ?? value.codexFastMode);
   const permissionConfig = coerceAutomationPermissionConfig(value.permissionConfig);
 
   if (targetLaneId) out.targetLaneId = targetLaneId;
@@ -558,7 +558,7 @@ function coerceAutomationAction(value: unknown): AutomationAction | null {
   if (prompt != null) out.prompt = prompt;
   if (sessionTitle != null) out.sessionTitle = sessionTitle;
   if (modelConfig != null) out.modelConfig = modelConfig;
-  if (codexFastMode != null) out.codexFastMode = codexFastMode;
+  if (fastMode != null) out.fastMode = fastMode;
   if (permissionConfig != null) out.permissionConfig = permissionConfig;
 
   return out;
@@ -618,12 +618,12 @@ function coerceAutomationExecution(value: unknown): AutomationExecution | undefi
       ? firstNonEmptyString(value.session.title, legacyTitle)
       : legacyTitle;
     const sessionReasoningEffort = isRecord(value.session) ? asString(value.session.reasoningEffort)?.trim() : undefined;
-    const sessionCodexFastMode = isRecord(value.session) ? asBool(value.session.codexFastMode) : undefined;
-    const session = sessionTitle || sessionReasoningEffort || sessionCodexFastMode != null
+    const sessionFastMode = isRecord(value.session) ? asBool(value.session.fastMode ?? value.session.codexFastMode) : undefined;
+    const session = sessionTitle || sessionReasoningEffort || sessionFastMode != null
       ? {
           ...(sessionTitle ? { title: sessionTitle } : {}),
           ...(sessionReasoningEffort ? { reasoningEffort: sessionReasoningEffort } : {}),
-          ...(sessionCodexFastMode != null ? { codexFastMode: sessionCodexFastMode } : {}),
+          ...(sessionFastMode != null ? { fastMode: sessionFastMode } : {}),
         }
       : undefined;
     return {

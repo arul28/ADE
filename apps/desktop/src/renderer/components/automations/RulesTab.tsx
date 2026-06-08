@@ -122,7 +122,7 @@ function toDraftFromRule(rule: AutomationRuleSummary): AutomationRuleDraft {
         type: action.type,
         ...runtimeActionFields(action),
         ...(action.modelConfig ? { modelConfig: structuredClone(action.modelConfig) } : {}),
-        ...(action.codexFastMode === true ? { codexFastMode: true } : {}),
+        ...(action.fastMode === true ? { fastMode: true } : {}),
         ...(action.permissionConfig ? { permissionConfig: structuredClone(action.permissionConfig) } : {}),
         ...(action.prompt ? { prompt: action.prompt } : {}),
         ...(action.sessionTitle ? { sessionTitle: action.sessionTitle } : {}),

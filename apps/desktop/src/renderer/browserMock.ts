@@ -1161,7 +1161,7 @@ function mockAgentChatSummaryFromSession(session: any): any | null {
     title: session.title ?? null,
     goal: session.goal ?? null,
     reasoningEffort: session.resumeMetadata?.reasoningEffort ?? null,
-    codexFastMode: session.resumeMetadata?.codexFastMode === true,
+    fastMode: (session.resumeMetadata?.fastMode ?? session.resumeMetadata?.codexFastMode) === true,
     executionMode: session.resumeMetadata?.executionMode ?? null,
     permissionMode: session.resumeMetadata?.permissionMode ?? null,
     interactionMode: session.resumeMetadata?.interactionMode ?? null,

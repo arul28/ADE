@@ -224,6 +224,36 @@ describe("buildTrackedCliStartupCommand", () => {
       expect(launch.startupCommand).toContain("--model");
       expect(launch.startupCommand).toContain("claude-opus-4-8");
     });
+
+    it("passes Claude fast mode as per-session settings for fresh launches", () => {
+      const fastLaunch = buildTrackedCliLaunchCommand({
+        provider: "claude",
+        permissionMode: "default",
+        sessionId: "00000000-0000-0000-0000-000000000001",
+        model: "anthropic/claude-opus-4-8",
+        fastMode: true,
+      });
+      expect(fastLaunch.args).toEqual(expect.arrayContaining([
+        "--settings",
+        JSON.stringify({ fastMode: true }),
+      ]));
+      expect(fastLaunch.startupCommand).toContain("fastMode");
+      expect(fastLaunch.startupCommand).toContain("true");
+
+      const standardLaunch = buildTrackedCliLaunchCommand({
+        provider: "claude",
+        permissionMode: "default",
+        sessionId: "00000000-0000-0000-0000-000000000001",
+        model: "anthropic/claude-opus-4-8",
+        fastMode: false,
+      });
+      expect(standardLaunch.args).toEqual(expect.arrayContaining([
+        "--settings",
+        JSON.stringify({ fastMode: false }),
+      ]));
+      expect(standardLaunch.startupCommand).toContain("fastMode");
+      expect(standardLaunch.startupCommand).toContain("false");
+    });
   });
 
   describe("codex provider", () => {
@@ -306,6 +336,39 @@ describe("buildTrackedCliStartupCommand", () => {
       expect(launch.initialInput).toContain("Fix the failing Work tests.");
       expect(launch.startupCommand).toContain("model_reasoning_effort");
       expect(launch.startupCommand).not.toContain("Fix the failing Work tests.");
+    });
+
+    it("passes explicit Codex service tier overrides for fast mode", () => {
+      const fastLaunch = buildTrackedCliLaunchCommand({
+        provider: "codex",
+        permissionMode: "default",
+        fastMode: true,
+      });
+      expect(fastLaunch.args).toEqual(expect.arrayContaining([
+        "-c",
+        "service_tier=\"fast\"",
+        "-c",
+        "features.fast_mode=true",
+      ]));
+      expect(fastLaunch.startupCommand).toContain("service_tier");
+      expect(fastLaunch.startupCommand).toContain("features.fast_mode");
+
+      const defaultLaunch = buildTrackedCliLaunchCommand({
+        provider: "codex",
+        permissionMode: "default",
+        fastMode: false,
+      });
+      expect(defaultLaunch.args).toEqual(expect.arrayContaining([
+        "-c",
+        "service_tier=\"default\"",
+      ]));
+      expect(defaultLaunch.args).not.toContain("features.fast_mode=true");
+
+      const inheritedLaunch = buildTrackedCliLaunchCommand({
+        provider: "codex",
+        permissionMode: "default",
+      });
+      expect(inheritedLaunch.args.join("\n")).not.toContain("service_tier");
     });
 
     it("keeps legacy Codex migration-prompt models on the argv prompt path", () => {
@@ -414,6 +477,48 @@ describe("buildTrackedCliStartupCommand", () => {
       expect(launch.env?.[ADE_AGENT_SKILLS_DIRS_ENV]).toContain("agent-skills");
       expect(launch.startupCommand).toContain("OPENCODE_CONFIG_CONTENT=\"{\\\"permission\\\":\\\"allow\\\"}\" opencode");
       expect(launch.startupCommand).toContain("Use OpenCode.");
+    });
+
+    it("launches OpenCode fast mode through the interactive run variant flag", () => {
+      const launch = buildTrackedCliLaunchCommand({
+        provider: "opencode",
+        permissionMode: "full-auto",
+        model: "opencode/openai/gpt-5.4",
+        reasoningEffort: "high",
+        fastMode: true,
+        initialPrompt: "Use OpenCode fast mode.",
+      });
+      expect(launch.command).toBe("opencode");
+      expect(launch.args).toEqual(expect.arrayContaining([
+        "run",
+        "--interactive",
+        "--model",
+        "openai/gpt-5.4",
+        "--variant",
+        "fast",
+      ]));
+      expect(launch.args).not.toEqual(expect.arrayContaining(["--prompt"]));
+      expect(launch.startupCommand).toContain("opencode run --interactive");
+      expect(launch.startupCommand).toContain("--variant fast");
+      expect(launch.startupCommand).toContain("Use OpenCode fast mode.");
+    });
+
+    it("launches OpenCode reasoning through the interactive run variant flag when fast is off", () => {
+      const launch = buildTrackedCliLaunchCommand({
+        provider: "opencode",
+        permissionMode: "full-auto",
+        model: "opencode/openai/gpt-5.4",
+        reasoningEffort: "high",
+        fastMode: false,
+        initialPrompt: "Use OpenCode high reasoning.",
+      });
+      expect(launch.args).toEqual(expect.arrayContaining([
+        "run",
+        "--interactive",
+        "--variant",
+        "high",
+      ]));
+      expect(launch.args).not.toEqual(expect.arrayContaining(["--variant", "fast"]));
     });
 
     it("normalizes ADE OpenCode registry model ids before launching the CLI", () => {
@@ -541,6 +646,24 @@ describe("tracked CLI resume helpers", () => {
     );
 
     expect(buildTrackedCliResumeCommand({
+      provider: "claude",
+      targetKind: "session",
+      targetId: "claude-session-1",
+      launch: { permissionMode: "default", model: "anthropic/claude-opus-4-8", fastMode: true },
+    })).toBe(
+      "claude --permission-mode default --model claude-opus-4-8 --settings \"{\\\"fastMode\\\":true}\" --resume claude-session-1",
+    );
+
+    expect(buildTrackedCliResumeCommand({
+      provider: "claude",
+      targetKind: "session",
+      targetId: "claude-session-1",
+      launch: { permissionMode: "default", model: "anthropic/claude-opus-4-8", fastMode: false },
+    })).toBe(
+      "claude --permission-mode default --model claude-opus-4-8 --settings \"{\\\"fastMode\\\":false}\" --resume claude-session-1",
+    );
+
+    expect(buildTrackedCliResumeCommand({
       provider: "codex",
       targetKind: "thread",
       targetId: "thread-99",
@@ -584,30 +707,38 @@ describe("tracked CLI resume helpers", () => {
       provider: "codex",
       targetKind: "thread",
       targetId: "thread-99",
-      launch: { permissionMode: "edit", model: "gpt-5.4", reasoningEffort: "medium" },
+      launch: { permissionMode: "edit", model: "gpt-5.4", reasoningEffort: "medium", fastMode: true },
     })).toBe(
-      "codex --no-alt-screen --model gpt-5.4 -c \"model_reasoning_effort=\\\"medium\\\"\" --sandbox workspace-write --ask-for-approval untrusted resume thread-99",
+      "codex --no-alt-screen --model gpt-5.4 -c \"model_reasoning_effort=\\\"medium\\\"\" -c \"service_tier=\\\"fast\\\"\" -c features.fast_mode=true --sandbox workspace-write --ask-for-approval untrusted resume thread-99",
     );
+
+    expect(buildTrackedCliResumeCommand({
+      provider: "codex",
+      targetKind: "thread",
+      targetId: "thread-99",
+      launch: { permissionMode: "edit", model: "gpt-5.4", reasoningEffort: "medium", fastMode: false },
+    })).toContain("-c \"service_tier=\\\"default\\\"\"");
 
     expect(buildTrackedCliResumeCommand({
       provider: "opencode",
       targetKind: "session",
       targetId: "ses_99",
-      launch: { permissionMode: "plan", model: "opencode/openai/gpt-5.4" },
-    })).toContain("--agent plan --model \"openai/gpt-5.4\" --session ses_99");
+      launch: { permissionMode: "plan", model: "opencode/openai/gpt-5.4", fastMode: true },
+    })).toContain("opencode run --interactive --agent plan --model \"openai/gpt-5.4\" --variant fast --session ses_99");
   });
 
   it("builds OpenCode interactive replay resume commands for freeze-frame continuation", () => {
     const command = buildOpenCodeReplayResumeCommand({
       permissionMode: "plan",
       model: `opencode/openai/${encodeURIComponent("gpt-5.4")}`,
+      fastMode: true,
       resumeTarget: "ses_99",
       prompt: "continue from the snapshot",
       replayLimit: 12,
     });
 
     expect(command).toContain("OPENCODE_CONFIG_CONTENT=");
-    expect(command).toContain("opencode run --interactive --agent plan --model \"openai/gpt-5.4\" --session ses_99 --replay --replay-limit 12 --");
+    expect(command).toContain("opencode run --interactive --agent plan --model \"openai/gpt-5.4\" --variant fast --session ses_99 --replay --replay-limit 12 --");
     expect(command).toContain("continue from the snapshot");
     expect(command).toContain("\\\"question\\\":\\\"allow\\\"");
   });

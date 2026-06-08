@@ -10,6 +10,8 @@ import type {
   TerminalToolType,
 } from "../../shared/types";
 import {
+  claudeFastModeSettingsFlags,
+  codexServiceTierFlags,
   codexReasoningEffortFlags,
   modelToCliFlag,
   normalizeCliFlagValue,
@@ -74,6 +76,50 @@ function extractCliFlagValue(command: string, flag: string): string | null {
 function extractCodexReasoningEffort(command: string): string | null {
   const match = command.match(/model_reasoning_effort=(?:\\?["']?)([A-Za-z0-9_-]+)/i);
   return normalizeCliFlagValue(match?.[1] ?? "");
+}
+
+function extractFastMode(command: string): boolean | undefined {
+  const serviceTier = command.match(/service_tier=(?:\\?["']?)([A-Za-z0-9_-]+)/i)?.[1]?.toLowerCase();
+  if (serviceTier === "fast") return true;
+  if (serviceTier === "default" || serviceTier === "standard") return false;
+  const featureFastMode = command.match(/features\.fast_mode=(true|false)/i)?.[1]?.toLowerCase();
+  if (featureFastMode === "true") return true;
+  if (featureFastMode === "false") return false;
+  return undefined;
+}
+
+function extractClaudeFastMode(command: string): boolean | undefined {
+  let parts: string[];
+  try {
+    parts = parseCommandLine(stripLeadingEnvAssignments(command));
+  } catch {
+    return undefined;
+  }
+  for (let i = 0; i < parts.length; i += 1) {
+    const part = parts[i];
+    const inlinePrefix = "--settings=";
+    const settings = part === "--settings"
+      ? parts[i + 1]
+      : part.startsWith(inlinePrefix)
+        ? part.slice(inlinePrefix.length)
+        : null;
+    if (!settings) continue;
+    try {
+      const parsed = JSON.parse(settings);
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        const value = (parsed as Record<string, unknown>).fastMode;
+        if (value === true) return true;
+        if (value === false) return false;
+      }
+    } catch {
+      // Non-JSON --settings values are paths; they do not carry an ADE fast override.
+    }
+  }
+  return undefined;
+}
+
+function extractOpenCodeVariant(command: string): string | null {
+  return extractCliFlagValue(command, "--variant");
 }
 
 function extractDroidSettings(command: string): Record<string, unknown> | null {
@@ -232,15 +278,30 @@ function buildOpenCodeResumeCommand(args: {
   permissionMode: AgentChatPermissionMode | null | undefined;
   targetId: string | null;
   model?: string | null;
+  reasoningEffort?: string | null;
+  fastMode?: boolean | null;
   prompt?: string | null;
 }): string {
-  const commandArgs = ["opencode", ...permissionModeToOpenCodeArgs(args.permissionMode), ...modelToCliFlag(normalizeOpenCodeCliModel(args.model))];
+  const variant = args.fastMode === true ? "fast" : normalizeCliFlagValue(args.reasoningEffort);
+  const commandArgs = [
+    "opencode",
+    ...(variant ? ["run", "--interactive"] : []),
+    ...permissionModeToOpenCodeArgs(args.permissionMode),
+    ...modelToCliFlag(normalizeOpenCodeCliModel(args.model)),
+  ];
+  if (variant) commandArgs.push("--variant", variant);
   if (args.targetId) {
     commandArgs.push("--session", args.targetId);
   } else {
     commandArgs.push("--continue");
   }
-  if (args.prompt) commandArgs.push("--prompt", args.prompt);
+  if (args.prompt) {
+    if (variant) {
+      commandArgs.push("--", args.prompt);
+    } else {
+      commandArgs.push("--prompt", args.prompt);
+    }
+  }
   const config = openCodeConfigEnv(args.permissionMode);
   const assignment = config ? `${OPENCODE_INLINE_CONFIG_ENV}=${shellQuote(config)} ` : "";
   return `${assignment}${commandArrayToLine(commandArgs)}`;
@@ -252,9 +313,12 @@ export function buildOpenCodeReplayResumeCommand(args: {
   permissionMode: AgentChatPermissionMode | null | undefined;
   targetId: string | null;
   model?: string | null;
+  reasoningEffort?: string | null;
+  fastMode?: boolean | null;
   prompt: string;
   replayLimit?: number | null;
 }): string {
+  const variant = args.fastMode === true ? "fast" : normalizeCliFlagValue(args.reasoningEffort);
   const commandArgs = [
     "opencode",
     "run",
@@ -262,6 +326,7 @@ export function buildOpenCodeReplayResumeCommand(args: {
     ...permissionModeToOpenCodeArgs(args.permissionMode),
     ...modelToCliFlag(normalizeOpenCodeCliModel(args.model)),
   ];
+  if (variant) commandArgs.push("--variant", variant);
   if (args.targetId) {
     commandArgs.push("--session", args.targetId);
   } else {
@@ -360,7 +425,19 @@ export function parseTrackedCliLaunchConfig(
     ?? droidSpecStringSetting(droidSettings, "specModeReasoningEffort")
     ?? (provider === "codex"
     ? extractCodexReasoningEffort(normalized)
-    : (extractCliFlagValue(normalized, "--effort") ?? extractCliFlagValue(normalized, "--reasoning-effort")));
+    : provider === "opencode"
+      ? (() => {
+          const variant = extractOpenCodeVariant(normalized);
+          return variant?.toLowerCase() === "fast" ? null : variant;
+        })()
+      : (extractCliFlagValue(normalized, "--effort") ?? extractCliFlagValue(normalized, "--reasoning-effort")));
+  const fastMode = provider === "codex"
+    ? extractFastMode(normalized)
+    : provider === "claude"
+      ? extractClaudeFastMode(normalized)
+      : extractOpenCodeVariant(normalized)?.toLowerCase() === "fast"
+        ? true
+        : undefined;
 
   if (provider === "claude") {
     const effectivePermissionMode = permissionMode ?? "default";
@@ -378,6 +455,7 @@ export function parseTrackedCliLaunchConfig(
       permissionMode: effectivePermissionMode,
       ...(model ? { model } : {}),
       ...(reasoningEffort ? { reasoningEffort } : {}),
+      ...(fastMode !== undefined ? { fastMode } : {}),
       claudePermissionMode,
     };
   }
@@ -386,6 +464,7 @@ export function parseTrackedCliLaunchConfig(
     const base = {
       ...(model ? { model } : {}),
       ...(reasoningEffort ? { reasoningEffort } : {}),
+      ...(fastMode !== undefined ? { fastMode } : {}),
     };
     const codexPolicies: Record<string, { codexApprovalPolicy: AgentChatCodexApprovalPolicy; codexSandbox: AgentChatCodexSandbox }> = {
       "full-auto": { codexApprovalPolicy: "never", codexSandbox: "danger-full-access" },
@@ -404,6 +483,7 @@ export function parseTrackedCliLaunchConfig(
     ...(permissionMode ? { permissionMode } : {}),
     ...(model ? { model } : {}),
     ...(reasoningEffort ? { reasoningEffort } : {}),
+    ...(fastMode !== undefined ? { fastMode } : {}),
   };
 }
 
@@ -475,6 +555,7 @@ export function buildTrackedCliResumeCommand(
   overrides: {
     model?: string | null;
     reasoningEffort?: string | null;
+    fastMode?: boolean | null;
     permissionMode?: AgentChatPermissionMode | null;
     prompt?: string | null;
   } = {},
@@ -486,6 +567,9 @@ export function buildTrackedCliResumeCommand(
   const reasoningEffort = overrides.reasoningEffort !== undefined
     ? overrides.reasoningEffort
     : metadata.launch.reasoningEffort;
+  const fastMode = overrides.fastMode !== undefined
+    ? overrides.fastMode
+    : metadata.launch.fastMode ?? metadata.launch.codexFastMode;
   const targetId = sanitizeResumeTargetId(metadata.targetId) ?? "";
   const prompt = normalizeCliFlagValue(overrides.prompt);
 
@@ -495,6 +579,7 @@ export function buildTrackedCliResumeCommand(
     if (claudeModel) parts.push("--model", claudeModel);
     const claudeReasoningEffort = normalizeCliFlagValue(reasoningEffort);
     if (claudeReasoningEffort) parts.push("--effort", claudeReasoningEffort);
+    parts.push(...claudeFastModeSettingsFlags(fastMode));
     parts.push("--resume");
     if (targetId.length) parts.push(targetId);
     if (prompt) parts.push(prompt);
@@ -507,6 +592,7 @@ export function buildTrackedCliResumeCommand(
       "--no-alt-screen",
       ...modelToCliFlag(model),
       ...codexReasoningEffortFlags(reasoningEffort),
+      ...codexServiceTierFlags(fastMode),
       ...permissionModeToCodexFlags(permissionMode),
     ];
     parts.push("resume");
@@ -533,7 +619,7 @@ export function buildTrackedCliResumeCommand(
     return buildDroidCommandLine({ permissionMode, model, reasoningEffort, prompt, resumeTarget: targetId || null });
   }
 
-  return buildOpenCodeResumeCommand({ permissionMode, targetId: targetId || null, model, prompt });
+  return buildOpenCodeResumeCommand({ permissionMode, targetId: targetId || null, model, reasoningEffort, fastMode, prompt });
 }
 
 function canonicalizePreferredTool(preferredTool: TerminalToolType | null | undefined): TerminalToolType | null | undefined {

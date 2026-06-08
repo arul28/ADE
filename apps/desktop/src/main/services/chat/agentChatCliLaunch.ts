@@ -95,6 +95,9 @@ export async function launchAgentChatCli(
     ...(provider === "claude" ? { sessionId } : {}),
     model: arg.model ?? null,
     reasoningEffort: arg.reasoningEffort ?? null,
+    ...((provider === "codex" || provider === "claude" || provider === "opencode") && (arg.fastMode ?? arg.codexFastMode) !== undefined
+      ? { fastMode: arg.fastMode ?? arg.codexFastMode }
+      : {}),
     initialPrompt: kickoffPrompt,
     laneWorktreePath: worktreePath,
   });

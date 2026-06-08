@@ -125,7 +125,7 @@ describe("discoverDroidCliModelDescriptors", () => {
     });
   });
 
-  it("preserves Droid SDK reasoning and media metadata", async () => {
+  it("preserves Droid SDK reasoning and media metadata without exposing tier as a toggle", async () => {
     const close = vi.fn(async () => {});
     mockCreateSession.mockResolvedValueOnce({
       initResult: {
@@ -148,12 +148,12 @@ describe("discoverDroidCliModelDescriptors", () => {
     expect(descriptors[0]).toMatchObject({
       id: "droid/gpt-5.4",
       reasoningTiers: ["high", "low", "max"],
-      serviceTiers: ["fast"],
       capabilities: expect.objectContaining({
         vision: false,
         reasoning: true,
       }),
     });
+    expect(descriptors[0]?.serviceTiers).toBeUndefined();
   });
 
   it("merges existing Factory config custom models with SDK models", async () => {

@@ -448,6 +448,97 @@ describe("parseCursorCliModelsStdout", () => {
     ]);
   });
 
+  it("passes explicit standard service tier params when Cursor fast mode is off", async () => {
+    cursorModelsListMock.mockResolvedValue([
+      {
+        id: "composer-2.5",
+        displayName: "Composer 2.5",
+        parameters: [
+          {
+            id: "speed",
+            displayName: "Speed",
+            values: [
+              { value: "standard", displayName: "Standard" },
+              { value: "fast", displayName: "Fast" },
+            ],
+          },
+        ],
+        variants: [
+          {
+            displayName: "Standard",
+            params: [{ id: "speed", value: "standard" }],
+          },
+          {
+            displayName: "Fast",
+            params: [{ id: "speed", value: "fast" }],
+          },
+        ],
+      },
+    ]);
+
+    await discoverCursorSdkModelDescriptors("crsr_test", { mode: "probe" });
+
+    expect(resolveCursorSdkModelSelectionParams({
+      modelSdkId: "composer-2.5",
+      fastMode: false,
+    })).toEqual([{ id: "speed", value: "standard" }]);
+    expect(resolveCursorSdkModelSelectionParams({
+      modelSdkId: "composer-2.5",
+      fastMode: true,
+    })).toEqual([{ id: "speed", value: "fast" }]);
+  });
+
+  it("does not let standard tier variants overwrite selected Cursor reasoning params", async () => {
+    cursorModelsListMock.mockResolvedValue([
+      {
+        id: "composer-2.5",
+        displayName: "Composer 2.5",
+        parameters: [
+          {
+            id: "reasoning_effort",
+            displayName: "Reasoning effort",
+            values: [
+              { value: "low", displayName: "Low" },
+              { value: "high", displayName: "High" },
+            ],
+          },
+          {
+            id: "speed",
+            displayName: "Speed",
+            values: [
+              { value: "standard", displayName: "Standard" },
+              { value: "fast", displayName: "Fast" },
+            ],
+          },
+        ],
+        variants: [
+          {
+            displayName: "High reasoning",
+            params: [{ id: "reasoning_effort", value: "high" }],
+          },
+          {
+            displayName: "Standard",
+            params: [
+              { id: "speed", value: "standard" },
+              { id: "reasoning_effort", value: "low" },
+            ],
+          },
+        ],
+      },
+    ]);
+
+    await discoverCursorSdkModelDescriptors("crsr_test", { mode: "probe" });
+
+    expect(resolveCursorSdkModelSelectionParams({
+      modelSdkId: "composer-2.5",
+      reasoningEffort: "high",
+      fastMode: false,
+    })).toEqual([
+      { id: "reasoning_effort", value: "high" },
+      { id: "speed", value: "standard" },
+    ]);
+  });
+
   it("falls back to Cursor's official models API when SDK model listing fails", async () => {
     cursorModelsListMock.mockRejectedValue(new Error("SDK model listing failed"));
     const fetchMock = vi.fn(async () => ({

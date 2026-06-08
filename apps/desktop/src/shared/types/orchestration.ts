@@ -33,7 +33,7 @@ export type ModelSelection = {
   provider: AgentChatProvider;
   modelId: string;
   reasoningEffort?: string | null;
-  codexFastMode?: boolean;
+  fastMode?: boolean;
 };
 
 export type ModelRouting = {
@@ -47,7 +47,7 @@ export type SpawnFingerprint = {
   provider: AgentChatProvider;
   modelId: string;
   reasoningEffort?: string | null;
-  codexFastMode?: boolean;
+  fastMode?: boolean;
   resolvedAt: string;
   routingKey:
     | "byRoleTag"

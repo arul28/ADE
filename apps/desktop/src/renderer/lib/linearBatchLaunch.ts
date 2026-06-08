@@ -14,6 +14,7 @@ import {
   getModelById,
   getRuntimeModelRefForDescriptor,
   modelSupportsFastMode,
+  resolveCursorCliModelVariant,
   resolveProviderGroupForModel,
   type ModelDescriptor,
 } from "../../shared/modelRegistry";
@@ -26,7 +27,7 @@ export type BatchLaunchSessionType = "chat" | "cli";
 export type BatchLaunchIssueConfig = {
   modelId: string;
   reasoningEffort: string | null;
-  codexFastMode: boolean;
+  fastMode: boolean;
   /** Editable kickoff prompt; when blank, a default issue-derived prompt is used. */
   kickoffPrompt: string;
   /** Editable branch name; when blank, derived from the issue identifier/title. */
@@ -126,7 +127,13 @@ export function batchLaunchSupportsFastMode(modelId: string): boolean {
  * set, so the group doubles as the CLI profile; unknown models fall back to
  * OpenCode with the raw model id.
  */
-export function resolveCliLaunchProviderAndModel(modelId: string): {
+export function resolveCliLaunchProviderAndModel(
+  modelId: string,
+  options?: {
+    reasoningEffort?: string | null;
+    fastMode?: boolean | null;
+  },
+): {
   provider: AgentChatCliLaunchProvider;
   model: string;
 } {
@@ -135,7 +142,14 @@ export function resolveCliLaunchProviderAndModel(modelId: string): {
     return { provider: "opencode", model: modelId };
   }
   const group = resolveProviderGroupForModel(descriptor);
-  const model = group === "opencode" ? modelId : getRuntimeModelRefForDescriptor(descriptor, group);
+  const model = group === "cursor"
+    ? resolveCursorCliModelVariant(descriptor, {
+        reasoningEffort: options?.reasoningEffort,
+        fastMode: options?.fastMode,
+      })
+    : group === "opencode"
+      ? modelId
+      : getRuntimeModelRefForDescriptor(descriptor, group);
   return { provider: group as AgentChatCliLaunchProvider, model };
 }
 
@@ -206,7 +220,7 @@ export type BatchLaunchDeps = {
     model: string;
     modelId: string;
     reasoningEffort: string | null;
-    codexFastMode?: boolean;
+    fastMode?: boolean;
     permissionMode?: AgentChatPermissionMode | null;
     kickoffText: string;
     contextAttachments: AgentChatContextAttachment[];
@@ -223,6 +237,7 @@ export type BatchLaunchDeps = {
     provider: AgentChatCliLaunchProvider;
     model: string;
     reasoningEffort: string | null;
+    fastMode?: boolean;
     permissionMode?: AgentChatPermissionMode | null;
     kickoffPrompt: string;
     linearIssues: LaneLinearIssue[];
@@ -306,12 +321,16 @@ export async function runBatchLaunch(
         if (!deps.launchCli) {
           throw new Error("CLI session launch requested but no launchCli dependency was provided.");
         }
-        const { provider, model } = resolveCliLaunchProviderAndModel(config.modelId);
+        const { provider, model } = resolveCliLaunchProviderAndModel(config.modelId, {
+          reasoningEffort: config.reasoningEffort,
+          fastMode: config.fastMode,
+        });
         const session = await deps.launchCli({
           laneId,
           provider,
           model,
           reasoningEffort: config.reasoningEffort,
+          ...(batchLaunchSupportsFastMode(config.modelId) ? { fastMode: config.fastMode } : {}),
           permissionMode: config.permissionMode ?? null,
           kickoffPrompt: config.kickoffPrompt.trim() || defaultKickoffIntro(),
           linearIssues: [issue],
@@ -332,7 +351,7 @@ export async function runBatchLaunch(
         model,
         modelId: config.modelId,
         reasoningEffort: config.reasoningEffort,
-        ...(batchLaunchSupportsFastMode(config.modelId) ? { codexFastMode: config.codexFastMode } : {}),
+        ...(batchLaunchSupportsFastMode(config.modelId) ? { fastMode: config.fastMode } : {}),
         ...(config.permissionMode ? { permissionMode: config.permissionMode } : {}),
         kickoffText,
         contextAttachments: [makeLinearIssueContextAttachment(issue, "lane_link")],

@@ -257,6 +257,7 @@ describe("modelRegistry", () => {
         outputPricePer1M: 25,
       });
       expect(opus?.reasoningTiers).toEqual(["low", "medium", "high", "xhigh", "max"]);
+      expect(opus?.serviceTiers).toEqual(["fast"]);
     });
 
     it("keeps Opus 4.7 and Opus 4.7 1M as distinct selectable models", () => {
@@ -271,6 +272,7 @@ describe("modelRegistry", () => {
         shortId: "opus-1m",
         providerModelId: "claude-opus-4-7[1m]",
         contextWindow: 1_000_000,
+        serviceTiers: ["fast"],
       });
       expect(resolveModelAlias("opus")?.id).toBe("anthropic/claude-opus-4-7");
       expect(resolveModelAlias("opus[1m]")?.id).toBe("anthropic/claude-opus-4-7-1m");
@@ -283,6 +285,11 @@ describe("modelRegistry", () => {
       expect(resolveModelAlias("anthropic/claude-opus-4-6-1m")?.id).toBe("anthropic/claude-opus-4-7-1m");
       expect(getModelById("anthropic/claude-opus-4-6")?.id).toBe("anthropic/claude-opus-4-7");
       expect(getModelById("anthropic/claude-opus-4-6-1m")?.id).toBe("anthropic/claude-opus-4-7-1m");
+    });
+
+    it("does not advertise Claude Fast mode on non-Opus models", () => {
+      expect(getModelById("anthropic/claude-sonnet-4-6")?.serviceTiers).toBeUndefined();
+      expect(getModelById("anthropic/claude-haiku-4-5")?.serviceTiers).toBeUndefined();
     });
   });
 

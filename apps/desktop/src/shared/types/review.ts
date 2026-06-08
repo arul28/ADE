@@ -144,6 +144,8 @@ export type ReviewRunConfig = {
   dirtyOnly: boolean;
   modelId: string;
   reasoningEffort: string | null;
+  fastMode?: boolean;
+  /** @deprecated Use fastMode. */
   codexFastMode?: boolean;
   publishBehavior: ReviewPublishBehavior;
 };

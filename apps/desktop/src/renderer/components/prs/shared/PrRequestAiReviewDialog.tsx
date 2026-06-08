@@ -120,7 +120,7 @@ export const PrRequestAiReviewDialog = memo(function PrRequestAiReviewDialog({
 }: PrRequestAiReviewDialogProps) {
   const [modelId, setModelId] = useState(DEFAULT_MODEL_ID);
   const [reasoningEffort, setReasoningEffort] = useState(DEFAULT_REASONING);
-  const [codexFastMode, setCodexFastMode] = useState(false);
+  const [fastMode, setFastMode] = useState(false);
   const [launching, setLaunching] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -144,7 +144,7 @@ export const PrRequestAiReviewDialog = memo(function PrRequestAiReviewDialog({
           dirtyOnly: false,
           modelId: modelId.trim(),
           reasoningEffort: reasoningEffort.trim() || null,
-          codexFastMode,
+          fastMode,
           publishBehavior: "auto_publish",
         },
       });
@@ -158,7 +158,7 @@ export const PrRequestAiReviewDialog = memo(function PrRequestAiReviewDialog({
     } finally {
       setLaunching(false);
     }
-  }, [codexFastMode, lane, modelId, onOpenChange, pr.id, pr.laneId, reasoningEffort]);
+  }, [fastMode, lane, modelId, onOpenChange, pr.id, pr.laneId, reasoningEffort]);
 
   return (
     <LaneDialogShell
@@ -184,10 +184,10 @@ export const PrRequestAiReviewDialog = memo(function PrRequestAiReviewDialog({
           <ReviewLaunchModelControls
             modelId={modelId}
             reasoningEffort={reasoningEffort}
-            codexFastMode={codexFastMode}
+            fastMode={fastMode}
             onModelChange={setModelId}
             onReasoningEffortChange={setReasoningEffort}
-            onCodexFastModeChange={setCodexFastMode}
+            onFastModeChange={setFastMode}
             disabled={launching}
           />
         </div>

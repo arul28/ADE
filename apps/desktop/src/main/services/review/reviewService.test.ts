@@ -930,7 +930,7 @@ describe("reviewService", () => {
         makeOutput("No cross-file findings.", []),
         makeOutput("No checks findings.", []),
       ],
-      config: { codexFastMode: true },
+      config: { fastMode: true },
     });
 
     const run = await harness.start();
@@ -940,9 +940,31 @@ describe("reviewService", () => {
     );
 
     expect(harness.createSession).toHaveBeenCalledWith(expect.objectContaining({
-      codexFastMode: true,
+      fastMode: true,
       permissionMode: "plan",
       surface: "automation",
+    }));
+  });
+
+  it("launches with fast mode for a legacy config carrying only codexFastMode", async () => {
+    const harness = createHarness({
+      outputs: [
+        makeOutput("No direct findings.", []),
+        makeOutput("No cross-file findings.", []),
+        makeOutput("No checks findings.", []),
+      ],
+      // Pre-rename runs persisted only the deprecated codexFastMode flag.
+      config: { codexFastMode: true, fastMode: undefined },
+    });
+
+    const run = await harness.start();
+    await waitFor(
+      () => harness.service.listRuns(),
+      (runs) => runs.some((entry) => entry.id === run.id && entry.status === "completed"),
+    );
+
+    expect(harness.createSession).toHaveBeenCalledWith(expect.objectContaining({
+      fastMode: true,
     }));
   });
 

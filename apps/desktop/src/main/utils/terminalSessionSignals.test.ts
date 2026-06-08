@@ -113,6 +113,24 @@ describe("terminalSessionSignals", () => {
       permissionMode: "plan",
       model: "auto",
     });
+    expect(parseTrackedCliLaunchConfig(
+      "claude --permission-mode default --model claude-opus-4-8 --settings '{\"fastMode\":true}'",
+      "claude",
+    )).toEqual({
+      permissionMode: "default",
+      model: "claude-opus-4-8",
+      fastMode: true,
+      claudePermissionMode: "default",
+    });
+    expect(parseTrackedCliLaunchConfig(
+      "claude --permission-mode default --model claude-opus-4-8 --settings '{\"fastMode\":false}'",
+      "claude",
+    )).toEqual({
+      permissionMode: "default",
+      model: "claude-opus-4-8",
+      fastMode: false,
+      claudePermissionMode: "default",
+    });
     expect(parseTrackedCliLaunchConfig("droid --settings /tmp/ade.json", "droid")).toEqual({
       permissionMode: "plan",
     });
@@ -134,6 +152,16 @@ describe("terminalSessionSignals", () => {
     });
     expect(parseTrackedCliLaunchConfig("OPENCODE_CONFIG_CONTENT='{\"permission\":{\"*\":\"ask\",\"edit\":\"allow\"}}' opencode", "opencode")).toEqual({
       permissionMode: "edit",
+    });
+    expect(parseTrackedCliLaunchConfig("opencode run --interactive --model openai/gpt-5.4 --variant fast", "opencode")).toEqual({
+      permissionMode: "config-toml",
+      model: "openai/gpt-5.4",
+      fastMode: true,
+    });
+    expect(parseTrackedCliLaunchConfig("opencode run --interactive --model openai/gpt-5.4 --variant high", "opencode")).toEqual({
+      permissionMode: "config-toml",
+      model: "openai/gpt-5.4",
+      reasoningEffort: "high",
     });
   });
 
@@ -177,8 +205,8 @@ describe("terminalSessionSignals", () => {
       provider: "opencode",
       targetKind: "session",
       targetId: "ses_1",
-      launch: { permissionMode: "full-auto" },
-    })).toBe("OPENCODE_CONFIG_CONTENT='{\"permission\":\"allow\"}' opencode --session ses_1");
+      launch: { permissionMode: "full-auto", fastMode: true },
+    })).toBe("OPENCODE_CONFIG_CONTENT='{\"permission\":\"allow\"}' opencode run --interactive --variant fast --session ses_1");
   });
 
   it("applies resume-time model, reasoning, and permission overrides", () => {
@@ -213,14 +241,45 @@ describe("terminalSessionSignals", () => {
       codexSandbox: "workspace-write",
       codexConfigSource: "flags",
     });
+    expect(parseTrackedCliLaunchConfig(
+      "codex --no-alt-screen -c 'service_tier=\"fast\"' -c features.fast_mode=true --sandbox workspace-write --ask-for-approval on-request",
+      "codex",
+    )).toEqual({
+      permissionMode: "default",
+      fastMode: true,
+      codexApprovalPolicy: "on-request",
+      codexSandbox: "workspace-write",
+      codexConfigSource: "flags",
+    });
+    expect(parseTrackedCliLaunchConfig(
+      "codex --no-alt-screen -c 'service_tier=\"default\"' --sandbox workspace-write --ask-for-approval on-request",
+      "codex",
+    )).toEqual({
+      permissionMode: "default",
+      fastMode: false,
+      codexApprovalPolicy: "on-request",
+      codexSandbox: "workspace-write",
+      codexConfigSource: "flags",
+    });
 
     expect(buildTrackedCliResumeCommand({
       provider: "codex",
       targetKind: "thread",
       targetId: "thread-99",
-      launch: { permissionMode: "edit", model: "gpt-5.4", reasoningEffort: "medium" },
+      launch: { permissionMode: "edit", model: "gpt-5.4", reasoningEffort: "medium", fastMode: true },
     })).toBe(
-      "codex --no-alt-screen --model gpt-5.4 -c 'model_reasoning_effort=\"medium\"' --sandbox workspace-write --ask-for-approval untrusted resume thread-99",
+      "codex --no-alt-screen --model gpt-5.4 -c 'model_reasoning_effort=\"medium\"' -c 'service_tier=\"fast\"' -c features.fast_mode=true --sandbox workspace-write --ask-for-approval untrusted resume thread-99",
+    );
+  });
+
+  it("resumes pre-rename sessions that only stored the deprecated codexFastMode", () => {
+    expect(buildTrackedCliResumeCommand({
+      provider: "codex",
+      targetKind: "thread",
+      targetId: "thread-99",
+      launch: { permissionMode: "edit", codexFastMode: true },
+    })).toBe(
+      "codex --no-alt-screen -c 'service_tier=\"fast\"' -c features.fast_mode=true --sandbox workspace-write --ask-for-approval untrusted resume thread-99",
     );
   });
 
@@ -307,10 +366,11 @@ describe("terminalSessionSignals", () => {
       permissionMode: "edit",
       targetId: "ses_abc",
       model: "openai/gpt-5.4",
+      fastMode: true,
       prompt: "continue from here",
     });
 
-    expect(command).toContain("opencode run --interactive --model openai/gpt-5.4 --session ses_abc --replay --replay-limit 40 -- 'continue from here'");
+    expect(command).toContain("opencode run --interactive --model openai/gpt-5.4 --variant fast --session ses_abc --replay --replay-limit 40 -- 'continue from here'");
     expect(command).toContain("\"question\":\"allow\"");
   });
 

@@ -12,7 +12,7 @@
  * `respondToInput` IPC call.
  */
 
-import { memo, useCallback, useMemo, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import {
   type ModelSelection,
   type OrchestrationModelSelectionMetadata,
@@ -75,9 +75,18 @@ export const ChatModelSelectionPendingCard = memo(function ChatModelSelectionPen
   const [reasoningEffort, setReasoningEffort] = useState<string | null>(
     suggested?.reasoningEffort ?? null,
   );
-  const [codexFastMode, setCodexFastMode] = useState<boolean>(
-    Boolean(suggested?.codexFastMode),
+  const [fastMode, setFastMode] = useState<boolean>(
+    Boolean(suggested?.fastMode),
   );
+
+  const descriptor = getModelById(modelId);
+  const fastModeSupported = modelSupportsFastMode(descriptor);
+
+  // Clear fast mode when the picked model doesn't support it, so a stale toggle
+  // can't be submitted after switching to an unsupported model.
+  useEffect(() => {
+    if (!fastModeSupported && fastMode) setFastMode(false);
+  }, [fastModeSupported, fastMode]);
 
   // When the user picks a different model, infer the new provider from the
   // model registry so the dispatched ModelSelection stays internally
@@ -100,10 +109,10 @@ export const ChatModelSelectionPendingCard = memo(function ChatModelSelectionPen
       provider,
       modelId,
       ...(reasoningEffort !== null ? { reasoningEffort } : {}),
-      ...(codexFastMode ? { codexFastMode: true } : {}),
+      ...(fastMode && fastModeSupported ? { fastMode: true } : {}),
     };
     onConfirm(selection);
-  }, [provider, modelId, reasoningEffort, codexFastMode, onConfirm]);
+  }, [provider, modelId, reasoningEffort, fastMode, fastModeSupported, onConfirm]);
 
   const headerLabel = useMemo(() => {
     if (!metadata) return "Pick a model";
@@ -114,9 +123,6 @@ export const ChatModelSelectionPendingCard = memo(function ChatModelSelectionPen
 
   // TODO: pass inferProviderFamily(initialProvider) to the picker rail so it
   // highlights the right column once ModelPicker supports an initialFamily prop.
-
-  const descriptor = getModelById(modelId);
-  const fastModeSupported = modelSupportsFastMode(descriptor);
 
   return (
     <div
@@ -149,9 +155,9 @@ export const ChatModelSelectionPendingCard = memo(function ChatModelSelectionPen
           disabled={responding}
           hidePermissionRail
           compact
-          fastModeActive={codexFastMode}
+          fastModeActive={fastMode}
           fastModeSupported={fastModeSupported}
-          {...(fastModeSupported ? { onFastModeToggle: setCodexFastMode } : {})}
+          {...(fastModeSupported ? { onFastModeToggle: setFastMode } : {})}
         />
         <ReasoningEffortPicker
           modelId={modelId}

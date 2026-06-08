@@ -8,10 +8,10 @@ import { cn } from "../ui/cn";
 type ReviewLaunchModelControlsProps = {
   modelId: string;
   reasoningEffort: string;
-  codexFastMode?: boolean;
+  fastMode?: boolean;
   onModelChange: (modelId: string) => void;
   onReasoningEffortChange: (value: string) => void;
-  onCodexFastModeChange?: (value: boolean) => void;
+  onFastModeChange?: (value: boolean) => void;
   disabled?: boolean;
   className?: string;
 };
@@ -19,10 +19,10 @@ type ReviewLaunchModelControlsProps = {
 export function ReviewLaunchModelControls({
   modelId,
   reasoningEffort,
-  codexFastMode = false,
+  fastMode = false,
   onModelChange,
   onReasoningEffortChange,
-  onCodexFastModeChange,
+  onFastModeChange,
   disabled = false,
   className,
 }: ReviewLaunchModelControlsProps) {
@@ -63,8 +63,8 @@ export function ReviewLaunchModelControls({
         surfaceKey="review-launch"
         availableModelIds={availableModelIds}
         disabled={disabled}
-        fastModeActive={codexFastMode}
-        onFastModeToggle={onCodexFastModeChange}
+        fastModeActive={fastMode}
+        onFastModeToggle={onFastModeChange}
       />
       <ReasoningEffortPicker
         modelId={modelId}

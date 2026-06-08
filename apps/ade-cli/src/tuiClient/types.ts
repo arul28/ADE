@@ -74,7 +74,7 @@ export type AdeCodeModelState = {
   modelId: string | null;
   displayName: string;
   reasoningEffort: string | null;
-  codexFastMode: boolean;
+  fastMode: boolean;
   permissionMode: AgentChatPermissionMode;
   interactionMode: AgentChatInteractionMode;
   claudePermissionMode: AgentChatClaudePermissionMode;

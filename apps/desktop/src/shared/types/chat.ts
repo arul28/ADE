@@ -907,7 +907,9 @@ export type AgentChatSession = {
   modelId?: ModelId;
   sessionProfile?: AgentChatSessionProfile;
   reasoningEffort?: string | null;
-  codexFastMode?: boolean;
+  fastMode?: boolean;
+  /** Effective service tier reported by the Codex app-server, when known. */
+  codexServiceTier?: string | null;
   executionMode?: AgentChatExecutionMode | null;
   permissionMode?: AgentChatPermissionMode;
   interactionMode?: AgentChatInteractionMode | null;
@@ -958,7 +960,9 @@ export type AgentChatSessionSummary = {
   title?: string | null;
   goal?: string | null;
   reasoningEffort?: string | null;
-  codexFastMode?: boolean;
+  fastMode?: boolean;
+  /** Effective service tier reported by the Codex app-server, when known. */
+  codexServiceTier?: string | null;
   executionMode?: AgentChatExecutionMode | null;
   permissionMode?: AgentChatPermissionMode;
   interactionMode?: AgentChatInteractionMode | null;
@@ -1304,6 +1308,8 @@ export type AgentChatCreateArgs = {
   title?: string | null;
   sessionProfile?: AgentChatSessionProfile;
   reasoningEffort?: string | null;
+  fastMode?: boolean;
+  /** @deprecated Use fastMode. Accepted for older renderer/IPC callers. */
   codexFastMode?: boolean;
   permissionMode?: AgentChatPermissionMode;
   interactionMode?: AgentChatInteractionMode | null;
@@ -1368,6 +1374,10 @@ export type AgentChatLaunchCliArgs = {
   /** Runtime model ref for the provider's fresh-launch CLI flags. */
   model?: string | null;
   reasoningEffort?: string | null;
+  /** Fast-mode override for runtimes that expose a fast tier. */
+  fastMode?: boolean | null;
+  /** @deprecated Use fastMode. Accepted for older renderer/IPC callers. */
+  codexFastMode?: boolean | null;
   permissionMode?: AgentChatPermissionMode;
   /** Optional orchestration role; when present, role policy overrides the requested permission mode. */
   orchestrationRole?: OrchestrationRole | null;
@@ -1400,6 +1410,8 @@ export type AgentChatHandoffArgs = {
    * session the same way as a legacy handoff.
    */
   reasoningEffort?: string | null;
+  fastMode?: boolean;
+  /** @deprecated Use fastMode. Accepted for older renderer/IPC callers. */
   codexFastMode?: boolean;
   claudePermissionMode?: AgentChatClaudePermissionMode;
   codexApprovalPolicy?: AgentChatCodexApprovalPolicy;
@@ -1593,6 +1605,8 @@ export type AgentChatUpdateSessionArgs = {
   manuallyNamed?: boolean;
   modelId?: ModelId;
   reasoningEffort?: string | null;
+  fastMode?: boolean;
+  /** @deprecated Use fastMode. Accepted for older renderer/IPC callers. */
   codexFastMode?: boolean;
   permissionMode?: AgentChatPermissionMode;
   interactionMode?: AgentChatInteractionMode | null;

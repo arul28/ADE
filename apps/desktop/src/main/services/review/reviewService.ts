@@ -2117,7 +2117,7 @@ export function createReviewService({
       dirtyOnly: partial?.dirtyOnly ?? target.mode === "working_tree",
       modelId: partial?.modelId?.trim() || defaultReviewModelId,
       reasoningEffort: partial?.reasoningEffort?.trim() || null,
-      codexFastMode: partial?.codexFastMode === true,
+      fastMode: (partial?.fastMode ?? partial?.codexFastMode) === true,
       publishBehavior: target.mode === "pr" && partial?.publishBehavior === "auto_publish"
         ? "auto_publish"
         : "local_only",
@@ -2268,7 +2268,7 @@ export function createReviewService({
         model: args.model,
         modelId: args.descriptorId,
         reasoningEffort: args.run.config.reasoningEffort,
-        codexFastMode: args.run.config.codexFastMode === true,
+        fastMode: (args.run.config.fastMode ?? args.run.config.codexFastMode) === true,
         permissionMode: "plan",
         sessionProfile: "workflow",
         surface: "automation",

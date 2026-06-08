@@ -1293,7 +1293,7 @@ describe("automationService integration", () => {
       billingCode: "auto:test",
       execution: {
         kind: "agent-session" as const,
-        session: { codexFastMode: true, reasoningEffort: "xhigh" },
+        session: { fastMode: true, reasoningEffort: "xhigh" },
       },
       prompt: "Summarize the current state.",
     };
@@ -1329,7 +1329,7 @@ describe("automationService integration", () => {
       expect(run.status).toBe("succeeded");
       expect(createSession).toHaveBeenCalledWith(expect.objectContaining({
         modelId: "openai/gpt-5.5",
-        codexFastMode: true,
+        fastMode: true,
         reasoningEffort: "xhigh",
       }));
       expect(runSessionTurn).toHaveBeenCalledWith(expect.objectContaining({
@@ -1585,7 +1585,7 @@ describe("automationService integration", () => {
               prompt: "Summarize",
               sessionTitle: "Summary",
               modelConfig: { modelId: "openai/gpt-5.5", thinkingLevel: "high" as const },
-              codexFastMode: true,
+              fastMode: true,
               permissionConfig: { providers: { codex: "full-auto" as const } },
             },
           ],
@@ -1625,7 +1625,7 @@ describe("automationService integration", () => {
       expect(run.status).toBe("succeeded");
       expect(createSession).toHaveBeenCalledWith(expect.objectContaining({
         modelId: "openai/gpt-5.5",
-        codexFastMode: true,
+        fastMode: true,
         reasoningEffort: "high",
         permissionMode: "full-auto",
       }));

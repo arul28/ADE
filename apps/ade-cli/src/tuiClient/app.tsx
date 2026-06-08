@@ -563,7 +563,7 @@ export function chatSessionToOptimisticSummary(
     ...(session.sessionProfile ? { sessionProfile: session.sessionProfile } : {}),
     title: title?.trim() || "New chat",
     ...(session.reasoningEffort ? { reasoningEffort: session.reasoningEffort } : {}),
-    ...(session.codexFastMode !== undefined ? { codexFastMode: session.codexFastMode } : {}),
+    ...(session.fastMode !== undefined ? { fastMode: session.fastMode } : {}),
     ...(session.executionMode ? { executionMode: session.executionMode } : {}),
     ...(session.permissionMode ? { permissionMode: session.permissionMode } : {}),
     ...(session.interactionMode ? { interactionMode: session.interactionMode } : {}),
@@ -667,7 +667,7 @@ function initialModelState(): AdeCodeModelState {
     modelId: descriptor?.id ?? null,
     displayName: descriptor?.displayName ?? "GPT-5.5",
     reasoningEffort: DEFAULT_CODEX_REASONING_EFFORT,
-    codexFastMode: false,
+    fastMode: false,
     permissionMode: "default",
     interactionMode: "default",
     claudePermissionMode: "default",
@@ -1505,7 +1505,7 @@ function buildSetupRows(args: {
   rows.push({
     kind: "codex-fast",
     label: "Fast mode",
-    value: fastSupported && args.modelState.codexFastMode ? "on" : "off",
+    value: fastSupported && args.modelState.fastMode ? "on" : "off",
     detail: "on · off",
     disabled: !fastSupported,
     cyclable: true,
@@ -3499,7 +3499,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
   const statusLineRows = statusLineText ? Math.min(3, statusLineText.split(/\r?\n/).filter(Boolean).length || 1) : 0;
   const statusRows = statusLineRows;
   const modelStatusOverlayRows = statusRows
-    + (draftChatActive || (vimModeEnabled && !hideVimModeIndicator) || modelState.codexFastMode ? 1 : 0);
+    + (draftChatActive || (vimModeEnabled && !hideVimModeIndicator) || modelState.fastMode ? 1 : 0);
   const goalBannerRows = goalBannerText ? 1 : 0;
   const addModeRows = addMode ? 1 : 0;
   const rightPaneMaxWidth = rightPane.kind === "model-picker"
@@ -4308,7 +4308,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
           displayName: modelState.displayName,
           display_name: modelState.displayName,
           provider: modelState.provider,
-          fastMode: modelState.codexFastMode,
+          fastMode: modelState.fastMode,
           supportsEffort: modelReasoningEfforts(modelState, models).length > 0,
         },
         workspace: {
@@ -4938,7 +4938,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         return {
           ...prev,
           ...patch,
-          codexFastMode: fastSupported ? prev.codexFastMode : false,
+          fastMode: fastSupported ? prev.fastMode : false,
         };
       });
     }
@@ -5692,7 +5692,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
           modelId: configSession.modelId ?? activeModel?.modelId ?? activeModel?.id ?? prev.modelId,
           displayName: activeModel?.displayName ?? configSession.model ?? prev.displayName,
           reasoningEffort: configSession.reasoningEffort ?? prev.reasoningEffort,
-          codexFastMode: configSession.codexFastMode === true,
+          fastMode: configSession.fastMode === true,
           permissionMode: configSession.permissionMode ?? prev.permissionMode,
           interactionMode: configSession.interactionMode ?? prev.interactionMode,
           claudePermissionMode: configSession.claudePermissionMode ?? prev.claudePermissionMode,
@@ -5858,7 +5858,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       sessionId,
       modelId: normalized.modelId,
       reasoningEffort: normalized.reasoningEffort,
-      codexFastMode: normalized.codexFastMode,
+      fastMode: normalized.fastMode,
       permissionMode: normalized.permissionMode,
       interactionMode: normalized.provider === "claude" ? normalized.interactionMode : undefined,
       claudePermissionMode: normalized.provider === "claude" ? normalized.claudePermissionMode : undefined,
@@ -6440,7 +6440,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       provider: runtimeProvider,
       modelId: normalized.modelId,
       reasoningEffort: normalized.reasoningEffort,
-      codexFastMode: normalized.codexFastMode,
+      fastMode: normalized.fastMode,
       permissionMode: normalized.permissionMode,
       interactionMode: normalized.interactionMode,
       claudePermissionMode: normalized.claudePermissionMode,
@@ -8571,7 +8571,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
           provider: runtimeProvider,
           modelId: normalized.modelId,
           reasoningEffort: normalized.reasoningEffort,
-          codexFastMode: normalized.codexFastMode,
+          fastMode: normalized.fastMode,
           permissionMode: normalized.permissionMode,
           interactionMode: normalized.interactionMode,
           claudePermissionMode: normalized.claudePermissionMode,
@@ -8684,8 +8684,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       const nextModelState: AdeCodeModelState = {
         ...previousModelState,
         ...modelStatePatchForModel(provider, target),
-        codexFastMode: (target.serviceTiers?.some((tier) => tier.trim().toLowerCase() === "fast") || modelSupportsFastMode(descriptor))
-          ? previousModelState.codexFastMode
+        fastMode: (target.serviceTiers?.some((tier) => tier.trim().toLowerCase() === "fast") || modelSupportsFastMode(descriptor))
+          ? previousModelState.fastMode
           : false,
       };
       modelStateRef.current = nextModelState;
@@ -8757,7 +8757,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       return {
         ...prev,
         ...patch,
-        codexFastMode: fastSupported ? prev.codexFastMode : false,
+        fastMode: fastSupported ? prev.fastMode : false,
       };
     });
     void loadProviderModels(provider, { applyDefault: false }).catch(() => undefined);
@@ -8783,8 +8783,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
     applyModelState((prev) => ({
       ...prev,
       ...modelStatePatchForModel(modelState.provider, nextModel),
-      codexFastMode: (nextModel.serviceTiers?.some((tier) => tier.trim().toLowerCase() === "fast") || modelSupportsFastMode(getModelById(nextModel.modelId ?? nextModel.id)))
-        ? prev.codexFastMode
+      fastMode: (nextModel.serviceTiers?.some((tier) => tier.trim().toLowerCase() === "fast") || modelSupportsFastMode(getModelById(nextModel.modelId ?? nextModel.id)))
+        ? prev.fastMode
         : false,
     }));
   }, [applyModelState, modelState.modelId, modelState.provider, models]);
@@ -8881,7 +8881,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       return;
     }
     if (row.kind === "codex-fast") {
-      applyModelState((prev) => ({ ...prev, codexFastMode: !prev.codexFastMode }));
+      applyModelState((prev) => ({ ...prev, fastMode: !prev.fastMode }));
       return;
     }
     if (row.kind === "output-style") {
@@ -9134,7 +9134,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         Boolean(activeModel?.serviceTiers?.some((tier) => tier.trim().toLowerCase() === "fast"))
         || modelSupportsFastMode(descriptor);
       if (fastSupported) {
-        applyModelState((prev) => ({ ...prev, codexFastMode: !prev.codexFastMode }));
+        applyModelState((prev) => ({ ...prev, fastMode: !prev.fastMode }));
       } else if (modelState.provider === "claude") {
         void submitPrompt("/fast");
       } else {
@@ -9902,7 +9902,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
       if (key.downArrow) {
         if (cell === "provider") cycleProvider(1);
         else if (cell === "model") cycleModel(1);
-        else if (cell === "fast") applyModelState((prev) => ({ ...prev, codexFastMode: !prev.codexFastMode }));
+        else if (cell === "fast") applyModelState((prev) => ({ ...prev, fastMode: !prev.fastMode }));
         else if (cell === "reasoning") cycleReasoning(1);
         else if (cell === "permission") cyclePermission(1);
         else if (cell === "subagents") openSubagentsPane();
@@ -11403,7 +11403,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
         selectFooterControl(null);
         setPaneFocus("chat");
         setInlineRowFocus({ cell: "fast" });
-        applyModelState((prev) => ({ ...prev, codexFastMode: !prev.codexFastMode }));
+        applyModelState((prev) => ({ ...prev, fastMode: !prev.fastMode }));
       });
       footerX += width;
     }
@@ -11471,7 +11471,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
             const cell = inlineRowFocus.cell;
             if (cell === "provider") cycleProvider(1);
             else if (cell === "model") cycleModel(1);
-            else if (cell === "fast") applyModelState((prev) => ({ ...prev, codexFastMode: !prev.codexFastMode }));
+            else if (cell === "fast") applyModelState((prev) => ({ ...prev, fastMode: !prev.fastMode }));
             else if (cell === "reasoning") cycleReasoning(1);
             else if (cell === "permission") cyclePermission(1);
             else if (cell === "subagents") openSubagentsPane();
@@ -12431,7 +12431,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath }
           tokenSummary={tokenSummary}
           approvalActive={pendingApproval?.mode === "approval" && !pendingApproval.highStakes}
           liveAgentCount={liveAgentCount}
-          fastMode={modelState.codexFastMode}
+          fastMode={modelState.fastMode}
           fastSupported={footerFastSupported}
           inlineRowFocused={inlineRowFocused}
           inlineRowCell={inlineRowFocus.cell}
