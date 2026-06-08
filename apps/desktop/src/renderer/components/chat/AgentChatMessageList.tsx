@@ -1140,6 +1140,20 @@ function ThinkingDots({ toneClass = "bg-emerald-300/70" }: { toneClass?: string 
 const LONG_RUNNING_TURN_SECONDS = 30;
 
 /**
+ * Formats the elapsed turn time as a compact "working for" duration. Stays as
+ * bare seconds under a minute ("42s") and rolls into minutes past it
+ * ("1m 03s", "13m 13s") so a long turn doesn't read as an enormous raw second
+ * count. The whole turn — not the current sub-action — is what's been running.
+ */
+export function formatElapsedSeconds(totalSeconds: number): string {
+  const safe = Math.max(0, Math.floor(totalSeconds));
+  if (safe < 60) return `${safe}s`;
+  const minutes = Math.floor(safe / 60);
+  const seconds = safe % 60;
+  return `${minutes}m ${String(seconds).padStart(2, "0")}s`;
+}
+
+/**
  * The single, calm "model is working" indicator (replaces the prior tangle of
  * shimmer-text / emerald + violet dot variants). Three violet pulses + a
  * concise verb + a self-ticking elapsed timer that mutates textContent via a
@@ -1158,7 +1172,7 @@ function WorkingIndicator({ activity, startedAt }: { activity: string | null; st
     let handle = 0;
     const tick = () => {
       const elapsedSec = Math.max(0, Math.floor((Date.now() - startMs) / 1000));
-      if (el) el.textContent = `${elapsedSec}s`;
+      if (el) el.textContent = formatElapsedSeconds(elapsedSec);
       setLongRunning(elapsedSec >= LONG_RUNNING_TURN_SECONDS);
       handle = window.setTimeout(tick, 1000);
     };
@@ -1170,7 +1184,9 @@ function WorkingIndicator({ activity, startedAt }: { activity: string | null; st
       <ThinkingDots toneClass="bg-violet-400/70" />
       <span className="font-medium text-fg/55">{activity ?? "Working"}</span>
       <span className="text-fg/28" aria-hidden>·</span>
-      <span ref={timerRef} className="tabular-nums text-fg/38">0s</span>
+      <span className="text-fg/38">
+        working for <span ref={timerRef} className="tabular-nums">0s</span>
+      </span>
       {longRunning ? (
         <>
           <span className="text-fg/28" aria-hidden>·</span>
@@ -3676,6 +3692,63 @@ export function calculateVirtualWindow({
   };
 }
 
+/**
+ * Window anchored to the *end* of the list, used while we're following the
+ * bottom of a streaming turn. Estimate-based `scrollTop` windowing drifts on
+ * long transcripts (a single rendered row whose stored height lags its real
+ * DOM height desyncs the spacer math from `el.scrollTop`), which strands the
+ * tail above a phantom gap and "locks" — new content keeps landing at the top
+ * while the space above the composer stays empty. Anchoring directly to the
+ * last row keeps the tail permanently mounted and re-measured every frame, so
+ * `bottomSpacerHeight` is always 0 and the streaming indicator sits flush
+ * against the final message regardless of how stale the off-screen estimates
+ * upstream are.
+ */
+export function calculateVirtualWindowAnchoredToEnd({
+  rowCount,
+  containerHeight,
+  rowHeight,
+  overscan = OVERSCAN,
+  rowGap = CHAT_TIMELINE_ROW_GAP_PX,
+}: {
+  rowCount: number;
+  containerHeight: number;
+  rowHeight: (index: number) => number;
+  overscan?: number;
+  rowGap?: number;
+}): {
+  startIndex: number;
+  endIndex: number;
+  totalHeight: number;
+  offsetTop: number;
+} {
+  if (rowCount <= 0) {
+    return { startIndex: 0, endIndex: 0, totalHeight: 0, offsetTop: 0 };
+  }
+
+  let total = 0;
+  for (let i = 0; i < rowCount; i += 1) {
+    total += rowHeight(i) + rowGap;
+  }
+  const totalHeight = total - rowGap;
+
+  // Walk back from the last row until the rendered rows cover the viewport.
+  let firstVisible = rowCount - 1;
+  let filled = rowHeight(firstVisible);
+  while (firstVisible > 0 && filled < containerHeight) {
+    firstVisible -= 1;
+    filled += rowHeight(firstVisible) + rowGap;
+  }
+  const startIndex = Math.max(0, firstVisible - overscan);
+
+  let offsetTop = 0;
+  for (let i = 0; i < startIndex; i += 1) {
+    offsetTop += rowHeight(i) + rowGap;
+  }
+
+  return { startIndex, endIndex: rowCount, totalHeight, offsetTop };
+}
+
 export function reconcileMeasuredScrollTop({
   index,
   previousHeight,
@@ -4088,6 +4161,18 @@ function AgentChatMessageListMain({
       return { startIndex: 0, endIndex: groupedRows.length, totalHeight: 0, offsetTop: 0 };
     }
 
+    // While following the bottom, anchor the window to the last row instead of
+    // deriving it from the estimate-based scrollTop. This keeps the tail mounted
+    // so it can't strand behind a phantom gap on long transcripts.
+    if (stickToBottom) {
+      return calculateVirtualWindowAnchoredToEnd({
+        rowCount: groupedRows.length,
+        containerHeight,
+        rowHeight,
+        rowGap: timelineRowGapPx,
+      });
+    }
+
     return calculateVirtualWindow({
       rowCount: groupedRows.length,
       scrollTop,
@@ -4096,7 +4181,7 @@ function AgentChatMessageListMain({
       rowGap: timelineRowGapPx,
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [shouldVirtualize, groupedRows.length, scrollTop, containerHeight, rowHeight, measurementTick, timelineRowGapPx]);
+  }, [shouldVirtualize, stickToBottom, groupedRows.length, scrollTop, containerHeight, rowHeight, measurementTick, timelineRowGapPx]);
 
   useLayoutEffect(() => {
     if (stickToBottomRef.current) scrollToBottomSoon(2);
