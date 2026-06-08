@@ -2936,6 +2936,19 @@ function toOrchestrationRuntimeEvent(
   if (typeof payload.kind !== "string" || !ORCHESTRATION_EVENT_KINDS.has(payload.kind)) {
     return null;
   }
+  if (payload.kind === "heartbeat") {
+    if (typeof payload.sessionId !== "string" || !payload.sessionId) return null;
+    if (typeof payload.lastHeartbeatAt !== "string" || !payload.lastHeartbeatAt)
+      return null;
+  }
+  if (
+    payload.kind === "lifecycle" &&
+    payload.status !== "suspended" &&
+    payload.status !== "resumed" &&
+    payload.status !== "deleted"
+  ) {
+    return null;
+  }
   return payload as unknown as OrchestrationEventPayload;
 }
 

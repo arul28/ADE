@@ -6518,15 +6518,26 @@ export function registerIpc({
   // (see preload `orchestrationBridge`), so these handlers only fire when the
   // desktop owns the orchestration service directly. Both paths share the same
   // `createOrchestrationDomainService` factory, so behaviour stays identical.
+  let cachedOrchestrationDomain:
+    | { ctx: ReturnType<typeof getCtx>; domain: ReturnType<typeof createOrchestrationDomainService> }
+    | null = null;
   const getOrchestrationDomain = () => {
     const { ctx, service } = ensureOrchestration();
-    return createOrchestrationDomainService({
+    // ctx identity fully determines the deps (service + laneService + agentChatService
+    // all hang off it); reuse the closure object across calls, rebuilding only when the
+    // owning context changes (e.g. in-process project switch).
+    if (cachedOrchestrationDomain && cachedOrchestrationDomain.ctx === ctx) {
+      return cachedOrchestrationDomain.domain;
+    }
+    const domain = createOrchestrationDomainService({
       orchestrationService: service,
       laneService: {
         getLaneWorktreePath: (laneId: string) => ctx.laneService.getLaneWorktreePath(laneId),
       },
       agentChatService: ctx.agentChatService,
     });
+    cachedOrchestrationDomain = { ctx, domain };
+    return domain;
   };
 
   ipcMain.handle(IPC.orchestrationRunCreate, async (_event, arg: OrchestrationRunCreateRequest & { laneId: string }) => {
