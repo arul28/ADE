@@ -109,19 +109,21 @@ struct WorkActivityIndicator: View {
   /// Timestamp of the last user message / turn-start boundary, i.e. when the
   /// currently-streaming turn began.
   static func activeTurnStartTimestamp(from transcript: [WorkChatEnvelope]) -> String? {
+    var latestActiveStatus: String?
     for envelope in transcript.reversed() {
       switch envelope.event {
       case .userMessage:
         return envelope.timestamp
       case .status(let turnStatus, _, _):
-        if ["started", "active", "running"].contains(turnStatus.lowercased()) {
-          return envelope.timestamp
+        if latestActiveStatus == nil,
+           ["started", "active", "running"].contains(turnStatus.lowercased()) {
+          latestActiveStatus = envelope.timestamp
         }
       default:
         continue
       }
     }
-    return transcript.last?.timestamp
+    return latestActiveStatus ?? transcript.last?.timestamp
   }
 
   struct Presentation: Equatable {

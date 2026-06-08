@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   CrsqlChangeRow,
   SyncMobileProjectSummary,
@@ -21,8 +21,17 @@ import { buildChangesetBatchPayload } from "./changesetPump";
 // Bonjour advertisement), which is now an opt-in mode selected via
 // ADE_SYNC_BIND_HOST=127.0.0.1. SYNC_HOST_BIND_HOST is captured at module-load,
 // so this must be set (via vi.hoisted) before syncHostService.ts is imported.
+const ORIGINAL_ADE_SYNC_BIND_HOST = vi.hoisted(() => process.env.ADE_SYNC_BIND_HOST);
 vi.hoisted(() => {
   process.env.ADE_SYNC_BIND_HOST = "127.0.0.1";
+});
+
+afterAll(() => {
+  if (ORIGINAL_ADE_SYNC_BIND_HOST === undefined) {
+    delete process.env.ADE_SYNC_BIND_HOST;
+  } else {
+    process.env.ADE_SYNC_BIND_HOST = ORIGINAL_ADE_SYNC_BIND_HOST;
+  }
 });
 
 const publishMock = vi.hoisted(() => vi.fn());

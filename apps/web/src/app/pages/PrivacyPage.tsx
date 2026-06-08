@@ -73,7 +73,7 @@ const sections: Section[] = [
       {
         list: [
           "Revoke camera or local network access in iOS Settings → ADE.",
-          "Unpair the iOS app from the host to clear the stored pairing.",
+          "Unpair the iOS app from the machine to clear the stored pairing.",
           "Disable cloud and BYOK features in the desktop app at any time.",
           "Uninstall the apps to remove all locally stored ADE data on the device.",
         ],

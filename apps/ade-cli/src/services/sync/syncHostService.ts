@@ -133,12 +133,15 @@ const BONJOUR_PROJECT_NAME_MAX_LENGTH = 48;
 // for new bootstrap-token devices (see the hello handler) since loopback is
 // already a trust boundary.
 const SYNC_HOST_BIND_HOST: string = process.env.ADE_SYNC_BIND_HOST?.trim() || "0.0.0.0";
+const SYNC_HOST_BIND_HOST_NORMALIZED = SYNC_HOST_BIND_HOST.toLowerCase();
 // When the host is bound to loopback only, the OS already restricts connections
 // to local processes, so first-pairing can fall back to the historical
 // bootstrap-token behaviour. Any non-loopback bind (the LAN default) must gate
 // new devices behind the PIN flow.
 const SYNC_HOST_BIND_LOOPBACK_ONLY: boolean =
-  SYNC_HOST_BIND_HOST === "127.0.0.1" || SYNC_HOST_BIND_HOST === "::1" || SYNC_HOST_BIND_HOST === "localhost";
+  SYNC_HOST_BIND_HOST_NORMALIZED === "127.0.0.1"
+  || SYNC_HOST_BIND_HOST_NORMALIZED === "::1"
+  || SYNC_HOST_BIND_HOST_NORMALIZED === "localhost";
 export const SYNC_TAILNET_DISCOVERY_SERVICE_NAME = "svc:ade-sync";
 export const SYNC_TAILNET_DISCOVERY_SERVICE_PORT = DEFAULT_SYNC_HOST_PORT;
 export type SyncRuntimeKind = "desktop-embedded" | "headless" | "remote-stdio" | "desktop" | "daemon" | "remote";
@@ -1478,7 +1481,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   const publishLanDiscovery = (port: number, options?: { force?: boolean }): void => {
     if (disposed) return;
     // Loopback-bound hosts are intentionally not advertised on the LAN; remote reachability is handled by explicit/tailnet paths.
-    if (SYNC_HOST_BIND_HOST !== "0.0.0.0" && SYNC_HOST_BIND_HOST !== "::") {
+    if (SYNC_HOST_BIND_LOOPBACK_ONLY) {
       unpublishLanDiscovery();
       return;
     }
@@ -2885,9 +2888,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
             return false;
           }
           // LAN-bound default: bootstrap is reconnect-only. A device must already
-          // be paired AND a PIN must be configured for the token path to be
-          // honoured; otherwise the device must pair via the PIN flow.
-          return !alreadyPaired || !args.pinStore.hasPin();
+          // be paired; unknown devices must pair via the PIN flow. Existing
+          // paired phones from older releases may not have a host PIN configured
+          // yet, and should still be able to reconnect with their stored token.
+          return !alreadyPaired;
         }
         if (hello.auth?.kind === "paired") {
           if (hello.auth.deviceId !== hello.peer.deviceId) return true;

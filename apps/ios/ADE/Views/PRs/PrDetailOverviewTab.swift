@@ -636,6 +636,8 @@ struct PrOverviewMergeRailModel {
   }
 
   let phase: Phase
+  let repoOwner: String
+  let repoName: String
   let prNumber: Int
   /// Merge-gate summary (green/amber/red) for the active state.
   let gate: PrMergeGateInfo
@@ -656,7 +658,7 @@ struct PrOverviewMergeRailModel {
   let onDeleteBranch: () -> Void
 
   var commandLine: String {
-    "gh pr merge \(prNumber) --\(mergeMethod.rawValue)"
+    "gh -R \(repoOwner)/\(repoName) pr merge \(prNumber) --\(mergeMethod.rawValue)"
   }
 }
 

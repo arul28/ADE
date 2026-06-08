@@ -294,16 +294,18 @@ export function createSyncPeerService(args: SyncPeerServiceArgs) {
       case "hello_ok": {
         const payload = envelope.payload as {
           brain: SyncPeerMetadata;
+          host?: SyncPeerMetadata;
           serverDbVersion: number;
         };
+        const host = payload.host ?? payload.brain;
         latestRemoteDbVersion = Math.max(0, Math.floor(payload.serverDbVersion ?? 0));
         status.state = "connected";
         status.connectedAt = nowIso();
-        status.message = `Connected to host ${payload.brain.deviceName}.`;
+        status.message = `Connected to host ${host.deviceName}.`;
         status.error = null;
         status.brainDeviceId = payload.brain.deviceId;
-        status.hostDeviceId = payload.brain.deviceId;
-        status.hostName = payload.brain.deviceName;
+        status.hostDeviceId = host.deviceId;
+        status.hostName = host.deviceName;
         if (connectionDraft) {
           connectionDraft.lastRemoteDbVersion = latestRemoteDbVersion;
         }
@@ -381,10 +383,11 @@ export function createSyncPeerService(args: SyncPeerServiceArgs) {
       }
       case "brain_status": {
         const payload = envelope.payload as SyncBrainStatusPayload;
+        const host = payload.host ?? payload.brain;
         latestBrainStatus = payload;
         status.brainDeviceId = payload.brain.deviceId;
-        status.hostDeviceId = payload.brain.deviceId;
-        status.hostName = payload.brain.deviceName;
+        status.hostDeviceId = host.deviceId;
+        status.hostName = host.deviceName;
         const localDeviceId = args.deviceRegistryService.getLocalDeviceId();
         const localPeer = payload.connectedPeers.find((peer) => peer.deviceId === localDeviceId) ?? null;
         status.latencyMs = localPeer?.latencyMs ?? null;

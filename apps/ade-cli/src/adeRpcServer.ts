@@ -5403,7 +5403,10 @@ export function createAdeRpcRequestHandler(args: {
         return { runtimeName: syncService.getRuntimeName() };
       }
       if (method === "sync.setRuntimeName") {
-        const name = typeof params.name === "string" ? params.name : "";
+        if (typeof params.name !== "string") {
+          throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "name must be a string");
+        }
+        const name = params.name;
         return await syncService.setRuntimeName(name);
       }
       if (method === "sync.clearRuntimeName") {

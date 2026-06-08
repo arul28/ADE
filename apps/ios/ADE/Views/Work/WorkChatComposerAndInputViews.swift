@@ -275,7 +275,8 @@ struct WorkComposerChipStrip: View {
       Capsule(style: .continuous)
         .stroke(tint.opacity(0.35), lineWidth: 0.5)
     )
-    .contentShape(Capsule(style: .continuous))
+    .frame(minWidth: 44, minHeight: 44)
+    .contentShape(Rectangle())
   }
 
   /// Reasoning-effort chip tuned to the active model. Each model advertises

@@ -432,6 +432,7 @@ private enum WorkPreviewData {
       optimisticPendingSteers: [],
       localEchoMessages: [],
       expandedToolCardIds: Binding<Set<String>>.constant(["cmd-1"]),
+      collapsedChangedFileGroupIds: Binding<Set<String>>.constant([]),
       artifactContent: .constant([:]),
       fullscreenImage: Binding<WorkFullscreenImage?>.constant(nil),
       artifactRefreshInFlight: false,

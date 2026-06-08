@@ -258,8 +258,9 @@ struct PrDetailView: View {
   }
 
   private var canAutoMapCurrentPr: Bool {
-    canRunPrActions && syncService.supportsRemoteAction("prs.createLaneFromPrBranch")
+    isLive && !isDetailBusy && syncService.supportsRemoteAction("prs.createLaneFromPrBranch")
       && !currentPr.repoOwner.isEmpty && !currentPr.repoName.isEmpty
+      && currentPr.githubPrNumber > 0
   }
 
   /// Bulleted merge-blocker reasons derived from the already-fetched PR status /
@@ -320,6 +321,8 @@ struct PrDetailView: View {
     }()
     return PrOverviewMergeRailModel(
       phase: phase,
+      repoOwner: currentPr.repoOwner,
+      repoName: currentPr.repoName,
       prNumber: currentPr.githubPrNumber,
       gate: mergeGateInfo,
       blockers: mergeBlockers,
@@ -1356,11 +1359,11 @@ struct PrDetailView: View {
       },
       onSuccess: {
         onSuccess()
-        Task { await reload() }
+        Task { await reload(includeLiveSidecars: true) }
         actionMessage = "\(label) finished."
       },
       onFailure: { error in
-        Task { await reload() }
+        Task { await reload(includeLiveSidecars: true) }
         errorMessage = error.localizedDescription
       }
     )

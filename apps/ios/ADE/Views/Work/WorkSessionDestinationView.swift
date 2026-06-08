@@ -127,6 +127,7 @@ struct WorkSessionDestinationView: View {
   @State var localEchoMessages: [WorkLocalEchoMessage] = []
   @State var optimisticPendingSteers: [WorkPendingSteerModel] = []
   @State var expandedToolCardIds = Set<String>()
+  @State private var collapsedChangedFileGroupIds = Set<String>()
   @State var artifactContent: [String: WorkLoadedArtifactContent] = [:]
   @State var artifactContentLoadsInFlight = Set<String>()
   @State var artifactRefreshInFlight = false
@@ -308,6 +309,7 @@ struct WorkSessionDestinationView: View {
           optimisticPendingSteers: optimisticPendingSteers,
           localEchoMessages: localEchoMessages,
           expandedToolCardIds: $expandedToolCardIds,
+          collapsedChangedFileGroupIds: $collapsedChangedFileGroupIds,
           artifactContent: $artifactContent,
           fullscreenImage: $fullscreenImage,
           artifactRefreshInFlight: artifactRefreshInFlight,

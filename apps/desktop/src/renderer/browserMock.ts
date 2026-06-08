@@ -3508,9 +3508,16 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       setPin: resolvedArg(BROWSER_MOCK_SYNC_SNAPSHOT),
       generatePin: resolved(BROWSER_MOCK_SYNC_SNAPSHOT),
       clearPin: resolved(BROWSER_MOCK_SYNC_SNAPSHOT),
-      getRuntimeName: resolved({ runtimeName: null }),
-      setRuntimeName: resolvedArg(BROWSER_MOCK_SYNC_SNAPSHOT),
-      clearRuntimeName: resolved(BROWSER_MOCK_SYNC_SNAPSHOT),
+      getRuntimeName: async () => ({ runtimeName: BROWSER_MOCK_SYNC_SNAPSHOT.runtimeName ?? null }),
+      setRuntimeName: async (name: string) => {
+        const trimmed = String(name ?? "").trim();
+        BROWSER_MOCK_SYNC_SNAPSHOT.runtimeName = trimmed || null;
+        return BROWSER_MOCK_SYNC_SNAPSHOT;
+      },
+      clearRuntimeName: async () => {
+        BROWSER_MOCK_SYNC_SNAPSHOT.runtimeName = null;
+        return BROWSER_MOCK_SYNC_SNAPSHOT;
+      },
       setActiveLanePresence: resolvedArg(undefined),
       onEvent: () => () => {},
     },

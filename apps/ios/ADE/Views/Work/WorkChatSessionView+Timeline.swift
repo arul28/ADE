@@ -132,14 +132,18 @@ extension WorkChatSessionView {
 
   @ViewBuilder
   func timelineChangedFiles(_ group: WorkChangedFilesGroupModel) -> some View {
-    // Files panels are open by default (desktop parity); membership in
-    // `expandedToolCardIds` here means the user has explicitly collapsed it, so
-    // the open flag is inverted. State still lives in the parent so it persists
-    // across lazy-stack recycling.
+    // Files panels are open by default (desktop parity); this dedicated collapse
+    // set keeps changed-file state distinct from ordinary tool-card expansion.
     WorkChangedFilesPanelView(
       group: group,
-      isExpanded: !expandedToolCardIds.contains(group.id),
-      onToggle: { toggleToolCard(group.id) },
+      isExpanded: !collapsedChangedFileGroupIds.contains(group.id),
+      onToggle: {
+        if collapsedChangedFileGroupIds.contains(group.id) {
+          collapsedChangedFileGroupIds.remove(group.id)
+        } else {
+          collapsedChangedFileGroupIds.insert(group.id)
+        }
+      },
       onUndo: nil
     )
   }

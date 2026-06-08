@@ -249,6 +249,10 @@ describe("ADE CLI", () => {
       kind: "brain",
       rest: ["restart"],
     });
+    expect(buildCliPlan(["brain", "--socket", "/tmp/ade.sock", "status"])).toEqual({
+      kind: "brain",
+      rest: ["--socket", "/tmp/ade.sock", "status"],
+    });
     expect(buildCliPlan(["brain", "pin", "generate"])).toEqual({
       kind: "execute",
       label: "sync pin generate",

@@ -966,6 +966,13 @@ export function createSyncService(args: SyncServiceArgs) {
       const currentBrain = rawCurrentBrain?.deviceId === localDevice.deviceId
         ? localDevice
         : rawCurrentBrain;
+      const currentHostId = cluster?.hostDeviceId ?? cluster?.brainDeviceId ?? null;
+      const rawCurrentHost = currentHostId
+        ? deviceRegistryService.getDevice(currentHostId)
+        : localDevice;
+      const currentRuntime = rawCurrentHost?.deviceId === localDevice.deviceId
+        ? localDevice
+        : (rawCurrentHost ?? currentBrain);
       const isLocalBrain = forceHostRole || (cluster
         ? cluster.brainDeviceId === localDevice.deviceId
         : !savedDraft && !syncPeerService.isConnected());
@@ -1001,7 +1008,7 @@ export function createSyncService(args: SyncServiceArgs) {
         runtimeRole,
         localDevice,
         currentBrain,
-        currentRuntime: currentBrain,
+        currentRuntime,
         clusterState: cluster,
         bootstrapToken:
           canHostPhonePairing ? readToken() : null,
@@ -1142,7 +1149,7 @@ export function createSyncService(args: SyncServiceArgs) {
     async setRuntimeName(name: string): Promise<SyncRoleSnapshot> {
       assertPhonePairingAvailable();
       const current = await service.getStatus();
-      if (current.role !== "brain") {
+      if ((current.runtimeRole ?? current.role) !== "host" && current.role !== "brain") {
         throw new Error("The machine name can only be set on the host ADE runtime.");
       }
       runtimeNameStore.setRuntimeName(name);
@@ -1154,8 +1161,8 @@ export function createSyncService(args: SyncServiceArgs) {
     async clearRuntimeName(): Promise<SyncRoleSnapshot> {
       assertPhonePairingAvailable();
       const current = await service.getStatus();
-      if (current.role !== "brain") {
-        throw new Error("The machine name can only be set on the host ADE runtime.");
+      if ((current.runtimeRole ?? current.role) !== "host" && current.role !== "brain") {
+        throw new Error("The machine name can only be cleared on the host ADE runtime.");
       }
       runtimeNameStore.clearRuntimeName();
       const snapshot = await service.getStatus();

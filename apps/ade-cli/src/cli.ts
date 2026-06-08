@@ -10350,6 +10350,7 @@ const VALUE_CARRIER_FLAGS: ReadonlySet<string> = new Set([
   "--stack-base-branch",
   "--stack-id",
   "--scheme",
+  "--socket",
   "--start-point",
   "--start-x",
   "--start-y",
@@ -10533,7 +10534,7 @@ function buildCliPlan(command: string[]): CliPlan {
     return { kind: "runtime", rest: args };
   }
   if (primary === "brain") {
-    const sub = args.find((arg) => arg !== "--" && !arg.startsWith("-")) ?? "status";
+    const sub = firstStandalonePositional([...args]) ?? "status";
     if (sub === "pin") {
       return buildSyncPlan(args);
     }
@@ -12634,7 +12635,7 @@ async function runRuntimeCommand(
   options: GlobalOptions,
 ): Promise<unknown> {
   const args = [...rest];
-  const sub = firstPositional(args) ?? "status";
+  const sub = firstStandalonePositional(args) ?? "status";
   const socketOverride = readValue(args, ["--socket"]);
   const socketPath = await resolveMachineRuntimeSocketPath(socketOverride);
 

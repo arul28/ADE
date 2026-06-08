@@ -14,6 +14,7 @@ struct WorkChatSessionView: View {
   let optimisticPendingSteers: [WorkPendingSteerModel]
   let localEchoMessages: [WorkLocalEchoMessage]
   @Binding var expandedToolCardIds: Set<String>
+  @Binding var collapsedChangedFileGroupIds: Set<String>
   @Binding var artifactContent: [String: WorkLoadedArtifactContent]
   @Binding var fullscreenImage: WorkFullscreenImage?
   let artifactRefreshInFlight: Bool

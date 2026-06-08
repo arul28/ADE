@@ -1989,31 +1989,52 @@ final class SyncService: ObservableObject {
 
   private func profileStorageKey(_ profile: HostConnectionProfile) -> String? {
     // Key saved machines by machine identity, not by the per-project/per-DB
-    // runtime `siteId`. One machine pairing token works across that machine's
-    // project ports; `siteId` is retained only as a legacy token alias.
-    return [
-      profile.hostIdentity,
-      profile.lastHostDeviceId,
-      profile.hostName,
-      profile.lastSuccessfulAddress,
-    ]
-      .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
-      .first { !$0.isEmpty }
-      .map { "machine:\($0.lowercased())" }
+    // runtime `siteId` when a stable device identity exists. For older hosts that
+    // do not advertise identity yet, include route-specific data so two machines
+    // with the same display name do not collapse into one token entry.
+    if let identity = syncNonEmpty(profile.hostIdentity) ?? syncNonEmpty(profile.lastHostDeviceId) {
+      return "machine:\(identity.lowercased())"
+    }
+    if let address = syncNonEmpty(profile.lastSuccessfulAddress) {
+      return "machine:addr:\(address.lowercased()):\(profile.port)"
+    }
+    if let siteId = syncNonEmpty(profile.siteId) {
+      return "machine:site:\(siteId.lowercased())"
+    }
+    if let hostName = syncNonEmpty(profile.hostName) {
+      return "machine:name:\(hostName.lowercased()):\(profile.port)"
+    }
+    return nil
   }
 
   private func legacyProfileStorageKeys(_ profile: HostConnectionProfile) -> [String] {
     let current = profileStorageKey(profile)
     var keys: [String] = []
+    func appendLegacyKey(_ value: String?) {
+      guard let trimmed = syncNonEmpty(value) else { return }
+      keys.append(trimmed)
+      let lowered = trimmed.lowercased()
+      if lowered != trimmed {
+        keys.append(lowered)
+      }
+    }
     if let siteId = syncNonEmpty(profile.siteId) {
       keys.append("site:\(siteId.lowercased())")
+      keys.append("machine:\(siteId.lowercased())")
+      appendLegacyKey(siteId)
     }
     if let hostName = syncNonEmpty(profile.hostName) {
       keys.append("name:\(hostName.lowercased()):\(profile.port)")
+      keys.append("machine:\(hostName.lowercased())")
+      appendLegacyKey("\(hostName):\(profile.port)")
     }
     if let last = syncNonEmpty(profile.lastSuccessfulAddress) {
       keys.append("addr:\(last):\(profile.port)")
+      keys.append("machine:\(last.lowercased())")
+      appendLegacyKey("\(last):\(profile.port)")
     }
+    appendLegacyKey(profile.hostIdentity)
+    appendLegacyKey(profile.lastHostDeviceId)
     var seen = Set<String>()
     return keys.filter { key in
       key != current && seen.insert(key).inserted
@@ -2668,9 +2689,6 @@ final class SyncService: ObservableObject {
         },
         tailscaleAddress: normalizedTailscaleAddress ?? addressCandidates.first(where: syncIsTailscaleRoute)
       )
-      keychain.saveToken(secret)
-      keychain.saveToken(secret, hostKey: profileStorageKey(profile))
-      saveProfile(profile)
       currentAddress = preferredAddress
       try await hello(
         host: preferredAddress,
@@ -2681,6 +2699,8 @@ final class SyncService: ObservableObject {
         expectedHostIdentity: hostIdentity,
         connectAttemptGeneration: connectAttemptGeneration
       )
+      keychain.saveToken(secret)
+      keychain.saveToken(secret, hostKey: profileStorageKey(activeHostProfile ?? profile))
     } catch {
       guard isCurrentConnectAttempt(connectAttemptGeneration) else { return }
       let friendlyMessage = SyncUserFacingError.message(for: error)
@@ -6077,11 +6097,6 @@ final class SyncService: ObservableObject {
   private func syncMachineIdentityKey(_ host: DiscoveredSyncHost) -> String? {
     if let identity = syncNonEmpty(host.hostIdentity) {
       return "machine:\(identity.lowercased())"
-    }
-    if let name = syncNonEmpty(host.hostName),
-       !syncIsTailscaleRoute(name),
-       !syncLooksLikeIpAddress(name) {
-      return "machine-name:\(name.lowercased())"
     }
     return nil
   }

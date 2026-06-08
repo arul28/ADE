@@ -166,6 +166,13 @@ function ensureWritableWindowAde(): void {
 
 beforeEach(() => {
   ensureUsableLocalStorage();
+  if (typeof window !== "undefined") {
+    try {
+      window.localStorage.clear();
+    } catch {
+      // Storage may remain unavailable in a few non-jsdom unit tests.
+    }
+  }
   ensureWritableWindowAde();
 });
 
