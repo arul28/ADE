@@ -63,7 +63,7 @@ export const PrManageLaneDialogHost = memo(function PrManageLaneDialogHost({
     if (!deleteSelection.worktree && !deleteSelection.localBranch && !deleteSelection.remoteBranch) return;
 
     const args: DeleteLaneArgs = { laneId: lane.id, force: deleteForce };
-    args.deleteBranch = deleteSelection.localBranch || deleteSelection.remoteBranch;
+    args.deleteBranch = deleteSelection.localBranch;
     if (deleteSelection.remoteBranch) {
       args.deleteRemoteBranch = true;
       args.remoteName = "origin";

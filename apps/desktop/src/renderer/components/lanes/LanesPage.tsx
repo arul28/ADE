@@ -1791,7 +1791,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     const deleteArgsByLaneId = new Map<string, DeleteLaneArgs>();
     for (const lane of actionable) {
       const args: DeleteLaneArgs = { laneId: lane.id, force: deleteForce };
-      args.deleteBranch = deleteSelection.localBranch || deleteSelection.remoteBranch;
+      args.deleteBranch = deleteSelection.localBranch;
       if (deleteSelection.remoteBranch) {
         args.deleteRemoteBranch = true;
         args.remoteName = "origin";
