@@ -73,16 +73,29 @@ function runtimeEnvironment(): Record<string, string> | undefined {
 }
 
 function fileSha256(filePath: string): string | null {
+  let fd: number | null = null;
   try {
-    return createHash("sha256").update(fs.readFileSync(filePath)).digest("hex");
+    fd = fs.openSync(filePath, "r");
+    const hash = createHash("sha256");
+    const buffer = Buffer.allocUnsafe(1024 * 1024);
+    for (;;) {
+      const bytesRead = fs.readSync(fd, buffer, 0, buffer.length, null);
+      if (bytesRead === 0) break;
+      hash.update(bytesRead === buffer.length ? buffer : buffer.subarray(0, bytesRead));
+    }
+    return hash.digest("hex");
   } catch {
     return null;
+  } finally {
+    if (fd != null) {
+      try { fs.closeSync(fd); } catch {}
+    }
   }
 }
 
 function resolveCliPackageRoot(entryPath: string): string | null {
   const seen = new Set<string>();
-  const starts = [entryPath ? path.dirname(entryPath) : null, process.cwd()];
+  const starts = entryPath ? [path.dirname(entryPath)] : [process.cwd()];
   for (const start of starts) {
     if (!start) continue;
     let cursor = path.resolve(start);
@@ -110,21 +123,21 @@ function resolveCliDistPath(entryPath: string): string | null {
 
 export function resolveAdeServiceCommandBuildHash(command: AdeServiceCommand): string | null {
   const firstArg = command.args[0] ? path.resolve(command.args[0]) : "";
-  if (
+  const isNodeServeFallback =
     command.command === process.execPath
     && command.args.length === 1
-    && command.args[0] === "serve"
-  ) {
+    && command.args[0] === "serve";
+  if (isNodeServeFallback) {
     const entry = typeof process.argv[1] === "string" && process.argv[1].trim()
       ? path.resolve(process.argv[1])
       : "";
     const distPath = resolveCliDistPath(entry);
-    if (distPath) return fileSha256(distPath);
+    return distPath ? fileSha256(distPath) : null;
   }
   if (command.command === process.execPath && firstArg && fs.existsSync(firstArg)) {
     return fileSha256(firstArg);
   }
-  if (fs.existsSync(command.command)) {
+  if (command.command !== process.execPath && fs.existsSync(command.command)) {
     return fileSha256(path.resolve(command.command));
   }
   return null;

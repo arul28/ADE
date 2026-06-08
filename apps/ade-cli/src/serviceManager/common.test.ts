@@ -112,6 +112,40 @@ describe("resolveAdeServeCommand", () => {
       },
     });
   });
+
+  it("does not hash node when the node serve fallback has no dist CLI", () => {
+    const tempDir = makeTempHome("ade-service-command-no-dist-");
+    process.argv[1] = path.join(tempDir, "missing-cli.cjs");
+
+    const command = resolveAdeServeCommand();
+
+    expect(command).toMatchObject({
+      command: process.execPath,
+      args: ["serve"],
+    });
+    expect(command.env?.ADE_RUNTIME_BUILD_HASH).toBeUndefined();
+  });
+
+  it("sets the runtime build hash from dist cli for the node serve fallback", () => {
+    const tempDir = makeTempHome("ade-service-command-dist-");
+    const srcDir = path.join(tempDir, "src");
+    const distDir = path.join(tempDir, "dist");
+    fs.mkdirSync(srcDir, { recursive: true });
+    fs.mkdirSync(distDir, { recursive: true });
+    fs.writeFileSync(path.join(tempDir, "package.json"), "{\"name\":\"ade-cli\"}\n", "utf8");
+    fs.writeFileSync(path.join(srcDir, "cli.ts"), "export {}\n", "utf8");
+    const distPath = path.join(distDir, "cli.cjs");
+    fs.writeFileSync(distPath, "console.log('dist runtime')\n", "utf8");
+    process.argv[1] = path.join(tempDir, "missing-cli.cjs");
+
+    expect(resolveAdeServeCommand()).toMatchObject({
+      command: process.execPath,
+      args: ["serve"],
+      env: {
+        ADE_RUNTIME_BUILD_HASH: fileSha256(distPath),
+      },
+    });
+  });
 });
 
 describe("service manager status parsers", () => {
