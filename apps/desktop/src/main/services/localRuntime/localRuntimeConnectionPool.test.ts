@@ -1759,6 +1759,35 @@ describe("local runtime connection pool", () => {
     });
   });
 
+  it("routes machine sync calls without adding a project id", async () => {
+    const call = vi.fn().mockResolvedValue({
+      mode: "standalone",
+      connectedPeers: [],
+    });
+    const pool = new LocalRuntimeConnectionPool("1.2.3", {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    } as never);
+    (pool as unknown as { connection: Promise<unknown> }).connection = Promise.resolve({
+      client: { call, isClosed: () => false },
+      child: null,
+      socketPath: "/tmp/ade.sock",
+    });
+
+    await expect(pool.callSync("sync.getStatus", {
+      includeTransferReadiness: true,
+    })).resolves.toEqual({
+      mode: "standalone",
+      connectedPeers: [],
+    });
+
+    expect(call).toHaveBeenCalledWith("sync.getStatus", {
+      includeTransferReadiness: true,
+    });
+  });
+
   it("registers a foreground project without switching the mobile sync host", async () => {
     const rootPath = path.resolve("/repo");
     const project = {

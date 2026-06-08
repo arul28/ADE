@@ -840,6 +840,14 @@ export class LocalRuntimeConnectionPool {
     return await this.callSyncForRoot<SyncRoleSnapshot>(rootPath, "sync.clearRuntimeName");
   }
 
+  async callSync<T>(
+    method: string,
+    params: Record<string, unknown> = {},
+  ): Promise<T> {
+    const entry = await this.connect();
+    return await entry.client.call(method, params) as T;
+  }
+
   async callActionForRoot(
     rootPath: string,
     request: RemoteRuntimeActionRequest,

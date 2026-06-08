@@ -1614,6 +1614,40 @@ export function registerIpc({
     return await action(localRuntimeConnectionPool, rootPath);
   };
 
+  const isSyncServiceUnavailableError = (error: unknown): boolean => {
+    const message = error instanceof Error ? error.message : String(error);
+    return /Sync service is not available|Register a project first/i.test(message);
+  };
+
+  const tryRuntimeSync = async <T>(
+    event: { sender: Electron.WebContents },
+    method: string,
+    params: Record<string, unknown>,
+    projectAction?: (pool: LocalRuntimeConnectionPool, rootPath: string) => Promise<T>,
+  ): Promise<{ handled: true; result: T } | { handled: false }> => {
+    if (!localRuntimeConnectionPool) return { handled: false };
+    const rootPath = getLocalRuntimeRootForEvent(event);
+    if (rootPath && projectAction) {
+      try {
+        return {
+          handled: true,
+          result: await projectAction(localRuntimeConnectionPool, rootPath),
+        };
+      } catch (error) {
+        if (!isSyncServiceUnavailableError(error)) throw error;
+      }
+    }
+    try {
+      return {
+        handled: true,
+        result: await localRuntimeConnectionPool.callSync<T>(method, params),
+      };
+    } catch (error) {
+      if (isSyncServiceUnavailableError(error)) return { handled: false };
+      throw error;
+    }
+  };
+
   // Backend services use Error.code for known failures (e.g.
   // "github_not_connected", "remote_already_exists"). Electron IPC strips
   // custom properties from thrown errors, so we re-throw with the code
@@ -4390,10 +4424,17 @@ export function registerIpc({
   );
 
   ipcMain.handle(IPC.syncGetStatus, async (event, arg?: SyncGetStatusArgs): Promise<SyncRoleSnapshot> => {
-    const runtimeStatus = await tryLocalRuntimeSync(event, (pool, rootPath) =>
-      pool.syncStatusForRoot(rootPath, arg ?? {})
+    const params = {
+      includeTransferReadiness: arg?.includeTransferReadiness === true,
+      forceTransferReadiness: arg?.forceTransferReadiness === true,
+    };
+    const runtimeStatus = await tryRuntimeSync<SyncRoleSnapshot>(
+      event,
+      "sync.getStatus",
+      params,
+      (pool, rootPath) => pool.syncStatusForRoot(rootPath, arg ?? {}),
     );
-    if (runtimeStatus) return runtimeStatus;
+    if (runtimeStatus.handled) return runtimeStatus.result;
     const service = await resolveOptionalSyncService();
     if (!service) {
       throw new Error("Sync service is not available.");
@@ -4405,18 +4446,24 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.syncRefreshDiscovery, async (event): Promise<SyncRoleSnapshot> => {
-    const runtimeStatus = await tryLocalRuntimeSync(event, (pool, rootPath) =>
-      pool.refreshSyncDiscoveryForRoot(rootPath)
+    const runtimeStatus = await tryRuntimeSync<SyncRoleSnapshot>(
+      event,
+      "sync.refreshDiscovery",
+      {},
+      (pool, rootPath) => pool.refreshSyncDiscoveryForRoot(rootPath),
     );
-    if (runtimeStatus) return runtimeStatus;
+    if (runtimeStatus.handled) return runtimeStatus.result;
     return await (await requireSyncService()).refreshDiscovery();
   });
 
   ipcMain.handle(IPC.syncListDevices, async (event): Promise<SyncDeviceRuntimeState[]> => {
-    const runtimeDevices = await tryLocalRuntimeSync(event, (pool, rootPath) =>
-      pool.syncDevicesForRoot(rootPath)
+    const runtimeDevices = await tryRuntimeSync<SyncDeviceRuntimeState[]>(
+      event,
+      "sync.listDevices",
+      {},
+      (pool, rootPath) => pool.syncDevicesForRoot(rootPath),
     );
-    if (runtimeDevices) return runtimeDevices;
+    if (runtimeDevices.handled) return runtimeDevices.result;
     return await (await requireSyncService()).listDevices();
   });
 
@@ -4426,123 +4473,161 @@ export function registerIpc({
       event,
       arg: { name?: string; deviceType?: SyncPeerDeviceType },
     ): Promise<SyncDeviceRecord> => {
-      const runtimeDevice = await tryLocalRuntimeSync(event, (pool, rootPath) =>
-        pool.updateSyncLocalDeviceForRoot(rootPath, {
-          name: typeof arg?.name === "string" ? arg.name : undefined,
-          deviceType: arg?.deviceType,
-        })
-      );
-      if (runtimeDevice) return runtimeDevice;
-      return await (await requireSyncService()).updateLocalDevice({
+      const params = {
         name: typeof arg?.name === "string" ? arg.name : undefined,
         deviceType: arg?.deviceType,
-      });
+      };
+      const runtimeDevice = await tryRuntimeSync<SyncDeviceRecord>(
+        event,
+        "sync.updateLocalDevice",
+        params,
+        (pool, rootPath) => pool.updateSyncLocalDeviceForRoot(rootPath, params),
+      );
+      if (runtimeDevice.handled) return runtimeDevice.result;
+      return await (await requireSyncService()).updateLocalDevice(params);
     },
   );
 
   ipcMain.handle(
     IPC.syncConnectToBrain,
     async (event, arg: SyncDesktopConnectionDraft): Promise<SyncRoleSnapshot> => {
-      const runtimeStatus = await tryLocalRuntimeSync(event, (pool, rootPath) =>
-        pool.callSyncForRoot<SyncRoleSnapshot>(
+      const params = (arg ?? {}) as unknown as Record<string, unknown>;
+      const runtimeStatus = await tryRuntimeSync<SyncRoleSnapshot>(
+        event,
+        "sync.connectToBrain",
+        params,
+        (pool, rootPath) => pool.callSyncForRoot<SyncRoleSnapshot>(
           rootPath,
           "sync.connectToBrain",
-          (arg ?? {}) as unknown as Record<string, unknown>,
-        )
+          params,
+        ),
       );
-      if (runtimeStatus) return runtimeStatus;
+      if (runtimeStatus.handled) return runtimeStatus.result;
       return await (await requireSyncService()).connectToBrain(arg);
     },
   );
 
   ipcMain.handle(IPC.syncDisconnectFromBrain, async (event): Promise<SyncRoleSnapshot> => {
-    const runtimeStatus = await tryLocalRuntimeSync(event, (pool, rootPath) =>
-      pool.callSyncForRoot<SyncRoleSnapshot>(rootPath, "sync.disconnectFromBrain")
+    const runtimeStatus = await tryRuntimeSync<SyncRoleSnapshot>(
+      event,
+      "sync.disconnectFromBrain",
+      {},
+      (pool, rootPath) => pool.callSyncForRoot<SyncRoleSnapshot>(rootPath, "sync.disconnectFromBrain"),
     );
-    if (runtimeStatus) return runtimeStatus;
+    if (runtimeStatus.handled) return runtimeStatus.result;
     return await (await requireSyncService()).disconnectFromBrain();
   });
 
   ipcMain.handle(IPC.syncForgetDevice, async (event, arg: { deviceId: string }): Promise<SyncRoleSnapshot> => {
     const deviceId = typeof arg?.deviceId === "string" ? arg.deviceId : "";
-    const runtimeStatus = await tryLocalRuntimeSync(event, (pool, rootPath) =>
-      pool.forgetSyncDeviceForRoot(rootPath, deviceId)
+    const runtimeStatus = await tryRuntimeSync<SyncRoleSnapshot>(
+      event,
+      "sync.forgetDevice",
+      { deviceId },
+      (pool, rootPath) => pool.forgetSyncDeviceForRoot(rootPath, deviceId),
     );
-    if (runtimeStatus) return runtimeStatus;
+    if (runtimeStatus.handled) return runtimeStatus.result;
     return await (await requireSyncService()).forgetDevice(deviceId);
   });
 
   ipcMain.handle(IPC.syncGetTransferReadiness, async (event): Promise<SyncTransferReadiness> => {
-    const runtimeReadiness = await tryLocalRuntimeSync(event, (pool, rootPath) =>
-      pool.callSyncForRoot<SyncTransferReadiness>(rootPath, "sync.getTransferReadiness")
+    const runtimeReadiness = await tryRuntimeSync<SyncTransferReadiness>(
+      event,
+      "sync.getTransferReadiness",
+      {},
+      (pool, rootPath) => pool.callSyncForRoot<SyncTransferReadiness>(rootPath, "sync.getTransferReadiness"),
     );
-    if (runtimeReadiness) return runtimeReadiness;
+    if (runtimeReadiness.handled) return runtimeReadiness.result;
     return await (await requireSyncService()).getTransferReadiness();
   });
 
   ipcMain.handle(IPC.syncTransferBrainToLocal, async (event): Promise<SyncRoleSnapshot> => {
-    const runtimeStatus = await tryLocalRuntimeSync(event, (pool, rootPath) =>
-      pool.callSyncForRoot<SyncRoleSnapshot>(rootPath, "sync.transferBrainToLocal")
+    const runtimeStatus = await tryRuntimeSync<SyncRoleSnapshot>(
+      event,
+      "sync.transferBrainToLocal",
+      {},
+      (pool, rootPath) => pool.callSyncForRoot<SyncRoleSnapshot>(rootPath, "sync.transferBrainToLocal"),
     );
-    if (runtimeStatus) return runtimeStatus;
+    if (runtimeStatus.handled) return runtimeStatus.result;
     return await (await requireSyncService()).transferBrainToLocal();
   });
 
   ipcMain.handle(IPC.syncGetPin, async (event): Promise<{ pin: string | null }> => {
-    const runtimePin = await tryLocalRuntimeSync(event, (pool, rootPath) =>
-      pool.syncPinForRoot(rootPath)
+    const runtimePin = await tryRuntimeSync<{ pin: string | null }>(
+      event,
+      "sync.getPin",
+      {},
+      (pool, rootPath) => pool.syncPinForRoot(rootPath),
     );
-    if (runtimePin) return runtimePin;
+    if (runtimePin.handled) return runtimePin.result;
     return { pin: (await requireSyncService()).getPin() };
   });
 
   ipcMain.handle(IPC.syncSetPin, async (event, pin: string): Promise<SyncRoleSnapshot> => {
     const normalizedPin = typeof pin === "string" ? pin : "";
-    const runtimeStatus = await tryLocalRuntimeSync(event, (pool, rootPath) =>
-      pool.setSyncPinForRoot(rootPath, normalizedPin)
+    const runtimeStatus = await tryRuntimeSync<SyncRoleSnapshot>(
+      event,
+      "sync.setPin",
+      { pin: normalizedPin },
+      (pool, rootPath) => pool.setSyncPinForRoot(rootPath, normalizedPin),
     );
-    if (runtimeStatus) return runtimeStatus;
+    if (runtimeStatus.handled) return runtimeStatus.result;
     return await (await requireSyncService()).setPin(normalizedPin);
   });
 
   ipcMain.handle(IPC.syncGeneratePin, async (event): Promise<SyncRoleSnapshot> => {
-    const runtimeStatus = await tryLocalRuntimeSync(event, (pool, rootPath) =>
-      pool.generateSyncPinForRoot(rootPath)
+    const runtimeStatus = await tryRuntimeSync<SyncRoleSnapshot>(
+      event,
+      "sync.generatePin",
+      {},
+      (pool, rootPath) => pool.generateSyncPinForRoot(rootPath),
     );
-    if (runtimeStatus) return runtimeStatus;
+    if (runtimeStatus.handled) return runtimeStatus.result;
     return await (await requireSyncService()).generatePin();
   });
 
   ipcMain.handle(IPC.syncClearPin, async (event): Promise<SyncRoleSnapshot> => {
-    const runtimeStatus = await tryLocalRuntimeSync(event, (pool, rootPath) =>
-      pool.clearSyncPinForRoot(rootPath)
+    const runtimeStatus = await tryRuntimeSync<SyncRoleSnapshot>(
+      event,
+      "sync.clearPin",
+      {},
+      (pool, rootPath) => pool.clearSyncPinForRoot(rootPath),
     );
-    if (runtimeStatus) return runtimeStatus;
+    if (runtimeStatus.handled) return runtimeStatus.result;
     return await (await requireSyncService()).clearPin();
   });
 
   ipcMain.handle(IPC.syncGetRuntimeName, async (event): Promise<{ runtimeName: string | null }> => {
-    const runtimeName = await tryLocalRuntimeSync(event, (pool, rootPath) =>
-      pool.syncRuntimeNameForRoot(rootPath)
+    const runtimeName = await tryRuntimeSync<{ runtimeName: string | null }>(
+      event,
+      "sync.getRuntimeName",
+      {},
+      (pool, rootPath) => pool.syncRuntimeNameForRoot(rootPath),
     );
-    if (runtimeName) return runtimeName;
+    if (runtimeName.handled) return runtimeName.result;
     return { runtimeName: (await requireSyncService()).getRuntimeName() };
   });
 
   ipcMain.handle(IPC.syncSetRuntimeName, async (event, name: string): Promise<SyncRoleSnapshot> => {
     const normalizedName = typeof name === "string" ? name : "";
-    const runtimeStatus = await tryLocalRuntimeSync(event, (pool, rootPath) =>
-      pool.setSyncRuntimeNameForRoot(rootPath, normalizedName)
+    const runtimeStatus = await tryRuntimeSync<SyncRoleSnapshot>(
+      event,
+      "sync.setRuntimeName",
+      { name: normalizedName },
+      (pool, rootPath) => pool.setSyncRuntimeNameForRoot(rootPath, normalizedName),
     );
-    if (runtimeStatus) return runtimeStatus;
+    if (runtimeStatus.handled) return runtimeStatus.result;
     return await (await requireSyncService()).setRuntimeName(normalizedName);
   });
 
   ipcMain.handle(IPC.syncClearRuntimeName, async (event): Promise<SyncRoleSnapshot> => {
-    const runtimeStatus = await tryLocalRuntimeSync(event, (pool, rootPath) =>
-      pool.clearSyncRuntimeNameForRoot(rootPath)
+    const runtimeStatus = await tryRuntimeSync<SyncRoleSnapshot>(
+      event,
+      "sync.clearRuntimeName",
+      {},
+      (pool, rootPath) => pool.clearSyncRuntimeNameForRoot(rootPath),
     );
-    if (runtimeStatus) return runtimeStatus;
+    if (runtimeStatus.handled) return runtimeStatus.result;
     return await (await requireSyncService()).clearRuntimeName();
   });
 
@@ -4550,9 +4635,16 @@ export function registerIpc({
     IPC.syncSetActiveLanePresence,
     async (event, arg: { laneIds?: string[] | null }): Promise<void> => {
       const laneIds = Array.isArray(arg?.laneIds) ? arg.laneIds : [];
-      const rootPath = getLocalRuntimeRootForEvent(event);
-      if (localRuntimeConnectionPool && rootPath) {
-        await localRuntimeConnectionPool.callSyncForRoot(rootPath, "sync.setActiveLanePresence", { laneIds });
+      const runtimeResult = await tryRuntimeSync<{ ok: true }>(
+        event,
+        "sync.setActiveLanePresence",
+        { laneIds },
+        async (pool, rootPath) => {
+          await pool.callSyncForRoot(rootPath, "sync.setActiveLanePresence", { laneIds });
+          return { ok: true };
+        },
+      );
+      if (runtimeResult.handled) {
         return;
       }
       const service = await resolveOptionalSyncService();
