@@ -49,6 +49,7 @@ type RuntimeServiceManagerOutput = {
 
 type LocalRuntimeConnectionPoolOptions = {
   disableSync?: boolean;
+  preferServiceRepair?: boolean;
   queryServiceStatus?: () => ServiceManagerStatusResult;
 };
 
@@ -550,6 +551,7 @@ export class LocalRuntimeConnectionPool {
     checkedAt: null,
   };
   private serviceHealthCheckedAtMs = 0;
+  private serviceInstallPromise: Promise<void> | null = null;
 
   constructor(
     private readonly appVersion: string,
@@ -625,6 +627,15 @@ export class LocalRuntimeConnectionPool {
   }
 
   async installServiceBestEffort(): Promise<void> {
+    if (this.serviceInstallPromise) return this.serviceInstallPromise;
+    const install = this.runServiceInstallBestEffort().finally(() => {
+      if (this.serviceInstallPromise === install) this.serviceInstallPromise = null;
+    });
+    this.serviceInstallPromise = install;
+    return install;
+  }
+
+  private async runServiceInstallBestEffort(): Promise<void> {
     const cliPath = resolveCliScriptPath();
     this.serviceInstallStatus = {
       state: "installing",
@@ -1122,6 +1133,9 @@ export class LocalRuntimeConnectionPool {
     const existing = await this.tryConnect(socketPath);
     if (existing) return existing;
 
+    const repaired = await this.tryRepairServiceConnection(socketPath, "missing");
+    if (repaired) return repaired;
+
     const child = this.spawnRuntime(socketPath);
     try {
       await waitForSocket(socketPath);
@@ -1146,10 +1160,50 @@ export class LocalRuntimeConnectionPool {
       return { client, child, socketPath };
     } catch (error) {
       if (error instanceof LocalRuntimeCompatibilityError) {
+        const repaired = await this.tryRepairServiceConnection(socketPath, "incompatible", error);
+        if (repaired) return repaired;
         return await this.startIsolatedRuntime(socketPath, error);
       }
       this.logger.debug("local_runtime.connect_existing_failed", {
         socketPath,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    }
+  }
+
+  private async tryRepairServiceConnection(
+    socketPath: string,
+    reason: "missing" | "incompatible",
+    compatibilityError?: LocalRuntimeCompatibilityError,
+  ): Promise<LocalRuntimeConnection | null> {
+    if (!this.options.preferServiceRepair) return null;
+    this.logger.info("local_runtime.service_repair_attempt", {
+      socketPath,
+      reason,
+      pid: compatibilityError?.pid ?? null,
+      message: compatibilityError?.message ?? null,
+    });
+    await this.installServiceBestEffort();
+    const installStatus = this.serviceInstallStatus;
+    if (installStatus.state !== "installed") {
+      this.logger.warn("local_runtime.service_repair_skipped", {
+        socketPath,
+        reason,
+        serviceState: installStatus.state,
+        message: installStatus.message,
+      });
+      return null;
+    }
+    try {
+      await waitForSocket(socketPath);
+      const client = await this.connectClient(socketPath);
+      this.ownedRuntimeChild = null;
+      return { client, child: null, socketPath };
+    } catch (error) {
+      this.logger.warn("local_runtime.service_repair_connect_failed", {
+        socketPath,
+        reason,
         error: error instanceof Error ? error.message : String(error),
       });
       return null;

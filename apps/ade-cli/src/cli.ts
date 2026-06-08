@@ -10536,6 +10536,9 @@ function buildCliPlan(command: string[]): CliPlan {
     const runtimeArgs = [...args];
     const sub = firstStandalonePositional(runtimeArgs) ?? "status";
     if (sub === "run" || sub === "foreground") {
+      if (!readValue([...runtimeArgs], ["--socket"])) {
+        throw new CliUsageError("ade runtime run requires --socket <path>.");
+      }
       const syncDisabled = readFlag([...runtimeArgs], ["--no-sync"]);
       if (!syncDisabled) {
         runtimeArgs.push("--no-sync");
@@ -12513,6 +12516,60 @@ function isRuntimeShutdownCloseError(error: unknown): boolean {
   return message.includes("socket closed") || message.includes("runtime endpoint closed");
 }
 
+function shouldRepairMachineRuntimeServiceBeforeSpawn(
+  socketPath: string,
+  socketPathOverride?: string | null,
+): boolean {
+  return !socketPathOverride?.trim()
+    && process.env.ADE_DISABLE_RUNTIME_SERVICE_INSTALL !== "1"
+    && Boolean(process.versions.electron)
+    && !socketPath.startsWith("tcp://")
+    && !isAdeRuntimeNamedPipePath(socketPath)
+    && !isEphemeralRuntimeSocketPath(socketPath);
+}
+
+async function repairMachineRuntimeServiceConnection(args: {
+  socketPath: string;
+  options: GlobalOptions;
+  expectedBuildHash: string | null;
+  enforceBuildCompatibility: boolean;
+}): Promise<SocketJsonRpcClient | null> {
+  let client: SocketJsonRpcClient | null = null;
+  try {
+    const { installRuntimeService } = await import("./serviceManager");
+    const result = installRuntimeService();
+    if (!result.ok) return null;
+    client = await SocketJsonRpcClient.connect(
+      args.socketPath,
+      args.options.timeoutMs,
+      "ADE runtime endpoint",
+    );
+    const runtimeInfo = await initializeMachineRuntimeDaemon(
+      client,
+      args.options,
+    );
+    const mismatch = machineRuntimeMismatchReason(
+      runtimeInfo,
+      args.expectedBuildHash,
+      args.options.role,
+      { enforceBuildCompatibility: args.enforceBuildCompatibility },
+    );
+    if (mismatch) {
+      client.close();
+      return null;
+    }
+    const repaired = client;
+    client = null;
+    return repaired;
+  } catch {
+    return null;
+  } finally {
+    try {
+      client?.close();
+    } catch {}
+  }
+}
+
 async function spawnMachineRuntimeDaemon(
   socketPath: string,
   options: GlobalOptions,
@@ -12568,6 +12625,19 @@ async function connectMachineRuntimeDaemon(
   const expectedBuildHash = isTcpSocket || !enforceBuildCompatibility
     ? null
     : await resolveExpectedMachineRuntimeBuildHash();
+  const preferServiceRepair = shouldRepairMachineRuntimeServiceBeforeSpawn(
+    socketPath,
+    socketPathOverride,
+  );
+  const repairServiceConnection = async (): Promise<SocketJsonRpcClient | null> => {
+    if (!preferServiceRepair) return null;
+    return repairMachineRuntimeServiceConnection({
+      socketPath,
+      options,
+      expectedBuildHash,
+      enforceBuildCompatibility,
+    });
+  };
   try {
     const client = await SocketJsonRpcClient.connect(
       socketPath,
@@ -12592,6 +12662,8 @@ async function connectMachineRuntimeDaemon(
         );
       }
       await shutdownMachineRuntimeDaemon(client);
+      const repaired = await repairServiceConnection();
+      if (repaired) return repaired;
       const spawned = await spawnMachineRuntimeDaemon(socketPath, options);
       if (!spawned) {
         throw new Error(
@@ -12624,6 +12696,8 @@ async function connectMachineRuntimeDaemon(
     return client;
   } catch (firstError) {
     if (!allowSpawn) throw firstError;
+    const repaired = await repairServiceConnection();
+    if (repaired) return repaired;
     const spawned = await spawnMachineRuntimeDaemon(socketPath, options);
     if (!spawned) throw firstError;
     try {

@@ -656,12 +656,19 @@ export async function connectToAde(args: {
   forceEmbedded?: boolean;
   requireSocket?: boolean;
   socketPath?: string | null;
+  preferServiceRepair?: boolean;
 }): Promise<AdeCodeConnection> {
   const layout = resolveAdeLayout(args.project.projectRoot);
   const explicitSocketPath =
     args.socketPath?.trim() || process.env.ADE_RPC_SOCKET_PATH?.trim() || null;
   const machineSocketPath = resolveMachineAdeLayout().socketPath;
   const socketPath = explicitSocketPath ?? machineSocketPath;
+  const preferServiceRepair =
+    args.preferServiceRepair ?? (
+      !explicitSocketPath
+      && process.env.ADE_DISABLE_RUNTIME_SERVICE_INSTALL !== "1"
+      && Boolean(process.versions.electron)
+    );
 
   if (args.forceEmbedded && args.requireSocket) {
     throw new Error("Cannot use embedded mode when an ADE socket is required.");
@@ -699,8 +706,21 @@ export async function connectToAde(args: {
         delayMs: 200,
         shutdownOnStale: true,
       });
+    const repairService = async (): Promise<AdeCodeConnection | null> => {
+      if (!preferServiceRepair) return null;
+      try {
+        const { installRuntimeService } = await import("../serviceManager");
+        const result = installRuntimeService();
+        if (!result.ok) return null;
+        return await tryDaemon(25);
+      } catch {
+        return null;
+      }
+    };
     try {
       if (!fs.existsSync(machineSocketPath)) {
+        const repaired = await repairService();
+        if (repaired) return repaired;
         const spawned = spawnDaemon(machineSocketPath);
         return await tryDaemon(spawned ? 25 : 1);
       }
@@ -709,6 +729,8 @@ export async function connectToAde(args: {
       if (firstError instanceof StaleAdeSocketError) {
         await new Promise((resolve) => setTimeout(resolve, 200));
       }
+      const repaired = await repairService();
+      if (repaired) return repaired;
       try {
         const spawned = spawnDaemon(machineSocketPath);
         if (spawned) return await tryDaemon(25);

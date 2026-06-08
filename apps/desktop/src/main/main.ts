@@ -1186,7 +1186,13 @@ app.whenReady().then(async () => {
   const mobileSyncHandoffLeaseTimers = new Map<string, ReturnType<typeof setTimeout>>();
   const mobileSyncPreparationPromises = new Map<string, Promise<SyncProjectSwitchResultPayload>>();
   const localRuntimeLogger = createFileLogger(path.join(app.getPath("userData"), "local-runtime.jsonl"));
-  const localRuntimePool = new LocalRuntimeConnectionPool(app.getVersion(), localRuntimeLogger);
+  const shouldRepairRuntimeServiceOnFallback =
+    app.isPackaged
+    && process.env.NODE_ENV !== "test"
+    && process.env.ADE_DISABLE_RUNTIME_SERVICE_INSTALL !== "1";
+  const localRuntimePool = new LocalRuntimeConnectionPool(app.getVersion(), localRuntimeLogger, {
+    preferServiceRepair: shouldRepairRuntimeServiceOnFallback,
+  });
   if (shouldAttemptRuntimeServiceInstall) {
     void localRuntimePool.installServiceBestEffort()
       .then(() => {

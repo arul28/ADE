@@ -275,6 +275,9 @@ describe("ADE CLI", () => {
       kind: "runtime",
       rest: ["status"],
     });
+    expect(() => buildCliPlan(["runtime", "run"])).toThrow(
+      "ade runtime run requires --socket <path>.",
+    );
     expect(
       buildCliPlan(["runtime", "run", "--socket", "/tmp/ade.sock"]),
     ).toEqual({
