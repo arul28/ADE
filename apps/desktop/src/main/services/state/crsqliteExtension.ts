@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 function extensionFileName(): string {
@@ -52,10 +53,14 @@ export function resolveCrsqliteExtensionPath(): string | null {
     const moduleRepoRoot = findRepoRoot(moduleDir);
     if (moduleRepoRoot) repoRootSet.add(moduleRepoRoot);
   }
+  const adeHome = process.env.ADE_HOME ?? path.join(os.homedir(), ".ade");
   const candidates = [
     process.resourcesPath ? path.join(process.resourcesPath, `${packagedAsarName()}.unpacked`, relativePath) : null,
     process.resourcesPath ? path.join(process.resourcesPath, "app.asar.unpacked", relativePath) : null,
     process.resourcesPath ? path.join(process.resourcesPath, relativePath) : null,
+    // Installed static/headless brain: native tarball is extracted to
+    // <ADE_HOME>/runtime/<target>/, carrying crsqlite at vendor/crsqlite/<arch>/.
+    path.join(adeHome, "runtime", platformArchDir(), relativePath),
     path.resolve(process.cwd(), relativePath),
     path.resolve(process.cwd(), "apps", "desktop", relativePath),
     ...Array.from(repoRootSet, (repoRoot) => path.join(repoRoot, "apps", "desktop", relativePath)),

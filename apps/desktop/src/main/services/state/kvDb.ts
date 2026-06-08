@@ -487,8 +487,19 @@ const LOCAL_ONLY_CRR_EXCLUDED_TABLES = new Set([
   "lane_list_snapshots",
   LOCAL_CRR_CHANGE_SUPPRESSIONS_TABLE,
   "pr_auto_link_ignores",
+  // Config snapshots rebuilt (delete+reinsert) from ade.yaml on every project
+  // config load (projectConfigService.syncSnapshots). Pure local-derived state —
+  // remote clients read these via RPC (e.g. processes.listDefinitions, which
+  // returns projectConfigService.get().effective, not the table), never from a
+  // synced replica — so they must not be CRRs. Leaving them CRR makes the
+  // rebuild DELETE fire crsql triggers that call crsql_internal_sync_bit, which
+  // crashes any runtime without the extension loaded (e.g. the static machine
+  // runtime), surfacing to remote clients as a fake "host unreachable" disconnect.
+  "process_definitions",
   "pull_request_ai_summaries",
   "runtime_processes",
+  "stack_buttons",
+  "test_suites",
 ]);
 
 function listEligibleCrrTables(db: DatabaseSyncType): string[] {

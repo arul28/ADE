@@ -134,7 +134,12 @@ export function LinearQuickViewButton({
   const batchConfigByIssueRef = useRef<Map<string, BatchLaunchIssueConfig>>(new Map());
   const activeProjectRoot =
     projectBinding?.kind === "remote" ? projectBinding.rootPath : project?.rootPath;
-  const shouldAutoCheckVisibility = projectBinding?.kind !== "remote";
+  // Auto-check Linear visibility for both local and remote projects. The check
+  // is driven by getLinearConnectionStatus, which routes to the remote daemon
+  // when bound to a remote runtime, so a remote machine's Linear connection is
+  // surfaced just like a local one. Remote uses a longer retry interval
+  // (visibilityRetryIntervalMs) to avoid hammering the remote daemon.
+  const shouldAutoCheckVisibility = Boolean(activeProjectRoot);
   const visibilityRetryIntervalMs =
     projectBinding?.kind === "remote"
       ? REMOTE_VISIBILITY_RETRY_INTERVAL_MS

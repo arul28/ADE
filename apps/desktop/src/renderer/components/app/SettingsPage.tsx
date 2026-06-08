@@ -10,6 +10,7 @@ import { AiFeaturesSection } from "../settings/AiFeaturesSection";
 import { IntegrationsSettingsSection } from "../settings/IntegrationsSettingsSection";
 import { MobilePushPanel } from "../settings/MobilePushPanel";
 import { AdeUsageSection } from "../settings/AdeUsageSection";
+import { RemoteSettingsBanner } from "../settings/RemoteContextBadge";
 import { COLORS, SANS_FONT, LABEL_STYLE } from "../lanes/laneDesignTokens";
 
 const SECTIONS = [
@@ -186,6 +187,7 @@ export function SettingsPage({ active = true }: { active?: boolean } = {}) {
           padding: 24,
         }}
       >
+        <RemoteSettingsBanner />
         {section === "general" && <GeneralSection />}
         {section === "appearance" && <AppearanceSection />}
         {section === "ai" && <ProvidersSection />}

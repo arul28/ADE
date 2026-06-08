@@ -329,11 +329,7 @@ export class RemoteConnectionService {
       this.clearAutomaticReconnectBudget(targetId);
       return projects;
     } catch (error) {
-      this.mergeStatus(targetId, {
-        state: "error",
-        lastError: this.recordImplicitFailure(targetId, error),
-        lastAttemptedAt: Date.now(),
-      });
+      this.markCallFailure(targetId, error);
       throw error;
     }
   }
@@ -350,11 +346,7 @@ export class RemoteConnectionService {
       this.clearAutomaticReconnectBudget(targetId);
       return project;
     } catch (error) {
-      this.mergeStatus(targetId, {
-        state: "error",
-        lastError: this.recordImplicitFailure(targetId, error),
-        lastAttemptedAt: Date.now(),
-      });
+      this.markCallFailure(targetId, error);
       throw error;
     }
   }
@@ -368,11 +360,7 @@ export class RemoteConnectionService {
     try {
       return await this.pool.ensureLocalPortForward(target.id, request);
     } catch (error) {
-      this.mergeStatus(targetId, {
-        state: "error",
-        lastError: this.recordImplicitFailure(targetId, error),
-        lastAttemptedAt: Date.now(),
-      });
+      this.markCallFailure(targetId, error);
       throw error;
     }
   }
@@ -482,11 +470,7 @@ export class RemoteConnectionService {
       this.clearAutomaticReconnectBudget(targetId);
       return result;
     } catch (error) {
-      this.mergeStatus(targetId, {
-        state: "error",
-        lastError: this.recordImplicitFailure(targetId, error),
-        lastAttemptedAt: Date.now(),
-      });
+      this.markCallFailure(targetId, error);
       throw error;
     }
   }
@@ -511,11 +495,7 @@ export class RemoteConnectionService {
       this.clearAutomaticReconnectBudget(targetId);
       return result;
     } catch (error) {
-      this.mergeStatus(targetId, {
-        state: "error",
-        lastError: this.recordImplicitFailure(targetId, error),
-        lastAttemptedAt: Date.now(),
-      });
+      this.markCallFailure(targetId, error);
       throw error;
     }
   }
@@ -544,11 +524,7 @@ export class RemoteConnectionService {
       this.clearAutomaticReconnectBudget(targetId);
       return cleanup;
     } catch (error) {
-      this.mergeStatus(targetId, {
-        state: "error",
-        lastError: this.recordImplicitFailure(targetId, error),
-        lastAttemptedAt: Date.now(),
-      });
+      this.markCallFailure(targetId, error);
       throw error;
     }
   }
@@ -571,11 +547,7 @@ export class RemoteConnectionService {
       this.clearAutomaticReconnectBudget(targetId);
       return registry;
     } catch (error) {
-      this.mergeStatus(targetId, {
-        state: "error",
-        lastError: this.recordImplicitFailure(targetId, error),
-        lastAttemptedAt: Date.now(),
-      });
+      this.markCallFailure(targetId, error);
       throw error;
     }
   }
@@ -602,11 +574,7 @@ export class RemoteConnectionService {
       this.clearAutomaticReconnectBudget(targetId);
       return result;
     } catch (error) {
-      this.mergeStatus(targetId, {
-        state: "error",
-        lastError: this.recordImplicitFailure(targetId, error),
-        lastAttemptedAt: Date.now(),
-      });
+      this.markCallFailure(targetId, error);
       throw error;
     }
   }
@@ -670,11 +638,7 @@ export class RemoteConnectionService {
       this.clearAutomaticReconnectBudget(target.id);
       return result;
     } catch (error) {
-      this.mergeStatus(target.id, {
-        state: "error",
-        lastError: this.recordImplicitFailure(target.id, error),
-        lastAttemptedAt: Date.now(),
-      });
+      this.markCallFailure(target.id, error);
       throw error;
     }
   }
@@ -709,6 +673,25 @@ export class RemoteConnectionService {
   private clearAutomaticReconnectBudget(targetId: string): void {
     this.automaticReconnectFailuresByTargetId.delete(targetId);
     this.automaticReconnectPausedTargetIds.delete(targetId);
+  }
+
+  /**
+   * Classify a failure from an RPC call made over an already-established
+   * connection. If the response came back over a live channel, the host is
+   * reachable and the error is application-level (e.g. a host-side SQL or
+   * validation failure). Such errors must NOT flip the connection to
+   * "error"/reconnecting — doing so surfaces a false "host is unreachable"
+   * toast and a reconnect loop for what is really a per-action failure. Only
+   * genuine transport failures update the connection status and reconnect
+   * budget; everything else is left to rethrow to the caller untouched.
+   */
+  private markCallFailure(targetId: string, error: unknown): void {
+    if (!isImplicitConnectionFailure(error)) return;
+    this.mergeStatus(targetId, {
+      state: "error",
+      lastError: this.recordImplicitFailure(targetId, error),
+      lastAttemptedAt: Date.now(),
+    });
   }
 
   private recordImplicitFailure(targetId: string, error: unknown): string {
