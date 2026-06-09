@@ -922,7 +922,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
     expect(status.localDevice.lastPort).toBe(8787);
   }, 30_000);
 
-  it("does not fall back to an OS-random sync host port", async () => {
+  it("does not fall back to an out-of-range sync host port", async () => {
     const projectRoot = makeProjectRoot("ade-sync-service-no-random-port-");
     const db = await openKvDb(
       path.join(projectRoot, ".ade", "ade.db"),
@@ -998,8 +998,10 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
     await expect(service.initialize()).rejects.toThrow("address already in use");
     const attemptedPorts = createSyncHostServiceMock.mock.calls.map((call: any[]) => call[0]?.port);
     expect(attemptedPorts[0]).toBe(8787);
-    expect(attemptedPorts).toContain(55035);
+    expect(attemptedPorts).toContain(8999);
+    expect(attemptedPorts).not.toContain(55035);
     expect(attemptedPorts).not.toContain(0);
+    expect(attemptedPorts.every((port) => port >= 8787 && port <= 8999)).toBe(true);
   }, 30_000);
 
   describe("cooperative brain election", () => {

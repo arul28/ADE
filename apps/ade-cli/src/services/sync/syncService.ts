@@ -232,8 +232,8 @@ function migrateLegacySyncSecretFile(args: {
 }
 const RUNNING_PROCESS_STATES = new Set(["starting", "running", "degraded"]);
 const CHAT_TOOL_TYPES = new Set(["codex-chat", "claude-chat", "opencode-chat"]);
-const LEGACY_SYNC_HOST_PORT_RETRY_WINDOW = 12;
-const SYNC_HOST_PORT_RETRY_WINDOW = 13;
+const LEGACY_SYNC_HOST_PORT_RETRY_WINDOW = 13;
+const SYNC_HOST_PORT_RETRY_WINDOW = 8999 - DEFAULT_SYNC_HOST_PORT;
 const LEGACY_SYNC_HOST_MAX_PORT = DEFAULT_SYNC_HOST_PORT + LEGACY_SYNC_HOST_PORT_RETRY_WINDOW;
 const SYNC_HOST_MAX_PORT = DEFAULT_SYNC_HOST_PORT + SYNC_HOST_PORT_RETRY_WINDOW;
 const LOCAL_LANE_PRESENCE_HEARTBEAT_MS = 30_000;
@@ -329,7 +329,7 @@ function buildAddressCandidates(
 function buildPairingConnectInfo(argsIn: {
   localDevice: SyncRoleSnapshot["localDevice"];
 }): SyncPairingConnectInfo {
-  const port = argsIn.localDevice.lastPort ?? DEFAULT_SYNC_HOST_PORT;
+  const port = normalizeSyncHostPort(argsIn.localDevice.lastPort);
   const addressCandidates = buildAddressCandidates(argsIn.localDevice);
   const hostIdentity = {
     deviceId: argsIn.localDevice.deviceId,
@@ -387,15 +387,16 @@ function buildHostPortCandidates(preferredPort: number | null | undefined): numb
   for (let port = DEFAULT_SYNC_HOST_PORT; port <= SYNC_HOST_MAX_PORT; port += 1) {
     add(port);
   }
-  if (preferred < DEFAULT_SYNC_HOST_PORT || preferred > SYNC_HOST_MAX_PORT) {
-    add(preferred);
-    for (let offset = 1; offset <= Math.min(4, SYNC_HOST_PORT_RETRY_WINDOW); offset += 1) {
-      if (preferred + offset <= 65_535) {
-        add(preferred + offset);
-      }
-    }
-  }
   return candidates;
+}
+
+function normalizeSyncHostPort(port: number | null | undefined): number {
+  const parsed = Number.isFinite(port)
+    ? Math.max(1, Math.min(65_535, Math.floor(Number(port))))
+    : DEFAULT_SYNC_HOST_PORT;
+  return parsed >= DEFAULT_SYNC_HOST_PORT && parsed <= SYNC_HOST_MAX_PORT
+    ? parsed
+    : DEFAULT_SYNC_HOST_PORT;
 }
 
 export function createSyncService(args: SyncServiceArgs) {
