@@ -1126,22 +1126,25 @@ final class ADETests: XCTestCase {
   func testSyncConnectPortCandidatesFallbackBetweenAdeDefaultPorts() {
     XCTAssertEqual(
       syncConnectPortCandidates(primaryPort: 8787, addresses: ["100.75.20.63"]),
-      Array(8787...8800)
+      SyncDirectHostPorts.portCandidates
     )
     XCTAssertEqual(
       syncConnectPortCandidates(primaryPort: 8788, addresses: ["192.168.1.10"]),
-      [8788, 8787] + Array(8789...8800)
+      [8788] + SyncDirectHostPorts.portCandidates.filter { $0 != 8788 }
     )
     XCTAssertEqual(
       syncConnectPortCandidates(primaryPort: 9000, addresses: ["100.75.20.63"]),
-      [9000] + Array(8787...8800)
+      [9000] + SyncDirectHostPorts.portCandidates
     )
     XCTAssertEqual(
       syncConnectPortCandidates(primaryPort: 9000, addresses: ["192.168.1.10"]),
       [9000]
     )
     XCTAssertTrue(
-      syncConnectPortCandidates(primaryPort: 8790, addresses: ["100.75.20.63"]).contains(8800)
+      syncConnectPortCandidates(primaryPort: 8790, addresses: ["100.75.20.63"]).contains(8803)
+    )
+    XCTAssertTrue(
+      syncConnectPortCandidates(primaryPort: 8790, addresses: ["100.75.20.63"]).contains(SyncDirectHostPorts.fallbackMaxPort)
     )
     XCTAssertEqual(SyncTailnetDiscovery.portCandidates, SyncDirectHostPorts.portCandidates)
   }

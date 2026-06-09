@@ -17,11 +17,14 @@ import {
   buildLocalRuntimeServeArgs,
   computeLocalRuntimeBuildHash,
   createLocalRuntimeOutputLogger,
+  isLocalChannelBuildOutputPath,
   isLocalRuntimeConnectionDropped,
   isLocalRuntimeMethodTimeout,
   isRetryableReadAction,
+  localReleaseBuildOutputRuntimeBlock,
   LocalRuntimeConnectionPool,
   parseRuntimeServiceManagerOutput,
+  shouldAutoInstallRuntimeServiceFromPath,
 } from "./localRuntimeConnectionPool";
 
 type RawPendingRequest = {
@@ -211,6 +214,70 @@ describe("local runtime connection pool", () => {
     expect(env.NODE_PATH).toContain("app-x64.asar.unpacked");
     expect(env.NODE_PATH).toContain("app.asar.unpacked");
     expect(env.NODE_PATH).toContain("/custom/node_modules");
+  });
+
+  it("does not auto-install channel services from local release build output paths", () => {
+    const releaseCliPath = "/Users/admin/Projects/ADE/apps/desktop/release-beta/mac-arm64/ADE Beta.app/Contents/Resources/ade-cli/cli.cjs";
+    const installedCliPath = "/Applications/ADE Beta.app/Contents/Resources/ade-cli/cli.cjs";
+    const originalAllow = process.env.ADE_ALLOW_LOCAL_RELEASE_SERVICE_INSTALL;
+
+    try {
+      delete process.env.ADE_ALLOW_LOCAL_RELEASE_SERVICE_INSTALL;
+
+      expect(isLocalChannelBuildOutputPath(releaseCliPath)).toBe(true);
+      expect(shouldAutoInstallRuntimeServiceFromPath(releaseCliPath)).toBe(false);
+      expect(localReleaseBuildOutputRuntimeBlock(releaseCliPath)).toMatchObject({
+        cliPath: releaseCliPath,
+      });
+      expect(isLocalChannelBuildOutputPath(installedCliPath)).toBe(false);
+      expect(shouldAutoInstallRuntimeServiceFromPath(installedCliPath)).toBe(true);
+      expect(localReleaseBuildOutputRuntimeBlock(installedCliPath)).toBeNull();
+
+      process.env.ADE_ALLOW_LOCAL_RELEASE_SERVICE_INSTALL = "1";
+      expect(shouldAutoInstallRuntimeServiceFromPath(releaseCliPath)).toBe(true);
+      expect(localReleaseBuildOutputRuntimeBlock(releaseCliPath)).toBeNull();
+    } finally {
+      if (originalAllow === undefined) delete process.env.ADE_ALLOW_LOCAL_RELEASE_SERVICE_INSTALL;
+      else process.env.ADE_ALLOW_LOCAL_RELEASE_SERVICE_INSTALL = originalAllow;
+    }
+  });
+
+  it("records skipped service install status for local release build output paths", async () => {
+    const releaseCliPath = "/Users/admin/Projects/ADE/apps/desktop/release-beta/mac-arm64/ADE Beta.app/Contents/Resources/ade-cli/cli.cjs";
+    const originalCliJs = process.env.ADE_CLI_JS;
+    const originalAllow = process.env.ADE_ALLOW_LOCAL_RELEASE_SERVICE_INSTALL;
+    const logger = {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    };
+    const pool = new LocalRuntimeConnectionPool("1.2.3", logger as never);
+
+    try {
+      process.env.ADE_CLI_JS = releaseCliPath;
+      delete process.env.ADE_ALLOW_LOCAL_RELEASE_SERVICE_INSTALL;
+      await pool.installServiceBestEffort();
+
+      expect(pool.getStatus().serviceInstall).toMatchObject({
+        state: "skipped",
+        attempted: false,
+        path: releaseCliPath,
+      });
+      expect(logger.warn).toHaveBeenCalledWith(
+        "local_runtime.service_install_skipped",
+        expect.objectContaining({
+          cliPath: releaseCliPath,
+          reason: "local_release_build_output",
+        }),
+      );
+    } finally {
+      pool.dispose();
+      if (originalCliJs === undefined) delete process.env.ADE_CLI_JS;
+      else process.env.ADE_CLI_JS = originalCliJs;
+      if (originalAllow === undefined) delete process.env.ADE_ALLOW_LOCAL_RELEASE_SERVICE_INSTALL;
+      else process.env.ADE_ALLOW_LOCAL_RELEASE_SERVICE_INSTALL = originalAllow;
+    }
   });
 
   it("logs child runtime stderr by line and flushes partial output", () => {

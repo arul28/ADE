@@ -67,6 +67,8 @@ const LOCAL_RUNTIME_EVENT_POLL_TIMEOUT_MS = 2_000;
 const PLACEHOLDER_RUNTIME_VERSION = "0.0.0";
 const LOCAL_RUNTIME_OUTPUT_LINE_MAX_CHARS = 4_000;
 const LOCAL_RUNTIME_OUTPUT_BUFFER_MAX_CHARS = 16_000;
+const LOCAL_RELEASE_BUILD_OUTPUT_RUNTIME_MESSAGE =
+  "This local release build output cannot start the ADE brain directly. Install the channel app into /Applications and relaunch ADE.";
 const COALESCED_LOCAL_RUNTIME_ACTIONS = new Set([
   "chat.listSessions",
   "layout.get",
@@ -226,6 +228,35 @@ function resolveCliScriptPath(): string {
       return false;
     }
   }) ?? path.resolve(process.cwd(), "..", "ade-cli", "dist", "cli.cjs");
+}
+
+export function isLocalChannelBuildOutputPath(targetPath: string): boolean {
+  const normalized = path.resolve(targetPath);
+  const parts = normalized.split(path.sep).filter(Boolean);
+  for (let index = 0; index < parts.length - 2; index += 1) {
+    if (
+      parts[index] === "apps" &&
+      parts[index + 1] === "desktop" &&
+      /^release-[^/\\]+$/.test(parts[index + 2] ?? "")
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+export function shouldAutoInstallRuntimeServiceFromPath(targetPath: string): boolean {
+  if (process.env.ADE_ALLOW_LOCAL_RELEASE_SERVICE_INSTALL === "1") return true;
+  return !isLocalChannelBuildOutputPath(targetPath);
+}
+
+export function localReleaseBuildOutputRuntimeBlock(targetPath: string): { cliPath: string; message: string } | null {
+  const cliPath = path.resolve(targetPath);
+  if (shouldAutoInstallRuntimeServiceFromPath(cliPath)) return null;
+  return {
+    cliPath,
+    message: LOCAL_RELEASE_BUILD_OUTPUT_RUNTIME_MESSAGE,
+  };
 }
 
 function openSocketTransport(socketPath: string, timeoutMs = 3_000): Promise<RuntimeRpcTransport> {
@@ -651,6 +682,23 @@ export class LocalRuntimeConnectionPool {
 
   private async runServiceInstallBestEffort(): Promise<void> {
     const cliPath = resolveCliScriptPath();
+    const releaseBuildBlock = localReleaseBuildOutputRuntimeBlock(cliPath);
+    if (releaseBuildBlock) {
+      this.serviceInstallStatus = {
+        state: "skipped",
+        attempted: false,
+        path: releaseBuildBlock.cliPath,
+        message: releaseBuildBlock.message,
+        exitCode: null,
+        updatedAt: new Date().toISOString(),
+      };
+      this.logger.warn("local_runtime.service_install_skipped", {
+        cliPath: releaseBuildBlock.cliPath,
+        reason: "local_release_build_output",
+        message: releaseBuildBlock.message,
+      });
+      return;
+    }
     this.serviceInstallStatus = {
       state: "installing",
       attempted: true,
@@ -1158,6 +1206,17 @@ export class LocalRuntimeConnectionPool {
     const repaired = await this.tryRepairServiceConnection(socketPath, "missing");
     if (repaired) return repaired;
 
+    const releaseBuildBlock = this.releaseBuildOutputRuntimeBlock();
+    if (releaseBuildBlock) {
+      this.logger.warn("local_runtime.release_build_runtime_blocked", {
+        cliPath: releaseBuildBlock.cliPath,
+        socketPath,
+        reason: "missing",
+        message: releaseBuildBlock.message,
+      });
+      throw new Error(releaseBuildBlock.message);
+    }
+
     const child = this.spawnRuntime(socketPath);
     try {
       await waitForSocket(socketPath);
@@ -1184,6 +1243,20 @@ export class LocalRuntimeConnectionPool {
       if (error instanceof LocalRuntimeCompatibilityError) {
         const repaired = await this.tryRepairServiceConnection(socketPath, "incompatible", error);
         if (repaired) return repaired;
+        const releaseBuildBlock = this.releaseBuildOutputRuntimeBlock();
+        if (releaseBuildBlock) {
+          this.logger.warn("local_runtime.release_build_runtime_blocked", {
+            cliPath: releaseBuildBlock.cliPath,
+            socketPath,
+            reason: "incompatible",
+            message: releaseBuildBlock.message,
+            runtimePid: error.pid,
+            runtimeVersion: error.runtimeVersion,
+            runtimeBuildHash: error.runtimeBuildHash,
+            runtimeDefaultRole: error.runtimeDefaultRole,
+          });
+          throw new Error(releaseBuildBlock.message);
+        }
         return await this.startIsolatedRuntime(socketPath, error);
       }
       this.logger.debug("local_runtime.connect_existing_failed", {
@@ -1293,6 +1366,10 @@ export class LocalRuntimeConnectionPool {
       disposeOwnedRuntimeChild(child, socketPath, { unlinkSocket: true });
       throw error;
     }
+  }
+
+  private releaseBuildOutputRuntimeBlock(): { cliPath: string; message: string } | null {
+    return localReleaseBuildOutputRuntimeBlock(resolveCliScriptPath());
   }
 
   private async connectClient(socketPath: string): Promise<RuntimeRpcClient> {

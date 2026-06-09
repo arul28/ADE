@@ -283,8 +283,8 @@ enum SyncTailnetDiscovery {
 
 enum SyncDirectHostPorts {
   static let defaultPort = 8787
-  static let retryWindow = 13
-  static let portCandidates = Array(defaultPort...(defaultPort + retryWindow))
+  static let fallbackMaxPort = 8999
+  static let portCandidates = Array(defaultPort...fallbackMaxPort)
 }
 
 struct SyncRouteEndpoint: Equatable {
