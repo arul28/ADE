@@ -77,3 +77,4 @@ package-lock.json
 apps/desktop/resources/runtime/ade-*
 
 .claude/scheduled_tasks.lock
+apps/web/public/images/updatedImages/
