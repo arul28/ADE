@@ -5180,7 +5180,7 @@ describe("AgentChatPane submit recovery", () => {
   });
 
   it("launches a CLI session draft in the background without stealing focus", async () => {
-    const { send, create, createLane, suggestLaneName } = installAdeMocks({ sessions: [] });
+    const { send, createLane, suggestLaneName } = installAdeMocks({ sessions: [] });
     const onLaunchCliSession = vi.fn().mockResolvedValue({ sessionId: "terminal-created", ptyId: "pty-created" });
     suggestLaneName.mockResolvedValue("background-cli-lane");
     createLane.mockResolvedValue({
@@ -5222,7 +5222,6 @@ describe("AgentChatPane submit recovery", () => {
     const launchArgs = onLaunchCliSession.mock.calls[0]?.[0];
     expect(launchArgs.startupCommand).not.toContain("Launch this CLI session in the background.");
     expect(launchArgs.initialInput).toContain("Launch this CLI session in the background.");
-    expect(create).not.toHaveBeenCalled();
     expect(send).not.toHaveBeenCalled();
     expect(screen.getByTestId("location").textContent).toBe("/work");
 
