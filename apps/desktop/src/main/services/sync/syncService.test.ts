@@ -6,11 +6,11 @@ import { isCrsqliteAvailable } from "../state/crsqliteExtension";
 import { openKvDb } from "../state/kvDb";
 import { createSyncService } from "./syncService";
 
-const { createSyncHostServiceMock, syncHostServiceMockState } = vi.hoisted(() => ({
-  syncHostServiceMockState: {
+const { createDefaultSyncHostServiceMock, createSyncHostServiceMock, syncHostServiceMockState } = vi.hoisted(() => {
+  const syncHostServiceMockState = {
     port: 8787,
-  },
-  createSyncHostServiceMock: vi.fn(() => ({
+  };
+  const createDefaultSyncHostServiceMock = () => ({
     async waitUntilListening() {
       return syncHostServiceMockState.port;
     },
@@ -42,8 +42,13 @@ const { createSyncHostServiceMock, syncHostServiceMockState } = vi.hoisted(() =>
     handlePtyExit() {},
     setDiscoveryEnabled: vi.fn(),
     async dispose() {},
-  })),
-}));
+  });
+  return {
+    syncHostServiceMockState,
+    createDefaultSyncHostServiceMock,
+    createSyncHostServiceMock: vi.fn(createDefaultSyncHostServiceMock),
+  };
+});
 
 // Prevent real WebSocket servers from binding to port 8787 during tests.
 // Tests only exercise role/transfer/pairing logic, not the sync transport.
@@ -109,7 +114,8 @@ function insertProjectAndLane(
 const activeDisposers: Array<() => Promise<void>> = [];
 
 beforeEach(() => {
-  createSyncHostServiceMock.mockClear();
+  createSyncHostServiceMock.mockReset();
+  createSyncHostServiceMock.mockImplementation(createDefaultSyncHostServiceMock);
   syncHostServiceMockState.port = 8787;
 });
 
@@ -850,6 +856,70 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
     expect(createSyncHostServiceMock.mock.calls.map((call: any[]) => call[0]?.port)).toEqual([8787, 8788]);
     expect(disposeFirstAttempt).toHaveBeenCalledTimes(1);
     expect(service.getHostService()?.getPort()).toBe(8788);
+  }, 30_000);
+
+  it("starts on a legacy-discoverable port when the saved port drifted past the old phone range", async () => {
+    const projectRoot = makeProjectRoot("ade-sync-service-legacy-phone-port-");
+    const db = await openKvDb(
+      path.join(projectRoot, ".ade", "ade.db"),
+      createLogger() as any,
+    );
+    const localDeviceId = "local-device";
+    const localDeviceIdPath = path.join(projectRoot, ".ade", "secrets", "sync-device-id");
+    fs.mkdirSync(path.dirname(localDeviceIdPath), { recursive: true });
+    fs.writeFileSync(localDeviceIdPath, `${localDeviceId}\n`, "utf8");
+    db.run(
+      `insert into devices(
+          device_id, site_id, name, platform, device_type,
+          created_at, updated_at, last_seen_at, last_host, last_port,
+          tailscale_ip, ip_addresses_json, metadata_json
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        localDeviceId,
+        db.sync.getSiteId(),
+        "Local Mac",
+        "macOS",
+        "desktop",
+        "2026-04-01T00:00:00.000Z",
+        "2026-04-01T00:00:00.000Z",
+        "2026-04-01T00:00:00.000Z",
+        "192.168.1.8",
+        8800,
+        "100.75.20.63",
+        JSON.stringify(["192.168.1.8"]),
+        JSON.stringify({}),
+      ],
+    );
+
+    const service = createSyncService({
+      db,
+      logger: createLogger() as any,
+      projectRoot,
+      localDeviceIdPath,
+      fileService: { dispose: () => {} } as any,
+      laneService: {
+        list: async () => [],
+        create: async () => ({}),
+        archive: async () => {},
+      } as any,
+      prService: {} as any,
+      sessionService: { list: () => [] } as any,
+      ptyService: {} as any,
+      computerUseArtifactBrokerService: {} as any,
+      agentChatService: { listSessions: async () => [] } as any,
+      processService: { listRuntime: () => [] } as any,
+    });
+
+    activeDisposers.push(async () => {
+      await service.dispose();
+      db.close();
+    });
+
+    await service.initialize();
+    const status = await service.getStatus();
+
+    expect(createSyncHostServiceMock.mock.calls.map((call: any[]) => call[0]?.port)[0]).toBe(8787);
+    expect(status.localDevice.lastPort).toBe(8787);
   }, 30_000);
 
   describe("cooperative brain election", () => {

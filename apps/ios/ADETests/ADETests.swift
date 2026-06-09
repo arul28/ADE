@@ -1126,20 +1126,24 @@ final class ADETests: XCTestCase {
   func testSyncConnectPortCandidatesFallbackBetweenAdeDefaultPorts() {
     XCTAssertEqual(
       syncConnectPortCandidates(primaryPort: 8787, addresses: ["100.75.20.63"]),
-      Array(8787...8799)
+      Array(8787...8800)
     )
     XCTAssertEqual(
       syncConnectPortCandidates(primaryPort: 8788, addresses: ["192.168.1.10"]),
-      [8788, 8787] + Array(8789...8799)
+      [8788, 8787] + Array(8789...8800)
     )
     XCTAssertEqual(
       syncConnectPortCandidates(primaryPort: 9000, addresses: ["100.75.20.63"]),
-      [9000] + Array(8787...8799)
+      [9000] + Array(8787...8800)
     )
     XCTAssertEqual(
       syncConnectPortCandidates(primaryPort: 9000, addresses: ["192.168.1.10"]),
       [9000]
     )
+    XCTAssertTrue(
+      syncConnectPortCandidates(primaryPort: 8790, addresses: ["100.75.20.63"]).contains(8800)
+    )
+    XCTAssertEqual(SyncTailnetDiscovery.portCandidates, SyncDirectHostPorts.portCandidates)
   }
 
   func testSyncRoamDecisionUsesSavedTailnetWhenWifiDrops() {
@@ -1273,6 +1277,49 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(
       service.automaticReconnectAddressesForTesting(profile),
       ["100.75.20.63", "192.168.1.8"]
+    )
+  }
+
+  @MainActor
+  func testSyncAutomaticReconnectPrefersTailnetOnCellularWithoutManualRoamFlag() {
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+    let profile = HostConnectionProfile(
+      hostIdentity: "host-1",
+      hostName: "Mac Studio",
+      port: 8790,
+      authKind: "paired",
+      pairedDeviceId: "phone-1",
+      lastRemoteDbVersion: 0,
+      lastHostDeviceId: "host-1",
+      lastSuccessfulAddress: "192.168.1.8",
+      savedAddressCandidates: ["192.168.1.8", "100.75.20.63"],
+      discoveredLanAddresses: ["192.168.1.8"],
+      tailscaleAddress: "100.75.20.63"
+    )
+    service.setNetworkPathForTesting(
+      usesWiFi: false,
+      usesCellular: true,
+      usesWiredEthernet: false
+    )
+    service.applyDiscoveredHostsForTesting([
+      DiscoveredSyncHost(
+        id: "bonjour-host",
+        serviceName: "ADE Sync Mac 8800",
+        hostName: "Mac Studio",
+        hostIdentity: "host-1",
+        port: 8800,
+        addresses: ["192.168.1.8"],
+        tailscaleAddress: "100.75.20.63",
+        lastResolvedAt: "2026-04-23T00:00:00.000Z"
+      ),
+    ])
+
+    XCTAssertEqual(
+      service.automaticReconnectAddressesForTesting(profile),
+      ["100.75.20.63", "192.168.1.8"]
+    )
+    XCTAssertTrue(
+      syncConnectPortCandidates(primaryPort: profile.port, addresses: service.automaticReconnectAddressesForTesting(profile)).contains(8800)
     )
   }
 
@@ -1515,6 +1562,17 @@ final class ADETests: XCTestCase {
 
     XCTAssertEqual(syncConnectionStateAfterTransportFailure(error: fatalError, fallback: .connecting), .error)
     XCTAssertEqual(syncConnectionStateAfterTransportFailure(error: transientError, fallback: .connecting), .connecting)
+  }
+
+  func testSyncRequestTimeoutWithoutInboundTrafficPublishesReconnectingState() {
+    XCTAssertEqual(
+      syncConnectionStateAfterRequestTimeout(lastInboundMessageAt: nil, fallback: .error),
+      .connecting
+    )
+    XCTAssertEqual(
+      syncConnectionStateAfterRequestTimeout(lastInboundMessageAt: 42, fallback: .error),
+      .error
+    )
   }
 
   func testSyncClientHeartbeatUsesHalfServerIntervalWithBounds() {

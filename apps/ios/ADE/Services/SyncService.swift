@@ -278,15 +278,12 @@ enum SyncTailnetDiscovery {
   static let hostCandidates = [
     "ade-sync",
   ]
-  static let portCandidates = [
-    8787,
-    8788,
-  ]
+  static let portCandidates = SyncDirectHostPorts.portCandidates
 }
 
 enum SyncDirectHostPorts {
   static let defaultPort = 8787
-  static let retryWindow = 12
+  static let retryWindow = 13
   static let portCandidates = Array(defaultPort...(defaultPort + retryWindow))
 }
 
@@ -513,6 +510,13 @@ private func syncIsMessageTooLongError(_ error: Error) -> Bool {
 
 func syncConnectionStateAfterTransportFailure(error: Error, fallback: RemoteConnectionState) -> RemoteConnectionState {
   syncIsMessageTooLongError(error) ? .error : fallback
+}
+
+func syncConnectionStateAfterRequestTimeout(
+  lastInboundMessageAt: TimeInterval?,
+  fallback: RemoteConnectionState
+) -> RemoteConnectionState {
+  lastInboundMessageAt == nil ? .connecting : fallback
 }
 
 func syncShouldPublishForegroundReconnectStarted(
@@ -5832,7 +5836,7 @@ final class SyncService: ObservableObject {
   }
 
   private func automaticReconnectAddresses(for profile: HostConnectionProfile) -> [String] {
-    let preferTailnet = shouldPreferTailnetReconnect()
+    let preferTailnet = shouldPreferTailnetReconnect() || shouldPreferTailnetForUserReconnect(profile)
     let matchingDiscovery = discoveredHosts.filter { host in
       matchesDiscoveredHost(host, profile: profile)
     }
@@ -6454,6 +6458,23 @@ final class SyncService: ObservableObject {
 
   func prioritizedReconnectAddressesForTesting(_ profile: HostConnectionProfile) -> [String] {
     prioritizedAddresses(for: profile)
+  }
+
+  func setNetworkPathForTesting(
+    usesWiFi: Bool,
+    usesCellular: Bool,
+    usesWiredEthernet: Bool,
+    isExpensive: Bool = false,
+    isConstrained: Bool = false
+  ) {
+    lastNetworkPathSnapshot = SyncNetworkPathSnapshot(
+      isSatisfied: true,
+      usesWiFi: usesWiFi,
+      usesCellular: usesCellular,
+      usesWiredEthernet: usesWiredEthernet,
+      isExpensive: isExpensive,
+      isConstrained: isConstrained
+    )
   }
 
   func setActiveProjectForTesting(projectId: String?, rootPath: String?) {
@@ -7356,16 +7377,24 @@ final class SyncService: ObservableObject {
     timeoutError: NSError = SyncRequestTimeout.error()
   ) {
     guard pending[requestId] != nil else { return }
+    let shouldReconnect = disconnectOnTimeout
+      && syncShouldReconnectAfterRequestTimeout(
+        now: ProcessInfo.processInfo.systemUptime,
+        lastInboundMessageAt: lastInboundMessageAt
+      )
     if disconnectOnTimeout,
-       syncShouldReconnectAfterRequestTimeout(
-         now: ProcessInfo.processInfo.systemUptime,
-         lastInboundMessageAt: lastInboundMessageAt
-       ) {
+       shouldReconnect {
       // handleTransportFailure tears the socket down before flipping the
       // reduced-load preference, so we must NOT call markConnectionLoadStrained
       // here — calling it pre-teardown re-subscribes chat events on the
       // doomed socket. The transport-failure path strains the load itself.
-      handleTransportFailure(timeoutError)
+      handleTransportFailure(
+        timeoutError,
+        connectionState: syncConnectionStateAfterRequestTimeout(
+          lastInboundMessageAt: lastInboundMessageAt,
+          fallback: .error
+        )
+      )
     } else {
       // The default `timeoutError` is `SyncRequestTimeout.error()`, whose
       // message says "Reconnecting now." That copy is only honest in the

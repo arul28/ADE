@@ -232,7 +232,10 @@ function migrateLegacySyncSecretFile(args: {
 }
 const RUNNING_PROCESS_STATES = new Set(["starting", "running", "degraded"]);
 const CHAT_TOOL_TYPES = new Set(["codex-chat", "claude-chat", "opencode-chat"]);
-const SYNC_HOST_PORT_RETRY_WINDOW = 12;
+const LEGACY_SYNC_HOST_PORT_RETRY_WINDOW = 12;
+const SYNC_HOST_PORT_RETRY_WINDOW = 13;
+const LEGACY_SYNC_HOST_MAX_PORT = DEFAULT_SYNC_HOST_PORT + LEGACY_SYNC_HOST_PORT_RETRY_WINDOW;
+const SYNC_HOST_MAX_PORT = DEFAULT_SYNC_HOST_PORT + SYNC_HOST_PORT_RETRY_WINDOW;
 const LOCAL_LANE_PRESENCE_HEARTBEAT_MS = 30_000;
 const TRANSFER_READINESS_CACHE_MS = 15_000;
 const STALE_BRAIN_LAST_SEEN_MS = 5 * 60_000;
@@ -362,9 +365,12 @@ function createInactiveTailnetDiscoveryStatus(
 }
 
 function buildHostPortCandidates(preferredPort: number | null | undefined): number[] {
-  const preferred = Number.isFinite(preferredPort)
-    ? Math.max(0, Math.min(65_535, Math.floor(Number(preferredPort))))
+  const parsedPreferred = Number.isFinite(preferredPort)
+    ? Math.max(1, Math.min(65_535, Math.floor(Number(preferredPort))))
     : DEFAULT_SYNC_HOST_PORT;
+  const preferred = parsedPreferred || DEFAULT_SYNC_HOST_PORT;
+  const preferredIsLegacyReachable = preferred >= DEFAULT_SYNC_HOST_PORT
+    && preferred <= LEGACY_SYNC_HOST_MAX_PORT;
   const candidates: number[] = [];
   const seen = new Set<number>();
   const add = (port: number) => {
@@ -373,19 +379,19 @@ function buildHostPortCandidates(preferredPort: number | null | undefined): numb
     seen.add(normalized);
     candidates.push(normalized);
   };
-  add(preferred);
-  if (preferred !== DEFAULT_SYNC_HOST_PORT) {
+  if (preferredIsLegacyReachable) {
+    add(preferred);
+  } else {
     add(DEFAULT_SYNC_HOST_PORT);
   }
-  for (let offset = 1; offset <= SYNC_HOST_PORT_RETRY_WINDOW; offset += 1) {
-    if (preferred + offset <= 65_535) {
-      add(preferred + offset);
-    }
+  for (let port = DEFAULT_SYNC_HOST_PORT; port <= SYNC_HOST_MAX_PORT; port += 1) {
+    add(port);
   }
-  if (preferred !== DEFAULT_SYNC_HOST_PORT) {
+  if (preferred < DEFAULT_SYNC_HOST_PORT || preferred > SYNC_HOST_MAX_PORT) {
+    add(preferred);
     for (let offset = 1; offset <= Math.min(4, SYNC_HOST_PORT_RETRY_WINDOW); offset += 1) {
-      if (DEFAULT_SYNC_HOST_PORT + offset <= 65_535) {
-        add(DEFAULT_SYNC_HOST_PORT + offset);
+      if (preferred + offset <= 65_535) {
+        add(preferred + offset);
       }
     }
   }
