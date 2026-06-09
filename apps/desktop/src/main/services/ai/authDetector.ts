@@ -801,7 +801,14 @@ async function verifyCursorApiKey(
   try {
     const { Cursor } = await loadCursorSdk();
     const user = await Promise.race([
-      Cursor.me({ apiKey: key }),
+      (async () => {
+        const account = await Cursor.me({ apiKey: key });
+        const models = await Cursor.models.list({ apiKey: key });
+        if (!Array.isArray(models) || models.length === 0) {
+          throw new Error("Cursor model verification returned no available models.");
+        }
+        return account;
+      })(),
       new Promise<never>((_, reject) => {
         timeoutHandle = setTimeout(
           () => reject(new Error("Verification timed out.")),
@@ -816,7 +823,7 @@ async function verifyCursorApiKey(
       message: user.userEmail
         ? `Connection verified for ${user.userEmail}.`
         : "Connection verified successfully.",
-      endpoint: "Cursor.me",
+      endpoint: "Cursor.me + Cursor.models.list",
       statusCode: null,
       verifiedAt,
     };
@@ -832,7 +839,7 @@ async function verifyCursorApiKey(
       provider: "cursor",
       ok: false,
       message: authFailed ? "Authentication failed. Check API key." : `Verification request failed: ${message}`,
-      endpoint: "Cursor.me",
+      endpoint: "Cursor.me + Cursor.models.list",
       statusCode: null,
       verifiedAt,
     };

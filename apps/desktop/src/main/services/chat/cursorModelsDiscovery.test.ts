@@ -643,8 +643,13 @@ describe("parseCursorCliModelsStdout", () => {
     });
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    const afterFailure = await discoverCursorSdkModelDescriptors("crsr_test");
+    cursorModelsListMock.mockClear();
+    fetchMock.mockClear();
+
+    const afterFailure = await discoverCursorSdkModelDescriptors("crsr_test", { mode: "cached-or-fallback" });
     expect(afterFailure).toEqual([]);
+    expect(cursorModelsListMock).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("bounds direct Cursor SDK model list discovery with a timeout", async () => {

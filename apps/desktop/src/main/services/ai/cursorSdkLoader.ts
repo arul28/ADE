@@ -1,11 +1,11 @@
 import { createRequire } from "node:module";
-import path from "node:path";
+import { fileURLToPath } from "node:url";
 import type * as CursorSdkModuleTypes from "@cursor/sdk";
 
 export type CursorSdkModule = typeof CursorSdkModuleTypes;
 
 const requireFromRuntime = createRequire(
-  typeof __filename === "string" ? __filename : path.join(process.cwd(), "package.json"),
+  typeof __filename === "string" ? __filename : fileURLToPath(import.meta.url),
 );
 
 let sdkModule: CursorSdkModule | null = null;
@@ -31,14 +31,11 @@ function loadCursorSdkWithRequire(originalError: unknown): CursorSdkModule {
   try {
     return requireFromRuntime("@cursor/sdk") as CursorSdkModule;
   } catch (fallbackError) {
-    if (isCursorSdkResolutionError(originalError)) {
-      const error = new Error(
-        `Failed to load @cursor/sdk via dynamic import or packaged runtime resolution. import=${errorText(originalError)} require=${errorText(fallbackError)}`,
-      );
-      (error as { cause?: unknown }).cause = originalError;
-      throw error;
-    }
-    throw originalError instanceof Error ? originalError : fallbackError;
+    const error = new Error(
+      `Failed to load @cursor/sdk via dynamic import or packaged runtime resolution. import=${errorText(originalError)} require=${errorText(fallbackError)}`,
+    );
+    (error as { cause?: unknown }).cause = originalError;
+    throw error;
   }
 }
 

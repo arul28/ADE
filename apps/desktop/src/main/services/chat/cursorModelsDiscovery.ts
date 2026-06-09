@@ -627,12 +627,7 @@ function getCachedCursorSdkModels(apiKey?: string | null): CursorCliModelRow[] |
   const now = Date.now();
   const normalizedApiKey = apiKey?.trim() || undefined;
   const keyHash = hashKeyForCache(normalizedApiKey);
-  if (
-    sdkLastFailure
-    && sdkLastFailure.keyHash === keyHash
-    && now - sdkLastFailure.at < TTL_MS
-    && (sdkLastFailure.kind === "auth" || sdkLastFailure.kind === "unavailable")
-  ) {
+  if (hasRecentCursorSdkFailure(keyHash, now)) {
     return null;
   }
   if (sdkCached && sdkCached.keyHash === keyHash && now - sdkCached.at < TTL_MS && sdkCached.models.length) {
@@ -641,6 +636,14 @@ function getCachedCursorSdkModels(apiKey?: string | null): CursorCliModelRow[] |
   return null;
 }
 
+function hasRecentCursorSdkFailure(keyHash: string, now = Date.now()): boolean {
+  return Boolean(
+    sdkLastFailure
+    && sdkLastFailure.keyHash === keyHash
+    && now - sdkLastFailure.at < TTL_MS
+    && (sdkLastFailure.kind === "auth" || sdkLastFailure.kind === "unavailable"),
+  );
+}
 
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
   let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
@@ -730,7 +733,7 @@ async function fetchCursorModelsFromOfficialApi(apiKey: string | undefined): Pro
 function warmCursorModelsFromSdk(apiKey?: string | null): void {
   const normalizedApiKey = apiKey?.trim() || undefined;
   const keyHash = hashKeyForCache(normalizedApiKey);
-  if (sdkWarmInFlight?.keyHash === keyHash) return;
+  if (sdkWarmInFlight?.keyHash === keyHash || hasRecentCursorSdkFailure(keyHash)) return;
 
   const generation = sdkCacheGeneration;
   const promise = fetchCursorModelsFromSdk(

@@ -1,11 +1,11 @@
 import { createRequire } from "node:module";
-import path from "node:path";
+import { fileURLToPath } from "node:url";
 import type * as DroidSdkModuleTypes from "@factory/droid-sdk";
 
 export type DroidSdkModule = typeof DroidSdkModuleTypes;
 
 const requireFromRuntime = createRequire(
-  typeof __filename === "string" ? __filename : path.join(process.cwd(), "package.json"),
+  typeof __filename === "string" ? __filename : fileURLToPath(import.meta.url),
 );
 
 let sdkModule: DroidSdkModule | null = null;
@@ -31,14 +31,11 @@ function loadDroidSdkWithRequire(originalError: unknown): DroidSdkModule {
   try {
     return requireFromRuntime("@factory/droid-sdk") as DroidSdkModule;
   } catch (fallbackError) {
-    if (isDroidSdkResolutionError(originalError)) {
-      const error = new Error(
-        `Failed to load @factory/droid-sdk via dynamic import or packaged runtime resolution. import=${errorText(originalError)} require=${errorText(fallbackError)}`,
-      );
-      (error as { cause?: unknown }).cause = originalError;
-      throw error;
-    }
-    throw originalError instanceof Error ? originalError : fallbackError;
+    const error = new Error(
+      `Failed to load @factory/droid-sdk via dynamic import or packaged runtime resolution. import=${errorText(originalError)} require=${errorText(fallbackError)}`,
+    );
+    (error as { cause?: unknown }).cause = originalError;
+    throw error;
   }
 }
 

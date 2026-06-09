@@ -16,11 +16,12 @@ import { Buffer } from "node:buffer";
 import fs from "node:fs";
 import { createRequire } from "node:module";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 type CursorSdk = typeof import("@cursor/sdk");
 
 const requireFromRuntime = createRequire(
-  typeof __filename === "string" ? __filename : path.join(process.cwd(), "package.json"),
+  typeof __filename === "string" ? __filename : fileURLToPath(import.meta.url),
 );
 let sdkModulePromise: Promise<CursorSdk> | null = null;
 
