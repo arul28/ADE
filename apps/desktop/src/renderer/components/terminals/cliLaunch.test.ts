@@ -254,6 +254,30 @@ describe("buildTrackedCliStartupCommand", () => {
       expect(standardLaunch.startupCommand).toContain("fastMode");
       expect(standardLaunch.startupCommand).toContain("false");
     });
+
+    it("translates Claude ultracode to xhigh effort plus per-session settings", () => {
+      const launch = buildTrackedCliLaunchCommand({
+        provider: "claude",
+        permissionMode: "default",
+        sessionId: "00000000-0000-0000-0000-000000000001",
+        model: "anthropic/claude-fable-5",
+        reasoningEffort: "ultracode",
+        fastMode: true,
+      });
+
+      expect(launch.args).toEqual(expect.arrayContaining([
+        "--model",
+        "fable",
+        "--effort",
+        "xhigh",
+        "--settings",
+        JSON.stringify({ fastMode: true, ultracode: true }),
+      ]));
+      expect(launch.args).not.toEqual(expect.arrayContaining(["--effort", "ultracode"]));
+      expect(launch.startupCommand).toContain("--model fable");
+      expect(launch.startupCommand).toContain("--effort xhigh");
+      expect(launch.startupCommand).toContain("ultracode");
+    });
   });
 
   describe("codex provider", () => {
@@ -661,6 +685,19 @@ describe("tracked CLI resume helpers", () => {
       launch: { permissionMode: "default", model: "anthropic/claude-opus-4-8", fastMode: false },
     })).toBe(
       "claude --permission-mode default --model claude-opus-4-8 --settings \"{\\\"fastMode\\\":false}\" --resume claude-session-1",
+    );
+
+    expect(buildTrackedCliResumeCommand({
+      provider: "claude",
+      targetKind: "session",
+      targetId: "claude-session-1",
+      launch: {
+        permissionMode: "default",
+        model: "anthropic/claude-fable-5",
+        reasoningEffort: "ultracode",
+      },
+    })).toBe(
+      "claude --permission-mode default --model fable --effort xhigh --settings \"{\\\"ultracode\\\":true}\" --resume claude-session-1",
     );
 
     expect(buildTrackedCliResumeCommand({

@@ -179,10 +179,14 @@ function normalizeDroidReasoningEffort(value: unknown): string | null {
     case "high":
     case "xhigh":
     case "max":
+    case "ultracode":
       return normalized;
     case "extra-high":
     case "extra_high":
       return "xhigh";
+    case "ultra-code":
+    case "ultra_code":
+      return "ultracode";
     default:
       return null;
   }

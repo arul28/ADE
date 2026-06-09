@@ -194,6 +194,7 @@ private func workCuratedModelCatalogGroups() -> [WorkModelCatalogGroup] {
         key: "anthropic",
         displayName: "Anthropic",
         models: [
+          WorkModelOption(id: "claude-fable-5", displayName: "Claude Fable 5", tier: .flagship, tagline: "Flagship · 1M context", provider: "claude"),
           WorkModelOption(id: "claude-opus-4-8", displayName: "Claude Opus 4.8 1M", tier: .flagship, tagline: "Flagship · 1M context", provider: "claude"),
           WorkModelOption(id: "claude-opus-4-7", displayName: "Claude Opus 4.7", tier: .flagship, tagline: "Flagship · best for complex reasoning", provider: "claude"),
           WorkModelOption(id: "claude-opus-4-7-1m", displayName: "Claude Opus 4.7 1M", tier: .flagship, tagline: "1M-token context window", provider: "claude"),
@@ -231,6 +232,8 @@ private func workCuratedModelCatalogGroups() -> [WorkModelCatalogGroup] {
         key: "anthropic",
         displayName: "Anthropic",
         models: [
+          WorkModelOption(id: "claude-fable-5-thinking-high", displayName: "Claude Fable 5 Thinking High", tier: .flagship, tagline: "Cursor-routed Fable", provider: "claude"),
+          WorkModelOption(id: "claude-fable-5-thinking-xhigh", displayName: "Claude Fable 5 Thinking XHigh", tier: .flagship, tagline: "Cursor-routed Fable", provider: "claude"),
           WorkModelOption(id: "claude-4.6-sonnet-thinking", displayName: "Sonnet 4.6 · Thinking", tier: .reasoning, tagline: "Extended reasoning", provider: "claude"),
           WorkModelOption(id: "claude-4.6-sonnet", displayName: "Sonnet 4.6", tier: .balanced, tagline: "Fast coding default", provider: "claude"),
         ]
@@ -312,6 +315,7 @@ private func workCuratedModelCatalogGroups() -> [WorkModelCatalogGroup] {
         key: "anthropic",
         displayName: "Anthropic",
         models: [
+          WorkModelOption(id: "opencode/anthropic/claude-fable-5", displayName: "Claude Fable 5", tier: .flagship, tagline: "Flagship · 1M context", provider: "claude"),
           WorkModelOption(id: "opencode/anthropic/claude-sonnet-4-6", displayName: "Claude Sonnet 4.6", tier: .balanced, tagline: "Balanced coder", provider: "claude"),
           WorkModelOption(id: "opencode/anthropic/claude-opus-4-8", displayName: "Claude Opus 4.8 1M", tier: .flagship, tagline: "Flagship reasoning · 1M context", provider: "claude"),
           WorkModelOption(id: "opencode/anthropic/claude-opus-4-7", displayName: "Claude Opus 4.7", tier: .flagship, tagline: "Flagship reasoning", provider: "claude"),
@@ -570,6 +574,8 @@ private func workModelLookupKeys(_ raw: String?) -> [String] {
 
 private func workCanonicalClaudeRegistryId(for raw: String) -> String? {
   switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+  case "fable", "claude-fable-5", "anthropic/claude-fable-5":
+    return "anthropic/claude-fable-5"
   case "claude-opus-4-8", "anthropic/claude-opus-4-8",
        "opus-4.8", "opus-4-8", "opus-4.8-1m", "opus-4.8[1m]", "opus-4-8-1m",
        "claude-opus-4-8-1m", "claude-opus-4-8[1m]", "anthropic/claude-opus-4-8-1m":
@@ -589,6 +595,8 @@ private func workCanonicalClaudeRegistryId(for raw: String) -> String? {
 
 private func workClaudeRuntimeModelId(for raw: String) -> String? {
   switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+  case "fable", "claude-fable-5", "anthropic/claude-fable-5":
+    return "claude-fable-5"
   case "claude-opus-4-8", "anthropic/claude-opus-4-8",
        "opus-4.8", "opus-4-8", "opus-4.8-1m", "opus-4.8[1m]", "opus-4-8-1m",
        "claude-opus-4-8-1m", "claude-opus-4-8[1m]", "anthropic/claude-opus-4-8-1m":
@@ -652,6 +660,8 @@ func workModelIdsEquivalent(_ lhs: String?, _ rhs: String?) -> Bool {
 
 func workKnownModelDisplayName(_ raw: String?) -> String? {
   switch raw?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? "" {
+  case "fable", "anthropic/claude-fable-5", "claude-fable-5", "opencode/anthropic/claude-fable-5":
+    return "Claude Fable 5"
   case "anthropic/claude-opus-4-8", "claude-opus-4-8",
        "opus-4.8", "opus-4-8", "opus-4.8-1m", "opus-4.8[1m]", "opus-4-8-1m",
        "anthropic/claude-opus-4-8-1m", "claude-opus-4-8-1m", "claude-opus-4-8[1m]":
@@ -757,7 +767,7 @@ private func workModelProviderKey(for model: AgentChatModelInfo, topLevelProvide
     if normalizedId.hasPrefix("glm-") || normalizedId.hasPrefix("kimi-") || normalizedId.hasPrefix("minimax-") || normalizedId.hasPrefix("custom:") {
       return "factory"
     }
-    if normalizedId.contains("claude") || normalizedId.contains("sonnet") || normalizedId.contains("opus") || normalizedId.contains("haiku") {
+    if normalizedId.contains("claude") || normalizedId.contains("fable") || normalizedId.contains("sonnet") || normalizedId.contains("opus") || normalizedId.contains("haiku") {
       return "anthropic"
     }
     if normalizedId.contains("gpt") || normalizedId.contains("codex") {
@@ -782,7 +792,7 @@ private func workModelProviderKey(for model: AgentChatModelInfo, topLevelProvide
     if normalizedFamily == "cursor" {
       return "cursor"
     }
-    if normalizedFamily == "anthropic" || normalizedId.contains("claude") || normalizedId.contains("sonnet") || normalizedId.contains("opus") || normalizedId.contains("haiku") {
+    if normalizedFamily == "anthropic" || normalizedId.contains("claude") || normalizedId.contains("fable") || normalizedId.contains("sonnet") || normalizedId.contains("opus") || normalizedId.contains("haiku") {
       return "anthropic"
     }
     if normalizedFamily == "openai" || normalizedFamily == "codex" || normalizedId.contains("gpt") || normalizedId.contains("codex") {
@@ -861,7 +871,7 @@ private func workDynamicModelTier(for modelId: String, curated: WorkModelOption?
   if normalized.contains("mini") || normalized.contains("spark") || normalized.contains("flash") || normalized == "auto" || normalized.contains("haiku") {
     return .fast
   }
-  if normalized.contains("opus") || normalized.contains("gpt-5.5") || normalized == "gpt-5" {
+  if normalized.contains("fable") || normalized.contains("opus") || normalized.contains("gpt-5.5") || normalized == "gpt-5" {
     return .flagship
   }
   return .balanced
@@ -966,7 +976,7 @@ func workModelCatalogGroupKey(for currentModelId: String, currentProvider: Strin
   if modelId.hasPrefix("opencode/") || provider == "opencode" {
     return "opencode"
   }
-  if provider == "anthropic" || provider == "claude" || modelId.hasPrefix("anthropic/") || modelId.contains("claude") || modelId.contains("sonnet") || modelId.contains("opus") || modelId.contains("haiku") {
+  if provider == "anthropic" || provider == "claude" || modelId.hasPrefix("anthropic/") || modelId.contains("claude") || modelId.contains("fable") || modelId.contains("sonnet") || modelId.contains("opus") || modelId.contains("haiku") {
     return "claude"
   }
   if provider == "openai" || provider == "codex" || modelId.hasPrefix("openai/") || modelId.contains("gpt") || modelId.contains("codex") {

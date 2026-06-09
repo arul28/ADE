@@ -369,7 +369,7 @@ import {
 } from "../../../shared/orchestrationRuntimePolicy";
 import type { ProcessRegistryService } from "../runtime/processRegistryService";
 
-const CLAUDE_AGENT_SDK_VERSION = "0.2.139";
+const CLAUDE_AGENT_SDK_VERSION = "0.3.170";
 const CLAUDE_AGENT_SDK_API = "v1_query";
 const CLAUDE_AGENT_SDK_TELEMETRY_TAGS = {
   "claude_sdk.version": CLAUDE_AGENT_SDK_VERSION,
@@ -1995,8 +1995,9 @@ const CLAUDE_REASONING_EFFORTS: Array<{ effort: string; description: string }> =
   { effort: "low", description: "Quick responses with minimal reasoning." },
   { effort: "medium", description: "Balanced reasoning depth and speed." },
   { effort: "high", description: "Deep reasoning for complex tasks." },
-  { effort: "xhigh", description: "Extra-high reasoning depth for Opus 4.7." },
-  { effort: "max", description: "Maximum reasoning depth. Best for Opus on hard problems." },
+  { effort: "xhigh", description: "Extra-high reasoning depth for complex Claude tasks." },
+  { effort: "max", description: "Maximum reasoning depth. Best for hard problems." },
+  { effort: "ultracode", description: "Ultracode orchestration for the hardest coding tasks." },
 ];
 
 const KNOWN_CLAUDE_EFFORTS = new Set(CLAUDE_REASONING_EFFORTS.map((e) => e.effort));
@@ -2051,6 +2052,16 @@ function normalizeReasoningEffort(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const normalized = value.trim().toLowerCase();
   return normalized.length > 0 ? normalized : null;
+}
+
+function claudeRuntimeEffortForReasoningEffort(effort: string | null | undefined): "low" | "medium" | "high" | "xhigh" | "max" | null {
+  if (effort === "low" || effort === "medium" || effort === "high" || effort === "xhigh" || effort === "max") return effort;
+  if (effort === "ultracode") return "xhigh";
+  return null;
+}
+
+function isClaudeUltracodeEffort(effort: string | null | undefined): boolean {
+  return effort === "ultracode";
 }
 
 type CodexServiceTier = "fast";
@@ -3415,6 +3426,86 @@ function normalizeClaudeTodoItems(
   });
 
   return items.length ? items : null;
+}
+
+type ClaudeTodoItems = Extract<AgentChatEvent, { type: "todo_update" }>["items"];
+type ClaudeTaskTodoState = ClaudeTodoItems[number];
+
+function normalizeClaudeTaskTodoStatus(value: unknown): ClaudeTaskTodoState["status"] {
+  const normalized = typeof value === "string" ? value.trim().toLowerCase() : "";
+  if (normalized === "completed") return "completed";
+  if (normalized === "in_progress" || normalized === "inprogress" || normalized === "running") return "in_progress";
+  return "pending";
+}
+
+function firstNonEmptyString(...values: unknown[]): string | null {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim().length) return value.trim();
+  }
+  return null;
+}
+
+function updateClaudeTaskTodosFromToolInput(
+  tasksById: Map<string, ClaudeTaskTodoState>,
+  toolName: string,
+  input: unknown,
+  fallbackId: string,
+): ClaudeTodoItems | null {
+  if (!input || typeof input !== "object") return null;
+  const record = input as Record<string, unknown>;
+  const normalizedToolName = toolName.trim();
+  if (normalizedToolName === "TaskCreate") {
+    const description = firstNonEmptyString(record.subject, record.description, record.activeForm);
+    if (!description) return null;
+    const id = firstNonEmptyString(record.taskId, record.id, record.metadata && typeof record.metadata === "object"
+      ? (record.metadata as Record<string, unknown>).taskId
+      : null) ?? fallbackId;
+    tasksById.set(id, {
+      id,
+      description,
+      status: normalizeClaudeTaskTodoStatus(record.status),
+    });
+  } else if (normalizedToolName === "TaskUpdate") {
+    const id = firstNonEmptyString(record.taskId, record.id);
+    if (!id) return null;
+    const rawStatus = typeof record.status === "string" ? record.status.trim().toLowerCase() : "";
+    if (rawStatus === "deleted") {
+      tasksById.delete(id);
+    } else {
+      const existing = tasksById.get(id);
+      const description = firstNonEmptyString(record.subject, record.description, record.activeForm, existing?.description)
+        ?? id;
+      tasksById.set(id, {
+        id,
+        description,
+        status: normalizeClaudeTaskTodoStatus(record.status ?? existing?.status),
+      });
+    }
+  } else {
+    return null;
+  }
+  return [...tasksById.values()];
+}
+
+function remapClaudeTaskTodoFromRuntimeEvent(
+  tasksById: Map<string, ClaudeTaskTodoState>,
+  previousId: string | null | undefined,
+  nextId: string | null | undefined,
+  updates?: { description?: string | null; status?: ClaudeTaskTodoState["status"] },
+): ClaudeTodoItems | null {
+  const fromId = previousId?.trim();
+  const toId = nextId?.trim();
+  if (!fromId || !toId || fromId === toId) return null;
+  const existing = tasksById.get(fromId);
+  if (!existing) return null;
+  tasksById.delete(fromId);
+  tasksById.set(toId, {
+    ...existing,
+    id: toId,
+    description: firstNonEmptyString(updates?.description, existing.description) ?? existing.description,
+    status: updates?.status ?? existing.status,
+  });
+  return [...tasksById.values()];
 }
 
 async function buildStreamingUserContent(
@@ -10903,6 +10994,7 @@ export function createAgentChatService(args: {
     const toolInputJsonByContentIndex = new Map<number, string>();
     const toolUseMetaByContentIndex = new Map<number, { toolName: string; itemId: string; toolUseId?: string }>();
     const emittedClaudeTodoIds = new Set<string>();
+    const claudeTaskTodosById = new Map<string, ClaudeTaskTodoState>();
     const emitClaudeToolCompletion = (
       itemId: string,
       result: Record<string, unknown>,
@@ -10955,9 +11047,10 @@ export function createAgentChatService(args: {
       }
     };
     const maybeEmitTodoUpdate = (toolName: string, input: unknown, itemId: string): void => {
-      if (toolName !== "TodoWrite") return;
       if (emittedClaudeTodoIds.has(itemId)) return;
-      const todoItems = normalizeClaudeTodoItems(input ?? {});
+      const todoItems = toolName === "TodoWrite"
+        ? normalizeClaudeTodoItems(input ?? {})
+        : updateClaudeTaskTodosFromToolInput(claudeTaskTodosById, toolName, input ?? {}, itemId);
       if (!todoItems) return;
       emittedClaudeTodoIds.add(itemId);
       emitChatEvent(managed, { type: "todo_update", items: todoItems, turnId });
@@ -11405,6 +11498,18 @@ export function createAgentChatService(args: {
             ...(taskType ? { taskType } : {}),
             ...(workflowName ? { workflowName } : {}),
           });
+          const remappedTodoItems = remapClaudeTaskTodoFromRuntimeEvent(
+            claudeTaskTodosById,
+            parentToolUseId,
+            taskId,
+            {
+              description,
+              status: "in_progress",
+            },
+          );
+          if (remappedTodoItems) {
+            emitChatEvent(managed, { type: "todo_update", items: remappedTodoItems, turnId });
+          }
           emitChatEvent(managed, {
             type: "subagent_started",
             taskId,
@@ -11694,15 +11799,7 @@ export function createAgentChatService(args: {
                   itemId,
                   turnId,
                 });
-                const todoItems = toolName === "TodoWrite" ? normalizeClaudeTodoItems(block.input ?? {}) : null;
-                if (todoItems && !emittedClaudeTodoIds.has(itemId)) {
-                  emittedClaudeTodoIds.add(itemId);
-                  emitChatEvent(managed, {
-                    type: "todo_update",
-                    items: todoItems,
-                    turnId,
-                  });
-                }
+                maybeEmitTodoUpdate(toolName, block.input, itemId);
                 if (typeof contentIndex === "number") {
                   const initial =
                     block.input != null && typeof block.input === "object" && Object.keys(block.input as object).length
@@ -11741,6 +11838,7 @@ export function createAgentChatService(args: {
                   const taskInput = extractTaskToolInput(parsed);
                   if (taskInput) runtime.taskToolInputByToolUseId.set(meta.toolUseId, taskInput);
                 }
+                maybeEmitTodoUpdate(meta.toolName, parsed, meta.itemId);
                 const syntheticResult = maybeSyntheticToolResult(meta.toolName, parsed, meta.itemId, turnId);
                 if (syntheticResult && !emittedSyntheticItemIds.has(meta.itemId)) {
                   emittedSyntheticItemIds.add(meta.itemId);
@@ -12238,8 +12336,12 @@ export function createAgentChatService(args: {
     const claudeSupportsReasoning = claudeDescriptor?.capabilities.reasoning ?? true;
     if (claudeSupportsReasoning) {
       const effort = managed.session.reasoningEffort;
-      if (effort === "low" || effort === "medium" || effort === "high" || effort === "xhigh" || effort === "max") {
-        cliArgs.push("--effort", effort);
+      const runtimeEffort = claudeRuntimeEffortForReasoningEffort(effort);
+      if (runtimeEffort) {
+        cliArgs.push("--effort", runtimeEffort);
+      }
+      if (isClaudeUltracodeEffort(effort)) {
+        cliArgs.push("--settings", JSON.stringify({ ultracode: true }));
       }
     }
     cliArgs.push(promptText);
@@ -16712,8 +16814,15 @@ export function createAgentChatService(args: {
     const claudeSupportsReasoning = claudeDescriptor?.capabilities.reasoning ?? true;
     if (claudeSupportsReasoning) {
       const effort = managed.session.reasoningEffort;
-      if (effort === "low" || effort === "medium" || effort === "high" || effort === "xhigh" || effort === "max") {
-        opts.effort = effort as any;
+      const runtimeEffort = claudeRuntimeEffortForReasoningEffort(effort);
+      if (runtimeEffort) {
+        opts.effort = runtimeEffort as any;
+      }
+      if (isClaudeUltracodeEffort(effort)) {
+        opts.settings = {
+          ...((opts.settings ?? {}) as Record<string, unknown>),
+          ultracode: true,
+        } as any;
       }
     }
     const model = opts.model ?? resolveClaudeCliModel(managed.session.model) ?? DEFAULT_CLAUDE_MODEL;

@@ -26,12 +26,14 @@ export function reasoningChipLabel(effort: string | null | undefined): string | 
   if (lower === "high") return "HI";
   if (lower === "xhigh") return "XH";
   if (lower === "max") return "MAX";
+  if (lower === "ultracode") return "ULTRA";
   return lower.slice(0, 3).toUpperCase();
 }
 
 function tierLabel(tier: string): string {
   if (tier === "xhigh") return "Extra High";
   if (tier === "max") return "Max";
+  if (tier === "ultracode") return "Ultracode";
   return tier.charAt(0).toUpperCase() + tier.slice(1);
 }
 

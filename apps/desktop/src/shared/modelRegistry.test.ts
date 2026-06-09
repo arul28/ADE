@@ -235,14 +235,30 @@ describe("modelRegistry", () => {
     })).toBe("claude-opus-4-7-thinking-low-fast");
   });
 
-  describe("Claude Opus descriptors", () => {
-    it("adds Opus 4.8 1M at the top of the Claude model registry", () => {
+  describe("Claude descriptors", () => {
+    it("adds Fable 5 above Opus 4.8 in the Claude model registry", () => {
       expect(MODEL_REGISTRY.filter((model) => model.family === "anthropic").slice(0, 4).map((model) => model.id)).toEqual([
+        "anthropic/claude-fable-5",
         "anthropic/claude-opus-4-8",
         "anthropic/claude-opus-4-7",
         "anthropic/claude-opus-4-7-1m",
-        "anthropic/claude-sonnet-4-6",
       ]);
+      const fable = getModelById("anthropic/claude-fable-5");
+      expect(fable).toBeTruthy();
+      expect(fable).toMatchObject({
+        displayName: "Claude Fable 5",
+        shortId: "fable",
+        family: "anthropic",
+        providerRoute: "claude-cli",
+        providerModelId: "claude-fable-5",
+        contextWindow: 1_000_000,
+        maxOutputTokens: 128_000,
+        inputPricePer1M: 10,
+        outputPricePer1M: 50,
+      });
+      expect(fable?.reasoningTiers).toEqual(["low", "medium", "high", "xhigh", "max", "ultracode"]);
+      expect(resolveModelAlias("fable")?.id).toBe("anthropic/claude-fable-5");
+
       const opus = getModelById("anthropic/claude-opus-4-8");
       expect(opus).toBeTruthy();
       expect(opus).toMatchObject({
@@ -256,7 +272,7 @@ describe("modelRegistry", () => {
         inputPricePer1M: 5,
         outputPricePer1M: 25,
       });
-      expect(opus?.reasoningTiers).toEqual(["low", "medium", "high", "xhigh", "max"]);
+      expect(opus?.reasoningTiers).toEqual(["low", "medium", "high", "xhigh", "max", "ultracode"]);
       expect(opus?.serviceTiers).toEqual(["fast"]);
     });
 

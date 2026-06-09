@@ -333,11 +333,8 @@ export function buildTrackedCliLaunchCommand(args: {
     if (model) {
       commandArgs.push("--model", model);
     }
-    const reasoningEffort = normalizeCliFlagValue(args.reasoningEffort);
-    if (reasoningEffort) {
-      commandArgs.push("--effort", reasoningEffort);
-    }
-    commandArgs.push(...claudeFastModeSettingsFlags(args.fastMode));
+    commandArgs.push(...claudeRuntimeEffortFlags(args.reasoningEffort));
+    commandArgs.push(...claudeSessionSettingsFlags(args.fastMode, args.reasoningEffort));
     const guidance = buildAdeCliAgentGuidance(skillRoots);
     commandArgs.push("--append-system-prompt", guidance);
     commandArgs.push(...permissionModeToClaudeFlag(permissionMode));
@@ -506,6 +503,24 @@ export function claudeFastModeSettingsFlags(fastMode: boolean | null | undefined
   if (fastMode === true) return ["--settings", JSON.stringify({ fastMode: true })];
   if (fastMode === false) return ["--settings", JSON.stringify({ fastMode: false })];
   return [];
+}
+
+function claudeRuntimeEffortFlags(reasoningEffort: string | null | undefined): string[] {
+  const effort = normalizeCliFlagValue(reasoningEffort);
+  if (!effort) return [];
+  if (effort === "ultracode") return ["--effort", "xhigh"];
+  return ["--effort", effort];
+}
+
+function claudeSessionSettingsFlags(
+  fastMode: boolean | null | undefined,
+  reasoningEffort: string | null | undefined,
+): string[] {
+  const settings: Record<string, unknown> = {};
+  if (fastMode === true) settings.fastMode = true;
+  if (fastMode === false) settings.fastMode = false;
+  if (normalizeCliFlagValue(reasoningEffort) === "ultracode") settings.ultracode = true;
+  return Object.keys(settings).length ? ["--settings", JSON.stringify(settings)] : [];
 }
 
 function workTabCliPrompt(initialPrompt: string | null, skillRoots: readonly string[]): string {
@@ -762,9 +777,8 @@ export function buildTrackedCliResumeCommand(
     const parts = ["claude", ...permissionModeToClaudeFlag(permissionMode)];
     const claudeModel = resolveClaudeCliModelForLaunch(model);
     if (claudeModel) parts.push("--model", claudeModel);
-    const claudeReasoningEffort = normalizeCliFlagValue(reasoningEffort);
-    if (claudeReasoningEffort) parts.push("--effort", claudeReasoningEffort);
-    parts.push(...claudeFastModeSettingsFlags(fastMode));
+    parts.push(...claudeRuntimeEffortFlags(reasoningEffort));
+    parts.push(...claudeSessionSettingsFlags(fastMode, reasoningEffort));
     parts.push("--resume");
     if (targetId) parts.push(targetId);
     if (prompt) parts.push(prompt);
