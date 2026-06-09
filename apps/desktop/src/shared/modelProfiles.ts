@@ -83,7 +83,9 @@ export const CLAUDE_THINKING_LEVELS: ThinkingOption[] = [
   { value: "low", label: "Low" },
   { value: "medium", label: "Medium" },
   { value: "high", label: "High" },
+  { value: "xhigh", label: "Extra High" },
   { value: "max", label: "Max" },
+  { value: "ultracode", label: "Ultracode" },
 ];
 
 export const CODEX_THINKING_LEVELS: ThinkingOption[] = [

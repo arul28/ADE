@@ -269,6 +269,27 @@ describe("ChatSubagentsPanel (pane variant)", () => {
     ).toBeTruthy();
   });
 
+  it("renders task snapshots in the agents pane even when no subagents exist", () => {
+    render(
+      <ChatSubagentsPanel
+        snapshots={[]}
+        events={[]}
+        variant="pane"
+        todoItems={[
+          { id: "todo-1", description: "Inspect model catalog", status: "completed" },
+          { id: "todo-2", description: "Wire task pane", status: "in_progress" },
+          { id: "todo-3", description: "Run focused checks", status: "pending" },
+        ]}
+      />,
+    );
+
+    expect(screen.getByText("Tasks")).toBeTruthy();
+    expect(screen.getByText("1/3 complete · 1 active")).toBeTruthy();
+    expect(screen.getByText("Wire task pane")).toBeTruthy();
+    expect(screen.getByText("Run focused checks")).toBeTruthy();
+    expect(screen.queryByText(/No agent activity/i)).toBeNull();
+  });
+
   it("toggles the inline drawer closed on a second click of the same row", async () => {
     const probeSubagentTranscript = vi.fn().mockResolvedValue(false);
     render(

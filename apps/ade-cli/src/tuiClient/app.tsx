@@ -209,7 +209,7 @@ import type {
 } from "./types";
 
 const PURPLE = theme.color.accent;
-const EFFORTS = ["low", "medium", "high", "xhigh", "max"];
+const EFFORTS = ["low", "medium", "high", "xhigh", "max", "ultracode"];
 const PROVIDER_OPTIONS: Array<{ value: AdeCodeProvider; label: string }> = [
   { value: "claude", label: "Claude" },
   { value: "codex", label: "Codex" },
@@ -722,10 +722,14 @@ function modelCatalogClientRefreshTtlMs(provider?: AgentChatModelCatalogRefreshP
 
 function firstReasoningEffortForModel(model: AgentChatModelInfo | null | undefined, provider: AdeCodeProvider): string | null {
   const efforts = model?.reasoningEfforts?.map((entry) => entry.effort).filter(Boolean) ?? [];
+  const modelId = `${model?.modelId ?? ""} ${model?.id ?? ""} ${model?.displayName ?? ""}`.toLowerCase();
+  if (modelId.includes("fable") && efforts.includes("high")) return "high";
   if (efforts.includes(DEFAULT_CODEX_REASONING_EFFORT)) return DEFAULT_CODEX_REASONING_EFFORT;
   if (efforts.length) return efforts[0] ?? null;
   const descriptor = model?.modelId || model?.id ? getModelById(model.modelId ?? model.id) : undefined;
   const descriptorEfforts = descriptor?.reasoningTiers ?? [];
+  const descriptorId = `${descriptor?.id ?? ""} ${descriptor?.providerModelId ?? ""} ${descriptor?.displayName ?? ""}`.toLowerCase();
+  if (descriptorId.includes("fable") && descriptorEfforts.includes("high")) return "high";
   if (descriptorEfforts.includes(DEFAULT_CODEX_REASONING_EFFORT)) return DEFAULT_CODEX_REASONING_EFFORT;
   if (descriptorEfforts.length) return descriptorEfforts[0] ?? null;
   return provider === "codex" ? DEFAULT_CODEX_REASONING_EFFORT : null;
@@ -761,7 +765,9 @@ function fallbackModelStatePatch(provider: AdeCodeProvider): Pick<AdeCodeModelSt
     model: descriptor ? getRuntimeModelRefForDescriptor(descriptor, registryProvider) : "gpt-5.5",
     modelId: descriptor?.id ?? null,
     displayName: descriptor?.displayName ?? providerLabel(provider),
-    reasoningEffort: descriptor?.reasoningTiers?.[0] ?? (provider === "codex" ? DEFAULT_CODEX_REASONING_EFFORT : null),
+    reasoningEffort: descriptor?.id.includes("fable") && descriptor.reasoningTiers?.includes("high")
+      ? "high"
+      : descriptor?.reasoningTiers?.[0] ?? (provider === "codex" ? DEFAULT_CODEX_REASONING_EFFORT : null),
   };
 }
 

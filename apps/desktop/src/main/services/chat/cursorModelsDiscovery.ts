@@ -151,6 +151,8 @@ type ParsedCursorCliVariant = {
 };
 
 const CURSOR_CLI_REASONING_SUFFIXES = [
+  ["ultra-code", "ultracode"],
+  ["ultracode", "ultracode"],
   ["extra-high", "xhigh"],
   ["xhigh", "xhigh"],
   ["minimal", "minimal"],
@@ -182,7 +184,7 @@ function parseCursorCliVariantId(id: string): ParsedCursorCliVariant | null {
     }
   }
 
-  const thinkingMiddle = base.match(/^(.*)-(none|minimal|low|medium|high|xhigh|extra-high|max)-thinking$/i);
+  const thinkingMiddle = base.match(/^(.*)-(none|minimal|low|medium|high|xhigh|extra-high|max|ultracode|ultra-code)-thinking$/i);
   if (thinkingMiddle) {
     const reasoningEffort = normalizeCursorReasoningValue(thinkingMiddle[2]);
     if (reasoningEffort) {
@@ -355,6 +357,7 @@ function normalizeCursorReasoningValue(value: unknown): string | null {
   const normalized = normalizeCursorMetadataText(value);
   if (!normalized) return null;
   if (normalized === "extra-high" || normalized === "extra_high") return "xhigh";
+  if (normalized === "ultra-code" || normalized === "ultra_code") return "ultracode";
   if ([
     "none",
     "dynamic",
@@ -365,6 +368,7 @@ function normalizeCursorReasoningValue(value: unknown): string | null {
     "high",
     "xhigh",
     "max",
+    "ultracode",
     "thinking",
   ].includes(normalized)) {
     return normalized;

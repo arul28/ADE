@@ -114,9 +114,16 @@ describe("getModelsForProvider", () => {
 // ---------------------------------------------------------------------------
 
 describe("thinking levels", () => {
-  it("CLAUDE_THINKING_LEVELS exposes the Opus-capable effort ladder", () => {
-    expect(CLAUDE_THINKING_LEVELS).toHaveLength(4);
-    expect(CLAUDE_THINKING_LEVELS.map((t) => t.value)).toEqual(["low", "medium", "high", "max"]);
+  it("CLAUDE_THINKING_LEVELS exposes the Claude Code effort ladder", () => {
+    expect(CLAUDE_THINKING_LEVELS).toHaveLength(6);
+    expect(CLAUDE_THINKING_LEVELS.map((t) => t.value)).toEqual([
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max",
+      "ultracode",
+    ]);
   });
 
   it("CODEX_THINKING_LEVELS has four levels including xhigh", () => {
@@ -193,6 +200,10 @@ describe("thinkingLevelToReasoningEffort", () => {
 
   it("maps 'max' to 'max'", () => {
     expect(thinkingLevelToReasoningEffort("max")).toBe("max");
+  });
+
+  it("maps 'ultracode' to 'ultracode'", () => {
+    expect(thinkingLevelToReasoningEffort("ultracode")).toBe("ultracode");
   });
 
   it("returns 'low' for null", () => {

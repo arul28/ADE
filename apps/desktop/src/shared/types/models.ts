@@ -4,7 +4,7 @@
 
 export type ModelProvider = "claude" | "codex" | "cursor" | "droid" | "opencode" | (string & {});
 
-export type ThinkingLevel = "none" | "minimal" | "low" | "medium" | "high" | "max" | "xhigh";
+export type ThinkingLevel = "none" | "minimal" | "low" | "medium" | "high" | "max" | "xhigh" | "ultracode";
 
 export type ModelConfig = {
   /** Optional provider hint; routing is resolved from modelId via model registry. */

@@ -89,6 +89,9 @@ const OPENCODE_REASONING_VARIANT_ALIASES: Record<string, string> = {
   "extra-high": "xhigh",
   extra_high: "xhigh",
   max: "max",
+  ultracode: "ultracode",
+  ultra_code: "ultracode",
+  "ultra-code": "ultracode",
 };
 
 const OPENCODE_SERVICE_VARIANT_ALIASES: Record<string, string> = {

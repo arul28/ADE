@@ -106,7 +106,6 @@ import { ChatComputerUsePanel } from "./ChatComputerUsePanel";
 import { ChatIosSimulatorPanel } from "./ChatIosSimulatorPanel";
 import { ChatAppControlPanel } from "./ChatAppControlPanel";
 import { ChatSubagentsPanel } from "./ChatSubagentsPanel";
-import { ChatTasksPanel } from "./ChatTasksPanel";
 import { ChatFileChangesPanel } from "./ChatFileChangesPanel";
 import { RewindFilesConfirmDialog, type RewindFilesConfirmDialogState } from "./RewindFilesConfirmDialog";
 import { buildRewindPreviewFiles, deriveRewindDiffSummaries } from "./rewindFilesPreview";
@@ -1534,11 +1533,13 @@ function writeLastUsedReasoningEffort(args: {
 function selectReasoningEffort(args: {
   tiers: string[];
   preferred: string | null;
+  modelId?: string | null;
 }): string | null {
   if (!args.tiers.length) return null;
   if (args.preferred && args.tiers.includes(args.preferred)) {
     return args.preferred;
   }
+  if (args.modelId?.toLowerCase().includes("fable") && args.tiers.includes("high")) return "high";
   return args.tiers.includes("medium") ? "medium" : args.tiers[0]!;
 }
 
@@ -4285,6 +4286,7 @@ export function AgentChatPane({
     setReasoningEffort(selectReasoningEffort({
       tiers,
       preferred: config.reasoningEffort,
+      modelId: config.modelId,
     }));
     setFastMode(modelSupportsFastMode(desc) && config.fastMode);
     setExecutionMode(config.executionMode);
@@ -5213,7 +5215,7 @@ export function AgentChatPane({
     }
     if (reasoningEffort && reasoningTiers.includes(reasoningEffort)) return;
     const preferred = readLastUsedReasoningEffort({ laneId, modelId });
-    setReasoningEffort(selectReasoningEffort({ tiers: reasoningTiers, preferred }));
+    setReasoningEffort(selectReasoningEffort({ tiers: reasoningTiers, preferred, modelId }));
   }, [laneId, modelId, reasoningEffort, reasoningTiers]);
 
   useEffect(() => {
@@ -6325,7 +6327,7 @@ export function AgentChatPane({
     const nextModel = nextProvider === "opencode" ? nextModelId : runtimeFacingModelId(nextDesc, nextModelId);
     const tiers = nextDesc?.reasoningTiers ?? [];
     const preferred = readLastUsedReasoningEffort({ laneId, modelId: nextModelId });
-    const nextReasoningEffort = selectReasoningEffort({ tiers, preferred });
+    const nextReasoningEffort = selectReasoningEffort({ tiers, preferred, modelId: nextModelId });
     const nextRec = recommendedOpenCodePermissionModeForModel(nextPermissionDesc);
     return {
       nextDesc,
@@ -8339,10 +8341,11 @@ export function AgentChatPane({
   const ChatActionsToolbarIcon = chatActionsToolbarIcon;
   const proofArtifactCount = computerUseSnapshot?.artifacts?.length ?? 0;
   const proofSessionId = selectedSessionId ?? "";
-  const agentsTabContent = selectedSubagentPaneAvailable ? (
+  const agentsTabContent = selectedSubagentPaneAvailable || selectedTodoItems.length > 0 ? (
     <ChatSubagentsPanel
       snapshots={selectedSubagentSnapshots}
       events={selectedEvents}
+      todoItems={selectedTodoItems}
       variant="pane"
       onSelectSubagent={(selection) => {
         setSubagentView({
@@ -8376,7 +8379,7 @@ export function AgentChatPane({
     />
   ) : (
     <div className="flex h-full min-h-0 flex-col items-center justify-center px-4 py-8 text-center">
-      <p className="font-sans text-[13px] text-fg/50">No subagents detected</p>
+      <p className="font-sans text-[13px] text-fg/50">No agent activity detected</p>
     </div>
   );
   const proofTabContent = (
@@ -9399,7 +9402,7 @@ export function AgentChatPane({
               const desc = resolveModelDescriptorWithRuntimeCatalog(nextModelId) ?? getModelById(nextModelId);
               const tiers = desc?.reasoningTiers ?? [];
               const preferred = readLastUsedReasoningEffort({ laneId, modelId: nextModelId });
-              const nextEffort = selectReasoningEffort({ tiers, preferred });
+              const nextEffort = selectReasoningEffort({ tiers, preferred, modelId: nextModelId });
               const previousPermissionDesc = getModelDescriptorForPermissionMode(parallelModelSlots[index]?.modelId ?? "");
               const nextPermissionDesc = getModelDescriptorForPermissionMode(nextModelId);
               const nextRecommendedOpenCodeMode = recommendedOpenCodePermissionModeForModel(nextPermissionDesc);
@@ -9852,9 +9855,6 @@ export function AgentChatPane({
                         <span className="text-emerald-400/75">+{sessionDelta.insertions}</span>
                         <span className="text-red-400/75">-{sessionDelta.deletions}</span>
                       </div>
-                    ) : null}
-                    {selectedTodoItems.length ? (
-                      <ChatTasksPanel items={selectedTodoItems} />
                     ) : null}
                     {selectedTurnDiffSummaries.length && selectedSessionId ? (
                       <ChatFileChangesPanel

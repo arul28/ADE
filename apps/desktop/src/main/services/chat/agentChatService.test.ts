@@ -10737,6 +10737,208 @@ describe("createAgentChatService", () => {
         }),
       ]));
     });
+
+    it("emits todo_update events for Claude TaskCreate and TaskUpdate tool uses", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      const send = vi.fn().mockResolvedValue(undefined);
+      let streamCall = 0;
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield {
+            type: "system",
+            subtype: "init",
+            session_id: "sdk-session-1",
+            slash_commands: [],
+          };
+          return;
+        }
+
+        yield {
+          type: "assistant",
+          message: {
+            content: [
+              {
+                type: "tool_use",
+                id: "task-create-1",
+                name: "TaskCreate",
+                input: {
+                  subject: "Inspect SDK changes",
+                  description: "Inspect the latest Claude Agent SDK changes",
+                  activeForm: "Inspecting SDK changes",
+                },
+              },
+            ],
+            usage: { input_tokens: 1, output_tokens: 1 },
+          },
+        };
+        yield {
+          type: "system",
+          subtype: "task_started",
+          task_id: "task-1",
+          parent_tool_use_id: "task-create-1",
+          description: "Inspect SDK changes",
+          task_type: "other",
+        };
+        yield {
+          type: "assistant",
+          message: {
+            content: [
+              {
+                type: "tool_use",
+                id: "task-update-1",
+                name: "TaskUpdate",
+                input: {
+                  taskId: "task-1",
+                  status: "in_progress",
+                  activeForm: "Applying SDK changes",
+                },
+              },
+            ],
+            usage: { input_tokens: 1, output_tokens: 1 },
+          },
+        };
+        yield {
+          type: "result",
+          usage: { input_tokens: 1, output_tokens: 1 },
+        };
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send,
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-session-1",
+        setPermissionMode,
+      } as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "Track the SDK task list.",
+      });
+
+      const todoEvents = events
+        .map((event) => event.event)
+        .filter((event): event is Extract<AgentChatEventEnvelope["event"], { type: "todo_update" }> =>
+          event.type === "todo_update",
+        );
+      expect(todoEvents.length).toBeGreaterThanOrEqual(3);
+      expect(todoEvents.at(-1)).toMatchObject({
+        type: "todo_update",
+        items: [
+          {
+            id: "task-1",
+            description: "Applying SDK changes",
+            status: "in_progress",
+          },
+        ],
+      });
+
+      expect(events).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          event: expect.objectContaining({
+            type: "tool_call",
+            tool: "TaskCreate",
+            itemId: "task-create-1",
+          }),
+        }),
+        expect.objectContaining({
+          event: expect.objectContaining({
+            type: "tool_call",
+            tool: "TaskUpdate",
+            itemId: "task-update-1",
+          }),
+        }),
+      ]));
+    });
+
+    it("applies Claude task_started updates when the SDK task id matches the tool use id", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const stream = vi.fn(() => (async function* () {
+        yield {
+          type: "system",
+          subtype: "init",
+          session_id: "sdk-session-1",
+          slash_commands: [],
+        };
+        yield {
+          type: "assistant",
+          message: {
+            content: [
+              {
+                type: "tool_use",
+                id: "task-1",
+                name: "TaskCreate",
+                input: {
+                  subject: "Inspect SDK changes",
+                  activeForm: "Inspecting SDK changes",
+                },
+              },
+            ],
+            usage: { input_tokens: 1, output_tokens: 1 },
+          },
+        };
+        yield {
+          type: "system",
+          subtype: "task_started",
+          task_id: "task-1",
+          parent_tool_use_id: "task-1",
+          description: "Inspect SDK changes",
+          task_type: "other",
+        };
+        yield {
+          type: "result",
+          usage: { input_tokens: 1, output_tokens: 1 },
+        };
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send: vi.fn().mockResolvedValue(undefined),
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-session-1",
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      } as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "Track the SDK task list.",
+      });
+
+      const todoEvents = events
+        .map((event) => event.event)
+        .filter((event): event is Extract<AgentChatEventEnvelope["event"], { type: "todo_update" }> =>
+          event.type === "todo_update",
+        );
+
+      expect(todoEvents.at(-1)).toMatchObject({
+        type: "todo_update",
+        items: [
+          {
+            id: "task-1",
+            description: "Inspect SDK changes",
+            status: "in_progress",
+          },
+        ],
+      });
+    });
   });
 
   // --------------------------------------------------------------------------
