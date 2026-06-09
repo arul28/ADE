@@ -11,11 +11,17 @@ import {
   type ServiceManagerSpawnSync,
   type ServiceManagerStatusResult,
 } from "./common";
+import {
+  detectSyncHostSingletonConflict,
+  formatSyncHostSingletonConflictMessage,
+  type SyncHostSingletonDeps,
+} from "../services/sync/syncHostSingleton";
 
 type LaunchdServiceManagerDeps = {
   command?: AdeServiceCommand;
   spawnSync?: ServiceManagerSpawnSync;
   homeDir?: string;
+  syncHostSingletonDeps?: SyncHostSingletonDeps;
 };
 
 function escapeXml(value: string): string {
@@ -33,6 +39,12 @@ function plistArray(values: string[]): string {
     ...values.map((value) => `  <string>${escapeXml(value)}</string>`),
     "</array>",
   ].join("\n");
+}
+
+function launchdPrintOutputText(result: ReturnType<ServiceManagerSpawnSync>): string {
+  if (typeof result.stdout === "string") return result.stdout;
+  if (Buffer.isBuffer(result.stdout)) return result.stdout.toString("utf8");
+  return "";
 }
 
 export function launchAgentPath(homeDir = os.homedir()): string {
@@ -83,6 +95,21 @@ ${plistArray([command.command, ...command.args]).split("\n").map((line) => `  ${
   return sections.join("\n");
 }
 
+function getLoadedLaunchdRunningState(
+  run: ServiceManagerSpawnSync,
+): boolean | null {
+  const uid = typeof process.getuid === "function" ? process.getuid() : os.userInfo().uid;
+  let print = run("launchctl", ["print", `gui/${uid}/${ADE_RUNTIME_SERVICE_NAME}`], { encoding: "utf8" });
+  if (print.status !== 0) {
+    const userPrint = run("launchctl", ["print", `user/${uid}/${ADE_RUNTIME_SERVICE_NAME}`], { encoding: "utf8" });
+    if (userPrint.status === 0) {
+      print = userPrint;
+    }
+  }
+  if (print.status !== 0) return null;
+  return isLaunchdPrintRunning(launchdPrintOutputText(print));
+}
+
 export function installLaunchdService(deps: LaunchdServiceManagerDeps = {}): ServiceManagerResult {
   const run = deps.spawnSync ?? spawnSync;
   const homeDir = deps.homeDir ?? os.homedir();
@@ -92,8 +119,43 @@ export function installLaunchdService(deps: LaunchdServiceManagerDeps = {}): Ser
   fs.mkdirSync(path.dirname(servicePath), { recursive: true });
   const plist = renderLaunchdPlist(command, homeDir);
   fs.mkdirSync(path.join(adeHome, "runtime"), { recursive: true });
-  fs.writeFileSync(servicePath, plist, "utf8");
-  run("launchctl", ["unload", servicePath], { stdio: "ignore" });
+  const existingPlist = fs.existsSync(servicePath)
+    ? fs.readFileSync(servicePath, "utf8")
+    : null;
+  const plistUnchanged = existingPlist === plist;
+  let loadedRunningState: boolean | null = null;
+  if (plistUnchanged) {
+    loadedRunningState = getLoadedLaunchdRunningState(run);
+    if (loadedRunningState === true) {
+      return {
+        ok: true,
+        serviceName: ADE_RUNTIME_SERVICE_NAME,
+        action: "install",
+        path: servicePath,
+        message: "ADE service launchd service is already installed and running.",
+      };
+    }
+  }
+
+  const conflict = detectSyncHostSingletonConflict(deps.syncHostSingletonDeps);
+  if (conflict) {
+    return {
+      ok: false,
+      serviceName: ADE_RUNTIME_SERVICE_NAME,
+      action: "install",
+      path: servicePath,
+      message: formatSyncHostSingletonConflictMessage(conflict),
+    };
+  }
+
+  if (plistUnchanged) {
+    if (loadedRunningState === false) {
+      run("launchctl", ["unload", servicePath], { stdio: "ignore" });
+    }
+  } else {
+    fs.writeFileSync(servicePath, plist, "utf8");
+    run("launchctl", ["unload", servicePath], { stdio: "ignore" });
+  }
   const load = run("launchctl", ["load", servicePath], { encoding: "utf8" });
   if (load.status !== 0) {
     return {

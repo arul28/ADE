@@ -54,6 +54,44 @@ function fileSha256(filePath: string): string {
   return createHash("sha256").update(fs.readFileSync(filePath)).digest("hex");
 }
 
+function writeSyncHostSingletonLock(args: {
+  lockPath: string;
+  pid: number;
+  port: number;
+  appName: string;
+  quitCommand: string;
+}): void {
+  const now = "2026-06-09T00:00:00.000Z";
+  fs.mkdirSync(path.dirname(args.lockPath), { recursive: true });
+  fs.writeFileSync(
+    args.lockPath,
+    `${JSON.stringify({
+      version: 1,
+      owner: {
+        id: "existing-brain",
+        pid: args.pid,
+        port: args.port,
+        appName: args.appName,
+        packageChannel: null,
+        adeHome: path.join(os.homedir(), ".ade"),
+        serviceName: "com.ade.runtime",
+        socketPath: path.join(os.homedir(), ".ade", "sock", "ade.sock"),
+        projectRoot: "/Users/admin/Projects/ADE",
+        commandLine: null,
+        quitCommand: args.quitCommand,
+        createdAt: now,
+        updatedAt: now,
+      },
+    }, null, 2)}\n`,
+    "utf8",
+  );
+}
+
+function currentLaunchdDomain(): string {
+  const uid = typeof process.getuid === "function" ? process.getuid() : os.userInfo().uid;
+  return `gui/${uid}/${ADE_RUNTIME_SERVICE_NAME}`;
+}
+
 describe("resolveAdeServeCommand", () => {
   it("uses node plus the CLI script when argv points at a real script", () => {
     process.argv[1] = path.resolve("src/cli.ts");
@@ -241,6 +279,95 @@ describe("launchd service install", () => {
       { command: "launchctl", args: ["unload", servicePath] },
       { command: "launchctl", args: ["load", servicePath] },
     ]);
+  });
+
+  it("leaves an unchanged running launch agent loaded", () => {
+    const homeDir = makeTempHome("ade-launchd-running-");
+    const servicePath = launchAgentPath(homeDir);
+    fs.mkdirSync(path.dirname(servicePath), { recursive: true });
+    fs.writeFileSync(servicePath, renderLaunchdPlist(serviceCommand, homeDir), "utf8");
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const spawnSync = spawnSequence(calls, [
+      { status: 0, stdout: "state = running\n", stderr: "" },
+    ]);
+
+    const result = installLaunchdService({ command: serviceCommand, spawnSync, homeDir });
+
+    expect(result).toMatchObject({
+      ok: true,
+      serviceName: ADE_RUNTIME_SERVICE_NAME,
+      action: "install",
+      path: servicePath,
+      message: "ADE service launchd service is already installed and running.",
+    });
+    expect(calls).toEqual([
+      { command: "launchctl", args: ["print", currentLaunchdDomain()] },
+    ]);
+  });
+
+  it("reloads an unchanged launch agent when it is loaded but stopped", () => {
+    const homeDir = makeTempHome("ade-launchd-stopped-");
+    const servicePath = launchAgentPath(homeDir);
+    fs.mkdirSync(path.dirname(servicePath), { recursive: true });
+    fs.writeFileSync(servicePath, renderLaunchdPlist(serviceCommand, homeDir), "utf8");
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const spawnSync = spawnSequence(calls, [
+      { status: 0, stdout: "state = waiting\n", stderr: "" },
+      { status: 0, stdout: "", stderr: "" },
+      { status: 0, stdout: "", stderr: "" },
+    ]);
+
+    const result = installLaunchdService({ command: serviceCommand, spawnSync, homeDir });
+
+    expect(result).toMatchObject({
+      ok: true,
+      serviceName: ADE_RUNTIME_SERVICE_NAME,
+      action: "install",
+      path: servicePath,
+    });
+    expect(calls).toEqual([
+      { command: "launchctl", args: ["print", currentLaunchdDomain()] },
+      { command: "launchctl", args: ["unload", servicePath] },
+      { command: "launchctl", args: ["load", servicePath] },
+    ]);
+  });
+
+  it("does not load a launch agent when another sync brain is active", () => {
+    const homeDir = makeTempHome("ade-launchd-conflict-");
+    const servicePath = launchAgentPath(homeDir);
+    const lockPath = path.join(homeDir, "sync-host-lock.json");
+    const existingPid = 1234;
+    writeSyncHostSingletonLock({
+      lockPath,
+      pid: existingPid,
+      port: 8801,
+      appName: "ADE",
+      quitCommand: "ADE_HOME='/Users/example/.ade' '/Applications/ADE.app/Contents/Resources/ade-cli/bin/ade' brain stop --text",
+    });
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const spawnSync = spawnSequence(calls, []);
+
+    const result = installLaunchdService({
+      command: serviceCommand,
+      spawnSync,
+      homeDir,
+      syncHostSingletonDeps: {
+        lockPath,
+        pidAlive: (pid) => pid === existingPid,
+        scanListeners: () => [],
+      },
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      serviceName: ADE_RUNTIME_SERVICE_NAME,
+      action: "install",
+      path: servicePath,
+    });
+    expect(result.message).toContain("Another ADE brain is already hosting mobile sync on port 8801.");
+    expect(result.message).toContain("brain stop --text");
+    expect(calls).toEqual([]);
+    expect(fs.existsSync(servicePath)).toBe(false);
   });
 
   it("surfaces launchctl load failures", () => {

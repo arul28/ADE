@@ -64,6 +64,7 @@ import { createSyncPinStore } from "./syncPinStore";
 import { createSyncRuntimeNameStore } from "./syncRuntimeNameStore";
 import { DEFAULT_SYNC_HOST_PORT } from "./syncProtocol";
 import { createSyncRemoteCommandService, type SyncRemoteCommandService } from "./syncRemoteCommandService";
+import { acquireSyncHostSingleton, type SyncHostSingletonLease } from "./syncHostSingleton";
 import type { ModelPickerStore } from "../modelPickerStore";
 
 type SyncServiceArgs = {
@@ -448,6 +449,7 @@ export function createSyncService(args: SyncServiceArgs) {
   });
 
   let hostService: SyncHostService | null = null;
+  let hostSingletonLease: SyncHostSingletonLease | null = null;
   let refreshRunning = false;
   let refreshQueued = false;
   let disposed = false;
@@ -598,10 +600,18 @@ export function createSyncService(args: SyncServiceArgs) {
     args.onStatusChanged?.(await service.getStatus());
   };
 
+  const releaseHostSingletonLease = (): void => {
+    const lease = hostSingletonLease;
+    hostSingletonLease = null;
+    lease?.dispose();
+  };
+
   const startHostIfNeeded = async (): Promise<void> => {
     if (!hostStartupEnabled || !isCrdtSyncAvailable()) {
       if (hostService) {
         await stopHostIfRunning();
+      } else {
+        releaseHostSingletonLease();
       }
       const currentLocalDevice = deviceRegistryService.ensureLocalDevice();
       deviceRegistryService.touchLocalDevice({
@@ -623,98 +633,112 @@ export function createSyncService(args: SyncServiceArgs) {
     const localDevice = deviceRegistryService.ensureLocalDevice();
     const preferredPort = localDevice.lastPort ?? DEFAULT_SYNC_HOST_PORT;
     let lastError: unknown = null;
-    for (const attemptedPort of buildHostPortCandidates(preferredPort)) {
-      const candidateHostService = createSyncHostService({
-        db: args.db,
-        logger: args.logger,
-        projectId: args.projectId ?? null,
-        projectRoot: args.projectRoot,
-        fileService: args.fileService,
-        laneService: args.laneService,
-        gitService: args.gitService,
-        diffService: args.diffService,
-        conflictService: args.conflictService,
-        prService: args.prService,
-        issueInventoryService: args.issueInventoryService,
-        pathToMergeOrchestrator: args.pathToMergeOrchestrator,
-        queueLandingService: args.queueLandingService,
-        sessionService: args.sessionService,
-        ptyService: args.ptyService,
-        processService: args.processService,
-        agentChatService: args.agentChatService,
-        workerAgentService: args.workerAgentService,
-        workerBudgetService: args.workerBudgetService,
-        workerHeartbeatService: args.workerHeartbeatService,
-        workerRevisionService: args.workerRevisionService,
-        ctoStateService: args.ctoStateService,
-        flowPolicyService: args.flowPolicyService,
-        linearCredentialService: args.linearCredentialService,
-        getLinearIngressService: args.getLinearIngressService,
-        getLinearIssueTracker: args.getLinearIssueTracker,
-        getLinearSyncService: args.getLinearSyncService,
-        projectConfigService: args.projectConfigService,
-        portAllocationService: args.portAllocationService,
-        laneEnvironmentService: args.laneEnvironmentService,
-        laneTemplateService: args.laneTemplateService,
-        rebaseSuggestionService: args.rebaseSuggestionService ?? undefined,
-        autoRebaseService: args.autoRebaseService ?? undefined,
-        dispatchDeeplinkUrl: args.dispatchDeeplinkUrl,
-        computerUseArtifactBrokerService: args.computerUseArtifactBrokerService,
-        pinStore,
-        runtimeNameStore,
-        bootstrapTokenPath: tokenPath,
-        pairingSecretsPath,
-        port: attemptedPort,
-        discoveryEnabled: hostDiscoveryEnabled,
-        runtimeKind: args.runtimeKind ?? "desktop-embedded",
-        runtimeVersion: args.appVersion ?? "",
-        deviceRegistryService,
-        notificationEventBus: args.notificationEventBus ?? null,
-        projectCatalogProvider: args.projectCatalogProvider,
-        remoteCommandService,
-        remoteCommandExecutor: args.remoteCommandExecutor,
-        onStateChanged: () => {
-          void refreshRoleState();
-        },
-      });
-      try {
-        const resolvedPort = await candidateHostService.waitUntilListening();
-        hostService = candidateHostService;
-        hostService.setLocalActiveLanePresence?.(activeLocalLanePresenceIds);
-        deviceRegistryService.touchLocalDevice({
-          lastSeenAt: nowIso(),
-          lastHost: localDevice.ipAddresses[0] ?? localDevice.tailscaleIp ?? localDevice.lastHost,
-          lastPort: resolvedPort,
-        });
-        return;
-      } catch (error) {
-        lastError = error;
-        await candidateHostService.dispose().catch(() => {});
-        const retryable = isRetryableHostBindError(error) && attemptedPort !== 0;
-        args.logger.warn(
-          retryable ? "sync.host_start_port_conflict" : "sync.host_start_failed",
-          {
-            preferredPort,
-            attemptedPort,
-            error: error instanceof Error ? error.message : String(error),
-            code: (error as NodeJS.ErrnoException | null | undefined)?.code ?? null,
+    hostSingletonLease ??= acquireSyncHostSingleton({ projectRoot: args.projectRoot });
+    try {
+      for (const attemptedPort of buildHostPortCandidates(preferredPort)) {
+        const candidateHostService = createSyncHostService({
+          db: args.db,
+          logger: args.logger,
+          projectId: args.projectId ?? null,
+          projectRoot: args.projectRoot,
+          fileService: args.fileService,
+          laneService: args.laneService,
+          gitService: args.gitService,
+          diffService: args.diffService,
+          conflictService: args.conflictService,
+          prService: args.prService,
+          issueInventoryService: args.issueInventoryService,
+          pathToMergeOrchestrator: args.pathToMergeOrchestrator,
+          queueLandingService: args.queueLandingService,
+          sessionService: args.sessionService,
+          ptyService: args.ptyService,
+          processService: args.processService,
+          agentChatService: args.agentChatService,
+          workerAgentService: args.workerAgentService,
+          workerBudgetService: args.workerBudgetService,
+          workerHeartbeatService: args.workerHeartbeatService,
+          workerRevisionService: args.workerRevisionService,
+          ctoStateService: args.ctoStateService,
+          flowPolicyService: args.flowPolicyService,
+          linearCredentialService: args.linearCredentialService,
+          getLinearIngressService: args.getLinearIngressService,
+          getLinearIssueTracker: args.getLinearIssueTracker,
+          getLinearSyncService: args.getLinearSyncService,
+          projectConfigService: args.projectConfigService,
+          portAllocationService: args.portAllocationService,
+          laneEnvironmentService: args.laneEnvironmentService,
+          laneTemplateService: args.laneTemplateService,
+          rebaseSuggestionService: args.rebaseSuggestionService ?? undefined,
+          autoRebaseService: args.autoRebaseService ?? undefined,
+          dispatchDeeplinkUrl: args.dispatchDeeplinkUrl,
+          computerUseArtifactBrokerService: args.computerUseArtifactBrokerService,
+          pinStore,
+          runtimeNameStore,
+          bootstrapTokenPath: tokenPath,
+          pairingSecretsPath,
+          port: attemptedPort,
+          discoveryEnabled: hostDiscoveryEnabled,
+          runtimeKind: args.runtimeKind ?? "desktop-embedded",
+          runtimeVersion: args.appVersion ?? "",
+          deviceRegistryService,
+          notificationEventBus: args.notificationEventBus ?? null,
+          projectCatalogProvider: args.projectCatalogProvider,
+          remoteCommandService,
+          remoteCommandExecutor: args.remoteCommandExecutor,
+          onStateChanged: () => {
+            void refreshRoleState();
           },
-        );
-        if (!retryable) {
-          throw error;
+        });
+        try {
+          const resolvedPort = await candidateHostService.waitUntilListening();
+          hostService = candidateHostService;
+          hostSingletonLease.updatePort(resolvedPort);
+          hostService.setLocalActiveLanePresence?.(activeLocalLanePresenceIds);
+          deviceRegistryService.touchLocalDevice({
+            lastSeenAt: nowIso(),
+            lastHost: localDevice.ipAddresses[0] ?? localDevice.tailscaleIp ?? localDevice.lastHost,
+            lastPort: resolvedPort,
+          });
+          return;
+        } catch (error) {
+          lastError = error;
+          await candidateHostService.dispose().catch(() => {});
+          const retryable = isRetryableHostBindError(error) && attemptedPort !== 0;
+          args.logger.warn(
+            retryable ? "sync.host_start_port_conflict" : "sync.host_start_failed",
+            {
+              preferredPort,
+              attemptedPort,
+              error: error instanceof Error ? error.message : String(error),
+              code: (error as NodeJS.ErrnoException | null | undefined)?.code ?? null,
+            },
+          );
+          if (!retryable) {
+            throw error;
+          }
         }
       }
+      throw lastError instanceof Error
+        ? lastError
+        : new Error("Unable to start the sync host.");
+    } catch (error) {
+      if (!hostService) releaseHostSingletonLease();
+      throw error;
     }
-    throw lastError instanceof Error
-      ? lastError
-      : new Error("Unable to start the sync host.");
   };
 
   const stopHostIfRunning = async (): Promise<void> => {
-    if (!hostService) return;
+    if (!hostService) {
+      releaseHostSingletonLease();
+      return;
+    }
     const current = hostService;
     hostService = null;
-    await current.dispose();
+    try {
+      await current.dispose();
+    } finally {
+      releaseHostSingletonLease();
+    }
   };
 
   const resolveViewerDraftFromRegistry =
