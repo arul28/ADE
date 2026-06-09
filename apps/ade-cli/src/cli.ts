@@ -13364,12 +13364,23 @@ async function runServe(
   }
 
   if (syncEnabled) {
-    const syncHostStartup = preferredSyncProjectId
+    const startSyncHost = () => (preferredSyncProjectId
       ? scopeRegistry.switchSyncHost(preferredSyncProjectId)
-      : scopeRegistry.resolveActiveSyncHost();
-    void syncHostStartup.catch((error: unknown) => {
+      : scopeRegistry.resolveActiveSyncHost());
+    void (async () => {
+      const [{ runSyncHostStartupLoop }, { getRuntimeServiceMainPid }] = await Promise.all([
+        import("./services/sync/syncHostStartupLoop"),
+        import("./serviceManager"),
+      ]);
+      await runSyncHostStartupLoop({
+        startSyncHost,
+        isDone: () => done,
+        log: (message) => process.stderr.write(`${message}\n`),
+        getServiceMainPid: getRuntimeServiceMainPid,
+      });
+    })().catch((error: unknown) => {
       process.stderr.write(
-        `ADE brain sync host failed: ${error instanceof Error ? error.message : String(error)}\n`,
+        `ADE brain sync host startup loop failed: ${error instanceof Error ? error.message : String(error)}\n`,
       );
     });
   }
@@ -13387,8 +13398,17 @@ async function runServe(
         return;
       }
       resolveDone = resolve;
-      process.once("SIGINT", finish);
-      process.once("SIGTERM", finish);
+      // A signal means launchd/systemd or an installer wants this brain gone.
+      // Graceful disposal can wedge on live agent/PTY children; a wedged brain
+      // outlives its service registration and squats on the channel socket and
+      // sync singleton, so force the exit if disposal does not finish in time.
+      const finishFromSignal = () => {
+        finish();
+        const timer = setTimeout(() => process.exit(0), 10_000);
+        timer.unref();
+      };
+      process.once("SIGINT", finishFromSignal);
+      process.once("SIGTERM", finishFromSignal);
     });
   } finally {
     stopParentMonitor();

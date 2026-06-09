@@ -5,6 +5,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   ADE_RUNTIME_SERVICE_NAME,
+  isStaleChannelServeCommandLine,
   renderCommand,
   renderWindowsCommand,
   resolveAdeServeCommand,
@@ -66,8 +67,12 @@ function writeSyncHostSingletonLock(args: {
   port: number;
   appName: string;
   quitCommand: string;
+  packageChannel?: string | null;
+  adeHome?: string;
+  serviceName?: string;
 }): void {
   const now = "2026-06-09T00:00:00.000Z";
+  const adeHome = args.adeHome ?? path.join(os.homedir(), ".ade");
   fs.mkdirSync(path.dirname(args.lockPath), { recursive: true });
   fs.writeFileSync(
     args.lockPath,
@@ -78,10 +83,10 @@ function writeSyncHostSingletonLock(args: {
         pid: args.pid,
         port: args.port,
         appName: args.appName,
-        packageChannel: null,
-        adeHome: path.join(os.homedir(), ".ade"),
-        serviceName: "com.ade.runtime",
-        socketPath: path.join(os.homedir(), ".ade", "sock", "ade.sock"),
+        packageChannel: args.packageChannel ?? null,
+        adeHome,
+        serviceName: args.serviceName ?? "com.ade.runtime",
+        socketPath: path.join(adeHome, "sock", "ade.sock"),
         projectRoot: "/Users/admin/Projects/ADE",
         commandLine: null,
         quitCommand: args.quitCommand,
@@ -208,6 +213,43 @@ describe("resolveAdeServeCommand", () => {
   });
 });
 
+describe("isStaleChannelServeCommandLine", () => {
+  const cliScriptPath = "/Applications/ADE Beta.app/Contents/Resources/ade-cli/cli.cjs";
+  const primarySocketPath = "/Users/example/.ade-beta/sock/ade.sock";
+  const opts = { cliScriptPath, primarySocketPath };
+  const electron = "/Applications/ADE Beta.app/Contents/MacOS/ADE Beta";
+
+  it("matches channel brains with and without an explicit primary socket", () => {
+    expect(isStaleChannelServeCommandLine(`${electron} ${cliScriptPath} serve`, opts)).toBe(true);
+    expect(isStaleChannelServeCommandLine(
+      `${electron} ${cliScriptPath} serve --socket ${primarySocketPath}`,
+      opts,
+    )).toBe(true);
+  });
+
+  it("ignores isolated, installer, and foreign-socket runtimes", () => {
+    expect(isStaleChannelServeCommandLine(`${electron} ${cliScriptPath} serve --no-sync`, opts)).toBe(false);
+    expect(isStaleChannelServeCommandLine(`${electron} ${cliScriptPath} serve --install-service`, opts)).toBe(false);
+    expect(isStaleChannelServeCommandLine(
+      `${electron} ${cliScriptPath} serve --socket /tmp/ade-runtime-dev.sock`,
+      opts,
+    )).toBe(false);
+    expect(isStaleChannelServeCommandLine(
+      `${electron} ${cliScriptPath} serve --socket /Users/example/.ade-beta/sock/i-0c362cb4.sock --no-sync`,
+      opts,
+    )).toBe(false);
+  });
+
+  it("ignores other binaries and non-serve commands", () => {
+    expect(isStaleChannelServeCommandLine(`${electron}`, opts)).toBe(false);
+    expect(isStaleChannelServeCommandLine(`${electron} ${cliScriptPath} doctor`, opts)).toBe(false);
+    expect(isStaleChannelServeCommandLine(
+      "/Applications/ADE.app/Contents/Resources/ade-cli/cli.cjs serve",
+      opts,
+    )).toBe(false);
+  });
+});
+
 describe("service manager status parsers", () => {
   it("detects running launchd services from launchctl print output", () => {
     expect(isLaunchdPrintRunning("state = running\npid = 123\n")).toBe(true);
@@ -272,6 +314,8 @@ describe("launchd service install", () => {
     const spawnSync = spawnSequence(calls, [
       { status: 0, stdout: "", stderr: "" },
       { status: 0, stdout: "", stderr: "" },
+      { status: 0, stdout: "", stderr: "" },
+      { status: 0, stdout: "", stderr: "" },
     ]);
 
     const result = installLaunchdService({ command: serviceCommand, spawnSync, homeDir });
@@ -284,7 +328,9 @@ describe("launchd service install", () => {
     });
     expect(fs.readFileSync(servicePath, "utf8")).toBe(renderLaunchdPlist(serviceCommand, homeDir));
     expect(calls).toEqual([
+      { command: "launchctl", args: ["print", currentLaunchdDomain()] },
       { command: "launchctl", args: ["unload", servicePath] },
+      { command: "ps", args: ["-axo", "pid=,command="] },
       { command: "launchctl", args: ["load", servicePath] },
     ]);
   });
@@ -336,11 +382,12 @@ describe("launchd service install", () => {
     expect(calls).toEqual([
       { command: "launchctl", args: ["print", currentLaunchdDomain()] },
       { command: "launchctl", args: ["unload", servicePath] },
+      { command: "ps", args: ["-axo", "pid=,command="] },
       { command: "launchctl", args: ["load", servicePath] },
     ]);
   });
 
-  it("does not load a launch agent when another sync brain is active", () => {
+  it("does not load a launch agent when another channel's brain hosts sync", () => {
     const homeDir = makeTempHome("ade-launchd-conflict-");
     const servicePath = launchAgentPath(homeDir);
     const lockPath = path.join(homeDir, "sync-host-lock.json");
@@ -349,20 +396,29 @@ describe("launchd service install", () => {
       lockPath,
       pid: existingPid,
       port: 8801,
-      appName: "ADE",
-      quitCommand: "ADE_HOME='/Users/example/.ade' '/Applications/ADE.app/Contents/Resources/ade-cli/bin/ade' brain stop --text",
+      appName: "ADE Beta",
+      packageChannel: "beta",
+      adeHome: path.join(os.homedir(), ".ade-beta"),
+      serviceName: "com.ade.runtime.beta",
+      quitCommand: "ADE_PACKAGE_CHANNEL=beta ADE_HOME='/Users/example/.ade-beta' '/Applications/ADE Beta.app/Contents/Resources/ade-cli/bin/ade-beta' brain stop --text",
     });
     const calls: Array<{ command: string; args: string[] }> = [];
+    const killed: Array<{ pid: number; signal: NodeJS.Signals | number }> = [];
     const spawnSync = spawnSequence(calls, []);
 
     const result = installLaunchdService({
       command: serviceCommand,
       spawnSync,
       homeDir,
+      env: { ...process.env, ADE_HOME: path.join(homeDir, ".ade") },
       syncHostSingletonDeps: {
         lockPath,
         pidAlive: (pid) => pid === existingPid,
         scanListeners: () => [],
+      },
+      terminateDeps: {
+        kill: (pid, signal) => killed.push({ pid, signal }),
+        pidAlive: () => false,
       },
     });
 
@@ -374,14 +430,99 @@ describe("launchd service install", () => {
     });
     expect(result.message).toContain("Another ADE brain is already hosting mobile sync on port 8801.");
     expect(result.message).toContain("brain stop --text");
-    expect(calls).toEqual([]);
+    expect(killed).toEqual([]);
+    expect(calls).toEqual([
+      { command: "launchctl", args: ["print", currentLaunchdDomain()] },
+    ]);
     expect(fs.existsSync(servicePath)).toBe(false);
+  });
+
+  it("reaps a stale same-channel sync brain and installs anyway", () => {
+    const homeDir = makeTempHome("ade-launchd-reap-");
+    const adeHome = path.join(homeDir, ".ade");
+    const servicePath = launchAgentPath(homeDir);
+    const lockPath = path.join(homeDir, "sync-host-lock.json");
+    const existingPid = 1234;
+    writeSyncHostSingletonLock({
+      lockPath,
+      pid: existingPid,
+      port: 8801,
+      appName: "ADE",
+      adeHome,
+      quitCommand: "ADE_HOME='/Users/example/.ade' '/Applications/ADE.app/Contents/Resources/ade-cli/bin/ade' brain stop --text",
+    });
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const killed: Array<{ pid: number; signal: NodeJS.Signals | number }> = [];
+    const spawnSync = spawnSequence(calls, []);
+
+    const result = installLaunchdService({
+      command: serviceCommand,
+      spawnSync,
+      homeDir,
+      env: { ...process.env, ADE_HOME: adeHome },
+      syncHostSingletonDeps: {
+        lockPath,
+        pidAlive: (pid) => pid === existingPid,
+        scanListeners: () => [],
+      },
+      terminateDeps: {
+        kill: (pid, signal) => killed.push({ pid, signal }),
+        pidAlive: () => false,
+      },
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      serviceName: ADE_RUNTIME_SERVICE_NAME,
+      action: "install",
+      path: servicePath,
+    });
+    expect(killed).toEqual([{ pid: existingPid, signal: "SIGTERM" }]);
+    expect(calls.map((call) => [call.command, call.args[0]])).toEqual([
+      ["launchctl", "print"],
+      ["launchctl", "unload"],
+      ["ps", "-axo"],
+      ["launchctl", "load"],
+    ]);
+  });
+
+  it("terminates the previous service child and stale serve processes on restart", () => {
+    const homeDir = makeTempHome("ade-launchd-sweep-");
+    const adeHome = path.join(homeDir, ".ade");
+    const staleServeLine = `  4242 ${serviceCommand.command} serve --socket ${path.join(adeHome, "sock", "ade.sock")}`;
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const killed: Array<{ pid: number; signal: NodeJS.Signals | number }> = [];
+    const spawnSync = spawnSequence(calls, [
+      { status: 0, stdout: "state = running\npid = 9876\n", stderr: "" },
+      { status: 0, stdout: "", stderr: "" },
+      { status: 0, stdout: `${staleServeLine}\n  4243 ${serviceCommand.command} serve --no-sync\n`, stderr: "" },
+      { status: 0, stdout: "", stderr: "" },
+    ]);
+
+    const result = installLaunchdService({
+      command: serviceCommand,
+      spawnSync,
+      homeDir,
+      env: { ...process.env, ADE_HOME: adeHome },
+      terminateDeps: {
+        kill: (pid, signal) => killed.push({ pid, signal }),
+        pidAlive: () => false,
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(killed).toEqual([
+      { pid: 9876, signal: "SIGTERM" },
+      { pid: 4242, signal: "SIGTERM" },
+    ]);
   });
 
   it("surfaces launchctl load failures", () => {
     const homeDir = makeTempHome("ade-launchd-fail-");
     const calls: Array<{ command: string; args: string[] }> = [];
     const spawnSync = spawnSequence(calls, [
+      { status: 0, stdout: "", stderr: "" },
+      { status: 0, stdout: "", stderr: "" },
       { status: 0, stdout: "", stderr: "" },
       { status: 5, stdout: "", stderr: "Load failed" },
     ]);
@@ -390,7 +531,7 @@ describe("launchd service install", () => {
 
     expect(result.ok).toBe(false);
     expect(result.message).toBe("Load failed");
-    expect(calls.map((call) => call.args[0])).toEqual(["unload", "load"]);
+    expect(calls.map((call) => call.args[0])).toEqual(["print", "unload", "-axo", "load"]);
   });
 });
 

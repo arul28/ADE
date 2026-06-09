@@ -6,6 +6,7 @@ import {
   acquireSyncHostSingleton,
   detectSyncHostSingletonConflict,
   formatSyncHostSingletonConflictMessage,
+  isSameChannelSyncHostOwner,
   type SyncHostSingletonOwner,
 } from "./syncHostSingleton";
 
@@ -163,5 +164,42 @@ describe("sync host singleton", () => {
 
     lease.dispose();
     expect(fs.existsSync(lockPath)).toBe(false);
+  });
+});
+
+describe("isSameChannelSyncHostOwner", () => {
+  const betaEnv = {
+    ADE_PACKAGE_CHANNEL: "beta",
+    ADE_HOME: "/Users/example/.ade-beta",
+  } as NodeJS.ProcessEnv;
+
+  it("matches owners by ADE home when recorded", () => {
+    expect(isSameChannelSyncHostOwner(owner({ adeHome: "/Users/example/.ade-beta" }), betaEnv)).toBe(true);
+    expect(isSameChannelSyncHostOwner(owner({ adeHome: "/Users/example/.ade" }), betaEnv)).toBe(false);
+  });
+
+  it("falls back to service name, then channel, when the home is unknown", () => {
+    expect(isSameChannelSyncHostOwner(
+      owner({ adeHome: null, serviceName: "com.ade.runtime.beta" }),
+      betaEnv,
+    )).toBe(true);
+    expect(isSameChannelSyncHostOwner(
+      owner({ adeHome: null, serviceName: "com.ade.runtime" }),
+      betaEnv,
+    )).toBe(false);
+    expect(isSameChannelSyncHostOwner(
+      owner({ adeHome: null, serviceName: null, packageChannel: "beta" }),
+      betaEnv,
+    )).toBe(true);
+    expect(isSameChannelSyncHostOwner(
+      owner({ adeHome: null, serviceName: null, packageChannel: null }),
+      betaEnv,
+    )).toBe(false);
+  });
+
+  it("treats stable defaults as same-channel for a stable install", () => {
+    const stableEnv = {} as NodeJS.ProcessEnv;
+    expect(isSameChannelSyncHostOwner(owner(), stableEnv)).toBe(true);
+    expect(isSameChannelSyncHostOwner(owner({ adeHome: "/Users/example/.ade-beta" }), stableEnv)).toBe(false);
   });
 });

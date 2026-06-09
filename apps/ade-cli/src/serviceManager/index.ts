@@ -1,10 +1,34 @@
+import { spawnSync } from "node:child_process";
 import type { ServiceManagerResult, ServiceManagerStatusResult } from "./common";
 import { ADE_RUNTIME_SERVICE_NAME } from "./common";
-import { getLaunchdServiceStatus, installLaunchdService, uninstallLaunchdService } from "./installLaunchd";
+import { getLaunchdServiceMainPid, getLaunchdServiceStatus, installLaunchdService, uninstallLaunchdService } from "./installLaunchd";
 import { getSystemdServiceStatus, installSystemdService, uninstallSystemdService } from "./installSystemd";
 import { getWindowsServiceStatus, installWindowsService, uninstallWindowsService } from "./installWindows";
 
 export type { ServiceManagerResult, ServiceManagerStatusResult } from "./common";
+
+// Main pid of the channel's installed runtime service, or null when the
+// platform/service does not expose one. Used by the brain to decide whether
+// it is the service-owned process with authority to take over the mobile
+// sync singleton from a stale same-channel sibling.
+export function getRuntimeServiceMainPid(): number | null {
+  switch (process.platform) {
+    case "darwin":
+      return getLaunchdServiceMainPid();
+    case "linux": {
+      const result = spawnSync(
+        "systemctl",
+        ["--user", "show", ADE_RUNTIME_SERVICE_NAME, "-p", "MainPID", "--value"],
+        { encoding: "utf8" },
+      );
+      if (result.status !== 0) return null;
+      const pid = Number(String(result.stdout ?? "").trim());
+      return Number.isFinite(pid) && pid > 0 ? Math.floor(pid) : null;
+    }
+    default:
+      return null;
+  }
+}
 
 export function installRuntimeService(): ServiceManagerResult {
   switch (process.platform) {

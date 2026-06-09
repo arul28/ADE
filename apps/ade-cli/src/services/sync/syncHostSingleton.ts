@@ -386,6 +386,33 @@ export function assertNoSyncHostSingletonConflict(deps: SyncHostSingletonDeps = 
   if (conflict) throw new SyncHostSingletonConflictError(conflict);
 }
 
+function defaultAdeHomeForChannel(channel: string | null): string {
+  if (channel === "beta") return path.join(os.homedir(), ".ade-beta");
+  if (channel === "alpha") return path.join(os.homedir(), ".ade-alpha");
+  return path.join(os.homedir(), ".ade");
+}
+
+// The mobile sync singleton is machine-wide across channels, so a stable
+// brain hosting sync must never be reaped by a beta install (and vice
+// versa). Same-channel owners are stale siblings of the brain being
+// (re)started and are safe to replace.
+export function isSameChannelSyncHostOwner(
+  owner: SyncHostSingletonOwner,
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  const currentChannel = normalizedChannel(env.ADE_PACKAGE_CHANNEL);
+  const currentAdeHome = env.ADE_HOME?.trim() || defaultAdeHomeForChannel(currentChannel);
+  if (owner.adeHome) {
+    return path.resolve(owner.adeHome) === path.resolve(currentAdeHome);
+  }
+  const currentServiceName = env.ADE_RUNTIME_SERVICE_NAME?.trim()
+    || (currentChannel ? `com.ade.runtime.${currentChannel}` : "com.ade.runtime");
+  if (owner.serviceName) {
+    return owner.serviceName === currentServiceName;
+  }
+  return normalizedChannel(owner.packageChannel) === currentChannel;
+}
+
 export function acquireSyncHostSingleton(
   args: { port?: number | null; projectRoot?: string | null },
   deps: SyncHostSingletonDeps = {},

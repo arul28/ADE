@@ -156,6 +156,101 @@ function withRuntimeBuildHash(command: AdeServiceCommand): AdeServiceCommand {
   };
 }
 
+export type TerminatePidDeps = {
+  kill?: (pid: number, signal: NodeJS.Signals | number) => void;
+  pidAlive?: (pid: number) => boolean;
+  graceTimeoutMs?: number;
+};
+
+function defaultKill(pid: number, signal: NodeJS.Signals | number): void {
+  process.kill(pid, signal);
+}
+
+function defaultPidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+export function terminatePidGracefully(pid: number | null, deps: TerminatePidDeps = {}): void {
+  if (!pid || pid <= 0 || pid === process.pid) return;
+  const kill = deps.kill ?? defaultKill;
+  const pidAlive = deps.pidAlive ?? defaultPidAlive;
+  try {
+    kill(pid, "SIGTERM");
+  } catch {
+    return;
+  }
+  const deadline = Date.now() + (deps.graceTimeoutMs ?? 1_500);
+  while (Date.now() < deadline) {
+    if (!pidAlive(pid)) return;
+    sleepSync(50);
+  }
+  try {
+    kill(pid, "SIGKILL");
+  } catch {
+    // best effort
+  }
+}
+
+export function resolveAdeServeCliScriptPath(command: AdeServiceCommand): string {
+  const first = command.args[0]?.trim();
+  if (first && first !== "serve") return first;
+  return command.command;
+}
+
+// A ps command line counts as a stale channel brain when it runs this
+// channel's packaged CLI in `serve` mode against the channel's primary
+// socket. Isolated (--no-sync), installer, and foreign-socket runtimes are
+// other lifecycles and must not be reaped by a service install.
+export function isStaleChannelServeCommandLine(
+  commandLine: string,
+  opts: { cliScriptPath: string; primarySocketPath: string },
+): boolean {
+  const line = commandLine.trim();
+  if (!line || !opts.cliScriptPath) return false;
+  const cliIndex = line.indexOf(opts.cliScriptPath);
+  if (cliIndex < 0) return false;
+  const tail = line.slice(cliIndex + opts.cliScriptPath.length);
+  if (!/^\s+serve(?:\s|$)/.test(tail)) return false;
+  if (/--(?:install-service|uninstall-service|service-status|no-sync)\b/.test(tail)) return false;
+  const socketMatch = tail.match(/--socket(?:=|\s+)(\S+)/);
+  if (socketMatch && path.resolve(socketMatch[1]) !== path.resolve(opts.primarySocketPath)) {
+    return false;
+  }
+  return true;
+}
+
+export function listStaleChannelServePids(
+  run: ServiceManagerSpawnSync,
+  opts: { cliScriptPath: string; primarySocketPath: string; excludePids?: number[] },
+): number[] {
+  const result = run("ps", ["-axo", "pid=,command="], { encoding: "utf8" });
+  if (result.status !== 0) return [];
+  const output = typeof result.stdout === "string"
+    ? result.stdout
+    : Buffer.isBuffer(result.stdout)
+      ? result.stdout.toString("utf8")
+      : "";
+  const exclude = new Set([process.pid, ...(opts.excludePids ?? [])]);
+  const pids: number[] = [];
+  for (const line of output.split(/\r?\n/)) {
+    const match = line.trim().match(/^(\d+)\s+(.+)$/);
+    if (!match) continue;
+    const pid = Number(match[1]);
+    if (!Number.isFinite(pid) || pid <= 0 || exclude.has(pid)) continue;
+    if (isStaleChannelServeCommandLine(match[2], opts)) pids.push(pid);
+  }
+  return pids;
+}
+
 export function shellQuote(value: string): string {
   return `'${value.replace(/'/g, "'\\''")}'`;
 }

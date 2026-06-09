@@ -5,15 +5,20 @@ import path from "node:path";
 import {
   ADE_RUNTIME_SERVICE_NAME,
   type AdeServiceCommand,
+  listStaleChannelServePids,
+  resolveAdeServeCliScriptPath,
   resolveAdeServeCommand,
   serviceManagerResultText,
   type ServiceManagerResult,
   type ServiceManagerSpawnSync,
   type ServiceManagerStatusResult,
+  terminatePidGracefully,
+  type TerminatePidDeps,
 } from "./common";
 import {
   detectSyncHostSingletonConflict,
   formatSyncHostSingletonConflictMessage,
+  isSameChannelSyncHostOwner,
   type SyncHostSingletonDeps,
 } from "../services/sync/syncHostSingleton";
 
@@ -22,6 +27,8 @@ type LaunchdServiceManagerDeps = {
   spawnSync?: ServiceManagerSpawnSync;
   homeDir?: string;
   syncHostSingletonDeps?: SyncHostSingletonDeps;
+  terminateDeps?: TerminatePidDeps;
+  env?: NodeJS.ProcessEnv;
 };
 
 function escapeXml(value: string): string {
@@ -121,50 +128,19 @@ function getLoadedLaunchdState(
   };
 }
 
-function getLoadedLaunchdRunningState(
-  run: ServiceManagerSpawnSync,
-): boolean | null {
-  return getLoadedLaunchdState(run)?.running ?? null;
-}
-
-function pidIsAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-function sleepSync(ms: number): void {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-}
-
-function terminatePid(pid: number | null): void {
-  if (!pid || pid <= 0 || pid === process.pid) return;
-  try {
-    process.kill(pid, "SIGTERM");
-  } catch {
-    return;
-  }
-  const deadline = Date.now() + 1_500;
-  while (Date.now() < deadline) {
-    if (!pidIsAlive(pid)) return;
-    sleepSync(50);
-  }
-  try {
-    process.kill(pid, "SIGKILL");
-  } catch {
-    // best effort
-  }
+export function getLaunchdServiceMainPid(
+  run: ServiceManagerSpawnSync = spawnSync,
+): number | null {
+  return getLoadedLaunchdState(run)?.pid ?? null;
 }
 
 export function installLaunchdService(deps: LaunchdServiceManagerDeps = {}): ServiceManagerResult {
   const run = deps.spawnSync ?? spawnSync;
+  const env = deps.env ?? process.env;
   const homeDir = deps.homeDir ?? os.homedir();
   const servicePath = launchAgentPath(homeDir);
   const command = deps.command ?? resolveAdeServeCommand();
-  const adeHome = command.env?.ADE_HOME?.trim() || process.env.ADE_HOME?.trim() || path.join(homeDir, ".ade");
+  const adeHome = command.env?.ADE_HOME?.trim() || env.ADE_HOME?.trim() || path.join(homeDir, ".ade");
   fs.mkdirSync(path.dirname(servicePath), { recursive: true });
   const plist = renderLaunchdPlist(command, homeDir);
   fs.mkdirSync(path.join(adeHome, "runtime"), { recursive: true });
@@ -172,38 +148,53 @@ export function installLaunchdService(deps: LaunchdServiceManagerDeps = {}): Ser
     ? fs.readFileSync(servicePath, "utf8")
     : null;
   const plistUnchanged = existingPlist === plist;
-  let loadedRunningState: boolean | null = null;
-  if (plistUnchanged) {
-    loadedRunningState = getLoadedLaunchdRunningState(run);
-    if (loadedRunningState === true) {
-      return {
-        ok: true,
-        serviceName: ADE_RUNTIME_SERVICE_NAME,
-        action: "install",
-        path: servicePath,
-        message: "ADE service launchd service is already installed and running.",
-      };
-    }
-  }
-
-  const conflict = detectSyncHostSingletonConflict(deps.syncHostSingletonDeps);
-  if (conflict) {
+  const loaded = getLoadedLaunchdState(run);
+  if (plistUnchanged && loaded?.running === true) {
     return {
-      ok: false,
+      ok: true,
       serviceName: ADE_RUNTIME_SERVICE_NAME,
       action: "install",
       path: servicePath,
-      message: formatSyncHostSingletonConflictMessage(conflict),
+      message: "ADE service launchd service is already installed and running.",
     };
   }
 
-  if (plistUnchanged) {
-    if (loadedRunningState === false) {
-      run("launchctl", ["unload", servicePath], { stdio: "ignore" });
+  // From here on the service is being (re)started, so this install is the
+  // channel's lifecycle authority. Same-channel brains holding the mobile
+  // sync singleton are stale siblings of the service being installed and are
+  // reaped; a brain from another channel keeps sync ownership and fails the
+  // install so a beta update can never tear down the stable host.
+  const conflict = detectSyncHostSingletonConflict(deps.syncHostSingletonDeps);
+  if (conflict) {
+    const ownEnv = command.env ? { ...env, ...command.env } : env;
+    if (!isSameChannelSyncHostOwner(conflict.owner, ownEnv)) {
+      return {
+        ok: false,
+        serviceName: ADE_RUNTIME_SERVICE_NAME,
+        action: "install",
+        path: servicePath,
+        message: formatSyncHostSingletonConflictMessage(conflict),
+      };
     }
-  } else {
+    terminatePidGracefully(conflict.owner.pid, deps.terminateDeps);
+  }
+
+  if (!plistUnchanged) {
     fs.writeFileSync(servicePath, plist, "utf8");
-    run("launchctl", ["unload", servicePath], { stdio: "ignore" });
+  }
+  run("launchctl", ["unload", servicePath], { stdio: "ignore" });
+  // launchctl unload does not reliably terminate a wedged child, and an
+  // orphaned brain keeps the channel socket and sync lock hostage. Reap the
+  // previous service child plus any stale same-channel serve processes
+  // before loading the replacement.
+  terminatePidGracefully(loaded?.pid ?? null, deps.terminateDeps);
+  const stalePids = listStaleChannelServePids(run, {
+    cliScriptPath: resolveAdeServeCliScriptPath(command),
+    primarySocketPath: path.join(adeHome, "sock", "ade.sock"),
+    excludePids: loaded?.pid ? [loaded.pid] : [],
+  });
+  for (const pid of stalePids) {
+    terminatePidGracefully(pid, deps.terminateDeps);
   }
   const load = run("launchctl", ["load", servicePath], { encoding: "utf8" });
   if (load.status !== 0) {
@@ -231,7 +222,7 @@ export function uninstallLaunchdService(): ServiceManagerResult {
   spawnSync("launchctl", ["bootout", `gui/${uid}/${ADE_RUNTIME_SERVICE_NAME}`], { stdio: "ignore" });
   spawnSync("launchctl", ["bootout", `user/${uid}/${ADE_RUNTIME_SERVICE_NAME}`], { stdio: "ignore" });
   spawnSync("launchctl", ["unload", servicePath], { stdio: "ignore" });
-  terminatePid(loaded?.pid ?? null);
+  terminatePidGracefully(loaded?.pid ?? null);
   try { fs.unlinkSync(servicePath); } catch {}
   return {
     ok: true,

@@ -577,6 +577,7 @@ export class LocalRuntimeConnectionPool {
   private activeRuntimePid: number | null = null;
   private ownedRuntimeChild: ChildProcess | null = null;
   private preserveOwnedRuntimeChildOnNextConnect = false;
+  private isolatedRecoveryTimer: NodeJS.Timeout | null = null;
   private readonly coalescedActionCalls = new Map<string, Promise<RemoteRuntimeActionResult>>();
   private readonly projectsByRoot = new Map<string, RemoteRuntimeProjectRecord>();
   private serviceInstallStatus: LocalRuntimeStatus["serviceInstall"] = {
@@ -1130,6 +1131,7 @@ export class LocalRuntimeConnectionPool {
   }
 
   dispose(): void {
+    this.clearIsolatedRecoveryTimer();
     const pending = this.connection;
     this.connection = null;
     this.activeConnection = null;
@@ -1290,31 +1292,44 @@ export class LocalRuntimeConnectionPool {
       });
       return null;
     }
-    try {
-      await waitForSocket(socketPath);
-      const client = await this.connectClient(socketPath);
-      this.ownedRuntimeChild = null;
-      return { client, child: null, socketPath };
-    } catch (error) {
-      if (error instanceof LocalRuntimeCompatibilityError) {
-        this.logger.warn("local_runtime.service_repair_connect_failed", {
-          socketPath,
-          reason,
-          error: error.message,
-          runtimePid: error.pid,
-          runtimeVersion: error.runtimeVersion,
-          runtimeBuildHash: error.runtimeBuildHash,
-          runtimeDefaultRole: error.runtimeDefaultRole,
-        });
-        return null;
+    // The service was just (re)installed: the stale brain may still be dying
+    // and the replacement child still binding the socket. A single connect
+    // attempt lands in that churn window and strands this desktop on an
+    // isolated no-sync runtime, so keep retrying — through connect failures
+    // AND through compatibility errors from the not-yet-replaced old brain —
+    // until the repaired service is actually reachable.
+    const deadline = Date.now() + 20_000;
+    let lastError: unknown = null;
+    for (;;) {
+      try {
+        await waitForSocket(socketPath, 2_000);
+        const client = await this.connectClient(socketPath);
+        this.ownedRuntimeChild = null;
+        return { client, child: null, socketPath };
+      } catch (error) {
+        lastError = error;
+        if (Date.now() >= deadline) break;
+        await new Promise((resolve) => setTimeout(resolve, 750));
       }
+    }
+    if (lastError instanceof LocalRuntimeCompatibilityError) {
       this.logger.warn("local_runtime.service_repair_connect_failed", {
         socketPath,
         reason,
-        error: error instanceof Error ? error.message : String(error),
+        error: lastError.message,
+        runtimePid: lastError.pid,
+        runtimeVersion: lastError.runtimeVersion,
+        runtimeBuildHash: lastError.runtimeBuildHash,
+        runtimeDefaultRole: lastError.runtimeDefaultRole,
       });
       return null;
     }
+    this.logger.warn("local_runtime.service_repair_connect_failed", {
+      socketPath,
+      reason,
+      error: lastError instanceof Error ? lastError.message : String(lastError),
+    });
+    return null;
   }
 
   private isolatedRuntimeSocketPath(primarySocketPath: string): string {
@@ -1346,6 +1361,7 @@ export class LocalRuntimeConnectionPool {
     try {
       const client = await this.connectClient(socketPath);
       this.ownedRuntimeChild = null;
+      this.scheduleIsolatedRuntimeRecovery(primarySocketPath);
       return { client, child: null, socketPath };
     } catch (error) {
       if (error instanceof LocalRuntimeCompatibilityError) {
@@ -1361,10 +1377,74 @@ export class LocalRuntimeConnectionPool {
     try {
       await waitForSocket(socketPath);
       const client = await this.connectClient(socketPath);
+      this.scheduleIsolatedRuntimeRecovery(primarySocketPath);
       return { client, child, socketPath };
     } catch (error) {
       disposeOwnedRuntimeChild(child, socketPath, { unlinkSocket: true });
       throw error;
+    }
+  }
+
+  // An isolated no-sync runtime is a degraded last resort: the desktop loses
+  // mobile sync and the channel brain's shared state for the whole session.
+  // Keep probing the primary socket and migrate back the moment a compatible
+  // brain is reachable; consumers recover through the normal disconnect path,
+  // exactly as they do when a brain is recycled on a build-hash mismatch.
+  private scheduleIsolatedRuntimeRecovery(primarySocketPath: string): void {
+    if (this.isolatedRecoveryTimer) return;
+    const timer = setInterval(() => {
+      void this.tryRecoverFromIsolatedRuntime(primarySocketPath);
+    }, 20_000);
+    timer.unref?.();
+    this.isolatedRecoveryTimer = timer;
+  }
+
+  private clearIsolatedRecoveryTimer(): void {
+    if (!this.isolatedRecoveryTimer) return;
+    clearInterval(this.isolatedRecoveryTimer);
+    this.isolatedRecoveryTimer = null;
+  }
+
+  private async tryRecoverFromIsolatedRuntime(primarySocketPath: string): Promise<void> {
+    const entry = this.activeConnection;
+    if (!entry || entry.socketPath === primarySocketPath) {
+      this.clearIsolatedRecoveryTimer();
+      return;
+    }
+    if (!(await this.probeCompatibleRuntime(primarySocketPath))) return;
+    this.logger.info("local_runtime.isolated_recovery", {
+      primarySocketPath,
+      isolatedSocketPath: entry.socketPath,
+    });
+    this.clearIsolatedRecoveryTimer();
+    if (!this.clearConnectionIfCurrent(entry)) return;
+    closeRuntimeClient(entry.client);
+    if (this.ownedRuntimeChild === entry.child) this.ownedRuntimeChild = null;
+    disposeOwnedRuntimeChild(entry.child, entry.socketPath, { unlinkSocket: true });
+  }
+
+  // Compatibility check with no side effects on pool state, safe to run while
+  // another connection is active.
+  private async probeCompatibleRuntime(socketPath: string): Promise<boolean> {
+    let client: RuntimeRpcClient | null = null;
+    try {
+      const transport = await openSocketTransport(socketPath);
+      client = new RuntimeRpcClient(transport);
+      const initializeResult = await client.initialize("ade-desktop-local-probe", this.appVersion);
+      const runtimeInfo = readRuntimeInfo(initializeResult);
+      const expectedBuildHash = computeLocalRuntimeBuildHash();
+      return isCompatibleRuntimeVersion({
+        runtimeVersion: runtimeInfo.version,
+        appVersion: this.appVersion,
+        runtimeBuildHash: runtimeInfo.buildHash,
+        expectedBuildHash,
+      })
+        && (!expectedBuildHash || runtimeInfo.buildHash === expectedBuildHash)
+        && runtimeInfo.defaultRole === "cto";
+    } catch {
+      return false;
+    } finally {
+      if (client) closeRuntimeClient(client);
     }
   }
 
