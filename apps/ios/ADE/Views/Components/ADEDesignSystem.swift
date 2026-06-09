@@ -118,6 +118,7 @@ enum ADEColor {
   private static let modelColors: [String: UInt32] = [
     // Anthropic
     "anthropic/claude-fable-5": 0xD97706,
+    "anthropic/claude-fable-5-api": 0xD97706,
     "claude-fable-5": 0xD97706,
     "fable": 0xD97706,
     "anthropic/claude-opus-4-8": 0xD97706,
@@ -177,8 +178,9 @@ enum ADEColor {
     case "gpt-5.4-mini", "gpt-5.4-mini-codex", "openai/gpt-5.4-mini", "openai/gpt-5.4-mini-codex":
       append("openai/gpt-5.4-mini")
       append("gpt-5.4-mini")
-    case "fable", "anthropic/claude-fable-5", "claude-fable-5":
+    case "fable", "anthropic/claude-fable-5", "anthropic/claude-fable-5-api", "claude-fable-5":
       append("anthropic/claude-fable-5")
+      append("anthropic/claude-fable-5-api")
       append("claude-fable-5")
       append("fable")
     case "anthropic/claude-opus-4-8", "claude-opus-4-8",
@@ -236,6 +238,7 @@ enum ADEColor {
   private static let modelReasoningTiers: [String: [String]] = [
     // Claude
     "anthropic/claude-fable-5": ["low", "medium", "high", "xhigh", "max", "ultracode"],
+    "anthropic/claude-fable-5-api": ["low", "medium", "high", "xhigh", "max", "ultracode"],
     "claude-fable-5": ["low", "medium", "high", "xhigh", "max", "ultracode"],
     "fable": ["low", "medium", "high", "xhigh", "max", "ultracode"],
     "anthropic/claude-opus-4-8": ["low", "medium", "high", "xhigh", "max", "ultracode"],

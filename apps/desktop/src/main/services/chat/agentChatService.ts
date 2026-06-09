@@ -3495,10 +3495,12 @@ function remapClaudeTaskTodoFromRuntimeEvent(
 ): ClaudeTodoItems | null {
   const fromId = previousId?.trim();
   const toId = nextId?.trim();
-  if (!fromId || !toId || fromId === toId) return null;
+  if (!fromId || !toId) return null;
   const existing = tasksById.get(fromId);
   if (!existing) return null;
-  tasksById.delete(fromId);
+  if (fromId !== toId) {
+    tasksById.delete(fromId);
+  }
   tasksById.set(toId, {
     ...existing,
     id: toId,

@@ -1475,8 +1475,8 @@ function pickPreferredModel(
 
 function pickDefaultClaudeModel(models: ModelDescriptor[]): ModelDescriptor | undefined {
   return pickPreferredModel(models, [
-    (model) => /\bsonnet\b/i.test(model.displayName) || /\bsonnet\b/i.test(model.providerModelId),
     (model) => /\bfable\b/i.test(model.displayName) || /\bfable\b/i.test(model.providerModelId),
+    (model) => /\bsonnet\b/i.test(model.displayName) || /\bsonnet\b/i.test(model.providerModelId),
     (model) => /\bopus\b/i.test(model.displayName) || /\bopus\b/i.test(model.providerModelId),
     (model) => /\bhaiku\b/i.test(model.displayName) || /\bhaiku\b/i.test(model.providerModelId),
   ]);

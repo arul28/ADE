@@ -10860,6 +10860,85 @@ describe("createAgentChatService", () => {
         }),
       ]));
     });
+
+    it("applies Claude task_started updates when the SDK task id matches the tool use id", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const stream = vi.fn(() => (async function* () {
+        yield {
+          type: "system",
+          subtype: "init",
+          session_id: "sdk-session-1",
+          slash_commands: [],
+        };
+        yield {
+          type: "assistant",
+          message: {
+            content: [
+              {
+                type: "tool_use",
+                id: "task-1",
+                name: "TaskCreate",
+                input: {
+                  subject: "Inspect SDK changes",
+                  activeForm: "Inspecting SDK changes",
+                },
+              },
+            ],
+            usage: { input_tokens: 1, output_tokens: 1 },
+          },
+        };
+        yield {
+          type: "system",
+          subtype: "task_started",
+          task_id: "task-1",
+          parent_tool_use_id: "task-1",
+          description: "Inspect SDK changes",
+          task_type: "other",
+        };
+        yield {
+          type: "result",
+          usage: { input_tokens: 1, output_tokens: 1 },
+        };
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send: vi.fn().mockResolvedValue(undefined),
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-session-1",
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      } as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "Track the SDK task list.",
+      });
+
+      const todoEvents = events
+        .map((event) => event.event)
+        .filter((event): event is Extract<AgentChatEventEnvelope["event"], { type: "todo_update" }> =>
+          event.type === "todo_update",
+        );
+
+      expect(todoEvents.at(-1)).toMatchObject({
+        type: "todo_update",
+        items: [
+          {
+            id: "task-1",
+            description: "Inspect SDK changes",
+            status: "in_progress",
+          },
+        ],
+      });
+    });
   });
 
   // --------------------------------------------------------------------------

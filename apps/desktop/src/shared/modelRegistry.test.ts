@@ -274,6 +274,7 @@ describe("modelRegistry", () => {
       });
       expect(opus?.reasoningTiers).toEqual(["low", "medium", "high", "xhigh", "max", "ultracode"]);
       expect(opus?.serviceTiers).toEqual(["fast"]);
+      expect(getDefaultModelDescriptor("claude")?.id).toBe("anthropic/claude-fable-5");
     });
 
     it("keeps Opus 4.7 and Opus 4.7 1M as distinct selectable models", () => {
