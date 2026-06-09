@@ -12,7 +12,13 @@ import {
   type ServiceManagerProcessResult,
   type ServiceManagerSpawnSync,
 } from "./common";
-import { installLaunchdService, isLaunchdPrintRunning, launchAgentPath, renderLaunchdPlist } from "./installLaunchd";
+import {
+  installLaunchdService,
+  isLaunchdPrintRunning,
+  launchAgentPath,
+  parseLaunchdPrintPid,
+  renderLaunchdPlist,
+} from "./installLaunchd";
 import { installSystemdService, renderSystemdEnvironment, renderSystemdUnit, servicePath as systemdServicePath } from "./installSystemd";
 import {
   buildWindowsCreateTaskArgs,
@@ -206,6 +212,8 @@ describe("service manager status parsers", () => {
   it("detects running launchd services from launchctl print output", () => {
     expect(isLaunchdPrintRunning("state = running\npid = 123\n")).toBe(true);
     expect(isLaunchdPrintRunning("state = waiting\n")).toBe(false);
+    expect(parseLaunchdPrintPid("state = running\npid = 123\n")).toBe(123);
+    expect(parseLaunchdPrintPid("state = waiting\n")).toBeNull();
   });
 
   it("detects running Windows scheduled tasks from schtasks output", () => {

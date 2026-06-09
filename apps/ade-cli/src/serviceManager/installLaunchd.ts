@@ -55,6 +55,13 @@ export function isLaunchdPrintRunning(output: string): boolean {
   return /\bstate\s*=\s*running\b/i.test(output);
 }
 
+export function parseLaunchdPrintPid(output: string): number | null {
+  const match = output.match(/\bpid\s*=\s*(\d+)\b/i);
+  if (!match) return null;
+  const pid = Number(match[1]);
+  return Number.isFinite(pid) && pid > 0 ? Math.floor(pid) : null;
+}
+
 export function renderLaunchdPlist(command: AdeServiceCommand, homeDir = os.homedir()): string {
   const envEntries = Object.entries(command.env ?? {});
   const adeHome = command.env?.ADE_HOME?.trim() || process.env.ADE_HOME?.trim() || path.join(homeDir, ".ade");
@@ -95,9 +102,9 @@ ${plistArray([command.command, ...command.args]).split("\n").map((line) => `  ${
   return sections.join("\n");
 }
 
-function getLoadedLaunchdRunningState(
+function getLoadedLaunchdState(
   run: ServiceManagerSpawnSync,
-): boolean | null {
+): { running: boolean; pid: number | null } | null {
   const uid = typeof process.getuid === "function" ? process.getuid() : os.userInfo().uid;
   let print = run("launchctl", ["print", `gui/${uid}/${ADE_RUNTIME_SERVICE_NAME}`], { encoding: "utf8" });
   if (print.status !== 0) {
@@ -107,7 +114,49 @@ function getLoadedLaunchdRunningState(
     }
   }
   if (print.status !== 0) return null;
-  return isLaunchdPrintRunning(launchdPrintOutputText(print));
+  const output = launchdPrintOutputText(print);
+  return {
+    running: isLaunchdPrintRunning(output),
+    pid: parseLaunchdPrintPid(output),
+  };
+}
+
+function getLoadedLaunchdRunningState(
+  run: ServiceManagerSpawnSync,
+): boolean | null {
+  return getLoadedLaunchdState(run)?.running ?? null;
+}
+
+function pidIsAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+function terminatePid(pid: number | null): void {
+  if (!pid || pid <= 0 || pid === process.pid) return;
+  try {
+    process.kill(pid, "SIGTERM");
+  } catch {
+    return;
+  }
+  const deadline = Date.now() + 1_500;
+  while (Date.now() < deadline) {
+    if (!pidIsAlive(pid)) return;
+    sleepSync(50);
+  }
+  try {
+    process.kill(pid, "SIGKILL");
+  } catch {
+    // best effort
+  }
 }
 
 export function installLaunchdService(deps: LaunchdServiceManagerDeps = {}): ServiceManagerResult {
@@ -177,7 +226,12 @@ export function installLaunchdService(deps: LaunchdServiceManagerDeps = {}): Ser
 
 export function uninstallLaunchdService(): ServiceManagerResult {
   const servicePath = launchAgentPath();
+  const loaded = getLoadedLaunchdState(spawnSync);
+  const uid = typeof process.getuid === "function" ? process.getuid() : os.userInfo().uid;
+  spawnSync("launchctl", ["bootout", `gui/${uid}/${ADE_RUNTIME_SERVICE_NAME}`], { stdio: "ignore" });
+  spawnSync("launchctl", ["bootout", `user/${uid}/${ADE_RUNTIME_SERVICE_NAME}`], { stdio: "ignore" });
   spawnSync("launchctl", ["unload", servicePath], { stdio: "ignore" });
+  terminatePid(loaded?.pid ?? null);
   try { fs.unlinkSync(servicePath); } catch {}
   return {
     ok: true,

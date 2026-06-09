@@ -90,6 +90,9 @@ describe("sync host singleton", () => {
     expect(formatSyncHostSingletonConflictMessage(conflict!)).toContain(
       "/Applications/ADE.app/Contents/Resources/ade-cli/bin/ade' brain stop --text",
     );
+    expect(formatSyncHostSingletonConflictMessage(conflict!)).toContain(
+      `/bin/kill ${lockOwner.pid} 2>/dev/null || true`,
+    );
   });
 
   it("reports an ADE listener conflict when no lock exists", () => {

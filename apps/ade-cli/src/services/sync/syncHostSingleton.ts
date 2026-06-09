@@ -60,6 +60,13 @@ function shellQuote(value: string): string {
   return `'${value.replace(/'/g, "'\\''")}'`;
 }
 
+function withPidKillFallback(command: string, pid: number): string {
+  if (!Number.isFinite(pid) || pid <= 0) return command;
+  const normalizedPid = Math.floor(pid);
+  if (command.includes(`/bin/kill ${normalizedPid}`)) return command;
+  return `${command}; /bin/kill ${normalizedPid} 2>/dev/null || true`;
+}
+
 function userId(): string {
   try {
     return String(typeof process.getuid === "function" ? process.getuid() : os.userInfo().uid);
@@ -100,6 +107,9 @@ function safeReadLock(lockPath: string): SyncHostSingletonLockFile | null {
     const row = owner as Record<string, unknown>;
     const pid = typeof row.pid === "number" ? row.pid : Number(row.pid);
     if (!Number.isFinite(pid) || pid <= 0) return null;
+    const rawQuitCommand = typeof row.quitCommand === "string" && row.quitCommand.trim()
+      ? row.quitCommand
+      : buildQuitCommand({ pid, commandLine: null, appName: null, packageChannel: null, adeHome: null });
     return {
       version: LOCK_VERSION,
       owner: {
@@ -113,9 +123,7 @@ function safeReadLock(lockPath: string): SyncHostSingletonLockFile | null {
         socketPath: typeof row.socketPath === "string" && row.socketPath.trim() ? row.socketPath : null,
         projectRoot: typeof row.projectRoot === "string" && row.projectRoot.trim() ? row.projectRoot : null,
         commandLine: typeof row.commandLine === "string" && row.commandLine.trim() ? row.commandLine : null,
-        quitCommand: typeof row.quitCommand === "string" && row.quitCommand.trim()
-          ? row.quitCommand
-          : buildQuitCommand({ pid, commandLine: null, appName: null, packageChannel: null, adeHome: null }),
+        quitCommand: withPidKillFallback(rawQuitCommand, pid),
         createdAt: typeof row.createdAt === "string" && row.createdAt.trim() ? row.createdAt : new Date().toISOString(),
         updatedAt: typeof row.updatedAt === "string" && row.updatedAt.trim() ? row.updatedAt : new Date().toISOString(),
       },
@@ -181,14 +189,14 @@ function buildQuitCommand(args: {
     ?? path.join(os.homedir(), ".ade");
   if (channel === "beta") {
     const betaCli = "/Applications/ADE Beta.app/Contents/Resources/ade-cli/bin/ade-beta";
-    return `ADE_PACKAGE_CHANNEL=beta ADE_HOME=${shellQuote(adeHome)} ${shellQuote(betaCli)} brain stop --text`;
+    return withPidKillFallback(`ADE_PACKAGE_CHANNEL=beta ADE_HOME=${shellQuote(adeHome)} ${shellQuote(betaCli)} brain stop --text`, args.pid);
   }
   if (channel === "alpha") {
     const alphaCli = "/Applications/ADE Alpha.app/Contents/Resources/ade-cli/bin/ade-alpha";
-    return `ADE_PACKAGE_CHANNEL=alpha ADE_HOME=${shellQuote(adeHome)} ${shellQuote(alphaCli)} brain stop --text`;
+    return withPidKillFallback(`ADE_PACKAGE_CHANNEL=alpha ADE_HOME=${shellQuote(adeHome)} ${shellQuote(alphaCli)} brain stop --text`, args.pid);
   }
   const stableCli = "/Applications/ADE.app/Contents/Resources/ade-cli/bin/ade";
-  return `ADE_HOME=${shellQuote(adeHome)} ${shellQuote(stableCli)} brain stop --text`;
+  return withPidKillFallback(`ADE_HOME=${shellQuote(adeHome)} ${shellQuote(stableCli)} brain stop --text`, args.pid);
 }
 
 function currentOwner(args: {
