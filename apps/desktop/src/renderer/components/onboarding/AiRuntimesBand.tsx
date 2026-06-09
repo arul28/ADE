@@ -363,7 +363,7 @@ function CursorKeyPopover({ onSave }: { onSave: (key: string) => Promise<{ ok: b
     <InputPopover
       triggerLabel="Add key"
       title="Cursor API key"
-      helpText={<>Get a key at <code style={codeStyle}>cursor.com/dashboard/integrations</code></>}
+      helpText={<>Get a key at <code style={codeStyle}>cursor.com/dashboard/api</code></>}
       placeholder="cur_..."
       onSave={onSave}
       align="left"

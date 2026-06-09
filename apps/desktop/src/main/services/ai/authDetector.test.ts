@@ -7,6 +7,11 @@ import path from "node:path";
 const spawnMock = vi.fn();
 const execFileSyncMock = vi.fn();
 const getAllApiKeysMock = vi.fn();
+const cursorMeMock = vi.fn();
+const cursorModelsListMock = vi.fn();
+const reportProviderRuntimeAuthFailureMock = vi.fn();
+const reportProviderRuntimeFailureMock = vi.fn();
+const reportProviderRuntimeReadyMock = vi.fn();
 
 /** Helper: create a fake ChildProcess that immediately emits close with the given result. */
 function fakeChild(result: { status: number | null; stdout?: string; stderr?: string }) {
@@ -48,6 +53,23 @@ vi.mock("./apiKeyStore", () => ({
   getAllApiKeys: () => getAllApiKeysMock(),
 }));
 
+vi.mock("./cursorSdkLoader", () => ({
+  loadCursorSdk: async () => ({
+    Cursor: {
+      me: (...args: unknown[]) => cursorMeMock(...args),
+      models: {
+        list: (...args: unknown[]) => cursorModelsListMock(...args),
+      },
+    },
+  }),
+}));
+
+vi.mock("./providerRuntimeHealth", () => ({
+  reportProviderRuntimeAuthFailure: (...args: unknown[]) => reportProviderRuntimeAuthFailureMock(...args),
+  reportProviderRuntimeFailure: (...args: unknown[]) => reportProviderRuntimeFailureMock(...args),
+  reportProviderRuntimeReady: (...args: unknown[]) => reportProviderRuntimeReadyMock(...args),
+}));
+
 // Import AFTER mocks are set up — must re-import to reset the module-level cache.
 let detectAllAuth: typeof import("./authDetector").detectAllAuth;
 let detectCliAuthStatuses: typeof import("./authDetector").detectCliAuthStatuses;
@@ -64,6 +86,11 @@ function setPlatform(value: NodeJS.Platform): void {
 beforeEach(async () => {
   vi.resetModules();
   setPlatform("darwin");
+  cursorMeMock.mockReset();
+  cursorModelsListMock.mockReset();
+  reportProviderRuntimeAuthFailureMock.mockReset();
+  reportProviderRuntimeFailureMock.mockReset();
+  reportProviderRuntimeReadyMock.mockReset();
   const mod = await import("./authDetector");
   detectAllAuth = mod.detectAllAuth;
   detectCliAuthStatuses = mod.detectCliAuthStatuses;
@@ -576,6 +603,53 @@ describe("authDetector", () => {
     expect(result.ok).toBe(false);
     expect(result.message).toContain("API key is valid");
     expect(result.endpoint).toBe("https://api.openai.com/v1/models");
+  });
+
+  it("marks Cursor runtime ready only after API key and model access verification succeeds", async () => {
+    cursorMeMock.mockResolvedValue({ userEmail: "user@example.test" });
+    cursorModelsListMock.mockResolvedValue([{ id: "composer-1" }]);
+
+    const result = await verifyProviderApiKey("cursor", "crsr_test");
+
+    expect(result.ok).toBe(true);
+    expect(result.message).toContain("user@example.test");
+    expect(result.endpoint).toBe("Cursor.me + Cursor.models.list");
+    expect(cursorMeMock).toHaveBeenCalledWith({ apiKey: "crsr_test" });
+    expect(cursorModelsListMock).toHaveBeenCalledWith({ apiKey: "crsr_test" });
+    expect(reportProviderRuntimeReadyMock).toHaveBeenCalledWith("cursor");
+    expect(reportProviderRuntimeAuthFailureMock).not.toHaveBeenCalled();
+    expect(reportProviderRuntimeFailureMock).not.toHaveBeenCalled();
+  });
+
+  it("does not mark Cursor runtime ready when model access verification fails", async () => {
+    cursorMeMock.mockResolvedValue({ userEmail: "user@example.test" });
+    cursorModelsListMock.mockRejectedValue(new Error("Forbidden: model access denied"));
+
+    const result = await verifyProviderApiKey("cursor", "crsr_test");
+
+    expect(result.ok).toBe(false);
+    expect(result.message).toContain("Authentication failed");
+    expect(result.endpoint).toBe("Cursor.me + Cursor.models.list");
+    expect(reportProviderRuntimeReadyMock).not.toHaveBeenCalled();
+    expect(reportProviderRuntimeAuthFailureMock).toHaveBeenCalledWith(
+      "cursor",
+      "Cursor rejected the configured API key. Check the key from the Cursor dashboard API page.",
+    );
+  });
+
+  it("does not mark Cursor runtime ready when model access returns no models", async () => {
+    cursorMeMock.mockResolvedValue({ userEmail: "user@example.test" });
+    cursorModelsListMock.mockResolvedValue([]);
+
+    const result = await verifyProviderApiKey("cursor", "crsr_test");
+
+    expect(result.ok).toBe(false);
+    expect(result.message).toContain("no available models");
+    expect(reportProviderRuntimeReadyMock).not.toHaveBeenCalled();
+    expect(reportProviderRuntimeFailureMock).toHaveBeenCalledWith(
+      "cursor",
+      "Cursor model verification returned no available models.",
+    );
   });
 
   it("returns auth failure for invalid API keys", async () => {

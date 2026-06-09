@@ -48,6 +48,35 @@ class FakeSdkChild extends EventEmitter {
   }
 }
 
+class ExitingBeforeInitChild extends EventEmitter {
+  stdout = new EventEmitter();
+  stderr = new EventEmitter();
+  exitCode: number | null = null;
+  killed = false;
+  connected = true;
+
+  send(message: { type?: string; requestId?: string }): boolean {
+    if (message.type === "init") {
+      queueMicrotask(() => {
+        this.exitCode = 1;
+        this.connected = false;
+        this.emit("exit", 1, null);
+      });
+      return true;
+    }
+    if (message.type === "dispose") {
+      throw Object.assign(new Error("Channel closed"), { code: "ERR_IPC_CHANNEL_CLOSED" });
+    }
+    return true;
+  }
+
+  kill(signal?: NodeJS.Signals): boolean {
+    this.killed = true;
+    this.emit("exit", null, signal ?? "SIGTERM");
+    return true;
+  }
+}
+
 afterEach(() => {
   forkMock.mockReset();
 });
@@ -83,5 +112,22 @@ describe("Droid SDK pool", () => {
 
     releaseDroidSdkConnection(poolKey, second.generation);
     expect(child.disposeCount).toBe(1);
+  });
+
+  it("rejects initialization instead of throwing when the worker IPC channel closes", async () => {
+    forkMock.mockReturnValue(new ExitingBeforeInitChild());
+    const poolKey = `test-exit:${Date.now()}:${Math.random()}`;
+
+    await expect(acquireDroidSdkConnection({
+      poolKey,
+      droidPath: "/usr/local/bin/droid",
+      workspacePath: path.join(os.tmpdir(), "ade-workspace"),
+      sessionId: "session-1",
+      settings: {
+        modelId: "droid-model",
+        autonomyLevel: "medium" as const,
+        interactionMode: "auto" as const,
+      },
+    })).rejects.toThrow("Droid SDK worker exited (1).");
   });
 });

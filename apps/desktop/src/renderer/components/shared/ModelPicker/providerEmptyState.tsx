@@ -42,7 +42,7 @@ const PROVIDER_COPY: Partial<Record<ProviderFamily, ProviderCopy>> = {
     primary: { label: "Open Settings", action: { kind: "open-settings" } },
     secondary: {
       label: "Get Cursor API key",
-      action: { kind: "open-external", url: "https://cursor.com/dashboard/integrations" },
+      action: { kind: "open-external", url: "https://cursor.com/dashboard/api" },
     },
   },
   factory: {
@@ -141,7 +141,7 @@ function discoveryEmptyCopy(family: ProviderFamily): ProviderCopy {
       primary: { label: "Open Settings", action: { kind: "open-settings" } },
       secondary: {
         label: "Get Cursor API key",
-        action: { kind: "open-external", url: "https://cursor.com/dashboard/integrations" },
+        action: { kind: "open-external", url: "https://cursor.com/dashboard/api" },
       },
     };
   }

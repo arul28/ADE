@@ -10,8 +10,10 @@ import type { SDKModel } from "@cursor/sdk";
 import { createHash } from "node:crypto";
 import {
   reportProviderRuntimeAuthFailure,
+  reportProviderRuntimeFailure,
   reportProviderRuntimeReady,
 } from "../ai/providerRuntimeHealth";
+import { isCursorSdkResolutionError, loadCursorSdk } from "../ai/cursorSdkLoader";
 
 export type CursorModelParameterValue = { id: string; value: string };
 export type CursorModelParameterDefinition = {
@@ -54,7 +56,7 @@ const TTL_MS = 120_000;
 const SDK_MODEL_LIST_TIMEOUT_MS = 5_000;
 const CURSOR_MODELS_API_URL = "https://api.cursor.com/v0/models";
 const CURSOR_AGENT_AUTH_BLOCKER =
-  "Cursor rejected the configured API key for agent/model access. Re-enter a Cursor API key from the Cursor dashboard integrations page.";
+  "Cursor rejected the configured API key for agent/model access. Re-enter a Cursor API key from the Cursor dashboard API page.";
 
 class CursorModelDiscoveryError extends Error {
   readonly kind: CursorModelDiscoveryFailureKind;
@@ -528,6 +530,8 @@ function recordCursorModelDiscoveryFailure(error: unknown): CursorModelDiscovery
   const discoveryError = toCursorModelDiscoveryError(error);
   if (discoveryError.kind === "auth") {
     reportProviderRuntimeAuthFailure("cursor", CURSOR_AGENT_AUTH_BLOCKER);
+  } else if (discoveryError.kind === "unavailable") {
+    reportProviderRuntimeFailure("cursor", discoveryError.message);
   }
   return discoveryError;
 }
@@ -623,12 +627,23 @@ function getCachedCursorSdkModels(apiKey?: string | null): CursorCliModelRow[] |
   const now = Date.now();
   const normalizedApiKey = apiKey?.trim() || undefined;
   const keyHash = hashKeyForCache(normalizedApiKey);
+  if (hasRecentCursorSdkFailure(keyHash, now)) {
+    return null;
+  }
   if (sdkCached && sdkCached.keyHash === keyHash && now - sdkCached.at < TTL_MS && sdkCached.models.length) {
     return sdkCached.models;
   }
   return null;
 }
 
+function hasRecentCursorSdkFailure(keyHash: string, now = Date.now()): boolean {
+  return Boolean(
+    sdkLastFailure
+    && sdkLastFailure.keyHash === keyHash
+    && now - sdkLastFailure.at < TTL_MS
+    && (sdkLastFailure.kind === "auth" || sdkLastFailure.kind === "unavailable"),
+  );
+}
 
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
   let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
@@ -654,7 +669,7 @@ async function fetchCursorModelsFromSdk(
   const rows = await withTimeout((async () => {
     let sdkError: unknown = null;
     try {
-      const { Cursor } = await import("@cursor/sdk");
+      const { Cursor } = await loadCursorSdk();
       const sdkRows = normalizeSdkModelRows(await Cursor.models.list({ apiKey }));
       if (sdkRows.length) {
         sdkSucceeded = true;
@@ -662,6 +677,10 @@ async function fetchCursorModelsFromSdk(
       }
     } catch (error) {
       sdkError = error;
+    }
+
+    if (sdkError && isCursorSdkResolutionError(sdkError)) {
+      throw toCursorModelDiscoveryError(sdkError);
     }
 
     try {
@@ -714,7 +733,7 @@ async function fetchCursorModelsFromOfficialApi(apiKey: string | undefined): Pro
 function warmCursorModelsFromSdk(apiKey?: string | null): void {
   const normalizedApiKey = apiKey?.trim() || undefined;
   const keyHash = hashKeyForCache(normalizedApiKey);
-  if (sdkWarmInFlight?.keyHash === keyHash) return;
+  if (sdkWarmInFlight?.keyHash === keyHash || hasRecentCursorSdkFailure(keyHash)) return;
 
   const generation = sdkCacheGeneration;
   const promise = fetchCursorModelsFromSdk(
@@ -763,8 +782,8 @@ export async function probeCursorSdkModelDiscovery(
     };
   } catch (error) {
     const discoveryError = rememberCursorModelDiscoveryFailure(keyHash, error);
-    // Best-effort: a transient SDK error or invalid key should not crash
-    // model resolution — fallback IDs cover the common case.
+    // Best-effort: model resolution reports failures to provider health and
+    // returns no rows instead of letting discovery errors crash status refresh.
     return {
       rows: [],
       failureKind: discoveryError.kind,

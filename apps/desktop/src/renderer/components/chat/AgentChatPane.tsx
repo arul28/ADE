@@ -4429,7 +4429,7 @@ export function AgentChatPane({
     }
     return null;
   }, [effectiveAvailableModelIds, modelId, modelSelectionConstrained]);
-  const cursorCloudApiAvailable = providerConnections?.cursor?.authAvailable === true
+  const cursorCloudApiAvailable = providerConnections?.cursor?.runtimeAvailable === true
     || aiStatus?.availableProviders?.cursor === true;
   const cursorCloudAvailable = Boolean(laneId)
     && cursorCloudApiAvailable

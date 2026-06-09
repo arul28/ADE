@@ -3,6 +3,7 @@ import type { ModelDescriptor } from "../../../shared/modelRegistry";
 
 const cursorModelsListMock = vi.hoisted(() => vi.fn());
 const reportProviderRuntimeAuthFailureMock = vi.hoisted(() => vi.fn());
+const reportProviderRuntimeFailureMock = vi.hoisted(() => vi.fn());
 const reportProviderRuntimeReadyMock = vi.hoisted(() => vi.fn());
 const spawnAsyncMock = vi.hoisted(() => vi.fn());
 
@@ -16,6 +17,7 @@ vi.mock("@cursor/sdk", () => ({
 
 vi.mock("../ai/providerRuntimeHealth", () => ({
   reportProviderRuntimeAuthFailure: (...args: unknown[]) => reportProviderRuntimeAuthFailureMock(...args),
+  reportProviderRuntimeFailure: (...args: unknown[]) => reportProviderRuntimeFailureMock(...args),
   reportProviderRuntimeReady: (...args: unknown[]) => reportProviderRuntimeReadyMock(...args),
 }));
 
@@ -43,6 +45,7 @@ import {
 beforeEach(() => {
   cursorModelsListMock.mockReset();
   reportProviderRuntimeAuthFailureMock.mockReset();
+  reportProviderRuntimeFailureMock.mockReset();
   reportProviderRuntimeReadyMock.mockReset();
   spawnAsyncMock.mockReset();
   clearCursorCliModelsCache();
@@ -606,6 +609,28 @@ describe("parseCursorCliModelsStdout", () => {
     expect(freshProbe.fromCache).toBeUndefined();
   });
 
+  it("suppresses warmed Cursor SDK cache after an SDK runtime failure", async () => {
+    cursorModelsListMock.mockResolvedValueOnce([{ id: "cached-model", displayName: "Cached Model" }]);
+    await expect(probeCursorSdkModelDiscovery("crsr_test", { timeoutMs: 1_000 })).resolves.toMatchObject({
+      rows: [{ id: "cached-model", displayName: "Cached Model" }],
+      failureKind: null,
+    });
+
+    cursorModelsListMock.mockRejectedValue(new Error("Cannot find package '@cursor/sdk' imported from /Applications/ADE Beta.app/Contents/Resources/ade-cli/cli.js"));
+
+    await expect(probeCursorSdkModelDiscovery("crsr_test", { timeoutMs: 1_000 })).resolves.toMatchObject({
+      rows: [],
+      failureKind: "unavailable",
+    });
+
+    await expect(discoverCursorSdkModelDescriptors("crsr_test", { mode: "cached-only" })).resolves.toEqual([]);
+    expect(resolveCachedCursorModelAvailability("cursor/cached-model", "crsr_test")).toBeNull();
+    expect(reportProviderRuntimeFailureMock).toHaveBeenCalledWith(
+      "cursor",
+      expect.stringContaining("Cannot find package '@cursor/sdk'"),
+    );
+  });
+
   it("suppresses fallback rows after a warm auth failure", async () => {
     cursorModelsListMock.mockRejectedValue(new Error("AuthenticationError (status=401, endpoint=GET /v1/models)"));
     const fetchMock = vi.fn(async () => ({ ok: false, status: 401 }));
@@ -618,8 +643,13 @@ describe("parseCursorCliModelsStdout", () => {
     });
     await new Promise((resolve) => setTimeout(resolve, 0));
 
-    const afterFailure = await discoverCursorSdkModelDescriptors("crsr_test");
+    cursorModelsListMock.mockClear();
+    fetchMock.mockClear();
+
+    const afterFailure = await discoverCursorSdkModelDescriptors("crsr_test", { mode: "cached-or-fallback" });
     expect(afterFailure).toEqual([]);
+    expect(cursorModelsListMock).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("bounds direct Cursor SDK model list discovery with a timeout", async () => {
