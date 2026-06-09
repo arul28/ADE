@@ -97,7 +97,7 @@ import type {
 import { DEFAULT_NOTIFICATION_PREFERENCES, normalizeNotificationPreferences } from "../../../../desktop/src/shared/types/sync";
 import type { SyncPinStore } from "./syncPinStore";
 import type { SyncRuntimeNameStore } from "./syncRuntimeNameStore";
-import { DEFAULT_SYNC_COMPRESSION_THRESHOLD_BYTES, DEFAULT_SYNC_HOST_PORT, encodeSyncEnvelope, mapPlatform, parseSyncEnvelope, wsDataToText } from "./syncProtocol";
+import { DEFAULT_SYNC_COMPRESSION_THRESHOLD_BYTES, DEFAULT_SYNC_HOST_PORT, DEFAULT_SYNC_MAX_FRAME_BYTES, encodeSyncEnvelope, encodeSyncEnvelopeFrames, mapPlatform, parseSyncEnvelope, SYNC_CHUNKED_ENVELOPES_CAPABILITY, wsDataToText } from "./syncProtocol";
 import { resolveTailscaleCliPath } from "./resolveTailscaleCliPath";
 import { createSyncRemoteCommandService, type SyncRemoteCommandService } from "./syncRemoteCommandService";
 import {
@@ -1807,6 +1807,40 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     }
   };
 
+  function peerForSocket(ws: WebSocket): PeerState | null {
+    for (const peer of peers) {
+      if (peer.ws === ws) return peer;
+    }
+    return null;
+  }
+
+  // Frame budget for a peer: clients that declared the chunkedEnvelopes hello
+  // capability get oversized envelopes split into envelope_chunk frames so no
+  // single websocket message can exceed their receive buffer (URLSession kills
+  // the connection at ~1 MiB by default). Legacy peers keep full frames.
+  function maxFrameBytesForPeer(peer: PeerState | null): number | null {
+    return Array.isArray(peer?.metadata?.capabilities)
+      && peer.metadata.capabilities.includes(SYNC_CHUNKED_ENVELOPES_CAPABILITY)
+      ? DEFAULT_SYNC_MAX_FRAME_BYTES
+      : null;
+  }
+
+  function encodeFramesFor<TPayload>(
+    target: WebSocket | PeerState,
+    type: SyncEnvelope["type"],
+    payload: TPayload,
+    requestId?: string | null,
+  ): string[] {
+    const peer = target instanceof WebSocket ? peerForSocket(target) : target;
+    return encodeSyncEnvelopeFrames({
+      type,
+      payload,
+      requestId,
+      compressionThresholdBytes,
+      maxFrameBytes: maxFrameBytesForPeer(peer),
+    });
+  }
+
   function send<TPayload>(target: WebSocket | PeerState, type: SyncEnvelope["type"], payload: TPayload, requestId?: string | null): boolean {
     const ws = target instanceof WebSocket ? target : target.ws;
     if (ws.readyState !== WebSocket.OPEN) return false;
@@ -1817,22 +1851,30 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     if (target instanceof WebSocket ? ws.bufferedAmount >= PEER_BACKPRESSURE_BYTES : isPeerBackpressured(target)) {
       return false;
     }
-    ws.send(encodeSyncEnvelope({ type, payload, requestId, compressionThresholdBytes }));
+    // The backpressure gate runs once per envelope, not per frame: a chunked
+    // envelope must ship every frame or the client's reassembly would stall.
+    for (const frame of encodeFramesFor(target, type, payload, requestId)) {
+      ws.send(frame);
+    }
     return true;
   }
 
   function sendRequired<TPayload>(peer: PeerState, type: SyncEnvelope["type"], payload: TPayload, requestId?: string | null): boolean {
     const ws = peer.ws;
     if (ws.readyState !== WebSocket.OPEN) return false;
-    ws.send(encodeSyncEnvelope({ type, payload, requestId, compressionThresholdBytes }), (error) => {
-      if (!error) return;
-      args.logger.warn("sync_host.required_send_failed", {
-        type,
-        requestId: requestId ?? null,
-        peerDeviceId: peer.metadata?.deviceId ?? peer.pairedDeviceId ?? null,
-        error: error.message,
+    let reported = false;
+    for (const frame of encodeFramesFor(peer, type, payload, requestId)) {
+      ws.send(frame, (error) => {
+        if (!error || reported) return;
+        reported = true;
+        args.logger.warn("sync_host.required_send_failed", {
+          type,
+          requestId: requestId ?? null,
+          peerDeviceId: peer.metadata?.deviceId ?? peer.pairedDeviceId ?? null,
+          error: error.message,
+        });
       });
-    });
+    }
     return true;
   }
 
@@ -1849,14 +1891,22 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     if (ws.readyState === WebSocket.CLOSING || ws.readyState === WebSocket.CLOSED) {
       return Promise.reject(new Error("Cannot send on closed WebSocket."));
     }
+    const frames = encodeFramesFor(ws, type, payload, requestId);
     return new Promise<void>((resolve, reject) => {
-      ws.send(
-        encodeSyncEnvelope({ type, payload, requestId, compressionThresholdBytes }),
-        (error) => {
-          if (error) reject(error);
-          else resolve();
-        },
-      );
+      let failed = false;
+      let remaining = frames.length;
+      for (const frame of frames) {
+        ws.send(frame, (error) => {
+          if (failed) return;
+          if (error) {
+            failed = true;
+            reject(error);
+            return;
+          }
+          remaining -= 1;
+          if (remaining === 0) resolve();
+        });
+      }
     });
   }
 

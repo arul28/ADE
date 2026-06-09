@@ -351,6 +351,12 @@ function isRetryableHostBindError(error: unknown): boolean {
   return code === "EADDRINUSE" || code === "EACCES";
 }
 
+// How long to insist on the preferred port before drifting: 8 × 400ms ≈ 3.2s,
+// enough for a disposing listener (or a sibling host being replaced) to free
+// the port that paired phones have saved.
+const PREFERRED_PORT_BIND_ATTEMPTS = 8;
+const PREFERRED_PORT_BIND_RETRY_DELAY_MS = 400;
+
 function createInactiveTailnetDiscoveryStatus(
   error: string,
 ): SyncTailnetDiscoveryStatus {
@@ -635,7 +641,23 @@ export function createSyncService(args: SyncServiceArgs) {
     let lastError: unknown = null;
     hostSingletonLease ??= acquireSyncHostSingleton({ projectRoot: args.projectRoot });
     try {
-      for (const attemptedPort of buildHostPortCandidates(preferredPort)) {
+      const portCandidates = buildHostPortCandidates(preferredPort);
+      // A host restart (project switch, role change) can race its own dying
+      // listener: the old server's socket may briefly hold the preferred port
+      // and a single EADDRINUSE would silently drift the host to port+1 —
+      // stranding paired phones that saved the old port. Re-attempt the
+      // preferred port for a few seconds before falling back to the scan.
+      const attemptPlan = portCandidates.flatMap((candidatePort, candidateIndex) =>
+        candidateIndex === 0
+          ? Array.from({ length: PREFERRED_PORT_BIND_ATTEMPTS }, () => candidatePort)
+          : [candidatePort],
+      );
+      let previousAttemptedPort: number | null = null;
+      for (const attemptedPort of attemptPlan) {
+        if (previousAttemptedPort === attemptedPort) {
+          await new Promise((resolve) => setTimeout(resolve, PREFERRED_PORT_BIND_RETRY_DELAY_MS));
+        }
+        previousAttemptedPort = attemptedPort;
         const candidateHostService = createSyncHostService({
           db: args.db,
           logger: args.logger,

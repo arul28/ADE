@@ -423,6 +423,58 @@ func syncIsTailscaleRoute(_ address: String) -> Bool {
     || host.hasSuffix(".ts.net")
 }
 
+/// Reassembles `envelope_chunk` frames back into the full encoded envelope.
+/// The host slices any oversized envelope into base64 parts so no single
+/// websocket message can exceed the socket's receive budget; parts concatenate
+/// in `index` order into the original envelope JSON. Bounded so a broken host
+/// cannot grow the buffer without limit.
+struct SyncEnvelopeChunkAssembler {
+  private struct PartialChunk {
+    let total: Int
+    var parts: [Int: String] = [:]
+  }
+
+  private var buffers: [String: PartialChunk] = [:]
+  private var arrivalOrder: [String] = []
+  private let maxConcurrentChunks = 8
+  private let maxTotalParts = 512
+
+  mutating func add(chunkId: String, index: Int, total: Int, part: String) -> String? {
+    guard total > 0, index >= 0, index < total, total <= maxTotalParts, !chunkId.isEmpty else { return nil }
+    if buffers[chunkId] == nil {
+      while arrivalOrder.count >= maxConcurrentChunks, let oldest = arrivalOrder.first {
+        arrivalOrder.removeFirst()
+        buffers.removeValue(forKey: oldest)
+      }
+      buffers[chunkId] = PartialChunk(total: total)
+      arrivalOrder.append(chunkId)
+    }
+    guard var buffer = buffers[chunkId], buffer.total == total else {
+      buffers.removeValue(forKey: chunkId)
+      arrivalOrder.removeAll { $0 == chunkId }
+      return nil
+    }
+    buffer.parts[index] = part
+    guard buffer.parts.count == buffer.total else {
+      buffers[chunkId] = buffer
+      return nil
+    }
+    buffers.removeValue(forKey: chunkId)
+    arrivalOrder.removeAll { $0 == chunkId }
+    var data = Data()
+    for partIndex in 0..<buffer.total {
+      guard let encoded = buffer.parts[partIndex], let decoded = Data(base64Encoded: encoded) else { return nil }
+      data.append(decoded)
+    }
+    return String(data: data, encoding: .utf8)
+  }
+
+  mutating func reset() {
+    buffers.removeAll()
+    arrivalOrder.removeAll()
+  }
+}
+
 struct SyncReconnectState {
   private(set) var attempts = 0
 
@@ -458,6 +510,14 @@ struct SyncReconnectState {
 
   mutating func reset() {
     attempts = 0
+  }
+
+  /// Re-open the budget for exactly one attempt from the slow heartbeat loop.
+  /// The counter stays at its ceiling so a failed attempt re-exhausts
+  /// immediately and the caller schedules the next heartbeat instead of
+  /// re-entering the fast 1s→16s burst.
+  mutating func allowOneSlowAttempt() {
+    attempts = Self.maxAutomaticAttempts - 1
   }
 }
 
@@ -1117,6 +1177,7 @@ final class SyncService: ObservableObject {
   private var outboundLocalDbVersion = 0
   private let discoveryBrowser = SyncBonjourBrowser()
   private var reconnectState = SyncReconnectState()
+  private var envelopeChunkAssembler = SyncEnvelopeChunkAssembler()
   private var connectionGeneration: UInt64 = 0
   private var connectAttemptGeneration: UInt64 = 0
   private var lastInboundMessageAt: TimeInterval?
@@ -5977,12 +6038,15 @@ final class SyncService: ObservableObject {
   private func scheduleReconnectIfNeeded(after delayNanoseconds: UInt64) {
     let profile = loadProfile()
     guard allowAutoReconnect, !autoReconnectPausedByUser, profile != nil, tokenForProfile(profile) != nil else { return }
-    // Cap the silent retry loop. Once the attempt budget is spent we stop
-    // re-arming and surface a real "can't reach this machine" terminal state
-    // instead of churning forever. A later live discovery or a user-initiated
-    // reconnect resets the counter and re-enables the loop.
+    // Once the fast attempt budget is spent, surface the "can't reach this
+    // machine" state but keep a quiet slow heartbeat trying in the background.
+    // A paired machine routinely comes back well after the first minute — a
+    // WiFi→cellular handoff settling, the brain restarting after an update, a
+    // Tailscale route appearing — and the phone must reconnect on its own
+    // without the user babysitting a reconnect button.
     if reconnectState.isExhausted {
       enterUnreachableTerminalState(for: profile)
+      scheduleSlowReconnectHeartbeat()
       return
     }
     reconnectTask?.cancel()
@@ -5990,6 +6054,26 @@ final class SyncService: ObservableObject {
       try? await Task.sleep(nanoseconds: delayNanoseconds)
       guard !Task.isCancelled else { return }
       await reconnectIfPossible()
+    }
+  }
+
+  /// Slow background retry (~30-40s cadence with jitter) that outlives the
+  /// fast 1s→16s burst. Each beat opens the budget for exactly one attempt;
+  /// a failed attempt re-exhausts and reschedules through
+  /// scheduleReconnectIfNeeded, while an attempt that found no route yet
+  /// (waiting on live discovery) reschedules itself here.
+  private func scheduleSlowReconnectHeartbeat() {
+    reconnectTask?.cancel()
+    reconnectTask = Task { @MainActor in
+      let jitter = UInt64.random(in: 0...10_000_000_000)
+      try? await Task.sleep(nanoseconds: 30_000_000_000 + jitter)
+      guard !Task.isCancelled else { return }
+      reconnectState.allowOneSlowAttempt()
+      await reconnectIfPossible()
+      guard !Task.isCancelled else { return }
+      if autoReconnectAwaitingLiveDiscovery {
+        scheduleSlowReconnectHeartbeat()
+      }
     }
   }
 
@@ -6338,7 +6422,7 @@ final class SyncService: ObservableObject {
       "deviceType": "phone",
       "siteId": database.localSiteId(),
       "dbVersion": latestRemoteDbVersion,
-      "capabilities": ["changesetAck"],
+      "capabilities": ["changesetAck", "chunkedEnvelopes"],
     ]
   }
 
@@ -6365,6 +6449,11 @@ final class SyncService: ObservableObject {
       throw NSError(domain: "ADE", code: 1, userInfo: [NSLocalizedDescriptionKey: "Invalid machine address."])
     }
     let task = socketSession.webSocketTask(with: url)
+    // URLSession's default receive budget is ~1 MiB and exceeding it kills the
+    // connection with "Message too long". Current hosts chunk large envelopes
+    // (chunkedEnvelopes capability); the raised ceiling protects against older
+    // hosts and any future unchunked path.
+    task.maximumMessageSize = 32 * 1024 * 1024
     socket = task
     try await awaitSocketOpen(task)
     guard isCurrentConnectAttempt(connectAttemptGeneration) else {
@@ -6821,13 +6910,10 @@ final class SyncService: ObservableObject {
     connectionState = syncConnectionStateAfterTransportFailure(error: error, fallback: .disconnected)
     setDomainStatus(SyncDomain.allCases, phase: .failed, error: friendlyError.localizedDescription)
     failPendingRequests(with: friendlyError)
-    if syncIsMessageTooLongError(error) {
-      allowAutoReconnect = false
-      setAutoReconnectPausedByUser(true)
-      cancelReconnectLoop()
-    } else {
-      scheduleReconnectIfNeeded(after: reconnectDelay())
-    }
+    // "Message too long" used to pause auto-reconnect permanently. With the
+    // raised socket receive budget and hosts chunking oversized envelopes it
+    // is an ordinary transport failure now — reconnect like any other drop.
+    scheduleReconnectIfNeeded(after: reconnectDelay())
   }
 
   private func handleIncoming(_ text: String) throws {
@@ -6839,6 +6925,15 @@ final class SyncService: ObservableObject {
     lastInboundMessageAt = ProcessInfo.processInfo.systemUptime
 
     switch type {
+    case "envelope_chunk":
+      guard let dict = payload as? [String: Any],
+            let chunkId = dict["chunkId"] as? String,
+            let index = dict["index"] as? Int,
+            let total = dict["total"] as? Int,
+            let part = dict["part"] as? String else { return }
+      if let reassembled = envelopeChunkAssembler.add(chunkId: chunkId, index: index, total: total, part: part) {
+        try handleIncoming(reassembled)
+      }
     case "hello_ok":
       reconnectState.reset()
       resolve(requestId: requestId, result: .success(payload))
@@ -7340,6 +7435,7 @@ final class SyncService: ObservableObject {
     lastInboundMessageAt = nil
     refreshReducedSyncLoad()
     pendingProjectCatalogChunks.removeAll()
+    envelopeChunkAssembler.reset()
     connectionGeneration &+= 1
   }
 
@@ -7354,20 +7450,15 @@ final class SyncService: ObservableObject {
     teardownSocket(reason: friendlyError.localizedDescription)
     markConnectionLoadStrained()
     lastError = friendlyError.localizedDescription
-    let fatalTransportFailure = syncIsMessageTooLongError(error)
     self.connectionState = syncConnectionStateAfterTransportFailure(error: error, fallback: connectionState)
-    if phase == .failed || fatalTransportFailure {
+    if phase == .failed || syncIsMessageTooLongError(error) {
       setDomainStatus(SyncDomain.allCases, phase: .failed, error: friendlyError.localizedDescription)
     } else {
       setDomainStatus(SyncDomain.allCases, phase: .disconnected)
     }
     failPendingRequests(with: friendlyError)
-    if fatalTransportFailure {
-      allowAutoReconnect = false
-      setAutoReconnectPausedByUser(true)
-      cancelReconnectLoop()
-      return
-    }
+    // Oversized-message errors no longer pause reconnect permanently — see
+    // handleIncomingFailure.
     scheduleReconnectIfNeeded(after: reconnectDelayNanoseconds ?? reconnectDelay())
   }
 

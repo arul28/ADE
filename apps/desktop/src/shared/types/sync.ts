@@ -1014,6 +1014,20 @@ export type SyncNotificationPrefsEnvelope = SyncEnvelopeWithPayload<"notificatio
 export type SyncSendTestPushEnvelope = SyncEnvelopeWithPayload<"send_test_push", SyncSendTestPushPayload>;
 export type SyncInAppNotificationEnvelope = SyncEnvelopeWithPayload<"in_app_notification", SyncInAppNotificationPayload>;
 
+/**
+ * One slice of an oversized encoded envelope. `part` is a base64 slice of the
+ * full encoded envelope's UTF-8 bytes; clients concatenate parts in `index`
+ * order, decode, and process the result as a normal envelope. Hosts only emit
+ * these to peers that declared the "chunkedEnvelopes" hello capability.
+ */
+export type SyncEnvelopeChunkPayload = {
+  chunkId: string;
+  index: number;
+  total: number;
+  part: string;
+};
+export type SyncEnvelopeChunkEnvelope = SyncEnvelopeWithPayload<"envelope_chunk", SyncEnvelopeChunkPayload>;
+
 export type SyncEnvelope =
   | SyncHelloEnvelope
   | SyncHelloOkEnvelope
@@ -1047,7 +1061,8 @@ export type SyncEnvelope =
   | SyncRegisterPushTokenEnvelope
   | SyncNotificationPrefsEnvelope
   | SyncSendTestPushEnvelope
-  | SyncInAppNotificationEnvelope;
+  | SyncInAppNotificationEnvelope
+  | SyncEnvelopeChunkEnvelope;
 
 export const DEFAULT_NOTIFICATION_PREFERENCES: NotificationPreferences = {
   enabled: true,

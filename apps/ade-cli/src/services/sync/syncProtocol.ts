@@ -1,11 +1,20 @@
+import { randomUUID } from "node:crypto";
 import { gunzipSync, gzipSync } from "node:zlib";
-import type { SyncCompressionCodec, SyncEnvelope, SyncPeerPlatform, SyncProtocolVersion } from "../../../../desktop/src/shared/types";
+import type { SyncCompressionCodec, SyncEnvelope, SyncEnvelopeChunkPayload, SyncPeerPlatform, SyncProtocolVersion } from "../../../../desktop/src/shared/types";
 import { safeJsonParse } from "../../../../desktop/src/main/services/shared/utils";
 
 export const SYNC_PROTOCOL_VERSION: SyncProtocolVersion = 1;
 export const DEFAULT_SYNC_HOST_PORT = 8787;
 export const DEFAULT_SYNC_COMPRESSION_THRESHOLD_BYTES = 4 * 1024;
 export const MAX_UNCOMPRESSED_SYNC_ENVELOPE_BYTES = 25 * 1024 * 1024;
+
+/** Hello capability a client declares when it can reassemble envelope_chunk frames. */
+export const SYNC_CHUNKED_ENVELOPES_CAPABILITY = "chunkedEnvelopes";
+
+// URLSessionWebSocketTask buffers at most ~1 MiB per message by default and
+// kills the whole connection ("Message too long") past that. Keep every frame
+// comfortably under that even after the base64 + wrapper overhead of a chunk.
+export const DEFAULT_SYNC_MAX_FRAME_BYTES = 720 * 1024;
 
 export function mapPlatform(platform: NodeJS.Platform): SyncPeerPlatform {
   switch (platform) {
@@ -83,6 +92,101 @@ export function encodeSyncEnvelope(args: EncodeEnvelopeArgs): string {
     payloadEncoding: "json",
     payload: args.payload ?? null,
   }));
+}
+
+/**
+ * Encode an envelope into one or more websocket frames. When the encoded
+ * envelope exceeds `maxFrameBytes`, it is sliced into `envelope_chunk` frames
+ * the client reassembles by concatenating base64 `part`s in `index` order.
+ * Pass a null/undefined `maxFrameBytes` for peers that did not declare the
+ * chunkedEnvelopes capability — they get the single full frame, same as today.
+ */
+export function encodeSyncEnvelopeFrames(
+  args: EncodeEnvelopeArgs & { maxFrameBytes?: number | null },
+): string[] {
+  const encoded = encodeSyncEnvelope(args);
+  const maxFrameBytes = args.maxFrameBytes ?? null;
+  if (!maxFrameBytes || Buffer.byteLength(encoded, "utf8") <= maxFrameBytes) {
+    return [encoded];
+  }
+  const raw = Buffer.from(encoded, "utf8");
+  // Each part is base64 (4/3 expansion) inside a small JSON wrapper; budget
+  // the decoded slice so the wrapped chunk frame stays under maxFrameBytes.
+  const partBytes = Math.max(16 * 1024, Math.floor(((maxFrameBytes - 1024) * 3) / 4));
+  const total = Math.ceil(raw.byteLength / partBytes);
+  const chunkId = randomUUID();
+  const frames: string[] = [];
+  for (let index = 0; index < total; index += 1) {
+    const payload: SyncEnvelopeChunkPayload = {
+      chunkId,
+      index,
+      total,
+      part: raw.subarray(index * partBytes, Math.min(raw.byteLength, (index + 1) * partBytes)).toString("base64"),
+    };
+    frames.push(encodeSyncEnvelope({
+      type: "envelope_chunk",
+      requestId: args.requestId,
+      payload,
+      // base64 of (usually gzipped) data does not compress again.
+      compressionThresholdBytes: Number.POSITIVE_INFINITY,
+    }));
+  }
+  return frames;
+}
+
+export function parseSyncEnvelopeChunkPayload(payload: unknown): SyncEnvelopeChunkPayload | null {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
+  const record = payload as Record<string, unknown>;
+  const chunkId = typeof record.chunkId === "string" && record.chunkId.trim() ? record.chunkId : null;
+  const index = typeof record.index === "number" && Number.isInteger(record.index) && record.index >= 0 ? record.index : null;
+  const total = typeof record.total === "number" && Number.isInteger(record.total) && record.total > 0 ? record.total : null;
+  const part = typeof record.part === "string" ? record.part : null;
+  if (chunkId == null || index == null || total == null || part == null || index >= total) return null;
+  return { chunkId, index, total, part };
+}
+
+/**
+ * Client-side reassembly helper: collects envelope_chunk payloads by chunkId
+ * and returns the full encoded envelope text once every part has arrived.
+ * Keeps only a handful of in-flight chunk ids so a malicious or broken host
+ * cannot grow the buffer unboundedly.
+ */
+export function createSyncEnvelopeChunkAssembler(options: { maxConcurrentChunks?: number; maxTotalParts?: number } = {}) {
+  const maxConcurrentChunks = options.maxConcurrentChunks ?? 8;
+  const maxTotalParts = options.maxTotalParts ?? 512;
+  const buffers = new Map<string, { total: number; parts: Map<number, string> }>();
+  return {
+    add(payload: SyncEnvelopeChunkPayload): string | null {
+      if (payload.total > maxTotalParts) return null;
+      let buffer = buffers.get(payload.chunkId);
+      if (!buffer) {
+        while (buffers.size >= maxConcurrentChunks) {
+          const oldest = buffers.keys().next().value;
+          if (oldest == null) break;
+          buffers.delete(oldest);
+        }
+        buffer = { total: payload.total, parts: new Map() };
+        buffers.set(payload.chunkId, buffer);
+      }
+      if (buffer.total !== payload.total) {
+        buffers.delete(payload.chunkId);
+        return null;
+      }
+      buffer.parts.set(payload.index, payload.part);
+      if (buffer.parts.size < buffer.total) return null;
+      buffers.delete(payload.chunkId);
+      const segments: Buffer[] = [];
+      for (let index = 0; index < buffer.total; index += 1) {
+        const part = buffer.parts.get(index);
+        if (part == null) return null;
+        segments.push(Buffer.from(part, "base64"));
+      }
+      return Buffer.concat(segments).toString("utf8");
+    },
+    reset(): void {
+      buffers.clear();
+    },
+  };
 }
 
 export function parseSyncEnvelope(rawText: string): ParsedSyncEnvelope {
