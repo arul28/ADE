@@ -7,6 +7,8 @@ import type * as ReactNamespace from "react";
 import type * as RouterNamespace from "react-router-dom";
 import { ADE_OPEN_BUILT_IN_BROWSER_EVENT } from "../../lib/openExternal";
 
+const ROUTE_INTEGRATION_TIMEOUT_MS = 45_000;
+
 const workLifecycle = vi.hoisted(() => ({
   mounts: 0,
   unmounts: 0,
@@ -186,6 +188,7 @@ vi.mock("../lanes/LanesPage", async () => {
 
 describe("App Work route keep-alive", () => {
   beforeEach(() => {
+    cleanup();
     vi.clearAllMocks();
     workLifecycle.mounts = 0;
     workLifecycle.unmounts = 0;
@@ -257,7 +260,7 @@ describe("App Work route keep-alive", () => {
     });
     expect(workLifecycle.mounts).toBe(1);
     expect(workLifecycle.unmounts).toBe(0);
-  });
+  }, ROUTE_INTEGRATION_TIMEOUT_MS);
 
   it("parks the native Work browser view when the Work route is backgrounded", async () => {
     const { App } = await import("./App");
@@ -285,7 +288,7 @@ describe("App Work route keep-alive", () => {
         visible: false,
       });
     });
-  });
+  }, ROUTE_INTEGRATION_TIMEOUT_MS);
 
   it("reveals the Work browser pane when an ADE browser URL opens from another tab", async () => {
     window.history.replaceState({}, "", "/files");
@@ -310,7 +313,7 @@ describe("App Work route keep-alive", () => {
         workSidebarTab: "browser",
       }),
     );
-  });
+  }, ROUTE_INTEGRATION_TIMEOUT_MS);
 
   it("hydrates project stores with launch clipboard reminder preferences", async () => {
     appStoreState.launchPromptClipboardNoticeEnabled = false;

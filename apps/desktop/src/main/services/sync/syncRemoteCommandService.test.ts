@@ -487,6 +487,14 @@ function createMockConflictService() {
   } as any;
 }
 
+function createMockRebaseSuggestionService() {
+  return {
+    listSuggestions: vi.fn().mockResolvedValue([]),
+    dismiss: vi.fn().mockResolvedValue(undefined),
+    defer: vi.fn().mockResolvedValue(undefined),
+  } as any;
+}
+
 function createMockWorkerAgentService() {
   return {
     listAgents: vi.fn().mockReturnValue([]),
@@ -610,6 +618,7 @@ describe("createSyncRemoteCommandService", () => {
   let linearSyncService: ReturnType<typeof createMockLinearSyncService>;
   let linearCredentialService: ReturnType<typeof createMockLinearCredentialService>;
   let conflictService: ReturnType<typeof createMockConflictService>;
+  let rebaseSuggestionService: ReturnType<typeof createMockRebaseSuggestionService>;
   let processService: ReturnType<typeof createMockProcessService>;
   let issueInventoryService: ReturnType<typeof createMockIssueInventoryService>;
   let queueLandingService: ReturnType<typeof createMockQueueLandingService>;
@@ -631,6 +640,7 @@ describe("createSyncRemoteCommandService", () => {
     linearSyncService = createMockLinearSyncService();
     linearCredentialService = createMockLinearCredentialService();
     conflictService = createMockConflictService();
+    rebaseSuggestionService = createMockRebaseSuggestionService();
     processService = createMockProcessService();
     issueInventoryService = createMockIssueInventoryService();
     queueLandingService = createMockQueueLandingService();
@@ -652,6 +662,7 @@ describe("createSyncRemoteCommandService", () => {
       getLinearIssueTracker: () => linearIssueTracker,
       getLinearSyncService: () => linearSyncService,
       conflictService,
+      rebaseSuggestionService,
       processService,
       logger: createLogger() as any,
     });
@@ -3172,36 +3183,29 @@ describe("createSyncRemoteCommandService", () => {
       }))).rejects.toThrow("lanes.rebasePush requires laneIds.");
     });
 
-    it("lanes.dismissRebaseSuggestion routes to conflictService even without a rebaseSuggestionService", async () => {
+    it("lanes.dismissRebaseSuggestion hides the banner without dismissing the rebase need", async () => {
       const result = await service.execute(makePayload("lanes.dismissRebaseSuggestion", {
         laneId: "lane-1",
       }));
-      expect(conflictService.dismissRebase).toHaveBeenCalledWith("lane-1");
+      expect(rebaseSuggestionService.dismiss).toHaveBeenCalledWith({ laneId: "lane-1" });
+      expect(conflictService.dismissRebase).not.toHaveBeenCalled();
       expect(result).toEqual({ ok: true });
     });
 
-    it("lanes.deferRebaseSuggestion clamps minutes and forwards an ISO timestamp to conflictService", async () => {
-      vi.useFakeTimers();
-      try {
-        vi.setSystemTime(new Date("2026-04-15T22:00:00.000Z"));
-        await service.execute(makePayload("lanes.deferRebaseSuggestion", {
-          laneId: "lane-1",
-          minutes: 1,
-        }));
-        expect(conflictService.deferRebase).toHaveBeenCalledWith(
-          "lane-1",
-          "2026-04-15T22:05:00.000Z",
-        );
-        conflictService.deferRebase.mockClear();
-        await service.execute(makePayload("lanes.deferRebaseSuggestion", {
-          laneId: "lane-1",
-          minutes: 60 * 24 * 30,
-        }));
-        const [, until] = conflictService.deferRebase.mock.calls.at(-1) ?? [];
-        expect(until).toBe(new Date(Date.parse("2026-04-15T22:00:00.000Z") + 7 * 24 * 60 * 60_000).toISOString());
-      } finally {
-        vi.useRealTimers();
-      }
+    it("lanes.deferRebaseSuggestion clamps minutes and snoozes the banner without deferring the rebase need", async () => {
+      await service.execute(makePayload("lanes.deferRebaseSuggestion", {
+        laneId: "lane-1",
+        minutes: 1,
+      }));
+      expect(rebaseSuggestionService.defer).toHaveBeenCalledWith({ laneId: "lane-1", minutes: 5 });
+      expect(conflictService.deferRebase).not.toHaveBeenCalled();
+
+      await service.execute(makePayload("lanes.deferRebaseSuggestion", {
+        laneId: "lane-1",
+        minutes: 60 * 24 * 30,
+      }));
+      expect(rebaseSuggestionService.defer).toHaveBeenLastCalledWith({ laneId: "lane-1", minutes: 7 * 24 * 60 });
+      expect(conflictService.deferRebase).not.toHaveBeenCalled();
     });
   });
 

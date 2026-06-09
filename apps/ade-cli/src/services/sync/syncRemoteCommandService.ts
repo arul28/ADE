@@ -2058,7 +2058,6 @@ function registerLaneRemoteCommands({ args, register }: RemoteCommandRegistratio
   register("lanes.listRebaseSuggestions", { viewerAllowed: true }, async () => args.rebaseSuggestionService?.listSuggestions() ?? []);
   register("lanes.dismissRebaseSuggestion", { viewerAllowed: true, queueable: true }, async (payload) => {
     const laneId = requireString(payload.laneId, "lanes.dismissRebaseSuggestion requires laneId.");
-    args.conflictService?.dismissRebase(laneId);
     if (args.rebaseSuggestionService) {
       await args.rebaseSuggestionService.dismiss({ laneId });
     }
@@ -2067,8 +2066,6 @@ function registerLaneRemoteCommands({ args, register }: RemoteCommandRegistratio
   register("lanes.deferRebaseSuggestion", { viewerAllowed: true, queueable: true }, async (payload) => {
     const laneId = requireString(payload.laneId, "lanes.deferRebaseSuggestion requires laneId.");
     const minutes = Math.max(5, Math.min(7 * 24 * 60, Math.floor(asOptionalNumber(payload.minutes) ?? 60)));
-    const until = new Date(Date.now() + minutes * 60_000).toISOString();
-    args.conflictService?.deferRebase(laneId, until);
     if (args.rebaseSuggestionService) {
       await args.rebaseSuggestionService.defer({
         laneId,

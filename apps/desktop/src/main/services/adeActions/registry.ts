@@ -1450,14 +1450,11 @@ function buildLaneDomainService(runtime: AdeRuntime): OpaqueService {
     },
     dismissRebaseSuggestion: async (args?: { laneId?: string }) => {
       const laneId = requireNonEmptyString(args?.laneId, "laneId");
-      runtime.conflictService?.dismissRebase(laneId);
       await runtime.rebaseSuggestionService?.dismiss({ laneId });
     },
     deferRebaseSuggestion: async (args?: { laneId?: string; minutes?: number }) => {
       const laneId = requireNonEmptyString(args?.laneId, "laneId");
       const minutes = Math.max(5, Math.min(7 * 24 * 60, Math.floor(args?.minutes ?? 60)));
-      const until = new Date(Date.now() + minutes * 60_000).toISOString();
-      runtime.conflictService?.deferRebase(laneId, until);
       await runtime.rebaseSuggestionService?.defer({ laneId, minutes });
     },
     listAutoRebaseStatuses: () =>

@@ -35,7 +35,9 @@ describe("PrRebaseBanner", () => {
         execute: vi.fn(async () => {
           throw new Error("rebase failed");
         }),
-        dismiss: vi.fn(),
+      },
+      lanes: {
+        dismissRebaseSuggestion: vi.fn(),
       },
     };
 
@@ -58,7 +60,9 @@ describe("PrRebaseBanner", () => {
     (window as any).ade = {
       rebase: {
         execute: vi.fn(async () => undefined),
-        dismiss: vi.fn(),
+      },
+      lanes: {
+        dismissRebaseSuggestion: vi.fn(),
       },
     };
 
@@ -76,5 +80,35 @@ describe("PrRebaseBanner", () => {
 
     await waitFor(() => expect(onRefresh).toHaveBeenCalledTimes(1));
     expect(onRebaseDone).toHaveBeenCalledTimes(1);
+  });
+
+  it("hides the banner without dismissing the active rebase need", async () => {
+    const dismissRebaseSuggestion = vi.fn(async () => undefined);
+    const onRefresh = vi.fn(async () => undefined);
+    (window as any).ade = {
+      rebase: {
+        execute: vi.fn(async () => undefined),
+        dismiss: vi.fn(),
+      },
+      lanes: {
+        dismissRebaseSuggestion,
+      },
+    };
+
+    render(
+      <PrRebaseBanner
+        laneId="lane-1"
+        rebaseNeeds={[makeNeed()]}
+        onTabChange={() => {}}
+        onRefresh={onRefresh}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /HIDE BANNER/i }));
+
+    await waitFor(() => expect(dismissRebaseSuggestion).toHaveBeenCalledWith({ laneId: "lane-1" }));
+    expect((window as any).ade.rebase.dismiss).not.toHaveBeenCalled();
+    expect(onRefresh).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText(/2 commits behind main/i)).toBeNull();
   });
 });

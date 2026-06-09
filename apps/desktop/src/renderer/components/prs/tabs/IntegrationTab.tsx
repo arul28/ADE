@@ -24,6 +24,7 @@ import { isDirtyWorktreeErrorMessage, stripDirtyWorktreePrefix } from "../shared
 import { deriveIntegrationPrLiveModel } from "../shared/integrationPrModel";
 import { PrAiResolverPanel } from "../shared/PrAiResolverPanel";
 import { findLaneBaseNeed, findMatchingRebaseNeed, rebaseNeedItemKey } from "../shared/rebaseNeedUtils";
+import { getActiveRebaseNeeds } from "./rebaseWorkflowModel";
 
 /* ---- Outcome dot with design-system colors ---- */
 
@@ -603,8 +604,8 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
   );
   const rebaseNeedByLaneId = React.useMemo(
     () => new Map(
-      rebaseNeeds
-        .filter((need) => need.kind === "lane_base" && need.behindBy > 0 && !need.dismissedAt)
+      getActiveRebaseNeeds(rebaseNeeds)
+        .filter((need) => need.kind === "lane_base")
         .map((need) => [need.laneId, need] as const),
     ),
     [rebaseNeeds],

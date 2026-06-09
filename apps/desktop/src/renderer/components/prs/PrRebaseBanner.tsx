@@ -19,8 +19,7 @@ export function PrRebaseBanner({ laneId, rebaseNeeds, autoRebaseStatuses, onTabC
 
   const need = React.useMemo(() => {
     const laneNeed = findLaneBaseNeed(rebaseNeeds, laneId);
-    if (!laneNeed || laneNeed.behindBy <= 0 || laneNeed.dismissedAt) return null;
-    if (laneNeed.deferredUntil && new Date(laneNeed.deferredUntil) > new Date()) return null;
+    if (!laneNeed || laneNeed.behindBy <= 0) return null;
     return laneNeed;
   }, [laneId, rebaseNeeds]);
   const autoStatus = autoRebaseStatuses?.find((s) => s.laneId === laneId);
@@ -93,7 +92,7 @@ export function PrRebaseBanner({ laneId, rebaseNeeds, autoRebaseStatuses, onTabC
   const handleDismiss = async () => {
     setActionError(null);
     try {
-      await window.ade.rebase.dismiss(laneId);
+      await window.ade.lanes.dismissRebaseSuggestion({ laneId });
       await onRefresh?.();
       setDismissed(true);
     } catch (error) {
@@ -168,7 +167,7 @@ export function PrRebaseBanner({ laneId, rebaseNeeds, autoRebaseStatuses, onTabC
             }}
             onClick={() => void handleDismiss()}
           >
-            DISMISS
+            HIDE BANNER
           </button>
         </div>
       </div>

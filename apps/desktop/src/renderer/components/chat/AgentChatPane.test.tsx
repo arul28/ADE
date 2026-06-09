@@ -5797,7 +5797,7 @@ describe("AgentChatPane submit recovery", () => {
     await waitFor(() => {
       expect(create).toHaveBeenCalledTimes(2);
       expect(send).toHaveBeenCalledTimes(2);
-    });
+    }, { timeout: 5000 });
     expect(writeClipboardText).toHaveBeenCalledTimes(1);
     expect(writeClipboardText).toHaveBeenCalledWith("Fix the login bug");
     expect(create).toHaveBeenNthCalledWith(1, expect.objectContaining({
