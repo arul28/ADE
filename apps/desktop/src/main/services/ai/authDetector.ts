@@ -17,8 +17,10 @@ import { inspectLocalProvider, clearLocalProviderInspectionCache } from "./local
 import { resolveDroidExecutable } from "./droidExecutable";
 import {
   reportProviderRuntimeAuthFailure,
+  reportProviderRuntimeFailure,
   reportProviderRuntimeReady,
 } from "./providerRuntimeHealth";
+import { loadCursorSdk } from "./cursorSdkLoader";
 
 type CliName = "claude" | "codex" | "cursor" | "droid";
 
@@ -797,7 +799,7 @@ async function verifyCursorApiKey(
 ): Promise<ApiKeyVerificationResult> {
   let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
   try {
-    const { Cursor } = await import("@cursor/sdk");
+    const { Cursor } = await loadCursorSdk();
     const user = await Promise.race([
       Cursor.me({ apiKey: key }),
       new Promise<never>((_, reject) => {
@@ -822,7 +824,9 @@ async function verifyCursorApiKey(
     const message = error instanceof Error ? error.message : String(error);
     const authFailed = /auth|unauthorized|forbidden|invalid|api key/i.test(message);
     if (authFailed) {
-      reportProviderRuntimeAuthFailure("cursor", "Cursor rejected the configured API key. Check the key from the Cursor dashboard integrations page.");
+      reportProviderRuntimeAuthFailure("cursor", "Cursor rejected the configured API key. Check the key from the Cursor dashboard API page.");
+    } else {
+      reportProviderRuntimeFailure("cursor", message);
     }
     return {
       provider: "cursor",

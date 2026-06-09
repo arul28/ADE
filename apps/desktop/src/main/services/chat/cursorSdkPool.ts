@@ -276,6 +276,40 @@ async function createCursorSdkConnection(args: Parameters<typeof acquireCursorSd
     onCloudArtifact: null,
     onHookRequest: null,
   };
+  const workerIpcClosedError = () => new Error("Cursor SDK worker IPC channel is closed.");
+  const normalizeIpcSendError = (error: unknown): Error => (
+    error instanceof Error ? error : new Error(String(error))
+  );
+  const sendWorkerMessage = (
+    message: CursorSdkWorkerRequest,
+    onError?: (error: Error) => void,
+  ): boolean => {
+    if (child.exitCode != null || child.killed || child.connected === false) {
+      onError?.(workerIpcClosedError());
+      return false;
+    }
+    try {
+      child.send(message, (error) => {
+        if (error) onError?.(normalizeIpcSendError(error));
+      });
+      return true;
+    } catch (error) {
+      onError?.(normalizeIpcSendError(error));
+      return false;
+    }
+  };
+  const rejectPending = (error: Error) => {
+    for (const [, waiter] of pending) waiter.reject(error);
+    pending.clear();
+  };
+  const cleanupPoolEntry = (pooledRef: CursorSdkPooled) => {
+    for (const [poolKey, entry] of pools) {
+      if (entry.pooled === pooledRef) {
+        pools.delete(poolKey);
+        cleanupCursorSdkRuntimePaths(entry);
+      }
+    }
+  };
 
   child.stdout?.on("data", (chunk) => {
     const text = Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk);
@@ -299,7 +333,17 @@ async function createCursorSdkConnection(args: Parameters<typeof acquireCursorSd
           reject,
           type,
         });
-        child.send?.({ type, requestId, payload } as CursorSdkWorkerRequest);
+        const sent = sendWorkerMessage({ type, requestId, payload } as CursorSdkWorkerRequest, (error) => {
+          const waiter = pending.get(requestId);
+          if (!waiter) return;
+          pending.delete(requestId);
+          waiter.reject(error);
+        });
+        if (!sent) {
+          if (pending.delete(requestId)) {
+            reject(workerIpcClosedError());
+          }
+        }
       });
     },
     sendPrompt: (payload) => pooled.request("send", payload),
@@ -308,11 +352,7 @@ async function createCursorSdkConnection(args: Parameters<typeof acquireCursorSd
     dispose: () => {
       for (const [, waiter] of pending) waiter.reject(new Error("Cursor SDK worker disposed."));
       pending.clear();
-      try {
-        child.send?.({ type: "dispose", requestId: randomUUID() } as CursorSdkWorkerRequest);
-      } catch {
-        // ignore
-      }
+      sendWorkerMessage({ type: "dispose", requestId: randomUUID() } as CursorSdkWorkerRequest);
       setTimeout(() => {
         if (child.exitCode == null && !child.killed) child.kill("SIGTERM");
       }, 800).unref();
@@ -413,11 +453,15 @@ async function createCursorSdkConnection(args: Parameters<typeof acquireCursorSd
             agent_message: "Hook evaluation failed due to an internal error.",
           };
         }
-        child.send?.({
+        sendWorkerMessage({
           type: "hook_response",
           requestId: message.requestId,
           payload: decision,
-        } as CursorSdkWorkerRequest);
+        } as CursorSdkWorkerRequest, (error) => {
+          args.logger?.warn?.("agent_chat.cursor_sdk_hook_response_failed", {
+            error: error.message,
+          });
+        });
       })();
       return;
     }
@@ -430,17 +474,14 @@ async function createCursorSdkConnection(args: Parameters<typeof acquireCursorSd
     }
   });
 
+  child.on("error", (error) => {
+    rejectPending(normalizeIpcSendError(error));
+    cleanupPoolEntry(pooled);
+  });
+
   child.on("exit", (code, signal) => {
-    for (const [, waiter] of pending) {
-      waiter.reject(new Error(`Cursor SDK worker exited (${code ?? signal ?? "unknown"}).`));
-    }
-    pending.clear();
-    for (const [poolKey, entry] of pools) {
-      if (entry.pooled === pooled) {
-        pools.delete(poolKey);
-        cleanupCursorSdkRuntimePaths(entry);
-      }
-    }
+    rejectPending(new Error(`Cursor SDK worker exited (${code ?? signal ?? "unknown"}).`));
+    cleanupPoolEntry(pooled);
   });
 
   const initPayload: CursorSdkWorkerInit = {

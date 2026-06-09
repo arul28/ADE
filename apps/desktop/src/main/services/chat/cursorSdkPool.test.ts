@@ -47,6 +47,35 @@ class FakeSdkChild extends EventEmitter {
   }
 }
 
+class ExitingBeforeInitChild extends EventEmitter {
+  stdout = new EventEmitter();
+  stderr = new EventEmitter();
+  exitCode: number | null = null;
+  killed = false;
+  connected = true;
+
+  send(message: { type?: string; requestId?: string }): boolean {
+    if (message.type === "init") {
+      queueMicrotask(() => {
+        this.exitCode = 1;
+        this.connected = false;
+        this.emit("exit", 1, null);
+      });
+      return true;
+    }
+    if (message.type === "dispose") {
+      throw Object.assign(new Error("Channel closed"), { code: "ERR_IPC_CHANNEL_CLOSED" });
+    }
+    return true;
+  }
+
+  kill(signal?: NodeJS.Signals): boolean {
+    this.killed = true;
+    this.emit("exit", null, signal ?? "SIGTERM");
+    return true;
+  }
+}
+
 afterEach(() => {
   forkMock.mockReset();
 });
@@ -139,5 +168,25 @@ describe("Cursor SDK pool paths", () => {
 
     releaseCursorSdkConnection(poolKey, second.generation);
     expect(child.disposeCount).toBe(1);
+  });
+
+  it("rejects initialization instead of throwing when the worker IPC channel closes", async () => {
+    forkMock.mockReturnValue(new ExitingBeforeInitChild());
+    const poolKey = `test-exit:${Date.now()}:${Math.random()}`;
+
+    await expect(acquireCursorSdkConnection({
+      poolKey,
+      projectRoot: path.join(os.tmpdir(), "ade-project"),
+      workspacePath: path.join(os.tmpdir(), "ade-workspace"),
+      modelSdkId: "cursor-model",
+      sessionId: "session-1",
+      policy: {
+        chatMode: "agent" as const,
+        approvalPolicy: "on-request" as const,
+        sandbox: "ade" as const,
+        force: false,
+        hardGuards: true,
+      },
+    })).rejects.toThrow("Cursor SDK worker exited (1).");
   });
 });

@@ -14,14 +14,49 @@
 
 import { Buffer } from "node:buffer";
 import fs from "node:fs";
+import { createRequire } from "node:module";
 import path from "node:path";
 
 type CursorSdk = typeof import("@cursor/sdk");
 
+const requireFromRuntime = createRequire(
+  typeof __filename === "string" ? __filename : path.join(process.cwd(), "package.json"),
+);
 let sdkModulePromise: Promise<CursorSdk> | null = null;
+
+function cursorSdkLoadErrorText(error: unknown): string {
+  if (error instanceof Error) return `${error.name}: ${error.message}`;
+  return String(error);
+}
+
+function isCursorSdkResolutionError(error: unknown): boolean {
+  const code = error && typeof error === "object"
+    ? String((error as { code?: unknown }).code ?? "")
+    : "";
+  const message = cursorSdkLoadErrorText(error);
+  return code === "ERR_MODULE_NOT_FOUND"
+    || code === "MODULE_NOT_FOUND"
+    || /Cannot find package ['"]@cursor\/sdk['"]/i.test(message)
+    || /Cannot find module ['"]@cursor\/sdk['"]/i.test(message);
+}
+
 async function getSdk(): Promise<CursorSdk> {
   if (!sdkModulePromise) {
-    sdkModulePromise = import("@cursor/sdk");
+    sdkModulePromise = import("@cursor/sdk")
+      .catch((error) => {
+        if (!isCursorSdkResolutionError(error)) throw error;
+        try {
+          return requireFromRuntime("@cursor/sdk") as CursorSdk;
+        } catch (fallbackError) {
+          throw new Error(
+            `Failed to load @cursor/sdk via dynamic import or packaged runtime resolution. import=${cursorSdkLoadErrorText(error)} require=${cursorSdkLoadErrorText(fallbackError)}`,
+          );
+        }
+      })
+      .catch((error) => {
+        sdkModulePromise = null;
+        throw error;
+      });
   }
   return sdkModulePromise;
 }

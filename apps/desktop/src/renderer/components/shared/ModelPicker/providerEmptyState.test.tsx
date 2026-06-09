@@ -39,7 +39,7 @@ describe("ProviderEmptyState", () => {
     await userEvent.click(screen.getByRole("button", { name: /Open Settings/i }));
     expect(onOpenSignIn).toHaveBeenCalledOnce();
     await userEvent.click(screen.getByRole("button", { name: /Get Cursor API key/i }));
-    expect(openExternalCalls).toContain("https://cursor.com/dashboard/integrations");
+    expect(openExternalCalls).toContain("https://cursor.com/dashboard/api");
   });
 
   it("renders connected-but-empty Cursor discovery copy", () => {

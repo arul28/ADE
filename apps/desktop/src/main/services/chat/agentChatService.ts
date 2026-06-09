@@ -3123,7 +3123,7 @@ const DEFAULT_SESSION_TITLES_NORMALIZED = new Set(
     .map((title) => title.toLowerCase()),
 );
 const CURSOR_RUNTIME_AUTH_ERROR =
-  "Cursor rejected the configured API key for agent/model access. Re-enter a Cursor API key from the Cursor dashboard integrations page.";
+  "Cursor rejected the configured API key for agent/model access. Re-enter a Cursor API key from the Cursor dashboard API page.";
 
 function isCursorRuntimeAuthError(error: unknown): boolean {
   const statusCode = readErrorStatusCode(error);

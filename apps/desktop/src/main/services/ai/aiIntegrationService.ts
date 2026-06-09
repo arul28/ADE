@@ -76,6 +76,7 @@ import { getProviderRuntimeHealthVersion, resetProviderRuntimeHealth } from "./p
 import { resetClaudeRuntimeProbeCache } from "./claudeRuntimeProbe";
 import { runProviderTask } from "./providerTaskRunner";
 import { resolveClaudeCodeExecutable } from "./claudeCodeExecutable";
+import { loadCursorSdk } from "./cursorSdkLoader";
 
 export type AiTaskType =
   | "planning"
@@ -1074,7 +1075,7 @@ export function createAiIntegrationService(args: {
               ...verification,
               ok: false,
               message:
-                "Cursor account verification succeeded, but Cursor rejected this API key for agent/model access. Re-enter a key from the Cursor dashboard integrations page.",
+                "Cursor account verification succeeded, but Cursor rejected this API key for agent/model access. Re-enter a key from the Cursor dashboard API page.",
               source: apiEntry.source,
             };
           }
@@ -1105,7 +1106,7 @@ export function createAiIntegrationService(args: {
 
   const listCursorCloudRepositories = async (): Promise<CursorCloudRepository[]> => {
     const apiKey = await requireCursorCloudApiKey();
-    const { Cursor } = await import("@cursor/sdk");
+    const { Cursor } = await loadCursorSdk();
     const repos = await Cursor.repositories.list({ apiKey });
     return repos
       .map((repo) => ({ url: String(repo.url ?? "").trim() }))
@@ -1118,7 +1119,7 @@ export function createAiIntegrationService(args: {
     cursor?: string | null;
   }): Promise<CursorCloudListAgentsResult> => {
     const apiKey = await requireCursorCloudApiKey();
-    const { Agent } = await import("@cursor/sdk");
+    const { Agent } = await loadCursorSdk();
     const result = await Agent.list({
       runtime: "cloud",
       apiKey,
@@ -1140,7 +1141,7 @@ export function createAiIntegrationService(args: {
     const agentId = args.agentId.trim();
     if (!agentId) throw new Error("Cursor cloud agent id is required.");
     const apiKey = await requireCursorCloudApiKey();
-    const { Agent } = await import("@cursor/sdk");
+    const { Agent } = await loadCursorSdk();
     const result = await Agent.listRuns(agentId, {
       runtime: "cloud",
       apiKey,
@@ -1162,7 +1163,7 @@ export function createAiIntegrationService(args: {
     if (!repoUrl) throw new Error("Cursor cloud repo is required.");
     const idempotencyKey = args.idempotencyKey?.trim() || undefined;
     const apiKey = await requireCursorCloudApiKey();
-    const { Agent } = await import("@cursor/sdk");
+    const { Agent } = await loadCursorSdk();
     const agent = await Agent.create({
       apiKey,
       ...(idempotencyKey ? { idempotencyKey } : {}),
@@ -1198,7 +1199,7 @@ export function createAiIntegrationService(args: {
     const id = agentId.trim();
     if (!id) throw new Error("Cursor cloud agent id is required.");
     const apiKey = await requireCursorCloudApiKey();
-    const { Agent } = await import("@cursor/sdk");
+    const { Agent } = await loadCursorSdk();
     await Agent.archive(id, { apiKey });
   };
 
@@ -1206,7 +1207,7 @@ export function createAiIntegrationService(args: {
     const id = agentId.trim();
     if (!id) throw new Error("Cursor cloud agent id is required.");
     const apiKey = await requireCursorCloudApiKey();
-    const { Agent } = await import("@cursor/sdk");
+    const { Agent } = await loadCursorSdk();
     await Agent.unarchive(id, { apiKey });
   };
 
@@ -1214,7 +1215,7 @@ export function createAiIntegrationService(args: {
     const id = agentId.trim();
     if (!id) throw new Error("Cursor cloud agent id is required.");
     const apiKey = await requireCursorCloudApiKey();
-    const { Agent } = await import("@cursor/sdk");
+    const { Agent } = await loadCursorSdk();
     await Agent.delete(id, { apiKey });
   };
 
@@ -1222,7 +1223,7 @@ export function createAiIntegrationService(args: {
     const id = agentId.trim();
     if (!id) throw new Error("Cursor cloud agent id is required.");
     const apiKey = await requireCursorCloudApiKey();
-    const { Agent } = await import("@cursor/sdk");
+    const { Agent } = await loadCursorSdk();
     try {
       const raw = await Agent.get(id, { apiKey });
       return normalizeCursorCloudAgent(raw);
@@ -1237,7 +1238,7 @@ export function createAiIntegrationService(args: {
     const id = agentId.trim();
     if (!id) throw new Error("Cursor cloud agent id is required.");
     const apiKey = await requireCursorCloudApiKey();
-    const { Agent } = await import("@cursor/sdk");
+    const { Agent } = await loadCursorSdk();
     const cloudAgent = await Agent.resume(id, { apiKey });
     try {
       const artifacts = await cloudAgent.listArtifacts();
@@ -1264,7 +1265,7 @@ export function createAiIntegrationService(args: {
     if (!id) throw new Error("Cursor cloud agent id is required.");
     if (!artifactPath.length) throw new Error("Cursor cloud artifact path is required.");
     const apiKey = await requireCursorCloudApiKey();
-    const { Agent } = await import("@cursor/sdk");
+    const { Agent } = await loadCursorSdk();
     const cloudAgent = await Agent.resume(id, { apiKey });
     try {
       const buffer = await cloudAgent.downloadArtifact(artifactPath);

@@ -106,7 +106,14 @@ export function modelPickerProviderAuthStatus(
     }
     return "unavailable";
   }
-  if (provider === "codex" || provider === "cursor" || provider === "droid") {
+  if (provider === "cursor") {
+    const connection = status.providerConnections?.cursor;
+    if (connection?.runtimeAvailable || status.availableProviders?.cursor === true) {
+      return "ready";
+    }
+    return "unavailable";
+  }
+  if (provider === "codex" || provider === "droid") {
     const connection = status.providerConnections?.[provider];
     if (connection?.authAvailable || connection?.runtimeAvailable || status.availableProviders?.[provider] === true || providerModelsCount(status, provider) > 0) {
       return "ready";

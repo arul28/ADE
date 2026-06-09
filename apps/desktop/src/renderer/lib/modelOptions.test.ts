@@ -152,9 +152,18 @@ describe("deriveConfiguredModelIds", () => {
     }
   });
 
-  it("includes Cursor SDK models from availableModelIds when Cursor API key auth is present", () => {
+  it("includes Cursor SDK models from availableModelIds when Cursor runtime is verified", () => {
     const status = makeStatus({
       detectedAuth: [{ type: "api-key", provider: "cursor", source: "store" }],
+      availableProviders: {
+        claude: {
+          binary: { present: false, source: "missing", path: null },
+          auth: { ready: false, mode: "none", detail: null },
+        },
+        codex: false,
+        cursor: true,
+        droid: false,
+      },
       availableModelIds: ["cursor/auto", "cursor/composer-2", "openai/gpt-5.4-pro"],
     });
     const ids = deriveConfiguredModelIds(status);
@@ -170,14 +179,13 @@ describe("deriveConfiguredModelIds", () => {
     }
   });
 
-  it("includes Cursor SDK models by default", () => {
+  it("does not include Cursor SDK models from a stored key before runtime verification", () => {
     const status = makeStatus({
       detectedAuth: [{ type: "api-key", provider: "cursor", source: "store" }],
       availableModelIds: ["cursor/auto", "cursor/composer-2"],
     });
     const ids = deriveConfiguredModelIds(status, {});
-    expect(ids).toContain("cursor/auto");
-    expect(ids).toContain("cursor/composer-2");
+    expect(ids).toEqual([]);
   });
 
   it("includes Cursor SDK models when Cursor runtime is available even without api-key auth entry", () => {

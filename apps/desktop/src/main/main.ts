@@ -1458,6 +1458,10 @@ app.whenReady().then(async () => {
         tabRoots.add(normalizedRoot);
         windowProjectTabRoots.set(windowId, tabRoots);
       }
+      const win = BrowserWindow.fromId(windowId);
+      if (win && !win.isDestroyed()) {
+        builtInBrowserService.attachToWindow(win);
+      }
     }
     if (options.foreground ?? true) {
       setForegroundProject(normalizedRoot);

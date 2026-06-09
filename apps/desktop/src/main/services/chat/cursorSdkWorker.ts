@@ -26,6 +26,7 @@ import {
   summarizeCursorHook,
 } from "./cursorSdkPolicy";
 import { ensureCursorSdkUserHook } from "./cursorSdkHooks";
+import { loadCursorSdk } from "../ai/cursorSdkLoader";
 
 type CursorSdkModule = typeof CursorSdkModuleTypes;
 type SdkAgent = Awaited<ReturnType<CursorSdkModule["Agent"]["create"]>>;
@@ -141,7 +142,7 @@ function classifyWorkerError(error: unknown): { error: string; errorCode?: strin
 
 async function getSdk(): Promise<CursorSdkModule> {
   if (!sdkModule) {
-    sdkModule = await import("@cursor/sdk");
+    sdkModule = await loadCursorSdk();
   }
   return sdkModule;
 }

@@ -200,20 +200,23 @@ export async function buildProviderConnections(
   if (cursorEnvAuth) cursorCredsSource = "cursor-env";
   else if (cursorStoredAuth) cursorCredsSource = "cursor-api-key-store";
   else if (cursorAdminEnvAuth) cursorCredsSource = "cursor-admin-env";
-  // Runtime is bundled with the app — it always exists. Only auth-related
-  // fields should depend on whether a Cursor API key is present.
+  // The SDK package is bundled with the app, but Cursor chat is only runtime
+  // ready after verification/model discovery proves the SDK can load and the
+  // key can access agent models.
   const cursorFlags = {
     runtimeDetected: true,
     cliAuthenticated: false,
     cliExplicitlyUnauthenticated: false,
     localCredsDetected: cursorAuthAvailable,
     authAvailable: cursorAuthAvailable,
-    runtimeAvailable: cursorSdkAuth,
+    runtimeAvailable: cursorRuntimeHealth?.state === "ready",
   };
 
   let cursorBlocker: string | null;
-  if (cursorSdkAuth) {
+  if (cursorFlags.runtimeAvailable) {
     cursorBlocker = null;
+  } else if (cursorSdkAuth) {
+    cursorBlocker = "Verify the Cursor API key to enable Cursor chat.";
   } else if (cursorAdminUsageAuth) {
     cursorBlocker = "Cursor Admin API key is configured for usage; add a Cursor agent API key for Cursor runtime access.";
   } else if (cursorAdminEnvAuth) {
@@ -221,7 +224,7 @@ export async function buildProviderConnections(
   } else if (cursorStoreUnavailable) {
     cursorBlocker = "ADE could not read the Cursor API key store yet. Retry after the key store is ready.";
   } else {
-    cursorBlocker = "Enter a Cursor API key from https://cursor.com/dashboard/integrations.";
+    cursorBlocker = "Enter a Cursor API key from https://cursor.com/dashboard/api.";
   }
 
   const cursor: AiProviderConnectionStatus = {

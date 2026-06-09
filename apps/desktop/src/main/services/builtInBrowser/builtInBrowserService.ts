@@ -372,9 +372,11 @@ export function createBuiltInBrowserService(args: {
     if (!win) {
       throw new Error(`No ADE browser window is open for project: ${normalized}`);
     }
-    return serviceForWindowProfile(win, profileForProjectRoot(normalized), {
+    const service = serviceForWindowProfile(win, profileForProjectRoot(normalized), {
       markActive: projectRootsMatch(projectRootForWindow(win), normalized),
     });
+    service.attachToWindow(win);
+    return service;
   };
 
   const serviceForInput = (
@@ -1290,6 +1292,11 @@ function createBuiltInBrowserWindowService(args: {
   };
 
   const attachToWindow = (nextWin: BrowserWindow): void => {
+    if (win === nextWin) {
+      attachViewsToCurrentWindow();
+      emitStatus();
+      return;
+    }
     if (win && winClosedListener) {
       win.removeListener("closed", winClosedListener);
       winClosedListener = null;
