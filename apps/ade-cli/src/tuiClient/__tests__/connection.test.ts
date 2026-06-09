@@ -459,12 +459,16 @@ describe("connectToAde embedded mode", () => {
 
   it("repairs the packaged service before spawning an unmanaged machine daemon", async () => {
     useMissingMachineSocket();
-    runtimeService.installRuntimeService.mockReturnValue({
-      ok: true,
-      serviceName: "com.ade.runtime",
-      action: "install",
-      path: "/tmp/com.ade.runtime.plist",
-      message: "installed",
+    const installEnvRoles: Array<string | undefined> = [];
+    runtimeService.installRuntimeService.mockImplementation(() => {
+      installEnvRoles.push(process.env.ADE_DEFAULT_ROLE);
+      return {
+        ok: true,
+        serviceName: "com.ade.runtime",
+        action: "install",
+        path: "/tmp/com.ade.runtime.plist",
+        message: "installed",
+      };
     });
     const client = mockAttachedClient();
 
@@ -476,6 +480,8 @@ describe("connectToAde embedded mode", () => {
     }
 
     expect(runtimeService.installRuntimeService).toHaveBeenCalledTimes(1);
+    expect(installEnvRoles).toEqual(["cto"]);
+    expect(process.env.ADE_DEFAULT_ROLE).toBe(originalAdeDefaultRole);
     expect(childProcess.spawn).not.toHaveBeenCalled();
     expect(client.close).toHaveBeenCalledTimes(1);
   });

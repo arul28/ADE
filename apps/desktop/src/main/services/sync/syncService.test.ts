@@ -884,7 +884,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
         "2026-04-01T00:00:00.000Z",
         "2026-04-01T00:00:00.000Z",
         "192.168.1.8",
-        8800,
+        55035,
         "100.75.20.63",
         JSON.stringify(["192.168.1.8"]),
         JSON.stringify({}),
@@ -920,6 +920,86 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
 
     expect(createSyncHostServiceMock.mock.calls.map((call: any[]) => call[0]?.port)[0]).toBe(8787);
     expect(status.localDevice.lastPort).toBe(8787);
+  }, 30_000);
+
+  it("does not fall back to an OS-random sync host port", async () => {
+    const projectRoot = makeProjectRoot("ade-sync-service-no-random-port-");
+    const db = await openKvDb(
+      path.join(projectRoot, ".ade", "ade.db"),
+      createLogger() as any,
+    );
+    const localDeviceId = "local-device";
+    const localDeviceIdPath = path.join(projectRoot, ".ade", "secrets", "sync-device-id");
+    fs.mkdirSync(path.dirname(localDeviceIdPath), { recursive: true });
+    fs.writeFileSync(localDeviceIdPath, `${localDeviceId}\n`, "utf8");
+    db.run(
+      `insert into devices(
+          device_id, site_id, name, platform, device_type,
+          created_at, updated_at, last_seen_at, last_host, last_port,
+          tailscale_ip, ip_addresses_json, metadata_json
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        localDeviceId,
+        db.sync.getSiteId(),
+        "Local Mac",
+        "macOS",
+        "desktop",
+        "2026-04-01T00:00:00.000Z",
+        "2026-04-01T00:00:00.000Z",
+        "2026-04-01T00:00:00.000Z",
+        "192.168.1.8",
+        55035,
+        "100.75.20.63",
+        JSON.stringify(["192.168.1.8"]),
+        JSON.stringify({}),
+      ],
+    );
+
+    createSyncHostServiceMock.mockImplementation((({ port }: { port?: number }) => {
+      const attemptedPort = port ?? 8787;
+      return {
+        ...createDefaultSyncHostServiceMock(),
+        async waitUntilListening() {
+          const error = Object.assign(new Error("address already in use"), {
+            code: "EADDRINUSE",
+          });
+          throw error;
+        },
+        getPort() {
+          return attemptedPort;
+        },
+      };
+    }) as any);
+
+    const service = createSyncService({
+      db,
+      logger: createLogger() as any,
+      projectRoot,
+      localDeviceIdPath,
+      fileService: { dispose: () => {} } as any,
+      laneService: {
+        list: async () => [],
+        create: async () => ({}),
+        archive: async () => {},
+      } as any,
+      prService: {} as any,
+      sessionService: { list: () => [] } as any,
+      ptyService: {} as any,
+      computerUseArtifactBrokerService: {} as any,
+      agentChatService: { listSessions: async () => [] } as any,
+      processService: { listRuntime: () => [] } as any,
+    });
+
+    activeDisposers.push(async () => {
+      await service.dispose();
+      db.close();
+    });
+
+    await expect(service.initialize()).rejects.toThrow("address already in use");
+    const attemptedPorts = createSyncHostServiceMock.mock.calls.map((call: any[]) => call[0]?.port);
+    expect(attemptedPorts[0]).toBe(8787);
+    expect(attemptedPorts).toContain(55035);
+    expect(attemptedPorts).not.toContain(0);
   }, 30_000);
 
   describe("cooperative brain election", () => {

@@ -29,12 +29,15 @@ import {
 
 const originalArgv = [...process.argv];
 const originalNodePath = process.env.NODE_PATH;
+const originalAdeDefaultRole = process.env.ADE_DEFAULT_ROLE;
 const tempDirs: string[] = [];
 
 afterEach(() => {
   process.argv.splice(0, process.argv.length, ...originalArgv);
   if (originalNodePath === undefined) delete process.env.NODE_PATH;
   else process.env.NODE_PATH = originalNodePath;
+  if (originalAdeDefaultRole === undefined) delete process.env.ADE_DEFAULT_ROLE;
+  else process.env.ADE_DEFAULT_ROLE = originalAdeDefaultRole;
   while (tempDirs.length > 0) {
     const dir = tempDirs.pop();
     if (dir) fs.rmSync(dir, { recursive: true, force: true });
@@ -79,6 +82,19 @@ describe("resolveAdeServeCommand", () => {
       args: ["serve"],
       env: {
         NODE_PATH: "/opt/ade/runtime/node_modules",
+      },
+    });
+  });
+
+  it("preserves ADE_DEFAULT_ROLE for launch-managed runtime services", () => {
+    process.argv[1] = path.resolve("definitely-not-real-cli.cjs");
+    process.env.ADE_DEFAULT_ROLE = "cto";
+
+    expect(resolveAdeServeCommand()).toMatchObject({
+      command: process.execPath,
+      args: ["serve"],
+      env: {
+        ADE_DEFAULT_ROLE: "cto",
       },
     });
   });

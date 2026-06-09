@@ -395,7 +395,6 @@ function buildHostPortCandidates(preferredPort: number | null | undefined): numb
       }
     }
   }
-  add(0);
   return candidates;
 }
 

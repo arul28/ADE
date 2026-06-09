@@ -56,6 +56,7 @@ const RUNTIME_ENV_PASSTHROUGH = [
   "ADE_PACKAGE_CHANNEL",
   "ADE_DESKTOP_APP_NAME",
   "ADE_RUNTIME_SERVICE_NAME",
+  "ADE_DEFAULT_ROLE",
 ] as const;
 
 function runtimeEnvironment(): Record<string, string> | undefined {

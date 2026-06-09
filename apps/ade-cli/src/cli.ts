@@ -76,6 +76,20 @@ type GlobalOptions = {
   timeoutMs: number;
 };
 
+async function withAdeDefaultRole<T>(
+  role: GlobalOptions["role"],
+  run: () => Promise<T> | T,
+): Promise<T> {
+  const previousRole = process.env.ADE_DEFAULT_ROLE;
+  process.env.ADE_DEFAULT_ROLE = role;
+  try {
+    return await run();
+  } finally {
+    if (previousRole == null) delete process.env.ADE_DEFAULT_ROLE;
+    else process.env.ADE_DEFAULT_ROLE = previousRole;
+  }
+}
+
 type ParsedCli = {
   options: GlobalOptions;
   command: string[];
@@ -12549,7 +12563,10 @@ async function repairMachineRuntimeServiceConnection(args: {
   let client: SocketJsonRpcClient | null = null;
   try {
     const { installRuntimeService, uninstallRuntimeService } = await import("./serviceManager");
-    const result = installRuntimeService();
+    const result = await withAdeDefaultRole(
+      args.options.role,
+      () => installRuntimeService(),
+    );
     if (!result.ok) return null;
     client = await SocketJsonRpcClient.connect(
       args.socketPath,
@@ -12853,7 +12870,7 @@ async function runRuntimeCommand(
 
   if (sub === "install-service") {
     const { installRuntimeService } = await import("./serviceManager");
-    return installRuntimeService();
+    return withAdeDefaultRole(options.role, () => installRuntimeService());
   }
   if (sub === "uninstall-service") {
     const { uninstallRuntimeService } = await import("./serviceManager");
@@ -12926,7 +12943,7 @@ async function runBrainCommand(
 
   if (sub === "start") {
     const { installRuntimeService } = await import("./serviceManager");
-    return installRuntimeService();
+    return withAdeDefaultRole("cto", () => installRuntimeService());
   }
 
   if (sub === "stop") {
@@ -12937,7 +12954,7 @@ async function runBrainCommand(
   if (sub === "restart") {
     const { installRuntimeService, uninstallRuntimeService } = await import("./serviceManager");
     const stopped = uninstallRuntimeService();
-    const started = installRuntimeService();
+    const started = await withAdeDefaultRole("cto", () => installRuntimeService());
     return {
       ok: stopped.ok && started.ok,
       action: "restart",
@@ -13071,7 +13088,7 @@ async function runServe(
   const args = [...rest];
   if (readFlag(args, ["--install-service"])) {
     const { installRuntimeService } = await import("./serviceManager");
-    return installRuntimeService();
+    return withAdeDefaultRole(options.role, () => installRuntimeService());
   }
   if (readFlag(args, ["--uninstall-service"])) {
     const { uninstallRuntimeService } = await import("./serviceManager");

@@ -275,6 +275,20 @@ async function initializeEmbeddedCto(request: AdeRpcRequest): Promise<Initialize
   }
 }
 
+async function withAdeDefaultRole<T>(
+  role: "cto",
+  run: () => Promise<T> | T,
+): Promise<T> {
+  const previousRole = process.env.ADE_DEFAULT_ROLE;
+  process.env.ADE_DEFAULT_ROLE = role;
+  try {
+    return await run();
+  } finally {
+    if (previousRole === undefined) delete process.env.ADE_DEFAULT_ROLE;
+    else process.env.ADE_DEFAULT_ROLE = previousRole;
+  }
+}
+
 async function withTimeout<T>(
   promise: Promise<T>,
   timeoutMs: number,
@@ -708,7 +722,7 @@ export async function connectToAde(args: {
       if (!preferServiceRepair) return null;
       try {
         const { installRuntimeService } = await import("../serviceManager");
-        const result = installRuntimeService();
+        const result = await withAdeDefaultRole("cto", () => installRuntimeService());
         if (!result.ok) return null;
         return await tryDaemon(25);
       } catch {
