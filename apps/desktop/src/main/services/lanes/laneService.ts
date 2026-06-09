@@ -4066,8 +4066,13 @@ export function createLaneService({
         let parentHead = "";
         let parentTargetLabel = "";
         let operationMetadata: Record<string, unknown> = {
+          runId,
+          rootLaneId: target.id,
           reason,
           recursive: scope === "lane_and_descendants",
+          scope,
+          pushMode,
+          actor,
         };
         try {
           const parent = lane.parent_lane_id ? getLaneRow(lane.parent_lane_id) : null;

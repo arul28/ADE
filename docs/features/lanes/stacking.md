@@ -178,7 +178,10 @@ suggestion can re-appear.
 
 The renderer subscribes via `ade.lanes.rebaseSuggestions.event` and
 surfaces a banner on lane rows plus a `LaneRebaseBanner` inline with
-Rebase Now / Defer / Dismiss actions.
+Rebase Now / Snooze banner / Hide banner actions. Those controls only
+change suggestion visibility; PR workflow rebase needs come from
+`conflictService.scanRebaseNeeds()` and remain actionable while the lane
+is still behind.
 
 ## Auto-rebase
 
@@ -225,7 +228,10 @@ and `laneService.rebaseStart` both respect.
   `buildIntegrationSourcesByLaneId` from `renderer/lib/integrationLanes.ts`.
 - `LaneRebaseBanner` is conditionally rendered above the lane detail
   when `listRebaseSuggestions` returns a suggestion that is neither
-  dismissed nor deferred.
+  dismissed nor deferred. PR workflow banners use rebase-need drift and
+  route hide/snooze actions back to `rebaseSuggestionService`, so hiding
+  a notification does not move a still-behind lane out of the active
+  Rebase/Merge action list.
 - `rebaseNeedUtils.ts` on the renderer side provides
   `buildUpstreamRebaseChain` for surfacing the full upstream rebase
   chain in the PRs Rebase tab (see `pull-requests/stacking.md`).

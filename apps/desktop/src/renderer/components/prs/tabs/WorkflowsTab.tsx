@@ -14,6 +14,7 @@ import { EmptyState } from "../../ui/EmptyState";
 import type {
   IntegrationProposal,
   LaneSummary,
+  OperationRecord,
   PrMergeContext,
   PrWithConflicts,
 } from "../../../../shared/types";
@@ -27,6 +28,13 @@ import { rebaseNeedItemKey } from "../shared/rebaseNeedUtils";
 import { filterRebaseAttentionStatuses } from "../shared/rebaseAttentionUtils";
 import { usePrs } from "../state/PrsContext";
 import { getQueueWorkflowBucket } from "./queueWorkflowModel";
+import {
+  getActiveRebaseNeeds,
+  getRebaseHistoryOperations,
+  getRebaseOperationLabel,
+  parseRebaseOperationMetadata,
+  sortRebaseHistoryOperations,
+} from "./rebaseWorkflowModel";
 import { selectActiveProjectRoot, useAppStore } from "../../../state/appStore";
 
 const CATEGORY_THEMES = {
@@ -40,6 +48,8 @@ type WorkflowView = "active" | "history";
 const WORKFLOWS_VIEW_STORAGE_KEY = "ade:prs:workflows:view";
 const WORKFLOWS_CACHE_TTL_MS = 120_000;
 const WORKFLOWS_CACHE_DISABLED = import.meta.env.MODE === "test";
+const REBASE_HISTORY_OPERATION_LIMIT = 100;
+const REBASE_HISTORY_PULL_OPERATION_LIMIT = 1000;
 
 type WorkflowsWarmCache = {
   view: WorkflowView;
@@ -252,44 +262,63 @@ function QueueHistoryPanel({
 }
 
 function RebaseHistoryPanel({
-  needs,
+  operations,
+  loading,
 }: {
-  needs: import("../../../../shared/types").RebaseNeed[];
+  operations: OperationRecord[];
+  loading?: boolean;
 }) {
-  if (!needs.length) {
-    return <EmptyState title="No rebase history" description="Deferred, dismissed, and recently resolved rebase items will appear here." />;
+  if (loading && !operations.length) {
+    return (
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: 32, gap: 8 }}>
+        <ArrowsClockwise size={16} className="animate-spin" style={{ color: COLORS.textMuted }} />
+        <span style={{ fontSize: 13, color: COLORS.textMuted, fontFamily: SANS_FONT }}>Loading rebase history...</span>
+      </div>
+    );
+  }
+
+  if (!operations.length) {
+    return <EmptyState title="No ADE rebase history yet" description="Completed, failed, and canceled ADE rebase operations will appear here." />;
   }
 
   const theme = CATEGORY_THEMES.rebase;
   const statusColors: Record<string, string> = {
-    "dismissed": "#EF4444",
-    "deferred": "#F59E0B",
-    "resolved recently": COLORS.success,
+    succeeded: COLORS.success,
+    failed: COLORS.danger,
+    canceled: COLORS.warning,
+    running: theme.color,
   };
+  const shortSha = (sha: string | null) => sha ? sha.slice(0, 8) : "unknown";
 
   return (
     <div style={{ display: "grid", gap: 14, padding: 16 }}>
-      {needs.map((need) => {
-        const statusLabel = need.dismissedAt
-          ? "dismissed"
-          : need.deferredUntil && new Date(need.deferredUntil) > new Date()
-            ? "deferred"
-            : "resolved recently";
-        const timestamp = need.dismissedAt ?? need.deferredUntil ?? null;
-        const badgeColor = statusColors[statusLabel] ?? theme.color;
+      {operations.map((operation) => {
+        const metadata = parseRebaseOperationMetadata(operation);
+        const badgeColor = statusColors[operation.status] ?? theme.color;
+        const target =
+          typeof metadata.baseTargetRef === "string" ? metadata.baseTargetRef
+            : typeof metadata.baseBranchRef === "string" ? metadata.baseBranchRef
+              : typeof metadata.parentBranchRef === "string" ? metadata.parentBranchRef
+                : null;
+        const actor = typeof metadata.actor === "string" ? metadata.actor : null;
         return (
-          <div key={need.laneId} style={cardStyle({ background: theme.bgSubtle, borderColor: theme.border, borderLeft: `3px solid ${theme.color}` })}>
+          <div key={operation.id} style={cardStyle({ background: theme.bgSubtle, borderColor: theme.border, borderLeft: `3px solid ${theme.color}` })}>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
               <div>
-                <div style={{ fontSize: 15, fontWeight: 700, color: COLORS.textPrimary, fontFamily: SANS_FONT }}>{need.laneName}</div>
+                <div style={{ fontSize: 15, fontWeight: 700, color: COLORS.textPrimary, fontFamily: SANS_FONT }}>{operation.laneName ?? operation.laneId ?? "Unknown lane"}</div>
                 <div style={{ marginTop: 5, fontSize: 12, color: COLORS.textMuted, fontFamily: SANS_FONT }}>
-                  base <span style={{ fontFamily: MONO_FONT, fontSize: 11 }}>{need.baseBranch}</span> · behind <span style={{ fontFamily: MONO_FONT, fontSize: 11, color: badgeColor, fontWeight: 600 }}>{need.behindBy}</span>
+                  {getRebaseOperationLabel(operation)}
+                  {target ? <> · target <span style={{ fontFamily: MONO_FONT, fontSize: 11 }}>{target}</span></> : null}
+                  {actor ? <> · actor <span style={{ fontFamily: MONO_FONT, fontSize: 11 }}>{actor}</span></> : null}
                 </div>
               </div>
-              <span style={inlineBadge(badgeColor, { background: `${badgeColor}18`, fontWeight: 600, borderRadius: 8 })}>{statusLabel}</span>
+              <span style={inlineBadge(badgeColor, { background: `${badgeColor}18`, fontWeight: 600, borderRadius: 8 })}>{operation.status}</span>
             </div>
             <div style={{ marginTop: 10, fontSize: 12, fontFamily: SANS_FONT, color: COLORS.textSecondary }}>
-              {timestamp ? <>Updated <span style={{ fontFamily: MONO_FONT, fontSize: 11 }}>{formatTimestampShort(timestamp)}</span></> : "Captured in workflow history."}
+              Started <span style={{ fontFamily: MONO_FONT, fontSize: 11 }}>{formatTimestampShort(operation.startedAt)}</span>
+              {operation.endedAt ? <> · ended <span style={{ fontFamily: MONO_FONT, fontSize: 11 }}>{formatTimestampShort(operation.endedAt)}</span></> : null}
+              {" · "}
+              <span style={{ fontFamily: MONO_FONT, fontSize: 11 }}>{shortSha(operation.preHeadSha)} {"->"} {shortSha(operation.postHeadSha)}</span>
             </div>
           </div>
         );
@@ -681,7 +710,10 @@ export function WorkflowsTab({
     () => warmCache?.integrationWorkflows ?? [],
   );
   const [loading, setLoading] = React.useState(() => !warmCache);
-  const [error, setError] = React.useState<string | null>(null);
+  const [rebaseHistoryOperations, setRebaseHistoryOperations] = React.useState<OperationRecord[]>([]);
+  const [rebaseHistoryLoading, setRebaseHistoryLoading] = React.useState(true);
+  const [workflowError, setWorkflowError] = React.useState<string | null>(null);
+  const [rebaseHistoryError, setRebaseHistoryError] = React.useState<string | null>(null);
   const workflowsLoadedRef = React.useRef(Boolean(warmCache));
 
   const setView = React.useCallback((next: WorkflowView) => {
@@ -705,21 +737,47 @@ export function WorkflowsTab({
       return;
     }
     if (!options?.silent) setLoading(true);
-    setError(null);
+    setWorkflowError(null);
     try {
       const next = await window.ade.prs.listIntegrationWorkflows({ view: "all" });
       workflowsLoadedRef.current = true;
       setIntegrationWorkflows(next);
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setWorkflowError(err instanceof Error ? err.message : String(err));
     } finally {
       setLoading(false);
     }
   }, [cacheKey]);
 
+  const loadRebaseHistory = React.useCallback(async () => {
+    setRebaseHistoryLoading(true);
+    try {
+      const operationGroups = await Promise.all([
+        window.ade.history.listOperations({ kind: "lane_rebase", limit: REBASE_HISTORY_OPERATION_LIMIT }),
+        window.ade.history.listOperations({ kind: "git_sync_rebase", limit: REBASE_HISTORY_OPERATION_LIMIT }),
+        window.ade.history.listOperations({ kind: "git_pull", limit: REBASE_HISTORY_PULL_OPERATION_LIMIT }),
+      ]);
+      const operationsById = new Map<string, OperationRecord>();
+      for (const operation of getRebaseHistoryOperations(operationGroups.flat())) {
+        operationsById.set(operation.id, operation);
+      }
+      setRebaseHistoryOperations(sortRebaseHistoryOperations(Array.from(operationsById.values())));
+      setRebaseHistoryError(null);
+    } catch (err) {
+      setRebaseHistoryError(err instanceof Error ? `Rebase history unavailable: ${err.message}` : `Rebase history unavailable: ${String(err)}`);
+      setRebaseHistoryOperations([]);
+    } finally {
+      setRebaseHistoryLoading(false);
+    }
+  }, []);
+
   React.useEffect(() => {
     void loadWorkflows({ silent: Boolean(warmCache), skipFreshCache: true });
   }, [loadWorkflows, warmCache]);
+
+  React.useEffect(() => {
+    void loadRebaseHistory();
+  }, [loadRebaseHistory]);
 
   React.useEffect(() => {
     if (WORKFLOWS_CACHE_DISABLED) return;
@@ -735,8 +793,9 @@ export function WorkflowsTab({
     await Promise.all([
       onRefreshAll().catch(() => {}),
       loadWorkflows(),
+      loadRebaseHistory(),
     ]);
-  }, [loadWorkflows, onRefreshAll]);
+  }, [loadRebaseHistory, loadWorkflows, onRefreshAll]);
 
   const queueWorkflowGroups = React.useMemo(
     () => buildQueueWorkflowGroups({ prs, mergeContextByPrId, lanes, queueStates }),
@@ -751,9 +810,9 @@ export function WorkflowsTab({
     history: queueWorkflowGroups.filter((group) => group.bucket === "history"),
   }), [queueWorkflowGroups]);
   const rebaseByView = React.useMemo(() => ({
-    active: rebaseNeeds.filter((need) => !need.dismissedAt && !(need.deferredUntil && new Date(need.deferredUntil) > new Date()) && need.behindBy > 0),
-    history: rebaseNeeds.filter((need) => need.dismissedAt || (need.deferredUntil && new Date(need.deferredUntil) > new Date()) || need.behindBy === 0),
-  }), [rebaseNeeds]);
+    active: getActiveRebaseNeeds(rebaseNeeds),
+    history: rebaseHistoryOperations,
+  }), [rebaseHistoryOperations, rebaseNeeds]);
   const rebaseAttentionByView = React.useMemo(() => ({
     active: filterRebaseAttentionStatuses({
       autoRebaseStatuses,
@@ -775,11 +834,6 @@ export function WorkflowsTab({
       if (view !== "active") setView("active");
       return;
     }
-    const historyKeys = new Set(rebaseByView.history.map(rebaseNeedItemKey));
-    if (historyKeys.has(selectedRebaseItemId) && view !== "history") {
-      setView("history");
-      return;
-    }
     const historyAttentionLaneIds = new Set(rebaseAttentionByView.history.map((status) => status.laneId));
     if (historyAttentionLaneIds.has(selectedRebaseItemId) && view !== "history") {
       setView("history");
@@ -789,10 +843,13 @@ export function WorkflowsTab({
   const counts = {
     integration: integrationByView[view].length,
     queue: queueByView[view].length,
-    rebase: rebaseByView[view].length + rebaseAttentionByView[view].length,
+    rebase: view === "history"
+      ? rebaseHistoryOperations.length
+      : rebaseByView.active.length + rebaseAttentionByView.active.length,
   };
 
   const activeTheme = CATEGORY_THEMES[activeCategory];
+  const error = workflowError ?? rebaseHistoryError;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
@@ -970,7 +1027,7 @@ export function WorkflowsTab({
               onNavigate={(path) => navigate(path)}
             />
           ) : (
-            <RebaseHistoryPanel needs={rebaseByView.history} />
+            <RebaseHistoryPanel operations={rebaseHistoryOperations} loading={rebaseHistoryLoading} />
           )
         ) : null}
       </div>
