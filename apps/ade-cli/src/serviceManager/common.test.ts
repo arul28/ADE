@@ -39,6 +39,7 @@ import {
 const originalArgv = [...process.argv];
 const originalNodePath = process.env.NODE_PATH;
 const originalAdeDefaultRole = process.env.ADE_DEFAULT_ROLE;
+const originalAllowSelfMutation = process.env.ADE_ALLOW_RUNTIME_SERVICE_SELF_MUTATION;
 const tempDirs: string[] = [];
 
 afterEach(() => {
@@ -47,6 +48,11 @@ afterEach(() => {
   else process.env.NODE_PATH = originalNodePath;
   if (originalAdeDefaultRole === undefined) delete process.env.ADE_DEFAULT_ROLE;
   else process.env.ADE_DEFAULT_ROLE = originalAdeDefaultRole;
+  if (originalAllowSelfMutation === undefined) {
+    delete process.env.ADE_ALLOW_RUNTIME_SERVICE_SELF_MUTATION;
+  } else {
+    process.env.ADE_ALLOW_RUNTIME_SERVICE_SELF_MUTATION = originalAllowSelfMutation;
+  }
   while (tempDirs.length > 0) {
     const dir = tempDirs.pop();
     if (dir) fs.rmSync(dir, { recursive: true, force: true });
@@ -230,7 +236,18 @@ describe("isCurrentProcessDescendantOfPid", () => {
     })).toBe(true);
   });
 
-  it("returns false for unrelated process trees and parent cycles", () => {
+  it("returns false when the current process is in an unrelated process tree", () => {
+    expect(isCurrentProcessDescendantOfPid({
+      targetPid: 100,
+      currentPid: 400,
+      parentPid: (pid) => ({
+        400: 300,
+        300: 1,
+      })[pid] ?? null,
+    })).toBe(false);
+  });
+
+  it("returns false for parent cycles", () => {
     expect(isCurrentProcessDescendantOfPid({
       targetPid: 100,
       currentPid: 400,
@@ -582,6 +599,41 @@ describe("launchd service install", () => {
     expect(fs.existsSync(servicePath)).toBe(false);
   });
 
+  it("allows launch agent restart from a descendant when self-mutation is explicitly enabled", () => {
+    const homeDir = makeTempHome("ade-launchd-self-install-override-");
+    const servicePath = launchAgentPath(homeDir);
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const spawnSync = spawnSequence(calls, [
+      { status: 0, stdout: "state = running\npid = 100\n", stderr: "" },
+      { status: 0, stdout: "", stderr: "" },
+      { status: 0, stdout: "", stderr: "" },
+      { status: 0, stdout: "", stderr: "" },
+    ]);
+    const parentPid = (pid: number) => ({
+      400: 300,
+      300: 100,
+      100: 1,
+    })[pid] ?? null;
+    process.env.ADE_ALLOW_RUNTIME_SERVICE_SELF_MUTATION = "1";
+
+    const result = installLaunchdService({
+      command: serviceCommand,
+      spawnSync,
+      homeDir,
+      currentPid: 400,
+      parentPid,
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      serviceName: ADE_RUNTIME_SERVICE_NAME,
+      action: "install",
+      path: servicePath,
+    });
+    expect(fs.existsSync(servicePath)).toBe(true);
+    expect(calls.map((call) => call.args[0])).toEqual(["print", "unload", "-axo", "load"]);
+  });
+
   it("refuses to uninstall a launch agent from a descendant of the loaded service", () => {
     const homeDir = makeTempHome("ade-launchd-self-uninstall-");
     const servicePath = launchAgentPath(homeDir);
@@ -615,6 +667,48 @@ describe("launchd service install", () => {
       { command: "launchctl", args: ["print", currentLaunchdDomain()] },
     ]);
     expect(fs.existsSync(servicePath)).toBe(true);
+  });
+
+  it("allows launch agent uninstall from a descendant when self-mutation is explicitly enabled", () => {
+    const homeDir = makeTempHome("ade-launchd-self-uninstall-override-");
+    const servicePath = launchAgentPath(homeDir);
+    fs.mkdirSync(path.dirname(servicePath), { recursive: true });
+    fs.writeFileSync(servicePath, renderLaunchdPlist(serviceCommand, homeDir), "utf8");
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const killed: Array<{ pid: number; signal: NodeJS.Signals | number }> = [];
+    const spawnSync = spawnSequence(calls, [
+      { status: 0, stdout: "state = running\npid = 100\n", stderr: "" },
+      { status: 0, stdout: "", stderr: "" },
+      { status: 0, stdout: "", stderr: "" },
+      { status: 0, stdout: "", stderr: "" },
+    ]);
+    const parentPid = (pid: number) => ({
+      400: 300,
+      300: 100,
+      100: 1,
+    })[pid] ?? null;
+    process.env.ADE_ALLOW_RUNTIME_SERVICE_SELF_MUTATION = "1";
+
+    const result = uninstallLaunchdService({
+      spawnSync,
+      homeDir,
+      currentPid: 400,
+      parentPid,
+      terminateDeps: {
+        kill: (pid, signal) => killed.push({ pid, signal }),
+        pidAlive: () => false,
+      },
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      serviceName: ADE_RUNTIME_SERVICE_NAME,
+      action: "uninstall",
+      path: servicePath,
+    });
+    expect(calls.map((call) => call.args[0])).toEqual(["print", "bootout", "bootout", "unload"]);
+    expect(killed).toEqual([{ pid: 100, signal: "SIGTERM" }]);
+    expect(fs.existsSync(servicePath)).toBe(false);
   });
 
   it("surfaces launchctl load failures", () => {

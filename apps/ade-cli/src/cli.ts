@@ -12551,13 +12551,14 @@ function shouldAllowRuntimeSelfShutdown(env: NodeJS.ProcessEnv = process.env): b
 
 class RuntimeSelfShutdownBlockedError extends Error {}
 
-function runtimeSelfShutdownBlock(
-  runtimeInfo: MachineRuntimeInfo,
+function isLocalRuntimeSocketPath(socketPath: string): boolean {
+  return !socketPath.startsWith("tcp://");
+}
+
+function runtimeSelfShutdownMessage(
+  runtimePid: number,
   action: "repair" | "stop",
-): string | null {
-  const runtimePid = runtimeInfo.pid;
-  if (!runtimePid || shouldAllowRuntimeSelfShutdown()) return null;
-  if (!isCurrentProcessDescendantOfPid({ targetPid: runtimePid })) return null;
+): string {
   const verb = action === "repair" ? "repair/restart" : "stop";
   return (
     `Refusing to ${verb} ADE runtime from a command running inside that runtime ` +
@@ -12566,12 +12567,47 @@ function runtimeSelfShutdownBlock(
   );
 }
 
+function runtimeSelfShutdownBlock(
+  runtimeInfo: MachineRuntimeInfo,
+  action: "repair" | "stop",
+  options: { localRuntime?: boolean } = {},
+): string | null {
+  if (options.localRuntime === false) return null;
+  const runtimePid = runtimeInfo.pid;
+  if (!runtimePid || shouldAllowRuntimeSelfShutdown()) return null;
+  if (!isCurrentProcessDescendantOfPid({ targetPid: runtimePid })) return null;
+  return runtimeSelfShutdownMessage(runtimePid, action);
+}
+
 function runtimeSelfShutdownBlockedError(
   runtimeInfo: MachineRuntimeInfo,
   action: "repair" | "stop",
+  options: { localRuntime?: boolean } = {},
 ): RuntimeSelfShutdownBlockedError | null {
-  const message = runtimeSelfShutdownBlock(runtimeInfo, action);
+  const message = runtimeSelfShutdownBlock(runtimeInfo, action, options);
   return message ? new RuntimeSelfShutdownBlockedError(message) : null;
+}
+
+async function runtimeServiceSelfShutdownBlock(
+  socketPath: string,
+  action: "repair" | "stop",
+): Promise<string | null> {
+  if (!isLocalRuntimeSocketPath(socketPath) || shouldAllowRuntimeSelfShutdown()) {
+    return null;
+  }
+  const { getRuntimeServiceMainPid } = await import("./serviceManager");
+  const runtimePid = getRuntimeServiceMainPid();
+  if (!runtimePid) return null;
+  if (!isCurrentProcessDescendantOfPid({ targetPid: runtimePid })) return null;
+  return runtimeSelfShutdownMessage(runtimePid, action);
+}
+
+function isRuntimeSelfShutdownBlockedResult(result: unknown): boolean {
+  return isRecord(result)
+    && result.ok === false
+    && typeof result.message === "string"
+    && result.message.includes("ADE_ALLOW_RUNTIME_SERVICE_SELF_MUTATION=1")
+    && result.message.includes("running inside that brain");
 }
 
 function shouldRepairMachineRuntimeServiceBeforeSpawn(
@@ -12616,7 +12652,9 @@ async function repairMachineRuntimeServiceConnection(args: {
       { enforceBuildCompatibility: args.enforceBuildCompatibility },
     );
     if (mismatch) {
-      const selfShutdownBlock = runtimeSelfShutdownBlockedError(runtimeInfo, "repair");
+      const selfShutdownBlock = runtimeSelfShutdownBlockedError(runtimeInfo, "repair", {
+        localRuntime: isLocalRuntimeSocketPath(args.socketPath),
+      });
       if (selfShutdownBlock) throw selfShutdownBlock;
       uninstallRuntimeService();
       client.close();
@@ -12685,6 +12723,7 @@ async function connectMachineRuntimeDaemon(
   const label = "ADE runtime endpoint";
   const allowSpawn = connectOptions.allowSpawn ?? !options.requireSocket;
   const isTcpSocket = socketPath.startsWith("tcp://");
+  const isLocalRuntime = isLocalRuntimeSocketPath(socketPath);
   const enforceBuildCompatibility =
     shouldEnforceMachineRuntimeBuildCompatibility(socketPathOverride);
   const expectedBuildHash = isTcpSocket || !enforceBuildCompatibility
@@ -12726,7 +12765,9 @@ async function connectMachineRuntimeDaemon(
           `ADE runtime ${mismatch}.`,
         );
       }
-      const selfShutdownBlock = runtimeSelfShutdownBlockedError(runtimeInfo, "repair");
+      const selfShutdownBlock = runtimeSelfShutdownBlockedError(runtimeInfo, "repair", {
+        localRuntime: isLocalRuntime,
+      });
       if (selfShutdownBlock) {
         client.close();
         throw selfShutdownBlock;
@@ -12756,7 +12797,9 @@ async function connectMachineRuntimeDaemon(
         { enforceBuildCompatibility },
       );
       if (restartedMismatch) {
-        const selfShutdownBlock = runtimeSelfShutdownBlockedError(restartedInfo, "repair");
+        const selfShutdownBlock = runtimeSelfShutdownBlockedError(restartedInfo, "repair", {
+          localRuntime: isLocalRuntime,
+        });
         if (selfShutdownBlock) {
           restarted.close();
           throw selfShutdownBlock;
@@ -12793,7 +12836,9 @@ async function connectMachineRuntimeDaemon(
         { enforceBuildCompatibility },
       );
       if (mismatch) {
-        const selfShutdownBlock = runtimeSelfShutdownBlockedError(runtimeInfo, "repair");
+        const selfShutdownBlock = runtimeSelfShutdownBlockedError(runtimeInfo, "repair", {
+          localRuntime: isLocalRuntime,
+        });
         if (selfShutdownBlock) {
           client.close();
           throw selfShutdownBlock;
@@ -12901,7 +12946,19 @@ async function runRuntimeCommand(
       try {
         const runtimeInfo = await initializeMachineRuntimeDaemon(client, options).catch(() => null);
         if (runtimeInfo) {
-          const selfShutdownBlock = runtimeSelfShutdownBlock(runtimeInfo, "stop");
+          const selfShutdownBlock = runtimeSelfShutdownBlock(runtimeInfo, "stop", {
+            localRuntime: isLocalRuntimeSocketPath(socketPath),
+          });
+          if (selfShutdownBlock) {
+            return {
+              ok: false,
+              running: true,
+              socketPath,
+              message: selfShutdownBlock,
+            };
+          }
+        } else if (!socketOverride?.trim()) {
+          const selfShutdownBlock = await runtimeServiceSelfShutdownBlock(socketPath, "stop");
           if (selfShutdownBlock) {
             return {
               ok: false,
@@ -13017,7 +13074,7 @@ async function runBrainCommand(
   if (sub === "restart") {
     const { installRuntimeService, uninstallRuntimeService } = await import("./serviceManager");
     const stopped = uninstallRuntimeService();
-    if (!stopped.ok) {
+    if (isRuntimeSelfShutdownBlockedResult(stopped)) {
       return {
         ok: false,
         action: "restart",
@@ -13032,9 +13089,11 @@ async function runBrainCommand(
       action: "restart",
       stopped,
       started,
-      message: started.ok
-        ? "ADE brain restarted."
-        : started.message,
+      message: !stopped.ok
+        ? `ADE brain restart attempted after stop warning: ${stopped.message}`
+        : started.ok
+          ? "ADE brain restarted."
+          : started.message,
     };
   }
 
