@@ -13526,10 +13526,19 @@ async function runServe(
         log: (message) => process.stderr.write(`${message}\n`),
         getServiceMainPid: getRuntimeServiceMainPid,
       });
-    })().catch((error: unknown) => {
-      process.stderr.write(
-        `ADE brain sync host startup loop failed: ${error instanceof Error ? error.message : String(error)}\n`,
-      );
+    })().catch(async (error: unknown) => {
+      // Cross-channel conflict (another build's live brain owns mobile sync):
+      // real builds never run sync-less, so fail the brain instead of coming
+      // up half-alive. The message carries the exact quit command.
+      const { SyncHostSingletonConflictError } = await import("./services/sync/syncHostSingleton");
+      const message = error instanceof Error ? error.message : String(error);
+      if (error instanceof SyncHostSingletonConflictError) {
+        process.stderr.write(`ADE brain refusing to run without mobile sync.\n${message}\n`);
+        process.exitCode = 1;
+        finish();
+        return;
+      }
+      process.stderr.write(`ADE brain sync host startup loop failed: ${message}\n`);
     });
   }
 

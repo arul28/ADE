@@ -65,9 +65,16 @@ async function terminatePidAsync(
 }
 
 // Keeps retrying mobile sync host startup until it succeeds or the brain
-// shuts down. A brain that cannot host sync is silently useless to phones,
-// so a one-shot startup failure must never be terminal: squatters die,
-// upgrades finish, and the next attempt should win.
+// shuts down. Same-channel conflicts are transient by nature (update races,
+// restart overlap, a stale sibling about to be evicted), so they retry:
+// squatters die, upgrades finish, and the next attempt should win.
+//
+// A conflict with ANOTHER channel's live brain is different — it means a
+// human deliberately launched a second build. Waiting would leave this brain
+// running without mobile sync, which reads as "phone mysteriously frozen /
+// talking to old code" rather than an error. Real builds never run sync-less:
+// the conflict is rethrown so the caller can fail brain startup with the
+// quit instructions in the message.
 export async function runSyncHostStartupLoop(deps: SyncHostStartupLoopDeps): Promise<void> {
   const kill = deps.kill ?? defaultKill;
   const pidAlive = deps.pidAlive ?? defaultPidAlive;
@@ -91,6 +98,9 @@ export async function runSyncHostStartupLoop(deps: SyncHostStartupLoopDeps): Pro
       }
       if (error instanceof SyncHostSingletonConflictError) {
         const owner = error.conflict.owner;
+        if (owner.pid !== process.pid && !isSameChannelSyncHostOwner(owner, deps.env)) {
+          throw error;
+        }
         const serviceMainPid = deps.getServiceMainPid?.() ?? null;
         if (
           owner.pid !== process.pid
