@@ -709,6 +709,31 @@ function wipeQueueLandingStateForStackedOverhaulIfNeeded(db: DatabaseSyncType, l
   }
 }
 
+/**
+ * Drop CRR shadow tables whose base table no longer exists. The
+ * crsql_changes virtual table unions every `__crsql_clock` table it finds;
+ * a single orphan (base table dropped, clock table left behind) makes EVERY
+ * scan of crsql_changes fail instantly with SQLITE_ABORT ("query aborted") —
+ * which silently kills all changeset export (mobile sync, peer relay) while
+ * writes keep working. Observed live with a dropped `github_pr_cache`.
+ */
+function removeOrphanedCrrMetadata(db: DatabaseSyncType, logger?: Logger): void {
+  const clockTables = allRows<{ name: string }>(
+    db,
+    "select name from sqlite_master where type = 'table' and name like '%__crsql_clock'",
+  ).map((row) => String(row.name)).filter((name) => name.endsWith("__crsql_clock"));
+  for (const clockTableName of clockTables) {
+    const tableName = clockTableName.slice(0, -"__crsql_clock".length);
+    if (!tableName || rawHasTable(db, tableName)) continue;
+    runStatement(db, `drop table if exists ${quoteIdentifier(clockTableName)}`);
+    runStatement(db, `drop table if exists ${quoteIdentifier(`${tableName}__crsql_pks`)}`);
+    if (rawHasTable(db, "crsql_master") && rawHasColumn(db, "crsql_master", "tbl_name")) {
+      runStatement(db, "delete from crsql_master where tbl_name = ?", [tableName]);
+    }
+    logger?.warn("db.crr_orphan_removed", { tableName });
+  }
+}
+
 function removeExcludedCrrMetadata(db: DatabaseSyncType, logger?: Logger): void {
   for (const tableName of LOCAL_ONLY_CRR_EXCLUDED_TABLES) {
     const clockTableName = `${tableName}__crsql_clock`;
@@ -940,6 +965,7 @@ function rebuildCrrTableWithBackfill(db: DatabaseSyncType, tableName: string): v
 }
 
 function ensureCrrTables(db: DatabaseSyncType, logger?: Logger): void {
+  removeOrphanedCrrMetadata(db, logger);
   removeExcludedCrrMetadata(db, logger);
 
   const repairTargets = new Set<string>(PHONE_CRITICAL_CRR_TABLES);
