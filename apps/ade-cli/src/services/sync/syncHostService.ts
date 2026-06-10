@@ -107,6 +107,10 @@ import {
 } from "./changesetPump";
 export { selectChangesetBatchChunk } from "./changesetPump";
 const execFileAsync = promisify(execFile);
+// db_version window per pump poll. Large enough to cross sparse version
+// ranges quickly (a few polls per million versions), small enough that the
+// windowed crsql_changes scan completes in milliseconds.
+const SYNC_EXPORT_VERSION_WINDOW = 250_000;
 const DEFAULT_SYNC_HEARTBEAT_INTERVAL_MS = 30_000;
 const DEFAULT_SYNC_HEARTBEAT_MISS_LIMIT = 2;
 const MOBILE_SYNC_HEARTBEAT_MISS_LIMIT = 6;
@@ -2330,16 +2334,24 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         continue;
       }
       if (currentDbVersion <= peer.lastKnownServerDbVersion) continue;
-      // Bounded export: an unbounded scan of a deep backlog runs long enough
-      // that any concurrent local write aborts it, permanently starving the
-      // peer; and the pump only consumes one batch per poll anyway.
+      // Bounded export: scan a db_version WINDOW, not the whole backlog. The
+      // crsql_changes vtab pushes version-range constraints down to indexed
+      // clock tables, while an open-ended ORDER BY scan materializes the full
+      // backlog first (a bare LIMIT does not help) — long enough that any
+      // concurrent write aborts it with SQLITE_ABORT, permanently starving
+      // the peer. Empty windows advance the cursor so sparse version deserts
+      // (e.g. compacted operations churn) are crossed in a few polls.
+      const scanThroughDbVersion = Math.min(
+        peer.lastKnownServerDbVersion + SYNC_EXPORT_VERSION_WINDOW,
+        currentDbVersion,
+      );
       const exported = args.db.sync.exportChangesSince(
         peer.lastKnownServerDbVersion,
-        { maxRows: maxChangesetBatchRows * 4 },
+        { maxRows: maxChangesetBatchRows * 4, throughDbVersion: scanThroughDbVersion },
       );
       const exportedThroughDbVersion = exported.length > 0
         ? Number(exported[exported.length - 1].db_version)
-        : currentDbVersion;
+        : scanThroughDbVersion;
       const changes = exported
         .filter((change: CrsqlChangeRow) => change.site_id !== peer.metadata?.siteId);
       if (changes.length === 0) {

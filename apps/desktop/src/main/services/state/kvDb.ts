@@ -29,14 +29,16 @@ export type AdeDbSyncApi = {
   getSiteId: () => string;
   getDbVersion: () => number;
   /**
-   * Export CRR changes after `version`. With `maxRows` the scan is bounded:
-   * at most ~maxRows rows are returned, truncated only at a complete
-   * db_version boundary so a consumer's cursor watermark never lands in the
-   * middle of a version group. An unbounded scan of a large backlog runs long
-   * enough that any concurrent write aborts it (SQLITE_ABORT from the
-   * crsql_changes vtab) — which permanently starves behind/fresh peers.
+   * Export CRR changes after `version`. Pass `throughDbVersion` to bound the
+   * scan to a version window — the crsql_changes virtual table pushes
+   * db_version range constraints down to its indexed clock tables, while a
+   * bare LIMIT still materializes the full ordered scan first. An unbounded
+   * scan of a deep backlog runs long enough that any concurrent write aborts
+   * it (SQLITE_ABORT), permanently starving behind/fresh peers. `maxRows`
+   * additionally truncates the result at a complete db_version boundary so a
+   * consumer's cursor watermark never lands inside a version group.
    */
-  exportChangesSince: (version: number, options?: { maxRows?: number }) => CrsqlChangeRow[];
+  exportChangesSince: (version: number, options?: { maxRows?: number; throughDbVersion?: number }) => CrsqlChangeRow[];
   applyChanges: (changes: CrsqlChangeRow[]) => ApplyRemoteChangesResult;
   /**
    * Suppress unpublished local-site CRR rows for specific tables. Used when
@@ -3257,7 +3259,7 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
       const row = get<{ db_version: number }>("select crsql_db_version() as db_version");
       return Number(row?.db_version ?? 0);
     },
-    exportChangesSince: (version: number, options?: { maxRows?: number }) => {
+    exportChangesSince: (version: number, options?: { maxRows?: number; throughDbVersion?: number }) => {
       if (!crsqliteLoaded) return [];
       const suppressions = new Map<string, number>(
         allRows<{ table_name: string; through_db_version: number }>(
@@ -3280,6 +3282,13 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
         cl: number;
         seq: number;
       };
+      const throughDbVersion = options?.throughDbVersion != null && Number.isFinite(options.throughDbVersion)
+        ? Math.max(version, Math.floor(options.throughDbVersion))
+        : null;
+      const rangeSql = throughDbVersion != null
+        ? "where db_version > ? and db_version <= ?"
+        : "where db_version > ?";
+      const rangeParams = throughDbVersion != null ? [version, throughDbVersion] : [version];
       const selectSql = `select [table] as table_name,
                 pk,
                 cid,
@@ -3290,16 +3299,16 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
                 cl,
                 seq
            from crsql_changes
-          where db_version > ?
+          ${rangeSql}
           order by db_version asc, cl asc, seq asc`;
       const maxRows = options?.maxRows != null && Number.isFinite(options.maxRows)
         ? Math.max(1, Math.floor(options.maxRows))
         : null;
       let rows: ExportedChangeRow[];
       if (maxRows == null) {
-        rows = allRows<ExportedChangeRow>(db, selectSql, [version]);
+        rows = allRows<ExportedChangeRow>(db, selectSql, rangeParams);
       } else {
-        rows = allRows<ExportedChangeRow>(db, `${selectSql} limit ?`, [version, maxRows + 1]);
+        rows = allRows<ExportedChangeRow>(db, `${selectSql} limit ?`, [...rangeParams, maxRows + 1]);
         if (rows.length > maxRows) {
           // The fetch was truncated; drop the trailing (possibly incomplete)
           // db_version group so consumers only ever watermark complete groups.
@@ -3313,7 +3322,18 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
             // one version group in full — bounded by the group itself.
             rows = allRows<ExportedChangeRow>(
               db,
-              `${selectSql.replace("where db_version > ?", "where db_version > ? and db_version <= ?")}`,
+              `select [table] as table_name,
+                pk,
+                cid,
+                val,
+                col_version,
+                db_version,
+                site_id,
+                cl,
+                seq
+           from crsql_changes
+          where db_version > ? and db_version <= ?
+          order by db_version asc, cl asc, seq asc`,
               [version, tailVersion],
             );
           }
