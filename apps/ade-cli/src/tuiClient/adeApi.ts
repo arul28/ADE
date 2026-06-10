@@ -347,6 +347,9 @@ export async function getAvailableModels(
     // Codex is intentionally NOT here: its tiers come from the app-server, which
     // loadAvailableModels always queries regardless of activateRuntime.
     activateRuntime: provider === "cursor" || provider === "droid",
+    // TUI chats run cursor models through the SDK; probing only that source
+    // keeps the picker refresh off the slower cursor-agent CLI spawn.
+    ...(provider === "cursor" ? { cursorSource: "sdk" } : {}),
   });
 }
 

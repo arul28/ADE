@@ -140,6 +140,7 @@ import type {
   AgentChatNoticeDetail,
   AgentChatInteractionMode,
   AgentChatInterruptArgs,
+  AgentChatCursorModelSource,
   AgentChatModelCatalog,
   AgentChatModelCatalogArgs,
   AgentChatModelCatalogRefreshProvider,
@@ -23303,18 +23304,29 @@ export function createAgentChatService(args: {
   const modelCatalogContainsRefreshProvider = (
     catalog: AgentChatModelCatalog,
     provider: AgentChatModelCatalogRefreshProvider,
+    cursorSource?: AgentChatCursorModelSource,
   ): boolean => {
     return (catalog.groups ?? []).some((group) => {
       const groupMatches = group.key === provider;
       if (!groupMatches) return false;
+      // A cursor-flavored check must see rows the requesting surface can run:
+      // an SDK-only refresh must not satisfy a CLI-surface staleness probe.
+      if (provider === "cursor" && (cursorSource === "sdk" || cursorSource === "cli")) {
+        return (group.providers ?? []).some((entry) =>
+          (entry.subsections ?? []).some((subsection) =>
+            (subsection.models ?? []).some((model) => model.cursorAvailability?.[cursorSource] === true)));
+      }
       return (group.providers ?? []).some((entry) => entry.modelCount > 0);
     });
   };
 
-  const isModelCatalogRefreshStale = (refreshProvider?: AgentChatModelCatalogRefreshProvider): boolean => {
+  const isModelCatalogRefreshStale = (
+    refreshProvider?: AgentChatModelCatalogRefreshProvider,
+    cursorSource?: AgentChatCursorModelSource,
+  ): boolean => {
     if (!modelCatalogCache) return true;
     if (refreshProvider) {
-      if (refreshProvider === "cursor" && !modelCatalogContainsRefreshProvider(modelCatalogCache, refreshProvider)) return true;
+      if (refreshProvider === "cursor" && !modelCatalogContainsRefreshProvider(modelCatalogCache, refreshProvider, cursorSource)) return true;
       const refreshedAt = modelCatalogProviderRefreshedAt.get(refreshProvider);
       return !refreshedAt || Date.now() - refreshedAt > modelCatalogRefreshTtlMs(refreshProvider);
     }
@@ -23368,6 +23380,7 @@ export function createAgentChatService(args: {
   const loadAvailableModels = async (args: {
     provider: AgentChatProvider;
     activateRuntime?: boolean;
+    cursorSource?: AgentChatCursorModelSource;
   }): Promise<AgentChatModelInfo[]> => {
     const provider = args.provider;
     if (provider === "codex") {
@@ -23387,15 +23400,23 @@ export function createAgentChatService(args: {
         const cursorCliPath = cursorCli?.type === "cli-subscription" && cursorCli.cli === "cursor"
           ? cursorCli.path
           : null;
+        // Probe only the source the requesting surface runs models through —
+        // chat surfaces use the SDK (~300ms), CLI lane drafts use the CLI
+        // (a process spawn that can take seconds). The other source serves
+        // last-known-good rows and revalidates in the background, so a chat
+        // picker refresh never waits on a CLI spawn.
+        const cursorSource = args.cursorSource ?? "all";
+        const probeCli = args.activateRuntime === true && cursorSource !== "sdk";
+        const probeSdk = args.activateRuntime === true && cursorSource !== "cli";
         const [cliDescriptors, sdkDescriptors] = await Promise.all([
           cursorCliPath
             ? discoverCursorCliModelDescriptors(cursorCliPath, {
-                mode: args.activateRuntime ? "probe" : "cached-or-fallback",
+                mode: probeCli ? "probe" : "cached-or-fallback",
               }).catch(() => [])
             : Promise.resolve([]),
           apiKey
             ? discoverCursorSdkModelDescriptors(apiKey, {
-                mode: args.activateRuntime ? "probe" : "cached-only",
+                mode: probeSdk ? "probe" : "cached-or-fallback",
               }).catch(() => [])
             : Promise.resolve([]),
         ]);
@@ -23571,17 +23592,19 @@ export function createAgentChatService(args: {
   const getAvailableModels = async ({
     provider,
     activateRuntime,
+    cursorSource,
   }: {
     provider: AgentChatProvider;
     activateRuntime?: boolean;
+    cursorSource?: AgentChatCursorModelSource;
   }): Promise<AgentChatModelInfo[]> => {
-    const requestKey = `${provider}:${activateRuntime === true ? "active" : "passive"}`;
+    const requestKey = `${provider}:${activateRuntime === true ? "active" : "passive"}:${cursorSource ?? "all"}`;
     const existingRequest = availableModelsRequests.get(requestKey);
     if (existingRequest) {
       return existingRequest;
     }
 
-    const request = loadAvailableModels({ provider, activateRuntime });
+    const request = loadAvailableModels({ provider, activateRuntime, cursorSource });
     availableModelsRequests.set(requestKey, request);
     try {
       return await request;
@@ -23595,7 +23618,7 @@ export function createAgentChatService(args: {
   const modelCatalogRequestKey = (catalogArgs?: AgentChatModelCatalogArgs): string => {
     const mode = catalogArgs?.mode ?? "refresh-stale";
     const refreshProvider = catalogArgs?.refreshProvider;
-    return `${mode}:${refreshProvider ?? "all"}`;
+    return `${mode}:${refreshProvider ?? "all"}:${catalogArgs?.cursorSource ?? "all"}`;
   };
 
   const buildModelCatalog = async (catalogArgs?: AgentChatModelCatalogArgs): Promise<AgentChatModelCatalog> => {
@@ -23624,6 +23647,9 @@ export function createAgentChatService(args: {
               activateRuntime:
                 (provider === "cursor" && shouldRefreshProvider("cursor"))
                 || (provider === "droid" && shouldRefreshProvider("droid")),
+              ...(provider === "cursor" && catalogArgs?.cursorSource
+                ? { cursorSource: catalogArgs.cursorSource }
+                : {}),
             }),
           };
         } catch {
@@ -23833,11 +23859,12 @@ export function createAgentChatService(args: {
   const getModelCatalog = async (catalogArgs?: AgentChatModelCatalogArgs): Promise<AgentChatModelCatalog> => {
     const mode = catalogArgs?.mode ?? "refresh-stale";
     if (mode === "refresh-stale" && modelCatalogCache) {
-      const stale = isModelCatalogRefreshStale(catalogArgs?.refreshProvider);
+      const stale = isModelCatalogRefreshStale(catalogArgs?.refreshProvider, catalogArgs?.cursorSource);
       if (stale) {
         scheduleModelCatalogRefresh({
           mode: "force",
           ...(catalogArgs?.refreshProvider ? { refreshProvider: catalogArgs.refreshProvider } : {}),
+          ...(catalogArgs?.cursorSource ? { cursorSource: catalogArgs.cursorSource } : {}),
         });
       }
       return withModelCatalogStaleFlag(modelCatalogCache, stale);

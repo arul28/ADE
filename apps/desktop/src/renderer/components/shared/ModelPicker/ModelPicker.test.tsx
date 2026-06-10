@@ -734,7 +734,7 @@ describe("ModelPicker", () => {
     await user.click(cursorRail);
 
     await waitFor(() => {
-      expect(modelCatalog).toHaveBeenCalledWith({ mode: "refresh-stale", refreshProvider: "cursor" });
+      expect(modelCatalog).toHaveBeenCalledWith({ mode: "refresh-stale", refreshProvider: "cursor", cursorSource: "sdk" });
     });
     expect(await screen.findByText("No Cursor models found")).toBeTruthy();
     expect(screen.queryByText("Connect Cursor")).toBeNull();
@@ -743,7 +743,7 @@ describe("ModelPicker", () => {
     await user.click(cursorRail);
 
     await waitFor(() => {
-      expect(modelCatalog).toHaveBeenCalledWith({ mode: "refresh-stale", refreshProvider: "cursor" });
+      expect(modelCatalog).toHaveBeenCalledWith({ mode: "refresh-stale", refreshProvider: "cursor", cursorSource: "sdk" });
     });
   });
 

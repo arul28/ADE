@@ -86,10 +86,21 @@ export const ModelPicker = memo(function ModelPicker({
   const [refreshingProvider, setRefreshingProvider] = useState<AgentChatModelCatalogRefreshProvider | null>(null);
   const { recents } = useModelRecents({ hydrate: open });
 
+  // Which cursor discovery source this picker surface needs synchronously:
+  // chat surfaces run models through the SDK, CLI lane drafts through the
+  // cursor-agent CLI. The host probes only this source and lets the other
+  // revalidate in the background, so a chat refresh never waits on a CLI spawn.
+  const cursorSource = cursorAvailabilityMode === "cli"
+    ? "cli" as const
+    : cursorAvailabilityMode === "all"
+      ? undefined
+      : "sdk" as const;
+
   const loadRuntimeCatalog = useCallback(async (args: {
     mode: "cached" | "refresh-stale" | "force";
     refreshProvider?: AgentChatModelCatalogRefreshProvider;
   }): Promise<AgentChatModelCatalog | null> => {
+    const cursorFlavor = args.refreshProvider === "cursor" ? cursorSource : undefined;
     const shared = getSharedRuntimeCatalog();
     if (args.mode === "cached" && shared) {
       setRuntimeCatalog(shared);
@@ -97,14 +108,14 @@ export const ModelPicker = memo(function ModelPicker({
     }
     if (args.mode === "refresh-stale" && args.refreshProvider && shared) {
       setRuntimeCatalog(shared);
-      if (runtimeCatalogProviderIsFresh(args.refreshProvider)) {
+      if (runtimeCatalogProviderIsFresh(args.refreshProvider, cursorFlavor)) {
         return { ...shared, stale: false };
       }
     }
 
     const bridge = window.ade?.agentChat?.modelCatalog;
     if (typeof bridge !== "function") return null;
-    const requestKey = `${args.mode}:${args.refreshProvider ?? "all"}`;
+    const requestKey = `${args.mode}:${args.refreshProvider ?? "all"}:${cursorFlavor ?? "all"}`;
     const existingRequest = getRuntimeCatalogRequest(requestKey);
     if (existingRequest) {
       const next = await existingRequest;
@@ -114,7 +125,10 @@ export const ModelPicker = memo(function ModelPicker({
 
     const request = (async () => {
       try {
-        const next = await bridge(args);
+        const next = await bridge({
+          ...args,
+          ...(cursorFlavor ? { cursorSource: cursorFlavor } : {}),
+        });
         const visible = rememberRuntimeCatalog(next, args);
         setRuntimeCatalog(visible);
         return visible;
@@ -128,7 +142,7 @@ export const ModelPicker = memo(function ModelPicker({
       clearRuntimeCatalogRequest(requestKey, request);
     });
     return await request;
-  }, []);
+  }, [cursorSource]);
 
   useEffect(() => {
     if (!open) return;
@@ -150,10 +164,11 @@ export const ModelPicker = memo(function ModelPicker({
                 : null;
     if (refreshProvider) {
       void (async () => {
+        const cursorFlavor = refreshProvider === "cursor" ? cursorSource : undefined;
         const shared = getSharedRuntimeCatalog();
         if (shared) {
           setRuntimeCatalog(shared);
-          if (runtimeCatalogProviderIsFresh(refreshProvider)) return;
+          if (runtimeCatalogProviderIsFresh(refreshProvider, cursorFlavor)) return;
         }
         setRefreshingProvider(refreshProvider);
         try {
@@ -167,7 +182,7 @@ export const ModelPicker = memo(function ModelPicker({
         }
       })();
     }
-  }, [loadRuntimeCatalog, onRuntimeCatalogRefreshed]);
+  }, [cursorSource, loadRuntimeCatalog, onRuntimeCatalogRefreshed]);
 
   const catalogModels = useMemo(
     () => descriptorsFromAgentChatModelCatalog(runtimeCatalog, filter),

@@ -33,12 +33,20 @@ function runtimeCatalogRefreshTtlMs(provider?: AgentChatModelCatalogRefreshProvi
 function catalogContainsRefreshProvider(
   catalog: AgentChatModelCatalog,
   provider: AgentChatModelCatalogRefreshProvider,
+  cursorFlavor?: "sdk" | "cli",
 ): boolean {
   return (catalog.groups ?? []).some((group) => {
     const groupMatches = provider === "droid"
       ? group.key === "droid"
       : group.key === provider;
     if (!groupMatches) return false;
+    // A cursor-flavored check must see rows the requesting surface can run:
+    // an SDK-only refresh must not satisfy a CLI-surface freshness check.
+    if (provider === "cursor" && cursorFlavor) {
+      return (group.providers ?? []).some((entry) =>
+        (entry.subsections ?? []).some((subsection) =>
+          (subsection.models ?? []).some((model) => model.cursorAvailability?.[cursorFlavor] === true)));
+    }
     return (group.providers ?? []).some((entry) => entry.modelCount > 0);
   });
 }
@@ -58,9 +66,12 @@ function markRuntimeCatalogProviderFresh(
   sharedRuntimeCatalogProviderRefreshedAt.set(provider, refreshedAt);
 }
 
-export function runtimeCatalogProviderIsFresh(provider: AgentChatModelCatalogRefreshProvider): boolean {
+export function runtimeCatalogProviderIsFresh(
+  provider: AgentChatModelCatalogRefreshProvider,
+  cursorFlavor?: "sdk" | "cli",
+): boolean {
   const refreshedAt = sharedRuntimeCatalogProviderRefreshedAt.get(provider);
-  if (provider === "cursor" && (!sharedRuntimeCatalog || !catalogContainsRefreshProvider(sharedRuntimeCatalog, provider))) {
+  if (provider === "cursor" && (!sharedRuntimeCatalog || !catalogContainsRefreshProvider(sharedRuntimeCatalog, provider, cursorFlavor))) {
     return false;
   }
   return Boolean(refreshedAt && Date.now() - refreshedAt <= runtimeCatalogRefreshTtlMs(provider));
