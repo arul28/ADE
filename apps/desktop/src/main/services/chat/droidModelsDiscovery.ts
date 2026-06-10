@@ -269,6 +269,7 @@ async function listDroidModelsFromSdk(droidPath: string): Promise<DroidExecHelpM
 export function clearDroidCliModelsCache(): void {
   cached = null;
   inflight = null;
+  warmInFlight = false;
   lastWarmAttemptAt = 0;
 }
 

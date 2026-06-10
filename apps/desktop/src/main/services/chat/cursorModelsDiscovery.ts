@@ -1199,10 +1199,10 @@ export async function discoverCursorSdkModelDescriptors(
     ? await probeCursorSdkModelDiscovery(apiKey, { timeoutMs: options?.timeoutMs })
     : null;
   let rows = result?.rows ?? [];
-  if (!rows.length && result?.failureKind !== "auth") {
-    // Cache lookup covers the cached modes and lets a transiently-failed
-    // probe fall back to last-known-good rows. An auth failure means the key
-    // itself is dead, so stale rows for it must not resurface.
+  if (!rows.length && (result == null || result.failureKind !== "auth")) {
+    // Cache lookup covers the cached modes (result == null) and lets a
+    // transiently-failed probe fall back to last-known-good rows. An auth
+    // failure means the key itself is dead, so stale rows must not resurface.
     rows = getCachedCursorSdkModels(apiKey) ?? [];
   }
   if (!rows.length && options?.mode === "cached-or-fallback") {
