@@ -428,6 +428,95 @@ func syncIsTailscaleRoute(_ address: String) -> Bool {
     || host.hasSuffix(".ts.net")
 }
 
+/// Inbound frame after the CPU-heavy stages (envelope JSON parse, gunzip,
+/// payload JSON parse) have run OFF the main actor. The main actor only does
+/// state mutation with the pre-decoded payload — multi-megabyte frames used
+/// to freeze the UI (and get the app killed by the watchdog) while decoding
+/// inline on the main thread.
+struct SyncPreprocessedEnvelope {
+  let type: String
+  let requestId: String?
+  let payload: Any
+}
+
+func syncPreprocessIncoming(_ text: String) throws -> SyncPreprocessedEnvelope? {
+  guard let data = text.data(using: .utf8) else { return nil }
+  guard let envelope = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+  let type = envelope["type"] as? String ?? ""
+  let requestId = envelope["requestId"] as? String
+  let payload: Any
+  let compression = envelope["compression"] as? String ?? "none"
+  if compression == "gzip", let base64 = envelope["payload"] as? String, let compressed = Data(base64Encoded: base64) {
+    let inflated = try gunzip(compressed)
+    payload = try JSONSerialization.jsonObject(with: inflated, options: [])
+  } else {
+    payload = envelope["payload"] ?? NSNull()
+  }
+  return SyncPreprocessedEnvelope(type: type, requestId: requestId, payload: payload)
+}
+
+func syncDecodeChangesetBatch(_ payload: Any) throws -> SyncChangesetBatchPayload {
+  let data = try adeJSONData(withJSONObject: payload)
+  return try JSONDecoder().decode(SyncChangesetBatchPayload.self, from: data)
+}
+
+private let syncAddressProbeQueue = DispatchQueue(label: "ade.sync.address-probe", qos: .userInitiated)
+
+/// Raw TCP reachability probe used to race address candidates before the
+/// (single-socket) websocket connect. Cheap, concurrent, and cancel-safe.
+func syncTcpProbe(host: String, port: Int, timeoutNanoseconds: UInt64) async -> Bool {
+  guard let endpointPort = NWEndpoint.Port(rawValue: UInt16(clamping: port)) else { return false }
+  return await withCheckedContinuation { continuation in
+    let connection = NWConnection(host: NWEndpoint.Host(host), port: endpointPort, using: .tcp)
+    var completed = false
+    let complete: (Bool) -> Void = { result in
+      guard !completed else { return }
+      completed = true
+      connection.cancel()
+      continuation.resume(returning: result)
+    }
+    connection.stateUpdateHandler = { state in
+      switch state {
+      case .ready: complete(true)
+      case .failed, .cancelled: complete(false)
+      default: break
+      }
+    }
+    connection.start(queue: syncAddressProbeQueue)
+    syncAddressProbeQueue.asyncAfter(deadline: .now() + .nanoseconds(Int(timeoutNanoseconds))) {
+      complete(false)
+    }
+  }
+}
+
+/// Happy-eyeballs ordering for reconnect: TCP-probe every candidate address
+/// concurrently and put reachable ones first, in completion order (fastest
+/// route wins). Unreachable candidates keep their original relative order as
+/// a fallback tail — a probe can be blocked on networks where the websocket
+/// still works. Sequential attempts over a dead LAN IP used to burn the full
+/// open timeout before the live Tailscale route was even tried.
+func syncRaceAddressCandidates(
+  addresses: [String],
+  port: Int,
+  timeoutNanoseconds: UInt64 = 1_500_000_000
+) async -> [String] {
+  guard addresses.count > 1 else { return addresses }
+  return await withTaskGroup(of: (Int, Bool).self) { group in
+    for (index, address) in addresses.enumerated() {
+      group.addTask {
+        (index, await syncTcpProbe(host: address, port: port, timeoutNanoseconds: timeoutNanoseconds))
+      }
+    }
+    var reachable: [Int] = []
+    var unreachable: [Int] = []
+    for await (index, ok) in group {
+      if ok { reachable.append(index) } else { unreachable.append(index) }
+    }
+    unreachable.sort()
+    return (reachable + unreachable).map { addresses[$0] }
+  }
+}
+
 /// Reassembles `envelope_chunk` frames back into the full encoded envelope.
 /// The host slices any oversized envelope into base64 parts so no single
 /// websocket message can exceed the socket's receive budget; parts concatenate
@@ -5984,7 +6073,17 @@ final class SyncService: ObservableObject {
       throw noConnectableAddressError()
     }
 
-    for address in addresses {
+    let racedAddresses = await syncRaceAddressCandidates(
+      addresses: addresses,
+      port: portCandidates.first ?? profile.port
+    )
+    if racedAddresses != addresses {
+      syncConnectLog.info(
+        "ADE_SYNC_TRACE reconnect probe reorder raced=[\(syncLogAddressList(racedAddresses), privacy: .public)]"
+      )
+    }
+
+    for address in racedAddresses {
       guard isCurrentConnectAttempt(connectAttemptGeneration) else {
         throw CancellationError()
       }
@@ -6906,7 +7005,15 @@ final class SyncService: ObservableObject {
             text = ""
           }
           do {
-            try self.handleIncoming(text)
+            // CPU-heavy decode (envelope JSON, gunzip, payload JSON) runs off
+            // the main actor; ordering is preserved because each frame is
+            // awaited in sequence. The main actor only mutates state.
+            let preprocessed = try await Task.detached(priority: .userInitiated) {
+              try syncPreprocessIncoming(text)
+            }.value
+            if let preprocessed {
+              try await self.handleIncoming(preprocessed)
+            }
           } catch {
             if self.socket === task {
               self.handleIncomingFailure(error, text: text)
@@ -6968,12 +7075,10 @@ final class SyncService: ObservableObject {
     scheduleReconnectIfNeeded(after: reconnectDelay())
   }
 
-  private func handleIncoming(_ text: String) throws {
-    guard let data = text.data(using: .utf8) else { return }
-    guard let envelope = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
-    let type = envelope["type"] as? String ?? ""
-    let requestId = envelope["requestId"] as? String
-    let payload = try decodeEnvelopePayload(envelope)
+  private func handleIncoming(_ pre: SyncPreprocessedEnvelope) async throws {
+    let type = pre.type
+    let requestId = pre.requestId
+    let payload = pre.payload
     lastInboundMessageAt = ProcessInfo.processInfo.systemUptime
 
     switch type {
@@ -6984,7 +7089,14 @@ final class SyncService: ObservableObject {
             let total = dict["total"] as? Int,
             let part = dict["part"] as? String else { return }
       if let reassembled = envelopeChunkAssembler.add(chunkId: chunkId, index: index, total: total, part: part) {
-        try handleIncoming(reassembled)
+        // The reassembled envelope can be tens of megabytes — decode it off
+        // the main actor like any first-class frame.
+        let nested = try await Task.detached(priority: .userInitiated) {
+          try syncPreprocessIncoming(reassembled)
+        }.value
+        if let nested {
+          try await handleIncoming(nested)
+        }
       }
     case "hello_ok":
       reconnectState.reset()
@@ -7023,9 +7135,18 @@ final class SyncService: ObservableObject {
           batchPayload = payloadObject
         }
       }
-      let batch = try decode(batchPayload, as: SyncChangesetBatchPayload.self)
+      // Decode and apply off the main actor: a 250-row batch can carry
+      // megabytes and the SQLite connection is FULLMUTEX (serialized), so
+      // cross-thread application is safe. The receive loop awaits each frame
+      // in order, so batches still apply sequentially.
+      let batch = try await Task.detached(priority: .userInitiated) {
+        try syncDecodeChangesetBatch(batchPayload)
+      }.value
       do {
-        let result = try database.applyChanges(batch.changes)
+        let database = self.database
+        let result = try await Task.detached(priority: .userInitiated) {
+          try database.applyChanges(batch.changes)
+        }.value
         latestRemoteDbVersion = max(latestRemoteDbVersion, batch.toDbVersion, result.dbVersion)
         lastSyncAt = Date()
         let advancedVersion = latestRemoteDbVersion

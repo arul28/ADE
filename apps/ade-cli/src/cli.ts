@@ -13207,12 +13207,14 @@ async function runServe(
             };
           }
           try {
-            // Keep the current phone socket alive until project_switch_result is
-            // flushed; completion retires inactive hosts after the phone has the
-            // new project's connection bundle.
-            const scope = await scopeRegistry.switchSyncHost(record.projectId, {
-              deactivatePreviousHost: false,
-            });
+            // Prepare must NOT start the new project's sync host: the old host
+            // still owns the sync port, so an early start either drifts to a
+            // new port (stranding the phone's saved address) or races the old
+            // listener. Open the project scope for metadata only, reply with
+            // the CURRENT stable port, and let completion — which runs after
+            // project_switch_result is flushed — stop the old host first and
+            // start the new one on that same port.
+            const scope = await scopeRegistry.get(record.projectId);
             const syncService = scope?.runtime.syncService ?? null;
             if (!scope || !syncService) {
               return {
@@ -13221,9 +13223,6 @@ async function runServe(
                 project,
               };
             }
-            syncService.setHostDiscoveryEnabled?.(true);
-            await syncService.setHostStartupEnabled?.(true);
-            await syncService.initialize();
             const lanes = await scope.runtime.laneService
               .list({ includeArchived: false, includeStatus: false })
               .catch(() => []);
@@ -13232,8 +13231,9 @@ async function runServe(
               isOpen: true,
               laneCount,
             });
-            const status = await syncService.getStatus();
-            const connectInfo = status.pairingConnectInfo;
+            const activeScope = await scopeRegistry.resolveActiveSyncHost();
+            const activeStatus = await activeScope?.runtime.syncService?.getStatus();
+            const connectInfo = activeStatus?.pairingConnectInfo ?? null;
             if (!connectInfo) {
               return {
                 ok: false,
@@ -13283,10 +13283,14 @@ async function runServe(
             // The mobile handoff already succeeded; a stale registry touch should
             // not fail the sync protocol completion.
           }
-          // Retire by the registry's current active host (defaults to
-          // this.syncHostProjectId) rather than this request's projectId, so an
-          // interleaved later switch is not mistakenly disabled by a stale
-          // completion for an earlier switch.
+          // The phone already holds project_switch_result with the CURRENT
+          // port. Stop the old host first so the new one binds that same
+          // port (deactivatePreviousHost runs before the new host starts;
+          // the preferred-port retry rides out the old socket's close), then
+          // retire any other stale hosts.
+          await scopeRegistry.switchSyncHost(projectId, {
+            deactivatePreviousHost: true,
+          });
           await scopeRegistry.deactivateInactiveSyncHosts();
         },
       },

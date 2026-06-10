@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { safeStorage } from "electron";
@@ -8,7 +9,7 @@ import type { GitHubAutolink, GitHubRepoRef, GitHubStatus } from "../../../share
 import { resolveAdeLayout } from "../../../shared/adeLayout";
 import { getGitHubTokenAccessState, parseGitHubScopeHeaders } from "../../../shared/githubScopes";
 import type { SyncCredentialStore } from "../../../../../ade-cli/src/services/credentials/credentialStore";
-import { resolveExecutableFromKnownLocations } from "../ai/cliExecutableResolver";
+import { mergePathEntries, resolveExecutableFromKnownLocations } from "../ai/cliExecutableResolver";
 
 import { nowIso, asString } from "../shared/utils";
 
@@ -30,6 +31,38 @@ type GitHubTokenLookup = GitHubCliAuthResult & {
   patTokenStored: boolean;
 };
 
+/**
+ * Read the gh CLI's stored oauth token directly from its hosts.yml. gh keeps
+ * file-based tokens here (keychain-stored ones won't appear — those need the
+ * gh binary). This is the only auth path that works reliably in headless
+ * contexts (the launchd brain) where spawning gh has proven fragile.
+ */
+function readGhHostsFileToken(env: NodeJS.ProcessEnv = process.env): string | null {
+  const configDir = env.GH_CONFIG_DIR?.trim()
+    || path.join(env.XDG_CONFIG_HOME?.trim() || path.join(os.homedir(), ".config"), "gh");
+  const hostsPath = path.join(configDir, "hosts.yml");
+  try {
+    const raw = fs.readFileSync(hostsPath, "utf8");
+    const lines = raw.split(/\r?\n/);
+    let inGithubHost = false;
+    for (const line of lines) {
+      if (/^\S/.test(line)) {
+        inGithubHost = /^github\.com\s*:/.test(line.trim());
+        continue;
+      }
+      if (!inGithubHost) continue;
+      const match = line.match(/^\s+oauth_token\s*:\s*(\S+)\s*$/);
+      if (match) {
+        const token = match[1].replace(/^["']|["']$/g, "").trim();
+        if (token) return token;
+      }
+    }
+  } catch {
+    // No hosts.yml or unreadable — fall through.
+  }
+  return null;
+}
+
 function readGitHubCliAuthToken(): GitHubCliAuthResult {
   if (process.env.ADE_DISABLE_GH_AUTH_FALLBACK === "1") {
     return { token: null, ghCliPath: null, ghAuthError: null };
@@ -37,6 +70,10 @@ function readGitHubCliAuthToken(): GitHubCliAuthResult {
 
   const resolved = resolveExecutableFromKnownLocations("gh");
   if (!resolved?.path) {
+    const hostsToken = readGhHostsFileToken();
+    if (hostsToken) {
+      return { token: hostsToken, ghCliPath: null, ghAuthError: null };
+    }
     return {
       token: null,
       ghCliPath: null,
@@ -49,10 +86,18 @@ function readGitHubCliAuthToken(): GitHubCliAuthResult {
       encoding: "utf8",
       timeout: 5_000,
       windowsHide: true,
+      env: {
+        ...process.env,
+        PATH: mergePathEntries(process.env.PATH, path.dirname(resolved.path)),
+      },
     });
     const token = typeof result.stdout === "string" ? result.stdout.trim() : "";
     if (result.status === 0 && token.length > 0) {
       return { token, ghCliPath: resolved.path, ghAuthError: null };
+    }
+    const hostsToken = readGhHostsFileToken();
+    if (hostsToken) {
+      return { token: hostsToken, ghCliPath: resolved.path, ghAuthError: null };
     }
     const stderr = typeof result.stderr === "string" ? result.stderr.trim() : "";
     const message = result.error instanceof Error ? result.error.message : stderr;
@@ -62,6 +107,10 @@ function readGitHubCliAuthToken(): GitHubCliAuthResult {
       ghAuthError: message || "GitHub CLI is installed, but `gh auth token` did not return a token.",
     };
   } catch (error) {
+    const hostsToken = readGhHostsFileToken();
+    if (hostsToken) {
+      return { token: hostsToken, ghCliPath: resolved.path, ghAuthError: null };
+    }
     return {
       token: null,
       ghCliPath: resolved.path,

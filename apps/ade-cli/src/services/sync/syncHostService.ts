@@ -111,6 +111,25 @@ const execFileAsync = promisify(execFile);
 // ranges quickly (a few polls per million versions), small enough that the
 // windowed crsql_changes scan completes in milliseconds.
 const SYNC_EXPORT_VERSION_WINDOW = 250_000;
+
+// High-churn / large-row tables the phone never reads (verified against the
+// iOS Database.swift query surface). Excluding them from phone changesets is
+// a PowerSync-style sync rule: it removes the multi-megabyte transcript and
+// operations payloads that froze the iOS main thread (and got the app killed
+// by the watchdog mid-apply), and cuts the bulk of backlog churn. The peer's
+// ack watermark still advances through the filtered versions.
+const MOBILE_CHANGESET_EXCLUDED_TABLES = new Set([
+  "attempt_transcripts",
+  "operations",
+  "ai_usage_log",
+  "budget_usage_records",
+  "automation_runs",
+  "automation_action_results",
+]);
+
+function isMobileChangesetPeer(peer: { metadata: SyncPeerMetadata | null }): boolean {
+  return peer.metadata?.deviceType === "phone" || peer.metadata?.platform === "iOS";
+}
 const DEFAULT_SYNC_HEARTBEAT_INTERVAL_MS = 30_000;
 const DEFAULT_SYNC_HEARTBEAT_MISS_LIMIT = 2;
 const MOBILE_SYNC_HEARTBEAT_MISS_LIMIT = 6;
@@ -2115,13 +2134,12 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       args.logger.warn("sync_host.project_switch_failed", { message });
-      // prepareProjectConnection activates the new host but leaves the previous
-      // one running (switchSyncHost is called with deactivatePreviousHost:false).
-      // If preparing succeeded but delivering the result failed (e.g. the phone
-      // disconnected after the new host was activated), still retire inactive
-      // hosts so the previous host is not leaked. Completion is idempotent —
-      // deactivateInactiveSyncHosts only disables hosts other than the active
-      // one — so running it here is safe.
+      // prepareProjectConnection only opens the target scope and reports the
+      // current stable port; the actual host swap happens in completion. If
+      // preparing succeeded but delivering the result failed (e.g. the phone
+      // disconnected first), still run completion so the registry converges
+      // on the requested project — the phone's reconnect lands on the same
+      // port either way. Completion is idempotent.
       if (result) {
         try {
           await args.projectCatalogProvider.completeProjectConnection?.(payload ?? {}, result);
@@ -2352,8 +2370,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       const exportedThroughDbVersion = exported.length > 0
         ? Number(exported[exported.length - 1].db_version)
         : scanThroughDbVersion;
+      const mobilePeer = isMobileChangesetPeer(peer);
       const changes = exported
-        .filter((change: CrsqlChangeRow) => change.site_id !== peer.metadata?.siteId);
+        .filter((change: CrsqlChangeRow) => change.site_id !== peer.metadata?.siteId)
+        .filter((change: CrsqlChangeRow) => !mobilePeer || !MOBILE_CHANGESET_EXCLUDED_TABLES.has(change.table));
       if (changes.length === 0) {
         const previousDbVersion = peer.lastKnownServerDbVersion;
         // Only advance through what was actually scanned — with a bounded
