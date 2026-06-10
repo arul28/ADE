@@ -555,6 +555,7 @@ export function buildSyncHostHelloOkPayload(args: {
   peer: SyncPeerMetadata;
   brain: SyncPeerMetadata;
   serverDbVersion: number;
+  serverDbSiteId?: string;
   heartbeatIntervalMs: number;
   pollIntervalMs: number;
   projectCatalog: SyncProjectCatalogPayload;
@@ -573,6 +574,7 @@ export function buildSyncHostHelloOkPayload(args: {
     peer: args.peer,
     brain: args.brain,
     serverDbVersion: args.serverDbVersion,
+    ...(args.serverDbSiteId ? { serverDbSiteId: args.serverDbSiteId } : {}),
     heartbeatIntervalMs: args.heartbeatIntervalMs,
     pollIntervalMs: args.pollIntervalMs,
     projects: args.projectCatalog.projects,
@@ -637,6 +639,16 @@ function parseHelloPayload(payload: unknown): SyncHelloPayload | null {
   } else {
     return null;
   }
+  const dbVersionBySite: Record<string, number> = {};
+  if (peer.dbVersionBySite && typeof peer.dbVersionBySite === "object" && !Array.isArray(peer.dbVersionBySite)) {
+    for (const [site, version] of Object.entries(peer.dbVersionBySite)) {
+      const normalizedSite = site.trim();
+      const normalizedVersion = Number(version);
+      if (normalizedSite && Number.isFinite(normalizedVersion) && normalizedVersion >= 0) {
+        dbVersionBySite[normalizedSite] = Math.floor(normalizedVersion);
+      }
+    }
+  }
   return {
     peer: {
       deviceId: String(peer.deviceId).trim(),
@@ -645,6 +657,7 @@ function parseHelloPayload(payload: unknown): SyncHelloPayload | null {
       deviceType: peer.deviceType ?? "unknown",
       siteId: String(peer.siteId).trim(),
       dbVersion: Number(peer.dbVersion ?? 0),
+      ...(Object.keys(dbVersionBySite).length > 0 ? { dbVersionBySite } : {}),
       capabilities: Array.isArray(peer.capabilities)
         ? peer.capabilities
           .filter((capability): capability is string => typeof capability === "string")
@@ -2317,21 +2330,32 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         continue;
       }
       if (currentDbVersion <= peer.lastKnownServerDbVersion) continue;
-      const changes = args.db.sync
-        .exportChangesSince(peer.lastKnownServerDbVersion)
+      // Bounded export: an unbounded scan of a deep backlog runs long enough
+      // that any concurrent local write aborts it, permanently starving the
+      // peer; and the pump only consumes one batch per poll anyway.
+      const exported = args.db.sync.exportChangesSince(
+        peer.lastKnownServerDbVersion,
+        { maxRows: maxChangesetBatchRows * 4 },
+      );
+      const exportedThroughDbVersion = exported.length > 0
+        ? Number(exported[exported.length - 1].db_version)
+        : currentDbVersion;
+      const changes = exported
         .filter((change: CrsqlChangeRow) => change.site_id !== peer.metadata?.siteId);
       if (changes.length === 0) {
         const previousDbVersion = peer.lastKnownServerDbVersion;
-        peer.lastKnownServerDbVersion = currentDbVersion;
+        // Only advance through what was actually scanned — with a bounded
+        // export, versions past the truncation point have not been seen.
+        peer.lastKnownServerDbVersion = exportedThroughDbVersion;
         args.logger.debug("sync_host.changeset_advanced_without_send", {
           peerDeviceId: peer.metadata?.deviceId ?? null,
           fromDbVersion: previousDbVersion,
-          toDbVersion: currentDbVersion,
+          toDbVersion: exportedThroughDbVersion,
           reason: "peer_owned_changes_only",
         });
         continue;
       }
-      const pending = sendNextChangesetBatch(peer, "broadcast", peer.lastKnownServerDbVersion, currentDbVersion, changes);
+      const pending = sendNextChangesetBatch(peer, "broadcast", peer.lastKnownServerDbVersion, exportedThroughDbVersion, changes);
       if (pending) {
         if (peerSupportsChangesetAck(peer)) {
           peer.pendingChangesetBatch = pending;
@@ -2985,7 +3009,14 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       peer.authKind = auth.kind;
       peer.pairedDeviceId = auth.kind === "paired" ? auth.deviceId : null;
       peer.pairingRecord = auth.kind === "paired" ? authenticatedPairingRecord : null;
-      peer.lastKnownServerDbVersion = Math.max(0, Math.floor(hello.peer.dbVersion));
+      // Prefer the client's cursor for THIS project DB. The legacy single
+      // dbVersion is only meaningful when the client last synced this same
+      // DB; after a hosted-project change it points into a different DB's
+      // version sequence and silently skips (or replays) the entire backlog.
+      const ownSiteId = args.db.sync.getSiteId();
+      const cursorForThisDb = hello.peer.dbVersionBySite?.[ownSiteId]
+        ?? (hello.peer.dbVersionBySite ? 0 : hello.peer.dbVersion);
+      peer.lastKnownServerDbVersion = Math.max(0, Math.floor(cursorForThisDb));
       args.deviceRegistryService?.upsertPeerMetadata(hello.peer, {
         lastSeenAt: nowIso(),
         lastHost: peer.remoteAddress,
@@ -2996,6 +3027,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         peer: hello.peer,
         brain: readBrainMetadata(),
         serverDbVersion: args.db.sync.getDbVersion(),
+        serverDbSiteId: ownSiteId,
         heartbeatIntervalMs,
         pollIntervalMs,
         projectCatalog,

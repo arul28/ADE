@@ -1184,6 +1184,9 @@ final class SyncService: ObservableObject {
   private var reconnectState = SyncReconnectState()
   private var envelopeChunkAssembler = SyncEnvelopeChunkAssembler()
   private var transportProbeTask: Task<Void, Never>?
+  /// cr-sqlite site id of the project DB the connected host currently serves
+  /// (lowercased), from hello_ok's serverDbSiteId. Nil for older hosts.
+  private var activeRemoteDbSiteId: String?
   private var connectionGeneration: UInt64 = 0
   private var connectAttemptGeneration: UInt64 = 0
   private var lastInboundMessageAt: TimeInterval?
@@ -6438,7 +6441,7 @@ final class SyncService: ObservableObject {
   }
 
   private func currentPeerMetadata() -> [String: Any] {
-    [
+    var metadata: [String: Any] = [
       "deviceId": deviceId,
       "deviceName": UIDevice.current.name,
       "platform": "iOS",
@@ -6447,6 +6450,13 @@ final class SyncService: ObservableObject {
       "dbVersion": latestRemoteDbVersion,
       "capabilities": ["changesetAck", "chunkedEnvelopes"],
     ]
+    // Per-project-DB cursors: the host picks the entry for the DB it serves,
+    // so a brain that switched hosted projects pumps the right backlog
+    // instead of trusting the single legacy cursor from a different DB.
+    if let bySite = loadProfile()?.remoteDbVersionBySite, !bySite.isEmpty {
+      metadata["dbVersionBySite"] = bySite
+    }
+    return metadata
   }
 
   private func openSocket(
@@ -6698,6 +6708,23 @@ final class SyncService: ObservableObject {
         code: 20,
         userInfo: [NSLocalizedDescriptionKey: "The saved pairing belongs to a different ADE machine. Pair again with the current machine."]
       )
+    }
+
+    // Key the inbound changeset cursor to the project DB this host serves.
+    // The same brain hosts different project DBs over time, each with its own
+    // db_version sequence; reusing a cursor across DBs silently skips the
+    // entire backlog (host sees "caught up") or replays from zero.
+    if let serverDbSiteId = syncNonEmpty(payload["serverDbSiteId"] as? String) {
+      let normalizedSite = serverDbSiteId.lowercased()
+      if activeRemoteDbSiteId != normalizedSite {
+        activeRemoteDbSiteId = normalizedSite
+        latestRemoteDbVersion = loadProfile()?.remoteDbVersionBySite?[normalizedSite] ?? 0
+        updateProfile { profile in
+          profile.lastRemoteDbVersion = latestRemoteDbVersion
+        }
+      }
+    } else {
+      activeRemoteDbSiteId = nil
     }
 
     let features = payload["features"] as? [String: Any]
@@ -7001,8 +7028,15 @@ final class SyncService: ObservableObject {
         let result = try database.applyChanges(batch.changes)
         latestRemoteDbVersion = max(latestRemoteDbVersion, batch.toDbVersion, result.dbVersion)
         lastSyncAt = Date()
+        let advancedVersion = latestRemoteDbVersion
+        let cursorSite = activeRemoteDbSiteId
         updateProfile { profile in
-          profile.lastRemoteDbVersion = latestRemoteDbVersion
+          profile.lastRemoteDbVersion = advancedVersion
+          if let cursorSite {
+            var bySite = profile.remoteDbVersionBySite ?? [:]
+            bySite[cursorSite] = max(bySite[cursorSite] ?? 0, advancedVersion)
+            profile.remoteDbVersionBySite = bySite
+          }
         }
         sendChangesetAck(
           batch: batch,

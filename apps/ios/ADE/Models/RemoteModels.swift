@@ -22,6 +22,12 @@ struct HostConnectionProfile: Codable, Equatable {
   var authKind: String
   var pairedDeviceId: String?
   var lastRemoteDbVersion: Int
+  /// Inbound changeset cursor per host project DB, keyed by that DB's
+  /// cr-sqlite site id. A brain hosts one project DB at a time and each has
+  /// its own db_version sequence, so the single `lastRemoteDbVersion` is only
+  /// valid against the DB it was built from — replaying it against another
+  /// project's DB silently skips (or refetches) the whole backlog.
+  var remoteDbVersionBySite: [String: Int]?
   var lastHostDeviceId: String?
   var lastSuccessfulAddress: String?
   var savedAddressCandidates: [String]
@@ -37,6 +43,7 @@ struct HostConnectionProfile: Codable, Equatable {
     authKind: String,
     pairedDeviceId: String?,
     lastRemoteDbVersion: Int,
+    remoteDbVersionBySite: [String: Int]? = nil,
     lastHostDeviceId: String?,
     lastSuccessfulAddress: String?,
     savedAddressCandidates: [String],
@@ -51,6 +58,7 @@ struct HostConnectionProfile: Codable, Equatable {
     self.authKind = authKind
     self.pairedDeviceId = pairedDeviceId
     self.lastRemoteDbVersion = lastRemoteDbVersion
+    self.remoteDbVersionBySite = remoteDbVersionBySite
     self.lastHostDeviceId = lastHostDeviceId
     self.lastSuccessfulAddress = lastSuccessfulAddress
     self.savedAddressCandidates = savedAddressCandidates

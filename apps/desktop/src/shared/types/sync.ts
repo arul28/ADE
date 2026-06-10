@@ -44,6 +44,14 @@ export type SyncPeerMetadata = {
   deviceType: SyncPeerDeviceType;
   siteId: string;
   dbVersion: number;
+  /**
+   * Per-host-DB changeset cursors keyed by the host project DB's cr-sqlite
+   * site id. A brain hosts one project DB at a time and each DB has its own
+   * db_version sequence, so a single `dbVersion` is meaningless after the
+   * hosted project changes — the host picks its own site's entry and falls
+   * back to `dbVersion` for older clients.
+   */
+  dbVersionBySite?: Record<string, number>;
   capabilities?: string[];
 };
 
@@ -301,6 +309,12 @@ export type SyncHelloOkPayload = {
   peer: SyncPeerMetadata;
   brain: SyncPeerMetadata;
   serverDbVersion: number;
+  /**
+   * cr-sqlite site id of the project DB this host is currently serving.
+   * Clients key their inbound changeset cursor on it so a cursor built
+   * against one project's DB is never replayed against another's.
+   */
+  serverDbSiteId?: string;
   heartbeatIntervalMs: number;
   pollIntervalMs: number;
   projects?: SyncMobileProjectSummary[];

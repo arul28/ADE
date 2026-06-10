@@ -28,7 +28,15 @@ export type AdeDbSyncApi = {
   isAvailable?: () => boolean;
   getSiteId: () => string;
   getDbVersion: () => number;
-  exportChangesSince: (version: number) => CrsqlChangeRow[];
+  /**
+   * Export CRR changes after `version`. With `maxRows` the scan is bounded:
+   * at most ~maxRows rows are returned, truncated only at a complete
+   * db_version boundary so a consumer's cursor watermark never lands in the
+   * middle of a version group. An unbounded scan of a large backlog runs long
+   * enough that any concurrent write aborts it (SQLITE_ABORT from the
+   * crsql_changes vtab) — which permanently starves behind/fresh peers.
+   */
+  exportChangesSince: (version: number, options?: { maxRows?: number }) => CrsqlChangeRow[];
   applyChanges: (changes: CrsqlChangeRow[]) => ApplyRemoteChangesResult;
   /**
    * Suppress unpublished local-site CRR rows for specific tables. Used when
@@ -3249,7 +3257,7 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
       const row = get<{ db_version: number }>("select crsql_db_version() as db_version");
       return Number(row?.db_version ?? 0);
     },
-    exportChangesSince: (version: number) => {
+    exportChangesSince: (version: number, options?: { maxRows?: number }) => {
       if (!crsqliteLoaded) return [];
       const suppressions = new Map<string, number>(
         allRows<{ table_name: string; through_db_version: number }>(
@@ -3261,7 +3269,7 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
           [desiredSiteId],
         ).map((row) => [String(row.table_name), Number(row.through_db_version)]),
       );
-      const rows = allRows<{
+      type ExportedChangeRow = {
         table_name: string;
         pk: unknown;
         cid: string;
@@ -3271,9 +3279,8 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
         site_id: Uint8Array;
         cl: number;
         seq: number;
-      }>(
-        db,
-        `select [table] as table_name,
+      };
+      const selectSql = `select [table] as table_name,
                 pk,
                 cid,
                 val,
@@ -3284,9 +3291,34 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
                 seq
            from crsql_changes
           where db_version > ?
-          order by db_version asc, cl asc, seq asc`,
-        [version]
-      );
+          order by db_version asc, cl asc, seq asc`;
+      const maxRows = options?.maxRows != null && Number.isFinite(options.maxRows)
+        ? Math.max(1, Math.floor(options.maxRows))
+        : null;
+      let rows: ExportedChangeRow[];
+      if (maxRows == null) {
+        rows = allRows<ExportedChangeRow>(db, selectSql, [version]);
+      } else {
+        rows = allRows<ExportedChangeRow>(db, `${selectSql} limit ?`, [version, maxRows + 1]);
+        if (rows.length > maxRows) {
+          // The fetch was truncated; drop the trailing (possibly incomplete)
+          // db_version group so consumers only ever watermark complete groups.
+          const tailVersion = Number(rows[rows.length - 1].db_version);
+          let cut = rows.length;
+          while (cut > 0 && Number(rows[cut - 1].db_version) === tailVersion) cut -= 1;
+          if (cut > 0) {
+            rows = rows.slice(0, cut);
+          } else {
+            // A single transaction touched more rows than maxRows. Fetch that
+            // one version group in full — bounded by the group itself.
+            rows = allRows<ExportedChangeRow>(
+              db,
+              `${selectSql.replace("where db_version > ?", "where db_version > ? and db_version <= ?")}`,
+              [version, tailVersion],
+            );
+          }
+        }
+      }
 
       return rows
         .filter((row) => !isLocalOnlyQueueWipeMarkerRawChange(row))

@@ -204,19 +204,26 @@ export function createSyncPeerService(args: SyncPeerServiceArgs) {
     const currentDbVersion = args.db.sync.getDbVersion();
     if (currentDbVersion <= outboundLocalDbVersion) return;
     const localSiteId = args.deviceRegistryService.getLocalSiteId();
-    const changes = args.db.sync
-      .exportChangesSince(outboundLocalDbVersion)
-      .filter((change) => change.site_id === localSiteId);
+    // Bounded export — an unbounded scan of a deep backlog aborts under
+    // concurrent writes (SQLITE_ABORT), permanently stalling the relay.
+    const exported = args.db.sync.exportChangesSince(
+      outboundLocalDbVersion,
+      { maxRows: MAX_OUTBOUND_CHANGESET_BATCH_ROWS * 4 },
+    );
+    const exportedThroughDbVersion = exported.length > 0
+      ? Number(exported[exported.length - 1].db_version)
+      : currentDbVersion;
+    const changes = exported.filter((change) => change.site_id === localSiteId);
     const previousDbVersion = outboundLocalDbVersion;
     if (!changes.length) {
-      outboundLocalDbVersion = currentDbVersion;
+      outboundLocalDbVersion = exportedThroughDbVersion;
       return;
     }
     const payload = buildChangesetBatchPayload({
       deviceId: currentLocalPeerMetadata().deviceId,
       reason: "relay",
       fromDbVersion: previousDbVersion,
-      toDbVersion: currentDbVersion,
+      toDbVersion: exportedThroughDbVersion,
       changes,
       maxRows: MAX_OUTBOUND_CHANGESET_BATCH_ROWS,
       maxBytes: MAX_OUTBOUND_CHANGESET_BATCH_BYTES,
