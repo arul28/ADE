@@ -76,6 +76,15 @@ final class TerminalSessionController: NSObject, ObservableObject {
   private var pinchBaseFontSize: CGFloat = TerminalSessionController.defaultFontSize
   private var ctrlResetObserver: NSObjectProtocol?
 
+  // Hosts that stamp transcript offsets push live terminal_data; legacy hosts
+  // (pre-offset brains) never push terminal output at all, so the screen
+  // falls back to periodic tail refreshes until an offset proves otherwise.
+  // nil = unknown (no snapshot seen yet).
+  private var hostSupportsOffsets: Bool?
+  private var legacyPollTask: Task<Void, Never>?
+  private static let legacyPollIntervalNs: UInt64 = 2_000_000_000
+  private static let legacyPollBudgetBytes = 192_000
+
   deinit {
     if let ctrlResetObserver {
       NotificationCenter.default.removeObserver(ctrlResetObserver)
@@ -100,6 +109,7 @@ final class TerminalSessionController: NSObject, ObservableObject {
       do {
         try await syncService.subscribeTerminalStream(sessionId: sessionId, sinceOffset: resumeOffset)
         self.isSubscribed = true
+        self.startLegacyPollingIfNeeded()
       } catch {
         self.isSubscribed = false
       }
@@ -110,11 +120,37 @@ final class TerminalSessionController: NSObject, ObservableObject {
     inputFlushTask?.cancel()
     inputFlushTask = nil
     pendingInput = ""
+    legacyPollTask?.cancel()
+    legacyPollTask = nil
     guard let syncService, !sessionId.isEmpty else { return }
     syncService.detachTerminalStream(sessionId: sessionId)
     isSubscribed = false
     let id = sessionId
     Task { try? await syncService.unsubscribeTerminal(sessionId: id) }
+  }
+
+  /// Pre-offset hosts never push terminal_data (their PTY→sync bridge only
+  /// existed in the Electron desktop), so without this loop the screen would
+  /// freeze on its first snapshot forever. Polls a modest tail and stops the
+  /// moment any snapshot/chunk proves the host stamps offsets.
+  private func startLegacyPollingIfNeeded() {
+    guard hostSupportsOffsets != true, legacyPollTask == nil else { return }
+    legacyPollTask = Task { @MainActor [weak self] in
+      defer { self?.legacyPollTask = nil }
+      while let self, !Task.isCancelled {
+        try? await Task.sleep(nanoseconds: Self.legacyPollIntervalNs)
+        if Task.isCancelled { return }
+        if self.hostSupportsOffsets == true || self.hasExited { return }
+        guard let syncService = self.syncService, self.isSubscribed, self.readyToFeed else { continue }
+        // Don't yank the viewport out from under a reader: replace-hydrates
+        // re-pin to the bottom.
+        guard self.isPinnedToBottom else { continue }
+        try? await syncService.refreshTerminalSnapshot(
+          sessionId: self.sessionId,
+          maxBytes: Self.legacyPollBudgetBytes
+        )
+      }
+    }
   }
 
   func handleConnectionChange(isConnected: Bool) {
@@ -126,6 +162,9 @@ final class TerminalSessionController: NSObject, ObservableObject {
       if let terminal = terminalView?.getTerminal() {
         sendResizeIfNeeded(cols: terminal.cols, rows: terminal.rows)
       }
+      // The reconnect may have landed on a different (possibly older) host.
+      hostSupportsOffsets = nil
+      startLegacyPollingIfNeeded()
     } else {
       isSubscribed = false
     }
@@ -197,8 +236,15 @@ final class TerminalSessionController: NSObject, ObservableObject {
   private func applyStreamEvent(_ event: TerminalStreamEvent) {
     switch event {
     case .hydrate(let text, let replacing, let startOffset, let endOffset):
+      noteHostOffsetCapability(endOffset != nil)
       if replacing {
-        transcript = Data(text.utf8)
+        let bytes = Data(text.utf8)
+        // Legacy polling refetches the same tail every cycle; rebuilding on an
+        // unchanged tail would flicker the screen every poll.
+        if endOffset == nil, !bytes.isEmpty, transcript == bytes || (transcript.count > bytes.count && transcript.suffix(bytes.count) == bytes) {
+          return
+        }
+        transcript = bytes
         transcriptStartOffset = startOffset
         transcriptEndOffset = endOffset
         historyAtStart = startOffset == 0
@@ -207,9 +253,18 @@ final class TerminalSessionController: NSObject, ObservableObject {
         appendBytes(Data(text.utf8), endOffset: endOffset, countsAsLive: false)
       }
     case .chunk(let text, let endOffset):
+      noteHostOffsetCapability(endOffset != nil)
       appendBytes(Data(text.utf8), endOffset: endOffset, countsAsLive: true)
     case .exit:
       hasExited = true
+    }
+  }
+
+  private func noteHostOffsetCapability(_ supportsOffsets: Bool) {
+    if supportsOffsets {
+      hostSupportsOffsets = true
+    } else if hostSupportsOffsets == nil {
+      hostSupportsOffsets = false
     }
   }
 
