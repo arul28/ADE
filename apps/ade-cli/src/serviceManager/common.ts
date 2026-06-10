@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import { createHash } from "node:crypto";
 import path from "node:path";
-import type { SpawnSyncOptions } from "node:child_process";
+import { spawnSync, type SpawnSyncOptions } from "node:child_process";
 
 export type ServiceManagerResult = {
   ok: boolean;
@@ -49,6 +49,44 @@ export type ServiceManagerSpawnSync = (
   args: string[],
   options?: SpawnSyncOptions,
 ) => ServiceManagerProcessResult;
+
+function processOutputText(result: ServiceManagerProcessResult): string {
+  if (typeof result.stdout === "string") return result.stdout.trim();
+  if (Buffer.isBuffer(result.stdout)) return result.stdout.toString("utf8").trim();
+  return "";
+}
+
+function readParentPid(
+  run: ServiceManagerSpawnSync,
+  pid: number,
+): number | null {
+  const result = run("ps", ["-o", "ppid=", "-p", String(pid)], { encoding: "utf8" });
+  if (result.status !== 0) return null;
+  const parentPid = Number.parseInt(processOutputText(result), 10);
+  return Number.isFinite(parentPid) && parentPid > 0 ? parentPid : null;
+}
+
+export function isCurrentProcessDescendantOfPid(args: {
+  targetPid: number;
+  run?: ServiceManagerSpawnSync;
+  currentPid?: number;
+  parentPid?: (pid: number) => number | null;
+}): boolean {
+  const targetPid = Math.floor(args.targetPid);
+  if (!Number.isFinite(targetPid) || targetPid <= 0) return false;
+  const run = args.run ?? spawnSync;
+  const readPid = args.parentPid ?? ((pid) => readParentPid(run, pid));
+  const seen = new Set<number>();
+  let cursor = Math.floor(args.currentPid ?? process.pid);
+  while (Number.isFinite(cursor) && cursor > 0 && !seen.has(cursor)) {
+    if (cursor === targetPid) return true;
+    seen.add(cursor);
+    const next = readPid(cursor);
+    if (!next || next === cursor) return false;
+    cursor = next;
+  }
+  return false;
+}
 
 const RUNTIME_ENV_PASSTHROUGH = [
   "NODE_PATH",

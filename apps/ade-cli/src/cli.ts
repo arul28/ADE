@@ -56,7 +56,10 @@ import type {
   SyncProjectSwitchResultPayload,
 } from "../../desktop/src/shared/types/sync";
 import { MACOS_VM_PHASES } from "../../desktop/src/shared/types/macosVm";
-import type { AdeServiceCommand } from "./serviceManager/common";
+import {
+  isCurrentProcessDescendantOfPid,
+  type AdeServiceCommand,
+} from "./serviceManager/common";
 import { normalizeAdeRuntimeRole, resolveAdeDefaultRole } from "./runtimeRoles";
 import type { AdeRuntime } from "./bootstrap";
 import { reseedBundledAdeSkillsForCli } from "./bootstrap";
@@ -12542,6 +12545,35 @@ function isRuntimeShutdownCloseError(error: unknown): boolean {
   return message.includes("socket closed") || message.includes("runtime endpoint closed");
 }
 
+function shouldAllowRuntimeSelfShutdown(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.ADE_ALLOW_RUNTIME_SERVICE_SELF_MUTATION === "1";
+}
+
+class RuntimeSelfShutdownBlockedError extends Error {}
+
+function runtimeSelfShutdownBlock(
+  runtimeInfo: MachineRuntimeInfo,
+  action: "repair" | "stop",
+): string | null {
+  const runtimePid = runtimeInfo.pid;
+  if (!runtimePid || shouldAllowRuntimeSelfShutdown()) return null;
+  if (!isCurrentProcessDescendantOfPid({ targetPid: runtimePid })) return null;
+  const verb = action === "repair" ? "repair/restart" : "stop";
+  return (
+    `Refusing to ${verb} ADE runtime from a command running inside that runtime ` +
+    `(pid ${runtimePid}). Run this from an external terminal, or set ` +
+    "ADE_ALLOW_RUNTIME_SERVICE_SELF_MUTATION=1 if you intentionally want to tear down active ADE sessions."
+  );
+}
+
+function runtimeSelfShutdownBlockedError(
+  runtimeInfo: MachineRuntimeInfo,
+  action: "repair" | "stop",
+): RuntimeSelfShutdownBlockedError | null {
+  const message = runtimeSelfShutdownBlock(runtimeInfo, action);
+  return message ? new RuntimeSelfShutdownBlockedError(message) : null;
+}
+
 function shouldRepairMachineRuntimeServiceBeforeSpawn(
   socketPath: string,
   socketPathOverride?: string | null,
@@ -12584,6 +12616,8 @@ async function repairMachineRuntimeServiceConnection(args: {
       { enforceBuildCompatibility: args.enforceBuildCompatibility },
     );
     if (mismatch) {
+      const selfShutdownBlock = runtimeSelfShutdownBlockedError(runtimeInfo, "repair");
+      if (selfShutdownBlock) throw selfShutdownBlock;
       uninstallRuntimeService();
       client.close();
       return null;
@@ -12591,7 +12625,8 @@ async function repairMachineRuntimeServiceConnection(args: {
     const repaired = client;
     client = null;
     return repaired;
-  } catch {
+  } catch (error) {
+    if (error instanceof RuntimeSelfShutdownBlockedError) throw error;
     return null;
   } finally {
     try {
@@ -12691,6 +12726,11 @@ async function connectMachineRuntimeDaemon(
           `ADE runtime ${mismatch}.`,
         );
       }
+      const selfShutdownBlock = runtimeSelfShutdownBlockedError(runtimeInfo, "repair");
+      if (selfShutdownBlock) {
+        client.close();
+        throw selfShutdownBlock;
+      }
       await shutdownMachineRuntimeDaemon(client);
       const repaired = await repairServiceConnection();
       if (repaired) return repaired;
@@ -12716,6 +12756,11 @@ async function connectMachineRuntimeDaemon(
         { enforceBuildCompatibility },
       );
       if (restartedMismatch) {
+        const selfShutdownBlock = runtimeSelfShutdownBlockedError(restartedInfo, "repair");
+        if (selfShutdownBlock) {
+          restarted.close();
+          throw selfShutdownBlock;
+        }
         await shutdownMachineRuntimeDaemon(restarted);
         throw new Error(
           `ADE runtime ${restartedMismatch}.`,
@@ -12725,6 +12770,7 @@ async function connectMachineRuntimeDaemon(
     }
     return client;
   } catch (firstError) {
+    if (firstError instanceof RuntimeSelfShutdownBlockedError) throw firstError;
     if (!allowSpawn) throw firstError;
     const repaired = await repairServiceConnection();
     if (repaired) return repaired;
@@ -12747,6 +12793,11 @@ async function connectMachineRuntimeDaemon(
         { enforceBuildCompatibility },
       );
       if (mismatch) {
+        const selfShutdownBlock = runtimeSelfShutdownBlockedError(runtimeInfo, "repair");
+        if (selfShutdownBlock) {
+          client.close();
+          throw selfShutdownBlock;
+        }
         await shutdownMachineRuntimeDaemon(client);
         throw new Error(
           `ADE runtime ${mismatch}.`,
@@ -12754,6 +12805,7 @@ async function connectMachineRuntimeDaemon(
       }
       return client;
     } catch (secondError) {
+      if (secondError instanceof RuntimeSelfShutdownBlockedError) throw secondError;
       const firstMessage =
         firstError instanceof Error ? firstError.message : String(firstError);
       const secondMessage =
@@ -12847,7 +12899,18 @@ async function runRuntimeCommand(
         "ADE runtime endpoint",
       );
       try {
-        await initializeMachineRuntimeDaemon(client, options).catch(() => null);
+        const runtimeInfo = await initializeMachineRuntimeDaemon(client, options).catch(() => null);
+        if (runtimeInfo) {
+          const selfShutdownBlock = runtimeSelfShutdownBlock(runtimeInfo, "stop");
+          if (selfShutdownBlock) {
+            return {
+              ok: false,
+              running: true,
+              socketPath,
+              message: selfShutdownBlock,
+            };
+          }
+        }
         await shutdownMachineRuntimeDaemon(client);
       } finally {
         client.close();
@@ -12954,6 +13017,15 @@ async function runBrainCommand(
   if (sub === "restart") {
     const { installRuntimeService, uninstallRuntimeService } = await import("./serviceManager");
     const stopped = uninstallRuntimeService();
+    if (!stopped.ok) {
+      return {
+        ok: false,
+        action: "restart",
+        stopped,
+        started: null,
+        message: stopped.message,
+      };
+    }
     const started = await withAdeDefaultRole("cto", () => installRuntimeService());
     return {
       ok: stopped.ok && started.ok,

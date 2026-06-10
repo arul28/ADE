@@ -5,6 +5,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   ADE_RUNTIME_SERVICE_NAME,
+  isCurrentProcessDescendantOfPid,
   isStaleChannelServeCommandLine,
   renderCommand,
   renderWindowsCommand,
@@ -19,6 +20,7 @@ import {
   launchAgentPath,
   parseLaunchdPrintPid,
   renderLaunchdPlist,
+  uninstallLaunchdService,
 } from "./installLaunchd";
 import { installSystemdService, renderSystemdEnvironment, renderSystemdUnit, servicePath as systemdServicePath } from "./installSystemd";
 import {
@@ -210,6 +212,34 @@ describe("resolveAdeServeCommand", () => {
         ADE_RUNTIME_BUILD_HASH: fileSha256(distPath),
       },
     });
+  });
+});
+
+describe("isCurrentProcessDescendantOfPid", () => {
+  it("detects when the current process descends from the target pid", () => {
+    const parentPid = (pid: number) => ({
+      400: 300,
+      300: 100,
+      100: 1,
+    })[pid] ?? null;
+
+    expect(isCurrentProcessDescendantOfPid({
+      targetPid: 100,
+      currentPid: 400,
+      parentPid,
+    })).toBe(true);
+  });
+
+  it("returns false for unrelated process trees and parent cycles", () => {
+    expect(isCurrentProcessDescendantOfPid({
+      targetPid: 100,
+      currentPid: 400,
+      parentPid: (pid) => ({
+        400: 300,
+        300: 200,
+        200: 300,
+      })[pid] ?? null,
+    })).toBe(false);
   });
 });
 
@@ -504,6 +534,7 @@ describe("launchd service install", () => {
       spawnSync,
       homeDir,
       env: { ...process.env, ADE_HOME: adeHome },
+      parentPid: () => null,
       terminateDeps: {
         kill: (pid, signal) => killed.push({ pid, signal }),
         pidAlive: () => false,
@@ -515,6 +546,75 @@ describe("launchd service install", () => {
       { pid: 9876, signal: "SIGTERM" },
       { pid: 4242, signal: "SIGTERM" },
     ]);
+  });
+
+  it("refuses to restart a launch agent from a descendant of the loaded service", () => {
+    const homeDir = makeTempHome("ade-launchd-self-install-");
+    const servicePath = launchAgentPath(homeDir);
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const spawnSync = spawnSequence(calls, [
+      { status: 0, stdout: "state = running\npid = 100\n", stderr: "" },
+    ]);
+    const parentPid = (pid: number) => ({
+      400: 300,
+      300: 100,
+      100: 1,
+    })[pid] ?? null;
+
+    const result = installLaunchdService({
+      command: serviceCommand,
+      spawnSync,
+      homeDir,
+      currentPid: 400,
+      parentPid,
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      serviceName: ADE_RUNTIME_SERVICE_NAME,
+      action: "install",
+      path: servicePath,
+    });
+    expect(result.message).toContain("Refusing to restart ADE brain");
+    expect(calls).toEqual([
+      { command: "launchctl", args: ["print", currentLaunchdDomain()] },
+    ]);
+    expect(fs.existsSync(servicePath)).toBe(false);
+  });
+
+  it("refuses to uninstall a launch agent from a descendant of the loaded service", () => {
+    const homeDir = makeTempHome("ade-launchd-self-uninstall-");
+    const servicePath = launchAgentPath(homeDir);
+    fs.mkdirSync(path.dirname(servicePath), { recursive: true });
+    fs.writeFileSync(servicePath, renderLaunchdPlist(serviceCommand, homeDir), "utf8");
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const spawnSync = spawnSequence(calls, [
+      { status: 0, stdout: "state = running\npid = 100\n", stderr: "" },
+    ]);
+    const parentPid = (pid: number) => ({
+      400: 300,
+      300: 100,
+      100: 1,
+    })[pid] ?? null;
+
+    const result = uninstallLaunchdService({
+      spawnSync,
+      homeDir,
+      currentPid: 400,
+      parentPid,
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      serviceName: ADE_RUNTIME_SERVICE_NAME,
+      action: "uninstall",
+      path: servicePath,
+    });
+    expect(result.message).toContain("Refusing to stop ADE brain");
+    expect(calls).toEqual([
+      { command: "launchctl", args: ["print", currentLaunchdDomain()] },
+    ]);
+    expect(fs.existsSync(servicePath)).toBe(true);
   });
 
   it("surfaces launchctl load failures", () => {
