@@ -105,6 +105,13 @@ import {
   DEFAULT_MAX_CHANGESET_BATCH_BYTES,
   DEFAULT_MAX_CHANGESET_BATCH_ROWS,
 } from "./changesetPump";
+import {
+  SYNC_HOST_BIND_HOST,
+  SYNC_HOST_BIND_LOOPBACK_ONLY,
+  SYNC_HOST_MAX_PAYLOAD_BYTES,
+  type SharedSyncListener,
+  type SyncPeerHandoffSnapshot,
+} from "./sharedSyncListener";
 export { selectChangesetBatchChunk } from "./changesetPump";
 const execFileAsync = promisify(execFile);
 // db_version window per pump poll. Large enough to cross sparse version
@@ -148,23 +155,6 @@ const SYNC_MDNS_SERVICE_TYPE = "ade-sync";
 const MAX_PROJECT_CATALOG_ENVELOPE_BYTES = 768 * 1024;
 const BONJOUR_PROJECT_TXT_ENTRY_LIMIT = 24;
 const BONJOUR_PROJECT_NAME_MAX_LENGTH = 48;
-// Bind the sync host on all interfaces by default so phones on the same
-// wifi/LAN can reach it without Tailscale. 0.0.0.0 is a superset of loopback,
-// so local TUI/desktop clients (and the unix RPC socket, which is separate)
-// keep working unchanged. Operators who want the old loopback-only posture can
-// set ADE_SYNC_BIND_HOST=127.0.0.1; that mode also relaxes the PIN requirement
-// for new bootstrap-token devices (see the hello handler) since loopback is
-// already a trust boundary.
-const SYNC_HOST_BIND_HOST: string = process.env.ADE_SYNC_BIND_HOST?.trim() || "0.0.0.0";
-const SYNC_HOST_BIND_HOST_NORMALIZED = SYNC_HOST_BIND_HOST.toLowerCase();
-// When the host is bound to loopback only, the OS already restricts connections
-// to local processes, so first-pairing can fall back to the historical
-// bootstrap-token behaviour. Any non-loopback bind (the LAN default) must gate
-// new devices behind the PIN flow.
-const SYNC_HOST_BIND_LOOPBACK_ONLY: boolean =
-  SYNC_HOST_BIND_HOST_NORMALIZED === "127.0.0.1"
-  || SYNC_HOST_BIND_HOST_NORMALIZED === "::1"
-  || SYNC_HOST_BIND_HOST_NORMALIZED === "localhost";
 export const SYNC_TAILNET_DISCOVERY_SERVICE_NAME = "svc:ade-sync";
 export const SYNC_TAILNET_DISCOVERY_SERVICE_PORT = DEFAULT_SYNC_HOST_PORT;
 export type SyncRuntimeKind = "desktop-embedded" | "headless" | "remote-stdio" | "desktop" | "daemon" | "remote";
@@ -386,6 +376,14 @@ type SyncHostServiceArgs = {
   bootstrapTokenPath?: string;
   pairingSecretsPath?: string;
   port?: number;
+  /**
+   * Brain-level websocket listener shared across hosted-project switches.
+   * When provided, this host service does NOT own a WebSocketServer: it
+   * attaches as the listener's connection handler, adopts peers handed off
+   * by the previous host service, and on dispose hands its own peers back
+   * to the listener instead of closing them.
+   */
+  sharedListener?: SharedSyncListener | null;
   discoveryEnabled?: boolean;
   runtimeKind?: SyncRuntimeKind;
   runtimeVersion?: string;
@@ -1259,11 +1257,17 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         return result;
     }
   };
-  const server = new WebSocketServer({
-    host: SYNC_HOST_BIND_HOST,
-    port: args.port ?? DEFAULT_SYNC_HOST_PORT,
-    maxPayload: 25 * 1024 * 1024,
-  });
+  const sharedListener = args.sharedListener ?? null;
+  // Self-owned listener (desktop-embedded / standalone): only created when no
+  // shared listener is injected. The brain injects a shared listener so the
+  // websocket — and every connected phone — survives hosted-project switches.
+  const server = sharedListener
+    ? null
+    : new WebSocketServer({
+        host: SYNC_HOST_BIND_HOST,
+        port: args.port ?? DEFAULT_SYNC_HOST_PORT,
+        maxPayload: SYNC_HOST_MAX_PAYLOAD_BYTES,
+      });
 
   let disposed = false;
   let startupError: Error | null = null;
@@ -1306,9 +1310,9 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   let lastBroadcastAt: string | null = null;
   const startedAtMs = Date.now();
 
-  server.on("error", (error: unknown) => {
+  server?.on("error", (error: unknown) => {
     const normalized = error instanceof Error ? error : new Error(String(error));
-    if (!disposed && !server.address()) {
+    if (!disposed && !server?.address()) {
       startupError = normalized;
     }
     args.logger.warn("sync_host.server_error", {
@@ -1379,8 +1383,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     },
   ) ?? null;
 
-  server.on("connection", (ws, request) => {
-    const remoteAddress = sanitizeRemoteAddress(request.socket.remoteAddress);
+  function registerPeer(ws: WebSocket, remoteAddress: string | null, remotePort: number | null): PeerState {
     const peer: PeerState = {
       ws,
       metadata: null,
@@ -1396,7 +1399,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       awaitingHeartbeatAt: null,
       missedHeartbeatCount: 0,
       remoteAddress,
-      remotePort: request.socket.remotePort ?? null,
+      remotePort,
       subscribedSessionIds: new Set(),
       subscribedChatSessionIds: new Set(),
       chatTranscriptOffsets: new Map(),
@@ -1440,7 +1443,103 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         peerDeviceId: peer.metadata?.deviceId ?? null,
       });
     });
+    return peer;
+  }
+
+  server?.on("connection", (ws, request) => {
+    registerPeer(ws, sanitizeRemoteAddress(request.socket.remoteAddress), request.socket.remotePort ?? null);
   });
+
+  /**
+   * Adopt sockets handed off by the previous host service (plus any
+   * connections that arrived while no host owned the shared listener). Peers
+   * that were authenticated on the old host stay authenticated: their
+   * metadata/auth is carried over, the per-project changeset cursor is
+   * recomputed for THIS project's DB from the hello dbVersionBySite map, and
+   * a fresh brain_status + project_catalog tells the client the project
+   * context changed. Frames buffered during the handoff window are replayed.
+   */
+  async function adoptHandedOffPeers(): Promise<void> {
+    if (!sharedListener || disposed) return;
+    const snapshots = sharedListener.takePeers();
+    if (snapshots.length === 0) return;
+    const adopted: PeerState[] = [];
+    for (const snapshot of snapshots) {
+      const ws = snapshot.ws;
+      if (ws.readyState !== WebSocket.OPEN) continue;
+      // The previous owner (host service or listener parking) must leave no
+      // listeners behind — this host attaches its own message/close/error
+      // handlers via registerPeer.
+      ws.removeAllListeners("message");
+      ws.removeAllListeners("close");
+      ws.removeAllListeners("error");
+      const peer = registerPeer(ws, sanitizeRemoteAddress(snapshot.remoteAddress), snapshot.remotePort);
+      if (snapshot.metadata && snapshot.authKind) {
+        const pairingRecord = snapshot.authKind === "paired" && snapshot.pairedDeviceId
+          ? pairingStore.getPairingRecord(snapshot.pairedDeviceId)
+          : null;
+        if (snapshot.authKind === "paired" && !pairingRecord) {
+          // Pairing is not valid for this host (revoked or different secrets
+          // store) — fail closed and force a fresh authenticated reconnect.
+          peers.delete(peer);
+          try {
+            ws.close(4003, "Authentication required");
+          } catch {
+            // ignore close failures
+          }
+          continue;
+        }
+        peer.authenticated = true;
+        peer.metadata = snapshot.metadata;
+        peer.authKind = snapshot.authKind;
+        peer.pairedDeviceId = snapshot.pairedDeviceId;
+        peer.pairingRecord = pairingRecord;
+        peer.connectedAt = snapshot.connectedAt;
+        peer.lastKnownServerDbVersion = Math.max(
+          0,
+          Math.floor(snapshot.metadata.dbVersionBySite?.[args.db.sync.getSiteId()] ?? 0),
+        );
+        args.deviceRegistryService?.upsertPeerMetadata(snapshot.metadata, {
+          lastSeenAt: nowIso(),
+          lastHost: peer.remoteAddress,
+          lastPort: peer.remotePort,
+        });
+        adopted.push(peer);
+        args.logger.info("sync_host.peer_adopted", {
+          peerDeviceId: snapshot.metadata.deviceId,
+          peerName: snapshot.metadata.deviceName,
+          authKind: snapshot.authKind,
+          remoteAddress: peer.remoteAddress ?? null,
+          lastKnownServerDbVersion: peer.lastKnownServerDbVersion,
+        });
+      }
+      for (const buffered of snapshot.bufferedMessages ?? []) {
+        ws.emit("message", buffered.data, buffered.isBinary);
+      }
+    }
+    args.onStateChanged?.();
+    if (adopted.length === 0) return;
+    const projectCatalog = await buildProjectCatalogPayload();
+    const brainStatus = buildBrainStatus();
+    for (const peer of adopted) {
+      if (peer.ws.readyState !== WebSocket.OPEN) continue;
+      send(peer.ws, "brain_status", brainStatus);
+      sendProjectCatalog(peer, projectCatalog);
+    }
+    await pumpChanges();
+  }
+
+  let detachSharedListener: (() => void) | null = null;
+  if (sharedListener) {
+    detachSharedListener = sharedListener.setConnectionHandler((connection) => {
+      registerPeer(connection.ws, sanitizeRemoteAddress(connection.remoteAddress), connection.remotePort);
+    });
+    void adoptHandedOffPeers().catch((error) => {
+      args.logger.warn("sync_host.peer_adoption_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  }
 
   const clearNativeLanDiscoveryRecovery = (): void => {
     if (!nativeBonjourRecoveryTimer) return;
@@ -3453,8 +3552,23 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       .filter((entry) => entry.devicesOpen.length > 0);
   };
 
+  function getListeningPort(): number | null {
+    if (!server) return sharedListener?.getPort() ?? null;
+    const address = server.address();
+    return typeof address === "object" && address ? address.port : null;
+  }
+
   return {
     async waitUntilListening(): Promise<number> {
+      if (!server) {
+        // Shared listener: binding happened (or happens) at the brain level;
+        // ensureListening is idempotent and returns the existing port.
+        const port = sharedListener!.getPort()
+          ?? await sharedListener!.ensureListening([args.port ?? DEFAULT_SYNC_HOST_PORT]);
+        publishLanDiscovery(port);
+        publishTailnetDiscovery(port);
+        return port;
+      }
       if (startupError) {
         throw startupError;
       }
@@ -3500,8 +3614,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     },
 
     getPort(): number | null {
-      const address = server.address();
-      return typeof address === "object" && address ? address.port : null;
+      return getListeningPort();
     },
 
     getBootstrapToken(): string {
@@ -3513,24 +3626,24 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     },
 
     refreshLanDiscovery(options?: { forceLan?: boolean; forceTailnet?: boolean }): void {
-      const address = server.address();
-      if (typeof address === "object" && address) {
-        publishLanDiscovery(address.port, { force: options?.forceLan });
-        publishTailnetDiscovery(address.port, { force: options?.forceTailnet });
+      const port = getListeningPort();
+      if (port != null) {
+        publishLanDiscovery(port, { force: options?.forceLan });
+        publishTailnetDiscovery(port, { force: options?.forceTailnet });
       }
     },
 
     setDiscoveryEnabled(enabled: boolean): void {
       if (discoveryEnabled === enabled) return;
       discoveryEnabled = enabled;
-      const address = server.address();
+      const port = getListeningPort();
       if (!enabled) {
         unpublishLanDiscovery();
         void unpublishTailnetDiscovery();
         updateTailnetDiscoveryStatus({
           state: "disabled",
           serviceName: SYNC_TAILNET_DISCOVERY_SERVICE_NAME,
-          servicePort: typeof address === "object" && address ? address.port : SYNC_TAILNET_DISCOVERY_SERVICE_PORT,
+          servicePort: port ?? SYNC_TAILNET_DISCOVERY_SERVICE_PORT,
           target: null,
           updatedAt: nowIso(),
           error: "Tailnet discovery is disabled for this background project context.",
@@ -3538,9 +3651,9 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         });
         return;
       }
-      if (typeof address === "object" && address) {
-        publishLanDiscovery(address.port, { force: true });
-        publishTailnetDiscovery(address.port, { force: true });
+      if (port != null) {
+        publishLanDiscovery(port, { force: true });
+        publishTailnetDiscovery(port, { force: true });
       }
     },
 
@@ -3681,25 +3794,56 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       } catch {
         // Never throw from dispose.
       }
-      await new Promise<void>((resolve) => {
-        const finish = () => resolve();
+      if (!server) {
+        // Shared listener: do NOT close the server or the peer sockets this
+        // host does not own. Detach the connection handler and hand every
+        // open, authenticated socket back to the listener so the next hosted
+        // project's sync host can adopt it without the phone reconnecting.
+        // If no host adopts in time (e.g. the brain is shutting down or sync
+        // was disabled), the listener closes them after a grace period.
+        detachSharedListener?.();
+        detachSharedListener = null;
+        const snapshots: SyncPeerHandoffSnapshot[] = [];
         for (const peer of peers) {
-          try {
-            peer.ws.close();
-          } catch {
-            // ignore
+          peer.ws.removeAllListeners("message");
+          peer.ws.removeAllListeners("close");
+          peer.ws.removeAllListeners("error");
+          if (peer.ws.readyState !== WebSocket.OPEN) continue;
+          snapshots.push({
+            ws: peer.ws,
+            remoteAddress: peer.remoteAddress,
+            remotePort: peer.remotePort,
+            metadata: peer.metadata,
+            authKind: peer.authKind,
+            pairedDeviceId: peer.pairedDeviceId,
+            connectedAt: peer.connectedAt,
+          });
+        }
+        peers.clear();
+        if (snapshots.length > 0) {
+          sharedListener!.depositPeers(snapshots);
+        }
+      } else {
+        await new Promise<void>((resolve) => {
+          const finish = () => resolve();
+          for (const peer of peers) {
+            try {
+              peer.ws.close();
+            } catch {
+              // ignore
+            }
           }
-        }
-        if (!server.address()) {
-          finish();
-          return;
-        }
-        try {
-          server.close(() => finish());
-        } catch {
-          finish();
-        }
-      });
+          if (!server.address()) {
+            finish();
+            return;
+          }
+          try {
+            server.close(() => finish());
+          } catch {
+            finish();
+          }
+        });
+      }
       if (bonjourAnnouncement) {
         try {
           bonjourAnnouncement.stop?.();

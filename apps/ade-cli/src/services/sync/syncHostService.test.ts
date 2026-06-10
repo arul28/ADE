@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { WebSocket } from "ws";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   CrsqlChangeRow,
@@ -15,6 +16,8 @@ import {
   selectChangesetBatchChunk,
 } from "./syncHostService";
 import { buildChangesetBatchPayload } from "./changesetPump";
+import { createSharedSyncListener } from "./sharedSyncListener";
+import { encodeSyncEnvelope, parseSyncEnvelope, wsDataToText, type ParsedSyncEnvelope } from "./syncProtocol";
 
 // The sync host now binds to all interfaces (0.0.0.0) by default so phones on
 // the LAN can reach it. These tests assert the LOOPBACK-only posture (no LAN
@@ -543,3 +546,262 @@ describe("createSyncHostService LAN discovery", () => {
     }
   });
 });
+
+async function waitForValue<T>(get: () => T | null | undefined, label: string, timeoutMs = 4_000): Promise<T> {
+  const startedAt = Date.now();
+  for (;;) {
+    const value = get();
+    if (value != null) return value;
+    if (Date.now() - startedAt > timeoutMs) {
+      throw new Error(`Timed out waiting for ${label}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
+type HandoffDbOptions = {
+  siteId: string;
+  dbVersion: number;
+  changes: CrsqlChangeRow[];
+};
+
+function createHandoffHostArgs(
+  projectRoot: string,
+  bootstrapTokenPath: string,
+  db: HandoffDbOptions,
+) {
+  const base = createHostArgs(projectRoot, []);
+  return {
+    ...base,
+    db: {
+      sync: {
+        getSiteId: () => db.siteId,
+        getDbVersion: () => db.dbVersion,
+        exportChangesSince: (fromDbVersion: number) =>
+          db.changes.filter((change) => Number(change.db_version) > fromDbVersion),
+        applyChanges: () => ({ appliedCount: 0 }),
+        discardUnpublishedChangesForTables: () => {},
+      },
+    },
+    deviceRegistryService: {
+      ...base.deviceRegistryService,
+      upsertPeerMetadata: vi.fn(),
+    },
+    bootstrapTokenPath,
+  };
+}
+
+function trackClientEnvelopes(client: WebSocket): {
+  envelopes: ParsedSyncEnvelope[];
+  closeEvents: Array<{ code: number; reason: string }>;
+} {
+  const envelopes: ParsedSyncEnvelope[] = [];
+  const closeEvents: Array<{ code: number; reason: string }> = [];
+  client.on("message", (data) => {
+    envelopes.push(parseSyncEnvelope(wsDataToText(data)));
+  });
+  client.on("close", (code, reason) => {
+    closeEvents.push({ code, reason: reason.toString("utf8") });
+  });
+  return { envelopes, closeEvents };
+}
+
+function sendHello(client: WebSocket, token: string): void {
+  client.send(encodeSyncEnvelope({
+    type: "hello",
+    payload: {
+      peer: {
+        deviceId: "ios-device-1",
+        deviceName: "Test iPhone",
+        platform: "iOS",
+        deviceType: "phone",
+        siteId: "ios-site-1",
+        dbVersion: 0,
+      },
+      auth: { kind: "bootstrap", token },
+    },
+  }));
+}
+
+describe("sync host handoff over a shared listener", () => {
+  beforeEach(() => {
+    publishMock.mockReset();
+    spawnMock.mockReset();
+    bonjourDestroyMock.mockReset();
+    bonjourConstructorMock.mockReset();
+    spawnMock.mockImplementation(() => ({ kill: vi.fn(), once: vi.fn(), unref: vi.fn() }));
+  });
+
+  function makeHostChange(dbVersion: number, seq: number): CrsqlChangeRow {
+    return {
+      table: "kv",
+      pk: `key-${seq}`,
+      cid: "value",
+      val: `value-${seq}`,
+      col_version: dbVersion,
+      db_version: dbVersion,
+      site_id: "site-host-origin",
+      cl: 1,
+      seq,
+    };
+  }
+
+  it("keeps an authenticated peer connected across a host service swap and streams the new host's changesets", async () => {
+    const rootA = createTempProjectRoot();
+    const rootB = createTempProjectRoot();
+    const tokenPath = path.join(rootA.projectRoot, "shared-bootstrap-token");
+    const listener = createSharedSyncListener({ bindHost: "127.0.0.1" });
+    let client: WebSocket | null = null;
+    let hostB: ReturnType<typeof createSyncHostService> | null = null;
+    try {
+      const port = await listener.ensureListening([0]);
+      const hostA = createSyncHostService({
+        ...createHandoffHostArgs(rootA.projectRoot, tokenPath, {
+          siteId: "site-a",
+          dbVersion: 0,
+          changes: [],
+        }),
+        sharedListener: listener,
+      } as unknown as Parameters<typeof createSyncHostService>[0]);
+      expect(await hostA.waitUntilListening()).toBe(port);
+
+      client = new WebSocket(`ws://127.0.0.1:${port}`);
+      const { envelopes, closeEvents } = trackClientEnvelopes(client);
+      await new Promise<void>((resolve, reject) => {
+        client!.once("open", () => resolve());
+        client!.once("error", reject);
+      });
+      sendHello(client, hostA.getBootstrapToken());
+      await waitForValue(
+        () => envelopes.find((envelope) => envelope.type === "hello_ok"),
+        "hello_ok from host A",
+      );
+      expect(hostA.getPeerStates()).toHaveLength(1);
+
+      // Project switch: host A dies, host B (a different project DB) takes
+      // over the shared listener and must adopt the live socket.
+      await hostA.dispose();
+      const envelopeCountAfterDispose = envelopes.length;
+      hostB = createSyncHostService({
+        ...createHandoffHostArgs(rootB.projectRoot, tokenPath, {
+          siteId: "site-b",
+          dbVersion: 2,
+          changes: [makeHostChange(1, 0), makeHostChange(2, 1)],
+        }),
+        sharedListener: listener,
+      } as unknown as Parameters<typeof createSyncHostService>[0]);
+      expect(await hostB.waitUntilListening()).toBe(port);
+
+      const changesetBatch = await waitForValue(
+        () => envelopes.slice(envelopeCountAfterDispose).find((envelope) => envelope.type === "changeset_batch"),
+        "changeset_batch from host B",
+      );
+      const payload = changesetBatch.payload as { changes?: CrsqlChangeRow[] };
+      expect(payload.changes).toHaveLength(2);
+      expect(payload.changes?.every((change) => change.site_id === "site-host-origin")).toBe(true);
+      // The adopting host re-announces context so the phone notices the
+      // hosted project changed without re-helloing.
+      expect(envelopes.slice(envelopeCountAfterDispose).some((envelope) => envelope.type === "brain_status")).toBe(true);
+      expect(envelopes.slice(envelopeCountAfterDispose).some((envelope) => envelope.type === "project_catalog")).toBe(true);
+      // The whole point: the socket never closed during the swap.
+      expect(closeEvents).toEqual([]);
+      expect(client.readyState).toBe(WebSocket.OPEN);
+      const adoptedPeer = hostB.getPeerStates();
+      expect(adoptedPeer).toHaveLength(1);
+      expect(adoptedPeer[0]?.deviceId).toBe("ios-device-1");
+    } finally {
+      try {
+        client?.close();
+      } catch {
+        // ignore
+      }
+      await hostB?.dispose();
+      await listener.close();
+      rootA.cleanup();
+      rootB.cleanup();
+    }
+  });
+
+  it("parks a connection that arrives while no host owns the listener and replays its hello to the next host", async () => {
+    const root = createTempProjectRoot();
+    const tokenPath = path.join(root.projectRoot, "shared-bootstrap-token");
+    const listener = createSharedSyncListener({ bindHost: "127.0.0.1" });
+    let client: WebSocket | null = null;
+    let host: ReturnType<typeof createSyncHostService> | null = null;
+    try {
+      const port = await listener.ensureListening([0]);
+      // No host service attached yet: the socket is parked and its frames buffered.
+      client = new WebSocket(`ws://127.0.0.1:${port}`);
+      const { envelopes, closeEvents } = trackClientEnvelopes(client);
+      await new Promise<void>((resolve, reject) => {
+        client!.once("open", () => resolve());
+        client!.once("error", reject);
+      });
+      const hostArgs = createHandoffHostArgs(root.projectRoot, tokenPath, {
+        siteId: "site-a",
+        dbVersion: 0,
+        changes: [],
+      });
+      // The bootstrap token file is created by the host; pre-create it via a
+      // throwaway self-owned host so the parked hello can carry a valid token.
+      const tokenSeedHost = createSyncHostService({
+        ...hostArgs,
+        port: 0,
+      } as unknown as Parameters<typeof createSyncHostService>[0]);
+      const token = tokenSeedHost.getBootstrapToken();
+      await tokenSeedHost.dispose();
+      sendHello(client, token);
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      expect(envelopes).toEqual([]);
+
+      host = createSyncHostService({
+        ...hostArgs,
+        sharedListener: listener,
+      } as unknown as Parameters<typeof createSyncHostService>[0]);
+      await host.waitUntilListening();
+      await waitForValue(
+        () => envelopes.find((envelope) => envelope.type === "hello_ok"),
+        "hello_ok replayed after adoption",
+      );
+      expect(closeEvents).toEqual([]);
+    } finally {
+      try {
+        client?.close();
+      } catch {
+        // ignore
+      }
+      await host?.dispose();
+      await listener.close();
+      root.cleanup();
+    }
+  });
+
+  it("closes parked peers with 4002 when no host adopts them in time", async () => {
+    const listener = createSharedSyncListener({ bindHost: "127.0.0.1", parkedPeerGraceMs: 150 });
+    let client: WebSocket | null = null;
+    try {
+      const port = await listener.ensureListening([0]);
+      expect(await listener.ensureListening([0])).toBe(port);
+      client = new WebSocket(`ws://127.0.0.1:${port}`);
+      const { closeEvents } = trackClientEnvelopes(client);
+      await new Promise<void>((resolve, reject) => {
+        client!.once("open", () => resolve());
+        client!.once("error", reject);
+      });
+      const closeEvent = await waitForValue(
+        () => closeEvents[0],
+        "grace-period close",
+      );
+      expect(closeEvent.code).toBe(4002);
+      expect(closeEvent.reason).toBe("Sync host changed projects");
+    } finally {
+      try {
+        client?.close();
+      } catch {
+        // ignore
+      }
+      await listener.close();
+    }
+  });
+});
+

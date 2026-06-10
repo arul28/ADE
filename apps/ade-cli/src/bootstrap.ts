@@ -75,6 +75,7 @@ import {
 import { createAiIntegrationService } from "../../desktop/src/main/services/ai/aiIntegrationService";
 import { initApiKeyStore } from "../../desktop/src/main/services/ai/apiKeyStore";
 import type { createSyncService } from "./services/sync/syncService";
+import type { SharedSyncListener } from "./services/sync/sharedSyncListener";
 import type { createSyncHostService, SyncRuntimeKind } from "./services/sync/syncHostService";
 import { getSharedModelPickerStore } from "./services/modelPickerStore";
 import { createAutomationIngressService } from "../../desktop/src/main/services/automations/automationIngressService";
@@ -171,6 +172,12 @@ export type AdeRuntimeSyncOptions = {
   phonePairingStateDir?: string;
   projectCatalogProvider?: Parameters<typeof createSyncService>[0]["projectCatalogProvider"];
   remoteCommandExecutor?: Parameters<typeof createSyncService>[0]["remoteCommandExecutor"];
+  /**
+   * Brain-level websocket listener shared by every project scope's sync host
+   * so connected phones survive hosted-project switches. Owned (created and
+   * closed) by the brain process, threaded through unchanged.
+   */
+  sharedSyncListener?: SharedSyncListener | null;
 };
 
 export type AdeRuntime = {
@@ -1285,6 +1292,7 @@ export async function createAdeRuntime(args: {
       getLinearIssueTracker: () => headlessLinearServices.linearIssueTracker,
       getLinearSyncService: () => headlessLinearServices.linearSyncService,
       processService,
+      sharedSyncListener: resolvedArgs.syncRuntime.sharedSyncListener ?? null,
       hostStartupEnabled: resolvedArgs.syncRuntime.hostStartupEnabled ?? true,
       hostDiscoveryEnabled: resolvedArgs.syncRuntime.hostDiscoveryEnabled ?? true,
       forceHostRole: resolvedArgs.syncRuntime.forceHostRole ?? false,

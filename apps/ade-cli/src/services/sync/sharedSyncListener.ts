@@ -1,0 +1,363 @@
+import { WebSocketServer, WebSocket, type RawData } from "ws";
+import type { SyncPeerMetadata } from "../../../../desktop/src/shared/types";
+import { DEFAULT_SYNC_HOST_PORT } from "./syncProtocol";
+
+// Bind the sync host on all interfaces by default so phones on the same
+// wifi/LAN can reach it without Tailscale. 0.0.0.0 is a superset of loopback,
+// so local TUI/desktop clients (and the unix RPC socket, which is separate)
+// keep working unchanged. Operators who want the old loopback-only posture can
+// set ADE_SYNC_BIND_HOST=127.0.0.1; that mode also relaxes the PIN requirement
+// for new bootstrap-token devices (see the hello handler in syncHostService)
+// since loopback is already a trust boundary.
+export const SYNC_HOST_BIND_HOST: string = process.env.ADE_SYNC_BIND_HOST?.trim() || "0.0.0.0";
+const SYNC_HOST_BIND_HOST_NORMALIZED = SYNC_HOST_BIND_HOST.toLowerCase();
+// When the host is bound to loopback only, the OS already restricts connections
+// to local processes, so first-pairing can fall back to the historical
+// bootstrap-token behaviour. Any non-loopback bind (the LAN default) must gate
+// new devices behind the PIN flow.
+export const SYNC_HOST_BIND_LOOPBACK_ONLY: boolean =
+  SYNC_HOST_BIND_HOST_NORMALIZED === "127.0.0.1"
+  || SYNC_HOST_BIND_HOST_NORMALIZED === "::1"
+  || SYNC_HOST_BIND_HOST_NORMALIZED === "localhost";
+
+export const SYNC_HOST_MAX_PAYLOAD_BYTES = 25 * 1024 * 1024;
+
+// How long an unowned socket may sit parked (between sync host services, or
+// before the first one attaches) before the listener gives up and closes it.
+const DEFAULT_PARKED_PEER_GRACE_MS = 30_000;
+// Frames buffered per parked socket while no host owns it. The handshake plus
+// a few in-flight requests fit comfortably; anything beyond signals a peer
+// flooding an unowned socket.
+const PARKED_MESSAGE_BUFFER_LIMIT = 256;
+// Mirror of the syncService preferred-port semantics: insist on the first
+// candidate for ~3.2s before drifting, so a dying listener from a previous
+// brain process can free the port paired phones have saved.
+const PREFERRED_PORT_BIND_ATTEMPTS = 8;
+const PREFERRED_PORT_BIND_RETRY_DELAY_MS = 400;
+
+type SharedSyncListenerLogger = {
+  info?: (message: string, fields?: Record<string, unknown>) => void;
+  warn?: (message: string, fields?: Record<string, unknown>) => void;
+};
+
+export type SharedSyncListenerConnection = {
+  ws: WebSocket;
+  remoteAddress: string | null;
+  remotePort: number | null;
+};
+
+export type SharedSyncListenerConnectionHandler = (connection: SharedSyncListenerConnection) => void;
+
+/**
+ * Authenticated peer state exported by a sync host service on dispose so the
+ * NEXT hosted project's sync host can adopt the live socket without the phone
+ * ever observing a disconnect. `bufferedMessages` are frames that arrived
+ * while no host owned the socket; the adopting host replays them after
+ * attaching its own listeners.
+ */
+export type SyncPeerHandoffSnapshot = {
+  ws: WebSocket;
+  remoteAddress: string | null;
+  remotePort: number | null;
+  metadata: SyncPeerMetadata | null;
+  authKind: "bootstrap" | "paired" | null;
+  pairedDeviceId: string | null;
+  connectedAt: string;
+  bufferedMessages?: Array<{ data: RawData; isBinary: boolean }>;
+};
+
+export type SharedSyncListener = {
+  /**
+   * Bind the websocket server once. Subsequent calls return the existing
+   * port — project switches never rebind, so connected peers survive them.
+   */
+  ensureListening(portCandidates: number[]): Promise<number>;
+  getPort(): number | null;
+  isListening(): boolean;
+  /**
+   * Install the connection handler for NEW sockets. Returns a detach function
+   * that only clears the handler if it has not been superseded by a newer
+   * host service.
+   */
+  setConnectionHandler(handler: SharedSyncListenerConnectionHandler): () => void;
+  /** Park live peer sockets for adoption by the next host service. */
+  depositPeers(snapshots: SyncPeerHandoffSnapshot[]): void;
+  /** Claim every parked socket (deposited peers + connections that arrived handler-less). */
+  takePeers(): SyncPeerHandoffSnapshot[];
+  /** Final shutdown: closes every socket (parked and connected) and the server. */
+  close(): Promise<void>;
+};
+
+type ParkedEntry = {
+  snapshot: SyncPeerHandoffSnapshot;
+  bufferedMessages: Array<{ data: RawData; isBinary: boolean }>;
+  onMessage: (data: RawData, isBinary: boolean) => void;
+  onClose: () => void;
+  onError: (error: Error) => void;
+  expireTimer: ReturnType<typeof setTimeout>;
+};
+
+function isRetryableListenerBindError(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException | null | undefined)?.code ?? "";
+  return code === "EADDRINUSE" || code === "EACCES";
+}
+
+export function createSharedSyncListener(options: {
+  logger?: SharedSyncListenerLogger;
+  bindHost?: string;
+  maxPayloadBytes?: number;
+  parkedPeerGraceMs?: number;
+} = {}): SharedSyncListener {
+  const logger = options.logger ?? {};
+  const bindHost = options.bindHost ?? SYNC_HOST_BIND_HOST;
+  const maxPayloadBytes = options.maxPayloadBytes ?? SYNC_HOST_MAX_PAYLOAD_BYTES;
+  const parkedPeerGraceMs = Math.max(50, Math.floor(options.parkedPeerGraceMs ?? DEFAULT_PARKED_PEER_GRACE_MS));
+
+  let server: WebSocketServer | null = null;
+  let listeningPromise: Promise<number> | null = null;
+  let handler: SharedSyncListenerConnectionHandler | null = null;
+  let closed = false;
+  const parked = new Map<WebSocket, ParkedEntry>();
+
+  const unpark = (entry: ParkedEntry): void => {
+    clearTimeout(entry.expireTimer);
+    entry.snapshot.ws.off("message", entry.onMessage);
+    entry.snapshot.ws.off("close", entry.onClose);
+    entry.snapshot.ws.off("error", entry.onError);
+    parked.delete(entry.snapshot.ws);
+  };
+
+  const park = (snapshot: SyncPeerHandoffSnapshot): void => {
+    const ws = snapshot.ws;
+    if (ws.readyState !== WebSocket.OPEN && ws.readyState !== WebSocket.CONNECTING) return;
+    const bufferedMessages: Array<{ data: RawData; isBinary: boolean }> = [
+      ...(snapshot.bufferedMessages ?? []),
+    ];
+    const entry: ParkedEntry = {
+      snapshot: { ...snapshot, bufferedMessages },
+      bufferedMessages,
+      onMessage: (data, isBinary) => {
+        // Buffer frames that arrive while no host owns the socket so the
+        // adopting host can replay them (e.g. a hello sent mid-handoff).
+        if (bufferedMessages.length >= PARKED_MESSAGE_BUFFER_LIMIT) return;
+        bufferedMessages.push({ data, isBinary });
+      },
+      onClose: () => {
+        const existing = parked.get(ws);
+        if (existing) unpark(existing);
+      },
+      onError: (error: Error) => {
+        // A parked socket has no other error listener; without this handler an
+        // emitted 'error' would crash the process.
+        logger.warn?.("sync_listener.parked_socket_error", {
+          error: error.message,
+          peerDeviceId: snapshot.metadata?.deviceId ?? snapshot.pairedDeviceId ?? null,
+        });
+      },
+      expireTimer: setTimeout(() => {
+        const existing = parked.get(ws);
+        if (!existing) return;
+        unpark(existing);
+        logger.info?.("sync_listener.parked_peer_expired", {
+          peerDeviceId: snapshot.metadata?.deviceId ?? snapshot.pairedDeviceId ?? null,
+          remoteAddress: snapshot.remoteAddress ?? null,
+        });
+        try {
+          ws.close(4002, "Sync host changed projects");
+        } catch {
+          // ignore close failures
+        }
+      }, parkedPeerGraceMs),
+    };
+    entry.expireTimer.unref?.();
+    ws.on("message", entry.onMessage);
+    ws.on("close", entry.onClose);
+    ws.on("error", entry.onError);
+    parked.set(ws, entry);
+  };
+
+  const bindOnce = async (portCandidates: number[]): Promise<number> => {
+    const candidates = portCandidates.length > 0 ? portCandidates : [DEFAULT_SYNC_HOST_PORT];
+    const attemptPlan = candidates.flatMap((candidatePort, candidateIndex) =>
+      candidateIndex === 0 && candidatePort !== 0
+        ? Array.from({ length: PREFERRED_PORT_BIND_ATTEMPTS }, () => candidatePort)
+        : [candidatePort],
+    );
+    let lastError: unknown = null;
+    let previousAttemptedPort: number | null = null;
+    for (const attemptedPort of attemptPlan) {
+      if (closed) throw new Error("The shared sync listener has been closed.");
+      if (previousAttemptedPort === attemptedPort) {
+        await new Promise((resolve) => setTimeout(resolve, PREFERRED_PORT_BIND_RETRY_DELAY_MS));
+      }
+      previousAttemptedPort = attemptedPort;
+      const candidateServer = new WebSocketServer({
+        host: bindHost,
+        port: attemptedPort,
+        maxPayload: maxPayloadBytes,
+      });
+      try {
+        const resolvedPort = await new Promise<number>((resolve, reject) => {
+          const onListening = () => {
+            cleanup();
+            const address = candidateServer.address();
+            resolve(typeof address === "object" && address ? address.port : attemptedPort);
+          };
+          const onError = (error: unknown) => {
+            cleanup();
+            reject(error instanceof Error ? error : new Error(String(error)));
+          };
+          const cleanup = () => {
+            candidateServer.off("listening", onListening);
+            candidateServer.off("error", onError);
+          };
+          candidateServer.on("listening", onListening);
+          candidateServer.on("error", onError);
+        });
+        server = candidateServer;
+        server.on("error", (error: unknown) => {
+          logger.warn?.("sync_listener.server_error", {
+            error: error instanceof Error ? error.message : String(error),
+            code: (error as NodeJS.ErrnoException | null | undefined)?.code ?? null,
+            port: resolvedPort,
+          });
+        });
+        server.on("connection", (ws, request) => {
+          const connection: SharedSyncListenerConnection = {
+            ws,
+            remoteAddress: request.socket.remoteAddress ?? null,
+            remotePort: request.socket.remotePort ?? null,
+          };
+          if (handler) {
+            handler(connection);
+            return;
+          }
+          // No host service owns the listener right now (mid project switch
+          // or before the first host starts). Park the socket and buffer its
+          // frames; the next host adopts it via takePeers().
+          park({
+            ws,
+            remoteAddress: connection.remoteAddress,
+            remotePort: connection.remotePort,
+            metadata: null,
+            authKind: null,
+            pairedDeviceId: null,
+            connectedAt: new Date().toISOString(),
+          });
+        });
+        return resolvedPort;
+      } catch (error) {
+        lastError = error;
+        try {
+          candidateServer.close();
+        } catch {
+          // ignore cleanup failures
+        }
+        const retryable = isRetryableListenerBindError(error) && attemptedPort !== 0;
+        logger.warn?.(
+          retryable ? "sync_listener.bind_port_conflict" : "sync_listener.bind_failed",
+          {
+            attemptedPort,
+            error: error instanceof Error ? error.message : String(error),
+            code: (error as NodeJS.ErrnoException | null | undefined)?.code ?? null,
+          },
+        );
+        if (!retryable) throw error;
+      }
+    }
+    throw lastError instanceof Error
+      ? lastError
+      : new Error("Unable to bind the shared sync listener.");
+  };
+
+  return {
+    async ensureListening(portCandidates: number[]): Promise<number> {
+      if (closed) throw new Error("The shared sync listener has been closed.");
+      if (!listeningPromise) {
+        listeningPromise = bindOnce(portCandidates).catch((error) => {
+          // A failed bind must not poison future attempts.
+          listeningPromise = null;
+          throw error;
+        });
+      }
+      return await listeningPromise;
+    },
+
+    getPort(): number | null {
+      const address = server?.address();
+      return typeof address === "object" && address ? address.port : null;
+    },
+
+    isListening(): boolean {
+      return server?.address() != null;
+    },
+
+    setConnectionHandler(nextHandler: SharedSyncListenerConnectionHandler): () => void {
+      handler = nextHandler;
+      return () => {
+        if (handler === nextHandler) {
+          handler = null;
+        }
+      };
+    },
+
+    depositPeers(snapshots: SyncPeerHandoffSnapshot[]): void {
+      if (closed) {
+        for (const snapshot of snapshots) {
+          try {
+            snapshot.ws.close();
+          } catch {
+            // ignore close failures
+          }
+        }
+        return;
+      }
+      for (const snapshot of snapshots) {
+        park(snapshot);
+      }
+    },
+
+    takePeers(): SyncPeerHandoffSnapshot[] {
+      const snapshots: SyncPeerHandoffSnapshot[] = [];
+      for (const entry of [...parked.values()]) {
+        unpark(entry);
+        snapshots.push(entry.snapshot);
+      }
+      return snapshots;
+    },
+
+    async close(): Promise<void> {
+      if (closed) return;
+      closed = true;
+      handler = null;
+      if (listeningPromise) {
+        await listeningPromise.catch(() => {});
+      }
+      for (const entry of [...parked.values()]) {
+        unpark(entry);
+        try {
+          entry.snapshot.ws.close();
+        } catch {
+          // ignore close failures
+        }
+      }
+      const current = server;
+      server = null;
+      if (!current) return;
+      for (const ws of current.clients) {
+        try {
+          ws.close();
+        } catch {
+          // ignore close failures
+        }
+      }
+      await new Promise<void>((resolve) => {
+        try {
+          current.close(() => resolve());
+        } catch {
+          resolve();
+        }
+      });
+    },
+  };
+}

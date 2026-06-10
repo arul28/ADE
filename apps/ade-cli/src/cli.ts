@@ -13104,11 +13104,13 @@ async function runServe(
     { ProjectRegistry },
     { ProjectScopeRegistry },
     { createMultiProjectRpcRequestHandler },
+    { createSharedSyncListener },
   ] = await Promise.all([
     import("./services/projects/machineLayout"),
     import("./services/projects/projectRegistry"),
     import("./services/projects/projectScope"),
     import("./multiProjectRpcServer"),
+    import("./services/sync/sharedSyncListener"),
   ]);
 
   const layout = resolveMachineAdeLayout();
@@ -13158,10 +13160,22 @@ async function runServe(
     isOpen: false,
     ...overrides,
   });
+  // ONE websocket listener for the whole brain: every project scope's sync
+  // host attaches to it instead of binding its own server, so the hosted
+  // project can change without paired phones ever seeing a disconnect.
+  const sharedSyncListener = syncEnabled
+    ? createSharedSyncListener({
+        logger: {
+          warn: (message, fields) =>
+            process.stderr.write(`${message} ${JSON.stringify(fields ?? {})}\n`),
+        },
+      })
+    : null;
   let scopeRegistry: InstanceType<typeof ProjectScopeRegistry>;
   scopeRegistry = new ProjectScopeRegistry(projectRegistry, {
     syncRuntime: {
       enabled: syncEnabled,
+      sharedSyncListener,
       hostStartupEnabled: true,
       hostDiscoveryEnabled: true,
       forceHostRole: false,
@@ -13423,6 +13437,11 @@ async function runServe(
     stopHeadlessRpcServer(state);
   }
   await scopeRegistry.disposeAll();
+  // The brain is exiting: the shared listener (and any peers the last host
+  // service handed back to it) must close now — no successor will adopt them.
+  if (sharedSyncListener) {
+    await sharedSyncListener.close().catch(() => {});
+  }
   if (!isAdeRuntimeNamedPipePath(socketPath)) {
     try {
       fs.unlinkSync(socketPath);
