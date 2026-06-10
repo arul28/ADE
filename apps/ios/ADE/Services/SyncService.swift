@@ -256,7 +256,10 @@ enum SyncRequestTimeout {
 
 private let syncTerminalSubscriptionMaxBytes = 240_000
 private let syncChatSubscriptionMaxBytes = 2_000_000
-private let syncReducedLoadChatSubscriptionMaxBytes = 160_000
+// 512KB, up from 160KB: the old budget silently truncated reasoning-heavy
+// turns on cellular/Tailscale routes. Chunked envelopes plus off-main decode
+// make the larger snapshot cheap to receive.
+private let syncReducedLoadChatSubscriptionMaxBytes = 512_000
 private let syncTerminalBufferMaxCharacters = 240_000
 private let chatEventHistoryMaxEvents = 1_000
 private let chatEventNotificationCoalesceNanoseconds: UInt64 = 420_000_000
@@ -4579,7 +4582,7 @@ final class SyncService: ObservableObject {
     try await sendDecodableCommand(action: "chat.getSummary", args: ["sessionId": sessionId], as: AgentChatSessionSummary.self)
   }
 
-  func fetchChatTranscriptResponse(sessionId: String, limit: Int = 200, maxChars: Int = 120_000) async throws -> AgentChatTranscriptResponse {
+  func fetchChatTranscriptResponse(sessionId: String, limit: Int = 500, maxChars: Int = 600_000) async throws -> AgentChatTranscriptResponse {
     try await sendDecodableCommand(
       action: "chat.getTranscript",
       args: ["sessionId": sessionId, "limit": limit, "maxChars": maxChars],
@@ -4587,7 +4590,7 @@ final class SyncService: ObservableObject {
     )
   }
 
-  func fetchChatTranscript(sessionId: String, limit: Int = 200, maxChars: Int = 120_000) async throws -> [AgentChatTranscriptEntry] {
+  func fetchChatTranscript(sessionId: String, limit: Int = 500, maxChars: Int = 600_000) async throws -> [AgentChatTranscriptEntry] {
     let response = try await fetchChatTranscriptResponse(sessionId: sessionId, limit: limit, maxChars: maxChars)
     return response.entries
   }

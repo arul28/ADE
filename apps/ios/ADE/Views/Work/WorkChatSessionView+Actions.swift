@@ -13,7 +13,10 @@ extension WorkChatSessionView {
     let artifactSnapshot = artifacts
     let echoSnapshot = localEchoMessages
 
-    timelineRebuildTask = Task.detached(priority: .utility) {
+    // .userInitiated, not .utility: this rebuild feeds the visible streaming
+    // transcript, and utility-priority tasks get starved while SwiftUI is
+    // busy — which showed up as multi-second delta-to-screen latency.
+    timelineRebuildTask = Task.detached(priority: .userInitiated) {
       try? await Task.sleep(for: .milliseconds(220))
       guard !Task.isCancelled else { return }
       let nextSnapshot = buildWorkChatTimelineSnapshot(

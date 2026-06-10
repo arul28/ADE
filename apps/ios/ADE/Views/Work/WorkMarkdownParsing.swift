@@ -185,7 +185,16 @@ func isMarkdownTableHeader(lines: [String], index: Int) -> Bool {
 func markdownListItemText(_ line: String, regex: NSRegularExpression) -> String? {
   let range = NSRange(location: 0, length: (line as NSString).length)
   guard let match = regex.firstMatch(in: line, options: [], range: range) else { return nil }
-  return (line as NSString).substring(from: match.range.length)
+  var text = (line as NSString).substring(from: match.range.length)
+  // GFM task lists: render the checkbox marker as a glyph instead of leaking
+  // literal "[ ]" / "[x]" into the prose (desktop's remark-gfm renders real
+  // checkboxes for these).
+  if text.hasPrefix("[ ] ") {
+    text = "☐ " + text.dropFirst(4)
+  } else if text.hasPrefix("[x] ") || text.hasPrefix("[X] ") {
+    text = "☑ " + text.dropFirst(4)
+  }
+  return text
 }
 
 func workMarkdownListRegex(ordered: Bool) -> NSRegularExpression? {
@@ -263,13 +272,40 @@ func markdownAttributedString(_ text: String) -> AttributedString {
   // Give inline code runs the desktop "pill" look: tinted background,
   // monospaced font, and a slight accent on the foreground color so
   // identifiers / branch names / file paths visually pop from prose.
+  // Strikethrough intent is mapped explicitly — SwiftUI does not reliably
+  // draw it from the presentation intent alone, which left ~~text~~ looking
+  // like plain prose on mobile while desktop (remark-gfm) struck it through.
   for run in attributed.runs {
     let intent = run.inlinePresentationIntent ?? []
-    guard intent.contains(.code) else { continue }
     let range = run.range
+    if intent.contains(.strikethrough) {
+      attributed[range].strikethroughStyle = .single
+    }
+    guard intent.contains(.code) else { continue }
     attributed[range].backgroundColor = ADEColor.accent.opacity(0.14)
     attributed[range].foregroundColor = ADEColor.accent
     attributed[range].font = Font.system(.caption, design: .monospaced).weight(.semibold)
+  }
+
+  // GFM autolinks: desktop linkifies bare URLs via remark-gfm; Apple's
+  // markdown parser only links explicit [text](url) syntax. Linkify bare
+  // URLs when the parser produced none (results are LRU-cached, so the
+  // detector does not run per frame during streaming).
+  if text.contains("http"), attributed.runs.allSatisfy({ $0.link == nil }) {
+    let plain = String(attributed.characters)
+    if let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue) {
+      let matches = detector.matches(in: plain, options: [], range: NSRange(plain.startIndex..., in: plain))
+      for match in matches {
+        guard let url = match.url,
+              let stringRange = Range(match.range, in: plain),
+              let lower = AttributedString.Index(stringRange.lowerBound, within: attributed),
+              let upper = AttributedString.Index(stringRange.upperBound, within: attributed)
+        else { continue }
+        attributed[lower..<upper].link = url
+        attributed[lower..<upper].foregroundColor = ADEColor.accent
+        attributed[lower..<upper].underlineStyle = .single
+      }
+    }
   }
 
   workMarkdownCache.setObject(WorkMarkdownCacheBox(attributed), forKey: key)
