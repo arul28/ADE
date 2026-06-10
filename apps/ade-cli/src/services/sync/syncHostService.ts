@@ -1376,7 +1376,21 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         });
       });
     });
-    ws.on("close", () => {
+    ws.on("close", (code, reason) => {
+      // The close frame is the only record of WHY a peer left: a deliberate
+      // client teardown carries a code + reason string ("Network route
+      // changed.", "The machine took too long to respond.", …) while 1006
+      // means the transport died with no close frame at all. Keep this log —
+      // it is the primary tool for diagnosing mobile disconnect loops.
+      args.logger.info("sync_host.peer_closed", {
+        code,
+        reason: reason.toString("utf8") || null,
+        peerDeviceId: peer.metadata?.deviceId ?? peer.pairedDeviceId ?? null,
+        peerName: peer.metadata?.deviceName ?? null,
+        remoteAddress: peer.remoteAddress ?? null,
+        connectedAt: peer.connectedAt ?? null,
+        authenticated: peer.authenticated,
+      });
       if (removeAllPresenceForDevice(peer.metadata?.deviceId, "remote")) {
         broadcastBrainStatus();
       }

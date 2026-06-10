@@ -483,6 +483,11 @@ const LOCAL_ONLY_CRR_EXCLUDED_TABLES = new Set([
   // excluding it keeps the unique index and lets removeExcludedCrrMetadata
   // un-CRR any DB where it was already (incorrectly) converted.
   "automation_ingress_events",
+  // Per-device bookkeeping of which remote changes to suppress locally.
+  // Syncing it is circular (it describes the sync process itself) and ships
+  // rows to phones whose schema may not have the table — a changeset that an
+  // older client hard-rejects, freezing its sync cursor entirely.
+  LOCAL_CRR_CHANGE_SUPPRESSIONS_TABLE,
   "lane_detail_snapshots",
   "lane_list_snapshots",
   LOCAL_CRR_CHANGE_SUPPRESSIONS_TABLE,

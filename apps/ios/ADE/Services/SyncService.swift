@@ -235,6 +235,11 @@ enum SyncRequestTimeout {
     switch action {
     case "lanes.delete":
       return laneDeleteTimeoutNanoseconds
+    case "prs.refresh", "prs.getGitHubSnapshot":
+      // These fan out to the GitHub API on the host and routinely take
+      // longer than the default budget; a short timeout here surfaced as
+      // a permanently "cached" PRs tab.
+      return 120_000_000_000
     default:
       return defaultTimeoutNanoseconds
     }
@@ -1178,6 +1183,7 @@ final class SyncService: ObservableObject {
   private let discoveryBrowser = SyncBonjourBrowser()
   private var reconnectState = SyncReconnectState()
   private var envelopeChunkAssembler = SyncEnvelopeChunkAssembler()
+  private var transportProbeTask: Task<Void, Never>?
   private var connectionGeneration: UInt64 = 0
   private var connectAttemptGeneration: UInt64 = 0
   private var lastInboundMessageAt: TimeInterval?
@@ -1878,6 +1884,15 @@ final class SyncService: ObservableObject {
     self.socketSessionDelegate = socketSessionDelegate
     self.socketSession = socketSession
     self.database = database
+    // One-time migration: builds before the chunked-envelope transport set
+    // this flag on "message too long" transport errors and it survives app
+    // updates, silently blocking auto-reconnect forever. Current builds only
+    // set it for a real user pause, so clear the stale value once.
+    let pausedFlagMigrationKey = "ade.sync.autoReconnectPausedMigratedV2"
+    if !UserDefaults.standard.bool(forKey: pausedFlagMigrationKey) {
+      UserDefaults.standard.removeObject(forKey: autoReconnectPausedKey)
+      UserDefaults.standard.set(true, forKey: pausedFlagMigrationKey)
+    }
     self.autoReconnectPausedByUser = UserDefaults.standard.bool(forKey: autoReconnectPausedKey)
     if let existing = keychain.loadDeviceId() {
       deviceId = existing
@@ -2370,6 +2385,14 @@ final class SyncService: ObservableObject {
         teardownSocket(reason: "Reconnect restarted.")
         reconnectConnectInFlight = false
       }
+    }
+    // Background retries (slow heartbeat, network-path task, discovery
+    // callbacks) must never reach openSocket while a healthy connection is
+    // up — openSocket starts with teardownSocket, so a stray retry would
+    // kill a live session. Only an explicit user reconnect may rebuild one.
+    guard userInitiated || !canSendLiveRequests() else {
+      syncConnectLog.info("reconnect skipped: already connected")
+      return
     }
     guard userInitiated || allowAutoReconnect else {
       syncConnectLog.info("reconnect skipped: automatic reconnect disabled")
@@ -6751,9 +6774,11 @@ final class SyncService: ObservableObject {
       activeProjectHostIdentity = incomingHostIdentity
       UserDefaults.standard.set(incomingHostIdentity, forKey: activeProjectHostIdentityKey)
     }
-    if activeProject != nil {
-      projectHomePresented = false
-    }
+    // Connecting must not navigate. Forcing `projectHomePresented = false`
+    // here yanked the user out of the machine's project list into the
+    // remembered project on every (re)connect — and with background reconnect
+    // cycles it re-fired while they sat on the main page. Entering a project
+    // is only ever a user action (selectProject / closeProjectHome).
 
     reconnectState.reset()
     allowAutoReconnect = true
@@ -7409,6 +7434,8 @@ final class SyncService: ObservableObject {
   }
 
   private func teardownSocket(closeCode: URLSessionWebSocketTask.CloseCode = .goingAway, reason: String? = nil) {
+    transportProbeTask?.cancel()
+    transportProbeTask = nil
     relayTask?.cancel()
     relayTask = nil
     clientHeartbeatTask?.cancel()
@@ -7475,17 +7502,17 @@ final class SyncService: ObservableObject {
       )
     if disconnectOnTimeout,
        shouldReconnect {
-      // handleTransportFailure tears the socket down before flipping the
-      // reduced-load preference, so we must NOT call markConnectionLoadStrained
-      // here — calling it pre-teardown re-subscribes chat events on the
-      // doomed socket. The transport-failure path strains the load itself.
-      handleTransportFailure(
-        timeoutError,
-        connectionState: syncConnectionStateAfterRequestTimeout(
-          lastInboundMessageAt: lastInboundMessageAt,
-          fallback: .error
-        )
-      )
+      // A timed-out request plus a quiet inbound window does NOT prove the
+      // socket is dead — the host may just be slow (catalog/PR refreshes can
+      // take 30s+) while nothing else streams. Tearing down here put cellular
+      // sessions into a perpetual timeout→reconnect→re-request loop. Fail the
+      // request, then actively probe the transport; only a probe that hears
+      // nothing back tears the socket down.
+      markConnectionLoadStrained()
+      resolve(requestId: requestId, result: .failure(SyncUserFacingError.error(from: SyncRequestTimeout.error(
+        message: "The machine took too long to respond. Try again."
+      ))))
+      verifyTransportAliveAfterRequestTimeout(timeoutError)
     } else {
       // The default `timeoutError` is `SyncRequestTimeout.error()`, whose
       // message says "Reconnecting now." That copy is only honest in the
@@ -7504,6 +7531,36 @@ final class SyncService: ObservableObject {
       }
       markConnectionLoadStrained()
       resolve(requestId: requestId, result: .failure(resolvedError))
+    }
+  }
+
+  /// Active liveness check after a request timeout: ping the host and give it
+  /// a short window to send anything back. Inbound traffic (the pong, a
+  /// changeset, a status ping) proves the transport works and the socket is
+  /// kept; total silence means the connection is actually dead and the normal
+  /// transport-failure teardown runs. One probe at a time.
+  private func verifyTransportAliveAfterRequestTimeout(_ timeoutError: NSError) {
+    guard transportProbeTask == nil, canSendLiveRequests() else { return }
+    let generation = connectionGeneration
+    let probeStartedAt = ProcessInfo.processInfo.systemUptime
+    sendEnvelope(type: "heartbeat", requestId: nil, payload: [
+      "kind": "ping",
+      "sentAt": ISO8601DateFormatter().string(from: Date()),
+      "dbVersion": database.currentDbVersion(),
+    ])
+    transportProbeTask = Task { @MainActor [weak self] in
+      try? await Task.sleep(nanoseconds: 5_000_000_000)
+      guard let self else { return }
+      self.transportProbeTask = nil
+      guard !Task.isCancelled, self.connectionGeneration == generation else { return }
+      if let lastInbound = self.lastInboundMessageAt, lastInbound > probeStartedAt { return }
+      self.handleTransportFailure(
+        timeoutError,
+        connectionState: syncConnectionStateAfterRequestTimeout(
+          lastInboundMessageAt: self.lastInboundMessageAt,
+          fallback: .error
+        )
+      )
     }
   }
 

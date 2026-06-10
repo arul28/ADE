@@ -358,7 +358,17 @@ final class DatabaseService {
         if shouldIgnoreIncomingSyncTable(rawChange.table) {
           continue
         }
-        try validateIncomingSyncTableExists(rawChange.table)
+        // A table this build doesn't know (a newer desktop added it) must NOT
+        // fail the batch: a thrown error here nacks the whole changeset, the
+        // host's cursor never advances past it, and every future batch
+        // replays the same poison — freezing ALL sync for the device until an
+        // app update ships. Skip the unknown table's rows and let the rest of
+        // the data keep flowing; the table's data arrives after the phone
+        // updates and re-pairs/backfills.
+        if !hasTable(named: rawChange.table) {
+          skippedUnknownSyncTables.insert(rawChange.table)
+          continue
+        }
         let change = normalizeIncomingChange(rawChange)
         let changed = try execute(sql) { statement in
           try bindText(change.table, to: statement, index: 1)
@@ -2839,10 +2849,10 @@ final class DatabaseService {
     return false
   }
 
-  private func validateIncomingSyncTableExists(_ tableName: String) throws {
-    if hasTable(named: tableName) { return }
-    throw sqliteError("Unsupported incoming sync table '\(tableName)'. Update ADE before applying this changeset.")
-  }
+  /// Tables seen in incoming changesets that this build's schema lacks.
+  /// Their rows are skipped (see applyChanges); exposed so the UI can hint
+  /// that an app update unlocks newer data.
+  private(set) var skippedUnknownSyncTables: Set<String> = []
 
   private func listEligibleCrrTables() -> [String] {
     let sql = """

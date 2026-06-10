@@ -89,6 +89,29 @@ create table if not exists lane_linear_issue_links (
       foreign key(lane_id) references lanes(id) on delete cascade
     );
 
+create table if not exists session_linear_issues (
+      id text primary key,
+      project_id text not null,
+      session_id text not null,
+      lane_id text,
+      issue_id text not null,
+      issue_json text not null,
+      role text not null,
+      source text not null,
+      include_in_pr integer not null default 1,
+      close_on_merge integer not null default 0,
+      evidence_json text,
+      created_at text not null,
+      updated_at text not null,
+      foreign key(project_id) references projects(id) on delete cascade
+    );
+
+create index if not exists idx_session_linear_issues_session on session_linear_issues(project_id, session_id);
+
+create index if not exists idx_session_linear_issues_lane on session_linear_issues(project_id, lane_id);
+
+create index if not exists idx_session_linear_issues_issue on session_linear_issues(project_id, issue_id);
+
 create index if not exists idx_lane_linear_issue_links_lane on lane_linear_issue_links(project_id, lane_id);
 
 create index if not exists idx_lane_linear_issue_links_issue on lane_linear_issue_links(project_id, issue_id);
