@@ -5,6 +5,7 @@ import path from "node:path";
 import {
   ADE_RUNTIME_SERVICE_NAME,
   type AdeServiceCommand,
+  isCurrentProcessDescendantOfPid,
   listStaleChannelServePids,
   resolveAdeServeCliScriptPath,
   resolveAdeServeCommand,
@@ -29,6 +30,17 @@ type LaunchdServiceManagerDeps = {
   syncHostSingletonDeps?: SyncHostSingletonDeps;
   terminateDeps?: TerminatePidDeps;
   env?: NodeJS.ProcessEnv;
+  currentPid?: number;
+  parentPid?: (pid: number) => number | null;
+};
+
+type LaunchdServiceUninstallDeps = {
+  spawnSync?: ServiceManagerSpawnSync;
+  homeDir?: string;
+  terminateDeps?: TerminatePidDeps;
+  env?: NodeJS.ProcessEnv;
+  currentPid?: number;
+  parentPid?: (pid: number) => number | null;
 };
 
 function escapeXml(value: string): string {
@@ -67,6 +79,54 @@ export function parseLaunchdPrintPid(output: string): number | null {
   if (!match) return null;
   const pid = Number(match[1]);
   return Number.isFinite(pid) && pid > 0 ? Math.floor(pid) : null;
+}
+
+function shouldAllowSelfServiceMutation(env: NodeJS.ProcessEnv): boolean {
+  return env.ADE_ALLOW_RUNTIME_SERVICE_SELF_MUTATION === "1";
+}
+
+function selfServiceMutationBlockedResult(args: {
+  action: "install" | "uninstall";
+  servicePath: string;
+  servicePid: number;
+}): ServiceManagerResult {
+  const verb = args.action === "install" ? "restart" : "stop";
+  return {
+    ok: false,
+    serviceName: ADE_RUNTIME_SERVICE_NAME,
+    action: args.action,
+    path: args.servicePath,
+    message:
+      `Refusing to ${verb} ADE brain from a command running inside that brain ` +
+      `(pid ${args.servicePid}). Run this from an external terminal, or set ` +
+      "ADE_ALLOW_RUNTIME_SERVICE_SELF_MUTATION=1 if you intentionally want to tear down active ADE sessions.",
+  };
+}
+
+function selfServiceMutationBlock(args: {
+  action: "install" | "uninstall";
+  loadedPid: number | null | undefined;
+  servicePath: string;
+  run: ServiceManagerSpawnSync;
+  env: NodeJS.ProcessEnv;
+  currentPid?: number;
+  parentPid?: (pid: number) => number | null;
+}): ServiceManagerResult | null {
+  const servicePid = args.loadedPid ?? null;
+  if (!servicePid || shouldAllowSelfServiceMutation(args.env)) return null;
+  if (!isCurrentProcessDescendantOfPid({
+    targetPid: servicePid,
+    run: args.run,
+    currentPid: args.currentPid,
+    parentPid: args.parentPid,
+  })) {
+    return null;
+  }
+  return selfServiceMutationBlockedResult({
+    action: args.action,
+    servicePath: args.servicePath,
+    servicePid,
+  });
 }
 
 export function renderLaunchdPlist(command: AdeServiceCommand, homeDir = os.homedir()): string {
@@ -158,6 +218,16 @@ export function installLaunchdService(deps: LaunchdServiceManagerDeps = {}): Ser
       message: "ADE service launchd service is already installed and running.",
     };
   }
+  const selfBlock = selfServiceMutationBlock({
+    action: "install",
+    loadedPid: loaded?.pid,
+    servicePath,
+    run,
+    env,
+    currentPid: deps.currentPid,
+    parentPid: deps.parentPid,
+  });
+  if (selfBlock) return selfBlock;
 
   // From here on the service is being (re)started, so this install is the
   // channel's lifecycle authority. Same-channel brains holding the mobile
@@ -215,14 +285,26 @@ export function installLaunchdService(deps: LaunchdServiceManagerDeps = {}): Ser
   };
 }
 
-export function uninstallLaunchdService(): ServiceManagerResult {
-  const servicePath = launchAgentPath();
-  const loaded = getLoadedLaunchdState(spawnSync);
+export function uninstallLaunchdService(deps: LaunchdServiceUninstallDeps = {}): ServiceManagerResult {
+  const run = deps.spawnSync ?? spawnSync;
+  const env = deps.env ?? process.env;
+  const servicePath = launchAgentPath(deps.homeDir);
+  const loaded = getLoadedLaunchdState(run);
+  const selfBlock = selfServiceMutationBlock({
+    action: "uninstall",
+    loadedPid: loaded?.pid,
+    servicePath,
+    run,
+    env,
+    currentPid: deps.currentPid,
+    parentPid: deps.parentPid,
+  });
+  if (selfBlock) return selfBlock;
   const uid = typeof process.getuid === "function" ? process.getuid() : os.userInfo().uid;
-  spawnSync("launchctl", ["bootout", `gui/${uid}/${ADE_RUNTIME_SERVICE_NAME}`], { stdio: "ignore" });
-  spawnSync("launchctl", ["bootout", `user/${uid}/${ADE_RUNTIME_SERVICE_NAME}`], { stdio: "ignore" });
-  spawnSync("launchctl", ["unload", servicePath], { stdio: "ignore" });
-  terminatePidGracefully(loaded?.pid ?? null);
+  run("launchctl", ["bootout", `gui/${uid}/${ADE_RUNTIME_SERVICE_NAME}`], { stdio: "ignore" });
+  run("launchctl", ["bootout", `user/${uid}/${ADE_RUNTIME_SERVICE_NAME}`], { stdio: "ignore" });
+  run("launchctl", ["unload", servicePath], { stdio: "ignore" });
+  terminatePidGracefully(loaded?.pid ?? null, deps.terminateDeps);
   try { fs.unlinkSync(servicePath); } catch {}
   return {
     ok: true,
