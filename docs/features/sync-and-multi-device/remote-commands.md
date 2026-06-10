@@ -156,11 +156,15 @@ before.
 - `restart`, `updateSession`, `archive`, `unarchive`, `delete`, `models`,
   `modelCatalog`
 
-`chat.modelCatalog` accepts `{ mode?, refreshProvider? }` where `mode`
-is `"cached" | "refresh-stale" | "force"` (default `"cached"`) and
-`refreshProvider` is `"opencode" | "cursor" | "droid" | "lmstudio" |
-"ollama"`. The brain returns the full provider-grouped catalog used by
-the desktop and TUI ModelPickers and the iOS Work model sheet; only
+`chat.modelCatalog` accepts `{ mode?, refreshProvider?, cursorSource? }`
+where `mode` is `"cached" | "refresh-stale" | "force"` (default
+`"cached"`) and `refreshProvider` is `"opencode" | "cursor" | "droid" |
+"lmstudio" | "ollama"`. `cursorSource` (`"sdk" | "cli" | "all"`, default
+`"all"`) scopes which Cursor discovery source the host probes
+synchronously — chat-style surfaces pass `"sdk"` so the refresh stays off
+the slower `cursor-agent` CLI spawn while the CLI flavor revalidates in
+the background. The brain returns the full provider-grouped catalog used
+by the desktop and TUI ModelPickers and the iOS Work model sheet; only
 explicit `force` / `refresh-stale` calls trigger a runtime probe.
 
 `chat.dispatchSteer` (Claude SDK only) takes
@@ -460,12 +464,16 @@ the brain when the Linear workspace is connected. Controllers use
 these to render the workspace brand on Linear-related surfaces
 without fetching them separately.
 
-`parseChatModelsArgs` accepts `{ provider, activateRuntime? }`. When
-`chat.create` is missing an explicit model, `resolveChatCreateArgs`
+`parseChatModelsArgs` accepts `{ provider, activateRuntime?, cursorSource? }`
+(`cursorSource` is `"sdk" | "cli" | "all"`, mirroring `chat.modelCatalog`).
+When `chat.create` is missing an explicit model, `resolveChatCreateArgs`
 forwards `activateRuntime: true` only for the `opencode` provider so
 the brain actually launches the OpenCode probe server before resolving
 a default model. All other providers use passive (cache-only) resolution;
-see the chat README for the passive/active contract.
+see the chat README for the passive/active contract. The iOS companion's
+`chat.models` request sets `activateRuntime: true` for cursor/droid and
+`cursorSource: "sdk"` for cursor so a fresh key surfaces SDK models on the
+first fetch instead of returning an empty passive cache.
 
 ## Gotchas
 

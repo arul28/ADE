@@ -312,7 +312,9 @@ describe("getAvailableModels", () => {
       {
         domain: "chat",
         action: "getAvailableModels",
-        args: { provider: "cursor", activateRuntime: true },
+        // TUI chats run cursor through the SDK, so only that source is probed
+        // synchronously; the CLI flavor revalidates in the background on the host.
+        args: { provider: "cursor", activateRuntime: true, cursorSource: "sdk" },
       },
     ]);
   });

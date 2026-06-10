@@ -1634,7 +1634,8 @@ export function createAiIntegrationService(args: {
     // invalidation runs on every forced status refresh and on verifying ANY
     // provider's key, and blanking the dynamic model lists here made cursor
     // models vanish from every surface right after a successful verification.
-    // Key changes do a full clear at the storeApiKey/deleteApiKey call sites.
+    // A cursor key change does a full clear at the storeApiKey/deleteApiKey
+    // call sites; droid auth is file-based, so it has no such call site.
     markCursorModelCachesStale();
     markDroidModelCachesStale();
     clearOpenCodeBinaryCache();

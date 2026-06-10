@@ -35,6 +35,7 @@ import {
   discoverCursorSdkModelDescriptors,
   listCursorModelsFromCli,
   listCursorModelsFromSdk,
+  markCursorModelCachesStale,
   mergeCursorModelDescriptorSources,
   parseCursorCliModelsStdout,
   probeCursorSdkModelDiscovery,
@@ -660,5 +661,50 @@ describe("parseCursorCliModelsStdout", () => {
     await vi.advanceTimersByTimeAsync(26);
 
     await expect(rowsPromise).resolves.toEqual([]);
+  });
+
+  it("serves last-known-good CLI rows past the freshness window after the cache is aged", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-10T00:00:00.000Z"));
+    spawnAsyncMock.mockResolvedValueOnce({ status: 0, stdout: "auto - Auto\n", stderr: "" });
+
+    const fresh = await listCursorModelsFromCli("/usr/local/bin/cursor-agent");
+    expect(fresh.map((row) => row.id)).toEqual(["auto"]);
+    expect(spawnAsyncMock).toHaveBeenCalledTimes(1);
+
+    // Generic readiness invalidation ages the cache instead of dropping it.
+    markCursorModelCachesStale();
+    spawnAsyncMock.mockReset();
+
+    // Past the 120s freshness window, a transient probe failure must still
+    // surface the last-known-good rows rather than blanking the model list.
+    vi.setSystemTime(new Date("2026-06-10T00:05:00.000Z"));
+    spawnAsyncMock.mockRejectedValue(new Error("cursor-agent spawn failed"));
+
+    const afterStale = await listCursorModelsFromCli("/usr/local/bin/cursor-agent");
+    expect(afterStale.map((row) => row.id)).toEqual(["auto"]);
+    expect(reportProviderRuntimeFailureMock).not.toHaveBeenCalled();
+  });
+
+  it("drops CLI rows and reports a provider failure when the signed-in CLI has no model access", async () => {
+    spawnAsyncMock.mockResolvedValueOnce({ status: 0, stdout: "auto - Auto\n", stderr: "" });
+    const seeded = await listCursorModelsFromCli("/usr/local/bin/cursor-agent");
+    expect(seeded.map((row) => row.id)).toEqual(["auto"]);
+
+    // Age the cache so the next call re-probes the CLI instead of short-circuiting.
+    markCursorModelCachesStale();
+    spawnAsyncMock.mockReset();
+    spawnAsyncMock.mockResolvedValue({ status: 0, stdout: "No models available for this account", stderr: "" });
+
+    const afterNoAccess = await listCursorModelsFromCli("/usr/local/bin/cursor-agent");
+    expect(afterNoAccess).toEqual([]);
+    expect(reportProviderRuntimeFailureMock).toHaveBeenCalledWith(
+      "cursor",
+      expect.stringContaining("reports no available models"),
+    );
+    // The dead login must not keep resurfacing stale rows on the next read.
+    expect(
+      await discoverCursorCliModelDescriptors("/usr/local/bin/cursor-agent", { mode: "cached-only" }),
+    ).toEqual([]);
   });
 });

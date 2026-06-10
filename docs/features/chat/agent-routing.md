@@ -18,7 +18,7 @@ where the machinery lives.
 | `apps/desktop/src/main/services/ai/codexExecutable.ts` / `droidExecutable.ts` | CLI resolution for runtimes that still need an external binary (looks on PATH, in the app bundle, then in configured install paths where supported). Claude uses the bundled Claude Agent SDK binary; Cursor and Droid run through embedded SDKs (`@cursor/sdk`, `@factory/droid-sdk`). |
 | `apps/desktop/src/main/services/ai/tools/systemPrompt.ts` | Adjusts the system prompt per mode (`chat`, `coding`, `planning`) and permission mode. |
 | `apps/desktop/src/main/services/chat/droidSdkPool.ts`, `droidSdkWorker.ts`, `droidSdkProtocol.ts`, `droidSdkEventMapper.ts` | Droid SDK adapter. `droidSdkPool` forks `droidSdkWorker.cjs` (one per session), brokers prompt sends, permission requests, ask-user prompts, and settings updates via the JSON-line protocol in `droidSdkProtocol`. `droidSdkEventMapper` translates Droid SDK events into the canonical `AgentChatEventEnvelope` shape; the per-session mapper state (`createDroidSdkEventMapperState`) tracks streaming text/thinking item ids, in-flight tool-use names, and the latest usage breakdown. |
-| `apps/desktop/src/main/services/chat/droidModelsDiscovery.ts` | Droid model discovery: probes the live SDK via `createSession({ execPath })` to read `initResult.availableModels`, normalizes `supportedReasoningEfforts` into `reasoningTiers`, and emits `droid/<id>` descriptors via `createDynamicDroidCliModelDescriptor`. Droid fast choices are distinct model IDs, not ADE `serviceTiers`; custom (`~/.factory/config.json`) models are merged in. The legacy `DROID_DEFAULT_MODEL_IDS` constant has been removed — the SDK is the only source. |
+| `apps/desktop/src/main/services/chat/droidModelsDiscovery.ts` | Droid model discovery: probes the live SDK via `createSession({ execPath })` to read `initResult.availableModels`, normalizes `supportedReasoningEfforts` into `reasoningTiers`, and emits `droid/<id>` descriptors via `createDynamicDroidCliModelDescriptor`. Droid fast choices are distinct model IDs, not ADE `serviceTiers`; custom (`~/.factory/config.json`) models are merged in. The legacy `DROID_DEFAULT_MODEL_IDS` constant has been removed — the SDK is the only source. Like Cursor, the cache is stale-while-revalidate: `markDroidModelCachesStale` ages it without dropping last-known-good rows, which are served past the 120s window (up to ~6h) while one background warm per freshness window refreshes them, so an unauthenticated/mid-reauth droid isn't handed a session per passive read. |
 
 ## Supported providers
 
@@ -384,6 +384,18 @@ through `workerAgentService`.
   in `localModelDiscovery.ts` can add and remove descriptors. Callers
   that cache the registry must subscribe to the discovery emitter or
   re-read on each use.
+- **Cursor discovery is surface-scoped (`cursorSource`).** Chat surfaces
+  run Cursor models through the SDK (~300ms); Work-tab CLI lane drafts run
+  the `cursor-agent` CLI (a process spawn that can take seconds).
+  `loadAvailableModels` / `getModelCatalog` accept a `cursorSource`
+  (`"sdk" | "cli" | "all"`, default `"all"`) and probe only the requested
+  source synchronously — the other source serves last-known-good rows and
+  revalidates in the background, so a chat picker refresh never waits on a
+  CLI spawn. The TUI (`adeApi.ts`), mobile (`SyncService.swift`), and the
+  desktop ModelPicker all pass `cursorSource: "sdk"`. Catalog staleness is
+  flavor-aware: an SDK-only refresh does **not** satisfy a CLI-surface
+  staleness check (it gates on `cursorAvailability[source]`, not just
+  `modelCount > 0`), mirrored on the renderer in `runtimeCatalogCache.ts`.
 - **Handoff requires context contract.** `handoffSession` calls the
   summarizer with the current transcript plus the context contract
   from `contextContract.ts`. If the contract can't be resolved (e.g.

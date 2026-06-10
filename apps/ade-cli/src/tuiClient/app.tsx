@@ -4970,6 +4970,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
 	      const catalog = await getModelCatalog(conn, {
 	        mode: options.refreshProvider ? "refresh-stale" : "cached",
 	        ...(options.refreshProvider ? { refreshProvider: options.refreshProvider } : {}),
+	        // TUI chats run cursor models through the SDK; refreshing only that
+	        // source keeps the catalog probe off the slower host cursor-agent CLI
+	        // spawn (mirrors getAvailableModels and the desktop ModelPicker).
+	        ...(options.refreshProvider === "cursor" ? { cursorSource: "sdk" as const } : {}),
 	      });
 	      modelCatalogRef.current = catalog;
 	      setModelCatalog(catalog);
@@ -4980,6 +4984,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
 	        void getModelCatalog(conn, {
 	          mode: "force",
 	          refreshProvider: options.refreshProvider,
+	          ...(options.refreshProvider === "cursor" ? { cursorSource: "sdk" as const } : {}),
 	        }).then((freshCatalog) => {
 	          if (connectionRef.current !== conn) return;
 	          modelCatalogRef.current = freshCatalog;
