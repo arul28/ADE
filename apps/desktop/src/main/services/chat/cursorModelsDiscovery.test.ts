@@ -610,6 +610,24 @@ describe("parseCursorCliModelsStdout", () => {
     expect(freshProbe.fromCache).toBeUndefined();
   });
 
+  it("reflects an authoritative empty Cursor probe instead of stale cached rows", async () => {
+    // Warm the cache with a model via a successful probe.
+    cursorModelsListMock.mockResolvedValueOnce([{ id: "cached-model", displayName: "Cached Model" }]);
+    await expect(probeCursorSdkModelDiscovery("crsr_test", { timeoutMs: 1_000 })).resolves.toMatchObject({
+      rows: [{ id: "cached-model" }],
+      failureKind: null,
+    });
+
+    // A later probe SUCCEEDS but the account now has no models. Both the SDK
+    // and the official-API fallback return empty without error, so failureKind
+    // stays null — an authoritative empty result, not a transient failure.
+    cursorModelsListMock.mockResolvedValue([]);
+    vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, json: async () => ({ models: [] }) })));
+
+    const descriptors = await discoverCursorSdkModelDescriptors("crsr_test", { mode: "probe" });
+    expect(descriptors).toEqual([]);
+  });
+
   it("suppresses warmed Cursor SDK cache after an SDK runtime failure", async () => {
     cursorModelsListMock.mockResolvedValueOnce([{ id: "cached-model", displayName: "Cached Model" }]);
     await expect(probeCursorSdkModelDiscovery("crsr_test", { timeoutMs: 1_000 })).resolves.toMatchObject({

@@ -1199,10 +1199,14 @@ export async function discoverCursorSdkModelDescriptors(
     ? await probeCursorSdkModelDiscovery(apiKey, { timeoutMs: options?.timeoutMs })
     : null;
   let rows = result?.rows ?? [];
-  if (!rows.length && (result == null || result.failureKind !== "auth")) {
-    // Cache lookup covers the cached modes (result == null) and lets a
-    // transiently-failed probe fall back to last-known-good rows. An auth
-    // failure means the key itself is dead, so stale rows must not resurface.
+  // Fall back to last-known-good rows for the cached modes (result == null) and
+  // for transient probe failures. A SUCCESSFUL but empty probe (failureKind
+  // == null) is authoritative — reflect the empty result rather than
+  // advertising models the provider just reported as gone. An auth failure
+  // means the key is dead, so its stale rows must not resurface either.
+  const probeFailedTransiently =
+    result != null && result.failureKind != null && result.failureKind !== "auth";
+  if (!rows.length && (result == null || probeFailedTransiently)) {
     rows = getCachedCursorSdkModels(apiKey) ?? [];
   }
   if (!rows.length && options?.mode === "cached-or-fallback") {
