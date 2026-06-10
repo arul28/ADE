@@ -12603,11 +12603,10 @@ async function runtimeServiceSelfShutdownBlock(
 }
 
 function isRuntimeSelfShutdownBlockedResult(result: unknown): boolean {
-  return isRecord(result)
-    && result.ok === false
-    && typeof result.message === "string"
-    && result.message.includes("ADE_ALLOW_RUNTIME_SERVICE_SELF_MUTATION=1")
-    && result.message.includes("running inside that brain");
+  // Branch on the typed discriminator, not the human-readable message — the
+  // wording of the block message lives in serviceManager and must be free to
+  // change without silently defeating the brain-restart guard here.
+  return isRecord(result) && result.selfMutationBlocked === true;
 }
 
 function shouldRepairMachineRuntimeServiceBeforeSpawn(

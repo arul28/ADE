@@ -9,6 +9,10 @@ export type ServiceManagerResult = {
   action: "install" | "uninstall";
   path: string | null;
   message: string;
+  // Set when the result was refused because the caller is running inside the
+  // very brain it tried to mutate. Consumers must branch on this typed flag,
+  // never on the human-readable `message` text.
+  selfMutationBlocked?: boolean;
 };
 
 export type ServiceManagerStatusResult = {
