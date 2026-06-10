@@ -136,7 +136,7 @@ Each live PTY has an entry in the `ptys` map keyed by `ptyId` with:
 - `pty` (node-pty handle), `laneId`, `laneWorktreePath`, `boundCwd`,
   `sessionId`, `tracked`
 - transcript: `transcriptPath`, `transcriptStream`,
-  `transcriptBytesWritten`, `transcriptLimitReached` (64 MB cap from
+  `transcriptBytesWritten`, `transcriptLimitReached` (16 MB cap from
   `MAX_TRANSCRIPT_BYTES`)
 - preview: `lastPreviewWriteAt`, `previewCurrentLine`,
   `latestPreviewLine`, `lastPreviewWritten`
@@ -259,9 +259,32 @@ OpenCode rendering inside Work tabs.
 ### Data, preview, and runtime state
 
 `writeTranscript(entry, data)` writes to the append-mode write stream.
-Once the 64 MB cap is hit it writes a single notice line and drops
-further output. Bytes written are not persisted, so the cap resets on
-reattach.
+Once the 16 MB cap (`MAX_TRANSCRIPT_BYTES`) is hit it writes a single
+notice line and drops further output. `transcriptBytesWritten` is
+seeded from the file size on (re)attach, so the cap survives resume.
+
+`transcriptBytesWritten` doubles as the transcript byte cursor for
+mobile streaming: each batched PTY data emission carries `offset` —
+the transcript's end byte offset after the batch (null once the cap is
+reached, the write stream fails, or the session is untracked). The
+transcript write and the data-batch enqueue run in the same `onData`
+handler, so the cursor at flush time is exact. Note the fs.WriteStream
+buffers, so disk can lag the cursor by a few ms; range reads clamp to
+the flushed file size and report achieved offsets.
+
+`readTranscriptRange({ sessionId, startOffset, endOffset })` reads a
+byte range from the transcript for scrollback paging (the sync host's
+`terminal_history`), scanning the page start forward to a newline/ESC
+boundary (and past UTF-8 continuation bytes) so a page never begins
+mid-escape-sequence.
+
+Resize ownership: the ptyId-based `resize(...)` path (desktop
+renderer) records `lastDesktopCols/Rows` on the entry;
+`resizeBySessionId(..., { source: "mobile" })` does not.
+`restoreDesktopSizeBySessionId(sessionId)` puts the PTY back to the
+recorded desktop size — the sync host calls it when the last
+subscribed phone detaches, so a phone-fitted 45-column reflow doesn't
+linger on desktop.
 
 `updatePreviewThrottled` uses `derivePreviewFromChunk` to track the last
 non-empty line, capped at 220 chars. Preview is flushed to

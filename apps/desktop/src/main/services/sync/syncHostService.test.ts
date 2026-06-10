@@ -1619,7 +1619,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
       },
     }));
     await waitFor(() => resizeBySessionId.mock.calls.length === 1);
-    expect(resizeBySessionId).toHaveBeenCalledWith("session-1", 120, 34);
+    expect(resizeBySessionId).toHaveBeenCalledWith("session-1", 120, 34, { source: "mobile" });
 
     host.handlePtyData({
       ptyId: "pty-1",

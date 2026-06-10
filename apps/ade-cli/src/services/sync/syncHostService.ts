@@ -47,6 +47,7 @@ import type {
   SyncProjectSwitchResultPayload,
   SyncRemoteCommandDescriptor,
   SyncTailnetDiscoveryStatus,
+  SyncTerminalHistoryResponsePayload,
   SyncTerminalSnapshotPayload,
 } from "../../../../desktop/src/shared/types";
 import { parseAgentChatTranscript } from "../../../../desktop/src/shared/chatTranscript";
@@ -146,6 +147,9 @@ const DEFAULT_BRAIN_STATUS_INTERVAL_MS = 5_000;
 const NATIVE_LAN_DISCOVERY_RECOVERY_DELAY_MS = 1_000;
 const NATIVE_LAN_DISCOVERY_FALLBACK_MS = 30_000;
 const DEFAULT_TERMINAL_SNAPSHOT_BYTES = 220_000;
+const DEFAULT_TERMINAL_HISTORY_PAGE_BYTES = 262_144;
+const MIN_TERMINAL_HISTORY_PAGE_BYTES = 4_096;
+const MAX_TERMINAL_HISTORY_PAGE_BYTES = 524_288;
 const PEER_BACKPRESSURE_BYTES = 4 * 1024 * 1024;
 const MOBILE_COMMAND_RESULT_CACHE_TTL_MS = 30 * 60 * 1000;
 const MOBILE_COMMAND_RESULT_CACHE_MAX_ENTRIES = 512;
@@ -512,6 +516,22 @@ export function syncHeartbeatMissLimitForPeerMetadata(metadata: Pick<SyncPeerMet
     : DEFAULT_SYNC_HEARTBEAT_MISS_LIMIT;
 }
 
+/**
+ * Flushed transcript size in bytes, or null when the session has no
+ * transcript (file missing / untracked). The transcript WriteStream buffers,
+ * so this can briefly lag the in-memory byte counter — offset consumers
+ * tolerate that via gap detection.
+ */
+function transcriptFileSizeOrNull(transcriptPath: string | null | undefined): number | null {
+  const filePath = toOptionalString(transcriptPath);
+  if (!filePath) return null;
+  try {
+    return Math.max(0, Number(fs.statSync(filePath).size) || 0);
+  } catch {
+    return null;
+  }
+}
+
 const SYNC_HOST_PROJECT_SCOPED_INBOUND_ENVELOPE_TYPES = new Set<SyncEnvelope["type"]>([
   "changeset_batch",
   "changeset_ack",
@@ -520,6 +540,7 @@ const SYNC_HOST_PROJECT_SCOPED_INBOUND_ENVELOPE_TYPES = new Set<SyncEnvelope["ty
   "terminal_unsubscribe",
   "terminal_input",
   "terminal_resize",
+  "terminal_history",
   "chat_subscribe",
   "chat_unsubscribe",
 ]);
@@ -1501,6 +1522,26 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     },
   ) ?? null;
 
+  /**
+   * Snap a PTY back to the desktop-preferred size once no connected peer is
+   * still viewing it (mobile unsubscribe or disconnect). While another peer
+   * remains subscribed the mobile size stays — that peer is still actively
+   * driving the viewport.
+   */
+  function restoreDesktopTerminalSizeIfUnwatched(sessionId: string): void {
+    for (const other of peers) {
+      if (other.subscribedSessionIds.has(sessionId) && other.ws.readyState === WebSocket.OPEN) return;
+    }
+    try {
+      args.ptyService.restoreDesktopSizeBySessionId(sessionId);
+    } catch (error) {
+      args.logger.warn("sync_host.restore_desktop_terminal_size_failed", {
+        sessionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
   function registerPeer(ws: WebSocket, remoteAddress: string | null, remotePort: number | null): PeerState {
     const peer: PeerState = {
       ws,
@@ -1552,6 +1593,9 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         broadcastBrainStatus();
       }
       peers.delete(peer);
+      for (const sessionId of peer.subscribedSessionIds) {
+        restoreDesktopTerminalSizeIfUnwatched(sessionId);
+      }
       args.onStateChanged?.();
       broadcastBrainStatus();
     });
@@ -3448,19 +3492,57 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         await handleFileRequest(peer, envelope.requestId, envelope.payload as SyncFileRequest);
         break;
       case "terminal_subscribe": {
-        const payload = envelope.payload as { sessionId?: string; maxBytes?: number } | null;
+        const payload = envelope.payload as { sessionId?: string; maxBytes?: number; sinceOffset?: number } | null;
         const sessionId = toOptionalString(payload?.sessionId);
         if (!sessionId) break;
         peer.subscribedSessionIds.add(sessionId);
         const session = args.sessionService.get(sessionId);
+        const maxBytes = Math.max(1_024, Math.min(2_000_000, Math.floor(payload?.maxBytes ?? DEFAULT_TERMINAL_SNAPSHOT_BYTES)));
+        const transcriptSize = transcriptFileSizeOrNull(session?.transcriptPath);
+        const sinceOffset = typeof payload?.sinceOffset === "number" && Number.isInteger(payload.sinceOffset)
+          ? payload.sinceOffset
+          : null;
+        // Resume fast-path: when the client's byte watermark falls inside the
+        // transcript and the missed span fits the snapshot budget, send only
+        // the delta so reconnects do not re-transfer the whole tail.
+        if (
+          sinceOffset != null
+          && transcriptSize != null
+          && sinceOffset >= 0
+          && sinceOffset <= transcriptSize
+          && transcriptSize - sinceOffset <= maxBytes
+        ) {
+          const range = await args.ptyService.readTranscriptRange({
+            sessionId,
+            startOffset: sinceOffset,
+            endOffset: transcriptSize,
+          });
+          if (range) {
+            sendRequired(peer, "terminal_snapshot", {
+              sessionId,
+              transcript: range.data,
+              status: session?.status ?? null,
+              runtimeState: session?.runtimeState ?? null,
+              lastOutputPreview: session?.lastOutputPreview ?? null,
+              capturedAt: nowIso(),
+              startOffset: range.startOffset,
+              endOffset: range.endOffset,
+              delta: true,
+            } satisfies SyncTerminalSnapshotPayload, envelope.requestId);
+            break;
+          }
+        }
         const transcript = session
           ? await args.ptyService.readTranscriptTail({
               sessionId,
-              maxBytes: Math.max(1_024, Math.min(2_000_000, Math.floor(payload?.maxBytes ?? DEFAULT_TERMINAL_SNAPSHOT_BYTES))),
+              maxBytes,
               raw: true,
               alignToLineBoundary: true,
             })
           : "";
+        // The tail read merges still-buffered live output, so its byte length
+        // can exceed what the WriteStream has flushed to disk; clamp the
+        // derived start to 0 and let the phone's gap detection self-heal.
         const snapshot: SyncTerminalSnapshotPayload = {
           sessionId,
           transcript,
@@ -3468,6 +3550,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           runtimeState: session?.runtimeState ?? null,
           lastOutputPreview: session?.lastOutputPreview ?? null,
           capturedAt: nowIso(),
+          startOffset: transcriptSize != null
+            ? Math.max(0, transcriptSize - Buffer.byteLength(transcript, "utf8"))
+            : null,
+          endOffset: transcriptSize,
         };
         sendRequired(peer, "terminal_snapshot", snapshot, envelope.requestId);
         break;
@@ -3477,7 +3563,59 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         const sessionId = toOptionalString(payload?.sessionId);
         if (sessionId) {
           peer.subscribedSessionIds.delete(sessionId);
+          restoreDesktopTerminalSizeIfUnwatched(sessionId);
         }
+        break;
+      }
+      case "terminal_history": {
+        // Pull-to-load-older paging over the transcript file. Reuses the
+        // terminal_input access gate: only a peer with a live subscribe for
+        // the session may read its history.
+        const payload = envelope.payload as { sessionId?: string; beforeOffset?: number; maxBytes?: number } | null;
+        const sessionId = toOptionalString(payload?.sessionId);
+        if (!sessionId) break;
+        const beforeOffset = typeof payload?.beforeOffset === "number" && Number.isFinite(payload.beforeOffset)
+          ? Math.max(0, Math.floor(payload.beforeOffset))
+          : 0;
+        const refused: SyncTerminalHistoryResponsePayload = {
+          sessionId,
+          data: "",
+          startOffset: beforeOffset,
+          endOffset: beforeOffset,
+          atStart: false,
+        };
+        const session = args.sessionService.get(sessionId);
+        if (!peer.subscribedSessionIds.has(sessionId) || !session) {
+          args.logger.warn("sync.terminal_history_unsubscribed_session", { sessionId });
+          sendRequired(peer, "terminal_history", refused, envelope.requestId);
+          break;
+        }
+        const pageBytes = Math.max(
+          MIN_TERMINAL_HISTORY_PAGE_BYTES,
+          Math.min(
+            MAX_TERMINAL_HISTORY_PAGE_BYTES,
+            Math.floor(typeof payload?.maxBytes === "number" ? payload.maxBytes : DEFAULT_TERMINAL_HISTORY_PAGE_BYTES),
+          ),
+        );
+        const transcriptSize = transcriptFileSizeOrNull(session.transcriptPath);
+        const endOffset = Math.min(beforeOffset, transcriptSize ?? 0);
+        const range = await args.ptyService.readTranscriptRange({
+          sessionId,
+          startOffset: Math.max(0, endOffset - pageBytes),
+          endOffset,
+          alignStartToSafeBoundary: true,
+        });
+        if (!range) {
+          sendRequired(peer, "terminal_history", refused, envelope.requestId);
+          break;
+        }
+        sendRequired(peer, "terminal_history", {
+          sessionId,
+          data: range.data,
+          startOffset: range.startOffset,
+          endOffset: range.endOffset,
+          atStart: range.startOffset === 0,
+        } satisfies SyncTerminalHistoryResponsePayload, envelope.requestId);
         break;
       }
       case "terminal_input": {
@@ -3510,7 +3648,9 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         const rows = typeof payload?.rows === "number" ? Math.floor(payload.rows) : null;
         if (!sessionId || cols == null || rows == null) break;
         if (!peer.subscribedSessionIds.has(sessionId)) break;
-        args.ptyService.resizeBySessionId(sessionId, cols, rows);
+        // Tagged as mobile so the phone's viewport never becomes the
+        // desktop-preferred size — it is restored when the phone detaches.
+        args.ptyService.resizeBySessionId(sessionId, cols, rows, { source: "mobile" });
         break;
       }
       case "chat_subscribe": {
@@ -3974,6 +4114,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         ptyId: event.ptyId,
         data: event.data,
         at: nowIso(),
+        offset: event.offset ?? null,
       };
       for (const peer of peers) {
         if (!peer.authenticated || !peer.subscribedSessionIds.has(event.sessionId) || peer.ws.readyState !== WebSocket.OPEN) continue;

@@ -94,6 +94,11 @@ describe("resolveSyncHostInboundProjectScope", () => {
       projectId: "project-1",
       usedSingleProjectFallback: true,
     });
+    expect(resolveSyncHostInboundProjectScope("terminal_history", null, "project-1")).toEqual({
+      ok: true,
+      projectId: "project-1",
+      usedSingleProjectFallback: true,
+    });
   });
 
   it("accepts matching project-scoped envelopes", () => {
@@ -910,5 +915,335 @@ describe("chat event replay buffer (resumable chat streams)", () => {
     // …while recent clients still resume.
     const plan = planChatEventResume(buffer, buffer.entries[0]!.seq);
     expect(plan.mode).toBe("replay");
+  });
+});
+
+describe("terminal byte-offset streaming, history paging, and resize ownership", () => {
+  // 5000 ASCII bytes so byte offsets equal string indices in assertions.
+  const TRANSCRIPT_CONTENT = "0123456789".repeat(500);
+
+  beforeEach(() => {
+    publishMock.mockReset();
+    spawnMock.mockReset();
+    bonjourDestroyMock.mockReset();
+    bonjourConstructorMock.mockReset();
+    spawnMock.mockImplementation(() => ({ kill: vi.fn(), once: vi.fn(), unref: vi.fn() }));
+  });
+
+  function createTerminalHost(projectRoot: string) {
+    const transcriptPath = path.join(projectRoot, "transcripts", "session-1.log");
+    fs.mkdirSync(path.dirname(transcriptPath), { recursive: true });
+    fs.writeFileSync(transcriptPath, TRANSCRIPT_CONTENT);
+    const session = {
+      id: "session-1",
+      laneId: "lane-1",
+      transcriptPath,
+      status: "running",
+      runtimeState: "running",
+      lastOutputPreview: "preview",
+    };
+    const readTranscriptTail = vi.fn(async () => "tail-snapshot");
+    const readTranscriptRange = vi.fn(async (args: { sessionId: string; startOffset: number; endOffset: number }) => ({
+      data: TRANSCRIPT_CONTENT.slice(args.startOffset, args.endOffset),
+      startOffset: args.startOffset,
+      endOffset: args.endOffset,
+    }));
+    const resizeBySessionId = vi.fn().mockReturnValue(true);
+    const restoreDesktopSizeBySessionId = vi.fn().mockReturnValue(true);
+    const base = createHostArgs(projectRoot, []);
+    const host = createSyncHostService({
+      ...base,
+      projectId: "project-1",
+      db: {
+        sync: {
+          getSiteId: () => "site-host-terminal",
+          getDbVersion: () => 0,
+          exportChangesSince: () => [],
+          applyChanges: () => ({ appliedCount: 0 }),
+          discardUnpublishedChangesForTables: () => {},
+        },
+      },
+      deviceRegistryService: {
+        ...base.deviceRegistryService,
+        upsertPeerMetadata: vi.fn(),
+      },
+      sessionService: {
+        list: () => [session],
+        get: (id: string) => (id === "session-1" ? session : null),
+        readTranscriptTail: async () => "",
+      },
+      ptyService: {
+        create: vi.fn(),
+        readTranscriptTail,
+        readTranscriptRange,
+        writeBySessionId: vi.fn().mockReturnValue(true),
+        resizeBySessionId,
+        restoreDesktopSizeBySessionId,
+        enrichSessions: (rows: unknown[]) => rows,
+      },
+    } as unknown as Parameters<typeof createSyncHostService>[0]);
+    return { host, readTranscriptTail, readTranscriptRange, resizeBySessionId, restoreDesktopSizeBySessionId };
+  }
+
+  async function connectTerminalPeer(port: number, token: string, deviceId: string) {
+    const ws = new WebSocket(`ws://127.0.0.1:${port}`);
+    const tracked = trackClientEnvelopes(ws);
+    await new Promise<void>((resolve, reject) => {
+      ws.once("open", () => resolve());
+      ws.once("error", reject);
+    });
+    ws.send(encodeSyncEnvelope({
+      type: "hello",
+      payload: {
+        peer: {
+          deviceId,
+          deviceName: deviceId,
+          platform: "iOS",
+          deviceType: "phone",
+          siteId: `${deviceId}-site`,
+          dbVersion: 0,
+        },
+        auth: { kind: "bootstrap", token },
+      },
+    }));
+    await waitForValue(
+      () => tracked.envelopes.find((envelope) => envelope.type === "hello_ok"),
+      `hello_ok for ${deviceId}`,
+    );
+    return { ws, ...tracked };
+  }
+
+  function nextResponse(envelopes: ParsedSyncEnvelope[], type: string, requestId: string) {
+    return waitForValue(
+      () => envelopes.find((envelope) => envelope.type === type && envelope.requestId === requestId),
+      `${type} response ${requestId}`,
+    );
+  }
+
+  it("answers terminal_subscribe with a delta when sinceOffset fits the budget, else a tail snapshot with offsets", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const { host, readTranscriptTail, readTranscriptRange } = createTerminalHost(projectRoot);
+    let client: Awaited<ReturnType<typeof connectTerminalPeer>> | null = null;
+    try {
+      const port = await host.waitUntilListening();
+      client = await connectTerminalPeer(port, host.getBootstrapToken(), "ios-terminal-1");
+
+      client.ws.send(encodeSyncEnvelope({
+        type: "terminal_subscribe",
+        requestId: "sub-delta",
+        payload: { sessionId: "session-1", maxBytes: 32_000, sinceOffset: 4_988 },
+      }));
+      const delta = await nextResponse(client.envelopes, "terminal_snapshot", "sub-delta");
+      expect(delta.payload).toMatchObject({
+        sessionId: "session-1",
+        transcript: TRANSCRIPT_CONTENT.slice(4_988),
+        delta: true,
+        startOffset: 4_988,
+        endOffset: 5_000,
+      });
+      expect(readTranscriptRange).toHaveBeenCalledWith({
+        sessionId: "session-1",
+        startOffset: 4_988,
+        endOffset: 5_000,
+      });
+      expect(readTranscriptTail).not.toHaveBeenCalled();
+
+      // Gap larger than the budget → full tail snapshot (delta omitted).
+      client.ws.send(encodeSyncEnvelope({
+        type: "terminal_subscribe",
+        requestId: "sub-full",
+        payload: { sessionId: "session-1", maxBytes: 1_024, sinceOffset: 0 },
+      }));
+      const full = await nextResponse(client.envelopes, "terminal_snapshot", "sub-full");
+      expect(full.payload).toMatchObject({
+        sessionId: "session-1",
+        transcript: "tail-snapshot",
+        startOffset: 5_000 - Buffer.byteLength("tail-snapshot", "utf8"),
+        endOffset: 5_000,
+      });
+      expect((full.payload as { delta?: boolean }).delta).toBeUndefined();
+      expect(readTranscriptTail).toHaveBeenCalledWith({
+        sessionId: "session-1",
+        maxBytes: 1_024,
+        raw: true,
+        alignToLineBoundary: true,
+      });
+
+      // sinceOffset beyond the transcript end (host restarted with a fresh
+      // file, client watermark stale) → full snapshot, not a delta.
+      client.ws.send(encodeSyncEnvelope({
+        type: "terminal_subscribe",
+        requestId: "sub-stale",
+        payload: { sessionId: "session-1", maxBytes: 32_000, sinceOffset: 9_999 },
+      }));
+      const stale = await nextResponse(client.envelopes, "terminal_snapshot", "sub-stale");
+      expect((stale.payload as { delta?: boolean }).delta).toBeUndefined();
+      expect((stale.payload as { transcript: string }).transcript).toBe("tail-snapshot");
+    } finally {
+      try {
+        client?.ws.close();
+      } catch {
+        // ignore
+      }
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("serves terminal_history pages to subscribed peers and refuses unsubscribed ones", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const { host, readTranscriptRange } = createTerminalHost(projectRoot);
+    let client: Awaited<ReturnType<typeof connectTerminalPeer>> | null = null;
+    try {
+      const port = await host.waitUntilListening();
+      client = await connectTerminalPeer(port, host.getBootstrapToken(), "ios-terminal-2");
+
+      // Not subscribed yet: same access gate as terminal_input.
+      client.ws.send(encodeSyncEnvelope({
+        type: "terminal_history",
+        requestId: "hist-refused",
+        payload: { sessionId: "session-1", beforeOffset: 4_000 },
+      }));
+      const refused = await nextResponse(client.envelopes, "terminal_history", "hist-refused");
+      expect(refused.payload).toEqual({
+        sessionId: "session-1",
+        data: "",
+        startOffset: 4_000,
+        endOffset: 4_000,
+        atStart: false,
+      });
+      expect(readTranscriptRange).not.toHaveBeenCalled();
+
+      client.ws.send(encodeSyncEnvelope({
+        type: "terminal_subscribe",
+        requestId: "sub-1",
+        payload: { sessionId: "session-1", maxBytes: 32_000 },
+      }));
+      await nextResponse(client.envelopes, "terminal_snapshot", "sub-1");
+
+      client.ws.send(encodeSyncEnvelope({
+        type: "terminal_history",
+        requestId: "hist-1",
+        payload: { sessionId: "session-1", beforeOffset: 5_000, maxBytes: 4_096 },
+      }));
+      const page = await nextResponse(client.envelopes, "terminal_history", "hist-1");
+      expect(readTranscriptRange).toHaveBeenCalledWith({
+        sessionId: "session-1",
+        startOffset: 5_000 - 4_096,
+        endOffset: 5_000,
+        alignStartToSafeBoundary: true,
+      });
+      expect(page.payload).toEqual({
+        sessionId: "session-1",
+        data: TRANSCRIPT_CONTENT.slice(904),
+        startOffset: 904,
+        endOffset: 5_000,
+        atStart: false,
+      });
+
+      // beforeOffset inside the first page → page starts at 0 and atStart=true.
+      client.ws.send(encodeSyncEnvelope({
+        type: "terminal_history",
+        requestId: "hist-first",
+        payload: { sessionId: "session-1", beforeOffset: 800, maxBytes: 4_096 },
+      }));
+      const firstPage = await nextResponse(client.envelopes, "terminal_history", "hist-first");
+      expect(firstPage.payload).toEqual({
+        sessionId: "session-1",
+        data: TRANSCRIPT_CONTENT.slice(0, 800),
+        startOffset: 0,
+        endOffset: 800,
+        atStart: true,
+      });
+
+      // beforeOffset past EOF clamps to the flushed transcript size.
+      client.ws.send(encodeSyncEnvelope({
+        type: "terminal_history",
+        requestId: "hist-clamped",
+        payload: { sessionId: "session-1", beforeOffset: 999_999, maxBytes: 4_096 },
+      }));
+      const clamped = await nextResponse(client.envelopes, "terminal_history", "hist-clamped");
+      expect(clamped.payload).toMatchObject({ startOffset: 904, endOffset: 5_000, atStart: false });
+    } finally {
+      try {
+        client?.ws.close();
+      } catch {
+        // ignore
+      }
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("restores the desktop terminal size only after the last subscribed peer detaches", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const { host, resizeBySessionId, restoreDesktopSizeBySessionId } = createTerminalHost(projectRoot);
+    let clientA: Awaited<ReturnType<typeof connectTerminalPeer>> | null = null;
+    let clientB: Awaited<ReturnType<typeof connectTerminalPeer>> | null = null;
+    try {
+      const port = await host.waitUntilListening();
+      clientA = await connectTerminalPeer(port, host.getBootstrapToken(), "ios-terminal-a");
+      clientB = await connectTerminalPeer(port, host.getBootstrapToken(), "ios-terminal-b");
+
+      clientA.ws.send(encodeSyncEnvelope({
+        type: "terminal_subscribe",
+        requestId: "sub-a",
+        payload: { sessionId: "session-1", maxBytes: 32_000 },
+      }));
+      await nextResponse(clientA.envelopes, "terminal_snapshot", "sub-a");
+      clientB.ws.send(encodeSyncEnvelope({
+        type: "terminal_subscribe",
+        requestId: "sub-b",
+        payload: { sessionId: "session-1", maxBytes: 32_000 },
+      }));
+      await nextResponse(clientB.envelopes, "terminal_snapshot", "sub-b");
+
+      clientA.ws.send(encodeSyncEnvelope({
+        type: "terminal_resize",
+        payload: { sessionId: "session-1", cols: 61.7, rows: 21.2 },
+      }));
+      await waitForValue(
+        () => (resizeBySessionId.mock.calls.length > 0 ? resizeBySessionId.mock.calls[0] : null),
+        "mobile resize forwarded",
+      );
+      expect(resizeBySessionId).toHaveBeenCalledWith("session-1", 61, 21, { source: "mobile" });
+
+      // Peer A detaches while peer B still watches: no restore. The follow-up
+      // history request (refused because A just unsubscribed) fences ordering.
+      clientA.ws.send(encodeSyncEnvelope({
+        type: "terminal_unsubscribe",
+        payload: { sessionId: "session-1" },
+      }));
+      clientA.ws.send(encodeSyncEnvelope({
+        type: "terminal_history",
+        requestId: "fence-a",
+        payload: { sessionId: "session-1", beforeOffset: 100 },
+      }));
+      const fence = await nextResponse(clientA.envelopes, "terminal_history", "fence-a");
+      expect((fence.payload as { atStart: boolean }).atStart).toBe(false);
+      expect(restoreDesktopSizeBySessionId).not.toHaveBeenCalled();
+
+      // Last watcher disconnects → snap back to the desktop size.
+      clientB.ws.close();
+      await waitForValue(
+        () => (restoreDesktopSizeBySessionId.mock.calls.length > 0 ? restoreDesktopSizeBySessionId.mock.calls[0] : null),
+        "desktop size restore after last peer detached",
+      );
+      expect(restoreDesktopSizeBySessionId).toHaveBeenCalledTimes(1);
+      expect(restoreDesktopSizeBySessionId).toHaveBeenCalledWith("session-1");
+    } finally {
+      try {
+        clientA?.ws.close();
+      } catch {
+        // ignore
+      }
+      try {
+        clientB?.ws.close();
+      } catch {
+        // ignore
+      }
+      await host.dispose();
+      cleanup();
+    }
   });
 });
