@@ -3330,6 +3330,14 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
       const maxRows = options?.maxRows != null && Number.isFinite(options.maxRows)
         ? Math.max(1, Math.floor(options.maxRows))
         : null;
+      const survivesExportFilters = (row: ExportedChangeRow): boolean => {
+        if (isLocalOnlyQueueWipeMarkerRawChange(row)) return false;
+        const suppressedThroughVersion = suppressions.get(row.table_name);
+        if (suppressedThroughVersion == null || Number(row.db_version) > suppressedThroughVersion) {
+          return true;
+        }
+        return Buffer.from(row.site_id).toString("hex") !== desiredSiteId;
+      };
       // The crsql_changes vtab aborts a scan ("query aborted", SQLITE_ABORT)
       // whenever another connection commits mid-read. Outside a transaction
       // there is no snapshot isolation, so on a busy machine (multi-process
@@ -3345,23 +3353,35 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
       let rows: ExportedChangeRow[];
       try {
         if (maxRows == null) {
-          rows = allRows<ExportedChangeRow>(db, selectSql, rangeParams);
+          rows = allRows<ExportedChangeRow>(db, selectSql, rangeParams).filter(survivesExportFilters);
         } else {
-          rows = allRows<ExportedChangeRow>(db, `${selectSql} limit ?`, [...rangeParams, maxRows + 1]);
-          if (rows.length > maxRows) {
-            // The fetch was truncated; drop the trailing (possibly incomplete)
-            // db_version group so consumers only ever watermark complete groups.
-            const tailVersion = Number(rows[rows.length - 1].db_version);
-            let cut = rows.length;
-            while (cut > 0 && Number(rows[cut - 1].db_version) === tailVersion) cut -= 1;
-            if (cut > 0) {
-              rows = rows.slice(0, cut);
-            } else {
-              // A single transaction touched more rows than maxRows. Fetch that
-              // one version group in full — bounded by the group itself.
-              rows = allRows<ExportedChangeRow>(
-                db,
-                `select [table] as table_name,
+          // Scan forward in maxRows-sized fetches until one yields rows that
+          // survive the suppression/wipe-marker filters or the requested
+          // range is exhausted. An empty return must mean "the whole range
+          // was scanned": callers advance their watermark to the range end on
+          // empty results, so returning [] when a truncated fetch was merely
+          // filtered out would permanently skip the unscanned versions behind
+          // the truncation point.
+          let scanFromVersion = version;
+          for (;;) {
+            const scanParams = throughDbVersion != null ? [scanFromVersion, throughDbVersion] : [scanFromVersion];
+            let fetched = allRows<ExportedChangeRow>(db, `${selectSql} limit ?`, [...scanParams, maxRows + 1]);
+            let truncated = false;
+            if (fetched.length > maxRows) {
+              truncated = true;
+              // The fetch was truncated; drop the trailing (possibly incomplete)
+              // db_version group so consumers only ever watermark complete groups.
+              const tailVersion = Number(fetched[fetched.length - 1].db_version);
+              let cut = fetched.length;
+              while (cut > 0 && Number(fetched[cut - 1].db_version) === tailVersion) cut -= 1;
+              if (cut > 0) {
+                fetched = fetched.slice(0, cut);
+              } else {
+                // A single transaction touched more rows than maxRows. Fetch that
+                // one version group in full — bounded by the group itself.
+                fetched = allRows<ExportedChangeRow>(
+                  db,
+                  `select [table] as table_name,
                 pk,
                 cid,
                 val,
@@ -3373,9 +3393,15 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
            from crsql_changes
           where db_version > ? and db_version <= ?
           order by db_version asc, cl asc, seq asc`,
-                [version, tailVersion],
-              );
+                  [scanFromVersion, tailVersion],
+                );
+              }
             }
+            rows = fetched.filter(survivesExportFilters);
+            if (rows.length > 0 || !truncated || fetched.length === 0) break;
+            // Every fetched row was filtered out but the scan stopped short of
+            // the range end — continue from the last scanned version group.
+            scanFromVersion = Number(fetched[fetched.length - 1].db_version);
           }
         }
       } finally {
@@ -3389,14 +3415,6 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
       }
 
       return rows
-        .filter((row) => !isLocalOnlyQueueWipeMarkerRawChange(row))
-        .filter((row) => {
-          const suppressedThroughVersion = suppressions.get(row.table_name);
-          if (suppressedThroughVersion == null || Number(row.db_version) > suppressedThroughVersion) {
-            return true;
-          }
-          return Buffer.from(row.site_id).toString("hex") !== desiredSiteId;
-        })
         .map((row) => ({
           table: row.table_name,
           pk: encodeSyncScalar(row.pk),

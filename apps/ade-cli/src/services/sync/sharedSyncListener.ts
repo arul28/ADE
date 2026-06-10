@@ -63,6 +63,19 @@ export type SyncPeerHandoffSnapshot = {
   authKind: "bootstrap" | "paired" | null;
   pairedDeviceId: string | null;
   connectedAt: string;
+  /**
+   * Site id of the project DB the depositing host was serving plus the peer's
+   * live ack watermark on that DB. When the adopting host serves the SAME DB
+   * (e.g. a same-project host restart) this is fresher than the hello-time
+   * `metadata.dbVersionBySite` snapshot and avoids re-draining the backlog.
+   */
+  serverDbSiteId?: string | null;
+  lastKnownServerDbVersion?: number;
+  /** Live terminal/chat subscriptions to restore on adoption so streaming
+   * does not silently stop for peers that never observe a disconnect. */
+  subscribedSessionIds?: string[];
+  subscribedChatSessionIds?: string[];
+  chatTranscriptOffsets?: Record<string, number>;
   bufferedMessages?: Array<{ data: RawData; isBinary: boolean }>;
 };
 
@@ -129,7 +142,18 @@ export function createSharedSyncListener(options: {
 
   const park = (snapshot: SyncPeerHandoffSnapshot): void => {
     const ws = snapshot.ws;
-    if (ws.readyState !== WebSocket.OPEN && ws.readyState !== WebSocket.CONNECTING) return;
+    if (ws.readyState !== WebSocket.OPEN && ws.readyState !== WebSocket.CONNECTING) {
+      // The depositing host already stripped its listeners; without an error
+      // handler a late transport error on the dying socket would crash the
+      // process.
+      ws.on("error", () => {});
+      try {
+        ws.close();
+      } catch {
+        // ignore close failures
+      }
+      return;
+    }
     const bufferedMessages: Array<{ data: RawData; isBinary: boolean }> = [
       ...(snapshot.bufferedMessages ?? []),
     ];

@@ -156,8 +156,29 @@ export class ProjectScopeRegistry {
       await this.configureSyncHost(scope, true);
       return scope;
     } catch (error) {
+      // A failing get() already nulls syncHostProjectId, so check for both.
       if (this.syncHostProjectId === projectId) {
         this.syncHostProjectId = deactivatePreviousHost ? null : previousHostId;
+      }
+      if (
+        this.syncHostProjectId == null
+        && deactivatePreviousHost
+        && previousHostId
+        && previousHostId !== projectId
+      ) {
+        // The previous host was already stopped. With a brain-level shared
+        // sync listener that leaves NO host owning the socket: reconnecting
+        // phones would park until the grace close (4002), forever, since
+        // nothing else restarts a host. Restore the known-good previous
+        // host before surfacing the failure.
+        try {
+          const previousScope = await this.get(previousHostId);
+          await this.configureSyncHost(previousScope, true);
+          this.syncHostProjectId = previousHostId;
+        } catch {
+          // Leave syncHostProjectId null; resolveActiveSyncHost() (e.g. the
+          // next prepareProjectConnection) is the remaining recovery path.
+        }
       }
       throw error;
     }

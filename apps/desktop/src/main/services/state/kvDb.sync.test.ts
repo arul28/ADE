@@ -340,6 +340,38 @@ describe.skipIf(!isCrsqliteAvailable())("kvDb sync foundation", () => {
     dbB.close();
   });
 
+  it("continues a bounded export past suppressed rows instead of returning an empty truncated window", async () => {
+    const db = await openKvDb(makeDbPath("ade-kvdb-sync-suppressed-scan-"), createLogger() as any);
+    const siteId = db.sync.getSiteId();
+
+    // A backlog of own-site kv writes, then a suppression covering all of them.
+    for (let index = 0; index < 50; index += 1) {
+      db.run("insert into kv(key, value) values (?, ?)", [`suppressed-${index}`, `value-${index}`]);
+    }
+    db.run(
+      `insert into local_crr_change_suppressions(table_name, site_id, through_db_version, created_at)
+       values (?, ?, ?, ?)`,
+      ["kv", siteId, db.sync.getDbVersion(), "2026-06-10T00:00:00.000Z"],
+    );
+    // One legitimate change AFTER the suppressed backlog.
+    db.run(
+      `insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at)
+       values (?, ?, ?, ?, ?, ?)`,
+      ["project-after-suppression", "/repo/after", "After", "main", "2026-06-10T00:00:00.000Z", "2026-06-10T00:00:00.000Z"],
+    );
+
+    // maxRows is small enough that the first scan window holds only suppressed
+    // rows. Consumers treat an empty export as "the whole range was scanned"
+    // and advance their watermark to the range end, so the export must keep
+    // scanning until it surfaces the projects change (or truly exhausts the range).
+    const exported = db.sync.exportChangesSince(0, { maxRows: 10 });
+    expect(exported.length).toBeGreaterThan(0);
+    expect(exported.some((change) => change.table === "projects")).toBe(true);
+    expect(exported.some((change) => change.table === "kv")).toBe(false);
+
+    db.close();
+  });
+
   it("ignores CRDT changes for legacy unified_memories tables removed in #329", async () => {
     const db2 = await openKvDb(makeDbPath("ade-kvdb-sync-mem-skip-"), createLogger() as any);
     const legacyChanges = ["unified_memories", "unified_memories_fts_content"].map((table, index) => ({

@@ -7076,6 +7076,10 @@ final class SyncService: ObservableObject {
             let preprocessed = try await Task.detached(priority: .userInitiated) {
               try syncPreprocessIncoming(text)
             }.value
+            // The detached decode is a suspension point: the socket can be
+            // torn down (and a new connection brought up) while it runs. A
+            // stale frame must not mutate the new connection's state.
+            guard self.socket === task else { break }
             if let preprocessed {
               try await self.handleIncoming(preprocessed)
             }
@@ -7144,6 +7148,12 @@ final class SyncService: ObservableObject {
     let type = pre.type
     let requestId = pre.requestId
     let payload = pre.payload
+    // The detached decode/apply stages below are suspension points; a
+    // teardown + reconnect can complete while they run. Guard every
+    // post-await state mutation on the generation captured here so a stale
+    // frame can't advance the NEW connection's cursors (applyHelloPayload may
+    // have re-keyed activeRemoteDbSiteId to a different project DB).
+    let generation = connectionGeneration
     lastInboundMessageAt = ProcessInfo.processInfo.systemUptime
 
     switch type {
@@ -7159,6 +7169,7 @@ final class SyncService: ObservableObject {
         let nested = try await Task.detached(priority: .userInitiated) {
           try syncPreprocessIncoming(reassembled)
         }.value
+        guard isCurrentConnectionGeneration(generation) else { return }
         if let nested {
           try await handleIncoming(nested)
         }
@@ -7207,11 +7218,17 @@ final class SyncService: ObservableObject {
       let batch = try await Task.detached(priority: .userInitiated) {
         try syncDecodeChangesetBatch(batchPayload)
       }.value
+      guard isCurrentConnectionGeneration(generation) else { return }
       do {
         let database = self.database
         let result = try await Task.detached(priority: .userInitiated) {
           try database.applyChanges(batch.changes)
         }.value
+        // Stale apply after a reconnect: the rows are already committed
+        // (insert-or-ignore makes the resend idempotent), but the cursor and
+        // ack belong to the dead connection — advancing the new site's cursor
+        // here would make the host skip the new project DB's backlog.
+        guard isCurrentConnectionGeneration(generation) else { return }
         latestRemoteDbVersion = max(latestRemoteDbVersion, batch.toDbVersion, result.dbVersion)
         lastSyncAt = Date()
         let advancedVersion = latestRemoteDbVersion
@@ -7232,6 +7249,7 @@ final class SyncService: ObservableObject {
         )
         resolve(requestId: requestId, result: .success(payload))
       } catch {
+        guard isCurrentConnectionGeneration(generation) else { return }
         sendChangesetAck(
           batch: batch,
           ok: false,

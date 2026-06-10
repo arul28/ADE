@@ -1584,7 +1584,18 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     const adopted: PeerState[] = [];
     for (const snapshot of snapshots) {
       const ws = snapshot.ws;
-      if (ws.readyState !== WebSocket.OPEN) continue;
+      if (ws.readyState !== WebSocket.OPEN) {
+        // takePeers() already stripped the parked listeners; leave a no-op
+        // error handler so a late transport error cannot crash the process.
+        ws.removeAllListeners("error");
+        ws.on("error", () => {});
+        try {
+          ws.close();
+        } catch {
+          // ignore close failures
+        }
+        continue;
+      }
       // The previous owner (host service or listener parking) must leave no
       // listeners behind — this host attaches its own message/close/error
       // handlers via registerPeer.
@@ -1617,6 +1628,44 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           0,
           Math.floor(snapshot.metadata.dbVersionBySite?.[args.db.sync.getSiteId()] ?? 0),
         );
+        if (
+          snapshot.serverDbSiteId === args.db.sync.getSiteId()
+          && typeof snapshot.lastKnownServerDbVersion === "number"
+          && Number.isFinite(snapshot.lastKnownServerDbVersion)
+        ) {
+          // Same project DB as the depositing host (e.g. a same-project host
+          // restart): its live ack watermark is fresher than the hello-time
+          // dbVersionBySite snapshot and avoids re-draining the backlog.
+          peer.lastKnownServerDbVersion = Math.max(
+            peer.lastKnownServerDbVersion,
+            Math.floor(snapshot.lastKnownServerDbVersion),
+          );
+        }
+        // Restore live subscriptions so streaming does not silently stop for
+        // a peer that never observes a disconnect. Sessions from a different
+        // project simply no-op on this host; the phone that REQUESTED a
+        // project switch tears down its socket and re-subscribes on its own.
+        for (const sessionId of snapshot.subscribedSessionIds ?? []) {
+          peer.subscribedSessionIds.add(sessionId);
+        }
+        for (const [sessionId, offset] of Object.entries(snapshot.chatTranscriptOffsets ?? {})) {
+          if (!Number.isFinite(offset)) continue;
+          peer.chatTranscriptOffsets.set(sessionId, Math.max(0, Math.floor(offset)));
+        }
+        for (const sessionId of snapshot.subscribedChatSessionIds ?? []) {
+          // This host's replay buffers start a fresh seq epoch. Tell the
+          // client to drop its stored per-session seq watermark (the
+          // documented meaning of a non-resumed chat_subscribe ack) BEFORE
+          // re-enabling the subscription — otherwise the first re-streamed
+          // events (seq restarting at 1) would be discarded as already-seen.
+          sendRequired(peer, "chat_subscribe", {
+            sessionId,
+            capturedAt: nowIso(),
+            truncated: false,
+            events: [],
+          } satisfies SyncChatSubscribeSnapshotPayload);
+          peer.subscribedChatSessionIds.add(sessionId);
+        }
         args.deviceRegistryService?.upsertPeerMetadata(snapshot.metadata, {
           lastSeenAt: nowIso(),
           lastHost: peer.remoteAddress,
@@ -3977,7 +4026,17 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           peer.ws.removeAllListeners("message");
           peer.ws.removeAllListeners("close");
           peer.ws.removeAllListeners("error");
-          if (peer.ws.readyState !== WebSocket.OPEN) continue;
+          if (peer.ws.readyState !== WebSocket.OPEN) {
+            // Not handed off — re-attach a no-op error handler so a late
+            // transport error on the dying socket cannot crash the process.
+            peer.ws.on("error", () => {});
+            try {
+              peer.ws.close();
+            } catch {
+              // ignore close failures
+            }
+            continue;
+          }
           snapshots.push({
             ws: peer.ws,
             remoteAddress: peer.remoteAddress,
@@ -3986,6 +4045,11 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
             authKind: peer.authKind,
             pairedDeviceId: peer.pairedDeviceId,
             connectedAt: peer.connectedAt,
+            serverDbSiteId: args.db.sync.getSiteId(),
+            lastKnownServerDbVersion: peer.lastKnownServerDbVersion,
+            subscribedSessionIds: [...peer.subscribedSessionIds],
+            subscribedChatSessionIds: [...peer.subscribedChatSessionIds],
+            chatTranscriptOffsets: Object.fromEntries(peer.chatTranscriptOffsets),
           });
         }
         peers.clear();
