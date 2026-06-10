@@ -18961,7 +18961,7 @@ describe("suggestLaneNameFromPrompt", () => {
     expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalled();
   });
 
-  it("uses the generic deterministic fallback instead of chat fallback when the prompt fallback is generic", async () => {
+  it("preserves the generated suffix when the prompt fallback is generic", async () => {
     const { service } = createSuggestService();
     const result = await service.suggestLaneNameFromPrompt({
       prompt: "!!!",
@@ -18970,7 +18970,7 @@ describe("suggestLaneNameFromPrompt", () => {
       fallbackName: "chat-20260514-010203",
     });
 
-    expect(result).toBe("parallel-task");
+    expect(result).toBe("parallel-task-20260514-010203");
   });
 
   it("uses AI-generated name when the model runtime succeeds", async () => {

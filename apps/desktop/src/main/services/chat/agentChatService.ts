@@ -261,6 +261,12 @@ import { buildAdeCliAgentGuidance } from "../../../shared/adeCliGuidance";
 import { getAdeAgentSkillRootsForPrompt } from "../../../shared/agentSkillRoots";
 import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
 import { extractLeadingSlashCommand, isProviderSlashCommandInput } from "../../../shared/chatSlashCommands";
+import {
+  deriveDeterministicLaneNameFromPrompt,
+  GENERIC_LANE_FALLBACK_NAME,
+  genericLaneFallbackName,
+  genericSuffixFromLaneFallbackName,
+} from "../../../shared/laneNameFallback";
 import { resolveSubagentCapability } from "../../../shared/subagentCapabilities";
 import { stripAnsi } from "../../utils/ansiStrip";
 import type { createCtoStateService } from "../cto/ctoStateService";
@@ -3070,78 +3076,21 @@ function sanitizeAutoTitle(raw: string, maxChars = AUTO_TITLE_MAX_CHARS): string
   return normalized.length > maxChars ? normalized.slice(0, maxChars).trimEnd() : normalized;
 }
 
-const GENERIC_PROMPT_LANE_NAME = "parallel-task";
-const LANE_FALLBACK_STOPWORDS = new Set([
-  "a",
-  "an",
-  "and",
-  "are",
-  "as",
-  "can",
-  "could",
-  "for",
-  "from",
-  "have",
-  "help",
-  "how",
-  "i",
-  "in",
-  "into",
-  "is",
-  "it",
-  "just",
-  "let",
-  "make",
-  "me",
-  "my",
-  "of",
-  "on",
-  "please",
-  "pls",
-  "the",
-  "this",
-  "to",
-  "use",
-  "we",
-  "with",
-  "you",
-]);
-
 function fallbackLaneNameFromPrompt(prompt: string): string {
-  const collapsed = prompt
-    .replace(/```[\s\S]*?```/g, " ")
-    .replace(/`([^`]+)`/g, "$1")
-    .replace(/\b(?:please|pls|can you|could you|help me|i need(?: you)? to|let'?s|we need to)\b/giu, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-  if (!collapsed.length) return GENERIC_PROMPT_LANE_NAME;
-  const meaningfulWords = collapsed
-    .toLowerCase()
-    .match(/[a-z0-9]+/g)
-    ?.filter((token) => token.length > 1 && !LANE_FALLBACK_STOPWORDS.has(token))
-    .slice(0, 5) ?? [];
-  const fallbackWords = collapsed
-    .toLowerCase()
-    .match(/[a-z0-9]+/g)
-    ?.filter((token) => token.length > 1)
-    .slice(0, 4) ?? [];
-  const words = meaningfulWords.length ? meaningfulWords : fallbackWords;
-  const slug = words
-    .join("-")
-    .replace(/[^a-z0-9-]+/g, "-")
-    .replace(/-+/g, "-")
-    .replace(/^-|-$/g, "");
-  return slug.length ? slug.slice(0, 48) : GENERIC_PROMPT_LANE_NAME;
+  return deriveDeterministicLaneNameFromPrompt(prompt);
 }
 
 function uniquePromptFallbackLaneName(promptFallback: string, explicitFallback: string | null): string {
-  if (promptFallback !== GENERIC_PROMPT_LANE_NAME) {
+  if (promptFallback !== GENERIC_LANE_FALLBACK_NAME) {
     return promptFallback;
   }
-  if (!explicitFallback || /^chat(?:-|$)/u.test(explicitFallback)) {
-    return promptFallback;
+  const suffix = genericSuffixFromLaneFallbackName(explicitFallback);
+  if (suffix) {
+    return genericLaneFallbackName(suffix);
   }
-  return explicitFallback;
+  return explicitFallback && !/^chat(?:-|$)/u.test(explicitFallback)
+    ? explicitFallback
+    : promptFallback;
 }
 
 function normalizeSuggestedLaneName(raw: string): string | null {

@@ -61,6 +61,7 @@ import type {
 } from "../../../shared/types/orchestration";
 import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
 import { isProviderSlashCommandInput } from "../../../shared/chatSlashCommands";
+import { deriveDeterministicLaneNameFromPrompt } from "../../../shared/laneNameFallback";
 import {
   LOCAL_PROVIDER_LABELS,
   MODEL_REGISTRY,
@@ -650,65 +651,21 @@ function draftLaunchRequestKey(args: {
   });
 }
 
-const GENERIC_AUTO_LANE_NAME = "parallel-task";
-const AUTO_LANE_FALLBACK_STOPWORDS = new Set([
-  "a",
-  "an",
-  "and",
-  "are",
-  "as",
-  "can",
-  "could",
-  "for",
-  "from",
-  "have",
-  "help",
-  "how",
-  "i",
-  "in",
-  "into",
-  "is",
-  "it",
-  "just",
-  "let",
-  "make",
-  "me",
-  "my",
-  "of",
-  "on",
-  "please",
-  "pls",
-  "the",
-  "this",
-  "to",
-  "use",
-  "we",
-  "with",
-  "you",
-]);
+function autoLaneGenericSuffix(date = new Date()): string {
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return [
+    date.getFullYear(),
+    pad(date.getMonth() + 1),
+    pad(date.getDate()),
+  ].join("") + "-" + [
+    pad(date.getHours()),
+    pad(date.getMinutes()),
+    pad(date.getSeconds()),
+  ].join("");
+}
 
-function createDeterministicAutoLaneName(prompt: string): string {
-  const collapsed = prompt
-    .replace(/```[\s\S]*?```/g, " ")
-    .replace(/`([^`]+)`/g, "$1")
-    .replace(/\b(?:please|pls|can you|could you|help me|i need(?: you)? to|let'?s|we need to)\b/giu, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-  if (!collapsed.length) return GENERIC_AUTO_LANE_NAME;
-  const tokens = collapsed.toLowerCase().match(/[a-z0-9]+/g) ?? [];
-  const meaningfulWords = tokens
-    .filter((token) => token.length > 1 && !AUTO_LANE_FALLBACK_STOPWORDS.has(token))
-    .slice(0, 5);
-  const fallbackWords = tokens
-    .filter((token) => token.length > 1)
-    .slice(0, 4);
-  const words = meaningfulWords.length ? meaningfulWords : fallbackWords;
-  const slug = words
-    .join("-")
-    .replace(/[^a-z0-9-]+/g, "-")
-    .replace(/-+/g, "-")
-    .replace(/^-|-$/g, "");
-  return slug.length ? slug.slice(0, 48) : GENERIC_AUTO_LANE_NAME;
+function createDeterministicAutoLaneName(prompt: string, options: { genericSuffix?: string | null } = {}): string {
+  return deriveDeterministicLaneNameFromPrompt(prompt, options);
 }
 
 const AUTO_LANE_NAME_SUGGEST_TIMEOUT_MS = 10_000;
@@ -717,9 +674,10 @@ async function suggestAutoLaneName(args: {
   laneId: string;
   prompt: string;
   modelId: string;
+  genericSuffix?: string | null;
   onFallback?: (message: string) => void;
 }): Promise<string> {
-  const fallbackName = createDeterministicAutoLaneName(args.prompt);
+  const fallbackName = createDeterministicAutoLaneName(args.prompt, { genericSuffix: args.genericSuffix });
   let timeoutId: ReturnType<typeof setTimeout> | null = null;
   try {
     const suggested = await Promise.race([
@@ -6817,12 +6775,14 @@ export function AgentChatPane({
       const titleModelId = typeof titleSettings?.modelId === "string" ? titleSettings.modelId.trim() : "";
       const namingModelId = titleModelId || snapshot.modelId;
       onAutoCreateNameModelResolved?.(namingModelId);
+      const genericSuffix = autoLaneGenericSuffix();
       const laneName = titleSettings?.enabled === false
-        ? createDeterministicAutoLaneName(namingSeed)
+        ? createDeterministicAutoLaneName(namingSeed, { genericSuffix })
         : await suggestAutoLaneName({
             laneId: primaryLane.id,
             prompt: namingSeed,
             modelId: namingModelId,
+            genericSuffix,
             onFallback: onAutoCreateNameFallback,
           });
       onAutoCreateNameResolved?.();
@@ -7472,12 +7432,14 @@ export function AgentChatPane({
         if (titleSettings?.enabled !== false) {
           setParallelLaunchStatus(`Naming lanes with ${formatLocalModelLabel(namingModelId)}...`);
         }
+        const genericSuffix = autoLaneGenericSuffix();
         const baseName = titleSettings?.enabled === false
-          ? createDeterministicAutoLaneName(namingSeed)
+          ? createDeterministicAutoLaneName(namingSeed, { genericSuffix })
           : await suggestAutoLaneName({
               laneId,
               prompt: namingSeed,
               modelId: namingModelId,
+              genericSuffix,
               onFallback: setParallelLaunchStatus,
             });
         setParallelLaunchStatus(`Creating ${parallelModelSlots.length} child lanes…`);
