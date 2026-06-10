@@ -3304,25 +3304,38 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
       const maxRows = options?.maxRows != null && Number.isFinite(options.maxRows)
         ? Math.max(1, Math.floor(options.maxRows))
         : null;
+      // The crsql_changes vtab aborts a scan ("query aborted", SQLITE_ABORT)
+      // whenever another connection commits mid-read. Outside a transaction
+      // there is no snapshot isolation, so on a busy machine (multi-process
+      // writers) every export dies. A read transaction pins the WAL snapshot
+      // for the duration of the scan, making it immune to concurrent commits.
+      let openedSnapshotTxn = false;
+      try {
+        runStatement(db, "BEGIN");
+        openedSnapshotTxn = true;
+      } catch {
+        // Already inside a caller-managed transaction — its snapshot works too.
+      }
       let rows: ExportedChangeRow[];
-      if (maxRows == null) {
-        rows = allRows<ExportedChangeRow>(db, selectSql, rangeParams);
-      } else {
-        rows = allRows<ExportedChangeRow>(db, `${selectSql} limit ?`, [...rangeParams, maxRows + 1]);
-        if (rows.length > maxRows) {
-          // The fetch was truncated; drop the trailing (possibly incomplete)
-          // db_version group so consumers only ever watermark complete groups.
-          const tailVersion = Number(rows[rows.length - 1].db_version);
-          let cut = rows.length;
-          while (cut > 0 && Number(rows[cut - 1].db_version) === tailVersion) cut -= 1;
-          if (cut > 0) {
-            rows = rows.slice(0, cut);
-          } else {
-            // A single transaction touched more rows than maxRows. Fetch that
-            // one version group in full — bounded by the group itself.
-            rows = allRows<ExportedChangeRow>(
-              db,
-              `select [table] as table_name,
+      try {
+        if (maxRows == null) {
+          rows = allRows<ExportedChangeRow>(db, selectSql, rangeParams);
+        } else {
+          rows = allRows<ExportedChangeRow>(db, `${selectSql} limit ?`, [...rangeParams, maxRows + 1]);
+          if (rows.length > maxRows) {
+            // The fetch was truncated; drop the trailing (possibly incomplete)
+            // db_version group so consumers only ever watermark complete groups.
+            const tailVersion = Number(rows[rows.length - 1].db_version);
+            let cut = rows.length;
+            while (cut > 0 && Number(rows[cut - 1].db_version) === tailVersion) cut -= 1;
+            if (cut > 0) {
+              rows = rows.slice(0, cut);
+            } else {
+              // A single transaction touched more rows than maxRows. Fetch that
+              // one version group in full — bounded by the group itself.
+              rows = allRows<ExportedChangeRow>(
+                db,
+                `select [table] as table_name,
                 pk,
                 cid,
                 val,
@@ -3334,8 +3347,17 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
            from crsql_changes
           where db_version > ? and db_version <= ?
           order by db_version asc, cl asc, seq asc`,
-              [version, tailVersion],
-            );
+                [version, tailVersion],
+              );
+            }
+          }
+        }
+      } finally {
+        if (openedSnapshotTxn) {
+          try {
+            runStatement(db, "COMMIT");
+          } catch {
+            try { runStatement(db, "ROLLBACK"); } catch {}
           }
         }
       }
