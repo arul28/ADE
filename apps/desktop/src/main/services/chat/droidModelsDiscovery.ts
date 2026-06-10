@@ -22,7 +22,11 @@ type DroidCliModelDiscoveryMode = "probe" | "cached-or-fallback";
 
 let cached: { at: number; models: DroidExecHelpModelRow[] } | null = null;
 let inflight: Promise<DroidExecHelpModelRow[]> | null = null;
+let warmInFlight = false;
 const TTL_MS = 120_000;
+// Serve last-known-good rows well past the freshness window (revalidating in
+// the background) so passive consumers never lose models between probes.
+const POSITIVE_TTL_MS = 6 * 60 * 60_000;
 
 export function parseDroidExecHelpModels(stdout: string): DroidExecHelpModelRow[] {
   const lines = stdout.split(/\r?\n/);
@@ -266,9 +270,36 @@ export function clearDroidCliModelsCache(): void {
   inflight = null;
 }
 
-function getCachedDroidModels(): DroidExecHelpModelRow[] | null {
+/**
+ * Age the positive model cache so the next consumer revalidates, without
+ * dropping last-known-good rows. Generic provider readiness invalidation
+ * must not blank the droid model list — only a credential change does that
+ * ({@link clearDroidCliModelsCache}).
+ */
+export function markDroidModelCachesStale(): void {
+  if (cached) cached = { ...cached, at: Math.min(cached.at, Date.now() - TTL_MS) };
+}
+
+function warmDroidModels(droidPath: string): void {
+  if (warmInFlight) return;
+  warmInFlight = true;
+  void listDroidModelsFromSdk(droidPath)
+    .catch(() => undefined)
+    .finally(() => {
+      warmInFlight = false;
+    });
+}
+
+function getCachedDroidModels(droidPathForRevalidate?: string | null): DroidExecHelpModelRow[] | null {
   const now = Date.now();
   if (cached && now - cached.at < TTL_MS) {
+    return cached.models;
+  }
+  // Stale-while-revalidate: serve last-known-good rows past the freshness
+  // window and refresh in the background so passive consumers never watch
+  // models blink out between active probes.
+  if (cached && now - cached.at < POSITIVE_TTL_MS && cached.models.length) {
+    if (droidPathForRevalidate) warmDroidModels(droidPathForRevalidate);
     return cached.models;
   }
   return null;
@@ -311,8 +342,11 @@ export async function discoverDroidCliModelDescriptors(
   options?: { mode?: DroidCliModelDiscoveryMode },
 ): Promise<ModelDescriptor[]> {
   const fromSdk = options?.mode === "cached-or-fallback"
-    ? getCachedDroidModels() ?? []
+    ? getCachedDroidModels(droidPath) ?? []
     : await listDroidModelsFromSdk(droidPath).catch(() => []);
+  if (!fromSdk.length && options?.mode === "cached-or-fallback") {
+    warmDroidModels(droidPath);
+  }
   const baseRows: DroidExecHelpModelRow[] = fromSdk;
 
   // Merge custom models from ~/.factory/config.json so vibeproxy-injected

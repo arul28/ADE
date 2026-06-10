@@ -48,11 +48,17 @@ export type CursorSdkModelDiscoveryResult = {
 };
 
 let cached: { at: number; models: CursorCliModelRow[] } | null = null;
+let cliWarmInFlight: Promise<CursorCliModelRow[]> | null = null;
 let sdkCached: { at: number; keyHash: string; models: CursorCliModelRow[] } | null = null;
 let sdkWarmInFlight: { keyHash: string; promise: Promise<CursorCliModelRow[]> } | null = null;
 let sdkLastFailure: { at: number; keyHash: string; kind: CursorModelDiscoveryFailureKind; message: string } | null = null;
 let sdkCacheGeneration = 0;
 const TTL_MS = 120_000;
+// Serve last-known-good rows well past the freshness window (revalidating in
+// the background) so passive consumers — status/availableModelIds, the mobile
+// app, the TUI — never watch a verified provider's models blink out two
+// minutes after the last active probe.
+const POSITIVE_TTL_MS = 6 * 60 * 60_000;
 const SDK_MODEL_LIST_TIMEOUT_MS = 5_000;
 const CURSOR_MODELS_API_URL = "https://api.cursor.com/v0/models";
 const CURSOR_AGENT_AUTH_BLOCKER =
@@ -291,10 +297,26 @@ function foldCursorCliVariantRows(rows: CursorCliModelRow[]): CursorCliModelRow[
 
 export function clearCursorCliModelsCache(): void {
   cached = null;
+  cliWarmInFlight = null;
   sdkCached = null;
   sdkWarmInFlight = null;
   sdkLastFailure = null;
   sdkCacheGeneration += 1;
+}
+
+/**
+ * Age the positive model caches so the next consumer revalidates in the
+ * background, without dropping last-known-good rows. Generic provider
+ * readiness invalidation (forced status refresh, verifying another provider's
+ * key) must not blank the cursor model list — only a cursor key change does
+ * that ({@link clearCursorCliModelsCache}). A stale SDK row set for a
+ * different key is already unreachable because the cache is key-hash gated.
+ */
+export function markCursorModelCachesStale(): void {
+  const stalePoint = Date.now() - TTL_MS;
+  if (cached) cached = { ...cached, at: Math.min(cached.at, stalePoint) };
+  if (sdkCached) sdkCached = { ...sdkCached, at: Math.min(sdkCached.at, stalePoint) };
+  sdkLastFailure = null;
 }
 
 function hashKeyForCache(key: string | null | undefined): string {
@@ -548,6 +570,11 @@ function rememberCursorModelDiscoveryFailure(keyHash: string, error: unknown): C
     kind: discoveryError.kind,
     message: discoveryError.message,
   };
+  // Auth failures mean the key is dead: last-known-good rows for that key
+  // must not keep resurfacing. Transient failures keep serving them.
+  if (discoveryError.kind === "auth" && sdkCached?.keyHash === keyHash) {
+    sdkCached = null;
+  }
   return discoveryError;
 }
 
@@ -631,10 +658,13 @@ function getCachedCursorSdkModels(apiKey?: string | null): CursorCliModelRow[] |
   const now = Date.now();
   const normalizedApiKey = apiKey?.trim() || undefined;
   const keyHash = hashKeyForCache(normalizedApiKey);
-  if (hasRecentCursorSdkFailure(keyHash, now)) {
-    return null;
-  }
-  if (sdkCached && sdkCached.keyHash === keyHash && now - sdkCached.at < TTL_MS && sdkCached.models.length) {
+  if (sdkCached && sdkCached.keyHash === keyHash && now - sdkCached.at < POSITIVE_TTL_MS && sdkCached.models.length) {
+    // Stale-while-revalidate: keep serving last-known-good rows and refresh
+    // in the background once the freshness window has passed. A transient
+    // failure recorded after a successful fetch must not blank the list.
+    if (now - sdkCached.at >= TTL_MS) {
+      warmCursorModelsFromSdk(normalizedApiKey);
+    }
     return sdkCached.models;
   }
   return null;
@@ -684,6 +714,9 @@ async function fetchCursorModelsFromSdk(
     }
 
     if (sdkError && isCursorSdkResolutionError(sdkError)) {
+      // The SDK module itself is unusable (packaging bug), so chats cannot
+      // run — drop last-known-good rows rather than advertise phantom models.
+      sdkCached = null;
       throw toCursorModelDiscoveryError(sdkError);
     }
 
@@ -803,12 +836,24 @@ export async function listCursorModelsFromSdk(
   return (await probeCursorSdkModelDiscovery(apiKey, options)).rows;
 }
 
-function getCachedCursorModels(): CursorCliModelRow[] | null {
+function getCachedCursorModels(agentPathForRevalidate?: string | null): CursorCliModelRow[] | null {
   const now = Date.now();
-  if (cached && now - cached.at < TTL_MS && cached.models.length) {
+  if (cached && now - cached.at < POSITIVE_TTL_MS && cached.models.length) {
+    if (now - cached.at >= TTL_MS && agentPathForRevalidate) {
+      warmCursorModelsFromCli(agentPathForRevalidate);
+    }
     return cached.models;
   }
   return null;
+}
+
+function warmCursorModelsFromCli(agentPath: string): void {
+  if (cliWarmInFlight) return;
+  const promise = listCursorModelsFromCli(agentPath).catch(() => [] as CursorCliModelRow[]);
+  cliWarmInFlight = promise;
+  void promise.finally(() => {
+    if (cliWarmInFlight === promise) cliWarmInFlight = null;
+  });
 }
 
 function normalizeCursorModelLookupRef(value: unknown): string {
@@ -1068,12 +1113,17 @@ export async function listCursorModelsFromCli(agentPath: string): Promise<Cursor
     ["--list-models"],
   ];
 
+  let cliReportedNoModels = false;
   for (const args of probes) {
     try {
       const result = await spawnAsync(agentPath, args, { timeout: 12_000 });
       if (result.status !== 0) continue;
       const stdout = (result.stdout ?? "").trim();
       if (!stdout) continue;
+      if (/no models available/i.test(stripAnsi(stdout))) {
+        cliReportedNoModels = true;
+        continue;
+      }
 
       try {
         const parsed = JSON.parse(stdout) as unknown;
@@ -1099,7 +1149,20 @@ export async function listCursorModelsFromCli(agentPath: string): Promise<Cursor
     }
   }
 
-  return [];
+  if (cliReportedNoModels) {
+    // The CLI answers but its stored login has lost model access (e.g. a plan
+    // change invalidated the browser session). A stored session also shadows
+    // CURSOR_API_KEY, so the only user fix is to re-auth the CLI itself.
+    cached = null;
+    reportProviderRuntimeFailure(
+      "cursor",
+      "Cursor CLI is signed in but reports no available models — its stored login has lost model access. Run `cursor-agent logout` so the CLI falls back to your Cursor API key, or sign in to the CLI again.",
+    );
+    return [];
+  }
+
+  // Transient probe failure: keep serving last-known-good rows if we have them.
+  return getCachedCursorModels() ?? [];
 }
 
 /**
@@ -1109,9 +1172,13 @@ export async function discoverCursorCliModelDescriptors(
   agentPath: string,
   options?: { mode?: CursorCliModelDiscoveryMode },
 ): Promise<ModelDescriptor[]> {
-  const rows = options?.mode === "cached-or-fallback" || options?.mode === "cached-only"
-    ? getCachedCursorModels() ?? []
+  const cachedMode = options?.mode === "cached-or-fallback" || options?.mode === "cached-only";
+  const rows = cachedMode
+    ? getCachedCursorModels(options?.mode === "cached-or-fallback" ? agentPath : null) ?? []
     : await listCursorModelsFromCli(agentPath);
+  if (!rows.length && options?.mode === "cached-or-fallback") {
+    warmCursorModelsFromCli(agentPath);
+  }
   return cursorRowsToDescriptors(rows);
 }
 
@@ -1122,7 +1189,13 @@ export async function discoverCursorSdkModelDescriptors(
   const result = options?.mode === "probe"
     ? await probeCursorSdkModelDiscovery(apiKey, { timeoutMs: options?.timeoutMs })
     : null;
-  const rows = result?.rows ?? getCachedCursorSdkModels(apiKey) ?? [];
+  let rows = result?.rows ?? [];
+  if (!rows.length && result?.failureKind !== "auth") {
+    // Cache lookup covers the cached modes and lets a transiently-failed
+    // probe fall back to last-known-good rows. An auth failure means the key
+    // itself is dead, so stale rows for it must not resurface.
+    rows = getCachedCursorSdkModels(apiKey) ?? [];
+  }
   if (!rows.length && options?.mode === "cached-or-fallback") {
     warmCursorModelsFromSdk(apiKey);
   }
