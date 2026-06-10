@@ -15,10 +15,23 @@ struct WorkInlineMarkdownText: View {
 
 struct WorkMarkdownRenderer: View {
   let markdown: String
+  /// Non-nil while this markdown is still receiving streaming deltas. Routes
+  /// block parsing through the tail-only streaming parser (stable prefix
+  /// cached under this key — the message id) instead of the whole-text block
+  /// cache, which misses on every delta because the text keeps growing.
+  /// Completed messages keep the default whole-text cache path.
+  var streamingCacheKey: String? = nil
+
+  private var blocks: [WorkMarkdownBlock] {
+    if let streamingCacheKey {
+      return parseMarkdownBlocksForStreaming(markdown, cacheKey: streamingCacheKey)
+    }
+    return parseMarkdownBlocks(markdown)
+  }
 
   var body: some View {
     VStack(alignment: .leading, spacing: 10) {
-      ForEach(parseMarkdownBlocks(markdown)) { block in
+      ForEach(blocks) { block in
         switch block.kind {
         case .paragraph(let text):
           WorkInlineMarkdownText(text: text)

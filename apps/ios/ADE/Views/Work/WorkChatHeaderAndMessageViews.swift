@@ -88,6 +88,10 @@ struct WorkSessionHeader: View {
 /// the per-message timestamp for the same reason.
 struct WorkChatMessageBubble: View {
   let message: WorkChatMessage
+  /// True only for the assistant message still receiving streaming deltas.
+  /// Switches its markdown block parsing to the tail-only streaming parser so
+  /// each delta re-parses just the growing tail instead of the whole message.
+  var isStreaming: Bool = false
   @State private var assistantLineBudget = workAssistantMessageInitialLineBudget
   /// Measured column width, used to cap the user bubble at ~82% (desktop's
   /// `max-width`). Probed via a zero-impact background GeometryReader so the
@@ -167,7 +171,10 @@ struct WorkChatMessageBubble: View {
           .textSelection(.enabled)
           .accessibilityLabel(workAssistantMessageAccessibilityLabel(preview))
       } else {
-        WorkMarkdownRenderer(markdown: preview.text)
+        WorkMarkdownRenderer(
+          markdown: preview.text,
+          streamingCacheKey: isStreaming ? message.id : nil
+        )
           .accessibilityElement(children: .ignore)
           .accessibilityLabel(workAssistantMessageAccessibilityLabel(preview))
       }

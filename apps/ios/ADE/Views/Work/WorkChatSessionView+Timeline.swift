@@ -3,11 +3,32 @@ import UIKit
 import AVKit
 
 extension WorkChatSessionView {
+  /// Id of the assistant message still receiving streaming deltas, or nil
+  /// when no turn is active. Only the LAST message qualifies, and only while
+  /// the session is actively streaming — that message's bubble parses its
+  /// markdown through the tail-only streaming parser; every completed message
+  /// keeps the whole-text block cache path.
+  var streamingAssistantMessageId: String? {
+    guard workChatIsStreaming(
+      sessionStatus: sessionStatus,
+      isLive: isLive,
+      transcriptIndicatesActiveTurn: timelineSnapshot.transcriptIndicatesActiveTurn
+    ) else { return nil }
+    for entry in timelineSnapshot.timeline.reversed() {
+      guard case .message(let message) = entry.payload else { continue }
+      return message.role == "assistant" ? message.id : nil
+    }
+    return nil
+  }
+
   @ViewBuilder
   func timelineEntryView(for entry: WorkTimelineEntry, proxy: ScrollViewProxy) -> some View {
     switch entry.payload {
     case .message(let message):
-      WorkChatMessageBubble(message: message)
+      WorkChatMessageBubble(
+        message: message,
+        isStreaming: message.id == streamingAssistantMessageId
+      )
     case .toolCard(let toolCard):
       timelineToolCard(toolCard)
     case .eventCard(let card):

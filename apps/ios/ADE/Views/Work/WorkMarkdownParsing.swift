@@ -51,6 +51,93 @@ func parseMarkdownBlocks(_ markdown: String) -> [WorkMarkdownBlock] {
   return parsed
 }
 
+/// Tail-only block parsing for the actively-streaming assistant message.
+///
+/// While a turn streams, the message text grows with every delta, so the
+/// whole-text cache in `parseMarkdownBlocks` misses on every rebuild and the
+/// entire (ever longer) message re-parses each frame. This entry point splits
+/// the text at the last "stable boundary" — the last empty line that is not
+/// inside an unclosed ``` fence. Everything before that boundary can never be
+/// re-interpreted by text that arrives later (every non-code construct in the
+/// parser terminates at a blank line and never looks past one), so the prefix
+/// is parsed once and cached under `cacheKey` (the message id); only the small
+/// growing tail re-parses per delta.
+///
+/// The combined output is exactly `parseMarkdownBlocks(fullText)` — same
+/// kinds, same ids — so views can switch between the streaming and completed
+/// paths without any visual or identity churn.
+func parseMarkdownBlocksForStreaming(_ markdown: String, cacheKey: String) -> [WorkMarkdownBlock] {
+  let normalized = markdown.replacingOccurrences(of: "\r\n", with: "\n")
+  let key = cacheKey as NSString
+  let cached = workStreamingMarkdownCache.object(forKey: key)
+  if let cached, cached.fullText == normalized {
+    return cached.blocks
+  }
+
+  guard let boundary = workStreamingStableBoundaryIndex(in: normalized) else {
+    // No stable prefix yet (still inside the first block, or everything sits
+    // in one unclosed leading fence) — parse the whole text fresh.
+    let blocks = parseMarkdownBlocksInternal(normalized)
+    workStreamingMarkdownCache.setObject(
+      WorkStreamingMarkdownCacheBox(prefixText: "", prefixBlocks: [], fullText: normalized, blocks: blocks),
+      forKey: key
+    )
+    return blocks
+  }
+
+  let prefixText = String(normalized[..<boundary])
+  let prefixBlocks: [WorkMarkdownBlock]
+  if let cached, cached.prefixText == prefixText {
+    prefixBlocks = cached.prefixBlocks
+  } else {
+    prefixBlocks = parseMarkdownBlocksInternal(prefixText)
+  }
+
+  let tailBlocks = parseMarkdownBlocksInternal(String(normalized[boundary...]))
+  var blocks = prefixBlocks
+  blocks.reserveCapacity(prefixBlocks.count + tailBlocks.count)
+  for tailBlock in tailBlocks {
+    // Re-id the tail blocks so indices continue from the prefix — the parser
+    // bakes the running block index into each id, and ids must match the
+    // whole-text parse exactly.
+    blocks.append(WorkMarkdownBlock(
+      id: "markdown-block-\(blocks.count)-\(workStableDigest(tailBlock.kind.cacheKey))",
+      kind: tailBlock.kind
+    ))
+  }
+  workStreamingMarkdownCache.setObject(
+    WorkStreamingMarkdownCacheBox(prefixText: prefixText, prefixBlocks: prefixBlocks, fullText: normalized, blocks: blocks),
+    forKey: key
+  )
+  return blocks
+}
+
+/// Finds the position just past the last empty line that is NOT inside an
+/// unclosed ``` fence (fence state is tracked by toggling on every line whose
+/// trimmed text starts with "```", mirroring the parser's open/close rule).
+/// Splitting there is safe because blank lines terminate every non-code
+/// construct in `parseMarkdownBlocksInternal`, and the parser's only lookahead
+/// (the table-header check) never crosses a blank line.
+private func workStreamingStableBoundaryIndex(in normalized: String) -> String.Index? {
+  var boundary: String.Index?
+  var insideFence = false
+  var lineStart = normalized.startIndex
+  while lineStart < normalized.endIndex {
+    let newlineIndex = normalized[lineStart...].firstIndex(of: "\n")
+    let lineEnd = newlineIndex ?? normalized.endIndex
+    if lineStart == lineEnd {
+      if !insideFence {
+        boundary = newlineIndex.map { normalized.index(after: $0) } ?? lineEnd
+      }
+    } else if normalized[lineStart..<lineEnd].trimmingCharacters(in: .whitespaces).hasPrefix("```") {
+      insideFence.toggle()
+    }
+    guard let newlineIndex else { break }
+    lineStart = normalized.index(after: newlineIndex)
+  }
+  return boundary
+}
+
 private func parseMarkdownBlocksInternal(_ markdown: String) -> [WorkMarkdownBlock] {
   let lines = markdown.replacingOccurrences(of: "\r\n", with: "\n").split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
   var index = 0
@@ -146,7 +233,12 @@ private func parseMarkdownBlocksInternal(_ markdown: String) -> [WorkMarkdownBlo
       if value.isEmpty || value.hasPrefix("```") || value.hasPrefix(">") || isMarkdownTableHeader(lines: lines, index: index) || isMarkdownListItem(value, ordered: false) || isMarkdownListItem(value, ordered: true) || ["---", "***", "___"].contains(value) {
         break
       }
-      if value.hasPrefix("#") { break }
+      // Only break for REAL headings (hashes followed by text). A line of
+      // only '#' characters is not matched by the heading branch above, so
+      // breaking on it here would leave `index` unadvanced and spin this
+      // parser forever — streaming snapshots routinely end mid-heading
+      // (e.g. the text so far is exactly "#").
+      if value.hasPrefix("#"), value.contains(where: { $0 != "#" }) { break }
       paragraphLines.append(lines[index])
       index += 1
     }
@@ -240,6 +332,30 @@ private let workMarkdownCache: NSCache<NSString, WorkMarkdownCacheBox> = {
 private let workMarkdownBlocksCache: NSCache<NSString, WorkMarkdownBlocksCacheBox> = {
   let cache = NSCache<NSString, WorkMarkdownBlocksCacheBox>()
   cache.countLimit = 128
+  return cache
+}()
+
+/// Per-message state for `parseMarkdownBlocksForStreaming`, keyed by message
+/// id. Immutable snapshot box (replaced wholesale on each delta) so concurrent
+/// readers never observe a half-updated entry. Only one message streams at a
+/// time per session, so the limit stays tiny.
+private final class WorkStreamingMarkdownCacheBox: NSObject {
+  let prefixText: String
+  let prefixBlocks: [WorkMarkdownBlock]
+  let fullText: String
+  let blocks: [WorkMarkdownBlock]
+
+  init(prefixText: String, prefixBlocks: [WorkMarkdownBlock], fullText: String, blocks: [WorkMarkdownBlock]) {
+    self.prefixText = prefixText
+    self.prefixBlocks = prefixBlocks
+    self.fullText = fullText
+    self.blocks = blocks
+  }
+}
+
+private let workStreamingMarkdownCache: NSCache<NSString, WorkStreamingMarkdownCacheBox> = {
+  let cache = NSCache<NSString, WorkStreamingMarkdownCacheBox>()
+  cache.countLimit = 8
   return cache
 }()
 

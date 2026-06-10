@@ -117,6 +117,7 @@
 		D30000000000000000000013 /* AttentionDrawerSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000003 /* AttentionDrawerSheet.swift */; };
 		D30000000000000000000015 /* AttentionDrawerModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000005 /* AttentionDrawerModelTests.swift */; };
 		D30000000000000000000016 /* SyncEnvelopeChunkAssemblerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000006 /* SyncEnvelopeChunkAssemblerTests.swift */; };
+		D30000000000000000000017 /* WorkMarkdownStreamingParsingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000007 /* WorkMarkdownStreamingParsingTests.swift */; };
 		889573D8A5ED468D3BD12894 /* PRsTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5EE4D463D21266B62B422D11 /* PRsTabView.swift */; };
 		B10000000000000000000002 /* LaneAttachSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000002 /* LaneAttachSheet.swift */; };
 		B10000000000000000000003 /* LaneBatchManageSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000003 /* LaneBatchManageSheet.swift */; };
@@ -324,6 +325,7 @@
 		D30000000000000000000003 /* AttentionDrawerSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AttentionDrawerSheet.swift; path = ADE/Views/AttentionDrawer/AttentionDrawerSheet.swift; sourceTree = "<group>"; };
 		D30000000000000000000005 /* AttentionDrawerModelTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AttentionDrawerModelTests.swift; path = ADETests/AttentionDrawerModelTests.swift; sourceTree = "<group>"; };
 		D30000000000000000000006 /* SyncEnvelopeChunkAssemblerTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SyncEnvelopeChunkAssemblerTests.swift; path = ADETests/SyncEnvelopeChunkAssemblerTests.swift; sourceTree = "<group>"; };
+		D30000000000000000000007 /* WorkMarkdownStreamingParsingTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkMarkdownStreamingParsingTests.swift; path = ADETests/WorkMarkdownStreamingParsingTests.swift; sourceTree = "<group>"; };
 		27A125DE2C17BA32F9291513 /* ADE.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ADE.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		2856F8D2F2D630DD985B870A /* DatabaseBootstrap.sql */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text; name = DatabaseBootstrap.sql; path = ADE/Resources/DatabaseBootstrap.sql; sourceTree = "<group>"; };
 		31EC445F22FD38F90C16343E /* Foundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Foundation.framework; path = Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS18.0.sdk/System/Library/Frameworks/Foundation.framework; sourceTree = DEVELOPER_DIR; };
@@ -803,6 +805,7 @@
 				14C0DF7FEB4C2EB854BAC888 /* ADETests.swift */,
 				D30000000000000000000005 /* AttentionDrawerModelTests.swift */,
 				D30000000000000000000006 /* SyncEnvelopeChunkAssemblerTests.swift */,
+				D30000000000000000000007 /* WorkMarkdownStreamingParsingTests.swift */,
 			);
 			name = ADETests;
 			sourceTree = "<group>";
@@ -1174,6 +1177,7 @@
 				7B70BE6839672E5D2D006B28 /* ADETests.swift in Sources */,
 				D30000000000000000000015 /* AttentionDrawerModelTests.swift in Sources */,
 				D30000000000000000000016 /* SyncEnvelopeChunkAssemblerTests.swift in Sources */,
+				D30000000000000000000017 /* WorkMarkdownStreamingParsingTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
