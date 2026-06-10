@@ -49,6 +49,7 @@ export type CursorSdkModelDiscoveryResult = {
 
 let cached: { at: number; models: CursorCliModelRow[] } | null = null;
 let cliWarmInFlight: Promise<CursorCliModelRow[]> | null = null;
+let cliLastWarmAttemptAt = 0;
 let sdkCached: { at: number; keyHash: string; models: CursorCliModelRow[] } | null = null;
 let sdkWarmInFlight: { keyHash: string; promise: Promise<CursorCliModelRow[]> } | null = null;
 let sdkLastFailure: { at: number; keyHash: string; kind: CursorModelDiscoveryFailureKind; message: string } | null = null;
@@ -298,6 +299,7 @@ function foldCursorCliVariantRows(rows: CursorCliModelRow[]): CursorCliModelRow[
 export function clearCursorCliModelsCache(): void {
   cached = null;
   cliWarmInFlight = null;
+  cliLastWarmAttemptAt = 0;
   sdkCached = null;
   sdkWarmInFlight = null;
   sdkLastFailure = null;
@@ -317,6 +319,7 @@ export function markCursorModelCachesStale(): void {
   if (cached) cached = { ...cached, at: Math.min(cached.at, stalePoint) };
   if (sdkCached) sdkCached = { ...sdkCached, at: Math.min(sdkCached.at, stalePoint) };
   sdkLastFailure = null;
+  cliLastWarmAttemptAt = 0;
 }
 
 function hashKeyForCache(key: string | null | undefined): string {
@@ -671,11 +674,13 @@ function getCachedCursorSdkModels(apiKey?: string | null): CursorCliModelRow[] |
 }
 
 function hasRecentCursorSdkFailure(keyHash: string, now = Date.now()): boolean {
+  // Gates background warms only (active probes always run): any recent
+  // failure kind — including timeouts — defers the next warm attempt so
+  // passive consumers don't retry a 5s fetch on every call.
   return Boolean(
     sdkLastFailure
     && sdkLastFailure.keyHash === keyHash
-    && now - sdkLastFailure.at < TTL_MS
-    && (sdkLastFailure.kind === "auth" || sdkLastFailure.kind === "unavailable"),
+    && now - sdkLastFailure.at < TTL_MS,
   );
 }
 
@@ -848,7 +853,11 @@ function getCachedCursorModels(agentPathForRevalidate?: string | null): CursorCl
 }
 
 function warmCursorModelsFromCli(agentPath: string): void {
-  if (cliWarmInFlight) return;
+  const now = Date.now();
+  // At most one background CLI probe per freshness window — without this, a
+  // broken or missing CLI gets re-spawned on every passive discovery call.
+  if (cliWarmInFlight || now - cliLastWarmAttemptAt < TTL_MS) return;
+  cliLastWarmAttemptAt = now;
   const promise = listCursorModelsFromCli(agentPath).catch(() => [] as CursorCliModelRow[]);
   cliWarmInFlight = promise;
   void promise.finally(() => {

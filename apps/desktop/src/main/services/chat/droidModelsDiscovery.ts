@@ -23,6 +23,7 @@ type DroidCliModelDiscoveryMode = "probe" | "cached-or-fallback";
 let cached: { at: number; models: DroidExecHelpModelRow[] } | null = null;
 let inflight: Promise<DroidExecHelpModelRow[]> | null = null;
 let warmInFlight = false;
+let lastWarmAttemptAt = 0;
 const TTL_MS = 120_000;
 // Serve last-known-good rows well past the freshness window (revalidating in
 // the background) so passive consumers never lose models between probes.
@@ -268,6 +269,7 @@ async function listDroidModelsFromSdk(droidPath: string): Promise<DroidExecHelpM
 export function clearDroidCliModelsCache(): void {
   cached = null;
   inflight = null;
+  lastWarmAttemptAt = 0;
 }
 
 /**
@@ -278,10 +280,17 @@ export function clearDroidCliModelsCache(): void {
  */
 export function markDroidModelCachesStale(): void {
   if (cached) cached = { ...cached, at: Math.min(cached.at, Date.now() - TTL_MS) };
+  lastWarmAttemptAt = 0;
 }
 
 function warmDroidModels(droidPath: string): void {
-  if (warmInFlight) return;
+  const now = Date.now();
+  // At most one background SDK session per freshness window — a fresh cached
+  // result (even an empty one) or a recent attempt means don't re-probe, so
+  // an unauthenticated droid doesn't get a session spawned per passive call.
+  if (warmInFlight || now - lastWarmAttemptAt < TTL_MS) return;
+  if (cached && now - cached.at < TTL_MS) return;
+  lastWarmAttemptAt = now;
   warmInFlight = true;
   void listDroidModelsFromSdk(droidPath)
     .catch(() => undefined)
