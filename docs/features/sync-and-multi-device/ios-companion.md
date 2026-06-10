@@ -26,12 +26,13 @@ kept as connection details behind the row.
 3. Enter the 6-digit PIN. The phone receives a durable per-device
    secret and stores it in Keychain, so future reconnects do not ask
    for the PIN again.
-4. Pick a project from the machine catalog. Today ADE may reconnect
-   internally to the selected project's sync port, but the user-facing
-   model stays machine -> projects.
+4. Pick a project from the machine catalog. The machine keeps one sync
+   listener on a stable port; switching projects swaps which project
+   host owns the connection, and the user-facing model stays
+   machine -> projects.
 
 The same machine token works across LAN and Tailscale routes and across
-that machine's project ports. `siteId` remains an internal per-project
+that machine's projects. `siteId` remains an internal per-project
 database/runtime detail and must not be used as the visible identity of
 a saved machine.
 
@@ -310,17 +311,34 @@ Source: `apps/ios/ADE/Services/SyncService.swift`.
 1. App launch: read pairing secret from Keychain. Read the stored
    connection draft (machine identity, port, QR payload v2 address
    candidates).
-2. Open WebSocket connection. `reconnectIfPossible` is guarded so
-   overlapping wake-ups never stack TCP/WebSocket attempts.
-3. Send local `db_version`; `hello_ok` includes the runtime's current
-   project catalog when the runtime supports project switching.
+2. Open WebSocket connection. Before connecting, all saved address
+   candidates are raced with concurrent raw-TCP reachability probes
+   (happy eyeballs) and tried in first-reachable order, so a dead LAN
+   IP does not cost a full open timeout before the live Tailscale
+   route is attempted. `reconnectIfPossible` is guarded so overlapping
+   wake-ups never stack TCP/WebSocket attempts, and a reconnect never
+   tears down an already-live connection. The socket declares the
+   `chunkedEnvelopes` capability and sets a 32 MiB
+   `maximumMessageSize` receive budget.
+3. Send local `db_version` plus the per-host-DB cursor map
+   (`remoteDbVersionBySite`); `hello_ok` returns the host DB's
+   `serverDbSiteId` and the runtime's current project catalog when the
+   runtime supports project switching.
 4. If no active project is selected, show the native project home
    instead of hydrating lane/file/PR surfaces against the wrong row.
 5. After the active project row exists locally, receive catchup
    changesets and hydrate lane, file, Work, and PR projections scoped
    to that project.
-6. Enter continuous bidirectional sync.
-7. On disconnect: automatic reconnection with exponential backoff.
+6. Enter continuous bidirectional sync. Inbound processing runs off
+   the main actor: envelope JSON parse, gunzip, payload JSON parse,
+   chunked-envelope reassembly, and changeset decode + apply all run
+   in detached tasks (the SQLite connection is FULLMUTEX). The receive
+   loop awaits frames in order, so application order is unchanged —
+   the UI just never freezes under sync load.
+7. On disconnect: a fast exponential-backoff reconnect burst, then an
+   indefinite ~30 s slow-heartbeat retry loop. The phone never
+   permanently gives up — a paired machine that comes back minutes
+   later reconnects without the user touching anything.
 8. After pairing completes, the phone announces currently-open lanes
    via `lanes.presence.announce` so the runtime decorates
    `LaneSummary.devicesOpen` for other controllers; the phone calls
@@ -345,7 +363,8 @@ Implemented envelope types on iOS:
 | `file_request` / `file_response` | Bidirectional | On-demand file access |
 | `terminal_subscribe` / `terminal_unsubscribe` / `terminal_data` | Phone ↔ runtime | Terminal streaming; `unsubscribe` is sent when a Work terminal screen disappears so the phone stops accumulating buffer for off-screen sessions |
 | `terminal_input` / `terminal_resize` | Phone → runtime | Raw input bytes and viewport size changes for a subscribed live PTY |
-| `chat_subscribe` / `chat_event` | Phone → runtime / runtime → phone | Agent chat transcript streaming |
+| `chat_subscribe` / `chat_event` | Phone → runtime / runtime → phone | Agent chat transcript streaming; `chat_subscribe` carries `sinceSeq` so the runtime can replay exactly the missed events from its per-session buffer instead of re-sending a snapshot |
+| `envelope_chunk` | Runtime → phone | Slice of an oversized encoded envelope (>720 KB); the phone reassembles by `chunkId`/`index` before normal decode |
 | `heartbeat` | Bidirectional | Connection health (30s) |
 | `brain_status` | Runtime → phone | Legacy-named cluster authority broadcast |
 
@@ -382,12 +401,16 @@ results, anything), and the timeout path consults
 silenceThreshold:)` before tearing down. The default silence
 threshold is `SyncSocketTiming.requestTimeoutReconnectSilenceSeconds
 = 12 s`. If any envelope arrived within the last 12 seconds, the
-phone keeps the connection and lets the user retry; only when the connection
-has actually been silent for the full window does the timeout escalate
-to a reconnect. This avoids cycling a healthy connection while one
-slow command is in flight, and falls back to "reconnect" when
-`lastInboundMessageAt` is `nil` (fresh connection / never received
-anything).
+phone keeps the connection and lets the user retry. Even when the
+connection has been silent for the full window, the phone does not
+tear down immediately: it fails the request, marks the connection
+load-strained, and runs an **active transport probe**
+(`verifyTransportAliveAfterRequestTimeout` — ping the host and wait
+briefly for any inbound traffic). Only a probe that hears nothing
+back triggers the normal transport-failure teardown. This avoids
+cycling a healthy-but-slow connection (catalog/PR refreshes can take
+30 s+ on cellular) into a perpetual timeout→reconnect→re-request
+loop.
 
 `InitialHydrationGate` polls for the project row at 200ms intervals up
 to a 15s total budget. This covers the first sync-after-pairing gap
@@ -739,15 +762,19 @@ duplicate. Project list dedup runs as a final pass
 All lane, file, Work, and PR projections are scoped through
 `Database.currentProjectId()`. The iOS app stores the active project id
 in `UserDefaults`, mirrors it into `DatabaseService`, and falls back to
-the project home if no selected project row has arrived yet. Project
-switches reset the remote DB version. The machine runtime runs at most
-one active sync project at a time, so when the phone asks the runtime to
-switch projects, the runtime activates the requested project locally,
-returns `connection: null`, and the phone reuses its
-existing pairing credentials to reconnect against the now-active project
-endpoint. If the runtime is offline at switch time, it still records the
-requested project as active and the phone reconnects when the machine
-returns.
+the project home if no selected project row has arrived yet. The
+machine runtime runs at most one active sync project at a time behind
+a single brain-level listener on a stable port. When the phone asks
+the runtime to switch projects, the runtime activates the requested
+project locally, returns `connection: null`, and the phone reuses its
+existing pairing credentials to reconnect against the same port. The
+phone keeps a durable inbound cursor **per host DB site**
+(`remoteDbVersionBySite`, keyed by the `serverDbSiteId` from
+`hello_ok`) because each hosted project DB has its own `db_version`
+sequence — returning to a previously-synced project resumes its
+backlog precisely instead of replaying everything or skipping. If the
+runtime is offline at switch time, it still records the requested
+project as active and the phone reconnects when the machine returns.
 
 Before tearing down the old connection on a project switch, `SyncService`
 calls `resetChatEventState(clearHistory: false)` and
@@ -891,9 +918,11 @@ reflected in the phone's UI on the next descriptor read.
   the Settings tab's "Forget machine" flow does both.
 - **The ADE iOS bootstrap SQL is generated.** When desktop `kvDb.ts`
   schema changes, regenerate `DatabaseBootstrap.sql`. Schema drift
-  between desktop and iOS breaks the first-launch bootstrap, and
-  `changeset_batch` apply will fail for tables that don't exist
-  locally.
+  between desktop and iOS breaks the first-launch bootstrap.
+  `changeset_batch` apply no longer fails on tables the phone's
+  schema doesn't know — those rows are skipped so a newer desktop can
+  never freeze a phone's sync — but the skipped tables' data is
+  simply missing until the app updates.
 - **Integration proposal schema must move with PR workflow fields.**
   Desktop merge-into-lane proposals store
   `preferred_integration_lane_id` and `merge_into_head_sha` on
@@ -911,13 +940,13 @@ reflected in the phone's UI on the next descriptor read.
   be batched into a single command with a single reply rather than
   rapid-fire command storms.
 - **A request timeout is not the same as a dead connection.** The 30 s
-  `SyncRequestTimeout` only forces a reconnect when
-  `syncShouldReconnectAfterRequestTimeout` agrees — that helper
-  consults `lastInboundMessageAt` and the 12 s
-  `requestTimeoutReconnectSilenceSeconds` window. If anything has
-  arrived on the WebSocket recently (heartbeats, change batches, a
-  result), the timeout surfaces to the caller without dropping the
-  connection. New transport-affecting code should bump
+  `SyncRequestTimeout` never tears the socket down directly. If
+  anything has arrived on the WebSocket within the 12 s
+  `requestTimeoutReconnectSilenceSeconds` window (heartbeats, change
+  batches, a result), the timeout surfaces to the caller and nothing
+  else happens. If the socket has been fully silent, the phone runs an
+  active transport probe and tears down only when the probe also hears
+  nothing. New transport-affecting code should bump
   `lastInboundMessageAt` on inbound traffic and treat that timestamp
   as the source of truth for "is this connection actually alive".
 - **Connection UI must use `SyncConnectionHealth`, not the raw state.**
@@ -927,12 +956,21 @@ reflected in the phone's UI on the next descriptor read.
   affordances should render off `syncService.connectionHealth` so
   load-strain and transport failure stay distinct from each other and
   from background sync work.
-- **Chat streaming is push, with polling as fallback.** Once a phone
+- **Chat streaming is push, with seq-based resume.** Once a phone
   sends `chat_subscribe`, the runtime fans out `chat_event` envelopes in
-  real time from `agentChatService.subscribeToEvents`. The runtime still
-  runs its polling path on reconnect / catchup to fill any gap; the
-  phone de-duplicates per-event keys so a push and a catchup poll
-  covering the same event produce one rendered message.
+  real time from `agentChatService.subscribeToEvents`. Each event
+  carries a host-assigned per-session monotonic `seq`; the phone tracks
+  the highest applied seq per session, drops duplicates, and sends it
+  back as `sinceSeq` on re-subscribe so the runtime replays exactly the
+  missed events from its replay buffer instead of re-sending a
+  snapshot. Uncoverable gaps fall back to the snapshot path, and a
+  non-resumed subscribe ack resets the phone's watermark (seq epochs
+  restart at 1 when a new host takes over). Events without `seq`
+  (older hosts) bypass the watermark entirely.
+- **Transcript history pages through an opaque cursor.**
+  `chat.getTranscript` responses carry `nextCursor`; the phone's
+  `fetchChatTranscriptPage` requests strictly-older history with it.
+  The default fetch budget is 500 messages / 600k chars.
 - **Chat subscribe requests a 2 MB snapshot window.** The phone sends
   `chat_subscribe` with `maxBytes: 2_000_000`
   (`syncChatSubscriptionMaxBytes`) so the initial snapshot can carry

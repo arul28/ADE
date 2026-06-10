@@ -146,6 +146,11 @@ uses the selected parent lane's current branch.
 
 **Chat** (`chat.*`)
 - `listSessions`, `getSummary`, `getTranscript`
+
+`chat.getTranscript` supports cursor pagination: responses carry an
+opaque index-based `nextCursor`, and requests can pass `cursor` to
+page strictly-older history. Calls without a cursor behave exactly as
+before.
 - `create`, `send`, `interrupt`, `steer`, `cancelSteer`, `editSteer`,
   `dispatchSteer`, `cancelDispatchedSteer`, `approve`, `respondToInput`
 - `restart`, `updateSession`, `archive`, `unarchive`, `delete`, `models`,
@@ -472,10 +477,15 @@ see the chat README for the passive/active contract.
   disconnected controller can enqueue deletes that replay on
   reconnect. Be aware when reasoning about "why did this lane
   disappear" — check the command queue, not just the local DB.
-- **`prs.createFromLane` requires the brain's GitHub token.** On a
-  headless/manual runtime with no `ADE_GITHUB_TOKEN` /
-  `GITHUB_TOKEN` / `GH_TOKEN`, the command fails with a clear
-  error before reaching GitHub. This is deliberate fail-fast behavior.
+- **`prs.createFromLane` requires GitHub auth on the brain.** Headless
+  brains resolve auth the same way the desktop does: a stored PAT,
+  then env tokens (`ADE_GITHUB_TOKEN` / `GITHUB_TOKEN` / `GH_TOKEN`),
+  then the `gh` CLI resolved from known absolute install locations
+  (launchd's minimal PATH does not include Homebrew), then reading
+  `gh`'s `hosts.yml` oauth token directly (both host-level and nested
+  `users:<login>:` token layouts). Only when none of those yield a
+  token does the command fail with a clear error before reaching
+  GitHub.
 - **`work.runQuickCommand` always creates a PTY.** There is no
   "run a command, give me just the output" variant; the controller
   must subscribe to the terminal stream and stop the process with
