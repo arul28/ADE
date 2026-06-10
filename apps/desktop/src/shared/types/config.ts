@@ -1301,13 +1301,15 @@ export type AiOrchestratorConfig = {
 export type SessionIntelligenceConfig = {
   titles?: {
     enabled?: boolean;
-    modelId?: ModelId;
+    modelId?: ModelId | null;
+    reasoningEffort?: string | null;
     /** Whether to regenerate the title when the session completes */
     refreshOnComplete?: boolean;
   };
   summaries?: {
     enabled?: boolean;
-    modelId?: ModelId;
+    modelId?: ModelId | null;
+    reasoningEffort?: string | null;
   };
 };
 
@@ -1345,7 +1347,7 @@ export type AiConfig = {
   localProviders?: AiLocalProviderConfigs;
   workerSafety?: WorkerSafetyPolicy;
   /** Per-feature model overrides, e.g. { pr_descriptions: "claude-sonnet-4-6" } */
-  featureModelOverrides?: Partial<Record<AiFeatureKey, string>>;
+  featureModelOverrides?: Partial<Record<AiFeatureKey, string | null>>;
   /** Per-feature reasoning effort overrides */
   featureReasoningOverrides?: Partial<Record<AiFeatureKey, string | null>>;
   /** Unified title + summary intelligence config for all session types */

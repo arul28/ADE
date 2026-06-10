@@ -365,6 +365,10 @@ function coerceSessionIntelligenceConfig(value: unknown): AiConfig["sessionIntel
     if (enabled != null) titles.enabled = enabled;
     const modelId = asString(titlesRaw.modelId)?.trim();
     if (modelId) titles.modelId = modelId;
+    else if (titlesRaw.modelId === null) titles.modelId = null;
+    const reasoningEffort = asString(titlesRaw.reasoningEffort)?.trim();
+    if (reasoningEffort) titles.reasoningEffort = reasoningEffort;
+    else if (titlesRaw.reasoningEffort === null) titles.reasoningEffort = null;
     const refreshOnComplete = asBool(titlesRaw.refreshOnComplete);
     if (refreshOnComplete != null) titles.refreshOnComplete = refreshOnComplete;
     if (Object.keys(titles).length) out.titles = titles;
@@ -377,6 +381,10 @@ function coerceSessionIntelligenceConfig(value: unknown): AiConfig["sessionIntel
     if (enabled != null) summaries.enabled = enabled;
     const modelId = asString(summariesRaw.modelId)?.trim();
     if (modelId) summaries.modelId = modelId;
+    else if (summariesRaw.modelId === null) summaries.modelId = null;
+    const reasoningEffort = asString(summariesRaw.reasoningEffort)?.trim();
+    if (reasoningEffort) summaries.reasoningEffort = reasoningEffort;
+    else if (summariesRaw.reasoningEffort === null) summaries.reasoningEffort = null;
     if (Object.keys(summaries).length) out.summaries = summaries;
   }
 
@@ -385,12 +393,29 @@ function coerceSessionIntelligenceConfig(value: unknown): AiConfig["sessionIntel
 
 function coerceFeatureModelOverrides(value: unknown): AiConfig["featureModelOverrides"] {
   if (!isRecord(value)) return undefined;
-  const featureModelOverrides: Partial<Record<AiFeatureKey, string>> = {};
+  const featureModelOverrides: Partial<Record<AiFeatureKey, string | null>> = {};
   for (const key of AI_FEATURE_KEYS) {
-    const modelId = asString(value[key])?.trim();
+    const rawValue = value[key];
+    const modelId = asString(rawValue)?.trim();
     if (modelId) featureModelOverrides[key] = modelId;
+    else if (rawValue === null) featureModelOverrides[key] = null;
   }
   return Object.keys(featureModelOverrides).length ? featureModelOverrides : undefined;
+}
+
+function coerceFeatureReasoningOverrides(value: unknown): AiConfig["featureReasoningOverrides"] {
+  if (!isRecord(value)) return undefined;
+  const featureReasoningOverrides: Partial<Record<AiFeatureKey, string | null>> = {};
+  for (const key of AI_FEATURE_KEYS) {
+    const rawValue = value[key];
+    const reasoningEffort = asString(rawValue)?.trim();
+    if (reasoningEffort) {
+      featureReasoningOverrides[key] = reasoningEffort;
+    } else if (rawValue === null) {
+      featureReasoningOverrides[key] = null;
+    }
+  }
+  return Object.keys(featureReasoningOverrides).length ? featureReasoningOverrides : undefined;
 }
 
 function parseReadiness(value: unknown): ConfigProcessReadiness | undefined {
@@ -1322,6 +1347,8 @@ function coerceAiConfig(value: unknown): AiConfig | undefined {
 
   const featureModelOverrides = coerceFeatureModelOverrides(value.featureModelOverrides);
   if (featureModelOverrides) out.featureModelOverrides = featureModelOverrides;
+  const featureReasoningOverrides = coerceFeatureReasoningOverrides(value.featureReasoningOverrides);
+  if (featureReasoningOverrides) out.featureReasoningOverrides = featureReasoningOverrides;
 
   const permissionsRaw = isRecord(value.permissions) ? value.permissions : null;
   if (permissionsRaw) {
@@ -1506,12 +1533,15 @@ function coerceAiConfig(value: unknown): AiConfig | undefined {
     if (autoTitleEnabled != null) titles.enabled = autoTitleEnabled;
     const autoTitleModelId = asString(chatRaw?.autoTitleModelId)?.trim();
     if (autoTitleModelId) titles.modelId = autoTitleModelId;
+    const autoTitleReasoningEffort = asString(chatRaw?.autoTitleReasoningEffort)?.trim();
+    if (autoTitleReasoningEffort) titles.reasoningEffort = autoTitleReasoningEffort;
     const autoTitleRefreshOnComplete = asBool(chatRaw?.autoTitleRefreshOnComplete);
     if (autoTitleRefreshOnComplete != null) titles.refreshOnComplete = autoTitleRefreshOnComplete;
 
     const summaries: NonNullable<NonNullable<AiConfig["sessionIntelligence"]>["summaries"]> = {};
-    if (featureModelOverrides?.terminal_summaries) {
-      summaries.modelId = featureModelOverrides.terminal_summaries;
+    const terminalSummariesModelId = featureModelOverrides?.terminal_summaries;
+    if (typeof terminalSummariesModelId === "string" && terminalSummariesModelId.trim().length) {
+      summaries.modelId = terminalSummariesModelId.trim();
     }
 
     const migrated: NonNullable<AiConfig["sessionIntelligence"]> = {
@@ -1882,6 +1912,10 @@ export function mergeAiConfig(sharedAi?: AiConfig, localAi?: Partial<AiConfig>):
     ...(sharedAi?.featureModelOverrides ?? {}),
     ...(localAi?.featureModelOverrides ?? {})
   };
+  const featureReasoningOverrides = {
+    ...(sharedAi?.featureReasoningOverrides ?? {}),
+    ...(localAi?.featureReasoningOverrides ?? {})
+  };
   const apiKeys = {
     ...(sharedAi?.apiKeys ?? {}),
     ...(localAi?.apiKeys ?? {})
@@ -1910,6 +1944,7 @@ export function mergeAiConfig(sharedAi?: AiConfig, localAi?: Partial<AiConfig>):
     ...(Object.keys(chat).length ? { chat } : {}),
     ...(sessionIntelligence ? { sessionIntelligence } : {}),
     ...(Object.keys(featureModelOverrides).length ? { featureModelOverrides } : {}),
+    ...(Object.keys(featureReasoningOverrides).length ? { featureReasoningOverrides } : {}),
     ...(Object.keys(apiKeys).length ? { apiKeys } : {}),
     ...(localProvidersEntries.length ? { localProviders } : {}),
     ...(workerSafety ? { workerSafety } : {}),

@@ -636,7 +636,6 @@ describe("bootstrapRemoteRuntime upload flow", () => {
         command.includes("printf '%s\\n' '2.0.0' > $HOME/.ade/bin/ade.version")
       ) return ok("");
       if (command.includes("$HOME/.ade/bin/ade --version")) return ok("ade 2.0.0\n");
-      if (command.includes("$HOME/.ade/bin/ade runtime stop --text")) return ok("");
       return defaultRemoteBootstrapCommand(command);
     });
 
@@ -670,12 +669,10 @@ describe("bootstrapRemoteRuntime upload flow", () => {
     expect(commands).toContain(
       'ADE_HOME="$HOME/.ade" PATH="$HOME/.ade/bin:$HOME/.local/bin:$HOME/.npm-global/bin${PATH:+:$PATH}" ADE_DEFAULT_ROLE="cto" $HOME/.ade/bin/ade --version',
     );
-    expect(commands).toContain(
-      'ADE_HOME="$HOME/.ade" PATH="$HOME/.ade/bin:$HOME/.local/bin:$HOME/.npm-global/bin${PATH:+:$PATH}" ADE_DEFAULT_ROLE="cto" $HOME/.ade/bin/ade runtime stop --text >/dev/null 2>&1 || true',
-    );
+    expect(commands.some((command) => command.includes("runtime stop --text"))).toBe(false);
     expect(openSshRuntimeTransportMock).toHaveBeenCalledWith(
       fakeSsh.ssh,
-      'ADE_HOME="$HOME/.ade" PATH="$HOME/.ade/bin:$HOME/.local/bin:$HOME/.npm-global/bin${PATH:+:$PATH}" ADE_DEFAULT_ROLE="cto" $HOME/.ade/bin/ade rpc --stdio',
+      'ADE_HOME="$HOME/.ade" PATH="$HOME/.ade/bin:$HOME/.local/bin:$HOME/.npm-global/bin${PATH:+:$PATH}" ADE_DEFAULT_ROLE="cto" $HOME/.ade/bin/ade --socket $HOME/.ade/sock/ade.sock rpc --stdio',
     );
     expect(initializeMock).toHaveBeenCalledWith("ade-desktop-remote", APP_VERSION);
     expect(callMock).toHaveBeenCalledWith("projects.list", {});
@@ -773,7 +770,7 @@ describe("bootstrapRemoteRuntime upload flow", () => {
     )).toBe(true);
     expect(openSshRuntimeTransportMock).toHaveBeenCalledWith(
       fakeSsh.ssh,
-      'ADE_HOME="$HOME/.ade" PATH="$HOME/.ade/bin:$HOME/.local/bin:$HOME/.npm-global/bin${PATH:+:$PATH}" ADE_DEFAULT_ROLE="cto" ADE_PTY_HOST_WORKER_PATH="$HOME/.ade/runtime/ptyHostWorker.cjs" ADE_PTY_HOST_WORKER_NODE=\'/usr/local/bin/node\' $HOME/.ade/bin/ade rpc --stdio',
+      'ADE_HOME="$HOME/.ade" PATH="$HOME/.ade/bin:$HOME/.local/bin:$HOME/.npm-global/bin${PATH:+:$PATH}" ADE_DEFAULT_ROLE="cto" ADE_PTY_HOST_WORKER_PATH="$HOME/.ade/runtime/ptyHostWorker.cjs" ADE_PTY_HOST_WORKER_NODE=\'/usr/local/bin/node\' $HOME/.ade/bin/ade --socket $HOME/.ade/sock/ade.sock rpc --stdio',
     );
     expect(connected.result).toMatchObject({
       arch: "linux-x64",
@@ -829,7 +826,7 @@ describe("bootstrapRemoteRuntime upload flow", () => {
     expect(fakeSsh.sftpWrapper.fastPut).not.toHaveBeenCalled();
     expect(openSshRuntimeTransportMock).toHaveBeenCalledWith(
       fakeSsh.ssh,
-      'ADE_HOME="$HOME/.ade" PATH="$HOME/.ade/bin:$HOME/.local/bin:$HOME/.npm-global/bin${PATH:+:$PATH}" ADE_DEFAULT_ROLE="cto" ADE_PTY_HOST_WORKER_COMMAND="$HOME/.ade/bin/ade" $HOME/.ade/bin/ade rpc --stdio',
+      'ADE_HOME="$HOME/.ade" PATH="$HOME/.ade/bin:$HOME/.local/bin:$HOME/.npm-global/bin${PATH:+:$PATH}" ADE_DEFAULT_ROLE="cto" ADE_PTY_HOST_WORKER_COMMAND="$HOME/.ade/bin/ade" $HOME/.ade/bin/ade --socket $HOME/.ade/sock/ade.sock rpc --stdio',
     );
     expect(connected.result).toMatchObject({
       arch: "linux-x64",
@@ -948,7 +945,6 @@ describe("bootstrapRemoteRuntime upload flow", () => {
         command.includes(`printf '%s\\n' '${APP_VERSION}' > $HOME/.ade/bin/ade.version`)
       ) return ok("");
       if (command.includes("$HOME/.ade/bin/ade --version")) return ok(`ade ${APP_VERSION}\n`);
-      if (command.includes("$HOME/.ade/bin/ade runtime stop --text")) return ok("");
       return defaultRemoteBootstrapCommand(command);
     });
 
@@ -968,7 +964,7 @@ describe("bootstrapRemoteRuntime upload flow", () => {
     )).toBe(true);
     expect(openSshRuntimeTransportMock).toHaveBeenCalledWith(
       fakeSsh.ssh,
-      'ADE_HOME="$HOME/.ade" PATH="$HOME/.ade/bin:$HOME/.local/bin:$HOME/.npm-global/bin${PATH:+:$PATH}" ADE_DEFAULT_ROLE="cto" $HOME/.ade/bin/ade rpc --stdio',
+      'ADE_HOME="$HOME/.ade" PATH="$HOME/.ade/bin:$HOME/.local/bin:$HOME/.npm-global/bin${PATH:+:$PATH}" ADE_DEFAULT_ROLE="cto" $HOME/.ade/bin/ade --socket $HOME/.ade/sock/ade.sock rpc --stdio',
     );
     expect(connected.result).toMatchObject({
       arch: "linux-x64",
@@ -1018,7 +1014,6 @@ describe("bootstrapRemoteRuntime upload flow", () => {
         command.includes(`printf '%s\\n' '${APP_VERSION}' > $HOME/.ade/bin/ade.version`)
       ) return ok("");
       if (command.includes("$HOME/.ade/bin/ade --version")) return ok(`ade ${APP_VERSION}\n`);
-      if (command.includes("$HOME/.ade/bin/ade runtime stop --text")) return ok("");
       return defaultRemoteBootstrapCommand(command);
     });
 
@@ -1037,7 +1032,7 @@ describe("bootstrapRemoteRuntime upload flow", () => {
     )).toBe(true);
     expect(openSshRuntimeTransportMock).toHaveBeenCalledWith(
       fakeSsh.ssh,
-      'ADE_HOME="$HOME/.ade" PATH="$HOME/.ade/bin:$HOME/.local/bin:$HOME/.npm-global/bin${PATH:+:$PATH}" ADE_DEFAULT_ROLE="cto" $HOME/.ade/bin/ade rpc --stdio',
+      'ADE_HOME="$HOME/.ade" PATH="$HOME/.ade/bin:$HOME/.local/bin:$HOME/.npm-global/bin${PATH:+:$PATH}" ADE_DEFAULT_ROLE="cto" $HOME/.ade/bin/ade --socket $HOME/.ade/sock/ade.sock rpc --stdio',
     );
     expect(connected.result).toMatchObject({
       arch: "linux-x64",
@@ -1214,7 +1209,6 @@ describe("bootstrapRemoteRuntime upload flow", () => {
       ) return ok("");
       if (command === "codesign --force --sign - $HOME/.ade-alpha/bin/ade") return ok("");
       if (command.includes("$HOME/.ade-alpha/bin/ade --version")) return ok("ade 2.0.0\n");
-      if (command.includes("$HOME/.ade-alpha/bin/ade runtime stop --text")) return ok("");
       return defaultRemoteBootstrapCommand(command);
     });
 
@@ -1249,7 +1243,7 @@ describe("bootstrapRemoteRuntime upload flow", () => {
     );
     expect(openSshRuntimeTransportMock).toHaveBeenCalledWith(
       fakeSsh.ssh,
-      'ADE_HOME="$HOME/.ade-alpha" PATH="$HOME/.ade-alpha/bin:$HOME/.local/bin:$HOME/.npm-global/bin${PATH:+:$PATH}" ADE_DEFAULT_ROLE="cto" ADE_PACKAGE_CHANNEL="alpha" ADE_DISABLE_RUNTIME_SERVICE_INSTALL=1 NODE_PATH="$HOME/.ade-alpha/runtime/darwin-arm64/node_modules${NODE_PATH:+:$NODE_PATH}" $HOME/.ade-alpha/bin/ade rpc --stdio',
+      'ADE_HOME="$HOME/.ade-alpha" PATH="$HOME/.ade-alpha/bin:$HOME/.local/bin:$HOME/.npm-global/bin${PATH:+:$PATH}" ADE_DEFAULT_ROLE="cto" ADE_PACKAGE_CHANNEL="alpha" ADE_DISABLE_RUNTIME_SERVICE_INSTALL=1 NODE_PATH="$HOME/.ade-alpha/runtime/darwin-arm64/node_modules${NODE_PATH:+:$NODE_PATH}" $HOME/.ade-alpha/bin/ade --socket $HOME/.ade-alpha/sock/ade.sock rpc --stdio',
     );
   });
 
@@ -1302,7 +1296,7 @@ describe("bootstrapRemoteRuntime upload flow", () => {
     expect(fakeSsh.exec).not.toHaveBeenCalled();
     expect(openSshRuntimeTransportMock).toHaveBeenCalledWith(
       fakeSsh.ssh,
-      'ADE_HOME="$HOME/.ade-alpha" PATH="$HOME/.ade-alpha/bin:$HOME/.local/bin:$HOME/.npm-global/bin${PATH:+:$PATH}" ADE_DEFAULT_ROLE="cto" ADE_PACKAGE_CHANNEL="alpha" ADE_DISABLE_RUNTIME_SERVICE_INSTALL=1 ade rpc --stdio',
+      'ADE_HOME="$HOME/.ade-alpha" PATH="$HOME/.ade-alpha/bin:$HOME/.local/bin:$HOME/.npm-global/bin${PATH:+:$PATH}" ADE_DEFAULT_ROLE="cto" ADE_PACKAGE_CHANNEL="alpha" ADE_DISABLE_RUNTIME_SERVICE_INSTALL=1 ade --socket $HOME/.ade-alpha/sock/ade.sock rpc --stdio',
     );
     expect(connected.result.version).toBe("1.9.0-alpha.4");
     expect(connected.result.compatibilityWarnings).toEqual([
@@ -1365,12 +1359,12 @@ describe("bootstrapRemoteRuntime upload flow", () => {
     expect(openSshRuntimeTransportMock).toHaveBeenNthCalledWith(
       1,
       fakeSsh.ssh,
-      'ADE_HOME="$HOME/.ade-beta" PATH="$HOME/.ade-beta/bin:$HOME/.local/bin:$HOME/.npm-global/bin${PATH:+:$PATH}" ADE_DEFAULT_ROLE="cto" ADE_PACKAGE_CHANNEL="beta" ADE_DISABLE_RUNTIME_SERVICE_INSTALL=1 ade rpc --stdio',
+      'ADE_HOME="$HOME/.ade-beta" PATH="$HOME/.ade-beta/bin:$HOME/.local/bin:$HOME/.npm-global/bin${PATH:+:$PATH}" ADE_DEFAULT_ROLE="cto" ADE_PACKAGE_CHANNEL="beta" ADE_DISABLE_RUNTIME_SERVICE_INSTALL=1 ade --socket $HOME/.ade-beta/sock/ade.sock rpc --stdio',
     );
     expect(openSshRuntimeTransportMock).toHaveBeenNthCalledWith(
       2,
       fakeSsh.ssh,
-      'ADE_HOME="$HOME/.ade-alpha" PATH="$HOME/.ade-alpha/bin:$HOME/.local/bin:$HOME/.npm-global/bin${PATH:+:$PATH}" ADE_DEFAULT_ROLE="cto" ADE_PACKAGE_CHANNEL="alpha" ADE_DISABLE_RUNTIME_SERVICE_INSTALL=1 NODE_PATH="$HOME/.ade-alpha/runtime/linux-x64/node_modules${NODE_PATH:+:$NODE_PATH}" ade rpc --stdio',
+      'ADE_HOME="$HOME/.ade-alpha" PATH="$HOME/.ade-alpha/bin:$HOME/.local/bin:$HOME/.npm-global/bin${PATH:+:$PATH}" ADE_DEFAULT_ROLE="cto" ADE_PACKAGE_CHANNEL="alpha" ADE_DISABLE_RUNTIME_SERVICE_INSTALL=1 NODE_PATH="$HOME/.ade-alpha/runtime/linux-x64/node_modules${NODE_PATH:+:$NODE_PATH}" ade --socket $HOME/.ade-alpha/sock/ade.sock rpc --stdio',
     );
     expect(connected.result).toMatchObject({
       version: "1.9.0-alpha.4",
@@ -1434,7 +1428,7 @@ describe("bootstrapRemoteRuntime upload flow", () => {
     expect(openSshRuntimeTransportMock).toHaveBeenNthCalledWith(
       2,
       fakeSsh.ssh,
-      'ADE_HOME="$HOME/.ade" PATH="$HOME/.ade/bin:$HOME/.local/bin:$HOME/.npm-global/bin${PATH:+:$PATH}" ADE_DEFAULT_ROLE="cto" ADE_DISABLE_RUNTIME_SERVICE_INSTALL=1 NODE_PATH="$HOME/.ade/runtime/linux-x64/node_modules${NODE_PATH:+:$NODE_PATH}" ade rpc --stdio',
+      'ADE_HOME="$HOME/.ade" PATH="$HOME/.ade/bin:$HOME/.local/bin:$HOME/.npm-global/bin${PATH:+:$PATH}" ADE_DEFAULT_ROLE="cto" ADE_DISABLE_RUNTIME_SERVICE_INSTALL=1 NODE_PATH="$HOME/.ade/runtime/linux-x64/node_modules${NODE_PATH:+:$NODE_PATH}" ade --socket $HOME/.ade/sock/ade.sock rpc --stdio',
     );
   });
 
@@ -1463,7 +1457,6 @@ describe("bootstrapRemoteRuntime upload flow", () => {
         command.includes("shasum -a 256 $HOME/.ade/bin/ade") &&
         command.includes("echo ok")
       ) return ok("ok\n");
-      if (command.includes("$HOME/.ade/bin/ade runtime stop --text")) return ok("");
       return defaultRemoteBootstrapCommand(command);
     });
     initializeMock.mockResolvedValueOnce({
@@ -1494,8 +1487,6 @@ describe("bootstrapRemoteRuntime upload flow", () => {
 
     expect(fakeSsh.exec).not.toHaveBeenCalled();
     expect(openSshRuntimeTransportMock).toHaveBeenCalledTimes(1);
-    expect(commands).not.toContain(
-      'ADE_HOME="$HOME/.ade" PATH="$HOME/.ade/bin:$HOME/.local/bin:$HOME/.npm-global/bin${PATH:+:$PATH}" ADE_DEFAULT_ROLE="cto" $HOME/.ade/bin/ade runtime stop --text >/dev/null 2>&1 || true',
-    );
+    expect(commands.some((command) => command.includes("runtime stop --text"))).toBe(false);
   });
 });

@@ -3435,7 +3435,7 @@ describe("AgentChatPane submit recovery", () => {
         laneId: "lane-primary",
         prompt: "Fix auto create lane routing.",
         modelId: "openai/gpt-5.4",
-        fallbackName: expect.stringMatching(/^chat-\d{8}-\d{6}$/),
+        fallbackName: "fix-auto-create-lane-routing",
       }));
       expect(createLane).toHaveBeenCalledWith({
         name: "fix-auto-create-flow",
@@ -3568,7 +3568,7 @@ describe("AgentChatPane submit recovery", () => {
 
       await waitFor(() => {
         expect(createLane).toHaveBeenCalledWith({
-          name: expect.stringMatching(/^chat-\d{8}-\d{6}$/),
+          name: "keep-going-even-if-naming",
           baseBranch: "origin/main",
         });
         expect(create).toHaveBeenCalledWith(expect.objectContaining({ laneId: "lane-created" }));
@@ -4127,7 +4127,7 @@ describe("AgentChatPane submit recovery", () => {
 
     await waitFor(() => {
       expect(suggestLaneName).toHaveBeenCalled();
-      expect(screen.getByText(/Choosing a branch name/i)).toBeTruthy();
+      expect(screen.getByText(/Naming lane with/i)).toBeTruthy();
       expect((screen.getByRole("button", { name: "Send" }) as HTMLButtonElement).disabled).toBe(true);
       expect((screen.getByRole("button", { name: "Auto-create in background" }) as HTMLButtonElement).disabled).toBe(true);
     });
@@ -4182,14 +4182,14 @@ describe("AgentChatPane submit recovery", () => {
 
     await waitFor(() => {
       expect(suggestLaneName).toHaveBeenCalledTimes(1);
-      expect(screen.getByText(/Choosing a branch name/i)).toBeTruthy();
+      expect(screen.getByText(/Naming lane with/i)).toBeTruthy();
     });
     expect(screen.queryByRole("button", { name: "Dismiss launch status" })).toBeNull();
 
     rendered.unmount();
     renderAutoCreateDraftPane();
 
-    expect(await screen.findByText(/Choosing a branch name/i)).toBeTruthy();
+    expect(await screen.findByText(/Naming lane with/i)).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Dismiss launch status" })).toBeNull();
 
     await act(async () => {
@@ -4226,7 +4226,9 @@ describe("AgentChatPane submit recovery", () => {
           laneId: null,
           laneName: null,
           sessionId: null,
+          namingModelId: null,
           error: null,
+          warning: null,
           autoOpen: false,
           createdAtMs: Date.now() - DRAFT_LAUNCH_JOB_STALE_AFTER_MS - 1,
           snapshot: {
@@ -4289,7 +4291,7 @@ describe("AgentChatPane submit recovery", () => {
 
       await waitFor(() => {
         expect(suggestLaneName).toHaveBeenCalledTimes(1);
-        expect(screen.getByText(/Choosing a branch name/i)).toBeTruthy();
+        expect(screen.getByText(/Naming lane with/i)).toBeTruthy();
       });
 
       const scopeKey = draftLaunchJobsScopeKeyForTest({
@@ -4395,7 +4397,7 @@ describe("AgentChatPane submit recovery", () => {
 
     await waitFor(() => {
       expect(suggestLaneName).toHaveBeenCalledTimes(1);
-      expect(screen.getAllByText(/Choosing a branch name/i)).toHaveLength(1);
+      expect(screen.getAllByText(/Naming lane with/i)).toHaveLength(1);
     });
   });
 
@@ -4476,9 +4478,9 @@ describe("AgentChatPane submit recovery", () => {
 
     await waitFor(() => {
       expect(suggestLaneName).toHaveBeenCalledTimes(1);
-      expect(within(paneOne).getByText(/Choosing a branch name/i)).toBeTruthy();
+      expect(within(paneOne).getByText(/Naming lane with/i)).toBeTruthy();
     });
-    expect(within(paneTwo).queryByText(/Choosing a branch name/i)).toBeNull();
+    expect(within(paneTwo).queryByText(/Naming lane with/i)).toBeNull();
     expect(within(paneTwo).queryByTestId("draft-launch-job")).toBeNull();
   });
 
@@ -4510,7 +4512,7 @@ describe("AgentChatPane submit recovery", () => {
     }
 
     expect(screen.getAllByTestId("draft-launch-job")).toHaveLength(9);
-    expect(screen.getAllByText(/Choosing a branch name/i)).toHaveLength(9);
+    expect(screen.getAllByText(/Naming lane with/i)).toHaveLength(9);
   });
 
   it("allows multiple background auto-create launches to stay pending at the same time", async () => {
@@ -4552,7 +4554,7 @@ describe("AgentChatPane submit recovery", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Auto-create in background" }));
     await waitFor(() => {
       expect(suggestLaneName).toHaveBeenCalledTimes(2);
-      expect(screen.getAllByText(/Choosing a branch name/i)).toHaveLength(2);
+      expect(screen.getAllByText(/Naming lane with/i)).toHaveLength(2);
     });
 
     await act(async () => {
@@ -5785,7 +5787,7 @@ describe("AgentChatPane submit recovery", () => {
         laneId: "lane-1",
         prompt: "Fix the login bug",
         modelId: "openai/gpt-5.4",
-        fallbackName: expect.stringMatching(/^chat-\d{8}-\d{6}$/),
+        fallbackName: "fix-login-bug",
       }));
       expect(createChild).toHaveBeenCalledTimes(2);
     });

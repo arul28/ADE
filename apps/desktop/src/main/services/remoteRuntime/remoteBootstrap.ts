@@ -170,6 +170,7 @@ type RemoteRuntimeLayout = {
   binDirRelative: string;
   runtimeDirExpr: string;
   runtimeDirRelative: string;
+  socketExpr: string;
   binaryExpr: string;
   binaryRelative: string;
   versionExpr: string;
@@ -202,6 +203,7 @@ export function resolveRemoteRuntimeLayout(env: NodeJS.ProcessEnv = process.env)
     binDirRelative: `${homeDirName}/bin`,
     runtimeDirExpr,
     runtimeDirRelative: `${homeDirName}/runtime`,
+    socketExpr: `${homeDirExpr}/sock/ade.sock`,
     binaryExpr: `${binDirExpr}/ade`,
     binaryRelative: `${homeDirName}/bin/ade`,
     versionExpr: `${binDirExpr}/ade.version`,
@@ -1077,15 +1079,14 @@ async function signUploadedRuntimeBinaryIfNeeded(client: Client, layout: RemoteR
   }
 }
 
-async function stopRemoteRuntimeDaemon(client: Client, layout: RemoteRuntimeLayout, runtimeEnvPrefix: string): Promise<void> {
-  await execSsh(
-    client,
-    `${runtimeEnvPrefix}${layout.binaryExpr} runtime stop --text >/dev/null 2>&1 || true`,
-  );
-}
-
 function runtimeErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function remoteRuntimeRpcCommand(layout: RemoteRuntimeLayout, runtimeEnvPrefix: string, binaryExpr: string): string {
+  // Use the channel's explicit socket so a freshly uploaded helper CLI does not
+  // treat the desktop-owned brain as a build-hash mismatch and recycle it.
+  return `${runtimeEnvPrefix}${binaryExpr} --socket ${layout.socketExpr} rpc --stdio`;
 }
 
 async function openValidatedRuntimeClient(args: {
@@ -1336,7 +1337,6 @@ export async function bootstrapRemoteRuntime(args: {
 
     if (runtimeUploaded) {
       await verifyUploadedRuntime();
-      await stopRemoteRuntimeDaemon(ssh, layout, runtimeEnvPrefix);
     }
 
     if (!runtimeVersion) {
@@ -1348,8 +1348,8 @@ export async function bootstrapRemoteRuntime(args: {
     }
 
     const command = localBinary || runtimeUploaded
-      ? `${runtimeEnvPrefix}${layout.binaryExpr} rpc --stdio`
-      : `${runtimeEnvPrefix}ade rpc --stdio`;
+      ? remoteRuntimeRpcCommand(layout, runtimeEnvPrefix, layout.binaryExpr)
+      : remoteRuntimeRpcCommand(layout, runtimeEnvPrefix, "ade");
     let openedRuntime: Awaited<ReturnType<typeof openValidatedRuntimeClient>> | null = null;
     const expectedVersion = localBinary || runtimeUploaded ? args.appVersion : null;
     try {
@@ -1382,7 +1382,7 @@ export async function bootstrapRemoteRuntime(args: {
           layout: candidateLayout,
           disableRuntimeServiceInstall: true,
         });
-        const candidateCommand = `${candidateRuntimeEnvPrefix}ade rpc --stdio`;
+        const candidateCommand = remoteRuntimeRpcCommand(candidateLayout, candidateRuntimeEnvPrefix, "ade");
         try {
           openedRuntime = await openValidatedRuntimeClient({
             ssh,

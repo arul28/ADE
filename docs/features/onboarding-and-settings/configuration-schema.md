@@ -297,7 +297,7 @@ type AiConfig = {
   apiKeys?: Record<string, string>;       // stored encrypted per provider
   localProviders?: AiLocalProviderConfigs;
   workerSafety?: WorkerSafetyPolicy;
-  featureModelOverrides?: Partial<Record<AiFeatureKey, string>>;
+  featureModelOverrides?: Partial<Record<AiFeatureKey, string | null>>;
   featureReasoningOverrides?: Partial<Record<AiFeatureKey, string | null>>;
   sessionIntelligence?: SessionIntelligenceConfig;
 };
@@ -307,13 +307,16 @@ type AiConfig = {
 behavior. Legacy `providers.mode` migration is still in the service
 but idempotent.
 
-`sessionIntelligence` controls auto-titles and end-of-session
-summaries:
+`sessionIntelligence` controls background session naming and
+end-of-session summaries:
 
 - `titles.enabled`
 - `titles.refreshOnComplete`
-- `titles.modelId`
-- `summaries.enabled` and similar
+- `titles.modelId` (`null` clears a project override)
+- `titles.reasoningEffort`
+- `summaries.enabled`
+- `summaries.modelId` (`null` clears a project override)
+- `summaries.reasoningEffort`
 
 Legacy `ai.chat.autoTitleEnabled`, `ai.chat.autoTitleModelId`, and
 `ai.chat.autoTitleRefreshOnComplete` are read on load and migrated
