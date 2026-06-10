@@ -129,7 +129,10 @@ export const ModelPicker = memo(function ModelPicker({
           ...args,
           ...(cursorFlavor ? { cursorSource: cursorFlavor } : {}),
         });
-        const visible = rememberRuntimeCatalog(next, args);
+        const visible = rememberRuntimeCatalog(next, {
+          ...args,
+          ...(cursorFlavor ? { cursorSource: cursorFlavor } : {}),
+        });
         setRuntimeCatalog(visible);
         return visible;
       } catch {

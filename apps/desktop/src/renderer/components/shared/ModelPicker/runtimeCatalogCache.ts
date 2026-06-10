@@ -12,11 +12,16 @@ const REFRESH_PROVIDERS: AgentChatModelCatalogRefreshProvider[] = [
 
 let sharedRuntimeCatalog: AgentChatModelCatalog | null = null;
 const sharedRuntimeCatalogProviderRefreshedAt = new Map<AgentChatModelCatalogRefreshProvider, number>();
+// Cursor freshness is per discovery source: an SDK-scoped refresh must not
+// mark the CLI surface fresh (a later Work-tab CLI picker would otherwise
+// short-circuit its force refresh for the TTL and miss CLI-only changes).
+const cursorSourceRefreshedAt = new Map<"sdk" | "cli", number>();
 const sharedRuntimeCatalogRequests = new Map<string, Promise<AgentChatModelCatalog | null>>();
 
 export function resetModelPickerRuntimeCatalogForTests(): void {
   sharedRuntimeCatalog = null;
   sharedRuntimeCatalogProviderRefreshedAt.clear();
+  cursorSourceRefreshedAt.clear();
   sharedRuntimeCatalogRequests.clear();
 }
 
@@ -54,15 +59,30 @@ function catalogContainsRefreshProvider(
 function shouldMarkRefreshProviderFresh(
   catalog: AgentChatModelCatalog,
   provider: AgentChatModelCatalogRefreshProvider,
+  cursorFlavor?: "sdk" | "cli",
 ): boolean {
   if (provider !== "cursor") return true;
-  return catalogContainsRefreshProvider(catalog, provider);
+  return catalogContainsRefreshProvider(catalog, provider, cursorFlavor);
 }
 
 function markRuntimeCatalogProviderFresh(
   provider: AgentChatModelCatalogRefreshProvider,
   refreshedAt = Date.now(),
+  cursorFlavor?: "sdk" | "cli",
 ): void {
+  if (provider === "cursor") {
+    const sources: ("sdk" | "cli")[] = cursorFlavor ? [cursorFlavor] : ["sdk", "cli"];
+    for (const source of sources) {
+      // Without an explicit flavor (generic cached-reuse marking), only mark a
+      // source fresh if the catalog actually carries rows it can run, so an
+      // sdk-only catalog never marks the cli surface fresh.
+      if (!cursorFlavor && sharedRuntimeCatalog && !catalogContainsRefreshProvider(sharedRuntimeCatalog, "cursor", source)) {
+        continue;
+      }
+      cursorSourceRefreshedAt.set(source, refreshedAt);
+    }
+    return;
+  }
   sharedRuntimeCatalogProviderRefreshedAt.set(provider, refreshedAt);
 }
 
@@ -70,16 +90,28 @@ export function runtimeCatalogProviderIsFresh(
   provider: AgentChatModelCatalogRefreshProvider,
   cursorFlavor?: "sdk" | "cli",
 ): boolean {
-  const refreshedAt = sharedRuntimeCatalogProviderRefreshedAt.get(provider);
-  if (provider === "cursor" && (!sharedRuntimeCatalog || !catalogContainsRefreshProvider(sharedRuntimeCatalog, provider, cursorFlavor))) {
-    return false;
+  if (provider === "cursor") {
+    if (!sharedRuntimeCatalog || !catalogContainsRefreshProvider(sharedRuntimeCatalog, provider, cursorFlavor)) {
+      return false;
+    }
+    const sources: ("sdk" | "cli")[] = cursorFlavor ? [cursorFlavor] : ["sdk", "cli"];
+    const ttl = runtimeCatalogRefreshTtlMs(provider);
+    return sources.every((source) => {
+      const at = cursorSourceRefreshedAt.get(source);
+      return Boolean(at && Date.now() - at <= ttl);
+    });
   }
+  const refreshedAt = sharedRuntimeCatalogProviderRefreshedAt.get(provider);
   return Boolean(refreshedAt && Date.now() - refreshedAt <= runtimeCatalogRefreshTtlMs(provider));
 }
 
 export function rememberRuntimeCatalog(
   catalog: AgentChatModelCatalog,
-  args: { mode: "cached" | "refresh-stale" | "force"; refreshProvider?: AgentChatModelCatalogRefreshProvider },
+  args: {
+    mode: "cached" | "refresh-stale" | "force";
+    refreshProvider?: AgentChatModelCatalogRefreshProvider;
+    cursorSource?: "sdk" | "cli";
+  },
 ): AgentChatModelCatalog {
   if (args.mode === "cached" && sharedRuntimeCatalog) {
     for (const provider of REFRESH_PROVIDERS) {
@@ -94,12 +126,13 @@ export function rememberRuntimeCatalog(
   }
 
   sharedRuntimeCatalog = catalog;
+  const cursorFlavor = args.refreshProvider === "cursor" ? args.cursorSource : undefined;
   if (
     args.refreshProvider
     && (args.mode === "force" || catalog.stale !== true)
-    && shouldMarkRefreshProviderFresh(catalog, args.refreshProvider)
+    && shouldMarkRefreshProviderFresh(catalog, args.refreshProvider, cursorFlavor)
   ) {
-    markRuntimeCatalogProviderFresh(args.refreshProvider);
+    markRuntimeCatalogProviderFresh(args.refreshProvider, Date.now(), cursorFlavor);
     return catalog;
   }
   if (args.mode === "cached" && catalog.stale !== true) {

@@ -23288,16 +23288,36 @@ export function createAgentChatService(args: {
       ? MODEL_CATALOG_LOCAL_REFRESH_TTL_MS
       : MODEL_CATALOG_REFRESH_TTL_MS;
 
+  // Cursor freshness is tracked per discovery source: an SDK-scoped refresh
+  // only proves the SDK rows are current, so it must not mark the CLI surface
+  // fresh (a later Work-tab CLI picker would otherwise skip its force probe
+  // for the TTL and miss CLI-only model/auth changes), and vice versa.
+  const cursorCatalogSourceRefreshedAt = new Map<"sdk" | "cli", number>();
+  const cursorSourcesFor = (cursorSource?: AgentChatCursorModelSource): ("sdk" | "cli")[] =>
+    cursorSource === "sdk" ? ["sdk"] : cursorSource === "cli" ? ["cli"] : ["sdk", "cli"];
+
   const markModelCatalogProviderFresh = (
     refreshProvider: AgentChatModelCatalogRefreshProvider | undefined,
     refreshedAt: number,
+    cursorSource?: AgentChatCursorModelSource,
   ): void => {
+    if (refreshProvider === "cursor") {
+      for (const source of cursorSourcesFor(cursorSource)) {
+        cursorCatalogSourceRefreshedAt.set(source, refreshedAt);
+      }
+      return;
+    }
     if (refreshProvider) {
       modelCatalogProviderRefreshedAt.set(refreshProvider, refreshedAt);
       return;
     }
     for (const provider of MODEL_CATALOG_REFRESH_PROVIDERS) {
-      modelCatalogProviderRefreshedAt.set(provider, refreshedAt);
+      if (provider === "cursor") {
+        cursorCatalogSourceRefreshedAt.set("sdk", refreshedAt);
+        cursorCatalogSourceRefreshedAt.set("cli", refreshedAt);
+      } else {
+        modelCatalogProviderRefreshedAt.set(provider, refreshedAt);
+      }
     }
   };
 
@@ -23325,8 +23345,17 @@ export function createAgentChatService(args: {
     cursorSource?: AgentChatCursorModelSource,
   ): boolean => {
     if (!modelCatalogCache) return true;
+    if (refreshProvider === "cursor") {
+      if (!modelCatalogContainsRefreshProvider(modelCatalogCache, refreshProvider, cursorSource)) return true;
+      // Stale unless every source the request covers was itself refreshed
+      // within the TTL — an "all" request needs both sdk and cli fresh.
+      const ttl = modelCatalogRefreshTtlMs(refreshProvider);
+      return cursorSourcesFor(cursorSource).some((source) => {
+        const refreshedAt = cursorCatalogSourceRefreshedAt.get(source);
+        return !refreshedAt || Date.now() - refreshedAt > ttl;
+      });
+    }
     if (refreshProvider) {
-      if (refreshProvider === "cursor" && !modelCatalogContainsRefreshProvider(modelCatalogCache, refreshProvider, cursorSource)) return true;
       const refreshedAt = modelCatalogProviderRefreshedAt.get(refreshProvider);
       return !refreshedAt || Date.now() - refreshedAt > modelCatalogRefreshTtlMs(refreshProvider);
     }
@@ -23345,10 +23374,11 @@ export function createAgentChatService(args: {
   const shouldMarkModelCatalogProviderFresh = (
     catalog: AgentChatModelCatalog,
     refreshProvider: AgentChatModelCatalogRefreshProvider | undefined,
+    cursorSource?: AgentChatCursorModelSource,
   ): boolean => {
     if (!refreshProvider) return true;
     if (refreshProvider !== "cursor") return true;
-    return modelCatalogContainsRefreshProvider(catalog, refreshProvider);
+    return modelCatalogContainsRefreshProvider(catalog, refreshProvider, cursorSource);
   };
 
   const discoverOpenCodeLocalModels = async (): Promise<DiscoveredLocalModelEntry[]> => {
@@ -23841,8 +23871,8 @@ export function createAgentChatService(args: {
       })),
     };
     modelCatalogCache = catalog;
-    if (mode !== "cached" && shouldMarkModelCatalogProviderFresh(catalog, refreshProvider)) {
-      markModelCatalogProviderFresh(refreshProvider, Date.now());
+    if (mode !== "cached" && shouldMarkModelCatalogProviderFresh(catalog, refreshProvider, catalogArgs?.cursorSource)) {
+      markModelCatalogProviderFresh(refreshProvider, Date.now(), catalogArgs?.cursorSource);
     }
     return catalog;
   };

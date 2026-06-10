@@ -65,9 +65,24 @@ describe("runtimeCatalogCache flavor-aware cursor freshness", () => {
     // ...but a CLI-flavored surface must still treat cursor as stale, because
     // none of the cached rows are runnable through the cursor-agent CLI.
     expect(runtimeCatalogProviderIsFresh("cursor", "cli")).toBe(false);
-    // The flavor-agnostic check (modelCount > 0) stays fresh — the generic
-    // path is unchanged for non-flavored callers.
-    expect(runtimeCatalogProviderIsFresh("cursor")).toBe(true);
+    // The flavor-agnostic ("all") check needs BOTH sources fresh, so it is
+    // stale too — only the SDK source was refreshed.
+    expect(runtimeCatalogProviderIsFresh("cursor")).toBe(false);
+  });
+
+  it("an sdk-scoped refresh leaves the cli surface stale even with dual-capable rows", () => {
+    // The catalog carries dual-capable rows (cli AND sdk), but the refresh
+    // only probed the SDK source. The CLI surface must stay stale so a later
+    // Work-tab CLI picker still forces its own probe (per-source freshness),
+    // rather than trusting the SDK refresh because dual rows happen to be cli.
+    rememberRuntimeCatalog(cursorCatalog({ sdk: true, cli: true }), {
+      mode: "force",
+      refreshProvider: "cursor",
+      cursorSource: "sdk",
+    });
+
+    expect(runtimeCatalogProviderIsFresh("cursor", "sdk")).toBe(true);
+    expect(runtimeCatalogProviderIsFresh("cursor", "cli")).toBe(false);
   });
 
   it("treats both surfaces as fresh once the catalog carries CLI and SDK rows", () => {
@@ -78,6 +93,7 @@ describe("runtimeCatalogCache flavor-aware cursor freshness", () => {
 
     expect(runtimeCatalogProviderIsFresh("cursor", "sdk")).toBe(true);
     expect(runtimeCatalogProviderIsFresh("cursor", "cli")).toBe(true);
+    expect(runtimeCatalogProviderIsFresh("cursor")).toBe(true);
   });
 
   it("reports cursor stale for every flavor before any catalog is cached", () => {
