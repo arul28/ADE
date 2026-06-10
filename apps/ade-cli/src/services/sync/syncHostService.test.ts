@@ -4,14 +4,20 @@ import path from "node:path";
 import { WebSocket } from "ws";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
+  AgentChatEventEnvelope,
   CrsqlChangeRow,
   SyncMobileProjectSummary,
   SyncPeerMetadata,
   SyncRemoteCommandDescriptor,
 } from "../../../../desktop/src/shared/types";
 import {
+  CHAT_EVENT_REPLAY_MAX_BYTES,
+  CHAT_EVENT_REPLAY_MAX_EVENTS,
   buildSyncHostHelloOkPayload,
+  createChatEventReplayBuffer,
   createSyncHostService,
+  planChatEventResume,
+  recordChatEventInReplayBuffer,
   resolveSyncHostInboundProjectScope,
   selectChangesetBatchChunk,
 } from "./syncHostService";
@@ -805,3 +811,104 @@ describe("sync host handoff over a shared listener", () => {
   });
 });
 
+
+describe("chat event replay buffer (resumable chat streams)", () => {
+  const sessionId = "session-replay";
+
+  function chatEnvelope(sequence: number, text = `event-${sequence}`, session = sessionId): AgentChatEventEnvelope {
+    return {
+      sessionId: session,
+      timestamp: new Date(1_700_000_000_000 + sequence * 1_000).toISOString(),
+      sequence,
+      event: { type: "text", text } as AgentChatEventEnvelope["event"],
+    };
+  }
+
+  it("assigns monotonically increasing seqs and dedupes by delivery key", () => {
+    const buffer = createChatEventReplayBuffer();
+    const first = chatEnvelope(1);
+    expect(recordChatEventInReplayBuffer(buffer, first)).toBe(1);
+    expect(recordChatEventInReplayBuffer(buffer, chatEnvelope(2))).toBe(2);
+    // Same logical event observed again (live broadcast + transcript pump)
+    // must resolve to the seq already assigned, not mint a new one.
+    expect(recordChatEventInReplayBuffer(buffer, first)).toBe(1);
+    expect(buffer.latestSeq).toBe(2);
+    expect(buffer.entries.map((entry) => entry.seq)).toEqual([1, 2]);
+  });
+
+  it("falls back to snapshot for a fresh subscribe without sinceSeq", () => {
+    const buffer = createChatEventReplayBuffer();
+    recordChatEventInReplayBuffer(buffer, chatEnvelope(1));
+    expect(planChatEventResume(buffer, undefined)).toEqual({ mode: "snapshot" });
+    expect(planChatEventResume(buffer, null)).toEqual({ mode: "snapshot" });
+    expect(planChatEventResume(buffer, "3")).toEqual({ mode: "snapshot" });
+    expect(planChatEventResume(buffer, -1)).toEqual({ mode: "snapshot" });
+    expect(planChatEventResume(buffer, 1.5)).toEqual({ mode: "snapshot" });
+    // No buffer for the session at all (e.g. host restart) → snapshot.
+    expect(planChatEventResume(undefined, 3)).toEqual({ mode: "snapshot" });
+  });
+
+  it("replays exactly the missed events when the buffer covers the gap", () => {
+    const buffer = createChatEventReplayBuffer();
+    for (let index = 1; index <= 6; index += 1) {
+      recordChatEventInReplayBuffer(buffer, chatEnvelope(index));
+    }
+    const plan = planChatEventResume(buffer, 3);
+    expect(plan.mode).toBe("replay");
+    if (plan.mode !== "replay") throw new Error("expected replay");
+    expect(plan.entries.map((entry) => entry.seq)).toEqual([4, 5, 6]);
+    // sinceSeq of 0 resumes from the very beginning while the buffer is intact.
+    const fromStart = planChatEventResume(buffer, 0);
+    if (fromStart.mode !== "replay") throw new Error("expected replay");
+    expect(fromStart.entries.map((entry) => entry.seq)).toEqual([1, 2, 3, 4, 5, 6]);
+  });
+
+  it("replays nothing when the client is already current", () => {
+    const buffer = createChatEventReplayBuffer();
+    recordChatEventInReplayBuffer(buffer, chatEnvelope(1));
+    recordChatEventInReplayBuffer(buffer, chatEnvelope(2));
+    expect(planChatEventResume(buffer, 2)).toEqual({ mode: "replay", entries: [] });
+  });
+
+  it("falls back to snapshot when the gap predates the ring buffer", () => {
+    const buffer = createChatEventReplayBuffer();
+    for (let index = 1; index <= CHAT_EVENT_REPLAY_MAX_EVENTS + 10; index += 1) {
+      recordChatEventInReplayBuffer(buffer, chatEnvelope(index));
+    }
+    expect(buffer.entries.length).toBe(CHAT_EVENT_REPLAY_MAX_EVENTS);
+    const oldestBuffered = buffer.entries[0]!.seq;
+    // Client last saw an event that has been evicted → cannot prove
+    // continuity → snapshot.
+    expect(planChatEventResume(buffer, oldestBuffered - 2)).toEqual({ mode: "snapshot" });
+    // But the boundary case (sinceSeq + 1 is still buffered) replays fine.
+    const boundary = planChatEventResume(buffer, oldestBuffered - 1);
+    expect(boundary.mode).toBe("replay");
+    if (boundary.mode !== "replay") throw new Error("expected replay");
+    expect(boundary.entries[0]!.seq).toBe(oldestBuffered);
+    expect(boundary.entries.at(-1)!.seq).toBe(buffer.latestSeq);
+  });
+
+  it("falls back to snapshot when sinceSeq is from a newer epoch than the buffer", () => {
+    const buffer = createChatEventReplayBuffer();
+    recordChatEventInReplayBuffer(buffer, chatEnvelope(1));
+    // e.g. host restarted and reset its counter; the client's watermark is
+    // ahead of everything the host has ever assigned.
+    expect(planChatEventResume(buffer, 42)).toEqual({ mode: "snapshot" });
+  });
+
+  it("evicts oldest events when the byte budget is exceeded", () => {
+    const buffer = createChatEventReplayBuffer();
+    const bigText = "x".repeat(900_000);
+    recordChatEventInReplayBuffer(buffer, chatEnvelope(1, bigText));
+    recordChatEventInReplayBuffer(buffer, chatEnvelope(2, bigText));
+    recordChatEventInReplayBuffer(buffer, chatEnvelope(3, bigText));
+    expect(buffer.totalBytes).toBeLessThanOrEqual(CHAT_EVENT_REPLAY_MAX_BYTES);
+    expect(buffer.entries[0]!.seq).toBeGreaterThan(1);
+    expect(buffer.latestSeq).toBe(3);
+    // The evicted event forces a snapshot for clients that far behind…
+    expect(planChatEventResume(buffer, 0)).toEqual({ mode: "snapshot" });
+    // …while recent clients still resume.
+    const plan = planChatEventResume(buffer, buffer.entries[0]!.seq);
+    expect(plan.mode).toBe("replay");
+  });
+});

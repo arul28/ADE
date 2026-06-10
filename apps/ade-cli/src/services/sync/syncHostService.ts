@@ -29,6 +29,7 @@ import type {
   SyncCommandPayload,
   SyncCommandResultPayload,
   SyncEnvelope,
+  SyncChatEventPayload,
   SyncChatSubscribeSnapshotPayload,
   SyncChatUnsubscribePayload,
   SyncFileBlob,
@@ -782,6 +783,123 @@ async function recoverOrphanedNativeLanDiscoveryProcesses(logger: Logger): Promi
 
 function looksLikePendingTailnetApproval(text: string): boolean {
   return /\b(pending|approval|approve|review)\b/i.test(text);
+}
+
+// ---------------------------------------------------------------------------
+// Resumable chat event streams.
+//
+// The host assigns each broadcast chat event a per-session, monotonically
+// increasing `seq` and keeps a bounded ring buffer of recent events. When a
+// phone reconnects it passes the last seq it applied (`sinceSeq` on
+// chat_subscribe); if the buffer still covers `sinceSeq + 1 .. latest` the
+// host replays exactly the missed events instead of re-sending a large
+// maxBytes-capped snapshot.
+// ---------------------------------------------------------------------------
+
+export const CHAT_EVENT_REPLAY_MAX_EVENTS = 500;
+export const CHAT_EVENT_REPLAY_MAX_BYTES = 2_000_000;
+// Delivery-key dedupe map cap. Must exceed CHAT_EVENT_REPLAY_MAX_EVENTS so a
+// buffered event's key cannot be evicted while the event itself is still in
+// the ring buffer (which could double-assign a seq to the same event).
+const CHAT_EVENT_REPLAY_MAX_KEYS = 1_500;
+// Bound the number of sessions with live replay buffers (LRU-evicted).
+const CHAT_EVENT_REPLAY_MAX_SESSIONS = 64;
+
+export type ChatEventReplayBufferEntry = {
+  seq: number;
+  bytes: number;
+  event: AgentChatEventEnvelope;
+};
+
+export type ChatEventReplayBuffer = {
+  /** Highest seq assigned for this session (0 when no events recorded yet). */
+  latestSeq: number;
+  /** Oldest-first ring buffer of recently broadcast events. */
+  entries: ChatEventReplayBufferEntry[];
+  totalBytes: number;
+  /** Delivery-key → assigned seq, so live + transcript-pump duplicates share one seq. */
+  seqByKey: Map<string, number>;
+};
+
+export function createChatEventReplayBuffer(): ChatEventReplayBuffer {
+  return { latestSeq: 0, entries: [], totalBytes: 0, seqByKey: new Map() };
+}
+
+function chatEventDeliveryKey(event: AgentChatEventEnvelope): string {
+  return `${event.sessionId}:${event.sequence ?? -1}:${event.timestamp}:${event.event.type}`;
+}
+
+/**
+ * Assign (or look up) the per-session seq for `event` and retain it in the
+ * ring buffer for replay. Returns the seq to stamp on the outgoing
+ * `chat_event` payload. The same logical event observed via both the live
+ * subscription and the transcript pump resolves to a single seq.
+ */
+export function recordChatEventInReplayBuffer(
+  buffer: ChatEventReplayBuffer,
+  event: AgentChatEventEnvelope,
+): number {
+  const key = chatEventDeliveryKey(event);
+  const existing = buffer.seqByKey.get(key);
+  if (existing != null) return existing;
+  const seq = ++buffer.latestSeq;
+  buffer.seqByKey.set(key, seq);
+  while (buffer.seqByKey.size > CHAT_EVENT_REPLAY_MAX_KEYS) {
+    const oldestKey = buffer.seqByKey.keys().next().value;
+    if (oldestKey == null) break;
+    buffer.seqByKey.delete(oldestKey);
+  }
+  let bytes = 512;
+  try {
+    bytes = JSON.stringify(event).length;
+  } catch {
+    // keep the conservative default
+  }
+  buffer.entries.push({ seq, bytes, event });
+  buffer.totalBytes += bytes;
+  while (
+    buffer.entries.length > 0
+    && (buffer.entries.length > CHAT_EVENT_REPLAY_MAX_EVENTS || buffer.totalBytes > CHAT_EVENT_REPLAY_MAX_BYTES)
+  ) {
+    const removed = buffer.entries.shift()!;
+    buffer.totalBytes -= removed.bytes;
+  }
+  return seq;
+}
+
+export type ChatEventResumePlan =
+  | { mode: "snapshot" }
+  | { mode: "replay"; entries: ChatEventReplayBufferEntry[] };
+
+/**
+ * Decide how to answer a chat_subscribe: replay the exact missed events when
+ * the ring buffer still covers `(sinceSeq, latestSeq]`, otherwise fall back
+ * to the legacy snapshot. Fresh subscribes (no/invalid sinceSeq), unknown
+ * sessions, seqs from a previous host run (sinceSeq > latestSeq), and gaps
+ * older than the buffer all yield a snapshot.
+ */
+export function planChatEventResume(
+  buffer: ChatEventReplayBuffer | undefined,
+  sinceSeq: unknown,
+): ChatEventResumePlan {
+  if (typeof sinceSeq !== "number" || !Number.isInteger(sinceSeq) || sinceSeq < 0) {
+    return { mode: "snapshot" };
+  }
+  if (!buffer) return { mode: "snapshot" };
+  if (sinceSeq > buffer.latestSeq) {
+    // Seq from a different epoch (e.g. host restart) — cannot trust it.
+    return { mode: "snapshot" };
+  }
+  if (sinceSeq === buffer.latestSeq) {
+    // Client is already current; nothing to replay and no snapshot needed.
+    return { mode: "replay", entries: [] };
+  }
+  const oldestBuffered = buffer.entries[0]?.seq;
+  if (oldestBuffered == null || oldestBuffered > sinceSeq + 1) {
+    // Gap not coverable: events between sinceSeq and the buffer were evicted.
+    return { mode: "snapshot" };
+  }
+  return { mode: "replay", entries: buffer.entries.filter((entry) => entry.seq > sinceSeq) };
 }
 
 export function createSyncHostService(args: SyncHostServiceArgs) {
@@ -2355,8 +2473,24 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     }
   }
 
-  function chatEventDeliveryKey(event: AgentChatEventEnvelope): string {
-    return `${event.sessionId}:${event.sequence ?? -1}:${event.timestamp}:${event.event.type}`;
+  // Per-session replay buffers for resumable chat event streams. Map insertion
+  // order doubles as the LRU order — recordChatEventSeq re-inserts on touch.
+  const chatEventReplayBuffers = new Map<string, ChatEventReplayBuffer>();
+
+  function recordChatEventSeq(event: AgentChatEventEnvelope): number {
+    let buffer = chatEventReplayBuffers.get(event.sessionId);
+    if (buffer) {
+      chatEventReplayBuffers.delete(event.sessionId);
+    } else {
+      buffer = createChatEventReplayBuffer();
+      while (chatEventReplayBuffers.size >= CHAT_EVENT_REPLAY_MAX_SESSIONS) {
+        const oldestSessionId = chatEventReplayBuffers.keys().next().value;
+        if (oldestSessionId == null) break;
+        chatEventReplayBuffers.delete(oldestSessionId);
+      }
+    }
+    chatEventReplayBuffers.set(event.sessionId, buffer);
+    return recordChatEventInReplayBuffer(buffer, event);
   }
 
   function rememberChatEventSent(peer: PeerState, event: AgentChatEventEnvelope): boolean {
@@ -2396,20 +2530,24 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           peer.chatTranscriptOffsets.set(sessionId, nextOffset);
         }
         for (const event of events) {
+          const seq = recordChatEventSeq(event);
           if (!rememberChatEventSent(peer, event)) continue;
-          send(peer.ws, "chat_event", event);
+          send(peer.ws, "chat_event", { ...event, seq } satisfies SyncChatEventPayload);
         }
       }
     }
   }
 
   function broadcastChatEvent(event: AgentChatEventEnvelope): void {
+    // Record unconditionally (even with no subscribed peers) so the replay
+    // buffer can cover events that happened while a phone was disconnected.
+    const seq = recordChatEventSeq(event);
     for (const peer of peers) {
       if (!peer.authenticated || peer.ws.readyState !== WebSocket.OPEN) continue;
       if (isPeerBackpressured(peer)) continue;
       if (!peer.subscribedChatSessionIds.has(event.sessionId)) continue;
       if (!rememberChatEventSent(peer, event)) continue;
-      send(peer.ws, "chat_event", event);
+      send(peer.ws, "chat_event", { ...event, seq } satisfies SyncChatEventPayload);
     }
   }
 
@@ -3327,12 +3465,43 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         break;
       }
       case "chat_subscribe": {
-        const payload = envelope.payload as { sessionId?: string; maxBytes?: number } | null;
+        const payload = envelope.payload as { sessionId?: string; maxBytes?: number; sinceSeq?: number } | null;
         const sessionId = toOptionalString(payload?.sessionId);
         if (!sessionId) break;
         peer.subscribedChatSessionIds.add(sessionId);
 
         const session = args.sessionService.get(sessionId);
+        const resumePlan = planChatEventResume(chatEventReplayBuffers.get(sessionId), payload?.sinceSeq);
+        if (resumePlan.mode === "replay") {
+          // The replay buffer covers everything the peer missed: skip the
+          // snapshot, fast-forward the transcript pump past content the
+          // replay already carries, and re-send just the missed events as
+          // ordinary chat_event envelopes (in order, after the ack).
+          const transcriptSize = session?.transcriptPath && fs.existsSync(session.transcriptPath)
+            ? fs.statSync(session.transcriptPath).size
+            : 0;
+          peer.chatTranscriptOffsets.set(sessionId, transcriptSize);
+          const resumeAck: SyncChatSubscribeSnapshotPayload = {
+            sessionId,
+            capturedAt: nowIso(),
+            truncated: false,
+            events: [],
+            resumed: true,
+          };
+          sendRequired(peer, "chat_subscribe", resumeAck, envelope.requestId);
+          for (const entry of resumePlan.entries) {
+            // Skip events already delivered on this connection — TCP ordering
+            // guarantees the peer has (or will get) them.
+            if (!rememberChatEventSent(peer, entry.event)) continue;
+            send(peer.ws, "chat_event", { ...entry.event, seq: entry.seq } satisfies SyncChatEventPayload);
+          }
+          args.logger.debug("sync_host.chat_subscribe_resumed", {
+            sessionId,
+            sinceSeq: payload?.sinceSeq,
+            replayedEventCount: resumePlan.entries.length,
+          });
+          break;
+        }
         const maxBytes = Math.max(
           1_024,
           Math.min(2_000_000, Math.floor(typeof payload?.maxBytes === "number" ? payload.maxBytes : DEFAULT_TERMINAL_SNAPSHOT_BYTES)),

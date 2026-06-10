@@ -1175,6 +1175,12 @@ final class SyncService: ObservableObject {
   private(set) var terminalBufferUpdatedAt: [String: Date] = [:]
   private(set) var chatEventEnvelopesBySession: [String: [AgentChatEventEnvelope]] = [:]
   private(set) var chatEventRevisionsBySession: [String: Int] = [:]
+  /// Highest host-assigned `seq` applied per chat session. Sent back as
+  /// `sinceSeq` on re-subscribe so the host can replay exactly the missed
+  /// events instead of a full snapshot, and used to drop duplicate/old
+  /// events after a replay. Events without `seq` (older hosts) bypass this
+  /// entirely, preserving today's behavior.
+  private(set) var chatEventLastSeqBySession: [String: Int] = [:]
   /// Latest known chat summary keyed by session id. Populated by the Work
   /// list and chat detail screens so the LA reconcile can read `modelId`
   /// + a real `lastActivityAt` without round-tripping for each running chat.
@@ -3804,7 +3810,13 @@ final class SyncService: ObservableObject {
       localStateRevision += 1
     }
     if canSendLiveRequests() && supportsChatStreaming && (!wasSubscribed || requestSnapshot) {
-      sendEnvelope(type: "chat_subscribe", requestId: nil, payload: chatSubscriptionPayload(sessionId: trimmedSessionId, maxBytes: maxBytes))
+      // Explicit snapshot requests must not advertise a resume point — the
+      // caller wants the full history, not a delta replay.
+      sendEnvelope(
+        type: "chat_subscribe",
+        requestId: nil,
+        payload: chatSubscriptionPayload(sessionId: trimmedSessionId, maxBytes: maxBytes, includeSinceSeq: !requestSnapshot)
+      )
     }
   }
 
@@ -3832,7 +3844,7 @@ final class SyncService: ObservableObject {
   }
 
   func chatSubscriptionPayloads() -> [[String: Any]] {
-    subscribedChatSessionIds.sorted().map { chatSubscriptionPayload(sessionId: $0) }
+    subscribedChatSessionIds.sorted().map { chatSubscriptionPayload(sessionId: $0, includeSinceSeq: true) }
   }
 
   func runQuickCommand(
@@ -4593,6 +4605,56 @@ final class SyncService: ObservableObject {
   func fetchChatTranscript(sessionId: String, limit: Int = 500, maxChars: Int = 600_000) async throws -> [AgentChatTranscriptEntry] {
     let response = try await fetchChatTranscriptResponse(sessionId: sessionId, limit: limit, maxChars: maxChars)
     return response.entries
+  }
+
+  /// One page of a paginated chat transcript walk. `nextCursor` is an opaque
+  /// host token identifying the position just before the oldest entry
+  /// returned; pass it back via `fetchChatTranscriptPage(cursor:)` to load
+  /// the previous (older) page. `nil` means the start of the transcript was
+  /// reached.
+  struct AgentChatTranscriptPage: Equatable {
+    var sessionId: String
+    var entries: [AgentChatTranscriptEntry]
+    var truncated: Bool
+    var totalEntries: Int
+    var nextCursor: String?
+  }
+
+  /// Fetch a transcript page. Without `cursor` this returns the newest
+  /// entries (same data as `fetchChatTranscriptResponse`) plus a cursor for
+  /// walking backwards; with `cursor` it returns the page strictly BEFORE
+  /// that point. Older hosts that predate pagination simply omit
+  /// `nextCursor`, which surfaces here as `nil` (no more pages).
+  func fetchChatTranscriptPage(
+    sessionId: String,
+    cursor: String? = nil,
+    limit: Int = 200,
+    maxChars: Int = 600_000
+  ) async throws -> AgentChatTranscriptPage {
+    var args: [String: Any] = ["sessionId": sessionId, "limit": limit, "maxChars": maxChars]
+    if let cursor, !cursor.isEmpty {
+      args["cursor"] = cursor
+    }
+    let response = try await sendCommand(action: "chat.getTranscript", args: args)
+    if let payload = response as? [String: Any], payload["queued"] as? Bool == true {
+      throw QueuedRemoteCommandError(action: "chat.getTranscript")
+    }
+    let transcript = try decode(response, as: AgentChatTranscriptResponse.self)
+    var nextCursor: String?
+    if let dict = response as? [String: Any], let rawCursor = dict["nextCursor"] {
+      if let text = rawCursor as? String, !text.isEmpty {
+        nextCursor = text
+      } else if let number = rawCursor as? NSNumber, !(rawCursor is Bool) {
+        nextCursor = number.stringValue
+      }
+    }
+    return AgentChatTranscriptPage(
+      sessionId: transcript.sessionId,
+      entries: transcript.entries,
+      truncated: transcript.truncated,
+      totalEntries: transcript.totalEntries,
+      nextCursor: nextCursor
+    )
   }
 
   @discardableResult
@@ -7221,6 +7283,14 @@ final class SyncService: ObservableObject {
          let dict = payload as? [String: Any],
          let snapshot = try? decode(dict, as: SyncChatSubscribeSnapshotPayload.self),
          subscribedChatSessionIds.contains(snapshot.sessionId) {
+        if (dict["resumed"] as? Bool) != true {
+          // Full snapshot: the host did not (or could not) resume from our
+          // sinceSeq, so its seq stream may have restarted (host reboot,
+          // replay buffer eviction). Drop the stale watermark and re-track
+          // from the next live event — otherwise we would discard the first
+          // events of the new stream as "old".
+          chatEventLastSeqBySession.removeValue(forKey: snapshot.sessionId)
+        }
         mergeChatEventHistory(sessionId: snapshot.sessionId, events: snapshot.events)
       }
     case "chat_event":
@@ -7231,6 +7301,15 @@ final class SyncService: ObservableObject {
         // Gate chat events on the current subscription set so events from a
         // previous project (still streaming on the host) do not leak into the
         // newly-active project's view after a quick switch.
+        if let seq = (dict["seq"] as? NSNumber)?.intValue {
+          // Resumable stream: drop duplicates/old replays and advance the
+          // per-session watermark used as sinceSeq on re-subscribe. Events
+          // without seq (older hosts) keep today's behavior unchanged.
+          if let lastSeq = chatEventLastSeqBySession[envelope.sessionId], seq <= lastSeq {
+            break
+          }
+          chatEventLastSeqBySession[envelope.sessionId] = seq
+        }
         recordChatEventEnvelope(envelope)
       }
     case "terminal_data":
@@ -7957,21 +8036,35 @@ final class SyncService: ObservableObject {
     return ["queued": true]
   }
 
-  private func chatSubscriptionPayload(sessionId: String, maxBytes requestedMaxBytes: Int? = nil) -> [String: Any] {
+  private func chatSubscriptionPayload(
+    sessionId: String,
+    maxBytes requestedMaxBytes: Int? = nil,
+    includeSinceSeq: Bool = false
+  ) -> [String: Any] {
     let defaultMaxBytes = canSendLiveRequests() && prefersReducedSyncLoad
       ? syncReducedLoadChatSubscriptionMaxBytes
       : syncChatSubscriptionMaxBytes
     let maxBytes = max(1_024, min(syncChatSubscriptionMaxBytes, requestedMaxBytes ?? defaultMaxBytes))
-    return [
+    var payload: [String: Any] = [
       "sessionId": sessionId,
       "maxBytes": maxBytes,
     ]
+    if includeSinceSeq, let lastSeq = chatEventLastSeqBySession[sessionId] {
+      payload["sinceSeq"] = lastSeq
+    }
+    return payload
   }
 
   private func restoreChatEventSubscriptions() {
     guard canSendLiveRequests(), supportsChatStreaming else { return }
     for sessionId in subscribedChatSessionIds.sorted() {
-      sendEnvelope(type: "chat_subscribe", requestId: nil, payload: chatSubscriptionPayload(sessionId: sessionId))
+      // Pass the last applied seq so the host can replay only the missed
+      // events; it falls back to a full snapshot when the gap is too old.
+      sendEnvelope(
+        type: "chat_subscribe",
+        requestId: nil,
+        payload: chatSubscriptionPayload(sessionId: sessionId, includeSinceSeq: true)
+      )
     }
   }
 
@@ -8125,6 +8218,9 @@ final class SyncService: ObservableObject {
     if clearHistory {
       chatEventEnvelopesBySession.removeAll()
       chatEventRevisionsBySession.removeAll()
+      // Watermarks are only meaningful while the applied history is retained;
+      // resuming from a seq after dropping history would skip those events.
+      chatEventLastSeqBySession.removeAll()
     }
     markChatEventsChanged(immediate: true)
     localStateRevision += 1

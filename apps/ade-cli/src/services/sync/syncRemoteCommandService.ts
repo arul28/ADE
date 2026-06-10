@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type {
   AgentChatCreateArgs,
   AgentChatArchiveArgs,
+  AgentChatTranscriptEntry,
   AgentChatApproveArgs,
   AgentChatCodexClearGoalArgs,
   AgentChatCodexGetGoalArgs,
@@ -928,12 +929,64 @@ function parseGetTranscriptArgs(value: Record<string, unknown>): {
   sessionId: string;
   limit?: number;
   maxChars?: number;
+  cursor?: number;
 } {
   return {
     sessionId: requireString(value.sessionId, "chat.getTranscript requires sessionId."),
     limit: asOptionalNumber(value.limit),
     maxChars: asOptionalNumber(value.maxChars),
+    cursor: parseTranscriptCursor(value.cursor),
   };
+}
+
+// Pagination cursor for chat.getTranscript. The cursor is the index (within
+// the session's full, append-only entry list) of the oldest entry returned by
+// the previous page; a request with `cursor` returns the page strictly BEFORE
+// that index. Serialized as a string on the wire so clients can treat it as
+// opaque, but numbers are accepted too.
+function parseTranscriptCursor(value: unknown): number | undefined {
+  const parsed = typeof value === "string" && value.trim().length ? Number(value) : value;
+  if (typeof parsed !== "number" || !Number.isFinite(parsed)) return undefined;
+  const index = Math.floor(parsed);
+  return index >= 0 ? index : undefined;
+}
+
+const TRANSCRIPT_PAGE_DEFAULT_LIMIT = 200;
+const TRANSCRIPT_PAGE_MAX_LIMIT = 1_000;
+const TRANSCRIPT_PAGE_DEFAULT_MAX_CHARS = 600_000;
+const TRANSCRIPT_PAGE_MAX_CHARS = 2_000_000;
+
+// Mirror agentChatService.getChatTranscript's char-bounding: walk the page
+// from newest to oldest, keep whole entries while budget remains, and trim
+// the boundary entry's text. Returns a suffix of `page` (oldest entries are
+// the ones dropped) so cursor arithmetic stays index-stable.
+function boundTranscriptEntriesByChars(
+  page: AgentChatTranscriptEntry[],
+  maxChars: number,
+): { entries: AgentChatTranscriptEntry[]; truncated: boolean } {
+  let remainingChars = maxChars;
+  let truncated = false;
+  const bounded: AgentChatTranscriptEntry[] = [];
+  for (let index = page.length - 1; index >= 0; index -= 1) {
+    const entry = page[index]!;
+    if (remainingChars <= 0) {
+      truncated = true;
+      break;
+    }
+    if (entry.text.length <= remainingChars) {
+      bounded.push(entry);
+      remainingChars -= entry.text.length;
+      continue;
+    }
+    bounded.push({
+      ...entry,
+      text: remainingChars > 3 ? `${entry.text.slice(0, remainingChars - 3).trimEnd()}...` : entry.text.slice(0, remainingChars),
+    });
+    truncated = true;
+    break;
+  }
+  bounded.reverse();
+  return { entries: bounded, truncated };
 }
 
 function parseGitFileActionArgs(value: Record<string, unknown>, action: string): GitFileActionArgs {
@@ -2259,8 +2312,39 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
   });
   register("chat.getSummary", { viewerAllowed: true }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.").getSessionSummary(parseAgentChatGetSummaryArgs(payload).sessionId));
-  register("chat.getTranscript", { viewerAllowed: true }, async (payload) =>
-    requireService(args.agentChatService, "Agent chat service not available.").getChatTranscript(parseGetTranscriptArgs(payload)));
+  register("chat.getTranscript", { viewerAllowed: true }, async (payload) => {
+    const agentChatService = requireService(args.agentChatService, "Agent chat service not available.");
+    const parsed = parseGetTranscriptArgs(payload);
+
+    if (parsed.cursor == null) {
+      // Tail page (today's behavior) + nextCursor so clients can walk back.
+      const result = await agentChatService.getChatTranscript(parsed);
+      const oldestReturnedIndex = result.totalEntries - result.entries.length;
+      return {
+        ...result,
+        nextCursor: oldestReturnedIndex > 0 ? String(oldestReturnedIndex) : null,
+      };
+    }
+
+    // Cursor page: entries strictly BEFORE the cursor index. The transcript
+    // is append-only, so indices are stable across pages even while the
+    // session keeps streaming new entries at the tail.
+    const limit = Math.max(1, Math.min(TRANSCRIPT_PAGE_MAX_LIMIT, Math.floor(parsed.limit ?? TRANSCRIPT_PAGE_DEFAULT_LIMIT)));
+    const maxChars = Math.max(200, Math.min(TRANSCRIPT_PAGE_MAX_CHARS, Math.floor(parsed.maxChars ?? TRANSCRIPT_PAGE_DEFAULT_MAX_CHARS)));
+    const allEntries = await agentChatService.readTranscript(parsed.sessionId);
+    const end = Math.max(0, Math.min(parsed.cursor, allEntries.length));
+    const start = Math.max(0, end - limit);
+    const { entries, truncated } = boundTranscriptEntriesByChars(allEntries.slice(start, end), maxChars);
+    const oldestReturnedIndex = end - entries.length;
+    const hasMore = oldestReturnedIndex > 0 && entries.length > 0;
+    return {
+      sessionId: parsed.sessionId,
+      entries,
+      truncated: truncated || hasMore,
+      totalEntries: allEntries.length,
+      nextCursor: hasMore ? String(oldestReturnedIndex) : null,
+    };
+  });
   register("chat.create", { viewerAllowed: true, queueable: true }, async (payload) => {
     const agentChatService = requireService(args.agentChatService, "Agent chat service not available.");
     const parsed = parseAgentChatCreateArgs(payload);

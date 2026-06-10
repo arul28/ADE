@@ -483,6 +483,16 @@ export type SyncTerminalResizePayload = {
 export type SyncChatSubscribePayload = {
   sessionId: string;
   maxBytes?: number;
+  /**
+   * Resume marker: the highest `seq` (see SyncChatEventPayload) the client
+   * has already applied for this session. When the host's per-session replay
+   * buffer still covers `sinceSeq + 1 .. latest`, it replays just those
+   * events as ordinary `chat_event` envelopes and skips the snapshot
+   * (responding with `resumed: true` and an empty `events` array). When the
+   * gap is no longer coverable (host restart, buffer eviction), the host
+   * falls back to the regular maxBytes-capped snapshot.
+   */
+  sinceSeq?: number;
 };
 
 export type SyncChatSubscribeSnapshotPayload = {
@@ -490,13 +500,28 @@ export type SyncChatSubscribeSnapshotPayload = {
   capturedAt: string;
   truncated: boolean;
   events: AgentChatEventEnvelope[];
+  /**
+   * True when the host honored `sinceSeq` and replayed buffered events
+   * instead of producing a snapshot. `events` is empty in that case — the
+   * replayed history arrives as ordinary `chat_event` envelopes. Clients must
+   * reset any stored seq watermark when this is absent/false because the
+   * host's seq stream may have restarted (e.g. host process restart).
+   */
+  resumed?: boolean;
 };
 
 export type SyncChatUnsubscribePayload = {
   sessionId: string;
 };
 
-export type SyncChatEventPayload = AgentChatEventEnvelope;
+/**
+ * Live chat event envelope. `seq` is a host-assigned, per-session,
+ * monotonically increasing counter used for resumable streams: clients track
+ * the highest seq applied and pass it back as `sinceSeq` on re-subscribe.
+ * Optional for backward compatibility — events without `seq` behave exactly
+ * as before (no dedupe, no resume).
+ */
+export type SyncChatEventPayload = AgentChatEventEnvelope & { seq?: number };
 
 export type SyncBrainStatusPayload = {
   // Legacy wire field. New consumers can read host/runtime instead.
