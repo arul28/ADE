@@ -994,6 +994,46 @@ describe("ptyService", () => {
       }
     });
 
+    it("uses agent CLI initialInput as the first-prompt title seed", async () => {
+      vi.useFakeTimers();
+      try {
+        const aiIntegrationService = {
+          getMode: vi.fn(() => "subscription"),
+          summarizeTerminal: vi.fn(async () => ({ text: "Print cwd" })),
+        };
+        const { service, mockPty, sessionService } = createHarness({ aiIntegrationService });
+
+        await service.create({
+          laneId: "lane-1",
+          title: "Codex CLI",
+          cols: 80,
+          rows: 24,
+          toolType: "codex",
+          command: "codex",
+          args: ["--no-alt-screen"],
+          startupCommand: "codex --no-alt-screen",
+          initialInput: "print cwd",
+        });
+
+        const createdSessionId = (sessionService.create as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]?.sessionId;
+        expect(createdSessionId).toBeTruthy();
+
+        mockPty._emitter.emit("data", "\x1b[2J\x1b[Hmodel: gpt-5.4 medium\nMCP startup incomplete (failed: linear)\n› ");
+        await vi.advanceTimersByTimeAsync(600);
+        await Promise.resolve();
+
+        expect(sessionService.get(createdSessionId!)?.goal).toBe("print cwd");
+        expect(aiIntegrationService.summarizeTerminal).toHaveBeenCalledWith(
+          expect.objectContaining({
+            prompt: expect.stringContaining("print cwd"),
+            taskType: "session_title",
+          }),
+        );
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it("does not send Codex initialInput into the update prompt", async () => {
       vi.useFakeTimers();
       try {
@@ -3118,6 +3158,7 @@ describe("ptyService", () => {
     });
 
     it.each([
+      ["claude", "Claude Code"],
       ["codex", "Codex session"],
       ["cursor-cli", "Cursor Agent CLI"],
       ["droid", "Factory Droid CLI"],
@@ -3289,7 +3330,7 @@ describe("ptyService", () => {
       }
     });
 
-    it("does not call ADE AI title generation for Claude CLI sessions", async () => {
+    it("uses ADE first-prompt AI title generation for Claude CLI sessions", async () => {
       const aiIntegrationService = {
         getMode: vi.fn(() => "subscription"),
         summarizeTerminal: vi.fn(async () => ({ text: "ADE generated title" })),
@@ -3310,7 +3351,12 @@ describe("ptyService", () => {
       await Promise.resolve();
 
       expect(sessionService.get(createdSessionId)?.title).toBe("Fix the flaky login tests");
-      expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalled();
+      expect(aiIntegrationService.summarizeTerminal).toHaveBeenCalledWith(
+        expect.objectContaining({
+          prompt: expect.stringContaining("Fix the flaky login tests"),
+          taskType: "session_title",
+        }),
+      );
     });
 
     it("treats legacy slash-command CLI titles as placeholders", async () => {

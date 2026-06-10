@@ -72,7 +72,7 @@ function chatAgentFrom(summary: AgentChatSessionSummary): LaneAgent {
     activity: chatActivity(summary),
     lastHint: summary.awaitingInput
       ? "Awaiting your input"
-      : summary.lastOutputPreview?.trim() || null,
+      : summary.summary?.trim() || summary.lastOutputPreview?.trim() || null,
     lastActivityAt: summary.lastActivityAt ?? summary.startedAt,
   };
 }
@@ -88,7 +88,7 @@ function cliAgentFrom(summary: TerminalSessionSummary): LaneAgent {
     activity: cliActivity(summary),
     lastHint: summary.runtimeState === "waiting-input"
       ? "Awaiting your input"
-      : summary.lastOutputPreview?.trim() || null,
+      : summary.summary?.trim() || summary.lastOutputPreview?.trim() || null,
     lastActivityAt: summary.endedAt ?? summary.startedAt,
   };
 }

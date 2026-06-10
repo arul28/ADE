@@ -1505,7 +1505,7 @@ export function createAiIntegrationService(args: {
       throw new Error("No AI provider is available. Install and authenticate Claude Code and/or Codex CLI.");
     }
 
-    if (!getFeatureFlag(args.feature)) {
+    if (args.taskType !== "session_title" && !getFeatureFlag(args.feature)) {
       logger.warn("ai.task.skipped_feature_disabled", {
         requestId,
         taskType: args.taskType,
@@ -2007,6 +2007,7 @@ export function createAiIntegrationService(args: {
       prompt: string;
       timeoutMs?: number;
       model?: string;
+      reasoningEffort?: string | null;
       jsonSchema?: unknown;
       systemPrompt?: string;
       taskType?: Extract<AiTaskType, "terminal_summary" | "session_title" | "session_summary" | "handoff_summary" | "continuity_summary" | "context_compaction">;
@@ -2018,6 +2019,7 @@ export function createAiIntegrationService(args: {
         prompt: args.prompt,
         timeoutMs: args.timeoutMs,
         model: args.model,
+        reasoningEffort: args.reasoningEffort,
         jsonSchema: args.jsonSchema,
         systemPrompt: args.systemPrompt
       });

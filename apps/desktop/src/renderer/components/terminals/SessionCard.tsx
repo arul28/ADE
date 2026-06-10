@@ -111,9 +111,13 @@ function orchestrationRoleA11yLabel(role: OrchestrationRole, tag?: string | null
 function getPreviewLine(session: TerminalSessionSummary, primaryText: string): string | null {
   const summary = preferredSessionLabel(session.summary);
   if (summary && summary !== primaryText) return summary;
+  const goal = preferredSessionLabel(session.goal);
+  if (session.status !== "running") {
+    if (goal && goal !== primaryText) return goal;
+    return null;
+  }
   const preview = sanitizeTerminalInlineText(session.lastOutputPreview, 120);
   if (preview && preview !== primaryText) return preview;
-  const goal = preferredSessionLabel(session.goal);
   if (goal && goal !== primaryText) return goal;
   return null;
 }

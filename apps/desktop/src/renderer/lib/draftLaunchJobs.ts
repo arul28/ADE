@@ -79,7 +79,9 @@ export type DraftLaunchJob = {
   laneId: string | null;
   laneName: string | null;
   sessionId: string | null;
+  namingModelId: string | null;
   error: string | null;
+  warning: string | null;
   autoOpen: boolean;
   createdAtMs: number;
   snapshot: DraftLaunchSnapshot;

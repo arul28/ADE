@@ -1376,6 +1376,12 @@ export function createPtyService({
     return typeof raw === "string" && raw.trim().length ? raw.trim() : undefined;
   };
 
+  const resolveTitleReasoningEffort = (): string | null => {
+    const si = getSessionIntelligence();
+    const raw = si?.titles?.reasoningEffort;
+    return typeof raw === "string" && raw.trim().length ? raw.trim() : null;
+  };
+
   const tryCliUserTitleFromWrite = (entry: PtyEntry, data: string): void => {
     if (!CLI_USER_TITLE_TOOL_TYPES.has(entry.toolTypeHint ?? "shell")) return;
     if (entry.cliUserTitleCommitted || entry.disposed) return;
@@ -1411,15 +1417,12 @@ export function createPtyService({
           sessionService.updateMeta({ sessionId: entry.sessionId, title: fallbackTitle, manuallyNamed: false });
         }
       }
-      // Claude Code writes its own generated `ai-title` into local session
-      // storage. Keep ADE's prompt summarizer out of this path so that native
-      // Claude names win when they arrive.
-      if (isClaudeTrackedCliToolType(entry.toolTypeHint)) return;
       if (!aiIntegrationService || aiIntegrationService.getMode() === "guest") return;
       if (!isTitleGenerationEnabled()) return;
 
       const laneName = session.laneName?.trim() || "Current lane";
       const titleModelId = resolveTitleModelId();
+      const titleReasoningEffort = resolveTitleReasoningEffort();
       const prompt = [
         "Write a concise title for this CLI coding session.",
         "Return only plain text, max 80 characters, no punctuation at the end.",
@@ -1438,6 +1441,7 @@ export function createPtyService({
           taskType: "session_title",
           timeoutMs: PTY_AI_TITLE_TIMEOUT_MS,
           ...(titleModelId ? { model: titleModelId } : {}),
+          ...(titleReasoningEffort ? { reasoningEffort: titleReasoningEffort } : {}),
         })
         .then((result) => {
           if (entry.disposed) return;
@@ -1624,11 +1628,15 @@ export function createPtyService({
             const summaryModelId = typeof si?.summaries?.modelId === "string" && si.summaries.modelId.trim().length
               ? si.summaries.modelId.trim()
               : undefined;
+            const summaryReasoningEffort = typeof si?.summaries?.reasoningEffort === "string" && si.summaries.reasoningEffort.trim().length
+              ? si.summaries.reasoningEffort.trim()
+              : undefined;
 
             const aiSummary = await aiIntegrationService!.summarizeTerminal({
               cwd: summaryCwd || laneService.getLaneBaseAndBranch(session.laneId).worktreePath,
               prompt,
               ...(summaryModelId ? { model: summaryModelId } : {}),
+              ...(summaryReasoningEffort ? { reasoningEffort: summaryReasoningEffort } : {}),
             });
             const text = aiSummary.text.trim();
             if (text.length) {
@@ -1664,12 +1672,14 @@ export function createPtyService({
               ].filter(Boolean).join("\n");
 
               const titleModelId = resolveTitleModelId();
+              const titleReasoningEffort = resolveTitleReasoningEffort();
               const titleResult = await aiIntegrationService!.summarizeTerminal({
                 cwd: summaryCwd || laneService.getLaneBaseAndBranch(session.laneId).worktreePath,
                 prompt: titlePrompt,
                 taskType: "session_title",
                 timeoutMs: PTY_AI_TITLE_TIMEOUT_MS,
                 ...(titleModelId ? { model: titleModelId } : {}),
+                ...(titleReasoningEffort ? { reasoningEffort: titleReasoningEffort } : {}),
               });
               const finalTitle = sanitizeGeneratedCliTitle(titleResult.text);
               if (finalTitle) {
@@ -3965,6 +3975,7 @@ export function createPtyService({
             if (provider) {
               const submittedInitialInput = normalizedInitialInput.trim();
               if (submittedInitialInput.length > 0) {
+                tryCliUserTitleFromWrite(entry, `${submittedInitialInput}\r`);
                 const wrote = await writeAgentCliInput((data) => {
                   pty.write(data);
                   return true;
@@ -4084,6 +4095,7 @@ export function createPtyService({
           ].join("\n");
 
           const titleModelId = resolveTitleModelId();
+          const titleReasoningEffort = resolveTitleReasoningEffort();
           capturedAi
             .summarizeTerminal({
               cwd: entry.boundCwd || entry.laneWorktreePath,
@@ -4091,6 +4103,7 @@ export function createPtyService({
               taskType: "session_title",
               timeoutMs: PTY_AI_TITLE_TIMEOUT_MS,
               ...(titleModelId ? { model: titleModelId } : {}),
+              ...(titleReasoningEffort ? { reasoningEffort: titleReasoningEffort } : {}),
             })
             .then((result) => {
               const title = sanitizeGeneratedCliTitle(result.text);

@@ -111,19 +111,19 @@ export function AiRuntimesBand() {
     try {
       if (key === "auto_title") {
         await window.ade.ai.updateConfig({
-          sessionIntelligence: { titles: { modelId: modelId || undefined } } as AiConfig["sessionIntelligence"],
+          sessionIntelligence: { titles: { modelId: modelId || null } } as AiConfig["sessionIntelligence"],
         });
       } else {
-        const overrides: Record<string, string> = {};
+        const overrides: Record<string, string | null> = {};
         for (const [k, v] of Object.entries(aiConfig?.featureModelOverrides ?? {})) {
           if (typeof v === "string" && v) overrides[k] = v;
         }
         if (modelId) overrides[key] = modelId;
-        else delete overrides[key];
+        else overrides[key] = null;
         await window.ade.ai.updateConfig({
           featureModelOverrides: overrides as AiConfig["featureModelOverrides"],
           ...(key === "terminal_summaries"
-            ? { sessionIntelligence: { summaries: { modelId: modelId || undefined } } as AiConfig["sessionIntelligence"] }
+            ? { sessionIntelligence: { summaries: { modelId: modelId || null } } as AiConfig["sessionIntelligence"] }
             : {}),
         });
       }

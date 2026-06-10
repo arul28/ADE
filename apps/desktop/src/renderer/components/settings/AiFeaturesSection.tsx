@@ -34,7 +34,7 @@ type ChatTitleSettingsPatch = {
 };
 
 const FEATURES: FeatureInfo[] = [
-  { key: "terminal_summaries", label: "Chat & terminal summaries", description: "Summarize closed terminal sessions and keep chat session summaries updated", subtitle: "Never lose track of what happened in closed sessions", icon: ChatCircleDots },
+  { key: "terminal_summaries", label: "Summarize completed chats and terminals", description: "Replace raw last output with a concise session summary when work completes", subtitle: "Show what happened instead of the last terminal line", icon: ChatCircleDots },
   { key: "pr_descriptions", label: "PR description drafting", description: "Draft PR descriptions when you trigger the action in the PR flows", subtitle: "Get a head start on PR descriptions when you're ready to merge", icon: GitPullRequest },
   { key: "commit_messages", label: "Commit messages", description: "Generate a brief git commit subject when the field is empty", subtitle: "Meaningful commit messages generated from your staged changes", icon: GitCommit },
 ];
@@ -161,13 +161,20 @@ export function AiFeaturesSection() {
       );
       setChatAutoTitleEnabled(effectiveAi?.sessionIntelligence?.titles?.enabled ?? true);
       setChatAutoTitleRefresh(effectiveAi?.sessionIntelligence?.titles?.refreshOnComplete ?? true);
-      setChatAutoTitleReasoning(effectiveAi?.chat?.autoTitleReasoningEffort ?? null);
+      setChatAutoTitleReasoning(
+        effectiveAi?.sessionIntelligence?.titles?.reasoningEffort
+        ?? effectiveAi?.chat?.autoTitleReasoningEffort
+        ?? null
+      );
 
       const persistedReasoning = effectiveAi?.featureReasoningOverrides ?? {};
       const nextReasoning: Record<string, string | null> = {};
       for (const key of Object.keys(persistedReasoning)) {
         nextReasoning[key] = persistedReasoning[key as AiFeatureKey] ?? null;
       }
+      nextReasoning.terminal_summaries = effectiveAi?.sessionIntelligence?.summaries?.reasoningEffort
+        ?? nextReasoning.terminal_summaries
+        ?? null;
       setFeatureReasoning(nextReasoning);
     } finally {
       setLoading(false);
@@ -205,12 +212,10 @@ export function AiFeaturesSection() {
         sessionIntelligence: {
           titles: {
             enabled: nextEnabled,
-            modelId: nextModelId || undefined,
+            modelId: nextModelId || null,
+            reasoningEffort: nextReasoning,
             refreshOnComplete: nextRefresh,
           },
-        },
-        chat: {
-          autoTitleReasoningEffort: nextReasoning,
         },
       });
 
@@ -261,13 +266,17 @@ export function AiFeaturesSection() {
     try {
       const nextFeatureModels = { ...featureModels, [key]: modelId };
       setFeatureModels(nextFeatureModels);
+      const featureModelOverrides = toFeatureModelOverrides(nextFeatureModels) ?? {};
+      if (!modelId) {
+        featureModelOverrides[key] = null;
+      }
       await window.ade.ai.updateConfig({
-        featureModelOverrides: toFeatureModelOverrides(nextFeatureModels),
+        featureModelOverrides,
         ...(key === "terminal_summaries"
           ? {
               sessionIntelligence: {
                 summaries: {
-                  modelId: modelId || undefined,
+                  modelId: modelId || null,
                 },
               } as AiConfig["sessionIntelligence"],
             }
@@ -288,8 +297,20 @@ export function AiFeaturesSection() {
       for (const [k, v] of Object.entries(nextReasoning)) {
         if (v != null) overrides[k] = v;
       }
+      if (effort == null) {
+        overrides[key] = null;
+      }
       await window.ade.ai.updateConfig({
         featureReasoningOverrides: overrides as AiConfig["featureReasoningOverrides"],
+        ...(key === "terminal_summaries"
+          ? {
+              sessionIntelligence: {
+                summaries: {
+                  reasoningEffort: effort,
+                },
+              } as AiConfig["sessionIntelligence"],
+            }
+          : {}),
       });
     } finally {
       setSaving(false);
@@ -447,7 +468,7 @@ export function AiFeaturesSection() {
             );
           })}
 
-          {/* Auto-name chat tabs */}
+          {/* Auto-name chats, CLI sessions, and lanes */}
           <div
             className="ai-feature-row"
             style={{
@@ -486,7 +507,7 @@ export function AiFeaturesSection() {
                       color: chatAutoTitleEnabled ? COLORS.textPrimary : COLORS.textMuted,
                     }}
                   >
-                    Auto-name chat tabs
+                    Auto-name chats, CLI sessions, and lanes
                   </div>
                   <div
                     style={{
@@ -499,7 +520,7 @@ export function AiFeaturesSection() {
                       wordBreak: "break-word",
                     }}
                   >
-                    Tabs automatically get descriptive names based on conversation content
+                    Names come from the first prompt, with a deterministic fallback when the model is off or too slow
                   </div>
                   <label style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 6, cursor: "pointer" }}>
                     <input

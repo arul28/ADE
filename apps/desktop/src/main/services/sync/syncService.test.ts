@@ -6,10 +6,29 @@ import { isCrsqliteAvailable } from "../state/crsqliteExtension";
 import { openKvDb } from "../state/kvDb";
 import { createSyncService } from "./syncService";
 
-const { createDefaultSyncHostServiceMock, createSyncHostServiceMock, syncHostServiceMockState } = vi.hoisted(() => {
+const { acquireSyncHostSingletonMock, createDefaultSyncHostServiceMock, createSyncHostServiceMock, syncHostServiceMockState } = vi.hoisted(() => {
   const syncHostServiceMockState = {
     port: 8787,
   };
+  const acquireSyncHostSingletonMock = vi.fn(() => ({
+    owner: {
+      id: "test-sync-host",
+      pid: process.pid,
+      port: null,
+      appName: "ADE Test",
+      packageChannel: "test",
+      adeHome: null,
+      serviceName: null,
+      socketPath: null,
+      projectRoot: null,
+      commandLine: null,
+      quitCommand: "",
+      createdAt: "2026-03-15T00:00:00.000Z",
+      updatedAt: "2026-03-15T00:00:00.000Z",
+    },
+    updatePort: vi.fn(),
+    dispose: vi.fn(),
+  }));
   const createDefaultSyncHostServiceMock = () => ({
     async waitUntilListening() {
       return syncHostServiceMockState.port;
@@ -44,6 +63,7 @@ const { createDefaultSyncHostServiceMock, createSyncHostServiceMock, syncHostSer
     async dispose() {},
   });
   return {
+    acquireSyncHostSingletonMock,
     syncHostServiceMockState,
     createDefaultSyncHostServiceMock,
     createSyncHostServiceMock: vi.fn(createDefaultSyncHostServiceMock),
@@ -56,6 +76,10 @@ vi.mock("../../../../../ade-cli/src/services/sync/syncHostService", () => ({
   createSyncHostService: createSyncHostServiceMock,
   SYNC_TAILNET_DISCOVERY_SERVICE_NAME: "svc:ade-sync",
   SYNC_TAILNET_DISCOVERY_SERVICE_PORT: 8787,
+}));
+
+vi.mock("../../../../../ade-cli/src/services/sync/syncHostSingleton", () => ({
+  acquireSyncHostSingleton: acquireSyncHostSingletonMock,
 }));
 
 function createLogger() {
@@ -853,8 +877,18 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
 
     await service.initialize();
 
-    expect(createSyncHostServiceMock.mock.calls.map((call: any[]) => call[0]?.port)).toEqual([8787, 8788]);
-    expect(disposeFirstAttempt).toHaveBeenCalledTimes(1);
+    expect(createSyncHostServiceMock.mock.calls.map((call: any[]) => call[0]?.port)).toEqual([
+      8787,
+      8787,
+      8787,
+      8787,
+      8787,
+      8787,
+      8787,
+      8787,
+      8788,
+    ]);
+    expect(disposeFirstAttempt).toHaveBeenCalledTimes(8);
     expect(service.getHostService()?.getPort()).toBe(8788);
   }, 30_000);
 

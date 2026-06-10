@@ -1833,9 +1833,11 @@ type ResolvedChatConfig = {
   sessionBudgetUsd: number | null;
   titleGenerationEnabled: boolean;
   titleModelId: string | null;
+  titleReasoningEffort: string | null;
   titleRefreshOnComplete: boolean;
   summaryEnabled: boolean;
   summaryModelId: string | null;
+  summaryReasoningEffort: string | null;
 };
 
 const MAX_PENDING_STEERS = 10;
@@ -3069,14 +3071,63 @@ function sanitizeAutoTitle(raw: string, maxChars = AUTO_TITLE_MAX_CHARS): string
 }
 
 const GENERIC_PROMPT_LANE_NAME = "parallel-task";
+const LANE_FALLBACK_STOPWORDS = new Set([
+  "a",
+  "an",
+  "and",
+  "are",
+  "as",
+  "can",
+  "could",
+  "for",
+  "from",
+  "have",
+  "help",
+  "how",
+  "i",
+  "in",
+  "into",
+  "is",
+  "it",
+  "just",
+  "let",
+  "make",
+  "me",
+  "my",
+  "of",
+  "on",
+  "please",
+  "pls",
+  "the",
+  "this",
+  "to",
+  "use",
+  "we",
+  "with",
+  "you",
+]);
 
 function fallbackLaneNameFromPrompt(prompt: string): string {
-  const collapsed = prompt.replace(/\s+/g, " ");
+  const collapsed = prompt
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/\b(?:please|pls|can you|could you|help me|i need(?: you)? to|let'?s|we need to)\b/giu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
   if (!collapsed.length) return GENERIC_PROMPT_LANE_NAME;
-  const words = collapsed.split(/\s+/).filter(Boolean).slice(0, 4);
+  const meaningfulWords = collapsed
+    .toLowerCase()
+    .match(/[a-z0-9]+/g)
+    ?.filter((token) => token.length > 1 && !LANE_FALLBACK_STOPWORDS.has(token))
+    .slice(0, 5) ?? [];
+  const fallbackWords = collapsed
+    .toLowerCase()
+    .match(/[a-z0-9]+/g)
+    ?.filter((token) => token.length > 1)
+    .slice(0, 4) ?? [];
+  const words = meaningfulWords.length ? meaningfulWords : fallbackWords;
   const slug = words
     .join("-")
-    .toLowerCase()
     .replace(/[^a-z0-9-]+/g, "-")
     .replace(/-+/g, "-")
     .replace(/^-|-$/g, "");
@@ -3084,24 +3135,13 @@ function fallbackLaneNameFromPrompt(prompt: string): string {
 }
 
 function uniquePromptFallbackLaneName(promptFallback: string, explicitFallback: string | null): string {
-  if (promptFallback === GENERIC_PROMPT_LANE_NAME) {
-    return explicitFallback ?? promptFallback;
+  if (promptFallback !== GENERIC_PROMPT_LANE_NAME) {
+    return promptFallback;
   }
-  if (!explicitFallback) return promptFallback;
-
-  const uniqueSuffix = explicitFallback
-    .replace(/^chat-?/u, "")
-    .replace(/[^a-z0-9-]+/giu, "-")
-    .replace(/-+/g, "-")
-    .replace(/^-|-$/g, "")
-    .toLowerCase();
-  if (!uniqueSuffix.length) return promptFallback;
-
-  const maxPrefixLength = Math.max(1, 60 - uniqueSuffix.length - 1);
-  const prefix = promptFallback
-    .slice(0, maxPrefixLength)
-    .replace(/-+$/g, "");
-  return `${prefix}-${uniqueSuffix}`;
+  if (!explicitFallback || /^chat(?:-|$)/u.test(explicitFallback)) {
+    return promptFallback;
+  }
+  return explicitFallback;
 }
 
 function normalizeSuggestedLaneName(raw: string): string | null {
@@ -5357,14 +5397,23 @@ export function createAgentChatService(args: {
     prompt: string;
     systemPrompt?: string;
     timeoutMs?: number;
+    reasoningEffort?: string | null;
     taskType: "session_title" | "session_summary" | "handoff_summary" | "continuity_summary";
   }) => {
+    const config = resolveChatConfig();
+    const reasoningEffort = args.reasoningEffort
+      ?? (args.taskType === "session_title"
+        ? config.titleReasoningEffort
+        : args.taskType === "session_summary"
+          ? config.summaryReasoningEffort
+          : null);
     return await aiIntegrationService.summarizeTerminal({
       cwd: args.cwd,
       model: args.modelId,
       prompt: args.prompt,
       systemPrompt: args.systemPrompt,
       timeoutMs: args.timeoutMs,
+      reasoningEffort,
       taskType: args.taskType,
     });
   };
@@ -7660,9 +7709,17 @@ export function createAgentChatService(args: {
     const titleGenerationEnabled = si?.titles?.enabled
       ?? (typeof legacyChat.autoTitleEnabled === "boolean" ? legacyChat.autoTitleEnabled : undefined)
       ?? true;
-    const titleModelIdRaw = si?.titles?.modelId ?? legacyChat.autoTitleModelId;
+    const titleModelIdRaw = si?.titles && Object.prototype.hasOwnProperty.call(si.titles, "modelId")
+      ? si.titles.modelId
+      : legacyChat.autoTitleModelId;
     const titleModelId = typeof titleModelIdRaw === "string" && titleModelIdRaw.trim().length
       ? titleModelIdRaw.trim()
+      : null;
+    const titleReasoningEffortRaw = si?.titles && Object.prototype.hasOwnProperty.call(si.titles, "reasoningEffort")
+      ? si.titles.reasoningEffort
+      : legacyChat.autoTitleReasoningEffort;
+    const titleReasoningEffort = typeof titleReasoningEffortRaw === "string" && titleReasoningEffortRaw.trim().length
+      ? titleReasoningEffortRaw.trim()
       : null;
     const titleRefreshOnComplete = si?.titles?.refreshOnComplete
       ?? (typeof legacyChat.autoTitleRefreshOnComplete === "boolean" ? legacyChat.autoTitleRefreshOnComplete : undefined)
@@ -7674,6 +7731,10 @@ export function createAgentChatService(args: {
     const summaryModelId = typeof summaryModelIdRaw === "string" && summaryModelIdRaw.trim().length
       ? summaryModelIdRaw.trim()
       : null;
+    const summaryReasoningEffortRaw = si?.summaries?.reasoningEffort;
+    const summaryReasoningEffort = typeof summaryReasoningEffortRaw === "string" && summaryReasoningEffortRaw.trim().length
+      ? summaryReasoningEffortRaw.trim()
+      : null;
 
     return {
       codexApprovalPolicy: approvalPolicy,
@@ -7683,9 +7744,11 @@ export function createAgentChatService(args: {
       sessionBudgetUsd,
       titleGenerationEnabled,
       titleModelId,
+      titleReasoningEffort,
       titleRefreshOnComplete,
       summaryEnabled,
       summaryModelId,
+      summaryReasoningEffort,
     };
   };
 

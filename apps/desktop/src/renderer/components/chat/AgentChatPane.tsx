@@ -650,23 +650,76 @@ function draftLaunchRequestKey(args: {
   });
 }
 
-function createTemporaryAutoLaneName(date = new Date()): string {
-  const pad = (value: number) => String(value).padStart(2, "0");
-  return [
-    "chat",
-    `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}`,
-    `${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`,
-  ].join("-");
+const GENERIC_AUTO_LANE_NAME = "parallel-task";
+const AUTO_LANE_FALLBACK_STOPWORDS = new Set([
+  "a",
+  "an",
+  "and",
+  "are",
+  "as",
+  "can",
+  "could",
+  "for",
+  "from",
+  "have",
+  "help",
+  "how",
+  "i",
+  "in",
+  "into",
+  "is",
+  "it",
+  "just",
+  "let",
+  "make",
+  "me",
+  "my",
+  "of",
+  "on",
+  "please",
+  "pls",
+  "the",
+  "this",
+  "to",
+  "use",
+  "we",
+  "with",
+  "you",
+]);
+
+function createDeterministicAutoLaneName(prompt: string): string {
+  const collapsed = prompt
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/\b(?:please|pls|can you|could you|help me|i need(?: you)? to|let'?s|we need to)\b/giu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!collapsed.length) return GENERIC_AUTO_LANE_NAME;
+  const tokens = collapsed.toLowerCase().match(/[a-z0-9]+/g) ?? [];
+  const meaningfulWords = tokens
+    .filter((token) => token.length > 1 && !AUTO_LANE_FALLBACK_STOPWORDS.has(token))
+    .slice(0, 5);
+  const fallbackWords = tokens
+    .filter((token) => token.length > 1)
+    .slice(0, 4);
+  const words = meaningfulWords.length ? meaningfulWords : fallbackWords;
+  const slug = words
+    .join("-")
+    .replace(/[^a-z0-9-]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "");
+  return slug.length ? slug.slice(0, 48) : GENERIC_AUTO_LANE_NAME;
 }
 
-const AUTO_LANE_NAME_SUGGEST_TIMEOUT_MS = 3_500;
+const AUTO_LANE_NAME_SUGGEST_TIMEOUT_MS = 10_000;
 
 async function suggestAutoLaneName(args: {
   laneId: string;
   prompt: string;
   modelId: string;
+  onFallback?: (message: string) => void;
 }): Promise<string> {
-  const fallbackName = createTemporaryAutoLaneName();
+  const fallbackName = createDeterministicAutoLaneName(args.prompt);
   let timeoutId: ReturnType<typeof setTimeout> | null = null;
   try {
     const suggested = await Promise.race([
@@ -677,12 +730,16 @@ async function suggestAutoLaneName(args: {
         fallbackName,
       }),
       new Promise<string>((resolve) => {
-        timeoutId = setTimeout(() => resolve(fallbackName), AUTO_LANE_NAME_SUGGEST_TIMEOUT_MS);
+        timeoutId = setTimeout(() => {
+          args.onFallback?.(`Lane naming with ${formatLocalModelLabel(args.modelId)} took longer than 10s; using a deterministic name.`);
+          resolve(fallbackName);
+        }, AUTO_LANE_NAME_SUGGEST_TIMEOUT_MS);
       }),
     ]);
     return suggested.trim() || fallbackName;
   } catch (error) {
     console.warn("draft launch lane name suggestion failed; using fallback name", error);
+    args.onFallback?.("Lane naming failed; using a deterministic name.");
     return fallbackName;
   } finally {
     if (timeoutId) clearTimeout(timeoutId);
@@ -737,10 +794,11 @@ function draftLaunchPromptSnippet(job: DraftLaunchJob): string {
 
 function draftLaunchJobMessage(job: DraftLaunchJob): string {
   const laneSuffix = job.laneName ? ` in ${job.laneName}` : "";
-  if (job.status === "naming-lane") return `Creating lane for ${draftLaunchKindLabel(job.draftKind)}... Choosing a branch name.`;
-  if (job.status === "creating-lane") return `Creating lane for ${draftLaunchKindLabel(job.draftKind)}...`;
-  if (job.status === "starting-session") return `Starting ${draftLaunchKindLabel(job.draftKind)}${laneSuffix}...`;
-  if (job.status === "sending-prompt") return `Sending prompt to ${draftLaunchKindLabel(job.draftKind)}${laneSuffix}...`;
+  const warningSuffix = job.warning ? ` ${job.warning}` : "";
+  if (job.status === "naming-lane") return `Naming lane with ${formatLocalModelLabel(job.namingModelId ?? job.snapshot.modelId)}...${warningSuffix}`;
+  if (job.status === "creating-lane") return `Creating lane for ${draftLaunchKindLabel(job.draftKind)}...${warningSuffix}`;
+  if (job.status === "starting-session") return `Starting ${draftLaunchKindLabel(job.draftKind)}${laneSuffix}...${warningSuffix}`;
+  if (job.status === "sending-prompt") return `Sending prompt to ${draftLaunchKindLabel(job.draftKind)}${laneSuffix}...${warningSuffix}`;
   if (job.status === "failed") return job.error ? `Launch failed: ${job.error}` : "Launch failed.";
   return job.mode === "background"
     ? `Launched ${draftLaunchKindLabel(job.draftKind)}${laneSuffix}.`
@@ -6744,6 +6802,8 @@ export function AgentChatPane({
   const resolveDraftLaunchLane = useCallback(async (
     snapshot: DraftLaunchSnapshot,
     onAutoCreateNameResolved?: () => void,
+    onAutoCreateNameFallback?: (message: string) => void,
+    onAutoCreateNameModelResolved?: (modelId: string) => void,
   ): Promise<DraftLaunchLaneTarget> => {
     if (draftLaunchTargetIsAutoCreate) {
       if (!laneId) throw new Error("Select a lane before auto-creating a new lane.");
@@ -6751,13 +6811,21 @@ export function AgentChatPane({
         ?? availableLanes?.find((candidate) => candidate.name.trim().toLowerCase() === "primary")
         ?? null;
       if (!primaryLane) throw new Error("Auto-create requires a primary lane.");
-      const laneName = await suggestAutoLaneName({
-        laneId: primaryLane.id,
-        prompt: buildDraftLaunchNamingSeed(snapshot),
-        modelId: snapshot.modelId,
-      });
-      onAutoCreateNameResolved?.();
+      const namingSeed = buildDraftLaunchNamingSeed(snapshot);
       const projectConfigSnapshot = await getProjectConfigCached({ projectRoot, force: true }).catch(() => null);
+      const titleSettings = projectConfigSnapshot?.effective?.ai?.sessionIntelligence?.titles;
+      const titleModelId = typeof titleSettings?.modelId === "string" ? titleSettings.modelId.trim() : "";
+      const namingModelId = titleModelId || snapshot.modelId;
+      onAutoCreateNameModelResolved?.(namingModelId);
+      const laneName = titleSettings?.enabled === false
+        ? createDeterministicAutoLaneName(namingSeed)
+        : await suggestAutoLaneName({
+            laneId: primaryLane.id,
+            prompt: namingSeed,
+            modelId: namingModelId,
+            onFallback: onAutoCreateNameFallback,
+          });
+      onAutoCreateNameResolved?.();
       const baseSource = effectiveNewLaneBaseSource(projectConfigSnapshot);
       const branches = await fetchNewLaneBaseBranches({
         source: baseSource,
@@ -6990,7 +7058,9 @@ export function AgentChatPane({
       laneId: null,
       laneName: null,
       sessionId: null,
+      namingModelId: null,
       error: null,
+      warning: null,
       autoOpen: mode === "foreground",
       createdAtMs: Date.now(),
       snapshot,
@@ -7012,6 +7082,10 @@ export function AgentChatPane({
     try {
       targetLane = await resolveDraftLaunchLane(snapshot, () => {
         patchDraftLaunchJob(jobId, { status: "creating-lane" });
+      }, (message) => {
+        patchDraftLaunchJob(jobId, { warning: message });
+      }, (modelId) => {
+        patchDraftLaunchJob(jobId, { namingModelId: modelId });
       });
       patchDraftLaunchJob(jobId, {
         status: "starting-session",
@@ -7391,11 +7465,21 @@ export function AgentChatPane({
             issueCount ? `${issueCount} issue${issueCount === 1 ? "" : "s"}` : null,
           ].filter(Boolean).join(" · ");
         }
-        const baseName = await suggestAutoLaneName({
-          laneId,
-          prompt: namingSeed,
-          modelId: parallelModelSlots[0]!.modelId,
-        });
+        const projectConfigSnapshot = await getProjectConfigCached({ projectRoot, force: false }).catch(() => null);
+        const titleSettings = projectConfigSnapshot?.effective?.ai?.sessionIntelligence?.titles;
+        const titleModelId = typeof titleSettings?.modelId === "string" ? titleSettings.modelId.trim() : "";
+        const namingModelId = titleModelId || parallelModelSlots[0]!.modelId;
+        if (titleSettings?.enabled !== false) {
+          setParallelLaunchStatus(`Naming lanes with ${formatLocalModelLabel(namingModelId)}...`);
+        }
+        const baseName = titleSettings?.enabled === false
+          ? createDeterministicAutoLaneName(namingSeed)
+          : await suggestAutoLaneName({
+              laneId,
+              prompt: namingSeed,
+              modelId: namingModelId,
+              onFallback: setParallelLaunchStatus,
+            });
         setParallelLaunchStatus(`Creating ${parallelModelSlots.length} child lanes…`);
 
         for (const slot of parallelModelSlots) {
@@ -9509,6 +9593,15 @@ export function AgentChatPane({
                   }}
                 >
                   Restore
+                </button>
+              ) : null}
+              {isActiveJob && job.status === "naming-lane" ? (
+                <button
+                  type="button"
+                  className="rounded-md px-2 py-0.5 text-[length:calc(var(--chat-font-size)*10.5/14)] font-medium text-fg/65 transition-colors hover:bg-white/10 hover:text-fg/85"
+                  onClick={() => navigate("/settings?tab=background-jobs")}
+                >
+                  Settings
                 </button>
               ) : null}
               {canOpen ? (
