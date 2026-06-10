@@ -11084,6 +11084,17 @@ describe("createAgentChatService", () => {
         cursorAvailability: { cli: true, sdk: false },
       });
       expect(models[0]?.description).toContain("Cursor CLI");
+
+      // A surface that runs Cursor through the SDK (cursorSource: "sdk", e.g.
+      // TUI/mobile chat) must not be offered these CLI-only models — they'd
+      // fail on selection. With no SDK key configured, the sdk-scoped request
+      // returns nothing rather than leaking the CLI-only rows.
+      const sdkScoped = await service.getAvailableModels({
+        provider: "cursor",
+        activateRuntime: true,
+        cursorSource: "sdk",
+      });
+      expect(sdkScoped).toEqual([]);
     });
 
     it("coalesces concurrent codex model discovery requests", async () => {

@@ -23420,7 +23420,20 @@ export function createAgentChatService(args: {
               }).catch(() => [])
             : Promise.resolve([]),
         ]);
-        const ordered = mergeCursorModelDescriptorSources({ cliDescriptors, sdkDescriptors });
+        const merged = mergeCursorModelDescriptorSources({ cliDescriptors, sdkDescriptors });
+        // Honor the requested source in the RETURNED set, not just in probing.
+        // A surface that runs Cursor through one runtime must not be offered
+        // models only the other runtime can run — selecting one would later
+        // throw in assertCursorChatModelCanUseSdk (or the CLI equivalent). The
+        // skipped source still annotates availability on dual-capable rows;
+        // only rows exclusive to the skipped source are dropped. "all" returns
+        // the union. Surfaces that don't filter client-side (some TUI/mobile
+        // paths) rely on this.
+        const ordered = cursorSource === "sdk"
+          ? merged.filter((d) => d.cursorAvailability?.sdk === true)
+          : cursorSource === "cli"
+            ? merged.filter((d) => d.cursorAvailability?.cli === true)
+            : merged;
         const preferred = pickDefaultCursorDescriptorFromCliList(ordered);
         return ordered.map((d) => ({
           id: d.id,
