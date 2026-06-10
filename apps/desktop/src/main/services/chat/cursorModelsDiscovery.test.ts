@@ -626,6 +626,12 @@ describe("parseCursorCliModelsStdout", () => {
 
     const descriptors = await discoverCursorSdkModelDescriptors("crsr_test", { mode: "probe" });
     expect(descriptors).toEqual([]);
+
+    // The authoritative empty probe must also drop the stale SDK cache, so a
+    // later passive cached-or-fallback read (status/mobile/TUI) reflects the
+    // empty result instead of resurrecting the warmed rows.
+    const passive = await discoverCursorSdkModelDescriptors("crsr_test", { mode: "cached-or-fallback" });
+    expect(passive).toEqual([]);
   });
 
   it("suppresses warmed Cursor SDK cache after an SDK runtime failure", async () => {

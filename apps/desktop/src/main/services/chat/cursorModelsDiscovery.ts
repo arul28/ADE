@@ -742,6 +742,13 @@ async function fetchCursorModelsFromSdk(
   })(), timeoutMs);
   if (rows.length && generation === sdkCacheGeneration) {
     sdkCached = { at: Date.now(), keyHash, models: rows };
+  } else if (!rows.length && generation === sdkCacheGeneration && sdkCached?.keyHash === keyHash) {
+    // Authoritative empty result: the fetch returned without throwing, so both
+    // the SDK and the official API reported zero models for this key (timeouts
+    // and auth/transient failures throw and never reach here). Drop the stale
+    // rows so passive cached-or-fallback readers (status/mobile/TUI) don't
+    // resurrect models the provider just reported as gone.
+    sdkCached = null;
   }
   if (sdkSucceeded && rows.length && sdkLastFailure?.keyHash === keyHash) {
     sdkLastFailure = null;
