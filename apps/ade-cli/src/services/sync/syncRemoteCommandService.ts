@@ -1195,16 +1195,28 @@ function parseConflictLaneArgs(value: Record<string, unknown>, action: string): 
   };
 }
 
-function parseChatModelsArgs(value: Record<string, unknown>): { provider: AgentChatProvider; activateRuntime?: boolean } {
+function parseCursorModelSource(value: unknown): "sdk" | "cli" | "all" | null {
+  const source = asTrimmedString(value);
+  return source === "sdk" || source === "cli" || source === "all" ? source : null;
+}
+
+function parseChatModelsArgs(value: Record<string, unknown>): {
+  provider: AgentChatProvider;
+  activateRuntime?: boolean;
+  cursorSource?: "sdk" | "cli" | "all";
+} {
+  const cursorSource = parseCursorModelSource(value.cursorSource);
   return {
     provider: (asTrimmedString(value.provider) ?? "codex") as AgentChatProvider,
     ...(value.activateRuntime === true ? { activateRuntime: true } : {}),
+    ...(cursorSource ? { cursorSource } : {}),
   };
 }
 
 function parseChatModelCatalogArgs(value: Record<string, unknown>): AgentChatModelCatalogArgs {
   const mode = asTrimmedString(value.mode) as AgentChatModelCatalogMode | null;
   const refreshProvider = asTrimmedString(value.refreshProvider) as AgentChatModelCatalogRefreshProvider | null;
+  const cursorSource = parseCursorModelSource(value.cursorSource);
   return {
     ...(mode === "cached" || mode === "refresh-stale" || mode === "force" ? { mode } : {}),
     ...(
@@ -1216,6 +1228,7 @@ function parseChatModelCatalogArgs(value: Record<string, unknown>): AgentChatMod
         ? { refreshProvider }
         : {}
     ),
+    ...(cursorSource ? { cursorSource } : {}),
   };
 }
 

@@ -67,9 +67,10 @@ import { inspectLocalProvider } from "./localModelDiscovery";
 import {
   discoverCursorSdkModelDescriptors,
   clearCursorCliModelsCache,
+  markCursorModelCachesStale,
   probeCursorSdkModelDiscovery,
 } from "../chat/cursorModelsDiscovery";
-import { discoverDroidCliModelDescriptors, clearDroidCliModelsCache } from "../chat/droidModelsDiscovery";
+import { discoverDroidCliModelDescriptors, markDroidModelCachesStale } from "../chat/droidModelsDiscovery";
 import { resolveDroidExecutable } from "./droidExecutable";
 import { buildProviderConnections } from "./providerConnectionStatus";
 import { getProviderRuntimeHealthVersion, resetProviderRuntimeHealth } from "./providerRuntimeHealth";
@@ -999,7 +1000,10 @@ export function createAiIntegrationService(args: {
 
     let available = getAvailableModels(auth);
     const discoveryMode = options?.discoverCliModels === true ? "probe" : "cached-or-fallback";
-    const cursorDiscoveryMode = options?.discoverCliModels === true ? "probe" : "cached-only";
+    // "cached-or-fallback" serves last-known-good rows and warms the cache in
+    // the background when cold, so a verified key surfaces models on passive
+    // status reads (availableModelIds, mobile, TUI) without an active probe.
+    const cursorDiscoveryMode = options?.discoverCliModels === true ? "probe" : "cached-or-fallback";
 
     const cursorApiKey = getCursorApiKeyFromAuth(auth);
     if (cursorApiKey) {
@@ -1626,8 +1630,14 @@ export function createAiIntegrationService(args: {
     resetProviderRuntimeHealth();
     resetClaudeRuntimeProbeCache();
     resetLocalProviderDetectionCache();
-    clearCursorCliModelsCache();
-    clearDroidCliModelsCache();
+    // Keep last-known-good cursor/droid model rows: generic readiness
+    // invalidation runs on every forced status refresh and on verifying ANY
+    // provider's key, and blanking the dynamic model lists here made cursor
+    // models vanish from every surface right after a successful verification.
+    // A cursor key change does a full clear at the storeApiKey/deleteApiKey
+    // call sites; droid auth is file-based, so it has no such call site.
+    markCursorModelCachesStale();
+    markDroidModelCachesStale();
     clearOpenCodeBinaryCache();
     clearOpenCodeInventoryCache();
     replaceDynamicOpenCodeModelDescriptors([]);
@@ -1902,10 +1912,12 @@ export function createAiIntegrationService(args: {
     verifyApiKeyConnection,
     storeApiKey(provider: string, key: string): void {
       storeStoredApiKey(provider, key);
+      if (provider.trim().toLowerCase() === "cursor") clearCursorCliModelsCache();
       invalidateProviderReadinessCaches();
     },
     deleteApiKey(provider: string): void {
       deleteStoredApiKey(provider);
+      if (provider.trim().toLowerCase() === "cursor") clearCursorCliModelsCache();
       invalidateProviderReadinessCaches();
     },
     listApiKeys(): string[] {

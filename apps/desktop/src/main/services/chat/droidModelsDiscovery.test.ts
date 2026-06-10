@@ -21,9 +21,19 @@ vi.mock("node:os", async (importOriginal) => {
 import {
   clearDroidCliModelsCache,
   discoverDroidCliModelDescriptors,
+  markDroidModelCachesStale,
   parseDroidExecHelpModelIds,
   parseDroidExecHelpModels,
 } from "./droidModelsDiscovery";
+
+function sessionWithModels(ids: string[]) {
+  return {
+    initResult: {
+      availableModels: ids.map((id) => ({ id, displayName: id })),
+    },
+    close: vi.fn(async () => {}),
+  };
+}
 
 let tmpHome: string;
 
@@ -192,5 +202,37 @@ describe("discoverDroidCliModelDescriptors", () => {
       displayName: "Claude Sonnet 4.6 (High)",
       customProxy: true,
     });
+  });
+
+  it("serves last-known-good rows past the freshness window and revalidates once in the background", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-10T00:00:00.000Z"));
+    try {
+      mockCreateSession.mockResolvedValueOnce(sessionWithModels(["claude-sonnet-4-6"]));
+      const seeded = await discoverDroidCliModelDescriptors("/mock/bin/droid");
+      expect(seeded.map((d) => d.id)).toEqual(["droid/claude-sonnet-4-6"]);
+      expect(mockCreateSession).toHaveBeenCalledTimes(1);
+
+      // Generic readiness invalidation ages the cache without dropping rows.
+      markDroidModelCachesStale();
+      // The background revalidation fails (e.g. droid is mid-reauth), so the
+      // aged last-known-good rows must remain the served answer.
+      mockCreateSession.mockRejectedValue(new Error("droid session unavailable"));
+
+      // A passive read past the 120s window still returns the cached rows
+      // synchronously and kicks off exactly one background SDK session.
+      const stale = await discoverDroidCliModelDescriptors("/mock/bin/droid", { mode: "cached-or-fallback" });
+      expect(stale.map((d) => d.id)).toEqual(["droid/claude-sonnet-4-6"]);
+      expect(mockCreateSession).toHaveBeenCalledTimes(2);
+
+      // Backoff: a second passive read inside the same freshness window must
+      // NOT spawn another session, even though the cache is still aged and the
+      // warm just failed — without backoff a broken droid gets a session per call.
+      const again = await discoverDroidCliModelDescriptors("/mock/bin/droid", { mode: "cached-or-fallback" });
+      expect(again.map((d) => d.id)).toEqual(["droid/claude-sonnet-4-6"]);
+      expect(mockCreateSession).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

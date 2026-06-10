@@ -4321,9 +4321,21 @@ final class SyncService: ObservableObject {
 
     let task = Task { @MainActor [weak self] in
       guard let self else { throw CancellationError() }
+      // Cursor/droid model lists are discovered dynamically on the host;
+      // activate the runtime so a fresh key surfaces models on first fetch
+      // instead of returning an empty passive cache (mirrors the TUI). Mobile
+      // chats run cursor models through the SDK, so only that source is
+      // probed synchronously — the CLI flavor revalidates in the background.
+      var args: [String: Any] = ["provider": normalizedProvider]
+      if normalizedProvider == "cursor" || normalizedProvider == "droid" {
+        args["activateRuntime"] = true
+      }
+      if normalizedProvider == "cursor" {
+        args["cursorSource"] = "sdk"
+      }
       let response = try await self.sendCommand(
         action: "chat.models",
-        args: ["provider": normalizedProvider],
+        args: args,
         disconnectOnTimeout: false,
         timeoutMessage: "Model list is still loading from the machine.",
         timeoutNanoseconds: SyncRequestTimeout.modelCatalogTimeoutNanoseconds

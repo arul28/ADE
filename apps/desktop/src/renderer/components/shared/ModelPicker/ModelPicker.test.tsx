@@ -734,7 +734,7 @@ describe("ModelPicker", () => {
     await user.click(cursorRail);
 
     await waitFor(() => {
-      expect(modelCatalog).toHaveBeenCalledWith({ mode: "refresh-stale", refreshProvider: "cursor" });
+      expect(modelCatalog).toHaveBeenCalledWith({ mode: "refresh-stale", refreshProvider: "cursor", cursorSource: "sdk" });
     });
     expect(await screen.findByText("No Cursor models found")).toBeTruthy();
     expect(screen.queryByText("Connect Cursor")).toBeNull();
@@ -743,7 +743,7 @@ describe("ModelPicker", () => {
     await user.click(cursorRail);
 
     await waitFor(() => {
-      expect(modelCatalog).toHaveBeenCalledWith({ mode: "refresh-stale", refreshProvider: "cursor" });
+      expect(modelCatalog).toHaveBeenCalledWith({ mode: "refresh-stale", refreshProvider: "cursor", cursorSource: "sdk" });
     });
   });
 
@@ -755,8 +755,25 @@ describe("ModelPicker", () => {
         providers: [{
           key: "cursor",
           displayName: "Cursor",
+          badgeColor: "#60A5FA",
           modelCount: 1,
-          subsections: [],
+          subsections: [{
+            key: "cursor",
+            label: "Cursor",
+            models: [{
+              id: "cursor/composer-2",
+              runtimeModelId: "cursor/composer-2",
+              provider: "cursor",
+              providerKey: "cursor",
+              groupKey: "cursor",
+              displayName: "Composer 2",
+              isDefault: true,
+              isAvailable: true,
+              supportsReasoning: true,
+              supportsTools: true,
+              cursorAvailability: { sdk: true, cli: true },
+            }],
+          }],
         }],
       }],
       fetchedAt: "2026-05-18T00:00:00.000Z",

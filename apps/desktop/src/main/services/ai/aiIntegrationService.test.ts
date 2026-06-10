@@ -8,6 +8,7 @@ const mockState = vi.hoisted(() => ({
   buildProviderConnections: vi.fn(),
   inspectLocalProvider: vi.fn(),
   clearCursorCliModelsCache: vi.fn(),
+  markCursorModelCachesStale: vi.fn(),
   discoverCursorCliModelDescriptors: vi.fn(),
   discoverCursorSdkModelDescriptors: vi.fn(),
   probeCursorSdkModelDiscovery: vi.fn(),
@@ -40,6 +41,7 @@ vi.mock("./localModelDiscovery", () => ({
 
 vi.mock("../chat/cursorModelsDiscovery", () => ({
   clearCursorCliModelsCache: (...args: unknown[]) => mockState.clearCursorCliModelsCache(...args),
+  markCursorModelCachesStale: (...args: unknown[]) => mockState.markCursorModelCachesStale(...args),
   discoverCursorCliModelDescriptors: (...args: unknown[]) => mockState.discoverCursorCliModelDescriptors(...args),
   discoverCursorSdkModelDescriptors: (...args: unknown[]) => mockState.discoverCursorSdkModelDescriptors(...args),
   probeCursorSdkModelDiscovery: (...args: unknown[]) => mockState.probeCursorSdkModelDiscovery(...args),
@@ -576,7 +578,10 @@ describe("aiIntegrationService", () => {
     });
     expect(refreshedStatus.availableProviders.cursor).toBe(true);
     expect(refreshedStatus.availableModelIds).toContain("cursor/auto");
-    expect(mockState.clearCursorCliModelsCache).toHaveBeenCalled();
+    // Verification ages the dynamic model caches without dropping
+    // last-known-good rows; a full clear only happens on a key change.
+    expect(mockState.markCursorModelCachesStale).toHaveBeenCalled();
+    expect(mockState.clearCursorCliModelsCache).not.toHaveBeenCalled();
     expect(mockState.clearOpenCodeInventoryCache).toHaveBeenCalled();
   });
 

@@ -1295,9 +1295,19 @@ export type AgentChatModelCatalogRefreshProvider =
 
 export type AgentChatModelCatalogMode = "cached" | "refresh-stale" | "force";
 
+/**
+ * Which cursor discovery source the requesting surface needs synchronously.
+ * Chat surfaces run models through the Cursor SDK ("sdk"); Work-tab CLI lane
+ * drafts run the cursor-agent CLI ("cli"). "all" (default) probes both, which
+ * makes the refresh wait on the slower CLI spawn — surfaces that know their
+ * flavor should pass it so the other source revalidates in the background.
+ */
+export type AgentChatCursorModelSource = "sdk" | "cli" | "all";
+
 export type AgentChatModelCatalogArgs = {
   mode?: AgentChatModelCatalogMode;
   refreshProvider?: AgentChatModelCatalogRefreshProvider;
+  cursorSource?: AgentChatCursorModelSource;
 };
 
 export type AgentChatCreateArgs = {
@@ -1584,6 +1594,7 @@ export type AgentChatRespondToInputArgs = {
 export type AgentChatModelsArgs = {
   provider: AgentChatProvider;
   activateRuntime?: boolean;
+  cursorSource?: AgentChatCursorModelSource;
 };
 
 export type AgentChatDisposeArgs = {
