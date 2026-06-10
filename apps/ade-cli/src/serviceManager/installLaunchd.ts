@@ -93,6 +93,7 @@ function selfServiceMutationBlockedResult(args: {
   const verb = args.action === "install" ? "restart" : "stop";
   return {
     ok: false,
+    selfMutationBlocked: true,
     serviceName: ADE_RUNTIME_SERVICE_NAME,
     action: args.action,
     path: args.servicePath,

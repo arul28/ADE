@@ -1,6 +1,6 @@
 # Ship Lane — Autonomous PR-to-Merge Playbook
 
-This playbook drives a single lane (branch) from "work is ready" to "merged on `main`" without human shepherding. Any agent CLI (Claude Code, Codex, etc.) can follow it. Claude Code invokes it via `/shipLane`; other CLIs can invoke it directly by reading this file.
+This playbook drives a single lane (branch) from "work is ready" to "merged on `main`" without human shepherding. Any agent CLI (Claude Code, Codex, etc.) can follow it. Claude Code invokes it via the `/ship` skill; other CLIs can invoke it directly by reading this file.
 
 ## When to use
 
@@ -129,14 +129,21 @@ gh pr view --json number,state,headRefOid,baseRefName 2>/dev/null
 
 If a PR exists for the current branch, skip to 0.4 (bot pings) with `prNumber` captured.
 
-### 0.2 Pre-push preparation (no existing PR)
+### 0.2 Pre-push expectation (no existing PR)
 
-Run two sub-agents **serially** (automate first, then finalize):
+Ship is a **pure merge loop** — it does NOT run `/quality`, `/test`, or
+`/finalize`. Those are separate steps in the dev loop
+(`/context → work → /quality → /test → /ship`) that the author runs *before*
+reaching ship. Ship assumes the lane is already reviewed, tested, and
+(optionally) finalized; it never generates tests or simplifies code itself.
 
-1. **automate-agent** — follows `.claude/commands/automate.md` (or wherever its sibling lives for non-Claude CLIs). Generates tests for untested new code on the branch.
-2. **finalize-agent** — follows `.claude/commands/finalize.md`. Runs simplification, doc updates, lock-file sync, typecheck, lint, sharded tests, build.
+Sanity-check only here:
 
-If either exits with failure, abort Phase 0 and record `status: blocked`, `exitReason: "phase-0-gate-failed"`.
+- `git status` must be clean of foreign changes. If uncommitted changes belong
+  to this lane, commit them with `ship: checkpoint before ship`. If they're
+  unrelated, exit `blocked` with `exitReason: "dirty-working-tree"`.
+- If the lane was never run through `/quality` or `/test`, that's the author's
+  call — ship does not block on it, but note it in the first iteration summary.
 
 ### 0.3 Commit + push + create PR
 
@@ -157,7 +164,7 @@ The `ade` surface evolves. Don't assume flag names or output shapes from this pl
 1. **Find an `ade` binary.** Try in order, and stop at the first hit:
    1. `command -v ade` (PATH).
    2. `<repo-root>/apps/ade-cli/bin/ade` (project-local launcher, when committed).
-   3. `node <repo-root>/apps/ade-cli/dist/cli.cjs` (project-local build output — present after `apps/ade-cli && npm run build`, which is what `/finalize` runs).
+   3. `node <repo-root>/apps/ade-cli/dist/cli.cjs` (project-local build output — present after `apps/ade-cli && npm run build`; build it yourself if absent, since ship no longer runs `/finalize` in-loop).
    If none exist, skip to the `gh` fallback at the bottom of this section. Whichever one wins, use it everywhere this playbook says `ade` for the remainder of the run, and record the resolved path under `adeBin` in the state file.
 2. **Confirm the PR subcommand exists.** `ade --help` (or `ade -h`). Look for `prs` (or whatever the current noun is — the help text is authoritative, this playbook is not).
 3. **Read the exact create invocation.** `ade prs --help` then `ade prs create --help`. Note the actual required flags — expect something like `--lane <id>`, `--base <branch>`, and an output format flag (`--json`, `--text`, or global `--json`). Do not trust any specific invocation this playbook gives you; trust the help output.
@@ -483,7 +490,7 @@ gh pr merge "$PR_NUMBER" --squash --auto
 
 ### 3c.4 Branch deletion
 
-**Do NOT pass `--delete-branch` to `gh pr merge`.** That flag triggers a local `git checkout` of the base branch, which fails if `main` is checked out in another worktree (common when /shipLane runs from a per-lane worktree). Instead, delete server-side after the merge succeeds:
+**Do NOT pass `--delete-branch` to `gh pr merge`.** That flag triggers a local `git checkout` of the base branch, which fails if `main` is checked out in another worktree (common when `/ship` runs from a per-lane worktree). Instead, delete server-side after the merge succeeds:
 
 ```bash
 gh api -X DELETE "repos/{owner}/{repo}/git/refs/heads/$CURRENT_BRANCH"
@@ -545,7 +552,7 @@ git commit -m "ship: iteration 6 (force-finalize, review skipped) — fix $CI_JO
 git push
 ```
 
-Post the standard Phase 4 bot ping (`@copilot review but do not make fixes`). Update state:
+Post the Phase 4 bot ping (a force-finalize push is a re-push → `@codex review`). Update state:
 
 ```json
 {
@@ -576,13 +583,22 @@ There is no second force-finalize. Iteration 6 is one shot at landing the lane.
 
 ## Phase 4 — Post-push bot pings
 
-Runs after **any** push (initial or re-push). Always:
+Runs after **any** push. The ping depends on whether this is the initial PR push
+or a later fix iteration:
+
+- **Initial push** (Phase 0, PR just created):
 
 ```bash
 gh pr comment "$PR_NUMBER" --body "@copilot review but do not make fixes"
 ```
 
-If the PR touches more than 250 files:
+- **Subsequent fix-iteration re-pushes:**
+
+```bash
+gh pr comment "$PR_NUMBER" --body "@codex review"
+```
+
+If the PR touches more than 250 files (on any push):
 
 ```bash
 FILE_COUNT=$(gh pr diff "$PR_NUMBER" --name-only | wc -l | tr -d ' ')

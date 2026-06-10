@@ -2,10 +2,11 @@
 
 Path to Merge (PtM) drives a PR through CI, review, and merge in one
 self-pacing loop instead of forcing the operator to babysit each round.
-It is a native TypeScript port of the `/shipLane` Claude skill state
-machine — `apps/.claude/commands/shipLane.md` is the source of truth for
+It is a native TypeScript port of the ship-lane state
+machine — `docs/playbooks/ship-lane.md` is the source of truth for
 the phase delays, terminal-state gate, conflict-strategy switch, and
-force-finalize semantics; this implementation mirrors them in-process so
+force-finalize semantics (the same playbook the `/ship` agent skill drives);
+this implementation mirrors them in-process so
 the **active ADE runtime** (local machine runtime for local-bound windows,
 SSH-attached remote runtime for remote-bound windows) can run several
 PtM loops in parallel without spawning agents per phase. For
@@ -60,7 +61,7 @@ The orchestrator stores three pieces of state:
 
 ## Phase delays
 
-`PHASE_DELAY_SECONDS` mirrors `/shipLane` §5.3 exactly:
+`PHASE_DELAY_SECONDS` mirrors the ship-lane playbook (`docs/playbooks/ship-lane.md` §5.3) exactly:
 
 | Kind | Seconds | When |
 |------|---------|------|
@@ -170,9 +171,9 @@ Conflict detection on the REST rung is substring-based on the error
 message (`/conflict|409/i`); a conflict short-circuits the ladder so
 the caller can run the merge-time conflict strategy and retry.
 
-`gh pr merge` is invoked **without** `--delete-branch`. Per shipLane
-line 212, `--delete-branch` would conflict with the project-root
-worktree on `main`; branch deletion is delegated to
+`gh pr merge` is invoked **without** `--delete-branch`. Per the
+ship-lane playbook's `--delete-branch` guidance, it would conflict with
+the project-root worktree on `main`; branch deletion is delegated to
 `prService.runPostMergeCleanup` so it goes through the same path as the
 REST flow.
 
@@ -268,30 +269,30 @@ The IPC bridge for the modal also adds `ade.prs.retargetBase` (PR id +
 base branch), which is what re-points each non-leading queue PR at the
 chain base before PtM picks it up.
 
-## Differences from `/shipLane`
+## Differences from the ship-lane playbook
 
-`/shipLane` relies on Claude Code's `TeamCreate` primitive to run a
+The ship-lane playbook relies on Claude Code's `TeamCreate` primitive to run a
 poll-agent + fix-agent + rebase-agent in parallel. ADE has no
 equivalent, so each iteration here dispatches a **single fix agent**
 through `launchPrIssueResolutionChat`; that agent decides internally
-whether to fix CI, review comments, or both. The shipLane Phase 0
-`automate-agent` / `finalize-agent` are also unimplemented — the
-orchestrator assumes the PR already exists and PR creation is the
+whether to fix CI, review comments, or both. Like the `/ship` skill,
+the orchestrator runs no pre-push preparation (`/quality`, `/test`,
+`/finalize`) — it assumes the PR already exists and PR creation is the
 caller's responsibility (the Queue Automate Merging modal handles this
 for stack flows, since each queue member is already a PR).
 
-Wake-up delays, the combined CI + review terminal gate (line 206), the
+Wake-up delays, the combined CI + review terminal-state gate, the
 4-option conflict strategy switch, the merge ladder rung sequence
-(REST → admin → auto), and the force-finalize predicate (lines
-183–198) all match `/shipLane` exactly.
+(REST → admin → auto), and the force-finalize predicate all match the
+ship-lane playbook exactly.
 
 ## Gotchas
 
 - **Never pass `--delete-branch` to gh.** Branch deletion goes through
   `prService.runPostMergeCleanup` so the post-merge cleanup pipeline
   (child-lane rebase, group-membership cleanup, cache invalidation,
-  rebase-needs scan) actually runs. shipLane line 212 documents the
-  same constraint.
+  rebase-needs scan) actually runs. The ship-lane playbook documents
+  the same constraint.
 - **Don't set `forceFinalizeUsed` on fix dispatch.** It is consumed by
   the merge-ladder attempt in step 7. Setting it on dispatch degrades
   force-finalize to "one extra fix iteration, then pause" instead of

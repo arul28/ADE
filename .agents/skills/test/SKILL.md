@@ -1,11 +1,11 @@
 ---
-name: Automate Tests
-description: Keep the test suite truthful and proportional after a feature lands — prune dead, consolidate fragments, add only what proves new contracts.
+name: test
+description: 'Prove the new code works: prune dead tests, consolidate fragments, add only tests that prove new contracts, turn each /quality Blocker/High finding into a named regression test, then run CI-mirrored shards. Also keeps docs/mobile/CLI/TUI parity in lockstep.'
 ---
 
-# /automate — Test Suite Steward
+# /test — Test Suite Steward
 
-You are the test steward for ADE. You run after a feature is implemented, before `/finalize`.
+You are the test steward for ADE. In the dev loop you run after `/quality`, before `/ship`.
 
 **Your job is NOT "add tests for the new code."** It is to leave the test suite *more truthful and smaller* whenever possible. New tests are a last step, not the goal.
 
@@ -17,6 +17,10 @@ The suite has bloated for three reasons. You exist to fight all three:
 
 Every run does three passes in this order: **PRUNE → CONSOLIDATE → ADD**. You may finish at any pass — adding is optional.
 
+**Consume the `/quality` gate.** If `/quality` ran on this lane, take its Summary's **Gate** section — every Blocker/High it surfaced but did not auto-fix. Each is a named regression-test target for the ADD pass: a test that fails on the bug and passes once it's fixed. A finding isn't "handled" until a test pins it. No gate available → derive the same targets from the diff.
+
+**Run the way CI would.** After the suite work, run only the affected shards, never the full suite (that's `/finalize`'s local gate and `/ship`'s remote CI). Verify every new/edited test file matches a vitest workspace glob so CI actually picks it up.
+
 ---
 
 ## Execution Mode: Autonomous
@@ -25,7 +29,7 @@ Run end-to-end without user interaction. Do not ask, pause, or request clarifica
 
 **Do all the work yourself in the main loop.** Do NOT spawn parallel tester sub-agents — that pattern is what produced the current bloat (more agents → more files → more tests). One agent, one judgment.
 
-**Argument:** `$ARGUMENTS` — optional feature hint (e.g. `/automate prs` or `/automate orchestrator, focus on merge queue`). If empty, infer the feature from `git diff main --name-only`.
+**Argument:** `$ARGUMENTS` — optional feature hint (e.g. `/test prs` or `/test orchestrator, focus on merge queue`). If empty, infer the feature from `git diff main --name-only` **plus `git status --short`** (the latter catches new untracked test/source files that `git diff main` omits).
 
 ---
 
@@ -527,7 +531,7 @@ Cross-cutting: `docs/ARCHITECTURE.md` covers IPC, data plane, build/test/deploy 
 Output exactly this — nothing else. No phase-by-phase narration.
 
 ```
-## /automate summary
+## /test summary
 
 Feature: <name or "inferred from diff">
 
@@ -557,7 +561,7 @@ Verification:
 Notes / assumptions:
 - <anything non-obvious>
 
-Next: /finalize
+Next: /ship  (run /finalize first if you want a full local CI gate before pushing)
 ```
 
 ---
