@@ -1,9 +1,9 @@
 /**
  * Path to Merge orchestrator.
  *
- * Native TypeScript port of the `/shipLane` Claude skill state machine
- * (`.claude/commands/shipLane.md`). Drives a PR through CI + review until
- * merged, using:
+ * Native TypeScript port of the ship-lane state machine
+ * (`docs/playbooks/ship-lane.md`, the source of truth; also driven by the
+ * `/ship` agent skill). Drives a PR through CI + review until merged, using:
  *   - phase-aware setTimeout wake-ups (270 / 720 / 1800 seconds; see
  *     {@link PHASE_DELAY_SECONDS});
  *   - a combined CI + review terminal-state gate before pushing fixes;
@@ -18,15 +18,16 @@
  * manual entry points (`startPullRequestConvergenceRound`) and dispatches each
  * fix iteration via `launchPrIssueResolutionChat`.
  *
- * Simplifications vs `/shipLane`:
- *   - The shipLane reference relies on Claude Code's TeamCreate primitive to
+ * Simplifications vs the ship-lane playbook:
+ *   - The playbook relies on Claude Code's TeamCreate primitive to
  *     run a poll-agent + fix-agent + rebase-agent in parallel. ADE has no
  *     equivalent, so each iteration here dispatches a single fix agent
  *     through the standard `launchPrIssueResolutionChat` pipeline; that
  *     agent internally decides whether to fix CI, review comments, or both.
- *   - We do not implement the Phase 0 `automate-agent`/`finalize-agent` —
- *     this orchestrator assumes the PR already exists; PR creation is the
- *     caller's responsibility.
+ *   - We do not run any pre-push preparation (`/quality`, `/test`,
+ *     `/finalize`) — like the `/ship` skill, this orchestrator assumes the PR
+ *     already exists; preparation and PR creation are the caller's
+ *     responsibility.
  */
 
 import { spawn } from "node:child_process";

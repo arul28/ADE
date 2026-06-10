@@ -3,19 +3,24 @@ name: finalize
 description: 'Final gate: simplify code, validate docs, and run local CI checks before pushing'
 ---
 
-# Finalize Command
+# /finalize — Pre-push Local-CI Gate
 
-This command is the final gate before pushing and opening a PR.
+This skill is the final local gate before pushing and opening a PR.
+
+> In the dev loop, deep bug-finding and code cleanup are `/quality`'s job (the
+> loop default) and test-suite work is `/test`'s. `/finalize` is **optional**:
+> run it when you want a full **local** CI gate before `/ship` pushes — a final
+> simplification sweep plus typecheck/lint/sharded-tests/build/doc-validation.
 
 It guarantees three outcomes:
-1. Code quality cleanup is complete
-2. Docs changed by `/automate` are still valid
+1. A final code-simplification sweep is complete (`/quality` already did the heavy lifting)
+2. Docs changed by `/test` are still valid
 3. Local CI checks pass
 
 It does **not** guarantee that remote PR review is complete after a push. GitHub's
 first visible check list can look quiet before delayed checks, bot reviews, and
 inline comments arrive. After pushing a finalized branch, hand off to
-`/shipLane` or an equivalent PR poll loop. Use the ship-lane cadence: poll
+`/ship` or an equivalent PR poll loop. Use the ship-lane cadence: poll
 immediately after a push, wait 270s if CI has not registered, wait 720s while CI
 is running, and wait 1800s only when CI is done and the PR is just waiting on
 review.
@@ -112,7 +117,7 @@ Prompt each with:
 
 Wait for all simplifier agents to complete before moving to Phase 3.
 
-Docs, mobile, CLI, and TUI parity reviewers have moved to `/automate` — they should run before `/finalize`. Do not re-spawn them here.
+Docs, mobile, CLI, and TUI parity reviewers have moved to `/test` — they should run before `/finalize`. Do not re-spawn them here.
 
 ---
 
@@ -282,7 +287,7 @@ surface looks complete. In particular:
 Handoff rule:
 
 ```bash
-# After the branch is pushed, continue with /shipLane or equivalent:
+# After the branch is pushed, continue with /ship or equivalent:
 # - poll PR checks, status rollup, review comments, issue comments, and reviews
 # - poll immediately after a push so early CI registration/failures are visible
 # - if CI has not started yet, wait 270s
@@ -291,7 +296,7 @@ Handoff rule:
 # - poll again before declaring the PR clean or ready for human merge
 ```
 
-If `/finalize` is running as a sub-step inside `/shipLane`, return a summary that
+If `/finalize` is running as a sub-step inside `/ship`, return a summary that
 explicitly says remote checks/comments still require the ship-lane poll loop.
 Do not report "PR clean" from `/finalize` alone.
 
@@ -322,7 +327,7 @@ Do not report "PR clean" from `/finalize` alone.
 
 ### Remote PR Handoff:
 - Post-push polling required: YES
-- Poll loop: `/shipLane` branch-specific cadence
+- Poll loop: `/ship` branch-specific cadence
 - Reason: delayed checks and bot comments may arrive after first visible green state
 
 ### Status: Ready to push / Issues found
@@ -332,4 +337,4 @@ Do not report "PR clean" from `/finalize` alone.
 
 ## Completion Checklist
 
-Before marking complete: every Phase 3 step (3a–3j) must report PASS in the Phase 4 summary, and Phase 2 simplifier agents must have reported back. Remote PR review is **not** declared clean by `/finalize` — handoff to `/shipLane` (Phase 3j) is mandatory after push.
+Before marking complete: every Phase 3 step (3a–3j) must report PASS in the Phase 4 summary, and Phase 2 simplifier agents must have reported back. Remote PR review is **not** declared clean by `/finalize` — handoff to `/ship` (Phase 3j) is mandatory after push.
