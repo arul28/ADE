@@ -10,6 +10,71 @@ final class ADESwiftTermView: TerminalView {
   var holdScrollOnOutput = false
   var onLayout: (() -> Void)?
 
+  // Apps that enable mouse reporting (Claude Code, htop, …) scroll by
+  // consuming wheel events, but SwiftTerm's iOS pan handler only synthesizes
+  // press/drag/release — so panning a mouse-mode TUI did nothing. Translate
+  // vertical pans into wheel events ourselves while mouse reporting is on,
+  // and keep SwiftTerm's drag-event pan out of the way (taps still report).
+  private let wheelPanGesture = UIPanGestureRecognizer()
+  private var wheelPanResidual: CGFloat = 0
+  /// Points of pan travel per synthesized wheel tick. Roughly half a cell:
+  /// fine enough to feel direct, coarse enough not to flood the PTY.
+  private var wheelTickStride: CGFloat {
+    let rows = max(1, getTerminal().rows)
+    return max(8, bounds.height / CGFloat(rows) / 2)
+  }
+
+  private var mouseReportingActive: Bool {
+    getTerminal().mouseMode != .off
+  }
+
+  func installWheelPanGesture() {
+    guard wheelPanGesture.view == nil else { return }
+    wheelPanGesture.addTarget(self, action: #selector(handleWheelPan(_:)))
+    wheelPanGesture.maximumNumberOfTouches = 1
+    addGestureRecognizer(wheelPanGesture)
+  }
+
+  override func gestureRecognizerShouldBegin(_ gestureRecognizer: UIGestureRecognizer) -> Bool {
+    if gestureRecognizer === wheelPanGesture {
+      return mouseReportingActive
+    }
+    // While mouse reporting is on, suppress both SwiftTerm's drag-event pan
+    // and the scroll view's own pan (a mouse-mode TUI has no scrollback to
+    // move; rubber-banding under the wheel stream just adds noise).
+    if mouseReportingActive, gestureRecognizer is UIPanGestureRecognizer {
+      return false
+    }
+    return super.gestureRecognizerShouldBegin(gestureRecognizer)
+  }
+
+  @objc private func handleWheelPan(_ gesture: UIPanGestureRecognizer) {
+    let terminal = getTerminal()
+    guard terminal.mouseMode != .off else { return }
+    switch gesture.state {
+    case .began:
+      wheelPanResidual = 0
+    case .changed:
+      let translation = gesture.translation(in: self).y + wheelPanResidual
+      let stride = wheelTickStride
+      let ticks = Int(translation / stride)
+      guard ticks != 0 else { return }
+      wheelPanResidual = translation - CGFloat(ticks) * stride
+      gesture.setTranslation(.zero, in: self)
+      // Finger moving down reveals earlier content → wheel up (button 4).
+      let button = ticks > 0 ? 4 : 5
+      let flags = terminal.encodeButton(button: button, release: false, shift: false, meta: false, control: false)
+      let location = gesture.location(in: self)
+      let col = max(0, min(terminal.cols - 1, Int(location.x / max(1, bounds.width / CGFloat(max(1, terminal.cols))))))
+      let row = max(0, min(terminal.rows - 1, Int(location.y / max(1, bounds.height / CGFloat(max(1, terminal.rows))))))
+      for _ in 0..<min(abs(ticks), 12) {
+        terminal.sendEvent(buttonFlags: flags, x: col, y: row)
+      }
+    default:
+      wheelPanResidual = 0
+    }
+  }
+
   override func scrolled(source terminal: Terminal, yDisp: Int) {
     guard !holdScrollOnOutput else { return }
     super.scrolled(source: terminal, yDisp: yDisp)
@@ -189,6 +254,7 @@ final class TerminalSessionController: NSObject, ObservableObject {
     view.nativeForegroundColor = UIColor(white: 0.92, alpha: 1)
     view.keyboardAppearance = .dark
     view.changeScrollback(Self.scrollbackLines)
+    view.installWheelPanGesture()
     view.onLayout = { [weak self] in
       self?.handleTerminalLayout()
     }
