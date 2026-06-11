@@ -236,12 +236,20 @@ function __adeSeaShouldUseFilesystemRequireFirst(id) {
     && __adeSeaIsBareModuleId(id)
     && !__adeSeaIsBuiltinModuleId(id);
 }
+function __adeSeaCanFallbackAfterResolveError(error, id) {
+  if (!error) return false;
+  if (error.code === "ERR_UNKNOWN_BUILTIN_MODULE") return true;
+  if (error.code !== "MODULE_NOT_FOUND") return false;
+  var message = typeof error.message === "string" ? error.message : "";
+  return message.indexOf("Cannot find module '" + id + "'") !== -1
+    || message.indexOf("Cannot find module \\"" + id + "\\"") !== -1;
+}
 function __adeSeaRequire(id) {
   if (__adeSeaShouldUseFilesystemRequireFirst(id)) {
     try {
       return __adeSeaFilesystemRequire(id);
     } catch (error) {
-      if (!error || (error.code !== "ERR_UNKNOWN_BUILTIN_MODULE" && error.code !== "MODULE_NOT_FOUND")) {
+      if (!__adeSeaCanFallbackAfterResolveError(error, id)) {
         throw error;
       }
     }
@@ -249,7 +257,7 @@ function __adeSeaRequire(id) {
   try {
     return __adeSeaOriginalRequire(id);
   } catch (error) {
-    if (error && (error.code === "ERR_UNKNOWN_BUILTIN_MODULE" || error.code === "MODULE_NOT_FOUND")) {
+    if (__adeSeaCanFallbackAfterResolveError(error, id)) {
       return __adeSeaFilesystemRequire(id);
     }
     throw error;
@@ -261,7 +269,7 @@ __adeSeaRequire.resolve = function __adeSeaRequireResolve(id, options) {
     try {
       return __adeSeaFilesystemRequire.resolve(id, options);
     } catch (error) {
-      if (!error || (error.code !== "ERR_UNKNOWN_BUILTIN_MODULE" && error.code !== "MODULE_NOT_FOUND")) {
+      if (!__adeSeaCanFallbackAfterResolveError(error, id)) {
         throw error;
       }
     }
@@ -269,7 +277,7 @@ __adeSeaRequire.resolve = function __adeSeaRequireResolve(id, options) {
   try {
     return __adeSeaOriginalRequire.resolve(id, options);
   } catch (error) {
-    if (error && (error.code === "ERR_UNKNOWN_BUILTIN_MODULE" || error.code === "MODULE_NOT_FOUND")) {
+    if (__adeSeaCanFallbackAfterResolveError(error, id)) {
       return __adeSeaFilesystemRequire.resolve(id, options);
     }
     throw error;
