@@ -3,6 +3,8 @@ import type {
   AgentChatEventEnvelope,
   AgentChatSessionSummary,
 } from "../../../desktop/src/shared/types/chat";
+import { readRecord, summarizeInlineText } from "../../../desktop/src/renderer/components/chat/chatTranscriptRows";
+import { replaceInternalToolNames } from "../../../desktop/src/renderer/components/chat/toolPresentation";
 import type { LocalNotice } from "./types";
 import {
   chatEventLineId,
@@ -53,6 +55,7 @@ export type PendingSteer = {
 export type AggregatedBlock =
   | { kind: "user-bubble"; id: string; line: RenderedChatLine }
   | { kind: "assistant-text"; id: string; line: RenderedChatLine; precededByHeavy?: boolean }
+  | { kind: "reasoning"; id: string; turnId: string | null; text: string; live: boolean }
   | { kind: "tool-calls-group"; id: string; turnId: string | null; entries: ToolCallEntry[]; live: boolean; durationMs?: number }
   | { kind: "files-changed-group"; id: string; turnId: string | null; entries: FileChangeEntry[]; live: boolean; durationMs?: number }
   | { kind: "runtime-activity"; id: string; turnId: string | null; entries: RuntimeActivityEntry[]; live: boolean }
@@ -87,16 +90,77 @@ function workItemKey(turnId: string | null, itemId: string): string {
   return `${turnId ?? ""}:${itemId}`;
 }
 
-function singleArg(value: unknown, max = 60): string {
-  const text = (() => {
-    if (typeof value === "string") return value;
-    try {
-      return JSON.stringify(value);
-    } catch {
-      return String(value);
-    }
-  })();
-  return (text ?? "").replace(/\s+/g, " ").trim().slice(0, max);
+// ── Desktop-parity tool line derivation ─────────────────────────────────────
+// The desktop work log renders each tool call as `glyph slug target` (see
+// ChatWorkLogBlock's ToolCallRow + entryArgText). Mirror that here so the TUI
+// transcript reads identically for Codex / Cursor / OpenCode / Droid chats.
+
+function isGenericToolIdentifier(value: string | undefined): boolean {
+  const normalized = value?.trim().toLowerCase() ?? "";
+  return !normalized.length || normalized === "other" || normalized === "tool";
+}
+
+function readToolTitle(value: unknown): string | null {
+  const record = readRecord(value);
+  if (!record) return null;
+  const title = typeof record.title === "string" ? record.title.trim() : "";
+  return title.length ? title : null;
+}
+
+/** Desktop's workLogEntryKindSlug, applied to a tool name. */
+function toolSlug(toolName: string): string {
+  let raw = toolName.trim();
+  if (!raw) return "tool";
+  if (raw.includes(".")) raw = raw.split(".").pop() ?? raw;
+  if (raw.includes("__")) raw = raw.split("__").pop() ?? raw;
+  const snake = raw
+    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+    .replace(/[-\s.]+/g, "_")
+    .toLowerCase();
+  if (snake === "exec_command") return "shell";
+  return snake;
+}
+
+// Mirrors the getTarget extractors in desktop chatToolAppearance: nearly every
+// tool's "target" is the first non-empty of a fixed key list.
+const TOOL_TARGET_KEYS = [
+  "file_path",
+  "path",
+  "notebook_path",
+  "pattern",
+  "command",
+  "cmd",
+  "query",
+  "url",
+  "question",
+  "name",
+  "workerId",
+  "to",
+  "role",
+  "ref",
+  // Subagent-style tools (Task / spawn_agent / delegate_*) carry their task
+  // text here; only consulted when none of the precise keys above match.
+  "description",
+  "task",
+  "message",
+] as const;
+
+function toolTargetText(args: unknown): string | null {
+  const record = readRecord(args);
+  if (!record) return null;
+  for (const key of TOOL_TARGET_KEYS) {
+    const value = record[key];
+    if (typeof value === "string" && value.trim().length > 0) return value.trim();
+  }
+  return null;
+}
+
+function toolArgPreview(toolName: string, args: unknown): string {
+  const target = toolTargetText(args);
+  if (target) return replaceInternalToolNames(summarizeInlineText(target, 140));
+  const title = readToolTitle(args);
+  if (title && title !== toolName) return replaceInternalToolNames(summarizeInlineText(title, 140));
+  return "";
 }
 
 function diffStats(diff: string): { additions: number; deletions: number } {
@@ -115,11 +179,24 @@ function appendToolCallEvent(
   event: Extract<AgentChatEvent, { type: "tool_call" | "tool_result" }>,
   durationMs?: number,
 ): void {
+  // Desktop parity: generic identifiers ("tool" / "other") fall back to the
+  // title carried in the payload (readToolTitle in chatTranscriptRows).
+  const payload = event.type === "tool_call" ? event.args : event.result;
+  const titleFallback = readToolTitle(payload);
+  const resolvedToolName = isGenericToolIdentifier(event.tool) && titleFallback ? titleFallback : event.tool;
   if (event.type === "tool_call") {
+    const existing = block.entries.find((entry) => entry.itemId === event.itemId);
+    if (existing) {
+      if (isGenericToolIdentifier(existing.tool) && !isGenericToolIdentifier(resolvedToolName)) {
+        existing.tool = toolSlug(resolvedToolName);
+      }
+      if (!existing.arg) existing.arg = toolArgPreview(resolvedToolName, event.args);
+      return;
+    }
     block.entries.push({
       itemId: event.itemId,
-      tool: event.tool,
-      arg: singleArg(event.args),
+      tool: toolSlug(resolvedToolName),
+      arg: toolArgPreview(resolvedToolName, event.args),
       status: "running",
     });
     return;
@@ -128,16 +205,37 @@ function appendToolCallEvent(
   const status: WorkToolStatus = event.status === "failed" ? "failed" : event.status === "running" ? "running" : "ok";
   if (existing) {
     existing.status = status;
+    if (isGenericToolIdentifier(existing.tool) && !isGenericToolIdentifier(resolvedToolName)) {
+      existing.tool = toolSlug(resolvedToolName);
+    }
     if (durationMs !== undefined) existing.durationMs = durationMs;
     return;
   }
   block.entries.push({
     itemId: event.itemId,
-    tool: event.tool,
-    arg: singleArg(event.result),
+    tool: toolSlug(resolvedToolName),
+    arg: toolArgPreview(resolvedToolName, payload),
     status,
     ...(durationMs !== undefined ? { durationMs } : {}),
   });
+}
+
+function appendWebSearchEvent(
+  block: Extract<AggregatedBlock, { kind: "tool-calls-group" }>,
+  event: Extract<AgentChatEvent, { type: "web_search" }>,
+): void {
+  // Desktop groups web_search lifecycle events with the other tool calls
+  // (buildWebSearchWorkLogEvent): label "search", target = query.
+  const itemId = (event as { itemId?: string }).itemId ?? `web-search:${event.query}`;
+  const status: WorkToolStatus = event.status === "failed" ? "failed" : event.status === "running" ? "running" : "ok";
+  const arg = summarizeInlineText(event.query ?? "", 140);
+  const existing = block.entries.find((entry) => entry.itemId === itemId);
+  if (existing) {
+    existing.status = status;
+    if (arg) existing.arg = arg;
+    return;
+  }
+  block.entries.push({ itemId, tool: "search", arg, status });
 }
 
 function appendFileChangeEvent(
@@ -186,7 +284,7 @@ function appendCommandAsTool(
   const failed = event.status === "failed" || (event.exitCode ?? 0) !== 0;
   const status: WorkToolStatus = event.status === "running" ? "running" : failed ? "failed" : "ok";
   const durationMs = validDurationMs(event.durationMs) ?? validDurationMs(derivedDurationMs);
-  const cleanCommand = stripShellLauncher(event.command);
+  const cleanCommand = summarizeInlineText(stripShellLauncher(event.command), 140);
   const existing = block.entries.find((entry) => entry.itemId === event.itemId);
   if (existing) {
     existing.status = status;
@@ -227,12 +325,13 @@ function findLastBlock<K extends AggregatedBlock["kind"]>(
 
 function isLiveTurnBlock(
   block: AggregatedBlock,
-): block is Extract<AggregatedBlock, { kind: "tool-calls-group" | "files-changed-group" | "runtime-activity" | "plan" | "compaction" }> {
+): block is Extract<AggregatedBlock, { kind: "tool-calls-group" | "files-changed-group" | "runtime-activity" | "plan" | "compaction" | "reasoning" }> {
   return block.kind === "tool-calls-group"
     || block.kind === "files-changed-group"
     || block.kind === "runtime-activity"
     || block.kind === "plan"
-    || block.kind === "compaction";
+    || block.kind === "compaction"
+    || block.kind === "reasoning";
 }
 
 function finishTurnBlocks(blocks: AggregatedBlock[], turnId: string | null): void {
@@ -251,6 +350,7 @@ const SILENCED_EVENT_TYPES = new Set<AgentChatEvent["type"]>([
   "tool_result",
   "command",
   "file_change",
+  "web_search",
   "reasoning",
   "plan",
   "done",
@@ -497,6 +597,7 @@ export function aggregateChatBlocks(args: {
   };
   const workItemStartedAt = new Map<string, number>();
   const assistantTextEventsByBlockId = new Map<string, AssistantTextEvent>();
+  const reasoningItemIdByBlockId = new Map<string, string>();
 
   for (const entry of timeline) {
     if (entry.kind === "notice") {
@@ -565,13 +666,37 @@ export function aggregateChatBlocks(args: {
       continue;
     }
     if (event.type === "reasoning") {
+      // Desktop parity: reasoning surfaces as a collapsed "Thinking…/Thought"
+      // row (MinimalThought) instead of being dropped. Merge consecutive
+      // fragments for the same turn so streamed deltas stay one row.
+      if (!event.text || event.text.length === 0) continue;
+      const previous = blocks[blocks.length - 1];
+      if (previous?.kind === "reasoning" && previous.turnId === turnId) {
+        const previousItemId = reasoningItemIdByBlockId.get(previous.id) ?? null;
+        const nextItemId = (event as { itemId?: string }).itemId ?? null;
+        previous.text = previousItemId && nextItemId && previousItemId !== nextItemId
+          ? `${previous.text}\n\n${event.text}`
+          : `${previous.text}${event.text}`;
+        previous.live = true;
+        if (nextItemId) reasoningItemIdByBlockId.set(previous.id, nextItemId);
+        continue;
+      }
+      blocks.push({ kind: "reasoning", id, turnId, text: event.text, live: true });
+      const itemId = (event as { itemId?: string }).itemId ?? null;
+      if (itemId) reasoningItemIdByBlockId.set(id, itemId);
       continue;
     }
-    if (event.type === "tool_call" || event.type === "tool_result" || event.type === "command" || event.type === "file_change") {
+    if (
+      event.type === "tool_call"
+      || event.type === "tool_result"
+      || event.type === "command"
+      || event.type === "file_change"
+      || event.type === "web_search"
+    ) {
       if (isSubagentChildWorkEvent(event, subagentParentItemIds, subagentChildItemIds)) {
         continue;
       }
-      if (event.type === "tool_call" || event.type === "tool_result" || event.type === "command") {
+      if (event.type === "tool_call" || event.type === "tool_result" || event.type === "command" || event.type === "web_search") {
         const last = blocks[blocks.length - 1];
         let group: Extract<AggregatedBlock, { kind: "tool-calls-group" }>;
         if (last && last.kind === "tool-calls-group" && last.turnId === turnId) {
@@ -580,7 +705,9 @@ export function aggregateChatBlocks(args: {
           group = { kind: "tool-calls-group", id, turnId, entries: [], live: true };
           blocks.push(group);
         }
-        if (event.type === "command") {
+        if (event.type === "web_search") {
+          appendWebSearchEvent(group, event);
+        } else if (event.type === "command") {
           const key = workItemKey(turnId, event.itemId);
           const startedAt = workItemStartedAt.get(key);
           const derivedDurationMs = event.status === "running" || startedAt === undefined

@@ -69,9 +69,11 @@ export async function listLaneDiffStats(
   connection: AdeCodeConnection,
   laneIds?: string[],
 ): Promise<Record<string, DiffLineStats>> {
-  return await connection.action<Record<string, DiffLineStats>>("diff", "listLaneDiffStats", {
+  // Normalize a null/undefined action result (older runtimes, transport
+  // hiccups) to an empty record — callers keep this in render-time state.
+  return (await connection.action<Record<string, DiffLineStats>>("diff", "listLaneDiffStats", {
     ...(laneIds ? { laneIds } : {}),
-  });
+  })) ?? {};
 }
 
 export async function listChatSessions(

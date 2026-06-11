@@ -385,7 +385,10 @@ describe("ChatView", () => {
 
     expect(frame).toContain("test message");
     expect(frame).toContain("Got it.");
-    expect(frame).not.toContain("internal thought");
+    // Reasoning renders as a collapsed desktop-style "Thought" row with a
+    // single-line preview — not as a full reasoning dump.
+    expect(frame).toContain("Thought");
+    expect(frame).toContain("internal thought");
     expect(frame).not.toContain("Thinking through the answer");
     expect(frame).not.toContain("Codex");
     expect(frame).not.toContain("gpt");
@@ -861,18 +864,32 @@ describe("ChatView", () => {
     expect(frame).not.toContain("24m");
   });
 
-  it("hides reasoning-only events from the quiet transcript", () => {
+  it("collapses streamed reasoning into one desktop-style Thinking row", () => {
     const turnId = "turn-think";
     const events: AgentChatEventEnvelope[] = [
-      { sessionId: "s1", timestamp: "2026-01-01T12:00:00.000Z", sequence: 1, event: { type: "reasoning", text: "first thought", turnId } },
-      { sessionId: "s1", timestamp: "2026-01-01T12:00:00.500Z", sequence: 2, event: { type: "reasoning", text: "second thought", turnId } },
+      { sessionId: "s1", timestamp: "2026-01-01T12:00:00.000Z", sequence: 1, event: { type: "reasoning", text: "first thought ", turnId } },
+      { sessionId: "s1", timestamp: "2026-01-01T12:00:00.500Z", sequence: 2, event: { type: "reasoning", text: "second thought ", turnId } },
       { sessionId: "s1", timestamp: "2026-01-01T12:00:01.000Z", sequence: 3, event: { type: "reasoning", text: "third thought", turnId } },
     ];
     const frame = renderEvents(events, { width: 80 });
     expect(frame).not.toMatch(/✦/);
-    expect(frame).not.toContain("first thought");
-    expect(frame).not.toContain("second thought");
-    expect(frame).not.toContain("third thought");
+    // One merged row, live label, single-line preview of the streamed text.
+    expect(frame).toContain("Thinking…");
+    expect(frame).toContain("first thought second thought third thought");
+    const reasoningRows = frame.split(/\r?\n/).filter((line) => line.includes("thought"));
+    expect(reasoningRows).toHaveLength(1);
+  });
+
+  it("marks the reasoning row as Thought once the turn completes", () => {
+    const turnId = "turn-think-done";
+    const events: AgentChatEventEnvelope[] = [
+      { sessionId: "s1", timestamp: "2026-01-01T12:00:00.000Z", sequence: 1, event: { type: "reasoning", text: "weighing options", turnId } },
+      { sessionId: "s1", timestamp: "2026-01-01T12:00:01.000Z", sequence: 2, event: { type: "done", turnId, status: "completed" } },
+    ];
+    const frame = renderEvents(events, { width: 80 });
+    expect(frame).toContain("Thought");
+    expect(frame).not.toContain("Thinking…");
+    expect(frame).toContain("weighing options");
   });
 
   it("suppresses done footers because token/runtime detail lives in the footer", () => {
@@ -925,7 +942,7 @@ describe("ChatView", () => {
     expect(text).not.toContain("gpt");
   });
 
-  it("caps tool-calls-group at 3 visible entries with a + N more affordance", () => {
+  it("stacks every tool call as its own line like the desktop work log", () => {
     const turnId = "turn-many";
     const events: AgentChatEventEnvelope[] = Array.from({ length: 12 }, (_, index): AgentChatEventEnvelope => ({
       sessionId: "s1",
@@ -943,13 +960,13 @@ describe("ChatView", () => {
         turnId,
       },
     }));
-    const frame = renderEvents(events, { width: 120 });
+    const frame = renderEvents(events, { width: 120, maxRows: 40 });
     expect(frame).toContain("Tool calls (12)");
-    expect(frame).toContain("+ 9 more");
-    // Most recent 3 visible (cmd-12, cmd-11, cmd-10); older ones in the "+N more" tail.
+    expect(frame).not.toContain("more");
+    // Every consecutive call stacks as its own single line (desktop parity).
+    expect(frame).toContain("cmd-1");
+    expect(frame).toContain("cmd-5");
     expect(frame).toContain("cmd-12");
-    expect(frame).toContain("cmd-10");
-    expect(frame).not.toContain("cmd-5");
   });
 
   it("strips the /bin/zsh -lc launcher wrapper from shell commands", () => {

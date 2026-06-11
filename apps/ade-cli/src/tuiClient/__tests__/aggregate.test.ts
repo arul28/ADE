@@ -319,3 +319,79 @@ describe("aggregateChatBlocks typed groups", () => {
     });
   });
 });
+
+describe("aggregateChatBlocks desktop work-log parity", () => {
+  it("derives slug + target arg like the desktop work log instead of dumping raw args JSON", () => {
+    const events: AgentChatEventEnvelope[] = [
+      env("2026-01-01T12:00:00.000Z", {
+        type: "tool_call",
+        tool: "Read",
+        args: { file_path: "apps/desktop/src/main.ts", limit: 40 },
+        itemId: "t1",
+        turnId: "turn-1",
+      }),
+      env("2026-01-01T12:00:01.000Z", {
+        type: "tool_call",
+        tool: "exec_command",
+        args: { command: "npm test" },
+        itemId: "t2",
+        turnId: "turn-1",
+      }),
+    ];
+    const blocks = aggregate(events);
+    const group = blocks.find((b) => b.kind === "tool-calls-group") as Extract<AggregatedBlock, { kind: "tool-calls-group" }>;
+    expect(group.entries[0]).toMatchObject({ tool: "read", arg: "apps/desktop/src/main.ts" });
+    // exec_command normalizes to the shell slug, same as desktop's kind slug.
+    expect(group.entries[1]).toMatchObject({ tool: "shell", arg: "npm test" });
+    expect(group.entries[0]!.arg).not.toContain("{");
+  });
+
+  it("resolves generic tool identifiers from the payload title (desktop readToolTitle parity)", () => {
+    const events: AgentChatEventEnvelope[] = [
+      env("2026-01-01T12:00:00.000Z", {
+        type: "tool_call",
+        tool: "tool",
+        args: { title: "Custom Migration" },
+        itemId: "t1",
+        turnId: "turn-1",
+      }),
+    ];
+    const blocks = aggregate(events);
+    const group = blocks.find((b) => b.kind === "tool-calls-group") as Extract<AggregatedBlock, { kind: "tool-calls-group" }>;
+    expect(group.entries[0]!.tool).toBe("custom_migration");
+  });
+
+  it("groups web_search lifecycle events into the tool-calls group keyed by query", () => {
+    const events: AgentChatEventEnvelope[] = [
+      env("2026-01-01T12:00:00.000Z", {
+        type: "web_search",
+        query: "ink truncate text",
+        status: "running",
+        turnId: "turn-1",
+      } as AgentChatEvent),
+      env("2026-01-01T12:00:01.000Z", {
+        type: "web_search",
+        query: "ink truncate text",
+        status: "completed",
+        turnId: "turn-1",
+      } as AgentChatEvent),
+    ];
+    const blocks = aggregate(events);
+    const group = blocks.find((b) => b.kind === "tool-calls-group") as Extract<AggregatedBlock, { kind: "tool-calls-group" }>;
+    expect(group).toBeDefined();
+    expect(group.entries).toHaveLength(1);
+    expect(group.entries[0]).toMatchObject({ tool: "search", arg: "ink truncate text", status: "ok" });
+  });
+
+  it("merges streamed reasoning into one block and finishes it at turn end", () => {
+    const events: AgentChatEventEnvelope[] = [
+      env("2026-01-01T12:00:00.000Z", { type: "reasoning", text: "part one ", turnId: "turn-1" }),
+      env("2026-01-01T12:00:00.500Z", { type: "reasoning", text: "part two", turnId: "turn-1" }),
+      env("2026-01-01T12:00:01.000Z", { type: "done", turnId: "turn-1", status: "completed" } as AgentChatEvent),
+    ];
+    const blocks = aggregate(events);
+    const reasoning = blocks.filter((b) => b.kind === "reasoning") as Extract<AggregatedBlock, { kind: "reasoning" }>[];
+    expect(reasoning).toHaveLength(1);
+    expect(reasoning[0]).toMatchObject({ text: "part one part two", live: false });
+  });
+});

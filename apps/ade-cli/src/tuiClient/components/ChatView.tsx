@@ -674,6 +674,9 @@ function moreLineRow(blockId: string, remaining: number): RenderedChatRow {
   };
 }
 
+// Runtime-activity chatter still collapses behind "+N more"; tool calls and
+// file changes render every entry, one line each, exactly like the desktop
+// work log — consecutive calls stack instead of disappearing into a tail.
 function visibleEntries<T>(entries: T[]): { shown: T[]; remaining: number } {
   if (entries.length <= GROUP_VISIBLE_CAP) return { shown: entries, remaining: 0 };
   // Prefer the most recent entries; older ones collapse into the "+N more" tail.
@@ -699,8 +702,9 @@ function toolCallsGroupRows(
     rail: null,
   });
 
-  const { shown, remaining } = visibleEntries(block.entries);
-  for (const entry of shown) {
+  // Every tool call renders as one stacked line (desktop work-log parity);
+  // ChatRow truncates to the pane width so a long arg can never wrap.
+  for (const entry of block.entries) {
     const glyph = statusGlyph(entry.status, spinFrame);
     const dur = formatDurationMs(entry.durationMs);
     const arg = entry.arg ? truncateLongLine(entry.arg) : "";
@@ -719,7 +723,6 @@ function toolCallsGroupRows(
       rail: null,
     });
   }
-  if (remaining > 0) out.push(moreLineRow(block.id, remaining));
   return out;
 }
 
@@ -767,8 +770,7 @@ function filesChangedGroupRows(
   });
 
   const pathWidth = Math.max(20, width - 18);
-  const { shown, remaining } = visibleEntries(block.entries);
-  for (const entry of shown) {
+  for (const entry of block.entries) {
     const badge = fileBadgeFor(entry);
     const glyph = statusGlyph(entry.status, spinFrame);
     const trimmedPath = compactPath(entry.path, pathWidth);
@@ -794,7 +796,6 @@ function filesChangedGroupRows(
       rail: null,
     });
   }
-  if (remaining > 0) out.push(moreLineRow(block.id, remaining));
   return out;
 }
 
@@ -831,6 +832,36 @@ function runtimeActivityRows(
   }
   if (remaining > 0) out.push(moreLineRow(block.id, remaining));
   return out;
+}
+
+/**
+ * Collapsed reasoning row — mirrors the desktop MinimalThought line:
+ * `▸ Thinking… <preview>` while live, `▸ Thought · <preview>` once done.
+ */
+function reasoningRows(
+  block: Extract<AggregatedBlock, { kind: "reasoning" }>,
+  spinFrame: string,
+): RenderedChatRow[] {
+  const preview = block.text.replace(/\s+/g, " ").trim();
+  const clipped = preview.length > 96 ? `${preview.slice(0, 96)}...` : preview;
+  const label = block.live ? "Thinking…" : "Thought";
+  const runs: InlineRun[] = [
+    { text: "▸ ", color: theme.color.t4 },
+    ...(block.live
+      ? [
+          { text: spinFrame, color: theme.color.violet } as InlineRun,
+          { text: ` ${label}`, color: theme.color.violet, italic: true } as InlineRun,
+        ]
+      : [{ text: label, color: theme.color.t3, italic: true } as InlineRun]),
+  ];
+  if (clipped) runs.push({ text: `  ${clipped}`, color: theme.color.t4, italic: true });
+  return [{
+    id: block.id,
+    tone: "work",
+    text: `▸ ${label}${clipped ? `  ${clipped}` : ""}`,
+    runs,
+    rail: null,
+  }];
 }
 
 function compactionRows(block: Extract<AggregatedBlock, { kind: "compaction" }>, brailleFrame: string): RenderedChatRow[] {
@@ -1014,6 +1045,8 @@ function rowsForBlock(
       return filesChangedGroupRows(block, width, spinFrame);
     case "runtime-activity":
       return runtimeActivityRows(block, spinFrame);
+    case "reasoning":
+      return reasoningRows(block, spinFrame);
     case "compaction":
       return compactionRows(block, brailleFrame);
     case "queued-steer":
@@ -1213,6 +1246,9 @@ const ChatRow = React.memo(function ChatRow({
   const selectedRange = selection && typeof row.sourceRowIndex === "number"
     ? selectedRangeForRow(row.sourceRowIndex, selection, textWidth(renderedRowText(row)))
     : null;
+  // Every transcript row is exactly one terminal line — the scroll math and
+  // mouse selection both assume it. Truncate instead of letting Ink wrap long
+  // tool/work lines onto a second row.
   if (selectedRange) {
     const [before, selected, after] = splitTextByColumns(renderedRowText(row), selectedRange[0], selectedRange[1]);
     return (
@@ -1221,6 +1257,7 @@ const ChatRow = React.memo(function ChatRow({
         dimColor={row.dim}
         bold={row.bold}
         italic={row.italic}
+        wrap="truncate-end"
       >
         {railColor ? <Text color={railColor}>{"▎ "}</Text> : null}
         {before}
@@ -1235,6 +1272,7 @@ const ChatRow = React.memo(function ChatRow({
       dimColor={row.dim}
       bold={row.bold}
       italic={row.italic}
+      wrap="truncate-end"
     >
       {railColor ? <Text color={railColor}>{"▎ "}</Text> : null}
       {row.runs ? <InlineSpans runs={row.runs} /> : plainText}
