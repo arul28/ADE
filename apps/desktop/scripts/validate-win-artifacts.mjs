@@ -516,6 +516,8 @@ async function validatePackagedRuntime(appDir) {
   const resourcesPath = path.join(appDir, "resources");
   const appAsarPath = path.join(resourcesPath, "app.asar");
   const unpackedPath = path.join(resourcesPath, "app.asar.unpacked");
+  const adeCliBinPath = path.join(resourcesPath, "ade-cli", "bin", "ade.cmd");
+  const adeCliInstallerPath = path.join(resourcesPath, "ade-cli", "install-path.cmd");
   const adeCliTuiPath = path.join(resourcesPath, "ade-cli", "tuiClient", "cli.mjs");
   const bundledAgentSkillsRoot = path.join(resourcesPath, "agent-skills");
   const nodeModulesPath = path.join(unpackedPath, "node_modules");
