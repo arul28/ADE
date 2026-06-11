@@ -234,6 +234,7 @@ export const IPC = {
   agentChatGetSessionCapabilities: "ade.agentChat.getSessionCapabilities",
   agentChatGetTurnFileDiff: "ade.agentChat.getTurnFileDiff",
   agentChatGetEventHistory: "ade.agentChat.getEventHistory",
+  agentChatGetEventHistoryPage: "ade.agentChat.getEventHistoryPage",
   agentChatReadTranscript: "ade.agentChat.readTranscript",
   agentChatCodexGetGoal: "ade.agentChat.codex.goal.get",
   agentChatCodexSetGoal: "ade.agentChat.codex.goal.set",

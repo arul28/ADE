@@ -11598,6 +11598,157 @@ describe("createAgentChatService", () => {
     });
   });
 
+  describe("getChatEventHistoryPage", () => {
+    // Byte-window edge cases (line-boundary cursors, oversized lines,
+    // multi-byte UTF-8, concurrent appends) are covered with the REAL parser
+    // in chatTranscriptHistoryPager.test.ts; these tests cover the service
+    // contract around it: session validation, path resolution, subagent
+    // filtering, and the tailStartOffset cursor handshake.
+    const jsonLineParse = (raw: string): AgentChatEventEnvelope[] =>
+      raw.split("\n").filter((line) => line.trim().length > 0).map((line) => JSON.parse(line) as AgentChatEventEnvelope);
+
+    const paddedLine = (envelope: AgentChatEventEnvelope, exactBytes: number): string => {
+      const baseEvent = envelope.event as { type: "text"; text: string };
+      let line = `${JSON.stringify(envelope)}\n`;
+      const padding = exactBytes - Buffer.byteLength(line, "utf8");
+      if (padding < 0) throw new Error("fixture line too large");
+      line = `${JSON.stringify({ ...envelope, event: { ...baseEvent, text: baseEvent.text + "x".repeat(padding) } })}\n`;
+      expect(Buffer.byteLength(line, "utf8")).toBe(exactBytes);
+      return line;
+    };
+
+    it("returns sessionFound:false for unknown sessions", () => {
+      const { service } = createService();
+      const page = service.getChatEventHistoryPage("unknown-session", { beforeOffset: 1_000 });
+      expect(page).toEqual({
+        sessionId: "unknown-session",
+        events: [],
+        startOffset: 0,
+        hasMore: false,
+        sessionFound: false,
+      });
+    });
+
+    it("returns an empty head-reached page for beforeOffset <= 0", async () => {
+      const { service } = createService();
+      const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+      for (const beforeOffset of [0, -25]) {
+        const page = service.getChatEventHistoryPage(session.id, { beforeOffset });
+        expect(page.sessionFound).toBe(true);
+        expect(page.events).toEqual([]);
+        expect(page.hasMore).toBe(false);
+        expect(page.startOffset).toBe(0);
+      }
+    });
+
+    it("returns an empty page when the transcript file is missing", async () => {
+      const { service } = createService();
+      const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+      fs.rmSync(path.join(tmpRoot, "transcripts", `${session.id}.chat.jsonl`), { force: true });
+      const page = service.getChatEventHistoryPage(session.id, { beforeOffset: 5_000 });
+      expect(page.sessionFound).toBe(true);
+      expect(page.events).toEqual([]);
+      expect(page.hasMore).toBe(false);
+      expect(page.startOffset).toBe(0);
+    });
+
+    it("reads the requested byte window and filters Codex subagent envelopes", async () => {
+      const { service } = createService();
+      const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+
+      const parentEnvelope: AgentChatEventEnvelope = {
+        sessionId: session.id,
+        timestamp: "2026-06-10T10:00:00.000Z",
+        event: { type: "text", text: "parent-visible" },
+        sequence: 1,
+      };
+      const subagentEnvelope: AgentChatEventEnvelope = {
+        sessionId: session.id,
+        timestamp: "2026-06-10T10:00:01.000Z",
+        event: { type: "text", text: "subagent-hidden" },
+        sequence: 2,
+        provenance: { targetKind: "codex_subagent" },
+      };
+      const otherSessionEnvelope: AgentChatEventEnvelope = {
+        sessionId: "other-session",
+        timestamp: "2026-06-10T10:00:02.000Z",
+        event: { type: "text", text: "foreign" },
+        sequence: 3,
+      };
+      const transcriptFile = path.join(tmpRoot, "transcripts", `${session.id}.chat.jsonl`);
+      const raw = [parentEnvelope, subagentEnvelope, otherSessionEnvelope]
+        .map((entry) => `${JSON.stringify(entry)}\n`).join("");
+      fs.writeFileSync(transcriptFile, raw, "utf8");
+      vi.mocked(parseAgentChatTranscript).mockImplementation(jsonLineParse);
+
+      const page = service.getChatEventHistoryPage(session.id, {
+        beforeOffset: Buffer.byteLength(raw, "utf8"),
+      });
+      expect(page.sessionFound).toBe(true);
+      expect(page.events.map((entry) => (entry.event.type === "text" ? entry.event.text : ""))).toEqual([
+        "parent-visible",
+      ]);
+      expect(page.startOffset).toBe(0);
+      expect(page.hasMore).toBe(false);
+    });
+
+    it("hands out a tailStartOffset that pages seamlessly into the bytes the tail skipped", async () => {
+      const { service } = createService();
+      const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+
+      // 82 lines × 25_000 bytes = 2_050_000 bytes — 50_000 bytes older than the
+      // 2_000_000-byte hydration tail, i.e. exactly the first two lines.
+      const LINE_BYTES = 25_000;
+      const LINE_COUNT = 82;
+      const lines: string[] = [];
+      for (let index = 0; index < LINE_COUNT; index += 1) {
+        lines.push(paddedLine({
+          sessionId: session.id,
+          timestamp: new Date(Date.UTC(2026, 5, 10, 10, 0, index)).toISOString(),
+          event: { type: "text", text: `line-${index}-` },
+          sequence: index,
+        }, LINE_BYTES));
+      }
+      const transcriptFile = path.join(tmpRoot, "transcripts", `${session.id}.chat.jsonl`);
+      fs.writeFileSync(transcriptFile, lines.join(""), "utf8");
+      vi.mocked(parseAgentChatTranscript).mockImplementation(jsonLineParse);
+
+      const history = service.getChatEventHistory(session.id);
+      expect(history.transcriptTruncated).toBe(true);
+      // The tail window starts exactly at line 2 (a line boundary).
+      expect(history.tailStartOffset).toBe(2 * LINE_BYTES);
+      expect(history.events[0]?.event).toMatchObject({ type: "text" });
+      expect((history.events[0]?.event as { text: string }).text.startsWith("line-2-")).toBe(true);
+
+      const page = service.getChatEventHistoryPage(session.id, { beforeOffset: history.tailStartOffset! });
+      expect(page.sessionFound).toBe(true);
+      expect(page.events.map((entry) => (entry.event.type === "text" ? entry.event.text.split("x")[0] : ""))).toEqual([
+        "line-0-",
+        "line-1-",
+      ]);
+      expect(page.startOffset).toBe(0);
+      expect(page.hasMore).toBe(false);
+    });
+
+    it("reports a null tailStartOffset when the transcript is fully hydrated", async () => {
+      const { service } = createService();
+      const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+      const envelope: AgentChatEventEnvelope = {
+        sessionId: session.id,
+        timestamp: "2026-06-10T10:00:00.000Z",
+        event: { type: "text", text: "small" },
+        sequence: 1,
+      };
+      const transcriptFile = path.join(tmpRoot, "transcripts", `${session.id}.chat.jsonl`);
+      fs.writeFileSync(transcriptFile, `${JSON.stringify(envelope)}\n`, "utf8");
+      vi.mocked(parseAgentChatTranscript).mockImplementation(jsonLineParse);
+
+      const history = service.getChatEventHistory(session.id);
+      expect(history.transcriptTruncated).toBe(false);
+      expect(history.tailStartOffset).toBeNull();
+    });
+  });
+
   // --------------------------------------------------------------------------
   // Session creation edge cases
   // --------------------------------------------------------------------------

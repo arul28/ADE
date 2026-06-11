@@ -1075,6 +1075,7 @@ function sliceRows(
   maxRows?: number,
   scrollOffsetRows = 0,
   unseenMessageCount = 0,
+  olderHistoryLoading = false,
 ): RenderedChatRow[] {
   // Preserve object identity when sourceRowIndex is already correct (pre-indexed
   // historical rows), so React.memo(ChatRow) can skip re-rendering unchanged rows
@@ -1105,7 +1106,15 @@ function sliceRows(
   const visible = indexedRows.slice(start, end);
   const result: RenderedChatRow[] = [];
   if (hasOlder) {
-    result.push({ id: "older-indicator", tone: "indicator", text: "↑ older messages", dim: true, rail: null });
+    // While a scroll-back page fetch is in flight the indicator swaps text in
+    // place — same row, same count — so the scroll math is untouched.
+    result.push({
+      id: "older-indicator",
+      tone: "indicator",
+      text: olderHistoryLoading ? "↑ loading earlier…" : "↑ older messages",
+      dim: true,
+      rail: null,
+    });
   }
   result.push(...visible);
   while (result.length < viewportRows - (hasNewer ? 1 : 0)) {
@@ -1565,6 +1574,7 @@ export function ChatView({
   maxRows,
   scrollOffsetRows = 0,
   unseenMessageCount = 0,
+  olderHistory = null,
   selection = null,
   width = DEFAULT_VIEW_WIDTH,
   focused = false,
@@ -1589,6 +1599,13 @@ export function ChatView({
   maxRows?: number;
   scrollOffsetRows?: number;
   unseenMessageCount?: number;
+  /**
+   * Scroll-back pagination state for the ACTIVE single-chat view. "loading"
+   * swaps the top indicator text to "↑ loading earlier…" in place (row count
+   * is identical in all states); "available"/"exhausted"/null keep the
+   * existing indicator behavior.
+   */
+  olderHistory?: "loading" | "available" | "exhausted" | null;
   selection?: ChatTextSelection | null;
   width?: number;
   focused?: boolean;
@@ -1659,8 +1676,8 @@ export function ChatView({
     } else if (interrupted) {
       withSuffix = [...baseRows, ...modelInterruptedRows()];
     }
-    return sliceRows(withSuffix, bodyRows, scrollOffsetRows, unseenMessageCount);
-  }, [historicalRows, historicalBlocks, tailBlocks, rowInnerWidth, brailleFrame, spinFrame, dotPulse, shimmerTick, streaming, interrupted, showWorkingIndicator, bodyRows, scrollOffsetRows, unseenMessageCount]);
+    return sliceRows(withSuffix, bodyRows, scrollOffsetRows, unseenMessageCount, olderHistory === "loading");
+  }, [historicalRows, historicalBlocks, tailBlocks, rowInnerWidth, brailleFrame, spinFrame, dotPulse, shimmerTick, streaming, interrupted, showWorkingIndicator, bodyRows, scrollOffsetRows, unseenMessageCount, olderHistory]);
   const isEmpty = !hasConversationContent(blocks) && !streaming && !interrupted;
   let content: React.ReactNode;
   if (isEmpty && tileMode) {

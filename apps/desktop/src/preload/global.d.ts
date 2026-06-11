@@ -89,6 +89,7 @@ import type {
   AgentChatDeleteArgs,
   AgentChatSuggestLaneNameArgs,
   AgentChatEventEnvelope,
+  AgentChatEventHistoryPage,
   AgentChatEventHistorySnapshot,
   AgentChatGetSummaryArgs,
   AgentChatHandoffArgs,
@@ -1418,6 +1419,11 @@ declare global {
           sessionId: string;
           maxEvents?: number;
         }) => Promise<AgentChatEventHistorySnapshot>;
+        getEventHistoryPage: (args: {
+          sessionId: string;
+          beforeOffset: number;
+          maxBytes?: number;
+        }) => Promise<AgentChatEventHistoryPage>;
         codex: {
           getGoal: (
             args: AgentChatCodexGetGoalArgs,

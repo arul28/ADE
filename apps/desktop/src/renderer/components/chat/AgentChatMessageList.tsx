@@ -3606,6 +3606,11 @@ const VIRTUALIZATION_THRESHOLD = 60;
 const STICK_THRESHOLD_PX = 160;
 const STICK_RESUME_THRESHOLD_PX = 24;
 const TOUCH_SCROLL_DEADBAND_PX = 2;
+/**
+ * Distance (px) from the top of the scroll container within which scrolling
+ * up requests the next older transcript page (when one exists).
+ */
+const LOAD_OLDER_THRESHOLD_PX = 300;
 
 export function shouldAbsorbProgrammaticScrollEvent({
   scrollTop,
@@ -3796,6 +3801,9 @@ function AgentChatMessageListMain({
   onRevealChatTerminal,
   onRewindFiles,
   sessionEnded = false,
+  hasOlderHistory = false,
+  loadingOlderHistory = false,
+  onLoadOlderHistory,
 }: {
   events: AgentChatEventEnvelope[];
   showStreamingIndicator?: boolean;
@@ -3813,6 +3821,12 @@ function AgentChatMessageListMain({
   laneId?: string | null;
   sessionId?: string | null;
   sessionEnded?: boolean;
+  /** True when older transcript pages exist above the loaded events. */
+  hasOlderHistory?: boolean;
+  /** True while an older transcript page is being fetched. */
+  loadingOlderHistory?: boolean;
+  /** Called when the user scrolls near the top and older pages exist. */
+  onLoadOlderHistory?: () => void;
 }) {
   const chatTranscriptDensity = useAppStore((s) => s.chatTranscriptDensity);
   const runtimeName = useAppStore((s) => s.projectBinding?.kind === "remote" ? s.projectBinding.runtimeName : null);
@@ -3858,12 +3872,35 @@ function AgentChatMessageListMain({
   // Keeping this keyed by row identity prevents stale measurements from a
   // previous row at the same index from creating phantom scroll space.
   const measuredHeights = useRef<Map<string, number>>(new Map());
-  // Track previous events identity to clear stale measurements on session switch
+  // Track previous events identity to clear stale measurements on session
+  // switch. Older-history pagination PREPENDS events (changing events[0]
+  // while keeping the previous envelopes), so only clear when the previous
+  // first envelope is gone entirely — i.e. a real content swap, not a prepend.
   const prevEventsRef = useRef<AgentChatEventEnvelope[]>(events);
   if (prevEventsRef.current !== events && events.length > 0 && (events[0] !== prevEventsRef.current[0])) {
-    measuredHeights.current.clear();
+    const prevFirst = prevEventsRef.current[0];
+    if (!prevFirst || !events.includes(prevFirst)) {
+      measuredHeights.current.clear();
+    }
   }
   prevEventsRef.current = events;
+
+  // Mirror older-history props into refs so the stable scroll handler can
+  // consult them without re-subscribing.
+  const onLoadOlderHistoryRef = useRef(onLoadOlderHistory);
+  const hasOlderHistoryRef = useRef(hasOlderHistory);
+  const loadingOlderHistoryRef = useRef(loadingOlderHistory);
+  useEffect(() => {
+    onLoadOlderHistoryRef.current = onLoadOlderHistory;
+    hasOlderHistoryRef.current = hasOlderHistory;
+    loadingOlderHistoryRef.current = loadingOlderHistory;
+  }, [onLoadOlderHistory, hasOlderHistory, loadingOlderHistory]);
+
+  const maybeRequestOlderHistory = useCallback((scrollTopNow: number) => {
+    if (scrollTopNow > LOAD_OLDER_THRESHOLD_PX) return;
+    if (!hasOlderHistoryRef.current || loadingOlderHistoryRef.current) return;
+    onLoadOlderHistoryRef.current?.();
+  }, []);
 
   useEffect(() => {
     onApprovalRef.current = onApproval;
@@ -4187,6 +4224,70 @@ function AgentChatMessageListMain({
     if (stickToBottomRef.current) scrollToBottomSoon(2);
   }, [containerHeight, groupedRows.length, measurementTick, scrollToBottomSoon, shouldVirtualize, totalHeight]);
 
+  // ── Prepend anchoring ──────────────────────────────────────────────────
+  // When older transcript pages are prepended, keep the viewport visually
+  // anchored to the row the user was looking at: bump scrollTop by exactly
+  // the height inserted ABOVE the previous first row. In virtualized mode the
+  // inserted height is derived from the same per-key height model the spacer
+  // math uses (so the compensation matches the virtualizer's layout); in the
+  // non-virtualized path the DOM scrollHeight delta is exact.
+  const prependAnchorKeysRef = useRef<readonly string[] | null>(null);
+  const prependDomMetricsRef = useRef<{ scrollHeight: number; scrollTop: number } | null>(null);
+  useLayoutEffect(() => {
+    const prevKeys = prependAnchorKeysRef.current;
+    prependAnchorKeysRef.current = groupedRowKeys;
+    const el = scrollRef.current;
+    if (!el || !prevKeys?.length || groupedRowKeys.length <= prevKeys.length) return;
+    if (stickToBottomRef.current) return;
+
+    // Locate one of the previous leading rows in the new list. Scanning a few
+    // keys tolerates the seam row being re-grouped/merged by the collapse
+    // pipeline (its key changes when older events join its group).
+    let anchorOldIndex = -1;
+    let anchorNewIndex = -1;
+    for (let oldIndex = 0; oldIndex < Math.min(prevKeys.length, 4); oldIndex += 1) {
+      const key = prevKeys[oldIndex]!;
+      const newIndex = groupedRowKeys.indexOf(key);
+      if (newIndex >= 0) {
+        anchorOldIndex = oldIndex;
+        anchorNewIndex = newIndex;
+        break;
+      }
+    }
+    // No prepend (appends keep leading keys at the same index) or no anchor.
+    if (anchorOldIndex < 0 || anchorNewIndex <= anchorOldIndex) return;
+
+    let delta: number;
+    if (shouldVirtualize) {
+      const heightForKey = (key: string | undefined): number =>
+        (key ? measuredHeights.current.get(key) : undefined) ?? ESTIMATED_ROW_HEIGHT;
+      let oldPrefix = 0;
+      for (let i = 0; i < anchorOldIndex; i += 1) oldPrefix += heightForKey(prevKeys[i]) + timelineRowGapPx;
+      let newPrefix = 0;
+      for (let i = 0; i < anchorNewIndex; i += 1) newPrefix += heightForKey(groupedRowKeys[i]) + timelineRowGapPx;
+      delta = newPrefix - oldPrefix;
+    } else {
+      const previousMetrics = prependDomMetricsRef.current;
+      delta = previousMetrics ? el.scrollHeight - previousMetrics.scrollHeight : 0;
+    }
+    if (delta <= 0) return;
+
+    const before = el.scrollTop;
+    el.scrollTop = before + delta;
+    if (el.scrollTop !== before) {
+      programmaticScrollTargetRef.current = el.scrollTop;
+      setScrollTop(el.scrollTop);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [groupedRowKeys, shouldVirtualize, timelineRowGapPx]);
+
+  // Snapshot DOM scroll metrics after every commit so the prepend anchor can
+  // compare against the pre-prepend layout on the next commit.
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    if (el) prependDomMetricsRef.current = { scrollHeight: el.scrollHeight, scrollTop: el.scrollTop };
+  });
+
   const handleScroll = useCallback((event: React.UIEvent<HTMLDivElement>) => {
     const target = event.currentTarget;
     // Absorb scroll events produced by our own programmatic scroll-to-bottom
@@ -4215,7 +4316,8 @@ function AgentChatMessageListMain({
       setStickToBottom(nextStick);
     }
     setScrollTop(target.scrollTop);
-  }, []);
+    maybeRequestOlderHistory(target.scrollTop);
+  }, [maybeRequestOlderHistory]);
 
   const handleWheel = useCallback((event: React.WheelEvent<HTMLDivElement>) => {
     if (event.deltaY < 0) {
@@ -4438,6 +4540,18 @@ function AgentChatMessageListMain({
         onTouchCancel={handleTouchEnd}
       >
         <div ref={contentWrapperRef} className="mx-auto w-full min-w-0 max-w-[var(--chat-column,52rem)] overflow-visible">
+          {hasOlderHistory ? (
+            /* Constant-height slot while older pages exist so toggling the
+               loading text never shifts the transcript below it. Unmounts
+               entirely once the head of the transcript is reached. */
+            <div
+              className="flex h-7 shrink-0 items-center justify-center font-sans text-[11px] text-fg/45"
+              role="status"
+              aria-live="polite"
+            >
+              {loadingOlderHistory ? "loading earlier messages…" : null}
+            </div>
+          ) : null}
           {rows.length === 0 && !streamingIndicator ? (
             null
           ) : shouldVirtualize ? (

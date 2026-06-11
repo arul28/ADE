@@ -131,6 +131,7 @@ import type {
   AgentChatEvent,
   AgentChatEventEnvelope,
   AgentChatEventMetadata,
+  AgentChatEventHistoryPage,
   AgentChatEventHistorySnapshot,
   AgentChatContextAttachment,
   AgentChatFileRef,
@@ -261,6 +262,7 @@ import { resolveAdeLayout } from "../../../shared/adeLayout";
 import { buildAdeCliAgentGuidance } from "../../../shared/adeCliGuidance";
 import { getAdeAgentSkillRootsForPrompt } from "../../../shared/agentSkillRoots";
 import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
+import { readTranscriptHistoryPage, type TranscriptHistoryPageRead } from "./chatTranscriptHistoryPager";
 import { extractLeadingSlashCommand, isProviderSlashCommandInput } from "../../../shared/chatSlashCommands";
 import {
   deriveDeterministicLaneNameFromPrompt,
@@ -5301,6 +5303,8 @@ export function createAgentChatService(args: {
     size: number;
     mtimeMs: number;
     truncated: boolean;
+    /** Byte offset (line start) where the cached tail window begins; 0 when not truncated. */
+    startOffset: number;
     envelopes: AgentChatEventEnvelope[];
   }>();
 
@@ -5320,6 +5324,7 @@ export function createAgentChatService(args: {
       size: number;
       mtimeMs: number;
       truncated: boolean;
+      startOffset: number;
       envelopes: AgentChatEventEnvelope[];
     },
   ): void => {
@@ -6528,26 +6533,39 @@ export function createAgentChatService(args: {
   const readTranscriptTailForHistory = (
     transcriptPath: string,
     stat: fs.Stats,
-  ): { raw: string; truncated: boolean } => {
+  ): { raw: string; truncated: boolean; startOffset: number } => {
     const size = stat.size;
     const start = Math.max(0, size - CHAT_EVENT_HISTORY_TRANSCRIPT_MAX_BYTES);
-    const length = size - start;
-    if (length <= 0) return { raw: "", truncated: false };
+    // Read one extra byte before the window (when possible) so a window
+    // boundary that lands exactly on a line start does not silently drop a
+    // complete line: if byte `start - 1` is "\n" the line at `start` is kept.
+    const readStart = Math.max(0, start - 1);
+    const length = size - readStart;
+    if (length <= 0) return { raw: "", truncated: false, startOffset: 0 };
     const fd = fs.openSync(transcriptPath, "r");
     try {
       const out = Buffer.allocUnsafe(length);
-      const bytesRead = fs.readSync(fd, out, 0, out.length, start);
+      const bytesRead = fs.readSync(fd, out, 0, out.length, readStart);
       let slice = bytesRead === out.length ? out : out.subarray(0, bytesRead);
       const truncated = start > 0;
+      // The byte offset where the parsed tail window begins (always a line
+      // start). Used as the initial pagination cursor for getChatEventHistoryPage.
+      let startOffset = readStart;
       if (truncated && slice.length > 0) {
         const nextNewline = slice.indexOf(0x0a);
-        if (nextNewline >= 0 && nextNewline + 1 < slice.length) {
+        const lineStart = nextNewline >= 0 ? readStart + nextNewline + 1 : -1;
+        if (lineStart >= 0 && lineStart < size) {
           slice = slice.subarray(nextNewline + 1);
+          startOffset = lineStart;
         } else {
+          // The whole tail window is a single partial line — nothing
+          // parseable. Report the window start so pagination can continue
+          // strictly backwards past the oversized line.
           slice = Buffer.alloc(0);
+          startOffset = start;
         }
       }
-      return { raw: slice.toString("utf8"), truncated };
+      return { raw: slice.toString("utf8"), truncated, startOffset: truncated ? startOffset : 0 };
     } finally {
       fs.closeSync(fd);
     }
@@ -6556,7 +6574,7 @@ export function createAgentChatService(args: {
   const parseTranscriptHistoryTail = (
     sessionId: string,
     transcriptPath: string,
-  ): { envelopes: AgentChatEventEnvelope[]; truncated: boolean } => {
+  ): { envelopes: AgentChatEventEnvelope[]; truncated: boolean; startOffset: number } => {
     const stat = fs.statSync(transcriptPath);
     const cached = transcriptHistoryCacheBySession.get(sessionId);
     if (
@@ -6566,10 +6584,10 @@ export function createAgentChatService(args: {
       && cached.mtimeMs === stat.mtimeMs
     ) {
       rememberTranscriptHistoryCache(sessionId, cached);
-      return { envelopes: cached.envelopes.slice(), truncated: cached.truncated };
+      return { envelopes: cached.envelopes.slice(), truncated: cached.truncated, startOffset: cached.startOffset };
     }
 
-    const { raw, truncated } = readTranscriptTailForHistory(transcriptPath, stat);
+    const { raw, truncated, startOffset } = readTranscriptTailForHistory(transcriptPath, stat);
     const envelopes = parseAgentChatTranscript(raw)
       .filter((entry) => entry.sessionId === sessionId);
     rememberTranscriptHistoryCache(sessionId, {
@@ -6577,9 +6595,10 @@ export function createAgentChatService(args: {
       size: stat.size,
       mtimeMs: stat.mtimeMs,
       truncated,
+      startOffset,
       envelopes,
     });
-    return { envelopes: envelopes.slice(), truncated };
+    return { envelopes: envelopes.slice(), truncated, startOffset };
   };
 
   // Read a bounded on-disk transcript tail for a session without requiring an
@@ -6587,15 +6606,15 @@ export function createAgentChatService(args: {
   // in-memory ring buffer without allocating huge historical transcripts.
   const readTranscriptEnvelopesForSessionId = (
     sessionId: string,
-  ): { envelopes: AgentChatEventEnvelope[]; truncated: boolean } => {
+  ): { envelopes: AgentChatEventEnvelope[]; truncated: boolean; startOffset: number } => {
     const managed = managedSessions.get(sessionId);
     if (managed?.transcriptPath) {
       try {
         const transcriptPath = resolveReadableChatPath(managed.transcriptPath, "agent_chat.transcript_read_skipped_path_outside_ade");
-        if (!transcriptPath) return { envelopes: [], truncated: false };
+        if (!transcriptPath) return { envelopes: [], truncated: false, startOffset: 0 };
         return parseTranscriptHistoryTail(sessionId, transcriptPath);
       } catch {
-        return { envelopes: [], truncated: false };
+        return { envelopes: [], truncated: false, startOffset: 0 };
       }
     }
     // Fall back to the known transcript layout so sessions that were never
@@ -6614,7 +6633,36 @@ export function createAgentChatService(args: {
         // try next candidate
       }
     }
-    return { envelopes: [], truncated: false };
+    return { envelopes: [], truncated: false, startOffset: 0 };
+  };
+
+  // Resolve the on-disk transcript path for a session the same way
+  // readTranscriptEnvelopesForSessionId does (managed transcriptPath first,
+  // then the known transcript layouts), returning null when nothing readable
+  // exists. Used by getChatEventHistoryPage.
+  const resolveTranscriptPathForSessionId = (sessionId: string): string | null => {
+    const managed = managedSessions.get(sessionId);
+    if (managed?.transcriptPath) {
+      try {
+        return resolveReadableChatPath(managed.transcriptPath, "agent_chat.transcript_read_skipped_path_outside_ade");
+      } catch {
+        return null;
+      }
+    }
+    const candidates = [
+      path.join(transcriptsDir, `${sessionId}.chat.jsonl`),
+      path.join(chatTranscriptsDir, `${sessionId}.jsonl`),
+    ];
+    for (const candidatePath of candidates) {
+      try {
+        const transcriptPath = resolveReadableChatPath(candidatePath, "agent_chat.transcript_read_skipped_path_outside_ade");
+        if (!transcriptPath) continue;
+        if (fs.existsSync(transcriptPath)) return transcriptPath;
+      } catch {
+        // try next candidate
+      }
+    }
+    return null;
   };
 
   const readFullTranscriptEnvelopesForSessionId = (sessionId: string): AgentChatEventEnvelope[] => {
@@ -6760,6 +6808,73 @@ export function createAgentChatService(args: {
       truncated,
       transcriptTruncated,
       windowTruncated,
+      sessionFound: true,
+      // Pagination cursor: the byte offset (line start) where the hydrated
+      // transcript tail began. Null when the transcript was fully hydrated
+      // (or absent) — i.e. there is nothing older on disk to page through.
+      tailStartOffset: transcriptTruncated ? transcriptHistory.startOffset : null,
+    };
+  };
+
+  /**
+   * Read one page of OLDER transcript history ending (exclusively) at
+   * `beforeOffset` — the scroll-back complement to getChatEventHistory.
+   *
+   * Cursor protocol: start from the snapshot's `tailStartOffset`, then pass
+   * each page's `startOffset` as the next request's `beforeOffset` until
+   * `hasMore` is false (startOffset 0 = head of transcript reached). The
+   * returned `startOffset` is strictly less than `beforeOffset`, so paging
+   * always terminates — even when a single JSONL line is larger than the
+   * page window (such pages return no events but still move the cursor).
+   * The transcript is append-only and pages are bounded by `beforeOffset`,
+   * so concurrent appends never affect the pages being read.
+   */
+  const getChatEventHistoryPage = (
+    sessionId: string,
+    options: { beforeOffset: number; maxBytes?: number },
+  ): AgentChatEventHistoryPage => {
+    const trimmedId = sessionId.trim();
+    const emptyPage = (sessionFound: boolean): AgentChatEventHistoryPage => ({
+      sessionId: trimmedId,
+      events: [],
+      startOffset: 0,
+      hasMore: false,
+      sessionFound,
+    });
+    if (!trimmedId.length) return emptyPage(false);
+    // Validate the session belongs to an agent chat before reading any
+    // transcript path — this function is reachable via IPC and builds
+    // filesystem paths from `trimmedId` downstream.
+    const row = sessionService.get(trimmedId);
+    if (!row || !isChatToolType(row.toolType)) return emptyPage(false);
+
+    const beforeOffsetRaw = options?.beforeOffset;
+    const beforeOffset = typeof beforeOffsetRaw === "number" && Number.isFinite(beforeOffsetRaw)
+      ? Math.floor(beforeOffsetRaw)
+      : 0;
+    if (beforeOffset <= 0) return emptyPage(true);
+
+    const transcriptPath = resolveTranscriptPathForSessionId(trimmedId);
+    if (!transcriptPath) return emptyPage(true);
+
+    let page: TranscriptHistoryPageRead;
+    try {
+      page = readTranscriptHistoryPage({
+        transcriptPath,
+        sessionId: trimmedId,
+        beforeOffset,
+        maxBytes: options?.maxBytes,
+      });
+    } catch {
+      // Transcript disappeared between resolution and read (or is unreadable)
+      // — the session exists but has no pageable history.
+      return emptyPage(true);
+    }
+    return {
+      sessionId: trimmedId,
+      events: page.envelopes.filter((entry) => !isCodexSubagentTranscriptEnvelope(entry)),
+      startOffset: page.startOffset,
+      hasMore: page.hasMore,
       sessionFound: true,
     };
   };
@@ -26521,6 +26636,7 @@ export function createAgentChatService(args: {
     disposeForLane,
     getChatTranscript,
     getChatEventHistory,
+    getChatEventHistoryPage,
     ensureIdentitySession,
     approveToolUse,
     respondToInput,

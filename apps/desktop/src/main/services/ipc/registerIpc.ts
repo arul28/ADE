@@ -300,6 +300,7 @@ import type {
   AgentChatLaunchCliResult,
   AgentChatDeleteArgs,
   AgentChatGetSummaryArgs,
+  AgentChatEventHistoryPage,
   AgentChatEventHistorySnapshot,
   AgentChatHandoffArgs,
   AgentChatHandoffResult,
@@ -6553,6 +6554,33 @@ export function registerIpc({
         ? rawMaxEvents
         : undefined;
     return service.getChatEventHistory(sessionId, maxEvents != null ? { maxEvents } : undefined);
+  });
+
+  ipcMain.handle(IPC.agentChatGetEventHistoryPage, async (
+    _event,
+    arg: { sessionId?: string; beforeOffset?: number; maxBytes?: number },
+  ): Promise<AgentChatEventHistoryPage> => {
+    const ctx = getCtx();
+    const sessionId = typeof arg?.sessionId === "string" ? arg.sessionId.trim() : "";
+    if (!sessionId) return { sessionId: "", events: [], startOffset: 0, hasMore: false, sessionFound: false };
+    const service = ctx.agentChatService;
+    if (
+      !service ||
+      typeof (service as unknown as { getChatEventHistoryPage?: unknown }).getChatEventHistoryPage !== "function"
+    ) {
+      return { sessionId, events: [], startOffset: 0, hasMore: false, sessionFound: false };
+    }
+    const beforeOffset = typeof arg?.beforeOffset === "number" && Number.isFinite(arg.beforeOffset)
+      ? arg.beforeOffset
+      : 0;
+    const rawMaxBytes = typeof arg?.maxBytes === "number" ? arg.maxBytes : undefined;
+    const maxBytes = rawMaxBytes != null && Number.isFinite(rawMaxBytes) && rawMaxBytes > 0
+      ? rawMaxBytes
+      : undefined;
+    return service.getChatEventHistoryPage(sessionId, {
+      beforeOffset,
+      ...(maxBytes != null ? { maxBytes } : {}),
+    });
   });
 
   ipcMain.handle(IPC.agentChatReadTranscript, async (

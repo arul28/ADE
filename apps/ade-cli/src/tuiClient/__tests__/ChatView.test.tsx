@@ -36,7 +36,7 @@ function stripAnsi(value: string): string {
 
 function renderEvents(
   events: AgentChatEventEnvelope[],
-  options: { maxRows?: number; scrollOffsetRows?: number; width?: number; streaming?: boolean; interrupted?: boolean; provider?: AdeCodeProvider } = {},
+  options: { maxRows?: number; scrollOffsetRows?: number; width?: number; streaming?: boolean; interrupted?: boolean; provider?: AdeCodeProvider; olderHistory?: "loading" | "available" | "exhausted" | null } = {},
 ): string {
   const provider = options.provider ?? "codex";
   const result = render(
@@ -51,6 +51,7 @@ function renderEvents(
       interrupted={options.interrupted}
       maxRows={options.maxRows}
       scrollOffsetRows={options.scrollOffsetRows}
+      olderHistory={options.olderHistory}
       width={options.width}
     />,
   );
@@ -539,6 +540,33 @@ describe("ChatView", () => {
     expect(older).toContain("↓ newer messages");
     expect(older).not.toContain("assistant row 12");
     expect(older.split("\n").at(-1)).toContain("↓ newer messages");
+  });
+
+  it("swaps the older-messages indicator for a loading variant in place while a scroll-back page is in flight", () => {
+    const events = Array.from({ length: 12 }, (_, index): AgentChatEventEnvelope => ({
+      sessionId: "s1",
+      timestamp: `2026-01-01T12:00:${String(index).padStart(2, "0")}.000Z`,
+      sequence: index + 1,
+      event: index % 2 === 0
+        ? { type: "user_message", text: `user row ${String(index + 1).padStart(2, "0")}` }
+        : { type: "text", text: `assistant row ${String(index + 1).padStart(2, "0")}` },
+    }));
+    const maxRows = 5;
+
+    const idle = renderEvents(events, { maxRows, width: 80 });
+    const loading = renderEvents(events, { maxRows, width: 80, olderHistory: "loading" });
+    const exhausted = renderEvents(events, { maxRows, width: 80, olderHistory: "exhausted" });
+
+    expect(idle).toContain("↑ older messages");
+    expect(loading).toContain("↑ loading earlier…");
+    expect(loading).not.toContain("↑ older messages");
+    // "exhausted"/"available" keep the existing indicator behavior untouched.
+    expect(exhausted).toContain("↑ older messages");
+    // The indicator swaps text in the SAME row: row count is identical in all
+    // states so the scroll math is untouched.
+    expect(transcriptLines(loading)).toHaveLength(transcriptLines(idle).length);
+    expect(transcriptLines(loading)[0]).toContain("↑ loading earlier…");
+    expect(transcriptLines(idle)[0]).toContain("↑ older messages");
   });
 
   it("stays at the oldest rows when the transcript is overscrolled", () => {

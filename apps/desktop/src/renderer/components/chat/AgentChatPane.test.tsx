@@ -33,9 +33,11 @@ import {
   cleanupTransientParallelLaunchLanes,
   formatParallelLaunchFailureMessage,
   getSubagentAutoOpenStorageKey,
+  advanceOlderHistoryCursor,
   isMatchingOptimisticUserMessage,
   mergeChatHistorySnapshot,
   parallelLaneModelSuffix,
+  prependOlderChatHistoryPage,
   resolveNextSelectedSessionId,
   shouldPromoteSessionForComputerUse,
   type AgentChatSessionCreatedOptions,
@@ -6105,6 +6107,93 @@ describe("mergeChatHistorySnapshot", () => {
 
     expect(merged[0]).toBe(first);
     expect(merged[1]).toBe(parsedSecond);
+  });
+});
+
+describe("prependOlderChatHistoryPage", () => {
+  function envelope(timestamp: string, sequence: number, text: string): AgentChatEventEnvelope {
+    return {
+      sessionId: "session-1",
+      timestamp,
+      sequence,
+      event: { type: "text", text },
+    };
+  }
+
+  it("prepends older events ahead of the loaded list", () => {
+    const olderA = envelope("2026-06-10T09:00:00.000Z", 1, "older-a");
+    const olderB = envelope("2026-06-10T09:01:00.000Z", 2, "older-b");
+    const loaded = envelope("2026-06-10T10:00:00.000Z", 3, "loaded");
+
+    const merged = prependOlderChatHistoryPage([olderA, olderB], [loaded]);
+
+    expect(merged.map((entry) => (entry.event.type === "text" ? entry.event.text : ""))).toEqual([
+      "older-a",
+      "older-b",
+      "loaded",
+    ]);
+    // Existing envelope identity is preserved (the message list relies on it
+    // to keep row measurements across the prepend).
+    expect(merged[2]).toBe(loaded);
+  });
+
+  it("drops page entries that duplicate the seam of the loaded list", () => {
+    // The hydrated tail merges the disk transcript with the live ring buffer,
+    // so a byte-window page ending at the cursor can overlap the oldest
+    // loaded entries — duplicates at the seam must be dropped.
+    const older = envelope("2026-06-10T09:00:00.000Z", 1, "older");
+    const seam = envelope("2026-06-10T09:30:00.000Z", 2, "seam");
+    const seamFromDisk = envelope("2026-06-10T09:30:00.000Z", 2, "seam");
+    const tail = envelope("2026-06-10T10:00:00.000Z", 3, "tail");
+
+    const existing = [seam, tail];
+    const merged = prependOlderChatHistoryPage([older, seamFromDisk], existing);
+
+    expect(merged.map((entry) => (entry.event.type === "text" ? entry.event.text : ""))).toEqual([
+      "older",
+      "seam",
+      "tail",
+    ]);
+    expect(merged[1]).toBe(seam);
+  });
+
+  it("returns the existing array unchanged when the page contributes nothing", () => {
+    const seam = envelope("2026-06-10T09:30:00.000Z", 2, "seam");
+    const seamFromDisk = envelope("2026-06-10T09:30:00.000Z", 2, "seam");
+    const existing = [seam];
+
+    expect(prependOlderChatHistoryPage([], existing)).toBe(existing);
+    expect(prependOlderChatHistoryPage([seamFromDisk], existing)).toBe(existing);
+  });
+
+  it("keeps same-millisecond fragments with distinct payloads", () => {
+    const fragmentA = envelope("2026-06-10T09:30:00.000Z", 1, "fragment-a");
+    const fragmentB = envelope("2026-06-10T09:30:00.000Z", 2, "fragment-b");
+
+    const merged = prependOlderChatHistoryPage([fragmentA], [fragmentB]);
+
+    expect(merged.map((entry) => (entry.event.type === "text" ? entry.event.text : ""))).toEqual([
+      "fragment-a",
+      "fragment-b",
+    ]);
+  });
+});
+
+describe("advanceOlderHistoryCursor", () => {
+  it("follows a strictly decreasing cursor while more history exists", () => {
+    expect(advanceOlderHistoryCursor(10_000, { startOffset: 4_000, hasMore: true })).toBe(4_000);
+  });
+
+  it("returns 0 when the head is reached", () => {
+    expect(advanceOlderHistoryCursor(10_000, { startOffset: 0, hasMore: false })).toBe(0);
+    expect(advanceOlderHistoryCursor(10_000, { startOffset: 4_000, hasMore: false })).toBe(0);
+  });
+
+  it("terminates on malformed (non-decreasing or invalid) cursors", () => {
+    expect(advanceOlderHistoryCursor(10_000, { startOffset: 10_000, hasMore: true })).toBe(0);
+    expect(advanceOlderHistoryCursor(10_000, { startOffset: 12_000, hasMore: true })).toBe(0);
+    expect(advanceOlderHistoryCursor(10_000, { startOffset: -5, hasMore: true })).toBe(0);
+    expect(advanceOlderHistoryCursor(10_000, { startOffset: Number.NaN, hasMore: true })).toBe(0);
   });
 });
 

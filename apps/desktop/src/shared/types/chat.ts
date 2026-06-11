@@ -807,6 +807,22 @@ export type AgentChatEventHistorySnapshot = {
    * runtime. Optional for compatibility with older desktop/runtime pairs.
    */
   sessionFound?: boolean;
+  /**
+   * Byte offset in the transcript file where the hydrated tail window began.
+   * Pass it as `beforeOffset` to `getChatEventHistoryPage` to page older
+   * history. Null/undefined when the session had no transcript file or the
+   * transcript was not truncated at the file level (nothing older on disk).
+   */
+  tailStartOffset?: number | null;
+};
+
+export type AgentChatEventHistoryPage = {
+  sessionId: string;
+  events: AgentChatEventEnvelope[];
+  /** Byte offset in the transcript where this page begins. Pass as the next request's beforeOffset. 0 = head reached. */
+  startOffset: number;
+  hasMore: boolean;
+  sessionFound: boolean;
 };
 
 export type AgentChatPermissionMode = "default" | "auto" | "plan" | "edit" | "full-auto" | "config-toml";

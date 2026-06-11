@@ -19,6 +19,7 @@ import type {
   AgentChatDispatchSteerResult,
   AgentChatDroidPermissionMode,
   AgentChatEventEnvelope,
+  AgentChatEventHistoryPage,
   AgentChatFileRef,
   AgentChatInteractionMode,
   AgentChatKillDroidWorkerArgs,
@@ -294,6 +295,34 @@ export async function getChatHistory(
   maxEvents = 20_000,
 ): Promise<ChatHistorySnapshot> {
   return await connection.actionList<ChatHistorySnapshot>("chat", "getChatEventHistory", [sessionId, { maxEvents }]);
+}
+
+export async function getChatHistoryPage(
+  connection: AdeCodeConnection,
+  sessionId: string,
+  beforeOffset: number,
+  maxBytes?: number,
+): Promise<AgentChatEventHistoryPage> {
+  const page = await connection.actionList<AgentChatEventHistoryPage | null | undefined>(
+    "chat",
+    "getChatEventHistoryPage",
+    [sessionId, { beforeOffset, ...(maxBytes ? { maxBytes } : {}) }],
+  );
+  // Defensive normalization: an older daemon (or a routing miss) can yield
+  // null/partial results — treat those as "nothing pageable" so the scroll-back
+  // loop terminates instead of spinning on a malformed cursor.
+  if (!page || typeof page !== "object") {
+    return { sessionId, events: [], startOffset: 0, hasMore: false, sessionFound: false };
+  }
+  return {
+    sessionId: typeof page.sessionId === "string" ? page.sessionId : sessionId,
+    events: Array.isArray(page.events) ? page.events : [],
+    startOffset: typeof page.startOffset === "number" && Number.isFinite(page.startOffset)
+      ? page.startOffset
+      : 0,
+    hasMore: page.hasMore === true,
+    sessionFound: page.sessionFound !== false,
+  };
 }
 
 export async function getSlashCommands(
