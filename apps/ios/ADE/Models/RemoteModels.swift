@@ -3235,6 +3235,10 @@ struct TerminalSnapshot: Codable, Equatable {
   /// True when `transcript` only contains bytes from the requested
   /// `sinceOffset` to the end — append, don't replace.
   var delta: Bool?
+  /// Whether a live PTY currently backs the session. False when a brain
+  /// restart orphaned a "running" session — typing would go nowhere. Absent
+  /// on older hosts.
+  var live: Bool?
 }
 
 /// Response payload for `terminal_history`: transcript bytes

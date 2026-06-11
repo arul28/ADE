@@ -17,7 +17,9 @@ struct TerminalSessionScreen: View {
   @State private var statusDotFlash = false
 
   private var bottomIgnoredEdges: Edge.Set {
-    keyboardVisible ? [] : [.bottom]
+    // The resume bar renders without the keyboard; it needs the bottom safe
+    // area so it doesn't sit under the home indicator.
+    (keyboardVisible || controller.hasExited) ? [] : [.bottom]
   }
 
   private let keyboardShowPublisher: NotificationCenter.Publisher =
@@ -50,7 +52,9 @@ struct TerminalSessionScreen: View {
     terminalStack
       .background(Color.black.ignoresSafeArea())
       .safeAreaInset(edge: .bottom, spacing: 0) {
-        if keyboardVisible {
+        if controller.hasExited {
+          resumeBar
+        } else if keyboardVisible {
           keyBarStack
         }
       }
@@ -195,6 +199,65 @@ struct TerminalSessionScreen: View {
       .overlay(Capsule().stroke(ADEColor.glassBorder, lineWidth: 0.6))
     }
     .buttonStyle(.plain)
+  }
+
+  // MARK: - Resume bar
+
+  /// Whether the host can relaunch this session's runtime: agent CLI sessions
+  /// carry resume metadata; plain shells do not.
+  private var sessionIsResumable: Bool {
+    let tool = session.toolType?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+    return !tool.isEmpty && tool != "shell"
+  }
+
+  private var resumeBar: some View {
+    VStack(spacing: 6) {
+      if let resumeError = controller.resumeError {
+        Text(resumeError)
+          .font(.caption2.weight(.medium))
+          .foregroundStyle(ADEColor.warning)
+          .lineLimit(2)
+          .padding(.horizontal, 12)
+          .frame(maxWidth: .infinity, alignment: .leading)
+      }
+      HStack(spacing: 10) {
+        Text("Session ended")
+          .font(.system(size: 13, weight: .medium, design: .monospaced))
+          .foregroundStyle(ADEColor.textMuted)
+        Spacer(minLength: 0)
+        if sessionIsResumable {
+          Button {
+            controller.resume()
+          } label: {
+            HStack(spacing: 6) {
+              if controller.isResuming {
+                ProgressView()
+                  .controlSize(.small)
+                  .tint(.white)
+              } else {
+                Image(systemName: "arrow.counterclockwise")
+                  .font(.system(size: 11, weight: .bold))
+              }
+              Text(controller.isResuming ? "Resuming…" : "Resume")
+                .font(.system(size: 13, weight: .semibold))
+            }
+            .foregroundStyle(.white)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 8)
+            .background(ADEColor.accent, in: Capsule())
+          }
+          .buttonStyle(.plain)
+          .disabled(controller.isResuming)
+        }
+      }
+      .padding(.horizontal, 12)
+    }
+    .padding(.top, 8)
+    .padding(.bottom, 8)
+    .background(ADEColor.recessedBackground.opacity(0.92))
+    .overlay(alignment: .top) {
+      Rectangle().fill(ADEColor.glassBorder).frame(height: 0.5)
+    }
   }
 
   // MARK: - Key bar

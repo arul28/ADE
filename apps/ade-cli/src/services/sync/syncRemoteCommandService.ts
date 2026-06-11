@@ -2273,6 +2273,24 @@ function registerWorkRemoteCommands({ args, register }: RemoteCommandRegistratio
       session: enriched,
     } satisfies SyncStartCliSessionResult;
   });
+  register("work.resumeCliSession", { viewerAllowed: true, queueable: true }, async (payload) => {
+    // Mirror of the desktop resume affordance: relaunch an ended/orphaned
+    // agent CLI session's runtime (same sessionId, provider resume metadata).
+    const value = (payload ?? {}) as Record<string, unknown>;
+    const sessionId = requireString(value.sessionId, "work.resumeCliSession requires sessionId.");
+    const cols = typeof value.cols === "number" ? clampCliDimension(Math.floor(value.cols), DEFAULT_CLI_COLS, 20, MAX_CLI_COLS) : undefined;
+    const rows = typeof value.rows === "number" ? clampCliDimension(Math.floor(value.rows), DEFAULT_CLI_ROWS, 4, MAX_CLI_ROWS) : undefined;
+    const result = await args.ptyService.resumeSession({
+      sessionId,
+      ...(cols != null ? { cols } : {}),
+      ...(rows != null ? { rows } : {}),
+    });
+    return {
+      sessionId: result.sessionId,
+      ptyId: result.ptyId,
+      session: result.session,
+    } satisfies SyncStartCliSessionResult;
+  });
   register("work.sendToSession", { viewerAllowed: true, queueable: true }, async (payload) => {
     const parsed = parseSendToSessionArgs(payload);
     const result = await args.ptyService.sendToSession({

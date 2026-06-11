@@ -460,6 +460,12 @@ export type SyncTerminalSnapshotPayload = {
   endOffset?: number | null;
   /** True when `transcript` only contains bytes from the requested `sinceOffset` (client appends instead of replacing). */
   delta?: boolean;
+  /**
+   * Whether a live PTY currently backs the session. False when a brain
+   * restart orphaned a "running" session — input would go nowhere, so clients
+   * surface a resume affordance instead of silently accepting keystrokes.
+   */
+  live?: boolean;
 };
 
 export type SyncTerminalDataPayload = {
@@ -662,6 +668,7 @@ export type SyncRemoteCommandAction =
   | "work.updateSessionMeta"
   | "work.runQuickCommand"
   | "work.startCliSession"
+  | "work.resumeCliSession"
   | "work.sendToSession"
   | "work.stopRuntime"
   | "processes.listDefinitions"

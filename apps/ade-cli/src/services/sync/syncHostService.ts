@@ -3528,6 +3528,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
               startOffset: range.startOffset,
               endOffset: range.endOffset,
               delta: true,
+              live: args.ptyService.hasLivePty(sessionId),
             } satisfies SyncTerminalSnapshotPayload, envelope.requestId);
             break;
           }
@@ -3554,6 +3555,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
             ? Math.max(0, transcriptSize - Buffer.byteLength(transcript, "utf8"))
             : null,
           endOffset: transcriptSize,
+          live: args.ptyService.hasLivePty(sessionId),
         };
         sendRequired(peer, "terminal_snapshot", snapshot, envelope.requestId);
         break;

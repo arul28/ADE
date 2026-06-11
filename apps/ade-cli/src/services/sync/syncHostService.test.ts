@@ -422,6 +422,7 @@ function createHostArgs(projectRoot: string, projects: SyncMobileProjectSummary[
     ptyService: {
       create: vi.fn(),
       readTranscriptTail: vi.fn(async () => ""),
+      hasLivePty: () => true,
       enrichSessions: (rows: unknown[]) => rows,
     },
     computerUseArtifactBrokerService: {
@@ -950,6 +951,7 @@ describe("terminal byte-offset streaming, history paging, and resize ownership",
     }));
     const resizeBySessionId = vi.fn().mockReturnValue(true);
     const restoreDesktopSizeBySessionId = vi.fn().mockReturnValue(true);
+    const hasLivePty = vi.fn().mockReturnValue(true);
     const base = createHostArgs(projectRoot, []);
     const host = createSyncHostService({
       ...base,
@@ -979,10 +981,11 @@ describe("terminal byte-offset streaming, history paging, and resize ownership",
         writeBySessionId: vi.fn().mockReturnValue(true),
         resizeBySessionId,
         restoreDesktopSizeBySessionId,
+        hasLivePty,
         enrichSessions: (rows: unknown[]) => rows,
       },
     } as unknown as Parameters<typeof createSyncHostService>[0]);
-    return { host, readTranscriptTail, readTranscriptRange, resizeBySessionId, restoreDesktopSizeBySessionId };
+    return { host, readTranscriptTail, readTranscriptRange, resizeBySessionId, restoreDesktopSizeBySessionId, hasLivePty };
   }
 
   async function connectTerminalPeer(port: number, token: string, deviceId: string) {
@@ -1239,6 +1242,43 @@ describe("terminal byte-offset streaming, history paging, and resize ownership",
       }
       try {
         clientB?.ws.close();
+      } catch {
+        // ignore
+      }
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("marks terminal snapshots live:false when no PTY backs the session", async () => {
+    // A brain restart orphans "running" sessions; the phone needs the truth
+    // up front so it shows the resume bar instead of accepting keystrokes.
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const { host, hasLivePty } = createTerminalHost(projectRoot);
+    hasLivePty.mockReturnValue(false);
+    let client: Awaited<ReturnType<typeof connectTerminalPeer>> | null = null;
+    try {
+      const port = await host.waitUntilListening();
+      client = await connectTerminalPeer(port, host.getBootstrapToken(), "ios-terminal-live");
+      client.ws.send(encodeSyncEnvelope({
+        type: "terminal_subscribe",
+        requestId: "sub-dead",
+        payload: { sessionId: "session-1", maxBytes: 32_000 },
+      }));
+      const snapshot = await nextResponse(client.envelopes, "terminal_snapshot", "sub-dead");
+      expect((snapshot.payload as { live?: boolean }).live).toBe(false);
+
+      hasLivePty.mockReturnValue(true);
+      client.ws.send(encodeSyncEnvelope({
+        type: "terminal_subscribe",
+        requestId: "sub-live",
+        payload: { sessionId: "session-1", maxBytes: 32_000 },
+      }));
+      const liveSnapshot = await nextResponse(client.envelopes, "terminal_snapshot", "sub-live");
+      expect((liveSnapshot.payload as { live?: boolean }).live).toBe(true);
+    } finally {
+      try {
+        client?.ws.close();
       } catch {
         // ignore
       }

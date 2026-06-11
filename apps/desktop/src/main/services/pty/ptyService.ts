@@ -114,6 +114,11 @@ const CLAUDE_TITLE_SCAN_BYTES = 512 * 1024;
 const CLAUDE_STORAGE_MATCH_START_SKEW_MS = 1_000;
 const CLAUDE_STORAGE_MATCH_END_SKEW_MS = 5_000;
 const PTY_DATA_BATCH_INTERVAL_MS = 50;
+// Echo latency is dominated by the data batch window. After a user keystroke
+// the very next flush races the user's perception, so batch on a much shorter
+// window for a brief period following any write to the PTY.
+const PTY_DATA_INTERACTIVE_BATCH_INTERVAL_MS = 8;
+const PTY_DATA_INTERACTIVE_WINDOW_MS = 1_000;
 const PTY_DATA_BATCH_MAX_CHARS = 64 * 1024;
 const PTY_DATA_SUMMARY_INTERVAL_MS = 10_000;
 const PTY_LIVE_SESSION_RESYNC_INTERVAL_MS = 1_000;
@@ -612,6 +617,8 @@ type PtyEntry = {
   pendingDataChunks: string[];
   pendingDataChars: number;
   pendingDataTimer: ReturnType<typeof setTimeout> | null;
+  /** Epoch ms of the last user write; shortens the data batch window. */
+  lastUserInputAt: number;
   terminalSnapshot: TerminalSnapshotMirror | null;
   recentOutputTail: string;
   /** Output-snippet title timer (skipped for interactive Claude/Codex; see CLI user-title path). */
@@ -2936,9 +2943,10 @@ export function createPtyService({
       return;
     }
     if (entry.pendingDataTimer) return;
+    const interactive = Date.now() - entry.lastUserInputAt < PTY_DATA_INTERACTIVE_WINDOW_MS;
     entry.pendingDataTimer = setTimeout(() => {
       flushQueuedPtyData(entry, ids);
-    }, PTY_DATA_BATCH_INTERVAL_MS);
+    }, interactive ? PTY_DATA_INTERACTIVE_BATCH_INTERVAL_MS : PTY_DATA_BATCH_INTERVAL_MS);
   };
 
   const emitPtyExit = (entry: Pick<PtyEntry, "laneId" | "sessionId">, event: PtyExitEvent) => {
@@ -3842,6 +3850,7 @@ export function createPtyService({
         pendingDataChunks: [],
         pendingDataChars: 0,
         pendingDataTimer: null,
+        lastUserInputAt: 0,
         terminalSnapshot: tracked ? createTerminalSnapshotMirror(cols, rows) : null,
         recentOutputTail: "",
         aiTitleTimer: null,
@@ -4299,6 +4308,7 @@ export function createPtyService({
       const entry = ptys.get(ptyId);
       if (!entry) return;
       try {
+        entry.lastUserInputAt = Date.now();
         entry.pty.write(data);
         tryCliUserTitleFromWrite(entry, data);
         setRuntimeState(entry.sessionId, "running");
@@ -4659,6 +4669,7 @@ export function createPtyService({
       );
       if (!entry) return false;
       try {
+        entry.lastUserInputAt = Date.now();
         entry.pty.write(data);
         tryCliUserTitleFromWrite(entry, data);
         setRuntimeState(entry.sessionId, "running");
@@ -4668,6 +4679,12 @@ export function createPtyService({
         logger.warn("pty.write_by_session_failed", { sessionId, err: String(err) });
         return false;
       }
+    },
+
+    /** Whether a live (non-disposed) PTY currently backs `sessionId`. */
+    hasLivePty(sessionId: string): boolean {
+      if (!sessionId) return false;
+      return liveEntryBySessionId(sessionId) != null;
     },
 
     /**

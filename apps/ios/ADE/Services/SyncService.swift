@@ -3902,6 +3902,28 @@ final class SyncService: ObservableObject {
         endOffset: snapshot.endOffset
       ))
     }
+    if snapshot.live == false {
+      // No PTY behind the session (ended, or orphaned by a brain restart even
+      // though status still says running) — typing would go nowhere. Surface
+      // the exited/resume state instead of a live prompt.
+      terminalStreamHandlers[sessionId]?(.exit(code: nil))
+    }
+  }
+
+  /// Whether a full-screen terminal currently owns the live stream for
+  /// `sessionId`. Used to skip detach-unsubscribes that would race a remount.
+  func hasTerminalStream(sessionId: String) -> Bool {
+    terminalStreamHandlers[sessionId] != nil
+  }
+
+  /// Relaunches an ended/orphaned agent CLI session's runtime on the host
+  /// (same sessionId, provider resume metadata) — the phone mirror of the
+  /// desktop resume affordance.
+  func resumeCliSession(sessionId: String, cols: Int? = nil, rows: Int? = nil) async throws -> StartCliSessionResult {
+    var args: [String: Any] = ["sessionId": sessionId]
+    if let cols { args["cols"] = cols }
+    if let rows { args["rows"] = rows }
+    return try await sendDecodableCommand(action: "work.resumeCliSession", args: args, as: StartCliSessionResult.self)
   }
 
   func unsubscribeTerminal(sessionId: String) async throws {

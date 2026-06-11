@@ -103,6 +103,8 @@ final class TerminalSessionController: NSObject, ObservableObject {
   @Published private(set) var liveChunksWhileScrolledUp = 0
   @Published private(set) var isLoadingHistory = false
   @Published private(set) var hasExited = false
+  @Published private(set) var isResuming = false
+  @Published private(set) var resumeError: String?
   @Published private(set) var isSubscribed = false
   @Published private(set) var ctrlArmed = false
   @Published private(set) var bellPulse = 0
@@ -191,7 +193,41 @@ final class TerminalSessionController: NSObject, ObservableObject {
     syncService.detachTerminalStream(sessionId: sessionId)
     isSubscribed = false
     let id = sessionId
-    Task { try? await syncService.unsubscribeTerminal(sessionId: id) }
+    Task { @MainActor in
+      // Pop-then-repush of the same session can order the old screen's
+      // disappear after the new screen's subscribe; unsubscribing then would
+      // sever the new screen's live stream (and trigger the host's
+      // desktop-size restore). Skip when another screen has re-attached.
+      guard !syncService.hasTerminalStream(sessionId: id) else { return }
+      try? await syncService.unsubscribeTerminal(sessionId: id)
+    }
+  }
+
+  /// Relaunch an ended/orphaned session's runtime and re-attach the stream.
+  func resume() {
+    guard !isResuming, let syncService, !sessionId.isEmpty else { return }
+    isResuming = true
+    resumeError = nil
+    ADEHaptics.medium()
+    let id = sessionId
+    let terminal = terminalView?.getTerminal()
+    let cols = terminal.map(\.cols)
+    let rows = terminal.map(\.rows)
+    Task { @MainActor [weak self] in
+      defer { self?.isResuming = false }
+      guard let self else { return }
+      do {
+        _ = try await syncService.resumeCliSession(sessionId: id, cols: cols, rows: rows)
+        self.hasExited = false
+        // The relaunched PTY appends to the same transcript; resume the
+        // stream exactly after what's already rendered.
+        try? await syncService.subscribeTerminalStream(sessionId: id, sinceOffset: self.transcriptEndOffset)
+        self.isSubscribed = true
+        self.startLegacyPollingIfNeeded()
+      } catch {
+        self.resumeError = (error as NSError).localizedDescription
+      }
+    }
   }
 
   /// Pre-offset hosts never push terminal_data (their PTY→sync bridge only
@@ -323,6 +359,9 @@ final class TerminalSessionController: NSObject, ObservableObject {
       appendBytes(Data(text.utf8), endOffset: endOffset, countsAsLive: true)
     case .exit:
       hasExited = true
+      // Drop the keyboard: input has nowhere to go and the resume bar
+      // replaces the key bar.
+      _ = terminalView?.resignFirstResponder()
     }
   }
 
@@ -476,17 +515,25 @@ final class TerminalSessionController: NSObject, ObservableObject {
     terminalView?.paste(nil)
   }
 
+  /// Leading + trailing flush: the first keystroke of a burst goes out
+  /// immediately (single taps shouldn't pay the batch window), follow-ups
+  /// within 16ms coalesce into one trailing envelope.
   private func scheduleInputFlush() {
     guard inputFlushTask == nil else { return }
+    flushPendingInputNow()
     inputFlushTask = Task { @MainActor [weak self] in
       try? await Task.sleep(nanoseconds: 16_000_000)
       guard let self, !Task.isCancelled else { return }
       self.inputFlushTask = nil
-      let buffered = self.pendingInput
-      self.pendingInput = ""
-      guard !buffered.isEmpty else { return }
-      self.syncService?.sendTerminalInput(sessionId: self.sessionId, data: buffered)
+      self.flushPendingInputNow()
     }
+  }
+
+  private func flushPendingInputNow() {
+    let buffered = pendingInput
+    pendingInput = ""
+    guard !buffered.isEmpty else { return }
+    syncService?.sendTerminalInput(sessionId: sessionId, data: buffered)
   }
 
   private func sendResizeIfNeeded(cols: Int, rows: Int) {

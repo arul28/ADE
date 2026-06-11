@@ -1561,6 +1561,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
         readTranscriptTail,
         writeBySessionId,
         resizeBySessionId,
+        hasLivePty: () => true,
         enrichSessions: (rows: any[]) => rows,
       } as any,
       computerUseArtifactBrokerService: {
