@@ -37,13 +37,45 @@ describe("prependOlderTuiHistory", () => {
     expect(prependOlderTuiHistory(existing, [])).toBe(existing);
   });
 
-  it("dedupes the seam by sequence", () => {
+  it("dedupes exact duplicate seam events", () => {
     const existing = [envelope(9), envelope(10)];
     const older = [envelope(7), envelope(8), envelope(9)];
 
     const next = prependOlderTuiHistory(existing, older);
 
     expect(next.map((entry) => entry.sequence)).toEqual([7, 8, 9, 10]);
+  });
+
+  it("preserves distinct older events when provider-run sequences restart", () => {
+    const existing = [
+      envelope(0, {
+        timestamp: "2026-01-01T12:10:00.000Z",
+        event: { type: "text", text: "new run first message" },
+      }),
+      envelope(1, {
+        timestamp: "2026-01-01T12:10:01.000Z",
+        event: { type: "text", text: "new run second message" },
+      }),
+    ];
+    const older = [
+      envelope(0, {
+        timestamp: "2026-01-01T11:59:00.000Z",
+        event: { type: "text", text: "older run first message" },
+      }),
+      envelope(1, {
+        timestamp: "2026-01-01T11:59:01.000Z",
+        event: { type: "text", text: "older run second message" },
+      }),
+    ];
+
+    const next = prependOlderTuiHistory(existing, older);
+
+    expect(next.map((entry) => entry.event.type === "text" ? entry.event.text : "")).toEqual([
+      "older run first message",
+      "older run second message",
+      "new run first message",
+      "new run second message",
+    ]);
   });
 
   it("returns the same array reference when every page event collides at the seam", () => {
@@ -53,7 +85,7 @@ describe("prependOlderTuiHistory", () => {
     expect(prependOlderTuiHistory(existing, older)).toBe(existing);
   });
 
-  it("falls back to timestamp + event type identity when sequences are missing", () => {
+  it("requires full event identity when sequences are missing", () => {
     const seamTwin = envelope(null, {
       timestamp: "2026-01-01T12:00:09.000Z",
       event: { type: "text", text: "tail copy" },
@@ -66,7 +98,7 @@ describe("prependOlderTuiHistory", () => {
       }),
       envelope(null, {
         timestamp: "2026-01-01T12:00:09.000Z",
-        event: { type: "text", text: "tail copy (older read)" },
+        event: { type: "text", text: "tail copy" },
       }),
     ];
 

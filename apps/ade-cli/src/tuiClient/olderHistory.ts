@@ -1,5 +1,5 @@
 import type { AgentChatEventEnvelope } from "../../../desktop/src/shared/types/chat";
-import { dedupeTuiEvents } from "./eventDedup";
+import { dedupeTuiEvents, tuiEventDedupKey } from "./eventDedup";
 
 /**
  * Hard ceiling on how many transcript events the TUI keeps loaded for one
@@ -57,12 +57,11 @@ export function takeNewestChunk(
 
 /**
  * Seam identity for deduping a paged-in older history block against the
- * already-loaded transcript. Prefers the durable per-session `sequence`;
- * falls back to timestamp + event type when a side lacks a sequence.
+ * already-loaded transcript. Sequence numbers can restart across provider
+ * runs, so use the same full event identity as the live/replay dedupe path.
  */
 function seamIdentityKey(envelope: AgentChatEventEnvelope): string {
-  if (envelope.sequence != null) return `seq:${String(envelope.sequence)}`;
-  return `id:${envelope.timestamp}:${envelope.event.type}`;
+  return tuiEventDedupKey(envelope);
 }
 
 /**
