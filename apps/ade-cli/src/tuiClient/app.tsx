@@ -4672,9 +4672,16 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   const removeMultiViewTile = useCallback((index: number) => {
     const prev = multiViewRef.current;
     if (!prev) return;
+    const removed = prev.tiles[index] ?? null;
     const tiles = prev.tiles.filter((_, tileIndex) => tileIndex !== index);
     const survivor = tiles.length < 2 ? tiles[0] ?? null : null;
     setMultiView(tiles.length < 2 ? null : { tiles, focusedIndex: Math.min(prev.focusedIndex, tiles.length - 1) });
+    if (removed) {
+      // Drop the closed tile's per-session view state so re-adding the chat
+      // later starts from a fresh (bottom-anchored) viewport.
+      setScrollBySessionId(({ [removed.sessionId]: _droppedScroll, ...rest }) => rest);
+      setSelectionBySessionId(({ [removed.sessionId]: _droppedSelection, ...rest }) => rest);
+    }
     if (survivor) {
       // Grid collapsed to one chat → leave grid view into that single chat.
       setGridView(false);
@@ -4683,6 +4690,45 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     }
     setPaneFocus("chat");
   }, [selectActiveLaneId, selectActiveSessionId, setGridView, setPaneFocus]);
+
+  // Prune grid tiles + per-session view caches when a chat session disappears
+  // from the runtime (archived or deleted). Diffing successive session lists —
+  // instead of treating the list as ground truth — keeps two failure modes
+  // safe: a transient empty list during reconnect prunes nothing, and a brand
+  // new session that has streamed events but hasn't hit the list yet is never
+  // touched.
+  const prunedSessionIdsRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    const current = new Set(sessions.map((session) => session.sessionId));
+    if (!sessions.length) return;
+    const previous = prunedSessionIdsRef.current;
+    prunedSessionIdsRef.current = current;
+    const removed = [...previous].filter((sessionId) => !current.has(sessionId));
+    if (!removed.length) return;
+    const removedSet = new Set(removed);
+    const grid = multiViewRef.current;
+    if (grid && grid.tiles.some((tile) => removedSet.has(tile.sessionId))) {
+      const tiles = grid.tiles.filter((tile) => !removedSet.has(tile.sessionId));
+      const survivor = tiles.length < 2 ? tiles[0] ?? null : null;
+      setMultiView(tiles.length < 2 ? null : { tiles, focusedIndex: Math.min(grid.focusedIndex, tiles.length - 1) });
+      if (tiles.length < 2) setGridView(false);
+      if (survivor) {
+        selectActiveLaneId(survivor.laneId);
+        selectActiveSessionId(survivor.sessionId);
+      }
+    }
+    const prune = <T,>(record: Record<string, T>): Record<string, T> => {
+      if (!removed.some((sessionId) => sessionId in record)) return record;
+      const next = { ...record };
+      for (const sessionId of removed) delete next[sessionId];
+      return next;
+    };
+    setScrollBySessionId(prune);
+    setSelectionBySessionId(prune);
+    setStreamingBySessionId(prune);
+    setInterruptedBySessionId(prune);
+    setEventsBySessionId(prune);
+  }, [selectActiveLaneId, selectActiveSessionId, sessions, setGridView]);
 
   const isTileableChatSessionId = useCallback((sessionId: string | null | undefined) => {
     if (!sessionId) return false;
