@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -102,11 +103,20 @@ describe("Cursor SDK pool paths", () => {
   });
 
   it("builds a worker environment with real HOME parity and ADE socket metadata", () => {
+    const cliBinDir = path.join(os.tmpdir(), `ade-cli-bin-${Date.now()}-${Math.random()}`);
+    const cliEntry = path.join(os.tmpdir(), `ade-cli-entry-${Date.now()}-${Math.random()}`, "cli.cjs");
+    fs.mkdirSync(cliBinDir, { recursive: true });
+    fs.mkdirSync(path.dirname(cliEntry), { recursive: true });
+    const adeCommand = path.join(cliBinDir, process.platform === "win32" ? "ade.cmd" : "ade");
+    fs.writeFileSync(adeCommand, "");
+    fs.writeFileSync(cliEntry, "");
     const env = buildCursorSdkWorkerEnv({
       baseEnv: {
         HOME: "/synthetic",
         USERPROFILE: "/synthetic-profile",
         PATH: "/bin",
+        ADE_CLI_ENTRY_PATH: cliEntry,
+        ADE_CLI_BIN_DIR: cliBinDir,
         CURSOR_API_KEY: "cursor-secret",
         CURSOR_AUTH_TOKEN: "cursor-token",
       },
@@ -121,6 +131,10 @@ describe("Cursor SDK pool paths", () => {
     expect(env.USERPROFILE).toBe("/Users/admin");
     expect(env.CURSOR_API_KEY).toBeUndefined();
     expect(env.CURSOR_AUTH_TOKEN).toBeUndefined();
+    expect(env.ADE_DISABLE_RUNTIME_SERVICE_INSTALL).toBe("1");
+    expect(env.ADE_CLI_BIN_DIR).toBe(cliBinDir);
+    expect(env.ADE_CLI_PATH).toBe(adeCommand);
+    expect(env.PATH?.split(path.delimiter)[0]).toBe(cliBinDir);
     expect(env.ADE_CURSOR_SDK_SOCKET).toBe("/tmp/ade-cursor-sdk/socket.sock");
     expect(env.ADE_CURSOR_SDK_LANE_ROOT).toBe("/repo/.ade/worktrees/lane");
     expect(env.ADE_CURSOR_SDK_SESSION_ID).toBe("session-1");

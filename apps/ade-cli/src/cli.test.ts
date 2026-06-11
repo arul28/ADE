@@ -19,6 +19,7 @@ import {
   resolveAdeCodeModulePath,
   resolveRoots,
   shouldAutoRegisterProjectForPlan,
+  shouldBlockManualMachineRuntimeSpawn,
   shouldEnforceMachineRuntimeBuildCompatibility,
   shouldAttemptDesktopSocketConnection,
   summarizeExecution,
@@ -343,6 +344,19 @@ describe("ADE CLI", () => {
     expect(isEphemeralRuntimeSocketPath(path.join(os.tmpdir(), "other-app", "ade.sock"))).toBe(false);
     expect(isEphemeralRuntimeSocketPath(path.join(os.homedir(), ".ade", "sock", "ade.sock"))).toBe(false);
     expect(isEphemeralRuntimeSocketPath("tcp://127.0.0.1:8765")).toBe(false);
+  });
+
+  it("blocks manual service-socket runtime spawn when service mutation is disabled", () => {
+    expect(shouldBlockManualMachineRuntimeSpawn("/Users/example/.ade-beta/sock/ade.sock", {
+      ADE_DISABLE_RUNTIME_SERVICE_INSTALL: "1",
+    })).toBe(true);
+    expect(shouldBlockManualMachineRuntimeSpawn("/Users/example/.ade-beta/sock/ade.sock", {})).toBe(false);
+    expect(shouldBlockManualMachineRuntimeSpawn("tcp://127.0.0.1:9999", {
+      ADE_DISABLE_RUNTIME_SERVICE_INSTALL: "1",
+    })).toBe(false);
+    expect(shouldBlockManualMachineRuntimeSpawn(path.join(os.tmpdir(), "ade-code-test", "ade.sock"), {
+      ADE_DISABLE_RUNTIME_SERVICE_INSTALL: "1",
+    })).toBe(false);
   });
 
   it("parses runtime idle expiry with a minimum clamp", () => {

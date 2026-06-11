@@ -19774,6 +19774,7 @@ export function createAgentChatService(args: {
         poolKey,
         projectRoot,
         workspacePath: managed.laneWorktreePath,
+        baseEnv: buildAgentRuntimeEnv(managed),
         modelSdkId: launchModelSdkId,
         ...(launchModelParams?.length ? { modelParams: launchModelParams } : {}),
         apiKey,

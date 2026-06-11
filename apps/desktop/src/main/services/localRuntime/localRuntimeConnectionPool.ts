@@ -1219,6 +1219,19 @@ export class LocalRuntimeConnectionPool {
       throw new Error(releaseBuildBlock.message);
     }
 
+    if (this.options.preferServiceRepair) {
+      const message =
+        `ADE service repair did not restore the runtime endpoint at ${socketPath}; ` +
+        "refusing to spawn an app-owned sync-enabled brain on the primary service socket.";
+      this.logger.warn("local_runtime.service_repair_fallback_blocked", {
+        socketPath,
+        message,
+        serviceState: this.serviceInstallStatus.state,
+        serviceMessage: this.serviceInstallStatus.message,
+      });
+      throw new Error(message);
+    }
+
     const child = this.spawnRuntime(socketPath);
     try {
       await waitForSocket(socketPath);

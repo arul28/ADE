@@ -120,6 +120,121 @@ function sanitizeEnv(base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   return env;
 }
 
+function pathEnvKey(env: NodeJS.ProcessEnv): string {
+  if (process.platform !== "win32") return "PATH";
+  if (env.PATH !== undefined) return "PATH";
+  if (env.Path !== undefined) return "Path";
+  return "PATH";
+}
+
+function prependPathDir(env: NodeJS.ProcessEnv, dir: string | null | undefined): void {
+  if (!dir?.trim()) return;
+  try {
+    if (!fs.statSync(dir).isDirectory()) return;
+  } catch {
+    return;
+  }
+  const key = pathEnvKey(env);
+  const current = env[key]?.trim();
+  const parts = current ? current.split(path.delimiter) : [];
+  if (parts.some((part) => path.resolve(part) === path.resolve(dir))) return;
+  env[key] = current ? `${dir}${path.delimiter}${current}` : dir;
+}
+
+function prependPathList(existing: string | undefined, root: string | null): string | undefined {
+  if (!root) return existing;
+  try {
+    if (!fs.statSync(root).isDirectory()) return existing;
+  } catch {
+    return existing;
+  }
+  const parts = (existing ?? "").split(path.delimiter).filter(Boolean);
+  if (parts.some((part) => path.resolve(part) === path.resolve(root))) return existing;
+  return [root, ...parts].join(path.delimiter);
+}
+
+function existingFilePath(candidate: string | null | undefined): string | null {
+  const trimmed = candidate?.trim();
+  if (!trimmed) return null;
+  try {
+    const resolved = path.resolve(trimmed);
+    return fs.statSync(resolved).isFile() ? resolved : null;
+  } catch {
+    return null;
+  }
+}
+
+function existingDirPath(candidate: string | null | undefined): string | null {
+  const trimmed = candidate?.trim();
+  if (!trimmed) return null;
+  try {
+    const resolved = path.resolve(trimmed);
+    return fs.statSync(resolved).isDirectory() ? resolved : null;
+  } catch {
+    return null;
+  }
+}
+
+function commandFileName(name: string): string {
+  return process.platform === "win32" ? `${name}.cmd` : name;
+}
+
+function adeCommandNameCandidates(env: NodeJS.ProcessEnv): string[] {
+  const names = [
+    env.ADE_CLI_PATH ? path.basename(env.ADE_CLI_PATH, process.platform === "win32" ? ".cmd" : "") : "",
+    env.ADE_CLI_INSTALL_NAME,
+    env.ADE_PACKAGE_CHANNEL === "alpha" || env.ADE_PACKAGE_CHANNEL === "beta"
+      ? `ade-${env.ADE_PACKAGE_CHANNEL}`
+      : "",
+    "ade",
+    "ade-dev",
+  ];
+  return Array.from(new Set(names.map((name) => name?.trim()).filter((name): name is string => Boolean(name))));
+}
+
+function findAdeCommandInBinDir(binDir: string | null, env: NodeJS.ProcessEnv): string | null {
+  if (!binDir) return null;
+  for (const name of adeCommandNameCandidates(env)) {
+    const candidate = existingFilePath(path.join(binDir, commandFileName(name)));
+    if (!candidate) continue;
+    return candidate;
+  }
+  return null;
+}
+
+function inferAdeCliBinDirFromEntry(cliEntry: string | null): string | null {
+  if (!cliEntry) return null;
+  return existingDirPath(path.join(path.dirname(cliEntry), "bin"));
+}
+
+function inferAdeCliEntryFromBinDir(binDir: string | null): string | null {
+  if (!binDir) return null;
+  return existingFilePath(path.resolve(binDir, "..", "cli.cjs"));
+}
+
+function applyCurrentAdeCliEnv(env: NodeJS.ProcessEnv): void {
+  const envCliEntry = existingFilePath(env.ADE_CLI_ENTRY_PATH);
+  const argvCliEntry = existingFilePath(typeof process.argv[1] === "string" ? process.argv[1] : null);
+  const binDir = existingDirPath(env.ADE_CLI_BIN_DIR)
+    ?? inferAdeCliBinDirFromEntry(envCliEntry)
+    ?? inferAdeCliBinDirFromEntry(argvCliEntry);
+  if (binDir) {
+    env.ADE_CLI_BIN_DIR = binDir;
+    prependPathDir(env, binDir);
+    const commandPath = findAdeCommandInBinDir(binDir, env);
+    if (commandPath) env.ADE_CLI_PATH = commandPath;
+  }
+  const cliEntry = inferAdeCliEntryFromBinDir(binDir) ?? envCliEntry ?? argvCliEntry;
+  if (cliEntry) env.ADE_CLI_ENTRY_PATH = cliEntry;
+  else delete env.ADE_CLI_ENTRY_PATH;
+  const bundledSkillsRoot = binDir
+    ? path.resolve(binDir, "..", "..", "agent-skills")
+    : cliEntry
+      ? path.resolve(path.dirname(cliEntry), "..", "agent-skills")
+      : null;
+  env.ADE_AGENT_SKILLS_DIRS = prependPathList(env.ADE_AGENT_SKILLS_DIRS, bundledSkillsRoot);
+}
+
 function ensurePrivateDirectory(dir: string): void {
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   let fd: number | null = null;
@@ -183,21 +298,25 @@ export function buildCursorSdkWorkerEnv(args: {
   workspacePath: string;
   sessionId: string;
 }): NodeJS.ProcessEnv {
-  return {
+  const env: NodeJS.ProcessEnv = {
     ...sanitizeEnv(args.baseEnv ?? process.env),
     HOME: args.userHomeDir,
     USERPROFILE: args.userHomeDir,
+    ADE_DISABLE_RUNTIME_SERVICE_INSTALL: "1",
     ADE_CURSOR_SDK_SOCKET: args.socketPath,
     ADE_CURSOR_SDK_LANE_ROOT: args.workspacePath,
     ADE_CURSOR_SDK_SESSION_ID: args.sessionId,
     ADE_CURSOR_SDK_STATE_ROOT: args.stateRoot,
   };
+  applyCurrentAdeCliEnv(env);
+  return env;
 }
 
 export async function acquireCursorSdkConnection(args: {
   poolKey: string;
   projectRoot: string;
   workspacePath: string;
+  baseEnv?: NodeJS.ProcessEnv;
   modelSdkId: string;
   modelParams?: CursorSdkModelParameterValue[];
   apiKey?: string | null;
@@ -258,6 +377,7 @@ async function createCursorSdkConnection(args: Parameters<typeof acquireCursorSd
   const child = fork(workerPath, [], {
     cwd: args.workspacePath,
     env: buildCursorSdkWorkerEnv({
+      baseEnv: args.baseEnv,
       userHomeDir: paths.userHomeDir,
       stateRoot: paths.stateRoot,
       socketPath: paths.socketPath,

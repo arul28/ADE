@@ -6099,6 +6099,50 @@ describe("mergeChatHistorySnapshot", () => {
     expect(merged[1]).toBe(second);
   });
 
+  it("preserves already-paged older rows when a fresh bounded tail snapshot overlaps", () => {
+    const older = envelope("2026-04-30T23:10:00.000Z", 1002, "already paged older");
+    const firstTail = envelope("2026-04-30T23:14:47.751Z", 1003, "tail first");
+    const secondTail = envelope("2026-04-30T23:19:57.083Z", 1004, "tail second");
+    const parsedFirstTail = envelope("2026-04-30T23:14:47.751Z", 1003, "tail first");
+    const parsedSecondTail = envelope("2026-04-30T23:19:57.083Z", 1004, "tail second refreshed");
+
+    const merged = mergeChatHistorySnapshot(
+      [parsedFirstTail, parsedSecondTail],
+      [older, firstTail, secondTail],
+    );
+
+    expect(merged.map((entry) => entry.event.type === "text" ? entry.event.text : "")).toEqual([
+      "already paged older",
+      "tail first",
+      "tail second refreshed",
+    ]);
+    expect(merged[0]).toBe(older);
+    expect(merged[1]).toBe(firstTail);
+  });
+
+  it("preserves already-paged older rows when only a later tail row overlaps", () => {
+    const older = envelope("2026-04-30T23:10:00.000Z", 1001, "already paged older");
+    const firstTail = envelope("2026-04-30T23:14:47.751Z", 1002, "tail first");
+    const secondTail = envelope("2026-04-30T23:19:57.083Z", 1003, "tail second");
+    const recoveredBeforeOverlap = envelope("2026-04-30T23:14:40.000Z", 1004, "recovered before overlap");
+    const parsedSecondTail = envelope("2026-04-30T23:19:57.083Z", 1003, "tail second");
+
+    const merged = mergeChatHistorySnapshot(
+      [recoveredBeforeOverlap, parsedSecondTail],
+      [older, firstTail, secondTail],
+    );
+
+    expect(merged.map((entry) => entry.event.type === "text" ? entry.event.text : "")).toEqual([
+      "already paged older",
+      "tail first",
+      "recovered before overlap",
+      "tail second",
+    ]);
+    expect(merged[0]).toBe(older);
+    expect(merged[1]).toBe(firstTail);
+    expect(merged[3]).toBe(secondTail);
+  });
+
   it("reuses existing snapshot entries while appending newly recovered events", () => {
     const first = envelope("2026-04-30T23:14:47.751Z", 1003, "first");
     const parsedFirst = envelope("2026-04-30T23:14:47.751Z", 1003, "first");
@@ -6223,6 +6267,26 @@ describe("mergeOlderChatHistoryPageWithCap", () => {
       "loaded-c",
     ]);
     expect(merged.hitResidentCap).toBe(true);
+  });
+
+  it("keeps prepended history when the loaded snapshot has reached the initial hydration cap", () => {
+    const older = envelope("2026-06-10T08:59:00.000Z", 0, "older-page");
+    const existing = Array.from({ length: 20_000 }, (_, index) =>
+      envelope(
+        new Date(Date.UTC(2026, 5, 10, 9, 0, index % 60)).toISOString(),
+        index + 1,
+        `loaded-${index}`,
+      ));
+
+    const merged = mergeOlderChatHistoryPageWithCap({
+      older: [older],
+      existing,
+      maxEvents: 60_000,
+    });
+
+    expect(merged.hitResidentCap).toBe(false);
+    expect(merged.events).toHaveLength(existing.length + 1);
+    expect(merged.events[0]).toBe(older);
   });
 });
 

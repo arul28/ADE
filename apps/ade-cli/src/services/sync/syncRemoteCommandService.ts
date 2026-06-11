@@ -2380,12 +2380,9 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
       nextCursor: hasMore ? String(oldestReturnedIndex) : null,
     };
   });
-  // Byte-offset transcript pagination for chat event envelopes (scroll-back
-  // beyond the hydrated tail). Mirrors the desktop `chat.getChatEventHistoryPage`
-  // action; cursor protocol lives on agentChatService.getChatEventHistoryPage.
-  register("agentChat.getEventHistoryPage", { viewerAllowed: true }, async (payload) => {
+  const getChatEventHistoryPage = async (payload: Record<string, unknown>) => {
     const agentChatService = requireService(args.agentChatService, "Agent chat service not available.");
-    const sessionId = requireString(payload.sessionId, "agentChat.getEventHistoryPage requires sessionId.");
+    const sessionId = requireString(payload.sessionId, "chat.getChatEventHistoryPage requires sessionId.");
     const beforeOffset = typeof payload.beforeOffset === "number" && Number.isFinite(payload.beforeOffset)
       ? payload.beforeOffset
       : 0;
@@ -2396,7 +2393,13 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
       beforeOffset,
       ...(maxBytes != null ? { maxBytes } : {}),
     });
-  });
+  };
+  // Byte-offset transcript pagination for chat event envelopes (scroll-back
+  // beyond the hydrated tail). The canonical action mirrors the desktop/TUI
+  // ADE action surface; the legacy agentChat.* name remains for older mobile
+  // clients that learned the first sync-only spelling.
+  register("chat.getChatEventHistoryPage", { viewerAllowed: true }, getChatEventHistoryPage);
+  register("agentChat.getEventHistoryPage", { viewerAllowed: true }, getChatEventHistoryPage);
   register("chat.create", { viewerAllowed: true, queueable: true }, async (payload) => {
     const agentChatService = requireService(args.agentChatService, "Agent chat service not available.");
     const parsed = parseAgentChatCreateArgs(payload);

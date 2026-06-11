@@ -12621,6 +12621,22 @@ function shouldRepairMachineRuntimeServiceBeforeSpawn(
     && !isEphemeralRuntimeSocketPath(socketPath);
 }
 
+export function shouldBlockManualMachineRuntimeSpawn(
+  socketPath: string,
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  return env.ADE_DISABLE_RUNTIME_SERVICE_INSTALL === "1"
+    && !socketPath.startsWith("tcp://")
+    && !isAdeRuntimeNamedPipePath(socketPath)
+    && !isEphemeralRuntimeSocketPath(socketPath);
+}
+
+function manualMachineRuntimeSpawnBlockedError(socketPath: string): Error {
+  return new Error(
+    `ADE runtime is unavailable at ${socketPath}, and ADE_DISABLE_RUNTIME_SERVICE_INSTALL=1 forbids starting a manual replacement for this service-managed socket.`,
+  );
+}
+
 async function repairMachineRuntimeServiceConnection(args: {
   socketPath: string;
   options: GlobalOptions;
@@ -12771,6 +12787,10 @@ async function connectMachineRuntimeDaemon(
         client.close();
         throw selfShutdownBlock;
       }
+      if (shouldBlockManualMachineRuntimeSpawn(socketPath)) {
+        client.close();
+        throw manualMachineRuntimeSpawnBlockedError(socketPath);
+      }
       await shutdownMachineRuntimeDaemon(client);
       const repaired = await repairServiceConnection();
       if (repaired) return repaired;
@@ -12816,6 +12836,9 @@ async function connectMachineRuntimeDaemon(
     if (!allowSpawn) throw firstError;
     const repaired = await repairServiceConnection();
     if (repaired) return repaired;
+    if (shouldBlockManualMachineRuntimeSpawn(socketPath)) {
+      throw manualMachineRuntimeSpawnBlockedError(socketPath);
+    }
     const spawned = await spawnMachineRuntimeDaemon(socketPath, options);
     if (!spawned) throw firstError;
     try {

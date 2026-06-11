@@ -1787,6 +1787,39 @@ describe("local runtime connection pool", () => {
     }));
   });
 
+  it("does not spawn a primary sync runtime when service repair is configured but unavailable", async () => {
+    const logger = {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    };
+    const pool = new LocalRuntimeConnectionPool("1.2.3", logger as never, {
+      preferServiceRepair: true,
+    });
+    const internals = pool as unknown as {
+      createConnection: () => Promise<unknown>;
+      tryConnect: (socketPath: string) => Promise<unknown>;
+      tryRepairServiceConnection: (socketPath: string, reason: "missing") => Promise<unknown>;
+      spawnRuntime: (socketPath: string) => ChildProcess;
+    };
+    const tryConnect = vi.spyOn(internals, "tryConnect").mockResolvedValue(null);
+    const tryRepair = vi.spyOn(internals, "tryRepairServiceConnection").mockResolvedValue(null);
+    const spawnRuntime = vi.spyOn(internals, "spawnRuntime");
+
+    await expect(internals.createConnection()).rejects.toThrow(
+      /refusing to spawn an app-owned sync-enabled brain/i,
+    );
+
+    expect(tryConnect).toHaveBeenCalled();
+    expect(tryRepair).toHaveBeenCalled();
+    expect(spawnRuntime).not.toHaveBeenCalled();
+    expect(logger.warn).toHaveBeenCalledWith(
+      "local_runtime.service_repair_fallback_blocked",
+      expect.objectContaining({ socketPath: expect.any(String) }),
+    );
+  });
+
   it("routes local sync calls through the project-scoped runtime RPC", async () => {
     const call = vi.fn().mockResolvedValue({
       mode: "standalone",
