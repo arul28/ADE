@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -95,6 +96,19 @@ function makeProjectRoot(prefix: string): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
   fs.mkdirSync(path.join(root, ".ade", "artifacts"), { recursive: true });
   return root;
+}
+
+async function getUnusedPort(): Promise<number> {
+  const server = net.createServer();
+  await new Promise<void>((resolve) => {
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const address = server.address();
+  const port = typeof address === "object" && address ? address.port : 0;
+  await new Promise<void>((resolve, reject) => {
+    server.close((error) => (error ? reject(error) : resolve()));
+  });
+  return port;
 }
 
 function insertProjectAndLane(
@@ -413,6 +427,175 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
     expect(transferred.clusterState?.brainEpoch).toBe(4);
     expect(transferred.currentBrain?.deviceId).toBe(localDevice.deviceId);
     expect(transferred.transferReadiness.ready).toBe(true);
+  }, 30_000);
+
+  it("reclaims host role from a stale local viewer draft after transport failure", async () => {
+    const projectRoot = makeProjectRoot("ade-sync-service-stale-local-draft-");
+    const appPairingDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), "ade-sync-service-stale-local-draft-app-"),
+    );
+    fs.mkdirSync(appPairingDir, { recursive: true });
+    fs.writeFileSync(path.join(appPairingDir, "sync-bootstrap-token"), "local-bootstrap-token\n", "utf8");
+    fs.writeFileSync(
+      path.join(appPairingDir, "sync-peer-draft.json"),
+      `${JSON.stringify({
+        host: "127.0.0.1",
+        port: await getUnusedPort(),
+        authKind: "bootstrap",
+        lastRemoteDbVersion: 0,
+      }, null, 2)}\n`,
+      "utf8",
+    );
+    const db = await openKvDb(
+      path.join(projectRoot, ".ade", "ade.db"),
+      createLogger() as any,
+    );
+
+    const service = createSyncService({
+      db,
+      logger: createLogger() as any,
+      projectRoot,
+      phonePairingStateDir: appPairingDir,
+      fileService: { dispose: () => {} } as any,
+      laneService: {
+        list: async () => [],
+        create: async () => ({}),
+        archive: async () => {},
+      } as any,
+      prService: {} as any,
+      sessionService: { list: () => [] } as any,
+      ptyService: {} as any,
+      computerUseArtifactBrokerService: {} as any,
+      agentChatService: { listSessions: async () => [] } as any,
+      processService: { listRuntime: () => [] } as any,
+      hostStartupEnabled: true,
+    } as any);
+
+    activeDisposers.push(async () => {
+      await service.dispose();
+      db.close();
+    });
+
+    const localDevice = (await service.getStatus()).localDevice;
+    const staleAt = "2026-03-15T00:00:00.000Z";
+    db.run(
+      `insert into devices(
+        device_id, site_id, name, platform, device_type, created_at, updated_at, last_seen_at, last_host, last_port, tailscale_ip, ip_addresses_json, metadata_json
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        "stale-local-brain",
+        "stale-site",
+        "Old local host",
+        "macOS",
+        "desktop",
+        staleAt,
+        staleAt,
+        staleAt,
+        "127.0.0.1",
+        8789,
+        null,
+        JSON.stringify(["127.0.0.1"]),
+        JSON.stringify({}),
+      ],
+    );
+    db.run(
+      `insert into sync_cluster_state(cluster_id, brain_device_id, brain_epoch, updated_at, updated_by_device_id)
+       values (?, ?, ?, ?, ?)`,
+      ["default", "stale-local-brain", 41, staleAt, "stale-local-brain"],
+    );
+
+    await service.initialize();
+
+    const status = await service.getStatus();
+    expect(status.role).toBe("brain");
+    expect(status.clusterState?.brainDeviceId).toBe(localDevice.deviceId);
+    expect(status.clusterState?.brainEpoch).toBe(42);
+    expect(status.pairingConnectInfo).toBeTruthy();
+    expect(fs.existsSync(path.join(appPairingDir, "sync-peer-draft.json"))).toBe(false);
+  }, 30_000);
+
+  it("keeps a stale unreachable viewer draft when the draft target is not local", async () => {
+    const projectRoot = makeProjectRoot("ade-sync-service-stale-remote-draft-");
+    const appPairingDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), "ade-sync-service-stale-remote-draft-app-"),
+    );
+    const draftPath = path.join(appPairingDir, "sync-peer-draft.json");
+    fs.mkdirSync(appPairingDir, { recursive: true });
+    fs.writeFileSync(path.join(appPairingDir, "sync-bootstrap-token"), "remote-bootstrap-token\n", "utf8");
+    fs.writeFileSync(
+      draftPath,
+      `${JSON.stringify({
+        host: "not-local.invalid",
+        port: 8789,
+        authKind: "bootstrap",
+        lastRemoteDbVersion: 0,
+      }, null, 2)}\n`,
+      "utf8",
+    );
+    const db = await openKvDb(
+      path.join(projectRoot, ".ade", "ade.db"),
+      createLogger() as any,
+    );
+
+    const service = createSyncService({
+      db,
+      logger: createLogger() as any,
+      projectRoot,
+      phonePairingStateDir: appPairingDir,
+      fileService: { dispose: () => {} } as any,
+      laneService: {
+        list: async () => [],
+        create: async () => ({}),
+        archive: async () => {},
+      } as any,
+      prService: {} as any,
+      sessionService: { list: () => [] } as any,
+      ptyService: {} as any,
+      computerUseArtifactBrokerService: {} as any,
+      agentChatService: { listSessions: async () => [] } as any,
+      processService: { listRuntime: () => [] } as any,
+      hostStartupEnabled: true,
+    } as any);
+
+    activeDisposers.push(async () => {
+      await service.dispose();
+      db.close();
+    });
+
+    const staleAt = "2026-03-15T00:00:00.000Z";
+    db.run(
+      `insert into devices(
+        device_id, site_id, name, platform, device_type, created_at, updated_at, last_seen_at, last_host, last_port, tailscale_ip, ip_addresses_json, metadata_json
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        "stale-remote-brain",
+        "stale-site",
+        "Remote host",
+        "macOS",
+        "desktop",
+        staleAt,
+        staleAt,
+        staleAt,
+        "not-local.invalid",
+        8789,
+        null,
+        JSON.stringify(["10.0.0.9"]),
+        JSON.stringify({}),
+      ],
+    );
+    db.run(
+      `insert into sync_cluster_state(cluster_id, brain_device_id, brain_epoch, updated_at, updated_by_device_id)
+       values (?, ?, ?, ?, ?)`,
+      ["default", "stale-remote-brain", 41, staleAt, "stale-remote-brain"],
+    );
+
+    await service.initialize();
+
+    const status = await service.getStatus();
+    expect(status.role).toBe("viewer");
+    expect(status.clusterState?.brainDeviceId).toBe("stale-remote-brain");
+    expect(status.pairingConnectInfo).toBeNull();
+    expect(fs.existsSync(draftPath)).toBe(true);
   }, 30_000);
 
   it("builds pairing runtime addresses with LAN-first address candidates and tailscale fallback", async () => {

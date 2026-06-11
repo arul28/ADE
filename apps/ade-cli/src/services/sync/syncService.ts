@@ -248,6 +248,16 @@ const SYNC_HOST_MAX_PORT = DEFAULT_SYNC_HOST_PORT + SYNC_HOST_PORT_RETRY_WINDOW;
 const LOCAL_LANE_PRESENCE_HEARTBEAT_MS = 30_000;
 const TRANSFER_READINESS_CACHE_MS = 15_000;
 const STALE_BRAIN_LAST_SEEN_MS = 5 * 60_000;
+const VIEWER_DRAFT_TRANSPORT_ERROR_CODES = new Set([
+  "ECONNREFUSED",
+  "ETIMEDOUT",
+  "EHOSTUNREACH",
+  "ENETUNREACH",
+  "ENOTFOUND",
+  "EAI_AGAIN",
+]);
+const VIEWER_DRAFT_TRANSPORT_ERROR_PATTERN =
+  /\b(?:ECONNREFUSED|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH|ENOTFOUND|EAI_AGAIN)\b/i;
 
 function generatePairingPin(): string {
   return randomInt(0, 1_000_000).toString().padStart(6, "0");
@@ -289,6 +299,12 @@ function normalizeHost(host: string | null | undefined): string | null {
   if (!host) return null;
   const normalized = host.trim().toLowerCase();
   return normalized.length > 0 ? normalized : null;
+}
+
+function normalizeHostKey(host: string | null | undefined): string | null {
+  const normalized = normalizeHost(host);
+  if (!normalized) return null;
+  return normalized.replace(/^\[/, "").replace(/\]$/, "").replace(/\.$/, "");
 }
 
 function tailscaleDnsNameFromDevice(
@@ -333,6 +349,37 @@ function buildAddressCandidates(
   append(localDevice.tailscaleIp, "tailscale");
   append("127.0.0.1", "loopback");
   return candidates;
+}
+
+function isDraftTargetLocalDevice(
+  draft: SyncDesktopConnectionDraft,
+  localDevice: SyncRoleSnapshot["localDevice"],
+): boolean {
+  const draftHost = normalizeHostKey(draft.host);
+  if (!draftHost) return false;
+  const localHosts = new Set<string>(["localhost", "127.0.0.1", "::1"]);
+  for (const host of localDevice.ipAddresses) {
+    const key = normalizeHostKey(host);
+    if (key) localHosts.add(key);
+  }
+  for (const host of [
+    localDevice.tailscaleIp,
+    tailscaleDnsNameFromDevice(localDevice),
+    typeof localDevice.metadata?.hostname === "string" ? localDevice.metadata.hostname : null,
+  ]) {
+    const key = normalizeHostKey(host);
+    if (key) localHosts.add(key);
+  }
+  return localHosts.has(draftHost);
+}
+
+function isViewerDraftTransportError(error: unknown): boolean {
+  const code = (error as { code?: unknown } | null | undefined)?.code;
+  if (typeof code === "string" && VIEWER_DRAFT_TRANSPORT_ERROR_CODES.has(code)) {
+    return true;
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  return VIEWER_DRAFT_TRANSPORT_ERROR_PATTERN.test(message);
 }
 
 function buildPairingConnectInfo(argsIn: {
@@ -827,6 +874,18 @@ export function createSyncService(args: SyncServiceArgs) {
     return Date.now() - lastSeenMs > STALE_BRAIN_LAST_SEEN_MS;
   };
 
+  const shouldReclaimStaleViewerDraft = (argsIn: {
+    cluster: ReturnType<typeof deviceRegistryService.getClusterState>;
+    localDevice: SyncRoleSnapshot["localDevice"];
+    draft: SyncDesktopConnectionDraft;
+    error: unknown;
+  }): boolean => {
+    if (!hostStartupEnabled || !isCrdtSyncAvailable()) return false;
+    if (!isViewerDraftTransportError(argsIn.error)) return false;
+    if (!isDraftTargetLocalDevice(argsIn.draft, argsIn.localDevice)) return false;
+    return !argsIn.cluster || isStaleNonLocalBrainCluster(argsIn.cluster, argsIn.localDevice.deviceId);
+  };
+
   const refreshRoleState = async (): Promise<void> => {
     if (disposed) return;
     if (refreshRunning) {
@@ -892,6 +951,27 @@ export function createSyncService(args: SyncServiceArgs) {
               args.logger.warn("sync.role.viewer_connect_failed", {
                 error: error instanceof Error ? error.message : String(error),
               });
+              if (shouldReclaimStaleViewerDraft({ cluster, localDevice, draft, error })) {
+                args.logger.warn("sync.role.viewer_stale_draft_reclaimed", {
+                  host: draft.host,
+                  port: draft.port,
+                  previousBrainDeviceId: cluster?.brainDeviceId ?? null,
+                  error: error instanceof Error ? error.message : String(error),
+                });
+                writeSavedDraft(null);
+                syncPeerService.setSavedDraft(null);
+                deviceRegistryService.touchLocalDevice({
+                  lastSeenAt: nowIso(),
+                  lastHost: localDevice.lastHost,
+                  lastPort: localDevice.lastPort ?? DEFAULT_SYNC_HOST_PORT,
+                });
+                cluster = deviceRegistryService.setClusterState({
+                  brainDeviceId: localDevice.deviceId,
+                  brainEpoch: (cluster?.brainEpoch ?? 0) + 1,
+                  updatedByDeviceId: localDevice.deviceId,
+                });
+                await startHostIfNeeded();
+              }
             }
           }
         }
