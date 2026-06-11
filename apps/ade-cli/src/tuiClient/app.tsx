@@ -112,6 +112,13 @@ import {
   type DrawerLayout,
 } from "./drawerLayout";
 import {
+  buildNewLaneSubmission,
+  cycleNewLaneStart,
+  newLaneFormFields,
+  normalizeNewLaneStart,
+  toggleNewLaneRuntime,
+} from "./newLaneForm";
+import {
   ChatView,
   computeChatScrollMaxOffset,
   renderChatSelectableRowTexts,
@@ -2175,6 +2182,7 @@ export function cycleLaneDeleteScope(value: string | null | undefined, delta: nu
 
 export function formFieldUsesPromptInput(command: string, fieldName: string): boolean {
   if (command === "lane-delete" && (fieldName === "scope" || fieldName === "force")) return false;
+  if (command === "new-lane" && (fieldName === "start" || fieldName === "runtime")) return false;
   return true;
 }
 
@@ -5037,16 +5045,14 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   }, [setPaneFocus, stashActiveInput]);
 
   const openNewLaneForm = useCallback(() => {
+    const activeLaneName = lanes.find((lane) => lane.id === activeLaneIdRef.current)?.name ?? null;
     openForm({
       kind: "form",
       title: "New lane",
       command: "new-lane",
-      fields: [
-        { name: "name", label: "Name", required: true, placeholder: "feature-name" },
-        { name: "baseBranch", label: "Base branch", placeholder: "default" },
-      ],
+      fields: newLaneFormFields("primary", { activeLaneName }),
     });
-  }, [openForm]);
+  }, [lanes, openForm]);
 
   const openMoveUnstagedForm = useCallback(() => {
     const laneId = activeLaneIdRef.current;
@@ -7981,11 +7987,16 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     if (form.command === "new-lane") {
       const name = requireField("name", "Name");
       if (!name) return;
-      const baseBranch = values.baseBranch?.trim();
-      const created = await conn.action<LaneSummary>("lane", "create", {
-        name,
-        ...(baseBranch ? { baseBranch } : {}),
-      });
+      const submission = buildNewLaneSubmission({ values, lanes, activeLaneId });
+      if (submission.kind === "error") {
+        addNotice(submission.message, "error");
+        return;
+      }
+      const created = submission.kind === "createChild"
+        ? await conn.action<LaneSummary>("lane", "createChild", submission.payload)
+        : submission.kind === "importBranch"
+          ? await conn.action<LaneSummary>("lane", "importBranch", submission.payload)
+          : await conn.action<LaneSummary>("lane", "create", submission.payload);
       selectActiveLaneId(created.id);
       selectActiveSessionId(null);
       setDrawerLaneId(created.id);
@@ -8260,7 +8271,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         addNotice(`Feedback failed: ${message}`, "error");
       }
     }
-  }, [addNotice, focusAfterDetails, lanes, refreshState, renameLane, selectActiveLaneId, selectActiveSessionId, selectFallbackChatAfterRemoval, sessions]);
+  }, [activeLaneId, addNotice, focusAfterDetails, lanes, refreshState, renameLane, selectActiveLaneId, selectActiveSessionId, selectFallbackChatAfterRemoval, sessions]);
 
   const openLatestImage = useCallback(() => {
     const target = latestOpenableImageTarget(events);
@@ -10493,6 +10504,43 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           const nextForce = nextValues.force === "yes" ? "no" : "yes";
           const values = { ...nextValues, force: nextForce };
           setFormValues(values);
+          setPrompt("");
+          return;
+        }
+        if (printableInput(input) && !key.ctrl && !key.meta && !key.return) return;
+      }
+    }
+
+    if (pane === "details" && rightOpen && rightPane.kind === "form" && rightPane.command === "new-lane") {
+      const fields = rightPane.fields;
+      const field = fields[formFieldIndex] ?? fields[0] ?? null;
+      const nextValues = currentFormValues();
+      if (field?.name === "start") {
+        const startByKey: Record<string, string> = { "1": "primary", "2": "child", "3": "import" };
+        const cycled = key.leftArrow || key.rightArrow
+          ? cycleNewLaneStart(nextValues.start, key.leftArrow ? -1 : 1)
+          : startByKey[input];
+        if (cycled && cycled !== normalizeNewLaneStart(nextValues.start)) {
+          const activeLaneName = lanes.find((entry) => entry.id === activeLaneIdRef.current)?.name ?? null;
+          setFormValues({ ...nextValues, start: cycled });
+          // Rebuild the visible fields for the chosen mode (desktop dialog
+          // parity: each "Start from" mode shows its own inputs). The start
+          // row keeps the same index across modes so focus stays put.
+          setRightPane((previous) => previous.kind === "form" && previous.command === "new-lane"
+            ? { ...previous, fields: newLaneFormFields(normalizeNewLaneStart(cycled), { activeLaneName }) }
+            : previous);
+          setPrompt("");
+          return;
+        }
+        if (cycled) {
+          setPrompt("");
+          return;
+        }
+        if (printableInput(input) && !key.ctrl && !key.meta && !key.return) return;
+      }
+      if (field?.name === "runtime") {
+        if (key.leftArrow || key.rightArrow || input === " ") {
+          setFormValues({ ...nextValues, runtime: toggleNewLaneRuntime(nextValues.runtime) });
           setPrompt("");
           return;
         }

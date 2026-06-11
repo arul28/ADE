@@ -22,6 +22,12 @@ import type { SubagentCapability } from "../../../../desktop/src/shared/subagent
 import { missionFeatureCounts, orderMissionFeatures } from "../../../../desktop/src/renderer/components/chat/chatMission";
 import type { MissionSnapshot } from "../types";
 import type { HelpRow } from "../helpIndex";
+import {
+  NEW_LANE_START_HINT,
+  NEW_LANE_START_LABEL,
+  normalizeNewLaneStart,
+  type NewLaneStart,
+} from "../newLaneForm";
 import { useShimmerTick } from "../spinTick";
 import {
   FEEDBACK_TYPES,
@@ -1524,6 +1530,105 @@ function LaneDeleteFormPane({
   );
 }
 
+type NewLaneFormContent = FormPaneContent & { command: "new-lane" };
+
+/**
+ * Desktop CreateLaneDialog parity for /new lane: a "Start from" mode chip row
+ * (primary base / child of lane / import branch) that swaps the visible
+ * inputs, plus the runtime placement toggle. Text fields render through the
+ * shared prompt input like every other form.
+ */
+function NewLaneFormPane({
+  content,
+  formValues,
+  activeFormField,
+  width,
+}: {
+  content: NewLaneFormContent;
+  formValues: Record<string, string>;
+  activeFormField: number;
+  width: number;
+}) {
+  const hoveredId = useHoveredHitId();
+  const inner = Math.max(12, width - 4);
+  const fields = content.fields;
+  const start = normalizeNewLaneStart(formValues.start);
+  const runtime = formValues.runtime === "macos-vm" ? "macos-vm" : "local";
+  const activeName = fields[activeFormField]?.name ?? fields[0]?.name ?? "name";
+  const active = (name: string) => activeName === name || hoveredId === `right:form:${name}`;
+  const startOption = (value: NewLaneStart, label: string) => (
+    <Text color={start === value ? theme.color.violet : theme.color.t3} bold={start === value}>
+      {start === value ? `[${label}]` : ` ${label} `}
+    </Text>
+  );
+  const textRow = (name: string, label: string, options: { required?: boolean; placeholder?: string } = {}) => {
+    const field = fields.find((entry) => entry.name === name);
+    if (!field) return null;
+    const value = formValues[name]?.trim() ?? "";
+    return (
+      <Box key={name} flexDirection="column" marginTop={1}>
+        <Text color={active(name) ? theme.color.violet : theme.color.t3} bold={active(name)}>
+          {active(name) ? theme.rail : " "} {label}{options.required ?? field.required ? " *" : ""}
+        </Text>
+        <Text color={value ? theme.color.t1 : theme.color.t4} dimColor={!value} wrap="truncate-end">
+          {"  "}{endTruncate(value || options.placeholder || field.placeholder || "", inner - 2)}
+        </Text>
+      </Box>
+    );
+  };
+
+  return (
+    <Box flexDirection="column">
+      {textRow("name", "Name")}
+
+      <Box flexDirection="column" marginTop={1}>
+        <Text color={active("start") ? theme.color.violet : theme.color.t3} bold={active("start")}>
+          {active("start") ? theme.rail : " "} Start from
+        </Text>
+        <Text>
+          {"  "}
+          {startOption("primary", NEW_LANE_START_LABEL.primary)}
+          <Text> </Text>
+          {startOption("child", NEW_LANE_START_LABEL.child)}
+          <Text> </Text>
+          {startOption("import", NEW_LANE_START_LABEL.import)}
+        </Text>
+        <Text color={theme.color.t4} dimColor>
+          {"  "}{NEW_LANE_START_HINT[start]}
+        </Text>
+      </Box>
+
+      {textRow("parent", "Parent lane")}
+      {textRow("branch", "Branch to import")}
+      {textRow("baseBranch", start === "child" ? "Base override" : "Base branch")}
+
+      {fields.some((field) => field.name === "runtime") ? (
+        <Box flexDirection="column" marginTop={1}>
+          <Text color={active("runtime") ? theme.color.violet : theme.color.t3} bold={active("runtime")}>
+            {active("runtime") ? theme.rail : " "} Runtime
+          </Text>
+          <Text>
+            {"  "}
+            <Text color={runtime === "local" ? theme.color.violet : theme.color.t3} bold={runtime === "local"}>
+              {runtime === "local" ? "[local mac]" : " local mac "}
+            </Text>
+            <Text> </Text>
+            <Text color={runtime === "macos-vm" ? theme.color.info : theme.color.t3} bold={runtime === "macos-vm"}>
+              {runtime === "macos-vm" ? "[mac vm]" : " mac vm "}
+            </Text>
+          </Text>
+        </Box>
+      ) : null}
+
+      <Box marginTop={1}>
+        <Text color={theme.color.t4} dimColor>
+          ↑↓ rows · ←→ choices · enter creates · esc cancels
+        </Text>
+      </Box>
+    </Box>
+  );
+}
+
 function ContextUsagePane({
   content,
   width,
@@ -1818,7 +1923,16 @@ export function RightPane({
         />
       ) : null}
 
-      {content.kind === "form" && content.command !== "lane-delete" && content.command !== "feedback" ? (
+      {content.kind === "form" && content.command === "new-lane" ? (
+        <NewLaneFormPane
+          content={content as NewLaneFormContent}
+          formValues={formValues}
+          activeFormField={activeFormField}
+          width={paneWidth}
+        />
+      ) : null}
+
+      {content.kind === "form" && content.command !== "lane-delete" && content.command !== "feedback" && content.command !== "new-lane" ? (
         <Box flexDirection="column">
           {content.description ? (
             <Box marginBottom={1}>

@@ -315,6 +315,71 @@ function lane(overrides: Partial<LaneSummary> = {}): LaneSummary {
   };
 }
 
+describe("RightPane new-lane form", () => {
+  it("renders the start-from chips, hint, and runtime toggle", () => {
+    const result = render(
+      <RightPane
+        content={{
+          kind: "form",
+          title: "New lane",
+          command: "new-lane",
+          fields: [
+            { name: "name", label: "Name", required: true, placeholder: "feature-name" },
+            { name: "start", label: "Start from", initialValue: "primary" },
+            { name: "baseBranch", label: "Base branch", placeholder: "default" },
+            { name: "runtime", label: "Runtime", initialValue: "local" },
+          ],
+        }}
+        formValues={{ name: "auth-refresh", start: "primary", baseBranch: "", runtime: "local" }}
+        activeFormField={1}
+        focused
+        width={80}
+      />,
+    );
+    const frame = stripAnsi(result.lastFrame() ?? "");
+
+    expect(frame).toContain("Name");
+    expect(frame).toContain("auth-refresh");
+    expect(frame).toContain("Start from");
+    expect(frame).toContain("[base branch]");
+    expect(frame).toContain("child of lane");
+    expect(frame).toContain("import branch");
+    expect(frame).toContain("new branch off the project base");
+    expect(frame).toContain("[local mac]");
+    expect(frame).toContain("mac vm");
+    expect(frame).toContain("←→ choices");
+  });
+
+  it("renders import-mode fields when the start mode is import", () => {
+    const result = render(
+      <RightPane
+        content={{
+          kind: "form",
+          title: "New lane",
+          command: "new-lane",
+          fields: [
+            { name: "name", label: "Name", required: true, placeholder: "feature-name" },
+            { name: "start", label: "Start from", initialValue: "import" },
+            { name: "branch", label: "Branch to import", required: true, placeholder: "origin/feature-x" },
+            { name: "baseBranch", label: "Base branch", placeholder: "default" },
+          ],
+        }}
+        formValues={{ name: "", start: "import", branch: "origin/feature-x", baseBranch: "" }}
+        activeFormField={2}
+        focused
+        width={80}
+      />,
+    );
+    const frame = stripAnsi(result.lastFrame() ?? "");
+
+    expect(frame).toContain("[import branch]");
+    expect(frame).toContain("Branch to import");
+    expect(frame).toContain("origin/feature-x");
+    expect(frame).toContain("adopt an existing local/remote branch");
+    expect(frame).not.toContain("Runtime");
+  });
+});
+
 describe("RightPane lane-details", () => {
   const baseLaneDetails = {
     lane: lane(),
