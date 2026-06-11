@@ -2278,8 +2278,12 @@ function registerWorkRemoteCommands({ args, register }: RemoteCommandRegistratio
     // agent CLI session's runtime (same sessionId, provider resume metadata).
     const value = (payload ?? {}) as Record<string, unknown>;
     const sessionId = requireString(value.sessionId, "work.resumeCliSession requires sessionId.");
-    const cols = typeof value.cols === "number" ? clampCliDimension(Math.floor(value.cols), DEFAULT_CLI_COLS, 20, MAX_CLI_COLS) : undefined;
-    const rows = typeof value.rows === "number" ? clampCliDimension(Math.floor(value.rows), DEFAULT_CLI_ROWS, 4, MAX_CLI_ROWS) : undefined;
+    const cols = typeof value.cols === "number" && Number.isFinite(value.cols)
+      ? clampCliDimension(value.cols, DEFAULT_CLI_COLS, 20, MAX_CLI_COLS)
+      : undefined;
+    const rows = typeof value.rows === "number" && Number.isFinite(value.rows)
+      ? clampCliDimension(value.rows, DEFAULT_CLI_ROWS, 4, MAX_CLI_ROWS)
+      : undefined;
     const result = await args.ptyService.resumeSession({
       sessionId,
       ...(cols != null ? { cols } : {}),

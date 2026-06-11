@@ -3211,6 +3211,22 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           message: resolution.message,
         },
       } satisfies SyncFileResponsePayload, requestId);
+      return;
+    }
+
+    if (type === "terminal_history") {
+      const historyPayload = (payload ?? {}) as { sessionId?: string; beforeOffset?: number };
+      const sessionId = toOptionalString(historyPayload.sessionId) ?? "";
+      const beforeOffset = typeof historyPayload.beforeOffset === "number" && Number.isFinite(historyPayload.beforeOffset)
+        ? Math.max(0, Math.floor(historyPayload.beforeOffset))
+        : 0;
+      sendRequired(peer, "terminal_history", {
+        sessionId,
+        data: "",
+        startOffset: beforeOffset,
+        endOffset: beforeOffset,
+        atStart: true,
+      } satisfies SyncTerminalHistoryResponsePayload, requestId);
     }
   }
 
@@ -3541,9 +3557,14 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
               alignToLineBoundary: true,
             })
           : "";
-        // The tail read merges still-buffered live output, so its byte length
-        // can exceed what the WriteStream has flushed to disk; clamp the
-        // derived start to 0 and let the phone's gap detection self-heal.
+        // The tail read can merge still-buffered live output that is not
+        // reflected in the flushed file size yet. Only advertise offsets when
+        // the returned bytes fit inside the flushed transcript.
+        const transcriptBytes = Buffer.byteLength(transcript, "utf8");
+        const snapshotStartOffset = transcriptSize != null && transcriptBytes <= transcriptSize
+          ? transcriptSize - transcriptBytes
+          : null;
+        const snapshotEndOffset = snapshotStartOffset != null ? transcriptSize : null;
         const snapshot: SyncTerminalSnapshotPayload = {
           sessionId,
           transcript,
@@ -3551,10 +3572,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           runtimeState: session?.runtimeState ?? null,
           lastOutputPreview: session?.lastOutputPreview ?? null,
           capturedAt: nowIso(),
-          startOffset: transcriptSize != null
-            ? Math.max(0, transcriptSize - Buffer.byteLength(transcript, "utf8"))
-            : null,
-          endOffset: transcriptSize,
+          startOffset: snapshotStartOffset,
+          endOffset: snapshotEndOffset,
           live: args.ptyService.hasLivePty(sessionId),
         };
         sendRequired(peer, "terminal_snapshot", snapshot, envelope.requestId);
@@ -3584,7 +3603,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           data: "",
           startOffset: beforeOffset,
           endOffset: beforeOffset,
-          atStart: false,
+          atStart: true,
         };
         const session = args.sessionService.get(sessionId);
         if (!peer.subscribedSessionIds.has(sessionId) || !session) {

@@ -3845,8 +3845,8 @@ export function createPtyService({
         cleanupPaths,
         lastResizeCols: null,
         lastResizeRows: null,
-        lastDesktopCols: null,
-        lastDesktopRows: null,
+        lastDesktopCols: cols,
+        lastDesktopRows: rows,
         pendingDataChunks: [],
         pendingDataChars: 0,
         pendingDataTimer: null,
@@ -4572,10 +4572,16 @@ export function createPtyService({
         }
         entry = live[1];
       }
-      entry.pty.write(args.data);
-      tryCliUserTitleFromWrite(entry, args.data);
-      setRuntimeState(entry.sessionId, "running");
-      scheduleIdleTransition(entry.sessionId);
+      try {
+        entry.lastUserInputAt = Date.now();
+        entry.pty.write(args.data);
+        tryCliUserTitleFromWrite(entry, args.data);
+        setRuntimeState(entry.sessionId, "running");
+        scheduleIdleTransition(entry.sessionId);
+      } catch (err) {
+        logger.warn("pty.terminal_write_failed", { sessionId: entry.sessionId, err: String(err) });
+        throw err;
+      }
       return { ok: true };
     },
 

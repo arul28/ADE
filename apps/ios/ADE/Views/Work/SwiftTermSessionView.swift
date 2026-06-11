@@ -426,7 +426,7 @@ final class TerminalSessionController: NSObject, ObservableObject {
         let slice = try await syncService.fetchTerminalHistory(sessionId: id, beforeOffset: startOffset)
         // A replace-hydration may have landed while the fetch was in flight;
         // prepending stale bytes would corrupt the window.
-        guard self.transcriptStartOffset == startOffset, slice.endOffset <= startOffset else { return }
+        guard self.transcriptStartOffset == startOffset, slice.endOffset == startOffset else { return }
         if !slice.data.isEmpty {
           self.transcript = Data(slice.data.utf8) + self.transcript
           self.transcriptStartOffset = slice.startOffset
@@ -611,7 +611,7 @@ final class TerminalSessionController: NSObject, ObservableObject {
 
 extension TerminalSessionController: TerminalViewDelegate {
   nonisolated func send(source: TerminalView, data: ArraySlice<UInt8>) {
-    let text = String(decoding: data, as: UTF8.self)
+    let text = String(bytes: data, encoding: .utf8) ?? String(decoding: data, as: UTF8.self)
     MainActor.assumeIsolated {
       enqueueInput(text)
     }
@@ -637,7 +637,7 @@ extension TerminalSessionController: TerminalViewDelegate {
   }
 
   nonisolated func clipboardCopy(source: TerminalView, content: Data) {
-    let text = String(decoding: content, as: UTF8.self)
+    let text = String(bytes: content, encoding: .utf8) ?? String(decoding: content, as: UTF8.self)
     MainActor.assumeIsolated {
       UIPasteboard.general.string = text
     }

@@ -4388,14 +4388,15 @@ describe("ptyService", () => {
       expect(mockPty.resize).toHaveBeenLastCalledWith(90, 30);
     });
 
-    it("does not restore when no desktop size was ever recorded", async () => {
+    it("restores to the create-time size when mobile resizes before desktop", async () => {
       const { service, mockPty } = createHarness();
       const { sessionId } = await service.create({ laneId: "lane-1", title: "t", cols: 80, rows: 24 });
 
       expect(service.resizeBySessionId(sessionId, 61, 21, { source: "mobile" })).toBe(true);
-      const resizeCalls = (mockPty.resize as ReturnType<typeof vi.fn>).mock.calls.length;
-      expect(service.restoreDesktopSizeBySessionId(sessionId)).toBe(false);
-      expect((mockPty.resize as ReturnType<typeof vi.fn>).mock.calls.length).toBe(resizeCalls);
+      expect(mockPty.resize).toHaveBeenLastCalledWith(61, 21);
+
+      expect(service.restoreDesktopSizeBySessionId(sessionId)).toBe(true);
+      expect(mockPty.resize).toHaveBeenLastCalledWith(80, 24);
     });
   });
 
@@ -5298,6 +5299,32 @@ describe("ptyService", () => {
       const result = await service.writeTerminal({ chatSessionId: "chat-write", data: "y\n" });
       expect(result).toEqual({ ok: true });
       expect(mockPty.write).toHaveBeenCalledWith("y\n");
+    });
+
+    it("writeTerminal marks user input so immediate output uses the interactive batch window", async () => {
+      vi.useFakeTimers();
+      try {
+        vi.setSystemTime(new Date("2026-06-10T12:00:00.000Z"));
+        const { service, mockPty, broadcastData } = createChatHarness();
+        await service.create({
+          laneId: "lane-1",
+          title: "Writer",
+          cols: 80,
+          rows: 24,
+          chatSessionId: "chat-write",
+        });
+
+        await service.writeTerminal({ chatSessionId: "chat-write", data: "y\n" });
+        mockPty._emitter.emit("data", "prompt");
+
+        await vi.advanceTimersByTimeAsync(7);
+        expect(broadcastData).not.toHaveBeenCalled();
+
+        await vi.advanceTimersByTimeAsync(1);
+        expect(broadcastData).toHaveBeenCalledWith(expect.objectContaining({ data: "prompt" }));
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it("resizeTerminal resizes the active chat terminal", async () => {

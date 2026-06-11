@@ -3800,7 +3800,9 @@ final class SyncService: ObservableObject {
   }
 
   func detachTerminalStream(sessionId: String) {
-    terminalStreamHandlers.removeValue(forKey: sessionId)
+    let trimmedSessionId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmedSessionId.isEmpty else { return }
+    terminalStreamHandlers.removeValue(forKey: trimmedSessionId)
   }
 
   /// Fetches transcript bytes ending at/before `beforeOffset` for on-demand
@@ -3810,6 +3812,9 @@ final class SyncService: ObservableObject {
     guard !trimmedSessionId.isEmpty else {
       throw NSError(domain: "ADE", code: 6, userInfo: [NSLocalizedDescriptionKey: "Missing terminal session id."])
     }
+    guard subscribedTerminalSessionIds.contains(trimmedSessionId) else {
+      throw NSError(domain: "ADE", code: 7, userInfo: [NSLocalizedDescriptionKey: "Terminal stream is not subscribed."])
+    }
     let requestId = makeRequestId()
     // Older hosts never answer terminal_history; let the request time out
     // without tearing the socket down.
@@ -3817,7 +3822,7 @@ final class SyncService: ObservableObject {
       self.sendEnvelope(type: "terminal_history", requestId: requestId, payload: [
         "sessionId": trimmedSessionId,
         "beforeOffset": beforeOffset,
-        "maxBytes": max(1_024, min(syncTerminalStreamMaxBytes, maxBytes)),
+        "maxBytes": max(1_024, min(syncTerminalHistoryMaxBytes, maxBytes)),
       ])
     }
     return try decode(raw, as: TerminalHistorySlice.self)
@@ -3842,8 +3847,12 @@ final class SyncService: ObservableObject {
         } else {
           if chunkStart < lastEnd {
             // Partial overlap: trim the already-applied UTF-8 prefix.
-            let overlap = lastEnd - chunkStart
-            deliverableChunk = String(decoding: Array(chunk.utf8).dropFirst(overlap), as: UTF8.self)
+            let bytes = Array(chunk.utf8)
+            var overlap = min(max(0, lastEnd - chunkStart), bytes.count)
+            while overlap < bytes.count, bytes[overlap] & 0xC0 == 0x80 {
+              overlap += 1
+            }
+            deliverableChunk = String(decoding: bytes.dropFirst(overlap), as: UTF8.self)
           }
           terminalEndOffsets[sessionId] = endOffset
         }
@@ -3913,7 +3922,9 @@ final class SyncService: ObservableObject {
   /// Whether a full-screen terminal currently owns the live stream for
   /// `sessionId`. Used to skip detach-unsubscribes that would race a remount.
   func hasTerminalStream(sessionId: String) -> Bool {
-    terminalStreamHandlers[sessionId] != nil
+    let trimmedSessionId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmedSessionId.isEmpty else { return false }
+    return terminalStreamHandlers[trimmedSessionId] != nil
   }
 
   /// Relaunches an ended/orphaned agent CLI session's runtime on the host

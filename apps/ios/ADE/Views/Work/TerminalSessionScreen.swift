@@ -206,8 +206,7 @@ struct TerminalSessionScreen: View {
   /// Whether the host can relaunch this session's runtime: agent CLI sessions
   /// carry resume metadata; plain shells do not.
   private var sessionIsResumable: Bool {
-    let tool = session.toolType?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
-    return !tool.isEmpty && tool != "shell"
+    terminalSessionHasResumeTarget(session)
   }
 
   private var resumeBar: some View {

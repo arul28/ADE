@@ -1082,6 +1082,20 @@ describe("terminal byte-offset streaming, history paging, and resize ownership",
       const stale = await nextResponse(client.envelopes, "terminal_snapshot", "sub-stale");
       expect((stale.payload as { delta?: boolean }).delta).toBeUndefined();
       expect((stale.payload as { transcript: string }).transcript).toBe("tail-snapshot");
+
+      readTranscriptTail.mockResolvedValueOnce(`${TRANSCRIPT_CONTENT}buffered`);
+      client.ws.send(encodeSyncEnvelope({
+        type: "terminal_subscribe",
+        requestId: "sub-buffered",
+        payload: { sessionId: "session-1", maxBytes: 1_024, sinceOffset: 0 },
+      }));
+      const buffered = await nextResponse(client.envelopes, "terminal_snapshot", "sub-buffered");
+      expect(buffered.payload).toMatchObject({
+        sessionId: "session-1",
+        transcript: `${TRANSCRIPT_CONTENT}buffered`,
+        startOffset: null,
+        endOffset: null,
+      });
     } finally {
       try {
         client?.ws.close();
@@ -1101,6 +1115,22 @@ describe("terminal byte-offset streaming, history paging, and resize ownership",
       const port = await host.waitUntilListening();
       client = await connectTerminalPeer(port, host.getBootstrapToken(), "ios-terminal-2");
 
+      client.ws.send(encodeSyncEnvelope({
+        type: "terminal_history",
+        requestId: "hist-wrong-project",
+        projectId: "project-2",
+        payload: { sessionId: "session-1", beforeOffset: 4_000 },
+      }));
+      const wrongProject = await nextResponse(client.envelopes, "terminal_history", "hist-wrong-project");
+      expect(wrongProject.payload).toEqual({
+        sessionId: "session-1",
+        data: "",
+        startOffset: 4_000,
+        endOffset: 4_000,
+        atStart: true,
+      });
+      expect(readTranscriptRange).not.toHaveBeenCalled();
+
       // Not subscribed yet: same access gate as terminal_input.
       client.ws.send(encodeSyncEnvelope({
         type: "terminal_history",
@@ -1113,7 +1143,7 @@ describe("terminal byte-offset streaming, history paging, and resize ownership",
         data: "",
         startOffset: 4_000,
         endOffset: 4_000,
-        atStart: false,
+        atStart: true,
       });
       expect(readTranscriptRange).not.toHaveBeenCalled();
 
@@ -1223,7 +1253,7 @@ describe("terminal byte-offset streaming, history paging, and resize ownership",
         payload: { sessionId: "session-1", beforeOffset: 100 },
       }));
       const fence = await nextResponse(clientA.envelopes, "terminal_history", "fence-a");
-      expect((fence.payload as { atStart: boolean }).atStart).toBe(false);
+      expect((fence.payload as { atStart: boolean }).atStart).toBe(true);
       expect(restoreDesktopSizeBySessionId).not.toHaveBeenCalled();
 
       // Last watcher disconnects → snap back to the desktop size.

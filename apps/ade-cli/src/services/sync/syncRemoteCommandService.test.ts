@@ -61,4 +61,18 @@ describe("createSyncRemoteCommandService", () => {
     );
     expect(ptyService.resumeSession).not.toHaveBeenCalled();
   });
+
+  it("omits non-finite work.resumeCliSession dimensions", async () => {
+    const { service, ptyService } = createService();
+
+    await service.execute(makePayload("work.resumeCliSession", {
+      sessionId: "session-1",
+      cols: Number.NaN,
+      rows: Number.POSITIVE_INFINITY,
+    }));
+
+    expect(ptyService.resumeSession).toHaveBeenCalledWith({
+      sessionId: "session-1",
+    });
+  });
 });
