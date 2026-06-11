@@ -199,6 +199,13 @@ export class RuntimeRpcClient {
    * envelope id is recovered from the retained line head; a `"method"` key
    * appearing before `"id"` marks the line as a notification (its params may
    * embed unrelated `"id"` fields), in which case nothing is rejected.
+   *
+   * Heuristic assumption: the daemon serializes response envelopes with the
+   * top-level `id` before `result` (jsonrpc.ts writeMessage key order), so
+   * the first `"id"` in a response line is the envelope id, never one nested
+   * inside the result. If a misfire ever happens anyway, the failure mode is
+   * benign: no pending entry matches, the line is warn-logged and dropped,
+   * and the real caller times out instead of receiving a wrong rejection.
    */
   private rejectOversizedLine(oversized: OversizedLineState): void {
     const idMatch = /"id"\s*:\s*(\d+)/.exec(oversized.prefix);

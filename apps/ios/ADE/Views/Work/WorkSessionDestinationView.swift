@@ -575,6 +575,17 @@ struct WorkSessionDestinationView: View {
     if !combined.isEmpty, combined != fallbackEntries {
       fallbackEntries = combined
     }
+    // fallbackEntries only feed the timeline while `transcript` is empty
+    // (buildWorkTimeline), so splice the older entries into the rendered
+    // transcript right away — otherwise the fetched page stays invisible
+    // until the next loadTranscript poll. preferredWorkTranscript backfills
+    // by role+turnId+text identity, so entries already rendered from live
+    // events are not duplicated.
+    let olderTranscript = makeWorkChatTranscript(from: combined, sessionId: sessionId)
+    let merged = preferredWorkTranscript(current: [], fallback: olderTranscript, eventTranscript: transcript)
+    if !merged.isEmpty, merged != transcript {
+      transcript = merged
+    }
   }
 
   @MainActor
