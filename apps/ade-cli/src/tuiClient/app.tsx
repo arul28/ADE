@@ -12459,6 +12459,27 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     );
   }
 
+  // The multi-chat grid draws its own bottom border, so it must span the REAL
+  // height of the center flex row — chatRowBudget is 2 rows short of it. The
+  // fixed chrome around the center area is header (2) + prompt box
+  // (promptRows + 2 borders) + footer (1) + ModelStatus (statusRows [+1 when
+  // the vim/next-chat extras line shows]), i.e. rows - 5 - promptRows -
+  // statusRows in the common case, while chatRowBudget = rows - 7 - promptRows
+  // - statusRows (minus banner rows, which both share). The drawer has no
+  // explicit height and stretches to the full row, which is why its border
+  // reached 2 rows below the grid. Also subtract the transient rows that
+  // shrink the center area but are NOT in chatRowBudget, so the grid never
+  // overflows and pushes the prompt off-screen.
+  const gridRowBudget = Math.max(
+    4,
+    chatRowBudget
+      + 2
+      - (draftChatActive || (vimModeEnabled && !hideVimModeIndicator) ? 1 : 0)
+      - (error ? 1 : 0)
+      - (attachedImageChips.length ? 1 : 0)
+      - (modeChangeNotice ? 3 : 0),
+  );
+
   // Footer mini-map: show tile state when multi-view is open, or just the
   // transient notice when we have something to flash but no grid yet.
   const footerMultiViewMap = (() => {
@@ -12517,7 +12538,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
                 tiles={multiView.tiles}
                 focusedIndex={multiView.focusedIndex}
                 width={chatWrapWidth}
-                height={chatRowBudget}
+                height={gridRowBudget}
                 baseX={drawerPaneWidth + 1}
                 baseY={3 + goalBannerRows + addModeRows}
                 projectName={projectName}
