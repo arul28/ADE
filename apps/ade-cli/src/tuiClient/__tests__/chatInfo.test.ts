@@ -176,4 +176,42 @@ describe("deriveChatInfoSnapshot", () => {
     expect(snapshot.snapshots).toHaveLength(1);
     expect(snapshot.inspectedSubagentId).toBe("x1");
   });
+
+  it("derives todos, plan explanation, and the lane PR rollup", () => {
+    const snapshot = deriveChatInfoSnapshot({
+      events: [
+        env("2026-05-18T12:00:00.000Z", {
+          type: "plan",
+          turnId: "t1",
+          steps: [{ text: "step", status: "in_progress" }],
+          explanation: "Do the risky part first.",
+          streamingText: "still planning…",
+        } as never, 1),
+        env("2026-05-18T12:00:01.000Z", {
+          type: "todo_update",
+          items: [
+            { id: "todo-1", description: "Fix adapter", status: "completed" },
+            { id: "todo-2", description: "Add tests", status: "pending" },
+          ],
+        } as never, 2),
+      ],
+      activeSession: session({ provider: "codex" }),
+      provider: "codex",
+      modelLabel: "gpt-5.5",
+      laneLabel: "lane",
+      snapshots: [],
+      tokenStats: null,
+      goal: null,
+      streaming: false,
+      pr: { number: 7, state: "open", checksPassed: 1, checksTotal: 2 },
+    });
+
+    expect(snapshot.planExplanation).toBe("Do the risky part first.");
+    expect(snapshot.planStreamingText).toBe("still planning…");
+    expect(snapshot.todos).toEqual([
+      { id: "todo-1", description: "Fix adapter", status: "completed" },
+      { id: "todo-2", description: "Add tests", status: "pending" },
+    ]);
+    expect(snapshot.pr).toEqual({ number: 7, state: "open", checksPassed: 1, checksTotal: 2 });
+  });
 });

@@ -80,7 +80,7 @@ export const BUILTIN_COMMANDS: BuiltinCommand[] = [
   { name: "/lane unarchive", description: "Unarchive a lane by id or name", placement: "right", argumentHint: "<lane-id|name>", category: "Lanes" },
   { name: "/lane archived", description: "List archived lanes", placement: "right", category: "Lanes" },
   { name: "/lane delete", description: "Delete the active lane after confirmation", placement: "right", category: "Lanes" },
-  { name: "/pr", description: "Show pull request state", placement: "right", category: "PRs" },
+  { name: "/pr", description: "Open PR details (summary + checks)", placement: "right", category: "PRs" },
   { name: "/pr open", description: "Create or open a PR for the active lane", placement: "right", category: "PRs" },
   { name: "/pr review", description: "Show PR reviews", placement: "right", category: "PRs" },
   { name: "/pr comments", description: "Show actionable PR comments", placement: "right", category: "PRs" },

@@ -1,10 +1,12 @@
 import type {
+  AgentChatEvent,
   AgentChatEventEnvelope,
   AgentChatSessionSummary,
 } from "../../../desktop/src/shared/types/chat";
 import { latestPlan } from "../../../desktop/src/shared/chatSubagents";
 import { resolveSubagentCapability } from "../../../desktop/src/shared/subagentCapabilities";
 import { deriveMissionSnapshot } from "../../../desktop/src/renderer/components/chat/chatMission";
+import { deriveTodoItems } from "../../../desktop/src/renderer/components/chat/chatExecutionSummary";
 import type {
   AdeCodeProvider,
   ChatInfoSnapshot,
@@ -35,6 +37,18 @@ function tokenStatsSummary(stats: TokenStats | null): string | null {
   return parts.length ? parts.join(" ") : null;
 }
 
+function latestPlanEvent(events: AgentChatEventEnvelope[]): Extract<AgentChatEvent, { type: "plan" }> | null {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index]?.event;
+    if (event?.type === "plan") return event;
+  }
+  return null;
+}
+
+function trimmedOrNull(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
 export function deriveChatInfoSnapshot(args: {
   events: AgentChatEventEnvelope[];
   activeSession: AgentChatSessionSummary | null;
@@ -46,8 +60,11 @@ export function deriveChatInfoSnapshot(args: {
   goal: ChatInfoSnapshot["goal"];
   streaming: boolean;
   inspectedSubagentId?: string | null;
+  pr?: ChatInfoSnapshot["pr"];
 }): ChatInfoSnapshot {
   const provider = (args.activeSession?.provider ?? args.provider) as AdeCodeProvider;
+  const planEvent = latestPlanEvent(args.events);
+  const planEventRecord = planEvent as (Record<string, unknown> | null);
   return {
     provider,
     modelLabel: args.modelLabel,
@@ -56,6 +73,10 @@ export function deriveChatInfoSnapshot(args: {
     tokenSummary: tokenStatsSummary(args.tokenStats),
     goal: args.goal,
     plan: latestPlan(args.events),
+    planExplanation: trimmedOrNull(planEventRecord?.explanation),
+    planStreamingText: trimmedOrNull(planEventRecord?.streamingText),
+    todos: deriveTodoItems(args.events),
+    pr: args.pr ?? null,
     snapshots: args.snapshots,
     inspectedSubagentId: args.inspectedSubagentId ?? null,
     streaming: args.streaming,

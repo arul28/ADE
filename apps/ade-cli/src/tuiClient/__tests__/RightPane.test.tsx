@@ -50,6 +50,10 @@ function chatInfo(overrides: Partial<ChatInfoSnapshot> = {}): ChatInfoSnapshot {
     inspectedSubagentId: null,
     capability: resolveSubagentCapability(provider),
     mission: null,
+    planExplanation: null,
+    planStreamingText: null,
+    todos: [],
+    pr: null,
     ...overrides,
   };
 }
@@ -214,6 +218,72 @@ describe("RightPane chat info", () => {
     expect(backgroundIndex).toBeLessThan(desktopIndex);
     // bg count shows up in the header
     expect(frame).toMatch(/2\s+bg/);
+  });
+
+  it("renders tasks and PR sections below the roster (desktop chat-actions parity)", () => {
+    const result = render(
+      <RightPane
+        content={{
+          kind: "chat-info",
+          info: chatInfo({
+            todos: [
+              { id: "t1", description: "Wire the adapter", status: "completed" },
+              { id: "t2", description: "Run smoke tests", status: "in_progress" },
+            ],
+            pr: { number: 412, state: "open", checksPassed: 3, checksTotal: 5 },
+          }),
+        }}
+        selectedIndex={0}
+        focused
+        width={80}
+      />,
+    );
+    const frame = stripAnsi(result.lastFrame() ?? "");
+
+    expect(frame).toContain("TASKS");
+    expect(frame).toContain("1/2");
+    expect(frame).toContain("Wire the adapter");
+    expect(frame).toContain("Run smoke tests");
+    expect(frame).toContain("PR");
+    expect(frame).toContain("#412");
+    expect(frame).toContain("open");
+    expect(frame).toContain("3/5");
+    expect(frame).toContain("/pr for details");
+  });
+
+  it("renders the plan explanation under the plan steps when present", () => {
+    const result = render(
+      <RightPane
+        content={{
+          kind: "chat-info",
+          info: chatInfo({
+            planExplanation: "Patching the bridge first keeps the smoke test honest.",
+          }),
+        }}
+        selectedIndex={0}
+        focused
+        width={80}
+      />,
+    );
+    const frame = stripAnsi(result.lastFrame() ?? "");
+
+    expect(frame).toContain("PLAN");
+    expect(frame).toContain("Patching the bridge first");
+  });
+
+  it("omits tasks and PR sections when the chat has neither", () => {
+    const result = render(
+      <RightPane
+        content={{ kind: "chat-info", info: chatInfo() }}
+        selectedIndex={0}
+        focused
+        width={80}
+      />,
+    );
+    const frame = stripAnsi(result.lastFrame() ?? "");
+
+    expect(frame).not.toContain("TASKS");
+    expect(frame).not.toContain("/pr for details");
   });
 });
 

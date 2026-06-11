@@ -3277,19 +3277,24 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     () => subagentSnapshots.filter((snap) => snap.status === "running").length,
     [subagentSnapshots],
   );
-  const chatInfo = useMemo(() => deriveChatInfoSnapshot({
-    events,
-    activeSession,
-    provider: modelState.provider,
-    modelLabel: modelState.displayName || modelState.model || modelState.provider,
-    laneLabel: activeLane?.name ?? null,
-    snapshots: subagentSnapshots,
-    tokenStats: statusLineStats,
-    goal: currentGoal,
-    streaming,
-    inspectedSubagentId,
-  }), [
+  const chatInfo = useMemo(() => {
+    const chatLaneId = activeSession?.laneId ?? activeLaneId;
+    return deriveChatInfoSnapshot({
+      events,
+      activeSession,
+      provider: modelState.provider,
+      modelLabel: modelState.displayName || modelState.model || modelState.provider,
+      laneLabel: activeLane?.name ?? null,
+      snapshots: subagentSnapshots,
+      tokenStats: statusLineStats,
+      goal: currentGoal,
+      streaming,
+      inspectedSubagentId,
+      pr: (chatLaneId ? prByLaneId?.[chatLaneId] : null) ?? null,
+    });
+  }, [
     activeLane?.name,
+    activeLaneId,
     activeSession,
     currentGoal,
     events,
@@ -3297,6 +3302,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     modelState.displayName,
     modelState.model,
     modelState.provider,
+    prByLaneId,
     statusLineStats,
     streaming,
     subagentSnapshots,
@@ -7314,13 +7320,26 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       const prId = activePr ? String(activePr.id ?? activePr.prId ?? "") : "";
       if (name === "/pr") {
         const ahead = activeLane?.status?.ahead ?? 0;
-        setRightPane({
-          kind: "details",
-          title: "PR",
-          body: activePr
-            ? formatPrSummary(activePr)
-            : `No PR is linked to this lane yet.\n${ahead > 0 ? `${ahead} commit${ahead === 1 ? "" : "s"} ahead of base.\n` : ""}Run /pr open <title> to create a draft.`,
-        });
+        if (!activePr) {
+          setRightPane({
+            kind: "details",
+            title: "PR",
+            body: `No PR is linked to this lane yet.\n${ahead > 0 ? `${ahead} commit${ahead === 1 ? "" : "s"} ahead of base.\n` : ""}Run /pr open <title> to create a draft.`,
+          });
+          return;
+        }
+        // Combined detail view (desktop ChatPrPane parity): summary + live
+        // checks in one pane, with the deeper sub-commands hinted at the end.
+        const checks = prId
+          ? await conn.actionList("pr", "getChecks", [prId]).catch((err) => ({ error: err instanceof Error ? err.message : String(err) }))
+          : null;
+        const sections = [
+          formatPrSummary(activePr),
+          ...(checks ? ["", formatPrChecks(checks)] : []),
+          "",
+          "More: /pr checks · /pr review · /pr comments · /pr land",
+        ];
+        setRightPane({ kind: "details", title: "PR", body: sections.join("\n") });
         return;
       }
       if (name === "/pr open") {

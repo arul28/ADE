@@ -690,6 +690,12 @@ function ChatInfoPlanBlock({ info, brandColor, width }: { info: ChatInfoSnapshot
           {planStepGlyph(step.status)} {endTruncate(step.text, inner - 2)}
         </Text>
       ))}
+      {info.planExplanation ? (
+        <Text color={theme.color.t4} dimColor wrap="truncate-end">{endTruncate(info.planExplanation, inner)}</Text>
+      ) : null}
+      {info.planStreamingText ? (
+        <Text color={theme.color.t4} dimColor italic wrap="truncate-end">{endTruncate(info.planStreamingText, inner)}</Text>
+      ) : null}
     </Box>
   );
 }
@@ -928,6 +934,65 @@ function ChatInfoMissionBlock({ mission, width, brandColor }: { mission: Mission
   );
 }
 
+// Desktop ChatTasksPanel parity: latest todo_update snapshot. Rendered BELOW
+// the roster (like Mission) so the roster's click line-math stays intact.
+const TASKS_VISIBLE_CAP = 6;
+function ChatInfoTasksBlock({ info, brandColor, width }: { info: ChatInfoSnapshot; brandColor: string; width: number }) {
+  if (!info.todos.length) return null;
+  const inner = Math.max(10, width - 4);
+  const done = info.todos.filter((todo) => todo.status === "completed").length;
+  const visible = info.todos.slice(0, TASKS_VISIBLE_CAP);
+  const hiddenAfter = info.todos.length - visible.length;
+  return (
+    <Box flexDirection="column">
+      <ChatInfoSectionHead title="TASKS" hint={`${done}/${info.todos.length}`} color={brandColor} width={width} />
+      {visible.map((todo) => {
+        const status = todo.status === "completed" || todo.status === "failed" || todo.status === "in_progress"
+          ? todo.status
+          : "pending";
+        return (
+          <Text key={todo.id} color={planStepColor(status as ChatInfoPlanStep["status"])} wrap="truncate-end">
+            {planStepGlyph(status as ChatInfoPlanStep["status"])} {endTruncate(todo.description, inner - 2)}
+          </Text>
+        );
+      })}
+      {hiddenAfter > 0 ? <Text color={theme.color.t4} dimColor>{`  ↓ ${hiddenAfter} more`}</Text> : null}
+    </Box>
+  );
+}
+
+// Desktop ChatPrPane parity: the lane's PR rollup with a /pr handoff hint.
+// Rendered BELOW the roster so the click line-math stays intact.
+function ChatInfoPrBlock({ info, brandColor, width }: { info: ChatInfoSnapshot; brandColor: string; width: number }) {
+  const pr = info.pr;
+  if (!pr) return null;
+  const stateColor = pr.state === "open"
+    ? theme.color.running
+    : pr.state === "merged"
+      ? theme.color.violet
+      : theme.color.t4;
+  const checksColor = pr.checksTotal === 0
+    ? theme.color.t4
+    : pr.checksPassed === pr.checksTotal
+      ? theme.color.running
+      : theme.color.attention;
+  return (
+    <Box flexDirection="column">
+      <ChatInfoSectionHead title="PR" hint={`#${pr.number}`} color={brandColor} width={width} />
+      <Box flexDirection="row">
+        <Text color={stateColor} bold>{` ${pr.state}`}</Text>
+        {pr.checksTotal > 0 ? (
+          <>
+            <Text color={theme.color.t4}>{" · checks "}</Text>
+            <Text color={checksColor}>{`${pr.checksPassed}/${pr.checksTotal}`}</Text>
+          </>
+        ) : null}
+      </Box>
+      <Text color={theme.color.t4} dimColor>{" /pr for details · /pr checks · /pr review"}</Text>
+    </Box>
+  );
+}
+
 function ChatInfoPane({
   info,
   selectedIndex,
@@ -944,6 +1009,8 @@ function ChatInfoPane({
       <ChatInfoPlanBlock info={info} brandColor={brand.color} width={width} />
       <ChatInfoGoalBlock info={info} brandColor={brand.color} width={width} />
       <ChatInfoRoster info={info} selectedIndex={selectedIndex} brandColor={brand.color} width={width} />
+      <ChatInfoTasksBlock info={info} brandColor={brand.color} width={width} />
+      <ChatInfoPrBlock info={info} brandColor={brand.color} width={width} />
     </Box>
   );
 }
