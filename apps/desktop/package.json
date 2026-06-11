@@ -220,6 +220,14 @@
         "to": "ade-cli/ptyHostWorker.cjs"
       },
       {
+        "from": "../ade-cli/dist/cursorSdkWorker.cjs",
+        "to": "ade-cli/cursorSdkWorker.cjs"
+      },
+      {
+        "from": "../ade-cli/dist/droidSdkWorker.cjs",
+        "to": "ade-cli/droidSdkWorker.cjs"
+      },
+      {
         "from": "../ade-cli/dist/adeRpcServer.cjs",
         "to": "ade-cli/adeRpcServer.cjs"
       },

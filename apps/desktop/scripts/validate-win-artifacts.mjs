@@ -33,6 +33,17 @@ const bundledAgentSkills = [
   "ade-macos-vm",
   "ade-deeplinks",
 ];
+const bundledAdeCliFiles = [
+  ["cli.cjs", "bundled ADE CLI entry"],
+  ["bootstrap.cjs", "bundled ADE CLI bootstrap entry"],
+  ["ptyHostWorker.cjs", "bundled ADE CLI PTY host worker"],
+  ["cursorSdkWorker.cjs", "bundled ADE CLI Cursor SDK worker"],
+  ["droidSdkWorker.cjs", "bundled ADE CLI Droid SDK worker"],
+  ["adeRpcServer.cjs", "bundled ADE CLI RPC entry"],
+  ["tuiClient/cli.mjs", "bundled ADE CLI TUI entry"],
+  ["bin/ade.cmd", "bundled ADE CLI wrapper"],
+  ["install-path.cmd", "bundled ADE CLI PATH installer"],
+];
 
 function readFlag(name) {
   const prefix = `${name}=`;
@@ -171,6 +182,12 @@ function hasExtraResource(to) {
     && pkg.build.extraResources.some((entry) => entry && entry.to === to);
 }
 
+function requireExtraResource(to) {
+  if (!hasExtraResource(to)) {
+    fail(`package.json build.extraResources must ship ${to}`);
+  }
+}
+
 function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -200,23 +217,17 @@ function validatePreflight() {
   requireFile("scripts/ade-cli-install-path.cmd", "Windows ADE CLI PATH installer");
   requireFile("vendor/crsqlite/win32-x64/crsqlite.dll", "Windows cr-sqlite extension");
 
-  if (!hasExtraResource("ade-cli/bin/ade.cmd")) {
-    fail("package.json build.extraResources must ship ade-cli/bin/ade.cmd");
-  }
-  if (!hasExtraResource("ade-cli/bootstrap.cjs")) {
-    fail("package.json build.extraResources must ship ade-cli/bootstrap.cjs");
-  }
-  if (!hasExtraResource("ade-cli/ptyHostWorker.cjs")) {
-    fail("package.json build.extraResources must ship ade-cli/ptyHostWorker.cjs");
-  }
-  if (!hasExtraResource("ade-cli/adeRpcServer.cjs")) {
-    fail("package.json build.extraResources must ship ade-cli/adeRpcServer.cjs");
-  }
-  if (!hasExtraResource("ade-cli/tuiClient")) {
-    fail("package.json build.extraResources must ship ade-cli/tuiClient");
-  }
-  if (!hasExtraResource("ade-cli/install-path.cmd")) {
-    fail("package.json build.extraResources must ship ade-cli/install-path.cmd");
+  for (const relativePath of [
+    "bin/ade.cmd",
+    "bootstrap.cjs",
+    "ptyHostWorker.cjs",
+    "cursorSdkWorker.cjs",
+    "droidSdkWorker.cjs",
+    "adeRpcServer.cjs",
+    "tuiClient",
+    "install-path.cmd",
+  ]) {
+    requireExtraResource(`ade-cli/${relativePath}`);
   }
   if (!Array.isArray(pkg.build?.asarUnpack) || !pkg.build.asarUnpack.includes("vendor/crsqlite/**")) {
     fail("package.json build.asarUnpack must unpack vendor/crsqlite/**");
@@ -504,10 +515,6 @@ async function validatePackagedRuntime(appDir) {
   const resourcesPath = path.join(appDir, "resources");
   const appAsarPath = path.join(resourcesPath, "app.asar");
   const unpackedPath = path.join(resourcesPath, "app.asar.unpacked");
-  const adeCliPath = path.join(resourcesPath, "ade-cli", "cli.cjs");
-  const adeCliBootstrapPath = path.join(resourcesPath, "ade-cli", "bootstrap.cjs");
-  const adeCliPtyHostWorkerPath = path.join(resourcesPath, "ade-cli", "ptyHostWorker.cjs");
-  const adeCliRpcPath = path.join(resourcesPath, "ade-cli", "adeRpcServer.cjs");
   const adeCliTuiPath = path.join(resourcesPath, "ade-cli", "tuiClient", "cli.mjs");
   const adeCliBinPath = path.join(resourcesPath, "ade-cli", "bin", "ade.cmd");
   const adeCliInstallerPath = path.join(resourcesPath, "ade-cli", "install-path.cmd");
@@ -521,13 +528,9 @@ async function validatePackagedRuntime(appDir) {
   await assertPathExists(appExe, "packaged Windows app executable");
   await assertPathExists(appAsarPath, "app.asar payload");
   await assertPathExists(unpackedPath, "app.asar.unpacked runtime payload");
-  await assertPathExists(adeCliPath, "bundled ADE CLI entry");
-  await assertPathExists(adeCliBootstrapPath, "bundled ADE CLI bootstrap entry");
-  await assertPathExists(adeCliPtyHostWorkerPath, "bundled ADE CLI PTY host worker");
-  await assertPathExists(adeCliRpcPath, "bundled ADE CLI RPC entry");
-  await assertPathExists(adeCliTuiPath, "bundled ADE CLI TUI entry");
-  await assertPathExists(adeCliBinPath, "bundled ADE CLI wrapper");
-  await assertPathExists(adeCliInstallerPath, "bundled ADE CLI PATH installer");
+  for (const [relativePath, label] of bundledAdeCliFiles) {
+    await assertPathExists(path.join(resourcesPath, "ade-cli", relativePath), label);
+  }
   await assertBundledAgentSkills(bundledAgentSkillsRoot);
   await assertPathExists(nodePtyModulePath, "unpacked node-pty module");
   await assertPathExists(sqlJsModulePath, "unpacked sql.js module");

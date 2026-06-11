@@ -12,6 +12,9 @@ const distFiles = [
   path.join(cliRoot, "dist", "cli.cjs"),
   path.join(cliRoot, "dist", "bootstrap.cjs"),
   path.join(cliRoot, "dist", "adeRpcServer.cjs"),
+  path.join(cliRoot, "dist", "ptyHostWorker.cjs"),
+  path.join(cliRoot, "dist", "cursorSdkWorker.cjs"),
+  path.join(cliRoot, "dist", "droidSdkWorker.cjs"),
   path.join(cliRoot, "dist", "tuiClient", "cli.mjs"),
 ];
 
