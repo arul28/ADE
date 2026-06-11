@@ -149,22 +149,32 @@ describe("aggregateChatBlocks typed groups", () => {
     expect(toolGroup!.entries.map((e) => e.itemId)).toEqual(["kept-1"]);
   });
 
-  it("suppresses tool-derived runtime activity so tool groups match desktop transcript grouping", () => {
+  it("drops tool-derived activity, spawning_agent, and subagent lifecycle from the transcript", () => {
+    // Desktop parity: the subagent roster (chat-info pane) is the surface for
+    // lifecycle + spawn chatter; the transcript shows none of it.
     const events: AgentChatEventEnvelope[] = [
       env("2026-01-01T12:00:00.000Z", { type: "activity", activity: "thinking", detail: "Thinking through the answer", turnId: "turn-1" }),
       env("2026-01-01T12:00:01.000Z", { type: "activity", activity: "reading", detail: "apps/ade-cli/src/tuiClient/app.tsx", turnId: "turn-1" }),
       env("2026-01-01T12:00:02.000Z", { type: "activity", activity: "searching", detail: "Grep", turnId: "turn-1" }),
       env("2026-01-01T12:00:03.000Z", { type: "activity", activity: "tool_calling", detail: "Processing tool input", turnId: "turn-1" }),
-      env("2026-01-01T12:00:04.000Z", { type: "subagent_started", taskId: "agent-1", parentToolUseId: "spawn-1", description: "child launch spam", turnId: "turn-1" }),
+      env("2026-01-01T12:00:03.500Z", { type: "activity", activity: "spawning_agent", detail: "Repo root: /Users/me/Projects/ADE", turnId: "turn-1" } as unknown as AgentChatEvent),
+      env("2026-01-01T12:00:04.000Z", { type: "subagent_started", taskId: "agent-1", parentToolUseId: "spawn-1", description: "child launch spam", turnId: "turn-1" } as unknown as AgentChatEvent),
+      env("2026-01-01T12:00:05.000Z", { type: "subagent_progress", taskId: "agent-1", parentToolUseId: "spawn-1", summary: "child progress", turnId: "turn-1" } as unknown as AgentChatEvent),
+      env("2026-01-01T12:00:06.000Z", { type: "subagent_result", taskId: "agent-1", parentToolUseId: "spawn-1", status: "completed", summary: "child done", turnId: "turn-1" } as unknown as AgentChatEvent),
     ];
 
     const blocks = aggregate(events);
-    const activity = blocks.find((b) => b.kind === "runtime-activity") as Extract<AggregatedBlock, { kind: "runtime-activity" }> | undefined;
+    expect(blocks.some((b) => b.kind === "runtime-activity")).toBe(false);
+  });
 
+  it("still surfaces unrecognized activity events as runtime activity", () => {
+    const events: AgentChatEventEnvelope[] = [
+      env("2026-01-01T12:00:00.000Z", { type: "activity", activity: "compacting_memory", detail: "trimming context", turnId: "turn-1" } as unknown as AgentChatEvent),
+    ];
+    const blocks = aggregate(events);
+    const activity = blocks.find((b) => b.kind === "runtime-activity") as Extract<AggregatedBlock, { kind: "runtime-activity" }> | undefined;
     expect(activity).toBeDefined();
-    expect(activity!.entries).toHaveLength(1);
-    expect(activity!.entries[0]).toMatchObject({ label: "subagent started" });
-    expect(activity!.entries[0]).not.toHaveProperty("detail");
+    expect(activity!.entries[0]).toMatchObject({ label: "compacting memory", detail: "trimming context" });
   });
 
   it("keeps one tool-calls-group when activity status events are interleaved", () => {
@@ -197,6 +207,42 @@ describe("aggregateChatBlocks typed groups", () => {
 
     expect(assistantBlocks).toHaveLength(1);
     expect(assistantBlocks[0]!.line.body).toBe("Let me look at the sendMessage flow more carefully and what events are emitted when a session is resumed.");
+  });
+
+  it("does not duplicate the tail when a provider re-emits an overlapping fragment of the same message", () => {
+    // Regression (real Codex chat): "…so I can split the review instead of
+    // doing it as one giant pass." rendered twice because the provider re-sent
+    // the final sentence for the same messageId and the merge was plain concat.
+    const events: AgentChatEventEnvelope[] = [
+      env("2026-01-01T12:00:00.000Z", { type: "text", text: "I found the entry point so I can split the review instead of doing it as one giant pass.", turnId: "turn-1", messageId: "msg-1" }),
+      env("2026-01-01T12:00:01.000Z", { type: "text", text: " so I can split the review instead of doing it as one giant pass.", turnId: "turn-1", messageId: "msg-1" }),
+    ];
+    const blocks = aggregate(events);
+    const assistantBlocks = blocks.filter((b) => b.kind === "assistant-text") as Array<Extract<AggregatedBlock, { kind: "assistant-text" }>>;
+    expect(assistantBlocks).toHaveLength(1);
+    expect(assistantBlocks[0]!.line.body).toBe("I found the entry point so I can split the review instead of doing it as one giant pass.");
+  });
+
+  it("replaces the buffer when a provider re-emits the cumulative message text", () => {
+    const events: AgentChatEventEnvelope[] = [
+      env("2026-01-01T12:00:00.000Z", { type: "text", text: "Hello", turnId: "turn-1", messageId: "msg-1" }),
+      env("2026-01-01T12:00:01.000Z", { type: "text", text: "Hello world.", turnId: "turn-1", messageId: "msg-1" }),
+    ];
+    const blocks = aggregate(events);
+    const assistantBlocks = blocks.filter((b) => b.kind === "assistant-text") as Array<Extract<AggregatedBlock, { kind: "assistant-text" }>>;
+    expect(assistantBlocks).toHaveLength(1);
+    expect(assistantBlocks[0]!.line.body).toBe("Hello world.");
+  });
+
+  it("dedupes re-emitted reasoning tails within the same reasoning item", () => {
+    const events: AgentChatEventEnvelope[] = [
+      env("2026-01-01T12:00:00.000Z", { type: "reasoning", text: "Weighing options before refactor.", turnId: "turn-1", itemId: "r1" }),
+      env("2026-01-01T12:00:00.500Z", { type: "reasoning", text: " before refactor.", turnId: "turn-1", itemId: "r1" }),
+    ];
+    const blocks = aggregate(events);
+    const reasoning = blocks.filter((b) => b.kind === "reasoning") as Array<Extract<AggregatedBlock, { kind: "reasoning" }>>;
+    expect(reasoning).toHaveLength(1);
+    expect(reasoning[0]!.text).toBe("Weighing options before refactor.");
   });
 
   it("marks tool-calls-group and files-changed-group as not-live without stamping turn duration", () => {

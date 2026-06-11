@@ -67,6 +67,7 @@ import {
   killDroidWorker,
   latestGoal,
   latestTokenStats,
+  listGitBranches,
   listLaneDiffStats,
   listClaudePlugins,
   listClaudeOutputStyles,
@@ -113,11 +114,16 @@ import {
 } from "./drawerLayout";
 import {
   buildNewLaneSubmission,
+  cycleNewLaneColor,
   cycleNewLaneStart,
+  filterNewLaneBranchMatches,
   newLaneFormFieldRowOffsets,
   newLaneFormFields,
-  newLaneStartForClickX,
+  newLaneStartForClickRow,
+  newLaneTypeaheadField,
+  normalizeNewLaneBranchSource,
   normalizeNewLaneStart,
+  toggleNewLaneBranchSource,
   toggleNewLaneRuntime,
 } from "./newLaneForm";
 import {
@@ -2184,7 +2190,11 @@ export function cycleLaneDeleteScope(value: string | null | undefined, delta: nu
 
 export function formFieldUsesPromptInput(command: string, fieldName: string): boolean {
   if (command === "lane-delete" && (fieldName === "scope" || fieldName === "force")) return false;
-  if (command === "new-lane" && (fieldName === "start" || fieldName === "runtime")) return false;
+  if (
+    command === "new-lane"
+    && (fieldName === "start" || fieldName === "runtime" || fieldName === "color"
+      || fieldName === "branchSource" || fieldName === "create")
+  ) return false;
   return true;
 }
 
@@ -5104,6 +5114,21 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       command: "new-lane",
       fields: newLaneFormFields("primary", { activeLaneName }),
     });
+    // Fetch branch names once for the typeahead (async — the form opens
+    // immediately and the matches appear when the result lands). Stashed on
+    // the form content so RightPane stays a pure renderer.
+    const conn = connectionRef.current;
+    const laneId = activeLaneIdRef.current;
+    if (conn && laneId) {
+      void listGitBranches(conn, laneId)
+        .then((branches) => {
+          const mapped = branches.map((branch) => ({ name: branch.name, remote: branch.isRemote }));
+          setRightPane((previous) => previous.kind === "form" && previous.command === "new-lane"
+            ? { ...previous, branches: mapped }
+            : previous);
+        })
+        .catch(() => {});
+    }
   }, [lanes, openForm]);
 
   const openMoveUnstagedForm = useCallback(() => {
@@ -8049,6 +8074,16 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         : submission.kind === "importBranch"
           ? await conn.action<LaneSummary>("lane", "importBranch", submission.payload)
           : await conn.action<LaneSummary>("lane", "create", submission.payload);
+      // Desktop-parity color picker: lane create payloads don't carry a color,
+      // so apply the chosen swatch via lane.updateAppearance after creation.
+      // Best-effort — the lane exists either way, so skip silently on failure.
+      if (submission.color) {
+        try {
+          await conn.action("lane", "updateAppearance", { laneId: created.id, color: submission.color });
+        } catch {
+          // Lane created fine; the color just falls back to auto.
+        }
+      }
       selectActiveLaneId(created.id);
       selectActiveSessionId(null);
       setDrawerLaneId(created.id);
@@ -8057,8 +8092,12 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       setSelectedDrawerLaneAction(null);
       setSelectedDrawerChatAction(null);
       setDrawerSection("lanes");
-      setRightOpen(false);
-      setRightPane({ kind: "empty" });
+      // Land on the new lane's details pane (same view as highlighting a lane
+      // in the drawer) instead of closing the right pane to empty.
+      setRightPane(seedLaneDetails(
+        submission.color ? { ...created, color: submission.color } : created,
+      ));
+      setRightOpen(true);
       lastUserOpenedPaneRef.current = null;
       focusAfterDetails();
       addNotice(`Created lane ${created.name}.`, "success");
@@ -10234,6 +10273,34 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       return true;
     };
 
+    // New-lane form branch typeahead: ↹ completes the top match into the
+    // active branch/base-branch field. Must run before the global
+    // tab-cycles-pane-focus handler below; tab is swallowed on typeahead
+    // fields either way so focus doesn't jump mid-typing.
+    if (
+      key.tab && !key.shift
+      && pane === "details" && rightOpen
+      && rightPane.kind === "form" && rightPane.command === "new-lane"
+    ) {
+      const fields = rightPane.fields;
+      const field = fields[formFieldIndex] ?? fields[0] ?? null;
+      const typeaheadName = newLaneTypeaheadField(fields);
+      if (field && typeaheadName && field.name === typeaheadName) {
+        const values = currentFormValues();
+        const top = filterNewLaneBranchMatches({
+          branches: rightPane.branches,
+          query: values[field.name] ?? "",
+          remote: field.name === "baseBranch" ? true : normalizeNewLaneBranchSource(values.branchSource) === "remote",
+          limit: 1,
+        })[0];
+        if (top) {
+          setFormValues({ ...values, [field.name]: top });
+          setPrompt(top);
+        }
+        return;
+      }
+    }
+
     if (key.tab && key.shift) {
       cyclePermission(1);
       return;
@@ -10568,7 +10635,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       const field = fields[formFieldIndex] ?? fields[0] ?? null;
       const nextValues = currentFormValues();
       if (field?.name === "start") {
-        const startByKey: Record<string, string> = { "1": "primary", "2": "child", "3": "import" };
+        // 1-3 follow the vertical option order (primary / branch / child).
+        const startByKey: Record<string, string> = { "1": "primary", "2": "import", "3": "child" };
         const cycled = key.leftArrow || key.rightArrow
           ? cycleNewLaneStart(nextValues.start, key.leftArrow ? -1 : 1)
           : startByKey[input];
@@ -10590,6 +10658,22 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         }
         if (printableInput(input) && !key.ctrl && !key.meta && !key.return) return;
       }
+      if (field?.name === "color") {
+        if (key.leftArrow || key.rightArrow) {
+          setFormValues({ ...nextValues, color: cycleNewLaneColor(nextValues.color, key.leftArrow ? -1 : 1) });
+          setPrompt("");
+          return;
+        }
+        if (printableInput(input) && !key.ctrl && !key.meta && !key.return) return;
+      }
+      if (field?.name === "branchSource") {
+        if (key.leftArrow || key.rightArrow || input === " ") {
+          setFormValues({ ...nextValues, branchSource: toggleNewLaneBranchSource(nextValues.branchSource) });
+          setPrompt("");
+          return;
+        }
+        if (printableInput(input) && !key.ctrl && !key.meta && !key.return) return;
+      }
       if (field?.name === "runtime") {
         if (key.leftArrow || key.rightArrow || input === " ") {
           setFormValues({ ...nextValues, runtime: toggleNewLaneRuntime(nextValues.runtime) });
@@ -10597,6 +10681,12 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           return;
         }
         if (printableInput(input) && !key.ctrl && !key.meta && !key.return) return;
+      }
+      if (field?.name === "create") {
+        // ↵ falls through to the generic form submit below; everything else
+        // is inert on the button row.
+        if (printableInput(input) && !key.ctrl && !key.meta && !key.return) return;
+        if (key.leftArrow || key.rightArrow) return;
       }
     }
 
@@ -12120,13 +12210,18 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
             : newLaneOffsets
               ? rightBodyTop + 3 + (newLaneOffsets[index] ?? (3 * index + 1))
               : rightBodyTop + 3 + index;
+          // New-lane geometry: the start block spans label + 3 option rows;
+          // the create button is a single row; other blocks are label + value.
+          const h = rightPane.command === "new-lane"
+            ? field.name === "start" ? 4 : field.name === "create" ? 1 : 2
+            : rightPane.command === "lane-delete" ? 2 : 1;
           addTarget({
             id: `right:form:${field.name}`,
             rect: {
               x: rightStartColumn,
               y,
               w: rightPaneWidth,
-              h: rightPane.command === "lane-delete" || rightPane.command === "new-lane" ? 2 : 1,
+              h,
             },
             onClick: (ev) => {
               setFormFieldIndex(index);
@@ -12144,8 +12239,12 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
                 return;
               }
               if (rightPane.command === "new-lane" && field.name === "start") {
-                const relX = Math.max(0, (ev.x ?? rightStartColumn) - rightStartColumn);
-                const nextStart = newLaneStartForClickX(relX);
+                const relY = Math.max(0, (ev.y ?? y) - y);
+                const nextStart = newLaneStartForClickRow(relY);
+                if (!nextStart) {
+                  setPrompt("");
+                  return;
+                }
                 const activeLaneName = lanes.find((entry) => entry.id === activeLaneIdRef.current)?.name ?? null;
                 setFormValues((prev) => ({ ...prev, start: nextStart }));
                 setRightPane((previous) => previous.kind === "form" && previous.command === "new-lane"
@@ -12154,9 +12253,25 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
                 setPrompt("");
                 return;
               }
+              if (rightPane.command === "new-lane" && field.name === "color") {
+                setFormValues((prev) => ({ ...prev, color: cycleNewLaneColor(prev.color, 1) }));
+                setPrompt("");
+                return;
+              }
+              if (rightPane.command === "new-lane" && field.name === "branchSource") {
+                setFormValues((prev) => ({ ...prev, branchSource: toggleNewLaneBranchSource(prev.branchSource) }));
+                setPrompt("");
+                return;
+              }
               if (rightPane.command === "new-lane" && field.name === "runtime") {
                 setFormValues((prev) => ({ ...prev, runtime: toggleNewLaneRuntime(prev.runtime) }));
                 setPrompt("");
+                return;
+              }
+              if (rightPane.command === "new-lane" && field.name === "create") {
+                setPrompt("");
+                void submitRightForm(rightPane, formValues)
+                  .catch((err) => addNotice(err instanceof Error ? err.message : String(err), "error"));
                 return;
               }
               if (field && formFieldUsesPromptInput(rightPane.command, field.name)) {

@@ -138,7 +138,7 @@ describe("subagent pane helpers", () => {
     expect(transcript.map((entry) => JSON.stringify(entry.event)).join("\n")).not.toContain("wrong transcript");
   });
 
-  it("converts a real daemon transcript into role-prefixed text envelopes", () => {
+  it("converts a real daemon transcript into typed user/assistant envelopes", () => {
     const messages: AgentChatSubagentTranscriptMessage[] = [
       { type: "user", uuid: "u1", sessionId: "child-1", parentToolUseId: null, message: {}, text: "Investigate the renderer" },
       { type: "assistant", uuid: "a1", sessionId: "child-1", parentToolUseId: null, message: {}, text: "Found the path in app.tsx" },
@@ -157,28 +157,120 @@ describe("subagent pane helpers", () => {
       },
     });
     // Header + the two non-empty messages (the whitespace-only system row drops).
-    expect(events.map((entry) => entry.event.type)).toEqual(["text", "text", "text"]);
+    expect(events.map((entry) => entry.event.type)).toEqual(["text", "user_message", "text"]);
     const body = events.map((entry) => JSON.stringify(entry.event)).join("\n");
-    expect(body).toContain("user › Investigate the renderer");
+    expect(body).toContain("Investigate the renderer");
     expect(body).toContain("Found the path in app.tsx");
-    expect(body).not.toContain("assistant › ");
+  });
+
+  it("merges streamed codex text-delta messages of one item back into a single paragraph", () => {
+    // Codex persists each streamed delta as its own transcript message wrapping
+    // a formed `text` event with the same turnId+itemId. Without a shared
+    // messageId the renderer made each delta its own block — one word per line.
+    const delta = (uuid: string, text: string): AgentChatSubagentTranscriptMessage => ({
+      type: "assistant",
+      uuid,
+      sessionId: "child-1",
+      parentToolUseId: null,
+      message: { type: "text", text, turnId: "turn-1", itemId: "item-1" },
+      text,
+    });
+    const events = subagentTranscriptMessagesToEvents({
+      messages: [delta("d1", "Scanning"), delta("d2", " the"), delta("d3", " renderer.")],
+      sessionId: "s1",
+      snapshot: { id: "child-1", name: "Explore", kind: "subagent", status: "completed", summary: "done", turnId: "turn-1" },
+    });
+    const lines = renderChatLines({ activeSession: session, notices: [], events });
+    const bodies = lines.filter((l) => l.tone === "assistant").map((l) => l.body);
+    expect(bodies.some((b) => b.includes("Scanning the renderer."))).toBe(true);
+    expect(bodies.filter((b) => b.includes("Scanning")).length).toBe(1);
+  });
+
+  it("passes embedded command events through so they render as tool lines, not system text", () => {
+    const messages: AgentChatSubagentTranscriptMessage[] = [
+      {
+        type: "system",
+        uuid: "c1",
+        sessionId: "child-1",
+        parentToolUseId: null,
+        message: {
+          type: "command",
+          command: "/bin/zsh -lc \"sed -n '1,260p' src/app.tsx\"",
+          cwd: "/repo",
+          output: "…",
+          itemId: "cmd-1",
+          status: "completed",
+          turnId: "turn-1",
+        },
+        text: "/bin/zsh -lc \"sed -n '1,260p' src/app.tsx\"",
+      },
+    ];
+    const events = subagentTranscriptMessagesToEvents({
+      messages,
+      sessionId: "s1",
+      snapshot: { id: "child-1", name: "Explore", kind: "subagent", status: "completed", summary: "done", turnId: "turn-1" },
+    });
+    expect(events.map((entry) => entry.event.type)).toEqual(["text", "command"]);
+    expect(events[1]!.event).toMatchObject({ type: "command", itemId: "cmd-1", status: "completed" });
+  });
+
+  it("parses flat system shell-launcher text into a command event", () => {
+    const events = subagentTranscriptMessagesToEvents({
+      messages: [
+        { type: "system", uuid: "s1", sessionId: "child-1", parentToolUseId: null, message: {}, text: "/bin/zsh -lc \"git status --short\"" },
+      ],
+      sessionId: "s1",
+      snapshot: { id: "child-1", name: "Explore", kind: "subagent", status: "completed", summary: "done", turnId: "turn-1" },
+    });
+    expect(events.map((entry) => entry.event.type)).toEqual(["text", "command"]);
+    expect(events[1]!.event).toMatchObject({
+      type: "command",
+      command: "/bin/zsh -lc \"git status --short\"",
+      status: "completed",
+    });
+  });
+
+  it("expands Claude message content blocks into text and tool_call events", () => {
+    const events = subagentTranscriptMessagesToEvents({
+      messages: [
+        {
+          type: "assistant",
+          uuid: "m1",
+          sessionId: "child-1",
+          parentToolUseId: null,
+          message: {
+            type: "message",
+            role: "assistant",
+            content: [
+              { type: "text", text: "Reading the entry point." },
+              { type: "tool_use", id: "toolu_1", name: "Read", input: { file_path: "src/app.tsx" } },
+            ],
+          },
+        },
+      ],
+      sessionId: "s1",
+      snapshot: { id: "child-1", name: "Explore", kind: "subagent", status: "completed", summary: "done", turnId: "turn-1" },
+    });
+    expect(events.map((entry) => entry.event.type)).toEqual(["text", "text", "tool_call"]);
+    expect(events[2]!.event).toMatchObject({ type: "tool_call", tool: "Read", itemId: "toolu_1" });
   });
 
   it("renders takeover transcript messages as SEPARATE lines (not one jammed blob)", () => {
     // Regression: synthetic transcript lines all share the snapshot turnId; without
-    // distinct itemIds the render-line coalescer fused them into one separator-less
-    // blob ("…Task: XInvestigate…Found the path"). Each line must stay distinct.
+    // distinct per-message identity the render-line coalescer fused them into one
+    // separator-less blob ("…Task: XInvestigate…Found the path"). Distinct source
+    // messages must stay distinct lines.
     const events = subagentTranscriptMessagesToEvents({
       messages: [
-        { type: "user", uuid: "u1", sessionId: "c1", parentToolUseId: null, message: {}, text: "Investigate the renderer" },
-        { type: "assistant", uuid: "a1", sessionId: "c1", parentToolUseId: null, message: {}, text: "Found the path in app.tsx" },
+        { type: "assistant", uuid: "a1", sessionId: "c1", parentToolUseId: null, message: {}, text: "Investigate the renderer" },
+        { type: "assistant", uuid: "a2", sessionId: "c1", parentToolUseId: null, message: {}, text: "Found the path in app.tsx" },
       ],
       sessionId: "s1",
       snapshot: { id: "c1", name: "Explore renderer", kind: "subagent", status: "completed", summary: "done", turnId: "turn-1" },
     });
     const lines = renderChatLines({ activeSession: session, notices: [], events });
     const assistantBodies = lines.filter((l) => l.tone === "assistant").map((l) => l.body);
-    // Header, user message, and assistant message are three distinct lines.
+    // Header plus the two assistant messages are three distinct lines.
     expect(assistantBodies.length).toBeGreaterThanOrEqual(3);
     // The two messages are never concatenated into a single line.
     for (const body of assistantBodies) {

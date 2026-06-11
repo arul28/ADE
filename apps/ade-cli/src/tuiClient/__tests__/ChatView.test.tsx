@@ -415,8 +415,10 @@ describe("ChatView", () => {
     });
 
     expect(frame).not.toContain("Runtime");
-    expect(frame.match(/Tool calls/g)).toHaveLength(1);
-    expect(frame).toContain("Tool calls (2)");
+    // Headerless: the per-call lines stack directly, no "Tool calls (N)" rows.
+    expect(frame).not.toContain("Tool calls");
+    expect(frame).toContain("grep");
+    expect(frame).toContain("read");
     expect(frame).toContain("Let me look at the sendMessage flow more carefully and what events are emitted when a session is resumed.");
   });
 
@@ -464,6 +466,18 @@ describe("ChatView", () => {
     expect(frame).toContain("I'm Codex.");
     // No round-border glyphs in an assistant-only frame.
     expect(frame).not.toMatch(/[╭╮╯╰]/);
+  });
+
+  it("renders a re-emitted overlapping tail fragment only once (no duplicated sentence)", () => {
+    // Screenshot regression: "…so I can split the review instead of doing it as
+    // one giant pass. so I can split the review…" — the provider re-emitted the
+    // closing fragment for the same messageId and concat duplicated it.
+    const frame = renderEvents([
+      { sessionId: "s1", timestamp: "2026-01-01T12:00:00.000Z", sequence: 1, event: { type: "text", text: "Alpha beta gamma.", messageId: "m1", turnId: "t1" } },
+      { sessionId: "s1", timestamp: "2026-01-01T12:00:01.000Z", sequence: 2, event: { type: "text", text: "beta gamma.", messageId: "m1", turnId: "t1" } },
+    ], { width: 80 });
+    expect(frame).toContain("Alpha beta gamma.");
+    expect(frame.match(/beta gamma\./g)).toHaveLength(1);
   });
 
   it("renders markdown-like assistant output into readable blocks", () => {
@@ -593,7 +607,7 @@ describe("ChatView", () => {
     expect(transcriptLines(frame).at(-1)).toContain("↓ newer messages");
   });
 
-  it("renders single command in a tool-calls-group with shell label and command", () => {
+  it("renders a command as a headerless stacked tool line with shell label and command", () => {
     const frame = renderEvents([
       {
         sessionId: "s1",
@@ -602,9 +616,8 @@ describe("ChatView", () => {
         event: { type: "command", command: "git branch", cwd: "/repo", output: "main", itemId: "cmd-1", status: "completed", exitCode: 0, durationMs: 12 },
       },
     ], { width: 100 });
-    expect(frame).toMatch(/▸\s+Tool calls \(1\)/);
-    expect(frame).toContain("shell");
-    expect(frame).toContain("git branch");
+    expect(frame).not.toContain("Tool calls");
+    expect(frame).toMatch(/✓ shell\s+git branch\s+12ms/);
   });
 
   it("splits consecutive tool-calls and file_changes into typed groups within one turn", () => {
@@ -630,12 +643,16 @@ describe("ChatView", () => {
       },
     ];
     const frame = renderEvents(events, { width: 100 });
-    // Two tool-calls-groups (one before the file_change, one after) plus the files group.
-    expect(frame).toContain("Tool calls (1)");
-    expect(frame).toContain("1 file changed");
+    // Headerless groups: the tool lines and the badge/stats file row stack
+    // directly, in event order, without "Tool calls"/"files changed" rows.
+    expect(frame).not.toContain("Tool calls");
+    expect(frame).not.toContain("file changed");
     expect(frame).toContain("npm test");
     expect(frame).toContain("npm run typecheck");
     expect(frame).toContain("auth.ts");
+    // File rows keep their badge + diff stats format.
+    expect(frame).toContain("TS");
+    expect(frame).toContain("+2 −1");
   });
 
   it("keeps subagent lifecycle and child tool chatter out of the center transcript", () => {
@@ -718,7 +735,7 @@ describe("ChatView", () => {
       },
     ], { width: 100 });
 
-    expect(frame).toContain("Tool calls (1)");
+    expect(frame).not.toContain("Tool calls");
     expect(frame).toContain("spawn_agent");
     expect(frame).toContain("Explore renderer");
     expect(frame).not.toContain("child launch spam");
@@ -824,9 +841,10 @@ describe("ChatView", () => {
       },
     ];
     const frame = renderEvents(events, { width: 100 });
-    expect(frame).toMatch(/▸\s+Tool calls \(4\)/);
-    expect(frame).toMatch(/3 ok/);
-    expect(frame).toMatch(/1 failed/);
+    // Headerless: ok/failed status lives on each line's glyph, not a summary row.
+    expect(frame).not.toContain("Tool calls");
+    expect(frame.match(/✓/g)).toHaveLength(3);
+    expect(frame.match(/✗/g)).toHaveLength(1);
     // Most recent shell commands visible.
     expect(frame).toContain("npm test");
     expect(frame).toContain("echo two");
@@ -961,7 +979,7 @@ describe("ChatView", () => {
       },
     }));
     const frame = renderEvents(events, { width: 120, maxRows: 40 });
-    expect(frame).toContain("Tool calls (12)");
+    expect(frame).not.toContain("Tool calls");
     expect(frame).not.toContain("more");
     // Every consecutive call stacks as its own single line (desktop parity).
     expect(frame).toContain("cmd-1");
@@ -1032,7 +1050,7 @@ describe("ChatView", () => {
       },
     ];
     const frame = renderEvents(events, { width: 120 });
-    expect(frame).toContain("3 files changed");
+    expect(frame).not.toContain("files changed");
     expect(frame).toContain("TSX");
     expect(frame).toContain("JS");
     expect(frame).toContain("MD");

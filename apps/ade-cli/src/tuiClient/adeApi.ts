@@ -40,7 +40,7 @@ import type {
   CodexThreadGoal,
 } from "../../../desktop/src/shared/types/chat";
 import type { AiSettingsStatus, OpenCodeRuntimeSnapshot } from "../../../desktop/src/shared/types/config";
-import type { DiffLineStats } from "../../../desktop/src/shared/types/git";
+import type { DiffLineStats, GitBranchSummary } from "../../../desktop/src/shared/types/git";
 import type { LaneSummary } from "../../../desktop/src/shared/types/lanes";
 import type { PrLaneSummary } from "../../../desktop/src/shared/types/prs";
 import type {
@@ -63,6 +63,15 @@ export async function listLanes(
     includeArchived: options.includeArchived ?? false,
     includeStatus: true,
   });
+}
+
+export async function listGitBranches(
+  connection: AdeCodeConnection,
+  laneId: string,
+): Promise<GitBranchSummary[]> {
+  // git.listBranches returns local + remote-tracking refs (remote names come
+  // back in "<remote>/<name>" form). Used by the new-lane branch typeahead.
+  return (await connection.action<GitBranchSummary[]>("git", "listBranches", { laneId })) ?? [];
 }
 
 export async function listLaneDiffStats(

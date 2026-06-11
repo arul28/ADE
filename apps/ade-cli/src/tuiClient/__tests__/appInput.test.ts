@@ -313,6 +313,17 @@ describe("lane delete form helpers", () => {
     expect(formFieldUsesPromptInput("lane-delete", "confirm")).toBe(true);
     expect(formFieldUsesPromptInput("feedback", "body")).toBe(true);
   });
+
+  it("does not treat new-lane select/toggle/button rows as prompt text", () => {
+    expect(formFieldUsesPromptInput("new-lane", "start")).toBe(false);
+    expect(formFieldUsesPromptInput("new-lane", "runtime")).toBe(false);
+    expect(formFieldUsesPromptInput("new-lane", "color")).toBe(false);
+    expect(formFieldUsesPromptInput("new-lane", "branchSource")).toBe(false);
+    expect(formFieldUsesPromptInput("new-lane", "create")).toBe(false);
+    expect(formFieldUsesPromptInput("new-lane", "name")).toBe(true);
+    expect(formFieldUsesPromptInput("new-lane", "branch")).toBe(true);
+    expect(formFieldUsesPromptInput("new-lane", "baseBranch")).toBe(true);
+  });
 });
 
 describe("lane worktree availability", () => {

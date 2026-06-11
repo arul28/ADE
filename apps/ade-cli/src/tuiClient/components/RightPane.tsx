@@ -23,10 +23,17 @@ import { missionFeatureCounts, orderMissionFeatures } from "../../../../desktop/
 import type { MissionSnapshot } from "../types";
 import type { HelpRow } from "../helpIndex";
 import {
+  NEW_LANE_COLOR_OPTIONS,
   NEW_LANE_START_HINT,
   NEW_LANE_START_LABEL,
+  NEW_LANE_START_ORDER,
+  NEW_LANE_TYPEAHEAD_ROWS,
+  filterNewLaneBranchMatches,
+  newLaneColorIndex,
+  newLaneCreateAction,
+  newLaneTypeaheadField,
+  normalizeNewLaneBranchSource,
   normalizeNewLaneStart,
-  type NewLaneStart,
 } from "../newLaneForm";
 import { useShimmerTick } from "../spinTick";
 import {
@@ -1533,10 +1540,12 @@ function LaneDeleteFormPane({
 type NewLaneFormContent = FormPaneContent & { command: "new-lane" };
 
 /**
- * Desktop CreateLaneDialog parity for /new lane: a "Start from" mode chip row
- * (primary base / child of lane / import branch) that swaps the visible
- * inputs, plus the runtime placement toggle. Text fields render through the
- * shared prompt input like every other form.
+ * Desktop CreateLaneDialog parity for /new lane: name + color swatches, a
+ * vertical "Start from" option list (radio style — never wraps in a narrow
+ * pane), mode-specific inputs with a branch typeahead, the runtime placement
+ * toggle, and an explicit create button. Text fields render through the
+ * shared prompt input like every other form. Row geometry must stay in sync
+ * with newLaneFormFieldRowOffsets (the mouse hit-target source of truth).
  */
 function NewLaneFormPane({
   content,
@@ -1554,75 +1563,160 @@ function NewLaneFormPane({
   const fields = content.fields;
   const start = normalizeNewLaneStart(formValues.start);
   const runtime = formValues.runtime === "macos-vm" ? "macos-vm" : "local";
+  const branchSource = normalizeNewLaneBranchSource(formValues.branchSource);
   const activeName = fields[activeFormField]?.name ?? fields[0]?.name ?? "name";
   const active = (name: string) => activeName === name || hoveredId === `right:form:${name}`;
-  const startOption = (value: NewLaneStart, label: string) => (
-    <Text color={start === value ? theme.color.violet : theme.color.t3} bold={start === value}>
-      {start === value ? `[${label}]` : ` ${label} `}
+  const typeahead = newLaneTypeaheadField(fields);
+
+  const labelRow = (name: string, label: string, required?: boolean) => (
+    <Text color={active(name) ? theme.color.violet : theme.color.t3} bold={active(name)}>
+      {active(name) ? theme.rail : " "} {label}{required ? " *" : ""}
     </Text>
   );
-  const textRow = (name: string, label: string, options: { required?: boolean; placeholder?: string } = {}) => {
-    const field = fields.find((entry) => entry.name === name);
-    if (!field) return null;
-    const value = formValues[name]?.trim() ?? "";
-    return (
-      <Box key={name} flexDirection="column" marginTop={1}>
-        <Text color={active(name) ? theme.color.violet : theme.color.t3} bold={active(name)}>
-          {active(name) ? theme.rail : " "} {label}{options.required ?? field.required ? " *" : ""}
-        </Text>
-        <Text color={value ? theme.color.t1 : theme.color.t4} dimColor={!value} wrap="truncate-end">
-          {"  "}{endTruncate(value || options.placeholder || field.placeholder || "", inner - 2)}
-        </Text>
-      </Box>
-    );
+
+  // Fixed-height match list under the typeahead field (blank rows reserved so
+  // the pane's row geometry never shifts while typing). ↹ completes the top match.
+  const typeaheadRows = (name: string) => {
+    const matches = filterNewLaneBranchMatches({
+      branches: content.branches,
+      query: formValues[name]?.trim() ?? "",
+      remote: name === "baseBranch" ? true : branchSource === "remote",
+      limit: NEW_LANE_TYPEAHEAD_ROWS,
+    });
+    return Array.from({ length: NEW_LANE_TYPEAHEAD_ROWS }, (_, index) => (
+      <Text key={`${name}:match:${index}`} color={theme.color.t4} dimColor wrap="truncate-end">
+        {matches[index] ? `  ${index === 0 ? "↹ " : "  "}${endTruncate(matches[index]!, inner - 4)}` : " "}
+      </Text>
+    ));
+  };
+
+  const renderField = (field: NewLaneFormContent["fields"][number]) => {
+    switch (field.name) {
+      case "name":
+      case "parent":
+      case "branch":
+      case "baseBranch": {
+        const value = formValues[field.name]?.trim() ?? "";
+        return (
+          <Box key={field.name} flexDirection="column" marginTop={1}>
+            {labelRow(field.name, field.label, field.required)}
+            <Text color={value ? theme.color.t1 : theme.color.t4} dimColor={!value} wrap="truncate-end">
+              {"  "}{endTruncate(value || field.placeholder || "", inner - 2)}
+            </Text>
+            {field.name === typeahead ? typeaheadRows(field.name) : null}
+          </Box>
+        );
+      }
+      case "color": {
+        const colorIndex = newLaneColorIndex(formValues.color);
+        const selected = NEW_LANE_COLOR_OPTIONS[colorIndex] ?? NEW_LANE_COLOR_OPTIONS[0]!;
+        return (
+          <Box key="color" flexDirection="column" marginTop={1}>
+            {labelRow("color", "Color")}
+            <Text wrap="truncate-end">
+              {"  "}
+              {NEW_LANE_COLOR_OPTIONS.map((option, index) => (
+                <Text
+                  key={option.name}
+                  color={option.hex ?? theme.color.t3}
+                  bold={index === colorIndex}
+                  dimColor={!option.hex && index !== colorIndex}
+                >
+                  {index === colorIndex ? (option.hex ? "[●]" : "[○]") : option.hex ? "●" : "○"}
+                </Text>
+              ))}
+              <Text color={selected.hex ?? theme.color.t3}> {selected.name}</Text>
+            </Text>
+          </Box>
+        );
+      }
+      case "start":
+        return (
+          <Box key="start" flexDirection="column" marginTop={1}>
+            {labelRow("start", "Start from")}
+            {NEW_LANE_START_ORDER.map((mode) => {
+              const chosen = start === mode;
+              return (
+                <Text key={mode} wrap="truncate-end">
+                  {"  "}
+                  <Text color={chosen ? theme.color.violet : theme.color.t4} bold={chosen} dimColor={!chosen}>
+                    {chosen ? "●" : "○"} {NEW_LANE_START_LABEL[mode].padEnd(8)}
+                  </Text>
+                  <Text color={chosen ? theme.color.t3 : theme.color.t5} dimColor={!chosen}>
+                    {endTruncate(NEW_LANE_START_HINT[mode], inner - 12)}
+                  </Text>
+                </Text>
+              );
+            })}
+          </Box>
+        );
+      case "branchSource":
+        return (
+          <Box key="branchSource" flexDirection="column" marginTop={1}>
+            {labelRow("branchSource", "Source")}
+            <Text>
+              {"  "}
+              <Text color={branchSource === "remote" ? theme.color.violet : theme.color.t3} bold={branchSource === "remote"}>
+                {branchSource === "remote" ? "[remote]" : " remote "}
+              </Text>
+              <Text> </Text>
+              <Text color={branchSource === "local" ? theme.color.violet : theme.color.t3} bold={branchSource === "local"}>
+                {branchSource === "local" ? "[local]" : " local "}
+              </Text>
+            </Text>
+          </Box>
+        );
+      case "runtime":
+        return (
+          <Box key="runtime" flexDirection="column" marginTop={1}>
+            {labelRow("runtime", "Runtime")}
+            <Text>
+              {"  "}
+              <Text color={runtime === "local" ? theme.color.violet : theme.color.t3} bold={runtime === "local"}>
+                {runtime === "local" ? "[local mac]" : " local mac "}
+              </Text>
+              <Text> </Text>
+              <Text color={runtime === "macos-vm" ? theme.color.info : theme.color.t3} bold={runtime === "macos-vm"}>
+                {runtime === "macos-vm" ? "[mac vm]" : " mac vm "}
+              </Text>
+            </Text>
+          </Box>
+        );
+      case "create": {
+        const action = newLaneCreateAction({ values: formValues, fields });
+        return (
+          <Box key="create" marginTop={1}>
+            <Text wrap="truncate-end">
+              <Text color={active("create") ? theme.color.violet : theme.color.t3} bold={active("create")}>
+                {active("create") ? theme.rail : " "}{" "}
+              </Text>
+              <Text
+                color={action.enabled ? theme.color.violet : theme.color.t4}
+                bold={action.enabled}
+                dimColor={!action.enabled}
+              >
+                [ {endTruncate(action.label, inner - 8)} ]
+              </Text>
+              {action.reason ? (
+                <Text color={theme.color.t5} dimColor>  {action.reason}</Text>
+              ) : null}
+            </Text>
+          </Box>
+        );
+      }
+      default:
+        return null;
+    }
   };
 
   return (
     <Box flexDirection="column">
-      {textRow("name", "Name")}
-
-      <Box flexDirection="column" marginTop={1}>
-        <Text color={active("start") ? theme.color.violet : theme.color.t3} bold={active("start")}>
-          {active("start") ? theme.rail : " "} Start from
-        </Text>
-        <Text>
-          {"  "}
-          {startOption("primary", NEW_LANE_START_LABEL.primary)}
-          <Text> </Text>
-          {startOption("child", NEW_LANE_START_LABEL.child)}
-          <Text> </Text>
-          {startOption("import", NEW_LANE_START_LABEL.import)}
-        </Text>
-        <Text color={theme.color.t4} dimColor>
-          {"  "}{NEW_LANE_START_HINT[start]}
-        </Text>
-      </Box>
-
-      {textRow("parent", "Parent lane")}
-      {textRow("branch", "Branch to import")}
-      {textRow("baseBranch", start === "child" ? "Base override" : "Base branch")}
-
-      {fields.some((field) => field.name === "runtime") ? (
-        <Box flexDirection="column" marginTop={1}>
-          <Text color={active("runtime") ? theme.color.violet : theme.color.t3} bold={active("runtime")}>
-            {active("runtime") ? theme.rail : " "} Runtime
-          </Text>
-          <Text>
-            {"  "}
-            <Text color={runtime === "local" ? theme.color.violet : theme.color.t3} bold={runtime === "local"}>
-              {runtime === "local" ? "[local mac]" : " local mac "}
-            </Text>
-            <Text> </Text>
-            <Text color={runtime === "macos-vm" ? theme.color.info : theme.color.t3} bold={runtime === "macos-vm"}>
-              {runtime === "macos-vm" ? "[mac vm]" : " mac vm "}
-            </Text>
-          </Text>
-        </Box>
-      ) : null}
-
+      {fields.map((field) => renderField(field))}
       <Box marginTop={1}>
-        <Text color={theme.color.t4} dimColor>
-          ↑↓ rows · ←→ choices · enter creates · esc cancels
+        <Text color={theme.color.t4} dimColor wrap="truncate-end">
+          {activeName === typeahead
+            ? "type to filter · ↹ top match · ↵ create"
+            : "↑↓ rows · ←→ pick · ↵ create · esc"}
         </Text>
       </Box>
     </Box>

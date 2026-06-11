@@ -686,24 +686,16 @@ function visibleEntries<T>(entries: T[]): { shown: T[]; remaining: number } {
   return { shown, remaining: entries.length - shown.length };
 }
 
+// No group header row: the desktop work log just stacks the per-call lines,
+// and the bottom-of-transcript "model working" indicator already conveys live
+// state — repeated "Tool calls (N)" headers only added clutter between the
+// assistant-text fragments of a turn.
 function toolCallsGroupRows(
   block: Extract<AggregatedBlock, { kind: "tool-calls-group" }>,
   spinFrame: string,
 ): RenderedChatRow[] {
   if (!block.entries.length) return [];
   const out: RenderedChatRow[] = [];
-  const total = block.entries.length;
-  const ok = block.entries.filter((entry) => entry.status === "ok").length;
-  const failed = block.entries.filter((entry) => entry.status === "failed").length;
-
-  out.push({
-    id: block.id,
-    tone: "work",
-    text: `▸ Tool calls (${total})`,
-    runs: groupHeaderRuns("Tool calls", total, block.live ? null : { ok, failed }, spinFrame),
-    rail: null,
-  });
-
   // Every tool call renders as one stacked line (desktop work-log parity);
   // ChatRow truncates to the pane width so a long arg can never wrap.
   for (const entry of block.entries) {
@@ -711,7 +703,7 @@ function toolCallsGroupRows(
     const dur = formatDurationMs(entry.durationMs);
     const arg = entry.arg ? truncateLongLine(entry.arg) : "";
     const runs: InlineRun[] = [
-      { text: "    " },
+      { text: "  " },
       { text: glyph, color: WORK_STATUS_COLOR[entry.status] },
       { text: ` ${entry.tool}`, color: theme.color.t1 },
     ];
@@ -720,7 +712,7 @@ function toolCallsGroupRows(
     out.push({
       id: `${block.id}:${entry.itemId}`,
       tone: "work",
-      text: `    ${glyph} ${entry.tool}${arg ? `  ${arg}` : ""}${dur ? `  ${dur}` : ""}`,
+      text: `  ${glyph} ${entry.tool}${arg ? `  ${arg}` : ""}${dur ? `  ${dur}` : ""}`,
       runs,
       rail: null,
     });
@@ -738,6 +730,8 @@ function fileBadgeFor(entry: FileChangeEntry): { label: string; color: string } 
   return { label, color };
 }
 
+// Header-less for the same reason as toolCallsGroupRows — the badge/stats
+// file rows carry all the signal on their own.
 function filesChangedGroupRows(
   block: Extract<AggregatedBlock, { kind: "files-changed-group" }>,
   width: number,
@@ -745,32 +739,6 @@ function filesChangedGroupRows(
 ): RenderedChatRow[] {
   if (!block.entries.length) return [];
   const out: RenderedChatRow[] = [];
-  const total = block.entries.length;
-  const failed = block.entries.filter((entry) => entry.status === "failed").length;
-  const label = total === 1 ? "file changed" : "files changed";
-
-  out.push({
-    id: block.id,
-    tone: "work",
-    text: `▸ ${total} ${label}`,
-    runs: [
-      { text: "▸ ", color: theme.color.t3 },
-      { text: `${total} ${label}`, color: theme.color.t2, bold: true },
-      ...(block.live
-        ? [
-            { text: "  ", color: theme.color.t4 } as InlineRun,
-            { text: spinFrame, color: theme.color.violet } as InlineRun,
-            { text: " working…", color: theme.color.violet, italic: true } as InlineRun,
-          ]
-        : [
-            ...(failed > 0
-              ? [{ text: `  ·  ${failed} failed`, color: theme.color.t4 } as InlineRun]
-              : []),
-          ]),
-    ],
-    rail: null,
-  });
-
   const pathWidth = Math.max(20, width - 18);
   for (const entry of block.entries) {
     const badge = fileBadgeFor(entry);
@@ -781,7 +749,7 @@ function filesChangedGroupRows(
       : `+${entry.additions} −${entry.deletions}`;
     const statsColor = entry.deleted ? theme.color.error : theme.color.t4;
     const runs: InlineRun[] = [
-      { text: "    " },
+      { text: "  " },
       { text: glyph, color: WORK_STATUS_COLOR[entry.status] },
       { text: " " },
       { text: badge.label.padEnd(3, " "), color: badge.color, bold: true },
@@ -793,7 +761,7 @@ function filesChangedGroupRows(
     out.push({
       id: `${block.id}:${entry.itemId}`,
       tone: "work",
-      text: `    ${glyph} ${badge.label} ${trimmedPath}  ${stats}`,
+      text: `  ${glyph} ${badge.label} ${trimmedPath}  ${stats}`,
       runs,
       rail: null,
     });

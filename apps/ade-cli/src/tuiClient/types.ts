@@ -265,6 +265,9 @@ export type RightPaneContent =
       // Present only for the feedback form (command === "feedback"): the
       // multiline form's serializable state (see FeedbackContextMeta).
       feedback?: FeedbackContextMeta;
+      // Present only for the new-lane form (command === "new-lane"): branch
+      // names fetched once when the form opens, feeding the branch typeahead.
+      branches?: Array<{ name: string; remote: boolean }>;
       fields: Array<{
         name: string;
         label: string;

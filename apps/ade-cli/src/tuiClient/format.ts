@@ -5,7 +5,7 @@ import type { LaneSummary } from "../../../desktop/src/shared/types/lanes";
 import { highlightCode, type HighlightedToken } from "./highlightCache";
 import { glyphFor } from "./theme";
 import type { LocalNotice } from "./types";
-import { isCodexSubagentMessageId, shouldMergeAssistantText } from "./assistantTextIdentity";
+import { appendStreamingText, isCodexSubagentMessageId, shouldMergeAssistantText } from "./assistantTextIdentity";
 
 export type { HighlightedToken } from "./highlightCache";
 
@@ -778,17 +778,10 @@ function headerSpeakerKey(header: string | undefined): string {
   return first ? first.trim() : "";
 }
 
-function smartConcat(prev: string, next: string): string {
-  // Codex/Claude stream assistant text as small chunks that may break mid-word
-  // (e.g., "Consolid" + "ated", or "complete" + "."). Joining with a forced
-  // space corrupted words and inserted spaces before punctuation. Streaming
-  // chunks already include the whitespace they intend — direct concat is
-  // correct. If the model wants a space or newline between fragments, it sends
-  // one explicitly.
-  if (!prev) return next;
-  if (!next) return prev;
-  return `${prev}${next}`;
-}
+// Streamed chunks may break mid-word ("Consolid" + "ated"), so fragments join
+// without inserted whitespace; appendStreamingText additionally dedupes
+// cumulative/tail re-emits of the same message (overlap-aware, desktop parity).
+const smartConcat = appendStreamingText;
 
 function coalesceLines(lines: RenderedChatLine[]): RenderedChatLine[] {
   const out: RenderedChatLine[] = [];

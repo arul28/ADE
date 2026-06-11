@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import { render } from "ink-testing-library";
 import { LANE_DETAIL_ACTIONS, LANE_DETAIL_PR_ACTION_INDEX, feedbackStateFromContent, laneDetailsInteractionLayout, rightPaneScrollableRowCount, RightPane } from "../components/RightPane";
 import { feedbackFormToFormValues } from "../feedbackForm";
+import { newLaneFormFields } from "../newLaneForm";
 import { buildFeedbackDraftInput } from "../feedback";
 import type { LaneSummary } from "../../../../desktop/src/shared/types/lanes";
 
@@ -316,67 +317,106 @@ function lane(overrides: Partial<LaneSummary> = {}): LaneSummary {
 }
 
 describe("RightPane new-lane form", () => {
-  it("renders the start-from chips, hint, and runtime toggle", () => {
+  const branches = [
+    { name: "origin/main", remote: true },
+    { name: "origin/feature-x", remote: true },
+    { name: "main", remote: false },
+  ];
+
+  it("renders vertical start options, color + create rows without wrapping at width 44", () => {
     const result = render(
       <RightPane
         content={{
           kind: "form",
           title: "New lane",
           command: "new-lane",
-          fields: [
-            { name: "name", label: "Name", required: true, placeholder: "feature-name" },
-            { name: "start", label: "Start from", initialValue: "primary" },
-            { name: "baseBranch", label: "Base branch", placeholder: "default" },
-            { name: "runtime", label: "Runtime", initialValue: "local" },
-          ],
+          fields: newLaneFormFields("primary"),
+          branches,
         }}
-        formValues={{ name: "auth-refresh", start: "primary", baseBranch: "", runtime: "local" }}
-        activeFormField={1}
-        focused
-        width={80}
-      />,
-    );
-    const frame = stripAnsi(result.lastFrame() ?? "");
-
-    expect(frame).toContain("Name");
-    expect(frame).toContain("auth-refresh");
-    expect(frame).toContain("Start from");
-    expect(frame).toContain("[base branch]");
-    expect(frame).toContain("child of lane");
-    expect(frame).toContain("import branch");
-    expect(frame).toContain("new branch off the project base");
-    expect(frame).toContain("[local mac]");
-    expect(frame).toContain("mac vm");
-    expect(frame).toContain("←→ choices");
-  });
-
-  it("renders import-mode fields when the start mode is import", () => {
-    const result = render(
-      <RightPane
-        content={{
-          kind: "form",
-          title: "New lane",
-          command: "new-lane",
-          fields: [
-            { name: "name", label: "Name", required: true, placeholder: "feature-name" },
-            { name: "start", label: "Start from", initialValue: "import" },
-            { name: "branch", label: "Branch to import", required: true, placeholder: "origin/feature-x" },
-            { name: "baseBranch", label: "Base branch", placeholder: "default" },
-          ],
-        }}
-        formValues={{ name: "", start: "import", branch: "origin/feature-x", baseBranch: "" }}
+        formValues={{ name: "auth-refresh", color: "", start: "primary", baseBranch: "", runtime: "local" }}
         activeFormField={2}
         focused
-        width={80}
+        width={44}
+      />,
+    );
+    const frame = stripAnsi(result.lastFrame() ?? "");
+    const lines = frame.split("\n");
+
+    // Vertical option list: one row per option, radio style — never wraps.
+    const optionLines = lines.filter((line) => /[●○] (primary|branch|child)\b/.test(line));
+    expect(optionLines).toHaveLength(3);
+    for (const line of optionLines) {
+      expect(line.trimEnd().length).toBeLessThanOrEqual(44);
+    }
+    expect(frame).toContain("● primary");
+    expect(frame).toContain("○ branch");
+    expect(frame).toContain("○ child");
+    expect(frame).toContain("new lane off the base branch");
+
+    // Color row (auto selected by default) and explicit create button.
+    expect(frame).toContain("Color");
+    expect(frame).toContain("[○]");
+    expect(frame).toContain("auto");
+    expect(frame).toContain("[ create lane ]");
+
+    // Base-branch typeahead lists remote branches; runtime toggle still there.
+    expect(frame).toContain("origin/main");
+    expect(frame).toContain("[local mac]");
+
+    // The footer hint fits a single 44-col row.
+    const hintLine = lines.find((line) => line.includes("↑↓ rows"));
+    expect(hintLine).toBeTruthy();
+    expect((hintLine ?? "").trimEnd().length).toBeLessThanOrEqual(44);
+  });
+
+  it("renders branch-mode fields with the source toggle, typeahead, and resolved create label", () => {
+    const result = render(
+      <RightPane
+        content={{
+          kind: "form",
+          title: "New lane",
+          command: "new-lane",
+          fields: newLaneFormFields("import"),
+          branches,
+        }}
+        formValues={{ name: "adopted", color: "", start: "import", branchSource: "remote", branch: "feat", baseBranch: "" }}
+        activeFormField={4}
+        focused
+        width={44}
       />,
     );
     const frame = stripAnsi(result.lastFrame() ?? "");
 
-    expect(frame).toContain("[import branch]");
-    expect(frame).toContain("Branch to import");
-    expect(frame).toContain("origin/feature-x");
-    expect(frame).toContain("adopt an existing local/remote branch");
+    expect(frame).toContain("○ primary");
+    expect(frame).toContain("● branch");
+    expect(frame).toContain("Source");
+    expect(frame).toContain("[remote]");
+    expect(frame).toContain("↹ origin/feature-x");
+    expect(frame).toContain("[ import feat ]");
     expect(frame).not.toContain("Runtime");
+    // Typeahead hint while the branch field is active.
+    expect(frame).toContain("↹ top match");
+  });
+
+  it("dims the create button with the validation reason when the form is invalid", () => {
+    const result = render(
+      <RightPane
+        content={{
+          kind: "form",
+          title: "New lane",
+          command: "new-lane",
+          fields: newLaneFormFields("primary"),
+        }}
+        formValues={{ name: "", color: "", start: "primary", baseBranch: "", runtime: "local" }}
+        activeFormField={0}
+        focused
+        width={44}
+      />,
+    );
+    const frame = stripAnsi(result.lastFrame() ?? "");
+
+    expect(frame).toContain("[ create lane ]");
+    expect(frame).toContain("name required");
   });
 });
 

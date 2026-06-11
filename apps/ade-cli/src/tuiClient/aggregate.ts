@@ -13,7 +13,7 @@ import {
   type RenderedChatLine,
 } from "./format";
 import { workEventItemId, workEventParentItemId } from "./workEventIds";
-import { shouldMergeAssistantText } from "./assistantTextIdentity";
+import { appendStreamingText, shouldMergeAssistantText } from "./assistantTextIdentity";
 
 export type WorkToolStatus = "running" | "ok" | "failed";
 
@@ -398,16 +398,11 @@ function compactActivityDetail(value: unknown, max = 70): string | undefined {
   return `${normalized.slice(0, Math.max(0, max - 1))}…`;
 }
 
-function runtimeStatus(value: unknown): RuntimeActivityEntry["status"] {
-  if (value === "failed" || value === "interrupted") return "failed";
-  if (value === "completed" || value === "ok" || value === "complete") return "ok";
-  if (value === "running" || value === "started" || value === "active") return "running";
-  return "info";
-}
-
 // Activity events that mirror the real tool/command/file events the transcript
 // already renders. Suppress them in the TUI so the same fragment doesn't appear
 // twice (once as Runtime, once as Tool calls). Matches desktop suppression.
+// "spawning_agent" is covered by the subagent roster (chat-info pane), exactly
+// like the subagent lifecycle events the timeline also drops.
 const suppressedRuntimeActivities = new Set([
   "thinking",
   "working",
@@ -417,6 +412,7 @@ const suppressedRuntimeActivities = new Set([
   "running_command",
   "editing_file",
   "web_searching",
+  "spawning_agent",
 ]);
 
 function runtimeActivityFromEvent(id: string, event: AgentChatEvent): RuntimeActivityEntry | null {
@@ -428,31 +424,6 @@ function runtimeActivityFromEvent(id: string, event: AgentChatEvent): RuntimeAct
       label: activity.replace(/_/g, " "),
       detail: compactActivityDetail(event.detail),
       status: "running",
-    };
-  }
-  // Subagent lifecycle stays as compact, detail-free markers in the center
-  // transcript — the live task text, summaries, persona, and per-runtime stats
-  // all surface in the subagent (chat-info) pane instead, so the parent
-  // transcript isn't polluted by child chatter (see ChatInfoRoster).
-  if (event.type === "subagent_started" || event.type === "subagent.started") {
-    return {
-      id,
-      label: "subagent started",
-      status: "running",
-    };
-  }
-  if (event.type === "subagent_progress" || event.type === "subagent.progress") {
-    return {
-      id,
-      label: "subagent progress",
-      status: "running",
-    };
-  }
-  if (event.type === "subagent_result" || event.type === "subagent.completed") {
-    return {
-      id,
-      label: "subagent finished",
-      status: runtimeStatus((event as { status?: unknown }).status ?? "completed"),
     };
   }
   return null;
@@ -619,9 +590,10 @@ export function aggregateChatBlocks(args: {
     const id = chatEventLineId(envelope, index);
     const turnId = turnIdOf(event);
 
+    // Subagent lifecycle (started/progress/result, teammate idle, task done)
+    // never reaches the transcript — the subagent roster in the chat-info pane
+    // is its surface, matching the desktop transcript which hides these too.
     if (isSubagentTimelineEvent(event)) {
-      const activity = runtimeActivityFromEvent(id, event);
-      if (activity) appendRuntimeActivityBlock(blocks, id, turnId, activity);
       continue;
     }
 
@@ -647,7 +619,9 @@ export function aggregateChatBlocks(args: {
       if (previous?.kind === "assistant-text") {
         const previousTextEvent = assistantTextEventsByBlockId.get(previous.id);
         if (previousTextEvent && shouldMergeAssistantTextEvents(previousTextEvent, event)) {
-          const mergedText = `${previous.line.body}${event.text}`;
+          // Overlap-aware: providers re-emit cumulative/tail fragments of the
+          // same message, which plain concat rendered as a duplicated tail.
+          const mergedText = appendStreamingText(previous.line.body, event.text);
           previous.line = {
             ...previous.line,
             body: mergedText,
@@ -683,7 +657,7 @@ export function aggregateChatBlocks(args: {
           const nextItemId = (event as { itemId?: string }).itemId ?? null;
           const merged = previousItemId && nextItemId && previousItemId !== nextItemId
             ? `${previous.text}\n\n${event.text}`
-            : `${previous.text}${event.text}`;
+            : appendStreamingText(previous.text, event.text);
           previous.text = merged.slice(0, REASONING_TEXT_CAP);
         }
         previous.live = true;
