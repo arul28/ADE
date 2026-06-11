@@ -4664,10 +4664,9 @@ export function createPtyService({
      */
     writeBySessionId(sessionId: string, data: string): boolean {
       if (!sessionId || typeof data !== "string") return false;
-      const entry = Array.from(ptys.values()).find(
-        (candidate) => candidate.sessionId === sessionId && !candidate.disposed,
-      );
-      if (!entry) return false;
+      const live = liveEntryBySessionId(sessionId);
+      if (!live) return false;
+      const [, entry] = live;
       try {
         entry.lastUserInputAt = Date.now();
         entry.pty.write(data);
@@ -4694,10 +4693,9 @@ export function createPtyService({
      */
     resizeBySessionId(sessionId: string, cols: number, rows: number, opts?: { source?: "desktop" | "mobile" }): boolean {
       if (!sessionId) return false;
-      const entry = Array.from(ptys.values()).find(
-        (candidate) => candidate.sessionId === sessionId && !candidate.disposed,
-      );
-      if (!entry) return false;
+      const live = liveEntryBySessionId(sessionId);
+      if (!live) return false;
+      const [, entry] = live;
       const safe = clampDims(cols, rows);
       // A mobile viewport must never become the desktop-preferred size — it
       // is restored from lastDesktop* when the phone detaches.
@@ -4726,10 +4724,9 @@ export function createPtyService({
      */
     restoreDesktopSizeBySessionId(sessionId: string): boolean {
       if (!sessionId) return false;
-      const entry = Array.from(ptys.values()).find(
-        (candidate) => candidate.sessionId === sessionId && !candidate.disposed,
-      );
-      if (!entry) return false;
+      const live = liveEntryBySessionId(sessionId);
+      if (!live) return false;
+      const [, entry] = live;
       const cols = entry.lastDesktopCols;
       const rows = entry.lastDesktopRows;
       if (cols == null || rows == null) return false;

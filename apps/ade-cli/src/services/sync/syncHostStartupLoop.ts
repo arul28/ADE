@@ -98,14 +98,15 @@ export async function runSyncHostStartupLoop(deps: SyncHostStartupLoopDeps): Pro
       }
       if (error instanceof SyncHostSingletonConflictError) {
         const owner = error.conflict.owner;
-        if (owner.pid !== process.pid && !isSameChannelSyncHostOwner(owner, deps.env)) {
+        const sameChannelOwner = isSameChannelSyncHostOwner(owner, deps.env);
+        if (owner.pid !== process.pid && !sameChannelOwner) {
           throw error;
         }
         const serviceMainPid = deps.getServiceMainPid?.() ?? null;
         if (
           owner.pid !== process.pid
           && serviceMainPid === process.pid
-          && isSameChannelSyncHostOwner(owner, deps.env)
+          && sameChannelOwner
         ) {
           deps.log(
             `ADE brain taking over mobile sync from stale ${owner.appName ?? "ADE"} brain (pid ${owner.pid}).`,
