@@ -600,13 +600,15 @@ const ACTIVITY_STATUS_COLOR: Record<RuntimeActivityEntry["status"], string> = {
   info: theme.color.t4,
 };
 
-// How many entries to render inline per work-group before collapsing into "+N more".
-// Tight by design: the TUI can't expand groups, so flooding with all tools is just noise.
+// Runtime-activity entries to render inline before collapsing into "+N more".
+// Tool calls and file changes are NOT capped — they stack one line per entry,
+// matching the desktop work log.
 const GROUP_VISIBLE_CAP = 3;
-// Per-row arg/command truncation. Chosen so each tool entry stays on a single
-// terminal line at typical widths (~120 cols) — the noise from line-wrapped
-// shell args was the user's main complaint.
-const LONG_LINE_TRUNCATE_AT = 80;
+// Per-row arg/command cap for the plain-text copy form. Matches the desktop
+// work log's summarizeInlineText cap (140); the rendered row is truncated to
+// the actual pane width by ChatRow (wrap="truncate-end"), so this only bounds
+// what very wide terminals show.
+const LONG_LINE_TRUNCATE_AT = 140;
 
 function formatDurationMs(ms: number | undefined): string | null {
   if (typeof ms !== "number" || !Number.isFinite(ms) || ms <= 0) return null;

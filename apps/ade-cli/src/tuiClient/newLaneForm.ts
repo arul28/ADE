@@ -79,6 +79,30 @@ export function newLaneFormFields(
   return fields;
 }
 
+/**
+ * Content-row offset of each field's LABEL line inside NewLaneFormPane,
+ * in field order. Every block renders marginTop(1) + label(1) + value(1),
+ * except the start block which adds a hint line (4 rows total). Used by the
+ * right-pane mouse hit-testing so clicks land on the right field.
+ */
+export function newLaneFormFieldRowOffsets(fields: ReadonlyArray<{ name: string }>): number[] {
+  const offsets: number[] = [];
+  let row = 0;
+  for (const field of fields) {
+    offsets.push(row + 1);
+    row += field.name === "start" ? 4 : 3;
+  }
+  return offsets;
+}
+
+/** Map a click X offset on the start-chip row onto the chosen start mode. */
+export function newLaneStartForClickX(relX: number): NewLaneStart {
+  // Row text: `  [base branch] child of lane  import branch`
+  if (relX < 16) return "primary";
+  if (relX < 31) return "child";
+  return "import";
+}
+
 export type NewLaneSubmission =
   | { kind: "create"; payload: { name: string; baseBranch?: string; runtimePlacement?: NewLaneRuntime } }
   | {

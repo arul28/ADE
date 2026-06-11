@@ -114,7 +114,9 @@ import {
 import {
   buildNewLaneSubmission,
   cycleNewLaneStart,
+  newLaneFormFieldRowOffsets,
   newLaneFormFields,
+  newLaneStartForClickX,
   normalizeNewLaneStart,
   toggleNewLaneRuntime,
 } from "./newLaneForm";
@@ -3583,10 +3585,14 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   const addModeChatIndex = useMemo(() => {
     if (!addMode) return selectedChatIndex;
     const allLaneSessions = tileableDisplaySessions.filter((session) => session.laneId === addMode.cursorLaneId);
-    const laneSessions = allLaneSessions.slice(0, visibleDrawerChatCount(allLaneSessions.length));
+    // Cap at what the drawer actually renders for the expanded (cursor) lane so
+    // the add-mode cursor can't sit on an invisible row.
+    const plan = drawerLayoutValue.lanes.find((entry) => entry.laneId === addMode.cursorLaneId && entry.expanded) ?? null;
+    const cap = plan ? plan.visibleChatCount : visibleDrawerChatCount(allLaneSessions.length);
+    const laneSessions = allLaneSessions.slice(0, cap);
     const index = laneSessions.findIndex((session) => session.sessionId === addMode.cursorChatId);
     return index >= 0 ? index : 0;
-  }, [addMode, selectedChatIndex, tileableDisplaySessions]);
+  }, [addMode, drawerLayoutValue, selectedChatIndex, tileableDisplaySessions]);
   const applyDrawerChatSelection = useCallback((
     selection: { session: AgentChatSessionSummary | null; action: DrawerChatAction | null },
   ) => {
@@ -12107,11 +12113,21 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           zIndex: 3,
         });
       } else if (rightPane.kind === "form") {
+        const newLaneOffsets = rightPane.command === "new-lane" ? newLaneFormFieldRowOffsets(rightPane.fields) : null;
         rightPane.fields.forEach((field, index) => {
-          const y = rightPane.command === "lane-delete" ? rightBodyTop + ([7, 11, 14, 17][index] ?? (3 + index)) : rightBodyTop + 3 + index;
+          const y = rightPane.command === "lane-delete"
+            ? rightBodyTop + ([7, 11, 14, 17][index] ?? (3 + index))
+            : newLaneOffsets
+              ? rightBodyTop + 3 + (newLaneOffsets[index] ?? (3 * index + 1))
+              : rightBodyTop + 3 + index;
           addTarget({
             id: `right:form:${field.name}`,
-            rect: { x: rightStartColumn, y, w: rightPaneWidth, h: rightPane.command === "lane-delete" ? 2 : 1 },
+            rect: {
+              x: rightStartColumn,
+              y,
+              w: rightPaneWidth,
+              h: rightPane.command === "lane-delete" || rightPane.command === "new-lane" ? 2 : 1,
+            },
             onClick: (ev) => {
               setFormFieldIndex(index);
               setFormDiscardArmed(false);
@@ -12124,6 +12140,22 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
               }
               if (rightPane.command === "lane-delete" && field.name === "force") {
                 setFormValues((prev) => ({ ...prev, force: prev.force === "yes" ? "no" : "yes" }));
+                setPrompt("");
+                return;
+              }
+              if (rightPane.command === "new-lane" && field.name === "start") {
+                const relX = Math.max(0, (ev.x ?? rightStartColumn) - rightStartColumn);
+                const nextStart = newLaneStartForClickX(relX);
+                const activeLaneName = lanes.find((entry) => entry.id === activeLaneIdRef.current)?.name ?? null;
+                setFormValues((prev) => ({ ...prev, start: nextStart }));
+                setRightPane((previous) => previous.kind === "form" && previous.command === "new-lane"
+                  ? { ...previous, fields: newLaneFormFields(nextStart, { activeLaneName }) }
+                  : previous);
+                setPrompt("");
+                return;
+              }
+              if (rightPane.command === "new-lane" && field.name === "runtime") {
+                setFormValues((prev) => ({ ...prev, runtime: toggleNewLaneRuntime(prev.runtime) }));
                 setPrompt("");
                 return;
               }

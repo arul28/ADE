@@ -952,12 +952,12 @@ function ChatInfoTasksBlock({ info, brandColor, width }: { info: ChatInfoSnapsho
   return (
     <Box flexDirection="column">
       <ChatInfoSectionHead title="TASKS" hint={`${done}/${info.todos.length}`} color={brandColor} width={width} />
-      {visible.map((todo) => {
+      {visible.map((todo, index) => {
         const status = todo.status === "completed" || todo.status === "failed" || todo.status === "in_progress"
           ? todo.status
           : "pending";
         return (
-          <Text key={todo.id} color={planStepColor(status as ChatInfoPlanStep["status"])} wrap="truncate-end">
+          <Text key={`${todo.id || "todo"}:${index}`} color={planStepColor(status as ChatInfoPlanStep["status"])} wrap="truncate-end">
             {planStepGlyph(status as ChatInfoPlanStep["status"])} {endTruncate(todo.description, inner - 2)}
           </Text>
         );

@@ -128,6 +128,10 @@ export function computeDrawerLayout({
   }));
 
   let remaining = Math.max(0, chatRowBudget);
+  // A selected-but-not-expanded lane (chats mode browsing another lane) still
+  // renders its diff row; reserve it before handing rows to previews.
+  const nonExpandedDiffRows = plans.filter((plan) => plan.hasDiffRow && !plan.expanded).length;
+  remaining = Math.max(0, remaining - nonExpandedDiffRows);
   const expandedPlan = plans.find((plan) => plan.expanded) ?? null;
   if (expandedPlan) {
     const lane = lanes[expandedPlan.laneIndex]!;

@@ -301,6 +301,10 @@ function appendCommandAsTool(
   });
 }
 
+// Reasoning rows render a ≤96-char preview; keep enough head text for that
+// (and a margin for whitespace collapsing) without retaining whole streams.
+const REASONING_TEXT_CAP = 2_000;
+
 function isExpandedFailureEvent(event: AgentChatEvent): boolean {
   if (event.type === "tool_result") return event.status === "failed";
   if (event.type === "file_change") return event.status === "failed";
@@ -668,20 +672,26 @@ export function aggregateChatBlocks(args: {
     if (event.type === "reasoning") {
       // Desktop parity: reasoning surfaces as a collapsed "Thinking…/Thought"
       // row (MinimalThought) instead of being dropped. Merge consecutive
-      // fragments for the same turn so streamed deltas stay one row.
+      // fragments for the same turn so streamed deltas stay one row. Only a
+      // short head preview ever renders, so cap the stored text — long Codex
+      // reasoning streams would otherwise grow the block without bound.
       if (!event.text || event.text.length === 0) continue;
       const previous = blocks[blocks.length - 1];
       if (previous?.kind === "reasoning" && previous.turnId === turnId) {
-        const previousItemId = reasoningItemIdByBlockId.get(previous.id) ?? null;
-        const nextItemId = (event as { itemId?: string }).itemId ?? null;
-        previous.text = previousItemId && nextItemId && previousItemId !== nextItemId
-          ? `${previous.text}\n\n${event.text}`
-          : `${previous.text}${event.text}`;
+        if (previous.text.length < REASONING_TEXT_CAP) {
+          const previousItemId = reasoningItemIdByBlockId.get(previous.id) ?? null;
+          const nextItemId = (event as { itemId?: string }).itemId ?? null;
+          const merged = previousItemId && nextItemId && previousItemId !== nextItemId
+            ? `${previous.text}\n\n${event.text}`
+            : `${previous.text}${event.text}`;
+          previous.text = merged.slice(0, REASONING_TEXT_CAP);
+        }
         previous.live = true;
+        const nextItemId = (event as { itemId?: string }).itemId ?? null;
         if (nextItemId) reasoningItemIdByBlockId.set(previous.id, nextItemId);
         continue;
       }
-      blocks.push({ kind: "reasoning", id, turnId, text: event.text, live: true });
+      blocks.push({ kind: "reasoning", id, turnId, text: event.text.slice(0, REASONING_TEXT_CAP), live: true });
       const itemId = (event as { itemId?: string }).itemId ?? null;
       if (itemId) reasoningItemIdByBlockId.set(id, itemId);
       continue;

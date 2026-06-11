@@ -3,7 +3,9 @@ import type { LaneSummary } from "../../../../desktop/src/shared/types/lanes";
 import {
   buildNewLaneSubmission,
   cycleNewLaneStart,
+  newLaneFormFieldRowOffsets,
   newLaneFormFields,
+  newLaneStartForClickX,
   normalizeNewLaneStart,
   toggleNewLaneRuntime,
 } from "../newLaneForm";
@@ -49,6 +51,25 @@ describe("start/runtime cycling", () => {
     expect(toggleNewLaneRuntime("local")).toBe("macos-vm");
     expect(toggleNewLaneRuntime("macos-vm")).toBe("local");
     expect(toggleNewLaneRuntime(undefined)).toBe("macos-vm");
+  });
+});
+
+describe("newLaneFormFieldRowOffsets", () => {
+  it("matches the NewLaneFormPane block heights (3 rows per field, 4 for start)", () => {
+    // primary: name(1), start(4), baseBranch(8), runtime(11)
+    expect(newLaneFormFieldRowOffsets(newLaneFormFields("primary"))).toEqual([1, 4, 8, 11]);
+    // child adds the parent row: name(1), start(4), parent(8), base(11), runtime(14)
+    expect(newLaneFormFieldRowOffsets(newLaneFormFields("child"))).toEqual([1, 4, 8, 11, 14]);
+    // import: name(1), start(4), branch(8), base(11)
+    expect(newLaneFormFieldRowOffsets(newLaneFormFields("import"))).toEqual([1, 4, 8, 11]);
+  });
+});
+
+describe("newLaneStartForClickX", () => {
+  it("maps chip-row columns onto the start modes", () => {
+    expect(newLaneStartForClickX(3)).toBe("primary");
+    expect(newLaneStartForClickX(18)).toBe("child");
+    expect(newLaneStartForClickX(35)).toBe("import");
   });
 });
 

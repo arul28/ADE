@@ -371,10 +371,10 @@ export function Drawer({
   );
 }
 
-// Lane-card chrome note: the drawer's mouse hit-test (drawerMouseHitForLine in
-// app.tsx) reserves exactly two border rows per lane card (top + bottom) plus a
-// 1-row margin between cards. The rounded box used per lane keeps exactly those
-// two border rows, so the hit-test cadence stays correct.
+// Lane-card chrome note: the drawer's mouse hit-test (drawerMouseHitForLayout
+// in drawerLayout.ts) models exactly two border rows per lane card (top +
+// bottom) plus a 1-row margin between cards. The rounded box used per lane
+// keeps exactly those two border rows, so the shared layout stays correct.
 
 /**
  * A single-row titled hairline-rule section header (glyph + bold title + count
