@@ -101,7 +101,16 @@ import { BUILTIN_COMMANDS, paletteCommands, parseCommand } from "./commands";
 import { buildHelpIndex, buildHelpRows, flattenHelpRows, pushRecent } from "./helpIndex";
 import { hasFirstUserMessage, isPlanMode } from "./planMode";
 import { connectToAde } from "./connection";
-import { Drawer, visibleDrawerChatCount, visibleDrawerLaneCount, type DrawerPrSummary } from "./components/Drawer";
+import { Drawer, type DrawerPrSummary } from "./components/Drawer";
+import {
+  computeDrawerLayout,
+  drawerLaneWindow,
+  drawerMouseHitForLayout,
+  visibleDrawerChatCount,
+  visibleDrawerLaneCount,
+  type DrawerLaneInput,
+  type DrawerLayout,
+} from "./drawerLayout";
 import {
   ChatView,
   computeChatScrollMaxOffset,
@@ -2147,75 +2156,8 @@ function parseTerminalMouseInputs(input: string): TerminalMouseInput[] {
   return events.sort((left, right) => left.index - right.index).map(({ event }) => event);
 }
 
-export type DrawerMouseHit =
-  | { kind: "lane"; index: number }
-  | { kind: "chat"; index: number }
-  | { kind: "new-chat" }
-  | null;
-
-export function drawerMouseHitForLine({
-  y,
-  laneCount,
-  selectedLaneIndex,
-  chatCount,
-}: {
-  y: number | null;
-  laneCount: number;
-  selectedLaneIndex: number;
-  chatCount: number;
-}): DrawerMouseHit {
-  // Lane drawer layout (terminal mouse Y is 1-based):
-  //   row 1            outer drawer top border
-  //   row 2            "LANES · N" header
-  //   row 3+           lane cards, each:
-  //                      ╭──────╮   top border
-  //                      │ name │   line 1
-  //                      │ meta │   line 2
-  //                      │ diff │   only on selected cards
-  //                      [chat block inline, only on selected card]
-  //                      ╰──────╯   bottom border
-  //                    + 1 blank row of marginTop between adjacent cards
-  //   Chat block on selected card:
-  //                      (blank marginTop)
-  //                      CHATS · N
-  //                      chat 0
-  //                      (blank between chats)
-  //                      chat 1
-  //                      …
-  //                      + new chat
-  if (y == null || laneCount <= 0) return null;
-  let line = 3; // first lane card's top border row
-  for (let index = 0; index < laneCount; index += 1) {
-    const isSelected = index === selectedLaneIndex;
-    // Card body before the chat block / bottom border:
-    //   top border + line1 + line2 + (selected ? diff row : 0)
-    const cardBodyHeight = 3 + (isSelected ? 1 : 0);
-    if (y >= line && y < line + cardBodyHeight) return { kind: "lane", index };
-    line += cardBodyHeight;
-    if (isSelected) {
-      // Chat block (inside the card, above the bottom border).
-      const chatBlockMarginTop = 1;
-      const chatHeader = 1;
-      // Each chat row consumes 1 row; chats >0 get a 1-row top margin.
-      const blockStart = line + chatBlockMarginTop + chatHeader;
-      for (let chatIdx = 0; chatIdx < chatCount; chatIdx += 1) {
-        const chatRowY = blockStart + chatIdx * 2;
-        if (y === chatRowY) return { kind: "chat", index: chatIdx };
-      }
-      const newChatY = chatCount > 0
-        ? blockStart + (chatCount - 1) * 2 + 1
-        : blockStart;
-      if (y === newChatY) return { kind: "new-chat" };
-      line += chatBlockMarginTop
-        + chatHeader
-        + (chatCount > 0 ? chatCount * 2 - 1 : 0)
-        + 1; // + new chat row
-    }
-    line += 1; // bottom border of card
-    if (index < laneCount - 1) line += 1; // marginTop=1 separator to next card
-  }
-  return null;
-}
+// Drawer mouse hit-testing lives in ./drawerLayout (drawerMouseHitForLayout)
+// so the row math is shared with the Drawer renderer.
 
 type LaneDeleteScope = "worktree" | "local_branch" | "remote_branch";
 const LANE_DELETE_SCOPES: LaneDeleteScope[] = ["worktree", "local_branch", "remote_branch"];
@@ -3540,16 +3482,83 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     () => displaySessions.filter((session) => session.laneId === drawerLaneId),
     [displaySessions, drawerLaneId],
   );
-  const drawerVisibleLaneSessions = useMemo(
-    () => drawerLaneSessions.slice(0, visibleDrawerChatCount(drawerLaneSessions.length)),
-    [drawerLaneSessions],
-  );
   const selectedLaneIndex = useMemo(() => {
     if (selectedDrawerLaneAction === "new-lane") return drawerLaneRows.length;
     const targetId = selectedDrawerLaneId ?? drawerLaneId ?? activeLaneId;
     const index = drawerLaneRows.findIndex((lane) => lane.id === targetId);
     return index >= 0 ? index : 0;
   }, [activeLaneId, drawerLaneId, drawerLaneRows, selectedDrawerLaneAction, selectedDrawerLaneId]);
+  const addModeLaneIndex = useMemo(() => {
+    if (!addMode) return selectedLaneIndex;
+    const index = drawerLaneRows.findIndex((lane) => lane.id === addMode.cursorLaneId);
+    return index >= 0 ? index : 0;
+  }, [addMode, drawerLaneRows, selectedLaneIndex]);
+  // Single source of truth for the drawer's row layout, shared with the
+  // Drawer renderer (which derives the identical layout from the same inputs)
+  // so mouse hit-testing cannot drift from what is on screen.
+  const drawerSessionsSource = addMode ? tileableDisplaySessions : displaySessions;
+  const drawerLayoutValue = useMemo<DrawerLayout>(() => {
+    const mode = addMode ? "chats" : drawerSection;
+    const sliceSelected = addMode ? addModeLaneIndex : selectedLaneIndex;
+    const browsing = addMode?.cursorLaneId ?? drawerLaneId ?? activeLaneId;
+    const { start, count } = drawerLaneWindow(chatRowBudget, orderedDrawerLanes.length, drawerScrollOffsetRows);
+    const selectedAbsolute = sliceSelected >= 0 && sliceSelected < count ? start + sliceSelected : null;
+    const expandedAbsolute = mode === "chats"
+      ? (() => {
+          const index = orderedDrawerLanes.findIndex((lane) => lane.id === browsing);
+          return index >= 0 ? index : null;
+        })()
+      : selectedAbsolute;
+    return computeDrawerLayout({
+      panelHeight: chatRowBudget,
+      lanes: orderedDrawerLanes.map((lane): DrawerLaneInput => ({
+        laneId: lane.id,
+        chatCount: drawerSessionsSource.filter((session) => session.laneId === lane.id).length,
+        worktreeAvailable: !unavailableLaneIds.has(lane.id),
+        hasDiffRow: Boolean(diffByLaneId[lane.id]),
+      })),
+      expandedLaneIndex: expandedAbsolute,
+      selectedLaneIndex: selectedAbsolute,
+      scrollOffsetRows: drawerScrollOffsetRows,
+    });
+  }, [
+    activeLaneId,
+    addMode,
+    addModeLaneIndex,
+    chatRowBudget,
+    diffByLaneId,
+    drawerLaneId,
+    drawerScrollOffsetRows,
+    drawerSection,
+    drawerSessionsSource,
+    orderedDrawerLanes,
+    selectedLaneIndex,
+    unavailableLaneIds,
+  ]);
+  const drawerLayoutValueRef = useRef(drawerLayoutValue);
+  useEffect(() => {
+    drawerLayoutValueRef.current = drawerLayoutValue;
+  }, [drawerLayoutValue]);
+  /** Resolve a drawer chat hit (window-relative lane + chat index) to its session. */
+  const drawerSessionForChatHit = useCallback((
+    hit: { laneIndex: number; chatIndex: number },
+    layout: DrawerLayout,
+  ): AgentChatSessionSummary | null => {
+    const plan = layout.lanes[hit.laneIndex];
+    if (!plan) return null;
+    const laneSessions = drawerSessionsSource
+      .filter((session) => session.laneId === plan.laneId)
+      .slice(0, plan.visibleChatCount);
+    return laneSessions[hit.chatIndex] ?? null;
+  }, [drawerSessionsSource]);
+  const drawerVisibleLaneSessions = useMemo(() => {
+    // Cap the browsable chat list at what the drawer actually renders for the
+    // expanded lane so keyboard selection can't land on an invisible row.
+    const laneId = drawerLaneId ?? activeLaneId;
+    const plan = drawerLayoutValue.lanes.find((entry) => entry.laneId === laneId && entry.expanded) ?? null;
+    const cap = plan ? plan.visibleChatCount : visibleDrawerChatCount(drawerLaneSessions.length);
+    return drawerLaneSessions.slice(0, cap);
+  }, [activeLaneId, drawerLaneId, drawerLaneSessions, drawerLayoutValue]);
   const selectedChatIndex = useMemo(() => {
     if (selectedDrawerChatAction === "new-chat") return drawerVisibleLaneSessions.length;
     const targetId = selectedDrawerChatId
@@ -3557,11 +3566,6 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     const index = drawerVisibleLaneSessions.findIndex((session) => session.sessionId === targetId);
     return index >= 0 ? index : 0;
   }, [activeLaneId, activeSessionId, drawerLaneId, drawerVisibleLaneSessions, selectedDrawerChatAction, selectedDrawerChatId]);
-  const addModeLaneIndex = useMemo(() => {
-    if (!addMode) return selectedLaneIndex;
-    const index = drawerLaneRows.findIndex((lane) => lane.id === addMode.cursorLaneId);
-    return index >= 0 ? index : 0;
-  }, [addMode, drawerLaneRows, selectedLaneIndex]);
   const addModeChatIndex = useMemo(() => {
     if (!addMode) return selectedChatIndex;
     const allLaneSessions = tileableDisplaySessions.filter((session) => session.laneId === addMode.cursorLaneId);
@@ -9516,14 +9520,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         }
       }
       if (mouse.kind === "drag" && inDrawerPane) {
-        const hit = drawerMouseHitForLine({
-          y: drawerLocalY,
-          laneCount: drawerLaneRows.length,
-          selectedLaneIndex,
-          chatCount: drawerVisibleLaneSessions.length,
-        });
+        const hit = drawerMouseHitForLayout({ y: drawerLocalY, layout: drawerLayoutValue });
         if (hit?.kind === "chat") {
-          const session = drawerVisibleLaneSessions[hit.index];
+          const session = drawerSessionForChatHit(hit, drawerLayoutValue);
           if (session) {
             dragAddSessionRef.current = { sessionId: session.sessionId, laneId: session.laneId };
             return;
@@ -9566,12 +9565,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
             openNewLaneForm();
             return;
           }
-          const hit = drawerMouseHitForLine({
-            y: drawerLocalY,
-            laneCount: drawerLaneRows.length,
-            selectedLaneIndex,
-            chatCount: drawerVisibleLaneSessions.length,
-          });
+          const hit = drawerMouseHitForLayout({ y: drawerLocalY, layout: drawerLayoutValue });
           if (hit?.kind === "lane") {
             const lane = drawerLaneRows[hit.index];
             if (lane) {
@@ -9583,8 +9577,15 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
               applyDrawerChatSelection({ session: null, action: null });
             }
           } else if (hit?.kind === "chat") {
-            const session = drawerVisibleLaneSessions[hit.index];
-            if (session) {
+            const session = drawerSessionForChatHit(hit, drawerLayoutValue);
+            const lane = drawerLaneRows[hit.laneIndex];
+            if (session && lane) {
+              // Clicking a chat under any lane card selects that lane too, so
+              // the always-visible previews are directly clickable.
+              setSelectedDrawerLaneAction(null);
+              setSelectedDrawerLaneId(lane.id);
+              setDrawerLaneId(lane.id);
+              selectActiveLaneId(lane.id);
               setDrawerSection("chats");
               setSelectedDrawerChatAction(null);
               setSelectedDrawerChatId(session.sessionId);
@@ -11590,20 +11591,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     if (drawerOpen && drawerPaneWidth > 0) {
       const drawerTopRow = 3 + goalBannerRows + addModeRows;
       const drawerBottomRow = drawerTopRow + Math.max(1, chatRowBudget) - 1;
-      const addModeLaneSessions = addMode
-        ? tileableDisplaySessions.filter((session) => session.laneId === addMode.cursorLaneId)
-        : [];
-      const registeredDrawerSessions = addMode
-        ? addModeLaneSessions.slice(0, visibleDrawerChatCount(addModeLaneSessions.length))
-        : drawerVisibleLaneSessions;
       for (let y = drawerTopRow; y <= drawerBottomRow; y += 1) {
         const localY = y - drawerTopRow + 1;
-        const hit = drawerMouseHitForLine({
-          y: localY,
-          laneCount: drawerLaneRows.length,
-          selectedLaneIndex: addMode ? addModeLaneIndex : selectedLaneIndex,
-          chatCount: registeredDrawerSessions.length,
-        });
+        const hit = drawerMouseHitForLayout({ y: localY, layout: drawerLayoutValue });
         if (hit?.kind === "lane") {
           const lane = drawerLaneRows[hit.index];
           if (!lane) continue;
@@ -11628,7 +11618,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
             zIndex: 2,
           });
         } else if (hit?.kind === "chat") {
-          const session = registeredDrawerSessions[hit.index];
+          const session = drawerSessionForChatHit(hit, drawerLayoutValue);
+          const hitLane = drawerLaneRows[hit.laneIndex];
           if (!session) continue;
           addTarget({
             id: `drawer:chat:${session.sessionId}:${y}`,
@@ -11639,6 +11630,12 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
                 return;
               }
               focusDrawerOnly();
+              if (hitLane) {
+                setSelectedDrawerLaneAction(null);
+                setSelectedDrawerLaneId(hitLane.id);
+                setDrawerLaneId(hitLane.id);
+                selectActiveLaneId(hitLane.id);
+              }
               setDrawerSection("chats");
               setSelectedDrawerChatAction(null);
               setSelectedDrawerChatId(session.sessionId);
@@ -12089,8 +12086,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     cycleReasoning,
     displaySessions,
     drawerLaneRows,
+    drawerLayoutValue,
     drawerOpen,
     drawerPaneWidth,
+    drawerSessionForChatHit,
     drawerVisibleLaneSessions,
     focusChat,
     focusDrawerOnly,

@@ -11,7 +11,6 @@ import {
   deletePromptForward,
   deletePreviousPromptLine,
   deletePreviousPromptWord,
-  drawerMouseHitForLine,
   encodeTerminalPromptSubmit,
   encodeTerminalPromptSubmitConfirm,
   applyCoalescedPromptInput,
@@ -520,40 +519,8 @@ describe("drawer mouse hit testing", () => {
     expect(resolveDrawerPaneWidth(400, true)).toBe(48);
   });
 
-  it("maps card-style drawer lines to lane and chat rows", () => {
-    // Layout for the selected lane (index 0) with 6 chats:
-    //   y=3 border, y=4 name, y=5 branch, y=6 diff, y=7 (chat margin),
-    //   y=8 CHATS header, y=9 chat 0, y=10 margin, y=11 chat 1, y=12 margin,
-    //   y=13 chat 2, y=14 margin, y=15 chat 3, y=16 margin, y=17 chat 4,
-    //   y=18 margin, y=19 chat 5, y=20 + new chat, y=21 bottom border,
-    //   y=22 marginTop separator, y=23 lane 1 top border, y=24 lane 1 name.
-    expect(drawerMouseHitForLine({ y: 5, laneCount: 5, selectedLaneIndex: 0, chatCount: 6 })).toEqual({
-      kind: "lane",
-      index: 0,
-    });
-    expect(drawerMouseHitForLine({ y: 9, laneCount: 5, selectedLaneIndex: 0, chatCount: 6 })).toEqual({
-      kind: "chat",
-      index: 0,
-    });
-    expect(drawerMouseHitForLine({ y: 11, laneCount: 5, selectedLaneIndex: 0, chatCount: 6 })).toEqual({
-      kind: "chat",
-      index: 1,
-    });
-    expect(drawerMouseHitForLine({ y: 20, laneCount: 5, selectedLaneIndex: 0, chatCount: 6 })).toEqual({
-      kind: "new-chat",
-    });
-    expect(drawerMouseHitForLine({ y: 24, laneCount: 5, selectedLaneIndex: 0, chatCount: 6 })).toEqual({
-      kind: "lane",
-      index: 1,
-    });
-    // 5 unselected lanes ahead consume 5 rows each (border+2 content+border+margin),
-    // so lane 5's card body starts at y=28. With 2 chats, chat 0 lands at y=34.
-    expect(drawerMouseHitForLine({ y: 34, laneCount: 6, selectedLaneIndex: 5, chatCount: 2 })).toEqual({
-      kind: "chat",
-      index: 0,
-    });
-  });
-
+  // Drawer mouse hit-testing now lives in drawerLayout.ts and is covered by
+  // __tests__/drawerLayout.test.ts against the shared layout model.
 });
 
 describe("prompt mouse hit testing", () => {

@@ -9,7 +9,16 @@ import { useSpinFrame } from "../spinTick";
 import { theme, type LaneStatusKind } from "../theme";
 import type { AdeCodeProvider } from "../types";
 import { useHoveredHitId } from "../hitTestRegistry";
-import { Chip, Rail, statusGlyph, type StatusKind } from "./designKit";
+import {
+  computeDrawerLayout,
+  drawerLaneWindow,
+  visibleDrawerChatCount,
+  visibleDrawerLaneCount,
+  type DrawerLaneInput,
+} from "../drawerLayout";
+import { Rail, statusGlyph, type StatusKind } from "./designKit";
+
+export { visibleDrawerChatCount, visibleDrawerLaneCount };
 
 type DrawerDensity = "full" | "mini";
 type DrawerMode = "lanes" | "chats";
@@ -24,26 +33,6 @@ export type DrawerPrSummary = {
   checksPassed: number;
   checksTotal: number;
 };
-
-export function visibleDrawerLaneCount(panelHeight: number, laneCount: number): number {
-  // Each lane card is 4 rows (2 content + 2 border) plus a 1-row margin between
-  // adjacent cards. Header + footer hints + new-lane row eat about 6 rows of
-  // outer chrome. Use 5 rows per card so the count stays inside the visible
-  // panel even when the selected card also expands its chat block.
-  const lanesMaxRows = Math.max(2, Math.floor((panelHeight - 6) / 5));
-  return Math.min(laneCount, 12, lanesMaxRows);
-}
-
-export function visibleDrawerChatCount(chatCount: number, availableRows?: number): number {
-  const cap = 12;
-  if (availableRows == null) return Math.min(chatCount, cap);
-  // Each chat row costs 2 rows (content + margin); first row has no margin.
-  // The chat block also has a header ("CHATS · N") and a footer ("+ new chat"),
-  // costing 3 rows of chrome (header + marginTop + footer).
-  const chromeRows = 3;
-  const maxByHeight = Math.max(1, Math.floor((availableRows - chromeRows + 1) / 2));
-  return Math.min(chatCount, cap, maxByHeight);
-}
 
 /** Derive a wireframe-bucket status for a lane from its data + active session. */
 function deriveLaneStatus(
@@ -188,19 +177,50 @@ export function Drawer({
   const resolvedPanelHeight = panelHeight ?? stdout?.rows ?? 40;
   const ordered = React.useMemo(() => sortLanesForStackGraph(lanes), [lanes]);
   const rowMeta = React.useMemo(() => computeStackRowMeta(ordered), [ordered]);
-  const visibleCount = visibleDrawerLaneCount(resolvedPanelHeight, ordered.length);
-  const laneStart = Math.max(0, Math.min(scrollOffsetRows, Math.max(0, ordered.length - visibleCount)));
-  const laneRows = ordered.slice(laneStart, laneStart + visibleCount);
-  const visibleRowMeta = rowMeta.slice(laneStart, laneStart + laneRows.length);
 
   const browsing = browsingLaneId ?? activeLaneId;
+  // selectedLaneIndex is relative to the visible window (app.tsx derives it
+  // from the sliced lane rows); convert to an absolute index into `ordered`
+  // for the shared layout. An index at/past the window count means the
+  // "+ new lane" row is selected.
+  const { start: windowStart, count: windowCount } = drawerLaneWindow(
+    resolvedPanelHeight,
+    ordered.length,
+    scrollOffsetRows,
+  );
+  const selectedAbsoluteIndex = selectedLaneIndex >= 0 && selectedLaneIndex < windowCount
+    ? windowStart + selectedLaneIndex
+    : null;
+  // The expanded card (full chat block) tracks the selected lane in lanes mode
+  // and the browsing lane in chats mode — app.tsx mirrors this for the mouse
+  // hit-test via the same computeDrawerLayout inputs.
+  const expandedAbsoluteIndex = mode === "chats"
+    ? (() => {
+        const index = ordered.findIndex((l) => l.id === browsing);
+        return index >= 0 ? index : null;
+      })()
+    : selectedAbsoluteIndex;
+  const layout = computeDrawerLayout({
+    panelHeight: resolvedPanelHeight,
+    lanes: ordered.map((lane): DrawerLaneInput => ({
+      laneId: lane.id,
+      chatCount: sessions.filter((s) => s.laneId === lane.id).length,
+      worktreeAvailable: !unavailableLaneIds.has(lane.id),
+      hasDiffRow: Boolean(diffByLaneId[lane.id]),
+    })),
+    expandedLaneIndex: expandedAbsoluteIndex,
+    selectedLaneIndex: selectedAbsoluteIndex,
+    scrollOffsetRows,
+  });
+  const laneStart = layout.laneStart;
+  const laneRows = layout.lanes.map((plan) => ordered[plan.laneIndex]!);
+  const visibleRowMeta = layout.lanes.map((plan) => rowMeta[plan.laneIndex]!);
   const browsingLane = laneRows.find((l) => l.id === browsing) ?? null;
-  // Budget rows for the chat block: panel height minus outer chrome (header 1 +
-  // footer hints 2 + new-lane 1 + borders 2 = 6) minus rows consumed by lane
-  // cards (each non-selected card ~5 rows, selected card ~6 with diff line).
-  const chatRowBudget = resolvedPanelHeight - 6 - laneRows.length * 5;
-  const laneSessions = browsingLane
-    ? sessions.filter((s) => s.laneId === browsingLane.id).slice(0, visibleDrawerChatCount(sessions.length, chatRowBudget))
+  const expandedPlan = layout.lanes.find((plan) => plan.expanded) ?? null;
+  const laneSessions = expandedPlan
+    ? sessions
+        .filter((s) => s.laneId === expandedPlan.laneId)
+        .slice(0, expandedPlan.visibleChatCount)
     : [];
 
   const width = density === "mini"
@@ -260,21 +280,18 @@ export function Drawer({
           </Box>
         ) : null}
         {laneRows.map((lane, index) => {
-          // laneRows is sliced by laneStart for scrolling, but selectedLaneIndex
-          // is an ABSOLUTE index into `ordered`; rebase before comparing so the
-          // highlight tracks the right lane once the list is scrolled.
-          const absoluteIndex = laneStart + index;
-          const isSelected = absoluteIndex === selectedLaneIndex;
+          // laneRows is sliced by laneStart for scrolling; selection is tracked
+          // as an absolute index resolved above so the highlight stays on the
+          // right lane once the list is scrolled.
+          const plan = layout.lanes[index]!;
+          const isSelected = plan.laneIndex === selectedAbsoluteIndex;
           const isHovered = hoveredId?.startsWith(`drawer:lane:${lane.id}:`) ?? false;
           const meta = visibleRowMeta[index] ?? { depth: 0, isLast: false, prefix: "" };
-          const worktreeAvailable = !unavailableLaneIds.has(lane.id);
+          const worktreeAvailable = plan.worktreeAvailable;
           const status = deriveLaneStatus(lane, sessions, activeLaneId, unavailableLaneIds);
-          const isBrowsing = lane.id === browsing;
           const sessionsInLane = sessions.filter((session) => session.laneId === lane.id);
-          const laneChatSessions = sessionsInLane.slice(0, visibleDrawerChatCount(sessionsInLane.length, chatRowBudget));
-          const showChatBlock = mode === "chats"
-            ? isBrowsing && browsingLane?.id === lane.id
-            : isSelected;
+          const laneChatSessions = sessionsInLane.slice(0, plan.visibleChatCount);
+          const showChatBlock = plan.expanded;
           // Flat rows: no side borders or per-card padding, so content uses the
           // full drawer width. Only the outer drawer border (2) + the lane
           // container paddingX (2) inset the content now.
@@ -321,7 +338,15 @@ export function Drawer({
                   interactive={mode === "chats"}
                   hoveredId={hoveredId}
                 />
-              ) : null}
+              ) : (
+                <CompactChatPreview
+                  sessions={laneChatSessions}
+                  moreCount={plan.moreCount}
+                  activeSessionId={activeSessionId}
+                  width={laneContentWidth}
+                  hoveredId={hoveredId}
+                />
+              )}
             </Box>
           );
         })}
@@ -336,8 +361,8 @@ export function Drawer({
       />
       <Box paddingX={1} flexShrink={0}>
         <Text
-          color={focused && mode === "lanes" && selectedLaneIndex >= ordered.length ? theme.color.violet : theme.color.t4}
-          bold={focused && mode === "lanes" && selectedLaneIndex >= ordered.length}
+          color={focused && mode === "lanes" && selectedLaneIndex >= windowCount ? theme.color.violet : theme.color.t4}
+          bold={focused && mode === "lanes" && selectedLaneIndex >= windowCount}
         >
           + new lane
         </Text>
@@ -546,19 +571,17 @@ function LaneCard({
   const name = truncate(lane.name, nameMax);
 
   // Line 2 indents under the name (past prefix + lead chrome), capped so deep
-  // stacks don't push the branch ref off a narrow drawer.
+  // stacks don't push the meta line off a narrow drawer. The branch ref is
+  // deliberately NOT rendered here — it was clutter; lane details / the header
+  // still surface it when needed.
   const line2Indent = " ".repeat(Math.min(indicatorWidth + LEAD_WIDTH, 6));
-  const branch = lane.branchRef ?? "";
   // Diff is rendered on its own third line under selected cards; never inline
-  // on line 2. Hints (missing worktree, dirty, rebase, checkpoint Xd) still
-  // appear between branch and age on line 2.
+  // on line 2. Hints (missing worktree, dirty, rebase, checkpoint Xd) appear
+  // before the age on line 2.
   const inlineHint = detail.hint ?? "";
   const canShowAge = Boolean(age) && contentWidth >= 22;
   const metaWidth = contentWidth - line2Indent.length - 2 - (canShowAge ? age.length + 3 : 0);
-  const hintMax = inlineHint ? Math.min(inlineHint.length, Math.max(0, metaWidth - 7)) : 0;
-  const branchMax = Math.max(3, metaWidth - (hintMax ? hintMax + 3 : 0));
-  const truncBranch = truncate(branch, branchMax);
-  const truncHint = inlineHint ? truncate(inlineHint, hintMax) : "";
+  const truncHint = inlineHint ? truncate(inlineHint, Math.max(3, metaWidth)) : "";
   // Diff renders only when the card is selected — otherwise the line list stays
   // calm. Selected cards get an extra row under the branch with +adds/−dels.
   const showDiffLine = selected && detail.diff !== null;
@@ -602,16 +625,12 @@ function LaneCard({
           ) : (
             <Text color={theme.color.t5}>· </Text>
           )}
-          <Chip value={truncBranch} valueColor={theme.color.t3} />
           {truncHint ? (
-            <>
-              <Text color={theme.color.t5}> · </Text>
-              <Text color={theme.color.t3}>{truncHint}</Text>
-            </>
+            <Text color={theme.color.t3}>{truncHint}</Text>
           ) : null}
           {canShowAge && age ? (
             <>
-              <Text color={theme.color.t5}> · </Text>
+              {truncHint ? <Text color={theme.color.t5}> · </Text> : null}
               <Text color={theme.color.t3}>{age}</Text>
             </>
           ) : null}
@@ -753,6 +772,68 @@ function ActiveChatSpin() {
   return <Text color={theme.color.running}>{frame} </Text>;
 }
 
+/**
+ * Always-visible compact chat rows under non-expanded lane cards: one row per
+ * chat (status dot + provider glyph + title + age) and an optional dim
+ * "+N more" row. No header, no "+ new chat" — those stay on the expanded
+ * card. Row count MUST match the lane's DrawerLanePlan (visibleChatCount +
+ * moreCount-row) so the drawer mouse hit-test stays aligned.
+ */
+function CompactChatPreview({
+  sessions,
+  moreCount,
+  activeSessionId,
+  width,
+  hoveredId,
+}: {
+  sessions: AgentChatSessionSummary[];
+  moreCount: number;
+  activeSessionId: string | null;
+  width: number;
+  hoveredId?: string | null;
+}) {
+  if (sessions.length === 0 && moreCount <= 0) return null;
+  const max = Math.max(8, width - 4);
+  return (
+    <Box flexDirection="column">
+      {sessions.map((session) => {
+        const running = session.status === "active";
+        const hovered = hoveredId?.startsWith(`drawer:chat:${session.sessionId}:`) ?? false;
+        const provider = (session.provider as AdeCodeProvider) ?? null;
+        const exec = theme.provider(provider);
+        const when = formatSessionAge(session);
+        const dot = statusGlyph(chatStatusDot(session));
+        const label = truncate(formatSessionLabel(session), max - 8);
+        const titleColor: string = hovered
+          ? theme.color.violet
+          : session.awaitingInput && !running
+            ? theme.color.attention
+            : theme.color.t2;
+        return (
+          <Box key={session.sessionId}>
+            <Text wrap="truncate-end">
+              {running ? <Text>{"  "}</Text> : <Text color={dot.color} bold={session.awaitingInput}>{dot.glyph} </Text>}
+              <Text color={exec.color}>{exec.glyph} </Text>
+              <Text color={titleColor}>{label}</Text>
+              <Text> </Text>
+              {running ? <ActiveChatSpin /> : null}
+              <Text color={theme.color.t4}>{when}</Text>
+              {session.sessionId === activeSessionId ? (
+                <Text color={theme.color.violet}> ●</Text>
+              ) : null}
+            </Text>
+          </Box>
+        );
+      })}
+      {moreCount > 0 ? (
+        <Box>
+          <Text color={theme.color.t5} dimColor wrap="truncate-end">{`  +${moreCount} more`}</Text>
+        </Box>
+      ) : null}
+    </Box>
+  );
+}
+
 /** Mini-row drawer variant (single-line rows). Matches D3MiniRow in the wireframe. */
 function MiniDrawer({
   width,
@@ -814,8 +895,8 @@ function MiniDrawer({
       {lanes.map((lane, index) => {
         const status = deriveLaneStatus(lane, rawSessions, activeLaneId, unavailableLaneIds);
         const meta = rowMeta[index] ?? { depth: 0, prefix: "", isLast: false };
-        // lanes is sliced by laneStart; selectedLaneIndex is absolute.
-        const selected = laneStart + index === selectedLaneIndex;
+        // lanes is sliced by laneStart; selectedLaneIndex is window-relative.
+        const selected = index === selectedLaneIndex;
         const hovered = hoveredId?.startsWith(`drawer:lane:${lane.id}:`) ?? false;
         const detail = formatLaneAge(lane);
         const isVmLane = lane.runtimePlacement === "macos-vm";
@@ -881,7 +962,7 @@ function MiniDrawer({
             );
           })}
           <Box paddingX={1}>
-            {lanes[selectedLaneIndex - laneStart] && unavailableLaneIds.has(lanes[selectedLaneIndex - laneStart]!.id) ? (
+            {lanes[selectedLaneIndex] && unavailableLaneIds.has(lanes[selectedLaneIndex]!.id) ? (
               <Text color={theme.color.error}>worktree missing</Text>
             ) : (
               <Text color={selectedChatIndex === sessions.length || (hoveredId?.startsWith("drawer:new-chat:") ?? false) ? theme.color.violet : theme.color.t4}>
@@ -904,8 +985,8 @@ function MiniDrawer({
       </Box>
       <Box paddingX={1} flexShrink={0}>
         <Text
-          color={focused && mode === "lanes" && selectedLaneIndex >= laneTotal ? theme.color.violet : theme.color.t4}
-          bold={focused && mode === "lanes" && selectedLaneIndex >= laneTotal}
+          color={focused && mode === "lanes" && selectedLaneIndex >= lanes.length ? theme.color.violet : theme.color.t4}
+          bold={focused && mode === "lanes" && selectedLaneIndex >= lanes.length}
         >
           + lane
         </Text>
