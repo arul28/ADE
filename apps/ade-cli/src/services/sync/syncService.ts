@@ -248,16 +248,21 @@ const SYNC_HOST_MAX_PORT = DEFAULT_SYNC_HOST_PORT + SYNC_HOST_PORT_RETRY_WINDOW;
 const LOCAL_LANE_PRESENCE_HEARTBEAT_MS = 30_000;
 const TRANSFER_READINESS_CACHE_MS = 15_000;
 const STALE_BRAIN_LAST_SEEN_MS = 5 * 60_000;
-const VIEWER_DRAFT_TRANSPORT_ERROR_CODES = new Set([
+const VIEWER_DRAFT_TRANSPORT_ERROR_CODES = [
   "ECONNREFUSED",
   "ETIMEDOUT",
   "EHOSTUNREACH",
   "ENETUNREACH",
   "ENOTFOUND",
   "EAI_AGAIN",
-]);
-const VIEWER_DRAFT_TRANSPORT_ERROR_PATTERN =
-  /\b(?:ECONNREFUSED|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH|ENOTFOUND|EAI_AGAIN)\b/i;
+] as const;
+const VIEWER_DRAFT_TRANSPORT_ERROR_CODE_SET = new Set<string>(
+  VIEWER_DRAFT_TRANSPORT_ERROR_CODES,
+);
+const VIEWER_DRAFT_TRANSPORT_ERROR_PATTERN = new RegExp(
+  `\\b(?:${VIEWER_DRAFT_TRANSPORT_ERROR_CODES.join("|")})\\b`,
+  "i",
+);
 
 function generatePairingPin(): string {
   return randomInt(0, 1_000_000).toString().padStart(6, "0");
@@ -375,7 +380,7 @@ function isDraftTargetLocalDevice(
 
 function isViewerDraftTransportError(error: unknown): boolean {
   const code = (error as { code?: unknown } | null | undefined)?.code;
-  if (typeof code === "string" && VIEWER_DRAFT_TRANSPORT_ERROR_CODES.has(code)) {
+  if (typeof code === "string" && VIEWER_DRAFT_TRANSPORT_ERROR_CODE_SET.has(code)) {
     return true;
   }
   const message = error instanceof Error ? error.message : String(error);

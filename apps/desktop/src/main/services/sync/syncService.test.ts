@@ -1,5 +1,4 @@
 import fs from "node:fs";
-import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -96,19 +95,6 @@ function makeProjectRoot(prefix: string): string {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
   fs.mkdirSync(path.join(root, ".ade", "artifacts"), { recursive: true });
   return root;
-}
-
-async function getUnusedPort(): Promise<number> {
-  const server = net.createServer();
-  await new Promise<void>((resolve) => {
-    server.listen(0, "127.0.0.1", resolve);
-  });
-  const address = server.address();
-  const port = typeof address === "object" && address ? address.port : 0;
-  await new Promise<void>((resolve, reject) => {
-    server.close((error) => (error ? reject(error) : resolve()));
-  });
-  return port;
 }
 
 function insertProjectAndLane(
@@ -440,7 +426,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
       path.join(appPairingDir, "sync-peer-draft.json"),
       `${JSON.stringify({
         host: "127.0.0.1",
-        port: await getUnusedPort(),
+        port: 1,
         authKind: "bootstrap",
         lastRemoteDbVersion: 0,
       }, null, 2)}\n`,
