@@ -61,6 +61,8 @@ export function deriveChatInfoSnapshot(args: {
   streaming: boolean;
   inspectedSubagentId?: string | null;
   pr?: ChatInfoSnapshot["pr"];
+  /** Closed-but-resumable Claude terminal session (drives the resume row). */
+  resumableTerminal?: boolean;
 }): ChatInfoSnapshot {
   const provider = (args.activeSession?.provider ?? args.provider) as AdeCodeProvider;
   const planEvent = latestPlanEvent(args.events);
@@ -85,5 +87,6 @@ export function deriveChatInfoSnapshot(args: {
     // session summary, and the 4 shared runtimes map 1:1 from provider).
     capability: resolveSubagentCapability(provider),
     mission: deriveMissionSnapshot(args.events),
+    resumableTerminal: args.resumableTerminal ?? false,
   };
 }

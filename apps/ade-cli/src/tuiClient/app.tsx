@@ -147,7 +147,7 @@ import {
   terminalPageStep,
 } from "./components/TerminalScrollState";
 import { Header } from "./components/Header";
-import { computeLaneChatCounts, DETAILS_BODY_MAX_LINES, LANE_DETAIL_ACTIONS, LANE_DETAIL_PR_ACTION_INDEX, laneDetailsInteractionLayout, rightPaneScrollableRowCount, RightPane } from "./components/RightPane";
+import { CHAT_INFO_RESUME_ROW_LINES, chatInfoSelectionOffset, computeLaneChatCounts, DETAILS_BODY_MAX_LINES, LANE_DETAIL_ACTIONS, LANE_DETAIL_PR_ACTION_INDEX, laneDetailsInteractionLayout, rightPaneScrollableRowCount, RightPane } from "./components/RightPane";
 import { buildModelPickerLayout, defaultSelectionFor, railEntrySelection } from "./components/ModelPicker/modelPickerLayout";
 import { modelPickerGeometry } from "./components/ModelPicker/modelPickerGeometry";
 import { SlashPalette, slashPaletteReservedRows } from "./components/SlashPalette";
@@ -1272,6 +1272,17 @@ export function resolveContextDefault(args: ContextDefaultArgs): RightPaneConten
     return seedLaneDetails(args.activeLane, !args.unavailableLaneIds.has(args.activeLane.id));
   }
   return { kind: "empty" };
+}
+
+/**
+ * Setup surfaces shown while a draft "new chat" is being configured (today the
+ * model-picker opened on the "new-chat" surface — both the new-chat form rows
+ * and the model picker live on that one pane kind). The first-send draft
+ * commit replaces exactly these with the live chat-info pane; anything else on
+ * the right pane was deliberately opened by the user and is never hijacked.
+ */
+export function isNewChatSetupPane(pane: RightPaneContent): boolean {
+  return pane.kind === "model-picker" && pane.surface === "new-chat";
 }
 
 function formatOutputStyles(styles: Awaited<ReturnType<typeof listClaudeOutputStyles>>, activeStyle?: string | null): string {
@@ -2729,6 +2740,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   const promptHistoryIndexBySessionIdRef = useRef<Record<string, number | null>>({});
   const promptHistoryDraftBySessionIdRef = useRef<Record<string, string>>({});
   const rightPaneKindRef = useRef<RightPaneContent["kind"]>("empty");
+  // Full right-pane mirror so async draft-commit paths (first send) can check
+  // the CURRENT pane without stale-closure state (see showChatInfoAfterDraftCommit).
+  const rightPaneRef = useRef<RightPaneContent>({ kind: "empty" });
   const lastLocalSendAtRef = useRef<number>(0);
   const eventCountRef = useRef<number>(0);
   const eventDedupKeysRef = useRef<Set<string>>(new Set());
@@ -3283,6 +3297,14 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     () => terminalSessions.find((session) => session.terminalId === activeSessionId) ?? null,
     [activeSessionId, terminalSessions],
   );
+  // Chat-shaped view of the active session that ALSO covers Claude terminal
+  // sessions (which never appear in `sessions`). Drives chat-info availability
+  // and the context resolver so terminal chats get the same chat-info default
+  // pane as SDK chats instead of falling back to lane-details.
+  const activeDisplaySession = useMemo(
+    () => activeSession ?? (activeTerminalSession ? terminalSessionToChatSummary(activeTerminalSession) : null),
+    [activeSession, activeTerminalSession],
+  );
   const activeTerminalProvider = terminalSessionProvider(activeTerminalSession);
   const displaySessions = useMemo(
     () => [...sessions.filter((session) => !session.archivedAt), ...terminalSessions.map(terminalSessionToChatSummary)]
@@ -3357,10 +3379,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     [subagentSnapshots],
   );
   const chatInfo = useMemo(() => {
-    const chatLaneId = activeSession?.laneId ?? activeLaneId;
+    const chatLaneId = activeDisplaySession?.laneId ?? activeLaneId;
     return deriveChatInfoSnapshot({
       events,
-      activeSession,
+      activeSession: activeDisplaySession,
       provider: modelState.provider,
       modelLabel: modelState.displayName || modelState.model || modelState.provider,
       laneLabel: activeLane?.name ?? null,
@@ -3370,11 +3392,15 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       streaming,
       inspectedSubagentId,
       pr: (chatLaneId ? prByLaneId?.[chatLaneId] : null) ?? null,
+      // Closed-but-resumable Claude terminal → chat-info shows the orange
+      // resume row (activating it calls resumeClosedTerminalSession).
+      resumableTerminal: isTerminalSessionResumable(activeTerminalSession),
     });
   }, [
+    activeDisplaySession,
     activeLane?.name,
     activeLaneId,
-    activeSession,
+    activeTerminalSession,
     currentGoal,
     events,
     inspectedSubagentId,
@@ -3390,9 +3416,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   useEffect(() => {
     chatInfoRef.current = chatInfo;
   }, [chatInfo]);
-  // Chat info is available for any active chat; subagent rows fill in when
-  // the provider emits agent lifecycle events.
-  const subagentPaneCommandAvailable = Boolean(activeSession && !draftChatActive);
+  // Chat info is available for any active chat — including Claude terminal
+  // sessions (resume row / status); subagent rows fill in when the provider
+  // emits agent lifecycle events.
+  const subagentPaneCommandAvailable = Boolean(activeDisplaySession && !draftChatActive);
   const subagentsButtonVisibleRef = useRef<boolean>(false);
   useEffect(() => {
     subagentsButtonVisibleRef.current = subagentPaneCommandAvailable;
@@ -3424,12 +3451,17 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
 	    }
 	  }, [rightPane.kind]);
   useEffect(() => {
+    rightPaneRef.current = rightPane;
+  }, [rightPane]);
+  useEffect(() => {
     const content = subagentPaneContentFromRightPane(rightPane);
     if (!content) return;
     // Chat-info exposes (snapshot count + 1) selectable rows: main row at 0,
-    // subagents at 1..N. Clamp prior selection back into range when the
-    // roster shrinks (e.g., a subagent finishes and is reaped).
-    const rowCount = buildSubagentPaneRows(content).filter((row) => row.kind === "snapshot").length;
+    // subagents at 1..N — plus one extra leading row when the resume row is
+    // visible (0 = resume, 1 = main, …). Clamp prior selection back into range
+    // when the roster shrinks (e.g., a subagent finishes and is reaped).
+    const resumeOffset = rightPane.kind === "chat-info" ? chatInfoSelectionOffset(rightPane.info) : 0;
+    const rowCount = buildSubagentPaneRows(content).filter((row) => row.kind === "snapshot").length + resumeOffset;
     setRightSelectionIndex((index) => Math.max(0, Math.min(Number.isFinite(index) ? Math.floor(index) : 0, rowCount)));
   }, [rightPane]);
   useEffect(() => {
@@ -4428,7 +4460,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     if (rightPane.kind === "form") return;
     const next = resolveContextDefault({
       draftChatActive: draftChatActiveRef.current,
-      activeSession,
+      // Includes Claude terminal sessions so their context default is the
+      // chat-info pane (resume row + status), not lane-details.
+      activeSession: activeDisplaySession,
       activeLane,
       liveAgentCount,
       highlightedDrawerLane,
@@ -4436,7 +4470,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       drawerNav: drawerNavTarget,
       chatInfo,
       subagentSnapshots,
-      provider: (activeSession?.provider ?? modelState.provider) as AdeCodeProvider,
+      provider: (activeDisplaySession?.provider ?? modelState.provider) as AdeCodeProvider,
       unavailableLaneIds,
       newChatSetup: (drawerLaneId ?? activeLaneId)
         ? {
@@ -4467,9 +4501,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       return next;
     });
   }, [
+    activeDisplaySession,
     activeLane,
     activeLaneId,
-    activeSession,
     chatInfo,
     draftChatActive,
     drawerLane,
@@ -6746,6 +6780,26 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     return () => clearInterval(timer);
   }, [addNotice, connection, connectionLost, forceEmbedded, mode, preferServiceRepair, project, refreshState, socketPath, streaming]);
 
+  // First-send draft commit → Chat Info. While a draft new chat is being set
+  // up, the right pane shows the new-chat setup surface (model-picker, surface
+  // "new-chat"). Once the first send turns the draft into a real session, swap
+  // that setup pane for the live Chat Info view — the same content
+  // openSubagentsPane builds (the chat-info refresh effect keeps it live, so
+  // this is never a stale snapshot). Gated to the setup pane kinds so a pane
+  // the user deliberately opened mid-draft (a form, /diff, /help, …) — or a
+  // pane they explicitly dismissed — is never hijacked. Marking the pane as
+  // user-opened ("chat-info", exactly like ^a/openSubagentsPane) keeps the
+  // context resolver from transiently stomping it back to lane-details while
+  // the freshly created session (terminal sessions especially) is still in
+  // flight to refreshState.
+  const showChatInfoAfterDraftCommit = useCallback(() => {
+    if (!isNewChatSetupPane(rightPaneRef.current)) return;
+    setRightPane({ kind: "chat-info", info: chatInfoRef.current });
+    setRightSelectionIndex(0);
+    setRightOpen(true);
+    lastUserOpenedPaneRef.current = "chat-info";
+  }, []);
+
   const ensureActiveSession = useCallback(async (): Promise<string | null> => {
     const conn = connectionRef.current;
     const laneId = activeLaneIdRef.current;
@@ -6795,9 +6849,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     setSessions((current) => mergeOptimisticChatSessions(current, optimisticChatSessionsRef.current));
     setDraftChatMode(false);
     selectActiveSessionId(created.id);
+    showChatInfoAfterDraftCommit();
     await refreshState();
     return created.id;
-  }, [addNotice, lanes, modelState, refreshState, selectActiveSessionId, sessions, setDraftChatMode]);
+  }, [addNotice, lanes, modelState, refreshState, selectActiveSessionId, sessions, setDraftChatMode, showChatInfoAfterDraftCommit]);
 
   const resolvePendingApproval = useCallback(async (
     approval: PendingApproval,
@@ -6903,6 +6958,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       setDraftChatMode(false);
       activeTerminalSessionRef.current = normalizeChatTerminalSession(created.session);
       selectActiveSessionId(created.sessionId);
+      showChatInfoAfterDraftCommit();
       await refreshState();
       return true;
     };
@@ -6911,7 +6967,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       .then(run);
     claudeTerminalSubmitQueueRef.current = queued;
     return await queued;
-  }, [addNotice, chatRowBudget, refreshState, refreshTerminalPreview, selectActiveSessionId, setDraftChatMode, terminalPaneWidth]);
+  }, [addNotice, chatRowBudget, refreshState, refreshTerminalPreview, selectActiveSessionId, setDraftChatMode, showChatInfoAfterDraftCommit, terminalPaneWidth]);
 
   const resumeClosedTerminalSession = useCallback(async (terminal: ChatTerminalSession): Promise<boolean> => {
     const conn = connectionRef.current;
@@ -6929,9 +6985,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     setDraftChatMode(false);
     activeTerminalSessionRef.current = normalizeChatTerminalSession(resumed.session);
     selectActiveSessionId(resumed.sessionId);
+    showChatInfoAfterDraftCommit();
     await refreshState();
     return true;
-  }, [chatRowBudget, refreshState, selectActiveSessionId, setDraftChatMode, terminalPaneWidth]);
+  }, [chatRowBudget, refreshState, selectActiveSessionId, setDraftChatMode, showChatInfoAfterDraftCommit, terminalPaneWidth]);
 
   const startClaudeTerminalForPrompt = useCallback(async (text: string): Promise<string | null> => {
     const conn = connectionRef.current;
@@ -6970,9 +7027,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     setDraftChatMode(false);
     if (created.session) activeTerminalSessionRef.current = created.session;
     selectActiveSessionId(created.sessionId);
+    showChatInfoAfterDraftCommit();
     await refreshState();
     return created.sessionId;
-  }, [addNotice, chatRowBudget, lanes, refreshState, selectActiveSessionId, setDraftChatMode, terminalPaneWidth]);
+  }, [addNotice, chatRowBudget, lanes, refreshState, selectActiveSessionId, setDraftChatMode, showChatInfoAfterDraftCommit, terminalPaneWidth]);
 
   const sendClaudeModelCommandToTerminal = useCallback(async (modelRef?: string | null): Promise<boolean> => {
     const terminal = activeTerminalSessionRef.current;
@@ -9961,10 +10019,17 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           setRightOpen(true);
           focusDetailsOnly();
           if (rightPane.kind === "chat-info") {
-            const subagentPaneTop = 4 + goalBannerRows + addModeRows;
+            // The resume row (when visible) sits ABOVE the roster, shifting it
+            // down — compensate in the pane-top offset (same mechanism as the
+            // goal-banner / add-mode header lines) and map roster indices back
+            // into the shifted selection space.
+            const resumeOffset = chatInfoSelectionOffset(rightPane.info);
+            const subagentPaneTop = 4 + goalBannerRows + addModeRows + (resumeOffset ? CHAT_INFO_RESUME_ROW_LINES : 0);
             const subagentContent = subagentPaneContentFromRightPane(rightPane);
-            const nextIndex = subagentContent ? subagentIndexForPaneLine(subagentContent, mouse.y - subagentPaneTop, rightSelectionIndex) : null;
-            if (nextIndex != null) setRightSelectionIndex(nextIndex);
+            const nextIndex = subagentContent
+              ? subagentIndexForPaneLine(subagentContent, mouse.y - subagentPaneTop, rightSelectionIndex - resumeOffset)
+              : null;
+            if (nextIndex != null) setRightSelectionIndex(nextIndex + resumeOffset);
           }
           return;
         }
@@ -10071,11 +10136,16 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         && mouse.y != null
       ) {
         if (mouse.x >= rightStart) {
-          const subagentPaneTop = 4 + goalBannerRows + addModeRows;
+          // Resume row shifts the roster down — see the chat-info hover
+          // handler above for the offset rationale.
+          const resumeOffset = chatInfoSelectionOffset(rightPane.info);
+          const subagentPaneTop = 4 + goalBannerRows + addModeRows + (resumeOffset ? CHAT_INFO_RESUME_ROW_LINES : 0);
           const subagentContent = subagentPaneContentFromRightPane(rightPane);
-          const nextIndex = subagentContent ? subagentIndexForPaneLine(subagentContent, mouse.y - subagentPaneTop, rightSelectionIndex) : null;
+          const nextIndex = subagentContent
+            ? subagentIndexForPaneLine(subagentContent, mouse.y - subagentPaneTop, rightSelectionIndex - resumeOffset)
+            : null;
           if (nextIndex != null) {
-            setRightSelectionIndex(nextIndex);
+            setRightSelectionIndex(nextIndex + resumeOffset);
           }
           setRightOpen(true);
           setPaneFocus("details");
@@ -11026,9 +11096,12 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       if (!subagentContent) return;
       const snapshotRows = buildSubagentPaneRows(subagentContent)
         .filter((row): row is Extract<SubagentPaneRow, { kind: "snapshot" }> => row.kind === "snapshot");
-      // Selection: 0 = main row; 1..N = subagent rows.
-      const selectableCount = snapshotRows.length + 1;
-      const selectedRow = rightSelectionIndex > 0 ? snapshotRows[rightSelectionIndex - 1] : null;
+      // Selection: 0 = main row; 1..N = subagent rows — shifted down by one
+      // when the resume row is visible (0 = resume, 1 = main, …).
+      const resumeOffset = chatInfoSelectionOffset(rightPane.info);
+      const selectableCount = snapshotRows.length + 1 + resumeOffset;
+      const resumeRowSelected = resumeOffset === 1 && rightSelectionIndex === 0;
+      const selectedRow = rightSelectionIndex > resumeOffset ? snapshotRows[rightSelectionIndex - 1 - resumeOffset] : null;
       const selectedSnapshot: SubagentSnapshot | null = selectedRow ? selectedRow.snapshot : null;
       // ^k — stop the selected Droid AGI worker. The Droid worker subagent id IS
       // its workerSessionId (see droidSdkEventMapper.mission_worker_started).
@@ -11056,9 +11129,24 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         return;
       }
       if (key.return) {
+        // Resume row (closed-but-resumable Claude terminal): same primitive
+        // the desktop/mobile crashed-CLI resume buttons use (pty.resumeSession).
+        // On success the pane simply stays on chat-info for the resumed
+        // session (resumableTerminal flips false, the row disappears).
+        if (resumeRowSelected) {
+          const terminal = activeTerminalSessionRef.current;
+          if (terminal) {
+            void resumeClosedTerminalSession(terminal)
+              .then((resumed) => {
+                if (resumed) addNotice("Resuming Claude session…", "info");
+              })
+              .catch((err) => addNotice(err instanceof Error ? err.message : String(err), "error"));
+          }
+          return;
+        }
         // Capability gate: only runtimes with a real child transcript
         // (Codex/OpenCode) take over the main chat. Cursor/Droid keep the row
-        // selected with its inline detail shown; selecting "main" (row 0) always
+        // selected with its inline detail shown; selecting "main" always
         // returns to the parent chat.
         if (selectedSnapshot && !chatInfoRef.current.capability.canViewFullTranscript) {
           return;
@@ -12342,16 +12430,44 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         }
       } else if (rightPane.kind === "chat-info") {
         const subagentContent = subagentPaneContentFromRightPane(rightPane);
-        const subagentPaneTop = 4 + goalBannerRows + addModeRows;
+        // The resume row (when visible) adds CHAT_INFO_RESUME_ROW_LINES above
+        // the roster, so the roster's pane-top offset shifts down by the same
+        // amount — exactly how goalBannerRows/addModeRows are folded in.
+        const resumeOffset = chatInfoSelectionOffset(rightPane.info);
+        const subagentPaneTop = 4 + goalBannerRows + addModeRows + (resumeOffset ? CHAT_INFO_RESUME_ROW_LINES : 0);
+        if (resumeOffset) {
+          // Dedicated hit-target for the resume row (it renders as the first
+          // body line, directly below the pane title) — chat-info roster rows
+          // are line-mapped, so this row gets its own explicit target like the
+          // form buttons do. Click selects + activates.
+          addTarget({
+            id: "right:chat-info:resume",
+            rect: { x: rightStartColumn, y: rightBodyTop, w: rightPaneWidth, h: 1 },
+            onClick: () => {
+              setRightSelectionIndex(0);
+              setRightOpen(true);
+              setPaneFocus("details");
+              const terminal = activeTerminalSessionRef.current;
+              if (terminal) {
+                void resumeClosedTerminalSession(terminal)
+                  .then((resumed) => {
+                    if (resumed) addNotice("Resuming Claude session…", "info");
+                  })
+                  .catch((err) => addNotice(err instanceof Error ? err.message : String(err), "error"));
+              }
+            },
+            zIndex: 4,
+          });
+        }
         if (subagentContent) {
           for (let y = rightBodyTop; y <= Math.max(rightBodyTop, rows - 2); y += 1) {
-            const index = subagentIndexForPaneLine(subagentContent, y - subagentPaneTop, rightSelectionIndex);
+            const index = subagentIndexForPaneLine(subagentContent, y - subagentPaneTop, rightSelectionIndex - resumeOffset);
             if (index == null) continue;
             addTarget({
-              id: `right:chat-info:${index}:${y}`,
+              id: `right:chat-info:${index + resumeOffset}:${y}`,
               rect: { x: rightStartColumn, y, w: rightPaneWidth, h: 1 },
               onClick: () => {
-                setRightSelectionIndex(index);
+                setRightSelectionIndex(index + resumeOffset);
                 setRightOpen(true);
                 setPaneFocus("details");
               },
@@ -12617,6 +12733,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     promptPaneWidth,
     promptRows.length,
     removeMultiViewTile,
+    resumeClosedTerminalSession,
     rightPane,
     rightPaneScrollOffsetRows,
     rightPaneVisible,

@@ -1,7 +1,8 @@
 import React from "react";
 import { describe, expect, it } from "vitest";
 import { render } from "ink-testing-library";
-import { LANE_DETAIL_ACTIONS, LANE_DETAIL_PR_ACTION_INDEX, feedbackStateFromContent, laneDetailsInteractionLayout, rightPaneScrollableRowCount, RightPane } from "../components/RightPane";
+import { ChatInfoResumeRow, LANE_DETAIL_ACTIONS, LANE_DETAIL_PR_ACTION_INDEX, feedbackStateFromContent, laneDetailsInteractionLayout, rightPaneScrollableRowCount, RightPane } from "../components/RightPane";
+import { theme } from "../theme";
 import { feedbackFormToFormValues } from "../feedbackForm";
 import { newLaneFormFields } from "../newLaneForm";
 import { buildFeedbackDraftInput } from "../feedback";
@@ -55,6 +56,7 @@ function chatInfo(overrides: Partial<ChatInfoSnapshot> = {}): ChatInfoSnapshot {
     planStreamingText: null,
     todos: [],
     pr: null,
+    resumableTerminal: false,
     ...overrides,
   };
 }
@@ -270,6 +272,68 @@ describe("RightPane chat info", () => {
 
     expect(frame).toContain("PLAN");
     expect(frame).toContain("Patching the bridge first");
+  });
+
+  it("renders the orange resume row above the header for closed-but-resumable claude terminals", () => {
+    const result = render(
+      <RightPane
+        content={{
+          kind: "chat-info",
+          info: chatInfo({ provider: "claude", modelLabel: "claude-code", resumableTerminal: true }),
+        }}
+        selectedIndex={0}
+        focused
+        width={80}
+      />,
+    );
+    const raw = result.lastFrame() ?? "";
+    const frame = stripAnsi(raw);
+
+    expect(frame).toContain("[ ⟳ resume session ]");
+    // Resume row renders ABOVE the model header line.
+    expect(frame.indexOf("resume session")).toBeLessThan(frame.indexOf("claude-code"));
+    // Selected at index 0 → the resume row holds the selection (activation hint),
+    // and the main roster row does NOT show as selected.
+    expect(frame).toContain("↵ resume");
+    // Explicitly orange: the test env strips ANSI (chalk level 0), so assert
+    // the color at the element level — the label Text carries
+    // theme.color.attention (#F59E0B) and bold.
+    const row = ChatInfoResumeRow({ selected: true }) as React.ReactElement;
+    const texts = React.Children.toArray((row.props as { children?: React.ReactNode }).children)
+      .filter((child): child is React.ReactElement => React.isValidElement(child));
+    const label = texts.find((child) => String((child.props as { children?: unknown }).children ?? "").includes("resume session"));
+    expect(label).toBeDefined();
+    expect((label!.props as { color?: string }).color).toBe(theme.color.attention);
+    expect((label!.props as { bold?: boolean }).bold).toBe(true);
+    expect(theme.color.attention).toBe("#F59E0B");
+  });
+
+  it("shifts roster selection below the resume row (index 1 = main) and hides the row when not resumable", () => {
+    const resumable = render(
+      <RightPane
+        content={{
+          kind: "chat-info",
+          info: chatInfo({ provider: "claude", resumableTerminal: true }),
+        }}
+        selectedIndex={1}
+        focused
+        width={80}
+      />,
+    );
+    const resumableFrame = stripAnsi(resumable.lastFrame() ?? "");
+    // Index 1 selects "main" when the resume row occupies index 0.
+    const mainLine = resumableFrame.split("\n").find((line) => line.includes(" main"));
+    expect(mainLine).toContain("▎");
+
+    const plain = render(
+      <RightPane
+        content={{ kind: "chat-info", info: chatInfo({ provider: "claude", resumableTerminal: false }) }}
+        selectedIndex={0}
+        focused
+        width={80}
+      />,
+    );
+    expect(stripAnsi(plain.lastFrame() ?? "")).not.toContain("resume session");
   });
 
   it("omits tasks and PR sections when the chat has neither", () => {

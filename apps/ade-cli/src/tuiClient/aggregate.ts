@@ -174,8 +174,20 @@ function diffStats(diff: string): { additions: number; deletions: number } {
   return { additions, deletions };
 }
 
+// Cross-group tool entry resolution (desktop appendWorkLogRow parity): a
+// tool's lifecycle events collapse into ONE entry keyed by turn+item no matter
+// how many assistant-text blocks interleave between the call and its result.
+// `get` resolves the existing entry wherever it lives (possibly in an earlier
+// tool-calls-group of the same turn); `add` appends a brand-new entry to the
+// current trailing group. Without this, Claude's interleaved streams left
+// every call stuck "running" and re-added its result as a duplicate "ok" row.
+type ToolEntryRegistry = {
+  get(itemId: string): ToolCallEntry | undefined;
+  add(entry: ToolCallEntry): void;
+};
+
 function appendToolCallEvent(
-  block: Extract<AggregatedBlock, { kind: "tool-calls-group" }>,
+  registry: ToolEntryRegistry,
   event: Extract<AgentChatEvent, { type: "tool_call" | "tool_result" }>,
   durationMs?: number,
 ): void {
@@ -185,7 +197,7 @@ function appendToolCallEvent(
   const titleFallback = readToolTitle(payload);
   const resolvedToolName = isGenericToolIdentifier(event.tool) && titleFallback ? titleFallback : event.tool;
   if (event.type === "tool_call") {
-    const existing = block.entries.find((entry) => entry.itemId === event.itemId);
+    const existing = registry.get(event.itemId);
     if (existing) {
       if (isGenericToolIdentifier(existing.tool) && !isGenericToolIdentifier(resolvedToolName)) {
         existing.tool = toolSlug(resolvedToolName);
@@ -193,7 +205,7 @@ function appendToolCallEvent(
       if (!existing.arg) existing.arg = toolArgPreview(resolvedToolName, event.args);
       return;
     }
-    block.entries.push({
+    registry.add({
       itemId: event.itemId,
       tool: toolSlug(resolvedToolName),
       arg: toolArgPreview(resolvedToolName, event.args),
@@ -201,7 +213,7 @@ function appendToolCallEvent(
     });
     return;
   }
-  const existing = block.entries.find((entry) => entry.itemId === event.itemId);
+  const existing = registry.get(event.itemId);
   const status: WorkToolStatus = event.status === "failed" ? "failed" : event.status === "running" ? "running" : "ok";
   if (existing) {
     existing.status = status;
@@ -211,7 +223,7 @@ function appendToolCallEvent(
     if (durationMs !== undefined) existing.durationMs = durationMs;
     return;
   }
-  block.entries.push({
+  registry.add({
     itemId: event.itemId,
     tool: toolSlug(resolvedToolName),
     arg: toolArgPreview(resolvedToolName, payload),
@@ -221,7 +233,7 @@ function appendToolCallEvent(
 }
 
 function appendWebSearchEvent(
-  block: Extract<AggregatedBlock, { kind: "tool-calls-group" }>,
+  registry: ToolEntryRegistry,
   event: Extract<AgentChatEvent, { type: "web_search" }>,
 ): void {
   // Desktop groups web_search lifecycle events with the other tool calls
@@ -229,13 +241,13 @@ function appendWebSearchEvent(
   const itemId = (event as { itemId?: string }).itemId ?? `web-search:${event.query}`;
   const status: WorkToolStatus = event.status === "failed" ? "failed" : event.status === "running" ? "running" : "ok";
   const arg = summarizeInlineText(event.query ?? "", 140);
-  const existing = block.entries.find((entry) => entry.itemId === itemId);
+  const existing = registry.get(itemId);
   if (existing) {
     existing.status = status;
     if (arg) existing.arg = arg;
     return;
   }
-  block.entries.push({ itemId, tool: "search", arg, status });
+  registry.add({ itemId, tool: "search", arg, status });
 }
 
 function appendFileChangeEvent(
@@ -277,7 +289,7 @@ function stripShellLauncher(command: string): string {
 }
 
 function appendCommandAsTool(
-  block: Extract<AggregatedBlock, { kind: "tool-calls-group" }>,
+  registry: ToolEntryRegistry,
   event: Extract<AgentChatEvent, { type: "command" }>,
   derivedDurationMs?: number,
 ): void {
@@ -285,14 +297,14 @@ function appendCommandAsTool(
   const status: WorkToolStatus = event.status === "running" ? "running" : failed ? "failed" : "ok";
   const durationMs = validDurationMs(event.durationMs) ?? validDurationMs(derivedDurationMs);
   const cleanCommand = summarizeInlineText(stripShellLauncher(event.command), 140);
-  const existing = block.entries.find((entry) => entry.itemId === event.itemId);
+  const existing = registry.get(event.itemId);
   if (existing) {
     existing.status = status;
     existing.arg = cleanCommand;
     if (durationMs !== undefined) existing.durationMs = durationMs;
     return;
   }
-  block.entries.push({
+  registry.add({
     itemId: event.itemId,
     tool: "shell",
     arg: cleanCommand,
@@ -571,6 +583,9 @@ export function aggregateChatBlocks(args: {
     blocks.push({ kind, id, line } as AggregatedBlock);
   };
   const workItemStartedAt = new Map<string, number>();
+  // turnId:itemId → live entry reference, so a tool's later lifecycle events
+  // resolve the SAME entry even when assistant text split the visual groups.
+  const toolEntryByItemKey = new Map<string, ToolCallEntry>();
   const assistantTextEventsByBlockId = new Map<string, AssistantTextEvent>();
   const reasoningItemIdByBlockId = new Map<string, string>();
 
@@ -615,10 +630,26 @@ export function aggregateChatBlocks(args: {
     }
     if (event.type === "text") {
       if (event.text.length === 0) continue;
+      const line = linesById.get(id);
       const previous = blocks[blocks.length - 1];
       if (previous?.kind === "assistant-text") {
         const previousTextEvent = assistantTextEventsByBlockId.get(previous.id);
         if (previousTextEvent && shouldMergeAssistantTextEvents(previousTextEvent, event)) {
+          // Only the FIRST delta of a streamed message owns a rendered line —
+          // renderChatLines' coalesceLines already fused the rest into it. A
+          // line-less delta's text is therefore ALREADY in previous.line.body;
+          // appending it again duplicated the tail (garbled Claude history
+          // replays, where deltas land un-coalesced). Just keep the identity
+          // fresh so later deltas continue matching this block.
+          if (!line) {
+            assistantTextEventsByBlockId.set(previous.id, {
+              ...previousTextEvent,
+              turnId: previousTextEvent.turnId ?? event.turnId,
+              itemId: previousTextEvent.itemId ?? event.itemId,
+              messageId: previousTextEvent.messageId ?? event.messageId,
+            });
+            continue;
+          }
           // Overlap-aware: providers re-emit cumulative/tail fragments of the
           // same message, which plain concat rendered as a duplicated tail.
           const mergedText = appendStreamingText(previous.line.body, event.text);
@@ -637,7 +668,6 @@ export function aggregateChatBlocks(args: {
           continue;
         }
       }
-      const line = linesById.get(id);
       if (!line) continue;
       blocks.push({ kind: "assistant-text", id, line });
       assistantTextEventsByBlockId.set(id, event);
@@ -681,16 +711,26 @@ export function aggregateChatBlocks(args: {
         continue;
       }
       if (event.type === "tool_call" || event.type === "tool_result" || event.type === "command" || event.type === "web_search") {
-        const last = blocks[blocks.length - 1];
-        let group: Extract<AggregatedBlock, { kind: "tool-calls-group" }>;
-        if (last && last.kind === "tool-calls-group" && last.turnId === turnId) {
-          group = last;
-        } else {
-          group = { kind: "tool-calls-group", id, turnId, entries: [], live: true };
-          blocks.push(group);
-        }
+        // Lazily appends to the trailing tool group (creating one only when a
+        // genuinely new entry arrives); lookups resolve across ALL groups of
+        // the turn so a result never duplicates its call's row.
+        const registry: ToolEntryRegistry = {
+          get: (itemId) => toolEntryByItemKey.get(workItemKey(turnId, itemId)),
+          add: (newEntry) => {
+            const last = blocks[blocks.length - 1];
+            let group: Extract<AggregatedBlock, { kind: "tool-calls-group" }>;
+            if (last && last.kind === "tool-calls-group" && last.turnId === turnId) {
+              group = last;
+            } else {
+              group = { kind: "tool-calls-group", id, turnId, entries: [], live: true };
+              blocks.push(group);
+            }
+            group.entries.push(newEntry);
+            toolEntryByItemKey.set(workItemKey(turnId, newEntry.itemId), newEntry);
+          },
+        };
         if (event.type === "web_search") {
-          appendWebSearchEvent(group, event);
+          appendWebSearchEvent(registry, event);
         } else if (event.type === "command") {
           const key = workItemKey(turnId, event.itemId);
           const startedAt = workItemStartedAt.get(key);
@@ -698,7 +738,7 @@ export function aggregateChatBlocks(args: {
             ? undefined
             : entry.timestamp - startedAt;
           if (!workItemStartedAt.has(key)) workItemStartedAt.set(key, entry.timestamp);
-          appendCommandAsTool(group, event, derivedDurationMs);
+          appendCommandAsTool(registry, event, derivedDurationMs);
         } else {
           const key = workItemKey(turnId, event.itemId);
           if (event.type === "tool_call" && !workItemStartedAt.has(key)) {
@@ -708,7 +748,7 @@ export function aggregateChatBlocks(args: {
           const derivedDurationMs = event.type === "tool_result" && event.status !== "running" && startedAt !== undefined
             ? entry.timestamp - startedAt
             : undefined;
-          appendToolCallEvent(group, event, validDurationMs(derivedDurationMs));
+          appendToolCallEvent(registry, event, validDurationMs(derivedDurationMs));
         }
       } else if (event.type === "file_change") {
         const last = blocks[blocks.length - 1];

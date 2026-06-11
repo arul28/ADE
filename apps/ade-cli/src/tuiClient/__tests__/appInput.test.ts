@@ -54,6 +54,7 @@ import {
   modelPickerProviderSwitchBlocked,
   mergeNewChatModelPickerContext,
   normalizeCatalogProvider,
+  isNewChatSetupPane,
   resolveContextDefault,
   resolveDrawerPaneWidth,
   resolveModelPickerEscape,
@@ -63,7 +64,7 @@ import {
   subagentSnapshotsFromEvents,
 } from "../app";
 import { clampTerminalPaneCols } from "../components/TerminalPane";
-import type { ChatInfoSnapshot } from "../types";
+import type { ChatInfoSnapshot, RightPaneContent } from "../types";
 import { resolveSubagentCapability } from "../../../../desktop/src/shared/subagentCapabilities";
 import type { AgentChatSession, AgentChatSessionSummary } from "../../../../desktop/src/shared/types/chat";
 import type { LaneSummary } from "../../../../desktop/src/shared/types/lanes";
@@ -409,6 +410,7 @@ describe("right pane context defaults", () => {
       streaming: false,
       capability: resolveSubagentCapability("claude"),
       mission: null,
+      resumableTerminal: false,
     };
   }
 
@@ -444,6 +446,30 @@ describe("right pane context defaults", () => {
       footerFocus: null,
       focusedIndex: 0,
     });
+  });
+
+  // First-send draft commit: only the new-chat setup surface is swapped for
+  // chat-info — panes the user opened deliberately mid-draft are untouched.
+  it("isNewChatSetupPane matches exactly the new-chat model-picker surface", () => {
+    const picker = (surface: "chat" | "new-chat"): RightPaneContent => ({
+      kind: "model-picker",
+      surface,
+      query: "",
+      searchMode: false,
+      selection: { kind: "provider", provider: "claude" },
+      focusedIndex: 0,
+    });
+    expect(isNewChatSetupPane(picker("new-chat"))).toBe(true);
+    expect(isNewChatSetupPane(picker("chat"))).toBe(false);
+    expect(isNewChatSetupPane({ kind: "chat-info", info: chatInfoForContext() })).toBe(false);
+    expect(isNewChatSetupPane({ kind: "empty" })).toBe(false);
+    expect(isNewChatSetupPane({
+      kind: "form",
+      title: "Rename",
+      command: "rename",
+      fields: [{ name: "name", label: "Name" }],
+    })).toBe(false);
+    expect(isNewChatSetupPane({ kind: "details", title: "Diff", body: "" })).toBe(false);
   });
 });
 

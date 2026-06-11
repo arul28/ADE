@@ -441,3 +441,55 @@ describe("aggregateChatBlocks desktop work-log parity", () => {
     expect(reasoning[0]).toMatchObject({ text: "part one part two", live: false });
   });
 });
+
+// Realistic Claude history-replay shapes (distilled from real ended-session
+// transcripts under .ade/transcripts/chat): tool results separated from their
+// calls by interleaved assistant text, stream-path tool_calls that arrive with
+// empty args and are re-emitted enriched, and un-coalesced text deltas.
+describe("aggregateChatBlocks claude history accuracy", () => {
+  it("resolves a tool_result into its call's entry across interleaved assistant text", () => {
+    const events: AgentChatEventEnvelope[] = [
+      env("2026-01-01T12:00:00.000Z", { type: "tool_call", tool: "Read", args: { file_path: "a.ts" }, itemId: "toolu_1", turnId: "turn-1" }),
+      env("2026-01-01T12:00:01.000Z", { type: "text", text: "Reading that file now.", messageId: "m1", turnId: "turn-1" }),
+      env("2026-01-01T12:00:02.000Z", { type: "tool_result", tool: "Read", result: "ok", itemId: "toolu_1", turnId: "turn-1", status: "completed" } as AgentChatEvent),
+      env("2026-01-01T12:00:03.000Z", { type: "done", turnId: "turn-1", status: "completed" } as AgentChatEvent),
+    ];
+    const blocks = aggregate(events);
+    const groups = blocks.filter((b) => b.kind === "tool-calls-group") as Extract<AggregatedBlock, { kind: "tool-calls-group" }>[];
+    // The result must RESOLVE the original entry, not open a second group with
+    // a duplicate "ok" row while the call stays stuck "running".
+    expect(groups).toHaveLength(1);
+    expect(groups[0]!.entries).toHaveLength(1);
+    expect(groups[0]!.entries[0]).toMatchObject({ itemId: "toolu_1", tool: "read", arg: "a.ts", status: "ok" });
+  });
+
+  it("backfills empty stream-path args from the enriched tool_call re-emit (same itemId)", () => {
+    const events: AgentChatEventEnvelope[] = [
+      env("2026-01-01T12:00:00.000Z", { type: "tool_call", tool: "Bash", args: {}, itemId: "toolu_2", turnId: "turn-1" }),
+      env("2026-01-01T12:00:01.000Z", { type: "tool_call", tool: "Bash", args: { command: "ls -la" }, itemId: "toolu_2", turnId: "turn-1" }),
+      env("2026-01-01T12:00:02.000Z", { type: "tool_result", tool: "Bash", result: "total 0", itemId: "toolu_2", turnId: "turn-1", status: "completed" } as AgentChatEvent),
+    ];
+    const blocks = aggregate(events);
+    const groups = blocks.filter((b) => b.kind === "tool-calls-group") as Extract<AggregatedBlock, { kind: "tool-calls-group" }>[];
+    expect(groups).toHaveLength(1);
+    expect(groups[0]!.entries).toHaveLength(1);
+    expect(groups[0]!.entries[0]).toMatchObject({ itemId: "toolu_2", tool: "bash", arg: "ls -la", status: "ok" });
+  });
+
+  it("does not duplicate text when un-coalesced deltas of one message replay from history", () => {
+    // History replay delivers the raw per-delta envelopes (no live coalescing);
+    // renderChatLines fuses them into ONE line owned by the first delta, so the
+    // aggregate pass must not append the later deltas' text a second time.
+    const events: AgentChatEventEnvelope[] = [
+      env("2026-01-01T12:00:00.000Z", { type: "text", text: "Both expl", messageId: "m9", turnId: "turn-1" }),
+      env("2026-01-01T12:00:00.400Z", { type: "text", text: "orations are complete — what", messageId: "m9", turnId: "turn-1" }),
+      env("2026-01-01T12:00:00.700Z", { type: "activity", activity: "thinking", detail: "Thinking", turnId: "turn-1" } as AgentChatEvent),
+      env("2026-01-01T12:00:00.900Z", { type: "text", text: " docs exist.", messageId: "m9", turnId: "turn-1" }),
+      env("2026-01-01T12:00:01.000Z", { type: "done", turnId: "turn-1", status: "completed" } as AgentChatEvent),
+    ];
+    const blocks = aggregate(events);
+    const texts = blocks.filter((b) => b.kind === "assistant-text") as Extract<AggregatedBlock, { kind: "assistant-text" }>[];
+    expect(texts).toHaveLength(1);
+    expect(texts[0]!.line.body).toBe("Both explorations are complete — what docs exist.");
+  });
+});

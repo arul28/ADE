@@ -17290,6 +17290,96 @@ describe("createAgentChatService", () => {
     expect(events.some((event) => event.event.type === "tool_call" && event.event.tool === "Bash")).toBe(true);
   });
 
+  it("re-emits a Claude tool_call with parsed args once the input has streamed in after content_block_start", async () => {
+    const events: AgentChatEventEnvelope[] = [];
+    const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+    const send = vi.fn().mockResolvedValue(undefined);
+    let streamCall = 0;
+
+    const stream = vi.fn(() => (async function* () {
+      streamCall += 1;
+      if (streamCall === 1) {
+        yield {
+          type: "system",
+          subtype: "init",
+          session_id: "sdk-session-streamed-args",
+          slash_commands: [],
+        };
+        return;
+      }
+
+      // Stream path: tool_use starts with NO input; the input arrives via
+      // input_json_delta and only parses at content_block_stop. Without the
+      // enriched re-emit the persisted tool_call keeps args:{} forever.
+      yield {
+        type: "stream_event",
+        event: {
+          type: "content_block_start",
+          index: 0,
+          content_block: { type: "tool_use", id: "tool-use-streamed-args", name: "Read", input: {} },
+        },
+      };
+      yield {
+        type: "stream_event",
+        event: {
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "input_json_delta", partial_json: "{\"file_path\":\"apps/desk" },
+        },
+      };
+      yield {
+        type: "stream_event",
+        event: {
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "input_json_delta", partial_json: "top/src/a.ts\"}" },
+        },
+      };
+      yield {
+        type: "stream_event",
+        event: { type: "content_block_stop", index: 0 },
+      };
+      yield {
+        type: "result",
+        usage: { input_tokens: 1, output_tokens: 1 },
+      };
+    })());
+
+    vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+      send,
+      stream,
+      close: vi.fn(),
+      sessionId: "sdk-session-streamed-args",
+      setPermissionMode,
+    } as any);
+
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "claude",
+      model: "claude-sonnet-4-6",
+      modelId: "anthropic/claude-sonnet-4-6",
+    });
+
+    await service.runSessionTurn({
+      sessionId: session.id,
+      text: "Read the file.",
+    });
+
+    const toolCalls = events
+      .map((event) => event.event)
+      .filter((event): event is Extract<AgentChatEventEnvelope["event"], { type: "tool_call" }> => event.type === "tool_call")
+      .filter((event) => event.tool === "Read");
+    expect(toolCalls).toHaveLength(2);
+    // Same itemId so renderers collapse both into a single entry.
+    expect(new Set(toolCalls.map((event) => event.itemId)).size).toBe(1);
+    expect(toolCalls[0]?.args).toEqual({});
+    expect(toolCalls[1]?.args).toEqual({ file_path: "apps/desktop/src/a.ts" });
+  });
+
   it("emits completed Claude tool_result rows when tool_use_summary arrives", async () => {
     const events: AgentChatEventEnvelope[] = [];
     const setPermissionMode = vi.fn().mockResolvedValue(undefined);

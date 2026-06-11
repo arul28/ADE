@@ -727,6 +727,35 @@ function ChatInfoGoalBlock({ info, brandColor, width }: { info: ChatInfoSnapshot
   );
 }
 
+// ── Resume row (closed-but-resumable Claude terminal sessions) ──────────────
+// Rendered as the FIRST chat-info body block (directly below the pane title,
+// above the model header). It occupies a fixed number of lines ABOVE the
+// roster, so the click line-math compensates: app.tsx adds
+// CHAT_INFO_RESUME_ROW_LINES to `subagentPaneTop` whenever the row is visible
+// — the same mechanism the variable goal-banner / add-mode header lines use.
+export const CHAT_INFO_RESUME_ROW_LINES = 2;
+
+/**
+ * Selection-index offset the resume row introduces into the chat-info
+ * selection model: with the row visible, index 0 = resume, 1 = main,
+ * 2..N+1 = subagents (otherwise 0 = main, 1..N = subagents).
+ */
+export function chatInfoSelectionOffset(info: ChatInfoSnapshot): 0 | 1 {
+  return info.resumableTerminal ? 1 : 0;
+}
+
+export function ChatInfoResumeRow({ selected }: { selected: boolean }) {
+  return (
+    <Box flexDirection="row" marginBottom={1}>
+      <Text color={selected ? theme.color.attention : theme.color.t5}>{selected ? theme.rail : " "}</Text>
+      {/* Deliberately orange (theme.color.attention) — this is the "your
+          session died, bring it back" affordance. */}
+      <Text color={theme.color.attention} bold>{" [ ⟳ resume session ]"}</Text>
+      {selected ? <Text color={theme.color.t4} dimColor>{"  ↵ resume"}</Text> : null}
+    </Box>
+  );
+}
+
 function rosterWindow(rowCount: number, selected: number, capacity: number): { start: number; end: number } {
   if (rowCount <= capacity) return { start: 0, end: rowCount };
   const half = Math.floor(capacity / 2);
@@ -758,8 +787,10 @@ function ChatInfoRoster({
   const failedCount = snapshotRows.filter((row) => row.snapshot.status === "failed").length;
   const bgCount = snapshotRows.filter((row) => row.section === "background").length;
   // Selection convention: 0 = main row; 1..N = subagent rows (1-indexed).
+  // A negative index means the selection sits ABOVE the roster (the resume
+  // row) — nothing in the roster highlights.
   const totalSelectable = snapshotRows.length + 1;
-  const selected = Math.max(0, Math.min(selectedIndex, totalSelectable - 1));
+  const selected = Math.max(-1, Math.min(selectedIndex, totalSelectable - 1));
   const mainSelected = selected === 0;
   const showingMain = !info.inspectedSubagentId;
   const hint = snapshotRows.length === 0
@@ -1016,12 +1047,17 @@ function ChatInfoPane({
   width: number;
 }) {
   const brand = theme.provider(info.provider);
+  // With the resume row visible the selection space shifts by one (0 = resume,
+  // 1 = main, …); the roster receives the un-shifted index (-1 ⇒ resume row
+  // holds the selection, nothing in the roster highlights).
+  const resumeOffset = chatInfoSelectionOffset(info);
   return (
     <Box flexDirection="column">
+      {info.resumableTerminal ? <ChatInfoResumeRow selected={selectedIndex === 0} /> : null}
       <ChatInfoHeader info={info} width={width} />
       <ChatInfoPlanBlock info={info} brandColor={brand.color} width={width} />
       <ChatInfoGoalBlock info={info} brandColor={brand.color} width={width} />
-      <ChatInfoRoster info={info} selectedIndex={selectedIndex} brandColor={brand.color} width={width} />
+      <ChatInfoRoster info={info} selectedIndex={selectedIndex - resumeOffset} brandColor={brand.color} width={width} />
       <ChatInfoTasksBlock info={info} brandColor={brand.color} width={width} />
       <ChatInfoPrBlock info={info} brandColor={brand.color} width={width} />
     </Box>

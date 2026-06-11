@@ -45,6 +45,7 @@ function rosterContent(): Extract<RightPaneContent, { kind: "chat-info" }> {
       inspectedSubagentId: null,
       capability: resolveSubagentCapability("codex"),
       mission: null,
+      resumableTerminal: false,
       snapshots: [
         { id: "run-1", name: "running", kind: "subagent", status: "running", summary: "checking files" },
         { id: "team-1", name: "review", kind: "teammate", status: "completed", summary: "done" },

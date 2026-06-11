@@ -159,6 +159,12 @@ export type ChatInfoSnapshot = {
   capability: SubagentCapability;
   /** Droid AGI mission snapshot (null for non-AGI sessions). */
   mission: MissionSnapshot | null;
+  /**
+   * True when the active session is a CLOSED/CRASHED but resumable Claude
+   * terminal session (isTerminalSessionResumable in app.tsx). Renders the
+   * orange resume row at the top of the chat-info pane.
+   */
+  resumableTerminal: boolean;
 };
 
 export type ModelPickerRightPaneSelection =

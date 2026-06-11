@@ -11122,7 +11122,7 @@ export function createAgentChatService(args: {
     };
     const openClaudeToolUses = new Map<string, { toolName: string }>();
     const toolInputJsonByContentIndex = new Map<number, string>();
-    const toolUseMetaByContentIndex = new Map<number, { toolName: string; itemId: string; toolUseId?: string }>();
+    const toolUseMetaByContentIndex = new Map<number, { toolName: string; itemId: string; toolUseId?: string; argsWereEmpty?: boolean }>();
     const emittedClaudeTodoIds = new Set<string>();
     const claudeTaskTodosById = new Map<string, ClaudeTaskTodoState>();
     const emitClaudeToolCompletion = (
@@ -11941,6 +11941,12 @@ export function createAgentChatService(args: {
                     toolName,
                     itemId,
                     ...(toolUseId ? { toolUseId } : {}),
+                    // Stream path: the tool's input arrives AFTER this start
+                    // event via input_json_delta, so the tool_call above went
+                    // out with empty args. Flag it so content_block_stop can
+                    // re-emit the call with the fully parsed args (renderers
+                    // collapse both events into one entry by turn+itemId).
+                    argsWereEmpty: initial.length === 0,
                   });
                 }
               }
@@ -11967,6 +11973,26 @@ export function createAgentChatService(args: {
                 if (isClaudeSubagentToolName(meta.toolName) && meta.toolUseId) {
                   const taskInput = extractTaskToolInput(parsed);
                   if (taskInput) runtime.taskToolInputByToolUseId.set(meta.toolUseId, taskInput);
+                }
+                // The start-time tool_call carried empty args (input streamed
+                // in afterwards). Re-emit it with the parsed args so history
+                // shows the tool's target (file path / command / task) instead
+                // of a bare tool name. Desktop's appendWorkLogRow and the TUI's
+                // tool registry both collapse this into the original entry via
+                // turn+itemId, so no duplicate row renders.
+                if (
+                  meta.argsWereEmpty
+                  && parsed != null
+                  && typeof parsed === "object"
+                  && Object.keys(parsed as object).length > 0
+                ) {
+                  emitChatEvent(managed, {
+                    type: "tool_call",
+                    tool: meta.toolName,
+                    args: parsed as Record<string, unknown>,
+                    itemId: meta.itemId,
+                    turnId,
+                  });
                 }
                 maybeEmitTodoUpdate(meta.toolName, parsed, meta.itemId);
                 const syntheticResult = maybeSyntheticToolResult(meta.toolName, parsed, meta.itemId, turnId);
