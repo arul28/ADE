@@ -70,6 +70,14 @@ extension WorkChatSessionView {
       visibleTimelineCount += workTimelinePageSize
       refreshTimelinePresentation()
     }
+    // Once the locally-buffered timeline is nearly exhausted, pull the next
+    // older transcript page from the host so scroll-back continues through
+    // the full history instead of stopping at the initial tail fetch.
+    if hasOlderTranscriptHistory,
+       hiddenTimelineCount <= workTimelinePageSize * 2,
+       let onLoadOlderTranscript {
+      Task { await onLoadOlderTranscript() }
+    }
   }
 
   @MainActor

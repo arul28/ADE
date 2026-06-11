@@ -123,6 +123,13 @@ struct WorkSessionDestinationView: View {
   @State var chatSummary: AgentChatSessionSummary?
   @State var transcript: [WorkChatEnvelope] = []
   @State var fallbackEntries: [AgentChatTranscriptEntry] = []
+  // Canonical transcript entries keyed by their host-side index. Tail
+  // refreshes overwrite the newest indices while "load earlier" pages fill
+  // older ones, so a poll can never clobber scroll-back history. The cursor
+  // is the oldest fetched index (0 = transcript head reached).
+  @State var transcriptEntriesByIndex: [Int: AgentChatTranscriptEntry] = [:]
+  @State var olderTranscriptCursor: Int?
+  @State var olderTranscriptLoading = false
   @State var artifacts: [ComputerUseArtifactSummary] = []
   @State var localEchoMessages: [WorkLocalEchoMessage] = []
   @State var optimisticPendingSteers: [WorkPendingSteerModel] = []
@@ -351,7 +358,9 @@ struct WorkSessionDestinationView: View {
           onSelectModel: selectModel,
           onSelectRuntimeMode: selectRuntimeMode,
           onSelectEffort: selectReasoningEffort,
-          lanes: lanes
+          lanes: lanes,
+          hasOlderTranscriptHistory: hasOlderTranscriptHistory,
+          onLoadOlderTranscript: loadOlderTranscriptEntries
         )
       } else {
         TerminalSessionScreen(session: session)
@@ -454,10 +463,11 @@ struct WorkSessionDestinationView: View {
       || (liveTranscript.isEmpty && transcript.isEmpty)
       || (!liveTranscript.isEmpty && status != "active")
     let fallbackMaxChars = status == "active" ? 32_000 : 120_000
-    if shouldFetchFallback, let response = try? await syncService.fetchChatTranscriptResponse(sessionId: sessionId, maxChars: fallbackMaxChars) {
-      fetchedFallbackEntries = response.entries
+    if shouldFetchFallback, let page = try? await syncService.fetchChatTranscriptPage(sessionId: sessionId, maxChars: fallbackMaxChars) {
+      recordTranscriptPage(page, before: nil)
+      fetchedFallbackEntries = combinedTranscriptEntries()
       fetchedFallbackEntriesAvailable = true
-      fallbackTranscript = makeWorkChatTranscript(from: response.entries, sessionId: sessionId)
+      fallbackTranscript = makeWorkChatTranscript(from: fetchedFallbackEntries, sessionId: sessionId)
     }
 
     // Chat-only fallback: parses chat envelopes out of the raw terminal buffer.
@@ -507,6 +517,74 @@ struct WorkSessionDestinationView: View {
     reconcileLocalEchoMessages()
     if forceRemote {
       lastTranscriptRemoteRefreshAt = Date()
+    }
+  }
+
+  /// Fold one host transcript page into the index-keyed store. `cursor` is
+  /// the `before` index the page was requested with (nil for a tail fetch).
+  /// Host indices are stable because the transcript is append-only.
+  @MainActor
+  func recordTranscriptPage(_ page: SyncService.AgentChatTranscriptPage, before cursor: Int?) {
+    let end = min(cursor ?? page.totalEntries, page.totalEntries)
+    let start = max(0, end - page.entries.count)
+    let pageCursor = page.nextCursor ?? 0
+    if cursor == nil {
+      // Tail refresh. If the new window starts past everything stored (a
+      // burst of entries landed between polls), stitching would render a
+      // transcript with a silent hole — reset to the fresh tail instead and
+      // re-anchor scroll-back below it.
+      let nextContiguousIndex = transcriptEntriesByIndex.keys.max().map { $0 + 1 } ?? 0
+      if start > nextContiguousIndex, !page.entries.isEmpty {
+        transcriptEntriesByIndex = [:]
+        olderTranscriptCursor = pageCursor
+      } else if olderTranscriptCursor == nil {
+        // First fetch establishes the scroll-back anchor; later contiguous
+        // polls must not move it forward past pages the user already loaded.
+        olderTranscriptCursor = pageCursor
+      }
+    } else {
+      olderTranscriptCursor = min(olderTranscriptCursor ?? pageCursor, pageCursor)
+    }
+    for (offset, entry) in page.entries.enumerated() {
+      transcriptEntriesByIndex[start + offset] = entry
+    }
+  }
+
+  @MainActor
+  func combinedTranscriptEntries() -> [AgentChatTranscriptEntry] {
+    transcriptEntriesByIndex.keys.sorted().compactMap { transcriptEntriesByIndex[$0] }
+  }
+
+  var hasOlderTranscriptHistory: Bool {
+    (olderTranscriptCursor ?? 0) > 0
+  }
+
+  /// Fetch the next strictly-older transcript page from the host and prepend
+  /// it to the fallback entries that feed the chat timeline.
+  @MainActor
+  func loadOlderTranscriptEntries() async {
+    guard !olderTranscriptLoading, let cursor = olderTranscriptCursor, cursor > 0 else { return }
+    olderTranscriptLoading = true
+    defer { olderTranscriptLoading = false }
+    guard let page = try? await syncService.fetchChatTranscriptPage(
+      sessionId: sessionId,
+      cursor: cursor
+    ) else { return }
+    recordTranscriptPage(page, before: cursor)
+    let combined = combinedTranscriptEntries()
+    if !combined.isEmpty, combined != fallbackEntries {
+      fallbackEntries = combined
+    }
+    // fallbackEntries only feed the timeline while `transcript` is empty
+    // (buildWorkTimeline), so splice the older entries into the rendered
+    // transcript right away — otherwise the fetched page stays invisible
+    // until the next loadTranscript poll. preferredWorkTranscript backfills
+    // by role+turnId+text identity, so entries already rendered from live
+    // events are not duplicated.
+    let olderTranscript = makeWorkChatTranscript(from: combined, sessionId: sessionId)
+    let merged = preferredWorkTranscript(current: [], fallback: olderTranscript, eventTranscript: transcript)
+    if !merged.isEmpty, merged != transcript {
+      transcript = merged
     }
   }
 

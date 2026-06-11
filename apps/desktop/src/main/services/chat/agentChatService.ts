@@ -5297,7 +5297,70 @@ export function createAgentChatService(args: {
   const CHAT_EVENT_HISTORY_RESPONSE_MAX_PER_SESSION = 20_000;
   const CHAT_EVENT_HISTORY_TRANSCRIPT_MAX_BYTES = 2_000_000;
   const CHAT_EVENT_HISTORY_TRANSCRIPT_CACHE_MAX_SESSIONS = 32;
+  // Byte budgets alongside the event-count caps above. Individual events are
+  // unbounded (multi-MB tool outputs exist in real transcripts), so count caps
+  // alone cannot keep a history snapshot under the desktop RPC client's
+  // 16 MiB per-message limit; one over-limit response used to fail every
+  // in-flight call on the shared runtime socket. The ring budget is the
+  // working bound (ring 4 MB + 2 MB transcript tail ≈ 6 MB merged); the
+  // response budget is a backstop that should not trigger in practice.
+  const CHAT_EVENT_HISTORY_BUFFER_MAX_CHARS = 4_000_000;
+  const CHAT_EVENT_HISTORY_RESPONSE_MAX_CHARS = 8_000_000;
   const eventHistoryBySession = new Map<string, AgentChatEventEnvelope[]>();
+
+  const safeJsonChars = (value: unknown): number => {
+    try {
+      return JSON.stringify(value).length;
+    } catch {
+      return 2_048;
+    }
+  };
+
+  // Keep the newest items whose cumulative serialized size fits the budget
+  // (always at least the newest one, even when it alone exceeds it).
+  const keepNewestWithinCharBudget = <T>(
+    items: T[],
+    maxChars: number,
+    sizeOf: (item: T) => number,
+  ): T[] => {
+    let total = 0;
+    let start = items.length;
+    while (start > 0) {
+      const next = total + sizeOf(items[start - 1]!);
+      if (start < items.length && next > maxChars) break;
+      total = next;
+      start -= 1;
+    }
+    return start > 0 ? items.slice(start) : items;
+  };
+
+  // Envelopes are immutable once recorded; cache their serialized size so
+  // byte-budget trims do not re-stringify multi-MB events on every snapshot.
+  const envelopeSizeCache = new WeakMap<AgentChatEventEnvelope, number>();
+
+  const estimateEnvelopeChars = (envelope: AgentChatEventEnvelope): number => {
+    let size = envelopeSizeCache.get(envelope);
+    if (size == null) {
+      size = safeJsonChars(envelope);
+      envelopeSizeCache.set(envelope, size);
+    }
+    return size;
+  };
+
+  const trimEnvelopesToByteBudget = (
+    envelopes: AgentChatEventEnvelope[],
+    maxChars: number,
+  ): AgentChatEventEnvelope[] => keepNewestWithinCharBudget(envelopes, maxChars, estimateEnvelopeChars);
+
+  // The single policy for what bounds the in-memory event ring: an event-count
+  // cap, then a byte budget. Applied wherever the ring is (re)written.
+  const boundRingEnvelopes = (envelopes: AgentChatEventEnvelope[]): AgentChatEventEnvelope[] =>
+    trimEnvelopesToByteBudget(
+      envelopes.length > CHAT_EVENT_HISTORY_BUFFER_MAX_PER_SESSION
+        ? envelopes.slice(-CHAT_EVENT_HISTORY_BUFFER_MAX_PER_SESSION)
+        : envelopes,
+      CHAT_EVENT_HISTORY_BUFFER_MAX_CHARS,
+    );
   const transcriptHistoryCacheBySession = new Map<string, {
     transcriptPath: string;
     size: number;
@@ -5311,10 +5374,7 @@ export function createAgentChatService(args: {
   const recordChatEventInHistory = (envelope: AgentChatEventEnvelope): void => {
     const current = eventHistoryBySession.get(envelope.sessionId) ?? [];
     current.push(envelope);
-    if (current.length > CHAT_EVENT_HISTORY_BUFFER_MAX_PER_SESSION) {
-      current.splice(0, current.length - CHAT_EVENT_HISTORY_BUFFER_MAX_PER_SESSION);
-    }
-    eventHistoryBySession.set(envelope.sessionId, current);
+    eventHistoryBySession.set(envelope.sessionId, boundRingEnvelopes(current));
   };
 
   const rememberTranscriptHistoryCache = (
@@ -6790,18 +6850,26 @@ export function createAgentChatService(args: {
     if (merged.length > CHAT_EVENT_HISTORY_RESPONSE_MAX_PER_SESSION) {
       merged = merged.slice(-CHAT_EVENT_HISTORY_RESPONSE_MAX_PER_SESSION);
     }
-    eventHistoryBySession.set(trimmedId, merged.slice(-CHAT_EVENT_HISTORY_BUFFER_MAX_PER_SESSION));
+    eventHistoryBySession.set(trimmedId, boundRingEnvelopes(merged.slice()));
 
     const parentVisibleMerged = merged.filter((entry) => !isCodexSubagentTranscriptEnvelope(entry));
     const parentVisibleLength = parentVisibleMerged.length;
     const transcriptTruncated = transcriptHistory.truncated;
-    const windowTruncated =
-      mergedLengthBeforeResponseCap > CHAT_EVENT_HISTORY_RESPONSE_MAX_PER_SESSION
-      || parentVisibleLength > maxEvents;
-    const truncated = transcriptTruncated || windowTruncated;
-    const windowed = parentVisibleLength > maxEvents
+    const countWindowed = parentVisibleLength > maxEvents
       ? parentVisibleMerged.slice(-maxEvents)
       : parentVisibleMerged;
+    // Backstop byte budget so the serialized snapshot always fits one RPC
+    // message. The ring and transcript-tail budgets keep snapshots well under
+    // it, so it only trims when a single envelope dwarfs both (>~6 MB); such
+    // trimmed events sit AFTER tailStartOffset and are not reachable through
+    // getChatEventHistoryPage (which pages strictly older) — an accepted
+    // seam, the alternative being a response the client must discard.
+    const windowed = trimEnvelopesToByteBudget(countWindowed, CHAT_EVENT_HISTORY_RESPONSE_MAX_CHARS);
+    const windowTruncated =
+      mergedLengthBeforeResponseCap > CHAT_EVENT_HISTORY_RESPONSE_MAX_PER_SESSION
+      || parentVisibleLength > maxEvents
+      || windowed.length < countWindowed.length;
+    const truncated = transcriptTruncated || windowTruncated;
     return {
       sessionId: trimmedId,
       events: windowed,
@@ -25369,6 +25437,20 @@ export function createAgentChatService(args: {
     return options.limit !== undefined ? sliced.slice(0, options.limit) : sliced;
   }
 
+  // Subagent transcripts merge unbounded sources (full persisted transcript,
+  // live `thread/turns/list?itemsView=full` pulls) and individual messages can
+  // carry multi-MB tool outputs. Keep the newest messages that fit one RPC
+  // response (always at least one) so a single fetch can never exceed the
+  // desktop client's per-message limit. Note for `offset`/`limit` callers: the
+  // bound keeps the newest suffix of the requested window, so a response may
+  // start later than `offset` and a short page does not imply end-of-data.
+  const SUBAGENT_TRANSCRIPT_RESPONSE_MAX_CHARS = 4_000_000;
+
+  const boundSubagentTranscriptResponse = (
+    messages: AgentChatSubagentTranscriptMessage[],
+  ): AgentChatSubagentTranscriptMessage[] =>
+    keepNewestWithinCharBudget(messages, SUBAGENT_TRANSCRIPT_RESPONSE_MAX_CHARS, safeJsonChars);
+
   function mergeSubagentTranscriptMessages(
     left: AgentChatSubagentTranscriptMessage[],
     right: AgentChatSubagentTranscriptMessage[],
@@ -25452,8 +25534,11 @@ export function createAgentChatService(args: {
    * - **Cursor**: SDK `task` events tag every lifecycle envelope with the
    *   subagent's `agentId`; we filter the parent stream by that value.
    * - **Everything else (droid, lmstudio, …)**: `null`.
+   *
+   * Exposed via getSubagentTranscript, which byte-bounds whatever this
+   * returns — new runtime branches here need no size handling of their own.
    */
-  const getSubagentTranscript = async ({
+  const collectSubagentTranscript = async ({
     sessionId,
     agentId,
     laneId,
@@ -25636,6 +25721,16 @@ export function createAgentChatService(args: {
         ...(text ? { text } : {}),
       };
     });
+  };
+
+  // The byte bound is a response-boundary invariant: enforce it once here so
+  // every runtime branch in collectSubagentTranscript stays bounded by
+  // construction rather than by remembering to wrap each return.
+  const getSubagentTranscript = async (
+    args: AgentChatSubagentTranscriptArgs,
+  ): Promise<AgentChatSubagentTranscriptMessage[] | null> => {
+    const messages = await collectSubagentTranscript(args);
+    return messages ? boundSubagentTranscriptResponse(messages) : messages;
   };
 
   const normalizeClaudeContextUsage = (

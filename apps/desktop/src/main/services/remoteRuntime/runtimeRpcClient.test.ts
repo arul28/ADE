@@ -166,6 +166,76 @@ describe("RuntimeRpcClient", () => {
     expect(transport.writes).toEqual([]);
   });
 
+  it("rejects only the request answered by an oversized response and keeps the connection alive", async () => {
+    const transport = new MockTransport();
+    const client = new RuntimeRpcClient(transport);
+
+    const oversized = client.call("chat.getChatEventHistory", {});
+    const unrelated = client.call("projects.list", {});
+    const oversizedId = requestId(transport.writes[0]!);
+    const unrelatedId = requestId(transport.writes[1]!);
+
+    // Stream a single >16 MiB response line in chunks, as a socket would.
+    const head = `{"jsonrpc":"2.0","id":${oversizedId},"result":{"events":["`;
+    transport.emitData(head);
+    const filler = "x".repeat(1024 * 1024);
+    for (let i = 0; i < 17; i++) transport.emitData(filler);
+    transport.emitData(`"]}}\n`);
+
+    await expect(oversized).rejects.toThrow(
+      /response for method chat\.getChatEventHistory exceeded 16 MiB .* and was discarded/,
+    );
+    expect(client.isClosed()).toBe(false);
+
+    // The unrelated in-flight call and brand-new calls still complete.
+    transport.emitData({ jsonrpc: "2.0", id: unrelatedId, result: ["project"] });
+    await expect(unrelated).resolves.toEqual(["project"]);
+    const after = client.call("projects.list", {});
+    transport.emitData({ jsonrpc: "2.0", id: requestId(transport.writes[2]!), result: ["still-alive"] });
+    await expect(after).resolves.toEqual(["still-alive"]);
+  });
+
+  it("parses lines that arrive in the same chunk after an oversized line ends", async () => {
+    const transport = new MockTransport();
+    const client = new RuntimeRpcClient(transport);
+
+    const oversized = client.call("chat.getChatEventHistory", {});
+    const follower = client.call("projects.list", {});
+    const oversizedId = requestId(transport.writes[0]!);
+    const followerId = requestId(transport.writes[1]!);
+
+    transport.emitData(`{"jsonrpc":"2.0","id":${oversizedId},"result":"`);
+    transport.emitData("y".repeat(17 * 1024 * 1024));
+    // The oversized line terminator and the follower response share a chunk.
+    transport.emitData(`"}\n{"jsonrpc":"2.0","id":${followerId},"result":"ok"}\n`);
+
+    await expect(oversized).rejects.toThrow(/exceeded 16 MiB/);
+    await expect(follower).resolves.toBe("ok");
+    expect(client.isClosed()).toBe(false);
+  });
+
+  it("discards an oversized notification without rejecting pending calls", async () => {
+    const transport = new MockTransport();
+    const client = new RuntimeRpcClient(transport);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const pending = client.call("projects.list", {});
+      const pendingId = requestId(transport.writes[0]!);
+
+      // A notification whose params embed an "id" field matching the pending
+      // call must not be mistaken for that call's response.
+      transport.emitData(`{"jsonrpc":"2.0","method":"runtime/event","params":{"id":${pendingId},"blob":"`);
+      transport.emitData("z".repeat(17 * 1024 * 1024));
+      transport.emitData(`"}}\n`);
+
+      expect(client.isClosed()).toBe(false);
+      transport.emitData({ jsonrpc: "2.0", id: pendingId, result: ["project"] });
+      await expect(pending).resolves.toEqual(["project"]);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it("dispatches JSON-RPC notifications without resolving pending calls", async () => {
     const transport = new MockTransport();
     const client = new RuntimeRpcClient(transport);
