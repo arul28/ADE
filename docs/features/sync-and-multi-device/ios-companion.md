@@ -114,8 +114,10 @@ apps/ios/
 │   │   ├── Work/                    # WorkRootScreen, WorkChatSessionView,
 │   │   │                            # Work*Helpers, WorkNewChatScreen (chat/CLI
 │   │   │                            #   segmented launcher), WorkArtifactTerminalViews,
-│   │   │                            # WorkTerminalEmulatorView (UIKit-backed monospaced
-│   │   │                            #   terminal screen + viewport reporter),
+│   │   │                            # TerminalSessionScreen + SwiftTermSessionView
+│   │   │                            #   (full-screen SwiftTerm terminal,
+│   │   │                            #   offset resume/history paging +
+│   │   │                            #   viewport reporter),
 │   │   │                            # WorkSessionDestination*,
 │   │   │                            # WorkRootScreen+Selection (multi-select state +
 │   │   │                            #   bulk close/archive/restore/delete/export),
@@ -1056,17 +1058,18 @@ reflected in the phone's UI on the next descriptor read.
   message, and sends it with the durable `sessionId`. The runtime writes
   to a live PTY when present, or starts the provider continuation
   internally and attaches the new PTY to the same session row.
-- **`WorkTerminalEmulatorView` drives a monospaced grid, not a free
-  text view.** The viewport reported back to the runtime is in (cols,
-  rows) inferred from the rendered glyph cell, not pixel dimensions.
-  The emulator unsubscribes the runtime stream on `onDisappear` so a
-  user paging through the session list does not accumulate buffer
-  bytes for off-screen sessions; `restoreTerminalSubscriptions`
-  re-subscribes on reconnect for any session id still tracked in
-  `subscribedTerminalSessionIds`. Terminal snapshots request up to
-  240 KB and local buffers trim at roughly 240,000 characters, keeping
-  recent CLI output available without letting an off-screen PTY grow
-  the mobile buffer indefinitely.
+- **`TerminalSessionScreen` + `SwiftTermSessionView` drive a real
+  SwiftTerm grid, not a free text view.** The viewport reported back to
+  the runtime is in (cols, rows) inferred from the rendered glyph cell,
+  not pixel dimensions. The terminal unsubscribes the runtime stream on
+  `onDisappear` so a user paging through the session list does not keep
+  a phone-owned viewport attached; `restoreTerminalSubscriptions`
+  re-subscribes on reconnect with the last known transcript end offset
+  for any session id still tracked in `subscribedTerminalSessionIds`.
+  Terminal snapshots request up to 240 KB for legacy hosts; offset-aware
+  hosts use `sinceOffset` delta snapshots and `terminal_history` pages
+  so the phone can keep older scrollback without reloading the whole
+  tail.
 - **Lane presence is best-effort with a TTL.** The phone
   re-announces on a 30 s cadence; the runtime prunes stale entries at
   60 s. A phone that crashes without sending `lanes.presence.release`

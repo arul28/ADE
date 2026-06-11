@@ -40,14 +40,17 @@ desktop in-process path used before a binding exists, in diagnostics,
 and in tests.
 
 - `apps/desktop/src/main/services/pty/ptyService.ts` — PTY lifecycle,
-  transcript capture (capped at `MAX_TRANSCRIPT_BYTES = 64 MB`), runtime
+  transcript capture (capped at `MAX_TRANSCRIPT_BYTES = 16 MB`), runtime
   state, AI auto-titles, tool-type routing, continuation-target backfill,
   session-id based write/resize entry points used by mobile sync
   terminal control, `readTranscriptTail({ sessionId, ... })` which
   merges the on-disk transcript tail with the live PTY output tail so
   Work/TUI terminal hydration can replay output that is still buffered
-  in the transcript write stream, agent CLI input protocol (bracketed
-  paste, chunked writes, provider-specific submit delays), process tree
+  in the transcript write stream, `readTranscriptRange({ sessionId,
+  startOffset, endOffset })` for mobile scrollback/delta resume,
+  offset-stamped PTY data batches, desktop-size restore after
+  mobile-driven resizes, agent CLI input protocol (bracketed paste,
+  chunked writes, provider-specific submit delays), process tree
   termination (`terminatePtyProcessTree` walks descendant PIDs via
   `pgrep` and escalates to `SIGKILL` after a grace timer), live session
   row resync (re-opens rows that drifted to `ended` while the PTY is
@@ -111,6 +114,7 @@ Shared types and IPC:
 - `apps/desktop/src/shared/types/sessions.ts` — `TerminalSessionSummary`,
   `TerminalSessionStatus`, `TerminalToolType`, `TerminalRuntimeState`,
   `TerminalResumeMetadata`, `PtyCreateArgs`, `SessionDeltaSummary`,
+  offset-stamped `PtyDataEvent`,
   `PtySendToSessionArgs` / `PtySendToSessionResult` (the
   send-or-continue surface), `PtyResumeSessionArgs` /
   `PtyResumeSessionResult` (prompt-free tracked CLI relaunch), the rich `ChatTerminalSession` /
@@ -131,8 +135,11 @@ Shared types and IPC:
   `ade.localhost.probePort`.
 - `apps/desktop/src/shared/types/sync.ts` — terminal stream/control
   envelopes (`terminal_subscribe`, `terminal_unsubscribe`,
-  `terminal_data`, `terminal_exit`, `terminal_input`, `terminal_resize`)
-  for iOS Work surfaces, plus the mobile CLI launcher payload
+  `terminal_snapshot`, `terminal_data`, `terminal_history`,
+  `terminal_exit`, `terminal_input`, `terminal_resize`) for iOS Work
+  surfaces, including transcript offsets, `sinceOffset` delta resume,
+  `live` backing-PTY status, and pull-to-load-older history pages, plus
+  the mobile CLI launcher payload
   (`SyncCliLaunchProvider`, `SyncStartCliSessionArgs`,
   `SyncStartCliSessionResult`) consumed by the
   `work.startCliSession` remote command.
@@ -496,15 +503,15 @@ iOS Work surfaces:
   row action. The earlier
   in-list activity feed is gone — running chats surface through the
   session list and the live-count chip.
+- `apps/ios/ADE/Views/Work/TerminalSessionScreen.swift` and
+  `SwiftTermSessionView.swift` — full-screen SwiftTerm-backed terminal
+  surface for CLI sessions. It subscribes with `sinceOffset`, applies
+  offset-stamped `terminal_data`, pages older transcript bytes via
+  `terminal_history`, sends raw `terminal_input`, reports viewport
+  changes as `terminal_resize`, and unsubscribes on disappear.
 - `apps/ios/ADE/Views/Work/WorkArtifactTerminalViews.swift` —
-  terminal artifact/output views and the compact input bar that sends
-  `terminal_input` bytes and Ctrl-C to the subscribed host PTY. Hosts
-  the new emulator surface and unsubscribes via
-  `SyncService.unsubscribeTerminal` on view disappear.
-- `apps/ios/ADE/Views/Work/WorkTerminalEmulatorView.swift` —
-  UIKit-backed monospaced terminal screen + `WorkTerminalScreen`
-  model that reports its viewport in (cols, rows) so the host can
-  resize the PTY to the phone's actual rendered grid.
+  terminal artifact/output views and inline preview cards; the older
+  lightweight terminal emulator remains here only for compact previews.
 - `apps/ios/ADE/Views/Work/WorkChatSessionView.swift`,
   `WorkChatComposerAndInputViews.swift`, `WorkChatRichCardViews.swift`,
   `WorkReasoningCard.swift`, `WorkNewChatScreen.swift` — mobile chat,
@@ -574,9 +581,10 @@ See `apps/desktop/src/shared/types/sessions.ts` for the full shape.
    `initialInputDelayMs` delay.
 
 2. **Stream** — PTY `data` events are written to the transcript
-   (capped at `MAX_TRANSCRIPT_BYTES = 64 MB`), throttled into a
-   `lastOutputPreview`, forwarded to `broadcastData`, and scanned for
-   runtime state signals (OSC 133 prompt markers).
+   (capped at `MAX_TRANSCRIPT_BYTES = 16 MB`), throttled into a
+   `lastOutputPreview`, forwarded to `broadcastData` with the transcript
+   end offset when available, and scanned for runtime state signals
+   (OSC 133 prompt markers).
 
 3. **Tag** — the tool type is inferred or passed by the renderer.
    Claude/Codex sessions also get a best-effort `--session-id` extraction
@@ -757,9 +765,10 @@ Processes (managed):
   falls back to `defaultResumeCommandForTool(toolType)`. Editing it
   directly is only allowed through `sessionService.setResumeCommand` or
   `updateMeta`, both of which re-derive the metadata.
-- Transcript writes are capped at 64 MB; after the cap a notice line is
-  written once and further output is dropped. The runtime counter
-  `transcriptBytesWritten` is not persisted.
+- Transcript writes are capped at 16 MB; after the cap a notice line is
+  written once and further output is dropped. The runtime seeds
+  `transcriptBytesWritten` from the file size on attach, so the cap
+  survives resume.
 - Preview updates are throttled (~900 ms) and the string is capped at
   220 chars via `derivePreviewFromChunk`.
 - Reconcile and dispose paths gate on `processRegistryService` live and
