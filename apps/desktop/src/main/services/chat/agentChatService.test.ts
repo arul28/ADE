@@ -11390,6 +11390,64 @@ describe("createAgentChatService", () => {
       )).toEqual(["event-2", "event-3", "event-4"]);
     });
 
+    it("byte-caps a snapshot whose merged events exceed the response budget", async () => {
+      // Regression: individual chat events can carry multi-MB tool outputs.
+      // Event-count caps alone let a snapshot serialize past the desktop RPC
+      // client's 16 MiB per-message limit, which used to fail every in-flight
+      // call on the shared runtime socket.
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      const envelopes: AgentChatEventEnvelope[] = Array.from({ length: 4 }, (_, index) => ({
+        sessionId: session.id,
+        timestamp: `2026-04-23T10:0${index}:00.000Z`,
+        event: { type: "text", text: `event-${index}-${"x".repeat(3_000_000)}` },
+        sequence: index + 1,
+      }));
+      const transcriptFile = path.join(tmpRoot, "transcripts", `${session.id}.chat.jsonl`);
+      fs.writeFileSync(transcriptFile, "ignored\n", "utf8");
+      vi.mocked(parseAgentChatTranscript).mockReturnValue(envelopes);
+
+      const history = service.getChatEventHistory(session.id);
+
+      // 4 × ~3 MB events exceed the 8 MB response budget: only the newest
+      // events that fit are returned, and the trim is reported as window
+      // truncation so clients know to page for the rest.
+      expect(history.events.length).toBeLessThan(envelopes.length);
+      expect(history.events.length).toBeGreaterThan(0);
+      expect(history.windowTruncated).toBe(true);
+      expect(history.truncated).toBe(true);
+      expect(JSON.stringify(history.events).length).toBeLessThanOrEqual(8_000_000);
+      const lastEvent = history.events.at(-1)?.event;
+      expect(lastEvent?.type === "text" ? lastEvent.text.startsWith("event-3-") : false).toBe(true);
+    });
+
+    it("always returns at least the newest event even when it alone exceeds the byte budget", async () => {
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      const giant: AgentChatEventEnvelope = {
+        sessionId: session.id,
+        timestamp: "2026-04-23T10:00:00.000Z",
+        event: { type: "text", text: "giant-".concat("y".repeat(9_000_000)) },
+        sequence: 1,
+      };
+      const transcriptFile = path.join(tmpRoot, "transcripts", `${session.id}.chat.jsonl`);
+      fs.writeFileSync(transcriptFile, "ignored\n", "utf8");
+      vi.mocked(parseAgentChatTranscript).mockReturnValue([giant]);
+
+      const history = service.getChatEventHistory(session.id);
+      expect(history.events).toHaveLength(1);
+    });
+
     it("marks window truncation when the service response cap removes events", async () => {
       const { service } = createService();
       const session = await service.createSession({

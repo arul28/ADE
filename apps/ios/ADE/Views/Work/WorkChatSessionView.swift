@@ -25,6 +25,7 @@ struct WorkChatSessionView: View {
   @State var actionInFlight = false
   @State var isNearBottom = true
   @State var unreadBelowCount = 0
+  @State var lastTimelineTailId: String?
   @State var artifactDrawerPresented = false
   @State var timelineSnapshot = WorkChatTimelineSnapshot.empty
   @State var timelinePresentation = WorkTimelinePresentation.empty
@@ -57,6 +58,10 @@ struct WorkChatSessionView: View {
   let onSelectEffort: @MainActor (String) async -> Void
 
   var lanes: [LaneSummary] = []
+  // Host-side scroll-back: true while older transcript pages remain on the
+  // host beyond what the phone has fetched; the callback pulls the next page.
+  var hasOlderTranscriptHistory: Bool = false
+  var onLoadOlderTranscript: (@MainActor () async -> Void)? = nil
 
   @State var steerEditDrafts: [String: String] = [:]
   @State var modelPickerPresented = false
@@ -257,14 +262,15 @@ struct WorkChatSessionView: View {
         message: isLive ? "Send a message to start streaming the transcript." : "Reconnect to load the latest chat history from the machine."
       )
     } else {
-      if hiddenTimelineCount > 0 {
+      if hiddenTimelineCount > 0 || hasOlderTranscriptHistory {
+        let nextPageCount = min(hiddenTimelineCount, workTimelinePageSize)
+        let loadEarlierTitle = nextPageCount > 0
+          ? "Load \(nextPageCount) earlier message\(nextPageCount == 1 ? "" : "s")"
+          : "Load earlier messages"
         Button {
           loadEarlierTimelineEntries()
         } label: {
-          Label(
-            "Load \(min(hiddenTimelineCount, workTimelinePageSize)) earlier message\(min(hiddenTimelineCount, workTimelinePageSize) == 1 ? "" : "s")",
-            systemImage: "chevron.up.circle"
-          )
+          Label(loadEarlierTitle, systemImage: "chevron.up.circle")
           .font(.footnote.weight(.semibold))
           .foregroundStyle(ADEColor.accent)
           .frame(maxWidth: .infinity)
@@ -454,8 +460,14 @@ struct WorkChatSessionView: View {
         }
       }
       .onChange(of: timeline.count) { oldCount, newCount in
+        let previousTailId = lastTimelineTailId
+        lastTimelineTailId = timeline.last?.id
         let delta = newCount - oldCount
         guard delta > 0 else { return }
+        // Older-page prepends grow the timeline above the viewport — the
+        // newest entry stays put. Don't autoscroll to the bottom or flag
+        // the prepended entries as "new messages below".
+        if let previousTailId, previousTailId == timeline.last?.id { return }
         if isNearBottom {
           scrollToLatest(proxy, animated: false)
         } else {

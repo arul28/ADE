@@ -4798,45 +4798,45 @@ final class SyncService: ObservableObject {
     return response.entries
   }
 
-  /// One page of a paginated chat transcript walk. `nextCursor` is an opaque
-  /// host token identifying the position just before the oldest entry
-  /// returned; pass it back via `fetchChatTranscriptPage(cursor:)` to load
-  /// the previous (older) page. `nil` means the start of the transcript was
-  /// reached.
+  /// One page of a paginated chat transcript walk. `nextCursor` is the
+  /// host-side index of the oldest entry returned (the transcript is
+  /// append-only, so indices are stable); pass it back via
+  /// `fetchChatTranscriptPage(cursor:)` to load the previous (older) page.
+  /// `nil` means the start of the transcript was reached.
   struct AgentChatTranscriptPage: Equatable {
     var sessionId: String
     var entries: [AgentChatTranscriptEntry]
     var truncated: Bool
     var totalEntries: Int
-    var nextCursor: String?
+    var nextCursor: Int?
   }
 
   /// Fetch a transcript page. Without `cursor` this returns the newest
   /// entries (same data as `fetchChatTranscriptResponse`) plus a cursor for
   /// walking backwards; with `cursor` it returns the page strictly BEFORE
-  /// that point. Older hosts that predate pagination simply omit
+  /// that index. Older hosts that predate pagination simply omit
   /// `nextCursor`, which surfaces here as `nil` (no more pages).
   func fetchChatTranscriptPage(
     sessionId: String,
-    cursor: String? = nil,
+    cursor: Int? = nil,
     limit: Int = 200,
     maxChars: Int = 600_000
   ) async throws -> AgentChatTranscriptPage {
     var args: [String: Any] = ["sessionId": sessionId, "limit": limit, "maxChars": maxChars]
-    if let cursor, !cursor.isEmpty {
-      args["cursor"] = cursor
+    if let cursor, cursor > 0 {
+      args["cursor"] = String(cursor)
     }
     let response = try await sendCommand(action: "chat.getTranscript", args: args)
     if let payload = response as? [String: Any], payload["queued"] as? Bool == true {
       throw QueuedRemoteCommandError(action: "chat.getTranscript")
     }
     let transcript = try decode(response, as: AgentChatTranscriptResponse.self)
-    var nextCursor: String?
+    var nextCursor: Int?
     if let dict = response as? [String: Any], let rawCursor = dict["nextCursor"] {
-      if let text = rawCursor as? String, !text.isEmpty {
-        nextCursor = text
+      if let text = rawCursor as? String {
+        nextCursor = Int(text)
       } else if let number = rawCursor as? NSNumber, !(rawCursor is Bool) {
-        nextCursor = number.stringValue
+        nextCursor = number.intValue
       }
     }
     return AgentChatTranscriptPage(
