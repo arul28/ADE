@@ -3131,10 +3131,28 @@ describe("createSyncRemoteCommandService", () => {
 
   describe("execute — prs.refresh", () => {
     it("refreshes single PR by prId", async () => {
-      prService.listAll.mockResolvedValue([{ id: "pr-1" }]);
+      prService.listAll.mockResolvedValue([{ id: "pr-1" }, { id: "pr-2" }]);
+      prService.listSnapshots.mockReturnValue([{ prId: "pr-1" }, { prId: "pr-2" }]);
       const result = await service.execute(makePayload("prs.refresh", { prId: "pr-1" }));
       expect(prService.refresh).toHaveBeenCalledWith({ prId: "pr-1" });
-      expect(result).toEqual(expect.objectContaining({ refreshedCount: 1 }));
+      expect(prService.listSnapshots).toHaveBeenCalledWith({ prId: "pr-1" });
+      expect(result).toEqual(expect.objectContaining({
+        refreshedCount: 1,
+        prs: [{ id: "pr-1" }],
+        snapshots: [{ prId: "pr-1" }],
+      }));
+    });
+
+    it("scopes multi-PR refresh payloads by prIds", async () => {
+      prService.listAll.mockResolvedValue([{ id: "pr-1" }, { id: "pr-2" }, { id: "pr-3" }]);
+      prService.listSnapshots.mockReturnValue([{ prId: "pr-1" }, { prId: "pr-2" }, { prId: "pr-3" }]);
+      const result = await service.execute(makePayload("prs.refresh", { prIds: ["pr-1", "pr-3"] }));
+      expect(prService.refresh).toHaveBeenCalledWith({ prIds: ["pr-1", "pr-3"] });
+      expect(result).toEqual(expect.objectContaining({
+        refreshedCount: 2,
+        prs: [{ id: "pr-1" }, { id: "pr-3" }],
+        snapshots: [{ prId: "pr-1" }, { prId: "pr-3" }],
+      }));
     });
 
     it("refreshes all PRs when no prId or prIds given", async () => {

@@ -1820,6 +1820,56 @@ describe("local runtime connection pool", () => {
     );
   });
 
+  it("does not spawn a primary sync runtime when service repair is not configured", async () => {
+    const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-local-runtime-primary-block-"));
+    const originalEnv = {
+      ADE_HOME: process.env.ADE_HOME,
+      ADE_RUNTIME_SOCKET_PATH: process.env.ADE_RUNTIME_SOCKET_PATH,
+    };
+    const logger = {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    };
+    const pool = new LocalRuntimeConnectionPool("1.2.3", logger as never);
+    const internals = pool as unknown as {
+      createConnection: () => Promise<unknown>;
+      tryConnect: (socketPath: string) => Promise<unknown>;
+      tryRepairServiceConnection: (socketPath: string, reason: "missing") => Promise<unknown>;
+      spawnRuntime: (socketPath: string) => ChildProcess;
+    };
+    const tryConnect = vi.spyOn(internals, "tryConnect").mockResolvedValue(null);
+    const tryRepair = vi.spyOn(internals, "tryRepairServiceConnection").mockResolvedValue(null);
+    const spawnRuntime = vi.spyOn(internals, "spawnRuntime");
+
+    try {
+      process.env.ADE_HOME = adeHome;
+      delete process.env.ADE_RUNTIME_SOCKET_PATH;
+
+      await expect(internals.createConnection()).rejects.toThrow(
+        /refusing to spawn an app-owned brain on a primary channel socket/i,
+      );
+
+      expect(tryConnect).toHaveBeenCalledWith(path.join(adeHome, "sock", "ade.sock"));
+      expect(tryRepair).toHaveBeenCalled();
+      expect(spawnRuntime).not.toHaveBeenCalled();
+      expect(logger.warn).toHaveBeenCalledWith(
+        "local_runtime.primary_runtime_spawn_blocked",
+        expect.objectContaining({
+          socketPath: path.join(adeHome, "sock", "ade.sock"),
+          preferServiceRepair: false,
+        }),
+      );
+    } finally {
+      if (originalEnv.ADE_HOME === undefined) delete process.env.ADE_HOME;
+      else process.env.ADE_HOME = originalEnv.ADE_HOME;
+      if (originalEnv.ADE_RUNTIME_SOCKET_PATH === undefined) delete process.env.ADE_RUNTIME_SOCKET_PATH;
+      else process.env.ADE_RUNTIME_SOCKET_PATH = originalEnv.ADE_RUNTIME_SOCKET_PATH;
+      removeTempDir(adeHome);
+    }
+  });
+
   it("routes local sync calls through the project-scoped runtime RPC", async () => {
     const call = vi.fn().mockResolvedValue({
       mode: "standalone",

@@ -84,6 +84,26 @@ const pools = new Map<string, {
 }>();
 const pendingInits = new Map<string, Promise<CursorSdkPooled>>();
 const STALE_INIT_RETRY_LIMIT = 2;
+const CURSOR_SDK_WORKER_ENV_DENYLIST = [
+  "CURSOR_API_KEY",
+  "CURSOR_AUTH_TOKEN",
+  "ADE_HOME",
+  "ADE_PACKAGE_CHANNEL",
+  "ADE_RUNTIME_SOCKET_PATH",
+  "ADE_RPC_SOCKET_PATH",
+  "ADE_DESKTOP_BRIDGE_SOCKET_PATH",
+  "ADE_RUNTIME_BUILD_HASH",
+  "ADE_RUNTIME_PARENT_PID",
+  "ADE_RUNTIME_IDLE_EXIT_MS",
+  "ADE_CLI_ENTRY_PATH",
+  "ADE_CLI_JS",
+  "ADE_CLI_INSTALL_NAME",
+  "ADE_DEFAULT_ROLE",
+  "ADE_DESKTOP_APP_NAME",
+  "ADE_ALLOW_RUNTIME_SERVICE_SELF_MUTATION",
+  "ADE_ALLOW_LOCAL_RELEASE_SERVICE_INSTALL",
+  "ELECTRON_RUN_AS_NODE",
+] as const;
 const moduleDir =
   typeof __dirname === "string"
     ? __dirname
@@ -113,11 +133,18 @@ function socketPathFor(poolKey: string): string {
   return path.join(os.tmpdir(), `ade-cursor-sdk-${userPart}`, name, "hook.sock");
 }
 
-function sanitizeEnv(base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+export function sanitizeCursorSdkWorkerBaseEnv(base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const env = { ...base };
-  delete env.CURSOR_API_KEY;
-  delete env.CURSOR_AUTH_TOKEN;
+  for (const key of CURSOR_SDK_WORKER_ENV_DENYLIST) {
+    delete env[key];
+  }
   return env;
+}
+
+export function isCursorSdkPooledAlive(pooled: CursorSdkPooled): boolean {
+  return pooled.process.exitCode == null
+    && !pooled.process.killed
+    && pooled.process.connected !== false;
 }
 
 function pathEnvKey(env: NodeJS.ProcessEnv): string {
@@ -212,16 +239,20 @@ function inferAdeCliEntryFromBinDir(binDir: string | null): string | null {
   return existingFilePath(path.resolve(binDir, "..", "cli.cjs"));
 }
 
-function applyCurrentAdeCliEnv(env: NodeJS.ProcessEnv): void {
-  const envCliEntry = existingFilePath(env.ADE_CLI_ENTRY_PATH);
+function applyCurrentAdeCliEnv(
+  env: NodeJS.ProcessEnv,
+  sourceEnv: NodeJS.ProcessEnv = env,
+): void {
+  const envCliEntry = existingFilePath(sourceEnv.ADE_CLI_ENTRY_PATH ?? env.ADE_CLI_ENTRY_PATH);
   const argvCliEntry = existingFilePath(typeof process.argv[1] === "string" ? process.argv[1] : null);
-  const binDir = existingDirPath(env.ADE_CLI_BIN_DIR)
+  const binDir = existingDirPath(sourceEnv.ADE_CLI_BIN_DIR ?? env.ADE_CLI_BIN_DIR)
     ?? inferAdeCliBinDirFromEntry(envCliEntry)
     ?? inferAdeCliBinDirFromEntry(argvCliEntry);
   if (binDir) {
     env.ADE_CLI_BIN_DIR = binDir;
     prependPathDir(env, binDir);
-    const commandPath = findAdeCommandInBinDir(binDir, env);
+    const commandPath = findAdeCommandInBinDir(binDir, sourceEnv)
+      ?? findAdeCommandInBinDir(binDir, env);
     if (commandPath) env.ADE_CLI_PATH = commandPath;
   }
   const cliEntry = inferAdeCliEntryFromBinDir(binDir) ?? envCliEntry ?? argvCliEntry;
@@ -298,8 +329,9 @@ export function buildCursorSdkWorkerEnv(args: {
   workspacePath: string;
   sessionId: string;
 }): NodeJS.ProcessEnv {
+  const baseEnv = args.baseEnv ?? process.env;
   const env: NodeJS.ProcessEnv = {
-    ...sanitizeEnv(args.baseEnv ?? process.env),
+    ...sanitizeCursorSdkWorkerBaseEnv(baseEnv),
     HOME: args.userHomeDir,
     USERPROFILE: args.userHomeDir,
     ADE_DISABLE_RUNTIME_SERVICE_INSTALL: "1",
@@ -308,7 +340,8 @@ export function buildCursorSdkWorkerEnv(args: {
     ADE_CURSOR_SDK_SESSION_ID: args.sessionId,
     ADE_CURSOR_SDK_STATE_ROOT: args.stateRoot,
   };
-  applyCurrentAdeCliEnv(env);
+  applyCurrentAdeCliEnv(env, baseEnv);
+  delete env.ADE_CLI_ENTRY_PATH;
   return env;
 }
 
@@ -330,12 +363,13 @@ export async function acquireCursorSdkConnection(args: {
 }): Promise<{ pooled: CursorSdkPooled; generation: number }> {
   for (let staleInitRetries = 0; ; staleInitRetries += 1) {
     const existing = pools.get(args.poolKey);
-    if (existing && existing.pooled.process.exitCode == null && !existing.pooled.process.killed) {
+    if (existing && isCursorSdkPooledAlive(existing.pooled)) {
       existing.ref += 1;
       return { pooled: existing.pooled, generation: existing.generation };
     }
     if (existing) {
       pools.delete(args.poolKey);
+      existing.pooled.dispose();
       cleanupCursorSdkRuntimePaths(existing);
     }
 
@@ -351,9 +385,7 @@ export async function acquireCursorSdkConnection(args: {
 
     const pooled = await init;
     const entry = pools.get(args.poolKey);
-    const live = entry?.pooled === pooled
-      && pooled.process.exitCode == null
-      && !pooled.process.killed;
+    const live = entry?.pooled === pooled && isCursorSdkPooledAlive(pooled);
     if (!entry || !live) {
       if (initOwner) {
         throw new Error("Cursor SDK worker was disposed during initialization.");
@@ -400,6 +432,34 @@ async function createCursorSdkConnection(args: Parameters<typeof acquireCursorSd
   const normalizeIpcSendError = (error: unknown): Error => (
     error instanceof Error ? error : new Error(String(error))
   );
+  let lastStderr = "";
+  const rememberStderr = (text: string): void => {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    lastStderr = `${lastStderr}\n${trimmed}`.trim().slice(-4000);
+  };
+  const summarizeStderr = (): string | null => {
+    const lines = lastStderr
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+    if (!lines.length) return null;
+    const meaningful = [
+      lines.find((line) => /^(ConnectError|Error|TypeError|ReferenceError|SyntaxError):/.test(line)),
+      lines.find((line) => line.includes("NGHTTP2_ENHANCE_YOUR_CALM")),
+      lines.find((line) => line.includes("rawMessage:")),
+      lines.find((line) => line.startsWith("Node.js ")),
+    ].filter((line): line is string => Boolean(line));
+    const unique = Array.from(new Set(meaningful));
+    return (unique.length ? unique : lines.slice(0, 3)).join(" ");
+  };
+  const workerExitedError = (code: number | null, signal: NodeJS.Signals | null): Error => {
+    const exitStatus = code ?? signal ?? "unknown";
+    const detail = summarizeStderr();
+    return new Error(detail
+      ? `Cursor SDK worker exited (${exitStatus}). ${detail}`
+      : `Cursor SDK worker exited (${exitStatus}).`);
+  };
   const sendWorkerMessage = (
     message: CursorSdkWorkerRequest,
     onError?: (error: Error) => void,
@@ -437,6 +497,7 @@ async function createCursorSdkConnection(args: Parameters<typeof acquireCursorSd
   });
   child.stderr?.on("data", (chunk) => {
     const text = Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk);
+    rememberStderr(text);
     if (text.trim()) args.logger?.warn("agent_chat.cursor_sdk_worker_stderr", { text: text.trim() });
   });
 
@@ -472,7 +533,11 @@ async function createCursorSdkConnection(args: Parameters<typeof acquireCursorSd
     dispose: () => {
       for (const [, waiter] of pending) waiter.reject(new Error("Cursor SDK worker disposed."));
       pending.clear();
-      sendWorkerMessage({ type: "dispose", requestId: randomUUID() } as CursorSdkWorkerRequest);
+      const sent = sendWorkerMessage({ type: "dispose", requestId: randomUUID() } as CursorSdkWorkerRequest);
+      if (!sent && child.exitCode == null && !child.killed) {
+        child.kill("SIGTERM");
+        return;
+      }
       setTimeout(() => {
         if (child.exitCode == null && !child.killed) child.kill("SIGTERM");
       }, 800).unref();
@@ -600,7 +665,7 @@ async function createCursorSdkConnection(args: Parameters<typeof acquireCursorSd
   });
 
   child.on("exit", (code, signal) => {
-    rejectPending(new Error(`Cursor SDK worker exited (${code ?? signal ?? "unknown"}).`));
+    rejectPending(workerExitedError(code, signal));
     cleanupPoolEntry(pooled);
   });
 

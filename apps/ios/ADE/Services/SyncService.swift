@@ -2036,6 +2036,9 @@ final class SyncService: ObservableObject {
     projects = deduplicateProjectListByRoot(sortedProjectList(database.listMobileProjects()))
     outboundLocalDbVersion = loadOutboundCursorVersionForActiveProject(defaultVersion: database.currentDbVersion())
     normalizeActiveProjectSelection(allowSingleProjectFallback: false)
+    if activeProjectId != nil {
+      projectHomePresented = false
+    }
     pendingOperationCount = loadPendingOperations().count
     resetOutboundCursorStateForActiveProject()
     activeHostProfile = loadProfile()
@@ -3264,7 +3267,7 @@ final class SyncService: ObservableObject {
     do {
       let raw = try await sendCommand(action: "prs.refresh", args: args)
       let payload = try decodeHydrationPayload(raw, as: PullRequestRefreshPayload.self, domainLabel: "pull request", decoder: decoder)
-      try database.replacePullRequestHydration(payload)
+      try database.replacePullRequestHydration(payload, pruneStale: prId == nil)
       scheduleWorkspaceSnapshotWrite()
       setDomainStatus([.prs], phase: .ready)
     } catch {

@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import net from "node:net";
+import os from "node:os";
 import path from "node:path";
 import { app } from "electron";
 import { isAdeRuntimeNamedPipePath } from "../../../shared/adeRuntimeIpc";
@@ -77,6 +78,36 @@ const COALESCED_LOCAL_RUNTIME_ACTIONS = new Set([
   "session.list",
   "tiling_tree.get",
 ]);
+
+function normalizeComparableSocketPath(socketPath: string): string {
+  return socketPath.startsWith("tcp://") || isAdeRuntimeNamedPipePath(socketPath)
+    ? socketPath
+    : path.resolve(socketPath);
+}
+
+function defaultChannelRuntimeSocketPaths(): Set<string> {
+  return new Set([".ade", ".ade-alpha", ".ade-beta"].map((homeName) =>
+    path.join(os.homedir(), homeName, "sock", "ade.sock")
+  ).map(normalizeComparableSocketPath));
+}
+
+function isPrimaryMachineRuntimeSocketPath(
+  socketPath: string,
+  layoutSocketPath: string,
+): boolean {
+  const normalizedSocketPath = normalizeComparableSocketPath(socketPath);
+  if (normalizedSocketPath === normalizeComparableSocketPath(layoutSocketPath)) {
+    return true;
+  }
+  return defaultChannelRuntimeSocketPaths().has(normalizedSocketPath);
+}
+
+function primaryRuntimeSpawnBlockedMessage(socketPath: string): string {
+  return (
+    `ADE runtime is unavailable at ${socketPath}; refusing to spawn an app-owned brain ` +
+    "on a primary channel socket. Start or repair the ADE background service instead."
+  );
+}
 
 function stableActionValue(value: unknown): unknown {
   if (!value || typeof value !== "object") return value;
@@ -1219,15 +1250,19 @@ export class LocalRuntimeConnectionPool {
       throw new Error(releaseBuildBlock.message);
     }
 
-    if (this.options.preferServiceRepair) {
-      const message =
-        `ADE service repair did not restore the runtime endpoint at ${socketPath}; ` +
-        "refusing to spawn an app-owned sync-enabled brain on the primary service socket.";
-      this.logger.warn("local_runtime.service_repair_fallback_blocked", {
+    if (isPrimaryMachineRuntimeSocketPath(socketPath, layout.socketPath)) {
+      const message = this.options.preferServiceRepair
+        ? `ADE service repair did not restore the runtime endpoint at ${socketPath}; ` +
+          "refusing to spawn an app-owned sync-enabled brain on the primary service socket."
+        : primaryRuntimeSpawnBlockedMessage(socketPath);
+      this.logger.warn(this.options.preferServiceRepair
+        ? "local_runtime.service_repair_fallback_blocked"
+        : "local_runtime.primary_runtime_spawn_blocked", {
         socketPath,
         message,
         serviceState: this.serviceInstallStatus.state,
         serviceMessage: this.serviceInstallStatus.message,
+        preferServiceRepair: this.options.preferServiceRepair === true,
       });
       throw new Error(message);
     }

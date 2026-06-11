@@ -910,6 +910,11 @@ struct PRsTabView: View {
     }
   }
 
+  private func linkedPullRequest(for item: GitHubPrListItem) -> PullRequestListItem? {
+    guard let linkedPrId = item.linkedPrId else { return nil }
+    return prs.first { $0.id == linkedPrId }
+  }
+
   @ViewBuilder
   private func githubRowNavigation(for item: GitHubPrListItem) -> some View {
     if let prId = item.linkedPrId {
@@ -918,6 +923,7 @@ struct PRsTabView: View {
       } label: {
         PrRowCard(
           item: item,
+          linkedPr: linkedPullRequest(for: item),
           transitionNamespace: ADEMotion.allowsMatchedGeometry(reduceMotion: reduceMotion) ? prTransitionNamespace : nil,
           isSelectedTransitionSource: selectedPrTransitionId == prId
         )
@@ -945,6 +951,7 @@ struct PRsTabView: View {
       } label: {
         PrRowCard(
           item: item,
+          linkedPr: linkedPullRequest(for: item),
           onLink: canLinkGitHubPullRequests
             ? { laneLinkRequest = PrGitHubLaneLinkRequest(item: item) }
             : nil

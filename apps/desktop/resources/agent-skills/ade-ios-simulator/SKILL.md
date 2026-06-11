@@ -65,15 +65,19 @@ ade --socket ios-sim preview-status --text
 ade --socket ios-sim previews --source <swift-file> --text
 ade --socket ios-sim preview-match --source <swift-file> --line <n> --text
 ade --socket ios-sim preview-ensure --source <swift-file> --line <n> --text
+ade --socket ios-sim preview-current --text
 ade --socket ios-sim preview-render --source <swift-file> --index <n> --text
 ```
 
-Start with `preview-match` when the selected simulator element exposes Swift source context; pass its `sourceFile` and optional `sourceLine`, plus `--label` / `--component-id` only as hints for naming a missing-preview suggestion. If it returns a usable target, render that target before changing code. Use `preview-ensure` when Xcode Preview Lab is not ready; it opens this lane's iOS project in Xcode and waits for MCP readiness.
+To bridge the current simulator screen into Preview Lab, first select a source-backed element (`ade --socket ios-sim select --x <x> --y <y> --text`) or pass an explicit `--source` / `--line`, then run `ade --socket ios-sim preview-current --text`. That one command resolves the best nearby preview, opens/waits for Xcode when needed, renders through Xcode MCP, and brings the ADE Preview drawer forward.
+
+Use `preview-match` when you only need the target decision without rendering. The selected simulator element's `sourceFile` and optional `sourceLine` bias matching; `--label` / `--component-id` are only hints for naming a missing-preview suggestion. Use `preview-ensure` when Xcode Preview Lab is not ready; it opens this lane's iOS project in Xcode and waits for MCP readiness.
 
 Add or refine a preview only when no useful nearby preview exists or the match is too far from the selected element. Preview fixtures must not require live sync, keychain, network, push, sockets, or production databases.
 
 ## Gotchas
 
 - Do not create symlink projects, fake schemes, or repo-layout shims as the first fix for app detection. Re-run `ade --socket ios-sim apps --text` and report the selected project, scheme, and build output.
+- If `preview-current` or `preview-match` returns `no-context`, do not guess the screen from stale code. Run `ade --socket ios-sim snapshot --text`, select a source-backed element, or pass an explicit source file/line.
 - If no simulator/session/snapshot exists, report the exact blocker instead of guessing the screen.
 - When you own the simulator session and the task no longer needs it, run `ade --socket ios-sim shutdown --text`.

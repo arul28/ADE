@@ -258,15 +258,25 @@ export function isStaleChannelServeCommandLine(
 ): boolean {
   const line = commandLine.trim();
   if (!line || !opts.cliScriptPath) return false;
+  const socketMatch = line.match(/--socket(?:=|\s+)(\S+)/);
+  const explicitPrimarySocket = socketMatch
+    ? path.resolve(socketMatch[1]) === path.resolve(opts.primarySocketPath)
+    : false;
   const cliIndex = line.indexOf(opts.cliScriptPath);
-  if (cliIndex < 0) return false;
-  const tail = line.slice(cliIndex + opts.cliScriptPath.length);
+  const alternateCliMatch = line.match(
+    /\b(?:ade-cli[\\/](?:bin[\\/]ade|cli\.cjs)|apps[\\/]ade-cli[\\/]dist[\\/]cli\.cjs|cli\.cjs)(?=\s+serve(?:\s|$))/,
+  );
+  const tail = cliIndex >= 0
+    ? line.slice(cliIndex + opts.cliScriptPath.length)
+    : alternateCliMatch?.index != null
+      ? line.slice(alternateCliMatch.index + alternateCliMatch[0].length)
+      : "";
   if (!/^\s+serve(?:\s|$)/.test(tail)) return false;
   if (/--(?:install-service|uninstall-service|service-status|no-sync)\b/.test(tail)) return false;
-  const socketMatch = tail.match(/--socket(?:=|\s+)(\S+)/);
-  if (socketMatch && path.resolve(socketMatch[1]) !== path.resolve(opts.primarySocketPath)) {
+  if (socketMatch && !explicitPrimarySocket) {
     return false;
   }
+  if (cliIndex < 0 && !explicitPrimarySocket) return false;
   return true;
 }
 

@@ -77,10 +77,12 @@ force shutdown is requested.
 
 8. **Preview Lab.** `listPreviewTargets()` discovers nearby `#Preview` and
    `PreviewProvider` definitions. `resolvePreviewMatch()` ranks the best target
-   for the selected source file, using inspector label/component metadata only
-   as naming hints when a preview needs to be created. `ensurePreviewWorkspace()`
-   opens this lane's iOS project in Xcode when needed and waits for Preview Lab
-   readiness before `renderPreview()` drives Xcode MCP.
+   for the selected source file or the drawer's last selected simulator item,
+   using inspector label/component metadata only as naming hints when a preview
+   needs to be created. `renderCurrentPreview()` is the one-shot bridge from the
+   current simulator selection to ADE's Preview drawer: it resolves the match,
+   opens/waits for Xcode when needed, then calls `renderPreview()` through Xcode
+   MCP.
 
 9. **Shutdown.** `shutdown({ force? })` stops live-view status, releases the
    active session, stops idb companion work, clears window parking follow state,
@@ -100,12 +102,18 @@ ade --socket ios-sim select --x 120 --y 420 --text
 ade --socket ios-sim tap --x 120 --y 420 --text
 ade --socket ios-sim preview-match --source apps/ios/ADE/Views/Home.swift --line 42 --text
 ade --socket ios-sim preview-ensure --source apps/ios/ADE/Views/Home.swift --line 42 --text
+ade --socket ios-sim preview-current --text
 ade --socket ios-sim preview-render --source apps/ios/ADE/Views/Home.swift --index 0 --text
 ade --socket ios-sim shutdown --text
 ```
 
 Use `--socket` whenever the CLI and desktop drawer must share live session,
 selection, and proof state.
+
+For current-screen Preview Lab work, run `select` on a source-backed simulator
+element or pass an explicit `--source` and `--line`, then use
+`preview-current`. A `no-context` result means ADE has no selected source-backed
+element yet; it is not a signal to guess the SwiftUI screen from stale code.
 
 ## Troubleshooting
 

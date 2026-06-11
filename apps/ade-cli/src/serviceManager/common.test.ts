@@ -274,6 +274,13 @@ describe("isStaleChannelServeCommandLine", () => {
     )).toBe(true);
   });
 
+  it("matches old ADE CLI builds when they explicitly serve this channel socket", () => {
+    expect(isStaleChannelServeCommandLine(
+      `/Applications/ADE.app/Contents/MacOS/ADE /Applications/ADE.app/Contents/Resources/ade-cli/cli.cjs serve --socket ${primarySocketPath}`,
+      opts,
+    )).toBe(true);
+  });
+
   it("ignores isolated, installer, and foreign-socket runtimes", () => {
     expect(isStaleChannelServeCommandLine(`${electron} ${cliScriptPath} serve --no-sync`, opts)).toBe(false);
     expect(isStaleChannelServeCommandLine(`${electron} ${cliScriptPath} serve --install-service`, opts)).toBe(false);
@@ -283,6 +290,10 @@ describe("isStaleChannelServeCommandLine", () => {
     )).toBe(false);
     expect(isStaleChannelServeCommandLine(
       `${electron} ${cliScriptPath} serve --socket /Users/example/.ade-beta/sock/i-0c362cb4.sock --no-sync`,
+      opts,
+    )).toBe(false);
+    expect(isStaleChannelServeCommandLine(
+      `/Applications/ADE.app/Contents/MacOS/ADE /Applications/ADE.app/Contents/Resources/ade-cli/cli.cjs serve --socket ${primarySocketPath} --no-sync`,
       opts,
     )).toBe(false);
   });

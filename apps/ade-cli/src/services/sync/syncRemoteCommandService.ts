@@ -2959,14 +2959,21 @@ function registerPrAndDeeplinkRemoteCommands({ args, register }: RemoteCommandRe
     if (prId) refreshArgs = { prId };
     else if (prIds.length > 0) refreshArgs = { prIds };
     await args.prService.refresh(refreshArgs);
-    const prs = await args.prService.listAll();
+    const allPrs = await args.prService.listAll();
+    const requestedPrIds = new Set(prId ? [prId] : prIds);
+    const prs = requestedPrIds.size > 0 ? allPrs.filter((pr) => requestedPrIds.has(pr.id)) : allPrs;
     let refreshedCount = prs.length;
     if (prId) refreshedCount = 1;
     else if (prIds.length > 0) refreshedCount = prIds.length;
+    const snapshots = prId
+      ? args.prService.listSnapshots({ prId }).filter((snapshot) => requestedPrIds.has(snapshot.prId))
+      : requestedPrIds.size > 0
+        ? args.prService.listSnapshots().filter((snapshot) => requestedPrIds.has(snapshot.prId))
+        : args.prService.listSnapshots();
     return {
       refreshedCount,
       prs,
-      snapshots: args.prService.listSnapshots(),
+      snapshots,
     };
   });
   // iOS "Send to your Mac" deeplink bounce. Mobile cannot natively open a

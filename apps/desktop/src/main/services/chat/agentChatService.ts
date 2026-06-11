@@ -300,6 +300,7 @@ import { inspectLocalProvider } from "../ai/localModelDiscovery";
 import { resolveDroidExecutable } from "../ai/droidExecutable";
 import {
   acquireCursorSdkConnection,
+  isCursorSdkPooledAlive,
   releaseCursorSdkConnection,
   resolveCursorSdkUserHome,
   runCursorSdkCloudRequest,
@@ -2820,12 +2821,19 @@ function classifyProviderHostError(
   if (
     statusCode === 429
     || combinedLower.includes("rate limit")
+    || combinedLower.includes("rate_limited")
     || combinedLower.includes("429")
     || combinedLower.includes("too many requests")
+    || combinedLower.includes("enhance_your_calm")
+    || combinedLower.includes("enhance your calm")
+    || combinedLower.includes("resource exhausted")
+    || combinedLower.includes("slow down")
+    || combinedLower.includes("back off")
   ) {
+    const rateLimitDetail = rawDetail || rawMessage;
     return {
       message: `Rate limited by ${providerLabel}. The runtime should recover automatically, but you may want to retry with a different model.`,
-      ...(rawDetail ? { detail: rawDetail } : {}),
+      ...(rateLimitDetail ? { detail: rateLimitDetail } : {}),
       errorInfo: { category: "rate_limit", provider: providerLabel, model: modelDisplayName },
     };
   }
@@ -3149,6 +3157,10 @@ function isCursorSdkAgentBusyError(error: unknown): boolean {
     || message.includes("already has an active run")
     || message.includes("active run in progress")
     || message.includes("already running another task");
+}
+
+function isCursorSdkRuntimeProcessAlive(runtime: CursorRuntime): boolean {
+  return isCursorSdkPooledAlive(runtime.sdk);
 }
 
 function classifyCursorSdkChatError(
@@ -19720,14 +19732,25 @@ export function createAgentChatService(args: {
     if (managed.runtime?.kind === "cursor") {
       const existing = managed.runtime;
       if (existing.poolKey === poolKey) {
-        existing.sdkPolicy = policy;
-        existing.currentModeId = displayModeId;
-        existing.currentModelId = launchModelSdkId;
-        wireCursorSdkBridgeHandlers(managed, existing);
-        syncCursorModeSnapshot(managed, existing);
-        return existing;
+        if (!isCursorSdkRuntimeProcessAlive(existing)) {
+          logger.warn("agent_chat.cursor_sdk_dead_runtime_reacquire", {
+            sessionId: managed.session.id,
+            poolKey,
+            exitCode: existing.sdk.process.exitCode,
+            killed: existing.sdk.process.killed,
+            connected: existing.sdk.process.connected,
+          });
+          teardownRuntime(managed, "handle_close");
+        } else {
+          existing.sdkPolicy = policy;
+          existing.currentModeId = displayModeId;
+          existing.currentModelId = launchModelSdkId;
+          wireCursorSdkBridgeHandlers(managed, existing);
+          syncCursorModeSnapshot(managed, existing);
+          return existing;
+        }
       }
-      teardownRuntime(managed, "handle_close");
+      if (managed.runtime?.kind === "cursor") teardownRuntime(managed, "handle_close");
     } else if (managed.runtime) {
       teardownRuntime(managed, "handle_close");
     }
