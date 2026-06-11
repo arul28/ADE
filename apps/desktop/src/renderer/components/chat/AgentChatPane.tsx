@@ -1005,6 +1005,11 @@ type AgentChatSessionViewCache = {
   turnActive: boolean;
   pendingInputs: DerivedPendingInput[];
   pendingSteers: PendingSteerEntry[];
+  /**
+   * Older-transcript pagination cursor (byte offset of the oldest loaded
+   * transcript line). 0 = head reached; null = pagination unavailable.
+   */
+  historyCursor: number | null;
   cachedAtMs: number;
 };
 
@@ -1026,6 +1031,7 @@ function writeAgentChatSessionViewCache(
   sessionId: string,
   events: AgentChatEventEnvelope[],
   derived = deriveRuntimeState(events),
+  historyCursor: number | null = null,
 ): void {
   if (!AGENT_CHAT_VIEW_CACHE_ENABLED) return;
   const trimmed = trimChatEventHistory(events, MAX_SELECTED_CHAT_SESSION_EVENTS);
@@ -1035,6 +1041,7 @@ function writeAgentChatSessionViewCache(
     turnActive: derived.turnActive,
     pendingInputs: derived.pendingInputs,
     pendingSteers: derived.pendingSteers,
+    historyCursor,
     cachedAtMs: Date.now(),
   });
   while (agentChatSessionViewCacheBySessionId.size > MAX_AGENT_CHAT_VIEW_CACHE_ENTRIES) {
@@ -1766,6 +1773,60 @@ export function mergeChatHistorySnapshot(
     return existing;
   }
   return merged;
+}
+
+/**
+ * Prepend an older transcript page to the in-memory event list, dropping
+ * page entries that already exist at the seam (the hydrated tail merges the
+ * disk transcript with the live ring buffer, so the byte window ending at
+ * the cursor can overlap the oldest in-memory entries).
+ *
+ * Returns `existing` unchanged when the page contributes nothing new.
+ */
+export function prependOlderChatHistoryPage(
+  older: AgentChatEventEnvelope[],
+  existing: AgentChatEventEnvelope[],
+): AgentChatEventEnvelope[] {
+  if (!older.length) return existing;
+  if (!existing.length) return older.slice();
+  // Overlap is only possible at the seam — dedupe against the oldest slice of
+  // the loaded list instead of hashing all (potentially 20k) entries.
+  const seamWindow = Math.min(existing.length, older.length + 64);
+  const seamKeys = new Set<string>();
+  for (let index = 0; index < seamWindow; index += 1) {
+    seamKeys.add(chatEventDedupKey(existing[index]!));
+  }
+  const fresh = older.filter((entry) => !seamKeys.has(chatEventDedupKey(entry)));
+  if (!fresh.length) return existing;
+  return [...fresh, ...existing];
+}
+
+export function mergeOlderChatHistoryPageWithCap(args: {
+  older: AgentChatEventEnvelope[];
+  existing: AgentChatEventEnvelope[];
+  maxEvents: number;
+}): { events: AgentChatEventEnvelope[]; hitResidentCap: boolean } {
+  const merged = prependOlderChatHistoryPage(args.older, args.existing);
+  return {
+    events: trimChatEventHistory(merged, args.maxEvents),
+    hitResidentCap: merged.length > args.maxEvents,
+  };
+}
+
+/**
+ * Compute the next older-history cursor after a page response. Returns 0
+ * (exhausted) unless the page reports more history AND its startOffset
+ * strictly decreased — the strict decrease mirrors the service guarantee and
+ * makes client-side paging loops provably terminating.
+ */
+export function advanceOlderHistoryCursor(
+  beforeOffset: number,
+  page: { startOffset: number; hasMore: boolean },
+): number {
+  if (!page.hasMore) return 0;
+  if (!Number.isFinite(page.startOffset) || page.startOffset <= 0) return 0;
+  if (page.startOffset >= beforeOffset) return 0;
+  return page.startOffset;
 }
 
 function pruneSessionRecord<T>(record: Record<string, T>, keepIds: ReadonlySet<string>): Record<string, T> {
@@ -2946,6 +3007,11 @@ export function AgentChatPane({
     && selectedSessionId == null
     && Boolean(onLaunchCliSession);
   const [eventsBySession, setEventsBySession] = useState<Record<string, AgentChatEventEnvelope[]>>({});
+  // Older-transcript pagination: byte-offset cursor (line start) where the
+  // oldest loaded transcript window begins. 0 = head reached; missing key =
+  // pagination unavailable (no truncated transcript / old runtime).
+  const [olderHistoryCursorBySession, setOlderHistoryCursorBySession] = useState<Record<string, number>>({});
+  const [olderHistoryLoadingBySession, setOlderHistoryLoadingBySession] = useState<Record<string, boolean>>({});
   const [turnActiveBySession, setTurnActiveBySession] = useState<Record<string, boolean>>({});
   const [pendingInputsBySession, setPendingInputsBySession] = useState<Record<string, DerivedPendingInput[]>>({});
   const [codexGoalPendingBySession, setCodexGoalPendingBySession] = useState<Record<string, boolean>>({});
@@ -3250,6 +3316,8 @@ export function AgentChatPane({
   const pendingFastModeUpdateRef = useRef<{ sessionId: string; updateId: number; promise: Promise<void> } | null>(null);
   const pendingEventQueueRef = useRef<AgentChatEventEnvelope[]>([]);
   const eventsBySessionRef = useRef<Record<string, AgentChatEventEnvelope[]>>({});
+  const olderHistoryCursorRef = useRef<Record<string, number>>({});
+  const olderHistoryInFlightRef = useRef<Set<string>>(new Set());
   const eventFlushTimerRef = useRef<number | null>(null);
   const refreshSessionsTimerRef = useRef<number | null>(null);
   const selectedSessionIdRef = useRef<string | null>(selectedSessionId);
@@ -4780,12 +4848,15 @@ export function AgentChatPane({
       optimisticSessionIds: optimisticSessionIdsRef.current,
     });
     eventsBySessionRef.current = pruneSessionRecord(eventsBySessionRef.current, retainedSessionIds);
+    olderHistoryCursorRef.current = pruneSessionRecord(olderHistoryCursorRef.current, retainedSessionIds);
     for (const sessionId of [...loadedHistoryRef.current]) {
       if (!retainedSessionIds.has(sessionId)) {
         loadedHistoryRef.current.delete(sessionId);
       }
     }
     setEventsBySession((prev) => pruneSessionRecord(prev, retainedSessionIds));
+    setOlderHistoryCursorBySession((prev) => pruneSessionRecord(prev, retainedSessionIds));
+    setOlderHistoryLoadingBySession((prev) => pruneSessionRecord(prev, retainedSessionIds));
     setTurnActiveBySession((prev) => {
       const base = pruneSessionRecord(prev, retainedSessionIds);
       let next: Record<string, boolean> | null = base === prev ? null : base;
@@ -4909,26 +4980,52 @@ export function AgentChatPane({
     }
   }, []);
 
+  // Record (or remove, when null) the older-history pagination cursor for a
+  // session in both the synchronous ref (read by loadOlderHistory) and the
+  // render state (drives the message list's "more above" affordance).
+  const applyOlderHistoryCursor = useCallback((sessionId: string, cursor: number | null) => {
+    if (cursor == null) {
+      if (sessionId in olderHistoryCursorRef.current) {
+        const next = { ...olderHistoryCursorRef.current };
+        delete next[sessionId];
+        olderHistoryCursorRef.current = next;
+      }
+      setOlderHistoryCursorBySession((prev) => {
+        if (!(sessionId in prev)) return prev;
+        const next = { ...prev };
+        delete next[sessionId];
+        return next;
+      });
+      return;
+    }
+    olderHistoryCursorRef.current = { ...olderHistoryCursorRef.current, [sessionId]: cursor };
+    setOlderHistoryCursorBySession((prev) => (
+      prev[sessionId] === cursor ? prev : { ...prev, [sessionId]: cursor }
+    ));
+  }, []);
+
   const clearSessionView = useCallback((sessionId: string) => {
     deleteAgentChatSessionViewCache(sessionId);
     eventsBySessionRef.current = { ...eventsBySessionRef.current, [sessionId]: [] };
+    applyOlderHistoryCursor(sessionId, null);
     setEventsBySession((prev) => ({ ...prev, [sessionId]: [] }));
     setTurnActiveBySession((prev) => ({ ...prev, [sessionId]: false }));
     setPendingInputsBySession((prev) => ({ ...prev, [sessionId]: [] }));
     setPendingSteersBySession((prev) => ({ ...prev, [sessionId]: [] }));
-  }, []);
+  }, [applyOlderHistoryCursor]);
 
   const applyCachedSessionView = useCallback((sessionId: string): boolean => {
     const cached = readAgentChatSessionViewCache(sessionId);
     if (!cached) return false;
     eventsBySessionRef.current = { ...eventsBySessionRef.current, [sessionId]: cached.events };
     loadedHistoryRef.current.add(sessionId);
+    applyOlderHistoryCursor(sessionId, typeof cached.historyCursor === "number" ? cached.historyCursor : null);
     setEventsBySession((prev) => ({ ...prev, [sessionId]: cached.events }));
     setTurnActiveBySession((prev) => ({ ...prev, [sessionId]: cached.turnActive }));
     setPendingInputsBySession((prev) => ({ ...prev, [sessionId]: cached.pendingInputs }));
     setPendingSteersBySession((prev) => ({ ...prev, [sessionId]: cached.pendingSteers }));
     return true;
-  }, []);
+  }, [applyOlderHistoryCursor]);
 
   const loadHistory = useCallback(async (sessionId: string, options?: { force?: boolean }) => {
     if (options?.force) {
@@ -4948,6 +5045,9 @@ export function AgentChatPane({
       // main-process build that lacks the handler.
       let parsed: AgentChatEventEnvelope[] = [];
       let usedSnapshotPath = false;
+      // Older-history cursor seeded from the snapshot: the byte offset where
+      // the hydrated transcript tail began (0 = whole transcript hydrated).
+      let snapshotTailStartOffset = 0;
       try {
         if (typeof window.ade.agentChat.getEventHistory === "function") {
           const snapshot: AgentChatEventHistorySnapshot = await window.ade.agentChat.getEventHistory({
@@ -4970,6 +5070,10 @@ export function AgentChatPane({
           if (snapshot?.events?.length || snapshot?.sessionId === sessionId) {
             parsed = (snapshot.events ?? []).filter((entry) => entry.sessionId === sessionId);
             usedSnapshotPath = true;
+            snapshotTailStartOffset =
+              typeof snapshot.tailStartOffset === "number" && snapshot.tailStartOffset > 0
+                ? snapshot.tailStartOffset
+                : 0;
           }
         }
       } catch {
@@ -5011,8 +5115,10 @@ export function AgentChatPane({
       const sessionSummary = sessionsRef.current.find((entry) => entry.sessionId === sessionId)
         ?? (initialSessionSummary?.sessionId === sessionId ? initialSessionSummary : null);
       const allowRunningFromSummary = sessionSummary?.status === "active" && sessionSummary.awaitingInput !== true;
-      writeAgentChatSessionViewCache(sessionId, merged, derived);
+      const historyCursor = usedSnapshotPath ? snapshotTailStartOffset : null;
+      writeAgentChatSessionViewCache(sessionId, merged, derived, historyCursor);
       eventsBySessionRef.current = { ...eventsBySessionRef.current, [sessionId]: merged };
+      applyOlderHistoryCursor(sessionId, historyCursor);
       setEventsBySession((prev) => ({ ...prev, [sessionId]: merged }));
       setTurnActiveBySession((prev) => ({ ...prev, [sessionId]: allowRunningFromSummary ? derived.turnActive : false }));
       setPendingInputsBySession((prev) => ({ ...prev, [sessionId]: derived.pendingInputs }));
@@ -5024,7 +5130,79 @@ export function AgentChatPane({
       // permanently blocked re-entry until the chat received a new event.
       loadedHistoryRef.current.delete(sessionId);
     }
-  }, [clearSessionView, initialSessionSummary, lockSessionId]);
+  }, [applyOlderHistoryCursor, clearSessionView, initialSessionSummary, lockSessionId]);
+
+  /**
+   * Fetch the next OLDER transcript page for a session and prepend it to the
+   * in-memory event list. Triggered by the message list when the user scrolls
+   * near the top. One in-flight request per session; the cursor only moves
+   * toward 0 (head), so retriggers are naturally deduped by cursor value.
+   */
+  const loadOlderHistory = useCallback(async (sessionId: string) => {
+    const cursor = olderHistoryCursorRef.current[sessionId];
+    if (cursor == null || cursor <= 0) return;
+    if (olderHistoryInFlightRef.current.has(sessionId)) return;
+    if (typeof window.ade.agentChat.getEventHistoryPage !== "function") return;
+    olderHistoryInFlightRef.current.add(sessionId);
+    setOlderHistoryLoadingBySession((prev) => ({ ...prev, [sessionId]: true }));
+    try {
+      let beforeOffset = cursor;
+      let nextCursor = cursor;
+      let olderEvents: AgentChatEventEnvelope[] = [];
+      // A page spanning a single oversized JSONL line is empty but still
+      // moves the cursor strictly toward the head — follow a bounded number
+      // of those per trigger; the next scroll re-triggers if needed.
+      for (let attempt = 0; attempt < 8; attempt += 1) {
+        const page = await window.ade.agentChat.getEventHistoryPage({ sessionId, beforeOffset });
+        if (page?.sessionId !== sessionId || page.sessionFound === false) {
+          nextCursor = 0;
+          break;
+        }
+        nextCursor = advanceOlderHistoryCursor(beforeOffset, page);
+        if (page.events?.length) {
+          olderEvents = page.events.filter((entry) => entry.sessionId === sessionId);
+          break;
+        }
+        if (nextCursor <= 0) break;
+        beforeOffset = nextCursor;
+      }
+      if (olderEvents.length) {
+        const existing = eventsBySessionRef.current[sessionId] ?? [];
+        const maxEvents = sessionId === selectedSessionIdRef.current || sessionId === lockSessionId
+          ? MAX_SELECTED_CHAT_SESSION_EVENTS
+          : MAX_BACKGROUND_CHAT_SESSION_EVENTS;
+        const { events: merged, hitResidentCap } = mergeOlderChatHistoryPageWithCap({
+          older: olderEvents,
+          existing,
+          maxEvents,
+        });
+        if (hitResidentCap) nextCursor = 0;
+        if (merged !== existing) {
+          eventsBySessionRef.current = { ...eventsBySessionRef.current, [sessionId]: merged };
+          setEventsBySession((prev) => ({ ...prev, [sessionId]: merged }));
+        }
+        writeAgentChatSessionViewCache(sessionId, merged, undefined, nextCursor);
+      } else {
+        writeAgentChatSessionViewCache(
+          sessionId,
+          eventsBySessionRef.current[sessionId] ?? [],
+          undefined,
+          nextCursor,
+        );
+      }
+      applyOlderHistoryCursor(sessionId, nextCursor);
+    } catch {
+      // Keep the current cursor so a later scroll can retry.
+    } finally {
+      olderHistoryInFlightRef.current.delete(sessionId);
+      setOlderHistoryLoadingBySession((prev) => ({ ...prev, [sessionId]: false }));
+    }
+  }, [applyOlderHistoryCursor, lockSessionId]);
+
+  const loadOlderHistoryForSelectedSession = useCallback(() => {
+    const sessionId = selectedSessionIdRef.current;
+    if (sessionId) void loadOlderHistory(sessionId);
+  }, [loadOlderHistory]);
 
   useEffect(() => {
     if (lockSessionId) {
@@ -5597,7 +5775,7 @@ export function AgentChatPane({
     const pendingSteerPatch: Record<string, PendingSteerEntry[]> = {};
     for (const sessionId of touchedSessionIds) {
       const derived = deriveRuntimeState(next[sessionId] ?? []);
-      writeAgentChatSessionViewCache(sessionId, next[sessionId] ?? [], derived);
+      writeAgentChatSessionViewCache(sessionId, next[sessionId] ?? [], derived, olderHistoryCursorRef.current[sessionId] ?? null);
       activePatch[sessionId] = derived.turnActive;
       pendingInputPatch[sessionId] = derived.pendingInputs;
       pendingSteerPatch[sessionId] = derived.pendingSteers;
@@ -9891,6 +10069,17 @@ export function AgentChatPane({
                       surfaceMode={surfaceMode}
                       surfaceProfile={surfaceProfile}
                       assistantLabel={assistantLabel}
+                      hasOlderHistory={Boolean(
+                        !subagentView
+                        && selectedSessionId
+                        && (olderHistoryCursorBySession[selectedSessionId] ?? 0) > 0,
+                      )}
+                      loadingOlderHistory={Boolean(
+                        !subagentView
+                        && selectedSessionId
+                        && olderHistoryLoadingBySession[selectedSessionId],
+                      )}
+                      onLoadOlderHistory={!subagentView && selectedSessionId ? loadOlderHistoryForSelectedSession : undefined}
                       respondingApprovalIds={respondingApprovalIds}
                       pendingApprovalIds={pendingApprovalIds}
                       laneId={laneId}

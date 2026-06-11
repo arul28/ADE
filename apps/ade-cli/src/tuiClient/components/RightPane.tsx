@@ -22,6 +22,19 @@ import type { SubagentCapability } from "../../../../desktop/src/shared/subagent
 import { missionFeatureCounts, orderMissionFeatures } from "../../../../desktop/src/renderer/components/chat/chatMission";
 import type { MissionSnapshot } from "../types";
 import type { HelpRow } from "../helpIndex";
+import {
+  NEW_LANE_COLOR_OPTIONS,
+  NEW_LANE_START_HINT,
+  NEW_LANE_START_LABEL,
+  NEW_LANE_START_ORDER,
+  NEW_LANE_TYPEAHEAD_ROWS,
+  filterNewLaneBranchMatches,
+  newLaneColorIndex,
+  newLaneCreateAction,
+  newLaneTypeaheadField,
+  normalizeNewLaneBranchSource,
+  normalizeNewLaneStart,
+} from "../newLaneForm";
 import { useShimmerTick } from "../spinTick";
 import {
   FEEDBACK_TYPES,
@@ -690,6 +703,12 @@ function ChatInfoPlanBlock({ info, brandColor, width }: { info: ChatInfoSnapshot
           {planStepGlyph(step.status)} {endTruncate(step.text, inner - 2)}
         </Text>
       ))}
+      {info.planExplanation ? (
+        <Text color={theme.color.t4} dimColor wrap="truncate-end">{endTruncate(info.planExplanation, inner)}</Text>
+      ) : null}
+      {info.planStreamingText ? (
+        <Text color={theme.color.t4} dimColor italic wrap="truncate-end">{endTruncate(info.planStreamingText, inner)}</Text>
+      ) : null}
     </Box>
   );
 }
@@ -704,6 +723,35 @@ function ChatInfoGoalBlock({ info, brandColor, width }: { info: ChatInfoSnapshot
       {goal.objective ? (
         <Text color={theme.color.t2} wrap="truncate-end">{endTruncate(goal.objective, inner)}</Text>
       ) : null}
+    </Box>
+  );
+}
+
+// ── Resume row (closed-but-resumable Claude terminal sessions) ──────────────
+// Rendered as the FIRST chat-info body block (directly below the pane title,
+// above the model header). It occupies a fixed number of lines ABOVE the
+// roster, so the click line-math compensates: app.tsx adds
+// CHAT_INFO_RESUME_ROW_LINES to `subagentPaneTop` whenever the row is visible
+// — the same mechanism the variable goal-banner / add-mode header lines use.
+export const CHAT_INFO_RESUME_ROW_LINES = 2;
+
+/**
+ * Selection-index offset the resume row introduces into the chat-info
+ * selection model: with the row visible, index 0 = resume, 1 = main,
+ * 2..N+1 = subagents (otherwise 0 = main, 1..N = subagents).
+ */
+export function chatInfoSelectionOffset(info: ChatInfoSnapshot): 0 | 1 {
+  return info.resumableTerminal ? 1 : 0;
+}
+
+export function ChatInfoResumeRow({ selected }: { selected: boolean }) {
+  return (
+    <Box flexDirection="row" marginBottom={1}>
+      <Text color={selected ? theme.color.attention : theme.color.t5}>{selected ? theme.rail : " "}</Text>
+      {/* Deliberately orange (theme.color.attention) — this is the "your
+          session died, bring it back" affordance. */}
+      <Text color={theme.color.attention} bold>{" [ ⟳ resume session ]"}</Text>
+      {selected ? <Text color={theme.color.t4} dimColor>{"  ↵ resume"}</Text> : null}
     </Box>
   );
 }
@@ -739,8 +787,10 @@ function ChatInfoRoster({
   const failedCount = snapshotRows.filter((row) => row.snapshot.status === "failed").length;
   const bgCount = snapshotRows.filter((row) => row.section === "background").length;
   // Selection convention: 0 = main row; 1..N = subagent rows (1-indexed).
+  // A negative index means the selection sits ABOVE the roster (the resume
+  // row) — nothing in the roster highlights.
   const totalSelectable = snapshotRows.length + 1;
-  const selected = Math.max(0, Math.min(selectedIndex, totalSelectable - 1));
+  const selected = Math.max(-1, Math.min(selectedIndex, totalSelectable - 1));
   const mainSelected = selected === 0;
   const showingMain = !info.inspectedSubagentId;
   const hint = snapshotRows.length === 0
@@ -928,6 +978,65 @@ function ChatInfoMissionBlock({ mission, width, brandColor }: { mission: Mission
   );
 }
 
+// Desktop ChatTasksPanel parity: latest todo_update snapshot. Rendered BELOW
+// the roster (like Mission) so the roster's click line-math stays intact.
+const TASKS_VISIBLE_CAP = 6;
+function ChatInfoTasksBlock({ info, brandColor, width }: { info: ChatInfoSnapshot; brandColor: string; width: number }) {
+  if (!info.todos.length) return null;
+  const inner = Math.max(10, width - 4);
+  const done = info.todos.filter((todo) => todo.status === "completed").length;
+  const visible = info.todos.slice(0, TASKS_VISIBLE_CAP);
+  const hiddenAfter = info.todos.length - visible.length;
+  return (
+    <Box flexDirection="column">
+      <ChatInfoSectionHead title="TASKS" hint={`${done}/${info.todos.length}`} color={brandColor} width={width} />
+      {visible.map((todo, index) => {
+        const status = todo.status === "completed" || todo.status === "failed" || todo.status === "in_progress"
+          ? todo.status
+          : "pending";
+        return (
+          <Text key={`${todo.id || "todo"}:${index}`} color={planStepColor(status as ChatInfoPlanStep["status"])} wrap="truncate-end">
+            {planStepGlyph(status as ChatInfoPlanStep["status"])} {endTruncate(todo.description, inner - 2)}
+          </Text>
+        );
+      })}
+      {hiddenAfter > 0 ? <Text color={theme.color.t4} dimColor>{`  ↓ ${hiddenAfter} more`}</Text> : null}
+    </Box>
+  );
+}
+
+// Desktop ChatPrPane parity: the lane's PR rollup with a /pr handoff hint.
+// Rendered BELOW the roster so the click line-math stays intact.
+function ChatInfoPrBlock({ info, brandColor, width }: { info: ChatInfoSnapshot; brandColor: string; width: number }) {
+  const pr = info.pr;
+  if (!pr) return null;
+  const stateColor = pr.state === "open"
+    ? theme.color.running
+    : pr.state === "merged"
+      ? theme.color.violet
+      : theme.color.t4;
+  const checksColor = pr.checksTotal === 0
+    ? theme.color.t4
+    : pr.checksPassed === pr.checksTotal
+      ? theme.color.running
+      : theme.color.attention;
+  return (
+    <Box flexDirection="column">
+      <ChatInfoSectionHead title="PR" hint={`#${pr.number}`} color={brandColor} width={width} />
+      <Box flexDirection="row">
+        <Text color={stateColor} bold>{` ${pr.state}`}</Text>
+        {pr.checksTotal > 0 ? (
+          <>
+            <Text color={theme.color.t4}>{" · checks "}</Text>
+            <Text color={checksColor}>{`${pr.checksPassed}/${pr.checksTotal}`}</Text>
+          </>
+        ) : null}
+      </Box>
+      <Text color={theme.color.t4} dimColor>{" /pr for details · /pr checks · /pr review"}</Text>
+    </Box>
+  );
+}
+
 function ChatInfoPane({
   info,
   selectedIndex,
@@ -938,12 +1047,19 @@ function ChatInfoPane({
   width: number;
 }) {
   const brand = theme.provider(info.provider);
+  // With the resume row visible the selection space shifts by one (0 = resume,
+  // 1 = main, …); the roster receives the un-shifted index (-1 ⇒ resume row
+  // holds the selection, nothing in the roster highlights).
+  const resumeOffset = chatInfoSelectionOffset(info);
   return (
     <Box flexDirection="column">
+      {info.resumableTerminal ? <ChatInfoResumeRow selected={selectedIndex === 0} /> : null}
       <ChatInfoHeader info={info} width={width} />
       <ChatInfoPlanBlock info={info} brandColor={brand.color} width={width} />
       <ChatInfoGoalBlock info={info} brandColor={brand.color} width={width} />
-      <ChatInfoRoster info={info} selectedIndex={selectedIndex} brandColor={brand.color} width={width} />
+      <ChatInfoRoster info={info} selectedIndex={selectedIndex - resumeOffset} brandColor={brand.color} width={width} />
+      <ChatInfoTasksBlock info={info} brandColor={brand.color} width={width} />
+      <ChatInfoPrBlock info={info} brandColor={brand.color} width={width} />
     </Box>
   );
 }
@@ -1457,6 +1573,192 @@ function LaneDeleteFormPane({
   );
 }
 
+type NewLaneFormContent = FormPaneContent & { command: "new-lane" };
+
+/**
+ * Desktop CreateLaneDialog parity for /new lane: name + color swatches, a
+ * vertical "Start from" option list (radio style — never wraps in a narrow
+ * pane), mode-specific inputs with a branch typeahead, the runtime placement
+ * toggle, and an explicit create button. Text fields render through the
+ * shared prompt input like every other form. Row geometry must stay in sync
+ * with newLaneFormFieldRowOffsets (the mouse hit-target source of truth).
+ */
+function NewLaneFormPane({
+  content,
+  formValues,
+  activeFormField,
+  width,
+}: {
+  content: NewLaneFormContent;
+  formValues: Record<string, string>;
+  activeFormField: number;
+  width: number;
+}) {
+  const hoveredId = useHoveredHitId();
+  const inner = Math.max(12, width - 4);
+  const fields = content.fields;
+  const start = normalizeNewLaneStart(formValues.start);
+  const runtime = formValues.runtime === "macos-vm" ? "macos-vm" : "local";
+  const branchSource = normalizeNewLaneBranchSource(formValues.branchSource);
+  const activeName = fields[activeFormField]?.name ?? fields[0]?.name ?? "name";
+  const active = (name: string) => activeName === name || hoveredId === `right:form:${name}`;
+  const typeahead = newLaneTypeaheadField(fields);
+
+  const labelRow = (name: string, label: string, required?: boolean) => (
+    <Text color={active(name) ? theme.color.violet : theme.color.t3} bold={active(name)}>
+      {active(name) ? theme.rail : " "} {label}{required ? " *" : ""}
+    </Text>
+  );
+
+  // Fixed-height match list under the typeahead field (blank rows reserved so
+  // the pane's row geometry never shifts while typing). ↹ completes the top match.
+  const typeaheadRows = (name: string) => {
+    const matches = filterNewLaneBranchMatches({
+      branches: content.branches,
+      query: formValues[name]?.trim() ?? "",
+      remote: name === "baseBranch" ? true : branchSource === "remote",
+      limit: NEW_LANE_TYPEAHEAD_ROWS,
+    });
+    return Array.from({ length: NEW_LANE_TYPEAHEAD_ROWS }, (_, index) => (
+      <Text key={`${name}:match:${index}`} color={theme.color.t4} dimColor wrap="truncate-end">
+        {matches[index] ? `  ${index === 0 ? "↹ " : "  "}${endTruncate(matches[index]!, inner - 4)}` : " "}
+      </Text>
+    ));
+  };
+
+  const renderField = (field: NewLaneFormContent["fields"][number]) => {
+    switch (field.name) {
+      case "name":
+      case "parent":
+      case "branch":
+      case "baseBranch": {
+        const value = formValues[field.name]?.trim() ?? "";
+        return (
+          <Box key={field.name} flexDirection="column" marginTop={1}>
+            {labelRow(field.name, field.label, field.required)}
+            <Text color={value ? theme.color.t1 : theme.color.t4} dimColor={!value} wrap="truncate-end">
+              {"  "}{endTruncate(value || field.placeholder || "", inner - 2)}
+            </Text>
+            {field.name === typeahead ? typeaheadRows(field.name) : null}
+          </Box>
+        );
+      }
+      case "color": {
+        const colorIndex = newLaneColorIndex(formValues.color);
+        const selected = NEW_LANE_COLOR_OPTIONS[colorIndex] ?? NEW_LANE_COLOR_OPTIONS[0]!;
+        return (
+          <Box key="color" flexDirection="column" marginTop={1}>
+            {labelRow("color", "Color")}
+            <Text wrap="truncate-end">
+              {"  "}
+              {NEW_LANE_COLOR_OPTIONS.map((option, index) => (
+                <Text
+                  key={option.name}
+                  color={option.hex ?? theme.color.t3}
+                  bold={index === colorIndex}
+                  dimColor={!option.hex && index !== colorIndex}
+                >
+                  {index === colorIndex ? (option.hex ? "[●]" : "[○]") : option.hex ? "●" : "○"}
+                </Text>
+              ))}
+              <Text color={selected.hex ?? theme.color.t3}> {selected.name}</Text>
+            </Text>
+          </Box>
+        );
+      }
+      case "start":
+        return (
+          <Box key="start" flexDirection="column" marginTop={1}>
+            {labelRow("start", "Start from")}
+            {NEW_LANE_START_ORDER.map((mode) => {
+              const chosen = start === mode;
+              return (
+                <Text key={mode} wrap="truncate-end">
+                  {"  "}
+                  <Text color={chosen ? theme.color.violet : theme.color.t4} bold={chosen} dimColor={!chosen}>
+                    {chosen ? "●" : "○"} {NEW_LANE_START_LABEL[mode].padEnd(8)}
+                  </Text>
+                  <Text color={chosen ? theme.color.t3 : theme.color.t5} dimColor={!chosen}>
+                    {endTruncate(NEW_LANE_START_HINT[mode], inner - 12)}
+                  </Text>
+                </Text>
+              );
+            })}
+          </Box>
+        );
+      case "branchSource":
+        return (
+          <Box key="branchSource" flexDirection="column" marginTop={1}>
+            {labelRow("branchSource", "Source")}
+            <Text>
+              {"  "}
+              <Text color={branchSource === "remote" ? theme.color.violet : theme.color.t3} bold={branchSource === "remote"}>
+                {branchSource === "remote" ? "[remote]" : " remote "}
+              </Text>
+              <Text> </Text>
+              <Text color={branchSource === "local" ? theme.color.violet : theme.color.t3} bold={branchSource === "local"}>
+                {branchSource === "local" ? "[local]" : " local "}
+              </Text>
+            </Text>
+          </Box>
+        );
+      case "runtime":
+        return (
+          <Box key="runtime" flexDirection="column" marginTop={1}>
+            {labelRow("runtime", "Runtime")}
+            <Text>
+              {"  "}
+              <Text color={runtime === "local" ? theme.color.violet : theme.color.t3} bold={runtime === "local"}>
+                {runtime === "local" ? "[local mac]" : " local mac "}
+              </Text>
+              <Text> </Text>
+              <Text color={runtime === "macos-vm" ? theme.color.info : theme.color.t3} bold={runtime === "macos-vm"}>
+                {runtime === "macos-vm" ? "[mac vm]" : " mac vm "}
+              </Text>
+            </Text>
+          </Box>
+        );
+      case "create": {
+        const action = newLaneCreateAction({ values: formValues, fields });
+        return (
+          <Box key="create" marginTop={1}>
+            <Text wrap="truncate-end">
+              <Text color={active("create") ? theme.color.violet : theme.color.t3} bold={active("create")}>
+                {active("create") ? theme.rail : " "}{" "}
+              </Text>
+              <Text
+                color={action.enabled ? theme.color.violet : theme.color.t4}
+                bold={action.enabled}
+                dimColor={!action.enabled}
+              >
+                [ {endTruncate(action.label, inner - 8)} ]
+              </Text>
+              {action.reason ? (
+                <Text color={theme.color.t5} dimColor>  {action.reason}</Text>
+              ) : null}
+            </Text>
+          </Box>
+        );
+      }
+      default:
+        return null;
+    }
+  };
+
+  return (
+    <Box flexDirection="column">
+      {fields.map((field) => renderField(field))}
+      <Box marginTop={1}>
+        <Text color={theme.color.t4} dimColor wrap="truncate-end">
+          {activeName === typeahead
+            ? "type to filter · ↹ top match · ↵ create"
+            : "↑↓ rows · ←→ pick · ↵ create · esc"}
+        </Text>
+      </Box>
+    </Box>
+  );
+}
+
 function ContextUsagePane({
   content,
   width,
@@ -1751,7 +2053,16 @@ export function RightPane({
         />
       ) : null}
 
-      {content.kind === "form" && content.command !== "lane-delete" && content.command !== "feedback" ? (
+      {content.kind === "form" && content.command === "new-lane" ? (
+        <NewLaneFormPane
+          content={content as NewLaneFormContent}
+          formValues={formValues}
+          activeFormField={activeFormField}
+          width={paneWidth}
+        />
+      ) : null}
+
+      {content.kind === "form" && content.command !== "lane-delete" && content.command !== "feedback" && content.command !== "new-lane" ? (
         <Box flexDirection="column">
           {content.description ? (
             <Box marginBottom={1}>

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  appendStreamingText,
   coalesceTextDeltaEnvelopes,
   isCodexSubagentMessageId,
   shouldMergeAssistantText,
@@ -35,7 +36,46 @@ describe("isCodexSubagentMessageId", () => {
   });
 });
 
+describe("appendStreamingText", () => {
+  it("concatenates ordinary deltas without inserting whitespace", () => {
+    expect(appendStreamingText("Consolid", "ated")).toBe("Consolidated");
+    expect(appendStreamingText("", "x")).toBe("x");
+    expect(appendStreamingText("x", "")).toBe("x");
+  });
+
+  it("takes the incoming text when it is a cumulative re-emit of the message", () => {
+    expect(appendStreamingText("Hello", "Hello world.")).toBe("Hello world.");
+  });
+
+  it("keeps the existing text when the incoming fragment is its re-emitted tail", () => {
+    expect(appendStreamingText("A B C.", "B C.")).toBe("A B C.");
+    expect(appendStreamingText(
+      "so I can split the review instead of doing it as one giant pass.",
+      " instead of doing it as one giant pass.",
+    )).toBe("so I can split the review instead of doing it as one giant pass.");
+  });
+
+  it("still appends whitespace-only repeats (paragraph breaks are legitimate)", () => {
+    expect(appendStreamingText("para\n\n", "\n\n")).toBe("para\n\n\n\n");
+  });
+
+  it("still appends single-token repeats (only multi-word fragments tail-dedupe)", () => {
+    expect(appendStreamingText("x x", " x")).toBe("x x x");
+    expect(appendStreamingText("had", " had")).toBe("had had");
+  });
+});
+
 describe("coalesceTextDeltaEnvelopes", () => {
+  it("dedupes a re-emitted tail fragment instead of duplicating it", () => {
+    const ids = { messageId: "m1", turnId: "t1", itemId: "i1" };
+    const out = coalesceTextDeltaEnvelopes([
+      textDelta(1, "A B C.", ids),
+      textDelta(2, "B C.", ids),
+    ]);
+    expect(out).toHaveLength(1);
+    expect((out[0]!.event as { text: string }).text).toBe("A B C.");
+  });
+
   it("fuses consecutive same-message deltas into one envelope, byte-identical, latest ts/seq", () => {
     const ids = { messageId: "m1", turnId: "t1", itemId: "i1" };
     const out = coalesceTextDeltaEnvelopes([

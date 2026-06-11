@@ -600,13 +600,15 @@ const ACTIVITY_STATUS_COLOR: Record<RuntimeActivityEntry["status"], string> = {
   info: theme.color.t4,
 };
 
-// How many entries to render inline per work-group before collapsing into "+N more".
-// Tight by design: the TUI can't expand groups, so flooding with all tools is just noise.
+// Runtime-activity entries to render inline before collapsing into "+N more".
+// Tool calls and file changes are NOT capped — they stack one line per entry,
+// matching the desktop work log.
 const GROUP_VISIBLE_CAP = 3;
-// Per-row arg/command truncation. Chosen so each tool entry stays on a single
-// terminal line at typical widths (~120 cols) — the noise from line-wrapped
-// shell args was the user's main complaint.
-const LONG_LINE_TRUNCATE_AT = 80;
+// Per-row arg/command cap for the plain-text copy form. Matches the desktop
+// work log's summarizeInlineText cap (140); the rendered row is truncated to
+// the actual pane width by ChatRow (wrap="truncate-end"), so this only bounds
+// what very wide terminals show.
+const LONG_LINE_TRUNCATE_AT = 140;
 
 function formatDurationMs(ms: number | undefined): string | null {
   if (typeof ms !== "number" || !Number.isFinite(ms) || ms <= 0) return null;
@@ -674,6 +676,9 @@ function moreLineRow(blockId: string, remaining: number): RenderedChatRow {
   };
 }
 
+// Runtime-activity chatter still collapses behind "+N more"; tool calls and
+// file changes render every entry, one line each, exactly like the desktop
+// work log — consecutive calls stack instead of disappearing into a tail.
 function visibleEntries<T>(entries: T[]): { shown: T[]; remaining: number } {
   if (entries.length <= GROUP_VISIBLE_CAP) return { shown: entries, remaining: 0 };
   // Prefer the most recent entries; older ones collapse into the "+N more" tail.
@@ -681,31 +686,24 @@ function visibleEntries<T>(entries: T[]): { shown: T[]; remaining: number } {
   return { shown, remaining: entries.length - shown.length };
 }
 
+// No group header row: the desktop work log just stacks the per-call lines,
+// and the bottom-of-transcript "model working" indicator already conveys live
+// state — repeated "Tool calls (N)" headers only added clutter between the
+// assistant-text fragments of a turn.
 function toolCallsGroupRows(
   block: Extract<AggregatedBlock, { kind: "tool-calls-group" }>,
   spinFrame: string,
 ): RenderedChatRow[] {
   if (!block.entries.length) return [];
   const out: RenderedChatRow[] = [];
-  const total = block.entries.length;
-  const ok = block.entries.filter((entry) => entry.status === "ok").length;
-  const failed = block.entries.filter((entry) => entry.status === "failed").length;
-
-  out.push({
-    id: block.id,
-    tone: "work",
-    text: `▸ Tool calls (${total})`,
-    runs: groupHeaderRuns("Tool calls", total, block.live ? null : { ok, failed }, spinFrame),
-    rail: null,
-  });
-
-  const { shown, remaining } = visibleEntries(block.entries);
-  for (const entry of shown) {
+  // Every tool call renders as one stacked line (desktop work-log parity);
+  // ChatRow truncates to the pane width so a long arg can never wrap.
+  for (const entry of block.entries) {
     const glyph = statusGlyph(entry.status, spinFrame);
     const dur = formatDurationMs(entry.durationMs);
     const arg = entry.arg ? truncateLongLine(entry.arg) : "";
     const runs: InlineRun[] = [
-      { text: "    " },
+      { text: "  " },
       { text: glyph, color: WORK_STATUS_COLOR[entry.status] },
       { text: ` ${entry.tool}`, color: theme.color.t1 },
     ];
@@ -714,12 +712,11 @@ function toolCallsGroupRows(
     out.push({
       id: `${block.id}:${entry.itemId}`,
       tone: "work",
-      text: `    ${glyph} ${entry.tool}${arg ? `  ${arg}` : ""}${dur ? `  ${dur}` : ""}`,
+      text: `  ${glyph} ${entry.tool}${arg ? `  ${arg}` : ""}${dur ? `  ${dur}` : ""}`,
       runs,
       rail: null,
     });
   }
-  if (remaining > 0) out.push(moreLineRow(block.id, remaining));
   return out;
 }
 
@@ -733,6 +730,8 @@ function fileBadgeFor(entry: FileChangeEntry): { label: string; color: string } 
   return { label, color };
 }
 
+// Header-less for the same reason as toolCallsGroupRows — the badge/stats
+// file rows carry all the signal on their own.
 function filesChangedGroupRows(
   block: Extract<AggregatedBlock, { kind: "files-changed-group" }>,
   width: number,
@@ -740,35 +739,8 @@ function filesChangedGroupRows(
 ): RenderedChatRow[] {
   if (!block.entries.length) return [];
   const out: RenderedChatRow[] = [];
-  const total = block.entries.length;
-  const failed = block.entries.filter((entry) => entry.status === "failed").length;
-  const label = total === 1 ? "file changed" : "files changed";
-
-  out.push({
-    id: block.id,
-    tone: "work",
-    text: `▸ ${total} ${label}`,
-    runs: [
-      { text: "▸ ", color: theme.color.t3 },
-      { text: `${total} ${label}`, color: theme.color.t2, bold: true },
-      ...(block.live
-        ? [
-            { text: "  ", color: theme.color.t4 } as InlineRun,
-            { text: spinFrame, color: theme.color.violet } as InlineRun,
-            { text: " working…", color: theme.color.violet, italic: true } as InlineRun,
-          ]
-        : [
-            ...(failed > 0
-              ? [{ text: `  ·  ${failed} failed`, color: theme.color.t4 } as InlineRun]
-              : []),
-          ]),
-    ],
-    rail: null,
-  });
-
   const pathWidth = Math.max(20, width - 18);
-  const { shown, remaining } = visibleEntries(block.entries);
-  for (const entry of shown) {
+  for (const entry of block.entries) {
     const badge = fileBadgeFor(entry);
     const glyph = statusGlyph(entry.status, spinFrame);
     const trimmedPath = compactPath(entry.path, pathWidth);
@@ -777,7 +749,7 @@ function filesChangedGroupRows(
       : `+${entry.additions} −${entry.deletions}`;
     const statsColor = entry.deleted ? theme.color.error : theme.color.t4;
     const runs: InlineRun[] = [
-      { text: "    " },
+      { text: "  " },
       { text: glyph, color: WORK_STATUS_COLOR[entry.status] },
       { text: " " },
       { text: badge.label.padEnd(3, " "), color: badge.color, bold: true },
@@ -789,12 +761,11 @@ function filesChangedGroupRows(
     out.push({
       id: `${block.id}:${entry.itemId}`,
       tone: "work",
-      text: `    ${glyph} ${badge.label} ${trimmedPath}  ${stats}`,
+      text: `  ${glyph} ${badge.label} ${trimmedPath}  ${stats}`,
       runs,
       rail: null,
     });
   }
-  if (remaining > 0) out.push(moreLineRow(block.id, remaining));
   return out;
 }
 
@@ -831,6 +802,36 @@ function runtimeActivityRows(
   }
   if (remaining > 0) out.push(moreLineRow(block.id, remaining));
   return out;
+}
+
+/**
+ * Collapsed reasoning row — mirrors the desktop MinimalThought line:
+ * `▸ Thinking… <preview>` while live, `▸ Thought · <preview>` once done.
+ */
+function reasoningRows(
+  block: Extract<AggregatedBlock, { kind: "reasoning" }>,
+  spinFrame: string,
+): RenderedChatRow[] {
+  const preview = block.text.replace(/\s+/g, " ").trim();
+  const clipped = preview.length > 96 ? `${preview.slice(0, 96)}...` : preview;
+  const label = block.live ? "Thinking…" : "Thought";
+  const runs: InlineRun[] = [
+    { text: "▸ ", color: theme.color.t4 },
+    ...(block.live
+      ? [
+          { text: spinFrame, color: theme.color.violet } as InlineRun,
+          { text: ` ${label}`, color: theme.color.violet, italic: true } as InlineRun,
+        ]
+      : [{ text: label, color: theme.color.t3, italic: true } as InlineRun]),
+  ];
+  if (clipped) runs.push({ text: `  ${clipped}`, color: theme.color.t4, italic: true });
+  return [{
+    id: block.id,
+    tone: "work",
+    text: `▸ ${label}${clipped ? `  ${clipped}` : ""}`,
+    runs,
+    rail: null,
+  }];
 }
 
 function compactionRows(block: Extract<AggregatedBlock, { kind: "compaction" }>, brailleFrame: string): RenderedChatRow[] {
@@ -1014,6 +1015,8 @@ function rowsForBlock(
       return filesChangedGroupRows(block, width, spinFrame);
     case "runtime-activity":
       return runtimeActivityRows(block, spinFrame);
+    case "reasoning":
+      return reasoningRows(block, spinFrame);
     case "compaction":
       return compactionRows(block, brailleFrame);
     case "queued-steer":
@@ -1072,6 +1075,7 @@ function sliceRows(
   maxRows?: number,
   scrollOffsetRows = 0,
   unseenMessageCount = 0,
+  olderHistoryLoading = false,
 ): RenderedChatRow[] {
   // Preserve object identity when sourceRowIndex is already correct (pre-indexed
   // historical rows), so React.memo(ChatRow) can skip re-rendering unchanged rows
@@ -1102,7 +1106,15 @@ function sliceRows(
   const visible = indexedRows.slice(start, end);
   const result: RenderedChatRow[] = [];
   if (hasOlder) {
-    result.push({ id: "older-indicator", tone: "indicator", text: "↑ older messages", dim: true, rail: null });
+    // While a scroll-back page fetch is in flight the indicator swaps text in
+    // place — same row, same count — so the scroll math is untouched.
+    result.push({
+      id: "older-indicator",
+      tone: "indicator",
+      text: olderHistoryLoading ? "↑ loading earlier…" : "↑ older messages",
+      dim: true,
+      rail: null,
+    });
   }
   result.push(...visible);
   while (result.length < viewportRows - (hasNewer ? 1 : 0)) {
@@ -1213,6 +1225,9 @@ const ChatRow = React.memo(function ChatRow({
   const selectedRange = selection && typeof row.sourceRowIndex === "number"
     ? selectedRangeForRow(row.sourceRowIndex, selection, textWidth(renderedRowText(row)))
     : null;
+  // Every transcript row is exactly one terminal line — the scroll math and
+  // mouse selection both assume it. Truncate instead of letting Ink wrap long
+  // tool/work lines onto a second row.
   if (selectedRange) {
     const [before, selected, after] = splitTextByColumns(renderedRowText(row), selectedRange[0], selectedRange[1]);
     return (
@@ -1221,6 +1236,7 @@ const ChatRow = React.memo(function ChatRow({
         dimColor={row.dim}
         bold={row.bold}
         italic={row.italic}
+        wrap="truncate-end"
       >
         {railColor ? <Text color={railColor}>{"▎ "}</Text> : null}
         {before}
@@ -1235,6 +1251,7 @@ const ChatRow = React.memo(function ChatRow({
       dimColor={row.dim}
       bold={row.bold}
       italic={row.italic}
+      wrap="truncate-end"
     >
       {railColor ? <Text color={railColor}>{"▎ "}</Text> : null}
       {row.runs ? <InlineSpans runs={row.runs} /> : plainText}
@@ -1557,6 +1574,7 @@ export function ChatView({
   maxRows,
   scrollOffsetRows = 0,
   unseenMessageCount = 0,
+  olderHistory = null,
   selection = null,
   width = DEFAULT_VIEW_WIDTH,
   focused = false,
@@ -1581,6 +1599,13 @@ export function ChatView({
   maxRows?: number;
   scrollOffsetRows?: number;
   unseenMessageCount?: number;
+  /**
+   * Scroll-back pagination state for the ACTIVE single-chat view. "loading"
+   * swaps the top indicator text to "↑ loading earlier…" in place (row count
+   * is identical in all states); "available"/"exhausted"/null keep the
+   * existing indicator behavior.
+   */
+  olderHistory?: "loading" | "available" | "exhausted" | null;
   selection?: ChatTextSelection | null;
   width?: number;
   focused?: boolean;
@@ -1651,8 +1676,8 @@ export function ChatView({
     } else if (interrupted) {
       withSuffix = [...baseRows, ...modelInterruptedRows()];
     }
-    return sliceRows(withSuffix, bodyRows, scrollOffsetRows, unseenMessageCount);
-  }, [historicalRows, historicalBlocks, tailBlocks, rowInnerWidth, brailleFrame, spinFrame, dotPulse, shimmerTick, streaming, interrupted, showWorkingIndicator, bodyRows, scrollOffsetRows, unseenMessageCount]);
+    return sliceRows(withSuffix, bodyRows, scrollOffsetRows, unseenMessageCount, olderHistory === "loading");
+  }, [historicalRows, historicalBlocks, tailBlocks, rowInnerWidth, brailleFrame, spinFrame, dotPulse, shimmerTick, streaming, interrupted, showWorkingIndicator, bodyRows, scrollOffsetRows, unseenMessageCount, olderHistory]);
   const isEmpty = !hasConversationContent(blocks) && !streaming && !interrupted;
   let content: React.ReactNode;
   if (isEmpty && tileMode) {

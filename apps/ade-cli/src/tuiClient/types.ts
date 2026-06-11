@@ -122,6 +122,20 @@ import type { MissionSnapshot } from "../../../desktop/src/renderer/components/c
 
 export type { MissionSnapshot } from "../../../desktop/src/renderer/components/chat/chatMission";
 
+export type ChatInfoTodoItem = {
+  id: string;
+  description: string;
+  status: string;
+};
+
+/** Lane PR rollup shown in the chat-info pane (same shape the drawer uses). */
+export type ChatInfoPrSummary = {
+  number: number;
+  state: "open" | "merged" | "closed";
+  checksPassed: number;
+  checksTotal: number;
+};
+
 export type ChatInfoSnapshot = {
   provider: AdeCodeProvider;
   modelLabel: string;
@@ -130,6 +144,14 @@ export type ChatInfoSnapshot = {
   tokenSummary: string | null;
   goal: CodexThreadGoal | null;
   plan: ChatInfoPlan;
+  /** Provider-supplied explanation for the latest plan (desktop CodexPlanCard parity). */
+  planExplanation: string | null;
+  /** Live streaming text on the latest plan event, when the plan is still forming. */
+  planStreamingText: string | null;
+  /** Latest todo_update snapshot (desktop ChatTasksPanel parity). */
+  todos: ChatInfoTodoItem[];
+  /** Open/merged/closed PR on the chat's lane (desktop ChatPrPane parity). */
+  pr: ChatInfoPrSummary | null;
   snapshots: SubagentSnapshot[];
   inspectedSubagentId?: string | null;
   streaming: boolean;
@@ -137,6 +159,12 @@ export type ChatInfoSnapshot = {
   capability: SubagentCapability;
   /** Droid AGI mission snapshot (null for non-AGI sessions). */
   mission: MissionSnapshot | null;
+  /**
+   * True when the active session is a CLOSED/CRASHED but resumable Claude
+   * terminal session (isTerminalSessionResumable in app.tsx). Renders the
+   * orange resume row at the top of the chat-info pane.
+   */
+  resumableTerminal: boolean;
 };
 
 export type ModelPickerRightPaneSelection =
@@ -243,6 +271,9 @@ export type RightPaneContent =
       // Present only for the feedback form (command === "feedback"): the
       // multiline form's serializable state (see FeedbackContextMeta).
       feedback?: FeedbackContextMeta;
+      // Present only for the new-lane form (command === "new-lane"): branch
+      // names fetched once when the form opens, feeding the branch typeahead.
+      branches?: Array<{ name: string; remote: boolean }>;
       fields: Array<{
         name: string;
         label: string;

@@ -306,6 +306,7 @@ import type {
   AgentChatDeleteArgs,
   AgentChatSuggestLaneNameArgs,
   AgentChatEventEnvelope,
+  AgentChatEventHistoryPage,
   AgentChatEventHistorySnapshot,
   AgentChatGetSummaryArgs,
   AgentChatHandoffArgs,
@@ -5458,6 +5459,18 @@ contextBridge.exposeInMainWorld("ade", {
       return runtime.handled
         ? runtime.result
         : ipcRenderer.invoke(IPC.agentChatGetEventHistory, args);
+    },
+    getEventHistoryPage: async (args: {
+      sessionId: string;
+      beforeOffset: number;
+      maxBytes?: number;
+    }): Promise<AgentChatEventHistoryPage> => {
+      const runtime = await callProjectRuntimeActionIfBound<AgentChatEventHistoryPage>("chat", "getChatEventHistoryPage", {
+        argsList: [args.sessionId, { beforeOffset: args.beforeOffset, maxBytes: args.maxBytes }],
+      });
+      return runtime.handled
+        ? runtime.result
+        : ipcRenderer.invoke(IPC.agentChatGetEventHistoryPage, args);
     },
     codex: {
       getGoal: (

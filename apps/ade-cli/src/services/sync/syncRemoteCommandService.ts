@@ -2380,6 +2380,23 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
       nextCursor: hasMore ? String(oldestReturnedIndex) : null,
     };
   });
+  // Byte-offset transcript pagination for chat event envelopes (scroll-back
+  // beyond the hydrated tail). Mirrors the desktop `chat.getChatEventHistoryPage`
+  // action; cursor protocol lives on agentChatService.getChatEventHistoryPage.
+  register("agentChat.getEventHistoryPage", { viewerAllowed: true }, async (payload) => {
+    const agentChatService = requireService(args.agentChatService, "Agent chat service not available.");
+    const sessionId = requireString(payload.sessionId, "agentChat.getEventHistoryPage requires sessionId.");
+    const beforeOffset = typeof payload.beforeOffset === "number" && Number.isFinite(payload.beforeOffset)
+      ? payload.beforeOffset
+      : 0;
+    const maxBytes = typeof payload.maxBytes === "number" && Number.isFinite(payload.maxBytes) && payload.maxBytes > 0
+      ? payload.maxBytes
+      : undefined;
+    return agentChatService.getChatEventHistoryPage(sessionId, {
+      beforeOffset,
+      ...(maxBytes != null ? { maxBytes } : {}),
+    });
+  });
   register("chat.create", { viewerAllowed: true, queueable: true }, async (payload) => {
     const agentChatService = requireService(args.agentChatService, "Agent chat service not available.");
     const parsed = parseAgentChatCreateArgs(payload);

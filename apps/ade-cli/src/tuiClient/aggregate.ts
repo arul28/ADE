@@ -3,6 +3,8 @@ import type {
   AgentChatEventEnvelope,
   AgentChatSessionSummary,
 } from "../../../desktop/src/shared/types/chat";
+import { readRecord, summarizeInlineText } from "../../../desktop/src/renderer/components/chat/chatTranscriptRows";
+import { replaceInternalToolNames } from "../../../desktop/src/renderer/components/chat/toolPresentation";
 import type { LocalNotice } from "./types";
 import {
   chatEventLineId,
@@ -11,7 +13,7 @@ import {
   type RenderedChatLine,
 } from "./format";
 import { workEventItemId, workEventParentItemId } from "./workEventIds";
-import { shouldMergeAssistantText } from "./assistantTextIdentity";
+import { appendStreamingText, shouldMergeAssistantText } from "./assistantTextIdentity";
 
 export type WorkToolStatus = "running" | "ok" | "failed";
 
@@ -53,6 +55,7 @@ export type PendingSteer = {
 export type AggregatedBlock =
   | { kind: "user-bubble"; id: string; line: RenderedChatLine }
   | { kind: "assistant-text"; id: string; line: RenderedChatLine; precededByHeavy?: boolean }
+  | { kind: "reasoning"; id: string; turnId: string | null; text: string; live: boolean }
   | { kind: "tool-calls-group"; id: string; turnId: string | null; entries: ToolCallEntry[]; live: boolean; durationMs?: number }
   | { kind: "files-changed-group"; id: string; turnId: string | null; entries: FileChangeEntry[]; live: boolean; durationMs?: number }
   | { kind: "runtime-activity"; id: string; turnId: string | null; entries: RuntimeActivityEntry[]; live: boolean }
@@ -87,16 +90,77 @@ function workItemKey(turnId: string | null, itemId: string): string {
   return `${turnId ?? ""}:${itemId}`;
 }
 
-function singleArg(value: unknown, max = 60): string {
-  const text = (() => {
-    if (typeof value === "string") return value;
-    try {
-      return JSON.stringify(value);
-    } catch {
-      return String(value);
-    }
-  })();
-  return (text ?? "").replace(/\s+/g, " ").trim().slice(0, max);
+// ── Desktop-parity tool line derivation ─────────────────────────────────────
+// The desktop work log renders each tool call as `glyph slug target` (see
+// ChatWorkLogBlock's ToolCallRow + entryArgText). Mirror that here so the TUI
+// transcript reads identically for Codex / Cursor / OpenCode / Droid chats.
+
+function isGenericToolIdentifier(value: string | undefined): boolean {
+  const normalized = value?.trim().toLowerCase() ?? "";
+  return !normalized.length || normalized === "other" || normalized === "tool";
+}
+
+function readToolTitle(value: unknown): string | null {
+  const record = readRecord(value);
+  if (!record) return null;
+  const title = typeof record.title === "string" ? record.title.trim() : "";
+  return title.length ? title : null;
+}
+
+/** Desktop's workLogEntryKindSlug, applied to a tool name. */
+function toolSlug(toolName: string): string {
+  let raw = toolName.trim();
+  if (!raw) return "tool";
+  if (raw.includes(".")) raw = raw.split(".").pop() ?? raw;
+  if (raw.includes("__")) raw = raw.split("__").pop() ?? raw;
+  const snake = raw
+    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+    .replace(/[-\s.]+/g, "_")
+    .toLowerCase();
+  if (snake === "exec_command") return "shell";
+  return snake;
+}
+
+// Mirrors the getTarget extractors in desktop chatToolAppearance: nearly every
+// tool's "target" is the first non-empty of a fixed key list.
+const TOOL_TARGET_KEYS = [
+  "file_path",
+  "path",
+  "notebook_path",
+  "pattern",
+  "command",
+  "cmd",
+  "query",
+  "url",
+  "question",
+  "name",
+  "workerId",
+  "to",
+  "role",
+  "ref",
+  // Subagent-style tools (Task / spawn_agent / delegate_*) carry their task
+  // text here; only consulted when none of the precise keys above match.
+  "description",
+  "task",
+  "message",
+] as const;
+
+function toolTargetText(args: unknown): string | null {
+  const record = readRecord(args);
+  if (!record) return null;
+  for (const key of TOOL_TARGET_KEYS) {
+    const value = record[key];
+    if (typeof value === "string" && value.trim().length > 0) return value.trim();
+  }
+  return null;
+}
+
+function toolArgPreview(toolName: string, args: unknown): string {
+  const target = toolTargetText(args);
+  if (target) return replaceInternalToolNames(summarizeInlineText(target, 140));
+  const title = readToolTitle(args);
+  if (title && title !== toolName) return replaceInternalToolNames(summarizeInlineText(title, 140));
+  return "";
 }
 
 function diffStats(diff: string): { additions: number; deletions: number } {
@@ -110,34 +174,80 @@ function diffStats(diff: string): { additions: number; deletions: number } {
   return { additions, deletions };
 }
 
+// Cross-group tool entry resolution (desktop appendWorkLogRow parity): a
+// tool's lifecycle events collapse into ONE entry keyed by turn+item no matter
+// how many assistant-text blocks interleave between the call and its result.
+// `get` resolves the existing entry wherever it lives (possibly in an earlier
+// tool-calls-group of the same turn); `add` appends a brand-new entry to the
+// current trailing group. Without this, Claude's interleaved streams left
+// every call stuck "running" and re-added its result as a duplicate "ok" row.
+type ToolEntryRegistry = {
+  get(itemId: string): ToolCallEntry | undefined;
+  add(entry: ToolCallEntry): void;
+};
+
 function appendToolCallEvent(
-  block: Extract<AggregatedBlock, { kind: "tool-calls-group" }>,
+  registry: ToolEntryRegistry,
   event: Extract<AgentChatEvent, { type: "tool_call" | "tool_result" }>,
   durationMs?: number,
 ): void {
+  // Desktop parity: generic identifiers ("tool" / "other") fall back to the
+  // title carried in the payload (readToolTitle in chatTranscriptRows).
+  const payload = event.type === "tool_call" ? event.args : event.result;
+  const titleFallback = readToolTitle(payload);
+  const resolvedToolName = isGenericToolIdentifier(event.tool) && titleFallback ? titleFallback : event.tool;
   if (event.type === "tool_call") {
-    block.entries.push({
+    const existing = registry.get(event.itemId);
+    if (existing) {
+      if (isGenericToolIdentifier(existing.tool) && !isGenericToolIdentifier(resolvedToolName)) {
+        existing.tool = toolSlug(resolvedToolName);
+      }
+      if (!existing.arg) existing.arg = toolArgPreview(resolvedToolName, event.args);
+      return;
+    }
+    registry.add({
       itemId: event.itemId,
-      tool: event.tool,
-      arg: singleArg(event.args),
+      tool: toolSlug(resolvedToolName),
+      arg: toolArgPreview(resolvedToolName, event.args),
       status: "running",
     });
     return;
   }
-  const existing = block.entries.find((entry) => entry.itemId === event.itemId);
+  const existing = registry.get(event.itemId);
   const status: WorkToolStatus = event.status === "failed" ? "failed" : event.status === "running" ? "running" : "ok";
   if (existing) {
     existing.status = status;
+    if (isGenericToolIdentifier(existing.tool) && !isGenericToolIdentifier(resolvedToolName)) {
+      existing.tool = toolSlug(resolvedToolName);
+    }
     if (durationMs !== undefined) existing.durationMs = durationMs;
     return;
   }
-  block.entries.push({
+  registry.add({
     itemId: event.itemId,
-    tool: event.tool,
-    arg: singleArg(event.result),
+    tool: toolSlug(resolvedToolName),
+    arg: toolArgPreview(resolvedToolName, payload),
     status,
     ...(durationMs !== undefined ? { durationMs } : {}),
   });
+}
+
+function appendWebSearchEvent(
+  registry: ToolEntryRegistry,
+  event: Extract<AgentChatEvent, { type: "web_search" }>,
+): void {
+  // Desktop groups web_search lifecycle events with the other tool calls
+  // (buildWebSearchWorkLogEvent): label "search", target = query.
+  const itemId = (event as { itemId?: string }).itemId ?? `web-search:${event.query}`;
+  const status: WorkToolStatus = event.status === "failed" ? "failed" : event.status === "running" ? "running" : "ok";
+  const arg = summarizeInlineText(event.query ?? "", 140);
+  const existing = registry.get(itemId);
+  if (existing) {
+    existing.status = status;
+    if (arg) existing.arg = arg;
+    return;
+  }
+  registry.add({ itemId, tool: "search", arg, status });
 }
 
 function appendFileChangeEvent(
@@ -179,22 +289,22 @@ function stripShellLauncher(command: string): string {
 }
 
 function appendCommandAsTool(
-  block: Extract<AggregatedBlock, { kind: "tool-calls-group" }>,
+  registry: ToolEntryRegistry,
   event: Extract<AgentChatEvent, { type: "command" }>,
   derivedDurationMs?: number,
 ): void {
   const failed = event.status === "failed" || (event.exitCode ?? 0) !== 0;
   const status: WorkToolStatus = event.status === "running" ? "running" : failed ? "failed" : "ok";
   const durationMs = validDurationMs(event.durationMs) ?? validDurationMs(derivedDurationMs);
-  const cleanCommand = stripShellLauncher(event.command);
-  const existing = block.entries.find((entry) => entry.itemId === event.itemId);
+  const cleanCommand = summarizeInlineText(stripShellLauncher(event.command), 140);
+  const existing = registry.get(event.itemId);
   if (existing) {
     existing.status = status;
     existing.arg = cleanCommand;
     if (durationMs !== undefined) existing.durationMs = durationMs;
     return;
   }
-  block.entries.push({
+  registry.add({
     itemId: event.itemId,
     tool: "shell",
     arg: cleanCommand,
@@ -202,6 +312,10 @@ function appendCommandAsTool(
     ...(durationMs !== undefined ? { durationMs } : {}),
   });
 }
+
+// Reasoning rows render a ≤96-char preview; keep enough head text for that
+// (and a margin for whitespace collapsing) without retaining whole streams.
+const REASONING_TEXT_CAP = 2_000;
 
 function isExpandedFailureEvent(event: AgentChatEvent): boolean {
   if (event.type === "tool_result") return event.status === "failed";
@@ -227,12 +341,13 @@ function findLastBlock<K extends AggregatedBlock["kind"]>(
 
 function isLiveTurnBlock(
   block: AggregatedBlock,
-): block is Extract<AggregatedBlock, { kind: "tool-calls-group" | "files-changed-group" | "runtime-activity" | "plan" | "compaction" }> {
+): block is Extract<AggregatedBlock, { kind: "tool-calls-group" | "files-changed-group" | "runtime-activity" | "plan" | "compaction" | "reasoning" }> {
   return block.kind === "tool-calls-group"
     || block.kind === "files-changed-group"
     || block.kind === "runtime-activity"
     || block.kind === "plan"
-    || block.kind === "compaction";
+    || block.kind === "compaction"
+    || block.kind === "reasoning";
 }
 
 function finishTurnBlocks(blocks: AggregatedBlock[], turnId: string | null): void {
@@ -251,6 +366,7 @@ const SILENCED_EVENT_TYPES = new Set<AgentChatEvent["type"]>([
   "tool_result",
   "command",
   "file_change",
+  "web_search",
   "reasoning",
   "plan",
   "done",
@@ -294,16 +410,11 @@ function compactActivityDetail(value: unknown, max = 70): string | undefined {
   return `${normalized.slice(0, Math.max(0, max - 1))}…`;
 }
 
-function runtimeStatus(value: unknown): RuntimeActivityEntry["status"] {
-  if (value === "failed" || value === "interrupted") return "failed";
-  if (value === "completed" || value === "ok" || value === "complete") return "ok";
-  if (value === "running" || value === "started" || value === "active") return "running";
-  return "info";
-}
-
 // Activity events that mirror the real tool/command/file events the transcript
 // already renders. Suppress them in the TUI so the same fragment doesn't appear
 // twice (once as Runtime, once as Tool calls). Matches desktop suppression.
+// "spawning_agent" is covered by the subagent roster (chat-info pane), exactly
+// like the subagent lifecycle events the timeline also drops.
 const suppressedRuntimeActivities = new Set([
   "thinking",
   "working",
@@ -313,6 +424,7 @@ const suppressedRuntimeActivities = new Set([
   "running_command",
   "editing_file",
   "web_searching",
+  "spawning_agent",
 ]);
 
 function runtimeActivityFromEvent(id: string, event: AgentChatEvent): RuntimeActivityEntry | null {
@@ -324,31 +436,6 @@ function runtimeActivityFromEvent(id: string, event: AgentChatEvent): RuntimeAct
       label: activity.replace(/_/g, " "),
       detail: compactActivityDetail(event.detail),
       status: "running",
-    };
-  }
-  // Subagent lifecycle stays as compact, detail-free markers in the center
-  // transcript — the live task text, summaries, persona, and per-runtime stats
-  // all surface in the subagent (chat-info) pane instead, so the parent
-  // transcript isn't polluted by child chatter (see ChatInfoRoster).
-  if (event.type === "subagent_started" || event.type === "subagent.started") {
-    return {
-      id,
-      label: "subagent started",
-      status: "running",
-    };
-  }
-  if (event.type === "subagent_progress" || event.type === "subagent.progress") {
-    return {
-      id,
-      label: "subagent progress",
-      status: "running",
-    };
-  }
-  if (event.type === "subagent_result" || event.type === "subagent.completed") {
-    return {
-      id,
-      label: "subagent finished",
-      status: runtimeStatus((event as { status?: unknown }).status ?? "completed"),
     };
   }
   return null;
@@ -496,7 +583,11 @@ export function aggregateChatBlocks(args: {
     blocks.push({ kind, id, line } as AggregatedBlock);
   };
   const workItemStartedAt = new Map<string, number>();
+  // turnId:itemId → live entry reference, so a tool's later lifecycle events
+  // resolve the SAME entry even when assistant text split the visual groups.
+  const toolEntryByItemKey = new Map<string, ToolCallEntry>();
   const assistantTextEventsByBlockId = new Map<string, AssistantTextEvent>();
+  const reasoningItemIdByBlockId = new Map<string, string>();
 
   for (const entry of timeline) {
     if (entry.kind === "notice") {
@@ -514,9 +605,10 @@ export function aggregateChatBlocks(args: {
     const id = chatEventLineId(envelope, index);
     const turnId = turnIdOf(event);
 
+    // Subagent lifecycle (started/progress/result, teammate idle, task done)
+    // never reaches the transcript — the subagent roster in the chat-info pane
+    // is its surface, matching the desktop transcript which hides these too.
     if (isSubagentTimelineEvent(event)) {
-      const activity = runtimeActivityFromEvent(id, event);
-      if (activity) appendRuntimeActivityBlock(blocks, id, turnId, activity);
       continue;
     }
 
@@ -538,11 +630,29 @@ export function aggregateChatBlocks(args: {
     }
     if (event.type === "text") {
       if (event.text.length === 0) continue;
+      const line = linesById.get(id);
       const previous = blocks[blocks.length - 1];
       if (previous?.kind === "assistant-text") {
         const previousTextEvent = assistantTextEventsByBlockId.get(previous.id);
         if (previousTextEvent && shouldMergeAssistantTextEvents(previousTextEvent, event)) {
-          const mergedText = `${previous.line.body}${event.text}`;
+          // Only the FIRST delta of a streamed message owns a rendered line —
+          // renderChatLines' coalesceLines already fused the rest into it. A
+          // line-less delta's text is therefore ALREADY in previous.line.body;
+          // appending it again duplicated the tail (garbled Claude history
+          // replays, where deltas land un-coalesced). Just keep the identity
+          // fresh so later deltas continue matching this block.
+          if (!line) {
+            assistantTextEventsByBlockId.set(previous.id, {
+              ...previousTextEvent,
+              turnId: previousTextEvent.turnId ?? event.turnId,
+              itemId: previousTextEvent.itemId ?? event.itemId,
+              messageId: previousTextEvent.messageId ?? event.messageId,
+            });
+            continue;
+          }
+          // Overlap-aware: providers re-emit cumulative/tail fragments of the
+          // same message, which plain concat rendered as a duplicated tail.
+          const mergedText = appendStreamingText(previous.line.body, event.text);
           previous.line = {
             ...previous.line,
             body: mergedText,
@@ -558,36 +668,77 @@ export function aggregateChatBlocks(args: {
           continue;
         }
       }
-      const line = linesById.get(id);
       if (!line) continue;
       blocks.push({ kind: "assistant-text", id, line });
       assistantTextEventsByBlockId.set(id, event);
       continue;
     }
     if (event.type === "reasoning") {
+      // Desktop parity: reasoning surfaces as a collapsed "Thinking…/Thought"
+      // row (MinimalThought) instead of being dropped. Merge consecutive
+      // fragments for the same turn so streamed deltas stay one row. Only a
+      // short head preview ever renders, so cap the stored text — long Codex
+      // reasoning streams would otherwise grow the block without bound.
+      if (!event.text || event.text.length === 0) continue;
+      const previous = blocks[blocks.length - 1];
+      if (previous?.kind === "reasoning" && previous.turnId === turnId) {
+        if (previous.text.length < REASONING_TEXT_CAP) {
+          const previousItemId = reasoningItemIdByBlockId.get(previous.id) ?? null;
+          const nextItemId = (event as { itemId?: string }).itemId ?? null;
+          const merged = previousItemId && nextItemId && previousItemId !== nextItemId
+            ? `${previous.text}\n\n${event.text}`
+            : appendStreamingText(previous.text, event.text);
+          previous.text = merged.slice(0, REASONING_TEXT_CAP);
+        }
+        previous.live = true;
+        const nextItemId = (event as { itemId?: string }).itemId ?? null;
+        if (nextItemId) reasoningItemIdByBlockId.set(previous.id, nextItemId);
+        continue;
+      }
+      blocks.push({ kind: "reasoning", id, turnId, text: event.text.slice(0, REASONING_TEXT_CAP), live: true });
+      const itemId = (event as { itemId?: string }).itemId ?? null;
+      if (itemId) reasoningItemIdByBlockId.set(id, itemId);
       continue;
     }
-    if (event.type === "tool_call" || event.type === "tool_result" || event.type === "command" || event.type === "file_change") {
+    if (
+      event.type === "tool_call"
+      || event.type === "tool_result"
+      || event.type === "command"
+      || event.type === "file_change"
+      || event.type === "web_search"
+    ) {
       if (isSubagentChildWorkEvent(event, subagentParentItemIds, subagentChildItemIds)) {
         continue;
       }
-      if (event.type === "tool_call" || event.type === "tool_result" || event.type === "command") {
-        const last = blocks[blocks.length - 1];
-        let group: Extract<AggregatedBlock, { kind: "tool-calls-group" }>;
-        if (last && last.kind === "tool-calls-group" && last.turnId === turnId) {
-          group = last;
-        } else {
-          group = { kind: "tool-calls-group", id, turnId, entries: [], live: true };
-          blocks.push(group);
-        }
-        if (event.type === "command") {
+      if (event.type === "tool_call" || event.type === "tool_result" || event.type === "command" || event.type === "web_search") {
+        // Lazily appends to the trailing tool group (creating one only when a
+        // genuinely new entry arrives); lookups resolve across ALL groups of
+        // the turn so a result never duplicates its call's row.
+        const registry: ToolEntryRegistry = {
+          get: (itemId) => toolEntryByItemKey.get(workItemKey(turnId, itemId)),
+          add: (newEntry) => {
+            const last = blocks[blocks.length - 1];
+            let group: Extract<AggregatedBlock, { kind: "tool-calls-group" }>;
+            if (last && last.kind === "tool-calls-group" && last.turnId === turnId) {
+              group = last;
+            } else {
+              group = { kind: "tool-calls-group", id, turnId, entries: [], live: true };
+              blocks.push(group);
+            }
+            group.entries.push(newEntry);
+            toolEntryByItemKey.set(workItemKey(turnId, newEntry.itemId), newEntry);
+          },
+        };
+        if (event.type === "web_search") {
+          appendWebSearchEvent(registry, event);
+        } else if (event.type === "command") {
           const key = workItemKey(turnId, event.itemId);
           const startedAt = workItemStartedAt.get(key);
           const derivedDurationMs = event.status === "running" || startedAt === undefined
             ? undefined
             : entry.timestamp - startedAt;
           if (!workItemStartedAt.has(key)) workItemStartedAt.set(key, entry.timestamp);
-          appendCommandAsTool(group, event, derivedDurationMs);
+          appendCommandAsTool(registry, event, derivedDurationMs);
         } else {
           const key = workItemKey(turnId, event.itemId);
           if (event.type === "tool_call" && !workItemStartedAt.has(key)) {
@@ -597,7 +748,7 @@ export function aggregateChatBlocks(args: {
           const derivedDurationMs = event.type === "tool_result" && event.status !== "running" && startedAt !== undefined
             ? entry.timestamp - startedAt
             : undefined;
-          appendToolCallEvent(group, event, validDurationMs(derivedDurationMs));
+          appendToolCallEvent(registry, event, validDurationMs(derivedDurationMs));
         }
       } else if (event.type === "file_change") {
         const last = blocks[blocks.length - 1];

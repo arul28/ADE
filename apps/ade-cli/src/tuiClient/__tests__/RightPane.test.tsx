@@ -1,8 +1,10 @@
 import React from "react";
 import { describe, expect, it } from "vitest";
 import { render } from "ink-testing-library";
-import { LANE_DETAIL_ACTIONS, LANE_DETAIL_PR_ACTION_INDEX, feedbackStateFromContent, laneDetailsInteractionLayout, rightPaneScrollableRowCount, RightPane } from "../components/RightPane";
+import { ChatInfoResumeRow, LANE_DETAIL_ACTIONS, LANE_DETAIL_PR_ACTION_INDEX, feedbackStateFromContent, laneDetailsInteractionLayout, rightPaneScrollableRowCount, RightPane } from "../components/RightPane";
+import { theme } from "../theme";
 import { feedbackFormToFormValues } from "../feedbackForm";
+import { newLaneFormFields } from "../newLaneForm";
 import { buildFeedbackDraftInput } from "../feedback";
 import type { LaneSummary } from "../../../../desktop/src/shared/types/lanes";
 
@@ -50,6 +52,11 @@ function chatInfo(overrides: Partial<ChatInfoSnapshot> = {}): ChatInfoSnapshot {
     inspectedSubagentId: null,
     capability: resolveSubagentCapability(provider),
     mission: null,
+    planExplanation: null,
+    planStreamingText: null,
+    todos: [],
+    pr: null,
+    resumableTerminal: false,
     ...overrides,
   };
 }
@@ -215,6 +222,134 @@ describe("RightPane chat info", () => {
     // bg count shows up in the header
     expect(frame).toMatch(/2\s+bg/);
   });
+
+  it("renders tasks and PR sections below the roster (desktop chat-actions parity)", () => {
+    const result = render(
+      <RightPane
+        content={{
+          kind: "chat-info",
+          info: chatInfo({
+            todos: [
+              { id: "t1", description: "Wire the adapter", status: "completed" },
+              { id: "t2", description: "Run smoke tests", status: "in_progress" },
+            ],
+            pr: { number: 412, state: "open", checksPassed: 3, checksTotal: 5 },
+          }),
+        }}
+        selectedIndex={0}
+        focused
+        width={80}
+      />,
+    );
+    const frame = stripAnsi(result.lastFrame() ?? "");
+
+    expect(frame).toContain("TASKS");
+    expect(frame).toContain("1/2");
+    expect(frame).toContain("Wire the adapter");
+    expect(frame).toContain("Run smoke tests");
+    expect(frame).toContain("PR");
+    expect(frame).toContain("#412");
+    expect(frame).toContain("open");
+    expect(frame).toContain("3/5");
+    expect(frame).toContain("/pr for details");
+  });
+
+  it("renders the plan explanation under the plan steps when present", () => {
+    const result = render(
+      <RightPane
+        content={{
+          kind: "chat-info",
+          info: chatInfo({
+            planExplanation: "Patching the bridge first keeps the smoke test honest.",
+          }),
+        }}
+        selectedIndex={0}
+        focused
+        width={80}
+      />,
+    );
+    const frame = stripAnsi(result.lastFrame() ?? "");
+
+    expect(frame).toContain("PLAN");
+    expect(frame).toContain("Patching the bridge first");
+  });
+
+  it("renders the orange resume row above the header for closed-but-resumable claude terminals", () => {
+    const result = render(
+      <RightPane
+        content={{
+          kind: "chat-info",
+          info: chatInfo({ provider: "claude", modelLabel: "claude-code", resumableTerminal: true }),
+        }}
+        selectedIndex={0}
+        focused
+        width={80}
+      />,
+    );
+    const raw = result.lastFrame() ?? "";
+    const frame = stripAnsi(raw);
+
+    expect(frame).toContain("[ ⟳ resume session ]");
+    // Resume row renders ABOVE the model header line.
+    expect(frame.indexOf("resume session")).toBeLessThan(frame.indexOf("claude-code"));
+    // Selected at index 0 → the resume row holds the selection (activation hint),
+    // and the main roster row does NOT show as selected.
+    expect(frame).toContain("↵ resume");
+    // Explicitly orange: the test env strips ANSI (chalk level 0), so assert
+    // the color at the element level — the label Text carries
+    // theme.color.attention (#F59E0B) and bold.
+    const row = ChatInfoResumeRow({ selected: true }) as React.ReactElement;
+    const texts = React.Children.toArray((row.props as { children?: React.ReactNode }).children)
+      .filter((child): child is React.ReactElement => React.isValidElement(child));
+    const label = texts.find((child) => String((child.props as { children?: unknown }).children ?? "").includes("resume session"));
+    expect(label).toBeDefined();
+    expect((label!.props as { color?: string }).color).toBe(theme.color.attention);
+    expect((label!.props as { bold?: boolean }).bold).toBe(true);
+    expect(theme.color.attention).toBe("#F59E0B");
+  });
+
+  it("shifts roster selection below the resume row (index 1 = main) and hides the row when not resumable", () => {
+    const resumable = render(
+      <RightPane
+        content={{
+          kind: "chat-info",
+          info: chatInfo({ provider: "claude", resumableTerminal: true }),
+        }}
+        selectedIndex={1}
+        focused
+        width={80}
+      />,
+    );
+    const resumableFrame = stripAnsi(resumable.lastFrame() ?? "");
+    // Index 1 selects "main" when the resume row occupies index 0.
+    const mainLine = resumableFrame.split("\n").find((line) => line.includes(" main"));
+    expect(mainLine).toContain("▎");
+
+    const plain = render(
+      <RightPane
+        content={{ kind: "chat-info", info: chatInfo({ provider: "claude", resumableTerminal: false }) }}
+        selectedIndex={0}
+        focused
+        width={80}
+      />,
+    );
+    expect(stripAnsi(plain.lastFrame() ?? "")).not.toContain("resume session");
+  });
+
+  it("omits tasks and PR sections when the chat has neither", () => {
+    const result = render(
+      <RightPane
+        content={{ kind: "chat-info", info: chatInfo() }}
+        selectedIndex={0}
+        focused
+        width={80}
+      />,
+    );
+    const frame = stripAnsi(result.lastFrame() ?? "");
+
+    expect(frame).not.toContain("TASKS");
+    expect(frame).not.toContain("/pr for details");
+  });
 });
 
 function lane(overrides: Partial<LaneSummary> = {}): LaneSummary {
@@ -244,6 +379,110 @@ function lane(overrides: Partial<LaneSummary> = {}): LaneSummary {
     ...overrides,
   };
 }
+
+describe("RightPane new-lane form", () => {
+  const branches = [
+    { name: "origin/main", remote: true },
+    { name: "origin/feature-x", remote: true },
+    { name: "main", remote: false },
+  ];
+
+  it("renders vertical start options, color + create rows without wrapping at width 44", () => {
+    const result = render(
+      <RightPane
+        content={{
+          kind: "form",
+          title: "New lane",
+          command: "new-lane",
+          fields: newLaneFormFields("primary"),
+          branches,
+        }}
+        formValues={{ name: "auth-refresh", color: "", start: "primary", baseBranch: "", runtime: "local" }}
+        activeFormField={2}
+        focused
+        width={44}
+      />,
+    );
+    const frame = stripAnsi(result.lastFrame() ?? "");
+    const lines = frame.split("\n");
+
+    // Vertical option list: one row per option, radio style — never wraps.
+    const optionLines = lines.filter((line) => /[●○] (primary|branch|child)\b/.test(line));
+    expect(optionLines).toHaveLength(3);
+    for (const line of optionLines) {
+      expect(line.trimEnd().length).toBeLessThanOrEqual(44);
+    }
+    expect(frame).toContain("● primary");
+    expect(frame).toContain("○ branch");
+    expect(frame).toContain("○ child");
+    expect(frame).toContain("new lane off the base branch");
+
+    // Color row (auto selected by default) and explicit create button.
+    expect(frame).toContain("Color");
+    expect(frame).toContain("[○]");
+    expect(frame).toContain("auto");
+    expect(frame).toContain("[ create lane ]");
+
+    // Base-branch typeahead lists remote branches; runtime toggle still there.
+    expect(frame).toContain("origin/main");
+    expect(frame).toContain("[local mac]");
+
+    // The footer hint fits a single 44-col row.
+    const hintLine = lines.find((line) => line.includes("↑↓ rows"));
+    expect(hintLine).toBeTruthy();
+    expect((hintLine ?? "").trimEnd().length).toBeLessThanOrEqual(44);
+  });
+
+  it("renders branch-mode fields with the source toggle, typeahead, and resolved create label", () => {
+    const result = render(
+      <RightPane
+        content={{
+          kind: "form",
+          title: "New lane",
+          command: "new-lane",
+          fields: newLaneFormFields("import"),
+          branches,
+        }}
+        formValues={{ name: "adopted", color: "", start: "import", branchSource: "remote", branch: "feat", baseBranch: "" }}
+        activeFormField={4}
+        focused
+        width={44}
+      />,
+    );
+    const frame = stripAnsi(result.lastFrame() ?? "");
+
+    expect(frame).toContain("○ primary");
+    expect(frame).toContain("● branch");
+    expect(frame).toContain("Source");
+    expect(frame).toContain("[remote]");
+    expect(frame).toContain("↹ origin/feature-x");
+    expect(frame).toContain("[ import feat ]");
+    expect(frame).not.toContain("Runtime");
+    // Typeahead hint while the branch field is active.
+    expect(frame).toContain("↹ top match");
+  });
+
+  it("dims the create button with the validation reason when the form is invalid", () => {
+    const result = render(
+      <RightPane
+        content={{
+          kind: "form",
+          title: "New lane",
+          command: "new-lane",
+          fields: newLaneFormFields("primary"),
+        }}
+        formValues={{ name: "", color: "", start: "primary", baseBranch: "", runtime: "local" }}
+        activeFormField={0}
+        focused
+        width={44}
+      />,
+    );
+    const frame = stripAnsi(result.lastFrame() ?? "");
+
+    expect(frame).toContain("[ create lane ]");
+    expect(frame).toContain("name required");
+  });
+});
 
 describe("RightPane lane-details", () => {
   const baseLaneDetails = {

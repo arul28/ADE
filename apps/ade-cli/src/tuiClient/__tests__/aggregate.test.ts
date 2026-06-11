@@ -149,22 +149,32 @@ describe("aggregateChatBlocks typed groups", () => {
     expect(toolGroup!.entries.map((e) => e.itemId)).toEqual(["kept-1"]);
   });
 
-  it("suppresses tool-derived runtime activity so tool groups match desktop transcript grouping", () => {
+  it("drops tool-derived activity, spawning_agent, and subagent lifecycle from the transcript", () => {
+    // Desktop parity: the subagent roster (chat-info pane) is the surface for
+    // lifecycle + spawn chatter; the transcript shows none of it.
     const events: AgentChatEventEnvelope[] = [
       env("2026-01-01T12:00:00.000Z", { type: "activity", activity: "thinking", detail: "Thinking through the answer", turnId: "turn-1" }),
       env("2026-01-01T12:00:01.000Z", { type: "activity", activity: "reading", detail: "apps/ade-cli/src/tuiClient/app.tsx", turnId: "turn-1" }),
       env("2026-01-01T12:00:02.000Z", { type: "activity", activity: "searching", detail: "Grep", turnId: "turn-1" }),
       env("2026-01-01T12:00:03.000Z", { type: "activity", activity: "tool_calling", detail: "Processing tool input", turnId: "turn-1" }),
-      env("2026-01-01T12:00:04.000Z", { type: "subagent_started", taskId: "agent-1", parentToolUseId: "spawn-1", description: "child launch spam", turnId: "turn-1" }),
+      env("2026-01-01T12:00:03.500Z", { type: "activity", activity: "spawning_agent", detail: "Repo root: /Users/me/Projects/ADE", turnId: "turn-1" } as unknown as AgentChatEvent),
+      env("2026-01-01T12:00:04.000Z", { type: "subagent_started", taskId: "agent-1", parentToolUseId: "spawn-1", description: "child launch spam", turnId: "turn-1" } as unknown as AgentChatEvent),
+      env("2026-01-01T12:00:05.000Z", { type: "subagent_progress", taskId: "agent-1", parentToolUseId: "spawn-1", summary: "child progress", turnId: "turn-1" } as unknown as AgentChatEvent),
+      env("2026-01-01T12:00:06.000Z", { type: "subagent_result", taskId: "agent-1", parentToolUseId: "spawn-1", status: "completed", summary: "child done", turnId: "turn-1" } as unknown as AgentChatEvent),
     ];
 
     const blocks = aggregate(events);
-    const activity = blocks.find((b) => b.kind === "runtime-activity") as Extract<AggregatedBlock, { kind: "runtime-activity" }> | undefined;
+    expect(blocks.some((b) => b.kind === "runtime-activity")).toBe(false);
+  });
 
+  it("still surfaces unrecognized activity events as runtime activity", () => {
+    const events: AgentChatEventEnvelope[] = [
+      env("2026-01-01T12:00:00.000Z", { type: "activity", activity: "compacting_memory", detail: "trimming context", turnId: "turn-1" } as unknown as AgentChatEvent),
+    ];
+    const blocks = aggregate(events);
+    const activity = blocks.find((b) => b.kind === "runtime-activity") as Extract<AggregatedBlock, { kind: "runtime-activity" }> | undefined;
     expect(activity).toBeDefined();
-    expect(activity!.entries).toHaveLength(1);
-    expect(activity!.entries[0]).toMatchObject({ label: "subagent started" });
-    expect(activity!.entries[0]).not.toHaveProperty("detail");
+    expect(activity!.entries[0]).toMatchObject({ label: "compacting memory", detail: "trimming context" });
   });
 
   it("keeps one tool-calls-group when activity status events are interleaved", () => {
@@ -197,6 +207,42 @@ describe("aggregateChatBlocks typed groups", () => {
 
     expect(assistantBlocks).toHaveLength(1);
     expect(assistantBlocks[0]!.line.body).toBe("Let me look at the sendMessage flow more carefully and what events are emitted when a session is resumed.");
+  });
+
+  it("does not duplicate the tail when a provider re-emits an overlapping fragment of the same message", () => {
+    // Regression (real Codex chat): "…so I can split the review instead of
+    // doing it as one giant pass." rendered twice because the provider re-sent
+    // the final sentence for the same messageId and the merge was plain concat.
+    const events: AgentChatEventEnvelope[] = [
+      env("2026-01-01T12:00:00.000Z", { type: "text", text: "I found the entry point so I can split the review instead of doing it as one giant pass.", turnId: "turn-1", messageId: "msg-1" }),
+      env("2026-01-01T12:00:01.000Z", { type: "text", text: " so I can split the review instead of doing it as one giant pass.", turnId: "turn-1", messageId: "msg-1" }),
+    ];
+    const blocks = aggregate(events);
+    const assistantBlocks = blocks.filter((b) => b.kind === "assistant-text") as Array<Extract<AggregatedBlock, { kind: "assistant-text" }>>;
+    expect(assistantBlocks).toHaveLength(1);
+    expect(assistantBlocks[0]!.line.body).toBe("I found the entry point so I can split the review instead of doing it as one giant pass.");
+  });
+
+  it("replaces the buffer when a provider re-emits the cumulative message text", () => {
+    const events: AgentChatEventEnvelope[] = [
+      env("2026-01-01T12:00:00.000Z", { type: "text", text: "Hello", turnId: "turn-1", messageId: "msg-1" }),
+      env("2026-01-01T12:00:01.000Z", { type: "text", text: "Hello world.", turnId: "turn-1", messageId: "msg-1" }),
+    ];
+    const blocks = aggregate(events);
+    const assistantBlocks = blocks.filter((b) => b.kind === "assistant-text") as Array<Extract<AggregatedBlock, { kind: "assistant-text" }>>;
+    expect(assistantBlocks).toHaveLength(1);
+    expect(assistantBlocks[0]!.line.body).toBe("Hello world.");
+  });
+
+  it("dedupes re-emitted reasoning tails within the same reasoning item", () => {
+    const events: AgentChatEventEnvelope[] = [
+      env("2026-01-01T12:00:00.000Z", { type: "reasoning", text: "Weighing options before refactor.", turnId: "turn-1", itemId: "r1" }),
+      env("2026-01-01T12:00:00.500Z", { type: "reasoning", text: " before refactor.", turnId: "turn-1", itemId: "r1" }),
+    ];
+    const blocks = aggregate(events);
+    const reasoning = blocks.filter((b) => b.kind === "reasoning") as Array<Extract<AggregatedBlock, { kind: "reasoning" }>>;
+    expect(reasoning).toHaveLength(1);
+    expect(reasoning[0]!.text).toBe("Weighing options before refactor.");
   });
 
   it("marks tool-calls-group and files-changed-group as not-live without stamping turn duration", () => {
@@ -317,5 +363,133 @@ describe("aggregateChatBlocks typed groups", () => {
       deletions: 0,
       deleted: true,
     });
+  });
+});
+
+describe("aggregateChatBlocks desktop work-log parity", () => {
+  it("derives slug + target arg like the desktop work log instead of dumping raw args JSON", () => {
+    const events: AgentChatEventEnvelope[] = [
+      env("2026-01-01T12:00:00.000Z", {
+        type: "tool_call",
+        tool: "Read",
+        args: { file_path: "apps/desktop/src/main.ts", limit: 40 },
+        itemId: "t1",
+        turnId: "turn-1",
+      }),
+      env("2026-01-01T12:00:01.000Z", {
+        type: "tool_call",
+        tool: "exec_command",
+        args: { command: "npm test" },
+        itemId: "t2",
+        turnId: "turn-1",
+      }),
+    ];
+    const blocks = aggregate(events);
+    const group = blocks.find((b) => b.kind === "tool-calls-group") as Extract<AggregatedBlock, { kind: "tool-calls-group" }>;
+    expect(group.entries[0]).toMatchObject({ tool: "read", arg: "apps/desktop/src/main.ts" });
+    // exec_command normalizes to the shell slug, same as desktop's kind slug.
+    expect(group.entries[1]).toMatchObject({ tool: "shell", arg: "npm test" });
+    expect(group.entries[0]!.arg).not.toContain("{");
+  });
+
+  it("resolves generic tool identifiers from the payload title (desktop readToolTitle parity)", () => {
+    const events: AgentChatEventEnvelope[] = [
+      env("2026-01-01T12:00:00.000Z", {
+        type: "tool_call",
+        tool: "tool",
+        args: { title: "Custom Migration" },
+        itemId: "t1",
+        turnId: "turn-1",
+      }),
+    ];
+    const blocks = aggregate(events);
+    const group = blocks.find((b) => b.kind === "tool-calls-group") as Extract<AggregatedBlock, { kind: "tool-calls-group" }>;
+    expect(group.entries[0]!.tool).toBe("custom_migration");
+  });
+
+  it("groups web_search lifecycle events into the tool-calls group keyed by query", () => {
+    const events: AgentChatEventEnvelope[] = [
+      env("2026-01-01T12:00:00.000Z", {
+        type: "web_search",
+        query: "ink truncate text",
+        status: "running",
+        turnId: "turn-1",
+      } as AgentChatEvent),
+      env("2026-01-01T12:00:01.000Z", {
+        type: "web_search",
+        query: "ink truncate text",
+        status: "completed",
+        turnId: "turn-1",
+      } as AgentChatEvent),
+    ];
+    const blocks = aggregate(events);
+    const group = blocks.find((b) => b.kind === "tool-calls-group") as Extract<AggregatedBlock, { kind: "tool-calls-group" }>;
+    expect(group).toBeDefined();
+    expect(group.entries).toHaveLength(1);
+    expect(group.entries[0]).toMatchObject({ tool: "search", arg: "ink truncate text", status: "ok" });
+  });
+
+  it("merges streamed reasoning into one block and finishes it at turn end", () => {
+    const events: AgentChatEventEnvelope[] = [
+      env("2026-01-01T12:00:00.000Z", { type: "reasoning", text: "part one ", turnId: "turn-1" }),
+      env("2026-01-01T12:00:00.500Z", { type: "reasoning", text: "part two", turnId: "turn-1" }),
+      env("2026-01-01T12:00:01.000Z", { type: "done", turnId: "turn-1", status: "completed" } as AgentChatEvent),
+    ];
+    const blocks = aggregate(events);
+    const reasoning = blocks.filter((b) => b.kind === "reasoning") as Extract<AggregatedBlock, { kind: "reasoning" }>[];
+    expect(reasoning).toHaveLength(1);
+    expect(reasoning[0]).toMatchObject({ text: "part one part two", live: false });
+  });
+});
+
+// Realistic Claude history-replay shapes (distilled from real ended-session
+// transcripts under .ade/transcripts/chat): tool results separated from their
+// calls by interleaved assistant text, stream-path tool_calls that arrive with
+// empty args and are re-emitted enriched, and un-coalesced text deltas.
+describe("aggregateChatBlocks claude history accuracy", () => {
+  it("resolves a tool_result into its call's entry across interleaved assistant text", () => {
+    const events: AgentChatEventEnvelope[] = [
+      env("2026-01-01T12:00:00.000Z", { type: "tool_call", tool: "Read", args: { file_path: "a.ts" }, itemId: "toolu_1", turnId: "turn-1" }),
+      env("2026-01-01T12:00:01.000Z", { type: "text", text: "Reading that file now.", messageId: "m1", turnId: "turn-1" }),
+      env("2026-01-01T12:00:02.000Z", { type: "tool_result", tool: "Read", result: "ok", itemId: "toolu_1", turnId: "turn-1", status: "completed" } as AgentChatEvent),
+      env("2026-01-01T12:00:03.000Z", { type: "done", turnId: "turn-1", status: "completed" } as AgentChatEvent),
+    ];
+    const blocks = aggregate(events);
+    const groups = blocks.filter((b) => b.kind === "tool-calls-group") as Extract<AggregatedBlock, { kind: "tool-calls-group" }>[];
+    // The result must RESOLVE the original entry, not open a second group with
+    // a duplicate "ok" row while the call stays stuck "running".
+    expect(groups).toHaveLength(1);
+    expect(groups[0]!.entries).toHaveLength(1);
+    expect(groups[0]!.entries[0]).toMatchObject({ itemId: "toolu_1", tool: "read", arg: "a.ts", status: "ok" });
+  });
+
+  it("backfills empty stream-path args from the enriched tool_call re-emit (same itemId)", () => {
+    const events: AgentChatEventEnvelope[] = [
+      env("2026-01-01T12:00:00.000Z", { type: "tool_call", tool: "Bash", args: {}, itemId: "toolu_2", turnId: "turn-1" }),
+      env("2026-01-01T12:00:01.000Z", { type: "tool_call", tool: "Bash", args: { command: "ls -la" }, itemId: "toolu_2", turnId: "turn-1" }),
+      env("2026-01-01T12:00:02.000Z", { type: "tool_result", tool: "Bash", result: "total 0", itemId: "toolu_2", turnId: "turn-1", status: "completed" } as AgentChatEvent),
+    ];
+    const blocks = aggregate(events);
+    const groups = blocks.filter((b) => b.kind === "tool-calls-group") as Extract<AggregatedBlock, { kind: "tool-calls-group" }>[];
+    expect(groups).toHaveLength(1);
+    expect(groups[0]!.entries).toHaveLength(1);
+    expect(groups[0]!.entries[0]).toMatchObject({ itemId: "toolu_2", tool: "bash", arg: "ls -la", status: "ok" });
+  });
+
+  it("does not duplicate text when un-coalesced deltas of one message replay from history", () => {
+    // History replay delivers the raw per-delta envelopes (no live coalescing);
+    // renderChatLines fuses them into ONE line owned by the first delta, so the
+    // aggregate pass must not append the later deltas' text a second time.
+    const events: AgentChatEventEnvelope[] = [
+      env("2026-01-01T12:00:00.000Z", { type: "text", text: "Both expl", messageId: "m9", turnId: "turn-1" }),
+      env("2026-01-01T12:00:00.400Z", { type: "text", text: "orations are complete — what", messageId: "m9", turnId: "turn-1" }),
+      env("2026-01-01T12:00:00.700Z", { type: "activity", activity: "thinking", detail: "Thinking", turnId: "turn-1" } as AgentChatEvent),
+      env("2026-01-01T12:00:00.900Z", { type: "text", text: " docs exist.", messageId: "m9", turnId: "turn-1" }),
+      env("2026-01-01T12:00:01.000Z", { type: "done", turnId: "turn-1", status: "completed" } as AgentChatEvent),
+    ];
+    const blocks = aggregate(events);
+    const texts = blocks.filter((b) => b.kind === "assistant-text") as Extract<AggregatedBlock, { kind: "assistant-text" }>[];
+    expect(texts).toHaveLength(1);
+    expect(texts[0]!.line.body).toBe("Both explorations are complete — what docs exist.");
   });
 });

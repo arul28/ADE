@@ -11598,6 +11598,157 @@ describe("createAgentChatService", () => {
     });
   });
 
+  describe("getChatEventHistoryPage", () => {
+    // Byte-window edge cases (line-boundary cursors, oversized lines,
+    // multi-byte UTF-8, concurrent appends) are covered with the REAL parser
+    // in chatTranscriptHistoryPager.test.ts; these tests cover the service
+    // contract around it: session validation, path resolution, subagent
+    // filtering, and the tailStartOffset cursor handshake.
+    const jsonLineParse = (raw: string): AgentChatEventEnvelope[] =>
+      raw.split("\n").filter((line) => line.trim().length > 0).map((line) => JSON.parse(line) as AgentChatEventEnvelope);
+
+    const paddedLine = (envelope: AgentChatEventEnvelope, exactBytes: number): string => {
+      const baseEvent = envelope.event as { type: "text"; text: string };
+      let line = `${JSON.stringify(envelope)}\n`;
+      const padding = exactBytes - Buffer.byteLength(line, "utf8");
+      if (padding < 0) throw new Error("fixture line too large");
+      line = `${JSON.stringify({ ...envelope, event: { ...baseEvent, text: baseEvent.text + "x".repeat(padding) } })}\n`;
+      expect(Buffer.byteLength(line, "utf8")).toBe(exactBytes);
+      return line;
+    };
+
+    it("returns sessionFound:false for unknown sessions", () => {
+      const { service } = createService();
+      const page = service.getChatEventHistoryPage("unknown-session", { beforeOffset: 1_000 });
+      expect(page).toEqual({
+        sessionId: "unknown-session",
+        events: [],
+        startOffset: 0,
+        hasMore: false,
+        sessionFound: false,
+      });
+    });
+
+    it("returns an empty head-reached page for beforeOffset <= 0", async () => {
+      const { service } = createService();
+      const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+      for (const beforeOffset of [0, -25]) {
+        const page = service.getChatEventHistoryPage(session.id, { beforeOffset });
+        expect(page.sessionFound).toBe(true);
+        expect(page.events).toEqual([]);
+        expect(page.hasMore).toBe(false);
+        expect(page.startOffset).toBe(0);
+      }
+    });
+
+    it("returns an empty page when the transcript file is missing", async () => {
+      const { service } = createService();
+      const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+      fs.rmSync(path.join(tmpRoot, "transcripts", `${session.id}.chat.jsonl`), { force: true });
+      const page = service.getChatEventHistoryPage(session.id, { beforeOffset: 5_000 });
+      expect(page.sessionFound).toBe(true);
+      expect(page.events).toEqual([]);
+      expect(page.hasMore).toBe(false);
+      expect(page.startOffset).toBe(0);
+    });
+
+    it("reads the requested byte window and filters Codex subagent envelopes", async () => {
+      const { service } = createService();
+      const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+
+      const parentEnvelope: AgentChatEventEnvelope = {
+        sessionId: session.id,
+        timestamp: "2026-06-10T10:00:00.000Z",
+        event: { type: "text", text: "parent-visible" },
+        sequence: 1,
+      };
+      const subagentEnvelope: AgentChatEventEnvelope = {
+        sessionId: session.id,
+        timestamp: "2026-06-10T10:00:01.000Z",
+        event: { type: "text", text: "subagent-hidden" },
+        sequence: 2,
+        provenance: { targetKind: "codex_subagent" },
+      };
+      const otherSessionEnvelope: AgentChatEventEnvelope = {
+        sessionId: "other-session",
+        timestamp: "2026-06-10T10:00:02.000Z",
+        event: { type: "text", text: "foreign" },
+        sequence: 3,
+      };
+      const transcriptFile = path.join(tmpRoot, "transcripts", `${session.id}.chat.jsonl`);
+      const raw = [parentEnvelope, subagentEnvelope, otherSessionEnvelope]
+        .map((entry) => `${JSON.stringify(entry)}\n`).join("");
+      fs.writeFileSync(transcriptFile, raw, "utf8");
+      vi.mocked(parseAgentChatTranscript).mockImplementation(jsonLineParse);
+
+      const page = service.getChatEventHistoryPage(session.id, {
+        beforeOffset: Buffer.byteLength(raw, "utf8"),
+      });
+      expect(page.sessionFound).toBe(true);
+      expect(page.events.map((entry) => (entry.event.type === "text" ? entry.event.text : ""))).toEqual([
+        "parent-visible",
+      ]);
+      expect(page.startOffset).toBe(0);
+      expect(page.hasMore).toBe(false);
+    });
+
+    it("hands out a tailStartOffset that pages seamlessly into the bytes the tail skipped", async () => {
+      const { service } = createService();
+      const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+
+      // 82 lines × 25_000 bytes = 2_050_000 bytes — 50_000 bytes older than the
+      // 2_000_000-byte hydration tail, i.e. exactly the first two lines.
+      const LINE_BYTES = 25_000;
+      const LINE_COUNT = 82;
+      const lines: string[] = [];
+      for (let index = 0; index < LINE_COUNT; index += 1) {
+        lines.push(paddedLine({
+          sessionId: session.id,
+          timestamp: new Date(Date.UTC(2026, 5, 10, 10, 0, index)).toISOString(),
+          event: { type: "text", text: `line-${index}-` },
+          sequence: index,
+        }, LINE_BYTES));
+      }
+      const transcriptFile = path.join(tmpRoot, "transcripts", `${session.id}.chat.jsonl`);
+      fs.writeFileSync(transcriptFile, lines.join(""), "utf8");
+      vi.mocked(parseAgentChatTranscript).mockImplementation(jsonLineParse);
+
+      const history = service.getChatEventHistory(session.id);
+      expect(history.transcriptTruncated).toBe(true);
+      // The tail window starts exactly at line 2 (a line boundary).
+      expect(history.tailStartOffset).toBe(2 * LINE_BYTES);
+      expect(history.events[0]?.event).toMatchObject({ type: "text" });
+      expect((history.events[0]?.event as { text: string }).text.startsWith("line-2-")).toBe(true);
+
+      const page = service.getChatEventHistoryPage(session.id, { beforeOffset: history.tailStartOffset! });
+      expect(page.sessionFound).toBe(true);
+      expect(page.events.map((entry) => (entry.event.type === "text" ? entry.event.text.split("x")[0] : ""))).toEqual([
+        "line-0-",
+        "line-1-",
+      ]);
+      expect(page.startOffset).toBe(0);
+      expect(page.hasMore).toBe(false);
+    });
+
+    it("reports a null tailStartOffset when the transcript is fully hydrated", async () => {
+      const { service } = createService();
+      const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+      const envelope: AgentChatEventEnvelope = {
+        sessionId: session.id,
+        timestamp: "2026-06-10T10:00:00.000Z",
+        event: { type: "text", text: "small" },
+        sequence: 1,
+      };
+      const transcriptFile = path.join(tmpRoot, "transcripts", `${session.id}.chat.jsonl`);
+      fs.writeFileSync(transcriptFile, `${JSON.stringify(envelope)}\n`, "utf8");
+      vi.mocked(parseAgentChatTranscript).mockImplementation(jsonLineParse);
+
+      const history = service.getChatEventHistory(session.id);
+      expect(history.transcriptTruncated).toBe(false);
+      expect(history.tailStartOffset).toBeNull();
+    });
+  });
+
   // --------------------------------------------------------------------------
   // Session creation edge cases
   // --------------------------------------------------------------------------
@@ -17137,6 +17288,96 @@ describe("createAgentChatService", () => {
       .filter((event): event is Extract<AgentChatEventEnvelope["event"], { type: "text" }> => event.type === "text");
     expect(textEvents.map((event) => event.text)).toEqual(["Let me check the desktop app."]);
     expect(events.some((event) => event.event.type === "tool_call" && event.event.tool === "Bash")).toBe(true);
+  });
+
+  it("re-emits a Claude tool_call with parsed args once the input has streamed in after content_block_start", async () => {
+    const events: AgentChatEventEnvelope[] = [];
+    const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+    const send = vi.fn().mockResolvedValue(undefined);
+    let streamCall = 0;
+
+    const stream = vi.fn(() => (async function* () {
+      streamCall += 1;
+      if (streamCall === 1) {
+        yield {
+          type: "system",
+          subtype: "init",
+          session_id: "sdk-session-streamed-args",
+          slash_commands: [],
+        };
+        return;
+      }
+
+      // Stream path: tool_use starts with NO input; the input arrives via
+      // input_json_delta and only parses at content_block_stop. Without the
+      // enriched re-emit the persisted tool_call keeps args:{} forever.
+      yield {
+        type: "stream_event",
+        event: {
+          type: "content_block_start",
+          index: 0,
+          content_block: { type: "tool_use", id: "tool-use-streamed-args", name: "Read", input: {} },
+        },
+      };
+      yield {
+        type: "stream_event",
+        event: {
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "input_json_delta", partial_json: "{\"file_path\":\"apps/desk" },
+        },
+      };
+      yield {
+        type: "stream_event",
+        event: {
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "input_json_delta", partial_json: "top/src/a.ts\"}" },
+        },
+      };
+      yield {
+        type: "stream_event",
+        event: { type: "content_block_stop", index: 0 },
+      };
+      yield {
+        type: "result",
+        usage: { input_tokens: 1, output_tokens: 1 },
+      };
+    })());
+
+    vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+      send,
+      stream,
+      close: vi.fn(),
+      sessionId: "sdk-session-streamed-args",
+      setPermissionMode,
+    } as any);
+
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "claude",
+      model: "claude-sonnet-4-6",
+      modelId: "anthropic/claude-sonnet-4-6",
+    });
+
+    await service.runSessionTurn({
+      sessionId: session.id,
+      text: "Read the file.",
+    });
+
+    const toolCalls = events
+      .map((event) => event.event)
+      .filter((event): event is Extract<AgentChatEventEnvelope["event"], { type: "tool_call" }> => event.type === "tool_call")
+      .filter((event) => event.tool === "Read");
+    expect(toolCalls).toHaveLength(2);
+    // Same itemId so renderers collapse both into a single entry.
+    expect(new Set(toolCalls.map((event) => event.itemId)).size).toBe(1);
+    expect(toolCalls[0]?.args).toEqual({});
+    expect(toolCalls[1]?.args).toEqual({ file_path: "apps/desktop/src/a.ts" });
   });
 
   it("emits completed Claude tool_result rows when tool_use_summary arrives", async () => {

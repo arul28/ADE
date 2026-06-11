@@ -529,14 +529,179 @@ export function buildSubagentTranscriptEvents(args: {
   return transcript;
 }
 
+function transcriptRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function transcriptEventField(event: AgentChatEvent, key: "itemId" | "messageId" | "turnId"): string | null {
+  return textField((event as Record<string, unknown>)[key]);
+}
+
+// Stable per-source-message identity so the streamed chunks of one assistant
+// message (Codex persists each delta as its own transcript row) carry the SAME
+// messageId and the transcript coalescers fuse them back into one paragraph,
+// instead of rendering one block (≈ one word) per chunk.
+function stableTranscriptMessageId(
+  event: AgentChatEvent,
+  message: AgentChatSubagentTranscriptMessage,
+  index: number,
+): string {
+  const turnId = transcriptEventField(event, "turnId") ?? "no-turn";
+  const itemId = transcriptEventField(event, "itemId")
+    ?? transcriptEventField(event, "messageId")
+    ?? message.uuid
+    ?? String(index);
+  return `subagent:${message.sessionId}:${turnId}:${itemId}:${event.type}`;
+}
+
+function normalizeTranscriptEvent(
+  event: AgentChatEvent,
+  message: AgentChatSubagentTranscriptMessage,
+  index: number,
+): AgentChatEvent {
+  if (event.type === "text" || event.type === "user_message") {
+    return { ...event, messageId: event.messageId ?? stableTranscriptMessageId(event, message, index) };
+  }
+  // A Codex fileChange thread item fans out into one event per file, all
+  // sharing the item's id; the transcript group dedupes by itemId, so suffix
+  // the path to keep each file its own row (stable across refetches).
+  if (event.type === "file_change") {
+    return { ...event, itemId: `${event.itemId}:${event.path}` };
+  }
+  return event;
+}
+
+function claudeToolResultText(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content
+      .map((block) => {
+        if (typeof block === "string") return block;
+        const record = transcriptRecord(block);
+        return record && typeof record.text === "string" ? record.text : "";
+      })
+      .filter((value) => value.length > 0)
+      .join("\n");
+  }
+  return "";
+}
+
+/**
+ * Expand an Anthropic/Claude message ({ role, content[, type:"message"] }) into
+ * real transcript events — each content block (text / thinking / tool_use /
+ * tool_result) becomes the matching chat event so tool calls render through the
+ * same tool-line formatting as the main transcript (desktop parity:
+ * expandClaudeTranscriptMessage in AgentChatPane).
+ */
+function expandClaudeTranscriptMessage(
+  record: Record<string, unknown>,
+  message: AgentChatSubagentTranscriptMessage,
+): AgentChatEvent[] {
+  const role = typeof record.role === "string" ? record.role : message.type;
+  const content = record.content;
+  const out: AgentChatEvent[] = [];
+  const pushText = (value: string, id: string): void => {
+    const trimmed = value.trim();
+    if (!trimmed) return;
+    out.push(role === "user"
+      ? { type: "user_message", text: trimmed, messageId: id }
+      : { type: "text", text: trimmed, messageId: id });
+  };
+
+  if (typeof content === "string") {
+    pushText(content, message.uuid);
+  } else if (Array.isArray(content)) {
+    content.forEach((block, blockIndex) => {
+      const b = transcriptRecord(block);
+      if (!b) return;
+      const blockType = typeof b.type === "string" ? b.type : "";
+      const id = `${message.uuid}:${blockIndex}`;
+      if (blockType === "text" && typeof b.text === "string") {
+        pushText(b.text, id);
+      } else if (blockType === "thinking" && typeof b.thinking === "string" && b.thinking.trim().length > 0) {
+        out.push({ type: "reasoning", text: b.thinking, itemId: id });
+      } else if (blockType === "tool_use") {
+        out.push({
+          type: "tool_call",
+          tool: typeof b.name === "string" && b.name.length > 0 ? b.name : "tool",
+          args: b.input ?? {},
+          itemId: typeof b.id === "string" && b.id.length > 0 ? b.id : id,
+        });
+      } else if (blockType === "tool_result") {
+        out.push({
+          type: "tool_result",
+          tool: "",
+          result: claudeToolResultText(b.content),
+          itemId: typeof b.tool_use_id === "string" && b.tool_use_id.length > 0 ? b.tool_use_id : id,
+          status: b.is_error === true ? "failed" : "completed",
+        });
+      }
+    });
+  }
+
+  // Nothing structured extracted but the SDK still gave us flat text.
+  if (out.length === 0 && typeof message.text === "string" && message.text.trim().length > 0) {
+    pushText(message.text, message.uuid);
+  }
+  return out;
+}
+
+// `/bin/zsh -lc "…"`, `bash -c '…'`, `sh -c …` — system rows that are really
+// shell invocations become command events so they render as tool lines (the
+// transcript renderer strips the launcher wrapper itself).
+const SHELL_LAUNCHER_PATTERN = /^(?:\/[\w./-]+\/)?(?:zsh|bash|sh)\s+-[\w]*c\s+/;
+
+function eventsFromTranscriptMessage(
+  message: AgentChatSubagentTranscriptMessage,
+  index: number,
+): AgentChatEvent[] {
+  const record = transcriptRecord(message.message);
+  // Anthropic/Claude message shape — expand its content blocks. This MUST come
+  // before the generic passthrough: Anthropic messages carry type:"message",
+  // which would otherwise be mistaken for an already-formed chat event.
+  if (record && (record.type === "message" || record.role === "assistant" || record.role === "user")) {
+    const expanded = expandClaudeTranscriptMessage(record, message)
+      .map((event, subIndex) => normalizeTranscriptEvent(event, message, index + subIndex));
+    if (expanded.length > 0) return expanded;
+  }
+  // Runtime already handed us a formed chat event (Codex thread items / the
+  // captured live-event path) — pass it through so commands, file changes, and
+  // tool calls render through the normal typed pipeline.
+  if (typeof record?.type === "string" && record.type.trim().length > 0 && record.type !== "message") {
+    return [normalizeTranscriptEvent(record as unknown as AgentChatEvent, message, index)];
+  }
+  const text = typeof message.text === "string" ? message.text.trim() : "";
+  if (!text) return [];
+  if (message.type === "user") {
+    return [{ type: "user_message", text, messageId: message.uuid }];
+  }
+  if (message.type === "system") {
+    if (SHELL_LAUNCHER_PATTERN.test(text)) {
+      return [{
+        type: "command",
+        command: text,
+        cwd: "",
+        output: "",
+        itemId: `subagent-cmd:${message.uuid}`,
+        status: "completed",
+      }];
+    }
+    return [{ type: "text", text: `system › ${text}`, messageId: message.uuid }];
+  }
+  return [{ type: "text", text, messageId: message.uuid }];
+}
+
 /**
  * Convert a REAL daemon-backed subagent transcript (Codex app-server threads /
- * OpenCode child-session messages) into synthetic display envelopes for the
- * takeover view. Used when a `canViewFullTranscript` subagent is inspected;
- * falls back to {@link buildSubagentTranscriptEvents} when the daemon returns
- * null. The transcript messages are claude-session shaped, so we flatten each
- * one's `text` into a role-prefixed text event (tool internals aren't exposed
- * by the upstream message shape).
+ * OpenCode child-session messages / Claude SDK subagent messages) into display
+ * envelopes for the takeover view. Used when a `canViewFullTranscript` subagent
+ * is inspected; falls back to {@link buildSubagentTranscriptEvents} when the
+ * daemon returns null. Formed chat events embedded in `message` pass through
+ * (so tool calls / commands / file changes render as typed tool lines), Claude
+ * message content blocks expand to their event equivalents, and flat text gets
+ * a stable per-message messageId so streamed chunks merge back into paragraphs.
  */
 export function subagentTranscriptMessagesToEvents(args: {
   messages: AgentChatSubagentTranscriptMessage[];
@@ -550,27 +715,25 @@ export function subagentTranscriptMessagesToEvents(args: {
     syntheticTextEvent(
       sessionId,
       startTs,
-      -2,
+      lineSeq++,
       snapshot.turnId,
       `Viewing ${snapshot.kind === "teammate" ? "teammate" : snapshot.background ? "background agent" : "agent"} transcript. Select Main chat in Chat Info to return.\nTask: ${snapshot.name}`,
-      `subagent-line:${lineSeq++}`,
+      `subagent-line:0`,
     ),
   ];
-  for (const message of messages) {
-    const text = typeof message.text === "string" ? message.text.trim() : "";
-    if (!text) continue;
-    const rolePrefix = message.type === "user" ? "user › " : message.type === "system" ? "system › " : "";
-    transcript.push(syntheticTextEvent(sessionId, startTs, lineSeq, snapshot.turnId, `${rolePrefix}${text}`, `subagent-line:${lineSeq}`));
-    lineSeq += 1;
-  }
+  messages.forEach((message, index) => {
+    for (const event of eventsFromTranscriptMessage(message, index)) {
+      transcript.push({ sessionId, timestamp: startTs, sequence: lineSeq++, event });
+    }
+  });
   if (transcript.length === 1) {
     transcript.push(syntheticTextEvent(
       sessionId,
       snapshot.endedAt ?? startTs,
-      -1,
+      lineSeq,
       snapshot.turnId,
       snapshot.summary || "No transcript rows were returned for this agent.",
-      `subagent-line:${lineSeq++}`,
+      `subagent-line:${lineSeq}`,
     ));
   }
   return transcript;

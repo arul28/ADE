@@ -179,6 +179,48 @@ describe("Drawer lane and chat navigation layout", () => {
     expect(chatModeFrame).not.toContain("next lane");
   });
 
+  it("previews chats under non-selected lanes and hides branch refs from lane cards", () => {
+    const sessions: AgentChatSessionSummary[] = [
+      {
+        sessionId: "chat-other",
+        laneId: "lane-2",
+        provider: "codex",
+        model: "gpt-5.5",
+        title: "Sidechat",
+        status: "idle",
+        startedAt: "2026-05-12T11:30:00.000Z",
+        endedAt: null,
+        lastActivityAt: "2026-05-12T11:31:00.000Z",
+        lastOutputPreview: null,
+        summary: null,
+      },
+    ];
+
+    const frame = stripAnsi(render(
+      <Drawer
+        lanes={[
+          lane("lane-1", "Selected lane", "feature/selected-branch", "2026-05-12T11:55:00.000Z"),
+          lane("lane-2", "Other lane", "feature/other-branch", "2026-05-12T11:56:00.000Z"),
+        ]}
+        sessions={sessions}
+        activeLaneId="lane-1"
+        activeSessionId={null}
+        browsingLaneId="lane-1"
+        selectedLaneIndex={0}
+        selectedChatIndex={-1}
+        panelHeight={40}
+        mode="lanes"
+        focused
+      />,
+    ).lastFrame() ?? "");
+
+    // The non-selected lane's chat is visible without entering the lane.
+    expect(frame).toContain("Sidechat");
+    // Branch refs no longer render inside lane cards.
+    expect(frame).not.toContain("feature/selected-branch");
+    expect(frame).not.toContain("feature/other-branch");
+  });
+
   it("makes split add mode obvious in the drawer chrome", () => {
     const sessions: AgentChatSessionSummary[] = [
       {

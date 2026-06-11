@@ -700,6 +700,7 @@ export type SyncRemoteCommandAction =
   | "chat.delete"
   | "chat.models"
   | "chat.modelCatalog"
+  | "agentChat.getEventHistoryPage"
   | "cto.getRoster"
   | "cto.ensureSession"
   | "cto.ensureAgentSession"

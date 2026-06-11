@@ -20,6 +20,11 @@ type TileData = {
   lane: LaneSummary | null;
 };
 
+// Local notices are session-agnostic UI feedback (e.g. "Created lane x."), so
+// they must not be spliced into every tile's transcript — only the focused
+// tile shows them. Stable identity keeps ChatView's aggregation memo intact.
+const NO_NOTICES: LocalNotice[] = [];
+
 function groupRows<T extends { rect: { x: number; y: number } }>(entries: T[]): T[][] {
   const rows = new Map<number, T[]>();
   for (const entry of entries) {
@@ -246,7 +251,7 @@ export function MultiChatGrid({
                   modelDisplay={modelDisplay}
                   focused={index === focusedIndex}
                   events={eventsBySessionId[tile.sessionId] ?? []}
-                  notices={notices}
+                  notices={index === focusedIndex ? notices : NO_NOTICES}
                   streaming={!!streamingBySessionId[tile.sessionId]}
                   interrupted={!!interruptedBySessionId[tile.sessionId]}
                   expandedLineIds={expandedLineIds}
