@@ -3,7 +3,7 @@
 	archiveVersion = 1;
 	classes = {
 	};
-	objectVersion = 46;
+	objectVersion = 56;
 	objects = {
 
 /* Begin PBXBuildFile section */
@@ -194,6 +194,9 @@
 		E10000000000000000000045 /* WorkSelectionActionBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000045 /* WorkSelectionActionBar.swift */; };
 		E10000000000000000000046 /* WorkRootScreen+Selection.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000046 /* WorkRootScreen+Selection.swift */; };
 		E10000000000000000000048 /* WorkTerminalEmulatorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000048 /* WorkTerminalEmulatorView.swift */; };
+		E10000000000000000000049 /* TerminalSessionScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000049 /* TerminalSessionScreen.swift */; };
+		E1000000000000000000004A /* SwiftTermSessionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000004A /* SwiftTermSessionView.swift */; };
+		DD20000000000000000000B1 /* SwiftTerm in Frameworks */ = {isa = PBXBuildFile; productRef = DD10000000000000000000B1 /* SwiftTerm */; };
 		E689F42D41A500BB8CA233E4 /* LanesTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9270CF8A67F3FA79089F39C1 /* LanesTabView.swift */; };
 		F2A1C9D8456E7B3C1D2E4F90 /* FilesCodeSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = D6F9B21C0E4A6D8F1B3C5A77 /* FilesCodeSupport.swift */; };
 		FBEEF09EFB4911FEAC6A7E87 /* RemoteModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 483C5F1818BAE74B19B84617 /* RemoteModels.swift */; };
@@ -297,6 +300,8 @@
 		D10000000000000000000045 /* WorkSelectionActionBar.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkSelectionActionBar.swift; path = ADE/Views/Work/WorkSelectionActionBar.swift; sourceTree = "<group>"; };
 		D10000000000000000000046 /* WorkRootScreen+Selection.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "WorkRootScreen+Selection.swift"; path = "ADE/Views/Work/WorkRootScreen+Selection.swift"; sourceTree = "<group>"; };
 		D10000000000000000000048 /* WorkTerminalEmulatorView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkTerminalEmulatorView.swift; path = ADE/Views/Work/WorkTerminalEmulatorView.swift; sourceTree = "<group>"; };
+		D10000000000000000000049 /* TerminalSessionScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = TerminalSessionScreen.swift; path = ADE/Views/Work/TerminalSessionScreen.swift; sourceTree = "<group>"; };
+		D1000000000000000000004A /* SwiftTermSessionView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SwiftTermSessionView.swift; path = ADE/Views/Work/SwiftTermSessionView.swift; sourceTree = "<group>"; };
 		D1000000000000000000003C /* WorkSessionGrouping.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkSessionGrouping.swift; path = ADE/Views/Work/WorkSessionGrouping.swift; sourceTree = "<group>"; };
 		H10000000000000000000010 /* CtoRootScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CtoRootScreen.swift; path = ADE/Views/Cto/CtoRootScreen.swift; sourceTree = "<group>"; };
 		H10000000000000000000011 /* CtoSessionDestinationView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CtoSessionDestinationView.swift; path = ADE/Views/Cto/CtoSessionDestinationView.swift; sourceTree = "<group>"; };
@@ -416,6 +421,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				60F4CDDB763C0A9F0E650B40 /* Foundation.framework in Frameworks */,
+				DD20000000000000000000B1 /* SwiftTerm in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -626,6 +632,8 @@
 				D10000000000000000000046 /* WorkRootScreen+Selection.swift */,
 				D10000000000000000000047 /* ADEInspectable.swift */,
 				D10000000000000000000048 /* WorkTerminalEmulatorView.swift */,
+				D10000000000000000000049 /* TerminalSessionScreen.swift */,
+				D1000000000000000000004A /* SwiftTermSessionView.swift */,
 				D1000000000000000000003C /* WorkSessionGrouping.swift */,
 				D1000000000000000000002C /* WorkChatHeaderAndMessageViews.swift */,
 				D1000000000000000000002D /* WorkChatRichCardViews.swift */,
@@ -847,6 +855,9 @@
 				BB4400000000000000000002 /* PBXTargetDependency */,
 			);
 			name = ADE;
+			packageProductDependencies = (
+				DD10000000000000000000B1 /* SwiftTerm */,
+			);
 			productName = ADE;
 			productReference = 27A125DE2C17BA32F9291513 /* ADE.app */;
 			productType = "com.apple.product-type.application";
@@ -958,6 +969,9 @@
 				Base,
 			);
 			mainGroup = 564208E3878DD0F0137C7E86;
+			packageReferences = (
+				DD10000000000000000000A1 /* XCRemoteSwiftPackageReference "SwiftTerm" */,
+			);
 			productRefGroup = 7FAD2BF35AA6A286BCF68D49 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
@@ -1126,6 +1140,8 @@
 				E10000000000000000000045 /* WorkSelectionActionBar.swift in Sources */,
 				E10000000000000000000046 /* WorkRootScreen+Selection.swift in Sources */,
 				E10000000000000000000048 /* WorkTerminalEmulatorView.swift in Sources */,
+				E10000000000000000000049 /* TerminalSessionScreen.swift in Sources */,
+				E1000000000000000000004A /* SwiftTermSessionView.swift in Sources */,
 				E1000000000000000000003C /* WorkSessionGrouping.swift in Sources */,
 				E1000000000000000000002C /* WorkChatHeaderAndMessageViews.swift in Sources */,
 				E1000000000000000000002D /* WorkChatRichCardViews.swift in Sources */,
@@ -1607,6 +1623,25 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		DD10000000000000000000A1 /* XCRemoteSwiftPackageReference "SwiftTerm" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/migueldeicaza/SwiftTerm";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 1.13.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		DD10000000000000000000B1 /* SwiftTerm */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = DD10000000000000000000A1 /* XCRemoteSwiftPackageReference "SwiftTerm" */;
+			productName = SwiftTerm;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 9CBC925352322D208431EFAA /* Project object */;
 }

@@ -156,9 +156,7 @@ describe("deviceRegistryService", () => {
     dbB.close();
   });
 
-  it("does not leave device-registry DELETE changesets after viewer join clear", async () => {
-    if (!isCrsqliteAvailable()) return;
-
+  it.skipIf(!isCrsqliteAvailable())("does not leave device-registry DELETE changesets after viewer join clear", async () => {
     const projectRoot = makeProjectRoot("ade-device-registry-viewer-clear-");
     const dbPath = path.join(projectRoot, ".ade", "ade.db");
     const db = await openKvDb(dbPath, createLogger() as any);

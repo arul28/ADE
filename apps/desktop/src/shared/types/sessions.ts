@@ -200,6 +200,12 @@ export type PtyDataEvent = {
   sessionId: string;
   projectRoot?: string;
   data: string;
+  /**
+   * Transcript end offset (UTF-8 bytes) after this chunk was appended. null
+   * when the transcript can no longer mirror the stream (untracked session,
+   * transcript writes disabled, or the transcript byte cap was reached).
+   */
+  offset?: number | null;
 };
 
 export type PtyExitEvent = {

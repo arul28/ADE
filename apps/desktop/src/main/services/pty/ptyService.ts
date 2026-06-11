@@ -114,6 +114,11 @@ const CLAUDE_TITLE_SCAN_BYTES = 512 * 1024;
 const CLAUDE_STORAGE_MATCH_START_SKEW_MS = 1_000;
 const CLAUDE_STORAGE_MATCH_END_SKEW_MS = 5_000;
 const PTY_DATA_BATCH_INTERVAL_MS = 50;
+// Echo latency is dominated by the data batch window. After a user keystroke
+// the very next flush races the user's perception, so batch on a much shorter
+// window for a brief period following any write to the PTY.
+const PTY_DATA_INTERACTIVE_BATCH_INTERVAL_MS = 8;
+const PTY_DATA_INTERACTIVE_WINDOW_MS = 1_000;
 const PTY_DATA_BATCH_MAX_CHARS = 64 * 1024;
 const PTY_DATA_SUMMARY_INTERVAL_MS = 10_000;
 const PTY_LIVE_SESSION_RESYNC_INTERVAL_MS = 1_000;
@@ -606,9 +611,14 @@ type PtyEntry = {
   cleanupPaths: string[];
   lastResizeCols: number | null;
   lastResizeRows: number | null;
+  /** Last size set by a non-mobile caller, restored when a phone detaches. */
+  lastDesktopCols: number | null;
+  lastDesktopRows: number | null;
   pendingDataChunks: string[];
   pendingDataChars: number;
   pendingDataTimer: ReturnType<typeof setTimeout> | null;
+  /** Epoch ms of the last user write; shortens the data batch window. */
+  lastUserInputAt: number;
   terminalSnapshot: TerminalSnapshotMirror | null;
   recentOutputTail: string;
   /** Output-snippet title timer (skipped for interactive Claude/Codex; see CLI user-title path). */
@@ -815,6 +825,21 @@ function mergeTranscriptTailWithLiveOutput(transcriptTail: string, liveOutputTai
   if (!transcriptTail) return tailString(liveOutputTail, maxChars);
   const overlap = computeSuffixPrefixOverlap(transcriptTail, liveOutputTail, maxChars);
   return tailString(`${transcriptTail}${liveOutputTail.slice(overlap)}`, maxChars);
+}
+
+/**
+ * Forward-scan to the first safe place a transcript page may start: the byte
+ * after a newline, or an ESC (0x1B) opening a fresh escape sequence — so a
+ * page never begins mid-escape-sequence. Returns 0 (raw start) when the page
+ * contains neither.
+ */
+export function scanToTranscriptPageBoundary(page: Buffer): number {
+  for (let index = 0; index < page.length; index += 1) {
+    const byte = page[index];
+    if (byte === 0x1b) return index;
+    if (byte === 0x0a) return index + 1;
+  }
+  return 0;
 }
 
 function runtimeFromStatus(status: TerminalSessionStatus): TerminalRuntimeState {
@@ -2892,7 +2917,17 @@ export function createPtyService({
     if (!data) return;
     ptyDataBatchCount += 1;
     ptyDataMaxBatchChars = Math.max(ptyDataMaxBatchChars, data.length);
-    emitPtyDataNow(entry, { ...ids, data });
+    // writeTranscript runs synchronously in the same onData tick that enqueued
+    // each chunk, so transcriptBytesWritten here is exactly the transcript end
+    // offset of this batch. Offsets go null once the transcript stops
+    // mirroring the stream (byte cap reached, write failure, untracked).
+    const offset = entry.tracked
+      && entry.transcriptStream
+      && !entry.transcriptLimitReached
+      && !entry.transcriptWriteDisabled
+      ? entry.transcriptBytesWritten
+      : null;
+    emitPtyDataNow(entry, { ...ids, data, offset });
   };
 
   const enqueuePtyData = (entry: PtyEntry, event: PtyDataEvent) => {
@@ -2908,9 +2943,10 @@ export function createPtyService({
       return;
     }
     if (entry.pendingDataTimer) return;
+    const interactive = Date.now() - entry.lastUserInputAt < PTY_DATA_INTERACTIVE_WINDOW_MS;
     entry.pendingDataTimer = setTimeout(() => {
       flushQueuedPtyData(entry, ids);
-    }, PTY_DATA_BATCH_INTERVAL_MS);
+    }, interactive ? PTY_DATA_INTERACTIVE_BATCH_INTERVAL_MS : PTY_DATA_BATCH_INTERVAL_MS);
   };
 
   const emitPtyExit = (entry: Pick<PtyEntry, "laneId" | "sessionId">, event: PtyExitEvent) => {
@@ -3809,9 +3845,12 @@ export function createPtyService({
         cleanupPaths,
         lastResizeCols: null,
         lastResizeRows: null,
+        lastDesktopCols: cols,
+        lastDesktopRows: rows,
         pendingDataChunks: [],
         pendingDataChars: 0,
         pendingDataTimer: null,
+        lastUserInputAt: 0,
         terminalSnapshot: tracked ? createTerminalSnapshotMirror(cols, rows) : null,
         recentOutputTail: "",
         aiTitleTimer: null,
@@ -4269,6 +4308,7 @@ export function createPtyService({
       const entry = ptys.get(ptyId);
       if (!entry) return;
       try {
+        entry.lastUserInputAt = Date.now();
         entry.pty.write(data);
         tryCliUserTitleFromWrite(entry, data);
         setRuntimeState(entry.sessionId, "running");
@@ -4532,10 +4572,16 @@ export function createPtyService({
         }
         entry = live[1];
       }
-      entry.pty.write(args.data);
-      tryCliUserTitleFromWrite(entry, args.data);
-      setRuntimeState(entry.sessionId, "running");
-      scheduleIdleTransition(entry.sessionId);
+      try {
+        entry.lastUserInputAt = Date.now();
+        entry.pty.write(args.data);
+        tryCliUserTitleFromWrite(entry, args.data);
+        setRuntimeState(entry.sessionId, "running");
+        scheduleIdleTransition(entry.sessionId);
+      } catch (err) {
+        logger.warn("pty.terminal_write_failed", { sessionId: entry.sessionId, err: String(err) });
+        throw err;
+      }
       return { ok: true };
     },
 
@@ -4600,6 +4646,11 @@ export function createPtyService({
       const entry = ptys.get(ptyId);
       if (!entry) return;
       const safe = clampDims(cols, rows);
+      // The ptyId-based path is only driven by the desktop renderer: remember
+      // its size (even when the resize itself dedupes) so a mobile-driven
+      // resize can be undone when the phone detaches.
+      entry.lastDesktopCols = safe.cols;
+      entry.lastDesktopRows = safe.rows;
       if (entry.lastResizeCols === safe.cols && entry.lastResizeRows === safe.rows) return;
       try {
         entry.pty.resize(safe.cols, safe.rows);
@@ -4619,11 +4670,11 @@ export function createPtyService({
      */
     writeBySessionId(sessionId: string, data: string): boolean {
       if (!sessionId || typeof data !== "string") return false;
-      const entry = Array.from(ptys.values()).find(
-        (candidate) => candidate.sessionId === sessionId && !candidate.disposed,
-      );
-      if (!entry) return false;
+      const live = liveEntryBySessionId(sessionId);
+      if (!live) return false;
+      const [, entry] = live;
       try {
+        entry.lastUserInputAt = Date.now();
         entry.pty.write(data);
         tryCliUserTitleFromWrite(entry, data);
         setRuntimeState(entry.sessionId, "running");
@@ -4635,18 +4686,29 @@ export function createPtyService({
       }
     },
 
+    /** Whether a live (non-disposed) PTY currently backs `sessionId`. */
+    hasLivePty(sessionId: string): boolean {
+      if (!sessionId) return false;
+      return liveEntryBySessionId(sessionId) != null;
+    },
+
     /**
      * Resize the active PTY for a given session id. Mobile clients call this
      * when their visible terminal viewport changes (orientation flip, split
      * view, font-size change). Returns true on success.
      */
-    resizeBySessionId(sessionId: string, cols: number, rows: number): boolean {
+    resizeBySessionId(sessionId: string, cols: number, rows: number, opts?: { source?: "desktop" | "mobile" }): boolean {
       if (!sessionId) return false;
-      const entry = Array.from(ptys.values()).find(
-        (candidate) => candidate.sessionId === sessionId && !candidate.disposed,
-      );
-      if (!entry) return false;
+      const live = liveEntryBySessionId(sessionId);
+      if (!live) return false;
+      const [, entry] = live;
       const safe = clampDims(cols, rows);
+      // A mobile viewport must never become the desktop-preferred size — it
+      // is restored from lastDesktop* when the phone detaches.
+      if (opts?.source !== "mobile") {
+        entry.lastDesktopCols = safe.cols;
+        entry.lastDesktopRows = safe.rows;
+      }
       if (entry.lastResizeCols === safe.cols && entry.lastResizeRows === safe.rows) return true;
       try {
         entry.pty.resize(safe.cols, safe.rows);
@@ -4656,6 +4718,33 @@ export function createPtyService({
         return true;
       } catch (err) {
         logger.warn("pty.resize_by_session_failed", { sessionId, err: String(err) });
+        return false;
+      }
+    },
+
+    /**
+     * Resize the active PTY for a session back to the last desktop-preferred
+     * size. Called when the last subscribed mobile peer detaches so a phone's
+     * viewport does not linger on the desktop terminal. Returns true when a
+     * restore was performed.
+     */
+    restoreDesktopSizeBySessionId(sessionId: string): boolean {
+      if (!sessionId) return false;
+      const live = liveEntryBySessionId(sessionId);
+      if (!live) return false;
+      const [, entry] = live;
+      const cols = entry.lastDesktopCols;
+      const rows = entry.lastDesktopRows;
+      if (cols == null || rows == null) return false;
+      if (entry.lastResizeCols === cols && entry.lastResizeRows === rows) return false;
+      try {
+        entry.pty.resize(cols, rows);
+        entry.lastResizeCols = cols;
+        entry.lastResizeRows = rows;
+        resizeTerminalSnapshot(entry, cols, rows);
+        return true;
+      } catch (err) {
+        logger.warn("pty.restore_desktop_size_failed", { sessionId, err: String(err) });
         return false;
       }
     },
@@ -4698,6 +4787,66 @@ export function createPtyService({
       const live = liveEntryBySessionId(sessionId)?.[1].recentOutputTail ?? "";
       const merged = mergeTranscriptTailWithLiveOutput(diskTail, live, maxBytes);
       return args.raw ? merged : stripAnsi(merged);
+    },
+
+    /**
+     * Read an exact byte range of a session transcript (mobile history
+     * paging / delta resume). The transcript WriteStream buffers, so disk can
+     * lag `transcriptBytesWritten` (and any offset derived from it) by a few
+     * ms — both offsets are clamped to the flushed file size and the achieved
+     * range is reported back; clients detect the gap and re-request. When
+     * `alignStartToSafeBoundary` is set, a non-zero start is scanned forward
+     * to the byte after a `\n` or to an ESC byte so a page never begins
+     * mid-escape-sequence. A non-zero start always skips UTF-8 continuation
+     * bytes so decoding never splits a code point. Returns null when the
+     * session is unknown or has no transcript.
+     */
+    async readTranscriptRange(args: {
+      sessionId: string;
+      startOffset: number;
+      endOffset: number;
+      alignStartToSafeBoundary?: boolean;
+    }): Promise<{ data: string; startOffset: number; endOffset: number } | null> {
+      const sessionId = typeof args.sessionId === "string" ? args.sessionId.trim() : "";
+      if (!sessionId) return null;
+      const session = sessionService.get(sessionId);
+      const transcriptPath = session?.transcriptPath?.trim();
+      if (!transcriptPath) return null;
+      let fd: number | null = null;
+      try {
+        const fileSize = Math.max(0, Number(fs.statSync(transcriptPath).size) || 0);
+        const end = Math.max(0, Math.min(Math.floor(args.endOffset), fileSize));
+        const start = Math.min(Math.max(0, Math.floor(args.startOffset)), end);
+        if (end <= start) return { data: "", startOffset: end, endOffset: end };
+        fd = fs.openSync(transcriptPath, "r");
+        const buf = Buffer.alloc(end - start);
+        const bytesRead = fs.readSync(fd, buf, 0, buf.length, start);
+        const page = buf.subarray(0, Math.max(0, bytesRead));
+        let boundary = 0;
+        if (start > 0) {
+          if (args.alignStartToSafeBoundary) {
+            boundary = scanToTranscriptPageBoundary(page);
+          }
+          while (boundary < page.length && (page[boundary]! & 0b1100_0000) === 0b1000_0000) {
+            boundary += 1;
+          }
+        }
+        return {
+          data: page.subarray(boundary).toString("utf8"),
+          startOffset: start + boundary,
+          endOffset: start + page.length,
+        };
+      } catch {
+        return null;
+      } finally {
+        if (fd !== null) {
+          try {
+            fs.closeSync(fd);
+          } catch {
+            // Ignore close errors on best-effort transcript reads.
+          }
+        }
+      }
     },
 
     enrichSessions<T extends TerminalSessionSummary>(rows: T[]): T[] {

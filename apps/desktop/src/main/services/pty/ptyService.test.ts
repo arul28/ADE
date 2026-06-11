@@ -4043,6 +4043,7 @@ describe("ptyService", () => {
           sessionId,
           projectRoot: "/tmp/test-project",
           data: "hello world",
+          offset: Buffer.byteLength("hello world", "utf8"),
         });
       } finally {
         vi.useRealTimers();
@@ -4063,6 +4064,7 @@ describe("ptyService", () => {
           sessionId,
           projectRoot: "/tmp/test-project",
           data: "hello world",
+          offset: Buffer.byteLength("hello world", "utf8"),
         });
         expect(broadcastExit).toHaveBeenCalledWith({
           ptyId,
@@ -4207,6 +4209,194 @@ describe("ptyService", () => {
       } finally {
         vi.useRealTimers();
       }
+    });
+  });
+
+  describe("PTY data offsets (mobile byte-offset streaming)", () => {
+    it("attaches the transcript end offset across batched flushes", async () => {
+      vi.useFakeTimers();
+      try {
+        const { service, mockPty, broadcastData } = createHarness();
+        const { ptyId, sessionId } = await service.create({ laneId: "lane-1", title: "t", cols: 80, rows: 24 });
+        mockPty._emitter.emit("data", "hello ");
+        mockPty._emitter.emit("data", "wörld");
+        await vi.advanceTimersByTimeAsync(50);
+        expect(broadcastData).toHaveBeenLastCalledWith({
+          ptyId,
+          sessionId,
+          projectRoot: "/tmp/test-project",
+          data: "hello wörld",
+          offset: Buffer.byteLength("hello wörld", "utf8"),
+        });
+
+        mockPty._emitter.emit("data", "again");
+        await vi.advanceTimersByTimeAsync(50);
+        expect(broadcastData).toHaveBeenLastCalledWith(expect.objectContaining({
+          data: "again",
+          offset: Buffer.byteLength("hello wörld", "utf8") + Buffer.byteLength("again", "utf8"),
+        }));
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("emits null offsets once the transcript byte cap is reached", async () => {
+      vi.useFakeTimers();
+      try {
+        const MAX_TRANSCRIPT_BYTES = 16 * 1024 * 1024;
+        // Pre-existing transcript 5 bytes under the cap: the next chunk
+        // overflows it, so the transcript stops mirroring the stream.
+        mocks.fileStats.set("/tmp/transcripts/cap-session.log", { size: MAX_TRANSCRIPT_BYTES - 5 });
+        const { service, mockPty, broadcastData } = createHarness();
+        await service.create({ laneId: "lane-1", title: "t", cols: 80, rows: 24, sessionId: "cap-session" });
+        mockPty._emitter.emit("data", "0123456789");
+        await vi.advanceTimersByTimeAsync(50);
+        expect(broadcastData).toHaveBeenLastCalledWith(expect.objectContaining({
+          data: "0123456789",
+          offset: null,
+        }));
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("emits null offsets for untracked sessions", async () => {
+      vi.useFakeTimers();
+      try {
+        const { service, mockPty, broadcastData } = createHarness();
+        await service.create({ laneId: "lane-1", title: "t", cols: 80, rows: 24, tracked: false });
+        mockPty._emitter.emit("data", "untracked output");
+        await vi.advanceTimersByTimeAsync(50);
+        expect(broadcastData).toHaveBeenLastCalledWith(expect.objectContaining({
+          data: "untracked output",
+          offset: null,
+        }));
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
+  describe("readTranscriptRange", () => {
+    async function createSessionWithTranscript(content: string, sessionId = "range-session") {
+      const harness = createHarness();
+      await harness.service.create({ laneId: "lane-1", title: "t", cols: 80, rows: 24, sessionId });
+      const transcriptPath = `/tmp/transcripts/${sessionId}.log`;
+      mocks.fileContents.set(transcriptPath, content);
+      mocks.fileStats.set(transcriptPath, { size: Buffer.byteLength(content, "utf8") });
+      return harness;
+    }
+
+    it("reads an exact byte range from the start of the transcript", async () => {
+      const content = "line1\nline2\nline3\n";
+      const { service } = await createSessionWithTranscript(content);
+      const range = await service.readTranscriptRange({
+        sessionId: "range-session",
+        startOffset: 0,
+        endOffset: Buffer.byteLength(content, "utf8"),
+      });
+      expect(range).toEqual({ data: content, startOffset: 0, endOffset: 18 });
+    });
+
+    it("scans a non-zero page start forward past the next newline", async () => {
+      const { service } = await createSessionWithTranscript("abcdef\nghijkl\n");
+      const range = await service.readTranscriptRange({
+        sessionId: "range-session",
+        startOffset: 2,
+        endOffset: 14,
+        alignStartToSafeBoundary: true,
+      });
+      expect(range).toEqual({ data: "ghijkl\n", startOffset: 7, endOffset: 14 });
+    });
+
+    it("treats an ESC byte as a safe page start", async () => {
+      const { service } = await createSessionWithTranscript("abc\u001b[31mred");
+      const range = await service.readTranscriptRange({
+        sessionId: "range-session",
+        startOffset: 1,
+        endOffset: 11,
+        alignStartToSafeBoundary: true,
+      });
+      expect(range).toEqual({ data: "\u001b[31mred", startOffset: 3, endOffset: 11 });
+    });
+
+    it("never starts a page on a UTF-8 continuation byte, even without boundary alignment", async () => {
+      // "héllo" = 68 C3 A9 6C 6C 6F; offset 2 lands on the é continuation byte.
+      const { service } = await createSessionWithTranscript("héllo");
+      const range = await service.readTranscriptRange({
+        sessionId: "range-session",
+        startOffset: 2,
+        endOffset: 6,
+      });
+      expect(range).toEqual({ data: "llo", startOffset: 3, endOffset: 6 });
+    });
+
+    it("clamps the requested range to the flushed file size", async () => {
+      const { service } = await createSessionWithTranscript("line1\nline2\nline3\n");
+      const range = await service.readTranscriptRange({
+        sessionId: "range-session",
+        startOffset: 12,
+        endOffset: 999_999,
+      });
+      expect(range).toEqual({ data: "line3\n", startOffset: 12, endOffset: 18 });
+
+      const pastEof = await service.readTranscriptRange({
+        sessionId: "range-session",
+        startOffset: 50,
+        endOffset: 999_999,
+      });
+      expect(pastEof).toEqual({ data: "", startOffset: 18, endOffset: 18 });
+    });
+
+    it("returns an empty result for a zero-length range and null for unknown sessions", async () => {
+      const { service } = await createSessionWithTranscript("line1\n");
+      expect(await service.readTranscriptRange({
+        sessionId: "range-session",
+        startOffset: 5,
+        endOffset: 5,
+      })).toEqual({ data: "", startOffset: 5, endOffset: 5 });
+      expect(await service.readTranscriptRange({
+        sessionId: "missing-session",
+        startOffset: 0,
+        endOffset: 10,
+      })).toBeNull();
+    });
+  });
+
+  describe("mobile resize ownership", () => {
+    it("restores the desktop renderer size after a mobile resize", async () => {
+      const { service, mockPty } = createHarness();
+      const { ptyId, sessionId } = await service.create({ laneId: "lane-1", title: "t", cols: 80, rows: 24 });
+
+      service.resize({ ptyId, cols: 100, rows: 40 });
+      expect(service.resizeBySessionId(sessionId, 60, 20, { source: "mobile" })).toBe(true);
+      expect(mockPty.resize).toHaveBeenLastCalledWith(60, 20);
+
+      expect(service.restoreDesktopSizeBySessionId(sessionId)).toBe(true);
+      expect(mockPty.resize).toHaveBeenLastCalledWith(100, 40);
+      // Already back at the desktop size: nothing to restore.
+      expect(service.restoreDesktopSizeBySessionId(sessionId)).toBe(false);
+    });
+
+    it("records sizes from resizeBySessionId unless the source is mobile", async () => {
+      const { service, mockPty } = createHarness();
+      const { sessionId } = await service.create({ laneId: "lane-1", title: "t", cols: 80, rows: 24 });
+
+      expect(service.resizeBySessionId(sessionId, 90, 30)).toBe(true);
+      expect(service.resizeBySessionId(sessionId, 61, 21, { source: "mobile" })).toBe(true);
+      expect(service.restoreDesktopSizeBySessionId(sessionId)).toBe(true);
+      expect(mockPty.resize).toHaveBeenLastCalledWith(90, 30);
+    });
+
+    it("restores to the create-time size when mobile resizes before desktop", async () => {
+      const { service, mockPty } = createHarness();
+      const { sessionId } = await service.create({ laneId: "lane-1", title: "t", cols: 80, rows: 24 });
+
+      expect(service.resizeBySessionId(sessionId, 61, 21, { source: "mobile" })).toBe(true);
+      expect(mockPty.resize).toHaveBeenLastCalledWith(61, 21);
+
+      expect(service.restoreDesktopSizeBySessionId(sessionId)).toBe(true);
+      expect(mockPty.resize).toHaveBeenLastCalledWith(80, 24);
     });
   });
 
@@ -5109,6 +5299,32 @@ describe("ptyService", () => {
       const result = await service.writeTerminal({ chatSessionId: "chat-write", data: "y\n" });
       expect(result).toEqual({ ok: true });
       expect(mockPty.write).toHaveBeenCalledWith("y\n");
+    });
+
+    it("writeTerminal marks user input so immediate output uses the interactive batch window", async () => {
+      vi.useFakeTimers();
+      try {
+        vi.setSystemTime(new Date("2026-06-10T12:00:00.000Z"));
+        const { service, mockPty, broadcastData } = createChatHarness();
+        await service.create({
+          laneId: "lane-1",
+          title: "Writer",
+          cols: 80,
+          rows: 24,
+          chatSessionId: "chat-write",
+        });
+
+        await service.writeTerminal({ chatSessionId: "chat-write", data: "y\n" });
+        mockPty._emitter.emit("data", "prompt");
+
+        await vi.advanceTimersByTimeAsync(7);
+        expect(broadcastData).not.toHaveBeenCalled();
+
+        await vi.advanceTimersByTimeAsync(1);
+        expect(broadcastData).toHaveBeenCalledWith(expect.objectContaining({ data: "prompt" }));
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it("resizeTerminal resizes the active chat terminal", async () => {

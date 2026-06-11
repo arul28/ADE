@@ -118,15 +118,22 @@ describe("runSyncHostStartupLoop", () => {
     expect(killed).toEqual([]);
   });
 
-  it("never takes over from another channel's owner", async () => {
+  it("rethrows a cross-channel conflict immediately instead of retrying", async () => {
+    // Another build's live brain owning sync is a deliberate human state, not
+    // a transient race — the brain must fail startup, never run sync-less.
     const killed: number[] = [];
-    await runSyncHostStartupLoop({
-      startSyncHost: () => Promise.reject(conflictError(makeOwner({
-        packageChannel: null,
-        adeHome: "/Users/example/.ade",
-        serviceName: "com.ade.runtime",
-        appName: "ADE",
-      }))),
+    let attempts = 0;
+    const error = conflictError(makeOwner({
+      packageChannel: null,
+      adeHome: "/Users/example/.ade",
+      serviceName: "com.ade.runtime",
+      appName: "ADE",
+    }));
+    await expect(runSyncHostStartupLoop({
+      startSyncHost: () => {
+        attempts += 1;
+        return Promise.reject(error);
+      },
       isDone: () => false,
       log: () => {},
       getServiceMainPid: () => process.pid,
@@ -136,7 +143,8 @@ describe("runSyncHostStartupLoop", () => {
       sleep: instantSleep,
       env: betaEnv,
       maxAttempts: 3,
-    });
+    })).rejects.toBe(error);
+    expect(attempts).toBe(1);
     expect(killed).toEqual([]);
   });
 

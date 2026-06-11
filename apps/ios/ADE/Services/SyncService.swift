@@ -255,6 +255,10 @@ enum SyncRequestTimeout {
 }
 
 private let syncTerminalSubscriptionMaxBytes = 240_000
+/// Snapshot budget for the full-screen SwiftTerm session view, which renders
+/// real scrollback instead of a trimmed preview string.
+private let syncTerminalStreamMaxBytes = 512_000
+private let syncTerminalHistoryMaxBytes = 262_144
 private let syncChatSubscriptionMaxBytes = 2_000_000
 // 512KB, up from 160KB: the old budget silently truncated reasoning-heavy
 // turns on cellular/Tailscale routes. Chunked envelopes plus off-main decode
@@ -1089,6 +1093,7 @@ func syncOutboundEnvelopeProjectId(type: String, activeProjectId: String?) -> St
     "terminal_unsubscribe",
     "terminal_input",
     "terminal_resize",
+    "terminal_history",
     "chat_subscribe",
     "chat_unsubscribe",
   ]
@@ -1099,6 +1104,18 @@ func syncOutboundEnvelopeProjectId(type: String, activeProjectId: String?) -> St
 struct SyncSendTestPushResult: Equatable {
   var ok: Bool
   var message: String
+}
+
+/// Delivery events for the full-screen terminal. The active screen attaches a
+/// handler per session id and receives hydration snapshots, ordered live
+/// chunks, and process exit without polling `terminalBuffers`.
+enum TerminalStreamEvent {
+  /// Snapshot payload from `terminal_subscribe`. `replacing == false` means a
+  /// delta resume (bytes from the requested `sinceOffset` to the end) that
+  /// must be appended, not re-rendered from scratch.
+  case hydrate(text: String, replacing: Bool, startOffset: Int?, endOffset: Int?)
+  case chunk(text: String, endOffset: Int?)
+  case exit(code: Int?)
 }
 
 @MainActor
@@ -1173,6 +1190,12 @@ final class SyncService: ObservableObject {
 
   private(set) var terminalBuffers: [String: String] = [:]
   private(set) var terminalBufferUpdatedAt: [String: Date] = [:]
+  /// Transcript END byte offset (UTF-8) confirmed per terminal session, fed by
+  /// `terminal_data.offset` and snapshot `endOffset`. Nil for hosts that do not
+  /// emit offsets; all gap/dedupe logic disables itself in that case.
+  private(set) var terminalEndOffsets: [String: Int] = [:]
+  private var terminalStreamHandlers: [String: (TerminalStreamEvent) -> Void] = [:]
+  private var terminalGapRecoveryInFlight: Set<String> = []
   private(set) var chatEventEnvelopesBySession: [String: [AgentChatEventEnvelope]] = [:]
   private(set) var chatEventRevisionsBySession: [String: Int] = [:]
   /// Highest host-assigned `seq` applied per chat session. Sent back as
@@ -3742,20 +3765,176 @@ final class SyncService: ObservableObject {
     try await refreshTerminalSnapshot(sessionId: trimmedSessionId)
   }
 
-  func refreshTerminalSnapshot(sessionId: String, maxBytes: Int = syncTerminalSubscriptionMaxBytes) async throws {
+  func refreshTerminalSnapshot(sessionId: String, maxBytes: Int = syncTerminalSubscriptionMaxBytes, sinceOffset: Int? = nil) async throws {
     let trimmedSessionId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmedSessionId.isEmpty else { return }
     subscribedTerminalSessionIds.insert(trimmedSessionId)
     let requestId = makeRequestId()
+    var payload: [String: Any] = [
+      "sessionId": trimmedSessionId,
+      "maxBytes": max(1_024, min(syncTerminalStreamMaxBytes, maxBytes)),
+    ]
+    if let sinceOffset, sinceOffset >= 0 {
+      payload["sinceOffset"] = sinceOffset
+    }
     let raw = try await awaitResponse(requestId: requestId) {
-      self.sendEnvelope(type: "terminal_subscribe", requestId: requestId, payload: [
-        "sessionId": trimmedSessionId,
-        "maxBytes": max(1_024, min(syncTerminalSubscriptionMaxBytes, maxBytes)),
-      ])
+      self.sendEnvelope(type: "terminal_subscribe", requestId: requestId, payload: payload)
     }
     let snapshot = try decode(raw, as: TerminalSnapshot.self)
     guard subscribedTerminalSessionIds.contains(trimmedSessionId) else { return }
-    updateTerminalBuffer(sessionId: trimmedSessionId, transcript: snapshot.transcript, immediate: true)
+    applyTerminalSnapshot(snapshot, sessionId: trimmedSessionId)
+  }
+
+  /// Full-screen terminal subscribe: attaches at the 512K budget and resumes
+  /// exactly after `sinceOffset` when the caller still holds earlier bytes.
+  func subscribeTerminalStream(sessionId: String, sinceOffset: Int? = nil) async throws {
+    try await refreshTerminalSnapshot(sessionId: sessionId, maxBytes: syncTerminalStreamMaxBytes, sinceOffset: sinceOffset)
+  }
+
+  /// Registers the active full-screen terminal as the live delivery target for
+  /// `sessionId`. One handler per session; the screen detaches on disappear.
+  func attachTerminalStream(sessionId: String, handler: @escaping (TerminalStreamEvent) -> Void) {
+    let trimmedSessionId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmedSessionId.isEmpty else { return }
+    terminalStreamHandlers[trimmedSessionId] = handler
+  }
+
+  func detachTerminalStream(sessionId: String) {
+    let trimmedSessionId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmedSessionId.isEmpty else { return }
+    terminalStreamHandlers.removeValue(forKey: trimmedSessionId)
+  }
+
+  /// Fetches transcript bytes ending at/before `beforeOffset` for on-demand
+  /// scrollback paging. Requires an active `terminal_subscribe` on the host.
+  func fetchTerminalHistory(sessionId: String, beforeOffset: Int, maxBytes: Int = syncTerminalHistoryMaxBytes) async throws -> TerminalHistorySlice {
+    let trimmedSessionId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmedSessionId.isEmpty else {
+      throw NSError(domain: "ADE", code: 6, userInfo: [NSLocalizedDescriptionKey: "Missing terminal session id."])
+    }
+    guard subscribedTerminalSessionIds.contains(trimmedSessionId) else {
+      throw NSError(domain: "ADE", code: 7, userInfo: [NSLocalizedDescriptionKey: "Terminal stream is not subscribed."])
+    }
+    let requestId = makeRequestId()
+    // Older hosts never answer terminal_history; let the request time out
+    // without tearing the socket down.
+    let raw = try await awaitResponse(requestId: requestId, disconnectOnTimeout: false) {
+      self.sendEnvelope(type: "terminal_history", requestId: requestId, payload: [
+        "sessionId": trimmedSessionId,
+        "beforeOffset": beforeOffset,
+        "maxBytes": max(1_024, min(syncTerminalHistoryMaxBytes, maxBytes)),
+      ])
+    }
+    return try decode(raw, as: TerminalHistorySlice.self)
+  }
+
+  /// Applies a live `terminal_data` chunk with offset-based ordering. `endOffset`
+  /// is the transcript END byte offset after this chunk (nil on older hosts).
+  private func handleTerminalDataChunk(sessionId: String, chunk: String, endOffset: Int?) {
+    var deliverableChunk: String? = chunk
+    if let endOffset {
+      if let lastEnd = terminalEndOffsets[sessionId] {
+        let chunkStart = endOffset - chunk.utf8.count
+        if endOffset <= lastEnd {
+          // Replay of bytes a snapshot/delta already covered — drop entirely.
+          deliverableChunk = nil
+        } else if chunkStart > lastEnd {
+          // Missed bytes between lastEnd and this chunk. Drop the chunk and
+          // let a delta resubscribe (sinceOffset = lastEnd) deliver the full
+          // contiguous range; feeding it now would render out of order.
+          deliverableChunk = nil
+          recoverTerminalGap(sessionId: sessionId, sinceOffset: lastEnd)
+        } else {
+          if chunkStart < lastEnd {
+            // Partial overlap: trim the already-applied UTF-8 prefix.
+            let bytes = Array(chunk.utf8)
+            var overlap = min(max(0, lastEnd - chunkStart), bytes.count)
+            while overlap < bytes.count, bytes[overlap] & 0xC0 == 0x80 {
+              overlap += 1
+            }
+            deliverableChunk = String(decoding: bytes.dropFirst(overlap), as: UTF8.self)
+          }
+          terminalEndOffsets[sessionId] = endOffset
+        }
+      } else {
+        terminalEndOffsets[sessionId] = endOffset
+      }
+    }
+    guard let deliverableChunk, !deliverableChunk.isEmpty else {
+      terminalBufferUpdatedAt[sessionId] = Date()
+      return
+    }
+    terminalBuffers[sessionId] = trimmedTerminalBuffer((terminalBuffers[sessionId] ?? "") + deliverableChunk)
+    terminalBufferUpdatedAt[sessionId] = Date()
+    markTerminalBufferChanged()
+    terminalStreamHandlers[sessionId]?(.chunk(text: deliverableChunk, endOffset: endOffset))
+  }
+
+  private func recoverTerminalGap(sessionId: String, sinceOffset: Int) {
+    guard !terminalGapRecoveryInFlight.contains(sessionId) else { return }
+    terminalGapRecoveryInFlight.insert(sessionId)
+    Task { @MainActor [weak self] in
+      guard let self else { return }
+      defer { self.terminalGapRecoveryInFlight.remove(sessionId) }
+      try? await self.refreshTerminalSnapshot(
+        sessionId: sessionId,
+        maxBytes: syncTerminalStreamMaxBytes,
+        sinceOffset: sinceOffset
+      )
+    }
+  }
+
+  private func applyTerminalSnapshot(_ snapshot: TerminalSnapshot, sessionId: String) {
+    if let endOffset = snapshot.endOffset {
+      terminalEndOffsets[sessionId] = endOffset
+    }
+    if snapshot.delta == true {
+      // Delta resume: payload covers exactly [sinceOffset, end). Append —
+      // replacing would drop everything the screen already rendered.
+      if !snapshot.transcript.isEmpty {
+        terminalBuffers[sessionId] = trimmedTerminalBuffer((terminalBuffers[sessionId] ?? "") + snapshot.transcript)
+        markTerminalBufferChanged(immediate: true)
+        terminalStreamHandlers[sessionId]?(.hydrate(
+          text: snapshot.transcript,
+          replacing: false,
+          startOffset: snapshot.startOffset,
+          endOffset: snapshot.endOffset
+        ))
+      }
+      terminalBufferUpdatedAt[sessionId] = Date()
+    } else {
+      updateTerminalBuffer(sessionId: sessionId, transcript: snapshot.transcript, immediate: true)
+      terminalStreamHandlers[sessionId]?(.hydrate(
+        text: snapshot.transcript,
+        replacing: true,
+        startOffset: snapshot.startOffset,
+        endOffset: snapshot.endOffset
+      ))
+    }
+    if snapshot.live == false {
+      // No PTY behind the session (ended, or orphaned by a brain restart even
+      // though status still says running) — typing would go nowhere. Surface
+      // the exited/resume state instead of a live prompt.
+      terminalStreamHandlers[sessionId]?(.exit(code: nil))
+    }
+  }
+
+  /// Whether a full-screen terminal currently owns the live stream for
+  /// `sessionId`. Used to skip detach-unsubscribes that would race a remount.
+  func hasTerminalStream(sessionId: String) -> Bool {
+    let trimmedSessionId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmedSessionId.isEmpty else { return false }
+    return terminalStreamHandlers[trimmedSessionId] != nil
+  }
+
+  /// Relaunches an ended/orphaned agent CLI session's runtime on the host
+  /// (same sessionId, provider resume metadata) — the phone mirror of the
+  /// desktop resume affordance.
+  func resumeCliSession(sessionId: String, cols: Int? = nil, rows: Int? = nil) async throws -> StartCliSessionResult {
+    var args: [String: Any] = ["sessionId": sessionId]
+    if let cols { args["cols"] = cols }
+    if let rows { args["rows"] = rows }
+    return try await sendDecodableCommand(action: "work.resumeCliSession", args: args, as: StartCliSessionResult.self)
   }
 
   func unsubscribeTerminal(sessionId: String) async throws {
@@ -7302,7 +7481,7 @@ final class SyncService: ObservableObject {
         let message = dict["message"] as? String ?? "Remote command rejected."
         resolve(requestId: requestId, result: .failure(NSError(domain: "ADE", code: 6, userInfo: [NSLocalizedDescriptionKey: message])))
       }
-    case "command_result", "file_response", "terminal_snapshot":
+    case "command_result", "file_response", "terminal_snapshot", "terminal_history":
       resolve(requestId: requestId, result: .success(payload))
     case "in_app_notification":
       if let dict = payload as? [String: Any] {
@@ -7345,9 +7524,7 @@ final class SyncService: ObservableObject {
     case "terminal_data":
       if let dict = payload as? [String: Any], let sessionId = dict["sessionId"] as? String, let chunk = dict["data"] as? String {
         guard subscribedTerminalSessionIds.contains(sessionId) else { break }
-        terminalBuffers[sessionId] = trimmedTerminalBuffer((terminalBuffers[sessionId] ?? "") + chunk)
-        terminalBufferUpdatedAt[sessionId] = Date()
-        markTerminalBufferChanged()
+        handleTerminalDataChunk(sessionId: sessionId, chunk: chunk, endOffset: (dict["offset"] as? NSNumber)?.intValue)
       }
     case "terminal_exit":
       if let dict = payload as? [String: Any], let sessionId = dict["sessionId"] as? String {
@@ -7356,6 +7533,7 @@ final class SyncService: ObservableObject {
         terminalBuffers[sessionId] = trimmedTerminalBuffer((terminalBuffers[sessionId] ?? "") + "\n\n[process exited\(exitCode.map { " with \($0)" } ?? "")]")
         terminalBufferUpdatedAt[sessionId] = Date()
         markTerminalBufferChanged(immediate: true)
+        terminalStreamHandlers[sessionId]?(.exit(code: exitCode))
       }
     default:
       break
@@ -8106,7 +8284,16 @@ final class SyncService: ObservableObject {
       guard let self else { return }
       for sessionId in sessionIds {
         self.subscribedTerminalSessionIds.remove(sessionId)
-        try? await self.subscribeTerminal(sessionId: sessionId)
+        if self.terminalStreamHandlers[sessionId] != nil {
+          // Active full-screen terminal: resume exactly after the last byte we
+          // applied so the reconnect back-fills as an append, not a re-render.
+          try? await self.subscribeTerminalStream(
+            sessionId: sessionId,
+            sinceOffset: self.terminalEndOffsets[sessionId]
+          )
+        } else {
+          try? await self.subscribeTerminal(sessionId: sessionId)
+        }
       }
     }
   }
@@ -8261,6 +8448,8 @@ final class SyncService: ObservableObject {
       subscribedTerminalSessionIds.removeAll()
       terminalBuffers.removeAll()
       terminalBufferUpdatedAt.removeAll()
+      terminalEndOffsets.removeAll()
+      terminalGapRecoveryInFlight.removeAll()
     }
     terminalBufferRevision += 1
   }

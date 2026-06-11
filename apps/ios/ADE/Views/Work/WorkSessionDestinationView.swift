@@ -242,10 +242,18 @@ struct WorkSessionDestinationView: View {
     transitionNamespace == nil ? nil : "work-container-\(sessionId)"
   }
 
+  /// Terminal sessions render `TerminalSessionScreen`, which brings its own
+  /// slim full-bleed top bar — the shared pushed-detail chrome would stack a
+  /// second header on top of it.
+  private var isFullScreenTerminalSession: Bool {
+    guard let current = session ?? initialSession else { return false }
+    return !isChatSession(current)
+  }
+
   var body: some View {
     sessionDestinationRoot
       .workSessionNavigationChrome(
-        mode: navigationChrome,
+        mode: isFullScreenTerminalSession ? .embedded : navigationChrome,
         title: sessionDestinationNavigationTitle,
         trailingControls: { sessionHeaderTrailingControls }
       )
@@ -346,12 +354,8 @@ struct WorkSessionDestinationView: View {
           lanes: lanes
         )
       } else {
-        WorkTerminalSessionView(
-          session: session,
-          transitionNamespace: transitionNamespace,
-          onOpenLane: showsLaneActions ? openSessionLane : nil
-        )
-        .environmentObject(syncService)
+        TerminalSessionScreen(session: session)
+          .environmentObject(syncService)
       }
     } else {
       ADEEmptyStateView(
@@ -456,7 +460,11 @@ struct WorkSessionDestinationView: View {
       fallbackTranscript = makeWorkChatTranscript(from: response.entries, sessionId: sessionId)
     }
 
-    if forceRemote && !preferLightweight {
+    // Chat-only fallback: parses chat envelopes out of the raw terminal buffer.
+    // Terminal sessions own their subscription via TerminalSessionScreen's
+    // offset stream; a preview-budget subscribe here would race a second
+    // replace-snapshot into that stream.
+    if forceRemote && !preferLightweight, let currentSession = session ?? initialSession, isChatSession(currentSession) {
       try? await syncService.subscribeTerminal(sessionId: sessionId)
       let raw = syncService.terminalBuffers[sessionId] ?? ""
       let parsed = parseWorkChatTranscript(raw)

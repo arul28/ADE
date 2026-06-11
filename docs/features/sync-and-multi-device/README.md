@@ -160,10 +160,13 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   `budget_usage_records`, `automation_runs`,
   `automation_action_results` — are filtered from phone changesets
   while ack watermarks still advance), the per-session chat-event seq
-  + replay buffer, terminal/chat subscription bridging, mobile
-  terminal input/resize forwarding into subscribed PTYs, lane presence
-  decoration, project catalog/switch envelopes, per-IP pairing rate
-  limiter, and the Tailscale Serve / mDNS publication paths. Runtime
+  + replay buffer, terminal/chat subscription bridging, offset-stamped
+  mobile terminal streams, `sinceOffset` delta snapshots, scrollback
+  paging via `terminal_history`, mobile terminal input/resize forwarding
+  into subscribed PTYs, desktop-size restore after the last phone
+  detaches, lane presence decoration, project catalog/switch envelopes,
+  per-IP pairing rate limiter, and the Tailscale Serve / mDNS
+  publication paths. Runtime
   kind is one of `desktop-embedded`, `headless`, `remote-stdio`,
   `desktop`, `daemon`, or `remote`.
 - `sharedSyncListener.ts` — the brain-level WebSocket listener shared
@@ -509,7 +512,7 @@ Envelopes are JSON with fields:
         "heartbeat" | "file_request" | "file_response" |
         "terminal_subscribe" | "terminal_unsubscribe" |
         "terminal_snapshot" | "terminal_data" | "terminal_exit" |
-        "terminal_input" | "terminal_resize" |
+        "terminal_input" | "terminal_resize" | "terminal_history" |
         "chat_subscribe" | "chat_unsubscribe" | "chat_event" |
         "brain_status" |
         "project_catalog_request" | "project_catalog" |

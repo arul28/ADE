@@ -3228,6 +3228,27 @@ struct TerminalSnapshot: Codable, Equatable {
   var runtimeState: String?
   var lastOutputPreview: String?
   var capturedAt: String
+  /// Transcript byte offsets (UTF-8) covered by `transcript`. Absent on older
+  /// hosts, which also never set `delta`.
+  var startOffset: Int?
+  var endOffset: Int?
+  /// True when `transcript` only contains bytes from the requested
+  /// `sinceOffset` to the end — append, don't replace.
+  var delta: Bool?
+  /// Whether a live PTY currently backs the session. False when a brain
+  /// restart orphaned a "running" session — typing would go nowhere. Absent
+  /// on older hosts.
+  var live: Bool?
+}
+
+/// Response payload for `terminal_history`: transcript bytes
+/// [startOffset, endOffset) ending at/before the requested `beforeOffset`.
+struct TerminalHistorySlice: Codable, Equatable {
+  var sessionId: String
+  var data: String
+  var startOffset: Int
+  var endOffset: Int
+  var atStart: Bool
 }
 
 struct StartCliSessionResult: Codable, Equatable {

@@ -434,6 +434,13 @@ export type SyncFileResponsePayload = {
 export type SyncTerminalSubscribePayload = {
   sessionId: string;
   maxBytes?: number;
+  /**
+   * Resume marker: transcript byte offset the client has already applied.
+   * When the host can serve `sinceOffset .. end` within the maxBytes budget
+   * it replies with a delta snapshot (`delta: true`) the client appends;
+   * otherwise it falls back to the regular tail snapshot.
+   */
+  sinceOffset?: number;
 };
 
 export type SyncTerminalUnsubscribePayload = {
@@ -447,6 +454,18 @@ export type SyncTerminalSnapshotPayload = {
   runtimeState: string | null;
   lastOutputPreview: string | null;
   capturedAt: string;
+  /** Transcript byte offset where `transcript` begins. null when unknown. */
+  startOffset?: number | null;
+  /** Transcript byte offset `transcript` covers through. null when unknown. */
+  endOffset?: number | null;
+  /** True when `transcript` only contains bytes from the requested `sinceOffset` (client appends instead of replacing). */
+  delta?: boolean;
+  /**
+   * Whether a live PTY currently backs the session. False when a brain
+   * restart orphaned a "running" session — input would go nowhere, so clients
+   * surface a resume affordance instead of silently accepting keystrokes.
+   */
+  live?: boolean;
 };
 
 export type SyncTerminalDataPayload = {
@@ -454,6 +473,31 @@ export type SyncTerminalDataPayload = {
   ptyId: string;
   data: string;
   at: string;
+  /**
+   * Transcript end offset (UTF-8 bytes) after this chunk. null/omitted when
+   * unavailable (untracked session, transcript writes disabled, byte cap).
+   */
+  offset?: number | null;
+};
+
+// Mobile pull-to-load-older request: return transcript bytes
+// [startOffset, endOffset) where endOffset = min(beforeOffset, transcript
+// size) and the page is ~maxBytes. The host scans startOffset forward to a
+// safe boundary (byte after `\n`, or an ESC byte) so a page never starts
+// mid-escape-sequence — unless the page starts at offset 0.
+export type SyncTerminalHistoryRequestPayload = {
+  sessionId: string;
+  beforeOffset: number;
+  maxBytes?: number;
+};
+
+export type SyncTerminalHistoryResponsePayload = {
+  sessionId: string;
+  data: string;
+  startOffset: number;
+  endOffset: number;
+  /** True when this page starts at the very beginning of the transcript. */
+  atStart: boolean;
 };
 
 export type SyncTerminalExitPayload = {
@@ -624,6 +668,7 @@ export type SyncRemoteCommandAction =
   | "work.updateSessionMeta"
   | "work.runQuickCommand"
   | "work.startCliSession"
+  | "work.resumeCliSession"
   | "work.sendToSession"
   | "work.stopRuntime"
   | "processes.listDefinitions"
@@ -1041,6 +1086,7 @@ export type SyncTerminalDataEnvelope = SyncEnvelopeWithPayload<"terminal_data", 
 export type SyncTerminalExitEnvelope = SyncEnvelopeWithPayload<"terminal_exit", SyncTerminalExitPayload>;
 export type SyncTerminalInputEnvelope = SyncEnvelopeWithPayload<"terminal_input", SyncTerminalInputPayload>;
 export type SyncTerminalResizeEnvelope = SyncEnvelopeWithPayload<"terminal_resize", SyncTerminalResizePayload>;
+export type SyncTerminalHistoryEnvelope = SyncEnvelopeWithPayload<"terminal_history", SyncTerminalHistoryRequestPayload | SyncTerminalHistoryResponsePayload>;
 export type SyncChatSubscribeEnvelope = SyncEnvelopeWithPayload<"chat_subscribe", SyncChatSubscribePayload | SyncChatSubscribeSnapshotPayload>;
 export type SyncChatUnsubscribeEnvelope = SyncEnvelopeWithPayload<"chat_unsubscribe", SyncChatUnsubscribePayload>;
 export type SyncChatEventEnvelope = SyncEnvelopeWithPayload<"chat_event", SyncChatEventPayload>;
@@ -1090,6 +1136,7 @@ export type SyncEnvelope =
   | SyncTerminalExitEnvelope
   | SyncTerminalInputEnvelope
   | SyncTerminalResizeEnvelope
+  | SyncTerminalHistoryEnvelope
   | SyncChatSubscribeEnvelope
   | SyncChatUnsubscribeEnvelope
   | SyncChatEventEnvelope

@@ -761,6 +761,11 @@ export async function createAdeRuntime(args: {
   const ptyBackend = process.env.ADE_DISABLE_SUPERVISED_PTY_HOST === "1"
     ? null
     : createSupervisedPtyLoader({ logger });
+  // The sync runtime is created after ptyService (it takes ptyService as a
+  // dependency), so live PTY forwarding binds late through this ref — same
+  // pattern as desktop main. Without this bridge, paired phones only ever
+  // receive terminal snapshots, never live terminal_data push.
+  let syncServiceForPtyEvents: ReturnType<typeof createSyncService> | null = null;
   const ptyService = createPtyService({
     projectRoot,
     transcriptsDir: paths.transcriptsDir,
@@ -768,8 +773,16 @@ export async function createAdeRuntime(args: {
     sessionService,
     processRegistry,
     logger,
-    broadcastData: (event) => pushEvent("pty", { type: "pty_data", event }),
-    broadcastExit: (event) => pushEvent("pty", { type: "pty_exit", event }),
+    broadcastData: (event) => {
+      pushEvent("pty", { type: "pty_data", event });
+      const { projectRoot: _projectRoot, ...syncEvent } = event;
+      syncServiceForPtyEvents?.handlePtyData(syncEvent);
+    },
+    broadcastExit: (event) => {
+      pushEvent("pty", { type: "pty_exit", event });
+      const { projectRoot: _projectRoot, ...syncEvent } = event;
+      syncServiceForPtyEvents?.handlePtyExit(syncEvent);
+    },
     onSessionEnded: (event) => {
       void sessionDeltaService.computeSessionDelta(event.sessionId).catch((error) => {
         logger.warn("runtime.session_delta_compute_failed", {
@@ -1301,6 +1314,7 @@ export async function createAdeRuntime(args: {
       getModelPickerStore: () => getSharedModelPickerStore(db),
       onStatusChanged: (snapshot) => pushEvent("runtime", { type: "sync-status", snapshot }),
     });
+    syncServiceForPtyEvents = syncService;
   }
 
   if (syncService) {
