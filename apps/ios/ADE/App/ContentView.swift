@@ -378,6 +378,31 @@ private struct ProjectHomeView: View {
   }
 
   private var emptyProjects: some View {
+    Group {
+      if syncService.connectionState == .disconnected || syncService.connectionState == .error {
+        noMachineConnectedCard
+      } else {
+        emptyProjectsActionCard
+      }
+    }
+  }
+
+  private var noMachineConnectedCard: some View {
+    Text("No machine connected")
+      .font(.system(.subheadline, design: .rounded).weight(.medium))
+      .foregroundStyle(ADEColor.textSecondary)
+      .multilineTextAlignment(.center)
+      .frame(maxWidth: .infinity, alignment: .center)
+      .padding(14)
+      .background(ADEColor.cardBackground.opacity(0.62), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+      .overlay(
+        RoundedRectangle(cornerRadius: 8, style: .continuous)
+          .stroke(ADEColor.border.opacity(0.80), lineWidth: 1)
+      )
+      .accessibilityLabel("No machine connected")
+  }
+
+  private var emptyProjectsActionCard: some View {
     Button {
       syncService.settingsPresented = true
     } label: {
@@ -412,7 +437,7 @@ private struct ProjectHomeView: View {
     switch syncService.connectionState {
     case .connected, .syncing: return "No projects on machine"
     case .connecting: return "Connecting to machine"
-    case .error, .disconnected: return "Connect to a machine running ADE"
+    case .error, .disconnected: return "No projects on machine"
     }
   }
 
@@ -423,7 +448,7 @@ private struct ProjectHomeView: View {
     case .connecting:
       return syncService.hostName ?? "Projects appear after this iPhone connects"
     case .error, .disconnected:
-      return "Connect first before you can see projects"
+      return "Open a project on your machine"
     }
   }
 }
