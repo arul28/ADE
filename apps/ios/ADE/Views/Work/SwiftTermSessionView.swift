@@ -490,6 +490,11 @@ final class TerminalSessionController: NSObject, ObservableObject {
     enqueueInput(data)
   }
 
+  func dismissKeyboard() {
+    ADEHaptics.light()
+    _ = terminalView?.resignFirstResponder()
+  }
+
   func toggleCtrl() {
     guard let view = terminalView else { return }
     view.controlModifier.toggle()

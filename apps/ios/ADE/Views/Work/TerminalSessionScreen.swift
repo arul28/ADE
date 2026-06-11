@@ -309,18 +309,24 @@ struct TerminalSessionScreen: View {
   }
 
   private var keyBar: some View {
-    HStack(spacing: 5) {
+    HStack(spacing: 4) {
       keyButton("esc", sends: "\u{1B}")
       keyButton("⇥", sends: "\t")
+      // Back-tab (ESC[Z) — cycles permission modes in Claude Code.
+      keyButton("⇧⇥", sends: "\u{1B}[Z")
       ctrlButton
       keyButton("↑", sends: "\u{1B}[A")
       keyButton("↓", sends: "\u{1B}[B")
       keyButton("←", sends: "\u{1B}[D")
       keyButton("→", sends: "\u{1B}[C")
       keyButton("⏎", sends: "\r")
+      // Backslash + return: newline in agent TUIs (Claude Code treats `\`
+      // + Enter as soft return) and line continuation in shells.
+      keyButton("⇧⏎", sends: "\\\r")
       overflowMenu
+      dismissKeyboardButton
     }
-    .padding(.horizontal, 8)
+    .padding(.horizontal, 6)
     .disabled(controller.hasExited)
     .opacity(controller.hasExited ? 0.4 : 1)
   }
@@ -330,7 +336,7 @@ struct TerminalSessionScreen: View {
       controller.sendKeySequence(data)
     } label: {
       Text(label)
-        .font(.system(size: 13, weight: .semibold, design: .monospaced))
+        .font(.system(size: label.count > 1 && label != "esc" ? 11 : 13, weight: .semibold, design: .monospaced))
         .foregroundStyle(ADEColor.textPrimary)
         .frame(maxWidth: .infinity, minHeight: 32)
         .background(ADEColor.textPrimary.opacity(0.06), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
@@ -340,6 +346,24 @@ struct TerminalSessionScreen: View {
         )
     }
     .buttonStyle(.plain)
+  }
+
+  private var dismissKeyboardButton: some View {
+    Button {
+      controller.dismissKeyboard()
+    } label: {
+      Image(systemName: "keyboard.chevron.compact.down")
+        .font(.system(size: 13, weight: .semibold))
+        .foregroundStyle(ADEColor.textPrimary)
+        .frame(maxWidth: .infinity, minHeight: 32)
+        .background(ADEColor.textPrimary.opacity(0.06), in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+        .overlay(
+          RoundedRectangle(cornerRadius: 7, style: .continuous)
+            .stroke(ADEColor.border.opacity(0.28), lineWidth: 0.6)
+        )
+    }
+    .buttonStyle(.plain)
+    .accessibilityLabel("Hide keyboard")
   }
 
   private var ctrlButton: some View {
