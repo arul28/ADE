@@ -218,6 +218,7 @@ function validatePreflight() {
   requireFile("vendor/crsqlite/win32-x64/crsqlite.dll", "Windows cr-sqlite extension");
 
   for (const relativePath of [
+    "cli.cjs",
     "bin/ade.cmd",
     "bootstrap.cjs",
     "ptyHostWorker.cjs",
@@ -516,8 +517,6 @@ async function validatePackagedRuntime(appDir) {
   const appAsarPath = path.join(resourcesPath, "app.asar");
   const unpackedPath = path.join(resourcesPath, "app.asar.unpacked");
   const adeCliTuiPath = path.join(resourcesPath, "ade-cli", "tuiClient", "cli.mjs");
-  const adeCliBinPath = path.join(resourcesPath, "ade-cli", "bin", "ade.cmd");
-  const adeCliInstallerPath = path.join(resourcesPath, "ade-cli", "install-path.cmd");
   const bundledAgentSkillsRoot = path.join(resourcesPath, "agent-skills");
   const nodeModulesPath = path.join(unpackedPath, "node_modules");
   const nodePtyModulePath = path.join(nodeModulesPath, "node-pty");

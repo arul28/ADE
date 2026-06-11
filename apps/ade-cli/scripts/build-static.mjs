@@ -185,7 +185,6 @@ function __adeSeaCandidateRuntimeRoots() {
   if (explicitRoot) roots.push(explicitRoot);
   if (explicitNodeModules) roots.push(__adeSeaRuntimeRootFromNodeModules(explicitNodeModules));
   roots.push(__adeSeaPath.join(__adeSeaPath.dirname(process.execPath), "ade-" + target + ".native"));
-  roots.push(__adeSeaPath.dirname(process.execPath));
   roots.push(__adeSeaPath.join(__adeSeaPath.dirname(process.execPath), "..", "runtime", target));
   if (process.env.NODE_PATH) {
     process.env.NODE_PATH.split(__adeSeaPath.delimiter).forEach(function (entry) {
@@ -345,23 +344,24 @@ async function main() {
   let nativeArchivePath = null;
   const nativeStagingRoot = path.join(args.outDir, `ade-${args.target}.native`);
   const shouldRemoveNativeStaging = !args.skipNativeDeps && process.env.ADE_KEEP_NATIVE_RUNTIME_STAGING !== "1";
-  if (!args.skipNativeDeps) {
-    await run(process.execPath, [
-      path.join(packageRoot, "scripts", "package-native-deps.mjs"),
-      "--target",
-      args.target,
-      "--out-dir",
-      args.outDir,
-    ], {
-      env: {
-        ...process.env,
-        ADE_KEEP_NATIVE_RUNTIME_STAGING: "1",
-      },
-    });
-    nativeArchivePath = path.join(args.outDir, `ade-${args.target}.native.tar.gz`);
-  }
 
   try {
+    if (!args.skipNativeDeps) {
+      await run(process.execPath, [
+        path.join(packageRoot, "scripts", "package-native-deps.mjs"),
+        "--target",
+        args.target,
+        "--out-dir",
+        args.outDir,
+      ], {
+        env: {
+          ...process.env,
+          ADE_KEEP_NATIVE_RUNTIME_STAGING: "1",
+        },
+      });
+      nativeArchivePath = path.join(args.outDir, `ade-${args.target}.native.tar.gz`);
+    }
+
     await assertStaticRuntimeVersion(binaryPath, runtimeVersion, args.target);
   } finally {
     if (shouldRemoveNativeStaging) {
