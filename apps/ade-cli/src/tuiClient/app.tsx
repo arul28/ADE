@@ -413,6 +413,20 @@ export function mergeNewChatModelPickerContext(
   };
 }
 
+export function planSessionStatePrune(args: {
+  previous: Set<string>;
+  current: Set<string>;
+  connectionLost: boolean;
+}): { nextSeen: Set<string>; removed: string[] } | null {
+  if (args.current.size === 0 && (args.connectionLost || args.previous.size === 0)) {
+    return null;
+  }
+  return {
+    nextSeen: args.current,
+    removed: [...args.previous].filter((sessionId) => !args.current.has(sessionId)),
+  };
+}
+
 type ChatSessionActivity = Pick<AgentChatSessionSummary, "status" | "awaitingInput" | "idleSinceAt">;
 type TerminalSessionActivity = Pick<ChatTerminalSession, "status" | "runtimeState" | "pid">;
 
@@ -4958,10 +4972,15 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   const prunedSessionIdsRef = useRef<Set<string>>(new Set());
   useEffect(() => {
     const current = new Set(sessions.map((session) => session.sessionId));
-    if (!sessions.length) return;
     const previous = prunedSessionIdsRef.current;
-    prunedSessionIdsRef.current = current;
-    const removed = [...previous].filter((sessionId) => !current.has(sessionId));
+    const prunePlan = planSessionStatePrune({
+      previous,
+      current,
+      connectionLost: connectionLostRef.current,
+    });
+    if (!prunePlan) return;
+    prunedSessionIdsRef.current = prunePlan.nextSeen;
+    const { removed } = prunePlan;
     if (!removed.length) return;
     const removedSet = new Set(removed);
     const grid = multiViewRef.current;

@@ -1801,6 +1801,18 @@ export function prependOlderChatHistoryPage(
   return [...fresh, ...existing];
 }
 
+export function mergeOlderChatHistoryPageWithCap(args: {
+  older: AgentChatEventEnvelope[];
+  existing: AgentChatEventEnvelope[];
+  maxEvents: number;
+}): { events: AgentChatEventEnvelope[]; hitResidentCap: boolean } {
+  const merged = prependOlderChatHistoryPage(args.older, args.existing);
+  return {
+    events: trimChatEventHistory(merged, args.maxEvents),
+    hitResidentCap: merged.length > args.maxEvents,
+  };
+}
+
 /**
  * Compute the next older-history cursor after a page response. Returns 0
  * (exhausted) unless the page reports more history AND its startOffset
@@ -5156,12 +5168,27 @@ export function AgentChatPane({
       }
       if (olderEvents.length) {
         const existing = eventsBySessionRef.current[sessionId] ?? [];
-        const merged = prependOlderChatHistoryPage(olderEvents, existing);
+        const maxEvents = sessionId === selectedSessionIdRef.current || sessionId === lockSessionId
+          ? MAX_SELECTED_CHAT_SESSION_EVENTS
+          : MAX_BACKGROUND_CHAT_SESSION_EVENTS;
+        const { events: merged, hitResidentCap } = mergeOlderChatHistoryPageWithCap({
+          older: olderEvents,
+          existing,
+          maxEvents,
+        });
+        if (hitResidentCap) nextCursor = 0;
         if (merged !== existing) {
           eventsBySessionRef.current = { ...eventsBySessionRef.current, [sessionId]: merged };
           setEventsBySession((prev) => ({ ...prev, [sessionId]: merged }));
-          writeAgentChatSessionViewCache(sessionId, merged, undefined, nextCursor);
         }
+        writeAgentChatSessionViewCache(sessionId, merged, undefined, nextCursor);
+      } else {
+        writeAgentChatSessionViewCache(
+          sessionId,
+          eventsBySessionRef.current[sessionId] ?? [],
+          undefined,
+          nextCursor,
+        );
       }
       applyOlderHistoryCursor(sessionId, nextCursor);
     } catch {
@@ -5170,7 +5197,7 @@ export function AgentChatPane({
       olderHistoryInFlightRef.current.delete(sessionId);
       setOlderHistoryLoadingBySession((prev) => ({ ...prev, [sessionId]: false }));
     }
-  }, [applyOlderHistoryCursor]);
+  }, [applyOlderHistoryCursor, lockSessionId]);
 
   const loadOlderHistoryForSelectedSession = useCallback(() => {
     const sessionId = selectedSessionIdRef.current;

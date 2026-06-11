@@ -36,6 +36,7 @@ import {
   advanceOlderHistoryCursor,
   isMatchingOptimisticUserMessage,
   mergeChatHistorySnapshot,
+  mergeOlderChatHistoryPageWithCap,
   parallelLaneModelSuffix,
   prependOlderChatHistoryPage,
   resolveNextSelectedSessionId,
@@ -6176,6 +6177,52 @@ describe("prependOlderChatHistoryPage", () => {
       "fragment-a",
       "fragment-b",
     ]);
+  });
+});
+
+describe("mergeOlderChatHistoryPageWithCap", () => {
+  function envelope(timestamp: string, sequence: number, text: string): AgentChatEventEnvelope {
+    return {
+      sessionId: "session-1",
+      timestamp,
+      sequence,
+      event: { type: "text", text },
+    };
+  }
+
+  it("keeps the existing event list when an older page is only a seam duplicate", () => {
+    const seam = envelope("2026-06-10T09:30:00.000Z", 2, "seam");
+    const seamFromDisk = envelope("2026-06-10T09:30:00.000Z", 2, "seam");
+    const existing = [seam];
+
+    const merged = mergeOlderChatHistoryPageWithCap({
+      older: [seamFromDisk],
+      existing,
+      maxEvents: 10,
+    });
+
+    expect(merged.events).toBe(existing);
+    expect(merged.hitResidentCap).toBe(false);
+  });
+
+  it("reports when a prepended page would exceed the resident history cap", () => {
+    const older = envelope("2026-06-10T09:00:00.000Z", 1, "older");
+    const loadedA = envelope("2026-06-10T10:00:00.000Z", 2, "loaded-a");
+    const loadedB = envelope("2026-06-10T10:01:00.000Z", 3, "loaded-b");
+    const loadedC = envelope("2026-06-10T10:02:00.000Z", 4, "loaded-c");
+
+    const merged = mergeOlderChatHistoryPageWithCap({
+      older: [older],
+      existing: [loadedA, loadedB, loadedC],
+      maxEvents: 3,
+    });
+
+    expect(merged.events.map((entry) => (entry.event.type === "text" ? entry.event.text : ""))).toEqual([
+      "loaded-a",
+      "loaded-b",
+      "loaded-c",
+    ]);
+    expect(merged.hitResidentCap).toBe(true);
   });
 });
 

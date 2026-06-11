@@ -54,6 +54,7 @@ import {
   modelPickerProviderSwitchBlocked,
   mergeNewChatModelPickerContext,
   normalizeCatalogProvider,
+  planSessionStatePrune,
   isNewChatSetupPane,
   resolveContextDefault,
   resolveDrawerPaneWidth,
@@ -484,6 +485,40 @@ describe("modelPickerPaneContentOrigin", () => {
 
   it("clamps the content width to a floor for very narrow panes", () => {
     expect(modelPickerPaneContentOrigin({ paneTop: 0, paneLeft: 0, paneWidth: 6 }).paneWidth).toBe(8);
+  });
+});
+
+describe("planSessionStatePrune", () => {
+  it("keeps previous session ids during transient empty lists while disconnected", () => {
+    const previous = new Set(["chat-a", "chat-b"]);
+
+    expect(planSessionStatePrune({
+      previous,
+      current: new Set(),
+      connectionLost: true,
+    })).toBeNull();
+  });
+
+  it("prunes stale session ids when the runtime reports a true empty list", () => {
+    const plan = planSessionStatePrune({
+      previous: new Set(["chat-a", "chat-b"]),
+      current: new Set(),
+      connectionLost: false,
+    });
+
+    expect(plan?.removed).toEqual(["chat-a", "chat-b"]);
+    expect([...(plan?.nextSeen ?? [])]).toEqual([]);
+  });
+
+  it("diffs stable non-empty session lists", () => {
+    const plan = planSessionStatePrune({
+      previous: new Set(["chat-a", "chat-b"]),
+      current: new Set(["chat-b", "chat-c"]),
+      connectionLost: false,
+    });
+
+    expect(plan?.removed).toEqual(["chat-a"]);
+    expect([...(plan?.nextSeen ?? [])]).toEqual(["chat-b", "chat-c"]);
   });
 });
 
