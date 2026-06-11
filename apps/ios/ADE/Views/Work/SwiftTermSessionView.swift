@@ -218,6 +218,7 @@ final class TerminalSessionController: NSObject, ObservableObject {
       guard let self else { return }
       do {
         _ = try await syncService.resumeCliSession(sessionId: id, cols: cols, rows: rows)
+        guard self.sessionId == id, syncService.hasTerminalStream(sessionId: id) else { return }
         self.hasExited = false
         // The relaunched PTY appends to the same transcript; resume the
         // stream exactly after what's already rendered.

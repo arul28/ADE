@@ -8449,6 +8449,7 @@ final class SyncService: ObservableObject {
       terminalBuffers.removeAll()
       terminalBufferUpdatedAt.removeAll()
       terminalEndOffsets.removeAll()
+      terminalGapRecoveryInFlight.removeAll()
     }
     terminalBufferRevision += 1
   }
