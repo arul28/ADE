@@ -2,84 +2,35 @@ import SwiftUI
 
 struct FilesWorkspaceHeader: View {
   let workspaces: [FilesWorkspace]
+  let lanes: [LaneSummary]
   @Binding var selectedWorkspaceId: String
   let selectedWorkspace: FilesWorkspace
-  @Binding var showHidden: Bool
+  let isLive: Bool
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 12) {
-      VStack(alignment: .leading, spacing: 10) {
-        Text("Workspace")
-          .font(.headline)
-          .foregroundStyle(ADEColor.textPrimary)
+    VStack(alignment: .leading, spacing: 8) {
+      FilesWorkspacePickerDropdown(
+        workspaces: workspaces,
+        lanes: lanes,
+        selectedWorkspaceId: $selectedWorkspaceId
+      )
 
-        ScrollView(.horizontal, showsIndicators: false) {
-          HStack(spacing: 8) {
-            ForEach(workspaces) { workspace in
-              Button {
-                selectedWorkspaceId = workspace.id
-              } label: {
-                HStack(spacing: 6) {
-                  Text(workspace.name)
-                    .font(.caption.weight(.semibold))
-                    .lineLimit(1)
-                  if workspace.id == selectedWorkspaceId {
-                    Image(systemName: "checkmark.circle.fill")
-                      .font(.system(size: 11, weight: .semibold))
-                  }
-                }
-                .foregroundStyle(workspace.id == selectedWorkspaceId ? ADEColor.accent : ADEColor.textSecondary)
-                .padding(.horizontal, 10)
-                .padding(.vertical, 7)
-                .background(
-                  (workspace.id == selectedWorkspaceId ? ADEColor.accent.opacity(0.14) : ADEColor.surfaceBackground.opacity(0.55)),
-                  in: Capsule()
-                )
-                .overlay(
-                  Capsule()
-                    .stroke(workspace.id == selectedWorkspaceId ? ADEColor.accent.opacity(0.45) : ADEColor.border.opacity(0.16), lineWidth: 0.5)
-                )
-                .glassEffect()
-              }
-              .buttonStyle(.plain)
-              .accessibilityLabel("Workspace \(workspace.name)")
-              .accessibilityValue(workspace.id == selectedWorkspaceId ? "Selected" : "")
-            }
-          }
-        }
+      HStack(alignment: .firstTextBaseline, spacing: 8) {
+        Text(selectedWorkspace.rootPath)
+          .font(.caption.monospaced())
+          .foregroundStyle(ADEColor.textSecondary)
+          .lineLimit(1)
+          .truncationMode(.middle)
+          .textSelection(.enabled)
+          .frame(maxWidth: .infinity, alignment: .leading)
+
+        Text(isLive ? "Live" : "Cached")
+          .font(.caption2.weight(.semibold))
+          .foregroundStyle(isLive ? ADEColor.success : ADEColor.textMuted)
       }
-
-      Text(selectedWorkspace.rootPath)
-        .font(.caption.monospaced())
-        .foregroundStyle(ADEColor.textPrimary)
-        .lineLimit(2)
-        .truncationMode(.middle)
-        .accessibilityLabel("Workspace path \(selectedWorkspace.rootPath)")
-        .textSelection(.enabled)
-
-      ScrollView(.horizontal, showsIndicators: false) {
-        ADEGlassGroup(spacing: 8) {
-          ADEStatusPill(text: selectedWorkspace.kind.uppercased(), tint: ADEColor.accent)
-          if selectedWorkspace.laneId != nil {
-            ADEStatusPill(text: "LANE ROOT", tint: ADEColor.success)
-          }
-          if selectedWorkspace.readOnlyOnMobile {
-            ADEStatusPill(text: "READ ONLY", tint: ADEColor.warning)
-          }
-          Button {
-            showHidden.toggle()
-          } label: {
-            Label(showHidden ? "Hide" : "Show", systemImage: showHidden ? "eye.slash" : "eye")
-              .font(.caption.weight(.semibold))
-              .lineLimit(1)
-              .fixedSize(horizontal: true, vertical: false)
-          }
-          .buttonStyle(.glass)
-          .accessibilityLabel(showHidden ? "Hide hidden files" : "Show hidden files")
-        }
-      }
+      .accessibilityElement(children: .combine)
+      .accessibilityLabel("Workspace path \(selectedWorkspace.rootPath), \(isLive ? "live" : "cached")")
     }
-    .adeGlassCard(cornerRadius: 18)
   }
 }
 
@@ -271,83 +222,62 @@ struct FilesTreeNodeRow: View {
   let onCopyRelativePath: () -> Void
 
   var body: some View {
-    HStack(spacing: 12) {
-      Button(action: onOpen) {
-        HStack(spacing: 12) {
-          Image(systemName: node.type == "directory" ? "folder.fill" : fileIcon(for: node.name))
-            .font(.headline)
-            .foregroundStyle(node.type == "directory" ? ADEColor.accent : fileTint(for: node.name))
-            .frame(width: 22)
-            .adeMatchedGeometry(id: canTransition ? "files-icon-\(node.path)" : nil, in: transitionNamespace)
+    Button(action: onOpen) {
+      HStack(spacing: 10) {
+        Image(systemName: node.type == "directory" ? "folder.fill" : fileIcon(for: node.name))
+          .font(.system(size: 14, weight: .semibold))
+          .foregroundStyle(node.type == "directory" ? ADEColor.accent : fileTint(for: node.name))
+          .frame(width: 18)
+          .adeMatchedGeometry(id: canTransition ? "files-icon-\(node.path)" : nil, in: transitionNamespace)
 
-          VStack(alignment: .leading, spacing: 4) {
-            Text(node.name)
-              .font(.subheadline.weight(.semibold))
-              .foregroundStyle(ADEColor.textPrimary)
-              .lineLimit(1)
-              .adeMatchedGeometry(id: canTransition ? "files-title-\(node.path)" : nil, in: transitionNamespace)
-            HStack(spacing: 6) {
-              Text(node.path.isEmpty ? (node.type == "directory" ? "Folder" : "File") : node.path)
-                .font(.caption.monospaced())
-                .foregroundStyle(ADEColor.textSecondary)
-                .lineLimit(1)
+        Text(node.name)
+          .font(.subheadline.weight(.medium))
+          .foregroundStyle(ADEColor.textPrimary)
+          .lineLimit(1)
+          .adeMatchedGeometry(id: canTransition ? "files-title-\(node.path)" : nil, in: transitionNamespace)
 
-              if let changeStatus = node.changeStatus {
-                ADEStatusPill(text: changeStatus.uppercased(), tint: changeStatusTint(changeStatus))
-                  .fixedSize(horizontal: true, vertical: false)
-              }
-            }
-          }
-          .layoutPriority(1)
+        if let changeStatus = node.changeStatus {
+          ADEStatusPill(text: changeStatus.uppercased(), tint: changeStatusTint(changeStatus))
+            .fixedSize(horizontal: true, vertical: false)
+        }
 
-          Spacer(minLength: 8)
+        Spacer(minLength: 4)
 
-          if let size = node.size, node.type == "file" {
-            Text(formattedFileSize(size))
-              .font(.caption2.monospaced())
-              .foregroundStyle(ADEColor.textMuted)
-              .fixedSize(horizontal: true, vertical: false)
-          }
-
-          Image(systemName: "chevron.right")
-            .font(.caption.weight(.semibold))
+        if let size = node.size, node.type == "file" {
+          Text(formattedFileSize(size))
+            .font(.caption2.monospaced())
             .foregroundStyle(ADEColor.textMuted)
+            .fixedSize(horizontal: true, vertical: false)
         }
-        .contentShape(Rectangle())
-      }
-      .buttonStyle(.plain)
-      .accessibilityElement(children: .ignore)
-      .accessibilityLabel(accessibilityLabel)
-      .accessibilityHint(node.type == "directory" ? "Opens folder" : "Opens file")
-      .adeInspectable(
-        "Files.Directory.NodeRow",
-        metadata: [
-          "label": accessibilityLabel,
-          "path": node.path,
-          "type": node.type,
-          "role": "row"
-        ]
-      )
 
-      HStack(spacing: 6) {
-        Button(action: onCopyPath) {
-          Image(systemName: "link")
-            .font(.system(size: 14, weight: .semibold))
-            .frame(width: 32, height: 32)
+        if node.type == "directory" {
+          Image(systemName: "chevron.right")
+            .font(.caption2.weight(.bold))
+            .foregroundStyle(ADEColor.textMuted.opacity(0.7))
         }
-        .buttonStyle(.glass)
-        .accessibilityLabel("Copy path for \(node.name)")
-
-        Button(action: onCopyRelativePath) {
-          Image(systemName: "doc.on.doc")
-            .font(.system(size: 14, weight: .semibold))
-            .frame(width: 32, height: 32)
-        }
-        .buttonStyle(.glass)
-        .accessibilityLabel("Copy relative path for \(node.name)")
       }
+      .padding(.horizontal, 10)
+      .padding(.vertical, 9)
+      .background(ADEColor.surfaceBackground.opacity(0.35), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+      .contentShape(Rectangle())
     }
-    .adeListCard(cornerRadius: 16)
+    .buttonStyle(.plain)
+    .contextMenu {
+      Button("Copy Path", action: onCopyPath)
+      Button("Copy Relative Path", action: onCopyRelativePath)
+    }
+    .accessibilityElement(children: .ignore)
+    .accessibilityLabel(accessibilityLabel)
+    .accessibilityHint(node.type == "directory" ? "Opens folder" : "Opens file")
+    .adeInspectable(
+      "Files.Directory.NodeRow",
+      metadata: [
+        "label": accessibilityLabel,
+        "path": node.path,
+        "type": node.type,
+        "role": "row"
+      ]
+    )
     .adeMatchedTransitionSource(id: canTransition ? "files-container-\(node.path)" : nil, in: transitionNamespace)
   }
 
@@ -461,35 +391,34 @@ struct FilesBreadcrumbBar: View {
 
   var body: some View {
     ScrollView(.horizontal, showsIndicators: false) {
-      HStack(spacing: 8) {
+      HStack(spacing: 6) {
         Button("root") {
           onSelectDirectory("")
         }
-        .buttonStyle(.glass)
+        .font(.caption2.weight(.semibold))
+        .buttonStyle(.plain)
+        .foregroundStyle(ADEColor.textMuted)
 
         ForEach(filesBreadcrumbItems(relativePath: relativePath, includeCurrentFile: includeCurrentFile), id: \.path) { breadcrumb in
           Image(systemName: "chevron.right")
-            .font(.caption2.weight(.semibold))
-            .foregroundStyle(ADEColor.textMuted)
+            .font(.system(size: 8, weight: .bold))
+            .foregroundStyle(ADEColor.textMuted.opacity(0.55))
 
           if breadcrumb.isDirectory {
             Button(breadcrumb.label) {
               onSelectDirectory(breadcrumb.path)
             }
-            .buttonStyle(.glass)
+            .font(.caption2.weight(.semibold))
+            .buttonStyle(.plain)
+            .foregroundStyle(ADEColor.textSecondary)
           } else {
             Text(breadcrumb.label)
-              .font(.caption.weight(.semibold))
+              .font(.caption2.weight(.semibold))
               .foregroundStyle(ADEColor.textPrimary)
-              .padding(.horizontal, 10)
-              .padding(.vertical, 7)
-              .background(ADEColor.surfaceBackground, in: Capsule())
-              .glassEffect()
           }
         }
       }
-      .padding(4)
+      .padding(.vertical, 2)
     }
-    .adeGlassCard(cornerRadius: 18, padding: 12)
   }
 }

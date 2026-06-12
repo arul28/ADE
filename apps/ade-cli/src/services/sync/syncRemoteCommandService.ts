@@ -2935,6 +2935,10 @@ function registerGitAndFileRemoteCommands({ args, register }: RemoteCommandRegis
     requireService(args.gitService, "Git service not available.").rebaseContinue(parseConflictLaneArgs(payload, "git.rebaseContinue")));
   register("git.rebaseAbort", { viewerAllowed: true, queueable: true }, async (payload) =>
     requireService(args.gitService, "Git service not available.").rebaseAbort(parseConflictLaneArgs(payload, "git.rebaseAbort")));
+  register("git.mergeContinue", { viewerAllowed: true, queueable: true }, async (payload) =>
+    requireService(args.gitService, "Git service not available.").mergeContinue(parseConflictLaneArgs(payload, "git.mergeContinue")));
+  register("git.mergeAbort", { viewerAllowed: true, queueable: true }, async (payload) =>
+    requireService(args.gitService, "Git service not available.").mergeAbort(parseConflictLaneArgs(payload, "git.mergeAbort")));
   register("git.listBranches", { viewerAllowed: true }, async (payload) =>
     requireService(args.gitService, "Git service not available.").listBranches(parseGitListBranchesArgs(payload)));
   register("git.checkoutBranch", { viewerAllowed: true, queueable: true }, async (payload) =>

@@ -1984,6 +1984,111 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
     await expect(clientB.queue.next("chat_event", 250)).rejects.toThrow(/Timed out waiting for chat_event/);
   }, 15_000);
 
+  it("ships live turn state on the chat_subscribe ack so mid-turn subscribers see streaming state", async () => {
+    const brainDb = await openKvDb(makeDbPath("ade-sync-chat-turnstate-"), createLogger() as any);
+    const projectRoot = makeProjectRoot("ade-sync-chat-turnstate-project-");
+    const workspaceRoot = path.join(projectRoot, "workspace");
+    fs.mkdirSync(workspaceRoot, { recursive: true });
+    const chatService = createStubChatService();
+    // Snapshot tails can miss a long turn's `status: started` event, so the
+    // ack itself must carry the live "a turn is running" state.
+    chatService.service.getSessionSummary.mockImplementation(async (sessionId: string) =>
+      sessionId === "session-awaiting"
+        ? { sessionId, status: "active", awaitingInput: true }
+        : { sessionId, status: "active" });
+
+    const host = createSyncHostService({
+      db: brainDb,
+      logger: createLogger() as any,
+      projectId: "project-1",
+      projectRoot,
+      port: 0,
+      fileService: createStubFileService(workspaceRoot) as any,
+      laneService: {
+        list: vi.fn().mockResolvedValue([]),
+        create: vi.fn(),
+        archive: vi.fn(),
+      } as any,
+      prService: {
+        listAll: vi.fn().mockResolvedValue([]),
+        refresh: vi.fn().mockResolvedValue([]),
+        listSnapshots: vi.fn().mockReturnValue([]),
+        getDetail: vi.fn(),
+        getStatus: vi.fn(),
+        getChecks: vi.fn(),
+        getReviews: vi.fn(),
+        getComments: vi.fn(),
+        getFiles: vi.fn(),
+        createFromLane: vi.fn(),
+        land: vi.fn(),
+        closePr: vi.fn(),
+        requestReviewers: vi.fn(),
+      } as any,
+      sessionService: {
+        list: () => [],
+        get: () => null,
+        readTranscriptTail: async () => "",
+      } as any,
+      ptyService: {
+        create: vi.fn(),
+      } as any,
+      agentChatService: chatService.service,
+      computerUseArtifactBrokerService: {
+        listArtifacts: () => [],
+      } as any,
+      pinStore: createStubPinStore(),
+    });
+    activeDisposers.push(async () => {
+      await host.dispose();
+      brainDb.close();
+    });
+
+    const port = await host.waitUntilListening();
+    const client = await connectClient({
+      port,
+      token: host.getBootstrapToken(),
+      deviceId: "peer-chat-turnstate",
+      deviceName: "Peer Chat Turn State",
+      siteId: brainDb.sync.getSiteId(),
+      dbVersion: brainDb.sync.getDbVersion(),
+    });
+    activeDisposers.push(client.close);
+
+    client.ws.send(encodeSyncEnvelope({
+      type: "chat_subscribe",
+      payload: { sessionId: "session-running" },
+    }));
+    const runningAck = await client.queue.next("chat_subscribe");
+    expect(runningAck.payload).toMatchObject({
+      sessionId: "session-running",
+      turnActive: true,
+    });
+
+    // Awaiting-input sessions still report an active turn — the turn is
+    // running, just paused on a prompt; clients keep their stop affordance.
+    client.ws.send(encodeSyncEnvelope({
+      type: "chat_subscribe",
+      payload: { sessionId: "session-awaiting" },
+    }));
+    const awaitingAck = await client.queue.next("chat_subscribe");
+    expect(awaitingAck.payload).toMatchObject({
+      sessionId: "session-awaiting",
+      turnActive: true,
+    });
+
+    // When the chat service has no summary for the session, the ack must
+    // omit the field rather than fabricate state — clients treat absence as
+    // "no live signal" and fall back to transcript-derived streaming state.
+    chatService.service.getSessionSummary.mockResolvedValue(null);
+    client.ws.send(encodeSyncEnvelope({
+      type: "chat_subscribe",
+      payload: { sessionId: "session-unknown" },
+    }));
+    const unknownAck = await client.queue.next("chat_subscribe");
+    expect(unknownAck.payload).toMatchObject({ sessionId: "session-unknown" });
+    expect(unknownAck.payload).not.toHaveProperty("turnActive");
+  }, 15_000);
+
   it("resubscribes chat listeners after reconnect and routes chat remote commands", async () => {
     const brainDb = await openKvDb(makeDbPath("ade-sync-chat-commands-"), createLogger() as any);
     const projectRoot = makeProjectRoot("ade-sync-chat-commands-project-");

@@ -48,7 +48,7 @@ func latestActiveTurnId(from transcript: [WorkChatEnvelope]) -> String? {
     switch envelope.event {
     case .assistantText(_, let turnId, _),
          .activity(_, _, let turnId),
-         .userMessage(_, let turnId, _, _, _):
+         .userMessage(_, _, let turnId, _, _, _):
       if let turnId, !turnId.isEmpty { return turnId }
     case .status(_, _, let turnId):
       if let turnId, !turnId.isEmpty { return turnId }
@@ -62,7 +62,7 @@ func latestActiveTurnId(from transcript: [WorkChatEnvelope]) -> String? {
 func transcriptContainsResolvedSteer(_ transcript: [WorkChatEnvelope], steerId: String) -> Bool {
   for envelope in sortedWorkChatEnvelopes(transcript).reversed() {
     switch envelope.event {
-    case .userMessage(_, _, let candidate, let deliveryState, _):
+    case .userMessage(_, _, _, let candidate, let deliveryState, _):
       guard candidate == steerId else { continue }
       return deliveryState != "queued"
     case .systemNotice(_, let message, _, _, let candidate):
@@ -158,12 +158,12 @@ struct WorkSessionDestinationView: View {
   @State var localEchoMessages: [WorkLocalEchoMessage] = []
   @State var optimisticPendingSteers: [WorkPendingSteerModel] = []
   @State var expandedToolCardIds = Set<String>()
-  @State private var collapsedChangedFileGroupIds = Set<String>()
   @State var artifactContent: [String: WorkLoadedArtifactContent] = [:]
   @State var artifactContentLoadsInFlight = Set<String>()
   @State var artifactRefreshInFlight = false
   @State var artifactRefreshError: String?
   @State var fullscreenImage: WorkFullscreenImage?
+  @State var artifactDrawerPresented = false
   @State var sending = false
   @State var errorMessage: String?
   @State var announcedLaneId: String?
@@ -171,6 +171,9 @@ struct WorkSessionDestinationView: View {
   /// item. Nil until resolved (or when the lane has no cached PR), which keeps
   /// that menu item disabled with a "No PR yet" hint.
   @State var laneOpenPr: PullRequestListItem?
+  @State var prCreateCapabilities: PrCreateCapabilities?
+  @State var createPrPresented = false
+  @State var prLinkCopied = false
   @State var lastSessionRowRefreshAt = Date.distantPast
   @State var lastTranscriptRemoteRefreshAt = Date.distantPast
   @State var lastCanonicalTranscriptRefreshAt = Date.distantPast
@@ -217,8 +220,20 @@ struct WorkSessionDestinationView: View {
     )
   }
 
+  /// Deliberately row-authoritative (does NOT consult `liveTurnActiveHint`):
+  /// a stale-true hint must never route a fresh message into the steer queue
+  /// of an idle session, where it could sit undispatched. During the window
+  /// where the hint is true but the row hasn't flipped yet, `sendMessage`'s
+  /// "turn already active" error fallback retries the send as a steer.
   var shouldSteerActiveTurn: Bool {
     hostReachable && workChatShouldSteerActiveTurn(session: session, summary: chatSummary)
+  }
+
+  /// Live host-side "turn is running" hint (chat_subscribe ack + status/done
+  /// events). Fresher than the synced session row, which arrives via the
+  /// slower changeset pump.
+  var liveTurnActiveHint: Bool {
+    syncService.chatTurnActiveHint(sessionId: sessionId) ?? false
   }
 
   var supportsManualSteerDispatch: Bool {
@@ -233,27 +248,27 @@ struct WorkSessionDestinationView: View {
     return resolvedWorkNavigationLaneId(for: session, lanes: lanes)
   }
 
-  /// Trailing nav-bar overflow menu scoped to the session's lane: jump to the
-  /// lane's PR (when one is cached) or open the lane itself.
+  /// Trailing nav-bar overflow menu for chat sessions: proof drawer plus lane
+  /// shortcuts when the session is lane-backed.
   @ViewBuilder
   var sessionHeaderTrailingControls: some View {
-    if let session, showsLaneActions {
+    if let session, isChatSession(session) {
       Menu {
         Button {
-          openLaneOpenPr()
+          artifactDrawerPresented = true
         } label: {
-          if let laneOpenPr {
-            Label("Open PR #\(laneOpenPr.githubPrNumber)", systemImage: "arrow.triangle.pull")
+          if artifacts.isEmpty {
+            Label("Proof", systemImage: "cube.transparent")
           } else {
-            Label("Open PR (No PR yet)", systemImage: "arrow.triangle.pull")
+            Label("Proof (\(artifacts.count))", systemImage: "cube.transparent")
           }
         }
-        .disabled(laneOpenPr == nil)
+        .accessibilityHint("Opens the proof drawer")
 
-        Button {
-          openSessionLane()
-        } label: {
-          Label("Open lane", systemImage: "arrow.triangle.branch")
+        if showsLaneActions {
+          Divider()
+
+          chatPullRequestMenuItems
         }
       } label: {
         Image(systemName: "ellipsis")
@@ -263,10 +278,102 @@ struct WorkSessionDestinationView: View {
           .contentShape(Rectangle())
       }
       .buttonStyle(.glass)
-      .accessibilityLabel("Session actions for lane \(session.laneName)")
+      .accessibilityLabel("Chat actions")
     } else {
       EmptyView()
     }
+  }
+
+  @ViewBuilder
+  private var chatPullRequestMenuItems: some View {
+    if let laneOpenPr {
+      Button {
+        openLaneOpenPr()
+      } label: {
+        Label("Open in ADE (#\(laneOpenPr.githubPrNumber))", systemImage: "arrow.triangle.pull")
+      }
+
+      Button {
+        openLanePrOnGitHub()
+      } label: {
+        Label("Open on GitHub", systemImage: "link")
+      }
+      .disabled(laneOpenPr.githubUrl.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+      Button {
+        copyLanePrLink()
+      } label: {
+        if prLinkCopied {
+          Label("Copied link", systemImage: "checkmark")
+        } else {
+          Label("Copy link", systemImage: "doc.on.doc")
+        }
+      }
+      .disabled(laneOpenPr.githubUrl.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+    } else {
+      Button {
+        presentCreateLanePr()
+      } label: {
+        Label("Create pull request", systemImage: "plus")
+      }
+      .disabled(!canCreatePullRequestForHeaderLane)
+
+      if let blockedReason = createPullRequestBlockedReason {
+        Button {} label: {
+          Label(blockedReason, systemImage: "info.circle")
+        }
+        .disabled(true)
+      }
+    }
+
+    Button {
+      openSessionLane()
+    } label: {
+      Label("Open lane", systemImage: "arrow.triangle.branch")
+    }
+  }
+
+  private var canCreatePullRequestForHeaderLane: Bool {
+    guard hostReachable else { return false }
+    let laneId = headerMenuLaneId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !laneId.isEmpty else { return false }
+    if let eligibility = prCreateCapabilities?.lanes.first(where: { $0.laneId == laneId }) {
+      return eligibility.canCreate
+    }
+    if let capabilities = prCreateCapabilities {
+      return capabilities.canCreateAny
+    }
+    return !lanes.isEmpty
+  }
+
+  private var createPullRequestBlockedReason: String? {
+    let laneId = headerMenuLaneId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !laneId.isEmpty else { return nil }
+    let reason = prCreateCapabilities?
+      .lanes
+      .first(where: { $0.laneId == laneId })?
+      .blockedReason?
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    guard let reason, !reason.isEmpty else { return nil }
+    return reason
+  }
+
+  @ViewBuilder
+  private var chatCreatePrWizardSheet: some View {
+    let laneId = headerMenuLaneId.trimmingCharacters(in: .whitespacesAndNewlines)
+    CreatePrWizardView(
+      lanes: lanes,
+      createCapabilities: prCreateCapabilities,
+      initialLaneId: laneId.isEmpty ? nil : laneId,
+      singleModeOnly: true,
+      onCreateSingle: handleChatCreateSinglePr,
+      onCreateQueue: { _ in false },
+      onCreateIntegration: { _ in false }
+    )
+    .environmentObject(syncService)
+    .presentationDetents([.large])
+    .presentationDragIndicator(.visible)
+    .presentationContentInteraction(.scrolls)
   }
 
   var sessionDestinationZoomTransitionId: String? {
@@ -292,6 +399,9 @@ struct WorkSessionDestinationView: View {
       .sheet(item: $fullscreenImage) { image in
         WorkFullscreenImageView(image: image)
       }
+      .sheet(isPresented: $createPrPresented) {
+        chatCreatePrWizardSheet
+      }
       .task {
         session = initialSession
         chatSummary = initialChatSummary
@@ -305,10 +415,18 @@ struct WorkSessionDestinationView: View {
         await reconcileIdleCanonicalTranscriptIfNeeded()
       }
       .task(id: artifactObservationKey) {
-        // Proof rows arrive through CRDT-backed local DB updates, not chat
-        // event streams, so observe the synced DB revision directly.
+        // Proof rows and the session row both arrive through CRDT-backed
+        // local DB updates, not chat event streams, so observe the synced DB
+        // revision directly.
         try? await Task.sleep(nanoseconds: 320_000_000)
         guard !Task.isCancelled else { return }
+        // The session row is the status source for the stop button and the
+        // poll-loop gate. Without this re-read, a turn started on desktop
+        // while this view is open in an idle state never updates the local
+        // @State row — the chat streams output but renders as frozen
+        // (pollIfNeeded bails on non-active status and nothing else
+        // observes the DB).
+        await refreshSessionRowFromLocalStore()
         // Local sync can tick rapidly while a turn is streaming. Coalesce
         // refreshes here so we do not refetch artifact lists for every
         // unrelated revision burst while the user is reading the chat.
@@ -319,6 +437,7 @@ struct WorkSessionDestinationView: View {
       }
       .task(id: headerMenuLaneId) {
         await resolveLaneOpenPr(for: headerMenuLaneId)
+        await loadPrCreateCapabilitiesIfNeeded()
       }
       .task(id: pollingKey) {
         await pollIfNeeded()
@@ -348,9 +467,9 @@ struct WorkSessionDestinationView: View {
           optimisticPendingSteers: optimisticPendingSteers,
           localEchoMessages: localEchoMessages,
           expandedToolCardIds: $expandedToolCardIds,
-          collapsedChangedFileGroupIds: $collapsedChangedFileGroupIds,
           artifactContent: $artifactContent,
           fullscreenImage: $fullscreenImage,
+          artifactDrawerPresented: $artifactDrawerPresented,
           artifactRefreshInFlight: artifactRefreshInFlight,
           artifactRefreshError: artifactRefreshError,
           sending: $sending,
@@ -384,7 +503,8 @@ struct WorkSessionDestinationView: View {
           onSelectEffort: selectReasoningEffort,
           lanes: lanes,
           hasOlderTranscriptHistory: hasOlderTranscriptHistory,
-          onLoadOlderTranscript: loadOlderTranscriptEntries
+          onLoadOlderTranscript: loadOlderTranscriptEntries,
+          liveTurnActiveHint: liveTurnActiveHint
         )
       } else {
         TerminalSessionScreen(session: session)
@@ -402,7 +522,9 @@ struct WorkSessionDestinationView: View {
 
   var pollingKey: String {
     let status = normalizedWorkChatSessionStatus(session: session, summary: chatSummary)
-    return "\(session?.id ?? sessionId)-\(status)-\(isLiveAndReachable)"
+    // liveTurnActiveHint participates so a desktop-started turn (session row
+    // still idle locally) restarts the poll task the moment the hint flips on.
+    return "\(session?.id ?? sessionId)-\(status)-\(isLiveAndReachable)-\(liveTurnActiveHint)"
   }
 
   var liveChatObservationKey: String {
@@ -457,9 +579,15 @@ struct WorkSessionDestinationView: View {
     let status = normalizedWorkChatSessionStatus(session: session ?? initialSession, summary: chatSummary ?? initialChatSummary)
 
     if forceRemote, let currentSession = session ?? initialSession, isChatSession(currentSession) {
+      let alreadySubscribed = syncService.subscribedChatSessionIds.contains(sessionId)
       if status == "active" {
-        try? await syncService.subscribeToChatEvents(sessionId: sessionId, requestSnapshot: true)
-      } else {
+        // First visit subscribes (the host answers with a snapshot or a
+        // sinceSeq replay). Once subscribed, live chat_event push plus the
+        // host's transcript pump cover continuity — re-requesting a full
+        // byte-capped snapshot on every 8s poll was redundant wire traffic
+        // and a full dedupe/sort merge on the phone mid-stream.
+        try? await syncService.subscribeToChatEvents(sessionId: sessionId, requestSnapshot: !alreadySubscribed)
+      } else if !alreadySubscribed {
         // Active streaming stays on reduced snapshots for performance, but an
         // idle detail view must reconcile against a full event snapshot. A
         // reduced JSONL tail can start mid-message and render as a broken
@@ -514,12 +642,7 @@ struct WorkSessionDestinationView: View {
     let canonicalEventTranscript: [WorkChatEnvelope]
     if !fallbackTranscript.isEmpty, status != "active" {
       canonicalEventTranscript = eventTranscript.filter { envelope in
-        switch envelope.event {
-        case .userMessage, .assistantText, .status:
-          return false
-        default:
-          return true
-        }
+        workChatEventIncludedInIdleCanonicalEventTranscript(envelope.event)
       }
     } else {
       canonicalEventTranscript = eventTranscript
@@ -537,7 +660,7 @@ struct WorkSessionDestinationView: View {
     if fetchedFallbackEntriesAvailable, fallbackEntries != fetchedFallbackEntries {
       fallbackEntries = fetchedFallbackEntries
     }
-
+    reconcileOptimisticPendingSteers(with: mergedTranscript)
     reconcileLocalEchoMessages()
     if forceRemote {
       lastTranscriptRemoteRefreshAt = Date()
@@ -612,6 +735,17 @@ struct WorkSessionDestinationView: View {
     }
   }
 
+  /// Re-read this session's row from the phone's local replicated DB. Cheap
+  /// (no network) — keeps the @State row current with changeset-synced status
+  /// transitions (idle → running → exited) while the view is open.
+  @MainActor
+  func refreshSessionRowFromLocalStore() async {
+    guard let refreshed = try? await syncService.fetchSessions().first(where: { $0.id == sessionId }) else { return }
+    if refreshed != session {
+      session = refreshed
+    }
+  }
+
   @MainActor
   func refreshChatStateAfterAction(forceRemote: Bool = true) async {
     let preferLightweight = syncService.prefersReducedSyncLoad
@@ -682,7 +816,7 @@ struct WorkSessionDestinationView: View {
     let promptKey = "\(sessionId)|\(prompt)"
     guard handledOpeningPromptKey != promptKey else { return }
     if transcript.contains(where: { envelope in
-      if case .userMessage(let text, _, _, _, _) = envelope.event {
+      if case .userMessage(let text, _, _, _, _, _) = envelope.event {
         return text.trimmingCharacters(in: .whitespacesAndNewlines) == prompt
       }
       return false
@@ -768,12 +902,7 @@ struct WorkSessionDestinationView: View {
     let canonicalLiveTranscript: [WorkChatEnvelope]
     if shouldPreferFallbackTranscript {
       canonicalLiveTranscript = liveTranscript.filter { envelope in
-        switch envelope.event {
-        case .userMessage, .assistantText, .status:
-          return false
-        default:
-          return true
-        }
+        workChatEventIncludedInIdleCanonicalEventTranscript(envelope.event)
       }
     } else {
       canonicalLiveTranscript = liveTranscript
@@ -784,7 +913,7 @@ struct WorkSessionDestinationView: View {
       fallback: fallbackTranscript,
       eventTranscript: canonicalLiveTranscript
     )
-    if mergedTranscript != transcript {
+    if !mergedTranscript.isEmpty, mergedTranscript != transcript {
       transcript = mergedTranscript
     }
     reconcileOptimisticPendingSteers(with: mergedTranscript)
@@ -841,13 +970,24 @@ struct WorkSessionDestinationView: View {
   @MainActor
   func reconcileLocalEchoMessages() {
     guard !localEchoMessages.isEmpty else { return }
+    let pendingSteerTexts = Set(
+      derivePendingWorkSteers(from: transcript).map { normalizedWorkLocalEchoText($0.text) }
+    )
     localEchoMessages.removeAll { echo in
-      transcript.contains(where: { envelope in
-        if case .userMessage(let text, _, _, _, _) = envelope.event {
-          return text.trimmingCharacters(in: .whitespacesAndNewlines) == echo.text.trimmingCharacters(in: .whitespacesAndNewlines)
+      let normalizedEcho = normalizedWorkLocalEchoText(echo.text)
+      if pendingSteerTexts.contains(normalizedEcho) {
+        return true
+      }
+      return transcript.contains { envelope in
+        guard case .userMessage(let text, _, _, let steerId, let deliveryState, _) = envelope.event else {
+          return false
         }
-        return false
-      })
+        guard normalizedWorkLocalEchoText(text) == normalizedEcho else { return false }
+        if deliveryState == "queued", steerId != nil {
+          return false
+        }
+        return true
+      }
     }
   }
 
@@ -863,12 +1003,16 @@ struct WorkSessionDestinationView: View {
           let session,
           isChatSession(session)
     else { return }
+    // liveTurnActiveHint keeps the loop eligible when a desktop-started turn
+    // is streaming but the synced session row hasn't flipped to running yet —
+    // the row catches up via refreshSessionRowFromLocalStore / the loop's own
+    // summary refresh below.
     let initialStatus = normalizedWorkChatSessionStatus(session: session, summary: chatSummary)
-    guard initialStatus == "active" || initialStatus == "awaiting-input" else { return }
+    guard initialStatus == "active" || initialStatus == "awaiting-input" || liveTurnActiveHint else { return }
     while !Task.isCancelled, isLiveAndReachable,
       {
         let status = normalizedWorkChatSessionStatus(session: self.session, summary: self.chatSummary)
-        return status == "active" || status == "awaiting-input"
+        return status == "active" || status == "awaiting-input" || self.liveTurnActiveHint
       }() {
       syncTranscriptFromLiveEvents()
       let now = Date()

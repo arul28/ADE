@@ -46,16 +46,22 @@ struct CreatePrWizardView: View {
   let onCreateQueue: (CreateQueuePrsRequest) async -> Bool
   /// Integration PR submit (caller runs simulateIntegration → commitIntegration).
   let onCreateIntegration: (CreateIntegrationRequest) async -> Bool
+  let initialLaneId: String?
+  let singleModeOnly: Bool
 
   init(
     lanes: [LaneSummary],
     createCapabilities: PrCreateCapabilities? = nil,
+    initialLaneId: String? = nil,
+    singleModeOnly: Bool = false,
     onCreateSingle: @escaping (String, String, String, Bool, String, [String], [String], String?) async -> Bool,
     onCreateQueue: @escaping (CreateQueuePrsRequest) async -> Bool,
     onCreateIntegration: @escaping (CreateIntegrationRequest) async -> Bool
   ) {
     self.lanes = lanes
     self.createCapabilities = createCapabilities
+    self.initialLaneId = initialLaneId
+    self.singleModeOnly = singleModeOnly
     self.onCreateSingle = onCreateSingle
     self.onCreateQueue = onCreateQueue
     self.onCreateIntegration = onCreateIntegration
@@ -84,11 +90,7 @@ struct CreatePrWizardView: View {
   // Cached eligible lane options — recomputed only when the source-of-truth
   // (capabilities / lanes) shifts, not on every keystroke.
   @State private var cachedLaneOptions: [CreatePrLaneOption] = []
-  @State private var cachedBlockedLaneOptions: [PrCreateLaneEligibility] = []
   @State private var didCacheLaneOptions = false
-  @State private var showAllBlockedLanes = false
-
-  private static let collapsedBlockedLaneLimit = 3
 
   private var fallbackCreateLanes: [LaneSummary] {
     lanes.filter { $0.archivedAt == nil && $0.laneType != "primary" }
@@ -125,37 +127,26 @@ struct CreatePrWizardView: View {
     }
   }
 
-  private var blockedLaneOptions: [PrCreateLaneEligibility] {
-    didCacheLaneOptions ? cachedBlockedLaneOptions : sourceBlockedLaneOptions
-  }
-
-  private var sourceBlockedLaneOptions: [PrCreateLaneEligibility] {
-    guard let capabilities = createCapabilities else { return [] }
-    return capabilities.lanes.filter { !Self.canOpenPr(from: $0) }
-  }
-
-  private var visibleBlockedLaneOptions: [PrCreateLaneEligibility] {
-    guard !showAllBlockedLanes else { return blockedLaneOptions }
-    return Array(blockedLaneOptions.prefix(Self.collapsedBlockedLaneLimit))
-  }
-
-  private var canToggleBlockedLanes: Bool {
-    blockedLaneOptions.count > Self.collapsedBlockedLaneLimit
-  }
-
-  private var blockedLaneToggleTitle: String {
-    showAllBlockedLanes
-      ? "Show fewer"
-      : "Show \(blockedLaneOptions.count - Self.collapsedBlockedLaneLimit) more"
-  }
-
   private var selectedOption: CreatePrLaneOption? {
-    eligibleLaneOptions.first(where: { $0.id == selectedLaneId }) ?? eligibleLaneOptions.first
+    guard !selectedLaneId.isEmpty else { return nil }
+    if let match = eligibleLaneOptions.first(where: { $0.id == selectedLaneId }) {
+      return match
+    }
+    guard let lane = selectedLane else { return nil }
+    let eligibility = eligibility(for: lane.id)
+    return CreatePrLaneOption(
+      id: lane.id,
+      title: lane.name,
+      branchRef: lane.branchRef,
+      defaultBaseBranch: eligibility?.defaultBaseBranch ?? lane.baseRef,
+      defaultTitle: eligibility?.defaultTitle ?? lane.name,
+      subtitle: eligibility.map { Self.laneProgressSubtitle(for: $0) } ?? nil
+    )
   }
 
   private var selectedLane: LaneSummary? {
-    guard let id = selectedOption?.id else { return nil }
-    return lanes.first(where: { $0.id == id })
+    guard !selectedLaneId.isEmpty else { return nil }
+    return lanes.first(where: { $0.id == selectedLaneId })
   }
 
   /// Integration branches derived from other lanes of type "integration".
@@ -185,27 +176,50 @@ struct CreatePrWizardView: View {
       ?? "main"
   }
 
-  private var availableTargets: [TargetOption] {
-    var targets: [TargetOption] = []
-    targets.append(
-      TargetOption(
+  private var branchTargetOptions: [PrBranchTargetOption] {
+    var targets = [
+      PrBranchTargetOption(
         id: defaultTargetBranch,
-        icon: "∙",
         label: defaultTargetBranch,
         subtitle: "origin · default branch"
       )
-    )
+    ]
     for integration in integrationTargets {
       targets.append(
-        TargetOption(
+        PrBranchTargetOption(
           id: integration.id,
-          icon: "↯",
           label: integration.branchRef,
           subtitle: integration.subtitle
         )
       )
     }
     return targets
+  }
+
+  private func eligibility(for laneId: String) -> PrCreateLaneEligibility? {
+    createCapabilities?.lanes.first(where: { $0.laneId == laneId })
+  }
+
+  private func laneEligibilitySubtitle(for lane: LaneSummary) -> String? {
+    guard let eligibility = eligibility(for: lane.id) else { return nil }
+    return Self.laneProgressSubtitle(for: eligibility)
+  }
+
+  private func isSourceLaneDisabled(_ lane: LaneSummary) -> Bool {
+    guard let eligibility = eligibility(for: lane.id) else { return false }
+    return !Self.canOpenPr(from: eligibility)
+  }
+
+  private var selectedLaneBlockedReason: String? {
+    guard let lane = selectedLane, let eligibility = eligibility(for: lane.id) else { return nil }
+    guard !Self.canOpenPr(from: eligibility) else { return nil }
+    return Self.blockedCreateReason(for: eligibility)
+  }
+
+  private var selectedLaneCanCreate: Bool {
+    guard let lane = selectedLane else { return false }
+    guard let eligibility = eligibility(for: lane.id) else { return true }
+    return Self.canOpenPr(from: eligibility)
   }
 
   private static func laneProgressSubtitle(for eligibility: PrCreateLaneEligibility) -> String? {
@@ -244,7 +258,7 @@ struct CreatePrWizardView: View {
     if isSubmitting { return false }
     switch createMode {
     case .single:
-      guard selectedOption != nil else { return false }
+      guard selectedLane != nil, selectedLaneCanCreate else { return false }
       let hasTitle = !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
       let hasBase = !baseBranch.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
       return hasTitle && hasBase
@@ -257,125 +271,15 @@ struct CreatePrWizardView: View {
     }
   }
 
-  private var branchRefForHeader: String {
-    let raw = selectedOption?.branchRef ?? selectedLane?.branchRef ?? "lane"
-    return abbreviateBranchRef(raw).uppercased()
-  }
-
-  /// Long refs like `cursor/-bc-1763e942-e33d-49c1-9cb6-fa4101a980d4-aafb`
-  /// dominate the wizard hero subtitle. Keep the prefix + last segment so
-  /// the ref still looks real without wrapping across three lines.
-  private func abbreviateBranchRef(_ ref: String) -> String {
-    let trimmed = ref.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard trimmed.count > 28 else { return trimmed }
-    if let slash = trimmed.firstIndex(of: "/") {
-      let prefix = trimmed[..<slash]
-      let rest = trimmed[trimmed.index(after: slash)...]
-      let lastHyphen = rest.lastIndex(of: "-").map { rest.index(after: $0) }
-      let tail = lastHyphen.map { String(rest[$0...]) } ?? String(rest.suffix(6))
-      return "\(prefix)/…\(tail)"
-    }
-    return "\(trimmed.prefix(10))…\(trimmed.suffix(6))"
-  }
-
   private var backdrop: some View {
     prLiquidGlassBackdrop()
       .ignoresSafeArea()
-  }
-
-  private enum WizardStep: Int { case mode = 0, source, details, review }
-
-  private var currentStep: WizardStep {
-    // Mode step is "complete" the moment a mode is chosen — since `.single` is
-    // the default, the stepper advances immediately to source on first paint.
-    switch createMode {
-    case .single:
-      if selectedOption == nil { return .source }
-    case .queue, .integration:
-      if selectedLaneIds.isEmpty { return .source }
-    }
-    if title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return .details }
-    return .review
-  }
-
-  private var stepper: some View {
-    ScrollView(.horizontal, showsIndicators: false) {
-      HStack(spacing: 6) {
-        stepPill(label: "Mode", step: .mode)
-        stepConnector(filled: currentStep.rawValue > WizardStep.mode.rawValue)
-        stepPill(label: "Source", step: .source)
-        stepConnector(filled: currentStep.rawValue > WizardStep.source.rawValue)
-        stepPill(label: "Details", step: .details)
-        stepConnector(filled: currentStep.rawValue > WizardStep.details.rawValue)
-        stepPill(label: "Review", step: .review)
-      }
-      .padding(.horizontal, 16)
-    }
-    .padding(.bottom, 10)
-  }
-
-  @ViewBuilder
-  private func stepPill(label: String, step: WizardStep) -> some View {
-    let isActive = step == currentStep
-    let isComplete = step.rawValue < currentStep.rawValue
-    HStack(spacing: 5) {
-      if isComplete {
-        Image(systemName: "checkmark")
-          .font(.system(size: 9, weight: .heavy))
-          .foregroundStyle(PrGlassPalette.success)
-      } else {
-        Circle()
-          .fill(isActive ? Color.white : Color.white.opacity(0.3))
-          .frame(width: 6, height: 6)
-      }
-      Text(label)
-        .font(.system(size: 11, weight: .semibold))
-        .foregroundStyle(isActive ? .white : (isComplete ? PrGlassPalette.success : ADEColor.textMuted))
-        .lineLimit(1)
-        .fixedSize(horizontal: true, vertical: false)
-    }
-    .padding(.horizontal, 10)
-    .padding(.vertical, 6)
-    .background(
-      ZStack {
-        if isActive {
-          Capsule().fill(PrGlassPalette.accentGradient)
-        } else if isComplete {
-          Capsule().fill(PrGlassPalette.success.opacity(0.14))
-        } else {
-          Capsule().fill(Color.white.opacity(0.04))
-        }
-      }
-    )
-    .overlay(
-      Capsule()
-        .strokeBorder(
-          isActive ? Color.white.opacity(0.28) : (isComplete ? PrGlassPalette.success.opacity(0.35) : Color.white.opacity(0.10)),
-          lineWidth: 0.5
-        )
-    )
-    .overlay(
-      Capsule()
-        .inset(by: 1)
-        .stroke(Color.white.opacity(isActive ? 0.22 : 0), lineWidth: 0.5)
-        .blendMode(.plusLighter)
-    )
-    .shadow(color: isActive ? PrGlassPalette.purpleDeep.opacity(0.55) : .clear, radius: 12, y: 3)
-  }
-
-  private func stepConnector(filled: Bool) -> some View {
-    Rectangle()
-      .fill(filled ? PrGlassPalette.success.opacity(0.55) : Color.white.opacity(0.08))
-      .frame(height: 1)
-      .frame(maxWidth: 20)
-      .shadow(color: filled ? PrGlassPalette.success.opacity(0.45) : .clear, radius: 4)
   }
 
   var body: some View {
     NavigationStack {
       ScrollView {
         VStack(spacing: 0) {
-          heroHeader
           if let errorMessage, !syncService.connectionState.isHostUnreachable {
             ADENoticeCard(
               title: "Create PR failed",
@@ -386,21 +290,24 @@ struct CreatePrWizardView: View {
               action: nil
             )
             .padding(.horizontal, 16)
+            .padding(.top, 8)
             .padding(.bottom, 12)
           }
-          modeSelectorSection
+          if !singleModeOnly {
+            modeSelectorSection
+          }
           switch createMode {
           case .single:
-            laneSection
+            branchesSection
             aiTitleSection
             strategySection
-            targetSection
             stanceSection
             reviewersSection
             labelsSection
             finalReviewSection
           case .queue:
             multiLaneSection(mode: .queue)
+            targetBranchSection(title: "Target branch")
             queueSettingsSection
             stanceSection
             reviewersSection
@@ -408,9 +315,9 @@ struct CreatePrWizardView: View {
             queueReviewSection
           case .integration:
             multiLaneSection(mode: .integration)
+            targetBranchSection(title: "Target branch")
             integrationSettingsSection
             aiTitleSection
-            targetSection
             stanceSection
             reviewersSection
             labelsSection
@@ -434,14 +341,24 @@ struct CreatePrWizardView: View {
         }
       }
       .onAppear {
+        if singleModeOnly {
+          createMode = .single
+        }
         refreshCachedLaneOptions()
         if selectedLaneId.isEmpty {
-          selectedLaneId = selectedOption?.id ?? ""
+          if let initialLaneId,
+             fallbackCreateLanes.contains(where: { $0.id == initialLaneId }) {
+            selectedLaneId = initialLaneId
+          } else if let firstEligible = eligibleLaneOptions.first {
+            selectedLaneId = firstEligible.id
+          } else if let firstSource = fallbackCreateLanes.first {
+            selectedLaneId = firstSource.id
+          }
         }
         if baseBranch.isEmpty {
           baseBranch = defaultTargetBranch
         }
-        if !draftLoadedOnce, selectedOption != nil {
+        if !draftLoadedOnce, selectedLane != nil, selectedLaneCanCreate {
           draftLoadedOnce = true
           Task { await generateDraft(initial: true) }
         }
@@ -455,7 +372,7 @@ struct CreatePrWizardView: View {
         labelsInput = ""
         reviewersInput = ""
         errorMessage = nil
-        if selectedOption != nil {
+        if selectedLaneCanCreate {
           Task { await generateDraft(initial: false) }
         }
       }
@@ -486,104 +403,121 @@ struct CreatePrWizardView: View {
     }
   }
 
-  // MARK: - Hero chrome
+  // MARK: - Branches (source + target)
 
-  private var heroHeader: some View {
-    VStack(alignment: .leading, spacing: 6) {
-      PrEyebrow(text: "NEW PR · \(branchRefForHeader)")
-      Text("Open pull request")
-        .font(.system(size: 28, weight: .heavy, design: .default))
-        .tracking(-0.7)
-        .foregroundStyle(ADEColor.textPrimary)
-        .lineLimit(2)
-    }
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .padding(.horizontal, 22)
-    .padding(.top, 4)
-    .padding(.bottom, 14)
-  }
-
-  // MARK: - Lane picker (only shown when multiple lanes are eligible)
-
-  @ViewBuilder
-  private var laneSection: some View {
-    if eligibleLaneOptions.count > 1 {
-      PrSectionHdr(title: "Lane")
-      VStack(spacing: 0) {
-        ForEach(Array(eligibleLaneOptions.enumerated()), id: \.element.id) { index, option in
-          if index > 0 { PrRowSeparator() }
-          Button {
-            selectedLaneId = option.id
-          } label: {
-            LaneRow(option: option, selected: option.id == selectedOption?.id)
+  private var branchesSection: some View {
+    VStack(spacing: 0) {
+      PrSectionHdr(title: "Branches")
+      VStack(alignment: .leading, spacing: 14) {
+        branchPickerField(label: "Source branch") {
+          if fallbackCreateLanes.isEmpty {
+            Text("No lanes are available to open a PR.")
+              .font(.subheadline)
+              .foregroundStyle(ADEColor.textSecondary)
+          } else {
+            WorkLanePickerDropdown(
+              lanes: fallbackCreateLanes,
+              selectedLaneId: $selectedLaneId,
+              showsAutoCreateOption: false,
+              laneSubtitle: laneEligibilitySubtitle(for:),
+              isLaneDisabled: isSourceLaneDisabled(_:)
+            )
           }
-          .buttonStyle(.plain)
+        }
+
+        branchPickerField(label: "Target branch") {
+          PrTargetBranchPickerDropdown(
+            targets: branchTargetOptions,
+            selectedBranch: $baseBranch
+          )
+        }
+
+        if let lane = selectedLane {
+          comparisonStats(for: lane)
+        }
+
+        if let blockedReason = selectedLaneBlockedReason {
+          PrWarnBanner(text: blockedReason, tint: ADEColor.warning)
         }
       }
+      .padding(14)
       .wizardCard()
       .padding(.horizontal, 16)
       .padding(.bottom, 8)
-
-      if !blockedLaneOptions.isEmpty {
-        blockedLanesNotice
-      }
-    } else if eligibleLaneOptions.isEmpty {
-      PrSectionHdr(title: "Lane")
-      Text("No lanes are eligible to open a PR right now.")
-        .font(.subheadline)
-        .foregroundStyle(ADEColor.textSecondary)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(14)
-        .wizardCard()
-        .padding(.horizontal, 16)
-        .padding(.bottom, 8)
     }
   }
 
-  private var blockedLanesNotice: some View {
+  private func branchPickerField<Content: View>(label: String, @ViewBuilder content: () -> Content) -> some View {
     VStack(alignment: .leading, spacing: 6) {
-      HStack(spacing: 6) {
-        Image(systemName: "lock.fill")
-          .font(.caption2.weight(.semibold))
-          .foregroundStyle(ADEColor.warning)
-        Text("Not eligible (\(blockedLaneOptions.count))")
-          .font(.caption2.weight(.semibold))
-          .foregroundStyle(ADEColor.textSecondary)
-      }
-      ForEach(visibleBlockedLaneOptions) { entry in
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
-          Text(entry.laneName)
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(ADEColor.textPrimary)
-          if let reason = Self.blockedCreateReason(for: entry), !reason.isEmpty {
-            Text(reason)
-              .font(.caption2)
-              .foregroundStyle(ADEColor.textMuted)
-              .lineLimit(2)
-          }
-          Spacer(minLength: 0)
-        }
-      }
-      if canToggleBlockedLanes {
-        Button {
-          showAllBlockedLanes.toggle()
-        } label: {
-          HStack(spacing: 5) {
-            Text(blockedLaneToggleTitle)
-            Image(systemName: showAllBlockedLanes ? "chevron.up" : "chevron.down")
-              .font(.system(size: 9, weight: .bold))
-          }
-          .font(.caption2.weight(.semibold))
-          .foregroundStyle(ADEColor.textSecondary)
-          .frame(maxWidth: .infinity, alignment: .leading)
-          .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .padding(.top, 2)
+      Text(label.uppercased())
+        .font(.system(size: 10, weight: .bold))
+        .tracking(1.0)
+        .foregroundStyle(ADEColor.textSecondary)
+      content()
+    }
+  }
+
+  private func comparisonStats(for lane: LaneSummary) -> some View {
+    let eligibility = eligibility(for: lane.id)
+    let ahead = eligibility?.commitsAheadOfBase ?? lane.status.ahead
+    let behind = lane.status.behind
+    let dirty = eligibility?.dirty ?? lane.status.dirty
+
+    return VStack(alignment: .leading, spacing: 8) {
+      Text("COMPARISON")
+        .font(.system(size: 10, weight: .bold))
+        .tracking(1.0)
+        .foregroundStyle(ADEColor.textSecondary)
+      HStack(spacing: 8) {
+        comparisonStat(label: "Ahead", value: "\(ahead)", tint: ADEColor.textPrimary)
+        comparisonStat(label: "Behind", value: "\(behind)", tint: ADEColor.textSecondary)
+        comparisonStat(
+          label: "Status",
+          value: dirty ? "Dirty" : "Clean",
+          tint: dirty ? ADEColor.warning : ADEColor.success
+        )
       }
     }
-    .padding(.horizontal, 22)
-    .padding(.bottom, 12)
+  }
+
+  private func comparisonStat(label: String, value: String, tint: Color) -> some View {
+    VStack(spacing: 4) {
+      Text(value)
+        .font(.system(size: 18, weight: .bold, design: .rounded))
+        .foregroundStyle(tint)
+        .lineLimit(1)
+        .minimumScaleFactor(0.75)
+      Text(label.uppercased())
+        .font(.system(size: 9, weight: .bold))
+        .tracking(0.8)
+        .foregroundStyle(ADEColor.textMuted)
+    }
+    .frame(maxWidth: .infinity)
+    .padding(.vertical, 10)
+    .background(
+      RoundedRectangle(cornerRadius: 10, style: .continuous)
+        .fill(PrGlassPalette.ink.opacity(0.45))
+    )
+    .overlay(
+      RoundedRectangle(cornerRadius: 10, style: .continuous)
+        .strokeBorder(Color.white.opacity(0.08), lineWidth: 0.5)
+    )
+  }
+
+  private func targetBranchSection(title: String) -> some View {
+    VStack(spacing: 0) {
+      PrSectionHdr(title: title)
+      VStack(alignment: .leading, spacing: 6) {
+        PrTargetBranchPickerDropdown(
+          targets: branchTargetOptions,
+          selectedBranch: $baseBranch
+        )
+      }
+      .padding(14)
+      .wizardCard()
+      .padding(.horizontal, 16)
+      .padding(.bottom, 8)
+    }
   }
 
   // MARK: - AI-drafted title card
@@ -642,7 +576,7 @@ struct CreatePrWizardView: View {
             )
           }
           .buttonStyle(.plain)
-          .disabled(isGenerating || selectedOption == nil)
+          .disabled(isGenerating || selectedLane == nil || !selectedLaneCanCreate)
 
           Button {
             editPresented = true
@@ -720,29 +654,7 @@ struct CreatePrWizardView: View {
     }
   }
 
-  // MARK: - Target
-
-  private var targetSection: some View {
-    VStack(spacing: 0) {
-      PrSectionHdr(title: "Target")
-      VStack(spacing: 0) {
-        ForEach(Array(availableTargets.enumerated()), id: \.element.id) { index, target in
-          if index > 0 { PrRowSeparator() }
-          Button {
-            baseBranch = target.id
-          } label: {
-            TargetRowView(target: target, selected: target.id == baseBranch)
-          }
-          .buttonStyle(.plain)
-        }
-      }
-      .wizardCard()
-      .padding(.horizontal, 16)
-      .padding(.bottom, 8)
-    }
-  }
-
-  // MARK: - Stance
+  // MARK: - Strategy
 
   private var stanceSection: some View {
     VStack(spacing: 0) {
@@ -882,16 +794,19 @@ struct CreatePrWizardView: View {
   private var modeSelectorSection: some View {
     VStack(spacing: 0) {
       PrSectionHdr(title: "Mode")
-      HStack(spacing: 8) {
-        ForEach(CreatePrMode.allCases) { mode in
-          ModeCard(
-            mode: mode,
-            selected: mode == createMode,
-            action: { createMode = mode }
-          )
+      ScrollView(.horizontal, showsIndicators: false) {
+        HStack(spacing: 8) {
+          ForEach(CreatePrMode.allCases) { mode in
+            ModeCard(
+              mode: mode,
+              selected: mode == createMode,
+              action: { createMode = mode }
+            )
+            .frame(width: 148)
+          }
         }
+        .padding(.horizontal, 16)
       }
-      .padding(.horizontal, 16)
       .padding(.bottom, 12)
     }
   }
@@ -1137,7 +1052,7 @@ struct CreatePrWizardView: View {
 
     switch createMode {
     case .single:
-      guard let option = selectedOption else {
+      guard let option = selectedOption, selectedLaneCanCreate else {
         isSubmitting = false
         return
       }
@@ -1206,18 +1121,14 @@ struct CreatePrWizardView: View {
 
   private func refreshCachedLaneOptions() {
     cachedLaneOptions = sourceEligibleLaneOptions
-    cachedBlockedLaneOptions = sourceBlockedLaneOptions
     didCacheLaneOptions = true
-    if sourceBlockedLaneOptions.count <= Self.collapsedBlockedLaneLimit {
-      showAllBlockedLanes = false
-    }
   }
 
   // MARK: - Draft generation
 
   @MainActor
   private func generateDraft(initial: Bool) async {
-    guard let option = selectedOption else { return }
+    guard selectedLaneCanCreate, let option = selectedOption else { return }
     isGenerating = true
     defer { isGenerating = false }
 
@@ -1318,6 +1229,13 @@ fileprivate enum PrStrategyChoice: String {
   case prTarget = "pr_target"
   case laneBase = "lane_base"
 
+  var title: String {
+    switch self {
+    case .prTarget: return "PR target"
+    case .laneBase: return "Lane base"
+    }
+  }
+
   var subtitle: String {
     switch self {
     case .prTarget:
@@ -1356,8 +1274,8 @@ fileprivate struct StrategyRow: View {
 
         radio
         VStack(alignment: .leading, spacing: 2) {
-          Text(choice.rawValue)
-            .font(.system(size: 12, weight: .bold, design: .monospaced))
+          Text(choice.title)
+            .font(.system(size: 12, weight: .bold))
             .foregroundStyle(ADEColor.textPrimary)
           Text(choice.subtitle)
             .font(.system(size: 11.5))
@@ -1396,69 +1314,10 @@ fileprivate struct StrategyRow: View {
   }
 }
 
-fileprivate struct TargetOption: Identifiable, Equatable {
-  let id: String
-  let icon: String
-  let label: String
-  let subtitle: String
-}
-
 fileprivate struct IntegrationTargetOption: Identifiable, Equatable {
   let id: String
   let branchRef: String
   let subtitle: String
-}
-
-fileprivate struct TargetRowView: View {
-  let target: TargetOption
-  let selected: Bool
-
-  var body: some View {
-    HStack(spacing: 10) {
-      RoundedRectangle(cornerRadius: 2, style: .continuous)
-        .fill(
-          LinearGradient(
-            colors: [PrGlassPalette.purpleBright, PrGlassPalette.purpleDeep],
-            startPoint: .top, endPoint: .bottom
-          )
-        )
-        .frame(width: 3)
-        .opacity(selected ? 1.0 : 0.0)
-        .shadow(color: PrGlassPalette.purple.opacity(selected ? 0.5 : 0), radius: 6)
-
-      ZStack {
-        RoundedRectangle(cornerRadius: 7, style: .continuous)
-          .fill(selected ? PrGlassPalette.purple.opacity(0.2) : PrGlassPalette.ink.opacity(0.45))
-        RoundedRectangle(cornerRadius: 7, style: .continuous)
-          .strokeBorder(selected ? PrGlassPalette.purple.opacity(0.4) : Color.white.opacity(0.08), lineWidth: 0.5)
-        Text(target.icon)
-          .font(.system(size: 14, weight: .bold, design: .monospaced))
-          .foregroundStyle(selected ? PrGlassPalette.purple : ADEColor.textSecondary)
-      }
-      .frame(width: 26, height: 26)
-
-      VStack(alignment: .leading, spacing: 1) {
-        Text(target.label)
-          .font(.system(size: 12, weight: .semibold, design: .monospaced))
-          .foregroundStyle(ADEColor.textPrimary)
-          .lineLimit(1)
-        Text(target.subtitle)
-          .font(.system(size: 10, design: .monospaced))
-          .foregroundStyle(ADEColor.textMuted)
-          .lineLimit(1)
-      }
-      Spacer(minLength: 0)
-      if selected {
-        Image(systemName: "checkmark")
-          .font(.system(size: 12, weight: .bold))
-          .foregroundStyle(PrGlassPalette.purple)
-      }
-    }
-    .padding(.leading, 10)
-    .padding(.trailing, 14)
-    .padding(.vertical, 11)
-    .contentShape(Rectangle())
-  }
 }
 
 fileprivate struct StanceSegment: View {
@@ -1536,64 +1395,6 @@ fileprivate struct NextStepRow: View {
     }
     .padding(.horizontal, 14)
     .padding(.vertical, 10)
-  }
-}
-
-fileprivate struct LaneRow: View {
-  let option: CreatePrLaneOption
-  let selected: Bool
-
-  var body: some View {
-    HStack(spacing: 10) {
-      RoundedRectangle(cornerRadius: 2, style: .continuous)
-        .fill(
-          LinearGradient(
-            colors: [PrGlassPalette.purpleBright, PrGlassPalette.purpleDeep],
-            startPoint: .top, endPoint: .bottom
-          )
-        )
-        .frame(width: 3)
-        .opacity(selected ? 1.0 : 0.0)
-        .shadow(color: PrGlassPalette.purple.opacity(selected ? 0.5 : 0), radius: 6)
-
-      ZStack {
-        RoundedRectangle(cornerRadius: 7, style: .continuous)
-          .fill(selected ? PrGlassPalette.purple.opacity(0.2) : PrGlassPalette.ink.opacity(0.45))
-        RoundedRectangle(cornerRadius: 7, style: .continuous)
-          .strokeBorder(selected ? PrGlassPalette.purple.opacity(0.4) : Color.white.opacity(0.08), lineWidth: 0.5)
-        Image(systemName: "arrow.triangle.branch")
-          .font(.system(size: 11, weight: .semibold))
-          .foregroundStyle(selected ? PrGlassPalette.purple : ADEColor.textSecondary)
-      }
-      .frame(width: 26, height: 26)
-
-      VStack(alignment: .leading, spacing: 1) {
-        Text(option.title)
-          .font(.system(size: 13, weight: .semibold))
-          .foregroundStyle(ADEColor.textPrimary)
-          .lineLimit(1)
-        Text(option.branchRef)
-          .font(.system(size: 10.5, design: .monospaced))
-          .foregroundStyle(ADEColor.textMuted)
-          .lineLimit(1)
-        if let subtitle = option.subtitle, !subtitle.isEmpty {
-          Text(subtitle)
-            .font(.system(size: 10))
-            .foregroundStyle(ADEColor.textSecondary)
-            .lineLimit(1)
-        }
-      }
-      Spacer(minLength: 0)
-      if selected {
-        Image(systemName: "checkmark")
-          .font(.system(size: 12, weight: .bold))
-          .foregroundStyle(PrGlassPalette.purple)
-      }
-    }
-    .padding(.leading, 10)
-    .padding(.trailing, 14)
-    .padding(.vertical, 11)
-    .contentShape(Rectangle())
   }
 }
 

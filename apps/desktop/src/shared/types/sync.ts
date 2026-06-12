@@ -552,6 +552,15 @@ export type SyncChatSubscribeSnapshotPayload = {
    * host's seq stream may have restarted (e.g. host process restart).
    */
   resumed?: boolean;
+  /**
+   * Whether a turn is currently running for this session, taken from the live
+   * agent chat service at subscribe time. Snapshots are byte-capped transcript
+   * tails, so a long-running turn's `status: started` event can fall outside
+   * the tail — without this flag a client subscribing mid-turn cannot tell
+   * the session is streaming. Absent on hosts that predate the field and when
+   * the host has no live summary for the session.
+   */
+  turnActive?: boolean;
 };
 
 export type SyncChatUnsubscribePayload = {
@@ -762,6 +771,8 @@ export type SyncRemoteCommandAction =
   | "git.getConflictState"
   | "git.rebaseContinue"
   | "git.rebaseAbort"
+  | "git.mergeContinue"
+  | "git.mergeAbort"
   | "git.listBranches"
   | "git.checkoutBranch"
   | "conflicts.getLaneStatus"

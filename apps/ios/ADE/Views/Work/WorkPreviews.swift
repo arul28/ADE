@@ -212,6 +212,7 @@ private enum WorkPreviewData {
       sequence: 1,
       event: .userMessage(
         text: "The iOS Work tab is lagging when I switch tabs and focus the chat input.",
+        attachments: nil,
         turnId: "turn-1",
         steerId: nil,
         deliveryState: "delivered",
@@ -432,9 +433,9 @@ private enum WorkPreviewData {
       optimisticPendingSteers: [],
       localEchoMessages: [],
       expandedToolCardIds: Binding<Set<String>>.constant(["cmd-1"]),
-      collapsedChangedFileGroupIds: Binding<Set<String>>.constant([]),
       artifactContent: .constant([:]),
       fullscreenImage: Binding<WorkFullscreenImage?>.constant(nil),
+      artifactDrawerPresented: .constant(false),
       artifactRefreshInFlight: false,
       artifactRefreshError: nil,
       sending: .constant(false),

@@ -28,6 +28,8 @@ struct WorkSessionGroup: Identifiable, Equatable {
   let icon: Icon
   let tint: Color
   let sessions: [TerminalSessionSummary]
+  let laneColor: String?
+  let laneIcon: LaneIcon?
 
   enum Icon: Equatable {
     case statusDot
@@ -35,11 +37,31 @@ struct WorkSessionGroup: Identifiable, Equatable {
     case none
   }
 
+  init(
+    id: String,
+    label: String,
+    icon: Icon,
+    tint: Color,
+    sessions: [TerminalSessionSummary],
+    laneColor: String? = nil,
+    laneIcon: LaneIcon? = nil
+  ) {
+    self.id = id
+    self.label = label
+    self.icon = icon
+    self.tint = tint
+    self.sessions = sessions
+    self.laneColor = laneColor
+    self.laneIcon = laneIcon
+  }
+
   static func == (lhs: WorkSessionGroup, rhs: WorkSessionGroup) -> Bool {
     lhs.id == rhs.id
       && lhs.label == rhs.label
       && lhs.icon == rhs.icon
       && lhs.tint == rhs.tint
+      && lhs.laneColor == rhs.laneColor
+      && lhs.laneIcon == rhs.laneIcon
       && lhs.sessions.map(\.id) == rhs.sessions.map(\.id)
   }
 }
@@ -234,7 +256,15 @@ func workSessionGroupsByLane(
   let knownLaneIds = Set(orderedLanes.map(\.id))
   for lane in orderedLanes {
     guard let list = byLaneId[lane.id], !list.isEmpty else { continue }
-    groups.append(WorkSessionGroup(id: "lane:\(lane.id)", label: lane.name, icon: .laneBranch, tint: ADEColor.textSecondary, sessions: list))
+    groups.append(WorkSessionGroup(
+      id: "lane:\(lane.id)",
+      label: lane.name,
+      icon: .laneBranch,
+      tint: LaneColorPalette.displayColor(forHex: lane.color),
+      sessions: list,
+      laneColor: lane.color,
+      laneIcon: lane.icon
+    ))
   }
   // Surface any sessions whose lane isn't in the ordered list (e.g., soft-deleted lanes)
   // as their own per-lane groups so users still recognize which branch each belongs to.

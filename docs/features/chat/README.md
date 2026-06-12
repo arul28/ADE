@@ -323,20 +323,38 @@ free the underlying server sooner). Teardown routes through
 `teardownRuntime` distinguishes **terminal** close reasons
 (`handle_close`, `ended_session`, `model_switch`) from **non-terminal**
 ones (`idle_ttl`, `budget_eviction`, `pool_compaction`, `paused_run`,
-`project_close`, `shutdown`). For Claude runtimes only, a non-terminal
-teardown preserves resume state: the service pins
-`runtime.sdkSessionId` to the last known Claude SDK session id before releasing
-the session, persists chat state immediately, and skips the usual
+`project_close`, `shutdown`). For Claude and Cursor runtimes, a
+non-terminal teardown preserves resume state: the service persists chat
+state immediately (Claude additionally pins `runtime.sdkSessionId` to
+the last known Claude SDK session id before releasing the session;
+Cursor persists with its SDK agent id intact) and skips the usual
 `runtimeInvalidated = true` + `clearLaneDirectiveKey` cleanup. The next
-turn on that chat can therefore rehydrate the same Claude SDK session
+turn on that chat can therefore rehydrate the same provider SDK session
 instead of creating a fresh one, even though the SDK process was
-released to reclaim budget or compact the pool. Terminal closes still
-run the full invalidation path so runtime stops and explicit model
-switches don't leave stale continuation pointers behind. Cursor SDK
+released to reclaim budget or compact the pool (a dead pooled Cursor
+worker detected during turn setup also tears down with
+`pool_compaction`, keeping that path non-terminal). Terminal closes
+still run the full invalidation path so runtime stops and explicit
+model switches don't leave stale continuation pointers behind. Cursor SDK
 model switches are deferred while a turn is busy: the session model
 updates immediately, the active turn keeps reporting the model it
 started with, and runtime teardown waits until the turn finishes so
 approvals and stream callbacks are not orphaned mid-run.
+
+Cursor resume is best-effort on the SDK side: acquiring the pooled
+worker can come back with a **different** agent id than the one ADE
+persisted (the SDK opened a fresh agent instead of resuming). When that
+happens, `stageCursorSdkAgentRotationRecovery` stages a continuity
+recovery block into `pendingReconstructionContext` — a note naming the
+previous and rotated agent ids (with an instruction not to claim access
+to Cursor-side state that was not restored), the session's continuity
+summary, and a recent-conversation tail — and clears the lane-directive
+dedupe key so the brand-new agent gets the lane execution directive
+re-emitted on its first turn. The rotation is logged as
+`agent_chat.cursor_sdk_agent_rotated_after_resume`. Pending
+reconstruction context (from this path or session recovery) is injected
+ahead of the next prompt under the label
+`System context (ADE continuity, do not echo verbatim):`.
 
 On app shutdown the service exposes `forceDisposeAll()` — called from
 `runImmediateProcessCleanup()` in `main.ts`. It stops the cleanup timer,

@@ -236,12 +236,8 @@ struct WorkToolCardView: View {
   }
 }
 
-/// Minimal "Tool calls (N)" panel — the iOS counterpart to the desktop
-/// `Tool calls (n)` block. Collapsed by default: just a single tappable row
-/// showing the count and a `Last: <verb> <target>` breadcrumb. Tap the header
-/// to reveal the row list; tap a row to reveal its output inline beneath it.
-/// No glass card, no per-tool icons, no count pill chip — the row itself
-/// carries the count.
+/// Minimal "Tool calls (N)" panel — flat desktop parity. No card chrome: just a
+/// tappable header row and an indented member list when expanded.
 struct WorkToolCallsPanelView: View {
   let group: WorkToolGroupModel
   let isExpanded: Bool
@@ -253,45 +249,31 @@ struct WorkToolCallsPanelView: View {
     VStack(alignment: .leading, spacing: 0) {
       header
       if isExpanded {
-        Divider()
-          .background(ADEColor.glassBorder.opacity(0.4))
-          .padding(.top, 8)
-        VStack(alignment: .leading, spacing: 0) {
+        VStack(alignment: .leading, spacing: 2) {
           ForEach(group.members) { member in
             memberRow(member)
           }
         }
-        .padding(.top, 4)
+        .padding(.leading, 16)
+        .padding(.top, 6)
       }
     }
-    .padding(.horizontal, 14)
-    .padding(.vertical, 10)
-    .background(ADEColor.cardBackground.opacity(0.4), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-    .overlay(
-      RoundedRectangle(cornerRadius: 14, style: .continuous)
-        .strokeBorder(ADEColor.glassBorder, lineWidth: 1)
-    )
     .accessibilityElement(children: .contain)
     .accessibilityLabel("Tool calls cluster, \(group.count) calls, \(isExpanded ? "expanded" : "collapsed")")
   }
 
   private var header: some View {
     Button(action: onToggle) {
-      HStack(alignment: .center, spacing: 8) {
+      HStack(alignment: .center, spacing: 6) {
         Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
-          .font(.system(size: 11, weight: .bold))
-          .foregroundStyle(ADEColor.textMuted)
+          .font(.system(size: 9, weight: .bold))
+          .foregroundStyle(ADEColor.textMuted.opacity(0.65))
         Text("Tool calls")
-          .font(.subheadline.weight(.semibold))
-          .foregroundStyle(ADEColor.textPrimary)
-        Text("\(group.count)")
-          .font(.caption2.weight(.bold).monospacedDigit())
+          .font(.caption.weight(.medium))
           .foregroundStyle(ADEColor.textMuted)
-          .padding(.horizontal, 5)
-          .padding(.vertical, 1)
-          .background(ADEColor.textMuted.opacity(0.14), in: Capsule(style: .continuous))
-        // Collapsed: a one-line peek at the latest entry — status glyph, mono
-        // kind-slug, then the arg text, matching desktop's work-log header.
+        Text("(\(group.count))")
+          .font(.caption2.monospacedDigit())
+          .foregroundStyle(ADEColor.textMuted.opacity(0.55))
         if !isExpanded, let latest = group.latest {
           WorkToolStatusGlyph(status: latest.status)
           Text(memberSlug(latest))
@@ -300,14 +282,15 @@ struct WorkToolCallsPanelView: View {
             .lineLimit(1)
           if let target = memberTarget(latest), !target.isEmpty {
             Text(target)
-              .font(.caption2.monospaced())
-              .foregroundStyle(ADEColor.textMuted)
+              .font(.caption)
+              .foregroundStyle(ADEColor.textPrimary.opacity(0.88))
               .lineLimit(1)
-              .truncationMode(.middle)
+              .truncationMode(.tail)
           }
         }
         Spacer(minLength: 0)
       }
+      .padding(.vertical, 2)
     }
     .buttonStyle(.plain)
   }
@@ -341,10 +324,6 @@ struct WorkToolCallsPanelView: View {
           Spacer(minLength: 0)
         }
         if expanded, let detail = memberDetail(member) {
-          Divider()
-            .background(ADEColor.glassBorder.opacity(0.4))
-            .padding(.leading, 17)
-            .padding(.top, 4)
           ScrollView {
             Text(detail)
               .frame(maxWidth: .infinity, alignment: .leading)
@@ -385,11 +364,11 @@ struct WorkToolCallsPanelView: View {
   private func memberTarget(_ member: WorkToolGroupMember) -> String? {
     switch member {
     case .tool(let card):
-      return workToolResultPreview(card.argsText)
+      return workToolArgPreview(toolName: card.toolName, argsText: card.argsText)
         ?? workToolResultPreview(card.resultText)
-        ?? toolDisplayName(card.toolName)
     case .command(let card):
-      return card.command.isEmpty ? nil : card.command
+      guard !card.command.isEmpty else { return nil }
+      return workSummarizeInlineText(card.command, maxChars: 140)
     case .fileChange(let card):
       return workReferenceLabel(for: card.path)
     }
@@ -398,7 +377,16 @@ struct WorkToolCallsPanelView: View {
   private func memberDetail(_ member: WorkToolGroupMember) -> String? {
     switch member {
     case .tool(let card):
-      if let result = card.resultText, !result.isEmpty { return result }
+      if let result = card.resultText, !result.isEmpty {
+        let trimmed = result.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed == "{}" || trimmed == "[]" {
+          return workToolArgPreview(toolName: card.toolName, argsText: card.argsText)
+        }
+        return result
+      }
+      if let preview = workToolArgPreview(toolName: card.toolName, argsText: card.argsText) {
+        return preview
+      }
       if let args = card.argsText, !args.isEmpty { return args }
       return nil
     case .command(let card):
@@ -421,62 +409,52 @@ struct WorkToolCallsPanelView: View {
   }
 }
 
-/// Minimal "N files changed" panel. Header-only by default; tap to reveal one
-/// row per file with diff stats; tap a row to reveal the full diff inline.
+/// Minimal "Files changed (N)" panel — flat desktop/tool-calls parity. Collapsed
+/// by default; tap to reveal one row per file; tap a row for the full diff.
 struct WorkChangedFilesPanelView: View {
   let group: WorkChangedFilesGroupModel
   let isExpanded: Bool
   let onToggle: () -> Void
   let onUndo: (() -> Void)?
 
-  // Desktop parity: the "N files changed" panel is OPEN by default. The cluster
-  // is the headline of the turn's work, so the file rows + stats show without a
-  // tap. Open/closed state is owned by the parent (`isExpanded`/`onToggle`) so
-  // it survives the row scrolling out of and back into the lazy stack — the
-  // call site seeds it open by default.
   @State private var expandedFileIds: Set<String> = []
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
       header
       if isExpanded {
-        Divider()
-          .background(ADEColor.glassBorder.opacity(0.4))
-          .padding(.top, 8)
         VStack(alignment: .leading, spacing: 0) {
           ForEach(group.files) { file in
             fileRow(file)
           }
         }
-        .padding(.top, 4)
+        .padding(.leading, 16)
+        .padding(.top, 6)
       }
     }
-    .padding(.horizontal, 12)
-    .padding(.vertical, 8)
-    .background(ADEColor.cardBackground.opacity(0.4), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-    .overlay(
-      RoundedRectangle(cornerRadius: 12, style: .continuous)
-        .strokeBorder(ADEColor.glassBorder, lineWidth: 1)
-    )
     .accessibilityElement(children: .contain)
     .accessibilityLabel("Files changed cluster, \(group.count) files, \(isExpanded ? "expanded" : "collapsed")")
   }
 
   private var header: some View {
-    HStack(alignment: .center, spacing: 10) {
+    HStack(alignment: .center, spacing: 6) {
       Button(action: onToggle) {
-        HStack(alignment: .center, spacing: 10) {
+        HStack(alignment: .center, spacing: 6) {
           Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
-            .font(.system(size: 10, weight: .semibold))
+            .font(.system(size: 9, weight: .bold))
+            .foregroundStyle(ADEColor.textMuted.opacity(0.65))
+          Text("Files changed")
+            .font(.caption.weight(.medium))
             .foregroundStyle(ADEColor.textMuted)
-          Circle()
-            .fill(headerDotTint)
-            .frame(width: 6, height: 6)
-          Text("\(group.count) \(group.count == 1 ? "file" : "files") changed")
-            .font(.subheadline.weight(.semibold))
-            .foregroundStyle(ADEColor.textPrimary)
+          Text("(\(group.count))")
+            .font(.caption2.monospacedDigit())
+            .foregroundStyle(ADEColor.textMuted.opacity(0.55))
+          if !isExpanded {
+            collapsedPreview
+          }
           Spacer(minLength: 0)
         }
+        .padding(.vertical, 2)
       }
       .buttonStyle(.plain)
       if isExpanded, let onUndo {
@@ -491,6 +469,32 @@ struct WorkChangedFilesPanelView: View {
         }
         .buttonStyle(.plain)
       }
+    }
+  }
+
+  @ViewBuilder
+  private var collapsedPreview: some View {
+    if group.hasRunning {
+      Circle()
+        .fill(ADEColor.warning.opacity(0.85))
+        .frame(width: 6, height: 6)
+    }
+    if group.totalAdditions > 0 {
+      Text("+\(group.totalAdditions)")
+        .font(.caption2.monospacedDigit())
+        .foregroundStyle(ADEColor.success.opacity(0.85))
+    }
+    if group.totalDeletions > 0 {
+      Text("−\(group.totalDeletions)")
+        .font(.caption2.monospacedDigit())
+        .foregroundStyle(ADEColor.danger.opacity(0.85))
+    }
+    if let latest = group.files.last {
+      Text(workReferenceLabel(for: latest.path))
+        .font(.caption)
+        .foregroundStyle(ADEColor.textPrimary.opacity(0.88))
+        .lineLimit(1)
+        .truncationMode(.middle)
     }
   }
 
@@ -539,9 +543,6 @@ struct WorkChangedFilesPanelView: View {
           }
         }
         if expanded {
-          Divider()
-            .background(ADEColor.glassBorder.opacity(0.4))
-            .padding(.top, 4)
           if file.diff.isEmpty {
             Text("No diff payload available.")
               .font(.caption.monospaced())
@@ -570,12 +571,6 @@ struct WorkChangedFilesPanelView: View {
   }
 
   // MARK: – Helpers
-
-  private var headerDotTint: Color {
-    if group.hasRunning { return ADEColor.warning }
-    if group.files.contains(where: { $0.status == .failed }) { return ADEColor.danger }
-    return ADEColor.textMuted.opacity(0.5)
-  }
 
   private func diffLineTint(_ line: String) -> Color {
     if line.hasPrefix("+") && !line.hasPrefix("+++") { return ADEColor.success.opacity(0.9) }

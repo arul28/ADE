@@ -186,7 +186,6 @@ private struct PrsGitHubRootPreviewScreen: View {
           repoPrCount: 21,
           workflowCount: 1
         )
-        .padding(.top, 2)
         .prListRow()
 
         PrGitHubCategoryTabs(
@@ -195,34 +194,32 @@ private struct PrsGitHubRootPreviewScreen: View {
         )
         .prListRow()
 
-        Section("arul28/ADE") {
-          PrRowCard(
-            item: PrsRootPreviewData.github559,
-            linkedPr: PrsRootPreviewData.linkedPr559
-          )
-          .prListRow()
+        PrRowCard(
+          item: PrsRootPreviewData.github559,
+          linkedPr: PrsRootPreviewData.linkedPr559
+        )
+        .prListRowCard()
 
-          PrRowCard(
-            item: PrsRootPreviewData.github346,
-            onLink: {}
-          )
-          .prListRow()
+        PrRowCard(
+          item: PrsRootPreviewData.github346,
+          onLink: {}
+        )
+        .prListRowCard()
 
-          PrRowCard(
-            item: PrsRootPreviewData.github425,
-            onLink: {}
-          )
-          .prListRow()
+        PrRowCard(
+          item: PrsRootPreviewData.github425,
+          onLink: {}
+        )
+        .prListRowCard()
 
-          PrRowCard(
-            item: PrsRootPreviewData.github344,
-            onLink: {}
-          )
-          .prListRow()
-        }
+        PrRowCard(
+          item: PrsRootPreviewData.github344,
+          onLink: {}
+        )
+        .prListRowCard()
       }
       .listStyle(.plain)
-      .listRowSpacing(10)
+      .listRowSpacing(2)
       .scrollContentBackground(.hidden)
       .adeScreenBackground()
       .adeNavigationGlass()

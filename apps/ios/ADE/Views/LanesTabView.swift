@@ -7,6 +7,7 @@ struct LanesTabView: View {
   var isActive = true
 
   @State var laneSnapshots: [LaneListSnapshot] = []
+  @State var pullRequests: [PullRequestListItem] = []
   @State var errorMessage: String?
   @State var searchText = ""
   @State var scope: LaneListScope = .active

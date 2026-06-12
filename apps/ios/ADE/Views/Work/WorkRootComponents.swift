@@ -306,7 +306,7 @@ struct WorkSidebarSectionHeader: View {
 
         Text(group.label)
           .font(.caption.weight(.semibold))
-          .foregroundStyle(ADEColor.textPrimary)
+          .foregroundStyle(group.laneColor != nil ? group.tint : ADEColor.textPrimary)
           .lineLimit(1)
 
         Spacer(minLength: 0)
@@ -335,9 +335,8 @@ struct WorkSidebarSectionHeader: View {
         .fill(group.tint)
         .frame(width: 7, height: 7)
     case .laneBranch:
-      Image(systemName: "arrow.triangle.branch")
-        .font(.system(size: 10, weight: .semibold))
-        .foregroundStyle(group.tint)
+      WorkLaneLogoMark(color: group.tint, laneIcon: group.laneIcon, size: 11)
+        .frame(width: 12, height: 12)
     case .none:
       Color.clear.frame(width: 0, height: 0)
     }

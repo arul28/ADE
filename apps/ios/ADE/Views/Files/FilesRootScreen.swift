@@ -9,11 +9,11 @@ struct FilesProofArtifactsReloadKey: Hashable {
 struct FilesRootScreen: View {
   @Environment(\.accessibilityReduceMotion) var reduceMotion
   @EnvironmentObject var syncService: SyncService
-  @AppStorage("ade.files.showHidden") private var showHidden = false
   @Namespace var fileTransitionNamespace
   var isTabActive = true
 
   @State var workspaces: [FilesWorkspace] = []
+  @State var lanes: [LaneSummary] = []
   @State var selectedWorkspaceId: String?
   @State var quickOpenQuery = ""
   @State var quickOpenResults: [FilesQuickOpenItem] = []
@@ -121,41 +121,28 @@ struct FilesRootScreen: View {
           if let workspace = selectedWorkspace {
             FilesWorkspaceHeader(
               workspaces: workspaces,
+              lanes: lanes,
               selectedWorkspaceId: selectedWorkspaceBinding,
               selectedWorkspace: workspace,
-              showHidden: $showHidden
+              isLive: canUseLiveFileActions
             )
 
-            VStack(alignment: .leading, spacing: 12) {
-              HStack(alignment: .center, spacing: 10) {
-                Label("Browser", systemImage: "folder")
-                  .font(.headline)
-                  .foregroundStyle(ADEColor.textPrimary)
-                Spacer(minLength: 8)
-                Text(canUseLiveFileActions ? "Live" : "Cached")
-                  .font(.caption2.weight(.semibold))
-                  .foregroundStyle(canUseLiveFileActions ? ADEColor.success : ADEColor.textMuted)
-              }
-
-              FilesDirectoryContentsView(
-                workspace: workspace,
-                parentPath: "",
-                showHidden: showHidden,
-                isLive: canUseLiveFileActions,
-                isTabActive: isTabActive,
-                openDirectory: { path in
-                  openDirectory(path, in: workspace)
-                },
-                openFile: { path, line in
-                  openFile(path, in: workspace, focusLine: line)
-                },
-                transitionNamespace: transitionNamespace,
-                selectedFilePath: selectedFileTransitionPath,
-                manualReloadToken: 0
-              )
-              .environmentObject(syncService)
-            }
-            .adeGlassCard(cornerRadius: 18)
+            FilesDirectoryContentsView(
+              workspace: workspace,
+              parentPath: "",
+              isLive: canUseLiveFileActions,
+              isTabActive: isTabActive,
+              openDirectory: { path in
+                openDirectory(path, in: workspace)
+              },
+              openFile: { path, line in
+                openFile(path, in: workspace, focusLine: line)
+              },
+              transitionNamespace: transitionNamespace,
+              selectedFilePath: selectedFileTransitionPath,
+              manualReloadToken: 0
+            )
+            .environmentObject(syncService)
 
             FilesQueryCard(
               title: "Quick open",
@@ -251,7 +238,6 @@ struct FilesRootScreen: View {
             FilesDirectoryScreen(
               workspace: workspace,
               parentPath: parentPath,
-              showHidden: $showHidden,
               isLive: canUseLiveFileActions,
               isTabActive: isTabActive,
               openDirectory: { path in

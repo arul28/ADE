@@ -2,11 +2,9 @@ import SwiftUI
 
 /// A dedicated reasoning surface for the Work chat timeline.
 ///
-/// Collapsed state mirrors desktop's compact "Thought" pill: a single-line
-/// capsule with chevron · brain icon · "Thought" that hugs the assistant
-/// column rather than spanning full width. While the turn is live the header
-/// pulses ("Thinking …") but the body stays collapsed by default; the user
-/// must tap the pill to reveal streaming reasoning tokens.
+/// Collapsed state mirrors desktop's compact "Thought" pill: caret + label only,
+/// with the reasoning body hidden until the user expands. While the turn is
+/// live the header reads "Thinking"; once finished it reads "Thought".
 struct WorkReasoningCard: View {
   let card: WorkEventCardModel
   let isLive: Bool
@@ -25,21 +23,6 @@ struct WorkReasoningCard: View {
 
   private var headerTitle: String {
     isLive ? "Thinking" : "Thought"
-  }
-
-  private var headerTint: Color {
-    isLive ? ADEColor.purpleAccent : ADEColor.textSecondary
-  }
-
-  /// First non-empty line of the reasoning, used as the collapsed one-liner
-  /// preview (desktop shows a truncated peek next to the "Thought" label).
-  private var previewText: String? {
-    guard let bodyText else { return nil }
-    for line in bodyText.split(separator: "\n", omittingEmptySubsequences: true) {
-      let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
-      if !trimmed.isEmpty { return trimmed }
-    }
-    return nil
   }
 
   var body: some View {
@@ -66,37 +49,24 @@ struct WorkReasoningCard: View {
     }
   }
 
-  /// Single collapsed one-liner: caret + brain + "Thinking"/"Thought" + a
-  /// truncated preview. No pulsing brain, no thinking-dots loop — the lone
-  /// streaming animation lives in the tail WorkActivityIndicator so we don't
-  /// stack repeating loops across the transcript.
+  /// Single collapsed one-liner: caret + "Thinking"/"Thought" only. The body
+  /// stays hidden until expand — no preview line, no brain icon.
   private var compactPill: some View {
     Button {
       withAnimation(ADEMotion.quick(reduceMotion: reduceMotion)) {
         isExpanded.toggle()
       }
     } label: {
-      HStack(spacing: 8) {
+      HStack(spacing: 6) {
         Image(systemName: "chevron.right")
           .font(.system(size: 11, weight: .bold))
           .foregroundStyle(ADEColor.textMuted)
           .rotationEffect(isExpanded ? .degrees(90) : .degrees(0))
-        Image(systemName: "brain.head.profile")
-          .font(.system(size: 13, weight: .semibold))
-          .foregroundStyle(headerTint)
         Text(headerTitle)
-          .font(.caption.weight(.semibold))
-          .foregroundStyle(ADEColor.textSecondary)
-        if !isExpanded, let previewText {
-          Text(previewText)
-            .font(.caption2)
-            .foregroundStyle(ADEColor.textMuted)
-            .lineLimit(1)
-            .truncationMode(.tail)
-        }
+          .font(.caption.weight(.medium))
+          .foregroundStyle(isLive ? ADEColor.textSecondary : ADEColor.textMuted)
       }
-      .padding(.horizontal, 10)
-      .padding(.vertical, 5)
+      .padding(.vertical, 2)
       .contentShape(Rectangle())
     }
     .buttonStyle(.plain)

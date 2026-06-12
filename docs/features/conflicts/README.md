@@ -208,6 +208,10 @@ Apply modes: `unstaged | staged | commit`. Apply goes through
 Returns per-state `canContinue` / `canAbort` / `conflictedFiles`.
 Surfaces: `ade.git.getConflictState`, `ade.git.rebaseContinue`,
 `ade.git.rebaseAbort`, `ade.git.mergeContinue`, `ade.git.mergeAbort`.
+The same five operations are registered as sync remote commands
+(`git.getConflictState`, `git.rebaseContinue` / `Abort`,
+`git.mergeContinue` / `Abort`) so the iOS lane conflict banner can
+continue or abort either flow remotely.
 
 ## IPC surface
 

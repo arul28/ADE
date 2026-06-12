@@ -119,12 +119,11 @@ struct WorkComposerInputBanner: View {
 }
 
 /// Compact horizontal strip matching the desktop composer toolbar: small
-/// single-line pills for access / model / reasoning, queued/pending status
+/// single-line pills for access / model / reasoning, pending status
 /// chips, and nothing else. Runtime and reasoning choices are visible chips
 /// so mobile does not hide critical steering behind a native menu.
 struct WorkComposerChipStrip: View {
   let chatSummary: AgentChatSessionSummary?
-  let queuedSteerCount: Int
   let pendingInputCount: Int
   let onOpenModelPicker: (() -> Void)?
   let onSelectRuntimeMode: ((String) -> Void)?
@@ -153,9 +152,6 @@ struct WorkComposerChipStrip: View {
           effortControl(summary: chatSummary)
         }
 
-        if queuedSteerCount > 0 {
-          statusChip(icon: "paperplane.circle.fill", label: "\(queuedSteerCount) staged", tint: ADEColor.accent)
-        }
         if pendingInputCount > 0 {
           statusChip(icon: "hand.raised.circle.fill", label: "\(pendingInputCount) waiting", tint: ADEColor.warning)
         }

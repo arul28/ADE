@@ -34,6 +34,13 @@ enum FilesEditorMode: String, CaseIterable, Identifiable {
     case .diff: return "Diff"
     }
   }
+
+  var systemImage: String {
+    switch self {
+    case .preview: return "doc.text"
+    case .diff: return "arrow.left.arrow.right"
+    }
+  }
 }
 
 enum FilesCodeLayoutMode: String, CaseIterable, Identifiable {
@@ -46,6 +53,13 @@ enum FilesCodeLayoutMode: String, CaseIterable, Identifiable {
     switch self {
     case .wrap: return "Wrap"
     case .scroll: return "Scroll"
+    }
+  }
+
+  var systemImage: String {
+    switch self {
+    case .wrap: return "text.alignleft"
+    case .scroll: return "arrow.left.and.right"
     }
   }
 }
@@ -92,6 +106,13 @@ enum FilesDiffMode: String, CaseIterable, Identifiable {
     switch self {
     case .unstaged: return "Working tree"
     case .staged: return "Staged"
+    }
+  }
+
+  var systemImage: String {
+    switch self {
+    case .unstaged: return "pencil.and.outline"
+    case .staged: return "tray.and.arrow.down"
     }
   }
 }
@@ -153,6 +174,60 @@ func filesIsMarkdown(blob: SyncFileBlob, path: String) -> Bool {
   if ["md", "markdown", "mdx"].contains(ext) { return true }
   if blob.mimeType?.lowercased() == "text/markdown" { return true }
   return blob.languageId?.lowercased() == "markdown"
+}
+
+private let filesImageExtensions: Set<String> = [
+  "png", "jpg", "jpeg", "gif", "webp", "heic", "bmp", "tiff", "ico", "avif", "svg",
+]
+
+func filesIsImagePreviewable(path: String, blob: SyncFileBlob) -> Bool {
+  let ext = (path.lowercased() as NSString).pathExtension
+  if blob.previewKind?.lowercased() == "image" { return true }
+  return filesImageExtensions.contains(ext)
+}
+
+func filesStripYamlFrontmatter(_ text: String) -> String {
+  let normalized = text.replacingOccurrences(of: "\r\n", with: "\n")
+  guard normalized.hasPrefix("---\n") else { return text }
+  let searchStart = normalized.index(normalized.startIndex, offsetBy: 4)
+  guard searchStart < normalized.endIndex,
+        let endRange = normalized.range(of: "\n---\n", range: searchStart..<normalized.endIndex)
+  else {
+    return text
+  }
+  return String(normalized[endRange.upperBound...])
+}
+
+func filesImageData(from blob: SyncFileBlob) -> Data? {
+  if let dataUrl = blob.dataUrl, let comma = dataUrl.firstIndex(of: ",") {
+    let base64 = String(dataUrl[dataUrl.index(after: comma)...])
+    return Data(base64Encoded: base64)
+  }
+  if blob.encoding.lowercased() == "base64" {
+    return Data(base64Encoded: blob.content)
+  }
+  return Data(blob.content.utf8)
+}
+
+enum FilesMarkdownViewMode: String, CaseIterable, Identifiable {
+  case preview
+  case source
+
+  var id: String { rawValue }
+
+  var title: String {
+    switch self {
+    case .preview: return "Rendered"
+    case .source: return "Source"
+    }
+  }
+
+  var systemImage: String {
+    switch self {
+    case .preview: return "text.document"
+    case .source: return "chevron.left.forwardslash.chevron.right"
+    }
+  }
 }
 
 func filesDiffPreviewLimit(diff: FileDiff) -> FilesPreviewLimit? {

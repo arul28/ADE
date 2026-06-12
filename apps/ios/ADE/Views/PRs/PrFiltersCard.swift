@@ -128,8 +128,8 @@ struct PrGitHubCategoryTabs: View {
     HStack(spacing: 0) {
       ForEach(PrGitHubCategory.allCases) { category in
         tab(for: category)
+          .frame(maxWidth: .infinity)
       }
-      Spacer(minLength: 0)
     }
     .accessibilityElement(children: .contain)
     .accessibilityLabel("Pull request status")
@@ -145,27 +145,28 @@ struct PrGitHubCategoryTabs: View {
         selection = category
       }
     } label: {
-      VStack(spacing: 6) {
-        HStack(spacing: 5) {
+      VStack(spacing: 2) {
+        HStack(spacing: 3) {
           if let icon = category.icon {
             Image(systemName: icon)
-              .font(.system(size: 10, weight: .bold))
+              .font(.system(size: 8, weight: .bold))
               .foregroundStyle(isActive ? tint : PrsGlass.textMuted)
           }
           Text(category.title)
-            .font(.system(size: 12.5, weight: isActive ? .semibold : .regular))
+            .font(.system(size: 11, weight: isActive ? .semibold : .regular))
             .foregroundStyle(isActive ? tint : PrsGlass.textSecondary)
           Text("\(count)")
-            .font(.system(size: 10, weight: .bold, design: .monospaced))
+            .font(.system(size: 8, weight: .bold, design: .monospaced))
             .foregroundStyle(isActive ? tint.opacity(0.85) : PrsGlass.textMuted.opacity(0.8))
         }
-        .padding(.horizontal, 12)
-        .padding(.top, 8)
+        .padding(.horizontal, 4)
+        .padding(.top, 1)
 
         Rectangle()
           .fill(isActive ? tint : Color.clear)
-          .frame(height: 2)
+          .frame(height: 1.5)
       }
+      .frame(maxWidth: .infinity)
       .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
@@ -264,11 +265,11 @@ struct PrsSurfaceToggle: View {
   let workflowCount: Int
 
   var body: some View {
-    HStack(spacing: 4) {
+    HStack(spacing: 2) {
       segment(for: .github, count: repoPrCount)
       segment(for: .workflows, count: workflowCount)
     }
-    .padding(4)
+    .padding(2)
     .background {
       Capsule(style: .continuous)
         .fill(Color.white.opacity(0.04))
@@ -287,15 +288,15 @@ struct PrsSurfaceToggle: View {
         selection = surface
       }
     } label: {
-      HStack(spacing: 6) {
+      HStack(spacing: 4) {
         surfaceIcon(for: surface)
         Text(surface.title)
-          .font(.system(size: 13, weight: isActive ? .bold : .semibold))
+          .font(.system(size: 11, weight: isActive ? .bold : .semibold))
 
         if count > 0 {
           Text("\(count)")
-            .font(.system(size: 10, weight: .bold, design: .monospaced))
-            .padding(.horizontal, 6)
+            .font(.system(size: 8, weight: .bold, design: .monospaced))
+            .padding(.horizontal, 4)
             .padding(.vertical, 1)
             .background {
               Capsule(style: .continuous)
@@ -304,8 +305,8 @@ struct PrsSurfaceToggle: View {
         }
       }
       .foregroundStyle(isActive ? PrsGlass.textPrimary : PrsGlass.textSecondary)
-      .padding(.horizontal, 14)
-      .padding(.vertical, 8)
+      .padding(.horizontal, 8)
+      .padding(.vertical, 4)
       .frame(maxWidth: .infinity)
       .background {
         if isActive {

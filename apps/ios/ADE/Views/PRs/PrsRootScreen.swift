@@ -406,8 +406,7 @@ struct PRsTabView: View {
             repoPrCount: allGitHubPrsCount,
             workflowCount: workflowCards.count
           )
-          .padding(.top, 2)
-          .prListRow()
+          .prListRowChrome()
 
           switch selectedRootSurface.wrappedValue {
           case .github:
@@ -418,7 +417,8 @@ struct PRsTabView: View {
         }
       }
       .listStyle(.plain)
-      .listRowSpacing(10)
+      .listRowSpacing(0)
+      .contentMargins(.horizontal, 0, for: .scrollContent)
       .scrollContentBackground(.hidden)
       .adeScreenBackground()
       .adeNavigationGlass()
@@ -727,7 +727,7 @@ struct PRsTabView: View {
       text: $searchText,
       placeholder: selectedRootSurface.wrappedValue == .github ? "Search PRs, branches, authors" : "Search workflow cards"
     )
-    .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 8, trailing: 16))
+    .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 4, trailing: 16))
     .listRowBackground(Color.clear)
     .listRowSeparator(.hidden)
   }
@@ -787,7 +787,7 @@ struct PRsTabView: View {
       selection: selectedGitHubCategory,
       counts: githubCategoryCounts
     )
-    .prListRow()
+    .prListRowChrome()
 
     if filtersExpanded {
       PrGitHubFiltersCard(
@@ -842,69 +842,54 @@ struct PRsTabView: View {
     }
 
     if githubSnapshot == nil, !filteredPrs.isEmpty {
-      Section("Cached ADE pull requests") {
-        ForEach(filteredPrs) { pr in
-          NavigationLink(value: pr.id) {
-            PrRowCard(
-              pr: pr,
-              transitionNamespace: ADEMotion.allowsMatchedGeometry(reduceMotion: reduceMotion) ? prTransitionNamespace : nil,
-              isSelectedTransitionSource: selectedPrTransitionId == pr.id
-            ) { groupId, groupName in
-              stackPresentation = PrStackPresentation(id: groupId, groupName: groupName)
-            }
+      ForEach(filteredPrs) { pr in
+        NavigationLink(value: pr.id) {
+          PrRowCard(
+            pr: pr,
+            transitionNamespace: ADEMotion.allowsMatchedGeometry(reduceMotion: reduceMotion) ? prTransitionNamespace : nil,
+            isSelectedTransitionSource: selectedPrTransitionId == pr.id
+          ) { groupId, groupName in
+            stackPresentation = PrStackPresentation(id: groupId, groupName: groupName)
           }
-          .simultaneousGesture(TapGesture().onEnded {
-            selectedPrTransitionId = pr.id
-          })
-          .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-            rowSwipeActions(for: pr)
-          }
-          .prListRow()
         }
+        .simultaneousGesture(TapGesture().onEnded {
+          selectedPrTransitionId = pr.id
+        })
+        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+          rowSwipeActions(for: pr)
+        }
+        .prListRowCard()
       }
     }
 
     if githubSnapshot != nil {
       let repoItems = githubDerived.repoItems
       let externalItems = githubDerived.externalItems
-      let repoSectionTitle: String = {
-        if let repo = githubSnapshot?.repo {
-          return "\(repo.owner)/\(repo.name)"
-        }
-        return "Repository PRs"
-      }()
       if !repoItems.isEmpty {
-        Section(repoSectionTitle) {
-          ForEach(repoItems) { item in
-            githubRowNavigation(for: item)
-              .prListRow()
-          }
+        ForEach(repoItems) { item in
+          githubRowNavigation(for: item)
+            .prListRowCard()
         }
       }
       if !externalItems.isEmpty {
         let unmappedCount = externalItems.filter {
           $0.adeKind == nil && $0.linkedPrId == nil && $0.linkedLaneId == nil
         }.count
-        Section {
-          ForEach(externalItems) { item in
-            githubRowNavigation(for: item)
-              .prListRow()
-          }
-        } header: {
-          HStack(spacing: 6) {
-            PrsEyebrowLabel(
-              text: unmappedCount > 0
-                ? "External · \(unmappedCount) unmapped"
-                : "External",
-              tint: PrsGlass.externalTop
-            )
-            Spacer(minLength: 0)
-          }
-          .padding(.top, 8)
-          .padding(.bottom, 4)
-          .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 0, trailing: 16))
-          .listRowBackground(Color.clear)
-          .textCase(nil)
+        HStack(spacing: 6) {
+          PrsEyebrowLabel(
+            text: unmappedCount > 0
+              ? "External · \(unmappedCount) unmapped"
+              : "External",
+            tint: PrsGlass.externalTop
+          )
+          Spacer(minLength: 0)
+        }
+        .padding(.top, 6)
+        .padding(.bottom, 2)
+        .prListRow()
+        ForEach(externalItems) { item in
+          githubRowNavigation(for: item)
+            .prListRowCard()
         }
       }
     }

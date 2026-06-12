@@ -51,7 +51,7 @@ struct PrRowCard: View {
       }
     }
     .padding(.horizontal, 14)
-    .padding(.vertical, 11)
+    .padding(.vertical, 9)
     .frame(maxWidth: .infinity, alignment: .leading)
     .background {
       if isSelectedTransitionSource {

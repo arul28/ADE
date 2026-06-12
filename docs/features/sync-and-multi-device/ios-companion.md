@@ -104,16 +104,23 @@ apps/ios/
 │   │   │                            # — `ADEStreamingShimmer.swift` was retired
 │   │   ├── Cto/                     # CtoRootScreen, CtoSessionDestinationView
 │   │   ├── Lanes/                   # LaneDetailScreen, LaneActionsCard,
-│   │   │                            # LaneAdvancedScreen (gearshape destination),
-│   │   │                            # LaneBatchManageSheet, LaneManageSheet,
-│   │   │                            # LaneMultiAttachSheet, LaneStackCanvasScreen,
-│   │   │                            # LaneCommitSheet (review + per-file stage/diff),
+│   │   │                            # LaneDetailGitActionsPane (commit /
+│   │   │                            #   stage / stash / history / escape
+│   │   │                            #   hatches, desktop pane parity),
+│   │   │                            # LaneBatchManageSheet, LaneManageSheet
+│   │   │                            #   (tabbed manage dialog),
+│   │   │                            # LaneMultiAttachSheet, LaneStackGraphSheet,
+│   │   │                            # LaneDeeplinkHelpers (ade:// lane/branch
+│   │   │                            #   link minting),
 │   │   │                            # LaneEnvInitProgressView, etc.
 │   │   ├── Files/                   # FilesRootScreen, FilesDirectoryScreen,
-│   │   │                            # FilesDetailScreen, *+Actions helpers
+│   │   │                            # FilesDetailScreen, *+Actions helpers,
+│   │   │                            # FilesWorkspacePickerDropdown
 │   │   ├── Work/                    # WorkRootScreen, WorkChatSessionView,
 │   │   │                            # Work*Helpers, WorkNewChatScreen (chat/CLI
-│   │   │                            #   segmented launcher), WorkArtifactTerminalViews,
+│   │   │                            #   launcher), WorkLanePickerDropdown,
+│   │   │                            # WorkChatAttachmentTray,
+│   │   │                            # WorkArtifactTerminalViews,
 │   │   │                            # TerminalSessionScreen + SwiftTermSessionView
 │   │   │                            #   (full-screen SwiftTerm terminal,
 │   │   │                            #   offset resume/history paging +
@@ -124,7 +131,8 @@ apps/ios/
 │   │   │                            # WorkSelectionActionBar, etc.
 │   │   ├── PRs/                     # PrsRootScreen, PrDetailScreen and
 │   │   │                            # per-tab views, PrWorkflowCards,
-│   │   │                            # PrStackSheet, CreatePrWizardView
+│   │   │                            # PrStackSheet, CreatePrWizardView,
+│   │   │                            # PrTargetBranchPickerDropdown
 │   │   ├── Settings/                # ConnectionSettingsView, NotificationsCenterView,
 │   │   │                            # QuietHoursEditorView, PerSessionOverrideView,
 │   │   │                            # SettingsPairingSection, SettingsConnectionHeader,
@@ -132,7 +140,7 @@ apps/ios/
 │   │   └── LanesTabView.swift
 │   └── Assets.xcassets/             # App icon, brand mark, provider logos
 │                                    # (Anthropic, Claude, Codex, Cursor,
-│                                    # OpenAI, OpenCode)
+│                                    # Droid, OpenAI, OpenCode)
 ├── ADENotificationService/
 │   └── NotificationService.swift    # UNNotificationServiceExtension: brand-prefix
 │                                    # title, set threadIdentifier, raise interruption level
@@ -366,7 +374,7 @@ Implemented envelope types on iOS:
 | `terminal_subscribe` / `terminal_unsubscribe` / `terminal_data` | Phone ↔ runtime | Terminal streaming; `unsubscribe` is sent when a Work terminal screen disappears so the phone stops accumulating buffer for off-screen sessions. `terminal_data` carries `offset` — the transcript's end byte offset after the chunk (null when the session has no transcript or hit the size cap) — so the phone can detect dropped chunks. `terminal_subscribe` accepts `sinceOffset`; when the runtime can serve exactly `sinceOffset → end` within the byte budget it replies with a `delta: true` snapshot (append, don't replace), giving exact back-fill after reconnects/gaps. Snapshots also report `startOffset`/`endOffset`, plus `live: false` when no PTY backs the session (ended, or orphaned by a brain restart while status still says running) so the phone shows a resume bar instead of silently accepting keystrokes |
 | `terminal_history` | Phone → runtime | On-demand scrollback paging: `{ sessionId, beforeOffset, maxBytes? }` returns transcript bytes `[startOffset, endOffset)` ending at/before `beforeOffset` (page start scanned forward to a newline/ESC boundary; `atStart: true` at beginning of transcript). Requires an active `terminal_subscribe` |
 | `terminal_input` / `terminal_resize` | Phone → runtime | Raw input bytes and viewport size changes for a subscribed live PTY. Mobile resizes are non-authoritative: the runtime records the last desktop-originated size and restores it when the last subscribed phone detaches |
-| `chat_subscribe` / `chat_event` | Phone → runtime / runtime → phone | Agent chat transcript streaming; `chat_subscribe` carries `sinceSeq` so the runtime can replay exactly the missed events from its per-session buffer instead of re-sending a snapshot |
+| `chat_subscribe` / `chat_event` | Phone → runtime / runtime → phone | Agent chat transcript streaming; `chat_subscribe` carries `sinceSeq` so the runtime can replay exactly the missed events from its per-session buffer instead of re-sending a snapshot. The subscribe ack carries `turnActive` from the live agent chat service so a phone subscribing mid-turn renders the stop button and working indicator immediately — the byte-capped snapshot tail may have dropped the turn's `status: started` event, and the synced session row arrives via the slower changeset pump. The phone keeps the hint current from live `status` / `done` events, drops it when a full ack omits the flag (older host / no live summary), and clears it on project switch / reconnect resets. Incoming chat events bump a UI revision through a leading-edge coalescer (~150 ms window: the first event after a quiet period renders immediately, bursts batch); turn-state flips bypass the coalescer entirely so the stop button reacts instantly |
 | `envelope_chunk` | Runtime → phone | Slice of an oversized encoded envelope (>720 KB); the phone reassembles by `chunkId`/`index` before normal decode |
 | `heartbeat` | Bidirectional | Connection health (30s) |
 | `brain_status` | Runtime → phone | Legacy-named cluster authority broadcast |
@@ -747,9 +755,9 @@ duplicate. Project list dedup runs as a final pass
 
 | Tab | Icon | Desktop equivalent | Capabilities |
 |---|---|---|---|
-| **Lanes** | `square.stack.3d.up` | `/lanes` | Full lane surface: search/filter chips, open/create/attach/manage, multi-attach for unregistered worktrees, stack canvas, git/diff/rebase/conflicts, template-backed environment setup progress, lane-scoped sessions and AI chats. `devicesOpen` presence chips show which other devices currently have the lane open. The lane gear opens `LaneAdvancedScreen`, a single page that groups Manage / Switch branch / Stash and the destructive git escape hatches (rebase lane, rebase descendants, rebase + push, force push) with an inline description per row and an offline disabled banner. The commit sheet (`LaneCommitSheet`) renders staged + unstaged file lists with per-file stage / unstage / discard / restore / open-diff / open-files actions, a "Suggest" AI button gated by runtime capability, and a setup-hint card surfaced when the runtime returns "AI commit messages are off". |
-| **Files** | `doc.text` | `/files` | Lane-backed workspace picker, live file tree/search/read, protected-workspace read-only parity. `mobileReadOnly` on the workspace payload gates mutating file actions on the phone via `ensureMobileFileMutationsAllowed`; quick-open and text-search result lists cap visible rows at 40 and ask the user to refine when more matches exist. |
-| **Work** | `terminal` | `/work` | Terminal + chat session list, cached history with persisted lane names, output streaming, native key-passthrough terminal input (keystrokes from the iOS keyboard flow straight into the PTY as `terminal_input`, coalesced ~16 ms; PTY echo is the only source of truth), Ctrl-C forwarding for subscribed live PTYs, in-app CLI session launcher (Claude / Codex / Cursor / OpenCode / Droid / shell), message-to-continue on ended agent CLI rows, session pinning, live chat-event push from the runtime (no polling lag once subscribed). The new-session screen (`WorkNewChatScreen`) toggles between **ADE chat** and **CLI session** via a segmented picker; in CLI mode a `workCliProviderOptions` row picker exposes each supported provider explicitly. CLI mode submits `work.startCliSession` with the chosen provider, permission mode (Claude additionally supports `auto`), an optional `reasoningEffort`, and an optional opening message. For most providers the runtime types the opening message into the spawned PTY; for Codex the opening message is forwarded as the final argv positional through `buildTrackedCliLaunchCommand`, so the prompt is treated as a real first turn instead of a typed shell line. The terminal viewer (`TerminalSessionScreen` + `SwiftTermSessionView`) is a full-bleed SwiftTerm (real VT100/xterm) emulator: tap-to-focus raises the iOS keyboard for direct passthrough, a single-row key bar provides esc/tab/latching-Ctrl/arrows/return plus an overflow menu, pinch adjusts font size, and the phone owns the PTY's cols×rows while the screen is open (sent as `terminal_resize`; the runtime restores the desktop size on detach). Live output streams via offset-stamped `terminal_data` with gap detection + `sinceOffset` delta resume (no snapshot polling); scrolling near the top auto-pages older transcript via `terminal_history`, and a floating "↓ Live N" pill snaps back to the live tail. When the hosted program enables mouse reporting (Claude Code, htop), vertical pans are translated into SGR wheel events so the TUI scrolls itself; mouse-off sessions scroll native scrollback. Against pre-offset hosts (older brains, whose PTY→sync bridge never pushed terminal output) the screen detects the missing offsets and falls back to a 2s tail-refresh poll until offsets appear. The screen unsubscribes via `terminal_unsubscribe` on disappear. The legacy `WorkTerminalEmulatorView`/`WorkTerminalScreen` mini-parser remains only for inline preview cards. The earlier "activity feed" section was retired — running chats are surfaced through the session list and a Work tab badge bound to `SyncService.runningChatSessionCount`. |
+| **Lanes** | `square.stack.3d.up` | `/lanes` | Full lane surface: search/filter chips, open/create/attach/manage, multi-attach for unregistered worktrees, stack canvas, git/diff/rebase/conflicts, template-backed environment setup progress, lane-scoped sessions and AI chats. `devicesOpen` presence chips show which other devices currently have the lane open. The lane detail screen (full-screen, custom tab bar hidden) embeds `LaneDetailGitActionsPane`, a port of desktop's git actions pane: commit message field with amend toggle and an AI "Suggest message" button (gated by runtime capability, with a setup-hint when the runtime reports "AI commit messages are off"), pull (rebase/merge mode) / push (with force-with-lease) / fetch, staged + unstaged file lists with per-file and bulk stage / unstage / discard / restore / open-diff / open-files, stash push/apply/pop/drop, recent-commit history with context-menu view-files / copy-message / revert / cherry-pick, and a "more actions" menu holding switch branch plus the destructive escape hatches (rebase lane, rebase + descendants, rebase and push, force push). A conflict banner offers rebase **and merge** continue/abort (`git.rebaseContinue`/`Abort`, `git.mergeContinue`/`Abort`), and a rescue sheet creates a new lane from uncommitted changes. The lane options menu copies shareable deeplinks (`LaneDeeplinkHelpers`: `ade://lane/<id>`, `ade://repo/<owner>/<repo>/branch/<branch>`) and opens `LaneManageSheet`, now a tabbed manage dialog (delete / appearance / stack / archive) mirroring desktop's `ManageLaneDialog`. The previous `LaneAdvancedScreen`, `LaneCommitSheet`, `LaneStashesScreen`, and `LaneCommitHistoryScreen` destinations were deleted in favor of this single pane. |
+| **Files** | `doc.text` | `/files` | Lane-backed workspace picker (`FilesWorkspacePickerDropdown`, a desktop-shaped searchable dropdown that replaced the horizontal workspace chip row), live file tree/search/read, protected-workspace read-only parity. `mobileReadOnly` on the workspace payload gates mutating file actions on the phone via `ensureMobileFileMutationsAllowed`; quick-open and text-search result lists cap visible rows at 40 and ask the user to refine when more matches exist. |
+| **Work** | `terminal` | `/work` | Terminal + chat session list, cached history with persisted lane names, output streaming, native key-passthrough terminal input (keystrokes from the iOS keyboard flow straight into the PTY as `terminal_input`, coalesced ~16 ms; PTY echo is the only source of truth), Ctrl-C forwarding for subscribed live PTYs, in-app CLI session launcher (Claude / Codex / Cursor / OpenCode / Droid), message-to-continue on ended agent CLI rows, session pinning, live chat-event push from the runtime (no polling lag once subscribed). The new-session screen (`WorkNewChatScreen`) toggles between **Chat** and **CLI** via a compact nav-bar pill toggle (desktop `ModeSwitcherPills` parity); the lane is chosen through `WorkLanePickerDropdown` (searchable, with an auto-create-lane row), and in CLI mode the provider is derived from the picked model via `workResolveCliProvider` instead of a separate provider row — the explicit `workCliProviderOptions` picker (and its plain "Shell" launch option) was removed. CLI mode submits `work.startCliSession` with the resolved provider, permission mode (Claude additionally supports `auto`), an optional `reasoningEffort`, and an optional opening message. For most providers the runtime types the opening message into the spawned PTY; for Codex the opening message is forwarded as the final argv positional through `buildTrackedCliLaunchCommand`, so the prompt is treated as a real first turn instead of a typed shell line. The terminal viewer (`TerminalSessionScreen` + `SwiftTermSessionView`) is a full-bleed SwiftTerm (real VT100/xterm) emulator: tap-to-focus raises the iOS keyboard for direct passthrough, a single-row key bar provides esc/tab/latching-Ctrl/arrows/return plus an overflow menu, pinch adjusts font size, and the phone owns the PTY's cols×rows while the screen is open (sent as `terminal_resize`; the runtime restores the desktop size on detach). Live output streams via offset-stamped `terminal_data` with gap detection + `sinceOffset` delta resume (no snapshot polling); scrolling near the top auto-pages older transcript via `terminal_history`, and a floating "↓ Live N" pill snaps back to the live tail. When the hosted program enables mouse reporting (Claude Code, htop), vertical pans are translated into SGR wheel events so the TUI scrolls itself; mouse-off sessions scroll native scrollback. Against pre-offset hosts (older brains, whose PTY→sync bridge never pushed terminal output) the screen detects the missing offsets and falls back to a 2s tail-refresh poll until offsets appear. The screen unsubscribes via `terminal_unsubscribe` on disappear. The legacy `WorkTerminalEmulatorView`/`WorkTerminalScreen` mini-parser remains only for inline preview cards. The earlier "activity feed" section was retired — running chats are surfaced through the session list and a Work tab badge bound to `SyncService.runningChatSessionCount`. In chat sessions, user-message attachments render through `WorkChatAttachmentTray` (image thumbnails embedded in the bubble, desktop `ChatAttachmentTray` parity, placeholder tiles when the image bytes have not synced from the host yet), and the chat header's PR menu opens the lane's open PR on GitHub, copies its link, or launches the create-PR wizard in `singleModeOnly` mode (eligibility read from `prs.getMobileSnapshot.createCapabilities`). |
 | **PRs** | `arrow.triangle.pull` | `/prs` | PR list/detail driven by `prs.getMobileSnapshot`: stack visibility (`PrStackSheet`), create-PR wizard (`CreatePrWizardView`) gated by per-lane eligibility, workflow cards (queue / integration / rebase) rendered from `PrWorkflowCard`, per-PR action capabilities. |
 | **CTO** | `brain.head.profile` | `/cto` | CTO snapshot: Chat / Team / Workflows segments, with the mobile workflows screen mirroring the desktop workflow policy/dashboard and preserving the shared glass navigation chrome. Drills into per-worker chat sessions via `CtoSessionDestinationView`. |
 | **Settings** | `gearshape` | `/settings` (sync subset) | PIN pairing (`SettingsPinSheet`), notification preferences (`NotificationsCenterView`), quiet hours, per-session overrides, appearance, diagnostics, connection header with QR payload and address candidates, reconnect, forget. `ConnectionSettingsView` binds to `SettingsConnectionPresentationModel`, which feeds plain `SettingsConnectionSnapshot` / `SettingsPairingSnapshot` / `SettingsDiagnosticsSnapshot` DTOs into the section views (`SettingsConnectionHeader`, `SettingsPairingSection`, `SettingsDiagnosticsSection`) instead of having them reach into `SyncService` directly. `sendTestPush` is now `async` and returns a `SyncSendTestPushResult` (`ok`, `message`); the Notifications section renders that message verbatim so APNs-not-configured / in-app-only / wire failure cases all surface to the user. |
@@ -814,9 +822,13 @@ offline usage remain fast.
 ## PR data projection
 
 The iOS PR wizard (`CreatePrWizardView`) supports three create modes —
-`single`, `queue`, and `integration` — with a shared stepper (Mode →
-Source → Details → Review) and per-mode submit handlers routed through
-the sync command surface:
+`single`, `queue`, and `integration` — as a single scrollable form (the
+earlier Mode → Source → Details → Review stepper was removed): a mode
+selector (hidden when the wizard is opened with `singleModeOnly`, e.g.
+from a lane that can only create one PR), a source-branches section,
+and a target-branch picker rendered by `PrTargetBranchPickerDropdown`
+(searchable dropdown over the lane's eligible base branches). Per-mode
+submit handlers route through the sync command surface:
 
 - single → `prs.createFromLane` (via `onCreateSingle` callback)
 - queue → `prs.createQueue` and `prs.startQueueAutomation`, returning
@@ -1005,9 +1017,13 @@ reflected in the phone's UI on the next descriptor read.
   `claude | codex | cursor | droid | opencode | shell`. The phone
   has no way to pass arbitrary `command` / `startupCommand` payloads
   — those come from the shared
-  `apps/desktop/src/shared/cliLaunch.ts`. Adding a sixth provider
-  means updating both the runtime registry and the phone's
-  `workCliProviderOptions` together. `SyncStartCliSessionArgs` also
+  `apps/desktop/src/shared/cliLaunch.ts`. On the phone the provider is
+  derived from the picked model via `workResolveCliProvider`
+  (`WorkModelCatalog.swift`, mirroring desktop's
+  `resolveCliProviderForModel`), so adding a provider means updating
+  both the runtime registry and the phone's model-catalog grouping
+  together; `shell` remains valid runtime-side but the phone no longer
+  offers a plain-shell launch. `SyncStartCliSessionArgs` also
   carries an optional `reasoningEffort` field that the runtime forwards
   to `buildTrackedCliLaunchCommand`, so the phone can launch a Codex
   / Claude CLI session at a non-default effort tier without going
@@ -1017,9 +1033,10 @@ reflected in the phone's UI on the next descriptor read.
   into the spawned PTY (`writeBySessionId(sessionId, "${input}\\r")`),
   but Codex receives it as the final positional argv on `codex` via
   `buildTrackedCliLaunchCommand` so the model sees a clean first turn
-  instead of a typed shell line. Plain "Shell" launches go through
-  `resolveCleanShellLaunchFields` so the spawned shell never reads the
-  user's profile / rc / config files.
+  instead of a typed shell line. Runtime-side, plain `shell` launches
+  still go through `resolveCleanShellLaunchFields` so the spawned shell
+  never reads the user's profile / rc / config files (the phone UI no
+  longer offers that option).
 - **Pending-input item id flows out through chat summaries.** Both
   `AgentChatSessionSummary.pendingInputItemId` and
   `TerminalSessionSummary.pendingInputItemId` are populated by the

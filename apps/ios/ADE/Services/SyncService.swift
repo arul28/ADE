@@ -266,7 +266,14 @@ private let syncChatSubscriptionMaxBytes = 2_000_000
 private let syncReducedLoadChatSubscriptionMaxBytes = 512_000
 private let syncTerminalBufferMaxCharacters = 240_000
 private let chatEventHistoryMaxEvents = 1_000
-private let chatEventNotificationCoalesceNanoseconds: UInt64 = 420_000_000
+/// Coalescing window for chat-event UI notifications. The coalescer fires on
+/// the leading edge (first event after a quiet period surfaces immediately)
+/// and then at most once per window during a sustained burst. Was a 420 ms
+/// trailing-only debounce, which stacked with the 100 ms timeline rebuild
+/// debounce into ~640 ms delta-to-screen — streaming read as laggy next to
+/// the desktop's immediate render.
+private let chatEventNotificationCoalesceSeconds: TimeInterval = 0.15
+private let chatEventNotificationCoalesceNanoseconds = UInt64((chatEventNotificationCoalesceSeconds * 1_000_000_000).rounded())
 
 enum SyncBonjourTiming {
   static let searchRetryNanoseconds: UInt64 = 2_000_000_000
@@ -1204,6 +1211,13 @@ final class SyncService: ObservableObject {
   /// events after a replay. Events without `seq` (older hosts) bypass this
   /// entirely, preserving today's behavior.
   private(set) var chatEventLastSeqBySession: [String: Int] = [:]
+  /// Live "a turn is running right now" hint per chat session. Seeded from
+  /// the chat_subscribe ack's `turnActive` field (authoritative host state at
+  /// subscribe time) and kept current by live `status` / `done` chat events.
+  /// Bridges two gaps the synced session row can't cover: the changeset pump
+  /// lagging behind the chat event stream, and byte-capped snapshot tails
+  /// that dropped the active turn's `status: started` event.
+  private(set) var chatTurnActiveHintBySession: [String: Bool] = [:]
   /// Latest known chat summary keyed by session id. Populated by the Work
   /// list and chat detail screens so the LA reconcile can read `modelId`
   /// + a real `lastActivityAt` without round-tripping for each running chat.
@@ -1295,6 +1309,9 @@ final class SyncService: ObservableObject {
   private var openLaneReferenceCounts: [String: Int] = [:]
   private var terminalBufferRevisionTask: Task<Void, Never>?
   private var chatEventRevisionTask: Task<Void, Never>?
+  /// When the chat-event revision last fired; drives the coalescer's
+  /// leading-edge check in `markChatEventsChanged`.
+  private var lastChatEventRevisionBumpAt = Date.distantPast
   private var databaseObserver: NSObjectProtocol?
   /// Coalesces bursty `adeDatabaseDidChange` notifications so SwiftUI `.task(id: localStateRevision)` surfaces
   /// do not reload on every CRDT row during host sync (was freezing the Work tab and Settings UI).
@@ -4025,6 +4042,41 @@ final class SyncService: ObservableObject {
     chatEventRevisionsBySession[sessionId] ?? 0
   }
 
+  /// True/false when the host has told us whether a turn is currently running
+  /// for this session (subscribe ack or live status/done events); nil when no
+  /// signal has arrived yet (e.g. older hosts without `turnActive`).
+  func chatTurnActiveHint(sessionId: String) -> Bool? {
+    chatTurnActiveHintBySession[sessionId]
+  }
+
+  func updateChatTurnActiveHint(sessionId: String, turnActive: Bool) {
+    guard chatTurnActiveHintBySession[sessionId] != turnActive else { return }
+    chatTurnActiveHintBySession[sessionId] = turnActive
+    // Streaming-state flips drive the stop button and activity indicator —
+    // surface them immediately rather than waiting out the event coalescer.
+    markChatEventsChanged(immediate: true)
+  }
+
+  /// Drop the hint so streaming state falls back to transcript-derived
+  /// signals. Used when a full subscribe ack carries no `turnActive` (older
+  /// host, or no live summary) — keeping a stale `true` would pin the stop
+  /// button and the active-poll loop on a session the host no longer runs.
+  private func clearChatTurnActiveHint(sessionId: String) {
+    guard chatTurnActiveHintBySession.removeValue(forKey: sessionId) != nil else { return }
+    markChatEventsChanged(immediate: true)
+  }
+
+  private func updateChatTurnActiveHintFromEvent(_ envelope: AgentChatEventEnvelope) {
+    switch envelope.event {
+    case .status(let turnStatus, _, _):
+      updateChatTurnActiveHint(sessionId: envelope.sessionId, turnActive: turnStatus == .started)
+    case .done:
+      updateChatTurnActiveHint(sessionId: envelope.sessionId, turnActive: false)
+    default:
+      break
+    }
+  }
+
   func chatSubscriptionPayloads() -> [[String: Any]] {
     subscribedChatSessionIds.sorted().map { chatSubscriptionPayload(sessionId: $0, includeSinceSeq: true) }
   }
@@ -4485,6 +4537,8 @@ final class SyncService: ObservableObject {
   func fetchGitConflictState(laneId: String) async throws -> GitConflictState { try await sendDecodableCommand(action: "git.getConflictState", args: ["laneId": laneId], as: GitConflictState.self) }
   func rebaseContinueGit(laneId: String) async throws { _ = try await sendCommand(action: "git.rebaseContinue", args: ["laneId": laneId]) }
   func rebaseAbortGit(laneId: String) async throws { _ = try await sendCommand(action: "git.rebaseAbort", args: ["laneId": laneId]) }
+  func mergeContinueGit(laneId: String) async throws { _ = try await sendCommand(action: "git.mergeContinue", args: ["laneId": laneId]) }
+  func mergeAbortGit(laneId: String) async throws { _ = try await sendCommand(action: "git.mergeAbort", args: ["laneId": laneId]) }
 
   @MainActor
   func listChatModels(provider: String) async throws -> [AgentChatModelInfo] {
@@ -7504,6 +7558,15 @@ final class SyncService: ObservableObject {
           chatEventLastSeqBySession.removeValue(forKey: snapshot.sessionId)
         }
         mergeChatEventHistory(sessionId: snapshot.sessionId, events: snapshot.events)
+        if let turnActive = snapshot.turnActive {
+          updateChatTurnActiveHint(sessionId: snapshot.sessionId, turnActive: turnActive)
+        } else if (dict["resumed"] as? Bool) != true {
+          // Full snapshot with no live turn state (older host, or the host
+          // has no summary for this session): a previously latched hint can
+          // never be corrected by this host, so drop it and fall back to
+          // transcript-derived streaming state.
+          clearChatTurnActiveHint(sessionId: snapshot.sessionId)
+        }
       }
     case "chat_event":
       if supportsChatStreaming,
@@ -8326,6 +8389,7 @@ final class SyncService: ObservableObject {
     chatEventEnvelopesBySession[envelope.sessionId] = events
     chatEventRevisionsBySession[envelope.sessionId, default: 0] += 1
     lastSyncAt = Date()
+    updateChatTurnActiveHintFromEvent(envelope)
     markChatEventsChanged()
   }
 
@@ -8416,25 +8480,42 @@ final class SyncService: ObservableObject {
     }
   }
 
+  /// The single place the chat-event revision advances — keeps the
+  /// leading-edge timestamp and the published counter in lockstep.
+  private func bumpChatEventRevision() {
+    lastChatEventRevisionBumpAt = Date()
+    chatEventNotificationRevision += 1
+  }
+
   private func markChatEventsChanged(immediate: Bool = false) {
     if immediate {
       chatEventRevisionTask?.cancel()
       chatEventRevisionTask = nil
-      chatEventNotificationRevision += 1
+      bumpChatEventRevision()
       return
     }
 
     guard chatEventRevisionTask == nil else { return }
+    // Leading edge: the first event after a quiet period surfaces now instead
+    // of waiting out the coalescing window — streaming starts rendering the
+    // moment the first delta lands.
+    if Date().timeIntervalSince(lastChatEventRevisionBumpAt) >= chatEventNotificationCoalesceSeconds {
+      bumpChatEventRevision()
+      return
+    }
     chatEventRevisionTask = Task { @MainActor [weak self] in
       try? await Task.sleep(nanoseconds: chatEventNotificationCoalesceNanoseconds)
       guard let self, !Task.isCancelled else { return }
-      self.chatEventNotificationRevision += 1
+      self.bumpChatEventRevision()
       self.chatEventRevisionTask = nil
     }
   }
 
   private func resetChatEventState(clearHistory: Bool) {
     subscribedChatSessionIds.removeAll()
+    // Turn-active hints are scoped to the live connection's event stream —
+    // a stale "running" hint must not survive a project switch or reconnect.
+    chatTurnActiveHintBySession.removeAll()
     if clearHistory {
       chatEventEnvelopesBySession.removeAll()
       chatEventRevisionsBySession.removeAll()

@@ -1,12 +1,25 @@
 import SwiftUI
 
 extension View {
-  /// App-wide gutter applied to every PRs list row so content cards, filter
-  /// chips, and notice banners never hug the screen edge. 16pt matches the
-  /// horizontal gutter used by the top-bar and the detail-screen scroll
-  /// padding, keeping the left edge of every surface aligned.
+  /// App-wide gutter applied to chrome rows (search, filters, notices). 16pt
+  /// matches the horizontal gutter used by the top bar and detail screens.
   func prListRow() -> some View {
     listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 0, trailing: 16))
+      .listRowBackground(Color.clear)
+      .listRowSeparator(.hidden)
+  }
+
+  /// Tighter vertical rhythm for stacked filter chrome (surface toggle, tabs).
+  func prListRowChrome() -> some View {
+    listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 4, trailing: 16))
+      .listRowBackground(Color.clear)
+      .listRowSeparator(.hidden)
+  }
+
+  /// Full-bleed PR list row — no horizontal list inset so row backgrounds and
+  /// dividers span the entire list width. Text padding lives inside `PrRowCard`.
+  func prListRowCard() -> some View {
+    listRowInsets(EdgeInsets())
       .listRowBackground(Color.clear)
       .listRowSeparator(.hidden)
   }
@@ -519,7 +532,7 @@ struct PrsGlassSearchPill: View {
       }
     }
     .padding(.horizontal, 14)
-    .padding(.vertical, 11)
+    .padding(.vertical, 8)
     .background {
       ZStack {
         RoundedRectangle(cornerRadius: 14, style: .continuous)

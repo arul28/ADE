@@ -1,6 +1,117 @@
 import SwiftUI
 import UIKit
 
+struct FilesCompactSegmentedControl<Item: Identifiable & Equatable>: View {
+  let items: [Item]
+  @Binding var selection: Item
+  let label: (Item) -> String
+  var systemImage: ((Item) -> String)? = nil
+
+  var body: some View {
+    HStack(spacing: 2) {
+      ForEach(items) { item in
+        let isSelected = selection == item
+        Button {
+          guard !isSelected else { return }
+          withAnimation(.snappy(duration: 0.16)) {
+            selection = item
+          }
+        } label: {
+          HStack(spacing: 4) {
+            if let systemImage {
+              Image(systemName: systemImage(item))
+                .font(.caption2.weight(.semibold))
+            }
+            Text(label(item))
+              .font(.caption2.weight(.semibold))
+              .lineLimit(1)
+          }
+          .foregroundStyle(isSelected ? ADEColor.textPrimary : ADEColor.textMuted)
+          .padding(.horizontal, 10)
+          .padding(.vertical, 6)
+          .background(
+            isSelected ? ADEColor.accent.opacity(0.18) : Color.clear,
+            in: Capsule(style: .continuous)
+          )
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(label(item))
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
+      }
+    }
+    .padding(2)
+    .background(ADEColor.recessedBackground.opacity(0.72), in: Capsule(style: .continuous))
+  }
+}
+
+struct FilesViewerControlStrip: View {
+  let editorModes: [FilesEditorMode]
+  @Binding var mode: FilesEditorMode
+  let showsMarkdownToggle: Bool
+  @Binding var markdownViewMode: FilesMarkdownViewMode
+  let showsLayoutToggle: Bool
+  @Binding var codeLayoutMode: FilesCodeLayoutMode
+  let showsDiffScopeToggle: Bool
+  @Binding var diffMode: FilesDiffMode
+
+  private var hasControls: Bool {
+    editorModes.count > 1 || showsMarkdownToggle || showsLayoutToggle || showsDiffScopeToggle
+  }
+
+  var body: some View {
+    if hasControls {
+      ScrollView(.horizontal, showsIndicators: false) {
+        HStack(spacing: 10) {
+          if editorModes.count > 1 {
+            FilesCompactSegmentedControl(
+              items: editorModes,
+              selection: $mode,
+              label: { $0.title },
+              systemImage: { $0.systemImage }
+            )
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("View mode")
+          }
+
+          if showsMarkdownToggle {
+            FilesCompactSegmentedControl(
+              items: FilesMarkdownViewMode.allCases,
+              selection: $markdownViewMode,
+              label: { $0.title },
+              systemImage: { $0.systemImage }
+            )
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("Markdown mode")
+          }
+
+          if showsLayoutToggle {
+            FilesCompactSegmentedControl(
+              items: FilesCodeLayoutMode.allCases,
+              selection: $codeLayoutMode,
+              label: { $0.title },
+              systemImage: { $0.systemImage }
+            )
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("Code layout")
+          }
+
+          if showsDiffScopeToggle {
+            FilesCompactSegmentedControl(
+              items: FilesDiffMode.allCases,
+              selection: $diffMode,
+              label: { $0.title },
+              systemImage: { $0.systemImage }
+            )
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("Diff scope")
+          }
+        }
+        .padding(.horizontal, 16)
+      }
+    }
+  }
+}
+
 struct FilesHeaderStrip: View {
   @EnvironmentObject private var syncService: SyncService
 
@@ -378,6 +489,7 @@ struct SyntaxHighlightedCodeView: View {
   let language: FilesLanguage
   let focusLine: Int?
   let layoutMode: FilesCodeLayoutMode
+  var fillsContainer: Bool = false
 
   private var lines: [String] {
     let split = splitPreservingEmptyLines(text)
@@ -395,7 +507,7 @@ struct SyntaxHighlightedCodeView: View {
   var body: some View {
     ScrollViewReader { proxy in
       codeScrollView
-      .adeInsetField(cornerRadius: 16, padding: 0)
+      .modifier(FilesPreviewContainerStyle(fillsContainer: fillsContainer))
       .task(id: focusLine) {
         guard let focusLine else { return }
         withAnimation(.smooth) {
@@ -448,24 +560,17 @@ struct SyntaxHighlightedCodeView: View {
 
 struct FilesMarkdownPreview: View {
   let text: String
-
-  private var renderedText: AttributedString {
-    (try? AttributedString(
-      markdown: text,
-      options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
-    )) ?? AttributedString(text)
-  }
+  var fillsContainer: Bool = false
 
   var body: some View {
     ScrollView(.vertical) {
-      Text(renderedText)
-        .font(.body)
-        .foregroundStyle(ADEColor.textPrimary)
-        .textSelection(.enabled)
+      WorkMarkdownRenderer(markdown: text)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(14)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
+        .textSelection(.enabled)
     }
-    .adeInsetField(cornerRadius: 16, padding: 0)
+    .modifier(FilesPreviewContainerStyle(fillsContainer: fillsContainer))
   }
 }
 
@@ -473,6 +578,7 @@ struct FilesInlineDiffView: View {
   let lines: [FilesInlineDiffLine]
   let language: FilesLanguage
   let layoutMode: FilesCodeLayoutMode
+  var fillsContainer: Bool = false
 
   private var wrapsLines: Bool {
     layoutMode == .wrap
@@ -487,7 +593,7 @@ struct FilesInlineDiffView: View {
 
   var body: some View {
     diffScrollView
-    .adeInsetField(cornerRadius: 16, padding: 0)
+      .modifier(FilesPreviewContainerStyle(fillsContainer: fillsContainer))
   }
 
   @ViewBuilder
@@ -685,8 +791,21 @@ struct FilesProofArtifactSheet: View {
   }
 }
 
+private struct FilesPreviewContainerStyle: ViewModifier {
+  let fillsContainer: Bool
+
+  func body(content: Content) -> some View {
+    if fillsContainer {
+      content.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    } else {
+      content.adeInsetField(cornerRadius: 16, padding: 0)
+    }
+  }
+}
+
 struct ZoomableImageView: View {
   let image: UIImage
+  var fillsContainer: Bool = false
 
   @State private var scale: CGFloat = 1
   @State private var lastScale: CGFloat = 1
@@ -704,7 +823,7 @@ struct ZoomableImageView: View {
         .contentShape(Rectangle())
         .gesture(magnificationGesture.simultaneously(with: dragGesture))
     }
-    .adeInsetField(cornerRadius: 16, padding: 0)
+    .modifier(FilesPreviewContainerStyle(fillsContainer: fillsContainer))
   }
 
   private var magnificationGesture: some Gesture {

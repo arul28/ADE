@@ -14,9 +14,9 @@ struct WorkChatSessionView: View {
   let optimisticPendingSteers: [WorkPendingSteerModel]
   let localEchoMessages: [WorkLocalEchoMessage]
   @Binding var expandedToolCardIds: Set<String>
-  @Binding var collapsedChangedFileGroupIds: Set<String>
   @Binding var artifactContent: [String: WorkLoadedArtifactContent]
   @Binding var fullscreenImage: WorkFullscreenImage?
+  @Binding var artifactDrawerPresented: Bool
   let artifactRefreshInFlight: Bool
   let artifactRefreshError: String?
   @Binding var sending: Bool
@@ -26,7 +26,6 @@ struct WorkChatSessionView: View {
   @State var isNearBottom = true
   @State var unreadBelowCount = 0
   @State var lastTimelineTailId: String?
-  @State var artifactDrawerPresented = false
   @State var timelineSnapshot = WorkChatTimelineSnapshot.empty
   @State var timelinePresentation = WorkTimelinePresentation.empty
   @State var timelineRebuildTask: Task<Void, Never>?
@@ -62,6 +61,11 @@ struct WorkChatSessionView: View {
   // host beyond what the phone has fetched; the callback pulls the next page.
   var hasOlderTranscriptHistory: Bool = false
   var onLoadOlderTranscript: (@MainActor () async -> Void)? = nil
+  /// Live "turn is running" signal from the sync layer (chat_subscribe ack +
+  /// live status/done events). Covers the gap where the synced session row
+  /// still says idle while chat events are already streaming — without it
+  /// the chat renders output with no stop button or working indicator.
+  var liveTurnActiveHint: Bool = false
 
   @State var steerEditDrafts: [String: String] = [:]
   @State var modelPickerPresented = false
@@ -69,6 +73,25 @@ struct WorkChatSessionView: View {
 
   var sessionStatus: String {
     normalizedWorkChatSessionStatus(session: session, summary: chatSummary)
+  }
+
+  /// Combined "a turn is active" signal: transcript-derived (status/done
+  /// events in the local window) OR the live host hint. Either alone can
+  /// miss — the transcript window may have dropped the `status: started`
+  /// event, and the hint is absent on older hosts.
+  var transcriptOrHintIndicatesActiveTurn: Bool {
+    timelineSnapshot.transcriptIndicatesActiveTurn || liveTurnActiveHint
+  }
+
+  /// Single source of truth for "the assistant is generating right now".
+  /// Drives the activity indicator, the composer stop button, and the
+  /// streaming-markdown fast path.
+  var isStreamingTurn: Bool {
+    workChatIsStreaming(
+      sessionStatus: sessionStatus,
+      isLive: isLive,
+      transcriptIndicatesActiveTurn: transcriptOrHintIndicatesActiveTurn
+    )
   }
 
   var pendingInputs: [WorkPendingInputItem] {
@@ -175,7 +198,7 @@ struct WorkChatSessionView: View {
     if sending && !sendWillQueue {
       return "Sending message to machine..."
     }
-    if sendWillQueue {
+    if sendWillQueue, pendingSteers.isEmpty {
       return sessionStatus == "active"
         ? "Message will stage behind the active turn."
         : "Machine is reconnecting. Send will queue until it is back."
@@ -294,11 +317,7 @@ struct WorkChatSessionView: View {
   var streamingStatusSection: some View {
     WorkActivityIndicator(
       transcript: transcript,
-      isStreaming: workChatIsStreaming(
-        sessionStatus: sessionStatus,
-        isLive: isLive,
-        transcriptIndicatesActiveTurn: timelineSnapshot.transcriptIndicatesActiveTurn
-      )
+      isStreaming: isStreamingTurn
     )
   }
 
@@ -371,7 +390,6 @@ struct WorkChatSessionView: View {
 
       WorkChatComposerCard(
         chatSummary: chatSummary,
-        queuedSteerCount: pendingSteers.count,
         pendingInputCount: pendingInputs.count,
         awaitingInputGate: hasPendingInputGate,
         canCompose: canCompose,
@@ -380,8 +398,11 @@ struct WorkChatSessionView: View {
         // Show a Stop affordance on the Send button while the assistant is
         // generating. The chip strip stays usable so users can switch
         // access/model mid-turn; interruption replaces "Send" with a
-        // warning-tinted button.
-        showInterrupt: isLive && sessionStatus == "active",
+        // warning-tinted button. Gated on the combined streaming signal, not
+        // just the session row status — the row arrives via the (slower)
+        // changeset pump and a desktop-started turn would otherwise stream
+        // output with no way to stop it from the phone.
+        showInterrupt: isStreamingTurn,
         interruptInFlight: actionInFlight,
         onInterrupt: {
           await runSessionAction(onInterrupt)
@@ -393,11 +414,6 @@ struct WorkChatSessionView: View {
         onSelectEffort: chatSummary == nil ? nil : { effort in
           Task { await onSelectEffort(effort) }
         },
-        artifactCount: artifacts.count,
-        latestArtifact: artifacts.last,
-        artifactRefreshInFlight: artifactRefreshInFlight,
-        artifactRefreshError: artifactRefreshError,
-        onOpenProof: { artifactDrawerPresented = true },
         onSend: onSend,
         onSent: {
           scrollToLatest(proxy, animated: true)
@@ -431,9 +447,15 @@ struct WorkChatSessionView: View {
             }
         }
         .padding(16)
-        .environment(\.workChatProvider, chatSummary?.provider)
-        .environment(\.workChatModelId, chatSummary?.modelId ?? chatSummary?.model)
-        .environment(\.workChatModelLabel, chatSummary.map { prettyWorkChatModelName($0.model) })
+        .modifier(
+          WorkChatTranscriptEnvironmentModifier(
+            provider: chatSummary?.provider,
+            modelId: chatSummary?.modelId ?? chatSummary?.model,
+            modelLabel: chatSummary.map { prettyWorkChatModelName($0.model) },
+            laneId: session.laneId,
+            requestedCwd: chatSummary?.requestedCwd
+          )
+        )
       }
       .scrollIndicators(.hidden)
       .scrollDismissesKeyboard(.interactively)
@@ -642,14 +664,14 @@ func mergeWorkPendingSteers(
 
 private struct WorkChatComposerCard: View {
   let chatSummary: AgentChatSessionSummary?
-  let queuedSteerCount: Int
   let pendingInputCount: Int
   let awaitingInputGate: Bool
   let canCompose: Bool
   let canSend: Bool
   let sending: Bool
   /// True while the assistant is streaming a response. Swaps the Send button
-  /// for a warning-tinted Stop button that calls `onInterrupt` — replaces the
+  /// Desktop parity: red bordered stop control in the composer while a turn is
+  /// active (`border-red-500/25 bg-red-500/[0.08] text-red-400/80`).
   /// old full-width yellow slab that used to sit under the header.
   let showInterrupt: Bool
   let interruptInFlight: Bool
@@ -657,18 +679,12 @@ private struct WorkChatComposerCard: View {
   let onOpenModelPicker: (() -> Void)?
   let onSelectRuntimeMode: ((String) -> Void)?
   let onSelectEffort: ((String) -> Void)?
-  let artifactCount: Int
-  let latestArtifact: ComputerUseArtifactSummary?
-  let artifactRefreshInFlight: Bool
-  let artifactRefreshError: String?
-  let onOpenProof: () -> Void
   let onSend: @MainActor (String) async -> Bool
   let onSent: () -> Void
 
   var body: some View {
     WorkChatComposerDraftInput(
       chatSummary: chatSummary,
-      queuedSteerCount: queuedSteerCount,
       pendingInputCount: pendingInputCount,
       awaitingInputGate: awaitingInputGate,
       canCompose: canCompose,
@@ -680,11 +696,6 @@ private struct WorkChatComposerCard: View {
       onOpenModelPicker: onOpenModelPicker,
       onSelectRuntimeMode: onSelectRuntimeMode,
       onSelectEffort: onSelectEffort,
-      artifactCount: artifactCount,
-      latestArtifact: latestArtifact,
-      artifactRefreshInFlight: artifactRefreshInFlight,
-      artifactRefreshError: artifactRefreshError,
-      onOpenProof: onOpenProof,
       onSend: onSend,
       onSent: onSent
     )
@@ -718,7 +729,6 @@ private struct WorkChatComposerCard: View {
 
 private struct WorkChatComposerDraftInput: View {
   let chatSummary: AgentChatSessionSummary?
-  let queuedSteerCount: Int
   let pendingInputCount: Int
   let awaitingInputGate: Bool
   let canCompose: Bool
@@ -730,25 +740,10 @@ private struct WorkChatComposerDraftInput: View {
   let onOpenModelPicker: (() -> Void)?
   let onSelectRuntimeMode: ((String) -> Void)?
   let onSelectEffort: ((String) -> Void)?
-  let artifactCount: Int
-  let latestArtifact: ComputerUseArtifactSummary?
-  let artifactRefreshInFlight: Bool
-  let artifactRefreshError: String?
-  let onOpenProof: () -> Void
   let onSend: @MainActor (String) async -> Bool
   let onSent: () -> Void
 
   @StateObject private var draftState = WorkChatComposerDraftState()
-
-  /// Brand color for the active chat surface, used on the Send pill. Mirrors
-  /// desktop's provider-level chat accents: Claude amber, Codex warm white,
-  /// with model color only as a fallback for providers outside that map.
-  private var sendAccent: Color {
-    ADEColor.chatSurfaceAccent(
-      modelId: chatSummary?.modelId ?? chatSummary?.model,
-      provider: chatSummary?.provider
-    )
-  }
 
   var body: some View {
     VStack(alignment: .leading, spacing: 12) {
@@ -764,7 +759,6 @@ private struct WorkChatComposerDraftInput: View {
       HStack(alignment: .center, spacing: 8) {
         WorkComposerChipStrip(
           chatSummary: chatSummary,
-          queuedSteerCount: queuedSteerCount,
           pendingInputCount: pendingInputCount,
           onOpenModelPicker: onOpenModelPicker,
           onSelectRuntimeMode: onSelectRuntimeMode,
@@ -773,14 +767,6 @@ private struct WorkChatComposerDraftInput: View {
 
         Spacer(minLength: 0)
 
-        WorkProofComposerButton(
-          count: artifactCount,
-          latestArtifact: latestArtifact,
-          isRefreshing: artifactRefreshInFlight,
-          refreshError: artifactRefreshError,
-          onOpen: onOpenProof
-        )
-
         if showInterrupt {
           if draftState.hasSendableText {
             stopButton(compact: true)
@@ -788,8 +774,6 @@ private struct WorkChatComposerDraftInput: View {
               draftState: draftState,
               canSend: canSend,
               sending: sending,
-              accent: sendAccent,
-              label: "Stage",
               accessibilityLabelText: "Stage message",
               onSend: onSend,
               onSent: onSent
@@ -802,7 +786,6 @@ private struct WorkChatComposerDraftInput: View {
             draftState: draftState,
             canSend: canSend,
             sending: sending,
-            accent: sendAccent,
             onSend: onSend,
             onSent: onSent
           )
@@ -816,28 +799,29 @@ private struct WorkChatComposerDraftInput: View {
     Button {
       Task { await onInterrupt() }
     } label: {
-      HStack(spacing: 5) {
-        if interruptInFlight {
-          ProgressView()
-            .controlSize(.mini)
-            .tint(Color.white)
+      Group {
+        if compact {
+          stopButtonIcon(compact: true)
         } else {
-          Image(systemName: "stop.fill")
-            .font(.system(size: 12, weight: .bold))
-        }
-        if !compact {
-          Text("Stop")
-            .font(.caption.weight(.semibold))
+          HStack(spacing: 5) {
+            stopButtonIcon(compact: false)
+            Text("Stop")
+              .font(.caption.weight(.semibold))
+          }
+          .padding(.horizontal, 12)
+          .padding(.vertical, 8)
         }
       }
-      .foregroundStyle(Color.white)
-      .padding(.horizontal, compact ? 10 : 12)
-      .padding(.vertical, 8)
+      .foregroundStyle(ADEColor.danger.opacity(0.85))
+      .frame(width: compact ? 28 : nil, height: compact ? 28 : nil)
       .background(
-        Capsule(style: .continuous)
-          .fill(ADEColor.warning)
+        RoundedRectangle(cornerRadius: compact ? 8 : 10, style: .continuous)
+          .fill(ADEColor.danger.opacity(0.08))
       )
-      .shadow(color: ADEColor.warning.opacity(0.4), radius: 8, y: 2)
+      .overlay(
+        RoundedRectangle(cornerRadius: compact ? 8 : 10, style: .continuous)
+          .stroke(ADEColor.danger.opacity(0.25), lineWidth: 1)
+      )
     }
     .buttonStyle(.plain)
     .accessibilityLabel(interruptInFlight ? "Interrupting turn" : "Stop turn")
@@ -849,6 +833,18 @@ private struct WorkChatComposerDraftInput: View {
         "role": "button"
       ]
     )
+  }
+
+  @ViewBuilder
+  private func stopButtonIcon(compact: Bool) -> some View {
+    if interruptInFlight {
+      ProgressView()
+        .controlSize(.mini)
+        .tint(ADEColor.danger)
+    } else {
+      Image(systemName: "stop.fill")
+        .font(.system(size: compact ? 10 : 12, weight: .bold))
+    }
   }
 }
 
@@ -905,8 +901,6 @@ private struct WorkChatComposerSendButton: View {
   @ObservedObject var draftState: WorkChatComposerDraftState
   let canSend: Bool
   let sending: Bool
-  let accent: Color
-  var label = "Send"
   var accessibilityLabelText = "Send message"
   let onSend: @MainActor (String) async -> Bool
   let onSent: () -> Void
@@ -927,30 +921,22 @@ private struct WorkChatComposerSendButton: View {
         }
       }
     } label: {
-      HStack(spacing: 5) {
+      ZStack {
         if sending {
           ProgressView()
             .controlSize(.mini)
-            .tint(sendEnabled ? Color.white : ADEColor.textSecondary)
+            .tint(sendEnabled ? Color(red: 0.12, green: 0.12, blue: 0.14) : ADEColor.textSecondary)
         } else {
-          Image(systemName: "paperplane.fill")
-            .font(.system(size: 12, weight: .bold))
+          Image(systemName: "arrow.up")
+            .font(.system(size: 14, weight: .bold))
         }
-        Text(label)
-          .font(.caption.weight(.semibold))
       }
-      .foregroundStyle(sendEnabled ? Color.white : ADEColor.textSecondary)
-      .padding(.horizontal, 12)
-      .padding(.vertical, 8)
+      .frame(width: 28, height: 28)
+      .foregroundStyle(sendEnabled ? Color(red: 0.12, green: 0.12, blue: 0.14) : ADEColor.textSecondary.opacity(0.2))
       .background(
-        Capsule(style: .continuous)
-          .fill(sendEnabled ? accent : ADEColor.surfaceBackground.opacity(0.85))
+        Circle()
+          .fill(sendEnabled ? Color.white.opacity(0.9) : Color.white.opacity(0.06))
       )
-      .overlay(
-        Capsule(style: .continuous)
-          .stroke(sendEnabled ? Color.clear : ADEColor.border.opacity(0.35), lineWidth: 0.8)
-      )
-      .shadow(color: sendEnabled ? accent.opacity(0.4) : .clear, radius: 8, y: 2)
     }
     .buttonStyle(.plain)
     .accessibilityLabel(sending ? "Sending message" : accessibilityLabelText)
@@ -962,77 +948,5 @@ private struct WorkChatComposerSendButton: View {
         "role": "button"
       ]
     )
-  }
-}
-
-private struct WorkProofComposerButton: View {
-  let count: Int
-  let latestArtifact: ComputerUseArtifactSummary?
-  let isRefreshing: Bool
-  let refreshError: String?
-  let onOpen: () -> Void
-
-  private var tint: Color {
-    refreshError == nil ? ADEColor.accent : ADEColor.danger
-  }
-
-  var body: some View {
-    Button(action: onOpen) {
-      ZStack(alignment: .topTrailing) {
-        ZStack {
-          if isRefreshing {
-            ProgressView()
-              .controlSize(.mini)
-              .tint(tint)
-          } else {
-            Image(systemName: "cube.transparent")
-              .font(.system(size: 14, weight: .semibold))
-              .foregroundStyle(tint)
-          }
-        }
-        .frame(width: 32, height: 32)
-        .background(ADEColor.raisedBackground.opacity(0.88), in: Circle())
-        .overlay(
-          Circle()
-            .stroke(tint.opacity(refreshError == nil ? 0.28 : 0.5), lineWidth: 0.8)
-        )
-
-        if refreshError != nil {
-          Image(systemName: "exclamationmark")
-            .font(.system(size: 8, weight: .black))
-            .foregroundStyle(Color.white)
-            .frame(width: 14, height: 14)
-            .background(ADEColor.danger, in: Circle())
-            .offset(x: 3, y: -3)
-        } else if count > 0 {
-          Text("\(min(count, 99))")
-            .font(.system(size: 9, weight: .bold, design: .rounded))
-            .foregroundStyle(Color.white)
-            .frame(minWidth: 15, minHeight: 15)
-            .background(tint, in: Capsule())
-            .offset(x: 4, y: -4)
-        }
-      }
-    }
-    .buttonStyle(.plain)
-    .accessibilityLabel(accessibilityLabel)
-    .accessibilityHint("Opens the proof drawer")
-    .adeInspectable(
-      "Work.Chat.Composer.ProofButton",
-      metadata: [
-        "label": accessibilityLabel,
-        "role": "button"
-      ]
-    )
-  }
-
-  private var accessibilityLabel: String {
-    if let refreshError {
-      return "Proof drawer, refresh failed: \(refreshError)"
-    }
-    guard let latestArtifact else {
-      return "Proof drawer, no artifacts"
-    }
-    return "Proof drawer, \(count) artifact\(count == 1 ? "" : "s"), latest \(workArtifactKindLabel(latestArtifact.artifactKind)) \(relativeTimestamp(latestArtifact.createdAt))"
   }
 }

@@ -76,6 +76,7 @@ const mockState = vi.hoisted(() => ({
   cursorSdkSendCalls: [] as Array<Record<string, unknown>>,
   cursorSdkPolicyUpdates: [] as Array<Record<string, unknown>>,
   cursorSdkPooled: null as any,
+  cursorSdkAgentIdForNextAcquire: null as string | null,
   cursorSdkCloudRequests: [] as Array<{ type: string; payload: Record<string, unknown> }>,
   cursorSdkCloudResponses: new Map<string, unknown>(),
   cursorSendPromptGate: null as Promise<void> | null,
@@ -631,6 +632,8 @@ vi.mock("./cursorSdkPool", () => ({
   ),
   acquireCursorSdkConnection: vi.fn(async (args: Record<string, unknown>) => {
     mockState.cursorSdkAcquireCalls.push(args);
+    const agentId = mockState.cursorSdkAgentIdForNextAcquire ?? "cursor-sdk-agent-1";
+    mockState.cursorSdkAgentIdForNextAcquire = null;
     const pooled: any = {
       process: { exitCode: null, killed: false },
       bridge: {
@@ -639,7 +642,7 @@ vi.mock("./cursorSdkPool", () => ({
         onRunResult: null as any,
         onHookRequest: null as any,
       },
-      agentId: "cursor-sdk-agent-1",
+      agentId,
       runId: null,
       request: vi.fn(async (type: string, payload?: unknown) => {
         if (type === "policy_update") {
@@ -1511,6 +1514,7 @@ beforeEach(() => {
   mockState.cursorSdkSendCalls = [];
   mockState.cursorSdkPolicyUpdates = [];
   mockState.cursorSdkPooled = null;
+  mockState.cursorSdkAgentIdForNextAcquire = null;
   mockState.cursorSdkCloudRequests = [];
   mockState.cursorSdkCloudResponses = new Map<string, unknown>();
   mockState.cursorSendPromptGate = null;
@@ -7012,6 +7016,53 @@ describe("createAgentChatService", () => {
       expect(firstPooled.sendPrompt).toHaveBeenCalledTimes(1);
       expect(mockState.cursorSdkPooled).not.toBe(firstPooled);
       expect(mockState.cursorSdkPooled.sendPrompt).toHaveBeenCalledTimes(1);
+    });
+
+    it("injects recent ADE context when Cursor SDK resume opens a new agent", async () => {
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "Inspect the mobile files tab parity work.",
+      });
+      const firstPooled = mockState.cursorSdkPooled;
+      firstPooled.process.exitCode = 1;
+      mockState.cursorSdkAgentIdForNextAcquire = "cursor-sdk-agent-2";
+
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "Did you finish the prior work?",
+      });
+
+      expect(mockState.cursorSdkAcquireCalls).toHaveLength(2);
+      expect(mockState.cursorSdkAcquireCalls[1]).toEqual(
+        expect.objectContaining({ agentId: "cursor-sdk-agent-1" }),
+      );
+      const promptText = String(mockState.cursorSdkSendCalls.at(-1)?.promptText ?? "");
+      expect(promptText).toContain("Cursor SDK continuity recovery");
+      expect(promptText).toContain("cursor-sdk-agent-1");
+      expect(promptText).toContain("cursor-sdk-agent-2");
+      expect(promptText).toContain("Recent Conversation Tail");
+      expect(promptText).toContain("User: Inspect the mobile files tab parity work.");
+      expect(promptText).toContain("Did you finish the prior work?");
+      // Prompts are prepared before the runtime is acquired, so the rotation
+      // turn itself stays deduped — but the rotated agent is brand new, so the
+      // lane execution directive must be re-emitted on the following turn
+      // instead of staying suppressed by lastLaneDirectiveKey.
+      expect(promptText).not.toContain("[ADE launch directive]");
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "Continue with the next step.",
+      });
+      const postRotationPrompt = String(mockState.cursorSdkSendCalls.at(-1)?.promptText ?? "");
+      expect(postRotationPrompt).toContain("[ADE launch directive]");
     });
 
     it("reports active Droid SDK turns so project switching does not close the chat runtime", async () => {

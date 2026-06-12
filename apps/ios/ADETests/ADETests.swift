@@ -5660,6 +5660,92 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(warning?.accessibilitySummary, "Auto-rebase conflict. Resolve conflicts in the Rebase/Merge tab.")
   }
 
+  func testSelectLanePrTagPrefersOpenPrOnMatchingBranch() {
+    let lane = LaneSummary(
+      id: "lane-audit",
+      name: "mobile audit",
+      description: nil,
+      laneType: "worktree",
+      baseRef: "main",
+      branchRef: "ade/mobile-audit-34b23435",
+      worktreePath: "/tmp/mobile-audit",
+      attachedRootPath: nil,
+      parentLaneId: "lane-primary",
+      childCount: 0,
+      stackDepth: 1,
+      parentStatus: nil,
+      isEditProtected: false,
+      status: LaneStatus(dirty: true, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false),
+      color: "#a78bfa",
+      icon: nil,
+      tags: [],
+      folder: nil,
+      createdAt: "2026-03-20T00:00:00.000Z",
+      archivedAt: nil
+    )
+    let openPr = PullRequestListItem(
+      id: "pr-open",
+      laneId: "lane-audit",
+      laneName: "mobile audit",
+      projectId: "project-1",
+      repoOwner: "ade",
+      repoName: "ADE",
+      githubPrNumber: 561,
+      githubUrl: "https://github.com/ade/ADE/pull/561",
+      title: "Mobile audit",
+      state: "open",
+      baseBranch: "main",
+      headBranch: "ade/mobile-audit-34b23435",
+      checksStatus: "passing",
+      reviewStatus: "approved",
+      additions: 12,
+      deletions: 4,
+      lastSyncedAt: nil,
+      createdAt: "2026-03-20T00:00:00.000Z",
+      updatedAt: "2026-03-21T00:00:00.000Z",
+      adeKind: nil,
+      linkedGroupId: nil,
+      linkedGroupType: nil,
+      linkedGroupName: nil,
+      linkedGroupPosition: nil,
+      linkedGroupCount: 0,
+      workflowDisplayState: nil,
+      cleanupState: nil
+    )
+    let mergedPr = PullRequestListItem(
+      id: "pr-merged",
+      laneId: "lane-audit",
+      laneName: "mobile audit",
+      projectId: "project-1",
+      repoOwner: "ade",
+      repoName: "ADE",
+      githubPrNumber: 400,
+      githubUrl: "https://github.com/ade/ADE/pull/400",
+      title: "Old audit",
+      state: "merged",
+      baseBranch: "main",
+      headBranch: "ade/mobile-audit-34b23435",
+      checksStatus: "passing",
+      reviewStatus: "approved",
+      additions: 1,
+      deletions: 1,
+      lastSyncedAt: nil,
+      createdAt: "2026-03-10T00:00:00.000Z",
+      updatedAt: "2026-03-11T00:00:00.000Z",
+      adeKind: nil,
+      linkedGroupId: nil,
+      linkedGroupType: nil,
+      linkedGroupName: nil,
+      linkedGroupPosition: nil,
+      linkedGroupCount: 0,
+      workflowDisplayState: nil,
+      cleanupState: nil
+    )
+
+    XCTAssertEqual(selectLanePrTag(lane: lane, pullRequests: [mergedPr, openPr])?.id, "pr-open")
+    XCTAssertEqual(formatLanePrBadgeLabel(openPr), "PR #561")
+  }
+
   func testLaneStackCardAccessibilityLabelIncludesRebaseWarningSummary() {
     var snapshot = makeLaneListSnapshot(
       id: "lane-warning",
@@ -7266,7 +7352,7 @@ final class ADETests: XCTestCase {
         sessionId: "chat-1",
         timestamp: "2026-03-25T00:00:01.000Z",
         sequence: 1,
-        event: .userMessage(text: "First", turnId: "turn-1", steerId: nil, deliveryState: nil, processed: nil)
+        event: .userMessage(text: "First", attachments: nil, turnId: "turn-1", steerId: nil, deliveryState: nil, processed: nil)
       ),
     ]
     let live = [
@@ -7274,7 +7360,7 @@ final class ADETests: XCTestCase {
         sessionId: "chat-1",
         timestamp: "2026-03-25T00:00:01.000Z",
         sequence: 1,
-        event: .userMessage(text: "First", turnId: "turn-1", steerId: nil, deliveryState: nil, processed: nil)
+        event: .userMessage(text: "First", attachments: nil, turnId: "turn-1", steerId: nil, deliveryState: nil, processed: nil)
       ),
       WorkChatEnvelope(
         sessionId: "chat-1",
@@ -7339,7 +7425,7 @@ final class ADETests: XCTestCase {
         sessionId: "chat-1",
         timestamp: "2026-04-20T00:00:01.000Z",
         sequence: nil,
-        event: .userMessage(text: "What model are you?", turnId: "turn-1", steerId: nil, deliveryState: nil, processed: nil)
+        event: .userMessage(text: "What model are you?", attachments: nil, turnId: "turn-1", steerId: nil, deliveryState: nil, processed: nil)
       ),
       WorkChatEnvelope(
         sessionId: "chat-1",
@@ -7353,7 +7439,7 @@ final class ADETests: XCTestCase {
         sessionId: "chat-1",
         timestamp: "2026-04-20T00:00:01.000Z",
         sequence: 1,
-        event: .userMessage(text: "What model are you?", turnId: "turn-1", steerId: nil, deliveryState: nil, processed: nil)
+        event: .userMessage(text: "What model are you?", attachments: nil, turnId: "turn-1", steerId: nil, deliveryState: nil, processed: nil)
       ),
       WorkChatEnvelope(
         sessionId: "chat-1",
@@ -7412,7 +7498,7 @@ final class ADETests: XCTestCase {
         sessionId: "chat-1",
         timestamp: "2026-04-20T00:00:01.000Z",
         sequence: nil,
-        event: .userMessage(text: "ship it", turnId: "turn-1", steerId: nil, deliveryState: nil, processed: nil)
+        event: .userMessage(text: "ship it", attachments: nil, turnId: "turn-1", steerId: nil, deliveryState: nil, processed: nil)
       ),
     ]
     let live = [
@@ -7420,7 +7506,7 @@ final class ADETests: XCTestCase {
         sessionId: "chat-1",
         timestamp: "2026-04-20T00:00:01.000Z",
         sequence: 1,
-        event: .userMessage(text: "ship it", turnId: "turn-1", steerId: "steer-1", deliveryState: "queued", processed: nil)
+        event: .userMessage(text: "ship it", attachments: nil, turnId: "turn-1", steerId: "steer-1", deliveryState: "queued", processed: nil)
       ),
     ]
 
@@ -7454,7 +7540,7 @@ final class ADETests: XCTestCase {
         sessionId: "chat-1",
         timestamp: "2026-04-20T00:00:03.000Z",
         sequence: 3,
-        event: .userMessage(text: "keep this staged", turnId: "turn-active", steerId: "steer-1", deliveryState: "queued", processed: nil)
+        event: .userMessage(text: "keep this staged", attachments: nil, turnId: "turn-active", steerId: "steer-1", deliveryState: "queued", processed: nil)
       ),
       WorkChatEnvelope(
         sessionId: "chat-1",
@@ -7520,7 +7606,7 @@ final class ADETests: XCTestCase {
     let transcript = parseWorkChatTranscript(raw)
     XCTAssertEqual(transcript.count, 2)
 
-    guard case .userMessage(let text, _, let steerId, let deliveryState, _) = transcript[0].event else {
+    guard case .userMessage(let text, _, _, let steerId, let deliveryState, _) = transcript[0].event else {
       return XCTFail("Expected user_message event.")
     }
     XCTAssertEqual(text, "ship it")
@@ -7541,7 +7627,7 @@ final class ADETests: XCTestCase {
     let transcript = parseWorkChatTranscript(raw)
     XCTAssertEqual(transcript.count, 1)
 
-    guard case .userMessage(let text, let turnId, _, _, _) = transcript[0].event else {
+    guard case .userMessage(let text, _, let turnId, _, _, _) = transcript[0].event else {
       return XCTFail("Expected user_message event.")
     }
     XCTAssertEqual(text, "ADE coordinator start: initialize the session.")
@@ -7685,13 +7771,13 @@ final class ADETests: XCTestCase {
         sessionId: "chat-1",
         timestamp: "2026-03-25T00:00:01.000Z",
         sequence: 1,
-        event: .userMessage(text: "ship", turnId: "turn-1", steerId: "steer-1", deliveryState: "queued", processed: nil)
+        event: .userMessage(text: "ship", attachments: nil, turnId: "turn-1", steerId: "steer-1", deliveryState: "queued", processed: nil)
       ),
       WorkChatEnvelope(
         sessionId: "chat-1",
         timestamp: "2026-03-25T00:00:02.000Z",
         sequence: 2,
-        event: .userMessage(text: "ship it fast", turnId: "turn-1", steerId: "steer-1", deliveryState: "queued", processed: nil)
+        event: .userMessage(text: "ship it fast", attachments: nil, turnId: "turn-1", steerId: "steer-1", deliveryState: "queued", processed: nil)
       ),
       WorkChatEnvelope(
         sessionId: "chat-1",
@@ -7703,7 +7789,7 @@ final class ADETests: XCTestCase {
         sessionId: "chat-1",
         timestamp: "2026-03-25T00:00:04.000Z",
         sequence: 4,
-        event: .userMessage(text: "also run tests", turnId: "turn-1", steerId: "steer-2", deliveryState: "queued", processed: nil)
+        event: .userMessage(text: "also run tests", attachments: nil, turnId: "turn-1", steerId: "steer-2", deliveryState: "queued", processed: nil)
       ),
     ]
 
@@ -7718,13 +7804,13 @@ final class ADETests: XCTestCase {
         sessionId: "chat-1",
         timestamp: "2026-03-25T00:00:01.000Z",
         sequence: 1,
-        event: .userMessage(text: "first", turnId: "turn-1", steerId: "steer-1", deliveryState: "queued", processed: nil)
+        event: .userMessage(text: "first", attachments: nil, turnId: "turn-1", steerId: "steer-1", deliveryState: "queued", processed: nil)
       ),
       WorkChatEnvelope(
         sessionId: "chat-1",
         timestamp: "2026-03-25T00:00:02.000Z",
         sequence: 2,
-        event: .userMessage(text: "second", turnId: "turn-1", steerId: "steer-2", deliveryState: "queued", processed: nil)
+        event: .userMessage(text: "second", attachments: nil, turnId: "turn-1", steerId: "steer-2", deliveryState: "queued", processed: nil)
       ),
       WorkChatEnvelope(
         sessionId: "chat-1",
@@ -7736,7 +7822,7 @@ final class ADETests: XCTestCase {
         sessionId: "chat-1",
         timestamp: "2026-03-25T00:00:04.000Z",
         sequence: 4,
-        event: .userMessage(text: "second", turnId: "turn-1", steerId: "steer-2", deliveryState: "delivered", processed: nil)
+        event: .userMessage(text: "second", attachments: nil, turnId: "turn-1", steerId: "steer-2", deliveryState: "delivered", processed: nil)
       ),
     ]
 
@@ -7750,7 +7836,7 @@ final class ADETests: XCTestCase {
         sessionId: "chat-1",
         timestamp: "2026-03-25T00:00:01.000Z",
         sequence: 1,
-        event: .userMessage(text: "ship", turnId: "turn-1", steerId: "steer-1", deliveryState: "queued", processed: nil)
+        event: .userMessage(text: "ship", attachments: nil, turnId: "turn-1", steerId: "steer-1", deliveryState: "queued", processed: nil)
       ),
     ]
     let live = [
@@ -7758,16 +7844,99 @@ final class ADETests: XCTestCase {
         sessionId: "chat-1",
         timestamp: "2026-03-25T00:00:01.000Z",
         sequence: 1,
-        event: .userMessage(text: "ship it fast", turnId: "turn-1", steerId: "steer-1", deliveryState: "queued", processed: nil)
+        event: .userMessage(text: "ship it fast", attachments: nil, turnId: "turn-1", steerId: "steer-1", deliveryState: "queued", processed: nil)
       ),
     ]
 
     let merged = mergeWorkChatTranscripts(base: base, live: live)
     XCTAssertEqual(merged.count, 1)
-    guard case .userMessage(let text, _, _, _, _) = merged[0].event else {
+    guard case .userMessage(let text, _, _, _, _, _) = merged[0].event else {
       return XCTFail("Expected user_message event.")
     }
     XCTAssertEqual(text, "ship it fast")
+  }
+
+  func testPruneResolvedQueuedSteerEnvelopesDropsStaleQueuedRow() {
+    let transcript = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:01.000Z",
+        sequence: 1,
+        event: .userMessage(text: "ship it", attachments: nil, turnId: "turn-1", steerId: "steer-1", deliveryState: "queued", processed: nil)
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:02.000Z",
+        sequence: 2,
+        event: .userMessage(text: "ship it", attachments: nil, turnId: "turn-1", steerId: "steer-1", deliveryState: "delivered", processed: nil)
+      ),
+    ]
+
+    let pruned = pruneResolvedQueuedSteerEnvelopes(transcript)
+    XCTAssertEqual(pruned.count, 1)
+    guard case .userMessage(_, _, _, let steerId, let deliveryState, _) = pruned[0].event else {
+      return XCTFail("Expected delivered user_message event.")
+    }
+    XCTAssertEqual(steerId, "steer-1")
+    XCTAssertEqual(deliveryState, "delivered")
+    XCTAssertTrue(derivePendingWorkSteers(from: pruned).isEmpty)
+  }
+
+  func testPreferredWorkTranscriptPreservesQueuedSteerAfterPlainFallbackBackfill() {
+    let fallback = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-04-20T00:00:01.000Z",
+        sequence: nil,
+        event: .userMessage(text: "ship it", attachments: nil, turnId: "turn-1", steerId: nil, deliveryState: nil, processed: nil)
+      ),
+    ]
+    let live = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-04-20T00:00:01.000Z",
+        sequence: 1,
+        event: .userMessage(text: "ship it", attachments: nil, turnId: "turn-1", steerId: "steer-1", deliveryState: "queued", processed: nil)
+      ),
+    ]
+
+    let preferred = preferredWorkTranscript(
+      current: [],
+      fallback: fallback,
+      eventTranscript: live
+    )
+
+    XCTAssertEqual(buildWorkChatMessages(from: preferred).map(\.markdown), [])
+    XCTAssertEqual(derivePendingWorkSteers(from: preferred).map(\.id), ["steer-1"])
+  }
+
+  func testWorkTimelineHidesLocalEchoWhenQueuedSteerCoversSameText() {
+    let transcript = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:02.000Z",
+        sequence: 1,
+        event: .userMessage(text: "Stage me", attachments: nil, turnId: "turn-1", steerId: "steer-1", deliveryState: "queued", processed: nil)
+      ),
+    ]
+    let timeline = buildWorkTimeline(
+      transcript: transcript,
+      fallbackEntries: [],
+      toolCards: [],
+      commandCards: [],
+      fileChangeCards: [],
+      eventCards: [],
+      artifacts: [],
+      localEchoMessages: [
+        WorkLocalEchoMessage(text: "Stage me", timestamp: "2026-03-25T00:00:01.000Z", deliveryState: "queued"),
+      ]
+    )
+    let userMessages = timeline.compactMap { entry -> String? in
+      guard case .message(let message) = entry.payload, message.role == "user" else { return nil }
+      return message.markdown
+    }
+
+    XCTAssertTrue(userMessages.isEmpty)
   }
 
   func testVisibleWorkTimelineEntriesKeepsNewestPage() {
@@ -8148,6 +8317,13 @@ final class ADETests: XCTestCase {
     )
   }
 
+  func testWorkResolveCliProviderMapsModelFamiliesLikeDesktop() {
+    XCTAssertEqual(workResolveCliProvider(for: "claude-sonnet-4-6", provider: "claude"), "claude")
+    XCTAssertEqual(workResolveCliProvider(for: "gpt-5.5", provider: "codex"), "codex")
+    XCTAssertEqual(workResolveCliProvider(for: "auto", provider: "cursor"), "cursor")
+    XCTAssertEqual(workResolveCliProvider(for: "opencode/anthropic/claude-sonnet-4-6", provider: "opencode"), "opencode")
+  }
+
   func testWorkModelCatalogTreatsCodexRuntimeAndRegistryIdsAsSameModel() {
     let groups = workModelCatalogGroups(
       availableModelsByProvider: [
@@ -8431,7 +8607,7 @@ final class ADETests: XCTestCase {
         sessionId: "chat-1",
         timestamp: "2026-03-25T00:00:02.000Z",
         sequence: 1,
-        event: .userMessage(text: prompt, turnId: "turn-1", steerId: nil, deliveryState: nil, processed: nil)
+        event: .userMessage(text: prompt, attachments: nil, turnId: "turn-1", steerId: nil, deliveryState: nil, processed: nil)
       ),
     ]
     let timeline = buildWorkTimeline(
@@ -8487,7 +8663,7 @@ final class ADETests: XCTestCase {
         sessionId: "chat-1",
         timestamp: "2026-03-25T00:00:01.000Z",
         sequence: 1,
-        event: .userMessage(text: "say hi", turnId: "turn-1", steerId: nil, deliveryState: nil, processed: nil)
+        event: .userMessage(text: "say hi", attachments: nil, turnId: "turn-1", steerId: nil, deliveryState: nil, processed: nil)
       ),
       WorkChatEnvelope(
         sessionId: "chat-1",
@@ -8505,7 +8681,7 @@ final class ADETests: XCTestCase {
         sessionId: "chat-1",
         timestamp: "2026-03-25T00:01:01.000Z",
         sequence: 4,
-        event: .userMessage(text: "say hi again", turnId: "turn-2", steerId: nil, deliveryState: nil, processed: nil)
+        event: .userMessage(text: "say hi again", attachments: nil, turnId: "turn-2", steerId: nil, deliveryState: nil, processed: nil)
       ),
       WorkChatEnvelope(
         sessionId: "chat-1",
@@ -8652,6 +8828,36 @@ final class ADETests: XCTestCase {
     )
   }
 
+  /// Regression: the chat_subscribe ack now carries live turn state so a
+  /// phone that subscribes mid-turn (desktop-started chat, byte-capped
+  /// snapshot tail without the `status: started` event) still renders the
+  /// stop button and working indicator. Older hosts omit the field — it
+  /// must decode as nil, not fail or default to a fabricated state.
+  func testChatSubscribeSnapshotPayloadDecodesLiveTurnState() throws {
+    let modernJSON = """
+    {
+      "sessionId": "chat-1",
+      "capturedAt": "2026-06-12T00:00:00.000Z",
+      "truncated": true,
+      "events": [],
+      "turnActive": true
+    }
+    """
+    let modern = try JSONDecoder().decode(SyncChatSubscribeSnapshotPayload.self, from: Data(modernJSON.utf8))
+    XCTAssertEqual(modern.turnActive, true)
+
+    let legacyJSON = """
+    {
+      "sessionId": "chat-1",
+      "capturedAt": "2026-06-12T00:00:00.000Z",
+      "truncated": false,
+      "events": []
+    }
+    """
+    let legacy = try JSONDecoder().decode(SyncChatSubscribeSnapshotPayload.self, from: Data(legacyJSON.utf8))
+    XCTAssertNil(legacy.turnActive)
+  }
+
   func testWorkSessionEmptyStateMessagingExplainsSearchAndArchiveFallbacks() {
     XCTAssertEqual(
       workSessionEmptyStateTitle(status: .all, searchText: "deploy", hasFilters: true),
@@ -8786,6 +8992,46 @@ final class ADETests: XCTestCase {
         message: "This diff is too large to compare fully on iPhone. Open the file from ADE on your machine or inspect a smaller diff before rendering it on iPhone."
       )
     )
+  }
+
+  func testFilesStripYamlFrontmatterRemovesLeadingBlock() {
+    let input = """
+    ---
+    name: ade-autoresearch
+    description: perf skill
+    ---
+    # Heading
+
+    Body text
+    """
+    XCTAssertEqual(filesStripYamlFrontmatter(input), "# Heading\n\nBody text")
+    XCTAssertEqual(filesStripYamlFrontmatter("# No frontmatter"), "# No frontmatter")
+  }
+
+  func testFilesIsImagePreviewableUsesPathAndPreviewKind() {
+    let blob = SyncFileBlob(
+      path: "proof/screenshot.png",
+      size: 1200,
+      encoding: "base64",
+      isBinary: true,
+      content: "",
+      previewKind: "image"
+    )
+    XCTAssertTrue(filesIsImagePreviewable(path: "proof/screenshot.png", blob: blob))
+    XCTAssertFalse(filesIsImagePreviewable(path: "README.md", blob: SyncFileBlob(path: "README.md", size: 10, encoding: "utf8", isBinary: false, content: "# hi")))
+  }
+
+  func testFilesImageDataPrefersDataUrl() {
+    let tinyPngBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+    let blob = SyncFileBlob(
+      path: "a.png",
+      size: 68,
+      encoding: "base64",
+      isBinary: true,
+      content: "",
+      dataUrl: "data:image/png;base64,\(tinyPngBase64)"
+    )
+    XCTAssertNotNil(filesImageData(from: blob))
   }
 
   func testWorkDisplayLeavesCleanRepeatedLettersAloneEvenWithManyDoubles() {
@@ -9904,6 +10150,65 @@ final class ADETests: XCTestCase {
     XCTAssertNil(workToolResultPreview(""))
     XCTAssertEqual(workToolResultPreview("   \n\nHello\nWorld"), "Hello")
     XCTAssertEqual(workToolResultPreview("  padded line  "), "padded line")
+  }
+
+  func testMakeWorkChatEventPreservesUserMessageAttachments() {
+    let attachments = [AgentChatFileRef(path: ".ade/attachments/screenshot.png", type: "image")]
+    let mapped = makeWorkChatEvent(
+      from: .userMessage(
+        text: "see attached",
+        attachments: attachments,
+        turnId: "turn-1",
+        steerId: nil,
+        deliveryState: "delivered",
+        processed: true
+      )
+    )
+    guard case .userMessage(_, let preserved, _, _, _, _) = mapped else {
+      return XCTFail("Expected mapped user message event")
+    }
+    XCTAssertEqual(preserved, attachments)
+  }
+
+  func testBuildWorkChatMessagesIncludesAttachmentMetadata() {
+    let transcript = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-06-12T00:00:00.000Z",
+        sequence: 1,
+        event: .userMessage(
+          text: "screenshots attached",
+          attachments: [AgentChatFileRef(path: ".ade/attachments/a.png", type: "image")],
+          turnId: "turn-1",
+          steerId: nil,
+          deliveryState: "delivered",
+          processed: true
+        )
+      ),
+    ]
+    let messages = buildWorkChatMessages(from: transcript)
+    XCTAssertEqual(messages.count, 1)
+    XCTAssertEqual(messages.first?.attachments?.count, 1)
+    XCTAssertEqual(messages.first?.attachments?.first?.path, ".ade/attachments/a.png")
+  }
+
+  func testWorkToolArgPreviewExtractsPathInsteadOfRawJSONBrace() {
+    XCTAssertEqual(
+      workToolArgPreview(
+        toolName: "Read",
+        argsText: """
+        {
+          "path": "apps/ios/ADE/Views/Work/WorkReasoningCard.swift"
+        }
+        """
+      ),
+      "apps/ios/ADE/Views/Work/WorkReasoningCard.swift"
+    )
+    XCTAssertEqual(
+      workToolArgPreview(toolName: "Bash", argsText: #"{"command":"ade help ios-sim"}"#),
+      "ade help ios-sim"
+    )
+    XCTAssertNil(workToolArgPreview(toolName: "Read", argsText: "{}"))
   }
 
   func testWorkToolResultTruncateShortTextIsUntouched() {
