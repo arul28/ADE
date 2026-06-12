@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-06-12
+
+### Added
+
+- Moved ADE desktop onto the machine-runtime release architecture, including packaged runtime payloads for desktop, CLI, `ade code`, remote runtime, and iOS sync traffic.
+- Reworked the Work, PRs, Files, Lanes, History, proof, browser, simulator, and mobile sync flows so the current desktop product is reflected end to end.
+- Overhauled the Mintlify docs around the product ADE ships today, with simpler setup, lanes, chat, PR, CTO, mobile, provider, and troubleshooting guidance.
+- Uploaded the iOS companion as a build-number-only TestFlight update on the existing iOS 1.1.10 marketing version.
+
+### Fixed
+
+- Hardened provider readiness, sync host election, runtime switching, credential handling, GitHub and Linear auth, computer-use permissions, and packaged launch/update paths.
+- Tuned large-workload responsiveness across chat history hydration, CLI session launch, PR warm paths, terminal loading, file watching, and SQLite/CRDT sync work.
+- Removed public Automations and VM documentation paths so the docs stay focused on ADE's current lanes, agents, PR, CTO, proof, browser, and mobile surfaces.
+
 ## [1.1.12] - 2026-05-06
 
 ### Added
@@ -330,7 +345,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.1.12...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/arul28/ADE/compare/v1.1.12...v1.2.0
 [1.1.12]: https://github.com/arul28/ADE/compare/v1.1.11...v1.1.12
 [1.1.11]: https://github.com/arul28/ADE/compare/v1.1.10...v1.1.11
 [1.1.10]: https://github.com/arul28/ADE/compare/v1.1.9...v1.1.10
