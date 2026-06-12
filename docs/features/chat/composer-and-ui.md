@@ -215,12 +215,15 @@ and a footer that contains the composer.
 
 - **Work auto-create launch behavior.** The embedded draft composer can
   ask the main process for a lane name before creating a new Work lane.
-  The request includes a temporary `chat-YYYYMMDD-HHMMSS` fallback so
-  prompt-derived fallback names remain unique when model naming is
-  unavailable. Each launch creates a `DraftLaunchJob` that tracks
-  progress through `naming-lane` / `creating-lane` /
+  The request includes a deterministic prompt-derived fallback, so
+  model timeouts or errors still create readable lane and branch names.
+  Branch uniqueness is handled by the lane id suffix added by the lane
+  service. Each launch creates a `DraftLaunchJob` that tracks progress
+  through `naming-lane` / `creating-lane` /
   `starting-session` / `sending-prompt` / `ready` / `failed` states.
-  The lane-name suggestion phase is visible as `naming-lane`; once the
+  The lane-name suggestion phase is visible as `naming-lane` and names
+  the model being used. If naming takes longer than 10 seconds or fails,
+  the status row says ADE is using the deterministic fallback. Once the
   name is resolved the job advances to `creating-lane`. The composer is
   cleared optimistically when the job starts so the user can begin
   composing the next prompt immediately; the `DraftLaunchSnapshot`
@@ -558,8 +561,9 @@ These modules are pure and unit-testable:
   async launches and is stored in `appStore.draftLaunchJobsByScope`
   rather than local pane state. The composer is cleared immediately when
   the job starts, not when it finishes. Auto-created lanes begin at
-  `naming-lane`, switch to `creating-lane` after the suggested branch
-  name resolves, then move through session start and prompt send. If
+  `naming-lane`, show the naming model, switch to `creating-lane` after
+  the suggested branch name resolves or after the deterministic fallback
+  wins, then move through session start and prompt send. If
   the launch fails, the Restore action merges the snapshot back via
   `restoreDraftLaunchSnapshot`, which appends rather than replaces
   existing draft text and merges context items by id.

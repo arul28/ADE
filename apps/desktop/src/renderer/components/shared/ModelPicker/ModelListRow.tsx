@@ -50,6 +50,7 @@ const REASONING_LABELS: Record<string, string> = {
   high: "High",
   xhigh: "Extra High",
   max: "Max",
+  ultracode: "Ultracode",
 };
 
 function reasoningChipLabel(effort: string | null): string {

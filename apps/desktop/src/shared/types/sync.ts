@@ -44,6 +44,14 @@ export type SyncPeerMetadata = {
   deviceType: SyncPeerDeviceType;
   siteId: string;
   dbVersion: number;
+  /**
+   * Per-host-DB changeset cursors keyed by the host project DB's cr-sqlite
+   * site id. A brain hosts one project DB at a time and each DB has its own
+   * db_version sequence, so a single `dbVersion` is meaningless after the
+   * hosted project changes — the host picks its own site's entry and falls
+   * back to `dbVersion` for older clients.
+   */
+  dbVersionBySite?: Record<string, number>;
   capabilities?: string[];
 };
 
@@ -301,6 +309,12 @@ export type SyncHelloOkPayload = {
   peer: SyncPeerMetadata;
   brain: SyncPeerMetadata;
   serverDbVersion: number;
+  /**
+   * cr-sqlite site id of the project DB this host is currently serving.
+   * Clients key their inbound changeset cursor on it so a cursor built
+   * against one project's DB is never replayed against another's.
+   */
+  serverDbSiteId?: string;
   heartbeatIntervalMs: number;
   pollIntervalMs: number;
   projects?: SyncMobileProjectSummary[];
@@ -420,6 +434,13 @@ export type SyncFileResponsePayload = {
 export type SyncTerminalSubscribePayload = {
   sessionId: string;
   maxBytes?: number;
+  /**
+   * Resume marker: transcript byte offset the client has already applied.
+   * When the host can serve `sinceOffset .. end` within the maxBytes budget
+   * it replies with a delta snapshot (`delta: true`) the client appends;
+   * otherwise it falls back to the regular tail snapshot.
+   */
+  sinceOffset?: number;
 };
 
 export type SyncTerminalUnsubscribePayload = {
@@ -433,6 +454,18 @@ export type SyncTerminalSnapshotPayload = {
   runtimeState: string | null;
   lastOutputPreview: string | null;
   capturedAt: string;
+  /** Transcript byte offset where `transcript` begins. null when unknown. */
+  startOffset?: number | null;
+  /** Transcript byte offset `transcript` covers through. null when unknown. */
+  endOffset?: number | null;
+  /** True when `transcript` only contains bytes from the requested `sinceOffset` (client appends instead of replacing). */
+  delta?: boolean;
+  /**
+   * Whether a live PTY currently backs the session. False when a brain
+   * restart orphaned a "running" session — input would go nowhere, so clients
+   * surface a resume affordance instead of silently accepting keystrokes.
+   */
+  live?: boolean;
 };
 
 export type SyncTerminalDataPayload = {
@@ -440,6 +473,31 @@ export type SyncTerminalDataPayload = {
   ptyId: string;
   data: string;
   at: string;
+  /**
+   * Transcript end offset (UTF-8 bytes) after this chunk. null/omitted when
+   * unavailable (untracked session, transcript writes disabled, byte cap).
+   */
+  offset?: number | null;
+};
+
+// Mobile pull-to-load-older request: return transcript bytes
+// [startOffset, endOffset) where endOffset = min(beforeOffset, transcript
+// size) and the page is ~maxBytes. The host scans startOffset forward to a
+// safe boundary (byte after `\n`, or an ESC byte) so a page never starts
+// mid-escape-sequence — unless the page starts at offset 0.
+export type SyncTerminalHistoryRequestPayload = {
+  sessionId: string;
+  beforeOffset: number;
+  maxBytes?: number;
+};
+
+export type SyncTerminalHistoryResponsePayload = {
+  sessionId: string;
+  data: string;
+  startOffset: number;
+  endOffset: number;
+  /** True when this page starts at the very beginning of the transcript. */
+  atStart: boolean;
 };
 
 export type SyncTerminalExitPayload = {
@@ -469,6 +527,16 @@ export type SyncTerminalResizePayload = {
 export type SyncChatSubscribePayload = {
   sessionId: string;
   maxBytes?: number;
+  /**
+   * Resume marker: the highest `seq` (see SyncChatEventPayload) the client
+   * has already applied for this session. When the host's per-session replay
+   * buffer still covers `sinceSeq + 1 .. latest`, it replays just those
+   * events as ordinary `chat_event` envelopes and skips the snapshot
+   * (responding with `resumed: true` and an empty `events` array). When the
+   * gap is no longer coverable (host restart, buffer eviction), the host
+   * falls back to the regular maxBytes-capped snapshot.
+   */
+  sinceSeq?: number;
 };
 
 export type SyncChatSubscribeSnapshotPayload = {
@@ -476,13 +544,28 @@ export type SyncChatSubscribeSnapshotPayload = {
   capturedAt: string;
   truncated: boolean;
   events: AgentChatEventEnvelope[];
+  /**
+   * True when the host honored `sinceSeq` and replayed buffered events
+   * instead of producing a snapshot. `events` is empty in that case — the
+   * replayed history arrives as ordinary `chat_event` envelopes. Clients must
+   * reset any stored seq watermark when this is absent/false because the
+   * host's seq stream may have restarted (e.g. host process restart).
+   */
+  resumed?: boolean;
 };
 
 export type SyncChatUnsubscribePayload = {
   sessionId: string;
 };
 
-export type SyncChatEventPayload = AgentChatEventEnvelope;
+/**
+ * Live chat event envelope. `seq` is a host-assigned, per-session,
+ * monotonically increasing counter used for resumable streams: clients track
+ * the highest seq applied and pass it back as `sinceSeq` on re-subscribe.
+ * Optional for backward compatibility — events without `seq` behave exactly
+ * as before (no dedupe, no resume).
+ */
+export type SyncChatEventPayload = AgentChatEventEnvelope & { seq?: number };
 
 export type SyncBrainStatusPayload = {
   // Legacy wire field. New consumers can read host/runtime instead.
@@ -585,6 +668,7 @@ export type SyncRemoteCommandAction =
   | "work.updateSessionMeta"
   | "work.runQuickCommand"
   | "work.startCliSession"
+  | "work.resumeCliSession"
   | "work.sendToSession"
   | "work.stopRuntime"
   | "processes.listDefinitions"
@@ -616,6 +700,8 @@ export type SyncRemoteCommandAction =
   | "chat.delete"
   | "chat.models"
   | "chat.modelCatalog"
+  | "chat.getChatEventHistoryPage"
+  | "agentChat.getEventHistoryPage"
   | "cto.getRoster"
   | "cto.ensureSession"
   | "cto.ensureAgentSession"
@@ -994,6 +1080,7 @@ export type SyncTerminalDataEnvelope = SyncEnvelopeWithPayload<"terminal_data", 
 export type SyncTerminalExitEnvelope = SyncEnvelopeWithPayload<"terminal_exit", SyncTerminalExitPayload>;
 export type SyncTerminalInputEnvelope = SyncEnvelopeWithPayload<"terminal_input", SyncTerminalInputPayload>;
 export type SyncTerminalResizeEnvelope = SyncEnvelopeWithPayload<"terminal_resize", SyncTerminalResizePayload>;
+export type SyncTerminalHistoryEnvelope = SyncEnvelopeWithPayload<"terminal_history", SyncTerminalHistoryRequestPayload | SyncTerminalHistoryResponsePayload>;
 export type SyncChatSubscribeEnvelope = SyncEnvelopeWithPayload<"chat_subscribe", SyncChatSubscribePayload | SyncChatSubscribeSnapshotPayload>;
 export type SyncChatUnsubscribeEnvelope = SyncEnvelopeWithPayload<"chat_unsubscribe", SyncChatUnsubscribePayload>;
 export type SyncChatEventEnvelope = SyncEnvelopeWithPayload<"chat_event", SyncChatEventPayload>;
@@ -1005,6 +1092,20 @@ export type SyncRegisterPushTokenEnvelope = SyncEnvelopeWithPayload<"register_pu
 export type SyncNotificationPrefsEnvelope = SyncEnvelopeWithPayload<"notification_prefs", SyncNotificationPrefsPayload>;
 export type SyncSendTestPushEnvelope = SyncEnvelopeWithPayload<"send_test_push", SyncSendTestPushPayload>;
 export type SyncInAppNotificationEnvelope = SyncEnvelopeWithPayload<"in_app_notification", SyncInAppNotificationPayload>;
+
+/**
+ * One slice of an oversized encoded envelope. `part` is a base64 slice of the
+ * full encoded envelope's UTF-8 bytes; clients concatenate parts in `index`
+ * order, decode, and process the result as a normal envelope. Hosts only emit
+ * these to peers that declared the "chunkedEnvelopes" hello capability.
+ */
+export type SyncEnvelopeChunkPayload = {
+  chunkId: string;
+  index: number;
+  total: number;
+  part: string;
+};
+export type SyncEnvelopeChunkEnvelope = SyncEnvelopeWithPayload<"envelope_chunk", SyncEnvelopeChunkPayload>;
 
 export type SyncEnvelope =
   | SyncHelloEnvelope
@@ -1029,6 +1130,7 @@ export type SyncEnvelope =
   | SyncTerminalExitEnvelope
   | SyncTerminalInputEnvelope
   | SyncTerminalResizeEnvelope
+  | SyncTerminalHistoryEnvelope
   | SyncChatSubscribeEnvelope
   | SyncChatUnsubscribeEnvelope
   | SyncChatEventEnvelope
@@ -1039,7 +1141,8 @@ export type SyncEnvelope =
   | SyncRegisterPushTokenEnvelope
   | SyncNotificationPrefsEnvelope
   | SyncSendTestPushEnvelope
-  | SyncInAppNotificationEnvelope;
+  | SyncInAppNotificationEnvelope
+  | SyncEnvelopeChunkEnvelope;
 
 export const DEFAULT_NOTIFICATION_PREFERENCES: NotificationPreferences = {
   enabled: true,

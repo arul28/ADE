@@ -10,6 +10,8 @@ import {
 import { cn } from "../ui/cn";
 import type { ChatSubagentSnapshot } from "./chatExecutionSummary";
 import { derivePlan } from "./chatExecutionSummary";
+import type { TodoItemSnapshot } from "./chatExecutionSummary";
+import { ChatTaskList } from "./ChatTasksPanel";
 import type { ChatInfoPlanStep } from "../../../shared/chatSubagents";
 import type { AgentChatEventEnvelope, CodexThreadGoal } from "../../../shared/types";
 import type { SubagentCapability } from "../../../shared/subagentCapabilities";
@@ -450,6 +452,7 @@ export function ChatSubagentsPanel({
   onEditGoal,
   onClearGoal,
   goalPending = false,
+  todoItems = [],
 }: {
   snapshots: ChatSubagentSnapshot[];
   events: AgentChatEventEnvelope[];
@@ -471,6 +474,7 @@ export function ChatSubagentsPanel({
   onEditGoal?: (nextObjective: string) => void;
   onClearGoal?: () => void;
   goalPending?: boolean;
+  todoItems?: TodoItemSnapshot[];
 }) {
   const [expanded, setExpanded] = useState(false);
   // Which agent's inline details drawer is open (agents with no transcript).
@@ -599,9 +603,18 @@ export function ChatSubagentsPanel({
   const planComplete = plan?.steps.filter((step) => step.status === "completed").length ?? 0;
   const planTotal = plan?.steps.length ?? 0;
   const planPercent = planTotal > 0 ? Math.round((planComplete / planTotal) * 100) : 0;
+  const taskComplete = todoItems.filter((item) => item.status === "completed").length;
+  const taskActive = todoItems.filter((item) => item.status === "in_progress").length;
+  const taskHint = todoItems.length
+    ? [
+        `${taskComplete}/${todoItems.length} complete`,
+        ...(taskActive ? [`${taskActive} active`] : []),
+      ].join(" · ")
+    : undefined;
 
   const hasGoal = Boolean(goal?.objective?.trim());
-  const hasAnything = hasGoal || Boolean(plan) || foreground.length > 0 || background.length > 0;
+  const hasTasks = todoItems.length > 0;
+  const hasAnything = hasGoal || Boolean(plan) || hasTasks || foreground.length > 0 || background.length > 0;
 
   const body = (
     <div className="flex flex-col font-sans">
@@ -651,11 +664,29 @@ export function ChatSubagentsPanel({
         </section>
       ) : null}
 
+      {/* ── Tasks ───────────────────────────────────────────────── */}
+      {hasTasks ? (
+        <section
+          className={cn(
+            "pb-3",
+            (hasGoal || plan) && "border-t border-white/[0.04]",
+          )}
+        >
+          <SectionHeader
+            label="Tasks"
+            hint={taskHint}
+            tone="workflow"
+            emphasized
+          />
+          <ChatTaskList items={todoItems} className="px-1 pb-1 pt-0" />
+        </section>
+      ) : null}
+
       {/* ── Subagents ────────────────────────────────────────────── */}
       <section
         className={cn(
           "pb-3",
-          (plan || background.length) && "border-t border-white/[0.04]",
+          (plan || hasTasks || background.length) && "border-t border-white/[0.04]",
         )}
       >
         <SectionHeader

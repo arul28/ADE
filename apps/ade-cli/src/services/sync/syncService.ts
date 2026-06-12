@@ -64,6 +64,8 @@ import { createSyncPinStore } from "./syncPinStore";
 import { createSyncRuntimeNameStore } from "./syncRuntimeNameStore";
 import { DEFAULT_SYNC_HOST_PORT } from "./syncProtocol";
 import { createSyncRemoteCommandService, type SyncRemoteCommandService } from "./syncRemoteCommandService";
+import { acquireSyncHostSingleton, type SyncHostSingletonLease } from "./syncHostSingleton";
+import type { SharedSyncListener } from "./sharedSyncListener";
 import type { ModelPickerStore } from "../modelPickerStore";
 
 type SyncServiceArgs = {
@@ -118,6 +120,13 @@ type SyncServiceArgs = {
   getLinearIssueTracker?: () => ReturnType<typeof createLinearIssueTracker> | null;
   getLinearSyncService?: () => ReturnType<typeof createLinearSyncService> | null;
   processService: ReturnType<typeof createProcessService>;
+  /**
+   * Brain-level websocket listener shared across hosted-project switches.
+   * When provided, the embedded sync host attaches to it instead of binding
+   * its own WebSocketServer, so connected phones survive host swaps. The
+   * listener's lifecycle is owned by the caller (closed on brain shutdown).
+   */
+  sharedSyncListener?: SharedSyncListener | null;
   hostStartupEnabled?: boolean;
   hostDiscoveryEnabled?: boolean;
   /**
@@ -232,10 +241,28 @@ function migrateLegacySyncSecretFile(args: {
 }
 const RUNNING_PROCESS_STATES = new Set(["starting", "running", "degraded"]);
 const CHAT_TOOL_TYPES = new Set(["codex-chat", "claude-chat", "opencode-chat"]);
-const SYNC_HOST_PORT_RETRY_WINDOW = 12;
+const LEGACY_SYNC_HOST_PORT_RETRY_WINDOW = 13;
+const SYNC_HOST_PORT_RETRY_WINDOW = 8999 - DEFAULT_SYNC_HOST_PORT;
+const LEGACY_SYNC_HOST_MAX_PORT = DEFAULT_SYNC_HOST_PORT + LEGACY_SYNC_HOST_PORT_RETRY_WINDOW;
+const SYNC_HOST_MAX_PORT = DEFAULT_SYNC_HOST_PORT + SYNC_HOST_PORT_RETRY_WINDOW;
 const LOCAL_LANE_PRESENCE_HEARTBEAT_MS = 30_000;
 const TRANSFER_READINESS_CACHE_MS = 15_000;
 const STALE_BRAIN_LAST_SEEN_MS = 5 * 60_000;
+const VIEWER_DRAFT_TRANSPORT_ERROR_CODES = [
+  "ECONNREFUSED",
+  "ETIMEDOUT",
+  "EHOSTUNREACH",
+  "ENETUNREACH",
+  "ENOTFOUND",
+  "EAI_AGAIN",
+] as const;
+const VIEWER_DRAFT_TRANSPORT_ERROR_CODE_SET = new Set<string>(
+  VIEWER_DRAFT_TRANSPORT_ERROR_CODES,
+);
+const VIEWER_DRAFT_TRANSPORT_ERROR_PATTERN = new RegExp(
+  `\\b(?:${VIEWER_DRAFT_TRANSPORT_ERROR_CODES.join("|")})\\b`,
+  "i",
+);
 
 function generatePairingPin(): string {
   return randomInt(0, 1_000_000).toString().padStart(6, "0");
@@ -277,6 +304,12 @@ function normalizeHost(host: string | null | undefined): string | null {
   if (!host) return null;
   const normalized = host.trim().toLowerCase();
   return normalized.length > 0 ? normalized : null;
+}
+
+function normalizeHostKey(host: string | null | undefined): string | null {
+  const normalized = normalizeHost(host);
+  if (!normalized) return null;
+  return normalized.replace(/^\[/, "").replace(/\]$/, "").replace(/\.$/, "");
 }
 
 function tailscaleDnsNameFromDevice(
@@ -323,10 +356,41 @@ function buildAddressCandidates(
   return candidates;
 }
 
+function isDraftTargetLocalDevice(
+  draft: SyncDesktopConnectionDraft,
+  localDevice: SyncRoleSnapshot["localDevice"],
+): boolean {
+  const draftHost = normalizeHostKey(draft.host);
+  if (!draftHost) return false;
+  const localHosts = new Set<string>(["localhost", "127.0.0.1", "::1"]);
+  for (const host of localDevice.ipAddresses) {
+    const key = normalizeHostKey(host);
+    if (key) localHosts.add(key);
+  }
+  for (const host of [
+    localDevice.tailscaleIp,
+    tailscaleDnsNameFromDevice(localDevice),
+    typeof localDevice.metadata?.hostname === "string" ? localDevice.metadata.hostname : null,
+  ]) {
+    const key = normalizeHostKey(host);
+    if (key) localHosts.add(key);
+  }
+  return localHosts.has(draftHost);
+}
+
+function isViewerDraftTransportError(error: unknown): boolean {
+  const code = (error as { code?: unknown } | null | undefined)?.code;
+  if (typeof code === "string" && VIEWER_DRAFT_TRANSPORT_ERROR_CODE_SET.has(code)) {
+    return true;
+  }
+  const message = error instanceof Error ? error.message : String(error);
+  return VIEWER_DRAFT_TRANSPORT_ERROR_PATTERN.test(message);
+}
+
 function buildPairingConnectInfo(argsIn: {
   localDevice: SyncRoleSnapshot["localDevice"];
 }): SyncPairingConnectInfo {
-  const port = argsIn.localDevice.lastPort ?? DEFAULT_SYNC_HOST_PORT;
+  const port = normalizeSyncHostPort(argsIn.localDevice.lastPort);
   const addressCandidates = buildAddressCandidates(argsIn.localDevice);
   const hostIdentity = {
     deviceId: argsIn.localDevice.deviceId,
@@ -347,6 +411,12 @@ function isRetryableHostBindError(error: unknown): boolean {
   return code === "EADDRINUSE" || code === "EACCES";
 }
 
+// How long to insist on the preferred port before drifting: 8 × 400ms ≈ 3.2s,
+// enough for a disposing listener (or a sibling host being replaced) to free
+// the port that paired phones have saved.
+const PREFERRED_PORT_BIND_ATTEMPTS = 8;
+const PREFERRED_PORT_BIND_RETRY_DELAY_MS = 400;
+
 function createInactiveTailnetDiscoveryStatus(
   error: string,
 ): SyncTailnetDiscoveryStatus {
@@ -362,9 +432,12 @@ function createInactiveTailnetDiscoveryStatus(
 }
 
 function buildHostPortCandidates(preferredPort: number | null | undefined): number[] {
-  const preferred = Number.isFinite(preferredPort)
-    ? Math.max(0, Math.min(65_535, Math.floor(Number(preferredPort))))
+  const parsedPreferred = Number.isFinite(preferredPort)
+    ? Math.max(1, Math.min(65_535, Math.floor(Number(preferredPort))))
     : DEFAULT_SYNC_HOST_PORT;
+  const preferred = parsedPreferred || DEFAULT_SYNC_HOST_PORT;
+  const preferredIsLegacyReachable = preferred >= DEFAULT_SYNC_HOST_PORT
+    && preferred <= LEGACY_SYNC_HOST_MAX_PORT;
   const candidates: number[] = [];
   const seen = new Set<number>();
   const add = (port: number) => {
@@ -373,24 +446,24 @@ function buildHostPortCandidates(preferredPort: number | null | undefined): numb
     seen.add(normalized);
     candidates.push(normalized);
   };
-  add(preferred);
-  if (preferred !== DEFAULT_SYNC_HOST_PORT) {
+  if (preferredIsLegacyReachable) {
+    add(preferred);
+  } else {
     add(DEFAULT_SYNC_HOST_PORT);
   }
-  for (let offset = 1; offset <= SYNC_HOST_PORT_RETRY_WINDOW; offset += 1) {
-    if (preferred + offset <= 65_535) {
-      add(preferred + offset);
-    }
+  for (let port = DEFAULT_SYNC_HOST_PORT; port <= SYNC_HOST_MAX_PORT; port += 1) {
+    add(port);
   }
-  if (preferred !== DEFAULT_SYNC_HOST_PORT) {
-    for (let offset = 1; offset <= Math.min(4, SYNC_HOST_PORT_RETRY_WINDOW); offset += 1) {
-      if (DEFAULT_SYNC_HOST_PORT + offset <= 65_535) {
-        add(DEFAULT_SYNC_HOST_PORT + offset);
-      }
-    }
-  }
-  add(0);
   return candidates;
+}
+
+function normalizeSyncHostPort(port: number | null | undefined): number {
+  const parsed = Number.isFinite(port)
+    ? Math.max(1, Math.min(65_535, Math.floor(Number(port))))
+    : DEFAULT_SYNC_HOST_PORT;
+  return parsed >= DEFAULT_SYNC_HOST_PORT && parsed <= SYNC_HOST_MAX_PORT
+    ? parsed
+    : DEFAULT_SYNC_HOST_PORT;
 }
 
 export function createSyncService(args: SyncServiceArgs) {
@@ -442,6 +515,7 @@ export function createSyncService(args: SyncServiceArgs) {
   });
 
   let hostService: SyncHostService | null = null;
+  let hostSingletonLease: SyncHostSingletonLease | null = null;
   let refreshRunning = false;
   let refreshQueued = false;
   let disposed = false;
@@ -592,10 +666,18 @@ export function createSyncService(args: SyncServiceArgs) {
     args.onStatusChanged?.(await service.getStatus());
   };
 
+  const releaseHostSingletonLease = (): void => {
+    const lease = hostSingletonLease;
+    hostSingletonLease = null;
+    lease?.dispose();
+  };
+
   const startHostIfNeeded = async (): Promise<void> => {
     if (!hostStartupEnabled || !isCrdtSyncAvailable()) {
       if (hostService) {
         await stopHostIfRunning();
+      } else {
+        releaseHostSingletonLease();
       }
       const currentLocalDevice = deviceRegistryService.ensureLocalDevice();
       deviceRegistryService.touchLocalDevice({
@@ -617,98 +699,151 @@ export function createSyncService(args: SyncServiceArgs) {
     const localDevice = deviceRegistryService.ensureLocalDevice();
     const preferredPort = localDevice.lastPort ?? DEFAULT_SYNC_HOST_PORT;
     let lastError: unknown = null;
-    for (const attemptedPort of buildHostPortCandidates(preferredPort)) {
-      const candidateHostService = createSyncHostService({
-        db: args.db,
-        logger: args.logger,
-        projectId: args.projectId ?? null,
-        projectRoot: args.projectRoot,
-        fileService: args.fileService,
-        laneService: args.laneService,
-        gitService: args.gitService,
-        diffService: args.diffService,
-        conflictService: args.conflictService,
-        prService: args.prService,
-        issueInventoryService: args.issueInventoryService,
-        pathToMergeOrchestrator: args.pathToMergeOrchestrator,
-        queueLandingService: args.queueLandingService,
-        sessionService: args.sessionService,
-        ptyService: args.ptyService,
-        processService: args.processService,
-        agentChatService: args.agentChatService,
-        workerAgentService: args.workerAgentService,
-        workerBudgetService: args.workerBudgetService,
-        workerHeartbeatService: args.workerHeartbeatService,
-        workerRevisionService: args.workerRevisionService,
-        ctoStateService: args.ctoStateService,
-        flowPolicyService: args.flowPolicyService,
-        linearCredentialService: args.linearCredentialService,
-        getLinearIngressService: args.getLinearIngressService,
-        getLinearIssueTracker: args.getLinearIssueTracker,
-        getLinearSyncService: args.getLinearSyncService,
-        projectConfigService: args.projectConfigService,
-        portAllocationService: args.portAllocationService,
-        laneEnvironmentService: args.laneEnvironmentService,
-        laneTemplateService: args.laneTemplateService,
-        rebaseSuggestionService: args.rebaseSuggestionService ?? undefined,
-        autoRebaseService: args.autoRebaseService ?? undefined,
-        dispatchDeeplinkUrl: args.dispatchDeeplinkUrl,
-        computerUseArtifactBrokerService: args.computerUseArtifactBrokerService,
-        pinStore,
-        runtimeNameStore,
-        bootstrapTokenPath: tokenPath,
-        pairingSecretsPath,
-        port: attemptedPort,
-        discoveryEnabled: hostDiscoveryEnabled,
-        runtimeKind: args.runtimeKind ?? "desktop-embedded",
-        runtimeVersion: args.appVersion ?? "",
-        deviceRegistryService,
-        notificationEventBus: args.notificationEventBus ?? null,
-        projectCatalogProvider: args.projectCatalogProvider,
-        remoteCommandService,
-        remoteCommandExecutor: args.remoteCommandExecutor,
-        onStateChanged: () => {
-          void refreshRoleState();
-        },
+    hostSingletonLease ??= acquireSyncHostSingleton({ projectRoot: args.projectRoot });
+    const buildHostServiceArgs = (port: number): Parameters<typeof createSyncHostService>[0] => ({
+      db: args.db,
+      logger: args.logger,
+      projectId: args.projectId ?? null,
+      projectRoot: args.projectRoot,
+      fileService: args.fileService,
+      laneService: args.laneService,
+      gitService: args.gitService,
+      diffService: args.diffService,
+      conflictService: args.conflictService,
+      prService: args.prService,
+      issueInventoryService: args.issueInventoryService,
+      pathToMergeOrchestrator: args.pathToMergeOrchestrator,
+      queueLandingService: args.queueLandingService,
+      sessionService: args.sessionService,
+      ptyService: args.ptyService,
+      processService: args.processService,
+      agentChatService: args.agentChatService,
+      workerAgentService: args.workerAgentService,
+      workerBudgetService: args.workerBudgetService,
+      workerHeartbeatService: args.workerHeartbeatService,
+      workerRevisionService: args.workerRevisionService,
+      ctoStateService: args.ctoStateService,
+      flowPolicyService: args.flowPolicyService,
+      linearCredentialService: args.linearCredentialService,
+      getLinearIngressService: args.getLinearIngressService,
+      getLinearIssueTracker: args.getLinearIssueTracker,
+      getLinearSyncService: args.getLinearSyncService,
+      projectConfigService: args.projectConfigService,
+      portAllocationService: args.portAllocationService,
+      laneEnvironmentService: args.laneEnvironmentService,
+      laneTemplateService: args.laneTemplateService,
+      rebaseSuggestionService: args.rebaseSuggestionService ?? undefined,
+      autoRebaseService: args.autoRebaseService ?? undefined,
+      dispatchDeeplinkUrl: args.dispatchDeeplinkUrl,
+      computerUseArtifactBrokerService: args.computerUseArtifactBrokerService,
+      pinStore,
+      runtimeNameStore,
+      bootstrapTokenPath: tokenPath,
+      pairingSecretsPath,
+      port,
+      discoveryEnabled: hostDiscoveryEnabled,
+      runtimeKind: args.runtimeKind ?? "desktop-embedded",
+      runtimeVersion: args.appVersion ?? "",
+      deviceRegistryService,
+      notificationEventBus: args.notificationEventBus ?? null,
+      projectCatalogProvider: args.projectCatalogProvider,
+      remoteCommandService,
+      remoteCommandExecutor: args.remoteCommandExecutor,
+      onStateChanged: () => {
+        void refreshRoleState();
+      },
+    });
+    const finishHostStartup = (started: SyncHostService, resolvedPort: number): void => {
+      hostService = started;
+      hostSingletonLease?.updatePort(resolvedPort);
+      hostService.setLocalActiveLanePresence?.(activeLocalLanePresenceIds);
+      deviceRegistryService.touchLocalDevice({
+        lastSeenAt: nowIso(),
+        lastHost: localDevice.ipAddresses[0] ?? localDevice.tailscaleIp ?? localDevice.lastHost,
+        lastPort: resolvedPort,
       });
-      try {
-        const resolvedPort = await candidateHostService.waitUntilListening();
-        hostService = candidateHostService;
-        hostService.setLocalActiveLanePresence?.(activeLocalLanePresenceIds);
-        deviceRegistryService.touchLocalDevice({
-          lastSeenAt: nowIso(),
-          lastHost: localDevice.ipAddresses[0] ?? localDevice.tailscaleIp ?? localDevice.lastHost,
-          lastPort: resolvedPort,
+    };
+    try {
+      const portCandidates = buildHostPortCandidates(preferredPort);
+      if (args.sharedSyncListener) {
+        // The brain-level shared listener binds once and is handed between
+        // host services on project switches, so connected phones never see a
+        // disconnect. ensureListening is idempotent: the first start binds a
+        // candidate port, every later start reuses it.
+        const listenerPort = await args.sharedSyncListener.ensureListening(portCandidates);
+        const candidateHostService = createSyncHostService({
+          ...buildHostServiceArgs(listenerPort),
+          sharedListener: args.sharedSyncListener,
         });
-        return;
-      } catch (error) {
-        lastError = error;
-        await candidateHostService.dispose().catch(() => {});
-        const retryable = isRetryableHostBindError(error) && attemptedPort !== 0;
-        args.logger.warn(
-          retryable ? "sync.host_start_port_conflict" : "sync.host_start_failed",
-          {
-            preferredPort,
-            attemptedPort,
-            error: error instanceof Error ? error.message : String(error),
-            code: (error as NodeJS.ErrnoException | null | undefined)?.code ?? null,
-          },
-        );
-        if (!retryable) {
+        try {
+          const resolvedPort = await candidateHostService.waitUntilListening();
+          finishHostStartup(candidateHostService, resolvedPort);
+          return;
+        } catch (error) {
+          await candidateHostService.dispose().catch(() => {});
           throw error;
         }
       }
+      // A host restart (project switch, role change) can race its own dying
+      // listener: the old server's socket may briefly hold the preferred port
+      // and a single EADDRINUSE would silently drift the host to port+1 —
+      // stranding paired phones that saved the old port. Re-attempt the
+      // preferred port for a few seconds before falling back to the scan.
+      const attemptPlan = portCandidates.flatMap((candidatePort, candidateIndex) =>
+        candidateIndex === 0
+          ? Array.from({ length: PREFERRED_PORT_BIND_ATTEMPTS }, () => candidatePort)
+          : [candidatePort],
+      );
+      let previousAttemptedPort: number | null = null;
+      for (const attemptedPort of attemptPlan) {
+        if (previousAttemptedPort === attemptedPort) {
+          await new Promise((resolve) => setTimeout(resolve, PREFERRED_PORT_BIND_RETRY_DELAY_MS));
+        }
+        previousAttemptedPort = attemptedPort;
+        const candidateHostService = createSyncHostService(buildHostServiceArgs(attemptedPort));
+        try {
+          const resolvedPort = await candidateHostService.waitUntilListening();
+          finishHostStartup(candidateHostService, resolvedPort);
+          return;
+        } catch (error) {
+          lastError = error;
+          await candidateHostService.dispose().catch(() => {});
+          const retryable = isRetryableHostBindError(error) && attemptedPort !== 0;
+          args.logger.warn(
+            retryable ? "sync.host_start_port_conflict" : "sync.host_start_failed",
+            {
+              preferredPort,
+              attemptedPort,
+              error: error instanceof Error ? error.message : String(error),
+              code: (error as NodeJS.ErrnoException | null | undefined)?.code ?? null,
+            },
+          );
+          if (!retryable) {
+            throw error;
+          }
+        }
+      }
+      throw lastError instanceof Error
+        ? lastError
+        : new Error("Unable to start the sync host.");
+    } catch (error) {
+      if (!hostService) releaseHostSingletonLease();
+      throw error;
     }
-    throw lastError instanceof Error
-      ? lastError
-      : new Error("Unable to start the sync host.");
   };
 
   const stopHostIfRunning = async (): Promise<void> => {
-    if (!hostService) return;
+    if (!hostService) {
+      releaseHostSingletonLease();
+      return;
+    }
     const current = hostService;
     hostService = null;
-    await current.dispose();
+    try {
+      await current.dispose();
+    } finally {
+      releaseHostSingletonLease();
+    }
   };
 
   const resolveViewerDraftFromRegistry =
@@ -742,6 +877,18 @@ export function createSyncService(args: SyncServiceArgs) {
     const lastSeenMs = Date.parse(lastSeenRaw);
     if (!Number.isFinite(lastSeenMs)) return true;
     return Date.now() - lastSeenMs > STALE_BRAIN_LAST_SEEN_MS;
+  };
+
+  const shouldReclaimStaleViewerDraft = (argsIn: {
+    cluster: ReturnType<typeof deviceRegistryService.getClusterState>;
+    localDevice: SyncRoleSnapshot["localDevice"];
+    draft: SyncDesktopConnectionDraft;
+    error: unknown;
+  }): boolean => {
+    if (!hostStartupEnabled || !isCrdtSyncAvailable()) return false;
+    if (!isViewerDraftTransportError(argsIn.error)) return false;
+    if (!isDraftTargetLocalDevice(argsIn.draft, argsIn.localDevice)) return false;
+    return !argsIn.cluster || isStaleNonLocalBrainCluster(argsIn.cluster, argsIn.localDevice.deviceId);
   };
 
   const refreshRoleState = async (): Promise<void> => {
@@ -809,6 +956,27 @@ export function createSyncService(args: SyncServiceArgs) {
               args.logger.warn("sync.role.viewer_connect_failed", {
                 error: error instanceof Error ? error.message : String(error),
               });
+              if (shouldReclaimStaleViewerDraft({ cluster, localDevice, draft, error })) {
+                args.logger.warn("sync.role.viewer_stale_draft_reclaimed", {
+                  host: draft.host,
+                  port: draft.port,
+                  previousBrainDeviceId: cluster?.brainDeviceId ?? null,
+                  error: error instanceof Error ? error.message : String(error),
+                });
+                writeSavedDraft(null);
+                syncPeerService.setSavedDraft(null);
+                deviceRegistryService.touchLocalDevice({
+                  lastSeenAt: nowIso(),
+                  lastHost: localDevice.lastHost,
+                  lastPort: localDevice.lastPort ?? DEFAULT_SYNC_HOST_PORT,
+                });
+                cluster = deviceRegistryService.setClusterState({
+                  brainDeviceId: localDevice.deviceId,
+                  brainEpoch: (cluster?.brainEpoch ?? 0) + 1,
+                  updatedByDeviceId: localDevice.deviceId,
+                });
+                await startHostIfNeeded();
+              }
             }
           }
         }

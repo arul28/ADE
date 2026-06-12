@@ -106,7 +106,14 @@ export function modelPickerProviderAuthStatus(
     }
     return "unavailable";
   }
-  if (provider === "codex" || provider === "cursor" || provider === "droid") {
+  if (provider === "cursor") {
+    const connection = status.providerConnections?.cursor;
+    if (connection?.runtimeAvailable || status.availableProviders?.cursor === true) {
+      return "ready";
+    }
+    return "unavailable";
+  }
+  if (provider === "codex" || provider === "droid") {
     const connection = status.providerConnections?.[provider];
     if (connection?.authAvailable || connection?.runtimeAvailable || status.availableProviders?.[provider] === true || providerModelsCount(status, provider) > 0) {
       return "ready";
@@ -179,17 +186,23 @@ function entriesFromCatalog(
           seen.add(model.id);
           const family = providerFromCatalogGroup(String(model.groupKey || group.key), model.family);
           const authStatus = modelPickerProviderAuthStatus(aiStatus, family);
+          const catalogSubProvider = family === "cursor" || family === "droid"
+            ? subsection.label || model.providerName || provider.displayName || undefined
+            : family === "claude" || family === "codex"
+              ? providerLabel(family)
+              : model.providerName || provider.displayName || subsection.label || undefined;
+          const catalogSubProviderKey = family === "cursor" || family === "droid"
+            ? subsection.key || model.providerId || provider.key || undefined
+            : family === "claude" || family === "codex"
+              ? family
+              : model.providerId || provider.key || subsection.key || undefined;
           entries.push({
             modelId: model.id,
             runtimeModelId: model.runtimeModelId || model.id,
             displayName: model.displayName,
             family,
-            subProvider: family === "cursor" || family === "droid"
-              ? subsection.label || model.providerName || provider.displayName || undefined
-              : model.providerName || provider.displayName || subsection.label || undefined,
-            subProviderKey: family === "cursor" || family === "droid"
-              ? subsection.key || model.providerId || provider.key || undefined
-              : model.providerId || provider.key || subsection.key || undefined,
+            subProvider: catalogSubProvider,
+            subProviderKey: catalogSubProviderKey,
             isFavorite: favoritesSet.has(model.id),
             isAvailable: modelAvailability(authStatus, model.isAvailable),
             authStatus,
@@ -268,7 +281,10 @@ function entryFromModelInfo(
           subProvider: openCodeProviderLabel(descriptor.openCodeProviderId),
           subProviderKey: descriptor.openCodeProviderId,
         }
-      : {}),
+      : {
+          subProvider: providerLabel(provider),
+          subProviderKey: provider,
+        }),
     isFavorite: favoritesSet.has(modelId),
     isAvailable: modelAvailability(authStatus),
     authStatus,

@@ -26,12 +26,13 @@ kept as connection details behind the row.
 3. Enter the 6-digit PIN. The phone receives a durable per-device
    secret and stores it in Keychain, so future reconnects do not ask
    for the PIN again.
-4. Pick a project from the machine catalog. Today ADE may reconnect
-   internally to the selected project's sync port, but the user-facing
-   model stays machine -> projects.
+4. Pick a project from the machine catalog. The machine keeps one sync
+   listener on a stable port; switching projects swaps which project
+   host owns the connection, and the user-facing model stays
+   machine -> projects.
 
 The same machine token works across LAN and Tailscale routes and across
-that machine's project ports. `siteId` remains an internal per-project
+that machine's projects. `siteId` remains an internal per-project
 database/runtime detail and must not be used as the visible identity of
 a saved machine.
 
@@ -113,8 +114,10 @@ apps/ios/
 │   │   ├── Work/                    # WorkRootScreen, WorkChatSessionView,
 │   │   │                            # Work*Helpers, WorkNewChatScreen (chat/CLI
 │   │   │                            #   segmented launcher), WorkArtifactTerminalViews,
-│   │   │                            # WorkTerminalEmulatorView (UIKit-backed monospaced
-│   │   │                            #   terminal screen + viewport reporter),
+│   │   │                            # TerminalSessionScreen + SwiftTermSessionView
+│   │   │                            #   (full-screen SwiftTerm terminal,
+│   │   │                            #   offset resume/history paging +
+│   │   │                            #   viewport reporter),
 │   │   │                            # WorkSessionDestination*,
 │   │   │                            # WorkRootScreen+Selection (multi-select state +
 │   │   │                            #   bulk close/archive/restore/delete/export),
@@ -310,17 +313,34 @@ Source: `apps/ios/ADE/Services/SyncService.swift`.
 1. App launch: read pairing secret from Keychain. Read the stored
    connection draft (machine identity, port, QR payload v2 address
    candidates).
-2. Open WebSocket connection. `reconnectIfPossible` is guarded so
-   overlapping wake-ups never stack TCP/WebSocket attempts.
-3. Send local `db_version`; `hello_ok` includes the runtime's current
-   project catalog when the runtime supports project switching.
+2. Open WebSocket connection. Before connecting, all saved address
+   candidates are raced with concurrent raw-TCP reachability probes
+   (happy eyeballs) and tried in first-reachable order, so a dead LAN
+   IP does not cost a full open timeout before the live Tailscale
+   route is attempted. `reconnectIfPossible` is guarded so overlapping
+   wake-ups never stack TCP/WebSocket attempts, and a reconnect never
+   tears down an already-live connection. The socket declares the
+   `chunkedEnvelopes` capability and sets a 32 MiB
+   `maximumMessageSize` receive budget.
+3. Send local `db_version` plus the per-host-DB cursor map
+   (`remoteDbVersionBySite`); `hello_ok` returns the host DB's
+   `serverDbSiteId` and the runtime's current project catalog when the
+   runtime supports project switching.
 4. If no active project is selected, show the native project home
    instead of hydrating lane/file/PR surfaces against the wrong row.
 5. After the active project row exists locally, receive catchup
    changesets and hydrate lane, file, Work, and PR projections scoped
    to that project.
-6. Enter continuous bidirectional sync.
-7. On disconnect: automatic reconnection with exponential backoff.
+6. Enter continuous bidirectional sync. Inbound processing runs off
+   the main actor: envelope JSON parse, gunzip, payload JSON parse,
+   chunked-envelope reassembly, and changeset decode + apply all run
+   in detached tasks (the SQLite connection is FULLMUTEX). The receive
+   loop awaits frames in order, so application order is unchanged —
+   the UI just never freezes under sync load.
+7. On disconnect: a fast exponential-backoff reconnect burst, then an
+   indefinite ~30 s slow-heartbeat retry loop. The phone never
+   permanently gives up — a paired machine that comes back minutes
+   later reconnects without the user touching anything.
 8. After pairing completes, the phone announces currently-open lanes
    via `lanes.presence.announce` so the runtime decorates
    `LaneSummary.devicesOpen` for other controllers; the phone calls
@@ -343,9 +363,11 @@ Implemented envelope types on iOS:
 | `command_ack` | Runtime → phone | Command receipt |
 | `command_result` | Runtime → phone | Execution result or error |
 | `file_request` / `file_response` | Bidirectional | On-demand file access |
-| `terminal_subscribe` / `terminal_unsubscribe` / `terminal_data` | Phone ↔ runtime | Terminal streaming; `unsubscribe` is sent when a Work terminal screen disappears so the phone stops accumulating buffer for off-screen sessions |
-| `terminal_input` / `terminal_resize` | Phone → runtime | Raw input bytes and viewport size changes for a subscribed live PTY |
-| `chat_subscribe` / `chat_event` | Phone → runtime / runtime → phone | Agent chat transcript streaming |
+| `terminal_subscribe` / `terminal_unsubscribe` / `terminal_data` | Phone ↔ runtime | Terminal streaming; `unsubscribe` is sent when a Work terminal screen disappears so the phone stops accumulating buffer for off-screen sessions. `terminal_data` carries `offset` — the transcript's end byte offset after the chunk (null when the session has no transcript or hit the size cap) — so the phone can detect dropped chunks. `terminal_subscribe` accepts `sinceOffset`; when the runtime can serve exactly `sinceOffset → end` within the byte budget it replies with a `delta: true` snapshot (append, don't replace), giving exact back-fill after reconnects/gaps. Snapshots also report `startOffset`/`endOffset`, plus `live: false` when no PTY backs the session (ended, or orphaned by a brain restart while status still says running) so the phone shows a resume bar instead of silently accepting keystrokes |
+| `terminal_history` | Phone → runtime | On-demand scrollback paging: `{ sessionId, beforeOffset, maxBytes? }` returns transcript bytes `[startOffset, endOffset)` ending at/before `beforeOffset` (page start scanned forward to a newline/ESC boundary; `atStart: true` at beginning of transcript). Requires an active `terminal_subscribe` |
+| `terminal_input` / `terminal_resize` | Phone → runtime | Raw input bytes and viewport size changes for a subscribed live PTY. Mobile resizes are non-authoritative: the runtime records the last desktop-originated size and restores it when the last subscribed phone detaches |
+| `chat_subscribe` / `chat_event` | Phone → runtime / runtime → phone | Agent chat transcript streaming; `chat_subscribe` carries `sinceSeq` so the runtime can replay exactly the missed events from its per-session buffer instead of re-sending a snapshot |
+| `envelope_chunk` | Runtime → phone | Slice of an oversized encoded envelope (>720 KB); the phone reassembles by `chunkId`/`index` before normal decode |
 | `heartbeat` | Bidirectional | Connection health (30s) |
 | `brain_status` | Runtime → phone | Legacy-named cluster authority broadcast |
 
@@ -382,12 +404,16 @@ results, anything), and the timeout path consults
 silenceThreshold:)` before tearing down. The default silence
 threshold is `SyncSocketTiming.requestTimeoutReconnectSilenceSeconds
 = 12 s`. If any envelope arrived within the last 12 seconds, the
-phone keeps the connection and lets the user retry; only when the connection
-has actually been silent for the full window does the timeout escalate
-to a reconnect. This avoids cycling a healthy connection while one
-slow command is in flight, and falls back to "reconnect" when
-`lastInboundMessageAt` is `nil` (fresh connection / never received
-anything).
+phone keeps the connection and lets the user retry. Even when the
+connection has been silent for the full window, the phone does not
+tear down immediately: it fails the request, marks the connection
+load-strained, and runs an **active transport probe**
+(`verifyTransportAliveAfterRequestTimeout` — ping the host and wait
+briefly for any inbound traffic). Only a probe that hears nothing
+back triggers the normal transport-failure teardown. This avoids
+cycling a healthy-but-slow connection (catalog/PR refreshes can take
+30 s+ on cellular) into a perpetual timeout→reconnect→re-request
+loop.
 
 `InitialHydrationGate` polls for the project row at 200ms intervals up
 to a 15s total budget. This covers the first sync-after-pairing gap
@@ -723,7 +749,7 @@ duplicate. Project list dedup runs as a final pass
 |---|---|---|---|
 | **Lanes** | `square.stack.3d.up` | `/lanes` | Full lane surface: search/filter chips, open/create/attach/manage, multi-attach for unregistered worktrees, stack canvas, git/diff/rebase/conflicts, template-backed environment setup progress, lane-scoped sessions and AI chats. `devicesOpen` presence chips show which other devices currently have the lane open. The lane gear opens `LaneAdvancedScreen`, a single page that groups Manage / Switch branch / Stash and the destructive git escape hatches (rebase lane, rebase descendants, rebase + push, force push) with an inline description per row and an offline disabled banner. The commit sheet (`LaneCommitSheet`) renders staged + unstaged file lists with per-file stage / unstage / discard / restore / open-diff / open-files actions, a "Suggest" AI button gated by runtime capability, and a setup-hint card surfaced when the runtime returns "AI commit messages are off". |
 | **Files** | `doc.text` | `/files` | Lane-backed workspace picker, live file tree/search/read, protected-workspace read-only parity. `mobileReadOnly` on the workspace payload gates mutating file actions on the phone via `ensureMobileFileMutationsAllowed`; quick-open and text-search result lists cap visible rows at 40 and ask the user to refine when more matches exist. |
-| **Work** | `terminal` | `/work` | Terminal + chat session list, cached history with persisted lane names, output streaming, character-by-character terminal input (Termius-style: each typed glyph forwards a single `terminal_input` byte and the field clears so PTY echo is the only source of truth), Ctrl-C forwarding for subscribed live PTYs, in-app CLI session launcher (Claude / Codex / Cursor / OpenCode / Droid / shell), message-to-continue on ended agent CLI rows, session pinning, live chat-event push from the runtime (no polling lag once subscribed). The new-session screen (`WorkNewChatScreen`) toggles between **ADE chat** and **CLI session** via a segmented picker; in CLI mode a `workCliProviderOptions` row picker exposes each supported provider explicitly. CLI mode submits `work.startCliSession` with the chosen provider, permission mode (Claude additionally supports `auto`), an optional `reasoningEffort`, and an optional opening message. For most providers the runtime types the opening message into the spawned PTY; for Codex the opening message is forwarded as the final argv positional through `buildTrackedCliLaunchCommand`, so the prompt is treated as a real first turn instead of a typed shell line. The terminal viewer (`WorkTerminalEmulatorView`) is a UIKit-backed monospaced screen that drives a `WorkTerminalScreen` model, computes its viewport in (cols, rows) from the rendered glyph cell, forwards each viewport change as `terminal_resize`, and unsubscribes via `terminal_unsubscribe` when the screen disappears. The earlier "activity feed" section was retired — running chats are surfaced through the session list and a Work tab badge bound to `SyncService.runningChatSessionCount`. |
+| **Work** | `terminal` | `/work` | Terminal + chat session list, cached history with persisted lane names, output streaming, native key-passthrough terminal input (keystrokes from the iOS keyboard flow straight into the PTY as `terminal_input`, coalesced ~16 ms; PTY echo is the only source of truth), Ctrl-C forwarding for subscribed live PTYs, in-app CLI session launcher (Claude / Codex / Cursor / OpenCode / Droid / shell), message-to-continue on ended agent CLI rows, session pinning, live chat-event push from the runtime (no polling lag once subscribed). The new-session screen (`WorkNewChatScreen`) toggles between **ADE chat** and **CLI session** via a segmented picker; in CLI mode a `workCliProviderOptions` row picker exposes each supported provider explicitly. CLI mode submits `work.startCliSession` with the chosen provider, permission mode (Claude additionally supports `auto`), an optional `reasoningEffort`, and an optional opening message. For most providers the runtime types the opening message into the spawned PTY; for Codex the opening message is forwarded as the final argv positional through `buildTrackedCliLaunchCommand`, so the prompt is treated as a real first turn instead of a typed shell line. The terminal viewer (`TerminalSessionScreen` + `SwiftTermSessionView`) is a full-bleed SwiftTerm (real VT100/xterm) emulator: tap-to-focus raises the iOS keyboard for direct passthrough, a single-row key bar provides esc/tab/latching-Ctrl/arrows/return plus an overflow menu, pinch adjusts font size, and the phone owns the PTY's cols×rows while the screen is open (sent as `terminal_resize`; the runtime restores the desktop size on detach). Live output streams via offset-stamped `terminal_data` with gap detection + `sinceOffset` delta resume (no snapshot polling); scrolling near the top auto-pages older transcript via `terminal_history`, and a floating "↓ Live N" pill snaps back to the live tail. When the hosted program enables mouse reporting (Claude Code, htop), vertical pans are translated into SGR wheel events so the TUI scrolls itself; mouse-off sessions scroll native scrollback. Against pre-offset hosts (older brains, whose PTY→sync bridge never pushed terminal output) the screen detects the missing offsets and falls back to a 2s tail-refresh poll until offsets appear. The screen unsubscribes via `terminal_unsubscribe` on disappear. The legacy `WorkTerminalEmulatorView`/`WorkTerminalScreen` mini-parser remains only for inline preview cards. The earlier "activity feed" section was retired — running chats are surfaced through the session list and a Work tab badge bound to `SyncService.runningChatSessionCount`. |
 | **PRs** | `arrow.triangle.pull` | `/prs` | PR list/detail driven by `prs.getMobileSnapshot`: stack visibility (`PrStackSheet`), create-PR wizard (`CreatePrWizardView`) gated by per-lane eligibility, workflow cards (queue / integration / rebase) rendered from `PrWorkflowCard`, per-PR action capabilities. |
 | **CTO** | `brain.head.profile` | `/cto` | CTO snapshot: Chat / Team / Workflows segments, with the mobile workflows screen mirroring the desktop workflow policy/dashboard and preserving the shared glass navigation chrome. Drills into per-worker chat sessions via `CtoSessionDestinationView`. |
 | **Settings** | `gearshape` | `/settings` (sync subset) | PIN pairing (`SettingsPinSheet`), notification preferences (`NotificationsCenterView`), quiet hours, per-session overrides, appearance, diagnostics, connection header with QR payload and address candidates, reconnect, forget. `ConnectionSettingsView` binds to `SettingsConnectionPresentationModel`, which feeds plain `SettingsConnectionSnapshot` / `SettingsPairingSnapshot` / `SettingsDiagnosticsSnapshot` DTOs into the section views (`SettingsConnectionHeader`, `SettingsPairingSection`, `SettingsDiagnosticsSection`) instead of having them reach into `SyncService` directly. `sendTestPush` is now `async` and returns a `SyncSendTestPushResult` (`ok`, `message`); the Notifications section renders that message verbatim so APNs-not-configured / in-app-only / wire failure cases all surface to the user. |
@@ -739,15 +765,19 @@ duplicate. Project list dedup runs as a final pass
 All lane, file, Work, and PR projections are scoped through
 `Database.currentProjectId()`. The iOS app stores the active project id
 in `UserDefaults`, mirrors it into `DatabaseService`, and falls back to
-the project home if no selected project row has arrived yet. Project
-switches reset the remote DB version. The machine runtime runs at most
-one active sync project at a time, so when the phone asks the runtime to
-switch projects, the runtime activates the requested project locally,
-returns `connection: null`, and the phone reuses its
-existing pairing credentials to reconnect against the now-active project
-endpoint. If the runtime is offline at switch time, it still records the
-requested project as active and the phone reconnects when the machine
-returns.
+the project home if no selected project row has arrived yet. The
+machine runtime runs at most one active sync project at a time behind
+a single brain-level listener on a stable port. When the phone asks
+the runtime to switch projects, the runtime activates the requested
+project locally, returns `connection: null`, and the phone reuses its
+existing pairing credentials to reconnect against the same port. The
+phone keeps a durable inbound cursor **per host DB site**
+(`remoteDbVersionBySite`, keyed by the `serverDbSiteId` from
+`hello_ok`) because each hosted project DB has its own `db_version`
+sequence — returning to a previously-synced project resumes its
+backlog precisely instead of replaying everything or skipping. If the
+runtime is offline at switch time, it still records the requested
+project as active and the phone reconnects when the machine returns.
 
 Before tearing down the old connection on a project switch, `SyncService`
 calls `resetChatEventState(clearHistory: false)` and
@@ -891,9 +921,11 @@ reflected in the phone's UI on the next descriptor read.
   the Settings tab's "Forget machine" flow does both.
 - **The ADE iOS bootstrap SQL is generated.** When desktop `kvDb.ts`
   schema changes, regenerate `DatabaseBootstrap.sql`. Schema drift
-  between desktop and iOS breaks the first-launch bootstrap, and
-  `changeset_batch` apply will fail for tables that don't exist
-  locally.
+  between desktop and iOS breaks the first-launch bootstrap.
+  `changeset_batch` apply no longer fails on tables the phone's
+  schema doesn't know — those rows are skipped so a newer desktop can
+  never freeze a phone's sync — but the skipped tables' data is
+  simply missing until the app updates.
 - **Integration proposal schema must move with PR workflow fields.**
   Desktop merge-into-lane proposals store
   `preferred_integration_lane_id` and `merge_into_head_sha` on
@@ -911,13 +943,13 @@ reflected in the phone's UI on the next descriptor read.
   be batched into a single command with a single reply rather than
   rapid-fire command storms.
 - **A request timeout is not the same as a dead connection.** The 30 s
-  `SyncRequestTimeout` only forces a reconnect when
-  `syncShouldReconnectAfterRequestTimeout` agrees — that helper
-  consults `lastInboundMessageAt` and the 12 s
-  `requestTimeoutReconnectSilenceSeconds` window. If anything has
-  arrived on the WebSocket recently (heartbeats, change batches, a
-  result), the timeout surfaces to the caller without dropping the
-  connection. New transport-affecting code should bump
+  `SyncRequestTimeout` never tears the socket down directly. If
+  anything has arrived on the WebSocket within the 12 s
+  `requestTimeoutReconnectSilenceSeconds` window (heartbeats, change
+  batches, a result), the timeout surfaces to the caller and nothing
+  else happens. If the socket has been fully silent, the phone runs an
+  active transport probe and tears down only when the probe also hears
+  nothing. New transport-affecting code should bump
   `lastInboundMessageAt` on inbound traffic and treat that timestamp
   as the source of truth for "is this connection actually alive".
 - **Connection UI must use `SyncConnectionHealth`, not the raw state.**
@@ -927,12 +959,21 @@ reflected in the phone's UI on the next descriptor read.
   affordances should render off `syncService.connectionHealth` so
   load-strain and transport failure stay distinct from each other and
   from background sync work.
-- **Chat streaming is push, with polling as fallback.** Once a phone
+- **Chat streaming is push, with seq-based resume.** Once a phone
   sends `chat_subscribe`, the runtime fans out `chat_event` envelopes in
-  real time from `agentChatService.subscribeToEvents`. The runtime still
-  runs its polling path on reconnect / catchup to fill any gap; the
-  phone de-duplicates per-event keys so a push and a catchup poll
-  covering the same event produce one rendered message.
+  real time from `agentChatService.subscribeToEvents`. Each event
+  carries a host-assigned per-session monotonic `seq`; the phone tracks
+  the highest applied seq per session, drops duplicates, and sends it
+  back as `sinceSeq` on re-subscribe so the runtime replays exactly the
+  missed events from its replay buffer instead of re-sending a
+  snapshot. Uncoverable gaps fall back to the snapshot path, and a
+  non-resumed subscribe ack resets the phone's watermark (seq epochs
+  restart at 1 when a new host takes over). Events without `seq`
+  (older hosts) bypass the watermark entirely.
+- **Transcript history pages through an opaque cursor.**
+  `chat.getTranscript` responses carry `nextCursor`; the phone's
+  `fetchChatTranscriptPage` requests strictly-older history with it.
+  The default fetch budget is 500 messages / 600k chars.
 - **Chat subscribe requests a 2 MB snapshot window.** The phone sends
   `chat_subscribe` with `maxBytes: 2_000_000`
   (`syncChatSubscriptionMaxBytes`) so the initial snapshot can carry
@@ -1017,17 +1058,18 @@ reflected in the phone's UI on the next descriptor read.
   message, and sends it with the durable `sessionId`. The runtime writes
   to a live PTY when present, or starts the provider continuation
   internally and attaches the new PTY to the same session row.
-- **`WorkTerminalEmulatorView` drives a monospaced grid, not a free
-  text view.** The viewport reported back to the runtime is in (cols,
-  rows) inferred from the rendered glyph cell, not pixel dimensions.
-  The emulator unsubscribes the runtime stream on `onDisappear` so a
-  user paging through the session list does not accumulate buffer
-  bytes for off-screen sessions; `restoreTerminalSubscriptions`
-  re-subscribes on reconnect for any session id still tracked in
-  `subscribedTerminalSessionIds`. Terminal snapshots request up to
-  240 KB and local buffers trim at roughly 240,000 characters, keeping
-  recent CLI output available without letting an off-screen PTY grow
-  the mobile buffer indefinitely.
+- **`TerminalSessionScreen` + `SwiftTermSessionView` drive a real
+  SwiftTerm grid, not a free text view.** The viewport reported back to
+  the runtime is in (cols, rows) inferred from the rendered glyph cell,
+  not pixel dimensions. The terminal unsubscribes the runtime stream on
+  `onDisappear` so a user paging through the session list does not keep
+  a phone-owned viewport attached; `restoreTerminalSubscriptions`
+  re-subscribes on reconnect with the last known transcript end offset
+  for any session id still tracked in `subscribedTerminalSessionIds`.
+  Terminal snapshots request up to 240 KB for legacy hosts; offset-aware
+  hosts use `sinceOffset` delta snapshots and `terminal_history` pages
+  so the phone can keep older scrollback without reloading the whole
+  tail.
 - **Lane presence is best-effort with a TTL.** The phone
   re-announces on a 30 s cadence; the runtime prunes stale entries at
   60 s. A phone that crashes without sending `lanes.presence.release`

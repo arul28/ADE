@@ -79,6 +79,7 @@ const mockState = vi.hoisted(() => ({
   cursorSdkCloudRequests: [] as Array<{ type: string; payload: Record<string, unknown> }>,
   cursorSdkCloudResponses: new Map<string, unknown>(),
   cursorSendPromptGate: null as Promise<void> | null,
+  cursorSendPromptError: null as unknown,
   droidAcquireCalls: [] as Array<Record<string, unknown>>,
   droidNewSessionCalls: [] as Array<Record<string, unknown>>,
   droidPromptCalls: [] as Array<Record<string, unknown>>,
@@ -601,6 +602,33 @@ vi.mock("../../../shared/chatTranscript", () => ({
 }));
 
 vi.mock("./cursorSdkPool", () => ({
+  sanitizeCursorSdkWorkerBaseEnv: vi.fn((baseEnv: NodeJS.ProcessEnv) => {
+    const env = { ...baseEnv };
+    delete env.CURSOR_API_KEY;
+    delete env.CURSOR_AUTH_TOKEN;
+    delete env.ADE_HOME;
+    delete env.ADE_PACKAGE_CHANNEL;
+    delete env.ADE_RUNTIME_SOCKET_PATH;
+    delete env.ADE_RPC_SOCKET_PATH;
+    delete env.ADE_DESKTOP_BRIDGE_SOCKET_PATH;
+    delete env.ADE_RUNTIME_BUILD_HASH;
+    delete env.ADE_RUNTIME_PARENT_PID;
+    delete env.ADE_RUNTIME_IDLE_EXIT_MS;
+    delete env.ADE_CLI_ENTRY_PATH;
+    delete env.ADE_CLI_JS;
+    delete env.ADE_CLI_INSTALL_NAME;
+    delete env.ADE_DEFAULT_ROLE;
+    delete env.ADE_DESKTOP_APP_NAME;
+    delete env.ADE_ALLOW_RUNTIME_SERVICE_SELF_MUTATION;
+    delete env.ADE_ALLOW_LOCAL_RELEASE_SERVICE_INSTALL;
+    delete env.ELECTRON_RUN_AS_NODE;
+    return env;
+  }),
+  isCursorSdkPooledAlive: vi.fn((pooled: any) =>
+    pooled?.process?.exitCode == null
+    && !pooled?.process?.killed
+    && pooled?.process?.connected !== false
+  ),
   acquireCursorSdkConnection: vi.fn(async (args: Record<string, unknown>) => {
     mockState.cursorSdkAcquireCalls.push(args);
     const pooled: any = {
@@ -654,6 +682,7 @@ vi.mock("./cursorSdkPool", () => ({
       sendPrompt: vi.fn(async (payload: Record<string, unknown>) => {
         mockState.cursorSdkSendCalls.push(payload);
         if (mockState.cursorSendPromptGate) await mockState.cursorSendPromptGate;
+        if (mockState.cursorSendPromptError) throw mockState.cursorSendPromptError;
         return { id: "cursor-sdk-run-1", status: "finished" };
       }),
       updatePolicy: vi.fn(async (policy: Record<string, unknown>) => {
@@ -1396,6 +1425,7 @@ beforeEach(() => {
   mockState.cursorSdkCloudRequests = [];
   mockState.cursorSdkCloudResponses = new Map<string, unknown>();
   mockState.cursorSendPromptGate = null;
+  mockState.cursorSendPromptError = null;
   mockState.droidAcquireCalls = [];
   mockState.droidNewSessionCalls = [];
   mockState.droidPromptCalls = [];
@@ -3794,6 +3824,52 @@ describe("createAgentChatService", () => {
       expect(spawnArgs).not.toContain("--disable");
       expect(spawnArgs).not.toContain("browser_use");
       expect(spawnArgs).not.toContain("computer_use");
+    });
+
+    it("passes raw CLI access env to the Cursor SDK pool for worker sanitization", async () => {
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      const getAdeCliAgentEnv = vi.fn(() => ({
+        PATH: "/Applications/ADE Beta.app/Contents/Resources/ade-cli/bin:/usr/bin",
+        ADE_PACKAGE_CHANNEL: "beta",
+        ADE_HOME: "/Users/admin/.ade-beta",
+        ADE_RUNTIME_SOCKET_PATH: "/Users/admin/.ade-beta/sock/ade.sock",
+        ADE_RPC_SOCKET_PATH: "/Users/admin/.ade-beta/sock/ade.sock",
+        ADE_CLI_PATH: "/Applications/ADE Beta.app/Contents/Resources/ade-cli/bin/ade-beta",
+        ADE_CLI_BIN_DIR: "/Applications/ADE Beta.app/Contents/Resources/ade-cli/bin",
+        ADE_CLI_ENTRY_PATH: "/Applications/ADE.app/Contents/Resources/ade-cli/cli.cjs",
+        ADE_CLI_JS: "/Applications/ADE.app/Contents/Resources/ade-cli/cli.cjs",
+        ADE_CLI_INSTALL_NAME: "ade-beta",
+      }));
+
+      const { service } = createService({ getAdeCliAgentEnv });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Run locally.",
+      }, { awaitDispatch: true });
+
+      expect(getAdeCliAgentEnv).toHaveBeenCalled();
+      const baseEnv = mockState.cursorSdkAcquireCalls.at(-1)?.baseEnv as NodeJS.ProcessEnv | undefined;
+      expect(baseEnv).toEqual(expect.objectContaining({
+        ADE_CLI_PATH: "/Applications/ADE Beta.app/Contents/Resources/ade-cli/bin/ade-beta",
+        ADE_CLI_BIN_DIR: "/Applications/ADE Beta.app/Contents/Resources/ade-cli/bin",
+        ADE_PACKAGE_CHANNEL: "beta",
+        ADE_HOME: "/Users/admin/.ade-beta",
+        ADE_RUNTIME_SOCKET_PATH: "/Users/admin/.ade-beta/sock/ade.sock",
+        ADE_RPC_SOCKET_PATH: "/Users/admin/.ade-beta/sock/ade.sock",
+        ADE_CLI_ENTRY_PATH: "/Applications/ADE.app/Contents/Resources/ade-cli/cli.cjs",
+        ADE_CLI_JS: "/Applications/ADE.app/Contents/Resources/ade-cli/cli.cjs",
+        ADE_CLI_INSTALL_NAME: "ade-beta",
+        ADE_CHAT_SESSION_ID: session.id,
+        ADE_LANE_ID: "lane-1",
+        ADE_PROJECT_ROOT: tmpRoot,
+      }));
     });
   });
 
@@ -6785,6 +6861,68 @@ describe("createAgentChatService", () => {
       } finally {
         finishTurn();
       }
+    });
+
+    it("surfaces Cursor SDK HTTP/2 backoff failures as rate limits", async () => {
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      mockState.cursorSendPromptError = new Error(
+        "Cursor SDK send failed: Cursor rate limited this request: [internal] Stream closed with error code NGHTTP2_ENHANCE_YOUR_CALM",
+      );
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Trigger Cursor backoff.",
+      }, { awaitDispatch: true });
+
+      const errorEvent = await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & { event: Extract<AgentChatEventEnvelope["event"], { type: "error" }> } =>
+          event.event.type === "error" && event.sessionId === session.id,
+      );
+      expect(errorEvent.event.message).toContain("Rate limited by Cursor");
+      expect(errorEvent.event.errorInfo).toMatchObject({
+        category: "rate_limit",
+        provider: "Cursor",
+      });
+      expect(errorEvent.event.detail).toContain("NGHTTP2_ENHANCE_YOUR_CALM");
+    });
+
+    it("reacquires Cursor SDK workers that exited before a follow-up turn", async () => {
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "First Cursor turn.",
+      });
+      const firstPooled = mockState.cursorSdkPooled;
+      firstPooled.process.exitCode = 1;
+
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "Follow-up after worker exit.",
+      });
+
+      expect(mockState.cursorSdkAcquireCalls).toHaveLength(2);
+      expect(firstPooled.sendPrompt).toHaveBeenCalledTimes(1);
+      expect(mockState.cursorSdkPooled).not.toBe(firstPooled);
+      expect(mockState.cursorSdkPooled.sendPrompt).toHaveBeenCalledTimes(1);
     });
 
     it("reports active Droid SDK turns so project switching does not close the chat runtime", async () => {
@@ -10648,6 +10786,208 @@ describe("createAgentChatService", () => {
         }),
       ]));
     });
+
+    it("emits todo_update events for Claude TaskCreate and TaskUpdate tool uses", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      const send = vi.fn().mockResolvedValue(undefined);
+      let streamCall = 0;
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield {
+            type: "system",
+            subtype: "init",
+            session_id: "sdk-session-1",
+            slash_commands: [],
+          };
+          return;
+        }
+
+        yield {
+          type: "assistant",
+          message: {
+            content: [
+              {
+                type: "tool_use",
+                id: "task-create-1",
+                name: "TaskCreate",
+                input: {
+                  subject: "Inspect SDK changes",
+                  description: "Inspect the latest Claude Agent SDK changes",
+                  activeForm: "Inspecting SDK changes",
+                },
+              },
+            ],
+            usage: { input_tokens: 1, output_tokens: 1 },
+          },
+        };
+        yield {
+          type: "system",
+          subtype: "task_started",
+          task_id: "task-1",
+          parent_tool_use_id: "task-create-1",
+          description: "Inspect SDK changes",
+          task_type: "other",
+        };
+        yield {
+          type: "assistant",
+          message: {
+            content: [
+              {
+                type: "tool_use",
+                id: "task-update-1",
+                name: "TaskUpdate",
+                input: {
+                  taskId: "task-1",
+                  status: "in_progress",
+                  activeForm: "Applying SDK changes",
+                },
+              },
+            ],
+            usage: { input_tokens: 1, output_tokens: 1 },
+          },
+        };
+        yield {
+          type: "result",
+          usage: { input_tokens: 1, output_tokens: 1 },
+        };
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send,
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-session-1",
+        setPermissionMode,
+      } as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "Track the SDK task list.",
+      });
+
+      const todoEvents = events
+        .map((event) => event.event)
+        .filter((event): event is Extract<AgentChatEventEnvelope["event"], { type: "todo_update" }> =>
+          event.type === "todo_update",
+        );
+      expect(todoEvents.length).toBeGreaterThanOrEqual(3);
+      expect(todoEvents.at(-1)).toMatchObject({
+        type: "todo_update",
+        items: [
+          {
+            id: "task-1",
+            description: "Applying SDK changes",
+            status: "in_progress",
+          },
+        ],
+      });
+
+      expect(events).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          event: expect.objectContaining({
+            type: "tool_call",
+            tool: "TaskCreate",
+            itemId: "task-create-1",
+          }),
+        }),
+        expect.objectContaining({
+          event: expect.objectContaining({
+            type: "tool_call",
+            tool: "TaskUpdate",
+            itemId: "task-update-1",
+          }),
+        }),
+      ]));
+    });
+
+    it("applies Claude task_started updates when the SDK task id matches the tool use id", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const stream = vi.fn(() => (async function* () {
+        yield {
+          type: "system",
+          subtype: "init",
+          session_id: "sdk-session-1",
+          slash_commands: [],
+        };
+        yield {
+          type: "assistant",
+          message: {
+            content: [
+              {
+                type: "tool_use",
+                id: "task-1",
+                name: "TaskCreate",
+                input: {
+                  subject: "Inspect SDK changes",
+                  activeForm: "Inspecting SDK changes",
+                },
+              },
+            ],
+            usage: { input_tokens: 1, output_tokens: 1 },
+          },
+        };
+        yield {
+          type: "system",
+          subtype: "task_started",
+          task_id: "task-1",
+          parent_tool_use_id: "task-1",
+          description: "Inspect SDK changes",
+          task_type: "other",
+        };
+        yield {
+          type: "result",
+          usage: { input_tokens: 1, output_tokens: 1 },
+        };
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send: vi.fn().mockResolvedValue(undefined),
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-session-1",
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      } as any);
+
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+      });
+
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "Track the SDK task list.",
+      });
+
+      const todoEvents = events
+        .map((event) => event.event)
+        .filter((event): event is Extract<AgentChatEventEnvelope["event"], { type: "todo_update" }> =>
+          event.type === "todo_update",
+        );
+
+      expect(todoEvents.at(-1)).toMatchObject({
+        type: "todo_update",
+        items: [
+          {
+            id: "task-1",
+            description: "Inspect SDK changes",
+            status: "in_progress",
+          },
+        ],
+      });
+    });
   });
 
   // --------------------------------------------------------------------------
@@ -10793,6 +11133,17 @@ describe("createAgentChatService", () => {
         cursorAvailability: { cli: true, sdk: false },
       });
       expect(models[0]?.description).toContain("Cursor CLI");
+
+      // A surface that runs Cursor through the SDK (cursorSource: "sdk", e.g.
+      // TUI/mobile chat) must not be offered these CLI-only models — they'd
+      // fail on selection. With no SDK key configured, the sdk-scoped request
+      // returns nothing rather than leaking the CLI-only rows.
+      const sdkScoped = await service.getAvailableModels({
+        provider: "cursor",
+        activateRuntime: true,
+        cursorSource: "sdk",
+      });
+      expect(sdkScoped).toEqual([]);
     });
 
     it("coalesces concurrent codex model discovery requests", async () => {
@@ -11088,6 +11439,64 @@ describe("createAgentChatService", () => {
       )).toEqual(["event-2", "event-3", "event-4"]);
     });
 
+    it("byte-caps a snapshot whose merged events exceed the response budget", async () => {
+      // Regression: individual chat events can carry multi-MB tool outputs.
+      // Event-count caps alone let a snapshot serialize past the desktop RPC
+      // client's 16 MiB per-message limit, which used to fail every in-flight
+      // call on the shared runtime socket.
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      const envelopes: AgentChatEventEnvelope[] = Array.from({ length: 4 }, (_, index) => ({
+        sessionId: session.id,
+        timestamp: `2026-04-23T10:0${index}:00.000Z`,
+        event: { type: "text", text: `event-${index}-${"x".repeat(3_000_000)}` },
+        sequence: index + 1,
+      }));
+      const transcriptFile = path.join(tmpRoot, "transcripts", `${session.id}.chat.jsonl`);
+      fs.writeFileSync(transcriptFile, "ignored\n", "utf8");
+      vi.mocked(parseAgentChatTranscript).mockReturnValue(envelopes);
+
+      const history = service.getChatEventHistory(session.id);
+
+      // 4 × ~3 MB events exceed the 8 MB response budget: only the newest
+      // events that fit are returned, and the trim is reported as window
+      // truncation so clients know to page for the rest.
+      expect(history.events.length).toBeLessThan(envelopes.length);
+      expect(history.events.length).toBeGreaterThan(0);
+      expect(history.windowTruncated).toBe(true);
+      expect(history.truncated).toBe(true);
+      expect(JSON.stringify(history.events).length).toBeLessThanOrEqual(8_000_000);
+      const lastEvent = history.events.at(-1)?.event;
+      expect(lastEvent?.type === "text" ? lastEvent.text.startsWith("event-3-") : false).toBe(true);
+    });
+
+    it("always returns at least the newest event even when it alone exceeds the byte budget", async () => {
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      const giant: AgentChatEventEnvelope = {
+        sessionId: session.id,
+        timestamp: "2026-04-23T10:00:00.000Z",
+        event: { type: "text", text: "giant-".concat("y".repeat(9_000_000)) },
+        sequence: 1,
+      };
+      const transcriptFile = path.join(tmpRoot, "transcripts", `${session.id}.chat.jsonl`);
+      fs.writeFileSync(transcriptFile, "ignored\n", "utf8");
+      vi.mocked(parseAgentChatTranscript).mockReturnValue([giant]);
+
+      const history = service.getChatEventHistory(session.id);
+      expect(history.events).toHaveLength(1);
+    });
+
     it("marks window truncation when the service response cap removes events", async () => {
       const { service } = createService();
       const session = await service.createSession({
@@ -11293,6 +11702,157 @@ describe("createAgentChatService", () => {
       expect(afterDelete.events).toEqual([]);
       expect(afterDelete.truncated).toBe(false);
       expect(afterDelete.sessionFound).toBe(false);
+    });
+  });
+
+  describe("getChatEventHistoryPage", () => {
+    // Byte-window edge cases (line-boundary cursors, oversized lines,
+    // multi-byte UTF-8, concurrent appends) are covered with the REAL parser
+    // in chatTranscriptHistoryPager.test.ts; these tests cover the service
+    // contract around it: session validation, path resolution, subagent
+    // filtering, and the tailStartOffset cursor handshake.
+    const jsonLineParse = (raw: string): AgentChatEventEnvelope[] =>
+      raw.split("\n").filter((line) => line.trim().length > 0).map((line) => JSON.parse(line) as AgentChatEventEnvelope);
+
+    const paddedLine = (envelope: AgentChatEventEnvelope, exactBytes: number): string => {
+      const baseEvent = envelope.event as { type: "text"; text: string };
+      let line = `${JSON.stringify(envelope)}\n`;
+      const padding = exactBytes - Buffer.byteLength(line, "utf8");
+      if (padding < 0) throw new Error("fixture line too large");
+      line = `${JSON.stringify({ ...envelope, event: { ...baseEvent, text: baseEvent.text + "x".repeat(padding) } })}\n`;
+      expect(Buffer.byteLength(line, "utf8")).toBe(exactBytes);
+      return line;
+    };
+
+    it("returns sessionFound:false for unknown sessions", () => {
+      const { service } = createService();
+      const page = service.getChatEventHistoryPage("unknown-session", { beforeOffset: 1_000 });
+      expect(page).toEqual({
+        sessionId: "unknown-session",
+        events: [],
+        startOffset: 0,
+        hasMore: false,
+        sessionFound: false,
+      });
+    });
+
+    it("returns an empty head-reached page for beforeOffset <= 0", async () => {
+      const { service } = createService();
+      const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+      for (const beforeOffset of [0, -25]) {
+        const page = service.getChatEventHistoryPage(session.id, { beforeOffset });
+        expect(page.sessionFound).toBe(true);
+        expect(page.events).toEqual([]);
+        expect(page.hasMore).toBe(false);
+        expect(page.startOffset).toBe(0);
+      }
+    });
+
+    it("returns an empty page when the transcript file is missing", async () => {
+      const { service } = createService();
+      const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+      fs.rmSync(path.join(tmpRoot, "transcripts", `${session.id}.chat.jsonl`), { force: true });
+      const page = service.getChatEventHistoryPage(session.id, { beforeOffset: 5_000 });
+      expect(page.sessionFound).toBe(true);
+      expect(page.events).toEqual([]);
+      expect(page.hasMore).toBe(false);
+      expect(page.startOffset).toBe(0);
+    });
+
+    it("reads the requested byte window and filters Codex subagent envelopes", async () => {
+      const { service } = createService();
+      const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+
+      const parentEnvelope: AgentChatEventEnvelope = {
+        sessionId: session.id,
+        timestamp: "2026-06-10T10:00:00.000Z",
+        event: { type: "text", text: "parent-visible" },
+        sequence: 1,
+      };
+      const subagentEnvelope: AgentChatEventEnvelope = {
+        sessionId: session.id,
+        timestamp: "2026-06-10T10:00:01.000Z",
+        event: { type: "text", text: "subagent-hidden" },
+        sequence: 2,
+        provenance: { targetKind: "codex_subagent" },
+      };
+      const otherSessionEnvelope: AgentChatEventEnvelope = {
+        sessionId: "other-session",
+        timestamp: "2026-06-10T10:00:02.000Z",
+        event: { type: "text", text: "foreign" },
+        sequence: 3,
+      };
+      const transcriptFile = path.join(tmpRoot, "transcripts", `${session.id}.chat.jsonl`);
+      const raw = [parentEnvelope, subagentEnvelope, otherSessionEnvelope]
+        .map((entry) => `${JSON.stringify(entry)}\n`).join("");
+      fs.writeFileSync(transcriptFile, raw, "utf8");
+      vi.mocked(parseAgentChatTranscript).mockImplementation(jsonLineParse);
+
+      const page = service.getChatEventHistoryPage(session.id, {
+        beforeOffset: Buffer.byteLength(raw, "utf8"),
+      });
+      expect(page.sessionFound).toBe(true);
+      expect(page.events.map((entry) => (entry.event.type === "text" ? entry.event.text : ""))).toEqual([
+        "parent-visible",
+      ]);
+      expect(page.startOffset).toBe(0);
+      expect(page.hasMore).toBe(false);
+    });
+
+    it("hands out a tailStartOffset that pages seamlessly into the bytes the tail skipped", async () => {
+      const { service } = createService();
+      const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+
+      // 82 lines × 25_000 bytes = 2_050_000 bytes — 50_000 bytes older than the
+      // 2_000_000-byte hydration tail, i.e. exactly the first two lines.
+      const LINE_BYTES = 25_000;
+      const LINE_COUNT = 82;
+      const lines: string[] = [];
+      for (let index = 0; index < LINE_COUNT; index += 1) {
+        lines.push(paddedLine({
+          sessionId: session.id,
+          timestamp: new Date(Date.UTC(2026, 5, 10, 10, 0, index)).toISOString(),
+          event: { type: "text", text: `line-${index}-` },
+          sequence: index,
+        }, LINE_BYTES));
+      }
+      const transcriptFile = path.join(tmpRoot, "transcripts", `${session.id}.chat.jsonl`);
+      fs.writeFileSync(transcriptFile, lines.join(""), "utf8");
+      vi.mocked(parseAgentChatTranscript).mockImplementation(jsonLineParse);
+
+      const history = service.getChatEventHistory(session.id);
+      expect(history.transcriptTruncated).toBe(true);
+      // The tail window starts exactly at line 2 (a line boundary).
+      expect(history.tailStartOffset).toBe(2 * LINE_BYTES);
+      expect(history.events[0]?.event).toMatchObject({ type: "text" });
+      expect((history.events[0]?.event as { text: string }).text.startsWith("line-2-")).toBe(true);
+
+      const page = service.getChatEventHistoryPage(session.id, { beforeOffset: history.tailStartOffset! });
+      expect(page.sessionFound).toBe(true);
+      expect(page.events.map((entry) => (entry.event.type === "text" ? entry.event.text.split("x")[0] : ""))).toEqual([
+        "line-0-",
+        "line-1-",
+      ]);
+      expect(page.startOffset).toBe(0);
+      expect(page.hasMore).toBe(false);
+    });
+
+    it("reports a null tailStartOffset when the transcript is fully hydrated", async () => {
+      const { service } = createService();
+      const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });
+      const envelope: AgentChatEventEnvelope = {
+        sessionId: session.id,
+        timestamp: "2026-06-10T10:00:00.000Z",
+        event: { type: "text", text: "small" },
+        sequence: 1,
+      };
+      const transcriptFile = path.join(tmpRoot, "transcripts", `${session.id}.chat.jsonl`);
+      fs.writeFileSync(transcriptFile, `${JSON.stringify(envelope)}\n`, "utf8");
+      vi.mocked(parseAgentChatTranscript).mockImplementation(jsonLineParse);
+
+      const history = service.getChatEventHistory(session.id);
+      expect(history.transcriptTruncated).toBe(false);
+      expect(history.tailStartOffset).toBeNull();
     });
   });
 
@@ -16837,6 +17397,96 @@ describe("createAgentChatService", () => {
     expect(events.some((event) => event.event.type === "tool_call" && event.event.tool === "Bash")).toBe(true);
   });
 
+  it("re-emits a Claude tool_call with parsed args once the input has streamed in after content_block_start", async () => {
+    const events: AgentChatEventEnvelope[] = [];
+    const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+    const send = vi.fn().mockResolvedValue(undefined);
+    let streamCall = 0;
+
+    const stream = vi.fn(() => (async function* () {
+      streamCall += 1;
+      if (streamCall === 1) {
+        yield {
+          type: "system",
+          subtype: "init",
+          session_id: "sdk-session-streamed-args",
+          slash_commands: [],
+        };
+        return;
+      }
+
+      // Stream path: tool_use starts with NO input; the input arrives via
+      // input_json_delta and only parses at content_block_stop. Without the
+      // enriched re-emit the persisted tool_call keeps args:{} forever.
+      yield {
+        type: "stream_event",
+        event: {
+          type: "content_block_start",
+          index: 0,
+          content_block: { type: "tool_use", id: "tool-use-streamed-args", name: "Read", input: {} },
+        },
+      };
+      yield {
+        type: "stream_event",
+        event: {
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "input_json_delta", partial_json: "{\"file_path\":\"apps/desk" },
+        },
+      };
+      yield {
+        type: "stream_event",
+        event: {
+          type: "content_block_delta",
+          index: 0,
+          delta: { type: "input_json_delta", partial_json: "top/src/a.ts\"}" },
+        },
+      };
+      yield {
+        type: "stream_event",
+        event: { type: "content_block_stop", index: 0 },
+      };
+      yield {
+        type: "result",
+        usage: { input_tokens: 1, output_tokens: 1 },
+      };
+    })());
+
+    vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+      send,
+      stream,
+      close: vi.fn(),
+      sessionId: "sdk-session-streamed-args",
+      setPermissionMode,
+    } as any);
+
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "claude",
+      model: "claude-sonnet-4-6",
+      modelId: "anthropic/claude-sonnet-4-6",
+    });
+
+    await service.runSessionTurn({
+      sessionId: session.id,
+      text: "Read the file.",
+    });
+
+    const toolCalls = events
+      .map((event) => event.event)
+      .filter((event): event is Extract<AgentChatEventEnvelope["event"], { type: "tool_call" }> => event.type === "tool_call")
+      .filter((event) => event.tool === "Read");
+    expect(toolCalls).toHaveLength(2);
+    // Same itemId so renderers collapse both into a single entry.
+    expect(new Set(toolCalls.map((event) => event.itemId)).size).toBe(1);
+    expect(toolCalls[0]?.args).toEqual({});
+    expect(toolCalls[1]?.args).toEqual({ file_path: "apps/desktop/src/a.ts" });
+  });
+
   it("emits completed Claude tool_result rows when tool_use_summary arrives", async () => {
     const events: AgentChatEventEnvelope[] = [];
     const setPermissionMode = vi.fn().mockResolvedValue(undefined);
@@ -18531,11 +19181,11 @@ describe("createAgentChatService", () => {
 
 describe("suggestLaneNameFromPrompt", () => {
   function createProjectConfigServiceWithTitleOptions(
-    options: { titleGenerationEnabled?: boolean; titleModelId?: string } = {},
+    options: { titleGenerationEnabled?: boolean; titleModelId?: string | null; legacyTitleModelId?: string } = {},
   ) {
     const titleOptions: Record<string, unknown> = {};
     if (typeof options.titleGenerationEnabled === "boolean") titleOptions.enabled = options.titleGenerationEnabled;
-    if (options.titleModelId) titleOptions.modelId = options.titleModelId;
+    if (options.titleModelId !== undefined) titleOptions.modelId = options.titleModelId;
     const sessionIntelligence = Object.keys(titleOptions).length ? { titles: titleOptions } : {};
     return {
       get: vi.fn(() => ({
@@ -18545,7 +19195,9 @@ describe("suggestLaneNameFromPrompt", () => {
               cli: { mode: "edit" },
               inProcess: { mode: "edit" },
             },
-            chat: {},
+            chat: {
+              ...(options.legacyTitleModelId ? { autoTitleModelId: options.legacyTitleModelId } : {}),
+            },
             sessionIntelligence,
           },
         },
@@ -18555,7 +19207,7 @@ describe("suggestLaneNameFromPrompt", () => {
     } as any;
   }
 
-  function createSuggestService(options: { titleGenerationEnabled?: boolean; titleModelId?: string } = {}) {
+  function createSuggestService(options: { titleGenerationEnabled?: boolean; titleModelId?: string | null; legacyTitleModelId?: string } = {}) {
     return createService({
       projectConfigService: createProjectConfigServiceWithTitleOptions(options),
     });
@@ -18588,17 +19240,17 @@ describe("suggestLaneNameFromPrompt", () => {
       modelId: "anthropic/claude-haiku-4-5",
       laneId: "lane-1",
     });
-    expect(result).toBe("fix-the-login-bug");
+    expect(result).toBe("fix-login-bug");
   });
 
-  it("takes only first 4 words of a long prompt", async () => {
+  it("takes the first 5 meaningful words of a long prompt", async () => {
     const { service } = createSuggestService();
     const result = await service.suggestLaneNameFromPrompt({
       prompt: "Refactor the authentication service to use JWT tokens",
       modelId: "anthropic/claude-haiku-4-5",
       laneId: "lane-1",
     });
-    expect(result).toBe("refactor-the-authentication-service");
+    expect(result).toBe("refactor-authentication-service-jwt-tokens");
   });
 
   it("strips special characters from the prompt slug", async () => {
@@ -18608,7 +19260,7 @@ describe("suggestLaneNameFromPrompt", () => {
       modelId: "anthropic/claude-haiku-4-5",
       laneId: "lane-1",
     });
-    expect(result).toBe("fix-bug-123-in");
+    expect(result).toBe("fix-bug-123-module");
   });
 
   it("truncates the fallback slug to 48 characters", async () => {
@@ -18628,7 +19280,7 @@ describe("suggestLaneNameFromPrompt", () => {
       modelId: "anthropic/claude-haiku-4-5",
       laneId: "lane-1",
     });
-    expect(result).toBe("fix-the-bug-now");
+    expect(result).toBe("fix-bug-now");
   });
 
   it("falls back when the model runtime throws an error", async () => {
@@ -18644,14 +19296,14 @@ describe("suggestLaneNameFromPrompt", () => {
       laneId: "lane-1",
     });
 
-    expect(result).toBe("write-a-test-suite");
+    expect(result).toBe("write-test-suite");
     expect(logger.warn).toHaveBeenCalledWith(
       "agent_chat.suggest_lane_name_failed",
       expect.objectContaining({ error: "API rate limited" }),
     );
   });
 
-  it("keeps the prompt fallback readable while adding the temporary suffix when title generation is disabled", async () => {
+  it("uses the deterministic prompt fallback when title generation is disabled", async () => {
     vi.mocked(detectAllAuth).mockResolvedValue([
       { type: "cli-subscription" as any, cli: "claude", authenticated: true, path: "/usr/bin/claude", verified: true },
     ]);
@@ -18664,11 +19316,11 @@ describe("suggestLaneNameFromPrompt", () => {
       fallbackName: "chat-20260514-010203",
     });
 
-    expect(result).toBe("fix-the-authentication-login-20260514-010203");
+    expect(result).toBe("fix-authentication-login-failure-dashboard");
     expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalled();
   });
 
-  it("uses the explicit fallback directly when the prompt fallback is generic", async () => {
+  it("preserves the generated suffix when the prompt fallback is generic", async () => {
     const { service } = createSuggestService();
     const result = await service.suggestLaneNameFromPrompt({
       prompt: "!!!",
@@ -18677,7 +19329,7 @@ describe("suggestLaneNameFromPrompt", () => {
       fallbackName: "chat-20260514-010203",
     });
 
-    expect(result).toBe("chat-20260514-010203");
+    expect(result).toBe("parallel-task-20260514-010203");
   });
 
   it("uses AI-generated name when the model runtime succeeds", async () => {
@@ -18728,6 +19380,35 @@ describe("suggestLaneNameFromPrompt", () => {
     expect(aiIntegrationService.summarizeTerminal).toHaveBeenNthCalledWith(2, expect.objectContaining({
       model: "openai/gpt-5.4-mini",
       taskType: "session_title",
+    }));
+  });
+
+  it("does not fall back to a legacy title model when session intelligence model is explicitly cleared", async () => {
+    vi.mocked(detectAllAuth).mockResolvedValue([
+      { type: "cli-subscription" as any, cli: "claude", authenticated: true, path: "/usr/bin/claude", verified: true },
+    ]);
+    const { service, aiIntegrationService } = createSuggestService({
+      titleModelId: null,
+      legacyTitleModelId: "openai/gpt-5.4-mini",
+    });
+    vi.mocked(aiIntegrationService.summarizeTerminal).mockResolvedValueOnce({
+      text: "Fallback Title",
+      inputTokens: 10,
+      outputTokens: 5,
+    } as any);
+
+    const result = await service.suggestLaneNameFromPrompt({
+      prompt: "Fix null model clearing for background jobs",
+      modelId: "",
+      laneId: "lane-1",
+    });
+
+    expect(result).toBe("fallback-title");
+    expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalledWith(expect.objectContaining({
+      model: "openai/gpt-5.4-mini",
+    }));
+    expect(aiIntegrationService.summarizeTerminal).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      model: "anthropic/claude-haiku-4-5",
     }));
   });
 

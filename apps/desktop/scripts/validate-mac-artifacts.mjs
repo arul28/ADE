@@ -30,6 +30,17 @@ const bundledAgentSkills = [
   "ade-macos-vm",
   "ade-deeplinks",
 ];
+const bundledAdeCliFiles = [
+  ["cli.cjs", "bundled ADE CLI entry"],
+  ["bootstrap.cjs", "bundled ADE CLI bootstrap entry"],
+  ["ptyHostWorker.cjs", "bundled ADE CLI PTY host worker"],
+  ["cursorSdkWorker.cjs", "bundled ADE CLI Cursor SDK worker"],
+  ["droidSdkWorker.cjs", "bundled ADE CLI Droid SDK worker"],
+  ["adeRpcServer.cjs", "bundled ADE CLI RPC entry"],
+  ["tuiClient/cli.mjs", "bundled ADE CLI TUI entry"],
+  ["bin/ade", "bundled ADE CLI wrapper"],
+  ["install-path.sh", "bundled ADE CLI PATH installer"],
+];
 
 function readFlag(name) {
   const prefix = `${name}=`;
@@ -403,10 +414,6 @@ async function validatePackagedRuntime(appPath, description) {
   const resourcesPath = path.join(appPath, "Contents", "Resources");
   const appAsarPath = path.join(resourcesPath, "app.asar");
   const unpackedPath = await resolveRuntimeUnpackedPath(resourcesPath);
-  const adeCliPath = path.join(resourcesPath, "ade-cli", "cli.cjs");
-  const adeCliBootstrapPath = path.join(resourcesPath, "ade-cli", "bootstrap.cjs");
-  const adeCliPtyHostWorkerPath = path.join(resourcesPath, "ade-cli", "ptyHostWorker.cjs");
-  const adeCliRpcPath = path.join(resourcesPath, "ade-cli", "adeRpcServer.cjs");
   const adeCliTuiPath = path.join(resourcesPath, "ade-cli", "tuiClient", "cli.mjs");
   const adeCliBinPath = path.join(resourcesPath, "ade-cli", "bin", "ade");
   const adeCliInstallerPath = path.join(resourcesPath, "ade-cli", "install-path.sh");
@@ -420,13 +427,9 @@ async function validatePackagedRuntime(appPath, description) {
   await assertPathExists(appAsarPath, "app.asar payload");
   await assertPathExists(unpackedPath, "unpacked runtime payload");
   assertPackagedStartupModules(appAsarPath, description);
-  await assertPathExists(adeCliPath, "bundled ADE CLI entry");
-  await assertPathExists(adeCliBootstrapPath, "bundled ADE CLI bootstrap entry");
-  await assertPathExists(adeCliPtyHostWorkerPath, "bundled ADE CLI PTY host worker");
-  await assertPathExists(adeCliRpcPath, "bundled ADE CLI RPC entry");
-  await assertPathExists(adeCliTuiPath, "bundled ADE CLI TUI entry");
-  await assertPathExists(adeCliBinPath, "bundled ADE CLI wrapper");
-  await assertPathExists(adeCliInstallerPath, "bundled ADE CLI PATH installer");
+  for (const [relativePath, label] of bundledAdeCliFiles) {
+    await assertPathExists(path.join(resourcesPath, "ade-cli", relativePath), label);
+  }
   await assertBundledAgentSkills(bundledAgentSkillsRoot);
   await assertExecutable(adeCliBinPath, "bundled ADE CLI wrapper");
   await assertExecutable(adeCliInstallerPath, "bundled ADE CLI PATH installer");

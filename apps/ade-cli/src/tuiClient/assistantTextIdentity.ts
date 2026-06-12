@@ -56,6 +56,27 @@ export function shouldMergeAssistantText(previous: AssistantTextIdentity, next: 
 }
 
 /**
+ * Overlap-aware append for streamed assistant text (desktop mergeStreamingText
+ * parity, chatTranscriptRows.ts). Providers sometimes re-emit a cumulative
+ * snapshot of the message-so-far (incoming starts with everything we already
+ * hold), and history replay can overlap live buffered deltas (we already end
+ * with exactly the incoming fragment). Plain concatenation duplicated the tail
+ * in both cases — "…one giant pass. so I can split… one giant pass." Every
+ * merge site (aggregate.ts, format.ts, coalesceTextDeltaEnvelopes) must use
+ * this so the dedupe happens no matter which layer sees the overlap first.
+ */
+export function appendStreamingText(existing: string, incoming: string): string {
+  if (!existing.length) return incoming;
+  if (!incoming.length) return existing;
+  if (incoming.startsWith(existing)) return incoming;
+  // Tail dedupe only fires for multi-word fragments: providers re-emit whole
+  // phrases/sentences, while single-token deltas (" x", " the") legitimately
+  // repeat back-to-back in normal streaming and must keep concatenating.
+  if (/\S\s+\S/.test(incoming) && existing.endsWith(incoming)) return existing;
+  return `${existing}${incoming}`;
+}
+
+/**
  * Codex persists each subagent's child content (text + tool calls) as messages
  * whose id is namespaced `codex-subagent:<...>`. Desktop tags these with
  * provenance.targetKind==="codex_subagent" and filters them out of the parent
@@ -69,9 +90,10 @@ export function isCodexSubagentMessageId(messageId: string | undefined): boolean
 /**
  * Fuse consecutive `text` deltas that belong to the same streamed message into a
  * single envelope, so a turn's token stream lands in the transcript as a handful
- * of envelopes instead of thousands. The merged text is the byte-for-byte
- * concatenation (no trim, no inserted separators — deltas already carry their own
- * whitespace), and the fused envelope keeps the LATEST timestamp/sequence so the
+ * of envelopes instead of thousands. The merged text is the overlap-aware
+ * concatenation ({@link appendStreamingText} — no trim, no inserted separators;
+ * deltas carry their own whitespace, and cumulative/tail re-emits dedupe),
+ * and the fused envelope keeps the LATEST timestamp/sequence so the
  * timeline sort is unchanged. Non-text events and deltas from a different message
  * (or session) act as boundaries, so interleaved concurrent messages are never
  * merged together. Pure + order-preserving so both the per-session map and the
@@ -90,7 +112,7 @@ export function coalesceTextDeltaEnvelopes(
       && last.event.type === "text"
       && shouldMergeAssistantText(last.event, envelope.event)
     ) {
-      const mergedText = `${last.event.text}${envelope.event.text}`;
+      const mergedText = appendStreamingText(last.event.text, envelope.event.text);
       out[out.length - 1] = {
         ...last,
         timestamp: envelope.timestamp,

@@ -155,7 +155,7 @@ function buildStatus(
         runtimeAvailable: false,
         usageAvailable: false,
         path: null,
-        blocker: "Enter a Cursor API key from https://cursor.com/dashboard/integrations.",
+        blocker: "Enter a Cursor API key from https://cursor.com/dashboard/api.",
         lastCheckedAt: "2026-03-17T19:00:00.000Z",
         sources: [],
       },
@@ -372,6 +372,53 @@ describe("ProvidersSection", () => {
     });
     expect(await screen.findByText("Cursor connection verified.")).toBeTruthy();
     expect(screen.getAllByText("Connected").length).toBeGreaterThan(0);
+  });
+
+  it("shows failed Cursor verification as a dismissible error", async () => {
+    const getStatusMock = window.ade.ai.getStatus as ReturnType<typeof vi.fn>;
+    getStatusMock.mockReset();
+    getStatusMock.mockResolvedValue(buildStatus(true, []));
+    const listApiKeysMock = window.ade.ai.listApiKeys as ReturnType<typeof vi.fn>;
+    listApiKeysMock.mockReset();
+    listApiKeysMock
+      .mockResolvedValueOnce([])
+      .mockResolvedValue(["cursor"]);
+    const verifyApiKeyMock = window.ade.ai.verifyApiKey as ReturnType<typeof vi.fn>;
+    verifyApiKeyMock.mockResolvedValueOnce({
+      provider: "cursor",
+      ok: false,
+      message: "Verification request failed: Cannot find package '@cursor/sdk'",
+      source: "store",
+      verifiedAt: "2026-03-17T19:00:00.000Z",
+    });
+
+    render(<ProvidersSection />);
+
+    await waitFor(() => {
+      expect(window.ade.ai.getStatus).toHaveBeenCalledTimes(1);
+      expect(window.ade.ai.listApiKeys).toHaveBeenCalledTimes(1);
+    });
+
+    await act(async () => {
+      screen.getByLabelText("Add Cursor API key").click();
+    });
+
+    fireEvent.change(screen.getByLabelText("Cursor API key"), { target: { value: "crsr_test" } });
+
+    await act(async () => {
+      screen.getByLabelText("Save Cursor API key").click();
+    });
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("Cannot find package '@cursor/sdk'");
+    expect(screen.queryByText("Cursor verification failed.")).toBeNull();
+    expect(screen.queryByText("Invalid key")).toBeNull();
+    expect(screen.getByText("Verification failed")).toBeTruthy();
+
+    await act(async () => {
+      screen.getByLabelText("Dismiss error message").click();
+    });
+    expect(screen.queryByRole("alert")).toBeNull();
   });
 
   it("forces a provider status refresh after verifying a stored Cursor API key", async () => {

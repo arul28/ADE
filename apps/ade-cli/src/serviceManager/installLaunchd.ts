@@ -5,17 +5,42 @@ import path from "node:path";
 import {
   ADE_RUNTIME_SERVICE_NAME,
   type AdeServiceCommand,
+  isCurrentProcessDescendantOfPid,
+  listStaleChannelServePids,
+  resolveAdeServeCliScriptPath,
   resolveAdeServeCommand,
   serviceManagerResultText,
   type ServiceManagerResult,
   type ServiceManagerSpawnSync,
   type ServiceManagerStatusResult,
+  terminatePidGracefully,
+  type TerminatePidDeps,
 } from "./common";
+import {
+  detectSyncHostSingletonConflict,
+  formatSyncHostSingletonConflictMessage,
+  isSameChannelSyncHostOwner,
+  type SyncHostSingletonDeps,
+} from "../services/sync/syncHostSingleton";
 
 type LaunchdServiceManagerDeps = {
   command?: AdeServiceCommand;
   spawnSync?: ServiceManagerSpawnSync;
   homeDir?: string;
+  syncHostSingletonDeps?: SyncHostSingletonDeps;
+  terminateDeps?: TerminatePidDeps;
+  env?: NodeJS.ProcessEnv;
+  currentPid?: number;
+  parentPid?: (pid: number) => number | null;
+};
+
+type LaunchdServiceUninstallDeps = {
+  spawnSync?: ServiceManagerSpawnSync;
+  homeDir?: string;
+  terminateDeps?: TerminatePidDeps;
+  env?: NodeJS.ProcessEnv;
+  currentPid?: number;
+  parentPid?: (pid: number) => number | null;
 };
 
 function escapeXml(value: string): string {
@@ -35,12 +60,74 @@ function plistArray(values: string[]): string {
   ].join("\n");
 }
 
+function launchdPrintOutputText(result: ReturnType<ServiceManagerSpawnSync>): string {
+  if (typeof result.stdout === "string") return result.stdout;
+  if (Buffer.isBuffer(result.stdout)) return result.stdout.toString("utf8");
+  return "";
+}
+
 export function launchAgentPath(homeDir = os.homedir()): string {
   return path.join(homeDir, "Library", "LaunchAgents", `${ADE_RUNTIME_SERVICE_NAME}.plist`);
 }
 
 export function isLaunchdPrintRunning(output: string): boolean {
   return /\bstate\s*=\s*running\b/i.test(output);
+}
+
+export function parseLaunchdPrintPid(output: string): number | null {
+  const match = output.match(/\bpid\s*=\s*(\d+)\b/i);
+  if (!match) return null;
+  const pid = Number(match[1]);
+  return Number.isFinite(pid) && pid > 0 ? Math.floor(pid) : null;
+}
+
+function shouldAllowSelfServiceMutation(env: NodeJS.ProcessEnv): boolean {
+  return env.ADE_ALLOW_RUNTIME_SERVICE_SELF_MUTATION === "1";
+}
+
+function selfServiceMutationBlockedResult(args: {
+  action: "install" | "uninstall";
+  servicePath: string;
+  servicePid: number;
+}): ServiceManagerResult {
+  const verb = args.action === "install" ? "restart" : "stop";
+  return {
+    ok: false,
+    selfMutationBlocked: true,
+    serviceName: ADE_RUNTIME_SERVICE_NAME,
+    action: args.action,
+    path: args.servicePath,
+    message:
+      `Refusing to ${verb} ADE brain from a command running inside that brain ` +
+      `(pid ${args.servicePid}). Run this from an external terminal, or set ` +
+      "ADE_ALLOW_RUNTIME_SERVICE_SELF_MUTATION=1 if you intentionally want to tear down active ADE sessions.",
+  };
+}
+
+function selfServiceMutationBlock(args: {
+  action: "install" | "uninstall";
+  loadedPid: number | null | undefined;
+  servicePath: string;
+  run: ServiceManagerSpawnSync;
+  env: NodeJS.ProcessEnv;
+  currentPid?: number;
+  parentPid?: (pid: number) => number | null;
+}): ServiceManagerResult | null {
+  const servicePid = args.loadedPid ?? null;
+  if (!servicePid || shouldAllowSelfServiceMutation(args.env)) return null;
+  if (!isCurrentProcessDescendantOfPid({
+    targetPid: servicePid,
+    run: args.run,
+    currentPid: args.currentPid,
+    parentPid: args.parentPid,
+  })) {
+    return null;
+  }
+  return selfServiceMutationBlockedResult({
+    action: args.action,
+    servicePath: args.servicePath,
+    servicePid,
+  });
 }
 
 export function renderLaunchdPlist(command: AdeServiceCommand, homeDir = os.homedir()): string {
@@ -83,17 +170,103 @@ ${plistArray([command.command, ...command.args]).split("\n").map((line) => `  ${
   return sections.join("\n");
 }
 
+function getLoadedLaunchdState(
+  run: ServiceManagerSpawnSync,
+): { running: boolean; pid: number | null } | null {
+  const uid = typeof process.getuid === "function" ? process.getuid() : os.userInfo().uid;
+  let print = run("launchctl", ["print", `gui/${uid}/${ADE_RUNTIME_SERVICE_NAME}`], { encoding: "utf8" });
+  if (print.status !== 0) {
+    const userPrint = run("launchctl", ["print", `user/${uid}/${ADE_RUNTIME_SERVICE_NAME}`], { encoding: "utf8" });
+    if (userPrint.status === 0) {
+      print = userPrint;
+    }
+  }
+  if (print.status !== 0) return null;
+  const output = launchdPrintOutputText(print);
+  return {
+    running: isLaunchdPrintRunning(output),
+    pid: parseLaunchdPrintPid(output),
+  };
+}
+
+export function getLaunchdServiceMainPid(
+  run: ServiceManagerSpawnSync = spawnSync,
+): number | null {
+  return getLoadedLaunchdState(run)?.pid ?? null;
+}
+
 export function installLaunchdService(deps: LaunchdServiceManagerDeps = {}): ServiceManagerResult {
   const run = deps.spawnSync ?? spawnSync;
+  const env = deps.env ?? process.env;
   const homeDir = deps.homeDir ?? os.homedir();
   const servicePath = launchAgentPath(homeDir);
   const command = deps.command ?? resolveAdeServeCommand();
-  const adeHome = command.env?.ADE_HOME?.trim() || process.env.ADE_HOME?.trim() || path.join(homeDir, ".ade");
+  const adeHome = command.env?.ADE_HOME?.trim() || env.ADE_HOME?.trim() || path.join(homeDir, ".ade");
   fs.mkdirSync(path.dirname(servicePath), { recursive: true });
   const plist = renderLaunchdPlist(command, homeDir);
   fs.mkdirSync(path.join(adeHome, "runtime"), { recursive: true });
-  fs.writeFileSync(servicePath, plist, "utf8");
+  const existingPlist = fs.existsSync(servicePath)
+    ? fs.readFileSync(servicePath, "utf8")
+    : null;
+  const plistUnchanged = existingPlist === plist;
+  const loaded = getLoadedLaunchdState(run);
+  if (plistUnchanged && loaded?.running === true) {
+    return {
+      ok: true,
+      serviceName: ADE_RUNTIME_SERVICE_NAME,
+      action: "install",
+      path: servicePath,
+      message: "ADE service launchd service is already installed and running.",
+    };
+  }
+  const selfBlock = selfServiceMutationBlock({
+    action: "install",
+    loadedPid: loaded?.pid,
+    servicePath,
+    run,
+    env,
+    currentPid: deps.currentPid,
+    parentPid: deps.parentPid,
+  });
+  if (selfBlock) return selfBlock;
+
+  // From here on the service is being (re)started, so this install is the
+  // channel's lifecycle authority. Same-channel brains holding the mobile
+  // sync singleton are stale siblings of the service being installed and are
+  // reaped; a brain from another channel keeps sync ownership and fails the
+  // install so a beta update can never tear down the stable host.
+  const conflict = detectSyncHostSingletonConflict(deps.syncHostSingletonDeps);
+  if (conflict) {
+    const ownEnv = command.env ? { ...env, ...command.env } : env;
+    if (!isSameChannelSyncHostOwner(conflict.owner, ownEnv)) {
+      return {
+        ok: false,
+        serviceName: ADE_RUNTIME_SERVICE_NAME,
+        action: "install",
+        path: servicePath,
+        message: formatSyncHostSingletonConflictMessage(conflict),
+      };
+    }
+    terminatePidGracefully(conflict.owner.pid, deps.terminateDeps);
+  }
+
+  if (!plistUnchanged) {
+    fs.writeFileSync(servicePath, plist, "utf8");
+  }
   run("launchctl", ["unload", servicePath], { stdio: "ignore" });
+  // launchctl unload does not reliably terminate a wedged child, and an
+  // orphaned brain keeps the channel socket and sync lock hostage. Reap the
+  // previous service child plus any stale same-channel serve processes
+  // before loading the replacement.
+  terminatePidGracefully(loaded?.pid ?? null, deps.terminateDeps);
+  const stalePids = listStaleChannelServePids(run, {
+    cliScriptPath: resolveAdeServeCliScriptPath(command),
+    primarySocketPath: path.join(adeHome, "sock", "ade.sock"),
+    excludePids: loaded?.pid ? [loaded.pid] : [],
+  });
+  for (const pid of stalePids) {
+    terminatePidGracefully(pid, deps.terminateDeps);
+  }
   const load = run("launchctl", ["load", servicePath], { encoding: "utf8" });
   if (load.status !== 0) {
     return {
@@ -113,9 +286,26 @@ export function installLaunchdService(deps: LaunchdServiceManagerDeps = {}): Ser
   };
 }
 
-export function uninstallLaunchdService(): ServiceManagerResult {
-  const servicePath = launchAgentPath();
-  spawnSync("launchctl", ["unload", servicePath], { stdio: "ignore" });
+export function uninstallLaunchdService(deps: LaunchdServiceUninstallDeps = {}): ServiceManagerResult {
+  const run = deps.spawnSync ?? spawnSync;
+  const env = deps.env ?? process.env;
+  const servicePath = launchAgentPath(deps.homeDir);
+  const loaded = getLoadedLaunchdState(run);
+  const selfBlock = selfServiceMutationBlock({
+    action: "uninstall",
+    loadedPid: loaded?.pid,
+    servicePath,
+    run,
+    env,
+    currentPid: deps.currentPid,
+    parentPid: deps.parentPid,
+  });
+  if (selfBlock) return selfBlock;
+  const uid = typeof process.getuid === "function" ? process.getuid() : os.userInfo().uid;
+  run("launchctl", ["bootout", `gui/${uid}/${ADE_RUNTIME_SERVICE_NAME}`], { stdio: "ignore" });
+  run("launchctl", ["bootout", `user/${uid}/${ADE_RUNTIME_SERVICE_NAME}`], { stdio: "ignore" });
+  run("launchctl", ["unload", servicePath], { stdio: "ignore" });
+  terminatePidGracefully(loaded?.pid ?? null, deps.terminateDeps);
   try { fs.unlinkSync(servicePath); } catch {}
   return {
     ok: true,

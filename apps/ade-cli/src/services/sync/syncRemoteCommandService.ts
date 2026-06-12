@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import type {
   AgentChatCreateArgs,
   AgentChatArchiveArgs,
+  AgentChatTranscriptEntry,
   AgentChatApproveArgs,
   AgentChatCodexClearGoalArgs,
   AgentChatCodexGetGoalArgs,
@@ -929,12 +930,64 @@ function parseGetTranscriptArgs(value: Record<string, unknown>): {
   sessionId: string;
   limit?: number;
   maxChars?: number;
+  cursor?: number;
 } {
   return {
     sessionId: requireString(value.sessionId, "chat.getTranscript requires sessionId."),
     limit: asOptionalNumber(value.limit),
     maxChars: asOptionalNumber(value.maxChars),
+    cursor: parseTranscriptCursor(value.cursor),
   };
+}
+
+// Pagination cursor for chat.getTranscript. The cursor is the index (within
+// the session's full, append-only entry list) of the oldest entry returned by
+// the previous page; a request with `cursor` returns the page strictly BEFORE
+// that index. Serialized as a string on the wire so clients can treat it as
+// opaque, but numbers are accepted too.
+function parseTranscriptCursor(value: unknown): number | undefined {
+  const parsed = typeof value === "string" && value.trim().length ? Number(value) : value;
+  if (typeof parsed !== "number" || !Number.isFinite(parsed)) return undefined;
+  const index = Math.floor(parsed);
+  return index >= 0 ? index : undefined;
+}
+
+const TRANSCRIPT_PAGE_DEFAULT_LIMIT = 200;
+const TRANSCRIPT_PAGE_MAX_LIMIT = 1_000;
+const TRANSCRIPT_PAGE_DEFAULT_MAX_CHARS = 600_000;
+const TRANSCRIPT_PAGE_MAX_CHARS = 2_000_000;
+
+// Mirror agentChatService.getChatTranscript's char-bounding: walk the page
+// from newest to oldest, keep whole entries while budget remains, and trim
+// the boundary entry's text. Returns a suffix of `page` (oldest entries are
+// the ones dropped) so cursor arithmetic stays index-stable.
+function boundTranscriptEntriesByChars(
+  page: AgentChatTranscriptEntry[],
+  maxChars: number,
+): { entries: AgentChatTranscriptEntry[]; truncated: boolean } {
+  let remainingChars = maxChars;
+  let truncated = false;
+  const bounded: AgentChatTranscriptEntry[] = [];
+  for (let index = page.length - 1; index >= 0; index -= 1) {
+    const entry = page[index]!;
+    if (remainingChars <= 0) {
+      truncated = true;
+      break;
+    }
+    if (entry.text.length <= remainingChars) {
+      bounded.push(entry);
+      remainingChars -= entry.text.length;
+      continue;
+    }
+    bounded.push({
+      ...entry,
+      text: remainingChars > 3 ? `${entry.text.slice(0, remainingChars - 3).trimEnd()}...` : entry.text.slice(0, remainingChars),
+    });
+    truncated = true;
+    break;
+  }
+  bounded.reverse();
+  return { entries: bounded, truncated };
 }
 
 function parseGitFileActionArgs(value: Record<string, unknown>, action: string): GitFileActionArgs {
@@ -1143,16 +1196,28 @@ function parseConflictLaneArgs(value: Record<string, unknown>, action: string): 
   };
 }
 
-function parseChatModelsArgs(value: Record<string, unknown>): { provider: AgentChatProvider; activateRuntime?: boolean } {
+function parseCursorModelSource(value: unknown): "sdk" | "cli" | "all" | null {
+  const source = asTrimmedString(value);
+  return source === "sdk" || source === "cli" || source === "all" ? source : null;
+}
+
+function parseChatModelsArgs(value: Record<string, unknown>): {
+  provider: AgentChatProvider;
+  activateRuntime?: boolean;
+  cursorSource?: "sdk" | "cli" | "all";
+} {
+  const cursorSource = parseCursorModelSource(value.cursorSource);
   return {
     provider: (asTrimmedString(value.provider) ?? "codex") as AgentChatProvider,
     ...(value.activateRuntime === true ? { activateRuntime: true } : {}),
+    ...(cursorSource ? { cursorSource } : {}),
   };
 }
 
 function parseChatModelCatalogArgs(value: Record<string, unknown>): AgentChatModelCatalogArgs {
   const mode = asTrimmedString(value.mode) as AgentChatModelCatalogMode | null;
   const refreshProvider = asTrimmedString(value.refreshProvider) as AgentChatModelCatalogRefreshProvider | null;
+  const cursorSource = parseCursorModelSource(value.cursorSource);
   return {
     ...(mode === "cached" || mode === "refresh-stale" || mode === "force" ? { mode } : {}),
     ...(
@@ -1164,6 +1229,7 @@ function parseChatModelCatalogArgs(value: Record<string, unknown>): AgentChatMod
         ? { refreshProvider }
         : {}
     ),
+    ...(cursorSource ? { cursorSource } : {}),
   };
 }
 
@@ -2044,7 +2110,6 @@ function registerLaneRemoteCommands({ args, register }: RemoteCommandRegistratio
   register("lanes.listRebaseSuggestions", { viewerAllowed: true }, async () => args.rebaseSuggestionService?.listSuggestions() ?? []);
   register("lanes.dismissRebaseSuggestion", { viewerAllowed: true, queueable: true }, async (payload) => {
     const laneId = requireString(payload.laneId, "lanes.dismissRebaseSuggestion requires laneId.");
-    args.conflictService?.dismissRebase(laneId);
     if (args.rebaseSuggestionService) {
       await args.rebaseSuggestionService.dismiss({ laneId });
     }
@@ -2053,8 +2118,6 @@ function registerLaneRemoteCommands({ args, register }: RemoteCommandRegistratio
   register("lanes.deferRebaseSuggestion", { viewerAllowed: true, queueable: true }, async (payload) => {
     const laneId = requireString(payload.laneId, "lanes.deferRebaseSuggestion requires laneId.");
     const minutes = Math.max(5, Math.min(7 * 24 * 60, Math.floor(asOptionalNumber(payload.minutes) ?? 60)));
-    const until = new Date(Date.now() + minutes * 60_000).toISOString();
-    args.conflictService?.deferRebase(laneId, until);
     if (args.rebaseSuggestionService) {
       await args.rebaseSuggestionService.defer({
         laneId,
@@ -2196,6 +2259,28 @@ function registerWorkRemoteCommands({ args, register }: RemoteCommandRegistratio
       session: enriched,
     } satisfies SyncStartCliSessionResult;
   });
+  register("work.resumeCliSession", { viewerAllowed: true, queueable: true }, async (payload) => {
+    // Mirror of the desktop resume affordance: relaunch an ended/orphaned
+    // agent CLI session's runtime (same sessionId, provider resume metadata).
+    const value = (payload ?? {}) as Record<string, unknown>;
+    const sessionId = requireString(value.sessionId, "work.resumeCliSession requires sessionId.");
+    const cols = typeof value.cols === "number" && Number.isFinite(value.cols)
+      ? clampCliDimension(value.cols, DEFAULT_CLI_COLS, 20, MAX_CLI_COLS)
+      : undefined;
+    const rows = typeof value.rows === "number" && Number.isFinite(value.rows)
+      ? clampCliDimension(value.rows, DEFAULT_CLI_ROWS, 4, MAX_CLI_ROWS)
+      : undefined;
+    const result = await args.ptyService.resumeSession({
+      sessionId,
+      ...(cols != null ? { cols } : {}),
+      ...(rows != null ? { rows } : {}),
+    });
+    return {
+      sessionId: result.sessionId,
+      ptyId: result.ptyId,
+      session: result.session,
+    } satisfies SyncStartCliSessionResult;
+  });
   register("work.sendToSession", { viewerAllowed: true, queueable: true }, async (payload) => {
     const parsed = parseSendToSessionArgs(payload);
     const result = await args.ptyService.sendToSession({
@@ -2248,8 +2333,59 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
   });
   register("chat.getSummary", { viewerAllowed: true }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.").getSessionSummary(parseAgentChatGetSummaryArgs(payload).sessionId));
-  register("chat.getTranscript", { viewerAllowed: true }, async (payload) =>
-    requireService(args.agentChatService, "Agent chat service not available.").getChatTranscript(parseGetTranscriptArgs(payload)));
+  register("chat.getTranscript", { viewerAllowed: true }, async (payload) => {
+    const agentChatService = requireService(args.agentChatService, "Agent chat service not available.");
+    const parsed = parseGetTranscriptArgs(payload);
+
+    if (parsed.cursor == null) {
+      // Tail page (today's behavior) + nextCursor so clients can walk back.
+      const result = await agentChatService.getChatTranscript(parsed);
+      const oldestReturnedIndex = result.totalEntries - result.entries.length;
+      return {
+        ...result,
+        nextCursor: oldestReturnedIndex > 0 ? String(oldestReturnedIndex) : null,
+      };
+    }
+
+    // Cursor page: entries strictly BEFORE the cursor index. The transcript
+    // is append-only, so indices are stable across pages even while the
+    // session keeps streaming new entries at the tail.
+    const limit = Math.max(1, Math.min(TRANSCRIPT_PAGE_MAX_LIMIT, Math.floor(parsed.limit ?? TRANSCRIPT_PAGE_DEFAULT_LIMIT)));
+    const maxChars = Math.max(200, Math.min(TRANSCRIPT_PAGE_MAX_CHARS, Math.floor(parsed.maxChars ?? TRANSCRIPT_PAGE_DEFAULT_MAX_CHARS)));
+    const allEntries = await agentChatService.readTranscript(parsed.sessionId);
+    const end = Math.max(0, Math.min(parsed.cursor, allEntries.length));
+    const start = Math.max(0, end - limit);
+    const { entries, truncated } = boundTranscriptEntriesByChars(allEntries.slice(start, end), maxChars);
+    const oldestReturnedIndex = end - entries.length;
+    const hasMore = oldestReturnedIndex > 0 && entries.length > 0;
+    return {
+      sessionId: parsed.sessionId,
+      entries,
+      truncated: truncated || hasMore,
+      totalEntries: allEntries.length,
+      nextCursor: hasMore ? String(oldestReturnedIndex) : null,
+    };
+  });
+  const getChatEventHistoryPage = async (payload: Record<string, unknown>) => {
+    const agentChatService = requireService(args.agentChatService, "Agent chat service not available.");
+    const sessionId = requireString(payload.sessionId, "chat.getChatEventHistoryPage requires sessionId.");
+    const beforeOffset = typeof payload.beforeOffset === "number" && Number.isFinite(payload.beforeOffset)
+      ? payload.beforeOffset
+      : 0;
+    const maxBytes = typeof payload.maxBytes === "number" && Number.isFinite(payload.maxBytes) && payload.maxBytes > 0
+      ? payload.maxBytes
+      : undefined;
+    return agentChatService.getChatEventHistoryPage(sessionId, {
+      beforeOffset,
+      ...(maxBytes != null ? { maxBytes } : {}),
+    });
+  };
+  // Byte-offset transcript pagination for chat event envelopes (scroll-back
+  // beyond the hydrated tail). The canonical action mirrors the desktop/TUI
+  // ADE action surface; the legacy agentChat.* name remains for older mobile
+  // clients that learned the first sync-only spelling.
+  register("chat.getChatEventHistoryPage", { viewerAllowed: true }, getChatEventHistoryPage);
+  register("agentChat.getEventHistoryPage", { viewerAllowed: true }, getChatEventHistoryPage);
   register("chat.create", { viewerAllowed: true, queueable: true }, async (payload) => {
     const agentChatService = requireService(args.agentChatService, "Agent chat service not available.");
     const parsed = parseAgentChatCreateArgs(payload);
@@ -2809,14 +2945,21 @@ function registerPrAndDeeplinkRemoteCommands({ args, register }: RemoteCommandRe
     if (prId) refreshArgs = { prId };
     else if (prIds.length > 0) refreshArgs = { prIds };
     await args.prService.refresh(refreshArgs);
-    const prs = await args.prService.listAll();
+    const allPrs = await args.prService.listAll();
+    const requestedPrIds = new Set(prId ? [prId] : prIds);
+    const prs = requestedPrIds.size > 0 ? allPrs.filter((pr) => requestedPrIds.has(pr.id)) : allPrs;
     let refreshedCount = prs.length;
     if (prId) refreshedCount = 1;
     else if (prIds.length > 0) refreshedCount = prIds.length;
+    const snapshots = prId
+      ? args.prService.listSnapshots({ prId }).filter((snapshot) => requestedPrIds.has(snapshot.prId))
+      : requestedPrIds.size > 0
+        ? args.prService.listSnapshots().filter((snapshot) => requestedPrIds.has(snapshot.prId))
+        : args.prService.listSnapshots();
     return {
       refreshedCount,
       prs,
-      snapshots: args.prService.listSnapshots(),
+      snapshots,
     };
   });
   // iOS "Send to your Mac" deeplink bounce. Mobile cannot natively open a

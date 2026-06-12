@@ -29,6 +29,7 @@ import type {
   SyncCommandPayload,
   SyncCommandResultPayload,
   SyncEnvelope,
+  SyncChatEventPayload,
   SyncChatSubscribeSnapshotPayload,
   SyncChatUnsubscribePayload,
   SyncFileBlob,
@@ -46,6 +47,7 @@ import type {
   SyncProjectSwitchResultPayload,
   SyncRemoteCommandDescriptor,
   SyncTailnetDiscoveryStatus,
+  SyncTerminalHistoryResponsePayload,
   SyncTerminalSnapshotPayload,
 } from "../../../../desktop/src/shared/types";
 import { parseAgentChatTranscript } from "../../../../desktop/src/shared/chatTranscript";
@@ -97,7 +99,7 @@ import type {
 import { DEFAULT_NOTIFICATION_PREFERENCES, normalizeNotificationPreferences } from "../../../../desktop/src/shared/types/sync";
 import type { SyncPinStore } from "./syncPinStore";
 import type { SyncRuntimeNameStore } from "./syncRuntimeNameStore";
-import { DEFAULT_SYNC_COMPRESSION_THRESHOLD_BYTES, DEFAULT_SYNC_HOST_PORT, encodeSyncEnvelope, mapPlatform, parseSyncEnvelope, wsDataToText } from "./syncProtocol";
+import { DEFAULT_SYNC_COMPRESSION_THRESHOLD_BYTES, DEFAULT_SYNC_HOST_PORT, DEFAULT_SYNC_MAX_FRAME_BYTES, encodeSyncEnvelope, encodeSyncEnvelopeFrames, mapPlatform, parseSyncEnvelope, SYNC_CHUNKED_ENVELOPES_CAPABILITY, wsDataToText } from "./syncProtocol";
 import { resolveTailscaleCliPath } from "./resolveTailscaleCliPath";
 import { createSyncRemoteCommandService, type SyncRemoteCommandService } from "./syncRemoteCommandService";
 import {
@@ -105,8 +107,38 @@ import {
   DEFAULT_MAX_CHANGESET_BATCH_BYTES,
   DEFAULT_MAX_CHANGESET_BATCH_ROWS,
 } from "./changesetPump";
+import {
+  SYNC_HOST_BIND_HOST,
+  SYNC_HOST_BIND_LOOPBACK_ONLY,
+  SYNC_HOST_MAX_PAYLOAD_BYTES,
+  type SharedSyncListener,
+  type SyncPeerHandoffSnapshot,
+} from "./sharedSyncListener";
 export { selectChangesetBatchChunk } from "./changesetPump";
 const execFileAsync = promisify(execFile);
+// db_version window per pump poll. Large enough to cross sparse version
+// ranges quickly (a few polls per million versions), small enough that the
+// windowed crsql_changes scan completes in milliseconds.
+const SYNC_EXPORT_VERSION_WINDOW = 250_000;
+
+// High-churn / large-row tables the phone never reads (verified against the
+// iOS Database.swift query surface). Excluding them from phone changesets is
+// a PowerSync-style sync rule: it removes the multi-megabyte transcript and
+// operations payloads that froze the iOS main thread (and got the app killed
+// by the watchdog mid-apply), and cuts the bulk of backlog churn. The peer's
+// ack watermark still advances through the filtered versions.
+const MOBILE_CHANGESET_EXCLUDED_TABLES = new Set([
+  "attempt_transcripts",
+  "operations",
+  "ai_usage_log",
+  "budget_usage_records",
+  "automation_runs",
+  "automation_action_results",
+]);
+
+function isMobileChangesetPeer(peer: { metadata: SyncPeerMetadata | null }): boolean {
+  return peer.metadata?.deviceType === "phone" || peer.metadata?.platform === "iOS";
+}
 const DEFAULT_SYNC_HEARTBEAT_INTERVAL_MS = 30_000;
 const DEFAULT_SYNC_HEARTBEAT_MISS_LIMIT = 2;
 const MOBILE_SYNC_HEARTBEAT_MISS_LIMIT = 6;
@@ -115,6 +147,9 @@ const DEFAULT_BRAIN_STATUS_INTERVAL_MS = 5_000;
 const NATIVE_LAN_DISCOVERY_RECOVERY_DELAY_MS = 1_000;
 const NATIVE_LAN_DISCOVERY_FALLBACK_MS = 30_000;
 const DEFAULT_TERMINAL_SNAPSHOT_BYTES = 220_000;
+const DEFAULT_TERMINAL_HISTORY_PAGE_BYTES = 262_144;
+const MIN_TERMINAL_HISTORY_PAGE_BYTES = 4_096;
+const MAX_TERMINAL_HISTORY_PAGE_BYTES = 524_288;
 const PEER_BACKPRESSURE_BYTES = 4 * 1024 * 1024;
 const MOBILE_COMMAND_RESULT_CACHE_TTL_MS = 30 * 60 * 1000;
 const MOBILE_COMMAND_RESULT_CACHE_MAX_ENTRIES = 512;
@@ -125,23 +160,6 @@ const SYNC_MDNS_SERVICE_TYPE = "ade-sync";
 const MAX_PROJECT_CATALOG_ENVELOPE_BYTES = 768 * 1024;
 const BONJOUR_PROJECT_TXT_ENTRY_LIMIT = 24;
 const BONJOUR_PROJECT_NAME_MAX_LENGTH = 48;
-// Bind the sync host on all interfaces by default so phones on the same
-// wifi/LAN can reach it without Tailscale. 0.0.0.0 is a superset of loopback,
-// so local TUI/desktop clients (and the unix RPC socket, which is separate)
-// keep working unchanged. Operators who want the old loopback-only posture can
-// set ADE_SYNC_BIND_HOST=127.0.0.1; that mode also relaxes the PIN requirement
-// for new bootstrap-token devices (see the hello handler) since loopback is
-// already a trust boundary.
-const SYNC_HOST_BIND_HOST: string = process.env.ADE_SYNC_BIND_HOST?.trim() || "0.0.0.0";
-const SYNC_HOST_BIND_HOST_NORMALIZED = SYNC_HOST_BIND_HOST.toLowerCase();
-// When the host is bound to loopback only, the OS already restricts connections
-// to local processes, so first-pairing can fall back to the historical
-// bootstrap-token behaviour. Any non-loopback bind (the LAN default) must gate
-// new devices behind the PIN flow.
-const SYNC_HOST_BIND_LOOPBACK_ONLY: boolean =
-  SYNC_HOST_BIND_HOST_NORMALIZED === "127.0.0.1"
-  || SYNC_HOST_BIND_HOST_NORMALIZED === "::1"
-  || SYNC_HOST_BIND_HOST_NORMALIZED === "localhost";
 export const SYNC_TAILNET_DISCOVERY_SERVICE_NAME = "svc:ade-sync";
 export const SYNC_TAILNET_DISCOVERY_SERVICE_PORT = DEFAULT_SYNC_HOST_PORT;
 export type SyncRuntimeKind = "desktop-embedded" | "headless" | "remote-stdio" | "desktop" | "daemon" | "remote";
@@ -363,6 +381,14 @@ type SyncHostServiceArgs = {
   bootstrapTokenPath?: string;
   pairingSecretsPath?: string;
   port?: number;
+  /**
+   * Brain-level websocket listener shared across hosted-project switches.
+   * When provided, this host service does NOT own a WebSocketServer: it
+   * attaches as the listener's connection handler, adopts peers handed off
+   * by the previous host service, and on dispose hands its own peers back
+   * to the listener instead of closing them.
+   */
+  sharedListener?: SharedSyncListener | null;
   discoveryEnabled?: boolean;
   runtimeKind?: SyncRuntimeKind;
   runtimeVersion?: string;
@@ -490,6 +516,22 @@ export function syncHeartbeatMissLimitForPeerMetadata(metadata: Pick<SyncPeerMet
     : DEFAULT_SYNC_HEARTBEAT_MISS_LIMIT;
 }
 
+/**
+ * Flushed transcript size in bytes, or null when the session has no
+ * transcript (file missing / untracked). The transcript WriteStream buffers,
+ * so this can briefly lag the in-memory byte counter — offset consumers
+ * tolerate that via gap detection.
+ */
+function transcriptFileSizeOrNull(transcriptPath: string | null | undefined): number | null {
+  const filePath = toOptionalString(transcriptPath);
+  if (!filePath) return null;
+  try {
+    return Math.max(0, Number(fs.statSync(filePath).size) || 0);
+  } catch {
+    return null;
+  }
+}
+
 const SYNC_HOST_PROJECT_SCOPED_INBOUND_ENVELOPE_TYPES = new Set<SyncEnvelope["type"]>([
   "changeset_batch",
   "changeset_ack",
@@ -498,6 +540,7 @@ const SYNC_HOST_PROJECT_SCOPED_INBOUND_ENVELOPE_TYPES = new Set<SyncEnvelope["ty
   "terminal_unsubscribe",
   "terminal_input",
   "terminal_resize",
+  "terminal_history",
   "chat_subscribe",
   "chat_unsubscribe",
 ]);
@@ -555,6 +598,7 @@ export function buildSyncHostHelloOkPayload(args: {
   peer: SyncPeerMetadata;
   brain: SyncPeerMetadata;
   serverDbVersion: number;
+  serverDbSiteId?: string;
   heartbeatIntervalMs: number;
   pollIntervalMs: number;
   projectCatalog: SyncProjectCatalogPayload;
@@ -573,6 +617,7 @@ export function buildSyncHostHelloOkPayload(args: {
     peer: args.peer,
     brain: args.brain,
     serverDbVersion: args.serverDbVersion,
+    ...(args.serverDbSiteId ? { serverDbSiteId: args.serverDbSiteId } : {}),
     heartbeatIntervalMs: args.heartbeatIntervalMs,
     pollIntervalMs: args.pollIntervalMs,
     projects: args.projectCatalog.projects,
@@ -637,6 +682,16 @@ function parseHelloPayload(payload: unknown): SyncHelloPayload | null {
   } else {
     return null;
   }
+  const dbVersionBySite: Record<string, number> = {};
+  if (peer.dbVersionBySite && typeof peer.dbVersionBySite === "object" && !Array.isArray(peer.dbVersionBySite)) {
+    for (const [site, version] of Object.entries(peer.dbVersionBySite)) {
+      const normalizedSite = site.trim();
+      const normalizedVersion = Number(version);
+      if (normalizedSite && Number.isFinite(normalizedVersion) && normalizedVersion >= 0) {
+        dbVersionBySite[normalizedSite] = Math.floor(normalizedVersion);
+      }
+    }
+  }
   return {
     peer: {
       deviceId: String(peer.deviceId).trim(),
@@ -645,6 +700,7 @@ function parseHelloPayload(payload: unknown): SyncHelloPayload | null {
       deviceType: peer.deviceType ?? "unknown",
       siteId: String(peer.siteId).trim(),
       dbVersion: Number(peer.dbVersion ?? 0),
+      ...(Object.keys(dbVersionBySite).length > 0 ? { dbVersionBySite } : {}),
       capabilities: Array.isArray(peer.capabilities)
         ? peer.capabilities
           .filter((capability): capability is string => typeof capability === "string")
@@ -748,6 +804,123 @@ async function recoverOrphanedNativeLanDiscoveryProcesses(logger: Logger): Promi
 
 function looksLikePendingTailnetApproval(text: string): boolean {
   return /\b(pending|approval|approve|review)\b/i.test(text);
+}
+
+// ---------------------------------------------------------------------------
+// Resumable chat event streams.
+//
+// The host assigns each broadcast chat event a per-session, monotonically
+// increasing `seq` and keeps a bounded ring buffer of recent events. When a
+// phone reconnects it passes the last seq it applied (`sinceSeq` on
+// chat_subscribe); if the buffer still covers `sinceSeq + 1 .. latest` the
+// host replays exactly the missed events instead of re-sending a large
+// maxBytes-capped snapshot.
+// ---------------------------------------------------------------------------
+
+export const CHAT_EVENT_REPLAY_MAX_EVENTS = 500;
+export const CHAT_EVENT_REPLAY_MAX_BYTES = 2_000_000;
+// Delivery-key dedupe map cap. Must exceed CHAT_EVENT_REPLAY_MAX_EVENTS so a
+// buffered event's key cannot be evicted while the event itself is still in
+// the ring buffer (which could double-assign a seq to the same event).
+const CHAT_EVENT_REPLAY_MAX_KEYS = 1_500;
+// Bound the number of sessions with live replay buffers (LRU-evicted).
+const CHAT_EVENT_REPLAY_MAX_SESSIONS = 64;
+
+export type ChatEventReplayBufferEntry = {
+  seq: number;
+  bytes: number;
+  event: AgentChatEventEnvelope;
+};
+
+export type ChatEventReplayBuffer = {
+  /** Highest seq assigned for this session (0 when no events recorded yet). */
+  latestSeq: number;
+  /** Oldest-first ring buffer of recently broadcast events. */
+  entries: ChatEventReplayBufferEntry[];
+  totalBytes: number;
+  /** Delivery-key → assigned seq, so live + transcript-pump duplicates share one seq. */
+  seqByKey: Map<string, number>;
+};
+
+export function createChatEventReplayBuffer(): ChatEventReplayBuffer {
+  return { latestSeq: 0, entries: [], totalBytes: 0, seqByKey: new Map() };
+}
+
+function chatEventDeliveryKey(event: AgentChatEventEnvelope): string {
+  return `${event.sessionId}:${event.sequence ?? -1}:${event.timestamp}:${event.event.type}`;
+}
+
+/**
+ * Assign (or look up) the per-session seq for `event` and retain it in the
+ * ring buffer for replay. Returns the seq to stamp on the outgoing
+ * `chat_event` payload. The same logical event observed via both the live
+ * subscription and the transcript pump resolves to a single seq.
+ */
+export function recordChatEventInReplayBuffer(
+  buffer: ChatEventReplayBuffer,
+  event: AgentChatEventEnvelope,
+): number {
+  const key = chatEventDeliveryKey(event);
+  const existing = buffer.seqByKey.get(key);
+  if (existing != null) return existing;
+  const seq = ++buffer.latestSeq;
+  buffer.seqByKey.set(key, seq);
+  while (buffer.seqByKey.size > CHAT_EVENT_REPLAY_MAX_KEYS) {
+    const oldestKey = buffer.seqByKey.keys().next().value;
+    if (oldestKey == null) break;
+    buffer.seqByKey.delete(oldestKey);
+  }
+  let bytes = 512;
+  try {
+    bytes = JSON.stringify(event).length;
+  } catch {
+    // keep the conservative default
+  }
+  buffer.entries.push({ seq, bytes, event });
+  buffer.totalBytes += bytes;
+  while (
+    buffer.entries.length > 0
+    && (buffer.entries.length > CHAT_EVENT_REPLAY_MAX_EVENTS || buffer.totalBytes > CHAT_EVENT_REPLAY_MAX_BYTES)
+  ) {
+    const removed = buffer.entries.shift()!;
+    buffer.totalBytes -= removed.bytes;
+  }
+  return seq;
+}
+
+export type ChatEventResumePlan =
+  | { mode: "snapshot" }
+  | { mode: "replay"; entries: ChatEventReplayBufferEntry[] };
+
+/**
+ * Decide how to answer a chat_subscribe: replay the exact missed events when
+ * the ring buffer still covers `(sinceSeq, latestSeq]`, otherwise fall back
+ * to the legacy snapshot. Fresh subscribes (no/invalid sinceSeq), unknown
+ * sessions, seqs from a previous host run (sinceSeq > latestSeq), and gaps
+ * older than the buffer all yield a snapshot.
+ */
+export function planChatEventResume(
+  buffer: ChatEventReplayBuffer | undefined,
+  sinceSeq: unknown,
+): ChatEventResumePlan {
+  if (typeof sinceSeq !== "number" || !Number.isInteger(sinceSeq) || sinceSeq < 0) {
+    return { mode: "snapshot" };
+  }
+  if (!buffer) return { mode: "snapshot" };
+  if (sinceSeq > buffer.latestSeq) {
+    // Seq from a different epoch (e.g. host restart) — cannot trust it.
+    return { mode: "snapshot" };
+  }
+  if (sinceSeq === buffer.latestSeq) {
+    // Client is already current; nothing to replay and no snapshot needed.
+    return { mode: "replay", entries: [] };
+  }
+  const oldestBuffered = buffer.entries[0]?.seq;
+  if (oldestBuffered == null || oldestBuffered > sinceSeq + 1) {
+    // Gap not coverable: events between sinceSeq and the buffer were evicted.
+    return { mode: "snapshot" };
+  }
+  return { mode: "replay", entries: buffer.entries.filter((entry) => entry.seq > sinceSeq) };
 }
 
 export function createSyncHostService(args: SyncHostServiceArgs) {
@@ -1223,11 +1396,17 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         return result;
     }
   };
-  const server = new WebSocketServer({
-    host: SYNC_HOST_BIND_HOST,
-    port: args.port ?? DEFAULT_SYNC_HOST_PORT,
-    maxPayload: 25 * 1024 * 1024,
-  });
+  const sharedListener = args.sharedListener ?? null;
+  // Self-owned listener (desktop-embedded / standalone): only created when no
+  // shared listener is injected. The brain injects a shared listener so the
+  // websocket — and every connected phone — survives hosted-project switches.
+  const server = sharedListener
+    ? null
+    : new WebSocketServer({
+        host: SYNC_HOST_BIND_HOST,
+        port: args.port ?? DEFAULT_SYNC_HOST_PORT,
+        maxPayload: SYNC_HOST_MAX_PAYLOAD_BYTES,
+      });
 
   let disposed = false;
   let startupError: Error | null = null;
@@ -1270,9 +1449,9 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   let lastBroadcastAt: string | null = null;
   const startedAtMs = Date.now();
 
-  server.on("error", (error: unknown) => {
+  server?.on("error", (error: unknown) => {
     const normalized = error instanceof Error ? error : new Error(String(error));
-    if (!disposed && !server.address()) {
+    if (!disposed && !server?.address()) {
       startupError = normalized;
     }
     args.logger.warn("sync_host.server_error", {
@@ -1343,8 +1522,27 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     },
   ) ?? null;
 
-  server.on("connection", (ws, request) => {
-    const remoteAddress = sanitizeRemoteAddress(request.socket.remoteAddress);
+  /**
+   * Snap a PTY back to the desktop-preferred size once no connected peer is
+   * still viewing it (mobile unsubscribe or disconnect). While another peer
+   * remains subscribed the mobile size stays — that peer is still actively
+   * driving the viewport.
+   */
+  function restoreDesktopTerminalSizeIfUnwatched(sessionId: string): void {
+    for (const other of peers) {
+      if (other.subscribedSessionIds.has(sessionId) && other.ws.readyState === WebSocket.OPEN) return;
+    }
+    try {
+      args.ptyService.restoreDesktopSizeBySessionId(sessionId);
+    } catch (error) {
+      args.logger.warn("sync_host.restore_desktop_terminal_size_failed", {
+        sessionId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  function registerPeer(ws: WebSocket, remoteAddress: string | null, remotePort: number | null): PeerState {
     const peer: PeerState = {
       ws,
       metadata: null,
@@ -1360,7 +1558,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       awaitingHeartbeatAt: null,
       missedHeartbeatCount: 0,
       remoteAddress,
-      remotePort: request.socket.remotePort ?? null,
+      remotePort,
       subscribedSessionIds: new Set(),
       subscribedChatSessionIds: new Set(),
       chatTranscriptOffsets: new Map(),
@@ -1376,11 +1574,28 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         });
       });
     });
-    ws.on("close", () => {
+    ws.on("close", (code, reason) => {
+      // The close frame is the only record of WHY a peer left: a deliberate
+      // client teardown carries a code + reason string ("Network route
+      // changed.", "The machine took too long to respond.", …) while 1006
+      // means the transport died with no close frame at all. Keep this log —
+      // it is the primary tool for diagnosing mobile disconnect loops.
+      args.logger.info("sync_host.peer_closed", {
+        code,
+        reason: reason.toString("utf8") || null,
+        peerDeviceId: peer.metadata?.deviceId ?? peer.pairedDeviceId ?? null,
+        peerName: peer.metadata?.deviceName ?? null,
+        remoteAddress: peer.remoteAddress ?? null,
+        connectedAt: peer.connectedAt ?? null,
+        authenticated: peer.authenticated,
+      });
       if (removeAllPresenceForDevice(peer.metadata?.deviceId, "remote")) {
         broadcastBrainStatus();
       }
       peers.delete(peer);
+      for (const sessionId of peer.subscribedSessionIds) {
+        restoreDesktopTerminalSizeIfUnwatched(sessionId);
+      }
       args.onStateChanged?.();
       broadcastBrainStatus();
     });
@@ -1390,7 +1605,152 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         peerDeviceId: peer.metadata?.deviceId ?? null,
       });
     });
+    return peer;
+  }
+
+  server?.on("connection", (ws, request) => {
+    registerPeer(ws, sanitizeRemoteAddress(request.socket.remoteAddress), request.socket.remotePort ?? null);
   });
+
+  /**
+   * Adopt sockets handed off by the previous host service (plus any
+   * connections that arrived while no host owned the shared listener). Peers
+   * that were authenticated on the old host stay authenticated: their
+   * metadata/auth is carried over, the per-project changeset cursor is
+   * recomputed for THIS project's DB from the hello dbVersionBySite map, and
+   * a fresh brain_status + project_catalog tells the client the project
+   * context changed. Frames buffered during the handoff window are replayed.
+   */
+  async function adoptHandedOffPeers(): Promise<void> {
+    if (!sharedListener || disposed) return;
+    const snapshots = sharedListener.takePeers();
+    if (snapshots.length === 0) return;
+    const adopted: PeerState[] = [];
+    for (const snapshot of snapshots) {
+      const ws = snapshot.ws;
+      if (ws.readyState !== WebSocket.OPEN) {
+        // takePeers() already stripped the parked listeners; leave a no-op
+        // error handler so a late transport error cannot crash the process.
+        ws.removeAllListeners("error");
+        ws.on("error", () => {});
+        try {
+          ws.close();
+        } catch {
+          // ignore close failures
+        }
+        continue;
+      }
+      // The previous owner (host service or listener parking) must leave no
+      // listeners behind — this host attaches its own message/close/error
+      // handlers via registerPeer.
+      ws.removeAllListeners("message");
+      ws.removeAllListeners("close");
+      ws.removeAllListeners("error");
+      const peer = registerPeer(ws, sanitizeRemoteAddress(snapshot.remoteAddress), snapshot.remotePort);
+      if (snapshot.metadata && snapshot.authKind) {
+        const pairingRecord = snapshot.authKind === "paired" && snapshot.pairedDeviceId
+          ? pairingStore.getPairingRecord(snapshot.pairedDeviceId)
+          : null;
+        if (snapshot.authKind === "paired" && !pairingRecord) {
+          // Pairing is not valid for this host (revoked or different secrets
+          // store) — fail closed and force a fresh authenticated reconnect.
+          peers.delete(peer);
+          try {
+            ws.close(4003, "Authentication required");
+          } catch {
+            // ignore close failures
+          }
+          continue;
+        }
+        peer.authenticated = true;
+        peer.metadata = snapshot.metadata;
+        peer.authKind = snapshot.authKind;
+        peer.pairedDeviceId = snapshot.pairedDeviceId;
+        peer.pairingRecord = pairingRecord;
+        peer.connectedAt = snapshot.connectedAt;
+        peer.lastKnownServerDbVersion = Math.max(
+          0,
+          Math.floor(snapshot.metadata.dbVersionBySite?.[args.db.sync.getSiteId()] ?? 0),
+        );
+        if (
+          snapshot.serverDbSiteId === args.db.sync.getSiteId()
+          && typeof snapshot.lastKnownServerDbVersion === "number"
+          && Number.isFinite(snapshot.lastKnownServerDbVersion)
+        ) {
+          // Same project DB as the depositing host (e.g. a same-project host
+          // restart): its live ack watermark is fresher than the hello-time
+          // dbVersionBySite snapshot and avoids re-draining the backlog.
+          peer.lastKnownServerDbVersion = Math.max(
+            peer.lastKnownServerDbVersion,
+            Math.floor(snapshot.lastKnownServerDbVersion),
+          );
+        }
+        // Restore live subscriptions so streaming does not silently stop for
+        // a peer that never observes a disconnect. Sessions from a different
+        // project simply no-op on this host; the phone that REQUESTED a
+        // project switch tears down its socket and re-subscribes on its own.
+        for (const sessionId of snapshot.subscribedSessionIds ?? []) {
+          peer.subscribedSessionIds.add(sessionId);
+        }
+        for (const [sessionId, offset] of Object.entries(snapshot.chatTranscriptOffsets ?? {})) {
+          if (!Number.isFinite(offset)) continue;
+          peer.chatTranscriptOffsets.set(sessionId, Math.max(0, Math.floor(offset)));
+        }
+        for (const sessionId of snapshot.subscribedChatSessionIds ?? []) {
+          // This host's replay buffers start a fresh seq epoch. Tell the
+          // client to drop its stored per-session seq watermark (the
+          // documented meaning of a non-resumed chat_subscribe ack) BEFORE
+          // re-enabling the subscription — otherwise the first re-streamed
+          // events (seq restarting at 1) would be discarded as already-seen.
+          sendRequired(peer, "chat_subscribe", {
+            sessionId,
+            capturedAt: nowIso(),
+            truncated: false,
+            events: [],
+          } satisfies SyncChatSubscribeSnapshotPayload);
+          peer.subscribedChatSessionIds.add(sessionId);
+        }
+        args.deviceRegistryService?.upsertPeerMetadata(snapshot.metadata, {
+          lastSeenAt: nowIso(),
+          lastHost: peer.remoteAddress,
+          lastPort: peer.remotePort,
+        });
+        adopted.push(peer);
+        args.logger.info("sync_host.peer_adopted", {
+          peerDeviceId: snapshot.metadata.deviceId,
+          peerName: snapshot.metadata.deviceName,
+          authKind: snapshot.authKind,
+          remoteAddress: peer.remoteAddress ?? null,
+          lastKnownServerDbVersion: peer.lastKnownServerDbVersion,
+        });
+      }
+      for (const buffered of snapshot.bufferedMessages ?? []) {
+        ws.emit("message", buffered.data, buffered.isBinary);
+      }
+    }
+    args.onStateChanged?.();
+    if (adopted.length === 0) return;
+    const projectCatalog = await buildProjectCatalogPayload();
+    const brainStatus = buildBrainStatus();
+    for (const peer of adopted) {
+      if (peer.ws.readyState !== WebSocket.OPEN) continue;
+      send(peer.ws, "brain_status", brainStatus);
+      sendProjectCatalog(peer, projectCatalog);
+    }
+    await pumpChanges();
+  }
+
+  let detachSharedListener: (() => void) | null = null;
+  if (sharedListener) {
+    detachSharedListener = sharedListener.setConnectionHandler((connection) => {
+      registerPeer(connection.ws, sanitizeRemoteAddress(connection.remoteAddress), connection.remotePort);
+    });
+    void adoptHandedOffPeers().catch((error) => {
+      args.logger.warn("sync_host.peer_adoption_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  }
 
   const clearNativeLanDiscoveryRecovery = (): void => {
     if (!nativeBonjourRecoveryTimer) return;
@@ -1807,6 +2167,40 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     }
   };
 
+  function peerForSocket(ws: WebSocket): PeerState | null {
+    for (const peer of peers) {
+      if (peer.ws === ws) return peer;
+    }
+    return null;
+  }
+
+  // Frame budget for a peer: clients that declared the chunkedEnvelopes hello
+  // capability get oversized envelopes split into envelope_chunk frames so no
+  // single websocket message can exceed their receive buffer (URLSession kills
+  // the connection at ~1 MiB by default). Legacy peers keep full frames.
+  function maxFrameBytesForPeer(peer: PeerState | null): number | null {
+    return Array.isArray(peer?.metadata?.capabilities)
+      && peer.metadata.capabilities.includes(SYNC_CHUNKED_ENVELOPES_CAPABILITY)
+      ? DEFAULT_SYNC_MAX_FRAME_BYTES
+      : null;
+  }
+
+  function encodeFramesFor<TPayload>(
+    target: WebSocket | PeerState,
+    type: SyncEnvelope["type"],
+    payload: TPayload,
+    requestId?: string | null,
+  ): string[] {
+    const peer = target instanceof WebSocket ? peerForSocket(target) : target;
+    return encodeSyncEnvelopeFrames({
+      type,
+      payload,
+      requestId,
+      compressionThresholdBytes,
+      maxFrameBytes: maxFrameBytesForPeer(peer),
+    });
+  }
+
   function send<TPayload>(target: WebSocket | PeerState, type: SyncEnvelope["type"], payload: TPayload, requestId?: string | null): boolean {
     const ws = target instanceof WebSocket ? target : target.ws;
     if (ws.readyState !== WebSocket.OPEN) return false;
@@ -1817,22 +2211,30 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     if (target instanceof WebSocket ? ws.bufferedAmount >= PEER_BACKPRESSURE_BYTES : isPeerBackpressured(target)) {
       return false;
     }
-    ws.send(encodeSyncEnvelope({ type, payload, requestId, compressionThresholdBytes }));
+    // The backpressure gate runs once per envelope, not per frame: a chunked
+    // envelope must ship every frame or the client's reassembly would stall.
+    for (const frame of encodeFramesFor(target, type, payload, requestId)) {
+      ws.send(frame);
+    }
     return true;
   }
 
   function sendRequired<TPayload>(peer: PeerState, type: SyncEnvelope["type"], payload: TPayload, requestId?: string | null): boolean {
     const ws = peer.ws;
     if (ws.readyState !== WebSocket.OPEN) return false;
-    ws.send(encodeSyncEnvelope({ type, payload, requestId, compressionThresholdBytes }), (error) => {
-      if (!error) return;
-      args.logger.warn("sync_host.required_send_failed", {
-        type,
-        requestId: requestId ?? null,
-        peerDeviceId: peer.metadata?.deviceId ?? peer.pairedDeviceId ?? null,
-        error: error.message,
+    let reported = false;
+    for (const frame of encodeFramesFor(peer, type, payload, requestId)) {
+      ws.send(frame, (error) => {
+        if (!error || reported) return;
+        reported = true;
+        args.logger.warn("sync_host.required_send_failed", {
+          type,
+          requestId: requestId ?? null,
+          peerDeviceId: peer.metadata?.deviceId ?? peer.pairedDeviceId ?? null,
+          error: error.message,
+        });
       });
-    });
+    }
     return true;
   }
 
@@ -1849,14 +2251,22 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     if (ws.readyState === WebSocket.CLOSING || ws.readyState === WebSocket.CLOSED) {
       return Promise.reject(new Error("Cannot send on closed WebSocket."));
     }
+    const frames = encodeFramesFor(ws, type, payload, requestId);
     return new Promise<void>((resolve, reject) => {
-      ws.send(
-        encodeSyncEnvelope({ type, payload, requestId, compressionThresholdBytes }),
-        (error) => {
-          if (error) reject(error);
-          else resolve();
-        },
-      );
+      let failed = false;
+      let remaining = frames.length;
+      for (const frame of frames) {
+        ws.send(frame, (error) => {
+          if (failed) return;
+          if (error) {
+            failed = true;
+            reject(error);
+            return;
+          }
+          remaining -= 1;
+          if (remaining === 0) resolve();
+        });
+      }
     });
   }
 
@@ -2034,13 +2444,12 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       args.logger.warn("sync_host.project_switch_failed", { message });
-      // prepareProjectConnection activates the new host but leaves the previous
-      // one running (switchSyncHost is called with deactivatePreviousHost:false).
-      // If preparing succeeded but delivering the result failed (e.g. the phone
-      // disconnected after the new host was activated), still retire inactive
-      // hosts so the previous host is not leaked. Completion is idempotent —
-      // deactivateInactiveSyncHosts only disables hosts other than the active
-      // one — so running it here is safe.
+      // prepareProjectConnection only opens the target scope and reports the
+      // current stable port; the actual host swap happens in completion. If
+      // preparing succeeded but delivering the result failed (e.g. the phone
+      // disconnected first), still run completion so the registry converges
+      // on the requested project — the phone's reconnect lands on the same
+      // port either way. Completion is idempotent.
       if (result) {
         try {
           await args.projectCatalogProvider.completeProjectConnection?.(payload ?? {}, result);
@@ -2157,8 +2566,24 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     }
   }
 
-  function chatEventDeliveryKey(event: AgentChatEventEnvelope): string {
-    return `${event.sessionId}:${event.sequence ?? -1}:${event.timestamp}:${event.event.type}`;
+  // Per-session replay buffers for resumable chat event streams. Map insertion
+  // order doubles as the LRU order — recordChatEventSeq re-inserts on touch.
+  const chatEventReplayBuffers = new Map<string, ChatEventReplayBuffer>();
+
+  function recordChatEventSeq(event: AgentChatEventEnvelope): number {
+    let buffer = chatEventReplayBuffers.get(event.sessionId);
+    if (buffer) {
+      chatEventReplayBuffers.delete(event.sessionId);
+    } else {
+      buffer = createChatEventReplayBuffer();
+      while (chatEventReplayBuffers.size >= CHAT_EVENT_REPLAY_MAX_SESSIONS) {
+        const oldestSessionId = chatEventReplayBuffers.keys().next().value;
+        if (oldestSessionId == null) break;
+        chatEventReplayBuffers.delete(oldestSessionId);
+      }
+    }
+    chatEventReplayBuffers.set(event.sessionId, buffer);
+    return recordChatEventInReplayBuffer(buffer, event);
   }
 
   function rememberChatEventSent(peer: PeerState, event: AgentChatEventEnvelope): boolean {
@@ -2198,20 +2623,24 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           peer.chatTranscriptOffsets.set(sessionId, nextOffset);
         }
         for (const event of events) {
+          const seq = recordChatEventSeq(event);
           if (!rememberChatEventSent(peer, event)) continue;
-          send(peer.ws, "chat_event", event);
+          send(peer.ws, "chat_event", { ...event, seq } satisfies SyncChatEventPayload);
         }
       }
     }
   }
 
   function broadcastChatEvent(event: AgentChatEventEnvelope): void {
+    // Record unconditionally (even with no subscribed peers) so the replay
+    // buffer can cover events that happened while a phone was disconnected.
+    const seq = recordChatEventSeq(event);
     for (const peer of peers) {
       if (!peer.authenticated || peer.ws.readyState !== WebSocket.OPEN) continue;
       if (isPeerBackpressured(peer)) continue;
       if (!peer.subscribedChatSessionIds.has(event.sessionId)) continue;
       if (!rememberChatEventSent(peer, event)) continue;
-      send(peer.ws, "chat_event", event);
+      send(peer.ws, "chat_event", { ...event, seq } satisfies SyncChatEventPayload);
     }
   }
 
@@ -2253,21 +2682,42 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         continue;
       }
       if (currentDbVersion <= peer.lastKnownServerDbVersion) continue;
-      const changes = args.db.sync
-        .exportChangesSince(peer.lastKnownServerDbVersion)
-        .filter((change: CrsqlChangeRow) => change.site_id !== peer.metadata?.siteId);
+      // Bounded export: scan a db_version WINDOW, not the whole backlog. The
+      // crsql_changes vtab pushes version-range constraints down to indexed
+      // clock tables, while an open-ended ORDER BY scan materializes the full
+      // backlog first (a bare LIMIT does not help) — long enough that any
+      // concurrent write aborts it with SQLITE_ABORT, permanently starving
+      // the peer. Empty windows advance the cursor so sparse version deserts
+      // (e.g. compacted operations churn) are crossed in a few polls.
+      const scanThroughDbVersion = Math.min(
+        peer.lastKnownServerDbVersion + SYNC_EXPORT_VERSION_WINDOW,
+        currentDbVersion,
+      );
+      const exported = args.db.sync.exportChangesSince(
+        peer.lastKnownServerDbVersion,
+        { maxRows: maxChangesetBatchRows * 4, throughDbVersion: scanThroughDbVersion },
+      );
+      const exportedThroughDbVersion = exported.length > 0
+        ? Number(exported[exported.length - 1].db_version)
+        : scanThroughDbVersion;
+      const mobilePeer = isMobileChangesetPeer(peer);
+      const changes = exported
+        .filter((change: CrsqlChangeRow) => change.site_id !== peer.metadata?.siteId)
+        .filter((change: CrsqlChangeRow) => !mobilePeer || !MOBILE_CHANGESET_EXCLUDED_TABLES.has(change.table));
       if (changes.length === 0) {
         const previousDbVersion = peer.lastKnownServerDbVersion;
-        peer.lastKnownServerDbVersion = currentDbVersion;
+        // Only advance through what was actually scanned — with a bounded
+        // export, versions past the truncation point have not been seen.
+        peer.lastKnownServerDbVersion = exportedThroughDbVersion;
         args.logger.debug("sync_host.changeset_advanced_without_send", {
           peerDeviceId: peer.metadata?.deviceId ?? null,
           fromDbVersion: previousDbVersion,
-          toDbVersion: currentDbVersion,
+          toDbVersion: exportedThroughDbVersion,
           reason: "peer_owned_changes_only",
         });
         continue;
       }
-      const pending = sendNextChangesetBatch(peer, "broadcast", peer.lastKnownServerDbVersion, currentDbVersion, changes);
+      const pending = sendNextChangesetBatch(peer, "broadcast", peer.lastKnownServerDbVersion, exportedThroughDbVersion, changes);
       if (pending) {
         if (peerSupportsChangesetAck(peer)) {
           peer.pendingChangesetBatch = pending;
@@ -2761,6 +3211,22 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           message: resolution.message,
         },
       } satisfies SyncFileResponsePayload, requestId);
+      return;
+    }
+
+    if (type === "terminal_history") {
+      const historyPayload = (payload ?? {}) as { sessionId?: string; beforeOffset?: number };
+      const sessionId = toOptionalString(historyPayload.sessionId) ?? "";
+      const beforeOffset = typeof historyPayload.beforeOffset === "number" && Number.isFinite(historyPayload.beforeOffset)
+        ? Math.max(0, Math.floor(historyPayload.beforeOffset))
+        : 0;
+      sendRequired(peer, "terminal_history", {
+        sessionId,
+        data: "",
+        startOffset: beforeOffset,
+        endOffset: beforeOffset,
+        atStart: true,
+      } satisfies SyncTerminalHistoryResponsePayload, requestId);
     }
   }
 
@@ -2921,7 +3387,14 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       peer.authKind = auth.kind;
       peer.pairedDeviceId = auth.kind === "paired" ? auth.deviceId : null;
       peer.pairingRecord = auth.kind === "paired" ? authenticatedPairingRecord : null;
-      peer.lastKnownServerDbVersion = Math.max(0, Math.floor(hello.peer.dbVersion));
+      // Prefer the client's cursor for THIS project DB. The legacy single
+      // dbVersion is only meaningful when the client last synced this same
+      // DB; after a hosted-project change it points into a different DB's
+      // version sequence and silently skips (or replays) the entire backlog.
+      const ownSiteId = args.db.sync.getSiteId();
+      const cursorForThisDb = hello.peer.dbVersionBySite?.[ownSiteId]
+        ?? (hello.peer.dbVersionBySite ? 0 : hello.peer.dbVersion);
+      peer.lastKnownServerDbVersion = Math.max(0, Math.floor(cursorForThisDb));
       args.deviceRegistryService?.upsertPeerMetadata(hello.peer, {
         lastSeenAt: nowIso(),
         lastHost: peer.remoteAddress,
@@ -2932,6 +3405,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         peer: hello.peer,
         brain: readBrainMetadata(),
         serverDbVersion: args.db.sync.getDbVersion(),
+        serverDbSiteId: ownSiteId,
         heartbeatIntervalMs,
         pollIntervalMs,
         projectCatalog,
@@ -3034,19 +3508,63 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         await handleFileRequest(peer, envelope.requestId, envelope.payload as SyncFileRequest);
         break;
       case "terminal_subscribe": {
-        const payload = envelope.payload as { sessionId?: string; maxBytes?: number } | null;
+        const payload = envelope.payload as { sessionId?: string; maxBytes?: number; sinceOffset?: number } | null;
         const sessionId = toOptionalString(payload?.sessionId);
         if (!sessionId) break;
         peer.subscribedSessionIds.add(sessionId);
         const session = args.sessionService.get(sessionId);
+        const maxBytes = Math.max(1_024, Math.min(2_000_000, Math.floor(payload?.maxBytes ?? DEFAULT_TERMINAL_SNAPSHOT_BYTES)));
+        const transcriptSize = transcriptFileSizeOrNull(session?.transcriptPath);
+        const sinceOffset = typeof payload?.sinceOffset === "number" && Number.isInteger(payload.sinceOffset)
+          ? payload.sinceOffset
+          : null;
+        // Resume fast-path: when the client's byte watermark falls inside the
+        // transcript and the missed span fits the snapshot budget, send only
+        // the delta so reconnects do not re-transfer the whole tail.
+        if (
+          sinceOffset != null
+          && transcriptSize != null
+          && sinceOffset >= 0
+          && sinceOffset <= transcriptSize
+          && transcriptSize - sinceOffset <= maxBytes
+        ) {
+          const range = await args.ptyService.readTranscriptRange({
+            sessionId,
+            startOffset: sinceOffset,
+            endOffset: transcriptSize,
+          });
+          if (range) {
+            sendRequired(peer, "terminal_snapshot", {
+              sessionId,
+              transcript: range.data,
+              status: session?.status ?? null,
+              runtimeState: session?.runtimeState ?? null,
+              lastOutputPreview: session?.lastOutputPreview ?? null,
+              capturedAt: nowIso(),
+              startOffset: range.startOffset,
+              endOffset: range.endOffset,
+              delta: true,
+              live: args.ptyService.hasLivePty(sessionId),
+            } satisfies SyncTerminalSnapshotPayload, envelope.requestId);
+            break;
+          }
+        }
         const transcript = session
           ? await args.ptyService.readTranscriptTail({
               sessionId,
-              maxBytes: Math.max(1_024, Math.min(2_000_000, Math.floor(payload?.maxBytes ?? DEFAULT_TERMINAL_SNAPSHOT_BYTES))),
+              maxBytes,
               raw: true,
               alignToLineBoundary: true,
             })
           : "";
+        // The tail read can merge still-buffered live output that is not
+        // reflected in the flushed file size yet. Only advertise offsets when
+        // the returned bytes fit inside the flushed transcript.
+        const transcriptBytes = Buffer.byteLength(transcript, "utf8");
+        const snapshotStartOffset = transcriptSize != null && transcriptBytes <= transcriptSize
+          ? transcriptSize - transcriptBytes
+          : null;
+        const snapshotEndOffset = snapshotStartOffset != null ? transcriptSize : null;
         const snapshot: SyncTerminalSnapshotPayload = {
           sessionId,
           transcript,
@@ -3054,6 +3572,9 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           runtimeState: session?.runtimeState ?? null,
           lastOutputPreview: session?.lastOutputPreview ?? null,
           capturedAt: nowIso(),
+          startOffset: snapshotStartOffset,
+          endOffset: snapshotEndOffset,
+          live: args.ptyService.hasLivePty(sessionId),
         };
         sendRequired(peer, "terminal_snapshot", snapshot, envelope.requestId);
         break;
@@ -3063,7 +3584,59 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         const sessionId = toOptionalString(payload?.sessionId);
         if (sessionId) {
           peer.subscribedSessionIds.delete(sessionId);
+          restoreDesktopTerminalSizeIfUnwatched(sessionId);
         }
+        break;
+      }
+      case "terminal_history": {
+        // Pull-to-load-older paging over the transcript file. Reuses the
+        // terminal_input access gate: only a peer with a live subscribe for
+        // the session may read its history.
+        const payload = envelope.payload as { sessionId?: string; beforeOffset?: number; maxBytes?: number } | null;
+        const sessionId = toOptionalString(payload?.sessionId);
+        if (!sessionId) break;
+        const beforeOffset = typeof payload?.beforeOffset === "number" && Number.isFinite(payload.beforeOffset)
+          ? Math.max(0, Math.floor(payload.beforeOffset))
+          : 0;
+        const refused: SyncTerminalHistoryResponsePayload = {
+          sessionId,
+          data: "",
+          startOffset: beforeOffset,
+          endOffset: beforeOffset,
+          atStart: true,
+        };
+        const session = args.sessionService.get(sessionId);
+        if (!peer.subscribedSessionIds.has(sessionId) || !session) {
+          args.logger.warn("sync.terminal_history_unsubscribed_session", { sessionId });
+          sendRequired(peer, "terminal_history", refused, envelope.requestId);
+          break;
+        }
+        const pageBytes = Math.max(
+          MIN_TERMINAL_HISTORY_PAGE_BYTES,
+          Math.min(
+            MAX_TERMINAL_HISTORY_PAGE_BYTES,
+            Math.floor(typeof payload?.maxBytes === "number" ? payload.maxBytes : DEFAULT_TERMINAL_HISTORY_PAGE_BYTES),
+          ),
+        );
+        const transcriptSize = transcriptFileSizeOrNull(session.transcriptPath);
+        const endOffset = Math.min(beforeOffset, transcriptSize ?? 0);
+        const range = await args.ptyService.readTranscriptRange({
+          sessionId,
+          startOffset: Math.max(0, endOffset - pageBytes),
+          endOffset,
+          alignStartToSafeBoundary: true,
+        });
+        if (!range) {
+          sendRequired(peer, "terminal_history", refused, envelope.requestId);
+          break;
+        }
+        sendRequired(peer, "terminal_history", {
+          sessionId,
+          data: range.data,
+          startOffset: range.startOffset,
+          endOffset: range.endOffset,
+          atStart: range.startOffset === 0,
+        } satisfies SyncTerminalHistoryResponsePayload, envelope.requestId);
         break;
       }
       case "terminal_input": {
@@ -3096,16 +3669,49 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         const rows = typeof payload?.rows === "number" ? Math.floor(payload.rows) : null;
         if (!sessionId || cols == null || rows == null) break;
         if (!peer.subscribedSessionIds.has(sessionId)) break;
-        args.ptyService.resizeBySessionId(sessionId, cols, rows);
+        // Tagged as mobile so the phone's viewport never becomes the
+        // desktop-preferred size — it is restored when the phone detaches.
+        args.ptyService.resizeBySessionId(sessionId, cols, rows, { source: "mobile" });
         break;
       }
       case "chat_subscribe": {
-        const payload = envelope.payload as { sessionId?: string; maxBytes?: number } | null;
+        const payload = envelope.payload as { sessionId?: string; maxBytes?: number; sinceSeq?: number } | null;
         const sessionId = toOptionalString(payload?.sessionId);
         if (!sessionId) break;
         peer.subscribedChatSessionIds.add(sessionId);
 
         const session = args.sessionService.get(sessionId);
+        const resumePlan = planChatEventResume(chatEventReplayBuffers.get(sessionId), payload?.sinceSeq);
+        if (resumePlan.mode === "replay") {
+          // The replay buffer covers everything the peer missed: skip the
+          // snapshot, fast-forward the transcript pump past content the
+          // replay already carries, and re-send just the missed events as
+          // ordinary chat_event envelopes (in order, after the ack).
+          const transcriptSize = session?.transcriptPath && fs.existsSync(session.transcriptPath)
+            ? fs.statSync(session.transcriptPath).size
+            : 0;
+          peer.chatTranscriptOffsets.set(sessionId, transcriptSize);
+          const resumeAck: SyncChatSubscribeSnapshotPayload = {
+            sessionId,
+            capturedAt: nowIso(),
+            truncated: false,
+            events: [],
+            resumed: true,
+          };
+          sendRequired(peer, "chat_subscribe", resumeAck, envelope.requestId);
+          for (const entry of resumePlan.entries) {
+            // Skip events already delivered on this connection — TCP ordering
+            // guarantees the peer has (or will get) them.
+            if (!rememberChatEventSent(peer, entry.event)) continue;
+            send(peer.ws, "chat_event", { ...entry.event, seq: entry.seq } satisfies SyncChatEventPayload);
+          }
+          args.logger.debug("sync_host.chat_subscribe_resumed", {
+            sessionId,
+            sinceSeq: payload?.sinceSeq,
+            replayedEventCount: resumePlan.entries.length,
+          });
+          break;
+        }
         const maxBytes = Math.max(
           1_024,
           Math.min(2_000_000, Math.floor(typeof payload?.maxBytes === "number" ? payload.maxBytes : DEFAULT_TERMINAL_SNAPSHOT_BYTES)),
@@ -3325,8 +3931,23 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       .filter((entry) => entry.devicesOpen.length > 0);
   };
 
+  function getListeningPort(): number | null {
+    if (!server) return sharedListener?.getPort() ?? null;
+    const address = server.address();
+    return typeof address === "object" && address ? address.port : null;
+  }
+
   return {
     async waitUntilListening(): Promise<number> {
+      if (!server) {
+        // Shared listener: binding happened (or happens) at the brain level;
+        // ensureListening is idempotent and returns the existing port.
+        const port = sharedListener!.getPort()
+          ?? await sharedListener!.ensureListening([args.port ?? DEFAULT_SYNC_HOST_PORT]);
+        publishLanDiscovery(port);
+        publishTailnetDiscovery(port);
+        return port;
+      }
       if (startupError) {
         throw startupError;
       }
@@ -3372,8 +3993,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     },
 
     getPort(): number | null {
-      const address = server.address();
-      return typeof address === "object" && address ? address.port : null;
+      return getListeningPort();
     },
 
     getBootstrapToken(): string {
@@ -3385,24 +4005,24 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     },
 
     refreshLanDiscovery(options?: { forceLan?: boolean; forceTailnet?: boolean }): void {
-      const address = server.address();
-      if (typeof address === "object" && address) {
-        publishLanDiscovery(address.port, { force: options?.forceLan });
-        publishTailnetDiscovery(address.port, { force: options?.forceTailnet });
+      const port = getListeningPort();
+      if (port != null) {
+        publishLanDiscovery(port, { force: options?.forceLan });
+        publishTailnetDiscovery(port, { force: options?.forceTailnet });
       }
     },
 
     setDiscoveryEnabled(enabled: boolean): void {
       if (discoveryEnabled === enabled) return;
       discoveryEnabled = enabled;
-      const address = server.address();
+      const port = getListeningPort();
       if (!enabled) {
         unpublishLanDiscovery();
         void unpublishTailnetDiscovery();
         updateTailnetDiscoveryStatus({
           state: "disabled",
           serviceName: SYNC_TAILNET_DISCOVERY_SERVICE_NAME,
-          servicePort: typeof address === "object" && address ? address.port : SYNC_TAILNET_DISCOVERY_SERVICE_PORT,
+          servicePort: port ?? SYNC_TAILNET_DISCOVERY_SERVICE_PORT,
           target: null,
           updatedAt: nowIso(),
           error: "Tailnet discovery is disabled for this background project context.",
@@ -3410,9 +4030,9 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         });
         return;
       }
-      if (typeof address === "object" && address) {
-        publishLanDiscovery(address.port, { force: true });
-        publishTailnetDiscovery(address.port, { force: true });
+      if (port != null) {
+        publishLanDiscovery(port, { force: true });
+        publishTailnetDiscovery(port, { force: true });
       }
     },
 
@@ -3515,6 +4135,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         ptyId: event.ptyId,
         data: event.data,
         at: nowIso(),
+        offset: event.offset ?? null,
       };
       for (const peer of peers) {
         if (!peer.authenticated || !peer.subscribedSessionIds.has(event.sessionId) || peer.ws.readyState !== WebSocket.OPEN) continue;
@@ -3553,25 +4174,71 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       } catch {
         // Never throw from dispose.
       }
-      await new Promise<void>((resolve) => {
-        const finish = () => resolve();
+      if (!server) {
+        // Shared listener: do NOT close the server or the peer sockets this
+        // host does not own. Detach the connection handler and hand every
+        // open, authenticated socket back to the listener so the next hosted
+        // project's sync host can adopt it without the phone reconnecting.
+        // If no host adopts in time (e.g. the brain is shutting down or sync
+        // was disabled), the listener closes them after a grace period.
+        detachSharedListener?.();
+        detachSharedListener = null;
+        const snapshots: SyncPeerHandoffSnapshot[] = [];
         for (const peer of peers) {
-          try {
-            peer.ws.close();
-          } catch {
-            // ignore
+          peer.ws.removeAllListeners("message");
+          peer.ws.removeAllListeners("close");
+          peer.ws.removeAllListeners("error");
+          if (peer.ws.readyState !== WebSocket.OPEN) {
+            // Not handed off — re-attach a no-op error handler so a late
+            // transport error on the dying socket cannot crash the process.
+            peer.ws.on("error", () => {});
+            try {
+              peer.ws.close();
+            } catch {
+              // ignore close failures
+            }
+            continue;
           }
+          snapshots.push({
+            ws: peer.ws,
+            remoteAddress: peer.remoteAddress,
+            remotePort: peer.remotePort,
+            metadata: peer.metadata,
+            authKind: peer.authKind,
+            pairedDeviceId: peer.pairedDeviceId,
+            connectedAt: peer.connectedAt,
+            serverDbSiteId: args.db.sync.getSiteId(),
+            lastKnownServerDbVersion: peer.lastKnownServerDbVersion,
+            subscribedSessionIds: [...peer.subscribedSessionIds],
+            subscribedChatSessionIds: [...peer.subscribedChatSessionIds],
+            chatTranscriptOffsets: Object.fromEntries(peer.chatTranscriptOffsets),
+          });
         }
-        if (!server.address()) {
-          finish();
-          return;
+        peers.clear();
+        if (snapshots.length > 0) {
+          sharedListener!.depositPeers(snapshots);
         }
-        try {
-          server.close(() => finish());
-        } catch {
-          finish();
-        }
-      });
+      } else {
+        await new Promise<void>((resolve) => {
+          const finish = () => resolve();
+          for (const peer of peers) {
+            try {
+              peer.ws.close();
+            } catch {
+              // ignore
+            }
+          }
+          if (!server.address()) {
+            finish();
+            return;
+          }
+          try {
+            server.close(() => finish());
+          } catch {
+            finish();
+          }
+        });
+      }
       if (bonjourAnnouncement) {
         try {
           bonjourAnnouncement.stop?.();

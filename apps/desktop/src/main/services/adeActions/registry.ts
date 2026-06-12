@@ -78,6 +78,7 @@ import { parseLinearGraphQLInput } from "../cto/linearGraphQLInput";
 import { launchAgentChatCli } from "../chat/agentChatCliLaunch";
 import { createApnsBridgeService } from "../notifications/apnsBridgeService";
 import { deleteTerminalSessionWithRuntimeCleanup } from "../sessions/deleteTerminalSession";
+import { createOrchestrationDomainService } from "../orchestration/orchestrationDomain";
 
 export const ADE_ACTION_DOMAIN_NAMES = [
   "lane",
@@ -128,6 +129,7 @@ export const ADE_ACTION_DOMAIN_NAMES = [
   "review",
   "issue",
   "notifications_apns",
+  "orchestration",
 ] as const;
 
 export type AdeActionDomain = (typeof ADE_ACTION_DOMAIN_NAMES)[number];
@@ -436,6 +438,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "getClaudeSessionInfo",
     "getClaudeSessionMessages",
     "getChatEventHistory",
+    "getChatEventHistoryPage",
     "getContextUsage",
     "getSubagentTranscript",
     "listClaudeOutputStyles",
@@ -666,7 +669,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   tiling_tree: ["get", "set"],
   graph_state: ["get", "set"],
   computer_use_artifacts: ["getOwnerSnapshot", "getBackendStatus", "ingest", "listArtifacts", "readArtifactPreview", "routeArtifact", "updateArtifactReview"],
-  ios_simulator: ["getStatus", "claim", "listDevices", "listLaunchTargets", "launch", "attachToChatSession", "shutdown", "screenshot", "getScreenSnapshot", "getInspectorSnapshot", "inspectPoint", "getPreviewCapability", "listPreviewTargets", "resolvePreviewMatch", "ensurePreviewWorkspace", "renderPreview", "openPreviewWorkspace", "startStream", "stopStream", "getStreamStatus", "tap", "typeText", "drag", "swipe", "selectPoint"],
+  ios_simulator: ["getStatus", "claim", "listDevices", "listLaunchTargets", "launch", "attachToChatSession", "shutdown", "screenshot", "getScreenSnapshot", "getInspectorSnapshot", "inspectPoint", "getPreviewCapability", "listPreviewTargets", "resolvePreviewMatch", "ensurePreviewWorkspace", "renderCurrentPreview", "renderPreview", "openPreviewWorkspace", "startStream", "stopStream", "getStreamStatus", "tap", "typeText", "drag", "swipe", "selectPoint"],
   app_control: ["getStatus", "claim", "launch", "launchInTerminal", "connect", "stop", "focusWindow", "minimizeWindow", "screenshot", "getSnapshot", "inspectPoint", "selectPoint", "click", "typeText", "scroll", "dispatchKey", "listTargets", "attachToTarget", "readTerminal", "writeTerminal", "signalTerminal"],
   built_in_browser: [...BUILT_IN_BROWSER_DESKTOP_BRIDGE_METHODS],
   // Note: detachLane is intentionally NOT in this allowlist — it lives on
@@ -722,6 +725,22 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "uploadKey",
     "clearKey",
     "sendTestPush",
+  ],
+  orchestration: [
+    "runCreate",
+    "bundleRead",
+    "manifestReadSection",
+    "manifestPatch",
+    "planAppend",
+    "planWrite",
+    "assetRegister",
+    "claimTask",
+    "releaseTask",
+    "runList",
+    "spawnAgent",
+    "agentInject",
+    "subscribe",
+    "unsubscribe",
   ],
 };
 
@@ -825,6 +844,18 @@ type OpaqueService = Record<string, unknown>;
 
 function toService(value: unknown): OpaqueService | null {
   return (value ?? null) as OpaqueService | null;
+}
+
+function buildOrchestrationDomainService(runtime: AdeRuntime): OpaqueService | null {
+  const orchestrationService = runtime.orchestrationService;
+  const laneService = runtime.laneService;
+  const agentChatService = runtime.agentChatService;
+  if (!orchestrationService || !laneService || !agentChatService) return null;
+  return createOrchestrationDomainService({
+    orchestrationService,
+    laneService: { getLaneWorktreePath: (laneId: string) => laneService.getLaneWorktreePath(laneId) },
+    agentChatService,
+  }) as unknown as OpaqueService;
 }
 
 type CachedApnsBridgeDomainService = {
@@ -1400,14 +1431,11 @@ function buildLaneDomainService(runtime: AdeRuntime): OpaqueService {
     },
     dismissRebaseSuggestion: async (args?: { laneId?: string }) => {
       const laneId = requireNonEmptyString(args?.laneId, "laneId");
-      runtime.conflictService?.dismissRebase(laneId);
       await runtime.rebaseSuggestionService?.dismiss({ laneId });
     },
     deferRebaseSuggestion: async (args?: { laneId?: string; minutes?: number }) => {
       const laneId = requireNonEmptyString(args?.laneId, "laneId");
       const minutes = Math.max(5, Math.min(7 * 24 * 60, Math.floor(args?.minutes ?? 60)));
-      const until = new Date(Date.now() + minutes * 60_000).toISOString();
-      runtime.conflictService?.deferRebase(laneId, until);
       await runtime.rebaseSuggestionService?.defer({ laneId, minutes });
     },
     listAutoRebaseStatuses: () =>
@@ -2741,6 +2769,7 @@ export function getAdeActionDomainServices(
     automations: automationsEnabled ? toService(buildAutomationsDomainService(runtime)) : null,
     review: toService(runtime.reviewService),
     issue: toService(buildIssueDomainService(runtime)),
+    orchestration: toService(buildOrchestrationDomainService(runtime)),
     get notifications_apns() {
       return toService(getApnsBridgeDomainService(runtime));
     },

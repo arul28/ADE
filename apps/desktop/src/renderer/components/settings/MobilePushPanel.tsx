@@ -35,6 +35,7 @@ import {
   inlineBadge,
   outlineButton,
 } from "../lanes/laneDesignTokens";
+import { MachineScopeBadge } from "./RemoteContextBadge";
 
 /**
  * Settings panel for the Mobile Push (APNs) integration.
@@ -509,7 +510,10 @@ export function MobilePushPanel() {
               </div>
             </div>
           </div>
-          <span style={inlineBadge(statusColor)}>{statusLabel}</span>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <MachineScopeBadge />
+            <span style={inlineBadge(statusColor)}>{statusLabel}</span>
+          </div>
         </div>
 
         {/* Minimal required fields: Team ID (after .p8 drop) */}

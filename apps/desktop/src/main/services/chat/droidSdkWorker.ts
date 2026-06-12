@@ -11,6 +11,7 @@ import type {
   DroidSdkWorkerRequest,
   DroidSdkWorkerResponse,
 } from "./droidSdkProtocol";
+import { loadDroidSdk } from "../ai/droidSdkLoader";
 
 type DroidSdkModule = typeof DroidSdkTypes;
 type DroidSession = Awaited<ReturnType<DroidSdkModule["createSession"]>>;
@@ -39,7 +40,7 @@ function errorMessage(error: unknown): string {
 }
 
 async function getSdk(): Promise<DroidSdkModule> {
-  if (!sdkModule) sdkModule = await import("@factory/droid-sdk");
+  if (!sdkModule) sdkModule = await loadDroidSdk();
   return sdkModule;
 }
 

@@ -3,7 +3,7 @@
 	archiveVersion = 1;
 	classes = {
 	};
-	objectVersion = 46;
+	objectVersion = 56;
 	objects = {
 
 /* Begin PBXBuildFile section */
@@ -116,6 +116,8 @@
 		D30000000000000000000012 /* AttentionDrawerButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000002 /* AttentionDrawerButton.swift */; };
 		D30000000000000000000013 /* AttentionDrawerSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000003 /* AttentionDrawerSheet.swift */; };
 		D30000000000000000000015 /* AttentionDrawerModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000005 /* AttentionDrawerModelTests.swift */; };
+		D30000000000000000000016 /* SyncEnvelopeChunkAssemblerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000006 /* SyncEnvelopeChunkAssemblerTests.swift */; };
+		D30000000000000000000017 /* WorkMarkdownStreamingParsingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000007 /* WorkMarkdownStreamingParsingTests.swift */; };
 		889573D8A5ED468D3BD12894 /* PRsTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5EE4D463D21266B62B422D11 /* PRsTabView.swift */; };
 		B10000000000000000000002 /* LaneAttachSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000002 /* LaneAttachSheet.swift */; };
 		B10000000000000000000003 /* LaneBatchManageSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000003 /* LaneBatchManageSheet.swift */; };
@@ -155,6 +157,8 @@
 		G10000000000000000000003 /* PrListRowModifier.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000003 /* PrListRowModifier.swift */; };
 		G10000000000000000000004 /* PrFiltersCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000004 /* PrFiltersCard.swift */; };
 		G10000000000000000000005 /* PrRowCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000005 /* PrRowCard.swift */; };
+		G10000000000000000000026 /* PrsRootScreenPreviews.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000026 /* PrsRootScreenPreviews.swift */; };
+		G10000000000000000000025 /* PrRowCardPreviews.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000025 /* PrRowCardPreviews.swift */; };
 		G10000000000000000000006 /* PrsRootScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000006 /* PrsRootScreen.swift */; };
 		G10000000000000000000007 /* PrDetailScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000007 /* PrDetailScreen.swift */; };
 		G10000000000000000000008 /* PrDetailOverviewTab.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000008 /* PrDetailOverviewTab.swift */; };
@@ -192,6 +196,9 @@
 		E10000000000000000000045 /* WorkSelectionActionBar.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000045 /* WorkSelectionActionBar.swift */; };
 		E10000000000000000000046 /* WorkRootScreen+Selection.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000046 /* WorkRootScreen+Selection.swift */; };
 		E10000000000000000000048 /* WorkTerminalEmulatorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000048 /* WorkTerminalEmulatorView.swift */; };
+		E10000000000000000000049 /* TerminalSessionScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000049 /* TerminalSessionScreen.swift */; };
+		E1000000000000000000004A /* SwiftTermSessionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000004A /* SwiftTermSessionView.swift */; };
+		DD20000000000000000000B1 /* SwiftTerm in Frameworks */ = {isa = PBXBuildFile; productRef = DD10000000000000000000B1 /* SwiftTerm */; };
 		E689F42D41A500BB8CA233E4 /* LanesTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9270CF8A67F3FA79089F39C1 /* LanesTabView.swift */; };
 		F2A1C9D8456E7B3C1D2E4F90 /* FilesCodeSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = D6F9B21C0E4A6D8F1B3C5A77 /* FilesCodeSupport.swift */; };
 		FBEEF09EFB4911FEAC6A7E87 /* RemoteModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 483C5F1818BAE74B19B84617 /* RemoteModels.swift */; };
@@ -295,6 +302,8 @@
 		D10000000000000000000045 /* WorkSelectionActionBar.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkSelectionActionBar.swift; path = ADE/Views/Work/WorkSelectionActionBar.swift; sourceTree = "<group>"; };
 		D10000000000000000000046 /* WorkRootScreen+Selection.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "WorkRootScreen+Selection.swift"; path = "ADE/Views/Work/WorkRootScreen+Selection.swift"; sourceTree = "<group>"; };
 		D10000000000000000000048 /* WorkTerminalEmulatorView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkTerminalEmulatorView.swift; path = ADE/Views/Work/WorkTerminalEmulatorView.swift; sourceTree = "<group>"; };
+		D10000000000000000000049 /* TerminalSessionScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = TerminalSessionScreen.swift; path = ADE/Views/Work/TerminalSessionScreen.swift; sourceTree = "<group>"; };
+		D1000000000000000000004A /* SwiftTermSessionView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SwiftTermSessionView.swift; path = ADE/Views/Work/SwiftTermSessionView.swift; sourceTree = "<group>"; };
 		D1000000000000000000003C /* WorkSessionGrouping.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkSessionGrouping.swift; path = ADE/Views/Work/WorkSessionGrouping.swift; sourceTree = "<group>"; };
 		H10000000000000000000010 /* CtoRootScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CtoRootScreen.swift; path = ADE/Views/Cto/CtoRootScreen.swift; sourceTree = "<group>"; };
 		H10000000000000000000011 /* CtoSessionDestinationView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CtoSessionDestinationView.swift; path = ADE/Views/Cto/CtoSessionDestinationView.swift; sourceTree = "<group>"; };
@@ -322,6 +331,8 @@
 		D30000000000000000000002 /* AttentionDrawerButton.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AttentionDrawerButton.swift; path = ADE/Views/AttentionDrawer/AttentionDrawerButton.swift; sourceTree = "<group>"; };
 		D30000000000000000000003 /* AttentionDrawerSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AttentionDrawerSheet.swift; path = ADE/Views/AttentionDrawer/AttentionDrawerSheet.swift; sourceTree = "<group>"; };
 		D30000000000000000000005 /* AttentionDrawerModelTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AttentionDrawerModelTests.swift; path = ADETests/AttentionDrawerModelTests.swift; sourceTree = "<group>"; };
+		D30000000000000000000006 /* SyncEnvelopeChunkAssemblerTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SyncEnvelopeChunkAssemblerTests.swift; path = ADETests/SyncEnvelopeChunkAssemblerTests.swift; sourceTree = "<group>"; };
+		D30000000000000000000007 /* WorkMarkdownStreamingParsingTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkMarkdownStreamingParsingTests.swift; path = ADETests/WorkMarkdownStreamingParsingTests.swift; sourceTree = "<group>"; };
 		27A125DE2C17BA32F9291513 /* ADE.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ADE.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		2856F8D2F2D630DD985B870A /* DatabaseBootstrap.sql */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text; name = DatabaseBootstrap.sql; path = ADE/Resources/DatabaseBootstrap.sql; sourceTree = "<group>"; };
 		31EC445F22FD38F90C16343E /* Foundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Foundation.framework; path = Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS18.0.sdk/System/Library/Frameworks/Foundation.framework; sourceTree = DEVELOPER_DIR; };
@@ -371,6 +382,8 @@
 		G20000000000000000000002 /* PrHelpers.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrHelpers.swift; path = ADE/Views/PRs/PrHelpers.swift; sourceTree = "<group>"; };
 		G20000000000000000000003 /* PrListRowModifier.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrListRowModifier.swift; path = ADE/Views/PRs/PrListRowModifier.swift; sourceTree = "<group>"; };
 		G20000000000000000000004 /* PrFiltersCard.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrFiltersCard.swift; path = ADE/Views/PRs/PrFiltersCard.swift; sourceTree = "<group>"; };
+		G20000000000000000000026 /* PrsRootScreenPreviews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrsRootScreenPreviews.swift; path = ADE/Views/PRs/PrsRootScreenPreviews.swift; sourceTree = "<group>"; };
+		G20000000000000000000025 /* PrRowCardPreviews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrRowCardPreviews.swift; path = ADE/Views/PRs/PrRowCardPreviews.swift; sourceTree = "<group>"; };
 		G20000000000000000000005 /* PrRowCard.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrRowCard.swift; path = ADE/Views/PRs/PrRowCard.swift; sourceTree = "<group>"; };
 		G20000000000000000000006 /* PrsRootScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrsRootScreen.swift; path = ADE/Views/PRs/PrsRootScreen.swift; sourceTree = "<group>"; };
 		G20000000000000000000007 /* PrDetailScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrDetailScreen.swift; path = ADE/Views/PRs/PrDetailScreen.swift; sourceTree = "<group>"; };
@@ -412,6 +425,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				60F4CDDB763C0A9F0E650B40 /* Foundation.framework in Frameworks */,
+				DD20000000000000000000B1 /* SwiftTerm in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -538,7 +552,9 @@
 				G20000000000000000000003 /* PrListRowModifier.swift */,
 				G20000000000000000000004 /* PrFiltersCard.swift */,
 				G20000000000000000000005 /* PrRowCard.swift */,
+				G20000000000000000000025 /* PrRowCardPreviews.swift */,
 				G20000000000000000000006 /* PrsRootScreen.swift */,
+				G20000000000000000000026 /* PrsRootScreenPreviews.swift */,
 				G20000000000000000000007 /* PrDetailScreen.swift */,
 				G20000000000000000000008 /* PrDetailOverviewTab.swift */,
 				G20000000000000000000009 /* PrDetailFilesTab.swift */,
@@ -622,6 +638,8 @@
 				D10000000000000000000046 /* WorkRootScreen+Selection.swift */,
 				D10000000000000000000047 /* ADEInspectable.swift */,
 				D10000000000000000000048 /* WorkTerminalEmulatorView.swift */,
+				D10000000000000000000049 /* TerminalSessionScreen.swift */,
+				D1000000000000000000004A /* SwiftTermSessionView.swift */,
 				D1000000000000000000003C /* WorkSessionGrouping.swift */,
 				D1000000000000000000002C /* WorkChatHeaderAndMessageViews.swift */,
 				D1000000000000000000002D /* WorkChatRichCardViews.swift */,
@@ -800,6 +818,8 @@
 			children = (
 				14C0DF7FEB4C2EB854BAC888 /* ADETests.swift */,
 				D30000000000000000000005 /* AttentionDrawerModelTests.swift */,
+				D30000000000000000000006 /* SyncEnvelopeChunkAssemblerTests.swift */,
+				D30000000000000000000007 /* WorkMarkdownStreamingParsingTests.swift */,
 			);
 			name = ADETests;
 			sourceTree = "<group>";
@@ -841,6 +861,9 @@
 				BB4400000000000000000002 /* PBXTargetDependency */,
 			);
 			name = ADE;
+			packageProductDependencies = (
+				DD10000000000000000000B1 /* SwiftTerm */,
+			);
 			productName = ADE;
 			productReference = 27A125DE2C17BA32F9291513 /* ADE.app */;
 			productType = "com.apple.product-type.application";
@@ -952,6 +975,9 @@
 				Base,
 			);
 			mainGroup = 564208E3878DD0F0137C7E86;
+			packageReferences = (
+				DD10000000000000000000A1 /* XCRemoteSwiftPackageReference "SwiftTerm" */,
+			);
 			productRefGroup = 7FAD2BF35AA6A286BCF68D49 /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
@@ -1073,6 +1099,8 @@
 				G10000000000000000000003 /* PrListRowModifier.swift in Sources */,
 				G10000000000000000000004 /* PrFiltersCard.swift in Sources */,
 				G10000000000000000000005 /* PrRowCard.swift in Sources */,
+				G10000000000000000000025 /* PrRowCardPreviews.swift in Sources */,
+				G10000000000000000000026 /* PrsRootScreenPreviews.swift in Sources */,
 				G10000000000000000000006 /* PrsRootScreen.swift in Sources */,
 				G10000000000000000000007 /* PrDetailScreen.swift in Sources */,
 				G10000000000000000000008 /* PrDetailOverviewTab.swift in Sources */,
@@ -1120,6 +1148,8 @@
 				E10000000000000000000045 /* WorkSelectionActionBar.swift in Sources */,
 				E10000000000000000000046 /* WorkRootScreen+Selection.swift in Sources */,
 				E10000000000000000000048 /* WorkTerminalEmulatorView.swift in Sources */,
+				E10000000000000000000049 /* TerminalSessionScreen.swift in Sources */,
+				E1000000000000000000004A /* SwiftTermSessionView.swift in Sources */,
 				E1000000000000000000003C /* WorkSessionGrouping.swift in Sources */,
 				E1000000000000000000002C /* WorkChatHeaderAndMessageViews.swift in Sources */,
 				E1000000000000000000002D /* WorkChatRichCardViews.swift in Sources */,
@@ -1170,6 +1200,8 @@
 			files = (
 				7B70BE6839672E5D2D006B28 /* ADETests.swift in Sources */,
 				D30000000000000000000015 /* AttentionDrawerModelTests.swift in Sources */,
+				D30000000000000000000016 /* SyncEnvelopeChunkAssemblerTests.swift in Sources */,
+				D30000000000000000000017 /* WorkMarkdownStreamingParsingTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1599,6 +1631,25 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		DD10000000000000000000A1 /* XCRemoteSwiftPackageReference "SwiftTerm" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/migueldeicaza/SwiftTerm";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 1.13.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		DD10000000000000000000B1 /* SwiftTerm */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = DD10000000000000000000A1 /* XCRemoteSwiftPackageReference "SwiftTerm" */;
+			productName = SwiftTerm;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 9CBC925352322D208431EFAA /* Project object */;
 }

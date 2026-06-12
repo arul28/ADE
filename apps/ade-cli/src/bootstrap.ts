@@ -48,6 +48,7 @@ import {
 import { createProcessService } from "../../desktop/src/main/services/processes/processService";
 import { augmentProcessPathWithShellAndKnownCliDirs, setPathEnvValue } from "../../desktop/src/main/services/ai/cliExecutableResolver";
 import { createAgentChatService } from "../../desktop/src/main/services/chat/agentChatService";
+import { createOrchestrationService } from "../../desktop/src/main/services/orchestration/orchestrationService";
 import type { createPrService } from "../../desktop/src/main/services/prs/prService";
 import { createPrSummaryService } from "../../desktop/src/main/services/prs/prSummaryService";
 import { createQueueLandingService } from "../../desktop/src/main/services/prs/queueLandingService";
@@ -74,6 +75,7 @@ import {
 import { createAiIntegrationService } from "../../desktop/src/main/services/ai/aiIntegrationService";
 import { initApiKeyStore } from "../../desktop/src/main/services/ai/apiKeyStore";
 import type { createSyncService } from "./services/sync/syncService";
+import type { SharedSyncListener } from "./services/sync/sharedSyncListener";
 import type { createSyncHostService, SyncRuntimeKind } from "./services/sync/syncHostService";
 import { getSharedModelPickerStore } from "./services/modelPickerStore";
 import { createAutomationIngressService } from "../../desktop/src/main/services/automations/automationIngressService";
@@ -170,6 +172,12 @@ export type AdeRuntimeSyncOptions = {
   phonePairingStateDir?: string;
   projectCatalogProvider?: Parameters<typeof createSyncService>[0]["projectCatalogProvider"];
   remoteCommandExecutor?: Parameters<typeof createSyncService>[0]["remoteCommandExecutor"];
+  /**
+   * Brain-level websocket listener shared by every project scope's sync host
+   * so connected phones survive hosted-project switches. Owned (created and
+   * closed) by the brain process, threaded through unchanged.
+   */
+  sharedSyncListener?: SharedSyncListener | null;
 };
 
 export type AdeRuntime = {
@@ -206,6 +214,7 @@ export type AdeRuntime = {
   testService: ReturnType<typeof createTestService>;
   aiIntegrationService?: ReturnType<typeof createAiIntegrationService> | null;
   agentChatService?: ReturnType<typeof createAgentChatService> | null;
+  orchestrationService?: ReturnType<typeof createOrchestrationService> | null;
   prService?: ReturnType<typeof createPrService>;
   prSummaryService?: ReturnType<typeof createPrSummaryService> | null;
   queueLandingService?: ReturnType<typeof createQueueLandingService> | null;
@@ -752,6 +761,11 @@ export async function createAdeRuntime(args: {
   const ptyBackend = process.env.ADE_DISABLE_SUPERVISED_PTY_HOST === "1"
     ? null
     : createSupervisedPtyLoader({ logger });
+  // The sync runtime is created after ptyService (it takes ptyService as a
+  // dependency), so live PTY forwarding binds late through this ref — same
+  // pattern as desktop main. Without this bridge, paired phones only ever
+  // receive terminal snapshots, never live terminal_data push.
+  let syncServiceForPtyEvents: ReturnType<typeof createSyncService> | null = null;
   const ptyService = createPtyService({
     projectRoot,
     transcriptsDir: paths.transcriptsDir,
@@ -759,8 +773,16 @@ export async function createAdeRuntime(args: {
     sessionService,
     processRegistry,
     logger,
-    broadcastData: (event) => pushEvent("pty", { type: "pty_data", event }),
-    broadcastExit: (event) => pushEvent("pty", { type: "pty_exit", event }),
+    broadcastData: (event) => {
+      pushEvent("pty", { type: "pty_data", event });
+      const { projectRoot: _projectRoot, ...syncEvent } = event;
+      syncServiceForPtyEvents?.handlePtyData(syncEvent);
+    },
+    broadcastExit: (event) => {
+      pushEvent("pty", { type: "pty_exit", event });
+      const { projectRoot: _projectRoot, ...syncEvent } = event;
+      syncServiceForPtyEvents?.handlePtyExit(syncEvent);
+    },
     onSessionEnded: (event) => {
       void sessionDeltaService.computeSessionDelta(event.sessionId).catch((error) => {
         logger.warn("runtime.session_delta_compute_failed", {
@@ -993,9 +1015,24 @@ export async function createAdeRuntime(args: {
   });
 
   let automationServiceRef: ReturnType<typeof createAutomationService> | null = null;
+
+  const orchestrationService = createOrchestrationService({
+    resolveLaneWorktree: (laneId: string): string | undefined => {
+      try {
+        return laneService.getLaneWorktreePath(laneId);
+      } catch {
+        return undefined;
+      }
+    },
+  });
+  orchestrationService.on("event", (payload) => {
+    pushEvent("orchestrator", payload as unknown as Record<string, unknown>);
+  });
+
   let agentChatService = headlessLinearServices.agentChatService as unknown as ReturnType<typeof createAgentChatService> | null;
   if (resolvedArgs.chatRuntime === "agent") {
     agentChatService = createAgentChatService({
+      getOrchestrationService: () => orchestrationService,
       projectRoot,
       adeDir: paths.adeDir,
       transcriptsDir: paths.transcriptsDir,
@@ -1265,6 +1302,7 @@ export async function createAdeRuntime(args: {
       getLinearIssueTracker: () => headlessLinearServices.linearIssueTracker,
       getLinearSyncService: () => headlessLinearServices.linearSyncService,
       processService,
+      sharedSyncListener: resolvedArgs.syncRuntime.sharedSyncListener ?? null,
       hostStartupEnabled: resolvedArgs.syncRuntime.hostStartupEnabled ?? true,
       hostDiscoveryEnabled: resolvedArgs.syncRuntime.hostDiscoveryEnabled ?? true,
       forceHostRole: resolvedArgs.syncRuntime.forceHostRole ?? false,
@@ -1273,6 +1311,7 @@ export async function createAdeRuntime(args: {
       getModelPickerStore: () => getSharedModelPickerStore(db),
       onStatusChanged: (snapshot) => pushEvent("runtime", { type: "sync-status", snapshot }),
     });
+    syncServiceForPtyEvents = syncService;
   }
 
   if (syncService) {
@@ -1328,6 +1367,7 @@ export async function createAdeRuntime(args: {
     reviewService,
     aiIntegrationService,
     agentChatService,
+    orchestrationService,
     issueInventoryService,
     pathToMergeOrchestrator,
     ctoStateService,
@@ -1380,6 +1420,7 @@ export async function createAdeRuntime(args: {
       swallow(() => runtimeDiagnosticsService.dispose());
       swallow(() => oauthRedirectService.dispose());
       void laneProxyService.dispose().catch(() => {});
+      void orchestrationService?.dispose().catch(() => {});
       swallow(() => portAllocationService.dispose());
       swallow(() => iosSimulatorService?.dispose());
       swallow(() => appControlService?.dispose());

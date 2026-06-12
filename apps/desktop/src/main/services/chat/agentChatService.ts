@@ -131,6 +131,7 @@ import type {
   AgentChatEvent,
   AgentChatEventEnvelope,
   AgentChatEventMetadata,
+  AgentChatEventHistoryPage,
   AgentChatEventHistorySnapshot,
   AgentChatContextAttachment,
   AgentChatFileRef,
@@ -140,6 +141,7 @@ import type {
   AgentChatNoticeDetail,
   AgentChatInteractionMode,
   AgentChatInterruptArgs,
+  AgentChatCursorModelSource,
   AgentChatModelCatalog,
   AgentChatModelCatalogArgs,
   AgentChatModelCatalogRefreshProvider,
@@ -260,7 +262,14 @@ import { resolveAdeLayout } from "../../../shared/adeLayout";
 import { buildAdeCliAgentGuidance } from "../../../shared/adeCliGuidance";
 import { getAdeAgentSkillRootsForPrompt } from "../../../shared/agentSkillRoots";
 import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
+import { readTranscriptHistoryPage, type TranscriptHistoryPageRead } from "./chatTranscriptHistoryPager";
 import { extractLeadingSlashCommand, isProviderSlashCommandInput } from "../../../shared/chatSlashCommands";
+import {
+  deriveDeterministicLaneNameFromPrompt,
+  GENERIC_LANE_FALLBACK_NAME,
+  genericLaneFallbackName,
+  genericSuffixFromLaneFallbackName,
+} from "../../../shared/laneNameFallback";
 import { resolveSubagentCapability } from "../../../shared/subagentCapabilities";
 import { stripAnsi } from "../../utils/ansiStrip";
 import type { createCtoStateService } from "../cto/ctoStateService";
@@ -290,6 +299,7 @@ import { inspectLocalProvider } from "../ai/localModelDiscovery";
 import { resolveDroidExecutable } from "../ai/droidExecutable";
 import {
   acquireCursorSdkConnection,
+  isCursorSdkPooledAlive,
   releaseCursorSdkConnection,
   resolveCursorSdkUserHome,
   runCursorSdkCloudRequest,
@@ -368,7 +378,7 @@ import {
 } from "../../../shared/orchestrationRuntimePolicy";
 import type { ProcessRegistryService } from "../runtime/processRegistryService";
 
-const CLAUDE_AGENT_SDK_VERSION = "0.2.139";
+const CLAUDE_AGENT_SDK_VERSION = "0.3.170";
 const CLAUDE_AGENT_SDK_API = "v1_query";
 const CLAUDE_AGENT_SDK_TELEMETRY_TAGS = {
   "claude_sdk.version": CLAUDE_AGENT_SDK_VERSION,
@@ -1832,9 +1842,11 @@ type ResolvedChatConfig = {
   sessionBudgetUsd: number | null;
   titleGenerationEnabled: boolean;
   titleModelId: string | null;
+  titleReasoningEffort: string | null;
   titleRefreshOnComplete: boolean;
   summaryEnabled: boolean;
   summaryModelId: string | null;
+  summaryReasoningEffort: string | null;
 };
 
 const MAX_PENDING_STEERS = 10;
@@ -1994,8 +2006,9 @@ const CLAUDE_REASONING_EFFORTS: Array<{ effort: string; description: string }> =
   { effort: "low", description: "Quick responses with minimal reasoning." },
   { effort: "medium", description: "Balanced reasoning depth and speed." },
   { effort: "high", description: "Deep reasoning for complex tasks." },
-  { effort: "xhigh", description: "Extra-high reasoning depth for Opus 4.7." },
-  { effort: "max", description: "Maximum reasoning depth. Best for Opus on hard problems." },
+  { effort: "xhigh", description: "Extra-high reasoning depth for complex Claude tasks." },
+  { effort: "max", description: "Maximum reasoning depth. Best for hard problems." },
+  { effort: "ultracode", description: "Ultracode orchestration for the hardest coding tasks." },
 ];
 
 const KNOWN_CLAUDE_EFFORTS = new Set(CLAUDE_REASONING_EFFORTS.map((e) => e.effort));
@@ -2050,6 +2063,16 @@ function normalizeReasoningEffort(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const normalized = value.trim().toLowerCase();
   return normalized.length > 0 ? normalized : null;
+}
+
+function claudeRuntimeEffortForReasoningEffort(effort: string | null | undefined): "low" | "medium" | "high" | "xhigh" | "max" | null {
+  if (effort === "low" || effort === "medium" || effort === "high" || effort === "xhigh" || effort === "max") return effort;
+  if (effort === "ultracode") return "xhigh";
+  return null;
+}
+
+function isClaudeUltracodeEffort(effort: string | null | undefined): boolean {
+  return effort === "ultracode";
 }
 
 type CodexServiceTier = "fast";
@@ -2797,12 +2820,19 @@ function classifyProviderHostError(
   if (
     statusCode === 429
     || combinedLower.includes("rate limit")
+    || combinedLower.includes("rate_limited")
     || combinedLower.includes("429")
     || combinedLower.includes("too many requests")
+    || combinedLower.includes("enhance_your_calm")
+    || combinedLower.includes("enhance your calm")
+    || combinedLower.includes("resource exhausted")
+    || combinedLower.includes("slow down")
+    || combinedLower.includes("back off")
   ) {
+    const rateLimitDetail = rawDetail || rawMessage;
     return {
       message: `Rate limited by ${providerLabel}. The runtime should recover automatically, but you may want to retry with a different model.`,
-      ...(rawDetail ? { detail: rawDetail } : {}),
+      ...(rateLimitDetail ? { detail: rateLimitDetail } : {}),
       errorInfo: { category: "rate_limit", provider: providerLabel, model: modelDisplayName },
     };
   }
@@ -3056,40 +3086,21 @@ function sanitizeAutoTitle(raw: string, maxChars = AUTO_TITLE_MAX_CHARS): string
   return normalized.length > maxChars ? normalized.slice(0, maxChars).trimEnd() : normalized;
 }
 
-const GENERIC_PROMPT_LANE_NAME = "parallel-task";
-
 function fallbackLaneNameFromPrompt(prompt: string): string {
-  const collapsed = prompt.replace(/\s+/g, " ");
-  if (!collapsed.length) return GENERIC_PROMPT_LANE_NAME;
-  const words = collapsed.split(/\s+/).filter(Boolean).slice(0, 4);
-  const slug = words
-    .join("-")
-    .toLowerCase()
-    .replace(/[^a-z0-9-]+/g, "-")
-    .replace(/-+/g, "-")
-    .replace(/^-|-$/g, "");
-  return slug.length ? slug.slice(0, 48) : GENERIC_PROMPT_LANE_NAME;
+  return deriveDeterministicLaneNameFromPrompt(prompt);
 }
 
 function uniquePromptFallbackLaneName(promptFallback: string, explicitFallback: string | null): string {
-  if (promptFallback === GENERIC_PROMPT_LANE_NAME) {
-    return explicitFallback ?? promptFallback;
+  if (promptFallback !== GENERIC_LANE_FALLBACK_NAME) {
+    return promptFallback;
   }
-  if (!explicitFallback) return promptFallback;
-
-  const uniqueSuffix = explicitFallback
-    .replace(/^chat-?/u, "")
-    .replace(/[^a-z0-9-]+/giu, "-")
-    .replace(/-+/g, "-")
-    .replace(/^-|-$/g, "")
-    .toLowerCase();
-  if (!uniqueSuffix.length) return promptFallback;
-
-  const maxPrefixLength = Math.max(1, 60 - uniqueSuffix.length - 1);
-  const prefix = promptFallback
-    .slice(0, maxPrefixLength)
-    .replace(/-+$/g, "");
-  return `${prefix}-${uniqueSuffix}`;
+  const suffix = genericSuffixFromLaneFallbackName(explicitFallback);
+  if (suffix) {
+    return genericLaneFallbackName(suffix);
+  }
+  return explicitFallback && !/^chat(?:-|$)/u.test(explicitFallback)
+    ? explicitFallback
+    : promptFallback;
 }
 
 function normalizeSuggestedLaneName(raw: string): string | null {
@@ -3122,7 +3133,7 @@ const DEFAULT_SESSION_TITLES_NORMALIZED = new Set(
     .map((title) => title.toLowerCase()),
 );
 const CURSOR_RUNTIME_AUTH_ERROR =
-  "Cursor rejected the configured API key for agent/model access. Re-enter a Cursor API key from the Cursor dashboard integrations page.";
+  "Cursor rejected the configured API key for agent/model access. Re-enter a Cursor API key from the Cursor dashboard API page.";
 
 function isCursorRuntimeAuthError(error: unknown): boolean {
   const statusCode = readErrorStatusCode(error);
@@ -3145,6 +3156,10 @@ function isCursorSdkAgentBusyError(error: unknown): boolean {
     || message.includes("already has an active run")
     || message.includes("active run in progress")
     || message.includes("already running another task");
+}
+
+function isCursorSdkRuntimeProcessAlive(runtime: CursorRuntime): boolean {
+  return isCursorSdkPooledAlive(runtime.sdk);
 }
 
 function classifyCursorSdkChatError(
@@ -3414,6 +3429,88 @@ function normalizeClaudeTodoItems(
   });
 
   return items.length ? items : null;
+}
+
+type ClaudeTodoItems = Extract<AgentChatEvent, { type: "todo_update" }>["items"];
+type ClaudeTaskTodoState = ClaudeTodoItems[number];
+
+function normalizeClaudeTaskTodoStatus(value: unknown): ClaudeTaskTodoState["status"] {
+  const normalized = typeof value === "string" ? value.trim().toLowerCase() : "";
+  if (normalized === "completed") return "completed";
+  if (normalized === "in_progress" || normalized === "inprogress" || normalized === "running") return "in_progress";
+  return "pending";
+}
+
+function firstNonEmptyString(...values: unknown[]): string | null {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim().length) return value.trim();
+  }
+  return null;
+}
+
+function updateClaudeTaskTodosFromToolInput(
+  tasksById: Map<string, ClaudeTaskTodoState>,
+  toolName: string,
+  input: unknown,
+  fallbackId: string,
+): ClaudeTodoItems | null {
+  if (!input || typeof input !== "object") return null;
+  const record = input as Record<string, unknown>;
+  const normalizedToolName = toolName.trim();
+  if (normalizedToolName === "TaskCreate") {
+    const description = firstNonEmptyString(record.subject, record.description, record.activeForm);
+    if (!description) return null;
+    const id = firstNonEmptyString(record.taskId, record.id, record.metadata && typeof record.metadata === "object"
+      ? (record.metadata as Record<string, unknown>).taskId
+      : null) ?? fallbackId;
+    tasksById.set(id, {
+      id,
+      description,
+      status: normalizeClaudeTaskTodoStatus(record.status),
+    });
+  } else if (normalizedToolName === "TaskUpdate") {
+    const id = firstNonEmptyString(record.taskId, record.id);
+    if (!id) return null;
+    const rawStatus = typeof record.status === "string" ? record.status.trim().toLowerCase() : "";
+    if (rawStatus === "deleted") {
+      tasksById.delete(id);
+    } else {
+      const existing = tasksById.get(id);
+      const description = firstNonEmptyString(record.subject, record.description, record.activeForm, existing?.description)
+        ?? id;
+      tasksById.set(id, {
+        id,
+        description,
+        status: normalizeClaudeTaskTodoStatus(record.status ?? existing?.status),
+      });
+    }
+  } else {
+    return null;
+  }
+  return [...tasksById.values()];
+}
+
+function remapClaudeTaskTodoFromRuntimeEvent(
+  tasksById: Map<string, ClaudeTaskTodoState>,
+  previousId: string | null | undefined,
+  nextId: string | null | undefined,
+  updates?: { description?: string | null; status?: ClaudeTaskTodoState["status"] },
+): ClaudeTodoItems | null {
+  const fromId = previousId?.trim();
+  const toId = nextId?.trim();
+  if (!fromId || !toId) return null;
+  const existing = tasksById.get(fromId);
+  if (!existing) return null;
+  if (fromId !== toId) {
+    tasksById.delete(fromId);
+  }
+  tasksById.set(toId, {
+    ...existing,
+    id: toId,
+    description: firstNonEmptyString(updates?.description, existing.description) ?? existing.description,
+    status: updates?.status ?? existing.status,
+  });
+  return [...tasksById.values()];
 }
 
 async function buildStreamingUserContent(
@@ -5206,22 +5303,84 @@ export function createAgentChatService(args: {
   const CHAT_EVENT_HISTORY_RESPONSE_MAX_PER_SESSION = 20_000;
   const CHAT_EVENT_HISTORY_TRANSCRIPT_MAX_BYTES = 2_000_000;
   const CHAT_EVENT_HISTORY_TRANSCRIPT_CACHE_MAX_SESSIONS = 32;
+  // Byte budgets alongside the event-count caps above. Individual events are
+  // unbounded (multi-MB tool outputs exist in real transcripts), so count caps
+  // alone cannot keep a history snapshot under the desktop RPC client's
+  // 16 MiB per-message limit; one over-limit response used to fail every
+  // in-flight call on the shared runtime socket. The ring budget is the
+  // working bound (ring 4 MB + 2 MB transcript tail ≈ 6 MB merged); the
+  // response budget is a backstop that should not trigger in practice.
+  const CHAT_EVENT_HISTORY_BUFFER_MAX_CHARS = 4_000_000;
+  const CHAT_EVENT_HISTORY_RESPONSE_MAX_CHARS = 8_000_000;
   const eventHistoryBySession = new Map<string, AgentChatEventEnvelope[]>();
+
+  const safeJsonChars = (value: unknown): number => {
+    try {
+      return JSON.stringify(value).length;
+    } catch {
+      return 2_048;
+    }
+  };
+
+  // Keep the newest items whose cumulative serialized size fits the budget
+  // (always at least the newest one, even when it alone exceeds it).
+  const keepNewestWithinCharBudget = <T>(
+    items: T[],
+    maxChars: number,
+    sizeOf: (item: T) => number,
+  ): T[] => {
+    let total = 0;
+    let start = items.length;
+    while (start > 0) {
+      const next = total + sizeOf(items[start - 1]!);
+      if (start < items.length && next > maxChars) break;
+      total = next;
+      start -= 1;
+    }
+    return start > 0 ? items.slice(start) : items;
+  };
+
+  // Envelopes are immutable once recorded; cache their serialized size so
+  // byte-budget trims do not re-stringify multi-MB events on every snapshot.
+  const envelopeSizeCache = new WeakMap<AgentChatEventEnvelope, number>();
+
+  const estimateEnvelopeChars = (envelope: AgentChatEventEnvelope): number => {
+    let size = envelopeSizeCache.get(envelope);
+    if (size == null) {
+      size = safeJsonChars(envelope);
+      envelopeSizeCache.set(envelope, size);
+    }
+    return size;
+  };
+
+  const trimEnvelopesToByteBudget = (
+    envelopes: AgentChatEventEnvelope[],
+    maxChars: number,
+  ): AgentChatEventEnvelope[] => keepNewestWithinCharBudget(envelopes, maxChars, estimateEnvelopeChars);
+
+  // The single policy for what bounds the in-memory event ring: an event-count
+  // cap, then a byte budget. Applied wherever the ring is (re)written.
+  const boundRingEnvelopes = (envelopes: AgentChatEventEnvelope[]): AgentChatEventEnvelope[] =>
+    trimEnvelopesToByteBudget(
+      envelopes.length > CHAT_EVENT_HISTORY_BUFFER_MAX_PER_SESSION
+        ? envelopes.slice(-CHAT_EVENT_HISTORY_BUFFER_MAX_PER_SESSION)
+        : envelopes,
+      CHAT_EVENT_HISTORY_BUFFER_MAX_CHARS,
+    );
   const transcriptHistoryCacheBySession = new Map<string, {
     transcriptPath: string;
     size: number;
     mtimeMs: number;
     truncated: boolean;
+    /** Byte offset (line start) where the cached tail window begins; 0 when not truncated. */
+    startOffset: number;
     envelopes: AgentChatEventEnvelope[];
   }>();
 
   const recordChatEventInHistory = (envelope: AgentChatEventEnvelope): void => {
     const current = eventHistoryBySession.get(envelope.sessionId) ?? [];
     current.push(envelope);
-    if (current.length > CHAT_EVENT_HISTORY_BUFFER_MAX_PER_SESSION) {
-      current.splice(0, current.length - CHAT_EVENT_HISTORY_BUFFER_MAX_PER_SESSION);
-    }
-    eventHistoryBySession.set(envelope.sessionId, current);
+    eventHistoryBySession.set(envelope.sessionId, boundRingEnvelopes(current));
   };
 
   const rememberTranscriptHistoryCache = (
@@ -5231,6 +5390,7 @@ export function createAgentChatService(args: {
       size: number;
       mtimeMs: number;
       truncated: boolean;
+      startOffset: number;
       envelopes: AgentChatEventEnvelope[];
     },
   ): void => {
@@ -5258,14 +5418,23 @@ export function createAgentChatService(args: {
     prompt: string;
     systemPrompt?: string;
     timeoutMs?: number;
+    reasoningEffort?: string | null;
     taskType: "session_title" | "session_summary" | "handoff_summary" | "continuity_summary";
   }) => {
+    const config = resolveChatConfig();
+    const reasoningEffort = args.reasoningEffort
+      ?? (args.taskType === "session_title"
+        ? config.titleReasoningEffort
+        : args.taskType === "session_summary"
+          ? config.summaryReasoningEffort
+          : null);
     return await aiIntegrationService.summarizeTerminal({
       cwd: args.cwd,
       model: args.modelId,
       prompt: args.prompt,
       systemPrompt: args.systemPrompt,
       timeoutMs: args.timeoutMs,
+      reasoningEffort,
       taskType: args.taskType,
     });
   };
@@ -6429,26 +6598,39 @@ export function createAgentChatService(args: {
   const readTranscriptTailForHistory = (
     transcriptPath: string,
     stat: fs.Stats,
-  ): { raw: string; truncated: boolean } => {
+  ): { raw: string; truncated: boolean; startOffset: number } => {
     const size = stat.size;
     const start = Math.max(0, size - CHAT_EVENT_HISTORY_TRANSCRIPT_MAX_BYTES);
-    const length = size - start;
-    if (length <= 0) return { raw: "", truncated: false };
+    // Read one extra byte before the window (when possible) so a window
+    // boundary that lands exactly on a line start does not silently drop a
+    // complete line: if byte `start - 1` is "\n" the line at `start` is kept.
+    const readStart = Math.max(0, start - 1);
+    const length = size - readStart;
+    if (length <= 0) return { raw: "", truncated: false, startOffset: 0 };
     const fd = fs.openSync(transcriptPath, "r");
     try {
       const out = Buffer.allocUnsafe(length);
-      const bytesRead = fs.readSync(fd, out, 0, out.length, start);
+      const bytesRead = fs.readSync(fd, out, 0, out.length, readStart);
       let slice = bytesRead === out.length ? out : out.subarray(0, bytesRead);
       const truncated = start > 0;
+      // The byte offset where the parsed tail window begins (always a line
+      // start). Used as the initial pagination cursor for getChatEventHistoryPage.
+      let startOffset = readStart;
       if (truncated && slice.length > 0) {
         const nextNewline = slice.indexOf(0x0a);
-        if (nextNewline >= 0 && nextNewline + 1 < slice.length) {
+        const lineStart = nextNewline >= 0 ? readStart + nextNewline + 1 : -1;
+        if (lineStart >= 0 && lineStart < size) {
           slice = slice.subarray(nextNewline + 1);
+          startOffset = lineStart;
         } else {
+          // The whole tail window is a single partial line — nothing
+          // parseable. Report the window start so pagination can continue
+          // strictly backwards past the oversized line.
           slice = Buffer.alloc(0);
+          startOffset = start;
         }
       }
-      return { raw: slice.toString("utf8"), truncated };
+      return { raw: slice.toString("utf8"), truncated, startOffset: truncated ? startOffset : 0 };
     } finally {
       fs.closeSync(fd);
     }
@@ -6457,7 +6639,7 @@ export function createAgentChatService(args: {
   const parseTranscriptHistoryTail = (
     sessionId: string,
     transcriptPath: string,
-  ): { envelopes: AgentChatEventEnvelope[]; truncated: boolean } => {
+  ): { envelopes: AgentChatEventEnvelope[]; truncated: boolean; startOffset: number } => {
     const stat = fs.statSync(transcriptPath);
     const cached = transcriptHistoryCacheBySession.get(sessionId);
     if (
@@ -6467,10 +6649,10 @@ export function createAgentChatService(args: {
       && cached.mtimeMs === stat.mtimeMs
     ) {
       rememberTranscriptHistoryCache(sessionId, cached);
-      return { envelopes: cached.envelopes.slice(), truncated: cached.truncated };
+      return { envelopes: cached.envelopes.slice(), truncated: cached.truncated, startOffset: cached.startOffset };
     }
 
-    const { raw, truncated } = readTranscriptTailForHistory(transcriptPath, stat);
+    const { raw, truncated, startOffset } = readTranscriptTailForHistory(transcriptPath, stat);
     const envelopes = parseAgentChatTranscript(raw)
       .filter((entry) => entry.sessionId === sessionId);
     rememberTranscriptHistoryCache(sessionId, {
@@ -6478,9 +6660,10 @@ export function createAgentChatService(args: {
       size: stat.size,
       mtimeMs: stat.mtimeMs,
       truncated,
+      startOffset,
       envelopes,
     });
-    return { envelopes: envelopes.slice(), truncated };
+    return { envelopes: envelopes.slice(), truncated, startOffset };
   };
 
   // Read a bounded on-disk transcript tail for a session without requiring an
@@ -6488,15 +6671,15 @@ export function createAgentChatService(args: {
   // in-memory ring buffer without allocating huge historical transcripts.
   const readTranscriptEnvelopesForSessionId = (
     sessionId: string,
-  ): { envelopes: AgentChatEventEnvelope[]; truncated: boolean } => {
+  ): { envelopes: AgentChatEventEnvelope[]; truncated: boolean; startOffset: number } => {
     const managed = managedSessions.get(sessionId);
     if (managed?.transcriptPath) {
       try {
         const transcriptPath = resolveReadableChatPath(managed.transcriptPath, "agent_chat.transcript_read_skipped_path_outside_ade");
-        if (!transcriptPath) return { envelopes: [], truncated: false };
+        if (!transcriptPath) return { envelopes: [], truncated: false, startOffset: 0 };
         return parseTranscriptHistoryTail(sessionId, transcriptPath);
       } catch {
-        return { envelopes: [], truncated: false };
+        return { envelopes: [], truncated: false, startOffset: 0 };
       }
     }
     // Fall back to the known transcript layout so sessions that were never
@@ -6515,7 +6698,36 @@ export function createAgentChatService(args: {
         // try next candidate
       }
     }
-    return { envelopes: [], truncated: false };
+    return { envelopes: [], truncated: false, startOffset: 0 };
+  };
+
+  // Resolve the on-disk transcript path for a session the same way
+  // readTranscriptEnvelopesForSessionId does (managed transcriptPath first,
+  // then the known transcript layouts), returning null when nothing readable
+  // exists. Used by getChatEventHistoryPage.
+  const resolveTranscriptPathForSessionId = (sessionId: string): string | null => {
+    const managed = managedSessions.get(sessionId);
+    if (managed?.transcriptPath) {
+      try {
+        return resolveReadableChatPath(managed.transcriptPath, "agent_chat.transcript_read_skipped_path_outside_ade");
+      } catch {
+        return null;
+      }
+    }
+    const candidates = [
+      path.join(transcriptsDir, `${sessionId}.chat.jsonl`),
+      path.join(chatTranscriptsDir, `${sessionId}.jsonl`),
+    ];
+    for (const candidatePath of candidates) {
+      try {
+        const transcriptPath = resolveReadableChatPath(candidatePath, "agent_chat.transcript_read_skipped_path_outside_ade");
+        if (!transcriptPath) continue;
+        if (fs.existsSync(transcriptPath)) return transcriptPath;
+      } catch {
+        // try next candidate
+      }
+    }
+    return null;
   };
 
   const readFullTranscriptEnvelopesForSessionId = (sessionId: string): AgentChatEventEnvelope[] => {
@@ -6643,24 +6855,99 @@ export function createAgentChatService(args: {
     if (merged.length > CHAT_EVENT_HISTORY_RESPONSE_MAX_PER_SESSION) {
       merged = merged.slice(-CHAT_EVENT_HISTORY_RESPONSE_MAX_PER_SESSION);
     }
-    eventHistoryBySession.set(trimmedId, merged.slice(-CHAT_EVENT_HISTORY_BUFFER_MAX_PER_SESSION));
+    eventHistoryBySession.set(trimmedId, boundRingEnvelopes(merged.slice()));
 
     const parentVisibleMerged = merged.filter((entry) => !isCodexSubagentTranscriptEnvelope(entry));
     const parentVisibleLength = parentVisibleMerged.length;
     const transcriptTruncated = transcriptHistory.truncated;
-    const windowTruncated =
-      mergedLengthBeforeResponseCap > CHAT_EVENT_HISTORY_RESPONSE_MAX_PER_SESSION
-      || parentVisibleLength > maxEvents;
-    const truncated = transcriptTruncated || windowTruncated;
-    const windowed = parentVisibleLength > maxEvents
+    const countWindowed = parentVisibleLength > maxEvents
       ? parentVisibleMerged.slice(-maxEvents)
       : parentVisibleMerged;
+    // Backstop byte budget so the serialized snapshot always fits one RPC
+    // message. The ring and transcript-tail budgets keep snapshots well under
+    // it, so it only trims when a single envelope dwarfs both (>~6 MB); such
+    // trimmed events sit AFTER tailStartOffset and are not reachable through
+    // getChatEventHistoryPage (which pages strictly older) — an accepted
+    // seam, the alternative being a response the client must discard.
+    const windowed = trimEnvelopesToByteBudget(countWindowed, CHAT_EVENT_HISTORY_RESPONSE_MAX_CHARS);
+    const windowTruncated =
+      mergedLengthBeforeResponseCap > CHAT_EVENT_HISTORY_RESPONSE_MAX_PER_SESSION
+      || parentVisibleLength > maxEvents
+      || windowed.length < countWindowed.length;
+    const truncated = transcriptTruncated || windowTruncated;
     return {
       sessionId: trimmedId,
       events: windowed,
       truncated,
       transcriptTruncated,
       windowTruncated,
+      sessionFound: true,
+      // Pagination cursor: the byte offset (line start) where the hydrated
+      // transcript tail began. Null when the transcript was fully hydrated
+      // (or absent) — i.e. there is nothing older on disk to page through.
+      tailStartOffset: transcriptTruncated ? transcriptHistory.startOffset : null,
+    };
+  };
+
+  /**
+   * Read one page of OLDER transcript history ending (exclusively) at
+   * `beforeOffset` — the scroll-back complement to getChatEventHistory.
+   *
+   * Cursor protocol: start from the snapshot's `tailStartOffset`, then pass
+   * each page's `startOffset` as the next request's `beforeOffset` until
+   * `hasMore` is false (startOffset 0 = head of transcript reached). The
+   * returned `startOffset` is strictly less than `beforeOffset`, so paging
+   * always terminates — even when a single JSONL line is larger than the
+   * page window (such pages return no events but still move the cursor).
+   * The transcript is append-only and pages are bounded by `beforeOffset`,
+   * so concurrent appends never affect the pages being read.
+   */
+  const getChatEventHistoryPage = (
+    sessionId: string,
+    options: { beforeOffset: number; maxBytes?: number },
+  ): AgentChatEventHistoryPage => {
+    const trimmedId = sessionId.trim();
+    const emptyPage = (sessionFound: boolean): AgentChatEventHistoryPage => ({
+      sessionId: trimmedId,
+      events: [],
+      startOffset: 0,
+      hasMore: false,
+      sessionFound,
+    });
+    if (!trimmedId.length) return emptyPage(false);
+    // Validate the session belongs to an agent chat before reading any
+    // transcript path — this function is reachable via IPC and builds
+    // filesystem paths from `trimmedId` downstream.
+    const row = sessionService.get(trimmedId);
+    if (!row || !isChatToolType(row.toolType)) return emptyPage(false);
+
+    const beforeOffsetRaw = options?.beforeOffset;
+    const beforeOffset = typeof beforeOffsetRaw === "number" && Number.isFinite(beforeOffsetRaw)
+      ? Math.floor(beforeOffsetRaw)
+      : 0;
+    if (beforeOffset <= 0) return emptyPage(true);
+
+    const transcriptPath = resolveTranscriptPathForSessionId(trimmedId);
+    if (!transcriptPath) return emptyPage(true);
+
+    let page: TranscriptHistoryPageRead;
+    try {
+      page = readTranscriptHistoryPage({
+        transcriptPath,
+        sessionId: trimmedId,
+        beforeOffset,
+        maxBytes: options?.maxBytes,
+      });
+    } catch {
+      // Transcript disappeared between resolution and read (or is unreadable)
+      // — the session exists but has no pageable history.
+      return emptyPage(true);
+    }
+    return {
+      sessionId: trimmedId,
+      events: page.envelopes.filter((entry) => !isCodexSubagentTranscriptEnvelope(entry)),
+      startOffset: page.startOffset,
+      hasMore: page.hasMore,
       sessionFound: true,
     };
   };
@@ -7560,9 +7847,17 @@ export function createAgentChatService(args: {
     const titleGenerationEnabled = si?.titles?.enabled
       ?? (typeof legacyChat.autoTitleEnabled === "boolean" ? legacyChat.autoTitleEnabled : undefined)
       ?? true;
-    const titleModelIdRaw = si?.titles?.modelId ?? legacyChat.autoTitleModelId;
+    const titleModelIdRaw = si?.titles && Object.prototype.hasOwnProperty.call(si.titles, "modelId")
+      ? si.titles.modelId
+      : legacyChat.autoTitleModelId;
     const titleModelId = typeof titleModelIdRaw === "string" && titleModelIdRaw.trim().length
       ? titleModelIdRaw.trim()
+      : null;
+    const titleReasoningEffortRaw = si?.titles && Object.prototype.hasOwnProperty.call(si.titles, "reasoningEffort")
+      ? si.titles.reasoningEffort
+      : legacyChat.autoTitleReasoningEffort;
+    const titleReasoningEffort = typeof titleReasoningEffortRaw === "string" && titleReasoningEffortRaw.trim().length
+      ? titleReasoningEffortRaw.trim()
       : null;
     const titleRefreshOnComplete = si?.titles?.refreshOnComplete
       ?? (typeof legacyChat.autoTitleRefreshOnComplete === "boolean" ? legacyChat.autoTitleRefreshOnComplete : undefined)
@@ -7574,6 +7869,10 @@ export function createAgentChatService(args: {
     const summaryModelId = typeof summaryModelIdRaw === "string" && summaryModelIdRaw.trim().length
       ? summaryModelIdRaw.trim()
       : null;
+    const summaryReasoningEffortRaw = si?.summaries?.reasoningEffort;
+    const summaryReasoningEffort = typeof summaryReasoningEffortRaw === "string" && summaryReasoningEffortRaw.trim().length
+      ? summaryReasoningEffortRaw.trim()
+      : null;
 
     return {
       codexApprovalPolicy: approvalPolicy,
@@ -7583,9 +7882,11 @@ export function createAgentChatService(args: {
       sessionBudgetUsd,
       titleGenerationEnabled,
       titleModelId,
+      titleReasoningEffort,
       titleRefreshOnComplete,
       summaryEnabled,
       summaryModelId,
+      summaryReasoningEffort,
     };
   };
 
@@ -10894,8 +11195,9 @@ export function createAgentChatService(args: {
     };
     const openClaudeToolUses = new Map<string, { toolName: string }>();
     const toolInputJsonByContentIndex = new Map<number, string>();
-    const toolUseMetaByContentIndex = new Map<number, { toolName: string; itemId: string; toolUseId?: string }>();
+    const toolUseMetaByContentIndex = new Map<number, { toolName: string; itemId: string; toolUseId?: string; argsWereEmpty?: boolean }>();
     const emittedClaudeTodoIds = new Set<string>();
+    const claudeTaskTodosById = new Map<string, ClaudeTaskTodoState>();
     const emitClaudeToolCompletion = (
       itemId: string,
       result: Record<string, unknown>,
@@ -10948,9 +11250,10 @@ export function createAgentChatService(args: {
       }
     };
     const maybeEmitTodoUpdate = (toolName: string, input: unknown, itemId: string): void => {
-      if (toolName !== "TodoWrite") return;
       if (emittedClaudeTodoIds.has(itemId)) return;
-      const todoItems = normalizeClaudeTodoItems(input ?? {});
+      const todoItems = toolName === "TodoWrite"
+        ? normalizeClaudeTodoItems(input ?? {})
+        : updateClaudeTaskTodosFromToolInput(claudeTaskTodosById, toolName, input ?? {}, itemId);
       if (!todoItems) return;
       emittedClaudeTodoIds.add(itemId);
       emitChatEvent(managed, { type: "todo_update", items: todoItems, turnId });
@@ -11398,6 +11701,18 @@ export function createAgentChatService(args: {
             ...(taskType ? { taskType } : {}),
             ...(workflowName ? { workflowName } : {}),
           });
+          const remappedTodoItems = remapClaudeTaskTodoFromRuntimeEvent(
+            claudeTaskTodosById,
+            parentToolUseId,
+            taskId,
+            {
+              description,
+              status: "in_progress",
+            },
+          );
+          if (remappedTodoItems) {
+            emitChatEvent(managed, { type: "todo_update", items: remappedTodoItems, turnId });
+          }
           emitChatEvent(managed, {
             type: "subagent_started",
             taskId,
@@ -11687,15 +12002,7 @@ export function createAgentChatService(args: {
                   itemId,
                   turnId,
                 });
-                const todoItems = toolName === "TodoWrite" ? normalizeClaudeTodoItems(block.input ?? {}) : null;
-                if (todoItems && !emittedClaudeTodoIds.has(itemId)) {
-                  emittedClaudeTodoIds.add(itemId);
-                  emitChatEvent(managed, {
-                    type: "todo_update",
-                    items: todoItems,
-                    turnId,
-                  });
-                }
+                maybeEmitTodoUpdate(toolName, block.input, itemId);
                 if (typeof contentIndex === "number") {
                   const initial =
                     block.input != null && typeof block.input === "object" && Object.keys(block.input as object).length
@@ -11707,6 +12014,12 @@ export function createAgentChatService(args: {
                     toolName,
                     itemId,
                     ...(toolUseId ? { toolUseId } : {}),
+                    // Stream path: the tool's input arrives AFTER this start
+                    // event via input_json_delta, so the tool_call above went
+                    // out with empty args. Flag it so content_block_stop can
+                    // re-emit the call with the fully parsed args (renderers
+                    // collapse both events into one entry by turn+itemId).
+                    argsWereEmpty: initial.length === 0,
                   });
                 }
               }
@@ -11734,6 +12047,27 @@ export function createAgentChatService(args: {
                   const taskInput = extractTaskToolInput(parsed);
                   if (taskInput) runtime.taskToolInputByToolUseId.set(meta.toolUseId, taskInput);
                 }
+                // The start-time tool_call carried empty args (input streamed
+                // in afterwards). Re-emit it with the parsed args so history
+                // shows the tool's target (file path / command / task) instead
+                // of a bare tool name. Desktop's appendWorkLogRow and the TUI's
+                // tool registry both collapse this into the original entry via
+                // turn+itemId, so no duplicate row renders.
+                if (
+                  meta.argsWereEmpty
+                  && parsed != null
+                  && typeof parsed === "object"
+                  && Object.keys(parsed as object).length > 0
+                ) {
+                  emitChatEvent(managed, {
+                    type: "tool_call",
+                    tool: meta.toolName,
+                    args: parsed as Record<string, unknown>,
+                    itemId: meta.itemId,
+                    turnId,
+                  });
+                }
+                maybeEmitTodoUpdate(meta.toolName, parsed, meta.itemId);
                 const syntheticResult = maybeSyntheticToolResult(meta.toolName, parsed, meta.itemId, turnId);
                 if (syntheticResult && !emittedSyntheticItemIds.has(meta.itemId)) {
                   emittedSyntheticItemIds.add(meta.itemId);
@@ -12231,8 +12565,12 @@ export function createAgentChatService(args: {
     const claudeSupportsReasoning = claudeDescriptor?.capabilities.reasoning ?? true;
     if (claudeSupportsReasoning) {
       const effort = managed.session.reasoningEffort;
-      if (effort === "low" || effort === "medium" || effort === "high" || effort === "xhigh" || effort === "max") {
-        cliArgs.push("--effort", effort);
+      const runtimeEffort = claudeRuntimeEffortForReasoningEffort(effort);
+      if (runtimeEffort) {
+        cliArgs.push("--effort", runtimeEffort);
+      }
+      if (isClaudeUltracodeEffort(effort)) {
+        cliArgs.push("--settings", JSON.stringify({ ultracode: true }));
       }
     }
     cliArgs.push(promptText);
@@ -16705,8 +17043,15 @@ export function createAgentChatService(args: {
     const claudeSupportsReasoning = claudeDescriptor?.capabilities.reasoning ?? true;
     if (claudeSupportsReasoning) {
       const effort = managed.session.reasoningEffort;
-      if (effort === "low" || effort === "medium" || effort === "high" || effort === "xhigh" || effort === "max") {
-        opts.effort = effort as any;
+      const runtimeEffort = claudeRuntimeEffortForReasoningEffort(effort);
+      if (runtimeEffort) {
+        opts.effort = runtimeEffort as any;
+      }
+      if (isClaudeUltracodeEffort(effort)) {
+        opts.settings = {
+          ...((opts.settings ?? {}) as Record<string, unknown>),
+          ultracode: true,
+        } as any;
       }
     }
     const model = opts.model ?? resolveClaudeCliModel(managed.session.model) ?? DEFAULT_CLAUDE_MODEL;
@@ -19380,14 +19725,25 @@ export function createAgentChatService(args: {
     if (managed.runtime?.kind === "cursor") {
       const existing = managed.runtime;
       if (existing.poolKey === poolKey) {
-        existing.sdkPolicy = policy;
-        existing.currentModeId = displayModeId;
-        existing.currentModelId = launchModelSdkId;
-        wireCursorSdkBridgeHandlers(managed, existing);
-        syncCursorModeSnapshot(managed, existing);
-        return existing;
+        if (!isCursorSdkRuntimeProcessAlive(existing)) {
+          logger.warn("agent_chat.cursor_sdk_dead_runtime_reacquire", {
+            sessionId: managed.session.id,
+            poolKey,
+            exitCode: existing.sdk.process.exitCode,
+            killed: existing.sdk.process.killed,
+            connected: existing.sdk.process.connected,
+          });
+          teardownRuntime(managed, "handle_close");
+        } else {
+          existing.sdkPolicy = policy;
+          existing.currentModeId = displayModeId;
+          existing.currentModelId = launchModelSdkId;
+          wireCursorSdkBridgeHandlers(managed, existing);
+          syncCursorModeSnapshot(managed, existing);
+          return existing;
+        }
       }
-      teardownRuntime(managed, "handle_close");
+      if (managed.runtime?.kind === "cursor") teardownRuntime(managed, "handle_close");
     } else if (managed.runtime) {
       teardownRuntime(managed, "handle_close");
     }
@@ -19434,6 +19790,7 @@ export function createAgentChatService(args: {
         poolKey,
         projectRoot,
         workspacePath: managed.laneWorktreePath,
+        baseEnv: buildAgentRuntimeEnv(managed),
         modelSdkId: launchModelSdkId,
         ...(launchModelParams?.length ? { modelParams: launchModelParams } : {}),
         apiKey,
@@ -23157,34 +23514,74 @@ export function createAgentChatService(args: {
       ? MODEL_CATALOG_LOCAL_REFRESH_TTL_MS
       : MODEL_CATALOG_REFRESH_TTL_MS;
 
+  // Cursor freshness is tracked per discovery source: an SDK-scoped refresh
+  // only proves the SDK rows are current, so it must not mark the CLI surface
+  // fresh (a later Work-tab CLI picker would otherwise skip its force probe
+  // for the TTL and miss CLI-only model/auth changes), and vice versa.
+  const cursorCatalogSourceRefreshedAt = new Map<"sdk" | "cli", number>();
+  const cursorSourcesFor = (cursorSource?: AgentChatCursorModelSource): ("sdk" | "cli")[] =>
+    cursorSource === "sdk" ? ["sdk"] : cursorSource === "cli" ? ["cli"] : ["sdk", "cli"];
+
   const markModelCatalogProviderFresh = (
     refreshProvider: AgentChatModelCatalogRefreshProvider | undefined,
     refreshedAt: number,
+    cursorSource?: AgentChatCursorModelSource,
   ): void => {
+    if (refreshProvider === "cursor") {
+      for (const source of cursorSourcesFor(cursorSource)) {
+        cursorCatalogSourceRefreshedAt.set(source, refreshedAt);
+      }
+      return;
+    }
     if (refreshProvider) {
       modelCatalogProviderRefreshedAt.set(refreshProvider, refreshedAt);
       return;
     }
     for (const provider of MODEL_CATALOG_REFRESH_PROVIDERS) {
-      modelCatalogProviderRefreshedAt.set(provider, refreshedAt);
+      if (provider === "cursor") {
+        cursorCatalogSourceRefreshedAt.set("sdk", refreshedAt);
+        cursorCatalogSourceRefreshedAt.set("cli", refreshedAt);
+      } else {
+        modelCatalogProviderRefreshedAt.set(provider, refreshedAt);
+      }
     }
   };
 
   const modelCatalogContainsRefreshProvider = (
     catalog: AgentChatModelCatalog,
     provider: AgentChatModelCatalogRefreshProvider,
+    cursorSource?: AgentChatCursorModelSource,
   ): boolean => {
     return (catalog.groups ?? []).some((group) => {
       const groupMatches = group.key === provider;
       if (!groupMatches) return false;
+      // A cursor-flavored check must see rows the requesting surface can run:
+      // an SDK-only refresh must not satisfy a CLI-surface staleness probe.
+      if (provider === "cursor" && (cursorSource === "sdk" || cursorSource === "cli")) {
+        return (group.providers ?? []).some((entry) =>
+          (entry.subsections ?? []).some((subsection) =>
+            (subsection.models ?? []).some((model) => model.cursorAvailability?.[cursorSource] === true)));
+      }
       return (group.providers ?? []).some((entry) => entry.modelCount > 0);
     });
   };
 
-  const isModelCatalogRefreshStale = (refreshProvider?: AgentChatModelCatalogRefreshProvider): boolean => {
+  const isModelCatalogRefreshStale = (
+    refreshProvider?: AgentChatModelCatalogRefreshProvider,
+    cursorSource?: AgentChatCursorModelSource,
+  ): boolean => {
     if (!modelCatalogCache) return true;
+    if (refreshProvider === "cursor") {
+      if (!modelCatalogContainsRefreshProvider(modelCatalogCache, refreshProvider, cursorSource)) return true;
+      // Stale unless every source the request covers was itself refreshed
+      // within the TTL — an "all" request needs both sdk and cli fresh.
+      const ttl = modelCatalogRefreshTtlMs(refreshProvider);
+      return cursorSourcesFor(cursorSource).some((source) => {
+        const refreshedAt = cursorCatalogSourceRefreshedAt.get(source);
+        return !refreshedAt || Date.now() - refreshedAt > ttl;
+      });
+    }
     if (refreshProvider) {
-      if (refreshProvider === "cursor" && !modelCatalogContainsRefreshProvider(modelCatalogCache, refreshProvider)) return true;
       const refreshedAt = modelCatalogProviderRefreshedAt.get(refreshProvider);
       return !refreshedAt || Date.now() - refreshedAt > modelCatalogRefreshTtlMs(refreshProvider);
     }
@@ -23203,10 +23600,11 @@ export function createAgentChatService(args: {
   const shouldMarkModelCatalogProviderFresh = (
     catalog: AgentChatModelCatalog,
     refreshProvider: AgentChatModelCatalogRefreshProvider | undefined,
+    cursorSource?: AgentChatCursorModelSource,
   ): boolean => {
     if (!refreshProvider) return true;
     if (refreshProvider !== "cursor") return true;
-    return modelCatalogContainsRefreshProvider(catalog, refreshProvider);
+    return modelCatalogContainsRefreshProvider(catalog, refreshProvider, cursorSource);
   };
 
   const discoverOpenCodeLocalModels = async (): Promise<DiscoveredLocalModelEntry[]> => {
@@ -23238,6 +23636,7 @@ export function createAgentChatService(args: {
   const loadAvailableModels = async (args: {
     provider: AgentChatProvider;
     activateRuntime?: boolean;
+    cursorSource?: AgentChatCursorModelSource;
   }): Promise<AgentChatModelInfo[]> => {
     const provider = args.provider;
     if (provider === "codex") {
@@ -23257,19 +23656,40 @@ export function createAgentChatService(args: {
         const cursorCliPath = cursorCli?.type === "cli-subscription" && cursorCli.cli === "cursor"
           ? cursorCli.path
           : null;
+        // Probe only the source the requesting surface runs models through —
+        // chat surfaces use the SDK (~300ms), CLI lane drafts use the CLI
+        // (a process spawn that can take seconds). The other source serves
+        // last-known-good rows and revalidates in the background, so a chat
+        // picker refresh never waits on a CLI spawn.
+        const cursorSource = args.cursorSource ?? "all";
+        const probeCli = args.activateRuntime === true && cursorSource !== "sdk";
+        const probeSdk = args.activateRuntime === true && cursorSource !== "cli";
         const [cliDescriptors, sdkDescriptors] = await Promise.all([
           cursorCliPath
             ? discoverCursorCliModelDescriptors(cursorCliPath, {
-                mode: args.activateRuntime ? "probe" : "cached-or-fallback",
+                mode: probeCli ? "probe" : "cached-or-fallback",
               }).catch(() => [])
             : Promise.resolve([]),
           apiKey
             ? discoverCursorSdkModelDescriptors(apiKey, {
-                mode: args.activateRuntime ? "probe" : "cached-only",
+                mode: probeSdk ? "probe" : "cached-or-fallback",
               }).catch(() => [])
             : Promise.resolve([]),
         ]);
-        const ordered = mergeCursorModelDescriptorSources({ cliDescriptors, sdkDescriptors });
+        const merged = mergeCursorModelDescriptorSources({ cliDescriptors, sdkDescriptors });
+        // Honor the requested source in the RETURNED set, not just in probing.
+        // A surface that runs Cursor through one runtime must not be offered
+        // models only the other runtime can run — selecting one would later
+        // throw in assertCursorChatModelCanUseSdk (or the CLI equivalent). The
+        // skipped source still annotates availability on dual-capable rows;
+        // only rows exclusive to the skipped source are dropped. "all" returns
+        // the union. Surfaces that don't filter client-side (some TUI/mobile
+        // paths) rely on this.
+        const ordered = cursorSource === "sdk"
+          ? merged.filter((d) => d.cursorAvailability?.sdk === true)
+          : cursorSource === "cli"
+            ? merged.filter((d) => d.cursorAvailability?.cli === true)
+            : merged;
         const preferred = pickDefaultCursorDescriptorFromCliList(ordered);
         return ordered.map((d) => ({
           id: d.id,
@@ -23441,17 +23861,19 @@ export function createAgentChatService(args: {
   const getAvailableModels = async ({
     provider,
     activateRuntime,
+    cursorSource,
   }: {
     provider: AgentChatProvider;
     activateRuntime?: boolean;
+    cursorSource?: AgentChatCursorModelSource;
   }): Promise<AgentChatModelInfo[]> => {
-    const requestKey = `${provider}:${activateRuntime === true ? "active" : "passive"}`;
+    const requestKey = `${provider}:${activateRuntime === true ? "active" : "passive"}:${cursorSource ?? "all"}`;
     const existingRequest = availableModelsRequests.get(requestKey);
     if (existingRequest) {
       return existingRequest;
     }
 
-    const request = loadAvailableModels({ provider, activateRuntime });
+    const request = loadAvailableModels({ provider, activateRuntime, cursorSource });
     availableModelsRequests.set(requestKey, request);
     try {
       return await request;
@@ -23465,7 +23887,7 @@ export function createAgentChatService(args: {
   const modelCatalogRequestKey = (catalogArgs?: AgentChatModelCatalogArgs): string => {
     const mode = catalogArgs?.mode ?? "refresh-stale";
     const refreshProvider = catalogArgs?.refreshProvider;
-    return `${mode}:${refreshProvider ?? "all"}`;
+    return `${mode}:${refreshProvider ?? "all"}:${catalogArgs?.cursorSource ?? "all"}`;
   };
 
   const buildModelCatalog = async (catalogArgs?: AgentChatModelCatalogArgs): Promise<AgentChatModelCatalog> => {
@@ -23494,6 +23916,9 @@ export function createAgentChatService(args: {
               activateRuntime:
                 (provider === "cursor" && shouldRefreshProvider("cursor"))
                 || (provider === "droid" && shouldRefreshProvider("droid")),
+              ...(provider === "cursor" && catalogArgs?.cursorSource
+                ? { cursorSource: catalogArgs.cursorSource }
+                : {}),
             }),
           };
         } catch {
@@ -23672,8 +24097,8 @@ export function createAgentChatService(args: {
       })),
     };
     modelCatalogCache = catalog;
-    if (mode !== "cached" && shouldMarkModelCatalogProviderFresh(catalog, refreshProvider)) {
-      markModelCatalogProviderFresh(refreshProvider, Date.now());
+    if (mode !== "cached" && shouldMarkModelCatalogProviderFresh(catalog, refreshProvider, catalogArgs?.cursorSource)) {
+      markModelCatalogProviderFresh(refreshProvider, Date.now(), catalogArgs?.cursorSource);
     }
     return catalog;
   };
@@ -23703,11 +24128,12 @@ export function createAgentChatService(args: {
   const getModelCatalog = async (catalogArgs?: AgentChatModelCatalogArgs): Promise<AgentChatModelCatalog> => {
     const mode = catalogArgs?.mode ?? "refresh-stale";
     if (mode === "refresh-stale" && modelCatalogCache) {
-      const stale = isModelCatalogRefreshStale(catalogArgs?.refreshProvider);
+      const stale = isModelCatalogRefreshStale(catalogArgs?.refreshProvider, catalogArgs?.cursorSource);
       if (stale) {
         scheduleModelCatalogRefresh({
           mode: "force",
           ...(catalogArgs?.refreshProvider ? { refreshProvider: catalogArgs.refreshProvider } : {}),
+          ...(catalogArgs?.cursorSource ? { cursorSource: catalogArgs.cursorSource } : {}),
         });
       }
       return withModelCatalogStaleFlag(modelCatalogCache, stale);
@@ -25028,6 +25454,20 @@ export function createAgentChatService(args: {
     return options.limit !== undefined ? sliced.slice(0, options.limit) : sliced;
   }
 
+  // Subagent transcripts merge unbounded sources (full persisted transcript,
+  // live `thread/turns/list?itemsView=full` pulls) and individual messages can
+  // carry multi-MB tool outputs. Keep the newest messages that fit one RPC
+  // response (always at least one) so a single fetch can never exceed the
+  // desktop client's per-message limit. Note for `offset`/`limit` callers: the
+  // bound keeps the newest suffix of the requested window, so a response may
+  // start later than `offset` and a short page does not imply end-of-data.
+  const SUBAGENT_TRANSCRIPT_RESPONSE_MAX_CHARS = 4_000_000;
+
+  const boundSubagentTranscriptResponse = (
+    messages: AgentChatSubagentTranscriptMessage[],
+  ): AgentChatSubagentTranscriptMessage[] =>
+    keepNewestWithinCharBudget(messages, SUBAGENT_TRANSCRIPT_RESPONSE_MAX_CHARS, safeJsonChars);
+
   function mergeSubagentTranscriptMessages(
     left: AgentChatSubagentTranscriptMessage[],
     right: AgentChatSubagentTranscriptMessage[],
@@ -25111,8 +25551,11 @@ export function createAgentChatService(args: {
    * - **Cursor**: SDK `task` events tag every lifecycle envelope with the
    *   subagent's `agentId`; we filter the parent stream by that value.
    * - **Everything else (droid, lmstudio, …)**: `null`.
+   *
+   * Exposed via getSubagentTranscript, which byte-bounds whatever this
+   * returns — new runtime branches here need no size handling of their own.
    */
-  const getSubagentTranscript = async ({
+  const collectSubagentTranscript = async ({
     sessionId,
     agentId,
     laneId,
@@ -25295,6 +25738,16 @@ export function createAgentChatService(args: {
         ...(text ? { text } : {}),
       };
     });
+  };
+
+  // The byte bound is a response-boundary invariant: enforce it once here so
+  // every runtime branch in collectSubagentTranscript stays bounded by
+  // construction rather than by remembering to wrap each return.
+  const getSubagentTranscript = async (
+    args: AgentChatSubagentTranscriptArgs,
+  ): Promise<AgentChatSubagentTranscriptMessage[] | null> => {
+    const messages = await collectSubagentTranscript(args);
+    return messages ? boundSubagentTranscriptResponse(messages) : messages;
   };
 
   const normalizeClaudeContextUsage = (
@@ -26321,6 +26774,7 @@ export function createAgentChatService(args: {
     disposeForLane,
     getChatTranscript,
     getChatEventHistory,
+    getChatEventHistoryPage,
     ensureIdentitySession,
     approveToolUse,
     respondToInput,

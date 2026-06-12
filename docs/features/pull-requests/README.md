@@ -70,7 +70,7 @@ Service files (`apps/desktop/src/main/services/prs/`):
 | `prPollingService.ts` | 60 s polling loop, fingerprint-based change detection, notification emission. Writes `last_polled_at` per PR so callers can run delta polls on the next tick |
 | `prSummaryService.ts` | AI PR summary generator; caches `PrAiSummary` per `(prId, headSha)` in `pull_request_ai_summaries` so pushes invalidate the cache |
 | `queueLandingService.ts` | Merge queue state machine (`ALLOWED_TRANSITIONS`), landing loop, auto-resolve on conflicts |
-| `pathToMergeOrchestrator.ts` | Path-to-Merge orchestrator: phase-aware setTimeout wake-ups, combined CI + review terminal-state gate, 4-option conflict strategy, force-finalize bonus iteration, REST → `gh --admin` → `gh --auto` merge ladder, persistent resume across restarts. Native port of the `/shipLane` Claude skill. See [`path-to-merge.md`](./path-to-merge.md). |
+| `pathToMergeOrchestrator.ts` | Path-to-Merge orchestrator: phase-aware setTimeout wake-ups, combined CI + review terminal-state gate, 4-option conflict strategy, force-finalize bonus iteration, REST → `gh --admin` → `gh --auto` merge ladder, persistent resume across restarts. Native port of the ship-lane playbook (driven by the `/ship` skill). See [`path-to-merge.md`](./path-to-merge.md). |
 | `integrationPlanning.ts` | `buildIntegrationPreflight` — validates source lanes for an integration proposal |
 | `integrationValidation.ts` | `parseGitStatusPorcelain`, `hasMergeConflictMarkers` — shared helpers for integration flows |
 | `issueInventoryService.ts` | Typed issue inventory, per-round convergence status, participant classification, thread re-open logic. `IssueInventoryItem` carries `type` (`review_thread | check_failure | issue_comment`), `externalId`, `body`, `author`, and `threadCommentCount` / `threadLatestCommentAuthor` / `threadLatestCommentAt` so `PrConvergencePanel` can render expandable rows with the full comment context inline. Also persists pipeline settings (incl. the new `conflictStrategy`, `forceFinalizeMode`, `earlyMergeOnGreen`, `autoAgentSettings`) and the orchestrator's serialized run args (`pr_convergence_state.ptm_args_json`) via `savePathToMergeArgs` / `getPathToMergeArgs`. |
@@ -91,9 +91,10 @@ Renderer components (`apps/desktop/src/renderer/components/prs/`):
 | `tabs/QueueTab.tsx` | Merge queue UI. Hosts the "Automate Merging" entry point that opens `QueueAutomateMergingModal` with the queue's eligible members (everything that has not landed yet). |
 | `tabs/QueueAutomateMergingModal.tsx` | Stack-wide automation modal: edits one `PipelineSettings` config that applies to every queue member, then sequentially saves settings, calls `ade.prs.retargetBase` for non-leading members so each PR's base points at the queue's tracking branch, starts Path-to-Merge via `ade.prs.pathToMerge.start`, and polls `convergenceStateGet` every 4 s until the runtime status is terminal. Halts the sequence on the first `failed | cancelled | stopped`. Closing mid-sequence stops dispatching new starts but leaves already-launched orchestrators running. |
 | `tabs/IntegrationTab.tsx` | Integration (merge-plan) proposals and execution, including merge-into-lane selection, apply-and-resimulate, and adopted-lane cleanup messaging |
-| `tabs/RebaseTab.tsx` | Lane rebase needs (base + queue + PR target) and attention items |
-| `tabs/WorkflowsTab.tsx` | Container for queue/integration/rebase sub-tabs |
+| `tabs/RebaseTab.tsx` | Lane rebase needs (base + queue + PR target) and attention items. Hide/snooze controls only affect the lane rebase suggestion banner; still-behind needs remain actionable in the Rebase view. |
+| `tabs/WorkflowsTab.tsx` | Container for queue/integration/rebase sub-tabs. The Rebase/Merge history view is backed by actual ADE rebase operation records, while active rebase needs include any lane still behind its target regardless of banner hide/snooze state. |
 | `tabs/queueWorkflowModel.ts` | Pure model for queue tab rendering (active/history bucketing, guidance computation) |
+| `tabs/rebaseWorkflowModel.ts` | Pure model for active rebase bucketing and operation-history filtering |
 | `detail/PrDetailPane.tsx` | Selected PR detail pane: status, checks, reviews, comments, files, commits, merge readiness, bypass, Path-to-Merge convergence sub-tab (labelled "Path to Merge" in the tab list), resolver modals. Rich detail/files/commits/action-run reads render progressively; late cached snapshot hydration can update snapshot-owned fields but cannot overwrite richer live detail/files/commits already loaded for the selected PR. Switches the Overview tab between the legacy grid and the Timeline+Rails layout based on `prsTimelineRailsEnabled`. Persists the selected sub-tab (`overview | convergence | files | checks | activity`) per PR in `localStorage` under `ade:prs:detailTabs:v1`, mirrored through the `detailTab` URL param so deep links restore the last-used tab |
 | `detail/PrDetailTimelineRails.tsx` | Timeline+Rails overview: hosts the central `PrTimeline`, the left commit/checks rail, the right merge/metadata rail, the inline comment composer, and the command palette. Seeds the timeline with a synthetic `pr_opened` event followed by description, review threads, activity-stream entries (commits, comments, reviews, label changes, merges, deployments) and falls back to `args.checks` for any check that did not appear in the activity stream. Owns the deep-link scroll behaviour and the merge-bypass plumbing through to the right rail. |
 | `shared/PrTimeline.tsx` | Timeline column: renders the pre-computed `PrTimelineEvent[]` from `PrDetailTimelineRails`, handles per-PR filters (`PrTimelineFilters`), and groups events |
@@ -706,19 +707,20 @@ Builder responsibilities:
 - **Workflow cards** (`buildWorkflowCards`) — pulls non-terminal
   queue entries from `queue_landing_state` joined with `pr_groups`,
   active integration proposals via `listIntegrationWorkflows({ view:
-  "active" })`, and rebase needs from `conflictService.scanRebaseNeeds()`
-  (filtered to `kind === "lane_base"` with `behindBy > 0` and a live
-  defer window). Using the same source the desktop Rebase tab consumes
+  "active" })`, and active rebase needs from
+  `conflictService.scanRebaseNeeds()` (filtered to `kind ===
+  "lane_base"` with `behindBy > 0`). Using the same source the desktop
+  Rebase tab consumes
   via `window.ade.rebase.scanNeeds` keeps the phone's rebase cards
   in sync with the desktop — including drift against a local `main`
   that hasn't been pushed yet, which `rebaseSuggestionService` misses
-  because it only reads `origin/<base>`. Dismiss / defer rebase from
-  the phone (`lanes.dismissRebaseSuggestion`,
-  `lanes.deferRebaseSuggestion`) updates `conflictService` first so
-  the next snapshot reflects the action immediately, then forwards to
-  `rebaseSuggestionService` for legacy parity. Failures in any source
-  log a warning and skip that card category rather than failing the
-  whole snapshot.
+  because it only reads `origin/<base>`. Hide / snooze rebase-banner
+  actions (`lanes.dismissRebaseSuggestion`,
+  `lanes.deferRebaseSuggestion`) update only `rebaseSuggestionService`;
+  they do not dismiss or defer the underlying `conflictService` rebase
+  need, so unresolved drift stays actionable in PR workflow surfaces.
+  Failures in any source log a warning and skip that card category
+  rather than failing the whole snapshot.
 
 The snapshot is read-only; create/merge/close/comment actions go
 through the existing command surface (`prs.createFromLane`,

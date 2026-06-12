@@ -125,9 +125,10 @@ Three rows:
 1. **Status dot + title + relative time** — `sessionStatusDot()` and
    `primarySessionLabel()` drive these. The relative time comes from
    `relativeTimeCompact`.
-2. **Preview line** (conditional) — `session.summary`, then sanitized
-   `session.lastOutputPreview`, then `session.goal`, whichever differs
-   from the title. Sanitization strips ANSI and control chars via
+2. **Preview line** (conditional) — `session.summary` first. Running
+   sessions may then show sanitized `session.lastOutputPreview`; completed,
+   failed, disposed, and detached sessions fall back to `session.goal`
+   instead of raw last output. Sanitization strips ANSI and control chars via
    `sanitizeTerminalInlineText`.
 3. **Tool type + lane + badges** — `ToolLogo`, `shortToolTypeLabel`,
    lane icon/name, `ClaudeCacheTtlBadge` (Claude chat only), delta chips

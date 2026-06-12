@@ -17,8 +17,10 @@ import { inspectLocalProvider, clearLocalProviderInspectionCache } from "./local
 import { resolveDroidExecutable } from "./droidExecutable";
 import {
   reportProviderRuntimeAuthFailure,
+  reportProviderRuntimeFailure,
   reportProviderRuntimeReady,
 } from "./providerRuntimeHealth";
+import { loadCursorSdk } from "./cursorSdkLoader";
 
 type CliName = "claude" | "codex" | "cursor" | "droid";
 
@@ -797,9 +799,16 @@ async function verifyCursorApiKey(
 ): Promise<ApiKeyVerificationResult> {
   let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
   try {
-    const { Cursor } = await import("@cursor/sdk");
+    const { Cursor } = await loadCursorSdk();
     const user = await Promise.race([
-      Cursor.me({ apiKey: key }),
+      (async () => {
+        const account = await Cursor.me({ apiKey: key });
+        const models = await Cursor.models.list({ apiKey: key });
+        if (!Array.isArray(models) || models.length === 0) {
+          throw new Error("Cursor model verification returned no available models.");
+        }
+        return account;
+      })(),
       new Promise<never>((_, reject) => {
         timeoutHandle = setTimeout(
           () => reject(new Error("Verification timed out.")),
@@ -814,7 +823,7 @@ async function verifyCursorApiKey(
       message: user.userEmail
         ? `Connection verified for ${user.userEmail}.`
         : "Connection verified successfully.",
-      endpoint: "Cursor.me",
+      endpoint: "Cursor.me + Cursor.models.list",
       statusCode: null,
       verifiedAt,
     };
@@ -822,13 +831,15 @@ async function verifyCursorApiKey(
     const message = error instanceof Error ? error.message : String(error);
     const authFailed = /auth|unauthorized|forbidden|invalid|api key/i.test(message);
     if (authFailed) {
-      reportProviderRuntimeAuthFailure("cursor", "Cursor rejected the configured API key. Check the key from the Cursor dashboard integrations page.");
+      reportProviderRuntimeAuthFailure("cursor", "Cursor rejected the configured API key. Check the key from the Cursor dashboard API page.");
+    } else {
+      reportProviderRuntimeFailure("cursor", message);
     }
     return {
       provider: "cursor",
       ok: false,
       message: authFailed ? "Authentication failed. Check API key." : `Verification request failed: ${message}`,
-      endpoint: "Cursor.me",
+      endpoint: "Cursor.me + Cursor.models.list",
       statusCode: null,
       verifiedAt,
     };

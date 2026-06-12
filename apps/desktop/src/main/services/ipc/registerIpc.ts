@@ -287,6 +287,7 @@ import type {
   AgentChatLaunchCliResult,
   AgentChatDeleteArgs,
   AgentChatGetSummaryArgs,
+  AgentChatEventHistoryPage,
   AgentChatEventHistorySnapshot,
   AgentChatHandoffArgs,
   AgentChatHandoffResult,
@@ -596,19 +597,13 @@ import { ADE_ACTION_ALLOWLIST, getAdeActionDomainServices, listAllowedAdeActionN
 import type { AdeRuntime } from "../../../../../ade-cli/src/bootstrap";
 
 import type { createOrchestrationService } from "../orchestration/orchestrationService";
-import { validateSpawnBrief } from "../orchestration/orchestrationService";
-import {
-  applyOrchestrationPermissionProfile,
-  isOrchestrationPlanApproved,
-  resolveOrchestrationModel,
-} from "../orchestration/runtimeProfile";
+import { createOrchestrationDomainService } from "../orchestration/orchestrationDomain";
 import type {
   ManifestSection,
   OrchestrationAgentInjectRequest,
   OrchestrationAssetRegisterRequest,
   OrchestrationClaimTaskRequest,
   OrchestrationManifestPatchRequest,
-  OrchestrationOrigin,
   OrchestrationPlanAppendRequest,
   OrchestrationPlanWriteRequest,
   OrchestrationReleaseTaskRequest,
@@ -1019,10 +1014,6 @@ function clampLayout(layout: DockLayout): DockLayout {
     out[k] = Math.max(0, Math.min(100, v));
   }
   return out;
-}
-
-function pathJoinOrchestration(worktree: string, runId: string): string {
-  return path.join(worktree, ".ade", "orchestration", runId);
 }
 
 /**
@@ -1586,6 +1577,40 @@ export function registerIpc({
     const rootPath = getLocalRuntimeRootForEvent(event);
     if (!rootPath) return null;
     return await action(localRuntimeConnectionPool, rootPath);
+  };
+
+  const isSyncServiceUnavailableError = (error: unknown): boolean => {
+    const message = error instanceof Error ? error.message : String(error);
+    return /Sync service is not available|Register a project first/i.test(message);
+  };
+
+  const tryRuntimeSync = async <T>(
+    event: { sender: Electron.WebContents },
+    method: string,
+    params: Record<string, unknown>,
+    projectAction?: (pool: LocalRuntimeConnectionPool, rootPath: string) => Promise<T>,
+  ): Promise<{ handled: true; result: T } | { handled: false }> => {
+    if (!localRuntimeConnectionPool) return { handled: false };
+    const rootPath = getLocalRuntimeRootForEvent(event);
+    if (rootPath && projectAction) {
+      try {
+        return {
+          handled: true,
+          result: await projectAction(localRuntimeConnectionPool, rootPath),
+        };
+      } catch (error) {
+        if (!isSyncServiceUnavailableError(error)) throw error;
+      }
+    }
+    try {
+      return {
+        handled: true,
+        result: await localRuntimeConnectionPool.callSync<T>(method, params),
+      };
+    } catch (error) {
+      if (isSyncServiceUnavailableError(error)) return { handled: false };
+      throw error;
+    }
   };
 
   // Backend services use Error.code for known failures (e.g.
@@ -4364,10 +4389,17 @@ export function registerIpc({
   );
 
   ipcMain.handle(IPC.syncGetStatus, async (event, arg?: SyncGetStatusArgs): Promise<SyncRoleSnapshot> => {
-    const runtimeStatus = await tryLocalRuntimeSync(event, (pool, rootPath) =>
-      pool.syncStatusForRoot(rootPath, arg ?? {})
+    const params = {
+      includeTransferReadiness: arg?.includeTransferReadiness === true,
+      forceTransferReadiness: arg?.forceTransferReadiness === true,
+    };
+    const runtimeStatus = await tryRuntimeSync<SyncRoleSnapshot>(
+      event,
+      "sync.getStatus",
+      params,
+      (pool, rootPath) => pool.syncStatusForRoot(rootPath, arg ?? {}),
     );
-    if (runtimeStatus) return runtimeStatus;
+    if (runtimeStatus.handled) return runtimeStatus.result;
     const service = await resolveOptionalSyncService();
     if (!service) {
       throw new Error("Sync service is not available.");
@@ -4379,18 +4411,24 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.syncRefreshDiscovery, async (event): Promise<SyncRoleSnapshot> => {
-    const runtimeStatus = await tryLocalRuntimeSync(event, (pool, rootPath) =>
-      pool.refreshSyncDiscoveryForRoot(rootPath)
+    const runtimeStatus = await tryRuntimeSync<SyncRoleSnapshot>(
+      event,
+      "sync.refreshDiscovery",
+      {},
+      (pool, rootPath) => pool.refreshSyncDiscoveryForRoot(rootPath),
     );
-    if (runtimeStatus) return runtimeStatus;
+    if (runtimeStatus.handled) return runtimeStatus.result;
     return await (await requireSyncService()).refreshDiscovery();
   });
 
   ipcMain.handle(IPC.syncListDevices, async (event): Promise<SyncDeviceRuntimeState[]> => {
-    const runtimeDevices = await tryLocalRuntimeSync(event, (pool, rootPath) =>
-      pool.syncDevicesForRoot(rootPath)
+    const runtimeDevices = await tryRuntimeSync<SyncDeviceRuntimeState[]>(
+      event,
+      "sync.listDevices",
+      {},
+      (pool, rootPath) => pool.syncDevicesForRoot(rootPath),
     );
-    if (runtimeDevices) return runtimeDevices;
+    if (runtimeDevices.handled) return runtimeDevices.result;
     return await (await requireSyncService()).listDevices();
   });
 
@@ -4400,123 +4438,161 @@ export function registerIpc({
       event,
       arg: { name?: string; deviceType?: SyncPeerDeviceType },
     ): Promise<SyncDeviceRecord> => {
-      const runtimeDevice = await tryLocalRuntimeSync(event, (pool, rootPath) =>
-        pool.updateSyncLocalDeviceForRoot(rootPath, {
-          name: typeof arg?.name === "string" ? arg.name : undefined,
-          deviceType: arg?.deviceType,
-        })
-      );
-      if (runtimeDevice) return runtimeDevice;
-      return await (await requireSyncService()).updateLocalDevice({
+      const params = {
         name: typeof arg?.name === "string" ? arg.name : undefined,
         deviceType: arg?.deviceType,
-      });
+      };
+      const runtimeDevice = await tryRuntimeSync<SyncDeviceRecord>(
+        event,
+        "sync.updateLocalDevice",
+        params,
+        (pool, rootPath) => pool.updateSyncLocalDeviceForRoot(rootPath, params),
+      );
+      if (runtimeDevice.handled) return runtimeDevice.result;
+      return await (await requireSyncService()).updateLocalDevice(params);
     },
   );
 
   ipcMain.handle(
     IPC.syncConnectToBrain,
     async (event, arg: SyncDesktopConnectionDraft): Promise<SyncRoleSnapshot> => {
-      const runtimeStatus = await tryLocalRuntimeSync(event, (pool, rootPath) =>
-        pool.callSyncForRoot<SyncRoleSnapshot>(
+      const params = (arg ?? {}) as unknown as Record<string, unknown>;
+      const runtimeStatus = await tryRuntimeSync<SyncRoleSnapshot>(
+        event,
+        "sync.connectToBrain",
+        params,
+        (pool, rootPath) => pool.callSyncForRoot<SyncRoleSnapshot>(
           rootPath,
           "sync.connectToBrain",
-          (arg ?? {}) as unknown as Record<string, unknown>,
-        )
+          params,
+        ),
       );
-      if (runtimeStatus) return runtimeStatus;
+      if (runtimeStatus.handled) return runtimeStatus.result;
       return await (await requireSyncService()).connectToBrain(arg);
     },
   );
 
   ipcMain.handle(IPC.syncDisconnectFromBrain, async (event): Promise<SyncRoleSnapshot> => {
-    const runtimeStatus = await tryLocalRuntimeSync(event, (pool, rootPath) =>
-      pool.callSyncForRoot<SyncRoleSnapshot>(rootPath, "sync.disconnectFromBrain")
+    const runtimeStatus = await tryRuntimeSync<SyncRoleSnapshot>(
+      event,
+      "sync.disconnectFromBrain",
+      {},
+      (pool, rootPath) => pool.callSyncForRoot<SyncRoleSnapshot>(rootPath, "sync.disconnectFromBrain"),
     );
-    if (runtimeStatus) return runtimeStatus;
+    if (runtimeStatus.handled) return runtimeStatus.result;
     return await (await requireSyncService()).disconnectFromBrain();
   });
 
   ipcMain.handle(IPC.syncForgetDevice, async (event, arg: { deviceId: string }): Promise<SyncRoleSnapshot> => {
     const deviceId = typeof arg?.deviceId === "string" ? arg.deviceId : "";
-    const runtimeStatus = await tryLocalRuntimeSync(event, (pool, rootPath) =>
-      pool.forgetSyncDeviceForRoot(rootPath, deviceId)
+    const runtimeStatus = await tryRuntimeSync<SyncRoleSnapshot>(
+      event,
+      "sync.forgetDevice",
+      { deviceId },
+      (pool, rootPath) => pool.forgetSyncDeviceForRoot(rootPath, deviceId),
     );
-    if (runtimeStatus) return runtimeStatus;
+    if (runtimeStatus.handled) return runtimeStatus.result;
     return await (await requireSyncService()).forgetDevice(deviceId);
   });
 
   ipcMain.handle(IPC.syncGetTransferReadiness, async (event): Promise<SyncTransferReadiness> => {
-    const runtimeReadiness = await tryLocalRuntimeSync(event, (pool, rootPath) =>
-      pool.callSyncForRoot<SyncTransferReadiness>(rootPath, "sync.getTransferReadiness")
+    const runtimeReadiness = await tryRuntimeSync<SyncTransferReadiness>(
+      event,
+      "sync.getTransferReadiness",
+      {},
+      (pool, rootPath) => pool.callSyncForRoot<SyncTransferReadiness>(rootPath, "sync.getTransferReadiness"),
     );
-    if (runtimeReadiness) return runtimeReadiness;
+    if (runtimeReadiness.handled) return runtimeReadiness.result;
     return await (await requireSyncService()).getTransferReadiness();
   });
 
   ipcMain.handle(IPC.syncTransferBrainToLocal, async (event): Promise<SyncRoleSnapshot> => {
-    const runtimeStatus = await tryLocalRuntimeSync(event, (pool, rootPath) =>
-      pool.callSyncForRoot<SyncRoleSnapshot>(rootPath, "sync.transferBrainToLocal")
+    const runtimeStatus = await tryRuntimeSync<SyncRoleSnapshot>(
+      event,
+      "sync.transferBrainToLocal",
+      {},
+      (pool, rootPath) => pool.callSyncForRoot<SyncRoleSnapshot>(rootPath, "sync.transferBrainToLocal"),
     );
-    if (runtimeStatus) return runtimeStatus;
+    if (runtimeStatus.handled) return runtimeStatus.result;
     return await (await requireSyncService()).transferBrainToLocal();
   });
 
   ipcMain.handle(IPC.syncGetPin, async (event): Promise<{ pin: string | null }> => {
-    const runtimePin = await tryLocalRuntimeSync(event, (pool, rootPath) =>
-      pool.syncPinForRoot(rootPath)
+    const runtimePin = await tryRuntimeSync<{ pin: string | null }>(
+      event,
+      "sync.getPin",
+      {},
+      (pool, rootPath) => pool.syncPinForRoot(rootPath),
     );
-    if (runtimePin) return runtimePin;
+    if (runtimePin.handled) return runtimePin.result;
     return { pin: (await requireSyncService()).getPin() };
   });
 
   ipcMain.handle(IPC.syncSetPin, async (event, pin: string): Promise<SyncRoleSnapshot> => {
     const normalizedPin = typeof pin === "string" ? pin : "";
-    const runtimeStatus = await tryLocalRuntimeSync(event, (pool, rootPath) =>
-      pool.setSyncPinForRoot(rootPath, normalizedPin)
+    const runtimeStatus = await tryRuntimeSync<SyncRoleSnapshot>(
+      event,
+      "sync.setPin",
+      { pin: normalizedPin },
+      (pool, rootPath) => pool.setSyncPinForRoot(rootPath, normalizedPin),
     );
-    if (runtimeStatus) return runtimeStatus;
+    if (runtimeStatus.handled) return runtimeStatus.result;
     return await (await requireSyncService()).setPin(normalizedPin);
   });
 
   ipcMain.handle(IPC.syncGeneratePin, async (event): Promise<SyncRoleSnapshot> => {
-    const runtimeStatus = await tryLocalRuntimeSync(event, (pool, rootPath) =>
-      pool.generateSyncPinForRoot(rootPath)
+    const runtimeStatus = await tryRuntimeSync<SyncRoleSnapshot>(
+      event,
+      "sync.generatePin",
+      {},
+      (pool, rootPath) => pool.generateSyncPinForRoot(rootPath),
     );
-    if (runtimeStatus) return runtimeStatus;
+    if (runtimeStatus.handled) return runtimeStatus.result;
     return await (await requireSyncService()).generatePin();
   });
 
   ipcMain.handle(IPC.syncClearPin, async (event): Promise<SyncRoleSnapshot> => {
-    const runtimeStatus = await tryLocalRuntimeSync(event, (pool, rootPath) =>
-      pool.clearSyncPinForRoot(rootPath)
+    const runtimeStatus = await tryRuntimeSync<SyncRoleSnapshot>(
+      event,
+      "sync.clearPin",
+      {},
+      (pool, rootPath) => pool.clearSyncPinForRoot(rootPath),
     );
-    if (runtimeStatus) return runtimeStatus;
+    if (runtimeStatus.handled) return runtimeStatus.result;
     return await (await requireSyncService()).clearPin();
   });
 
   ipcMain.handle(IPC.syncGetRuntimeName, async (event): Promise<{ runtimeName: string | null }> => {
-    const runtimeName = await tryLocalRuntimeSync(event, (pool, rootPath) =>
-      pool.syncRuntimeNameForRoot(rootPath)
+    const runtimeName = await tryRuntimeSync<{ runtimeName: string | null }>(
+      event,
+      "sync.getRuntimeName",
+      {},
+      (pool, rootPath) => pool.syncRuntimeNameForRoot(rootPath),
     );
-    if (runtimeName) return runtimeName;
+    if (runtimeName.handled) return runtimeName.result;
     return { runtimeName: (await requireSyncService()).getRuntimeName() };
   });
 
   ipcMain.handle(IPC.syncSetRuntimeName, async (event, name: string): Promise<SyncRoleSnapshot> => {
     const normalizedName = typeof name === "string" ? name : "";
-    const runtimeStatus = await tryLocalRuntimeSync(event, (pool, rootPath) =>
-      pool.setSyncRuntimeNameForRoot(rootPath, normalizedName)
+    const runtimeStatus = await tryRuntimeSync<SyncRoleSnapshot>(
+      event,
+      "sync.setRuntimeName",
+      { name: normalizedName },
+      (pool, rootPath) => pool.setSyncRuntimeNameForRoot(rootPath, normalizedName),
     );
-    if (runtimeStatus) return runtimeStatus;
+    if (runtimeStatus.handled) return runtimeStatus.result;
     return await (await requireSyncService()).setRuntimeName(normalizedName);
   });
 
   ipcMain.handle(IPC.syncClearRuntimeName, async (event): Promise<SyncRoleSnapshot> => {
-    const runtimeStatus = await tryLocalRuntimeSync(event, (pool, rootPath) =>
-      pool.clearSyncRuntimeNameForRoot(rootPath)
+    const runtimeStatus = await tryRuntimeSync<SyncRoleSnapshot>(
+      event,
+      "sync.clearRuntimeName",
+      {},
+      (pool, rootPath) => pool.clearSyncRuntimeNameForRoot(rootPath),
     );
-    if (runtimeStatus) return runtimeStatus;
+    if (runtimeStatus.handled) return runtimeStatus.result;
     return await (await requireSyncService()).clearRuntimeName();
   });
 
@@ -4524,9 +4600,16 @@ export function registerIpc({
     IPC.syncSetActiveLanePresence,
     async (event, arg: { laneIds?: string[] | null }): Promise<void> => {
       const laneIds = Array.isArray(arg?.laneIds) ? arg.laneIds : [];
-      const rootPath = getLocalRuntimeRootForEvent(event);
-      if (localRuntimeConnectionPool && rootPath) {
-        await localRuntimeConnectionPool.callSyncForRoot(rootPath, "sync.setActiveLanePresence", { laneIds });
+      const runtimeResult = await tryRuntimeSync<{ ok: true }>(
+        event,
+        "sync.setActiveLanePresence",
+        { laneIds },
+        async (pool, rootPath) => {
+          await pool.callSyncForRoot(rootPath, "sync.setActiveLanePresence", { laneIds });
+          return { ok: true };
+        },
+      );
+      if (runtimeResult.handled) {
         return;
       }
       const service = await resolveOptionalSyncService();
@@ -6437,6 +6520,33 @@ export function registerIpc({
     return service.getChatEventHistory(sessionId, maxEvents != null ? { maxEvents } : undefined);
   });
 
+  ipcMain.handle(IPC.agentChatGetEventHistoryPage, async (
+    _event,
+    arg: { sessionId?: string; beforeOffset?: number; maxBytes?: number },
+  ): Promise<AgentChatEventHistoryPage> => {
+    const ctx = getCtx();
+    const sessionId = typeof arg?.sessionId === "string" ? arg.sessionId.trim() : "";
+    if (!sessionId) return { sessionId: "", events: [], startOffset: 0, hasMore: false, sessionFound: false };
+    const service = ctx.agentChatService;
+    if (
+      !service ||
+      typeof (service as unknown as { getChatEventHistoryPage?: unknown }).getChatEventHistoryPage !== "function"
+    ) {
+      return { sessionId, events: [], startOffset: 0, hasMore: false, sessionFound: false };
+    }
+    const beforeOffset = typeof arg?.beforeOffset === "number" && Number.isFinite(arg.beforeOffset)
+      ? arg.beforeOffset
+      : 0;
+    const rawMaxBytes = typeof arg?.maxBytes === "number" ? arg.maxBytes : undefined;
+    const maxBytes = rawMaxBytes != null && Number.isFinite(rawMaxBytes) && rawMaxBytes > 0
+      ? rawMaxBytes
+      : undefined;
+    return service.getChatEventHistoryPage(sessionId, {
+      beforeOffset,
+      ...(maxBytes != null ? { maxBytes } : {}),
+    });
+  });
+
   ipcMain.handle(IPC.agentChatReadTranscript, async (
     _event,
     arg: { sessionId: string; limit?: number; since?: string },
@@ -6487,292 +6597,101 @@ export function registerIpc({
     });
   };
 
-  ipcMain.handle(IPC.orchestrationRunCreate, async (_event, arg: OrchestrationRunCreateRequest & { laneId: string }) => {
+  // In-process / test-mode IPC handlers. In every runtime-backed build the
+  // renderer routes these through the daemon's "orchestration" action domain
+  // (see preload `orchestrationBridge`), so these handlers only fire when the
+  // desktop owns the orchestration service directly. Both paths share the same
+  // `createOrchestrationDomainService` factory, so behaviour stays identical.
+  let cachedOrchestrationDomain:
+    | { ctx: ReturnType<typeof getCtx>; domain: ReturnType<typeof createOrchestrationDomainService> }
+    | null = null;
+  const getOrchestrationDomain = () => {
     const { ctx, service } = ensureOrchestration();
-    subscribeOrchestrationBroadcast();
-    const worktree = ctx.laneService.getLaneWorktreePath(arg.laneId);
-    const result = await service.runCreate({ ...arg, bundleRoot: worktree });
-    // Stitch the run id + bundle path back into the lead chat's persisted
-    // record so the OrchestrationPanel mounts after a restart and downstream
-    // tooling can discover the bundle from the chat session alone.
-    const setter = (
-      ctx.agentChatService as unknown as {
-        setOrchestrationFields?: (
-          sessionId: string,
-          fields: {
-            orchestrationRunId?: string | null;
-            orchestrationRole?: "lead" | "worker" | "validator" | null;
-            orchestrationBundlePath?: string | null;
-          },
-        ) => void;
-      }
-    ).setOrchestrationFields;
-    if (typeof setter === "function") {
-      try {
-        setter(arg.leadSessionId, {
-          orchestrationRunId: result.runId,
-          orchestrationRole: "lead",
-          orchestrationBundlePath: result.manifest.bundlePath,
-        });
-      } catch {
-        // best-effort; the renderer also patches its local cache so the
-        // panel mounts immediately. Persisted state will fall through to
-        // a subsequent updateSession call if needed.
-      }
+    // ctx identity fully determines the deps (service + laneService + agentChatService
+    // all hang off it); reuse the closure object across calls, rebuilding only when the
+    // owning context changes (e.g. in-process project switch).
+    if (cachedOrchestrationDomain && cachedOrchestrationDomain.ctx === ctx) {
+      return cachedOrchestrationDomain.domain;
     }
-    return result;
+    const domain = createOrchestrationDomainService({
+      orchestrationService: service,
+      laneService: {
+        getLaneWorktreePath: (laneId: string) => ctx.laneService.getLaneWorktreePath(laneId),
+      },
+      agentChatService: ctx.agentChatService,
+    });
+    cachedOrchestrationDomain = { ctx, domain };
+    return domain;
+  };
+
+  ipcMain.handle(IPC.orchestrationRunCreate, async (_event, arg: OrchestrationRunCreateRequest & { laneId: string }) => {
+    subscribeOrchestrationBroadcast();
+    return getOrchestrationDomain().runCreate(arg);
   });
 
   ipcMain.handle(IPC.orchestrationBundleRead, async (_event, arg: { runId: string; laneId: string }) => {
-    const { ctx, service } = ensureOrchestration();
     subscribeOrchestrationBroadcast();
-    const worktree = ctx.laneService.getLaneWorktreePath(arg.laneId);
-    const bundlePath = pathJoinOrchestration(worktree, arg.runId);
-    return service.bundleRead(arg.runId, bundlePath);
+    return getOrchestrationDomain().bundleRead(arg);
   });
 
   ipcMain.handle(IPC.orchestrationManifestReadSection, async (
     _event,
     arg: { runId: string; laneId: string; section: ManifestSection },
-  ) => {
-    const { ctx, service } = ensureOrchestration();
-    const worktree = ctx.laneService.getLaneWorktreePath(arg.laneId);
-    const bundlePath = pathJoinOrchestration(worktree, arg.runId);
-    return service.manifestReadSection(arg.runId, bundlePath, arg.section);
-  });
+  ) => getOrchestrationDomain().manifestReadSection(arg));
 
   ipcMain.handle(IPC.orchestrationManifestPatch, async (
     _event,
     arg: OrchestrationManifestPatchRequest & { laneId: string },
-  ) => {
-    const { ctx, service } = ensureOrchestration();
-    const worktree = ctx.laneService.getLaneWorktreePath(arg.laneId);
-    const bundlePath = pathJoinOrchestration(worktree, arg.runId);
-    return service.manifestPatch(arg, bundlePath);
-  });
+  ) => getOrchestrationDomain().manifestPatch(arg));
 
   ipcMain.handle(IPC.orchestrationPlanAppend, async (
     _event,
     arg: OrchestrationPlanAppendRequest & { laneId: string },
-  ) => {
-    const { ctx, service } = ensureOrchestration();
-    const worktree = ctx.laneService.getLaneWorktreePath(arg.laneId);
-    const bundlePath = pathJoinOrchestration(worktree, arg.runId);
-    return service.planAppend(arg, bundlePath);
-  });
+  ) => getOrchestrationDomain().planAppend(arg));
 
   ipcMain.handle(IPC.orchestrationPlanWrite, async (
     _event,
     arg: OrchestrationPlanWriteRequest & { laneId: string },
-  ) => {
-    const { ctx, service } = ensureOrchestration();
-    const worktree = ctx.laneService.getLaneWorktreePath(arg.laneId);
-    const bundlePath = pathJoinOrchestration(worktree, arg.runId);
-    return service.planWrite(arg, bundlePath);
-  });
+  ) => getOrchestrationDomain().planWrite(arg));
 
   ipcMain.handle(IPC.orchestrationAssetRegister, async (
     _event,
     arg: OrchestrationAssetRegisterRequest & { laneId: string },
-  ) => {
-    const { ctx, service } = ensureOrchestration();
-    const worktree = ctx.laneService.getLaneWorktreePath(arg.laneId);
-    const bundlePath = pathJoinOrchestration(worktree, arg.runId);
-    return service.assetRegister(arg, bundlePath);
-  });
+  ) => getOrchestrationDomain().assetRegister(arg));
 
   ipcMain.handle(IPC.orchestrationClaimTask, async (
     _event,
     arg: OrchestrationClaimTaskRequest & { laneId: string },
-  ) => {
-    const { ctx, service } = ensureOrchestration();
-    const worktree = ctx.laneService.getLaneWorktreePath(arg.laneId);
-    const bundlePath = pathJoinOrchestration(worktree, arg.runId);
-    return service.claimTask(arg, bundlePath);
-  });
+  ) => getOrchestrationDomain().claimTask(arg));
 
   ipcMain.handle(IPC.orchestrationReleaseTask, async (
     _event,
     arg: OrchestrationReleaseTaskRequest & { laneId: string },
-  ) => {
-    const { ctx, service } = ensureOrchestration();
-    const worktree = ctx.laneService.getLaneWorktreePath(arg.laneId);
-    const bundlePath = pathJoinOrchestration(worktree, arg.runId);
-    return service.releaseTask(arg, bundlePath);
-  });
+  ) => getOrchestrationDomain().releaseTask(arg));
 
-  ipcMain.handle(IPC.orchestrationRunList, async (_event, arg: { laneId?: string } = {}) => {
-    const { service } = ensureOrchestration();
-    return service.runList(arg?.laneId);
-  });
+  ipcMain.handle(IPC.orchestrationRunList, async (_event, arg: { laneId?: string } = {}) =>
+    getOrchestrationDomain().runList(arg),
+  );
 
   ipcMain.handle(IPC.orchestrationSpawnAgent, async (
     _event,
     arg: OrchestrationSpawnAgentRequest & { laneId: string; leadSessionId: string },
-  ): Promise<{ sessionId: string; etag: string }> => {
-    const { ctx, service } = ensureOrchestration();
-    const worktree = ctx.laneService.getLaneWorktreePath(arg.laneId);
-    const bundlePath = pathJoinOrchestration(worktree, arg.runId);
-    const manifest = service.getManifestForRun(arg.runId);
-    if (!manifest) {
-      throw new Error(`run ${arg.runId} not loaded — call orchestrationBundleRead first`);
-    }
-    if (!isOrchestrationPlanApproved(manifest)) {
-      throw new Error("spawnAgent is blocked until the user approves the orchestration plan.");
-    }
-    const brief = validateSpawnBrief(arg.initialMessage);
-    if (!brief.ok) {
-      throw new Error(
-        `spawn brief missing required sections: ${brief.missing.join(", ")}`,
-      );
-    }
-    const routedSelection = resolveOrchestrationModel(manifest, arg.role, arg.tag, arg.modelOverride);
-    const interactionMode =
-      arg.role === "validator" ? "orchestrator-validator" : "orchestrator-worker";
-    const created = await ctx.agentChatService.createSession({
-      laneId: arg.laneId,
-      provider: routedSelection.provider,
-      model: routedSelection.modelId,
-      reasoningEffort: routedSelection.reasoningEffort ?? null,
-      fastMode: routedSelection.fastMode,
-      interactionMode,
-      surface: "work",
-      ...applyOrchestrationPermissionProfile(routedSelection.provider),
-      orchestrationRunId: arg.runId,
-      orchestrationRole: arg.role,
-      orchestrationParentSessionId: arg.leadSessionId,
-      orchestrationTag: arg.tag,
-      orchestrationStepId: arg.stepId,
-      orchestrationBundlePath: bundlePath,
-      goal: arg.goalSummary,
-    });
-    const spawnedAt = new Date().toISOString();
-    const fp = {
-      provider: routedSelection.provider,
-      modelId: routedSelection.modelId,
-      reasoningEffort: routedSelection.reasoningEffort ?? null,
-      fastMode: routedSelection.fastMode,
-      resolvedAt: spawnedAt,
-      routingKey: routedSelection.routingKey,
-    };
-    const buildSpawnPatch = (etag: string, summary: string) =>
-      ({
-        runId: arg.runId,
-        ifMatchEtag: etag,
-        actorRole: "lead" as const,
-        actorSessionId: arg.leadSessionId,
-        summary,
-        patches: [
-          {
-            op: "add" as const,
-            path: "/agents/-",
-            value: {
-              sessionId: created.id,
-              role: arg.role,
-              tag: arg.tag,
-              goalSummary: arg.goalSummary,
-              status: "pending",
-              spawnedAt,
-              currentStepId: arg.stepId,
-              spawnFingerprint: fp,
-            },
-          },
-        ],
-      });
-    let patchRes = await service.manifestPatch(buildSpawnPatch(manifest.etag, "spawn worker"), bundlePath);
-    if (!patchRes.ok && "manifest" in patchRes && patchRes.manifest) {
-      patchRes = await service.manifestPatch(
-        buildSpawnPatch(patchRes.manifest.etag, "spawn worker (retry)"),
-        bundlePath,
-      );
-    }
-    if (!patchRes.ok) {
-      await ctx.agentChatService.deleteSession({ sessionId: created.id });
-      throw new Error(
-        `spawn manifest patch failed: ${("error" in patchRes ? patchRes.error : "unknown")}`,
-      );
-    }
-    const origin: OrchestrationOrigin = {
-      runId: arg.runId,
-      fromSessionId: arg.leadSessionId,
-      kind: "wake",
-      intent: "directive",
-      taskId: arg.stepId,
-    };
-    await ctx.agentChatService.sendMessage(
-      {
-        sessionId: created.id,
-        text: arg.initialMessage,
-        metadata: { orchestrationOrigin: origin },
-      },
-      { awaitDispatch: false },
-    );
-    return { sessionId: created.id, etag: patchRes.etag };
-  });
+  ): Promise<{ sessionId: string; etag: string }> => getOrchestrationDomain().spawnAgent(arg));
 
   ipcMain.handle(IPC.orchestrationAgentInject, async (
     _event,
     arg: OrchestrationAgentInjectRequest,
-  ): Promise<void> => {
-    const { ctx, service } = ensureOrchestration();
-    const manifest = service.getManifestForRun(arg.runId);
-    if (!manifest) throw new Error(`run ${arg.runId} not loaded`);
-    const fromAgent = manifest.agents.find((a) => a.sessionId === arg.fromSessionId);
-    const targetAgent = manifest.agents.find((a) => a.sessionId === arg.targetSessionId);
-    if (!fromAgent || !targetAgent) {
-      throw new Error("orchestrationAgentInject: source/target not in same run");
-    }
-    const origin: OrchestrationOrigin = {
-      runId: arg.runId,
-      fromSessionId: arg.fromSessionId,
-      kind: arg.payload.kind,
-      intent: arg.payload.intent,
-      taskId: arg.payload.taskId,
-    };
-    if (arg.payload.kind === "queue") {
-      await ctx.agentChatService.steer({
-        sessionId: arg.targetSessionId,
-        text: arg.payload.text,
-        metadata: { orchestrationOrigin: origin },
-      });
-    } else if (arg.payload.kind === "interrupt-replace") {
-      await ctx.agentChatService.interrupt({ sessionId: arg.targetSessionId });
-      await ctx.agentChatService.sendMessage(
-        {
-          sessionId: arg.targetSessionId,
-          text: arg.payload.text,
-          metadata: { orchestrationOrigin: origin },
-        },
-        { awaitDispatch: false },
-      );
-    } else {
-      await ctx.agentChatService.sendMessage(
-        {
-          sessionId: arg.targetSessionId,
-          text: arg.payload.text,
-          metadata: { orchestrationOrigin: origin },
-        },
-        { awaitDispatch: false },
-      );
-    }
-  });
+  ): Promise<void> => getOrchestrationDomain().agentInject(arg));
 
   ipcMain.handle(IPC.orchestrationSubscribe, async (_event, arg: { runId: string; laneId?: string }) => {
-    const { ctx, service } = ensureOrchestration();
-    if (typeof arg.laneId === "string" && arg.laneId.trim()) {
-      const worktree = ctx.laneService.getLaneWorktreePath(arg.laneId);
-      const bundlePath = pathJoinOrchestration(worktree, arg.runId);
-      await service.subscribe(arg.runId, bundlePath);
-    }
+    const result = await getOrchestrationDomain().subscribe(arg);
     subscribeOrchestrationBroadcast();
-    return { ok: true, runId: arg.runId };
+    return result;
   });
 
-  ipcMain.handle(IPC.orchestrationUnsubscribe, async (_event, arg: { runId: string }) => {
-    const { service } = ensureOrchestration();
-    await service.release(arg.runId);
-    return { ok: true };
-  });
+  ipcMain.handle(IPC.orchestrationUnsubscribe, async (_event, arg: { runId: string }) =>
+    getOrchestrationDomain().unsubscribe(arg),
+  );
 
   ipcMain.handle(IPC.computerUseListArtifacts, async (_event, arg: ComputerUseArtifactListArgs = {}): Promise<ComputerUseArtifactView[]> => {
     const ctx = ensureComputerUseBroker();
@@ -7100,6 +7019,9 @@ export function registerIpc({
 
   ipcMain.handle(IPC.iosSimulatorEnsurePreviewWorkspace, async (_event, arg = {}) =>
     ensureIosSimulator().ensurePreviewWorkspace(arg));
+
+  ipcMain.handle(IPC.iosSimulatorRenderCurrentPreview, async (_event, arg = {}) =>
+    ensureIosSimulator().renderCurrentPreview(arg));
 
   ipcMain.handle(IPC.iosSimulatorRenderPreview, async (_event, arg) => ensureIosSimulator().renderPreview(arg));
 

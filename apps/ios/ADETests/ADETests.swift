@@ -1126,20 +1126,27 @@ final class ADETests: XCTestCase {
   func testSyncConnectPortCandidatesFallbackBetweenAdeDefaultPorts() {
     XCTAssertEqual(
       syncConnectPortCandidates(primaryPort: 8787, addresses: ["100.75.20.63"]),
-      Array(8787...8799)
+      SyncDirectHostPorts.portCandidates
     )
     XCTAssertEqual(
       syncConnectPortCandidates(primaryPort: 8788, addresses: ["192.168.1.10"]),
-      [8788, 8787] + Array(8789...8799)
+      [8788] + SyncDirectHostPorts.portCandidates.filter { $0 != 8788 }
     )
     XCTAssertEqual(
       syncConnectPortCandidates(primaryPort: 9000, addresses: ["100.75.20.63"]),
-      [9000] + Array(8787...8799)
+      [9000] + SyncDirectHostPorts.portCandidates
     )
     XCTAssertEqual(
       syncConnectPortCandidates(primaryPort: 9000, addresses: ["192.168.1.10"]),
       [9000]
     )
+    XCTAssertTrue(
+      syncConnectPortCandidates(primaryPort: 8790, addresses: ["100.75.20.63"]).contains(8803)
+    )
+    XCTAssertTrue(
+      syncConnectPortCandidates(primaryPort: 8790, addresses: ["100.75.20.63"]).contains(SyncDirectHostPorts.fallbackMaxPort)
+    )
+    XCTAssertEqual(SyncTailnetDiscovery.portCandidates, SyncDirectHostPorts.portCandidates)
   }
 
   func testSyncRoamDecisionUsesSavedTailnetWhenWifiDrops() {
@@ -1273,6 +1280,49 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(
       service.automaticReconnectAddressesForTesting(profile),
       ["100.75.20.63", "192.168.1.8"]
+    )
+  }
+
+  @MainActor
+  func testSyncAutomaticReconnectPrefersTailnetOnCellularWithoutManualRoamFlag() {
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+    let profile = HostConnectionProfile(
+      hostIdentity: "host-1",
+      hostName: "Mac Studio",
+      port: 8790,
+      authKind: "paired",
+      pairedDeviceId: "phone-1",
+      lastRemoteDbVersion: 0,
+      lastHostDeviceId: "host-1",
+      lastSuccessfulAddress: "192.168.1.8",
+      savedAddressCandidates: ["192.168.1.8", "100.75.20.63"],
+      discoveredLanAddresses: ["192.168.1.8"],
+      tailscaleAddress: "100.75.20.63"
+    )
+    service.setNetworkPathForTesting(
+      usesWiFi: false,
+      usesCellular: true,
+      usesWiredEthernet: false
+    )
+    service.applyDiscoveredHostsForTesting([
+      DiscoveredSyncHost(
+        id: "bonjour-host",
+        serviceName: "ADE Sync Mac 8800",
+        hostName: "Mac Studio",
+        hostIdentity: "host-1",
+        port: 8800,
+        addresses: ["192.168.1.8"],
+        tailscaleAddress: "100.75.20.63",
+        lastResolvedAt: "2026-04-23T00:00:00.000Z"
+      ),
+    ])
+
+    XCTAssertEqual(
+      service.automaticReconnectAddressesForTesting(profile),
+      ["100.75.20.63", "192.168.1.8"]
+    )
+    XCTAssertTrue(
+      syncConnectPortCandidates(primaryPort: profile.port, addresses: service.automaticReconnectAddressesForTesting(profile)).contains(8800)
     )
   }
 
@@ -1515,6 +1565,17 @@ final class ADETests: XCTestCase {
 
     XCTAssertEqual(syncConnectionStateAfterTransportFailure(error: fatalError, fallback: .connecting), .error)
     XCTAssertEqual(syncConnectionStateAfterTransportFailure(error: transientError, fallback: .connecting), .connecting)
+  }
+
+  func testSyncRequestTimeoutWithoutInboundTrafficPublishesReconnectingState() {
+    XCTAssertEqual(
+      syncConnectionStateAfterRequestTimeout(lastInboundMessageAt: nil, fallback: .error),
+      .connecting
+    )
+    XCTAssertEqual(
+      syncConnectionStateAfterRequestTimeout(lastInboundMessageAt: 42, fallback: .error),
+      .error
+    )
   }
 
   func testSyncClientHeartbeatUsesHalfServerIntervalWithBounds() {
@@ -3163,7 +3224,7 @@ final class ADETests: XCTestCase {
     database.close()
   }
 
-  func testDatabaseRejectsUnknownIncomingSyncTable() throws {
+  func testDatabaseIgnoresUnknownIncomingSyncTable() throws {
     let database = makeDatabase(baseURL: makeTemporaryDirectory())
     XCTAssertNil(database.initializationError)
 
@@ -3171,9 +3232,9 @@ final class ADETests: XCTestCase {
     let siteId = "b00e9b92c864a27958669c1595fcb2c3"
     let change = CrsqlChangeRow(table: "missing_future_table", pk: .string("row-1"), cid: "name", val: .string("future"), colVersion: 1, dbVersion: 2, siteId: siteId, cl: 1, seq: 0)
 
-    XCTAssertThrowsError(try database.applyChanges([change])) { error in
-      XCTAssertTrue((error as NSError).localizedDescription.contains("missing_future_table"))
-    }
+    let result = try database.applyChanges([change])
+    XCTAssertEqual(result.appliedCount, 0)
+    XCTAssertTrue(result.touchedTables.isEmpty)
     XCTAssertEqual(database.currentDbVersion(), initialVersion)
     database.close()
   }
@@ -4600,6 +4661,175 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(prs.first?.id, "pr-1")
     XCTAssertEqual(prs.first?.title, "Fix mobile hydration")
     XCTAssertEqual(database.fetchPullRequestSnapshot(prId: "pr-1")?.status?.isMergeable, true)
+    database.close()
+  }
+
+  func testDatabaseReplacePullRequestHydrationSkipsPrsUntilLaneRowsArrive() throws {
+    let baseURL = makeTemporaryDirectory()
+    let database = makeControllerHydrationDatabase(baseURL: baseURL)
+    XCTAssertNil(database.initializationError)
+
+    try database.executeSqlForTesting("""
+      insert into projects (
+        id, root_path, display_name, default_base_ref, created_at, last_opened_at
+      ) values (
+        'project-1', '/tmp/project', 'ADE', 'main', '2026-03-17T00:00:00.000Z', '2026-03-17T00:00:00.000Z'
+      );
+    """)
+
+    let payload = PullRequestRefreshPayload(
+      refreshedCount: 1,
+      prs: [
+        PrSummary(
+          id: "pr-before-lane",
+          laneId: "lane-primary",
+          projectId: "project-1",
+          repoOwner: "arul",
+          repoName: "ade",
+          githubPrNumber: 43,
+          githubUrl: "https://github.com/arul/ade/pull/43",
+          githubNodeId: nil,
+          title: "Arrives before lane",
+          state: "open",
+          baseBranch: "main",
+          headBranch: "ade/mobile-pr-before-lane",
+          checksStatus: "pending",
+          reviewStatus: "requested",
+          additions: 5,
+          deletions: 1,
+          lastSyncedAt: "2026-03-17T00:10:00.000Z",
+          createdAt: "2026-03-17T00:10:00.000Z",
+          updatedAt: "2026-03-17T00:10:00.000Z"
+        ),
+      ],
+      snapshots: [
+        PullRequestSnapshotHydration(
+          prId: "pr-before-lane",
+          detail: nil,
+          status: PrStatus(
+            prId: "pr-before-lane",
+            state: "open",
+            checksStatus: "pending",
+            reviewStatus: "requested",
+            isMergeable: true,
+            mergeConflicts: false,
+            behindBaseBy: 0
+          ),
+          checks: [],
+          reviews: [],
+          comments: [],
+          files: [],
+          updatedAt: "2026-03-17T00:10:00.000Z"
+        ),
+      ]
+    )
+
+    XCTAssertNoThrow(try database.replacePullRequestHydration(payload))
+    XCTAssertTrue(database.fetchPullRequests().isEmpty)
+    XCTAssertNil(database.fetchPullRequestSnapshot(prId: "pr-before-lane"))
+
+    try database.executeSqlForTesting("""
+      insert into lanes (
+        id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path,
+        attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, folder,
+        status, created_at, archived_at
+      ) values (
+        'lane-primary', 'project-1', 'Primary', null, 'primary', 'main', 'main', '/tmp/project',
+        null, 1, null, null, null, null, null,
+        'active', '2026-03-17T00:00:00.000Z', null
+      );
+    """)
+
+    try database.replacePullRequestHydration(payload)
+    XCTAssertEqual(database.fetchPullRequests().map(\.id), ["pr-before-lane"])
+    XCTAssertEqual(database.fetchPullRequestSnapshot(prId: "pr-before-lane")?.status?.isMergeable, true)
+    database.close()
+  }
+
+  func testDatabaseReplacePullRequestHydrationTargetedRefreshDoesNotPruneOtherPullRequests() throws {
+    let baseURL = makeTemporaryDirectory()
+    let database = makeControllerHydrationDatabase(baseURL: baseURL)
+    XCTAssertNil(database.initializationError)
+
+    try insertHydrationProjectGraph(into: database)
+
+    func summary(id: String, number: Int, title: String, updatedAt: String) -> PrSummary {
+      PrSummary(
+        id: id,
+        laneId: "lane-primary",
+        projectId: "project-1",
+        repoOwner: "arul",
+        repoName: "ade",
+        githubPrNumber: number,
+        githubUrl: "https://github.com/arul/ade/pull/\(number)",
+        githubNodeId: nil,
+        title: title,
+        state: "open",
+        baseBranch: "main",
+        headBranch: "ade/\(id)",
+        checksStatus: "pending",
+        reviewStatus: "requested",
+        additions: 5,
+        deletions: 1,
+        lastSyncedAt: updatedAt,
+        createdAt: "2026-03-17T00:10:00.000Z",
+        updatedAt: updatedAt
+      )
+    }
+
+    func snapshot(prId: String, isMergeable: Bool, updatedAt: String) -> PullRequestSnapshotHydration {
+      PullRequestSnapshotHydration(
+        prId: prId,
+        detail: nil,
+        status: PrStatus(
+          prId: prId,
+          state: "open",
+          checksStatus: "pending",
+          reviewStatus: "requested",
+          isMergeable: isMergeable,
+          mergeConflicts: false,
+          behindBaseBy: 0
+        ),
+        checks: [],
+        reviews: [],
+        comments: [],
+        files: [],
+        updatedAt: updatedAt
+      )
+    }
+
+    try database.replacePullRequestHydration(
+      PullRequestRefreshPayload(
+        refreshedCount: 2,
+        prs: [
+          summary(id: "pr-one", number: 41, title: "One", updatedAt: "2026-03-17T00:10:00.000Z"),
+          summary(id: "pr-two", number: 42, title: "Two", updatedAt: "2026-03-17T00:11:00.000Z"),
+        ],
+        snapshots: [
+          snapshot(prId: "pr-one", isMergeable: true, updatedAt: "2026-03-17T00:10:00.000Z"),
+          snapshot(prId: "pr-two", isMergeable: true, updatedAt: "2026-03-17T00:11:00.000Z"),
+        ]
+      )
+    )
+
+    try database.replacePullRequestHydration(
+      PullRequestRefreshPayload(
+        refreshedCount: 1,
+        prs: [
+          summary(id: "pr-one", number: 41, title: "One updated", updatedAt: "2026-03-17T00:12:00.000Z"),
+        ],
+        snapshots: [
+          snapshot(prId: "pr-one", isMergeable: false, updatedAt: "2026-03-17T00:12:00.000Z"),
+        ]
+      ),
+      pruneStale: false
+    )
+
+    let prs = database.fetchPullRequests()
+    XCTAssertEqual(Set(prs.map(\.id)), Set(["pr-one", "pr-two"]))
+    XCTAssertEqual(prs.first(where: { $0.id == "pr-one" })?.title, "One updated")
+    XCTAssertEqual(database.fetchPullRequestSnapshot(prId: "pr-one")?.status?.isMergeable, false)
+    XCTAssertEqual(database.fetchPullRequestSnapshot(prId: "pr-two")?.status?.isMergeable, true)
     database.close()
   }
 
@@ -7700,18 +7930,27 @@ final class ADETests: XCTestCase {
 
     let opencodeGroup = groups.first(where: { $0.key == "opencode" })
     let anthropicProvider = opencodeGroup?.providers.first(where: { $0.key == "anthropic" })
-    XCTAssertEqual(anthropicProvider?.models.first?.id, "opencode/anthropic/claude-sonnet-4-6")
+    XCTAssertEqual(
+      anthropicProvider?.models.filter { $0.id == "opencode/anthropic/claude-sonnet-4-6" }.count,
+      1
+    )
   }
 
   func testWorkModelCatalogIncludesFlagshipModelMetadata() {
     let groups = workModelCatalogGroups(currentModelId: "", currentProvider: "codex")
     let claudeGroup = groups.first(where: { $0.key == "claude" })
     let anthropicProvider = claudeGroup?.providers.first(where: { $0.key == "anthropic" })
+    let fable = anthropicProvider?.models.first(where: { $0.id == "claude-fable-5" })
     let opus48 = anthropicProvider?.models.first(where: { $0.id == "claude-opus-4-8" })
     let codexGroup = groups.first(where: { $0.key == "codex" })
     let openAIProvider = codexGroup?.providers.first(where: { $0.key == "openai" })
     let gpt55 = openAIProvider?.models.first(where: { $0.id == "gpt-5.5" })
 
+    XCTAssertEqual(anthropicProvider?.models.first?.id, "claude-fable-5")
+    XCTAssertEqual(fable?.displayName, "Claude Fable 5")
+    XCTAssertEqual(fable?.tier, .flagship)
+    XCTAssertEqual(fable?.tagline, "Flagship · 1M context")
+    XCTAssertNotNil(ADEColor.modelBrand(for: "claude-fable-5"))
     XCTAssertEqual(opus48?.displayName, "Claude Opus 4.8 1M")
     XCTAssertEqual(opus48?.tier, .flagship)
     XCTAssertEqual(opus48?.tagline, "Flagship · 1M context")
@@ -7723,12 +7962,16 @@ final class ADETests: XCTestCase {
   }
 
   func testMobileComposerReasoningTiersMirrorDesktopRegistry() {
-    XCTAssertEqual(ADEColor.reasoningTiers(for: "anthropic/claude-opus-4-8"), ["low", "medium", "high", "xhigh", "max"])
-    XCTAssertEqual(ADEColor.reasoningTiers(for: "claude-opus-4-8"), ["low", "medium", "high", "xhigh", "max"])
+    XCTAssertEqual(ADEColor.reasoningTiers(for: "anthropic/claude-fable-5"), ["low", "medium", "high", "xhigh", "max", "ultracode"])
+    XCTAssertEqual(ADEColor.reasoningTiers(for: "anthropic/claude-fable-5-api"), ["low", "medium", "high", "xhigh", "max", "ultracode"])
+    XCTAssertEqual(ADEColor.reasoningTiers(for: "claude-fable-5"), ["low", "medium", "high", "xhigh", "max", "ultracode"])
+    XCTAssertEqual(ADEColor.reasoningTiers(for: "fable"), ["low", "medium", "high", "xhigh", "max", "ultracode"])
+    XCTAssertEqual(ADEColor.reasoningTiers(for: "anthropic/claude-opus-4-8"), ["low", "medium", "high", "xhigh", "max", "ultracode"])
+    XCTAssertEqual(ADEColor.reasoningTiers(for: "claude-opus-4-8"), ["low", "medium", "high", "xhigh", "max", "ultracode"])
     XCTAssertEqual(ADEColor.reasoningTiers(for: "anthropic/claude-opus-4-7"), ["low", "medium", "high", "xhigh", "max"])
     XCTAssertEqual(ADEColor.reasoningTiers(for: "claude-opus-4-7"), ["low", "medium", "high", "xhigh", "max"])
     XCTAssertEqual(ADEColor.reasoningTiers(for: "opus"), ["low", "medium", "high", "xhigh", "max"])
-    XCTAssertEqual(ADEColor.reasoningTiers(for: "anthropic/claude-sonnet-4-6"), ["low", "medium", "high"])
+    XCTAssertEqual(ADEColor.reasoningTiers(for: "anthropic/claude-sonnet-4-6"), ["low", "medium", "high", "max"])
     XCTAssertNil(ADEColor.reasoningTiers(for: "claude-haiku-4-5"))
     XCTAssertEqual(ADEColor.reasoningTiers(for: "openai/gpt-5.3-codex-spark"), ["low", "medium", "high", "xhigh"])
     XCTAssertEqual(ADEColor.reasoningTiers(for: "gpt-5.2"), ["low", "medium", "high", "xhigh"])
@@ -10465,6 +10708,34 @@ final class ADETests: XCTestCase {
     XCTAssertNil(status.organizationName)
     XCTAssertNil(status.organizationUrlKey)
     XCTAssertNil(status.organizationLogoUrl)
+  }
+
+  func testWorkTranscriptEntryMergePrependsOlderPagesWithoutDuplicatingTailOverlap() {
+    let oldest = AgentChatTranscriptEntry(
+      role: "user",
+      text: "oldest",
+      timestamp: "2026-06-11T10:00:00.000Z",
+      turnId: "turn-1"
+    )
+    let overlap = AgentChatTranscriptEntry(
+      role: "assistant",
+      text: "middle",
+      timestamp: "2026-06-11T10:01:00.000Z",
+      turnId: "turn-1"
+    )
+    let newest = AgentChatTranscriptEntry(
+      role: "assistant",
+      text: "newest",
+      timestamp: "2026-06-11T10:02:00.000Z",
+      turnId: "turn-2"
+    )
+
+    let merged = mergeWorkTranscriptEntries(
+      older: [oldest, overlap],
+      newer: [overlap, newest]
+    )
+
+    XCTAssertEqual(merged, [oldest, overlap, newest])
   }
 
   // MARK: - Orchestration session fields forward-compat

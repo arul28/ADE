@@ -12,6 +12,7 @@ import type { WorkPtyLaunchArgs, WorkPtyLaunchResult } from "./cliLaunch";
 
 type WorkStartSurfaceProps = {
   draftKind: WorkDraftKind;
+  orchestratorEnabled?: boolean;
   draftLaneId?: string | null;
   draftContextTargetId?: string | null;
   lanes: LaneSummary[];
@@ -27,6 +28,7 @@ type WorkStartSurfaceProps = {
 
 export function WorkStartSurface({
   draftKind,
+  orchestratorEnabled = false,
   draftLaneId = null,
   draftContextTargetId = null,
   lanes,
@@ -133,6 +135,7 @@ export function WorkStartSurface({
           embeddedWorkLayout
           suppressDraftLaunchNavigation={suppressDraftLaunchNavigation}
           workDraftKind={draftKind}
+          orchestratorEnabled={orchestratorEnabled}
           initialLinearIssueContext={initialLinearIssueContext}
           initialLinearIssueContextSource={initialLinearIssueContextSource}
           initialModelId={initialModelId}

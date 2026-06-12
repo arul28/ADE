@@ -20,8 +20,19 @@ Every other service talks to plain SQLite (`run`, `get`, `all`,
 
 - `getSiteId(): string` — the local cr-sqlite site identifier.
 - `getDbVersion(): number` — the monotonic replication version.
-- `exportChangesSince(version: number): CrsqlChangeRow[]` — the list
-  of changes this device has generated since the given version.
+- `exportChangesSince(version, { maxRows?, throughDbVersion? }):
+  CrsqlChangeRow[]` — the changes generated since the given version.
+  Exports are **windowed and bounded**: callers constrain the scan to
+  a `db_version` range (the sync pump and peer relay walk 250k-version
+  windows per poll, ~4 batches of rows at a time) and the scan runs
+  inside a read transaction that pins the WAL snapshot. Both are
+  load-bearing: the `crsql_changes` vtab aborts any scan
+  (`SQLITE_ABORT`) when another connection commits mid-read, a bare
+  `LIMIT` cannot bound a vtab scan (it applies after the full backlog
+  is materialized and sorted), and version-range constraints are the
+  only thing that pushes down to the indexed clock tables. Truncation
+  only happens at complete `db_version` groups so ack watermarks stay
+  correct.
 - `applyChanges(rows: CrsqlChangeRow[]): ApplyRemoteChangesResult` —
   apply remote changes locally.
 - `discardUnpublishedChangesForTables(tableNames: string[]): void` —
@@ -58,6 +69,16 @@ The migration is dynamic: any new table that appears in
 `sqlite_master` and is not in the excluded set is marked as a CRR
 automatically at next startup. There is no hand-curated CRR list to
 maintain when a feature adds a table.
+
+Startup also self-heals **orphaned CRR shadow tables**
+(`removeOrphanedCrrMetadata` in `kvDb.ts`): if a base table was
+dropped but its `__crsql_clock` / `__crsql_pks` shadow tables were
+left behind, every `crsql_changes` scan fails instantly with
+`SQLITE_ABORT` — the vtab unions all clock tables it finds — silently
+killing changeset export (mobile sync, peer relay) while writes keep
+working. The repair drops shadow tables whose base table no longer
+exists before any other CRR work, so existing DBs heal on the next
+brain start.
 
 Sync-managed tables support later `ALTER TABLE ... ADD COLUMN` through
 automatic `crsql_begin_alter` / `crsql_commit_alter` wrapping in the
@@ -279,14 +300,21 @@ syncs.
 ### Extract
 
 ```sql
-SELECT * FROM crsql_changes WHERE db_version > ?;
+SELECT * FROM crsql_changes
+ WHERE db_version > ? AND db_version <= ?   -- bounded version window
+ ORDER BY db_version, cl, seq;
 ```
 
-Wrapped in `AdeDb.sync.exportChangesSince(version)`. Returns an array
-of `CrsqlChangeRow` objects; the transport layer batches them into
-`changeset_batch` envelopes. Because the replication watermark is the
-integer `db_version`, the transport must not split rows that share one
-`db_version` across separate host batches.
+Wrapped in `AdeDb.sync.exportChangesSince(version, options)`, run
+inside a read transaction that pins the WAL snapshot (concurrent
+commits otherwise abort the vtab scan). The sync pump and peer relay
+scan a 250,000-version window per poll and advance the cursor across
+empty windows; suppression-filtered fetches keep scanning forward
+until surviving rows appear or the range is exhausted, so a truncated
+fetch can never silently skip rows. Returned `CrsqlChangeRow`s are
+batched into `changeset_batch` envelopes. Because the replication
+watermark is the integer `db_version`, the transport must not split
+rows that share one `db_version` across separate host batches.
 
 ### Apply
 
@@ -299,16 +327,21 @@ emulation both handle conflict resolution inside the insert trigger
 (accept newer `col_version`, tombstone semantics for deletes, last
 writer wins on ties by `site_id`).
 
-Before apply, `kvDb.ts` filters inbound rows only for explicitly retired
-tables (`unified_memories` and related FTS tables). iOS also ignores
-its hydration-owned snapshot tables, which are intentionally not part
-of the desktop CRDT schema. Arbitrary unknown tables are rejected rather
-than ACKed: a peer that receives future-schema rows must upgrade before
-it can advance its sync cursor. This filter runs before the SQL
-transaction starts; a batch containing only ignored retired rows returns
-`appliedCount: 0`, preserves the local database version, and emits no
-touched tables. Mixed batches remain transactional for the actionable
-rows.
+Before apply, `kvDb.ts` filters inbound rows for explicitly retired
+tables (`unified_memories` and related FTS tables) and for tables that
+no longer exist locally. iOS also ignores its hydration-owned snapshot
+tables, which are intentionally not part of the desktop CRDT schema,
+and **skips rows for any table its bundled schema does not know**
+instead of failing the batch. A thrown error there would nack the
+whole changeset, the host's cursor would never advance past the poison
+batch, and every retry would replay it — freezing all sync for the
+device until an app update ships (this happened live when desktop
+added `session_linear_issues` before the phone schema had it). Skipped
+tables' data arrives after the phone updates. These filters run before
+the SQL transaction starts; a batch containing only ignored rows
+returns `appliedCount: 0`, preserves the local database version, and
+emits no touched tables. Mixed batches remain transactional for the
+actionable rows.
 
 After apply, ADE runs post-hooks:
 

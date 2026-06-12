@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AgentChatEventEnvelope } from "../../../../desktop/src/shared/types/chat";
-import { archiveChatSession, cancelSteerMessage, createChatSession, DEFAULT_CODEX_REASONING_EFFORT, deleteChatSession, dispatchSteerMessage, discoverProjectSlashCommands, editSteerMessage, getAvailableModels, latestGoal, latestTokenStats, listChatSessions, listLaneDiffStats, listPrsByLane, listTerminalSessions, resumeTerminalSession, sendChatMessage, signalTerminal, startClaudeTerminalSession, steerChatMessage, unarchiveChatSession } from "../adeApi";
+import { archiveChatSession, cancelSteerMessage, createChatSession, DEFAULT_CODEX_REASONING_EFFORT, deleteChatSession, dispatchSteerMessage, discoverProjectSlashCommands, editSteerMessage, getAvailableModels, getChatHistoryPage, latestGoal, latestTokenStats, listChatSessions, listLaneDiffStats, listPrsByLane, listTerminalSessions, resumeTerminalSession, sendChatMessage, signalTerminal, startClaudeTerminalSession, steerChatMessage, unarchiveChatSession } from "../adeApi";
 import type { AdeCodeConnection } from "../types";
 
 const tmpPaths: string[] = [];
@@ -53,6 +53,52 @@ describe("listLaneDiffStats", () => {
       },
     ]);
     expect(result["lane-1"]).toEqual({ additions: 12, deletions: 4, files: 3 });
+  });
+});
+
+describe("getChatHistoryPage", () => {
+  it("calls the positional chat history page action and passes maxBytes only when set", async () => {
+    const calls: Array<{ domain: string; action: string; argsList: unknown[] }> = [];
+    const connection = {
+      actionList: async (domain: string, action: string, argsList: unknown[]) => {
+        calls.push({ domain, action, argsList });
+        return { sessionId: "s1", events: [envelope(1, { type: "text", text: "hi" })], startOffset: 128, hasMore: true, sessionFound: true };
+      },
+    } as unknown as AdeCodeConnection;
+
+    const page = await getChatHistoryPage(connection, "s1", 4096);
+    await getChatHistoryPage(connection, "s1", 4096, 65_536);
+
+    expect(calls).toEqual([
+      { domain: "chat", action: "getChatEventHistoryPage", argsList: ["s1", { beforeOffset: 4096 }] },
+      { domain: "chat", action: "getChatEventHistoryPage", argsList: ["s1", { beforeOffset: 4096, maxBytes: 65_536 }] },
+    ]);
+    expect(page.startOffset).toBe(128);
+    expect(page.hasMore).toBe(true);
+    expect(page.events).toHaveLength(1);
+  });
+
+  it("normalizes a null result into a terminal empty page", async () => {
+    const connection = {
+      actionList: async () => null,
+    } as unknown as AdeCodeConnection;
+
+    const page = await getChatHistoryPage(connection, "s1", 4096);
+
+    expect(page).toEqual({ sessionId: "s1", events: [], startOffset: 0, hasMore: false, sessionFound: false });
+  });
+
+  it("normalizes malformed page fields so the scroll-back loop terminates", async () => {
+    const connection = {
+      actionList: async () => ({ sessionId: "s1", events: null, startOffset: Number.NaN, hasMore: "yes", sessionFound: true }),
+    } as unknown as AdeCodeConnection;
+
+    const page = await getChatHistoryPage(connection, "s1", 4096);
+
+    expect(page.events).toEqual([]);
+    expect(page.startOffset).toBe(0);
+    expect(page.hasMore).toBe(false);
+    expect(page.sessionFound).toBe(true);
   });
 });
 
@@ -312,7 +358,9 @@ describe("getAvailableModels", () => {
       {
         domain: "chat",
         action: "getAvailableModels",
-        args: { provider: "cursor", activateRuntime: true },
+        // TUI chats run cursor through the SDK, so only that source is probed
+        // synchronously; the CLI flavor revalidates in the background on the host.
+        args: { provider: "cursor", activateRuntime: true, cursorSource: "sdk" },
       },
     ]);
   });

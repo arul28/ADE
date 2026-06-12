@@ -30,6 +30,7 @@ const RUNTIME_ACTION_CHANNEL: Record<string, Record<string, string>> = {
   ios_simulator: {
     resolvePreviewMatch: IPC.iosSimulatorResolvePreviewMatch,
     ensurePreviewWorkspace: IPC.iosSimulatorEnsurePreviewWorkspace,
+    renderCurrentPreview: IPC.iosSimulatorRenderCurrentPreview,
   },
 };
 
@@ -127,6 +128,7 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
     case IPC.iosSimulatorListPreviewTargets:
     case IPC.iosSimulatorResolvePreviewMatch:
     case IPC.iosSimulatorEnsurePreviewWorkspace:
+    case IPC.iosSimulatorRenderCurrentPreview:
     case IPC.iosSimulatorRenderPreview:
       return 2 * 60_000;
     case IPC.iosSimulatorOpenPreviewWorkspace:

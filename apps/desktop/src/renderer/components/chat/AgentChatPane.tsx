@@ -61,6 +61,7 @@ import type {
 } from "../../../shared/types/orchestration";
 import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
 import { isProviderSlashCommandInput } from "../../../shared/chatSlashCommands";
+import { deriveDeterministicLaneNameFromPrompt } from "../../../shared/laneNameFallback";
 import {
   LOCAL_PROVIDER_LABELS,
   MODEL_REGISTRY,
@@ -106,7 +107,6 @@ import { ChatComputerUsePanel } from "./ChatComputerUsePanel";
 import { ChatIosSimulatorPanel } from "./ChatIosSimulatorPanel";
 import { ChatAppControlPanel } from "./ChatAppControlPanel";
 import { ChatSubagentsPanel } from "./ChatSubagentsPanel";
-import { ChatTasksPanel } from "./ChatTasksPanel";
 import { ChatFileChangesPanel } from "./ChatFileChangesPanel";
 import { RewindFilesConfirmDialog, type RewindFilesConfirmDialogState } from "./RewindFilesConfirmDialog";
 import { buildRewindPreviewFiles, deriveRewindDiffSummaries } from "./rewindFilesPreview";
@@ -622,6 +622,7 @@ function buildSubagentEventHistory(args: {
 const CHAT_HISTORY_READ_MAX_BYTES = 2_000_000;
 const MAX_RETAINED_CHAT_SESSION_HISTORIES = 6;
 const MAX_SELECTED_CHAT_SESSION_EVENTS = 20_000;
+const MAX_SELECTED_CHAT_SESSION_RESIDENT_EVENTS = 60_000;
 const MAX_BACKGROUND_CHAT_SESSION_EVENTS = 1_000;
 const EMPTY_DRAFT_LAUNCH_JOBS: DraftLaunchJob[] = [];
 
@@ -651,23 +652,33 @@ function draftLaunchRequestKey(args: {
   });
 }
 
-function createTemporaryAutoLaneName(date = new Date()): string {
+function autoLaneGenericSuffix(date = new Date()): string {
   const pad = (value: number) => String(value).padStart(2, "0");
   return [
-    "chat",
-    `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}`,
-    `${pad(date.getHours())}${pad(date.getMinutes())}${pad(date.getSeconds())}`,
-  ].join("-");
+    date.getFullYear(),
+    pad(date.getMonth() + 1),
+    pad(date.getDate()),
+  ].join("") + "-" + [
+    pad(date.getHours()),
+    pad(date.getMinutes()),
+    pad(date.getSeconds()),
+  ].join("");
 }
 
-const AUTO_LANE_NAME_SUGGEST_TIMEOUT_MS = 3_500;
+function createDeterministicAutoLaneName(prompt: string, options: { genericSuffix?: string | null } = {}): string {
+  return deriveDeterministicLaneNameFromPrompt(prompt, options);
+}
+
+const AUTO_LANE_NAME_SUGGEST_TIMEOUT_MS = 10_000;
 
 async function suggestAutoLaneName(args: {
   laneId: string;
   prompt: string;
   modelId: string;
+  genericSuffix?: string | null;
+  onFallback?: (message: string) => void;
 }): Promise<string> {
-  const fallbackName = createTemporaryAutoLaneName();
+  const fallbackName = createDeterministicAutoLaneName(args.prompt, { genericSuffix: args.genericSuffix });
   let timeoutId: ReturnType<typeof setTimeout> | null = null;
   try {
     const suggested = await Promise.race([
@@ -678,12 +689,16 @@ async function suggestAutoLaneName(args: {
         fallbackName,
       }),
       new Promise<string>((resolve) => {
-        timeoutId = setTimeout(() => resolve(fallbackName), AUTO_LANE_NAME_SUGGEST_TIMEOUT_MS);
+        timeoutId = setTimeout(() => {
+          args.onFallback?.(`Lane naming with ${formatLocalModelLabel(args.modelId)} took longer than 10s; using a deterministic name.`);
+          resolve(fallbackName);
+        }, AUTO_LANE_NAME_SUGGEST_TIMEOUT_MS);
       }),
     ]);
     return suggested.trim() || fallbackName;
   } catch (error) {
     console.warn("draft launch lane name suggestion failed; using fallback name", error);
+    args.onFallback?.("Lane naming failed; using a deterministic name.");
     return fallbackName;
   } finally {
     if (timeoutId) clearTimeout(timeoutId);
@@ -738,10 +753,11 @@ function draftLaunchPromptSnippet(job: DraftLaunchJob): string {
 
 function draftLaunchJobMessage(job: DraftLaunchJob): string {
   const laneSuffix = job.laneName ? ` in ${job.laneName}` : "";
-  if (job.status === "naming-lane") return `Creating lane for ${draftLaunchKindLabel(job.draftKind)}... Choosing a branch name.`;
-  if (job.status === "creating-lane") return `Creating lane for ${draftLaunchKindLabel(job.draftKind)}...`;
-  if (job.status === "starting-session") return `Starting ${draftLaunchKindLabel(job.draftKind)}${laneSuffix}...`;
-  if (job.status === "sending-prompt") return `Sending prompt to ${draftLaunchKindLabel(job.draftKind)}${laneSuffix}...`;
+  const warningSuffix = job.warning ? ` ${job.warning}` : "";
+  if (job.status === "naming-lane") return `Naming lane with ${formatLocalModelLabel(job.namingModelId ?? job.snapshot.modelId)}...${warningSuffix}`;
+  if (job.status === "creating-lane") return `Creating lane for ${draftLaunchKindLabel(job.draftKind)}...${warningSuffix}`;
+  if (job.status === "starting-session") return `Starting ${draftLaunchKindLabel(job.draftKind)}${laneSuffix}...${warningSuffix}`;
+  if (job.status === "sending-prompt") return `Sending prompt to ${draftLaunchKindLabel(job.draftKind)}${laneSuffix}...${warningSuffix}`;
   if (job.status === "failed") return job.error ? `Launch failed: ${job.error}` : "Launch failed.";
   return job.mode === "background"
     ? `Launched ${draftLaunchKindLabel(job.draftKind)}${laneSuffix}.`
@@ -990,6 +1006,11 @@ type AgentChatSessionViewCache = {
   turnActive: boolean;
   pendingInputs: DerivedPendingInput[];
   pendingSteers: PendingSteerEntry[];
+  /**
+   * Older-transcript pagination cursor (byte offset of the oldest loaded
+   * transcript line). 0 = head reached; null = pagination unavailable.
+   */
+  historyCursor: number | null;
   cachedAtMs: number;
 };
 
@@ -1011,15 +1032,18 @@ function writeAgentChatSessionViewCache(
   sessionId: string,
   events: AgentChatEventEnvelope[],
   derived = deriveRuntimeState(events),
+  historyCursor: number | null = null,
+  maxEvents = MAX_SELECTED_CHAT_SESSION_EVENTS,
 ): void {
   if (!AGENT_CHAT_VIEW_CACHE_ENABLED) return;
-  const trimmed = trimChatEventHistory(events, MAX_SELECTED_CHAT_SESSION_EVENTS);
+  const trimmed = trimChatEventHistory(events, maxEvents);
   agentChatSessionViewCacheBySessionId.delete(sessionId);
   agentChatSessionViewCacheBySessionId.set(sessionId, {
     events: trimmed,
     turnActive: derived.turnActive,
     pendingInputs: derived.pendingInputs,
     pendingSteers: derived.pendingSteers,
+    historyCursor,
     cachedAtMs: Date.now(),
   });
   while (agentChatSessionViewCacheBySessionId.size > MAX_AGENT_CHAT_VIEW_CACHE_ENTRIES) {
@@ -1069,15 +1093,17 @@ type ParallelModelRowState = NativeControlState & {
   executionMode: AgentChatExecutionMode;
 };
 
-type WorkDraftLaunchKind = "chat" | "cli" | "chat-orchestrator";
+type WorkDraftLaunchKind = "chat" | "cli";
 type WorkDraftStorageKind = WorkDraftLaunchKind | "work-start";
 
-function normalizeWorkDraftStorageKind(workDraftKind: WorkDraftLaunchKind): WorkDraftStorageKind {
-  return workDraftKind === "chat" || workDraftKind === "cli" ? "work-start" : workDraftKind;
+// Orchestrator is an orthogonal boolean now, so every launch kind shares the
+// single "work-start" bucket — prompt/model/lane persist across chat↔cli↔orchestrator.
+function normalizeWorkDraftStorageKind(): WorkDraftStorageKind {
+  return "work-start";
 }
 
 function resolveWorkDraftStorageKind(workDraftKind: WorkDraftLaunchKind | WorkDraftStorageKind): WorkDraftStorageKind {
-  return workDraftKind === "work-start" ? "work-start" : normalizeWorkDraftStorageKind(workDraftKind);
+  return workDraftKind === "work-start" ? "work-start" : normalizeWorkDraftStorageKind();
 }
 
 function launchConfigStorageKey(scope: {
@@ -1532,11 +1558,13 @@ function writeLastUsedReasoningEffort(args: {
 function selectReasoningEffort(args: {
   tiers: string[];
   preferred: string | null;
+  modelId?: string | null;
 }): string | null {
   if (!args.tiers.length) return null;
   if (args.preferred && args.tiers.includes(args.preferred)) {
     return args.preferred;
   }
+  if (args.modelId?.toLowerCase().includes("fable") && args.tiers.includes("high")) return "high";
   return args.tiers.includes("medium") ? "medium" : args.tiers[0]!;
 }
 
@@ -1712,9 +1740,12 @@ export function mergeChatHistorySnapshot(
   if (!parsed.length) return existing;
 
   const existingByKey = new Map<string, AgentChatEventEnvelope>();
-  for (const entry of existing) {
+  const existingIndexByKey = new Map<string, number>();
+  for (let index = 0; index < existing.length; index += 1) {
+    const entry = existing[index]!;
     const key = chatEventDedupKey(entry);
     if (!existingByKey.has(key)) existingByKey.set(key, entry);
+    if (!existingIndexByKey.has(key)) existingIndexByKey.set(key, index);
   }
   const parsedKeys = new Set<string>();
   const normalizedParsed = parsed.map((entry) => {
@@ -1722,6 +1753,13 @@ export function mergeChatHistorySnapshot(
     parsedKeys.add(key);
     return existingByKey.get(key) ?? entry;
   });
+  let firstOverlapIndex = -1;
+  for (const entry of parsed) {
+    const index = existingIndexByKey.get(chatEventDedupKey(entry)) ?? -1;
+    if (index >= 0 && (firstOverlapIndex < 0 || index < firstOverlapIndex)) {
+      firstOverlapIndex = index;
+    }
+  }
   const lastParsedKey = chatEventDedupKey(parsed[parsed.length - 1]!);
   let overlapIndex = -1;
   for (let index = existing.length - 1; index >= 0; index -= 1) {
@@ -1742,11 +1780,70 @@ export function mergeChatHistorySnapshot(
         return entry.timestamp > parsed[parsed.length - 1]!.timestamp;
       });
   const tail = tailCandidates.filter((entry) => !parsedKeys.has(chatEventDedupKey(entry)));
-  const merged = tail.length ? [...normalizedParsed, ...tail] : normalizedParsed;
+  const olderPrefix = firstOverlapIndex > 0
+    ? existing.slice(0, firstOverlapIndex).filter((entry) => !parsedKeys.has(chatEventDedupKey(entry)))
+    : [];
+  const merged = olderPrefix.length || tail.length
+    ? [...olderPrefix, ...normalizedParsed, ...tail]
+    : normalizedParsed;
   if (merged.length === existing.length && merged.every((entry, index) => entry === existing[index])) {
     return existing;
   }
   return merged;
+}
+
+/**
+ * Prepend an older transcript page to the in-memory event list, dropping
+ * page entries that already exist at the seam (the hydrated tail merges the
+ * disk transcript with the live ring buffer, so the byte window ending at
+ * the cursor can overlap the oldest in-memory entries).
+ *
+ * Returns `existing` unchanged when the page contributes nothing new.
+ */
+export function prependOlderChatHistoryPage(
+  older: AgentChatEventEnvelope[],
+  existing: AgentChatEventEnvelope[],
+): AgentChatEventEnvelope[] {
+  if (!older.length) return existing;
+  if (!existing.length) return older.slice();
+  // Overlap is only possible at the seam — dedupe against the oldest slice of
+  // the loaded list instead of hashing all (potentially 20k) entries.
+  const seamWindow = Math.min(existing.length, older.length + 64);
+  const seamKeys = new Set<string>();
+  for (let index = 0; index < seamWindow; index += 1) {
+    seamKeys.add(chatEventDedupKey(existing[index]!));
+  }
+  const fresh = older.filter((entry) => !seamKeys.has(chatEventDedupKey(entry)));
+  if (!fresh.length) return existing;
+  return [...fresh, ...existing];
+}
+
+export function mergeOlderChatHistoryPageWithCap(args: {
+  older: AgentChatEventEnvelope[];
+  existing: AgentChatEventEnvelope[];
+  maxEvents: number;
+}): { events: AgentChatEventEnvelope[]; hitResidentCap: boolean } {
+  const merged = prependOlderChatHistoryPage(args.older, args.existing);
+  return {
+    events: trimChatEventHistory(merged, args.maxEvents),
+    hitResidentCap: merged.length > args.maxEvents,
+  };
+}
+
+/**
+ * Compute the next older-history cursor after a page response. Returns 0
+ * (exhausted) unless the page reports more history AND its startOffset
+ * strictly decreased — the strict decrease mirrors the service guarantee and
+ * makes client-side paging loops provably terminating.
+ */
+export function advanceOlderHistoryCursor(
+  beforeOffset: number,
+  page: { startOffset: number; hasMore: boolean },
+): number {
+  if (!page.hasMore) return 0;
+  if (!Number.isFinite(page.startOffset) || page.startOffset <= 0) return 0;
+  if (page.startOffset >= beforeOffset) return 0;
+  return page.startOffset;
 }
 
 function pruneSessionRecord<T>(record: Record<string, T>, keepIds: ReadonlySet<string>): Record<string, T> {
@@ -2359,7 +2456,7 @@ function resolveCliRegistryModelId(provider: "codex" | "claude" | "cursor" | "dr
 
 function cursorModelAllowedForDraftKind(
   descriptor: ModelDescriptor | null | undefined,
-  workDraftKind: "chat" | "cli" | "chat-orchestrator",
+  workDraftKind: "chat" | "cli",
 ): boolean {
   if (descriptor?.family !== "cursor") return true;
   const availability = descriptor.cursorAvailability;
@@ -2370,7 +2467,7 @@ function cursorModelAllowedForDraftKind(
 
 function filterCursorModelIdsForDraftKind(
   modelIds: string[],
-  workDraftKind: "chat" | "cli" | "chat-orchestrator",
+  workDraftKind: "chat" | "cli",
 ): string[] {
   return modelIds.filter((modelId) => {
     const descriptor = resolveModelDescriptorWithRuntimeCatalog(modelId) ?? getModelById(modelId);
@@ -2737,6 +2834,7 @@ export function AgentChatPane({
   onInitialLinearIssueContextConsumed,
   onSessionCreated,
   workDraftKind = "chat",
+  orchestratorEnabled = false,
   onLaunchCliSession,
   onOpenShellSession,
   availableLanes,
@@ -2779,7 +2877,14 @@ export function AgentChatPane({
   initialModelId?: string | null;
   onInitialLinearIssueContextConsumed?: () => void;
   onSessionCreated?: (session: AgentChatSession, options?: AgentChatSessionCreatedOptions) => void | Promise<void>;
-  workDraftKind?: "chat" | "cli" | "chat-orchestrator";
+  workDraftKind?: "chat" | "cli";
+  /**
+   * Orthogonal orchestrator flag: when true the chat draft launches an
+   * orchestrator-lead run. Independent of `workDraftKind` so toggling
+   * chat↔cli↔orchestrator never splits prompt/model/lane draft state. CLI
+   * surfaces force this off (orchestrator has no CLI form).
+   */
+  orchestratorEnabled?: boolean;
   onLaunchCliSession?: (args: WorkPtyLaunchArgs) => Promise<WorkPtyLaunchResult>;
   onOpenShellSession?: (laneId: string) => void | Promise<void>;
   /** Available lanes for the lane selector in empty state (full `LaneSummary` includes `branchRef` for branch sublines in the menu). */
@@ -2843,7 +2948,7 @@ export function AgentChatPane({
   const isPersistentIdentitySurface = surfaceProfile === "persistent_identity";
   const showWorkspaceChrome = !hideWorkspaceChrome;
   const modelSwitchPolicy = presentation?.modelSwitchPolicy ?? "same-family-after-launch";
-  const workDraftStorageKind = normalizeWorkDraftStorageKind(workDraftKind);
+  const workDraftStorageKind = normalizeWorkDraftStorageKind();
   const isWorkDraftComposer = forceDraft && embeddedWorkLayout && !lockSessionId && !initialSessionId;
   const draftLaunchConfigLaneScopeId = isWorkDraftComposer ? WORK_START_DRAFT_LAUNCH_SCOPE_ID : laneId;
   const initialWorkDraftLaneIdRef = useRef<string | null>(isWorkDraftComposer ? laneId : null);
@@ -2919,6 +3024,11 @@ export function AgentChatPane({
     && selectedSessionId == null
     && Boolean(onLaunchCliSession);
   const [eventsBySession, setEventsBySession] = useState<Record<string, AgentChatEventEnvelope[]>>({});
+  // Older-transcript pagination: byte-offset cursor (line start) where the
+  // oldest loaded transcript window begins. 0 = head reached; missing key =
+  // pagination unavailable (no truncated transcript / old runtime).
+  const [olderHistoryCursorBySession, setOlderHistoryCursorBySession] = useState<Record<string, number>>({});
+  const [olderHistoryLoadingBySession, setOlderHistoryLoadingBySession] = useState<Record<string, boolean>>({});
   const [turnActiveBySession, setTurnActiveBySession] = useState<Record<string, boolean>>({});
   const [pendingInputsBySession, setPendingInputsBySession] = useState<Record<string, DerivedPendingInput[]>>({});
   const [codexGoalPendingBySession, setCodexGoalPendingBySession] = useState<Record<string, boolean>>({});
@@ -3223,6 +3333,8 @@ export function AgentChatPane({
   const pendingFastModeUpdateRef = useRef<{ sessionId: string; updateId: number; promise: Promise<void> } | null>(null);
   const pendingEventQueueRef = useRef<AgentChatEventEnvelope[]>([]);
   const eventsBySessionRef = useRef<Record<string, AgentChatEventEnvelope[]>>({});
+  const olderHistoryCursorRef = useRef<Record<string, number>>({});
+  const olderHistoryInFlightRef = useRef<Set<string>>(new Set());
   const eventFlushTimerRef = useRef<number | null>(null);
   const refreshSessionsTimerRef = useRef<number | null>(null);
   const selectedSessionIdRef = useRef<string | null>(selectedSessionId);
@@ -4275,6 +4387,7 @@ export function AgentChatPane({
     setReasoningEffort(selectReasoningEffort({
       tiers,
       preferred: config.reasoningEffort,
+      modelId: config.modelId,
     }));
     setFastMode(modelSupportsFastMode(desc) && config.fastMode);
     setExecutionMode(config.executionMode);
@@ -4356,7 +4469,7 @@ export function AgentChatPane({
   const assistantLabel = presentation?.assistantLabel?.trim()
     || resolveAssistantLabel(selectedModelDesc, selectedSession?.provider);
   const defaultMessagePlaceholder =
-    workDraftKind === "chat-orchestrator" && !selectedSessionId
+    orchestratorEnabled && !selectedSessionId
       ? "Describe the orchestration goal..."
       : "Type to vibecode...";
   const messagePlaceholder = presentation?.messagePlaceholder?.trim() || defaultMessagePlaceholder;
@@ -4419,7 +4532,7 @@ export function AgentChatPane({
     }
     return null;
   }, [effectiveAvailableModelIds, modelId, modelSelectionConstrained]);
-  const cursorCloudApiAvailable = providerConnections?.cursor?.authAvailable === true
+  const cursorCloudApiAvailable = providerConnections?.cursor?.runtimeAvailable === true
     || aiStatus?.availableProviders?.cursor === true;
   const cursorCloudAvailable = Boolean(laneId)
     && cursorCloudApiAvailable
@@ -4752,12 +4865,15 @@ export function AgentChatPane({
       optimisticSessionIds: optimisticSessionIdsRef.current,
     });
     eventsBySessionRef.current = pruneSessionRecord(eventsBySessionRef.current, retainedSessionIds);
+    olderHistoryCursorRef.current = pruneSessionRecord(olderHistoryCursorRef.current, retainedSessionIds);
     for (const sessionId of [...loadedHistoryRef.current]) {
       if (!retainedSessionIds.has(sessionId)) {
         loadedHistoryRef.current.delete(sessionId);
       }
     }
     setEventsBySession((prev) => pruneSessionRecord(prev, retainedSessionIds));
+    setOlderHistoryCursorBySession((prev) => pruneSessionRecord(prev, retainedSessionIds));
+    setOlderHistoryLoadingBySession((prev) => pruneSessionRecord(prev, retainedSessionIds));
     setTurnActiveBySession((prev) => {
       const base = pruneSessionRecord(prev, retainedSessionIds);
       let next: Record<string, boolean> | null = base === prev ? null : base;
@@ -4881,26 +4997,52 @@ export function AgentChatPane({
     }
   }, []);
 
+  // Record (or remove, when null) the older-history pagination cursor for a
+  // session in both the synchronous ref (read by loadOlderHistory) and the
+  // render state (drives the message list's "more above" affordance).
+  const applyOlderHistoryCursor = useCallback((sessionId: string, cursor: number | null) => {
+    if (cursor == null) {
+      if (sessionId in olderHistoryCursorRef.current) {
+        const next = { ...olderHistoryCursorRef.current };
+        delete next[sessionId];
+        olderHistoryCursorRef.current = next;
+      }
+      setOlderHistoryCursorBySession((prev) => {
+        if (!(sessionId in prev)) return prev;
+        const next = { ...prev };
+        delete next[sessionId];
+        return next;
+      });
+      return;
+    }
+    olderHistoryCursorRef.current = { ...olderHistoryCursorRef.current, [sessionId]: cursor };
+    setOlderHistoryCursorBySession((prev) => (
+      prev[sessionId] === cursor ? prev : { ...prev, [sessionId]: cursor }
+    ));
+  }, []);
+
   const clearSessionView = useCallback((sessionId: string) => {
     deleteAgentChatSessionViewCache(sessionId);
     eventsBySessionRef.current = { ...eventsBySessionRef.current, [sessionId]: [] };
+    applyOlderHistoryCursor(sessionId, null);
     setEventsBySession((prev) => ({ ...prev, [sessionId]: [] }));
     setTurnActiveBySession((prev) => ({ ...prev, [sessionId]: false }));
     setPendingInputsBySession((prev) => ({ ...prev, [sessionId]: [] }));
     setPendingSteersBySession((prev) => ({ ...prev, [sessionId]: [] }));
-  }, []);
+  }, [applyOlderHistoryCursor]);
 
   const applyCachedSessionView = useCallback((sessionId: string): boolean => {
     const cached = readAgentChatSessionViewCache(sessionId);
     if (!cached) return false;
     eventsBySessionRef.current = { ...eventsBySessionRef.current, [sessionId]: cached.events };
     loadedHistoryRef.current.add(sessionId);
+    applyOlderHistoryCursor(sessionId, typeof cached.historyCursor === "number" ? cached.historyCursor : null);
     setEventsBySession((prev) => ({ ...prev, [sessionId]: cached.events }));
     setTurnActiveBySession((prev) => ({ ...prev, [sessionId]: cached.turnActive }));
     setPendingInputsBySession((prev) => ({ ...prev, [sessionId]: cached.pendingInputs }));
     setPendingSteersBySession((prev) => ({ ...prev, [sessionId]: cached.pendingSteers }));
     return true;
-  }, []);
+  }, [applyOlderHistoryCursor]);
 
   const loadHistory = useCallback(async (sessionId: string, options?: { force?: boolean }) => {
     if (options?.force) {
@@ -4920,6 +5062,9 @@ export function AgentChatPane({
       // main-process build that lacks the handler.
       let parsed: AgentChatEventEnvelope[] = [];
       let usedSnapshotPath = false;
+      // Older-history cursor seeded from the snapshot: the byte offset where
+      // the hydrated transcript tail began (0 = whole transcript hydrated).
+      let snapshotTailStartOffset = 0;
       try {
         if (typeof window.ade.agentChat.getEventHistory === "function") {
           const snapshot: AgentChatEventHistorySnapshot = await window.ade.agentChat.getEventHistory({
@@ -4942,6 +5087,10 @@ export function AgentChatPane({
           if (snapshot?.events?.length || snapshot?.sessionId === sessionId) {
             parsed = (snapshot.events ?? []).filter((entry) => entry.sessionId === sessionId);
             usedSnapshotPath = true;
+            snapshotTailStartOffset =
+              typeof snapshot.tailStartOffset === "number" && snapshot.tailStartOffset > 0
+                ? snapshot.tailStartOffset
+                : 0;
           }
         }
       } catch {
@@ -4983,8 +5132,10 @@ export function AgentChatPane({
       const sessionSummary = sessionsRef.current.find((entry) => entry.sessionId === sessionId)
         ?? (initialSessionSummary?.sessionId === sessionId ? initialSessionSummary : null);
       const allowRunningFromSummary = sessionSummary?.status === "active" && sessionSummary.awaitingInput !== true;
-      writeAgentChatSessionViewCache(sessionId, merged, derived);
+      const historyCursor = usedSnapshotPath ? snapshotTailStartOffset : null;
+      writeAgentChatSessionViewCache(sessionId, merged, derived, historyCursor);
       eventsBySessionRef.current = { ...eventsBySessionRef.current, [sessionId]: merged };
+      applyOlderHistoryCursor(sessionId, historyCursor);
       setEventsBySession((prev) => ({ ...prev, [sessionId]: merged }));
       setTurnActiveBySession((prev) => ({ ...prev, [sessionId]: allowRunningFromSummary ? derived.turnActive : false }));
       setPendingInputsBySession((prev) => ({ ...prev, [sessionId]: derived.pendingInputs }));
@@ -4996,7 +5147,80 @@ export function AgentChatPane({
       // permanently blocked re-entry until the chat received a new event.
       loadedHistoryRef.current.delete(sessionId);
     }
-  }, [clearSessionView, initialSessionSummary, lockSessionId]);
+  }, [applyOlderHistoryCursor, clearSessionView, initialSessionSummary, lockSessionId]);
+
+  /**
+   * Fetch the next OLDER transcript page for a session and prepend it to the
+   * in-memory event list. Triggered by the message list when the user scrolls
+   * near the top. One in-flight request per session; the cursor only moves
+   * toward 0 (head), so retriggers are naturally deduped by cursor value.
+   */
+  const loadOlderHistory = useCallback(async (sessionId: string) => {
+    const cursor = olderHistoryCursorRef.current[sessionId];
+    if (cursor == null || cursor <= 0) return;
+    if (olderHistoryInFlightRef.current.has(sessionId)) return;
+    if (typeof window.ade.agentChat.getEventHistoryPage !== "function") return;
+    olderHistoryInFlightRef.current.add(sessionId);
+    setOlderHistoryLoadingBySession((prev) => ({ ...prev, [sessionId]: true }));
+    try {
+      let beforeOffset = cursor;
+      let nextCursor = cursor;
+      let olderEvents: AgentChatEventEnvelope[] = [];
+      // A page spanning a single oversized JSONL line is empty but still
+      // moves the cursor strictly toward the head — follow a bounded number
+      // of those per trigger; the next scroll re-triggers if needed.
+      for (let attempt = 0; attempt < 8; attempt += 1) {
+        const page = await window.ade.agentChat.getEventHistoryPage({ sessionId, beforeOffset });
+        if (page?.sessionId !== sessionId || page.sessionFound === false) {
+          nextCursor = 0;
+          break;
+        }
+        nextCursor = advanceOlderHistoryCursor(beforeOffset, page);
+        if (page.events?.length) {
+          olderEvents = page.events.filter((entry) => entry.sessionId === sessionId);
+          break;
+        }
+        if (nextCursor <= 0) break;
+        beforeOffset = nextCursor;
+      }
+      const maxEvents = sessionId === selectedSessionIdRef.current || sessionId === lockSessionId
+        ? MAX_SELECTED_CHAT_SESSION_RESIDENT_EVENTS
+        : MAX_BACKGROUND_CHAT_SESSION_EVENTS;
+      if (olderEvents.length) {
+        const existing = eventsBySessionRef.current[sessionId] ?? [];
+        const { events: merged, hitResidentCap } = mergeOlderChatHistoryPageWithCap({
+          older: olderEvents,
+          existing,
+          maxEvents,
+        });
+        if (hitResidentCap) nextCursor = 0;
+        if (merged !== existing) {
+          eventsBySessionRef.current = { ...eventsBySessionRef.current, [sessionId]: merged };
+          setEventsBySession((prev) => ({ ...prev, [sessionId]: merged }));
+        }
+        writeAgentChatSessionViewCache(sessionId, merged, undefined, nextCursor, maxEvents);
+      } else {
+        writeAgentChatSessionViewCache(
+          sessionId,
+          eventsBySessionRef.current[sessionId] ?? [],
+          undefined,
+          nextCursor,
+          maxEvents,
+        );
+      }
+      applyOlderHistoryCursor(sessionId, nextCursor);
+    } catch {
+      // Keep the current cursor so a later scroll can retry.
+    } finally {
+      olderHistoryInFlightRef.current.delete(sessionId);
+      setOlderHistoryLoadingBySession((prev) => ({ ...prev, [sessionId]: false }));
+    }
+  }, [applyOlderHistoryCursor, lockSessionId]);
+
+  const loadOlderHistoryForSelectedSession = useCallback(() => {
+    const sessionId = selectedSessionIdRef.current;
+    if (sessionId) void loadOlderHistory(sessionId);
+  }, [loadOlderHistory]);
 
   useEffect(() => {
     if (lockSessionId) {
@@ -5203,7 +5427,7 @@ export function AgentChatPane({
     }
     if (reasoningEffort && reasoningTiers.includes(reasoningEffort)) return;
     const preferred = readLastUsedReasoningEffort({ laneId, modelId });
-    setReasoningEffort(selectReasoningEffort({ tiers: reasoningTiers, preferred }));
+    setReasoningEffort(selectReasoningEffort({ tiers: reasoningTiers, preferred, modelId }));
   }, [laneId, modelId, reasoningEffort, reasoningTiers]);
 
   useEffect(() => {
@@ -5548,7 +5772,7 @@ export function AgentChatPane({
       const updated = trimChatEventHistory(
         [...sessionEvents, envelope],
         sessionId === selectedSessionIdRef.current || sessionId === lockSessionId
-          ? MAX_SELECTED_CHAT_SESSION_EVENTS
+          ? MAX_SELECTED_CHAT_SESSION_RESIDENT_EVENTS
           : MAX_BACKGROUND_CHAT_SESSION_EVENTS,
       );
       if (next === eventsBySessionRef.current) {
@@ -5569,7 +5793,16 @@ export function AgentChatPane({
     const pendingSteerPatch: Record<string, PendingSteerEntry[]> = {};
     for (const sessionId of touchedSessionIds) {
       const derived = deriveRuntimeState(next[sessionId] ?? []);
-      writeAgentChatSessionViewCache(sessionId, next[sessionId] ?? [], derived);
+      const maxEvents = sessionId === selectedSessionIdRef.current || sessionId === lockSessionId
+        ? MAX_SELECTED_CHAT_SESSION_RESIDENT_EVENTS
+        : MAX_BACKGROUND_CHAT_SESSION_EVENTS;
+      writeAgentChatSessionViewCache(
+        sessionId,
+        next[sessionId] ?? [],
+        derived,
+        olderHistoryCursorRef.current[sessionId] ?? null,
+        maxEvents,
+      );
       activePatch[sessionId] = derived.turnActive;
       pendingInputPatch[sessionId] = derived.pendingInputs;
       pendingSteerPatch[sessionId] = derived.pendingSteers;
@@ -6315,7 +6548,7 @@ export function AgentChatPane({
     const nextModel = nextProvider === "opencode" ? nextModelId : runtimeFacingModelId(nextDesc, nextModelId);
     const tiers = nextDesc?.reasoningTiers ?? [];
     const preferred = readLastUsedReasoningEffort({ laneId, modelId: nextModelId });
-    const nextReasoningEffort = selectReasoningEffort({ tiers, preferred });
+    const nextReasoningEffort = selectReasoningEffort({ tiers, preferred, modelId: nextModelId });
     const nextRec = recommendedOpenCodePermissionModeForModel(nextPermissionDesc);
     return {
       nextDesc,
@@ -6410,7 +6643,7 @@ export function AgentChatPane({
       // Orchestrator-lead draft: force the interactionMode so the lead chat
       // boots with the orchestrator skill + tool gates (`goal.md` §10.1).
       const orchestratorOverrides: Partial<Parameters<typeof window.ade.agentChat.create>[0]> =
-        workDraftKind === "chat-orchestrator"
+        orchestratorEnabled
           ? { interactionMode: "orchestrator-lead" as AgentChatInteractionMode }
           : {};
       const created = await window.ade.agentChat.create({
@@ -6429,7 +6662,7 @@ export function AgentChatPane({
       // so the bundle path is persisted alongside the new chat (workers will
       // pick it up from the manifest). If it fails, stop before sending the
       // first prompt so a half-created lead chat cannot start working.
-      if (workDraftKind === "chat-orchestrator") {
+      if (orchestratorEnabled) {
         try {
           const runCreate = await window.ade.orchestration.runCreate({
             laneId: targetLaneId,
@@ -6495,7 +6728,7 @@ export function AgentChatPane({
       if (options.notify) notifySessionCreated(created, options.notifyOptions);
       if (targetLaneId === laneId) void refreshSessions({ force: true }).catch(() => {});
       return created;
-  }, [fastMode, constrainedModelSelectionError, currentNativeControls, executionMode, initialNativeControls, laneId, lastLaunchConfigStorageKey, modelId, notifySessionCreated, patchSessionSummary, reasoningEffort, refreshSessions, touchSession, workDraftKind]);
+  }, [fastMode, constrainedModelSelectionError, currentNativeControls, executionMode, initialNativeControls, laneId, lastLaunchConfigStorageKey, modelId, notifySessionCreated, orchestratorEnabled, patchSessionSummary, reasoningEffort, refreshSessions, touchSession, workDraftKind]);
 
   const createSession = useCallback(async (): Promise<string | null> => {
     if (createSessionPromiseRef.current) {
@@ -6732,6 +6965,8 @@ export function AgentChatPane({
   const resolveDraftLaunchLane = useCallback(async (
     snapshot: DraftLaunchSnapshot,
     onAutoCreateNameResolved?: () => void,
+    onAutoCreateNameFallback?: (message: string) => void,
+    onAutoCreateNameModelResolved?: (modelId: string) => void,
   ): Promise<DraftLaunchLaneTarget> => {
     if (draftLaunchTargetIsAutoCreate) {
       if (!laneId) throw new Error("Select a lane before auto-creating a new lane.");
@@ -6739,13 +6974,23 @@ export function AgentChatPane({
         ?? availableLanes?.find((candidate) => candidate.name.trim().toLowerCase() === "primary")
         ?? null;
       if (!primaryLane) throw new Error("Auto-create requires a primary lane.");
-      const laneName = await suggestAutoLaneName({
-        laneId: primaryLane.id,
-        prompt: buildDraftLaunchNamingSeed(snapshot),
-        modelId: snapshot.modelId,
-      });
-      onAutoCreateNameResolved?.();
+      const namingSeed = buildDraftLaunchNamingSeed(snapshot);
       const projectConfigSnapshot = await getProjectConfigCached({ projectRoot, force: true }).catch(() => null);
+      const titleSettings = projectConfigSnapshot?.effective?.ai?.sessionIntelligence?.titles;
+      const titleModelId = typeof titleSettings?.modelId === "string" ? titleSettings.modelId.trim() : "";
+      const namingModelId = titleModelId || snapshot.modelId;
+      onAutoCreateNameModelResolved?.(namingModelId);
+      const genericSuffix = autoLaneGenericSuffix();
+      const laneName = titleSettings?.enabled === false
+        ? createDeterministicAutoLaneName(namingSeed, { genericSuffix })
+        : await suggestAutoLaneName({
+            laneId: primaryLane.id,
+            prompt: namingSeed,
+            modelId: namingModelId,
+            genericSuffix,
+            onFallback: onAutoCreateNameFallback,
+          });
+      onAutoCreateNameResolved?.();
       const baseSource = effectiveNewLaneBaseSource(projectConfigSnapshot);
       const branches = await fetchNewLaneBaseBranches({
         source: baseSource,
@@ -6940,7 +7185,7 @@ export function AgentChatPane({
     if (parallelLaunchBusy || projectTransitionBlocksChat) {
       return;
     }
-    if (kind === "chat" && (selectedSessionId || (workDraftKind !== "chat" && workDraftKind !== "chat-orchestrator"))) return;
+    if (kind === "chat" && (selectedSessionId || workDraftKind !== "chat")) return;
     if (kind === "cli" && (!isWorkCliLaunchDraft || !onLaunchCliSession)) return;
     if (!modelId) {
       setError("Select a model first");
@@ -6978,7 +7223,9 @@ export function AgentChatPane({
       laneId: null,
       laneName: null,
       sessionId: null,
+      namingModelId: null,
       error: null,
+      warning: null,
       autoOpen: mode === "foreground",
       createdAtMs: Date.now(),
       snapshot,
@@ -7000,6 +7247,10 @@ export function AgentChatPane({
     try {
       targetLane = await resolveDraftLaunchLane(snapshot, () => {
         patchDraftLaunchJob(jobId, { status: "creating-lane" });
+      }, (message) => {
+        patchDraftLaunchJob(jobId, { warning: message });
+      }, (modelId) => {
+        patchDraftLaunchJob(jobId, { namingModelId: modelId });
       });
       patchDraftLaunchJob(jobId, {
         status: "starting-session",
@@ -7379,11 +7630,23 @@ export function AgentChatPane({
             issueCount ? `${issueCount} issue${issueCount === 1 ? "" : "s"}` : null,
           ].filter(Boolean).join(" · ");
         }
-        const baseName = await suggestAutoLaneName({
-          laneId,
-          prompt: namingSeed,
-          modelId: parallelModelSlots[0]!.modelId,
-        });
+        const projectConfigSnapshot = await getProjectConfigCached({ projectRoot, force: false }).catch(() => null);
+        const titleSettings = projectConfigSnapshot?.effective?.ai?.sessionIntelligence?.titles;
+        const titleModelId = typeof titleSettings?.modelId === "string" ? titleSettings.modelId.trim() : "";
+        const namingModelId = titleModelId || parallelModelSlots[0]!.modelId;
+        if (titleSettings?.enabled !== false) {
+          setParallelLaunchStatus(`Naming lanes with ${formatLocalModelLabel(namingModelId)}...`);
+        }
+        const genericSuffix = autoLaneGenericSuffix();
+        const baseName = titleSettings?.enabled === false
+          ? createDeterministicAutoLaneName(namingSeed, { genericSuffix })
+          : await suggestAutoLaneName({
+              laneId,
+              prompt: namingSeed,
+              modelId: namingModelId,
+              genericSuffix,
+              onFallback: setParallelLaunchStatus,
+            });
         setParallelLaunchStatus(`Creating ${parallelModelSlots.length} child lanes…`);
 
         for (const slot of parallelModelSlots) {
@@ -7810,7 +8073,7 @@ export function AgentChatPane({
           const sendInteractionMode: AgentChatInteractionMode | null =
             sessionProvider === "claude"
               ? (
-                workDraftKind === "chat-orchestrator" || selectedSession?.interactionMode === "orchestrator-lead"
+                orchestratorEnabled || selectedSession?.interactionMode === "orchestrator-lead"
                   ? "orchestrator-lead"
                   : interactionMode
               )
@@ -7946,6 +8209,7 @@ export function AgentChatPane({
     builtInBrowserContextItems,
     macosVmContextItems,
     workDraftKind,
+    orchestratorEnabled,
   ]);
 
   const openRewindConfirmDialog = useCallback((state: RewindFilesConfirmDialogState): Promise<boolean> => {
@@ -8328,10 +8592,11 @@ export function AgentChatPane({
   const ChatActionsToolbarIcon = chatActionsToolbarIcon;
   const proofArtifactCount = computerUseSnapshot?.artifacts?.length ?? 0;
   const proofSessionId = selectedSessionId ?? "";
-  const agentsTabContent = selectedSubagentPaneAvailable ? (
+  const agentsTabContent = selectedSubagentPaneAvailable || selectedTodoItems.length > 0 ? (
     <ChatSubagentsPanel
       snapshots={selectedSubagentSnapshots}
       events={selectedEvents}
+      todoItems={selectedTodoItems}
       variant="pane"
       onSelectSubagent={(selection) => {
         setSubagentView({
@@ -8365,7 +8630,7 @@ export function AgentChatPane({
     />
   ) : (
     <div className="flex h-full min-h-0 flex-col items-center justify-center px-4 py-8 text-center">
-      <p className="font-sans text-[13px] text-fg/50">No subagents detected</p>
+      <p className="font-sans text-[13px] text-fg/50">No agent activity detected</p>
     </div>
   );
   const proofTabContent = (
@@ -9013,7 +9278,7 @@ export function AgentChatPane({
 
   const activeOrchestrationRole = selectedSession?.orchestrationRole ?? null;
   const isOrchestratorLead = selectedSession?.interactionMode === "orchestrator-lead";
-  const isOrchestratorDraft = forceDraft && workDraftKind === "chat-orchestrator" && selectedSessionId == null;
+  const isOrchestratorDraft = forceDraft && orchestratorEnabled && selectedSessionId == null;
 
   const composerElement = (
       <AgentChatComposer
@@ -9388,7 +9653,7 @@ export function AgentChatPane({
               const desc = resolveModelDescriptorWithRuntimeCatalog(nextModelId) ?? getModelById(nextModelId);
               const tiers = desc?.reasoningTiers ?? [];
               const preferred = readLastUsedReasoningEffort({ laneId, modelId: nextModelId });
-              const nextEffort = selectReasoningEffort({ tiers, preferred });
+              const nextEffort = selectReasoningEffort({ tiers, preferred, modelId: nextModelId });
               const previousPermissionDesc = getModelDescriptorForPermissionMode(parallelModelSlots[index]?.modelId ?? "");
               const nextPermissionDesc = getModelDescriptorForPermissionMode(nextModelId);
               const nextRecommendedOpenCodeMode = recommendedOpenCodePermissionModeForModel(nextPermissionDesc);
@@ -9495,6 +9760,15 @@ export function AgentChatPane({
                   }}
                 >
                   Restore
+                </button>
+              ) : null}
+              {isActiveJob && job.status === "naming-lane" ? (
+                <button
+                  type="button"
+                  className="rounded-md px-2 py-0.5 text-[length:calc(var(--chat-font-size)*10.5/14)] font-medium text-fg/65 transition-colors hover:bg-white/10 hover:text-fg/85"
+                  onClick={() => navigate("/settings?tab=background-jobs")}
+                >
+                  Settings
                 </button>
               ) : null}
               {canOpen ? (
@@ -9822,6 +10096,17 @@ export function AgentChatPane({
                       surfaceMode={surfaceMode}
                       surfaceProfile={surfaceProfile}
                       assistantLabel={assistantLabel}
+                      hasOlderHistory={Boolean(
+                        !subagentView
+                        && selectedSessionId
+                        && (olderHistoryCursorBySession[selectedSessionId] ?? 0) > 0,
+                      )}
+                      loadingOlderHistory={Boolean(
+                        !subagentView
+                        && selectedSessionId
+                        && olderHistoryLoadingBySession[selectedSessionId],
+                      )}
+                      onLoadOlderHistory={!subagentView && selectedSessionId ? loadOlderHistoryForSelectedSession : undefined}
                       respondingApprovalIds={respondingApprovalIds}
                       pendingApprovalIds={pendingApprovalIds}
                       laneId={laneId}
@@ -9841,9 +10126,6 @@ export function AgentChatPane({
                         <span className="text-emerald-400/75">+{sessionDelta.insertions}</span>
                         <span className="text-red-400/75">-{sessionDelta.deletions}</span>
                       </div>
-                    ) : null}
-                    {selectedTodoItems.length ? (
-                      <ChatTasksPanel items={selectedTodoItems} />
                     ) : null}
                     {selectedTurnDiffSummaries.length && selectedSessionId ? (
                       <ChatFileChangesPanel

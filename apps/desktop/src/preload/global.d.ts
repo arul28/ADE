@@ -89,6 +89,7 @@ import type {
   AgentChatDeleteArgs,
   AgentChatSuggestLaneNameArgs,
   AgentChatEventEnvelope,
+  AgentChatEventHistoryPage,
   AgentChatEventHistorySnapshot,
   AgentChatGetSummaryArgs,
   AgentChatHandoffArgs,
@@ -551,6 +552,8 @@ import type {
   IosSimulatorPreviewCapability,
   IosSimulatorPreviewMatch,
   IosSimulatorPreviewTarget,
+  IosSimulatorRenderCurrentPreviewArgs,
+  IosSimulatorRenderCurrentPreviewResult,
   IosSimulatorRenderPreviewArgs,
   IosSimulatorRenderPreviewResult,
   IosScreenSnapshot,
@@ -1407,6 +1410,11 @@ declare global {
           sessionId: string;
           maxEvents?: number;
         }) => Promise<AgentChatEventHistorySnapshot>;
+        getEventHistoryPage: (args: {
+          sessionId: string;
+          beforeOffset: number;
+          maxBytes?: number;
+        }) => Promise<AgentChatEventHistoryPage>;
         codex: {
           getGoal: (
             args: AgentChatCodexGetGoalArgs,
@@ -1476,6 +1484,9 @@ declare global {
         ensurePreviewWorkspace: (
           args?: IosSimulatorEnsurePreviewWorkspaceArgs,
         ) => Promise<IosSimulatorEnsurePreviewWorkspaceResult>;
+        renderCurrentPreview: (
+          args?: IosSimulatorRenderCurrentPreviewArgs,
+        ) => Promise<IosSimulatorRenderCurrentPreviewResult>;
         renderPreview: (
           args: IosSimulatorRenderPreviewArgs,
         ) => Promise<IosSimulatorRenderPreviewResult>;

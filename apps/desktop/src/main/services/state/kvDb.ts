@@ -28,7 +28,17 @@ export type AdeDbSyncApi = {
   isAvailable?: () => boolean;
   getSiteId: () => string;
   getDbVersion: () => number;
-  exportChangesSince: (version: number) => CrsqlChangeRow[];
+  /**
+   * Export CRR changes after `version`. Pass `throughDbVersion` to bound the
+   * scan to a version window — the crsql_changes virtual table pushes
+   * db_version range constraints down to its indexed clock tables, while a
+   * bare LIMIT still materializes the full ordered scan first. An unbounded
+   * scan of a deep backlog runs long enough that any concurrent write aborts
+   * it (SQLITE_ABORT), permanently starving behind/fresh peers. `maxRows`
+   * additionally truncates the result at a complete db_version boundary so a
+   * consumer's cursor watermark never lands inside a version group.
+   */
+  exportChangesSince: (version: number, options?: { maxRows?: number; throughDbVersion?: number }) => CrsqlChangeRow[];
   applyChanges: (changes: CrsqlChangeRow[]) => ApplyRemoteChangesResult;
   /**
    * Suppress unpublished local-site CRR rows for specific tables. Used when
@@ -483,12 +493,28 @@ const LOCAL_ONLY_CRR_EXCLUDED_TABLES = new Set([
   // excluding it keeps the unique index and lets removeExcludedCrrMetadata
   // un-CRR any DB where it was already (incorrectly) converted.
   "automation_ingress_events",
+  // Per-device bookkeeping of which remote changes to suppress locally.
+  // Syncing it is circular (it describes the sync process itself) and ships
+  // rows to phones whose schema may not have the table — a changeset that an
+  // older client hard-rejects, freezing its sync cursor entirely.
+  LOCAL_CRR_CHANGE_SUPPRESSIONS_TABLE,
   "lane_detail_snapshots",
   "lane_list_snapshots",
   LOCAL_CRR_CHANGE_SUPPRESSIONS_TABLE,
   "pr_auto_link_ignores",
+  // Config snapshots rebuilt (delete+reinsert) from ade.yaml on every project
+  // config load (projectConfigService.syncSnapshots). Pure local-derived state —
+  // remote clients read these via RPC (e.g. processes.listDefinitions, which
+  // returns projectConfigService.get().effective, not the table), never from a
+  // synced replica — so they must not be CRRs. Leaving them CRR makes the
+  // rebuild DELETE fire crsql triggers that call crsql_internal_sync_bit, which
+  // crashes any runtime without the extension loaded (e.g. the static machine
+  // runtime), surfacing to remote clients as a fake "host unreachable" disconnect.
+  "process_definitions",
   "pull_request_ai_summaries",
   "runtime_processes",
+  "stack_buttons",
+  "test_suites",
 ]);
 
 function listEligibleCrrTables(db: DatabaseSyncType): string[] {
@@ -680,6 +706,31 @@ function wipeQueueLandingStateForStackedOverhaulIfNeeded(db: DatabaseSyncType, l
     // Table may not exist on a brand-new DB; initialization will create both
     // tables and the next startup will record the marker. Skipping the wipe
     // on a fresh DB is correct (nothing to wipe).
+  }
+}
+
+/**
+ * Drop CRR shadow tables whose base table no longer exists. The
+ * crsql_changes virtual table unions every `__crsql_clock` table it finds;
+ * a single orphan (base table dropped, clock table left behind) makes EVERY
+ * scan of crsql_changes fail instantly with SQLITE_ABORT ("query aborted") —
+ * which silently kills all changeset export (mobile sync, peer relay) while
+ * writes keep working. Observed live with a dropped `github_pr_cache`.
+ */
+function removeOrphanedCrrMetadata(db: DatabaseSyncType, logger?: Logger): void {
+  const clockTables = allRows<{ name: string }>(
+    db,
+    "select name from sqlite_master where type = 'table' and name like '%__crsql_clock'",
+  ).map((row) => String(row.name)).filter((name) => name.endsWith("__crsql_clock"));
+  for (const clockTableName of clockTables) {
+    const tableName = clockTableName.slice(0, -"__crsql_clock".length);
+    if (!tableName || rawHasTable(db, tableName)) continue;
+    runStatement(db, `drop table if exists ${quoteIdentifier(clockTableName)}`);
+    runStatement(db, `drop table if exists ${quoteIdentifier(`${tableName}__crsql_pks`)}`);
+    if (rawHasTable(db, "crsql_master") && rawHasColumn(db, "crsql_master", "tbl_name")) {
+      runStatement(db, "delete from crsql_master where tbl_name = ?", [tableName]);
+    }
+    logger?.warn("db.crr_orphan_removed", { tableName });
   }
 }
 
@@ -914,6 +965,7 @@ function rebuildCrrTableWithBackfill(db: DatabaseSyncType, tableName: string): v
 }
 
 function ensureCrrTables(db: DatabaseSyncType, logger?: Logger): void {
+  removeOrphanedCrrMetadata(db, logger);
   removeExcludedCrrMetadata(db, logger);
 
   const repairTargets = new Set<string>(PHONE_CRITICAL_CRR_TABLES);
@@ -3233,7 +3285,7 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
       const row = get<{ db_version: number }>("select crsql_db_version() as db_version");
       return Number(row?.db_version ?? 0);
     },
-    exportChangesSince: (version: number) => {
+    exportChangesSince: (version: number, options?: { maxRows?: number; throughDbVersion?: number }) => {
       if (!crsqliteLoaded) return [];
       const suppressions = new Map<string, number>(
         allRows<{ table_name: string; through_db_version: number }>(
@@ -3245,7 +3297,7 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
           [desiredSiteId],
         ).map((row) => [String(row.table_name), Number(row.through_db_version)]),
       );
-      const rows = allRows<{
+      type ExportedChangeRow = {
         table_name: string;
         pk: unknown;
         cid: string;
@@ -3255,9 +3307,15 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
         site_id: Uint8Array;
         cl: number;
         seq: number;
-      }>(
-        db,
-        `select [table] as table_name,
+      };
+      const throughDbVersion = options?.throughDbVersion != null && Number.isFinite(options.throughDbVersion)
+        ? Math.max(version, Math.floor(options.throughDbVersion))
+        : null;
+      const rangeSql = throughDbVersion != null
+        ? "where db_version > ? and db_version <= ?"
+        : "where db_version > ?";
+      const rangeParams = throughDbVersion != null ? [version, throughDbVersion] : [version];
+      const selectSql = `select [table] as table_name,
                 pk,
                 cid,
                 val,
@@ -3267,20 +3325,96 @@ export async function openKvDb(dbPath: string, logger: Logger): Promise<AdeDb> {
                 cl,
                 seq
            from crsql_changes
-          where db_version > ?
+          ${rangeSql}
+          order by db_version asc, cl asc, seq asc`;
+      const maxRows = options?.maxRows != null && Number.isFinite(options.maxRows)
+        ? Math.max(1, Math.floor(options.maxRows))
+        : null;
+      const survivesExportFilters = (row: ExportedChangeRow): boolean => {
+        if (isLocalOnlyQueueWipeMarkerRawChange(row)) return false;
+        const suppressedThroughVersion = suppressions.get(row.table_name);
+        if (suppressedThroughVersion == null || Number(row.db_version) > suppressedThroughVersion) {
+          return true;
+        }
+        return Buffer.from(row.site_id).toString("hex") !== desiredSiteId;
+      };
+      // The crsql_changes vtab aborts a scan ("query aborted", SQLITE_ABORT)
+      // whenever another connection commits mid-read. Outside a transaction
+      // there is no snapshot isolation, so on a busy machine (multi-process
+      // writers) every export dies. A read transaction pins the WAL snapshot
+      // for the duration of the scan, making it immune to concurrent commits.
+      let openedSnapshotTxn = false;
+      try {
+        runStatement(db, "BEGIN");
+        openedSnapshotTxn = true;
+      } catch {
+        // Already inside a caller-managed transaction — its snapshot works too.
+      }
+      let rows: ExportedChangeRow[];
+      try {
+        if (maxRows == null) {
+          rows = allRows<ExportedChangeRow>(db, selectSql, rangeParams).filter(survivesExportFilters);
+        } else {
+          // Scan forward in maxRows-sized fetches until one yields rows that
+          // survive the suppression/wipe-marker filters or the requested
+          // range is exhausted. An empty return must mean "the whole range
+          // was scanned": callers advance their watermark to the range end on
+          // empty results, so returning [] when a truncated fetch was merely
+          // filtered out would permanently skip the unscanned versions behind
+          // the truncation point.
+          let scanFromVersion = version;
+          for (;;) {
+            const scanParams = throughDbVersion != null ? [scanFromVersion, throughDbVersion] : [scanFromVersion];
+            let fetched = allRows<ExportedChangeRow>(db, `${selectSql} limit ?`, [...scanParams, maxRows + 1]);
+            let truncated = false;
+            if (fetched.length > maxRows) {
+              truncated = true;
+              // The fetch was truncated; drop the trailing (possibly incomplete)
+              // db_version group so consumers only ever watermark complete groups.
+              const tailVersion = Number(fetched[fetched.length - 1].db_version);
+              let cut = fetched.length;
+              while (cut > 0 && Number(fetched[cut - 1].db_version) === tailVersion) cut -= 1;
+              if (cut > 0) {
+                fetched = fetched.slice(0, cut);
+              } else {
+                // A single transaction touched more rows than maxRows. Fetch that
+                // one version group in full — bounded by the group itself.
+                fetched = allRows<ExportedChangeRow>(
+                  db,
+                  `select [table] as table_name,
+                pk,
+                cid,
+                val,
+                col_version,
+                db_version,
+                site_id,
+                cl,
+                seq
+           from crsql_changes
+          where db_version > ? and db_version <= ?
           order by db_version asc, cl asc, seq asc`,
-        [version]
-      );
+                  [scanFromVersion, tailVersion],
+                );
+              }
+            }
+            rows = fetched.filter(survivesExportFilters);
+            if (rows.length > 0 || !truncated || fetched.length === 0) break;
+            // Every fetched row was filtered out but the scan stopped short of
+            // the range end — continue from the last scanned version group.
+            scanFromVersion = Number(fetched[fetched.length - 1].db_version);
+          }
+        }
+      } finally {
+        if (openedSnapshotTxn) {
+          try {
+            runStatement(db, "COMMIT");
+          } catch {
+            try { runStatement(db, "ROLLBACK"); } catch {}
+          }
+        }
+      }
 
       return rows
-        .filter((row) => !isLocalOnlyQueueWipeMarkerRawChange(row))
-        .filter((row) => {
-          const suppressedThroughVersion = suppressions.get(row.table_name);
-          if (suppressedThroughVersion == null || Number(row.db_version) > suppressedThroughVersion) {
-            return true;
-          }
-          return Buffer.from(row.site_id).toString("hex") !== desiredSiteId;
-        })
         .map((row) => ({
           table: row.table_name,
           pk: encodeSyncScalar(row.pk),

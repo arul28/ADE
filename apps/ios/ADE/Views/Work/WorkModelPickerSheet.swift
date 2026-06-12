@@ -1001,6 +1001,7 @@ struct ModelPickerListRow: View {
     switch tier.lowercased() {
     case "xhigh": return "XHigh"
     case "max": return "Max"
+    case "ultracode": return "Ultracode"
     default: return tier.capitalized
     }
   }

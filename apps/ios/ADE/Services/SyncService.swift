@@ -235,6 +235,11 @@ enum SyncRequestTimeout {
     switch action {
     case "lanes.delete":
       return laneDeleteTimeoutNanoseconds
+    case "prs.refresh", "prs.getGitHubSnapshot":
+      // These fan out to the GitHub API on the host and routinely take
+      // longer than the default budget; a short timeout here surfaced as
+      // a permanently "cached" PRs tab.
+      return 120_000_000_000
     default:
       return defaultTimeoutNanoseconds
     }
@@ -250,8 +255,15 @@ enum SyncRequestTimeout {
 }
 
 private let syncTerminalSubscriptionMaxBytes = 240_000
+/// Snapshot budget for the full-screen SwiftTerm session view, which renders
+/// real scrollback instead of a trimmed preview string.
+private let syncTerminalStreamMaxBytes = 512_000
+private let syncTerminalHistoryMaxBytes = 262_144
 private let syncChatSubscriptionMaxBytes = 2_000_000
-private let syncReducedLoadChatSubscriptionMaxBytes = 160_000
+// 512KB, up from 160KB: the old budget silently truncated reasoning-heavy
+// turns on cellular/Tailscale routes. Chunked envelopes plus off-main decode
+// make the larger snapshot cheap to receive.
+private let syncReducedLoadChatSubscriptionMaxBytes = 512_000
 private let syncTerminalBufferMaxCharacters = 240_000
 private let chatEventHistoryMaxEvents = 1_000
 private let chatEventNotificationCoalesceNanoseconds: UInt64 = 420_000_000
@@ -278,16 +290,13 @@ enum SyncTailnetDiscovery {
   static let hostCandidates = [
     "ade-sync",
   ]
-  static let portCandidates = [
-    8787,
-    8788,
-  ]
+  static let portCandidates = SyncDirectHostPorts.portCandidates
 }
 
 enum SyncDirectHostPorts {
   static let defaultPort = 8787
-  static let retryWindow = 12
-  static let portCandidates = Array(defaultPort...(defaultPort + retryWindow))
+  static let fallbackMaxPort = 8999
+  static let portCandidates = Array(defaultPort...fallbackMaxPort)
 }
 
 struct SyncRouteEndpoint: Equatable {
@@ -426,6 +435,147 @@ func syncIsTailscaleRoute(_ address: String) -> Bool {
     || host.hasSuffix(".ts.net")
 }
 
+/// Inbound frame after the CPU-heavy stages (envelope JSON parse, gunzip,
+/// payload JSON parse) have run OFF the main actor. The main actor only does
+/// state mutation with the pre-decoded payload — multi-megabyte frames used
+/// to freeze the UI (and get the app killed by the watchdog) while decoding
+/// inline on the main thread.
+struct SyncPreprocessedEnvelope {
+  let type: String
+  let requestId: String?
+  let payload: Any
+}
+
+func syncPreprocessIncoming(_ text: String) throws -> SyncPreprocessedEnvelope? {
+  guard let data = text.data(using: .utf8) else { return nil }
+  guard let envelope = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+  let type = envelope["type"] as? String ?? ""
+  let requestId = envelope["requestId"] as? String
+  let payload: Any
+  let compression = envelope["compression"] as? String ?? "none"
+  if compression == "gzip", let base64 = envelope["payload"] as? String, let compressed = Data(base64Encoded: base64) {
+    let inflated = try gunzip(compressed)
+    payload = try JSONSerialization.jsonObject(with: inflated, options: [])
+  } else {
+    payload = envelope["payload"] ?? NSNull()
+  }
+  return SyncPreprocessedEnvelope(type: type, requestId: requestId, payload: payload)
+}
+
+func syncDecodeChangesetBatch(_ payload: Any) throws -> SyncChangesetBatchPayload {
+  let data = try adeJSONData(withJSONObject: payload)
+  return try JSONDecoder().decode(SyncChangesetBatchPayload.self, from: data)
+}
+
+private let syncAddressProbeQueue = DispatchQueue(label: "ade.sync.address-probe", qos: .userInitiated)
+
+/// Raw TCP reachability probe used to race address candidates before the
+/// (single-socket) websocket connect. Cheap, concurrent, and cancel-safe.
+func syncTcpProbe(host: String, port: Int, timeoutNanoseconds: UInt64) async -> Bool {
+  guard let endpointPort = NWEndpoint.Port(rawValue: UInt16(clamping: port)) else { return false }
+  return await withCheckedContinuation { continuation in
+    let connection = NWConnection(host: NWEndpoint.Host(host), port: endpointPort, using: .tcp)
+    var completed = false
+    let complete: (Bool) -> Void = { result in
+      guard !completed else { return }
+      completed = true
+      connection.cancel()
+      continuation.resume(returning: result)
+    }
+    connection.stateUpdateHandler = { state in
+      switch state {
+      case .ready: complete(true)
+      case .failed, .cancelled: complete(false)
+      default: break
+      }
+    }
+    connection.start(queue: syncAddressProbeQueue)
+    syncAddressProbeQueue.asyncAfter(deadline: .now() + .nanoseconds(Int(timeoutNanoseconds))) {
+      complete(false)
+    }
+  }
+}
+
+/// Happy-eyeballs ordering for reconnect: TCP-probe every candidate address
+/// concurrently and put reachable ones first, in completion order (fastest
+/// route wins). Unreachable candidates keep their original relative order as
+/// a fallback tail — a probe can be blocked on networks where the websocket
+/// still works. Sequential attempts over a dead LAN IP used to burn the full
+/// open timeout before the live Tailscale route was even tried.
+func syncRaceAddressCandidates(
+  addresses: [String],
+  port: Int,
+  timeoutNanoseconds: UInt64 = 1_500_000_000
+) async -> [String] {
+  guard addresses.count > 1 else { return addresses }
+  return await withTaskGroup(of: (Int, Bool).self) { group in
+    for (index, address) in addresses.enumerated() {
+      group.addTask {
+        (index, await syncTcpProbe(host: address, port: port, timeoutNanoseconds: timeoutNanoseconds))
+      }
+    }
+    var reachable: [Int] = []
+    var unreachable: [Int] = []
+    for await (index, ok) in group {
+      if ok { reachable.append(index) } else { unreachable.append(index) }
+    }
+    unreachable.sort()
+    return (reachable + unreachable).map { addresses[$0] }
+  }
+}
+
+/// Reassembles `envelope_chunk` frames back into the full encoded envelope.
+/// The host slices any oversized envelope into base64 parts so no single
+/// websocket message can exceed the socket's receive budget; parts concatenate
+/// in `index` order into the original envelope JSON. Bounded so a broken host
+/// cannot grow the buffer without limit.
+struct SyncEnvelopeChunkAssembler {
+  private struct PartialChunk {
+    let total: Int
+    var parts: [Int: String] = [:]
+  }
+
+  private var buffers: [String: PartialChunk] = [:]
+  private var arrivalOrder: [String] = []
+  private let maxConcurrentChunks = 8
+  private let maxTotalParts = 512
+
+  mutating func add(chunkId: String, index: Int, total: Int, part: String) -> String? {
+    guard total > 0, index >= 0, index < total, total <= maxTotalParts, !chunkId.isEmpty else { return nil }
+    if buffers[chunkId] == nil {
+      while arrivalOrder.count >= maxConcurrentChunks, let oldest = arrivalOrder.first {
+        arrivalOrder.removeFirst()
+        buffers.removeValue(forKey: oldest)
+      }
+      buffers[chunkId] = PartialChunk(total: total)
+      arrivalOrder.append(chunkId)
+    }
+    guard var buffer = buffers[chunkId], buffer.total == total else {
+      buffers.removeValue(forKey: chunkId)
+      arrivalOrder.removeAll { $0 == chunkId }
+      return nil
+    }
+    buffer.parts[index] = part
+    guard buffer.parts.count == buffer.total else {
+      buffers[chunkId] = buffer
+      return nil
+    }
+    buffers.removeValue(forKey: chunkId)
+    arrivalOrder.removeAll { $0 == chunkId }
+    var data = Data()
+    for partIndex in 0..<buffer.total {
+      guard let encoded = buffer.parts[partIndex], let decoded = Data(base64Encoded: encoded) else { return nil }
+      data.append(decoded)
+    }
+    return String(data: data, encoding: .utf8)
+  }
+
+  mutating func reset() {
+    buffers.removeAll()
+    arrivalOrder.removeAll()
+  }
+}
+
 struct SyncReconnectState {
   private(set) var attempts = 0
 
@@ -461,6 +611,14 @@ struct SyncReconnectState {
 
   mutating func reset() {
     attempts = 0
+  }
+
+  /// Re-open the budget for exactly one attempt from the slow heartbeat loop.
+  /// The counter stays at its ceiling so a failed attempt re-exhausts
+  /// immediately and the caller schedules the next heartbeat instead of
+  /// re-entering the fast 1s→16s burst.
+  mutating func allowOneSlowAttempt() {
+    attempts = Self.maxAutomaticAttempts - 1
   }
 }
 
@@ -513,6 +671,13 @@ private func syncIsMessageTooLongError(_ error: Error) -> Bool {
 
 func syncConnectionStateAfterTransportFailure(error: Error, fallback: RemoteConnectionState) -> RemoteConnectionState {
   syncIsMessageTooLongError(error) ? .error : fallback
+}
+
+func syncConnectionStateAfterRequestTimeout(
+  lastInboundMessageAt: TimeInterval?,
+  fallback: RemoteConnectionState
+) -> RemoteConnectionState {
+  lastInboundMessageAt == nil ? .connecting : fallback
 }
 
 func syncShouldPublishForegroundReconnectStarted(
@@ -928,6 +1093,7 @@ func syncOutboundEnvelopeProjectId(type: String, activeProjectId: String?) -> St
     "terminal_unsubscribe",
     "terminal_input",
     "terminal_resize",
+    "terminal_history",
     "chat_subscribe",
     "chat_unsubscribe",
   ]
@@ -938,6 +1104,18 @@ func syncOutboundEnvelopeProjectId(type: String, activeProjectId: String?) -> St
 struct SyncSendTestPushResult: Equatable {
   var ok: Bool
   var message: String
+}
+
+/// Delivery events for the full-screen terminal. The active screen attaches a
+/// handler per session id and receives hydration snapshots, ordered live
+/// chunks, and process exit without polling `terminalBuffers`.
+enum TerminalStreamEvent {
+  /// Snapshot payload from `terminal_subscribe`. `replacing == false` means a
+  /// delta resume (bytes from the requested `sinceOffset` to the end) that
+  /// must be appended, not re-rendered from scratch.
+  case hydrate(text: String, replacing: Bool, startOffset: Int?, endOffset: Int?)
+  case chunk(text: String, endOffset: Int?)
+  case exit(code: Int?)
 }
 
 @MainActor
@@ -1012,8 +1190,20 @@ final class SyncService: ObservableObject {
 
   private(set) var terminalBuffers: [String: String] = [:]
   private(set) var terminalBufferUpdatedAt: [String: Date] = [:]
+  /// Transcript END byte offset (UTF-8) confirmed per terminal session, fed by
+  /// `terminal_data.offset` and snapshot `endOffset`. Nil for hosts that do not
+  /// emit offsets; all gap/dedupe logic disables itself in that case.
+  private(set) var terminalEndOffsets: [String: Int] = [:]
+  private var terminalStreamHandlers: [String: (TerminalStreamEvent) -> Void] = [:]
+  private var terminalGapRecoveryInFlight: Set<String> = []
   private(set) var chatEventEnvelopesBySession: [String: [AgentChatEventEnvelope]] = [:]
   private(set) var chatEventRevisionsBySession: [String: Int] = [:]
+  /// Highest host-assigned `seq` applied per chat session. Sent back as
+  /// `sinceSeq` on re-subscribe so the host can replay exactly the missed
+  /// events instead of a full snapshot, and used to drop duplicate/old
+  /// events after a replay. Events without `seq` (older hosts) bypass this
+  /// entirely, preserving today's behavior.
+  private(set) var chatEventLastSeqBySession: [String: Int] = [:]
   /// Latest known chat summary keyed by session id. Populated by the Work
   /// list and chat detail screens so the LA reconcile can read `modelId`
   /// + a real `lastActivityAt` without round-tripping for each running chat.
@@ -1113,6 +1303,11 @@ final class SyncService: ObservableObject {
   private var outboundLocalDbVersion = 0
   private let discoveryBrowser = SyncBonjourBrowser()
   private var reconnectState = SyncReconnectState()
+  private var envelopeChunkAssembler = SyncEnvelopeChunkAssembler()
+  private var transportProbeTask: Task<Void, Never>?
+  /// cr-sqlite site id of the project DB the connected host currently serves
+  /// (lowercased), from hello_ok's serverDbSiteId. Nil for older hosts.
+  private var activeRemoteDbSiteId: String?
   private var connectionGeneration: UInt64 = 0
   private var connectAttemptGeneration: UInt64 = 0
   private var lastInboundMessageAt: TimeInterval?
@@ -1813,6 +2008,15 @@ final class SyncService: ObservableObject {
     self.socketSessionDelegate = socketSessionDelegate
     self.socketSession = socketSession
     self.database = database
+    // One-time migration: builds before the chunked-envelope transport set
+    // this flag on "message too long" transport errors and it survives app
+    // updates, silently blocking auto-reconnect forever. Current builds only
+    // set it for a real user pause, so clear the stale value once.
+    let pausedFlagMigrationKey = "ade.sync.autoReconnectPausedMigratedV2"
+    if !UserDefaults.standard.bool(forKey: pausedFlagMigrationKey) {
+      UserDefaults.standard.removeObject(forKey: autoReconnectPausedKey)
+      UserDefaults.standard.set(true, forKey: pausedFlagMigrationKey)
+    }
     self.autoReconnectPausedByUser = UserDefaults.standard.bool(forKey: autoReconnectPausedKey)
     if let existing = keychain.loadDeviceId() {
       deviceId = existing
@@ -1832,6 +2036,9 @@ final class SyncService: ObservableObject {
     projects = deduplicateProjectListByRoot(sortedProjectList(database.listMobileProjects()))
     outboundLocalDbVersion = loadOutboundCursorVersionForActiveProject(defaultVersion: database.currentDbVersion())
     normalizeActiveProjectSelection(allowSingleProjectFallback: false)
+    if activeProjectId != nil {
+      projectHomePresented = false
+    }
     pendingOperationCount = loadPendingOperations().count
     resetOutboundCursorStateForActiveProject()
     activeHostProfile = loadProfile()
@@ -2305,6 +2512,14 @@ final class SyncService: ObservableObject {
         teardownSocket(reason: "Reconnect restarted.")
         reconnectConnectInFlight = false
       }
+    }
+    // Background retries (slow heartbeat, network-path task, discovery
+    // callbacks) must never reach openSocket while a healthy connection is
+    // up — openSocket starts with teardownSocket, so a stray retry would
+    // kill a live session. Only an explicit user reconnect may rebuild one.
+    guard userInitiated || !canSendLiveRequests() else {
+      syncConnectLog.info("reconnect skipped: already connected")
+      return
     }
     guard userInitiated || allowAutoReconnect else {
       syncConnectLog.info("reconnect skipped: automatic reconnect disabled")
@@ -3052,7 +3267,7 @@ final class SyncService: ObservableObject {
     do {
       let raw = try await sendCommand(action: "prs.refresh", args: args)
       let payload = try decodeHydrationPayload(raw, as: PullRequestRefreshPayload.self, domainLabel: "pull request", decoder: decoder)
-      try database.replacePullRequestHydration(payload)
+      try database.replacePullRequestHydration(payload, pruneStale: prId == nil)
       scheduleWorkspaceSnapshotWrite()
       setDomainStatus([.prs], phase: .ready)
     } catch {
@@ -3553,20 +3768,176 @@ final class SyncService: ObservableObject {
     try await refreshTerminalSnapshot(sessionId: trimmedSessionId)
   }
 
-  func refreshTerminalSnapshot(sessionId: String, maxBytes: Int = syncTerminalSubscriptionMaxBytes) async throws {
+  func refreshTerminalSnapshot(sessionId: String, maxBytes: Int = syncTerminalSubscriptionMaxBytes, sinceOffset: Int? = nil) async throws {
     let trimmedSessionId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmedSessionId.isEmpty else { return }
     subscribedTerminalSessionIds.insert(trimmedSessionId)
     let requestId = makeRequestId()
+    var payload: [String: Any] = [
+      "sessionId": trimmedSessionId,
+      "maxBytes": max(1_024, min(syncTerminalStreamMaxBytes, maxBytes)),
+    ]
+    if let sinceOffset, sinceOffset >= 0 {
+      payload["sinceOffset"] = sinceOffset
+    }
     let raw = try await awaitResponse(requestId: requestId) {
-      self.sendEnvelope(type: "terminal_subscribe", requestId: requestId, payload: [
-        "sessionId": trimmedSessionId,
-        "maxBytes": max(1_024, min(syncTerminalSubscriptionMaxBytes, maxBytes)),
-      ])
+      self.sendEnvelope(type: "terminal_subscribe", requestId: requestId, payload: payload)
     }
     let snapshot = try decode(raw, as: TerminalSnapshot.self)
     guard subscribedTerminalSessionIds.contains(trimmedSessionId) else { return }
-    updateTerminalBuffer(sessionId: trimmedSessionId, transcript: snapshot.transcript, immediate: true)
+    applyTerminalSnapshot(snapshot, sessionId: trimmedSessionId)
+  }
+
+  /// Full-screen terminal subscribe: attaches at the 512K budget and resumes
+  /// exactly after `sinceOffset` when the caller still holds earlier bytes.
+  func subscribeTerminalStream(sessionId: String, sinceOffset: Int? = nil) async throws {
+    try await refreshTerminalSnapshot(sessionId: sessionId, maxBytes: syncTerminalStreamMaxBytes, sinceOffset: sinceOffset)
+  }
+
+  /// Registers the active full-screen terminal as the live delivery target for
+  /// `sessionId`. One handler per session; the screen detaches on disappear.
+  func attachTerminalStream(sessionId: String, handler: @escaping (TerminalStreamEvent) -> Void) {
+    let trimmedSessionId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmedSessionId.isEmpty else { return }
+    terminalStreamHandlers[trimmedSessionId] = handler
+  }
+
+  func detachTerminalStream(sessionId: String) {
+    let trimmedSessionId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmedSessionId.isEmpty else { return }
+    terminalStreamHandlers.removeValue(forKey: trimmedSessionId)
+  }
+
+  /// Fetches transcript bytes ending at/before `beforeOffset` for on-demand
+  /// scrollback paging. Requires an active `terminal_subscribe` on the host.
+  func fetchTerminalHistory(sessionId: String, beforeOffset: Int, maxBytes: Int = syncTerminalHistoryMaxBytes) async throws -> TerminalHistorySlice {
+    let trimmedSessionId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmedSessionId.isEmpty else {
+      throw NSError(domain: "ADE", code: 6, userInfo: [NSLocalizedDescriptionKey: "Missing terminal session id."])
+    }
+    guard subscribedTerminalSessionIds.contains(trimmedSessionId) else {
+      throw NSError(domain: "ADE", code: 7, userInfo: [NSLocalizedDescriptionKey: "Terminal stream is not subscribed."])
+    }
+    let requestId = makeRequestId()
+    // Older hosts never answer terminal_history; let the request time out
+    // without tearing the socket down.
+    let raw = try await awaitResponse(requestId: requestId, disconnectOnTimeout: false) {
+      self.sendEnvelope(type: "terminal_history", requestId: requestId, payload: [
+        "sessionId": trimmedSessionId,
+        "beforeOffset": beforeOffset,
+        "maxBytes": max(1_024, min(syncTerminalHistoryMaxBytes, maxBytes)),
+      ])
+    }
+    return try decode(raw, as: TerminalHistorySlice.self)
+  }
+
+  /// Applies a live `terminal_data` chunk with offset-based ordering. `endOffset`
+  /// is the transcript END byte offset after this chunk (nil on older hosts).
+  private func handleTerminalDataChunk(sessionId: String, chunk: String, endOffset: Int?) {
+    var deliverableChunk: String? = chunk
+    if let endOffset {
+      if let lastEnd = terminalEndOffsets[sessionId] {
+        let chunkStart = endOffset - chunk.utf8.count
+        if endOffset <= lastEnd {
+          // Replay of bytes a snapshot/delta already covered — drop entirely.
+          deliverableChunk = nil
+        } else if chunkStart > lastEnd {
+          // Missed bytes between lastEnd and this chunk. Drop the chunk and
+          // let a delta resubscribe (sinceOffset = lastEnd) deliver the full
+          // contiguous range; feeding it now would render out of order.
+          deliverableChunk = nil
+          recoverTerminalGap(sessionId: sessionId, sinceOffset: lastEnd)
+        } else {
+          if chunkStart < lastEnd {
+            // Partial overlap: trim the already-applied UTF-8 prefix.
+            let bytes = Array(chunk.utf8)
+            var overlap = min(max(0, lastEnd - chunkStart), bytes.count)
+            while overlap < bytes.count, bytes[overlap] & 0xC0 == 0x80 {
+              overlap += 1
+            }
+            deliverableChunk = String(decoding: bytes.dropFirst(overlap), as: UTF8.self)
+          }
+          terminalEndOffsets[sessionId] = endOffset
+        }
+      } else {
+        terminalEndOffsets[sessionId] = endOffset
+      }
+    }
+    guard let deliverableChunk, !deliverableChunk.isEmpty else {
+      terminalBufferUpdatedAt[sessionId] = Date()
+      return
+    }
+    terminalBuffers[sessionId] = trimmedTerminalBuffer((terminalBuffers[sessionId] ?? "") + deliverableChunk)
+    terminalBufferUpdatedAt[sessionId] = Date()
+    markTerminalBufferChanged()
+    terminalStreamHandlers[sessionId]?(.chunk(text: deliverableChunk, endOffset: endOffset))
+  }
+
+  private func recoverTerminalGap(sessionId: String, sinceOffset: Int) {
+    guard !terminalGapRecoveryInFlight.contains(sessionId) else { return }
+    terminalGapRecoveryInFlight.insert(sessionId)
+    Task { @MainActor [weak self] in
+      guard let self else { return }
+      defer { self.terminalGapRecoveryInFlight.remove(sessionId) }
+      try? await self.refreshTerminalSnapshot(
+        sessionId: sessionId,
+        maxBytes: syncTerminalStreamMaxBytes,
+        sinceOffset: sinceOffset
+      )
+    }
+  }
+
+  private func applyTerminalSnapshot(_ snapshot: TerminalSnapshot, sessionId: String) {
+    if let endOffset = snapshot.endOffset {
+      terminalEndOffsets[sessionId] = endOffset
+    }
+    if snapshot.delta == true {
+      // Delta resume: payload covers exactly [sinceOffset, end). Append —
+      // replacing would drop everything the screen already rendered.
+      if !snapshot.transcript.isEmpty {
+        terminalBuffers[sessionId] = trimmedTerminalBuffer((terminalBuffers[sessionId] ?? "") + snapshot.transcript)
+        markTerminalBufferChanged(immediate: true)
+        terminalStreamHandlers[sessionId]?(.hydrate(
+          text: snapshot.transcript,
+          replacing: false,
+          startOffset: snapshot.startOffset,
+          endOffset: snapshot.endOffset
+        ))
+      }
+      terminalBufferUpdatedAt[sessionId] = Date()
+    } else {
+      updateTerminalBuffer(sessionId: sessionId, transcript: snapshot.transcript, immediate: true)
+      terminalStreamHandlers[sessionId]?(.hydrate(
+        text: snapshot.transcript,
+        replacing: true,
+        startOffset: snapshot.startOffset,
+        endOffset: snapshot.endOffset
+      ))
+    }
+    if snapshot.live == false {
+      // No PTY behind the session (ended, or orphaned by a brain restart even
+      // though status still says running) — typing would go nowhere. Surface
+      // the exited/resume state instead of a live prompt.
+      terminalStreamHandlers[sessionId]?(.exit(code: nil))
+    }
+  }
+
+  /// Whether a full-screen terminal currently owns the live stream for
+  /// `sessionId`. Used to skip detach-unsubscribes that would race a remount.
+  func hasTerminalStream(sessionId: String) -> Bool {
+    let trimmedSessionId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmedSessionId.isEmpty else { return false }
+    return terminalStreamHandlers[trimmedSessionId] != nil
+  }
+
+  /// Relaunches an ended/orphaned agent CLI session's runtime on the host
+  /// (same sessionId, provider resume metadata) — the phone mirror of the
+  /// desktop resume affordance.
+  func resumeCliSession(sessionId: String, cols: Int? = nil, rows: Int? = nil) async throws -> StartCliSessionResult {
+    var args: [String: Any] = ["sessionId": sessionId]
+    if let cols { args["cols"] = cols }
+    if let rows { args["rows"] = rows }
+    return try await sendDecodableCommand(action: "work.resumeCliSession", args: args, as: StartCliSessionResult.self)
   }
 
   func unsubscribeTerminal(sessionId: String) async throws {
@@ -3621,7 +3992,13 @@ final class SyncService: ObservableObject {
       localStateRevision += 1
     }
     if canSendLiveRequests() && supportsChatStreaming && (!wasSubscribed || requestSnapshot) {
-      sendEnvelope(type: "chat_subscribe", requestId: nil, payload: chatSubscriptionPayload(sessionId: trimmedSessionId, maxBytes: maxBytes))
+      // Explicit snapshot requests must not advertise a resume point — the
+      // caller wants the full history, not a delta replay.
+      sendEnvelope(
+        type: "chat_subscribe",
+        requestId: nil,
+        payload: chatSubscriptionPayload(sessionId: trimmedSessionId, maxBytes: maxBytes, includeSinceSeq: !requestSnapshot)
+      )
     }
   }
 
@@ -3649,7 +4026,7 @@ final class SyncService: ObservableObject {
   }
 
   func chatSubscriptionPayloads() -> [[String: Any]] {
-    subscribedChatSessionIds.sorted().map { chatSubscriptionPayload(sessionId: $0) }
+    subscribedChatSessionIds.sorted().map { chatSubscriptionPayload(sessionId: $0, includeSinceSeq: true) }
   }
 
   func runQuickCommand(
@@ -4126,9 +4503,21 @@ final class SyncService: ObservableObject {
 
     let task = Task { @MainActor [weak self] in
       guard let self else { throw CancellationError() }
+      // Cursor/droid model lists are discovered dynamically on the host;
+      // activate the runtime so a fresh key surfaces models on first fetch
+      // instead of returning an empty passive cache (mirrors the TUI). Mobile
+      // chats run cursor models through the SDK, so only that source is
+      // probed synchronously — the CLI flavor revalidates in the background.
+      var args: [String: Any] = ["provider": normalizedProvider]
+      if normalizedProvider == "cursor" || normalizedProvider == "droid" {
+        args["activateRuntime"] = true
+      }
+      if normalizedProvider == "cursor" {
+        args["cursorSource"] = "sdk"
+      }
       let response = try await self.sendCommand(
         action: "chat.models",
-        args: ["provider": normalizedProvider],
+        args: args,
         disconnectOnTimeout: false,
         timeoutMessage: "Model list is still loading from the machine.",
         timeoutNanoseconds: SyncRequestTimeout.modelCatalogTimeoutNanoseconds
@@ -4399,7 +4788,7 @@ final class SyncService: ObservableObject {
     try await sendDecodableCommand(action: "chat.getSummary", args: ["sessionId": sessionId], as: AgentChatSessionSummary.self)
   }
 
-  func fetchChatTranscriptResponse(sessionId: String, limit: Int = 200, maxChars: Int = 120_000) async throws -> AgentChatTranscriptResponse {
+  func fetchChatTranscriptResponse(sessionId: String, limit: Int = 500, maxChars: Int = 600_000) async throws -> AgentChatTranscriptResponse {
     try await sendDecodableCommand(
       action: "chat.getTranscript",
       args: ["sessionId": sessionId, "limit": limit, "maxChars": maxChars],
@@ -4407,9 +4796,59 @@ final class SyncService: ObservableObject {
     )
   }
 
-  func fetchChatTranscript(sessionId: String, limit: Int = 200, maxChars: Int = 120_000) async throws -> [AgentChatTranscriptEntry] {
+  func fetchChatTranscript(sessionId: String, limit: Int = 500, maxChars: Int = 600_000) async throws -> [AgentChatTranscriptEntry] {
     let response = try await fetchChatTranscriptResponse(sessionId: sessionId, limit: limit, maxChars: maxChars)
     return response.entries
+  }
+
+  /// One page of a paginated chat transcript walk. `nextCursor` is the
+  /// host-side index of the oldest entry returned (the transcript is
+  /// append-only, so indices are stable); pass it back via
+  /// `fetchChatTranscriptPage(cursor:)` to load the previous (older) page.
+  /// `nil` means the start of the transcript was reached.
+  struct AgentChatTranscriptPage: Equatable {
+    var sessionId: String
+    var entries: [AgentChatTranscriptEntry]
+    var truncated: Bool
+    var totalEntries: Int
+    var nextCursor: Int?
+  }
+
+  /// Fetch a transcript page. Without `cursor` this returns the newest
+  /// entries (same data as `fetchChatTranscriptResponse`) plus a cursor for
+  /// walking backwards; with `cursor` it returns the page strictly BEFORE
+  /// that index. Older hosts that predate pagination simply omit
+  /// `nextCursor`, which surfaces here as `nil` (no more pages).
+  func fetchChatTranscriptPage(
+    sessionId: String,
+    cursor: Int? = nil,
+    limit: Int = 200,
+    maxChars: Int = 600_000
+  ) async throws -> AgentChatTranscriptPage {
+    var args: [String: Any] = ["sessionId": sessionId, "limit": limit, "maxChars": maxChars]
+    if let cursor, cursor > 0 {
+      args["cursor"] = String(cursor)
+    }
+    let response = try await sendCommand(action: "chat.getTranscript", args: args)
+    if let payload = response as? [String: Any], payload["queued"] as? Bool == true {
+      throw QueuedRemoteCommandError(action: "chat.getTranscript")
+    }
+    let transcript = try decode(response, as: AgentChatTranscriptResponse.self)
+    var nextCursor: Int?
+    if let dict = response as? [String: Any], let rawCursor = dict["nextCursor"] {
+      if let text = rawCursor as? String {
+        nextCursor = Int(text)
+      } else if let number = rawCursor as? NSNumber, !(rawCursor is Bool) {
+        nextCursor = number.intValue
+      }
+    }
+    return AgentChatTranscriptPage(
+      sessionId: transcript.sessionId,
+      entries: transcript.entries,
+      truncated: transcript.truncated,
+      totalEntries: transcript.totalEntries,
+      nextCursor: nextCursor
+    )
   }
 
   @discardableResult
@@ -5748,7 +6187,7 @@ final class SyncService: ObservableObject {
   }
 
   private func automaticReconnectAddresses(for profile: HostConnectionProfile) -> [String] {
-    let preferTailnet = shouldPreferTailnetReconnect()
+    let preferTailnet = shouldPreferTailnetReconnect() || shouldPreferTailnetForUserReconnect(profile)
     let matchingDiscovery = discoveredHosts.filter { host in
       matchesDiscoveredHost(host, profile: profile)
     }
@@ -5809,7 +6248,17 @@ final class SyncService: ObservableObject {
       throw noConnectableAddressError()
     }
 
-    for address in addresses {
+    let racedAddresses = await syncRaceAddressCandidates(
+      addresses: addresses,
+      port: portCandidates.first ?? profile.port
+    )
+    if racedAddresses != addresses {
+      syncConnectLog.info(
+        "ADE_SYNC_TRACE reconnect probe reorder raced=[\(syncLogAddressList(racedAddresses), privacy: .public)]"
+      )
+    }
+
+    for address in racedAddresses {
       guard isCurrentConnectAttempt(connectAttemptGeneration) else {
         throw CancellationError()
       }
@@ -5889,12 +6338,15 @@ final class SyncService: ObservableObject {
   private func scheduleReconnectIfNeeded(after delayNanoseconds: UInt64) {
     let profile = loadProfile()
     guard allowAutoReconnect, !autoReconnectPausedByUser, profile != nil, tokenForProfile(profile) != nil else { return }
-    // Cap the silent retry loop. Once the attempt budget is spent we stop
-    // re-arming and surface a real "can't reach this machine" terminal state
-    // instead of churning forever. A later live discovery or a user-initiated
-    // reconnect resets the counter and re-enables the loop.
+    // Once the fast attempt budget is spent, surface the "can't reach this
+    // machine" state but keep a quiet slow heartbeat trying in the background.
+    // A paired machine routinely comes back well after the first minute — a
+    // WiFi→cellular handoff settling, the brain restarting after an update, a
+    // Tailscale route appearing — and the phone must reconnect on its own
+    // without the user babysitting a reconnect button.
     if reconnectState.isExhausted {
       enterUnreachableTerminalState(for: profile)
+      scheduleSlowReconnectHeartbeat()
       return
     }
     reconnectTask?.cancel()
@@ -5902,6 +6354,26 @@ final class SyncService: ObservableObject {
       try? await Task.sleep(nanoseconds: delayNanoseconds)
       guard !Task.isCancelled else { return }
       await reconnectIfPossible()
+    }
+  }
+
+  /// Slow background retry (~30-40s cadence with jitter) that outlives the
+  /// fast 1s→16s burst. Each beat opens the budget for exactly one attempt;
+  /// a failed attempt re-exhausts and reschedules through
+  /// scheduleReconnectIfNeeded, while an attempt that found no route yet
+  /// (waiting on live discovery) reschedules itself here.
+  private func scheduleSlowReconnectHeartbeat() {
+    reconnectTask?.cancel()
+    reconnectTask = Task { @MainActor in
+      let jitter = UInt64.random(in: 0...10_000_000_000)
+      try? await Task.sleep(nanoseconds: 30_000_000_000 + jitter)
+      guard !Task.isCancelled else { return }
+      reconnectState.allowOneSlowAttempt()
+      await reconnectIfPossible()
+      guard !Task.isCancelled else { return }
+      if autoReconnectAwaitingLiveDiscovery {
+        scheduleSlowReconnectHeartbeat()
+      }
     }
   }
 
@@ -6243,15 +6715,22 @@ final class SyncService: ObservableObject {
   }
 
   private func currentPeerMetadata() -> [String: Any] {
-    [
+    var metadata: [String: Any] = [
       "deviceId": deviceId,
       "deviceName": UIDevice.current.name,
       "platform": "iOS",
       "deviceType": "phone",
       "siteId": database.localSiteId(),
       "dbVersion": latestRemoteDbVersion,
-      "capabilities": ["changesetAck"],
+      "capabilities": ["changesetAck", "chunkedEnvelopes"],
     ]
+    // Per-project-DB cursors: the host picks the entry for the DB it serves,
+    // so a brain that switched hosted projects pumps the right backlog
+    // instead of trusting the single legacy cursor from a different DB.
+    if let bySite = loadProfile()?.remoteDbVersionBySite, !bySite.isEmpty {
+      metadata["dbVersionBySite"] = bySite
+    }
+    return metadata
   }
 
   private func openSocket(
@@ -6277,6 +6756,11 @@ final class SyncService: ObservableObject {
       throw NSError(domain: "ADE", code: 1, userInfo: [NSLocalizedDescriptionKey: "Invalid machine address."])
     }
     let task = socketSession.webSocketTask(with: url)
+    // URLSession's default receive budget is ~1 MiB and exceeding it kills the
+    // connection with "Message too long". Current hosts chunk large envelopes
+    // (chunkedEnvelopes capability); the raised ceiling protects against older
+    // hosts and any future unchunked path.
+    task.maximumMessageSize = 32 * 1024 * 1024
     socket = task
     try await awaitSocketOpen(task)
     guard isCurrentConnectAttempt(connectAttemptGeneration) else {
@@ -6370,6 +6854,23 @@ final class SyncService: ObservableObject {
 
   func prioritizedReconnectAddressesForTesting(_ profile: HostConnectionProfile) -> [String] {
     prioritizedAddresses(for: profile)
+  }
+
+  func setNetworkPathForTesting(
+    usesWiFi: Bool,
+    usesCellular: Bool,
+    usesWiredEthernet: Bool,
+    isExpensive: Bool = false,
+    isConstrained: Bool = false
+  ) {
+    lastNetworkPathSnapshot = SyncNetworkPathSnapshot(
+      isSatisfied: true,
+      usesWiFi: usesWiFi,
+      usesCellular: usesCellular,
+      usesWiredEthernet: usesWiredEthernet,
+      isExpensive: isExpensive,
+      isConstrained: isConstrained
+    )
   }
 
   func setActiveProjectForTesting(projectId: String?, rootPath: String?) {
@@ -6483,6 +6984,23 @@ final class SyncService: ObservableObject {
       )
     }
 
+    // Key the inbound changeset cursor to the project DB this host serves.
+    // The same brain hosts different project DBs over time, each with its own
+    // db_version sequence; reusing a cursor across DBs silently skips the
+    // entire backlog (host sees "caught up") or replays from zero.
+    if let serverDbSiteId = syncNonEmpty(payload["serverDbSiteId"] as? String) {
+      let normalizedSite = serverDbSiteId.lowercased()
+      if activeRemoteDbSiteId != normalizedSite {
+        activeRemoteDbSiteId = normalizedSite
+        latestRemoteDbVersion = loadProfile()?.remoteDbVersionBySite?[normalizedSite] ?? 0
+        updateProfile { profile in
+          profile.lastRemoteDbVersion = latestRemoteDbVersion
+        }
+      }
+    } else {
+      activeRemoteDbSiteId = nil
+    }
+
     let features = payload["features"] as? [String: Any]
     supportsChatStreaming = {
       if let chatStreaming = features?["chatStreaming"] as? [String: Any],
@@ -6557,9 +7075,11 @@ final class SyncService: ObservableObject {
       activeProjectHostIdentity = incomingHostIdentity
       UserDefaults.standard.set(incomingHostIdentity, forKey: activeProjectHostIdentityKey)
     }
-    if activeProject != nil {
-      projectHomePresented = false
-    }
+    // Connecting must not navigate. Forcing `projectHomePresented = false`
+    // here yanked the user out of the machine's project list into the
+    // remembered project on every (re)connect — and with background reconnect
+    // cycles it re-fired while they sat on the main page. Entering a project
+    // is only ever a user action (selectProject / closeProjectHome).
 
     reconnectState.reset()
     allowAutoReconnect = true
@@ -6660,7 +7180,19 @@ final class SyncService: ObservableObject {
             text = ""
           }
           do {
-            try self.handleIncoming(text)
+            // CPU-heavy decode (envelope JSON, gunzip, payload JSON) runs off
+            // the main actor; ordering is preserved because each frame is
+            // awaited in sequence. The main actor only mutates state.
+            let preprocessed = try await Task.detached(priority: .userInitiated) {
+              try syncPreprocessIncoming(text)
+            }.value
+            // The detached decode is a suspension point: the socket can be
+            // torn down (and a new connection brought up) while it runs. A
+            // stale frame must not mutate the new connection's state.
+            guard self.socket === task else { break }
+            if let preprocessed {
+              try await self.handleIncoming(preprocessed)
+            }
           } catch {
             if self.socket === task {
               self.handleIncomingFailure(error, text: text)
@@ -6716,24 +7248,42 @@ final class SyncService: ObservableObject {
     connectionState = syncConnectionStateAfterTransportFailure(error: error, fallback: .disconnected)
     setDomainStatus(SyncDomain.allCases, phase: .failed, error: friendlyError.localizedDescription)
     failPendingRequests(with: friendlyError)
-    if syncIsMessageTooLongError(error) {
-      allowAutoReconnect = false
-      setAutoReconnectPausedByUser(true)
-      cancelReconnectLoop()
-    } else {
-      scheduleReconnectIfNeeded(after: reconnectDelay())
-    }
+    // "Message too long" used to pause auto-reconnect permanently. With the
+    // raised socket receive budget and hosts chunking oversized envelopes it
+    // is an ordinary transport failure now — reconnect like any other drop.
+    scheduleReconnectIfNeeded(after: reconnectDelay())
   }
 
-  private func handleIncoming(_ text: String) throws {
-    guard let data = text.data(using: .utf8) else { return }
-    guard let envelope = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
-    let type = envelope["type"] as? String ?? ""
-    let requestId = envelope["requestId"] as? String
-    let payload = try decodeEnvelopePayload(envelope)
+  private func handleIncoming(_ pre: SyncPreprocessedEnvelope) async throws {
+    let type = pre.type
+    let requestId = pre.requestId
+    let payload = pre.payload
+    // The detached decode/apply stages below are suspension points; a
+    // teardown + reconnect can complete while they run. Guard every
+    // post-await state mutation on the generation captured here so a stale
+    // frame can't advance the NEW connection's cursors (applyHelloPayload may
+    // have re-keyed activeRemoteDbSiteId to a different project DB).
+    let generation = connectionGeneration
     lastInboundMessageAt = ProcessInfo.processInfo.systemUptime
 
     switch type {
+    case "envelope_chunk":
+      guard let dict = payload as? [String: Any],
+            let chunkId = dict["chunkId"] as? String,
+            let index = dict["index"] as? Int,
+            let total = dict["total"] as? Int,
+            let part = dict["part"] as? String else { return }
+      if let reassembled = envelopeChunkAssembler.add(chunkId: chunkId, index: index, total: total, part: part) {
+        // The reassembled envelope can be tens of megabytes — decode it off
+        // the main actor like any first-class frame.
+        let nested = try await Task.detached(priority: .userInitiated) {
+          try syncPreprocessIncoming(reassembled)
+        }.value
+        guard isCurrentConnectionGeneration(generation) else { return }
+        if let nested {
+          try await handleIncoming(nested)
+        }
+      }
     case "hello_ok":
       reconnectState.reset()
       resolve(requestId: requestId, result: .success(payload))
@@ -6771,13 +7321,35 @@ final class SyncService: ObservableObject {
           batchPayload = payloadObject
         }
       }
-      let batch = try decode(batchPayload, as: SyncChangesetBatchPayload.self)
+      // Decode and apply off the main actor: a 250-row batch can carry
+      // megabytes and the SQLite connection is FULLMUTEX (serialized), so
+      // cross-thread application is safe. The receive loop awaits each frame
+      // in order, so batches still apply sequentially.
+      let batch = try await Task.detached(priority: .userInitiated) {
+        try syncDecodeChangesetBatch(batchPayload)
+      }.value
+      guard isCurrentConnectionGeneration(generation) else { return }
       do {
-        let result = try database.applyChanges(batch.changes)
+        let database = self.database
+        let result = try await Task.detached(priority: .userInitiated) {
+          try database.applyChanges(batch.changes)
+        }.value
+        // Stale apply after a reconnect: the rows are already committed
+        // (insert-or-ignore makes the resend idempotent), but the cursor and
+        // ack belong to the dead connection — advancing the new site's cursor
+        // here would make the host skip the new project DB's backlog.
+        guard isCurrentConnectionGeneration(generation) else { return }
         latestRemoteDbVersion = max(latestRemoteDbVersion, batch.toDbVersion, result.dbVersion)
         lastSyncAt = Date()
+        let advancedVersion = latestRemoteDbVersion
+        let cursorSite = activeRemoteDbSiteId
         updateProfile { profile in
-          profile.lastRemoteDbVersion = latestRemoteDbVersion
+          profile.lastRemoteDbVersion = advancedVersion
+          if let cursorSite {
+            var bySite = profile.remoteDbVersionBySite ?? [:]
+            bySite[cursorSite] = max(bySite[cursorSite] ?? 0, advancedVersion)
+            profile.remoteDbVersionBySite = bySite
+          }
         }
         sendChangesetAck(
           batch: batch,
@@ -6787,6 +7359,7 @@ final class SyncService: ObservableObject {
         )
         resolve(requestId: requestId, result: .success(payload))
       } catch {
+        guard isCurrentConnectionGeneration(generation) else { return }
         sendChangesetAck(
           batch: batch,
           ok: false,
@@ -6827,7 +7400,7 @@ final class SyncService: ObservableObject {
         let message = dict["message"] as? String ?? "Remote command rejected."
         resolve(requestId: requestId, result: .failure(NSError(domain: "ADE", code: 6, userInfo: [NSLocalizedDescriptionKey: message])))
       }
-    case "command_result", "file_response", "terminal_snapshot":
+    case "command_result", "file_response", "terminal_snapshot", "terminal_history":
       resolve(requestId: requestId, result: .success(payload))
     case "in_app_notification":
       if let dict = payload as? [String: Any] {
@@ -6838,6 +7411,14 @@ final class SyncService: ObservableObject {
          let dict = payload as? [String: Any],
          let snapshot = try? decode(dict, as: SyncChatSubscribeSnapshotPayload.self),
          subscribedChatSessionIds.contains(snapshot.sessionId) {
+        if (dict["resumed"] as? Bool) != true {
+          // Full snapshot: the host did not (or could not) resume from our
+          // sinceSeq, so its seq stream may have restarted (host reboot,
+          // replay buffer eviction). Drop the stale watermark and re-track
+          // from the next live event — otherwise we would discard the first
+          // events of the new stream as "old".
+          chatEventLastSeqBySession.removeValue(forKey: snapshot.sessionId)
+        }
         mergeChatEventHistory(sessionId: snapshot.sessionId, events: snapshot.events)
       }
     case "chat_event":
@@ -6848,14 +7429,21 @@ final class SyncService: ObservableObject {
         // Gate chat events on the current subscription set so events from a
         // previous project (still streaming on the host) do not leak into the
         // newly-active project's view after a quick switch.
+        if let seq = (dict["seq"] as? NSNumber)?.intValue {
+          // Resumable stream: drop duplicates/old replays and advance the
+          // per-session watermark used as sinceSeq on re-subscribe. Events
+          // without seq (older hosts) keep today's behavior unchanged.
+          if let lastSeq = chatEventLastSeqBySession[envelope.sessionId], seq <= lastSeq {
+            break
+          }
+          chatEventLastSeqBySession[envelope.sessionId] = seq
+        }
         recordChatEventEnvelope(envelope)
       }
     case "terminal_data":
       if let dict = payload as? [String: Any], let sessionId = dict["sessionId"] as? String, let chunk = dict["data"] as? String {
         guard subscribedTerminalSessionIds.contains(sessionId) else { break }
-        terminalBuffers[sessionId] = trimmedTerminalBuffer((terminalBuffers[sessionId] ?? "") + chunk)
-        terminalBufferUpdatedAt[sessionId] = Date()
-        markTerminalBufferChanged()
+        handleTerminalDataChunk(sessionId: sessionId, chunk: chunk, endOffset: (dict["offset"] as? NSNumber)?.intValue)
       }
     case "terminal_exit":
       if let dict = payload as? [String: Any], let sessionId = dict["sessionId"] as? String {
@@ -6864,6 +7452,7 @@ final class SyncService: ObservableObject {
         terminalBuffers[sessionId] = trimmedTerminalBuffer((terminalBuffers[sessionId] ?? "") + "\n\n[process exited\(exitCode.map { " with \($0)" } ?? "")]")
         terminalBufferUpdatedAt[sessionId] = Date()
         markTerminalBufferChanged(immediate: true)
+        terminalStreamHandlers[sessionId]?(.exit(code: exitCode))
       }
     default:
       break
@@ -7209,6 +7798,8 @@ final class SyncService: ObservableObject {
   }
 
   private func teardownSocket(closeCode: URLSessionWebSocketTask.CloseCode = .goingAway, reason: String? = nil) {
+    transportProbeTask?.cancel()
+    transportProbeTask = nil
     relayTask?.cancel()
     relayTask = nil
     clientHeartbeatTask?.cancel()
@@ -7235,6 +7826,7 @@ final class SyncService: ObservableObject {
     lastInboundMessageAt = nil
     refreshReducedSyncLoad()
     pendingProjectCatalogChunks.removeAll()
+    envelopeChunkAssembler.reset()
     connectionGeneration &+= 1
   }
 
@@ -7249,20 +7841,15 @@ final class SyncService: ObservableObject {
     teardownSocket(reason: friendlyError.localizedDescription)
     markConnectionLoadStrained()
     lastError = friendlyError.localizedDescription
-    let fatalTransportFailure = syncIsMessageTooLongError(error)
     self.connectionState = syncConnectionStateAfterTransportFailure(error: error, fallback: connectionState)
-    if phase == .failed || fatalTransportFailure {
+    if phase == .failed || syncIsMessageTooLongError(error) {
       setDomainStatus(SyncDomain.allCases, phase: .failed, error: friendlyError.localizedDescription)
     } else {
       setDomainStatus(SyncDomain.allCases, phase: .disconnected)
     }
     failPendingRequests(with: friendlyError)
-    if fatalTransportFailure {
-      allowAutoReconnect = false
-      setAutoReconnectPausedByUser(true)
-      cancelReconnectLoop()
-      return
-    }
+    // Oversized-message errors no longer pause reconnect permanently — see
+    // handleIncomingFailure.
     scheduleReconnectIfNeeded(after: reconnectDelayNanoseconds ?? reconnectDelay())
   }
 
@@ -7272,16 +7859,24 @@ final class SyncService: ObservableObject {
     timeoutError: NSError = SyncRequestTimeout.error()
   ) {
     guard pending[requestId] != nil else { return }
+    let shouldReconnect = disconnectOnTimeout
+      && syncShouldReconnectAfterRequestTimeout(
+        now: ProcessInfo.processInfo.systemUptime,
+        lastInboundMessageAt: lastInboundMessageAt
+      )
     if disconnectOnTimeout,
-       syncShouldReconnectAfterRequestTimeout(
-         now: ProcessInfo.processInfo.systemUptime,
-         lastInboundMessageAt: lastInboundMessageAt
-       ) {
-      // handleTransportFailure tears the socket down before flipping the
-      // reduced-load preference, so we must NOT call markConnectionLoadStrained
-      // here — calling it pre-teardown re-subscribes chat events on the
-      // doomed socket. The transport-failure path strains the load itself.
-      handleTransportFailure(timeoutError)
+       shouldReconnect {
+      // A timed-out request plus a quiet inbound window does NOT prove the
+      // socket is dead — the host may just be slow (catalog/PR refreshes can
+      // take 30s+) while nothing else streams. Tearing down here put cellular
+      // sessions into a perpetual timeout→reconnect→re-request loop. Fail the
+      // request, then actively probe the transport; only a probe that hears
+      // nothing back tears the socket down.
+      markConnectionLoadStrained()
+      resolve(requestId: requestId, result: .failure(SyncUserFacingError.error(from: SyncRequestTimeout.error(
+        message: "The machine took too long to respond. Try again."
+      ))))
+      verifyTransportAliveAfterRequestTimeout(timeoutError)
     } else {
       // The default `timeoutError` is `SyncRequestTimeout.error()`, whose
       // message says "Reconnecting now." That copy is only honest in the
@@ -7300,6 +7895,36 @@ final class SyncService: ObservableObject {
       }
       markConnectionLoadStrained()
       resolve(requestId: requestId, result: .failure(resolvedError))
+    }
+  }
+
+  /// Active liveness check after a request timeout: ping the host and give it
+  /// a short window to send anything back. Inbound traffic (the pong, a
+  /// changeset, a status ping) proves the transport works and the socket is
+  /// kept; total silence means the connection is actually dead and the normal
+  /// transport-failure teardown runs. One probe at a time.
+  private func verifyTransportAliveAfterRequestTimeout(_ timeoutError: NSError) {
+    guard transportProbeTask == nil, canSendLiveRequests() else { return }
+    let generation = connectionGeneration
+    let probeStartedAt = ProcessInfo.processInfo.systemUptime
+    sendEnvelope(type: "heartbeat", requestId: nil, payload: [
+      "kind": "ping",
+      "sentAt": ISO8601DateFormatter().string(from: Date()),
+      "dbVersion": database.currentDbVersion(),
+    ])
+    transportProbeTask = Task { @MainActor [weak self] in
+      try? await Task.sleep(nanoseconds: 5_000_000_000)
+      guard let self else { return }
+      self.transportProbeTask = nil
+      guard !Task.isCancelled, self.connectionGeneration == generation else { return }
+      if let lastInbound = self.lastInboundMessageAt, lastInbound > probeStartedAt { return }
+      self.handleTransportFailure(
+        timeoutError,
+        connectionState: syncConnectionStateAfterRequestTimeout(
+          lastInboundMessageAt: self.lastInboundMessageAt,
+          fallback: .error
+        )
+      )
     }
   }
 
@@ -7538,21 +8163,35 @@ final class SyncService: ObservableObject {
     return ["queued": true]
   }
 
-  private func chatSubscriptionPayload(sessionId: String, maxBytes requestedMaxBytes: Int? = nil) -> [String: Any] {
+  private func chatSubscriptionPayload(
+    sessionId: String,
+    maxBytes requestedMaxBytes: Int? = nil,
+    includeSinceSeq: Bool = false
+  ) -> [String: Any] {
     let defaultMaxBytes = canSendLiveRequests() && prefersReducedSyncLoad
       ? syncReducedLoadChatSubscriptionMaxBytes
       : syncChatSubscriptionMaxBytes
     let maxBytes = max(1_024, min(syncChatSubscriptionMaxBytes, requestedMaxBytes ?? defaultMaxBytes))
-    return [
+    var payload: [String: Any] = [
       "sessionId": sessionId,
       "maxBytes": maxBytes,
     ]
+    if includeSinceSeq, let lastSeq = chatEventLastSeqBySession[sessionId] {
+      payload["sinceSeq"] = lastSeq
+    }
+    return payload
   }
 
   private func restoreChatEventSubscriptions() {
     guard canSendLiveRequests(), supportsChatStreaming else { return }
     for sessionId in subscribedChatSessionIds.sorted() {
-      sendEnvelope(type: "chat_subscribe", requestId: nil, payload: chatSubscriptionPayload(sessionId: sessionId))
+      // Pass the last applied seq so the host can replay only the missed
+      // events; it falls back to a full snapshot when the gap is too old.
+      sendEnvelope(
+        type: "chat_subscribe",
+        requestId: nil,
+        payload: chatSubscriptionPayload(sessionId: sessionId, includeSinceSeq: true)
+      )
     }
   }
 
@@ -7564,7 +8203,16 @@ final class SyncService: ObservableObject {
       guard let self else { return }
       for sessionId in sessionIds {
         self.subscribedTerminalSessionIds.remove(sessionId)
-        try? await self.subscribeTerminal(sessionId: sessionId)
+        if self.terminalStreamHandlers[sessionId] != nil {
+          // Active full-screen terminal: resume exactly after the last byte we
+          // applied so the reconnect back-fills as an append, not a re-render.
+          try? await self.subscribeTerminalStream(
+            sessionId: sessionId,
+            sinceOffset: self.terminalEndOffsets[sessionId]
+          )
+        } else {
+          try? await self.subscribeTerminal(sessionId: sessionId)
+        }
       }
     }
   }
@@ -7706,6 +8354,9 @@ final class SyncService: ObservableObject {
     if clearHistory {
       chatEventEnvelopesBySession.removeAll()
       chatEventRevisionsBySession.removeAll()
+      // Watermarks are only meaningful while the applied history is retained;
+      // resuming from a seq after dropping history would skip those events.
+      chatEventLastSeqBySession.removeAll()
     }
     markChatEventsChanged(immediate: true)
     localStateRevision += 1
@@ -7716,6 +8367,8 @@ final class SyncService: ObservableObject {
       subscribedTerminalSessionIds.removeAll()
       terminalBuffers.removeAll()
       terminalBufferUpdatedAt.removeAll()
+      terminalEndOffsets.removeAll()
+      terminalGapRecoveryInFlight.removeAll()
     }
     terminalBufferRevision += 1
   }

@@ -19,6 +19,7 @@ import type {
   AgentChatDispatchSteerResult,
   AgentChatDroidPermissionMode,
   AgentChatEventEnvelope,
+  AgentChatEventHistoryPage,
   AgentChatFileRef,
   AgentChatInteractionMode,
   AgentChatKillDroidWorkerArgs,
@@ -40,7 +41,7 @@ import type {
   CodexThreadGoal,
 } from "../../../desktop/src/shared/types/chat";
 import type { AiSettingsStatus, OpenCodeRuntimeSnapshot } from "../../../desktop/src/shared/types/config";
-import type { DiffLineStats } from "../../../desktop/src/shared/types/git";
+import type { DiffLineStats, GitBranchSummary } from "../../../desktop/src/shared/types/git";
 import type { LaneSummary } from "../../../desktop/src/shared/types/lanes";
 import type { PrLaneSummary } from "../../../desktop/src/shared/types/prs";
 import type {
@@ -65,13 +66,24 @@ export async function listLanes(
   });
 }
 
+export async function listGitBranches(
+  connection: AdeCodeConnection,
+  laneId: string,
+): Promise<GitBranchSummary[]> {
+  // git.listBranches returns local + remote-tracking refs (remote names come
+  // back in "<remote>/<name>" form). Used by the new-lane branch typeahead.
+  return (await connection.action<GitBranchSummary[]>("git", "listBranches", { laneId })) ?? [];
+}
+
 export async function listLaneDiffStats(
   connection: AdeCodeConnection,
   laneIds?: string[],
 ): Promise<Record<string, DiffLineStats>> {
-  return await connection.action<Record<string, DiffLineStats>>("diff", "listLaneDiffStats", {
+  // Normalize a null/undefined action result (older runtimes, transport
+  // hiccups) to an empty record — callers keep this in render-time state.
+  return (await connection.action<Record<string, DiffLineStats>>("diff", "listLaneDiffStats", {
     ...(laneIds ? { laneIds } : {}),
-  });
+  })) ?? {};
 }
 
 export async function listChatSessions(
@@ -285,6 +297,34 @@ export async function getChatHistory(
   return await connection.actionList<ChatHistorySnapshot>("chat", "getChatEventHistory", [sessionId, { maxEvents }]);
 }
 
+export async function getChatHistoryPage(
+  connection: AdeCodeConnection,
+  sessionId: string,
+  beforeOffset: number,
+  maxBytes?: number,
+): Promise<AgentChatEventHistoryPage> {
+  const page = await connection.actionList<AgentChatEventHistoryPage | null | undefined>(
+    "chat",
+    "getChatEventHistoryPage",
+    [sessionId, { beforeOffset, ...(maxBytes ? { maxBytes } : {}) }],
+  );
+  // Defensive normalization: an older daemon (or a routing miss) can yield
+  // null/partial results — treat those as "nothing pageable" so the scroll-back
+  // loop terminates instead of spinning on a malformed cursor.
+  if (!page || typeof page !== "object") {
+    return { sessionId, events: [], startOffset: 0, hasMore: false, sessionFound: false };
+  }
+  return {
+    sessionId: typeof page.sessionId === "string" ? page.sessionId : sessionId,
+    events: Array.isArray(page.events) ? page.events : [],
+    startOffset: typeof page.startOffset === "number" && Number.isFinite(page.startOffset)
+      ? page.startOffset
+      : 0,
+    hasMore: page.hasMore === true,
+    sessionFound: page.sessionFound !== false,
+  };
+}
+
 export async function getSlashCommands(
   connection: AdeCodeConnection,
   args: string | null | AgentChatSlashCommandsArgs,
@@ -347,6 +387,9 @@ export async function getAvailableModels(
     // Codex is intentionally NOT here: its tiers come from the app-server, which
     // loadAvailableModels always queries regardless of activateRuntime.
     activateRuntime: provider === "cursor" || provider === "droid",
+    // TUI chats run cursor models through the SDK; probing only that source
+    // keeps the picker refresh off the slower cursor-agent CLI spawn.
+    ...(provider === "cursor" ? { cursorSource: "sdk" } : {}),
   });
 }
 

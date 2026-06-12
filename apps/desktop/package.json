@@ -51,7 +51,8 @@
     "version:release": "node ./scripts/set-release-version.mjs"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "^0.2.139",
+    "@anthropic-ai/claude-agent-sdk": "^0.3.170",
+    "@anthropic-ai/sdk": "^0.103.0",
     "@cursor/sdk": "^1.0.13",
     "@factory/droid-sdk": "^0.2.0",
     "@floating-ui/react": "^0.27.19",
@@ -62,6 +63,7 @@
     "@lobehub/icons": "^5.2.0",
     "@lobehub/icons-static-svg": "^1.84.0",
     "@lobehub/ui": "^5.6.3",
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "@novnc/novnc": "^1.7.0",
     "@openai/codex": "0.133.0",
     "@opencode-ai/sdk": "^1.15.5",
@@ -216,6 +218,14 @@
       {
         "from": "../ade-cli/dist/ptyHostWorker.cjs",
         "to": "ade-cli/ptyHostWorker.cjs"
+      },
+      {
+        "from": "../ade-cli/dist/cursorSdkWorker.cjs",
+        "to": "ade-cli/cursorSdkWorker.cjs"
+      },
+      {
+        "from": "../ade-cli/dist/droidSdkWorker.cjs",
+        "to": "ade-cli/droidSdkWorker.cjs"
       },
       {
         "from": "../ade-cli/dist/adeRpcServer.cjs",

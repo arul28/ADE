@@ -227,6 +227,31 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
   // Claude chat surfaces use the native Agent SDK effort ladder. Keep these
   // tiers aligned with the launch validation path.
   {
+    id: "anthropic/claude-fable-5",
+    shortId: "fable",
+    aliases: [
+      "fable",
+      "claude-fable-5",
+      "anthropic/claude-fable-5-api",
+    ],
+    displayName: "Claude Fable 5",
+    family: "anthropic",
+    authTypes: ["cli-subscription"],
+    contextWindow: 1_000_000,
+    maxOutputTokens: 128_000,
+    capabilities: ALL_CAPS,
+    reasoningTiers: ["low", "medium", "high", "xhigh", "max", "ultracode"],
+    serviceTiers: ["fast"],
+    color: "#D97706",
+    providerRoute: "claude-cli",
+    providerModelId: "claude-fable-5",
+    cliCommand: "claude",
+    isCliWrapped: true,
+    inputPricePer1M: 10,
+    outputPricePer1M: 50,
+    costTier: "very_high",
+  },
+  {
     id: "anthropic/claude-opus-4-8",
     shortId: "opus-4.8-1m",
     aliases: [
@@ -247,7 +272,7 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     contextWindow: 1_000_000,
     maxOutputTokens: 128_000,
     capabilities: ALL_CAPS,
-    reasoningTiers: ["low", "medium", "high", "xhigh", "max"],
+    reasoningTiers: ["low", "medium", "high", "xhigh", "max", "ultracode"],
     serviceTiers: ["fast"],
     color: "#D97706",
     providerRoute: "claude-cli",
@@ -315,7 +340,7 @@ export const MODEL_REGISTRY: ModelDescriptor[] = [
     contextWindow: 200_000,
     maxOutputTokens: 32_000,
     capabilities: ALL_CAPS,
-    reasoningTiers: ["low", "medium", "high"],
+    reasoningTiers: ["low", "medium", "high", "max"],
     color: "#8B5CF6",
     providerRoute: "claude-cli",
     providerModelId: "sonnet",
@@ -833,7 +858,7 @@ export function cursorCliLineGroupFromSdkId(providerModelId: string): CursorCliL
   const s = providerModelId.trim().toLowerCase();
   if (s === "auto") return "auto";
   if (s.includes("composer")) return "composer";
-  if (/claude|sonnet|opus|haiku/.test(s)) return "anthropic";
+  if (/claude|fable|sonnet|opus|haiku/.test(s)) return "anthropic";
   if (/gemini/.test(s)) return "google";
   if (/grok/.test(s)) return "grok";
   if (/gpt|(?:^|[:/])o\d|codex/.test(s)) return "openai";
@@ -864,7 +889,7 @@ function formatCursorSdkFallbackDisplayName(providerModelId: string): string {
 function colorForCursorSdkId(providerModelId: string): string {
   const s = providerModelId.toLowerCase();
   if (s === "auto") return "#A78BFA";
-  if (/claude|sonnet|opus|haiku/.test(s)) return "#D97706";
+  if (/claude|fable|sonnet|opus|haiku/.test(s)) return "#D97706";
   if (/composer/.test(s)) return "#8B5CF6";
   if (/gemini/.test(s)) return "#4285F4";
   if (/grok/.test(s)) return "#1DA1F2";
@@ -951,7 +976,7 @@ export const DROID_CLI_LINE_ORDER: DroidCliLineGroup[] = ["anthropic", "openai",
 export function droidCliLineGroupFromModelId(providerModelId: string): DroidCliLineGroup {
   const s = providerModelId.trim().toLowerCase();
   if (s.startsWith("custom:")) return "custom";
-  if (/claude|sonnet|opus|haiku/.test(s)) return "anthropic";
+  if (/claude|fable|sonnet|opus|haiku/.test(s)) return "anthropic";
   if (/gpt|(?:^|[:/])o\d|codex/.test(s)) return "openai";
   if (/gemini/.test(s)) return "google";
   return "other";
@@ -970,7 +995,7 @@ export function droidCliLineGroupLabel(group: DroidCliLineGroup): string {
 
 function colorForDroidModelId(providerModelId: string): string {
   const s = providerModelId.toLowerCase();
-  if (/claude|sonnet|opus|haiku/.test(s)) return "#D97706";
+  if (/claude|fable|sonnet|opus|haiku/.test(s)) return "#D97706";
   if (/gemini/.test(s)) return "#4285F4";
   if (/gpt|(?:^|[:/])o\d|codex/.test(s)) return "#10A37F";
   return "#71717A";
@@ -1037,6 +1062,7 @@ function normalizeDroidEffortLabel(value: string): string {
 }
 
 const KNOWN_DROID_COMPACT_DISPLAY_NAMES: Record<string, string> = {
+  "claude-fable-5": "Fable 5",
   "claude-opus-4-5-20251101": "Opus 4.5 (2x)",
   "claude-opus-4-6": "Opus 4.6 (2x)",
   "claude-opus-4-6-fast": "Opus 4.6 Fast Mode (12x)",
@@ -1449,6 +1475,7 @@ function pickPreferredModel(
 
 function pickDefaultClaudeModel(models: ModelDescriptor[]): ModelDescriptor | undefined {
   return pickPreferredModel(models, [
+    (model) => /\bfable\b/i.test(model.displayName) || /\bfable\b/i.test(model.providerModelId),
     (model) => /\bsonnet\b/i.test(model.displayName) || /\bsonnet\b/i.test(model.providerModelId),
     (model) => /\bopus\b/i.test(model.displayName) || /\bopus\b/i.test(model.providerModelId),
     (model) => /\bhaiku\b/i.test(model.displayName) || /\bhaiku\b/i.test(model.providerModelId),
@@ -1476,6 +1503,7 @@ function pickDefaultCodexModel(models: ModelDescriptor[]): ModelDescriptor | und
 function pickDefaultOpenCodeModel(models: ModelDescriptor[]): ModelDescriptor | undefined {
   return pickPreferredModel(models, [
     (model) => model.family === "openai" && /\bgpt-5\.4\b/i.test(`${model.displayName} ${model.providerModelId}`),
+    (model) => model.id === "opencode/anthropic/claude-fable-5" || (model.family === "anthropic" && /\bfable\b/i.test(`${model.displayName} ${model.providerModelId}`)),
     (model) => model.id === "opencode/anthropic/claude-sonnet-4-6" || (model.family === "anthropic" && model.providerRoute === "opencode"),
     (model) => model.family === "anthropic" && /\bsonnet\b/i.test(model.displayName),
     (model) => model.family === "anthropic",
@@ -1487,6 +1515,7 @@ function pickDefaultOpenCodeModel(models: ModelDescriptor[]): ModelDescriptor | 
 export function pickDefaultCursorDescriptorFromCliList(models: ModelDescriptor[]): ModelDescriptor | undefined {
   return pickPreferredModel(models, [
     (m) => m.providerModelId === "auto",
+    (m) => /fable/i.test(m.providerModelId) || /fable/i.test(m.displayName),
     (m) => /sonnet/i.test(m.providerModelId) || /sonnet/i.test(m.displayName),
     (m) => /composer/i.test(m.providerModelId),
     (m) => /gpt-5\.4/i.test(m.providerModelId),
@@ -1495,6 +1524,7 @@ export function pickDefaultCursorDescriptorFromCliList(models: ModelDescriptor[]
 
 export function pickDefaultDroidDescriptorFromCliList(models: ModelDescriptor[]): ModelDescriptor | undefined {
   return pickPreferredModel(models, [
+    (m) => /fable/i.test(m.providerModelId) || /fable/i.test(m.displayName),
     (m) => /sonnet/i.test(m.providerModelId) || /sonnet/i.test(m.displayName),
     (m) => /opus/i.test(m.providerModelId),
     (m) => /gpt-5\.1-codex/i.test(m.providerModelId),

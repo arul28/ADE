@@ -184,14 +184,13 @@ function __adeSeaCandidateRuntimeRoots() {
   var explicitNodeModules = process.env.ADE_RUNTIME_NODE_MODULES;
   if (explicitRoot) roots.push(explicitRoot);
   if (explicitNodeModules) roots.push(__adeSeaRuntimeRootFromNodeModules(explicitNodeModules));
+  roots.push(__adeSeaPath.join(__adeSeaPath.dirname(process.execPath), "ade-" + target + ".native"));
+  roots.push(__adeSeaPath.join(__adeSeaPath.dirname(process.execPath), "..", "runtime", target));
   if (process.env.NODE_PATH) {
     process.env.NODE_PATH.split(__adeSeaPath.delimiter).forEach(function (entry) {
       roots.push(__adeSeaRuntimeRootFromNodeModules(entry));
     });
   }
-  roots.push(__adeSeaPath.join(__adeSeaPath.dirname(process.execPath), "ade-" + target + ".native"));
-  roots.push(__adeSeaPath.dirname(process.execPath));
-  roots.push(__adeSeaPath.join(__adeSeaPath.dirname(process.execPath), "..", "runtime", target));
   roots.push(__adeSeaPath.join(__adeSeaOs.homedir(), ".ade", "runtime", target));
   return roots.filter(function (entry, index) {
     return Boolean(entry) && roots.indexOf(entry) === index;
@@ -220,11 +219,45 @@ if (__adeSeaRuntimeRoot) {
 var __adeSeaFilesystemRequire = __adeSeaModule.createRequire(
   __adeSeaRuntimeRoot ? __adeSeaPath.join(__adeSeaRuntimeRoot, ".ade-runtime.cjs") : process.execPath
 );
+var __adeSeaBuiltinModules = new Set(__adeSeaModule.builtinModules || []);
+function __adeSeaIsBuiltinModuleId(id) {
+  var bare = id.indexOf("node:") === 0 ? id.slice(5) : id;
+  return __adeSeaBuiltinModules.has(id) || __adeSeaBuiltinModules.has(bare);
+}
+function __adeSeaIsBareModuleId(id) {
+  return typeof id === "string"
+    && id.length > 0
+    && id.charAt(0) !== "."
+    && !__adeSeaPath.isAbsolute(id)
+    && !/^[A-Za-z]:[\\/]/.test(id);
+}
+function __adeSeaShouldUseFilesystemRequireFirst(id) {
+  return Boolean(__adeSeaRuntimeRoot)
+    && __adeSeaIsBareModuleId(id)
+    && !__adeSeaIsBuiltinModuleId(id);
+}
+function __adeSeaCanFallbackAfterResolveError(error, id) {
+  if (!error) return false;
+  if (error.code === "ERR_UNKNOWN_BUILTIN_MODULE") return true;
+  if (error.code !== "MODULE_NOT_FOUND") return false;
+  var message = typeof error.message === "string" ? error.message : "";
+  return message.indexOf("Cannot find module '" + id + "'") !== -1
+    || message.indexOf("Cannot find module \\"" + id + "\\"") !== -1;
+}
 function __adeSeaRequire(id) {
+  if (__adeSeaShouldUseFilesystemRequireFirst(id)) {
+    try {
+      return __adeSeaFilesystemRequire(id);
+    } catch (error) {
+      if (!__adeSeaCanFallbackAfterResolveError(error, id)) {
+        throw error;
+      }
+    }
+  }
   try {
     return __adeSeaOriginalRequire(id);
   } catch (error) {
-    if (error && (error.code === "ERR_UNKNOWN_BUILTIN_MODULE" || error.code === "MODULE_NOT_FOUND")) {
+    if (__adeSeaCanFallbackAfterResolveError(error, id)) {
       return __adeSeaFilesystemRequire(id);
     }
     throw error;
@@ -232,10 +265,19 @@ function __adeSeaRequire(id) {
 }
 Object.assign(__adeSeaRequire, __adeSeaOriginalRequire);
 __adeSeaRequire.resolve = function __adeSeaRequireResolve(id, options) {
+  if (__adeSeaShouldUseFilesystemRequireFirst(id)) {
+    try {
+      return __adeSeaFilesystemRequire.resolve(id, options);
+    } catch (error) {
+      if (!__adeSeaCanFallbackAfterResolveError(error, id)) {
+        throw error;
+      }
+    }
+  }
   try {
     return __adeSeaOriginalRequire.resolve(id, options);
   } catch (error) {
-    if (error && (error.code === "ERR_UNKNOWN_BUILTIN_MODULE" || error.code === "MODULE_NOT_FOUND")) {
+    if (__adeSeaCanFallbackAfterResolveError(error, id)) {
       return __adeSeaFilesystemRequire.resolve(id, options);
     }
     throw error;
@@ -306,22 +348,36 @@ async function main() {
   }
   await run(path.join(packageRoot, "node_modules", ".bin", process.platform === "win32" ? "postject.cmd" : "postject"), postjectArgs);
   await adHocSignIfNeeded(binaryPath);
-  await assertStaticRuntimeVersion(binaryPath, runtimeVersion, args.target);
 
   let nativeArchivePath = null;
-  if (!args.skipNativeDeps) {
-    await run(process.execPath, [
-      path.join(packageRoot, "scripts", "package-native-deps.mjs"),
-      "--target",
-      args.target,
-      "--out-dir",
-      args.outDir,
-    ]);
-    nativeArchivePath = path.join(args.outDir, `ade-${args.target}.native.tar.gz`);
-  }
+  const nativeStagingRoot = path.join(args.outDir, `ade-${args.target}.native`);
+  const shouldRemoveNativeStaging = !args.skipNativeDeps && process.env.ADE_KEEP_NATIVE_RUNTIME_STAGING !== "1";
 
-  if (process.env.ADE_KEEP_STATIC_RUNTIME_STAGING !== "1") {
-    await fs.rm(workDir, { recursive: true, force: true });
+  try {
+    if (!args.skipNativeDeps) {
+      await run(process.execPath, [
+        path.join(packageRoot, "scripts", "package-native-deps.mjs"),
+        "--target",
+        args.target,
+        "--out-dir",
+        args.outDir,
+      ], {
+        env: {
+          ...process.env,
+          ADE_KEEP_NATIVE_RUNTIME_STAGING: "1",
+        },
+      });
+      nativeArchivePath = path.join(args.outDir, `ade-${args.target}.native.tar.gz`);
+    }
+
+    await assertStaticRuntimeVersion(binaryPath, runtimeVersion, args.target);
+  } finally {
+    if (shouldRemoveNativeStaging) {
+      await fs.rm(nativeStagingRoot, { recursive: true, force: true });
+    }
+    if (process.env.ADE_KEEP_STATIC_RUNTIME_STAGING !== "1") {
+      await fs.rm(workDir, { recursive: true, force: true });
+    }
   }
 
   process.stdout.write(`${JSON.stringify({

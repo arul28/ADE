@@ -1391,6 +1391,126 @@ describe("registerIpc sync bridge", () => {
     expect(resolveSyncService).toHaveBeenCalledTimes(1);
   });
 
+  it("uses the machine runtime sync bridge when no local project is bound", async () => {
+    const status = { mode: "standalone", role: "brain" };
+    const resolveSyncService = vi.fn(async () => null);
+    const localRuntimeConnectionPool = {
+      callSync: vi.fn(async () => status),
+    };
+    registerIpc({
+      getCtx: () => ({
+        logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() },
+        syncService: null,
+      }) as any,
+      resolveSyncService,
+      getWindowSession: () => ({
+        windowId: 7,
+        project: null,
+        binding: null,
+      }),
+      localRuntimeConnectionPool: localRuntimeConnectionPool as any,
+      switchProjectFromDialog: vi.fn(),
+      closeCurrentProject: vi.fn(),
+      closeProjectByPath: vi.fn(),
+      globalStatePath: "/tmp/ade-state.json",
+    });
+
+    await expect(
+      ipcHandlers.get(IPC.syncGetStatus)?.(
+        eventForSender(),
+        { includeTransferReadiness: true },
+      ),
+    ).resolves.toBe(status);
+
+    expect(localRuntimeConnectionPool.callSync).toHaveBeenCalledWith(
+      "sync.getStatus",
+      {
+        includeTransferReadiness: true,
+        forceTransferReadiness: false,
+      },
+    );
+    expect(resolveSyncService).not.toHaveBeenCalled();
+  });
+
+  it("falls back to machine runtime sync when project sync is unavailable", async () => {
+    const status = { mode: "standalone", role: "brain" };
+    const localRuntimeConnectionPool = {
+      syncStatusForRoot: vi.fn(async () => {
+        throw new Error("Sync service is not available. Register a project first.");
+      }),
+      callSync: vi.fn(async () => status),
+    };
+    registerIpc({
+      getCtx: () => ({
+        logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() },
+        syncService: null,
+      }) as any,
+      getWindowSession: () => ({
+        windowId: 7,
+        project: { rootPath: "/repo", displayName: "Repo" } as any,
+        binding: localBinding("/repo"),
+      }),
+      localRuntimeConnectionPool: localRuntimeConnectionPool as any,
+      switchProjectFromDialog: vi.fn(),
+      closeCurrentProject: vi.fn(),
+      closeProjectByPath: vi.fn(),
+      globalStatePath: "/tmp/ade-state.json",
+    });
+
+    await expect(
+      ipcHandlers.get(IPC.syncGetStatus)?.(
+        eventForSender(),
+        {},
+      ),
+    ).resolves.toBe(status);
+
+    expect(localRuntimeConnectionPool.syncStatusForRoot).toHaveBeenCalledWith("/repo", {});
+    expect(localRuntimeConnectionPool.callSync).toHaveBeenCalledWith(
+      "sync.getStatus",
+      {
+        includeTransferReadiness: false,
+        forceTransferReadiness: false,
+      },
+    );
+  });
+
+  it("treats null machine runtime sync responses as handled", async () => {
+    const resolveSyncService = vi.fn(async () => null);
+    const localRuntimeConnectionPool = {
+      callSync: vi.fn(async () => null),
+    };
+    registerIpc({
+      getCtx: () => ({
+        logger: { warn: vi.fn(), info: vi.fn(), error: vi.fn() },
+        syncService: null,
+      }) as any,
+      resolveSyncService,
+      getWindowSession: () => ({
+        windowId: 7,
+        project: null,
+        binding: null,
+      }),
+      localRuntimeConnectionPool: localRuntimeConnectionPool as any,
+      switchProjectFromDialog: vi.fn(),
+      closeCurrentProject: vi.fn(),
+      closeProjectByPath: vi.fn(),
+      globalStatePath: "/tmp/ade-state.json",
+    });
+
+    await expect(
+      ipcHandlers.get(IPC.syncSetActiveLanePresence)?.(
+        eventForSender(),
+        { laneIds: ["lane-1"] },
+      ),
+    ).resolves.toBeUndefined();
+
+    expect(localRuntimeConnectionPool.callSync).toHaveBeenCalledWith(
+      "sync.setActiveLanePresence",
+      { laneIds: ["lane-1"] },
+    );
+    expect(resolveSyncService).not.toHaveBeenCalled();
+  });
+
   it("returns a dev-tools snapshot instead of throwing when the service is unavailable", async () => {
     registerIpc({
       getCtx: () => ({

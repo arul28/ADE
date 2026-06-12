@@ -146,16 +146,25 @@ uses the selected parent lane's current branch.
 
 **Chat** (`chat.*`)
 - `listSessions`, `getSummary`, `getTranscript`
+
+`chat.getTranscript` supports cursor pagination: responses carry an
+opaque index-based `nextCursor`, and requests can pass `cursor` to
+page strictly-older history. Calls without a cursor behave exactly as
+before.
 - `create`, `send`, `interrupt`, `steer`, `cancelSteer`, `editSteer`,
   `dispatchSteer`, `cancelDispatchedSteer`, `approve`, `respondToInput`
 - `restart`, `updateSession`, `archive`, `unarchive`, `delete`, `models`,
   `modelCatalog`
 
-`chat.modelCatalog` accepts `{ mode?, refreshProvider? }` where `mode`
-is `"cached" | "refresh-stale" | "force"` (default `"cached"`) and
-`refreshProvider` is `"opencode" | "cursor" | "droid" | "lmstudio" |
-"ollama"`. The brain returns the full provider-grouped catalog used by
-the desktop and TUI ModelPickers and the iOS Work model sheet; only
+`chat.modelCatalog` accepts `{ mode?, refreshProvider?, cursorSource? }`
+where `mode` is `"cached" | "refresh-stale" | "force"` (default
+`"cached"`) and `refreshProvider` is `"opencode" | "cursor" | "droid" |
+"lmstudio" | "ollama"`. `cursorSource` (`"sdk" | "cli" | "all"`, default
+`"all"`) scopes which Cursor discovery source the host probes
+synchronously — chat-style surfaces pass `"sdk"` so the refresh stays off
+the slower `cursor-agent` CLI spawn while the CLI flavor revalidates in
+the background. The brain returns the full provider-grouped catalog used
+by the desktop and TUI ModelPickers and the iOS Work model sheet; only
 explicit `force` / `refresh-stale` calls trigger a runtime probe.
 
 `chat.dispatchSteer` (Claude SDK only) takes
@@ -455,12 +464,16 @@ the brain when the Linear workspace is connected. Controllers use
 these to render the workspace brand on Linear-related surfaces
 without fetching them separately.
 
-`parseChatModelsArgs` accepts `{ provider, activateRuntime? }`. When
-`chat.create` is missing an explicit model, `resolveChatCreateArgs`
+`parseChatModelsArgs` accepts `{ provider, activateRuntime?, cursorSource? }`
+(`cursorSource` is `"sdk" | "cli" | "all"`, mirroring `chat.modelCatalog`).
+When `chat.create` is missing an explicit model, `resolveChatCreateArgs`
 forwards `activateRuntime: true` only for the `opencode` provider so
 the brain actually launches the OpenCode probe server before resolving
 a default model. All other providers use passive (cache-only) resolution;
-see the chat README for the passive/active contract.
+see the chat README for the passive/active contract. The iOS companion's
+`chat.models` request sets `activateRuntime: true` for cursor/droid and
+`cursorSource: "sdk"` for cursor so a fresh key surfaces SDK models on the
+first fetch instead of returning an empty passive cache.
 
 ## Gotchas
 
@@ -472,10 +485,15 @@ see the chat README for the passive/active contract.
   disconnected controller can enqueue deletes that replay on
   reconnect. Be aware when reasoning about "why did this lane
   disappear" — check the command queue, not just the local DB.
-- **`prs.createFromLane` requires the brain's GitHub token.** On a
-  headless/manual runtime with no `ADE_GITHUB_TOKEN` /
-  `GITHUB_TOKEN` / `GH_TOKEN`, the command fails with a clear
-  error before reaching GitHub. This is deliberate fail-fast behavior.
+- **`prs.createFromLane` requires GitHub auth on the brain.** Headless
+  brains resolve auth the same way the desktop does: a stored PAT,
+  then env tokens (`ADE_GITHUB_TOKEN` / `GITHUB_TOKEN` / `GH_TOKEN`),
+  then the `gh` CLI resolved from known absolute install locations
+  (launchd's minimal PATH does not include Homebrew), then reading
+  `gh`'s `hosts.yml` oauth token directly (both host-level and nested
+  `users:<login>:` token layouts). Only when none of those yield a
+  token does the command fail with a clear error before reaching
+  GitHub.
 - **`work.runQuickCommand` always creates a PTY.** There is no
   "run a command, give me just the output" variant; the controller
   must subscribe to the terminal stream and stop the process with

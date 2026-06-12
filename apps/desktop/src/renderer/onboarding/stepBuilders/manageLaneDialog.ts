@@ -11,8 +11,7 @@ const MANAGE_LANE_DIALOG_SELECTOR = '[data-tour="lanes.manageDialog"]';
  * Anchors (verified in ManageLaneDialog.tsx):
  *   lanes.laneTab, lanes.manageLane,
  *   lanes.manageDialog.laneInfo, lanes.manageDialog.archive,
- *   lanes.manageDialog.tabs, lanes.manageDialog.confirm,
- *   lanes.manageDialog.delete
+ *   lanes.manageDialog.tabs, lanes.manageDialog.delete
  */
 export function buildManageLaneDialogWalkthrough(): TourStep[] {
   return [
@@ -76,8 +75,8 @@ export function buildManageLaneDialogWalkthrough(): TourStep[] {
     {
       id: "manageLane.deleteTabs",
       target: '[data-tour="lanes.manageDialog.tabs"]',
-      title: "How thorough to delete",
-      body: "Three levels: remove just the lane folder, also delete the branch on your computer, or also delete the branch on GitHub. Pick how far you want it gone.",
+      title: "Pick what to remove",
+      body: "Check off what you want gone: the lane folder, the branch on your computer, the branch on GitHub — or hit **Select everything**. Nothing is checked by default, so you can't delete by accident.",
       placement: "bottom",
       requires: MANAGE_LANE_DIALOG_REQUIRES,
       waitForSelector: '[data-tour="lanes.manageDialog.tabs"]',
@@ -86,22 +85,10 @@ export function buildManageLaneDialogWalkthrough(): TourStep[] {
       docUrl: docs.lanesOverview,
     },
     {
-      id: "manageLane.deleteConfirm",
-      target: '[data-tour="lanes.manageDialog.confirm"]',
-      title: "Type to confirm",
-      body: "Deletion is permanent, so ADE asks you to type the lane's name to make sure you really mean it. The delete button stays disabled until what you type matches.",
-      placement: "right",
-      requires: MANAGE_LANE_DIALOG_REQUIRES,
-      waitForSelector: '[data-tour="lanes.manageDialog.confirm"]',
-      exitOnOutsideInteraction: true,
-      allowedInteractionSelectors: [MANAGE_LANE_DIALOG_SELECTOR],
-      docUrl: docs.lanesOverview,
-    },
-    {
       id: "manageLane.deleteButton",
       target: '[data-tour="lanes.manageDialog.delete"]',
       title: "The point of no return",
-      body: "Click this and the lane is gone for good. Your real project is always protected — you can never accidentally delete it from this dialog.",
+      body: "Click this and whatever you checked is gone for good. It stays disabled until you pick at least one thing, and your real project is always protected — you can never accidentally delete it from this dialog.",
       placement: "left",
       requires: MANAGE_LANE_DIALOG_REQUIRES,
       waitForSelector: '[data-tour="lanes.manageDialog.delete"]',

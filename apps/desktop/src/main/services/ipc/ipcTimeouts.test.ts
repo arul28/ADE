@@ -72,8 +72,12 @@ describe("ipcInvokeTimeoutMs", () => {
   it("extends iOS Preview Lab matching and workspace readiness timeouts", () => {
     expect(ipcInvokeTimeoutMs(IPC.iosSimulatorResolvePreviewMatch)).toBe(2 * 60_000);
     expect(ipcInvokeTimeoutMs(IPC.iosSimulatorEnsurePreviewWorkspace)).toBe(2 * 60_000);
+    expect(ipcInvokeTimeoutMs(IPC.iosSimulatorRenderCurrentPreview)).toBe(2 * 60_000);
     expect(ipcInvokeTimeoutMs(IPC.localRuntimeCallAction, [{
       request: { domain: "ios_simulator", action: "ensurePreviewWorkspace", args: {} },
+    }])).toBe(2 * 60_000);
+    expect(ipcInvokeTimeoutMs(IPC.localRuntimeCallAction, [{
+      request: { domain: "ios_simulator", action: "renderCurrentPreview", args: {} },
     }])).toBe(2 * 60_000);
     expect(ipcInvokeTimeoutMs(IPC.remoteRuntimeCallAction, [{
       id: "target-1",

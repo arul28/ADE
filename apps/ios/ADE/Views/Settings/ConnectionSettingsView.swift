@@ -43,9 +43,6 @@ struct ConnectionSettingsView: View {
           )
             .padding(.horizontal, 16)
 
-          SettingsTailscaleHelpSection()
-            .padding(.horizontal, 16)
-
           SettingsNotificationsSection(
             onPreferencesChanged: { prefs in
               syncService.uploadNotificationPrefs(prefs)
@@ -272,39 +269,6 @@ private final class SettingsConnectionPresentationModel: ObservableObject {
     let prefix = trimmed.prefix(6)
     let suffix = trimmed.suffix(4)
     return "\(prefix)…\(suffix)"
-  }
-}
-
-private struct SettingsTailscaleHelpSection: View {
-  var body: some View {
-    VStack(alignment: .leading, spacing: 10) {
-      HStack(alignment: .center, spacing: 10) {
-        Image(systemName: "network")
-          .font(.system(size: 15, weight: .semibold))
-          .foregroundStyle(ADEColor.purpleAccent)
-          .frame(width: 28, height: 28)
-          .background(ADEColor.purpleAccent.opacity(0.14), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
-        VStack(alignment: .leading, spacing: 2) {
-          Text("Away from home")
-            .font(.subheadline.weight(.semibold))
-            .foregroundStyle(ADEColor.textPrimary)
-          Text("Install Tailscale on this iPhone and your ADE machine. Pair once on local Wi-Fi or enter the machine's Tailscale address, then reconnect from the saved machine when you are away.")
-            .font(.caption)
-            .foregroundStyle(ADEColor.textSecondary)
-            .fixedSize(horizontal: false, vertical: true)
-        }
-      }
-    }
-    .padding(14)
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .background(
-      RoundedRectangle(cornerRadius: 18, style: .continuous)
-        .fill(Color.white.opacity(0.045))
-    )
-    .overlay(
-      RoundedRectangle(cornerRadius: 18, style: .continuous)
-        .strokeBorder(Color.white.opacity(0.08), lineWidth: 0.8)
-    )
   }
 }
 

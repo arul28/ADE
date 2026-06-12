@@ -11,7 +11,6 @@ import {
   deletePromptForward,
   deletePreviousPromptLine,
   deletePreviousPromptWord,
-  drawerMouseHitForLine,
   encodeTerminalPromptSubmit,
   encodeTerminalPromptSubmitConfirm,
   applyCoalescedPromptInput,
@@ -55,6 +54,8 @@ import {
   modelPickerProviderSwitchBlocked,
   mergeNewChatModelPickerContext,
   normalizeCatalogProvider,
+  planSessionStatePrune,
+  isNewChatSetupPane,
   resolveContextDefault,
   resolveDrawerPaneWidth,
   resolveModelPickerEscape,
@@ -64,7 +65,7 @@ import {
   subagentSnapshotsFromEvents,
 } from "../app";
 import { clampTerminalPaneCols } from "../components/TerminalPane";
-import type { ChatInfoSnapshot } from "../types";
+import type { ChatInfoSnapshot, RightPaneContent } from "../types";
 import { resolveSubagentCapability } from "../../../../desktop/src/shared/subagentCapabilities";
 import type { AgentChatSession, AgentChatSessionSummary } from "../../../../desktop/src/shared/types/chat";
 import type { LaneSummary } from "../../../../desktop/src/shared/types/lanes";
@@ -314,6 +315,17 @@ describe("lane delete form helpers", () => {
     expect(formFieldUsesPromptInput("lane-delete", "confirm")).toBe(true);
     expect(formFieldUsesPromptInput("feedback", "body")).toBe(true);
   });
+
+  it("does not treat new-lane select/toggle/button rows as prompt text", () => {
+    expect(formFieldUsesPromptInput("new-lane", "start")).toBe(false);
+    expect(formFieldUsesPromptInput("new-lane", "runtime")).toBe(false);
+    expect(formFieldUsesPromptInput("new-lane", "color")).toBe(false);
+    expect(formFieldUsesPromptInput("new-lane", "branchSource")).toBe(false);
+    expect(formFieldUsesPromptInput("new-lane", "create")).toBe(false);
+    expect(formFieldUsesPromptInput("new-lane", "name")).toBe(true);
+    expect(formFieldUsesPromptInput("new-lane", "branch")).toBe(true);
+    expect(formFieldUsesPromptInput("new-lane", "baseBranch")).toBe(true);
+  });
 });
 
 describe("lane worktree availability", () => {
@@ -390,11 +402,16 @@ describe("right pane context defaults", () => {
       tokenSummary: null,
       goal: null,
       plan: { current: 0, total: 0, live: false, steps: [] },
+      planExplanation: null,
+      planStreamingText: null,
+      todos: [],
+      pr: null,
       snapshots: [],
       inspectedSubagentId: null,
       streaming: false,
       capability: resolveSubagentCapability("claude"),
       mission: null,
+      resumableTerminal: false,
     };
   }
 
@@ -431,6 +448,30 @@ describe("right pane context defaults", () => {
       focusedIndex: 0,
     });
   });
+
+  // First-send draft commit: only the new-chat setup surface is swapped for
+  // chat-info — panes the user opened deliberately mid-draft are untouched.
+  it("isNewChatSetupPane matches exactly the new-chat model-picker surface", () => {
+    const picker = (surface: "chat" | "new-chat"): RightPaneContent => ({
+      kind: "model-picker",
+      surface,
+      query: "",
+      searchMode: false,
+      selection: { kind: "provider", provider: "claude" },
+      focusedIndex: 0,
+    });
+    expect(isNewChatSetupPane(picker("new-chat"))).toBe(true);
+    expect(isNewChatSetupPane(picker("chat"))).toBe(false);
+    expect(isNewChatSetupPane({ kind: "chat-info", info: chatInfoForContext() })).toBe(false);
+    expect(isNewChatSetupPane({ kind: "empty" })).toBe(false);
+    expect(isNewChatSetupPane({
+      kind: "form",
+      title: "Rename",
+      command: "rename",
+      fields: [{ name: "name", label: "Name" }],
+    })).toBe(false);
+    expect(isNewChatSetupPane({ kind: "details", title: "Diff", body: "" })).toBe(false);
+  });
 });
 
 describe("modelPickerPaneContentOrigin", () => {
@@ -444,6 +485,40 @@ describe("modelPickerPaneContentOrigin", () => {
 
   it("clamps the content width to a floor for very narrow panes", () => {
     expect(modelPickerPaneContentOrigin({ paneTop: 0, paneLeft: 0, paneWidth: 6 }).paneWidth).toBe(8);
+  });
+});
+
+describe("planSessionStatePrune", () => {
+  it("keeps previous session ids during transient empty lists while disconnected", () => {
+    const previous = new Set(["chat-a", "chat-b"]);
+
+    expect(planSessionStatePrune({
+      previous,
+      current: new Set(),
+      connectionLost: true,
+    })).toBeNull();
+  });
+
+  it("prunes stale session ids when the runtime reports a true empty list", () => {
+    const plan = planSessionStatePrune({
+      previous: new Set(["chat-a", "chat-b"]),
+      current: new Set(),
+      connectionLost: false,
+    });
+
+    expect(plan?.removed).toEqual(["chat-a", "chat-b"]);
+    expect([...(plan?.nextSeen ?? [])]).toEqual([]);
+  });
+
+  it("diffs stable non-empty session lists", () => {
+    const plan = planSessionStatePrune({
+      previous: new Set(["chat-a", "chat-b"]),
+      current: new Set(["chat-b", "chat-c"]),
+      connectionLost: false,
+    });
+
+    expect(plan?.removed).toEqual(["chat-a"]);
+    expect([...(plan?.nextSeen ?? [])]).toEqual(["chat-b", "chat-c"]);
   });
 });
 
@@ -520,40 +595,8 @@ describe("drawer mouse hit testing", () => {
     expect(resolveDrawerPaneWidth(400, true)).toBe(48);
   });
 
-  it("maps card-style drawer lines to lane and chat rows", () => {
-    // Layout for the selected lane (index 0) with 6 chats:
-    //   y=3 border, y=4 name, y=5 branch, y=6 diff, y=7 (chat margin),
-    //   y=8 CHATS header, y=9 chat 0, y=10 margin, y=11 chat 1, y=12 margin,
-    //   y=13 chat 2, y=14 margin, y=15 chat 3, y=16 margin, y=17 chat 4,
-    //   y=18 margin, y=19 chat 5, y=20 + new chat, y=21 bottom border,
-    //   y=22 marginTop separator, y=23 lane 1 top border, y=24 lane 1 name.
-    expect(drawerMouseHitForLine({ y: 5, laneCount: 5, selectedLaneIndex: 0, chatCount: 6 })).toEqual({
-      kind: "lane",
-      index: 0,
-    });
-    expect(drawerMouseHitForLine({ y: 9, laneCount: 5, selectedLaneIndex: 0, chatCount: 6 })).toEqual({
-      kind: "chat",
-      index: 0,
-    });
-    expect(drawerMouseHitForLine({ y: 11, laneCount: 5, selectedLaneIndex: 0, chatCount: 6 })).toEqual({
-      kind: "chat",
-      index: 1,
-    });
-    expect(drawerMouseHitForLine({ y: 20, laneCount: 5, selectedLaneIndex: 0, chatCount: 6 })).toEqual({
-      kind: "new-chat",
-    });
-    expect(drawerMouseHitForLine({ y: 24, laneCount: 5, selectedLaneIndex: 0, chatCount: 6 })).toEqual({
-      kind: "lane",
-      index: 1,
-    });
-    // 5 unselected lanes ahead consume 5 rows each (border+2 content+border+margin),
-    // so lane 5's card body starts at y=28. With 2 chats, chat 0 lands at y=34.
-    expect(drawerMouseHitForLine({ y: 34, laneCount: 6, selectedLaneIndex: 5, chatCount: 2 })).toEqual({
-      kind: "chat",
-      index: 0,
-    });
-  });
-
+  // Drawer mouse hit-testing now lives in drawerLayout.ts and is covered by
+  // __tests__/drawerLayout.test.ts against the shared layout model.
 });
 
 describe("prompt mouse hit testing", () => {

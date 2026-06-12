@@ -13,7 +13,10 @@ extension WorkChatSessionView {
     let artifactSnapshot = artifacts
     let echoSnapshot = localEchoMessages
 
-    timelineRebuildTask = Task.detached(priority: .utility) {
+    // .userInitiated, not .utility: this rebuild feeds the visible streaming
+    // transcript, and utility-priority tasks get starved while SwiftUI is
+    // busy — which showed up as multi-second delta-to-screen latency.
+    timelineRebuildTask = Task.detached(priority: .userInitiated) {
       try? await Task.sleep(for: .milliseconds(220))
       guard !Task.isCancelled else { return }
       let nextSnapshot = buildWorkChatTimelineSnapshot(
@@ -66,6 +69,14 @@ extension WorkChatSessionView {
     withAnimation(ADEMotion.quick(reduceMotion: reduceMotion)) {
       visibleTimelineCount += workTimelinePageSize
       refreshTimelinePresentation()
+    }
+    // Once the locally-buffered timeline is nearly exhausted, pull the next
+    // older transcript page from the host so scroll-back continues through
+    // the full history instead of stopping at the initial tail fetch.
+    if hasOlderTranscriptHistory,
+       hiddenTimelineCount <= workTimelinePageSize * 2,
+       let onLoadOlderTranscript {
+      Task { await onLoadOlderTranscript() }
     }
   }
 

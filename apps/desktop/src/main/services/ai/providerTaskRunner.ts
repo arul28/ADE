@@ -14,6 +14,7 @@ import { getApiKey } from "./apiKeyStore";
 import { parseStructuredOutput } from "./utils";
 import { runOpenCodeTextPrompt } from "../opencode/openCodeRuntime";
 import { resolveCliSpawnInvocation, terminateProcessTree } from "../shared/processExecution";
+import { loadCursorSdk } from "./cursorSdkLoader";
 
 export type ProviderTaskRunnerArgs = {
   cwd: string;
@@ -336,7 +337,7 @@ async function runCursorTask(args: ProviderTaskRunnerArgs): Promise<ProviderTask
   if (!apiKey) {
     throw new Error("Cursor tasks require a Cursor API key. Add one in Settings > AI Providers.");
   }
-  const { Agent } = await import("@cursor/sdk");
+  const { Agent } = await loadCursorSdk();
   const agent = args.sessionId?.trim()
     ? await Agent.resume(args.sessionId.trim(), {
         apiKey,

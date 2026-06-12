@@ -215,8 +215,9 @@ Renderer — settings:
   get the bundled CLI automatically; this surface is what makes
   `ade` available to the user's own terminals.
 - `apps/desktop/src/renderer/components/settings/AiFeaturesSection.tsx`
-  — Background Jobs settings for AI-powered helpers such as terminal
-  summaries, PR descriptions, commit messages, and chat titles.
+  — Background Jobs settings for AI-powered helpers: auto-naming chats,
+  CLI sessions, and lanes; summarizing completed chats and terminals;
+  PR description drafting; and commit message drafting.
 - `apps/desktop/src/renderer/components/settings/ProvidersSection.tsx`
   — AI Connections settings for provider CLIs, authentication, API keys,
   and model availability.

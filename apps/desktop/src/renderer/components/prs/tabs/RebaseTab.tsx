@@ -513,7 +513,7 @@ export function RebaseTab({
     if (!selectedNeed) return;
     setRebaseError(null);
     try {
-      await window.ade.rebase.dismiss(selectedNeed.laneId);
+      await window.ade.lanes.dismissRebaseSuggestion({ laneId: selectedNeed.laneId });
       await onRefresh();
     } catch (err: unknown) {
       setRebaseError(err instanceof Error ? err.message : String(err));
@@ -522,10 +522,9 @@ export function RebaseTab({
 
   const handleDefer = async () => {
     if (!selectedNeed) return;
-    const until = new Date(Date.now() + 4 * 60 * 60 * 1000).toISOString();
     setRebaseError(null);
     try {
-      await window.ade.rebase.defer(selectedNeed.laneId, until);
+      await window.ade.lanes.deferRebaseSuggestion({ laneId: selectedNeed.laneId, minutes: 4 * 60 });
       await onRefresh();
     } catch (err: unknown) {
       setRebaseError(err instanceof Error ? err.message : String(err));
@@ -1342,7 +1341,7 @@ export function RebaseTab({
                 >
                   <Clock size={12} className="mr-1" />
                   <span className="font-mono font-bold uppercase" style={{ fontSize: 10, letterSpacing: "1px" }}>
-                    DEFER 4H
+                    SNOOZE BANNER 4H
                   </span>
                 </Button>
                 <Button
@@ -1354,7 +1353,7 @@ export function RebaseTab({
                 >
                   <XCircle size={12} className="mr-1" />
                   <span className="font-mono font-bold uppercase" style={{ fontSize: 10, letterSpacing: "1px" }}>
-                    DISMISS
+                    HIDE BANNER
                   </span>
                 </Button>
               </div>

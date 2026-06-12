@@ -36,7 +36,7 @@ function stripAnsi(value: string): string {
 
 function renderEvents(
   events: AgentChatEventEnvelope[],
-  options: { maxRows?: number; scrollOffsetRows?: number; width?: number; streaming?: boolean; interrupted?: boolean; provider?: AdeCodeProvider } = {},
+  options: { maxRows?: number; scrollOffsetRows?: number; width?: number; streaming?: boolean; interrupted?: boolean; provider?: AdeCodeProvider; olderHistory?: "loading" | "available" | "exhausted" | null } = {},
 ): string {
   const provider = options.provider ?? "codex";
   const result = render(
@@ -51,6 +51,7 @@ function renderEvents(
       interrupted={options.interrupted}
       maxRows={options.maxRows}
       scrollOffsetRows={options.scrollOffsetRows}
+      olderHistory={options.olderHistory}
       width={options.width}
     />,
   );
@@ -385,7 +386,10 @@ describe("ChatView", () => {
 
     expect(frame).toContain("test message");
     expect(frame).toContain("Got it.");
-    expect(frame).not.toContain("internal thought");
+    // Reasoning renders as a collapsed desktop-style "Thought" row with a
+    // single-line preview — not as a full reasoning dump.
+    expect(frame).toContain("Thought");
+    expect(frame).toContain("internal thought");
     expect(frame).not.toContain("Thinking through the answer");
     expect(frame).not.toContain("Codex");
     expect(frame).not.toContain("gpt");
@@ -412,8 +416,10 @@ describe("ChatView", () => {
     });
 
     expect(frame).not.toContain("Runtime");
-    expect(frame.match(/Tool calls/g)).toHaveLength(1);
-    expect(frame).toContain("Tool calls (2)");
+    // Headerless: the per-call lines stack directly, no "Tool calls (N)" rows.
+    expect(frame).not.toContain("Tool calls");
+    expect(frame).toContain("grep");
+    expect(frame).toContain("read");
     expect(frame).toContain("Let me look at the sendMessage flow more carefully and what events are emitted when a session is resumed.");
   });
 
@@ -461,6 +467,18 @@ describe("ChatView", () => {
     expect(frame).toContain("I'm Codex.");
     // No round-border glyphs in an assistant-only frame.
     expect(frame).not.toMatch(/[╭╮╯╰]/);
+  });
+
+  it("renders a re-emitted overlapping tail fragment only once (no duplicated sentence)", () => {
+    // Screenshot regression: "…so I can split the review instead of doing it as
+    // one giant pass. so I can split the review…" — the provider re-emitted the
+    // closing fragment for the same messageId and concat duplicated it.
+    const frame = renderEvents([
+      { sessionId: "s1", timestamp: "2026-01-01T12:00:00.000Z", sequence: 1, event: { type: "text", text: "Alpha beta gamma.", messageId: "m1", turnId: "t1" } },
+      { sessionId: "s1", timestamp: "2026-01-01T12:00:01.000Z", sequence: 2, event: { type: "text", text: "beta gamma.", messageId: "m1", turnId: "t1" } },
+    ], { width: 80 });
+    expect(frame).toContain("Alpha beta gamma.");
+    expect(frame.match(/beta gamma\./g)).toHaveLength(1);
   });
 
   it("renders markdown-like assistant output into readable blocks", () => {
@@ -522,6 +540,33 @@ describe("ChatView", () => {
     expect(older).toContain("↓ newer messages");
     expect(older).not.toContain("assistant row 12");
     expect(older.split("\n").at(-1)).toContain("↓ newer messages");
+  });
+
+  it("swaps the older-messages indicator for a loading variant in place while a scroll-back page is in flight", () => {
+    const events = Array.from({ length: 12 }, (_, index): AgentChatEventEnvelope => ({
+      sessionId: "s1",
+      timestamp: `2026-01-01T12:00:${String(index).padStart(2, "0")}.000Z`,
+      sequence: index + 1,
+      event: index % 2 === 0
+        ? { type: "user_message", text: `user row ${String(index + 1).padStart(2, "0")}` }
+        : { type: "text", text: `assistant row ${String(index + 1).padStart(2, "0")}` },
+    }));
+    const maxRows = 5;
+
+    const idle = renderEvents(events, { maxRows, width: 80 });
+    const loading = renderEvents(events, { maxRows, width: 80, olderHistory: "loading" });
+    const exhausted = renderEvents(events, { maxRows, width: 80, olderHistory: "exhausted" });
+
+    expect(idle).toContain("↑ older messages");
+    expect(loading).toContain("↑ loading earlier…");
+    expect(loading).not.toContain("↑ older messages");
+    // "exhausted"/"available" keep the existing indicator behavior untouched.
+    expect(exhausted).toContain("↑ older messages");
+    // The indicator swaps text in the SAME row: row count is identical in all
+    // states so the scroll math is untouched.
+    expect(transcriptLines(loading)).toHaveLength(transcriptLines(idle).length);
+    expect(transcriptLines(loading)[0]).toContain("↑ loading earlier…");
+    expect(transcriptLines(idle)[0]).toContain("↑ older messages");
   });
 
   it("stays at the oldest rows when the transcript is overscrolled", () => {
@@ -590,7 +635,7 @@ describe("ChatView", () => {
     expect(transcriptLines(frame).at(-1)).toContain("↓ newer messages");
   });
 
-  it("renders single command in a tool-calls-group with shell label and command", () => {
+  it("renders a command as a headerless stacked tool line with shell label and command", () => {
     const frame = renderEvents([
       {
         sessionId: "s1",
@@ -599,9 +644,8 @@ describe("ChatView", () => {
         event: { type: "command", command: "git branch", cwd: "/repo", output: "main", itemId: "cmd-1", status: "completed", exitCode: 0, durationMs: 12 },
       },
     ], { width: 100 });
-    expect(frame).toMatch(/▸\s+Tool calls \(1\)/);
-    expect(frame).toContain("shell");
-    expect(frame).toContain("git branch");
+    expect(frame).not.toContain("Tool calls");
+    expect(frame).toMatch(/✓ shell\s+git branch\s+12ms/);
   });
 
   it("splits consecutive tool-calls and file_changes into typed groups within one turn", () => {
@@ -627,12 +671,16 @@ describe("ChatView", () => {
       },
     ];
     const frame = renderEvents(events, { width: 100 });
-    // Two tool-calls-groups (one before the file_change, one after) plus the files group.
-    expect(frame).toContain("Tool calls (1)");
-    expect(frame).toContain("1 file changed");
+    // Headerless groups: the tool lines and the badge/stats file row stack
+    // directly, in event order, without "Tool calls"/"files changed" rows.
+    expect(frame).not.toContain("Tool calls");
+    expect(frame).not.toContain("file changed");
     expect(frame).toContain("npm test");
     expect(frame).toContain("npm run typecheck");
     expect(frame).toContain("auth.ts");
+    // File rows keep their badge + diff stats format.
+    expect(frame).toContain("TS");
+    expect(frame).toContain("+2 −1");
   });
 
   it("keeps subagent lifecycle and child tool chatter out of the center transcript", () => {
@@ -715,7 +763,7 @@ describe("ChatView", () => {
       },
     ], { width: 100 });
 
-    expect(frame).toContain("Tool calls (1)");
+    expect(frame).not.toContain("Tool calls");
     expect(frame).toContain("spawn_agent");
     expect(frame).toContain("Explore renderer");
     expect(frame).not.toContain("child launch spam");
@@ -821,9 +869,10 @@ describe("ChatView", () => {
       },
     ];
     const frame = renderEvents(events, { width: 100 });
-    expect(frame).toMatch(/▸\s+Tool calls \(4\)/);
-    expect(frame).toMatch(/3 ok/);
-    expect(frame).toMatch(/1 failed/);
+    // Headerless: ok/failed status lives on each line's glyph, not a summary row.
+    expect(frame).not.toContain("Tool calls");
+    expect(frame.match(/✓/g)).toHaveLength(3);
+    expect(frame.match(/✗/g)).toHaveLength(1);
     // Most recent shell commands visible.
     expect(frame).toContain("npm test");
     expect(frame).toContain("echo two");
@@ -861,18 +910,32 @@ describe("ChatView", () => {
     expect(frame).not.toContain("24m");
   });
 
-  it("hides reasoning-only events from the quiet transcript", () => {
+  it("collapses streamed reasoning into one desktop-style Thinking row", () => {
     const turnId = "turn-think";
     const events: AgentChatEventEnvelope[] = [
-      { sessionId: "s1", timestamp: "2026-01-01T12:00:00.000Z", sequence: 1, event: { type: "reasoning", text: "first thought", turnId } },
-      { sessionId: "s1", timestamp: "2026-01-01T12:00:00.500Z", sequence: 2, event: { type: "reasoning", text: "second thought", turnId } },
+      { sessionId: "s1", timestamp: "2026-01-01T12:00:00.000Z", sequence: 1, event: { type: "reasoning", text: "first thought ", turnId } },
+      { sessionId: "s1", timestamp: "2026-01-01T12:00:00.500Z", sequence: 2, event: { type: "reasoning", text: "second thought ", turnId } },
       { sessionId: "s1", timestamp: "2026-01-01T12:00:01.000Z", sequence: 3, event: { type: "reasoning", text: "third thought", turnId } },
     ];
     const frame = renderEvents(events, { width: 80 });
     expect(frame).not.toMatch(/✦/);
-    expect(frame).not.toContain("first thought");
-    expect(frame).not.toContain("second thought");
-    expect(frame).not.toContain("third thought");
+    // One merged row, live label, single-line preview of the streamed text.
+    expect(frame).toContain("Thinking…");
+    expect(frame).toContain("first thought second thought third thought");
+    const reasoningRows = frame.split(/\r?\n/).filter((line) => line.includes("thought"));
+    expect(reasoningRows).toHaveLength(1);
+  });
+
+  it("marks the reasoning row as Thought once the turn completes", () => {
+    const turnId = "turn-think-done";
+    const events: AgentChatEventEnvelope[] = [
+      { sessionId: "s1", timestamp: "2026-01-01T12:00:00.000Z", sequence: 1, event: { type: "reasoning", text: "weighing options", turnId } },
+      { sessionId: "s1", timestamp: "2026-01-01T12:00:01.000Z", sequence: 2, event: { type: "done", turnId, status: "completed" } },
+    ];
+    const frame = renderEvents(events, { width: 80 });
+    expect(frame).toContain("Thought");
+    expect(frame).not.toContain("Thinking…");
+    expect(frame).toContain("weighing options");
   });
 
   it("suppresses done footers because token/runtime detail lives in the footer", () => {
@@ -925,7 +988,7 @@ describe("ChatView", () => {
     expect(text).not.toContain("gpt");
   });
 
-  it("caps tool-calls-group at 3 visible entries with a + N more affordance", () => {
+  it("stacks every tool call as its own line like the desktop work log", () => {
     const turnId = "turn-many";
     const events: AgentChatEventEnvelope[] = Array.from({ length: 12 }, (_, index): AgentChatEventEnvelope => ({
       sessionId: "s1",
@@ -943,13 +1006,13 @@ describe("ChatView", () => {
         turnId,
       },
     }));
-    const frame = renderEvents(events, { width: 120 });
-    expect(frame).toContain("Tool calls (12)");
-    expect(frame).toContain("+ 9 more");
-    // Most recent 3 visible (cmd-12, cmd-11, cmd-10); older ones in the "+N more" tail.
+    const frame = renderEvents(events, { width: 120, maxRows: 40 });
+    expect(frame).not.toContain("Tool calls");
+    expect(frame).not.toContain("more");
+    // Every consecutive call stacks as its own single line (desktop parity).
+    expect(frame).toContain("cmd-1");
+    expect(frame).toContain("cmd-5");
     expect(frame).toContain("cmd-12");
-    expect(frame).toContain("cmd-10");
-    expect(frame).not.toContain("cmd-5");
   });
 
   it("strips the /bin/zsh -lc launcher wrapper from shell commands", () => {
@@ -1015,7 +1078,7 @@ describe("ChatView", () => {
       },
     ];
     const frame = renderEvents(events, { width: 120 });
-    expect(frame).toContain("3 files changed");
+    expect(frame).not.toContain("files changed");
     expect(frame).toContain("TSX");
     expect(frame).toContain("JS");
     expect(frame).toContain("MD");

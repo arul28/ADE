@@ -6,11 +6,30 @@ import { isCrsqliteAvailable } from "../state/crsqliteExtension";
 import { openKvDb } from "../state/kvDb";
 import { createSyncService } from "./syncService";
 
-const { createSyncHostServiceMock, syncHostServiceMockState } = vi.hoisted(() => ({
-  syncHostServiceMockState: {
+const { acquireSyncHostSingletonMock, createDefaultSyncHostServiceMock, createSyncHostServiceMock, syncHostServiceMockState } = vi.hoisted(() => {
+  const syncHostServiceMockState = {
     port: 8787,
-  },
-  createSyncHostServiceMock: vi.fn(() => ({
+  };
+  const acquireSyncHostSingletonMock = vi.fn(() => ({
+    owner: {
+      id: "test-sync-host",
+      pid: process.pid,
+      port: null,
+      appName: "ADE Test",
+      packageChannel: "test",
+      adeHome: null,
+      serviceName: null,
+      socketPath: null,
+      projectRoot: null,
+      commandLine: null,
+      quitCommand: "",
+      createdAt: "2026-03-15T00:00:00.000Z",
+      updatedAt: "2026-03-15T00:00:00.000Z",
+    },
+    updatePort: vi.fn(),
+    dispose: vi.fn(),
+  }));
+  const createDefaultSyncHostServiceMock = () => ({
     async waitUntilListening() {
       return syncHostServiceMockState.port;
     },
@@ -42,8 +61,14 @@ const { createSyncHostServiceMock, syncHostServiceMockState } = vi.hoisted(() =>
     handlePtyExit() {},
     setDiscoveryEnabled: vi.fn(),
     async dispose() {},
-  })),
-}));
+  });
+  return {
+    acquireSyncHostSingletonMock,
+    syncHostServiceMockState,
+    createDefaultSyncHostServiceMock,
+    createSyncHostServiceMock: vi.fn(createDefaultSyncHostServiceMock),
+  };
+});
 
 // Prevent real WebSocket servers from binding to port 8787 during tests.
 // Tests only exercise role/transfer/pairing logic, not the sync transport.
@@ -51,6 +76,10 @@ vi.mock("../../../../../ade-cli/src/services/sync/syncHostService", () => ({
   createSyncHostService: createSyncHostServiceMock,
   SYNC_TAILNET_DISCOVERY_SERVICE_NAME: "svc:ade-sync",
   SYNC_TAILNET_DISCOVERY_SERVICE_PORT: 8787,
+}));
+
+vi.mock("../../../../../ade-cli/src/services/sync/syncHostSingleton", () => ({
+  acquireSyncHostSingleton: acquireSyncHostSingletonMock,
 }));
 
 function createLogger() {
@@ -109,7 +138,8 @@ function insertProjectAndLane(
 const activeDisposers: Array<() => Promise<void>> = [];
 
 beforeEach(() => {
-  createSyncHostServiceMock.mockClear();
+  createSyncHostServiceMock.mockReset();
+  createSyncHostServiceMock.mockImplementation(createDefaultSyncHostServiceMock);
   syncHostServiceMockState.port = 8787;
 });
 
@@ -383,6 +413,175 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
     expect(transferred.clusterState?.brainEpoch).toBe(4);
     expect(transferred.currentBrain?.deviceId).toBe(localDevice.deviceId);
     expect(transferred.transferReadiness.ready).toBe(true);
+  }, 30_000);
+
+  it("reclaims host role from a stale local viewer draft after transport failure", async () => {
+    const projectRoot = makeProjectRoot("ade-sync-service-stale-local-draft-");
+    const appPairingDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), "ade-sync-service-stale-local-draft-app-"),
+    );
+    fs.mkdirSync(appPairingDir, { recursive: true });
+    fs.writeFileSync(path.join(appPairingDir, "sync-bootstrap-token"), "local-bootstrap-token\n", "utf8");
+    fs.writeFileSync(
+      path.join(appPairingDir, "sync-peer-draft.json"),
+      `${JSON.stringify({
+        host: "127.0.0.1",
+        port: 1,
+        authKind: "bootstrap",
+        lastRemoteDbVersion: 0,
+      }, null, 2)}\n`,
+      "utf8",
+    );
+    const db = await openKvDb(
+      path.join(projectRoot, ".ade", "ade.db"),
+      createLogger() as any,
+    );
+
+    const service = createSyncService({
+      db,
+      logger: createLogger() as any,
+      projectRoot,
+      phonePairingStateDir: appPairingDir,
+      fileService: { dispose: () => {} } as any,
+      laneService: {
+        list: async () => [],
+        create: async () => ({}),
+        archive: async () => {},
+      } as any,
+      prService: {} as any,
+      sessionService: { list: () => [] } as any,
+      ptyService: {} as any,
+      computerUseArtifactBrokerService: {} as any,
+      agentChatService: { listSessions: async () => [] } as any,
+      processService: { listRuntime: () => [] } as any,
+      hostStartupEnabled: true,
+    } as any);
+
+    activeDisposers.push(async () => {
+      await service.dispose();
+      db.close();
+    });
+
+    const localDevice = (await service.getStatus()).localDevice;
+    const staleAt = "2026-03-15T00:00:00.000Z";
+    db.run(
+      `insert into devices(
+        device_id, site_id, name, platform, device_type, created_at, updated_at, last_seen_at, last_host, last_port, tailscale_ip, ip_addresses_json, metadata_json
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        "stale-local-brain",
+        "stale-site",
+        "Old local host",
+        "macOS",
+        "desktop",
+        staleAt,
+        staleAt,
+        staleAt,
+        "127.0.0.1",
+        8789,
+        null,
+        JSON.stringify(["127.0.0.1"]),
+        JSON.stringify({}),
+      ],
+    );
+    db.run(
+      `insert into sync_cluster_state(cluster_id, brain_device_id, brain_epoch, updated_at, updated_by_device_id)
+       values (?, ?, ?, ?, ?)`,
+      ["default", "stale-local-brain", 41, staleAt, "stale-local-brain"],
+    );
+
+    await service.initialize();
+
+    const status = await service.getStatus();
+    expect(status.role).toBe("brain");
+    expect(status.clusterState?.brainDeviceId).toBe(localDevice.deviceId);
+    expect(status.clusterState?.brainEpoch).toBe(42);
+    expect(status.pairingConnectInfo).toBeTruthy();
+    expect(fs.existsSync(path.join(appPairingDir, "sync-peer-draft.json"))).toBe(false);
+  }, 30_000);
+
+  it("keeps a stale unreachable viewer draft when the draft target is not local", async () => {
+    const projectRoot = makeProjectRoot("ade-sync-service-stale-remote-draft-");
+    const appPairingDir = fs.mkdtempSync(
+      path.join(os.tmpdir(), "ade-sync-service-stale-remote-draft-app-"),
+    );
+    const draftPath = path.join(appPairingDir, "sync-peer-draft.json");
+    fs.mkdirSync(appPairingDir, { recursive: true });
+    fs.writeFileSync(path.join(appPairingDir, "sync-bootstrap-token"), "remote-bootstrap-token\n", "utf8");
+    fs.writeFileSync(
+      draftPath,
+      `${JSON.stringify({
+        host: "not-local.invalid",
+        port: 8789,
+        authKind: "bootstrap",
+        lastRemoteDbVersion: 0,
+      }, null, 2)}\n`,
+      "utf8",
+    );
+    const db = await openKvDb(
+      path.join(projectRoot, ".ade", "ade.db"),
+      createLogger() as any,
+    );
+
+    const service = createSyncService({
+      db,
+      logger: createLogger() as any,
+      projectRoot,
+      phonePairingStateDir: appPairingDir,
+      fileService: { dispose: () => {} } as any,
+      laneService: {
+        list: async () => [],
+        create: async () => ({}),
+        archive: async () => {},
+      } as any,
+      prService: {} as any,
+      sessionService: { list: () => [] } as any,
+      ptyService: {} as any,
+      computerUseArtifactBrokerService: {} as any,
+      agentChatService: { listSessions: async () => [] } as any,
+      processService: { listRuntime: () => [] } as any,
+      hostStartupEnabled: true,
+    } as any);
+
+    activeDisposers.push(async () => {
+      await service.dispose();
+      db.close();
+    });
+
+    const staleAt = "2026-03-15T00:00:00.000Z";
+    db.run(
+      `insert into devices(
+        device_id, site_id, name, platform, device_type, created_at, updated_at, last_seen_at, last_host, last_port, tailscale_ip, ip_addresses_json, metadata_json
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        "stale-remote-brain",
+        "stale-site",
+        "Remote host",
+        "macOS",
+        "desktop",
+        staleAt,
+        staleAt,
+        staleAt,
+        "not-local.invalid",
+        8789,
+        null,
+        JSON.stringify(["10.0.0.9"]),
+        JSON.stringify({}),
+      ],
+    );
+    db.run(
+      `insert into sync_cluster_state(cluster_id, brain_device_id, brain_epoch, updated_at, updated_by_device_id)
+       values (?, ?, ?, ?, ?)`,
+      ["default", "stale-remote-brain", 41, staleAt, "stale-remote-brain"],
+    );
+
+    await service.initialize();
+
+    const status = await service.getStatus();
+    expect(status.role).toBe("viewer");
+    expect(status.clusterState?.brainDeviceId).toBe("stale-remote-brain");
+    expect(status.pairingConnectInfo).toBeNull();
+    expect(fs.existsSync(draftPath)).toBe(true);
   }, 30_000);
 
   it("builds pairing runtime addresses with LAN-first address candidates and tailscale fallback", async () => {
@@ -847,9 +1046,165 @@ describe.skipIf(!isCrsqliteAvailable())("syncService", () => {
 
     await service.initialize();
 
-    expect(createSyncHostServiceMock.mock.calls.map((call: any[]) => call[0]?.port)).toEqual([8787, 8788]);
-    expect(disposeFirstAttempt).toHaveBeenCalledTimes(1);
+    expect(createSyncHostServiceMock.mock.calls.map((call: any[]) => call[0]?.port)).toEqual([
+      8787,
+      8787,
+      8787,
+      8787,
+      8787,
+      8787,
+      8787,
+      8787,
+      8788,
+    ]);
+    expect(disposeFirstAttempt).toHaveBeenCalledTimes(8);
     expect(service.getHostService()?.getPort()).toBe(8788);
+  }, 30_000);
+
+  it("starts on a legacy-discoverable port when the saved port drifted past the old phone range", async () => {
+    const projectRoot = makeProjectRoot("ade-sync-service-legacy-phone-port-");
+    const db = await openKvDb(
+      path.join(projectRoot, ".ade", "ade.db"),
+      createLogger() as any,
+    );
+    const localDeviceId = "local-device";
+    const localDeviceIdPath = path.join(projectRoot, ".ade", "secrets", "sync-device-id");
+    fs.mkdirSync(path.dirname(localDeviceIdPath), { recursive: true });
+    fs.writeFileSync(localDeviceIdPath, `${localDeviceId}\n`, "utf8");
+    db.run(
+      `insert into devices(
+          device_id, site_id, name, platform, device_type,
+          created_at, updated_at, last_seen_at, last_host, last_port,
+          tailscale_ip, ip_addresses_json, metadata_json
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        localDeviceId,
+        db.sync.getSiteId(),
+        "Local Mac",
+        "macOS",
+        "desktop",
+        "2026-04-01T00:00:00.000Z",
+        "2026-04-01T00:00:00.000Z",
+        "2026-04-01T00:00:00.000Z",
+        "192.168.1.8",
+        55035,
+        "100.75.20.63",
+        JSON.stringify(["192.168.1.8"]),
+        JSON.stringify({}),
+      ],
+    );
+
+    const service = createSyncService({
+      db,
+      logger: createLogger() as any,
+      projectRoot,
+      localDeviceIdPath,
+      fileService: { dispose: () => {} } as any,
+      laneService: {
+        list: async () => [],
+        create: async () => ({}),
+        archive: async () => {},
+      } as any,
+      prService: {} as any,
+      sessionService: { list: () => [] } as any,
+      ptyService: {} as any,
+      computerUseArtifactBrokerService: {} as any,
+      agentChatService: { listSessions: async () => [] } as any,
+      processService: { listRuntime: () => [] } as any,
+    });
+
+    activeDisposers.push(async () => {
+      await service.dispose();
+      db.close();
+    });
+
+    await service.initialize();
+    const status = await service.getStatus();
+
+    expect(createSyncHostServiceMock.mock.calls.map((call: any[]) => call[0]?.port)[0]).toBe(8787);
+    expect(status.localDevice.lastPort).toBe(8787);
+  }, 30_000);
+
+  it("does not fall back to an out-of-range sync host port", async () => {
+    const projectRoot = makeProjectRoot("ade-sync-service-no-random-port-");
+    const db = await openKvDb(
+      path.join(projectRoot, ".ade", "ade.db"),
+      createLogger() as any,
+    );
+    const localDeviceId = "local-device";
+    const localDeviceIdPath = path.join(projectRoot, ".ade", "secrets", "sync-device-id");
+    fs.mkdirSync(path.dirname(localDeviceIdPath), { recursive: true });
+    fs.writeFileSync(localDeviceIdPath, `${localDeviceId}\n`, "utf8");
+    db.run(
+      `insert into devices(
+          device_id, site_id, name, platform, device_type,
+          created_at, updated_at, last_seen_at, last_host, last_port,
+          tailscale_ip, ip_addresses_json, metadata_json
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        localDeviceId,
+        db.sync.getSiteId(),
+        "Local Mac",
+        "macOS",
+        "desktop",
+        "2026-04-01T00:00:00.000Z",
+        "2026-04-01T00:00:00.000Z",
+        "2026-04-01T00:00:00.000Z",
+        "192.168.1.8",
+        55035,
+        "100.75.20.63",
+        JSON.stringify(["192.168.1.8"]),
+        JSON.stringify({}),
+      ],
+    );
+
+    createSyncHostServiceMock.mockImplementation((({ port }: { port?: number }) => {
+      const attemptedPort = port ?? 8787;
+      return {
+        ...createDefaultSyncHostServiceMock(),
+        async waitUntilListening() {
+          const error = Object.assign(new Error("address already in use"), {
+            code: "EADDRINUSE",
+          });
+          throw error;
+        },
+        getPort() {
+          return attemptedPort;
+        },
+      };
+    }) as any);
+
+    const service = createSyncService({
+      db,
+      logger: createLogger() as any,
+      projectRoot,
+      localDeviceIdPath,
+      fileService: { dispose: () => {} } as any,
+      laneService: {
+        list: async () => [],
+        create: async () => ({}),
+        archive: async () => {},
+      } as any,
+      prService: {} as any,
+      sessionService: { list: () => [] } as any,
+      ptyService: {} as any,
+      computerUseArtifactBrokerService: {} as any,
+      agentChatService: { listSessions: async () => [] } as any,
+      processService: { listRuntime: () => [] } as any,
+    });
+
+    activeDisposers.push(async () => {
+      await service.dispose();
+      db.close();
+    });
+
+    await expect(service.initialize()).rejects.toThrow("address already in use");
+    const attemptedPorts = createSyncHostServiceMock.mock.calls.map((call: any[]) => call[0]?.port);
+    expect(attemptedPorts[0]).toBe(8787);
+    expect(attemptedPorts).toContain(8999);
+    expect(attemptedPorts).not.toContain(55035);
+    expect(attemptedPorts).not.toContain(0);
+    expect(attemptedPorts.every((port) => port >= 8787 && port <= 8999)).toBe(true);
   }, 30_000);
 
   describe("cooperative brain election", () => {

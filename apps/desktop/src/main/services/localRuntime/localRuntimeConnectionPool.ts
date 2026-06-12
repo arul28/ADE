@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import net from "node:net";
+import os from "node:os";
 import path from "node:path";
 import { app } from "electron";
 import { isAdeRuntimeNamedPipePath } from "../../../shared/adeRuntimeIpc";
@@ -67,6 +68,8 @@ const LOCAL_RUNTIME_EVENT_POLL_TIMEOUT_MS = 2_000;
 const PLACEHOLDER_RUNTIME_VERSION = "0.0.0";
 const LOCAL_RUNTIME_OUTPUT_LINE_MAX_CHARS = 4_000;
 const LOCAL_RUNTIME_OUTPUT_BUFFER_MAX_CHARS = 16_000;
+const LOCAL_RELEASE_BUILD_OUTPUT_RUNTIME_MESSAGE =
+  "This local release build output cannot start the ADE brain directly. Install the channel app into /Applications and relaunch ADE.";
 const COALESCED_LOCAL_RUNTIME_ACTIONS = new Set([
   "chat.listSessions",
   "layout.get",
@@ -75,6 +78,36 @@ const COALESCED_LOCAL_RUNTIME_ACTIONS = new Set([
   "session.list",
   "tiling_tree.get",
 ]);
+
+function normalizeComparableSocketPath(socketPath: string): string {
+  return socketPath.startsWith("tcp://") || isAdeRuntimeNamedPipePath(socketPath)
+    ? socketPath
+    : path.resolve(socketPath);
+}
+
+function defaultChannelRuntimeSocketPaths(): Set<string> {
+  return new Set([".ade", ".ade-alpha", ".ade-beta"].map((homeName) =>
+    path.join(os.homedir(), homeName, "sock", "ade.sock")
+  ).map(normalizeComparableSocketPath));
+}
+
+function isPrimaryMachineRuntimeSocketPath(
+  socketPath: string,
+  layoutSocketPath: string,
+): boolean {
+  const normalizedSocketPath = normalizeComparableSocketPath(socketPath);
+  if (normalizedSocketPath === normalizeComparableSocketPath(layoutSocketPath)) {
+    return true;
+  }
+  return defaultChannelRuntimeSocketPaths().has(normalizedSocketPath);
+}
+
+function primaryRuntimeSpawnBlockedMessage(socketPath: string): string {
+  return (
+    `ADE runtime is unavailable at ${socketPath}; refusing to spawn an app-owned brain ` +
+    "on a primary channel socket. Start or repair the ADE background service instead."
+  );
+}
 
 function stableActionValue(value: unknown): unknown {
   if (!value || typeof value !== "object") return value;
@@ -226,6 +259,35 @@ function resolveCliScriptPath(): string {
       return false;
     }
   }) ?? path.resolve(process.cwd(), "..", "ade-cli", "dist", "cli.cjs");
+}
+
+export function isLocalChannelBuildOutputPath(targetPath: string): boolean {
+  const normalized = path.resolve(targetPath);
+  const parts = normalized.split(path.sep).filter(Boolean);
+  for (let index = 0; index < parts.length - 2; index += 1) {
+    if (
+      parts[index] === "apps" &&
+      parts[index + 1] === "desktop" &&
+      /^release-[^/\\]+$/.test(parts[index + 2] ?? "")
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+export function shouldAutoInstallRuntimeServiceFromPath(targetPath: string): boolean {
+  if (process.env.ADE_ALLOW_LOCAL_RELEASE_SERVICE_INSTALL === "1") return true;
+  return !isLocalChannelBuildOutputPath(targetPath);
+}
+
+export function localReleaseBuildOutputRuntimeBlock(targetPath: string): { cliPath: string; message: string } | null {
+  const cliPath = path.resolve(targetPath);
+  if (shouldAutoInstallRuntimeServiceFromPath(cliPath)) return null;
+  return {
+    cliPath,
+    message: LOCAL_RELEASE_BUILD_OUTPUT_RUNTIME_MESSAGE,
+  };
 }
 
 function openSocketTransport(socketPath: string, timeoutMs = 3_000): Promise<RuntimeRpcTransport> {
@@ -546,6 +608,7 @@ export class LocalRuntimeConnectionPool {
   private activeRuntimePid: number | null = null;
   private ownedRuntimeChild: ChildProcess | null = null;
   private preserveOwnedRuntimeChildOnNextConnect = false;
+  private isolatedRecoveryTimer: NodeJS.Timeout | null = null;
   private readonly coalescedActionCalls = new Map<string, Promise<RemoteRuntimeActionResult>>();
   private readonly projectsByRoot = new Map<string, RemoteRuntimeProjectRecord>();
   private serviceInstallStatus: LocalRuntimeStatus["serviceInstall"] = {
@@ -651,6 +714,23 @@ export class LocalRuntimeConnectionPool {
 
   private async runServiceInstallBestEffort(): Promise<void> {
     const cliPath = resolveCliScriptPath();
+    const releaseBuildBlock = localReleaseBuildOutputRuntimeBlock(cliPath);
+    if (releaseBuildBlock) {
+      this.serviceInstallStatus = {
+        state: "skipped",
+        attempted: false,
+        path: releaseBuildBlock.cliPath,
+        message: releaseBuildBlock.message,
+        exitCode: null,
+        updatedAt: new Date().toISOString(),
+      };
+      this.logger.warn("local_runtime.service_install_skipped", {
+        cliPath: releaseBuildBlock.cliPath,
+        reason: "local_release_build_output",
+        message: releaseBuildBlock.message,
+      });
+      return;
+    }
     this.serviceInstallStatus = {
       state: "installing",
       attempted: true,
@@ -838,6 +918,14 @@ export class LocalRuntimeConnectionPool {
 
   async clearSyncRuntimeNameForRoot(rootPath: string): Promise<SyncRoleSnapshot> {
     return await this.callSyncForRoot<SyncRoleSnapshot>(rootPath, "sync.clearRuntimeName");
+  }
+
+  async callSync<T>(
+    method: string,
+    params: Record<string, unknown> = {},
+  ): Promise<T> {
+    const entry = await this.connect();
+    return await entry.client.call(method, params) as T;
   }
 
   async callActionForRoot(
@@ -1074,6 +1162,7 @@ export class LocalRuntimeConnectionPool {
   }
 
   dispose(): void {
+    this.clearIsolatedRecoveryTimer();
     const pending = this.connection;
     this.connection = null;
     this.activeConnection = null;
@@ -1150,6 +1239,34 @@ export class LocalRuntimeConnectionPool {
     const repaired = await this.tryRepairServiceConnection(socketPath, "missing");
     if (repaired) return repaired;
 
+    const releaseBuildBlock = this.releaseBuildOutputRuntimeBlock();
+    if (releaseBuildBlock) {
+      this.logger.warn("local_runtime.release_build_runtime_blocked", {
+        cliPath: releaseBuildBlock.cliPath,
+        socketPath,
+        reason: "missing",
+        message: releaseBuildBlock.message,
+      });
+      throw new Error(releaseBuildBlock.message);
+    }
+
+    if (isPrimaryMachineRuntimeSocketPath(socketPath, layout.socketPath)) {
+      const message = this.options.preferServiceRepair
+        ? `ADE service repair did not restore the runtime endpoint at ${socketPath}; ` +
+          "refusing to spawn an app-owned sync-enabled brain on the primary service socket."
+        : primaryRuntimeSpawnBlockedMessage(socketPath);
+      this.logger.warn(this.options.preferServiceRepair
+        ? "local_runtime.service_repair_fallback_blocked"
+        : "local_runtime.primary_runtime_spawn_blocked", {
+        socketPath,
+        message,
+        serviceState: this.serviceInstallStatus.state,
+        serviceMessage: this.serviceInstallStatus.message,
+        preferServiceRepair: this.options.preferServiceRepair === true,
+      });
+      throw new Error(message);
+    }
+
     const child = this.spawnRuntime(socketPath);
     try {
       await waitForSocket(socketPath);
@@ -1176,6 +1293,20 @@ export class LocalRuntimeConnectionPool {
       if (error instanceof LocalRuntimeCompatibilityError) {
         const repaired = await this.tryRepairServiceConnection(socketPath, "incompatible", error);
         if (repaired) return repaired;
+        const releaseBuildBlock = this.releaseBuildOutputRuntimeBlock();
+        if (releaseBuildBlock) {
+          this.logger.warn("local_runtime.release_build_runtime_blocked", {
+            cliPath: releaseBuildBlock.cliPath,
+            socketPath,
+            reason: "incompatible",
+            message: releaseBuildBlock.message,
+            runtimePid: error.pid,
+            runtimeVersion: error.runtimeVersion,
+            runtimeBuildHash: error.runtimeBuildHash,
+            runtimeDefaultRole: error.runtimeDefaultRole,
+          });
+          throw new Error(releaseBuildBlock.message);
+        }
         return await this.startIsolatedRuntime(socketPath, error);
       }
       this.logger.debug("local_runtime.connect_existing_failed", {
@@ -1209,31 +1340,44 @@ export class LocalRuntimeConnectionPool {
       });
       return null;
     }
-    try {
-      await waitForSocket(socketPath);
-      const client = await this.connectClient(socketPath);
-      this.ownedRuntimeChild = null;
-      return { client, child: null, socketPath };
-    } catch (error) {
-      if (error instanceof LocalRuntimeCompatibilityError) {
-        this.logger.warn("local_runtime.service_repair_connect_failed", {
-          socketPath,
-          reason,
-          error: error.message,
-          runtimePid: error.pid,
-          runtimeVersion: error.runtimeVersion,
-          runtimeBuildHash: error.runtimeBuildHash,
-          runtimeDefaultRole: error.runtimeDefaultRole,
-        });
-        return null;
+    // The service was just (re)installed: the stale brain may still be dying
+    // and the replacement child still binding the socket. A single connect
+    // attempt lands in that churn window and strands this desktop on an
+    // isolated no-sync runtime, so keep retrying — through connect failures
+    // AND through compatibility errors from the not-yet-replaced old brain —
+    // until the repaired service is actually reachable.
+    const deadline = Date.now() + 20_000;
+    let lastError: unknown = null;
+    for (;;) {
+      try {
+        await waitForSocket(socketPath, 2_000);
+        const client = await this.connectClient(socketPath);
+        this.ownedRuntimeChild = null;
+        return { client, child: null, socketPath };
+      } catch (error) {
+        lastError = error;
+        if (Date.now() >= deadline) break;
+        await new Promise((resolve) => setTimeout(resolve, 750));
       }
+    }
+    if (lastError instanceof LocalRuntimeCompatibilityError) {
       this.logger.warn("local_runtime.service_repair_connect_failed", {
         socketPath,
         reason,
-        error: error instanceof Error ? error.message : String(error),
+        error: lastError.message,
+        runtimePid: lastError.pid,
+        runtimeVersion: lastError.runtimeVersion,
+        runtimeBuildHash: lastError.runtimeBuildHash,
+        runtimeDefaultRole: lastError.runtimeDefaultRole,
       });
       return null;
     }
+    this.logger.warn("local_runtime.service_repair_connect_failed", {
+      socketPath,
+      reason,
+      error: lastError instanceof Error ? lastError.message : String(lastError),
+    });
+    return null;
   }
 
   private isolatedRuntimeSocketPath(primarySocketPath: string): string {
@@ -1265,6 +1409,7 @@ export class LocalRuntimeConnectionPool {
     try {
       const client = await this.connectClient(socketPath);
       this.ownedRuntimeChild = null;
+      this.scheduleIsolatedRuntimeRecovery(primarySocketPath);
       return { client, child: null, socketPath };
     } catch (error) {
       if (error instanceof LocalRuntimeCompatibilityError) {
@@ -1280,11 +1425,79 @@ export class LocalRuntimeConnectionPool {
     try {
       await waitForSocket(socketPath);
       const client = await this.connectClient(socketPath);
+      this.scheduleIsolatedRuntimeRecovery(primarySocketPath);
       return { client, child, socketPath };
     } catch (error) {
       disposeOwnedRuntimeChild(child, socketPath, { unlinkSocket: true });
       throw error;
     }
+  }
+
+  // An isolated no-sync runtime is a degraded last resort: the desktop loses
+  // mobile sync and the channel brain's shared state for the whole session.
+  // Keep probing the primary socket and migrate back the moment a compatible
+  // brain is reachable; consumers recover through the normal disconnect path,
+  // exactly as they do when a brain is recycled on a build-hash mismatch.
+  private scheduleIsolatedRuntimeRecovery(primarySocketPath: string): void {
+    if (this.isolatedRecoveryTimer) return;
+    const timer = setInterval(() => {
+      void this.tryRecoverFromIsolatedRuntime(primarySocketPath);
+    }, 20_000);
+    timer.unref?.();
+    this.isolatedRecoveryTimer = timer;
+  }
+
+  private clearIsolatedRecoveryTimer(): void {
+    if (!this.isolatedRecoveryTimer) return;
+    clearInterval(this.isolatedRecoveryTimer);
+    this.isolatedRecoveryTimer = null;
+  }
+
+  private async tryRecoverFromIsolatedRuntime(primarySocketPath: string): Promise<void> {
+    const entry = this.activeConnection;
+    if (!entry || entry.socketPath === primarySocketPath) {
+      this.clearIsolatedRecoveryTimer();
+      return;
+    }
+    if (!(await this.probeCompatibleRuntime(primarySocketPath))) return;
+    this.logger.info("local_runtime.isolated_recovery", {
+      primarySocketPath,
+      isolatedSocketPath: entry.socketPath,
+    });
+    this.clearIsolatedRecoveryTimer();
+    if (!this.clearConnectionIfCurrent(entry)) return;
+    closeRuntimeClient(entry.client);
+    if (this.ownedRuntimeChild === entry.child) this.ownedRuntimeChild = null;
+    disposeOwnedRuntimeChild(entry.child, entry.socketPath, { unlinkSocket: true });
+  }
+
+  // Compatibility check with no side effects on pool state, safe to run while
+  // another connection is active.
+  private async probeCompatibleRuntime(socketPath: string): Promise<boolean> {
+    let client: RuntimeRpcClient | null = null;
+    try {
+      const transport = await openSocketTransport(socketPath);
+      client = new RuntimeRpcClient(transport);
+      const initializeResult = await client.initialize("ade-desktop-local-probe", this.appVersion);
+      const runtimeInfo = readRuntimeInfo(initializeResult);
+      const expectedBuildHash = computeLocalRuntimeBuildHash();
+      return isCompatibleRuntimeVersion({
+        runtimeVersion: runtimeInfo.version,
+        appVersion: this.appVersion,
+        runtimeBuildHash: runtimeInfo.buildHash,
+        expectedBuildHash,
+      })
+        && (!expectedBuildHash || runtimeInfo.buildHash === expectedBuildHash)
+        && runtimeInfo.defaultRole === "cto";
+    } catch {
+      return false;
+    } finally {
+      if (client) closeRuntimeClient(client);
+    }
+  }
+
+  private releaseBuildOutputRuntimeBlock(): { cliPath: string; message: string } | null {
+    return localReleaseBuildOutputRuntimeBlock(resolveCliScriptPath());
   }
 
   private async connectClient(socketPath: string): Promise<RuntimeRpcClient> {

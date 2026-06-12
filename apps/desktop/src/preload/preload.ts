@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer, webFrame, webUtils } from "electron";
 import { IPC } from "../shared/ipc";
 import { createOrchestrationBridge } from "./orchestrationBridge";
+import type { OrchestrationEventPayload } from "../shared/types/orchestration";
 import type {
   AdeCleanupResult,
   AdeProjectEvent,
@@ -300,6 +301,7 @@ import type {
   AgentChatDeleteArgs,
   AgentChatSuggestLaneNameArgs,
   AgentChatEventEnvelope,
+  AgentChatEventHistoryPage,
   AgentChatEventHistorySnapshot,
   AgentChatGetSummaryArgs,
   AgentChatHandoffArgs,
@@ -563,6 +565,8 @@ import type {
   IosSimulatorPreviewCapability,
   IosSimulatorPreviewMatch,
   IosSimulatorPreviewTarget,
+  IosSimulatorRenderCurrentPreviewArgs,
+  IosSimulatorRenderCurrentPreviewResult,
   IosSimulatorRenderPreviewArgs,
   IosSimulatorRenderPreviewResult,
   IosScreenSnapshot,
@@ -1560,6 +1564,9 @@ const remoteIosSimulatorEventCallbacks = new Set<
 const remoteAppControlEventCallbacks = new Set<
   (payload: AppControlEventPayload) => void
 >();
+const remoteOrchestrationEventCallbacks = new Set<
+  (payload: OrchestrationEventPayload) => void
+>();
 
 function createLocalIpcEventSubscription<T>(
   channel: string,
@@ -1707,8 +1714,19 @@ function hasRemoteRuntimeEventSubscribers(): boolean {
     remoteComputerUseEventCallbacks.size > 0 ||
     remoteIosSimulatorEventCallbacks.size > 0 ||
     remoteAppControlEventCallbacks.size > 0 ||
+    remoteOrchestrationEventCallbacks.size > 0 ||
     remotePrAiResolutionEventCallbacks.size > 0
   );
+}
+
+function registerRemoteOrchestrationEventCallback(
+  cb: (payload: OrchestrationEventPayload) => void,
+): () => void {
+  remoteOrchestrationEventCallbacks.add(cb);
+  ensureRemoteRuntimeEventPump();
+  return () => {
+    remoteOrchestrationEventCallbacks.delete(cb);
+  };
 }
 
 function normalizePtyDataSubscriptionIds(value: unknown): Set<string> {
@@ -1991,6 +2009,17 @@ function dispatchRemoteRuntimeEventPayload(
         cb(automationsEvent);
       } catch (error) {
         console.error("preload remote automation listener failed", error);
+      }
+    }
+  }
+
+  const orchestrationEvent = toOrchestrationRuntimeEvent(payload);
+  if (orchestrationEvent) {
+    for (const cb of [...remoteOrchestrationEventCallbacks]) {
+      try {
+        cb(orchestrationEvent);
+      } catch (error) {
+        console.error("preload remote orchestration listener failed", error);
       }
     }
   }
@@ -2880,6 +2909,39 @@ function toAutomationsRuntimeEvent(
   const event: Record<string, unknown> = { ...payload };
   delete event.source;
   return event as unknown as AutomationsEventPayload;
+}
+
+const ORCHESTRATION_EVENT_KINDS = new Set([
+  "manifest",
+  "plan",
+  "asset",
+  "heartbeat",
+  "lifecycle",
+]);
+
+function toOrchestrationRuntimeEvent(
+  payload: unknown,
+): OrchestrationEventPayload | null {
+  if (!isRecord(payload)) return null;
+  if (typeof payload.runId !== "string" || !payload.runId) return null;
+  if (typeof payload.etag !== "string") return null;
+  if (typeof payload.kind !== "string" || !ORCHESTRATION_EVENT_KINDS.has(payload.kind)) {
+    return null;
+  }
+  if (payload.kind === "heartbeat") {
+    if (typeof payload.sessionId !== "string" || !payload.sessionId) return null;
+    if (typeof payload.lastHeartbeatAt !== "string" || !payload.lastHeartbeatAt)
+      return null;
+  }
+  if (
+    payload.kind === "lifecycle" &&
+    payload.status !== "suspended" &&
+    payload.status !== "resumed" &&
+    payload.status !== "deleted"
+  ) {
+    return null;
+  }
+  return payload as unknown as OrchestrationEventPayload;
 }
 
 function toMacosVmRuntimeEvent(payload: unknown): MacosVmEventPayload | null {
@@ -5389,6 +5451,18 @@ contextBridge.exposeInMainWorld("ade", {
         ? runtime.result
         : ipcRenderer.invoke(IPC.agentChatGetEventHistory, args);
     },
+    getEventHistoryPage: async (args: {
+      sessionId: string;
+      beforeOffset: number;
+      maxBytes?: number;
+    }): Promise<AgentChatEventHistoryPage> => {
+      const runtime = await callProjectRuntimeActionIfBound<AgentChatEventHistoryPage>("chat", "getChatEventHistoryPage", {
+        argsList: [args.sessionId, { beforeOffset: args.beforeOffset, maxBytes: args.maxBytes }],
+      });
+      return runtime.handled
+        ? runtime.result
+        : ipcRenderer.invoke(IPC.agentChatGetEventHistoryPage, args);
+    },
     codex: {
       getGoal: (
         args: AgentChatCodexGetGoalArgs,
@@ -5433,7 +5507,18 @@ contextBridge.exposeInMainWorld("ade", {
       since?: string;
     }) => ipcRenderer.invoke(IPC.agentChatReadTranscript, args),
   },
-  orchestration: createOrchestrationBridge(ipcRenderer),
+  orchestration: createOrchestrationBridge({
+    callAction: (action, args, ipcChannel) =>
+      callProjectRuntimeActionOr(
+        "orchestration",
+        action,
+        { args: args as Record<string, unknown> | undefined },
+        () => ipcRenderer.invoke(ipcChannel, args),
+      ),
+    subscribeRuntimeOrchestrationEvents: registerRemoteOrchestrationEventCallback,
+    parseLegacyEvent: toOrchestrationRuntimeEvent,
+    ipcRenderer,
+  }),
   computerUse: {
     listArtifacts: async (
       args: ComputerUseArtifactListArgs = {},
@@ -5613,6 +5698,15 @@ contextBridge.exposeInMainWorld("ade", {
         "ensurePreviewWorkspace",
         { args },
         () => ipcRenderer.invoke(IPC.iosSimulatorEnsurePreviewWorkspace, args),
+      ),
+    renderCurrentPreview: async (
+      args: IosSimulatorRenderCurrentPreviewArgs = {},
+    ): Promise<IosSimulatorRenderCurrentPreviewResult> =>
+      callProjectRuntimeActionOr(
+        "ios_simulator",
+        "renderCurrentPreview",
+        { args },
+        () => ipcRenderer.invoke(IPC.iosSimulatorRenderCurrentPreview, args),
       ),
     renderPreview: async (
       args: IosSimulatorRenderPreviewArgs,

@@ -1,13 +1,7 @@
 ---
-name: "source-command-audit"
-description: "Audit recent work — trace error paths, probe edge cases, fix any bugs or gaps found"
+name: audit
+description: Audit recent work — trace error paths, probe edge cases, fix any bugs or gaps found
 ---
-
-# source-command-audit
-
-Use this skill when the user asks to run the migrated source command `audit`.
-
-## Command Template
 
 Audit the work you just did in this session. Don't stop at "it compiles" or "it looks right" — actively go hunting for what's wrong.
 

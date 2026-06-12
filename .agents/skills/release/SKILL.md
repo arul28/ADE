@@ -214,7 +214,7 @@ The user's standing guidance is to land changes through a lane/worktree, not by 
      gh pr create --fill --title "release: changelog for v<VERSION>" \
        --body "Changelog for v<VERSION>. Tag will be cut after this lands on main."
      ```
-   - Then hand off to `/shipLane` to drive the PR to merge, OR merge it yourself with `gh pr merge --admin --squash` if the user has already said "merge it".
+   - Then hand off to `/ship` to drive the PR to merge, OR merge it yourself with `gh pr merge --admin --squash` if the user has already said "merge it".
    - Wait for `origin/main` to contain the new commit before Phase 5.
 
 2. **Admin-bypass path (only if user explicitly says "push directly"):**

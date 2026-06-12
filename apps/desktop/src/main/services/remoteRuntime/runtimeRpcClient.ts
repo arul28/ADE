@@ -13,6 +13,10 @@ type PendingRequest = {
 };
 
 const MAX_RPC_BUFFER_CHARS = 16 * 1024 * 1024;
+// Head of an oversized line retained to identify which request it answers.
+// The JSON-RPC envelope id appears within the first few dozen chars of a
+// response; 4 KiB is generous while keeping discarded-line memory bounded.
+const OVERSIZED_LINE_PREFIX_CHARS = 4096;
 const MAX_RPC_TIMEOUT_MS = 2_147_483_647;
 
 type RuntimeRpcCallOptions = {
@@ -35,9 +39,15 @@ function normalizeRuntimeRpcTimeoutMs(value: number): number {
   return Math.ceil(timeoutMs);
 }
 
+type OversizedLineState = {
+  prefix: string;
+  discardedChars: number;
+};
+
 export class RuntimeRpcClient {
   private nextId = 1;
   private buffer = "";
+  private oversizedLine: OversizedLineState | null = null;
   private readonly pending = new Map<number, PendingRequest>();
   private readonly notificationHandlers = new Map<string, Set<(params: unknown) => void>>();
   private readonly disconnectCallbacks = new Set<(error: Error) => void>();
@@ -144,11 +154,21 @@ export class RuntimeRpcClient {
 
   private onData(chunk: string): void {
     if (this.closedError) return;
-    this.buffer += chunk;
-    if (this.buffer.length > MAX_RPC_BUFFER_CHARS) {
-      this.failConnection(new Error("Remote ADE service response buffer exceeded 16 MiB."));
-      return;
+    if (this.oversizedLine) {
+      // An oversized line is being discarded as it streams. Drop chunks until
+      // its terminating newline, then resume normal parsing on the remainder.
+      const newline = chunk.indexOf("\n");
+      if (newline < 0) {
+        this.oversizedLine.discardedChars += chunk.length;
+        return;
+      }
+      const oversized = this.oversizedLine;
+      this.oversizedLine = null;
+      oversized.discardedChars += newline;
+      this.rejectOversizedLine(oversized);
+      chunk = chunk.slice(newline + 1);
     }
+    this.buffer += chunk;
     while (true) {
       const newline = this.buffer.indexOf("\n");
       if (newline < 0) break;
@@ -156,7 +176,57 @@ export class RuntimeRpcClient {
       this.buffer = this.buffer.slice(newline + 1);
       if (!line) continue;
       this.handleLine(line);
+      if (this.closedError) return;
     }
+    // The leftover is one partial line. If it has outgrown the buffer cap,
+    // reject only the request it answers and discard the rest of the line as
+    // it streams — a single oversized response must not take down the shared
+    // connection (every project pane multiplexes over it). Note the cap
+    // bounds PARTIAL-LINE ACCUMULATION, not message size: a complete line
+    // delivered within one chunk is parsed regardless of length. Real
+    // transports chunk at ~64 KB, so any >16 MiB line lands here in practice.
+    if (this.buffer.length > MAX_RPC_BUFFER_CHARS) {
+      this.oversizedLine = {
+        prefix: this.buffer.slice(0, OVERSIZED_LINE_PREFIX_CHARS),
+        discardedChars: this.buffer.length,
+      };
+      this.buffer = "";
+    }
+  }
+
+  /**
+   * Fail the single request answered by a discarded oversized line. The
+   * envelope id is recovered from the retained line head; a `"method"` key
+   * appearing before `"id"` marks the line as a notification (its params may
+   * embed unrelated `"id"` fields), in which case nothing is rejected.
+   *
+   * Heuristic assumption: the daemon serializes response envelopes with the
+   * top-level `id` before `result` (jsonrpc.ts writeMessage key order), so
+   * the first `"id"` in a response line is the envelope id, never one nested
+   * inside the result. If a misfire ever happens anyway, the failure mode is
+   * benign: no pending entry matches, the line is warn-logged and dropped,
+   * and the real caller times out instead of receiving a wrong rejection.
+   */
+  private rejectOversizedLine(oversized: OversizedLineState): void {
+    const idMatch = /"id"\s*:\s*(\d+)/.exec(oversized.prefix);
+    const methodMatch = /"method"\s*:/.exec(oversized.prefix);
+    const responseId = idMatch && (!methodMatch || idMatch.index < methodMatch.index)
+      ? Number(idMatch[1])
+      : null;
+    const approxMiB = (oversized.discardedChars / (1024 * 1024)).toFixed(1);
+    const pending = responseId != null ? this.pending.get(responseId) : undefined;
+    if (!pending || responseId == null) {
+      console.warn("Remote ADE service sent an oversized message; discarded", {
+        approxMiB,
+        hasResponseId: responseId != null,
+      });
+      return;
+    }
+    this.pending.delete(responseId);
+    clearTimeout(pending.timer);
+    pending.reject(new Error(
+      `Remote ADE service response for method ${pending.method} exceeded 16 MiB (~${approxMiB} MiB) and was discarded.`,
+    ));
   }
 
   private handleLine(line: string): void {

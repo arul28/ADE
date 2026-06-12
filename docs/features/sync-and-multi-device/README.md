@@ -40,9 +40,10 @@ path unless explicitly noted.
 - **Machine runtime** — the per-channel, per-machine `ade serve` runtime. It owns agent
   execution, PTYs, worktrees, worker heartbeats, the orchestrator, and
   the sync WebSocket server. It can hold **multiple** open projects at
-  once, with one active sync project port at a time; a phone picks which
-  project to bind to via the machine project catalog and reconnects
-  internally when it switches projects.
+  once behind a single brain-level WebSocket listener on a stable port;
+  a phone picks which project to bind to via the machine project
+  catalog, and when the hosted project changes the new project's host
+  service **adopts** the open sockets instead of dropping them.
 - **Desktop renderer** — a client of the local runtime over the
   runtime IPC bridge. The same renderer can also bind to a remote
   runtime (the remote-runtime feature), in which case sync state lives
@@ -105,7 +106,8 @@ running sync authority).
 │   - syncRemoteCommandService — registry of executable actions    │
 │   - deviceRegistryService — devices + cluster_state singleton    │
 │   - hosts MULTIPLE projects per machine                          │
-│   - exposes per-project sync ports behind one machine catalog     │
+│   - one brain-level shared listener (sharedSyncListener);        │
+│     per-project host services adopt peers across switches        │
 └──────────────────────────────────────────────────────────────────┘
                           │
                           ▼
@@ -115,8 +117,11 @@ running sync authority).
 │     changeset_ack, heartbeat, file_request/response,             │
 │     terminal_*, chat_*, brain_status (legacy name),              │
 │     project_catalog/project_switch,                              │
-│     command / command_ack / command_result                       │
+│     command / command_ack / command_result,                      │
+│     envelope_chunk                                               │
 │   - JSON payloads; gzip+base64 above threshold (4 KB default)    │
+│   - encoded envelopes >720 KB sliced into envelope_chunk frames  │
+│     for peers declaring the "chunkedEnvelopes" capability        │
 └──────────────────────────────────────────────────────────────────┘
                           │
                           ▼
@@ -146,21 +151,53 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   `forceHostRole` only as a legacy override; normal callers leave it
   false so a second runtime becomes a viewer instead of stealing the
   sync authority role.
-- `syncHostService.ts` (~3,260 lines) — the WebSocket server. Owns
+- `syncHostService.ts` — the per-project WebSocket host. Owns
   connection acceptance, hello/pairing handshakes, per-peer state,
-  changeset fan-out + ack tracking, terminal/chat subscription
-  bridging, mobile terminal input/resize forwarding into subscribed
-  PTYs, lane presence decoration, project catalog/switch envelopes,
+  changeset fan-out + ack tracking (bounded, windowed exports — see
+  `crdt-model.md`), the mobile changeset diet
+  (`MOBILE_CHANGESET_EXCLUDED_TABLES`: high-churn tables the phone
+  never reads — `attempt_transcripts`, `operations`, `ai_usage_log`,
+  `budget_usage_records`, `automation_runs`,
+  `automation_action_results` — are filtered from phone changesets
+  while ack watermarks still advance), the per-session chat-event seq
+  + replay buffer, terminal/chat subscription bridging, offset-stamped
+  mobile terminal streams, `sinceOffset` delta snapshots, scrollback
+  paging via `terminal_history`, mobile terminal input/resize forwarding
+  into subscribed PTYs, desktop-size restore after the last phone
+  detaches, lane presence decoration, project catalog/switch envelopes,
   per-IP pairing rate limiter, and the Tailscale Serve / mDNS
-  publication paths. Runtime kind is one of `desktop-embedded`,
-  `headless`, `remote-stdio`, `desktop`, `daemon`, or `remote`.
+  publication paths. Runtime
+  kind is one of `desktop-embedded`, `headless`, `remote-stdio`,
+  `desktop`, `daemon`, or `remote`.
+- `sharedSyncListener.ts` — the brain-level WebSocket listener shared
+  across per-project host services. Binds once (preferred-port retry:
+  ~8 attempts over ~3.2 s on the saved port before falling back to a
+  port scan, so a brain restart does not drift the port phones saved)
+  and is handed between hosts on project switch: the new host adopts
+  the open sockets — peer metadata carried over, pairing auth
+  re-validated against the pairing store, changeset cursors recomputed
+  from the peer's per-site cursor map, chat/terminal subscriptions and
+  transcript offsets riding the handoff snapshot, and frames buffered
+  during the handoff window replayed — so phones survive project
+  switches without reconnecting. Sockets left unowned park with
+  buffered frames and close with code 4002 after a 30 s grace. A
+  self-owned server path remains for tests/standalone hosts.
+- `changesetPump.ts` — batch-chunk selection for changeset fan-out.
+  Splits an export into `changeset_batch` envelopes at ~256 KB / 250
+  rows while never splitting rows that share a `db_version` (the ack
+  watermark is version-granular).
 - `syncPeerService.ts` (~580 lines) — WebSocket **client**. The runtime
   can run this too when it joins another runtime as a peer (handoff
   rehearsal, controller-to-authority swap). On iOS, an equivalent Swift
   implementation lives in `apps/ios/ADE/Services/SyncService.swift`.
-- `syncProtocol.ts` (~150 lines) — envelope encode/decode with gzip
-  threshold (`DEFAULT_SYNC_COMPRESSION_THRESHOLD_BYTES = 4 * 1024`).
-  Protocol version is `1`. Default host port is `8787`.
+- `syncProtocol.ts` — envelope encode/decode with gzip
+  threshold (`DEFAULT_SYNC_COMPRESSION_THRESHOLD_BYTES = 4 * 1024`)
+  and envelope chunking: an encoded envelope above
+  `DEFAULT_SYNC_MAX_FRAME_BYTES` (720 KB) is sliced into
+  `envelope_chunk` frames for peers that declared the
+  `chunkedEnvelopes` hello capability
+  (`SYNC_CHUNKED_ENVELOPES_CAPABILITY`); legacy peers get the single
+  full frame. Protocol version is `1`. Default host port is `8787`.
 - `syncRemoteCommandService.ts` (~2,840 lines) — command registry
   (lanes, chat, git, PR, sessions, conflicts, files,
   `prs.getMobileSnapshot`, `lanes.presence.*`, `work.runQuickCommand`,
@@ -306,11 +343,11 @@ iOS notification / widget files (under `apps/ios/`):
 ## Multi-project runtimes and project switching
 
 The machine runtime knows **every** project the user has opened on that machine
-(within retention) and exposes them as a single catalog. The current
-mobile transport is still per-active-project behind that machine: the
-phone pairs with the machine once, sees the catalog, and reconnects to
-the selected project's sync port when the user switches projects. The
-phone flow:
+(within retention) and exposes them as a single catalog. The mobile
+transport is one brain-level WebSocket listener on a stable port; one
+project's host service owns the connected peers at a time. The phone
+pairs with the machine once, sees the catalog, and stays on the same
+port across project switches. The phone flow:
 
 1. Phone connects and sends `hello`. The runtime responds with
    `hello_ok` containing the current project catalog (when supported).
@@ -318,13 +355,18 @@ phone flow:
    marked available/cached/unavailable, with `MobileProjectSummary`
    metadata (icon, lane snippets) supplied by the runtime.
 3. The user taps a project → phone sends `project_switch_request`.
-   The runtime's `prepareProjectConnection` runs, the runtime activates
-   that project locally, and returns a `project_switch_result` with
-   either a fresh `connection` payload or `connection: null` (the
-   phone should reuse its existing pairing credentials and reconnect
-   against the now-active project endpoint).
-4. After the runtime acknowledges the switch, `completeProjectConnection`
-   runs so the runtime can persist the new active project.
+   The runtime's `prepareProjectConnection` only opens the target
+   project scope and replies with the **current** port in a
+   `project_switch_result` (fresh `connection` payload or
+   `connection: null`, meaning reuse existing pairing credentials).
+4. After the result is flushed, `completeProjectConnection` runs: the
+   old host stops first and the new host starts on the same port under
+   the preferred-port retry, adopting any sockets that stayed open.
+   A phone that initiated the switch tears down and reconnects against
+   the same port; a phone that was merely connected while another
+   client switched projects is adopted in place and never disconnects.
+   If the switch fails, the previous host is restored so the listener
+   is never left unowned.
 
 Project catalog snapshots are also chunked
 (`MAX_PROJECT_CATALOG_ENVELOPE_BYTES = 768 KB`,
@@ -447,16 +489,16 @@ is not supported.
   store, with paired devices deduped by `deviceId`.
 - **Tailscale Serve tailnet discovery**: when the runtime sees a usable
   `tailscale` CLI (via `ADE_TAILSCALE_CLI` or the macOS default
-  `/Applications/Tailscale.app/Contents/MacOS/Tailscale`), it publishes
-  the sync WebSocket port on the tailnet under the service name
-  `svc:ade-sync` (`SYNC_TAILNET_DISCOVERY_SERVICE_NAME`) at the
-  default port `8787` (`SYNC_TAILNET_DISCOVERY_SERVICE_PORT`). Status
+  `/Applications/Tailscale.app/Contents/MacOS/Tailscale`), it runs a
+  plain per-node `tailscale serve` against the **live** sync port
+  (target `tcp://127.0.0.1:<port>`); the tagged-node `svc:ade-sync`
+  Service form is not used because it requires tagged nodes and pinned
+  a constant port that never matched the live socket. Status
   flows out through `SyncRoleSnapshot.tailnetDiscovery`
   (`SyncTailnetDiscoveryStatus`: `disabled | publishing | published |
   pending_approval | unavailable | failed`) plus `error` / `stderr`
-  tails. The runtime tracks a `tailnetServeSignature` so re-publishing
-  is a no-op when the `(serviceName, port, target)` tuple hasn't
-  changed.
+  tails. The runtime tracks a `tailnetServeSignature` (`serve:<port>`)
+  so re-publishing is a no-op while the port hasn't changed.
 
 ## Sync protocol (summary)
 
@@ -470,13 +512,14 @@ Envelopes are JSON with fields:
         "heartbeat" | "file_request" | "file_response" |
         "terminal_subscribe" | "terminal_unsubscribe" |
         "terminal_snapshot" | "terminal_data" | "terminal_exit" |
-        "terminal_input" | "terminal_resize" |
+        "terminal_input" | "terminal_resize" | "terminal_history" |
         "chat_subscribe" | "chat_unsubscribe" | "chat_event" |
         "brain_status" |
         "project_catalog_request" | "project_catalog" |
         "project_catalog_chunk" |
         "project_switch_request" | "project_switch_result" |
-        "command" | "command_ack" | "command_result",
+        "command" | "command_ack" | "command_result" |
+        "envelope_chunk",
   projectId?: string | null, // present on project-scoped envelopes
   requestId: string | null,
   compression: "none" | "gzip",
@@ -491,6 +534,15 @@ gzipped and base64-encoded. `parseSyncEnvelope` rejects a mismatch
 between `compression` and `payloadEncoding` and rejects unsupported
 protocol versions.
 
+Encoded envelopes larger than 720 KB
+(`DEFAULT_SYNC_MAX_FRAME_BYTES`) are sliced into `envelope_chunk`
+frames (base64 parts keyed by `chunkId`/`index`) for peers that
+declared the `chunkedEnvelopes` capability in `hello`; the receiver
+reassembles before normal decode. iOS declares the capability and
+raises its socket receive budget to 32 MiB, so chat / terminal
+snapshots, `file_response`, and large `command_result` payloads can
+no longer kill the connection with "Message too long".
+
 `SyncHelloErrorPayload.code` is trimmed to `auth_failed |
 invalid_hello`. `SyncPairingResultPayload.error.code` is one of
 `invalid_pin | pin_not_set | pairing_failed`.
@@ -499,10 +551,16 @@ Heartbeat interval is 30 seconds. Desktop peers close after **two**
 consecutive missed heartbeats; mobile peers get a wider grace window
 (`MOBILE_SYNC_HEARTBEAT_MISS_LIMIT = 6`) because iOS can briefly suspend
 foreground networking during app and route transitions. Reconnection
-resumes from the last-known `db_version` so no changesets are lost.
-Runtime-side batching keeps every row for a given `db_version` in the same
-`changeset_batch`; otherwise an ack for a partial transaction would
-advance the receiver past unsent rows.
+resumes from a **per-host-DB cursor**: `hello_ok` carries the host
+DB's `serverDbSiteId`, the phone keys its inbound cursor by that site
+(`remoteDbVersionBySite`) and sends the full map in `hello`, and the
+host picks its own site's entry (falling back to the legacy single
+cursor for older clients). Each hosted project DB has its own
+`db_version` sequence, so the per-site map is what keeps a brain that
+switches hosted projects from replaying everything or skipping
+backlog. Runtime-side batching keeps every row for a given `db_version`
+in the same `changeset_batch`; otherwise an ack for a partial
+transaction would advance the receiver past unsent rows.
 
 `changeset_batch` envelopes carry a `batchId`; legacy batches without
 one are decoded with a deterministic fallback so older desktops can
@@ -531,7 +589,7 @@ payload.
 | Changeset sync | Bidirectional cr-sqlite row exchange | All devices |
 | File access | On-demand file reads, listings, writes | iOS Files, desktop remote viewing |
 | Terminal stream/control | Subscribe to PTY output from the runtime; send input bytes and viewport resize events back to the subscribed PTY | iOS Work tab |
-| Chat stream | Agent chat transcript events (subscribe snapshot + live `chat_event` push from the runtime's `agentChatService.subscribeToEvents` fan-out; polling survives as the reconnect-catchup path) | iOS Work tab, controller chat |
+| Chat stream | Agent chat transcript events. Each `chat_event` carries a host-assigned per-session monotonic `seq` backed by a capped replay buffer (500 events / 2 MB per session, 64-session LRU). `chat_subscribe` accepts `sinceSeq`: gaps the buffer covers replay as ordinary events; uncoverable gaps fall back to a snapshot, and a non-resumed ack tells the client to drop its stale seq watermark (seq epochs restart at 1 on a new host) | iOS Work tab, controller chat |
 | Command routing | Send named actions (`chat.send`, `lanes.create`, `git.push`, `prs.getMobileSnapshot`, etc.) | Controller devices |
 | Project switching | `project_catalog` + `project_switch_request/result` for multi-project runtimes | iOS project home |
 | Runtime status | Runtime broadcasts cluster/version status (`brain_status` is the legacy envelope name) | All devices |
@@ -624,12 +682,17 @@ project scope split.
 | PIN-based phone pairing + per-device secrets | Implemented |
 | Live chat-event push from runtime | Implemented |
 | Mobile project catalog + project switch handoff | Implemented |
+| Brain-level shared listener (peers adopted across project switches) | Implemented |
+| Chunked envelopes (`envelope_chunk`, 720 KB frame budget) | Implemented |
+| Per-host-DB sync cursors (`serverDbSiteId` / `remoteDbVersionBySite`) | Implemented |
+| Resumable chat streams (per-session `seq` + `sinceSeq` replay buffer) | Implemented |
+| Mobile changeset diet (heavy never-read tables filtered for phones) | Implemented |
 | Lane presence decoration (`devicesOpen`) | Implemented |
 | PR mobile snapshot (`prs.getMobileSnapshot`) | Implemented |
 | iOS local replicated DB | Implemented |
 | iOS Lanes / Files / Work / PRs / Settings tabs | Implemented |
 | QR pairing UX | Implemented (payload v2; PIN entered separately) |
-| Tailscale integration | Implemented (address candidate + mDNS TXT + `tailscale serve` publication under `svc:ade-sync`) |
+| Tailscale integration | Implemented (address candidate + mDNS TXT + per-node `tailscale serve` publication on the live sync port) |
 | Lane portability desktop-to-desktop | Planned |
 
 ## Gotchas

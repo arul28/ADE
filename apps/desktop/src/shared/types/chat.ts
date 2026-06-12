@@ -807,6 +807,22 @@ export type AgentChatEventHistorySnapshot = {
    * runtime. Optional for compatibility with older desktop/runtime pairs.
    */
   sessionFound?: boolean;
+  /**
+   * Byte offset in the transcript file where the hydrated tail window began.
+   * Pass it as `beforeOffset` to `getChatEventHistoryPage` to page older
+   * history. Null/undefined when the session had no transcript file or the
+   * transcript was not truncated at the file level (nothing older on disk).
+   */
+  tailStartOffset?: number | null;
+};
+
+export type AgentChatEventHistoryPage = {
+  sessionId: string;
+  events: AgentChatEventEnvelope[];
+  /** Byte offset in the transcript where this page begins. Pass as the next request's beforeOffset. 0 = head reached. */
+  startOffset: number;
+  hasMore: boolean;
+  sessionFound: boolean;
 };
 
 export type AgentChatPermissionMode = "default" | "auto" | "plan" | "edit" | "full-auto" | "config-toml";
@@ -1295,9 +1311,19 @@ export type AgentChatModelCatalogRefreshProvider =
 
 export type AgentChatModelCatalogMode = "cached" | "refresh-stale" | "force";
 
+/**
+ * Which cursor discovery source the requesting surface needs synchronously.
+ * Chat surfaces run models through the Cursor SDK ("sdk"); Work-tab CLI lane
+ * drafts run the cursor-agent CLI ("cli"). "all" (default) probes both, which
+ * makes the refresh wait on the slower CLI spawn — surfaces that know their
+ * flavor should pass it so the other source revalidates in the background.
+ */
+export type AgentChatCursorModelSource = "sdk" | "cli" | "all";
+
 export type AgentChatModelCatalogArgs = {
   mode?: AgentChatModelCatalogMode;
   refreshProvider?: AgentChatModelCatalogRefreshProvider;
+  cursorSource?: AgentChatCursorModelSource;
 };
 
 export type AgentChatCreateArgs = {
@@ -1584,6 +1610,7 @@ export type AgentChatRespondToInputArgs = {
 export type AgentChatModelsArgs = {
   provider: AgentChatProvider;
   activateRuntime?: boolean;
+  cursorSource?: AgentChatCursorModelSource;
 };
 
 export type AgentChatDisposeArgs = {

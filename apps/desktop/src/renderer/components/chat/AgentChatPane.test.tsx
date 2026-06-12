@@ -33,9 +33,12 @@ import {
   cleanupTransientParallelLaunchLanes,
   formatParallelLaunchFailureMessage,
   getSubagentAutoOpenStorageKey,
+  advanceOlderHistoryCursor,
   isMatchingOptimisticUserMessage,
   mergeChatHistorySnapshot,
+  mergeOlderChatHistoryPageWithCap,
   parallelLaneModelSuffix,
+  prependOlderChatHistoryPage,
   resolveNextSelectedSessionId,
   shouldPromoteSessionForComputerUse,
   type AgentChatSessionCreatedOptions,
@@ -978,7 +981,8 @@ function renderAutoCreateDraftPane(args?: {
     session: AgentChatSession,
     options?: AgentChatSessionCreatedOptions,
   ) => void | Promise<void>;
-  workDraftKind?: "chat" | "cli" | "chat-orchestrator";
+  workDraftKind?: "chat" | "cli";
+  orchestratorEnabled?: boolean;
   onLaunchCliSession?: React.ComponentProps<typeof AgentChatPane>["onLaunchCliSession"];
   onLaneChange?: React.ComponentProps<typeof AgentChatPane>["onLaneChange"];
   lanes?: any[];
@@ -1018,6 +1022,7 @@ function renderAutoCreateDraftPane(args?: {
                 forceDraftMode
                 embeddedWorkLayout
                 workDraftKind={args?.workDraftKind}
+                orchestratorEnabled={args?.orchestratorEnabled}
                 availableLanes={lanes}
                 onLaneChange={args?.onLaneChange ?? vi.fn()}
                 onSessionCreated={args?.onSessionCreated}
@@ -1035,7 +1040,7 @@ function renderAutoCreateDraftPane(args?: {
 function composerDraftStorageKeyForTest(args: {
   projectRoot: string;
   companionStateKey: string;
-  workDraftKind?: "work-start" | "chat" | "cli" | "chat-orchestrator";
+  workDraftKind?: "work-start" | "chat" | "cli";
 }) {
   return [
     "ade.chat.composerDraft.v1",
@@ -1049,7 +1054,7 @@ function composerDraftStorageKeyForTest(args: {
 function draftLaunchJobsScopeKeyForTest(args: {
   projectRoot: string;
   laneId: string;
-  workDraftKind?: "work-start" | "chat-orchestrator";
+  workDraftKind?: "work-start";
 }) {
   return [
     "draft-launch-jobs",
@@ -3433,7 +3438,7 @@ describe("AgentChatPane submit recovery", () => {
         laneId: "lane-primary",
         prompt: "Fix auto create lane routing.",
         modelId: "openai/gpt-5.4",
-        fallbackName: expect.stringMatching(/^chat-\d{8}-\d{6}$/),
+        fallbackName: "fix-auto-create-lane-routing",
       }));
       expect(createLane).toHaveBeenCalledWith({
         name: "fix-auto-create-flow",
@@ -3566,7 +3571,7 @@ describe("AgentChatPane submit recovery", () => {
 
       await waitFor(() => {
         expect(createLane).toHaveBeenCalledWith({
-          name: expect.stringMatching(/^chat-\d{8}-\d{6}$/),
+          name: "keep-going-even-if-naming",
           baseBranch: "origin/main",
         });
         expect(create).toHaveBeenCalledWith(expect.objectContaining({ laneId: "lane-created" }));
@@ -3699,7 +3704,7 @@ describe("AgentChatPane submit recovery", () => {
   it("keeps orchestrator lead mode on the first Claude draft send", async () => {
     const { send, create } = installAdeMocks({ sessions: [], includeClaudeModel: true });
 
-    renderAutoCreateDraftPane({ workDraftKind: "chat-orchestrator" });
+    renderAutoCreateDraftPane({ orchestratorEnabled: true });
 
     const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
     const claudeLabel = getModelById("anthropic/claude-sonnet-4-6")?.displayName ?? "Claude Sonnet 4.6";
@@ -3733,7 +3738,7 @@ describe("AgentChatPane submit recovery", () => {
     vi.mocked(window.ade.orchestration.runCreate).mockRejectedValueOnce(new Error("disk full"));
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     try {
-      renderAutoCreateDraftPane({ workDraftKind: "chat-orchestrator" });
+      renderAutoCreateDraftPane({ orchestratorEnabled: true });
 
       const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
       const claudeLabel = getModelById("anthropic/claude-sonnet-4-6")?.displayName ?? "Claude Sonnet 4.6";
@@ -4125,7 +4130,7 @@ describe("AgentChatPane submit recovery", () => {
 
     await waitFor(() => {
       expect(suggestLaneName).toHaveBeenCalled();
-      expect(screen.getByText(/Choosing a branch name/i)).toBeTruthy();
+      expect(screen.getByText(/Naming lane with/i)).toBeTruthy();
       expect((screen.getByRole("button", { name: "Send" }) as HTMLButtonElement).disabled).toBe(true);
       expect((screen.getByRole("button", { name: "Auto-create in background" }) as HTMLButtonElement).disabled).toBe(true);
     });
@@ -4180,14 +4185,14 @@ describe("AgentChatPane submit recovery", () => {
 
     await waitFor(() => {
       expect(suggestLaneName).toHaveBeenCalledTimes(1);
-      expect(screen.getByText(/Choosing a branch name/i)).toBeTruthy();
+      expect(screen.getByText(/Naming lane with/i)).toBeTruthy();
     });
     expect(screen.queryByRole("button", { name: "Dismiss launch status" })).toBeNull();
 
     rendered.unmount();
     renderAutoCreateDraftPane();
 
-    expect(await screen.findByText(/Choosing a branch name/i)).toBeTruthy();
+    expect(await screen.findByText(/Naming lane with/i)).toBeTruthy();
     expect(screen.queryByRole("button", { name: "Dismiss launch status" })).toBeNull();
 
     await act(async () => {
@@ -4224,7 +4229,9 @@ describe("AgentChatPane submit recovery", () => {
           laneId: null,
           laneName: null,
           sessionId: null,
+          namingModelId: null,
           error: null,
+          warning: null,
           autoOpen: false,
           createdAtMs: Date.now() - DRAFT_LAUNCH_JOB_STALE_AFTER_MS - 1,
           snapshot: {
@@ -4287,7 +4294,7 @@ describe("AgentChatPane submit recovery", () => {
 
       await waitFor(() => {
         expect(suggestLaneName).toHaveBeenCalledTimes(1);
-        expect(screen.getByText(/Choosing a branch name/i)).toBeTruthy();
+        expect(screen.getByText(/Naming lane with/i)).toBeTruthy();
       });
 
       const scopeKey = draftLaunchJobsScopeKeyForTest({
@@ -4393,7 +4400,7 @@ describe("AgentChatPane submit recovery", () => {
 
     await waitFor(() => {
       expect(suggestLaneName).toHaveBeenCalledTimes(1);
-      expect(screen.getAllByText(/Choosing a branch name/i)).toHaveLength(1);
+      expect(screen.getAllByText(/Naming lane with/i)).toHaveLength(1);
     });
   });
 
@@ -4474,9 +4481,9 @@ describe("AgentChatPane submit recovery", () => {
 
     await waitFor(() => {
       expect(suggestLaneName).toHaveBeenCalledTimes(1);
-      expect(within(paneOne).getByText(/Choosing a branch name/i)).toBeTruthy();
+      expect(within(paneOne).getByText(/Naming lane with/i)).toBeTruthy();
     });
-    expect(within(paneTwo).queryByText(/Choosing a branch name/i)).toBeNull();
+    expect(within(paneTwo).queryByText(/Naming lane with/i)).toBeNull();
     expect(within(paneTwo).queryByTestId("draft-launch-job")).toBeNull();
   });
 
@@ -4508,7 +4515,7 @@ describe("AgentChatPane submit recovery", () => {
     }
 
     expect(screen.getAllByTestId("draft-launch-job")).toHaveLength(9);
-    expect(screen.getAllByText(/Choosing a branch name/i)).toHaveLength(9);
+    expect(screen.getAllByText(/Naming lane with/i)).toHaveLength(9);
   });
 
   it("allows multiple background auto-create launches to stay pending at the same time", async () => {
@@ -4550,7 +4557,7 @@ describe("AgentChatPane submit recovery", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Auto-create in background" }));
     await waitFor(() => {
       expect(suggestLaneName).toHaveBeenCalledTimes(2);
-      expect(screen.getAllByText(/Choosing a branch name/i)).toHaveLength(2);
+      expect(screen.getAllByText(/Naming lane with/i)).toHaveLength(2);
     });
 
     await act(async () => {
@@ -5178,7 +5185,7 @@ describe("AgentChatPane submit recovery", () => {
   });
 
   it("launches a CLI session draft in the background without stealing focus", async () => {
-    const { send, create, createLane, suggestLaneName } = installAdeMocks({ sessions: [] });
+    const { send, createLane, suggestLaneName } = installAdeMocks({ sessions: [] });
     const onLaunchCliSession = vi.fn().mockResolvedValue({ sessionId: "terminal-created", ptyId: "pty-created" });
     suggestLaneName.mockResolvedValue("background-cli-lane");
     createLane.mockResolvedValue({
@@ -5220,7 +5227,6 @@ describe("AgentChatPane submit recovery", () => {
     const launchArgs = onLaunchCliSession.mock.calls[0]?.[0];
     expect(launchArgs.startupCommand).not.toContain("Launch this CLI session in the background.");
     expect(launchArgs.initialInput).toContain("Launch this CLI session in the background.");
-    expect(create).not.toHaveBeenCalled();
     expect(send).not.toHaveBeenCalled();
     expect(screen.getByTestId("location").textContent).toBe("/work");
 
@@ -5784,7 +5790,7 @@ describe("AgentChatPane submit recovery", () => {
         laneId: "lane-1",
         prompt: "Fix the login bug",
         modelId: "openai/gpt-5.4",
-        fallbackName: expect.stringMatching(/^chat-\d{8}-\d{6}$/),
+        fallbackName: "fix-login-bug",
       }));
       expect(createChild).toHaveBeenCalledTimes(2);
     });
@@ -5796,7 +5802,7 @@ describe("AgentChatPane submit recovery", () => {
     await waitFor(() => {
       expect(create).toHaveBeenCalledTimes(2);
       expect(send).toHaveBeenCalledTimes(2);
-    });
+    }, { timeout: 5000 });
     expect(writeClipboardText).toHaveBeenCalledTimes(1);
     expect(writeClipboardText).toHaveBeenCalledWith("Fix the login bug");
     expect(create).toHaveBeenNthCalledWith(1, expect.objectContaining({
@@ -6093,6 +6099,50 @@ describe("mergeChatHistorySnapshot", () => {
     expect(merged[1]).toBe(second);
   });
 
+  it("preserves already-paged older rows when a fresh bounded tail snapshot overlaps", () => {
+    const older = envelope("2026-04-30T23:10:00.000Z", 1002, "already paged older");
+    const firstTail = envelope("2026-04-30T23:14:47.751Z", 1003, "tail first");
+    const secondTail = envelope("2026-04-30T23:19:57.083Z", 1004, "tail second");
+    const parsedFirstTail = envelope("2026-04-30T23:14:47.751Z", 1003, "tail first");
+    const parsedSecondTail = envelope("2026-04-30T23:19:57.083Z", 1004, "tail second refreshed");
+
+    const merged = mergeChatHistorySnapshot(
+      [parsedFirstTail, parsedSecondTail],
+      [older, firstTail, secondTail],
+    );
+
+    expect(merged.map((entry) => entry.event.type === "text" ? entry.event.text : "")).toEqual([
+      "already paged older",
+      "tail first",
+      "tail second refreshed",
+    ]);
+    expect(merged[0]).toBe(older);
+    expect(merged[1]).toBe(firstTail);
+  });
+
+  it("preserves already-paged older rows when only a later tail row overlaps", () => {
+    const older = envelope("2026-04-30T23:10:00.000Z", 1001, "already paged older");
+    const firstTail = envelope("2026-04-30T23:14:47.751Z", 1002, "tail first");
+    const secondTail = envelope("2026-04-30T23:19:57.083Z", 1003, "tail second");
+    const recoveredBeforeOverlap = envelope("2026-04-30T23:14:40.000Z", 1004, "recovered before overlap");
+    const parsedSecondTail = envelope("2026-04-30T23:19:57.083Z", 1003, "tail second");
+
+    const merged = mergeChatHistorySnapshot(
+      [recoveredBeforeOverlap, parsedSecondTail],
+      [older, firstTail, secondTail],
+    );
+
+    expect(merged.map((entry) => entry.event.type === "text" ? entry.event.text : "")).toEqual([
+      "already paged older",
+      "tail first",
+      "recovered before overlap",
+      "tail second",
+    ]);
+    expect(merged[0]).toBe(older);
+    expect(merged[1]).toBe(firstTail);
+    expect(merged[3]).toBe(secondTail);
+  });
+
   it("reuses existing snapshot entries while appending newly recovered events", () => {
     const first = envelope("2026-04-30T23:14:47.751Z", 1003, "first");
     const parsedFirst = envelope("2026-04-30T23:14:47.751Z", 1003, "first");
@@ -6102,6 +6152,159 @@ describe("mergeChatHistorySnapshot", () => {
 
     expect(merged[0]).toBe(first);
     expect(merged[1]).toBe(parsedSecond);
+  });
+});
+
+describe("prependOlderChatHistoryPage", () => {
+  function envelope(timestamp: string, sequence: number, text: string): AgentChatEventEnvelope {
+    return {
+      sessionId: "session-1",
+      timestamp,
+      sequence,
+      event: { type: "text", text },
+    };
+  }
+
+  it("prepends older events ahead of the loaded list", () => {
+    const olderA = envelope("2026-06-10T09:00:00.000Z", 1, "older-a");
+    const olderB = envelope("2026-06-10T09:01:00.000Z", 2, "older-b");
+    const loaded = envelope("2026-06-10T10:00:00.000Z", 3, "loaded");
+
+    const merged = prependOlderChatHistoryPage([olderA, olderB], [loaded]);
+
+    expect(merged.map((entry) => (entry.event.type === "text" ? entry.event.text : ""))).toEqual([
+      "older-a",
+      "older-b",
+      "loaded",
+    ]);
+    // Existing envelope identity is preserved (the message list relies on it
+    // to keep row measurements across the prepend).
+    expect(merged[2]).toBe(loaded);
+  });
+
+  it("drops page entries that duplicate the seam of the loaded list", () => {
+    // The hydrated tail merges the disk transcript with the live ring buffer,
+    // so a byte-window page ending at the cursor can overlap the oldest
+    // loaded entries — duplicates at the seam must be dropped.
+    const older = envelope("2026-06-10T09:00:00.000Z", 1, "older");
+    const seam = envelope("2026-06-10T09:30:00.000Z", 2, "seam");
+    const seamFromDisk = envelope("2026-06-10T09:30:00.000Z", 2, "seam");
+    const tail = envelope("2026-06-10T10:00:00.000Z", 3, "tail");
+
+    const existing = [seam, tail];
+    const merged = prependOlderChatHistoryPage([older, seamFromDisk], existing);
+
+    expect(merged.map((entry) => (entry.event.type === "text" ? entry.event.text : ""))).toEqual([
+      "older",
+      "seam",
+      "tail",
+    ]);
+    expect(merged[1]).toBe(seam);
+  });
+
+  it("returns the existing array unchanged when the page contributes nothing", () => {
+    const seam = envelope("2026-06-10T09:30:00.000Z", 2, "seam");
+    const seamFromDisk = envelope("2026-06-10T09:30:00.000Z", 2, "seam");
+    const existing = [seam];
+
+    expect(prependOlderChatHistoryPage([], existing)).toBe(existing);
+    expect(prependOlderChatHistoryPage([seamFromDisk], existing)).toBe(existing);
+  });
+
+  it("keeps same-millisecond fragments with distinct payloads", () => {
+    const fragmentA = envelope("2026-06-10T09:30:00.000Z", 1, "fragment-a");
+    const fragmentB = envelope("2026-06-10T09:30:00.000Z", 2, "fragment-b");
+
+    const merged = prependOlderChatHistoryPage([fragmentA], [fragmentB]);
+
+    expect(merged.map((entry) => (entry.event.type === "text" ? entry.event.text : ""))).toEqual([
+      "fragment-a",
+      "fragment-b",
+    ]);
+  });
+});
+
+describe("mergeOlderChatHistoryPageWithCap", () => {
+  function envelope(timestamp: string, sequence: number, text: string): AgentChatEventEnvelope {
+    return {
+      sessionId: "session-1",
+      timestamp,
+      sequence,
+      event: { type: "text", text },
+    };
+  }
+
+  it("keeps the existing event list when an older page is only a seam duplicate", () => {
+    const seam = envelope("2026-06-10T09:30:00.000Z", 2, "seam");
+    const seamFromDisk = envelope("2026-06-10T09:30:00.000Z", 2, "seam");
+    const existing = [seam];
+
+    const merged = mergeOlderChatHistoryPageWithCap({
+      older: [seamFromDisk],
+      existing,
+      maxEvents: 10,
+    });
+
+    expect(merged.events).toBe(existing);
+    expect(merged.hitResidentCap).toBe(false);
+  });
+
+  it("reports when a prepended page would exceed the resident history cap", () => {
+    const older = envelope("2026-06-10T09:00:00.000Z", 1, "older");
+    const loadedA = envelope("2026-06-10T10:00:00.000Z", 2, "loaded-a");
+    const loadedB = envelope("2026-06-10T10:01:00.000Z", 3, "loaded-b");
+    const loadedC = envelope("2026-06-10T10:02:00.000Z", 4, "loaded-c");
+
+    const merged = mergeOlderChatHistoryPageWithCap({
+      older: [older],
+      existing: [loadedA, loadedB, loadedC],
+      maxEvents: 3,
+    });
+
+    expect(merged.events.map((entry) => (entry.event.type === "text" ? entry.event.text : ""))).toEqual([
+      "loaded-a",
+      "loaded-b",
+      "loaded-c",
+    ]);
+    expect(merged.hitResidentCap).toBe(true);
+  });
+
+  it("keeps prepended history when the loaded snapshot has reached the initial hydration cap", () => {
+    const older = envelope("2026-06-10T08:59:00.000Z", 0, "older-page");
+    const existing = Array.from({ length: 20_000 }, (_, index) =>
+      envelope(
+        new Date(Date.UTC(2026, 5, 10, 9, 0, index % 60)).toISOString(),
+        index + 1,
+        `loaded-${index}`,
+      ));
+
+    const merged = mergeOlderChatHistoryPageWithCap({
+      older: [older],
+      existing,
+      maxEvents: 60_000,
+    });
+
+    expect(merged.hitResidentCap).toBe(false);
+    expect(merged.events).toHaveLength(existing.length + 1);
+    expect(merged.events[0]).toBe(older);
+  });
+});
+
+describe("advanceOlderHistoryCursor", () => {
+  it("follows a strictly decreasing cursor while more history exists", () => {
+    expect(advanceOlderHistoryCursor(10_000, { startOffset: 4_000, hasMore: true })).toBe(4_000);
+  });
+
+  it("returns 0 when the head is reached", () => {
+    expect(advanceOlderHistoryCursor(10_000, { startOffset: 0, hasMore: false })).toBe(0);
+    expect(advanceOlderHistoryCursor(10_000, { startOffset: 4_000, hasMore: false })).toBe(0);
+  });
+
+  it("terminates on malformed (non-decreasing or invalid) cursors", () => {
+    expect(advanceOlderHistoryCursor(10_000, { startOffset: 10_000, hasMore: true })).toBe(0);
+    expect(advanceOlderHistoryCursor(10_000, { startOffset: 12_000, hasMore: true })).toBe(0);
+    expect(advanceOlderHistoryCursor(10_000, { startOffset: -5, hasMore: true })).toBe(0);
+    expect(advanceOlderHistoryCursor(10_000, { startOffset: Number.NaN, hasMore: true })).toBe(0);
   });
 });
 

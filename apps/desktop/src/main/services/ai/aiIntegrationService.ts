@@ -67,15 +67,17 @@ import { inspectLocalProvider } from "./localModelDiscovery";
 import {
   discoverCursorSdkModelDescriptors,
   clearCursorCliModelsCache,
+  markCursorModelCachesStale,
   probeCursorSdkModelDiscovery,
 } from "../chat/cursorModelsDiscovery";
-import { discoverDroidCliModelDescriptors, clearDroidCliModelsCache } from "../chat/droidModelsDiscovery";
+import { discoverDroidCliModelDescriptors, markDroidModelCachesStale } from "../chat/droidModelsDiscovery";
 import { resolveDroidExecutable } from "./droidExecutable";
 import { buildProviderConnections } from "./providerConnectionStatus";
 import { getProviderRuntimeHealthVersion, resetProviderRuntimeHealth } from "./providerRuntimeHealth";
 import { resetClaudeRuntimeProbeCache } from "./claudeRuntimeProbe";
 import { runProviderTask } from "./providerTaskRunner";
 import { resolveClaudeCodeExecutable } from "./claudeCodeExecutable";
+import { loadCursorSdk } from "./cursorSdkLoader";
 
 export type AiTaskType =
   | "planning"
@@ -998,7 +1000,10 @@ export function createAiIntegrationService(args: {
 
     let available = getAvailableModels(auth);
     const discoveryMode = options?.discoverCliModels === true ? "probe" : "cached-or-fallback";
-    const cursorDiscoveryMode = options?.discoverCliModels === true ? "probe" : "cached-only";
+    // "cached-or-fallback" serves last-known-good rows and warms the cache in
+    // the background when cold, so a verified key surfaces models on passive
+    // status reads (availableModelIds, mobile, TUI) without an active probe.
+    const cursorDiscoveryMode = options?.discoverCliModels === true ? "probe" : "cached-or-fallback";
 
     const cursorApiKey = getCursorApiKeyFromAuth(auth);
     if (cursorApiKey) {
@@ -1074,7 +1079,7 @@ export function createAiIntegrationService(args: {
               ...verification,
               ok: false,
               message:
-                "Cursor account verification succeeded, but Cursor rejected this API key for agent/model access. Re-enter a key from the Cursor dashboard integrations page.",
+                "Cursor account verification succeeded, but Cursor rejected this API key for agent/model access. Re-enter a key from the Cursor dashboard API page.",
               source: apiEntry.source,
             };
           }
@@ -1105,7 +1110,7 @@ export function createAiIntegrationService(args: {
 
   const listCursorCloudRepositories = async (): Promise<CursorCloudRepository[]> => {
     const apiKey = await requireCursorCloudApiKey();
-    const { Cursor } = await import("@cursor/sdk");
+    const { Cursor } = await loadCursorSdk();
     const repos = await Cursor.repositories.list({ apiKey });
     return repos
       .map((repo) => ({ url: String(repo.url ?? "").trim() }))
@@ -1118,7 +1123,7 @@ export function createAiIntegrationService(args: {
     cursor?: string | null;
   }): Promise<CursorCloudListAgentsResult> => {
     const apiKey = await requireCursorCloudApiKey();
-    const { Agent } = await import("@cursor/sdk");
+    const { Agent } = await loadCursorSdk();
     const result = await Agent.list({
       runtime: "cloud",
       apiKey,
@@ -1140,7 +1145,7 @@ export function createAiIntegrationService(args: {
     const agentId = args.agentId.trim();
     if (!agentId) throw new Error("Cursor cloud agent id is required.");
     const apiKey = await requireCursorCloudApiKey();
-    const { Agent } = await import("@cursor/sdk");
+    const { Agent } = await loadCursorSdk();
     const result = await Agent.listRuns(agentId, {
       runtime: "cloud",
       apiKey,
@@ -1162,7 +1167,7 @@ export function createAiIntegrationService(args: {
     if (!repoUrl) throw new Error("Cursor cloud repo is required.");
     const idempotencyKey = args.idempotencyKey?.trim() || undefined;
     const apiKey = await requireCursorCloudApiKey();
-    const { Agent } = await import("@cursor/sdk");
+    const { Agent } = await loadCursorSdk();
     const agent = await Agent.create({
       apiKey,
       ...(idempotencyKey ? { idempotencyKey } : {}),
@@ -1198,7 +1203,7 @@ export function createAiIntegrationService(args: {
     const id = agentId.trim();
     if (!id) throw new Error("Cursor cloud agent id is required.");
     const apiKey = await requireCursorCloudApiKey();
-    const { Agent } = await import("@cursor/sdk");
+    const { Agent } = await loadCursorSdk();
     await Agent.archive(id, { apiKey });
   };
 
@@ -1206,7 +1211,7 @@ export function createAiIntegrationService(args: {
     const id = agentId.trim();
     if (!id) throw new Error("Cursor cloud agent id is required.");
     const apiKey = await requireCursorCloudApiKey();
-    const { Agent } = await import("@cursor/sdk");
+    const { Agent } = await loadCursorSdk();
     await Agent.unarchive(id, { apiKey });
   };
 
@@ -1214,7 +1219,7 @@ export function createAiIntegrationService(args: {
     const id = agentId.trim();
     if (!id) throw new Error("Cursor cloud agent id is required.");
     const apiKey = await requireCursorCloudApiKey();
-    const { Agent } = await import("@cursor/sdk");
+    const { Agent } = await loadCursorSdk();
     await Agent.delete(id, { apiKey });
   };
 
@@ -1222,7 +1227,7 @@ export function createAiIntegrationService(args: {
     const id = agentId.trim();
     if (!id) throw new Error("Cursor cloud agent id is required.");
     const apiKey = await requireCursorCloudApiKey();
-    const { Agent } = await import("@cursor/sdk");
+    const { Agent } = await loadCursorSdk();
     try {
       const raw = await Agent.get(id, { apiKey });
       return normalizeCursorCloudAgent(raw);
@@ -1237,7 +1242,7 @@ export function createAiIntegrationService(args: {
     const id = agentId.trim();
     if (!id) throw new Error("Cursor cloud agent id is required.");
     const apiKey = await requireCursorCloudApiKey();
-    const { Agent } = await import("@cursor/sdk");
+    const { Agent } = await loadCursorSdk();
     const cloudAgent = await Agent.resume(id, { apiKey });
     try {
       const artifacts = await cloudAgent.listArtifacts();
@@ -1264,7 +1269,7 @@ export function createAiIntegrationService(args: {
     if (!id) throw new Error("Cursor cloud agent id is required.");
     if (!artifactPath.length) throw new Error("Cursor cloud artifact path is required.");
     const apiKey = await requireCursorCloudApiKey();
-    const { Agent } = await import("@cursor/sdk");
+    const { Agent } = await loadCursorSdk();
     const cloudAgent = await Agent.resume(id, { apiKey });
     try {
       const buffer = await cloudAgent.downloadArtifact(artifactPath);
@@ -1504,7 +1509,7 @@ export function createAiIntegrationService(args: {
       throw new Error("No AI provider is available. Install and authenticate Claude Code and/or Codex CLI.");
     }
 
-    if (!getFeatureFlag(args.feature)) {
+    if (args.taskType !== "session_title" && !getFeatureFlag(args.feature)) {
       logger.warn("ai.task.skipped_feature_disabled", {
         requestId,
         taskType: args.taskType,
@@ -1625,8 +1630,14 @@ export function createAiIntegrationService(args: {
     resetProviderRuntimeHealth();
     resetClaudeRuntimeProbeCache();
     resetLocalProviderDetectionCache();
-    clearCursorCliModelsCache();
-    clearDroidCliModelsCache();
+    // Keep last-known-good cursor/droid model rows: generic readiness
+    // invalidation runs on every forced status refresh and on verifying ANY
+    // provider's key, and blanking the dynamic model lists here made cursor
+    // models vanish from every surface right after a successful verification.
+    // A cursor key change does a full clear at the storeApiKey/deleteApiKey
+    // call sites; droid auth is file-based, so it has no such call site.
+    markCursorModelCachesStale();
+    markDroidModelCachesStale();
     clearOpenCodeBinaryCache();
     clearOpenCodeInventoryCache();
     replaceDynamicOpenCodeModelDescriptors([]);
@@ -1901,10 +1912,12 @@ export function createAiIntegrationService(args: {
     verifyApiKeyConnection,
     storeApiKey(provider: string, key: string): void {
       storeStoredApiKey(provider, key);
+      if (provider.trim().toLowerCase() === "cursor") clearCursorCliModelsCache();
       invalidateProviderReadinessCaches();
     },
     deleteApiKey(provider: string): void {
       deleteStoredApiKey(provider);
+      if (provider.trim().toLowerCase() === "cursor") clearCursorCliModelsCache();
       invalidateProviderReadinessCaches();
     },
     listApiKeys(): string[] {
@@ -2006,6 +2019,7 @@ export function createAiIntegrationService(args: {
       prompt: string;
       timeoutMs?: number;
       model?: string;
+      reasoningEffort?: string | null;
       jsonSchema?: unknown;
       systemPrompt?: string;
       taskType?: Extract<AiTaskType, "terminal_summary" | "session_title" | "session_summary" | "handoff_summary" | "continuity_summary" | "context_compaction">;
@@ -2017,6 +2031,7 @@ export function createAiIntegrationService(args: {
         prompt: args.prompt,
         timeoutMs: args.timeoutMs,
         model: args.model,
+        reasoningEffort: args.reasoningEffort,
         jsonSchema: args.jsonSchema,
         systemPrompt: args.systemPrompt
       });

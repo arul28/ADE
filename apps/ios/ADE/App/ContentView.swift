@@ -36,7 +36,6 @@ private enum RootTab: Hashable, CaseIterable, Identifiable {
 struct ContentView: View {
   @EnvironmentObject private var syncService: SyncService
   @State private var selectedTab: RootTab = .work
-  @State private var rootTabBarHidden = false
   @AppStorage("ade.colorScheme") private var colorSchemeRaw: String = ADEColorSchemeChoice.system.rawValue
 
   private var colorSchemeChoice: ADEColorSchemeChoice {
@@ -58,9 +57,6 @@ struct ContentView: View {
       .preferredColorScheme(colorSchemeChoice.preferredColorScheme)
       .sensoryFeedback(.selection, trigger: selectedTab)
       .environmentObject(syncService.attentionDrawer)
-      .onAppear {
-        ADEUIKitAppearance.configureTabBar()
-      }
       .sheet(isPresented: $syncService.settingsPresented) {
         ConnectionSettingsView(syncService: syncService)
       }
@@ -107,18 +103,6 @@ struct ContentView: View {
       filesTab
       ctoTab
     }
-    .toolbar(.hidden, for: .tabBar)
-    .safeAreaInset(edge: .bottom, spacing: 0) {
-      if !rootTabBarHidden {
-        ADERootBottomTabBar(
-          selectedTab: $selectedTab,
-          workBadgeCount: syncService.runningChatSessionCount
-        )
-      }
-    }
-    .onPreferenceChange(ADERootTabBarHiddenPreferenceKey.self) { hidden in
-      rootTabBarHidden = hidden
-    }
   }
 
   private var workTab: some View {
@@ -160,64 +144,6 @@ struct ContentView: View {
       .tabItem {
         Label("CTO", systemImage: "brain.head.profile")
       }
-  }
-}
-
-private struct ADERootBottomTabBar: View {
-  @Binding var selectedTab: RootTab
-  let workBadgeCount: Int
-
-  var body: some View {
-    HStack(spacing: 6) {
-      ForEach(RootTab.allCases) { tab in
-        Button {
-          selectedTab = tab
-        } label: {
-          VStack(spacing: 4) {
-            ZStack(alignment: .topTrailing) {
-              Image(systemName: tab.symbol)
-                .font(.system(size: 18, weight: .semibold))
-                .frame(width: 38, height: 28)
-
-              if tab == .work, workBadgeCount > 0 {
-                Text("\(min(workBadgeCount, 99))")
-                  .font(.system(size: 10, weight: .bold, design: .rounded))
-                  .foregroundStyle(.white)
-                  .padding(.horizontal, 5)
-                  .frame(minWidth: 18, minHeight: 18)
-                  .background(ADEColor.danger, in: Capsule())
-                  .offset(x: 10, y: -6)
-              }
-            }
-
-            Text(tab.title)
-              .font(.caption2.weight(.semibold))
-              .lineLimit(1)
-          }
-          .frame(maxWidth: .infinity)
-          .foregroundStyle(selectedTab == tab ? ADEColor.accentBright : ADEColor.textSecondary)
-          .padding(.vertical, 8)
-          .background(
-            selectedTab == tab
-              ? ADEColor.accent.opacity(0.14)
-              : Color.clear,
-            in: RoundedRectangle(cornerRadius: 16, style: .continuous)
-          )
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(tab.title)
-        .accessibilityValue(selectedTab == tab ? "Selected" : "")
-      }
-    }
-    .padding(.horizontal, 12)
-    .padding(.top, 8)
-    .padding(.bottom, 8)
-    .background(ADEColor.surfaceBackground.ignoresSafeArea(edges: .bottom))
-    .overlay(alignment: .top) {
-      Rectangle()
-        .fill(ADEColor.glassBorder)
-        .frame(height: 0.5)
-    }
   }
 }
 
@@ -378,6 +304,31 @@ private struct ProjectHomeView: View {
   }
 
   private var emptyProjects: some View {
+    Group {
+      if syncService.connectionState == .disconnected || syncService.connectionState == .error {
+        noMachineConnectedCard
+      } else {
+        emptyProjectsActionCard
+      }
+    }
+  }
+
+  private var noMachineConnectedCard: some View {
+    Text("No machine connected")
+      .font(.system(.subheadline, design: .rounded).weight(.medium))
+      .foregroundStyle(ADEColor.textSecondary)
+      .multilineTextAlignment(.center)
+      .frame(maxWidth: .infinity, alignment: .center)
+      .padding(14)
+      .background(ADEColor.cardBackground.opacity(0.62), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+      .overlay(
+        RoundedRectangle(cornerRadius: 8, style: .continuous)
+          .stroke(ADEColor.border.opacity(0.80), lineWidth: 1)
+      )
+      .accessibilityLabel("No machine connected")
+  }
+
+  private var emptyProjectsActionCard: some View {
     Button {
       syncService.settingsPresented = true
     } label: {
@@ -412,7 +363,7 @@ private struct ProjectHomeView: View {
     switch syncService.connectionState {
     case .connected, .syncing: return "No projects on machine"
     case .connecting: return "Connecting to machine"
-    case .error, .disconnected: return "Connect to a machine running ADE"
+    case .error, .disconnected: return "No projects on machine"
     }
   }
 
@@ -423,7 +374,7 @@ private struct ProjectHomeView: View {
     case .connecting:
       return syncService.hostName ?? "Projects appear after this iPhone connects"
     case .error, .disconnected:
-      return "Connect first before you can see projects"
+      return "Open a project on your machine"
     }
   }
 }

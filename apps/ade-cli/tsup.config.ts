@@ -38,7 +38,8 @@ export default defineConfig([
       bootstrap: "src/bootstrap.ts",
       adeRpcServer: "src/adeRpcServer.ts",
       ptyHostWorker: "../desktop/src/main/services/pty/ptyHostWorker.ts",
-      cursorSdkWorker: "../desktop/src/main/services/chat/cursorSdkWorker.ts"
+      cursorSdkWorker: "../desktop/src/main/services/chat/cursorSdkWorker.ts",
+      droidSdkWorker: "../desktop/src/main/services/chat/droidSdkWorker.ts"
     },
     format: ["cjs"],
     platform: "node",

@@ -84,24 +84,43 @@ export const ChatTasksPanel = React.memo(function ChatTasksPanel({
       expanded={expanded}
       onToggle={() => setExpanded((v) => !v)}
     >
-      <div className="space-y-px py-1">
-        {sortedItems.map((item) => (
-          <div
-            key={item.id}
-            className={cn(
-              "ade-chat-task-row flex items-start gap-2.5 px-3 py-1.5",
-              item.status === "in_progress" && "ade-chat-task-row-active",
-            )}
-          >
-            <span className="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center">
-              {statusIcon(item.status)}
-            </span>
-            <span className={cn("text-[13px] leading-snug", statusTextClass(item.status))}>
-              {item.description}
-            </span>
-          </div>
-        ))}
-      </div>
+      <ChatTaskList items={sortedItems} />
     </BottomDrawerSection>
+  );
+});
+
+export const ChatTaskList = React.memo(function ChatTaskList({
+  items,
+  className,
+}: {
+  items: TodoItemSnapshot[];
+  className?: string;
+}) {
+  const sortedItems = useMemo(
+    () => [...items].sort((a, b) => STATUS_SORT_ORDER[a.status] - STATUS_SORT_ORDER[b.status]),
+    [items],
+  );
+
+  if (!items.length) return null;
+
+  return (
+    <div className={cn("space-y-px py-1", className)}>
+      {sortedItems.map((item) => (
+        <div
+          key={item.id}
+          className={cn(
+            "ade-chat-task-row flex items-start gap-2.5 px-3 py-1.5",
+            item.status === "in_progress" && "ade-chat-task-row-active",
+          )}
+        >
+          <span className="mt-0.5 flex h-4 w-4 shrink-0 items-center justify-center">
+            {statusIcon(item.status)}
+          </span>
+          <span className={cn("text-[13px] leading-snug", statusTextClass(item.status))}>
+            {item.description}
+          </span>
+        </div>
+      ))}
+    </div>
   );
 });

@@ -37,6 +37,8 @@ PRtab
 pnpm-lock.yaml
 release/
 release-stable/
+# ...but the agent-folder dev-loop skill named "release" must stay tracked
+!/.agents/skills/release/
 /.electron-cache
 
 # Secrets & env
@@ -77,3 +79,4 @@ package-lock.json
 apps/desktop/resources/runtime/ade-*
 
 .claude/scheduled_tasks.lock
+apps/web/public/images/updatedImages/

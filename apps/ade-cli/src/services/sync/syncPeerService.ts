@@ -49,6 +49,8 @@ const CHANGESET_ACK_TIMEOUT_MS = 10_000;
 const MAX_CHANGESET_ACK_RETRIES = 6;
 const MAX_OUTBOUND_CHANGESET_BATCH_BYTES = DEFAULT_MAX_CHANGESET_BATCH_BYTES;
 const MAX_OUTBOUND_CHANGESET_BATCH_ROWS = DEFAULT_MAX_CHANGESET_BATCH_ROWS;
+// See syncHostService SYNC_EXPORT_VERSION_WINDOW.
+const OUTBOUND_EXPORT_VERSION_WINDOW = 250_000;
 
 export function createSyncPeerService(args: SyncPeerServiceArgs) {
   let ws: WebSocket | null = null;
@@ -204,19 +206,32 @@ export function createSyncPeerService(args: SyncPeerServiceArgs) {
     const currentDbVersion = args.db.sync.getDbVersion();
     if (currentDbVersion <= outboundLocalDbVersion) return;
     const localSiteId = args.deviceRegistryService.getLocalSiteId();
-    const changes = args.db.sync
-      .exportChangesSince(outboundLocalDbVersion)
-      .filter((change) => change.site_id === localSiteId);
+    // Bounded export — scan a db_version window, not the whole backlog. An
+    // open-ended scan of a deep backlog aborts under concurrent writes
+    // (SQLITE_ABORT), permanently stalling the relay; empty windows advance
+    // the cursor so sparse ranges are crossed in a few ticks.
+    const scanThroughDbVersion = Math.min(
+      outboundLocalDbVersion + OUTBOUND_EXPORT_VERSION_WINDOW,
+      currentDbVersion,
+    );
+    const exported = args.db.sync.exportChangesSince(
+      outboundLocalDbVersion,
+      { maxRows: MAX_OUTBOUND_CHANGESET_BATCH_ROWS * 4, throughDbVersion: scanThroughDbVersion },
+    );
+    const exportedThroughDbVersion = exported.length > 0
+      ? Number(exported[exported.length - 1].db_version)
+      : scanThroughDbVersion;
+    const changes = exported.filter((change) => change.site_id === localSiteId);
     const previousDbVersion = outboundLocalDbVersion;
     if (!changes.length) {
-      outboundLocalDbVersion = currentDbVersion;
+      outboundLocalDbVersion = exportedThroughDbVersion;
       return;
     }
     const payload = buildChangesetBatchPayload({
       deviceId: currentLocalPeerMetadata().deviceId,
       reason: "relay",
       fromDbVersion: previousDbVersion,
-      toDbVersion: currentDbVersion,
+      toDbVersion: exportedThroughDbVersion,
       changes,
       maxRows: MAX_OUTBOUND_CHANGESET_BATCH_ROWS,
       maxBytes: MAX_OUTBOUND_CHANGESET_BATCH_BYTES,

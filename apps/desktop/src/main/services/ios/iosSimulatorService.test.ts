@@ -614,6 +614,32 @@ describe("iosSimulatorService Xcode preview parsing", () => {
     }
   });
 
+  it("returns an actionable no-context result for current preview rendering", async () => {
+    const projectRoot = fs.mkdtempSync(`${os.tmpdir()}/ade-ios-preview-current-no-context-`);
+    const service = createIosSimulatorService({
+      projectRoot,
+      logger: noopLogger,
+    });
+
+    try {
+      const result = await service.renderCurrentPreview();
+
+      expect(result).toMatchObject({
+        ok: false,
+        target: null,
+        render: null,
+        match: {
+          status: "no-context",
+          confidence: "none",
+        },
+      });
+      expect(result.error).toMatch(/select --x <x> --y <y>/);
+    } finally {
+      service.dispose();
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
   it("resolves an exact Preview Lab match for the selected Swift file", async () => {
     const projectRoot = fs.mkdtempSync(`${os.tmpdir()}/ade-ios-preview-match-`);
     const iosDir = path.join(projectRoot, "apps", "ios", "ADE", "Views");

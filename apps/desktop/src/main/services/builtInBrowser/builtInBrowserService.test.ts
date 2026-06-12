@@ -359,16 +359,22 @@ let fakeWindowId = 1;
 
 function fakeBrowserWindow() {
   const children: unknown[] = [];
+  const addChildViewCalls: unknown[] = [];
+  const removeChildViewCalls: unknown[] = [];
   return {
     id: fakeWindowId++,
     isDestroyed: () => false,
     getContentBounds: () => ({ x: 0, y: 0, width: 1280, height: 720 }),
+    addChildViewCalls,
+    removeChildViewCalls,
     contentView: {
       children,
       addChildView: (view: unknown) => {
+        addChildViewCalls.push(view);
         if (!children.includes(view)) children.push(view);
       },
       removeChildView: (view: unknown) => {
+        removeChildViewCalls.push(view);
         const index = children.indexOf(view);
         if (index >= 0) children.splice(index, 1);
       },
@@ -705,6 +711,164 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     expect(service.getStatus(browserWin).url).toBe("https://beta.example.test/");
     expect(service.getStatus({ projectRoot: "/Users/ade/project-alpha" }).profileProjectRoot).toBe("/Users/ade/project-alpha");
     expect(service.getStatus({ projectRoot: "/Users/ade/project-alpha" }).url).toBe("https://alpha.example.test/");
+  });
+
+  it("attaches project-scoped browser views without waiting for a window focus event", async () => {
+    const projectRootByWindow = new Map<number, string>();
+    const windowsByProjectRoot = new Map<string, ReturnType<typeof fakeBrowserWindow>>();
+    const service = createBuiltInBrowserService({
+      onEvent: collector.onEvent,
+      getProjectRootForWindow: (win) => projectRootByWindow.get(win.id) ?? null,
+      getWindowForProjectRoot: (projectRoot) =>
+        (
+          windowsByProjectRoot.get(projectRoot) as unknown as
+            Parameters<ReturnType<typeof createBuiltInBrowserService>["attachToWindow"]>[0] | undefined
+        ) ?? null,
+    });
+    const win = fakeBrowserWindow();
+    const browserWin = win as unknown as Parameters<typeof service.attachToWindow>[0];
+    windowsByProjectRoot.set("/Users/ade/project-alpha", win);
+    windowsByProjectRoot.set("/Users/ade/project-beta", win);
+
+    service.attachToWindow(browserWin);
+    projectRootByWindow.set(win.id, "/Users/ade/project-alpha");
+    await service.setBounds({
+      projectRoot: "/Users/ade/project-alpha",
+      x: 12,
+      y: 24,
+      width: 640,
+      height: 360,
+      visible: true,
+    });
+
+    expect(service.getStatus({ projectRoot: "/Users/ade/project-alpha" })).toMatchObject({
+      attached: true,
+      profileProjectRoot: "/Users/ade/project-alpha",
+      visible: true,
+    });
+    expect(win.contentView.children).toHaveLength(1);
+
+    projectRootByWindow.set(win.id, "/Users/ade/project-beta");
+    await service.setBounds({
+      projectRoot: "/Users/ade/project-beta",
+      x: 12,
+      y: 24,
+      width: 640,
+      height: 360,
+      visible: true,
+    });
+
+    expect(service.getStatus({ projectRoot: "/Users/ade/project-beta" })).toMatchObject({
+      attached: true,
+      profileProjectRoot: "/Users/ade/project-beta",
+      visible: true,
+    });
+    expect(win.contentView.children).toHaveLength(1);
+    expect(service.getStatus({ projectRoot: "/Users/ade/project-alpha" })).toMatchObject({
+      attached: false,
+      visible: false,
+    });
+  });
+
+  it("keeps same-project view attachment stable across repeated project-scoped calls", async () => {
+    const projectRootByWindow = new Map<number, string>();
+    const windowsByProjectRoot = new Map<string, ReturnType<typeof fakeBrowserWindow>>();
+    const service = createBuiltInBrowserService({
+      onEvent: collector.onEvent,
+      getProjectRootForWindow: (win) => projectRootByWindow.get(win.id) ?? null,
+      getWindowForProjectRoot: (projectRoot) =>
+        (
+          windowsByProjectRoot.get(projectRoot) as unknown as
+            Parameters<ReturnType<typeof createBuiltInBrowserService>["attachToWindow"]>[0] | undefined
+        ) ?? null,
+    });
+    const win = fakeBrowserWindow();
+    const browserWin = win as unknown as Parameters<typeof service.attachToWindow>[0];
+    projectRootByWindow.set(win.id, "/Users/ade/project-alpha");
+    windowsByProjectRoot.set("/Users/ade/project-alpha", win);
+
+    service.attachToWindow(browserWin);
+    await service.setBounds({
+      projectRoot: "/Users/ade/project-alpha",
+      x: 12,
+      y: 24,
+      width: 640,
+      height: 360,
+      visible: true,
+    });
+
+    expect(win.contentView.children).toHaveLength(1);
+    const attachedView = win.contentView.children[0];
+    const addCalls = win.addChildViewCalls.length;
+    const removeCalls = win.removeChildViewCalls.length;
+
+    expect(service.getStatus({ projectRoot: "/Users/ade/project-alpha" })).toMatchObject({
+      attached: true,
+      visible: true,
+    });
+    await service.setBounds({
+      projectRoot: "/Users/ade/project-alpha",
+      x: 12,
+      y: 24,
+      width: 640,
+      height: 360,
+      visible: true,
+    });
+
+    expect(win.contentView.children).toEqual([attachedView]);
+    expect(win.addChildViewCalls).toHaveLength(addCalls);
+    expect(win.removeChildViewCalls).toHaveLength(removeCalls);
+  });
+
+  it("keeps project browser views attached independently in separate ADE windows", async () => {
+    const projectRootByWindow = new Map<number, string>();
+    const windowsByProjectRoot = new Map<string, ReturnType<typeof fakeBrowserWindow>>();
+    const service = createBuiltInBrowserService({
+      onEvent: collector.onEvent,
+      getProjectRootForWindow: (win) => projectRootByWindow.get(win.id) ?? null,
+      getWindowForProjectRoot: (projectRoot) =>
+        (
+          windowsByProjectRoot.get(projectRoot) as unknown as
+            Parameters<ReturnType<typeof createBuiltInBrowserService>["attachToWindow"]>[0] | undefined
+        ) ?? null,
+    });
+    const winA = fakeBrowserWindow();
+    const winB = fakeBrowserWindow();
+    projectRootByWindow.set(winA.id, "/Users/ade/project-alpha");
+    projectRootByWindow.set(winB.id, "/Users/ade/project-beta");
+    windowsByProjectRoot.set("/Users/ade/project-alpha", winA);
+    windowsByProjectRoot.set("/Users/ade/project-beta", winB);
+
+    await service.setBounds({
+      projectRoot: "/Users/ade/project-alpha",
+      x: 12,
+      y: 24,
+      width: 640,
+      height: 360,
+      visible: true,
+    });
+    await service.setBounds({
+      projectRoot: "/Users/ade/project-beta",
+      x: 20,
+      y: 32,
+      width: 800,
+      height: 420,
+      visible: true,
+    });
+
+    expect(service.getStatus({ projectRoot: "/Users/ade/project-alpha" })).toMatchObject({
+      attached: true,
+      profileProjectRoot: "/Users/ade/project-alpha",
+      visible: true,
+    });
+    expect(service.getStatus({ projectRoot: "/Users/ade/project-beta" })).toMatchObject({
+      attached: true,
+      profileProjectRoot: "/Users/ade/project-beta",
+      visible: true,
+    });
+    expect(winA.contentView.children).toHaveLength(1);
+    expect(winB.contentView.children).toHaveLength(1);
+    expect(winA.contentView.children[0]).not.toBe(winB.contentView.children[0]);
   });
 
   it("re-resolves the active window profile for bridge-style calls after project switches", async () => {

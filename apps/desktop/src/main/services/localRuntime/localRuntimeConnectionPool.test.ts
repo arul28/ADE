@@ -17,11 +17,14 @@ import {
   buildLocalRuntimeServeArgs,
   computeLocalRuntimeBuildHash,
   createLocalRuntimeOutputLogger,
+  isLocalChannelBuildOutputPath,
   isLocalRuntimeConnectionDropped,
   isLocalRuntimeMethodTimeout,
   isRetryableReadAction,
+  localReleaseBuildOutputRuntimeBlock,
   LocalRuntimeConnectionPool,
   parseRuntimeServiceManagerOutput,
+  shouldAutoInstallRuntimeServiceFromPath,
 } from "./localRuntimeConnectionPool";
 
 type RawPendingRequest = {
@@ -211,6 +214,70 @@ describe("local runtime connection pool", () => {
     expect(env.NODE_PATH).toContain("app-x64.asar.unpacked");
     expect(env.NODE_PATH).toContain("app.asar.unpacked");
     expect(env.NODE_PATH).toContain("/custom/node_modules");
+  });
+
+  it("does not auto-install channel services from local release build output paths", () => {
+    const releaseCliPath = "/Users/admin/Projects/ADE/apps/desktop/release-beta/mac-arm64/ADE Beta.app/Contents/Resources/ade-cli/cli.cjs";
+    const installedCliPath = "/Applications/ADE Beta.app/Contents/Resources/ade-cli/cli.cjs";
+    const originalAllow = process.env.ADE_ALLOW_LOCAL_RELEASE_SERVICE_INSTALL;
+
+    try {
+      delete process.env.ADE_ALLOW_LOCAL_RELEASE_SERVICE_INSTALL;
+
+      expect(isLocalChannelBuildOutputPath(releaseCliPath)).toBe(true);
+      expect(shouldAutoInstallRuntimeServiceFromPath(releaseCliPath)).toBe(false);
+      expect(localReleaseBuildOutputRuntimeBlock(releaseCliPath)).toMatchObject({
+        cliPath: releaseCliPath,
+      });
+      expect(isLocalChannelBuildOutputPath(installedCliPath)).toBe(false);
+      expect(shouldAutoInstallRuntimeServiceFromPath(installedCliPath)).toBe(true);
+      expect(localReleaseBuildOutputRuntimeBlock(installedCliPath)).toBeNull();
+
+      process.env.ADE_ALLOW_LOCAL_RELEASE_SERVICE_INSTALL = "1";
+      expect(shouldAutoInstallRuntimeServiceFromPath(releaseCliPath)).toBe(true);
+      expect(localReleaseBuildOutputRuntimeBlock(releaseCliPath)).toBeNull();
+    } finally {
+      if (originalAllow === undefined) delete process.env.ADE_ALLOW_LOCAL_RELEASE_SERVICE_INSTALL;
+      else process.env.ADE_ALLOW_LOCAL_RELEASE_SERVICE_INSTALL = originalAllow;
+    }
+  });
+
+  it("records skipped service install status for local release build output paths", async () => {
+    const releaseCliPath = "/Users/admin/Projects/ADE/apps/desktop/release-beta/mac-arm64/ADE Beta.app/Contents/Resources/ade-cli/cli.cjs";
+    const originalCliJs = process.env.ADE_CLI_JS;
+    const originalAllow = process.env.ADE_ALLOW_LOCAL_RELEASE_SERVICE_INSTALL;
+    const logger = {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    };
+    const pool = new LocalRuntimeConnectionPool("1.2.3", logger as never);
+
+    try {
+      process.env.ADE_CLI_JS = releaseCliPath;
+      delete process.env.ADE_ALLOW_LOCAL_RELEASE_SERVICE_INSTALL;
+      await pool.installServiceBestEffort();
+
+      expect(pool.getStatus().serviceInstall).toMatchObject({
+        state: "skipped",
+        attempted: false,
+        path: releaseCliPath,
+      });
+      expect(logger.warn).toHaveBeenCalledWith(
+        "local_runtime.service_install_skipped",
+        expect.objectContaining({
+          cliPath: releaseCliPath,
+          reason: "local_release_build_output",
+        }),
+      );
+    } finally {
+      pool.dispose();
+      if (originalCliJs === undefined) delete process.env.ADE_CLI_JS;
+      else process.env.ADE_CLI_JS = originalCliJs;
+      if (originalAllow === undefined) delete process.env.ADE_ALLOW_LOCAL_RELEASE_SERVICE_INSTALL;
+      else process.env.ADE_ALLOW_LOCAL_RELEASE_SERVICE_INSTALL = originalAllow;
+    }
   });
 
   it("logs child runtime stderr by line and flushes partial output", () => {
@@ -1720,6 +1787,89 @@ describe("local runtime connection pool", () => {
     }));
   });
 
+  it("does not spawn a primary sync runtime when service repair is configured but unavailable", async () => {
+    const logger = {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    };
+    const pool = new LocalRuntimeConnectionPool("1.2.3", logger as never, {
+      preferServiceRepair: true,
+    });
+    const internals = pool as unknown as {
+      createConnection: () => Promise<unknown>;
+      tryConnect: (socketPath: string) => Promise<unknown>;
+      tryRepairServiceConnection: (socketPath: string, reason: "missing") => Promise<unknown>;
+      spawnRuntime: (socketPath: string) => ChildProcess;
+    };
+    const tryConnect = vi.spyOn(internals, "tryConnect").mockResolvedValue(null);
+    const tryRepair = vi.spyOn(internals, "tryRepairServiceConnection").mockResolvedValue(null);
+    const spawnRuntime = vi.spyOn(internals, "spawnRuntime");
+
+    await expect(internals.createConnection()).rejects.toThrow(
+      /refusing to spawn an app-owned sync-enabled brain/i,
+    );
+
+    expect(tryConnect).toHaveBeenCalled();
+    expect(tryRepair).toHaveBeenCalled();
+    expect(spawnRuntime).not.toHaveBeenCalled();
+    expect(logger.warn).toHaveBeenCalledWith(
+      "local_runtime.service_repair_fallback_blocked",
+      expect.objectContaining({ socketPath: expect.any(String) }),
+    );
+  });
+
+  it("does not spawn a primary sync runtime when service repair is not configured", async () => {
+    const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-local-runtime-primary-block-"));
+    const originalEnv = {
+      ADE_HOME: process.env.ADE_HOME,
+      ADE_RUNTIME_SOCKET_PATH: process.env.ADE_RUNTIME_SOCKET_PATH,
+    };
+    const logger = {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    };
+    const pool = new LocalRuntimeConnectionPool("1.2.3", logger as never);
+    const internals = pool as unknown as {
+      createConnection: () => Promise<unknown>;
+      tryConnect: (socketPath: string) => Promise<unknown>;
+      tryRepairServiceConnection: (socketPath: string, reason: "missing") => Promise<unknown>;
+      spawnRuntime: (socketPath: string) => ChildProcess;
+    };
+    const tryConnect = vi.spyOn(internals, "tryConnect").mockResolvedValue(null);
+    const tryRepair = vi.spyOn(internals, "tryRepairServiceConnection").mockResolvedValue(null);
+    const spawnRuntime = vi.spyOn(internals, "spawnRuntime");
+
+    try {
+      process.env.ADE_HOME = adeHome;
+      delete process.env.ADE_RUNTIME_SOCKET_PATH;
+
+      await expect(internals.createConnection()).rejects.toThrow(
+        /refusing to spawn an app-owned brain on a primary channel socket/i,
+      );
+
+      expect(tryConnect).toHaveBeenCalledWith(path.join(adeHome, "sock", "ade.sock"));
+      expect(tryRepair).toHaveBeenCalled();
+      expect(spawnRuntime).not.toHaveBeenCalled();
+      expect(logger.warn).toHaveBeenCalledWith(
+        "local_runtime.primary_runtime_spawn_blocked",
+        expect.objectContaining({
+          socketPath: path.join(adeHome, "sock", "ade.sock"),
+          preferServiceRepair: false,
+        }),
+      );
+    } finally {
+      if (originalEnv.ADE_HOME === undefined) delete process.env.ADE_HOME;
+      else process.env.ADE_HOME = originalEnv.ADE_HOME;
+      if (originalEnv.ADE_RUNTIME_SOCKET_PATH === undefined) delete process.env.ADE_RUNTIME_SOCKET_PATH;
+      else process.env.ADE_RUNTIME_SOCKET_PATH = originalEnv.ADE_RUNTIME_SOCKET_PATH;
+      removeTempDir(adeHome);
+    }
+  });
+
   it("routes local sync calls through the project-scoped runtime RPC", async () => {
     const call = vi.fn().mockResolvedValue({
       mode: "standalone",
@@ -1755,6 +1905,35 @@ describe("local runtime connection pool", () => {
 
     expect(call).toHaveBeenCalledWith("sync.getStatus", {
       projectId: "project-1",
+      includeTransferReadiness: true,
+    });
+  });
+
+  it("routes machine sync calls without adding a project id", async () => {
+    const call = vi.fn().mockResolvedValue({
+      mode: "standalone",
+      connectedPeers: [],
+    });
+    const pool = new LocalRuntimeConnectionPool("1.2.3", {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    } as never);
+    (pool as unknown as { connection: Promise<unknown> }).connection = Promise.resolve({
+      client: { call, isClosed: () => false },
+      child: null,
+      socketPath: "/tmp/ade.sock",
+    });
+
+    await expect(pool.callSync("sync.getStatus", {
+      includeTransferReadiness: true,
+    })).resolves.toEqual({
+      mode: "standalone",
+      connectedPeers: [],
+    });
+
+    expect(call).toHaveBeenCalledWith("sync.getStatus", {
       includeTransferReadiness: true,
     });
   });

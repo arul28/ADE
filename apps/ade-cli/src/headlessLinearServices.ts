@@ -1,5 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import type { Logger } from "../../desktop/src/main/services/logging/logger";
 import type { AdeDb } from "../../desktop/src/main/services/state/kvDb";
@@ -230,30 +232,80 @@ type HeadlessGitHubTokenLookup = {
   ghAuthError: string | null;
 };
 
+/**
+ * gh's file-based credential store. The launchd brain has a minimal PATH (no
+ * Homebrew) and spawning bare "gh" fails silently, which left every headless
+ * GitHub call reporting "auth missing" while the desktop worked — reading
+ * hosts.yml directly is the only auth path that is reliable headless.
+ * Handles both layouts: host-level `oauth_token:` and the newer nested
+ * `users:<login>:oauth_token:`.
+ */
+function readGhHostsFileToken(): string | null {
+  const configDir = process.env.GH_CONFIG_DIR?.trim()
+    || path.join(process.env.XDG_CONFIG_HOME?.trim() || path.join(os.homedir(), ".config"), "gh");
+  try {
+    const raw = fs.readFileSync(path.join(configDir, "hosts.yml"), "utf8");
+    let inGithubHost = false;
+    for (const line of raw.split(/\r?\n/)) {
+      if (/^\S/.test(line)) {
+        inGithubHost = /^github\.com\s*:/.test(line.trim());
+        continue;
+      }
+      if (!inGithubHost) continue;
+      const match = line.match(/^\s+oauth_token\s*:\s*(\S+)\s*$/);
+      if (match) {
+        const token = match[1].replace(/^["']|["']$/g, "").trim();
+        if (token) return token;
+      }
+    }
+  } catch {
+    // No hosts.yml (keychain-stored creds or gh absent) — fall through.
+  }
+  return null;
+}
+
+function resolveGhCliPath(): string {
+  const candidates = ["/opt/homebrew/bin/gh", "/usr/local/bin/gh", "/usr/bin/gh"];
+  for (const candidate of candidates) {
+    try {
+      fs.accessSync(candidate, fs.constants.X_OK);
+      return candidate;
+    } catch {
+      // try next
+    }
+  }
+  return "gh";
+}
+
 function ghAuthToken(): Pick<HeadlessGitHubTokenLookup, "token" | "ghCliPath" | "ghAuthError"> {
   if (process.env.ADE_DISABLE_GH_AUTH_FALLBACK === "1") {
     return { token: null, ghCliPath: null, ghAuthError: null };
   }
+  const ghCliPath = resolveGhCliPath();
   try {
-    const result = spawnSync("gh", ["auth", "token"], {
+    const result = spawnSync(ghCliPath, ["auth", "token"], {
       encoding: "utf8",
       timeout: 5_000,
     });
-    if (result.status !== 0) {
-      const stderr = typeof result.stderr === "string" ? result.stderr.trim() : "";
-      return {
-        token: null,
-        ghCliPath: "gh",
-        ghAuthError: stderr || "GitHub CLI is installed, but `gh auth token` did not return a token.",
-      };
+    const token = result.status === 0 ? (result.stdout?.trim() ?? "") : "";
+    if (token.length > 0) {
+      return { token, ghCliPath, ghAuthError: null };
     }
-    const token = result.stdout?.trim() ?? "";
+    const hostsToken = readGhHostsFileToken();
+    if (hostsToken) {
+      return { token: hostsToken, ghCliPath, ghAuthError: null };
+    }
+    const stderr = typeof result.stderr === "string" ? result.stderr.trim() : "";
     return {
-      token: token.length > 0 ? token : null,
-      ghCliPath: "gh",
-      ghAuthError: token.length > 0 ? null : "GitHub CLI is installed, but `gh auth token` did not return a token.",
+      token: null,
+      ghCliPath,
+      ghAuthError: stderr || "GitHub CLI is installed, but `gh auth token` did not return a token.",
     };
   } catch (error) {
+    const hostsToken = readGhHostsFileToken();
+    if (hostsToken) {
+      return { token: hostsToken, ghCliPath, ghAuthError: null };
+    }
     return {
       token: null,
       ghCliPath: null,

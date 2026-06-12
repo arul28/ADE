@@ -56,7 +56,10 @@ import type {
   SyncProjectSwitchResultPayload,
 } from "../../desktop/src/shared/types/sync";
 import { MACOS_VM_PHASES } from "../../desktop/src/shared/types/macosVm";
-import type { AdeServiceCommand } from "./serviceManager/common";
+import {
+  isCurrentProcessDescendantOfPid,
+  type AdeServiceCommand,
+} from "./serviceManager/common";
 import { normalizeAdeRuntimeRole, resolveAdeDefaultRole } from "./runtimeRoles";
 import type { AdeRuntime } from "./bootstrap";
 import { reseedBundledAdeSkillsForCli } from "./bootstrap";
@@ -75,6 +78,20 @@ type GlobalOptions = {
   text: boolean;
   timeoutMs: number;
 };
+
+async function withAdeDefaultRole<T>(
+  role: GlobalOptions["role"],
+  run: () => Promise<T> | T,
+): Promise<T> {
+  const previousRole = process.env.ADE_DEFAULT_ROLE;
+  process.env.ADE_DEFAULT_ROLE = role;
+  try {
+    return await run();
+  } finally {
+    if (previousRole == null) delete process.env.ADE_DEFAULT_ROLE;
+    else process.env.ADE_DEFAULT_ROLE = previousRole;
+  }
+}
 
 type ParsedCli = {
   options: GlobalOptions;
@@ -774,6 +791,26 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
     --timeout <sec>        Render timeout, 5-240 seconds; default 120.
     --project-root <path>  ADE project root.
 `,
+  "preview-current": `${ADE_BANNER}
+  iOS Simulator: preview-current
+
+  Resolves and renders the Preview Lab target for the current simulator
+  selection. Run "select" first, or pass --source/--line explicitly.
+  Aliases: current-preview, preview-open-current, open-current-preview.
+
+    $ ade --socket ios-sim select --x 120 --y 420 --text
+    $ ade --socket ios-sim preview-current --text
+    $ ade --socket ios-sim preview-current --source apps/ios/ADE/Views/Home.swift --line 42 --text
+
+  Flags:
+    --source, --file <p>   Optional Swift source file; defaults to last selected element.
+    --line <n>             Optional source line; defaults to last selected element.
+    --label <text>         Visible element label used for a suggested preview title.
+    --component-id <id>    ADEInspector component id used for a suggested preview.
+    --tab, --tab-identifier <id> Xcode window tab from preview-status.
+    --timeout <sec>        Render timeout, 5-240 seconds; default 120.
+    --project-root <path>  ADE project root.
+`,
   "preview-open": `${ADE_BANNER}
   iOS Simulator: preview-open
 
@@ -900,6 +937,10 @@ const IOS_SIMULATOR_HELP_ALIASES: Record<string, string> = {
   "preview-workspace": "preview-ensure",
   "render-preview": "preview-render",
   preview: "preview-render",
+  "current-preview": "preview-current",
+  "preview-open-current": "preview-current",
+  "open-current-preview": "preview-current",
+  "render-current-preview": "preview-current",
   "open-preview-workspace": "preview-open",
   "open-xcode": "preview-open",
   "start-stream": "stream-start",
@@ -1368,6 +1409,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade ios-sim previews --source <file> --text  List nearby #Preview definitions
     $ ade ios-sim preview-match --source <file>    Resolve best Preview Lab match
     $ ade ios-sim preview-ensure --text            Open/wait for Xcode Preview Lab
+    $ ade ios-sim preview-current --text           Render preview for the selected simulator UI
     $ ade ios-sim preview-render --source <file>   Render a SwiftUI preview through Xcode MCP
 
   Live view:
@@ -6878,6 +6920,34 @@ function buildIosSimulatorPlan(args: string[]): CliPlan {
               ["--index"],
               0,
             ),
+            tabIdentifier: readValue(args, ["--tab", "--tab-identifier"]),
+            timeoutSec: readNumberOption(args, ["--timeout"], 120),
+          }),
+        ),
+      ],
+    };
+  }
+  if (
+    sub === "preview-current" ||
+    sub === "current-preview" ||
+    sub === "preview-open-current" ||
+    sub === "open-current-preview" ||
+    sub === "render-current-preview"
+  ) {
+    return {
+      kind: "execute",
+      label: "iOS simulator current preview render",
+      steps: [
+        actionStep(
+          "result",
+          "ios_simulator",
+          "renderCurrentPreview",
+          collectGenericObjectArgs(args, {
+            projectRoot: readValue(args, ["--project-root", "--root"]),
+            sourceFile: readValue(args, ["--source", "--file"]),
+            sourceLine: readNumberOption(args, ["--line"]),
+            elementLabel: readValue(args, ["--label"]),
+            componentId: readValue(args, ["--component-id", "--component"]),
             tabIdentifier: readValue(args, ["--tab", "--tab-identifier"]),
             timeoutSec: readNumberOption(args, ["--timeout"], 120),
           }),
@@ -12400,6 +12470,70 @@ function isRuntimeShutdownCloseError(error: unknown): boolean {
   return message.includes("socket closed") || message.includes("runtime endpoint closed");
 }
 
+function shouldAllowRuntimeSelfShutdown(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.ADE_ALLOW_RUNTIME_SERVICE_SELF_MUTATION === "1";
+}
+
+class RuntimeSelfShutdownBlockedError extends Error {}
+
+function isLocalRuntimeSocketPath(socketPath: string): boolean {
+  return !socketPath.startsWith("tcp://");
+}
+
+function runtimeSelfShutdownMessage(
+  runtimePid: number,
+  action: "repair" | "stop",
+): string {
+  const verb = action === "repair" ? "repair/restart" : "stop";
+  return (
+    `Refusing to ${verb} ADE runtime from a command running inside that runtime ` +
+    `(pid ${runtimePid}). Run this from an external terminal, or set ` +
+    "ADE_ALLOW_RUNTIME_SERVICE_SELF_MUTATION=1 if you intentionally want to tear down active ADE sessions."
+  );
+}
+
+function runtimeSelfShutdownBlock(
+  runtimeInfo: MachineRuntimeInfo,
+  action: "repair" | "stop",
+  options: { localRuntime?: boolean } = {},
+): string | null {
+  if (options.localRuntime === false) return null;
+  const runtimePid = runtimeInfo.pid;
+  if (!runtimePid || shouldAllowRuntimeSelfShutdown()) return null;
+  if (!isCurrentProcessDescendantOfPid({ targetPid: runtimePid })) return null;
+  return runtimeSelfShutdownMessage(runtimePid, action);
+}
+
+function runtimeSelfShutdownBlockedError(
+  runtimeInfo: MachineRuntimeInfo,
+  action: "repair" | "stop",
+  options: { localRuntime?: boolean } = {},
+): RuntimeSelfShutdownBlockedError | null {
+  const message = runtimeSelfShutdownBlock(runtimeInfo, action, options);
+  return message ? new RuntimeSelfShutdownBlockedError(message) : null;
+}
+
+async function runtimeServiceSelfShutdownBlock(
+  socketPath: string,
+  action: "repair" | "stop",
+): Promise<string | null> {
+  if (!isLocalRuntimeSocketPath(socketPath) || shouldAllowRuntimeSelfShutdown()) {
+    return null;
+  }
+  const { getRuntimeServiceMainPid } = await import("./serviceManager");
+  const runtimePid = getRuntimeServiceMainPid();
+  if (!runtimePid) return null;
+  if (!isCurrentProcessDescendantOfPid({ targetPid: runtimePid })) return null;
+  return runtimeSelfShutdownMessage(runtimePid, action);
+}
+
+function isRuntimeSelfShutdownBlockedResult(result: unknown): boolean {
+  // Branch on the typed discriminator, not the human-readable message — the
+  // wording of the block message lives in serviceManager and must be free to
+  // change without silently defeating the brain-restart guard here.
+  return isRecord(result) && result.selfMutationBlocked === true;
+}
+
 function shouldRepairMachineRuntimeServiceBeforeSpawn(
   socketPath: string,
   socketPathOverride?: string | null,
@@ -12412,6 +12546,22 @@ function shouldRepairMachineRuntimeServiceBeforeSpawn(
     && !isEphemeralRuntimeSocketPath(socketPath);
 }
 
+export function shouldBlockManualMachineRuntimeSpawn(
+  socketPath: string,
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  return env.ADE_DISABLE_RUNTIME_SERVICE_INSTALL === "1"
+    && !socketPath.startsWith("tcp://")
+    && !isAdeRuntimeNamedPipePath(socketPath)
+    && !isEphemeralRuntimeSocketPath(socketPath);
+}
+
+function manualMachineRuntimeSpawnBlockedError(socketPath: string): Error {
+  return new Error(
+    `ADE runtime is unavailable at ${socketPath}, and ADE_DISABLE_RUNTIME_SERVICE_INSTALL=1 forbids starting a manual replacement for this service-managed socket.`,
+  );
+}
+
 async function repairMachineRuntimeServiceConnection(args: {
   socketPath: string;
   options: GlobalOptions;
@@ -12421,7 +12571,10 @@ async function repairMachineRuntimeServiceConnection(args: {
   let client: SocketJsonRpcClient | null = null;
   try {
     const { installRuntimeService, uninstallRuntimeService } = await import("./serviceManager");
-    const result = installRuntimeService();
+    const result = await withAdeDefaultRole(
+      args.options.role,
+      () => installRuntimeService(),
+    );
     if (!result.ok) return null;
     client = await SocketJsonRpcClient.connect(
       args.socketPath,
@@ -12439,6 +12592,10 @@ async function repairMachineRuntimeServiceConnection(args: {
       { enforceBuildCompatibility: args.enforceBuildCompatibility },
     );
     if (mismatch) {
+      const selfShutdownBlock = runtimeSelfShutdownBlockedError(runtimeInfo, "repair", {
+        localRuntime: isLocalRuntimeSocketPath(args.socketPath),
+      });
+      if (selfShutdownBlock) throw selfShutdownBlock;
       uninstallRuntimeService();
       client.close();
       return null;
@@ -12446,7 +12603,8 @@ async function repairMachineRuntimeServiceConnection(args: {
     const repaired = client;
     client = null;
     return repaired;
-  } catch {
+  } catch (error) {
+    if (error instanceof RuntimeSelfShutdownBlockedError) throw error;
     return null;
   } finally {
     try {
@@ -12505,6 +12663,7 @@ async function connectMachineRuntimeDaemon(
   const label = "ADE runtime endpoint";
   const allowSpawn = connectOptions.allowSpawn ?? !options.requireSocket;
   const isTcpSocket = socketPath.startsWith("tcp://");
+  const isLocalRuntime = isLocalRuntimeSocketPath(socketPath);
   const enforceBuildCompatibility =
     shouldEnforceMachineRuntimeBuildCompatibility(socketPathOverride);
   const expectedBuildHash = isTcpSocket || !enforceBuildCompatibility
@@ -12546,6 +12705,17 @@ async function connectMachineRuntimeDaemon(
           `ADE runtime ${mismatch}.`,
         );
       }
+      const selfShutdownBlock = runtimeSelfShutdownBlockedError(runtimeInfo, "repair", {
+        localRuntime: isLocalRuntime,
+      });
+      if (selfShutdownBlock) {
+        client.close();
+        throw selfShutdownBlock;
+      }
+      if (shouldBlockManualMachineRuntimeSpawn(socketPath)) {
+        client.close();
+        throw manualMachineRuntimeSpawnBlockedError(socketPath);
+      }
       await shutdownMachineRuntimeDaemon(client);
       const repaired = await repairServiceConnection();
       if (repaired) return repaired;
@@ -12571,6 +12741,13 @@ async function connectMachineRuntimeDaemon(
         { enforceBuildCompatibility },
       );
       if (restartedMismatch) {
+        const selfShutdownBlock = runtimeSelfShutdownBlockedError(restartedInfo, "repair", {
+          localRuntime: isLocalRuntime,
+        });
+        if (selfShutdownBlock) {
+          restarted.close();
+          throw selfShutdownBlock;
+        }
         await shutdownMachineRuntimeDaemon(restarted);
         throw new Error(
           `ADE runtime ${restartedMismatch}.`,
@@ -12580,9 +12757,13 @@ async function connectMachineRuntimeDaemon(
     }
     return client;
   } catch (firstError) {
+    if (firstError instanceof RuntimeSelfShutdownBlockedError) throw firstError;
     if (!allowSpawn) throw firstError;
     const repaired = await repairServiceConnection();
     if (repaired) return repaired;
+    if (shouldBlockManualMachineRuntimeSpawn(socketPath)) {
+      throw manualMachineRuntimeSpawnBlockedError(socketPath);
+    }
     const spawned = await spawnMachineRuntimeDaemon(socketPath, options);
     if (!spawned) throw firstError;
     try {
@@ -12602,6 +12783,13 @@ async function connectMachineRuntimeDaemon(
         { enforceBuildCompatibility },
       );
       if (mismatch) {
+        const selfShutdownBlock = runtimeSelfShutdownBlockedError(runtimeInfo, "repair", {
+          localRuntime: isLocalRuntime,
+        });
+        if (selfShutdownBlock) {
+          client.close();
+          throw selfShutdownBlock;
+        }
         await shutdownMachineRuntimeDaemon(client);
         throw new Error(
           `ADE runtime ${mismatch}.`,
@@ -12609,6 +12797,7 @@ async function connectMachineRuntimeDaemon(
       }
       return client;
     } catch (secondError) {
+      if (secondError instanceof RuntimeSelfShutdownBlockedError) throw secondError;
       const firstMessage =
         firstError instanceof Error ? firstError.message : String(firstError);
       const secondMessage =
@@ -12702,7 +12891,30 @@ async function runRuntimeCommand(
         "ADE runtime endpoint",
       );
       try {
-        await initializeMachineRuntimeDaemon(client, options).catch(() => null);
+        const runtimeInfo = await initializeMachineRuntimeDaemon(client, options).catch(() => null);
+        if (runtimeInfo) {
+          const selfShutdownBlock = runtimeSelfShutdownBlock(runtimeInfo, "stop", {
+            localRuntime: isLocalRuntimeSocketPath(socketPath),
+          });
+          if (selfShutdownBlock) {
+            return {
+              ok: false,
+              running: true,
+              socketPath,
+              message: selfShutdownBlock,
+            };
+          }
+        } else if (!socketOverride?.trim()) {
+          const selfShutdownBlock = await runtimeServiceSelfShutdownBlock(socketPath, "stop");
+          if (selfShutdownBlock) {
+            return {
+              ok: false,
+              running: true,
+              socketPath,
+              message: selfShutdownBlock,
+            };
+          }
+        }
         await shutdownMachineRuntimeDaemon(client);
       } finally {
         client.close();
@@ -12725,7 +12937,7 @@ async function runRuntimeCommand(
 
   if (sub === "install-service") {
     const { installRuntimeService } = await import("./serviceManager");
-    return installRuntimeService();
+    return withAdeDefaultRole(options.role, () => installRuntimeService());
   }
   if (sub === "uninstall-service") {
     const { uninstallRuntimeService } = await import("./serviceManager");
@@ -12798,7 +13010,7 @@ async function runBrainCommand(
 
   if (sub === "start") {
     const { installRuntimeService } = await import("./serviceManager");
-    return installRuntimeService();
+    return withAdeDefaultRole("cto", () => installRuntimeService());
   }
 
   if (sub === "stop") {
@@ -12809,15 +13021,26 @@ async function runBrainCommand(
   if (sub === "restart") {
     const { installRuntimeService, uninstallRuntimeService } = await import("./serviceManager");
     const stopped = uninstallRuntimeService();
-    const started = installRuntimeService();
+    if (isRuntimeSelfShutdownBlockedResult(stopped)) {
+      return {
+        ok: false,
+        action: "restart",
+        stopped,
+        started: null,
+        message: stopped.message,
+      };
+    }
+    const started = await withAdeDefaultRole("cto", () => installRuntimeService());
     return {
       ok: stopped.ok && started.ok,
       action: "restart",
       stopped,
       started,
-      message: started.ok
-        ? "ADE brain restarted."
-        : started.message,
+      message: !stopped.ok
+        ? `ADE brain restart attempted after stop warning: ${stopped.message}`
+        : started.ok
+          ? "ADE brain restarted."
+          : started.message,
     };
   }
 
@@ -12943,7 +13166,7 @@ async function runServe(
   const args = [...rest];
   if (readFlag(args, ["--install-service"])) {
     const { installRuntimeService } = await import("./serviceManager");
-    return installRuntimeService();
+    return withAdeDefaultRole(options.role, () => installRuntimeService());
   }
   if (readFlag(args, ["--uninstall-service"])) {
     const { uninstallRuntimeService } = await import("./serviceManager");
@@ -12959,11 +13182,13 @@ async function runServe(
     { ProjectRegistry },
     { ProjectScopeRegistry },
     { createMultiProjectRpcRequestHandler },
+    { createSharedSyncListener },
   ] = await Promise.all([
     import("./services/projects/machineLayout"),
     import("./services/projects/projectRegistry"),
     import("./services/projects/projectScope"),
     import("./multiProjectRpcServer"),
+    import("./services/sync/sharedSyncListener"),
   ]);
 
   const layout = resolveMachineAdeLayout();
@@ -13013,10 +13238,22 @@ async function runServe(
     isOpen: false,
     ...overrides,
   });
+  // ONE websocket listener for the whole brain: every project scope's sync
+  // host attaches to it instead of binding its own server, so the hosted
+  // project can change without paired phones ever seeing a disconnect.
+  const sharedSyncListener = syncEnabled
+    ? createSharedSyncListener({
+        logger: {
+          warn: (message, fields) =>
+            process.stderr.write(`${message} ${JSON.stringify(fields ?? {})}\n`),
+        },
+      })
+    : null;
   let scopeRegistry: InstanceType<typeof ProjectScopeRegistry>;
   scopeRegistry = new ProjectScopeRegistry(projectRegistry, {
     syncRuntime: {
       enabled: syncEnabled,
+      sharedSyncListener,
       hostStartupEnabled: true,
       hostDiscoveryEnabled: true,
       forceHostRole: false,
@@ -13062,12 +13299,14 @@ async function runServe(
             };
           }
           try {
-            // Keep the current phone socket alive until project_switch_result is
-            // flushed; completion retires inactive hosts after the phone has the
-            // new project's connection bundle.
-            const scope = await scopeRegistry.switchSyncHost(record.projectId, {
-              deactivatePreviousHost: false,
-            });
+            // Prepare must NOT start the new project's sync host: the old host
+            // still owns the sync port, so an early start either drifts to a
+            // new port (stranding the phone's saved address) or races the old
+            // listener. Open the project scope for metadata only, reply with
+            // the CURRENT stable port, and let completion — which runs after
+            // project_switch_result is flushed — stop the old host first and
+            // start the new one on that same port.
+            const scope = await scopeRegistry.get(record.projectId);
             const syncService = scope?.runtime.syncService ?? null;
             if (!scope || !syncService) {
               return {
@@ -13076,9 +13315,6 @@ async function runServe(
                 project,
               };
             }
-            syncService.setHostDiscoveryEnabled?.(true);
-            await syncService.setHostStartupEnabled?.(true);
-            await syncService.initialize();
             const lanes = await scope.runtime.laneService
               .list({ includeArchived: false, includeStatus: false })
               .catch(() => []);
@@ -13087,8 +13323,9 @@ async function runServe(
               isOpen: true,
               laneCount,
             });
-            const status = await syncService.getStatus();
-            const connectInfo = status.pairingConnectInfo;
+            const activeScope = await scopeRegistry.resolveActiveSyncHost();
+            const activeStatus = await activeScope?.runtime.syncService?.getStatus();
+            const connectInfo = activeStatus?.pairingConnectInfo ?? null;
             if (!connectInfo) {
               return {
                 ok: false,
@@ -13138,10 +13375,14 @@ async function runServe(
             // The mobile handoff already succeeded; a stale registry touch should
             // not fail the sync protocol completion.
           }
-          // Retire by the registry's current active host (defaults to
-          // this.syncHostProjectId) rather than this request's projectId, so an
-          // interleaved later switch is not mistakenly disabled by a stale
-          // completion for an earlier switch.
+          // The phone already holds project_switch_result with the CURRENT
+          // port. Stop the old host first so the new one binds that same
+          // port (deactivatePreviousHost runs before the new host starts;
+          // the preferred-port retry rides out the old socket's close), then
+          // retire any other stale hosts.
+          await scopeRegistry.switchSyncHost(projectId, {
+            deactivatePreviousHost: true,
+          });
           await scopeRegistry.deactivateInactiveSyncHosts();
         },
       },
@@ -13169,6 +13410,15 @@ async function runServe(
       disposeScopesOnDispose: false,
       onShutdown: finish,
     });
+  const startSyncHost = () => (preferredSyncProjectId
+    ? scopeRegistry.switchSyncHost(preferredSyncProjectId)
+    : scopeRegistry.resolveActiveSyncHost());
+  const disposeServeResources = async () => {
+    await scopeRegistry.disposeAll();
+    if (sharedSyncListener) {
+      await sharedSyncListener.close().catch(() => {});
+    }
+  };
 
   const listen = async (
     server: net.Server,
@@ -13192,6 +13442,38 @@ async function runServe(
       }
     });
   };
+
+  if (syncEnabled) {
+    try {
+      const [{ runSyncHostStartupLoop }, { getRuntimeServiceMainPid }] = await Promise.all([
+        import("./services/sync/syncHostStartupLoop"),
+        import("./serviceManager"),
+      ]);
+      await runSyncHostStartupLoop({
+        startSyncHost,
+        isDone: () => done,
+        log: (message) => process.stderr.write(`${message}\n`),
+        getServiceMainPid: getRuntimeServiceMainPid,
+      });
+    } catch (error: unknown) {
+      // Cross-channel conflict (another build's live brain owns mobile sync):
+      // real builds never run sync-less, so fail before publishing ade.sock.
+      const { SyncHostSingletonConflictError } = await import("./services/sync/syncHostSingleton");
+      const message = error instanceof Error ? error.message : String(error);
+      if (error instanceof SyncHostSingletonConflictError) {
+        await disposeServeResources();
+        throw new CliExecutionError("ADE brain refusing to run without mobile sync.", {
+          cause: message,
+          socketPath,
+          nextAction:
+            "Stop the other ADE brain that owns mobile sync, then start this build again.",
+        });
+      }
+      process.stderr.write(`ADE brain sync host startup loop failed: ${message}\n`);
+      await disposeServeResources();
+      throw error;
+    }
+  }
 
   fs.mkdirSync(layout.adeDir, { recursive: true, mode: 0o700 });
   if (!isAdeRuntimeNamedPipePath(socketPath)) {
@@ -13218,17 +13500,6 @@ async function runServe(
     tcpUrl = `tcp://127.0.0.1:${port}`;
   }
 
-  if (syncEnabled) {
-    const syncHostStartup = preferredSyncProjectId
-      ? scopeRegistry.switchSyncHost(preferredSyncProjectId)
-      : scopeRegistry.resolveActiveSyncHost();
-    void syncHostStartup.catch((error: unknown) => {
-      process.stderr.write(
-        `ADE brain sync host failed: ${error instanceof Error ? error.message : String(error)}\n`,
-      );
-    });
-  }
-
   process.stderr.write(
     `ADE brain listening on ${socketPath}${tcpUrl ? ` and ${tcpUrl}` : ""}\n`,
   );
@@ -13242,8 +13513,17 @@ async function runServe(
         return;
       }
       resolveDone = resolve;
-      process.once("SIGINT", finish);
-      process.once("SIGTERM", finish);
+      // A signal means launchd/systemd or an installer wants this brain gone.
+      // Graceful disposal can wedge on live agent/PTY children; a wedged brain
+      // outlives its service registration and squats on the channel socket and
+      // sync singleton, so force the exit if disposal does not finish in time.
+      const finishFromSignal = () => {
+        finish();
+        const timer = setTimeout(() => process.exit(0), 10_000);
+        timer.unref();
+      };
+      process.once("SIGINT", finishFromSignal);
+      process.once("SIGTERM", finishFromSignal);
     });
   } finally {
     stopParentMonitor();
@@ -13253,7 +13533,7 @@ async function runServe(
   for (const state of states) {
     stopHeadlessRpcServer(state);
   }
-  await scopeRegistry.disposeAll();
+  await disposeServeResources();
   if (!isAdeRuntimeNamedPipePath(socketPath)) {
     try {
       fs.unlinkSync(socketPath);
@@ -14233,6 +14513,36 @@ function formatIosSimPreview(value: unknown): string {
     );
   }
   const record = isRecord(value) ? value : {};
+  if (isRecord(record.match)) {
+    const match = record.match;
+    const target = isRecord(record.target)
+      ? record.target
+      : isRecord(match.target)
+        ? match.target
+        : null;
+    const render = isRecord(record.render) ? record.render : null;
+    return renderKeyValues("ADE iOS Preview current", [
+      ["ok", record.ok],
+      ["status", match.status],
+      ["confidence", match.confidence],
+      [
+        "selected",
+        match.selectedSourceFile
+          ? `${match.selectedSourceFile}${match.selectedSourceLine ? `:${match.selectedSourceLine}` : ""}`
+          : null,
+      ],
+      [
+        "target",
+        target
+          ? `${target.title ?? "Preview"} · ${target.sourceFilePath ?? target.sourceFile ?? "unknown"}`
+          : null,
+      ],
+      ["snapshot", render?.previewSnapshotPath],
+      ["rendered", render?.renderedAt],
+      ["reason", match.reason],
+      ["error", record.error ?? render?.error],
+    ]);
+  }
   if (typeof record.status === "string" && "confidence" in record) {
     const target = isRecord(record.target) ? record.target : null;
     return renderKeyValues("ADE iOS Preview match", [
@@ -15229,6 +15539,7 @@ function inferFormatter(
     label === "ios simulator previews" ||
     label === "ios simulator preview match" ||
     label === "ios simulator preview workspace" ||
+    label === "ios simulator current preview render" ||
     label === "ios simulator preview render" ||
     label === "ios simulator preview open"
   )

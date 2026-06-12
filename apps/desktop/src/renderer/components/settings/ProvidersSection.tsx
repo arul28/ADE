@@ -22,6 +22,7 @@ import {
   Cpu,
   Info,
   WarningCircle,
+  X,
   XCircle,
 } from "@phosphor-icons/react";
 import { ClaudeLogo, CodexLogo, CursorAgentLogo, OpenCodeLogo } from "../terminals/ToolLogos";
@@ -68,7 +69,7 @@ const CLI_TOOLS: Array<{
     label: "Cursor",
     description: "Cursor SDK runtime",
     loginCmd: "Add a Cursor API key",
-    installHint: "Get a Cursor API key from https://cursor.com/dashboard/integrations",
+    installHint: "Get a Cursor API key from https://cursor.com/dashboard/api",
   },
   {
     cli: "droid",
@@ -119,6 +120,57 @@ const groupLabelStyle: React.CSSProperties = {
   marginBottom: 0,
   color: COLORS.textSecondary,
 };
+
+function AlertBanner({
+  tone,
+  message,
+  onDismiss,
+}: {
+  tone: "success" | "error" | "warning";
+  message: string;
+  onDismiss: () => void;
+}) {
+  const color = tone === "success" ? COLORS.success : tone === "warning" ? COLORS.warning : COLORS.danger;
+  const token = tone === "success" ? "success" : tone === "warning" ? "warning" : "error";
+  return (
+    <div
+      role={tone === "error" ? "alert" : "status"}
+      style={{
+        padding: "8px 10px 8px 12px",
+        fontSize: 11,
+        fontFamily: MONO_FONT,
+        color,
+        background: `color-mix(in srgb, var(--color-${token}) 12%, transparent)`,
+        border: `1px solid color-mix(in srgb, var(--color-${token}) 30%, transparent)`,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        gap: 12,
+      }}
+    >
+      <span style={{ minWidth: 0, overflowWrap: "anywhere" }}>{message}</span>
+      <button
+        type="button"
+        aria-label={`Dismiss ${tone} message`}
+        onClick={onDismiss}
+        style={{
+          border: `1px solid color-mix(in srgb, ${color} 32%, transparent)`,
+          background: "transparent",
+          color,
+          width: 22,
+          height: 22,
+          display: "inline-flex",
+          alignItems: "center",
+          justifyContent: "center",
+          padding: 0,
+          cursor: "pointer",
+        }}
+      >
+        <X size={12} weight="bold" />
+      </button>
+    </div>
+  );
+}
 
 const SOURCE_BADGE_MAP: Record<ApiKeySource, { color: string; label: string }> = {
   store: { color: COLORS.success, label: "Local Store" },
@@ -248,6 +300,7 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
   const [editValue, setEditValue] = useState("");
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [dismissedApiKeyStoreWarning, setDismissedApiKeyStoreWarning] = useState<string | null>(null);
   const [verifyingProvider, setVerifyingProvider] = useState<string | null>(null);
   const [verificationByProvider, setVerificationByProvider] = useState<Record<string, AiApiKeyVerificationResult>>({});
   const pendingRefreshTimerRef = useRef<number | null>(null);
@@ -365,6 +418,10 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
     }
     return null;
   }, [status?.apiKeyStore]);
+  const visibleApiKeyStoreWarning =
+    apiKeyStoreWarning && dismissedApiKeyStoreWarning !== apiKeyStoreWarning
+      ? apiKeyStoreWarning
+      : null;
 
   const beginEditing = (provider: string) => {
     setEditingProvider(provider);
@@ -432,9 +489,13 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
       invalidateAiDiscoveryCache();
       const result = await window.ade.ai.verifyApiKey(provider);
       invalidateAiDiscoveryCache();
-      setVerificationByProvider((prev) => ({ ...prev, [provider]: result }));
-      setNotice(result.ok ? `${provider} connection verified.` : `${provider} verification failed.`);
       await refreshStatus({ force: true, refreshOpenCodeInventory: true });
+      setVerificationByProvider((prev) => ({ ...prev, [provider]: result }));
+      if (result.ok) {
+        setNotice(`${provider} connection verified.`);
+      } else {
+        setError(result.message || `${provider} verification failed.`);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -458,12 +519,16 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
       await window.ade.ai.storeApiKey("cursor", trimmed);
       invalidateAiDiscoveryCache();
       setStoredProviders((prev) => Array.from(new Set([...prev, "cursor"])));
-      cancelEditing();
       const result = await window.ade.ai.verifyApiKey("cursor");
       invalidateAiDiscoveryCache();
-      setVerificationByProvider((prev) => ({ ...prev, cursor: result }));
-      setNotice(result.ok ? "Cursor connection verified." : "Cursor verification failed.");
       await refreshStatus({ force: true, refreshOpenCodeInventory: true });
+      setVerificationByProvider((prev) => ({ ...prev, cursor: result }));
+      if (result.ok) {
+        setNotice("Cursor connection verified.");
+        cancelEditing();
+      } else {
+        setError(result.message || "Cursor verification failed.");
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -526,48 +591,19 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
   return (
     <div id="ai-providers" style={{ display: "flex", flexDirection: "column", gap: 24 }}>
       {notice && (
-        <div
-          style={{
-            padding: "8px 12px",
-            fontSize: 11,
-            fontFamily: MONO_FONT,
-            color: COLORS.success,
-            background: "color-mix(in srgb, var(--color-success) 12%, transparent)",
-            border: "1px solid color-mix(in srgb, var(--color-success) 30%, transparent)",
-          }}
-        >
-          {notice}
-        </div>
+        <AlertBanner tone="success" message={notice} onDismiss={() => setNotice(null)} />
       )}
 
       {error && (
-        <div
-          style={{
-            padding: "8px 12px",
-            fontSize: 11,
-            fontFamily: MONO_FONT,
-            color: COLORS.danger,
-            background: "color-mix(in srgb, var(--color-error) 12%, transparent)",
-            border: "1px solid color-mix(in srgb, var(--color-error) 30%, transparent)",
-          }}
-        >
-          {error}
-        </div>
+        <AlertBanner tone="error" message={error} onDismiss={() => setError(null)} />
       )}
 
-      {apiKeyStoreWarning && (
-        <div
-          style={{
-            padding: "8px 12px",
-            fontSize: 11,
-            fontFamily: MONO_FONT,
-            color: COLORS.warning,
-            background: "color-mix(in srgb, var(--color-warning) 12%, transparent)",
-            border: "1px solid color-mix(in srgb, var(--color-warning) 30%, transparent)",
-          }}
-        >
-          {apiKeyStoreWarning}
-        </div>
+      {visibleApiKeyStoreWarning && (
+        <AlertBanner
+          tone="warning"
+          message={visibleApiKeyStoreWarning}
+          onDismiss={() => setDismissedApiKeyStoreWarning(visibleApiKeyStoreWarning)}
+        />
       )}
 
       {/* ── Model Availability Summary ── */}
@@ -729,7 +765,7 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
           : isVerified
             ? { color: COLORS.success, label: "Connected" }
             : isInvalid
-              ? { color: COLORS.danger, label: "Invalid key" }
+              ? { color: COLORS.danger, label: "Verification failed" }
               : isInitialCheckInFlight ? { color: COLORS.info, label: "Checking" } : getStatusTone(connection);
         const message = isVerifying
           ? "Verifying Cursor API key with the Cursor SDK."
@@ -759,9 +795,9 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
             {credentialSourceDesc && !connection?.runtimeAvailable && !isInitialCheckInFlight ? <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.info, marginTop: 4 }}>{credentialSourceDesc}</div> : null}
             {connection?.path && !isInitialCheckInFlight ? <code style={{ display: "block", marginTop: 6, fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textSecondary, background: "color-mix(in srgb, var(--color-muted-fg) 12%, transparent)", border: `1px solid ${COLORS.border}`, padding: "6px 8px", overflowWrap: "anywhere", wordBreak: "break-all" }}>{connection.path}</code> : null}
             <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted, lineHeight: 1.5, marginTop: 8 }}>
-              Get key from Cursor integrations dashboard:{" "}
-              <a href="https://cursor.com/dashboard/integrations" target="_blank" rel="noreferrer" style={{ color: COLORS.info }}>
-                https://cursor.com/dashboard/integrations
+              Get key from Cursor API dashboard:{" "}
+              <a href="https://cursor.com/dashboard/api" target="_blank" rel="noreferrer" style={{ color: COLORS.info }}>
+                https://cursor.com/dashboard/api
               </a>
             </div>
             <div style={{ marginTop: 12, paddingTop: 12, borderTop: `1px solid ${COLORS.border}`, display: "grid", gridTemplateColumns: "140px minmax(0, 1fr) auto", gap: 10, alignItems: "center" }}>
