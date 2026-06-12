@@ -377,17 +377,17 @@ export function buildTrackedCliLaunchCommand(args: {
   }
 
   if (args.provider === "cursor") {
-    const prompt = workTabCliPrompt(initialPrompt, skillRoots);
     const cursorModel = resolveCursorCliModelForLaunch(args.model);
     const commandArgs = [
       ...permissionModeToCursorFlags(permissionMode),
       ...modelToCliFlag(cursorModel),
-      prompt,
     ];
+    const initialInput = initialPrompt ? workTabCliPrompt(initialPrompt, skillRoots) : null;
     return {
       command: "cursor-agent",
       args: commandArgs,
       startupCommand: commandArrayToLine(["cursor-agent", ...commandArgs]),
+      ...(initialInput ? { initialInput, initialInputDelayMs: 750 } : {}),
       ...(agentSkillEnv ? { env: agentSkillEnv } : {}),
     };
   }

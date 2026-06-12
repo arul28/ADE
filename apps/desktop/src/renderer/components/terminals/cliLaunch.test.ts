@@ -408,20 +408,28 @@ describe("buildTrackedCliStartupCommand", () => {
   });
 
   describe("additional CLI providers", () => {
-    it("launches Cursor with the documented initial prompt argument", () => {
+    it("launches Cursor with initial prompts submitted through PTY input", () => {
       const launch = buildTrackedCliLaunchCommand({ provider: "cursor", permissionMode: "plan", model: "cursor-fast", initialPrompt: "Review this lane." });
       expect(launch.command).toBe("cursor-agent");
-      expect(launch.args).toEqual(expect.arrayContaining(["--mode", "plan", "--model", "cursor-fast"]));
-      expect(launch.args.at(-1)).toContain("ADE session guidance");
-      expect(launch.args.at(-1)).toContain("Review this lane.");
+      expect(launch.args).toEqual(["--mode", "plan", "--model", "cursor-fast"]);
       expect(launch.startupCommand).toContain("cursor-agent --mode plan --model cursor-fast");
-      expect(launch.startupCommand).toContain("Review this lane.");
-      expect(launch.startupCommand).toContain("ADE session guidance");
+      expect(launch.startupCommand).not.toContain("Review this lane.");
+      expect(launch.startupCommand).not.toContain("ADE session guidance");
       expect(launch.startupCommand).not.toContain("cursor-agent create-chat");
       expect(launch.startupCommand).not.toContain("--resume");
+      expect(launch.initialInput).toContain("ADE session guidance");
+      expect(launch.initialInput).toContain("Review this lane.");
+      expect(launch.initialInputDelayMs).toBe(750);
+      expect(launch.env?.[ADE_AGENT_SKILLS_DIRS_ENV]).toContain("agent-skills");
+    });
+
+    it("keeps empty Cursor launches idle instead of submitting ADE guidance as work", () => {
+      const launch = buildTrackedCliLaunchCommand({ provider: "cursor", permissionMode: "default", model: "cursor-fast" });
+      expect(launch.command).toBe("cursor-agent");
+      expect(launch.args).toEqual(["--model", "cursor-fast"]);
+      expect(launch.startupCommand).toBe("cursor-agent --model cursor-fast");
       expect(launch.initialInput).toBeUndefined();
       expect(launch.initialInputDelayMs).toBeUndefined();
-      expect(launch.env?.[ADE_AGENT_SKILLS_DIRS_ENV]).toContain("agent-skills");
     });
 
     it("normalizes Cursor registry model ids and forces full-auto interactive workspaces", () => {
@@ -437,17 +445,17 @@ describe("buildTrackedCliStartupCommand", () => {
       expect(launch.startupCommand).not.toContain("--model cursor/composer-2.5");
       expect(launch.args).toEqual(expect.arrayContaining(["--force", "--model", "composer-2.5"]));
       expect(launch.args).not.toContain("--trust");
-      expect(launch.args.at(-1)).toContain("Review this lane.");
+      expect(launch.args).not.toContain(expect.stringContaining("Review this lane."));
+      expect(launch.initialInput).toContain("Review this lane.");
     });
 
     it("keeps Cursor launch direct on Windows", () => {
       withProcessPlatform("win32", () => {
         const launch = buildTrackedCliLaunchCommand({ provider: "cursor", permissionMode: "plan", model: "cursor-fast", initialPrompt: "Review this lane." });
         expect(launch.command).toBe("cursor-agent");
-        expect(launch.args).toEqual(expect.arrayContaining(["--mode", "plan", "--model", "cursor-fast"]));
-        expect(launch.args.at(-1)).toContain("Review this lane.");
-        expect(launch.initialInput).toBeUndefined();
-        expect(launch.initialInputDelayMs).toBeUndefined();
+        expect(launch.args).toEqual(["--mode", "plan", "--model", "cursor-fast"]);
+        expect(launch.initialInput).toContain("Review this lane.");
+        expect(launch.initialInputDelayMs).toBe(750);
       });
     });
 

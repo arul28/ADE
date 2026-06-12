@@ -542,8 +542,10 @@ Launch commands are built by `apps/desktop/src/shared/cliLaunch.ts`:
     host-owned so ADE does not synthesize partial MCP tables that the
     CLI rejects during config validation.
   - **Cursor** → `--mode plan|ask` for read-only modes and `--force`
-    for full-auto. Sessions pre-allocate a chat id with
-    `cursor-agent create-chat` so `--resume <id>` is always known.
+    for full-auto. Fresh launches start interactive `cursor-agent`
+    directly; initial user prompts are submitted through PTY input after
+    Cursor readiness, and empty launches do not submit ADE guidance as a
+    first turn.
   - **Droid** → an autonomy-tiered settings JSON written to a temp file
     that `droid --settings $ADE_DROID_SETTINGS` consumes; `spec`
     autonomy is the plan/read-only fallback.
@@ -551,10 +553,10 @@ Launch commands are built by `apps/desktop/src/shared/cliLaunch.ts`:
     `OPENCODE_CONFIG_CONTENT` env var (`config-toml` mode skips the env
     so OpenCode reads `opencode.json` instead). Plan mode adds `--agent
     plan`.
-  Every provider also receives the ADE CLI guidance prompt — Claude
-  through `--append-system-prompt`, every other provider as a leading
-  prompt argument — so the agent starts with the ADE wrappers in
-  context.
+  Every provider also receives ADE CLI guidance — Claude through
+  `--append-system-prompt`, Codex/Droid/OpenCode as a leading prompt
+  argument, and Cursor through PTY `initialInput` only when there is an
+  initial user prompt.
 - `buildTrackedCliStartupCommand({ provider, permissionMode, ... })`
   thin wrapper that returns just the shell-typed `startupCommand`.
 - `resolveTrackedCliResumeCommand(session)` — internal runtime helper
