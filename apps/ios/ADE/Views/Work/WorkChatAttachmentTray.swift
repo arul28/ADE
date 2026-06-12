@@ -1,6 +1,22 @@
 import SwiftUI
 import UIKit
 
+private let workChatRemoteImageMaxBytes = 5 * 1024 * 1024
+private let workChatRemoteImageTimeoutSeconds: TimeInterval = 12
+
+private let workChatRemoteImageSession: URLSession = {
+  let configuration = URLSessionConfiguration.ephemeral
+  configuration.timeoutIntervalForRequest = workChatRemoteImageTimeoutSeconds
+  configuration.timeoutIntervalForResource = workChatRemoteImageTimeoutSeconds
+  configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+  configuration.urlCache = nil
+  return URLSession(configuration: configuration)
+}()
+
+private enum WorkChatRemoteImageError: Error {
+  case responseTooLarge
+}
+
 func workChatAttachmentIsImage(_ ref: AgentChatFileRef) -> Bool {
   let type = ref.type.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
   return type == "image" || type == "image-url"
@@ -23,6 +39,29 @@ func workChatAttachmentAccessibilityLabel(_ attachments: [AgentChatFileRef]) -> 
     return "Attachment: \(names[0])"
   }
   return "\(names.count) attachments: \(names.joined(separator: ", "))"
+}
+
+private func workChatAttachmentStableIdentity(_ ref: AgentChatFileRef) -> String {
+  let type = ref.type.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+  let path = ref.path.trimmingCharacters(in: .whitespacesAndNewlines)
+  let url = ref.url?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  return "\(type.count):\(type)|\(path.count):\(path)|\(url.count):\(url)"
+}
+
+private struct WorkChatAttachmentItem: Identifiable {
+  let id: String
+  let attachment: AgentChatFileRef
+}
+
+private func workChatAttachmentItems(_ attachments: [AgentChatFileRef]) -> [WorkChatAttachmentItem] {
+  var seen: [String: Int] = [:]
+  return attachments.map { attachment in
+    let baseId = workChatAttachmentStableIdentity(attachment)
+    let occurrence = seen[baseId, default: 0]
+    seen[baseId] = occurrence + 1
+    let id = occurrence == 0 ? baseId : "\(baseId)#\(occurrence)"
+    return WorkChatAttachmentItem(id: id, attachment: attachment)
+  }
 }
 
 enum WorkChatAttachmentTrayStyle {
@@ -62,15 +101,15 @@ struct WorkChatAttachmentTray: View {
           alignment: alignment,
           spacing: 8
         ) {
-          ForEach(Array(attachments.enumerated()), id: \.offset) { _, attachment in
-            WorkChatAttachmentChip(attachment: attachment, size: chipSize)
+          ForEach(workChatAttachmentItems(attachments)) { item in
+            WorkChatAttachmentChip(attachment: item.attachment, size: chipSize)
           }
         }
       } else {
         ScrollView(.horizontal, showsIndicators: false) {
           HStack(spacing: 8) {
-            ForEach(Array(attachments.enumerated()), id: \.offset) { _, attachment in
-              WorkChatAttachmentChip(attachment: attachment, size: chipSize)
+            ForEach(workChatAttachmentItems(attachments)) { item in
+              WorkChatAttachmentChip(attachment: item.attachment, size: chipSize)
             }
           }
         }
@@ -101,7 +140,7 @@ private struct WorkChatAttachmentChip: View {
         fileChip
       }
     }
-    .task(id: attachment.path) {
+    .task(id: workChatAttachmentStableIdentity(attachment)) {
       await loadPreviewIfNeeded()
     }
   }
@@ -165,7 +204,7 @@ private struct WorkChatAttachmentChip: View {
        let url = URL(string: urlString), let scheme = url.scheme?.lowercased(),
        scheme == "http" || scheme == "https" {
       do {
-        let (data, _) = try await URLSession.shared.data(from: url)
+        let data = try await workChatRemoteImageData(from: url)
         if let image = UIImage(data: data) {
           previewImage = image
           loadFailed = false
@@ -216,6 +255,25 @@ private struct WorkChatAttachmentChip: View {
       loadFailed = true
     }
   }
+}
+
+private func workChatRemoteImageData(from url: URL) async throws -> Data {
+  let (bytes, response) = try await workChatRemoteImageSession.bytes(from: url)
+  if response.expectedContentLength > Int64(workChatRemoteImageMaxBytes) {
+    throw WorkChatRemoteImageError.responseTooLarge
+  }
+
+  var data = Data()
+  if response.expectedContentLength > 0 {
+    data.reserveCapacity(min(Int(response.expectedContentLength), workChatRemoteImageMaxBytes))
+  }
+  for try await byte in bytes {
+    guard data.count < workChatRemoteImageMaxBytes else {
+      throw WorkChatRemoteImageError.responseTooLarge
+    }
+    data.append(byte)
+  }
+  return data
 }
 
 struct WorkChatTranscriptEnvironmentModifier: ViewModifier {
