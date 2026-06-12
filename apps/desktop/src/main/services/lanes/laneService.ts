@@ -2531,6 +2531,7 @@ export function createLaneService({
     // adopt the half-created worktree as a duplicate lane.
     const releasePendingWorktreeCreation = trackPendingWorktreeCreation(worktreePath, branchRef);
     let linearIssue: LaneLinearIssue | null = null;
+    let absorbedRacedAdoptionRows = 0;
     try {
       await runGitWorktreeMutation(() =>
         runGitOrThrow(["worktree", "add", "-b", branchRef, worktreePath, args.startPoint], {
@@ -2553,6 +2554,7 @@ export function createLaneService({
         // can never leave the worktree with the artifact deleted but no keeper.
         const laneColor = allocateLaneColorForProject();
         db.run("begin immediate");
+        let absorbedRowsInTransaction = 0;
         try {
           // Insert the canonical row first, then fold any raced recovery
           // artifact into it (so its sessions / Linear links migrate rather
@@ -2598,9 +2600,11 @@ export function createLaneService({
           for (const raced of racedAdoptionRows) {
             logger.info("laneService.absorbed_raced_adoption_row", { laneId, racedLaneId: raced.id });
             mergeDuplicateLaneInto(laneId, raced.id);
+            absorbedRowsInTransaction += 1;
           }
 
           db.run("commit");
+          absorbedRacedAdoptionRows = absorbedRowsInTransaction;
         } catch (txError) {
           try {
             db.run("rollback");
@@ -2629,6 +2633,7 @@ export function createLaneService({
           branchRef,
           worktreePath,
           cause: error,
+          preserveCreatedLane: absorbedRacedAdoptionRows > 0,
         });
       }
     } finally {
@@ -2912,9 +2917,21 @@ export function createLaneService({
     branchRef: string;
     worktreePath: string;
     cause: unknown;
+    preserveCreatedLane?: boolean;
   }): Promise<never> {
     const cleanupErrors: string[] = [];
     const originalMessage = args.cause instanceof Error ? args.cause.message : String(args.cause);
+
+    if (args.preserveCreatedLane) {
+      invalidateLaneListCache();
+      logger.warn("laneService.lane_create_cleanup_skipped_after_absorb", {
+        laneId: args.laneId,
+        branchRef: args.branchRef,
+        worktreePath: args.worktreePath,
+        error: originalMessage,
+      });
+      throw args.cause instanceof Error ? args.cause : new Error(originalMessage);
+    }
 
     try {
       cleanupLaneDatabaseRows(args.laneId);
