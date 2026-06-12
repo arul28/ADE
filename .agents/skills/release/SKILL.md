@@ -271,9 +271,9 @@ RELEASE_SHA=$(git rev-parse origin/main)
 
    Leave `isDraft=true`. Do not publish.
 
-   Expect the draft to carry both macOS and Windows assets once `publish-release` runs:
-   - macOS: `ADE-<version>-universal.dmg`, `ADE-<version>-universal-mac.zip`, `ADE-<version>-universal-mac.zip.blockmap`, `latest-mac.yml`
-   - Windows: `ADE-<version>-win-x64.exe`, `ADE-<version>-win-x64.exe.blockmap`, `latest.yml`
+   Expect the draft to carry the macOS-only asset set once `publish-release` runs
+   (the Windows/runtime surface is currently disabled in `release-core.yml`):
+   - `ADE-<version>-universal.dmg`, `ADE-<version>-universal-mac.zip`, `ADE-<version>-universal-mac.zip.blockmap`, `latest-mac.yml`
 
 ---
 

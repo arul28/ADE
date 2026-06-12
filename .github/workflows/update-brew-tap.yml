@@ -63,6 +63,13 @@ jobs:
           cd tap
           sed -i -E "s|^  version \".*\"$|  version \"$VERSION\"|" Casks/ade.rb
           sed -i -E "s|^  sha256 \".*\"$|  sha256 \"$SHA256\"|" Casks/ade.rb
+          # Fail loudly if the cask shape changed and a substitution silently
+          # no-op'd — otherwise `git diff --quiet` reports "nothing to do" and
+          # the tap quietly stops tracking releases.
+          grep -qxF "  version \"$VERSION\"" Casks/ade.rb \
+            || { echo "::error::version line not updated — Casks/ade.rb format may have changed."; exit 1; }
+          grep -qxF "  sha256 \"$SHA256\"" Casks/ade.rb \
+            || { echo "::error::sha256 line not updated — Casks/ade.rb format may have changed."; exit 1; }
           if git diff --quiet; then
             echo "Cask already at ADE $VERSION — nothing to do."
             exit 0

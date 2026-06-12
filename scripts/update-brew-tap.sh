@@ -41,14 +41,26 @@ trap 'rm -rf "$tmp_dir"' EXIT
 gh repo clone "$tap_repo" "$tmp_dir/tap" -- -q --depth 1
 cask="$tmp_dir/tap/Casks/ade.rb"
 
-sed -i '' -E "s|^  version \".*\"$|  version \"$version\"|" "$cask"
-sed -i '' -E "s|^  sha256 \".*\"$|  sha256 \"$sha\"|" "$cask"
+# Portable in-place edit (BSD/macOS and GNU sed both accept this temp-file form).
+sed -E "s|^  version \".*\"$|  version \"$version\"|" "$cask" > "$cask.tmp" && mv "$cask.tmp" "$cask"
+sed -E "s|^  sha256 \".*\"$|  sha256 \"$sha\"|" "$cask" > "$cask.tmp" && mv "$cask.tmp" "$cask"
+
+# Fail loudly if the cask shape changed and the substitution silently no-op'd —
+# otherwise `git diff --quiet` below would report "nothing to do" and the tap
+# would stop tracking releases without any alarm.
+grep -qxF "  version \"$version\"" "$cask" \
+  || { echo "error: version line not updated — Casks/ade.rb format may have changed." >&2; exit 1; }
+grep -qxF "  sha256 \"$sha\"" "$cask" \
+  || { echo "error: sha256 line not updated — Casks/ade.rb format may have changed." >&2; exit 1; }
 
 if git -C "$tmp_dir/tap" diff --quiet; then
   echo "Cask already at ADE $version — nothing to do."
   exit 0
 fi
 
-git -C "$tmp_dir/tap" commit -aqm "ade $version"
+git -C "$tmp_dir/tap" \
+  -c user.name="ade-release-bot" \
+  -c user.email="release-bot@users.noreply.github.com" \
+  commit -aqm "ade $version"
 git -C "$tmp_dir/tap" push -q
 echo "Updated $tap_repo cask to ADE $version (sha256 $sha)."

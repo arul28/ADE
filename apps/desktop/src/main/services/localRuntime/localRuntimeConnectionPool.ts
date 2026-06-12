@@ -1499,8 +1499,12 @@ export class LocalRuntimeConnectionPool {
       primarySocketPath,
       isolatedSocketPath: entry.socketPath,
     });
-    this.clearIsolatedRecoveryTimer();
+    // Confirm the isolated connection is still current BEFORE tearing down the
+    // recovery timer. If a connection swap raced during the probe above, bail
+    // with the timer intact so the next tick re-evaluates — clearing the timer
+    // first would strand us in "isolated" mode with no further recovery.
     if (!this.clearConnectionIfCurrent(entry)) return;
+    this.clearIsolatedRecoveryTimer();
     this.markIsolatedMode(false);
     closeRuntimeClient(entry.client);
     if (this.ownedRuntimeChild === entry.child) this.ownedRuntimeChild = null;

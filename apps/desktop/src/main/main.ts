@@ -5703,7 +5703,11 @@ app.whenReady().then(async () => {
     const phonesById = new Map<string, string>();
     const recordPeers = (peers: readonly SyncPeerConnectionState[] | undefined): void => {
       for (const peer of peers ?? []) {
-        if (peer.deviceType !== "phone" && peer.platform !== "iOS") continue;
+        // Match the canonical connected-phone convention used by the phone
+        // device list (main.ts ~2535) and APNS targeting: a phone is both
+        // deviceType "phone" AND platform "iOS". The looser OR form belongs to
+        // host-side sync gating, not user-facing phone copy.
+        if (peer.deviceType !== "phone" || peer.platform !== "iOS") continue;
         phonesById.set(peer.deviceId, peer.deviceName?.trim() || "Connected phone");
       }
     };
