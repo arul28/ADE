@@ -1956,26 +1956,72 @@ export function createLaneService({
   };
 
   /**
-   * Move a duplicate lane's Linear issue rows onto the keeper. Rows for an
-   * issue the keeper already maps are dropped (the keeper's mapping wins);
-   * the rest are re-pointed. Used by the duplicate-lane repair so a Linear
-   * link that landed on the soon-to-be-deleted row is not lost.
+   * Fold a duplicate lane's user-visible data onto the keeper, then cascade the
+   * duplicate row away. Sessions (and their session-scoped Linear links), child
+   * lanes, branch profiles, the lane's primary Linear issue, and additional
+   * Linear issue links are all re-pointed first so nothing the user attached to
+   * the soon-to-be-deleted row is lost. The caller MUST run this inside a
+   * transaction (both call sites already hold `begin immediate`) and the keeper
+   * row must already exist. Shared by the create/recover dedupe repair and the
+   * create-path raced-adoption absorb.
    */
-  const reassignLaneLinearLinksToKeeper = (
-    table: "lane_linear_issues" | "lane_linear_issue_links",
-    keeperId: string,
-    duplicateId: string,
-  ): void => {
+  const mergeDuplicateLaneInto = (keeperId: string, duplicateId: string): void => {
+    // Sessions and their session-scoped Linear links follow the lane.
+    db.run("update claude_sessions set lane_id = ? where lane_id = ?", [keeperId, duplicateId]);
+    db.run("update terminal_sessions set lane_id = ? where lane_id = ?", [keeperId, duplicateId]);
+    db.run("update session_linear_issues set lane_id = ? where lane_id = ? and project_id = ?", [
+      keeperId,
+      duplicateId,
+      projectId,
+    ]);
+    // Child lanes / branch profiles re-parent onto the keeper.
+    db.run("update lanes set parent_lane_id = ? where parent_lane_id = ? and project_id = ?", [
+      keeperId,
+      duplicateId,
+      projectId,
+    ]);
+    db.run("update lane_branch_profiles set parent_lane_id = ? where parent_lane_id = ? and project_id = ?", [
+      keeperId,
+      duplicateId,
+      projectId,
+    ]);
+    // Primary Linear issue: a lane holds at most one (`lane_linear_issues` is
+    // keyed by lane). Keep the keeper's if it already has one; otherwise adopt
+    // the duplicate's.
+    const keeperHasPrimaryIssue = db.get<{ one: number }>(
+      "select 1 as one from lane_linear_issues where lane_id = ? and project_id = ? limit 1",
+      [keeperId, projectId],
+    );
+    if (keeperHasPrimaryIssue) {
+      db.run("delete from lane_linear_issues where lane_id = ? and project_id = ?", [duplicateId, projectId]);
+    } else {
+      db.run("update lane_linear_issues set lane_id = ? where lane_id = ? and project_id = ?", [
+        keeperId,
+        duplicateId,
+        projectId,
+      ]);
+    }
+    // Additional Linear links are unique per (issue, role), so dedupe on both —
+    // dropping only the duplicate's links the keeper already carries for the
+    // same issue AND role, and migrating the rest.
     db.run(
-      `delete from ${table} where lane_id = ? and project_id = ? and issue_id in (
-         select issue_id from ${table} where lane_id = ? and project_id = ?
-       )`,
+      `delete from lane_linear_issue_links
+       where lane_id = ? and project_id = ?
+         and exists (
+           select 1 from lane_linear_issue_links keeper
+           where keeper.lane_id = ? and keeper.project_id = ?
+             and keeper.issue_id = lane_linear_issue_links.issue_id
+             and keeper.role = lane_linear_issue_links.role
+         )`,
       [duplicateId, projectId, keeperId, projectId],
     );
-    db.run(
-      `update ${table} set lane_id = ? where lane_id = ? and project_id = ?`,
-      [keeperId, duplicateId, projectId],
-    );
+    db.run("update lane_linear_issue_links set lane_id = ? where lane_id = ? and project_id = ?", [
+      keeperId,
+      duplicateId,
+      projectId,
+    ]);
+    // Everything else lane-scoped on the duplicate cascades away.
+    cleanupLaneDatabaseRows(duplicateId);
   };
 
   /**
@@ -1984,9 +2030,8 @@ export function createLaneService({
    * worktree before the creating call inserted its own row. The keeper is the
    * row whose id matches the suffix embedded in the worktree directory name
    * (the lane that actually created the worktree — see `worktreeDirSuffix`),
-   * falling back to the oldest row. Sessions, child lanes, and Linear issue
-   * links on the duplicate are re-pointed to the keeper before the duplicate
-   * row cascades away, so no user-visible data is lost.
+   * falling back to the oldest row. Each duplicate is folded into the keeper
+   * via `mergeDuplicateLaneInto`, so no user-visible data is lost.
    */
   const repairDuplicateManagedWorktreeLanes = (): void => {
     const rows = db.all<{ id: string; worktree_path: string; created_at: string }>(
@@ -2024,25 +2069,7 @@ export function createLaneService({
         if (duplicate.id === keeper.id) continue;
         db.run("begin immediate");
         try {
-          db.run("update claude_sessions set lane_id = ? where lane_id = ?", [keeper.id, duplicate.id]);
-          db.run("update terminal_sessions set lane_id = ? where lane_id = ?", [keeper.id, duplicate.id]);
-          db.run("update lanes set parent_lane_id = ? where parent_lane_id = ? and project_id = ?", [
-            keeper.id,
-            duplicate.id,
-            projectId,
-          ]);
-          db.run("update lane_branch_profiles set parent_lane_id = ? where parent_lane_id = ? and project_id = ?", [
-            keeper.id,
-            duplicate.id,
-            projectId,
-          ]);
-          // Re-point Linear issue links to the keeper, dropping only those the
-          // keeper already carries for the same issue so we never double up a
-          // (lane, issue) mapping. `cleanupLaneDatabaseRows` then deletes any
-          // remaining duplicate-scoped rows.
-          reassignLaneLinearLinksToKeeper("lane_linear_issues", keeper.id, duplicate.id);
-          reassignLaneLinearLinksToKeeper("lane_linear_issue_links", keeper.id, duplicate.id);
-          cleanupLaneDatabaseRows(duplicate.id);
+          mergeDuplicateLaneInto(keeper.id, duplicate.id);
           db.run("commit");
           removedCount += 1;
         } catch (error) {
@@ -2527,22 +2554,11 @@ export function createLaneService({
         const laneColor = allocateLaneColorForProject();
         db.run("begin immediate");
         try {
-          const racedAdoptionRows = db.all<{ id: string }>(
-            `
-              select id from lanes
-              where project_id = ?
-                and id != ?
-                and lane_type = 'worktree'
-                and is_edit_protected = 0
-                and (worktree_path = ? or branch_ref = ?)
-            `,
-            [projectId, laneId, worktreePath, branchRef]
-          );
-          for (const raced of racedAdoptionRows) {
-            logger.info("laneService.absorbed_raced_adoption_row", { laneId, racedLaneId: raced.id });
-            cleanupLaneDatabaseRows(raced.id);
-          }
-
+          // Insert the canonical row first, then fold any raced recovery
+          // artifact into it (so its sessions / Linear links migrate rather
+          // than being deleted). Archived lanes are excluded: an old archived
+          // lane may legitimately share this branch name after its Git ref was
+          // deleted, and it is not the raced artifact.
           db.run(
             `
               insert into lanes(
@@ -2566,6 +2582,24 @@ export function createLaneService({
               now
             ]
           );
+
+          const racedAdoptionRows = db.all<{ id: string }>(
+            `
+              select id from lanes
+              where project_id = ?
+                and id != ?
+                and lane_type = 'worktree'
+                and status != 'archived'
+                and is_edit_protected = 0
+                and (worktree_path = ? or branch_ref = ?)
+            `,
+            [projectId, laneId, worktreePath, branchRef]
+          );
+          for (const raced of racedAdoptionRows) {
+            logger.info("laneService.absorbed_raced_adoption_row", { laneId, racedLaneId: raced.id });
+            mergeDuplicateLaneInto(laneId, raced.id);
+          }
+
           db.run("commit");
         } catch (txError) {
           try {

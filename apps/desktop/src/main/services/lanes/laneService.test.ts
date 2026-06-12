@@ -684,6 +684,11 @@ describe("laneService create", () => {
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
     const now = "2026-03-11T12:00:00.000Z";
 
+    // Hoisted so the finally can always release the gate and drain the create,
+    // even if an assertion throws mid-test.
+    let releaseWorktreeAdd: () => void = () => {};
+    let createPromise: Promise<unknown> = Promise.resolve();
+
     try {
       db.run(
         "insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at) values (?, ?, ?, ?, ?, ?)",
@@ -703,7 +708,6 @@ describe("laneService create", () => {
       // registers it, before checkout completes. Park the add on a gate so a
       // list() can run inside that window.
       let pendingWorktree: { path: string; branch: string } | null = null;
-      let releaseWorktreeAdd: () => void = () => {};
       const worktreeAddGate = new Promise<void>((resolve) => {
         releaseWorktreeAdd = resolve;
       });
@@ -764,7 +768,7 @@ describe("laneService create", () => {
         worktreesDir: path.join(repoRoot, "worktrees"),
       });
 
-      const createPromise = service.create({ name: "Race lane", baseBranch: "main" });
+      createPromise = service.create({ name: "Race lane", baseBranch: "main" });
       await vi.waitFor(() => {
         expect(pendingWorktree).not.toBeNull();
       });
@@ -775,12 +779,16 @@ describe("laneService create", () => {
       expect(lanesDuringCreate.some((lane) => lane.worktreePath === pendingWorktree!.path)).toBe(false);
 
       releaseWorktreeAdd();
-      const lane = await createPromise;
+      const lane = (await createPromise) as { id: string; worktreePath: string };
 
       const lanesAfterCreate = await service.list({ includeStatus: false });
       const lanesOnPath = lanesAfterCreate.filter((entry) => entry.worktreePath === lane.worktreePath);
       expect(lanesOnPath.map((entry) => entry.id)).toEqual([lane.id]);
     } finally {
+      // Always release the gate and drain the create so an assertion failure
+      // before line 777 cannot leave `createPromise` blocked and hang CI.
+      releaseWorktreeAdd();
+      await Promise.resolve(createPromise).catch(() => undefined);
       db.close();
       fs.rmSync(repoRoot, { recursive: true, force: true });
     }
@@ -1279,13 +1287,26 @@ describe("laneService list repairs", () => {
       );
       // A Linear issue link the user attached while the duplicate (artifact)
       // row was the one surfaced in the Lanes tab must survive onto the keeper.
+      // `referenced` is a different role than the keeper's `worked` for the same
+      // issue, so it must be preserved (role-aware dedupe), while a same-role
+      // collision is dropped.
+      const insertLink = `
+        insert into lane_linear_issue_links(
+          id, project_id, lane_id, issue_id, issue_json, role, source, created_at, updated_at
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `;
+      db.run(insertLink, ["link-keeper-worked", "proj-repair-dup", keeperId, "ISS-99", "{}", "worked", "chat_attach", "2026-06-11T17:54:00.000Z", "2026-06-11T17:54:00.000Z"]);
+      db.run(insertLink, ["link-dup-referenced", "proj-repair-dup", artifactId, "ISS-99", "{}", "referenced", "chat_attach", "2026-06-11T17:55:00.000Z", "2026-06-11T17:55:00.000Z"]);
+      db.run(insertLink, ["link-dup-worked-dupe", "proj-repair-dup", artifactId, "ISS-99", "{}", "worked", "chat_attach", "2026-06-11T17:56:00.000Z", "2026-06-11T17:56:00.000Z"]);
+      // A session-scoped Linear issue attached directly to the duplicate lane
+      // must move to the keeper, not be cascade-deleted.
       db.run(
         `
-          insert into lane_linear_issue_links(
-            id, project_id, lane_id, issue_id, issue_json, role, source, created_at, updated_at
-          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          insert into session_linear_issues(
+            id, project_id, session_id, lane_id, issue_id, issue_json, role, source, created_at, updated_at
+          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `,
-        ["link-on-dup", "proj-repair-dup", artifactId, "ISS-99", "{}", "worked", "chat_attach", "2026-06-11T17:55:00.000Z", "2026-06-11T17:55:00.000Z"],
+        ["sess-link-on-dup", "proj-repair-dup", "session-on-dup", artifactId, "ISS-77", "{}", "worked", "chat_attach", "2026-06-11T17:57:00.000Z", "2026-06-11T17:57:00.000Z"],
       );
 
       vi.mocked(runGitOrThrow).mockImplementation(async (args: string[]) => {
@@ -1320,8 +1341,18 @@ describe("laneService list repairs", () => {
       expect(
         db.get<{ lane_id: string }>("select lane_id from terminal_sessions where id = ?", ["session-on-dup"])?.lane_id,
       ).toBe(keeperId);
+      // The differently-roled link survives on the keeper; the same-role
+      // collision is dropped (keeper's own `worked` wins). The keeper ends up
+      // with exactly one `worked` and one `referenced` row for the issue.
+      const keeperLinks = db.all<{ id: string; role: string }>(
+        "select id, role from lane_linear_issue_links where lane_id = ? and issue_id = ? order by role",
+        [keeperId, "ISS-99"],
+      );
+      expect(keeperLinks.map((r) => r.role)).toEqual(["referenced", "worked"]);
+      expect(db.get<{ id: string }>("select id from lane_linear_issue_links where id = ?", ["link-dup-worked-dupe"])).toBeNull();
+      // The session-scoped Linear issue moved to the keeper instead of being deleted.
       expect(
-        db.get<{ lane_id: string }>("select lane_id from lane_linear_issue_links where id = ?", ["link-on-dup"])?.lane_id,
+        db.get<{ lane_id: string }>("select lane_id from session_linear_issues where id = ?", ["sess-link-on-dup"])?.lane_id,
       ).toBe(keeperId);
     } finally {
       db.close();
