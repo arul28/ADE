@@ -679,6 +679,121 @@ describe("laneService create", () => {
     }
   });
 
+  it("does not let a concurrent list adopt a half-created worktree as a duplicate lane", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-create-race-"));
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    const now = "2026-03-11T12:00:00.000Z";
+
+    // Hoisted so the finally can always release the gate and drain the create,
+    // even if an assertion throws mid-test.
+    let releaseWorktreeAdd: () => void = () => {};
+    let createPromise: Promise<unknown> = Promise.resolve();
+
+    try {
+      db.run(
+        "insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at) values (?, ?, ?, ?, ?, ?)",
+        ["proj-create-race", repoRoot, "demo", "main", now, now],
+      );
+      db.run(
+        `
+          insert into lanes(
+            id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path,
+            attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, status, created_at, archived_at
+          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `,
+        ["lane-main", "proj-create-race", "Main", null, "primary", "main", "main", repoRoot, null, 1, null, null, null, null, "active", now, null],
+      );
+
+      // `git worktree list` reports a new worktree the moment `worktree add`
+      // registers it, before checkout completes. Park the add on a gate so a
+      // list() can run inside that window.
+      let pendingWorktree: { path: string; branch: string } | null = null;
+      const worktreeAddGate = new Promise<void>((resolve) => {
+        releaseWorktreeAdd = resolve;
+      });
+
+      vi.mocked(runGitOrThrow).mockImplementation(async (args: string[]) => {
+        if (args[0] === "worktree" && args[1] === "add") {
+          pendingWorktree = { branch: args[3], path: args[4] };
+          await worktreeAddGate;
+          return { exitCode: 0, stdout: "", stderr: "" } as any;
+        }
+        if (args[0] === "worktree" && args[1] === "list") {
+          const blocks = [`worktree ${repoRoot}\nbranch refs/heads/main`];
+          if (pendingWorktree) {
+            blocks.push(`worktree ${pendingWorktree.path}\nbranch refs/heads/${pendingWorktree.branch}`);
+          }
+          return { exitCode: 0, stdout: `${blocks.join("\n\n")}\n`, stderr: "" } as any;
+        }
+        throw new Error(`Unexpected git call: ${args.join(" ")}`);
+      });
+
+      vi.mocked(runGit).mockImplementation(async (args: string[]) => {
+        const laneBranchGitStub = defaultLaneBranchGitStub(args);
+        if (laneBranchGitStub) return laneBranchGitStub;
+        if (args[0] === "rev-parse" && args[1] === "--abbrev-ref" && args[2] === "HEAD") {
+          return { exitCode: 0, stdout: "main\n", stderr: "" };
+        }
+        if (args[0] === "rev-parse" && args[1] === "main") {
+          return { exitCode: 0, stdout: "sha-main\n", stderr: "" };
+        }
+        if (args[0] === "push" && args[1] === "-u") {
+          return { exitCode: 0, stdout: "", stderr: "" };
+        }
+        if (args[0] === "status" && args[1] === "--porcelain=v1") {
+          return { exitCode: 0, stdout: "", stderr: "" };
+        }
+        if (args[0] === "rev-list" && args[1] === "--left-right" && args[2] === "--count") {
+          return { exitCode: 0, stdout: "0\t0\n", stderr: "" };
+        }
+        if (
+          args[0] === "rev-parse"
+          && args[1] === "--abbrev-ref"
+          && args[2] === "--symbolic-full-name"
+          && args[3] === "@{upstream}"
+        ) {
+          return { exitCode: 1, stdout: "", stderr: "fatal: no upstream configured" };
+        }
+        if (args[0] === "rev-parse" && args[1] === "--path-format=absolute" && args[2] === "--git-dir") {
+          return { exitCode: 1, stdout: "", stderr: "fatal: no git dir" };
+        }
+        throw new Error(`Unexpected git call: ${args.join(" ")}`);
+      });
+
+      const service = createLaneService({
+        db,
+        projectRoot: repoRoot,
+        projectId: "proj-create-race",
+        defaultBaseRef: "main",
+        worktreesDir: path.join(repoRoot, "worktrees"),
+      });
+
+      createPromise = service.create({ name: "Race lane", baseBranch: "main" });
+      await vi.waitFor(() => {
+        expect(pendingWorktree).not.toBeNull();
+      });
+
+      // List while the create's checkout is still running: recovery must not
+      // adopt the pending worktree.
+      const lanesDuringCreate = await service.list({ includeStatus: false });
+      expect(lanesDuringCreate.some((lane) => lane.worktreePath === pendingWorktree!.path)).toBe(false);
+
+      releaseWorktreeAdd();
+      const lane = (await createPromise) as { id: string; worktreePath: string };
+
+      const lanesAfterCreate = await service.list({ includeStatus: false });
+      const lanesOnPath = lanesAfterCreate.filter((entry) => entry.worktreePath === lane.worktreePath);
+      expect(lanesOnPath.map((entry) => entry.id)).toEqual([lane.id]);
+    } finally {
+      // Always release the gate and drain the create so an assertion failure
+      // before line 777 cannot leave `createPromise` blocked and hang CI.
+      releaseWorktreeAdd();
+      await Promise.resolve(createPromise).catch(() => undefined);
+      db.close();
+      fs.rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
   it("cleans up the row, worktree, and branch when VM lane wiring fails", async () => {
     const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-create-vm-fail-"));
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
@@ -764,6 +879,119 @@ describe("laneService create", () => {
           ],
         ]),
       );
+    } finally {
+      db.close();
+      fs.rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves absorbed raced lane data when VM lane wiring fails after commit", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-create-vm-absorb-fail-"));
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    const now = "2026-03-11T12:00:00.000Z";
+    const projectId = "proj-create-vm-absorb-fail";
+    const racedLaneId = "raced-adoption-row";
+    const worktreesDir = path.join(repoRoot, "worktrees");
+
+    try {
+      db.run(
+        "insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at) values (?, ?, ?, ?, ?, ?)",
+        [projectId, repoRoot, "demo", "main", now, now],
+      );
+      db.run(
+        `
+          insert into lanes(
+            id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path,
+            attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, status, created_at, archived_at
+          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `,
+        ["lane-main", projectId, "Main", null, "primary", "main", "main", repoRoot, null, 0, null, null, null, null, "active", now, null],
+      );
+
+      vi.mocked(runGitOrThrow).mockImplementation(async (args: string[]) => {
+        if (args[0] === "worktree" && args[1] === "add") {
+          const branchRef = args[3];
+          const worktreePath = args[4];
+          db.run(
+            `
+              insert into lanes(
+                id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path,
+                attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, status, created_at, archived_at
+              ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            `,
+            [racedLaneId, projectId, "Recovered race", null, "worktree", "main", branchRef, worktreePath, null, 0, null, null, null, null, "active", now, null],
+          );
+          db.run(
+            `
+              insert into terminal_sessions(id, lane_id, title, started_at, transcript_path, status)
+              values (?, ?, ?, ?, ?, ?)
+            `,
+            ["session-on-raced-row", racedLaneId, "shell", now, "/tmp/transcript.jsonl", "running"],
+          );
+          db.run(
+            `
+              insert into lane_linear_issue_links(
+                id, project_id, lane_id, issue_id, issue_json, role, source, created_at, updated_at
+              ) values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            `,
+            ["link-on-raced-row", projectId, racedLaneId, "ISS-101", "{}", "worked", "chat_attach", now, now],
+          );
+          return { exitCode: 0, stdout: "", stderr: "" } as any;
+        }
+        if (args[0] === "worktree" && args[1] === "remove") {
+          return { exitCode: 0, stdout: "", stderr: "" } as any;
+        }
+        throw new Error(`Unexpected git call: ${args.join(" ")}`);
+      });
+
+      vi.mocked(runGit).mockImplementation(async (args: string[]) => {
+        const laneBranchGitStub = defaultLaneBranchGitStub(args);
+        if (laneBranchGitStub) return laneBranchGitStub;
+        if (args[0] === "rev-parse" && args[1] === "main") {
+          return { exitCode: 0, stdout: "sha-main\n", stderr: "" };
+        }
+        if (args[0] === "branch" && args[1] === "-D") {
+          return { exitCode: 0, stdout: "", stderr: "" };
+        }
+        throw new Error(`Unexpected git call: ${args.join(" ")}`);
+      });
+
+      const service = createLaneService({
+        db,
+        projectRoot: repoRoot,
+        projectId,
+        defaultBaseRef: "main",
+        worktreesDir,
+        macosVmHooks: {
+          linkLaneToCurrentVm: vi.fn(async () => {
+            throw new Error("vm link failed");
+          }),
+        } as any,
+      });
+
+      await expect(
+        service.create({
+          name: "VM absorbed lane",
+          baseBranch: "main",
+          runtimePlacement: "macos-vm",
+        }),
+      ).rejects.toThrow("vm link failed");
+
+      const worktreeRows = db.all<{ id: string; runtime_placement: string }>(
+        "select id, runtime_placement from lanes where project_id = ? and lane_type = 'worktree'",
+        [projectId],
+      );
+      expect(worktreeRows).toHaveLength(1);
+      expect(worktreeRows[0]?.id).not.toBe(racedLaneId);
+      expect(worktreeRows[0]?.runtime_placement).toBe("local");
+      expect(
+        db.get<{ lane_id: string }>("select lane_id from terminal_sessions where id = ?", ["session-on-raced-row"])?.lane_id,
+      ).toBe(worktreeRows[0]?.id);
+      expect(
+        db.get<{ lane_id: string }>("select lane_id from lane_linear_issue_links where id = ?", ["link-on-raced-row"])?.lane_id,
+      ).toBe(worktreeRows[0]?.id);
+      expect(vi.mocked(runGitOrThrow).mock.calls.some(([args]) => args[0] === "worktree" && args[1] === "remove")).toBe(false);
+      expect(vi.mocked(runGit).mock.calls.some(([args]) => args[0] === "branch" && args[1] === "-D")).toBe(false);
     } finally {
       db.close();
       fs.rmSync(repoRoot, { recursive: true, force: true });
@@ -1136,6 +1364,126 @@ describe("laneService list repairs", () => {
       fs.rmSync(repoRoot, { recursive: true, force: true });
     }
   });
+
+  it("dedupes duplicate lane rows sharing a managed worktree, keeping the creator row", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-repair-dup-"));
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    const worktreesDir = path.join(repoRoot, "worktrees");
+    const sharedWorktreePath = path.join(worktreesDir, "claude-pre-launch-review-ba241a46");
+    // The creator row's id matches the suffix embedded in the worktree dir name.
+    const keeperId = "ba241a46-0000-4000-8000-000000000001";
+    // The adoption artifact raced in first, so created_at alone would keep the wrong row.
+    const artifactId = "f2862e51-0000-4000-8000-000000000002";
+
+    try {
+      db.run(
+        "insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at) values (?, ?, ?, ?, ?, ?)",
+        ["proj-repair-dup", repoRoot, "demo", "main", "2026-06-11T17:41:00.000Z", "2026-06-11T17:41:00.000Z"],
+      );
+      const insertLane = `
+        insert into lanes(
+          id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path,
+          attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, status, created_at, archived_at
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `;
+      db.run(insertLane, ["lane-main", "proj-repair-dup", "Main", null, "primary", "main", "main", repoRoot, null, 1, null, null, null, null, "active", "2026-06-11T17:41:00.000Z", null]);
+      db.run(insertLane, [artifactId, "proj-repair-dup", "claude pre launch review", null, "worktree", "main", "ade/claude-pre-launch-review-ba241a46", sharedWorktreePath, null, 0, null, null, null, null, "active", "2026-06-11T17:41:33.000Z", null]);
+      db.run(insertLane, [keeperId, "proj-repair-dup", "claude pre-launch review", null, "worktree", "main", "ade/claude-pre-launch-review-ba241a46", sharedWorktreePath, null, 0, null, null, null, null, "active", "2026-06-11T17:41:33.933Z", null]);
+      // Work that landed on the duplicate must survive the dedupe.
+      db.run(insertLane, ["lane-dup-child", "proj-repair-dup", "Child of duplicate", null, "worktree", "ade/claude-pre-launch-review-ba241a46", "ade/dup-child", path.join(worktreesDir, "dup-child-11112222"), null, 0, artifactId, null, null, null, "active", "2026-06-11T18:00:00.000Z", null]);
+      db.run(
+        `
+          insert into terminal_sessions(id, lane_id, title, started_at, transcript_path, status)
+          values (?, ?, ?, ?, ?, ?)
+        `,
+        ["session-on-dup", artifactId, "shell", "2026-06-11T17:50:00.000Z", "/tmp/transcript.jsonl", "running"],
+      );
+      // A Linear issue link the user attached while the duplicate (artifact)
+      // row was the one surfaced in the Lanes tab must survive onto the keeper.
+      // `referenced` is a different role than the keeper's `worked` for the same
+      // issue, so it must be preserved (role-aware dedupe), while a same-role
+      // collision is dropped.
+      const insertLink = `
+        insert into lane_linear_issue_links(
+          id, project_id, lane_id, issue_id, issue_json, role, source, created_at, updated_at
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `;
+      db.run(insertLink, ["link-keeper-worked", "proj-repair-dup", keeperId, "ISS-99", "{}", "worked", "chat_attach", "2026-06-11T17:54:00.000Z", "2026-06-11T17:54:00.000Z"]);
+      db.run(insertLink, ["link-dup-referenced", "proj-repair-dup", artifactId, "ISS-99", "{}", "referenced", "chat_attach", "2026-06-11T17:55:00.000Z", "2026-06-11T17:55:00.000Z"]);
+      db.run(insertLink, ["link-dup-worked-dupe", "proj-repair-dup", artifactId, "ISS-99", "{}", "worked", "chat_attach", "2026-06-11T17:56:00.000Z", "2026-06-11T17:56:00.000Z"]);
+      // A session-scoped Linear issue attached directly to the duplicate lane
+      // must move to the keeper, not be cascade-deleted.
+      db.run(
+        `
+          insert into session_linear_issues(
+            id, project_id, session_id, lane_id, issue_id, issue_json, role, source, created_at, updated_at
+          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `,
+        ["sess-link-on-dup", "proj-repair-dup", "session-on-dup", artifactId, "ISS-77", "{}", "worked", "chat_attach", "2026-06-11T17:57:00.000Z", "2026-06-11T17:57:00.000Z"],
+      );
+      db.run(
+        `
+          insert into lane_branch_profiles(
+            id, project_id, lane_id, branch_ref, normalized_branch_ref, base_ref,
+            parent_lane_id, source_branch_ref, created_at, updated_at, last_checked_out_at
+          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `,
+        ["profile-on-dup", "proj-repair-dup", artifactId, "ade/dup-switched", "ade/dup-switched", "main", null, null, "2026-06-11T17:58:00.000Z", "2026-06-11T17:58:00.000Z", "2026-06-11T17:58:00.000Z"],
+      );
+
+      vi.mocked(runGitOrThrow).mockImplementation(async (args: string[]) => {
+        if (args[0] === "worktree" && args[1] === "list") {
+          return { exitCode: 0, stdout: "", stderr: "" } as any;
+        }
+        throw new Error(`Unexpected git call: ${args.join(" ")}`);
+      });
+      vi.mocked(runGit).mockImplementation(async (args: string[]) => {
+        const laneBranchGitStub = defaultLaneBranchGitStub(args);
+        if (laneBranchGitStub) return laneBranchGitStub;
+        if (args[0] === "rev-parse" && args[1] === "--abbrev-ref" && args[2] === "HEAD") {
+          return { exitCode: 0, stdout: "main\n", stderr: "" };
+        }
+        throw new Error(`Unexpected git call: ${args.join(" ")}`);
+      });
+
+      const service = createLaneService({
+        db,
+        projectRoot: repoRoot,
+        projectId: "proj-repair-dup",
+        defaultBaseRef: "main",
+        worktreesDir,
+      });
+
+      const lanes = await service.list({ includeStatus: false });
+
+      const sharedPathLanes = lanes.filter((lane) => lane.worktreePath === sharedWorktreePath);
+      expect(sharedPathLanes.map((lane) => lane.id)).toEqual([keeperId]);
+      expect(lanes.some((lane) => lane.id === artifactId)).toBe(false);
+      expect(lanes.find((lane) => lane.id === "lane-dup-child")?.parentLaneId).toBe(keeperId);
+      expect(
+        db.get<{ lane_id: string }>("select lane_id from terminal_sessions where id = ?", ["session-on-dup"])?.lane_id,
+      ).toBe(keeperId);
+      // The differently-roled link survives on the keeper; the same-role
+      // collision is dropped (keeper's own `worked` wins). The keeper ends up
+      // with exactly one `worked` and one `referenced` row for the issue.
+      const keeperLinks = db.all<{ id: string; role: string }>(
+        "select id, role from lane_linear_issue_links where lane_id = ? and issue_id = ? order by role",
+        [keeperId, "ISS-99"],
+      );
+      expect(keeperLinks.map((r) => r.role)).toEqual(["referenced", "worked"]);
+      expect(db.get<{ id: string }>("select id from lane_linear_issue_links where id = ?", ["link-dup-worked-dupe"])).toBeNull();
+      // The session-scoped Linear issue moved to the keeper instead of being deleted.
+      expect(
+        db.get<{ lane_id: string }>("select lane_id from session_linear_issues where id = ?", ["sess-link-on-dup"])?.lane_id,
+      ).toBe(keeperId);
+      expect(
+        db.get<{ lane_id: string }>("select lane_id from lane_branch_profiles where id = ?", ["profile-on-dup"])?.lane_id,
+      ).toBe(keeperId);
+    } finally {
+      db.close();
+      fs.rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("laneService importBranch", () => {
@@ -1472,6 +1820,87 @@ describe("laneService importBranch", () => {
 
     expect(result.branchRef).toBe("feature/existing-local");
     expect(vi.mocked(runGitOrThrow).mock.calls.some(([args]) => args[0] === "branch" && args[1] === "--track")).toBe(false);
+  });
+
+  it("absorbs raced recovered rows while importing a branch", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-import-race-"));
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    const projectId = "proj-import-race";
+    const racedLaneId = "raced-import-row";
+    const now = "2026-03-11T12:05:00.000Z";
+    await seedProjectAndStack(db, { projectId, repoRoot });
+
+    vi.mocked(runGit).mockImplementation(async (args: string[]) => {
+      const laneBranchGitStub = defaultLaneBranchGitStub(args);
+      if (laneBranchGitStub) return laneBranchGitStub;
+      if (args[0] === "show-ref" && args[1] === "--verify" && args[3] === "refs/heads/feature/import-race") {
+        return { exitCode: 0, stdout: "", stderr: "" };
+      }
+      if (args[0] === "status" && args[1] === "--porcelain=v1") {
+        return { exitCode: 0, stdout: "", stderr: "" };
+      }
+      if (args[0] === "rev-list" && args[1] === "--left-right" && args[2] === "--count") {
+        return { exitCode: 0, stdout: "0\t0\n", stderr: "" };
+      }
+      if (args[0] === "rev-parse" && args[1] === "--abbrev-ref" && args[2] === "--symbolic-full-name" && args[3] === "@{upstream}") {
+        return { exitCode: 0, stdout: "origin/feature/import-race\n", stderr: "" };
+      }
+      if (args[0] === "rev-list" && args[1] === "HEAD..@{upstream}" && args[2] === "--count") {
+        return { exitCode: 0, stdout: "0\n", stderr: "" };
+      }
+      if (args[0] === "rev-parse" && args[1] === "--path-format=absolute" && args[2] === "--git-dir") {
+        return { exitCode: 1, stdout: "", stderr: "fatal: no git dir" };
+      }
+      throw new Error(`Unexpected git call: ${args.join(" ")}`);
+    });
+
+    vi.mocked(runGitOrThrow).mockImplementation(async (args: string[]) => {
+      if (args[0] === "worktree" && args[1] === "list") {
+        return [`worktree ${repoRoot}`, "HEAD 1111111", "branch refs/heads/main", ""].join("\n") as any;
+      }
+      if (args[0] === "worktree" && args[1] === "add") {
+        const worktreePath = args[2];
+        const branchRef = args[3];
+        db.run(
+          `
+            insert into lanes(
+              id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path,
+              attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, status, created_at, archived_at
+            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `,
+          [racedLaneId, projectId, "Recovered import race", null, "worktree", "main", branchRef, worktreePath, null, 0, null, null, null, null, "active", now, null],
+        );
+        db.run(
+          `
+            insert into terminal_sessions(id, lane_id, title, started_at, transcript_path, status)
+            values (?, ?, ?, ?, ?, ?)
+          `,
+          ["session-on-import-race", racedLaneId, "shell", now, "/tmp/transcript.jsonl", "running"],
+        );
+        return { exitCode: 0, stdout: "", stderr: "" } as any;
+      }
+      throw new Error(`Unexpected git call: ${args.join(" ")}`);
+    });
+
+    const service = createLaneService({
+      db,
+      projectRoot: repoRoot,
+      projectId,
+      defaultBaseRef: "main",
+      worktreesDir: path.join(repoRoot, "worktrees"),
+    });
+
+    const result = await service.importBranch({ branchRef: "feature/import-race", name: "Imported race" });
+
+    const worktreeRows = db.all<{ id: string }>(
+      "select id from lanes where project_id = ? and lane_type = 'worktree' and branch_ref = ?",
+      [projectId, "feature/import-race"],
+    );
+    expect(worktreeRows.map((row) => row.id)).toEqual([result.id]);
+    expect(result.id).not.toBe(racedLaneId);
+    expect(
+      db.get<{ lane_id: string }>("select lane_id from terminal_sessions where id = ?", ["session-on-import-race"])?.lane_id,
+    ).toBe(result.id);
   });
 
   it("removes a created tracking branch when worktree setup fails during import", async () => {

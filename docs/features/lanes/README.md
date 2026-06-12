@@ -174,7 +174,7 @@ The `LaneType` column on the `lanes` table is one of:
 
 Primary lanes are created by `laneService.ensurePrimaryLane()` on project
 open and never rebuilt. Their `is_edit_protected = 1` flag prevents delete
-and reparent operations. Two startup repair routines normalize older data:
+and reparent operations. A set of repair routines normalize older data:
 
 - `repairPrimaryParentedRootLanes` — detaches non-primary lanes whose
   `parent_lane_id` was mistakenly set to the primary lane and resets
@@ -182,8 +182,18 @@ and reparent operations. Two startup repair routines normalize older data:
 - `repairLegacyPrimaryBaseRootLanes` — normalizes `base_ref` on root
   worktree lanes that still point to a stale or non-default branch.
   Lanes with open PRs are excluded from repair.
+- `repairDuplicateManagedWorktreeLanes` — removes duplicate lane rows
+  that share one managed worktree path (artifacts of the historical
+  create/recover race, see gotchas). Keeps the row whose id matches the
+  8-char suffix embedded in the worktree directory name (the lane that
+  created the worktree), falling back to the oldest row; sessions, child
+  lanes, and Linear issue links on the duplicate are re-pointed to the
+  keeper before the duplicate cascades away, so no user-visible data is
+  lost. Runs in the `list()` repair block alongside
+  `recoverManagedWorktreeRows`.
 
-Both routines run at `createLaneService()` time.
+These routines run inside `listLanes` (i.e. on every `lanes.list`), not at
+`createLaneService()` construction time.
 
 ## Lane status
 
@@ -516,6 +526,19 @@ open lanes; primary lanes render with a home icon.
   `parent_lane_id`.
 - **Startup repair runs every boot.** If you introduce a new lane
   field that can drift, handle it in the repair routines too.
+- **Half-created worktrees must stay invisible to recovery.** A new
+  worktree is visible to `git worktree list` the moment `worktree add`
+  registers it, but its lane row only lands after checkout completes.
+  `recoverManagedWorktreeRows` (run by every `lanes.list`) would adopt
+  that half-created worktree as a duplicate lane, so `createWorktreeLane`
+  and `importBranch` hold a pending-creation marker
+  (`trackPendingWorktreeCreation`) across the add→insert window, and
+  recovery/unregistered-worktree listings skip pending paths/branches.
+  Any new code path that runs `git worktree add` under `worktreesDir`
+  and inserts a lane row afterwards must do the same. The lanes table is
+  a cr-sqlite CRR, so a unique index cannot enforce this at the DB
+  layer; `repairDuplicateManagedWorktreeLanes` dedupes any rows that
+  slip through (e.g. from a second process).
 - **Lane list cache.** `LANE_LIST_CACHE_TTL_MS = 10_000`. Services
   that need fresh status after a git operation must call
   `laneService.list({ refresh: true })` or mutate through the
