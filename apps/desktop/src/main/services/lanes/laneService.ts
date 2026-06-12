@@ -1985,6 +1985,21 @@ export function createLaneService({
       duplicateId,
       projectId,
     ]);
+    db.run(
+      `delete from lane_branch_profiles
+       where lane_id = ? and project_id = ?
+         and exists (
+           select 1 from lane_branch_profiles keeper
+           where keeper.lane_id = ? and keeper.project_id = ?
+             and keeper.normalized_branch_ref = lane_branch_profiles.normalized_branch_ref
+         )`,
+      [duplicateId, projectId, keeperId, projectId],
+    );
+    db.run("update lane_branch_profiles set lane_id = ? where lane_id = ? and project_id = ?", [
+      keeperId,
+      duplicateId,
+      projectId,
+    ]);
     // Primary Linear issue: a lane holds at most one (`lane_linear_issues` is
     // keyed by lane). Keep the keeper's if it already has one; otherwise adopt
     // the duplicate's.
@@ -3701,17 +3716,46 @@ export function createLaneService({
         const baseRef = args.baseBranch?.trim() || defaultBaseRef;
         const laneColor = allocateLaneColorForProject();
 
-        db.run(
-          `
-            insert into lanes(
-              id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path,
-              attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, status, created_at, archived_at
-            )
-            values(?, ?, ?, ?, 'worktree', ?, ?, ?, null, 0, ?, ?, null, null, 'active', ?, null)
-          `,
-          [laneId, projectId, displayName, args.description ?? null, baseRef, branchRef, worktreePath, parentLaneId, laneColor, now]
-        );
-        laneInserted = true;
+        db.run("begin immediate");
+        try {
+          db.run(
+            `
+              insert into lanes(
+                id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path,
+                attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, status, created_at, archived_at
+              )
+              values(?, ?, ?, ?, 'worktree', ?, ?, ?, null, 0, ?, ?, null, null, 'active', ?, null)
+            `,
+            [laneId, projectId, displayName, args.description ?? null, baseRef, branchRef, worktreePath, parentLaneId, laneColor, now]
+          );
+
+          const racedAdoptionRows = db.all<{ id: string }>(
+            `
+              select id from lanes
+              where project_id = ?
+                and id != ?
+                and lane_type = 'worktree'
+                and status != 'archived'
+                and is_edit_protected = 0
+                and (worktree_path = ? or branch_ref = ?)
+            `,
+            [projectId, laneId, worktreePath, branchRef]
+          );
+          for (const raced of racedAdoptionRows) {
+            logger.info("laneService.import_absorbed_raced_adoption_row", { laneId, racedLaneId: raced.id });
+            mergeDuplicateLaneInto(laneId, raced.id);
+          }
+
+          db.run("commit");
+          laneInserted = true;
+        } catch (txError) {
+          try {
+            db.run("rollback");
+          } catch {
+            // surface the original error below
+          }
+          throw txError;
+        }
         invalidateLaneListCache();
 
         // Best-effort push to establish upstream if not already tracking a remote
