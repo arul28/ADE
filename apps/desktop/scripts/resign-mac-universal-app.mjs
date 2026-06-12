@@ -50,22 +50,26 @@ const appPath = resolveAbsolute(readFlag("--app")) ?? defaultAppPath;
 await assertPathExists(appPath, "universal ADE.app bundle");
 await assertPathExists(entitlementsPath, "macOS entitlements");
 
+let appNeedsRepair = false;
 try {
   await verifyAppSignature(appPath, "pre-repair universal app signature");
   console.log("[release:mac] Universal app signature was already valid.");
 } catch (error) {
+  appNeedsRepair = true;
   const output = [error?.stdout, error?.stderr].filter(Boolean).join("\n").trim();
   const suffix = output ? `\n${output}` : "";
   console.warn(`[release:mac] Universal app signature verification failed; re-signing.${suffix}`);
 }
 
-await signAsync({
-  app: appPath,
-  platform: "darwin",
-  entitlements: entitlementsPath,
-  hardenedRuntime: true,
-  strictVerify: true,
-});
+if (appNeedsRepair) {
+  await signAsync({
+    app: appPath,
+    platform: "darwin",
+    entitlements: entitlementsPath,
+    hardenedRuntime: true,
+    strictVerify: true,
+  });
+}
 
 await verifyAppSignature(appPath, "post-repair universal app signature");
 console.log("[release:mac] Universal ADE.app signature is valid.");
