@@ -67,6 +67,8 @@ function buildNotarytoolArgs(dmgPath) {
       process.env.APPLE_API_KEY_ID,
       "--issuer",
       process.env.APPLE_API_ISSUER,
+      "--output-format",
+      "json",
       "--wait",
     ];
   }
@@ -82,12 +84,23 @@ function buildNotarytoolArgs(dmgPath) {
       process.env.APPLE_APP_SPECIFIC_PASSWORD,
       "--team-id",
       process.env.APPLE_TEAM_ID,
+      "--output-format",
+      "json",
       "--wait",
     ];
   }
 
   if (process.env.APPLE_KEYCHAIN_PROFILE) {
-    const args = ["notarytool", "submit", dmgPath, "--keychain-profile", process.env.APPLE_KEYCHAIN_PROFILE, "--wait"];
+    const args = [
+      "notarytool",
+      "submit",
+      dmgPath,
+      "--keychain-profile",
+      process.env.APPLE_KEYCHAIN_PROFILE,
+      "--output-format",
+      "json",
+      "--wait",
+    ];
     if (process.env.APPLE_KEYCHAIN) {
       args.push("--keychain", process.env.APPLE_KEYCHAIN);
     }
@@ -152,7 +165,17 @@ const dmgBlockmapPath = `${dmgPath}.blockmap`;
 await assertPathExists(dmgPath, "mac dmg artifact");
 
 console.log(`[release:mac] Submitting DMG for notarization: ${dmgPath}`);
-await execFileAsync("xcrun", buildNotarytoolArgs(dmgPath), { maxBuffer: 1024 * 1024 * 10 });
+const { stdout: notarytoolOutput } = await execFileAsync("xcrun", buildNotarytoolArgs(dmgPath), {
+  maxBuffer: 1024 * 1024 * 10,
+});
+const notaryResult = JSON.parse(notarytoolOutput);
+if (notaryResult.status !== "Accepted") {
+  throw new Error(
+    `[release:mac] DMG notarization failed with status ${notaryResult.status ?? "unknown"} ` +
+      `for ${path.basename(dmgPath)} (${notaryResult.id ?? "no submission id"})`
+  );
+}
+console.log(`[release:mac] DMG notarization accepted: ${notaryResult.id ?? path.basename(dmgPath)}`);
 
 await stapleDmgWithRetry(dmgPath);
 

@@ -147,6 +147,42 @@ jobs:
             exit 1
           fi
 
+      - name: Import app Developer ID certificate
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+        run: |
+          if [ -z "$CSC_LINK" ] || [ -z "$CSC_KEY_PASSWORD" ]; then
+            echo "::error::Missing CSC_LINK or CSC_KEY_PASSWORD GitHub secret."
+            exit 1
+          fi
+
+          CERT_PATH="$RUNNER_TEMP/app-signing.p12"
+          if [ -f "$CSC_LINK" ]; then
+            cp "$CSC_LINK" "$CERT_PATH"
+          elif [[ "$CSC_LINK" == file://* ]]; then
+            cp "${CSC_LINK#file://}" "$CERT_PATH"
+          elif [[ "$CSC_LINK" == https://* ]]; then
+            curl -fsSL "$CSC_LINK" -o "$CERT_PATH"
+          elif [[ "$CSC_LINK" == http://* ]]; then
+            echo "::error::CSC_LINK must use HTTPS, a local path, or an encoded certificate payload."
+            exit 1
+          else
+            printf '%s' "$CSC_LINK" | base64 --decode > "$CERT_PATH"
+          fi
+
+          KEYCHAIN="$RUNNER_TEMP/app-signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -hex 24)"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          EXISTING_KEYCHAINS="$(security list-keychains -d user | tr -d '\"' | xargs)"
+          security list-keychains -d user -s "$KEYCHAIN" $EXISTING_KEYCHAINS
+          security default-keychain -s "$KEYCHAIN"
+          security import "$CERT_PATH" -k "$KEYCHAIN" -P "$CSC_KEY_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          echo "CSC_KEYCHAIN=$KEYCHAIN" >> "$GITHUB_ENV"
+
       - name: Build signed universal macOS release
         env:
           CSC_LINK: ${{ secrets.CSC_LINK }}
