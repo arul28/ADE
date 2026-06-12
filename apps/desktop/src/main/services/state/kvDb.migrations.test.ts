@@ -309,8 +309,8 @@ describe("kvDb migrations - lane worktree lock schema", () => {
     `);
     const key = fs.realpathSync.native(worktreePath);
     const expiredAt = "2026-01-01T00:00:00.000Z";
-    insert.run(key, key, "lane-old", "path_to_merge", "pr-old", null, null, "Old stale lock 1", "token-1", expiredAt, expiredAt, expiredAt);
-    insert.run(key, key, "lane-old", "path_to_merge", "pr-old", null, null, "Old stale lock 2", "token-2", expiredAt, expiredAt, expiredAt);
+    insert.run(key, key, "lane-old", "conflict_resolution", "pr-old", null, null, "Old stale lock 1", "token-1", expiredAt, expiredAt, expiredAt);
+    insert.run(key, key, "lane-old", "conflict_resolution", "pr-old", null, null, "Old stale lock 2", "token-2", expiredAt, expiredAt, expiredAt);
     rawDb.close();
 
     const db = await openKvDb(dbPath, createLogger());
@@ -326,9 +326,9 @@ describe("kvDb migrations - lane worktree lock schema", () => {
       const acquired = service.acquire({
         laneId: "lane-new",
         worktreePath,
-        ownerKind: "path_to_merge",
+        ownerKind: "conflict_resolution",
         ownerPrId: "pr-new",
-        ownerLabel: "Path to Merge for PR #123",
+        ownerLabel: "Conflict resolution for PR #123",
       });
 
       expect(acquired.token).toBeTruthy();
@@ -351,12 +351,12 @@ describe("kvDb migrations - lane worktree lock schema", () => {
       const acquired = service.acquire({
         laneId: "lane-1",
         worktreePath,
-        ownerKind: "path_to_merge",
+        ownerKind: "conflict_resolution",
         ownerPrId: "pr-1",
-        ownerLabel: "Path to Merge for PR #1",
+        ownerLabel: "Conflict resolution for PR #1",
       });
 
-      expect(service.release({ ownerKind: "path_to_merge", ownerPrId: "missing" })).toBe(0);
+      expect(service.release({ ownerKind: "conflict_resolution", ownerPrId: "missing" })).toBe(0);
       expect(service.getActiveForLane("lane-1")).toHaveLength(1);
       expect(service.release({ token: "missing-token" })).toBe(0);
       expect(service.release({ token: acquired.token })).toBe(1);
@@ -365,108 +365,52 @@ describe("kvDb migrations - lane worktree lock schema", () => {
       db.close();
     }
   });
-});
 
-describe("kvDb migrations - pipeline settings", () => {
-  it("backfills legacy default-shaped PtM settings without touching customized rows", async () => {
-    const dbPath = makeDbPath("ade-kvdb-pipeline-settings-legacy-");
+  it("clears legacy path_to_merge and pr_issue_resolution locks on open", async () => {
+    const dbPath = makeDbPath("ade-kvdb-lane-lock-ptm-");
+    const worktreePath = path.join(path.dirname(dbPath), "worktree");
+    fs.mkdirSync(worktreePath, { recursive: true });
     fs.mkdirSync(path.dirname(dbPath), { recursive: true });
 
     const { DatabaseSync } = require("node:sqlite") as { DatabaseSync: new (path: string) => RawDb };
     const rawDb = new DatabaseSync(dbPath);
+    const key = fs.realpathSync.native(worktreePath);
+    const now = "2026-06-12T00:00:00.000Z";
     rawDb.exec(`
-      create table pr_pipeline_settings (
-        pr_id text primary key,
-        auto_merge integer not null default 0,
-        merge_method text not null default 'repo_default',
-        max_rounds integer not null default 5,
-        on_rebase_needed text not null default 'pause',
-        conflict_strategy text not null default 'pause',
-        force_finalize_mode text not null default 'off',
-        force_finalize_require_no_ci_failures integer not null default 1,
-        early_merge_on_green integer not null default 1,
-        auto_agent_provider text,
-        auto_agent_model text,
-        auto_agent_reasoning_effort text,
-        auto_agent_permission_mode text,
-        auto_agent_confidence_threshold real,
-        at_cap_policy text,
-        at_cap_wait_minutes integer,
-        at_cap_ci_retry_max integer,
-        force_merge_requires_confirmation integer,
-        updated_at text not null
+      create table lane_worktree_locks (
+        worktree_key text not null unique,
+        worktree_path text not null,
+        lane_id text not null,
+        owner_kind text not null,
+        owner_pr_id text,
+        owner_session_id text,
+        owner_proposal_id text,
+        owner_label text not null,
+        token text not null,
+        created_at text not null,
+        heartbeat_at text not null,
+        expires_at text not null
       );
     `);
     const insert = rawDb.prepare(`
-      insert into pr_pipeline_settings (
-        pr_id, auto_merge, merge_method, max_rounds, on_rebase_needed,
-        conflict_strategy, force_finalize_mode, force_finalize_require_no_ci_failures,
-        early_merge_on_green, at_cap_policy, updated_at
-      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      insert into lane_worktree_locks (
+        worktree_key, worktree_path, lane_id, owner_kind, owner_pr_id,
+        owner_session_id, owner_proposal_id, owner_label, token,
+        created_at, heartbeat_at, expires_at
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
-    insert.run("pr-legacy", 0, "repo_default", 5, "pause", "pause", "off", 1, 1, null, "2026-05-01T00:00:00.000Z");
-    insert.run("pr-custom", 0, "squash", 5, "pause", "pause", "off", 1, 1, "stop", "2026-05-01T00:00:00.000Z");
+    insert.run(key, key, "lane-1", "path_to_merge", "pr-1", "session-1", null, "PtM", "token-ptm", now, now, "2099-01-01T00:00:00.000Z");
+    insert.run(`${key}-other`, `${key}-other`, "lane-2", "pr_issue_resolution", "pr-2", "session-2", null, "Issue", "token-issue", now, now, "2099-01-01T00:00:00.000Z");
     rawDb.close();
 
     const db = await openKvDb(dbPath, createLogger());
     try {
-      const legacy = db.get<{
-        auto_merge: number;
-        force_finalize_mode: string;
-        at_cap_policy: string | null;
-      }>(
-        "select auto_merge, force_finalize_mode, at_cap_policy from pr_pipeline_settings where pr_id = ?",
-        ["pr-legacy"],
-      );
-      expect(legacy).toEqual({
-        auto_merge: 1,
-        force_finalize_mode: "conditional",
-        at_cap_policy: "ci_retry_once",
-      });
-
-      const custom = db.get<{
-        auto_merge: number;
-        force_finalize_mode: string;
-        at_cap_policy: string | null;
-      }>(
-        "select auto_merge, force_finalize_mode, at_cap_policy from pr_pipeline_settings where pr_id = ?",
-        ["pr-custom"],
-      );
-      expect(custom).toEqual({
-        auto_merge: 0,
-        force_finalize_mode: "off",
-        at_cap_policy: "stop",
-      });
-
-      db.run(
-        "update pr_pipeline_settings set auto_merge = 0, force_finalize_mode = 'off', at_cap_policy = 'stop' where pr_id = ?",
-        ["pr-legacy"],
-      );
+      expect(db.get<{ count: number }>("select count(1) as count from lane_worktree_locks")?.count).toBe(0);
     } finally {
       db.close();
     }
-
-    const reopened = await openKvDb(dbPath, createLogger());
-    try {
-      const legacyAfterUserOverride = reopened.get<{
-        auto_merge: number;
-        force_finalize_mode: string;
-        at_cap_policy: string | null;
-      }>(
-        "select auto_merge, force_finalize_mode, at_cap_policy from pr_pipeline_settings where pr_id = ?",
-        ["pr-legacy"],
-      );
-      expect(legacyAfterUserOverride).toEqual({
-        auto_merge: 0,
-        force_finalize_mode: "off",
-        at_cap_policy: "stop",
-      });
-    } finally {
-      reopened.close();
-    }
   });
 });
-
 
 describe("kvDb migrations - worker agent schema", () => {
   it("creates W2 worker tables and indexes", async () => {

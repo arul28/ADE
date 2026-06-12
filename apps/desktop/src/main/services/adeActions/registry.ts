@@ -43,7 +43,6 @@ import type {
   LaneOverlayOverrides,
   LanePreviewInfo,
   ListLanesArgs,
-  LaunchPrIssueResolutionFromThreadArgs,
   PortLease,
   PrAgentPermissionMode,
   PrAiResolutionContext,
@@ -56,10 +55,7 @@ import type {
   PrAiResolutionStartResult,
   ReadTranscriptTailArgs,
   PrAiResolutionStopArgs,
-  PrIssueResolutionPromptPreviewArgs,
-  PrIssueResolutionStartArgs,
   ProxyStatus,
-  RebaseResolutionStartArgs,
   AiFeatureKey,
   AiSettingsStatus,
   CtoRunProjectScanResult,
@@ -76,8 +72,6 @@ import { appendDiffTruncationNotice, MAX_DIFF_SIDE_TEXT_BYTES } from "../diffs/d
 import { runGit } from "../git/git";
 import { buildComputerUseOwnerSnapshot } from "../computerUse/controlPlane";
 import { buildLaneListSnapshots } from "../lanes/laneListSnapshotService";
-import { launchPrIssueResolutionChat, previewPrIssueResolutionPrompt } from "../prs/prIssueResolver";
-import { launchRebaseResolutionChat } from "../prs/prRebaseResolver";
 import { mapPermissionModeForModelFamily } from "../prs/resolverUtils";
 import { getErrorMessage, isRecord, nowIso } from "../shared/utils";
 import { parseLinearGraphQLInput } from "../cto/linearGraphQLInput";
@@ -104,8 +98,6 @@ export const ADE_ACTION_DOMAIN_NAMES = [
   "operation",
   "ade_project",
   "project_config",
-  "issue_inventory",
-  "path_to_merge",
   "flow_policy",
   "linear_credentials",
   "linear_oauth",
@@ -149,7 +141,6 @@ export type AdeActionRole = "cto" | "orchestrator" | "agent" | "external" | "eva
  * must be listed here.
  */
 export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, readonly string[]>> = {
-  path_to_merge: ["startPathToMerge", "stopPathToMerge"],
   linear_credentials: [
     "setToken",
     "setOAuthToken",
@@ -422,10 +413,6 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "preflightCreateLaneFromPrBranch",
     "resumeQueueAutomation",
     "cancelQueueAutomation",
-    "issueResolutionStart",
-    "issueResolutionPreviewPrompt",
-    "launchIssueResolutionFromThread",
-    "rebaseResolutionStart",
     "submitReview",
     "updateBody",
     "updateComment",
@@ -560,28 +547,6 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   operation: ["finish", "get", "list", "start"],
   ade_project: ["clearLocalData", "getSnapshot", "initializeOrRepair", "runIntegrityCheck"],
   project_config: ["confirmTrust", "diffAgainstDisk", "get", "save", "setPrTranscriptGists", "validate"],
-  issue_inventory: [
-    "deletePipelineSettings",
-    "getConvergenceRuntime",
-    "getConvergenceStatus",
-    "getInventory",
-    "getNewItems",
-    "getPipelineSettings",
-    "markDismissed",
-    "markEscalated",
-    "markFixed",
-    "markSentToAgent",
-    "reconcileConvergenceSessionExit",
-    "resetConvergenceRuntime",
-    "resetInventory",
-    "saveConvergenceRuntime",
-    "savePipelineSettings",
-    "syncFromPrData",
-  ],
-  path_to_merge: [
-    "startPathToMerge",
-    "stopPathToMerge",
-  ],
   flow_policy: [
     "diffPolicyPaths",
     "getPolicy",
@@ -1890,37 +1855,6 @@ function readStringActionArg(value: unknown, field: string): string {
   return requireNonEmptyString(asActionRecord(value)[field], field);
 }
 
-function buildIssueResolutionInstructionsFromThread(arg: LaunchPrIssueResolutionFromThreadArgs): string {
-  const lines = [`Focus on review thread ${arg.threadId} on PR ${arg.prId}.`];
-  if (arg.commentId) {
-    lines.push(`The relevant comment id is ${arg.commentId}.`);
-  }
-  const fileContext = arg.fileContext;
-  if (fileContext?.path) {
-    const lineNumber = fileContext.startLine ?? fileContext.line ?? null;
-    lines.push(
-      lineNumber != null
-        ? `Start by inspecting ${fileContext.path}:${lineNumber}.`
-        : `Start by inspecting ${fileContext.path}.`,
-    );
-  }
-  if (arg.additionalInstructions) {
-    lines.push("", arg.additionalInstructions);
-  }
-  return lines.join("\n");
-}
-
-function buildPrIssueResolutionDeps(runtime: AdeRuntime) {
-  return {
-    prService: requireService(runtime.prService, "PR service not available."),
-    laneService: runtime.laneService,
-    agentChatService: requireService(runtime.agentChatService, "Agent chat service not available."),
-    sessionService: runtime.sessionService,
-    issueInventoryService: runtime.issueInventoryService,
-    laneWorktreeLockService: runtime.laneWorktreeLockService ?? null,
-  };
-}
-
 type PrAiRuntimeSession = {
   sessionId: string;
   ptyId: string | null;
@@ -2310,35 +2244,6 @@ function getPrAiRuntimeBridge(runtime: AdeRuntime): PrAiRuntimeBridge {
   return bridge;
 }
 
-async function persistIssueResolutionRuntime(
-  runtime: AdeRuntime,
-  args: PrIssueResolutionStartArgs,
-  result: { sessionId: string; laneId: string; href: string },
-): Promise<void> {
-  try {
-    const status = runtime.issueInventoryService.getConvergenceStatus(args.prId);
-    runtime.issueInventoryService.saveConvergenceRuntime(args.prId, {
-      currentRound: status.currentRound,
-      status: "running",
-      pollerStatus: "idle",
-      activeSessionId: result.sessionId,
-      activeLaneId: result.laneId,
-      activeHref: result.href,
-      lastStartedAt: nowIso(),
-      errorMessage: null,
-      pauseReason: null,
-    });
-  } catch (error) {
-    runtime.logger.warn("ade_actions.pr_issue_resolution_convergence_persist_failed", {
-      prId: args.prId,
-      sessionId: result.sessionId,
-      laneId: result.laneId,
-      href: result.href,
-      error: getErrorMessage(error),
-    });
-  }
-}
-
 function buildPrDomainService(runtime: AdeRuntime): OpaqueService | null {
   const prService = runtime.prService;
   if (!prService) return null;
@@ -2391,46 +2296,6 @@ function buildPrDomainService(runtime: AdeRuntime): OpaqueService | null {
           },
         }
       : {}),
-    async issueResolutionStart(args?: unknown) {
-      const startArgs = asActionRecord(args) as unknown as PrIssueResolutionStartArgs;
-      const result = await launchPrIssueResolutionChat(buildPrIssueResolutionDeps(runtime), startArgs);
-      await persistIssueResolutionRuntime(runtime, startArgs, result);
-      return result;
-    },
-    issueResolutionPreviewPrompt(args?: unknown) {
-      return previewPrIssueResolutionPrompt(
-        buildPrIssueResolutionDeps(runtime),
-        asActionRecord(args) as unknown as PrIssueResolutionPromptPreviewArgs,
-      );
-    },
-    rebaseResolutionStart(args?: unknown) {
-      return launchRebaseResolutionChat(
-        {
-          laneService: runtime.laneService,
-          agentChatService: requireService(runtime.agentChatService, "Agent chat service not available."),
-          sessionService: runtime.sessionService,
-          conflictService: runtime.conflictService,
-        },
-        asActionRecord(args) as unknown as RebaseResolutionStartArgs,
-      );
-    },
-    async launchIssueResolutionFromThread(args?: unknown) {
-      const threadArgs = asActionRecord(args) as unknown as LaunchPrIssueResolutionFromThreadArgs;
-      if (!threadArgs.modelId) {
-        throw new Error("modelId is required for launchIssueResolutionFromThread.");
-      }
-      const startArgs: PrIssueResolutionStartArgs = {
-        prId: threadArgs.prId,
-        scope: "comments",
-        modelId: threadArgs.modelId,
-        reasoning: threadArgs.reasoning ?? null,
-        permissionMode: threadArgs.permissionMode,
-        additionalInstructions: buildIssueResolutionInstructionsFromThread(threadArgs),
-      };
-      const result = await launchPrIssueResolutionChat(buildPrIssueResolutionDeps(runtime), startArgs);
-      await persistIssueResolutionRuntime(runtime, startArgs, result);
-      return result;
-    },
   };
 }
 
@@ -2859,8 +2724,6 @@ export function getAdeActionDomainServices(
     operation: toService(runtime.operationService),
     ade_project: toService(runtime.adeProjectService),
     project_config: toService(runtime.projectConfigService),
-    issue_inventory: toService(runtime.issueInventoryService),
-    path_to_merge: toService(runtime.pathToMergeOrchestrator),
     flow_policy: toService(runtime.flowPolicyService),
     linear_credentials: toService(runtime.linearCredentialService),
     linear_oauth: buildLinearOAuthDomainService(runtime),

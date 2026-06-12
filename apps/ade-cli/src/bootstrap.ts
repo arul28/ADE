@@ -52,8 +52,6 @@ import { createOrchestrationService } from "../../desktop/src/main/services/orch
 import type { createPrService } from "../../desktop/src/main/services/prs/prService";
 import { createPrSummaryService } from "../../desktop/src/main/services/prs/prSummaryService";
 import { createQueueLandingService } from "../../desktop/src/main/services/prs/queueLandingService";
-import { createIssueInventoryService } from "../../desktop/src/main/services/prs/issueInventoryService";
-import { createPathToMergeOrchestrator } from "../../desktop/src/main/services/prs/pathToMergeOrchestrator";
 import { createCtoStateService } from "../../desktop/src/main/services/cto/ctoStateService";
 import { createWorkerAgentService } from "../../desktop/src/main/services/cto/workerAgentService";
 import { createWorkerBudgetService } from "../../desktop/src/main/services/cto/workerBudgetService";
@@ -218,8 +216,6 @@ export type AdeRuntime = {
   prService?: ReturnType<typeof createPrService>;
   prSummaryService?: ReturnType<typeof createPrSummaryService> | null;
   queueLandingService?: ReturnType<typeof createQueueLandingService> | null;
-  issueInventoryService: ReturnType<typeof createIssueInventoryService>;
-  pathToMergeOrchestrator?: ReturnType<typeof createPathToMergeOrchestrator> | null;
   fileService?: ReturnType<typeof createFileService> | null;
   ctoStateService: ReturnType<typeof createCtoStateService>;
   workerAgentService: ReturnType<typeof createWorkerAgentService>;
@@ -806,7 +802,6 @@ export async function createAdeRuntime(args: {
     projectConfigService,
     broadcastEvent: (event) => pushEvent("runtime", event as unknown as Record<string, unknown>)
   });
-  const issueInventoryService = createIssueInventoryService({ db });
   const laneWorktreeLockService = createLaneWorktreeLockService({ db, logger });
 
   // Headless lane runtime env uses the same persistent allocator/proxy hostname
@@ -1045,7 +1040,6 @@ export async function createAdeRuntime(args: {
       linearClient: headlessLinearServices.linearClient,
       linearCredentials: headlessLinearServices.linearCredentialService,
       prService: headlessLinearServices.prService,
-      issueInventoryService,
       processService,
       getTestService: () => testService,
       ptyService,
@@ -1107,24 +1101,10 @@ export async function createAdeRuntime(args: {
         sessionService,
         sessionDeltaService,
         testService,
-        issueInventoryService,
         prService: headlessLinearServices.prService,
         onEvent: (event) => pushEvent("runtime", { type: "review_event", event }),
       })
     : null;
-  type PathToMergeAgentChatService = Parameters<typeof createPathToMergeOrchestrator>[0]["agentChatService"];
-  const pathToMergeOrchestrator = createPathToMergeOrchestrator({
-    logger,
-    prService: headlessLinearServices.prService,
-    laneService,
-    agentChatService: agentChatService as unknown as PathToMergeAgentChatService,
-    sessionService,
-    issueInventoryService,
-    conflictService,
-    laneWorktreeLockService,
-    defaultModelId: null,
-    defaultReasoningEffort: null,
-  });
   const automationFeatureEnabled = automationsEnabledForHeadlessRuntime();
   const automationService = automationFeatureEnabled
     ? createAutomationService({
@@ -1283,8 +1263,6 @@ export async function createAdeRuntime(args: {
       diffService,
       conflictService,
       prService: headlessLinearServices.prService,
-      issueInventoryService,
-      pathToMergeOrchestrator,
       sessionService,
       ptyService,
       projectConfigService,
@@ -1371,8 +1349,6 @@ export async function createAdeRuntime(args: {
     aiIntegrationService,
     agentChatService,
     orchestrationService,
-    issueInventoryService,
-    pathToMergeOrchestrator,
     ctoStateService,
     workerAgentService,
     adeProjectService,
@@ -1418,7 +1394,6 @@ export async function createAdeRuntime(args: {
       swallow(() => usageTrackingService.dispose());
       swallow(() => apnsService.dispose());
       swallow(() => syncService?.dispose());
-      swallow(() => pathToMergeOrchestrator.dispose());
       swallow(() => processService.disposeAll());
       swallow(() => runtimeDiagnosticsService.dispose());
       swallow(() => oauthRedirectService.dispose());

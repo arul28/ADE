@@ -7,7 +7,6 @@ import React, {
   useMemo,
 } from "react";
 import type {
-  PrConvergenceState,
   PrAiResolutionContext,
   PrAiResolutionSessionInfo,
   PrWithConflicts,
@@ -24,7 +23,6 @@ import type {
   LaneSummary,
   AutoRebaseLaneStatus,
   AutoRebaseEventPayload,
-  PrConvergenceStatePatch,
   PrReviewThread,
   PrDeployment,
   PrAiSummary,
@@ -129,9 +127,6 @@ type PrsState = {
   // Inline terminal
   inlineTerminal: InlineTerminalState;
 
-  // Persisted convergence runtime cache
-  convergenceStatesByPrId: Record<string, PrConvergenceState>;
-
   // Resolver preferences
   resolverModel: string;
   resolverReasoningLevel: string;
@@ -155,9 +150,6 @@ type PrsContextValue = PrsState & {
   upsertResolverSession: (session: PrAiResolutionSessionInfo) => void;
   clearResolverSession: (context: PrAiResolutionContext) => void;
   setInlineTerminal: (terminal: InlineTerminalState) => void;
-  loadConvergenceState: (prId: string, options?: { force?: boolean }) => Promise<PrConvergenceState>;
-  saveConvergenceState: (prId: string, state: PrConvergenceStatePatch) => Promise<PrConvergenceState>;
-  resetConvergenceState: (prId: string) => Promise<void>;
   refresh: (args?: { prId?: string; prIds?: string[] }) => Promise<void>;
 
   setTimelineFilters: (prId: string, filters: PrTimelineFilters) => void;
@@ -199,7 +191,6 @@ type PrsContextWarmCache = {
   autoRebaseStatuses: AutoRebaseLaneStatus[];
   queueStates: Record<string, QueueLandingState>;
   inlineTerminal: InlineTerminalState;
-  convergenceStatesByPrId: Record<string, PrConvergenceState>;
   resolverSessionsByContextKey: Record<string, PrAiResolutionSessionInfo>;
   viewerLogin: string | null;
   cachedAt: number;
@@ -553,17 +544,6 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
   // Inline terminal
   const [inlineTerminal, setInlineTerminal] = useState<InlineTerminalState>(() => warmCache?.inlineTerminal ?? null);
 
-  // Persisted convergence runtime cache
-  const [convergenceStatesByPrId, setConvergenceStatesByPrId] = useState<Record<string, PrConvergenceState>>(
-    () => warmCache?.convergenceStatesByPrId ?? {},
-  );
-  const convergenceStatesByPrIdRef = React.useRef<Record<string, PrConvergenceState>>(
-    warmCache?.convergenceStatesByPrId ?? {},
-  );
-  React.useEffect(() => {
-    convergenceStatesByPrIdRef.current = convergenceStatesByPrId;
-  }, [convergenceStatesByPrId]);
-
   // Resolver preferences
   const [resolverModel, setResolverModelRaw] = useState<string>(readPersistedModel);
   const [resolverReasoningLevel, setResolverReasoningLevelRaw] = useState<string>(readPersistedReasoningLevel);
@@ -613,57 +593,6 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
       if (!(key in prev)) return prev;
       const next = { ...prev };
       delete next[key];
-      return next;
-    });
-  }, []);
-
-  const storeConvergenceState = useCallback((state: PrConvergenceState): PrConvergenceState => {
-    // Guard against late IPC responses for PRs that have been pruned from the list.
-    // Only apply the guard after the initial load has completed — before that the PR
-    // list is empty and states should still be cached so explicit load/save calls work.
-    // Using initialLoadDone (rather than prsRef.current.length > 0) ensures that once
-    // the list is known, stale responses for unknown PR ids are always rejected — even
-    // when the list becomes empty after pruning.
-    if (initialLoadDone.current && !prsRef.current.some((pr) => pr.id === state.prId)) {
-      return state;
-    }
-    setConvergenceStatesByPrId((prev) => {
-      if (jsonEqual(prev[state.prId], state)) return prev;
-      const next = { ...prev, [state.prId]: state };
-      convergenceStatesByPrIdRef.current = next;
-      return next;
-    });
-    return state;
-  }, []);
-
-  const loadConvergenceState = useCallback(async (prId: string, options?: { force?: boolean }): Promise<PrConvergenceState> => {
-    const normalizedPrId = requirePrId(prId);
-    if (!options?.force) {
-      const cached = convergenceStatesByPrIdRef.current[normalizedPrId];
-      if (cached) return cached;
-    }
-    const runtime = await window.ade.prs.convergenceStateGet(normalizedPrId);
-    return storeConvergenceState(runtime);
-  }, [storeConvergenceState]);
-
-  const saveConvergenceState = useCallback(async (prId: string, state: PrConvergenceStatePatch): Promise<PrConvergenceState> => {
-    const normalizedPrId = requirePrId(prId);
-    const runtime = await window.ade.prs.convergenceStateSave(normalizedPrId, state);
-    return storeConvergenceState(runtime);
-  }, [storeConvergenceState]);
-
-  const resetConvergenceState = useCallback(async (prId: string): Promise<void> => {
-    const normalizedPrId = String(prId ?? "").trim();
-    if (!normalizedPrId) return;
-    await window.ade.prs.convergenceStateDelete(normalizedPrId);
-    // Update the mutable ref synchronously so callers that read it
-    // immediately after reset don't see stale data.
-    const { [normalizedPrId]: _, ...rest } = convergenceStatesByPrIdRef.current;
-    convergenceStatesByPrIdRef.current = rest;
-    setConvergenceStatesByPrId((prev) => {
-      if (!(normalizedPrId in prev)) return prev;
-      const next = { ...prev };
-      delete next[normalizedPrId];
       return next;
     });
   }, []);
@@ -859,7 +788,6 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
 
     const allowedPrIds = new Set(prList.map((pr) => pr.id));
     setMergeContextByPrId((prev) => pruneByAllowedIds(prev, allowedPrIds));
-    setConvergenceStatesByPrId((prev) => pruneByAllowedIds(prev, allowedPrIds));
     setDetailSnapshotsByPrId((prev) => pruneByAllowedIds(prev, allowedPrIds));
 
     if (changedPrIds.length > 0) {
@@ -1531,7 +1459,6 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
         prsRef.current = next;
         setPrs((prev) => (jsonEqual(prev, next) ? prev : next));
         const allowedPrIds = new Set(next.map((pr) => pr.id));
-        setConvergenceStatesByPrId((prev) => pruneByAllowedIds(prev, allowedPrIds));
         setDetailSnapshotsByPrId((prev) => pruneByAllowedIds(prev, allowedPrIds));
 
         // Clear selection if the active PR was removed (mirrors refresh() guard).
@@ -1663,7 +1590,6 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
       autoRebaseStatuses,
       queueStates,
       inlineTerminal,
-      convergenceStatesByPrId,
       resolverSessionsByContextKey,
       viewerLogin,
       cachedAt,
@@ -1673,7 +1599,6 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
     activeTab,
     autoRebaseStatuses,
     cacheKey,
-    convergenceStatesByPrId,
     detailAiSummary,
     detailChecks,
     detailComments,
@@ -1723,7 +1648,6 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
       autoRebaseStatuses,
       queueStates,
       inlineTerminal,
-      convergenceStatesByPrId,
       resolverModel,
       resolverReasoningLevel,
       resolverPermissionMode: resolverPermissions[resolvePermissionFamilyForModel(resolverModel)],
@@ -1742,9 +1666,6 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
       upsertResolverSession,
       clearResolverSession,
       setInlineTerminal,
-      loadConvergenceState,
-      saveConvergenceState,
-      resetConvergenceState,
       refresh,
       setTimelineFilters,
       setAiSummaryDismissed,
@@ -1782,7 +1703,6 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
       autoRebaseStatuses,
       queueStates,
       inlineTerminal,
-      convergenceStatesByPrId,
       resolverModel,
       resolverReasoningLevel,
       resolverPermissions,
@@ -1795,9 +1715,6 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
       setResolverPermissionMode,
       upsertResolverSession,
       clearResolverSession,
-      loadConvergenceState,
-      saveConvergenceState,
-      resetConvergenceState,
       refresh,
       setTimelineFilters,
       setAiSummaryDismissed,

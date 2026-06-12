@@ -512,33 +512,13 @@ const act7DetailDrawer: TourStep = {
   id: "act7.detailDrawer",
   target: '[data-tour="prs.detailDrawer"]',
   title: "The PR you just shipped",
-  body: "Click any PR in the list and this panel opens up to show its details. There are five tabs at the top: **Overview** (the basics), **Path to Merge** (anything stopping it from shipping), **Files** (what changed), **CI / Checks** (automated tests), and **Activity** (review comments and discussion).",
+  body: "Click any PR in the list and this panel opens up to show its details. There are four tabs at the top: **Overview** (the basics), **Files** (what changed), **CI / Checks** (automated tests), and **Activity** (review comments and discussion).",
   placement: "left",
   requires: PROJECT_OPEN_REQUIRES,
   fallbackAfterMs: OPTIONAL_ACTION_FALLBACK_MS,
   fallbackNextLabel: "Skip PR detail",
   fallbackNotice: "The detail drawer appears once you select a PR row.",
   waitForSelector: '[data-tour="prs.detailDrawer"]',
-  docUrl: docs.lanesOverview,
-};
-
-const act7Conflict: TourStep = {
-  id: "act7.conflict",
-  target: '[data-tour="prs.conflictSim"]',
-  title: "What's blocking me?",
-  body: "This is the most useful tab. It collects everything stopping your PR from shipping — automated tests that failed, comments asking for changes, code conflicts with the main project — into one ordered to-do list. Work top to bottom, and when the list is empty, you can ship.",
-  placement: "left",
-  requires: ["projectOpen", "prCreated"],
-  beforeEnter: async () => [{
-    type: "ipc",
-    call: async () => {
-      window.dispatchEvent(new CustomEvent("ade:tour-pr-detail-tab", { detail: "convergence" }));
-    },
-  }],
-  fallbackAfterMs: OPTIONAL_ACTION_FALLBACK_MS,
-  fallbackNextLabel: "Skip Path to Merge",
-  fallbackNotice: "Path to Merge appears once a PR is selected.",
-  waitForSelector: '[data-tour="prs.conflictSim"]',
   docUrl: docs.lanesOverview,
 };
 
@@ -829,12 +809,10 @@ const firstJourneyTour: Tour = {
     // The interactive builder ships a real PR. After it lands, we walk the
     // user through the detail drawer's tabs by dispatching the
     // `ade:tour-pr-detail-tab` event before each step (handler in
-    // PrDetailPane.tsx). Order: drawer overview → Path to Merge (the most
-    // load-bearing tab) → CI / Checks → stacking → close.
+    // PrDetailPane.tsx). Order: drawer overview → CI / Checks → stacking → close.
     act7Intro,
     ...buildPrCreateModalWalkthrough(),
     act7DetailDrawer,
-    act7Conflict,
     act7Checks,
     act7Stacking,
     act7CloseWithBranch,

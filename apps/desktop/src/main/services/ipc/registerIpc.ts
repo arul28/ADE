@@ -11,8 +11,6 @@ import { IPC } from "../../../shared/ipc";
 import { getModelById } from "../../../shared/modelRegistry";
 import { appendEvent as perfAppend, isRunActive as isPerfRunActive } from "../perf/perfLog";
 import { buildPrAiResolutionContextKey } from "../../../shared/types";
-import { launchPrIssueResolutionChat, previewPrIssueResolutionPrompt } from "../prs/prIssueResolver";
-import { launchRebaseResolutionChat } from "../prs/prRebaseResolver";
 import { browseProjectDirectories } from "../projects/projectBrowserService";
 import { getProjectDetail } from "../projects/projectDetailService";
 import { deleteTerminalSessionWithRuntimeCleanup } from "../sessions/deleteTerminalSession";
@@ -225,18 +223,6 @@ import type {
   PrAiResolutionSessionInfo,
   PrAiResolutionSessionStatus,
   PrAgentPermissionMode,
-  PrIssueResolutionPromptPreviewArgs,
-  PrIssueResolutionPromptPreviewResult,
-  PrIssueResolutionStartArgs,
-  PrIssueResolutionStartResult,
-  IssueInventoryItem,
-  IssueInventorySnapshot,
-  ConvergenceRuntimeState,
-  PrConvergenceStatePatch,
-  ConvergenceStatus,
-  PipelineSettings,
-  RebaseResolutionStartArgs,
-  RebaseResolutionStartResult,
   LinkPrToLaneArgs,
   LandResult,
   LandStackEnhancedArgs,
@@ -259,8 +245,6 @@ import type {
   PostPrReviewCommentArgs,
   SetPrReviewThreadResolvedArgs,
   ReactToPrCommentArgs,
-  LaunchPrIssueResolutionFromThreadArgs,
-  LaunchPrIssueResolutionFromThreadResult,
   SimulateIntegrationArgs,
   UpdatePrDescriptionArgs,
   LandPrArgs,
@@ -585,8 +569,6 @@ import { fetchAdeLatestRelease, type createGithubService } from "../github/githu
 import type { createPrService } from "../prs/prService";
 import type { createPrPollingService } from "../prs/prPollingService";
 import type { createQueueLandingService } from "../prs/queueLandingService";
-import type { createIssueInventoryService } from "../prs/issueInventoryService";
-import type { PathToMergeOrchestrator } from "../prs/pathToMergeOrchestrator";
 import type { createPrSummaryService } from "../prs/prSummaryService";
 import type { createReviewService } from "../review/reviewService";
 import type { createAgentChatService } from "../chat/agentChatService";
@@ -945,8 +927,6 @@ export type AppContext = {
   prService: ReturnType<typeof createPrService> | null;
   prPollingService: ReturnType<typeof createPrPollingService> | null;
   queueLandingService: ReturnType<typeof createQueueLandingService> | null;
-  issueInventoryService: ReturnType<typeof createIssueInventoryService> | null;
-  pathToMergeOrchestrator?: PathToMergeOrchestrator | null;
   prSummaryService: ReturnType<typeof createPrSummaryService> | null;
   reviewService: ReturnType<typeof createReviewService> | null;
   jobEngine: ReturnType<typeof createJobEngine> | null;
@@ -1512,29 +1492,6 @@ function getAllowedDirs(getCtx: () => AppContext): string[] {
     app.getPath("documents"),
     app.getPath("temp"),
   ];
-}
-
-function buildIssueResolutionInstructionsFromThread(arg: LaunchPrIssueResolutionFromThreadArgs): string {
-  const lines: string[] = [
-    `Focus on review thread ${arg.threadId} on PR ${arg.prId}.`,
-  ];
-  if (arg.commentId) {
-    lines.push(`The relevant comment id is ${arg.commentId}.`);
-  }
-  const fileContext = arg.fileContext;
-  if (fileContext?.path) {
-    const lineNumber = fileContext.startLine ?? fileContext.line ?? null;
-    lines.push(
-      lineNumber != null
-        ? `Start by inspecting ${fileContext.path}:${lineNumber}.`
-        : `Start by inspecting ${fileContext.path}.`,
-    );
-  }
-  if (arg.additionalInstructions) {
-    lines.push("");
-    lines.push(arg.additionalInstructions);
-  }
-  return lines.join("\n");
 }
 
 export function registerIpc({
@@ -8415,43 +8372,9 @@ export function registerIpc({
     return ctx;
   };
 
-  const ensurePrResolutionContext = (): AppContextWith<
-    "prService" | "laneService" | "agentChatService" | "sessionService" | "issueInventoryService"
-  > => {
-    const ctx = getCtx();
-    requireAppContextServices(ctx, [
-      "prService",
-      "laneService",
-      "agentChatService",
-      "sessionService",
-      "issueInventoryService",
-    ] as const);
-    return ctx;
-  };
-
-  const ensureRebaseResolutionContext = (): AppContextWith<
-    "laneService" | "agentChatService" | "sessionService" | "conflictService"
-  > => {
-    const ctx = getCtx();
-    requireAppContextServices(ctx, ["laneService", "agentChatService", "sessionService", "conflictService"] as const);
-    return ctx;
-  };
-
   const ensurePrAiResolutionContext = (): AppContextWith<"agentChatService" | "conflictService" | "sessionService"> => {
     const ctx = getCtx();
     requireAppContextServices(ctx, ["agentChatService", "conflictService", "sessionService"] as const);
-    return ctx;
-  };
-
-  const ensureIssueInventoryContext = (): AppContextWith<"issueInventoryService"> => {
-    const ctx = getCtx();
-    requireAppContextServices(ctx, ["issueInventoryService"] as const);
-    return ctx;
-  };
-
-  const ensurePrInventoryContext = (): AppContextWith<"prService" | "issueInventoryService"> => {
-    const ctx = getCtx();
-    requireAppContextServices(ctx, ["prService", "issueInventoryService"] as const);
     return ctx;
   };
 
@@ -8980,75 +8903,6 @@ export function registerIpc({
     });
   });
 
-  ipcMain.handle(IPC.prsIssueResolutionStart, async (_event, arg: PrIssueResolutionStartArgs): Promise<PrIssueResolutionStartResult> => {
-    const ctx = ensurePrResolutionContext();
-    const result = await launchPrIssueResolutionChat(
-      {
-        prService: ctx.prService,
-        laneService: ctx.laneService,
-        agentChatService: ctx.agentChatService,
-        sessionService: ctx.sessionService,
-        issueInventoryService: ctx.issueInventoryService,
-        laneWorktreeLockService: ctx.laneWorktreeLockService,
-      },
-      arg,
-    );
-    try {
-      const status = ctx.issueInventoryService.getConvergenceStatus(arg.prId);
-      ctx.issueInventoryService.saveConvergenceRuntime(arg.prId, {
-        currentRound: status.currentRound,
-        status: "running",
-        pollerStatus: "idle",
-        activeSessionId: result.sessionId,
-        activeLaneId: result.laneId,
-        activeHref: result.href,
-        lastStartedAt: nowIso(),
-        errorMessage: null,
-        pauseReason: null,
-      });
-    } catch (error) {
-      ctx.logger.warn("ipc.prs_issue_resolution_convergence_persist_failed", {
-        prId: arg.prId,
-        sessionId: result.sessionId,
-        laneId: result.laneId,
-        href: result.href,
-        error: getErrorMessage(error),
-      });
-    }
-    return result;
-  });
-
-  ipcMain.handle(IPC.prsIssueResolutionPreviewPrompt, async (
-    _event,
-    arg: PrIssueResolutionPromptPreviewArgs,
-  ): Promise<PrIssueResolutionPromptPreviewResult> => {
-    const ctx = ensurePrResolutionContext();
-    return await previewPrIssueResolutionPrompt(
-      {
-        prService: ctx.prService,
-        laneService: ctx.laneService,
-        agentChatService: ctx.agentChatService,
-        sessionService: ctx.sessionService,
-        issueInventoryService: ctx.issueInventoryService,
-        laneWorktreeLockService: ctx.laneWorktreeLockService,
-      },
-      arg,
-    );
-  });
-
-  ipcMain.handle(IPC.prsRebaseResolutionStart, async (_event, arg: RebaseResolutionStartArgs): Promise<RebaseResolutionStartResult> => {
-    const ctx = ensureRebaseResolutionContext();
-    return await launchRebaseResolutionChat(
-      {
-        laneService: ctx.laneService,
-        agentChatService: ctx.agentChatService,
-        sessionService: ctx.sessionService,
-        conflictService: ctx.conflictService,
-      },
-      arg,
-    );
-  });
-
   ipcMain.handle(IPC.prsGetDetail, (_e, args: { prId: string }) => {
     const ctx = ensurePrReadContext();
     return ctx.prService.getDetail(args.prId);
@@ -9147,187 +9001,8 @@ export function registerIpc({
     (_e, args: SetPrReviewThreadResolvedArgs) => ensurePrReadContext().prService.setReviewThreadResolved(args),
   );
   ipcMain.handle(IPC.prsReactToComment, (_e, args: ReactToPrCommentArgs) => ensurePrReadContext().prService.reactToComment(args));
-  ipcMain.handle(
-    IPC.prsLaunchIssueResolutionFromThread,
-    async (_e, arg: LaunchPrIssueResolutionFromThreadArgs): Promise<LaunchPrIssueResolutionFromThreadResult> => {
-      const ctx = ensurePrResolutionContext();
-      const additionalInstructions = buildIssueResolutionInstructionsFromThread(arg);
-      if (!arg.modelId) {
-        throw new Error("modelId is required for prsLaunchIssueResolutionFromThread.");
-      }
-      return await launchPrIssueResolutionChat(
-        {
-          prService: ctx.prService,
-          laneService: ctx.laneService,
-          agentChatService: ctx.agentChatService,
-          sessionService: ctx.sessionService,
-          issueInventoryService: ctx.issueInventoryService,
-          laneWorktreeLockService: ctx.laneWorktreeLockService,
-        },
-        {
-          prId: arg.prId,
-          scope: "comments",
-          modelId: arg.modelId,
-          reasoning: arg.reasoning ?? null,
-          permissionMode: arg.permissionMode,
-          additionalInstructions,
-        },
-      );
-    },
-  );
   ipcMain.handle(IPC.prsCleanupBranch, (_e, args: CleanupPrBranchArgs): Promise<CleanupPrBranchResult> =>
     ensurePrReadContext().prService.cleanupBranch(args));
-
-  // Issue Inventory (PR convergence loop)
-  ipcMain.handle(IPC.prsIssueInventorySync, async (_e, args: { prId: string }): Promise<IssueInventorySnapshot> => {
-    const ctx = ensurePrInventoryContext();
-    const [checks, reviewThreads, comments] = await Promise.all([
-      ctx.prService.getChecks(args.prId),
-      ctx.prService.getReviewThreads(args.prId),
-      ctx.prService.getComments(args.prId).catch(() => []),
-    ]);
-    return ctx.issueInventoryService.syncFromPrData(args.prId, checks, reviewThreads, comments);
-  });
-  ipcMain.handle(IPC.prsIssueInventoryGet, (_e, args: { prId: string }): IssueInventorySnapshot =>
-    ensureIssueInventoryContext().issueInventoryService.getInventory(args.prId));
-  ipcMain.handle(IPC.prsIssueInventoryGetNew, (_e, args: { prId: string }): IssueInventoryItem[] =>
-    ensureIssueInventoryContext().issueInventoryService.getNewItems(args.prId));
-  ipcMain.handle(IPC.prsIssueInventoryMarkFixed, (_e, args: { prId: string; itemIds: string[] }): void =>
-    ensureIssueInventoryContext().issueInventoryService.markFixed(args.prId, args.itemIds));
-  ipcMain.handle(IPC.prsIssueInventoryMarkDismissed, (_e, args: { prId: string; itemIds: string[]; reason: string }): void =>
-    ensureIssueInventoryContext().issueInventoryService.markDismissed(args.prId, args.itemIds, args.reason));
-  ipcMain.handle(IPC.prsIssueInventoryMarkEscalated, (_e, args: { prId: string; itemIds: string[] }): void =>
-    ensureIssueInventoryContext().issueInventoryService.markEscalated(args.prId, args.itemIds));
-  ipcMain.handle(IPC.prsIssueInventoryGetConvergence, (_e, args: { prId: string }): ConvergenceStatus =>
-    ensureIssueInventoryContext().issueInventoryService.getConvergenceStatus(args.prId));
-  ipcMain.handle(IPC.prsIssueInventoryReset, (_e, args: { prId: string }): void =>
-    ensureIssueInventoryContext().issueInventoryService.resetInventory(args.prId));
-
-  ipcMain.handle(IPC.prsConvergenceStateGet, (_e, args: { prId: string }): ConvergenceRuntimeState =>
-    ensureIssueInventoryContext().issueInventoryService.getConvergenceRuntime(args.prId));
-  ipcMain.handle(IPC.prsConvergenceStateSave, (_e, args: { prId: string; state: PrConvergenceStatePatch }): ConvergenceRuntimeState => {
-    // Whitelist: only allow renderer to update operational fields.
-    // Identity fields and immutable timestamps are stripped.
-    const MUTABLE_FIELDS: ReadonlySet<keyof ConvergenceRuntimeState> = new Set([
-      "autoConvergeEnabled",
-      "status",
-      "pollerStatus",
-      "currentRound",
-      "activeSessionId",
-      "activeLaneId",
-      "activeHref",
-      "pauseReason",
-      "errorMessage",
-      "lastStartedAt",
-      "lastPolledAt",
-      "lastPausedAt",
-      "lastStoppedAt",
-    ]);
-    // Validate that args.state is a plain non-null object before iterating.
-    if (args.state == null || typeof args.state !== "object" || Array.isArray(args.state)) {
-      return ensureIssueInventoryContext().issueInventoryService.getConvergenceRuntime(args.prId);
-    }
-
-    const VALID_STATUS: ReadonlySet<string> = new Set([
-      "idle", "launching", "running", "polling", "paused", "converged", "merged", "failed", "cancelled", "stopped",
-    ]);
-    const VALID_POLLER_STATUS: ReadonlySet<string> = new Set([
-      "idle", "scheduled", "polling", "waiting_for_checks", "waiting_for_comments", "paused", "stopped",
-    ]);
-
-    const isStringOrNull = (v: unknown): boolean => v === null || typeof v === "string";
-
-    const sanitized: PrConvergenceStatePatch = {};
-    for (const key of Object.keys(args.state) as (keyof ConvergenceRuntimeState)[]) {
-      if (!MUTABLE_FIELDS.has(key)) continue;
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-assignment
-      const val = (args.state as any)[key];
-      switch (key) {
-        case "autoConvergeEnabled":
-          if (typeof val === "boolean") sanitized.autoConvergeEnabled = val;
-          break;
-        case "status":
-          if (typeof val === "string" && VALID_STATUS.has(val)) sanitized.status = val as ConvergenceRuntimeState["status"];
-          break;
-        case "pollerStatus":
-          if (typeof val === "string" && VALID_POLLER_STATUS.has(val)) sanitized.pollerStatus = val as ConvergenceRuntimeState["pollerStatus"];
-          break;
-        case "currentRound":
-          if (typeof val === "number" && Number.isFinite(val) && val >= 0) sanitized.currentRound = val;
-          break;
-        case "activeSessionId":
-        case "activeLaneId":
-        case "activeHref":
-        case "pauseReason":
-        case "errorMessage":
-        case "lastStartedAt":
-        case "lastPolledAt":
-        case "lastPausedAt":
-        case "lastStoppedAt":
-          if (isStringOrNull(val)) (sanitized as any)[key] = val;
-          break;
-        default:
-          break;
-      }
-    }
-    return ensureIssueInventoryContext().issueInventoryService.saveConvergenceRuntime(args.prId, sanitized);
-  });
-  ipcMain.handle(IPC.prsConvergenceStateDelete, (_e, args: { prId: string }): void =>
-    ensureIssueInventoryContext().issueInventoryService.resetConvergenceRuntime(args.prId));
-
-  ipcMain.handle(
-    IPC.prsPathToMergeStart,
-    async (_e, args: {
-      prId: string;
-      modelId?: string | null;
-      reasoning?: string | null;
-      permissionMode?: string | null;
-      scope?: "checks" | "comments" | "both";
-      additionalInstructions?: string | null;
-    }) => {
-      const orchestrator = getCtx().pathToMergeOrchestrator;
-      if (!orchestrator) {
-        throw new Error("Path to Merge orchestrator is not available in this build.");
-      }
-      const prId = typeof args?.prId === "string" ? args.prId.trim() : "";
-      if (!prId) throw new Error("prId is required");
-      return await orchestrator.startPathToMerge({
-        prId,
-        modelId: typeof args?.modelId === "string" ? args.modelId : null,
-        reasoning: typeof args?.reasoning === "string" ? args.reasoning : null,
-        permissionMode: typeof args?.permissionMode === "string"
-          ? args.permissionMode as PrAgentPermissionMode
-          : null,
-        scope: args?.scope === "checks" || args?.scope === "comments" || args?.scope === "both"
-          ? args.scope
-          : undefined,
-        additionalInstructions: typeof args?.additionalInstructions === "string" ? args.additionalInstructions : null,
-      });
-    },
-  );
-
-  ipcMain.handle(
-    IPC.prsPathToMergeStop,
-    async (_e, args: { prId: string; reason?: string | null }) => {
-      const orchestrator = getCtx().pathToMergeOrchestrator;
-      if (!orchestrator) {
-        throw new Error("Path to Merge orchestrator is not available in this build.");
-      }
-      const prId = typeof args?.prId === "string" ? args.prId.trim() : "";
-      if (!prId) throw new Error("prId is required");
-      return await orchestrator.stopPathToMerge({
-        prId,
-        reason: typeof args?.reason === "string" ? args.reason : null,
-      });
-    },
-  );
-
-  ipcMain.handle(IPC.prsPipelineSettingsGet, (_e, args: { prId: string }): PipelineSettings =>
-    ensureIssueInventoryContext().issueInventoryService.getPipelineSettings(args.prId));
-  ipcMain.handle(IPC.prsPipelineSettingsSave, (_e, args: { prId: string; settings: Partial<PipelineSettings> }): void =>
-    ensureIssueInventoryContext().issueInventoryService.savePipelineSettings(args.prId, args.settings));
-  ipcMain.handle(IPC.prsPipelineSettingsDelete, (_e, args: { prId: string }): void =>
-    ensureIssueInventoryContext().issueInventoryService.deletePipelineSettings(args.prId));
 
   ipcMain.handle(IPC.rebaseScanNeeds, async () => ensureConflictContext().conflictService.scanRebaseNeeds());
 

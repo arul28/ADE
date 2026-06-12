@@ -54,16 +54,16 @@ describe("TabNav", () => {
     });
   });
 
-  it("places Review directly below PRs in the sidebar", () => {
+  it("places Review directly below Run in the sidebar", () => {
     render(
       <MemoryRouter initialEntries={["/work"]}>
         <TabNav />
       </MemoryRouter>,
     );
 
-    const prs = screen.getByRole("link", { name: "PRs" });
+    const run = screen.getByRole("link", { name: "Run" });
     const review = screen.getByRole("link", { name: "Review" });
-    expect(prs.nextElementSibling).toBe(review);
+    expect(run.nextElementSibling).toBe(review);
   });
 
   it("opens the connected GitHub profile from the sidebar avatar", () => {

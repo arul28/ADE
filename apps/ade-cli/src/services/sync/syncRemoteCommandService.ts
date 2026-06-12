@@ -45,7 +45,6 @@ import type {
   CreateLaneFromUnstagedArgs,
   CreatePrFromLaneArgs,
   CreateIntegrationLaneForProposalArgs,
-  ConvergenceRuntimeState,
   CleanupIntegrationWorkflowArgs,
   DeleteLaneArgs,
   DeleteIntegrationProposalArgs,
@@ -76,9 +75,7 @@ import type {
   LandPrArgs,
   LandQueueNextArgs,
   PauseQueueAutomationArgs,
-  PipelineSettings,
   PrGithubCoords,
-  PrConvergenceStatePatch,
   LaneEnvInitConfig,
   LaneEnvInitProgress,
   LaneDetailPayload,
@@ -163,8 +160,6 @@ import type { createRebaseSuggestionService } from "../../../../desktop/src/main
 import type { createProcessService } from "../../../../desktop/src/main/services/processes/processService";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
 import type { createPrService } from "../../../../desktop/src/main/services/prs/prService";
-import type { createIssueInventoryService } from "../../../../desktop/src/main/services/prs/issueInventoryService";
-import type { PathToMergeOrchestrator } from "../../../../desktop/src/main/services/prs/pathToMergeOrchestrator";
 import type { createQueueLandingService } from "../../../../desktop/src/main/services/prs/queueLandingService";
 import type { createPtyService } from "../../../../desktop/src/main/services/pty/ptyService";
 import type { createSessionService } from "../../../../desktop/src/main/services/sessions/sessionService";
@@ -182,14 +177,6 @@ type SyncRemoteCommandServiceArgs = {
   db?: AdeDb;
   laneService: ReturnType<typeof createLaneService>;
   prService: ReturnType<typeof createPrService>;
-  issueInventoryService?: ReturnType<typeof createIssueInventoryService> | null;
-  /**
-   * Optional Path-to-Merge orchestrator. When present, iOS callers can start
-   * and stop the convergence loop via the `prs.pathToMerge.start` /
-   * `prs.pathToMerge.stop` sync commands. Optional so older builds (without
-   * the orchestrator wired) keep compiling and degrade gracefully on iOS.
-   */
-  pathToMergeOrchestrator?: PathToMergeOrchestrator | null;
   queueLandingService?: ReturnType<typeof createQueueLandingService> | null;
   ptyService: ReturnType<typeof createPtyService>;
   sessionService: ReturnType<typeof createSessionService>;
@@ -1610,141 +1597,6 @@ function parseCancelQueueAutomationArgs(value: Record<string, unknown>): CancelQ
   };
 }
 
-function parseIssueInventoryPrArgs(value: Record<string, unknown>, action: string): { prId: string } {
-  return {
-    prId: requirePrId(value, action),
-  };
-}
-
-function parseIssueInventoryItemsArgs(value: Record<string, unknown>, action: string): { prId: string; itemIds: string[] } {
-  return {
-    prId: requirePrId(value, action),
-    itemIds: requireStringArray(value.itemIds, `${action} requires itemIds.`),
-  };
-}
-
-function parseIssueInventoryDismissArgs(value: Record<string, unknown>): { prId: string; itemIds: string[]; reason: string } {
-  return {
-    ...parseIssueInventoryItemsArgs(value, "prs.issueInventory.markDismissed"),
-    reason: typeof value.reason === "string" ? value.reason : "",
-  };
-}
-
-function parsePipelineSettingsPatch(value: Record<string, unknown>): { prId: string; settings: Partial<PipelineSettings> } {
-  const settings = isRecord(value.settings) ? value.settings : value;
-  const patch: Partial<PipelineSettings> = {};
-  if (typeof settings.autoMerge === "boolean") patch.autoMerge = settings.autoMerge;
-  const mergeMethod = asTrimmedString(settings.mergeMethod);
-  if (mergeMethod && ["merge", "squash", "rebase", "repo_default"].includes(mergeMethod)) {
-    patch.mergeMethod = mergeMethod as PipelineSettings["mergeMethod"];
-  }
-  const maxRounds = asOptionalNumber(settings.maxRounds);
-  if (maxRounds != null && maxRounds >= 1) patch.maxRounds = Math.floor(maxRounds);
-  const onRebaseNeeded = asTrimmedString(settings.onRebaseNeeded);
-  if (onRebaseNeeded === "pause" || onRebaseNeeded === "auto_rebase") {
-    patch.onRebaseNeeded = onRebaseNeeded;
-  }
-  const conflictStrategy = asTrimmedString(settings.conflictStrategy);
-  if (conflictStrategy && ["pause", "rebase", "merge", "auto"].includes(conflictStrategy)) {
-    patch.conflictStrategy = conflictStrategy as PipelineSettings["conflictStrategy"];
-  }
-  const forceFinalizeMode = asTrimmedString(settings.forceFinalizeMode);
-  if (forceFinalizeMode && ["off", "conditional", "unconditional"].includes(forceFinalizeMode)) {
-    patch.forceFinalizeMode = forceFinalizeMode as PipelineSettings["forceFinalizeMode"];
-  }
-  if (typeof settings.forceFinalizeRequireNoCiFailures === "boolean") {
-    patch.forceFinalizeRequireNoCiFailures = settings.forceFinalizeRequireNoCiFailures;
-  }
-  if (typeof settings.earlyMergeOnGreen === "boolean") {
-    patch.earlyMergeOnGreen = settings.earlyMergeOnGreen;
-  }
-  const atCapPolicy = asTrimmedString(settings.atCapPolicy);
-  if (atCapPolicy && ["stop", "wait_for_ci", "ci_retry_once", "ci_retry_loop", "force_merge"].includes(atCapPolicy)) {
-    patch.atCapPolicy = atCapPolicy as PipelineSettings["atCapPolicy"];
-  }
-  const atCapWaitMinutes = asOptionalNumber(settings.atCapWaitMinutes);
-  if (atCapWaitMinutes != null && atCapWaitMinutes >= 1) patch.atCapWaitMinutes = Math.floor(atCapWaitMinutes);
-  const atCapCiRetryMax = asOptionalNumber(settings.atCapCiRetryMax);
-  if (atCapCiRetryMax != null && atCapCiRetryMax >= 1) patch.atCapCiRetryMax = Math.floor(atCapCiRetryMax);
-  if (typeof settings.forceMergeRequiresConfirmation === "boolean") {
-    patch.forceMergeRequiresConfirmation = settings.forceMergeRequiresConfirmation;
-  }
-  if (isRecord(settings.autoAgentSettings)) {
-    const autoAgentSettings: Partial<PipelineSettings["autoAgentSettings"]> = {};
-    const provider = settings.autoAgentSettings.provider;
-    if (provider === null || provider === "claude" || provider === "codex") autoAgentSettings.provider = provider;
-    for (const key of ["model", "reasoningEffort"] as const) {
-      const value = settings.autoAgentSettings[key];
-      if (value === null || typeof value === "string") autoAgentSettings[key] = value;
-    }
-    const permissionMode = settings.autoAgentSettings.permissionMode;
-    if (
-      permissionMode === null ||
-      permissionMode === "read_only" ||
-      permissionMode === "guarded_edit" ||
-      permissionMode === "full_edit" ||
-      permissionMode === "default" ||
-      permissionMode === "plan" ||
-      permissionMode === "edit" ||
-      permissionMode === "full-auto" ||
-      permissionMode === "config-toml"
-    ) {
-      autoAgentSettings.permissionMode = permissionMode;
-    }
-    const confidenceThreshold = asOptionalNumber(settings.autoAgentSettings.confidenceThreshold);
-    if (settings.autoAgentSettings.confidenceThreshold === null || (confidenceThreshold != null && confidenceThreshold >= 0 && confidenceThreshold <= 1)) {
-      autoAgentSettings.confidenceThreshold = settings.autoAgentSettings.confidenceThreshold === null ? null : confidenceThreshold;
-    }
-    if (Object.keys(autoAgentSettings).length > 0) patch.autoAgentSettings = autoAgentSettings as PipelineSettings["autoAgentSettings"];
-  }
-  return {
-    prId: requirePrId(value, "prs.pipelineSettings.save"),
-    settings: patch,
-  };
-}
-
-function parseConvergenceStatePatch(value: Record<string, unknown>): { prId: string; state: PrConvergenceStatePatch } {
-  const raw = isRecord(value.state) ? value.state : value;
-  const patch: PrConvergenceStatePatch = {};
-  const statuses = new Set(["idle", "launching", "running", "polling", "paused", "converged", "merged", "failed", "cancelled", "stopped"]);
-  const pollerStatuses = new Set(["idle", "scheduled", "polling", "waiting_for_checks", "waiting_for_comments", "paused", "stopped"]);
-  if (typeof raw.autoConvergeEnabled === "boolean") patch.autoConvergeEnabled = raw.autoConvergeEnabled;
-  const status = asTrimmedString(raw.status);
-  if (status && statuses.has(status)) patch.status = status as ConvergenceRuntimeState["status"];
-  const pollerStatus = asTrimmedString(raw.pollerStatus);
-  if (pollerStatus && pollerStatuses.has(pollerStatus)) patch.pollerStatus = pollerStatus as ConvergenceRuntimeState["pollerStatus"];
-  const currentRound = asOptionalNumber(raw.currentRound);
-  if (currentRound != null && currentRound >= 0) patch.currentRound = Math.floor(currentRound);
-  if (typeof raw.forceFinalizeUsed === "boolean") patch.forceFinalizeUsed = raw.forceFinalizeUsed;
-  const ciRetryAttemptsUsed = asOptionalNumber(raw.ciRetryAttemptsUsed);
-  if (ciRetryAttemptsUsed != null && ciRetryAttemptsUsed >= 0) patch.ciRetryAttemptsUsed = Math.floor(ciRetryAttemptsUsed);
-  const pauseRepeatCount = asOptionalNumber(raw.pauseRepeatCount);
-  if (pauseRepeatCount != null && pauseRepeatCount >= 0) patch.pauseRepeatCount = Math.floor(pauseRepeatCount);
-  for (const key of [
-    "activeSessionId",
-    "activeLaneId",
-    "activeHref",
-    "pauseReason",
-    "errorMessage",
-    "waitForCiStartedAt",
-    "lastDispatchHeadSha",
-    "lastPauseReasonHash",
-    "lastStartedAt",
-    "lastPolledAt",
-    "lastPausedAt",
-    "lastStoppedAt",
-  ] as const) {
-    const next = raw[key];
-    if (next === null || typeof next === "string") {
-      (patch as Record<string, unknown>)[key] = next;
-    }
-  }
-  return {
-    prId: requirePrId(value, "prs.convergenceState.save"),
-    state: patch,
-  };
-}
-
 function mergeLaneDockerConfig(
   current: { composePath?: string; services?: string[]; projectPrefix?: string } | undefined,
   next: { composePath?: string; services?: string[]; projectPrefix?: string } | undefined,
@@ -3122,110 +2974,6 @@ function registerPrAndDeeplinkRemoteCommands({ args, register }: RemoteCommandRe
   register("prs.reorderQueue", { viewerAllowed: true, queueable: true }, async (payload) => {
     await args.prService.reorderQueuePrs(parseReorderQueuePrsArgs(payload));
     return { ok: true };
-  });
-  register("prs.issueInventory.sync", { viewerAllowed: true, queueable: true }, async (payload) => {
-    if (!args.issueInventoryService) throw new Error("Issue inventory is not available.");
-    const { prId } = parseIssueInventoryPrArgs(payload, "prs.issueInventory.sync");
-    const [checks, reviewThreads, comments] = await Promise.all([
-      args.prService.getChecks(prId),
-      args.prService.getReviewThreads(prId),
-      args.prService.getComments(prId).catch(() => []),
-    ]);
-    return args.issueInventoryService.syncFromPrData(prId, checks, reviewThreads, comments);
-  });
-  register("prs.issueInventory.get", { viewerAllowed: true }, async (payload) => {
-    if (!args.issueInventoryService) throw new Error("Issue inventory is not available.");
-    return args.issueInventoryService.getInventory(parseIssueInventoryPrArgs(payload, "prs.issueInventory.get").prId);
-  });
-  register("prs.issueInventory.getNew", { viewerAllowed: true }, async (payload) => {
-    if (!args.issueInventoryService) throw new Error("Issue inventory is not available.");
-    return args.issueInventoryService.getNewItems(parseIssueInventoryPrArgs(payload, "prs.issueInventory.getNew").prId);
-  });
-  register("prs.issueInventory.markFixed", { viewerAllowed: true, queueable: true }, async (payload) => {
-    if (!args.issueInventoryService) throw new Error("Issue inventory is not available.");
-    const parsed = parseIssueInventoryItemsArgs(payload, "prs.issueInventory.markFixed");
-    args.issueInventoryService.markFixed(parsed.prId, parsed.itemIds);
-    return { ok: true };
-  });
-  register("prs.issueInventory.markDismissed", { viewerAllowed: true, queueable: true }, async (payload) => {
-    if (!args.issueInventoryService) throw new Error("Issue inventory is not available.");
-    const parsed = parseIssueInventoryDismissArgs(payload);
-    args.issueInventoryService.markDismissed(parsed.prId, parsed.itemIds, parsed.reason);
-    return { ok: true };
-  });
-  register("prs.issueInventory.markEscalated", { viewerAllowed: true, queueable: true }, async (payload) => {
-    if (!args.issueInventoryService) throw new Error("Issue inventory is not available.");
-    const parsed = parseIssueInventoryItemsArgs(payload, "prs.issueInventory.markEscalated");
-    args.issueInventoryService.markEscalated(parsed.prId, parsed.itemIds);
-    return { ok: true };
-  });
-  register("prs.issueInventory.getConvergence", { viewerAllowed: true }, async (payload) => {
-    if (!args.issueInventoryService) throw new Error("Issue inventory is not available.");
-    return args.issueInventoryService.getConvergenceStatus(parseIssueInventoryPrArgs(payload, "prs.issueInventory.getConvergence").prId);
-  });
-  register("prs.issueInventory.reset", { viewerAllowed: true, queueable: true }, async (payload) => {
-    if (!args.issueInventoryService) throw new Error("Issue inventory is not available.");
-    args.issueInventoryService.resetInventory(parseIssueInventoryPrArgs(payload, "prs.issueInventory.reset").prId);
-    return { ok: true };
-  });
-  register("prs.convergenceState.get", { viewerAllowed: true }, async (payload) => {
-    if (!args.issueInventoryService) throw new Error("Issue inventory is not available.");
-    return args.issueInventoryService.getConvergenceRuntime(parseIssueInventoryPrArgs(payload, "prs.convergenceState.get").prId);
-  });
-  register("prs.convergenceState.save", { viewerAllowed: true, queueable: true }, async (payload) => {
-    if (!args.issueInventoryService) throw new Error("Issue inventory is not available.");
-    const parsed = parseConvergenceStatePatch(payload);
-    return args.issueInventoryService.saveConvergenceRuntime(parsed.prId, parsed.state);
-  });
-  register("prs.convergenceState.delete", { viewerAllowed: true, queueable: true }, async (payload) => {
-    if (!args.issueInventoryService) throw new Error("Issue inventory is not available.");
-    args.issueInventoryService.resetConvergenceRuntime(parseIssueInventoryPrArgs(payload, "prs.convergenceState.delete").prId);
-    return { ok: true };
-  });
-  register("prs.pipelineSettings.get", { viewerAllowed: true }, async (payload) => {
-    if (!args.issueInventoryService) throw new Error("Issue inventory is not available.");
-    return args.issueInventoryService.getPipelineSettings(parseIssueInventoryPrArgs(payload, "prs.pipelineSettings.get").prId);
-  });
-  register("prs.pipelineSettings.save", { viewerAllowed: true, queueable: true }, async (payload) => {
-    if (!args.issueInventoryService) throw new Error("Issue inventory is not available.");
-    const parsed = parsePipelineSettingsPatch(payload);
-    args.issueInventoryService.savePipelineSettings(parsed.prId, parsed.settings);
-    return { ok: true };
-  });
-  register("prs.pipelineSettings.delete", { viewerAllowed: true, queueable: true }, async (payload) => {
-    if (!args.issueInventoryService) throw new Error("Issue inventory is not available.");
-    args.issueInventoryService.deletePipelineSettings(parseIssueInventoryPrArgs(payload, "prs.pipelineSettings.delete").prId);
-    return { ok: true };
-  });
-  register("prs.pathToMerge.start", { viewerAllowed: true, queueable: true }, async (payload) => {
-    if (!args.pathToMergeOrchestrator) {
-      throw new Error("Path to Merge orchestrator is not available in this build.");
-    }
-    const { prId } = parseIssueInventoryPrArgs(payload, "prs.pathToMerge.start");
-    const modelId = typeof payload?.modelId === "string" ? payload.modelId : null;
-    const reasoning = typeof payload?.reasoning === "string" ? payload.reasoning : null;
-    const additionalInstructions = typeof payload?.additionalInstructions === "string"
-      ? payload.additionalInstructions
-      : null;
-    const rawScope = payload?.scope;
-    const scope = rawScope === "checks" || rawScope === "comments" || rawScope === "both"
-      ? rawScope
-      : undefined;
-    return args.pathToMergeOrchestrator.startPathToMerge({
-      prId,
-      modelId,
-      reasoning,
-      scope,
-      additionalInstructions,
-    });
-  });
-  register("prs.pathToMerge.stop", { viewerAllowed: true, queueable: true }, async (payload) => {
-    if (!args.pathToMergeOrchestrator) {
-      throw new Error("Path to Merge orchestrator is not available in this build.");
-    }
-    const { prId } = parseIssueInventoryPrArgs(payload, "prs.pathToMerge.stop");
-    const reason = typeof payload?.reason === "string" ? payload.reason : null;
-    return args.pathToMergeOrchestrator.stopPathToMerge({ prId, reason });
   });
   register("prs.getMobileSnapshot", { viewerAllowed: true }, async () => args.prService.getMobileSnapshot());
 }

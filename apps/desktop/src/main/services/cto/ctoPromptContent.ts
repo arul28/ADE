@@ -16,7 +16,6 @@ const previewDeps = {
   linearDispatcherService: null,
   flowPolicyService: null,
   prService: null,
-  issueInventoryService: null,
   fileService: null,
   processService: null,
   testService: null,

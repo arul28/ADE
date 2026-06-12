@@ -307,86 +307,6 @@ function createRuntime() {
       stop: vi.fn(),
       getLogTail: vi.fn(() => "")
     },
-    issueInventoryService: (() => {
-      const runtimeByPr = new Map<string, Record<string, unknown>>();
-      const inventoryByPr = new Map<string, Record<string, unknown>>();
-      const pipelineByPr = new Map<string, Record<string, unknown>>();
-
-      const defaultRuntime = (prId: string) => ({
-        prId,
-        autoConvergeEnabled: false,
-        status: "idle",
-        pollerStatus: "idle",
-        currentRound: 0,
-        activeSessionId: null,
-        activeLaneId: null,
-        activeHref: null,
-        pauseReason: null,
-        errorMessage: null,
-        lastStartedAt: null,
-        lastPolledAt: null,
-        lastPausedAt: null,
-        lastStoppedAt: null,
-        createdAt: "2026-03-17T19:00:00.000Z",
-        updatedAt: "2026-03-17T19:00:00.000Z",
-      });
-
-      const defaultPipeline = () => ({
-        autoMerge: false,
-        mergeMethod: "repo_default",
-        maxRounds: 5,
-        onRebaseNeeded: "pause",
-      });
-
-      return {
-        syncFromPrData: vi.fn((prId: string) => {
-          const runtime = { ...defaultRuntime(prId), ...runtimeByPr.get(prId) };
-          const existingSnapshot = inventoryByPr.get(prId) ?? null;
-          const snapshot = {
-            prId,
-            items: existingSnapshot?.items ?? [],
-            convergence: {
-              currentRound: typeof runtime.currentRound === "number" ? runtime.currentRound : 0,
-              maxRounds: { ...defaultPipeline(), ...pipelineByPr.get(prId) }.maxRounds,
-              issuesPerRound: [],
-              totalNew: 0,
-              totalFixed: 0,
-              totalDismissed: 0,
-              totalEscalated: 0,
-              totalSentToAgent: 0,
-              isConverging: false,
-              canAutoAdvance: false,
-            },
-            runtime,
-          };
-          inventoryByPr.set(prId, snapshot);
-          return snapshot;
-        }),
-        getConvergenceRuntime: vi.fn((prId: string) => ({
-          ...defaultRuntime(prId),
-          ...runtimeByPr.get(prId),
-        })),
-        getPipelineSettings: vi.fn((prId: string) => ({
-          ...defaultPipeline(),
-          ...pipelineByPr.get(prId),
-        })),
-        getNewItems: vi.fn((_prId: string) => []),
-        markSentToAgent: vi.fn(),
-        privateMaintenanceTask: vi.fn(),
-        resetInventory: vi.fn(),
-        saveConvergenceRuntime: vi.fn((prId: string, state: Record<string, unknown>) => {
-          const existing = runtimeByPr.get(prId) ?? {};
-          const merged = { ...defaultRuntime(prId), ...existing, ...state };
-          runtimeByPr.set(prId, merged);
-          return merged;
-        }),
-        deletePipelineSettings: vi.fn(),
-        savePipelineSettings: vi.fn((prId: string, settings: Record<string, unknown>) => {
-          const existing = pipelineByPr.get(prId) ?? {};
-          pipelineByPr.set(prId, { ...existing, ...settings });
-        }),
-      };
-    })(),
     prService: {
       simulateIntegration: vi.fn(async () => ({ steps: [], conflicts: [], clean: true })),
       createQueuePrs: vi.fn(async () => ({ groupId: "group-1", prs: [] })),
@@ -1519,7 +1439,6 @@ describe("adeRpcServer", () => {
         "get_pr_health",
         "pr_get_checks",
         "pr_get_review_comments",
-        "pr_refresh_issue_inventory",
         "pr_rerun_failed_checks",
         "pr_reply_to_review_thread",
         "pr_resolve_review_thread",
@@ -3035,33 +2954,6 @@ describe("adeRpcServer", () => {
 
 
 
-  it("does not expose unlisted service methods through dynamic ADE actions", async () => {
-    const fixture = createRuntime();
-    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
-    await initialize(handler, { callerId: "agent-1", role: "agent" });
-
-    const listed = await callTool(handler, "list_ade_actions", { domain: "issue_inventory" });
-    expect(listed?.isError).toBeUndefined();
-    const actions = listed.structuredContent.actions.map((entry: { action: string }) => entry.action);
-    expect(actions).toContain("getPipelineSettings");
-    expect(actions).toContain("resetInventory");
-    expect(actions).toContain("saveConvergenceRuntime");
-    expect(actions).toContain("deletePipelineSettings");
-    expect(actions).not.toContain("privateMaintenanceTask");
-
-    const response = await callTool(handler, "run_ade_action", {
-      domain: "issue_inventory",
-      action: "privateMaintenanceTask",
-      argsList: ["pr-1"],
-    });
-
-    expect(response.isError).toBe(true);
-    expect(JSON.stringify(response.error ?? response.structuredContent ?? {})).toContain(
-      "Action 'issue_inventory.privateMaintenanceTask' is not exposed through ADE actions.",
-    );
-    expect(fixture.runtime.issueInventoryService.privateMaintenanceTask).not.toHaveBeenCalled();
-  });
-
   it("rejects run_ade_action when the action is not a callable on the domain service", async () => {
     const fixture = createRuntime();
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
@@ -3669,45 +3561,6 @@ describe("adeRpcServer", () => {
     expect(fixture.runtime.prService.getReviews).toHaveBeenCalledWith("pr-123");
     expect(fixture.runtime.prService.getChecks).toHaveBeenCalledWith("pr-123");
     expect(fixture.runtime.prService.getReviewThreads).toHaveBeenCalledWith("pr-123");
-  });
-
-  it("routes pr_refresh_issue_inventory with checks, review threads, and issue comments", async () => {
-    const fixture = createRuntime();
-    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
-
-    await initialize(handler);
-    const response = await callTool(handler, "pr_refresh_issue_inventory", { prId: "pr-123" });
-
-    expect(response?.isError).toBeUndefined();
-    expect(response.structuredContent.summary).toEqual(
-      expect.objectContaining({
-        failingCheckCount: 0,
-        pendingCheckCount: 0,
-        actionableReviewThreadCount: 1,
-        actionableIssueCommentCount: 1,
-        actionableCommentCount: 2,
-        hasActionableChecks: false,
-        hasActionableComments: true,
-      }),
-    );
-    expect(response.structuredContent.failingWorkflowRuns).toHaveLength(1);
-    expect(response.structuredContent.reviewThreads[0]).toEqual(
-      expect.objectContaining({
-        id: "thread-1",
-        path: "src/index.ts",
-        line: 12,
-      }),
-    );
-    expect(response.structuredContent.issueComments[0]).toEqual(
-      expect.objectContaining({
-        author: "reviewer",
-        body: "Please fix the loading state.",
-      }),
-    );
-    expect(fixture.runtime.prService.getChecks).toHaveBeenCalledWith("pr-123");
-    expect(fixture.runtime.prService.getActionRuns).toHaveBeenCalledWith("pr-123");
-    expect(fixture.runtime.prService.getReviewThreads).toHaveBeenCalledWith("pr-123");
-    expect(fixture.runtime.prService.getComments).toHaveBeenCalledWith("pr-123");
   });
 
   it("routes pr_rerun_failed_checks, pr_reply_to_review_thread, and pr_resolve_review_thread", async () => {

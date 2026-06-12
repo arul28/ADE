@@ -189,7 +189,6 @@ eventually calls `prRebaseResolver.ts`'s `startRebaseResolution()`:
 - `pr_groups` (`group_type: queue | integration`) — PR group tables.
 - `pr_group_members` — ordered membership with `role: source | integration | target | … `.
 - `queue_landing_state` — queue state (see [`queue.md`](./queue.md)).
-- `pr_issue_inventory`, `pr_convergence_state` — issue resolution / convergence.
 
 ## Gotchas
 

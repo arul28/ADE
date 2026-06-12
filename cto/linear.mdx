@@ -6,7 +6,7 @@ icon: "arrow-right-arrow-left"
 
 ## How the CTO Uses Linear
 
-The CTO owns ADE's bidirectional Linear integration. It monitors your workspace for issue changes, routes them to the right execution target (worker, worker run, or PR convergence), and pushes updates back when work completes — tracking the full lifecycle from intake to closeout based on configurable workflow definitions.
+The CTO owns ADE's bidirectional Linear integration. It monitors your workspace for issue changes, routes them to the right execution target (worker, worker run, or PR issue resolution), and pushes updates back when work completes — tracking the full lifecycle from intake to closeout based on configurable workflow definitions.
 
 ---
 
@@ -27,7 +27,7 @@ The CTO owns ADE's bidirectional Linear integration. It monitors your workspace 
   <Step title="Configure workflow definitions">
     Set up workflow rules that map Linear events to ADE actions. Each workflow definition specifies:
     - **Trigger conditions** — which issues match (assignee, labels, priority, team, state transitions)
-    - **Execution target** — what ADE does (launch a worker run, start a worker session, open a PR convergence run)
+    - **Execution target** — what ADE does (launch a worker run, start a worker session, or route to a review gate)
     - **Lane selection** — where the work happens (primary lane, fresh issue-specific lane, or operator-prompted)
     - **Closeout policy** — what happens when the work completes (update issue state, add comments, apply labels)
   </Step>
@@ -62,7 +62,7 @@ When a workflow triggers, the CTO dispatches work to one of these targets:
 | **Worker run** | Complex issues that need a structured plan, multiple steps, and validation |
 | **Employee session** | Issues where a single agent chat session can handle the work |
 | **Worker run** | Background worker execution managed by the CTO |
-| **PR resolution** | Issues that map directly to an existing PR that needs convergence work |
+| **PR resolution** | Issues that map directly to an existing PR that needs issue resolution |
 | **Review gate** | Issues that need human review before the CTO proceeds |
 
 Each target can be configured with a worker selector (by ID, slug, or capability), model configuration, permission modes, and session templates.
@@ -156,7 +156,7 @@ Both the CTO's Linear integration and Automation rules can react to Linear event
 | **Intelligence** | Stateful — tracks issue lifecycle, makes routing decisions, manages workflow runs | Stateless — fires once per trigger, no memory of past events |
 | **Scope** | Full workflow from intake to closeout | Single action per trigger |
 | **Configuration** | Workflow definitions with triggers, targets, and closeout policies | Simple trigger-action pairs |
-| **Best for** | Ongoing issue management, complex routing, PR convergence | Simple notifications, one-shot tasks, scheduled checks |
+| **Best for** | Ongoing issue management, complex routing, multi-step workflows | Simple notifications, one-shot tasks, scheduled checks |
 
 The two systems are complementary. Use automation rules for simple event-response patterns. Use the CTO's Linear integration for stateful, intelligent issue management.
 

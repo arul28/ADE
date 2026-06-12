@@ -1,5 +1,4 @@
 import type {
-  IssueInventorySnapshot,
   PrCheck,
   PrReviewSnapshot,
   ReviewRun,
@@ -8,7 +7,6 @@ import type {
 import type { Logger } from "../logging/logger";
 import type { createLaneService } from "../lanes/laneService";
 import type { createPrService } from "../prs/prService";
-import type { createIssueInventoryService } from "../prs/issueInventoryService";
 import type { createSessionDeltaService } from "../sessions/sessionDeltaService";
 import type { AdeDb } from "../state/kvDb";
 import type { createTestService } from "../tests/testService";
@@ -22,7 +20,6 @@ import {
 const SESSION_DELTA_LIMIT = 3;
 const PRIOR_REVIEW_LIMIT = 2;
 const VALIDATION_SIGNAL_LIMIT = 5;
-const ISSUE_INVENTORY_LIMIT = 5;
 const MAX_TEXT_FIELD = 220;
 const MAX_PROMPT_SECTION = 6_000;
 
@@ -71,7 +68,7 @@ export type ReviewContextProvenancePayload = {
     createdAt: string;
   }>;
   lateStageSignals: Array<{
-    kind: "validation_failure_followed_by_edits" | "review_feedback_followed_by_edits" | "prior_review_overlap";
+    kind: "validation_failure_followed_by_edits" | "prior_review_overlap";
     summary: string;
     filePaths: string[];
     source: string;
@@ -127,18 +124,6 @@ export type ReviewContextValidationPayload = {
     startedAt: string;
     endedAt: string | null;
     logExcerpt: string | null;
-  }>;
-  issueInventory: Array<{
-    id: string;
-    source: string;
-    type: string;
-    state: string;
-    round: number;
-    headline: string;
-    body: string | null;
-    filePath: string | null;
-    line: number | null;
-    updatedAt: string;
   }>;
   sessionFailures: Array<{
     sessionId: string;
@@ -247,7 +232,6 @@ export function createReviewContextBuilder({
   laneService,
   sessionDeltaService,
   testService,
-  issueInventoryService,
   prService,
 }: {
   db: AdeDb;
@@ -256,7 +240,6 @@ export function createReviewContextBuilder({
   laneService: Pick<ReturnType<typeof createLaneService>, "getStateSnapshot">;
   sessionDeltaService: Pick<ReturnType<typeof createSessionDeltaService>, "listRecentLaneSessionDeltas">;
   testService: Pick<ReturnType<typeof createTestService>, "listRuns" | "getLogTail" | "listSuites">;
-  issueInventoryService: Pick<ReturnType<typeof createIssueInventoryService>, "getInventory">;
   prService?: Pick<ReturnType<typeof createPrService>, "getChecks" | "getReviewSnapshot">;
 }) {
   function getLinkedPrRow(run: ReviewRun): LinkedPrRow | null {
@@ -341,33 +324,22 @@ export function createReviewContextBuilder({
   }): Promise<ReviewContextValidationPayload> {
     let reviewSnapshot: PrReviewSnapshot | null = null;
     let checks: PrCheck[] = [];
-    let inventory: IssueInventorySnapshot | null = null;
 
-    if (args.linkedPr?.id) {
-      if (prService) {
-        reviewSnapshot = await prService.getReviewSnapshot(args.linkedPr.id).catch((error) => {
-          logger.debug("review.context_builder.review_snapshot_unavailable", {
-            prId: args.linkedPr?.id,
-            error: getErrorMessage(error),
-          });
-          return null;
-        });
-        checks = await prService.getChecks(args.linkedPr.id).catch((error) => {
-          logger.debug("review.context_builder.pr_checks_unavailable", {
-            prId: args.linkedPr?.id,
-            error: getErrorMessage(error),
-          });
-          return [];
-        });
-      }
-      try {
-        inventory = issueInventoryService.getInventory(args.linkedPr.id);
-      } catch (error) {
-        logger.debug("review.context_builder.issue_inventory_unavailable", {
+    if (args.linkedPr?.id && prService) {
+      reviewSnapshot = await prService.getReviewSnapshot(args.linkedPr.id).catch((error) => {
+        logger.debug("review.context_builder.review_snapshot_unavailable", {
           prId: args.linkedPr?.id,
           error: getErrorMessage(error),
         });
-      }
+        return null;
+      });
+      checks = await prService.getChecks(args.linkedPr.id).catch((error) => {
+        logger.debug("review.context_builder.pr_checks_unavailable", {
+          prId: args.linkedPr?.id,
+          error: getErrorMessage(error),
+        });
+        return [];
+      });
     }
 
     const suites = testService.listSuites().map((suite) => suite.id).slice(0, VALIDATION_SIGNAL_LIMIT);
@@ -392,22 +364,6 @@ export function createReviewContextBuilder({
       startedAt: check.startedAt,
       completedAt: check.completedAt,
     }));
-    const unresolvedInventoryItems = (inventory?.items ?? [])
-      .filter((item) => item.state !== "fixed" && item.state !== "dismissed")
-      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
-      .slice(0, ISSUE_INVENTORY_LIMIT)
-      .map((item) => ({
-        id: item.id,
-        source: item.source,
-        type: item.type,
-        state: item.state,
-        round: item.round,
-        headline: clipText(item.headline) ?? item.id,
-        body: clipText(item.body),
-        filePath: item.filePath,
-        line: item.line,
-        updatedAt: item.updatedAt,
-      }));
     const sessionFailures = args.sessionDeltas
       .filter((delta) => delta.failureLines.length > 0)
       .slice(0, SESSION_DELTA_LIMIT)
@@ -440,15 +396,6 @@ export function createReviewContextBuilder({
         sourceId: run.runId,
       });
     }
-    for (const item of unresolvedInventoryItems) {
-      if (signals.length >= VALIDATION_SIGNAL_LIMIT) break;
-      signals.push({
-        kind: "review_feedback",
-        summary: clipText(`${item.headline}${item.filePath ? ` (${item.filePath}${item.line ? `:${item.line}` : ""})` : ""}`, 260) ?? item.id,
-        filePaths: item.filePath ? [item.filePath] : [],
-        sourceId: item.id,
-      });
-    }
     for (const delta of sessionFailures) {
       if (signals.length >= VALIDATION_SIGNAL_LIMIT) break;
       signals.push({
@@ -478,7 +425,6 @@ export function createReviewContextBuilder({
       checks: normalizedChecks,
       suites,
       testRuns: normalizedTestRuns,
-      issueInventory: unresolvedInventoryItems,
       sessionFailures,
       signals,
     };
@@ -489,7 +435,6 @@ export function createReviewContextBuilder({
     laneSnapshot: ReturnType<Pick<ReturnType<typeof createLaneService>, "getStateSnapshot">["getStateSnapshot"]>;
     sessionDeltas: SessionDeltaSummary[];
     priorReviews: ReviewContextProvenancePayload["priorReviews"];
-    validation: ReviewContextValidationPayload;
   }): ReviewContextProvenancePayload {
     const changedPaths = args.materialized.changedFiles.map((file) => file.filePath);
     const normalizedSessionDeltas = args.sessionDeltas.slice(0, SESSION_DELTA_LIMIT).map((delta) => ({
@@ -511,18 +456,6 @@ export function createReviewContextBuilder({
         filePaths: overlappingPaths,
         source: delta.sessionId,
         occurredAt: delta.computedAt ?? delta.endedAt,
-      });
-    }
-    for (const item of args.validation.issueInventory) {
-      if (lateStageSignals.length >= VALIDATION_SIGNAL_LIMIT) break;
-      const overlappingPaths = overlapsChangedPaths([item.filePath], changedPaths);
-      if (overlappingPaths.length === 0) continue;
-      lateStageSignals.push({
-        kind: "review_feedback_followed_by_edits",
-        summary: clipText(`Open reviewer or check feedback still targets ${overlappingPaths.join(", ")}: ${item.headline}`, 260) ?? item.id,
-        filePaths: overlappingPaths,
-        source: item.id,
-        occurredAt: item.updatedAt,
       });
     }
     for (const review of args.priorReviews) {
@@ -615,7 +548,6 @@ export function createReviewContextBuilder({
       payload.signals.length > 0 ? `${payload.signals.length} validation signal${payload.signals.length === 1 ? "" : "s"}` : null,
       payload.checks.length > 0 ? `${payload.checks.length} check${payload.checks.length === 1 ? "" : "s"}` : null,
       payload.testRuns.length > 0 ? `${payload.testRuns.length} test run${payload.testRuns.length === 1 ? "" : "s"}` : null,
-      payload.issueInventory.length > 0 ? `${payload.issueInventory.length} inventory item${payload.issueInventory.length === 1 ? "" : "s"}` : null,
     ].filter((value): value is string => Boolean(value));
     return parts.length > 0 ? parts.join(", ") : "No validation signals";
   }
@@ -650,7 +582,6 @@ export function createReviewContextBuilder({
         laneSnapshot,
         sessionDeltas,
         priorReviews,
-        validation: validationPayload,
       });
       const rulesPayload: ReviewContextRulesPayload = {
         changedPaths,
@@ -704,7 +635,6 @@ export function createReviewContextBuilder({
             signalCount: validationPayload.signals.length,
             checkCount: validationPayload.checks.length,
             testRunCount: validationPayload.testRuns.length,
-            issueCount: validationPayload.issueInventory.length,
             sessionFailureCount: validationPayload.sessionFailures.length,
             suiteCount: validationPayload.suites.length,
           },

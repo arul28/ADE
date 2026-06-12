@@ -347,10 +347,6 @@ function retrofitLegacyPrimaryKeyNotNullSchema(db: DatabaseSyncType): boolean {
  * referential actions.
  */
 const FK_CONSTRAINTS: Record<string, { references: string; action: string }> = {
-  // PR convergence loop tables
-  "pr_issue_inventory:pr_id": { references: "pull_requests(id)", action: "on delete cascade" },
-  "pr_pipeline_settings:pr_id": { references: "pull_requests(id)", action: "on delete cascade" },
-  "pr_convergence_state:pr_id": { references: "pull_requests(id)", action: "on delete cascade" },
 };
 
 /**
@@ -2944,134 +2940,6 @@ function migrate(db: MigrationDb) {
   db.run("create index if not exists idx_review_suppressions_project on review_suppressions(project_id, created_at desc)");
   db.run("create index if not exists idx_review_suppressions_repo on review_suppressions(project_id, repo_key)");
 
-  // PR convergence loop: issue inventory tracking
-  db.run(`
-    create table if not exists pr_issue_inventory (
-      id text primary key,
-      pr_id text not null,
-      source text not null,
-      type text not null,
-      external_id text not null,
-      state text not null default 'new',
-      round integer not null default 0,
-      file_path text,
-      line integer,
-      severity text,
-      headline text not null,
-      body text,
-      author text,
-      url text,
-      dismiss_reason text,
-      agent_session_id text,
-      created_at text not null,
-      updated_at text not null,
-      unique(pr_id, external_id),
-      foreign key(pr_id) references pull_requests(id) on delete cascade
-    )
-  `);
-  safeAddColumn(db, "alter table pr_issue_inventory add column thread_comment_count integer");
-  safeAddColumn(db, "alter table pr_issue_inventory add column thread_latest_comment_id text");
-  safeAddColumn(db, "alter table pr_issue_inventory add column thread_latest_comment_author text");
-  safeAddColumn(db, "alter table pr_issue_inventory add column thread_latest_comment_at text");
-  safeAddColumn(db, "alter table pr_issue_inventory add column thread_latest_comment_source text");
-  db.run("create index if not exists idx_inventory_pr_state on pr_issue_inventory(pr_id, state)");
-
-  // PR pipeline settings: per-PR auto-converge / auto-merge configuration.
-  // Newer fields (conflict_strategy, force_finalize_*, early_merge_on_green,
-  // auto_agent_*) are added with safeAddColumn so existing DBs upgrade in
-  // place. The legacy `on_rebase_needed` column is retained for back-compat.
-  db.run(`
-    create table if not exists pr_pipeline_settings (
-      pr_id text primary key,
-      auto_merge integer not null default 1,
-      merge_method text not null default 'repo_default',
-      max_rounds integer not null default 5,
-      on_rebase_needed text not null default 'pause',
-      updated_at text not null,
-      foreign key(pr_id) references pull_requests(id) on delete cascade
-    )
-  `);
-  safeAddColumn(db, "alter table pr_pipeline_settings add column conflict_strategy text not null default 'pause'");
-  safeAddColumn(db, "alter table pr_pipeline_settings add column force_finalize_mode text not null default 'conditional'");
-  safeAddColumn(db, "alter table pr_pipeline_settings add column force_finalize_require_no_ci_failures integer not null default 1");
-  safeAddColumn(db, "alter table pr_pipeline_settings add column early_merge_on_green integer not null default 1");
-  safeAddColumn(db, "alter table pr_pipeline_settings add column auto_agent_provider text");
-  safeAddColumn(db, "alter table pr_pipeline_settings add column auto_agent_model text");
-  safeAddColumn(db, "alter table pr_pipeline_settings add column auto_agent_reasoning_effort text");
-  safeAddColumn(db, "alter table pr_pipeline_settings add column auto_agent_permission_mode text");
-  safeAddColumn(db, "alter table pr_pipeline_settings add column auto_agent_confidence_threshold real");
-  safeAddColumn(db, "alter table pr_pipeline_settings add column at_cap_policy text default 'ci_retry_once'");
-  safeAddColumn(db, "alter table pr_pipeline_settings add column at_cap_wait_minutes integer");
-  safeAddColumn(db, "alter table pr_pipeline_settings add column at_cap_ci_retry_max integer");
-  safeAddColumn(db, "alter table pr_pipeline_settings add column force_merge_requires_confirmation integer");
-  safeAddColumn(db, "alter table pr_pipeline_settings add column ptm_defaults_backfilled_version text");
-  try {
-    db.run(`
-      update pr_pipeline_settings
-         set auto_merge = 1,
-             force_finalize_mode = 'conditional',
-             at_cap_policy = 'ci_retry_once',
-             ptm_defaults_backfilled_version = 'ptm-defaults-v1'
-       where auto_merge = 0
-         and merge_method = 'repo_default'
-         and max_rounds = 5
-         and on_rebase_needed = 'pause'
-         and coalesce(conflict_strategy, 'pause') = 'pause'
-         and coalesce(force_finalize_mode, 'off') = 'off'
-         and coalesce(force_finalize_require_no_ci_failures, 1) = 1
-         and coalesce(early_merge_on_green, 1) = 1
-         and (at_cap_policy is null or at_cap_policy = 'stop')
-         and (at_cap_wait_minutes is null or at_cap_wait_minutes = 30)
-         and (at_cap_ci_retry_max is null or at_cap_ci_retry_max = 3)
-         and coalesce(force_merge_requires_confirmation, 1) = 1
-         and auto_agent_provider is null
-         and auto_agent_model is null
-         and auto_agent_reasoning_effort is null
-         and auto_agent_permission_mode is null
-         and auto_agent_confidence_threshold is null
-         and (ptm_defaults_backfilled_version is null or ptm_defaults_backfilled_version <> 'ptm-defaults-v1')
-    `);
-  } catch (err) {
-    // Backfill failure leaves existing rows on the legacy defaults while new
-    // rows pick up the new defaults — surface this so the split is visible.
-    console.warn("kvDb.migrate.ptm_defaults_backfill_failed", err);
-  }
-
-  db.run(`
-    create table if not exists pr_convergence_state (
-      pr_id text primary key,
-      auto_converge_enabled integer not null default 0,
-      status text not null default 'idle',
-      poller_status text not null default 'idle',
-      current_round integer not null default 0,
-      active_session_id text,
-      active_lane_id text,
-      active_href text,
-      pause_reason text,
-      error_message text,
-      last_started_at text,
-      last_polled_at text,
-      last_paused_at text,
-      last_stopped_at text,
-      created_at text not null,
-      updated_at text not null,
-      foreign key(pr_id) references pull_requests(id) on delete cascade
-    )
-  `);
-  // PtM-specific run args (modelId, reasoning, scope, additionalInstructions)
-  // serialized as JSON. Persisted so resumeFromPersistedState can re-dispatch
-  // the fix agent after a desktop restart instead of pausing on missing modelId.
-  safeAddColumn(db, "alter table pr_convergence_state add column ptm_args_json text");
-  safeAddColumn(db, "alter table pr_convergence_state add column force_finalize_used integer not null default 0");
-  safeAddColumn(db, "alter table pr_convergence_state add column ci_retry_attempts_used integer not null default 0");
-  safeAddColumn(db, "alter table pr_convergence_state add column wait_for_ci_started_at text");
-  safeAddColumn(db, "alter table pr_convergence_state add column last_dispatch_head_sha text");
-  safeAddColumn(db, "alter table pr_convergence_state add column last_bot_ping_head_sha text");
-  safeAddColumn(db, "alter table pr_convergence_state add column last_bot_ping_at text");
-  safeAddColumn(db, "alter table pr_convergence_state add column merge_wait_kind text");
-  safeAddColumn(db, "alter table pr_convergence_state add column pause_repeat_count integer not null default 0");
-  safeAddColumn(db, "alter table pr_convergence_state add column last_pause_reason_hash text");
-
   // Machine-local runtime guard for PR automation. This table intentionally
   // has no PRIMARY KEY so cr-sqlite does not register it as a CRR table.
   db.run(`
@@ -3107,6 +2975,12 @@ function migrate(db: MigrationDb) {
   db.run("create index if not exists idx_lane_worktree_locks_lane on lane_worktree_locks(lane_id)");
   db.run("create index if not exists idx_lane_worktree_locks_session on lane_worktree_locks(owner_session_id)");
   db.run("create index if not exists idx_lane_worktree_locks_expires on lane_worktree_locks(expires_at)");
+  // Path to Merge is removed; clear orphaned locks so conflict_resolution can acquire immediately.
+  try {
+    db.run("delete from lane_worktree_locks where owner_kind in ('path_to_merge', 'pr_issue_resolution')");
+  } catch (error) {
+    if (!isReadonlyDatabaseError(error)) throw error;
+  }
 
   // Model-picker favorites + recents. Per-project (the DB instance is the
   // scope, so no project_id column is needed) and CRR-replicated so desktop,

@@ -51,7 +51,6 @@ import type { createSessionService } from "../sessions/sessionService";
 import type { createSessionDeltaService } from "../sessions/sessionDeltaService";
 import type { createPrService } from "../prs/prService";
 import { buildPublishedReviewSummaryBody } from "../prs/prService";
-import type { createIssueInventoryService } from "../prs/issueInventoryService";
 import type { createTestService } from "../tests/testService";
 import { createReviewTargetMaterializer } from "./reviewTargetMaterializer";
 import { createReviewContextBuilder, type ReviewContextPacket } from "./reviewContextBuilder";
@@ -1620,7 +1619,6 @@ export function createReviewService({
   sessionService,
   sessionDeltaService,
   testService,
-  issueInventoryService,
   prService,
   onEvent,
 }: {
@@ -1635,7 +1633,6 @@ export function createReviewService({
   sessionService: Pick<ReturnType<typeof createSessionService>, "updateMeta">;
   sessionDeltaService: Pick<ReturnType<typeof createSessionDeltaService>, "listRecentLaneSessionDeltas">;
   testService: Pick<ReturnType<typeof createTestService>, "listRuns" | "getLogTail" | "listSuites">;
-  issueInventoryService: Pick<ReturnType<typeof createIssueInventoryService>, "getInventory">;
   prService?: Pick<ReturnType<typeof createPrService>, "getReviewSnapshot" | "getChecks" | "publishReviewPublication" | "addComment" | "updateComment" | "updateCommentByGithub">;
   onEvent?: (event: ReviewEventPayload) => void;
 }) {
@@ -1647,7 +1644,6 @@ export function createReviewService({
     laneService,
     sessionDeltaService,
     testService,
-    issueInventoryService,
     prService,
   });
   const suppressionService: ReviewSuppressionService = createReviewSuppressionService({

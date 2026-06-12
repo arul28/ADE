@@ -336,7 +336,6 @@ enum PrMergeMethodOption: String, CaseIterable, Identifiable {
 
 enum PrDetailTab: String, CaseIterable, Identifiable {
   case overview
-  case convergence
   case files
   case checks
   case activity
@@ -346,7 +345,6 @@ enum PrDetailTab: String, CaseIterable, Identifiable {
   var title: String {
     switch self {
     case .overview: return "Overview"
-    case .convergence: return "Path"
     case .files: return "Files"
     case .checks: return "Checks"
     case .activity: return "Activity"
@@ -404,8 +402,6 @@ struct PrDetailWarmEntry {
   var activityEvents: [PrActivityEvent]
   var deployments: [PrDeployment]
   var aiSummary: AiReviewSummary?
-  var issueInventory: IssueInventorySnapshot?
-  var pipelineSettings: PipelineSettings?
   var groupMembers: [PrGroupMemberSummary]
   var capabilities: PrActionCapabilities?
   var loadedAt: Date

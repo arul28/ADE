@@ -258,8 +258,6 @@ import type {
   SetPrReviewThreadResolvedArgs,
   SetPrReviewThreadResolvedResult,
   ReactToPrCommentArgs,
-  LaunchPrIssueResolutionFromThreadArgs,
-  LaunchPrIssueResolutionFromThreadResult,
   UpdatePrTitleArgs,
   UpdatePrBodyArgs,
   SetPrLabelsArgs,
@@ -271,15 +269,6 @@ import type {
   RerunPrChecksArgs,
   AiReviewSummaryArgs,
   AiReviewSummary,
-  IssueInventoryItem,
-  IssueInventorySnapshot,
-  PrConvergenceState,
-  PrConvergenceStatePatch,
-  PrAgentPermissionMode,
-  PathToMergeStartResult,
-  PathToMergeStopResult,
-  ConvergenceStatus,
-  PipelineSettings,
   UpdateIntegrationProposalArgs,
   UpdatePrDescriptionArgs,
   LandPrArgs,
@@ -450,12 +439,6 @@ import type {
   CleanupIntegrationWorkflowResult,
   PrAiResolutionStartArgs,
   PrAiResolutionStartResult,
-  PrIssueResolutionStartArgs,
-  PrIssueResolutionPromptPreviewArgs,
-  PrIssueResolutionPromptPreviewResult,
-  PrIssueResolutionStartResult,
-  RebaseResolutionStartArgs,
-  RebaseResolutionStartResult,
   PrAiResolutionGetSessionArgs,
   PrAiResolutionGetSessionResult,
   PrAiResolutionInputArgs,
@@ -7678,27 +7661,6 @@ contextBridge.exposeInMainWorld("ade", {
       callProjectRuntimeActionOr("pr", "aiResolutionStop", { args }, () =>
         ipcRenderer.invoke(IPC.prsAiResolutionStop, args),
       ),
-    issueResolutionStart: (
-      args: PrIssueResolutionStartArgs,
-    ): Promise<PrIssueResolutionStartResult> =>
-      callProjectRuntimeActionOr("pr", "issueResolutionStart", { args }, () =>
-        ipcRenderer.invoke(IPC.prsIssueResolutionStart, args),
-      ),
-    issueResolutionPreviewPrompt: (
-      args: PrIssueResolutionPromptPreviewArgs,
-    ): Promise<PrIssueResolutionPromptPreviewResult> =>
-      callProjectRuntimeActionOr(
-        "pr",
-        "issueResolutionPreviewPrompt",
-        { args },
-        () => ipcRenderer.invoke(IPC.prsIssueResolutionPreviewPrompt, args),
-      ),
-    rebaseResolutionStart: (
-      args: RebaseResolutionStartArgs,
-    ): Promise<RebaseResolutionStartResult> =>
-      callProjectRuntimeActionOr("pr", "rebaseResolutionStart", { args }, () =>
-        ipcRenderer.invoke(IPC.prsRebaseResolutionStart, args),
-      ),
     onAiResolutionEvent: (cb: (ev: PrAiResolutionEventPayload) => void) => {
       const listener = (
         _event: Electron.IpcRendererEvent,
@@ -7835,191 +7797,6 @@ contextBridge.exposeInMainWorld("ade", {
       callProjectRuntimeActionOr("pr", "aiReviewSummary", { args }, () =>
         ipcRenderer.invoke(IPC.prsAiReviewSummary, args),
       ),
-    issueInventorySync: async (
-      prId: string,
-    ): Promise<IssueInventorySnapshot> => {
-      const checks = await callProjectRuntimeActionIfBound<PrCheck[]>(
-        "pr",
-        "getChecks",
-        { arg: prId },
-      );
-      const reviewThreads = checks.handled
-        ? await callProjectRuntimeActionIfBound<PrReviewThread[]>(
-            "pr",
-            "getReviewThreads",
-            { arg: prId },
-          )
-        : ({ handled: false } as const);
-      const comments =
-        checks.handled && reviewThreads.handled
-          ? await callProjectRuntimeActionIfBound<PrComment[]>(
-              "pr",
-              "getComments",
-              { arg: prId },
-            )
-          : ({ handled: false } as const);
-      if (checks.handled && reviewThreads.handled && comments.handled) {
-        const runtime =
-          await callProjectRuntimeActionIfBound<IssueInventorySnapshot>(
-            "issue_inventory",
-            "syncFromPrData",
-            {
-              argsList: [
-                prId,
-                checks.result,
-                reviewThreads.result,
-                comments.result,
-              ],
-            },
-          );
-        if (runtime.handled) return runtime.result;
-      }
-      return ipcRenderer.invoke(IPC.prsIssueInventorySync, { prId });
-    },
-    issueInventoryGet: async (prId: string): Promise<IssueInventorySnapshot> =>
-      callProjectRuntimeActionOr(
-        "issue_inventory",
-        "getInventory",
-        { arg: prId },
-        () => ipcRenderer.invoke(IPC.prsIssueInventoryGet, { prId }),
-      ),
-    issueInventoryGetNew: async (prId: string): Promise<IssueInventoryItem[]> =>
-      callProjectRuntimeActionOr(
-        "issue_inventory",
-        "getNewItems",
-        { arg: prId },
-        () => ipcRenderer.invoke(IPC.prsIssueInventoryGetNew, { prId }),
-      ),
-    issueInventoryMarkFixed: async (
-      prId: string,
-      itemIds: string[],
-    ): Promise<void> =>
-      callProjectRuntimeActionOr(
-        "issue_inventory",
-        "markFixed",
-        { argsList: [prId, itemIds] },
-        () =>
-          ipcRenderer.invoke(IPC.prsIssueInventoryMarkFixed, { prId, itemIds }),
-      ),
-    issueInventoryMarkDismissed: async (
-      prId: string,
-      itemIds: string[],
-      reason: string,
-    ): Promise<void> =>
-      callProjectRuntimeActionOr(
-        "issue_inventory",
-        "markDismissed",
-        { argsList: [prId, itemIds, reason] },
-        () =>
-          ipcRenderer.invoke(IPC.prsIssueInventoryMarkDismissed, {
-            prId,
-            itemIds,
-            reason,
-          }),
-      ),
-    issueInventoryMarkEscalated: async (
-      prId: string,
-      itemIds: string[],
-    ): Promise<void> =>
-      callProjectRuntimeActionOr(
-        "issue_inventory",
-        "markEscalated",
-        { argsList: [prId, itemIds] },
-        () =>
-          ipcRenderer.invoke(IPC.prsIssueInventoryMarkEscalated, {
-            prId,
-            itemIds,
-          }),
-      ),
-    issueInventoryGetConvergence: async (
-      prId: string,
-    ): Promise<ConvergenceStatus> =>
-      callProjectRuntimeActionOr(
-        "issue_inventory",
-        "getConvergenceStatus",
-        { arg: prId },
-        () => ipcRenderer.invoke(IPC.prsIssueInventoryGetConvergence, { prId }),
-      ),
-    issueInventoryReset: async (prId: string): Promise<void> =>
-      callProjectRuntimeActionOr(
-        "issue_inventory",
-        "resetInventory",
-        { arg: prId },
-        () => ipcRenderer.invoke(IPC.prsIssueInventoryReset, { prId }),
-      ),
-    convergenceStateGet: async (prId: string): Promise<PrConvergenceState> =>
-      callProjectRuntimeActionOr(
-        "issue_inventory",
-        "getConvergenceRuntime",
-        { arg: prId },
-        () => ipcRenderer.invoke(IPC.prsConvergenceStateGet, { prId }),
-      ),
-    convergenceStateSave: async (
-      prId: string,
-      state: PrConvergenceStatePatch,
-    ): Promise<PrConvergenceState> =>
-      callProjectRuntimeActionOr(
-        "issue_inventory",
-        "saveConvergenceRuntime",
-        { argsList: [prId, state] },
-        () => ipcRenderer.invoke(IPC.prsConvergenceStateSave, { prId, state }),
-      ),
-    convergenceStateDelete: async (prId: string): Promise<void> =>
-      callProjectRuntimeActionOr(
-        "issue_inventory",
-        "resetConvergenceRuntime",
-        { arg: prId },
-        () => ipcRenderer.invoke(IPC.prsConvergenceStateDelete, { prId }),
-      ),
-    pathToMergeStart: async (args: {
-      prId: string;
-      modelId?: string | null;
-      reasoning?: string | null;
-      permissionMode?: PrAgentPermissionMode | null;
-      scope?: "checks" | "comments" | "both";
-      additionalInstructions?: string | null;
-    }): Promise<PathToMergeStartResult> =>
-      callProjectRuntimeActionOr(
-        "path_to_merge",
-        "startPathToMerge",
-        { args },
-        () => ipcRenderer.invoke(IPC.prsPathToMergeStart, args),
-      ),
-    pathToMergeStop: async (args: {
-      prId: string;
-      reason?: string | null;
-    }): Promise<PathToMergeStopResult> =>
-      callProjectRuntimeActionOr(
-        "path_to_merge",
-        "stopPathToMerge",
-        { args },
-        () => ipcRenderer.invoke(IPC.prsPathToMergeStop, args),
-      ),
-    pipelineSettingsGet: async (prId: string): Promise<PipelineSettings> =>
-      callProjectRuntimeActionOr(
-        "issue_inventory",
-        "getPipelineSettings",
-        { arg: prId },
-        () => ipcRenderer.invoke(IPC.prsPipelineSettingsGet, { prId }),
-      ),
-    pipelineSettingsSave: async (
-      prId: string,
-      settings: Partial<PipelineSettings>,
-    ): Promise<void> =>
-      callProjectRuntimeActionOr(
-        "issue_inventory",
-        "savePipelineSettings",
-        { argsList: [prId, settings] },
-        () =>
-          ipcRenderer.invoke(IPC.prsPipelineSettingsSave, { prId, settings }),
-      ),
-    pipelineSettingsDelete: async (prId: string): Promise<void> =>
-      callProjectRuntimeActionOr(
-        "issue_inventory",
-        "deletePipelineSettings",
-        { arg: prId },
-        () => ipcRenderer.invoke(IPC.prsPipelineSettingsDelete, { prId }),
-      ),
     dismissIntegrationCleanup: async (
       args: DismissIntegrationCleanupArgs,
     ): Promise<IntegrationProposal> =>
@@ -8071,15 +7848,6 @@ contextBridge.exposeInMainWorld("ade", {
     reactToComment: async (args: ReactToPrCommentArgs): Promise<void> =>
       callProjectRuntimeActionOr("pr", "reactToComment", { args }, () =>
         ipcRenderer.invoke(IPC.prsReactToComment, args),
-      ),
-    launchIssueResolutionFromThread: async (
-      args: LaunchPrIssueResolutionFromThreadArgs,
-    ): Promise<LaunchPrIssueResolutionFromThreadResult> =>
-      callProjectRuntimeActionOr(
-        "pr",
-        "launchIssueResolutionFromThread",
-        { args },
-        () => ipcRenderer.invoke(IPC.prsLaunchIssueResolutionFromThread, args),
       ),
     cleanupBranch: async (
       args: CleanupPrBranchArgs,

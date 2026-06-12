@@ -18,9 +18,6 @@ The **CTO** (Chief Technical Officer) is ADE's persistent, project-scoped AI sur
   <Card title="Bidirectional Linear Sync" icon="arrow-right-arrow-left">
     Reads from and writes to Linear. Creates issues from code changes, updates issue status when PRs merge, and adds analysis comments automatically.
   </Card>
-  <Card title="PR Convergence" icon="arrows-spin">
-    Drives PRs to merge readiness autonomously — starts convergence rounds, monitors CI and review comments, and manages the full resolution loop via five dedicated operator tools.
-  </Card>
   <Card title="Project Awareness" icon="diagram-project">
     Uses current lane, PR, Linear, worker run, and repository context to make delegation decisions.
   </Card>
@@ -38,7 +35,7 @@ Understanding how the CTO differs from the agents you spawn manually (in chat se
 | **Scope** | Entire project | Specific lane, task, or worker run |
 | **Context** | Project, lane, PR, Linear, and worker run state | Current session or assigned lane |
 | **Triggers** | Manual chat, Linear/PR workflows, and worker wakeups | Explicit user action, automation trigger, or per-worker timer |
-| **Authority** | Can spawn lanes, create worker runs, delegate to workers, drive PR convergence | Operates within its assigned lane/context |
+| **Authority** | Can spawn lanes, create worker runs, delegate to workers, drive PR issue resolution | Operates within its assigned lane/context |
 | **Linear access** | Full bidirectional sync (owner) | Read-only via ADE CLI tools, if granted |
 | **Primary UI** | CTO tab | Lane terminal, Chat pane, Workers tab |
 

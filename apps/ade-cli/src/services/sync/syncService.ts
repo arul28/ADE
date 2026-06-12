@@ -41,8 +41,6 @@ import type { createAutoRebaseService } from "../../../../desktop/src/main/servi
 import type { createPortAllocationService } from "../../../../desktop/src/main/services/lanes/portAllocationService";
 import type { createRebaseSuggestionService } from "../../../../desktop/src/main/services/lanes/rebaseSuggestionService";
 import type { createProcessService } from "../../../../desktop/src/main/services/processes/processService";
-import type { createIssueInventoryService } from "../../../../desktop/src/main/services/prs/issueInventoryService";
-import type { PathToMergeOrchestrator } from "../../../../desktop/src/main/services/prs/pathToMergeOrchestrator";
 import type { createPrService } from "../../../../desktop/src/main/services/prs/prService";
 import type { createQueueLandingService } from "../../../../desktop/src/main/services/prs/queueLandingService";
 import type { createPtyService } from "../../../../desktop/src/main/services/pty/ptyService";
@@ -83,12 +81,6 @@ type SyncServiceArgs = {
   diffService?: ReturnType<typeof createDiffService>;
   conflictService?: ReturnType<typeof createConflictService>;
   prService: ReturnType<typeof createPrService>;
-  issueInventoryService?: ReturnType<typeof createIssueInventoryService> | null;
-  /**
-   * Optional Path-to-Merge orchestrator forwarded to the embedded sync host so
-   * iOS callers can drive the convergence loop via remote commands.
-   */
-  pathToMergeOrchestrator?: PathToMergeOrchestrator | null;
   queueLandingService?: ReturnType<typeof createQueueLandingService> | null;
   sessionService: ReturnType<typeof createSessionService>;
   ptyService: ReturnType<typeof createPtyService>;
@@ -629,8 +621,6 @@ export function createSyncService(args: SyncServiceArgs) {
     db: args.db,
     laneService: args.laneService,
     prService: args.prService,
-    issueInventoryService: args.issueInventoryService,
-    pathToMergeOrchestrator: args.pathToMergeOrchestrator,
     queueLandingService: args.queueLandingService,
     ptyService: args.ptyService,
     sessionService: args.sessionService,
@@ -711,8 +701,6 @@ export function createSyncService(args: SyncServiceArgs) {
       diffService: args.diffService,
       conflictService: args.conflictService,
       prService: args.prService,
-      issueInventoryService: args.issueInventoryService,
-      pathToMergeOrchestrator: args.pathToMergeOrchestrator,
       queueLandingService: args.queueLandingService,
       sessionService: args.sessionService,
       ptyService: args.ptyService,

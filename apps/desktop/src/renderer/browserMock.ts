@@ -33,7 +33,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 import { getDefaultModelDescriptor } from "../shared/modelRegistry";
-import { DEFAULT_PIPELINE_SETTINGS } from "../shared/types";
 import { attachBrowserRuntimeBridge } from "./browserRuntimeBridge";
 
 const noop = () => () => {};
@@ -2121,37 +2120,6 @@ const MOCK_STATUS_BY_PR: Record<string, any> = {
   },
 };
 
-const MOCK_CONVERGENCE_RUNTIME: Record<string, any> = {};
-
-function createDefaultConvergenceRuntime(prId: string) {
-  const nowIso = new Date().toISOString();
-  return {
-    prId,
-    autoConvergeEnabled: false,
-    pathToMergeActive: false,
-    status: "idle",
-    pollerStatus: "idle",
-    currentRound: 0,
-    activeSessionId: null,
-    activeLaneId: null,
-    activeHref: null,
-    pauseReason: null,
-    errorMessage: null,
-    forceFinalizeUsed: false,
-    ciRetryAttemptsUsed: 0,
-    waitForCiStartedAt: null,
-    lastDispatchHeadSha: null,
-    pauseRepeatCount: 0,
-    lastPauseReasonHash: null,
-    lastStartedAt: null,
-    lastPolledAt: null,
-    lastPausedAt: null,
-    lastStoppedAt: null,
-    createdAt: nowIso,
-    updatedAt: nowIso,
-  };
-}
-
 // ── Rebase Needs (all urgency categories) ─────────────────────
 const BUILTIN_MOCK_REBASE_NEEDS: any[] = [
   // Attention: behind + conflicts predicted
@@ -2588,37 +2556,6 @@ function normalizeGitHubSnapshot(snapshot: any): any {
       ? snapshot.externalPullRequests.map(normalizeGitHubPrListItem)
       : [],
   };
-}
-
-function buildEmptyIssueInventorySnapshot(prId: string): any {
-  const runtime = createDefaultConvergenceRuntime(prId);
-  return {
-    prId,
-    items: [],
-    convergence: {
-      currentRound: 0,
-      maxRounds: 5,
-      issuesPerRound: [],
-      totalNew: 0,
-      totalFixed: 0,
-      totalDismissed: 0,
-      totalEscalated: 0,
-      totalSentToAgent: 0,
-      isConverging: false,
-      canAutoAdvance: false,
-    },
-    runtime,
-  };
-}
-
-const MOCK_ISSUE_INVENTORY_BY_PR = new Map<string, any>();
-
-function getIssueInventorySnapshot(prId: string): any {
-  const stored = MOCK_ISSUE_INVENTORY_BY_PR.get(prId);
-  if (stored) return stored;
-  const empty = buildEmptyIssueInventorySnapshot(prId);
-  MOCK_ISSUE_INVENTORY_BY_PR.set(prId, empty);
-  return empty;
 }
 
 function buildCreateLaneFromPrPreflight(args: any): any {
@@ -5717,120 +5654,6 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         error: null,
         context: { sourceTab: "normal" as const, laneId: "lane-1" },
       }),
-      issueResolutionStart: async () => ({
-        sessionId: "mock-pr-issue-session",
-        laneId: "lane-dashboard",
-        href: "/work?laneId=lane-dashboard&sessionId=mock-pr-issue-session",
-      }),
-      convergenceStateGet: async (prId: string) => {
-        const stored =
-          MOCK_CONVERGENCE_RUNTIME[prId] ??
-          createDefaultConvergenceRuntime(prId);
-        return { ...stored };
-      },
-      convergenceStateSave: async (
-        prId: string,
-        state: Record<string, any>,
-      ) => {
-        const nowIso = new Date().toISOString();
-        const existing =
-          MOCK_CONVERGENCE_RUNTIME[prId] ??
-          createDefaultConvergenceRuntime(prId);
-        // Only allow known ConvergenceRuntimeState keys (mirror real backend validation)
-        const allowedKeys = new Set([
-          "autoConvergeEnabled",
-          "pathToMergeActive",
-          "status",
-          "pollerStatus",
-          "currentRound",
-          "activeSessionId",
-          "activeLaneId",
-          "activeHref",
-          "pauseReason",
-          "errorMessage",
-          "forceFinalizeUsed",
-          "ciRetryAttemptsUsed",
-          "waitForCiStartedAt",
-          "lastDispatchHeadSha",
-          "pauseRepeatCount",
-          "lastPauseReasonHash",
-          "lastStartedAt",
-          "lastPolledAt",
-          "lastPausedAt",
-          "lastStoppedAt",
-        ]);
-        const filtered: Record<string, any> = {};
-        for (const key of Object.keys(state)) {
-          if (allowedKeys.has(key)) filtered[key] = state[key];
-        }
-        const next = {
-          ...existing,
-          ...filtered,
-          prId,
-          createdAt: existing.createdAt,
-          updatedAt: nowIso,
-        };
-        MOCK_CONVERGENCE_RUNTIME[prId] = next;
-        return { ...next };
-      },
-      convergenceStateDelete: async (prId: string) => {
-        delete MOCK_CONVERGENCE_RUNTIME[prId];
-      },
-      pathToMergeStart: async (args: {
-        prId: string;
-        permissionMode?: string | null;
-      }) => {
-        const runtime =
-          MOCK_CONVERGENCE_RUNTIME[args.prId] ??
-          createDefaultConvergenceRuntime(args.prId);
-        runtime.autoConvergeEnabled = true;
-        runtime.pathToMergeActive = true;
-        runtime.status = "running";
-        runtime.pollerStatus = "scheduled";
-        runtime.pauseReason = null;
-        runtime.errorMessage = null;
-        runtime.lastStartedAt = new Date().toISOString();
-        MOCK_CONVERGENCE_RUNTIME[args.prId] = runtime;
-        return { prId: args.prId, scheduled: true, runtime: { ...runtime } };
-      },
-      pathToMergeStop: async (args: {
-        prId: string;
-        reason?: string | null;
-      }) => {
-        const runtime = MOCK_CONVERGENCE_RUNTIME[args.prId] ?? null;
-        if (runtime) {
-          runtime.autoConvergeEnabled = false;
-          runtime.pathToMergeActive = false;
-          runtime.status = "stopped";
-          runtime.pollerStatus = "stopped";
-          runtime.pauseReason = args.reason ?? null;
-          runtime.lastStoppedAt = new Date().toISOString();
-        }
-        return {
-          prId: args.prId,
-          stopped: true,
-          runtime: runtime ? { ...runtime } : null,
-        };
-      },
-      pipelineSettingsGet: async (_prId: string) => DEFAULT_PIPELINE_SETTINGS,
-      pipelineSettingsSave: async (
-        _prId: string,
-        _settings: Record<string, unknown>,
-      ) => {
-        // No-op in browser mock — settings persistence is server-side.
-      },
-      pipelineSettingsDelete: async (_prId: string) => {
-        // No-op in browser mock.
-      },
-      rebaseResolutionStart: async () => ({
-        sessionId: "mock-rebase-session",
-        laneId: "lane-dashboard",
-        href: "/work?laneId=lane-dashboard&sessionId=mock-rebase-session",
-      }),
-      issueResolutionPreviewPrompt: async () => ({
-        title: "Resolve PR #1 issues",
-        prompt: "Mock PR issue resolver prompt",
-      }),
       aiResolutionInput: resolvedArg(undefined),
       aiResolutionStop: resolvedArg(undefined),
       onAiResolutionEvent: noop,
@@ -5864,25 +5687,9 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       }),
       setReviewThreadResolved: resolvedArg(undefined),
       reactToComment: resolvedArg(undefined),
-      launchIssueResolutionFromThread: resolvedArg({
-        sessionId: "mock-thread-resolution-session",
-        laneId: "lane-dashboard",
-        href: "/work?laneId=lane-dashboard&sessionId=mock-thread-resolution-session",
-      }),
       cleanupBranch: resolvedArg({ deleted: false, reason: "browser-mock" }),
       reorderQueuePrs: resolvedArg(undefined),
       aiResolutionGetSession: resolvedArg(null),
-      issueInventorySync: async (prId: string) => getIssueInventorySnapshot(prId),
-      issueInventoryGet: async (prId: string) => getIssueInventorySnapshot(prId),
-      issueInventoryGetNew: async (_prId: string) => [],
-      issueInventoryMarkFixed: resolvedArg2(undefined),
-      issueInventoryMarkDismissed: resolvedArg2(undefined),
-      issueInventoryMarkEscalated: resolvedArg2(undefined),
-      issueInventoryGetConvergence: async (prId: string) =>
-        getIssueInventorySnapshot(prId).convergence,
-      issueInventoryReset: async (prId: string) => {
-        MOCK_ISSUE_INVENTORY_BY_PR.set(prId, buildEmptyIssueInventorySnapshot(prId));
-      },
       getActionRuns: resolvedArg([]),
       getActivity: resolvedArg([]),
       addComment: resolvedArg({

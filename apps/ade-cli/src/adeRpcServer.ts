@@ -18,7 +18,6 @@ import {
   isCtoOnlyAdeAction,
   listAllowedAdeActionNames,
 } from "../../desktop/src/main/services/adeActions/registry";
-import { launchPrIssueResolutionChat, previewPrIssueResolutionPrompt } from "../../desktop/src/main/services/prs/prIssueResolver";
 import { runGit } from "../../desktop/src/main/services/git/git";
 import { resolvePathWithinRoot } from "../../desktop/src/main/services/shared/utils";
 import { getDefaultModelDescriptor } from "../../desktop/src/shared/modelRegistry";
@@ -29,10 +28,7 @@ import {
   getAdeAgentSkillRootsForPrompt,
   joinAdeAgentSkillRoots,
 } from "../../desktop/src/shared/agentSkillRoots";
-import {
-  getPrIssueResolutionAvailability,
-  isActionablePrIssueComment,
-} from "../../desktop/src/shared/prIssueResolution";
+import { isActionablePrIssueComment } from "../../desktop/src/shared/prIssueResolution";
 import {
   type LinearWorkflowConfig,
   type ComputerUseBackendStyle,
@@ -42,7 +38,7 @@ import {
   type MergeMethod,
   type AppNavigationRequest,
 } from "../../desktop/src/shared/types";
-import type { PrActionRun, PrCheck, PrComment, PrReviewThread } from "../../desktop/src/shared/types/prs";
+import type { PrCheck, PrComment, PrReviewThread } from "../../desktop/src/shared/types/prs";
 import type { CtoLinearQuickView } from "../../desktop/src/shared/types/cto";
 import type { LinearConnectionStatus } from "../../desktop/src/shared/types/linearSync";
 import { resolveAdeLayout } from "../../desktop/src/shared/adeLayout";
@@ -1201,52 +1197,6 @@ const TOOL_SPECS: ToolSpec[] = [
     }
   },
   {
-    name: "pr_refresh_issue_inventory",
-    description: "Refresh the current PR issue inventory, including checks, failing workflow runs, unresolved review threads, and advisory issue comments.",
-    inputSchema: {
-      type: "object",
-      required: ["prId"],
-      additionalProperties: false,
-      properties: {
-        prId: { type: "string", minLength: 1 }
-      }
-    }
-  },
-  {
-    name: "pr_preview_issue_resolution_prompt",
-    description: "Preview the ADE Path to Merge issue-resolution prompt for a PR without launching an agent.",
-    inputSchema: {
-      type: "object",
-      required: ["prId", "scope", "modelId"],
-      additionalProperties: false,
-      properties: {
-        prId: { type: "string", minLength: 1 },
-        scope: { type: "string", enum: ["checks", "comments", "both"] },
-        modelId: { type: "string", minLength: 1 },
-        reasoning: { type: "string" },
-        permissionMode: { type: "string", enum: ["read_only", "guarded_edit", "full_edit"] },
-        additionalInstructions: { type: "string" }
-      }
-    }
-  },
-  {
-    name: "pr_start_issue_resolution",
-    description: "Start a Path to Merge issue-resolution agent session for failing checks and/or review comments on a PR.",
-    inputSchema: {
-      type: "object",
-      required: ["prId", "scope", "modelId"],
-      additionalProperties: false,
-      properties: {
-        prId: { type: "string", minLength: 1 },
-        scope: { type: "string", enum: ["checks", "comments", "both"] },
-        modelId: { type: "string", minLength: 1 },
-        reasoning: { type: "string" },
-        permissionMode: { type: "string", enum: ["read_only", "guarded_edit", "full_edit"] },
-        additionalInstructions: { type: "string" }
-      }
-    }
-  },
-  {
     name: "pr_rerun_failed_checks",
     description: "Rerun failed CI checks for a pull request.",
     inputSchema: {
@@ -1698,8 +1648,6 @@ const READ_ONLY_TOOLS = new Set([
   "get_pr_health",
   "pr_get_checks",
   "pr_get_review_comments",
-  "pr_refresh_issue_inventory",
-  "pr_preview_issue_resolution_prompt",
   "get_cto_state",
   "listChats",
   "getChatStatus",
@@ -1755,7 +1703,6 @@ const MUTATION_TOOLS = new Set([
   "rebase_abort",
   "land_queue_next",
   "pr_rerun_failed_checks",
-  "pr_start_issue_resolution",
   "pr_reply_to_review_thread",
   "pr_resolve_review_thread",
   "spawnChat",
@@ -2250,64 +2197,6 @@ function summarizePrReviewComments(
   };
 }
 
-function summarizePrIssueInventory(args: {
-  checks: PrCheck[];
-  actionRuns: PrActionRun[];
-  reviewThreads: PrReviewThread[];
-  comments: PrComment[];
-}) {
-  const availability = getPrIssueResolutionAvailability(args.checks, args.reviewThreads, args.comments);
-  const failingRuns = args.actionRuns
-    .filter((run) => run.conclusion === "failure" || run.conclusion === "timed_out" || run.conclusion === "action_required")
-    .map((run) => ({
-      id: run.id,
-      name: run.name,
-      status: run.status,
-      conclusion: run.conclusion,
-      url: run.htmlUrl,
-      failingJobs: run.jobs
-        .filter((job) => job.conclusion === "failure" || job.status === "in_progress")
-        .map((job) => ({
-          id: job.id,
-          name: job.name,
-          status: job.status,
-          conclusion: job.conclusion,
-          failingSteps: job.steps
-            .filter((step) => step.conclusion === "failure" || step.status === "in_progress")
-            .map((step) => step.name),
-        })),
-    }));
-
-  return {
-    success: true,
-    summary: availability,
-    checks: args.checks.map(mapCheckToSummary),
-    failingWorkflowRuns: failingRuns,
-    reviewThreads: args.reviewThreads
-      .filter((thread) => !thread.isResolved && !thread.isOutdated)
-      .map((thread) => ({
-        id: thread.id,
-        path: thread.path,
-        line: thread.line,
-        url: thread.url,
-        comments: thread.comments.map((comment) => ({
-          id: comment.id,
-          author: comment.author,
-          body: comment.body,
-          url: comment.url,
-        })),
-      })),
-    issueComments: args.comments
-      .filter(isActionablePrIssueComment)
-      .map((comment) => ({
-        id: comment.id,
-        author: comment.author,
-        body: comment.body,
-        url: comment.url,
-      })),
-  };
-}
-
 function requireAgentChatService(runtime: AdeRuntime): NonNullable<AdeRuntime["agentChatService"]> {
   if (!runtime.agentChatService) {
     throw new JsonRpcError(
@@ -2642,7 +2531,6 @@ async function runCtoOperatorBridgeTool(
     linearDispatcherService: runtime.linearDispatcherService ?? null,
     flowPolicyService: runtime.flowPolicyService ?? null,
     prService: runtime.prService ?? null,
-    issueInventoryService: runtime.issueInventoryService,
     fileService: runtime.fileService ?? null,
     processService: runtime.processService ?? null,
     issueTracker: runtime.linearIssueTracker ?? null,
@@ -4840,89 +4728,6 @@ async function runTool(args: {
       prSvc.getReviewThreads(prId).catch(() => []),
     ]);
     return summarizePrReviewComments(prId, comments, reviews, checks, reviewThreads);
-  }
-
-  if (name === "pr_refresh_issue_inventory") {
-    const prId = assertNonEmptyString(toolArgs.prId, "prId");
-    const prSvc = requirePrService(runtime);
-    const [checks, actionRuns, reviewThreads, comments] = await Promise.all([
-      prSvc.getChecks(prId),
-      prSvc.getActionRuns(prId),
-      prSvc.getReviewThreads(prId),
-      prSvc.getComments(prId),
-    ]);
-    return summarizePrIssueInventory({
-      checks,
-      actionRuns,
-      reviewThreads,
-      comments,
-    });
-  }
-
-  if (name === "pr_preview_issue_resolution_prompt" || name === "pr_start_issue_resolution") {
-    const prId = assertNonEmptyString(toolArgs.prId, "prId");
-    const scope = assertNonEmptyString(toolArgs.scope, "scope");
-    if (scope !== "checks" && scope !== "comments" && scope !== "both") {
-      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "scope must be one of checks, comments, or both.");
-    }
-    const modelId = assertNonEmptyString(toolArgs.modelId, "modelId");
-    const permissionMode = asOptionalTrimmedString(toolArgs.permissionMode);
-    if (
-      permissionMode
-      && permissionMode !== "read_only"
-      && permissionMode !== "guarded_edit"
-      && permissionMode !== "full_edit"
-    ) {
-      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "permissionMode must be one of read_only, guarded_edit, or full_edit.");
-    }
-    const issueResolutionArgs = {
-      prId,
-      scope,
-      modelId,
-      reasoning: asOptionalTrimmedString(toolArgs.reasoning),
-      ...(permissionMode ? { permissionMode } : {}),
-      additionalInstructions: asOptionalTrimmedString(toolArgs.additionalInstructions),
-    };
-    const deps = {
-      prService: requirePrService(runtime),
-      laneService: runtime.laneService,
-      agentChatService: requireAgentChatService(runtime),
-      sessionService: runtime.sessionService,
-      issueInventoryService: runtime.issueInventoryService,
-    };
-
-    if (name === "pr_preview_issue_resolution_prompt") {
-      return await previewPrIssueResolutionPrompt(deps, issueResolutionArgs as any);
-    }
-
-    const result = await launchPrIssueResolutionChat(deps, issueResolutionArgs as any);
-    let convergenceRuntime: unknown = null;
-    try {
-      const status = runtime.issueInventoryService.getConvergenceStatus(prId);
-      convergenceRuntime = runtime.issueInventoryService.saveConvergenceRuntime(prId, {
-        currentRound: status.currentRound,
-        status: "running",
-        pollerStatus: "idle",
-        activeSessionId: result.sessionId,
-        activeLaneId: result.laneId,
-        activeHref: result.href,
-        lastStartedAt: nowIso(),
-        errorMessage: null,
-        pauseReason: null,
-      });
-    } catch (error) {
-      runtime.logger.warn("rpc.pr_issue_resolution_convergence_persist_failed", {
-        prId,
-        sessionId: result.sessionId,
-        laneId: result.laneId,
-        href: result.href,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-    return {
-      ...result,
-      convergenceRuntime,
-    };
   }
 
   if (name === "pr_rerun_failed_checks") {

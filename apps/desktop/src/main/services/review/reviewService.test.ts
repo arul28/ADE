@@ -430,7 +430,6 @@ function makeContextPacket(overrides: Partial<Record<string, any>> = {}) {
             logExcerpt: "AssertionError: fallback missing",
           },
         ],
-        issueInventory: [],
         sessionFailures: [
           {
             sessionId: "session-delta-1",
@@ -635,9 +634,6 @@ function createHarness(args: {
       listRuns: vi.fn().mockReturnValue([]),
       getLogTail: vi.fn().mockReturnValue(""),
       listSuites: vi.fn().mockReturnValue([]),
-    } as any,
-    issueInventoryService: {
-      getInventory: vi.fn().mockReturnValue({ prId: "pr-80", items: [], convergence: {}, runtime: {} }),
     } as any,
     prService: args.publicationTarget ? {
       getReviewSnapshot: vi.fn(),
@@ -1176,7 +1172,6 @@ describe("reviewService", () => {
           checks: [],
           suites: [],
           testRuns: [],
-          issueInventory: [],
           sessionFailures: [],
           signals: [],
         },

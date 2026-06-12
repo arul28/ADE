@@ -145,22 +145,6 @@ const IOS_REMOTE_COMMAND_ACTIONS = [
   "prs.getActionRuns",
   "prs.getActivity",
   "prs.getDeployments",
-  "prs.issueInventory.sync",
-  "prs.issueInventory.get",
-  "prs.issueInventory.getNew",
-  "prs.issueInventory.markFixed",
-  "prs.issueInventory.markDismissed",
-  "prs.issueInventory.markEscalated",
-  "prs.issueInventory.getConvergence",
-  "prs.issueInventory.reset",
-  "prs.convergenceState.get",
-  "prs.convergenceState.save",
-  "prs.convergenceState.delete",
-  "prs.pipelineSettings.get",
-  "prs.pipelineSettings.save",
-  "prs.pipelineSettings.delete",
-  "prs.pathToMerge.start",
-  "prs.pathToMerge.stop",
   "deeplinks.open",
 ] satisfies SyncRemoteCommandAction[];
 
@@ -282,59 +266,6 @@ function createMockPrService() {
       workflowCards: [],
       live: true,
     }),
-  } as any;
-}
-
-function createMockIssueInventoryService() {
-  const snapshot = {
-    prId: "pr-1",
-    items: [],
-    convergence: {
-      currentRound: 0,
-      maxRounds: 5,
-      issuesPerRound: [],
-      totalNew: 0,
-      totalFixed: 0,
-      totalDismissed: 0,
-      totalEscalated: 0,
-      totalSentToAgent: 0,
-      isConverging: false,
-      canAutoAdvance: false,
-    },
-    runtime: {
-      prId: "pr-1",
-      autoConvergeEnabled: false,
-      status: "idle",
-      pollerStatus: "idle",
-      currentRound: 0,
-      activeSessionId: null,
-      activeLaneId: null,
-      activeHref: null,
-      pauseReason: null,
-      errorMessage: null,
-      lastStartedAt: null,
-      lastPolledAt: null,
-      lastPausedAt: null,
-      lastStoppedAt: null,
-      createdAt: "2026-04-01T00:00:00Z",
-      updatedAt: "2026-04-01T00:00:00Z",
-    },
-  };
-  return {
-    syncFromPrData: vi.fn().mockReturnValue(snapshot),
-    getInventory: vi.fn().mockReturnValue(snapshot),
-    getNewItems: vi.fn().mockReturnValue([]),
-    markFixed: vi.fn(),
-    markDismissed: vi.fn(),
-    markEscalated: vi.fn(),
-    getConvergenceStatus: vi.fn().mockReturnValue(snapshot.convergence),
-    resetInventory: vi.fn(),
-    getConvergenceRuntime: vi.fn().mockReturnValue(snapshot.runtime),
-    saveConvergenceRuntime: vi.fn().mockReturnValue(snapshot.runtime),
-    resetConvergenceRuntime: vi.fn(),
-    getPipelineSettings: vi.fn().mockReturnValue({ autoMerge: false, mergeMethod: "repo_default", maxRounds: 5, onRebaseNeeded: "pause" }),
-    savePipelineSettings: vi.fn(),
-    deletePipelineSettings: vi.fn(),
   } as any;
 }
 
@@ -620,7 +551,6 @@ describe("createSyncRemoteCommandService", () => {
   let conflictService: ReturnType<typeof createMockConflictService>;
   let rebaseSuggestionService: ReturnType<typeof createMockRebaseSuggestionService>;
   let processService: ReturnType<typeof createMockProcessService>;
-  let issueInventoryService: ReturnType<typeof createMockIssueInventoryService>;
   let queueLandingService: ReturnType<typeof createMockQueueLandingService>;
   let service: ReturnType<typeof createSyncRemoteCommandService>;
 
@@ -642,12 +572,10 @@ describe("createSyncRemoteCommandService", () => {
     conflictService = createMockConflictService();
     rebaseSuggestionService = createMockRebaseSuggestionService();
     processService = createMockProcessService();
-    issueInventoryService = createMockIssueInventoryService();
     queueLandingService = createMockQueueLandingService();
     service = createSyncRemoteCommandService({
       laneService,
       prService,
-      issueInventoryService,
       queueLandingService,
       ptyService,
       sessionService,
@@ -807,7 +735,6 @@ describe("createSyncRemoteCommandService", () => {
       return createSyncRemoteCommandService({
         laneService,
         prService,
-        issueInventoryService,
         queueLandingService,
         ptyService,
         sessionService,
@@ -999,7 +926,6 @@ describe("createSyncRemoteCommandService", () => {
       const withRuntimeCleanup = createSyncRemoteCommandService({
         laneService,
         prService,
-        issueInventoryService,
         queueLandingService,
         ptyService,
         sessionService,
@@ -1321,7 +1247,6 @@ describe("createSyncRemoteCommandService", () => {
       return createSyncRemoteCommandService({
         laneService,
         prService,
-        issueInventoryService,
         queueLandingService,
         ptyService,
         sessionService,

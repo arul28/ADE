@@ -468,7 +468,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade operations status | wait                  Poll operation/test/chat/run status
     $ ade diff changes | file | patch               Inspect lane diffs (including raw git patch text)
     $ ade files tree | read | write | search        Read and edit lane workspaces
-    $ ade prs list | create | path-to-merge         Manage PRs, queues, and Path to Merge repair rounds
+    $ ade prs list | create | show | checks          Manage PRs, queues, and GitHub integration
     $ ade run defs | ps | start | logs              Manage Run tab process definitions and runtime
     $ ade shell start | write | resize | close      Launch and control tracked shell sessions
     $ ade terminal list | read | write | signal     Control the active in-chat terminal
@@ -513,7 +513,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade git stage --lane <lane> src/index.ts
     $ ade git commit --lane <lane> -m "Fix login redirect"
     $ ade prs create --lane <lane> --base main --draft
-    $ ade prs path-to-merge <pr-id-or-number-or-url> --model <model> --max-rounds 3 --no-auto-merge
+    $ ade prs checks <pr-id-or-number-or-url> --text
     $ ade proof record --seconds 20
     $ ade ios-sim apps --text
     $ ade ios-sim launch --target <id> --text
@@ -530,7 +530,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     JSON value fields:
       $ ade actions run pr.setLabels --arg prId=123 --arg-json 'labels=["ready","ship"]'
     Multi-parameter service call:
-      $ ade actions run issue_inventory.savePipelineSettings --args-list-json '["pr-1",{"maxRounds":3}]'
+      $ ade actions run pr.submitReview --args-list-json '["pr-1",{"event":"APPROVE"}]'
     $ ade actions list --text
     $ ade actions list --domain pr --text
     $ ade actions run <domain.action> --input-json '{"key":"value"}'
@@ -1262,11 +1262,6 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade prs comments <pr> --text                  Show unresolved review work
     $ ade prs github-snapshot --include-external-closed
                                                     Include closed external PR history in the GitHub snapshot
-    $ ade prs inventory <pr>                        Refresh ADE issue inventory
-    $ ade prs path-to-merge <pr> --model <model> --max-rounds 3 --no-auto-merge
-    $ ade prs path-to-merge <pr> --model <model> --conflict-strategy auto --force-finalize conditional
-    $ ade prs path-to-merge <pr> --model <model> --no-early-merge-on-green
-    $ ade prs pipeline <pr> save --conflict-strategy rebase --early-merge-on-green
     $ ade prs resolve-thread <pr> --thread <id>     Resolve a review thread
     $ ade prs labels set <pr> ready-to-merge        Replace labels
     $ ade prs reviewers request <pr> alice bob      Request reviewers
@@ -1770,7 +1765,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
     --arg parses true/false/null/numbers; --arg-json parses a JSON value:
       $ ade actions run pr.setLabels --arg prId=123 --arg-json 'labels=["ready","ship"]'
     argsList is for service methods with multiple positional parameters:
-      $ ade actions run issue_inventory.savePipelineSettings --args-list-json '["pr-1",{"maxRounds":3}]'
+      $ ade actions run pr.submitReview --args-list-json '["pr-1",{"event":"APPROVE"}]'
     $ ade actions list --text                       Domain-grouped action catalog
     $ ade actions list --domain git --text          Narrow the catalog
     $ ade actions run <domain.action> --input-json '{"key":"value"}'
@@ -2684,125 +2679,6 @@ function deriveLinearKickoffPrompt(issue: JsonObject): string {
   ];
   if (url) lines.push(`Issue: ${url}`);
   return lines.join("\n");
-}
-
-/**
- * Parse the PR pipeline-settings flags shared by `prs path-to-merge` and
- * `prs pipeline` subcommands. Returns a partial `PipelineSettings` patch
- * suitable for `issue_inventory.savePipelineSettings`. Only fields the user
- * explicitly passed are included so the patch never clobbers other settings.
- *
- * The orchestrator reads these from saved settings (not StartPathToMergeArgs),
- * so the path-to-merge command must save them before launching the loop.
- */
-function readPipelineSettingsPatch(args: string[]): JsonObject {
-  const patch: JsonObject = {};
-
-  const maxRounds = readIntOption(args, ["--max-rounds", "--rounds"]);
-  if (maxRounds != null) patch.maxRounds = maxRounds;
-
-  const autoMerge = readFlag(args, ["--auto-merge"]);
-  const noAutoMerge = readFlag(args, ["--no-auto-merge"]);
-  if (autoMerge || noAutoMerge) patch.autoMerge = autoMerge && !noAutoMerge;
-
-  const mergeMethod = readValue(args, ["--merge-method"]);
-  if (mergeMethod) patch.mergeMethod = mergeMethod;
-
-  const conflictStrategy = readValue(args, ["--conflict-strategy"]);
-  if (conflictStrategy) {
-    if (
-      conflictStrategy !== "pause" &&
-      conflictStrategy !== "rebase" &&
-      conflictStrategy !== "merge" &&
-      conflictStrategy !== "auto"
-    ) {
-      throw new CliUsageError(
-        "--conflict-strategy must be one of pause, rebase, merge, or auto.",
-      );
-    }
-    patch.conflictStrategy = conflictStrategy;
-  }
-
-  const forceFinalize = readValue(args, ["--force-finalize"]);
-  if (forceFinalize) {
-    if (
-      forceFinalize !== "off" &&
-      forceFinalize !== "conditional" &&
-      forceFinalize !== "unconditional"
-    ) {
-      throw new CliUsageError(
-        "--force-finalize must be one of off, conditional, or unconditional.",
-      );
-    }
-    patch.forceFinalizeMode = forceFinalize;
-    patch.atCapPolicy =
-      forceFinalize === "off"
-        ? "stop"
-        : forceFinalize === "unconditional"
-          ? "force_merge"
-          : "ci_retry_once";
-  }
-
-  const requireNoCi = readFlag(args, ["--force-finalize-require-no-ci"]);
-  const allowCi = readFlag(args, ["--force-finalize-allow-ci"]);
-  if (requireNoCi || allowCi) {
-    patch.forceFinalizeRequireNoCiFailures = requireNoCi && !allowCi;
-  }
-
-  const earlyMergeOn = readFlag(args, ["--early-merge-on-green"]);
-  const earlyMergeOff = readFlag(args, ["--no-early-merge-on-green"]);
-  if (earlyMergeOn || earlyMergeOff) {
-    patch.earlyMergeOnGreen = earlyMergeOn && !earlyMergeOff;
-  }
-
-  const atCapPolicy = readValue(args, ["--at-cap-policy"]);
-  if (atCapPolicy) {
-    if (
-      atCapPolicy !== "stop" &&
-      atCapPolicy !== "wait_for_ci" &&
-      atCapPolicy !== "ci_retry_once" &&
-      atCapPolicy !== "ci_retry_loop" &&
-      atCapPolicy !== "force_merge"
-    ) {
-      throw new CliUsageError(
-        "--at-cap-policy must be one of stop, wait_for_ci, ci_retry_once, ci_retry_loop, or force_merge.",
-      );
-    }
-    patch.atCapPolicy = atCapPolicy;
-    patch.forceFinalizeMode =
-      atCapPolicy === "stop"
-        ? "off"
-        : atCapPolicy === "force_merge"
-          ? "unconditional"
-          : "conditional";
-  }
-
-  const atCapWaitMinutes = readIntOption(args, ["--at-cap-wait-minutes"]);
-  if (atCapWaitMinutes != null) {
-    if (atCapWaitMinutes < 1)
-      throw new CliUsageError("--at-cap-wait-minutes must be at least 1.");
-    patch.atCapWaitMinutes = atCapWaitMinutes;
-  }
-
-  const atCapCiRetryMax = readIntOption(args, ["--at-cap-ci-retry-max"]);
-  if (atCapCiRetryMax != null) {
-    if (atCapCiRetryMax < 1)
-      throw new CliUsageError("--at-cap-ci-retry-max must be at least 1.");
-    patch.atCapCiRetryMax = atCapCiRetryMax;
-  }
-
-  const forceMergeConfirm = readFlag(args, [
-    "--force-merge-requires-confirmation",
-  ]);
-  const noForceMergeConfirm = readFlag(args, [
-    "--no-force-merge-requires-confirmation",
-  ]);
-  if (forceMergeConfirm || noForceMergeConfirm) {
-    patch.forceMergeRequiresConfirmation =
-      forceMergeConfirm && !noForceMergeConfirm;
-  }
-
-  return patch;
 }
 
 function parseCliArgs(argv: string[]): ParsedCli {
@@ -4901,123 +4777,6 @@ function buildPrPlan(args: string[]): CliPlan {
     };
   }
 
-  if (
-    sub === "path-to-merge" ||
-    sub === "resolve" ||
-    sub === "issue-resolution"
-  ) {
-    let mode = "start";
-    let positionalPrId = firstPositional(args);
-    if (positionalPrId === "start" || positionalPrId === "preview") {
-      mode = positionalPrId;
-      positionalPrId = firstPositional(args);
-    }
-    const id = requireValue(prId ?? positionalPrId, "prId");
-    const scope = readValue(args, ["--scope"]) ?? "both";
-    const modelId = requireValue(
-      readValue(args, ["--model", "--model-id"]),
-      "--model",
-    );
-    const input: JsonObject = {
-      prId: id,
-      scope,
-      modelId,
-    };
-    maybePut(input, "reasoning", readValue(args, ["--reasoning"]));
-    maybePut(
-      input,
-      "permissionMode",
-      readValue(args, ["--permission-mode", "--permissions"]),
-    );
-    maybePut(
-      input,
-      "additionalInstructions",
-      readValue(args, ["--instructions", "--additional-instructions"]),
-    );
-    // Path to Merge orchestrator reads conflictStrategy / forceFinalizeMode /
-    // earlyMergeOnGreen / autoMerge / maxRounds / mergeMethod from saved
-    // PipelineSettings, not from the launch args. Persist any user-supplied
-    // overrides before the resolver step so the loop picks them up.
-    const pipelinePatch = readPipelineSettingsPatch(args);
-    const steps: InvocationStep[] = [];
-    if (Object.keys(pipelinePatch).length > 0) {
-      steps.push(
-        actionArgsListStep(
-          "pipelineSettings",
-          "issue_inventory",
-          "savePipelineSettings",
-          [id, pipelinePatch],
-        ),
-      );
-    }
-    if (mode === "preview") {
-      steps.push(
-        actionCallStep(
-          "result",
-          "pr_preview_issue_resolution_prompt",
-          collectGenericObjectArgs(args, input),
-        ),
-      );
-    } else {
-      steps.push(
-        actionStep(
-          "result",
-          "path_to_merge",
-          "startPathToMerge",
-          collectGenericObjectArgs(args, input),
-        ),
-      );
-    }
-    return { kind: "execute", label: `PR path-to-merge ${mode}`, steps };
-  }
-
-  if (sub === "pipeline") {
-    const mode = firstPositional(args) ?? "get";
-    const id = requireValue(prId ?? firstPositional(args), "prId");
-    if (mode === "get")
-      return {
-        kind: "execute",
-        label: "PR pipeline",
-        steps: [
-          actionArgsListStep(
-            "result",
-            "issue_inventory",
-            "getPipelineSettings",
-            [id],
-          ),
-        ],
-      };
-    if (mode === "delete")
-      return {
-        kind: "execute",
-        label: "PR pipeline delete",
-        steps: [
-          actionArgsListStep(
-            "result",
-            "issue_inventory",
-            "deletePipelineSettings",
-            [id],
-          ),
-        ],
-      };
-    const settings = collectGenericObjectArgs(
-      args,
-      readPipelineSettingsPatch(args),
-    );
-    return {
-      kind: "execute",
-      label: "PR pipeline save",
-      steps: [
-        actionArgsListStep(
-          "result",
-          "issue_inventory",
-          "savePipelineSettings",
-          [id, settings],
-        ),
-      ],
-    };
-  }
-
   if (sub === "queue") {
     const mode = firstPositional(args) ?? "create";
     if (mode === "state" || mode === "list") {
@@ -5153,126 +4912,6 @@ function buildPrPlan(args: string[]): CliPlan {
       kind: "execute",
       label: `integration ${mode}`,
       steps: [actionCallStep("result", tool, collectGenericObjectArgs(args))],
-    };
-  }
-
-  if (sub === "inventory") {
-    const first = firstPositional(args);
-    const knownModes = new Set([
-      "refresh",
-      "get",
-      "new",
-      "mark-sent",
-      "mark-fixed",
-      "dismiss",
-      "escalate",
-      "reset",
-    ]);
-    const mode = first && knownModes.has(first) ? first : "refresh";
-    const positionalPrId = mode === "refresh" ? first : firstPositional(args);
-    if (mode === "refresh") {
-      return {
-        kind: "execute",
-        label: "PR inventory",
-        steps: [
-          actionCallStep(
-            "result",
-            "pr_refresh_issue_inventory",
-            withPr({ prId: requireValue(prId ?? positionalPrId, "prId") }),
-          ),
-        ],
-      };
-    }
-    const actionByMode: Record<string, string> = {
-      get: "getInventory",
-      new: "getNewItems",
-      "mark-sent": "markSentToAgent",
-      "mark-fixed": "markFixed",
-      dismiss: "markDismissed",
-      escalate: "markEscalated",
-      reset: "resetInventory",
-    };
-    const action = actionByMode[mode];
-    if (!action)
-      throw new CliUsageError(
-        "prs inventory supports get, new, mark-sent, mark-fixed, dismiss, escalate, or reset.",
-      );
-    const id = requireValue(prId ?? positionalPrId, "prId");
-    const itemIds = args.filter((entry) => !entry.startsWith("-"));
-    const argsListByMode: Record<string, unknown[]> = {
-      get: [id],
-      new: [id],
-      "mark-sent": [
-        id,
-        itemIds,
-        readValue(args, ["--session", "--session-id"]) ?? "",
-        readIntOption(args, ["--round"], 0) ?? 0,
-      ],
-      "mark-fixed": [id, itemIds],
-      dismiss: [id, itemIds, readValue(args, ["--reason"]) ?? ""],
-      escalate: [id, itemIds],
-      reset: [id],
-    };
-    return {
-      kind: "execute",
-      label: `PR inventory ${mode}`,
-      steps: [
-        actionArgsListStep(
-          "result",
-          "issue_inventory",
-          action,
-          argsListByMode[mode] ?? [id],
-        ),
-      ],
-    };
-  }
-
-  if (sub === "convergence") {
-    const mode = firstPositional(args) ?? "status";
-    const actionByMode: Record<string, string> = {
-      status: "getConvergenceStatus",
-      runtime: "getConvergenceRuntime",
-      get: "getConvergenceRuntime",
-      save: "saveConvergenceRuntime",
-      reset: "resetConvergenceRuntime",
-      reconcile: "reconcileConvergenceSessionExit",
-    };
-    const action = actionByMode[mode];
-    if (!action)
-      throw new CliUsageError(
-        "prs convergence supports status, runtime, save, reset, or reconcile.",
-      );
-    const id = requireValue(prId ?? firstPositional(args), "prId");
-    if (mode === "save") {
-      return {
-        kind: "execute",
-        label: "PR convergence save",
-        steps: [
-          actionArgsListStep("result", "issue_inventory", action, [
-            id,
-            collectGenericObjectArgs(args),
-          ]),
-        ],
-      };
-    }
-    if (mode === "reconcile") {
-      return {
-        kind: "execute",
-        label: "PR convergence reconcile",
-        steps: [
-          actionStep(
-            "result",
-            "issue_inventory",
-            action,
-            collectGenericObjectArgs(args, { prId: id }),
-          ),
-        ],
-      };
-    }
-    return {
-      kind: "execute",
-      label: `PR convergence ${mode}`,
-      steps: [actionArgsListStep("result", "issue_inventory", action, [id])],
     };
   }
 
@@ -11268,7 +10907,7 @@ function buildReadinessSnapshot(args: {
     .map(([key, check]) => `${key}: ${check.nextAction}`);
   if (!attachedSocketAvailable) {
     recommendations.unshift(
-      "runtime: Start ADE runtime or remove --headless when Work chat, Path to Merge, Run tab state, or shared proof state is required.",
+      "runtime: Start ADE runtime or remove --headless when Work chat, Run tab state, or shared proof state is required.",
     );
   }
   const projectInitialized = fs.existsSync(adeDir);

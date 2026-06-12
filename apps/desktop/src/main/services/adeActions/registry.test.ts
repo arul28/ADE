@@ -215,11 +215,6 @@ describe("listAllowedAdeActionNames", () => {
 });
 
 describe("isCtoOnlyAdeAction", () => {
-  it("keeps Path to Merge actions CTO-only", () => {
-    expect(isCtoOnlyAdeAction("path_to_merge", "startPathToMerge")).toBe(true);
-    expect(isCtoOnlyAdeAction("path_to_merge", "stopPathToMerge")).toBe(true);
-  });
-
   it("keeps AI credential mutations CTO-only", () => {
     expect(isCtoOnlyAdeAction("ai", "storeApiKey")).toBe(true);
     expect(isCtoOnlyAdeAction("ai", "deleteApiKey")).toBe(true);

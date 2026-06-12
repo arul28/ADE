@@ -1771,26 +1771,6 @@ export const ADE_ACTION_SCHEMAS: readonly AdeActionSchema[] = [
   },
 
   // ---------------------------------------------------------------------------
-  // issue_inventory
-  // ---------------------------------------------------------------------------
-  { domain: "issue_inventory", action: "deletePipelineSettings", label: "Delete pipeline settings", description: "Advanced action — pass arguments as JSON.", params: [] },
-  { domain: "issue_inventory", action: "getConvergenceRuntime", label: "Get convergence runtime", description: "Advanced action — pass arguments as JSON.", params: [] },
-  { domain: "issue_inventory", action: "getConvergenceStatus", label: "Get convergence status", description: "Advanced action — pass arguments as JSON.", params: [] },
-  { domain: "issue_inventory", action: "getInventory", label: "Get issue inventory", description: "Advanced action — pass arguments as JSON.", params: [] },
-  { domain: "issue_inventory", action: "getNewItems", label: "Get new inventory items", description: "Advanced action — pass arguments as JSON.", params: [] },
-  { domain: "issue_inventory", action: "getPipelineSettings", label: "Get pipeline settings", description: "Advanced action — pass arguments as JSON.", params: [] },
-  { domain: "issue_inventory", action: "markDismissed", label: "Mark inventory dismissed", description: "Advanced action — pass arguments as JSON.", params: [] },
-  { domain: "issue_inventory", action: "markEscalated", label: "Mark inventory escalated", description: "Advanced action — pass arguments as JSON.", params: [] },
-  { domain: "issue_inventory", action: "markFixed", label: "Mark inventory fixed", description: "Advanced action — pass arguments as JSON.", params: [] },
-  { domain: "issue_inventory", action: "markSentToAgent", label: "Mark inventory sent to agent", description: "Advanced action — pass arguments as JSON.", params: [] },
-  { domain: "issue_inventory", action: "reconcileConvergenceSessionExit", label: "Reconcile convergence session exit", description: "Advanced action — pass arguments as JSON.", params: [] },
-  { domain: "issue_inventory", action: "resetConvergenceRuntime", label: "Reset convergence runtime", description: "Advanced action — pass arguments as JSON.", params: [] },
-  { domain: "issue_inventory", action: "resetInventory", label: "Reset inventory", description: "Advanced action — pass arguments as JSON.", params: [] },
-  { domain: "issue_inventory", action: "saveConvergenceRuntime", label: "Save convergence runtime", description: "Advanced action — pass arguments as JSON.", params: [] },
-  { domain: "issue_inventory", action: "savePipelineSettings", label: "Save pipeline settings", description: "Advanced action — pass arguments as JSON.", params: [] },
-  { domain: "issue_inventory", action: "syncFromPrData", label: "Sync inventory from PR data", description: "Advanced action — pass arguments as JSON.", params: [] },
-
-  // ---------------------------------------------------------------------------
   // flow_policy
   // ---------------------------------------------------------------------------
   { domain: "flow_policy", action: "diffPolicyPaths", label: "Diff policy paths", description: "Advanced action — pass arguments as JSON.", params: [] },

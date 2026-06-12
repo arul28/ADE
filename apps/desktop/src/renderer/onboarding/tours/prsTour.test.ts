@@ -26,7 +26,6 @@ describe("prsTour", () => {
     // anchored to the always-visible list / create button do NOT need one.
     const detailDrawerStepTitles = [
       "Inside a PR",
-      "What's blocking me?",
       "Automated tests",
       "Stacked PRs",
       "Closing the PR",
@@ -55,7 +54,6 @@ describe("prsTour", () => {
     // [data-tour="prs.detailDrawer"] as a secondary fallback, so the spotlight
     // lands on the drawer container instead of failing to anchor.
     const stepsWithDrawerFallback = [
-      "What's blocking me?",
       "Automated tests",
       "Stacked PRs",
       "Closing the PR",
@@ -69,28 +67,6 @@ describe("prsTour", () => {
     }
   });
 
-  it("dispatches ade:tour-pr-detail-tab with `convergence` when entering What's blocking me?", async () => {
-    const step = findStep("What's blocking me?");
-    expect(step.beforeEnter).toBeTruthy();
-
-    const events: Array<{ type: string; detail: unknown }> = [];
-    const handler = (event: Event) => {
-      events.push({ type: event.type, detail: (event as CustomEvent).detail });
-    };
-    window.addEventListener("ade:tour-pr-detail-tab", handler);
-    try {
-      const actions = await step.beforeEnter!();
-      expect(Array.isArray(actions)).toBe(true);
-      const ipcAction = (actions as any[]).find((entry) => entry.type === "ipc");
-      expect(ipcAction, "expected an ipc action").toBeTruthy();
-      await ipcAction.call();
-      expect(events).toEqual([
-        { type: "ade:tour-pr-detail-tab", detail: "convergence" },
-      ]);
-    } finally {
-      window.removeEventListener("ade:tour-pr-detail-tab", handler);
-    }
-  });
 
   it("dispatches ade:tour-pr-detail-tab with `checks` when entering Automated tests", async () => {
     const step = findStep("Automated tests");
