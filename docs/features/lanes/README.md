@@ -186,9 +186,10 @@ and reparent operations. Two startup repair routines normalize older data:
   that share one managed worktree path (artifacts of the historical
   create/recover race, see gotchas). Keeps the row whose id matches the
   8-char suffix embedded in the worktree directory name (the lane that
-  created the worktree), falling back to the oldest row; sessions and
-  child lanes on the duplicate are re-pointed to the keeper before the
-  duplicate cascades away. Runs in the `list()` repair block alongside
+  created the worktree), falling back to the oldest row; sessions, child
+  lanes, and Linear issue links on the duplicate are re-pointed to the
+  keeper before the duplicate cascades away, so no user-visible data is
+  lost. Runs in the `list()` repair block alongside
   `recoverManagedWorktreeRows`.
 
 Both routines run at `createLaneService()` time.

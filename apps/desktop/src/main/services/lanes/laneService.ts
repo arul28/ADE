@@ -324,6 +324,18 @@ function parseGitWorktreePorcelain(stdout: string): GitWorktreeInfo[] {
   return worktrees;
 }
 
+/**
+ * The trailing segment of a managed worktree directory name is the 8-char
+ * prefix of the lane id that created it (`createWorktreeLane` builds the path
+ * as `${slug}-${laneId.slice(0, 8)}`). This is the canonical "which lane owns
+ * this worktree" signal used to pick the survivor when duplicate rows share a
+ * path. Returns "" for paths without a hyphen suffix (e.g. attached lanes).
+ */
+function worktreeDirSuffix(worktreePath: string): string {
+  const basename = path.basename(worktreePath);
+  return basename.includes("-") ? basename.split("-").pop() ?? "" : "";
+}
+
 function inferLaneNameFromManagedWorktree(candidate: UnregisteredLaneCandidate): string {
   const basename = path.basename(candidate.path).trim();
   const branchSlug = candidate.branch.trim().replace(/^ade\//, "");
@@ -1944,13 +1956,37 @@ export function createLaneService({
   };
 
   /**
+   * Move a duplicate lane's Linear issue rows onto the keeper. Rows for an
+   * issue the keeper already maps are dropped (the keeper's mapping wins);
+   * the rest are re-pointed. Used by the duplicate-lane repair so a Linear
+   * link that landed on the soon-to-be-deleted row is not lost.
+   */
+  const reassignLaneLinearLinksToKeeper = (
+    table: "lane_linear_issues" | "lane_linear_issue_links",
+    keeperId: string,
+    duplicateId: string,
+  ): void => {
+    db.run(
+      `delete from ${table} where lane_id = ? and project_id = ? and issue_id in (
+         select issue_id from ${table} where lane_id = ? and project_id = ?
+       )`,
+      [duplicateId, projectId, keeperId, projectId],
+    );
+    db.run(
+      `update ${table} set lane_id = ? where lane_id = ? and project_id = ?`,
+      [keeperId, duplicateId, projectId],
+    );
+  };
+
+  /**
    * Remove duplicate lane rows that share a managed worktree path. These are
    * artifacts of the create/recover race: a lanes.list adopted a half-created
    * worktree before the creating call inserted its own row. The keeper is the
-   * row whose id matches the 8-char suffix embedded in the worktree directory
-   * name (the lane that actually created the worktree), falling back to the
-   * oldest row. Sessions and child lanes on the duplicate are re-pointed to
-   * the keeper before the duplicate row cascades away.
+   * row whose id matches the suffix embedded in the worktree directory name
+   * (the lane that actually created the worktree — see `worktreeDirSuffix`),
+   * falling back to the oldest row. Sessions, child lanes, and Linear issue
+   * links on the duplicate are re-pointed to the keeper before the duplicate
+   * row cascades away, so no user-visible data is lost.
    */
   const repairDuplicateManagedWorktreeLanes = (): void => {
     const rows = db.all<{ id: string; worktree_path: string; created_at: string }>(
@@ -1980,9 +2016,9 @@ export function createLaneService({
       const sorted = [...group].sort(
         (a, b) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id)
       );
-      const dirSuffix = path.basename(pathKey).split("-").pop() ?? "";
+      const dirSuffix = worktreeDirSuffix(pathKey);
       const keeper =
-        (dirSuffix.length > 0 && sorted.find((row) => row.id.startsWith(dirSuffix))) || sorted[0];
+        sorted.find((row) => dirSuffix.length > 0 && row.id.startsWith(dirSuffix)) ?? sorted[0];
 
       for (const duplicate of sorted) {
         if (duplicate.id === keeper.id) continue;
@@ -2000,6 +2036,12 @@ export function createLaneService({
             duplicate.id,
             projectId,
           ]);
+          // Re-point Linear issue links to the keeper, dropping only those the
+          // keeper already carries for the same issue so we never double up a
+          // (lane, issue) mapping. `cleanupLaneDatabaseRows` then deletes any
+          // remaining duplicate-scoped rows.
+          reassignLaneLinearLinksToKeeper("lane_linear_issues", keeper.id, duplicate.id);
+          reassignLaneLinearLinksToKeeper("lane_linear_issue_links", keeper.id, duplicate.id);
           cleanupLaneDatabaseRows(duplicate.id);
           db.run("commit");
           removedCount += 1;
@@ -2477,49 +2519,64 @@ export function createLaneService({
         linkExistingDependencyInstalls(worktreePath);
 
         // Absorb any row another process raced onto this path/branch while the
-        // checkout ran. The path and branch embed this lane's fresh id suffix
-        // (and `worktree add -b` proved the branch was free), so a matching row
-        // can only be a recovery artifact adopted from the half-created worktree.
-        const racedAdoptionRows = db.all<{ id: string }>(
-          `
-            select id from lanes
-            where project_id = ?
-              and id != ?
-              and lane_type = 'worktree'
-              and is_edit_protected = 0
-              and (worktree_path = ? or branch_ref = ?)
-          `,
-          [projectId, laneId, worktreePath, branchRef]
-        );
-        for (const raced of racedAdoptionRows) {
-          logger.info("laneService.absorbed_raced_adoption_row", { laneId, racedLaneId: raced.id });
-          cleanupLaneDatabaseRows(raced.id);
-        }
-
+        // checkout ran (the path and branch embed this lane's fresh id suffix,
+        // and `worktree add -b` proved the branch was free, so a matching row
+        // can only be a recovery artifact adopted from the half-created
+        // worktree) and insert the canonical row in one transaction, so a crash
+        // can never leave the worktree with the artifact deleted but no keeper.
         const laneColor = allocateLaneColorForProject();
-        db.run(
-          `
-            insert into lanes(
-              id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path,
-              attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, folder, runtime_placement, status, created_at, archived_at
-            )
-            values(?, ?, ?, ?, 'worktree', ?, ?, ?, null, 0, ?, ?, null, null, ?, ?, 'active', ?, null)
-          `,
-          [
-            laneId,
-            projectId,
-            args.name,
-            args.description ?? null,
-            args.baseRef,
-            branchRef,
-            worktreePath,
-            args.parentLaneId,
-            laneColor,
-            args.folder ?? null,
-            runtimePlacement,
-            now
-          ]
-        );
+        db.run("begin immediate");
+        try {
+          const racedAdoptionRows = db.all<{ id: string }>(
+            `
+              select id from lanes
+              where project_id = ?
+                and id != ?
+                and lane_type = 'worktree'
+                and is_edit_protected = 0
+                and (worktree_path = ? or branch_ref = ?)
+            `,
+            [projectId, laneId, worktreePath, branchRef]
+          );
+          for (const raced of racedAdoptionRows) {
+            logger.info("laneService.absorbed_raced_adoption_row", { laneId, racedLaneId: raced.id });
+            cleanupLaneDatabaseRows(raced.id);
+          }
+
+          db.run(
+            `
+              insert into lanes(
+                id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path,
+                attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, folder, runtime_placement, status, created_at, archived_at
+              )
+              values(?, ?, ?, ?, 'worktree', ?, ?, ?, null, 0, ?, ?, null, null, ?, ?, 'active', ?, null)
+            `,
+            [
+              laneId,
+              projectId,
+              args.name,
+              args.description ?? null,
+              args.baseRef,
+              branchRef,
+              worktreePath,
+              args.parentLaneId,
+              laneColor,
+              args.folder ?? null,
+              runtimePlacement,
+              now
+            ]
+          );
+          db.run("commit");
+        } catch (txError) {
+          try {
+            db.run("rollback");
+          } catch {
+            // surface the original error below
+          }
+          throw txError;
+        }
+        // Linear issue upsert manages its own transaction, so it must run
+        // after the absorb+insert commit (SQLite has no nested transactions).
         linearIssue = args.linearIssue
           ? upsertLaneLinearIssue(laneId, args.linearIssue, branchRef)
           : null;

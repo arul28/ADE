@@ -1277,6 +1277,16 @@ describe("laneService list repairs", () => {
         `,
         ["session-on-dup", artifactId, "shell", "2026-06-11T17:50:00.000Z", "/tmp/transcript.jsonl", "running"],
       );
+      // A Linear issue link the user attached while the duplicate (artifact)
+      // row was the one surfaced in the Lanes tab must survive onto the keeper.
+      db.run(
+        `
+          insert into lane_linear_issue_links(
+            id, project_id, lane_id, issue_id, issue_json, role, source, created_at, updated_at
+          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `,
+        ["link-on-dup", "proj-repair-dup", artifactId, "ISS-99", "{}", "worked", "chat_attach", "2026-06-11T17:55:00.000Z", "2026-06-11T17:55:00.000Z"],
+      );
 
       vi.mocked(runGitOrThrow).mockImplementation(async (args: string[]) => {
         if (args[0] === "worktree" && args[1] === "list") {
@@ -1309,6 +1319,9 @@ describe("laneService list repairs", () => {
       expect(lanes.find((lane) => lane.id === "lane-dup-child")?.parentLaneId).toBe(keeperId);
       expect(
         db.get<{ lane_id: string }>("select lane_id from terminal_sessions where id = ?", ["session-on-dup"])?.lane_id,
+      ).toBe(keeperId);
+      expect(
+        db.get<{ lane_id: string }>("select lane_id from lane_linear_issue_links where id = ?", ["link-on-dup"])?.lane_id,
       ).toBe(keeperId);
     } finally {
       db.close();
