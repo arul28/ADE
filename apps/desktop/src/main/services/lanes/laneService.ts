@@ -1818,6 +1818,28 @@ export function createLaneService({
   const normalizedProjectRoot = normAbs(projectRoot);
   const normalizedWorktreesDir = normAbs(worktreesDir);
 
+  // Worktree paths / branch refs with an in-flight `git worktree add`. A new
+  // worktree is visible to `git worktree list` before its lane row is
+  // inserted, so recovery/adoption surfaces must skip these or a concurrent
+  // lanes.list adopts the half-created worktree as a duplicate lane.
+  const pendingWorktreeCreationPaths = new Set<string>();
+  const pendingWorktreeCreationBranches = new Set<string>();
+
+  const trackPendingWorktreeCreation = (worktreePath: string, branchRef: string): (() => void) => {
+    const pathKey = normAbs(worktreePath);
+    const branchKey = normalizeBranchKey(branchRef);
+    pendingWorktreeCreationPaths.add(pathKey);
+    if (branchKey) pendingWorktreeCreationBranches.add(branchKey);
+    return () => {
+      pendingWorktreeCreationPaths.delete(pathKey);
+      if (branchKey) pendingWorktreeCreationBranches.delete(branchKey);
+    };
+  };
+
+  const isPendingWorktreeCreation = (worktreePath: string, branchRef: string): boolean =>
+    pendingWorktreeCreationPaths.has(normAbs(worktreePath)) ||
+    (normalizeBranchKey(branchRef).length > 0 && pendingWorktreeCreationBranches.has(normalizeBranchKey(branchRef)));
+
   const getGitTopLevel = async (cwd: string): Promise<string> => {
     const top = await runGitOrThrow(["rev-parse", "--path-format=absolute", "--show-toplevel"], { cwd, timeoutMs: 10_000 });
     return normAbs(top.trim());
@@ -1853,7 +1875,11 @@ export function createLaneService({
     );
 
     return worktrees.filter(
-      (wt) => !wt.isBare && wt.path !== normalizedProjectRoot && !registeredPaths.has(wt.path)
+      (wt) =>
+        !wt.isBare &&
+        wt.path !== normalizedProjectRoot &&
+        !registeredPaths.has(wt.path) &&
+        !isPendingWorktreeCreation(wt.path, wt.branch)
     );
   };
 
@@ -1866,6 +1892,8 @@ export function createLaneService({
       const branchRef = candidate.branch.trim();
       if (!branchRef) continue;
       if (path.dirname(worktreePath) !== normalizedWorktreesDir) continue;
+      // A create may have started after the candidate snapshot was taken.
+      if (isPendingWorktreeCreation(worktreePath, branchRef)) continue;
 
       const existingPath = db.get<{ id: string }>(
         "select id from lanes where project_id = ? and worktree_path = ? limit 1",
@@ -1913,6 +1941,86 @@ export function createLaneService({
       });
     }
     return recoveredCount;
+  };
+
+  /**
+   * Remove duplicate lane rows that share a managed worktree path. These are
+   * artifacts of the create/recover race: a lanes.list adopted a half-created
+   * worktree before the creating call inserted its own row. The keeper is the
+   * row whose id matches the 8-char suffix embedded in the worktree directory
+   * name (the lane that actually created the worktree), falling back to the
+   * oldest row. Sessions and child lanes on the duplicate are re-pointed to
+   * the keeper before the duplicate row cascades away.
+   */
+  const repairDuplicateManagedWorktreeLanes = (): void => {
+    const rows = db.all<{ id: string; worktree_path: string; created_at: string }>(
+      `
+        select id, worktree_path, created_at
+        from lanes
+        where project_id = ? and lane_type = 'worktree' and status != 'archived'
+      `,
+      [projectId]
+    );
+
+    const groups = new Map<string, { id: string; worktree_path: string; created_at: string }[]>();
+    for (const row of rows) {
+      const pathKey = normAbs(row.worktree_path);
+      if (!pathKey.length) continue;
+      const group = groups.get(pathKey) ?? [];
+      group.push(row);
+      groups.set(pathKey, group);
+    }
+
+    let removedCount = 0;
+    for (const [pathKey, group] of groups) {
+      if (group.length < 2) continue;
+      // Never dedupe under an in-flight create; the row set is still settling.
+      if (pendingWorktreeCreationPaths.has(pathKey)) continue;
+
+      const sorted = [...group].sort(
+        (a, b) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id)
+      );
+      const dirSuffix = path.basename(pathKey).split("-").pop() ?? "";
+      const keeper =
+        (dirSuffix.length > 0 && sorted.find((row) => row.id.startsWith(dirSuffix))) || sorted[0];
+
+      for (const duplicate of sorted) {
+        if (duplicate.id === keeper.id) continue;
+        db.run("begin immediate");
+        try {
+          db.run("update claude_sessions set lane_id = ? where lane_id = ?", [keeper.id, duplicate.id]);
+          db.run("update terminal_sessions set lane_id = ? where lane_id = ?", [keeper.id, duplicate.id]);
+          db.run("update lanes set parent_lane_id = ? where parent_lane_id = ? and project_id = ?", [
+            keeper.id,
+            duplicate.id,
+            projectId,
+          ]);
+          db.run("update lane_branch_profiles set parent_lane_id = ? where parent_lane_id = ? and project_id = ?", [
+            keeper.id,
+            duplicate.id,
+            projectId,
+          ]);
+          cleanupLaneDatabaseRows(duplicate.id);
+          db.run("commit");
+          removedCount += 1;
+        } catch (error) {
+          try {
+            db.run("rollback");
+          } catch {
+            // surface the original error below
+          }
+          throw error;
+        }
+      }
+    }
+
+    if (removedCount > 0) {
+      invalidateLaneListCache();
+      logger.info("laneService.repaired_duplicate_worktree_lanes", {
+        projectRoot,
+        count: removedCount,
+      });
+    }
   };
 
   const ensureAttachableWorktreeRoot = async (candidatePath: string): Promise<void> => {
@@ -2119,6 +2227,11 @@ export function createLaneService({
       await recoverManagedWorktreeRows();
     } catch (err) {
       logger.warn("laneService.recoverManagedWorktreeRows_failed", { error: err instanceof Error ? err.message : String(err) });
+    }
+    try {
+      repairDuplicateManagedWorktreeLanes();
+    } catch (err) {
+      logger.warn("laneService.repairDuplicateManagedWorktreeLanes_failed", { error: err instanceof Error ? err.message : String(err) });
     }
     try {
       backfillLaneBranchProfiles();
@@ -2343,63 +2456,92 @@ export function createLaneService({
     const runtimePlacement = normalizeRuntimePlacement(args.runtimePlacement);
     const worktreePath = path.join(worktreesDir, `${slug}-${suffix}`);
 
-    await runGitWorktreeMutation(() =>
-      runGitOrThrow(["worktree", "add", "-b", branchRef, worktreePath, args.startPoint], {
-        cwd: projectRoot,
-        timeoutMs: 60_000
-      })
-    );
-
-    // From this point the worktree exists on disk. Any failure persisting the lane
-    // row (or its dependent inserts / VM wiring) must remove the worktree, otherwise
-    // we orphan a checkout that no lane row references.
+    // The worktree is visible to `git worktree list` the moment `worktree add`
+    // registers it, but the lane row only lands after checkout completes. Hold
+    // the pending marker across that window so a concurrent lanes.list cannot
+    // adopt the half-created worktree as a duplicate lane.
+    const releasePendingWorktreeCreation = trackPendingWorktreeCreation(worktreePath, branchRef);
     let linearIssue: LaneLinearIssue | null = null;
     try {
-      linkExistingDependencyInstalls(worktreePath);
+      await runGitWorktreeMutation(() =>
+        runGitOrThrow(["worktree", "add", "-b", branchRef, worktreePath, args.startPoint], {
+          cwd: projectRoot,
+          timeoutMs: 60_000
+        })
+      );
 
-      const laneColor = allocateLaneColorForProject();
-      db.run(
-        `
-          insert into lanes(
-            id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path,
-            attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, folder, runtime_placement, status, created_at, archived_at
-          )
-          values(?, ?, ?, ?, 'worktree', ?, ?, ?, null, 0, ?, ?, null, null, ?, ?, 'active', ?, null)
-        `,
-        [
+      // From this point the worktree exists on disk. Any failure persisting the lane
+      // row (or its dependent inserts / VM wiring) must remove the worktree, otherwise
+      // we orphan a checkout that no lane row references.
+      try {
+        linkExistingDependencyInstalls(worktreePath);
+
+        // Absorb any row another process raced onto this path/branch while the
+        // checkout ran. The path and branch embed this lane's fresh id suffix
+        // (and `worktree add -b` proved the branch was free), so a matching row
+        // can only be a recovery artifact adopted from the half-created worktree.
+        const racedAdoptionRows = db.all<{ id: string }>(
+          `
+            select id from lanes
+            where project_id = ?
+              and id != ?
+              and lane_type = 'worktree'
+              and is_edit_protected = 0
+              and (worktree_path = ? or branch_ref = ?)
+          `,
+          [projectId, laneId, worktreePath, branchRef]
+        );
+        for (const raced of racedAdoptionRows) {
+          logger.info("laneService.absorbed_raced_adoption_row", { laneId, racedLaneId: raced.id });
+          cleanupLaneDatabaseRows(raced.id);
+        }
+
+        const laneColor = allocateLaneColorForProject();
+        db.run(
+          `
+            insert into lanes(
+              id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path,
+              attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, folder, runtime_placement, status, created_at, archived_at
+            )
+            values(?, ?, ?, ?, 'worktree', ?, ?, ?, null, 0, ?, ?, null, null, ?, ?, 'active', ?, null)
+          `,
+          [
+            laneId,
+            projectId,
+            args.name,
+            args.description ?? null,
+            args.baseRef,
+            branchRef,
+            worktreePath,
+            args.parentLaneId,
+            laneColor,
+            args.folder ?? null,
+            runtimePlacement,
+            now
+          ]
+        );
+        linearIssue = args.linearIssue
+          ? upsertLaneLinearIssue(laneId, args.linearIssue, branchRef)
+          : null;
+        invalidateLaneListCache();
+
+        if (runtimePlacement === "macos-vm") {
+          await wireMacosVmLanePlacement({
+            laneId,
+            previousPlacement: "none",
+            rollbackPlacementOnLinkFailure: true,
+          });
+        }
+      } catch (error) {
+        await cleanupCreatedWorktreeLaneAfterCreateFailure({
           laneId,
-          projectId,
-          args.name,
-          args.description ?? null,
-          args.baseRef,
           branchRef,
           worktreePath,
-          args.parentLaneId,
-          laneColor,
-          args.folder ?? null,
-          runtimePlacement,
-          now
-        ]
-      );
-      linearIssue = args.linearIssue
-        ? upsertLaneLinearIssue(laneId, args.linearIssue, branchRef)
-        : null;
-      invalidateLaneListCache();
-
-      if (runtimePlacement === "macos-vm") {
-        await wireMacosVmLanePlacement({
-          laneId,
-          previousPlacement: "none",
-          rollbackPlacementOnLinkFailure: true,
+          cause: error,
         });
       }
-    } catch (error) {
-      await cleanupCreatedWorktreeLaneAfterCreateFailure({
-        laneId,
-        branchRef,
-        worktreePath,
-        cause: error,
-      });
+    } finally {
+      releasePendingWorktreeCreation();
     }
 
     // Best-effort initial push to establish upstream tracking
@@ -3421,6 +3563,9 @@ export function createLaneService({
       const suffix = laneId.slice(0, 8);
       const worktreePath = path.join(worktreesDir, `${slug}-${suffix}`);
 
+      // Same create/recover race as createWorktreeLane: keep recovery away
+      // from this path/branch until the lane row exists.
+      const releasePendingWorktreeCreation = trackPendingWorktreeCreation(worktreePath, branchRef);
       try {
         if (remoteRefToTrack) {
           await runGitOrThrow(["branch", "--track", branchRef, remoteRefToTrack], { cwd: projectRoot, timeoutMs: 15_000 });
@@ -3577,6 +3722,8 @@ export function createLaneService({
           throw new Error(`${error instanceof Error ? error.message : String(error)} Cleanup failed: ${cleanupErrors.join(" ")}`);
         }
         throw error;
+      } finally {
+        releasePendingWorktreeCreation();
       }
     },
 
