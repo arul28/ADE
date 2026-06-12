@@ -465,17 +465,17 @@ Before printing the summary, verify the draft release carries every expected ass
 gh release view "v<VERSION>" --json assets --jq '.assets[].name' | sort
 ```
 
-Expected asset set when `scope.desktop=true`:
+Expected asset set when `scope.desktop=true` (releases are macOS-only right now;
+Windows publishing is commented out in `release-core.yml`):
 - `ADE-<version>-universal.dmg`
 - `ADE-<version>-universal-mac.zip`
 - `ADE-<version>-universal-mac.zip.blockmap`
 - `latest-mac.yml`
-- `ADE-<version>-win-x64.exe`
-- `ADE-<version>-win-x64.exe.blockmap`
-- `latest.yml`
 
-If any macOS asset is missing → mac build or upload broke; re-inspect the `build-mac-release` job.
-If any Windows asset is missing → `build-win-release` broke or its artifact upload failed; re-inspect that job. Do not flip the draft if Windows artifacts are missing — shipping an asymmetric desktop release will confuse electron-updater consumers on the missing platform.
+These four are the complete set — the zip + blockmap + `latest-mac.yml` are what
+electron-updater consumes for auto-update (macOS updates install from the zip,
+not the DMG), so a release missing any of them silently bricks auto-update.
+If any asset is missing → mac build or upload broke; re-inspect the `build-mac-release` job.
 
 Then print a single final block and stop:
 
@@ -484,12 +484,17 @@ Release v<VERSION> — summary
 
 - Changelog:     https://www.ade-app.dev/docs/changelog/v<VERSION>
 - Draft release: <gh release url>  (still draft — flip manually)
-- Desktop assets: mac=<present|MISSING>, windows=<present|MISSING>
+- Desktop assets: mac=<present|MISSING>
 - Workflow run:  <gh run url>      (conclusion: success)
 - iOS TestFlight build <BUILD_NUMBER>: <VALID | processing | skipped>
 - Beta group:    <group name | n/a>
 
-Next step: review the draft release, then `gh release edit v<VERSION> --draft=false` to publish.
+Next steps:
+1. Review the draft release, then `gh release edit v<VERSION> --draft=false` to publish.
+2. After publishing, bump the Homebrew tap: `scripts/update-brew-tap.sh v<VERSION>`
+   (updates the cask version + sha256 in arul28/homebrew-ade so
+   `brew install --cask arul28/ade/ade` serves the new DMG. It refuses to run
+   against a draft, so it cannot be done before step 1.)
 ```
 
 If any phase ended in `blocked`, the summary says `BLOCKED` at the top with the failing phase and the command to resume.

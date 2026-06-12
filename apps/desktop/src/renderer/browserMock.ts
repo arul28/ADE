@@ -6112,6 +6112,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       error: null,
       recentlyInstalled: null,
     }),
+    updateGetInstallImpact: resolved({ connectedPhones: [] }),
     updateQuitAndInstall: resolved(true),
     updateDismissInstalledNotice: resolved(undefined),
     onUpdateEvent: noop,

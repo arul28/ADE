@@ -109,15 +109,19 @@ Download ADE from [**GitHub Releases**](https://github.com/arul28/ADE/releases/l
 
 ### macOS
 
-Download the latest `.dmg`, drag **ADE.app** into `/Applications`, and open it.
+With [Homebrew](https://brew.sh):
+
+```bash
+brew install --cask arul28/ade/ade
+```
+
+Or download the latest `.dmg`, drag **ADE.app** into `/Applications`, and open it. Both paths install the same signed + notarized universal app; ADE keeps itself current afterwards through its built-in auto-updater.
 
 Requirements: macOS 13+, git on `PATH`, Node 22+ for headless CLI workflows.
 
 ### Windows
 
-Download the latest Windows installer (`ADE-*-win-x64.exe`) from [**GitHub Releases**](https://github.com/arul28/ADE/releases/latest) and run it. Windows builds are published from the same release workflow as macOS and include the ADE runtime plus Windows auto-update metadata.
-
-Requirements: Windows x64, git on `PATH`, Node 22+ for headless CLI workflows.
+Windows releases are paused for now — current releases ship macOS only. The Windows build pipeline still exists (commented out in the release workflow) and will return in a future release.
 
 ## CLI
 

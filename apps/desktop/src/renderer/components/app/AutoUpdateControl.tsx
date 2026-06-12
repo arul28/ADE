@@ -72,10 +72,30 @@ export function AutoUpdateControl() {
     });
   }, []);
 
-  const handleRestartToInstall = useCallback(() => {
-    const confirmed = window.confirm(
-      `ADE will quit and reopen automatically to install ${versionLabel(snapshot.version)}.\n\nYou do not need to restart ADE yourself. Any unsaved work may be lost. Continue?`,
+  const handleRestartToInstall = useCallback(async () => {
+    // Best-effort probe of live connections (paired phones) so the user knows
+    // what drops while ADE and its brain service restart on the new version.
+    const impact = await window.ade.updateGetInstallImpact().catch(() => null);
+    const phones = impact?.connectedPhones ?? [];
+    const lines = [
+      `ADE will quit and reopen automatically to install ${versionLabel(snapshot.version)}.`,
+      "",
+    ];
+    if (phones.length === 1) {
+      lines.push(
+        `${phones[0].deviceName} is connected through ADE phone sync. It will disconnect during the update and reconnect automatically once ADE is back.`,
+      );
+    } else if (phones.length > 1) {
+      lines.push(
+        `Connected phones (${phones.map((phone) => phone.deviceName).join(", ")}) will disconnect during the update and reconnect automatically once ADE is back.`,
+      );
+    }
+    lines.push(
+      "Open ADE Code terminals and running agent sessions on this machine will disconnect while the ADE service restarts — you can reopen them right after the update.",
+      "",
+      "You do not need to restart ADE yourself. Any unsaved work may be lost. Continue?",
     );
+    const confirmed = window.confirm(lines.join("\n"));
     if (!confirmed) return;
     setInstallRequested(true);
     void window.ade.updateQuitAndInstall()
@@ -129,7 +149,7 @@ export function AutoUpdateControl() {
           disabled={effectiveStatus !== "ready"}
           onClick={() => {
             if (effectiveStatus === "ready") {
-              handleRestartToInstall();
+              void handleRestartToInstall();
             }
           }}
           title={indicatorTitle()}

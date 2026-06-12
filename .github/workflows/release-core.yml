@@ -175,74 +175,78 @@ jobs:
             apps/desktop/release/latest-mac.yml
           if-no-files-found: error
 
-  build-win-release:
-    needs:
-      - verify
-      - build-runtime-binaries
-    runs-on: windows-latest
-    concurrency:
-      group: release-${{ inputs.release_tag }}-win
-      cancel-in-progress: true
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ inputs.target_ref }}
-          fetch-depth: 0
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: |
-            apps/desktop/package-lock.json
-            apps/ade-cli/package-lock.json
-
-      - name: Install desktop dependencies
-        run: cd apps/desktop && npm ci
-
-      - name: Install ADE CLI dependencies
-        run: cd apps/ade-cli && npm ci
-
-      - name: Download ADE runtime binaries
-        uses: actions/download-artifact@v4
-        with:
-          pattern: ade-runtime-*
-          path: apps/desktop/resources/runtime
-          merge-multiple: true
-
-      - name: Materialize ADE runtime resources
-        env:
-          ADE_RUNTIME_ARTIFACTS_DIR: ${{ github.workspace }}\apps\desktop\resources\runtime
-        run: cd apps/desktop && npm run materialize:runtime-resources
-
-      - name: Stamp release version
-        env:
-          ADE_RELEASE_TAG: ${{ inputs.release_tag }}
-        run: cd apps/desktop && npm run version:release
-
-      - name: Reset release output
-        shell: pwsh
-        run: |
-          Remove-Item -Recurse -Force apps/desktop/release, apps/desktop/.cache -ErrorAction SilentlyContinue
-          New-Item -ItemType Directory -Path apps/desktop/.cache | Out-Null
-
-      - name: Build and validate Windows release
-        env:
-          ELECTRON_CACHE: ${{ github.workspace }}\apps\desktop\.cache\electron
-          ELECTRON_BUILDER_CACHE: ${{ github.workspace }}\apps\desktop\.cache\electron-builder
-          CSC_LINK: ${{ ((secrets.WINDOWS_CSC_LINK || secrets.WIN_CSC_LINK) && (secrets.WINDOWS_CSC_KEY_PASSWORD || secrets.WIN_CSC_KEY_PASSWORD)) && (secrets.WINDOWS_CSC_LINK || secrets.WIN_CSC_LINK) || '' }}
-          CSC_KEY_PASSWORD: ${{ ((secrets.WINDOWS_CSC_LINK || secrets.WIN_CSC_LINK) && (secrets.WINDOWS_CSC_KEY_PASSWORD || secrets.WIN_CSC_KEY_PASSWORD)) && (secrets.WINDOWS_CSC_KEY_PASSWORD || secrets.WIN_CSC_KEY_PASSWORD) || '' }}
-        run: cd apps/desktop && npm run dist:win
-
-      - name: Upload validated Windows artifacts to workflow run
-        uses: actions/upload-artifact@v4
-        with:
-          name: ade-win-release-${{ inputs.release_tag }}
-          path: |
-            apps/desktop/release/*.exe
-            apps/desktop/release/*.exe.blockmap
-            apps/desktop/release/latest.yml
-          if-no-files-found: error
+  # Windows release builds are disabled for now — ADE ships macOS-only releases.
+  # To re-enable: uncomment this job, add `build-win-release` back to
+  # publish-release `needs`, and restore the win blocks in the publish job
+  # (artifact download, manifest validation, upload list).
+  # build-win-release:
+  #   needs:
+  #     - verify
+  #     - build-runtime-binaries
+  #   runs-on: windows-latest
+  #   concurrency:
+  #     group: release-${{ inputs.release_tag }}-win
+  #     cancel-in-progress: true
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #       with:
+  #         ref: ${{ inputs.target_ref }}
+  #         fetch-depth: 0
+  #
+  #     - uses: actions/setup-node@v4
+  #       with:
+  #         node-version: 22
+  #         cache: npm
+  #         cache-dependency-path: |
+  #           apps/desktop/package-lock.json
+  #           apps/ade-cli/package-lock.json
+  #
+  #     - name: Install desktop dependencies
+  #       run: cd apps/desktop && npm ci
+  #
+  #     - name: Install ADE CLI dependencies
+  #       run: cd apps/ade-cli && npm ci
+  #
+  #     - name: Download ADE runtime binaries
+  #       uses: actions/download-artifact@v4
+  #       with:
+  #         pattern: ade-runtime-*
+  #         path: apps/desktop/resources/runtime
+  #         merge-multiple: true
+  #
+  #     - name: Materialize ADE runtime resources
+  #       env:
+  #         ADE_RUNTIME_ARTIFACTS_DIR: ${{ github.workspace }}\apps\desktop\resources\runtime
+  #       run: cd apps/desktop && npm run materialize:runtime-resources
+  #
+  #     - name: Stamp release version
+  #       env:
+  #         ADE_RELEASE_TAG: ${{ inputs.release_tag }}
+  #       run: cd apps/desktop && npm run version:release
+  #
+  #     - name: Reset release output
+  #       shell: pwsh
+  #       run: |
+  #         Remove-Item -Recurse -Force apps/desktop/release, apps/desktop/.cache -ErrorAction SilentlyContinue
+  #         New-Item -ItemType Directory -Path apps/desktop/.cache | Out-Null
+  #
+  #     - name: Build and validate Windows release
+  #       env:
+  #         ELECTRON_CACHE: ${{ github.workspace }}\apps\desktop\.cache\electron
+  #         ELECTRON_BUILDER_CACHE: ${{ github.workspace }}\apps\desktop\.cache\electron-builder
+  #         CSC_LINK: ${{ ((secrets.WINDOWS_CSC_LINK || secrets.WIN_CSC_LINK) && (secrets.WINDOWS_CSC_KEY_PASSWORD || secrets.WIN_CSC_KEY_PASSWORD)) && (secrets.WINDOWS_CSC_LINK || secrets.WIN_CSC_LINK) || '' }}
+  #         CSC_KEY_PASSWORD: ${{ ((secrets.WINDOWS_CSC_LINK || secrets.WIN_CSC_LINK) && (secrets.WINDOWS_CSC_KEY_PASSWORD || secrets.WIN_CSC_KEY_PASSWORD)) && (secrets.WINDOWS_CSC_KEY_PASSWORD || secrets.WIN_CSC_KEY_PASSWORD) || '' }}
+  #       run: cd apps/desktop && npm run dist:win
+  #
+  #     - name: Upload validated Windows artifacts to workflow run
+  #       uses: actions/upload-artifact@v4
+  #       with:
+  #         name: ade-win-release-${{ inputs.release_tag }}
+  #         path: |
+  #           apps/desktop/release/*.exe
+  #           apps/desktop/release/*.exe.blockmap
+  #           apps/desktop/release/latest.yml
+  #         if-no-files-found: error
 
   build-runtime-binaries:
     needs: verify
@@ -377,7 +381,6 @@ jobs:
     needs:
       - build-runtime-binaries
       - build-mac-release
-      - build-win-release
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -391,23 +394,33 @@ jobs:
           name: ade-mac-release-${{ inputs.release_tag }}
           path: release-assets/mac
 
-      - name: Download Windows release artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: ade-win-release-${{ inputs.release_tag }}
-          path: release-assets/win
-
-      - name: Download ADE runtime binaries
-        uses: actions/download-artifact@v4
-        with:
-          pattern: ade-runtime-*
-          path: release-assets/runtime
-          merge-multiple: true
-
-      - name: Add standalone runtime installer
-        run: |
-          cp apps/ade-cli/scripts/install-runtime.sh release-assets/runtime/install.sh
-          chmod 755 release-assets/runtime/install.sh
+      # Windows artifacts and the standalone runtime assets (ade-* binaries,
+      # native tarballs, install.sh) are intentionally NOT published right now.
+      # The release surface is macOS-only and kept minimal: the DMG for humans,
+      # plus the zip + blockmap + latest-mac.yml that electron-updater requires
+      # for auto-update (macOS auto-update installs from the zip, NOT the DMG —
+      # removing those three assets silently bricks updates for every install).
+      # The runtime binaries are still BUILT above because the macOS app bundles
+      # them as sidecars (local brain + remote-runtime bootstrap payloads).
+      # To publish them again, restore the blocks below.
+      #
+      # - name: Download Windows release artifacts
+      #   uses: actions/download-artifact@v4
+      #   with:
+      #     name: ade-win-release-${{ inputs.release_tag }}
+      #     path: release-assets/win
+      #
+      # - name: Download ADE runtime binaries
+      #   uses: actions/download-artifact@v4
+      #   with:
+      #     pattern: ade-runtime-*
+      #     path: release-assets/runtime
+      #     merge-multiple: true
+      #
+      # - name: Add standalone runtime installer
+      #   run: |
+      #     cp apps/ade-cli/scripts/install-runtime.sh release-assets/runtime/install.sh
+      #     chmod 755 release-assets/runtime/install.sh
 
       - name: Validate publish asset manifest
         run: |
@@ -440,23 +453,26 @@ jobs:
           require_glob 'release-assets/mac/*.zip' 'macOS zip'
           require_glob 'release-assets/mac/*-mac.zip.blockmap' 'macOS blockmap'
           require_file 'release-assets/mac/latest-mac.yml' 'macOS auto-update metadata'
-          require_glob 'release-assets/win/*.exe' 'Windows installer'
-          require_glob 'release-assets/win/*.exe.blockmap' 'Windows blockmap'
-          require_file 'release-assets/win/latest.yml' 'Windows auto-update metadata'
-          require_file 'release-assets/runtime/install.sh' 'standalone runtime installer'
-          if [ ! -x 'release-assets/runtime/install.sh' ]; then
-            echo "::error::Standalone runtime installer is not executable."
-            exit 1
-          fi
 
-          for target in darwin-arm64 darwin-x64 linux-arm64 linux-x64; do
-            require_file "release-assets/runtime/ade-$target" "ADE runtime binary for $target"
-            require_file "release-assets/runtime/ade-$target.native.tar.gz" "ADE native dependency archive for $target"
-            tar -tzf "release-assets/runtime/ade-$target.native.tar.gz" | grep -q '^\./node_modules/' || {
-              echo "::error::ADE native dependency archive for $target is missing node_modules."
-              exit 1
-            }
-          done
+          # Windows + standalone runtime assets are not published right now.
+          # Restore these checks together with the publish blocks above.
+          # require_glob 'release-assets/win/*.exe' 'Windows installer'
+          # require_glob 'release-assets/win/*.exe.blockmap' 'Windows blockmap'
+          # require_file 'release-assets/win/latest.yml' 'Windows auto-update metadata'
+          # require_file 'release-assets/runtime/install.sh' 'standalone runtime installer'
+          # if [ ! -x 'release-assets/runtime/install.sh' ]; then
+          #   echo "::error::Standalone runtime installer is not executable."
+          #   exit 1
+          # fi
+          #
+          # for target in darwin-arm64 darwin-x64 linux-arm64 linux-x64; do
+          #   require_file "release-assets/runtime/ade-$target" "ADE runtime binary for $target"
+          #   require_file "release-assets/runtime/ade-$target.native.tar.gz" "ADE native dependency archive for $target"
+          #   tar -tzf "release-assets/runtime/ade-$target.native.tar.gz" | grep -q '^\./node_modules/' || {
+          #     echo "::error::ADE native dependency archive for $target is missing node_modules."
+          #     exit 1
+          #   }
+          # done
 
       - name: Create or update draft GitHub release
         env:
@@ -466,16 +482,18 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           shopt -s nullglob
+          # macOS-only release surface. The zip + blockmap + latest-mac.yml are
+          # required by electron-updater; the DMG is the human download.
           files=(
             release-assets/mac/*.dmg
             release-assets/mac/*.zip
             release-assets/mac/*-mac.zip.blockmap
             release-assets/mac/latest-mac.yml
-            release-assets/win/*.exe
-            release-assets/win/*.exe.blockmap
-            release-assets/win/latest.yml
-            release-assets/runtime/install.sh
-            release-assets/runtime/ade-*
+            # release-assets/win/*.exe
+            # release-assets/win/*.exe.blockmap
+            # release-assets/win/latest.yml
+            # release-assets/runtime/install.sh
+            # release-assets/runtime/ade-*
           )
 
           if [ "${#files[@]}" -eq 0 ]; then

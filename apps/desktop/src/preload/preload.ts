@@ -22,6 +22,7 @@ import type {
   LatestReleaseInfo,
   AppNavigationRequest,
   AutoUpdateSnapshot,
+  UpdateInstallImpact,
   ClearLocalAdeDataArgs,
   ClearLocalAdeDataResult,
   ArchiveLaneArgs,
@@ -8935,6 +8936,8 @@ contextBridge.exposeInMainWorld("ade", {
   updateCheckForUpdates: () => ipcRenderer.invoke(IPC.updateCheckForUpdates),
   updateGetState: (): Promise<AutoUpdateSnapshot> =>
     ipcRenderer.invoke(IPC.updateGetState),
+  updateGetInstallImpact: (): Promise<UpdateInstallImpact> =>
+    ipcRenderer.invoke(IPC.updateGetInstallImpact),
   updateQuitAndInstall: (): Promise<boolean> =>
     ipcRenderer.invoke(IPC.updateQuitAndInstall),
   updateDismissInstalledNotice: () =>

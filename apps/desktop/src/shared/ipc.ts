@@ -790,6 +790,7 @@ export const IPC = {
   feedbackOnUpdate: "ade.feedback.onUpdate",
   updateCheckForUpdates: "ade.update.checkForUpdates",
   updateGetState: "ade.update.getState",
+  updateGetInstallImpact: "ade.update.getInstallImpact",
   updateQuitAndInstall: "ade.update.quitAndInstall",
   updateDismissInstalledNotice: "ade.update.dismissInstalledNotice",
   updateEvent: "ade.update.event",

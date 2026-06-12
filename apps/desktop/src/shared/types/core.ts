@@ -107,6 +107,20 @@ export type AutoUpdateSnapshot = {
   recentlyInstalled: RecentlyInstalledUpdate | null;
 };
 
+export type UpdateInstallImpactPhone = {
+  deviceId: string;
+  deviceName: string;
+};
+
+/**
+ * Live connections that drop while ADE (and its brain service) restarts for an
+ * update. Best-effort: probes are time-boxed, so an empty list means "none
+ * detected", not a guarantee.
+ */
+export type UpdateInstallImpact = {
+  connectedPhones: UpdateInstallImpactPhone[];
+};
+
 export type ProjectInfo = {
   rootPath: string;
   displayName: string;
