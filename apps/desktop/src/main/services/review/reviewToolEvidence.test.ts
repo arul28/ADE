@@ -11,7 +11,6 @@ function emptyPayload(
     checks: [],
     suites: [],
     testRuns: [],
-    issueInventory: [],
     sessionFailures: [],
     signals: [],
     ...overrides,

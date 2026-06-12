@@ -26,13 +26,13 @@ const mainItems = [
   { to: "/work", label: "Work", icon: Terminal },
   { to: "/lanes", label: "Lanes", icon: GitBranch },
   { to: "/files", label: "Files", icon: FileCode },
-  { to: "/project", label: "Run", icon: PlayCircle },
   { to: "/prs", label: "PRs", icon: GitPullRequest },
+  { to: "/project", label: "Run", icon: PlayCircle },
   { to: "/review", label: "Review", icon: MagnifyingGlass },
-  { to: "/automations", label: "Automations", icon: Robot },
   { to: "/cto", label: "CTO", icon: Brain },
   { to: "/graph", label: "Graph", icon: Graph },
   { to: "/history", label: "History", icon: ClockCounterClockwise },
+  { to: "/automations", label: "Automations", icon: Robot },
   { to: "/vm", label: "VM", icon: DesktopTower },
 ] as const;
 

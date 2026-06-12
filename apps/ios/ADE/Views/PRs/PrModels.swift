@@ -404,8 +404,7 @@ struct PrDetailWarmEntry {
   var activityEvents: [PrActivityEvent]
   var deployments: [PrDeployment]
   var aiSummary: AiReviewSummary?
-  var issueInventory: IssueInventorySnapshot?
-  var pipelineSettings: PipelineSettings?
+  var convergenceRuntime: ConvergenceRuntimeState?
   var groupMembers: [PrGroupMemberSummary]
   var capabilities: PrActionCapabilities?
   var loadedAt: Date

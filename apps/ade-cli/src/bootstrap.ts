@@ -1008,7 +1008,6 @@ export async function createAdeRuntime(args: {
       linearClient: headlessLinearServices.linearClient,
       linearCredentials: headlessLinearServices.linearCredentialService,
       prService: headlessLinearServices.prService,
-      issueInventoryService,
       processService,
       getTestService: () => testService,
       ptyService,
@@ -1070,7 +1069,6 @@ export async function createAdeRuntime(args: {
         sessionService,
         sessionDeltaService,
         testService,
-        issueInventoryService,
         prService: headlessLinearServices.prService,
         onEvent: (event) => pushEvent("runtime", { type: "review_event", event }),
       })
@@ -1083,7 +1081,6 @@ export async function createAdeRuntime(args: {
     agentChatService: agentChatService as unknown as PathToMergeAgentChatService,
     sessionService,
     issueInventoryService,
-    conflictService,
     laneWorktreeLockService,
     defaultModelId: null,
     defaultReasoningEffort: null,

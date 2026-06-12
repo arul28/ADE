@@ -265,33 +265,6 @@ describe("reviewContextBuilder", () => {
           `${"noise ".repeat(200)}\nAssertionError: bridge mismatch repeated ${"y".repeat(200)}\n`,
         ),
       } as any,
-      issueInventoryService: {
-        getInventory: vi.fn().mockReturnValue({
-          prId: "pr-1",
-          items: Array.from({ length: 6 }, (_, index) => ({
-            id: `inventory-${index}`,
-            prId: "pr-1",
-            source: "human",
-            type: "review_thread",
-            externalId: `thread-${index}`,
-            state: "new",
-            round: 1,
-            filePath: index === 0 ? "apps/desktop/src/preload/reviewBridge.ts" : "apps/desktop/src/renderer/review/ReviewPanel.tsx",
-            line: 20 + index,
-            severity: "major",
-            headline: `Review feedback ${index}`,
-            body: `Feedback body ${index}`,
-            author: "reviewer",
-            url: null,
-            dismissReason: null,
-            agentSessionId: null,
-            createdAt: "2026-04-06T10:01:00.000Z",
-            updatedAt: `2026-04-06T10:0${index}:00.000Z`,
-          })),
-          convergence: { currentRound: 1 },
-          runtime: { currentRound: 1 },
-        }),
-      } as any,
       prService: {
         getChecks: vi.fn().mockResolvedValue([
           {
@@ -335,7 +308,6 @@ describe("reviewContextBuilder", () => {
     });
 
     expect(packet.provenance.payload.sessionDeltas).toHaveLength(3);
-    expect(packet.validation.payload.issueInventory).toHaveLength(5);
     expect(packet.validation.payload.signals.length).toBeLessThanOrEqual(5);
     expect(packet.validation.payload.testRuns[0]?.logExcerpt?.length ?? 0).toBeLessThanOrEqual(220);
     expect(packet.validation.prompt).not.toContain("noise noise noise noise noise noise");
@@ -343,7 +315,7 @@ describe("reviewContextBuilder", () => {
     expect(packet.rules.metadata.matchedRuleIds).toContain("shared-contract");
   });
 
-  it("emits late-stage signals for validation failures, reviewer feedback, and prior review overlap", async () => {
+  it("emits late-stage signals for validation failures and prior review overlap", async () => {
     const { db } = createInMemoryAdeDb();
     db.run("insert into lanes(id, project_id) values (?, ?)", ["lane-review", "project-1"]);
     db.run(
@@ -394,35 +366,6 @@ describe("reviewContextBuilder", () => {
         listRuns: vi.fn().mockReturnValue([]),
         getLogTail: vi.fn().mockReturnValue(""),
       } as any,
-      issueInventoryService: {
-        getInventory: vi.fn().mockReturnValue({
-          prId: "pr-1",
-          items: [
-            {
-              id: "inventory-1",
-              prId: "pr-1",
-              source: "human",
-              type: "review_thread",
-              externalId: "thread-1",
-              state: "new",
-              round: 1,
-              filePath: "apps/desktop/src/preload/reviewBridge.ts",
-              line: 10,
-              severity: "major",
-              headline: "Reviewer says the preload bridge still drifts",
-              body: null,
-              author: "reviewer",
-              url: null,
-              dismissReason: null,
-              agentSessionId: null,
-              createdAt: "2026-04-06T10:01:00.000Z",
-              updatedAt: "2026-04-06T10:02:00.000Z",
-            },
-          ],
-          convergence: { currentRound: 1 },
-          runtime: { currentRound: 1 },
-        }),
-      } as any,
       prService: {
         getChecks: vi.fn().mockResolvedValue([]),
         getReviewSnapshot: vi.fn().mockResolvedValue({
@@ -447,7 +390,6 @@ describe("reviewContextBuilder", () => {
 
     const kinds = packet.provenance.payload.lateStageSignals.map((signal) => signal.kind);
     expect(kinds).toContain("validation_failure_followed_by_edits");
-    expect(kinds).toContain("review_feedback_followed_by_edits");
     expect(kinds).toContain("prior_review_overlap");
   });
 });

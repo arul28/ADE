@@ -1,66 +1,35 @@
 import { describe, expect, it } from "vitest";
-import type { PrConvergenceState } from "../../../../shared/types";
-import { isWaitingForGithubAutoMerge } from "./queueAutomateMergingRuntime";
+import { DEFAULT_CONVERGENCE_RUNTIME_STATE, type ConvergenceRuntimeStatus, type PrConvergenceState } from "../../../../shared/types";
+import { classifyWatcherOutcome } from "./queueAutomateMergingRuntime";
 
-function runtime(patch: Partial<PrConvergenceState> = {}): PrConvergenceState {
+function runtime(status: ConvergenceRuntimeStatus): PrConvergenceState {
   return {
+    ...DEFAULT_CONVERGENCE_RUNTIME_STATE,
     prId: "pr-1",
-    autoConvergeEnabled: true,
     pathToMergeActive: true,
-    status: "running",
-    pollerStatus: "polling",
-    mergeWaitKind: null,
-    currentRound: 0,
-    activeSessionId: null,
-    activeLaneId: null,
-    activeHref: null,
-    pauseReason: null,
-    errorMessage: null,
-    forceFinalizeUsed: false,
-    ciRetryAttemptsUsed: 0,
-    waitForCiStartedAt: null,
-    lastDispatchHeadSha: null,
-    lastBotPingHeadSha: null,
-    lastBotPingAt: null,
-    pauseRepeatCount: 0,
-    lastPauseReasonHash: null,
-    lastStartedAt: null,
-    lastPolledAt: null,
-    lastPausedAt: null,
-    lastStoppedAt: null,
-    createdAt: "2026-05-01T00:00:00.000Z",
-    updatedAt: "2026-05-01T00:00:00.000Z",
-    ...patch,
+    status,
   };
 }
 
-describe("isWaitingForGithubAutoMerge", () => {
-  it("keeps queue automation polling after gh auto-merge is armed", () => {
-    expect(isWaitingForGithubAutoMerge(runtime({
-      status: "converged",
-      pollerStatus: "waiting_for_checks",
-      mergeWaitKind: "github_auto_merge_armed",
-      pauseReason: "auto-merge armed via gh CLI; waiting for GitHub to land.",
-    }))).toBe(true);
-
-    expect(isWaitingForGithubAutoMerge(runtime({
-      status: "converged",
-      pollerStatus: "waiting_for_checks",
-      pauseReason: "auto-merge armed via gh CLI; waiting for GitHub to land.",
-    }))).toBe(false);
+describe("classifyWatcherOutcome", () => {
+  it("treats a ground-truth merge as merged", () => {
+    expect(classifyWatcherOutcome(runtime("merged"))).toBe("merged");
   });
 
-  it("does not treat operator-action converged states as active auto-merge waits", () => {
-    expect(isWaitingForGithubAutoMerge(runtime({
-      status: "converged",
-      pollerStatus: "waiting_for_comments",
-      pauseReason: "Converged but pipelineSettings.autoMerge is false; click merge when ready.",
-    }))).toBe(false);
+  it("keeps the watcher working while the agent is launching, running, or polling", () => {
+    expect(classifyWatcherOutcome(runtime("launching"))).toBe("working");
+    expect(classifyWatcherOutcome(runtime("running"))).toBe("working");
+    expect(classifyWatcherOutcome(runtime("polling"))).toBe("working");
+  });
 
-    expect(isWaitingForGithubAutoMerge(runtime({
-      status: "converged",
-      pollerStatus: "waiting_for_comments",
-      pauseReason: "Inventory clean; merge ladder is blocked: required review.",
-    }))).toBe(false);
+  it("halts on paused, failed, cancelled, or stopped", () => {
+    expect(classifyWatcherOutcome(runtime("paused"))).toBe("halted");
+    expect(classifyWatcherOutcome(runtime("failed"))).toBe("halted");
+    expect(classifyWatcherOutcome(runtime("cancelled"))).toBe("halted");
+    expect(classifyWatcherOutcome(runtime("stopped"))).toBe("halted");
+  });
+
+  it("defaults to working when there is no runtime yet", () => {
+    expect(classifyWatcherOutcome(null)).toBe("working");
   });
 });

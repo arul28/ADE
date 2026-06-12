@@ -2741,24 +2741,12 @@ app.whenReady().then(async () => {
       jobEngine?.onSessionEnded({ laneId, sessionId });
       automationService?.onSessionEnded({ laneId, sessionId });
       try {
-        laneWorktreeLockService.release({ ownerKind: "pr_issue_resolution", ownerSessionId: sessionId });
+        laneWorktreeLockService.release({ ownerKind: "path_to_merge", ownerSessionId: sessionId });
         laneWorktreeLockService.release({ ownerKind: "conflict_resolution", ownerSessionId: sessionId });
       } catch (error) {
         logger.warn("main.lane_worktree_session_lock_release_failed", {
           laneId,
           sessionId,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-      try {
-        issueInventoryService.reconcileConvergenceSessionExit(sessionId, {
-          exitCode,
-        });
-      } catch (error) {
-        logger.warn("main.convergence_session_reconcile_failed", {
-          laneId,
-          sessionId,
-          exitCode,
           error: error instanceof Error ? error.message : String(error),
         });
       }
@@ -2993,7 +2981,6 @@ app.whenReady().then(async () => {
       linearClient,
       linearCredentials: linearCredentialService,
       prService,
-      issueInventoryService,
       processService,
       getTestService: () => testServiceRef,
       ptyService,
@@ -3080,7 +3067,6 @@ app.whenReady().then(async () => {
       agentChatService,
       sessionService,
       issueInventoryService,
-      conflictService,
       laneWorktreeLockService,
       defaultModelId: null,
       defaultReasoningEffort: null,
@@ -3148,7 +3134,6 @@ app.whenReady().then(async () => {
       sessionService,
       sessionDeltaService,
       testService,
-      issueInventoryService,
       prService,
       onEvent: (event) => emitProjectEvent(projectRoot, IPC.reviewEvent, event),
     });

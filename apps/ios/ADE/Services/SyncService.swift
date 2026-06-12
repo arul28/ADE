@@ -4864,107 +4864,16 @@ final class SyncService: ObservableObject {
     _ = try await sendCommand(action: "prs.updateIntegrationProposal", args: args)
   }
 
-  func syncIssueInventory(prId: String) async throws -> IssueInventorySnapshot {
-    try await sendDecodableCommand(action: "prs.issueInventory.sync", args: ["prId": prId], as: IssueInventorySnapshot.self)
-  }
-
-  func fetchIssueInventory(prId: String) async throws -> IssueInventorySnapshot {
-    try await sendDecodableCommand(action: "prs.issueInventory.get", args: ["prId": prId], as: IssueInventorySnapshot.self)
-  }
-
-  func markIssueInventoryFixed(prId: String, itemIds: [String]) async throws {
-    _ = try await sendCommand(action: "prs.issueInventory.markFixed", args: ["prId": prId, "itemIds": itemIds])
-  }
-
-  func markIssueInventoryDismissed(prId: String, itemIds: [String], reason: String) async throws {
-    _ = try await sendCommand(action: "prs.issueInventory.markDismissed", args: [
-      "prId": prId,
-      "itemIds": itemIds,
-      "reason": reason,
-    ])
-  }
-
-  func markIssueInventoryEscalated(prId: String, itemIds: [String]) async throws {
-    _ = try await sendCommand(action: "prs.issueInventory.markEscalated", args: ["prId": prId, "itemIds": itemIds])
-  }
-
-  func resetIssueInventory(prId: String) async throws {
-    _ = try await sendCommand(action: "prs.issueInventory.reset", args: ["prId": prId])
-  }
-
-  func fetchPipelineSettings(prId: String) async throws -> PipelineSettings {
-    // Delegate to `getPipelineSettings` so both paths handle the server's
-    // `NSNull` response uniformly instead of crashing with a decode error
-    // when the desktop returns "no settings" after a save.
-    if let settings = try await getPipelineSettings(prId: prId) {
-      return settings
-    }
-    return PipelineSettings(
-      autoMerge: false,
-      mergeMethod: "repo_default",
-      maxRounds: 5,
-      onRebaseNeeded: "pause",
-      conflictStrategy: "pause",
-      forceFinalizeMode: "off",
-      forceFinalizeRequireNoCiFailures: true,
-      atCapPolicy: "ci_retry_once",
-      atCapWaitMinutes: 30,
-      atCapCiRetryMax: 3,
-      forceMergeRequiresConfirmation: true,
-      earlyMergeOnGreen: true
-    )
-  }
-
-  func savePipelineSettings(prId: String, autoMerge: Bool? = nil, mergeMethod: String? = nil, maxRounds: Int? = nil, onRebaseNeeded: String? = nil) async throws {
-    var settings: [String: Any] = [:]
-    if let autoMerge { settings["autoMerge"] = autoMerge }
-    if let mergeMethod { settings["mergeMethod"] = mergeMethod }
-    if let maxRounds { settings["maxRounds"] = maxRounds }
-    if let onRebaseNeeded { settings["onRebaseNeeded"] = onRebaseNeeded }
-    _ = try await sendCommand(action: "prs.pipelineSettings.save", args: ["prId": prId, "settings": settings])
-  }
-
-  func savePipelineSettings(prId: String, settings: PipelineSettings) async throws {
-    var payload: [String: Any] = [
-      "autoMerge": settings.autoMerge,
-      "mergeMethod": settings.mergeMethod,
-      "maxRounds": settings.maxRounds,
-      "onRebaseNeeded": settings.onRebaseNeeded,
-    ]
-    if let conflictStrategy = settings.conflictStrategy { payload["conflictStrategy"] = conflictStrategy }
-    if let autoAgentSettings = settings.autoAgentSettings {
-      var autoAgentPayload: [String: Any] = [:]
-      if let provider = autoAgentSettings.provider { autoAgentPayload["provider"] = provider }
-      if let model = autoAgentSettings.model { autoAgentPayload["model"] = model }
-      if let reasoningEffort = autoAgentSettings.reasoningEffort { autoAgentPayload["reasoningEffort"] = reasoningEffort }
-      if let permissionMode = autoAgentSettings.permissionMode { autoAgentPayload["permissionMode"] = permissionMode }
-      if let confidenceThreshold = autoAgentSettings.confidenceThreshold { autoAgentPayload["confidenceThreshold"] = confidenceThreshold }
-      payload["autoAgentSettings"] = autoAgentPayload
-    }
-    if let forceFinalizeMode = settings.forceFinalizeMode { payload["forceFinalizeMode"] = forceFinalizeMode }
-    if let forceFinalizeRequireNoCiFailures = settings.forceFinalizeRequireNoCiFailures { payload["forceFinalizeRequireNoCiFailures"] = forceFinalizeRequireNoCiFailures }
-    if let atCapPolicy = settings.atCapPolicy { payload["atCapPolicy"] = atCapPolicy }
-    if let atCapWaitMinutes = settings.atCapWaitMinutes { payload["atCapWaitMinutes"] = atCapWaitMinutes }
-    if let atCapCiRetryMax = settings.atCapCiRetryMax { payload["atCapCiRetryMax"] = atCapCiRetryMax }
-    if let forceMergeRequiresConfirmation = settings.forceMergeRequiresConfirmation { payload["forceMergeRequiresConfirmation"] = forceMergeRequiresConfirmation }
-    if let earlyMergeOnGreen = settings.earlyMergeOnGreen { payload["earlyMergeOnGreen"] = earlyMergeOnGreen }
-    _ = try await sendCommand(action: "prs.pipelineSettings.save", args: [
-      "prId": prId,
-      "settings": payload,
-    ])
-  }
-
-  func getPipelineSettings(prId: String) async throws -> PipelineSettings? {
-    let response = try await sendCommand(action: "prs.pipelineSettings.get", args: ["prId": prId])
+  /// Fetch the persisted Path-to-Merge runtime row for ``prId`` (the watcher's
+  /// status, active session/lane, last poll time, etc.). Returns `nil` when no
+  /// runtime row exists yet (the host responds with `NSNull`).
+  func fetchConvergenceRuntime(prId: String) async throws -> ConvergenceRuntimeState? {
+    let response = try await sendCommand(action: "prs.convergenceState.get", args: ["prId": prId])
     if response is NSNull { return nil }
     if let payload = response as? [String: Any], payload["queued"] as? Bool == true {
-      throw QueuedRemoteCommandError(action: "prs.pipelineSettings.get")
+      throw QueuedRemoteCommandError(action: "prs.convergenceState.get")
     }
-    return try decode(response, as: PipelineSettings.self)
-  }
-
-  func deletePipelineSettings(prId: String) async throws {
-    _ = try await sendCommand(action: "prs.pipelineSettings.delete", args: ["prId": prId])
+    return try decode(response, as: ConvergenceRuntimeState.self)
   }
 
   /// Start the desktop's Path-to-Merge convergence loop for ``prId``. The host
@@ -4981,15 +4890,19 @@ final class SyncService: ObservableObject {
   ///   - scope: which input the iteration's fix agent should consider —
   ///     `"checks"`, `"comments"`, or `"both"`. `nil` defers to the host
   ///     default.
-  ///   - additionalInstructions: free-form text appended to each iteration
-  ///     prompt.
+  ///   - additionalInstructions: free-form text appended to the watcher's
+  ///     standing contract.
+  ///   - pollIntervalSeconds: cadence (seconds) at which the host injects a
+  ///     fresh watch turn into the watcher chat. The host clamps to [60, 3600];
+  ///     `nil` defers to the host default.
   @discardableResult
   func startPathToMerge(
     prId: String,
     modelId: String? = nil,
     reasoning: String? = nil,
     scope: String? = nil,
-    additionalInstructions: String? = nil
+    additionalInstructions: String? = nil,
+    pollIntervalSeconds: Int? = nil
   ) async throws -> StartPathToMergeResult {
     var payload: [String: Any] = ["prId": prId]
     if let modelId, !modelId.isEmpty { payload["modelId"] = modelId }
@@ -4997,6 +4910,9 @@ final class SyncService: ObservableObject {
     if let scope, !scope.isEmpty { payload["scope"] = scope }
     if let additionalInstructions, !additionalInstructions.isEmpty {
       payload["additionalInstructions"] = additionalInstructions
+    }
+    if let pollIntervalSeconds {
+      payload["pollIntervalSeconds"] = pollIntervalSeconds
     }
     return try await sendDecodableCommand(
       action: "prs.pathToMerge.start",

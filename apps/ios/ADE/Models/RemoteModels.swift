@@ -3510,74 +3510,6 @@ struct PrWorkflowCard: Codable, Identifiable, Equatable {
   }
 }
 
-/// Tunables used by the conflict-resolver agent when
-/// ``PipelineSettings.conflictStrategy`` is `auto`. Mirrors desktop's
-/// `AutoConflictAgentSettings`. All fields are optional so older payloads
-/// that don't carry them still decode cleanly.
-struct AutoConflictAgentSettings: Codable, Equatable {
-  var provider: String?
-  var model: String?
-  var reasoningEffort: String?
-  var permissionMode: String?
-  var confidenceThreshold: Double?
-}
-
-/// Stack-wide pipeline settings for a PR's path-to-merge convergence loop.
-///
-/// The five fields originally exposed on iOS (`autoMerge`, `mergeMethod`,
-/// `maxRounds`, `onRebaseNeeded`) are still required for back-compat with
-/// older sync payloads. The newer fields added by the Path-to-Merge feature
-/// (`conflictStrategy`, `autoAgentSettings`, `forceFinalizeMode`,
-/// `forceFinalizeRequireNoCiFailures`, at-cap policy fields,
-/// `earlyMergeOnGreen`) are optional —
-/// when missing, a synthesized value is filled in from `onRebaseNeeded` so
-/// existing read paths keep working.
-struct PipelineSettings: Codable, Equatable {
-  var autoMerge: Bool
-  var mergeMethod: String
-  var maxRounds: Int
-  var onRebaseNeeded: String
-  var conflictStrategy: String?
-  var autoAgentSettings: AutoConflictAgentSettings?
-  var forceFinalizeMode: String?
-  var forceFinalizeRequireNoCiFailures: Bool?
-  var atCapPolicy: String?
-  var atCapWaitMinutes: Int?
-  var atCapCiRetryMax: Int?
-  var forceMergeRequiresConfirmation: Bool?
-  var earlyMergeOnGreen: Bool?
-
-  init(
-    autoMerge: Bool,
-    mergeMethod: String,
-    maxRounds: Int,
-    onRebaseNeeded: String,
-    conflictStrategy: String? = nil,
-    autoAgentSettings: AutoConflictAgentSettings? = nil,
-    forceFinalizeMode: String? = nil,
-    forceFinalizeRequireNoCiFailures: Bool? = nil,
-    atCapPolicy: String? = nil,
-    atCapWaitMinutes: Int? = nil,
-    atCapCiRetryMax: Int? = nil,
-    forceMergeRequiresConfirmation: Bool? = nil,
-    earlyMergeOnGreen: Bool? = nil
-  ) {
-    self.autoMerge = autoMerge
-    self.mergeMethod = mergeMethod
-    self.maxRounds = maxRounds
-    self.onRebaseNeeded = onRebaseNeeded
-    self.conflictStrategy = conflictStrategy
-    self.autoAgentSettings = autoAgentSettings
-    self.forceFinalizeMode = forceFinalizeMode
-    self.forceFinalizeRequireNoCiFailures = forceFinalizeRequireNoCiFailures
-    self.atCapPolicy = atCapPolicy
-    self.atCapWaitMinutes = atCapWaitMinutes
-    self.atCapCiRetryMax = atCapCiRetryMax
-    self.forceMergeRequiresConfirmation = forceMergeRequiresConfirmation
-    self.earlyMergeOnGreen = earlyMergeOnGreen
-  }
-}
-
 struct LaneWorktreeLockInfo: Codable, Equatable {
   var worktreeKey: String
   var worktreePath: String
@@ -3615,27 +3547,6 @@ struct StopPathToMergeResult: Codable, Equatable {
   var runtime: ConvergenceRuntimeState?
 }
 
-struct ConvergenceRoundStat: Codable, Identifiable, Equatable {
-  var id: Int { round }
-  var round: Int
-  var newCount: Int
-  var fixedCount: Int
-  var dismissedCount: Int
-}
-
-struct ConvergenceStatus: Codable, Equatable {
-  var currentRound: Int
-  var maxRounds: Int
-  var issuesPerRound: [ConvergenceRoundStat]
-  var totalNew: Int
-  var totalFixed: Int
-  var totalDismissed: Int
-  var totalEscalated: Int
-  var totalSentToAgent: Int
-  var isConverging: Bool
-  var canAutoAdvance: Bool
-}
-
 struct ConvergenceRuntimeState: Codable, Equatable {
   var prId: String
   var autoConvergeEnabled: Bool
@@ -3659,39 +3570,6 @@ struct ConvergenceRuntimeState: Codable, Equatable {
   var lastStoppedAt: String?
   var createdAt: String
   var updatedAt: String
-}
-
-struct IssueInventoryItem: Codable, Identifiable, Equatable {
-  var id: String
-  var prId: String
-  var source: String
-  var type: String
-  var externalId: String
-  var state: String
-  var round: Int
-  var filePath: String?
-  var line: Int?
-  var severity: String?
-  var headline: String
-  var body: String?
-  var author: String?
-  var url: String?
-  var dismissReason: String?
-  var agentSessionId: String?
-  var threadCommentCount: Int?
-  var threadLatestCommentId: String?
-  var threadLatestCommentAuthor: String?
-  var threadLatestCommentAt: String?
-  var threadLatestCommentSource: String?
-  var createdAt: String
-  var updatedAt: String
-}
-
-struct IssueInventorySnapshot: Codable, Equatable {
-  var prId: String
-  var items: [IssueInventoryItem]
-  var convergence: ConvergenceStatus
-  var runtime: ConvergenceRuntimeState
 }
 
 struct CreateIntegrationLaneForProposalResult: Codable, Equatable {

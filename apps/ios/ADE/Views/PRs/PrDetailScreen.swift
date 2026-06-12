@@ -15,8 +15,7 @@ struct PrDetailView: View {
   @State private var activityEvents: [PrActivityEvent] = []
   @State private var deployments: [PrDeployment] = []
   @State private var aiSummary: AiReviewSummary?
-  @State private var issueInventory: IssueInventorySnapshot?
-  @State private var pipelineSettings: PipelineSettings?
+  @State private var convergenceRuntime: ConvergenceRuntimeState?
   @State private var groupMembers: [PrGroupMemberSummary] = []
   @State private var capabilities: PrActionCapabilities?
   @State private var selectedTab: PrDetailTab = .overview
@@ -374,9 +373,7 @@ struct PrDetailView: View {
     case .overview:
       return nil
     case .convergence:
-      let items = issueInventory?.items ?? []
-      let active = items.filter { $0.state == "new" || $0.state == "sent_to_agent" || $0.state == "escalated" }.count
-      return active > 0 ? active : nil
+      return (convergenceRuntime?.autoConvergeEnabled ?? false) ? 1 : nil
     case .files:
       let count = snapshot?.files.count ?? 0
       return count > 0 ? count : nil
@@ -521,38 +518,19 @@ struct PrDetailView: View {
           snapshot: snapshot,
           groupMembers: groupMembers,
           reviewThreads: reviewThreads,
-          deployments: deployments,
-          aiSummary: aiSummary,
-          issueInventory: issueInventory,
-          pipelineSettings: pipelineSettings,
+          runtime: convergenceRuntime,
           capabilities: capabilities,
           isLive: canRunPrActions,
-          aiResolution: aiResolution,
-          isAiResolverBusy: isAiResolverBusy,
-          onRefreshAiSummary: refreshAiSummary,
-          onRerunChecks: rerunChecks,
-          onSyncIssueInventory: syncIssueInventory,
-          onMarkIssueFixed: { itemId in markIssueInventory(itemId: itemId, action: .fixed) },
-          onDismissIssue: { itemId in markIssueInventory(itemId: itemId, action: .dismissed) },
-          onEscalateIssue: { itemId in markIssueInventory(itemId: itemId, action: .escalated) },
-          onResetIssueInventory: resetIssueInventory,
-          onToggleAutoMerge: toggleAutoMerge,
-          onSetPipelineMergeMethod: setPipelineMergeMethod,
-          onSetPipelineMaxRounds: setPipelineMaxRounds,
-          onSetPipelineRebasePolicy: setPipelineRebasePolicy,
-          onSetPipelineConflictStrategy: setPipelineConflictStrategy,
-          onSetAtCapPolicy: setPipelineAtCapPolicy,
-          onSetAtCapWaitMinutes: setPipelineAtCapWaitMinutes,
-          onSetAtCapCiRetryMax: setPipelineAtCapCiRetryMax,
-          onSetForceMergeRequiresConfirmation: setPipelineForceMergeRequiresConfirmation,
-          onSetForceFinalizeRequireNoCiFailures: setPipelineForceFinalizeRequireNoCiFailures,
-          onSetEarlyMergeOnGreen: setPipelineEarlyMergeOnGreen,
-          onCopyPrompt: copyConvergencePrompt,
-          onLaunchAiResolver: { aiResolverSheetPresented = true },
-          onStopAiResolver: stopAiResolver,
           isPathToMergeBusy: isPathToMergeBusy,
-          onStartPathToMerge: startPathToMerge,
-          onStopPathToMerge: stopPathToMerge
+          onStartPathToMerge: { gating, instructions, pollSeconds in
+            startPathToMerge(
+              gating: gating,
+              additionalInstructions: instructions,
+              pollIntervalSeconds: pollSeconds
+            )
+          },
+          onStopPathToMerge: stopPathToMerge,
+          onOpenWatcherChat: openWatcherChat
         )
         .prListRow()
       case .files:
@@ -1214,8 +1192,7 @@ struct PrDetailView: View {
       let activityTask = shouldFetchLiveSidecars ? Task { try? await syncService.fetchPullRequestActivity(prId: sidecarPrId) } : nil
       let deploymentsTask = shouldFetchLiveSidecars ? Task { try? await syncService.fetchPullRequestDeployments(prId: sidecarPrId) } : nil
       let aiSummaryTask = shouldFetchLiveSidecars ? Task { try? await syncService.fetchPullRequestAiSummary(prId: sidecarPrId) } : nil
-      let issueInventoryTask = shouldFetchLiveSidecars ? Task { try? await syncService.fetchIssueInventory(prId: sidecarPrId) } : nil
-      let pipelineSettingsTask = shouldFetchLiveSidecars ? Task { try? await syncService.fetchPipelineSettings(prId: sidecarPrId) } : nil
+      let convergenceRuntimeTask = shouldFetchLiveSidecars ? Task { try? await syncService.fetchConvergenceRuntime(prId: sidecarPrId) } : nil
       if let reviewThreadsTask {
         reviewThreads = await reviewThreadsTask.value ?? []
       }
@@ -1231,11 +1208,8 @@ struct PrDetailView: View {
       if let summary = await aiSummaryTask?.value {
         aiSummary = summary
       }
-      if let inventory = await issueInventoryTask?.value {
-        issueInventory = inventory
-      }
-      if let settings = await pipelineSettingsTask?.value {
-        pipelineSettings = settings
+      if let runtime = await convergenceRuntimeTask?.value {
+        convergenceRuntime = runtime
       }
       if let capabilitiesTask {
         capabilities = await capabilitiesTask.value
@@ -1277,8 +1251,7 @@ struct PrDetailView: View {
     activityEvents = entry.activityEvents
     deployments = entry.deployments
     aiSummary = entry.aiSummary
-    issueInventory = entry.issueInventory
-    pipelineSettings = entry.pipelineSettings
+    convergenceRuntime = entry.convergenceRuntime
     groupMembers = entry.groupMembers
     capabilities = entry.capabilities
     // Treat the cache as a successful prior load so the UI shows content (not
@@ -1307,8 +1280,7 @@ struct PrDetailView: View {
         activityEvents: activityEvents,
         deployments: deployments,
         aiSummary: aiSummary,
-        issueInventory: issueInventory,
-        pipelineSettings: pipelineSettings,
+        convergenceRuntime: convergenceRuntime,
         groupMembers: groupMembers,
         capabilities: capabilities,
         loadedAt: Date()
@@ -1475,20 +1447,32 @@ struct PrDetailView: View {
     }
   }
 
-  /// Kick the desktop's Path-to-Merge convergence loop on this PR. The host
-  /// returns the updated runtime row, which we splice into the local issue
-  /// inventory snapshot so the convergence panel reflects the new state
-  /// without waiting for the next sync push.
-  private func startPathToMerge() {
+  /// Launch the desktop's Path-to-Merge watcher on this PR. The host spins up a
+  /// visible watcher chat in the PR's lane and returns the updated runtime row,
+  /// which we store locally so the panel flips to its running state without
+  /// waiting for the next sync push. Gating ("checks"/"comments"/"both"),
+  /// free-form instructions, and the poll interval are forwarded into the
+  /// watcher's seed contract.
+  private func startPathToMerge(
+    gating: String,
+    additionalInstructions: String,
+    pollIntervalSeconds: Int
+  ) {
     guard !isPathToMergeBusy else { return }
     let service = syncService
     let key = pathToMergeKey
     let actionablePrId = effectivePrId
+    let trimmedInstructions = additionalInstructions.trimmingCharacters(in: .whitespacesAndNewlines)
     let token = service.beginPrAction(key: key, label: "Starting Path to Merge")
     Task { @MainActor in
       defer { service.endPrAction(key: key, token: token) }
       do {
-        let result = try await service.startPathToMerge(prId: actionablePrId)
+        let result = try await service.startPathToMerge(
+          prId: actionablePrId,
+          scope: gating,
+          additionalInstructions: trimmedInstructions.isEmpty ? nil : trimmedInstructions,
+          pollIntervalSeconds: pollIntervalSeconds
+        )
         applyConvergenceRuntime(result.runtime)
         if !result.scheduled {
           errorMessage = result.blockedBy?.message ?? "Path to Merge is blocked by another lane task."
@@ -1501,9 +1485,9 @@ struct PrDetailView: View {
     }
   }
 
-  /// Stop the convergence loop. Mirrors {@link startPathToMerge} but updates
-  /// the runtime to the host-returned snapshot (when present) so the UI
-  /// reflects the canonical post-stop state, including any pause reason.
+  /// Stop the watcher loop. Mirrors {@link startPathToMerge} but updates the
+  /// runtime to the host-returned snapshot (when present) so the UI reflects the
+  /// canonical post-stop state, including any pause reason.
   private func stopPathToMerge() {
     guard !isPathToMergeBusy else { return }
     let service = syncService
@@ -1524,16 +1508,17 @@ struct PrDetailView: View {
     }
   }
 
-  /// Replace the runtime row inside `issueInventory` (if any) with `next`.
-  /// Used by the start/stop handlers so the mode toggle flips immediately.
+  /// Store the latest runtime row so the panel flips between its launch and
+  /// running states immediately, ahead of the next sync push.
   private func applyConvergenceRuntime(_ next: ConvergenceRuntimeState) {
-    guard let current = issueInventory else { return }
-    issueInventory = IssueInventorySnapshot(
-      prId: current.prId,
-      items: current.items,
-      convergence: current.convergence,
-      runtime: next
-    )
+    convergenceRuntime = next
+  }
+
+  /// Open the visible watcher chat session in the Work tab via the host-provided
+  /// deeplink. No-op until the host attaches a session href to the runtime.
+  private func openWatcherChat() {
+    guard let href = convergenceRuntime?.activeHref, let url = URL(string: href) else { return }
+    UIApplication.shared.open(url)
   }
 
   private func refreshAiSummary() {
@@ -1550,194 +1535,6 @@ struct PrDetailView: View {
       } catch {
         errorMessage = error.localizedDescription
       }
-    }
-  }
-
-  private func syncIssueInventory() {
-    runPrAction("Syncing issue inventory") {
-      let inventory = try await syncService.syncIssueInventory(prId: effectivePrId)
-      await MainActor.run {
-        issueInventory = inventory
-      }
-    }
-  }
-
-  private enum IssueInventoryAction {
-    case fixed
-    case dismissed
-    case escalated
-  }
-
-  private func markIssueInventory(itemId: String, action: IssueInventoryAction) {
-    let label: String
-    switch action {
-    case .fixed: label = "Marking issue fixed"
-    case .dismissed: label = "Dismissing issue"
-    case .escalated: label = "Escalating issue"
-    }
-    runPrAction(label) {
-      switch action {
-      case .fixed:
-        try await syncService.markIssueInventoryFixed(prId: effectivePrId, itemIds: [itemId])
-      case .dismissed:
-        try await syncService.markIssueInventoryDismissed(prId: effectivePrId, itemIds: [itemId], reason: "Dismissed from iOS")
-      case .escalated:
-        try await syncService.markIssueInventoryEscalated(prId: effectivePrId, itemIds: [itemId])
-      }
-    }
-  }
-
-  private func resetIssueInventory() {
-    runPrAction("Resetting issue inventory") {
-      try await syncService.resetIssueInventory(prId: effectivePrId)
-      await MainActor.run {
-        issueInventory = nil
-      }
-    }
-  }
-
-  private func defaultPipelineSettings() -> PipelineSettings {
-    PipelineSettings(
-      autoMerge: false,
-      mergeMethod: "repo_default",
-      maxRounds: 5,
-      onRebaseNeeded: "pause",
-      conflictStrategy: "pause",
-      autoAgentSettings: defaultAutoConflictAgentSettings(),
-      forceFinalizeMode: "off",
-      forceFinalizeRequireNoCiFailures: true,
-      atCapPolicy: "ci_retry_once",
-      atCapWaitMinutes: 30,
-      atCapCiRetryMax: 3,
-      forceMergeRequiresConfirmation: true,
-      earlyMergeOnGreen: true
-    )
-  }
-
-  private func updatePipelineSettings(_ label: String, mutate: @escaping (inout PipelineSettings) -> Void) {
-    runPrAction(label) {
-      var next: PipelineSettings
-      if let current = pipelineSettings {
-        next = current
-      } else if let fetched = try? await syncService.fetchPipelineSettings(prId: effectivePrId) {
-        next = fetched
-      } else {
-        next = defaultPipelineSettings()
-      }
-      mutate(&next)
-      try await syncService.savePipelineSettings(prId: effectivePrId, settings: next)
-      let settings = try await syncService.fetchPipelineSettings(prId: effectivePrId)
-      await MainActor.run {
-        pipelineSettings = settings
-      }
-    }
-  }
-
-  private func toggleAutoMerge() {
-    let next = !(pipelineSettings?.autoMerge ?? false)
-    updatePipelineSettings(next ? "Enabling auto-merge" : "Disabling auto-merge") { settings in
-      settings.autoMerge = next
-    }
-  }
-
-  private func setPipelineMergeMethod(_ method: String) {
-    updatePipelineSettings("Updating merge method") { settings in
-      settings.mergeMethod = method
-    }
-  }
-
-  private func setPipelineMaxRounds(_ maxRounds: Int) {
-    updatePipelineSettings("Updating max rounds") { settings in
-      settings.maxRounds = maxRounds
-    }
-  }
-
-  private func setPipelineRebasePolicy(_ policy: String) {
-    updatePipelineSettings("Updating rebase policy") { settings in
-      settings.onRebaseNeeded = policy
-      settings.conflictStrategy = policy == "auto_rebase" ? "rebase" : "pause"
-    }
-  }
-
-  private func setPipelineConflictStrategy(_ strategy: String) {
-    updatePipelineSettings("Updating conflict strategy") { settings in
-      settings.conflictStrategy = strategy
-      settings.onRebaseNeeded = strategy == "rebase" ? "auto_rebase" : "pause"
-      if strategy == "auto" {
-        settings.autoAgentSettings = resolvedAutoConflictAgentSettings(from: settings.autoAgentSettings)
-      }
-    }
-  }
-
-  private func defaultAutoConflictAgentSettings() -> AutoConflictAgentSettings {
-    AutoConflictAgentSettings(
-      provider: nil,
-      model: nil,
-      reasoningEffort: nil,
-      permissionMode: nil,
-      confidenceThreshold: nil
-    )
-  }
-
-  private func resolvedAutoConflictAgentSettings(from current: AutoConflictAgentSettings?) -> AutoConflictAgentSettings {
-    let model = trimmedNonEmpty(current?.model)
-    return AutoConflictAgentSettings(
-      provider: trimmedNonEmpty(current?.provider) ?? prAutoConflictAgentProvider(for: model) ?? "codex",
-      model: model,
-      reasoningEffort: trimmedNonEmpty(current?.reasoningEffort),
-      permissionMode: trimmedNonEmpty(current?.permissionMode),
-      confidenceThreshold: current?.confidenceThreshold
-    )
-  }
-
-  private func trimmedNonEmpty(_ value: String?) -> String? {
-    let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-    return trimmed.isEmpty ? nil : trimmed
-  }
-
-  private func prAutoConflictAgentProvider(for model: String?) -> String? {
-    let provider = workModelCatalogGroupKey(for: model ?? "", currentProvider: "")
-    return provider == "claude" || provider == "codex" ? provider : nil
-  }
-
-  private func setPipelineAtCapPolicy(_ policy: String) {
-    updatePipelineSettings("Updating at-cap policy") { settings in
-      settings.atCapPolicy = policy
-      if policy == "force_merge" {
-        settings.forceFinalizeMode = "force_merge"
-      } else if settings.forceFinalizeMode == "force_merge" {
-        settings.forceFinalizeMode = "off"
-      }
-    }
-  }
-
-  private func setPipelineAtCapWaitMinutes(_ minutes: Int) {
-    updatePipelineSettings("Updating at-cap wait") { settings in
-      settings.atCapWaitMinutes = max(1, min(180, minutes))
-    }
-  }
-
-  private func setPipelineAtCapCiRetryMax(_ maxRetries: Int) {
-    updatePipelineSettings("Updating CI retry max") { settings in
-      settings.atCapCiRetryMax = max(1, min(10, maxRetries))
-    }
-  }
-
-  private func setPipelineForceMergeRequiresConfirmation(_ requiresConfirmation: Bool) {
-    updatePipelineSettings("Updating force-merge confirmation") { settings in
-      settings.forceMergeRequiresConfirmation = requiresConfirmation
-    }
-  }
-
-  private func setPipelineForceFinalizeRequireNoCiFailures(_ requiresCleanCi: Bool) {
-    updatePipelineSettings("Updating force-merge CI guard") { settings in
-      settings.forceFinalizeRequireNoCiFailures = requiresCleanCi
-    }
-  }
-
-  private func setPipelineEarlyMergeOnGreen(_ enabled: Bool) {
-    updatePipelineSettings("Updating early merge") { settings in
-      settings.earlyMergeOnGreen = enabled
     }
   }
 
@@ -1833,62 +1630,6 @@ struct PrDetailView: View {
       ADEHaptics.error()
       errorMessage = error.localizedDescription
     }
-  }
-
-  /// Builds a markdown-style prompt summarising unresolved PR feedback
-  /// and failing checks, then copies it to the system clipboard. Mirrors the
-  /// "Copy Prompt" affordance on the desktop Path-to-Merge view — the user can
-  /// paste this into Claude/Codex/etc to bootstrap a fix session.
-  private func copyConvergencePrompt() {
-    var lines: [String] = []
-    let pr = currentPr
-    lines.append("# PR #\(pr.githubPrNumber) — \(pr.title)")
-    if !pr.headBranch.isEmpty || !pr.baseBranch.isEmpty {
-      let head = pr.headBranch.isEmpty ? "head" : pr.headBranch
-      let base = pr.baseBranch.isEmpty ? "base" : pr.baseBranch
-      lines.append("Branch: `\(head)` → `\(base)`")
-    }
-    if !pr.githubUrl.isEmpty { lines.append(pr.githubUrl) }
-
-    let active = (issueInventory?.items ?? []).filter {
-      $0.state == "new" || $0.state == "sent_to_agent" || $0.state == "escalated"
-    }
-    if !active.isEmpty {
-      lines.append("")
-      lines.append("## Unresolved PR feedback (\(active.count))")
-      for item in active {
-        let severity = (item.severity ?? "note").uppercased()
-        var location = ""
-        if let path = item.filePath, !path.isEmpty {
-          location = item.line.map { " — `\(path):\($0)`" } ?? " — `\(path)`"
-        }
-        lines.append("- **[\(severity)]** \(item.headline)\(location)")
-        if let body = item.body, !body.isEmpty {
-          let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines).prefix(280)
-          lines.append("  > \(trimmed)")
-        }
-      }
-    }
-
-    let failed = (snapshot?.checks ?? []).filter { check in
-      check.status == "completed" && check.conclusion != nil &&
-        check.conclusion != "success" && check.conclusion != "neutral" && check.conclusion != "skipped"
-    }
-    if !failed.isEmpty {
-      lines.append("")
-      lines.append("## Failing checks (\(failed.count))")
-      for check in failed {
-        let context = check.conclusion ?? check.status
-        lines.append("- `\(check.name)` — \(context)")
-      }
-    }
-
-    lines.append("")
-    lines.append("Resolve these issues, push fixes to `\(pr.headBranch.isEmpty ? "this branch" : pr.headBranch)`, and bring the PR to a green merge gate.")
-
-    UIPasteboard.general.string = lines.joined(separator: "\n")
-    ADEHaptics.success()
-    actionMessage = "Convergence prompt copied to clipboard."
   }
 
   private func copyFilePath(_ file: PrFile) {

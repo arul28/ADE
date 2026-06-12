@@ -967,7 +967,6 @@ export function WorkflowsTab({
               }}
               onResolverPermissionChange={setResolverPermissionMode}
               onRefresh={refreshWorkflows}
-              onNavigate={(path) => navigate(path)}
             />
           ) : (
             <RebaseHistoryPanel needs={rebaseByView.history} />

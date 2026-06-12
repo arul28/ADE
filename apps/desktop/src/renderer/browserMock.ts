@@ -2590,37 +2590,6 @@ function normalizeGitHubSnapshot(snapshot: any): any {
   };
 }
 
-function buildEmptyIssueInventorySnapshot(prId: string): any {
-  const runtime = createDefaultConvergenceRuntime(prId);
-  return {
-    prId,
-    items: [],
-    convergence: {
-      currentRound: 0,
-      maxRounds: 5,
-      issuesPerRound: [],
-      totalNew: 0,
-      totalFixed: 0,
-      totalDismissed: 0,
-      totalEscalated: 0,
-      totalSentToAgent: 0,
-      isConverging: false,
-      canAutoAdvance: false,
-    },
-    runtime,
-  };
-}
-
-const MOCK_ISSUE_INVENTORY_BY_PR = new Map<string, any>();
-
-function getIssueInventorySnapshot(prId: string): any {
-  const stored = MOCK_ISSUE_INVENTORY_BY_PR.get(prId);
-  if (stored) return stored;
-  const empty = buildEmptyIssueInventorySnapshot(prId);
-  MOCK_ISSUE_INVENTORY_BY_PR.set(prId, empty);
-  return empty;
-}
-
 function buildCreateLaneFromPrPreflight(args: any): any {
   const repoOwner = String(args?.repoOwner ?? "mock");
   const repoName = String(args?.repoName ?? "repo");
@@ -5699,11 +5668,6 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         error: null,
         context: { sourceTab: "normal" as const, laneId: "lane-1" },
       }),
-      issueResolutionStart: async () => ({
-        sessionId: "mock-pr-issue-session",
-        laneId: "lane-dashboard",
-        href: "/work?laneId=lane-dashboard&sessionId=mock-pr-issue-session",
-      }),
       convergenceStateGet: async (prId: string) => {
         const stored =
           MOCK_CONVERGENCE_RUNTIME[prId] ??
@@ -5804,15 +5768,6 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       pipelineSettingsDelete: async (_prId: string) => {
         // No-op in browser mock.
       },
-      rebaseResolutionStart: async () => ({
-        sessionId: "mock-rebase-session",
-        laneId: "lane-dashboard",
-        href: "/work?laneId=lane-dashboard&sessionId=mock-rebase-session",
-      }),
-      issueResolutionPreviewPrompt: async () => ({
-        title: "Resolve PR #1 issues",
-        prompt: "Mock PR issue resolver prompt",
-      }),
       aiResolutionInput: resolvedArg(undefined),
       aiResolutionStop: resolvedArg(undefined),
       onAiResolutionEvent: noop,
@@ -5846,25 +5801,9 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       }),
       setReviewThreadResolved: resolvedArg(undefined),
       reactToComment: resolvedArg(undefined),
-      launchIssueResolutionFromThread: resolvedArg({
-        sessionId: "mock-thread-resolution-session",
-        laneId: "lane-dashboard",
-        href: "/work?laneId=lane-dashboard&sessionId=mock-thread-resolution-session",
-      }),
       cleanupBranch: resolvedArg({ deleted: false, reason: "browser-mock" }),
       reorderQueuePrs: resolvedArg(undefined),
       aiResolutionGetSession: resolvedArg(null),
-      issueInventorySync: async (prId: string) => getIssueInventorySnapshot(prId),
-      issueInventoryGet: async (prId: string) => getIssueInventorySnapshot(prId),
-      issueInventoryGetNew: async (_prId: string) => [],
-      issueInventoryMarkFixed: resolvedArg2(undefined),
-      issueInventoryMarkDismissed: resolvedArg2(undefined),
-      issueInventoryMarkEscalated: resolvedArg2(undefined),
-      issueInventoryGetConvergence: async (prId: string) =>
-        getIssueInventorySnapshot(prId).convergence,
-      issueInventoryReset: async (prId: string) => {
-        MOCK_ISSUE_INVENTORY_BY_PR.set(prId, buildEmptyIssueInventorySnapshot(prId));
-      },
       getActionRuns: resolvedArg([]),
       getActivity: resolvedArg([]),
       addComment: resolvedArg({

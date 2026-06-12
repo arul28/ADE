@@ -1331,7 +1331,6 @@ export type PipelineMergeMethod = MergeMethod | "repo_default";
 
 export type LaneWorktreeLockOwnerKind =
   | "path_to_merge"
-  | "pr_issue_resolution"
   | "conflict_resolution"
   | "integration_resolution"
   | "git_mutation";
@@ -1439,8 +1438,6 @@ export const DEFAULT_AUTO_CONFLICT_AGENT_SETTINGS: AutoConflictAgentSettings = {
 };
 
 export type PipelineSettings = {
-  /** When true, PtM merges the PR as soon as it converges (or hits the early-green gate). */
-  autoMerge: boolean;
   mergeMethod: PipelineMergeMethod;
   /**
    * Hard cap on normal iterations before the loop either gives up or runs the
@@ -1485,7 +1482,6 @@ export type PipelineSettings = {
 };
 
 export const DEFAULT_PIPELINE_SETTINGS: PipelineSettings = {
-  autoMerge: true,
   mergeMethod: "repo_default",
   maxRounds: 5,
   onRebaseNeeded: "pause",
@@ -1593,60 +1589,8 @@ export type PathToMergeStopResult = {
 };
 
 // --------------------------------
-// Issue Inventory (PR Convergence Loop)
+// PR Convergence runtime (Path to Merge watcher)
 // --------------------------------
-
-export type IssueInventoryState = "new" | "sent_to_agent" | "fixed" | "dismissed" | "escalated";
-
-// Well-known sources kept for backwards-compat; any other string is also valid
-// (e.g. "greptile", "seer", "sonarqube") — detectSource() auto-extracts bot names.
-export type IssueSource = "coderabbit" | "codex" | "copilot" | "human" | "ade" | "greptile" | "seer" | "bot" | "unknown" | (string & {});
-
-export type IssueInventoryItem = {
-  id: string;
-  prId: string;
-  source: IssueSource;
-  type: "review_thread" | "check_failure" | "issue_comment";
-  externalId: string;
-  state: IssueInventoryState;
-  round: number;
-  filePath: string | null;
-  line: number | null;
-  severity: "critical" | "major" | "minor" | null;
-  headline: string;
-  body: string | null;
-  author: string | null;
-  url: string | null;
-  dismissReason: string | null;
-  agentSessionId: string | null;
-  threadCommentCount?: number | null;
-  threadLatestCommentId?: string | null;
-  threadLatestCommentAuthor?: string | null;
-  threadLatestCommentAt?: string | null;
-  threadLatestCommentSource?: IssueSource | null;
-  createdAt: string;
-  updatedAt: string;
-};
-
-export type ConvergenceRoundStat = {
-  round: number;
-  newCount: number;
-  fixedCount: number;
-  dismissedCount: number;
-};
-
-export type ConvergenceStatus = {
-  currentRound: number;
-  maxRounds: number;
-  issuesPerRound: ConvergenceRoundStat[];
-  totalNew: number;
-  totalFixed: number;
-  totalDismissed: number;
-  totalEscalated: number;
-  totalSentToAgent: number;
-  isConverging: boolean;
-  canAutoAdvance: boolean;
-};
 
 export const DEFAULT_CONVERGENCE_RUNTIME_STATE: Omit<ConvergenceRuntimeState, "prId"> = {
   autoConvergeEnabled: false,
@@ -1674,13 +1618,6 @@ export const DEFAULT_CONVERGENCE_RUNTIME_STATE: Omit<ConvergenceRuntimeState, "p
   lastStoppedAt: null,
   createdAt: new Date(0).toISOString(),
   updatedAt: new Date(0).toISOString(),
-};
-
-export type IssueInventorySnapshot = {
-  prId: string;
-  items: IssueInventoryItem[];
-  convergence: ConvergenceStatus;
-  runtime: ConvergenceRuntimeState;
 };
 
 // ---------------------------------------------------------------------------

@@ -76,6 +76,7 @@ import type {
   LandQueueNextArgs,
   PauseQueueAutomationArgs,
   PipelineSettings,
+  PrAgentPermissionMode,
   PrGithubCoords,
   PrConvergenceStatePatch,
   LaneEnvInitConfig,
@@ -1550,24 +1551,9 @@ function parseIssueInventoryPrArgs(value: Record<string, unknown>, action: strin
   };
 }
 
-function parseIssueInventoryItemsArgs(value: Record<string, unknown>, action: string): { prId: string; itemIds: string[] } {
-  return {
-    prId: requirePrId(value, action),
-    itemIds: requireStringArray(value.itemIds, `${action} requires itemIds.`),
-  };
-}
-
-function parseIssueInventoryDismissArgs(value: Record<string, unknown>): { prId: string; itemIds: string[]; reason: string } {
-  return {
-    ...parseIssueInventoryItemsArgs(value, "prs.issueInventory.markDismissed"),
-    reason: typeof value.reason === "string" ? value.reason : "",
-  };
-}
-
 function parsePipelineSettingsPatch(value: Record<string, unknown>): { prId: string; settings: Partial<PipelineSettings> } {
   const settings = isRecord(value.settings) ? value.settings : value;
   const patch: Partial<PipelineSettings> = {};
-  if (typeof settings.autoMerge === "boolean") patch.autoMerge = settings.autoMerge;
   const mergeMethod = asTrimmedString(settings.mergeMethod);
   if (mergeMethod && ["merge", "squash", "rebase", "repo_default"].includes(mergeMethod)) {
     patch.mergeMethod = mergeMethod as PipelineSettings["mergeMethod"];
@@ -2980,51 +2966,6 @@ function registerPrAndDeeplinkRemoteCommands({ args, register }: RemoteCommandRe
     await args.prService.reorderQueuePrs(parseReorderQueuePrsArgs(payload));
     return { ok: true };
   });
-  register("prs.issueInventory.sync", { viewerAllowed: true, queueable: true }, async (payload) => {
-    if (!args.issueInventoryService) throw new Error("Issue inventory is not available.");
-    const { prId } = parseIssueInventoryPrArgs(payload, "prs.issueInventory.sync");
-    const [checks, reviewThreads, comments] = await Promise.all([
-      args.prService.getChecks(prId),
-      args.prService.getReviewThreads(prId),
-      args.prService.getComments(prId).catch(() => []),
-    ]);
-    return args.issueInventoryService.syncFromPrData(prId, checks, reviewThreads, comments);
-  });
-  register("prs.issueInventory.get", { viewerAllowed: true }, async (payload) => {
-    if (!args.issueInventoryService) throw new Error("Issue inventory is not available.");
-    return args.issueInventoryService.getInventory(parseIssueInventoryPrArgs(payload, "prs.issueInventory.get").prId);
-  });
-  register("prs.issueInventory.getNew", { viewerAllowed: true }, async (payload) => {
-    if (!args.issueInventoryService) throw new Error("Issue inventory is not available.");
-    return args.issueInventoryService.getNewItems(parseIssueInventoryPrArgs(payload, "prs.issueInventory.getNew").prId);
-  });
-  register("prs.issueInventory.markFixed", { viewerAllowed: true, queueable: true }, async (payload) => {
-    if (!args.issueInventoryService) throw new Error("Issue inventory is not available.");
-    const parsed = parseIssueInventoryItemsArgs(payload, "prs.issueInventory.markFixed");
-    args.issueInventoryService.markFixed(parsed.prId, parsed.itemIds);
-    return { ok: true };
-  });
-  register("prs.issueInventory.markDismissed", { viewerAllowed: true, queueable: true }, async (payload) => {
-    if (!args.issueInventoryService) throw new Error("Issue inventory is not available.");
-    const parsed = parseIssueInventoryDismissArgs(payload);
-    args.issueInventoryService.markDismissed(parsed.prId, parsed.itemIds, parsed.reason);
-    return { ok: true };
-  });
-  register("prs.issueInventory.markEscalated", { viewerAllowed: true, queueable: true }, async (payload) => {
-    if (!args.issueInventoryService) throw new Error("Issue inventory is not available.");
-    const parsed = parseIssueInventoryItemsArgs(payload, "prs.issueInventory.markEscalated");
-    args.issueInventoryService.markEscalated(parsed.prId, parsed.itemIds);
-    return { ok: true };
-  });
-  register("prs.issueInventory.getConvergence", { viewerAllowed: true }, async (payload) => {
-    if (!args.issueInventoryService) throw new Error("Issue inventory is not available.");
-    return args.issueInventoryService.getConvergenceStatus(parseIssueInventoryPrArgs(payload, "prs.issueInventory.getConvergence").prId);
-  });
-  register("prs.issueInventory.reset", { viewerAllowed: true, queueable: true }, async (payload) => {
-    if (!args.issueInventoryService) throw new Error("Issue inventory is not available.");
-    args.issueInventoryService.resetInventory(parseIssueInventoryPrArgs(payload, "prs.issueInventory.reset").prId);
-    return { ok: true };
-  });
   register("prs.convergenceState.get", { viewerAllowed: true }, async (payload) => {
     if (!args.issueInventoryService) throw new Error("Issue inventory is not available.");
     return args.issueInventoryService.getConvergenceRuntime(parseIssueInventoryPrArgs(payload, "prs.convergenceState.get").prId);
@@ -3061,8 +3002,14 @@ function registerPrAndDeeplinkRemoteCommands({ args, register }: RemoteCommandRe
     const { prId } = parseIssueInventoryPrArgs(payload, "prs.pathToMerge.start");
     const modelId = typeof payload?.modelId === "string" ? payload.modelId : null;
     const reasoning = typeof payload?.reasoning === "string" ? payload.reasoning : null;
+    const permissionMode = typeof payload?.permissionMode === "string"
+      ? (payload.permissionMode as PrAgentPermissionMode)
+      : null;
     const additionalInstructions = typeof payload?.additionalInstructions === "string"
       ? payload.additionalInstructions
+      : null;
+    const pollIntervalSeconds = typeof payload?.pollIntervalSeconds === "number"
+      ? payload.pollIntervalSeconds
       : null;
     const rawScope = payload?.scope;
     const scope = rawScope === "checks" || rawScope === "comments" || rawScope === "both"
@@ -3072,8 +3019,10 @@ function registerPrAndDeeplinkRemoteCommands({ args, register }: RemoteCommandRe
       prId,
       modelId,
       reasoning,
+      permissionMode,
       scope,
       additionalInstructions,
+      pollIntervalSeconds,
     });
   });
   register("prs.pathToMerge.stop", { viewerAllowed: true, queueable: true }, async (payload) => {

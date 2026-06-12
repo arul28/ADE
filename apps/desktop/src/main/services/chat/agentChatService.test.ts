@@ -1221,99 +1221,11 @@ function createMockProjectConfigService() {
   } as any;
 }
 
-function createMockIssueInventoryService() {
-  const now = new Date().toISOString();
-  const runtimeByPr = new Map<string, Record<string, unknown>>();
-
-  const defaultRuntime = (prId: string) => ({
-    prId,
-    autoConvergeEnabled: false,
-    status: "idle",
-    pollerStatus: "idle",
-    currentRound: 0,
-    activeSessionId: null,
-    activeLaneId: null,
-    activeHref: null,
-    pauseReason: null,
-    errorMessage: null,
-    lastStartedAt: null,
-    lastPolledAt: null,
-    lastPausedAt: null,
-    lastStoppedAt: null,
-    createdAt: now,
-    updatedAt: now,
-  });
-
-  return {
-    syncFromPrData: vi.fn((prId: string) => {
-      const runtime = { ...defaultRuntime(prId), ...runtimeByPr.get(prId) };
-      return {
-        prId,
-        items: [],
-        convergence: {
-          currentRound: typeof runtime.currentRound === "number" ? runtime.currentRound : 0,
-          maxRounds: 5,
-          issuesPerRound: [],
-          totalNew: 0,
-          totalFixed: 0,
-          totalDismissed: 0,
-          totalEscalated: 0,
-          totalSentToAgent: 0,
-          isConverging: false,
-          canAutoAdvance: false,
-        },
-        runtime,
-      };
-    }),
-    getInventory: vi.fn(),
-    getNewItems: vi.fn(() => []),
-    markSentToAgent: vi.fn(),
-    markFixed: vi.fn(),
-    markDismissed: vi.fn(),
-    markEscalated: vi.fn(),
-    getConvergenceStatus: vi.fn(() => ({
-      currentRound: 0,
-      maxRounds: 5,
-      issuesPerRound: [],
-      totalNew: 0,
-      totalFixed: 0,
-      totalDismissed: 0,
-      totalEscalated: 0,
-      totalSentToAgent: 0,
-      isConverging: false,
-      canAutoAdvance: false,
-    })),
-    resetInventory: vi.fn(),
-    getConvergenceRuntime: vi.fn((prId: string) => ({
-      ...defaultRuntime(prId),
-      ...runtimeByPr.get(prId),
-    })),
-    saveConvergenceRuntime: vi.fn((prId: string, state: Record<string, unknown>) => {
-      const existing = runtimeByPr.get(prId) ?? {};
-      const merged = { ...defaultRuntime(prId), ...existing, ...state };
-      runtimeByPr.set(prId, merged);
-      return merged;
-    }),
-    resetConvergenceRuntime: vi.fn((prId: string) => {
-      runtimeByPr.delete(prId);
-    }),
-    getPipelineSettings: vi.fn(() => ({
-      maxRounds: 5,
-      autoMerge: false,
-      mergeMethod: "repo_default",
-      onRebaseNeeded: "pause",
-    })),
-    savePipelineSettings: vi.fn(),
-    deletePipelineSettings: vi.fn(),
-  } as any;
-}
-
 function createService(overrides: Record<string, unknown> = {}) {
   const logger = createLogger();
   const laneService = createMockLaneService();
   const sessionService = createMockSessionService();
   const projectConfigService = createMockProjectConfigService();
-  const issueInventoryService = createMockIssueInventoryService();
   const aiIntegrationService = {
     summarizeTerminal: vi.fn(async () => ({
       text: "Generated session intelligence",
@@ -1337,14 +1249,13 @@ function createService(overrides: Record<string, unknown> = {}) {
     sessionService,
     projectConfigService,
     aiIntegrationService: aiIntegrationService as any,
-    issueInventoryService,
     logger: logger as any,
     appVersion: "0.0.1-test",
     getDirtyFileTextForPath: () => undefined,
     ...overrides,
   });
 
-  return { service, logger, laneService, sessionService, projectConfigService, issueInventoryService, aiIntegrationService };
+  return { service, logger, laneService, sessionService, projectConfigService, aiIntegrationService };
 }
 
 async function createLoadedOrchestrationRun(leadSessionId = "S-lead") {

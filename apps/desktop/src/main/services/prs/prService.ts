@@ -149,7 +149,7 @@ import type { LinearLiveStatusService } from "../cto/linearLiveStatusService";
 import { publishLinearPrCard } from "../cto/linearLaneCardService";
 import { spawn } from "node:child_process";
 import { runGit, runGitMergeTree, runGitOrThrow } from "../git/git";
-import { shouldAttemptAdminMergeForRestError } from "./pathToMergeOrchestrator";
+import { shouldAttemptAdminMergeForRestError } from "./resolverUtils";
 import { deletePullRequestRowsByIds } from "./pullRequestRowCleanup";
 import { extractFirstJsonObject } from "../ai/utils";
 import { buildIntegrationPreflight } from "./integrationPlanning";

@@ -16,7 +16,6 @@ import {
   CaretRight,
   CheckCircle,
   ChatCircleDots,
-  Sparkle,
   X,
 } from "@phosphor-icons/react";
 
@@ -46,7 +45,6 @@ type PrReviewThreadCardProps = {
   repoOwner: string;
   repoName: string;
   viewerLogin: string | null;
-  modelId?: string | null;
   focused?: boolean;
   onNext?: () => void;
   onPrev?: () => void;
@@ -283,7 +281,6 @@ export const PrReviewThreadCard = memo(
       repoOwner,
       repoName,
       viewerLogin,
-      modelId,
       focused,
       onNext,
       onPrev,
@@ -299,7 +296,7 @@ export const PrReviewThreadCard = memo(
     const [expanded, setExpanded] = useState(!collapsedByDefault);
     const [replyOpen, setReplyOpen] = useState(false);
     const [replyValue, setReplyValue] = useState("");
-    const [busy, setBusy] = useState<"reply" | "resolve" | "fix" | null>(null);
+    const [busy, setBusy] = useState<"reply" | "resolve" | null>(null);
     const [error, setError] = useState<string | null>(null);
     const [localResolved, setLocalResolved] = useState(thread.isResolved);
 
@@ -385,35 +382,6 @@ export const PrReviewThreadCard = memo(
         setBusy(null);
       }
     }, [localResolved, prId, thread.id]);
-
-    const handleAskAiFix = useCallback(async () => {
-      const bridge = window.ade?.prs?.launchIssueResolutionFromThread;
-      if (!bridge) return;
-      setBusy("fix");
-      setError(null);
-      try {
-        const result = await bridge({
-          prId,
-          threadId: thread.id,
-          commentId: thread.comments[0]?.id ?? null,
-          modelId: modelId ?? null,
-          fileContext: thread.path
-            ? {
-                path: thread.path,
-                line: thread.line,
-                startLine: thread.startLine,
-              }
-            : null,
-        });
-        if (result?.href) {
-          navigate(result.href);
-        }
-      } catch (err) {
-        setError(err instanceof Error ? err.message : String(err));
-      } finally {
-        setBusy(null);
-      }
-    }, [prId, thread, modelId, navigate]);
 
     const handleReact = useCallback(
       async (commentId: string, content: PrReactionContent) => {
@@ -663,23 +631,6 @@ export const PrReviewThreadCard = memo(
                 >
                   <CheckCircle size={11} weight={localResolved ? "fill" : "regular"} />
                   {localResolved ? "Unresolve" : "Resolve"}
-                </button>
-                <button
-                  type="button"
-                  onClick={handleAskAiFix}
-                  disabled={busy === "fix"}
-                  style={outlineButton({
-                    height: 26,
-                    fontSize: 11,
-                    padding: "0 10px",
-                    color: COLORS.accent,
-                    borderColor: COLORS.accentBorder,
-                    background: COLORS.accentSubtle,
-                    opacity: busy === "fix" ? 0.6 : 1,
-                  })}
-                >
-                  <Sparkle size={11} weight="regular" />
-                  {busy === "fix" ? "Launching…" : "Ask AI to fix"}
                 </button>
               </>
             ) : null}

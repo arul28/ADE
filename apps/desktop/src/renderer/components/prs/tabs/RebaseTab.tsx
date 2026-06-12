@@ -22,6 +22,13 @@ import { StatusDot } from "../shared/StatusDot";
 import { PR_TAB_TILING_TREE } from "../shared/tilingConstants";
 import { PrResolverLaunchControls } from "../shared/PrResolverLaunchControls";
 import { formatTimeAgo } from "../shared/prFormatters";
+import { getModelById } from "../../../../shared/modelRegistry";
+
+function providerForModel(modelId: string): "codex" | "claude" {
+  const descriptor = getModelById(modelId);
+  if (descriptor?.family === "anthropic" || descriptor?.cliCommand === "claude") return "claude";
+  return "codex";
+}
 
 type RebaseTabProps = {
   rebaseNeeds: RebaseNeed[];
@@ -35,7 +42,6 @@ type RebaseTabProps = {
   onResolverChange: (model: string, level: string) => void;
   onResolverPermissionChange: (mode: PrAgentPermissionMode) => void;
   onRefresh: () => Promise<void>;
-  onNavigate: (path: string) => void;
 };
 
 type RebaseSectionKey = "lane_base" | "pr_target" | "stack_attention";
@@ -119,7 +125,6 @@ export function RebaseTab({
   onResolverChange,
   onResolverPermissionChange,
   onRefresh,
-  onNavigate,
 }: RebaseTabProps) {
   const laneById = React.useMemo(() => new Map(lanes.map((l) => [l.id, l])), [lanes]);
 
@@ -383,14 +388,22 @@ export function RebaseTab({
       }
       setResolverLaunching(true);
       try {
-        const result = await window.ade.prs.rebaseResolutionStart({
+        const result = await window.ade.rebase.execute({
           laneId: selectedNeed.laneId,
+          aiAssisted: true,
+          provider: providerForModel(resolverModel),
           modelId: resolverModel,
-          reasoning: resolverReasoningLevel || null,
+          reasoningEffort: resolverReasoningLevel || null,
           permissionMode: resolverPermissionMode,
-          forcePushAfterRebase,
         });
-        onNavigate(result.href);
+        if (!result.success) {
+          setRebaseError(result.error ?? "AI-assisted rebase failed.");
+          return;
+        }
+        if (forcePushAfterRebase) {
+          await window.ade.git.push({ laneId: selectedNeed.laneId, forceWithLease: true });
+        }
+        await onRefresh();
       } catch (err: unknown) {
         setRebaseError(err instanceof Error ? err.message : String(err));
       } finally {
@@ -1812,7 +1825,6 @@ export function RebaseTab({
       onRefresh,
       onResolverChange,
       onResolverPermissionChange,
-      onNavigate,
     ],
   );
 

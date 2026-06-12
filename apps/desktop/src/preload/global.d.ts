@@ -368,12 +368,6 @@ import type {
   PrDetail,
   PrEventPayload,
   PrFile,
-  PrIssueResolutionPromptPreviewArgs,
-  PrIssueResolutionPromptPreviewResult,
-  PrIssueResolutionStartArgs,
-  PrIssueResolutionStartResult,
-  RebaseResolutionStartArgs,
-  RebaseResolutionStartResult,
   PrMergeContext,
   PrReview,
   PrReviewThread,
@@ -388,8 +382,6 @@ import type {
   SetPrReviewThreadResolvedArgs,
   SetPrReviewThreadResolvedResult,
   ReactToPrCommentArgs,
-  LaunchPrIssueResolutionFromThreadArgs,
-  LaunchPrIssueResolutionFromThreadResult,
   ReplyToPrReviewThreadArgs,
   ResolvePrReviewThreadArgs,
   ResumeQueueAutomationArgs,
@@ -406,14 +398,11 @@ import type {
   RerunPrChecksArgs,
   AiReviewSummaryArgs,
   AiReviewSummary,
-  IssueInventoryItem,
-  IssueInventorySnapshot,
   PrConvergenceState,
   PrConvergenceStatePatch,
   PrAgentPermissionMode,
   PathToMergeStartResult,
   PathToMergeStopResult,
-  ConvergenceStatus,
   PipelineSettings,
   UpdateIntegrationProposalArgs,
   UpdatePrDescriptionArgs,
@@ -1967,15 +1956,6 @@ declare global {
         onAiResolutionEvent: (
           cb: (ev: PrAiResolutionEventPayload) => void,
         ) => () => void;
-        issueResolutionStart(
-          args: PrIssueResolutionStartArgs,
-        ): Promise<PrIssueResolutionStartResult>;
-        issueResolutionPreviewPrompt(
-          args: PrIssueResolutionPromptPreviewArgs,
-        ): Promise<PrIssueResolutionPromptPreviewResult>;
-        rebaseResolutionStart(
-          args: RebaseResolutionStartArgs,
-        ): Promise<RebaseResolutionStartResult>;
         landStackEnhanced: (
           args: LandStackEnhancedArgs,
         ) => Promise<LandResult[]>;
@@ -2057,26 +2037,6 @@ declare global {
         aiReviewSummary: (
           args: AiReviewSummaryArgs,
         ) => Promise<AiReviewSummary>;
-        issueInventorySync: (prId: string) => Promise<IssueInventorySnapshot>;
-        issueInventoryGet: (prId: string) => Promise<IssueInventorySnapshot>;
-        issueInventoryGetNew: (prId: string) => Promise<IssueInventoryItem[]>;
-        issueInventoryMarkFixed: (
-          prId: string,
-          itemIds: string[],
-        ) => Promise<void>;
-        issueInventoryMarkDismissed: (
-          prId: string,
-          itemIds: string[],
-          reason: string,
-        ) => Promise<void>;
-        issueInventoryMarkEscalated: (
-          prId: string,
-          itemIds: string[],
-        ) => Promise<void>;
-        issueInventoryGetConvergence: (
-          prId: string,
-        ) => Promise<ConvergenceStatus>;
-        issueInventoryReset: (prId: string) => Promise<void>;
         convergenceStateGet: (prId: string) => Promise<PrConvergenceState>;
         convergenceStateSave: (
           prId: string,
@@ -2090,6 +2050,7 @@ declare global {
           permissionMode?: PrAgentPermissionMode | null;
           scope?: "checks" | "comments" | "both";
           additionalInstructions?: string | null;
+          pollIntervalSeconds?: number | null;
         }) => Promise<PathToMergeStartResult>;
         pathToMergeStop: (args: {
           prId: string;
@@ -2117,9 +2078,6 @@ declare global {
           args: SetPrReviewThreadResolvedArgs,
         ) => Promise<SetPrReviewThreadResolvedResult>;
         reactToComment: (args: ReactToPrCommentArgs) => Promise<void>;
-        launchIssueResolutionFromThread: (
-          args: LaunchPrIssueResolutionFromThreadArgs,
-        ) => Promise<LaunchPrIssueResolutionFromThreadResult>;
         cleanupBranch: (
           args: CleanupPrBranchArgs,
         ) => Promise<CleanupPrBranchResult>;

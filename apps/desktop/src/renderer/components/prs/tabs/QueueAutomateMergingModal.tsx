@@ -2,16 +2,15 @@ import React from "react";
 import { CheckCircle, CircleNotch, MagicWand, Warning, X } from "@phosphor-icons/react";
 import type {
   ConvergenceRuntimeStatus,
-  PipelineSettings,
   PrConvergenceState,
   PrAgentPermissionMode,
 } from "../../../../shared/types";
-import { DEFAULT_PIPELINE_SETTINGS } from "../../../../shared/types";
 import { COLORS, MONO_FONT, SANS_FONT, outlineButton, primaryButton } from "../../lanes/laneDesignTokens";
 import { LaneAccentDot } from "../../lanes/LaneAccentDot";
-import { PrPipelineSettings } from "../shared/PrPipelineSettings";
+import { PrResolverLaunchControls } from "../shared/PrResolverLaunchControls";
+import type { PathToMergeGating } from "../shared/PrConvergencePanel";
 import { SmartTooltip } from "../../ui/SmartTooltip";
-import { isWaitingForGithubAutoMerge } from "./queueAutomateMergingRuntime";
+import { classifyWatcherOutcome } from "./queueAutomateMergingRuntime";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -42,10 +41,9 @@ export type QueueAutomateMergingModalProps = {
 
 type RunStatus =
   | { kind: "pending" }
-  | { kind: "saving" }
   | { kind: "retargeting" }
   | { kind: "starting" }
-  | { kind: "running"; runtimeStatus: ConvergenceRuntimeStatus | null; pauseReason: string | null; round: number }
+  | { kind: "running"; runtimeStatus: ConvergenceRuntimeStatus | null; pauseReason: string | null }
   | { kind: "merged" }
   | { kind: "failed"; error: string }
   | { kind: "skipped"; reason: string };
@@ -58,17 +56,15 @@ type SequenceState =
 
 const POLL_INTERVAL_MS = 4000;
 
-const TERMINAL_FAILED: ReadonlySet<ConvergenceRuntimeStatus> = new Set([
-  "paused",
-  "converged",
-  "failed",
-  "cancelled",
-  "stopped",
-]);
+const MIN_POLL_MINUTES = 1;
+const MAX_POLL_MINUTES = 60;
+const DEFAULT_POLL_MINUTES = 10;
 
-const TERMINAL_SUCCESS: ReadonlySet<ConvergenceRuntimeStatus> = new Set([
-  "merged",
-]);
+const GATING_OPTIONS: { value: PathToMergeGating; label: string; hint: string }[] = [
+  { value: "both", label: "CI + comments", hint: "Wait for green checks and resolved review comments before merging." },
+  { value: "checks", label: "CI only", hint: "Merge once required checks pass; ignore unresolved review comments." },
+  { value: "comments", label: "Comments only", hint: "Merge once review comments are resolved; ignore check status." },
+];
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -90,11 +86,10 @@ function describeRuntimeStatus(status: ConvergenceRuntimeStatus | null): string 
     case "idle":
       return "Idle";
     case "launching":
-      return "Launching";
+      return "Launching watcher";
     case "running":
-      return "Running fix iteration";
     case "polling":
-      return "Polling for CI / review";
+      return "Watching";
     case "paused":
       return "Paused";
     case "converged":
@@ -112,25 +107,16 @@ function describeRuntimeStatus(status: ConvergenceRuntimeStatus | null): string 
   }
 }
 
-function describePauseReason(reason: string | null): string | null {
-  if (!reason) return null;
-  if (reason === "force-finalize") return "Force-finalize next";
-  return reason;
-}
-
 function statusBadgeColor(status: RunStatus): { color: string; label: string } {
   switch (status.kind) {
     case "pending":
       return { color: COLORS.textMuted, label: "Queued" };
-    case "saving":
-      return { color: COLORS.info, label: "Saving settings" };
     case "retargeting":
       return { color: COLORS.info, label: "Retargeting base" };
     case "starting":
-      return { color: COLORS.info, label: "Starting" };
+      return { color: COLORS.info, label: "Launching" };
     case "running": {
-      const reason = describePauseReason(status.pauseReason);
-      const label = reason ?? describeRuntimeStatus(status.runtimeStatus);
+      const label = status.pauseReason?.trim() || describeRuntimeStatus(status.runtimeStatus);
       return { color: status.runtimeStatus === "paused" ? COLORS.warning : COLORS.info, label };
     }
     case "merged":
@@ -161,11 +147,11 @@ export function QueueAutomateMergingModal({
   onPermissionModeChange,
   onClose,
 }: QueueAutomateMergingModalProps) {
-  // Local pipeline settings — start from defaults each time the modal opens.
-  // The modal applies a single config to every PR in the queue.
-  const [pipelineSettings, setPipelineSettings] = React.useState<PipelineSettings>(
-    () => DEFAULT_PIPELINE_SETTINGS,
-  );
+  // Stack-wide launch config — start from defaults each time the modal opens.
+  // The same gating / instructions / interval applies to every PR's watcher.
+  const [gating, setGating] = React.useState<PathToMergeGating>("both");
+  const [additionalInstructions, setAdditionalInstructions] = React.useState("");
+  const [pollMinutes, setPollMinutes] = React.useState(DEFAULT_POLL_MINUTES);
   const [statuses, setStatuses] = React.useState<Record<string, RunStatus>>({});
   const [sequence, setSequence] = React.useState<SequenceState>({ kind: "idle" });
 
@@ -179,7 +165,9 @@ export function QueueAutomateMergingModal({
   const wasOpenRef = React.useRef(false);
   React.useEffect(() => {
     if (open && !wasOpenRef.current) {
-      setPipelineSettings(DEFAULT_PIPELINE_SETTINGS);
+      setGating("both");
+      setAdditionalInstructions("");
+      setPollMinutes(DEFAULT_POLL_MINUTES);
       setStatuses(() => {
         const next: Record<string, RunStatus> = {};
         for (const member of members) next[member.prId] = { kind: "pending" };
@@ -190,55 +178,44 @@ export function QueueAutomateMergingModal({
     }
     if (!open && wasOpenRef.current) {
       // Modal dismissed mid-sequence: stop dispatching new starts. Already-
-      // launched orchestrators keep running (per spec).
+      // launched watchers keep running in their own chats (per spec).
       cancelledRef.current = true;
     }
     wasOpenRef.current = open;
   }, [open, members]);
-
-  const handlePipelineSettingsChange = React.useCallback(
-    (patch: Partial<PipelineSettings>) => {
-      setPipelineSettings((prev) => ({ ...prev, ...patch }));
-    },
-    [],
-  );
 
   const updateStatus = React.useCallback((prId: string, status: RunStatus) => {
     setStatuses((prev) => ({ ...prev, [prId]: status }));
   }, []);
 
   const pollUntilTerminal = React.useCallback(
-    async (prId: string): Promise<{ outcome: "merged" | "failed"; runtime: PrConvergenceState | null; error?: string }> => {
+    async (prId: string): Promise<{ outcome: "merged" | "failed"; error?: string }> => {
       while (!cancelledRef.current) {
         let runtime: PrConvergenceState | null = null;
         try {
           runtime = await window.ade.prs.convergenceStateGet(prId);
         } catch (err) {
-          return { outcome: "failed", runtime: null, error: formatError(err) };
+          return { outcome: "failed", error: formatError(err) };
         }
         if (cancelledRef.current) {
-          return { outcome: "failed", runtime, error: "Cancelled by user" };
+          return { outcome: "failed", error: "Cancelled by user" };
         }
         const status = runtime?.status ?? null;
-        const round = runtime?.currentRound ?? 0;
         const pauseReason = runtime?.pauseReason ?? null;
-        updateStatus(prId, { kind: "running", runtimeStatus: status, pauseReason, round });
-        if (status && TERMINAL_SUCCESS.has(status)) {
-          return { outcome: "merged", runtime };
+        updateStatus(prId, { kind: "running", runtimeStatus: status, pauseReason });
+        const outcome = classifyWatcherOutcome(runtime);
+        if (outcome === "merged") {
+          return { outcome: "merged" };
         }
-        if (isWaitingForGithubAutoMerge(runtime)) {
-          await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
-          continue;
-        }
-        if (status && TERMINAL_FAILED.has(status)) {
+        if (outcome === "halted") {
           const message = runtime?.errorMessage?.trim()
             || runtime?.pauseReason?.trim()
-            || (status === "converged" ? "Path to Merge converged without merging." : `Path to Merge ${status}`);
-          return { outcome: "failed", runtime, error: message };
+            || `Path to Merge ${status ?? "halted"}`;
+          return { outcome: "failed", error: message };
         }
         await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
       }
-      return { outcome: "failed", runtime: null, error: "Cancelled by user" };
+      return { outcome: "failed", error: "Cancelled by user" };
     },
     [updateStatus],
   );
@@ -248,28 +225,24 @@ export function QueueAutomateMergingModal({
     cancelledRef.current = false;
     setSequence({ kind: "running", activeIndex: 0 });
 
+    const clampedMinutes = Math.min(
+      MAX_POLL_MINUTES,
+      Math.max(MIN_POLL_MINUTES, Math.round(pollMinutes) || DEFAULT_POLL_MINUTES),
+    );
+    const pollIntervalSeconds = clampedMinutes * 60;
+    const trimmedInstructions = additionalInstructions.trim();
+
     for (let idx = 0; idx < members.length; idx += 1) {
       const member = members[idx];
       if (cancelledRef.current) {
-        // Renderer-side dismissal: keep already-launched orchestrators running,
+        // Renderer-side dismissal: keep already-launched watchers running,
         // just stop dispatching new ones.
         return;
       }
       setSequence({ kind: "running", activeIndex: idx });
 
-      // 1. Save the stack-wide pipeline settings to this PR.
-      updateStatus(member.prId, { kind: "saving" });
-      try {
-        await window.ade.prs.pipelineSettingsSave(member.prId, pipelineSettings);
-      } catch (err) {
-        const message = formatError(err);
-        updateStatus(member.prId, { kind: "failed", error: message });
-        setSequence({ kind: "halted", failedIndex: idx, error: message });
-        return;
-      }
-
-      // 2. If position > 0, retarget base to the queue target branch so the
-      // PR's diff against `main` is what reviewers see while PtM drives it.
+      // 1. If position > 0, retarget base to the queue target branch so the
+      // PR's diff against `main` is what reviewers see while the watcher drives it.
       if (idx > 0) {
         updateStatus(member.prId, { kind: "retargeting" });
         try {
@@ -285,7 +258,7 @@ export function QueueAutomateMergingModal({
         }
       }
 
-      // 3. Start Path to Merge for this PR.
+      // 2. Launch a Path to Merge watcher chat for this PR.
       updateStatus(member.prId, { kind: "starting" });
       try {
         const startResult = await window.ade.prs.pathToMergeStart({
@@ -293,6 +266,9 @@ export function QueueAutomateMergingModal({
           modelId,
           reasoning: reasoningEffort,
           permissionMode,
+          scope: gating,
+          additionalInstructions: trimmedInstructions || null,
+          pollIntervalSeconds,
         });
         if (!startResult.scheduled) {
           const message = startResult.blockedBy?.message ?? "Path to Merge is blocked by another lane task.";
@@ -307,7 +283,7 @@ export function QueueAutomateMergingModal({
         return;
       }
 
-      // 4. Poll until the PR converges or fails terminally.
+      // 3. Poll until the PR merges (ground truth) or the watcher halts.
       const result = await pollUntilTerminal(member.prId);
       if (cancelledRef.current) return;
 
@@ -322,7 +298,7 @@ export function QueueAutomateMergingModal({
     }
 
     setSequence({ kind: "complete" });
-  }, [members, modelId, permissionMode, pipelineSettings, pollUntilTerminal, queueTargetBranch, reasoningEffort, updateStatus]);
+  }, [additionalInstructions, gating, members, modelId, permissionMode, pollMinutes, pollUntilTerminal, queueTargetBranch, reasoningEffort, updateStatus]);
 
   const handleStart = React.useCallback(() => {
     void runAutomation();
@@ -541,19 +517,7 @@ export function QueueAutomateMergingModal({
                       {member.prNumber != null ? `#${member.prNumber}` : "no PR"}
                     </span>
                     <div style={{ flex: 1 }} />
-                    {status.kind === "running" && status.round > 0 ? (
-                      <span
-                        style={{
-                          fontFamily: MONO_FONT,
-                          fontSize: 10,
-                          color: COLORS.textMuted,
-                        }}
-                      >
-                        round {status.round}/{pipelineSettings.maxRounds}
-                      </span>
-                    ) : null}
-                    {status.kind === "saving" ||
-                    status.kind === "retargeting" ||
+                    {status.kind === "retargeting" ||
                     status.kind === "starting" ||
                     (status.kind === "running" && status.runtimeStatus !== "paused") ? (
                       <CircleNotch size={12} className="animate-spin" style={{ color: badge.color }} />
@@ -584,7 +548,8 @@ export function QueueAutomateMergingModal({
             </div>
           </section>
 
-          {/* Pipeline settings — reuse the per-PR editor for the stack-wide config. */}
+          {/* Stack-wide launch config — the same gating / instructions / interval
+              drives every watcher in the queue. */}
           <section>
             <div
               style={{
@@ -597,32 +562,117 @@ export function QueueAutomateMergingModal({
                 marginBottom: 8,
               }}
             >
-              Stack-wide pipeline settings
+              Stack-wide watcher config
             </div>
             <div
               style={{
                 fontFamily: SANS_FONT,
                 fontSize: 11,
                 color: COLORS.textMuted,
-                marginBottom: 10,
+                marginBottom: 12,
                 lineHeight: 1.5,
               }}
             >
-              These settings apply to every PR in the queue. Each PR runs Path to Merge sequentially; once one merges, the next PR's base is dropped to{" "}
-              <span style={{ fontFamily: MONO_FONT, color: COLORS.textSecondary }}>{queueTargetBranch}</span> before its run begins.
+              Each PR gets its own visible Path to Merge watcher chat, launched in order. Once one merges, the next PR's base is dropped to{" "}
+              <span style={{ fontFamily: MONO_FONT, color: COLORS.textSecondary }}>{queueTargetBranch}</span> before its watcher starts.
             </div>
-            <PrPipelineSettings
-              settings={pipelineSettings}
-              onSettingsChange={handlePipelineSettingsChange}
-              showAutoConvergeSettings
-              modelId={modelId}
-              reasoningEffort={reasoningEffort}
-              permissionMode={permissionMode}
-              onModelChange={onModelChange}
-              onReasoningEffortChange={onReasoningEffortChange}
-              onPermissionModeChange={onPermissionModeChange}
-              disabled={isRunning}
-            />
+
+            <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+              <ConfigField label="What must be clear before merging">
+                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                  {GATING_OPTIONS.map((opt) => (
+                    <label
+                      key={opt.value}
+                      style={{
+                        display: "flex",
+                        alignItems: "flex-start",
+                        gap: 8,
+                        padding: "8px 10px",
+                        borderRadius: 8,
+                        cursor: isRunning ? "default" : "pointer",
+                        background: gating === opt.value ? COLORS.accentSubtle : COLORS.recessedBg,
+                        border: `1px solid ${gating === opt.value ? COLORS.accentBorder : COLORS.borderMuted}`,
+                      }}
+                    >
+                      <input
+                        type="radio"
+                        name="queue-ptm-gating"
+                        checked={gating === opt.value}
+                        onChange={() => setGating(opt.value)}
+                        disabled={isRunning}
+                        style={{ marginTop: 2, accentColor: COLORS.accent }}
+                      />
+                      <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                        <span style={{ fontSize: 12, fontWeight: 600, color: COLORS.textPrimary }}>{opt.label}</span>
+                        <span style={{ fontSize: 11, color: COLORS.textMuted, lineHeight: 1.4 }}>{opt.hint}</span>
+                      </div>
+                    </label>
+                  ))}
+                </div>
+              </ConfigField>
+
+              <ConfigField label="Additional instructions (optional)">
+                <textarea
+                  value={additionalInstructions}
+                  onChange={(e) => setAdditionalInstructions(e.target.value)}
+                  disabled={isRunning}
+                  placeholder='Anything for every watcher in this stack — e.g. "don&apos;t touch migrations", "ping @teammate before merging".'
+                  rows={3}
+                  style={{
+                    width: "100%",
+                    resize: "vertical",
+                    padding: "8px 10px",
+                    borderRadius: 8,
+                    background: COLORS.recessedBg,
+                    border: `1px solid ${COLORS.borderMuted}`,
+                    color: COLORS.textPrimary,
+                    fontSize: 12,
+                    fontFamily: SANS_FONT,
+                    lineHeight: 1.5,
+                    outline: "none",
+                  }}
+                />
+              </ConfigField>
+
+              <ConfigField label="Check each PR every">
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <input
+                    type="number"
+                    min={MIN_POLL_MINUTES}
+                    max={MAX_POLL_MINUTES}
+                    value={pollMinutes}
+                    onChange={(e) => setPollMinutes(Number(e.target.value))}
+                    disabled={isRunning}
+                    style={{
+                      width: 72,
+                      padding: "6px 8px",
+                      borderRadius: 8,
+                      background: COLORS.recessedBg,
+                      border: `1px solid ${COLORS.borderMuted}`,
+                      color: COLORS.textPrimary,
+                      fontSize: 12,
+                      fontFamily: MONO_FONT,
+                      outline: "none",
+                    }}
+                  />
+                  <span style={{ fontSize: 11, color: COLORS.textMuted }}>
+                    minutes ({MIN_POLL_MINUTES}–{MAX_POLL_MINUTES})
+                  </span>
+                </div>
+              </ConfigField>
+
+              <ConfigField label="Agent">
+                <PrResolverLaunchControls
+                  modelId={modelId}
+                  reasoningEffort={reasoningEffort}
+                  permissionMode={permissionMode}
+                  onModelChange={onModelChange}
+                  onReasoningEffortChange={onReasoningEffortChange}
+                  onPermissionModeChange={onPermissionModeChange}
+                  disabled={isRunning}
+                />
+              </ConfigField>
+            </div>
           </section>
 
           {/* Halted error surface */}
@@ -734,6 +784,15 @@ export function QueueAutomateMergingModal({
           </SmartTooltip>
         </div>
       </div>
+    </div>
+  );
+}
+
+function ConfigField({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+      <span style={{ fontSize: 11, fontWeight: 500, color: COLORS.textMuted }}>{label}</span>
+      {children}
     </div>
   );
 }

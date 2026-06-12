@@ -272,7 +272,6 @@ import type { createLinearDispatcherService } from "../cto/linearDispatcherServi
 import type { LinearClient } from "../cto/linearClient";
 import type { LinearCredentialService } from "../cto/linearCredentialService";
 import type { createPrService } from "../prs/prService";
-import type { createIssueInventoryService } from "../prs/issueInventoryService";
 import type { ComputerUseArtifactBrokerService } from "../computerUse/computerUseArtifactBrokerService";
 import { maybeSyntheticToolResult } from "../computerUse/syntheticToolResult";
 import {
@@ -5021,7 +5020,6 @@ export function createAgentChatService(args: {
   linearClient?: LinearClient | null;
   linearCredentials?: LinearCredentialService | null;
   prService?: ReturnType<typeof createPrService> | null;
-  issueInventoryService: ReturnType<typeof createIssueInventoryService>;
   processService?: ReturnType<typeof createProcessService> | null;
   getTestService?: () => { listSuites: () => any[]; run: (args: any) => Promise<any>; stop: (args: any) => void; listRuns: (args?: any) => any[]; getLogTail: (args: any) => string } | null;
   ptyService?: { create: (args: any) => Promise<{ ptyId: string; sessionId: string }> } | null;
@@ -5064,7 +5062,6 @@ export function createAgentChatService(args: {
     linearClient: linearClientRef,
     linearCredentials: linearCredentialsRef,
     prService,
-    issueInventoryService,
     processService,
     getTestService,
     ptyService,
@@ -5128,9 +5125,6 @@ export function createAgentChatService(args: {
       return null;
     }
   };
-  if (!issueInventoryService) {
-    throw new Error("Issue inventory service is required to initialize agent chat.");
-  }
   const claudeSubprocessReaper = injectedClaudeSubprocessReaper ?? createClaudeSubprocessReaper({ logger });
 
   // Materialize the session's attached Linear issues into a per-session context
@@ -6084,7 +6078,6 @@ export function createAgentChatService(args: {
         linearDispatcherService: getLinearDispatcherService?.() ?? null,
         flowPolicyService: flowPolicyService ?? null,
         prService: prService ?? null,
-        issueInventoryService,
         fileService: fileService ?? null,
         processService: processService ?? null,
         testService: getTestService?.() ?? null,
