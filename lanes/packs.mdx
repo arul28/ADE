@@ -1,58 +1,40 @@
 ---
-title: "Lane Context"
-description: "How ADE scopes context to a lane — lane and session state plus selected artifacts — while agents inspect the repository directly for product and architecture knowledge."
+title: "Lane context"
+description: "How ADE keeps each agent focused on the selected lane and the artifacts you attach."
 icon: "cube"
 ---
 
-## How lane context works
+Lane context is the information ADE gives an agent so it starts in the right place. It is intentionally small and local to the work.
 
-ADE keeps the context it injects local to the work being done. When an agent starts in a lane, it receives:
+## What context includes
 
-- **Lane and session state** — the lane's branch, base, intent (as you have set it), and the current session's metadata.
-- **Selected artifacts** — any artifacts you have attached to the session, plus worker run details when the session belongs to a worker run.
-- **Explicit instructions** — the prompt you send and any standing instructions for the lane.
+- Lane name, branch, base branch, and worktree.
+- The current chat or terminal session.
+- The task prompt and any explicit instructions.
+- Artifacts you attach, such as proof, logs, screenshots, or linked issues.
+- PR and Linear context when the lane is linked.
 
-ADE does **not** auto-generate or auto-inject PRD, architecture, or "project context" summaries. When an agent needs product or architecture knowledge, it inspects the repository directly — reading the actual files, history, and configuration — rather than relying on a generated summary that can drift out of date.
+## What agents still need to do
 
-<Note>
-This is a deliberate design choice. Generated summaries go stale the moment the code changes; direct repo inspection is always current. ADE injects the minimum lane/session context an agent needs to orient, and trusts the agent to read the repo for everything else.
-</Note>
+Agents should inspect the repository directly when they need code, architecture, tests, or product details. ADE does not rely on a giant generated summary as the source of truth.
 
----
+## Improve a lane's context
 
-## Editing the lane intent
+<Steps>
+  <Step title="Name the lane well">
+    A clear lane name gives humans and agents the first clue.
+  </Step>
+  <Step title="Write a focused prompt">
+    Say what should change, where to look, and how to verify it.
+  </Step>
+  <Step title="Attach useful artifacts">
+    Add screenshots, logs, Linear issues, or PR comments when they matter.
+  </Step>
+  <Step title="Keep follow-up in the same lane">
+    Continue the same chat or start a new lane-scoped chat when the work changes direction.
+  </Step>
+</Steps>
 
-The lane intent is a short statement of what the lane exists to accomplish. ADE derives an initial intent from the branch name and early commits; refine it to be specific — a precise intent meaningfully improves agent behavior.
-
-Weak: `Fix auth`
-
-Strong: `Add a refresh token endpoint (POST /auth/refresh) that validates, rotates, and returns a new access/refresh token pair. The login endpoint must also return a refresh token.`
-
-Edit the intent in the right inspector. The intent is also used to pre-fill PR titles and descriptions.
-
----
-
-## Audit and replay artifacts
-
-ADE stores a small set of compatibility artifacts under `.ade/artifacts/packs/` for audit and replay. These are records of what happened — they are not automatically prepended to all agent prompts as ambient context, but specific packs are explicitly provided to the relevant agent when needed (for example, the Conflict Pack is handed to the resolver agent when resolving a merge conflict):
-
-| Artifact | Purpose |
-|----------|---------|
-| **Conflict Pack** | Resolution context created when a conflict is detected between two lanes — the conflicting file regions, each lane's intent, and suggested resolution strategies. Provided to the resolver agent. |
-| **Plan Pack** | A versioned coding plan generated during a Worker run's Planning phase — the goal, steps, assumptions, risks, and executor assignments. |
-| **Worker run Pack** | A deterministic snapshot of a worker run at a point in time — plan, completed steps, artifacts, interventions, and cost — used for resume, audit, and replay. |
-
-These files are plain Markdown / JSON. You can read them in any editor, diff them across versions, or use them outside ADE.
-
----
-
-## Next Steps
-
-<CardGroup cols={2}>
-  <Card title="Lane Overview" icon="code-branch" href="/lanes/overview">
-    Learn how lanes isolate work, state, branches, and agent sessions.
-  </Card>
-  <Card title="Agent Context" icon="database" href="/chat/context">
-    Understand how agents manage context windows and inspect repo context.
-  </Card>
-</CardGroup>
+<Tip>
+Good context is specific, not large. A failing test name and expected behavior often help more than a long background essay.
+</Tip>

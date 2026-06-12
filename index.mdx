@@ -1,81 +1,44 @@
 ---
-title: "ADE — Agentic Development Environment"
-description: "Orchestrate parallel AI coding agents from a unified desktop control plane. Lanes, worker runs, context packs, and conflict detection — all local-first."
+title: "ADE - Agentic Development Environment"
+description: "Run AI coding agents in parallel from one local-first desktop control plane."
 ---
 
+ADE helps you run multiple coding agents without losing track of branches, files, chats, terminals, PRs, and proof. It is a desktop app for coordinating real work in real repositories.
+
 <CardGroup cols={2}>
-  <Card title="Get Started" icon="rocket" href="/welcome" color="#7C3AED">
-    New to ADE? Start here. Learn what it does, install the app, and set up your first project in 5 minutes.
+  <Card title="Start here" icon="rocket" href="/welcome" color="#7C3AED">
+    Learn what ADE does and follow the shortest setup path.
   </Card>
-  <Card title="App Guide" icon="grid-2" href="/tools/project-home" color="#2563EB">
-    Explore every tab — Run, Lanes, Chat, Files, Graph, PRs, Workers, CTO, and more.
+  <Card title="Quickstart" icon="flag-checkered" href="/quickstart" color="#059669">
+    Install ADE, open a repo, create a lane, and run one agent task.
   </Card>
-  <Card title="Settings & Config" icon="gear" href="/configuration/settings" color="#059669">
-    AI providers, integrations, permissions, budgets, and project configuration.
+  <Card title="App guide" icon="grid-2" href="/tools/project-home" color="#2563EB">
+    Browse the main surfaces: Run, Lanes, Work, Files, PRs, CTO, and Mobile.
   </Card>
   <Card title="Changelog" icon="clock-rotate-left" href="/changelog" color="#D97706">
-    What's new in ADE — latest features, improvements, and fixes.
+    See what shipped in recent desktop and iOS releases.
   </Card>
 </CardGroup>
 
----
+## What ADE gives you
 
-## Why ADE?
-
-AI coding agents are fast individually. Running them **in parallel** is where things break:
-
-<CardGroup cols={2}>
-  <Card title="Conflicts surface too late" icon="triangle-exclamation" color="#DC2626">
-    Two agents edit the same files and you only find out at merge time.
+<CardGroup cols={3}>
+  <Card title="Parallel lanes" icon="code-branch">
+    One isolated git worktree per task, with its own branch, terminals, chat sessions, and environment.
   </Card>
-  <Card title="Context resets every session" icon="rotate-left" color="#DC2626">
-    Agents start cold instead of continuing informed from where they left off.
+  <Card title="Agent workbench" icon="comments">
+    Chat with Claude, Codex, Cursor, or OpenCode inside a lane and watch every tool call, command, and file change.
   </Card>
-  <Card title="Oversight is fragmented" icon="puzzle-piece" color="#DC2626">
-    Sessions, branches, costs, and artifacts live in separate tools with no unified view.
+  <Card title="Review flow" icon="code-pull-request">
+    Create PRs, inspect CI and reviews, simulate conflicts, and merge work from inside ADE.
   </Card>
-  <Card title="Execution is noisy" icon="volume-high" color="#DC2626">
-    You can launch work but cannot track quality, ownership, or state across agents.
+  <Card title="CTO and workers" icon="crown">
+    Coordinate larger tasks through a project-level agent and scoped worker agents.
+  </Card>
+  <Card title="Proof artifacts" icon="camera">
+    Capture screenshots, recordings, traces, and logs as evidence tied to chats, PRs, Linear issues, or lanes.
+  </Card>
+  <Card title="iOS companion" icon="mobile-screen">
+    Pair your phone to follow work, receive push notifications, and act on updates while away from the Mac.
   </Card>
 </CardGroup>
-
-<Check>
-**ADE solves this** with isolated lanes, durable context packs, structured worker runs, a coordinator agent (CTO), and a workspace-wide view of branch state and merge risk.
-</Check>
-
----
-
-## Feature highlights
-
-<AccordionGroup>
-  <Accordion title="Lanes — Parallel workspaces" icon="code-branch">
-    Isolated git worktrees, each with their own terminal sessions, agent context, and environment. Run agents in all of them simultaneously.
-
-    [Explore Lanes →](/lanes/overview)
-  </Accordion>
-  <Accordion title="CTO — Always-on project agent" icon="crown">
-    Delegates work to specialized workers, syncs with Linear, and manages budgets across all lanes.
-
-    [Explore CTO →](/cto/overview)
-  </Accordion>
-  <Accordion title="Workers — Structured AI execution" icon="bullseye">
-    Multi-step execution with planning, approval, validation, cost tracking, and full audit trails.
-
-    [Explore Workers →](/cto/workers)
-  </Accordion>
-  <Accordion title="Automations — Background AI workers" icon="bolt">
-    Trigger-driven rules that launch agent sessions or worker runs in response to git events, schedules, and webhooks.
-
-    [Explore Automations →](/automations/overview)
-  </Accordion>
-  <Accordion title="Workspace Graph — Visual topology" icon="diagram-project">
-    Infinite canvas showing every lane, branch, PR, and dependency. Run merge simulations visually and spot risks at a glance.
-
-    [Explore Graph →](/tools/workspace-graph)
-  </Accordion>
-  <Accordion title="Proof — Intentional evidence capture" icon="camera">
-    Agents capture screenshots, short recordings, and ingested browser traces through the `ade proof` CLI. ADE normalizes and routes each artifact to its worker run, chat session, PR, or Linear issue.
-
-    [Explore Proof →](/computer-use/overview)
-  </Accordion>
-</AccordionGroup>

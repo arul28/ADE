@@ -1,70 +1,41 @@
 ---
-title: "Configuration"
-description: "Storage layout, retention, and troubleshooting for ADE proof capture."
+title: "Proof configuration"
+description: "Storage, retention, and troubleshooting for proof artifacts."
 icon: "sliders"
 ---
 
 ## Storage
 
-All captured proofs live under the project's `.ade/` directory:
+Proof files live under the project's `.ade/` directory:
 
-```
+```text
 .ade/artifacts/computer-use/
   <artifact-id>.png
   <artifact-id>.mp4
   <artifact-id>.zip
-  ...
 ```
 
-The metadata (kind, owner links, review state, workflow state, notes) is stored in ADE's SQLite database — not in the file itself — so renaming or moving files on disk breaks the link. Use the UI or the `ade proof` CLI to manage proofs; avoid touching the files directly.
-
----
+Metadata such as owner links, review state, notes, and file type lives in ADE's local database.
 
 ## Retention
 
-By default, ADE retains all captured proofs until you explicitly dismiss them. There is no automatic expiration. If the `.ade/artifacts/computer-use/` directory grows large:
+ADE keeps proof artifacts until you dismiss or delete them. This preserves review evidence after a PR or task is complete.
 
-- Dismissed proofs can be deleted from disk with a confirmation dialog from the Artifacts tab
-- `ade proof list --kind <kind>` helps you identify old proofs of a specific kind
-- For bulk cleanup, delete the row via the UI; the file is removed with it
-
-<Note>
-Proofs linked to closed PRs and completed Linear issues remain on disk until explicitly cleaned up. This is deliberate — it keeps the audit trail intact long after a worker run ends.
-</Note>
-
----
+Clean up old proof from the UI when artifacts are no longer useful. Avoid deleting files directly from `.ade/artifacts/`, because that leaves database records pointing at missing files.
 
 ## Troubleshooting
 
 <AccordionGroup>
-  <Accordion title="`ade proof status` reports 'no backends available'" icon="circle-question">
-    On macOS, `ade proof` needs `screencapture` on `PATH`. Run `which screencapture` in a terminal — it should resolve to `/usr/sbin/screencapture` on a standard install.
-
-    If you are running ADE on Linux or a non-standard shell environment, ensure `screencapture` (or a compatible alternative) is available to the shell `ade` runs inside. The status output tells you which binary it looked for.
+  <Accordion title="Screenshots are blank" icon="image">
+    Grant Screen Recording permission to ADE in macOS System Settings, then quit and relaunch ADE.
   </Accordion>
-
-  <Accordion title="Screenshots are blank or black" icon="image">
-    This is almost always a macOS Screen Recording permission issue.
-
-    1. Open **System Settings → Privacy & Security → Screen Recording**.
-    2. Ensure ADE is listed and enabled.
-    3. Quit and relaunch ADE — macOS requires a restart after granting screen recording permission.
-    4. Try `ade proof screenshot` again.
+  <Accordion title="Capture is unavailable" icon="circle-question">
+    Run `ade proof status --text` and confirm the local capture tools are available.
   </Accordion>
-
-  <Accordion title="`ade proof record` stops after a few seconds" icon="video">
-    `record` uses a built-in macOS capture pipeline with a default cap of 120 seconds. Pass `--seconds <n>` to control duration. For long captures, consider splitting into multiple segments.
+  <Accordion title="A proof is not attached to a PR" icon="code-pull-request">
+    Open the proof, check its owners, and publish or attach it to the PR again.
   </Accordion>
-
-  <Accordion title="A proof is not showing up on a PR" icon="code-pull-request">
-    Check that the proof's workflow state is `published` (review states of `accepted` on their own do not publish). In the Worker run Artifacts tab, open the proof, click **Publish**, and choose the PR as a target.
-
-    If the PR no longer exists or has been closed, the publish call returns an error in the CLI output. Re-target the proof to a different owner.
-  </Accordion>
-
-  <Accordion title="Ingesting an external trace fails silently" icon="triangle-exclamation">
-    `ade proof ingest` rejects entries that do not have at least one of `path`, `uri`, `text`, or `json`. Confirm your payload has real content — empty inputs are skipped.
-
-    Pass `--verbose` to see the ingestion result line-by-line, including which entries were dropped.
+  <Accordion title="Ingest fails" icon="triangle-exclamation">
+    Confirm each input has real content through `path`, `uri`, `text`, or `json`.
   </Accordion>
 </AccordionGroup>

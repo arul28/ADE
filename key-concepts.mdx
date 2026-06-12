@@ -1,417 +1,63 @@
 ---
-title: "Key Concepts"
-description: "A comprehensive reference for every core ADE concept: Lanes, Stacks, Packs, Checkpoints, Sessions, the CTO, Workers, Automations, ADE CLI, the Job Engine, Conflicts, and Artifacts."
+title: "Key concepts"
+description: "The ADE vocabulary: lanes, Work, chats, agents, CTO, workers, proof, PRs, mobile, and local project state."
 icon: "lightbulb"
 ---
 
-<CardGroup cols={3}>
-  <Card title="Lane" icon="code-branch" href="#lane">Isolated worktree + environment.</Card>
-  <Card title="Stack" icon="layer-group" href="#stack">Chained lanes for stacked PRs.</Card>
-  <Card title="Pack" icon="box" href="#runtime-context">Audit/replay artifact under `.ade/artifacts/packs/`.</Card>
-  <Card title="Checkpoint" icon="bookmark" href="#checkpoint">Immutable execution snapshot.</Card>
-  <Card title="Session" icon="rectangle-terminal" href="#session">Terminal session with metadata.</Card>
-  <Card title="CTO" icon="robot" href="#cto">Always-on orchestrator agent.</Card>
-  <Card title="Worker run" icon="bullseye" href="#worker-run">Structured multi-step AI unit.</Card>
-  <Card title="Automation" icon="bolt" href="#automation">Trigger-driven execution rule.</Card>
-  <Card title="Worker" icon="user-gear" href="#worker">Scoped sub-agent that writes code.</Card>
-  <Card title="ADE CLI" icon="plug" href="#ade-cli-and-actions">Native action surface for agents.</Card>
-  <Card title="Job Engine" icon="gears" href="#job-engine">Background task scheduler.</Card>
-  <Card title="Conflict" icon="triangle-exclamation" href="#conflict">Predicted or actual merge conflict.</Card>
-  <Card title="Artifact" icon="file-image" href="#proof-artifact">Proof produced by AI work.</Card>
-</CardGroup>
+ADE has a small set of ideas. Learn these and the rest of the app becomes easier to follow.
 
----
+<CardGroup cols={3}>
+  <Card title="Lane" icon="code-branch" href="#lane">One isolated branch and worktree per task.</Card>
+  <Card title="Work" icon="rectangle-terminal" href="#work">The place where chats, terminals, and CLI sessions run.</Card>
+  <Card title="Agent chat" icon="comments" href="#agent-chat">A lane-scoped conversation that can edit, run, test, and commit.</Card>
+  <Card title="CTO" icon="crown" href="#cto">A project-level agent for planning and delegation.</Card>
+  <Card title="Worker" icon="users" href="#worker">A scoped agent assigned to a specific job.</Card>
+  <Card title="Proof" icon="camera" href="#proof">Evidence captured during work.</Card>
+  <Card title="PR flow" icon="code-pull-request" href="#pr-flow">GitHub review tied back to lanes.</Card>
+  <Card title="History" icon="clock-rotate-left" href="#history">Searchable record of sessions, commits, and checkpoints.</Card>
+  <Card title="iOS companion" icon="mobile-screen" href="#ios-companion">Phone pairing for updates and remote follow-up.</Card>
+</CardGroup>
 
 ## Lane
 
-A **Lane** is ADE's unit of parallel work — an isolated execution environment with its own git branch, working directory, terminal sessions, agent context, and environment variables.
+A lane is ADE's unit of parallel work. It is a Git branch in an isolated worktree, usually under `.ade/worktrees/<lane-name>/`. Agents, terminals, diffs, tests, and PRs are scoped to that lane.
 
-<CardGroup cols={3}>
-  <Card title="Primary Lane" icon="house">
-    The repository's main working directory. Every project has exactly one Primary Lane — it represents the cloned repo root itself. Cannot be deleted.
-  </Card>
-  <Card title="Worktree Lane" icon="code-branch">
-    A git worktree created by ADE under `.ade/worktrees/<name>/`. Fully managed by ADE: created, configured, and cleaned up via the Lanes UI.
-  </Card>
-  <Card title="Attached Lane" icon="link">
-    An external git worktree that already exists on disk and has been imported into ADE. ADE tracks it but does not move its files. Can be "adopted" into a full Worktree Lane later.
-  </Card>
-</CardGroup>
+Use one lane for one feature, bug fix, experiment, or review thread. If the work grows, split it into another lane or stack a child lane on top of it.
 
-Each lane stores its branch name, appearance (color/icon), environment status, active sessions, and pack reference.
+## Work
 
-<Tip>
-Think of lanes like browser tabs — each is an isolated context that persists even when you are not looking at it.
-</Tip>
+Work is where active execution happens. A Work session can be a chat, a terminal, a provider CLI, or a managed process. ADE keeps these sessions visible and attributable so you can answer "what is running, where, and why?"
 
----
+## Agent chat
 
-## Stack
+Agent chat is a conversation with a coding agent inside a lane. The agent can read files, edit files, run shell commands, inspect diffs, create commits, and help open PRs. Tool calls and results stay in the transcript.
 
-A **Stack** is a chain of lanes for stacked PR workflows — each lane targets the lane directly above it as its base branch.
-
-```
-  main
-   └── feature/auth          ← Lane 1 (targets main)
-        └── feature/auth-ui  ← Lane 2 (targets feature/auth)
-             └── feature/auth-tests  ← Lane 3 (targets feature/auth-ui)
-```
-
-ADE tracks the stack topology and automatically rebases downstream lanes when an upstream lane is updated, surfaces rebase suggestions, and shows the full chain in the inspector.
-
-To create a stacked lane, use **Lanes → New Child Lane**. ADE sets the child's base branch to the parent's current branch automatically.
-
-<Note>
-ADE tracks rebase suggestions per-lane. When an upstream branch changes, a compact banner above the lane list surfaces each affected child. From there you can open the full workspace with **View in Rebase tab**, or dismiss the suggestion if it is not relevant.
-</Note>
-
----
-
-## Runtime context
-
-ADE keeps runtime context local to the work being done. Agents receive lane/session state, selected artifacts, worker run details, and explicit user instructions. When they need product or architecture knowledge, they inspect the repo directly instead of relying on generated PRD or architecture summaries.
-
-ADE also stores some compatibility artifacts under `.ade/artifacts/packs/` for audit and replay:
-
-<AccordionGroup>
-  <Accordion title="Conflict Pack" icon="triangle-exclamation">
-    A resolution-context pack created when a conflict is detected between two lanes. Contains the conflicting file regions, each lane's intent, and suggested resolution strategies. Injected into the resolver agent's context.
-  </Accordion>
-  <Accordion title="Plan Pack" icon="list-check">
-    A versioned coding plan generated during a Worker run's Planning phase. Captures the worker run's goal, steps, assumptions, risks, and executor assignments. Serves as the authoritative reference for all workers during execution.
-  </Accordion>
-  <Accordion title="Worker run Pack" icon="bullseye">
-    A deterministic snapshot of a worker run at a specific point in time — used for resume, audit, and replay. Contains the full worker run state: plan, completed steps, artifacts, interventions, and cost data.
-  </Accordion>
-</AccordionGroup>
-
----
-
-## Checkpoint
-
-A **Checkpoint** is an immutable snapshot created at session or commit boundaries, containing the git SHA, file deltas, timing, and actor metadata. Checkpoints appear in the **History** view and can be replayed to restore any lane's state. They are append-only — ADE never deletes them unless you explicitly clear project data.
-
----
-
-## Session
-
-A **Session** is a terminal session with metadata attached — full transcript, timing, agent attribution, file delta computation, and worker run/step linkage. Every terminal window ADE opens is recorded. The History view groups sessions by lane, worker run, and date.
-
----
+Provider support depends on what you have configured, but the main paths are Claude, Codex, Cursor, and OpenCode.
 
 ## CTO
 
-The **CTO** (Chief Technical Officer agent) is ADE's always-on, project-aware AI agent that sits at the top of the agent org chart. Unlike lane-level agents that focus on specific tasks, the CTO coordinates work across lanes and worker agents.
-
-The CTO can:
-- **Spawn Worker agents** in specific lanes to handle delegated tasks
-- **Sync with Linear** — read issues, update status, create new issues when problems are discovered
-- **Manage budgets** — track per-agent and per-worker run token spend, enforce limits
-- **Surface risks** — proactively flag conflict risks, stale lanes, and budget overruns
-- **Conduct retrospectives** — periodically review what worker runs succeeded and what failed
-
-The CTO is configured from the **CTO** tab (model, budget limit, Linear workspace, worker-spawning policy). Related global preferences — per-role models, monthly caps, Linear integration — live under **Settings → AI**, **Settings → Usage**, and **Settings → Integrations**.
-
-<Tip>
-If you are a solo developer, think of the CTO as your always-on senior engineer who is watching your project while you sleep. Brief it on your goals at the start of the week; it will decompose the work, assign it to agents, and present you with completed PRs.
-</Tip>
-
----
-
-## Worker run
-
-A **Worker run** is a structured AI execution unit for complex, multi-step work. Workers provide accountability, cost tracking, and a formal lifecycle that ad-hoc chat sessions do not.
-
-<Note>
-Workers are visible in every build, but **creation and live runs are paused in packaged releases** until the orchestration flow is production-ready. Dev and internal builds run worker runs end-to-end. The Automations tab mirrors this: the worker run execution surface is shown but disabled in packaged builds.
-</Note>
-
-### Worker run Lifecycle
-
-```
-Queued → Planning → [Approval] → Execution → Validation → Completed
-                                                         ↘ Failed
-                                                         ↘ Canceled
-```
-
-<Steps>
-  <Step title="Planning">
-    A planner agent (Claude CLI or Codex CLI) reads the worker run goal and generates a structured **Plan** — a JSON document with steps, executor hints, lane claims, dependencies, and a join policy. The planner also asks clarifying questions if the goal is ambiguous.
-  </Step>
-  <Step title="Approval (optional)">
-    If the worker run requires human approval before execution, ADE pauses here and presents the plan for review. You can accept, edit, or reject the plan. If `launchMode` is `autopilot`, this phase is skipped.
-  </Step>
-  <Step title="Execution">
-    Worker agents execute the plan's steps. Parallel steps run simultaneously in separate lane worktrees. The Worker run coordinator monitors progress, handles failures, and retries steps according to the plan's retry policy.
-  </Step>
-  <Step title="Validation">
-    A dedicated validator agent (or self-validation, depending on the phase profile) reviews the completed work against the worker run's goal and acceptance criteria. Computer-use proof may be required (screenshots, browser verification).
-  </Step>
-</Steps>
-
-### Worker run Statuses
-
-| Status | Meaning |
-|---|---|
-| `queued` | Created but not yet started |
-| `planning` | Planner agent generating the execution plan |
-| `in_progress` | Workers executing plan steps |
-| `intervention_required` | Paused — requires human input to continue |
-| `completed` | All steps done and validation passed |
-| `failed` | A step failed and could not be recovered |
-| `canceled` | Stopped by the user |
-
-### Interventions
-
-When a worker run cannot proceed without human input, it creates an **Intervention** and pauses. Intervention types include:
-- `approval_required` — a phase requires explicit sign-off
-- `phase_approval` — a phase boundary gate requires approval before advancing
-- `manual_input` — the agent needs an answer it cannot infer
-- `conflict` — a merge conflict blocks a step
-- `failed_step` — a step failed and automatic retry was not successful
-- `budget_limit_reached` — the worker run has hit its token or cost cap
-- `orchestrator_escalation` — the coordinator detected an unrecoverable error
-- `provider_unreachable` — the AI provider is unavailable
-
-You resolve interventions from the Worker run's Run panel by providing an answer, accepting defaults, or canceling the run.
-
----
-
-## Automation
-
-An **Automation** is a trigger → execution-surface rule that runs in response to:
-- **time-based triggers** (`schedule`)
-- **action-based triggers** (webhooks, commits, PR events, manual runs)
-
-### Trigger Types
-
-<CardGroup cols={2}>
-  <Card title="Git Events" icon="git-alt">
-    Fires on `git.push`, `git.pr_opened`, `git.pr_merged`, `git.commit`, and other git events. Example: auto-run tests when a PR is opened.
-  </Card>
-  <Card title="Schedule (Cron)" icon="clock">
-    Fires on a cron schedule. Example: run a dependency audit every Monday at 8am.
-  </Card>
-  <Card title="File Changes" icon="file">
-    Fires when specific files or patterns change. Example: regenerate the API documentation whenever `openapi.yaml` changes.
-  </Card>
-  <Card title="Webhook events" icon="plug">
-    Fires from GitHub webhooks or generic external webhooks. Example: run a scan when a pull request review is requested.
-  </Card>
-</CardGroup>
-
-### Execution surface
-
-Each rule chooses one execution surface:
-
-- **agent-session**: creates an automation-only chat thread with AI messages and tool events.
-- **worker run**: launches a full worker run with planner, validation gates, intervention handling, and worker artifacts.
-- **built-in-task**: runs a predefined ADE task without full worker run semantics.
-
-Agent-session outputs appear in **Automations → History**. Worker run outputs appear in **Workers**.
-
----
+The CTO is a project-scoped agent. Use it for planning, summarizing project state, coordinating workers, routing Linear issues, and deciding how to split work. It is not the fastest way to make a tiny edit; lane chat is usually better for that.
 
 ## Worker
 
-A **Worker** is a sub-agent spawned by the CTO or by a Worker run to handle a specific, scoped task. Workers are the agents that actually write code.
+A worker is a scoped agent identity the CTO can use for delegated work. Workers have roles, model settings, budget controls, and activity history. They are useful when you want repeatable responsibility, such as testing, review, or implementation in a specific area.
 
-Worker characteristics:
-- Run in a **specific lane** with a scoped working directory
-- Have **bounded tool access** — only the tools their role requires
-- Operate within a **budget limit** set by the spawning coordinator
-- Are attributed in session metadata for full traceability
-- Can be `claude_cli`, `codex_cli`, or `unified` (in-process API) executor kinds
+## Proof
 
-The Worker run coordinator manages worker lifecycle: spawning, monitoring heartbeats, retrying failed workers, and collecting their outputs.
+Proof is intentional evidence: screenshots, recordings, browser traces, console logs, or verification notes captured during work. Proof artifacts can be tied to a chat session, lane, PR, or Linear issue.
 
-<Note>
-ADE supports parallel workers — multiple workers executing different plan steps simultaneously in different lanes. The `parallelismCap` field in the worker run plan limits how many workers run at once.
-</Note>
+## PR flow
 
----
+ADE links lanes to GitHub PRs. From that link, ADE can show review state, CI, changed files, comments, merge risk, and stacked PR relationships. The point is simple: review the agent's work before it lands.
 
-## ADE CLI and Actions
+## History
 
-**ADE CLI** is the native action surface agents use to operate ADE. `ade serve` exposes the per-machine runtime endpoint at `~/.ade/sock/ade.sock`, and `ade` can run one-off commands in headless mode when you explicitly bypass the machine runtime.
+History is the searchable project record. It includes chats, terminal sessions, commits, PR events, lane changes, and checkpoints. Use it when you need to recover context or explain what happened.
 
-When an AI agent is running inside ADE (whether via Claude CLI, Codex CLI, or a local provider route), it can run `ade` commands against the same runtime surface as the desktop app and `ade code` to perform operations that go beyond simple text generation:
+## iOS companion
 
-<AccordionGroup>
-  <Accordion title="Git operations" icon="git-alt">
-    Stage files, commit, push, create branches, run merge simulations, cherry-pick, and manage stashes — all with full attribution back to the calling agent.
-  </Accordion>
-  <Accordion title="File access" icon="folder-open">
-    Read and write files across any lane's worktree. File writes are atomic and logged as session deltas.
-  </Accordion>
-  <Accordion title="Terminal control" icon="rectangle-terminal">
-    Spawn a new PTY session in a specific lane, write input, and read the output transcript.
-  </Accordion>
-  <Accordion title="Agent spawning" icon="robot">
-    Spawn a new Claude CLI or Codex CLI session in a lane, with a prompt and a budget limit. This is how the CTO delegates work to workers.
-  </Accordion>
-  <Accordion title="Pack management" icon="box">
-    Read and write the audit/replay packs under `.ade/artifacts/packs/` (Conflict Pack, Plan Pack, Worker run Pack). These are records of work for audit and replay — they are not prepended to agent prompts.
-  </Accordion>
-  <Accordion title="Worker run management" icon="bullseye">
-    Create worker runs, update step status, add artifacts, create interventions, and report progress back to the Worker run coordinator.
-  </Accordion>
-  <Accordion title="Computer-use artifacts" icon="desktop">
-    Route screenshots, browser traces, video recordings, and console logs to their owners (worker runs, PRs, Linear issues, chat sessions).
-  </Accordion>
-</AccordionGroup>
+The iOS app pairs with the desktop runtime. It can mirror useful project state, receive push notifications, and let you follow work from your phone. The phone does not run agents; your Mac remains the execution host.
 
-Sessions are authenticated by role: `orchestrator`, `agent`, `external`, or `evaluator`. Coordinator-level tools (spawning agents, creating worker runs) are only available to `orchestrator`-role callers.
+## Local project state
 
----
-
-## Job Engine
-
-The **Job Engine** is ADE's background task scheduler that handles work that should happen automatically, without user interaction.
-
-Current job types:
-- **Conflict pack refresh** — regenerates the audit Conflict Pack for a lane pair when their overlapping changes shift, so resolver context stays accurate
-- **Conflict prediction** — periodically runs merge simulations between all active lane pairs to surface potential conflicts early
-- **Rebase suggestion generation** — detects when upstream branches have moved and generates rebase suggestions for downstream lanes
-- **Automation execution** — receives trigger events and executes the appropriate automation rules
-
-The Job Engine uses a per-lane queue with deduplication: if a lane refresh is already running, a second trigger is coalesced into a single pending request rather than creating a duplicate job.
-
-<Note>
-In development mode, the Job Engine's periodic conflict prediction is disabled by default (to reduce noise). Set `ADE_ENABLE_CONFLICT_PREDICTION=1` to force-enable it.
-</Note>
-
----
-
-## Conflict
-
-A **Conflict** in ADE is a predicted or actual merge conflict between two lanes.
-
-ADE distinguishes between:
-- **Predicted conflicts**: File-level overlaps detected by running `git merge --no-commit --no-ff` simulations between lane pairs. These are surfaced in the Conflicts view before you attempt an actual merge.
-- **Active conflicts**: A real merge conflict that has occurred during a rebase or merge operation and requires resolution.
-
-The Conflict view shows:
-- A **risk matrix** — which lane pairs have the highest overlap risk
-- **File-level overlaps** — which specific files are touched by multiple lanes
-- **AI resolution proposals** — generated by ADE's conflict resolver agent, with a diff-level proposed resolution
-- **External resolver sessions** — if you prefer to use a CLI resolver (e.g., a dedicated agent), ADE can prepare and finalize resolver sessions
-
----
-
-## Proof / Artifact
-
-A **Proof** (also called an **Artifact**) is evidence produced during AI-driven work. ADE collects, normalizes, and routes proof artifacts to the appropriate owners.
-
-### Artifact Types
-
-| Type | Description |
-|---|---|
-| `screenshot` | A static image of the browser or desktop at a specific moment |
-| `browser_verification` | A structured record of a browser-based verification test |
-| `browser_trace` | A full Playwright/CDP trace recording of a browser session |
-| `video_recording` | A short screen recording captured via `ade proof record` |
-| `console_logs` | Browser or Node.js console output captured during testing |
-| `test_report` | A structured test run result (pass/fail per test case) |
-| `summary` | A human-readable summary of completed work |
-| `pr` | A link to an opened or merged pull request |
-| `patch` | A raw git patch file |
-| `plan` | The generated worker run plan document |
-
-### Proof Capture Flow
-
-Agents capture intentional evidence by calling the `ade proof` CLI — screenshot, short recording, or ingestion of an external browser trace:
-
-1. The agent runs `ade proof screenshot`, `ade proof record`, or `ade proof ingest` from a terminal inside its lane.
-2. ADE's artifact broker in the main process normalizes the input into a standard `ComputerUseArtifact` record with kind, owner, and metadata.
-3. The artifact is **routed** to its owner — a worker run step, a PR, a Linear issue, or a chat session — based on the flags passed to the CLI.
-4. The file is stored under `.ade/artifacts/computer-use/` and linked in the database.
-5. It appears in the **Worker run Artifacts tab**, the PR attachments panel, the chat session artifact panel, or the Linear issue sidebar, depending on routing.
-
----
-
-## Relationships Between Concepts
-
-Here is how all the core concepts connect in a typical workflow:
-
-```
-Project
-├── Primary Lane
-├── Worktree Lanes (1..n)
-│   ├── Sessions (terminal + agent)
-│   ├── Checkpoints (immutable snapshots)
-│   └── Conflicts ↔ other lanes
-│
-├── Stacks (chains of lanes)
-│
-├── Workers (1..n)
-│   ├── Plan (generated by Planner)
-│   ├── Steps → Workers → Sessions
-│   ├── Interventions (human touchpoints)
-│   ├── Artifacts (proof, summaries, PRs)
-│   └── Worker run Pack (audit snapshot)
-│
-├── CTO Agent
-│   ├── Project Memory
-│   ├── Workers (spawned into lanes)
-│   └── Linear sync
-│
-├── Automations
-│   └── Triggers → Workers or direct agent runs
-│
-└── Job Engine
-    ├── Conflict prediction
-    ├── Conflict pack refresh
-    └── Automation execution
-```
-
----
-
-## Glossary
-
-| Term | Definition |
-|---|---|
-| **ADE** | Agentic Development Environment. The product. |
-| **Lane** | Isolated git worktree + process environment, the fundamental unit of parallel work. |
-| **Primary Lane** | The repository's root working directory, always present. |
-| **Worktree Lane** | A lane backed by `git worktree add`, managed by ADE under `.ade/worktrees/`. |
-| **Attached Lane** | An externally created worktree imported into ADE for tracking. |
-| **Stack** | A chain of lanes in a stacked PR topology. |
-| **Pack** | An audit/replay artifact stored under `.ade/artifacts/packs/` (Conflict Pack, Plan Pack, Worker run Pack). Records work for audit and replay; not injected into agent prompts. |
-| **Checkpoint** | An immutable snapshot of lane state at a session or commit boundary. |
-| **Session** | A PTY terminal session with metadata, transcript, and delta tracking. |
-| **CTO** | Always-on project-aware AI agent at the top of the agent org chart. |
-| **Worker run** | A structured multi-step AI execution unit with full lifecycle and audit trail. |
-| **Worker** | A sub-agent spawned by the CTO or a Worker run to handle a specific task. |
-| **Automation** | A trigger → executor rule that fires an agent in response to an event. |
-| **Automation execution surface** | `agent-session`, `worker run`, or `built-in-task`; each determines where results are stored and how much workflow structure is available. |
-| **Intervention** | A worker run pause point requiring human input to continue. |
-| **ADE CLI** | The native action surface for agents: a local `ade` binary that talks to the machine runtime at `~/.ade/sock/ade.sock` or runs explicit headless one-off commands. |
-| **Job Engine** | ADE's background scheduler for conflict prediction, conflict pack refresh, and automation execution. |
-| **Conflict** | A predicted or actual merge conflict between two lanes. |
-| **Artifact / Proof** | Evidence captured via `ade proof` (screenshots, recordings, browser traces, console logs, test reports). |
-| **Plan** | The structured execution document generated by a Worker run's planner agent. |
-| **Phase** | A stage in a Worker run's lifecycle (Planning, Execution, Validation, etc.). |
-| **Phase Profile** | A reusable configuration of phases and their settings, applied to worker runs at launch. |
-| **Phase Card** | The configuration unit for a single phase: model, budget, validation gate, approval requirement. |
-| **baseRef** | The project's primary integration branch (e.g., `main`). Configured in `ade.yaml`. |
-| **`.ade/`** | The directory ADE creates at the repo root to store its metadata, worktrees, and artifacts. |
-
----
-
-## Next Steps
-
-<CardGroup cols={2}>
-  <Card title="Lanes Deep Dive" icon="code-branch" href="/lanes/overview">
-    Everything about lane creation, templates, environment isolation, and proxy routing.
-  </Card>
-  <Card title="Workers Deep Dive" icon="bullseye" href="/cto/workers">
-    Phase profiles, budget management, interventions, and audit log export.
-  </Card>
-  <Card title="CTO Agent" icon="robot" href="/cto/overview">
-    Configure the CTO with Linear sync and worker spawning policies.
-  </Card>
-  <Card title="ADE CLI" icon="terminal" href="/configuration/settings">
-    Review the native ADE CLI action surface and project readiness settings.
-  </Card>
-</CardGroup>
+ADE stores project data in `.ade/` inside your repository. That directory contains the local database, worktrees, artifacts, caches, and machine-specific state. Keep it out of Git unless a page explicitly tells you a file is safe to share.

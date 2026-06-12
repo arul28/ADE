@@ -1,124 +1,70 @@
 ---
-title: "Lanes Overview"
-description: "Lanes are the fundamental unit of parallel work in ADE — isolated git worktrees, each with its own agent context, terminal sessions, and execution environment."
-icon: "eye"
+title: "Lanes"
+description: "Use lanes to isolate parallel agent work in separate Git worktrees."
+icon: "code-branch"
 ---
 
-## What is a Lane?
-
-A **Lane** wraps a git branch inside an isolated development environment. Every lane gets its own git worktree, terminal sessions, agent context, port allocation, and environment variables. Agents in separate lanes never write to each other's files, conflict over ports, or bleed context into each other's prompts.
+A lane is one task's workspace. It has its own branch, worktree, sessions, diff, and PR link. Lanes let several agents work in the same repository without writing over each other.
 
 <CardGroup cols={3}>
-  <Card title="Isolated by Default" icon="shield">
-    Each lane is a separate git worktree. File changes in Lane A are invisible to Lane B until you merge.
+  <Card title="Isolated code" icon="shield">
+    Each worktree has its own files and branch.
   </Card>
-  <Card title="Context-Rich" icon="brain">
-    Every lane carries a Lane Pack — a living bundle of its intent, history, and current diff — automatically injected into every agent that works in it.
+  <Card title="Scoped sessions" icon="comments">
+    Chats and terminals run in the selected lane.
   </Card>
-  <Card title="Environment-Aware" icon="server">
-    Lanes get their own port allocations, environment variable overlays, and preview URLs. No port conflicts, no accidental shared state.
+  <Card title="Reviewable output" icon="code-pull-request">
+    A lane can be committed, pushed, and turned into a PR.
   </Card>
 </CardGroup>
 
----
+## Lane types
 
-## Lane Types
+| Type | Use it when |
+|------|-------------|
+| **Primary** | You need to inspect or run commands in the repository root. Be careful: agents write to the main checkout here. |
+| **Worktree** | You are doing normal agent work. This is the default and safest choice. |
+| **Attached** | You already have an external worktree and want ADE to track it. |
 
-ADE supports three lane types, each suited to different workflows.
+## Common actions
 
-| Type | Location | Use case | Can be deleted? |
-|------|----------|----------|-----------------|
-| **Primary** | Main repository directory | Working directly in the repo root; always exists | No (can be hidden) |
-| **Worktree** | `.ade/worktrees/<lane-name>/` | Standard parallel feature work; created by ADE | Yes |
-| **Attached** | Anywhere outside `.ade/` | Importing a worktree you created manually or in another tool | Yes (detaches only) |
+<Steps>
+  <Step title="Create">
+    Start from the default branch or from another lane when building stacked work.
+  </Step>
+  <Step title="Work">
+    Open chat, terminals, Files, or Run scoped to the lane.
+  </Step>
+  <Step title="Review">
+    Inspect the diff, tests, proof, History, and conflict risk.
+  </Step>
+  <Step title="Ship">
+    Commit, push, create a PR, merge, archive, or delete the lane.
+  </Step>
+</Steps>
 
-<AccordionGroup>
-  <Accordion title="Primary Lane" icon="house">
-    There is exactly one Primary lane per project. It points to your main repository directory — the working tree you cloned. The Primary lane is always present and cannot be deleted, only hidden from the lane list.
+## Stacked lanes
 
-    Use the Primary lane when you need to run commands that expect to be at the repo root (e.g., certain `git` operations, root-level scripts), or when you are doing work that does not benefit from worktree isolation.
+A stacked lane is based on another lane instead of `main`.
 
-    <Note>Agents running in the Primary lane write directly to your main working tree. Be mindful of this when running autonomous agents — prefer Worktree lanes for agent-driven tasks.</Note>
-  </Accordion>
-  <Accordion title="Worktree Lane" icon="code-branch">
-    Worktree lanes are the standard choice for parallel development. When you create a Worktree lane, ADE runs `git worktree add .ade/worktrees/<lane-name> <branch>` and sets up the full lane environment: port lease, env overlay, startup command configuration, and initial Lane Pack generation.
+```text
+main
+  auth-base
+    auth-ui
+      auth-tests
+```
 
-    The worktree directory is fully self-contained: the agent working in this lane sees exactly the files on its branch, with no interleaving from other branches.
-  </Accordion>
-  <Accordion title="Attached Lane" icon="link">
-    Attached lanes let you import an existing git worktree — one you created manually with `git worktree add`, or one that lives in a custom location outside `.ade/`. ADE adds it to the lane registry, generates a Lane Pack, and starts tracking its status, conflicts, and agent activity.
+Use stacks when one large change is easier to review as several smaller PRs. ADE keeps the relationship visible in Lanes, Graph, and PRs.
 
-    When you delete an Attached lane from ADE, the underlying worktree directory is not removed — it is simply detached from ADE management. The branch and files remain intact.
-  </Accordion>
-</AccordionGroup>
+## Cleanup
 
----
-
-## The 3-Pane Layout
-
-The Lanes tab uses a resizable 3-pane layout that stays consistent as you navigate between lanes.
-
-**Left pane — Lane list**: All lanes in the project, filterable by status (active/ready/archived). A topology mode toggle lets you switch between flat list view, stack graph view, and workspace canvas. Each row shows the lane name, branch, type badge, status indicator, conflict risk score, dirty/clean state, and ahead/behind counts.
-
-**Center pane — Lane detail**: The selected lane's full state. Includes a diff viewer (working tree, staged, recent commits), file tree toggle, quick edit capability, and in-app git operations: stage/unstage, commit/amend, stash, push, and branch management.
-
-**Right pane — Lane inspector**: A sub-tabbed panel with:
-- **Terminals** — all PTY and agent chat sessions running in this lane
-- **Packs** — the current Lane Pack content and freshness indicators
-- **Conflicts** — overlap analysis with other lanes, predicted conflict risk
-- **PR** — linked pull request status, checks, and quick actions
-
----
-
-## Lane Status
-
-Every lane displays a status badge that reflects the current state of work inside it.
-
-| Status | Meaning | Visual indicator |
-|--------|---------|-----------------|
-| `active` | An agent is currently running in this lane | Green pulsing dot |
-| `idle` | No agent running; lane is ready for work | Grey dot |
-| `blocked` | Agent is paused, waiting for human input | Amber dot |
-| `conflict` | Merge conflicts detected with another lane or base branch | Red badge with conflict count |
-| `stale` | Branch is out of sync with its base branch (behind by N commits) | Yellow clock icon with commit count |
-
-<Tip>Click any lane with `conflict` or `stale` status to see the full conflict analysis in the right inspector's Conflicts sub-tab. From there you can run a merge simulation, review the AI-proposed resolution strategy, or navigate directly to the Graph view for a visual diff.</Tip>
-
----
-
-## Lane Health Indicators
-
-Each lane row in the list displays a set of health indicators beyond simple status:
-
-- **Pack freshness** — how recently the Lane Pack was regenerated relative to the last commit. A stale pack icon appears if the pack is more than one session behind.
-- **Conflict risk score** — a 0–100 score showing the likelihood of integration conflict with the current base branch. Computed by ADE's conflict prediction engine.
-- **Uncommitted changes count** — number of modified files in the working tree (shown as `+N` in amber).
-- **Agent token usage** — a progress bar showing the current agent session's token consumption against its budget cap.
-
-### Rebase banner
-
-When a lane has pending rebase suggestions, a compact banner appears above the lane list. It shows how many lanes are affected and surfaces two actions per suggested lane:
-
-- **View in Rebase tab** — opens the dedicated Rebase tab for that lane, where you can inspect the plan, run the rebase, and handle conflicts with the full resolver
-- **Dismiss** — removes the suggestion permanently until new parent commits arrive
-
-Rebase runs and conflict resolution live in the Rebase tab and the Conflicts view — the lane-list banner stays intentionally small so it doesn't compete with the lane information.
-
----
-
-## Explore Lanes
+Archive lanes you may need later. Delete lanes when the branch is merged or abandoned and you are done with the worktree. ADE asks for confirmation before removing managed worktrees.
 
 <CardGroup cols={2}>
-  <Card title="Creating & Managing Lanes" icon="plus" href="/lanes/creating">
-    Step-by-step instructions for creating, renaming, archiving, and deleting lanes.
+  <Card title="Create lanes" icon="plus" href="/lanes/creating">
+    More detail on lane creation and cleanup.
   </Card>
-  <Card title="Lane Packs" icon="cube" href="/lanes/packs">
-    How Lane Packs provide automatic context injection for every agent session.
-  </Card>
-  <Card title="Stacked Lanes" icon="layer-group" href="/lanes/stacks">
-    Build layered branch chains for stacked PR workflows with automatic rebase propagation.
-  </Card>
-  <Card title="Lane Environment" icon="server" href="/lanes/environment">
-    Port allocation, environment variable overlays, startup commands, preview URLs, and runtime isolation.
+  <Card title="Stacked PRs" icon="layer-group" href="/lanes/stacks">
+    Work with branch chains and reviewable stacks.
   </Card>
 </CardGroup>

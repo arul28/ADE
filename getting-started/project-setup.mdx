@@ -1,129 +1,40 @@
 ---
-title: "Project setup & onboarding"
-description: "Walk through ADE's onboarding wizard step by step — detect tools, connect providers, configure GitHub, and get your project ready for agents."
+title: "Project setup"
+description: "What ADE checks when you open a repository for the first time."
 icon: "wand-magic-sparkles"
 ---
 
-When you open a repository in ADE for the first time, ADE creates a `.ade/` directory and launches the **project setup wizard**. This wizard matches what you see in the app at **Settings → General → Open project setup** — you can re-run it any time.
+Project setup is a convenience flow, not a gate. You can skip any step and configure it later in **Settings**.
 
-<Note>
-If you skip setup, ADE still works. You can configure everything later through Settings. The wizard is a fast path, not a gate.
-</Note>
-
----
-
-## Step 1: Dev tools
-
-ADE checks that your development toolchain is ready.
-
-| Check | What ADE looks for | Why it matters |
-|-------|-------------------|----------------|
-| **Git** | `git` in PATH, version ≥ 2.20 | Lanes use `git worktree` under the hood |
-| **GitHub CLI** | `gh` in PATH and authenticated | PR management, CI status sync |
-| **Node.js** | `node` in PATH | Required for ADE CLI and many project workflows |
-
-If a tool is missing, ADE shows a direct link to install it. None of these checks block setup — you can proceed and install later.
-
----
-
-## Step 2: AI connections
-
-Connect at least one AI provider so agents can run. ADE supports:
-
-<CardGroup cols={2}>
-  <Card title="API key providers" icon="key">
-    Anthropic (Claude), OpenAI (GPT/Codex), OpenRouter. Paste your key and ADE verifies the connection immediately.
-  </Card>
-  <Card title="CLI-based providers" icon="terminal">
-    Claude Code CLI (`claude`), Codex CLI (`codex`), Cursor agent. ADE detects installed CLIs and checks their auth status.
-  </Card>
-</CardGroup>
-
-ADE runs a health check on each provider. A green indicator means the provider is ready; amber means the CLI is installed but not authenticated; red means the key is invalid or the CLI is missing.
-
-<Tip>
-Start with one provider. You can add more any time in **Settings → AI**. Anthropic (Claude) is recommended for the most complete ADE experience — it works with chat, worker runs, CTO, and automations out of the box.
-</Tip>
-
----
-
-## Step 3: Background helpers
-
-Enable optional AI-powered background features:
-
-| Feature | What it does | Default |
-|---------|-------------|---------|
-| **Auto-title sessions** | AI generates descriptive names for terminal and chat sessions | On |
-
-These features use your configured AI provider and count toward your budget. Disable any you do not want.
-
----
-
-## Step 4: GitHub
-
-Connect your GitHub account for PR management, CI status, and stacked PR workflows.
+## Setup checklist
 
 <Steps>
-  <Step title="Authenticate with GitHub">
-    ADE uses a Personal Access Token (PAT) or GitHub CLI auth. If `gh` is installed and authenticated, ADE detects it automatically.
+  <Step title="Developer tools">
+    ADE checks for Git and other useful local tools. Git is the important one because lanes use worktrees.
   </Step>
-  <Step title="Select repository access">
-    Confirm which repositories and organizations ADE can access.
+  <Step title="AI providers">
+    Connect or verify at least one provider so chats and workers can run.
   </Step>
-  <Step title="Set default branch">
-    ADE detects your default branch (`main` or `master`) and uses it as the base for new lanes.
+  <Step title="GitHub">
+    Optional, but recommended if you want PR creation, CI status, review comments, and merge workflows inside ADE.
+  </Step>
+  <Step title="Linear">
+    Optional. Connect Linear if you want issues linked to lanes, PRs, CTO planning, and follow-up notes.
+  </Step>
+  <Step title="Project preferences">
+    Review project name, default branch, lane defaults, and any suggested process or test commands.
   </Step>
 </Steps>
 
-<Note>
-GitHub is optional. ADE works fully without it — you just won't have PR management, CI sync, or stacked PR features.
-</Note>
+## Where settings live
 
----
-
-## Step 6: Linear
-
-Connect Linear for bidirectional issue tracking between ADE and your Linear workspace.
-
-| Setting | Description |
-|---------|------------|
-| **API key** | Linear API key (stored in `local.secret.yaml`) |
-| **Sync direction** | Bidirectional (default), read-only, or disabled |
-| **Default team** | Which Linear team receives new issues from ADE |
-
-When connected, the CTO agent can read Linear issues, update status, and create new issues. Workers can link to Linear issues for full traceability.
-
-<Tip>
-Linear integration is most valuable when paired with the CTO agent. The CTO can ingest new Linear issues and automatically delegate them to worker agents in dedicated lanes.
-</Tip>
-
----
-
-## After setup
-
-Once you finish (or skip) the wizard, ADE takes you to the **Run** tab. From here you can:
+Most configuration is local to your machine. Provider credentials and secrets stay out of Git. Project-specific defaults can be shared deliberately, but ADE keeps local runtime state under `.ade/`.
 
 <CardGroup cols={2}>
-  <Card title="Create your first lane" icon="code-branch" href="/getting-started/first-lane">
-    Fork a task into its own isolated worktree.
+  <Card title="Settings overview" icon="sliders" href="/configuration/settings">
+    See the main settings sections.
   </Card>
-  <Card title="Start your first agent" icon="robot" href="/getting-started/first-agent">
-    Use chat for a quick task or launch a worker run for structured execution.
-  </Card>
-  <Card title="Set up managed processes" icon="play" href="/tools/project-home">
-    Configure your dev stack so ADE can start everything with one button.
-  </Card>
-  <Card title="Fine-tune settings" icon="gear" href="/configuration/settings">
-    Adjust AI models, budgets, permissions, and notification preferences.
+  <Card title="Configuration overview" icon="folder-tree" href="/configuration/overview">
+    Understand local project state and shared defaults.
   </Card>
 </CardGroup>
-
----
-
-## Re-running setup
-
-You can re-run the onboarding wizard at any time:
-- **Settings → General → Open project setup**
-- Or navigate directly to the onboarding route in the app
-
-Re-running setup does not reset existing configuration. It lets you review and update each step without losing your current settings.

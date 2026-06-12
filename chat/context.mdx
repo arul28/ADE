@@ -1,136 +1,53 @@
 ---
-title: "Context & Artifacts"
-description: "Managing context windows, compaction strategies, working with artifacts, chat history, and troubleshooting common issues."
+title: "Context and artifacts"
+description: "Keep agent chats focused with lane context, attachments, proof, and session history."
 icon: "database"
 ---
 
-## Managing Context
-Every chat session has a **context window** — the amount of conversation history and injected context the model can hold at once. ADE shows the context fill level as a meter in the chat header.
+ADE keeps chat context tied to the selected lane and session. The agent can inspect the repository directly when it needs more detail.
 
-<Tabs>
-  <Tab title="Automatic compaction">
-    When the context meter reaches **70%**, ADE suggests compaction. If auto-compaction is enabled (configured in **Settings → Chat → Auto-compact threshold**), ADE compacts automatically without prompting.
+## What the agent sees
 
-    Compaction summarizes older messages while preserving:
-    - Key decisions made in the session
-    - File paths and code blocks from recent turns
-    - Current task state and open questions
-    - Tool call results from the last few turns
-  </Tab>
-  <Tab title="Manual compaction">
-    Click the context meter in the header and select **Compact now** to trigger compaction immediately. A compact summary is injected as a synthetic message before the conversation continues.
-  </Tab>
-  <Tab title="Starting a fresh session">
-    If you prefer a clean context window, click **New session** in the chat header. The new session will receive a fresh context injection from the lane pack but will not carry over the previous conversation. The old session is saved in History.
-  </Tab>
-</Tabs>
+- Your prompt.
+- The selected lane and branch.
+- Relevant PR or Linear context when linked.
+- Attachments you add to the chat.
+- Recent session context when you resume a conversation.
+
+## Attachments and artifacts
+
+Use artifacts when they make the task clearer:
+
+| Artifact | Example |
+|----------|---------|
+| Screenshot | UI state the agent should match or debug. |
+| Log | Error output from a failing command. |
+| Proof | Evidence captured after a change. |
+| PR comment | Review feedback the agent should address. |
+| Linear issue | Requirements or acceptance criteria. |
+
+## Context window
+
+Long chats eventually fill the model context window. When that happens:
+
+- Continue if the agent is still on track.
+- Ask the agent to summarize the current state.
+- Start a new session in the same lane with the summary.
+- Attach the key logs or screenshots instead of relying on old messages.
 
 <Warning>
-  Compaction is lossy by design — exact wording of older messages is not preserved. If there is something in the conversation you want the agent to remember verbatim (e.g., a specific constraint), call it out explicitly before compacting: "Remember: the API must remain backwards compatible with v1 clients."
+Compaction and summaries are useful, but they are not exact memory. Restate any critical constraint before asking the agent to continue.
 </Warning>
 
----
+## Find old context
 
-## Project orientation
+Use **History** to reopen transcripts, inspect tool calls, and recover proof or PR links from previous sessions.
 
-ADE does not generate PRD or architecture summary files for chat. Agents are instructed to inspect the repository directly when they need project context: start with `AGENTS.md`, `README.md`, `docs/`, package manifests, and the source files relevant to the lane.
-
----
-
-## Working with Artifacts
-
-At the end of a session (or mid-session when the agent produces notable outputs), artifacts are surfaced for your review.
-
-### Artifact types produced in chat
-
-| Artifact | When it appears |
-|---|---|
-| File changes | After any file write tool call |
-| Proofs | When the agent calls `ade proof capture` or `ade proof record` (screenshots and short recordings) |
-| Ingested evidence | When the agent calls `ade proof ingest` with external traces or logs |
-| PR links | After a PR is created |
-| Test reports | After test runner tool calls |
-| Notes | When the agent explicitly attaches a note |
-
-### What you can do with artifacts
-
-<Steps>
-  <Step title="Keep — attach to lane pack">
-    Promotes the artifact into the lane's persistent context. Future chat sessions and worker runs will have access to it via context injection.
-  </Step>
-  <Step title="Attach to Worker run / PR / Linear issue">
-    Links the artifact to an existing Worker run, opens it for attachment to a PR description, or creates a Linear issue attachment.
-  </Step>
-  <Step title="Download">
-    Saves the artifact to your local filesystem (useful for screenshots and browser traces).
-  </Step>
-  <Step title="Dismiss">
-    Removes the artifact from the session's artifact list. It remains accessible in the session's History entry but is not promoted.
-  </Step>
-</Steps>
-
----
-
-## Chat History and Sessions
-
-Every chat session is stored with its full transcript, tool call log, timing data, and attached artifacts.
-
-Access sessions from the **History tab** within a Lane view. Each entry shows:
-- Session start time and duration
-- Message count and token total
-- Model used
-- Number of tool calls
-- Artifacts produced
-
-Click any session to open its transcript in read-only view. Click **Resume** to open a new chat session seeded with the previous session's summary.
-
----
-
-## Troubleshooting
-
-<AccordionGroup>
-  <Accordion title="The agent is not seeing my recent file changes">
-    The agent's file access is always live — it reads from the filesystem at the time of the tool call. If your changes are not reflected, check:
-
-    1. Are the changes saved? The agent reads saved files, not editor buffers.
-    2. Is the agent working in the correct lane? Confirm the lane selector in the chat header.
-    3. Ask the agent explicitly: "Re-read `src/foo.ts` and tell me what you see."
-  </Accordion>
-  <Accordion title="Context meter is full and compaction isn't helping">
-    If the session context is very large (deeply nested tool call results, very long files), compaction may not free enough space. Options:
-
-    - Start a **new session** — previous context is preserved in History
-    - Ask the agent to summarize key decisions and start fresh with that summary
-    - Switch to a model with a larger context window in the model selector
-  </Accordion>
-  <Accordion title="Proofs captured by the agent are not showing up">
-    Proofs appear in the session artifact panel the moment `ade proof` finishes. If a proof is missing:
-
-    - Run `ade proof list --text` in the same lane — if the artifact is listed there, the capture worked and the UI just needs a refresh.
-    - Run `ade proof status --text` to confirm the local capture pipeline is available (on macOS, `screencapture` must be on `PATH` and Screen Recording permission granted).
-    - Check the chat transcript for the `ade proof` invocation — the CLI returns an error if the capture failed, and the agent usually surfaces it inline.
-
-    See [Proof Overview](/computer-use/overview) for the full capture workflow.
-  </Accordion>
-  <Accordion title="ADE tool calls are failing">
-    If ADE tool calls fail consistently:
-
-    1. Run `ade doctor --project-root <path>` in a terminal to check CLI readiness and see per-domain action counts.
-    2. Confirm the machine runtime endpoint is reachable — `ade doctor --json` reports `runtimeEndpoint.available: true` when the CLI can attach.
-    3. Check the chat session transcript for the specific tool's error payload; ADE surfaces the RPC error message inline.
-  </Accordion>
-  <Accordion title="The agent created a PR on the wrong branch">
-    PR creation uses the lane's current branch. If the agent created a PR on the wrong branch:
-
-    1. Close or update the PR in GitHub directly.
-    2. In the chat, tell the agent: "You created the PR on the wrong branch. The correct branch is `feature/xyz`. Please update or re-create the PR."
-    3. To prevent this in future sessions, use an explicit branch name when asking for a PR: "create a PR from `feature/xyz` to `main`."
-  </Accordion>
-  <Accordion title="The agent keeps calling the same tool in a loop">
-    This usually indicates the agent is not seeing the tool's output correctly, or the task goal is ambiguous. Try:
-
-    1. Press **Escape** to interrupt the current turn.
-    2. Clarify the goal: "Stop. The issue is X. I need you to Y instead."
-    3. If the loop continues after clarification, start a new session with a more explicit initial prompt.
-  </Accordion>
-</AccordionGroup>
+<CardGroup cols={2}>
+  <Card title="History" icon="clock-rotate-left" href="/tools/history">
+    Search past sessions.
+  </Card>
+  <Card title="Proof" icon="camera" href="/computer-use/overview">
+    Capture and attach evidence.
+  </Card>
+</CardGroup>

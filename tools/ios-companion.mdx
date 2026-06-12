@@ -1,0 +1,52 @@
+---
+title: "iOS companion"
+description: "Pair the ADE iOS app with desktop to follow work, receive updates, and act on project state from your phone."
+icon: "mobile-screen"
+---
+
+The ADE iOS app is a companion to the desktop runtime. It does not run coding agents on the phone. Your Mac remains the execution host.
+
+## What mobile is for
+
+<CardGroup cols={2}>
+  <Card title="Follow active work" icon="eye">
+    See lanes, chats, PRs, and worker activity while away from the desktop.
+  </Card>
+  <Card title="Get notifications" icon="bell">
+    Receive push updates for completed work, failures, questions, and review events.
+  </Card>
+  <Card title="Respond quickly" icon="reply">
+    Review status and send small follow-up commands when the desktop runtime is reachable.
+  </Card>
+  <Card title="Stay synced" icon="rotate">
+    Pair with the local runtime so project state can mirror to the phone.
+  </Card>
+</CardGroup>
+
+## Pair your phone
+
+<Steps>
+  <Step title="Open Settings -> Mobile">
+    The desktop app shows pairing status and a QR code when mobile support is available.
+  </Step>
+  <Step title="Open ADE on iOS">
+    Scan the QR code from the iOS app.
+  </Step>
+  <Step title="Confirm connection">
+    Desktop should show the device as paired. The phone should show the project catalog or current project state.
+  </Step>
+  <Step title="Choose notifications">
+    Keep the events you care about, such as agent completed, agent failed, PR ready, or question waiting.
+  </Step>
+</Steps>
+
+## What to expect
+
+- Desktop must be running for local command execution.
+- Network reachability matters. Local Wi-Fi is simplest; tailnet setups can make reconnection easier.
+- Large artifacts may load on demand.
+- Sensitive source and project data remain tied to the paired desktop/runtime.
+
+<Note>
+If mobile looks connected but updates do not arrive, check desktop Settings -> Mobile first, then verify both devices are on a reachable network.
+</Note>

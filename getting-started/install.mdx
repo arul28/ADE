@@ -1,51 +1,50 @@
 ---
 title: "Install ADE"
-description: "Download the macOS beta, move ADE into Applications, and launch it for the first time."
+description: "Download the macOS app, move it to Applications, and launch it."
 icon: "download"
 ---
 
 ## Requirements
 
 <CardGroup cols={3}>
-  <Card title="macOS" icon="apple" color="#7C3AED">
-    ADE ships a macOS beta installer for Apple Silicon and Intel Macs. macOS 13+ recommended.
+  <Card title="macOS" icon="apple">
+    ADE ships as a macOS desktop app for Apple Silicon and Intel Macs.
   </Card>
-  <Card title="Git 2.20+" icon="git-alt" color="#F97316">
-    ADE manages worktrees and branches under the hood. Git must be installed and in your PATH.
+  <Card title="Git" icon="git-alt">
+    Required. ADE uses branches and worktrees for lanes.
   </Card>
-  <Card title="Node.js" icon="node-js" color="#059669">
-    Recommended for projects that depend on local tooling and ADE's bundled ADE CLI workflows.
+  <Card title="One AI provider" icon="key">
+    Needed for agent work. You can connect it after launch.
   </Card>
 </CardGroup>
 
----
-
-## Install the beta
+## Install
 
 <Steps>
-  <Step title="Download the DMG" icon="download">
-    Go to [GitHub Releases](https://github.com/arul28/ADE/releases) and download the latest macOS installer for your chip (Apple Silicon or Intel).
-
+  <Step title="Download the DMG">
+    Open [GitHub Releases](https://github.com/arul28/ADE/releases) and download the latest ADE macOS release.
   </Step>
-  <Step title="Drag ADE into Applications" icon="folder-open">
-    Open the DMG and drag **ADE.app** into `/Applications`. This is the standard macOS install flow.
-
+  <Step title="Move ADE into Applications">
+    Open the DMG and drag **ADE.app** into `/Applications`.
   </Step>
-  <Step title="Launch ADE" icon="rocket">
-    Open ADE from `/Applications` or Spotlight (`Cmd+Space`, type "ADE"). If macOS warns that the app was downloaded from the internet, click **Open** to confirm.
+  <Step title="Launch ADE">
+    Open ADE from `/Applications` or Spotlight. If macOS asks for confirmation, choose **Open**.
   </Step>
 </Steps>
 
-<Check>
-**You're installed.** ADE opens to a welcome screen where you can open your first project. Continue to the next step to connect an AI provider.
-</Check>
-
----
-
-## Optional permissions
-
-Computer Use workflows may ask for **Accessibility** or **Automation** permissions. You can grant those later in macOS **System Settings → Privacy & Security** if you're not using browser or desktop automation yet.
-
 <Note>
-ADE does not require admin privileges to install or run. It stores all project data in a `.ade/` directory inside your repository, and app preferences in `~/Library/Application Support/ADE/`.
+ADE stores project state inside each repository's `.ade/` directory and app preferences under your user Library. It does not require admin privileges.
 </Note>
+
+## First launch
+
+After the app opens, continue with:
+
+<CardGroup cols={2}>
+  <Card title="Connect a provider" icon="key" href="/getting-started/connect-provider">
+    Verify Claude, Codex, Cursor, OpenCode, or another supported provider.
+  </Card>
+  <Card title="Open a project" icon="folder-open" href="/getting-started/open-project">
+    Choose the Git repository you want ADE to manage.
+  </Card>
+</CardGroup>
