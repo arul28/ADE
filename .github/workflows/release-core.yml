@@ -46,6 +46,8 @@ jobs:
 
           ci_pass_json="$(
             gh api "repos/$GH_REPO/commits/$TARGET_REF/check-runs" \
+              --method GET \
+              -H "Accept: application/vnd.github+json" \
               -f per_page=100 \
               --paginate \
               --jq '[.check_runs[] | select(.name == "ci-pass")] | sort_by(.completed_at // "") | last // empty'
