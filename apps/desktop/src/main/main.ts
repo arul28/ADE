@@ -202,6 +202,7 @@ import {
 } from "./services/notifications/notificationEventBus";
 import type { SyncService } from "./services/sync/syncService";
 import type { DeviceRegistryService } from "./services/sync/deviceRegistryService";
+import { blockPackagedLaunchForCrossChannelSyncConflict } from "./services/sync/packagedSyncHostLaunchGate";
 import { createAutoUpdateService } from "./services/updates/autoUpdateService";
 import { cleanupStaleTempArtifacts } from "./services/runtime/tempCleanupService";
 import type { Logger } from "./services/logging/logger";
@@ -826,6 +827,13 @@ app.whenReady().then(async () => {
   const perfRun = initPerfRunFromEnv();
   if (perfRun) {
     startMetricsSampler();
+  }
+
+  if (blockPackagedLaunchForCrossChannelSyncConflict({
+    isPackaged: app.isPackaged,
+    channel: normalizeAdePackageChannel(process.env.ADE_PACKAGE_CHANNEL),
+  })) {
+    return;
   }
 
   /** Canonical artifacts dir for the active project; ade-artifact:// only serves under this path. */
