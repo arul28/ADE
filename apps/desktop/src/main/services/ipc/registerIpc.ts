@@ -223,9 +223,6 @@ import type {
   PrAiResolutionSessionInfo,
   PrAiResolutionSessionStatus,
   PrAgentPermissionMode,
-  ConvergenceRuntimeState,
-  PrConvergenceStatePatch,
-  PipelineSettings,
   LinkPrToLaneArgs,
   LandResult,
   LandStackEnhancedArgs,
@@ -571,8 +568,6 @@ import { fetchAdeLatestRelease, type createGithubService } from "../github/githu
 import type { createPrService } from "../prs/prService";
 import type { createPrPollingService } from "../prs/prPollingService";
 import type { createQueueLandingService } from "../prs/queueLandingService";
-import type { createIssueInventoryService } from "../prs/issueInventoryService";
-import type { PathToMergeOrchestrator } from "../prs/pathToMergeOrchestrator";
 import type { createPrSummaryService } from "../prs/prSummaryService";
 import type { createReviewService } from "../review/reviewService";
 import type { createAgentChatService } from "../chat/agentChatService";
@@ -931,8 +926,6 @@ export type AppContext = {
   prService: ReturnType<typeof createPrService> | null;
   prPollingService: ReturnType<typeof createPrPollingService> | null;
   queueLandingService: ReturnType<typeof createQueueLandingService> | null;
-  issueInventoryService: ReturnType<typeof createIssueInventoryService> | null;
-  pathToMergeOrchestrator?: PathToMergeOrchestrator | null;
   prSummaryService: ReturnType<typeof createPrSummaryService> | null;
   reviewService: ReturnType<typeof createReviewService> | null;
   jobEngine: ReturnType<typeof createJobEngine> | null;
@@ -8383,12 +8376,6 @@ export function registerIpc({
     return ctx;
   };
 
-  const ensureIssueInventoryContext = (): AppContextWith<"issueInventoryService"> => {
-    const ctx = getCtx();
-    requireAppContextServices(ctx, ["issueInventoryService"] as const);
-    return ctx;
-  };
-
   ipcMain.handle(IPC.prsGetForLane, async (_event, arg: { laneId: string }): Promise<PrSummary | null> => {
     const ctx = getCtx();
     if (!ctx.prService) return null;
@@ -9014,134 +9001,6 @@ export function registerIpc({
   ipcMain.handle(IPC.prsReactToComment, (_e, args: ReactToPrCommentArgs) => ensurePrReadContext().prService.reactToComment(args));
   ipcMain.handle(IPC.prsCleanupBranch, (_e, args: CleanupPrBranchArgs): Promise<CleanupPrBranchResult> =>
     ensurePrReadContext().prService.cleanupBranch(args));
-
-  ipcMain.handle(IPC.prsConvergenceStateGet, (_e, args: { prId: string }): ConvergenceRuntimeState =>
-    ensureIssueInventoryContext().issueInventoryService.getConvergenceRuntime(args.prId));
-  ipcMain.handle(IPC.prsConvergenceStateSave, (_e, args: { prId: string; state: PrConvergenceStatePatch }): ConvergenceRuntimeState => {
-    // Whitelist: only allow renderer to update operational fields.
-    // Identity fields and immutable timestamps are stripped.
-    const MUTABLE_FIELDS: ReadonlySet<keyof ConvergenceRuntimeState> = new Set([
-      "autoConvergeEnabled",
-      "status",
-      "pollerStatus",
-      "currentRound",
-      "activeSessionId",
-      "activeLaneId",
-      "activeHref",
-      "pauseReason",
-      "errorMessage",
-      "lastStartedAt",
-      "lastPolledAt",
-      "lastPausedAt",
-      "lastStoppedAt",
-    ]);
-    // Validate that args.state is a plain non-null object before iterating.
-    if (args.state == null || typeof args.state !== "object" || Array.isArray(args.state)) {
-      return ensureIssueInventoryContext().issueInventoryService.getConvergenceRuntime(args.prId);
-    }
-
-    const VALID_STATUS: ReadonlySet<string> = new Set([
-      "idle", "launching", "running", "polling", "paused", "converged", "merged", "failed", "cancelled", "stopped",
-    ]);
-    const VALID_POLLER_STATUS: ReadonlySet<string> = new Set([
-      "idle", "scheduled", "polling", "waiting_for_checks", "waiting_for_comments", "paused", "stopped",
-    ]);
-
-    const isStringOrNull = (v: unknown): boolean => v === null || typeof v === "string";
-
-    const sanitized: PrConvergenceStatePatch = {};
-    for (const key of Object.keys(args.state) as (keyof ConvergenceRuntimeState)[]) {
-      if (!MUTABLE_FIELDS.has(key)) continue;
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-assignment
-      const val = (args.state as any)[key];
-      switch (key) {
-        case "autoConvergeEnabled":
-          if (typeof val === "boolean") sanitized.autoConvergeEnabled = val;
-          break;
-        case "status":
-          if (typeof val === "string" && VALID_STATUS.has(val)) sanitized.status = val as ConvergenceRuntimeState["status"];
-          break;
-        case "pollerStatus":
-          if (typeof val === "string" && VALID_POLLER_STATUS.has(val)) sanitized.pollerStatus = val as ConvergenceRuntimeState["pollerStatus"];
-          break;
-        case "currentRound":
-          if (typeof val === "number" && Number.isFinite(val) && val >= 0) sanitized.currentRound = val;
-          break;
-        case "activeSessionId":
-        case "activeLaneId":
-        case "activeHref":
-        case "pauseReason":
-        case "errorMessage":
-        case "lastStartedAt":
-        case "lastPolledAt":
-        case "lastPausedAt":
-        case "lastStoppedAt":
-          if (isStringOrNull(val)) (sanitized as any)[key] = val;
-          break;
-        default:
-          break;
-      }
-    }
-    return ensureIssueInventoryContext().issueInventoryService.saveConvergenceRuntime(args.prId, sanitized);
-  });
-  ipcMain.handle(IPC.prsConvergenceStateDelete, (_e, args: { prId: string }): void =>
-    ensureIssueInventoryContext().issueInventoryService.resetConvergenceRuntime(args.prId));
-
-  ipcMain.handle(
-    IPC.prsPathToMergeStart,
-    async (_e, args: {
-      prId: string;
-      modelId?: string | null;
-      reasoning?: string | null;
-      permissionMode?: string | null;
-      scope?: "checks" | "comments" | "both";
-      additionalInstructions?: string | null;
-      pollIntervalSeconds?: number | null;
-    }) => {
-      const orchestrator = getCtx().pathToMergeOrchestrator;
-      if (!orchestrator) {
-        throw new Error("Path to Merge orchestrator is not available in this build.");
-      }
-      const prId = typeof args?.prId === "string" ? args.prId.trim() : "";
-      if (!prId) throw new Error("prId is required");
-      return await orchestrator.startPathToMerge({
-        prId,
-        modelId: typeof args?.modelId === "string" ? args.modelId : null,
-        reasoning: typeof args?.reasoning === "string" ? args.reasoning : null,
-        permissionMode: typeof args?.permissionMode === "string"
-          ? args.permissionMode as PrAgentPermissionMode
-          : null,
-        scope: args?.scope === "checks" || args?.scope === "comments" || args?.scope === "both"
-          ? args.scope
-          : undefined,
-        additionalInstructions: typeof args?.additionalInstructions === "string" ? args.additionalInstructions : null,
-        pollIntervalSeconds: typeof args?.pollIntervalSeconds === "number" ? args.pollIntervalSeconds : null,
-      });
-    },
-  );
-
-  ipcMain.handle(
-    IPC.prsPathToMergeStop,
-    async (_e, args: { prId: string; reason?: string | null }) => {
-      const orchestrator = getCtx().pathToMergeOrchestrator;
-      if (!orchestrator) {
-        throw new Error("Path to Merge orchestrator is not available in this build.");
-      }
-      const prId = typeof args?.prId === "string" ? args.prId.trim() : "";
-      if (!prId) throw new Error("prId is required");
-      return await orchestrator.stopPathToMerge({
-        prId,
-        reason: typeof args?.reason === "string" ? args.reason : null,
-      });
-    },
-  );
-
-  ipcMain.handle(IPC.prsPipelineSettingsGet, (_e, args: { prId: string }): PipelineSettings =>
-    ensureIssueInventoryContext().issueInventoryService.getPipelineSettings(args.prId));
-  ipcMain.handle(IPC.prsPipelineSettingsSave, (_e, args: { prId: string; settings: Partial<PipelineSettings> }): void =>
-    ensureIssueInventoryContext().issueInventoryService.savePipelineSettings(args.prId, args.settings));
-  ipcMain.handle(IPC.prsPipelineSettingsDelete, (_e, args: { prId: string }): void =>
-    ensureIssueInventoryContext().issueInventoryService.deletePipelineSettings(args.prId));
 
   ipcMain.handle(IPC.rebaseScanNeeds, async () => ensureConflictContext().conflictService.scanRebaseNeeds());
 

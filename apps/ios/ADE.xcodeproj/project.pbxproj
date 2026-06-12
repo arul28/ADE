@@ -171,7 +171,6 @@
 		G1000000000000000000000F /* PrMergeGateCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = G2000000000000000000000F /* PrMergeGateCard.swift */; };
 		G10000000000000000000020 /* PrAiSummaryCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000020 /* PrAiSummaryCard.swift */; };
 		G10000000000000000000021 /* PrCommitRailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000021 /* PrCommitRailView.swift */; };
-		G10000000000000000000022 /* PrAiResolverCtaCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000022 /* PrAiResolverCtaCard.swift */; };
 		G10000000000000000000023 /* PrStackDiagramView.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000023 /* PrStackDiagramView.swift */; };
 		G10000000000000000000024 /* PrRebaseScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000024 /* PrRebaseScreen.swift */; };
 		B10000000000000000000017 /* LaneTreeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000017 /* LaneTreeView.swift */; };
@@ -397,7 +396,6 @@
 		G2000000000000000000000F /* PrMergeGateCard.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrMergeGateCard.swift; path = ADE/Views/PRs/PrMergeGateCard.swift; sourceTree = "<group>"; };
 		G20000000000000000000020 /* PrAiSummaryCard.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrAiSummaryCard.swift; path = ADE/Views/PRs/PrAiSummaryCard.swift; sourceTree = "<group>"; };
 		G20000000000000000000021 /* PrCommitRailView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrCommitRailView.swift; path = ADE/Views/PRs/PrCommitRailView.swift; sourceTree = "<group>"; };
-		G20000000000000000000022 /* PrAiResolverCtaCard.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrAiResolverCtaCard.swift; path = ADE/Views/PRs/PrAiResolverCtaCard.swift; sourceTree = "<group>"; };
 		G20000000000000000000023 /* PrStackDiagramView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrStackDiagramView.swift; path = ADE/Views/PRs/PrStackDiagramView.swift; sourceTree = "<group>"; };
 		G20000000000000000000024 /* PrRebaseScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrRebaseScreen.swift; path = ADE/Views/PRs/PrRebaseScreen.swift; sourceTree = "<group>"; };
 		A10000000000000000000017 /* LaneTreeView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneTreeView.swift; path = ADE/Views/Lanes/LaneTreeView.swift; sourceTree = "<group>"; };
@@ -566,7 +564,6 @@
 				G2000000000000000000000F /* PrMergeGateCard.swift */,
 				G20000000000000000000020 /* PrAiSummaryCard.swift */,
 				G20000000000000000000021 /* PrCommitRailView.swift */,
-				G20000000000000000000022 /* PrAiResolverCtaCard.swift */,
 				G20000000000000000000023 /* PrStackDiagramView.swift */,
 				G20000000000000000000024 /* PrRebaseScreen.swift */,
 			);
@@ -1113,7 +1110,6 @@
 				G1000000000000000000000F /* PrMergeGateCard.swift in Sources */,
 				G10000000000000000000020 /* PrAiSummaryCard.swift in Sources */,
 				G10000000000000000000021 /* PrCommitRailView.swift in Sources */,
-				G10000000000000000000022 /* PrAiResolverCtaCard.swift in Sources */,
 				G10000000000000000000023 /* PrStackDiagramView.swift in Sources */,
 				G10000000000000000000024 /* PrRebaseScreen.swift in Sources */,
 				B10000000000000000000017 /* LaneTreeView.swift in Sources */,

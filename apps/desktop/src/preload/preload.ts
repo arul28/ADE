@@ -268,12 +268,6 @@ import type {
   RerunPrChecksArgs,
   AiReviewSummaryArgs,
   AiReviewSummary,
-  PrConvergenceState,
-  PrConvergenceStatePatch,
-  PrAgentPermissionMode,
-  PathToMergeStartResult,
-  PathToMergeStopResult,
-  PipelineSettings,
   UpdateIntegrationProposalArgs,
   UpdatePrDescriptionArgs,
   LandPrArgs,
@@ -7801,80 +7795,6 @@ contextBridge.exposeInMainWorld("ade", {
     ): Promise<AiReviewSummary> =>
       callProjectRuntimeActionOr("pr", "aiReviewSummary", { args }, () =>
         ipcRenderer.invoke(IPC.prsAiReviewSummary, args),
-      ),
-    convergenceStateGet: async (prId: string): Promise<PrConvergenceState> =>
-      callProjectRuntimeActionOr(
-        "issue_inventory",
-        "getConvergenceRuntime",
-        { arg: prId },
-        () => ipcRenderer.invoke(IPC.prsConvergenceStateGet, { prId }),
-      ),
-    convergenceStateSave: async (
-      prId: string,
-      state: PrConvergenceStatePatch,
-    ): Promise<PrConvergenceState> =>
-      callProjectRuntimeActionOr(
-        "issue_inventory",
-        "saveConvergenceRuntime",
-        { argsList: [prId, state] },
-        () => ipcRenderer.invoke(IPC.prsConvergenceStateSave, { prId, state }),
-      ),
-    convergenceStateDelete: async (prId: string): Promise<void> =>
-      callProjectRuntimeActionOr(
-        "issue_inventory",
-        "resetConvergenceRuntime",
-        { arg: prId },
-        () => ipcRenderer.invoke(IPC.prsConvergenceStateDelete, { prId }),
-      ),
-    pathToMergeStart: async (args: {
-      prId: string;
-      modelId?: string | null;
-      reasoning?: string | null;
-      permissionMode?: PrAgentPermissionMode | null;
-      scope?: "checks" | "comments" | "both";
-      additionalInstructions?: string | null;
-      pollIntervalSeconds?: number | null;
-    }): Promise<PathToMergeStartResult> =>
-      callProjectRuntimeActionOr(
-        "path_to_merge",
-        "startPathToMerge",
-        { args },
-        () => ipcRenderer.invoke(IPC.prsPathToMergeStart, args),
-      ),
-    pathToMergeStop: async (args: {
-      prId: string;
-      reason?: string | null;
-    }): Promise<PathToMergeStopResult> =>
-      callProjectRuntimeActionOr(
-        "path_to_merge",
-        "stopPathToMerge",
-        { args },
-        () => ipcRenderer.invoke(IPC.prsPathToMergeStop, args),
-      ),
-    pipelineSettingsGet: async (prId: string): Promise<PipelineSettings> =>
-      callProjectRuntimeActionOr(
-        "issue_inventory",
-        "getPipelineSettings",
-        { arg: prId },
-        () => ipcRenderer.invoke(IPC.prsPipelineSettingsGet, { prId }),
-      ),
-    pipelineSettingsSave: async (
-      prId: string,
-      settings: Partial<PipelineSettings>,
-    ): Promise<void> =>
-      callProjectRuntimeActionOr(
-        "issue_inventory",
-        "savePipelineSettings",
-        { argsList: [prId, settings] },
-        () =>
-          ipcRenderer.invoke(IPC.prsPipelineSettingsSave, { prId, settings }),
-      ),
-    pipelineSettingsDelete: async (prId: string): Promise<void> =>
-      callProjectRuntimeActionOr(
-        "issue_inventory",
-        "deletePipelineSettings",
-        { arg: prId },
-        () => ipcRenderer.invoke(IPC.prsPipelineSettingsDelete, { prId }),
       ),
     dismissIntegrationCleanup: async (
       args: DismissIntegrationCleanupArgs,

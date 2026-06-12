@@ -34,7 +34,7 @@ _    ____  _____
     $ ade operations status | wait                  Poll operation/test/chat/run status
     $ ade diff changes | file | patch               Inspect lane diffs (including raw git patch text)
     $ ade files tree | read | write | search        Read and edit lane workspaces
-    $ ade prs list | create | path-to-merge         Manage PRs, queues, and Path to Merge repair rounds
+    $ ade prs list | create | show | checks          Manage PRs, queues, and GitHub integration
     $ ade run defs | ps | start | logs              Manage Run tab process definitions and runtime
     $ ade shell start | write | resize | close      Launch and control tracked shell sessions
     $ ade terminal list | read | write | signal     Control the active in-chat terminal
@@ -78,7 +78,6 @@ _    ____  _____
     $ ade git stage --lane <lane> src/index.ts
     $ ade git commit --lane <lane> -m "Fix login redirect"
     $ ade prs create --lane <lane> --base main --draft
-    $ ade prs path-to-merge <pr-id-or-number-or-url> --model <model> --max-rounds 3 --no-auto-merge
     $ ade proof record --seconds 20
     $ ade ios-sim apps --text
     $ ade ios-sim launch --target <id> --text
@@ -95,7 +94,7 @@ _    ____  _____
     JSON value fields:
       $ ade actions run pr.setLabels --arg prId=123 --arg-json 'labels=["ready","ship"]'
     Multi-parameter service call:
-      $ ade actions run issue_inventory.savePipelineSettings --args-list-json '["pr-1",{"maxRounds":3}]'
+      $ ade actions run pr.submitReview --args-list-json '["pr-1",{"event":"APPROVE"}]'
     $ ade actions list --text
     $ ade actions list --domain pr --text
     $ ade actions run <domain.action> --input-json '{"key":"value"}'
@@ -135,7 +134,7 @@ _    ____  _____
     $ ade operations status | wait                  Poll operation/test/chat/run status
     $ ade diff changes | file | patch               Inspect lane diffs (including raw git patch text)
     $ ade files tree | read | write | search        Read and edit lane workspaces
-    $ ade prs list | create | path-to-merge         Manage PRs, queues, and Path to Merge repair rounds
+    $ ade prs list | create | show | checks          Manage PRs, queues, and GitHub integration
     $ ade run defs | ps | start | logs              Manage Run tab process definitions and runtime
     $ ade shell start | write | resize | close      Launch and control tracked shell sessions
     $ ade terminal list | read | write | signal     Control the active in-chat terminal
@@ -179,7 +178,6 @@ _    ____  _____
     $ ade git stage --lane <lane> src/index.ts
     $ ade git commit --lane <lane> -m "Fix login redirect"
     $ ade prs create --lane <lane> --base main --draft
-    $ ade prs path-to-merge <pr-id-or-number-or-url> --model <model> --max-rounds 3 --no-auto-merge
     $ ade proof record --seconds 20
     $ ade ios-sim apps --text
     $ ade ios-sim launch --target <id> --text
@@ -196,7 +194,7 @@ _    ____  _____
     JSON value fields:
       $ ade actions run pr.setLabels --arg prId=123 --arg-json 'labels=["ready","ship"]'
     Multi-parameter service call:
-      $ ade actions run issue_inventory.savePipelineSettings --args-list-json '["pr-1",{"maxRounds":3}]'
+      $ ade actions run pr.submitReview --args-list-json '["pr-1",{"event":"APPROVE"}]'
     $ ade actions list --text
     $ ade actions list --domain pr --text
     $ ade actions run <domain.action> --input-json '{"key":"value"}'
@@ -236,7 +234,7 @@ _    ____  _____
     $ ade operations status | wait                  Poll operation/test/chat/run status
     $ ade diff changes | file | patch               Inspect lane diffs (including raw git patch text)
     $ ade files tree | read | write | search        Read and edit lane workspaces
-    $ ade prs list | create | path-to-merge         Manage PRs, queues, and Path to Merge repair rounds
+    $ ade prs list | create | show | checks          Manage PRs, queues, and GitHub integration
     $ ade run defs | ps | start | logs              Manage Run tab process definitions and runtime
     $ ade shell start | write | resize | close      Launch and control tracked shell sessions
     $ ade terminal list | read | write | signal     Control the active in-chat terminal
@@ -280,7 +278,6 @@ _    ____  _____
     $ ade git stage --lane <lane> src/index.ts
     $ ade git commit --lane <lane> -m "Fix login redirect"
     $ ade prs create --lane <lane> --base main --draft
-    $ ade prs path-to-merge <pr-id-or-number-or-url> --model <model> --max-rounds 3 --no-auto-merge
     $ ade proof record --seconds 20
     $ ade ios-sim apps --text
     $ ade ios-sim launch --target <id> --text
@@ -297,7 +294,7 @@ _    ____  _____
     JSON value fields:
       $ ade actions run pr.setLabels --arg prId=123 --arg-json 'labels=["ready","ship"]'
     Multi-parameter service call:
-      $ ade actions run issue_inventory.savePipelineSettings --args-list-json '["pr-1",{"maxRounds":3}]'
+      $ ade actions run pr.submitReview --args-list-json '["pr-1",{"event":"APPROVE"}]'
     $ ade actions list --text
     $ ade actions list --domain pr --text
     $ ade actions run <domain.action> --input-json '{"key":"value"}'
@@ -437,11 +434,6 @@ _    ____  _____
     $ ade prs comments <pr> --text                  Show unresolved review work
     $ ade prs github-snapshot --include-external-closed
                                                     Include closed external PR history in the GitHub snapshot
-    $ ade prs inventory <pr>                        Refresh ADE issue inventory
-    $ ade prs path-to-merge <pr> --model <model> --max-rounds 3 --no-auto-merge
-    $ ade prs path-to-merge <pr> --model <model> --conflict-strategy auto --force-finalize conditional
-    $ ade prs path-to-merge <pr> --model <model> --no-early-merge-on-green
-    $ ade prs pipeline <pr> save --conflict-strategy rebase --early-merge-on-green
     $ ade prs resolve-thread <pr> --thread <id>     Resolve a review thread
     $ ade prs labels set <pr> ready-to-merge        Replace labels
     $ ade prs reviewers request <pr> alice bob      Request reviewers
@@ -976,7 +968,7 @@ _    ____  _____
     $ ade operations status | wait                  Poll operation/test/chat/run status
     $ ade diff changes | file | patch               Inspect lane diffs (including raw git patch text)
     $ ade files tree | read | write | search        Read and edit lane workspaces
-    $ ade prs list | create | path-to-merge         Manage PRs, queues, and Path to Merge repair rounds
+    $ ade prs list | create | show | checks          Manage PRs, queues, and GitHub integration
     $ ade run defs | ps | start | logs              Manage Run tab process definitions and runtime
     $ ade shell start | write | resize | close      Launch and control tracked shell sessions
     $ ade terminal list | read | write | signal     Control the active in-chat terminal
@@ -1020,7 +1012,6 @@ _    ____  _____
     $ ade git stage --lane <lane> src/index.ts
     $ ade git commit --lane <lane> -m "Fix login redirect"
     $ ade prs create --lane <lane> --base main --draft
-    $ ade prs path-to-merge <pr-id-or-number-or-url> --model <model> --max-rounds 3 --no-auto-merge
     $ ade proof record --seconds 20
     $ ade ios-sim apps --text
     $ ade ios-sim launch --target <id> --text
@@ -1037,7 +1028,7 @@ _    ____  _____
     JSON value fields:
       $ ade actions run pr.setLabels --arg prId=123 --arg-json 'labels=["ready","ship"]'
     Multi-parameter service call:
-      $ ade actions run issue_inventory.savePipelineSettings --args-list-json '["pr-1",{"maxRounds":3}]'
+      $ ade actions run pr.submitReview --args-list-json '["pr-1",{"event":"APPROVE"}]'
     $ ade actions list --text
     $ ade actions list --domain pr --text
     $ ade actions run <domain.action> --input-json '{"key":"value"}'
@@ -1089,7 +1080,7 @@ _    ____  _____
     --arg parses true/false/null/numbers; --arg-json parses a JSON value:
       $ ade actions run pr.setLabels --arg prId=123 --arg-json 'labels=["ready","ship"]'
     argsList is for service methods with multiple positional parameters:
-      $ ade actions run issue_inventory.savePipelineSettings --args-list-json '["pr-1",{"maxRounds":3}]'
+      $ ade actions run pr.submitReview --args-list-json '["pr-1",{"event":"APPROVE"}]'
     $ ade actions list --text                       Domain-grouped action catalog
     $ ade actions list --domain git --text          Narrow the catalog
     $ ade actions run <domain.action> --input-json '{"key":"value"}'

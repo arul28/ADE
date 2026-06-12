@@ -72,11 +72,7 @@ struct PrChecksTab: View {
   let deployments: [PrDeployment]
   let canRerunChecks: Bool
   let isLive: Bool
-  let aiResolution: AiResolutionState?
-  let isAiResolverBusy: Bool
   let onRerun: () -> Void
-  let onLaunchAiResolver: () -> Void
-  let onStopAiResolver: () -> Void
 
   init(
     checks: [PrCheck],
@@ -85,11 +81,7 @@ struct PrChecksTab: View {
     deployments: [PrDeployment] = [],
     canRerunChecks: Bool,
     isLive: Bool,
-    aiResolution: AiResolutionState? = nil,
-    isAiResolverBusy: Bool = false,
-    onRerun: @escaping () -> Void,
-    onLaunchAiResolver: @escaping () -> Void = {},
-    onStopAiResolver: @escaping () -> Void = {}
+    onRerun: @escaping () -> Void
   ) {
     self.checks = checks
     self.overallChecksStatus = overallChecksStatus
@@ -97,11 +89,7 @@ struct PrChecksTab: View {
     self.deployments = deployments
     self.canRerunChecks = canRerunChecks
     self.isLive = isLive
-    self.aiResolution = aiResolution
-    self.isAiResolverBusy = isAiResolverBusy
     self.onRerun = onRerun
-    self.onLaunchAiResolver = onLaunchAiResolver
-    self.onStopAiResolver = onStopAiResolver
   }
 
   private var stats: PrChecksSummaryStats {
@@ -118,11 +106,6 @@ struct PrChecksTab: View {
 
   private var emptyStateCopy: (title: String, message: String) {
     prChecksEmptyStateCopy(overallChecksStatus: overallChecksStatus)
-  }
-
-  private var aiResolverRunning: Bool {
-    let status = aiResolution?.status?.lowercased() ?? ""
-    return status == "running" || status == "starting" || status == "pending"
   }
 
   var body: some View {
@@ -143,15 +126,6 @@ struct PrChecksTab: View {
           PrChecksGroupCard(group: group)
         }
       }
-
-      // Dedicated AI resolver row (sparkle icon, copy, Launch/Stop CTA).
-      PrChecksAiResolverRow(
-        isBusy: isAiResolverBusy,
-        isRunning: aiResolverRunning,
-        isLive: isLive,
-        onLaunch: onLaunchAiResolver,
-        onStop: onStopAiResolver
-      )
 
       // Outline rerun button.
       PrChecksRerunButton(
@@ -633,111 +607,6 @@ private struct PrDeploymentRow: View {
 }
 
 // MARK: - Bottom actions
-
-/// Dedicated AI resolver row. Sparkle icon disc, title+blurb, and a purple
-/// gradient Launch CTA (or a red Stop when a run is live).
-private struct PrChecksAiResolverRow: View {
-  let isBusy: Bool
-  let isRunning: Bool
-  let isLive: Bool
-  let onLaunch: () -> Void
-  let onStop: () -> Void
-
-  var body: some View {
-    HStack(alignment: .center, spacing: 12) {
-      ZStack {
-        Circle()
-          .fill(PrGlassPalette.purple.opacity(0.55))
-          .frame(width: 34, height: 34)
-          .blur(radius: 10)
-          .opacity(0.7)
-        Circle()
-          .fill(
-            LinearGradient(
-              colors: [PrGlassPalette.purpleBright, PrGlassPalette.purpleDeep],
-              startPoint: .topLeading,
-              endPoint: .bottomTrailing
-            )
-          )
-          .frame(width: 30, height: 30)
-        Circle()
-          .strokeBorder(
-            LinearGradient(colors: [Color.white.opacity(0.55), .clear], startPoint: .top, endPoint: .center),
-            lineWidth: 1
-          )
-          .frame(width: 30, height: 30)
-        Image(systemName: "sparkles")
-          .font(.system(size: 13, weight: .bold))
-          .foregroundStyle(.white)
-          .symbolEffect(.pulse, options: .repeat(.continuous))
-      }
-
-      VStack(alignment: .leading, spacing: 2) {
-        Text("AI resolver")
-          .font(.system(size: 13, weight: .semibold))
-          .foregroundStyle(ADEColor.textPrimary)
-        Text("Diagnose failing checks and propose fixes")
-          .font(.system(size: 11))
-          .foregroundStyle(ADEColor.textSecondary)
-          .lineLimit(1)
-      }
-
-      Spacer(minLength: 0)
-
-      Button {
-        if isRunning { onStop() } else { onLaunch() }
-      } label: {
-        HStack(spacing: 5) {
-          if isBusy {
-            ProgressView().controlSize(.mini).tint(.white)
-          } else if isRunning {
-            Image(systemName: "stop.fill")
-              .font(.system(size: 11, weight: .bold))
-          }
-          Text(isRunning ? "Stop" : "Launch")
-            .font(.system(size: 12, weight: .bold))
-        }
-        .foregroundStyle(.white)
-        .padding(.horizontal, 14)
-        .padding(.vertical, 8)
-        .background {
-          if isRunning {
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-              .fill(ADEColor.danger)
-          } else {
-            ZStack {
-              RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(PrGlassPalette.accentGradient)
-              RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(
-                  LinearGradient(
-                    colors: [Color.white.opacity(0.22), Color.white.opacity(0)],
-                    startPoint: .top,
-                    endPoint: .bottom
-                  )
-                )
-            }
-          }
-        }
-        .overlay(
-          RoundedRectangle(cornerRadius: 10, style: .continuous)
-            .strokeBorder(Color.white.opacity(0.22), lineWidth: 0.5)
-        )
-        .shadow(
-          color: isRunning ? ADEColor.danger.opacity(0.45) : PrGlassPalette.purpleDeep.opacity(0.55),
-          radius: 10,
-          y: 4
-        )
-      }
-      .buttonStyle(.plain)
-      .disabled(isBusy || !isLive)
-      .opacity((isBusy || !isLive) ? 0.6 : 1)
-    }
-    .padding(.horizontal, 14)
-    .padding(.vertical, 12)
-    .prGlassCard(cornerRadius: 16, tint: PrGlassPalette.purple.opacity(0.45))
-  }
-}
 
 /// Outline-style "Rerun failed checks" button.
 private struct PrChecksRerunButton: View {

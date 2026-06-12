@@ -75,8 +75,6 @@ import { createFeedbackReporterService } from "./services/feedback/feedbackRepor
 import { createPrService } from "./services/prs/prService";
 import { createPrPollingService } from "./services/prs/prPollingService";
 import { createQueueLandingService } from "./services/prs/queueLandingService";
-import { createIssueInventoryService } from "./services/prs/issueInventoryService";
-import { createPathToMergeOrchestrator } from "./services/prs/pathToMergeOrchestrator";
 import { createPrSummaryService } from "./services/prs/prSummaryService";
 import {
   detectDefaultBaseRef,
@@ -2674,8 +2672,6 @@ app.whenReady().then(async () => {
     });
     queueLandingService.init();
 
-    const issueInventoryService = createIssueInventoryService({ db });
-
     const prSummaryService = createPrSummaryService({
       db,
       logger,
@@ -2758,7 +2754,6 @@ app.whenReady().then(async () => {
       jobEngine?.onSessionEnded({ laneId, sessionId });
       automationService?.onSessionEnded({ laneId, sessionId });
       try {
-        laneWorktreeLockService.release({ ownerKind: "path_to_merge", ownerSessionId: sessionId });
         laneWorktreeLockService.release({ ownerKind: "conflict_resolution", ownerSessionId: sessionId });
       } catch (error) {
         logger.warn("main.lane_worktree_session_lock_release_failed", {
@@ -3076,27 +3071,6 @@ app.whenReady().then(async () => {
 
     // Wire agentChatService into prService for integration resolution
     prService.setAgentChatService(agentChatService);
-
-    const pathToMergeOrchestrator = createPathToMergeOrchestrator({
-      logger,
-      prService,
-      laneService,
-      agentChatService,
-      sessionService,
-      issueInventoryService,
-      laneWorktreeLockService,
-      defaultModelId: null,
-      defaultReasoningEffort: null,
-    });
-    setImmediate(() => {
-      try {
-        pathToMergeOrchestrator.resumeFromPersistedState();
-      } catch (err) {
-        logger.warn("path_to_merge.resume_failed", {
-          error: err instanceof Error ? err.message : String(err),
-        });
-      }
-    });
 
     const gitService = createGitOperationsService({
       laneService,
@@ -3539,8 +3513,6 @@ app.whenReady().then(async () => {
       diffService,
       conflictService,
       prService,
-      issueInventoryService,
-      pathToMergeOrchestrator,
       queueLandingService,
       sessionService,
       ptyService,
@@ -4097,7 +4069,6 @@ app.whenReady().then(async () => {
           };
         },
       },
-      issueInventoryService,
       eventBuffer: rpcEventBuffer,
       dispose: () => {}, // desktop manages service lifecycle
     };
@@ -4257,7 +4228,6 @@ app.whenReady().then(async () => {
         sessionService,
         operationService,
         projectConfigService,
-        issueInventoryService,
         flowPolicyService,
         linearDispatcherService,
         linearIssueTracker,
@@ -4328,8 +4298,6 @@ app.whenReady().then(async () => {
       appControlService,
       macosVmService,
       queueLandingService,
-      issueInventoryService,
-      pathToMergeOrchestrator,
       prSummaryService,
       reviewService,
       jobEngine,
@@ -4576,8 +4544,6 @@ app.whenReady().then(async () => {
       prService: null,
       prPollingService: null,
       queueLandingService: null,
-      issueInventoryService: null,
-      pathToMergeOrchestrator: null,
       prSummaryService: null,
       reviewService: null,
       jobEngine: null,
@@ -4655,11 +4621,6 @@ app.whenReady().then(async () => {
     }
     try {
       ctx.prPollingService?.dispose();
-    } catch {
-      // ignore
-    }
-    try {
-      ctx.pathToMergeOrchestrator?.dispose();
     } catch {
       // ignore
     }

@@ -5175,34 +5175,6 @@ final class SyncService: ObservableObject {
     ])
   }
 
-  @discardableResult
-  func startPrAiResolution(prId: String, model: String? = nil, reasoningEffort: String? = nil) async throws -> AiResolutionState {
-    let result = try await startPathToMerge(
-      prId: prId,
-      modelId: model,
-      reasoning: reasoningEffort,
-      scope: "both"
-    )
-    if let blocker = result.blockedBy {
-      throw NSError(domain: "ADE", code: 31, userInfo: [NSLocalizedDescriptionKey: blocker.message])
-    }
-    let runtime = result.runtime
-    return AiResolutionState(
-      prId: prId,
-      status: result.scheduled ? "running" : runtime.status,
-      sessionId: runtime.activeSessionId,
-      model: model,
-      reasoningEffort: reasoningEffort,
-      startedAt: runtime.lastStartedAt ?? runtime.createdAt,
-      updatedAt: runtime.updatedAt,
-      lastError: runtime.errorMessage
-    )
-  }
-
-  func stopPrAiResolution(prId: String) async throws {
-    _ = try await stopPathToMerge(prId: prId, reason: "AI resolver stopped from mobile.")
-  }
-
   func resolveReviewThread(prId: String, threadId: String, resolved: Bool) async throws {
     _ = try await sendCommand(action: "prs.resolveReviewThread", args: [
       "prId": prId,
@@ -5301,76 +5273,6 @@ final class SyncService: ObservableObject {
     if let preferredIntegrationLaneId { args["preferredIntegrationLaneId"] = preferredIntegrationLaneId }
     if let mergeIntoHeadSha { args["mergeIntoHeadSha"] = mergeIntoHeadSha }
     _ = try await sendCommand(action: "prs.updateIntegrationProposal", args: args)
-  }
-
-  /// Fetch the persisted Path-to-Merge runtime row for ``prId`` (the watcher's
-  /// status, active session/lane, last poll time, etc.). Returns `nil` when no
-  /// runtime row exists yet (the host responds with `NSNull`).
-  func fetchConvergenceRuntime(prId: String) async throws -> ConvergenceRuntimeState? {
-    let response = try await sendCommand(action: "prs.convergenceState.get", args: ["prId": prId])
-    if response is NSNull { return nil }
-    if let payload = response as? [String: Any], payload["queued"] as? Bool == true {
-      throw QueuedRemoteCommandError(action: "prs.convergenceState.get")
-    }
-    return try decode(response, as: ConvergenceRuntimeState.self)
-  }
-
-  /// Start the desktop's Path-to-Merge convergence loop for ``prId``. The host
-  /// schedules the first iteration (or a noop refresh if it's already
-  /// running) and returns the persisted runtime row, which the caller can use
-  /// to refresh its local convergence panel without a follow-up fetch.
-  ///
-  /// - Parameters:
-  ///   - prId: PR identifier from the desktop catalog.
-  ///   - modelId: optional model id forwarded to the fix agent. `nil` keeps
-  ///     the host's default.
-  ///   - reasoning: optional reasoning-effort hint for providers that accept
-  ///     one (e.g. Anthropic's "extended", OpenAI's "high").
-  ///   - scope: which input the iteration's fix agent should consider —
-  ///     `"checks"`, `"comments"`, or `"both"`. `nil` defers to the host
-  ///     default.
-  ///   - additionalInstructions: free-form text appended to the watcher's
-  ///     standing contract.
-  ///   - pollIntervalSeconds: cadence (seconds) at which the host injects a
-  ///     fresh watch turn into the watcher chat. The host clamps to [60, 3600];
-  ///     `nil` defers to the host default.
-  @discardableResult
-  func startPathToMerge(
-    prId: String,
-    modelId: String? = nil,
-    reasoning: String? = nil,
-    scope: String? = nil,
-    additionalInstructions: String? = nil,
-    pollIntervalSeconds: Int? = nil
-  ) async throws -> StartPathToMergeResult {
-    var payload: [String: Any] = ["prId": prId]
-    if let modelId, !modelId.isEmpty { payload["modelId"] = modelId }
-    if let reasoning, !reasoning.isEmpty { payload["reasoning"] = reasoning }
-    if let scope, !scope.isEmpty { payload["scope"] = scope }
-    if let additionalInstructions, !additionalInstructions.isEmpty {
-      payload["additionalInstructions"] = additionalInstructions
-    }
-    if let pollIntervalSeconds {
-      payload["pollIntervalSeconds"] = pollIntervalSeconds
-    }
-    return try await sendDecodableCommand(
-      action: "prs.pathToMerge.start",
-      args: payload,
-      as: StartPathToMergeResult.self
-    )
-  }
-
-  /// Stop a running Path-to-Merge loop for ``prId``. ``reason`` is recorded on
-  /// the runtime row so the convergence panel can surface why the loop ended.
-  @discardableResult
-  func stopPathToMerge(prId: String, reason: String? = nil) async throws -> StopPathToMergeResult {
-    var payload: [String: Any] = ["prId": prId]
-    if let reason, !reason.isEmpty { payload["reason"] = reason }
-    return try await sendDecodableCommand(
-      action: "prs.pathToMerge.stop",
-      args: payload,
-      as: StopPathToMergeResult.self
-    )
   }
 
   @discardableResult

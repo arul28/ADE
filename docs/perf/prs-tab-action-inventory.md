@@ -70,7 +70,6 @@ Evidence run ids used so far:
 | prs.detail.open-queue | Open linked queue from detail | measured | `prs-ui-ptm-audit-20260512-0635`, marker `prs.detail.open-queue` |
 | prs.detail.open-graph | Show lane in graph | external-skip | navigates away from PRs |
 | prs.detail.overview | Open Overview tab | measured | `prs-ui-ptm-audit-20260512-0635`, marker `prs.detail.overview` |
-| prs.detail.path-to-merge | Open Path to Merge tab | measured | `prs-ui-ptm-audit-20260512-0635`, marker `prs-ptm-open-tab` |
 | prs.detail.files | Open Files tab | measured | `prs-ui-ptm-audit-20260512-0635`, marker `prs.detail.files` |
 | prs.detail.files.expand | Expand a changed file diff | measured | `prs-ui-ptm-audit-20260512-0635`, marker `prs.detail.files.expand` |
 | prs.detail.ci | Open CI / Checks tab | measured | `prs-ui-ptm-audit-20260512-0635`, marker `prs.detail.ci` |
@@ -88,22 +87,6 @@ Evidence run ids used so far:
 | prs.detail.issue-resolver.start | Resolve issues with agent | sandbox-only | `PrIssueResolverModal.tsx` |
 | prs.detail.close-pr | Close PR | prompt-only | `PrDetailPane.tsx` |
 | prs.detail.reopen-pr | Reopen PR | prompt-only | `PrDetailPane.tsx` |
-
-## Path to Merge
-
-| id | action | state | evidence |
-| --- | --- | --- | --- |
-| prs.ptm.panel-open | Open Path to Merge panel | measured | `prs-ui-ptm-audit-20260512-0635`, marker `prs-ptm-open-tab` |
-| prs.ptm.settings | Change pipeline settings | measured | `prs-ui-ptm-audit-20260512-0635`, marker `prs-ptm-safe-settings`, PLAN mode and auto-merge off |
-| prs.ptm.start | Start Path to Merge | measured | `prs-ui-ptm-audit-20260512-0635`, marker `prs-ptm-start-plan`, `ade.prs.pathToMerge.start 5ms` |
-| prs.ptm.stop | Stop active Path to Merge | measured | `prs-ui-ptm-audit-20260512-0635`, marker `prs-ptm-stop-plan`, `ade.prs.pathToMerge.stop 2ms` |
-| prs.ptm.force-finalize | Use force-finalize control | prompt-only | `PrConvergencePanel.tsx` |
-| prs.ptm.issue-inventory | Sync/read issue inventory | measured | `prs-ui-ptm-audit-20260512-0635`, marker `prs-ptm-refresh-seeded-inventory`, seeded local inventory rendered |
-
-Path to Merge coverage was run with PLAN mode and auto-merge off against a
-seeded local-only inventory item. It covered native UI start/stop and runtime
-state changes without dispatching an agent session; dispatch still depends on
-real GitHub checks or review threads becoming actionable.
 
 ## Workflows shell
 

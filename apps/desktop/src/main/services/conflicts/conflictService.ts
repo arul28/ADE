@@ -3483,7 +3483,7 @@ export function createConflictService({
       if (sharedLockToken) {
         const lock = laneWorktreeLockService.heartbeat(sharedLockToken);
         if (!lock) {
-          throw new Error("Path to Merge lane lock expired before launching conflict resolution.");
+          throw new Error("Lane worktree lock expired before launching conflict resolution.");
         }
       } else {
         const acquired = laneWorktreeLockService.acquire({

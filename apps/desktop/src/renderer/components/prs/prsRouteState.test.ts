@@ -60,7 +60,7 @@ describe("prsRouteState", () => {
   it("parses deep-link event, thread, commit, and detail tab params", () => {
     expect(
       parsePrsRouteState({
-        search: "?tab=normal&prId=pr-1&eventId=evt-99&threadId=thr-12&commitSha=abc123&detailTab=convergence",
+        search: "?tab=normal&prId=pr-1&eventId=evt-99&threadId=thr-12&commitSha=abc123&detailTab=files",
       }),
     ).toEqual({
       tab: "normal",
@@ -72,7 +72,7 @@ describe("prsRouteState", () => {
       eventId: "evt-99",
       threadId: "thr-12",
       commitSha: "abc123",
-      detailTab: "convergence",
+      detailTab: "files",
     });
   });
 

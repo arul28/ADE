@@ -888,23 +888,23 @@ export type QueueWaitReason =
   | "canceled";
 
 /**
- * Stack-wide config that the new Queue applies to every PR in the stack via
- * the convergence engine.
+ * Stack-wide config the merge Queue applies to every PR in the stack when
+ * landing it.
  *
  * The legacy fields (`autoResolve`, `resolverProvider`, `resolverModel`,
  * `reasoningEffort`, `permissionMode`, `confidenceThreshold`) are retained as
  * deprecated mirrors so existing call sites (iOS sync, RPC layer, older UI)
  * keep compiling while consumers migrate. The new authoritative source is the
  * embedded {@link PipelineSettings} on `pipeline`. A queue with
- * `pipeline.conflictStrategy === "auto"` reproduces the legacy auto-resolve
- * behavior — plus the full PtM loop on each PR.
+ * `pipeline.conflictStrategy === "auto"` enables auto rebase-conflict
+ * resolution while landing.
  */
 export type QueueAutomationConfig = {
   method: MergeMethod;
   archiveLane: boolean;
   /** Whether to pause the stack land when CI is failing or reviews are pending. */
   ciGating: boolean;
-  /** Stack-wide PtM/convergence settings applied to every queued PR. */
+  /** Stack-wide pipeline settings applied to every queued PR. */
   pipeline: PipelineSettings;
   /** Origin surface (telemetry/attribution) for the auto-resolver agent. */
   originSurface: ConflictResolverOriginSurface;
@@ -1323,14 +1323,13 @@ export type AiReviewSummary = {
 };
 
 // --------------------------------
-// Pipeline Settings (auto-converge / auto-merge)
+// Pipeline Settings (merge queue landing configuration)
 // --------------------------------
 
 /** Merge method for the auto-merge pipeline — extends MergeMethod with repo_default. */
 export type PipelineMergeMethod = MergeMethod | "repo_default";
 
 export type LaneWorktreeLockOwnerKind =
-  | "path_to_merge"
   | "conflict_resolution"
   | "integration_resolution"
   | "git_mutation";
@@ -1356,13 +1355,13 @@ export type LaneWorktreeLockBlocker = {
 
 /**
  * Legacy two-option rebase policy. Retained for back-compat reads from older
- * `pr_pipeline_settings` rows; new writes use {@link ConflictStrategy}.
+ * queue pipeline configs; new writes use {@link ConflictStrategy}.
  */
 export type RebasePolicy = "pause" | "auto_rebase";
 
 /**
- * What the convergence loop does when the PR's base branch advances or a merge
- * conflict surfaces.
+ * How the merge Queue handles the PR's base branch advancing or a merge
+ * conflict surfacing while landing.
  *
  * - `pause`  — stop the loop and surface the conflict to the operator
  * - `rebase` — `git rebase origin/<base>`, force-push with `--force-with-lease`
@@ -1378,7 +1377,8 @@ export type ConflictStrategy = "pause" | "rebase" | "merge" | "auto";
 export type ForceFinalizeMode = "off" | "unconditional" | "conditional";
 
 /**
- * What the convergence loop does when it hits {@link PipelineSettings.maxRounds}
+ * Legacy at-cap policy retained as queue pipeline config. Describes what an
+ * iteration-capped landing flow does when it hits {@link PipelineSettings.maxRounds}
  * without the PR being mergeable yet.
  *
  * - `stop`           — pause and wait for the user to decide.
@@ -1413,7 +1413,7 @@ export function atCapPolicyFromLegacy(mode: ForceFinalizeMode): AtCapPolicy {
  * Provider used by the {@link ConflictStrategy} `auto` agent and (legacy) by
  * the queue's standalone `autoResolve` flow. Mirrors
  * {@link ExternalConflictResolverProvider} but lives on PipelineSettings so
- * each PR's convergence can target its own provider.
+ * each PR's queue landing can target its own provider.
  */
 export type AutoConflictAgentProvider = "claude" | "codex";
 
@@ -1513,112 +1513,6 @@ export function conflictStrategyFromLegacyRebasePolicy(policy: RebasePolicy): Co
 export function legacyRebasePolicyFromConflictStrategy(strategy: ConflictStrategy): RebasePolicy {
   return strategy === "pause" ? "pause" : "auto_rebase";
 }
-
-// --------------------------------
-// PR Convergence Runtime State
-// --------------------------------
-
-export type ConvergenceRuntimeStatus =
-  | "idle"
-  | "launching"
-  | "running"
-  | "polling"
-  | "paused"
-  | "converged"
-  | "merged"
-  | "failed"
-  | "cancelled"
-  | "stopped";
-
-export type ConvergencePollerStatus =
-  | "idle"
-  | "scheduled"
-  | "polling"
-  | "waiting_for_checks"
-  | "waiting_for_comments"
-  | "paused"
-  | "stopped";
-
-export type ConvergenceMergeWaitKind =
-  | "github_auto_merge_armed";
-
-export type ConvergenceRuntimeState = {
-  prId: string;
-  autoConvergeEnabled: boolean;
-  /** True when the native Path to Merge orchestrator owns this runtime. */
-  pathToMergeActive: boolean;
-  status: ConvergenceRuntimeStatus;
-  pollerStatus: ConvergencePollerStatus;
-  mergeWaitKind: ConvergenceMergeWaitKind | null;
-  currentRound: number;
-  activeSessionId: string | null;
-  activeLaneId: string | null;
-  activeHref: string | null;
-  pauseReason: string | null;
-  errorMessage: string | null;
-  forceFinalizeUsed: boolean;
-  ciRetryAttemptsUsed: number;
-  waitForCiStartedAt: string | null;
-  lastDispatchHeadSha: string | null;
-  lastBotPingHeadSha: string | null;
-  lastBotPingAt: string | null;
-  pauseRepeatCount: number;
-  lastPauseReasonHash: string | null;
-  lastStartedAt: string | null;
-  lastPolledAt: string | null;
-  lastPausedAt: string | null;
-  lastStoppedAt: string | null;
-  createdAt: string;
-  updatedAt: string;
-};
-
-export type PrConvergenceState = ConvergenceRuntimeState;
-export type PrConvergenceStatePatch = Partial<Omit<ConvergenceRuntimeState, "prId" | "pathToMergeActive" | "createdAt" | "updatedAt">>;
-
-export type PathToMergeStartResult = {
-  prId: string;
-  scheduled: boolean;
-  runtime: ConvergenceRuntimeState;
-  blockedBy?: LaneWorktreeLockBlocker | null;
-};
-
-export type PathToMergeStopResult = {
-  prId: string;
-  stopped: boolean;
-  runtime: ConvergenceRuntimeState | null;
-};
-
-// --------------------------------
-// PR Convergence runtime (Path to Merge watcher)
-// --------------------------------
-
-export const DEFAULT_CONVERGENCE_RUNTIME_STATE: Omit<ConvergenceRuntimeState, "prId"> = {
-  autoConvergeEnabled: false,
-  pathToMergeActive: false,
-  status: "idle",
-  pollerStatus: "idle",
-  mergeWaitKind: null,
-  currentRound: 0,
-  activeSessionId: null,
-  activeLaneId: null,
-  activeHref: null,
-  pauseReason: null,
-  errorMessage: null,
-  forceFinalizeUsed: false,
-  ciRetryAttemptsUsed: 0,
-  waitForCiStartedAt: null,
-  lastDispatchHeadSha: null,
-  lastBotPingHeadSha: null,
-  lastBotPingAt: null,
-  pauseRepeatCount: 0,
-  lastPauseReasonHash: null,
-  lastStartedAt: null,
-  lastPolledAt: null,
-  lastPausedAt: null,
-  lastStoppedAt: null,
-  createdAt: new Date(0).toISOString(),
-  updatedAt: new Date(0).toISOString(),
-};
 
 // ---------------------------------------------------------------------------
 // PRs Tab — Timeline + Rails redesign (new)

@@ -29,28 +29,12 @@ export const prsTour: Tour = {
     {
       target: '[data-tour="prs.detailDrawer"], [data-tour="prs.list"]',
       title: "Inside a PR",
-      body: "When you click a PR, this panel opens with five tabs: **Overview** (the basics), **Path to Merge** (anything blocking it), **Files** (what changed), **CI / Checks** (automated tests), **Activity** (review comments). Pick a PR row to follow along.",
+      body: "When you click a PR, this panel opens with four tabs: **Overview** (the basics), **Files** (what changed), **CI / Checks** (automated tests), **Activity** (review comments). Pick a PR row to follow along.",
       docUrl: docs.prsOverview,
       placement: "left",
       fallbackAfterMs: FALLBACK_MS,
       fallbackNextLabel: "Skip drawer",
       fallbackNotice: "Nothing's broken — this panel just stays empty until you click a PR.",
-    },
-    {
-      target: '[data-tour="prs.conflictSim"], [data-tour="prs.detailDrawer"]',
-      title: "What's blocking me?",
-      body: "The most useful tab for an in-flight PR. It collects everything stopping it from shipping — failed tests, comments asking for changes, code conflicts — into one ordered to-do list. Work top to bottom.",
-      docUrl: docs.prsOverview,
-      placement: "left",
-      beforeEnter: async () => [{
-        type: "ipc",
-        call: async () => {
-          window.dispatchEvent(new CustomEvent("ade:tour-pr-detail-tab", { detail: "convergence" }));
-        },
-      }],
-      fallbackAfterMs: FALLBACK_MS,
-      fallbackNextLabel: "Skip Path to Merge",
-      fallbackNotice: "Pick a PR row to see this tab fill in.",
     },
     {
       target: '[data-tour="prs.checksPanel"], [data-tour="prs.detailDrawer"]',

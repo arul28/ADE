@@ -30,9 +30,6 @@ export function deletePullRequestRowsByIds(db: DbLike, projectId: string, prIds:
   const placeholders = ids.map(() => "?").join(", ");
 
   db.run(`delete from pr_group_members where pr_id in (${placeholders})`, ids);
-  db.run(`delete from pr_convergence_state where pr_id in (${placeholders})`, ids);
-  db.run(`delete from pr_pipeline_settings where pr_id in (${placeholders})`, ids);
-  db.run(`delete from pr_issue_inventory where pr_id in (${placeholders})`, ids);
   db.run(`delete from pull_request_ai_summaries where pr_id in (${placeholders})`, ids);
   db.run(`delete from pull_request_snapshots where pr_id in (${placeholders})`, ids);
   db.run(`delete from pull_requests where project_id = ? and id in (${placeholders})`, [projectId, ...ids]);
@@ -45,9 +42,6 @@ export function deletePullRequestRowsForLane(db: DbLike, projectId: string, lane
 
   db.run("delete from pr_group_members where lane_id = ?", [laneId]);
   db.run(`delete from pr_group_members where pr_id in (${prSelect})`, params);
-  db.run(`delete from pr_convergence_state where pr_id in (${prSelect})`, params);
-  db.run(`delete from pr_pipeline_settings where pr_id in (${prSelect})`, params);
-  db.run(`delete from pr_issue_inventory where pr_id in (${prSelect})`, params);
   db.run(`delete from pull_request_ai_summaries where pr_id in (${prSelect})`, params);
   db.run(`delete from pull_request_snapshots where pr_id in (${prSelect})`, params);
   db.run("delete from pull_requests where lane_id = ? and project_id = ?", params);

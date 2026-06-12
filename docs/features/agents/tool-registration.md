@@ -232,7 +232,7 @@ The `ade` command has two runtime modes:
 
 Both modes expose the same action protocol and output formatters. Agent
 prompts should prefer documented commands such as `ade lanes list`,
-`ade prs path-to-merge`, or the generic `ade actions run <domain.action>`.
+`ade prs show`, or the generic `ade actions run <domain.action>`.
 
 ### Agent-prompt fallbacks for missing `ade` on PATH
 

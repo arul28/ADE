@@ -900,18 +900,18 @@ describe("ADE CLI", () => {
     const argsListCall = buildCliPlan([
       "actions",
       "run",
-      "issue_inventory.savePipelineSettings",
+      "pr.submitReview",
       "--args-list-json",
-      '["pr-1",{"maxRounds":3}]',
+      '["pr-1",{"event":"APPROVE"}]',
     ]);
     expect(argsListCall.kind).toBe("execute");
     if (argsListCall.kind !== "execute") return;
     expect(argsListCall.steps[0]?.params).toEqual({
       name: "run_ade_action",
       arguments: {
-        domain: "issue_inventory",
-        action: "savePipelineSettings",
-        argsList: ["pr-1", { maxRounds: 3 }],
+        domain: "pr",
+        action: "submitReview",
+        argsList: ["pr-1", { event: "APPROVE" }],
       },
     });
 
@@ -1131,146 +1131,6 @@ describe("ADE CLI", () => {
       ]),
     ).toThrow(/not allowed/);
     expect(({} as Record<string, unknown>).polluted).toBeUndefined();
-  });
-
-  it("maps Path to Merge start to pipeline settings plus resolver tool", () => {
-    const plan = buildCliPlan([
-      "prs",
-      "path-to-merge",
-      "pr-1",
-      "--model",
-      "gpt-5.4",
-      "--max-rounds",
-      "3",
-      "--no-auto-merge",
-    ]);
-    expect(plan.kind).toBe("execute");
-    if (plan.kind !== "execute") return;
-
-    expect(plan.steps).toHaveLength(2);
-    expect(plan.steps[0]?.params).toEqual({
-      name: "run_ade_action",
-      arguments: {
-        domain: "issue_inventory",
-        action: "savePipelineSettings",
-        argsList: ["pr-1", { maxRounds: 3, autoMerge: false }],
-      },
-    });
-    expect(plan.steps[1]?.params).toEqual({
-      name: "run_ade_action",
-      arguments: {
-        domain: "path_to_merge",
-        action: "startPathToMerge",
-        args: {
-          prId: "pr-1",
-          scope: "both",
-          modelId: "gpt-5.4",
-        },
-      },
-    });
-  });
-
-  it("forwards new pipeline-settings flags through Path to Merge", () => {
-    const plan = buildCliPlan([
-      "prs",
-      "path-to-merge",
-      "pr-2",
-      "--model",
-      "gpt-5.4",
-      "--conflict-strategy",
-      "auto",
-      "--force-finalize",
-      "conditional",
-      "--at-cap-policy",
-      "ci_retry_loop",
-      "--at-cap-wait-minutes",
-      "12",
-      "--at-cap-ci-retry-max",
-      "4",
-      "--no-force-merge-requires-confirmation",
-      "--no-early-merge-on-green",
-    ]);
-    expect(plan.kind).toBe("execute");
-    if (plan.kind !== "execute") return;
-    expect(plan.steps).toHaveLength(2);
-    expect(plan.steps[0]?.params).toEqual({
-      name: "run_ade_action",
-      arguments: {
-        domain: "issue_inventory",
-        action: "savePipelineSettings",
-        argsList: [
-          "pr-2",
-          {
-            conflictStrategy: "auto",
-            forceFinalizeMode: "conditional",
-            atCapPolicy: "ci_retry_loop",
-            atCapWaitMinutes: 12,
-            atCapCiRetryMax: 4,
-            forceMergeRequiresConfirmation: false,
-            earlyMergeOnGreen: false,
-          },
-        ],
-      },
-    });
-    expect(plan.steps[1]?.params).toEqual({
-      name: "run_ade_action",
-      arguments: {
-        domain: "path_to_merge",
-        action: "startPathToMerge",
-        args: {
-          prId: "pr-2",
-          scope: "both",
-          modelId: "gpt-5.4",
-        },
-      },
-    });
-  });
-
-  it("rejects invalid pipeline-settings enum values", () => {
-    expect(() =>
-      buildCliPlan([
-        "prs",
-        "path-to-merge",
-        "pr-3",
-        "--model",
-        "gpt-5.4",
-        "--conflict-strategy",
-        "wat",
-      ]),
-    ).toThrow(/--conflict-strategy must be one of/);
-    expect(() =>
-      buildCliPlan([
-        "prs",
-        "path-to-merge",
-        "pr-3",
-        "--model",
-        "gpt-5.4",
-        "--force-finalize",
-        "always",
-      ]),
-    ).toThrow(/--force-finalize must be one of/);
-    expect(() =>
-      buildCliPlan([
-        "prs",
-        "path-to-merge",
-        "pr-3",
-        "--model",
-        "gpt-5.4",
-        "--at-cap-policy",
-        "forever",
-      ]),
-    ).toThrow(/--at-cap-policy must be one of/);
-    expect(() =>
-      buildCliPlan([
-        "prs",
-        "path-to-merge",
-        "pr-3",
-        "--model",
-        "gpt-5.4",
-        "--at-cap-wait-minutes",
-        "0",
-      ]),
-    ).toThrow(/--at-cap-wait-minutes must be at least 1/);
   });
 
   it("validates required arguments before service execution", () => {

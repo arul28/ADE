@@ -81,7 +81,7 @@ The dispatcher handles five target types:
 | --- | --- | --- |
 | `employee_session` | Direct CTO or employee chat with issue context | Uses `agentChatService.createSession`. Honors `sessionReuse` (fresh vs continue). |
 | `worker_run` | Delegated isolated worker run | Uses `workerAgentService` + `workerTaskSessionService`. Fresh lane by default. |
-| `pr_resolution` | PR-focused automation | Can spin up a worker depending on config. Applies PR convergence policy. |
+| `pr_resolution` | PR-focused automation | Can spin up a worker depending on config. Routes to a PR issue resolver session. |
 | `review_gate` | Manual gate | No work launched; surfaces review request and waits on human decision. |
 
 The dispatcher supports chained stages via `downstreamTarget` — e.g. a worker run feeding into a PR resolution. `getTargetStages(target)` walks the chain (mirror of `flattenTargetChain` in the pipeline builder).

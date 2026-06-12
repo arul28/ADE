@@ -15,7 +15,6 @@ struct PrDetailView: View {
   @State private var activityEvents: [PrActivityEvent] = []
   @State private var deployments: [PrDeployment] = []
   @State private var aiSummary: AiReviewSummary?
-  @State private var convergenceRuntime: ConvergenceRuntimeState?
   @State private var groupMembers: [PrGroupMemberSummary] = []
   @State private var capabilities: PrActionCapabilities?
   @State private var selectedTab: PrDetailTab = .overview
@@ -30,8 +29,6 @@ struct PrDetailView: View {
   @State private var stackPresentation: PrStackPresentation?
   @State private var editorSheet: PrDetailEditorSheet?
   @State private var mergeMethodSheetPresented: Bool = false
-  @State private var aiResolution: AiResolutionState?
-  @State private var aiResolverSheetPresented: Bool = false
   @State private var actionsSheetPresented: Bool = false
   @State private var hasLoadedLiveSidecars = false
   @State private var hasAttemptedInitialLoad = false
@@ -51,10 +48,6 @@ struct PrDetailView: View {
 
   /// Main action funnel key (merge/close/reopen/comment/edit/etc.).
   private var detailActionKey: String { "pr-detail:\(prId)" }
-  /// AI conflict-resolver key.
-  private var aiResolverKey: String { "pr-ai-resolver:\(prId)" }
-  /// Path-to-Merge convergence toggle key.
-  private var pathToMergeKey: String { "pr-path-to-merge:\(prId)" }
   /// AI review-summary regeneration key.
   private var aiSummaryKey: String { "pr-ai-summary:\(prId)" }
 
@@ -64,8 +57,6 @@ struct PrDetailView: View {
     syncService.prActionLabel(forKey: detailActionKey)
   }
   private var isDetailBusy: Bool { detailBusyLabel != nil }
-  private var isAiResolverBusy: Bool { syncService.isPrActionInFlight(key: aiResolverKey) }
-  private var isPathToMergeBusy: Bool { syncService.isPrActionInFlight(key: pathToMergeKey) }
   private var isAiSummaryLoading: Bool { syncService.isPrActionInFlight(key: aiSummaryKey) }
 
   private var prsStatus: SyncDomainStatus {
@@ -246,7 +237,7 @@ struct PrDetailView: View {
     // The unified Overview thread carries its own comment composer + inline
     // merge rail at the bottom (desktop parity), so a global sticky merge bar
     // in the same slot would cover the composer. Keep the sticky bar only on
-    // the non-thread tabs (Path / Files / Checks).
+    // the non-thread tabs (Files / Checks).
     hasPrDetailData && selectedTab != .overview && selectedTab != .activity
   }
 
@@ -353,7 +344,7 @@ struct PrDetailView: View {
   /// into the unified Overview thread (desktop parity), so it no longer appears
   /// as its own tab.
   private var visibleTabs: [PrDetailTab] {
-    [.overview, .convergence, .files, .checks]
+    [.overview, .files, .checks]
   }
 
   private func tabTitle(_ tab: PrDetailTab) -> String {
@@ -362,7 +353,6 @@ struct PrDetailView: View {
     case .checks: return "CI / Checks"
     case .activity: return "Activity"
     case .files: return "Files"
-    case .convergence: return "Path to Merge"
     }
   }
 
@@ -372,8 +362,6 @@ struct PrDetailView: View {
     switch tab {
     case .overview:
       return nil
-    case .convergence:
-      return (convergenceRuntime?.autoConvergeEnabled ?? false) ? 1 : nil
     case .files:
       let count = snapshot?.files.count ?? 0
       return count > 0 ? count : nil
@@ -512,27 +500,6 @@ struct PrDetailView: View {
           mergeRail: overviewMergeRailModel
         )
         .prListRow()
-      case .convergence:
-        PrPathToMergeTab(
-          pr: currentPr,
-          snapshot: snapshot,
-          groupMembers: groupMembers,
-          reviewThreads: reviewThreads,
-          runtime: convergenceRuntime,
-          capabilities: capabilities,
-          isLive: canRunPrActions,
-          isPathToMergeBusy: isPathToMergeBusy,
-          onStartPathToMerge: { gating, instructions, pollSeconds in
-            startPathToMerge(
-              gating: gating,
-              additionalInstructions: instructions,
-              pollIntervalSeconds: pollSeconds
-            )
-          },
-          onStopPathToMerge: stopPathToMerge,
-          onOpenWatcherChat: openWatcherChat
-        )
-        .prListRow()
       case .files:
         PrFilesTab(
           snapshot: snapshot,
@@ -549,11 +516,7 @@ struct PrDetailView: View {
           deployments: deployments,
           canRerunChecks: canRerunChecks,
           isLive: canRunPrActions,
-          aiResolution: aiResolution,
-          isAiResolverBusy: isAiResolverBusy,
-          onRerun: rerunChecks,
-          onLaunchAiResolver: { aiResolverSheetPresented = true },
-          onStopAiResolver: stopAiResolver
+          onRerun: rerunChecks
         )
         .prListRow()
       }
@@ -631,18 +594,6 @@ struct PrDetailView: View {
     .sheet(item: $stackPresentation) { presentation in
       PrStackSheet(groupId: presentation.id, groupName: presentation.groupName)
         .environmentObject(syncService)
-    }
-    .sheet(isPresented: $aiResolverSheetPresented) {
-      PrAiResolverSheet(
-        prNumber: currentPr.githubPrNumber,
-        isBusy: isAiResolverBusy,
-        isRunning: aiResolverRunning,
-        lastError: aiResolution?.lastError
-      ) { model, reasoningEffort in
-        startAiResolver(model: model, reasoningEffort: reasoningEffort)
-      } onStop: {
-        stopAiResolver()
-      }
     }
     .sheet(isPresented: $actionsSheetPresented) {
       prActionsSheet
@@ -891,7 +842,6 @@ struct PrDetailView: View {
   /// Active tab gets the full label so the user always knows where they are.
   private func compactTabTitle(_ tab: PrDetailTab) -> String {
     switch tab {
-    case .convergence: return "Path"
     case .checks: return "Checks"
     default: return tabTitle(tab)
     }
@@ -1192,7 +1142,6 @@ struct PrDetailView: View {
       let activityTask = shouldFetchLiveSidecars ? Task { try? await syncService.fetchPullRequestActivity(prId: sidecarPrId) } : nil
       let deploymentsTask = shouldFetchLiveSidecars ? Task { try? await syncService.fetchPullRequestDeployments(prId: sidecarPrId) } : nil
       let aiSummaryTask = shouldFetchLiveSidecars ? Task { try? await syncService.fetchPullRequestAiSummary(prId: sidecarPrId) } : nil
-      let convergenceRuntimeTask = shouldFetchLiveSidecars ? Task { try? await syncService.fetchConvergenceRuntime(prId: sidecarPrId) } : nil
       if let reviewThreadsTask {
         reviewThreads = await reviewThreadsTask.value ?? []
       }
@@ -1207,9 +1156,6 @@ struct PrDetailView: View {
       }
       if let summary = await aiSummaryTask?.value {
         aiSummary = summary
-      }
-      if let runtime = await convergenceRuntimeTask?.value {
-        convergenceRuntime = runtime
       }
       if let capabilitiesTask {
         capabilities = await capabilitiesTask.value
@@ -1251,7 +1197,6 @@ struct PrDetailView: View {
     activityEvents = entry.activityEvents
     deployments = entry.deployments
     aiSummary = entry.aiSummary
-    convergenceRuntime = entry.convergenceRuntime
     groupMembers = entry.groupMembers
     capabilities = entry.capabilities
     // Treat the cache as a successful prior load so the UI shows content (not
@@ -1280,7 +1225,6 @@ struct PrDetailView: View {
         activityEvents: activityEvents,
         deployments: deployments,
         aiSummary: aiSummary,
-        convergenceRuntime: convergenceRuntime,
         groupMembers: groupMembers,
         capabilities: capabilities,
         loadedAt: Date()
@@ -1390,135 +1334,6 @@ struct PrDetailView: View {
 
   private func rerunChecks() {
     runPrAction("Re-running checks") { try await syncService.rerunPullRequestChecks(prId: effectivePrId) }
-  }
-
-  private var aiResolverRunning: Bool {
-    let status = aiResolution?.status?.lowercased() ?? ""
-    return status == "running" || status == "starting" || status == "pending"
-  }
-
-  private func startAiResolver(model: String?, reasoningEffort: String?) {
-    guard !isAiResolverBusy else { return }
-    let service = syncService
-    let key = aiResolverKey
-    let actionablePrId = effectivePrId
-    let token = service.beginPrAction(key: key, label: "Starting AI resolver")
-    Task { @MainActor in
-      defer { service.endPrAction(key: key, token: token) }
-      do {
-        let state = try await service.startPrAiResolution(
-          prId: actionablePrId,
-          model: model,
-          reasoningEffort: reasoningEffort
-        )
-        aiResolution = state
-        aiResolverSheetPresented = false
-      } catch {
-        errorMessage = error.localizedDescription
-      }
-    }
-  }
-
-  private func stopAiResolver() {
-    guard !isAiResolverBusy else { return }
-    let service = syncService
-    let key = aiResolverKey
-    let actionablePrId = effectivePrId
-    let token = service.beginPrAction(key: key, label: "Stopping AI resolver")
-    Task { @MainActor in
-      defer { service.endPrAction(key: key, token: token) }
-      do {
-        try await service.stopPrAiResolution(prId: actionablePrId)
-        if let current = aiResolution {
-          aiResolution = AiResolutionState(
-            prId: current.prId,
-            status: "stopped",
-            sessionId: current.sessionId,
-            model: current.model,
-            reasoningEffort: current.reasoningEffort,
-            startedAt: current.startedAt,
-            updatedAt: current.updatedAt,
-            lastError: current.lastError
-          )
-        }
-      } catch {
-        errorMessage = error.localizedDescription
-      }
-    }
-  }
-
-  /// Launch the desktop's Path-to-Merge watcher on this PR. The host spins up a
-  /// visible watcher chat in the PR's lane and returns the updated runtime row,
-  /// which we store locally so the panel flips to its running state without
-  /// waiting for the next sync push. Gating ("checks"/"comments"/"both"),
-  /// free-form instructions, and the poll interval are forwarded into the
-  /// watcher's seed contract.
-  private func startPathToMerge(
-    gating: String,
-    additionalInstructions: String,
-    pollIntervalSeconds: Int
-  ) {
-    guard !isPathToMergeBusy else { return }
-    let service = syncService
-    let key = pathToMergeKey
-    let actionablePrId = effectivePrId
-    let trimmedInstructions = additionalInstructions.trimmingCharacters(in: .whitespacesAndNewlines)
-    let token = service.beginPrAction(key: key, label: "Starting Path to Merge")
-    Task { @MainActor in
-      defer { service.endPrAction(key: key, token: token) }
-      do {
-        let result = try await service.startPathToMerge(
-          prId: actionablePrId,
-          scope: gating,
-          additionalInstructions: trimmedInstructions.isEmpty ? nil : trimmedInstructions,
-          pollIntervalSeconds: pollIntervalSeconds
-        )
-        applyConvergenceRuntime(result.runtime)
-        if !result.scheduled {
-          errorMessage = result.blockedBy?.message ?? "Path to Merge is blocked by another lane task."
-          return
-        }
-        actionMessage = "Path to Merge started."
-      } catch {
-        errorMessage = error.localizedDescription
-      }
-    }
-  }
-
-  /// Stop the watcher loop. Mirrors {@link startPathToMerge} but updates the
-  /// runtime to the host-returned snapshot (when present) so the UI reflects the
-  /// canonical post-stop state, including any pause reason.
-  private func stopPathToMerge() {
-    guard !isPathToMergeBusy else { return }
-    let service = syncService
-    let key = pathToMergeKey
-    let actionablePrId = effectivePrId
-    let token = service.beginPrAction(key: key, label: "Stopping Path to Merge")
-    Task { @MainActor in
-      defer { service.endPrAction(key: key, token: token) }
-      do {
-        let result = try await service.stopPathToMerge(prId: actionablePrId, reason: "Stopped from iOS.")
-        if let runtime = result.runtime {
-          applyConvergenceRuntime(runtime)
-        }
-        actionMessage = "Path to Merge stopped."
-      } catch {
-        errorMessage = error.localizedDescription
-      }
-    }
-  }
-
-  /// Store the latest runtime row so the panel flips between its launch and
-  /// running states immediately, ahead of the next sync push.
-  private func applyConvergenceRuntime(_ next: ConvergenceRuntimeState) {
-    convergenceRuntime = next
-  }
-
-  /// Open the visible watcher chat session in the Work tab via the host-provided
-  /// deeplink. No-op until the host attaches a session href to the runtime.
-  private func openWatcherChat() {
-    guard let href = convergenceRuntime?.activeHref, let url = URL(string: href) else { return }
-    UIApplication.shared.open(url)
   }
 
   private func refreshAiSummary() {

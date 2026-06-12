@@ -113,8 +113,7 @@
             "pages": [
               "tools/pull-requests",
               "tools/conflicts",
-              "guides/stacked-prs",
-              "guides/pr-convergence"
+              "guides/stacked-prs"
             ]
           },
           {

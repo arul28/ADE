@@ -58,13 +58,11 @@ const BASE_PROPS = {
   repoOwner: "acme",
   repoName: "ade",
   viewerLogin: "octocat",
-  modelId: "claude-opus-4-7",
 };
 
 let postReviewComment: ReturnType<typeof vi.fn>;
 let setReviewThreadResolved: ReturnType<typeof vi.fn>;
 let reactToComment: ReturnType<typeof vi.fn>;
-let launchIssueResolutionFromThread: ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
   mockNavigate.mockClear();
@@ -73,9 +71,6 @@ beforeEach(() => {
     .fn()
     .mockImplementation(async ({ resolved }: { resolved: boolean }) => ({ threadId: "thread-1", isResolved: resolved }));
   reactToComment = vi.fn().mockResolvedValue(undefined);
-  launchIssueResolutionFromThread = vi
-    .fn()
-    .mockResolvedValue({ sessionId: "s-1", laneId: "lane-1", href: "/work?laneId=lane-1" });
 
   (window as unknown as { ade?: unknown }).ade = {
     app: { openExternal: vi.fn() },
@@ -83,7 +78,6 @@ beforeEach(() => {
       postReviewComment,
       setReviewThreadResolved,
       reactToComment,
-      launchIssueResolutionFromThread,
     },
   };
 });
@@ -165,23 +159,6 @@ describe("PrReviewThreadCard", () => {
     });
   });
 
-  it("launches issue resolution with modelId and navigates to returned href", async () => {
-    const user = userEvent.setup();
-    renderCard();
-    await user.click(screen.getByRole("button", { name: /ask ai to fix/i }));
-    await waitFor(() => {
-      expect(launchIssueResolutionFromThread).toHaveBeenCalledWith(
-        expect.objectContaining({
-          prId: "pr-1",
-          threadId: "thread-1",
-          modelId: "claude-opus-4-7",
-          fileContext: expect.objectContaining({ path: "src/foo.ts", line: 42 }),
-        }),
-      );
-      expect(mockNavigate).toHaveBeenCalledWith("/work?laneId=lane-1");
-    });
-  });
-
   it("responds to 'r' by opening reply, and 'x' by toggling resolve", async () => {
     const { container } = renderCard();
     const card = container.querySelector("[data-pr-review-thread-card]") as HTMLElement;
@@ -239,7 +216,7 @@ describe("PrReviewThreadCard", () => {
   });
 
   describe("when the PR is unmapped (laneId is null)", () => {
-    it("hides Reply / Resolve / Ask-AI write affordances but stays readable", () => {
+    it("hides Reply / Resolve write affordances but stays readable", () => {
       renderCard({}, { laneId: null });
       // Thread content remains visible and the read-only diff link survives.
       expect(screen.getByText(/please tighten this logic/i)).toBeTruthy();
@@ -248,7 +225,6 @@ describe("PrReviewThreadCard", () => {
       expect(screen.queryByRole("button", { name: /^reply$/i })).toBeNull();
       expect(screen.queryByRole("button", { name: /resolve/i })).toBeNull();
       expect(screen.queryByRole("button", { name: /unresolve/i })).toBeNull();
-      expect(screen.queryByRole("button", { name: /ask ai to fix/i })).toBeNull();
       expect(screen.queryByRole("button", { name: /add reaction/i })).toBeNull();
     });
 

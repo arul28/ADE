@@ -3025,37 +3025,6 @@ struct AiReviewSummary: Codable, Equatable {
   var mergeReadiness: String
 }
 
-public struct AiResolutionState: Codable, Equatable {
-  public let prId: String?
-  public let status: String?
-  public let sessionId: String?
-  public let model: String?
-  public let reasoningEffort: String?
-  public let startedAt: String?
-  public let updatedAt: String?
-  public let lastError: String?
-
-  public init(
-    prId: String? = nil,
-    status: String? = nil,
-    sessionId: String? = nil,
-    model: String? = nil,
-    reasoningEffort: String? = nil,
-    startedAt: String? = nil,
-    updatedAt: String? = nil,
-    lastError: String? = nil
-  ) {
-    self.prId = prId
-    self.status = status
-    self.sessionId = sessionId
-    self.model = model
-    self.reasoningEffort = reasoningEffort
-    self.startedAt = startedAt
-    self.updatedAt = updatedAt
-    self.lastError = lastError
-  }
-}
-
 struct PullRequestSnapshotHydration: Codable, Equatable, Identifiable {
   var id: String { prId }
   var prId: String
@@ -3537,68 +3506,6 @@ struct PrWorkflowCard: Codable, Identifiable, Equatable {
     case laneCount, conflictLaneCount, lanes, workflowDisplayState, cleanupState, linkedPrId, integrationLaneId, preferredIntegrationLaneId, mergeIntoHeadSha, integrationLaneOrigin, createdAt
     case laneId, laneName, behindBy, conflictPredicted, prId, prNumber, dismissedAt, deferredUntil, targetCommits, rebaseMode, creationStrategy
   }
-}
-
-struct LaneWorktreeLockInfo: Codable, Equatable {
-  var worktreeKey: String
-  var worktreePath: String
-  var laneId: String
-  var ownerKind: String
-  var ownerPrId: String?
-  var ownerSessionId: String?
-  var ownerProposalId: String?
-  var ownerLabel: String
-  var createdAt: String
-  var heartbeatAt: String
-  var expiresAt: String
-}
-
-struct LaneWorktreeLockBlocker: Codable, Equatable {
-  var message: String
-  var lock: LaneWorktreeLockInfo
-}
-
-/// Result envelope returned by `prs.pathToMerge.start`. `runtime` mirrors the
-/// updated convergence runtime row that the host just wrote, so callers can
-/// refresh local UI without an extra round-trip.
-struct StartPathToMergeResult: Codable, Equatable {
-  var prId: String
-  var scheduled: Bool
-  var runtime: ConvergenceRuntimeState
-  var blockedBy: LaneWorktreeLockBlocker?
-}
-
-/// Result envelope returned by `prs.pathToMerge.stop`. `runtime` may be `nil`
-/// when no runtime row existed for the PR (already-stopped no-op).
-struct StopPathToMergeResult: Codable, Equatable {
-  var prId: String
-  var stopped: Bool
-  var runtime: ConvergenceRuntimeState?
-}
-
-struct ConvergenceRuntimeState: Codable, Equatable {
-  var prId: String
-  var autoConvergeEnabled: Bool
-  var status: String
-  var pollerStatus: String
-  var currentRound: Int
-  var activeSessionId: String?
-  var activeLaneId: String?
-  var activeHref: String?
-  var pauseReason: String?
-  var errorMessage: String?
-  var forceFinalizeUsed: Bool?
-  var ciRetryAttemptsUsed: Int?
-  var waitForCiStartedAt: String?
-  var lastDispatchHeadSha: String?
-  var pauseRepeatCount: Int?
-  var lastPauseReasonHash: String?
-  var lastStartedAt: String?
-  var lastPolledAt: String?
-  var lastPausedAt: String?
-  var lastStoppedAt: String?
-  var createdAt: String
-  var updatedAt: String
 }
 
 struct CreateIntegrationLaneForProposalResult: Codable, Equatable {

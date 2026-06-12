@@ -15,7 +15,7 @@ metadata:
 
 Use this as engineering guidance for keeping the PRs tab fast while adding
 features. The PRs tab combines external GitHub search, local lane links,
-mergeability, queue/integration workflows, Path to Merge state, review threads,
+mergeability, queue/integration workflows, merge readiness, review threads,
 files, CI, and activity. Keep first paint local and defer expensive live GitHub
 or Git operations until the visible surface needs them.
 
@@ -98,7 +98,7 @@ or Git operations until the visible surface needs them.
 
 - **Why it helped**: Workflow pages previously fanned out merge-context calls
   and each one could pay for lane status work.
-- **Apply when**: Queue, integration, rebase/merge, or Path to Merge surfaces
+- **Apply when**: Queue, integration, rebase/merge, or merge-rail surfaces
   need per-PR merge context.
 - **Avoid**: Looping over `getMergeContext` or using bare `laneService.list()`
   from merge-context helpers.
@@ -133,18 +133,3 @@ or Git operations until the visible surface needs them.
   `prs-ui-rebase-fetch-ttl-20260512-062130`, queue reload lane reads dropped
   from `1393ms` to `47-80ms`, and `listAutoRebaseStatuses` dropped from
   `1404-1407ms` to `40-70ms`.
-
-### Keep Path to Merge start/stop local and state-first
-
-- **Why it helped**: Path to Merge controls should react to local pipeline
-  settings, convergence state, and issue inventory without waiting on a full PR
-  refresh or workflow sweep.
-- **Apply when**: Editing `PrConvergencePanel`, pipeline settings, issue
-  inventory sync, or Path to Merge IPC.
-- **Avoid**: Coupling the start/stop buttons to fresh detail hydration, merge
-  context fan-out, or agent dispatch prework that can run after the local state
-  transition.
-- **Verification**: In `prs-ui-ptm-audit-20260512-0635`, with PLAN mode and
-  auto-merge off, the UI covered native Path to Merge start/stop safely:
-  `ade.prs.pathToMerge.start` completed in `5ms` and
-  `ade.prs.pathToMerge.stop` completed in `2ms`.

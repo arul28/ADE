@@ -399,12 +399,7 @@ import type {
   RerunPrChecksArgs,
   AiReviewSummaryArgs,
   AiReviewSummary,
-  PrConvergenceState,
-  PrConvergenceStatePatch,
   PrAgentPermissionMode,
-  PathToMergeStartResult,
-  PathToMergeStopResult,
-  PipelineSettings,
   UpdateIntegrationProposalArgs,
   UpdatePrDescriptionArgs,
   ListOverlapsArgs,
@@ -2048,31 +2043,6 @@ declare global {
         aiReviewSummary: (
           args: AiReviewSummaryArgs,
         ) => Promise<AiReviewSummary>;
-        convergenceStateGet: (prId: string) => Promise<PrConvergenceState>;
-        convergenceStateSave: (
-          prId: string,
-          state: PrConvergenceStatePatch,
-        ) => Promise<PrConvergenceState>;
-        convergenceStateDelete: (prId: string) => Promise<void>;
-        pathToMergeStart: (args: {
-          prId: string;
-          modelId?: string | null;
-          reasoning?: string | null;
-          permissionMode?: PrAgentPermissionMode | null;
-          scope?: "checks" | "comments" | "both";
-          additionalInstructions?: string | null;
-          pollIntervalSeconds?: number | null;
-        }) => Promise<PathToMergeStartResult>;
-        pathToMergeStop: (args: {
-          prId: string;
-          reason?: string | null;
-        }) => Promise<PathToMergeStopResult>;
-        pipelineSettingsGet: (prId: string) => Promise<PipelineSettings>;
-        pipelineSettingsSave: (
-          prId: string,
-          settings: Partial<PipelineSettings>,
-        ) => Promise<void>;
-        pipelineSettingsDelete: (prId: string) => Promise<void>;
         dismissIntegrationCleanup: (
           args: DismissIntegrationCleanupArgs,
         ) => Promise<IntegrationProposal>;

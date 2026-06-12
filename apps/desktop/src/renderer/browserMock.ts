@@ -33,7 +33,6 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 import { getDefaultModelDescriptor } from "../shared/modelRegistry";
-import { DEFAULT_PIPELINE_SETTINGS } from "../shared/types";
 import { attachBrowserRuntimeBridge } from "./browserRuntimeBridge";
 
 const noop = () => () => {};
@@ -2120,37 +2119,6 @@ const MOCK_STATUS_BY_PR: Record<string, any> = {
     behindBaseBy: 3,
   },
 };
-
-const MOCK_CONVERGENCE_RUNTIME: Record<string, any> = {};
-
-function createDefaultConvergenceRuntime(prId: string) {
-  const nowIso = new Date().toISOString();
-  return {
-    prId,
-    autoConvergeEnabled: false,
-    pathToMergeActive: false,
-    status: "idle",
-    pollerStatus: "idle",
-    currentRound: 0,
-    activeSessionId: null,
-    activeLaneId: null,
-    activeHref: null,
-    pauseReason: null,
-    errorMessage: null,
-    forceFinalizeUsed: false,
-    ciRetryAttemptsUsed: 0,
-    waitForCiStartedAt: null,
-    lastDispatchHeadSha: null,
-    pauseRepeatCount: 0,
-    lastPauseReasonHash: null,
-    lastStartedAt: null,
-    lastPolledAt: null,
-    lastPausedAt: null,
-    lastStoppedAt: null,
-    createdAt: nowIso,
-    updatedAt: nowIso,
-  };
-}
 
 // ── Rebase Needs (all urgency categories) ─────────────────────
 const BUILTIN_MOCK_REBASE_NEEDS: any[] = [
@@ -5685,106 +5653,6 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         error: null,
         context: { sourceTab: "normal" as const, laneId: "lane-1" },
       }),
-      convergenceStateGet: async (prId: string) => {
-        const stored =
-          MOCK_CONVERGENCE_RUNTIME[prId] ??
-          createDefaultConvergenceRuntime(prId);
-        return { ...stored };
-      },
-      convergenceStateSave: async (
-        prId: string,
-        state: Record<string, any>,
-      ) => {
-        const nowIso = new Date().toISOString();
-        const existing =
-          MOCK_CONVERGENCE_RUNTIME[prId] ??
-          createDefaultConvergenceRuntime(prId);
-        // Only allow known ConvergenceRuntimeState keys (mirror real backend validation)
-        const allowedKeys = new Set([
-          "autoConvergeEnabled",
-          "pathToMergeActive",
-          "status",
-          "pollerStatus",
-          "currentRound",
-          "activeSessionId",
-          "activeLaneId",
-          "activeHref",
-          "pauseReason",
-          "errorMessage",
-          "forceFinalizeUsed",
-          "ciRetryAttemptsUsed",
-          "waitForCiStartedAt",
-          "lastDispatchHeadSha",
-          "pauseRepeatCount",
-          "lastPauseReasonHash",
-          "lastStartedAt",
-          "lastPolledAt",
-          "lastPausedAt",
-          "lastStoppedAt",
-        ]);
-        const filtered: Record<string, any> = {};
-        for (const key of Object.keys(state)) {
-          if (allowedKeys.has(key)) filtered[key] = state[key];
-        }
-        const next = {
-          ...existing,
-          ...filtered,
-          prId,
-          createdAt: existing.createdAt,
-          updatedAt: nowIso,
-        };
-        MOCK_CONVERGENCE_RUNTIME[prId] = next;
-        return { ...next };
-      },
-      convergenceStateDelete: async (prId: string) => {
-        delete MOCK_CONVERGENCE_RUNTIME[prId];
-      },
-      pathToMergeStart: async (args: {
-        prId: string;
-        permissionMode?: string | null;
-      }) => {
-        const runtime =
-          MOCK_CONVERGENCE_RUNTIME[args.prId] ??
-          createDefaultConvergenceRuntime(args.prId);
-        runtime.autoConvergeEnabled = true;
-        runtime.pathToMergeActive = true;
-        runtime.status = "running";
-        runtime.pollerStatus = "scheduled";
-        runtime.pauseReason = null;
-        runtime.errorMessage = null;
-        runtime.lastStartedAt = new Date().toISOString();
-        MOCK_CONVERGENCE_RUNTIME[args.prId] = runtime;
-        return { prId: args.prId, scheduled: true, runtime: { ...runtime } };
-      },
-      pathToMergeStop: async (args: {
-        prId: string;
-        reason?: string | null;
-      }) => {
-        const runtime = MOCK_CONVERGENCE_RUNTIME[args.prId] ?? null;
-        if (runtime) {
-          runtime.autoConvergeEnabled = false;
-          runtime.pathToMergeActive = false;
-          runtime.status = "stopped";
-          runtime.pollerStatus = "stopped";
-          runtime.pauseReason = args.reason ?? null;
-          runtime.lastStoppedAt = new Date().toISOString();
-        }
-        return {
-          prId: args.prId,
-          stopped: true,
-          runtime: runtime ? { ...runtime } : null,
-        };
-      },
-      pipelineSettingsGet: async (_prId: string) => DEFAULT_PIPELINE_SETTINGS,
-      pipelineSettingsSave: async (
-        _prId: string,
-        _settings: Record<string, unknown>,
-      ) => {
-        // No-op in browser mock — settings persistence is server-side.
-      },
-      pipelineSettingsDelete: async (_prId: string) => {
-        // No-op in browser mock.
-      },
       aiResolutionInput: resolvedArg(undefined),
       aiResolutionStop: resolvedArg(undefined),
       onAiResolutionEvent: noop,

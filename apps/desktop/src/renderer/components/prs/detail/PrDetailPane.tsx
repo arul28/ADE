@@ -1,7 +1,7 @@
 import React from "react";
 import {
   GithubLogo, CheckCircle, XCircle, Circle,
-  CircleNotch, Sparkle, ArrowRight, Eye, Code,
+  CircleNotch, ArrowRight, Eye, Code,
   PencilSimple, X, Check, ArrowsClockwise, Play,
   CaretDown, CaretRight, Stack as Layers,
 } from "@phosphor-icons/react";
@@ -24,7 +24,6 @@ import { PrManageLaneDialogHost } from "../shared/PrManageLaneDialogHost";
 import { COLORS, MONO_FONT, SANS_FONT, LABEL_STYLE, cardStyle, inlineBadge, outlineButton, primaryButton, dangerButton } from "../../lanes/laneDesignTokens";
 import { AdeDiffViewer } from "../../shared/AdeDiffViewer";
 import { PrCiRunningIndicator, getPrStateBadge, InlinePrBadge } from "../shared/prVisuals";
-import { PrConvergencePanel, type PathToMergeLaunchConfig } from "../shared/PrConvergencePanel";
 import { usePrs } from "../state/PrsContext";
 import { modifierKeyLabel } from "../../../lib/platform";
 import {
@@ -42,7 +41,7 @@ const DETAIL_TAB_STORAGE_KEY = "ade:prs:detailTabs:v1";
 const DETAIL_BACKGROUND_ACTIVITY_DELAY_MS = 250;
 
 function isDetailTab(value: unknown): value is DetailTab {
-  return value === "overview" || value === "convergence" || value === "files" || value === "checks";
+  return value === "overview" || value === "files" || value === "checks";
 }
 
 function normalizeDetailTab(tab: DetailTab | "activity" | null | undefined): DetailTab {
@@ -340,14 +339,6 @@ export function PrDetailPane({
   unmappedAffordance = null,
 }: PrDetailPaneProps) {
   const {
-    convergenceStatesByPrId,
-    loadConvergenceState,
-    resolverModel,
-    resolverReasoningLevel,
-    resolverPermissionMode,
-    setResolverModel,
-    setResolverReasoningLevel,
-    setResolverPermissionMode,
     dismissedAiSummaries,
     timelineFiltersByPrId,
     detailAiSummary,
@@ -412,7 +403,7 @@ export function PrDetailPane({
   React.useEffect(() => {
     const onTourTab = (event: Event) => {
       const tab = (event as CustomEvent<DetailTab | "activity">).detail;
-      if (tab === "overview" || tab === "convergence" || tab === "files" || tab === "checks" || tab === "activity") {
+      if (tab === "overview" || tab === "files" || tab === "checks" || tab === "activity") {
         setActiveTab(normalizeDetailTab(tab));
       }
     };
@@ -522,13 +513,6 @@ export function PrDetailPane({
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   }, [activeTab]);
-  // Path to Merge launch/status panel state. The agent watcher (a visible chat
-  // driven by a main-process scheduler) owns all convergence judgment now, so
-  // the renderer only launches/stops it and reflects the persisted runtime.
-  const [convergenceBusy, setConvergenceBusy] = React.useState(false);
-  const convergenceLoadSeqRef = React.useRef(0);
-  const convergenceRuntime = convergenceStatesByPrId[pr.id] ?? null;
-
   // Action states
   const [actionBusy, setActionBusy] = React.useState(false);
   const [actionError, setActionError] = React.useState<string | null>(null);
@@ -675,7 +659,6 @@ export function PrDetailPane({
   React.useEffect(() => {
     setActionError(null);
     setActionResult(null);
-    setConvergenceBusy(false);
     setEditingTitle(false);
     setShowLabelEditor(false);
     setShowReviewerEditor(false);
@@ -699,22 +682,13 @@ export function PrDetailPane({
     setActionRuns([]);
     setReviewThreads([]);
 
-    const requestId = ++convergenceLoadSeqRef.current;
-    // Convergence runtime is resolved via a DB row; skip for unmapped PRs.
-    if (pr.laneId) {
-      void loadConvergenceState(pr.id, { force: true }).catch(() => {
-        if (requestId !== convergenceLoadSeqRef.current) return;
-      });
-    }
-
     snapshotPrefillPendingRef.current = true;
     void loadDetail({ hydrateSnapshot: true });
     void refreshReviewThreads();
     return () => {
       detailLoadSeqRef.current += 1;
-      convergenceLoadSeqRef.current += 1;
     };
-  }, [applySnapshotHydration, loadConvergenceState, loadDetail, pr.id, refreshReviewThreads]);
+  }, [applySnapshotHydration, loadDetail, pr.id, refreshReviewThreads]);
 
   React.useEffect(() => {
     const key = [
@@ -766,8 +740,8 @@ export function PrDetailPane({
     };
   }, [activeTab, deepLinkState.eventId, fetchActivity, pr.id]);
 
-  // Poll checks + actionRuns + reviewThreads every 60s so the
-  // Path to Merge readiness panel stays fresh without requiring a manual refresh.
+  // Poll checks + actionRuns + reviewThreads every 60s so the PR detail
+  // readiness signals stay fresh without requiring a manual refresh.
   // Full activity fetches include comments/reviews/checks again, so only do that
   // while the Overview thread is actually visible.
   React.useEffect(() => {
@@ -910,54 +884,11 @@ export function PrDetailPane({
     }
   }, [loadDetail, onRefresh, pr.id, refreshReviewThreads]);
 
-  // Launch the Path to Merge watcher: a visible chat agent (in the PR's lane
-  // worktree) that a main-process scheduler nudges on an interval until the PR
-  // is merged. The agent owns all CI/review judgment and the merge itself.
-  const handlePathToMergeStart = React.useCallback(async (config: PathToMergeLaunchConfig) => {
-    setConvergenceBusy(true);
-    setActionError(null);
-    try {
-      const result = await window.ade.prs.pathToMergeStart({
-        prId: pr.id,
-        modelId: resolverModel,
-        reasoning: resolverReasoningLevel || null,
-        permissionMode: resolverPermissionMode,
-        scope: config.gating,
-        additionalInstructions: config.additionalInstructions,
-        pollIntervalSeconds: config.pollIntervalSeconds,
-      });
-      await loadConvergenceState(pr.id, { force: true }).catch(() => {});
-      const href = result.runtime?.activeHref ?? null;
-      if (href) onNavigate(href);
-    } catch (err: unknown) {
-      setActionError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setConvergenceBusy(false);
-    }
-  }, [loadConvergenceState, onNavigate, pr.id, resolverModel, resolverPermissionMode, resolverReasoningLevel]);
-
-  const handlePathToMergeStop = React.useCallback(async () => {
-    setConvergenceBusy(true);
-    setActionError(null);
-    try {
-      await window.ade.prs.pathToMergeStop({ prId: pr.id });
-      await loadConvergenceState(pr.id, { force: true }).catch(() => {});
-    } catch (err: unknown) {
-      setActionError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setConvergenceBusy(false);
-    }
-  }, [loadConvergenceState, pr.id]);
-
   const TAB_ACTIVE_COLORS: Record<DetailTab, string> = {
     overview: COLORS.accent,
-    convergence: COLORS.accent,
     files: COLORS.info,
     checks: COLORS.checkPass,
   };
-
-  const terminalState: "merged" | "closed" | null =
-    pr.state === "merged" || pr.state === "closed" ? pr.state : null;
 
   const headerChecks = React.useMemo(() => buildUnifiedChecks(checks, actionRuns), [checks, actionRuns]);
   const headerCi = React.useMemo(() => {
@@ -982,7 +913,6 @@ export function PrDetailPane({
 
   const DETAIL_TABS: Array<{ id: DetailTab; label: string; icon: React.ElementType; count?: number }> = [
     { id: "overview", label: "Overview", icon: Eye },
-    { id: "convergence", label: "Path to Merge", icon: Sparkle },
     { id: "files", label: "Files", icon: Code, count: files.length },
     { id: "checks", label: "CI / Checks", icon: Play, count: headerChecks.length },
   ];
@@ -1260,26 +1190,6 @@ export function PrDetailPane({
           onOpenChange={setManageLaneOpen}
           lane={laneForPr}
         />
-        {activeTab === "convergence" && (
-          <div data-tour="prs.conflictSim" style={{ display: "contents" }}>
-          <PrConvergencePanel
-            prNumber={pr.githubPrNumber}
-            prTitle={pr.title}
-            modelId={resolverModel}
-            reasoningEffort={resolverReasoningLevel}
-            permissionMode={resolverPermissionMode}
-            runtime={convergenceRuntime}
-            busy={convergenceBusy}
-            terminalState={terminalState}
-            onModelChange={setResolverModel}
-            onReasoningEffortChange={setResolverReasoningLevel}
-            onPermissionModeChange={setResolverPermissionMode}
-            onStart={handlePathToMergeStart}
-            onStop={handlePathToMergeStop}
-            onOpenChat={(href) => onNavigate(href)}
-          />
-          </div>
-        )}
         {activeTab === "files" && (
           <FilesTab files={files} expandedFile={expandedFile} setExpandedFile={setExpandedFile} />
         )}

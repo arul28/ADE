@@ -1,6 +1,6 @@
 ---
 name: ade-pr-workflows
-description: Use this skill when working with ADE PR workflows including PR tab data, PR checks/comments, queues, the Path to Merge watcher, rebase resolution, CI fixes, or merge readiness.
+description: Use this skill when working with ADE PR workflows including PR tab data, PR checks/comments, queues, rebase resolution, CI fixes, or merge readiness.
 ---
 
 # ADE PR workflows
@@ -12,15 +12,7 @@ ade prs list --text
 ade prs show <pr-id-or-number-or-url> --text
 ade prs checks <pr-id-or-number-or-url> --text
 ade prs comments <pr-id-or-number-or-url> --text
-ade prs path-to-merge <pr-id-or-number-or-url> --model <model> --gating both --poll-interval 600 --text
 ```
-
-`path-to-merge` launches a single visible chat agent that watches the PR and
-drives it to merge itself across many scheduler-injected turns. `--gating`
-(`checks` / `comments` / `both`) becomes a hard rule in the agent's contract;
-`--poll-interval` (seconds, 60–3600) sets the cadence; `--instructions "..."`
-appends free-form operator guidance. The agent owns every judgment — when CI and
-review are terminal, how to fix failures, and which merge tactic to use.
 
 Use `ade help prs` and `ade help git rebase` before guessing PR or rebase flags.
 

@@ -271,9 +271,8 @@ ade prs create --lane lane-id --base main --title "Fix checkout flow" --text  # 
 ade prs create --lane lane-id --base main --close-linear-issue-on-merge
 ade prs list-open --text
 ade prs github-snapshot --include-external-closed
-ade prs path-to-merge --pr pr-id --model gpt-5.5 --max-rounds 3 --no-auto-merge
-ade prs path-to-merge --pr pr-id --model gpt-5.5 --conflict-strategy auto --force-finalize conditional
-ade prs pipeline pr-id save --conflict-strategy rebase --no-early-merge-on-green
+ade prs checks pr-id --text
+ade prs comments pr-id --text
 ade run defs --text
 ade run start web --lane lane-id
 ade shell start --lane lane-id -- npm test
@@ -404,25 +403,6 @@ npm run package:beta         # origin/main -> ADE Beta.app, ade-beta, ~/.ade-bet
 ```
 
 Use these when you want a production-shaped local app without going through the GitHub release workflow. Alpha builds from the current checkout under `apps/desktop/release-alpha`; beta fetches `origin/main`, fast-forwards the local `main` checkout when possible, and writes artifacts under `apps/desktop/release-beta`. Use the dev scripts when you want Vite/Electron live reload, the temp dev endpoint, and the dev-only Electron profile. Local channel packages include the current machine's runtime binary. GitHub release builds use and validate the full cross-platform runtime artifact set.
-
-The `prs path-to-merge` and `prs pipeline save` commands persist a partial `PipelineSettings` patch via `issue_inventory.savePipelineSettings` before launching the resolver. The Path to Merge orchestrator reads these from saved settings, so the same flags work either way:
-
-| Flag | PipelineSettings field | Values |
-| --- | --- | --- |
-| `--max-rounds <n>` (alias `--rounds`) | `maxRounds` | positive integer |
-| `--auto-merge` / `--no-auto-merge` | `autoMerge` | boolean |
-| `--merge-method <m>` | `mergeMethod` | `repo_default` \| `merge` \| `squash` \| `rebase` |
-| `--conflict-strategy <s>` | `conflictStrategy` | `pause` \| `rebase` \| `merge` \| `auto` |
-| `--force-finalize <m>` | `forceFinalizeMode` | `off` \| `conditional` \| `unconditional` |
-| `--force-finalize-require-no-ci` / `--force-finalize-allow-ci` | `forceFinalizeRequireNoCiFailures` | boolean |
-| `--early-merge-on-green` / `--no-early-merge-on-green` | `earlyMergeOnGreen` | boolean |
-
-To set fields without a dedicated flag (for example `autoAgentSettings`), call the action directly:
-
-```bash
-ade actions run issue_inventory.savePipelineSettings --args-list-json \
-  '["pr-1",{"autoAgentSettings":{"provider":"claude","model":"sonnet","reasoningEffort":"high","permissionMode":"guarded_edit","confidenceThreshold":0.7}}]'
-```
 
 ## Automations
 

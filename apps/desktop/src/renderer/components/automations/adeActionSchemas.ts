@@ -1771,22 +1771,6 @@ export const ADE_ACTION_SCHEMAS: readonly AdeActionSchema[] = [
   },
 
   // ---------------------------------------------------------------------------
-  // issue_inventory
-  // ---------------------------------------------------------------------------
-  { domain: "issue_inventory", action: "deletePipelineSettings", label: "Delete pipeline settings", description: "Advanced action — pass arguments as JSON.", params: [] },
-  { domain: "issue_inventory", action: "getConvergenceRuntime", label: "Get convergence runtime", description: "Advanced action — pass arguments as JSON.", params: [] },
-  { domain: "issue_inventory", action: "getPipelineSettings", label: "Get pipeline settings", description: "Advanced action — pass arguments as JSON.", params: [] },
-  { domain: "issue_inventory", action: "resetConvergenceRuntime", label: "Reset convergence runtime", description: "Advanced action — pass arguments as JSON.", params: [] },
-  { domain: "issue_inventory", action: "saveConvergenceRuntime", label: "Save convergence runtime", description: "Advanced action — pass arguments as JSON.", params: [] },
-  { domain: "issue_inventory", action: "savePipelineSettings", label: "Save pipeline settings", description: "Advanced action — pass arguments as JSON.", params: [] },
-
-  // ---------------------------------------------------------------------------
-  // path_to_merge
-  // ---------------------------------------------------------------------------
-  { domain: "path_to_merge", action: "startPathToMerge", label: "Start Path to Merge", description: "Advanced action — pass arguments as JSON.", params: [] },
-  { domain: "path_to_merge", action: "stopPathToMerge", label: "Stop Path to Merge", description: "Advanced action — pass arguments as JSON.", params: [] },
-
-  // ---------------------------------------------------------------------------
   // flow_policy
   // ---------------------------------------------------------------------------
   { domain: "flow_policy", action: "diffPolicyPaths", label: "Diff policy paths", description: "Advanced action — pass arguments as JSON.", params: [] },

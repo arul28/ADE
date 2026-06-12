@@ -4959,8 +4959,8 @@ export function createPrService({
 
   /**
    * Post-merge bookkeeping that runs after a successful merge — regardless of
-   * whether the merge happened via REST (`land`) or the gh CLI rungs of the
-   * Path-to-Merge merge ladder.
+   * whether the merge happened via REST (`land`) or the gh CLI admin-merge
+   * fallback.
    *
    * Idempotent: every step (group cleanup, branch deletion, lane archive,
    * cache refresh) is wrapped in try/catch and tolerant of being called twice
@@ -8098,8 +8098,8 @@ export function createPrService({
 
     /**
      * Run only the post-merge bookkeeping (branch deletion, child-lane rebase
-     * advance, group cleanup, cache refresh). Used by the Path-to-Merge merge
-     * ladder when a `gh pr merge --admin` rung lands the PR outside of `land`.
+     * advance, group cleanup, cache refresh). Used when a `gh pr merge --admin`
+     * call lands the PR outside of `land`.
      */
     async runPostMergeCleanup(args: { prId: string; mergeCommitSha?: string | null; archiveLane?: boolean }): Promise<{
       branchDeleted: boolean;

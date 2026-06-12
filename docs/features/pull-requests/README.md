@@ -11,16 +11,15 @@ This folder documents:
 - [`stacking.md`](./stacking.md) — stacked PR chains, rebase ordering, queue-aware rebase targeting.
 - [`queue.md`](./queue.md) — PR merge queue model and landing state machine.
 - [`conflict-simulation.md`](./conflict-simulation.md) — how ADE predicts PR merge conflicts before the user hits Merge.
-- [`path-to-merge.md`](./path-to-merge.md) — the Path-to-Merge orchestrator: phase delays, terminal-state gate, conflict strategy switch, force-finalize, merge ladder, and Queue Automate Merging.
 
 ## Where this runs
 
 PR mutations, GitHub polling, queue landing, integration proposal
-simulation, the Path-to-Merge orchestrator, and the issue/rebase
-resolver agent dispatch all run inside the **active ADE runtime**
-(local machine runtime for local-bound windows, SSH-attached remote runtime
-for remote-bound windows). The renderer's `window.ade.prs.*` surface
-in `apps/desktop/src/preload/preload.ts` is the routing boundary:
+simulation, and the issue/rebase resolver agent dispatch all run inside
+the **active ADE runtime** (local machine runtime for local-bound
+windows, SSH-attached remote runtime for remote-bound windows). The
+renderer's `window.ade.prs.*` surface in
+`apps/desktop/src/preload/preload.ts` is the routing boundary:
 remote-bound windows route PR service work through the remote runtime,
 while local-bound windows still use selected legacy in-process IPC
 paths during migration. PR polling fingerprints, the
@@ -38,13 +37,12 @@ handlers directly for high-volume reads such as `listWithConflicts`,
 daemon startup. Mutations and long-running workflows still use the
 project runtime route where that route owns the behavior.
 
-For remote-bound windows, GitHub polling, the queue automation loop,
-and the Path-to-Merge orchestrator all execute on the remote machine.
-The git operations that back PR merges, rebases, and conflict
-resolution use the worktrees on the remote host. Stop / start /
-status reads work exactly the same as local; the desktop window just
-sends every action through the SSH-tunneled JSON-RPC instead of the
-local socket.
+For remote-bound windows, GitHub polling and the queue automation loop
+all execute on the remote machine. The git operations that back PR
+merges, rebases, and conflict resolution use the worktrees on the
+remote host. Status reads work exactly the same as local; the desktop
+window just sends every action through the SSH-tunneled JSON-RPC
+instead of the local socket.
 
 ## Source file map
 
@@ -70,10 +68,8 @@ Service files (`apps/desktop/src/main/services/prs/`):
 | `prPollingService.ts` | 60 s polling loop, fingerprint-based change detection, notification emission. Writes `last_polled_at` per PR so callers can run delta polls on the next tick |
 | `prSummaryService.ts` | AI PR summary generator; caches `PrAiSummary` per `(prId, headSha)` in `pull_request_ai_summaries` so pushes invalidate the cache |
 | `queueLandingService.ts` | Merge queue state machine (`ALLOWED_TRANSITIONS`), landing loop, auto-resolve on conflicts |
-| `pathToMergeOrchestrator.ts` | Path-to-Merge orchestrator: phase-aware setTimeout wake-ups, combined CI + review terminal-state gate, 4-option conflict strategy, force-finalize bonus iteration, REST → `gh --admin` → `gh --auto` merge ladder, persistent resume across restarts. Native port of the ship-lane playbook (driven by the `/ship` skill). See [`path-to-merge.md`](./path-to-merge.md). |
 | `integrationPlanning.ts` | `buildIntegrationPreflight` — validates source lanes for an integration proposal |
 | `integrationValidation.ts` | `parseGitStatusPorcelain`, `hasMergeConflictMarkers` — shared helpers for integration flows |
-| `issueInventoryService.ts` | Typed issue inventory, per-round convergence status, participant classification, thread re-open logic. `IssueInventoryItem` carries `type` (`review_thread | check_failure | issue_comment`), `externalId`, `body`, `author`, and `threadCommentCount` / `threadLatestCommentAuthor` / `threadLatestCommentAt` so `PrConvergencePanel` can render expandable rows with the full comment context inline. Also persists pipeline settings (incl. the new `conflictStrategy`, `forceFinalizeMode`, `earlyMergeOnGreen`, `autoAgentSettings`) and the orchestrator's serialized run args (`pr_convergence_state.ptm_args_json`) via `savePathToMergeArgs` / `getPathToMergeArgs`. |
 | `prIssueResolver.ts` | Builds issue-resolution prompts for the agent, launches chat session |
 | `prRebaseResolver.ts` | Builds rebase-resolution prompts, launches chat session |
 | `resolverUtils.ts` | Shared permission-mode mapping, recent commit reading, comment noise filter, and the `looksLikeResolutionAck` heuristic that flags resolved-looking replies on unresolved review threads |
@@ -83,19 +79,18 @@ Renderer components (`apps/desktop/src/renderer/components/prs/`):
 | File | Responsibility |
 |------|---------------|
 | `PRsPage.tsx` | Top-level tab shell (GitHub vs Workflows) with URL-driven state. Consumes create-PR handoff params from either router search or hash search (`create=1`, `sourceLaneId` / `laneId`, `target=primary`) and the `prs.create` dialog bus props, then opens `CreatePrModal` with matching initial values without persisting the one-shot route as the last PR route. |
-| `state/PrsContext.tsx` | PR data provider (list, selection, queue groups, rebase needs, convergence runtime state). Selected-PR primary reads apply progressively as status/check/review/comment requests resolve, so one slow piece does not hold the whole detail pane busy; cached snapshots stay visible during GitHub rate limits. Workflow queue-state reads tolerate older remote runtimes that do not expose the optional `pr.listQueueStates` action by rendering an empty queue-state set instead of failing the whole PR refresh. |
+| `state/PrsContext.tsx` | PR data provider (list, selection, queue groups, rebase needs). Selected-PR primary reads apply progressively as status/check/review/comment requests resolve, so one slow piece does not hold the whole detail pane busy; cached snapshots stay visible during GitHub rate limits. Workflow queue-state reads tolerate older remote runtimes that do not expose the optional `pr.listQueueStates` action by rendering an empty queue-state set instead of failing the whole PR refresh. |
 | `prsRouteState.ts` | URL ↔ page state mapping plus project-scoped last-route storage. When a project root is known, the PRs tab reads only that project's stored route and does not fall back to the legacy global route from another project. |
 | `CreatePrModal.tsx` | Draft/queue/integration PR creation with lane warnings, branch name validation, and optional initial values for single-PR handoffs from lane/chat surfaces. A `target: "primary"` handoff resolves the base branch from the primary lane (falling back to `main`). |
 | `tabs/NormalTab.tsx` | Normal PR list |
 | `tabs/GitHubTab.tsx` | Repository PR browser with label filters, CI badges, review indicators, ADE-vs-unmanaged scope counts, and linked-lane context. State filter is one of `open` / `closed` / `merged` / `all`. The tab ignores legacy cross-repo `externalPullRequests` payloads; the "External" scope means repo PRs that are not managed by ADE. The "create lane from PR branch" affordance has been removed — open/closed PRs on branches without a lane no longer offer the preflight + create dialog (`prsPreflightCreateLaneFromPrBranch` / `prsCreateLaneFromPrBranch` IPC channels have been deleted), so creating a lane for an existing PR now goes through the standard lane creation flow. |
-| `tabs/QueueTab.tsx` | Merge queue UI. Hosts the "Automate Merging" entry point that opens `QueueAutomateMergingModal` with the queue's eligible members (everything that has not landed yet). |
-| `tabs/QueueAutomateMergingModal.tsx` | Stack-wide automation modal: edits one `PipelineSettings` config that applies to every queue member, then sequentially saves settings, calls `ade.prs.retargetBase` for non-leading members so each PR's base points at the queue's tracking branch, starts Path-to-Merge via `ade.prs.pathToMerge.start`, and polls `convergenceStateGet` every 4 s until the runtime status is terminal. Halts the sequence on the first `failed | cancelled | stopped`. Closing mid-sequence stops dispatching new starts but leaves already-launched orchestrators running. |
+| `tabs/QueueTab.tsx` | Merge queue UI showing queued stack members and their landing state. |
 | `tabs/IntegrationTab.tsx` | Integration (merge-plan) proposals and execution, including merge-into-lane selection, apply-and-resimulate, and adopted-lane cleanup messaging |
 | `tabs/RebaseTab.tsx` | Lane rebase needs (base + queue + PR target) and attention items. Hide/snooze controls only affect the lane rebase suggestion banner; still-behind needs remain actionable in the Rebase view. |
 | `tabs/WorkflowsTab.tsx` | Container for queue/integration/rebase sub-tabs. The Rebase/Merge history view is backed by actual ADE rebase operation records, while active rebase needs include any lane still behind its target regardless of banner hide/snooze state. |
 | `tabs/queueWorkflowModel.ts` | Pure model for queue tab rendering (active/history bucketing, guidance computation) |
 | `tabs/rebaseWorkflowModel.ts` | Pure model for active rebase bucketing and operation-history filtering |
-| `detail/PrDetailPane.tsx` | Selected PR detail pane: status, checks, reviews, comments, files, commits, merge readiness, bypass, Path-to-Merge convergence sub-tab (labelled "Path to Merge" in the tab list), resolver modals. Rich detail/files/commits/action-run reads render progressively; late cached snapshot hydration can update snapshot-owned fields but cannot overwrite richer live detail/files/commits already loaded for the selected PR. Switches the Overview tab between the legacy grid and the Timeline+Rails layout based on `prsTimelineRailsEnabled`. Persists the selected sub-tab (`overview | convergence | files | checks | activity`) per PR in `localStorage` under `ade:prs:detailTabs:v1`, mirrored through the `detailTab` URL param so deep links restore the last-used tab |
+| `detail/PrDetailPane.tsx` | Selected PR detail pane: status, checks, reviews, comments, files, commits, merge readiness, bypass, resolver modals. Rich detail/files/commits/action-run reads render progressively; late cached snapshot hydration can update snapshot-owned fields but cannot overwrite richer live detail/files/commits already loaded for the selected PR. Switches the Overview tab between the legacy grid and the Timeline+Rails layout based on `prsTimelineRailsEnabled`. Persists the selected sub-tab (`overview | files | checks | activity`) per PR in `localStorage` under `ade:prs:detailTabs:v1`, mirrored through the `detailTab` URL param so deep links restore the last-used tab. The detail view has four tabs: Overview, Files, CI / Checks, and Activity. |
 | `detail/PrDetailTimelineRails.tsx` | Timeline+Rails overview: hosts the central `PrTimeline`, the left commit/checks rail, the right merge/metadata rail, the inline comment composer, and the command palette. Seeds the timeline with a synthetic `pr_opened` event followed by description, review threads, activity-stream entries (commits, comments, reviews, label changes, merges, deployments) and falls back to `args.checks` for any check that did not appear in the activity stream. Owns the deep-link scroll behaviour and the merge-bypass plumbing through to the right rail. |
 | `shared/PrTimeline.tsx` | Timeline column: renders the pre-computed `PrTimelineEvent[]` from `PrDetailTimelineRails`, handles per-PR filters (`PrTimelineFilters`), and groups events |
 | `shared/PrDetailLeftRail.tsx` | Left timeline rail. Stacks the commit list (`PrCommitRail` in `layout: "pane"` mode) on top of `PrPushChecksRail`, sharing the same accent gradient that bleeds into the timeline background. |
@@ -117,10 +112,7 @@ Renderer components (`apps/desktop/src/renderer/components/prs/`):
 | `shared/PrAiSummaryCard.tsx` | AI summary card above the timeline; dismissible per PR (state in `PrsContext.dismissedAiSummaries`), with a "Regenerate" action wired to `prSummaryService.regenerateSummary` |
 | `shared/PrReviewThreadCard.tsx`, `shared/PrBotReviewCard.tsx` | Rich thread cards for the timeline (bot-review collapse, reply box, resolve/react actions) |
 | `shared/PrDeploymentCard.tsx` | Deployment row used in the status rail and on the timeline |
-| `shared/PrConvergencePanel.tsx` | Path-to-Merge slide-over panel with issue inventory, agent session embed, pipeline settings. Status copy uses "Path to Merge" verbatim (e.g. "Agent working on Path to Merge…", "Ready to launch another Path to Merge run"). Each issue row is expandable (caret toggles full comment body, author, and thread comment count); a "show ignored" toggle un-hides previously dismissed items. The dismiss button is labelled "Ignore comment" so users understand it removes the item from the round without resolving the thread. The waiting-state copy hides the round number when the panel runs in non-round-aware contexts (`showRoundLabels = false`). Terminal PRs render a frozen state with historical comments shown for reference only. |
-| `shared/PrIssueResolverModal.tsx` | Launch issue resolution (checks/comments/both scopes) |
 | `shared/PrAiResolverPanel.tsx` | AI resolver launch controls in Rebase/Integration flows, including additional-instructions passthrough |
-| `shared/PrPipelineSettings.tsx` | Per-PR pipeline settings editor used inside `PrConvergencePanel` and the queue Automate Merging modal. Surfaces the 4-option `conflictStrategy` selector, the `auto`-only `autoAgentSettings` group (provider / model / reasoning / permission mode / confidence threshold), the `forceFinalizeMode` selector with the conditional sub-toggle, the `earlyMergeOnGreen` switch, `autoMerge`, `mergeMethod`, and `maxRounds`. Renders a force-push warning when `conflictStrategy` is `rebase` or `auto`. |
 | `shared/PrLaneCleanupBanner.tsx` | Post-merge cleanup banner on the PR detail. Also renders a dedicated "PR branch cleanup" variant when the PR is linked to the primary lane but its head branch differs — the primary lane is never deleted, but the user can still delete the local and/or remote PR branch after confirming `delete <branch>` |
 | `shared/IntegrationPrContextPanel.tsx` | Integration PR context panel |
 | `shared/prVisuals.tsx` | CI running indicator, check/review badges, dot colors, activity derivation |
@@ -190,13 +182,8 @@ Selected channels exposed through `preload.ts`:
 - `ade.prs.postReviewComment`, `ade.prs.setReviewThreadResolved`, `ade.prs.reactToComment` — GraphQL-backed mutations used by the timeline's thread cards
 - `ade.prs.getDeployments` — deployments for the PR's head SHA, with the latest status status URL and environment URL
 - `ade.prs.getAiSummary` / `ade.prs.regenerateAiSummary` — cached/forced `PrAiSummary` per `(prId, headSha)`
-- `ade.prs.launchIssueResolutionFromThread` — launch an agent chat pre-focused on a specific review thread (used by the thread card's "Resolve with agent" action)
-- `ade.prs.issueResolutionStart`, `ade.prs.issueResolutionPreview`
 - `ade.prs.rebaseResolutionStart`
-- `ade.prs.convergenceStateGet`, `ade.prs.convergenceStateSave`, `ade.prs.convergenceStateDelete`
-- `ade.prs.pathToMerge.start`, `ade.prs.pathToMerge.stop` — drive the Path-to-Merge orchestrator (see [`path-to-merge.md`](./path-to-merge.md))
-- `ade.prs.retargetBase` — re-point a PR's base branch (used by Queue Automate Merging when stacking the chain bases before PtM picks them up)
-- `ade.prs.pipelineSettingsGet`, `ade.prs.pipelineSettingsSave`, `ade.prs.pipelineSettingsDelete`
+- `ade.prs.retargetBase` — re-point a PR's base branch (used by stack-queue workflows)
 - `ade.prs.getGitHubSnapshot` — repository PR snapshot for the active GitHub repo. The DTO still carries `externalPullRequests` and accepts `includeExternalClosed` for compatibility, but the current service returns repo PRs only and the renderer ignores legacy cross-repo external items.
 - `ade.prs.simulateIntegration`, `ade.prs.createIntegrationLaneForProposal`, `ade.prs.commitIntegration`, `ade.prs.cleanupIntegrationWorkflow`
 - `ade.github.listRepoAutolinks` / `ade.github.createRepoAutolink` — read and create GitHub repo autolink references (the `key_prefix` + `url_template` rules that turn issue identifiers like `ADE-123` into GitHub-rendered hyperlinks). Used by the Linear setup flow so a project's Linear identifiers become clickable in PR bodies. `createRepoAutolink` requires `urlTemplate` to contain `<num>` and busts the autolinks ETag cache after a successful POST.
@@ -417,99 +404,17 @@ ADE supports agent-driven resolution of PR issues for two scopes:
 state (failing checks + workflow run detail, unresolved threads with
 compact summaries, changed files, recent commits) and launches a
 chat agent session scoped to the lane worktree. The session gets
-four workflow tools:
+workflow tools to re-pull checks/threads/comments, re-trigger failed
+GitHub Actions check runs, post replies on review threads, and mark
+review threads resolved.
 
-| Tool | Purpose |
-|------|---------|
-| `prRefreshIssueInventory` | Re-pull checks / threads / comments |
-| `prRerunFailedChecks` | Re-trigger failed GitHub Actions check runs |
-| `prReplyToReviewThread` | Post a reply on a review thread |
-| `prResolveReviewThread` | Mark a review thread resolved |
-
-`prRefreshIssueInventory` evaluates checks with failure-first
-priority: if any check has `conclusion === "failure"`, the status is
-`"failing"` regardless of other checks.
-
-The generated prompt frames each session as one bounded Path-to-Merge
+The generated prompt frames each session as one bounded resolution
 round: the agent makes a coherent set of fixes for the current
-inventory, commits and pushes, and stops with a concise final note
-(what changed, what was validated, whether it pushed, and any blocker).
-The agent is explicitly told not to wait indefinitely for CI or
-advisory review bots — ADE's poller will observe post-push comments
-and launch the next round if new actionable work appears.
-
-## Convergence loop
-
-`issueInventoryService.ts` tracks PR issues (failing checks,
-unresolved review threads, issue comments) in the `pr_issue_inventory`
-table. It classifies by source (CodeRabbit, Codex, Copilot, human,
-ADE), extracts severity from emoji/text patterns, and computes a
-per-round `ConvergenceStatus`.
-
-Thread tracking fields: `thread_comment_count`,
-`thread_latest_comment_id`, `thread_latest_comment_author`,
-`thread_latest_comment_at`, `thread_latest_comment_source`.
-
-A thread is treated as `fixed` when GitHub reports it as resolved or
-outdated, **or** when the latest reply on an unresolved thread from a
-non-bot author pattern-matches as a resolution acknowledgement
-(`looksLikeResolutionAck` in `resolverUtils.ts`). The helper rejects
-obvious negations ("not fixed", "still not resolved", etc.) before it
-accepts phrases like "fixed", "addressed", "no longer applies",
-"clear-to-merge", or "CI green". Bot sources (CodeRabbit, Copilot,
-Codex) still use the original resolved/outdated signal only.
-
-Runtime state (`pr_convergence_state` table):
-
-```ts
-type ConvergenceRuntimeState = {
-  autoConvergeEnabled: boolean;
-  status: ConvergenceStatus;        // idle, launching, running, polling, paused, converged, merged, failed, cancelled, stopped
-  pollerStatus: PollerStatus;       // idle, scheduled, polling, waiting_for_checks, waiting_for_comments, paused, stopped
-  currentRound: number;
-  activeSessionId: string | null;
-  activeLaneId: string | null;
-  activeHref: string | null;
-  pauseReason: string | null;
-  errorMessage: string | null;
-  lastStartedAt, lastPolledAt, lastPausedAt, lastStoppedAt: string | null;
-};
-```
-
-`PipelineSettings` (per PR) drives both the manual auto-converge panel
-and the Path-to-Merge orchestrator:
-
-| Field | Purpose |
-|-------|---------|
-| `autoMerge` | When true, PtM lands the PR after convergence (or via the early-green gate). |
-| `mergeMethod` | `repo_default | merge | squash | rebase`. PtM falls back to `squash` when the value is `repo_default` because GitHub's REST merge API requires an explicit method. |
-| `maxRounds` | Hard cap on normal iterations before the loop either gives up or runs the force-finalize bonus iteration. Default `5`. |
-| `conflictStrategy` | `pause | rebase | merge | auto`. Drives both base-advance sync between iterations and merge-time conflict handling. See [`path-to-merge.md`](./path-to-merge.md). |
-| `autoAgentSettings` | Provider / model / reasoning / permission mode / confidence threshold used when `conflictStrategy === "auto"` — also reused by the queue's standalone auto-resolve flow. |
-| `forceFinalizeMode` | `off | unconditional | conditional`. Controls the bonus iteration that runs after `maxRounds` is exhausted. |
-| `forceFinalizeRequireNoCiFailures` | When `forceFinalizeMode === "conditional"`, the bonus iteration only fires if no required CI checks are failing. |
-| `earlyMergeOnGreen` | Default `true`. Each iteration first checks whether checks are green and reviews are clean — if so, the merge ladder runs immediately instead of dispatching another fix round. |
-| `onRebaseNeeded` | Legacy two-option projection (`pause | auto_rebase`) of `conflictStrategy`. Kept for back-compat reads; new code reads `conflictStrategy`. |
-
-The orchestrator persists per-PR start args (`modelId`, `reasoning`,
-`scope`, `additionalInstructions`) in
-`pr_convergence_state.ptm_args_json` so a desktop restart can rehydrate
-the loop instead of pausing on missing model overrides.
-
-The manual auto-converge poller (still used when PtM is not active)
-waits for CI to finish and comments to stabilize (2 consecutive polls
-with same count) before starting the next round. Auto-merge
-additionally requires a non-empty check list: if GitHub returns zero
-checks for the PR, the poller pauses with
-`Auto-merge paused because GitHub returned no check data for this PR.`
-instead of merging on vacuously-true "all checks passed".
-
-Detail-pane inventory sync is now skipped entirely for merged or
-closed PRs — `syncInventory()` returns early, `refreshDetailSurface`
-omits the inventory leg, and `PrConvergencePanel` receives a
-`terminalState` signal so the panel renders the terminal summary
-instead of offering auto-converge controls. `newIssueCount` also zeroes
-for terminal PRs so sticky action-bar badges don't attach to a dead PR.
+checks and threads, commits and pushes, and stops with a concise
+final note (what changed, what was validated, whether it pushed, and
+any blocker). The agent is explicitly told not to wait indefinitely
+for CI or advisory review bots — ADE's poller will observe post-push
+comments and launch the next round if new actionable work appears.
 
 ## Integration merge target adoption
 
@@ -637,38 +542,21 @@ best-effort — failures log a warning and do not abort the tick.
 - `PrsContext` mounts cheaply on the plain GitHub PR list. The initial `refreshCore` only kicks a background GitHub refresh when the active tab is a workflow tab (`queue` / `integration` / `rebase`) or a PR is selected; otherwise `githubRefreshMode` is left undefined so the renderer paints from the existing snapshot. `applyLocalPrState` calls `prs.listWithConflicts({ includeConflictAnalysis: false })` and `lanes.list({ includeStatus: false })` for the plain list, then enables conflict analysis, rebase-needs scans, and auto-rebase status reads only when a workflow tab or selected PR needs them.
 - Workflow surfaces batch PR merge context through `prs.getMergeContexts(prIds)` instead of fanning out one `getMergeContext(prId)` call per card. The service builds the batch from metadata-only lane rows so queue/integration/rebase views do not pay full git status cost on render. Conflict analysis also runs as one batch over metadata-only active lanes, preserving overlap warnings against non-PR peer lanes without per-PR conflict calls.
 - `PrsContext` owns PR list, queue states, rebase needs, proposals,
-  convergence runtime state, and the Timeline+Rails UI state
+  and the Timeline+Rails UI state
   (`prsTimelineRailsEnabled`, `timelineFiltersByPrId`,
   `dismissedAiSummaries`, `viewerLogin`, `detailReviewThreads`,
-  `detailDeployments`, `detailAiSummary`). It caches convergence state
-  per PR and exposes `loadConvergenceState` / `saveConvergenceState` /
-  `resetConvergenceState`, plus `setTimelineFilters`,
-  `setAiSummaryDismissed`, and `regeneratePrAiSummary`.
+  `detailDeployments`, `detailAiSummary`). It exposes
+  `setTimelineFilters`, `setAiSummaryDismissed`, and
+  `regeneratePrAiSummary`.
 - `PrDetailPane` is where most rich behavior concentrates:
-  convergence panel (slide-over), issue resolver modal, rebase
-  banner, check/review/comment sections with running indicators
-  (`PrCiRunningIndicator`), merge readiness with bypass checkbox,
-  PR markdown rendered with `rehype-sanitize` after `rehype-raw`.
+  issue resolver modal, rebase banner, check/review/comment sections
+  with running indicators (`PrCiRunningIndicator`), merge readiness
+  with bypass checkbox, PR markdown rendered with `rehype-sanitize`
+  after `rehype-raw`.
 - `GitHubTab` renders the active repository's PR snapshot; filter tab
   counts respect the active ADE/unmanaged scope. Legacy
   `externalPullRequests` entries are ignored even if an old cache
   contains them.
-
-## CTO operator tools
-
-The CTO agent has five dedicated tools for orchestrating convergence
-programmatically:
-
-| Tool | Purpose |
-|------|---------|
-| `getPullRequestConvergence` | Read runtime state + settings + inventory summary |
-| `updatePullRequestConvergencePipeline` | Edit pipeline settings |
-| `updatePullRequestConvergenceRuntime` | Edit runtime state |
-| `startPullRequestConvergenceRound` | Launch the next convergence round |
-| `stopPullRequestConvergence` | Stop the active run, interrupt chat session, persist stopped state |
-
-The ADE CLI exposes the issue inventory service to terminal-capable
-agent workflows.
 
 ## Mobile snapshot
 
@@ -746,9 +634,6 @@ on open and re-fetches on focus or after a successful mutation.
   if cleanup fails.
 - **Conflict marker parser handles CRLF.** `parseConflictMarkers`
   matches both `\n` and `\r\n`. Windows checkouts depend on this.
-- **Convergence auto-advance needs two stable comment polls.**
-  Shortening this to one causes the poller to race GitHub's comment
-  propagation.
 - **Review thread resolution uses GraphQL.** `prService`'s GraphQL
   path backs `getReviewThreads`, `replyToReviewThread`, and
   `resolveReviewThread`. The REST API does not expose all the

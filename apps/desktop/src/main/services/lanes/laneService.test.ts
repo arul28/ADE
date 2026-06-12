@@ -3513,11 +3513,6 @@ describe("laneService delete teardown + cancellation + streaming", () => {
     db.run("insert into pr_group_members(id, group_id, pr_id, lane_id, position, role) values (?, ?, ?, ?, ?, ?)", ["member-child", "group-child", "pr-child", "lane-child", 0, "member"]);
     db.run("insert into pull_request_ai_summaries(pr_id, head_sha, summary_json, generated_at) values (?, ?, ?, ?)", ["pr-child", "abc123", "{}", now]);
     db.run("insert into pull_request_snapshots(pr_id, updated_at) values (?, ?)", ["pr-child", now]);
-    db.run("insert into pr_pipeline_settings(pr_id, updated_at) values (?, ?)", ["pr-child", now]);
-    db.run(
-      "insert into pr_issue_inventory(id, pr_id, source, type, external_id, headline, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?)",
-      ["issue-child", "pr-child", "review", "comment", "1", "Fix it", now, now],
-    );
     db.run(
       `
         insert into pr_auto_link_ignores(
@@ -3526,8 +3521,6 @@ describe("laneService delete teardown + cancellation + streaming", () => {
       `,
       [projectId, "acme", "demo", 1, "lane-child", "feature/child", now],
     );
-    db.run("insert into pr_convergence_state(pr_id, active_lane_id, created_at, updated_at) values (?, ?, ?, ?)", ["pr-child", "lane-child", now, now]);
-    db.run("insert into pr_convergence_state(pr_id, active_lane_id, created_at, updated_at) values (?, ?, ?, ?)", ["pr-parent", "lane-child", now, now]);
     db.run(
       `
         insert into review_runs(
@@ -3571,10 +3564,7 @@ describe("laneService delete teardown + cancellation + streaming", () => {
     expect(count("pr_group_members", "lane_id = ?", ["lane-child"])).toBe(0);
     expect(count("pull_request_ai_summaries", "pr_id = ?", ["pr-child"])).toBe(0);
     expect(count("pull_request_snapshots", "pr_id = ?", ["pr-child"])).toBe(0);
-    expect(count("pr_pipeline_settings", "pr_id = ?", ["pr-child"])).toBe(0);
-    expect(count("pr_issue_inventory", "pr_id = ?", ["pr-child"])).toBe(0);
     expect(count("pr_auto_link_ignores", "lane_id = ?", ["lane-child"])).toBe(0);
-    expect(db.get<{ active_lane_id: string | null }>("select active_lane_id from pr_convergence_state where pr_id = ?", ["pr-parent"])?.active_lane_id).toBeNull();
     expect(count("review_runs", "id = ?", ["review-run-child"])).toBe(0);
     expect(count("review_reviewer_runs", "id = ?", ["reviewer-run-child"])).toBe(0);
     expect(count("review_candidate_findings", "id = ?", ["candidate-child"])).toBe(0);
