@@ -24,6 +24,13 @@ export type LocalRuntimeConnectionState =
 
 export type LocalRuntimeStatus = {
   connectionState: LocalRuntimeConnectionState;
+  /**
+   * "isolated" means the desktop fell back to an app-owned no-sync brain
+   * (phone sync and ADE Code attach to the channel service, which is down).
+   * The pool keeps probing and reinstalling until it migrates back to
+   * "primary".
+   */
+  runtimeMode: "primary" | "isolated";
   serviceInstall: {
     state: LocalRuntimeServiceInstallState;
     attempted: boolean;

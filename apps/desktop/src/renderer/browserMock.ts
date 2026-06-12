@@ -3178,6 +3178,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         env: {},
         localRuntime: {
           connectionState: "idle",
+          runtimeMode: "primary",
           serviceInstall: {
             state: "skipped",
             attempted: false,

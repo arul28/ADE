@@ -1,4 +1,4 @@
-import { app, BrowserWindow, desktopCapturer, dialog, ipcMain, Menu, nativeImage, protocol, safeStorage, shell } from "electron";
+import { app, BrowserWindow, desktopCapturer, dialog, ipcMain, Menu, nativeImage, Notification, protocol, safeStorage, shell } from "electron";
 import { AsyncLocalStorage } from "node:async_hooks";
 import os from "node:os";
 import path from "node:path";
@@ -1201,6 +1201,27 @@ app.whenReady().then(async () => {
     && process.env.ADE_DISABLE_RUNTIME_SERVICE_INSTALL !== "1";
   const localRuntimePool = new LocalRuntimeConnectionPool(app.getVersion(), localRuntimeLogger, {
     preferServiceRepair: shouldRepairRuntimeServiceOnFallback,
+    onRuntimeModeChange: (mode) => {
+      localRuntimeLogger.warn("local_runtime.runtime_mode_changed", { mode });
+      if (!Notification.isSupported()) return;
+      try {
+        const notification = mode === "isolated"
+          ? new Notification({
+              title: "ADE is running in fallback mode",
+              body: "The ADE background service did not restart cleanly. Phone sync and ADE Code connections are unavailable while ADE keeps retrying in the background.",
+            })
+          : new Notification({
+              title: "ADE service restored",
+              body: "Phone sync and ADE Code connections are available again.",
+            });
+        notification.show();
+      } catch (error) {
+        localRuntimeLogger.warn("local_runtime.runtime_mode_notification_failed", {
+          mode,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    },
   });
   if (shouldAttemptRuntimeServiceInstall) {
     void localRuntimePool.installServiceBestEffort()

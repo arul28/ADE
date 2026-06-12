@@ -229,7 +229,9 @@ export function AboutSection() {
                 ADE runtime service
               </div>
               <div style={{ marginTop: 5, fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted, lineHeight: 1.5 }}>
-                Connection: {info.localRuntime.connectionState}. Install: {info.localRuntime.serviceInstall.message ?? "No install status."}
+                Connection: {info.localRuntime.connectionState}
+                {info.localRuntime.runtimeMode === "isolated" ? " (fallback brain — phone sync unavailable, retrying)" : ""}
+                . Install: {info.localRuntime.serviceInstall.message ?? "No install status."}
               </div>
               <div style={{ marginTop: 3, fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textMuted, lineHeight: 1.5 }}>
                 Login service: {info.localRuntime.serviceHealth.message ?? "No service health status."}

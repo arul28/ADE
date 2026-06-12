@@ -491,10 +491,10 @@ Release v<VERSION> — summary
 
 Next steps:
 1. Review the draft release, then `gh release edit v<VERSION> --draft=false` to publish.
-2. After publishing, bump the Homebrew tap: `scripts/update-brew-tap.sh v<VERSION>`
-   (updates the cask version + sha256 in arul28/homebrew-ade so
-   `brew install --cask arul28/ade/ade` serves the new DMG. It refuses to run
-   against a draft, so it cannot be done before step 1.)
+2. Publishing automatically bumps the Homebrew tap (arul28/homebrew-ade) via the
+   `update-brew-tap.yml` workflow — verify with
+   `gh run list --workflow update-brew-tap.yml --limit 1` after publishing.
+   Manual fallback if that run fails: `scripts/update-brew-tap.sh v<VERSION>`.
 ```
 
 If any phase ended in `blocked`, the summary says `BLOCKED` at the top with the failing phase and the command to resume.

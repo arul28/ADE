@@ -116,7 +116,7 @@ npm --prefix apps/ade-cli run build:static -- --target <target> --out-dir ../des
 
 ## Standalone runtime install
 
-For headless macOS / Linux machines that can run an SSH server but have no desktop, install the runtime directly from a release:
+For headless macOS / Linux machines that can run an SSH server but have no desktop, the runtime can be installed directly from a release. **Currently unavailable:** releases publish macOS desktop assets only — the runtime binaries and `install.sh` publish block in `release-core.yml` is commented out, so the command below 404s until it is re-enabled. SSH-reachable machines don't need it: the desktop bootstrap uploads bundled runtime artifacts on first connect.
 
 ```bash
 curl -fsSL https://github.com/arul28/ADE/releases/latest/download/install.sh | sh
