@@ -79,6 +79,7 @@ const mockState = vi.hoisted(() => ({
   cursorSdkCloudRequests: [] as Array<{ type: string; payload: Record<string, unknown> }>,
   cursorSdkCloudResponses: new Map<string, unknown>(),
   cursorSendPromptGate: null as Promise<void> | null,
+  cursorSendPromptError: null as unknown,
   droidAcquireCalls: [] as Array<Record<string, unknown>>,
   droidNewSessionCalls: [] as Array<Record<string, unknown>>,
   droidPromptCalls: [] as Array<Record<string, unknown>>,
@@ -601,6 +602,33 @@ vi.mock("../../../shared/chatTranscript", () => ({
 }));
 
 vi.mock("./cursorSdkPool", () => ({
+  sanitizeCursorSdkWorkerBaseEnv: vi.fn((baseEnv: NodeJS.ProcessEnv) => {
+    const env = { ...baseEnv };
+    delete env.CURSOR_API_KEY;
+    delete env.CURSOR_AUTH_TOKEN;
+    delete env.ADE_HOME;
+    delete env.ADE_PACKAGE_CHANNEL;
+    delete env.ADE_RUNTIME_SOCKET_PATH;
+    delete env.ADE_RPC_SOCKET_PATH;
+    delete env.ADE_DESKTOP_BRIDGE_SOCKET_PATH;
+    delete env.ADE_RUNTIME_BUILD_HASH;
+    delete env.ADE_RUNTIME_PARENT_PID;
+    delete env.ADE_RUNTIME_IDLE_EXIT_MS;
+    delete env.ADE_CLI_ENTRY_PATH;
+    delete env.ADE_CLI_JS;
+    delete env.ADE_CLI_INSTALL_NAME;
+    delete env.ADE_DEFAULT_ROLE;
+    delete env.ADE_DESKTOP_APP_NAME;
+    delete env.ADE_ALLOW_RUNTIME_SERVICE_SELF_MUTATION;
+    delete env.ADE_ALLOW_LOCAL_RELEASE_SERVICE_INSTALL;
+    delete env.ELECTRON_RUN_AS_NODE;
+    return env;
+  }),
+  isCursorSdkPooledAlive: vi.fn((pooled: any) =>
+    pooled?.process?.exitCode == null
+    && !pooled?.process?.killed
+    && pooled?.process?.connected !== false
+  ),
   acquireCursorSdkConnection: vi.fn(async (args: Record<string, unknown>) => {
     mockState.cursorSdkAcquireCalls.push(args);
     const pooled: any = {
@@ -654,6 +682,7 @@ vi.mock("./cursorSdkPool", () => ({
       sendPrompt: vi.fn(async (payload: Record<string, unknown>) => {
         mockState.cursorSdkSendCalls.push(payload);
         if (mockState.cursorSendPromptGate) await mockState.cursorSendPromptGate;
+        if (mockState.cursorSendPromptError) throw mockState.cursorSendPromptError;
         return { id: "cursor-sdk-run-1", status: "finished" };
       }),
       updatePolicy: vi.fn(async (policy: Record<string, unknown>) => {
@@ -1485,6 +1514,7 @@ beforeEach(() => {
   mockState.cursorSdkCloudRequests = [];
   mockState.cursorSdkCloudResponses = new Map<string, unknown>();
   mockState.cursorSendPromptGate = null;
+  mockState.cursorSendPromptError = null;
   mockState.droidAcquireCalls = [];
   mockState.droidNewSessionCalls = [];
   mockState.droidPromptCalls = [];
@@ -3883,6 +3913,52 @@ describe("createAgentChatService", () => {
       expect(spawnArgs).not.toContain("--disable");
       expect(spawnArgs).not.toContain("browser_use");
       expect(spawnArgs).not.toContain("computer_use");
+    });
+
+    it("passes raw CLI access env to the Cursor SDK pool for worker sanitization", async () => {
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      const getAdeCliAgentEnv = vi.fn(() => ({
+        PATH: "/Applications/ADE Beta.app/Contents/Resources/ade-cli/bin:/usr/bin",
+        ADE_PACKAGE_CHANNEL: "beta",
+        ADE_HOME: "/Users/admin/.ade-beta",
+        ADE_RUNTIME_SOCKET_PATH: "/Users/admin/.ade-beta/sock/ade.sock",
+        ADE_RPC_SOCKET_PATH: "/Users/admin/.ade-beta/sock/ade.sock",
+        ADE_CLI_PATH: "/Applications/ADE Beta.app/Contents/Resources/ade-cli/bin/ade-beta",
+        ADE_CLI_BIN_DIR: "/Applications/ADE Beta.app/Contents/Resources/ade-cli/bin",
+        ADE_CLI_ENTRY_PATH: "/Applications/ADE.app/Contents/Resources/ade-cli/cli.cjs",
+        ADE_CLI_JS: "/Applications/ADE.app/Contents/Resources/ade-cli/cli.cjs",
+        ADE_CLI_INSTALL_NAME: "ade-beta",
+      }));
+
+      const { service } = createService({ getAdeCliAgentEnv });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Run locally.",
+      }, { awaitDispatch: true });
+
+      expect(getAdeCliAgentEnv).toHaveBeenCalled();
+      const baseEnv = mockState.cursorSdkAcquireCalls.at(-1)?.baseEnv as NodeJS.ProcessEnv | undefined;
+      expect(baseEnv).toEqual(expect.objectContaining({
+        ADE_CLI_PATH: "/Applications/ADE Beta.app/Contents/Resources/ade-cli/bin/ade-beta",
+        ADE_CLI_BIN_DIR: "/Applications/ADE Beta.app/Contents/Resources/ade-cli/bin",
+        ADE_PACKAGE_CHANNEL: "beta",
+        ADE_HOME: "/Users/admin/.ade-beta",
+        ADE_RUNTIME_SOCKET_PATH: "/Users/admin/.ade-beta/sock/ade.sock",
+        ADE_RPC_SOCKET_PATH: "/Users/admin/.ade-beta/sock/ade.sock",
+        ADE_CLI_ENTRY_PATH: "/Applications/ADE.app/Contents/Resources/ade-cli/cli.cjs",
+        ADE_CLI_JS: "/Applications/ADE.app/Contents/Resources/ade-cli/cli.cjs",
+        ADE_CLI_INSTALL_NAME: "ade-beta",
+        ADE_CHAT_SESSION_ID: session.id,
+        ADE_LANE_ID: "lane-1",
+        ADE_PROJECT_ROOT: tmpRoot,
+      }));
     });
   });
 
@@ -6874,6 +6950,68 @@ describe("createAgentChatService", () => {
       } finally {
         finishTurn();
       }
+    });
+
+    it("surfaces Cursor SDK HTTP/2 backoff failures as rate limits", async () => {
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      mockState.cursorSendPromptError = new Error(
+        "Cursor SDK send failed: Cursor rate limited this request: [internal] Stream closed with error code NGHTTP2_ENHANCE_YOUR_CALM",
+      );
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Trigger Cursor backoff.",
+      }, { awaitDispatch: true });
+
+      const errorEvent = await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & { event: Extract<AgentChatEventEnvelope["event"], { type: "error" }> } =>
+          event.event.type === "error" && event.sessionId === session.id,
+      );
+      expect(errorEvent.event.message).toContain("Rate limited by Cursor");
+      expect(errorEvent.event.errorInfo).toMatchObject({
+        category: "rate_limit",
+        provider: "Cursor",
+      });
+      expect(errorEvent.event.detail).toContain("NGHTTP2_ENHANCE_YOUR_CALM");
+    });
+
+    it("reacquires Cursor SDK workers that exited before a follow-up turn", async () => {
+      process.env.CURSOR_API_KEY = "cursor-test-key";
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "cursor",
+        model: "composer-2",
+        modelId: "cursor/composer-2",
+      });
+
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "First Cursor turn.",
+      });
+      const firstPooled = mockState.cursorSdkPooled;
+      firstPooled.process.exitCode = 1;
+
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "Follow-up after worker exit.",
+      });
+
+      expect(mockState.cursorSdkAcquireCalls).toHaveLength(2);
+      expect(firstPooled.sendPrompt).toHaveBeenCalledTimes(1);
+      expect(mockState.cursorSdkPooled).not.toBe(firstPooled);
+      expect(mockState.cursorSdkPooled.sendPrompt).toHaveBeenCalledTimes(1);
     });
 
     it("reports active Droid SDK turns so project switching does not close the chat runtime", async () => {

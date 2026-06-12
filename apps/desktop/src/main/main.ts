@@ -3306,6 +3306,7 @@ app.whenReady().then(async () => {
       inspectPoint: "inspect",
       launch: "interact",
       openPreviewWorkspace: "preview",
+      renderCurrentPreview: "preview",
       renderPreview: "preview",
       selectPoint: "inspect",
       startStream: "interact",
@@ -3357,6 +3358,11 @@ app.whenReady().then(async () => {
       renderPreview: async (arg: Parameters<typeof iosSimulatorService.renderPreview>[0]) => {
         const result = await iosSimulatorService.renderPreview(arg);
         requestIosSimulatorDrawerOpen("renderPreview", arg, result);
+        return result;
+      },
+      renderCurrentPreview: async (arg?: Parameters<typeof iosSimulatorService.renderCurrentPreview>[0]) => {
+        const result = await iosSimulatorService.renderCurrentPreview(arg);
+        requestIosSimulatorDrawerOpen("renderCurrentPreview", arg, result);
         return result;
       },
       selectPoint: async (arg: Parameters<typeof iosSimulatorService.selectPoint>[0]) => {

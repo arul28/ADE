@@ -7056,6 +7056,9 @@ export function registerIpc({
   ipcMain.handle(IPC.iosSimulatorEnsurePreviewWorkspace, async (_event, arg = {}) =>
     ensureIosSimulator().ensurePreviewWorkspace(arg));
 
+  ipcMain.handle(IPC.iosSimulatorRenderCurrentPreview, async (_event, arg = {}) =>
+    ensureIosSimulator().renderCurrentPreview(arg));
+
   ipcMain.handle(IPC.iosSimulatorRenderPreview, async (_event, arg) => ensureIosSimulator().renderPreview(arg));
 
   ipcMain.handle(IPC.iosSimulatorOpenPreviewWorkspace, async (_event, arg = {}) =>

@@ -221,6 +221,21 @@ function installIosSimulatorApi(options: {
         suggestedSourceFile: "ContentPreviews.swift",
         suggestedSourceFilePath: "apps/ios/ContentPreviews.swift",
       });
+  const renderPreviewResult = {
+    ok: true,
+    target: {
+      sourceFilePath: previewTarget.sourceFilePath,
+      previewDefinitionIndexInFile: previewTarget.previewDefinitionIndexInFile,
+      tabIdentifier: previewCapability.selectedWindow?.tabIdentifier ?? null,
+    },
+    previewSnapshotPath: ".ade/artifacts/preview.png",
+    dataUrl: "data:image/png;base64,preview",
+    width: 390,
+    height: 844,
+    renderedAt: "2026-04-29T00:00:00.000Z",
+    capability: options.previewCapability ?? previewCapability,
+    error: null,
+  };
   const api = {
     getStatus: vi.fn().mockResolvedValue(options.status ?? activeStatus),
     listDevices: vi.fn().mockResolvedValue([device]),
@@ -291,21 +306,14 @@ function installIosSimulatorApi(options: {
       capability: options.previewCapability ?? previewCapability,
       error: null,
     }),
-    renderPreview: vi.fn().mockResolvedValue({
-      ok: true,
-      target: {
-        sourceFilePath: previewTarget.sourceFilePath,
-        previewDefinitionIndexInFile: previewTarget.previewDefinitionIndexInFile,
-        tabIdentifier: previewCapability.selectedWindow?.tabIdentifier ?? null,
-      },
-      previewSnapshotPath: ".ade/artifacts/preview.png",
-      dataUrl: "data:image/png;base64,preview",
-      width: 390,
-      height: 844,
-      renderedAt: "2026-04-29T00:00:00.000Z",
-      capability: options.previewCapability ?? previewCapability,
-      error: null,
+    renderCurrentPreview: vi.fn().mockResolvedValue({
+      ok: Boolean(effectivePreviewMatch.target),
+      match: effectivePreviewMatch,
+      target: effectivePreviewMatch.target,
+      render: effectivePreviewMatch.target ? renderPreviewResult : null,
+      error: effectivePreviewMatch.target ? null : effectivePreviewMatch.reason,
     }),
+    renderPreview: vi.fn().mockResolvedValue(renderPreviewResult),
     openPreviewWorkspace: vi.fn(),
     tap: vi.fn().mockResolvedValue(undefined),
     typeText: vi.fn().mockResolvedValue(undefined),
@@ -817,18 +825,16 @@ describe("ChatIosSimulatorPanel", () => {
     fireEvent.click(await screen.findByRole("button", { name: /Open in preview|Find preview|Create preview/ }));
 
     expect(await screen.findByText("ContentView.swift:12")).toBeTruthy();
-    expect(api.resolvePreviewMatch).toHaveBeenCalledWith({
+    expect(api.renderCurrentPreview).toHaveBeenCalledWith({
       projectRoot: "/tmp/project",
       sourceFile: inspectElement.sourceFile,
       sourceLine: inspectElement.sourceLine,
       elementLabel: inspectElement.label,
       componentId: inspectElement.componentId,
+      tabIdentifier: null,
+      timeoutSec: 120,
     });
-    expect(api.renderPreview).toHaveBeenCalledWith(expect.objectContaining({
-      projectRoot: "/tmp/project",
-      sourceFilePath: previewTarget.sourceFilePath,
-      previewDefinitionIndexInFile: previewTarget.previewDefinitionIndexInFile,
-    }));
+    expect(api.renderPreview).not.toHaveBeenCalled();
   });
 
   it("treats Swift #fileID source paths as the same Preview Lab match", async () => {
@@ -929,8 +935,8 @@ describe("ChatIosSimulatorPanel", () => {
       screenElements: [inspectElement, settingsElement],
       previewTargets: [],
     });
-    api.resolvePreviewMatch.mockImplementation(async (args?: { sourceFile?: string | null }) => (
-      args?.sourceFile === "SettingsView.swift"
+    api.renderCurrentPreview.mockImplementation(async (args?: { sourceFile?: string | null }) => {
+      const match = args?.sourceFile === "SettingsView.swift"
         ? settingsMatch
         : {
             status: "missing-preview",
@@ -942,8 +948,15 @@ describe("ChatIosSimulatorPanel", () => {
             suggestedTitle: "Continue Preview",
             suggestedSourceFile: "ContentPreviews.swift",
             suggestedSourceFilePath: "apps/ios/ContentPreviews.swift",
-          }
-    ));
+          };
+      return {
+        ok: false,
+        match,
+        target: null,
+        render: null,
+        error: match.reason,
+      };
+    });
 
     render(
       <ChatIosSimulatorPanel
@@ -979,12 +992,14 @@ describe("ChatIosSimulatorPanel", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Create preview" }));
 
     await waitFor(() => {
-      expect(api.resolvePreviewMatch).toHaveBeenCalledWith({
+      expect(api.renderCurrentPreview).toHaveBeenCalledWith({
         projectRoot: "/tmp/project",
         sourceFile: inspectElement.sourceFile,
         sourceLine: inspectElement.sourceLine,
         elementLabel: inspectElement.label,
         componentId: inspectElement.componentId,
+        tabIdentifier: null,
+        timeoutSec: 120,
       });
       expect(onInsertDraft).toHaveBeenCalledWith(expect.stringContaining("ContentView.swift:12"));
       expect(onInsertDraft).toHaveBeenCalledWith(expect.stringContaining("Continue Preview"));
@@ -1043,7 +1058,7 @@ describe("ChatIosSimulatorPanel", () => {
 
     await waitFor(() => {
       expect(onInsertDraft).toHaveBeenCalledWith(expect.stringContaining("No renderable #Preview was found"));
-      expect(onInsertDraft).toHaveBeenCalledWith(expect.stringContaining("ade ios-sim preview-match"));
+      expect(onInsertDraft).toHaveBeenCalledWith(expect.stringContaining("ade --socket ios-sim preview-current"));
       expect(api.renderPreview).not.toHaveBeenCalled();
     });
   });

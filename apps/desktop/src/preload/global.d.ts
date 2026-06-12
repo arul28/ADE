@@ -563,6 +563,8 @@ import type {
   IosSimulatorPreviewCapability,
   IosSimulatorPreviewMatch,
   IosSimulatorPreviewTarget,
+  IosSimulatorRenderCurrentPreviewArgs,
+  IosSimulatorRenderCurrentPreviewResult,
   IosSimulatorRenderPreviewArgs,
   IosSimulatorRenderPreviewResult,
   IosScreenSnapshot,
@@ -1493,6 +1495,9 @@ declare global {
         ensurePreviewWorkspace: (
           args?: IosSimulatorEnsurePreviewWorkspaceArgs,
         ) => Promise<IosSimulatorEnsurePreviewWorkspaceResult>;
+        renderCurrentPreview: (
+          args?: IosSimulatorRenderCurrentPreviewArgs,
+        ) => Promise<IosSimulatorRenderCurrentPreviewResult>;
         renderPreview: (
           args: IosSimulatorRenderPreviewArgs,
         ) => Promise<IosSimulatorRenderPreviewResult>;

@@ -92,6 +92,30 @@ func workChatErrorIndicatesActiveTurn(_ error: Error) -> Bool {
     || message.contains("already active")
 }
 
+func workTranscriptEntryIdentity(_ entry: AgentChatTranscriptEntry) -> String {
+  [
+    entry.timestamp,
+    entry.role,
+    entry.turnId ?? "",
+    entry.text
+  ].joined(separator: "\u{1F}")
+}
+
+func mergeWorkTranscriptEntries(
+  older: [AgentChatTranscriptEntry],
+  newer: [AgentChatTranscriptEntry]
+) -> [AgentChatTranscriptEntry] {
+  var seen = Set<String>()
+  var result: [AgentChatTranscriptEntry] = []
+  result.reserveCapacity(older.count + newer.count)
+  for entry in older + newer {
+    if seen.insert(workTranscriptEntryIdentity(entry)).inserted {
+      result.append(entry)
+    }
+  }
+  return result
+}
+
 private func workChatProviderFamilyFromToolType(_ toolType: String?) -> String? {
   let raw = toolType?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
   guard !raw.isEmpty else { return nil }

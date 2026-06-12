@@ -184,6 +184,41 @@ describe("Cursor SDK event mapper", () => {
     }]);
   });
 
+  it("uses Cursor SDK error detail when local status fails", () => {
+    expect(mapCursorSdkMessageToChatEvents({
+      type: "status",
+      status: "ERROR",
+      error: { message: "Tool execution aborted" },
+    }, mapperMeta())).toEqual([{
+      type: "error",
+      message: "Tool execution aborted",
+      turnId: "turn-1",
+    }]);
+  });
+
+  it("keeps the generic Cursor SDK failure only when no detail is present", () => {
+    expect(mapCursorSdkMessageToChatEvents({
+      type: "status",
+      status: "ERROR",
+    }, mapperMeta())).toEqual([{
+      type: "error",
+      message: "Cursor SDK run failed.",
+      turnId: "turn-1",
+    }]);
+  });
+
+  it("does not stringify unknown Cursor SDK error objects into chat", () => {
+    expect(mapCursorSdkMessageToChatEvents({
+      type: "status",
+      status: "ERROR",
+      error: { token: "secret-ish" },
+    }, mapperMeta())).toEqual([{
+      type: "error",
+      message: "Cursor SDK run failed.",
+      turnId: "turn-1",
+    }]);
+  });
+
   it("uses the provided task status map for task lifecycle transitions", () => {
     const taskStatusMap = new Map<string, string>();
     const started = mapCursorSdkMessageToChatEvents({

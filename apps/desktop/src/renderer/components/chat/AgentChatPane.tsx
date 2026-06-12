@@ -622,6 +622,7 @@ function buildSubagentEventHistory(args: {
 const CHAT_HISTORY_READ_MAX_BYTES = 2_000_000;
 const MAX_RETAINED_CHAT_SESSION_HISTORIES = 6;
 const MAX_SELECTED_CHAT_SESSION_EVENTS = 20_000;
+const MAX_SELECTED_CHAT_SESSION_RESIDENT_EVENTS = 60_000;
 const MAX_BACKGROUND_CHAT_SESSION_EVENTS = 1_000;
 const EMPTY_DRAFT_LAUNCH_JOBS: DraftLaunchJob[] = [];
 
@@ -1032,9 +1033,10 @@ function writeAgentChatSessionViewCache(
   events: AgentChatEventEnvelope[],
   derived = deriveRuntimeState(events),
   historyCursor: number | null = null,
+  maxEvents = MAX_SELECTED_CHAT_SESSION_EVENTS,
 ): void {
   if (!AGENT_CHAT_VIEW_CACHE_ENABLED) return;
-  const trimmed = trimChatEventHistory(events, MAX_SELECTED_CHAT_SESSION_EVENTS);
+  const trimmed = trimChatEventHistory(events, maxEvents);
   agentChatSessionViewCacheBySessionId.delete(sessionId);
   agentChatSessionViewCacheBySessionId.set(sessionId, {
     events: trimmed,
@@ -1738,9 +1740,12 @@ export function mergeChatHistorySnapshot(
   if (!parsed.length) return existing;
 
   const existingByKey = new Map<string, AgentChatEventEnvelope>();
-  for (const entry of existing) {
+  const existingIndexByKey = new Map<string, number>();
+  for (let index = 0; index < existing.length; index += 1) {
+    const entry = existing[index]!;
     const key = chatEventDedupKey(entry);
     if (!existingByKey.has(key)) existingByKey.set(key, entry);
+    if (!existingIndexByKey.has(key)) existingIndexByKey.set(key, index);
   }
   const parsedKeys = new Set<string>();
   const normalizedParsed = parsed.map((entry) => {
@@ -1748,6 +1753,13 @@ export function mergeChatHistorySnapshot(
     parsedKeys.add(key);
     return existingByKey.get(key) ?? entry;
   });
+  let firstOverlapIndex = -1;
+  for (const entry of parsed) {
+    const index = existingIndexByKey.get(chatEventDedupKey(entry)) ?? -1;
+    if (index >= 0 && (firstOverlapIndex < 0 || index < firstOverlapIndex)) {
+      firstOverlapIndex = index;
+    }
+  }
   const lastParsedKey = chatEventDedupKey(parsed[parsed.length - 1]!);
   let overlapIndex = -1;
   for (let index = existing.length - 1; index >= 0; index -= 1) {
@@ -1768,7 +1780,12 @@ export function mergeChatHistorySnapshot(
         return entry.timestamp > parsed[parsed.length - 1]!.timestamp;
       });
   const tail = tailCandidates.filter((entry) => !parsedKeys.has(chatEventDedupKey(entry)));
-  const merged = tail.length ? [...normalizedParsed, ...tail] : normalizedParsed;
+  const olderPrefix = firstOverlapIndex > 0
+    ? existing.slice(0, firstOverlapIndex).filter((entry) => !parsedKeys.has(chatEventDedupKey(entry)))
+    : [];
+  const merged = olderPrefix.length || tail.length
+    ? [...olderPrefix, ...normalizedParsed, ...tail]
+    : normalizedParsed;
   if (merged.length === existing.length && merged.every((entry, index) => entry === existing[index])) {
     return existing;
   }
@@ -5166,11 +5183,11 @@ export function AgentChatPane({
         if (nextCursor <= 0) break;
         beforeOffset = nextCursor;
       }
+      const maxEvents = sessionId === selectedSessionIdRef.current || sessionId === lockSessionId
+        ? MAX_SELECTED_CHAT_SESSION_RESIDENT_EVENTS
+        : MAX_BACKGROUND_CHAT_SESSION_EVENTS;
       if (olderEvents.length) {
         const existing = eventsBySessionRef.current[sessionId] ?? [];
-        const maxEvents = sessionId === selectedSessionIdRef.current || sessionId === lockSessionId
-          ? MAX_SELECTED_CHAT_SESSION_EVENTS
-          : MAX_BACKGROUND_CHAT_SESSION_EVENTS;
         const { events: merged, hitResidentCap } = mergeOlderChatHistoryPageWithCap({
           older: olderEvents,
           existing,
@@ -5181,13 +5198,14 @@ export function AgentChatPane({
           eventsBySessionRef.current = { ...eventsBySessionRef.current, [sessionId]: merged };
           setEventsBySession((prev) => ({ ...prev, [sessionId]: merged }));
         }
-        writeAgentChatSessionViewCache(sessionId, merged, undefined, nextCursor);
+        writeAgentChatSessionViewCache(sessionId, merged, undefined, nextCursor, maxEvents);
       } else {
         writeAgentChatSessionViewCache(
           sessionId,
           eventsBySessionRef.current[sessionId] ?? [],
           undefined,
           nextCursor,
+          maxEvents,
         );
       }
       applyOlderHistoryCursor(sessionId, nextCursor);
@@ -5754,7 +5772,7 @@ export function AgentChatPane({
       const updated = trimChatEventHistory(
         [...sessionEvents, envelope],
         sessionId === selectedSessionIdRef.current || sessionId === lockSessionId
-          ? MAX_SELECTED_CHAT_SESSION_EVENTS
+          ? MAX_SELECTED_CHAT_SESSION_RESIDENT_EVENTS
           : MAX_BACKGROUND_CHAT_SESSION_EVENTS,
       );
       if (next === eventsBySessionRef.current) {
@@ -5775,7 +5793,16 @@ export function AgentChatPane({
     const pendingSteerPatch: Record<string, PendingSteerEntry[]> = {};
     for (const sessionId of touchedSessionIds) {
       const derived = deriveRuntimeState(next[sessionId] ?? []);
-      writeAgentChatSessionViewCache(sessionId, next[sessionId] ?? [], derived, olderHistoryCursorRef.current[sessionId] ?? null);
+      const maxEvents = sessionId === selectedSessionIdRef.current || sessionId === lockSessionId
+        ? MAX_SELECTED_CHAT_SESSION_RESIDENT_EVENTS
+        : MAX_BACKGROUND_CHAT_SESSION_EVENTS;
+      writeAgentChatSessionViewCache(
+        sessionId,
+        next[sessionId] ?? [],
+        derived,
+        olderHistoryCursorRef.current[sessionId] ?? null,
+        maxEvents,
+      );
       activePatch[sessionId] = derived.turnActive;
       pendingInputPatch[sessionId] = derived.pendingInputs;
       pendingSteerPatch[sessionId] = derived.pendingSteers;

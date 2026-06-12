@@ -39,6 +39,7 @@ struct SettingsConnectionHeader: View {
           onDisconnect: onDisconnect,
           onReconnect: onReconnect
         )
+        .layoutPriority(1)
       }
 
       if health.transport.isConnected {
@@ -52,7 +53,7 @@ struct SettingsConnectionHeader: View {
           .foregroundStyle(ADEColor.textSecondary)
           .fixedSize(horizontal: false, vertical: true)
       } else {
-        Text("Pair a machine to start syncing lanes, work, and files.")
+        Text("Pair once on Wi‑Fi to remotely connect later.")
           .font(.subheadline)
           .foregroundStyle(ADEColor.textSecondary)
           .fixedSize(horizontal: false, vertical: true)
@@ -210,33 +211,26 @@ private struct SettingsConnectionQuickAction: View {
       .accessibilityLabel("Disconnect from machine")
 
     case .connecting:
-      HStack(spacing: 8) {
+      // Status copy lives in the header's leading column — keep the trailing
+      // control compact so it never steals width from the title stack.
+      Button {
+        onDisconnect()
+      } label: {
         HStack(spacing: 6) {
           ProgressView().controlSize(.mini)
-          Text("Connecting")
-            .font(.caption.weight(.medium))
-            .foregroundStyle(ADEColor.textSecondary)
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 7)
-        .background(ADEColor.textSecondary.opacity(0.1), in: Capsule())
-        .glassEffect()
-
-        // Always offer a way out of a connect attempt — `disconnect()` cancels
-        // the in-flight attempt so the user is never stuck watching a spinner.
-        Button {
-          onDisconnect()
-        } label: {
           Text("Cancel")
             .font(.caption.weight(.semibold))
             .foregroundStyle(ADEColor.textSecondary)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 7)
+            .lineLimit(1)
         }
-        .buttonStyle(.plain)
-        .background(ADEColor.textSecondary.opacity(0.1), in: Capsule())
-        .accessibilityLabel("Cancel connecting")
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
       }
+      .buttonStyle(.plain)
+      .background(ADEColor.textSecondary.opacity(0.1), in: Capsule())
+      .glassEffect()
+      .fixedSize(horizontal: true, vertical: false)
+      .accessibilityLabel("Cancel connecting")
 
     case .error, .disconnected:
       if canReconnectToSavedHost {

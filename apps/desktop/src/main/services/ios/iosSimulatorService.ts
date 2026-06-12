@@ -23,6 +23,8 @@ import type {
   IosSimulatorPreviewMatch,
   IosSimulatorPreviewTarget,
   IosSimulatorPreviewWindow,
+  IosSimulatorRenderCurrentPreviewArgs,
+  IosSimulatorRenderCurrentPreviewResult,
   IosSimulatorRenderPreviewArgs,
   IosSimulatorRenderPreviewResult,
   IosSimulatorEventPayload,
@@ -2550,7 +2552,26 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       .slice(0, 50);
   };
 
-  const resolvePreviewMatch = async (previewArgs: IosSimulatorListPreviewsArgs = {}): Promise<IosSimulatorPreviewMatch> => {
+  const previewArgsWithLastSelection = (
+    previewArgs: IosSimulatorListPreviewsArgs = {},
+  ): IosSimulatorListPreviewsArgs => {
+    const hasSource = typeof previewArgs.sourceFile === "string" && previewArgs.sourceFile.trim().length > 0;
+    if (hasSource || !lastSelectedItem?.sourceFile) return previewArgs;
+    const metadata = isRecord(lastSelectedItem.metadata) ? lastSelectedItem.metadata : {};
+    const label = typeof metadata.label === "string" && metadata.label.trim()
+      ? metadata.label
+      : null;
+    return {
+      ...previewArgs,
+      sourceFile: lastSelectedItem.sourceFile,
+      sourceLine: previewArgs.sourceLine ?? lastSelectedItem.sourceLine,
+      elementLabel: previewArgs.elementLabel ?? label,
+      componentId: previewArgs.componentId ?? lastSelectedItem.componentId,
+    };
+  };
+
+  const resolvePreviewMatch = async (rawPreviewArgs: IosSimulatorListPreviewsArgs = {}): Promise<IosSimulatorPreviewMatch> => {
+    const previewArgs = previewArgsWithLastSelection(rawPreviewArgs);
     const projectRoot = resolveProjectRoot(previewArgs.projectRoot);
     const rawSourceFile = previewArgs.sourceFile?.trim() ?? "";
     const selectedFile = resolveSwiftSourceFile(projectRoot, previewArgs.sourceFile);
@@ -2565,7 +2586,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         status: "no-context",
         target: null,
         confidence: "none",
-        reason: "Select an inspectable simulator element before opening a screen in Preview Lab.",
+        reason: "Select a source-backed simulator element first (`ade --socket ios-sim select --x <x> --y <y> --text`) or pass `--source <swift-file> --line <n>` before opening the screen in Preview Lab.",
         selectedSourceFile: null,
         selectedSourceLine,
         ...suggestion,
@@ -2617,6 +2638,37 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       selectedSourceFile,
       selectedSourceLine,
       ...suggestion,
+    };
+  };
+
+  const renderCurrentPreview = async (
+    previewArgs: IosSimulatorRenderCurrentPreviewArgs = {},
+  ): Promise<IosSimulatorRenderCurrentPreviewResult> => {
+    const match = await resolvePreviewMatch(previewArgs);
+    const target = match.target;
+    if (!target) {
+      return {
+        ok: false,
+        match,
+        target: null,
+        render: null,
+        error: match.reason,
+      };
+    }
+
+    const render = await renderPreview({
+      projectRoot: previewArgs.projectRoot,
+      sourceFilePath: target.sourceFilePath,
+      previewDefinitionIndexInFile: target.previewDefinitionIndexInFile,
+      tabIdentifier: previewArgs.tabIdentifier,
+      timeoutSec: previewArgs.timeoutSec,
+    });
+    return {
+      ok: render.ok,
+      match,
+      target,
+      render,
+      error: render.error,
     };
   };
 
@@ -3678,6 +3730,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     listPreviewTargets,
     resolvePreviewMatch,
     ensurePreviewWorkspace,
+    renderCurrentPreview,
     renderPreview,
     openPreviewWorkspace,
     startStream,

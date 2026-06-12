@@ -288,6 +288,7 @@ function previewBridgeActionForSelection(
   match: IosSimulatorPreviewMatch | null,
   element: IosScreenElement | null,
 ): PreviewBridgeAction {
+  if (!element && match?.status === "matched" && match.target) return "open";
   if (!element) return "create";
   if (!previewMatchBelongsToElement(match, element)) return "find";
   if (match?.status === "matched" && match.target) return "open";
@@ -1673,58 +1674,60 @@ export function ChatIosSimulatorPanel({
     const element = inspectBridgeElement;
     const elementSource = element?.sourceFile ?? null;
     const elementSourceLine = element?.sourceLine ?? null;
-    let match = previewMatch;
-    if (!previewMatchBelongsToElement(match, element)) {
-      setPreviewRefreshing(true);
-      setMessage("Finding a Preview Lab target for the frozen simulator frame...");
-      try {
-        match = await window.ade.iosSimulator.resolvePreviewMatch({
-          projectRoot,
-          sourceFile: elementSource,
-          sourceLine: elementSourceLine,
-          elementLabel: element ? elementLabel(element) : null,
-          componentId: element?.componentId ?? null,
-        });
-        setPreviewMatch(match);
-        const matchedTarget = match.target;
-        if (matchedTarget) {
-          setPreviewTargets((current) => (
-            current.some((target) => target.id === matchedTarget.id)
-              ? current
-              : [matchedTarget, ...current]
-          ));
-        }
-      } catch (error) {
-        setMessage(error instanceof Error ? error.message : String(error));
-        return;
-      } finally {
-        setPreviewRefreshing(false);
+    setPreviewRefreshing(true);
+    setMessage("Opening the current simulator selection in Preview Lab...");
+    try {
+      const current = await window.ade.iosSimulator.renderCurrentPreview({
+        projectRoot,
+        sourceFile: elementSource,
+        sourceLine: elementSourceLine,
+        elementLabel: element ? elementLabel(element) : null,
+        componentId: element?.componentId ?? null,
+        tabIdentifier: previewCapability?.selectedWindow?.tabIdentifier ?? null,
+        timeoutSec: 120,
+      });
+      const match = current.match;
+      setPreviewMatch(match);
+      const matchingTarget = current.target;
+      if (matchingTarget) {
+        setPreviewTargets((targets) => (
+          targets.some((target) => target.id === matchingTarget.id)
+            ? targets
+            : [matchingTarget, ...targets]
+        ));
       }
+      if (current.render?.capability) {
+        setPreviewCapability(current.render.capability);
+      }
+      if (current.render) {
+        setPreviewResult(current.render);
+      }
+      if (matchingTarget && current.render) {
+        setMode("preview");
+        setPreviewMode("control");
+        setSelectedPreviewTargetId(matchingTarget.id);
+        setMessage(current.ok
+          ? `Rendered ${matchingTarget.title}.`
+          : current.error ?? "Preview render failed.");
+        return;
+      }
+      setPreviewAgentHelpAction("open-simulator-in-preview");
+      setMessage(elementSource
+        ? `No #Preview matched ${elementSource}. Drafting an agent-backed preview task...`
+        : "No source-backed simulator element is selected. Drafting an agent prompt with the current snapshot workflow...");
+      void draftPreviewAgentHelpRef.current?.("open-simulator-in-preview", {
+        selectedElement: element,
+        previewTarget: null,
+        previewMatch: match,
+        previewResult: null,
+        includePreviewAttachment: false,
+      });
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error));
+    } finally {
+      setPreviewRefreshing(false);
     }
-    const matchingTarget = match?.target
-      ?? (elementSource
-        ? previewTargets.find((target) => target.sourceFile === elementSource || target.sourceFilePath === elementSource) ?? null
-        : null);
-    if (matchingTarget) {
-      setMode("preview");
-      setPreviewMode("control");
-      setSelectedPreviewTargetId(matchingTarget.id);
-      setPreviewResult(null);
-      void renderSelectedPreview(matchingTarget);
-      return;
-    }
-    setPreviewAgentHelpAction("open-simulator-in-preview");
-    setMessage(elementSource
-      ? `No #Preview matched ${elementSource}. Drafting an agent-backed preview task...`
-      : "No element is selected. Drafting an agent prompt to create a preview for the current screen...");
-    void draftPreviewAgentHelpRef.current?.("open-simulator-in-preview", {
-      selectedElement: element,
-      previewTarget: null,
-      previewMatch: match,
-      previewResult: null,
-      includePreviewAttachment: false,
-    });
-  }, [inspectBridgeElement, previewMatch, previewTargets, projectRoot, renderSelectedPreview]);
+  }, [inspectBridgeElement, previewCapability?.selectedWindow?.tabIdentifier, projectRoot]);
 
   const sendTypedText = useCallback(async () => {
     const text = typedText;
@@ -1983,14 +1986,14 @@ export function ChatIosSimulatorPanel({
         ? `- Step 5b: If no matching preview exists, add one in ${match.suggestedSourceFile}${match.suggestedTitle ? ` named ${JSON.stringify(match.suggestedTitle)}` : ""}. Prefer a lightweight harness with bindings, env objects, no-op callbacks, fake state, and no live sync/network dependencies.`
         : "- Step 5b: If no matching preview exists, add one (prefer a `<Feature>Previews.swift` sidecar; use a lightweight harness with bindings, env objects, no-op callbacks, fake state).";
       requestedWork = [
-        "- Step 1: Identify the screen that is currently open in the live iOS Simulator. Start with `ade ios-sim status --text` and `ade ios-sim snapshot --text` so you are using ADE's current simulator session, not a guessed route.",
+        "- Step 1: Identify the screen that is currently open in the live iOS Simulator. Start with `ade --socket ios-sim status --text` and `ade --socket ios-sim snapshot --text` so you are using ADE's current simulator session, not a guessed route.",
         "- Step 2: If the simulator is not running, there is no active simulator session, or ADE cannot capture a current screen/snapshot, stop and warn the user with the exact blocker. Do not guess from stale code.",
-        "- Step 3: Use the simulator snapshot, attached screenshot, visible labels, navigation title, inspector packets, and SwiftUI file search to find the matching screen in code.",
-        "- Step 4: Resolve ADE's current preview match with `ade ios-sim preview-match --source <swift-file> --text`, then check nearby definitions with `ade ios-sim previews --source <swift-file> --text`.",
+        "- Step 3: If the selected source is unknown, inspect the snapshot elements and run `ade --socket ios-sim select --x <x> --y <y> --text` on a source-backed element before editing code. If the prompt already provides a source file/line, use that directly.",
+        "- Step 4: Resolve and render ADE's current preview bridge with `ade --socket ios-sim preview-current --text`. If you have an explicit source, use `ade --socket ios-sim preview-current --source <swift-file> --line <n> --text`.",
         "- Step 5a: If a matching preview already exists, use it. Do not add a duplicate preview just because the first search was imperfect.",
         suggestedPreviewLine,
-        "- Step 6: Finish by opening/rendering the chosen preview through ADE CLI with `ade ios-sim preview-render --source <file> --index <previewDefinitionIndexInFile> --text` so the result lands in ADE's Preview surface.",
-        "- Report back with the screen you identified, the file:line of the preview that was used or added, and the `ade ios-sim preview-render` result.",
+        "- Step 6: Finish by running `ade --socket ios-sim preview-current --text` again, or `ade --socket ios-sim preview-render --source <file> --index <previewDefinitionIndexInFile> --text` when you intentionally chose a specific preview.",
+        "- Report back with the screen you identified, the file:line of the preview that was used or added, and the `ade --socket ios-sim preview-current` or `preview-render` result.",
       ];
     } else if (action === "add-realistic-mocks") {
       requestedWork = [

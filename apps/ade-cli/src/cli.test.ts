@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -18,7 +19,9 @@ import {
   renderLaneGraph,
   resolveAdeCodeModulePath,
   resolveRoots,
+  runCli,
   shouldAutoRegisterProjectForPlan,
+  shouldBlockManualMachineRuntimeSpawn,
   shouldEnforceMachineRuntimeBuildCompatibility,
   shouldAttemptDesktopSocketConnection,
   summarizeExecution,
@@ -30,6 +33,8 @@ type ResolveRootsOptions = Parameters<typeof resolveRoots>[0];
 
 process.env.ADE_ENABLE_AUTOMATIONS = "1";
 process.env.ADE_ENABLE_MACOS_VM = "1";
+
+const crdtHostIt = process.platform === "darwin" ? it : it.skip;
 
 function withEnv<T>(updates: Record<string, string | undefined>, run: () => T): T {
   const previous = new Map<string, string | undefined>();
@@ -78,6 +83,35 @@ function expectExecutePlan(
     throw new Error(`Expected execute plan, got ${plan.kind}`);
   }
   return plan;
+}
+
+function writeSyncHostSingletonLock(args: {
+  lockPath: string;
+  pid: number;
+  port: number;
+  packageChannel: string | null;
+  adeHome: string;
+}): void {
+  const now = "2026-06-11T00:00:00.000Z";
+  fs.mkdirSync(path.dirname(args.lockPath), { recursive: true });
+  fs.writeFileSync(args.lockPath, `${JSON.stringify({
+    version: 1,
+    owner: {
+      id: "other-channel-brain",
+      pid: args.pid,
+      port: args.port,
+      appName: args.packageChannel === "beta" ? "ADE Beta" : "ADE",
+      packageChannel: args.packageChannel,
+      adeHome: args.adeHome,
+      serviceName: args.packageChannel === "beta" ? "com.ade.runtime.beta" : "com.ade.runtime",
+      socketPath: path.join(args.adeHome, "sock", "ade.sock"),
+      projectRoot: "/Users/admin/Projects/ADE",
+      commandLine: null,
+      quitCommand: `ADE_HOME='${args.adeHome}' ade brain stop --text`,
+      createdAt: now,
+      updatedAt: now,
+    },
+  }, null, 2)}\n`, "utf8");
 }
 
 describe("ADE CLI", () => {
@@ -330,6 +364,62 @@ describe("ADE CLI", () => {
     });
   });
 
+  crdtHostIt("serve fails instead of exiting successfully when another channel owns mobile sync", async () => {
+    const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-serve-conflict-"));
+    const projectRoot = path.join(adeHome, "project");
+    const lockPath = path.join(adeHome, "sync-host-lock.json");
+    const socketPath = path.join(adeHome, "sock", "ade.sock");
+    fs.mkdirSync(projectRoot, { recursive: true });
+    const originalEnv = {
+      ADE_HOME: process.env.ADE_HOME,
+      ADE_PROJECT_ROOT: process.env.ADE_PROJECT_ROOT,
+      ADE_PACKAGE_CHANNEL: process.env.ADE_PACKAGE_CHANNEL,
+      ADE_SYNC_HOST_LOCK_PATH: process.env.ADE_SYNC_HOST_LOCK_PATH,
+      ADE_SYNC_HOST_SINGLETON_TEST_MODE: process.env.ADE_SYNC_HOST_SINGLETON_TEST_MODE,
+    };
+    const ownerProcess = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000);"], {
+      stdio: "ignore",
+    });
+    ownerProcess.on("error", () => {});
+    ownerProcess.unref();
+    if (!ownerProcess.pid) {
+      throw new Error("Failed to start fake sync-host owner process.");
+    }
+
+    try {
+      process.env.ADE_HOME = adeHome;
+      process.env.ADE_PROJECT_ROOT = projectRoot;
+      delete process.env.ADE_PACKAGE_CHANNEL;
+      process.env.ADE_SYNC_HOST_LOCK_PATH = lockPath;
+      process.env.ADE_SYNC_HOST_SINGLETON_TEST_MODE = "1";
+      writeSyncHostSingletonLock({
+        lockPath,
+        pid: ownerProcess.pid,
+        port: 8801,
+        packageChannel: "beta",
+        adeHome: path.join(os.homedir(), ".ade-beta"),
+      });
+
+      await expect(runCli(["serve", "--socket", socketPath])).rejects.toThrow(
+        "ADE brain refusing to run without mobile sync.",
+      );
+      expect(fs.existsSync(socketPath)).toBe(false);
+    } finally {
+      if (originalEnv.ADE_HOME === undefined) delete process.env.ADE_HOME;
+      else process.env.ADE_HOME = originalEnv.ADE_HOME;
+      if (originalEnv.ADE_PROJECT_ROOT === undefined) delete process.env.ADE_PROJECT_ROOT;
+      else process.env.ADE_PROJECT_ROOT = originalEnv.ADE_PROJECT_ROOT;
+      if (originalEnv.ADE_PACKAGE_CHANNEL === undefined) delete process.env.ADE_PACKAGE_CHANNEL;
+      else process.env.ADE_PACKAGE_CHANNEL = originalEnv.ADE_PACKAGE_CHANNEL;
+      if (originalEnv.ADE_SYNC_HOST_LOCK_PATH === undefined) delete process.env.ADE_SYNC_HOST_LOCK_PATH;
+      else process.env.ADE_SYNC_HOST_LOCK_PATH = originalEnv.ADE_SYNC_HOST_LOCK_PATH;
+      if (originalEnv.ADE_SYNC_HOST_SINGLETON_TEST_MODE === undefined) delete process.env.ADE_SYNC_HOST_SINGLETON_TEST_MODE;
+      else process.env.ADE_SYNC_HOST_SINGLETON_TEST_MODE = originalEnv.ADE_SYNC_HOST_SINGLETON_TEST_MODE;
+      ownerProcess.kill("SIGKILL");
+      fs.rmSync(adeHome, { recursive: true, force: true });
+    }
+  });
+
   it("recognizes the hidden PTY host worker entrypoint", () => {
     expect(buildCliPlan(["__ade-pty-host-worker"])).toEqual({
       kind: "pty-host-worker",
@@ -343,6 +433,19 @@ describe("ADE CLI", () => {
     expect(isEphemeralRuntimeSocketPath(path.join(os.tmpdir(), "other-app", "ade.sock"))).toBe(false);
     expect(isEphemeralRuntimeSocketPath(path.join(os.homedir(), ".ade", "sock", "ade.sock"))).toBe(false);
     expect(isEphemeralRuntimeSocketPath("tcp://127.0.0.1:8765")).toBe(false);
+  });
+
+  it("blocks manual service-socket runtime spawn when service mutation is disabled", () => {
+    expect(shouldBlockManualMachineRuntimeSpawn("/Users/example/.ade-beta/sock/ade.sock", {
+      ADE_DISABLE_RUNTIME_SERVICE_INSTALL: "1",
+    })).toBe(true);
+    expect(shouldBlockManualMachineRuntimeSpawn("/Users/example/.ade-beta/sock/ade.sock", {})).toBe(false);
+    expect(shouldBlockManualMachineRuntimeSpawn("tcp://127.0.0.1:9999", {
+      ADE_DISABLE_RUNTIME_SERVICE_INSTALL: "1",
+    })).toBe(false);
+    expect(shouldBlockManualMachineRuntimeSpawn(path.join(os.tmpdir(), "ade-code-test", "ade.sock"), {
+      ADE_DISABLE_RUNTIME_SERVICE_INSTALL: "1",
+    })).toBe(false);
   });
 
   it("parses runtime idle expiry with a minimum clamp", () => {
@@ -4229,8 +4332,10 @@ describe("ADE CLI", () => {
   it("formats preview-match and preview-ensure text as Preview Lab output", () => {
     const matchPlan = expectExecutePlan(buildCliPlan(["ios-sim", "preview-match", "--source", "Views/HomeView.swift"]));
     const ensurePlan = expectExecutePlan(buildCliPlan(["ios-sim", "preview-ensure"]));
+    const currentPlan = expectExecutePlan(buildCliPlan(["ios-sim", "preview-current"]));
     expect(inferFormatter(matchPlan)).toBe("ios-sim-preview");
     expect(inferFormatter(ensurePlan)).toBe("ios-sim-preview");
+    expect(inferFormatter(currentPlan)).toBe("ios-sim-preview");
 
     const output = formatOutput({
       status: "missing-preview",
@@ -4249,6 +4354,62 @@ describe("ADE CLI", () => {
     expect(output).toContain("ADE iOS Preview match");
     expect(output).toMatch(/status\s+missing-preview/);
     expect(output).toMatch(/suggested file\s+apps\/ios\/ADE\/Views\/HomePreviews\.swift/);
+
+    const currentOutput = formatOutput({
+      ok: false,
+      match: {
+        status: "no-context",
+        confidence: "none",
+        target: null,
+        selectedSourceFile: null,
+        selectedSourceLine: null,
+        reason: "Select a source-backed simulator element first.",
+      },
+      target: null,
+      render: null,
+      error: "Select a source-backed simulator element first.",
+    }, {
+      text: true,
+      pretty: false,
+    } as any, "ios-sim-preview");
+    expect(currentOutput).toContain("ADE iOS Preview current");
+    expect(currentOutput).toMatch(/status\s+no-context/);
+  });
+
+  it("ios-sim preview-current renders the currently selected simulator preview", () => {
+    const plan = expectExecutePlan(buildCliPlan([
+      "ios-sim",
+      "preview-current",
+      "--source",
+      "Views/HomeView.swift",
+      "--line",
+      "44",
+      "--label",
+      "Settings",
+      "--component-id",
+      "settings-row",
+      "--tab",
+      "tab-1",
+      "--timeout",
+      "30",
+      "--project-root",
+      "/tmp/app",
+    ]));
+    expect(plan.steps[0]?.params).toMatchObject({
+      arguments: {
+        domain: "ios_simulator",
+        action: "renderCurrentPreview",
+        args: {
+          projectRoot: "/tmp/app",
+          sourceFile: "Views/HomeView.swift",
+          sourceLine: 44,
+          elementLabel: "Settings",
+          componentId: "settings-row",
+          tabIdentifier: "tab-1",
+          timeoutSec: 30,
+        },
+      },
+    });
   });
 
   it("ios-sim preview-render requires a source file and forwards render options", () => {

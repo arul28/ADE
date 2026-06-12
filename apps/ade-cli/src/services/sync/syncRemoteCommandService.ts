@@ -2380,12 +2380,9 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
       nextCursor: hasMore ? String(oldestReturnedIndex) : null,
     };
   });
-  // Byte-offset transcript pagination for chat event envelopes (scroll-back
-  // beyond the hydrated tail). Mirrors the desktop `chat.getChatEventHistoryPage`
-  // action; cursor protocol lives on agentChatService.getChatEventHistoryPage.
-  register("agentChat.getEventHistoryPage", { viewerAllowed: true }, async (payload) => {
+  const getChatEventHistoryPage = async (payload: Record<string, unknown>) => {
     const agentChatService = requireService(args.agentChatService, "Agent chat service not available.");
-    const sessionId = requireString(payload.sessionId, "agentChat.getEventHistoryPage requires sessionId.");
+    const sessionId = requireString(payload.sessionId, "chat.getChatEventHistoryPage requires sessionId.");
     const beforeOffset = typeof payload.beforeOffset === "number" && Number.isFinite(payload.beforeOffset)
       ? payload.beforeOffset
       : 0;
@@ -2396,7 +2393,13 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
       beforeOffset,
       ...(maxBytes != null ? { maxBytes } : {}),
     });
-  });
+  };
+  // Byte-offset transcript pagination for chat event envelopes (scroll-back
+  // beyond the hydrated tail). The canonical action mirrors the desktop/TUI
+  // ADE action surface; the legacy agentChat.* name remains for older mobile
+  // clients that learned the first sync-only spelling.
+  register("chat.getChatEventHistoryPage", { viewerAllowed: true }, getChatEventHistoryPage);
+  register("agentChat.getEventHistoryPage", { viewerAllowed: true }, getChatEventHistoryPage);
   register("chat.create", { viewerAllowed: true, queueable: true }, async (payload) => {
     const agentChatService = requireService(args.agentChatService, "Agent chat service not available.");
     const parsed = parseAgentChatCreateArgs(payload);
@@ -2956,14 +2959,21 @@ function registerPrAndDeeplinkRemoteCommands({ args, register }: RemoteCommandRe
     if (prId) refreshArgs = { prId };
     else if (prIds.length > 0) refreshArgs = { prIds };
     await args.prService.refresh(refreshArgs);
-    const prs = await args.prService.listAll();
+    const allPrs = await args.prService.listAll();
+    const requestedPrIds = new Set(prId ? [prId] : prIds);
+    const prs = requestedPrIds.size > 0 ? allPrs.filter((pr) => requestedPrIds.has(pr.id)) : allPrs;
     let refreshedCount = prs.length;
     if (prId) refreshedCount = 1;
     else if (prIds.length > 0) refreshedCount = prIds.length;
+    const snapshots = prId
+      ? args.prService.listSnapshots({ prId }).filter((snapshot) => requestedPrIds.has(snapshot.prId))
+      : requestedPrIds.size > 0
+        ? args.prService.listSnapshots().filter((snapshot) => requestedPrIds.has(snapshot.prId))
+        : args.prService.listSnapshots();
     return {
       refreshedCount,
       prs,
-      snapshots: args.prService.listSnapshots(),
+      snapshots,
     };
   });
   // iOS "Send to your Mac" deeplink bounce. Mobile cannot natively open a

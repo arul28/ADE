@@ -1056,7 +1056,7 @@ final class DatabaseService {
     }
   }
 
-  func replacePullRequestHydration(_ payload: PullRequestRefreshPayload) throws {
+  func replacePullRequestHydration(_ payload: PullRequestRefreshPayload, pruneStale: Bool = true) throws {
     guard db != nil else { return }
     guard let projectId = currentProjectId() else {
       throw sqliteError(SyncHydrationMessaging.waitingForProjectData)
@@ -1067,14 +1067,43 @@ final class DatabaseService {
 
     try exec("begin")
     do {
-      _ = try execute("""
-        delete from pull_request_snapshots
-         where pr_id in (select id from pull_requests where project_id = ?)
-      """) { statement in
-        try bindText(projectId, to: statement, index: 1)
+      try exec("pragma defer_foreign_keys = on")
+      let incomingLaneIds = Array(Set(payload.prs.map(\.laneId))).sorted()
+      let availableLaneIds: Set<String>
+      if incomingLaneIds.isEmpty {
+        availableLaneIds = []
+      } else {
+        let placeholders = Array(repeating: "?", count: incomingLaneIds.count).joined(separator: ", ")
+        availableLaneIds = Set(query("""
+          select id
+            from lanes
+           where project_id = ?
+             and id in (\(placeholders))
+        """, bind: { [self] statement in
+          try self.bindText(projectId, to: statement, index: 1)
+          for (index, laneId) in incomingLaneIds.enumerated() {
+            try self.bindText(laneId, to: statement, index: Int32(index + 2))
+          }
+        }) { statement in
+          stringValue(statement, index: 0) ?? ""
+        })
+      }
+      let hydratablePrs = payload.prs.filter { availableLaneIds.contains($0.laneId) }
+      let hydratablePrIds = Set(hydratablePrs.map(\.id))
+
+      if !hydratablePrIds.isEmpty {
+        let placeholders = Array(repeating: "?", count: hydratablePrIds.count).joined(separator: ", ")
+        _ = try execute("""
+          delete from pull_request_snapshots
+           where pr_id in (\(placeholders))
+        """) { statement in
+          for (index, prId) in hydratablePrIds.sorted().enumerated() {
+            try bindText(prId, to: statement, index: Int32(index + 1))
+          }
+        }
       }
 
-      for pr in payload.prs {
+      for pr in hydratablePrs {
         _ = try execute("""
           insert into pull_requests(
             id, project_id, lane_id, repo_owner, repo_name, github_pr_number, github_url, github_node_id,
@@ -1132,6 +1161,7 @@ final class DatabaseService {
       }
 
       for snapshot in payload.snapshots {
+        guard hydratablePrIds.contains(snapshot.prId) else { continue }
         _ = try execute("""
           insert into pull_request_snapshots(
             pr_id, detail_json, status_json, checks_json, reviews_json, comments_json, files_json, commits_json, updated_at
@@ -1158,7 +1188,9 @@ final class DatabaseService {
         }
       }
 
-      try deleteStalePullRequestRows(projectId: projectId, keeping: payload.prs.map(\.id))
+      if pruneStale {
+        try deleteStalePullRequestRows(projectId: projectId, keeping: payload.prs.map(\.id))
+      }
 
       try exec("commit")
       notifyDidChange()
@@ -2580,6 +2612,7 @@ final class DatabaseService {
 
   private func deleteStalePullRequestRows(projectId: String, keeping prIds: [String]) throws {
     let childTables = [
+      "pull_request_snapshots",
       "pull_request_ai_summaries",
       "pr_group_members",
       "pr_issue_inventory",

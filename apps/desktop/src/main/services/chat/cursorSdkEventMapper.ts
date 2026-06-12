@@ -15,6 +15,39 @@ function readString(value: unknown): string | null {
   return text.length ? text : null;
 }
 
+function summarizeUnknown(value: unknown): string | null {
+  const direct = readString(value);
+  if (direct) return direct;
+  const record = asRecord(value);
+  if (record) {
+    const nested =
+      readString(record.message)
+      ?? readString(record.detail)
+      ?? readString(record.error)
+      ?? readString(record.reason)
+      ?? readString(record.description);
+    if (nested) return nested;
+  }
+  if (value == null) return null;
+  return typeof value === "number" || typeof value === "boolean" ? String(value) : null;
+}
+
+function readStatusDetail(record: SdkMessageRecord): string | null {
+  for (const value of [
+    record.message,
+    record.detail,
+    record.error,
+    record.reason,
+    record.description,
+    asRecord(record.data)?.message,
+    asRecord(record.data)?.error,
+  ]) {
+    const text = summarizeUnknown(value)?.trim();
+    if (text) return text;
+  }
+  return null;
+}
+
 function readNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
@@ -242,7 +275,7 @@ export function mapCursorSdkMessageToChatEvents(
     }
     case "status": {
       const statusText = readString(record.status);
-      const detail = readString(record.message);
+      const detail = readStatusDetail(record);
       if (runtime === "cloud") {
         const cloudStatus = normalizeCloudStatus(statusText);
         if (!cloudStatus) {

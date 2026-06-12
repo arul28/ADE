@@ -362,24 +362,10 @@ enum ADEMotion {
 }
 
 enum ADEUIKitAppearance {
+  /// Intentionally empty — ADE uses the system `TabView` tab bar so iOS 26
+  /// Liquid Glass stays native. Do not override `UITabBar.appearance()` here.
   @MainActor
-  static func configureTabBar() {
-    let appearance = UITabBarAppearance()
-    appearance.configureWithOpaqueBackground()
-    appearance.backgroundEffect = nil
-    appearance.backgroundColor = UIColor { traits in
-      traits.userInterfaceStyle == .dark ? hex(0x16141e) : hex(0xfaf8f5)
-    }
-    appearance.shadowColor = UIColor { traits in
-      traits.userInterfaceStyle == .dark
-        ? hex(0xffffff, alpha: 0.10)
-        : hex(0x1a1a1e, alpha: 0.10)
-    }
-
-    let tabBar = UITabBar.appearance()
-    tabBar.standardAppearance = appearance
-    tabBar.scrollEdgeAppearance = appearance
-  }
+  static func configureTabBar() {}
 }
 
 final class ADEImageCache {
@@ -1129,8 +1115,6 @@ private struct ADENavigationGlassModifier: ViewModifier {
     content
       .toolbarBackground(.clear, for: .navigationBar)
       .toolbarBackgroundVisibility(.visible, for: .navigationBar)
-      .toolbarBackground(ADEColor.surfaceBackground.opacity(0.96), for: .tabBar)
-      .toolbarBackgroundVisibility(.visible, for: .tabBar)
   }
 }
 

@@ -270,6 +270,19 @@ export type IosSimulatorRenderPreviewResult = {
   error: string | null;
 };
 
+export type IosSimulatorRenderCurrentPreviewArgs = IosSimulatorListPreviewsArgs & {
+  tabIdentifier?: string | null;
+  timeoutSec?: number | null;
+};
+
+export type IosSimulatorRenderCurrentPreviewResult = {
+  ok: boolean;
+  match: IosSimulatorPreviewMatch;
+  target: IosSimulatorPreviewTarget | null;
+  render: IosSimulatorRenderPreviewResult | null;
+  error: string | null;
+};
+
 export type IosSimulatorOpenPreviewWorkspaceArgs = {
   projectRoot?: string | null;
 };

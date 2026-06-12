@@ -791,6 +791,26 @@ const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
     --timeout <sec>        Render timeout, 5-240 seconds; default 120.
     --project-root <path>  ADE project root.
 `,
+  "preview-current": `${ADE_BANNER}
+  iOS Simulator: preview-current
+
+  Resolves and renders the Preview Lab target for the current simulator
+  selection. Run "select" first, or pass --source/--line explicitly.
+  Aliases: current-preview, preview-open-current, open-current-preview.
+
+    $ ade --socket ios-sim select --x 120 --y 420 --text
+    $ ade --socket ios-sim preview-current --text
+    $ ade --socket ios-sim preview-current --source apps/ios/ADE/Views/Home.swift --line 42 --text
+
+  Flags:
+    --source, --file <p>   Optional Swift source file; defaults to last selected element.
+    --line <n>             Optional source line; defaults to last selected element.
+    --label <text>         Visible element label used for a suggested preview title.
+    --component-id <id>    ADEInspector component id used for a suggested preview.
+    --tab, --tab-identifier <id> Xcode window tab from preview-status.
+    --timeout <sec>        Render timeout, 5-240 seconds; default 120.
+    --project-root <path>  ADE project root.
+`,
   "preview-open": `${ADE_BANNER}
   iOS Simulator: preview-open
 
@@ -917,6 +937,10 @@ const IOS_SIMULATOR_HELP_ALIASES: Record<string, string> = {
   "preview-workspace": "preview-ensure",
   "render-preview": "preview-render",
   preview: "preview-render",
+  "current-preview": "preview-current",
+  "preview-open-current": "preview-current",
+  "open-current-preview": "preview-current",
+  "render-current-preview": "preview-current",
   "open-preview-workspace": "preview-open",
   "open-xcode": "preview-open",
   "start-stream": "stream-start",
@@ -1387,6 +1411,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade ios-sim previews --source <file> --text  List nearby #Preview definitions
     $ ade ios-sim preview-match --source <file>    Resolve best Preview Lab match
     $ ade ios-sim preview-ensure --text            Open/wait for Xcode Preview Lab
+    $ ade ios-sim preview-current --text           Render preview for the selected simulator UI
     $ ade ios-sim preview-render --source <file>   Render a SwiftUI preview through Xcode MCP
 
   Live view:
@@ -7031,6 +7056,34 @@ function buildIosSimulatorPlan(args: string[]): CliPlan {
     };
   }
   if (
+    sub === "preview-current" ||
+    sub === "current-preview" ||
+    sub === "preview-open-current" ||
+    sub === "open-current-preview" ||
+    sub === "render-current-preview"
+  ) {
+    return {
+      kind: "execute",
+      label: "iOS simulator current preview render",
+      steps: [
+        actionStep(
+          "result",
+          "ios_simulator",
+          "renderCurrentPreview",
+          collectGenericObjectArgs(args, {
+            projectRoot: readValue(args, ["--project-root", "--root"]),
+            sourceFile: readValue(args, ["--source", "--file"]),
+            sourceLine: readNumberOption(args, ["--line"]),
+            elementLabel: readValue(args, ["--label"]),
+            componentId: readValue(args, ["--component-id", "--component"]),
+            tabIdentifier: readValue(args, ["--tab", "--tab-identifier"]),
+            timeoutSec: readNumberOption(args, ["--timeout"], 120),
+          }),
+        ),
+      ],
+    };
+  }
+  if (
     sub === "preview-open" ||
     sub === "open-preview-workspace" ||
     sub === "open-xcode"
@@ -12621,6 +12674,22 @@ function shouldRepairMachineRuntimeServiceBeforeSpawn(
     && !isEphemeralRuntimeSocketPath(socketPath);
 }
 
+export function shouldBlockManualMachineRuntimeSpawn(
+  socketPath: string,
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  return env.ADE_DISABLE_RUNTIME_SERVICE_INSTALL === "1"
+    && !socketPath.startsWith("tcp://")
+    && !isAdeRuntimeNamedPipePath(socketPath)
+    && !isEphemeralRuntimeSocketPath(socketPath);
+}
+
+function manualMachineRuntimeSpawnBlockedError(socketPath: string): Error {
+  return new Error(
+    `ADE runtime is unavailable at ${socketPath}, and ADE_DISABLE_RUNTIME_SERVICE_INSTALL=1 forbids starting a manual replacement for this service-managed socket.`,
+  );
+}
+
 async function repairMachineRuntimeServiceConnection(args: {
   socketPath: string;
   options: GlobalOptions;
@@ -12771,6 +12840,10 @@ async function connectMachineRuntimeDaemon(
         client.close();
         throw selfShutdownBlock;
       }
+      if (shouldBlockManualMachineRuntimeSpawn(socketPath)) {
+        client.close();
+        throw manualMachineRuntimeSpawnBlockedError(socketPath);
+      }
       await shutdownMachineRuntimeDaemon(client);
       const repaired = await repairServiceConnection();
       if (repaired) return repaired;
@@ -12816,6 +12889,9 @@ async function connectMachineRuntimeDaemon(
     if (!allowSpawn) throw firstError;
     const repaired = await repairServiceConnection();
     if (repaired) return repaired;
+    if (shouldBlockManualMachineRuntimeSpawn(socketPath)) {
+      throw manualMachineRuntimeSpawnBlockedError(socketPath);
+    }
     const spawned = await spawnMachineRuntimeDaemon(socketPath, options);
     if (!spawned) throw firstError;
     try {
@@ -13462,6 +13538,15 @@ async function runServe(
       disposeScopesOnDispose: false,
       onShutdown: finish,
     });
+  const startSyncHost = () => (preferredSyncProjectId
+    ? scopeRegistry.switchSyncHost(preferredSyncProjectId)
+    : scopeRegistry.resolveActiveSyncHost());
+  const disposeServeResources = async () => {
+    await scopeRegistry.disposeAll();
+    if (sharedSyncListener) {
+      await sharedSyncListener.close().catch(() => {});
+    }
+  };
 
   const listen = async (
     server: net.Server,
@@ -13486,6 +13571,38 @@ async function runServe(
     });
   };
 
+  if (syncEnabled) {
+    try {
+      const [{ runSyncHostStartupLoop }, { getRuntimeServiceMainPid }] = await Promise.all([
+        import("./services/sync/syncHostStartupLoop"),
+        import("./serviceManager"),
+      ]);
+      await runSyncHostStartupLoop({
+        startSyncHost,
+        isDone: () => done,
+        log: (message) => process.stderr.write(`${message}\n`),
+        getServiceMainPid: getRuntimeServiceMainPid,
+      });
+    } catch (error: unknown) {
+      // Cross-channel conflict (another build's live brain owns mobile sync):
+      // real builds never run sync-less, so fail before publishing ade.sock.
+      const { SyncHostSingletonConflictError } = await import("./services/sync/syncHostSingleton");
+      const message = error instanceof Error ? error.message : String(error);
+      if (error instanceof SyncHostSingletonConflictError) {
+        await disposeServeResources();
+        throw new CliExecutionError("ADE brain refusing to run without mobile sync.", {
+          cause: message,
+          socketPath,
+          nextAction:
+            "Stop the other ADE brain that owns mobile sync, then start this build again.",
+        });
+      }
+      process.stderr.write(`ADE brain sync host startup loop failed: ${message}\n`);
+      await disposeServeResources();
+      throw error;
+    }
+  }
+
   fs.mkdirSync(layout.adeDir, { recursive: true, mode: 0o700 });
   if (!isAdeRuntimeNamedPipePath(socketPath)) {
     fs.mkdirSync(path.dirname(socketPath), { recursive: true, mode: 0o700 });
@@ -13509,37 +13626,6 @@ async function runServe(
     states.push(tcpState);
     await listen(tcpState.server, { port, host: "127.0.0.1" });
     tcpUrl = `tcp://127.0.0.1:${port}`;
-  }
-
-  if (syncEnabled) {
-    const startSyncHost = () => (preferredSyncProjectId
-      ? scopeRegistry.switchSyncHost(preferredSyncProjectId)
-      : scopeRegistry.resolveActiveSyncHost());
-    void (async () => {
-      const [{ runSyncHostStartupLoop }, { getRuntimeServiceMainPid }] = await Promise.all([
-        import("./services/sync/syncHostStartupLoop"),
-        import("./serviceManager"),
-      ]);
-      await runSyncHostStartupLoop({
-        startSyncHost,
-        isDone: () => done,
-        log: (message) => process.stderr.write(`${message}\n`),
-        getServiceMainPid: getRuntimeServiceMainPid,
-      });
-    })().catch(async (error: unknown) => {
-      // Cross-channel conflict (another build's live brain owns mobile sync):
-      // real builds never run sync-less, so fail the brain instead of coming
-      // up half-alive. The message carries the exact quit command.
-      const { SyncHostSingletonConflictError } = await import("./services/sync/syncHostSingleton");
-      const message = error instanceof Error ? error.message : String(error);
-      if (error instanceof SyncHostSingletonConflictError) {
-        process.stderr.write(`ADE brain refusing to run without mobile sync.\n${message}\n`);
-        process.exitCode = 1;
-        finish();
-        return;
-      }
-      process.stderr.write(`ADE brain sync host startup loop failed: ${message}\n`);
-    });
   }
 
   process.stderr.write(
@@ -13575,12 +13661,7 @@ async function runServe(
   for (const state of states) {
     stopHeadlessRpcServer(state);
   }
-  await scopeRegistry.disposeAll();
-  // The brain is exiting: the shared listener (and any peers the last host
-  // service handed back to it) must close now — no successor will adopt them.
-  if (sharedSyncListener) {
-    await sharedSyncListener.close().catch(() => {});
-  }
+  await disposeServeResources();
   if (!isAdeRuntimeNamedPipePath(socketPath)) {
     try {
       fs.unlinkSync(socketPath);
@@ -14560,6 +14641,36 @@ function formatIosSimPreview(value: unknown): string {
     );
   }
   const record = isRecord(value) ? value : {};
+  if (isRecord(record.match)) {
+    const match = record.match;
+    const target = isRecord(record.target)
+      ? record.target
+      : isRecord(match.target)
+        ? match.target
+        : null;
+    const render = isRecord(record.render) ? record.render : null;
+    return renderKeyValues("ADE iOS Preview current", [
+      ["ok", record.ok],
+      ["status", match.status],
+      ["confidence", match.confidence],
+      [
+        "selected",
+        match.selectedSourceFile
+          ? `${match.selectedSourceFile}${match.selectedSourceLine ? `:${match.selectedSourceLine}` : ""}`
+          : null,
+      ],
+      [
+        "target",
+        target
+          ? `${target.title ?? "Preview"} · ${target.sourceFilePath ?? target.sourceFile ?? "unknown"}`
+          : null,
+      ],
+      ["snapshot", render?.previewSnapshotPath],
+      ["rendered", render?.renderedAt],
+      ["reason", match.reason],
+      ["error", record.error ?? render?.error],
+    ]);
+  }
   if (typeof record.status === "string" && "confidence" in record) {
     const target = isRecord(record.target) ? record.target : null;
     return renderKeyValues("ADE iOS Preview match", [
@@ -15556,6 +15667,7 @@ function inferFormatter(
     label === "ios simulator previews" ||
     label === "ios simulator preview match" ||
     label === "ios simulator preview workspace" ||
+    label === "ios simulator current preview render" ||
     label === "ios simulator preview render" ||
     label === "ios simulator preview open"
   )

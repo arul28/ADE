@@ -576,6 +576,8 @@ import type {
   IosSimulatorPreviewCapability,
   IosSimulatorPreviewMatch,
   IosSimulatorPreviewTarget,
+  IosSimulatorRenderCurrentPreviewArgs,
+  IosSimulatorRenderCurrentPreviewResult,
   IosSimulatorRenderPreviewArgs,
   IosSimulatorRenderPreviewResult,
   IosScreenSnapshot,
@@ -5707,6 +5709,15 @@ contextBridge.exposeInMainWorld("ade", {
         "ensurePreviewWorkspace",
         { args },
         () => ipcRenderer.invoke(IPC.iosSimulatorEnsurePreviewWorkspace, args),
+      ),
+    renderCurrentPreview: async (
+      args: IosSimulatorRenderCurrentPreviewArgs = {},
+    ): Promise<IosSimulatorRenderCurrentPreviewResult> =>
+      callProjectRuntimeActionOr(
+        "ios_simulator",
+        "renderCurrentPreview",
+        { args },
+        () => ipcRenderer.invoke(IPC.iosSimulatorRenderCurrentPreview, args),
       ),
     renderPreview: async (
       args: IosSimulatorRenderPreviewArgs,

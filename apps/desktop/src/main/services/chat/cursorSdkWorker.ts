@@ -41,6 +41,9 @@ const hookWaiters = new Map<string, (decision: CursorSdkHookDecision) => void>()
 const cloudRuns = new Map<string, { run: SdkRun; agentId: string }>();
 let cloudModelsCache: { at: number; keyHash: string; models: SDKModel[] } | null = null;
 const CLOUD_MODEL_VALIDATION_TTL_MS = 120_000;
+const activeRequests = new Map<string, CursorSdkWorkerRequest["type"]>();
+const reportedRequests = new Set<string>();
+let unhandledExitScheduled = false;
 
 function post(message: CursorSdkWorkerResponse): void {
   if (process.send) {
@@ -122,6 +125,18 @@ function isAgentBusyError(error: unknown): boolean {
     || message.includes("active run in progress");
 }
 
+function isCursorSdkBackoffError(error: unknown): boolean {
+  const message = errorMessage(error).toLowerCase();
+  return message.includes("enhance_your_calm")
+    || message.includes("enhance your calm")
+    || message.includes("too many requests")
+    || message.includes("rate limit")
+    || message.includes("rate_limited")
+    || message.includes("resource exhausted")
+    || message.includes("slow down")
+    || message.includes("back off");
+}
+
 function classifyWorkerError(error: unknown): { error: string; errorCode?: string } {
   if (isAgentBusyError(error)) {
     const detail = errorMessage(error);
@@ -131,6 +146,15 @@ function classifyWorkerError(error: unknown): { error: string; errorCode?: strin
         ? `${busyMessage} (${detail})`
         : busyMessage,
       errorCode: "agent_busy",
+    };
+  }
+  if (isCursorSdkBackoffError(error)) {
+    const detail = errorMessage(error);
+    return {
+      error: detail
+        ? `Cursor rate limited this request: ${detail}`
+        : "Cursor rate limited this request. Wait a moment and retry.",
+      errorCode: "rate_limited",
     };
   }
   const code = errorCode(error);
@@ -806,6 +830,36 @@ async function dispatch(req: CursorSdkWorkerRequest): Promise<unknown> {
   }
 }
 
+function reportRequestFailure(requestId: string, error: unknown): void {
+  if (reportedRequests.has(requestId)) return;
+  reportedRequests.add(requestId);
+  post({ type: "response", requestId, ok: false, ...classifyWorkerError(error) });
+}
+
+function scheduleExitAfterUnhandled(): void {
+  if (unhandledExitScheduled) return;
+  unhandledExitScheduled = true;
+  setTimeout(() => {
+    void dispose().finally(() => process.exit(1));
+  }, 20).unref();
+}
+
+function handleUnhandledWorkerError(error: unknown, origin: "unhandledRejection" | "uncaughtException"): void {
+  post({
+    type: "log",
+    level: "warn",
+    message: "Cursor SDK worker caught an unhandled SDK failure.",
+    detail: { origin, error: errorMessage(error) },
+  });
+  const activeRequest = Array.from(activeRequests.entries())
+    .reverse()
+    .find(([, type]) => type !== "hook_response" && type !== "dispose");
+  if (activeRequest) {
+    reportRequestFailure(activeRequest[0], error);
+  }
+  scheduleExitAfterUnhandled();
+}
+
 process.on("message", (raw: unknown) => {
   const req = raw as CursorSdkWorkerRequest;
   if (!req || typeof req !== "object" || !("type" in req)) return;
@@ -814,13 +868,27 @@ process.on("message", (raw: unknown) => {
       await dispatch(req);
       return;
     }
+    activeRequests.set(req.requestId, req.type);
     try {
       const result = await dispatch(req);
-      post({ type: "response", requestId: req.requestId, ok: true, result });
+      if (!reportedRequests.has(req.requestId)) {
+        post({ type: "response", requestId: req.requestId, ok: true, result });
+      }
     } catch (error) {
-      post({ type: "response", requestId: req.requestId, ok: false, ...classifyWorkerError(error) });
+      reportRequestFailure(req.requestId, error);
+    } finally {
+      activeRequests.delete(req.requestId);
+      reportedRequests.delete(req.requestId);
     }
   })();
+});
+
+process.on("unhandledRejection", (error) => {
+  handleUnhandledWorkerError(error, "unhandledRejection");
+});
+
+process.on("uncaughtException", (error) => {
+  handleUnhandledWorkerError(error, "uncaughtException");
 });
 
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
