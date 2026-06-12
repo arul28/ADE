@@ -22,7 +22,7 @@
     "dist:mac:dir": "npm run materialize:runtime-resources && npm run validate:runtime-resources && npm run build && electron-builder --dir --mac --publish never -c.mac.identity=null -c.mac.notarize=false",
     "dist:mac:signed": "node ./scripts/require-macos-release-secrets.cjs && npm run materialize:runtime-resources && npm run validate:runtime-resources && npm run build && electron-builder --mac --publish never",
     "prepare:mac:universal": "node ./scripts/prepare-universal-mac-inputs.mjs",
-    "dist:mac:universal:signed": "node ./scripts/require-macos-release-secrets.cjs && npm run materialize:runtime-resources && npm run validate:runtime-resources && npm run build && electron-builder --mac --universal --dir --publish never && node ./scripts/resign-mac-universal-app.mjs && electron-builder --mac dmg zip --prepackaged release/mac-universal/ADE.app --publish never",
+    "dist:mac:universal:signed": "node ./scripts/require-macos-release-secrets.cjs && npm run materialize:runtime-resources && npm run validate:runtime-resources && npm run build && electron-builder --mac --universal --dir --publish never && node ./scripts/resign-mac-universal-app.mjs && electron-builder --mac dmg zip --universal --prepackaged release/mac-universal/ADE.app --publish never",
     "dist:mac:universal:signed:zip": "node ./scripts/require-macos-release-secrets.cjs && npm run materialize:runtime-resources && npm run validate:runtime-resources && npm run build && electron-builder --mac zip --universal --publish never",
     "notarize:mac:dmg": "node ./scripts/notarize-mac-dmg.mjs",
     "validate:mac:artifacts": "node ./scripts/validate-mac-artifacts.mjs",
