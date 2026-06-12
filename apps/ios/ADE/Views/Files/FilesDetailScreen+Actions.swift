@@ -22,7 +22,8 @@ extension FilesDetailScreen {
   func load(refreshDiff: Bool = false, preservesVisibleHistory: Bool = false) async {
     var cachedImageBlob: SyncFileBlob?
 
-    if isImagePreviewable, let cachedData = ADEImageCache.shared.cachedData(for: imageCacheKey) {
+    if filesIsImagePreviewable(path: relativePath, blob: blob ?? SyncFileBlob(path: relativePath, size: 0, encoding: "utf8", isBinary: true, content: "")),
+       let cachedData = ADEImageCache.shared.cachedData(for: imageCacheKey) {
       let cachedBlob = SyncFileBlob(
         path: relativePath,
         size: cachedData.count,
@@ -45,7 +46,7 @@ extension FilesDetailScreen {
     do {
       let loaded = try await syncService.readFile(workspaceId: workspace.id, path: relativePath)
       blob = loaded
-      if loaded.isBinary, isImagePreviewable, let data = imageData {
+      if filesIsImagePreviewable(path: relativePath, blob: loaded), let data = filesImageData(from: loaded) {
         ADEImageCache.shared.store(data, for: imageCacheKey)
       }
       await loadHistoryAndMetadata(from: loaded, preservesVisibleHistory: preservesVisibleHistory)

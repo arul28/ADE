@@ -1,7 +1,9 @@
 import SwiftUI
+import UIKit
 
 struct LaneDetailScreen: View {
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @Environment(\.dismiss) private var dismiss
   @EnvironmentObject var syncService: SyncService
 
   let laneId: String
@@ -23,7 +25,6 @@ struct LaneDetailScreen: View {
   @State var stashMessage = ""
   @State var pendingFileConfirmation: LaneFileConfirmation?
   @State private var filesWorkspaceId: String?
-  @State var showCommitSheet = false
   @State var rebaseSuggestionDismissed = false
   @State var showCommitDiffPicker = false
   @State var commitDiffFiles: [String] = []
@@ -32,6 +33,9 @@ struct LaneDetailScreen: View {
   @State var cachedCommitDiffFilesBySha: [String: [String]] = [:]
   @State var pendingGitConfirmation: LaneGitConfirmation?
   @State private var lastLaneDetailLocalReload = Date.distantPast
+  @State private var copiedLinkNotice: String?
+  @State private var showRescueSheet = false
+  @State private var rescueLaneName = ""
 
   init(
     laneId: String,
@@ -64,51 +68,39 @@ struct LaneDetailScreen: View {
   }
 
   var body: some View {
-    ScrollView {
-      LazyVStack(spacing: 14) {
-        if let busyAction {
-          HStack(spacing: 10) {
-            ProgressView()
-              .tint(ADEColor.accent)
-            Text(busyAction.capitalized)
-              .font(.subheadline)
-              .foregroundStyle(ADEColor.textSecondary)
-            Spacer()
+    Group {
+      if let detail {
+        VStack(spacing: 10) {
+          detailBannerStack
+          if let conflictState = detail.conflictState, conflictState.inProgress {
+            conflictSection(conflictState: conflictState)
+              .padding(.horizontal, 16)
           }
-          .adeGlassCard(cornerRadius: 12, padding: 12)
+          gitActionsPane(detail: detail)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
-
-        if let errorMessage {
-          HStack(spacing: 10) {
-            Image(systemName: "exclamationmark.triangle.fill")
-              .foregroundStyle(ADEColor.danger)
-            Text(errorMessage)
-              .font(.footnote)
-              .foregroundStyle(ADEColor.danger)
-            Spacer()
+        .padding(.bottom, 8)
+      } else {
+        ScrollView {
+          VStack(spacing: 12) {
+            detailBannerStack
+            if let detailEmptyStatePresentation {
+              detailEmptyStateCard(detailEmptyStatePresentation)
+            }
           }
-          .adeGlassCard(cornerRadius: 12, padding: 12)
+          .padding(EdgeInsets(top: 4, leading: 16, bottom: 16, trailing: 16))
         }
-
-        rebaseBannerSection
-
-        detailHeader
-
-        if detail != nil {
-          gitSections
-        } else if let detailEmptyStatePresentation {
-          detailEmptyStateCard(detailEmptyStatePresentation)
-        }
+        .scrollBounceBehavior(.basedOnSize)
       }
-      .padding(EdgeInsets(top: 14, leading: 16, bottom: 14, trailing: 16))
     }
     .adeScreenBackground()
-    .adeNavigationGlass()
-    .scrollBounceBehavior(.basedOnSize)
-    .navigationTitle(detail?.lane.name ?? initialSnapshot.lane.name)
+    .navigationTitle("")
     .navigationBarTitleDisplayMode(.inline)
-    .toolbar {
-      ADERootToolbarLeadingItems()
+    .toolbar(.hidden, for: .navigationBar)
+    .toolbar(.hidden, for: .tabBar)
+    .adeRootTabBarHidden()
+    .safeAreaInset(edge: .top, spacing: 0) {
+      laneDetailTopBar
     }
     .adeNavigationZoomTransition(id: transitionNamespace == nil ? nil : "lane-container-\(laneId)", in: transitionNamespace)
     .task {
@@ -166,82 +158,6 @@ struct LaneDetailScreen: View {
     .sheet(isPresented: $showCommitDiffPicker) {
       commitDiffPickerSheet
     }
-    .sheet(isPresented: $showCommitSheet) {
-      LaneCommitSheet(
-        commitMessage: $commitMessage,
-        amendCommit: $amendCommit,
-        stagedCount: detail?.diffChanges?.staged.count ?? 0,
-        unstagedCount: detail?.diffChanges?.unstaged.count ?? 0,
-        canRunLiveActions: canRunLiveActions,
-        stagedFiles: detail?.diffChanges?.staged ?? [],
-        unstagedFiles: detail?.diffChanges?.unstaged ?? [],
-        onGenerateMessage: {
-          let shouldAmend = amendCommit
-          return try await syncService.generateCommitMessage(laneId: laneId, amend: shouldAmend)
-        },
-        onCommit: {
-          Task {
-            await performAction("commit") {
-              try await syncService.commitLane(laneId: laneId, message: commitMessage, amend: amendCommit)
-            }
-            if errorMessage == nil {
-              commitMessage = ""
-              amendCommit = false
-              showCommitSheet = false
-            }
-          }
-        },
-        onDismiss: {
-          showCommitSheet = false
-        },
-        onStageFile: { file in
-          Task { await performAction("stage file") { try await syncService.stageFile(laneId: laneId, path: file.path) } }
-        },
-        onUnstageFile: { file in
-          Task { await performAction("unstage file") { try await syncService.unstageFile(laneId: laneId, path: file.path) } }
-        },
-        onDiscardFile: { file in
-          Task { await performConfirmedFileAction(.discardUnstaged(file)) }
-        },
-        onRestoreStaged: { file in
-          Task { await performConfirmedFileAction(.restoreStaged(file)) }
-        },
-        onStageAll: {
-          let paths = (detail?.diffChanges?.unstaged ?? []).map(\.path)
-          guard !paths.isEmpty else { return }
-          Task { await performAction("stage all") { try await syncService.stageAll(laneId: laneId, paths: paths) } }
-        },
-        onUnstageAll: {
-          let paths = (detail?.diffChanges?.staged ?? []).map(\.path)
-          guard !paths.isEmpty else { return }
-          Task { await performAction("unstage all") { try await syncService.unstageAll(laneId: laneId, paths: paths) } }
-        },
-        onDiscardAllUnstaged: {
-          let files = detail?.diffChanges?.unstaged ?? []
-          guard !files.isEmpty else { return }
-          Task { await performConfirmedFileAction(.discardAllUnstaged(files)) }
-        },
-        onRestoreAllStaged: {
-          let files = detail?.diffChanges?.staged ?? []
-          guard !files.isEmpty else { return }
-          Task { await performConfirmedFileAction(.restoreAllStaged(files)) }
-        },
-        onOpenDiff: { file, isStaged in
-          selectedDiffRequest = LaneDiffRequest(
-            laneId: laneId,
-            path: file.path,
-            mode: isStaged ? "staged" : "unstaged",
-            compareRef: nil,
-            compareTo: nil,
-            title: (file.path as NSString).lastPathComponent
-          )
-        },
-        onOpenFiles: { file in
-          Task { await openFiles(path: file.path) }
-        }
-      )
-      .presentationDetents([.medium, .large])
-    }
     .sheet(isPresented: $showBranchPicker) {
       if let detail {
         LaneBranchPickerSheet(
@@ -251,61 +167,330 @@ struct LaneDetailScreen: View {
         )
       }
     }
+    .sheet(isPresented: $showRescueSheet) {
+      rescueLaneSheet
+    }
     .onDisappear {
       syncService.releaseLaneOpen(laneId: laneId)
     }
   }
 
   @ViewBuilder
-  var detailHeader: some View {
-    LaneDetailHeaderCard(
+  private var detailBannerStack: some View {
+    VStack(spacing: 8) {
+      if let busyAction {
+        busyBanner(busyAction)
+      }
+      if let errorMessage {
+        errorBanner(errorMessage)
+      }
+      if let copiedLinkNotice {
+        copiedBanner(copiedLinkNotice)
+      }
+      rebaseBannerSection
+    }
+    .padding(.horizontal, 16)
+    .padding(.top, 4)
+  }
+
+  private var laneDetailTopBar: some View {
+    HStack(spacing: 0) {
+      Button {
+        dismiss()
+      } label: {
+        Image(systemName: "chevron.left")
+          .font(.system(size: 15, weight: .semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+          .frame(width: 36, height: 32)
+      }
+      .buttonStyle(.plain)
+      .accessibilityLabel("Back to lanes")
+
+      Spacer(minLength: 0)
+
+      Menu {
+        Button {
+          copyLaneLink()
+        } label: {
+          Label("Copy ADE lane link", systemImage: "link")
+        }
+        Button {
+          copyBranchLink()
+        } label: {
+          Label("Copy branch link", systemImage: "arrow.triangle.branch")
+        }
+        Divider()
+        Button {
+          managePresented = true
+        } label: {
+          Label("Manage lane", systemImage: "slider.horizontal.3")
+        }
+      } label: {
+        Image(systemName: "ellipsis")
+          .font(.system(size: 16, weight: .semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+          .frame(width: 36, height: 32)
+      }
+      .buttonStyle(.plain)
+      .accessibilityLabel("Lane options")
+    }
+    .padding(.horizontal, 10)
+    .padding(.bottom, 2)
+    .background {
+      ADEColor.pageBackground.opacity(0.98)
+        .ignoresSafeArea(edges: .top)
+        .allowsHitTesting(false)
+    }
+  }
+
+  @ViewBuilder
+  private func gitActionsPane(detail: LaneDetailPayload) -> some View {
+    LaneDetailGitActionsPane(
       snapshot: currentSnapshot,
       detail: detail,
       linkedPullRequests: lanePullRequests,
-      transitionNamespace: transitionNamespace,
-      transitionLaneId: laneId,
       canRunLiveActions: canRunLiveActions,
-      onStackTapped: { showStackGraph = true },
-      onOpenLinkedPullRequest: { pr in openPullRequest(pr) },
-      onPush: {
-        Task { await performAction("push") { try await syncService.pushGit(laneId: laneId) } }
+      busyAction: busyAction,
+      commitMessage: $commitMessage,
+      amendCommit: $amendCommit,
+      stashMessage: $stashMessage,
+      onRefresh: {
+        Task { await loadDetail(refreshRemote: true) }
       },
-      onPull: {
-        Task { await performAction("pull rebase") { try await syncService.syncGit(laneId: laneId, mode: "rebase") } }
+      onCommit: {
+        Task {
+          await performAction("commit") {
+            try await syncService.commitLane(laneId: laneId, message: commitMessage, amend: amendCommit)
+          }
+          if errorMessage == nil {
+            commitMessage = ""
+            amendCommit = false
+          }
+        }
+      },
+      onGenerateMessage: {
+        try await syncService.generateCommitMessage(laneId: laneId, amend: amendCommit)
+      },
+      onPull: { mode in
+        Task { await performAction("pull \(mode)") { try await syncService.syncGit(laneId: laneId, mode: mode) } }
+      },
+      onPush: { force in
+        Task { await performAction(force ? "force push" : "push") { try await syncService.pushGit(laneId: laneId, forceWithLease: force) } }
       },
       onFetch: {
         Task { await performAction("fetch") { try await syncService.fetchGit(laneId: laneId) } }
       },
-      footer: {
-        if let detail {
-          // Compute whether there's any actual footer content before
-          // emitting the divider. `gitStatusBanner` only renders chips when
-          // there are unstaged/staged/stashed changes; the commit CTA only
-          // shows when the lane is dirty or has staged files. If neither
-          // produces content, drawing the divider leaves a stray hairline
-          // under the section header.
-          let unstagedCount = detail.diffChanges?.unstaged.count ?? 0
-          let stagedCount = detail.diffChanges?.staged.count ?? 0
-          let stashCount = detail.stashes.count
-          let hasStatusBanner = unstagedCount > 0 || stagedCount > 0 || stashCount > 0
-          let hasCommitCTA = detail.lane.status.dirty || stagedCount > 0
-          if hasStatusBanner || hasCommitCTA {
-            VStack(spacing: 10) {
-              Rectangle()
-                .fill(ADEColor.border.opacity(0.18))
-                .frame(height: 0.5)
-                .padding(.top, 2)
-              if hasStatusBanner {
-                gitStatusBanner(detail: detail)
-              }
-              if hasCommitCTA {
-                commitCTAButton(detail: detail)
-              }
-            }
+      onStageFile: { file in
+        Task { await performAction("stage file") { try await syncService.stageFile(laneId: laneId, path: file.path) } }
+      },
+      onUnstageFile: { file in
+        Task { await performAction("unstage file") { try await syncService.unstageFile(laneId: laneId, path: file.path) } }
+      },
+      onDiscardFile: { file in
+        Task { await performConfirmedFileAction(.discardUnstaged(file)) }
+      },
+      onRestoreStaged: { file in
+        Task { await performConfirmedFileAction(.restoreStaged(file)) }
+      },
+      onStageAll: {
+        let paths = (detail.diffChanges?.unstaged ?? []).map(\.path)
+        guard !paths.isEmpty else { return }
+        Task { await performAction("stage all") { try await syncService.stageAll(laneId: laneId, paths: paths) } }
+      },
+      onUnstageAll: {
+        let paths = (detail.diffChanges?.staged ?? []).map(\.path)
+        guard !paths.isEmpty else { return }
+        Task { await performAction("unstage all") { try await syncService.unstageAll(laneId: laneId, paths: paths) } }
+      },
+      onDiscardAllUnstaged: {
+        let files = detail.diffChanges?.unstaged ?? []
+        guard !files.isEmpty else { return }
+        Task { await performConfirmedFileAction(.discardAllUnstaged(files)) }
+      },
+      onRestoreAllStaged: {
+        let files = detail.diffChanges?.staged ?? []
+        guard !files.isEmpty else { return }
+        Task { await performConfirmedFileAction(.restoreAllStaged(files)) }
+      },
+      onOpenDiff: { file, staged in
+        selectedDiffRequest = LaneDiffRequest(
+          laneId: laneId,
+          path: file.path,
+          mode: staged ? "staged" : "unstaged",
+          compareRef: nil,
+          compareTo: nil,
+          title: (file.path as NSString).lastPathComponent
+        )
+      },
+      onOpenFiles: { file in
+        Task { await openFiles(path: file.path) }
+      },
+      onStashPush: { message in
+        Task {
+          await performAction("stash") {
+            try await syncService.stashPush(laneId: laneId, message: message, includeUntracked: true)
           }
         }
+      },
+      onStashApply: { ref in
+        Task { await performAction("stash apply") { try await syncService.stashApply(laneId: laneId, stashRef: ref) } }
+      },
+      onStashPop: { ref in
+        Task { await performAction("stash pop") { try await syncService.stashPop(laneId: laneId, stashRef: ref) } }
+      },
+      onStashDrop: { ref in
+        Task { await performAction("stash drop") { try await syncService.stashDrop(laneId: laneId, stashRef: ref) } }
+      },
+      onOpenCommitDiff: { commit in await openCommitDiffs(for: commit) },
+      onCopyCommitMessage: { commit in
+        do {
+          UIPasteboard.general.string = try await syncService.getCommitMessage(laneId: laneId, commitSha: commit.sha)
+          ADEHaptics.success()
+        } catch {
+          ADEHaptics.error()
+          errorMessage = error.localizedDescription
+        }
+      },
+      onRevertCommit: { commit in
+        Task { await performAction("revert commit") { try await syncService.revertCommit(laneId: laneId, commitSha: commit.sha) } }
+      },
+      onCherryPickCommit: { commit in
+        Task { await performAction("cherry pick") { try await syncService.cherryPickCommit(laneId: laneId, commitSha: commit.sha) } }
+      },
+      onSwitchBranch: { showBranchPicker = true },
+      onRebaseLane: { requestGitConfirmation(.rebaseLane) },
+      onRebaseDescendants: { requestGitConfirmation(.rebaseDescendants) },
+      onRebaseAndPush: { requestGitConfirmation(.rebaseAndPush) },
+      onForcePush: { requestGitConfirmation(.forcePush) },
+      onOpenLinkedPullRequest: { pr in openPullRequest(pr) },
+      onCreateLaneFromChanges: {
+        rescueLaneName = suggestedRescueLaneName
+        showRescueSheet = true
       }
     )
+    .padding(.horizontal, 16)
+  }
+
+  private var suggestedRescueLaneName: String {
+    let base = currentSnapshot.lane.name
+    return base.isEmpty ? "Rescue lane" : "\(base) changes"
+  }
+
+  @ViewBuilder
+  private var rescueLaneSheet: some View {
+    NavigationStack {
+      Form {
+        Section {
+          TextField("Lane name", text: $rescueLaneName)
+            .textInputAutocapitalization(.words)
+        } footer: {
+          Text("Moves unstaged changes into a new child lane on this stack.")
+            .font(.caption)
+        }
+      }
+      .navigationTitle("New lane")
+      .navigationBarTitleDisplayMode(.inline)
+      .toolbar {
+        ToolbarItem(placement: .cancellationAction) {
+          Button("Cancel") { showRescueSheet = false }
+        }
+        ToolbarItem(placement: .confirmationAction) {
+          Button("Create") {
+            Task { await createLaneFromUnstagedChanges() }
+          }
+          .disabled(rescueLaneName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        }
+      }
+    }
+    .presentationDetents([.medium])
+  }
+
+  @MainActor
+  private func createLaneFromUnstagedChanges() async {
+    let name = rescueLaneName.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !name.isEmpty else { return }
+    await performAction("create rescue lane", refreshRoot: true) {
+      _ = try await syncService.createFromUnstaged(sourceLaneId: laneId, name: name)
+    }
+    if errorMessage == nil {
+      showRescueSheet = false
+      rescueLaneName = ""
+    }
+  }
+
+  @MainActor
+  private func copyLaneLink() {
+    let url = LaneDeeplinkHelpers.laneLink(laneId: laneId)
+    UIPasteboard.general.string = url
+    ADEHaptics.success()
+    copiedLinkNotice = "Copied lane link"
+    Task {
+      try? await Task.sleep(for: .seconds(2))
+      if copiedLinkNotice == "Copied lane link" { copiedLinkNotice = nil }
+    }
+  }
+
+  @MainActor
+  private func copyBranchLink() {
+    let branch = normalizedPrBranchName(currentSnapshot.lane.branchRef)
+    guard !branch.isEmpty else {
+      copyLaneLink()
+      return
+    }
+    if let pr = lanePullRequests.first {
+      let url = LaneDeeplinkHelpers.branchLink(repoOwner: pr.repoOwner, repoName: pr.repoName, branch: branch)
+      UIPasteboard.general.string = url
+      ADEHaptics.success()
+      copiedLinkNotice = "Copied branch link"
+    } else {
+      UIPasteboard.general.string = LaneDeeplinkHelpers.laneLink(laneId: laneId)
+      ADEHaptics.success()
+      copiedLinkNotice = "No GitHub remote — copied lane link instead"
+    }
+    Task {
+      try? await Task.sleep(for: .seconds(2.5))
+      if copiedLinkNotice?.hasPrefix("Copied") == true || copiedLinkNotice?.hasPrefix("No GitHub") == true {
+        copiedLinkNotice = nil
+      }
+    }
+  }
+
+  @ViewBuilder
+  private func busyBanner(_ label: String) -> some View {
+    HStack(spacing: 10) {
+      ProgressView().tint(ADEColor.accent)
+      Text(label.capitalized)
+        .font(.subheadline)
+        .foregroundStyle(ADEColor.textSecondary)
+      Spacer()
+    }
+    .adeGlassCard(cornerRadius: 12, padding: 12)
+  }
+
+  @ViewBuilder
+  private func errorBanner(_ message: String) -> some View {
+    HStack(spacing: 10) {
+      Image(systemName: "exclamationmark.triangle.fill")
+        .foregroundStyle(ADEColor.danger)
+      Text(message)
+        .font(.footnote)
+        .foregroundStyle(ADEColor.danger)
+      Spacer()
+    }
+    .adeGlassCard(cornerRadius: 12, padding: 12)
+  }
+
+  @ViewBuilder
+  private func copiedBanner(_ message: String) -> some View {
+    HStack(spacing: 10) {
+      Image(systemName: "doc.on.doc.fill")
+        .foregroundStyle(ADEColor.success)
+      Text(message)
+        .font(.footnote)
+        .foregroundStyle(ADEColor.textSecondary)
+      Spacer()
+    }
+    .adeGlassCard(cornerRadius: 12, padding: 12)
   }
 
   @MainActor
@@ -320,14 +505,6 @@ struct LaneDetailScreen: View {
         errorMessage = error.localizedDescription
       }
     }
-  }
-
-  private var sessions: [TerminalSessionSummary] {
-    detail?.sessions ?? []
-  }
-
-  private var chatSessions: [AgentChatSessionSummary] {
-    detail?.chatSessions ?? []
   }
 
   var canRunLiveActions: Bool {

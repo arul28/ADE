@@ -178,6 +178,10 @@ func buildWorkTimeline(
       }
     : buildWorkChatMessages(from: transcript)
 
+  let pendingSteerTexts = Set(
+    derivePendingWorkSteers(from: transcript).map { normalizedWorkLocalEchoText($0.text) }.filter { !$0.isEmpty }
+  )
+
   var entries: [WorkTimelineEntry] = messages.enumerated().map { index, message in
     WorkTimelineEntry(id: "message-\(message.id)", timestamp: message.timestamp, rank: index, payload: .message(message))
   }
@@ -188,7 +192,8 @@ func buildWorkTimeline(
       .filter { !$0.isEmpty }
   )
   let visibleLocalEchoMessages = localEchoMessages.filter { echo in
-    !transcriptUserMessageTexts.contains(normalizedWorkLocalEchoText(echo.text))
+    let normalized = normalizedWorkLocalEchoText(echo.text)
+    return !transcriptUserMessageTexts.contains(normalized) && !pendingSteerTexts.contains(normalized)
   }
 
   entries.append(contentsOf: toolCards.enumerated().map { index, card in

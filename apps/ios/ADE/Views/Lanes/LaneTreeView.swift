@@ -1,7 +1,7 @@
 import SwiftUI
 
 private enum LaneTreeMetrics {
-  static let indent: CGFloat = 18
+  static let indent: CGFloat = 20
   static let elbowWidth: CGFloat = 14
   static let elbowHeight: CGFloat = 22
   static let rowSpacing: CGFloat = 8
@@ -26,6 +26,7 @@ struct LaneTreeView: View {
   let pinnedLaneIds: Set<String>
   let openLaneIds: [String]
   let allLaneSnapshots: [LaneListSnapshot]
+  let lanePrTagsByLaneId: [String: PullRequestListItem]
   let transitionNamespace: Namespace.ID?
   let selectedLaneId: String?
   let onRefreshRoot: () async -> Void
@@ -76,6 +77,7 @@ struct LaneTreeView: View {
           snapshot: snapshot,
           depth: depths[snapshot.lane.id] ?? 0,
           allLaneSnapshots: allLaneSnapshots,
+          pullRequest: lanePrTagsByLaneId[snapshot.lane.id],
           isPinned: pinnedLaneIds.contains(snapshot.lane.id),
           isOpen: openLaneIds.contains(snapshot.lane.id),
           transitionNamespace: transitionNamespace,
@@ -94,6 +96,7 @@ struct LaneTreeRow: View {
   let snapshot: LaneListSnapshot
   let depth: Int
   let allLaneSnapshots: [LaneListSnapshot]
+  let pullRequest: PullRequestListItem?
   let isPinned: Bool
   let isOpen: Bool
   let transitionNamespace: Namespace.ID?
@@ -132,6 +135,7 @@ struct LaneTreeRow: View {
           isPinned: isPinned,
           isOpen: isOpen,
           depth: depth,
+          pullRequest: pullRequest,
           transitionNamespace: transitionNamespace,
           isSelectedTransitionSource: isSelectedTransitionSource
         )
@@ -144,7 +148,7 @@ struct LaneTreeRow: View {
       .contextMenu {
         onContextMenu(snapshot)
       } preview: {
-        LanePeekPreview(snapshot: snapshot)
+        LanePeekPreview(snapshot: snapshot, pullRequest: pullRequest)
       }
       .swipeActions(edge: .leading, allowsFullSwipe: false) {
         Button {
@@ -161,24 +165,31 @@ struct LaneTreeRow: View {
 
 struct LanePeekPreview: View {
   let snapshot: LaneListSnapshot
+  var pullRequest: PullRequestListItem? = nil
 
   var body: some View {
-    let laneAccent = LaneColorPalette.color(forHex: snapshot.lane.color)
+    let laneTint = laneSurfaceTint(forHex: snapshot.lane.color)
+    let laneAccent = laneTint.text ?? ADEColor.textPrimary
     VStack(alignment: .leading, spacing: 10) {
       HStack(alignment: .firstTextBaseline, spacing: 8) {
-        LaneStatusIndicator(bucket: snapshot.runtime.bucket, size: 9)
-        if let laneAccent {
-          Circle().fill(laneAccent).frame(width: 7, height: 7)
-        }
+        WorkLaneLogoMark(color: laneAccent, laneIcon: snapshot.lane.icon, size: 12)
         Text(snapshot.lane.name)
           .font(.headline)
-          .foregroundStyle(laneAccent ?? ADEColor.textPrimary)
+          .foregroundStyle(laneAccent)
+        if let pullRequest {
+          LanePrTagChip(pullRequest: pullRequest)
+        }
         Spacer(minLength: 0)
       }
-      Text(snapshot.lane.branchRef)
-        .font(.system(.caption, design: .monospaced))
-        .foregroundStyle(ADEColor.textSecondary)
-        .lineLimit(1)
+      HStack(spacing: 5) {
+        Image(systemName: "arrow.triangle.branch")
+          .font(.system(size: 10, weight: .regular))
+          .foregroundStyle(ADEColor.textMuted.opacity(0.7))
+        Text(normalizedPrBranchName(snapshot.lane.branchRef))
+          .font(.system(.caption2, design: .monospaced))
+          .foregroundStyle(ADEColor.textMuted)
+          .lineLimit(1)
+      }
 
       Divider().opacity(0.2)
 
@@ -200,22 +211,13 @@ struct LanePeekPreview: View {
         }
         Spacer(minLength: 0)
       }
-
-      if snapshot.runtime.sessionCount > 0 {
-        Label("\(snapshot.runtime.sessionCount) running session\(snapshot.runtime.sessionCount == 1 ? "" : "s")", systemImage: "waveform.path.ecg")
-          .font(.caption)
-          .foregroundStyle(ADEColor.success)
-      }
-
-      if let activity = laneActivitySummary(snapshot) {
-        Text(activity)
-          .font(.caption)
-          .foregroundStyle(ADEColor.textMuted)
-          .lineLimit(3)
-      }
     }
     .padding(16)
     .frame(width: 280)
-    .background(ADEColor.surfaceBackground)
+    .background(laneTint.background)
+    .overlay(
+      RoundedRectangle(cornerRadius: 12, style: .continuous)
+        .stroke(laneTint.border, lineWidth: 0.75)
+    )
   }
 }

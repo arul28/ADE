@@ -128,32 +128,38 @@ iOS companion (`apps/ios/ADE/Views/Lanes/`):
   `LaneMultiAttachSheet.swift` — mobile add/attach entry points,
   including discovery and batch attachment of unregistered worktrees
   via `lanes.listUnregisteredWorktrees`.
-- `LaneStackCanvasScreen.swift` and `LaneStackGraphSheet.swift` —
-  mobile stack graph/canvas projection for parent-child lane chains.
+- `LaneStackGraphSheet.swift` — mobile stack graph projection for
+  parent-child lane chains.
 - `LaneDetailScreen.swift`, `LaneDetailGitSection.swift`,
-  `LaneDetailContentSections.swift`, `LaneDetailRebaseBanner.swift`,
-  `LaneDiffScreen.swift`, `LaneCommitSheet.swift`,
-  `LaneCommitHistoryScreen.swift`, `LaneStashesScreen.swift`,
-  `LaneSyncDetailScreen.swift`, `LaneActionsCard.swift`,
-  `LaneAdvancedScreen.swift` (single Advanced page that hosts Manage,
-  Switch branch, Stash, and the four destructive git escape hatches —
-  rebase lane, rebase descendants, rebase + push, force push — with a
-  description per row and an offline disabled banner),
-  `LaneManageSheet.swift`, `LaneBatchManageSheet.swift`,
-  `LaneChatLaunchSheet.swift`, `LaneTreeView.swift`,
+  `LaneDetailGitActionsPane.swift`, `LaneDetailRebaseBanner.swift`,
+  `LaneDiffScreen.swift`, `LaneSyncDetailScreen.swift`,
+  `LaneActionsCard.swift`, `LaneManageSheet.swift`,
+  `LaneBatchManageSheet.swift`, `LaneChatLaunchSheet.swift`,
+  `LaneDeeplinkHelpers.swift`, `LaneTreeView.swift`,
   `LaneFileTreeComponents.swift` — mobile detail, git, rebase, diff,
   stash, sync, manage, chat-launch, and file-tree parity surfaces.
-  `LaneManageSheet.swift` mirrors desktop's single-lane Stack position
-  section: parent-lane picker, optional base-branch override, "Runs git
-  rebase" disclosure, dirty/rebase-in-progress guards, and
-  `lanes.reparent` payloads that omit `stackBaseBranchRef` when the
-  override is blank.
-  `LaneCommitSheet.swift` is now a "review & commit" sheet: staged
-  and unstaged files render with per-file stage / unstage / discard /
-  restore / open-diff / open-files affordances, plus a "Suggest"
-  button that calls `aiCommitMessages.generate` and shows an inline
-  setup hint when the host reports AI commit messages aren't
-  configured.
+  `LaneDetailGitActionsPane.swift` is the single git surface embedded
+  in the lane detail (a port of desktop's `LaneGitActionsPane`):
+  commit message + amend with an AI "Suggest message" button (calls
+  `aiCommitMessages.generate` and shows an inline setup hint when the
+  host reports AI commit messages aren't configured), pull/push/fetch,
+  staged and unstaged files with per-file and bulk stage / unstage /
+  discard / restore / open-diff / open-files affordances, stash
+  push/apply/pop/drop, recent-commit history with revert / cherry-pick
+  context actions, and a "more actions" menu carrying switch branch
+  plus the destructive escape hatches (rebase lane, rebase +
+  descendants, rebase and push, force push). It replaced the former
+  `LaneAdvancedScreen`, `LaneCommitSheet`, `LaneCommitHistoryScreen`,
+  `LaneStashesScreen`, and `LaneDetailContentSections` files.
+  `LaneManageSheet.swift` is now a tabbed manage dialog (delete /
+  appearance / stack / archive) mirroring desktop's `ManageLaneDialog`;
+  its stack tab keeps the parent-lane picker, optional base-branch
+  override, "Runs git rebase" disclosure, dirty/rebase-in-progress
+  guards, and `lanes.reparent` payloads that omit `stackBaseBranchRef`
+  when the override is blank. `LaneDeeplinkHelpers.swift` mints the
+  shareable `ade://lane/<id>` and
+  `ade://repo/<owner>/<repo>/branch/<branch>` links the lane options
+  menu copies to the pasteboard.
 
 Detail docs in this folder:
 

@@ -78,10 +78,13 @@ func toolTypeForProvider(_ provider: String) -> String {
 func providerLabel(_ provider: String) -> String {
   switch providerFamilyKey(provider) {
   case "codex": return "Codex"
+  case "openai": return "OpenAI"
   case "claude": return "Claude"
+  case "anthropic": return "Anthropic"
   case "opencode": return "OpenCode"
-  case "cursor": return "Cursor"
-  case "droid": return "Droid"
+  case "cursor": return "Cursor Composer"
+  case "droid", "factory": return "Droid"
+  case "google": return "Google"
   case "ollama": return "Ollama"
   case "lmstudio": return "LM Studio"
   default: return provider.capitalized
@@ -109,12 +112,20 @@ func shortProviderLabel(_ toolType: String?) -> String {
 
 func providerIcon(_ provider: String) -> String {
   switch providerFamilyKey(provider) {
-  case "codex":
+  case "codex", "openai":
     return "sparkle"
   case "opencode":
     return "hammer.fill"
   case "cursor":
     return "cursorarrow"
+  case "droid", "factory":
+    return "cpu"
+  case "ollama":
+    return "hare.fill"
+  case "lmstudio":
+    return "desktopcomputer"
+  case "google":
+    return "g.circle.fill"
   default:
     return "brain.head.profile"
   }
@@ -131,15 +142,118 @@ func providerAssetName(_ provider: String?) -> String? {
   switch providerFamilyKey(provider) {
   case "claude":
     return "ProviderClaude"
+  case "anthropic":
+    return "ProviderAnthropic"
   case "codex":
     return "ProviderCodex"
+  case "openai":
+    return "ProviderOpenAI"
   case "cursor":
     return "ProviderCursor"
   case "opencode":
     return "ProviderOpenCode"
+  case "droid", "factory":
+    return "ProviderDroid"
   default:
     return nil
   }
+}
+
+/// Provider key for the model-picker rail icons. Mirrors desktop
+/// `ProviderLogo` family marks (Anthropic/OpenAI company logos for Claude/Codex
+/// groups, not the product marks used on model rows).
+func workRailLogoProvider(for catalogGroupKey: String) -> String {
+  switch catalogGroupKey.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+  case "claude", "anthropic":
+    return "anthropic"
+  case "codex", "openai":
+    return "openai"
+  case "cursor":
+    return "cursor"
+  case "droid", "factory":
+    return "droid"
+  case "opencode":
+    return "opencode"
+  case "ollama":
+    return "ollama"
+  case "lmstudio":
+    return "lmstudio"
+  default:
+    return catalogGroupKey
+  }
+}
+
+/// Maps a lowercased model id to its upstream brand logo key by substring,
+/// or nil when the id doesn't name a known upstream vendor model.
+func workUpstreamBrand(modelId: String) -> String? {
+  if modelId.contains("gemini") {
+    return "google"
+  }
+  if modelId.contains("claude") || modelId.contains("fable") || modelId.contains("sonnet")
+    || modelId.contains("opus") || modelId.contains("haiku") {
+    return "claude"
+  }
+  if modelId.contains("gpt") || modelId.contains("codex") {
+    return "codex"
+  }
+  return nil
+}
+
+/// Per-model row logo key. Mirrors desktop `ModelRowLogo` so Cursor/Droid/OpenCode
+/// rows show the upstream brand (Claude, OpenAI, Gemini, etc.) instead of the
+/// runtime group logo.
+func workModelRowLogoProvider(for model: WorkModelOption, catalogGroupKey: String?) -> String {
+  let modelId = model.id.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+  let group = catalogGroupKey?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+
+  if group == "cursor" || modelId.contains("cursor/") || modelId.contains("composer") {
+    if modelId == "auto" || modelId.contains("composer") {
+      return "cursor"
+    }
+    if let brand = workUpstreamBrand(modelId: modelId) {
+      return brand
+    }
+    if modelId.contains("grok") {
+      return "xai"
+    }
+    return "cursor"
+  }
+
+  if group == "droid" || group == "factory" || modelId.hasPrefix("droid/") {
+    if let brand = workUpstreamBrand(modelId: modelId) {
+      return brand
+    }
+    if modelId.hasPrefix("glm-") || modelId.hasPrefix("kimi-") || modelId.hasPrefix("minimax-")
+      || modelId.hasPrefix("custom:") {
+      return "factory"
+    }
+    return "droid"
+  }
+
+  if group == "opencode" || modelId.hasPrefix("opencode/") {
+    if modelId.hasPrefix("opencode/") {
+      let parts = modelId.split(separator: "/", omittingEmptySubsequences: true)
+      if parts.count >= 3 {
+        switch String(parts[1]) {
+        case "anthropic":
+          return "claude"
+        case "openai":
+          return "codex"
+        case "google":
+          return "google"
+        case "xai":
+          return "xai"
+        case "deepseek":
+          return "deepseek"
+        default:
+          return String(parts[1])
+        }
+      }
+    }
+    return "opencode"
+  }
+
+  return model.provider
 }
 
 func providerTint(_ provider: String?) -> Color {
@@ -760,6 +874,78 @@ func toolDisplayName(_ tool: String) -> String {
     return String(trimmed.split(separator: ".").last ?? Substring(trimmed))
   }
   return trimmed
+}
+
+/// Collapses whitespace and truncates long inline tool/command previews.
+/// Mirrors desktop `summarizeInlineText` in chatTranscriptRows.ts.
+func workSummarizeInlineText(_ value: String, maxChars: Int = 120) -> String {
+  let collapsed = value
+    .replacingOccurrences(of: "\n", with: " ")
+    .trimmingCharacters(in: .whitespacesAndNewlines)
+    .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+  guard collapsed.count > maxChars else { return collapsed }
+  return String(collapsed.prefix(max(1, maxChars - 1))) + "…"
+}
+
+/// Extracts the human-readable target from tool args JSON — file path, shell
+/// command, search pattern, etc. Avoids leaking raw `{` from pretty-printed
+/// JSON in collapsed work-log rows (desktop `entryArgText` parity).
+func workToolArgPreview(toolName: String, argsText: String?) -> String? {
+  guard let object = workJSONObject(from: argsText) else {
+    guard let argsText else { return nil }
+    let trimmed = argsText.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return nil }
+    let preview = workSummarizeInlineText(trimmed, maxChars: 140)
+    return preview.isEmpty ? nil : preview
+  }
+
+  func stringValue(_ key: String) -> String? {
+    guard let value = object[key] as? String else { return nil }
+    let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    return trimmed.isEmpty ? nil : trimmed
+  }
+
+  let suffix = toolDisplayName(toolName).lowercased()
+  let target: String? = {
+    switch suffix {
+    case "read", "readfile":
+      return stringValue("file_path") ?? stringValue("path")
+    case "grep", "glob":
+      return stringValue("pattern") ?? stringValue("path")
+    case "ls", "listdir":
+      return stringValue("path")
+    case "write", "edit", "multiedit", "editfile", "writefile":
+      return stringValue("file_path") ?? stringValue("path")
+    case "notebookedit":
+      return stringValue("notebook_path")
+    case "bash", "exec_command", "shell":
+      return stringValue("command") ?? stringValue("cmd")
+    case "websearch":
+      return stringValue("query")
+    case "webfetch":
+      return stringValue("url")
+    case "gitdiff":
+      return stringValue("path") ?? stringValue("ref")
+    case "gitlog":
+      return stringValue("ref")
+    case "askuser":
+      return stringValue("question")
+    case "delegate_parallel":
+      if let tasks = object["tasks"] as? [Any] {
+        return "\(tasks.count) task(s)"
+      }
+      return "0 task(s)"
+    default:
+      for key in ["file_path", "path", "command", "cmd", "query", "url", "pattern", "name"] {
+        if let value = stringValue(key) { return value }
+      }
+      return nil
+    }
+  }()
+
+  guard let target else { return nil }
+  let preview = workSummarizeInlineText(target, maxChars: 140)
+  return preview.isEmpty ? nil : preview
 }
 
 private func toolNameSuffix(_ tool: String) -> String {

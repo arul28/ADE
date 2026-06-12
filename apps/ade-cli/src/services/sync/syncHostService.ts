@@ -3674,6 +3674,18 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         peer.subscribedChatSessionIds.add(sessionId);
 
         const session = args.sessionService.get(sessionId);
+        // Snapshots are byte-capped transcript tails — a long-running turn's
+        // `status: started` event can sit outside the tail, leaving a client
+        // that subscribes mid-turn unable to tell the session is streaming.
+        // Ship the live turn state on the ack so clients don't depend on the
+        // (slower) changeset pump for running/stop affordances. Resolved
+        // immediately before each send (getSessionSummary is microtask-only):
+        // computing it earlier leaves an I/O window (readTranscriptTail) where
+        // a terminal chat_event could overtake a stale `turnActive: true`.
+        const resolveLiveStatusFields = async (): Promise<{ turnActive?: boolean }> => {
+          const liveSummary = await args.agentChatService?.getSessionSummary(sessionId).catch(() => null);
+          return liveSummary ? { turnActive: liveSummary.status === "active" } : {};
+        };
         const resumePlan = planChatEventResume(chatEventReplayBuffers.get(sessionId), payload?.sinceSeq);
         if (resumePlan.mode === "replay") {
           // The replay buffer covers everything the peer missed: skip the
@@ -3690,6 +3702,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
             truncated: false,
             events: [],
             resumed: true,
+            ...(await resolveLiveStatusFields()),
           };
           sendRequired(peer, "chat_subscribe", resumeAck, envelope.requestId);
           for (const entry of resumePlan.entries) {
@@ -3726,6 +3739,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           capturedAt: nowIso(),
           truncated: transcriptSize > maxBytes,
           events,
+          ...(await resolveLiveStatusFields()),
         };
         sendRequired(peer, "chat_subscribe", snapshot, envelope.requestId);
         break;

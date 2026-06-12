@@ -122,6 +122,10 @@ extension LanesTabView {
     treeSnapshots
   }
 
+  var lanePrTagsByLaneId: [String: PullRequestListItem] {
+    lanePrTagByLaneId(snapshots: laneSnapshots, pullRequests: pullRequests)
+  }
+
   @ViewBuilder
   var laneList: some View {
     if laneSnapshots.isEmpty {
@@ -170,6 +174,7 @@ extension LanesTabView {
                 isPinned: pinnedLaneIds.contains(primarySnapshot.lane.id),
                 isOpen: openLaneIds.contains(primarySnapshot.lane.id),
                 depth: 0,
+                pullRequest: lanePrTagsByLaneId[primarySnapshot.lane.id],
                 transitionNamespace: transitionNamespace,
                 isSelectedTransitionSource: selectedLaneTransitionId == primarySnapshot.lane.id
               )
@@ -180,7 +185,10 @@ extension LanesTabView {
             })
             .buttonStyle(ADEScaleButtonStyle())
             .contextMenu { laneContextMenu(snapshot: primarySnapshot) } preview: {
-              LanePeekPreview(snapshot: primarySnapshot)
+              LanePeekPreview(
+                snapshot: primarySnapshot,
+                pullRequest: lanePrTagsByLaneId[primarySnapshot.lane.id]
+              )
             }
             .swipeActions(edge: .leading, allowsFullSwipe: false) {
               Button {
@@ -199,6 +207,7 @@ extension LanesTabView {
               pinnedLaneIds: pinnedLaneIds,
               openLaneIds: openLaneIds,
               allLaneSnapshots: laneSnapshots,
+              lanePrTagsByLaneId: lanePrTagsByLaneId,
               transitionNamespace: transitionNamespace,
               selectedLaneId: selectedLaneTransitionId,
               onRefreshRoot: { await reload(refreshRemote: true) },
@@ -384,8 +393,12 @@ extension LanesTabView {
         try await syncService.refreshLaneSnapshots()
       }
       let loadedSnapshots = try await syncService.fetchLaneListSnapshots(includeArchived: true)
+      let loadedPullRequests = try await syncService.fetchPullRequestListItems()
       if laneSnapshots != loadedSnapshots {
         laneSnapshots = loadedSnapshots
+      }
+      if pullRequests != loadedPullRequests {
+        pullRequests = loadedPullRequests
       }
       let visibleIds = Set(loadedSnapshots.map(\.lane.id))
       let nextOpenLaneIds = openLaneIds.filter { visibleIds.contains($0) }

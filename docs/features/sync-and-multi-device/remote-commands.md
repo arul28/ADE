@@ -192,7 +192,10 @@ both via `SyncService.dispatchChatSteer` /
 - `undoLastHeadChange`, `redoLastHeadChange` — paired recovery
   actions that re-read HEAD before acting and refuse when the lane
   has moved since the operation they target
-- `getConflictState`, `rebaseContinue`, `rebaseAbort`
+- `getConflictState`, `rebaseContinue`, `rebaseAbort`,
+  `mergeContinue`, `mergeAbort` — the merge variants mirror the rebase
+  pair so the iOS lane conflict banner can continue or abort an
+  in-progress merge, not just a rebase
 - `listBranches`, `checkoutBranch`
 
 `git.pull` accepts an optional `mode` argument

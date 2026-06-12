@@ -82,6 +82,8 @@ const IOS_REMOTE_COMMAND_ACTIONS = [
   "git.getConflictState",
   "git.rebaseContinue",
   "git.rebaseAbort",
+  "git.mergeContinue",
+  "git.mergeAbort",
   "chat.models",
   "chat.modelCatalog",
   "chat.listSessions",
@@ -343,6 +345,8 @@ function createMockGitService() {
     getConflictState: vi.fn().mockResolvedValue(null),
     rebaseContinue: vi.fn().mockResolvedValue(undefined),
     rebaseAbort: vi.fn().mockResolvedValue(undefined),
+    mergeContinue: vi.fn().mockResolvedValue(undefined),
+    mergeAbort: vi.fn().mockResolvedValue(undefined),
     listBranches: vi.fn().mockResolvedValue([]),
     checkoutBranch: vi.fn().mockResolvedValue(undefined),
   } as any;
@@ -1467,6 +1471,14 @@ describe("createSyncRemoteCommandService", () => {
         mode: "rebase",
         baseRef: "main",
       });
+    });
+
+    it("git.mergeContinue and git.mergeAbort dispatch to the git service with the lane id", async () => {
+      await service.execute(makePayload("git.mergeContinue", { laneId: "lane-1" }));
+      expect(gitService.mergeContinue).toHaveBeenCalledWith({ laneId: "lane-1" });
+
+      await service.execute(makePayload("git.mergeAbort", { laneId: "lane-1" }));
+      expect(gitService.mergeAbort).toHaveBeenCalledWith({ laneId: "lane-1" });
     });
 
     it("git.checkoutBranch requires laneId and branchName", async () => {

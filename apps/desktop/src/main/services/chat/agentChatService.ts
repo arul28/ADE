@@ -7195,6 +7195,38 @@ export function createAgentChatService(args: {
     managed.pendingReconstructionContext = nextContext.length ? nextContext : null;
   };
 
+  const stageCursorSdkAgentRotationRecovery = (
+    managed: ManagedChatSession,
+    previousAgentId: string,
+    nextAgentId: string,
+  ): void => {
+    const sections = [
+      [
+        "Cursor SDK continuity recovery",
+        `ADE attempted to resume Cursor SDK agent ${previousAgentId}, but the Cursor SDK opened agent ${nextAgentId} instead.`,
+        "Use this ADE transcript context to continue the user's work. Do not claim access to hidden Cursor SDK state that was not restored.",
+      ].join("\n"),
+    ];
+
+    if (managed.continuitySummary?.trim()) {
+      sections.push(["Continuity Summary", managed.continuitySummary.trim()].join("\n"));
+    }
+
+    const recentConversation = buildRecentConversationContext(managed);
+    if (recentConversation.length) {
+      sections.push(["Recent Conversation Tail", recentConversation].join("\n"));
+    }
+
+    const existing = managed.pendingReconstructionContext?.trim();
+    if (existing) sections.push(existing);
+
+    const nextContext = sections.map((section) => section.trim()).filter((section) => section.length > 0).join("\n\n");
+    managed.pendingReconstructionContext = nextContext.length ? nextContext : null;
+    // The rotated agent is brand new, so re-emit the lane execution directive on
+    // the next turn instead of letting the dedupe key suppress it.
+    clearLaneDirectiveKey(managed);
+  };
+
   const detectAuth = async () => {
     const snapshot = projectConfigService.get();
     const configured = snapshot.effective.ai?.apiKeys;
@@ -9802,8 +9834,8 @@ export function createAgentChatService(args: {
       return;
     }
 
-    const preserveClaudeResumeState =
-      managed.runtime.kind === "claude" && reasonAllowsPreservation;
+    const preserveProviderResumeState =
+      (managed.runtime.kind === "claude" || managed.runtime.kind === "cursor") && reasonAllowsPreservation;
     if (managed.runtime.kind === "codex") {
       const runtime = managed.runtime;
       const interruptedTurnId = runtime.activeTurnId ?? runtime.startedTurnId ?? null;
@@ -9861,7 +9893,7 @@ export function createAgentChatService(args: {
     if (managed.runtime?.kind === "claude") {
       // Mark interrupted so the streaming catch block takes the graceful path
       managed.runtime.interrupted = true;
-      if (preserveClaudeResumeState) persistChatState(managed);
+      if (preserveProviderResumeState) persistChatState(managed);
       cancelClaudeWarmup(managed, managed.runtime, "teardown");
       try { managed.runtime.query?.close(); } catch { /* ignore */ }
       managed.runtime.inputPump?.close();
@@ -9901,6 +9933,7 @@ export function createAgentChatService(args: {
         cancelCursorPermissionWaiter(w, "Cursor tool approval was cancelled because the session closed.");
       }
       rt.permissionWaiters.clear();
+      if (preserveProviderResumeState) persistChatState(managed);
       releaseCursorSdkConnection(rt.poolKey, rt.poolGeneration);
       managed.runtime = null;
     }
@@ -9913,8 +9946,8 @@ export function createAgentChatService(args: {
       releaseDroidSdkConnection(rt.poolKey, rt.poolGeneration);
       managed.runtime = null;
     }
-    managed.runtimeInvalidated = !preserveClaudeResumeState;
-    if (!preserveClaudeResumeState) {
+    managed.runtimeInvalidated = !preserveProviderResumeState;
+    if (!preserveProviderResumeState) {
       clearLaneDirectiveKey(managed);
     }
   };
@@ -19733,7 +19766,7 @@ export function createAgentChatService(args: {
             killed: existing.sdk.process.killed,
             connected: existing.sdk.process.connected,
           });
-          teardownRuntime(managed, "handle_close");
+          teardownRuntime(managed, "pool_compaction");
         } else {
           existing.sdkPolicy = policy;
           existing.currentModeId = displayModeId;
@@ -19829,12 +19862,25 @@ export function createAgentChatService(args: {
       throw error;
     }
     const pooled = acquired.pooled;
+    const nextCursorSdkAgentId = pooled.agentId?.trim() || null;
+    if (
+      persistedCursorSdkAgentId
+      && nextCursorSdkAgentId
+      && nextCursorSdkAgentId !== persistedCursorSdkAgentId
+    ) {
+      stageCursorSdkAgentRotationRecovery(managed, persistedCursorSdkAgentId, nextCursorSdkAgentId);
+      logger.warn("agent_chat.cursor_sdk_agent_rotated_after_resume", {
+        sessionId: managed.session.id,
+        previousAgentId: persistedCursorSdkAgentId,
+        nextAgentId: nextCursorSdkAgentId,
+      });
+    }
     const rt: CursorRuntime = {
       kind: "cursor",
       poolKey,
       poolGeneration: acquired.generation,
       sdk: pooled,
-      sdkAgentId: pooled.agentId,
+      sdkAgentId: nextCursorSdkAgentId,
       sdkRunId: pooled.runId,
       sdkPolicy: policy,
       sdkApprovedTools: new Set(),
@@ -19934,7 +19980,7 @@ export function createAgentChatService(args: {
       const reconstructionContext = managed.pendingReconstructionContext?.trim() ?? "";
       if (reconstructionContext.length) {
         composed = [
-          "System context (CTO reconstruction, do not echo verbatim):",
+          "System context (ADE continuity, do not echo verbatim):",
           reconstructionContext,
           "",
           composed,

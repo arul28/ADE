@@ -35,7 +35,7 @@ func buildWorkChatMessages(from transcript: [WorkChatEnvelope]) -> [WorkChatMess
 
   for envelope in transcript {
     switch envelope.event {
-    case .userMessage(let text, let turnId, let steerId, let deliveryState, let processed):
+    case .userMessage(let text, let attachments, let turnId, let steerId, let deliveryState, let processed):
       previousEnvelopeWasAssistantText = false
       // Queued steers render as inline cards above the composer, not in the message stream.
       if deliveryState == "queued", steerId != nil {
@@ -47,6 +47,9 @@ func buildWorkChatMessages(from transcript: [WorkChatEnvelope]) -> [WorkChatMess
          messages[lastIndex].steerId == steerId,
          messages[lastIndex].timestamp == envelope.timestamp {
         messages[lastIndex].markdown += text
+        if let attachments, !attachments.isEmpty {
+          messages[lastIndex].attachments = attachments
+        }
         if let deliveryState {
           messages[lastIndex].deliveryState = deliveryState
         }
@@ -63,7 +66,8 @@ func buildWorkChatMessages(from transcript: [WorkChatEnvelope]) -> [WorkChatMess
           itemId: nil,
           steerId: steerId,
           deliveryState: deliveryState,
-          processed: processed
+          processed: processed,
+          attachments: attachments
         ))
       }
     case .assistantText(let text, let turnId, let itemId):
@@ -130,7 +134,7 @@ func makeWorkChatTranscript(from entries: [AgentChatTranscriptEntry], sessionId:
       sequence: nil,
       event: entry.role == "assistant"
         ? .assistantText(text: entry.text, turnId: entry.turnId, itemId: nil)
-        : .userMessage(text: entry.text, turnId: entry.turnId, steerId: nil, deliveryState: nil, processed: nil)
+        : .userMessage(text: entry.text, attachments: nil, turnId: entry.turnId, steerId: nil, deliveryState: nil, processed: nil)
     )
   }
 }
@@ -182,12 +186,27 @@ func preferredWorkTranscript(
     // make it into the live stream (compared by role+turnId+text). Without
     // this, the final assistant reply after e.g. a plan rejection vanishes
     // from mobile while it still shows on desktop.
-    return backfillMissingTextEnvelopes(into: merged, fallback: fallback)
+    let backfilled = backfillMissingTextEnvelopes(into: merged, fallback: fallback)
+    return pruneResolvedQueuedSteerEnvelopes(backfilled)
   }
   if !fallback.isEmpty {
-    return fallback
+    return pruneResolvedQueuedSteerEnvelopes(fallback)
   }
-  return current
+  return pruneResolvedQueuedSteerEnvelopes(current)
+}
+
+/// When an idle session prefers the canonical text transcript, keep tool /
+/// notice / queued-steer envelopes from the live event stream but drop the
+/// plain user/assistant/status rows the fallback already owns.
+func workChatEventIncludedInIdleCanonicalEventTranscript(_ event: WorkChatEvent) -> Bool {
+  switch event {
+  case .userMessage(_, _, _, let steerId, let deliveryState, _):
+    return deliveryState == "queued" && steerId != nil
+  case .assistantText, .status:
+    return false
+  default:
+    return true
+  }
 }
 
 private func backfillMissingTextEnvelopes(
@@ -208,6 +227,9 @@ private func backfillMissingTextEnvelopes(
     if replaceTruncatedTextEnvelope(in: &merged, with: envelope) {
       didReplace = true
       workTextBackfillDedupeKeys(for: envelope).forEach { seen.insert($0) }
+      continue
+    }
+    if shouldSkipBackfillPlainUserMessage(fallback: envelope, merged: merged) {
       continue
     }
     let keys = workTextBackfillDedupeKeys(for: envelope)
@@ -260,7 +282,7 @@ private func replaceTruncatedTextEnvelope(
 /// (returns nil → skipped).
 private func workTextContentKey(for envelope: WorkChatEnvelope) -> String? {
   switch envelope.event {
-  case .userMessage(let text, let turnId, let steerId, _, _):
+  case .userMessage(let text, _, let turnId, let steerId, _, _):
     let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines)
     return "user|\(turnId ?? "")|\(steerId ?? "")|\(normalized)"
   case .assistantText(let text, let turnId, _):
@@ -274,7 +296,7 @@ private func workTextContentKey(for envelope: WorkChatEnvelope) -> String? {
 private func workTextBackfillDedupeKeys(for envelope: WorkChatEnvelope) -> [String] {
   guard let key = workTextContentKey(for: envelope) else { return [] }
   switch envelope.event {
-  case .userMessage(let text, let turnId, _, _, _):
+  case .userMessage(let text, _, let turnId, _, _, _):
     let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines)
     return [key, "user|\(turnId ?? "")|\(normalized)"]
   default:
@@ -284,7 +306,7 @@ private func workTextBackfillDedupeKeys(for envelope: WorkChatEnvelope) -> [Stri
 
 private func workTextRoleTurnKey(for envelope: WorkChatEnvelope) -> String? {
   switch envelope.event {
-  case .userMessage(_, let turnId, let steerId, _, _):
+  case .userMessage(_, _, let turnId, let steerId, _, _):
     return "user|\(turnId ?? "")|\(steerId ?? "")"
   case .assistantText(_, let turnId, _):
     return "assistant|\(turnId ?? "")"
@@ -295,12 +317,66 @@ private func workTextRoleTurnKey(for envelope: WorkChatEnvelope) -> String? {
 
 private func workTextEnvelopeText(_ envelope: WorkChatEnvelope) -> String? {
   switch envelope.event {
-  case .userMessage(let text, _, _, _, _):
+  case .userMessage(let text, _, _, _, _, _):
     return text
   case .assistantText(let text, _, _):
     return text
   default:
     return nil
+  }
+}
+
+/// The host text transcript omits steer metadata, so backfilling a plain user
+/// row while a queued steer envelope is already present would render the same
+/// prompt twice — once in the staged strip and again as a sent bubble.
+private func shouldSkipBackfillPlainUserMessage(
+  fallback: WorkChatEnvelope,
+  merged: [WorkChatEnvelope]
+) -> Bool {
+  guard case .userMessage(let text, _, let turnId, let steerId, let deliveryState, _) = fallback.event else {
+    return false
+  }
+  guard steerId == nil, deliveryState != "queued" else { return false }
+  let normalizedText = text.trimmingCharacters(in: .whitespacesAndNewlines)
+  let normalizedTurnId = turnId ?? ""
+  for envelope in merged {
+    guard case .userMessage(let liveText, _, let liveTurnId, let liveSteerId, let liveDelivery, _) = envelope.event else {
+      continue
+    }
+    guard liveDelivery == "queued", liveSteerId != nil else { continue }
+    if (liveTurnId ?? "") == normalizedTurnId { return true }
+    if liveText.trimmingCharacters(in: .whitespacesAndNewlines) == normalizedText { return true }
+  }
+  return false
+}
+
+/// Drop stale queued `user_message` rows once the same steerId has graduated
+/// to delivered/inline/failed or been resolved by a steer system notice.
+func pruneResolvedQueuedSteerEnvelopes(_ transcript: [WorkChatEnvelope]) -> [WorkChatEnvelope] {
+  guard !transcript.isEmpty else { return transcript }
+  var resolvedSteerIds = Set<String>()
+  for envelope in sortedWorkChatEnvelopes(transcript) {
+    switch envelope.event {
+    case .userMessage(_, _, _, let steerId, let deliveryState, _):
+      if let steerId, deliveryState != "queued" {
+        resolvedSteerIds.insert(steerId)
+      }
+    case .systemNotice(_, let message, _, _, let steerId):
+      if let steerId, workSystemNoticeResolvesQueuedSteer(message) {
+        resolvedSteerIds.insert(steerId)
+      }
+    default:
+      continue
+    }
+  }
+  guard !resolvedSteerIds.isEmpty else { return transcript }
+  return transcript.filter { envelope in
+    guard case .userMessage(_, _, _, let steerId, let deliveryState, _) = envelope.event,
+          let steerId,
+          deliveryState == "queued",
+          resolvedSteerIds.contains(steerId)
+    else { return true }
+    return false
   }
 }
 
@@ -756,7 +832,7 @@ func derivePendingWorkSteers(from transcript: [WorkChatEnvelope]) -> [WorkPendin
   var resolved = Set<String>()
   for envelope in sortedWorkChatEnvelopes(transcript) {
     switch envelope.event {
-    case .userMessage(let text, let turnId, let steerId, let deliveryState, _):
+    case .userMessage(let text, _, let turnId, let steerId, let deliveryState, _):
       guard let steerId, !resolved.contains(steerId) else { continue }
       if deliveryState == "queued" {
         if queue[steerId] == nil { order.append(steerId) }
@@ -841,13 +917,14 @@ func workChatEnvelopeMergeKey(_ envelope: WorkChatEnvelope) -> String {
 
 func workChatEventMergeKey(_ event: WorkChatEvent) -> String {
   switch event {
-  case .userMessage(let text, let turnId, let steerId, let deliveryState, let processed):
+  case .userMessage(let text, let attachments, let turnId, let steerId, let deliveryState, let processed):
     // Queued steers are uniquely identified by steerId so that editSteer replaces the existing
     // entry in place instead of spawning a duplicate row whose only difference is the edited text.
     if let steerId, deliveryState == "queued" {
       return ["user_message", turnId ?? "", steerId, "queued"].joined(separator: "|")
     }
-    return ["user_message", turnId ?? "", steerId ?? "", deliveryState ?? "", processed.map { $0 ? "1" : "0" } ?? "", text].joined(separator: "|")
+    let attachmentDigest = (attachments ?? []).map { "\($0.type):\($0.path)" }.joined(separator: ",")
+    return ["user_message", turnId ?? "", steerId ?? "", deliveryState ?? "", processed.map { $0 ? "1" : "0" } ?? "", attachmentDigest, text].joined(separator: "|")
   case .assistantText(let text, let turnId, let itemId):
     return ["text", turnId ?? "", itemId ?? "", text].joined(separator: "|")
   case .toolCall(let tool, let argsText, let itemId, let parentItemId, let turnId):

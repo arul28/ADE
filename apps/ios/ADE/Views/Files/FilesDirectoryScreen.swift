@@ -5,7 +5,6 @@ struct FilesDirectoryScreen: View {
 
   let workspace: FilesWorkspace
   let parentPath: String
-  @Binding var showHidden: Bool
   let isLive: Bool
   let isTabActive: Bool
   let openDirectory: (String) -> Void
@@ -41,7 +40,6 @@ struct FilesDirectoryScreen: View {
         FilesDirectoryContentsView(
           workspace: workspace,
           parentPath: parentPath,
-          showHidden: showHidden,
           isLive: isLive,
           isTabActive: isTabActive,
           openDirectory: openDirectory,
@@ -61,14 +59,7 @@ struct FilesDirectoryScreen: View {
     .navigationTitle(parentPath.isEmpty ? "Root" : lastPathComponent(parentPath))
     .toolbar {
       ADERootToolbarLeadingItems()
-      ToolbarItemGroup(placement: .topBarTrailing) {
-        Button {
-          showHidden.toggle()
-        } label: {
-          Image(systemName: showHidden ? "eye.slash" : "eye")
-        }
-        .accessibilityLabel(showHidden ? "Hide hidden files" : "Show hidden files")
-
+      ToolbarItem(placement: .topBarTrailing) {
         Button {
           Task { await refreshDirectory() }
         } label: {

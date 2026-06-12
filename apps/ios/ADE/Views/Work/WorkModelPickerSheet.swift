@@ -47,6 +47,8 @@ struct WorkModelPickerSheet: View {
 	  @State private var isLoadingCatalog = false
 	  @State private var didPickInitialSelection = false
 	  @State private var selectedProviderTabKey: String?
+	  /// Model card awaiting a reasoning tier before the picker commits.
+	  @State private var pendingModelId: String?
 
 	  private var catalog: [WorkModelCatalogGroup] {
 	    if let liveCatalog {
@@ -93,6 +95,9 @@ struct WorkModelPickerSheet: View {
   var body: some View {
     NavigationStack {
       VStack(spacing: 0) {
+        if pendingModelId != nil {
+          pendingReasoningBanner
+        }
         searchBar
         if isLoadingCatalog && catalog.isEmpty {
           loadingState
@@ -109,6 +114,7 @@ struct WorkModelPickerSheet: View {
 	              onSelect: { next in
 	                selection = next
 	                selectedProviderTabKey = nil
+	                pendingModelId = nil
 	                if case .providerGroup(let key, _) = next {
 	                  Task { await refreshCatalog(for: key) }
 	                }
@@ -125,8 +131,10 @@ struct WorkModelPickerSheet: View {
 	              selectedProviderTabKey: selectedProviderTabKey,
 	              currentModelId: currentModelId,
               currentReasoningEffort: currentReasoningEffort,
+              pendingModelId: pendingModelId,
               favorites: picker.favorites,
               isBusy: isBusy,
+	              onHighlight: { model in pendingModelId = model.id },
 	              onSelect: { model, effort in commit(model: model, effort: effort) },
 	              onSelectProviderTab: { selectedProviderTabKey = $0 },
               onToggleFavorite: { picker.toggleFavorite($0, syncService: syncService) }
@@ -318,6 +326,28 @@ struct WorkModelPickerSheet: View {
   // MARK: Subviews
 
   @ViewBuilder
+  private var pendingReasoningBanner: some View {
+    HStack(spacing: 8) {
+      Image(systemName: "brain.head.profile")
+        .font(.subheadline.weight(.semibold))
+        .foregroundStyle(ADEColor.accent)
+      Text("Pick reasoning level")
+        .font(.subheadline.weight(.semibold))
+        .foregroundStyle(ADEColor.textPrimary)
+      Spacer(minLength: 0)
+      if let pendingModelId, let model = modelById[pendingModelId] {
+        Text(model.displayName)
+          .font(.caption.weight(.semibold))
+          .foregroundStyle(ADEColor.textSecondary)
+          .lineLimit(1)
+      }
+    }
+    .padding(.horizontal, 14)
+    .padding(.top, 10)
+    .padding(.bottom, 4)
+  }
+
+  @ViewBuilder
   private var searchBar: some View {
     HStack(spacing: 8) {
       Image(systemName: "magnifyingglass")
@@ -329,6 +359,11 @@ struct WorkModelPickerSheet: View {
         .foregroundStyle(ADEColor.textPrimary)
         .autocorrectionDisabled()
         .textInputAutocapitalization(.never)
+        .onChange(of: searchText) { _, newValue in
+          if !newValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            pendingModelId = nil
+          }
+        }
       if !searchText.isEmpty {
         Button {
           searchText = ""
@@ -342,15 +377,15 @@ struct WorkModelPickerSheet: View {
       }
     }
     .padding(.horizontal, 12)
-    .padding(.vertical, 9)
-    .background(ADEColor.recessedBackground.opacity(0.55), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    .padding(.vertical, 8)
+    .background(ADEColor.recessedBackground.opacity(0.55), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
     .overlay(
-      RoundedRectangle(cornerRadius: 12, style: .continuous)
+      RoundedRectangle(cornerRadius: 10, style: .continuous)
         .stroke(ADEColor.glassBorder, lineWidth: 0.5)
     )
-    .padding(.horizontal, 16)
-    .padding(.top, 12)
-    .padding(.bottom, 10)
+    .padding(.horizontal, 14)
+    .padding(.top, 10)
+    .padding(.bottom, 8)
   }
 
   @ViewBuilder
@@ -456,6 +491,7 @@ struct WorkModelPickerSheet: View {
     let effortChanged = (nextEffort ?? "") != normalizedCurrentEffort
     let isNoOp = workModelIdsEquivalent(model.id, currentModelId) && !effortChanged
 
+    pendingModelId = nil
     if isNoOp {
       dismiss()
       return
@@ -515,23 +551,21 @@ struct ModelPickerRail: View {
   var body: some View {
     ScrollView(.vertical, showsIndicators: false) {
       VStack(alignment: .center, spacing: 4) {
-        ForEach(entries) { entry in
-          VStack(spacing: 4) {
-            railButton(entry)
-            if case .recents = entry {
-              Divider()
-                .overlay(ADEColor.glassBorder)
-                .frame(width: 28)
-                .padding(.vertical, 4)
-            }
+        ForEach(Array(entries.enumerated()), id: \.element.id) { index, entry in
+          if index > 0, case .providerGroup = entry, case .recents = entries[index - 1] {
+            Divider()
+              .overlay(ADEColor.glassBorder.opacity(0.8))
+              .frame(width: 28)
+              .padding(.vertical, 2)
           }
+          railButton(entry)
         }
       }
       .padding(.vertical, 8)
-      .padding(.horizontal, 6)
+      .padding(.horizontal, 5)
     }
-    .frame(width: 56)
-    .background(ADEColor.recessedBackground.opacity(0.4))
+    .frame(width: 52)
+    .background(ADEColor.recessedBackground.opacity(0.35))
   }
 
   @ViewBuilder
@@ -542,20 +576,28 @@ struct ModelPickerRail: View {
     } label: {
       ZStack(alignment: .topTrailing) {
         railIcon(for: entry, isActive: isActive)
-          .frame(width: 44, height: 44)
+          .frame(maxWidth: .infinity, minHeight: 44)
           .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-              .fill(isActive ? ADEColor.accent.opacity(0.16) : Color.clear)
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+              .fill(isActive ? Color.white.opacity(0.07) : Color.clear)
           )
           .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-              .stroke(isActive ? ADEColor.accent.opacity(0.35) : Color.clear, lineWidth: 0.8)
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+              .stroke(isActive ? Color.white.opacity(0.06) : Color.clear, lineWidth: 0.8)
           )
+          .overlay(alignment: .trailing) {
+            if isActive {
+              RoundedRectangle(cornerRadius: 1, style: .continuous)
+                .fill(ADEColor.accent.opacity(0.85))
+                .frame(width: 2, height: 20)
+                .offset(x: 2)
+            }
+          }
         if let badge = badgeCount(for: entry), badge > 0 {
           Text("\(badge)")
-            .font(.system(size: 9, weight: .bold))
+            .font(.system(size: 8, weight: .bold))
             .foregroundStyle(ADEColor.textPrimary)
-            .padding(.horizontal, 4)
+            .padding(.horizontal, 3)
             .padding(.vertical, 1)
             .background(
               Capsule(style: .continuous)
@@ -565,7 +607,7 @@ struct ModelPickerRail: View {
               Capsule(style: .continuous)
                 .stroke(ADEColor.glassBorder, lineWidth: 0.5)
             )
-            .offset(x: 6, y: -4)
+            .offset(x: 4, y: -3)
         }
       }
     }
@@ -587,23 +629,20 @@ struct ModelPickerRail: View {
     switch entry {
     case .favorites:
       Image(systemName: isActive ? "star.fill" : "star")
-        .font(.system(size: 17, weight: .semibold))
+        .font(.system(size: 16, weight: .semibold))
         .foregroundStyle(ADEColor.warning)
     case .recents:
       Image(systemName: isActive ? "clock.fill" : "clock")
-        .font(.system(size: 17, weight: .semibold))
-        .foregroundStyle(isActive ? ADEColor.accent : ADEColor.textSecondary)
+        .font(.system(size: 16, weight: .semibold))
+        .foregroundStyle(isActive ? ADEColor.textPrimary : ADEColor.textSecondary)
     case .providerGroup(let key, _):
-      WorkProviderLogo(provider: providerKeyForLogo(key), size: 30)
+      WorkProviderBareLogo(
+        provider: workRailLogoProvider(for: key),
+        fallbackSymbol: providerIcon(key),
+        tint: providerTint(key),
+        size: 18
+      )
     }
-  }
-
-  /// The rail rows show a per-family logo. For the curated "claude"/"codex"
-  /// groups the brand asset key is the same as the group key, but the desktop
-  /// catalog uses keys like "opencode" / "cursor" / "droid" which already
-  /// resolve to brand assets via the existing `providerAssetName` map.
-  private func providerKeyForLogo(_ key: String) -> String {
-    key
   }
 
   private func accessibilityLabel(for entry: ModelPickerRailEntry) -> String {
@@ -633,13 +672,30 @@ struct ModelPickerContentPane: View {
   let selectedProviderTabKey: String?
   let currentModelId: String
   let currentReasoningEffort: String
+  let pendingModelId: String?
   let favorites: [String]
   let isBusy: Bool
+  let onHighlight: (WorkModelOption) -> Void
   let onSelect: (WorkModelOption, String?) -> Void
   let onSelectProviderTab: (String) -> Void
   let onToggleFavorite: (String) -> Void
 
   private var favoritesSet: Set<String> { Set(favorites) }
+
+  private var catalogGroupKey: String? {
+    if case .providerGroup(let key, _) = selection { return key }
+    return nil
+  }
+
+  private var rowStyle: ModelPickerRowStyle {
+    if isSearching { return .compact }
+    switch selection {
+    case .favorites, .recents:
+      return .compact
+    case .providerGroup:
+      return .detailed
+    }
+  }
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
@@ -650,9 +706,9 @@ struct ModelPickerContentPane: View {
         emptyState
       } else {
         ScrollView {
-          LazyVStack(alignment: .leading, spacing: 14) {
+          LazyVStack(alignment: .leading, spacing: rowStyle == .compact ? 4 : 5) {
             ForEach(groupedRows) { group in
-              VStack(alignment: .leading, spacing: 6) {
+              VStack(alignment: .leading, spacing: rowStyle == .compact ? 4 : 5) {
                 if let title = group.title {
                   Text(title.uppercased())
                     .font(.caption2.weight(.bold))
@@ -664,10 +720,15 @@ struct ModelPickerContentPane: View {
                 ForEach(group.models) { model in
                   ModelPickerListRow(
                     model: model,
-                    isActive: workModelIdsEquivalent(model.id, currentModelId),
+                    style: rowStyle,
+                    catalogGroupKey: catalogGroupKey,
+                    isSessionActive: workModelIdsEquivalent(model.id, currentModelId),
+                    isPending: pendingModelId.map { workModelIdsEquivalent(model.id, $0) } ?? false,
+                    hasPendingSelection: pendingModelId != nil,
                     isFavorite: favoritesSet.contains(model.id),
                     isBusy: isBusy,
                     currentReasoningEffort: currentReasoningEffort,
+                    onHighlight: { onHighlight(model) },
                     onSelect: { effort in onSelect(model, effort) },
                     onToggleFavorite: { onToggleFavorite(model.id) }
                   )
@@ -675,8 +736,8 @@ struct ModelPickerContentPane: View {
               }
             }
           }
-          .padding(.horizontal, 14)
-          .padding(.vertical, 14)
+          .padding(.horizontal, 10)
+          .padding(.vertical, 8)
         }
       }
     }
@@ -725,9 +786,7 @@ struct ModelPickerContentPane: View {
   @ViewBuilder
   private var header: some View {
     HStack(alignment: .center, spacing: 8) {
-      Image(systemName: headerSystemImage)
-        .font(.subheadline.weight(.semibold))
-        .foregroundStyle(headerTint)
+      headerLeadingIcon
       Text(headerTitle)
         .font(.subheadline.weight(.semibold))
         .foregroundStyle(ADEColor.textPrimary)
@@ -744,8 +803,35 @@ struct ModelPickerContentPane: View {
           )
       }
     }
-    .padding(.horizontal, 14)
-    .padding(.vertical, 10)
+    .padding(.horizontal, 12)
+    .padding(.vertical, 6)
+  }
+
+  @ViewBuilder
+  private var headerLeadingIcon: some View {
+    if isSearching {
+      Image(systemName: "magnifyingglass")
+        .font(.subheadline.weight(.semibold))
+        .foregroundStyle(ADEColor.textSecondary)
+    } else {
+      switch selection {
+      case .favorites:
+        Image(systemName: "star.fill")
+          .font(.subheadline.weight(.semibold))
+          .foregroundStyle(ADEColor.warning)
+      case .recents:
+        Image(systemName: "clock.fill")
+          .font(.subheadline.weight(.semibold))
+          .foregroundStyle(ADEColor.accent)
+      case .providerGroup(let key, _):
+        WorkProviderBareLogo(
+          provider: workRailLogoProvider(for: key),
+          fallbackSymbol: providerIcon(key),
+          tint: providerTint(key),
+          size: 16
+        )
+      }
+    }
   }
 
   private var headerTitle: String {
@@ -757,24 +843,6 @@ struct ModelPickerContentPane: View {
     case .favorites: return "Favorites"
     case .recents: return "Recents"
     case .providerGroup(_, let label): return label
-    }
-  }
-
-  private var headerSystemImage: String {
-    if isSearching { return "magnifyingglass" }
-    switch selection {
-    case .favorites: return "star.fill"
-    case .recents: return "clock.fill"
-    case .providerGroup: return "cpu"
-    }
-  }
-
-  private var headerTint: Color {
-    if isSearching { return ADEColor.textSecondary }
-    switch selection {
-    case .favorites: return ADEColor.warning
-    case .recents: return ADEColor.accent
-    case .providerGroup: return ADEColor.textSecondary
     }
   }
 
@@ -833,14 +901,36 @@ struct ModelPickerContentPane: View {
 
 // MARK: - Row
 
+enum ModelPickerRowStyle {
+  case compact
+  case detailed
+}
+
 struct ModelPickerListRow: View {
   let model: WorkModelOption
-  let isActive: Bool
+  let style: ModelPickerRowStyle
+  let catalogGroupKey: String?
+  let isSessionActive: Bool
+  let isPending: Bool
+  let hasPendingSelection: Bool
   let isFavorite: Bool
   let isBusy: Bool
   let currentReasoningEffort: String
+  let onHighlight: () -> Void
   let onSelect: (String?) -> Void
   let onToggleFavorite: () -> Void
+
+  private var isHighlighted: Bool {
+    isPending || (isSessionActive && !hasPendingSelection)
+  }
+
+  private var showsSessionActiveBadge: Bool {
+    isSessionActive && !hasPendingSelection
+  }
+
+  private var rowLogoProvider: String {
+    workModelRowLogoProvider(for: model, catalogGroupKey: catalogGroupKey)
+  }
 
   private var supportedTiers: [String] {
     var seen = Set<String>()
@@ -851,91 +941,112 @@ struct ModelPickerListRow: View {
     }
   }
 
-  private var rowSelectionEffort: String? {
-    guard !supportedTiers.isEmpty else { return nil }
-    let normalizedCurrent = currentReasoningEffort
-      .trimmingCharacters(in: .whitespacesAndNewlines)
-      .lowercased()
-    if supportedTiers.contains(normalizedCurrent) {
-      return normalizedCurrent
-    }
-    return supportedTiers.first(where: { $0 == "medium" })
-      ?? supportedTiers.first(where: { $0 == "low" })
-      ?? supportedTiers.first
-  }
-
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
-	      Button {
-	        onSelect(rowSelectionEffort)
+      Button {
+        if supportedTiers.isEmpty {
+          onSelect(nil)
+        } else {
+          onHighlight()
+        }
       } label: {
-        headerRow
-          .frame(maxWidth: .infinity, alignment: .leading)
-          .contentShape(Rectangle())
-	      }
-	      .buttonStyle(.plain)
-	      .disabled(isBusy || !model.isAvailable)
+        Group {
+          switch style {
+          case .compact:
+            compactHeaderRow
+          case .detailed:
+            detailedHeaderRow
+          }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+      .disabled(isBusy || !model.isAvailable)
 
       if !supportedTiers.isEmpty {
         reasoningPills(tiers: supportedTiers)
-          .padding(.top, 8)
+          .padding(.top, style == .detailed ? 6 : 4)
       }
     }
-    .padding(.horizontal, 12)
-    .padding(.vertical, 10)
+    .padding(.horizontal, style == .compact ? 10 : 11)
+    .padding(.vertical, style == .compact ? 7 : 8)
     .background(
-      RoundedRectangle(cornerRadius: 14, style: .continuous)
-	        .fill(isActive ? ADEColor.accent.opacity(0.08) : ADEColor.surfaceBackground.opacity(model.isAvailable ? 0.55 : 0.32))
+      RoundedRectangle(cornerRadius: style == .compact ? 10 : 11, style: .continuous)
+        .fill(isHighlighted ? ADEColor.accent.opacity(0.10) : ADEColor.surfaceBackground.opacity(model.isAvailable ? 0.45 : 0.28))
     )
     .overlay(
-      RoundedRectangle(cornerRadius: 14, style: .continuous)
-        .stroke(isActive ? ADEColor.accent.opacity(0.35) : ADEColor.glassBorder, lineWidth: isActive ? 1 : 0.5)
+      RoundedRectangle(cornerRadius: style == .compact ? 10 : 11, style: .continuous)
+        .stroke(isHighlighted ? ADEColor.accent.opacity(isPending ? 0.45 : 0.32) : ADEColor.glassBorder.opacity(0.7), lineWidth: isHighlighted ? 1 : 0.5)
     )
     .contentShape(Rectangle())
   }
 
   @ViewBuilder
-  private var headerRow: some View {
-    HStack(alignment: .center, spacing: 10) {
-      WorkProviderLogo(provider: model.provider, size: 28)
-      VStack(alignment: .leading, spacing: 3) {
+  private var compactHeaderRow: some View {
+    HStack(alignment: .center, spacing: 8) {
+      favoriteButton
+      WorkProviderBareLogo(
+        provider: rowLogoProvider,
+        fallbackSymbol: providerIcon(rowLogoProvider),
+        tint: providerTint(rowLogoProvider),
+        size: 18
+      )
+      VStack(alignment: .leading, spacing: 1) {
+        Text(model.displayName)
+          .font(.subheadline.weight(.semibold))
+          .foregroundStyle(model.isAvailable ? ADEColor.textPrimary : ADEColor.textMuted)
+          .lineLimit(1)
+        Text(providerLabel(rowLogoProvider))
+          .font(.caption2)
+          .foregroundStyle(ADEColor.textMuted.opacity(0.85))
+          .lineLimit(1)
+      }
+      Spacer(minLength: 4)
+      if showsSessionActiveBadge {
+        Image(systemName: "checkmark")
+          .font(.caption.weight(.bold))
+          .foregroundStyle(ADEColor.accent)
+      }
+    }
+    .accessibilityLabel("\(model.displayName), \(providerLabel(rowLogoProvider))\(showsSessionActiveBadge ? ". Currently selected." : isPending ? ". Pick a reasoning level." : "")")
+  }
+
+  @ViewBuilder
+  private var detailedHeaderRow: some View {
+    HStack(alignment: .center, spacing: 9) {
+      WorkProviderBareLogo(
+        provider: rowLogoProvider,
+        fallbackSymbol: providerIcon(rowLogoProvider),
+        tint: providerTint(rowLogoProvider),
+        size: 20
+      )
+      VStack(alignment: .leading, spacing: 1) {
         HStack(spacing: 6) {
-	          Text(model.displayName)
-	            .font(.subheadline.weight(.semibold))
-	            .foregroundStyle(model.isAvailable ? ADEColor.textPrimary : ADEColor.textMuted)
+          Text(model.displayName)
+            .font(.subheadline.weight(.semibold))
+            .foregroundStyle(model.isAvailable ? ADEColor.textPrimary : ADEColor.textMuted)
             .lineLimit(1)
-          if isActive {
+          if showsSessionActiveBadge {
             Text("active")
               .font(.caption2.weight(.bold))
               .tracking(0.3)
               .foregroundStyle(ADEColor.accent)
-              .padding(.horizontal, 6)
+              .padding(.horizontal, 5)
               .padding(.vertical, 2)
               .background(ADEColor.accent.opacity(0.15), in: Capsule())
           }
         }
-        HStack(spacing: 6) {
-          Text(workModelTierLabel(model.tier))
-            .font(.caption2.monospaced().weight(.bold))
-            .tracking(0.3)
-            .foregroundStyle(workModelTierTint(model.tier))
-          Text("·")
-            .foregroundStyle(ADEColor.textMuted)
-	          Text(model.tagline)
-	            .font(.caption)
-	            .foregroundStyle(model.isAvailable ? ADEColor.textSecondary : ADEColor.textMuted)
-            .lineLimit(1)
-        }
       }
-      Spacer(minLength: 8)
+      Spacer(minLength: 6)
       favoriteButton
-      if isActive {
+      if showsSessionActiveBadge {
         Image(systemName: "checkmark")
           .font(.subheadline.weight(.bold))
           .foregroundStyle(ADEColor.accent)
       }
     }
-    .accessibilityLabel("\(model.displayName), \(workModelTierLabel(model.tier)). \(model.tagline)\(isActive ? ". Currently selected." : "")")
+    .accessibilityLabel("\(model.displayName)\(showsSessionActiveBadge ? ". Currently selected." : isPending ? ". Pick a reasoning level." : "")")
   }
 
   @ViewBuilder
@@ -958,42 +1069,35 @@ struct ModelPickerListRow: View {
     let normalizedCurrent = currentReasoningEffort
       .trimmingCharacters(in: .whitespacesAndNewlines)
       .lowercased()
-    HStack(spacing: 6) {
-      Text("REASONING")
-        .font(.system(size: 9, weight: .bold))
-        .tracking(0.4)
-        .foregroundStyle(ADEColor.textMuted)
-      ScrollView(.horizontal, showsIndicators: false) {
-        HStack(spacing: 5) {
-          ForEach(tiers, id: \.self) { tier in
-            let normalized = tier.lowercased()
-            let isActiveTier = isActive && normalized == normalizedCurrent
-            Button {
-              onSelect(normalized)
-            } label: {
-              Text(reasoningLabel(for: tier))
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(isActiveTier ? Color.white : ADEColor.textSecondary)
-                .lineLimit(1)
-                .padding(.horizontal, 9)
-                .padding(.vertical, 5)
-                .background(
-                  Capsule(style: .continuous)
-                    .fill(isActiveTier ? ADEColor.accent : ADEColor.surfaceBackground.opacity(0.6))
-                )
-                .overlay(
-                  Capsule(style: .continuous)
-                    .stroke(isActiveTier ? ADEColor.accent : ADEColor.glassBorder, lineWidth: 0.6)
-                )
-            }
-            .buttonStyle(.plain)
-	            .disabled(isBusy || !model.isAvailable)
-            .accessibilityLabel("\(model.displayName) · reasoning \(reasoningLabel(for: tier))")
-            .accessibilityAddTraits(isActiveTier ? .isSelected : [])
+    ScrollView(.horizontal, showsIndicators: false) {
+      HStack(spacing: 6) {
+        ForEach(tiers, id: \.self) { tier in
+          let normalized = tier.lowercased()
+          let isActiveTier = showsSessionActiveBadge && normalized == normalizedCurrent
+          Button {
+            onSelect(normalized)
+          } label: {
+            Text(reasoningLabel(for: tier))
+              .font(.caption.weight(.semibold))
+              .foregroundStyle(isActiveTier ? Color.white : ADEColor.textSecondary)
+              .lineLimit(1)
+              .padding(.horizontal, 12)
+              .padding(.vertical, 7)
+              .background(
+                Capsule(style: .continuous)
+                  .fill(isActiveTier ? ADEColor.accent : ADEColor.surfaceBackground.opacity(isPending ? 0.75 : 0.5))
+              )
+              .overlay(
+                Capsule(style: .continuous)
+                  .stroke(isActiveTier ? ADEColor.accent : ADEColor.glassBorder, lineWidth: 0.6)
+              )
           }
+          .buttonStyle(.plain)
+          .disabled(isBusy || !model.isAvailable || !isPending)
+          .accessibilityLabel("\(model.displayName) · reasoning \(reasoningLabel(for: tier))")
+          .accessibilityAddTraits(isActiveTier ? .isSelected : [])
         }
       }
-      Spacer(minLength: 0)
     }
   }
 

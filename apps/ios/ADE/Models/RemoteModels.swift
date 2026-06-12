@@ -1768,6 +1768,7 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
 struct AgentChatFileRef: Codable, Equatable {
   var path: String
   var type: String
+  var url: String? = nil
 }
 
 enum AgentChatEvent: Decodable, Equatable {
@@ -2143,6 +2144,12 @@ struct SyncChatSubscribeSnapshotPayload: Decodable, Equatable {
   var capturedAt: String
   var truncated: Bool
   var events: [AgentChatEventEnvelope]
+  /// Live turn state from the host's agent chat service at subscribe time.
+  /// Snapshots are byte-capped transcript tails, so a long turn's
+  /// `status: started` event can fall outside the tail; this flag is fresher
+  /// than both the snapshot tail and the changeset-synced session row. Nil on
+  /// older hosts and when the host has no live summary for the session.
+  var turnActive: Bool?
 }
 
 struct AgentChatSteerRequest: Codable, Equatable {
@@ -2443,6 +2450,7 @@ struct FilesWorkspace: Codable, Identifiable, Equatable {
   var kind: String
   var laneId: String?
   var name: String
+  var branchRef: String? = nil
   var rootPath: String
   var isReadOnlyByDefault: Bool
   var mobileReadOnly: Bool
@@ -2456,6 +2464,7 @@ struct FilesWorkspace: Codable, Identifiable, Equatable {
     kind: String,
     laneId: String?,
     name: String,
+    branchRef: String? = nil,
     rootPath: String,
     isReadOnlyByDefault: Bool,
     mobileReadOnly: Bool = true
@@ -2464,6 +2473,7 @@ struct FilesWorkspace: Codable, Identifiable, Equatable {
     self.kind = kind
     self.laneId = laneId
     self.name = name
+    self.branchRef = branchRef
     self.rootPath = rootPath
     self.isReadOnlyByDefault = isReadOnlyByDefault
     self.mobileReadOnly = mobileReadOnly
@@ -2474,6 +2484,7 @@ struct FilesWorkspace: Codable, Identifiable, Equatable {
     case kind
     case laneId
     case name
+    case branchRef
     case rootPath
     case isReadOnlyByDefault
     case mobileReadOnly
@@ -2485,6 +2496,7 @@ struct FilesWorkspace: Codable, Identifiable, Equatable {
     kind = try container.decode(String.self, forKey: .kind)
     laneId = try container.decodeIfPresent(String.self, forKey: .laneId)
     name = try container.decode(String.self, forKey: .name)
+    branchRef = try container.decodeIfPresent(String.self, forKey: .branchRef)
     rootPath = try container.decode(String.self, forKey: .rootPath)
     isReadOnlyByDefault = try container.decode(Bool.self, forKey: .isReadOnlyByDefault)
     mobileReadOnly = try container.decodeIfPresent(Bool.self, forKey: .mobileReadOnly) ?? true

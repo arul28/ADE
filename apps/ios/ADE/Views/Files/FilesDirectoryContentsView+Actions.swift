@@ -8,7 +8,7 @@ extension FilesDirectoryContentsView {
       if nodes.isEmpty {
         isLoading = true
       }
-      nodes = try await syncService.listTree(workspaceId: workspace.id, parentPath: parentPath, includeIgnored: showHidden)
+      nodes = try await syncService.listTree(workspaceId: workspace.id, parentPath: parentPath, includeIgnored: true)
       errorMessage = nil
     } catch {
       errorMessage = error.localizedDescription

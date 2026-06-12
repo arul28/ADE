@@ -289,6 +289,62 @@ func lanePullRequestTint(_ state: String) -> Color {
   }
 }
 
+func lanePrStateRank(_ state: String) -> Int {
+  switch state {
+  case "open", "draft": return 0
+  case "merged": return 1
+  default: return 2
+  }
+}
+
+func lanePrMatchesCurrentBranch(lane: LaneSummary, pr: PullRequestListItem) -> Bool {
+  guard pr.laneId == lane.id else { return false }
+  let laneBranch = normalizedPrBranchName(lane.branchRef)
+  let prHeadBranch = normalizedPrBranchName(pr.headBranch)
+  guard !laneBranch.isEmpty, !prHeadBranch.isEmpty, laneBranch == prHeadBranch else { return false }
+  if lane.laneType == "primary" {
+    let baseBranch = normalizedPrBranchName(lane.baseRef)
+    if !laneBranch.isEmpty, !baseBranch.isEmpty, laneBranch == baseBranch { return false }
+  }
+  return true
+}
+
+func selectLanePrTag(lane: LaneSummary, pullRequests: [PullRequestListItem]) -> PullRequestListItem? {
+  pullRequests
+    .filter { lanePrMatchesCurrentBranch(lane: lane, pr: $0) }
+    .sorted { lhs, rhs in
+      let byState = lanePrStateRank(lhs.state) - lanePrStateRank(rhs.state)
+      if byState != 0 { return byState < 0 }
+      if lhs.updatedAt != rhs.updatedAt { return lhs.updatedAt > rhs.updatedAt }
+      return lhs.githubPrNumber > rhs.githubPrNumber
+    }
+    .first
+}
+
+func lanePrTagByLaneId(
+  snapshots: [LaneListSnapshot],
+  pullRequests: [PullRequestListItem]
+) -> [String: PullRequestListItem] {
+  var result: [String: PullRequestListItem] = [:]
+  for snapshot in snapshots {
+    if let pr = selectLanePrTag(lane: snapshot.lane, pullRequests: pullRequests) {
+      result[snapshot.lane.id] = pr
+    }
+  }
+  return result
+}
+
+func formatLanePrBadgeLabel(_ pr: PullRequestListItem) -> String {
+  let prefix: String
+  switch pr.state {
+  case "merged": prefix = "MERGED"
+  case "closed": prefix = "CLOSED"
+  case "draft": prefix = "DRAFT"
+  default: prefix = "PR"
+  }
+  return "\(prefix) #\(pr.githubPrNumber)"
+}
+
 func runtimeSymbol(_ bucket: String) -> String {
   switch bucket {
   case "running":

@@ -79,4 +79,89 @@ enum LaneColorPalette {
     let hex = fallbacks[fallbackIndex % fallbacks.count]
     return color(forHex: hex)
   }
+
+  /// Desktop `laneDisplayColor`: lane hex when set, otherwise a neutral secondary tone.
+  static func displayColor(forHex raw: String?, fallback: Color = ADEColor.textSecondary) -> Color {
+    color(forHex: raw) ?? fallback
+  }
+}
+
+enum LaneSurfaceTintStrength {
+  case soft
+  case `default`
+  case pastel
+}
+
+/// Desktop `laneSurfaceTint` — shaded fills and borders that reflect a lane's chosen color.
+struct LaneSurfaceTint {
+  let background: Color
+  let border: Color
+  let accentBar: Color
+  let text: Color?
+
+  static let neutral = LaneSurfaceTint(
+    background: ADEColor.surfaceBackground.opacity(0.08),
+    border: ADEColor.border.opacity(0.18),
+    accentBar: .clear,
+    text: nil
+  )
+}
+
+func laneSurfaceTint(forHex raw: String?, strength: LaneSurfaceTintStrength = .pastel) -> LaneSurfaceTint {
+  guard let color = LaneColorPalette.color(forHex: raw) else {
+    return .neutral
+  }
+  switch strength {
+  case .pastel:
+    return LaneSurfaceTint(
+      background: color.opacity(0.08),
+      border: color.opacity(0.14),
+      accentBar: color.opacity(0.40),
+      text: color.opacity(0.85)
+    )
+  case .soft:
+    return LaneSurfaceTint(
+      background: color.opacity(0.10),
+      border: color.opacity(0.22),
+      accentBar: color,
+      text: color
+    )
+  case .default:
+    return LaneSurfaceTint(
+      background: color.opacity(0.16),
+      border: color.opacity(0.28),
+      accentBar: color,
+      text: color
+    )
+  }
+}
+
+func laneIconSystemName(_ icon: LaneIcon) -> String {
+  switch icon {
+  case .star: return "star.fill"
+  case .flag: return "flag.fill"
+  case .bolt: return "bolt.fill"
+  case .shield: return "shield.fill"
+  case .tag: return "tag.fill"
+  }
+}
+
+/// Desktop `LaneLogoMark` — git-branch lane identity or the lane's custom icon glyph.
+struct WorkLaneLogoMark: View {
+  let color: Color
+  var laneIcon: LaneIcon? = nil
+  var size: CGFloat = 11
+
+  var body: some View {
+    Group {
+      if let laneIcon {
+        Image(systemName: laneIconSystemName(laneIcon))
+      } else {
+        Image(systemName: "arrow.branch")
+      }
+    }
+    .font(.system(size: size, weight: .regular))
+    .foregroundStyle(color)
+    .accessibilityHidden(true)
+  }
 }

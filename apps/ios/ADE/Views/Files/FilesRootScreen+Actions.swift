@@ -57,9 +57,15 @@ extension FilesRootScreen {
         try? await syncService.refreshLaneSnapshots()
       }
       let previousSelectedWorkspaceId = selectedWorkspaceId
-      let loadedWorkspaces = try await syncService.listWorkspaces()
+      async let loadedWorkspacesTask = syncService.listWorkspaces()
+      async let loadedLanesTask = syncService.fetchLanes()
+      let loadedWorkspaces = try await loadedWorkspacesTask
+      let loadedLanes = try await loadedLanesTask
       if workspaces != loadedWorkspaces {
         workspaces = loadedWorkspaces
+      }
+      if lanes != loadedLanes {
+        lanes = loadedLanes
       }
       let nextSelectedWorkspaceId = selectedWorkspaceId.flatMap { candidate in
         loadedWorkspaces.contains(where: { $0.id == candidate }) ? candidate : nil

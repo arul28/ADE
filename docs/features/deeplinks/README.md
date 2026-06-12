@@ -130,8 +130,14 @@ Apps/web — landing page + OG unfurl:
 - `apps/web/vercel.json` — adds `/open → /api/open` rewrite ahead of the
   catch-all SPA rewrite.
 
-iOS — inbound deeplinks + Send-to-Mac:
+iOS — inbound deeplinks, outbound link minting, and Send-to-Mac:
 
+- `apps/ios/ADE/Views/Lanes/LaneDeeplinkHelpers.swift` — outbound link
+  minting on the phone: builds `ade://lane/<id>` and percent-encoded
+  `ade://repo/<owner>/<repo>/branch/<branch>` strings for the lane
+  detail's "Copy ADE lane link" / "Copy branch link" menu actions
+  (branch links resolve owner/repo from a linked PR; with no GitHub
+  remote the lane link is copied instead, with a notice).
 - `apps/ios/ADE/App/DeepLinkRouter.swift` — parses inbound `ade://` URLs.
   `ade://session/<id>` and `ade://pr/<n>` (and the longer
   `ade://pr/<owner>/<repo>/<number>` form) flip the active tab via

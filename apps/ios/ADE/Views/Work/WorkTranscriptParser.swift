@@ -38,6 +38,7 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
       case "user_message":
         event = .userMessage(
           text: userMessageDisplayText(from: eventDict),
+          attachments: parseAgentChatFileRefs(from: eventDict["attachments"]),
           turnId: turnId,
           steerId: optionalString(eventDict["steerId"]),
           deliveryState: optionalString(eventDict["deliveryState"]),
@@ -360,6 +361,16 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
       }
       return lhs.timestamp < rhs.timestamp
     }
+}
+
+private func parseAgentChatFileRefs(from value: Any?) -> [AgentChatFileRef]? {
+  guard let array = value as? [[String: Any]], !array.isEmpty else { return nil }
+  let refs = array.compactMap { dict -> AgentChatFileRef? in
+    guard let path = optionalString(dict["path"]), !path.isEmpty else { return nil }
+    let type = optionalString(dict["type"]) ?? "file"
+    return AgentChatFileRef(path: path, type: type, url: optionalString(dict["url"]))
+  }
+  return refs.isEmpty ? nil : refs
 }
 
 private func userMessageDisplayText(from eventDict: [String: Any]) -> String {

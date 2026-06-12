@@ -5,7 +5,6 @@ struct FilesDirectoryContentsView: View {
 
   let workspace: FilesWorkspace
   let parentPath: String
-  let showHidden: Bool
   let isLive: Bool
   let isTabActive: Bool
   let openDirectory: (String) -> Void
@@ -77,7 +76,7 @@ struct FilesDirectoryContentsView: View {
     .task(id: DirectoryReloadKey(
       workspaceId: workspace.id,
       parentPath: parentPath,
-      includeHidden: showHidden,
+      includeHidden: true,
       live: isLive,
       active: isTabActive,
       manualReloadToken: manualReloadToken

@@ -219,6 +219,49 @@ enum LaneCreateMode: String, CaseIterable, Identifiable {
   }
 }
 
+struct LaneDeleteSelection: Equatable {
+  var worktree = false
+  var localBranch = false
+  var remoteBranch = false
+
+  static let empty = LaneDeleteSelection()
+
+  var hasAny: Bool {
+    worktree || localBranch || remoteBranch
+  }
+
+  var allSelected: Bool {
+    worktree && localBranch && remoteBranch
+  }
+}
+
+enum ManageLaneTab: String, CaseIterable, Identifiable {
+  case delete
+  case appearance
+  case stack
+  case archive
+
+  var id: String { rawValue }
+
+  var title: String {
+    switch self {
+    case .delete: return "Delete"
+    case .appearance: return "Appearance"
+    case .stack: return "Restack"
+    case .archive: return "Archive"
+    }
+  }
+
+  var symbol: String {
+    switch self {
+    case .delete: return "trash"
+    case .appearance: return "paintbrush"
+    case .stack: return "arrow.triangle.branch"
+    case .archive: return "archivebox"
+    }
+  }
+}
+
 enum LaneDeleteMode: String, CaseIterable, Identifiable {
   case worktree
   case localBranch = "local_branch"

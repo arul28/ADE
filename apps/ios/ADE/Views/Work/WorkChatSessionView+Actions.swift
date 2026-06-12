@@ -16,8 +16,13 @@ extension WorkChatSessionView {
     // .userInitiated, not .utility: this rebuild feeds the visible streaming
     // transcript, and utility-priority tasks get starved while SwiftUI is
     // busy — which showed up as multi-second delta-to-screen latency.
+    //
+    // 100 ms debounce: chat-event notifications arrive at most every ~150 ms
+    // (SyncService coalescer), so this timer always completes between bursts
+    // while still folding the multiple onChange triggers (transcript,
+    // fallbackEntries, artifacts) from a single refresh into one rebuild.
     timelineRebuildTask = Task.detached(priority: .userInitiated) {
-      try? await Task.sleep(for: .milliseconds(220))
+      try? await Task.sleep(for: .milliseconds(100))
       guard !Task.isCancelled else { return }
       let nextSnapshot = buildWorkChatTimelineSnapshot(
         transcript: transcriptSnapshot,

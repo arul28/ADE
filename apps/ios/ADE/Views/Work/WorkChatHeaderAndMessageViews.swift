@@ -237,23 +237,41 @@ struct WorkChatMessageBubble: View {
   private var userRow: some View {
     // Desktop parity: the user message is the ONLY bubble — right-aligned, an
     // accent→violet 135° gradient, white text, inset top highlight + soft
-    // drop shadow. Capped at ~82% of the measured column width so short replies
-    // stay compact while long ones wrap rather than clip.
-    HStack(alignment: .top, spacing: 8) {
+    // drop shadow. Attachments render inside the same bubble (not below it).
+    // Capped at ~92% of the measured column width on mobile so long prompts
+    // use more horizontal space and less vertical scroll.
+    let attachments = message.attachments ?? []
+    let hasAttachments = !attachments.isEmpty
+    let hasText = !message.markdown.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    let maxBubbleWidth = columnWidth > 0 ? columnWidth * 0.92 : 360
+
+    return HStack(alignment: .top, spacing: 8) {
       Spacer(minLength: 0)
-      VStack(alignment: .trailing, spacing: 4) {
+      VStack(alignment: .trailing, spacing: 6) {
         if let deliveryBadge {
           // Delivery badges only render when a non-default state applies
           // (queued/sending/failed). Successful deliveries stay silent.
           WorkDeliveryBadge(state: deliveryBadge)
         }
-        Text(message.markdown)
-          .font(.body)
-          .foregroundStyle(Color.white)
-          .lineSpacing(5)
-          .multilineTextAlignment(.leading)
-          .fixedSize(horizontal: false, vertical: true)
-          .textSelection(.enabled)
+        if hasText || hasAttachments {
+          VStack(alignment: .leading, spacing: hasText && hasAttachments ? 8 : 0) {
+            if hasText {
+              Text(message.markdown)
+                .font(.body)
+                .foregroundStyle(Color.white)
+                .lineSpacing(5)
+                .multilineTextAlignment(.leading)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+            }
+            if hasAttachments {
+              WorkChatAttachmentTray(
+                attachments: attachments,
+                alignment: .leading,
+                style: .embeddedInBubble
+              )
+            }
+          }
           .padding(.horizontal, 16)
           .padding(.vertical, 8)
           .background(userBubbleGradient, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
@@ -274,8 +292,9 @@ struct WorkChatMessageBubble: View {
               .stroke(userBubbleBorder, lineWidth: 0.8)
           )
           .shadow(color: accent.opacity(0.34), radius: 12, y: 5)
-          .frame(maxWidth: columnWidth > 0 ? columnWidth * 0.82 : 320, alignment: .trailing)
+          .frame(maxWidth: maxBubbleWidth, alignment: .trailing)
           .fixedSize(horizontal: false, vertical: true)
+        }
       }
     }
     .frame(maxWidth: .infinity)
@@ -294,7 +313,7 @@ struct WorkChatMessageBubble: View {
       }
     }
     .accessibilityElement(children: .combine)
-    .accessibilityLabel("Your message. \(workChatAccessibilityPreview(message.markdown))")
+    .accessibilityLabel(userMessageAccessibilityLabel)
     .adeInspectable(
       "Work.Chat.MessageBubble.User",
       metadata: [
@@ -304,6 +323,18 @@ struct WorkChatMessageBubble: View {
         "itemId": message.itemId ?? ""
       ]
     )
+  }
+
+  private var userMessageAccessibilityLabel: String {
+    var parts = ["Your message."]
+    let preview = workChatAccessibilityPreview(message.markdown)
+    if !preview.isEmpty {
+      parts.append(preview)
+    }
+    if let attachments = message.attachments, !attachments.isEmpty {
+      parts.append(workChatAttachmentAccessibilityLabel(attachments))
+    }
+    return parts.joined(separator: " ")
   }
 
   var deliveryBadge: WorkDeliveryBadge.State? {

@@ -9,11 +9,7 @@ extension WorkChatSessionView {
   /// markdown through the tail-only streaming parser; every completed message
   /// keeps the whole-text block cache path.
   var streamingAssistantMessageId: String? {
-    guard workChatIsStreaming(
-      sessionStatus: sessionStatus,
-      isLive: isLive,
-      transcriptIndicatesActiveTurn: timelineSnapshot.transcriptIndicatesActiveTurn
-    ) else { return nil }
+    guard isStreamingTurn else { return nil }
     for entry in timelineSnapshot.timeline.reversed() {
       guard case .message(let message) = entry.payload else { continue }
       return message.role == "assistant" ? message.id : nil
@@ -153,18 +149,10 @@ extension WorkChatSessionView {
 
   @ViewBuilder
   func timelineChangedFiles(_ group: WorkChangedFilesGroupModel) -> some View {
-    // Files panels are open by default (desktop parity); this dedicated collapse
-    // set keeps changed-file state distinct from ordinary tool-card expansion.
     WorkChangedFilesPanelView(
       group: group,
-      isExpanded: !collapsedChangedFileGroupIds.contains(group.id),
-      onToggle: {
-        if collapsedChangedFileGroupIds.contains(group.id) {
-          collapsedChangedFileGroupIds.remove(group.id)
-        } else {
-          collapsedChangedFileGroupIds.insert(group.id)
-        }
-      },
+      isExpanded: expandedToolCardIds.contains(group.id),
+      onToggle: { toggleToolCard(group.id) },
       onUndo: nil
     )
   }
@@ -206,7 +194,7 @@ extension WorkChatSessionView {
   /// Reasoning is "live" when the session is streaming AND this is the most
   /// recent reasoning entry in the transcript. Everything older collapses.
   func isReasoningLive(_ card: WorkEventCardModel) -> Bool {
-    guard isLive, sessionStatus == "active" else { return false }
+    guard isStreamingTurn else { return false }
     let latestReasoningId = eventCards.last(where: { $0.kind == "reasoning" })?.id
     return card.id == latestReasoningId
   }

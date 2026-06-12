@@ -35,6 +35,7 @@ struct WorkChatMessage: Identifiable, Equatable {
   var steerId: String? = nil
   var deliveryState: String? = nil
   var processed: Bool? = nil
+  var attachments: [AgentChatFileRef]? = nil
 }
 
 struct WorkLocalEchoMessage: Identifiable, Equatable {
@@ -178,9 +179,8 @@ enum WorkTimelinePayload: Equatable {
   /// `Tool calls (n)` panel.
   case toolGroup(WorkToolGroupModel)
   /// Cluster of consecutive code-change entries (file_change events plus
-  /// write-category tool calls) collapsed into a single header-only row.
-  /// Tap to reveal per-file rows with diff stats; tap a row to reveal its
-  /// diff. Matches the desktop `N files changed` panel.
+  /// write-category tool calls) collapsed into a single flat header row.
+  /// Collapsed by default like tool calls; tap to reveal per-file rows.
   case changedFiles(WorkChangedFilesGroupModel)
   case eventCard(WorkEventCardModel)
   case usageSummary(WorkUsageSummary)
@@ -428,7 +428,7 @@ struct WorkChatEnvelope: Identifiable, Equatable {
 }
 
 enum WorkChatEvent: Equatable {
-  case userMessage(text: String, turnId: String?, steerId: String?, deliveryState: String?, processed: Bool?)
+  case userMessage(text: String, attachments: [AgentChatFileRef]?, turnId: String?, steerId: String?, deliveryState: String?, processed: Bool?)
   case assistantText(text: String, turnId: String?, itemId: String?)
   case toolCall(tool: String, argsText: String, itemId: String, parentItemId: String?, turnId: String?)
   case toolResult(tool: String, resultText: String, itemId: String, parentItemId: String?, turnId: String?, status: WorkToolCardStatus)

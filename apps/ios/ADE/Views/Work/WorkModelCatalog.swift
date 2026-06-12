@@ -97,6 +97,52 @@ func workFilterChatModelsForCursorAvailability(
   models.filter { workAgentChatModelSupportsCursorAvailabilityMode($0, mode: mode) }
 }
 
+/// Maps a picked model to the tracked CLI runtime provider, mirroring desktop
+/// `resolveCliProviderForModel` + `resolveProviderGroupForModel`.
+func workResolveCliProvider(for modelId: String, provider: String) -> String {
+  switch workModelCatalogGroupKey(for: modelId, currentProvider: provider) {
+  case "claude": return "claude"
+  case "codex": return "codex"
+  case "cursor": return "cursor"
+  case "droid": return "droid"
+  default: return "opencode"
+  }
+}
+
+func workModelAllowedForAvailabilityMode(
+  modelId: String,
+  provider: String,
+  mode: WorkCursorAvailabilityMode
+) -> Bool {
+  let groups = workFilterCatalogForCursorAvailability(
+    workModelCatalogGroups(currentModelId: modelId, currentProvider: provider),
+    mode: mode
+  )
+  return groups.contains { group in
+    group.providers.contains { providerEntry in
+      providerEntry.models.contains { workModelIdsEquivalent($0.id, modelId) }
+    }
+  }
+}
+
+func workDefaultModelIdForAvailabilityMode(
+  preferredProvider: String,
+  mode: WorkCursorAvailabilityMode
+) -> (modelId: String, provider: String)? {
+  let family = providerFamilyKey(preferredProvider)
+  let filtered = workFilterCatalogForCursorAvailability(workCuratedModelCatalogGroups(), mode: mode)
+  if let match = filtered.first(where: { $0.key == family })?
+    .providers
+    .flatMap(\.models)
+    .first {
+    return (match.id, match.provider)
+  }
+  if let fallback = filtered.first?.providers.flatMap(\.models).first {
+    return (fallback.id, fallback.provider)
+  }
+  return nil
+}
+
 func workFilterCatalogForCursorAvailability(
   _ groups: [WorkModelCatalogGroup],
   mode: WorkCursorAvailabilityMode

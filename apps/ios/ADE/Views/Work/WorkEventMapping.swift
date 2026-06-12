@@ -33,8 +33,15 @@ private let workANSIAttributedStringCache: NSCache<NSString, WorkANSIAttributedS
 
 func makeWorkChatEvent(from event: AgentChatEvent) -> WorkChatEvent {
   switch event {
-  case .userMessage(let text, _, let turnId, let steerId, let deliveryState, let processed):
-    return .userMessage(text: text, turnId: turnId, steerId: steerId, deliveryState: deliveryState, processed: processed)
+  case .userMessage(let text, let attachments, let turnId, let steerId, let deliveryState, let processed):
+    return .userMessage(
+      text: text,
+      attachments: attachments,
+      turnId: turnId,
+      steerId: steerId,
+      deliveryState: deliveryState,
+      processed: processed
+    )
   case .text(let text, let messageId, let turnId, let itemId):
     let normalizedMessageId = messageId?.trimmingCharacters(in: .whitespacesAndNewlines)
     let normalizedItemId = itemId?.trimmingCharacters(in: .whitespacesAndNewlines)

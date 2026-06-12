@@ -459,4 +459,80 @@ extension WorkSessionDestinationView {
       laneId: pr.laneId
     )
   }
+
+  func openLanePrOnGitHub() {
+    guard let urlString = laneOpenPr?.githubUrl.trimmingCharacters(in: .whitespacesAndNewlines),
+          !urlString.isEmpty,
+          let url = URL(string: urlString) else { return }
+    UIApplication.shared.open(url)
+  }
+
+  @MainActor
+  func copyLanePrLink() {
+    guard let urlString = laneOpenPr?.githubUrl.trimmingCharacters(in: .whitespacesAndNewlines),
+          !urlString.isEmpty else { return }
+    UIPasteboard.general.string = urlString
+    prLinkCopied = true
+    Task {
+      try? await Task.sleep(nanoseconds: 1_500_000_000)
+      guard !Task.isCancelled else { return }
+      prLinkCopied = false
+    }
+  }
+
+  func presentCreateLanePr() {
+    createPrPresented = true
+  }
+
+  @MainActor
+  func loadPrCreateCapabilitiesIfNeeded() async {
+    guard hostReachable else {
+      prCreateCapabilities = nil
+      return
+    }
+    do {
+      let snapshot = try await syncService.fetchPrMobileSnapshot()
+      guard !Task.isCancelled else { return }
+      prCreateCapabilities = snapshot.createCapabilities
+    } catch {
+      guard !Task.isCancelled else { return }
+      prCreateCapabilities = nil
+    }
+  }
+
+  @MainActor
+  func handleChatCreateSinglePr(
+    laneId: String,
+    title: String,
+    body: String,
+    draft: Bool,
+    baseBranch: String,
+    labels: [String],
+    reviewers: [String],
+    strategy: String?
+  ) async -> Bool {
+    guard hostReachable else {
+      errorMessage = "Connect to your desktop to create a pull request."
+      return false
+    }
+    do {
+      try await syncService.createPullRequest(
+        laneId: laneId,
+        title: title,
+        body: body,
+        draft: draft,
+        baseBranch: baseBranch,
+        labels: labels,
+        reviewers: reviewers,
+        strategy: strategy
+      )
+      createPrPresented = false
+      await resolveLaneOpenPr(for: headerMenuLaneId)
+      await loadPrCreateCapabilitiesIfNeeded()
+      return true
+    } catch {
+      errorMessage = error.localizedDescription
+      return false
+    }
+  }
 }
