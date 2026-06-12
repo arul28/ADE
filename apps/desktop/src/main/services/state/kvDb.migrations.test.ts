@@ -365,6 +365,51 @@ describe("kvDb migrations - lane worktree lock schema", () => {
       db.close();
     }
   });
+
+  it("clears legacy path_to_merge and pr_issue_resolution locks on open", async () => {
+    const dbPath = makeDbPath("ade-kvdb-lane-lock-ptm-");
+    const worktreePath = path.join(path.dirname(dbPath), "worktree");
+    fs.mkdirSync(worktreePath, { recursive: true });
+    fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+
+    const { DatabaseSync } = require("node:sqlite") as { DatabaseSync: new (path: string) => RawDb };
+    const rawDb = new DatabaseSync(dbPath);
+    const key = fs.realpathSync.native(worktreePath);
+    const now = "2026-06-12T00:00:00.000Z";
+    rawDb.exec(`
+      create table lane_worktree_locks (
+        worktree_key text not null unique,
+        worktree_path text not null,
+        lane_id text not null,
+        owner_kind text not null,
+        owner_pr_id text,
+        owner_session_id text,
+        owner_proposal_id text,
+        owner_label text not null,
+        token text not null,
+        created_at text not null,
+        heartbeat_at text not null,
+        expires_at text not null
+      );
+    `);
+    const insert = rawDb.prepare(`
+      insert into lane_worktree_locks (
+        worktree_key, worktree_path, lane_id, owner_kind, owner_pr_id,
+        owner_session_id, owner_proposal_id, owner_label, token,
+        created_at, heartbeat_at, expires_at
+      ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    insert.run(key, key, "lane-1", "path_to_merge", "pr-1", "session-1", null, "PtM", "token-ptm", now, now, "2099-01-01T00:00:00.000Z");
+    insert.run(`${key}-other`, `${key}-other`, "lane-2", "pr_issue_resolution", "pr-2", "session-2", null, "Issue", "token-issue", now, now, "2099-01-01T00:00:00.000Z");
+    rawDb.close();
+
+    const db = await openKvDb(dbPath, createLogger());
+    try {
+      expect(db.get<{ count: number }>("select count(1) as count from lane_worktree_locks")?.count).toBe(0);
+    } finally {
+      db.close();
+    }
+  });
 });
 
 describe("kvDb migrations - worker agent schema", () => {

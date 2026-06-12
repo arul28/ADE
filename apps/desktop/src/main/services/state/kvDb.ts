@@ -2975,6 +2975,12 @@ function migrate(db: MigrationDb) {
   db.run("create index if not exists idx_lane_worktree_locks_lane on lane_worktree_locks(lane_id)");
   db.run("create index if not exists idx_lane_worktree_locks_session on lane_worktree_locks(owner_session_id)");
   db.run("create index if not exists idx_lane_worktree_locks_expires on lane_worktree_locks(expires_at)");
+  // Path to Merge is removed; clear orphaned locks so conflict_resolution can acquire immediately.
+  try {
+    db.run("delete from lane_worktree_locks where owner_kind in ('path_to_merge', 'pr_issue_resolution')");
+  } catch (error) {
+    if (!isReadonlyDatabaseError(error)) throw error;
+  }
 
   // Model-picker favorites + recents. Per-project (the DB instance is the
   // scope, so no project_id column is needed) and CRR-replicated so desktop,
