@@ -384,6 +384,52 @@ describe("local runtime connection pool", () => {
     });
   });
 
+  it("retries the service install from isolated recovery and reports runtime mode transitions", async () => {
+    const modeChanges: string[] = [];
+    const pool = new LocalRuntimeConnectionPool("1.2.3", {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    } as never, {
+      preferServiceRepair: true,
+      onRuntimeModeChange: (mode) => modeChanges.push(mode),
+    });
+    const internals = pool as unknown as {
+      activeConnection: { client: unknown; child: null; socketPath: string } | null;
+      probeCompatibleRuntime: (socketPath: string) => Promise<boolean>;
+      installServiceBestEffort: () => Promise<void>;
+      scheduleIsolatedRuntimeRecovery: (primarySocketPath: string) => void;
+      tryRecoverFromIsolatedRuntime: (primarySocketPath: string) => Promise<void>;
+      lastIsolatedServiceRepairMs: number;
+    };
+    const installSpy = vi.fn(async () => {});
+    internals.installServiceBestEffort = installSpy;
+    internals.probeCompatibleRuntime = async () => false;
+    internals.activeConnection = { client: {}, child: null, socketPath: "/tmp/ade-isolated.sock" };
+
+    internals.scheduleIsolatedRuntimeRecovery("/tmp/ade.sock");
+    expect(modeChanges).toEqual(["isolated"]);
+    expect(pool.getStatus().runtimeMode).toBe("isolated");
+
+    // A failed probe re-attempts the service install once per cooldown window.
+    await internals.tryRecoverFromIsolatedRuntime("/tmp/ade.sock");
+    expect(installSpy).toHaveBeenCalledTimes(1);
+    await internals.tryRecoverFromIsolatedRuntime("/tmp/ade.sock");
+    expect(installSpy).toHaveBeenCalledTimes(1);
+    internals.lastIsolatedServiceRepairMs = 0;
+    await internals.tryRecoverFromIsolatedRuntime("/tmp/ade.sock");
+    expect(installSpy).toHaveBeenCalledTimes(2);
+
+    // Landing back on the primary socket announces the recovery exactly once.
+    internals.activeConnection = { client: {}, child: null, socketPath: "/tmp/ade.sock" };
+    await internals.tryRecoverFromIsolatedRuntime("/tmp/ade.sock");
+    expect(modeChanges).toEqual(["isolated", "primary"]);
+    expect(pool.getStatus().runtimeMode).toBe("primary");
+
+    pool.dispose();
+  });
+
   it("parses structured service manager output for settings status", () => {
     expect(parseRuntimeServiceManagerOutput(JSON.stringify({
       ok: false,

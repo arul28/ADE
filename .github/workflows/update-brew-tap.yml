@@ -1,0 +1,81 @@
+name: Update brew tap
+
+# Bumps the arul28/homebrew-ade cask (version + sha256) whenever a release is
+# published, so `brew install --cask arul28/ade/ade` always serves the latest
+# DMG. Fires on publish (not draft creation) because the cask download URL only
+# resolves for published releases.
+#
+# Auth: HOMEBREW_TAP_DEPLOY_KEY repo secret — an SSH deploy key with write
+# access on arul28/homebrew-ade. Manual fallback: scripts/update-brew-tap.sh.
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  bump-cask:
+    if: ${{ !github.event.release.prerelease }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve DMG asset digest
+        id: dmg
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG_NAME: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          version="${TAG_NAME#v}"
+          asset_name="ADE-$version-universal.dmg"
+          digest="$(gh api "repos/$GH_REPO/releases/tags/$TAG_NAME" \
+            --jq ".assets[] | select(.name == \"$asset_name\") | .digest // empty")"
+          case "$digest" in
+            sha256:*) sha="${digest#sha256:}" ;;
+            *)
+              echo "::error::No sha256 digest found for $asset_name on $TAG_NAME."
+              exit 1
+              ;;
+          esac
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Update cask in arul28/homebrew-ade
+        env:
+          DEPLOY_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
+          VERSION: ${{ steps.dmg.outputs.version }}
+          SHA256: ${{ steps.dmg.outputs.sha }}
+        run: |
+          set -euo pipefail
+          if [ -z "$DEPLOY_KEY" ]; then
+            echo "::error::Missing HOMEBREW_TAP_DEPLOY_KEY secret (write deploy key for arul28/homebrew-ade)."
+            exit 1
+          fi
+          mkdir -p ~/.ssh
+          printf '%s\n' "$DEPLOY_KEY" > ~/.ssh/tap_deploy_key
+          chmod 600 ~/.ssh/tap_deploy_key
+          ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
+          export GIT_SSH_COMMAND="ssh -i ~/.ssh/tap_deploy_key -o IdentitiesOnly=yes"
+
+          git clone -q --depth 1 git@github.com:arul28/homebrew-ade.git tap
+          cd tap
+          sed -i -E "s|^  version \".*\"$|  version \"$VERSION\"|" Casks/ade.rb
+          sed -i -E "s|^  sha256 \".*\"$|  sha256 \"$SHA256\"|" Casks/ade.rb
+          # Fail loudly if the cask shape changed and a substitution silently
+          # no-op'd — otherwise `git diff --quiet` reports "nothing to do" and
+          # the tap quietly stops tracking releases.
+          grep -qxF "  version \"$VERSION\"" Casks/ade.rb \
+            || { echo "::error::version line not updated — Casks/ade.rb format may have changed."; exit 1; }
+          grep -qxF "  sha256 \"$SHA256\"" Casks/ade.rb \
+            || { echo "::error::sha256 line not updated — Casks/ade.rb format may have changed."; exit 1; }
+          if git diff --quiet; then
+            echo "Cask already at ADE $VERSION — nothing to do."
+            exit 0
+          fi
+          git config user.name "ade-release-bot"
+          git config user.email "release-bot@users.noreply.github.com"
+          git commit -aqm "ade $VERSION"
+          git push -q origin HEAD:main
+          echo "Updated cask to ADE $VERSION (sha256 $SHA256)."

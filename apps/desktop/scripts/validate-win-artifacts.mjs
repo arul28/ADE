@@ -32,6 +32,7 @@ const bundledAgentSkills = [
   "ade-proof-artifacts",
   "ade-macos-vm",
   "ade-deeplinks",
+  "ade-orchestrator",
 ];
 const bundledAdeCliFiles = [
   ["cli.cjs", "bundled ADE CLI entry"],

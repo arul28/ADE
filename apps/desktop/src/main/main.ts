@@ -1,4 +1,4 @@
-import { app, BrowserWindow, desktopCapturer, dialog, ipcMain, Menu, nativeImage, protocol, safeStorage, shell } from "electron";
+import { app, BrowserWindow, desktopCapturer, dialog, ipcMain, Menu, nativeImage, Notification, protocol, safeStorage, shell } from "electron";
 import { AsyncLocalStorage } from "node:async_hooks";
 import os from "node:os";
 import path from "node:path";
@@ -102,9 +102,11 @@ import type {
   ProjectInfo,
   PtyDataEvent,
   SyncMobileProjectSummary,
+  SyncPeerConnectionState,
   SyncProjectConnectionPayload,
   SyncProjectSwitchRequestPayload,
   SyncProjectSwitchResultPayload,
+  UpdateInstallImpact,
 } from "../shared/types";
 import { buildLinearAutomationDispatches } from "./services/automations/linearAutomationDispatch";
 import type { IosSimulatorDrawerMode } from "../shared/types/iosSimulator";
@@ -1199,6 +1201,27 @@ app.whenReady().then(async () => {
     && process.env.ADE_DISABLE_RUNTIME_SERVICE_INSTALL !== "1";
   const localRuntimePool = new LocalRuntimeConnectionPool(app.getVersion(), localRuntimeLogger, {
     preferServiceRepair: shouldRepairRuntimeServiceOnFallback,
+    onRuntimeModeChange: (mode) => {
+      localRuntimeLogger.warn("local_runtime.runtime_mode_changed", { mode });
+      if (!Notification.isSupported()) return;
+      try {
+        const notification = mode === "isolated"
+          ? new Notification({
+              title: "ADE is running in fallback mode",
+              body: "The ADE background service did not restart cleanly. Phone sync and ADE Code connections are unavailable while ADE keeps retrying in the background.",
+            })
+          : new Notification({
+              title: "ADE service restored",
+              body: "Phone sync and ADE Code connections are available again.",
+            });
+        notification.show();
+      } catch (error) {
+        localRuntimeLogger.warn("local_runtime.runtime_mode_notification_failed", {
+          mode,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    },
   });
   if (shouldAttemptRuntimeServiceInstall) {
     void localRuntimePool.installServiceBestEffort()
@@ -5672,6 +5695,67 @@ app.whenReady().then(async () => {
     return Array.from(new Set(labels));
   };
 
+  // Live-connection probe shown before an update install or quit. Mirrors the
+  // lane-delete quit probe: in-process services in dev, runtime actions against
+  // the brain in packaged builds. Best-effort — an unreachable runtime simply
+  // reports no phones.
+  const collectUpdateInstallImpact = async (): Promise<UpdateInstallImpact> => {
+    const phonesById = new Map<string, string>();
+    const recordPeers = (peers: readonly SyncPeerConnectionState[] | undefined): void => {
+      for (const peer of peers ?? []) {
+        // Match the canonical connected-phone convention used by the phone
+        // device list (main.ts ~2535) and APNS targeting: a phone is both
+        // deviceType "phone" AND platform "iOS". The looser OR form belongs to
+        // host-side sync gating, not user-facing phone copy.
+        if (peer.deviceType !== "phone" || peer.platform !== "iOS") continue;
+        phonesById.set(peer.deviceId, peer.deviceName?.trim() || "Connected phone");
+      }
+    };
+    if (shouldUseInProcessProjectRuntime()) {
+      for (const ctx of projectContexts.values()) {
+        try {
+          const status = await ctx.syncService?.getStatus();
+          recordPeers(status?.connectedPeers);
+        } catch {
+          // Best-effort probe.
+        }
+      }
+    } else {
+      const roots = new Set<string>([
+        ...rootsBoundToWindows(),
+        ...projectContexts.keys(),
+      ]);
+      await Promise.all(Array.from(roots).map(async (root) => {
+        try {
+          const status = await localRuntimePool.syncStatusForRoot(root, {});
+          recordPeers(status.connectedPeers);
+        } catch {
+          // Best-effort probe.
+        }
+      }));
+    }
+    return {
+      connectedPhones: Array.from(phonesById, ([deviceId, deviceName]) => ({
+        deviceId,
+        deviceName,
+      })),
+    };
+  };
+
+  // Quit/update dialogs are synchronous, so cap how long the impact probe can
+  // delay them. On timeout the dialog falls back to generic copy.
+  const collectUpdateInstallImpactBounded = async (
+    timeoutMs = 1_500,
+  ): Promise<UpdateInstallImpact> => {
+    return await Promise.race([
+      collectUpdateInstallImpact().catch((): UpdateInstallImpact => ({ connectedPhones: [] })),
+      new Promise<UpdateInstallImpact>((resolve) => {
+        const timer = setTimeout(() => resolve({ connectedPhones: [] }), timeoutMs);
+        timer.unref?.();
+      }),
+    ]);
+  };
+
   const confirmNoRunningLaneDeleteForQuit = async (ownerWindow?: BrowserWindow | null): Promise<boolean> => {
     const runningDeletes = await getRunningLaneDeleteLabels();
     if (runningDeletes.length === 0) return true;
@@ -5705,15 +5789,33 @@ app.whenReady().then(async () => {
     return choice === 1;
   };
 
-  const confirmQuitWarning = (ownerWindow?: BrowserWindow | null): boolean =>
-    showWindowCloseWarning(ownerWindow, {
+  const describeConnectedPhones = (impact: UpdateInstallImpact | null): string | null => {
+    const phones = impact?.connectedPhones ?? [];
+    if (phones.length === 0) return null;
+    const names = phones.map((phone) => phone.deviceName).join(", ");
+    return phones.length === 1
+      ? `${names} is connected through ADE phone sync and will disconnect; it reconnects automatically once ADE is running again.`
+      : `These phones are connected through ADE phone sync and will disconnect: ${names}. They reconnect automatically once ADE is running again.`;
+  };
+
+  const confirmQuitWarning = (
+    ownerWindow?: BrowserWindow | null,
+    impact: UpdateInstallImpact | null = null,
+  ): boolean => {
+    const phoneDetail = describeConnectedPhones(impact);
+    return showWindowCloseWarning(ownerWindow, {
       buttons: ["Keep ADE open", "Quit ADE"],
       title: "Quit ADE?",
       message: "Save your work before closing ADE.",
-      detail:
-        "Quitting ADE will end agents and background processes owned by this desktop session, including OpenCode servers, terminal sessions, and test runs. The ADE service login item keeps running separately when it is installed.",
+      detail: [
+        "Quitting ADE will end agents and background processes owned by this desktop session, including OpenCode servers, terminal sessions, and test runs.",
+        phoneDetail,
+        "Open ADE Code terminals attached to this machine's ADE service will disconnect too — you can reopen them afterwards.",
+        "The ADE service login item keeps running separately when it is installed.",
+      ].filter(Boolean).join(" "),
       rememberQuitAcknowledgement: true,
     });
+  };
 
   const confirmCloseWindowWarning = (ownerWindow: BrowserWindow): boolean =>
     showWindowCloseWarning(ownerWindow, {
@@ -5734,7 +5836,8 @@ app.whenReady().then(async () => {
     void (async () => {
       try {
         if (!(await confirmNoRunningLaneDeleteForQuit(ownerWindow))) return;
-        if (!confirmQuitWarning(ownerWindow)) return;
+        const impact = await collectUpdateInstallImpactBounded();
+        if (!confirmQuitWarning(ownerWindow, impact)) return;
         requestAppShutdown({ reason, exitCode: 0 });
       } finally {
         quitConfirmationInFlight = false;
@@ -6164,6 +6267,9 @@ app.whenReady().then(async () => {
       const ctx = getActiveContext();
       if (!ctx.autoUpdateService) {
         ctx.autoUpdateService = autoUpdateService;
+      }
+      if (!ctx.updateInstallImpactProvider) {
+        ctx.updateInstallImpactProvider = () => collectUpdateInstallImpactBounded();
       }
       return ctx;
     },

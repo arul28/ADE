@@ -549,6 +549,7 @@ import type {
   CursorCloudOpenChatRequest,
   CursorCloudOpenChatResult,
   CursorCloudStreamRunResult,
+  UpdateInstallImpact,
 } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
@@ -982,6 +983,7 @@ export type AppContext = {
   apnsKeyStore?: import("../notifications/apnsService").ApnsKeyStore | null;
   notificationEventBus?: import("../notifications/notificationEventBus").NotificationEventBus | null;
   autoUpdateService?: ReturnType<typeof createAutoUpdateService> | null;
+  updateInstallImpactProvider?: (() => Promise<UpdateInstallImpact>) | null;
   feedbackReporterService?: ReturnType<typeof createFeedbackReporterService> | null;
 };
 
@@ -10097,6 +10099,17 @@ export function registerIpc({
 
   ipcMain.handle(IPC.updateGetState, () => {
     return getCtx().autoUpdateService?.getSnapshot() ?? createEmptyAutoUpdateSnapshot();
+  });
+
+  ipcMain.handle(IPC.updateGetInstallImpact, async (): Promise<UpdateInstallImpact> => {
+    const provider = getCtx().updateInstallImpactProvider;
+    if (!provider) return { connectedPhones: [] };
+    try {
+      return await provider();
+    } catch {
+      // Best-effort probe: a failed impact query must never block the update UI.
+      return { connectedPhones: [] };
+    }
   });
 
   ipcMain.handle(IPC.updateQuitAndInstall, () => {

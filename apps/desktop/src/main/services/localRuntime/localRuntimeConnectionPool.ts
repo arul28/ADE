@@ -52,6 +52,11 @@ type LocalRuntimeConnectionPoolOptions = {
   disableSync?: boolean;
   preferServiceRepair?: boolean;
   queryServiceStatus?: () => ServiceManagerStatusResult;
+  /**
+   * Invoked when the pool enters or leaves isolated (no-sync fallback) mode.
+   * "isolated" fires once per degradation, "primary" once per recovery.
+   */
+  onRuntimeModeChange?: (mode: "primary" | "isolated") => void;
 };
 
 type LocalRuntimeNodePathOptions = {
@@ -609,6 +614,8 @@ export class LocalRuntimeConnectionPool {
   private ownedRuntimeChild: ChildProcess | null = null;
   private preserveOwnedRuntimeChildOnNextConnect = false;
   private isolatedRecoveryTimer: NodeJS.Timeout | null = null;
+  private isolatedModeActive = false;
+  private lastIsolatedServiceRepairMs = 0;
   private readonly coalescedActionCalls = new Map<string, Promise<RemoteRuntimeActionResult>>();
   private readonly projectsByRoot = new Map<string, RemoteRuntimeProjectRecord>();
   private serviceInstallStatus: LocalRuntimeStatus["serviceInstall"] = {
@@ -648,6 +655,7 @@ export class LocalRuntimeConnectionPool {
         : this.connection
           ? "connecting"
           : "idle",
+      runtimeMode: this.isolatedModeActive ? "isolated" : "primary",
       serviceInstall: { ...this.serviceInstallStatus },
       serviceHealth: { ...this.serviceHealthStatus },
     };
@@ -1163,6 +1171,7 @@ export class LocalRuntimeConnectionPool {
 
   dispose(): void {
     this.clearIsolatedRecoveryTimer();
+    this.markIsolatedMode(false, { notify: false });
     const pending = this.connection;
     this.connection = null;
     this.activeConnection = null;
@@ -1439,6 +1448,7 @@ export class LocalRuntimeConnectionPool {
   // brain is reachable; consumers recover through the normal disconnect path,
   // exactly as they do when a brain is recycled on a build-hash mismatch.
   private scheduleIsolatedRuntimeRecovery(primarySocketPath: string): void {
+    this.markIsolatedMode(true);
     if (this.isolatedRecoveryTimer) return;
     const timer = setInterval(() => {
       void this.tryRecoverFromIsolatedRuntime(primarySocketPath);
@@ -1453,22 +1463,65 @@ export class LocalRuntimeConnectionPool {
     this.isolatedRecoveryTimer = null;
   }
 
+  private markIsolatedMode(active: boolean, options: { notify?: boolean } = {}): void {
+    if (this.isolatedModeActive === active) return;
+    this.isolatedModeActive = active;
+    if (options.notify === false) return;
+    try {
+      this.options.onRuntimeModeChange?.(active ? "isolated" : "primary");
+    } catch (error) {
+      this.logger.warn("local_runtime.runtime_mode_listener_failed", {
+        mode: active ? "isolated" : "primary",
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
   private async tryRecoverFromIsolatedRuntime(primarySocketPath: string): Promise<void> {
     const entry = this.activeConnection;
     if (!entry || entry.socketPath === primarySocketPath) {
       this.clearIsolatedRecoveryTimer();
+      // No active isolated connection: either we reconnected to the primary
+      // socket through the normal path (a real recovery worth announcing) or
+      // the connection is simply gone (stay quiet).
+      this.markIsolatedMode(false, { notify: entry != null });
       return;
     }
-    if (!(await this.probeCompatibleRuntime(primarySocketPath))) return;
+    if (!(await this.probeCompatibleRuntime(primarySocketPath))) {
+      // The probe alone can never succeed when the service (re)install failed:
+      // nothing is going to bind a compatible brain to the primary socket. Keep
+      // re-attempting the install (cooled down) so a transient launchctl
+      // failure does not strand this desktop in no-sync mode forever.
+      await this.retryServiceInstallForIsolatedRecovery();
+      return;
+    }
     this.logger.info("local_runtime.isolated_recovery", {
       primarySocketPath,
       isolatedSocketPath: entry.socketPath,
     });
-    this.clearIsolatedRecoveryTimer();
+    // Confirm the isolated connection is still current BEFORE tearing down the
+    // recovery timer. If a connection swap raced during the probe above, bail
+    // with the timer intact so the next tick re-evaluates — clearing the timer
+    // first would strand us in "isolated" mode with no further recovery.
     if (!this.clearConnectionIfCurrent(entry)) return;
+    this.clearIsolatedRecoveryTimer();
+    this.markIsolatedMode(false);
     closeRuntimeClient(entry.client);
     if (this.ownedRuntimeChild === entry.child) this.ownedRuntimeChild = null;
     disposeOwnedRuntimeChild(entry.child, entry.socketPath, { unlinkSocket: true });
+  }
+
+  private async retryServiceInstallForIsolatedRecovery(): Promise<void> {
+    if (!this.options.preferServiceRepair) return;
+    if (this.serviceInstallStatus.state === "skipped" || this.serviceInstallStatus.state === "installing") return;
+    const now = Date.now();
+    if (now - this.lastIsolatedServiceRepairMs < 60_000) return;
+    this.lastIsolatedServiceRepairMs = now;
+    this.logger.info("local_runtime.isolated_recovery_service_reinstall", {
+      serviceState: this.serviceInstallStatus.state,
+      serviceMessage: this.serviceInstallStatus.message,
+    });
+    await this.installServiceBestEffort();
   }
 
   // Compatibility check with no side effects on pool state, safe to run while

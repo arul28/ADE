@@ -24,6 +24,13 @@ export type LocalRuntimeConnectionState =
 
 export type LocalRuntimeStatus = {
   connectionState: LocalRuntimeConnectionState;
+  /**
+   * "isolated" means the desktop fell back to an app-owned no-sync brain
+   * (phone sync and ADE Code attach to the channel service, which is down).
+   * The pool keeps probing and reinstalling until it migrates back to
+   * "primary".
+   */
+  runtimeMode: "primary" | "isolated";
   serviceInstall: {
     state: LocalRuntimeServiceInstallState;
     attempted: boolean;
@@ -105,6 +112,20 @@ export type AutoUpdateSnapshot = {
   releaseNotesUrl: string | null;
   error: string | null;
   recentlyInstalled: RecentlyInstalledUpdate | null;
+};
+
+export type UpdateInstallImpactPhone = {
+  deviceId: string;
+  deviceName: string;
+};
+
+/**
+ * Live connections that drop while ADE (and its brain service) restarts for an
+ * update. Best-effort: probes are time-boxed, so an empty list means "none
+ * detected", not a guarantee.
+ */
+export type UpdateInstallImpact = {
+  connectedPhones: UpdateInstallImpactPhone[];
 };
 
 export type ProjectInfo = {

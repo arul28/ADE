@@ -137,7 +137,7 @@ Product positioning and workflows live in [`docs/PRD.md`](../docs/PRD.md). This 
 
 **Bundled runtime artifacts.** Per-platform `ade-<platform-arch>` binaries plus their native dep tarballs live under `apps/desktop/resources/runtime/`, with packaged ADE CLI resources providing the `ptyHostWorker.cjs` used by remote terminals. `release-core.yml` builds the cross-platform set; `bootstrapRemoteRuntime` uploads missing or hash-mismatched artifacts on first SSH connect from the desktop client.
 
-**Headless install.** A standalone runtime can be installed on a headless machine without going through the desktop installer:
+**Headless install.** A standalone runtime can be installed on a headless machine without going through the desktop installer — but note that releases currently publish macOS desktop assets only, so the runtime binaries + `install.sh` are not on the release page (their publish block in `release-core.yml` is commented out). Remote machines reached over SSH don't need this path: `bootstrapRemoteRuntime` uploads the desktop app's bundled runtime artifacts. When the publish block is re-enabled:
 
 ```bash
 curl -fsSL https://github.com/arul28/ADE/releases/latest/download/install.sh | sh

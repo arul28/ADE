@@ -3178,6 +3178,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         env: {},
         localRuntime: {
           connectionState: "idle",
+          runtimeMode: "primary",
           serviceInstall: {
             state: "skipped",
             attempted: false,
@@ -6112,6 +6113,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       error: null,
       recentlyInstalled: null,
     }),
+    updateGetInstallImpact: resolved({ connectedPhones: [] }),
     updateQuitAndInstall: resolved(true),
     updateDismissInstalledNotice: resolved(undefined),
     onUpdateEvent: noop,

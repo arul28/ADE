@@ -16,6 +16,7 @@ import type {
   LatestReleaseInfo,
   AppNavigationRequest,
   AutoUpdateSnapshot,
+  UpdateInstallImpact,
   ClearLocalAdeDataArgs,
   ClearLocalAdeDataResult,
   ArchiveLaneArgs,
@@ -2310,6 +2311,7 @@ declare global {
       };
       updateCheckForUpdates: () => Promise<void>;
       updateGetState: () => Promise<AutoUpdateSnapshot>;
+      updateGetInstallImpact: () => Promise<UpdateInstallImpact>;
       updateQuitAndInstall: () => Promise<boolean>;
       updateDismissInstalledNotice: () => Promise<void>;
       onUpdateEvent: (cb: (snapshot: AutoUpdateSnapshot) => void) => () => void;

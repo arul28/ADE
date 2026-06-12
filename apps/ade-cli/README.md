@@ -46,6 +46,8 @@ Three ways to put `ade` on a machine:
 
 1. **Standalone runtime install** — single static binary plus its native dependency archive, fetched from a GitHub release. Suitable for headless macOS/Linux servers.
 
+   > **Currently unavailable:** releases ship macOS desktop assets only — the runtime binaries and `install.sh` are built by `release-core.yml` but not published as release assets (the publish block is commented out there). The script below only works once that block is re-enabled. Headless machines reached over SSH don't need it: the desktop app uploads its bundled runtime binaries on first connect.
+
    ```bash
    curl -fsSL https://github.com/arul28/ADE/releases/latest/download/install.sh | sh
    ```
