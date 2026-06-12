@@ -174,7 +174,7 @@ The `LaneType` column on the `lanes` table is one of:
 
 Primary lanes are created by `laneService.ensurePrimaryLane()` on project
 open and never rebuilt. Their `is_edit_protected = 1` flag prevents delete
-and reparent operations. Two startup repair routines normalize older data:
+and reparent operations. A set of repair routines normalize older data:
 
 - `repairPrimaryParentedRootLanes` — detaches non-primary lanes whose
   `parent_lane_id` was mistakenly set to the primary lane and resets
@@ -192,7 +192,8 @@ and reparent operations. Two startup repair routines normalize older data:
   lost. Runs in the `list()` repair block alongside
   `recoverManagedWorktreeRows`.
 
-Both routines run at `createLaneService()` time.
+These routines run inside `listLanes` (i.e. on every `lanes.list`), not at
+`createLaneService()` construction time.
 
 ## Lane status
 
