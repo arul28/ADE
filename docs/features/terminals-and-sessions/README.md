@@ -360,19 +360,20 @@ Renderer surfaces:
   profile to the recorded `TerminalToolType` (`cursor-cli`, `droid`,
   `opencode`, etc.) and the human tab title. `buildTrackedCliLaunchCommand`
   returns a typed `TrackedCliLaunchCommand` (`{ command?, args,
-  startupCommand, env? }`) so `ptyService.create` can spawn tracked
+  startupCommand, initialInput?, initialInputDelayMs?, env? }`) so `ptyService.create` can spawn tracked
   CLIs with explicit argv instead of typing the launch command into an
-  already-open shell. Cursor uses a direct `/bin/bash -lc` launch on
-  non-Windows because its startup path needs a multi-line preamble:
-  Cursor pre-allocates a chat with
-  `cursor-agent create-chat` so the resume target is known up front,
-  Droid materializes a temp `--settings` JSON keyed off the active
+  already-open shell. Cursor launches `cursor-agent` directly and keeps
+  empty Work launches idle; when ADE has an actual first user prompt,
+  it waits for Cursor's interactive prompt and submits the ADE guidance
+  plus user text through PTY input instead of argv. Droid materializes a
+  temp `--settings` JSON keyed off the active
   permission mode, and OpenCode passes its inline permission policy
   through the `OPENCODE_CONFIG_CONTENT` env var. ADE session guidance is
   injected on every launch with skill roots resolved from the active
   lane worktree when known: Claude gets `buildAdeCliAgentGuidance(...)`
-  through `--append-system-prompt`, while every other provider receives
-  a leading prompt from `buildAdeCliInlineGuidance(...)`. Launch env also
+  through `--append-system-prompt`; Codex, Droid, and OpenCode receive
+  a leading prompt from `buildAdeCliInlineGuidance(...)`; Cursor receives
+  that prompt only when there is an initial user message. Launch env also
   carries `ADE_AGENT_SKILLS_DIRS` when skill roots are known, including
   lane/user `.claude`, `.agents`, `.ade`, `.codex` skill dirs plus
   bundled ADE resources.
@@ -391,15 +392,12 @@ Renderer surfaces:
   `permissionMode: "auto"`); `validateLaunchProfilePermissionMode`
   rejects `auto` for any non-Claude provider and rejects `config-toml`
   for providers other than Codex and OpenCode. A launch that passes an
-  `initialPrompt` embeds it into the provider launch itself (Claude/
-  Codex/Droid argv, OpenCode `--prompt`, Cursor's pre-created resume
-  command), not as a post-create PTY write, so the first user message
-  opens the PTY and is submitted as the provider's real first turn
-  instead of becoming a half-typed shell line. Codex argv also
-  appends `codexNoisyLocalMcpDisableFlags` (`-c
-  mcp_servers.unityMCP.enabled=false`, `-c
-  mcp_servers.xcode.enabled=false`) for every non-`config-toml`
-  launch so unbundled local MCP servers do not auto-spawn under ADE.
+  `initialPrompt` embeds it into the provider launch itself for
+  argv-oriented runtimes (Claude/Codex legacy prompt models/Droid,
+  OpenCode `--prompt`), while Codex interactive launches and Cursor use
+  `initialInput` after PTY readiness so the first user message is
+  submitted as the provider's real first turn instead of becoming a
+  half-typed shell line.
   Plain "shell" launches and `resolveCleanShellLaunchFields({
   platform, shell, comSpec })` together produce a deterministic
   argv/env per OS that skips the user's profile / rc / config files

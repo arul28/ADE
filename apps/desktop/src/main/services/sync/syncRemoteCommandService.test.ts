@@ -2378,7 +2378,7 @@ describe("createSyncRemoteCommandService", () => {
       }))).rejects.toThrow("work.sendToSession requires text.");
     });
 
-    it("work.startCliSession passes Cursor initial input as the documented prompt argument", async () => {
+    it("work.startCliSession submits Cursor initial input after the interactive CLI is ready", async () => {
       await service.execute(makePayload("work.startCliSession", {
         laneId: "lane-1",
         provider: "cursor",
@@ -2387,14 +2387,16 @@ describe("createSyncRemoteCommandService", () => {
 
       const call = ptyService.create.mock.calls.at(-1)?.[0];
       expect(call?.startupCommand).toContain("cursor-agent");
-      expect(call?.startupCommand).toContain("fix the tests");
+      expect(call?.startupCommand).not.toContain("fix the tests");
       expect(call?.startupCommand).not.toContain("cursor-agent create-chat");
       expect(call?.startupCommand).not.toContain("--resume");
-      expect(call?.initialInput).toBeUndefined();
-      expect(call?.initialInputDelayMs).toBeUndefined();
+      expect(call?.initialInput).toContain("ADE session guidance");
+      expect(call?.initialInput).toContain("fix the tests");
+      expect(call?.initialInputDelayMs).toBe(750);
       expect(call).not.toHaveProperty("awaitInitialInput");
       expect(call?.command).toBe("cursor-agent");
-      expect(call?.args?.at(-1)).toContain("fix the tests");
+      expect(call?.args).toEqual(expect.arrayContaining(["--model", "auto"]));
+      expect(call?.args).not.toContain(expect.stringContaining("fix the tests"));
       expect(ptyService.writeBySessionId).not.toHaveBeenCalled();
       expect(ptyService.dispose).not.toHaveBeenCalled();
     });

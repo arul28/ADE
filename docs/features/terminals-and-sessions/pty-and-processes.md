@@ -432,7 +432,8 @@ write paths into one call:
    the command line so the continuation honours the user's current
    model picker. For the first ended-session continuation with
    structured `resumeMetadata`, `text` is also passed as the provider
-   prompt argument.
+   prompt argument, except for Cursor where ADE waits for the interactive
+   prompt and writes the text through PTY input.
 4. De-duplicate concurrent sends through `resumeRuntimeFlights` (one
    in-flight continuation per session id) so rapid sends do not spawn
    parallel PTYs against the same row.
@@ -440,6 +441,8 @@ write paths into one call:
    in the same row. When the row has structured `resumeMetadata` and
    no other resume flight is already running, the prompt is included in
    the provider resume command and no follow-up PTY write is attempted.
+   Cursor is the exception: its continuation command stays prompt-free,
+   then the text is submitted after the resumed CLI is input-ready.
    OpenCode uses its replay-resume command when the installed CLI
    supports it. If the code has to reuse an already-started resume
    flight, it writes `text` after the PTY is attached. The return shape

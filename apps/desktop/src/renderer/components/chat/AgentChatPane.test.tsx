@@ -4933,7 +4933,10 @@ describe("AgentChatPane submit recovery", () => {
     });
     const launchArgs = onLaunchCliSession.mock.calls[0]?.[0];
     expect(launchArgs.startupCommand).toContain(`--model ${fastAlias}`);
-    expect(launchArgs.args).toEqual(expect.arrayContaining([expect.stringContaining("Run Cursor in fast mode.")]));
+    expect(launchArgs.startupCommand).not.toContain("Run Cursor in fast mode.");
+    expect(launchArgs.args).not.toContain(expect.stringContaining("Run Cursor in fast mode."));
+    expect(launchArgs.initialInput).toContain("Run Cursor in fast mode.");
+    expect(launchArgs.initialInputDelayMs).toBe(750);
   });
 
   it("uses the OpenCode fast variant when launching a fast Work draft CLI session", async () => {
@@ -5125,7 +5128,10 @@ describe("AgentChatPane submit recovery", () => {
     });
     const launchArgs = onLaunchCliSession.mock.calls[0]?.[0];
     expect(launchArgs.startupCommand).toContain(`--model ${concreteModel}`);
-    expect(launchArgs.args).toEqual(expect.arrayContaining([expect.stringContaining("Run Cursor with medium fast thinking.")]));
+    expect(launchArgs.startupCommand).not.toContain("Run Cursor with medium fast thinking.");
+    expect(launchArgs.args).not.toContain(expect.stringContaining("Run Cursor with medium fast thinking."));
+    expect(launchArgs.initialInput).toContain("Run Cursor with medium fast thinking.");
+    expect(launchArgs.initialInputDelayMs).toBe(750);
   });
 
   it("auto-creates a lane for a foreground CLI session draft", async () => {
