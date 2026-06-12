@@ -1,78 +1,40 @@
 ---
-title: "CTO Agent Overview"
-description: "The CTO is ADE's project-aware AI surface — the top of an intelligent org chart for delegating work, syncing with Linear, and answering questions about your codebase."
+title: "CTO"
+description: "Use the CTO as a project-level agent for planning, delegation, Linear context, and worker coordination."
 icon: "crown"
 ---
 
-## What is the CTO Agent?
+The CTO is ADE's project-level agent. Use it when the question or task spans more than one lane, needs planning, or should be delegated to workers.
 
-The **CTO** (Chief Technical Officer) is ADE's persistent, project-scoped AI surface for coordinating worker agents. Its system prompt includes a **Daily Context** routine (check recent decisions and worker activity at each activation) and a **Decision Framework** (act autonomously when safe, escalate when risky). These protocols survive compaction.
+## Use the CTO for
 
 <CardGroup cols={2}>
-  <Card title="Worker Wakeups" icon="eye">
-    Workers can be woken on demand or by per-worker timer settings from CTO > Team.
+  <Card title="Project summaries" icon="clipboard-list">
+    Ask what changed, what is blocked, and what needs attention.
   </Card>
-  <Card title="Org Chart Model" icon="sitemap">
-    The CTO sits at the top of an agent hierarchy. It spawns and coordinates specialized Worker agents (Employees) to handle specific tasks.
+  <Card title="Delegation" icon="users">
+    Break larger work into lane-scoped worker tasks.
   </Card>
-  <Card title="Bidirectional Linear Sync" icon="arrow-right-arrow-left">
-    Reads from and writes to Linear. Creates issues from code changes, updates issue status when PRs merge, and adds analysis comments automatically.
+  <Card title="Linear context" icon="layers">
+    Read issues, link work, and publish updates when Linear is connected.
   </Card>
-  <Card title="Project Awareness" icon="diagram-project">
-    Uses current lane, PR, Linear, worker run, and repository context to make delegation decisions.
+  <Card title="Review help" icon="code-pull-request">
+    Ask for PR risk summaries, CI explanations, or follow-up plans.
   </Card>
 </CardGroup>
 
----
+## CTO vs lane chat
 
-## CTO vs. Regular Agents
+| Use lane chat when | Use CTO when |
+|--------------------|--------------|
+| You know the specific lane and task. | The work spans several lanes or issues. |
+| You want one agent to edit files. | You want planning, routing, or delegation. |
+| You are debugging a local failure. | You need project-wide state summarized. |
 
-Understanding how the CTO differs from the agents you spawn manually (in chat sessions or worker runs) helps you know when to use each.
+## Workers
 
-| | **CTO Agent** | **Regular / Worker Agent** |
-|--|---------------|---------------------------|
-| **Lifecycle** | Persistent project-scoped chat and coordination context | Ephemeral or persistent worker identity |
-| **Scope** | Entire project | Specific lane, task, or worker run |
-| **Context** | Project, lane, PR, Linear, and worker run state | Current session or assigned lane |
-| **Triggers** | Manual chat, Linear/PR workflows, and worker wakeups | Explicit user action, automation trigger, or per-worker timer |
-| **Authority** | Can spawn lanes, create worker runs, delegate to workers, drive PR issue resolution | Operates within its assigned lane/context |
-| **Linear access** | Full bidirectional sync (owner) | Read-only via ADE CLI tools, if granted |
-| **Primary UI** | CTO tab | Lane terminal, Chat pane, Workers tab |
+Workers are scoped agent identities the CTO can assign work to. They can have roles, budgets, model settings, and activity history. See [Workers](/cto/workers) for the operational model.
 
----
-
-## The Org Chart Model
-
-The CTO implements an **org chart model** for AI work delegation.
-
-```
-CTO (always-on, project-scoped)
-├── Worker: "auth-specialist"   (specialized for auth work)
-├── Worker: "test-writer"       (ephemeral, created for one task)
-└── Worker: "pr-reviewer"       (persistent, reviews all new PRs)
-```
-
-The CTO sits at the top. Below it are **Worker agents** (also called Employees) — specialized sub-agents the CTO creates and assigns to specific tasks or lanes. Workers have:
-
-- A **name**, **role**, **title**, and **capabilities** that define their focus
-- Optional **Linear identity matching** fields so incoming Linear work can map back to the right worker
-- An **adapter** and model/process command for the runtime that will execute work
-- A **monthly budget** and optional heartbeat settings
-
-The CTO coordinates workers: it assigns tasks, monitors their output, routes their results back to Linear or PRs, and intervenes if a worker is stuck or over budget.
-
----
-
-## Explore CTO Features
-
-<CardGroup cols={2}>
-  <Card title="Setting Up the CTO" icon="wand-magic-sparkles" href="/cto/setup">
-    Walk through onboarding, worker heartbeat configuration, and verifying the CTO team is active.
-  </Card>
-  <Card title="Linear Integration" icon="arrow-right-arrow-left" href="/cto/linear">
-    Connect Linear for bidirectional issue sync, status updates, and intelligent triage.
-  </Card>
-  <Card title="Workers & Budget" icon="users" href="/cto/workers">
-    Hire workers, manage budgets, configure practical workflows, and troubleshoot issues.
-  </Card>
-</CardGroup>
+<Tip>
+Ask the CTO for a plan before asking it to delegate. A good split saves time and reduces review noise.
+</Tip>

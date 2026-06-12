@@ -1,349 +1,67 @@
 ---
 title: "Settings"
-description: "Reference for every section in ADE Settings — General, Appearance, Workspace, AI, Mobile Push, Integrations, Lane Templates, and Usage."
+description: "The main ADE settings sections and when to use them."
 icon: "sliders"
 ---
 
-## Opening Settings
+Open Settings with `Cmd+,` or the gear icon.
 
-Access Settings from anywhere in ADE:
-
-- **Keyboard shortcut**: `Cmd+,`
-- **Sidebar**: Click the gear icon (⚙) at the bottom of the left sidebar
-- **Menu bar**: ADE → Preferences
-
-Settings are organized into nine sections in the left navigation panel. Changes take effect immediately in most sections — no restart required. Exceptions are noted in the relevant section below.
-
-<CardGroup cols={3}>
-  <Card title="General" icon="sliders" href="#general">App-wide preferences, keybindings, onboarding, help.</Card>
-  <Card title="Appearance" icon="palette" href="#appearance">Theme, density, and visual options.</Card>
-  <Card title="Workspace" icon="folder-tree" href="#workspace">Project identity, paths, and skill files.</Card>
-  <Card title="AI" icon="brain" href="#ai">Providers, per-role models, context management.</Card>
-  <Card title="Mobile Push" icon="mobile" href="#mobile-push">iPhone pairing, tailnet discovery, and push notifications.</Card>
-  <Card title="Integrations" icon="plug" href="#integrations">GitHub, Linear, and proof backends.</Card>
-  <Card title="Lane Templates" icon="layer-group" href="#lane-templates">Reusable lane templates and defaults.</Card>
-  <Card title="Usage" icon="bolt" href="#usage">Spend graphs and monthly totals across providers.</Card>
-</CardGroup>
-
-<Note>
-The former standalone **Sync** section has been folded into **Mobile Push**. Multi-device pairing, tailnet discovery, device registry, and push notification preferences now live in one place. Old links that pointed to `/settings/sync` automatically land on Mobile Push.
-</Note>
-
-<Note>
-Mobile Push is a local-only section that only appears in the desktop app (it manages device registration on this machine). Other sections sync across paired devices when multi-device sync is enabled.
-</Note>
-
----
-
-## General
-
-App-wide preferences, keybindings, onboarding, and help shortcuts.
-
-| Setting | Description | Default |
-|---------|-------------|---------|
-| Auto-update | Whether ADE checks for and installs updates automatically | On |
-| Beta channel | Opt in to receive pre-release builds | Off |
-| Telemetry | Anonymous usage metrics (no PII, no source code) | Opt-in prompt on first launch |
-| Keybindings | Review and customize keyboard shortcuts | Default mapping |
-| Tours | Re-trigger feature tours you have dismissed | — |
-| Help | Open the in-app help center | — |
-
-### Terminal Preferences
-
-Customize terminal rendering for all sessions (interactive, managed, and agent):
-
-| Setting | Range | Default |
-|---------|-------|---------|
-| Font size | 10–24 px | 13 px |
-| Line height | 1.0–2.0 | 1.2 |
-| Scrollback | 1,000–30,000 lines | 10,000 |
-
-Changes take effect immediately on all open terminal sessions without restart.
-
----
-
-## Appearance
-
-Visual presentation of the ADE shell.
+## Main sections
 
 <CardGroup cols={2}>
-  <Card title="Default Dark" icon="moon">
-    ADE's standard dark theme — dark greys with green accent colors.
+  <Card title="General" icon="sliders">
+    App updates, startup behavior, onboarding, help, and basic preferences.
   </Card>
-  <Card title="Default Light" icon="sun">
-    Light mode with the same green accent palette.
+  <Card title="Appearance" icon="palette">
+    Theme, density, terminal appearance, and UI preferences.
   </Card>
-  <Card title="Monokai" icon="paintbrush">
-    High-contrast dark theme with the classic Monokai color palette.
+  <Card title="AI Providers" icon="brain">
+    Provider keys, CLI detection, default models, and session preferences.
   </Card>
-  <Card title="Solarized Dark" icon="moon">
-    Warm dark tones from the Solarized palette.
+  <Card title="Integrations" icon="plug">
+    GitHub, Linear, proof, and external service connections.
   </Card>
-  <Card title="Solarized Light" icon="sun">
-    Warm light tones from the Solarized palette.
+  <Card title="Mobile" icon="mobile-screen">
+    Pair the iOS app, manage devices, and choose notification behavior.
   </Card>
-  <Card title="One Dark" icon="circle-half-stroke">
-    Atom-inspired dark theme with cool grey tones.
+  <Card title="Usage" icon="chart-line">
+    Review provider usage, budget signals, and session spend.
   </Card>
 </CardGroup>
 
-Theme changes take effect instantly and are saved per-device. Density and accent options live alongside the theme picker.
-
----
-
-## Workspace
-
-Project identity, file paths, and workspace-level skill files.
-
-| Setting | Description | Default |
-|---------|-------------|---------|
-| Project name | Display name shown in ADE's title bar | Derived from repository folder name |
-| Project description | Short description shown on Project Home | Empty |
-| Default working directory | Root directory for terminal sessions | Repository root |
-| baseRef | Primary integration branch for PRs | `main` |
-
----
-
-## AI
-
-Everything related to AI: provider credentials, per-role model overrides, context window management, and response streaming. This section replaces the older split between "AI Routing" and "AI Providers".
-
-### Providers
-
-Manage API keys for all configured providers. This section is a GUI layer over `local.secret.yaml`. Changes saved here write directly to that file.
-
-For full provider setup instructions, see [AI Providers](/configuration/ai-providers).
-
-| Action | How |
-|--------|-----|
-| Add API key | Click **Add Key** next to the provider, enter the key value |
-| Rotate key | Click **Rotate** — enter the new key. ADE swaps the key in memory immediately. |
-| Revoke key | Click **Revoke** — ADE removes the key from `local.secret.yaml` and memory. Agents using that provider will fail until a new key is added. |
-| Test connection | Click **Test Connection** — ADE sends a minimal request and reports success or the error message |
-| Set default model | Dropdown per provider — writes to `ade.yaml` (requires SHA re-approval if other fields changed) |
-
-### Per-Role Model Overrides
-
-ADE's default model applies to all agents unless you set role-specific overrides here.
-
-| Role | Description | Recommended Model |
-|------|-------------|-----------------|
-| Orchestrator | Worker run planning and worker coordination | `claude-opus-4-7` |
-| Worker | Worker run execution tasks | `claude-sonnet-4-6` |
-| Validator | Worker run validation and review | `claude-sonnet-4-6` |
-| Automation | Event-driven automation runs | `claude-haiku-4-5` |
-| Chat | Interactive chat sessions | `claude-sonnet-4-6` |
-| CTO | Project-level leadership and delegation | `claude-opus-4-7` |
-
-<Tip>
-Routing automation runs to `claude-haiku-4-5` while keeping `claude-opus-4-7` for worker run planning is the single most impactful cost optimization for users running frequent automations. Most PR-review and routine triage tasks do not require Opus-level reasoning.
-</Tip>
-
-### Context Management
-
-| Setting | Description | Default |
-|---------|-------------|---------|
-| Auto-compaction threshold | Percentage of context window used before compaction triggers | 70% |
-| Compaction strategy | `summarize` (quality-preserving) or `truncate` (fastest) | summarize |
-| Preserve system prompt | Always keep the system prompt in full during compaction | On |
-| Context warning threshold | Show a usage indicator in the chat header above this percentage | 60% |
-
-### Response Streaming
-
-| Setting | Description | Default |
-|---------|-------------|---------|
-| Stream responses | Show tokens as they arrive (vs. waiting for full response) | On |
-| Streaming buffer delay | Milliseconds between UI render updates during streaming | 16ms |
-
----
-
-## Mobile Push
-
-One consolidated section for everything that talks to your phone and other devices — pairing, tailnet discovery, and push notifications. The former standalone Sync section has been folded into this panel.
-
-<Note>
-Mobile Push is local to the desktop install (it manages device registration on this machine). It is hidden on builds that do not ship the iOS companion.
-</Note>
-
-### Pair a device
+## Recommended first pass
 
 <Steps>
-  <Step title="Open Settings → Mobile Push">
-    Navigate to **Settings → Mobile Push**.
+  <Step title="Verify one provider">
+    Make sure at least one agent provider is green.
   </Step>
-  <Step title="Scan the QR code on your iPhone">
-    Open the ADE iOS app and scan the registration QR code. The device is registered to your ADE install within a few seconds.
+  <Step title="Connect GitHub">
+    Do this if you want PR creation, CI state, comments, and merge workflows.
   </Step>
-  <Step title="Choose which events trigger a push">
-    Toggle individual event types. The most useful defaults: worker run complete, worker run failed, and intervention required.
+  <Step title="Connect Linear">
+    Do this if issues should link to lanes, CTO work, and PR updates.
+  </Step>
+  <Step title="Pair mobile">
+    Do this if you want iPhone updates for agent work and PR activity.
+  </Step>
+  <Step title="Check usage">
+    Set budgets or choose cheaper default models before running many agents in parallel.
   </Step>
 </Steps>
 
-Multiple iOS devices can be registered and each receives the same notifications. Devices are listed with their registration date and last-received timestamp. Tap **Remove** next to any device to deregister it.
+## Provider settings
 
-### Tailnet discovery
+Provider settings control which agents can run. Keep at least one reliable default model configured, then override per chat or worker when needed.
 
-If your Mac is on a Tailscale tailnet, ADE tries to publish a stable service name so phones can reconnect without a fresh QR scan each time. The panel surfaces one of three states:
+## Local-first behavior
 
-- **Direct Tailscale ready** — your Mac has a normal Tailscale address, so the QR code includes it. Phones can connect through Tailscale without any extra setup. Only the optional stable service shortcut is blocked.
-- **Published** — ADE has registered a stable service name on the tailnet and phones can discover it automatically.
-- **Tailscale setup needed** — automatic discovery is blocked because Tailscale policy requires a tagged node for service hosting. Local pairing still works; retry after a tailnet admin enables service hosting for this Mac.
-
-The panel hides itself entirely when Tailscale is not configured, so there is no noise on single-device installs.
-
-### Sync settings
-
-The pairing panel also surfaces everything the old Sync section managed:
-
-| Setting | Description | Default |
-|---|---|---|
-| Sync enabled | Master switch for multi-device sync | Off until first pair |
-| Device name | Friendly name for this device in the registry | Hostname |
-| Paired devices | List of devices paired with this install | — |
-| Sync transport | How changes are exchanged (local WebSocket, relay) | Local |
-| Sync history | Per-domain last-synced timestamps | — |
-
-<Note>
-Sync uses cr-sqlite for CRDT replication. Workers, lanes, and session history all replicate. `.ade/artifacts/` blobs are fetched on demand by the requesting device.
-</Note>
-
----
-
-## Integrations
-
-External services ADE connects to.
-
-### GitHub
-
-ADE uses GitHub OAuth for PR management. A GitHub token can also be supplied in `local.secret.yaml` for automation workflows that run without an interactive login.
-
-| Setting | Description |
-|---------|-------------|
-| OAuth connection | Connect or disconnect your GitHub account |
-| Organization access | Manage which GitHub orgs ADE can access |
-| Default branch | Branch ADE opens PRs against (default: `main`) |
-| PR auto-link | Automatically link PRs to ADE worker runs and lanes when the PR branch matches a lane |
-| Draft PRs by default | Create PRs as drafts until explicitly marked ready |
-
-### Linear
-
-ADE connects to Linear for bidirectional issue sync.
-
-| Setting | Description |
-|---------|-------------|
-| API key | Linear API key (stored in `local.secret.yaml`) |
-| Sync direction | `bidirectional`, `read-only` (ADE reads Linear), `disabled` |
-| Default team | Linear team for issue creation |
-| Label mappings | Map ADE worker run states to Linear issue labels |
-| Issue → Lane auto-create | Automatically create a lane when a Linear issue is assigned to you |
-
-### Proof Backends
-
-ADE stores intentional proof artifacts (screenshots, recordings, traces) that agents capture via the `ade proof` CLI. This panel shows which capture backends are available on the current machine and their health state.
-
-For full proof documentation, see [Proof](/computer-use/overview).
-
----
-
-## Lane Templates
-
-Reusable lane configurations. A template captures the default branch base, working directory pattern, environment overlays, terminal profile, and starting tool palette — so that new lanes can be created with a single click.
-
-| Setting | Description |
-|---------|-------------|
-| Manage templates | Create, edit, or delete templates |
-| Default template | Which template is pre-selected in the New Lane dialog |
-| Starter content | Files or scripts that run the first time a lane is created from the template |
-
----
-
-## Usage
-
-Spend tracking and monthly totals across all providers, agents, and sessions.
-
-The usage panel shows three graph views, each switchable between bar and line charts:
-
-- **Daily**: Per-day spend for the last 30 days, broken down by provider
-- **Weekly**: Per-week totals for the last 12 weeks, broken down by agent role
-- **Monthly**: Per-month totals for the last 12 months, broken down by lane
-
-Click any bar segment to drill into the individual sessions or worker runs that contributed to that spend.
-
-### Monthly Cap
-
-| Setting | Description | Default |
-|---------|-------------|---------|
-| Monthly total cap | Hard ceiling across all providers, agents, and sessions | $100.00 |
-| Warning threshold | Alert at this percentage of the monthly cap | 80% |
-| Hard stop | Pause all agent activity when the cap is reached | On |
-
-<Warning>
-The monthly cap is a hard stop. Once reached, all agent activity (chat, worker runs, automations, CTO heartbeats) pauses until either the cap is raised or the calendar month rolls over. ADE sends a notification when you reach 80% and again at 100%.
-</Warning>
-
----
-
-## Recommended Settings by Use Case
-
-<Tabs>
-  <Tab title="Solo Developer">
-    Prioritize speed and cost efficiency:
-
-    - **Default model**: `claude-sonnet-4-6`
-    - **Orchestrator model**: `claude-opus-4-7`
-    - **Automation model**: `claude-haiku-4-5`
-    - **Monthly cap**: $50.00
-    - **Auto-refresh events**: On PR create + On worker run start
-  </Tab>
-  <Tab title="Small Team">
-    Emphasize observability and shared standards:
-
-    - Commit `ade.yaml` with agreed model defaults and monthly cap
-    - Each developer maintains their own `local.yaml` with personal model preferences
-    - Enable **PR auto-link** in GitHub integration
-    - Enable bidirectional Linear sync
-    - Keep lane templates in the repo so new teammates get the same defaults
-  </Tab>
-  <Tab title="Power User">
-    Maximize throughput with fine-grained control:
-
-    - Configure per-role model routing (Opus for planning, Sonnet for execution, Haiku for automation)
-    - Set a high monthly cap and lean on the Usage panel to spot runaway spend
-    - Set compaction threshold to 60% for earlier and more frequent compaction
-    - Pair an iPhone from **Mobile Push** so pages land on your phone when a worker run needs intervention
-  </Tab>
-</Tabs>
-
----
-
-## Settings That Should Be Team-Shared vs. Personal
-
-| Setting | Shared in `ade.yaml` | Personal in `local.yaml` |
-|---------|---------------------|-------------------------|
-| Default AI model | Yes | Override per-machine |
-| Monthly cap | Yes (defaults) | Override per-machine |
-| Lane templates | Yes | No |
-| Automation definitions | Yes | No |
-| Process definitions | Yes | No |
-| Test suite config | Yes | No |
-| Theme | No | Yes |
-| Editor font size | No | Yes |
-| Terminal shell | No | Yes |
-| Mobile Push device list | No | Yes (local-only) |
-| API keys | Never | In `local.secret.yaml` |
-
----
-
-## What's Next
+Settings that include secrets are stored locally. ADE does not commit credentials to your repository.
 
 <CardGroup cols={2}>
-  <Card title="AI Providers" icon="robot" href="/configuration/ai-providers">
-    Deep dive into configuring Anthropic, OpenAI, OpenRouter, and local models.
+  <Card title="AI providers" icon="brain" href="/configuration/ai-providers">
+    Provider-specific setup and permission presets.
   </Card>
-  <Card title="Permissions" icon="shield-check" href="/configuration/permissions">
-    Understand the full trust boundary model and configure per-agent access rules.
-  </Card>
-  <Card title="Configuration Overview" icon="gear" href="/configuration/overview">
-    Review the .ade/ directory structure, project config overlays, and local secret references.
+  <Card title="iOS companion" icon="mobile-screen" href="/tools/ios-companion">
+    Pair your phone and manage mobile notifications.
   </Card>
 </CardGroup>

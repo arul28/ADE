@@ -1,72 +1,52 @@
 ---
-title: "Proof Overview"
-description: "Proof is ADE's intentional evidence system. Agents capture screenshots, recordings, traces, and logs via the `ade proof` CLI; ADE stores and links them to worker runs, chats, PRs, and Linear issues."
+title: "Proof"
+description: "Capture screenshots, recordings, traces, logs, and verification notes as evidence for agent work."
 icon: "camera"
 ---
 
-## Overview
+Proof is ADE's evidence system. It lets an agent or human attach concrete verification to a chat, lane, PR, Linear issue, or worker task.
 
-Proof is ADE's way of collecting **intentional evidence** during agent work. Workers and chat agents capture screenshots, short recordings, browser traces, verification snapshots, and console logs through the `ade proof` CLI. ADE stores the resulting artifacts, normalizes them, and links them to the worker run, chat session, PR, or Linear issue that produced them.
+## Proof kinds
 
-There is no separate computer-use broker, no backend negotiation, and no per-session policy chip. Agents simply call `ade proof` when they want to leave a trail.
+| Kind | Use it for |
+|------|------------|
+| Screenshot | Show the visible state of an app or browser. |
+| Recording | Capture a short interaction or repro. |
+| Browser trace | Preserve browser steps and diagnostics. |
+| Console logs | Attach useful runtime output. |
+| Verification note | Record what was checked and why it passed. |
+
+## Why proof matters
+
+Agents often say they tested something. Proof makes that claim inspectable. A PR with a screenshot, a test log, and a short summary is easier to review than a PR with only a chat transcript.
+
+## Where proof appears
+
+- Chat artifact panels.
+- Lane and History records.
+- PR detail views.
+- Linear issue updates when connected.
+- Worker activity when a worker captures it.
+
+## Basic flow
+
+<Steps>
+  <Step title="Capture">
+    Use the proof controls or ask the agent to capture evidence for a completed step.
+  </Step>
+  <Step title="Review">
+    Open the artifact and confirm it shows the right thing.
+  </Step>
+  <Step title="Attach">
+    Link it to the PR, Linear issue, chat, or lane that needs the evidence.
+  </Step>
+</Steps>
 
 <CardGroup cols={2}>
-  <Card title="Intentional Evidence" icon="camera">
-    Proof is explicit. Agents decide when a piece of work deserves a screenshot or recording — there is no background recording of every action.
+  <Card title="Proof workflow" icon="camera" href="/computer-use/proofs">
+    More detail on ownership and publishing.
   </Card>
-  <Card title="Unified Artifacts" icon="database">
-    Every proof is stored with a canonical record: kind, owner, storage path, MIME type, and metadata. The same normalized schema powers worker run artifact tabs, chat session history, and PR attachments.
-  </Card>
-  <Card title="Single CLI Surface" icon="terminal">
-    Agents use `ade proof capture`, `ade proof record`, `ade proof list`, and a few related commands. See the [Setup](/computer-use/setup) page for the full command list.
-  </Card>
-  <Card title="Routed to Owners" icon="link">
-    Proofs are linked to lanes, worker runs, chat sessions, PRs, and Linear issues. Review and publish them from the Worker run Artifacts tab or the chat artifact panel.
-  </Card>
-</CardGroup>
-
----
-
-## Proof Kinds
-
-ADE recognizes five proof kinds. All kinds share the same storage, ownership, and routing model — the kind only changes what the CLI captures and what the viewer shows.
-
-| Kind | What it is |
-|---|---|
-| `screenshot` | A static PNG/JPEG of the current screen or browser viewport |
-| `video_recording` | A short screen recording captured by `ade proof record` |
-| `browser_trace` | A machine-readable record of browser interactions ingested from an external tool |
-| `browser_verification` | An assertion result (did an expected DOM element exist, did the page contain expected text) |
-| `console_logs` | Captured browser or application console output |
-
-Screenshots and short recordings are the most common kinds, because they can be captured directly by `ade proof` without any external dependency.
-
----
-
-## Where Proofs Show Up
-
-| Context | Where proofs appear |
-|---|---|
-| Workers | The **Artifacts tab** on every worker run detail view lists every proof captured during that worker run |
-| Agent Chat | The session artifact panel surfaces proofs captured inside a chat session |
-| Pull Requests | Proofs routed to a PR appear in the PR detail view as inline attachments |
-| Linear Issues | Published proofs are posted as attachments on the linked Linear issue |
-| Lanes | Every proof retains a link back to the lane the agent was working in |
-
-Agents attach proofs to owners when they capture them, or later via `ade proof` subcommands. You can also promote a proof from the UI — for example, sending a before/after screenshot from a chat session to a PR with a single click.
-
----
-
-## Next Steps
-
-<CardGroup cols={3}>
-  <Card title="Setup & CLI" icon="terminal" href="/computer-use/setup">
-    Install prerequisites and walk through the `ade proof` commands agents use.
-  </Card>
-  <Card title="Proof Workflow" icon="camera" href="/computer-use/proofs">
-    How proofs are owned, reviewed, and published to PRs and Linear issues.
-  </Card>
-  <Card title="Configuration" icon="sliders" href="/computer-use/config">
-    Storage paths, retention, and troubleshooting common capture issues.
+  <Card title="Proof setup" icon="terminal" href="/computer-use/setup">
+    Capture prerequisites and CLI usage.
   </Card>
 </CardGroup>

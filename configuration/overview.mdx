@@ -1,275 +1,47 @@
 ---
-title: "Configuration Overview"
-description: "ADE stores project configuration in a .ade/ directory at your repository root. Shared team settings, personal overrides, and local secret references stay separated by a SHA-based trust model."
+title: "Configuration overview"
+description: "Where ADE stores local project state, shared defaults, credentials, and runtime files."
 icon: "folder-tree"
 ---
-## The `.ade/` Directory
 
-ADE initializes a `.ade/` directory at the project root on first open. It is the single source of truth for all ADE configuration, runtime artifacts, and worktree management.
+ADE keeps project state local. Most of what ADE creates belongs under `.ade/` in your repository and should not be committed.
 
-```
+```text
 .ade/
-  ade.yaml              # Shared team config — commit this to git
-  local.yaml            # Personal preferences — gitignored
-  local.secret.yaml     # Automation secret references — ALWAYS gitignored
-  secrets/              # Encrypted machine-local credentials and tokens
-  worktrees/            # Git worktrees for each lane (auto-managed by ADE)
+  ade.db
+  worktrees/
   artifacts/
-    packs/              # Compatibility snapshots and audit artifacts
-    checkpoints/        # Session boundary snapshots
-    sessions/           # Agent session transcripts
-    audit.log           # Append-only audit trail
+  cache/
+  secrets/
 ```
+
+## What is local
+
+| Area | Contains |
+|------|----------|
+| Database | Lanes, sessions, PR mappings, settings, History metadata. |
+| Worktrees | Managed lane worktrees. |
+| Artifacts | Proof, transcripts, exported evidence, and supporting files. |
+| Secrets | Encrypted or machine-local credentials. |
+| Cache | Derived data ADE can rebuild. |
+
+## What can be shared
+
+Some teams choose to share project defaults, such as recommended processes, test commands, provider preferences, or lane templates. Keep secrets and machine paths out of shared files.
 
 <Warning>
-Never commit `local.yaml` or `local.secret.yaml` to git. ADE automatically adds both to `.gitignore` on initialization, but verify this if you manage `.gitignore` manually. Committing secrets is irreversible once pushed to a remote.
+Never commit provider keys, tokens, local secret files, or the whole `.ade/` directory.
 </Warning>
 
-The `worktrees/` and `artifacts/` subdirectories are ADE-managed. Do not edit them directly.
+## Trust model
 
----
-
-## Configuration Layering
-
-ADE resolves project configuration from two files, then reads secret references separately when a service needs them.
-
-<CardGroup cols={3}>
-  <Card title="ade.yaml" icon="users">
-    **Shared team config.** Committed to git. Contains project defaults, AI model settings, lane templates, automation definitions, and trusted command definitions. Every team member reads this file.
-  </Card>
-  <Card title="local.yaml" icon="user">
-    **Personal overrides.** Gitignored. Overrides the same parsed config fields in `ade.yaml` for your machine only.
-  </Card>
-  <Card title="local.secret.yaml" icon="key">
-    **Secret references.** Always gitignored. Used by automation/webhook services when config points at a `secretRef`. AI provider keys saved from Settings live in the encrypted key store under `.ade/secrets` or the OS credential store, not in committed config.
-  </Card>
-</CardGroup>
-
-When resolving project config, ADE loads `ade.yaml` first and overlays `local.yaml` for that machine only. `local.secret.yaml` is not a third config layer; services read it only when a `secretRef` points at a path inside that file.
-
----
-
-## The Trust Model (SHA-Based Approval)
-
-`ade.yaml` can contain command definitions (process startup commands, automation executors, test suite runners). Because this file is committed to git, a malicious change in a PR could introduce arbitrary commands that run on your machine. ADE prevents this with a SHA-based approval gate.
-
-<Steps>
-  <Step title="ADE detects a change">
-    Whenever `ade.yaml` changes — from a `git pull`, a teammate's commit landing via fetch, or a direct edit — ADE immediately detects the difference.
-  </Step>
-  <Step title="ADE shows a diff and pauses">
-    ADE presents a structured diff of the changed fields and suspends execution of any commands defined in the new version. No new processes start, no automations trigger, no agents run commands from the updated config.
-  </Step>
-  <Step title="You review and approve">
-    Review the diff in the approval dialog (Settings → Config → Pending Approval, or the banner that appears automatically). If the changes are expected and safe, click **Approve**.
-  </Step>
-  <Step title="ADE records the approved SHA">
-    The SHA of the approved `ade.yaml` is recorded in local ADE state. Commands from this version of the config are now permitted to execute.
-  </Step>
-</Steps>
-<Warning>
-The approved SHA is machine-specific. If two developers need to approve the same change, each must approve it on their own machine. This is intentional — one person's trust cannot be delegated to another.
-</Warning>
-
-To re-approve the currently loaded config (e.g., after a manual edit): **Settings → Config → Re-approve current config**.
-
----
-
-## `ade.yaml` — Full Schema Reference
-
-Shared team config — commit this file. Every field is optional.
-
-```yaml
-# .ade/ade.yaml
-
-version: 1
-project:
-  iconPath: null
-
-# ── AI Defaults ───────────────────────────────────────────────────────────────
-ai:
-  defaultModel: "claude-sonnet-4-6"
-  budgets:
-    commit_messages:
-      dailyLimit: 20
-    pr_descriptions:
-      dailyLimit: 10
-
-# ── Process Definitions ───────────────────────────────────────────────────────
-processGroups:
-  - id: "app"
-    name: "App"
-
-processes:
-  - id: "frontend"
-    name: "Frontend"
-    command: ["npm", "run", "dev"]
-    cwd: "."
-    groupIds: ["app"]
-    readiness:
-      type: "port"
-      port: 3000
-
-# ── Test Suites ───────────────────────────────────────────────────────────────
-testSuites:
-  - id: "unit"
-    name: "Unit Tests"
-    command: ["npm", "test"]
-    cwd: "."
-    timeoutMs: 600000
-    tags: ["unit"]
-
-# ── Lane Templates ────────────────────────────────────────────────────────────
-laneTemplates:
-  - id: "web-feature"
-    name: "Web feature"
-    description: "Copy local env and install dependencies for a web lane."
-    envFiles:
-      - source: ".env.example"
-        dest: ".env"
-    dependencies:
-      - command: ["npm", "install"]
-    envVars:
-      NODE_ENV: "development"
-
-defaultLaneTemplate: "web-feature"
-
-# ── Automation Definitions ────────────────────────────────────────────────────
-automations:
-  - id: "pr-reviewer"
-    name: "PR Reviewer"
-    mode: "review"
-    enabled: true
-    trigger:
-      type: "github.pr_opened"
-    execution:
-      kind: "agent-session"
-      laneMode: "reuse"
-    executor:
-      mode: "automation-bot"
-    prompt: "Review this PR for code quality, security issues, and adherence to project conventions."
-    toolPalette: ["repo", "git", "github", "tests"]
-
-```
-
-<AccordionGroup>
-  <Accordion title="ai — AI defaults" icon="robot">
-    `ai.defaultModel` sets the default runtime model. `ai.budgets` is a map keyed by ADE feature (`commit_messages`, `pr_descriptions`, `terminal_summaries`, etc.); each entry currently supports `dailyLimit`.
-  </Accordion>
-  <Accordion title="processes — Dev server definitions" icon="server">
-    Process definitions describe how to start development servers. Use `id`, `command` arrays, `cwd`, optional `groupIds`, and optional readiness checks. `processGroups` defines the visual groups referenced by `groupIds`.
-  </Accordion>
-  <Accordion title="testSuites — Test runner config" icon="vial">
-    Test suites use `id`, `command` arrays, `cwd`, optional `timeoutMs`, and `tags`. ADE uses these definitions when agents or automations need a known validation command.
-  </Accordion>
-  <Accordion title="laneTemplates — Lane environment templates" icon="code-branch">
-    Lane templates are top-level `laneTemplates` entries. `defaultLaneTemplate` names the template applied by default. Templates can copy env files, install dependencies, define mount points, copy paths, reserve a port range, and set lane env vars.
-  </Accordion>
-  <Accordion title="automations — Event-driven automation rules" icon="bolt">
-    Automation definitions are shared team-wide. Each automation has an `id`, triggers, an `execution` mode, an `executor` object, and optional built-in `actions` such as `agent-session`, `run-tests`, `run-command`, and `ade-action`. See [Automations](/automations/overview) for the full automation reference.
-  </Accordion>
-  <Accordion title="Config trust — Managed by ADE" icon="shield">
-    ADE hashes `ade.yaml` and stores the approved shared hash in local ADE state. There is no `trust.approvedSha` field to author in project config.
-  </Accordion>
-</AccordionGroup>
-
----
-
-## `local.yaml` — Full Schema Reference
-
-Personal overrides — gitignored, never shared. Uses the same parsed schema as `ade.yaml` and overrides shared values for your machine only.
-
-```yaml
-# .ade/local.yaml
-
-ai:
-  defaultModel: "claude-sonnet-4-6"
-  chat:
-    defaultProvider: "last_used"
-    sendOnEnter: true
-    codexSandbox: "workspace-write"
-
-git:
-  autoRebaseOnHeadChange: false
-
-github:
-  prPollingIntervalSeconds: 60
-```
-
----
-
-## `local.secret.yaml` — Full Schema Reference
-
-Automation secret values addressed by `secretRef`. Always gitignored. Only main-process services read this file; the renderer UI never has access to its raw contents.
-
-```yaml
-# .ade/local.secret.yaml
-
-webhooks:
-  github: "${env:GITHUB_WEBHOOK_SECRET}"
-  linear: "${env:LINEAR_WEBHOOK_SECRET}"
-
-release:
-  npmToken: "${env:NPM_TOKEN}"
-```
-
-<Warning>
-`local.secret.yaml` must never be committed to git. ADE adds it to `.gitignore` automatically, but also add it manually if your project has nested `.gitignore` files. Run `git check-ignore -v .ade/local.secret.yaml` to verify it is excluded. Store AI provider API keys with Settings → AI Providers whenever possible; ADE persists those credentials in the OS credential store or encrypted `.ade/secrets/api-keys.v1.bin`.
-</Warning>
-
----
-
-## Hot-Reload Behavior
-
-ADE watches all three config files using filesystem events (debounced 500ms). Changes take effect without restarting ADE.
-
-| File | What happens on change |
-|------|------------------------|
-| `ade.yaml` | ADE detects the change, diffs against the approved SHA, and suspends commands until you approve the new version |
-| `local.yaml` | Parsed project-config overrides, such as `ai`, `git`, `github`, lane templates, and automations, are reloaded for this machine |
-| `local.secret.yaml` | Automation secret refs reload for services that watch or request secrets; provider keys managed in Settings use the encrypted credential store |
-
-<Tip>
-If you update a value in `local.secret.yaml`, automation code that resolves the related `secretRef` uses the new value on its next read. In-flight work keeps the value it already loaded.
-</Tip>
-
----
-
-## Best Practices
-
-<AccordionGroup>
-  <Accordion title="What to commit" icon="check">
-    **Commit `ade.yaml`.** It contains the team's shared AI model defaults, lane templates, automation definitions, test suite config, and process definitions. Committing it ensures all team members use the same baseline configuration.
-
-    Do not commit `local.yaml` or `local.secret.yaml`. ADE's `.gitignore` entries cover these, but double-check when initializing new repositories.
-  </Accordion>
-  <Accordion title="Rotating API keys" icon="rotate">
-    To rotate an AI provider API key, use Settings → AI Providers. ADE writes the new value to the encrypted credential store and uses it on the next provider call. Do not put provider keys in committed `ade.yaml`.
-
-    Never commit the old or new key values to git during rotation. If a key was accidentally committed, revoke it at the provider immediately regardless of whether you have since removed it from the file.
-  </Accordion>
-  <Accordion title="Reviewing ade.yaml changes from teammates" icon="users">
-    When you `git pull` and `ade.yaml` has changed, ADE shows the approval dialog before resuming any command execution. Read the diff carefully — pay particular attention to changes in `automations[*].executor`, `processes[*].command`, and `testSuites[*].command`. These fields define commands that will run on your machine.
-  </Accordion>
-  <Accordion title="Using environment variables instead of file values" icon="terminal">
-    For CI environments or machines where you cannot write credential-store values, provider runtimes can read standard provider variables such as `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `GOOGLE_API_KEY`, and `CURSOR_API_KEY`. Automation secrets can also reference environment values from `local.secret.yaml` with `${env:NAME}`.
-  </Accordion>
-  <Accordion title="Multiple projects on the same machine" icon="folder-open">
-    Each project has its own `.ade/` directory with its own `local.yaml` and `local.secret.yaml`. You can use different API keys or different preferred models for different projects. Settings in one project's `.ade/` never affect another project.
-  </Accordion>
-</AccordionGroup>
----
-
-## What's Next
+Commands saved as shared project defaults can run on developer machines. ADE treats those changes as sensitive and may require local approval before using newly changed command definitions.
 
 <CardGroup cols={2}>
-  <Card title="AI Providers" icon="robot" href="/configuration/ai-providers">
-    Configure Anthropic, OpenAI, OpenRouter, and local models. Set budgets and context preferences.
-  </Card>
-  <Card title="Settings" icon="gear" href="/configuration/settings">
-    Full reference for every setting in ADE's Settings page.
+  <Card title="Settings" icon="sliders" href="/configuration/settings">
+    Configure the app from the UI.
   </Card>
   <Card title="Permissions" icon="shield-check" href="/configuration/permissions">
-    Understand ADE's trust boundary model and configure agent permissions.
+    Review security and permission controls.
   </Card>
 </CardGroup>

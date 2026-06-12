@@ -1,105 +1,63 @@
 ---
-title: "Proof Workflow"
-description: "How proofs are owned, reviewed, and published. Ownership model, lifecycle states, and review actions."
+title: "Proof workflow"
+description: "Capture, review, and attach evidence to chats, lanes, PRs, Linear issues, and worker activity."
 icon: "camera"
 ---
 
-## Proof Kinds
+Proof is only useful when it is easy to review and tied to the work it supports.
 
-| Kind | Description | Typical capture |
-|---|---|---|
-| `screenshot` | A static image capture — the current screen or a browser viewport at a specific moment | `ade proof screenshot` |
-| `video_recording` | A short screen recording of an agent sequence | `ade proof record --seconds 20` |
-| `browser_trace` | Structured log of browser interactions (DOM events, navigation, network calls) | `ade proof ingest` from external tool |
-| `browser_verification` | Assertion result — did the expected element exist, did the page contain expected text | `ade proof ingest` from external tool |
-| `console_logs` | Browser or application console output captured during a flow | `ade proof ingest` from external tool |
+## Proof kinds
 
-Use screenshots for lightweight visual confirmation, recordings for flow review, and the three browser kinds when you already have structured evidence from an automation tool.
+| Kind | Typical use |
+|------|-------------|
+| Screenshot | Confirm a UI state or visible result. |
+| Recording | Show a short flow or reproduction. |
+| Browser trace | Preserve structured browser diagnostics from a test tool. |
+| Console logs | Attach useful runtime or browser output. |
+| Verification note | Record what was checked and what passed. |
 
----
+## Owners
 
-## Ownership Model
+A proof can be linked to more than one owner:
 
-Every proof is a canonical record in ADE's SQLite database. Proofs can have multiple owners simultaneously — the same screenshot can be linked to a worker run, a PR, and a Linear issue.
+- Lane.
+- Chat session.
+- Pull request.
+- Linear issue.
+- Worker task or worker activity.
 
-**Ownership types:**
-- **Lane** — the lane where the proof was captured
-- **Worker run** — the worker run the agent was working on, if any
-- **Chat Session** — the chat session the agent was in, if any
-- **Pull Request** — if the proof is linked to an open PR
-- **Linear Issue** — if the proof is published to a Linear issue as an attachment
-- **Orchestrator run / step / attempt** — finer-grained worker run subdivisions
-- **Automation run** — when the proof was captured inside an automation
+That link is what makes the artifact useful later. A screenshot without an owner is just a file; a screenshot linked to a PR and chat explains what it proves.
 
-Agents attach owners when they call `ade proof`, and you can add or remove owners later from the proof's detail view.
-
-### Lifecycle States
-
-Each proof carries two orthogonal state fields:
-
-**Review state** — your judgment of the proof:
+## Review states
 
 | State | Meaning |
-|---|---|
-| `pending` | No review yet |
-| `accepted` | Valid and meets requirements |
-| `needs_more` | Insufficient — more evidence required |
-| `dismissed` | Not relevant, excluded |
+|-------|---------|
+| Pending | Not reviewed yet. |
+| Accepted | Good evidence for the claim. |
+| Needs more | Useful but incomplete. |
+| Dismissed | Not relevant. |
 
-**Workflow state** — where the proof sits in the pipeline:
-
-| State | Meaning |
-|---|---|
-| `evidence_only` | Captured but not yet promoted anywhere |
-| `promoted` | Moved into a worker run's artifacts pool |
-| `published` | Routed to an external owner (PR attachment, Linear attachment) |
-| `dismissed` | Removed from the active pool |
-
-A typical proof starts as `pending` / `evidence_only`, moves to `accepted` / `promoted` when you approve it, and finally to `accepted` / `published` when it is attached to a PR or Linear issue.
-
----
-
-## Reviewing Proofs in Workers
-
-Workers surface proofs in the **Artifacts tab** on the worker run detail view. Each row shows the kind, title, source backend, owner, and a thumbnail.
+## Basic lifecycle
 
 <Steps>
-  <Step title="Open the Artifacts tab">
-    On a worker run detail view, switch to the **Artifacts** tab.
+  <Step title="Capture">
+    Capture a screenshot, recording, trace, log, or verification note.
   </Step>
-  <Step title="Click the proof you want to review">
-    A side panel opens with the full media, the capture metadata, and any existing owners.
+  <Step title="Review">
+    Open the proof and decide whether it supports the work.
   </Step>
-  <Step title="Set the review state">
-    Choose **Accept**, **Needs more**, or **Dismiss**. Your reviewer note is stored alongside the state.
+  <Step title="Attach">
+    Link accepted proof to the PR, Linear issue, lane, chat, or worker activity.
   </Step>
-  <Step title="Publish to owners (optional)">
-    Select one or more targets — the PR from this worker run, a Linear issue, a chat session — and click **Publish**. ADE routes the proof to each target and updates the workflow state to `published`.
+  <Step title="Reference">
+    Use the proof during review so the result is inspectable.
   </Step>
 </Steps>
 
----
+## Good proof habits
 
-## Reviewing Proofs in Chat
-
-When a chat agent captures a proof during a session, it appears in the session's artifact panel. From there you can:
-
-- Promote the proof to the lane's durable context
-- Attach it to an existing worker run's artifact pool
-- Attach it to a PR or Linear issue
-- Dismiss it
-
-Proofs captured in chat keep their link to the chat session, so you can always trace a proof back to the conversation that produced it.
-
----
-
-## Artifact Lifecycle Summary
-
-```
-capture → pending / evidence_only
-        → accepted / promoted
-        → accepted / published   (attached to PR or Linear)
-        → dismissed              (excluded from the active pool)
-```
-
-Every state transition is append-only: the original record is never overwritten. The History tab on each worker run reflects every review and publish action, giving you a full audit trail.
+- Capture after the relevant change is visible.
+- Give the artifact a plain title.
+- Attach test output when the proof is about correctness.
+- Prefer one clear screenshot over a long unrelated recording.
+- Dismiss proof that no longer supports the final result.

@@ -1,81 +1,45 @@
 ---
 title: "Connect an AI provider"
-description: "Add a provider credential so ADE can start agents and worker runs."
+description: "Add one working provider so ADE can run coding agents."
 icon: "key"
 ---
 
-## Open AI provider settings
+Open **Settings -> AI Providers**. ADE needs at least one verified provider before it can run agent chat, workers, CTO delegation, auto-titles, or AI summaries.
 
-Press `Cmd+,` (macOS) or `Ctrl+,` (Windows/Linux), or open **Settings** and select **AI Providers**.
+## Common choices
 
----
+| Provider | Best for | Setup |
+|----------|----------|-------|
+| **Claude / Claude Code** | Strong default for coding tasks and project reasoning | API key or authenticated `claude` CLI |
+| **Codex** | OpenAI coding agent workflows | Authenticated Codex CLI or configured OpenAI access |
+| **Cursor** | Cursor agent runs from inside ADE | Cursor API key |
+| **OpenCode** | Local or OpenRouter-backed CLI workflows | OpenCode config and provider key |
+| **OpenRouter / local providers** | Cost control or local experimentation | API key or local endpoint |
 
-## Add one provider first
+## Add and verify
 
-ADE works best once you have at least one verified provider configured. There are two types:
-
-<Tabs>
-  <Tab title="API key providers">
-    Paste an API key and ADE verifies the connection immediately.
-
-    <CardGroup cols={3}>
-      <Card title="Anthropic (Claude)" icon="sparkles" color="#7C3AED">
-        Best default — works with chat, worker runs, CTO, and automations. Keys start with `sk-ant-`.
-      </Card>
-      <Card title="OpenAI (GPT)" icon="circle" color="#059669">
-        Good for structured output and GPT-family models. Keys start with `sk-`.
-      </Card>
-      <Card title="OpenRouter" icon="shuffle" color="#2563EB">
-        Route to hundreds of models through one key. Great for cost optimization.
-      </Card>
-    </CardGroup>
-
-    These are the most common providers. Additional API-key providers (e.g. Google Gemini, Mistral, Ollama) are available in the **Settings → AI Providers** panel.
-
-    <Steps>
-      <Step title="Paste the API key">
-        Enter the credential into the correct provider field.
-      </Step>
-      <Step title="Save">
-        Click **Save** — ADE stores the credential locally in `.ade/local.secret.yaml` (never committed to git).
-      </Step>
-      <Step title="Verify">
-        ADE runs a lightweight check to confirm the credential works. A green indicator means you're ready.
-      </Step>
-    </Steps>
-  </Tab>
-  <Tab title="CLI and SDK providers">
-    ADE detects installed CLIs and SDK-backed provider keys automatically.
-
-    <CardGroup cols={3}>
-      <Card title="Claude Code" icon="terminal" color="#7C3AED">
-        Install the `claude` CLI and sign in. ADE detects it automatically.
-      </Card>
-      <Card title="Codex" icon="terminal" color="#059669">
-        Install the `codex` CLI globally (`npm i -g @openai/codex`) and authenticate.
-      </Card>
-      <Card title="Cursor" icon="arrow-pointer" color="#2563EB">
-        Add a Cursor API key. ADE uses Cursor's agent through the Cursor SDK.
-      </Card>
-    </CardGroup>
-
-    <Note>
-    Local CLIs and SDK-backed provider keys are checked during onboarding and on each app launch. If you install a CLI or add a provider key after starting ADE, open **Settings** and select **AI Providers**, then click **Refresh** to re-detect.
-    </Note>
-  </Tab>
-</Tabs>
-
----
-
-## Which provider should I start with?
-
-| If you want... | Use this | Why |
-|----------------|----------|-----|
-| The most complete ADE experience | **Anthropic (Claude)** | Works everywhere — chat, worker runs, CTO, automations |
-| You already use Cursor daily | **Cursor** | ADE integrates through the Cursor SDK with a Cursor API key |
-| Cost flexibility | **OpenRouter** | Route different agent roles to different models |
-| Privacy / offline work | **Ollama (local)** | No API key, runs entirely on your machine |
+<Steps>
+  <Step title="Choose the provider">
+    Pick the provider you already use, or start with Claude if you are unsure.
+  </Step>
+  <Step title="Add credentials">
+    Paste the API key or make sure the provider CLI is installed and authenticated.
+  </Step>
+  <Step title="Click verify or refresh">
+    ADE checks the provider and shows whether it can start sessions.
+  </Step>
+  <Step title="Set a default model">
+    Choose a default model for chat. You can override it per session later.
+  </Step>
+</Steps>
 
 <Warning>
-ADE is local-first. Provider calls go directly from your machine to the model provider. ADE never proxies your requests through its own servers.
+Provider calls go from your machine to the provider. ADE does not proxy model requests through an ADE-hosted service.
 </Warning>
+
+## If verification fails
+
+- Confirm the key is active and has model access.
+- Restart ADE after installing a new CLI.
+- Open a terminal and test the provider CLI directly.
+- Check **Settings -> AI Providers** again and click **Refresh**.

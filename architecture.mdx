@@ -1,68 +1,69 @@
 ---
 title: "Architecture"
-description: "How the ADE runtime, desktop app, ADE Code, iOS app, and remote machines work together."
+description: "How ADE desktop, the local runtime, project state, CLI, iOS companion, and optional remote runtimes fit together."
 icon: "diagram-project"
 ---
 
-ADE is built around one per-machine runtime. Desktop, `ade code`, the shell CLI, iOS, and SSH-bound desktop windows are clients of that runtime; they do not each own a separate copy of project state.
+ADE is local-first. The desktop app is the visible control plane, and a machine-local ADE runtime owns the durable project state and action surface.
 
 ```mermaid
 flowchart TB
-  subgraph LocalMachine["One ADE install on a machine"]
-    Desktop["Electron desktop app<br/>multi-window client"]
-    Code["ADE Code<br/>terminal Work client"]
-    Shell["ade CLI<br/>typed commands"]
-    Runtime["Machine ADE runtime<br/>ade serve<br/>~/.ade/sock/ade.sock"]
-    Bridge["Desktop bridge<br/>Electron-only services"]
-  end
+  Desktop["ADE desktop app"]
+  Work["Work tab<br/>chats and terminals"]
+  CLI["ade CLI and ade code"]
+  Runtime["Local ADE runtime<br/>~/.ade/sock/ade.sock"]
+  Project["Project .ade/<br/>database, worktrees, artifacts"]
+  IOS["iOS companion"]
+  Remote["Optional remote ADE runtime"]
 
-  Desktop -->|"runtime RPC"| Runtime
-  Code -->|"runtime RPC"| Runtime
-  Shell -->|"runtime RPC"| Runtime
-  Runtime -->|"browser and other Electron-only actions"| Bridge
-  Bridge -->|"WebContentsView and desktop UI state"| Desktop
-
-  subgraph ProjectState["Project .ade state"]
-    DB[".ade/ade.db<br/>SQLite + cr-sqlite"]
-    Worktrees[".ade/worktrees/*<br/>lanes"]
-    Artifacts[".ade/artifacts + cache<br/>proof, transcripts, packs"]
-  end
-
-  Runtime --> DB
-  Runtime --> Worktrees
-  Runtime --> Artifacts
-
-  IOS["iOS app<br/>controller client"] <-->|"sync WebSocket<br/>changesets + commands"| Runtime
-
-  RemoteDesktop["Desktop window<br/>SSH-bound client"] <-->|"ade rpc --stdio"| RemoteRuntime["Remote machine runtime<br/>ade serve or uploaded ade-* binary"]
-  RemoteRuntime --> RemoteProject["Remote project .ade state"]
+  Desktop --> Runtime
+  Work --> Runtime
+  CLI --> Runtime
+  Runtime --> Project
+  IOS <-->|"paired sync and commands"| Runtime
+  Desktop <-->|"SSH/RPC when configured"| Remote
 ```
 
-## Runtime first
+## The desktop app
 
-The ADE runtime (`apps/ade-cli`, started with `ade serve`) is the durable source of truth for projects, lanes, agent chats, work sessions, processes, sync, credentials, and proof artifacts. It hosts multiple projects through a project registry and exposes project-scoped actions through one JSON-RPC surface.
+Desktop owns the window, navigation, renderer UI, and Mac-only integrations. It displays lanes, Work sessions, files, PRs, History, Settings, CTO, and mobile pairing state.
 
-Desktop is a client of that surface. It owns the Electron window, preload bridge, renderer, and a narrow desktop bridge for services that physically require Electron APIs, such as ADE Browser. Runtime-backed work stays in the runtime even when the desktop window closes.
+## The ADE runtime
 
-`ade code` is also a client of the same runtime. It opens the terminal-native Work chat, attaches to `~/.ade/sock/ade.sock` by default, and can run in explicit embedded/headless mode for CI or one-off local checks.
+The runtime is the local service that reads and writes project state. It handles lanes, chats, terminals, Git operations, PR actions, provider sessions, proof artifacts, and mobile sync. Desktop and CLI clients call the same runtime surface, so a chat in the app and `ade code` in a terminal operate on the same project.
 
-## Remote and mobile
+## Project state
 
-An SSH-bound desktop window talks to a remote machine runtime through `ade rpc --stdio`. On first connect, desktop can upload the bundled `ade-<platform-arch>` runtime binary and native dependencies, then uses the same runtime action surface as a local window.
+ADE writes local state under the repository's `.ade/` directory:
 
-The iOS app is a controller. It pairs with a machine runtime over WebSocket, mirrors project state with cr-sqlite-compatible changesets, and sends commands back to the runtime. The phone never runs agents or owns lane processes.
+```text
+.ade/
+  ade.db
+  worktrees/
+  artifacts/
+  cache/
+  secrets/
+```
 
-## State boundaries
+The source repository remains a normal Git checkout. ADE uses Git branches, worktrees, commits, and PRs rather than replacing them.
 
-Project state lives under the repo's `.ade/` directory: `ade.db`, lane worktrees, artifacts, transcripts, and caches. Machine-global state lives under `~/.ade/`: the project registry, sockets, secrets, remote-machine records, and runtime metadata.
+## CLI and terminal clients
 
-Source code crosses machines through git. ADE does not host a git server, and it does not move secrets out of the local encrypted stores.
+The `ade` CLI gives agents and humans a typed way to reach ADE actions from a shell. `ade code` is the terminal-native Work client for people who prefer to stay in a terminal while sharing the same runtime and project state as desktop.
+
+## iOS companion
+
+The iOS app pairs with the local runtime. It mirrors useful state, receives push notifications, and can send commands back to the Mac. Agents still run on the Mac or configured remote runtime.
+
+## Optional remote runtimes
+
+ADE can connect to another machine over SSH and talk to an ADE runtime there. Use this when the repository or dev stack lives on a remote box, but you still want the desktop control plane locally.
 
 <CardGroup cols={2}>
-  <Card title="Architecture reference" icon="book" href="https://github.com/arul28/ADE/blob/main/docs/ARCHITECTURE.md">
-    Read the full internal engineering map with service catalogs and build details.
+  <Card title="Key concepts" icon="lightbulb" href="/key-concepts">
+    Learn the product vocabulary.
   </Card>
-  <Card title="Terminal workflows" icon="terminal" href="/tools/terminals">
-    Work with terminal sessions and CLI-based agents that share the runtime with desktop.
+  <Card title="iOS companion" icon="mobile-screen" href="/tools/ios-companion">
+    Pair your phone and understand what mobile can do.
   </Card>
 </CardGroup>

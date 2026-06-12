@@ -1,0 +1,31 @@
+---
+title: "v1.2.0"
+description: "Release notes for ADE v1.2.0 - June 12, 2026"
+---
+
+v1.2.0 is a broad desktop release that moves ADE onto the machine-runtime architecture, makes Work, PRs, Files, Lanes, History, and mobile sync feel like one connected product, and refreshes the public docs around the current ADE experience. The iOS companion stays on its existing marketing version for TestFlight and receives a new build with sync, chat, PR, CTO, and terminal improvements.
+
+---
+
+## Desktop
+
+- **Machine runtime architecture.** ADE now centers desktop, `ade code`, CLI, remote runtime, and iOS traffic around a shared machine runtime so project switches, sidecars, packaged launches, and phone sync survive more real-world startup and update paths.
+- **Work tab and chat continuity.** Work gets a major UI pass with multi-chat/session parity, better scroll stability, full transcript pagination, resumable streams, safer stale-session handling, and stronger recovery when provider or runtime connections flap.
+- **Provider and model support.** Claude, Codex, Cursor, OpenCode, Droid, and local-provider paths are more consistent, with provider readiness fixes, model picker sync, Cursor key verification caching, Codex goal controls, and newer model support.
+- **Lanes and branch operations.** Lane creation, deletion, duplicate handling, auto-rebase protection, stacked work, and branch cleanup all get sturdier guardrails, clearer loading/error states, and better handling of active sessions during destructive actions.
+- **PR review flow.** The PRs tab now has a richer detail view, better GitHub freshness and conflict state, Path to Merge improvements, Linear linkage, transcript gist publishing, issue resolution flows, queue/rebase cleanup, and stronger behavior around fork imports and team reviewers.
+- **Files, History, and graph surfaces.** Files gains a cleaner workbench, History gets a commit-graph style activity view, hidden-tab work is reduced, and Graph/Lanes/PR state stay mounted and fresher across tab switches.
+- **Proof, browser, and simulator tooling.** ADE Browser proof capture, built-in browser routing, macOS Computer Use permissions, iOS Simulator live capture, simulator preview matching, and screenshot/video artifact handling all received reliability work.
+- **Security and local-first hardening.** Credential storage, browser bridge sockets, GitHub auth, Linear GraphQL, sync host election, remote runtime bootstrap, runtime project switching, and headless service paths were hardened across desktop and CLI.
+- **Performance and memory.** Large workload responsiveness, chat history hydration, CLI session launch latency, terminal load, PR warm paths, hidden work, file watchers, and SQLite/CRDT hot paths were tuned to reduce crashes, hangs, and background churn.
+- **Docs overhaul.** The Mintlify docs were rewritten around the current product: simpler setup, clearer lanes/chat/PR/CTO/mobile flows, less internal reference detail, and no public Automations or VM guide paths.
+
+---
+
+## iOS
+
+- **Mobile sync reliability.** The companion app now benefits from the new brain-level sync listener, larger payload handling, stable port/reconnect behavior, better project switching, chunked envelopes, and fixes for schema drift and changeset starvation.
+- **Chat parity and transcripts.** Mobile chat receives faster transcript loading, resumable stream support, tail-only markdown rendering, desktop rendering parity, full scroll-back improvements, and shared provider/model state.
+- **Native terminal streaming.** iOS adds a native terminal surface with offset-based sync streaming so phone sessions can follow command output without taking over execution from the Mac.
+- **PR, Linear, and CTO polish.** PR comments, offline/deep-link navigation, CTO status accuracy, attention states, Linear-linked flows, and mobile tab parity were tightened so the companion reflects desktop work more accurately.
+- **Release build only.** iOS stays on the existing marketing version for this release and will ship as a new TestFlight build number only.

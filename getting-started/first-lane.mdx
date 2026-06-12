@@ -1,100 +1,45 @@
 ---
 title: "Create your first lane"
-description: "Start your first isolated worktree so AI tasks do not run in the primary checkout — step-by-step walkthrough with naming tips, environment setup, and verification."
+description: "Create an isolated branch and worktree for your first agent task."
 icon: "code-branch"
 ---
 
-## Why lanes matter
+A lane keeps agent work out of your primary checkout. Use one lane per task.
 
-A lane is ADE's unit of parallel work. Each lane has its own git worktree, branch, port allocation, Lane Pack, and conflict tracking. Without lanes, every agent would write to the same working directory simultaneously.
-
-<Note>
-The **Primary Lane** is your main repository checkout. It always exists and cannot be deleted. For agent-driven work, create a Worktree Lane — this keeps the primary checkout clean and lets you work manually without interference.
-</Note>
-
----
-
-## Create a lane
+## Create the lane
 
 <Steps>
-  <Step title="Open the Lanes view">
-    Click the **Lanes** icon (branch icon) in the left sidebar. You can also open the command palette with `Cmd/Ctrl+K` and choose **Create Lane**.
+  <Step title="Open Lanes">
+    Choose **Lanes** from the sidebar.
   </Step>
-  <Step title="Click New Lane">
-    Click the **+ New Lane** button at the top of the lane list. The creation dialog opens.
+  <Step title="Click New lane">
+    Give the lane a short task name, such as `add-health-endpoint` or `fix-login-copy`.
   </Step>
-  <Step title="Choose a name">
-    Enter a short, task-oriented name. ADE uses this as both the lane identifier and the worktree directory name.
-
-    Good names describe the work:
-    - `add-health-endpoint`
-    - `fix-auth-redirect`
-    - `refactor-payment-api`
-
-    Avoid generic names like `test` or `feature-1` — they become confusing when you have several lanes open at once.
+  <Step title="Choose the base branch">
+    For your first lane, use your default branch, usually `main`.
   </Step>
-  <Step title="Select a base branch">
-    Choose which branch this lane branches from. For your first lane, select your project's default branch (usually `main` or `develop`).
-
-    For stacked work, you would select another lane's branch as the base. See [Stacked Lanes](/lanes/stacks) for details.
-  </Step>
-  <Step title="Configure the environment (optional)">
-    Expand the **Advanced** section to set:
-    - **Environment variable overlays** — key-value pairs applied only in this lane (e.g., `DATABASE_URL` pointing to a test database)
-    - **Startup command** — a command ADE runs when the lane initializes (e.g., `npm run dev`)
-    - **Port offset** — override the auto-assigned port if needed
-
-    For your first lane, the defaults are fine. You can change these later in the lane's environment settings.
-  </Step>
-  <Step title="Create the lane">
-    Click **Create Lane**. ADE will:
-    1. Run `git worktree add` to create the isolated directory under `.ade/worktrees/<lane-name>/`
-    2. Initialize the lane environment (port lease, env overlay)
-    3. Generate an initial Lane Pack from the branch state
-    4. Add the lane to the list with `idle` status
-
-    This takes 2-5 seconds for most repositories.
+  <Step title="Create">
+    ADE creates a Git worktree under `.ade/worktrees/` and checks out a branch for the lane.
   </Step>
 </Steps>
 
----
+## Good lane names
 
-## Verify the lane is ready
+| Good | Avoid |
+|------|-------|
+| `add-health-endpoint` | `test` |
+| `fix-auth-redirect` | `agent-work` |
+| `linear-eng-142` | `new-branch` |
 
-Once created, your new lane appears in the lane list with a grey dot (`idle` status). Confirm:
+## When the lane is ready
 
-- The lane name and branch are correct in the list
-- Click the lane to select it — the center pane shows the lane detail with a clean diff (no changes yet)
-- The right inspector's **Packs** sub-tab shows a freshly generated Lane Pack
-
-You are now ready to [run your first agent](/getting-started/first-agent) in this lane.
-
----
-
-## Naming guidance
-
-| Convention | Example | When to use |
-|-----------|---------|-------------|
-| Feature prefix | `feature/user-preferences` | Following git-flow or similar branch conventions |
-| Task-oriented | `add-health-endpoint` | Quick, descriptive — works well for most tasks |
-| Issue-linked | `linear/ENG-142` | When the CTO creates lanes from Linear issues |
-| Hotfix | `hotfix/auth-redirect` | Urgent fixes that need fast-tracked review |
-
-<Tip>
-Prefer one lane per feature, fix, or experiment. If a task grows beyond what you expected, split it into stacked lanes rather than making one lane do too much. Narrow lanes have fewer conflicts and are easier to review.
-</Tip>
-
----
-
----
-
-## Next steps
+The lane should show a clean diff and no active sessions. Open it in **Work** to start chat or a terminal.
 
 <CardGroup cols={2}>
   <Card title="Run your first agent" icon="robot" href="/getting-started/first-agent">
-    Use Agent Chat for a quick task or launch a Worker run for structured execution.
+    Start a small lane-scoped chat.
   </Card>
-  <Card title="Lanes deep dive" icon="code-branch" href="/lanes/overview">
-    Learn about lane types, status indicators, the 3-pane layout, and health monitoring.
+  <Card title="Lanes overview" icon="code-branch" href="/lanes/overview">
+    Learn how lanes, stacks, and cleanup work.
   </Card>
 </CardGroup>

@@ -1,62 +1,50 @@
 ---
-title: "Setting Up the CTO"
-description: "Walk through the CTO onboarding wizard, configure worker heartbeat schedules, and verify the CTO team is active."
+title: "Set up the CTO"
+description: "Prepare the CTO agent for project-level planning and delegation."
 icon: "wand-magic-sparkles"
 ---
 
-## Setting Up the CTO
+The CTO needs a working AI provider and enough project context to make useful decisions.
+
+## Setup checklist
 
 <Steps>
-  <Step title="Open the CTO tab">
-    Click the **CTO** tab in ADE's left icon rail. On first launch, the onboarding wizard starts automatically.
+  <Step title="Verify a strong provider">
+    In **Settings -> AI Providers**, choose a model you trust for planning and review.
   </Step>
-  <Step title="Complete the onboarding wizard">
-    The wizard walks through three steps:
-    1. **Identity creation** — give the CTO a name and an initial persona prompt. This shapes how it communicates and what it prioritizes.
-    2. **Project scanning** — the CTO reads your repository structure, existing PRD/architecture docs, recent git history, and `.ade/` state to build its initial Project Pack. This takes 30–90 seconds on a typical project.
-    3. **Integration handoff** — optionally connect Linear (OAuth or manual token) and review the CTO team setup.
-
+  <Step title="Connect GitHub">
+    Recommended for PR summaries, CI explanations, and review follow-up.
   </Step>
-  <Step title="Configure worker heartbeats">
-    In **CTO > Team**, edit a worker and enable **Timer-based heartbeat**. The interval is stored per worker in seconds; the UI defaults to `300`.
+  <Step title="Connect Linear">
+    Optional. Use it when issues should map to lanes, PRs, and CTO updates.
   </Step>
-  <Step title="Verify the CTO is active">
-    The CTO surfaces worker state from the Team and Chat views. If a worker cannot run, check that at least one AI provider is configured in Settings > AI Providers.
+  <Step title="Create or review workers">
+    Add worker identities for recurring responsibilities, such as testing or PR review.
+  </Step>
+  <Step title="Ask for a summary">
+    Start with: `Summarize the current project state and identify the highest-risk open work.`
   </Step>
 </Steps>
 
----
+## First useful prompts
 
-## Worker Heartbeat Configuration
+```text
+Look across active lanes and tell me what is ready for review.
+```
 
-Worker heartbeats are per-agent runtime settings. When enabled, ADE wakes that worker on a timer and runs the worker heartbeat service for that agent.
+```text
+Plan how to split this feature into reviewable lanes before anyone starts coding.
+```
 
-### What happens on each heartbeat
+```text
+Read Linear issue ENG-142 and recommend the first lane to create.
+```
 
-ADE creates a worker wakeup request with reason `timer`, reconstructs the worker's recent context, and asks the worker to respond with `HEARTBEAT_OK` when no action is required. Wakeups with explicit prompts, events, changes, or task context are escalated into worker work; quiet timer wakeups can complete without action.
-
-### Heartbeat schedule options
-
-Configure heartbeats in **CTO > Team** on each worker:
-
-| Setting | Meaning |
-|---|---|
-| Timer-based heartbeat | Enables scheduled wakeups for that worker |
-| Interval (seconds) | Number of seconds between wakeups; the UI default is `300` |
-| Wake on demand | Allows ADE to wake the worker immediately for matching work |
-| Active hours | Restricts wakeups to a start/end window and timezone |
-
-This state is stored on the worker identity as `runtimeConfig.heartbeat`. ADE does not parse a project-level `.ade/ade.yaml` `cto.heartbeat` block.
-
-### Identity Restoration After Compaction
-
-When a CTO chat session hits the compaction threshold, ADE automatically **re-injects the CTO's identity context** after compaction completes. This means the CTO's persona and current operating instructions survive compaction — the CTO keeps its role mid-conversation, even during very long sessions.
-
-This also applies to worker agents that have an identity key assigned.
-
-### Manual activation
-
-You can trigger CTO work immediately from the UI:
-- Select a worker in **CTO > Team** and click **Wake** to create a manual worker wakeup
-- Type a message in the CTO Chat to activate the CTO in conversational mode
-- Via Automations using a real action such as `agent-session` for worker sessions or `ade-action` for a registered ADE action
+<CardGroup cols={2}>
+  <Card title="CTO overview" icon="crown" href="/cto/overview">
+    What the CTO is for.
+  </Card>
+  <Card title="Workers" icon="users" href="/cto/workers">
+    Manage delegated agent identities.
+  </Card>
+</CardGroup>

@@ -36,9 +36,9 @@
             "expanded": true,
             "pages": [
               "welcome",
+              "quickstart",
               "key-concepts",
-              "architecture",
-              "quickstart"
+              "architecture"
             ]
           },
           {
@@ -124,25 +124,20 @@
             ]
           },
           {
-            "group": "Automations",
-            "icon": "bolt",
-            "pages": [
-              "automations/overview",
-              "automations/executors",
-              "automations/templates",
-              "automations/guardrails",
-              "guides/automation-rules"
-            ]
-          },
-          {
-            "group": "CTO Agent",
+            "group": "CTO and Workers",
             "icon": "crown",
             "pages": [
               "cto/overview",
               "cto/setup",
               "cto/linear",
-              "cto/workers",
-              "guides/cto-linear-workflow"
+              "cto/workers"
+            ]
+          },
+          {
+            "group": "Mobile",
+            "icon": "mobile-screen",
+            "pages": [
+              "tools/ios-companion"
             ]
           }
         ]
@@ -199,6 +194,7 @@
             "expanded": true,
             "pages": [
               "changelog",
+              "changelog/v1.2.0",
               "changelog/v1.1.12",
               "changelog/v1.1.11",
               "changelog/v1.1.10",

@@ -1,139 +1,68 @@
 ---
-title: "Guide: Stacked PRs"
-sidebarTitle: "Stacked PR Workflows"
-description: "Use ADE lanes to create, manage, and land stacked pull requests with conflict detection and queue-based landing."
+title: "Guide: stacked PRs"
+sidebarTitle: "Stacked PRs"
+description: "Create, review, and land a chain of dependent PRs with ADE lanes."
 icon: "layer-group"
 ---
 
-Stacked PRs break large features into a chain of small, reviewable pull requests that build on each other. ADE's lane system makes this workflow natural — each PR lives in its own lane, and the stack topology is tracked automatically.
+Use stacked PRs when one feature is too large for a single review but each slice depends on the previous slice.
 
----
+## 1. Create the base lane
 
-## 1. Create the Base Lane
+Create a lane from `main` for the first slice of work. Commit the foundation there.
 
-Start by creating a lane for the first PR in your stack.
+## 2. Create child lanes
 
-<Steps>
-  <Step title="Open the Lanes panel">
-    Navigate to **Lanes** in the sidebar.
-  </Step>
-  <Step title="Create a new lane">
-    Click **New Lane**. Set the branch name (e.g., `feature/auth-models`) and select `main` as the base branch.
-  </Step>
-  <Step title="Do your work">
-    Switch to the new lane and make your changes manually or with an agent.
-  </Step>
-</Steps>
+Select the base lane and create a child lane for the next slice. Repeat only as needed.
 
----
+```text
+main
+  feature-auth-models
+    feature-auth-ui
+      feature-auth-tests
+```
 
-## 2. Stack a Child Lane
+## 3. Open PRs
 
-Once the base lane has commits, create a child lane that builds on top of it.
+Open PRs from the bottom of the stack upward:
 
-<Steps>
-  <Step title="Create a child lane">
-    From the Lanes panel, select your base lane, then click **New Child Lane**. ADE automatically sets the child's base branch to the parent lane's branch.
-  </Step>
-  <Step title="Name the child branch">
-    Use a descriptive branch name (e.g., `feature/auth-ui`). ADE tracks the parent-child relationship in the stack topology.
-  </Step>
-  <Step title="Repeat as needed">
-    Add more children to build a deeper stack. Each lane targets the one directly above it:
+- Base lane targets `main`.
+- First child targets the base lane branch.
+- Next child targets the first child branch.
 
-    ```
-    main
-     └── feature/auth-models      ← PR #1
-          └── feature/auth-ui      ← PR #2
-               └── feature/auth-tests  ← PR #3
-    ```
-  </Step>
-</Steps>
+ADE keeps this relationship visible in Lanes, Graph, and PRs.
 
----
+## 4. Review in order
 
-## 3. Visualize the Stack
+Review the base PR first. Child PRs will be easier to understand once the parent is approved.
 
-Open the **Workspace Graph** to see your stack as a connected chain. Each lane appears as a node with edges showing the base-branch relationship.
-
-The graph shows:
-- **Stack chains** — connected groups of lanes forming a stack
-- **Status badges** — whether each lane has uncommitted changes, open PRs, or conflicts
-- **Agent indicators** — which lanes have active agents running
-
-Drag-reparent lanes in the Graph to reorganize your stack. ADE updates the base-branch relationships automatically when you move a lane from one parent to another.
-
----
-
-## 4. Handle Upstream Changes
-
-When you update an upstream lane (e.g., push new commits to `feature/auth-models`), ADE detects that downstream lanes are out of date.
-
-- **Rebase suggestion** — ADE surfaces a rebase suggestion on each affected child lane with a preview of the changes
-- **Open the Rebase tab** — click **View in Rebase tab** on the lane-list banner to open the full rebase workspace, pick the scope, run the rebase, and resolve any conflicts. The banner surfaces suggestions only — it no longer runs the rebase in one click or offers a deferral option.
-- **Conflict detection** — if the rebase would cause conflicts, ADE flags them before you attempt the rebase
-
-<Note>ADE runs merge simulations automatically between stacked lanes. Conflicts are surfaced in the Conflicts view before they block your work.</Note>
-
----
-
-## 5. Open Stacked PRs
-
-Open a PR for each lane in the stack, starting from the bottom:
-
-<Steps>
-  <Step title="Open PR for the base lane">
-    From the lane's context menu or the PR panel, open a pull request targeting `main`.
-  </Step>
-  <Step title="Open PRs for child lanes">
-    Each child lane's PR targets the parent lane's branch. ADE sets this automatically based on the stack topology.
-  </Step>
-  <Step title="Review in order">
-    Reviewers can review each PR independently. The stacked topology is visible in the PR descriptions.
-  </Step>
-</Steps>
-
-ADE auto-generates PR descriptions that include the stack context — which PR this builds on, what the full stack looks like, and where this PR fits in the chain. Reviewers see the dependency structure without needing to trace branches manually.
-
----
-
-## 6. Land the Stack
-
-Land stacked PRs from the bottom up. ADE provides queue-based landing to handle this:
+## 5. Land the stack
 
 <Steps>
   <Step title="Merge the base PR">
-    Merge the bottom PR into `main` through your normal GitHub flow.
+    Land the first PR into `main`.
   </Step>
-  <Step title="Retarget child PRs">
-    After the base merges, retarget the next child PR to `main` (or let ADE suggest this automatically). Rebase if needed.
+  <Step title="Update the child">
+    Rebase or retarget the next PR so it now builds on `main`.
   </Step>
-  <Step title="Repeat up the stack">
-    Continue merging and retargeting until the entire stack is landed.
+  <Step title="Repeat">
+    Continue up the stack until all slices are merged.
   </Step>
 </Steps>
 
-ADE supports queue-aware rebase for stacked PRs. When a base PR merges, ADE detects the change and offers to retarget and rebase the next PR in the stack automatically. The `RebaseNeed` system distinguishes between `lane_base` (upstream lane changed) and `pr_target` (PR target branch moved), so you always know why a rebase is needed.
-
-For force-push-after-rebase workflows, ADE handles the `forcePushAfterRebase` flag automatically when the rebase succeeds.
-
----
-
 ## Tips
 
-- Keep each lane in the stack focused on a single concern — this makes reviews faster and conflicts rarer.
-- Use the Workspace Graph to spot when a stack is getting too deep (more than 3-4 levels can be hard to manage).
-- Run agents in child lanes while the parent is in review — ADE isolates them so work is not blocked.
-
----
-
-## Next Steps
+- Keep each PR small enough to review independently.
+- Avoid deep stacks unless the dependency is real.
+- Use Graph to see the chain.
+- Run tests again after rebasing a child.
+- If a child becomes independent, split it into a sibling lane.
 
 <CardGroup cols={2}>
-  <Card title="Lane Concepts" icon="code-branch" href="/key-concepts#lane">
-    Understand lane types, packs, and environment isolation.
+  <Card title="Stacked lanes" icon="layer-group" href="/lanes/stacks">
+    Understand the lane model.
   </Card>
-  <Card title="Running Multiple Agents" icon="users" href="/guides/multi-agent-setup">
-    Assign agents across your stack for parallel development.
+  <Card title="Pull requests" icon="code-pull-request" href="/tools/pull-requests">
+    Review and merge from ADE.
   </Card>
 </CardGroup>
