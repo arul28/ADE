@@ -824,6 +824,7 @@ struct WorkSessionDestinationView: View {
       handledOpeningPromptKey = promptKey
       return
     }
+    copySubmittedWorkPromptToPasteboard(prompt)
     handledOpeningPromptKey = promptKey
 
     let echo: WorkLocalEchoMessage

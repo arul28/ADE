@@ -386,10 +386,13 @@ turns a raw response dict into either the `result` value or throws an
 ### Offline behavior
 
 - All synced state is available offline from the local DB.
-- Execution commands queue locally and replay on reconnect. The runtime
-  deduplicates retried commands by `commandId` through a TTL'd cache
-  + persisted journal, so a replay returns the cached
-  `command_ack` / `command_result` instead of running twice.
+- Execution commands queue locally and replay on reconnect. Queueable commands
+  also enter the local queue when a send times out while the WebSocket still
+  appears connected; the phone keeps the same `commandId`, schedules a short
+  retry, and probes the transport instead of dropping the user's action. The
+  runtime deduplicates retried commands by `commandId` through a TTL'd cache +
+  persisted journal, so a replay returns the cached `command_ack` /
+  `command_result` instead of running twice.
 - UI shows "pending sync" indicators for queued actions.
 
 ### Timeouts

@@ -9,6 +9,7 @@ extension WorkSessionDestinationView {
     guard !sending || useSteer else { return false }
     let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !text.isEmpty else { return false }
+    copySubmittedWorkPromptToPasteboard(text)
     guard canSendChatMessages else { return false }
 
     let initialDeliveryState = (sendWillQueueChatMessage || useSteer) ? "queued" : "sending"
@@ -478,6 +479,13 @@ extension WorkSessionDestinationView {
       guard !Task.isCancelled else { return }
       prLinkCopied = false
     }
+  }
+
+  @MainActor
+  func copySubmittedWorkPromptToPasteboard(_ text: String) {
+    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return }
+    UIPasteboard.general.string = trimmed
   }
 
   func presentCreateLanePr() {

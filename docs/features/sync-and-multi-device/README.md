@@ -752,8 +752,9 @@ project scope split.
   rows, plus rows for tables that no longer exist locally, before
   opening the apply transaction. A batch that contains only ignored
   tables is a no-op and preserves the local database version.
-- **Controller command queues replay on reconnect.** If the runtime
-  advertises `chat.send` as queueable and the user sends while the
-  desktop is reconnecting, the iOS app stores the command locally with
-  a queued delivery state and replays on reconnect. Do not assume
-  synchronous semantics from the phone side.
+- **Controller command queues replay on reconnect and on live-send
+  timeouts.** If the runtime advertises `chat.send` as queueable and the user
+  sends while the desktop is reconnecting, or the send request times out while
+  the socket still appears connected, the iOS app stores the command locally
+  with a queued delivery state and replays it with the same `commandId`. Do not
+  assume synchronous semantics from the phone side.

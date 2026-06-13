@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { CircleNotch, GitFork, WarningCircle, Check } from "@phosphor-icons/react";
 import type { UnregisteredLaneCandidate } from "../../../shared/types/lanes";
+import { useAppStore } from "../../state/appStore";
 import { COLORS, SANS_FONT, MONO_FONT } from "../lanes/laneDesignTokens";
 import { Button } from "../ui/Button";
 import { RescanButton } from "./RescanButton";
@@ -9,6 +10,7 @@ import { CARD_BASE, SECTION_LABEL } from "./onboardingTheme";
 type LoadOptions = { preselectAll?: boolean; keepSelected?: Set<string> };
 
 export function WorktreesCard() {
+  const refreshLanes = useAppStore((s) => s.refreshLanes);
   const [worktrees, setWorktrees] = useState<UnregisteredLaneCandidate[]>([]);
   const [loading, setLoading] = useState(true);
   const [fetchError, setFetchError] = useState<string | null>(null);
@@ -82,6 +84,15 @@ export function WorktreesCard() {
         failedPaths.add(wt.path);
         collectedErrors.push(
           `${wt.branch || wt.path}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+    if (ok > 0) {
+      try {
+        await refreshLanes({ includeStatus: false });
+      } catch (err) {
+        collectedErrors.push(
+          `Added ${ok} worktree${ok !== 1 ? "s" : ""}, but the lane list did not refresh: ${err instanceof Error ? err.message : String(err)}`,
         );
       }
     }

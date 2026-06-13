@@ -129,6 +129,17 @@ func isRemoteCommandApplicationError(_ error: Error) -> Bool {
     && nsError.userInfo["ADEErrorCode"] != nil
 }
 
+func isSyncRequestTimeoutError(_ error: Error) -> Bool {
+  let nsError = error as NSError
+  return nsError.domain == "ADE" && nsError.code == 23
+}
+
+func syncShouldQueueCommandAfterSendFailure(error: Error, canSendLiveRequests: Bool, queueable: Bool) -> Bool {
+  guard queueable else { return false }
+  guard !isRemoteCommandApplicationError(error) else { return false }
+  return !canSendLiveRequests || isSyncRequestTimeoutError(error)
+}
+
 func decodeHydrationPayload<T: Decodable>(_ raw: Any, as type: T.Type, domainLabel: String, decoder: JSONDecoder) throws -> T {
   do {
     let data = try adeJSONData(withJSONObject: raw)
@@ -1305,6 +1316,7 @@ final class SyncService: ObservableObject {
   private var hydrationTask: Task<Void, Never>?
   private var reconnectTask: Task<Void, Never>?
   private var networkPathReconnectTask: Task<Void, Never>?
+  private var pendingOperationFlushTask: Task<Void, Never>?
   private var lanePresenceHeartbeatTask: Task<Void, Never>?
   private var openLaneReferenceCounts: [String: Int] = [:]
   private var terminalBufferRevisionTask: Task<Void, Never>?
@@ -2128,6 +2140,7 @@ final class SyncService: ObservableObject {
     projectSelectionTask?.cancel()
     reconnectTask?.cancel()
     networkPathReconnectTask?.cancel()
+    pendingOperationFlushTask?.cancel()
     lanePresenceHeartbeatTask?.cancel()
     terminalBufferRevisionTask?.cancel()
     chatEventRevisionTask?.cancel()
@@ -7771,6 +7784,8 @@ final class SyncService: ObservableObject {
     clientHeartbeatTask = nil
     hydrationTask?.cancel()
     hydrationTask = nil
+    pendingOperationFlushTask?.cancel()
+    pendingOperationFlushTask = nil
     lanePresenceHeartbeatTask?.cancel()
     lanePresenceHeartbeatTask = nil
     if let socket {
@@ -7959,6 +7974,16 @@ final class SyncService: ObservableObject {
     pendingOperationCount = operations.count
   }
 
+  private func schedulePendingOperationFlush(delayNanoseconds: UInt64 = 2_000_000_000) {
+    guard pendingOperationFlushTask == nil else { return }
+    pendingOperationFlushTask = Task { @MainActor [weak self] in
+      try? await Task.sleep(nanoseconds: delayNanoseconds)
+      guard let self, !Task.isCancelled else { return }
+      self.pendingOperationFlushTask = nil
+      await self.flushPendingOperations()
+    }
+  }
+
   private func enqueueOperation(kind: String, action: String, args: [String: Any], id: String? = nil) throws {
     guard JSONSerialization.isValidJSONObject(args) else {
       throw NSError(domain: "ADE", code: 11, userInfo: [NSLocalizedDescriptionKey: "Invalid queued operation payload."])
@@ -7976,6 +8001,9 @@ final class SyncService: ObservableObject {
       projectRootPath: activeProjectRootPath
     ))
     savePendingOperations(queued)
+    if canSendLiveRequests() {
+      schedulePendingOperationFlush()
+    }
   }
 
   private func pendingOperationMatchesActiveProject(_ operation: PendingOperation) -> Bool {
@@ -8044,13 +8072,16 @@ final class SyncService: ObservableObject {
         savePendingOperations(queued)
       } catch {
         lastError = SyncUserFacingError.message(for: error)
-        if canSendLiveRequests() {
+        let stillLive = canSendLiveRequests()
+        if isRemoteCommandApplicationError(error) || (stillLive && !isSyncRequestTimeoutError(error)) {
           queued.remove(at: index)
           savePendingOperations(queued)
           continue
         }
         savePendingOperations(queued)
-        connectionState = .error
+        if !stillLive {
+          connectionState = .error
+        }
         break
       }
     }
@@ -8109,10 +8140,16 @@ final class SyncService: ObservableObject {
           timeoutNanoseconds: timeoutNanoseconds
         )
       } catch {
-        if !isRemoteCommandApplicationError(error),
-           !canSendLiveRequests(),
-           commandPolicy(for: action)?.queueable == true {
+        let stillLive = canSendLiveRequests()
+        if syncShouldQueueCommandAfterSendFailure(
+          error: error,
+          canSendLiveRequests: stillLive,
+          queueable: commandPolicy(for: action)?.queueable == true
+        ) {
           try enqueueOperation(kind: "command", action: action, args: args, id: commandId)
+          if stillLive, isSyncRequestTimeoutError(error) {
+            verifyTransportAliveAfterRequestTimeout(error as NSError)
+          }
           return ["queued": true]
         }
         throw error
@@ -8744,10 +8781,16 @@ extension SyncService {
       do {
         return try await performCommandRequest(action: action, args: args, commandId: commandId)
       } catch {
-        if !isRemoteCommandApplicationError(error),
-           !canSendLiveRequests(),
-           commandPolicy(for: action)?.queueable == true {
+        let stillLive = canSendLiveRequests()
+        if syncShouldQueueCommandAfterSendFailure(
+          error: error,
+          canSendLiveRequests: stillLive,
+          queueable: commandPolicy(for: action)?.queueable == true
+        ) {
           try enqueueOperation(kind: "command", action: action, args: args, id: commandId)
+          if stillLive, isSyncRequestTimeoutError(error) {
+            verifyTransportAliveAfterRequestTimeout(error as NSError)
+          }
           return ["queued": true]
         }
         throw error
