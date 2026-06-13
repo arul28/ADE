@@ -7977,10 +7977,17 @@ final class SyncService: ObservableObject {
   private func schedulePendingOperationFlush(delayNanoseconds: UInt64 = 2_000_000_000) {
     guard pendingOperationFlushTask == nil else { return }
     pendingOperationFlushTask = Task { @MainActor [weak self] in
-      try? await Task.sleep(nanoseconds: delayNanoseconds)
-      guard let self, !Task.isCancelled else { return }
-      self.pendingOperationFlushTask = nil
-      await self.flushPendingOperations()
+      var nextDelay = delayNanoseconds
+      while !Task.isCancelled {
+        try? await Task.sleep(nanoseconds: nextDelay)
+        guard let self, !Task.isCancelled else { return }
+        let shouldRetry = await self.flushPendingOperations()
+        if !shouldRetry || !self.canSendLiveRequests() {
+          self.pendingOperationFlushTask = nil
+          return
+        }
+        nextDelay = 15_000_000_000
+      }
     }
   }
 
@@ -8037,21 +8044,33 @@ final class SyncService: ObservableObject {
     return dict
   }
 
-  private func flushPendingOperations() async {
-    guard canSendLiveRequests() else { return }
+  private func pendingOperationMatches(_ lhs: PendingOperation, _ rhs: PendingOperation) -> Bool {
+    lhs.id == rhs.id
+      && lhs.kind == rhs.kind
+      && lhs.action == rhs.action
+      && lhs.payload == rhs.payload
+  }
+
+  private func removePendingOperation(_ operation: PendingOperation) {
+    var queued = loadPendingOperations()
+    if let index = queued.firstIndex(where: { pendingOperationMatches($0, operation) }) {
+      queued.remove(at: index)
+      savePendingOperations(queued)
+    } else {
+      pendingOperationCount = queued.count
+    }
+  }
+
+  @discardableResult
+  private func flushPendingOperations() async -> Bool {
+    guard canSendLiveRequests() else { return false }
     var queued = loadPendingOperations()
     guard !queued.isEmpty else {
       pendingOperationCount = 0
-      return
+      return false
     }
 
-    var index = queued.startIndex
-    while index < queued.endIndex {
-      let operation = queued[index]
-      guard pendingOperationMatchesActiveProject(operation) else {
-        index = queued.index(after: index)
-        continue
-      }
+    while let operation = queued.first(where: pendingOperationMatchesActiveProject) {
       do {
         let args = try decodeQueuedArgs(operation)
         switch operation.kind {
@@ -8068,23 +8087,28 @@ final class SyncService: ObservableObject {
         default:
           throw NSError(domain: "ADE", code: 13, userInfo: [NSLocalizedDescriptionKey: "Unknown queued operation type."])
         }
-        queued.remove(at: index)
-        savePendingOperations(queued)
+        removePendingOperation(operation)
       } catch {
         lastError = SyncUserFacingError.message(for: error)
         let stillLive = canSendLiveRequests()
         if isRemoteCommandApplicationError(error) || (stillLive && !isSyncRequestTimeoutError(error)) {
-          queued.remove(at: index)
-          savePendingOperations(queued)
+          removePendingOperation(operation)
+          queued = loadPendingOperations()
           continue
         }
-        savePendingOperations(queued)
         if !stillLive {
           connectionState = .error
         }
-        break
+        if isSyncRequestTimeoutError(error) {
+          verifyTransportAliveAfterRequestTimeout(error as NSError)
+          return stillLive
+        }
+        return false
       }
+      queued = loadPendingOperations()
     }
+    pendingOperationCount = loadPendingOperations().count
+    return false
   }
 
   private func performCommandRequest(
