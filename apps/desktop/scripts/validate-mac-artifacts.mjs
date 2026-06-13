@@ -577,6 +577,22 @@ async function validateLatestMacYaml(latestMacPath, zipPath) {
   }
 }
 
+async function validateAppUpdateYaml(resourcesPath, description) {
+  const appUpdatePath = path.join(resourcesPath, "app-update.yml");
+  await assertPathExists(appUpdatePath, `packaged updater feed config for ${description}`);
+
+  const appUpdate = parseYaml(await fs.readFile(appUpdatePath, "utf8"));
+  const provider = String(appUpdate?.provider ?? "");
+  const owner = String(appUpdate?.owner ?? "");
+  const repo = String(appUpdate?.repo ?? "");
+  if (provider !== "github" || owner !== "arul28" || repo !== "ADE") {
+    throw new Error(
+      `[release:mac] Invalid packaged updater feed config for ${description}: ` +
+        `provider=${provider || "missing"} owner=${owner || "missing"} repo=${repo || "missing"}`
+    );
+  }
+}
+
 async function validateZip(zipPath) {
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "ade-release-zip-"));
 
@@ -590,6 +606,7 @@ async function validateZip(zipPath) {
 
     const appPath = path.join(tempDir, appEntry.name);
     await validateSignedApp(appPath, "zip artifact");
+    await validateAppUpdateYaml(path.join(appPath, "Contents", "Resources"), "zip artifact");
     await validatePackagedRuntime(appPath, "zip artifact");
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true });
@@ -620,6 +637,7 @@ async function validateDmg(dmgPath) {
     const appPath = path.join(mountPoint, "ADE.app");
     await assertPathExists(appPath, "mounted ADE.app");
     await validateSignedApp(appPath, "mounted dmg artifact");
+    await validateAppUpdateYaml(path.join(appPath, "Contents", "Resources"), "mounted dmg artifact");
     await validatePackagedRuntime(appPath, "mounted dmg artifact");
   } finally {
     await execFileAsync("hdiutil", ["detach", mountPoint, "-quiet"]).catch(() => {});
@@ -644,6 +662,7 @@ if (dmgPath) {
 }
 
 await validateSignedApp(appPath, "signed universal app bundle");
+await validateAppUpdateYaml(path.join(appPath, "Contents", "Resources"), "signed universal app bundle");
 await validateLatestMacYaml(latestMacPath, zipPath);
 await validateZip(zipPath);
 if (dmgPath) {

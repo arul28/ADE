@@ -10,6 +10,7 @@ class FakeAutoUpdater extends EventEmitter {
   logger: Logger | null = null;
   autoDownload = false;
   autoInstallOnAppQuit = true;
+  setFeedURL = vi.fn();
   checkForUpdates = vi.fn<[], Promise<unknown>>(async () => null);
   quitAndInstall = vi.fn();
 }
@@ -74,6 +75,27 @@ describe("createAutoUpdateService", () => {
     vi.advanceTimersByTime(60 * 60_000);
 
     expect(updater.checkForUpdates).not.toHaveBeenCalled();
+    service.dispose();
+  });
+
+  it("configures the GitHub update feed explicitly", () => {
+    const updater = new FakeAutoUpdater();
+    const service = createAutoUpdateService({
+      logger: makeLogger(),
+      currentVersion: "1.2.2",
+      globalStatePath: makeStatePath(),
+      startupDelayMs: 60_000,
+      periodicCheckMs: 60_000,
+      autoCheckEnabled: false,
+      updater,
+    });
+
+    expect(updater.setFeedURL).toHaveBeenCalledWith({
+      provider: "github",
+      owner: "arul28",
+      repo: "ADE",
+    });
+
     service.dispose();
   });
 

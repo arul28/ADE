@@ -267,6 +267,10 @@
         "filter": [
           "**/*"
         ]
+      },
+      {
+        "from": "resources/app-update.yml",
+        "to": "app-update.yml"
       }
     ],
     "afterPack": "./scripts/after-pack-runtime-fixes.cjs",

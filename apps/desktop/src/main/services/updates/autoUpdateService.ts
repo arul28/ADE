@@ -11,6 +11,7 @@ type AutoUpdaterLike = {
   logger: typeof autoUpdater.logger;
   autoDownload: boolean;
   autoInstallOnAppQuit: boolean;
+  setFeedURL?: (options: { provider: "github"; owner: string; repo: string }) => void;
   checkForUpdates: () => Promise<unknown>;
   quitAndInstall: (isSilent?: boolean, isForceRunAfter?: boolean) => void;
   on: (event: string, listener: (...args: any[]) => void) => unknown;
@@ -261,6 +262,17 @@ export function createAutoUpdateService({
   updater.logger = null;
   updater.autoDownload = true;
   updater.autoInstallOnAppQuit = false;
+  try {
+    updater.setFeedURL?.({
+      provider: "github",
+      owner: "arul28",
+      repo: "ADE",
+    });
+  } catch (error) {
+    logger.warn("autoUpdate.feed_config_failed", {
+      message: formatErrorMessage(error),
+    });
+  }
 
   const initialState = reconcilePersistedUpdateState({
     state: readGlobalState(globalStatePath),
