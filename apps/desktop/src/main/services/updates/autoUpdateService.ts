@@ -22,6 +22,7 @@ type CreateAutoUpdateServiceArgs = {
   currentVersion: string;
   globalStatePath: string;
   updater?: AutoUpdaterLike;
+  beforeQuitAndInstall?: () => void | Promise<void>;
   now?: () => string;
   releaseNotesBaseUrl?: string;
   startupDelayMs?: number;
@@ -249,6 +250,7 @@ export function createAutoUpdateService({
   currentVersion,
   globalStatePath,
   updater = autoUpdater as unknown as AutoUpdaterLike,
+  beforeQuitAndInstall,
   now = () => new Date().toISOString(),
   releaseNotesBaseUrl = DEFAULT_RELEASE_NOTES_BASE_URL,
   startupDelayMs = 5_000,
@@ -592,6 +594,22 @@ export function createAutoUpdateService({
         // longer "ready" with a version, but be explicit for the narrowing).
         const installVersion = snapshot.version;
         if (!installVersion) return false;
+        try {
+          await beforeQuitAndInstall?.();
+        } catch (error) {
+          const message = formatErrorMessage(error);
+          logger.warn("autoUpdate.prepare_quit_and_install_failed", {
+            version: installVersion,
+            message,
+          });
+          patchSnapshot({
+            ...createEmptyAutoUpdateSnapshot(),
+            status: "error",
+            error: message,
+            recentlyInstalled: snapshot.recentlyInstalled,
+          });
+          return false;
+        }
         writeGlobalState(globalStatePath, {
           ...readGlobalState(globalStatePath),
           pendingInstallUpdate: {

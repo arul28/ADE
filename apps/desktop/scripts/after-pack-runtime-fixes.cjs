@@ -234,10 +234,6 @@ function openCodeNativePackagesToPrune() {
 }
 
 function pruneUnneededRuntimePayload(runtimeRoot, platform) {
-  // afterPack runs per-arch on darwin; pruning here would race the
-  // electron-universal merge and ENOENT on deleted paths. Skip on darwin
-  // until a post-merge prune step exists.
-  if (platform === "darwin") return;
   const commonNonRuntimePayload = [
     ...claudeNativePackagesToPrune(platform),
     ...codexNativePackagesToPrune(platform),

@@ -424,6 +424,84 @@ describe("createAutoUpdateService", () => {
     service.dispose();
   });
 
+  it("runs the pre-install cleanup hook before handing off to the updater", async () => {
+    const globalStatePath = makeStatePath();
+    const updaterCacheDir = makeUpdaterCacheDir();
+    const logger = makeLogger();
+    const updater = new FakeAutoUpdater();
+    const beforeQuitAndInstall = vi.fn(async () => {});
+    const service = createAutoUpdateService({
+      logger,
+      currentVersion: "1.2.2",
+      globalStatePath,
+      updaterCacheDir,
+      startupDelayMs: 60_000,
+      periodicCheckMs: 60_000,
+      now: () => "2026-04-06T15:21:00.000Z",
+      updater,
+      beforeQuitAndInstall,
+    });
+
+    updater.emit("update-downloaded", {
+      version: "1.2.3",
+    });
+
+    await expect(service.quitAndInstall()).resolves.toBe(true);
+    expect(beforeQuitAndInstall).toHaveBeenCalledTimes(1);
+    expect(updater.quitAndInstall).toHaveBeenCalledWith(false, true);
+    expect(beforeQuitAndInstall.mock.invocationCallOrder[0]).toBeLessThan(
+      updater.quitAndInstall.mock.invocationCallOrder[0],
+    );
+    expect(readState(globalStatePath)).toMatchObject({
+      pendingInstallUpdate: {
+        targetVersion: "1.2.3",
+      },
+    });
+
+    service.dispose();
+  });
+
+  it("aborts install when pre-install cleanup fails", async () => {
+    const globalStatePath = makeStatePath();
+    const updaterCacheDir = makeUpdaterCacheDir();
+    const logger = makeLogger();
+    const updater = new FakeAutoUpdater();
+    const beforeQuitAndInstall = vi.fn(async () => {
+      throw new Error("Could not stop ADE service");
+    });
+    const service = createAutoUpdateService({
+      logger,
+      currentVersion: "1.2.2",
+      globalStatePath,
+      updaterCacheDir,
+      startupDelayMs: 60_000,
+      periodicCheckMs: 60_000,
+      updater,
+      beforeQuitAndInstall,
+    });
+
+    updater.emit("update-downloaded", {
+      version: "1.2.3",
+    });
+
+    await expect(service.quitAndInstall()).resolves.toBe(false);
+    expect(updater.quitAndInstall).not.toHaveBeenCalled();
+    expect(readState(globalStatePath)).toEqual({});
+    expect(service.getSnapshot()).toMatchObject({
+      status: "error",
+      error: "Could not stop ADE service",
+    });
+    expect(logger.warn).toHaveBeenCalledWith(
+      "autoUpdate.prepare_quit_and_install_failed",
+      expect.objectContaining({
+        version: "1.2.3",
+        message: "Could not stop ADE service",
+      }),
+    );
+
+    service.dispose();
+  });
+
   it("rolls back pending install state when an async install error arrives", async () => {
     const globalStatePath = makeStatePath();
     const updaterCacheDir = makeUpdaterCacheDir();

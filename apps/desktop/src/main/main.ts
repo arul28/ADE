@@ -124,6 +124,7 @@ import {
 } from "../../../ade-cli/src/jsonrpc";
 import { resolveMachineAdeLayout } from "../../../ade-cli/src/services/projects/machineLayout";
 import { normalizeProjectRootPath } from "../../../ade-cli/src/services/projects/projectRoots";
+import { uninstallRuntimeService } from "../../../ade-cli/src/serviceManager";
 import {
   ElectronSafeStorageCredentialStore,
   EncryptedFileCredentialStore,
@@ -1857,12 +1858,47 @@ app.whenReady().then(async () => {
     tempRoot: app.getPath("temp"),
     logger: updateLogger,
   });
+  const prepareAutoUpdateInstall = async (): Promise<void> => {
+    updateLogger.info("autoUpdate.prepare_quit_and_install_start", {
+      serviceManaged: shouldRepairRuntimeServiceOnFallback,
+    });
+    try {
+      localRuntimePool.dispose();
+    } catch (error) {
+      updateLogger.warn("autoUpdate.local_runtime_dispose_before_install_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+    if (!shouldRepairRuntimeServiceOnFallback) {
+      updateLogger.info("autoUpdate.prepare_quit_and_install_done", {
+        serviceManaged: false,
+      });
+      return;
+    }
+    const result = uninstallRuntimeService();
+    const payload = {
+      ok: result.ok,
+      serviceName: result.serviceName,
+      path: result.path,
+      message: result.message,
+      selfMutationBlocked: result.selfMutationBlocked === true,
+    };
+    if (!result.ok) {
+      updateLogger.warn("autoUpdate.runtime_service_uninstall_before_install_failed", payload);
+      throw new Error(result.message);
+    }
+    updateLogger.info("autoUpdate.runtime_service_uninstalled_before_install", payload);
+    updateLogger.info("autoUpdate.prepare_quit_and_install_done", {
+      serviceManaged: true,
+    });
+  };
   const autoUpdateService = createAutoUpdateService({
     logger: updateLogger,
     currentVersion: app.getVersion(),
     globalStatePath,
     updaterCacheDir: app.isPackaged ? resolveAutoUpdaterCacheDir() : undefined,
     autoCheckEnabled: app.isPackaged,
+    beforeQuitAndInstall: prepareAutoUpdateInstall,
   });
   const shouldRefreshRuntimeServiceAfterUpdate =
     app.isPackaged

@@ -16,7 +16,8 @@ const DEFAULT_MAX_APP_ASAR_BYTES = 900 * 1024 * 1024;
 // Universal macOS builds intentionally carry dual-arch agent runtimes
 // (Codex/OpenCode/Claude SDK) in the unpacked payload.
 const DEFAULT_MAX_UNPACKED_BYTES = 1280 * 1024 * 1024;
-const REMOTE_RUNTIME_TARGETS = ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64"];
+const REMOTE_RUNTIME_TARGETS = ["darwin-arm64", "darwin-x64"];
+const EXCLUDED_REMOTE_RUNTIME_TARGETS = ["linux-arm64", "linux-x64"];
 const allowHostOnlyRuntimeResources = process.env.ADE_RUNTIME_RESOURCES_ALLOW_HOST_ONLY === "1";
 const bundledAgentSkills = [
   "ade-cli-control-plane",
@@ -213,6 +214,10 @@ async function assertRemoteRuntimeBundle(resourcesPath, description) {
       throw new Error(`[release:mac] Remote runtime native archive for ${target} does not contain ./tuiClient/cli.mjs: ${nativeArchivePath}`);
     }
   }
+  for (const target of EXCLUDED_REMOTE_RUNTIME_TARGETS) {
+    await assertPathMissing(path.join(runtimeRoot, `ade-${target}`), `non-mac remote runtime binary ${target} for ${description}`);
+    await assertPathMissing(path.join(runtimeRoot, `ade-${target}.native.tar.gz`), `non-mac remote runtime native archive ${target} for ${description}`);
+  }
   if (allowHostOnlyRuntimeResources) {
     console.warn(
       `[release:mac] Host-only local package mode is enabled; validated remote runtime artifacts for ${currentTarget()} only. ` +
@@ -398,13 +403,6 @@ async function validatePackageHygiene(appPath, description) {
         `(limit ${maxUnpackedBytes})`
     );
   }
-
-  // Source-map and binary-package hygiene checks are paused until the
-  // perf-fixes packaging changes are reapplied with a post-universal-merge prune.
-
-  // Pruning these payloads on darwin requires a post-universal-merge step
-  // that does not exist yet; the per-arch afterPack prune races the merge.
-  // Until that lands, the macOS package legitimately ships these directories.
 
   console.log(`[release:mac] Package hygiene passed for ${description}`);
 }

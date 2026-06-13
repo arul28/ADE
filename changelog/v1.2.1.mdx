@@ -1,0 +1,14 @@
+---
+title: "v1.2.1"
+description: "Release notes for ADE v1.2.1 - June 13, 2026"
+---
+
+v1.2.1 is a desktop patch release for the macOS updater. It fixes the install handoff that could leave ADE on the old version after downloading v1.2.0, and trims the mac update package so future updates are faster and less fragile.
+
+---
+
+## Desktop
+
+- **Updater install handoff.** ADE now stops its background runtime service before handing an update to Squirrel, so the old `/Applications/ADE.app` bundle is not still in use while macOS tries to replace it.
+- **Smaller mac updater package.** The mac release no longer bundles Linux remote runtime sidecars in the auto-update zip, and Darwin package pruning now strips non-target native payloads from the mac app.
+- **Release validation guardrails.** mac artifact validation now fails if non-mac remote runtime files sneak back into the packaged app, preventing another oversized updater zip from shipping silently.
