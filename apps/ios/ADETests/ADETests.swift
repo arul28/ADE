@@ -693,6 +693,47 @@ final class ADETests: XCTestCase {
     )
   }
 
+  func testCommandSendFailureQueuePolicyPreservesQueueableTimeoutsOnly() {
+    XCTAssertTrue(
+      syncShouldQueueCommandAfterSendFailure(
+        error: SyncRequestTimeout.error(),
+        canSendLiveRequests: true,
+        queueable: true
+      )
+    )
+    XCTAssertTrue(
+      syncShouldQueueCommandAfterSendFailure(
+        error: NSError(domain: NSURLErrorDomain, code: NSURLErrorTimedOut),
+        canSendLiveRequests: false,
+        queueable: true
+      )
+    )
+
+    let error = NSError(
+      domain: "ADE",
+      code: 17,
+      userInfo: [
+        NSLocalizedDescriptionKey: "Remote command failed.",
+        "ADEErrorCode": "command_failed",
+      ]
+    )
+
+    XCTAssertFalse(
+      syncShouldQueueCommandAfterSendFailure(
+        error: error,
+        canSendLiveRequests: false,
+        queueable: true
+      )
+    )
+    XCTAssertFalse(
+      syncShouldQueueCommandAfterSendFailure(
+        error: SyncRequestTimeout.error(),
+        canSendLiveRequests: true,
+        queueable: false
+      )
+    )
+  }
+
   func testSyncConnectionHealthTreatsSyncingAsConnectedTransport() {
     let health = syncConnectionHealth(
       connectionState: .syncing,

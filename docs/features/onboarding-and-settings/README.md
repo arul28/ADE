@@ -98,6 +98,9 @@ Renderer — onboarding:
 - `apps/desktop/src/renderer/components/onboarding/GitHubCard.tsx`,
   `LinearCard.tsx`, `WorktreesCard.tsx` — setup cards for repository auth,
   Linear OAuth / API-key auth, and importing existing worktrees as lanes.
+  `WorktreesCard` refreshes the shared lane store after successful imports so
+  the first post-onboarding Work/Lanes views render the attached lanes without
+  waiting for a later project refresh.
 - `apps/desktop/src/renderer/components/onboarding/InputPopover.tsx`,
   `RescanButton.tsx`, `onboardingTheme.ts` — shared setup-card controls and
   brand/status styling tokens.

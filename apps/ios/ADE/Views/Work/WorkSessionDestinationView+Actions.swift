@@ -480,6 +480,13 @@ extension WorkSessionDestinationView {
     }
   }
 
+  @MainActor
+  func copySubmittedWorkPromptToPasteboard(_ text: String) {
+    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return }
+    UIPasteboard.general.string = trimmed
+  }
+
   func presentCreateLanePr() {
     createPrPresented = true
   }

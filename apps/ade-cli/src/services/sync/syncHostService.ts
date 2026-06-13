@@ -254,6 +254,7 @@ const PERSISTED_MOBILE_COMMAND_ACTIONS = new Set<string>([
   "processes.start",
   "processes.stop",
   "processes.kill",
+  "chat.send",
   "chat.interrupt",
   "chat.approve",
   "chat.respondToInput",
