@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -158,11 +159,39 @@ async function stapleDmgWithRetry(dmgPath) {
   }
 }
 
+async function verifyAppSignature(appPath, description) {
+  console.log(`[release:mac] Verifying ${description}: ${appPath}`);
+  await execFileAsync("codesign", ["--verify", "--deep", "--strict", "--verbose=4", appPath], {
+    maxBuffer: 1024 * 1024 * 10,
+  });
+  await execFileAsync(
+    "codesign",
+    ["--verify", "--strict", "--verbose=4", path.join(appPath, "Contents", "MacOS", "ADE")],
+    { maxBuffer: 1024 * 1024 * 10 }
+  );
+}
+
+async function verifyDmgBeforeNotarization(dmgPath) {
+  const mountPoint = await fs.mkdtemp(path.join(os.tmpdir(), "ade-dmg-notary-preflight-"));
+  try {
+    await execFileAsync("hdiutil", ["attach", dmgPath, "-nobrowse", "-quiet", "-mountpoint", mountPoint], {
+      maxBuffer: 1024 * 1024 * 10,
+    });
+    const mountedAppPath = path.join(mountPoint, "ADE.app");
+    await assertPathExists(mountedAppPath, "mounted ADE.app");
+    await verifyAppSignature(mountedAppPath, "mounted DMG app signature before notarization");
+  } finally {
+    await execFileAsync("hdiutil", ["detach", mountPoint, "-quiet"]).catch(() => {});
+    await fs.rm(mountPoint, { recursive: true, force: true });
+  }
+}
+
 const dmgPath =
   resolveAbsolute(readFlag("--dmg")) ?? (await findArtifact(/^ADE-.+-universal\.dmg$/, "mac dmg"));
 const dmgBlockmapPath = `${dmgPath}.blockmap`;
 
 await assertPathExists(dmgPath, "mac dmg artifact");
+await verifyDmgBeforeNotarization(dmgPath);
 
 console.log(`[release:mac] Submitting DMG for notarization: ${dmgPath}`);
 const { stdout: notarytoolOutput } = await execFileAsync("xcrun", buildNotarytoolArgs(dmgPath), {
