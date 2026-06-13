@@ -1317,6 +1317,7 @@ final class SyncService: ObservableObject {
   private var reconnectTask: Task<Void, Never>?
   private var networkPathReconnectTask: Task<Void, Never>?
   private var pendingOperationFlushTask: Task<Void, Never>?
+  private var pendingOperationFlushInFlight = false
   private var lanePresenceHeartbeatTask: Task<Void, Never>?
   private var openLaneReferenceCounts: [String: Int] = [:]
   private var terminalBufferRevisionTask: Task<Void, Never>?
@@ -2761,7 +2762,7 @@ final class SyncService: ObservableObject {
       try? await refreshLaneSnapshots()
       try? await refreshWorkSessions()
       try? await refreshPullRequestSnapshots()
-      await flushPendingOperationsAndScheduleRetry()
+      flushPendingOperationsAndScheduleRetry()
       return
     }
 
@@ -7470,7 +7471,7 @@ final class SyncService: ObservableObject {
       guard let self else { return }
       await self.performInitialHydration(for: connectionGeneration)
       guard self.isCurrentConnectionGeneration(connectionGeneration) else { return }
-      await self.flushPendingOperationsAndScheduleRetry()
+      self.flushPendingOperationsAndScheduleRetry()
     }
   }
 
@@ -7786,6 +7787,7 @@ final class SyncService: ObservableObject {
     hydrationTask = nil
     pendingOperationFlushTask?.cancel()
     pendingOperationFlushTask = nil
+    pendingOperationFlushInFlight = false
     lanePresenceHeartbeatTask?.cancel()
     lanePresenceHeartbeatTask = nil
     if let socket {
@@ -7979,9 +7981,13 @@ final class SyncService: ObservableObject {
     pendingOperationFlushTask = Task { @MainActor [weak self] in
       var nextDelay = delayNanoseconds
       while !Task.isCancelled {
-        try? await Task.sleep(nanoseconds: nextDelay)
+        if nextDelay > 0 {
+          try? await Task.sleep(nanoseconds: nextDelay)
+        }
         guard let self, !Task.isCancelled else { return }
+        self.pendingOperationFlushInFlight = true
         let shouldRetry = await self.flushPendingOperations()
+        self.pendingOperationFlushInFlight = false
         if !shouldRetry || !self.canSendLiveRequests() {
           self.pendingOperationFlushTask = nil
           return
@@ -8061,11 +8067,13 @@ final class SyncService: ObservableObject {
     }
   }
 
-  private func flushPendingOperationsAndScheduleRetry() async {
-    let shouldRetry = await flushPendingOperations()
-    if shouldRetry, canSendLiveRequests() {
-      schedulePendingOperationFlush(delayNanoseconds: 15_000_000_000)
+  private func flushPendingOperationsAndScheduleRetry() {
+    if pendingOperationFlushTask != nil {
+      guard !pendingOperationFlushInFlight else { return }
+      pendingOperationFlushTask?.cancel()
+      pendingOperationFlushTask = nil
     }
+    schedulePendingOperationFlush(delayNanoseconds: 0)
   }
 
   @discardableResult
