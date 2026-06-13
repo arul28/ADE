@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-06-13
+
+### Fixed
+
+- Fixed the macOS updater install handoff by stopping ADE's packaged background runtime service before Squirrel replaces the app bundle.
+- Reduced the mac updater package by removing Linux runtime sidecars from the mac release artifact and pruning non-target native payloads from packaged Darwin apps.
+- Added mac artifact validation that fails the release if non-mac runtime files are bundled again.
+
 ## [1.2.0] - 2026-06-12
 
 ### Added
@@ -345,7 +353,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.1...HEAD
+[1.2.1]: https://github.com/arul28/ADE/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/arul28/ADE/compare/v1.1.12...v1.2.0
 [1.1.12]: https://github.com/arul28/ADE/compare/v1.1.11...v1.1.12
 [1.1.11]: https://github.com/arul28/ADE/compare/v1.1.10...v1.1.11
