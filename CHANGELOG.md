@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.3] - 2026-06-13
+
+### Fixed
+
+- Restored the packaged GitHub updater feed config in the macOS app bundle so Electron's updater can download and install newer ADE releases.
+- Configured the updater feed at runtime as a fallback when the packaged config is missing.
+- Added mac release validation that fails if the signed app, updater zip, or mounted DMG is missing `app-update.yml`.
+
 ## [1.2.2] - 2026-06-13
 
 ### Fixed
@@ -360,7 +368,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.2...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.3...HEAD
+[1.2.3]: https://github.com/arul28/ADE/compare/v1.2.2...v1.2.3
 [1.2.2]: https://github.com/arul28/ADE/compare/v1.2.1...v1.2.2
 [1.2.1]: https://github.com/arul28/ADE/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/arul28/ADE/compare/v1.1.12...v1.2.0
