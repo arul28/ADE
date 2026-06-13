@@ -2761,7 +2761,7 @@ final class SyncService: ObservableObject {
       try? await refreshLaneSnapshots()
       try? await refreshWorkSessions()
       try? await refreshPullRequestSnapshots()
-      await flushPendingOperations()
+      await flushPendingOperationsAndScheduleRetry()
       return
     }
 
@@ -7470,7 +7470,7 @@ final class SyncService: ObservableObject {
       guard let self else { return }
       await self.performInitialHydration(for: connectionGeneration)
       guard self.isCurrentConnectionGeneration(connectionGeneration) else { return }
-      await self.flushPendingOperations()
+      await self.flushPendingOperationsAndScheduleRetry()
     }
   }
 
@@ -8058,6 +8058,13 @@ final class SyncService: ObservableObject {
       savePendingOperations(queued)
     } else {
       pendingOperationCount = queued.count
+    }
+  }
+
+  private func flushPendingOperationsAndScheduleRetry() async {
+    let shouldRetry = await flushPendingOperations()
+    if shouldRetry, canSendLiveRequests() {
+      schedulePendingOperationFlush(delayNanoseconds: 15_000_000_000)
     }
   }
 
