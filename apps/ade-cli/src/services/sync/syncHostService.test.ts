@@ -635,6 +635,136 @@ function sendHello(client: WebSocket, token: string): void {
   }));
 }
 
+function waitForEnvelope(envelopes: ParsedSyncEnvelope[], type: string, requestId: string) {
+  return waitForValue(
+    () => envelopes.find((envelope) => envelope.type === type && envelope.requestId === requestId),
+    `${type} response ${requestId}`,
+  );
+}
+
+async function connectPeer(port: number, token: string, deviceId: string) {
+  const ws = new WebSocket(`ws://127.0.0.1:${port}`);
+  const tracked = trackClientEnvelopes(ws);
+  await new Promise<void>((resolve, reject) => {
+    ws.once("open", () => resolve());
+    ws.once("error", reject);
+  });
+  ws.send(encodeSyncEnvelope({
+    type: "hello",
+    payload: {
+      peer: {
+        deviceId,
+        deviceName: deviceId,
+        platform: "iOS",
+        deviceType: "phone",
+        siteId: `${deviceId}-site`,
+        dbVersion: 0,
+      },
+      auth: { kind: "bootstrap", token },
+    },
+  }));
+  await waitForValue(
+    () => tracked.envelopes.find((envelope) => envelope.type === "hello_ok"),
+    `hello_ok for ${deviceId}`,
+  );
+  return { ws, ...tracked };
+}
+
+describe("mobile command result ledger", () => {
+  beforeEach(() => {
+    publishMock.mockReset();
+    spawnMock.mockReset();
+    bonjourDestroyMock.mockReset();
+    bonjourConstructorMock.mockReset();
+    spawnMock.mockImplementation(() => ({ kill: vi.fn(), once: vi.fn(), unref: vi.fn() }));
+  });
+
+  it("persists chat.send results so restart replays do not duplicate messages", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const sendMessage = vi.fn(async () => {});
+    let firstHost: ReturnType<typeof createSyncHostService> | null = null;
+    let secondHost: ReturnType<typeof createSyncHostService> | null = null;
+    let firstClient: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    let secondClient: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    const commandId = "cmd-chat-send-1";
+
+    const makeHost = () => {
+      const base = createHostArgs(projectRoot, []);
+      return createSyncHostService({
+        ...base,
+        projectId: "project-1",
+        deviceRegistryService: {
+          ...base.deviceRegistryService,
+          upsertPeerMetadata: vi.fn(),
+        },
+        agentChatService: {
+          sendMessage,
+          subscribeToEvents: vi.fn(() => vi.fn()),
+        },
+      } as unknown as Parameters<typeof createSyncHostService>[0]);
+    };
+    const sendChatCommand = (client: Awaited<ReturnType<typeof connectPeer>>, requestId: string): void => {
+      client.ws.send(encodeSyncEnvelope({
+        type: "command",
+        requestId,
+        projectId: "project-1",
+        payload: {
+          commandId,
+          action: "chat.send",
+          projectId: "project-1",
+          args: {
+            sessionId: "session-1",
+            text: "hello from iOS",
+          },
+        },
+      }));
+    };
+
+    try {
+      firstHost = makeHost();
+      const firstPort = await firstHost.waitUntilListening();
+      const token = firstHost.getBootstrapToken();
+      firstClient = await connectPeer(firstPort, token, "ios-chat-1");
+      sendChatCommand(firstClient, "send-1");
+      await waitForEnvelope(firstClient.envelopes, "command_ack", "send-1");
+      const firstResult = await waitForEnvelope(firstClient.envelopes, "command_result", "send-1");
+      expect(firstResult.payload).toMatchObject({
+        commandId,
+        ok: true,
+        result: { ok: true },
+      });
+      expect(sendMessage).toHaveBeenCalledTimes(1);
+
+      firstClient.ws.close();
+      await firstHost.dispose();
+      firstHost = null;
+
+      secondHost = makeHost();
+      const secondPort = await secondHost.waitUntilListening();
+      secondClient = await connectPeer(secondPort, token, "ios-chat-1");
+      sendChatCommand(secondClient, "send-2");
+      await waitForEnvelope(secondClient.envelopes, "command_ack", "send-2");
+      const replayResult = await waitForEnvelope(secondClient.envelopes, "command_result", "send-2");
+      expect(replayResult.payload).toMatchObject({
+        commandId,
+        ok: true,
+        result: { ok: true },
+      });
+      expect(sendMessage).toHaveBeenCalledTimes(1);
+    } finally {
+      try {
+        firstClient?.ws.close();
+        secondClient?.ws.close();
+      } catch {
+        // ignore
+      }
+      await firstHost?.dispose();
+      await secondHost?.dispose();
+      cleanup();
+    }
+  });
+});
+
 describe("sync host handoff over a shared listener", () => {
   beforeEach(() => {
     publishMock.mockReset();
