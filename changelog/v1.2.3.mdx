@@ -1,0 +1,14 @@
+---
+title: "v1.2.3"
+description: "Release notes for ADE v1.2.3 - June 13, 2026"
+---
+
+v1.2.3 is a desktop updater repair release. It restores the packaged GitHub update feed config that macOS installs need in order to download and install future ADE releases.
+
+---
+
+## Desktop
+
+- **Updater install path.** ADE now configures the GitHub update feed at runtime and also ships `app-update.yml` inside the macOS app bundle, so update checks can move from "update available" to a real downloaded installer.
+- **Release validation.** The mac release validator now opens the signed app, the updater zip, and the mounted DMG to confirm the packaged update feed config exists and points at `arul28/ADE`.
+- **Recovery note.** Installs already sitting on a `1.2.0` through `1.2.2` bundle that is missing `app-update.yml` may need one manual install of this build. After v1.2.3 is installed, future macOS updates use the repaired updater path.
