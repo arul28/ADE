@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   removeProjectIconOverride,
@@ -10,8 +10,13 @@ import {
   setProjectIconOverride,
   setProjectIconOverrideFromSelection,
 } from "./projectIconResolver";
+import { resolveMobileProjectIconDataUrl } from "./projectIconThumbnail";
 
 const OVER_ICON_LIMIT_BYTES = 10 * 1024 * 1024 + 1;
+const PNG_DATA = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=",
+  "base64",
+);
 
 function makeProjectRoot(): string {
   // Resolve through realpath so the assertions still hold on platforms
@@ -178,5 +183,94 @@ describe("projectIconResolver", () => {
     expect(icon.mimeType).toBe("image/svg+xml");
     expect(icon.sourcePath).toContain("favicon.svg");
     expect(icon.dataUrl).toMatch(/^data:image\/svg\+xml;base64,/);
+  });
+
+  it("uses an Electron nativeImage thumbnail for mobile when one can be decoded", () => {
+    const root = makeProjectRoot();
+    writeFile(root, "icon.png", PNG_DATA);
+    const rasterizeWithSips = vi.fn();
+
+    const dataUrl = resolveMobileProjectIconDataUrl(root, {
+      nativeImage: {
+        createFromPath: () => ({
+          isEmpty: () => false,
+          resize: () => ({
+            toDataURL: () => "data:image/png;base64,native-thumbnail",
+          }),
+        }),
+      },
+      rasterizeWithSips,
+    });
+
+    expect(dataUrl).toBe("data:image/png;base64,native-thumbnail");
+    expect(rasterizeWithSips).not.toHaveBeenCalled();
+  });
+
+  it("rasterizes SVG icons to a PNG data URL for mobile", () => {
+    const root = makeProjectRoot();
+    const iconPath = writeFile(
+      root,
+      "favicon.svg",
+      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64"/></svg>',
+    );
+    const rasterizeWithSips = vi.fn((_sourcePath: string, outputPath: string) => {
+      fs.writeFileSync(outputPath, PNG_DATA);
+    });
+
+    const dataUrl = resolveMobileProjectIconDataUrl(root, {
+      nativeImage: {
+        createFromPath: () => ({
+          isEmpty: () => true,
+          resize: () => ({
+            toDataURL: () => "data:image/png;base64,unused",
+          }),
+        }),
+      },
+      rasterizeWithSips,
+    });
+
+    expect(dataUrl).toBe(`data:image/png;base64,${PNG_DATA.toString("base64")}`);
+    expect(rasterizeWithSips).toHaveBeenCalledWith(iconPath, expect.stringMatching(/icon\.png$/), 64);
+  });
+
+  it("falls back to raw PNG data for mobile when thumbnailing is unavailable", () => {
+    const root = makeProjectRoot();
+    writeFile(root, "icon.png", PNG_DATA);
+
+    const dataUrl = resolveMobileProjectIconDataUrl(root, {
+      rasterizeWithSips: () => {
+        throw new Error("sips unavailable");
+      },
+    });
+
+    expect(dataUrl).toBe(`data:image/png;base64,${PNG_DATA.toString("base64")}`);
+  });
+
+  it("keeps native and headless mobile thumbnail cache entries separate", () => {
+    const root = makeProjectRoot();
+    writeFile(
+      root,
+      "favicon.svg",
+      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><circle cx="32" cy="32" r="32"/></svg>',
+    );
+
+    const headlessMiss = resolveMobileProjectIconDataUrl(root, {
+      rasterizeWithSips: () => {
+        throw new Error("sips unavailable");
+      },
+    });
+    const nativeHit = resolveMobileProjectIconDataUrl(root, {
+      nativeImage: {
+        createFromPath: () => ({
+          isEmpty: () => false,
+          resize: () => ({
+            toDataURL: () => "data:image/png;base64,native-after-headless",
+          }),
+        }),
+      },
+    });
+
+    expect(headlessMiss).toBeNull();
+    expect(nativeHit).toBe("data:image/png;base64,native-after-headless");
   });
 });

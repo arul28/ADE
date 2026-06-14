@@ -12950,12 +12950,14 @@ async function runServe(
     { ProjectScopeRegistry },
     { createMultiProjectRpcRequestHandler },
     { createSharedSyncListener },
+    { resolveMobileProjectIconDataUrl },
   ] = await Promise.all([
     import("./services/projects/machineLayout"),
     import("./services/projects/projectRegistry"),
     import("./services/projects/projectScope"),
     import("./multiProjectRpcServer"),
     import("./services/sync/sharedSyncListener"),
+    import("../../desktop/src/main/services/projects/projectIconThumbnail"),
   ]);
 
   const layout = resolveMachineAdeLayout();
@@ -12999,6 +13001,7 @@ async function runServe(
       record.lastOpenedAt > 0
         ? new Date(record.lastOpenedAt).toISOString()
         : null,
+    iconDataUrl: resolveMobileProjectIconDataUrl(record.rootPath),
     laneCount: 0,
     isAvailable: true,
     isCached: true,

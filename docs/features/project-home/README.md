@@ -199,11 +199,20 @@ main process because they execute before a runtime binding exists.
   root is blocked end-to-end (probe paths run through
   `resolvePathWithinRoot`, so symlinks pointing outside the worktree
   silently fail to match instead of leaking files).
+- `apps/desktop/src/main/services/projects/projectIconThumbnail.ts` —
+  phone-facing thumbnail resolver for the mobile project catalog. It
+  reuses `resolveProjectIcon(rootPath)`, asks Electron `nativeImage` to
+  produce a 64px PNG when running in the desktop host, falls back to
+  macOS `/usr/bin/sips` for SVG / ICO / WebP sources that Electron does
+  not decode, and falls back to raw PNG data only when thumbnailing is
+  unavailable. Results are cached by source path + file signature and
+  temporary conversion files are removed after each attempt.
 - `apps/desktop/src/main/services/projects/projectIconResolver.test.ts`
   — vitest coverage: direct file matches, HTML link scrapes,
   escape-attempt rejection, base64 data-URL emission, scoring
-  preferences, and round-tripping `setProjectIconOverride` /
-  `removeProjectIconOverride` against `.ade/ade.yaml`.
+  preferences, mobile PNG thumbnail generation, and round-tripping
+  `setProjectIconOverride` / `removeProjectIconOverride` against
+  `.ade/ade.yaml`.
 
 Shared types:
 
@@ -444,11 +453,13 @@ scaffold so the actual bytes travel with the override.
 
 The mobile companion gets the icon through a dedicated path: the host's
 `mobileProjectSummaryForContext` / `mobileProjectSummaryForRecent` in
-`apps/desktop/src/main/main.ts` runs `resolveProjectIcon` on every
-project entry, downsamples it to 64×64 via Electron's
-`nativeImage.createFromPath(...).resize(...)` (PNG fallback for SVG /
-ICO sources that `nativeImage` can't read), and ships the resulting
-data URL to iOS as `MobileProjectSummary.iconDataUrl`. The iOS
+`apps/desktop/src/main/main.ts` runs `resolveMobileProjectIconDataUrl`
+on every project entry, which reuses `resolveProjectIcon`, downsamples
+the source image to a 64px PNG via Electron `nativeImage` when possible,
+and uses macOS `sips` as the conversion fallback for SVG / ICO / WebP
+sources that `nativeImage` cannot decode. The ADE CLI brain uses the
+same helper for its headless mobile project catalog. The resulting
+PNG data URL is sent to iOS as `MobileProjectSummary.iconDataUrl`; the iOS
 `ProjectHomeView` renders that string as the project tile artwork.
 
 ## Data model
