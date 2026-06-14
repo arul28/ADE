@@ -57,6 +57,14 @@ function setThumbnailCache(key: string, entry: ThumbnailCacheEntry): void {
   thumbnailCache.set(key, entry);
 }
 
+function thumbnailCacheKey(
+  sourcePath: string,
+  options: ResolveMobileProjectIconDataUrlOptions,
+): string {
+  const context = options.nativeImage ? "native" : "headless";
+  return `${context}:${sourcePath}`;
+}
+
 function defaultSipsRasterizer(sourcePath: string, outputPath: string, edge: number): void {
   execFileSync(SIPS_PATH, [
     "-Z",
@@ -129,7 +137,7 @@ export function resolveMobileProjectIconDataUrl(
   if (!icon.sourcePath) return null;
 
   const signature = fileSignature(icon.sourcePath);
-  const cacheKey = icon.sourcePath;
+  const cacheKey = thumbnailCacheKey(icon.sourcePath, options);
   const cached = thumbnailCache.get(cacheKey);
   if (
     cached

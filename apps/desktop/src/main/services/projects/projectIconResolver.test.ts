@@ -245,4 +245,32 @@ describe("projectIconResolver", () => {
 
     expect(dataUrl).toBe(`data:image/png;base64,${PNG_DATA.toString("base64")}`);
   });
+
+  it("keeps native and headless mobile thumbnail cache entries separate", () => {
+    const root = makeProjectRoot();
+    writeFile(
+      root,
+      "favicon.svg",
+      '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><circle cx="32" cy="32" r="32"/></svg>',
+    );
+
+    const headlessMiss = resolveMobileProjectIconDataUrl(root, {
+      rasterizeWithSips: () => {
+        throw new Error("sips unavailable");
+      },
+    });
+    const nativeHit = resolveMobileProjectIconDataUrl(root, {
+      nativeImage: {
+        createFromPath: () => ({
+          isEmpty: () => false,
+          resize: () => ({
+            toDataURL: () => "data:image/png;base64,native-after-headless",
+          }),
+        }),
+      },
+    });
+
+    expect(headlessMiss).toBeNull();
+    expect(nativeHit).toBe("data:image/png;base64,native-after-headless");
+  });
 });
