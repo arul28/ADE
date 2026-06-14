@@ -83,7 +83,7 @@ import {
   upsertProjectRow,
 } from "./services/projects/projectService";
 import { inspectRecentProject, type RecentProjectInspection } from "./services/projects/recentProjectSummary";
-import { resolveProjectIcon } from "./services/projects/projectIconResolver";
+import { resolveMobileProjectIconDataUrl } from "./services/projects/projectIconThumbnail";
 import { normalizeStartupProjectState, resolveStartupProject } from "./services/projects/startupProjectResolver";
 import { createAdeProjectService } from "./services/projects/adeProjectService";
 import { createConfigReloadService } from "./services/projects/configReloadService";
@@ -4903,15 +4903,7 @@ app.whenReady().then(async () => {
 
   function mobileProjectIconDataUrl(projectRoot: string): string | null {
     try {
-      const icon = resolveProjectIcon(projectRoot);
-      if (!icon.sourcePath) return null;
-
-      const image = nativeImage.createFromPath(icon.sourcePath);
-      if (!image.isEmpty()) {
-        return image.resize({ width: 64, height: 64, quality: "best" }).toDataURL();
-      }
-
-      return icon.mimeType === "image/png" ? icon.dataUrl : null;
+      return resolveMobileProjectIconDataUrl(projectRoot, { nativeImage });
     } catch {
       return null;
     }
