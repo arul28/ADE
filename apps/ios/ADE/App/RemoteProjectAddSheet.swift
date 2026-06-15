@@ -63,8 +63,10 @@ struct RemoteProjectAddSheet: View {
               RemoteProjectDirectoryBrowser(
                 mode: .open,
                 path: $browsePath,
+                isSubmitting: isSubmitting,
                 onCancel: { screen = .chooser },
                 onChoose: { rootPath in
+                  guard !isSubmitting else { return }
                   Task { await openProject(rootPath: rootPath) }
                 }
               )
@@ -205,6 +207,9 @@ struct RemoteProjectAddSheet: View {
   }
 
   private func openProject(rootPath: String) async {
+    guard !isSubmitting else { return }
+    isSubmitting = true
+    defer { isSubmitting = false }
     do {
       let project = try await syncService.openMachineProject(rootPath: rootPath)
       actionError = nil
@@ -333,6 +338,7 @@ private struct RemoteProjectDirectoryBrowser: View {
 
   let mode: RemoteProjectDirectoryBrowserMode
   @Binding var path: String
+  let isSubmitting: Bool = false
   let onCancel: () -> Void
   let onChoose: (String) -> Void
 
@@ -422,7 +428,7 @@ private struct RemoteProjectDirectoryBrowser: View {
           }
         }
         .buttonStyle(ProjectPrimaryButtonStyle())
-        .disabled(targetPath == nil || loading)
+        .disabled(targetPath == nil || loading || isSubmitting)
       }
     }
     .task(id: path) {
