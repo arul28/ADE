@@ -116,7 +116,7 @@ running sync authority).
 │   - SyncEnvelope: hello, pairing, changeset_batch,               │
 │     changeset_ack, heartbeat, file_request/response,             │
 │     terminal_*, chat_*, brain_status (legacy name),              │
-│     project_catalog/project_switch,                              │
+│     project_catalog/project_switch/project actions,              │
 │     command / command_ack / command_result,                      │
 │     envelope_chunk                                               │
 │   - JSON payloads; gzip+base64 above threshold (4 KB default)    │
@@ -165,7 +165,9 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   paging via `terminal_history`, mobile terminal input/resize forwarding
   into subscribed PTYs, desktop-size restore after the last phone
   detaches, lane presence decoration, project catalog/switch envelopes,
-  per-IP pairing rate limiter, and the Tailscale Serve / mDNS
+  runtime-scoped project action envelopes (browse/open/create/clone/
+  list GitHub repos/default parent directory), per-IP pairing rate
+  limiter, and the Tailscale Serve / mDNS
   publication paths. Runtime
   kind is one of `desktop-embedded`, `headless`, `remote-stdio`,
   `desktop`, `daemon`, or `remote`.
@@ -181,7 +183,17 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   during the handoff window replayed — so phones survive project
   switches without reconnecting. Sockets left unowned park with
   buffered frames and close with code 4002 after a 30 s grace. A
-  self-owned server path remains for tests/standalone hosts.
+  machine-wide fallback handler may accept new sockets when no project
+  host owns the listener, but it is suppressed during the handoff grace
+  after a project host detaches so reconnecting phones still park for
+  adoption by the next project host. A self-owned server path remains
+  for tests/standalone hosts.
+- `brainProjectActionsSyncHandler.ts` — machine-wide fallback sync
+  handler used by `ade serve` before any project host is active. It
+  authenticates the same PIN / paired-secret / bootstrap paths as the
+  per-project host, applies the same failed-PIN cooldown, and serves
+  project catalog plus runtime-scoped project actions so a phone can
+  add/open/create/clone a project even from the project-home state.
 - `changesetPump.ts` — batch-chunk selection for changeset fan-out.
   Splits an export into `changeset_batch` envelopes at ~256 KB / 250
   rows while never splitting rows that share a `db_version` (the ack
@@ -367,6 +379,16 @@ port across project switches. The phone flow:
    client switched projects is adopted in place and never disconnects.
    If the switch fails, the previous host is restored so the listener
    is never left unowned.
+
+The project home can also manage machine projects without first binding
+to a project DB. `project_browse_request`,
+`project_default_parent_dir_request`, `project_open_request`,
+`project_create_request`, `project_clone_request`, and
+`project_list_my_github_repos_request` are runtime-scoped envelopes.
+When a project host is active, `syncHostService` handles them; when no
+project host owns the shared listener, `brainProjectActionsSyncHandler`
+handles the same envelopes so the phone can add a first project on a
+headless or freshly-started machine.
 
 Project catalog snapshots are also chunked
 (`MAX_PROJECT_CATALOG_ENVELOPE_BYTES = 768 KB`,
@@ -592,6 +614,7 @@ payload.
 | Chat stream | Agent chat transcript events. Each `chat_event` carries a host-assigned per-session monotonic `seq` backed by a capped replay buffer (500 events / 2 MB per session, 64-session LRU). `chat_subscribe` accepts `sinceSeq`: gaps the buffer covers replay as ordinary events; uncoverable gaps fall back to a snapshot, and a non-resumed ack tells the client to drop its stale seq watermark (seq epochs restart at 1 on a new host). The ack also carries `turnActive` from the live agent chat service — snapshots are byte-capped tails, so a long turn's `status: started` event can fall outside the window and the flag is what lets a mid-turn subscriber render streaming/stop affordances without waiting on the changeset pump (a full ack without the flag tells the client to drop any latched hint) | iOS Work tab, controller chat |
 | Command routing | Send named actions (`chat.send`, `lanes.create`, `git.push`, `prs.getMobileSnapshot`, etc.) | Controller devices |
 | Project switching | `project_catalog` + `project_switch_request/result` for multi-project runtimes | iOS project home |
+| Project actions | Runtime-scoped project browser plus open/create/clone/list-GitHub-repos/default-parent-dir envelopes. Available from the active project host or the machine-wide fallback handler before a project is selected | iOS project home |
 | Runtime status | Runtime broadcasts cluster/version status (`brain_status` is the legacy envelope name) | All devices |
 | Lane presence | Controllers call `lanes.presence.announce` / `lanes.presence.release`; the runtime decorates `LaneSummary.devicesOpen` for 60 s TTL | iOS Lanes tab; desktop runtime presence heartbeat |
 
@@ -682,6 +705,7 @@ project scope split.
 | PIN-based phone pairing + per-device secrets | Implemented |
 | Live chat-event push from runtime | Implemented |
 | Mobile project catalog + project switch handoff | Implemented |
+| Mobile project actions (browse/open/create/clone/list GitHub repos) | Implemented |
 | Brain-level shared listener (peers adopted across project switches) | Implemented |
 | Chunked envelopes (`envelope_chunk`, 720 KB frame budget) | Implemented |
 | Per-host-DB sync cursors (`serverDbSiteId` / `remoteDbVersionBySite`) | Implemented |

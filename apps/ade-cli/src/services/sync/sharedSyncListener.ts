@@ -93,6 +93,11 @@ export type SharedSyncListener = {
    * host service.
    */
   setConnectionHandler(handler: SharedSyncListenerConnectionHandler): () => void;
+  /**
+   * Machine-wide handler used when no project sync host currently owns new
+   * sockets. Project hosts still take precedence once they attach.
+   */
+  setFallbackConnectionHandler(handler: SharedSyncListenerConnectionHandler | null): () => void;
   /** Park live peer sockets for adoption by the next host service. */
   depositPeers(snapshots: SyncPeerHandoffSnapshot[]): void;
   /** Claim every parked socket (deposited peers + connections that arrived handler-less). */
@@ -129,6 +134,8 @@ export function createSharedSyncListener(options: {
   let server: WebSocketServer | null = null;
   let listeningPromise: Promise<number> | null = null;
   let handler: SharedSyncListenerConnectionHandler | null = null;
+  let fallbackHandler: SharedSyncListenerConnectionHandler | null = null;
+  let fallbackSuppressedUntilMs = 0;
   let closed = false;
   const parked = new Map<WebSocket, ParkedEntry>();
 
@@ -252,8 +259,10 @@ export function createSharedSyncListener(options: {
             remoteAddress: request.socket.remoteAddress ?? null,
             remotePort: request.socket.remotePort ?? null,
           };
-          if (handler) {
-            handler(connection);
+          const fallbackSuppressed = fallbackSuppressedUntilMs > Date.now();
+          const activeHandler = handler ?? (fallbackSuppressed ? null : fallbackHandler);
+          if (activeHandler) {
+            activeHandler(connection);
             return;
           }
           // No host service owns the listener right now (mid project switch
@@ -318,9 +327,20 @@ export function createSharedSyncListener(options: {
 
     setConnectionHandler(nextHandler: SharedSyncListenerConnectionHandler): () => void {
       handler = nextHandler;
+      fallbackSuppressedUntilMs = 0;
       return () => {
         if (handler === nextHandler) {
           handler = null;
+          fallbackSuppressedUntilMs = Date.now() + parkedPeerGraceMs;
+        }
+      };
+    },
+
+    setFallbackConnectionHandler(nextHandler: SharedSyncListenerConnectionHandler | null): () => void {
+      fallbackHandler = nextHandler;
+      return () => {
+        if (fallbackHandler === nextHandler) {
+          fallbackHandler = null;
         }
       };
     },
@@ -354,6 +374,7 @@ export function createSharedSyncListener(options: {
       if (closed) return;
       closed = true;
       handler = null;
+      fallbackHandler = null;
       if (listeningPromise) {
         await listeningPromise.catch(() => {});
       }

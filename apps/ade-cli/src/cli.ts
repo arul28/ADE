@@ -29,11 +29,24 @@ import {
   readMacosVmEnvOverride,
 } from "../../desktop/src/shared/automationAvailability";
 import { parseLinearGraphQLInput } from "../../desktop/src/main/services/cto/linearGraphQLInput";
+import { browseProjectDirectories } from "../../desktop/src/main/services/projects/projectBrowserService";
+import { createProjectScaffoldService } from "../../desktop/src/main/services/projects/projectScaffoldService";
+import { resolveRepoRoot } from "../../desktop/src/main/services/projects/projectService";
+import type { Logger } from "../../desktop/src/main/services/logging/logger";
+import type {
+  CloneProjectInput,
+  CreateProjectInput,
+  ListMyGitHubReposInput,
+  ProjectBrowseInput,
+} from "../../desktop/src/shared/types/core";
 import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
 import {
   findAdeManagedWorktreeRoot,
+  normalizeProjectRootPath,
   realpathIfExists,
 } from "./services/projects/projectRoots";
+import { createHeadlessGitHubService } from "./headlessLinearServices";
+import type { SyncProjectCatalogProvider } from "./services/sync/syncHostService";
 import {
   startJsonRpcServer,
   type JsonRpcHandler,
@@ -52,6 +65,7 @@ import {
 } from "../../desktop/src/shared/cliLaunch";
 import type {
   SyncMobileProjectSummary,
+  SyncProjectOpenRequestPayload,
   SyncProjectSwitchRequestPayload,
   SyncProjectSwitchResultPayload,
 } from "../../desktop/src/shared/types/sync";
@@ -64,6 +78,7 @@ import { normalizeAdeRuntimeRole, resolveAdeDefaultRole } from "./runtimeRoles";
 import type { AdeRuntime } from "./bootstrap";
 import { reseedBundledAdeSkillsForCli } from "./bootstrap";
 import { EncryptedFileCredentialStore } from "./services/credentials/credentialStore";
+import { DEFAULT_SYNC_HOST_PORT } from "./services/sync/syncProtocol";
 
 type JsonObject = Record<string, unknown>;
 
@@ -12954,6 +12969,7 @@ async function runServe(
     { createMultiProjectRpcRequestHandler },
     { createSharedSyncListener },
     { resolveMobileProjectIconDataUrl },
+    { createBrainProjectActionsSyncHandler },
   ] = await Promise.all([
     import("./services/projects/machineLayout"),
     import("./services/projects/projectRegistry"),
@@ -12961,6 +12977,7 @@ async function runServe(
     import("./multiProjectRpcServer"),
     import("./services/sync/sharedSyncListener"),
     import("../../desktop/src/main/services/projects/projectIconThumbnail"),
+    import("./services/sync/brainProjectActionsSyncHandler"),
   ]);
 
   const layout = resolveMachineAdeLayout();
@@ -13011,6 +13028,216 @@ async function runServe(
     isOpen: false,
     ...overrides,
   });
+  let scopeRegistry: InstanceType<typeof ProjectScopeRegistry>;
+  const headlessProjectLogger: Logger = {
+    debug: () => {},
+    info: () => {},
+    warn: (event, meta) =>
+      process.stderr.write(`${event} ${JSON.stringify(meta ?? {})}\n`),
+    error: (event, meta) =>
+      process.stderr.write(`${event} ${JSON.stringify(meta ?? {})}\n`),
+  };
+  const createHeadlessProjectScaffoldService = () => {
+    const githubService = createHeadlessGitHubService(
+      process.cwd(),
+      headlessProjectLogger,
+    );
+    return createProjectScaffoldService({
+      logger: headlessProjectLogger,
+      githubService,
+    });
+  };
+  const getHeadlessDefaultParentDir = (): string => {
+    const firstProjectRoot = projectRegistry.list()[0]?.rootPath;
+    if (firstProjectRoot) return path.dirname(firstProjectRoot);
+    return path.join(os.homedir(), "Projects");
+  };
+  const resolveHeadlessMobileProjectRoot = async (
+    rootPath: string | null | undefined,
+  ): Promise<string> => {
+    const requestedRoot = typeof rootPath === "string" ? rootPath.trim() : "";
+    if (!requestedRoot) {
+      throw new Error("Project path is required.");
+    }
+    const resolvedRoot = path.resolve(requestedRoot);
+    if (!fs.existsSync(resolvedRoot)) {
+      throw new Error("Project is no longer available on this machine.");
+    }
+    try {
+      return normalizeProjectRootPath(await resolveRepoRoot(resolvedRoot));
+    } catch {
+      throw new Error("Choose a Git repository folder.");
+    }
+  };
+  const mobileProjectSummaryForHeadlessRecord = async (
+    record: ProjectRecord,
+    overrides: Partial<SyncMobileProjectSummary> = {},
+  ): Promise<SyncMobileProjectSummary> => {
+    const scope = await scopeRegistry.get(record.projectId);
+    const lanes = await scope.runtime.laneService
+      .list({ includeArchived: false, includeStatus: false })
+      .catch(() => []);
+    const laneCount = lanes.length;
+    return toMobileProjectSummary(record, {
+      laneCount,
+      isOpen: true,
+      ...overrides,
+    });
+  };
+  const registerHeadlessMobileProject = async (
+    rootPath: string,
+  ): Promise<SyncMobileProjectSummary> => {
+    const record = projectRegistry.add(rootPath);
+    return await mobileProjectSummaryForHeadlessRecord(record);
+  };
+  const openHeadlessMobileProject = async (
+    input: SyncProjectOpenRequestPayload,
+  ): Promise<SyncMobileProjectSummary> => {
+    const projectRoot = await resolveHeadlessMobileProjectRoot(input.rootPath);
+    return await registerHeadlessMobileProject(projectRoot);
+  };
+  const createHeadlessMobileProject = async (
+    input: CreateProjectInput,
+  ): Promise<SyncMobileProjectSummary> => {
+    const result =
+      await createHeadlessProjectScaffoldService().createLocalProject(input);
+    return await registerHeadlessMobileProject(result.rootPath);
+  };
+  const cloneHeadlessMobileProject = async (
+    input: CloneProjectInput,
+  ): Promise<SyncMobileProjectSummary> => {
+    const result =
+      await createHeadlessProjectScaffoldService().cloneRepository(input);
+    return await registerHeadlessMobileProject(result.rootPath);
+  };
+  const machineProjectCatalogProvider: SyncProjectCatalogProvider = {
+    listProjects: async () => ({
+      projects: projectRegistry
+        .list()
+        .map((record) =>
+          toMobileProjectSummary(record, {
+            isAvailable: fs.existsSync(record.rootPath),
+          })),
+    }),
+    prepareProjectConnection: async (
+      request: SyncProjectSwitchRequestPayload,
+    ): Promise<SyncProjectSwitchResultPayload> => {
+      const requestedId =
+        typeof request.projectId === "string"
+          ? request.projectId.trim()
+          : "";
+      const requestedRootPath =
+        typeof request.rootPath === "string"
+          ? path.resolve(request.rootPath)
+          : "";
+      const record =
+        projectRegistry
+          .list()
+          .find(
+            (candidate) =>
+              (requestedId.length > 0 &&
+                candidate.projectId === requestedId) ||
+              (requestedRootPath.length > 0 &&
+                path.resolve(candidate.rootPath) === requestedRootPath),
+          ) ?? null;
+      const project = record
+        ? toMobileProjectSummary(record, { isOpen: true })
+        : null;
+      if (!record) {
+        return {
+          ok: false,
+          message: "That project is not registered on this ADE machine.",
+          project,
+        };
+      }
+      try {
+        // Prepare must not start the new project's sync host yet: the old host
+        // or the machine-wide fallback still owns the socket. Reply first,
+        // then completion activates the project host so the phone can
+        // reconnect cleanly when needed.
+        const scope = await scopeRegistry.get(record.projectId);
+        const syncService = scope?.runtime.syncService ?? null;
+        if (!scope || !syncService) {
+          return {
+            ok: false,
+            message: "Phone sync is not available for that project.",
+            project,
+          };
+        }
+        const lanes = await scope.runtime.laneService
+          .list({ includeArchived: false, includeStatus: false })
+          .catch(() => []);
+        const laneCount = lanes.length;
+        const readyProject = toMobileProjectSummary(record, {
+          isOpen: true,
+          laneCount,
+        });
+        const activeScope = await scopeRegistry.resolveActiveSyncHost();
+        const activeStatus = await activeScope?.runtime.syncService?.getStatus();
+        const connectInfo = activeStatus?.pairingConnectInfo ?? null;
+        if (!connectInfo) {
+          return {
+            ok: true,
+            project: readyProject,
+            connection: null,
+          };
+        }
+        return {
+          ok: true,
+          project: readyProject,
+          connection: {
+            authKind: "paired",
+            token: null,
+            pairedDeviceId: null,
+            hostIdentity: connectInfo.hostIdentity,
+            port: connectInfo.port,
+            addressCandidates: connectInfo.addressCandidates,
+          },
+        };
+      } catch (error) {
+        return {
+          ok: false,
+          message:
+            error instanceof Error
+              ? error.message
+              : "Unable to prepare phone sync for that project.",
+          project,
+        };
+      }
+    },
+    completeProjectConnection: async (
+      request: SyncProjectSwitchRequestPayload,
+      result: SyncProjectSwitchResultPayload,
+    ): Promise<void> => {
+      if (!result.ok) return;
+      const projectId =
+        typeof result.project?.id === "string" && result.project.id.trim()
+          ? result.project.id.trim()
+          : typeof request.projectId === "string" &&
+              request.projectId.trim()
+            ? request.projectId.trim()
+            : null;
+      if (!projectId) return;
+      try {
+        projectRegistry.touch(projectId);
+      } catch {
+        // The mobile handoff already succeeded; a stale registry touch should
+        // not fail the sync protocol completion.
+      }
+      await scopeRegistry.switchSyncHost(projectId, {
+        deactivatePreviousHost: true,
+      });
+      await scopeRegistry.deactivateInactiveSyncHosts();
+    },
+    browseDirectories: async (input: ProjectBrowseInput) =>
+      browseProjectDirectories(input),
+    getDefaultParentDir: async () => getHeadlessDefaultParentDir(),
+    openProject: openHeadlessMobileProject,
+    createProject: createHeadlessMobileProject,
+    cloneProject: cloneHeadlessMobileProject,
+    listMyGitHubRepos: async (input: ListMyGitHubReposInput) =>
+      createHeadlessProjectScaffoldService().listMyGitHubRepos(input),
+  };
   // ONE websocket listener for the whole brain: every project scope's sync
   // host attaches to it instead of binding its own server, so the hosted
   // project can change without paired phones ever seeing a disconnect.
@@ -13022,7 +13249,21 @@ async function runServe(
         },
       })
     : null;
-  let scopeRegistry: InstanceType<typeof ProjectScopeRegistry>;
+  const machineCredentialStore = new EncryptedFileCredentialStore({
+    secretsDir: layout.secretsDir,
+  });
+  sharedSyncListener?.setFallbackConnectionHandler(
+    createBrainProjectActionsSyncHandler({
+      logger: headlessProjectLogger,
+      projectCatalogProvider: machineProjectCatalogProvider,
+      bootstrapCredentialStore: machineCredentialStore,
+      legacyBootstrapTokenPath: path.join(layout.secretsDir, "sync-bootstrap-token"),
+      pairingSecretsPath: path.join(layout.secretsDir, "sync-paired-devices.json"),
+      pinPath: path.join(layout.secretsDir, "sync-pin.json"),
+      localDeviceIdPath: path.join(layout.secretsDir, "sync-device-id"),
+      localSiteIdPath: path.join(layout.secretsDir, "sync-site-id"),
+    }),
+  );
   scopeRegistry = new ProjectScopeRegistry(projectRegistry, {
     syncRuntime: {
       enabled: syncEnabled,
@@ -13034,131 +13275,7 @@ async function runServe(
       appVersion: VERSION,
       localDeviceIdPath: path.join(layout.secretsDir, "sync-device-id"),
       phonePairingStateDir: layout.secretsDir,
-      projectCatalogProvider: {
-        listProjects: async () => ({
-          projects: projectRegistry
-            .list()
-            .map((record) => toMobileProjectSummary(record)),
-        }),
-        prepareProjectConnection: async (
-          request: SyncProjectSwitchRequestPayload,
-        ): Promise<SyncProjectSwitchResultPayload> => {
-          const requestedId =
-            typeof request.projectId === "string"
-              ? request.projectId.trim()
-              : "";
-          const requestedRootPath =
-            typeof request.rootPath === "string"
-              ? path.resolve(request.rootPath)
-              : "";
-          const record =
-            projectRegistry
-              .list()
-              .find(
-                (candidate) =>
-                  (requestedId.length > 0 &&
-                    candidate.projectId === requestedId) ||
-                  (requestedRootPath.length > 0 &&
-                    path.resolve(candidate.rootPath) === requestedRootPath),
-              ) ?? null;
-          const project = record
-            ? toMobileProjectSummary(record, { isOpen: true })
-            : null;
-          if (!record) {
-            return {
-              ok: false,
-              message: "That project is not registered on this ADE machine.",
-              project,
-            };
-          }
-          try {
-            // Prepare must NOT start the new project's sync host: the old host
-            // still owns the sync port, so an early start either drifts to a
-            // new port (stranding the phone's saved address) or races the old
-            // listener. Open the project scope for metadata only, reply with
-            // the CURRENT stable port, and let completion — which runs after
-            // project_switch_result is flushed — stop the old host first and
-            // start the new one on that same port.
-            const scope = await scopeRegistry.get(record.projectId);
-            const syncService = scope?.runtime.syncService ?? null;
-            if (!scope || !syncService) {
-              return {
-                ok: false,
-                message: "Phone sync is not available for that project.",
-                project,
-              };
-            }
-            const lanes = await scope.runtime.laneService
-              .list({ includeArchived: false, includeStatus: false })
-              .catch(() => []);
-            const laneCount = lanes.length;
-            const readyProject = toMobileProjectSummary(record, {
-              isOpen: true,
-              laneCount,
-            });
-            const activeScope = await scopeRegistry.resolveActiveSyncHost();
-            const activeStatus = await activeScope?.runtime.syncService?.getStatus();
-            const connectInfo = activeStatus?.pairingConnectInfo ?? null;
-            if (!connectInfo) {
-              return {
-                ok: false,
-                message: "Phone sync is not ready for that project yet.",
-                project: readyProject,
-              };
-            }
-            return {
-              ok: true,
-              project: readyProject,
-              connection: {
-                authKind: "paired",
-                token: null,
-                pairedDeviceId: null,
-                hostIdentity: connectInfo.hostIdentity,
-                port: connectInfo.port,
-                addressCandidates: connectInfo.addressCandidates,
-              },
-            };
-          } catch (error) {
-            return {
-              ok: false,
-              message:
-                error instanceof Error
-                  ? error.message
-                  : "Unable to prepare phone sync for that project.",
-              project,
-            };
-          }
-        },
-        completeProjectConnection: async (
-          request: SyncProjectSwitchRequestPayload,
-          result: SyncProjectSwitchResultPayload,
-        ): Promise<void> => {
-          if (!result.ok) return;
-          const projectId =
-            typeof result.project?.id === "string" && result.project.id.trim()
-              ? result.project.id.trim()
-              : typeof request.projectId === "string" &&
-                  request.projectId.trim()
-                ? request.projectId.trim()
-                : null;
-          if (!projectId) return;
-          try {
-            projectRegistry.touch(projectId);
-          } catch {
-            // The mobile handoff already succeeded; a stale registry touch should
-            // not fail the sync protocol completion.
-          }
-          // The phone already holds project_switch_result with the CURRENT
-          // port. Stop the old host first so the new one binds that same
-          // port (deactivatePreviousHost runs before the new host starts;
-          // the preferred-port retry rides out the old socket's close), then
-          // retire any other stale hosts.
-          await scopeRegistry.switchSyncHost(projectId, {
-            deactivatePreviousHost: true,
-          });
-          await scopeRegistry.deactivateInactiveSyncHosts();
-        },
-      },
+      projectCatalogProvider: machineProjectCatalogProvider,
     },
   });
   const previousRole = process.env.ADE_DEFAULT_ROLE;
@@ -13183,9 +13300,17 @@ async function runServe(
       disposeScopesOnDispose: false,
       onShutdown: finish,
     });
-  const startSyncHost = () => (preferredSyncProjectId
-    ? scopeRegistry.switchSyncHost(preferredSyncProjectId)
-    : scopeRegistry.resolveActiveSyncHost());
+  const startSyncHost = async () => {
+    if (preferredSyncProjectId) {
+      return await scopeRegistry.switchSyncHost(preferredSyncProjectId);
+    }
+    const activeScope = await scopeRegistry.resolveActiveSyncHost();
+    if (activeScope) return activeScope;
+    if (sharedSyncListener) {
+      await sharedSyncListener.ensureListening([DEFAULT_SYNC_HOST_PORT]);
+    }
+    return null;
+  };
   const disposeServeResources = async () => {
     await scopeRegistry.disposeAll();
     if (sharedSyncListener) {

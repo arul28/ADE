@@ -542,7 +542,10 @@ private func workCliInitialSessionTitle(provider: String, opener: String) -> Str
 
 func workCliPermissionMode(provider: String, runtimeMode: String) -> String? {
   let wire = workRuntimeWireFields(provider: provider, mode: runtimeMode)
-  return wire.permissionMode ?? (runtimeMode.isEmpty ? nil : runtimeMode)
+  guard let permissionMode = wire.permissionMode, !permissionMode.isEmpty else {
+    return nil
+  }
+  return permissionMode
 }
 
 private func workCliToolType(provider: String) -> String {

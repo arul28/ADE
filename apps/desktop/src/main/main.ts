@@ -84,6 +84,7 @@ import {
   upsertProjectRow,
 } from "./services/projects/projectService";
 import { inspectRecentProject, type RecentProjectInspection } from "./services/projects/recentProjectSummary";
+import { browseProjectDirectories } from "./services/projects/projectBrowserService";
 import { resolveMobileProjectIconDataUrl } from "./services/projects/projectIconThumbnail";
 import { normalizeStartupProjectState, resolveStartupProject } from "./services/projects/startupProjectResolver";
 import { createAdeProjectService } from "./services/projects/adeProjectService";
@@ -93,14 +94,19 @@ import { resolveAdeLayout } from "../shared/adeLayout";
 import type {
   OpenProjectBinding,
   AppNavigationRequest,
+  CloneProjectInput,
+  CreateProjectInput,
   LaneDeleteProgress,
   LaneLinearIssue,
   LaneSummary,
+  ListMyGitHubReposInput,
   PortLease,
   PrEventPayload,
+  ProjectBrowseInput,
   ProjectInfo,
   PtyDataEvent,
   SyncMobileProjectSummary,
+  SyncProjectOpenRequestPayload,
   SyncPeerConnectionState,
   SyncProjectConnectionPayload,
   SyncProjectSwitchRequestPayload,
@@ -3620,6 +3626,17 @@ app.whenReady().then(async () => {
         listProjects: listMobileSyncProjects,
         prepareProjectConnection: prepareMobileSyncProjectConnection,
         completeProjectConnection: completeMobileSyncProjectConnection,
+        browseDirectories: async (input: ProjectBrowseInput) =>
+          browseProjectDirectories(input),
+        getDefaultParentDir: async () =>
+          projectScaffoldService.getDefaultParentDir(readGlobalState(globalStatePath).recentProjects ?? []),
+        openProject: openMobileSyncProject,
+        createProject: (input: CreateProjectInput) =>
+          createMobileSyncProject(input, projectScaffoldService),
+        cloneProject: (input: CloneProjectInput) =>
+          cloneMobileSyncProject(input, projectScaffoldService),
+        listMyGitHubRepos: async (input: ListMyGitHubReposInput) =>
+          projectScaffoldService.listMyGitHubRepos(input),
       },
       onStatusChanged: (snapshot) => {
         const normalizedProjectRoot = normalizeProjectRoot(projectRoot);
@@ -4999,6 +5016,59 @@ app.whenReady().then(async () => {
       })
       .map(([, project]) => project);
     return { projects };
+  }
+
+  function recentProjectInspectionForRoot(rootPath: string): RecentProjectInspection | null {
+    const normalizedRoot = normalizeProjectRoot(rootPath);
+    return (readGlobalState(globalStatePath).recentProjects ?? [])
+      .map(inspectRecentProject)
+      .find((entry) => normalizeProjectRoot(entry.summary.rootPath) === normalizedRoot) ?? null;
+  }
+
+  async function resolveMobileSyncProjectRoot(rootPath: string | null | undefined): Promise<string> {
+    const requestedRoot = typeof rootPath === "string" ? rootPath.trim() : "";
+    if (!requestedRoot) {
+      throw new Error("Project path is required.");
+    }
+    if (!fs.existsSync(requestedRoot)) {
+      throw new Error("Project is no longer available on this machine.");
+    }
+    try {
+      return normalizeProjectRoot(await resolveRepoRoot(requestedRoot));
+    } catch {
+      throw new Error("Choose a Git repository folder.");
+    }
+  }
+
+  async function mobileProjectSummaryForRoot(rootPath: string | null | undefined): Promise<SyncMobileProjectSummary> {
+    const normalizedRoot = await resolveMobileSyncProjectRoot(rootPath);
+    const ctx = await ensureProjectContextForMobileSync(normalizedRoot);
+    return await mobileProjectSummaryForContext(
+      ctx,
+      recentProjectInspectionForRoot(normalizedRoot),
+    );
+  }
+
+  async function openMobileSyncProject(
+    input: SyncProjectOpenRequestPayload,
+  ): Promise<SyncMobileProjectSummary> {
+    return await mobileProjectSummaryForRoot(input.rootPath);
+  }
+
+  async function createMobileSyncProject(
+    input: CreateProjectInput,
+    scaffoldService: ReturnType<typeof createProjectScaffoldService>,
+  ): Promise<SyncMobileProjectSummary> {
+    const result = await scaffoldService.createLocalProject(input);
+    return await mobileProjectSummaryForRoot(result.rootPath);
+  }
+
+  async function cloneMobileSyncProject(
+    input: CloneProjectInput,
+    scaffoldService: ReturnType<typeof createProjectScaffoldService>,
+  ): Promise<SyncMobileProjectSummary> {
+    const result = await scaffoldService.cloneRepository(input);
+    return await mobileProjectSummaryForRoot(result.rootPath);
   }
 
   async function ensureProjectContextForMobileSync(projectRoot: string): Promise<AppContext> {

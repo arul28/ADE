@@ -1359,6 +1359,7 @@ final class SyncService: ObservableObject {
   private var remoteProjectCatalog: [MobileProjectSummary] = []
   private var pendingProjectCatalogChunks: [String: [Int: [MobileProjectSummary]]] = [:]
   private var supportsProjectCatalog = false
+  private var supportsProjectActions = false
   private var supportsChatStreaming = false
   private var supportsChangesetAck = false
   private var projectSelectionTask: Task<Void, Never>?
@@ -1730,6 +1731,165 @@ final class SyncService: ObservableObject {
     } catch {
       syncConnectLog.info("project catalog refresh failed error=\(String(describing: error), privacy: .public)")
     }
+  }
+
+  var canRunRemoteProjectActions: Bool {
+    supportsProjectActions && canSendLiveRequests()
+  }
+
+  private func requireRemoteProjectActionsAvailable() throws {
+    guard supportsProjectActions else {
+      throw NSError(domain: "ADE", code: 31, userInfo: [
+        NSLocalizedDescriptionKey: "This machine does not support mobile project management. Update ADE on the machine and reconnect."
+      ])
+    }
+    guard canSendLiveRequests() else {
+      throw NSError(domain: "ADE", code: 14, userInfo: [
+        NSLocalizedDescriptionKey: "The machine is offline."
+      ])
+    }
+  }
+
+  private func requestMachineProjectPayload<T: Decodable>(
+    type: String,
+    payload: [String: Any],
+    responseType: T.Type,
+    timeoutMessage: String,
+    timeoutNanoseconds: UInt64 = SyncRequestTimeout.defaultTimeoutNanoseconds
+  ) async throws -> T {
+    try requireRemoteProjectActionsAvailable()
+    let requestId = makeRequestId()
+    let raw = try await awaitResponse(
+      requestId: requestId,
+      disconnectOnTimeout: false,
+      timeoutMessage: timeoutMessage,
+      timeoutNanoseconds: timeoutNanoseconds
+    ) {
+      self.sendEnvelope(type: type, requestId: requestId, payload: payload)
+    }
+    return try decode(raw, as: responseType)
+  }
+
+  func browseMachineProjectDirectories(
+    partialPath: String,
+    cwd: String? = nil,
+    limit: Int = 80
+  ) async throws -> MobileProjectBrowseResult {
+    let boundedLimit = max(1, min(limit, 500))
+    var payload: [String: Any] = [
+      "partialPath": partialPath,
+      "limit": boundedLimit,
+    ]
+    if let cwd, !cwd.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+      payload["cwd"] = cwd
+    }
+    let response = try await requestMachineProjectPayload(
+      type: "project_browse_request",
+      payload: payload,
+      responseType: MobileProjectBrowseResultPayload.self,
+      timeoutMessage: "Timed out browsing project folders."
+    )
+    guard response.ok, let result = response.result else {
+      throw NSError(domain: "ADE", code: 32, userInfo: [
+        NSLocalizedDescriptionKey: response.message ?? "The machine could not browse that folder."
+      ])
+    }
+    return result
+  }
+
+  func machineProjectDefaultParentDir() async throws -> String {
+    let response = try await requestMachineProjectPayload(
+      type: "project_default_parent_dir_request",
+      payload: [:],
+      responseType: MobileProjectDefaultParentDirPayload.self,
+      timeoutMessage: "Timed out reading the default project folder."
+    )
+    guard response.ok, let parentDir = response.parentDir, !parentDir.isEmpty else {
+      throw NSError(domain: "ADE", code: 33, userInfo: [
+        NSLocalizedDescriptionKey: response.message ?? "The machine did not provide a project folder."
+      ])
+    }
+    return parentDir
+  }
+
+  private func applyMachineProjectActionResponse(
+    _ response: MobileProjectActionResultPayload,
+    fallbackMessage: String
+  ) throws -> MobileProjectSummary {
+    guard response.ok, let project = response.project else {
+      throw NSError(domain: "ADE", code: 34, userInfo: [
+        NSLocalizedDescriptionKey: response.message ?? fallbackMessage
+      ])
+    }
+    remoteProjectCatalog.removeAll { existing in
+      existing.id == project.id
+        || (normalizedProjectRoot(existing.rootPath) != nil
+          && normalizedProjectRoot(existing.rootPath) == normalizedProjectRoot(project.rootPath))
+    }
+    remoteProjectCatalog.append(project)
+    refreshProjectCatalog(preferRemoteSelection: true)
+    return project
+  }
+
+  func openMachineProject(rootPath: String) async throws -> MobileProjectSummary {
+    let response = try await requestMachineProjectPayload(
+      type: "project_open_request",
+      payload: ["rootPath": rootPath],
+      responseType: MobileProjectActionResultPayload.self,
+      timeoutMessage: "Timed out opening that project.",
+      timeoutNanoseconds: 120_000_000_000
+    )
+    return try applyMachineProjectActionResponse(response, fallbackMessage: "The machine could not open that project.")
+  }
+
+  func createMachineProject(name: String, parentDir: String) async throws -> MobileProjectSummary {
+    let response = try await requestMachineProjectPayload(
+      type: "project_create_request",
+      payload: ["name": name, "parentDir": parentDir],
+      responseType: MobileProjectActionResultPayload.self,
+      timeoutMessage: "Timed out creating that project.",
+      timeoutNanoseconds: 120_000_000_000
+    )
+    return try applyMachineProjectActionResponse(response, fallbackMessage: "The machine could not create that project.")
+  }
+
+  func cloneMachineProject(url: String, name: String, parentDir: String) async throws -> MobileProjectSummary {
+    var payload: [String: Any] = [
+      "url": url,
+      "parentDir": parentDir,
+    ]
+    let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+    if !trimmedName.isEmpty {
+      payload["name"] = trimmedName
+    }
+    let response = try await requestMachineProjectPayload(
+      type: "project_clone_request",
+      payload: payload,
+      responseType: MobileProjectActionResultPayload.self,
+      timeoutMessage: "The machine is still cloning that project. Try again in a moment.",
+      timeoutNanoseconds: 300_000_000_000
+    )
+    return try applyMachineProjectActionResponse(response, fallbackMessage: "The machine could not clone that project.")
+  }
+
+  func listMachineGitHubRepos(search: String = "") async throws -> [MobileGitHubRepoSummary] {
+    var payload: [String: Any] = [:]
+    let trimmedSearch = search.trimmingCharacters(in: .whitespacesAndNewlines)
+    if !trimmedSearch.isEmpty {
+      payload["search"] = trimmedSearch
+    }
+    let response = try await requestMachineProjectPayload(
+      type: "project_list_my_github_repos_request",
+      payload: payload,
+      responseType: MobileProjectListMyGitHubReposResultPayload.self,
+      timeoutMessage: "Timed out loading GitHub repositories."
+    )
+    guard response.ok, let result = response.result else {
+      throw NSError(domain: "ADE", code: 35, userInfo: [
+        NSLocalizedDescriptionKey: response.message ?? "The machine could not load GitHub repositories."
+      ])
+    }
+    return result.repos
   }
 
   private func switchToDesktopProject(
@@ -6992,57 +7152,22 @@ final class SyncService: ObservableObject {
     }
 
     let features = payload["features"] as? [String: Any]
-    supportsChatStreaming = {
-      if let chatStreaming = features?["chatStreaming"] as? [String: Any],
-         let enabled = chatStreaming["enabled"] as? Bool {
-        return enabled
-      }
-      if let value = features?["chatStreaming"] as? Bool {
-        return value
-      }
-      if let chatStreaming = features?["chat_streaming"] as? [String: Any],
-         let enabled = chatStreaming["enabled"] as? Bool {
-        return enabled
-      }
-      if let value = features?["chat_streaming"] as? Bool {
-        return value
+    func featureEnabled(_ keys: String...) -> Bool {
+      for key in keys {
+        if let feature = features?[key] as? [String: Any],
+           let enabled = feature["enabled"] as? Bool {
+          return enabled
+        }
+        if let value = features?[key] as? Bool {
+          return value
+        }
       }
       return false
-    }()
-    supportsProjectCatalog = {
-      if let projectCatalog = features?["projectCatalog"] as? [String: Any],
-         let enabled = projectCatalog["enabled"] as? Bool {
-        return enabled
-      }
-      if let value = features?["projectCatalog"] as? Bool {
-        return value
-      }
-      if let projectCatalog = features?["project_catalog"] as? [String: Any],
-         let enabled = projectCatalog["enabled"] as? Bool {
-        return enabled
-      }
-      if let value = features?["project_catalog"] as? Bool {
-        return value
-      }
-      return false
-    }()
-    supportsChangesetAck = {
-      if let changesetAck = features?["changesetAck"] as? [String: Any],
-         let enabled = changesetAck["enabled"] as? Bool {
-        return enabled
-      }
-      if let value = features?["changesetAck"] as? Bool {
-        return value
-      }
-      if let changesetAck = features?["changeset_ack"] as? [String: Any],
-         let enabled = changesetAck["enabled"] as? Bool {
-        return enabled
-      }
-      if let value = features?["changeset_ack"] as? Bool {
-        return value
-      }
-      return false
-    }()
+    }
+    supportsChatStreaming = featureEnabled("chatStreaming", "chat_streaming")
+    supportsProjectCatalog = featureEnabled("projectCatalog", "project_catalog")
+    supportsProjectActions = featureEnabled("projectActions", "project_actions")
+    supportsChangesetAck = featureEnabled("changesetAck", "changeset_ack")
     remoteProjectCatalog = []
     pendingProjectCatalogChunks.removeAll()
     let commandDescriptors: [SyncRemoteCommandDescriptor] = {
@@ -7285,6 +7410,13 @@ final class SyncService: ObservableObject {
       let chunk = try decode(payload, as: MobileProjectCatalogChunkPayload.self)
       applyRemoteProjectCatalogChunk(chunk, requestId: requestId)
     case "project_switch_result":
+      resolve(requestId: requestId, result: .success(payload))
+    case "project_browse_result",
+         "project_default_parent_dir",
+         "project_open_result",
+         "project_create_result",
+         "project_clone_result",
+         "project_list_my_github_repos_result":
       resolve(requestId: requestId, result: .success(payload))
     case "hello_error":
       let code = ((payload as? [String: Any])?["code"] as? String) ?? "auth_failed"

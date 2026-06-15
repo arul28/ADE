@@ -156,6 +156,7 @@ struct ContentView: View {
 
 private struct ProjectHomeView: View {
   @EnvironmentObject private var syncService: SyncService
+  @State private var addProjectSheetPresented = false
 
   private var attachedMachineLabel: String {
     let trimmedHost = syncService.hostName?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -217,6 +218,10 @@ private struct ProjectHomeView: View {
       .navigationTitle("")
       .navigationBarTitleDisplayMode(.inline)
       .toolbar(.hidden, for: .navigationBar)
+      .sheet(isPresented: $addProjectSheetPresented) {
+        RemoteProjectAddSheet()
+          .environmentObject(syncService)
+      }
     }
   }
 
@@ -290,6 +295,12 @@ private struct ProjectHomeView: View {
         .font(.system(.caption, design: .rounded).weight(.semibold))
         .foregroundStyle(ADEColor.textMuted)
         .tracking(0.8)
+
+      if syncService.canRunRemoteProjectActions {
+        ProjectHomeAddProjectRow {
+          addProjectSheetPresented = true
+        }
+      }
 
       if !canShowProjectRows || syncService.projects.isEmpty {
         emptyProjects
@@ -383,6 +394,45 @@ private struct ProjectHomeView: View {
     case .error, .disconnected:
       return "Open a project on your machine"
     }
+  }
+}
+
+private struct ProjectHomeAddProjectRow: View {
+  let action: () -> Void
+
+  var body: some View {
+    Button(action: action) {
+      HStack(spacing: 12) {
+        ZStack {
+          RoundedRectangle(cornerRadius: 7, style: .continuous)
+            .fill(ADEColor.accent.opacity(0.16))
+            .frame(width: 38, height: 38)
+          Image(systemName: "plus")
+            .font(.system(size: 16, weight: .bold))
+            .foregroundStyle(ADEColor.accent)
+        }
+
+        Text("Add project")
+          .font(.system(.subheadline, design: .rounded).weight(.semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+
+        Spacer(minLength: 8)
+
+        Image(systemName: "chevron.right")
+          .font(.system(size: 13, weight: .semibold))
+          .foregroundStyle(ADEColor.accent.opacity(0.70))
+      }
+      .padding(12)
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .background(ADEColor.cardBackground.opacity(0.72), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+      .overlay(
+        RoundedRectangle(cornerRadius: 8, style: .continuous)
+          .stroke(ADEColor.accent.opacity(0.40), lineWidth: 1)
+      )
+    }
+    .buttonStyle(.plain)
+    .accessibilityLabel("Add project")
+    .accessibilityHint("Open, create, or clone a project on the connected machine.")
   }
 }
 

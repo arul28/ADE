@@ -147,6 +147,64 @@ struct MobileProjectSwitchResultPayload: Codable, Equatable {
   var connection: MobileProjectConnectionPayload?
 }
 
+struct MobileProjectBrowseEntry: Codable, Equatable, Identifiable {
+  var id: String { fullPath }
+  var name: String
+  var fullPath: String
+  var isGitRepo: Bool
+}
+
+struct MobileProjectBrowseResult: Codable, Equatable {
+  var inputPath: String
+  var resolvedPath: String
+  var directoryPath: String
+  var parentPath: String?
+  var exactDirectoryPath: String?
+  var openableProjectRoot: String?
+  var entries: [MobileProjectBrowseEntry]
+}
+
+struct MobileProjectBrowseResultPayload: Codable, Equatable {
+  var ok: Bool
+  var message: String?
+  var result: MobileProjectBrowseResult?
+}
+
+struct MobileProjectDefaultParentDirPayload: Codable, Equatable {
+  var ok: Bool
+  var message: String?
+  var parentDir: String?
+}
+
+struct MobileProjectActionResultPayload: Codable, Equatable {
+  var ok: Bool
+  var message: String?
+  var project: MobileProjectSummary?
+}
+
+struct MobileGitHubRepoSummary: Codable, Equatable, Identifiable {
+  var id: String { fullName }
+  var owner: String
+  var name: String
+  var fullName: String
+  var isPrivate: Bool
+  var pushedAt: String?
+  var defaultBranch: String
+  var htmlUrl: String
+  var cloneUrl: String
+  var sshUrl: String
+}
+
+struct MobileListMyGitHubReposResult: Codable, Equatable {
+  var repos: [MobileGitHubRepoSummary]
+}
+
+struct MobileProjectListMyGitHubReposResultPayload: Codable, Equatable {
+  var ok: Bool
+  var message: String?
+  var result: MobileListMyGitHubReposResult?
+}
+
 struct DiscoveredSyncHost: Codable, Equatable, Identifiable {
   var id: String
   var serviceName: String
