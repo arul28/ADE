@@ -650,6 +650,12 @@ struct WorkQueuedSteerRow: View {
   let onDispatchInline: (@MainActor () async -> Void)?
   let onDispatchInterrupt: (@MainActor () async -> Void)?
 
+  @StateObject private var dictationCoordinator = DictationInsertionCoordinator()
+  @State private var isDictating = false
+  private var dictationTargetId: String {
+    "work-steer:\(steer.id)"
+  }
+
   var body: some View {
     VStack(alignment: .leading, spacing: 8) {
       if isEditing {
@@ -661,22 +667,36 @@ struct WorkQueuedSteerRow: View {
           .disabled(busy || !isLive)
 
         HStack(spacing: 8) {
-          Spacer(minLength: 0)
-          Button("Cancel edit", action: onCancelEdit)
-            .buttonStyle(.glass)
-            .tint(ADEColor.textSecondary)
-            .controlSize(.small)
-            .disabled(busy)
-
-          Button("Save") {
-            let trimmed = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty else { return }
-            Task { await onSave(trimmed) }
+          if !isDictating {
+            DictationRawUndoChip(coordinator: dictationCoordinator, draft: $draft)
           }
-          .buttonStyle(.glassProminent)
-          .tint(ADEColor.accent)
-          .controlSize(.small)
-          .disabled(busy || !isLive || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+          DictationMicButton(
+            draft: $draft,
+            coordinator: dictationCoordinator,
+            targetId: dictationTargetId,
+            onRecordingChange: { isDictating = $0 }
+          )
+          .frame(maxWidth: isDictating ? .infinity : nil)
+
+          if !isDictating {
+            Spacer(minLength: 0)
+            Button("Cancel edit", action: onCancelEdit)
+              .buttonStyle(.glass)
+              .tint(ADEColor.textSecondary)
+              .controlSize(.small)
+              .disabled(busy)
+
+            Button("Save") {
+              let trimmed = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+              guard !trimmed.isEmpty else { return }
+              Task { await onSave(trimmed) }
+            }
+            .buttonStyle(.glassProminent)
+            .tint(ADEColor.accent)
+            .controlSize(.small)
+            .disabled(busy || !isLive || draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+          }
         }
       } else {
         // Disposition ribbon mirrors the desktop staging-card treatment so

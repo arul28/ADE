@@ -1,4 +1,5 @@
 import XCTest
+import AVFoundation
 import SQLite3
 import UIKit
 @testable import ADE
@@ -73,6 +74,47 @@ private actor LaneBatchDeleteRecorder {
 }
 
 final class ADETests: XCTestCase {
+  func testDictationCleanupCapitalizesAfterLeadingSentencePunctuation() {
+    let cleaned = DictationCleanup.clean("hello. \"goodbye\"", glossary: .empty)
+
+    XCTAssertEqual(cleaned, "Hello. \"Goodbye\"")
+  }
+
+  func testDictationCleanupAllowsExpandedUppercaseCharacters() {
+    let cleaned = DictationCleanup.clean("ßeta", glossary: .empty)
+
+    XCTAssertEqual(cleaned, "SSeta")
+  }
+
+  func testDictationBufferConverterRecreatesWhenInputFormatChanges() throws {
+    let converter = DictationBufferConverter()
+    let outputFormat = try XCTUnwrap(AVAudioFormat(
+      commonFormat: .pcmFormatFloat32,
+      sampleRate: 16_000,
+      channels: 1,
+      interleaved: false
+    ))
+    let firstInput = try XCTUnwrap(AVAudioFormat(
+      commonFormat: .pcmFormatFloat32,
+      sampleRate: 44_100,
+      channels: 1,
+      interleaved: false
+    ))
+    let secondInput = try XCTUnwrap(AVAudioFormat(
+      commonFormat: .pcmFormatFloat32,
+      sampleRate: 48_000,
+      channels: 1,
+      interleaved: false
+    ))
+    let firstBuffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: firstInput, frameCapacity: 441))
+    firstBuffer.frameLength = 441
+    let secondBuffer = try XCTUnwrap(AVAudioPCMBuffer(pcmFormat: secondInput, frameCapacity: 480))
+    secondBuffer.frameLength = 480
+
+    XCTAssertNoThrow(try converter.convert(firstBuffer, to: outputFormat))
+    XCTAssertNoThrow(try converter.convert(secondBuffer, to: outputFormat))
+  }
+
   func testTerminalDisplayReplaysCarriageReturnProgressUpdates() {
     let output = sanitizeTerminalOutputForDisplay("Downloading 10%\rDownloading 80%\rDownloading 100%\nDone")
 

@@ -55,6 +55,7 @@ import { RemoteTargetList } from "../remoteTargets/RemoteTargetList";
 import { ConfirmDialog, useConfirmDialog } from "../shared/InlineDialogs";
 import { SyncDevicesSection } from "../settings/SyncDevicesSection";
 import { HeaderUsageControl } from "../usage/HeaderUsageControl";
+import { GlobalVoiceCaptureIndicator } from "../voice/GlobalVoiceCaptureIndicator";
 import { appResourcePressureLevel, getAppResourceUsageCoalesced, resourcePressureDescription } from "../../lib/resourcePressure";
 import {
   ADE_BROWSER_VIEW_OCCLUSION_END_EVENT,
@@ -2424,6 +2425,9 @@ export function TopBar() {
 
       {/* Trailing controls: status · updates · utility cluster */}
       <div className="flex shrink-0 items-center gap-2">
+        {/* App-global voice capture — visible from any tab while recording. */}
+        <GlobalVoiceCaptureIndicator />
+
         <ResourcePressureIndicator usage={resourceUsage} />
 
         <div className="hidden md:flex items-center gap-1.5">

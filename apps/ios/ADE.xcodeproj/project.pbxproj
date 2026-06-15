@@ -30,6 +30,10 @@
 		AA5100000000000000000018 /* ADELiveActivityViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5100000000000000000002 /* ADELiveActivityViews.swift */; };
 		AA5600000000000000000011 /* ADELiveActivityPrimitives.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5600000000000000000001 /* ADELiveActivityPrimitives.swift */; };
 		AA5600000000000000000012 /* ADELiveActivityPrimitives.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5600000000000000000001 /* ADELiveActivityPrimitives.swift */; };
+		AA5800000000000000000011 /* DictationActivityShared.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5800000000000000000001 /* DictationActivityShared.swift */; };
+		AA5800000000000000000012 /* DictationActivityShared.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5800000000000000000001 /* DictationActivityShared.swift */; };
+		AA5800000000000000000022 /* DictationLiveActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5800000000000000000002 /* DictationLiveActivity.swift */; };
+		D1C7A70000000000000001B1 /* DictationController.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1C7A70000000000000001A1 /* DictationController.swift */; };
 		F300000000000000000000F0 /* NotificationPreferences.swift in Sources */ = {isa = PBXBuildFile; fileRef = F300000000000000000000E0 /* NotificationPreferences.swift */; };
 		F300000000000000000000F1 /* NotificationsCenterView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F300000000000000000000E1 /* NotificationsCenterView.swift */; };
 		F300000000000000000000F2 /* SettingsNotificationsSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = F300000000000000000000E2 /* SettingsNotificationsSection.swift */; };
@@ -115,6 +119,14 @@
 		63A9C60B0E0F0E2707634B2E /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 8943C47805A871A4E4A4BF68 /* Assets.xcassets */; };
 		6BDC22C6450AF0B3CBDB2650 /* FilesTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4EBFB65019F4C3F8A89428CE /* FilesTabView.swift */; };
 		6E32ED1BF961DFEFCA12EF52 /* DatabaseBootstrap.sql in Resources */ = {isa = PBXBuildFile; fileRef = 2856F8D2F2D630DD985B870A /* DatabaseBootstrap.sql */; };
+		CF71F8756A9A432A433D5E33 /* VoiceGlossary.json in Resources */ = {isa = PBXBuildFile; fileRef = 781DE0B3C61717AE3057B82D /* VoiceGlossary.json */; };
+		E7C4AFA1DEBFC844E11CC907 /* SpeechDictationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB5762445C5F7386370D09CB /* SpeechDictationService.swift */; };
+		01FE6A4E9FAB343B48940038 /* DictationCleanup.swift in Sources */ = {isa = PBXBuildFile; fileRef = 34B81E6D9F3ADFF19197A5A6 /* DictationCleanup.swift */; };
+		8FCB968194DE9C66EC194223 /* VoiceGlossary.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9BA0977F732D91B04AF997DB /* VoiceGlossary.swift */; };
+		91D46087242081A9F29BBFF5 /* DictationMicButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = 50F12DAB52A9A64E2D3D4D03 /* DictationMicButton.swift */; };
+		C85070CCC923CAB6FD61AF85 /* RecordingPill.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C7F48CB9D3EBD80F1FDBD9F /* RecordingPill.swift */; };
+		B1D40000000000000000A001 /* GlobalDictationPill.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1D40000000000000000A002 /* GlobalDictationPill.swift */; };
+		1F9DE38583114F239DC7616D /* SettingsVoiceInputSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = AB92EA06D5B7FD42F715A80C /* SettingsVoiceInputSection.swift */; };
 		7B70BE6839672E5D2D006B28 /* ADETests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 14C0DF7FEB4C2EB854BAC888 /* ADETests.swift */; };
 		D30000000000000000000011 /* AttentionDrawerModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000001 /* AttentionDrawerModel.swift */; };
 		D30000000000000000000012 /* AttentionDrawerButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000002 /* AttentionDrawerButton.swift */; };
@@ -260,6 +272,9 @@
 		AA5200000000000000000006 /* ADEWidgetPreviewData.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADEWidgetPreviewData.swift; path = ADEWidgets/ADEWidgetPreviewData.swift; sourceTree = "<group>"; };
 		AA5600000000000000000001 /* ADELiveActivityPrimitives.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADELiveActivityPrimitives.swift; path = ADEWidgets/ADELiveActivityPrimitives.swift; sourceTree = "<group>"; };
 		AA5700000000000000000002 /* ADELiveActivityPreviews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADELiveActivityPreviews.swift; path = ADEWidgets/ADELiveActivityPreviews.swift; sourceTree = "<group>"; };
+		AA5800000000000000000001 /* DictationActivityShared.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DictationActivityShared.swift; path = ADE/Shared/DictationActivityShared.swift; sourceTree = "<group>"; };
+		AA5800000000000000000002 /* DictationLiveActivity.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DictationLiveActivity.swift; path = ADEWidgets/DictationLiveActivity.swift; sourceTree = "<group>"; };
+		D1C7A70000000000000001A1 /* DictationController.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DictationController.swift; path = ADE/Services/Dictation/DictationController.swift; sourceTree = "<group>"; };
 		BB5000000000000000000001 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; name = Info.plist; path = ADENotificationService/Info.plist; sourceTree = "<group>"; };
 		BB5000000000000000000002 /* ADENotificationService.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; name = ADENotificationService.entitlements; path = ADENotificationService/ADENotificationService.entitlements; sourceTree = "<group>"; };
 		CC5000000000000000000001 /* ADE.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; name = ADE.entitlements; path = ADE/ADE.entitlements; sourceTree = "<group>"; };
@@ -340,6 +355,14 @@
 		D30000000000000000000007 /* WorkMarkdownStreamingParsingTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkMarkdownStreamingParsingTests.swift; path = ADETests/WorkMarkdownStreamingParsingTests.swift; sourceTree = "<group>"; };
 		27A125DE2C17BA32F9291513 /* ADE.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ADE.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		2856F8D2F2D630DD985B870A /* DatabaseBootstrap.sql */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text; name = DatabaseBootstrap.sql; path = ADE/Resources/DatabaseBootstrap.sql; sourceTree = "<group>"; };
+		781DE0B3C61717AE3057B82D /* VoiceGlossary.json */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.json; name = VoiceGlossary.json; path = ADE/Resources/VoiceGlossary.json; sourceTree = "<group>"; };
+		FB5762445C5F7386370D09CB /* SpeechDictationService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SpeechDictationService.swift; path = ADE/Services/Dictation/SpeechDictationService.swift; sourceTree = "<group>"; };
+		34B81E6D9F3ADFF19197A5A6 /* DictationCleanup.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DictationCleanup.swift; path = ADE/Services/Dictation/DictationCleanup.swift; sourceTree = "<group>"; };
+		9BA0977F732D91B04AF997DB /* VoiceGlossary.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = VoiceGlossary.swift; path = ADE/Services/Dictation/VoiceGlossary.swift; sourceTree = "<group>"; };
+		50F12DAB52A9A64E2D3D4D03 /* DictationMicButton.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DictationMicButton.swift; path = ADE/Views/Components/DictationMicButton.swift; sourceTree = "<group>"; };
+		1C7F48CB9D3EBD80F1FDBD9F /* RecordingPill.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = RecordingPill.swift; path = ADE/Views/Components/RecordingPill.swift; sourceTree = "<group>"; };
+		B1D40000000000000000A002 /* GlobalDictationPill.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = GlobalDictationPill.swift; path = ADE/Views/Components/GlobalDictationPill.swift; sourceTree = "<group>"; };
+		AB92EA06D5B7FD42F715A80C /* SettingsVoiceInputSection.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsVoiceInputSection.swift; path = ADE/Views/Settings/SettingsVoiceInputSection.swift; sourceTree = "<group>"; };
 		31EC445F22FD38F90C16343E /* Foundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Foundation.framework; path = Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS18.0.sdk/System/Library/Frameworks/Foundation.framework; sourceTree = DEVELOPER_DIR; };
 		483C5F1818BAE74B19B84617 /* RemoteModels.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = RemoteModels.swift; path = ADE/Models/RemoteModels.swift; sourceTree = "<group>"; };
 		4A9E6135ED52117E41DE95F7 /* ADEDesignSystem.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADEDesignSystem.swift; path = ADE/Views/Components/ADEDesignSystem.swift; sourceTree = "<group>"; };
@@ -462,6 +485,9 @@
 				4A9E6135ED52117E41DE95F7 /* ADEDesignSystem.swift */,
 				A1000000000000000000001A /* ADEHaptics.swift */,
 				C10000000000000000000011 /* ADEMobilePrimitives.swift */,
+				50F12DAB52A9A64E2D3D4D03 /* DictationMicButton.swift */,
+				1C7F48CB9D3EBD80F1FDBD9F /* RecordingPill.swift */,
+				B1D40000000000000000A002 /* GlobalDictationPill.swift */,
 				D6F9B21C0E4A6D8F1B3C5A77 /* FilesCodeSupport.swift */,
 			);
 			name = Components;
@@ -667,6 +693,7 @@
 				F20000000000000000000003 /* SettingsPairingSection.swift */,
 				F20000000000000000000004 /* SettingsPinSheet.swift */,
 				F20000000000000000000005 /* SettingsAppearanceSection.swift */,
+				AB92EA06D5B7FD42F715A80C /* SettingsVoiceInputSection.swift */,
 				F20000000000000000000006 /* SettingsDiagnosticsSection.swift */,
 				F300000000000000000000E1 /* NotificationsCenterView.swift */,
 				F300000000000000000000E2 /* SettingsNotificationsSection.swift */,
@@ -683,8 +710,20 @@
 				B5D5B5B87564C73F2FF34B0D /* KeychainService.swift */,
 				66B5024B0A05F3D9754101F1 /* SyncService.swift */,
 				AA5100000000000000000003 /* LiveActivityCoordinator.swift */,
+				B34C6C526E3BBB1E720C8D7C /* Dictation */,
 			);
 			name = Services;
+			sourceTree = "<group>";
+		};
+		B34C6C526E3BBB1E720C8D7C /* Dictation */ = {
+			isa = PBXGroup;
+			children = (
+				FB5762445C5F7386370D09CB /* SpeechDictationService.swift */,
+				34B81E6D9F3ADFF19197A5A6 /* DictationCleanup.swift */,
+				9BA0977F732D91B04AF997DB /* VoiceGlossary.swift */,
+				D1C7A70000000000000001A1 /* DictationController.swift */,
+			);
+			name = Dictation;
 			sourceTree = "<group>";
 		};
 		14E88398116BD8C3419D0CE7 /* iOS */ = {
@@ -728,6 +767,7 @@
 				AA1000000000000000000003 /* ADESharedTheme.swift */,
 				AA5100000000000000000004 /* LiveActivityIntentsForward.swift */,
 				AA5500000000000000000004 /* WidgetAppIntents.swift */,
+				AA5800000000000000000001 /* DictationActivityShared.swift */,
 			);
 			name = Shared;
 			sourceTree = "<group>";
@@ -747,6 +787,7 @@
 				AA5200000000000000000006 /* ADEWidgetPreviewData.swift */,
 				AA5600000000000000000001 /* ADELiveActivityPrimitives.swift */,
 				AA5700000000000000000002 /* ADELiveActivityPreviews.swift */,
+				AA5800000000000000000002 /* DictationLiveActivity.swift */,
 			);
 			name = ADEWidgets;
 			sourceTree = "<group>";
@@ -809,6 +850,7 @@
 			isa = PBXGroup;
 			children = (
 				2856F8D2F2D630DD985B870A /* DatabaseBootstrap.sql */,
+				781DE0B3C61717AE3057B82D /* VoiceGlossary.json */,
 			);
 			name = Resources;
 			sourceTree = "<group>";
@@ -1004,6 +1046,7 @@
 			files = (
 				63A9C60B0E0F0E2707634B2E /* Assets.xcassets in Resources */,
 				6E32ED1BF961DFEFCA12EF52 /* DatabaseBootstrap.sql in Resources */,
+				CF71F8756A9A432A433D5E33 /* VoiceGlossary.json in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1033,6 +1076,15 @@
 				AA1100000000000000000003 /* ADESharedTheme.swift in Sources */,
 				C10000000000000000000002 /* ADECodeRenderingCache.swift in Sources */,
 				0A1E077A24A5367ED58900F9 /* ADEDesignSystem.swift in Sources */,
+				E7C4AFA1DEBFC844E11CC907 /* SpeechDictationService.swift in Sources */,
+				01FE6A4E9FAB343B48940038 /* DictationCleanup.swift in Sources */,
+				8FCB968194DE9C66EC194223 /* VoiceGlossary.swift in Sources */,
+				D1C7A70000000000000001B1 /* DictationController.swift in Sources */,
+				AA5800000000000000000011 /* DictationActivityShared.swift in Sources */,
+				91D46087242081A9F29BBFF5 /* DictationMicButton.swift in Sources */,
+				C85070CCC923CAB6FD61AF85 /* RecordingPill.swift in Sources */,
+				B1D40000000000000000A001 /* GlobalDictationPill.swift in Sources */,
+				1F9DE38583114F239DC7616D /* SettingsVoiceInputSection.swift in Sources */,
 				D30000000000000000000011 /* AttentionDrawerModel.swift in Sources */,
 				D30000000000000000000012 /* AttentionDrawerButton.swift in Sources */,
 				D30000000000000000000013 /* AttentionDrawerSheet.swift in Sources */,
@@ -1217,6 +1269,8 @@
 				AA5600000000000000000012 /* ADELiveActivityPrimitives.swift in Sources */,
 				AA5100000000000000000015 /* LiveActivityIntentsForward.swift in Sources */,
 				AA5500000000000000000015 /* WidgetAppIntents.swift in Sources */,
+				AA5800000000000000000012 /* DictationActivityShared.swift in Sources */,
+				AA5800000000000000000022 /* DictationLiveActivity.swift in Sources */,
 				AA5200000000000000000011 /* ADEWidgetBundle.swift in Sources */,
 				AA5200000000000000000012 /* ADEWorkspaceWidget.swift in Sources */,
 				AA5200000000000000000013 /* ADEWorkspaceWidgetViews.swift in Sources */,

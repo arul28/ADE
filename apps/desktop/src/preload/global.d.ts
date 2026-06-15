@@ -881,6 +881,20 @@ declare global {
           args: CursorCloudOpenChatRequest,
         ) => Promise<CursorCloudOpenChatResult>;
       };
+      transcription: {
+        transcribe: (
+          pcm: ArrayBuffer,
+          options?: { sampleRate?: number; format?: "int16" | "float32" },
+        ) => Promise<{ raw: string; cleaned: string }>;
+        status: () => Promise<{
+          installed: boolean;
+          binaryPath: string | null;
+          modelPath: string | null;
+        }>;
+        requestMicAccess: () => Promise<{
+          status: "granted" | "denied" | "not-determined" | "restricted" | "unknown";
+        }>;
+      };
       modelPicker: {
         getFavorites: () => Promise<{ favorites: string[] }>;
         setFavorites: (favorites: string[]) => Promise<{ favorites: string[] }>;

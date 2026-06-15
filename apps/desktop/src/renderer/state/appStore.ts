@@ -512,6 +512,7 @@ type PersistedUserPreferences = {
   didYouKnowEnabled: boolean;
   launchPromptClipboardEnabled: boolean;
   launchPromptClipboardNoticeEnabled: boolean;
+  voiceInputEnabled: boolean;
   codeBlockCopyButtonPosition: CodeBlockCopyButtonPosition;
   agentTurnCompletionSound: AgentTurnCompletionSound;
   agentTurnCompletionSoundVolume: number;
@@ -524,6 +525,34 @@ type PersistedUserPreferences = {
   /** Set true the first time the user changes the chat font size; locks the
    *  large-screen auto-size so it never overrides their choice again. */
   userOverrodeChatFontSize: boolean;
+};
+
+// ── Voice dictation (ephemeral, app-global) ────────────────────────────────
+//
+// These fields back the app-global voice-capture lifecycle that lives in
+// `services/globalVoiceRecorder.ts`. They are deliberately EPHEMERAL — never
+// persisted and never copied into per-project stores — because they describe a
+// single live recording session, not a saved preference. The recorder writes
+// them on the ROOT store only, so the always-mounted header indicator and the
+// (project-scoped) composer pill both read the same live state.
+
+/** Number of waveform bars the recorder keeps in its rolling level buffer. */
+export const DICTATION_WAVEFORM_BARS = 9;
+
+export type DictationPhase = "idle" | "recording" | "transcribing";
+
+/**
+ * A composer that has registered itself as the insertion target for dictated
+ * text. The recorder calls `insertText(cleaned)` on `finish()` if a target is
+ * registered; otherwise the transcript is only copied to the clipboard.
+ */
+export type ActiveDictationTarget = {
+  /** Stable id for the registering composer (used for safe deregistration). */
+  id: string;
+  /** Insert the cleaned transcript at the composer's caret. */
+  insertText: (text: string) => void;
+  /** Best-effort focus of the composer's input (called before insertion). */
+  focus: () => void;
 };
 
 function coerceTheme(value: unknown): ThemeId | null {
@@ -546,6 +575,7 @@ function readUnifiedUserPreferences(): PersistedUserPreferences | null {
       didYouKnowEnabled: parsed.didYouKnowEnabled !== false,
       launchPromptClipboardEnabled: parsed.launchPromptClipboardEnabled !== false,
       launchPromptClipboardNoticeEnabled: parsed.launchPromptClipboardNoticeEnabled !== false,
+      voiceInputEnabled: parsed.voiceInputEnabled !== false,
       codeBlockCopyButtonPosition: normalizeCodeBlockCopyButtonPosition(parsed.codeBlockCopyButtonPosition),
       agentTurnCompletionSound: normalizeAgentTurnCompletionSound(parsed.agentTurnCompletionSound),
       agentTurnCompletionSoundVolume: normalizeAgentTurnCompletionSoundVolume(parsed.agentTurnCompletionSoundVolume),
@@ -590,6 +620,7 @@ function readLegacyUserPreferences(): PersistedUserPreferences {
     didYouKnowEnabled: true,
     launchPromptClipboardEnabled: true,
     launchPromptClipboardNoticeEnabled: true,
+    voiceInputEnabled: true,
     codeBlockCopyButtonPosition: "top",
     agentTurnCompletionSound: "off",
     agentTurnCompletionSoundVolume: DEFAULT_AGENT_TURN_COMPLETION_SOUND_VOLUME,
@@ -620,6 +651,7 @@ function persistUserPreferencesFrom(state: {
   didYouKnowEnabled: boolean;
   launchPromptClipboardEnabled: boolean;
   launchPromptClipboardNoticeEnabled: boolean;
+  voiceInputEnabled: boolean;
   codeBlockCopyButtonPosition: CodeBlockCopyButtonPosition;
   agentTurnCompletionSound: AgentTurnCompletionSound;
   agentTurnCompletionSoundVolume: number;
@@ -639,6 +671,7 @@ function persistUserPreferencesFrom(state: {
     didYouKnowEnabled: state.didYouKnowEnabled,
     launchPromptClipboardEnabled: state.launchPromptClipboardEnabled,
     launchPromptClipboardNoticeEnabled: state.launchPromptClipboardNoticeEnabled,
+    voiceInputEnabled: state.voiceInputEnabled,
     codeBlockCopyButtonPosition: state.codeBlockCopyButtonPosition,
     agentTurnCompletionSound: state.agentTurnCompletionSound,
     agentTurnCompletionSoundVolume: state.agentTurnCompletionSoundVolume,
@@ -748,6 +781,12 @@ export type AppState = {
   didYouKnowEnabled: boolean;
   launchPromptClipboardEnabled: boolean;
   launchPromptClipboardNoticeEnabled: boolean;
+  voiceInputEnabled: boolean;
+  // ── Ephemeral voice-dictation session state (root store only; not persisted) ──
+  dictationPhase: DictationPhase;
+  dictationElapsed: number;
+  dictationLevels: number[];
+  activeDictationTarget: ActiveDictationTarget | null;
   workViewByProject: Record<string, WorkProjectViewState>;
   laneWorkViewByScope: Record<string, WorkProjectViewState>;
   draftLaunchJobsByScope: Record<string, DraftLaunchJob[]>;
@@ -825,6 +864,15 @@ export type AppState = {
   setDidYouKnowEnabled: (enabled: boolean) => void;
   setLaunchPromptClipboardEnabled: (enabled: boolean) => void;
   setLaunchPromptClipboardNoticeEnabled: (enabled: boolean) => void;
+  setVoiceInputEnabled: (enabled: boolean) => void;
+  // ── Voice-dictation session setters (ephemeral; never persisted) ──
+  setDictationPhase: (phase: DictationPhase) => void;
+  setDictationElapsed: (seconds: number) => void;
+  setDictationLevels: (levels: number[]) => void;
+  resetDictationSession: () => void;
+  registerDictationTarget: (target: ActiveDictationTarget) => void;
+  /** Clear the active target only if `id` matches the currently-registered one. */
+  unregisterDictationTarget: (id: string) => void;
   getWorkViewState: (projectRoot: string | null | undefined) => WorkProjectViewState;
   setWorkViewState: (
     projectRoot: string | null | undefined,
@@ -1010,6 +1058,11 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   didYouKnowEnabled: initialUserPreferences.didYouKnowEnabled,
   launchPromptClipboardEnabled: initialUserPreferences.launchPromptClipboardEnabled,
   launchPromptClipboardNoticeEnabled: initialUserPreferences.launchPromptClipboardNoticeEnabled,
+  voiceInputEnabled: initialUserPreferences.voiceInputEnabled,
+  dictationPhase: "idle",
+  dictationElapsed: 0,
+  dictationLevels: new Array(DICTATION_WAVEFORM_BARS).fill(0.05),
+  activeDictationTarget: null,
   workViewByProject: initialPersistedWorkViews.workViewByProject,
   laneWorkViewByScope: initialPersistedWorkViews.laneWorkViewByScope,
   draftLaunchJobsByScope: {},
@@ -1274,6 +1327,29 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       persistUserPreferencesFrom({ ...prev, launchPromptClipboardNoticeEnabled: enabled });
       return { launchPromptClipboardNoticeEnabled: enabled };
     }),
+  setVoiceInputEnabled: (enabled) =>
+    set((prev) => {
+      persistUserPreferencesFrom({ ...prev, voiceInputEnabled: enabled });
+      return { voiceInputEnabled: enabled };
+    }),
+  // Ephemeral dictation setters: NO persistUserPreferencesFrom — these describe
+  // a live capture session, not a saved preference.
+  setDictationPhase: (phase) => set({ dictationPhase: phase }),
+  setDictationElapsed: (seconds) => set({ dictationElapsed: seconds }),
+  setDictationLevels: (levels) => set({ dictationLevels: levels }),
+  resetDictationSession: () =>
+    set({
+      dictationPhase: "idle",
+      dictationElapsed: 0,
+      dictationLevels: new Array(DICTATION_WAVEFORM_BARS).fill(0.05),
+    }),
+  registerDictationTarget: (target) => set({ activeDictationTarget: target }),
+  unregisterDictationTarget: (id) =>
+    set((prev) =>
+      prev.activeDictationTarget?.id === id
+        ? { activeDictationTarget: null }
+        : prev,
+    ),
   openNewTab: () => set({ isNewTabOpen: true, showWelcome: true }),
   cancelNewTab: () => {
     const hasProject = get().project != null;
@@ -1960,6 +2036,7 @@ export function createProjectAppStore(
     didYouKnowEnabled: rootState.didYouKnowEnabled,
     launchPromptClipboardEnabled: rootState.launchPromptClipboardEnabled,
     launchPromptClipboardNoticeEnabled: rootState.launchPromptClipboardNoticeEnabled,
+    voiceInputEnabled: rootState.voiceInputEnabled,
     setTheme: rootState.setTheme,
     setTerminalPreferences: rootState.setTerminalPreferences,
     setCodeBlockCopyButtonPosition: rootState.setCodeBlockCopyButtonPosition,
@@ -1977,6 +2054,7 @@ export function createProjectAppStore(
     setDidYouKnowEnabled: rootState.setDidYouKnowEnabled,
     setLaunchPromptClipboardEnabled: rootState.setLaunchPromptClipboardEnabled,
     setLaunchPromptClipboardNoticeEnabled: rootState.setLaunchPromptClipboardNoticeEnabled,
+    setVoiceInputEnabled: rootState.setVoiceInputEnabled,
   });
   return store;
 }
@@ -2015,3 +2093,20 @@ export const useAppStore = Object.assign(
     subscribe: rootAppStore.subscribe,
   },
 );
+
+/**
+ * The single root app store. The app-global voice recorder writes the ephemeral
+ * dictation slice here so the always-mounted header indicator and the
+ * project-scoped composer pill share one live capture session, regardless of
+ * which project-scoped store the composer's own `useAppStore` resolves to.
+ */
+export const rootAppStoreApi: AppStoreApi = rootAppStore;
+
+/**
+ * Reactively read from the ROOT store, bypassing any `AppStoreProvider` context.
+ * Components rendered inside a project-scoped store (e.g. the chat composer) use
+ * this for dictation state so they observe the same session the recorder drives.
+ */
+export function useRootAppStore<T>(selector: (state: AppState) => T): T {
+  return useStore(rootAppStore, selector);
+}

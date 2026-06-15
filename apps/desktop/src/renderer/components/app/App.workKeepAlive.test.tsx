@@ -41,6 +41,7 @@ const appStoreState = vi.hoisted(() => ({
   theme: "dark",
   launchPromptClipboardEnabled: true,
   launchPromptClipboardNoticeEnabled: true,
+  voiceInputEnabled: true,
   workViewByProject: {} as Record<string, Record<string, unknown>>,
   setWorkViewState: vi.fn((projectRoot: string | null | undefined, next: Record<string, unknown>) => {
     if (!projectRoot) return;
@@ -207,6 +208,7 @@ describe("App Work route keep-alive", () => {
     appStoreState.theme = "dark";
     appStoreState.launchPromptClipboardEnabled = true;
     appStoreState.launchPromptClipboardNoticeEnabled = true;
+    appStoreState.voiceInputEnabled = true;
     appStoreState.workViewByProject = {};
     appStoreState.setWorkViewState.mockClear();
     appStoreState.openProjectTabRoots = [];
@@ -315,8 +317,9 @@ describe("App Work route keep-alive", () => {
     );
   }, ROUTE_INTEGRATION_TIMEOUT_MS);
 
-  it("hydrates project stores with launch clipboard reminder preferences", async () => {
+  it("hydrates project stores with root user preferences", async () => {
     appStoreState.launchPromptClipboardNoticeEnabled = false;
+    appStoreState.voiceInputEnabled = false;
     const { hydrateProjectAppStore } = await import("../../state/appStore");
     const { App } = await import("./App");
 
@@ -329,6 +332,7 @@ describe("App Work route keep-alive", () => {
         expect.objectContaining({
           launchPromptClipboardEnabled: true,
           launchPromptClipboardNoticeEnabled: false,
+          voiceInputEnabled: false,
         }),
       );
     });

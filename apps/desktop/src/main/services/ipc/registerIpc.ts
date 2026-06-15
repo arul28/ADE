@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, desktopCapturer, dialog, ipcMain, nativeImage, shell } from "electron";
+import { app, BrowserWindow, clipboard, desktopCapturer, dialog, ipcMain, nativeImage, shell, systemPreferences } from "electron";
 import type { IpcMainInvokeEvent } from "electron";
 import { compareUpdateVersions, createEmptyAutoUpdateSnapshot, type createAutoUpdateService } from "../updates/autoUpdateService";
 import { spawn } from "node:child_process";
@@ -570,6 +570,12 @@ import type { createGitOperationsService } from "../git/gitOperationsService";
 import type { createOperationService } from "../history/operationService";
 import type { createConflictService } from "../conflicts/conflictService";
 import type { createJobEngine } from "../jobs/jobEngine";
+import {
+  type createTranscriptionService,
+  type TranscriptionResult,
+  type TranscriptionStatus,
+  TranscriptionError,
+} from "../transcription/transcriptionService";
 import type { createAiIntegrationService } from "../ai/aiIntegrationService";
 import { fetchAdeLatestRelease, type createGithubService } from "../github/githubService";
 import type { createPrService } from "../prs/prService";
@@ -971,6 +977,7 @@ export type AppContext = {
   autoUpdateService?: ReturnType<typeof createAutoUpdateService> | null;
   updateInstallImpactProvider?: (() => Promise<UpdateInstallImpact>) | null;
   feedbackReporterService?: ReturnType<typeof createFeedbackReporterService> | null;
+  transcriptionService?: ReturnType<typeof createTranscriptionService> | null;
 };
 
 type AppContextWith<K extends keyof AppContext> = AppContext & {
@@ -1800,6 +1807,7 @@ export function registerIpc({
     [IPC.builtInBrowserNavigate]: new Set(["url"]),
     [IPC.builtInBrowserCreateTab]: new Set(["url"]),
     [IPC.builtInBrowserShowPanel]: new Set(["url"]),
+    [IPC.transcriptionTranscribe]: new Set(["pcm"]),
   };
 
   const redactIpcArgsForChannel = (channel: string, args: unknown[]): unknown[] => {
@@ -1871,6 +1879,16 @@ export function registerIpc({
     ...(args.length > 1 ? { arg1: summarizeIpcArg(args[1]) } : {}),
     ...(args.length > 2 ? { arg2: summarizeIpcArg(args[2]) } : {}),
   });
+
+  const redactIpcResultForChannel = (channel: string, result: unknown): unknown => {
+    if (channel !== IPC.transcriptionTranscribe) return result;
+    if (!result || typeof result !== "object" || Array.isArray(result)) return "[redacted]";
+    return {
+      ...(result as Record<string, unknown>),
+      raw: "[redacted]",
+      cleaned: "[redacted]",
+    };
+  };
 
   const getTraceLogger = (): Pick<Logger, "info" | "warn"> => {
     try {
@@ -2049,7 +2067,7 @@ export function registerIpc({
               channel,
               winId,
               durationMs,
-              result: summarizeIpcValue(result),
+              result: summarizeIpcValue(redactIpcResultForChannel(channel, result)),
             });
           }
           return result;
@@ -6306,6 +6324,134 @@ export function registerIpc({
     const ctx = getCtx();
     return ctx.sessionDeltaService?.getSessionDelta(arg.sessionId) ?? null;
   });
+
+  // ── Voice-to-text dictation ──────────────────────────────────────────────
+  // The transcription service is project-independent (no DB / lane deps): it
+  // only needs the bundled whisper binary + model + the shared glossary. It is
+  // resolved from the active context, where it is threaded as a shared
+  // singleton (see main.ts).
+  type TranscriptionPcmFormat = "int16" | "float32";
+  const DEFAULT_TRANSCRIPTION_SAMPLE_RATE = 16_000;
+  const MIN_TRANSCRIPTION_SAMPLE_RATE = 8_000;
+  const MAX_TRANSCRIPTION_SAMPLE_RATE = 48_000;
+  const MAX_TRANSCRIPTION_SECONDS = 5 * 60;
+
+  const normalizeTranscriptionFormat = (format: unknown): TranscriptionPcmFormat => {
+    if (format == null) return "int16";
+    if (format === "int16" || format === "float32") return format;
+    throw new Error("transcribe_failed: Unsupported audio format.");
+  };
+
+  const normalizeTranscriptionSampleRate = (sampleRate: unknown): number => {
+    if (sampleRate == null) return DEFAULT_TRANSCRIPTION_SAMPLE_RATE;
+    if (
+      typeof sampleRate !== "number"
+      || !Number.isFinite(sampleRate)
+      || sampleRate < MIN_TRANSCRIPTION_SAMPLE_RATE
+      || sampleRate > MAX_TRANSCRIPTION_SAMPLE_RATE
+    ) {
+      throw new Error(
+        `transcribe_failed: Invalid audio sample rate; expected ${MIN_TRANSCRIPTION_SAMPLE_RATE}-${MAX_TRANSCRIPTION_SAMPLE_RATE} Hz.`,
+      );
+    }
+    return Math.round(sampleRate);
+  };
+
+  const normalizeTranscriptionBuffer = (
+    pcmValue: unknown,
+    format: TranscriptionPcmFormat,
+    sampleRate: number,
+  ): ArrayBuffer => {
+    let buffer: ArrayBuffer | null = null;
+    if (pcmValue instanceof ArrayBuffer) {
+      buffer = pcmValue;
+    } else if (pcmValue instanceof Int16Array && format === "int16") {
+      buffer = new ArrayBuffer(pcmValue.byteLength);
+      new Uint8Array(buffer).set(new Uint8Array(pcmValue.buffer, pcmValue.byteOffset, pcmValue.byteLength));
+    }
+    if (!buffer || buffer.byteLength === 0) {
+      throw new Error("empty_audio: No audio was captured.");
+    }
+
+    const bytesPerSample = format === "float32" ? 4 : 2;
+    if (buffer.byteLength % bytesPerSample !== 0) {
+      throw new Error("transcribe_failed: Invalid audio buffer alignment.");
+    }
+
+    const sampleCount = buffer.byteLength / bytesPerSample;
+    if (sampleCount / sampleRate > MAX_TRANSCRIPTION_SECONDS) {
+      throw new Error(`transcribe_failed: Dictation is limited to ${Math.round(MAX_TRANSCRIPTION_SECONDS / 60)} minutes.`);
+    }
+
+    return buffer;
+  };
+
+  ipcMain.handle(
+    IPC.transcriptionTranscribe,
+    async (
+      _event,
+      arg: { pcm: ArrayBuffer | Int16Array; sampleRate?: number; format?: "int16" | "float32" },
+    ): Promise<TranscriptionResult> => {
+      const service = getCtx().transcriptionService;
+      if (!service) {
+        throw new Error("model_not_installed: Voice model not installed");
+      }
+      // PCM arrives as a transferable ArrayBuffer (or a typed array when called
+      // in-process from tests). Validate before constructing a typed view so a
+      // malformed renderer-controlled payload cannot reach WAV encoding.
+      const format = normalizeTranscriptionFormat(arg?.format);
+      const sampleRate = normalizeTranscriptionSampleRate(arg?.sampleRate);
+      const buffer = normalizeTranscriptionBuffer(arg?.pcm, format, sampleRate);
+      const pcm = format === "float32"
+        ? new Float32Array(buffer)
+        : new Int16Array(buffer);
+      try {
+        return await service.transcribe(pcm, { sampleRate });
+      } catch (error) {
+        if (error instanceof TranscriptionError) {
+          // Surface the typed code via the message prefix the renderer matches on.
+          throw new Error(`${error.code}: ${error.message}`);
+        }
+        throw error;
+      }
+    },
+  );
+
+  ipcMain.handle(IPC.transcriptionStatus, async (): Promise<TranscriptionStatus> => {
+    const service = getCtx().transcriptionService;
+    if (!service) {
+      return { installed: false, binaryPath: null, modelPath: null };
+    }
+    return service.getStatus();
+  });
+
+  // Ensure macOS microphone access before the renderer calls getUserMedia.
+  // Electron on macOS returns a silent (all-zero) audio track instead of
+  // throwing when the OS hasn't granted mic access, so we must check/request
+  // the system-level permission explicitly (electron/electron#23792, #42714).
+  ipcMain.handle(
+    IPC.transcriptionRequestMicAccess,
+    async (): Promise<{ status: "granted" | "denied" | "not-determined" | "restricted" | "unknown" }> => {
+      if (process.platform !== "darwin") {
+        return { status: "granted" };
+      }
+      const current = systemPreferences.getMediaAccessStatus("microphone");
+      if (current === "granted") {
+        return { status: "granted" };
+      }
+      if (current === "not-determined") {
+        try {
+          const ok = await systemPreferences.askForMediaAccess("microphone");
+          return { status: ok ? "granted" : "denied" };
+        } catch {
+          return { status: "denied" };
+        }
+      }
+      // "denied" | "restricted" | "unknown" — the user must change this in
+      // System Settings; askForMediaAccess will not re-prompt.
+      return { status: current };
+    },
+  );
 
   ipcMain.handle(IPC.agentChatList, async (_event, arg: AgentChatListArgs = {}): Promise<AgentChatSessionSummary[]> => {
     const ctx = getCtx();

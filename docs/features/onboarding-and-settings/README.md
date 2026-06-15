@@ -197,8 +197,13 @@ Renderer — settings:
   — theme and chat appearance preferences. Renders `ChatAppearancePreview`
   and writes local user preferences through `appStore`, including
   `launchPromptClipboardEnabled` (whether Work draft launches copy the
-  submitted prompt) and `launchPromptClipboardNoticeEnabled` (whether
-  composer reminder text is shown before the copy).
+  submitted prompt), `launchPromptClipboardNoticeEnabled` (whether
+  composer reminder text is shown before the copy), and the
+  `DictationSection` voice-input toggle.
+- `apps/desktop/src/renderer/components/settings/DictationSection.tsx`
+  — voice input settings. Persists `voiceInputEnabled`, shows whether
+  the bundled on-device transcription model is installed, and gates the
+  chat composer mic affordance.
 - `apps/desktop/src/renderer/components/settings/ProjectSection.tsx`
   — project `.ade` structure snapshot, shared/local/secret config paths,
   health warnings, structure repair, and integrity-check controls.

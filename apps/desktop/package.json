@@ -17,17 +17,19 @@
     "dev:browser-bridge": "node ./scripts/browser-runtime-bridge.mjs",
     "export:browser-mock-ade": "node ./scripts/export-browser-mock-ade-snapshot.mjs",
     "build": "tsup && vite build",
-    "dist:win": "npm run materialize:runtime-resources && npm run validate:runtime-resources && npm run validate:win:artifacts && npm run build && electron-builder --win --x64 --publish never && npm run validate:win:release",
-    "dist:mac": "npm run materialize:runtime-resources && npm run validate:runtime-resources && npm run build && electron-builder --mac --publish never",
-    "dist:mac:dir": "npm run materialize:runtime-resources && npm run validate:runtime-resources && npm run build && electron-builder --dir --mac --publish never -c.mac.identity=null -c.mac.notarize=false",
-    "dist:mac:signed": "node ./scripts/require-macos-release-secrets.cjs && npm run materialize:runtime-resources && npm run validate:runtime-resources && npm run build && electron-builder --mac --publish never",
+    "dist:win": "npm run materialize:runtime-resources && npm run validate:runtime-resources && npm run materialize:whisper-resources && npm run validate:whisper-resources && npm run validate:win:artifacts && npm run build && electron-builder --win --x64 --publish never && npm run validate:win:release",
+    "dist:mac": "npm run materialize:runtime-resources && npm run validate:runtime-resources && npm run materialize:whisper-resources && npm run validate:whisper-resources && npm run build && electron-builder --mac --publish never",
+    "dist:mac:dir": "npm run materialize:runtime-resources && npm run validate:runtime-resources && npm run materialize:whisper-resources && npm run validate:whisper-resources && npm run build && electron-builder --dir --mac --publish never -c.mac.identity=null -c.mac.notarize=false",
+    "dist:mac:signed": "node ./scripts/require-macos-release-secrets.cjs && npm run materialize:runtime-resources && npm run validate:runtime-resources && npm run materialize:whisper-resources && npm run validate:whisper-resources && npm run build && electron-builder --mac --publish never",
     "prepare:mac:universal": "node ./scripts/prepare-universal-mac-inputs.mjs",
-    "dist:mac:universal:signed": "node ./scripts/require-macos-release-secrets.cjs && npm run materialize:runtime-resources && npm run validate:runtime-resources && npm run build && electron-builder --mac --universal --dir --publish never && node ./scripts/resign-mac-universal-app.mjs && electron-builder --mac zip --universal --prepackaged release/mac-universal/ADE.app --publish never && node ./scripts/create-mac-dmg.mjs",
-    "dist:mac:universal:signed:zip": "node ./scripts/require-macos-release-secrets.cjs && npm run materialize:runtime-resources && npm run validate:runtime-resources && npm run build && electron-builder --mac zip --universal --publish never",
+    "dist:mac:universal:signed": "node ./scripts/require-macos-release-secrets.cjs && npm run materialize:runtime-resources && npm run validate:runtime-resources && npm run materialize:whisper-resources && npm run validate:whisper-resources && npm run build && electron-builder --mac --universal --dir --publish never && node ./scripts/resign-mac-universal-app.mjs && electron-builder --mac zip --universal --prepackaged release/mac-universal/ADE.app --publish never && node ./scripts/create-mac-dmg.mjs",
+    "dist:mac:universal:signed:zip": "node ./scripts/require-macos-release-secrets.cjs && npm run materialize:runtime-resources && npm run validate:runtime-resources && npm run materialize:whisper-resources && npm run validate:whisper-resources && npm run build && electron-builder --mac zip --universal --publish never",
     "notarize:mac:dmg": "node ./scripts/notarize-mac-dmg.mjs",
     "validate:mac:artifacts": "node ./scripts/validate-mac-artifacts.mjs",
     "materialize:runtime-resources": "node ./scripts/materialize-runtime-resources.mjs",
     "validate:runtime-resources": "node ./scripts/validate-runtime-resources.mjs",
+    "materialize:whisper-resources": "node ./scripts/materialize-whisper-resources.mjs",
+    "validate:whisper-resources": "node ./scripts/validate-whisper-resources.mjs",
     "validate:win:artifacts": "node ./scripts/validate-win-artifacts.mjs --mode=preflight",
     "validate:win:release": "node ./scripts/validate-win-artifacts.mjs --mode=release",
     "release:mac:local": "node ./scripts/release-mac-local.mjs",
@@ -269,6 +271,20 @@
         ]
       },
       {
+        "from": "resources/voice",
+        "to": "voice",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "resources/whisper",
+        "to": "whisper",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
         "from": "resources/app-update.yml",
         "to": "app-update.yml"
       }
@@ -308,7 +324,8 @@
       "icon": "build/icon.icns",
       "category": "public.app-category.developer-tools",
       "extendInfo": {
-        "NSAppleEventsUsageDescription": "ADE launches agent terminals that can use local app automation through Codex Computer Use."
+        "NSAppleEventsUsageDescription": "ADE launches agent terminals that can use local app automation through Codex Computer Use.",
+        "NSMicrophoneUsageDescription": "ADE uses your microphone to dictate chat prompts with on-device voice-to-text."
       },
       "hardenedRuntime": true,
       "gatekeeperAssess": false,
@@ -316,7 +333,7 @@
       "entitlementsInherit": "build/entitlements.mac.inherit.plist",
       "notarize": true,
       "mergeASARs": false,
-      "x64ArchFiles": "Contents/Resources/{app.asar.unpacked/node_modules,app.asar.unpacked/vendor,runtime}/**/*"
+      "x64ArchFiles": "Contents/Resources/{app.asar.unpacked/node_modules,app.asar.unpacked/vendor,runtime,whisper}/**/*"
     }
   }
 }

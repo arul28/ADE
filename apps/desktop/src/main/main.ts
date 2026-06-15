@@ -66,6 +66,7 @@ import { createOperationService } from "./services/history/operationService";
 import { createGitOperationsService } from "./services/git/gitOperationsService";
 import { runGit } from "./services/git/git";
 import { createJobEngine } from "./services/jobs/jobEngine";
+import { createTranscriptionService } from "./services/transcription/transcriptionService";
 import { createAiIntegrationService } from "./services/ai/aiIntegrationService";
 import { augmentProcessPathWithShellAndKnownCliDirs, setPathEnvValue } from "./services/ai/cliExecutableResolver";
 import { createAgentChatService, writeSessionLinearIssueContextFile } from "./services/chat/agentChatService";
@@ -431,6 +432,22 @@ function createDesktopCredentialStore(secretsDir: string): SyncCredentialStore {
     };
   }
   return legacyStore;
+}
+
+// Voice-to-text transcription is a project-independent capability (it only needs
+// the bundled whisper binary + model + shared glossary), so it lives as a single
+// shared instance threaded into every project/dormant context. Constructed lazily
+// on first context build.
+let sharedTranscriptionService: ReturnType<typeof createTranscriptionService> | null = null;
+function getSharedTranscriptionService(logger: Logger): ReturnType<typeof createTranscriptionService> {
+  if (!sharedTranscriptionService) {
+    sharedTranscriptionService = createTranscriptionService({
+      logger,
+      isPackaged: app.isPackaged,
+      resourcesPath: process.resourcesPath,
+    });
+  }
+  return sharedTranscriptionService;
 }
 
 function isAllowedAdeBrowserWebviewSource(rawSrc: string): boolean {
@@ -4360,6 +4377,7 @@ app.whenReady().then(async () => {
       prSummaryService,
       reviewService,
       jobEngine,
+      transcriptionService: getSharedTranscriptionService(logger),
       automationService,
       automationPlannerService,
       automationIngressService,
@@ -4625,6 +4643,7 @@ app.whenReady().then(async () => {
       prSummaryService: null,
       reviewService: null,
       jobEngine: null,
+      transcriptionService: getSharedTranscriptionService(logger),
       automationService: null,
       automationPlannerService: null,
       automationIngressService: null,
@@ -5465,12 +5484,22 @@ app.whenReady().then(async () => {
     }
   };
 
+  const disposeSharedTranscriptionService = (): void => {
+    try {
+      sharedTranscriptionService?.dispose();
+    } catch {
+      // ignore
+    }
+    sharedTranscriptionService = null;
+  };
+
   const runImmediateProcessCleanup = (reason: string): void => {
     try {
       autoUpdateService?.dispose();
     } catch {
       // ignore
     }
+    disposeSharedTranscriptionService();
     try {
       localRuntimePool.dispose();
     } catch {
@@ -5948,6 +5977,7 @@ app.whenReady().then(async () => {
   });
   app.on("will-quit", () => {
     runImmediateProcessCleanup("will_quit");
+    disposeSharedTranscriptionService();
   });
 
   try {

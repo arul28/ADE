@@ -5,6 +5,10 @@ struct ADEApp: App {
   @UIApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
   @Environment(\.scenePhase) private var scenePhase
   @StateObject private var syncService = SyncService()
+  /// App-level dictation singleton. Owning the single `SpeechDictationService`
+  /// here (rather than per-composer) lets recording survive navigation and
+  /// drive the Dynamic Island Live Activity.
+  @StateObject private var dictationController = DictationController()
   @State private var didBootstrapSync = false
   @State private var lastActivationSyncAt = Date.distantPast
   /// Pending cross-machine deep link awaiting a "Send to Mac" confirmation.
@@ -15,6 +19,7 @@ struct ADEApp: App {
     WindowGroup {
       ContentView()
         .environmentObject(syncService)
+        .environmentObject(dictationController)
         .task {
           guard !didBootstrapSync else { return }
           didBootstrapSync = true
