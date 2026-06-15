@@ -355,11 +355,13 @@ export function createBrainProjectActionsSyncHandler(
       case "project_switch_request": {
         let result = null as Awaited<ReturnType<SyncProjectCatalogProvider["prepareProjectConnection"]>> | null;
         let completionAttempted = false;
+        let resultSent = false;
         try {
           result = await args.projectCatalogProvider.prepareProjectConnection(
             (envelope.payload ?? {}) as SyncProjectSwitchRequestPayload,
           );
           send(peer.ws, "project_switch_result", result, envelope.requestId);
+          resultSent = true;
           completionAttempted = true;
           await args.projectCatalogProvider.completeProjectConnection?.(
             (envelope.payload ?? {}) as SyncProjectSwitchRequestPayload,
@@ -379,10 +381,12 @@ export function createBrainProjectActionsSyncHandler(
               // Best effort; the peer will retry selection if handoff fails.
             }
           }
-          send(peer.ws, "project_switch_result", {
-            ok: false,
-            message: error instanceof Error ? error.message : String(error),
-          }, envelope.requestId);
+          if (!resultSent) {
+            send(peer.ws, "project_switch_result", {
+              ok: false,
+              message: error instanceof Error ? error.message : String(error),
+            }, envelope.requestId);
+          }
         }
         break;
       }
