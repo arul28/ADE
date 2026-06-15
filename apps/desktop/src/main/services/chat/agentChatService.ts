@@ -16937,11 +16937,18 @@ export function createAgentChatService(args: {
       cwd: managed.laneWorktreePath,
       env: claudeEnv,
       pathToClaudeCodeExecutable: claudeExecutable.path,
-      managedSettings: {
-        allowedMcpServers: [],
-        allowManagedMcpServersOnly: true,
-        strictPluginOnlyCustomization: ["mcp"],
-      },
+      // User-configured MCP servers (~/.claude.json, project .mcp.json) load via
+      // settingSources below, matching a terminal `claude` session. We previously
+      // locked this to managed-only (allowManagedMcpServersOnly + empty allowlist) as
+      // a context/perf trim in #294, but that silently stripped the user's MCP tools
+      // from chats — e.g. iOS-automation servers — making the SDK chat strictly less
+      // capable than an `ade` CLI session for the same task. ENABLE_TOOL_SEARCH now
+      // keeps large tool catalogs cheap, so the trim is no longer worth the capability
+      // loss. Orchestration sessions re-apply managed-only isolation in their own block.
+      // Lightweight side-jobs (auto-title / lane-naming) get no settingSources, and the
+      // SDK loads all MCP sources when unconstrained — so keep them lean with
+      // strictMcpConfig (ignores on-disk .mcp.json / user MCP), preserving prior behavior.
+      ...(lightweight ? { strictMcpConfig: true } : {}),
       settings: {
         outputStyle,
         enabledPlugins: CLAUDE_SESSION_DISABLED_PLUGINS,
