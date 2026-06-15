@@ -37,6 +37,7 @@ struct RemoteProjectAddSheet: View {
   @State private var cloneTab: ProjectCloneTab = .url
   @State private var browsePath = ""
   @State private var actionError: String?
+  @State private var isSubmitting = false
 
   private var title: String {
     switch screen {
@@ -71,6 +72,7 @@ struct RemoteProjectAddSheet: View {
               RemoteProjectCreateForm(
                 name: $createName,
                 parentDir: $createParentDir,
+                isSubmitting: isSubmitting,
                 onChooseParent: { screen = .parentPicker(.create) },
                 onCancel: { screen = .chooser },
                 onCreate: { Task { await createProject() } }
@@ -81,6 +83,7 @@ struct RemoteProjectAddSheet: View {
                 url: $cloneUrl,
                 name: $cloneName,
                 parentDir: $cloneParentDir,
+                isSubmitting: isSubmitting,
                 onChooseParent: { screen = .parentPicker(.clone) },
                 onCancel: { screen = .chooser },
                 onClone: { Task { await cloneProject() } }
@@ -213,6 +216,9 @@ struct RemoteProjectAddSheet: View {
   }
 
   private func createProject() async {
+    guard !isSubmitting else { return }
+    isSubmitting = true
+    defer { isSubmitting = false }
     do {
       let project = try await syncService.createMachineProject(name: createName, parentDir: createParentDir)
       actionError = nil
@@ -223,6 +229,9 @@ struct RemoteProjectAddSheet: View {
   }
 
   private func cloneProject() async {
+    guard !isSubmitting else { return }
+    isSubmitting = true
+    defer { isSubmitting = false }
     do {
       let project = try await syncService.cloneMachineProject(url: cloneUrl, name: cloneName, parentDir: cloneParentDir)
       actionError = nil
@@ -429,7 +438,7 @@ private struct RemoteProjectDirectoryBrowser: View {
     errorMessage = nil
     do {
       result = try await syncService.browseMachineProjectDirectories(partialPath: trimmed)
-      if mode == .open, selectedPath == nil {
+      if mode == .open {
         selectedPath = result?.openableProjectRoot
       }
     } catch {
@@ -490,6 +499,7 @@ private struct DirectoryBrowserRow: View {
 private struct RemoteProjectCreateForm: View {
   @Binding var name: String
   @Binding var parentDir: String
+  let isSubmitting: Bool
   let onChooseParent: () -> Void
   let onCancel: () -> Void
   let onCreate: () -> Void
@@ -530,7 +540,7 @@ private struct RemoteProjectCreateForm: View {
           .buttonStyle(ProjectSecondaryButtonStyle())
         Button("Create", action: onCreate)
           .buttonStyle(ProjectPrimaryButtonStyle())
-          .disabled(!canCreate)
+          .disabled(!canCreate || isSubmitting)
       }
       .frame(maxWidth: .infinity, alignment: .trailing)
     }
@@ -552,6 +562,7 @@ private struct RemoteProjectCloneForm: View {
   @Binding var url: String
   @Binding var name: String
   @Binding var parentDir: String
+  let isSubmitting: Bool
   let onChooseParent: () -> Void
   let onCancel: () -> Void
   let onClone: () -> Void
@@ -563,8 +574,12 @@ private struct RemoteProjectCloneForm: View {
 
   private var trimmedUrl: String { url.trimmingCharacters(in: .whitespacesAndNewlines) }
   private var trimmedName: String { name.trimmingCharacters(in: .whitespacesAndNewlines) }
+  private var hasGitHubHost: Bool {
+    guard let host = URL(string: trimmedUrl)?.host?.lowercased() else { return false }
+    return host == "github.com" || host.hasSuffix(".github.com")
+  }
   private var canClone: Bool {
-    trimmedUrl.contains("github.com")
+    hasGitHubHost
       && !trimmedName.isEmpty
       && !parentDir.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
   }
@@ -609,7 +624,7 @@ private struct RemoteProjectCloneForm: View {
           .buttonStyle(ProjectSecondaryButtonStyle())
         Button("Clone", action: onClone)
           .buttonStyle(ProjectPrimaryButtonStyle())
-          .disabled(!canClone)
+          .disabled(!canClone || isSubmitting)
       }
       .frame(maxWidth: .infinity, alignment: .trailing)
     }

@@ -832,6 +832,16 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
       platform: "iOS",
       deviceType: "phone",
     });
+    const observerClient = await connectClient({
+      port,
+      token: host.getBootstrapToken(),
+      deviceId: "ios-phone-2",
+      deviceName: "Arul iPad",
+      siteId: "ios-site-2",
+      dbVersion: 0,
+      platform: "iOS",
+      deviceType: "phone",
+    });
 
     const helloPayload = client.helloOk.payload as {
       projects?: unknown[];
@@ -913,7 +923,8 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
     expect(openResult.requestId).toBe("open-1");
     expect(projectCatalogProvider.openProject).toHaveBeenCalledWith({ rootPath: openedProject.rootPath });
     expect(openResult.payload).toEqual({ ok: true, project: openedProject });
-    await client.queue.next("project_catalog");
+    expect((await client.queue.next("project_catalog")).payload).toEqual({ projects: [project] });
+    expect((await observerClient.queue.next("project_catalog")).payload).toEqual({ projects: [project] });
 
     client.ws.send(encodeSyncEnvelope({
       type: "project_create_request",
@@ -985,6 +996,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
     });
 
     await client.close();
+    await observerClient.close();
   });
 
   it("chunks oversized mobile project catalog responses", async () => {

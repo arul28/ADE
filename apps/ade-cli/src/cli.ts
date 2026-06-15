@@ -78,6 +78,7 @@ import { normalizeAdeRuntimeRole, resolveAdeDefaultRole } from "./runtimeRoles";
 import type { AdeRuntime } from "./bootstrap";
 import { reseedBundledAdeSkillsForCli } from "./bootstrap";
 import { EncryptedFileCredentialStore } from "./services/credentials/credentialStore";
+import { DEFAULT_SYNC_HOST_PORT } from "./services/sync/syncProtocol";
 
 type JsonObject = Record<string, unknown>;
 
@@ -13043,7 +13044,7 @@ async function runServe(
     );
     return createProjectScaffoldService({
       logger: headlessProjectLogger,
-      githubService: githubService as never,
+      githubService,
     });
   };
   const getHeadlessDefaultParentDir = (): string => {
@@ -13072,16 +13073,11 @@ async function runServe(
     record: ProjectRecord,
     overrides: Partial<SyncMobileProjectSummary> = {},
   ): Promise<SyncMobileProjectSummary> => {
-    let laneCount = 0;
-    try {
-      const scope = await scopeRegistry.get(record.projectId);
-      const lanes = await scope.runtime.laneService
-        .list({ includeArchived: false, includeStatus: false })
-        .catch(() => []);
-      laneCount = lanes.length;
-    } catch {
-      laneCount = 0;
-    }
+    const scope = await scopeRegistry.get(record.projectId);
+    const lanes = await scope.runtime.laneService
+      .list({ includeArchived: false, includeStatus: false })
+      .catch(() => []);
+    const laneCount = lanes.length;
     return toMobileProjectSummary(record, {
       laneCount,
       isOpen: true,
@@ -13118,7 +13114,10 @@ async function runServe(
     listProjects: async () => ({
       projects: projectRegistry
         .list()
-        .map((record) => toMobileProjectSummary(record)),
+        .map((record) =>
+          toMobileProjectSummary(record, {
+            isAvailable: fs.existsSync(record.rootPath),
+          })),
     }),
     prepareProjectConnection: async (
       request: SyncProjectSwitchRequestPayload,
@@ -13250,11 +13249,15 @@ async function runServe(
         },
       })
     : null;
+  const machineCredentialStore = new EncryptedFileCredentialStore({
+    secretsDir: layout.secretsDir,
+  });
   sharedSyncListener?.setFallbackConnectionHandler(
     createBrainProjectActionsSyncHandler({
       logger: headlessProjectLogger,
       projectCatalogProvider: machineProjectCatalogProvider,
-      bootstrapTokenPath: path.join(layout.secretsDir, "sync-bootstrap-token"),
+      bootstrapCredentialStore: machineCredentialStore,
+      legacyBootstrapTokenPath: path.join(layout.secretsDir, "sync-bootstrap-token"),
       pairingSecretsPath: path.join(layout.secretsDir, "sync-paired-devices.json"),
       pinPath: path.join(layout.secretsDir, "sync-pin.json"),
       localDeviceIdPath: path.join(layout.secretsDir, "sync-device-id"),
@@ -13297,9 +13300,17 @@ async function runServe(
       disposeScopesOnDispose: false,
       onShutdown: finish,
     });
-  const startSyncHost = () => (preferredSyncProjectId
-    ? scopeRegistry.switchSyncHost(preferredSyncProjectId)
-    : scopeRegistry.resolveActiveSyncHost());
+  const startSyncHost = async () => {
+    if (preferredSyncProjectId) {
+      return await scopeRegistry.switchSyncHost(preferredSyncProjectId);
+    }
+    const activeScope = await scopeRegistry.resolveActiveSyncHost();
+    if (activeScope) return activeScope;
+    if (sharedSyncListener) {
+      await sharedSyncListener.ensureListening([DEFAULT_SYNC_HOST_PORT]);
+    }
+    return null;
+  };
   const disposeServeResources = async () => {
     await scopeRegistry.disposeAll();
     if (sharedSyncListener) {

@@ -2479,6 +2479,18 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     }
   }
 
+  function broadcastProjectCatalogToConnectedPeers(
+    projectCatalog: SyncProjectCatalogPayload,
+  ): void {
+    if (bonjourPort != null) {
+      refreshLanDiscoveryProjects(bonjourPort, projectCatalog);
+    }
+    for (const peer of peers) {
+      if (!peer.authenticated || peer.ws.readyState !== WebSocket.OPEN) continue;
+      sendProjectCatalog(peer, projectCatalog);
+    }
+  }
+
   async function handleProjectBrowseRequest(
     peer: PeerState,
     requestId: string | null | undefined,
@@ -2543,7 +2555,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       const project = await action(payload);
       sendRequired(peer, resultType, { ok: true, project }, requestId);
       if (args.projectCatalogProvider) {
-        sendProjectCatalog(peer, await buildProjectCatalogPayload());
+        broadcastProjectCatalogToConnectedPeers(await buildProjectCatalogPayload());
       }
     } catch (error) {
       sendRequired(peer, resultType, {

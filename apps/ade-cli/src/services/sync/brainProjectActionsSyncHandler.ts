@@ -20,6 +20,7 @@ import type { Logger } from "../../../../desktop/src/main/services/logging/logge
 import { nowIso } from "../../../../desktop/src/main/services/shared/utils";
 import type { SharedSyncListenerConnectionHandler } from "./sharedSyncListener";
 import { SYNC_HOST_BIND_LOOPBACK_ONLY } from "./sharedSyncListener";
+import type { SyncCredentialStore } from "../credentials/credentialStore";
 import { createSyncPairingStore } from "./syncPairingStore";
 import { createSyncPinStore } from "./syncPinStore";
 import {
@@ -35,7 +36,9 @@ import { resolveDeviceDisplayName } from "./deviceRegistryService";
 type BrainProjectActionsSyncHandlerArgs = {
   logger: Logger;
   projectCatalogProvider: SyncProjectCatalogProvider;
-  bootstrapTokenPath: string;
+  bootstrapCredentialStore: SyncCredentialStore;
+  bootstrapTokenKey?: string;
+  legacyBootstrapTokenPath?: string | null;
   pairingSecretsPath: string;
   pinPath: string;
   localDeviceIdPath: string;
@@ -51,6 +54,7 @@ type BrainPeerState = {
 };
 
 const WS_OPEN = 1;
+const BOOTSTRAP_TOKEN_KEY = "sync.bootstrapToken.v1";
 const PAIR_FAILURE_THRESHOLD = 5;
 const PAIR_COOLDOWN_MS = 10 * 60_000;
 const PAIR_FAILURE_WINDOW_MS = 10 * 60_000;
@@ -75,6 +79,29 @@ function ensureSecretFile(filePath: string, bytes: number): string {
     // ignore chmod failures on platforms that do not support it
   }
   return fs.readFileSync(filePath, "utf8").trim();
+}
+
+function readLegacySecretFile(filePath: string | null | undefined): string | null {
+  if (!filePath) return null;
+  try {
+    const value = fs.readFileSync(filePath, "utf8").trim();
+    return value.length > 0 ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function ensureCredentialSecret(
+  store: SyncCredentialStore,
+  key: string,
+  bytes: number,
+  legacyPath?: string | null,
+): string {
+  const existing = store.getSync(key)?.trim();
+  if (existing) return existing;
+  const next = readLegacySecretFile(legacyPath) ?? randomBytes(bytes).toString("hex");
+  store.setSync(key, next);
+  return next;
 }
 
 function safeStringEquals(expected: string, actual: string): boolean {
@@ -269,7 +296,12 @@ async function projectCatalog(provider: SyncProjectCatalogProvider, logger: Logg
 export function createBrainProjectActionsSyncHandler(
   args: BrainProjectActionsSyncHandlerArgs,
 ): SharedSyncListenerConnectionHandler {
-  const bootstrapToken = ensureSecretFile(args.bootstrapTokenPath, 24);
+  const bootstrapToken = ensureCredentialSecret(
+    args.bootstrapCredentialStore,
+    args.bootstrapTokenKey ?? BOOTSTRAP_TOKEN_KEY,
+    24,
+    args.legacyBootstrapTokenPath,
+  );
   const pinStore = createSyncPinStore({ filePath: args.pinPath });
   const pairingStore = createSyncPairingStore({
     filePath: args.pairingSecretsPath,
@@ -322,11 +354,13 @@ export function createBrainProjectActionsSyncHandler(
       }
       case "project_switch_request": {
         let result = null as Awaited<ReturnType<SyncProjectCatalogProvider["prepareProjectConnection"]>> | null;
+        let completionAttempted = false;
         try {
           result = await args.projectCatalogProvider.prepareProjectConnection(
             (envelope.payload ?? {}) as SyncProjectSwitchRequestPayload,
           );
           send(peer.ws, "project_switch_result", result, envelope.requestId);
+          completionAttempted = true;
           await args.projectCatalogProvider.completeProjectConnection?.(
             (envelope.payload ?? {}) as SyncProjectSwitchRequestPayload,
             result,
@@ -335,7 +369,7 @@ export function createBrainProjectActionsSyncHandler(
           args.logger.warn("sync_brain.project_switch_failed", {
             message: error instanceof Error ? error.message : String(error),
           });
-          if (result) {
+          if (result && !completionAttempted) {
             try {
               await args.projectCatalogProvider.completeProjectConnection?.(
                 (envelope.payload ?? {}) as SyncProjectSwitchRequestPayload,

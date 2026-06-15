@@ -26,6 +26,7 @@ import { buildChangesetBatchPayload } from "./changesetPump";
 import { createSharedSyncListener } from "./sharedSyncListener";
 import { createSyncPinStore } from "./syncPinStore";
 import { encodeSyncEnvelope, parseSyncEnvelope, wsDataToText, type ParsedSyncEnvelope } from "./syncProtocol";
+import { EncryptedFileCredentialStore } from "../credentials/credentialStore";
 
 // The sync host now binds to all interfaces (0.0.0.0) by default so phones on
 // the LAN can reach it. These tests assert the LOOPBACK-only posture (no LAN
@@ -330,6 +331,7 @@ describe("brain project actions fallback handler", () => {
     createSyncPinStore({ filePath: pinPath }).setPin("428193");
 
     const logger = createDiscoveryLogger();
+    const bootstrapTokenPath = path.join(secretsDir, "sync-bootstrap-token");
     const handler = createBrainProjectActionsSyncHandler({
       logger,
       projectCatalogProvider: {
@@ -339,12 +341,17 @@ describe("brain project actions fallback handler", () => {
           message: "No hosted project is ready.",
         })),
       },
-      bootstrapTokenPath: path.join(secretsDir, "sync-bootstrap-token"),
+      bootstrapCredentialStore: new EncryptedFileCredentialStore({
+        secretsDir,
+        keyMaterialProvider: () => null,
+      }),
       pairingSecretsPath: path.join(secretsDir, "sync-paired-devices.json"),
       pinPath,
       localDeviceIdPath: path.join(secretsDir, "sync-device-id"),
       localSiteIdPath: path.join(secretsDir, "sync-site-id"),
     });
+    expect(fs.existsSync(bootstrapTokenPath)).toBe(false);
+    expect(fs.existsSync(path.join(secretsDir, "credentials.json.enc"))).toBe(true);
     const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
     server.on("connection", (ws, request) => {
       handler({

@@ -1775,9 +1775,10 @@ final class SyncService: ObservableObject {
     cwd: String? = nil,
     limit: Int = 80
   ) async throws -> MobileProjectBrowseResult {
+    let boundedLimit = max(1, min(limit, 500))
     var payload: [String: Any] = [
       "partialPath": partialPath,
-      "limit": limit,
+      "limit": boundedLimit,
     ]
     if let cwd, !cwd.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
       payload["cwd"] = cwd
