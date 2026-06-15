@@ -175,4 +175,36 @@ describe("ade code remote launcher", () => {
       { sessionId: "claude-command-1", kind: "terminal", title: "Claude terminal" },
     ]);
   });
+
+  it("includes legacy Claude terminals when only resume metadata identifies them", async () => {
+    const client = {
+      request: async (_method: string, params: unknown) => {
+        const args = (params as { arguments?: { domain?: string; action?: string } }).arguments;
+        if (args?.domain === "chat" && args.action === "listSessions") {
+          return { result: [] };
+        }
+        if (args?.domain === "terminal" && args.action === "list") {
+          return {
+            result: [
+              {
+                terminalId: "claude-metadata-1",
+                laneId: "lane-1",
+                title: "Claude metadata terminal",
+                status: "running",
+                runtimeState: "idle",
+                startedAt: "2026-06-15T00:00:00.000Z",
+                toolType: "shell",
+                resumeMetadata: { provider: "claude" },
+              },
+            ],
+          };
+        }
+        throw new Error("unexpected request");
+      },
+    };
+
+    await expect(listRemoteSessions(client as never, "project-1")).resolves.toMatchObject([
+      { sessionId: "claude-metadata-1", kind: "terminal", title: "Claude metadata terminal" },
+    ]);
+  });
 });

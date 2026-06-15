@@ -778,17 +778,22 @@ function coerceChatSessions(value: unknown): AgentChatSessionSummary[] {
     const lastActivityAt = trimString(entry.lastActivityAt);
     if (!sessionId || !laneId || !provider || !model || !status || !startedAt || !lastActivityAt) return [];
     return [{
-      ...(entry as AgentChatSessionSummary),
       sessionId,
       laneId,
       provider: provider as AgentChatSessionSummary["provider"],
       model,
+      title: trimString(entry.title),
+      goal: trimString(entry.goal),
       status: status as AgentChatSessionSummary["status"],
       startedAt,
-      endedAt: typeof entry.endedAt === "string" ? entry.endedAt : null,
+      endedAt: trimString(entry.endedAt),
       lastActivityAt,
-      lastOutputPreview: typeof entry.lastOutputPreview === "string" ? entry.lastOutputPreview : null,
-      summary: typeof entry.summary === "string" ? entry.summary : null,
+      lastOutputPreview: trimString(entry.lastOutputPreview),
+      summary: trimString(entry.summary),
+      awaitingInput: typeof entry.awaitingInput === "boolean" ? entry.awaitingInput : undefined,
+      pendingInputItemId: trimString(entry.pendingInputItemId),
+      threadId: trimString(entry.threadId) ?? undefined,
+      requestedCwd: trimString(entry.requestedCwd),
     }];
   });
 }
@@ -800,17 +805,25 @@ function coerceTerminalSessions(value: unknown): ChatTerminalSession[] {
     const terminalId = trimString(entry.terminalId);
     const laneId = trimString(entry.laneId);
     if (!terminalId || !laneId) return [];
+    const status = trimString(entry.status) ?? "ended";
     return [{
-      ...(entry as ChatTerminalSession),
       terminalId,
+      ptyId: trimString(entry.ptyId),
+      chatSessionId: trimString(entry.chatSessionId),
       laneId,
+      laneName: trimString(entry.laneName) ?? laneId,
       title: trimString(entry.title) ?? terminalId,
       goal: trimString(entry.goal),
       toolType: trimString(entry.toolType) as ChatTerminalSession["toolType"],
-      status: (trimString(entry.status) ?? "ended") as ChatTerminalSession["status"],
+      status: status as ChatTerminalSession["status"],
       runtimeState: (trimString(entry.runtimeState) ?? "idle") as ChatTerminalSession["runtimeState"],
+      active: typeof entry.active === "boolean" ? entry.active : status === "running",
       startedAt: trimString(entry.startedAt) ?? new Date(0).toISOString(),
       endedAt: trimString(entry.endedAt),
+      exitCode: typeof entry.exitCode === "number" && Number.isInteger(entry.exitCode) ? entry.exitCode : null,
+      pid: typeof entry.pid === "number" && Number.isInteger(entry.pid) ? entry.pid : null,
+      resumeCommand: trimString(entry.resumeCommand),
+      resumeMetadata: isRecord(entry.resumeMetadata) ? entry.resumeMetadata as ChatTerminalSession["resumeMetadata"] : null,
       lastOutputPreview: trimString(entry.lastOutputPreview),
       summary: trimString(entry.summary),
     }];
@@ -1017,6 +1030,7 @@ async function startRemoteBridge(attempt: RemoteRpcAttempt): Promise<RemoteBridg
     socket.pipe(child.stdin);
     child.stdout.pipe(socket);
   });
+  server.maxConnections = 1;
 
   await new Promise<void>((resolve, reject) => {
     const cleanup = (): void => {
