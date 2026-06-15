@@ -36,6 +36,17 @@ function hasUsableProviderConnection(
   return Boolean(connection?.authAvailable || connection?.runtimeAvailable);
 }
 
+export function hasLocalProviderConnectionSignal(
+  connection: AiProviderConnectionStatus | null | undefined,
+): boolean {
+  return Boolean(
+    connection?.authAvailable ||
+    connection?.usageAvailable ||
+    connection?.runtimeDetected ||
+    connection?.runtimeAvailable,
+  );
+}
+
 function hasUsableRuntimeConnection(
   connection: AiRuntimeConnectionStatus | null | undefined,
 ): boolean {

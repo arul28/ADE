@@ -5,6 +5,7 @@ import type {
   UsageProvider,
   UsageSnapshot,
 } from "../../../shared/types";
+import { hasLocalProviderConnectionSignal } from "../../lib/aiProviderStatus";
 import { cn } from "../ui/cn";
 import { UsageQuotaPanel } from "./UsageQuotaPanel";
 import { ClaudeLogo, CodexLogo } from "../terminals/ToolLogos";
@@ -262,7 +263,7 @@ export function HeaderUsageControl({
       return providersWithUsage;
     }
     const configuredProviders = TRACKED_PROVIDERS.filter(
-      (provider) => providerConnections[provider]?.usageAvailable || providerConnections[provider]?.authAvailable,
+      (provider) => hasLocalProviderConnectionSignal(providerConnections[provider]),
     );
     return configuredProviders.length > 0 ? configuredProviders : providersWithUsage;
   }, [providerConnections, snapshot?.windows]);

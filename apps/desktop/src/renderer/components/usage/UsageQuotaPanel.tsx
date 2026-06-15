@@ -10,6 +10,9 @@ import type {
   UsageSnapshot,
   UsageWindow,
 } from "../../../shared/types";
+import { hasLocalProviderConnectionSignal } from "../../lib/aiProviderStatus";
+import { providerChatAccent } from "../chat/chatSurfaceTheme";
+import { ClaudeLogo, CodexLogo } from "../terminals/ToolLogos";
 import { cn } from "../ui/cn";
 
 // How long cached numbers may sit before opening the popup quietly refreshes
@@ -20,7 +23,7 @@ const PROVIDER_ORDER: UsageProvider[] = ["claude", "codex"];
 
 const PROVIDER_META: Record<UsageProvider, { label: string; color: string }> = {
   claude: { label: "Claude", color: "#D97757" },
-  codex: { label: "Codex", color: "#5BC98C" },
+  codex: { label: "Codex", color: providerChatAccent("codex") ?? "#E7E5E4" },
   cursor: { label: "Cursor", color: "#00BFA5" },
 };
 
@@ -268,7 +271,7 @@ export function UsageQuotaPanel({
     if (!providerConnections) return PROVIDER_ORDER;
     return PROVIDER_ORDER.filter((provider) => {
       const conn = providerConnection(providerConnections, provider);
-      return conn?.runtimeDetected !== false;
+      return hasLocalProviderConnectionSignal(conn);
     });
   }, [providerConnections]);
 
@@ -500,7 +503,7 @@ function ProviderUsageCard({
     return (
       <div className="rounded-xl px-4 py-3.5 opacity-55" style={CARD_STYLE}>
         <div className="flex items-center justify-between gap-3">
-          <ProviderHeading color={meta.color} label={meta.label} dim />
+          <ProviderHeading provider={provider} color={meta.color} label={meta.label} dim />
           <span className="text-[11px] text-fg/45">{status?.message ?? "Not signed in"}</span>
         </div>
       </div>
@@ -521,7 +524,7 @@ function ProviderUsageCard({
   return (
     <div className="rounded-xl px-4 py-3.5" style={CARD_STYLE}>
       <div className="mb-3 flex items-center justify-between gap-3">
-        <ProviderHeading color={meta.color} label={meta.label} />
+        <ProviderHeading provider={provider} color={meta.color} label={meta.label} />
         {status?.state === "stale" ? (
           <span className="text-[10px] text-amber-300/70" title={status.message ?? "Showing last reading"}>
             stale
@@ -575,13 +578,35 @@ function ProviderUsageCard({
   );
 }
 
-function ProviderHeading({ color, label, dim }: { color: string; label: string; dim?: boolean }) {
+function ProviderHeading({
+  provider,
+  color,
+  label,
+  dim,
+}: {
+  provider: UsageProvider;
+  color: string;
+  label: string;
+  dim?: boolean;
+}) {
+  const Logo = provider === "claude" ? ClaudeLogo : provider === "codex" ? CodexLogo : null;
   return (
     <div className="flex items-center gap-2">
-      <span
-        className="h-2 w-2 shrink-0 rounded-full"
-        style={{ background: color, opacity: dim ? 0.5 : 1, boxShadow: dim ? undefined : `0 0 8px ${color}66` }}
-      />
+      {Logo ? (
+        <Logo
+          size={16}
+          className={cn(
+            "shrink-0",
+            provider === "codex" && "text-zinc-100",
+            dim && "opacity-55",
+          )}
+        />
+      ) : (
+        <span
+          className="h-2 w-2 shrink-0 rounded-full"
+          style={{ background: color, opacity: dim ? 0.5 : 1, boxShadow: dim ? undefined : `0 0 8px ${color}66` }}
+        />
+      )}
       <span className="text-[12.5px] font-semibold tracking-[-0.01em] text-fg">{label}</span>
     </div>
   );
@@ -604,7 +629,7 @@ function ExtraUsageCard({ extra, reducedMotion }: { extra: ExtraUsage; reducedMo
   return (
     <div className="rounded-xl px-4 py-3.5" style={CARD_STYLE}>
       <div className="flex items-center justify-between gap-3">
-        <ProviderHeading color={meta.color} label={`${meta.label} extra usage`} />
+        <ProviderHeading provider={extra.provider} color={meta.color} label={`${meta.label} extra usage`} />
         <span className="text-[11px] tabular-nums text-fg/70">
           {formatUsd(usedUsd)}
           {limitUsd > 0 ? <span className="text-fg/40"> / {formatUsd(limitUsd)}</span> : null}
