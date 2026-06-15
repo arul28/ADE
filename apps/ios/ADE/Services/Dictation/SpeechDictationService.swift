@@ -44,6 +44,7 @@ final class SpeechDictationService: ObservableObject {
   // MARK: - Published state
 
   @Published private(set) var isRecording = false
+  @Published private(set) var isStarting = false
   @Published private(set) var elapsedTime: TimeInterval = 0
   /// Normalized 0...1 input amplitude (RMS) for the waveform. 0 when idle.
   @Published private(set) var audioLevel: Float = 0
@@ -143,8 +144,10 @@ final class SpeechDictationService: ObservableObject {
   /// Begin capture + streaming transcription. Throws if unauthorized or the
   /// analyzer/audio session can't be configured.
   func start() async throws {
-    guard !isRecording else { return }
+    guard !isRecording, !isStarting else { return }
     guard Self.isAvailable else { throw DictationError.transcriptionUnavailable }
+    isStarting = true
+    defer { isStarting = false }
 
     if authorizationState != .authorized {
       let granted = await requestAuthorization()

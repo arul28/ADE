@@ -178,7 +178,7 @@ final class DictationController: ObservableObject, DictationActivityActionHandle
     /// Begin recording on behalf of the composer identified by `targetId`.
     /// No-ops if a recording is already in flight (only one at a time).
     func startRecording(targetId: String) async {
-        guard !service.isRecording, !isFinishing else { return }
+        guard !service.isRecording, !service.isStarting, !isFinishing else { return }
         activeTargetId = targetId
         refreshActiveTargetVisibility()
         do {
