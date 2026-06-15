@@ -14,6 +14,7 @@ const detectProjectLaunchContextMock = vi.hoisted(() =>
     laneHint: null,
     sessionHint: null,
     remote: false,
+    remoteLabel: null,
   })),
 );
 
@@ -61,6 +62,8 @@ describe("ade code CLI entrypoint", () => {
       "lane-1",
       "--session",
       "session-1",
+      "--remote-label",
+      "Mac Studio",
       "--socket",
       "tcp://127.0.0.1:43333",
       "--require-socket",
@@ -70,6 +73,7 @@ describe("ade code CLI entrypoint", () => {
       workspaceRoot: "/remote/project",
       laneHint: "lane-1",
       sessionHint: "session-1",
+      remoteLabel: "Mac Studio",
       socketPath: "tcp://127.0.0.1:43333",
       requireSocket: true,
     });

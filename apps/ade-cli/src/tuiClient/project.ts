@@ -48,6 +48,7 @@ export function detectProjectLaunchContext(args: {
   laneHint?: string | null;
   sessionHint?: string | null;
   remote?: boolean;
+  remoteLabel?: string | null;
 } = {}): ProjectLaunchContext {
   const launchCwd = normalizeRoot(args.cwd ?? process.cwd());
   const explicitProjectRoot = args.projectRoot?.trim();
@@ -87,6 +88,7 @@ export function detectProjectLaunchContext(args: {
     laneHint: args.laneHint?.trim() || worktree?.laneHint || null,
     sessionHint: args.sessionHint?.trim() || null,
     remote,
+    remoteLabel: args.remoteLabel?.trim() || null,
   };
 }
 

@@ -75,6 +75,37 @@ export function TokenBar({ percent }: { percent: number }) {
   );
 }
 
+// Pie-circle glyphs filling by quarter (0 / 25 / 50 / 75 / 100%).
+const CONTEXT_DIAL_GLYPHS = ["○", "◔", "◑", "◕", "●"] as const;
+
+/**
+ * Single-cell context-usage dial: a small circle that fills as the context window
+ * fills, mirroring the desktop's circular ring while costing one terminal column
+ * instead of the 10-cell {@link TokenBar}. Used in the composer footer to keep
+ * that row compact; the chat-info pane keeps the full bar. Same color escalation
+ * (violet → amber → red) and idle-cheap danger pulse as TokenBar.
+ */
+export function ContextDial({ percent }: { percent: number }) {
+  const safe = Math.max(0, Math.min(100, percent));
+  const idx = Math.min(
+    CONTEXT_DIAL_GLYPHS.length - 1,
+    Math.round((safe / 100) * (CONTEXT_DIAL_GLYPHS.length - 1)),
+  );
+  const color = tokenBarColor(safe);
+
+  // Pulse the glyph on context exhaustion, gated on the activity tick so it stays
+  // static (no re-render loop) when idle — same discipline as TokenBar.
+  const tick = useShimmerTick();
+  const pulseDanger = safe >= 95;
+  const pulseDim = pulseDanger && tick % 2 === 1;
+
+  return (
+    <Text color={color} dimColor={pulseDim} bold={pulseDanger && !pulseDim}>
+      {CONTEXT_DIAL_GLYPHS[idx]}
+    </Text>
+  );
+}
+
 /**
  * A single picker cell. When `focused` (and the parent row is focused), the
  * value is wrapped in `[brackets]` and tinted with the violet accent (or the
@@ -280,7 +311,7 @@ export function FooterControls({
             <Text color={theme.color.t4}>{"  "}</Text>
             {contextPercent != null ? (
               <>
-                <TokenBar percent={contextPercent} />
+                <ContextDial percent={contextPercent} />
                 <Text dimColor>{` ${contextPercent}%`}</Text>
               </>
             ) : null}

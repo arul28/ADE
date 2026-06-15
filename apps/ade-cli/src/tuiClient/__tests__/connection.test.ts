@@ -84,6 +84,7 @@ const project: ProjectLaunchContext = {
   laneHint: null,
   sessionHint: null,
   remote: false,
+  remoteLabel: null,
 };
 
 const originalArgv1 = process.argv[1];

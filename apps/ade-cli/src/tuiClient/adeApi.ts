@@ -131,6 +131,14 @@ const RESUMABLE_TERMINAL_TOOL_TYPES = new Set([
   "claude-orchestrated",
 ]);
 
+function isClaudeTerminalSession(session: ChatTerminalSession): boolean {
+  const toolType = session.toolType ?? "";
+  if (RESUMABLE_TERMINAL_TOOL_TYPES.has(toolType)) return true;
+  if (session.resumeMetadata?.provider === "claude") return true;
+  const resumeCommand = typeof session.resumeCommand === "string" ? session.resumeCommand.trim().toLowerCase() : "";
+  return Boolean(resumeCommand && /\bclaude\b/.test(resumeCommand));
+}
+
 export async function listTerminalSessions(
   connection: AdeCodeConnection,
   laneId?: string | null,
@@ -142,8 +150,7 @@ export async function listTerminalSessions(
   return sessions.filter((session) => {
     const toolType = session.toolType ?? "";
     if (CHAT_BACKED_TERMINAL_TOOL_TYPES.has(toolType)) return false;
-    return RESUMABLE_TERMINAL_TOOL_TYPES.has(toolType)
-      || session.resumeMetadata?.provider === "claude";
+    return isClaudeTerminalSession(session);
   });
 }
 

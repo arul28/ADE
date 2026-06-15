@@ -14,6 +14,7 @@ type CliOptions = {
   laneHint: string | null;
   sessionHint: string | null;
   socketPath: string | null;
+  remoteLabel: string | null;
   preferServiceRepair: boolean;
 };
 
@@ -37,6 +38,7 @@ export function parseArgs(argv: string[]): CliOptions {
     laneHint: null,
     sessionHint: null,
     socketPath: null,
+    remoteLabel: null,
     preferServiceRepair: false,
   };
   for (let i = 0; i < argv.length; i += 1) {
@@ -58,6 +60,9 @@ export function parseArgs(argv: string[]): CliOptions {
       i += 1;
     } else if (arg === "--session" || arg === "--chat") {
       options.sessionHint = readRequiredFlagValue(argv, i, arg);
+      i += 1;
+    } else if (arg === "--remote-label") {
+      options.remoteLabel = readRequiredFlagValue(argv, i, arg);
       i += 1;
     } else if (arg === "--socket") {
       options.socketPath = readRequiredFlagValue(argv, i, arg);
@@ -128,6 +133,7 @@ async function printState(options: CliOptions): Promise<void> {
     laneHint: options.laneHint,
     sessionHint: options.sessionHint,
     remote: options.remote,
+    remoteLabel: options.remoteLabel,
   });
   const connection = await connectToAde({
     project,
@@ -172,6 +178,7 @@ export async function runAdeCodeCli(argv: string[] = process.argv.slice(2)): Pro
     laneHint: options.laneHint,
     sessionHint: options.sessionHint,
     remote: options.remote,
+    remoteLabel: options.remoteLabel,
   });
   const instance = render(
     <AdeCodeApp

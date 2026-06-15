@@ -120,6 +120,7 @@ describe("AdeCodeApp polling", () => {
     laneHint: null,
     sessionHint: null,
     remote: false,
+    remoteLabel: null,
   };
 
   beforeEach(() => {

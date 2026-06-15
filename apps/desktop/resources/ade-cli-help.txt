@@ -10,9 +10,9 @@ _    ____  _____
 
   Agent-focused command-line interface for ADE.
 
-  ADE CLI commands operate through the machine ADE runtime daemon by default.
-  If the daemon is not running, the CLI starts it, registers the selected
-  project, and routes project actions through that runtime.
+  ADE CLI commands operate through the machine ADE brain by default.
+  The brain is the always-on ADE process for this machine: it owns the project
+  catalog, sync endpoint, and execution authority for the channel.
 
     $ ade help <command...>                         Display help for a command
     $ ade auth status                               Check local ADE CLI readiness
@@ -22,13 +22,14 @@ _    ____  _____
     $ ade link lane | session | branch | pr | linear-issue
                                                      Build a shareable deeplink (copies to clipboard)
     $ ade linear install                            Register ADE as Linear's "Open in coding tool" target
-    $ ade runtime start | stop | status             Manage the machine runtime daemon
-    $ ade serve                                     Run the ADE runtime daemon in foreground
+    $ ade skill list | show <name>                  Browse ADE's bundled agent skills (local)
+    $ ade brain start | stop | status               Manage the background ADE brain
+    $ ade runtime run --socket <path>               Run a manual runtime for dev/test work
     $ ade rpc --stdio                               Speak ADE JSON-RPC over stdin/stdout
-    $ ade init [path]                               Register a project with this machine runtime
+    $ ade init [path]                               Register a project with this machine brain
     $ ade projects list                             List projects registered on this machine
     $ ade sync status | pin generate                Manage machine sync and phone pairing
-    $ ade doctor                                    Inspect project, socket, runtime, and tool availability
+    $ ade doctor                                    Inspect project, brain, runtime, and tool availability
     $ ade lanes list | show | create | child        Work with lanes and lane stacks
     $ ade git status | commit | push | stash        Run ADE-aware git operations
     $ ade operations status | wait                  Poll operation/test/chat/run status
@@ -52,7 +53,8 @@ _    ____  _____
     $ ade macos-vm status | start | restart | wipe | install-runtime | set-credentials | get-credentials | storage | display-session | detach
                                                     Run ADE's singleton Apple silicon macOS VM
     $ ade browser open | tabs | screenshot         Use ADE's built-in browser pane
-    $ ade usage snapshot | refresh | budget         Read provider quota usage and edit automation guardrails
+    $ ade usage snapshot | refresh | budget         Read provider quota usage and budget guardrails
+    $ ade settings pr-transcript-gists enable      Attach ADE chat transcript links to new PRs
     $ ade settings action <method>                  Call project config actions
     $ ade update status | check | install | dismiss Read auto-update state and drive install
     $ ade actions list | run | status | wait        Escape hatch for every ADE service action
@@ -62,8 +64,8 @@ _    ____  _____
   Global options:
     --project-root <path>   ADE project root. Inside .ade/worktrees/<lane>, this resolves to the parent project.
     --workspace-root <path> Lane/worktree to treat as the active workspace.
-    --headless              Skip the runtime daemon and run an in-process ADE runtime.
-    --socket                Require a live ADE socket; fail instead of falling back to headless.
+    --headless              Skip the machine brain and run an in-process ADE runtime.
+    --socket                Require a live ADE endpoint; fail instead of falling back to headless.
     --json                  Print machine-readable JSON. This is the default output mode.
     --text                  Print a compact human-readable summary when a formatter exists.
     --timeout-ms <ms>       Per-request timeout. Long agent/PR workflows may need several minutes.
@@ -78,6 +80,7 @@ _    ____  _____
     $ ade git stage --lane <lane> src/index.ts
     $ ade git commit --lane <lane> -m "Fix login redirect"
     $ ade prs create --lane <lane> --base main --draft
+    $ ade prs checks <pr-id-or-number-or-url> --text
     $ ade proof record --seconds 20
     $ ade ios-sim apps --text
     $ ade ios-sim launch --target <id> --text
@@ -110,9 +113,9 @@ _    ____  _____
 
   Agent-focused command-line interface for ADE.
 
-  ADE CLI commands operate through the machine ADE runtime daemon by default.
-  If the daemon is not running, the CLI starts it, registers the selected
-  project, and routes project actions through that runtime.
+  ADE CLI commands operate through the machine ADE brain by default.
+  The brain is the always-on ADE process for this machine: it owns the project
+  catalog, sync endpoint, and execution authority for the channel.
 
     $ ade help <command...>                         Display help for a command
     $ ade auth status                               Check local ADE CLI readiness
@@ -122,13 +125,14 @@ _    ____  _____
     $ ade link lane | session | branch | pr | linear-issue
                                                      Build a shareable deeplink (copies to clipboard)
     $ ade linear install                            Register ADE as Linear's "Open in coding tool" target
-    $ ade runtime start | stop | status             Manage the machine runtime daemon
-    $ ade serve                                     Run the ADE runtime daemon in foreground
+    $ ade skill list | show <name>                  Browse ADE's bundled agent skills (local)
+    $ ade brain start | stop | status               Manage the background ADE brain
+    $ ade runtime run --socket <path>               Run a manual runtime for dev/test work
     $ ade rpc --stdio                               Speak ADE JSON-RPC over stdin/stdout
-    $ ade init [path]                               Register a project with this machine runtime
+    $ ade init [path]                               Register a project with this machine brain
     $ ade projects list                             List projects registered on this machine
     $ ade sync status | pin generate                Manage machine sync and phone pairing
-    $ ade doctor                                    Inspect project, socket, runtime, and tool availability
+    $ ade doctor                                    Inspect project, brain, runtime, and tool availability
     $ ade lanes list | show | create | child        Work with lanes and lane stacks
     $ ade git status | commit | push | stash        Run ADE-aware git operations
     $ ade operations status | wait                  Poll operation/test/chat/run status
@@ -152,7 +156,8 @@ _    ____  _____
     $ ade macos-vm status | start | restart | wipe | install-runtime | set-credentials | get-credentials | storage | display-session | detach
                                                     Run ADE's singleton Apple silicon macOS VM
     $ ade browser open | tabs | screenshot         Use ADE's built-in browser pane
-    $ ade usage snapshot | refresh | budget         Read provider quota usage and edit automation guardrails
+    $ ade usage snapshot | refresh | budget         Read provider quota usage and budget guardrails
+    $ ade settings pr-transcript-gists enable      Attach ADE chat transcript links to new PRs
     $ ade settings action <method>                  Call project config actions
     $ ade update status | check | install | dismiss Read auto-update state and drive install
     $ ade actions list | run | status | wait        Escape hatch for every ADE service action
@@ -162,8 +167,8 @@ _    ____  _____
   Global options:
     --project-root <path>   ADE project root. Inside .ade/worktrees/<lane>, this resolves to the parent project.
     --workspace-root <path> Lane/worktree to treat as the active workspace.
-    --headless              Skip the runtime daemon and run an in-process ADE runtime.
-    --socket                Require a live ADE socket; fail instead of falling back to headless.
+    --headless              Skip the machine brain and run an in-process ADE runtime.
+    --socket                Require a live ADE endpoint; fail instead of falling back to headless.
     --json                  Print machine-readable JSON. This is the default output mode.
     --text                  Print a compact human-readable summary when a formatter exists.
     --timeout-ms <ms>       Per-request timeout. Long agent/PR workflows may need several minutes.
@@ -178,6 +183,7 @@ _    ____  _____
     $ ade git stage --lane <lane> src/index.ts
     $ ade git commit --lane <lane> -m "Fix login redirect"
     $ ade prs create --lane <lane> --base main --draft
+    $ ade prs checks <pr-id-or-number-or-url> --text
     $ ade proof record --seconds 20
     $ ade ios-sim apps --text
     $ ade ios-sim launch --target <id> --text
@@ -210,9 +216,9 @@ _    ____  _____
 
   Agent-focused command-line interface for ADE.
 
-  ADE CLI commands operate through the machine ADE runtime daemon by default.
-  If the daemon is not running, the CLI starts it, registers the selected
-  project, and routes project actions through that runtime.
+  ADE CLI commands operate through the machine ADE brain by default.
+  The brain is the always-on ADE process for this machine: it owns the project
+  catalog, sync endpoint, and execution authority for the channel.
 
     $ ade help <command...>                         Display help for a command
     $ ade auth status                               Check local ADE CLI readiness
@@ -222,13 +228,14 @@ _    ____  _____
     $ ade link lane | session | branch | pr | linear-issue
                                                      Build a shareable deeplink (copies to clipboard)
     $ ade linear install                            Register ADE as Linear's "Open in coding tool" target
-    $ ade runtime start | stop | status             Manage the machine runtime daemon
-    $ ade serve                                     Run the ADE runtime daemon in foreground
+    $ ade skill list | show <name>                  Browse ADE's bundled agent skills (local)
+    $ ade brain start | stop | status               Manage the background ADE brain
+    $ ade runtime run --socket <path>               Run a manual runtime for dev/test work
     $ ade rpc --stdio                               Speak ADE JSON-RPC over stdin/stdout
-    $ ade init [path]                               Register a project with this machine runtime
+    $ ade init [path]                               Register a project with this machine brain
     $ ade projects list                             List projects registered on this machine
     $ ade sync status | pin generate                Manage machine sync and phone pairing
-    $ ade doctor                                    Inspect project, socket, runtime, and tool availability
+    $ ade doctor                                    Inspect project, brain, runtime, and tool availability
     $ ade lanes list | show | create | child        Work with lanes and lane stacks
     $ ade git status | commit | push | stash        Run ADE-aware git operations
     $ ade operations status | wait                  Poll operation/test/chat/run status
@@ -252,7 +259,8 @@ _    ____  _____
     $ ade macos-vm status | start | restart | wipe | install-runtime | set-credentials | get-credentials | storage | display-session | detach
                                                     Run ADE's singleton Apple silicon macOS VM
     $ ade browser open | tabs | screenshot         Use ADE's built-in browser pane
-    $ ade usage snapshot | refresh | budget         Read provider quota usage and edit automation guardrails
+    $ ade usage snapshot | refresh | budget         Read provider quota usage and budget guardrails
+    $ ade settings pr-transcript-gists enable      Attach ADE chat transcript links to new PRs
     $ ade settings action <method>                  Call project config actions
     $ ade update status | check | install | dismiss Read auto-update state and drive install
     $ ade actions list | run | status | wait        Escape hatch for every ADE service action
@@ -262,8 +270,8 @@ _    ____  _____
   Global options:
     --project-root <path>   ADE project root. Inside .ade/worktrees/<lane>, this resolves to the parent project.
     --workspace-root <path> Lane/worktree to treat as the active workspace.
-    --headless              Skip the runtime daemon and run an in-process ADE runtime.
-    --socket                Require a live ADE socket; fail instead of falling back to headless.
+    --headless              Skip the machine brain and run an in-process ADE runtime.
+    --socket                Require a live ADE endpoint; fail instead of falling back to headless.
     --json                  Print machine-readable JSON. This is the default output mode.
     --text                  Print a compact human-readable summary when a formatter exists.
     --timeout-ms <ms>       Per-request timeout. Long agent/PR workflows may need several minutes.
@@ -278,6 +286,7 @@ _    ____  _____
     $ ade git stage --lane <lane> src/index.ts
     $ ade git commit --lane <lane> -m "Fix login redirect"
     $ ade prs create --lane <lane> --base main --draft
+    $ ade prs checks <pr-id-or-number-or-url> --text
     $ ade proof record --seconds 20
     $ ade ios-sim apps --text
     $ ade ios-sim launch --target <id> --text
@@ -300,6 +309,66 @@ _    ____  _____
     $ ade actions run <domain.action> --input-json '{"key":"value"}'
 
   Start with: ade doctor --text
+
+## ade code --help
+_    ____  _____
+    / \  |  _ \| ____|
+   / _ \ | | | |  _|
+  / ___ \| |_| | |___
+ /_/   \_\____/|_____|
+
+  ADE Code
+
+  Launch the terminal-native ADE Work chat. It uses the same project lanes,
+  chat sessions, transcript state, and slash commands as desktop ADE, but it
+  does not require the desktop app to be running.
+
+    $ ade code                                      Start the TUI for the current project
+    $ ade code --print-state                       Smoke-test attach/embed state
+    $ ade code --embedded                          Force the embedded runtime fallback
+    $ ade code --require-socket                    Fail instead of starting an embedded runtime when no runtime endpoint exists
+    $ ade code --socket /tmp/ade.sock              Attach to a specific local endpoint
+    $ ade code --lane <id|name|branch>             Launch focused on a specific lane
+    $ ade code remote --target <machine> --project <project>
+                                                     Launch against a saved desktop remote machine
+    $ ade code remote session --target <machine> --project <project> --session <session>
+                                                     Open a specific remote chat or Claude terminal session
+    $ ade code remote --list-targets               List saved remote machines
+    $ ade --project-root <path> code                Launch against a specific ADE project
+
+  Keys:
+    ctrl-o        Open or focus lanes and chats
+    ctrl-p        Open or focus details
+    ctrl-g        Split chat: add another chat tile
+    ctrl-w        Split chat: close focused tile
+    tab           Split chat: cycle focused tile
+    shift-tab     Cycle pane focus
+    esc           Return or cancel the active pane
+    ?             Help when it is the first prompt character
+    /             Command palette
+
+## ade skill --help
+_    ____  _____
+    / \  |  _ \| ____|
+   / _ \ | | | |  _|
+  / ___ \| |_| | |___
+ /_/   \_\____/|_____|
+
+  ADE Skills
+
+  Browse ADE's bundled, version-locked agent skills directly from the bundled
+  resources. This is a local command that does NOT require the machine brain —
+  it is the tamper-proof backstop for agents that can't natively discover
+  ADE's skills.
+
+    $ ade skill list                                List bundled skills (JSON: name, description, path)
+    $ ade skill list --text                         One "name — description" line per skill
+    $ ade skill show <name>                         Print a skill's SKILL.md (JSON: name, description, content, path)
+    $ ade skill show <name> --text                  Print just the skill's markdown body
+
+  Flags:
+    --text          Human-readable output.
+    --json          Structured JSON output (default).
 
 ## ade lanes --help
 _    ____  _____
@@ -330,6 +399,7 @@ _    ____  _____
     $ ade lanes import --branch <branch>            Register an existing branch/worktree
     $ ade lanes archive <lane>                      Archive a lane in ADE
     $ ade lanes unarchive <lane>                    Restore an archived lane
+    $ ade lanes delete <lane> --force               Delete a lane and clean up its worktree
     $ ade lanes attach --path <worktree> --name <n> Attach an external worktree
     $ ade lanes reparent <lane> --parent <parent>   Move lane onto a new parent (runs git rebase)
     $ ade lanes reparent <lane> --parent <parent> --stack-base-branch <branch>
@@ -448,7 +518,7 @@ _    ____  _____
   Run tab
 
   Run tab commands mirror ADE process definitions and runtime state. They use
-  the machine runtime daemon when live process state is needed.
+  the machine ADE brain when live process state is needed.
 
     $ ade run defs --text                           List configured run commands
     $ ade run ps --lane <lane> --text               List process runtime state
@@ -508,9 +578,10 @@ _    ____  _____
   Work chats
 
   Chat commands use ADE agent chat sessions. Live provider-backed chat normally
-  requires an attached runtime because the daemon owns provider/session state.
+  requires an attached runtime because it owns provider/session state.
 
-    $ ade chat list --text                          List chat sessions
+    $ ade chat list --lane <lane> --text            List chat sessions
+    $ ade chat list --include-automation --no-archived --text
     $ ade chat create --lane <lane> --provider codex --model <model> [--fast]
     $ ade chat create --from-linear-issue ENG-431   Start a chat with an attached issue + kickoff (alias: --linear-issue-json)
     $ ade chat send <session> --text "next step"    Send a message
@@ -562,7 +633,7 @@ _    ____  _____
   Linear workflows
 
   Daemon bridge (for an agent running inside a tracked ADE CLI session):
-  these commands route over the ADE daemon to the desktop runtime, which holds
+  these commands route over the ADE runtime to the desktop runtime, which holds
   the Linear credentials — the CLI never needs a Linear token. When ADE launches
   an agent with an attached issue it injects $ADE_CHAT_SESSION_ID and
   $ADE_LINEAR_ISSUE_IDS, so the agent can read and write its issue with no ids.
@@ -595,6 +666,9 @@ _    ____  _____
     $ ade linear sync run                           Trigger a sync run
     $ ade linear sync queue --text                  List sync queue items
     $ ade linear sync resolve --queue-item <id> --action approve
+    $ ade linear ingress status --text              Show Linear ingress status
+    $ ade linear ingress start --text               Ensure Linear webhook and start relay ingress
+    $ ade linear ingress start-local --text         Start only the local Linear webhook listener
     $ ade linear route worker --input-json '{"issueId":"LIN-123","workerId":"worker-1"}'
     $ ade linear install                            Register ADE as the "Open in coding tool" target
     $ ade linear install --dry-run                  Preview the ~/.linear/coding-tools.json write
@@ -617,6 +691,12 @@ _    ____  _____
     $ ade automations run <id> [--lane <id>] [--dry-run]
     $ ade automations trigger <id> [--lane <id>]
                                                      Trigger a rule manually
+    $ ade automations ingress status [--text]        Show webhook gateway status
+    $ ade automations ingress start [--text]         Start the local webhook listener
+    $ ade automations ingress refresh [--text]       Re-detect Tailscale/gateway status
+    $ ade --role cto automations ingress set-url <https-url>
+                                                     Save the public gateway URL
+    $ ade --role cto automations ingress clear-url   Clear the public gateway URL
     $ ade automations runs [--rule <id>] [--status <s>] [--limit 50]
     $ ade automations run-show <runId> [--json]     Inspect a run
     $ ade automations example                       Print an example rule (stdout)
@@ -691,7 +771,7 @@ _    ____  _____
   Prefer screenshots/images, screen recordings, and browser captures/traces.
   Console logs are supporting diagnostics, not a replacement for visual proof.
   Local screenshot/video fallback is macOS-only and runs headless by default
-  unless --socket is explicitly requested. Runtime socket mode has the best
+  unless --socket is explicitly requested. Attached runtime mode has the best
   parity for shared proof state.
 
     $ ade proof status --text                       Show proof backend capabilities
@@ -713,7 +793,7 @@ _    ____  _____
 
   iOS simulator commands build, launch, mirror, inspect, and control the ADE
   drawer simulator. Aliases: `ade ios` and `ade simulator` route to the same
-  surface. For drawer/shared session state, prefer runtime socket mode
+  surface. For drawer/shared session state, prefer attached runtime mode
   (--socket) so launch/select/tap operate on the same long-lived ADE service.
   Launch opens Simulator by default and ADE shows it in the drawer. Optional
   simulator control tools enable tap, drag, type, and inspect actions.
@@ -743,6 +823,9 @@ _    ____  _____
     $ ade ios-sim inspect --x 120 --y 420 --text   Inspect a point in the simulator
     $ ade ios-sim preview-status --text           Xcode MCP readiness for Preview Lab
     $ ade ios-sim previews --source <file> --text  List nearby #Preview definitions
+    $ ade ios-sim preview-match --source <file>    Resolve best Preview Lab match
+    $ ade ios-sim preview-ensure --text            Open/wait for Xcode Preview Lab
+    $ ade ios-sim preview-current --text           Render preview for the selected simulator UI
     $ ade ios-sim preview-render --source <file>   Render a SwiftUI preview through Xcode MCP
 
   Live view:
@@ -828,7 +911,7 @@ _    ____  _____
   ADE browser
 
   Browser commands control ADE's project-scoped built-in browser pane. Use
-  desktop socket mode so CLI calls, chat link clicks, terminal localhost links,
+  desktop bridge mode so CLI calls, chat link clicks, terminal localhost links,
   and the Work sidebar share the browser for the active project only. Browser
   tabs, cookies, and storage are isolated between separate projects.
   The browser is project-scoped, not lane-scoped. Ownership is per tab/session:
@@ -837,15 +920,17 @@ _    ____  _____
   tab switching are passive view operations; use
   "browser claim --tab <tab-id> --lane <lane-id>" to claim an already-open tab.
   ADE-launched agents should list tabs first and use only a tab/session owned
-  by their current chat. If no owned tab exists, open a fresh owned tab; plain
-  "browser open <url>" does this automatically for ADE-launched agents unless
-  --active-tab or --tab is passed.
+  by their current chat. Plain "browser open <url>" reuses that owned tab for
+  ADE-launched agents and creates one only when none exists, without revealing
+  the Browser panel unless --panel is passed. Use --new-tab only when the task
+  truly needs another tab; --active-tab and --tab stay explicit.
 
   Tabs and navigation:
     $ ade --socket browser status --text           Show active tab and tab list
     $ ade --socket browser claim --lane <lane-id>  Attribute the active browser tab to a lane
     $ ade --socket browser panel --text            Open the Work sidebar Browser panel
     $ ade --socket browser open https://example.com --text
+    $ ade --socket browser open https://example.com --panel --text
     $ ade --socket browser open localhost:5173 --new-tab --text
     $ ade --socket browser open localhost:5173 --active-tab --text
     $ ade --socket browser open https://example.com --no-panel
@@ -898,9 +983,11 @@ _    ____  _____
 
   Flags:
     --url <url>          URL for panel/open/new-tab. Bare localhost gets http://.
-    --new-tab           Open navigation in a new tab instead of active tab.
+    --new-tab           Always open navigation in a new tab.
     --active-tab         Navigate the active tab; aliases: --current-tab, --same-tab.
     --background         Create a new tab without activating it.
+    --panel, --show-panel
+                         Reveal the Work sidebar Browser panel for this command.
     --no-panel           Keep the Work sidebar panel hidden; alias: --hidden.
     --tab, --tab-id <id> Target tab for switch/close/open/control/capture/claim.
     --browser-session <id>
@@ -944,9 +1031,9 @@ _    ____  _____
 
   Agent-focused command-line interface for ADE.
 
-  ADE CLI commands operate through the machine ADE runtime daemon by default.
-  If the daemon is not running, the CLI starts it, registers the selected
-  project, and routes project actions through that runtime.
+  ADE CLI commands operate through the machine ADE brain by default.
+  The brain is the always-on ADE process for this machine: it owns the project
+  catalog, sync endpoint, and execution authority for the channel.
 
     $ ade help <command...>                         Display help for a command
     $ ade auth status                               Check local ADE CLI readiness
@@ -956,13 +1043,14 @@ _    ____  _____
     $ ade link lane | session | branch | pr | linear-issue
                                                      Build a shareable deeplink (copies to clipboard)
     $ ade linear install                            Register ADE as Linear's "Open in coding tool" target
-    $ ade runtime start | stop | status             Manage the machine runtime daemon
-    $ ade serve                                     Run the ADE runtime daemon in foreground
+    $ ade skill list | show <name>                  Browse ADE's bundled agent skills (local)
+    $ ade brain start | stop | status               Manage the background ADE brain
+    $ ade runtime run --socket <path>               Run a manual runtime for dev/test work
     $ ade rpc --stdio                               Speak ADE JSON-RPC over stdin/stdout
-    $ ade init [path]                               Register a project with this machine runtime
+    $ ade init [path]                               Register a project with this machine brain
     $ ade projects list                             List projects registered on this machine
     $ ade sync status | pin generate                Manage machine sync and phone pairing
-    $ ade doctor                                    Inspect project, socket, runtime, and tool availability
+    $ ade doctor                                    Inspect project, brain, runtime, and tool availability
     $ ade lanes list | show | create | child        Work with lanes and lane stacks
     $ ade git status | commit | push | stash        Run ADE-aware git operations
     $ ade operations status | wait                  Poll operation/test/chat/run status
@@ -986,7 +1074,8 @@ _    ____  _____
     $ ade macos-vm status | start | restart | wipe | install-runtime | set-credentials | get-credentials | storage | display-session | detach
                                                     Run ADE's singleton Apple silicon macOS VM
     $ ade browser open | tabs | screenshot         Use ADE's built-in browser pane
-    $ ade usage snapshot | refresh | budget         Read provider quota usage and edit automation guardrails
+    $ ade usage snapshot | refresh | budget         Read provider quota usage and budget guardrails
+    $ ade settings pr-transcript-gists enable      Attach ADE chat transcript links to new PRs
     $ ade settings action <method>                  Call project config actions
     $ ade update status | check | install | dismiss Read auto-update state and drive install
     $ ade actions list | run | status | wait        Escape hatch for every ADE service action
@@ -996,8 +1085,8 @@ _    ____  _____
   Global options:
     --project-root <path>   ADE project root. Inside .ade/worktrees/<lane>, this resolves to the parent project.
     --workspace-root <path> Lane/worktree to treat as the active workspace.
-    --headless              Skip the runtime daemon and run an in-process ADE runtime.
-    --socket                Require a live ADE socket; fail instead of falling back to headless.
+    --headless              Skip the machine brain and run an in-process ADE runtime.
+    --socket                Require a live ADE endpoint; fail instead of falling back to headless.
     --json                  Print machine-readable JSON. This is the default output mode.
     --text                  Print a compact human-readable summary when a formatter exists.
     --timeout-ms <ms>       Per-request timeout. Long agent/PR workflows may need several minutes.
@@ -1012,6 +1101,7 @@ _    ____  _____
     $ ade git stage --lane <lane> src/index.ts
     $ ade git commit --lane <lane> -m "Fix login redirect"
     $ ade prs create --lane <lane> --base main --draft
+    $ ade prs checks <pr-id-or-number-or-url> --text
     $ ade proof record --seconds 20
     $ ade ios-sim apps --text
     $ ade ios-sim launch --target <id> --text

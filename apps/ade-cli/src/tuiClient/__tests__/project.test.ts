@@ -61,6 +61,7 @@ describe("chooseInitialLane", () => {
       laneHint: "work",
       sessionHint: "session-remote",
       remote: true,
+      remoteLabel: "Mac Studio",
     });
 
     expect(context.projectRoot).toBe("/remote/project");
@@ -68,6 +69,7 @@ describe("chooseInitialLane", () => {
     expect(context.laneHint).toBe("work");
     expect(context.sessionHint).toBe("session-remote");
     expect(context.remote).toBe(true);
+    expect(context.remoteLabel).toBe("Mac Studio");
   });
 
   it("prefers the ADE worktree lane hint", () => {

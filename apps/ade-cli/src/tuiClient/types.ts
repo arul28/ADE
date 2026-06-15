@@ -33,6 +33,7 @@ export type ProjectLaunchContext = {
   laneHint: string | null;
   sessionHint: string | null;
   remote: boolean;
+  remoteLabel: string | null;
 };
 
 export type ChatHistorySnapshot = AgentChatEventHistorySnapshot;

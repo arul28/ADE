@@ -13235,6 +13235,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           projectName={projectName}
           lane={activeLane}
           chatTitle={draftChatActive ? "New chat" : activeTerminalSession?.title ?? activeSession?.title ?? activeSession?.goal ?? activeSession?.summary ?? null}
+          remoteLabel={remoteLaunch ? project.remoteLabel ?? "remote" : null}
         />
         {goalBannerText ? (
           <Box paddingX={1} flexShrink={0}>

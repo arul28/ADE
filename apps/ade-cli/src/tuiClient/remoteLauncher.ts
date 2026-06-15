@@ -1,6 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import net, { type AddressInfo } from "node:net";
-import readline from "node:readline/promises";
+import readline from "node:readline";
+import readlinePromises from "node:readline/promises";
 import { RemoteTargetRegistry, normalizeRemoteTargetRoutes } from "../../../desktop/src/main/services/remoteRuntime/remoteTargetRegistry";
 import type {
   RemoteRuntimeProjectRecord,
@@ -191,33 +192,110 @@ async function promptChoice<T>(title: string, entries: T[], describe: (entry: T,
     if (entries.length === 1) return entries[0]!;
     throw new Error(`${title}: pass a flag to choose non-interactively.`);
   }
+  if (entries.length === 1) return entries[0]!;
 
-  process.stderr.write(`\n${title}\n`);
-  entries.forEach((entry, index) => {
-    process.stderr.write(`  ${index + 1}. ${describe(entry, index)}\n`);
-  });
+  return await promptInteractiveChoice(title, entries, describe);
+}
 
-  const rl = readline.createInterface({
-    input: process.stdin,
-    output: process.stderr,
-  });
-  try {
-    while (true) {
-      const answer = (await rl.question("Choose: ")).trim();
-      const selected = Number.parseInt(answer, 10);
-      if (Number.isInteger(selected) && selected >= 1 && selected <= entries.length) {
-        return entries[selected - 1]!;
-      }
-      process.stderr.write(`Enter a number from 1 to ${entries.length}.\n`);
+function terminalColumns(): number {
+  return Math.max(40, process.stderr.columns || 80);
+}
+
+function truncateLine(value: string, width: number): string {
+  if (value.length <= width) return value;
+  if (width <= 3) return value.slice(0, Math.max(0, width));
+  return `${value.slice(0, width - 3)}...`;
+}
+
+async function promptInteractiveChoice<T>(
+  title: string,
+  entries: T[],
+  describe: (entry: T, index: number) => string,
+): Promise<T> {
+  const input = process.stdin;
+  const output = process.stderr;
+  const wasRaw = Boolean(input.isRaw);
+  let selectedIndex = 0;
+  let scrollOffset = 0;
+  let renderedLines = 0;
+  const visibleRows = Math.min(12, entries.length);
+
+  const render = (): void => {
+    if (renderedLines > 0) {
+      output.write(`\x1b[${renderedLines}A`);
     }
-  } finally {
-    rl.close();
-  }
+    const width = terminalColumns();
+    if (selectedIndex < scrollOffset) scrollOffset = selectedIndex;
+    if (selectedIndex >= scrollOffset + visibleRows) scrollOffset = selectedIndex - visibleRows + 1;
+    const shown = entries.slice(scrollOffset, scrollOffset + visibleRows);
+    const lines = [
+      `${title} (${selectedIndex + 1}/${entries.length})`,
+      ...shown.map((entry, visibleIndex) => {
+        const index = scrollOffset + visibleIndex;
+        const prefix = index === selectedIndex ? "> " : "  ";
+        return `${prefix}${truncateLine(describe(entry, index), Math.max(8, width - prefix.length))}`;
+      }),
+      "up/down select | enter choose | esc cancel",
+    ];
+    output.write(lines.map((line) => `\x1b[2K${line}`).join("\n"));
+    output.write("\n");
+    renderedLines = lines.length;
+  };
+
+  return await new Promise<T>((resolve, reject) => {
+    const cleanup = (): void => {
+      input.off("keypress", onKeypress);
+      if (input.isTTY) input.setRawMode(wasRaw);
+      input.pause();
+    };
+
+    const finish = (entry: T): void => {
+      cleanup();
+      output.write("\n");
+      resolve(entry);
+    };
+
+    const fail = (error: Error): void => {
+      cleanup();
+      output.write("\n");
+      reject(error);
+    };
+
+    const onKeypress = (_value: string, key: { name?: string; ctrl?: boolean }): void => {
+      if (key.ctrl && key.name === "c") {
+        fail(new Error(`${title}: cancelled.`));
+        return;
+      }
+      if (key.name === "escape" || key.name === "q") {
+        fail(new Error(`${title}: cancelled.`));
+        return;
+      }
+      if (key.name === "return" || key.name === "enter") {
+        finish(entries[selectedIndex]!);
+        return;
+      }
+      if (key.name === "up") {
+        selectedIndex = (selectedIndex - 1 + entries.length) % entries.length;
+        render();
+        return;
+      }
+      if (key.name === "down" || key.name === "tab") {
+        selectedIndex = (selectedIndex + 1) % entries.length;
+        render();
+      }
+    };
+
+    readline.emitKeypressEvents(input);
+    if (input.isTTY) input.setRawMode(true);
+    input.resume();
+    input.on("keypress", onKeypress);
+    render();
+  });
 }
 
 async function promptText(title: string): Promise<string> {
   if (!canPrompt()) throw new Error(`${title}: pass --project <remote-path> non-interactively.`);
-  const rl = readline.createInterface({
+  const rl = readlinePromises.createInterface({
     input: process.stdin,
     output: process.stderr,
   });
@@ -286,6 +364,13 @@ function normalizeRemoteRuntimeChannel(value: unknown): "alpha" | "beta" | null 
   return null;
 }
 
+function inferRemoteRuntimeChannelFromVersion(version: string | null | undefined): "alpha" | "beta" | null {
+  const normalized = version?.trim().toLowerCase() ?? "";
+  if (normalized.includes("alpha")) return "alpha";
+  if (normalized.includes("beta")) return "beta";
+  return null;
+}
+
 function remoteRuntimeLayoutForChannel(channel: "alpha" | "beta" | null): RemoteRuntimeLayout {
   const homeDirName = channel === "alpha"
     ? ".ade-alpha"
@@ -304,9 +389,12 @@ function remoteRuntimeLayoutForChannel(channel: "alpha" | "beta" | null): Remote
   };
 }
 
-function remoteRuntimeLayoutCandidates(env: NodeJS.ProcessEnv = process.env): RemoteRuntimeLayout[] {
+export function remoteRuntimeLayoutCandidates(
+  env: NodeJS.ProcessEnv = process.env,
+  preferredChannel: "alpha" | "beta" | null = normalizeRemoteRuntimeChannel(env.ADE_PACKAGE_CHANNEL),
+): RemoteRuntimeLayout[] {
   const channels = [
-    normalizeRemoteRuntimeChannel(env.ADE_PACKAGE_CHANNEL),
+    preferredChannel,
     null,
     "beta" as const,
     "alpha" as const,
@@ -330,8 +418,8 @@ export function buildRemoteRuntimeRpcCommand(layout: RemoteRuntimeLayout, binary
   ];
   if (layout.channel) {
     exports.push(`export ADE_PACKAGE_CHANNEL="${layout.channel}"`);
-    exports.push("export ADE_DISABLE_RUNTIME_SERVICE_INSTALL=1");
   }
+  exports.push("export ADE_DISABLE_RUNTIME_SERVICE_INSTALL=1");
   return [
     ...exports,
     "ADE_RUNTIME_ARCH=\"$(node -p 'process.platform + \"-\" + process.arch' 2>/dev/null || true)\"",
@@ -367,8 +455,11 @@ function buildSshArgs(target: RemoteRuntimeTarget, route: RemoteRuntimeTargetRou
 function remoteRpcAttempts(target: RemoteRuntimeTarget): RemoteRpcAttempt[] {
   const attempts: RemoteRpcAttempt[] = [];
   const seen = new Set<string>();
+  const preferredChannel =
+    inferRemoteRuntimeChannelFromVersion(target.runtimeBinaryVersion) ??
+    normalizeRemoteRuntimeChannel(process.env.ADE_PACKAGE_CHANNEL);
   for (const route of targetRoutes(target)) {
-    for (const layout of remoteRuntimeLayoutCandidates()) {
+    for (const layout of remoteRuntimeLayoutCandidates(process.env, preferredChannel)) {
       const commands = [
         buildRemoteRuntimeRpcCommand(layout, layout.binaryExpr),
         buildRemoteRuntimeRpcCommand(layout, "ade"),
@@ -651,6 +742,29 @@ async function callProjectAction<T>(
   return (isRecord(payload) && "result" in payload ? payload.result : payload) as T;
 }
 
+async function callProjectActionArgsList<T>(
+  client: ProcessJsonRpcClient,
+  projectId: string,
+  domain: string,
+  action: string,
+  argsList: unknown[],
+): Promise<T> {
+  const payload = await withTimeout(
+    client.request("ade/actions/call", {
+      projectId,
+      name: "run_ade_action",
+      arguments: { domain, action, argsList },
+    }),
+    REMOTE_RPC_TIMEOUT_MS,
+    `Timed out running ${domain}.${action} on the remote project.`,
+  );
+  if (isRecord(payload) && payload.ok === false) {
+    const message = isRecord(payload.error) ? trimString(payload.error.message) : null;
+    throw new Error(message ?? `Remote action failed: ${domain}.${action}`);
+  }
+  return (isRecord(payload) && "result" in payload ? payload.result : payload) as T;
+}
+
 function coerceChatSessions(value: unknown): AgentChatSessionSummary[] {
   if (!Array.isArray(value)) return [];
   return value.flatMap((entry) => {
@@ -724,7 +838,9 @@ function isTerminalSessionLaunchable(session: ChatTerminalSession): boolean {
     return false;
   }
   if (toolType === "claude" || toolType === "claude-orchestrated") return true;
-  return isRecord(session.resumeMetadata) && session.resumeMetadata.provider === "claude";
+  if (isRecord(session.resumeMetadata) && session.resumeMetadata.provider === "claude") return true;
+  const resumeCommand = typeof session.resumeCommand === "string" ? session.resumeCommand.trim().toLowerCase() : "";
+  return Boolean(resumeCommand && /\bclaude\b/.test(resumeCommand));
 }
 
 function chatToChoice(session: AgentChatSessionSummary): RemoteSessionChoice {
@@ -739,10 +855,32 @@ function chatToChoice(session: AgentChatSessionSummary): RemoteSessionChoice {
   };
 }
 
-async function listRemoteSessions(client: ProcessJsonRpcClient, projectId: string): Promise<RemoteSessionChoice[]> {
-  const chats = coerceChatSessions(await callProjectAction(client, projectId, "chat", "listSessions", {
+async function listRemoteChatSessions(client: ProcessJsonRpcClient, projectId: string): Promise<AgentChatSessionSummary[]> {
+  const args = {
     includeArchived: false,
-  }).catch(() => []));
+    includeAutomation: true,
+  };
+  try {
+    return coerceChatSessions(await callProjectAction(client, projectId, "chat", "listSessions", args));
+  } catch {
+    // Older remote action adapters called the positional chat service API with
+    // the object args as laneId. Retry through run_ade_action's positional
+    // argsList form so stale-but-compatible runtimes still expose ADE chats.
+    return coerceChatSessions(await callProjectActionArgsList(client, projectId, "chat", "listSessions", [
+      null,
+      args,
+    ]));
+  }
+}
+
+export async function listRemoteSessions(client: ProcessJsonRpcClient, projectId: string): Promise<RemoteSessionChoice[]> {
+  const chats = await listRemoteChatSessions(client, projectId).catch((error) => {
+    if (canPrompt()) {
+      const message = error instanceof Error ? error.message : String(error);
+      process.stderr.write(`Remote ADE chats unavailable: ${message}\n`);
+    }
+    return [];
+  });
   const terminals = coerceTerminalSessions(await callProjectAction(client, projectId, "terminal", "list", {
     limit: 200,
   }).catch(() => []));
@@ -987,6 +1125,8 @@ export async function runAdeCodeRemote(argv: string[], runAdeCodeCli: RunAdeCode
       bridge.socketUrl,
       "--require-socket",
       "--remote",
+      "--remote-label",
+      target.name,
       ...(session?.laneId ? ["--lane", session.laneId] : []),
       ...(session?.sessionId ? ["--session", session.sessionId] : []),
     ]);

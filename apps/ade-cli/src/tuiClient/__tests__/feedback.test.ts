@@ -88,6 +88,7 @@ describe("ADE Code feedback helpers", () => {
       laneHint: null,
       sessionHint: null,
       remote: false,
+      remoteLabel: null,
     }, lane());
     const fields = feedbackFormFields(environment);
 
