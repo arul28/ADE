@@ -16948,7 +16948,12 @@ export function createAgentChatService(args: {
       // Lightweight side-jobs (auto-title / lane-naming) get no settingSources, and the
       // SDK loads all MCP sources when unconstrained — so keep them lean with
       // strictMcpConfig (ignores on-disk .mcp.json / user MCP), preserving prior behavior.
-      ...(lightweight ? { strictMcpConfig: true } : {}),
+      // Orchestration LEAD sessions are read-only planners (their direct Claude tools are
+      // denied below); isolate their MCP the same way so user/project MCP servers can't
+      // hand a draft lead (no bundle yet → orchestration block skipped) tool capability
+      // back. Workers/validators do real work and keep user MCP. strictMcpConfig still
+      // permits the programmatic orchestration MCP server added below for bundled leads.
+      ...((lightweight || isOrchestrationLeadSession(managed.session)) ? { strictMcpConfig: true } : {}),
       settings: {
         outputStyle,
         enabledPlugins: CLAUDE_SESSION_DISABLED_PLUGINS,

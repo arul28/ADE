@@ -2454,6 +2454,10 @@ describe("createAgentChatService", () => {
 
       const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as any;
       expect(opts?.mcpServers?.["ade-orchestration"]).toBeUndefined();
+      // Regression guard (removed base MCP lock): a draft lead has no managed MCP block
+      // yet, so strictMcpConfig must isolate it — user/project MCP servers must not restore
+      // tool capability the read-only lead is denied.
+      expect(opts?.strictMcpConfig).toBe(true);
       expect(opts?.disallowedTools).toEqual(expect.arrayContaining([
         "Agent",
         "Bash",
@@ -2491,6 +2495,9 @@ describe("createAgentChatService", () => {
       });
 
       const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as any;
+      // Role-marked lead (no interactionMode, no bundle) is still a read-only lead, so it
+      // must be MCP-isolated too (regression guard for the removed base MCP lock).
+      expect(opts?.strictMcpConfig).toBe(true);
       expect(opts?.disallowedTools).toEqual(expect.arrayContaining([
         "Agent",
         "Bash",
