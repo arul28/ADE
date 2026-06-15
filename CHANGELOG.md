@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.4] - 2026-06-15
+
+### Added
+
+- On-device voice dictation in the chat composer on desktop (bundled whisper.cpp base.en) and iOS (on-device SpeechAnalyzer), with an inline recording pill, deterministic cleanup, and a Settings toggle.
+- Mobile project actions over sync: add and switch projects from iOS, including remote add-project flows.
+- Project icon thumbnails in the mobile project picker, delivered over sync.
+
+### Changed
+
+- Mobile chat surfaces token and context usage, preserves runtime-mode state across sessions, and tightens transcript streaming edge cases.
+
+### Fixed
+
+- Usage panel provider status: correct Claude and Codex logos, provider status warmed before a project opens, and no-project CLI detection aligned with settings.
+
 ## [1.2.3] - 2026-06-13
 
 ### Fixed
@@ -368,7 +384,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.3...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.4...HEAD
+[1.2.4]: https://github.com/arul28/ADE/compare/v1.2.3...v1.2.4
 [1.2.3]: https://github.com/arul28/ADE/compare/v1.2.2...v1.2.3
 [1.2.2]: https://github.com/arul28/ADE/compare/v1.2.1...v1.2.2
 [1.2.1]: https://github.com/arul28/ADE/compare/v1.2.0...v1.2.1
