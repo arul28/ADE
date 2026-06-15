@@ -187,6 +187,26 @@ describe("aggregateChatBlocks typed groups", () => {
     expect(blocks[0]).toMatchObject({ kind: "compaction", live: false, trigger: "auto", preTokens: 120_000 });
   });
 
+  it("collapses cross-turn context_compact completion into the live compaction block", () => {
+    const events: AgentChatEventEnvelope[] = [
+      env("2026-01-01T12:00:00.000Z", { type: "context_compact", trigger: "auto", state: "started", turnId: "turn-1" }),
+      env("2026-01-01T12:00:02.000Z", { type: "context_compact", trigger: "manual", state: "completed", preTokens: 120_000, turnId: "turn-2" }),
+    ];
+    const blocks = aggregate(events).filter((b) => b.kind === "compaction");
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0]).toMatchObject({ kind: "compaction", live: false, trigger: "manual", preTokens: 120_000 });
+  });
+
+  it("collapses cross-turn codex compaction completion into the live compaction block", () => {
+    const events: AgentChatEventEnvelope[] = [
+      env("2026-01-01T12:00:00.000Z", { type: "codex_context_compaction", trigger: "auto", state: "started", turnId: "turn-1" }),
+      env("2026-01-01T12:00:02.000Z", { type: "codex_context_compaction", trigger: "auto", state: "completed", turnId: "turn-2" }),
+    ];
+    const blocks = aggregate(events).filter((b) => b.kind === "compaction");
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0]).toMatchObject({ kind: "compaction", live: false, trigger: "auto" });
+  });
+
   it("renders a context_compact begin as a live (in-progress) compaction block", () => {
     const events: AgentChatEventEnvelope[] = [
       env("2026-01-01T12:00:00.000Z", { type: "context_compact", trigger: "manual", state: "started", turnId: "turn-1" }),

@@ -339,6 +339,19 @@ function findLastBlock<K extends AggregatedBlock["kind"]>(
   return null;
 }
 
+function findCompactionBlockForCompletion(
+  blocks: AggregatedBlock[],
+  turnId: string | null,
+): Extract<AggregatedBlock, { kind: "compaction" }> | null {
+  const exact = findLastBlock(blocks, "compaction", turnId);
+  if (exact) return exact;
+  for (let index = blocks.length - 1; index >= 0; index -= 1) {
+    const candidate = blocks[index]!;
+    if (candidate.kind === "compaction" && candidate.live) return candidate;
+  }
+  return null;
+}
+
 function isLiveTurnBlock(
   block: AggregatedBlock,
 ): block is Extract<AggregatedBlock, { kind: "tool-calls-group" | "files-changed-group" | "runtime-activity" | "plan" | "compaction" | "reasoning" }> {
@@ -795,7 +808,7 @@ export function aggregateChatBlocks(args: {
       // Runtimes that expose a begin signal send state:"started" then "completed";
       // flip the existing block live→done on completion instead of stacking a second
       // block. Legacy/completion-only sources omit state and render as done.
-      const existing = event.state ? findLastBlock(blocks, "compaction", turnId) : null;
+      const existing = event.state === "completed" ? findCompactionBlockForCompletion(blocks, turnId) : null;
       if (existing && event.state === "completed") {
         existing.live = false;
         existing.trigger = event.trigger;
@@ -813,7 +826,7 @@ export function aggregateChatBlocks(args: {
       continue;
     }
     if (event.type === "codex_context_compaction") {
-      const existing = findLastBlock(blocks, "compaction", turnId);
+      const existing = event.state === "completed" ? findCompactionBlockForCompletion(blocks, turnId) : null;
       if (existing && event.state === "completed") {
         existing.live = false;
         existing.trigger = event.trigger;
