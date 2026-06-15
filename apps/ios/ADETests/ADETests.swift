@@ -336,7 +336,7 @@ final class ADETests: XCTestCase {
   func testMobileRuntimeModeOptionsMirrorDesktopAndTuiProviders() {
     XCTAssertEqual(workRuntimeModeOptions(provider: "claude").map(\.id), ["default", "auto", "edit", "plan", "full-auto"])
     XCTAssertEqual(workRuntimeModeOptions(provider: "codex").map(\.id), ["default", "edit", "plan", "full-auto", "config-toml"])
-    XCTAssertEqual(workRuntimeModeOptions(provider: "opencode").map(\.id), ["default", "plan", "edit", "full-auto", "config-toml"])
+    XCTAssertEqual(workRuntimeModeOptions(provider: "opencode").map(\.id), ["plan", "edit", "full-auto", "config-toml"])
     XCTAssertEqual(workRuntimeModeOptions(provider: "cursor").map(\.id), ["default", "plan", "edit", "full-auto"])
     XCTAssertEqual(workRuntimeModeOptions(provider: "droid").map(\.id), ["read-only", "auto-low", "auto-medium", "auto-high", "agi"])
 
@@ -353,6 +353,15 @@ final class ADETests: XCTestCase {
     let cursorAsk = workRuntimeWireFields(provider: "cursor", mode: "edit")
     XCTAssertEqual(cursorAsk.permissionMode, "edit")
     XCTAssertEqual(cursorAsk.cursorModeId, "ask")
+
+    let opencodeLegacyDefault = workRuntimeWireFields(provider: "opencode", mode: "default")
+    XCTAssertEqual(opencodeLegacyDefault.permissionMode, "edit")
+    XCTAssertEqual(opencodeLegacyDefault.opencodePermissionMode, "edit")
+    XCTAssertEqual(workInitialRuntimeMode(makeAgentChatSessionSummary(
+      provider: "opencode",
+      status: "active",
+      permissionMode: "default"
+    )), "edit")
 
     let droidHigh = workRuntimeWireFields(provider: "droid", mode: "auto-high")
     XCTAssertEqual(droidHigh.permissionMode, "full-auto")
@@ -10652,7 +10661,9 @@ final class ADETests: XCTestCase {
     awaitingInput: Bool? = nil,
     archivedAt: String? = nil,
     lastActivityAt: String = recentIso8601Fixture(),
-    pendingInputItemId: String? = nil
+    pendingInputItemId: String? = nil,
+    permissionMode: String? = nil,
+    opencodePermissionMode: String? = nil
   ) -> AgentChatSessionSummary {
     AgentChatSessionSummary(
       sessionId: sessionId,
@@ -10667,13 +10678,13 @@ final class ADETests: XCTestCase {
       codexFastMode: nil,
       fastMode: nil,
       executionMode: nil,
-      permissionMode: nil,
+      permissionMode: permissionMode,
       interactionMode: nil,
       claudePermissionMode: nil,
       codexApprovalPolicy: nil,
       codexSandbox: nil,
       codexConfigSource: nil,
-      opencodePermissionMode: nil,
+      opencodePermissionMode: opencodePermissionMode,
       droidPermissionMode: nil,
       cursorModeSnapshot: nil,
       cursorModeId: nil,

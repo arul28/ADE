@@ -466,7 +466,6 @@ func workRuntimeModeOptions(provider: String) -> [WorkRuntimeModeOption] {
     ]
   case "opencode":
     return [
-      WorkRuntimeModeOption(id: "default", title: "Ask"),
       WorkRuntimeModeOption(id: "plan", title: "Plan"),
       WorkRuntimeModeOption(id: "edit", title: "Edit"),
       WorkRuntimeModeOption(id: "full-auto", title: "Allow"),
@@ -516,7 +515,7 @@ func workRuntimeModeLabel(provider: String, mode: String) -> String {
     case "edit": return "Edit"
     case "full-auto": return "Allow"
     case "config-toml": return "Config"
-    default: return "Ask"
+    default: return "Edit"
     }
   case "cursor":
     switch mode {
@@ -628,8 +627,9 @@ func workRuntimeWireFields(provider: String, mode: String) -> WorkRuntimeWireFie
       fields.permissionMode = "default"
     }
   case "opencode":
-    fields.opencodePermissionMode = mode
-    fields.permissionMode = mode
+    let normalizedMode = workNormalizedOpenCodeRuntimeMode(mode)
+    fields.opencodePermissionMode = normalizedMode
+    fields.permissionMode = normalizedMode
   case "cursor":
     let normalizedMode = mode.isEmpty ? "default" : mode
     switch normalizedMode {
@@ -721,7 +721,7 @@ func workInitialRuntimeMode(_ summary: AgentChatSessionSummary) -> String {
     }
     return "default"
   case "opencode":
-    return summary.opencodePermissionMode ?? summary.permissionMode ?? "edit"
+    return workNormalizedOpenCodeRuntimeMode(summary.opencodePermissionMode ?? summary.permissionMode)
   case "cursor":
     switch summary.cursorModeId ?? workCursorCurrentModeId(summary.cursorModeSnapshot) {
     case "plan": return "plan"
@@ -736,6 +736,15 @@ func workInitialRuntimeMode(_ summary: AgentChatSessionSummary) -> String {
     ) ?? "auto-low"
   default:
     return ""
+  }
+}
+
+func workNormalizedOpenCodeRuntimeMode(_ mode: String?) -> String {
+  switch mode {
+  case "plan", "edit", "full-auto", "config-toml":
+    return mode ?? "edit"
+  default:
+    return "edit"
   }
 }
 

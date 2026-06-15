@@ -335,7 +335,7 @@ private func workRuntimeModeSubtitle(provider: String, mode: String) -> String {
     case "edit": return "Allow edits; ask for the rest."
     case "full-auto": return "Allow configured OpenCode tools."
     case "config-toml": return "Use OpenCode config."
-    default: return "Ask before tool actions."
+    default: return "Allow edits; ask for the rest."
     }
   case "cursor":
     switch mode {
