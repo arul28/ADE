@@ -1,0 +1,24 @@
+---
+title: "v1.2.4"
+description: "Release notes for ADE v1.2.4 - June 15, 2026"
+---
+
+v1.2.4 adds on-device voice dictation to the prompt box on both desktop and iOS, and ships the mobile companion work: project actions over sync, steadier chat, and project icon thumbnails in the picker.
+
+---
+
+## Desktop
+
+- **Voice dictation.** A mic button now sits beside send in the chat composer. Recording shows an inline pill with a live waveform and timer; finishing transcribes on-device with a bundled `whisper.cpp` base.en model, cleans the text deterministically, and inserts it at the cursor (also copied to the clipboard). Toggle it from Settings; the model ships with the app and arrives on existing installs through the auto-updater.
+- **Usage panel provider status.** The usage panel now uses the Claude and Codex logos and the Codex chat accent, warms global provider status before a project opens, and aligns no-project CLI detection with the settings provider status — so provider state reads correctly on a cold start.
+- **Mobile project thumbnails.** A shared project-icon thumbnail resolver feeds both desktop-hosted and CLI brain mobile project summaries, so the mobile picker shows real project icons.
+- **Mobile sync hardening.** The host brain now serves mobile project actions over sync (add, switch) with headless fallback handling, and keeps ephemeral stdio runtimes from trying to own mobile sync.
+
+---
+
+## iOS
+
+- **Voice dictation.** Dictation comes to the mobile composer with the same mic-and-pill flow. Transcription runs fully on-device via SpeechAnalyzer, with a deterministic cleanup pass plus an optional, non-blocking on-device polish on supported hardware. A Live Activity surfaces an active recording, and the feature can be toggled in Settings.
+- **Chat stability.** Mobile chat now surfaces token and context usage, preserves runtime-mode state across sessions, aligns OpenCode runtime modes and fast-mode model selection, and tightens transcript streaming edge cases.
+- **Project actions over sync.** Add and switch projects directly from iOS, including remote add-project flows, with hardening against duplicate submissions and mid-switch races.
+- **Project thumbnails.** The project picker shows project icon thumbnails delivered over sync.

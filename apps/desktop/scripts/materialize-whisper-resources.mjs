@@ -18,6 +18,13 @@ const downloadTimeoutMs =
   Number.isFinite(configuredDownloadTimeoutMs) && configuredDownloadTimeoutMs > 0
     ? configuredDownloadTimeoutMs
     : 120_000;
+const configuredDownloadAttempts = Number.parseInt(process.env.ADE_WHISPER_DOWNLOAD_RETRIES ?? "", 10);
+// Large model + binary fetches over CDNs (HuggingFace xet-bridge, GitHub) hit
+// transient stalls; a single ETIMEDOUT must NOT sink a 20-minute release run.
+const maxDownloadAttempts =
+  Number.isFinite(configuredDownloadAttempts) && configuredDownloadAttempts > 0
+    ? configuredDownloadAttempts
+    : 4;
 const universalDarwinArchs = ["arm64", "x86_64"];
 
 // ───────────────────────────────────────────────────────────────────────────
@@ -158,6 +165,55 @@ async function downloadFile(url, destinationPath, redirectsRemaining = maxDownlo
   }
 }
 
+function isRetryableDownloadError(error) {
+  const code = typeof error?.code === "string" ? error.code : "";
+  const message = error instanceof Error ? error.message : String(error);
+  const retryableCodes = [
+    "ETIMEDOUT",
+    "ECONNRESET",
+    "ECONNREFUSED",
+    "ENOTFOUND",
+    "EAI_AGAIN",
+    "EPIPE",
+    "ENETUNREACH",
+    "ENETDOWN",
+    "EHOSTUNREACH",
+    "UND_ERR_SOCKET",
+  ];
+  if (retryableCodes.includes(code)) return true;
+  // Transient HTTP statuses (429 + 5xx) and generic socket/timeout failures.
+  return /ETIMEDOUT|ECONNRESET|socket hang up|aborted|Timed out|Download aborted|HTTP (?:429|5\d\d)/i.test(message);
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// Retry the whole download (redirects included) on transient network failures.
+// Non-retryable errors (e.g. HTTP 404) throw immediately.
+async function downloadWithRetry(url, destinationPath) {
+  let lastError;
+  for (let attempt = 1; attempt <= maxDownloadAttempts; attempt += 1) {
+    try {
+      await downloadFile(url, destinationPath);
+      return;
+    } catch (error) {
+      lastError = error;
+      const message = error instanceof Error ? error.message : String(error);
+      if (!isRetryableDownloadError(error) || attempt === maxDownloadAttempts) {
+        throw error;
+      }
+      const backoffMs = Math.min(30_000, 2_000 * 2 ** (attempt - 1));
+      console.warn(
+        `[whisper-resources] Download attempt ${attempt}/${maxDownloadAttempts} failed (${message}); ` +
+          `retrying in ${Math.round(backoffMs / 1000)}s`,
+      );
+      await sleep(backoffMs);
+    }
+  }
+  throw lastError;
+}
+
 async function materializeModel() {
   const modelPath = path.join(whisperRoot, MODEL_BASENAME);
   if (await pathExists(modelPath)) {
@@ -165,7 +221,7 @@ async function materializeModel() {
     return;
   }
   console.log(`[whisper-resources] Downloading ${MODEL_BASENAME} from ${redactUrl(MODEL_URL)}`);
-  await downloadFile(MODEL_URL, modelPath);
+  await downloadWithRetry(MODEL_URL, modelPath);
   console.log(`[whisper-resources] Downloaded model -> ${modelPath}`);
 }
 
@@ -217,15 +273,30 @@ async function buildBinaryFromSource(binaryPath, target) {
   console.log(
     `[whisper-resources] Building self-contained whisper.cpp ${WHISPER_SRC_REF} for ${target} (static, CPU)`,
   );
-  await spawnStep("git", [
-    "clone",
-    "--depth",
-    "1",
-    "--branch",
-    WHISPER_SRC_REF,
-    WHISPER_SRC_REPO,
-    srcDir,
-  ]);
+  for (let attempt = 1; attempt <= maxDownloadAttempts; attempt += 1) {
+    try {
+      await spawnStep("git", [
+        "clone",
+        "--depth",
+        "1",
+        "--branch",
+        WHISPER_SRC_REF,
+        WHISPER_SRC_REPO,
+        srcDir,
+      ]);
+      break;
+    } catch (error) {
+      await fs.rm(srcDir, { recursive: true, force: true });
+      if (attempt === maxDownloadAttempts) throw error;
+      const backoffMs = Math.min(30_000, 2_000 * 2 ** (attempt - 1));
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(
+        `[whisper-resources] whisper.cpp clone attempt ${attempt}/${maxDownloadAttempts} failed (${message}); ` +
+          `retrying in ${Math.round(backoffMs / 1000)}s`,
+      );
+      await sleep(backoffMs);
+    }
+  }
 
   const cmakeConfigureArgs = [
     "-S",
@@ -303,7 +374,7 @@ async function materializeBinary() {
   }
   if (spec.url) {
     console.log(`[whisper-resources] Downloading whisper.cpp CLI for ${spec.target} from ${redactUrl(spec.url)}`);
-    await downloadFile(spec.url, binaryPath);
+    await downloadWithRetry(spec.url, binaryPath);
     if (process.platform !== "win32") {
       await fs.chmod(binaryPath, 0o755);
     }
