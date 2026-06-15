@@ -169,8 +169,23 @@ extension WorkSessionDestinationView {
   }
 
   @MainActor
-  func selectRuntimeMode(_ modeId: String) async {
-    guard let summary = chatSummary else { return }
+  func selectCodexFastMode(_ enabled: Bool) async -> Bool {
+    do {
+      _ = try await syncService.updateChatSession(sessionId: sessionId, codexFastMode: enabled)
+      await refreshChatStateAfterAction(forceRemote: true)
+      errorMessage = nil
+      ADEHaptics.light()
+      return true
+    } catch {
+      ADEHaptics.error()
+      errorMessage = error.localizedDescription
+      return false
+    }
+  }
+
+  @MainActor
+  func selectRuntimeMode(_ modeId: String) async -> Bool {
+    guard let summary = chatSummary else { return false }
     let wire = workRuntimeWireFields(provider: summary.provider, mode: modeId)
     guard wire.permissionMode != nil
       || wire.interactionMode != nil
@@ -181,7 +196,7 @@ extension WorkSessionDestinationView {
       || wire.opencodePermissionMode != nil
       || wire.droidPermissionMode != nil
       || wire.cursorModeId != nil
-    else { return }
+    else { return false }
 
     do {
       _ = try await syncService.updateChatSession(
@@ -199,9 +214,11 @@ extension WorkSessionDestinationView {
       await refreshChatStateAfterAction(forceRemote: true)
       errorMessage = nil
       ADEHaptics.light()
+      return true
     } catch {
       ADEHaptics.error()
       errorMessage = error.localizedDescription
+      return false
     }
   }
 
@@ -422,6 +439,106 @@ extension WorkSessionDestinationView {
     guard let currentSession = session ?? initialSession else { return }
     let laneId = resolvedWorkNavigationLaneId(for: currentSession, lanes: lanes)
     syncService.requestedLaneNavigation = LaneNavigationRequest(laneId: laneId)
+  }
+
+  @MainActor
+  func presentSessionRename() {
+    sessionActionRenameText = (chatSummary?.title ?? session?.title ?? initialSession?.title ?? "")
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    sessionActionRenamePresented = true
+  }
+
+  @MainActor
+  func submitCurrentSessionRename(_ title: String) async {
+    let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmedTitle.isEmpty else {
+      ADEHaptics.error()
+      errorMessage = "Session title cannot be empty."
+      return
+    }
+    do {
+      try await syncService.updateSessionMeta(
+        sessionId: sessionId,
+        title: trimmedTitle,
+        manuallyNamed: true
+      )
+      _ = try? await syncService.updateChatSession(
+        sessionId: sessionId,
+        title: trimmedTitle,
+        manuallyNamed: true
+      )
+      if var currentSession = session {
+        currentSession.title = trimmedTitle
+        currentSession.manuallyNamed = true
+        session = currentSession
+      }
+      if var summary = chatSummary {
+        summary.title = trimmedTitle
+        chatSummary = summary
+        syncService.cacheChatSummary(summary)
+      }
+      sessionActionRenameText = ""
+      await refreshChatStateAfterAction(forceRemote: false)
+      errorMessage = nil
+    } catch {
+      ADEHaptics.error()
+      errorMessage = error.localizedDescription
+    }
+  }
+
+  @MainActor
+  func deleteCurrentChatSession() async {
+    do {
+      try await syncService.deleteChatSession(sessionId: sessionId)
+      errorMessage = nil
+      dismiss()
+    } catch {
+      ADEHaptics.error()
+      errorMessage = error.localizedDescription
+    }
+  }
+
+  @MainActor
+  func copyCurrentSessionId() {
+    UIPasteboard.general.string = sessionId
+    sessionIdCopied = true
+    Task { @MainActor in
+      try? await Task.sleep(nanoseconds: 1_500_000_000)
+      guard !Task.isCancelled else { return }
+      sessionIdCopied = false
+    }
+  }
+
+  @MainActor
+  func copyCurrentSessionDeepLink() {
+    let laneId = (session ?? initialSession).map {
+      resolvedWorkNavigationLaneId(for: $0, lanes: lanes)
+    }
+    UIPasteboard.general.string = workSessionDeepLink(sessionId: sessionId, laneId: laneId)
+    sessionDeepLinkCopied = true
+    Task { @MainActor in
+      try? await Task.sleep(nanoseconds: 1_500_000_000)
+      guard !Task.isCancelled else { return }
+      sessionDeepLinkCopied = false
+    }
+  }
+
+  @MainActor
+  func toggleCurrentSessionPinned() async {
+    guard let current = session ?? initialSession else { return }
+    let nextPinned = !current.pinned
+    do {
+      try await syncService.setSessionPinned(sessionId: sessionId, pinned: nextPinned)
+      if var currentSession = session {
+        currentSession.pinned = nextPinned
+        session = currentSession
+      }
+      await refreshSessionRowFromLocalStore()
+      errorMessage = nil
+    } catch {
+      ADEHaptics.error()
+      errorMessage = error.localizedDescription
+    }
   }
 
   /// Resolve the lane's primary cached PR for the header overflow menu. Runs

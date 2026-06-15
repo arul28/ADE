@@ -344,14 +344,14 @@ struct WorkToolCallsPanelView: View {
   // MARK: – Member helpers
 
   /// Mono "kind-slug" shown beside the status glyph — the lowercased tool name
-  /// (`read`, `bash`, `edit`) rather than a prose verb, matching the desktop
+  /// (`read`, `shell`, `edit`) rather than a prose verb, matching the desktop
   /// work-log row which leads with the raw tool kind.
   private func memberSlug(_ member: WorkToolGroupMember) -> String {
     switch member {
     case .tool(let card):
       return toolDisplayName(card.toolName).lowercased()
     case .command:
-      return "bash"
+      return "shell"
     case .fileChange(let card):
       switch card.kind.lowercased() {
       case "create": return "create"
@@ -390,11 +390,8 @@ struct WorkToolCallsPanelView: View {
       if let args = card.argsText, !args.isEmpty { return args }
       return nil
     case .command(let card):
-      let parts: [String] = [
-        card.command.isEmpty ? nil : "$ \(card.command)",
-        card.output.isEmpty ? nil : card.output,
-      ].compactMap { $0 }
-      return parts.isEmpty ? nil : parts.joined(separator: "\n\n")
+      let output = card.output.trimmingCharacters(in: .whitespacesAndNewlines)
+      return output.isEmpty ? nil : card.output
     case .fileChange(let card):
       return card.diff.isEmpty ? nil : card.diff
     }
@@ -851,66 +848,115 @@ struct WorkDiffOutputBlock: View {
   }
 }
 
-struct WorkFileChangeCardView: View {
-  let card: WorkFileChangeCardModel
+struct WorkInlineDiffPreview: View {
+  let diff: String
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 12) {
-      HStack(alignment: .top, spacing: 10) {
-        Image(systemName: fileChangeIcon)
-          .foregroundStyle(statusTint)
-          .frame(width: 28, height: 28)
-          .background(statusTint.opacity(0.14), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+    ScrollView([.horizontal, .vertical]) {
+      VStack(alignment: .leading, spacing: 2) {
+        ForEach(Array(diff.components(separatedBy: "\n").enumerated()), id: \.offset) { _, line in
+          Text(line.isEmpty ? " " : line)
+            .font(.system(.caption, design: .monospaced))
+            .foregroundStyle(diffLineColor(for: line))
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+      }
+      .frame(maxWidth: .infinity, alignment: .leading)
+    }
+    .frame(maxHeight: 320)
+    .padding(.top, 8)
+    .padding(.leading, 18)
+    .overlay(alignment: .topLeading) {
+      Rectangle()
+        .fill(ADEColor.glassBorder.opacity(0.55))
+        .frame(height: 1)
+        .padding(.leading, 18)
+    }
+  }
+}
 
-        VStack(alignment: .leading, spacing: 4) {
-          Text("File change")
-            .font(.subheadline.weight(.semibold))
-            .foregroundStyle(ADEColor.textPrimary)
+struct WorkFileChangeCardView: View {
+  let card: WorkFileChangeCardModel
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @State private var isExpanded = false
+
+  private var diffStats: (additions: Int, deletions: Int) {
+    aggregateDiffStats(card.diff)
+  }
+
+  private var hasDiff: Bool {
+    !card.diff.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+  }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 8) {
+      Button {
+        guard hasDiff else { return }
+        withAnimation(ADEMotion.quick(reduceMotion: reduceMotion)) {
+          isExpanded.toggle()
+        }
+      } label: {
+        HStack(spacing: 8) {
+          Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+            .font(.caption2.weight(.bold))
+            .foregroundStyle(ADEColor.textMuted)
+            .frame(width: 10)
+
+          Text(fileExtensionBadge)
+            .font(.caption2.weight(.semibold).monospaced())
+            .foregroundStyle(ADEColor.textSecondary)
+            .padding(.horizontal, 5)
+            .padding(.vertical, 2)
+            .overlay(
+              RoundedRectangle(cornerRadius: 3, style: .continuous)
+                .stroke(ADEColor.glassBorder.opacity(0.8), lineWidth: 1)
+            )
+
           Text(card.path)
             .font(.caption.monospaced())
-            .foregroundStyle(ADEColor.textSecondary)
+            .foregroundStyle(ADEColor.textPrimary)
+            .lineLimit(1)
+            .truncationMode(.middle)
             .textSelection(.enabled)
+
+          Spacer(minLength: 6)
+
+          if diffStats.additions > 0 {
+            Text("+\(diffStats.additions)")
+              .font(.caption.monospaced())
+              .foregroundStyle(ADEColor.success)
+          }
+          if diffStats.deletions > 0 || card.kind.lowercased() == "delete" {
+            Text("-\(diffStats.deletions)")
+              .font(.caption.monospaced())
+              .foregroundStyle(ADEColor.danger)
+          }
         }
-
-        Spacer(minLength: 8)
-        Text(relativeTimestamp(card.timestamp))
-          .font(.caption2)
-          .foregroundStyle(ADEColor.textMuted)
+        .contentShape(Rectangle())
       }
+      .buttonStyle(.plain)
+      .disabled(!hasDiff)
 
-      HStack(spacing: 8) {
-        WorkTag(text: card.kind.replacingOccurrences(of: "_", with: " ").capitalized, icon: fileChangeIcon, tint: statusTint)
-        if card.status != .running {
-          WorkTag(text: card.status.rawValue.capitalized, icon: statusIcon, tint: statusTint)
+      if isExpanded {
+        if hasDiff {
+          WorkInlineDiffPreview(diff: card.diff)
+        } else {
+          Text("No diff payload available.")
+            .font(.caption.monospaced())
+            .foregroundStyle(ADEColor.textMuted)
+            .padding(.leading, 18)
         }
-      }
-
-      if !card.diff.isEmpty {
-        WorkDiffOutputBlock(title: "Diff", diff: card.diff)
       }
     }
-    .padding(14)
-    .background(ADEColor.cardBackground.opacity(0.45), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-    .overlay(
-      RoundedRectangle(cornerRadius: 16, style: .continuous)
-        .stroke(ADEColor.glassBorder, lineWidth: 1)
-    )
+    .padding(.vertical, 4)
+    .accessibilityElement(children: .combine)
+    .accessibilityLabel("File change, \(card.path), \(diffStats.additions) additions, \(diffStats.deletions) deletions. \(hasDiff ? "Tap to \(isExpanded ? "collapse" : "expand") diff." : "No diff payload available.")")
   }
 
-  var statusTint: Color {
-    color(for: card.status)
-  }
-
-  var fileChangeIcon: String {
-    switch card.kind.lowercased() {
-    case "create": return "doc.badge.plus"
-    case "delete": return "trash"
-    default: return "pencil.line"
-    }
-  }
-
-  var statusIcon: String {
-    icon(for: card.status)
+  private var fileExtensionBadge: String {
+    let basename = (card.path as NSString).lastPathComponent
+    let ext = (basename as NSString).pathExtension.uppercased()
+    return ext.isEmpty || ext.count > 4 ? "FILE" : ext
   }
 }
 

@@ -547,6 +547,14 @@ describe("AgentChatComposer", () => {
     const fastButton = screen.getByRole("button", { name: "Fast mode" });
     expect(fastButton.getAttribute("aria-pressed")).toBe("false");
 
+    const toolbarButtons = screen.getAllByRole("button");
+    expect(toolbarButtons.indexOf(screen.getByRole("button", { name: /Select model/i }))).toBeLessThan(
+      toolbarButtons.indexOf(screen.getByRole("button", { name: "Reasoning effort" })),
+    );
+    expect(toolbarButtons.indexOf(screen.getByRole("button", { name: "Reasoning effort" }))).toBeLessThan(
+      toolbarButtons.indexOf(fastButton),
+    );
+
     fireEvent.click(fastButton);
 
     expect(onFastModeChange).toHaveBeenCalledWith(true);

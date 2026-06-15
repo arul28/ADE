@@ -139,7 +139,29 @@ struct WorkUsageSummary: Equatable {
   var outputTokens: Int
   var cacheReadTokens: Int
   var cacheCreationTokens: Int
+  var reasoningTokens: Int = 0
+  var totalTokens: Int = 0
+  var contextWindow: Int? = nil
   var costUsd: Double
+}
+
+struct WorkContextUsageViewModel: Equatable {
+  var provider: String
+  var contextWindow: Int?
+  var usedTokens: Int?
+  var inputTokens: Int?
+  var outputTokens: Int?
+  var cacheReadTokens: Int?
+  var cacheWriteTokens: Int?
+  var reasoningTokens: Int?
+  var totalTokens: Int?
+  var ratio: Double?
+  var windowSource: WorkContextUsageWindowSource?
+}
+
+enum WorkContextUsageWindowSource: String, Equatable {
+  case runtime
+  case registry
 }
 
 struct WorkCompletionArtifactModel: Equatable {
@@ -188,6 +210,9 @@ enum WorkTimelinePayload: Equatable {
   /// Centered time + model pill rendered between turns, matching the desktop
   /// transcript's turn separators.
   case turnSeparator(WorkTurnSeparator)
+  /// Centered end-of-turn completion row rendered after a terminal `done`
+  /// event, matching desktop's "time · Worked for ..." divider.
+  case turnEndMarker(WorkTurnEndMarker)
   case pendingQuestion(WorkPendingQuestionModel)
   case pendingPermission(WorkPendingPermissionModel)
   /// Plan-approval gate: agent has finished planning and is waiting for the
@@ -269,6 +294,12 @@ struct WorkTurnSeparator: Equatable {
   let provider: String
   let modelLabel: String
   let modelId: String?
+}
+
+struct WorkTurnEndMarker: Equatable {
+  let turnId: String
+  let time: String
+  let workedDurationLabel: String
 }
 
 struct WorkTimelineEntry: Identifiable, Equatable {
@@ -444,6 +475,7 @@ enum WorkChatEvent: Equatable {
   case systemNotice(kind: String, message: String, detail: String?, turnId: String?, steerId: String?)
   case error(message: String, detail: String?, category: String, turnId: String?)
   case done(status: String, summary: String, usage: WorkUsageSummary?, turnId: String, model: String?, modelId: String?)
+  case tokens(usage: WorkUsageSummary, turnId: String, itemId: String?)
   case promptSuggestion(text: String, turnId: String?)
   case contextCompact(summary: String, turnId: String?)
   case autoApprovalReview(summary: String, turnId: String?)
@@ -475,6 +507,7 @@ enum WorkChatEvent: Equatable {
     case .systemNotice: return "system_notice"
     case .error: return "error"
     case .done: return "done"
+    case .tokens: return "tokens"
     case .promptSuggestion: return "prompt_suggestion"
     case .contextCompact: return "context_compact"
     case .autoApprovalReview: return "auto_approval_review"

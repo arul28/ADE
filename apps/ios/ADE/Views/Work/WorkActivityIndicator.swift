@@ -29,8 +29,7 @@ struct WorkActivityIndicator: View {
 
   @ViewBuilder
   var body: some View {
-    if isStreaming {
-      let presentation = Self.derivePresentation(from: transcript)
+    if isStreaming, let presentation = Self.derivePresentation(from: transcript) {
 
       // Re-rendering only this leaf view once a second; the elapsed value is a
       // pure function of `context.date`, so no @State is mutated on tick.
@@ -139,12 +138,24 @@ struct WorkActivityIndicator: View {
   /// Walks the transcript tail looking for the most recent running/active
   /// event. Command > running tool call > file change > named activity >
   /// subagent progress > fall back to "Thinking…".
-  static func derivePresentation(from transcript: [WorkChatEnvelope]) -> Presentation {
+  static func derivePresentation(from transcript: [WorkChatEnvelope]) -> Presentation? {
     let thinkingFallback = Presentation(label: "Thinking", detail: nil, tint: ADEColor.accent)
+    let endedTurnIds = Set(transcript.compactMap(Self.endedTurnId(from:)))
 
-    for envelope in transcript.reversed() {
+    for envelope in sortedWorkChatEnvelopes(transcript).reversed() {
       switch envelope.event {
-      case .command(let command, _, _, let status, _, _, _, _):
+      case .done:
+        return nil
+
+      case .userMessage:
+        return thinkingFallback
+
+      case .assistantText(_, let turnId, _):
+        if let turnId, endedTurnIds.contains(turnId) { continue }
+        return thinkingFallback
+
+      case .command(let command, _, _, let status, _, _, _, let turnId):
+        if let turnId, endedTurnIds.contains(turnId) { continue }
         if status == .running {
           return Presentation(
             label: "Running",
@@ -153,14 +164,16 @@ struct WorkActivityIndicator: View {
           )
         }
 
-      case .toolCall(let tool, _, _, _, _):
+      case .toolCall(let tool, _, _, _, let turnId):
+        if let turnId, endedTurnIds.contains(turnId) { continue }
         return Presentation(
           label: labelForTool(tool),
           detail: nil,
           tint: ADEColor.accent
         )
 
-      case .toolResult(let tool, _, _, _, _, let status):
+      case .toolResult(let tool, _, _, _, let turnId, let status):
+        if let turnId, endedTurnIds.contains(turnId) { continue }
         if status == .running {
           return Presentation(
             label: labelForTool(tool),
@@ -169,7 +182,8 @@ struct WorkActivityIndicator: View {
           )
         }
 
-      case .fileChange(let path, _, let kind, let status, _, _):
+      case .fileChange(let path, _, let kind, let status, _, let turnId):
+        if let turnId, endedTurnIds.contains(turnId) { continue }
         if status == .running {
           return Presentation(
             label: fileChangeLabel(kind: kind),
@@ -178,14 +192,16 @@ struct WorkActivityIndicator: View {
           )
         }
 
-      case .activity(let kind, let detail, _):
+      case .activity(let kind, let detail, let turnId):
+        if let turnId, endedTurnIds.contains(turnId) { continue }
         return Presentation(
           label: humanizeActivityKind(kind),
           detail: detail?.isEmpty == false ? detail : nil,
           tint: ADEColor.accent
         )
 
-      case .webSearch(let query, _, let status, _, _):
+      case .webSearch(let query, _, let status, _, let turnId):
+        if let turnId, endedTurnIds.contains(turnId) { continue }
         if status == .running {
           return Presentation(
             label: "Searching",
@@ -194,14 +210,16 @@ struct WorkActivityIndicator: View {
           )
         }
 
-      case .subagentStarted(_, let description, _, _):
+      case .subagentStarted(_, let description, _, let turnId):
+        if let turnId, endedTurnIds.contains(turnId) { continue }
         return Presentation(
           label: "Agent",
           detail: description,
           tint: ADEColor.accent
         )
 
-      case .subagentProgress(_, _, let summary, let toolName, _):
+      case .subagentProgress(_, _, let summary, let toolName, let turnId):
+        if let turnId, endedTurnIds.contains(turnId) { continue }
         return Presentation(
           label: toolName.map { "Agent · \($0)" } ?? "Agent",
           detail: summary.isEmpty ? nil : summary,
@@ -209,6 +227,12 @@ struct WorkActivityIndicator: View {
         )
 
       case .status(let turnStatus, let message, _):
+        if Self.isTerminalStatus(turnStatus) {
+          return nil
+        }
+        if Self.isActiveStatus(turnStatus) {
+          return thinkingFallback
+        }
         if let message, !message.isEmpty {
           return Presentation(
             label: humanizeActivityKind(turnStatus),
@@ -220,16 +244,50 @@ struct WorkActivityIndicator: View {
       case .reasoning:
         return Presentation(label: "Thinking", detail: nil, tint: ADEColor.accent)
 
-      case .assistantText, .userMessage, .done, .plan, .planText,
+      case .plan, .planText,
            .todoUpdate, .approvalRequest, .structuredQuestion, .toolUseSummary,
            .systemNotice, .error, .promptSuggestion, .contextCompact,
            .autoApprovalReview, .pendingInputResolved, .subagentResult,
-           .completionReport, .unknown:
+           .completionReport, .tokens, .unknown:
         continue
       }
     }
 
     return thinkingFallback
+  }
+
+  private static func endedTurnId(from envelope: WorkChatEnvelope) -> String? {
+    switch envelope.event {
+    case .done(_, _, _, let turnId, _, _):
+      return normalizedActivityTurnId(turnId)
+    case .status(let turnStatus, _, let turnId) where isTerminalStatus(turnStatus):
+      return normalizedActivityTurnId(turnId)
+    default:
+      return nil
+    }
+  }
+
+  private static func normalizedActivityTurnId(_ turnId: String?) -> String? {
+    let key = turnId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    return key.isEmpty ? nil : key
+  }
+
+  private static func isActiveStatus(_ status: String) -> Bool {
+    switch status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+    case "started", "active", "running", "inprogress", "in_progress", "in-progress":
+      return true
+    default:
+      return false
+    }
+  }
+
+  private static func isTerminalStatus(_ status: String) -> Bool {
+    switch status.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+    case "completed", "failed", "interrupted", "cancelled", "canceled", "ended":
+      return true
+    default:
+      return false
+    }
   }
 
   private static func labelForTool(_ tool: String) -> String {
@@ -270,6 +328,11 @@ struct WorkActivityIndicator: View {
     if firstLine.count <= 72 { return firstLine }
     return String(firstLine.prefix(69)) + "…"
   }
+}
+
+func workChatShouldShowInterruptControl(isStreamingTurn: Bool, transcript: [WorkChatEnvelope]) -> Bool {
+  guard isStreamingTurn else { return false }
+  return WorkActivityIndicator.derivePresentation(from: transcript) != nil
 }
 
 /// Parse an ISO-8601 timestamp (with or without fractional seconds) into a

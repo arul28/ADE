@@ -458,6 +458,42 @@ const COMPOSER_TOOLBAR_PICKER_TRIGGER = "max-w-[min(9.5rem,34vw)] shrink min-w-0
 // has given up its width.
 const COMPOSER_MODEL_TRIGGER = "max-w-[min(9.5rem,34vw)] shrink min-w-[4.5rem]";
 
+function ComposerFastModeButton({
+  active,
+  disabled = false,
+  supported,
+  onToggle,
+}: {
+  active: boolean;
+  disabled?: boolean;
+  supported: boolean;
+  onToggle?: (next: boolean) => void;
+}) {
+  if (!supported) return null;
+
+  return (
+    <button
+      type="button"
+      data-chat-composer-fast-toggle="true"
+      aria-label="Fast mode"
+      aria-pressed={active}
+      title={active ? "Fast mode on" : "Enable fast mode"}
+      disabled={disabled || !onToggle}
+      onClick={() => onToggle?.(!active)}
+      className={cn(
+        "ade-chat-composer-fast-toggle inline-flex h-6 shrink-0 items-center justify-center gap-0.5 rounded-md border px-1.5",
+        "font-sans text-[9px] font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-45",
+        active
+          ? "border-amber-300/30 bg-amber-400/12 text-amber-100 shadow-[0_0_0_1px_rgba(251,191,36,0.08)]"
+          : "border-white/[0.07] bg-white/[0.025] text-muted-fg/60 hover:bg-white/[0.06] hover:text-fg/80",
+      )}
+    >
+      <Lightning size={10} weight="fill" />
+      <span className="ade-chat-composer-fast-label">Fast</span>
+    </button>
+  );
+}
+
 const COMPOSER_PERMISSION_TRIGGER_CLASS = cn(
   "ade-chat-composer-permission-trigger",
   "inline-flex h-6 min-w-0 shrink-0 items-center justify-start gap-1 rounded-md border px-1.5",
@@ -3565,9 +3601,6 @@ export function AgentChatComposer({
                   disabled={parallelLaunchBusy}
                   compact
                   triggerClassName={COMPOSER_MODEL_TRIGGER}
-                  fastModeActive={fastModeActive}
-                  fastModeSupported={fastModeSupported}
-                  onFastModeToggle={(next) => onParallelSlotFastModeChange?.(parallelConfiguringIndex, next)}
                 />
                 <ReasoningEffortPicker
                   modelId={parallelModelSlots[parallelConfiguringIndex]!.modelId}
@@ -3576,6 +3609,12 @@ export function AgentChatComposer({
                   disabled={parallelLaunchBusy}
                   compact
                   triggerClassName={COMPOSER_TOOLBAR_PICKER_TRIGGER}
+                />
+                <ComposerFastModeButton
+                  active={fastModeActive}
+                  disabled={parallelLaunchBusy}
+                  supported={fastModeSupported}
+                  onToggle={(next) => onParallelSlotFastModeChange?.(parallelConfiguringIndex, next)}
                 />
               </>
             ) : null}
@@ -3594,9 +3633,6 @@ export function AgentChatComposer({
                   disabled={modelSelectionLocked}
                   compact
                   triggerClassName={COMPOSER_MODEL_TRIGGER}
-                  fastModeActive={fastModeActive}
-                  fastModeSupported={fastModeSupported}
-                  onFastModeToggle={onFastModeChange}
                 />
                 <ReasoningEffortPicker
                   modelId={modelId}
@@ -3605,6 +3641,12 @@ export function AgentChatComposer({
                   disabled={modelSelectionLocked}
                   compact
                   triggerClassName={COMPOSER_TOOLBAR_PICKER_TRIGGER}
+                />
+                <ComposerFastModeButton
+                  active={fastModeActive}
+                  disabled={modelSelectionLocked}
+                  supported={fastModeSupported}
+                  onToggle={onFastModeChange}
                 />
               </>
             ) : null}

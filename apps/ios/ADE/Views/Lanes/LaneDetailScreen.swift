@@ -149,7 +149,11 @@ struct LaneDetailScreen: View {
     .sheet(isPresented: $managePresented) {
       LaneManageSheet(
         snapshot: currentSnapshot,
-        allLaneSnapshots: allLaneSnapshots
+        allLaneSnapshots: allLaneSnapshots,
+        onDeleted: {
+          await onRefreshRoot()
+          dismiss()
+        }
       ) {
         await loadDetail(refreshRemote: true)
         await onRefreshRoot()

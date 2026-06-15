@@ -334,28 +334,27 @@ final class ADETests: XCTestCase {
   }
 
   func testMobileRuntimeModeOptionsMirrorDesktopAndTuiProviders() {
-    XCTAssertEqual(workRuntimeModeOptions(provider: "claude").map(\.id), ["default", "auto", "plan", "edit", "full-auto"])
-    XCTAssertEqual(workRuntimeModeOptions(provider: "codex").map(\.id), ["default", "plan", "full-auto", "config-toml"])
-    XCTAssertEqual(workRuntimeModeOptions(provider: "opencode").map(\.id), ["plan", "edit", "full-auto"])
-    XCTAssertEqual(workRuntimeModeOptions(provider: "cursor").map(\.id), ["agent", "ask", "plan", "full-auto"])
-    XCTAssertEqual(workRuntimeModeOptions(provider: "droid").map(\.id), ["read-only", "auto-low", "auto-medium", "auto-high", "agi"])
-
-    // Droid AGI (orchestrator) mode maps to droidPermissionMode="agi" with a
-    // read-only/plan top-level permission mode (desktop parity).
-    let droidAgi = workRuntimeWireFields(provider: "droid", mode: "agi")
-    XCTAssertEqual(droidAgi.droidPermissionMode, "agi")
-    XCTAssertEqual(droidAgi.permissionMode, "plan")
+    XCTAssertEqual(workRuntimeModeOptions(provider: "claude").map(\.id), ["default", "auto", "edit", "plan", "full-auto"])
+    XCTAssertEqual(workRuntimeModeOptions(provider: "codex").map(\.id), ["default", "edit", "plan", "full-auto", "config-toml"])
+    XCTAssertEqual(workRuntimeModeOptions(provider: "opencode").map(\.id), ["default", "plan", "edit", "full-auto", "config-toml"])
+    XCTAssertEqual(workRuntimeModeOptions(provider: "cursor").map(\.id), ["default", "plan", "edit", "full-auto"])
+    XCTAssertEqual(workRuntimeModeOptions(provider: "droid").map(\.id), ["plan", "edit", "default", "full-auto"])
 
     let claudeAuto = workRuntimeWireFields(provider: "claude", mode: "auto")
     XCTAssertEqual(claudeAuto.permissionMode, "auto")
     XCTAssertEqual(claudeAuto.claudePermissionMode, "auto")
     XCTAssertEqual(claudeAuto.interactionMode, "default")
 
-    let cursorAsk = workRuntimeWireFields(provider: "cursor", mode: "ask")
+    let codexEdit = workRuntimeWireFields(provider: "codex", mode: "edit")
+    XCTAssertEqual(codexEdit.permissionMode, "edit")
+    XCTAssertEqual(codexEdit.codexApprovalPolicy, "untrusted")
+    XCTAssertEqual(codexEdit.codexSandbox, "workspace-write")
+
+    let cursorAsk = workRuntimeWireFields(provider: "cursor", mode: "edit")
     XCTAssertEqual(cursorAsk.permissionMode, "edit")
     XCTAssertEqual(cursorAsk.cursorModeId, "ask")
 
-    let droidHigh = workRuntimeWireFields(provider: "droid", mode: "auto-high")
+    let droidHigh = workRuntimeWireFields(provider: "droid", mode: "full-auto")
     XCTAssertEqual(droidHigh.permissionMode, "full-auto")
     XCTAssertEqual(droidHigh.droidPermissionMode, "auto-high")
   }
@@ -418,6 +417,32 @@ final class ADETests: XCTestCase {
 
     XCTAssertEqual(resolvedWorkNavigationLaneId(for: renamedSession, lanes: lanes), "lane-by-name")
     XCTAssertEqual(resolvedWorkNavigationLaneId(for: branchSession, lanes: lanes), "lane-by-branch")
+  }
+
+  func testWorkSessionDeepLinkMatchesDesktopSessionFormat() {
+    XCTAssertEqual(
+      workSessionDeepLink(sessionId: "session 1/2", laneId: "lane&active"),
+      "ade://session/session%201%2F2?lane=lane%26active"
+    )
+    XCTAssertEqual(
+      workSessionDeepLink(sessionId: "session-plain", laneId: "   "),
+      "ade://session/session-plain"
+    )
+  }
+
+  func testLaneTreeDisplayDepthUsesPersistedStackDepth() {
+    var directChild = makeLaneSummary(id: "lane-child", name: "Child", laneType: "worktree", branchRef: "ade/child")
+    directChild.parentLaneId = "lane-primary"
+    directChild.stackDepth = 1
+    var grandchild = makeLaneSummary(id: "lane-grandchild", name: "Grandchild", laneType: "worktree", branchRef: "ade/grandchild")
+    grandchild.parentLaneId = directChild.id
+    grandchild.stackDepth = 2
+    var invalidDepth = directChild
+    invalidDepth.stackDepth = -1
+
+    XCTAssertEqual(laneTreeDisplayDepth(for: directChild), 1)
+    XCTAssertEqual(laneTreeDisplayDepth(for: grandchild), 2)
+    XCTAssertEqual(laneTreeDisplayDepth(for: invalidDepth), 0)
   }
 
   func testTerminalDisplayPreservesAnsiRunsForRendering() {
@@ -1914,6 +1939,99 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(itemId, "approval-1")
     XCTAssertEqual(resolution, "accepted")
     XCTAssertEqual(turnId, "turn-1")
+  }
+
+  func testAgentChatEventEnvelopeDecodesTokenUsageEvent() throws {
+    let json = """
+    {
+      "sessionId": "session-usage",
+      "timestamp": "2026-03-17T00:00:00.000Z",
+      "sequence": 14,
+      "event": {
+        "type": "tokens",
+        "turnId": "turn-usage",
+        "itemId": "tokens-1",
+        "inputTokens": 169600,
+        "outputTokens": 701,
+        "cacheReadTokens": 168300,
+        "cacheWriteTokens": 1200,
+        "contextWindow": 258400
+      }
+    }
+    """
+
+    let envelope = try JSONDecoder().decode(AgentChatEventEnvelope.self, from: Data(json.utf8))
+
+    guard case .tokens(let turnId, let itemId, let inputTokens, let outputTokens, let cacheReadTokens, let cacheWriteTokens, let contextWindow) = envelope.event else {
+      return XCTFail("Expected tokens event.")
+    }
+    XCTAssertEqual(turnId, "turn-usage")
+    XCTAssertEqual(itemId, "tokens-1")
+    XCTAssertEqual(inputTokens, 169600)
+    XCTAssertEqual(outputTokens, 701)
+    XCTAssertEqual(cacheReadTokens, 168300)
+    XCTAssertEqual(cacheWriteTokens, 1200)
+    XCTAssertEqual(contextWindow, 258400)
+  }
+
+  func testAgentChatEventEnvelopeMapsCodexTokenUsageToContextUsage() throws {
+    let json = """
+    {
+      "sessionId": "session-usage",
+      "timestamp": "2026-03-17T00:00:00.000Z",
+      "sequence": 15,
+      "event": {
+        "type": "codex_token_usage",
+        "turnId": "turn-usage",
+        "usage": {
+          "threadId": "thread-usage",
+          "turnId": "turn-usage",
+          "modelContextWindow": 258400,
+          "last": {
+            "inputTokens": 169600,
+            "outputTokens": 701,
+            "cacheReadTokens": 168300,
+            "cacheWriteTokens": 1200,
+            "reasoningTokens": 15
+          },
+          "total": {
+            "totalTokens": 170301
+          }
+        }
+      }
+    }
+    """
+
+    let envelope = try JSONDecoder().decode(AgentChatEventEnvelope.self, from: Data(json.utf8))
+    let event = makeWorkChatEvent(from: envelope.event)
+
+    guard case .tokens(let usage, let turnId, let itemId) = event else {
+      return XCTFail("Expected codex token usage to normalize to a tokens event.")
+    }
+    XCTAssertEqual(turnId, "turn-usage")
+    XCTAssertNil(itemId)
+    XCTAssertEqual(usage.inputTokens, 169600)
+    XCTAssertEqual(usage.outputTokens, 701)
+    XCTAssertEqual(usage.cacheReadTokens, 168300)
+    XCTAssertEqual(usage.cacheCreationTokens, 1200)
+    XCTAssertEqual(usage.reasoningTokens, 15)
+    XCTAssertEqual(usage.totalTokens, 170301)
+    XCTAssertEqual(usage.contextWindow, 258400)
+
+    let viewModel = workContextUsageViewModel(
+      transcript: [
+        WorkChatEnvelope(
+          sessionId: envelope.sessionId,
+          timestamp: envelope.timestamp,
+          sequence: envelope.sequence,
+          event: event
+        )
+      ],
+      summary: makeAgentChatSessionSummary(provider: "codex", model: "GPT-5.5", status: "active")
+    )
+    XCTAssertEqual(viewModel?.usedTokens, 169600)
+    XCTAssertEqual(viewModel?.contextWindow, 258400)
+    XCTAssertEqual(viewModel?.ratio ?? 0, Double(169600) / Double(258400), accuracy: 0.0001)
   }
 
   @MainActor
@@ -6740,6 +6858,36 @@ final class ADETests: XCTestCase {
     ])
   }
 
+  func testWorkChatMessagesSuppressDuplicateAssistantSuffixAcrossTools() {
+    let fullText = "Got it, I’ll include the top-left back button in this pass too and shrink its hit chrome without disturbing the title layout."
+    let duplicateTail = "-left back button in this pass too and shrink its hit chrome without disturbing the title layout."
+    let transcript: [WorkChatEnvelope] = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-04-22T22:10:01.000Z",
+        sequence: 1,
+        event: .assistantText(text: fullText, turnId: "turn-1", itemId: "msg-full")
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-04-22T22:10:02.000Z",
+        sequence: 2,
+        event: .toolCall(tool: "shell", argsText: "{}", itemId: "tool-1", parentItemId: nil, turnId: "turn-1")
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-04-22T22:10:03.000Z",
+        sequence: 3,
+        event: .assistantText(text: duplicateTail, turnId: "turn-1", itemId: "msg-tail")
+      ),
+    ]
+
+    let assistantMessages = buildWorkChatMessages(from: transcript)
+      .filter { $0.role == "assistant" }
+
+    XCTAssertEqual(assistantMessages.map(\.markdown), [fullText])
+  }
+
   func testWorkSessionGroupsByLaneSurfacesOrphanLanesPerLaneId() {
     let knownLane = LaneSummary(
       id: "lane-primary",
@@ -6865,12 +7013,13 @@ final class ADETests: XCTestCase {
     {"sessionId":"chat-1","timestamp":"2026-03-25T00:00:00.000Z","sequence":1,"event":{"type":"command","command":"npm test","cwd":"/tmp/work","output":"ok","itemId":"cmd-1","turnId":"turn-1","exitCode":0,"durationMs":1240,"status":"completed"}}
     {"sessionId":"chat-1","timestamp":"2026-03-25T00:00:01.000Z","sequence":2,"event":{"type":"file_change","path":"Sources/WorkTabView.swift","diff":"@@ -1 +1 @@","kind":"modify","itemId":"file-1","turnId":"turn-1","status":"completed"}}
     {"sessionId":"chat-1","timestamp":"2026-03-25T00:00:02.000Z","sequence":3,"event":{"type":"completion_report","report":{"timestamp":"2026-03-25T00:00:02.000Z","summary":"Finished","status":"completed","artifacts":[{"type":"file","description":"Updated the transcript","reference":"docs/transcript.md"}]}}}
-    {"sessionId":"chat-1","timestamp":"2026-03-25T00:00:03.000Z","sequence":4,"event":{"type":"done","turnId":"turn-1","status":"completed","model":"claude-sonnet-4","usage":{"inputTokens":120,"outputTokens":45,"cacheReadTokens":12,"cacheCreationTokens":3},"costUsd":1.23}}
+    {"sessionId":"chat-1","timestamp":"2026-03-25T00:00:03.000Z","sequence":4,"event":{"type":"done","turnId":"turn-1","status":"completed","model":"claude-sonnet-4","usage":{"inputTokens":120,"outputTokens":45,"cacheReadTokens":12,"cacheCreationTokens":3,"reasoningTokens":7,"contextWindow":200000},"costUsd":1.23}}
+    {"sessionId":"chat-1","timestamp":"2026-03-25T00:00:04.000Z","sequence":5,"event":{"type":"tokens","turnId":"turn-1","itemId":"tok-1","inputTokens":169600,"outputTokens":701,"cacheReadTokens":168300,"cacheWriteTokens":1200,"contextWindow":258400}}
     """
 
     let transcript = parseWorkChatTranscript(raw)
 
-    XCTAssertEqual(transcript.count, 4)
+    XCTAssertEqual(transcript.count, 5)
 
     guard case .command(let command, let cwd, let output, let status, let itemId, let exitCode, let durationMs, let turnId) = transcript[0].event else {
       return XCTFail("Expected command event.")
@@ -6914,8 +7063,21 @@ final class ADETests: XCTestCase {
     XCTAssertTrue(doneSummary.contains("$1.2300"))
     XCTAssertEqual(usage?.inputTokens, 120)
     XCTAssertEqual(usage?.outputTokens, 45)
+    XCTAssertEqual(usage?.reasoningTokens, 7)
+    XCTAssertEqual(usage?.contextWindow, 200000)
     XCTAssertEqual(usage?.costUsd, 1.23)
     XCTAssertEqual(doneTurnId, "turn-1")
+
+    guard case .tokens(let tokenUsage, let tokenTurnId, let tokenItemId) = transcript[4].event else {
+      return XCTFail("Expected tokens event.")
+    }
+    XCTAssertEqual(tokenUsage.inputTokens, 169600)
+    XCTAssertEqual(tokenUsage.outputTokens, 701)
+    XCTAssertEqual(tokenUsage.cacheReadTokens, 168300)
+    XCTAssertEqual(tokenUsage.cacheCreationTokens, 1200)
+    XCTAssertEqual(tokenUsage.contextWindow, 258400)
+    XCTAssertEqual(tokenTurnId, "turn-1")
+    XCTAssertEqual(tokenItemId, "tok-1")
 
     let sessionUsage = summarizeWorkSessionUsage(from: transcript)
     XCTAssertEqual(sessionUsage?.turnCount, 1)
@@ -6923,7 +7085,82 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(sessionUsage?.outputTokens, 45)
     XCTAssertEqual(sessionUsage?.cacheReadTokens, 12)
     XCTAssertEqual(sessionUsage?.cacheCreationTokens, 3)
+    XCTAssertEqual(sessionUsage?.reasoningTokens, 7)
+    XCTAssertEqual(sessionUsage?.contextWindow, 200000)
     XCTAssertEqual(sessionUsage?.costUsd, 1.23)
+  }
+
+  func testWorkContextUsageViewModelUsesCodexInputAsOccupancy() {
+    let transcript = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:04.000Z",
+        sequence: 5,
+        event: .tokens(
+          usage: WorkUsageSummary(
+            turnCount: 1,
+            inputTokens: 169600,
+            outputTokens: 701,
+            cacheReadTokens: 168300,
+            cacheCreationTokens: 1200,
+            contextWindow: 258400,
+            costUsd: 0
+          ),
+          turnId: "turn-1",
+          itemId: "tok-1"
+        )
+      )
+    ]
+
+    let viewModel = workContextUsageViewModel(
+      transcript: transcript,
+      summary: makeAgentChatSessionSummary(provider: "codex", model: "GPT-5.5", status: "active")
+    )
+
+    XCTAssertEqual(viewModel?.usedTokens, 169600)
+    XCTAssertEqual(viewModel?.cacheReadTokens, 168300)
+    XCTAssertEqual(viewModel?.cacheWriteTokens, 1200)
+    XCTAssertEqual(viewModel?.contextWindow, 258400)
+    XCTAssertEqual(viewModel?.windowSource, .runtime)
+    XCTAssertEqual(viewModel?.ratio ?? 0, Double(169600) / Double(258400), accuracy: 0.0001)
+  }
+
+  func testWorkContextUsageViewModelSumsGenericInputAndCache() {
+    let transcript = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:04.000Z",
+        sequence: 5,
+        event: .done(
+          status: "completed",
+          summary: "Completed",
+          usage: WorkUsageSummary(
+            turnCount: 1,
+            inputTokens: 10,
+            outputTokens: 2,
+            cacheReadTokens: 20,
+            cacheCreationTokens: 5,
+            contextWindow: 100,
+            costUsd: 0
+          ),
+          turnId: "turn-1",
+          model: "Droid model",
+          modelId: nil
+        )
+      )
+    ]
+
+    let viewModel = workContextUsageViewModel(
+      transcript: transcript,
+      summary: makeAgentChatSessionSummary(provider: "droid", model: "droid-model", status: "active")
+    )
+
+    XCTAssertEqual(viewModel?.usedTokens, 35)
+    XCTAssertEqual(viewModel?.inputTokens, 10)
+    XCTAssertEqual(viewModel?.cacheReadTokens, 20)
+    XCTAssertEqual(viewModel?.cacheWriteTokens, 5)
+    XCTAssertEqual(viewModel?.contextWindow, 100)
+    XCTAssertEqual(viewModel?.ratio ?? 0, 0.35, accuracy: 0.0001)
   }
 
   func testWorkChatStatusNormalizationPrefersAwaitingInputAndIdle() {
@@ -7241,6 +7478,54 @@ final class ADETests: XCTestCase {
     XCTAssertNil(legacy.codexFastMode)
   }
 
+  func testWorkReasoningChipLabelMatchesDesktopAbbreviations() {
+    XCTAssertNil(workReasoningChipLabel(nil))
+    XCTAssertNil(workReasoningChipLabel(" "))
+    XCTAssertEqual(workReasoningChipLabel("minimal"), "MIN")
+    XCTAssertEqual(workReasoningChipLabel("low"), "LOW")
+    XCTAssertEqual(workReasoningChipLabel("medium"), "MED")
+    XCTAssertEqual(workReasoningChipLabel("high"), "HI")
+    XCTAssertEqual(workReasoningChipLabel("xhigh"), "XH")
+    XCTAssertEqual(workReasoningChipLabel("extra-high"), "XH")
+    XCTAssertEqual(workReasoningChipLabel("max"), "MAX")
+    XCTAssertEqual(workReasoningChipLabel("ultracode"), "ULTRA")
+    XCTAssertEqual(workReasoningChipLabel("custom-effort"), "CUS")
+  }
+
+  func testWorkChatComposerShowsFastModeForCodexSessionsWithoutPersistedFlag() {
+    let codex = makeAgentChatSessionSummary(
+      provider: "codex",
+      model: "gpt-5.5",
+      status: "idle"
+    )
+    let codexMini = makeAgentChatSessionSummary(
+      provider: "codex",
+      model: "gpt-5.4-mini",
+      status: "idle"
+    )
+    let claudeOpus = makeAgentChatSessionSummary(
+      provider: "claude",
+      model: "opus",
+      status: "idle"
+    )
+    let claude = makeAgentChatSessionSummary(
+      provider: "claude",
+      model: "sonnet",
+      status: "idle"
+    )
+    let openCode = makeAgentChatSessionSummary(
+      provider: "opencode",
+      model: "opencode/openai/gpt-5.4",
+      status: "idle"
+    )
+
+    XCTAssertTrue(workChatComposerSupportsFastMode(codex))
+    XCTAssertFalse(workChatComposerSupportsFastMode(codexMini))
+    XCTAssertTrue(workChatComposerSupportsFastMode(claudeOpus))
+    XCTAssertFalse(workChatComposerSupportsFastMode(claude))
+    XCTAssertTrue(workChatComposerSupportsFastMode(openCode))
+  }
+
   func testAgentChatModelInfoDetectsFastServiceTier() throws {
     let payload: [String: Any] = [
       "id": "gpt-5.5",
@@ -7500,6 +7785,38 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(preferred.count, 2)
     XCTAssertEqual(preferred.compactMap(\.sequence), [1, 2])
     XCTAssertEqual(messages.filter { $0.role == "assistant" }.map(\.markdown), ["I'm Codex, based on GPT-5."])
+  }
+
+  func testPreferredWorkTranscriptSkipsFallbackAssistantDuplicateWhenTurnIdIsMissing() {
+    let paragraph = "The context summary is already present in the live event stream."
+    let fallback = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-04-20T00:00:02.000Z",
+        sequence: nil,
+        event: .assistantText(text: paragraph, turnId: nil, itemId: nil)
+      ),
+    ]
+    let live = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-04-20T00:00:02.000Z",
+        sequence: 42,
+        event: .assistantText(text: paragraph, turnId: "turn-1", itemId: "msg-1")
+      ),
+    ]
+
+    let preferred = preferredWorkTranscript(
+      current: live,
+      fallback: fallback,
+      eventTranscript: live
+    )
+    let messages = buildWorkChatMessages(from: preferred)
+
+    XCTAssertEqual(preferred.count, 1)
+    XCTAssertEqual(preferred.compactMap(\.sequence), [42])
+    XCTAssertEqual(messages.filter { $0.role == "assistant" }.map(\.markdown), [paragraph])
+    XCTAssertEqual(messages.filter { $0.role == "assistant" }.map(\.turnId), ["turn-1"])
   }
 
   func testPreferredWorkTranscriptReplacesTrimmedLiveTailWithFullFallbackText() {
@@ -8766,6 +9083,29 @@ final class ADETests: XCTestCase {
 
     XCTAssertEqual(separators.map(\.modelLabel), ["Claude Sonnet 4.6", "GPT 5.4 Mini"])
     XCTAssertEqual(separators.map(\.provider), ["claude", "codex"])
+
+    let endMarkers = separated.compactMap { entry -> WorkTurnEndMarker? in
+      guard case .turnEndMarker(let marker) = entry.payload else { return nil }
+      return marker
+    }
+    XCTAssertEqual(endMarkers.map(\.turnId), ["turn-1", "turn-2"])
+    XCTAssertEqual(endMarkers.map(\.workedDurationLabel), ["2s", "2s"])
+
+    let turnOrder = separated.compactMap { entry -> String? in
+      switch entry.payload {
+      case .message(let message): return "\(message.role):\(message.turnId ?? "")"
+      case .turnEndMarker(let marker): return "ended:\(marker.turnId)"
+      default: return nil
+      }
+    }
+    XCTAssertEqual(turnOrder, [
+      "user:turn-1",
+      "assistant:turn-1",
+      "ended:turn-1",
+      "user:turn-2",
+      "assistant:turn-2",
+      "ended:turn-2",
+    ])
   }
 
   func testWorkEventCardsHideLowSignalLifecycleNoise() {
@@ -8843,6 +9183,8 @@ final class ADETests: XCTestCase {
 
     XCTAssertTrue(activeSnapshot.transcriptIndicatesActiveTurn)
     XCTAssertFalse(completedSnapshot.transcriptIndicatesActiveTurn)
+    XCTAssertFalse(workTranscriptLatestTurnEnded([started]))
+    XCTAssertTrue(workTranscriptLatestTurnEnded([started, completed]))
   }
 
   func testWorkChatStreamingRequiresLiveConnectionForTranscriptActiveTurn() {
@@ -8867,6 +9209,112 @@ final class ADETests: XCTestCase {
         transcriptIndicatesActiveTurn: false
       )
     )
+    XCTAssertTrue(
+      workChatIsStreaming(
+        sessionStatus: "idle",
+        isLive: true,
+        transcriptIndicatesActiveTurn: false,
+        liveTurnActiveHint: true,
+        transcriptLatestTurnEnded: false
+      )
+    )
+    XCTAssertFalse(
+      workChatIsStreaming(
+        sessionStatus: "active",
+        isLive: true,
+        transcriptIndicatesActiveTurn: false,
+        liveTurnActiveHint: true,
+        transcriptLatestTurnEnded: true
+      )
+    )
+    XCTAssertFalse(
+      workChatIsStreaming(
+        sessionStatus: "idle",
+        isLive: true,
+        transcriptIndicatesActiveTurn: false,
+        liveTurnActiveHint: true,
+        transcriptLatestTurnEnded: false,
+        rowEndedAfterLatestTranscript: true
+      )
+    )
+  }
+
+  func testWorkActivityIndicatorDoesNotReuseCommandAfterDone() {
+    let transcript = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:00.000Z",
+        sequence: 0,
+        event: .status(turnStatus: "started", message: nil, turnId: "turn-1")
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:01.000Z",
+        sequence: 1,
+        event: .command(
+          command: "/bin/zsh -lc 'npm test'",
+          cwd: "",
+          output: "",
+          status: .running,
+          itemId: "cmd-1",
+          exitCode: nil,
+          durationMs: nil,
+          turnId: "turn-1"
+        )
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:02.000Z",
+        sequence: 2,
+        event: .done(status: "completed", summary: "", usage: nil, turnId: "turn-1", model: nil, modelId: nil)
+      ),
+    ]
+
+    XCTAssertNil(WorkActivityIndicator.derivePresentation(from: transcript))
+  }
+
+  func testWorkInterruptControlHidesAfterCompletedTranscriptTail() {
+    let transcript = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:00.000Z",
+        sequence: 0,
+        event: .status(turnStatus: "started", message: nil, turnId: "turn-1")
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:01.000Z",
+        sequence: 1,
+        event: .assistantText(text: "Done.", turnId: "turn-1", itemId: "msg-1")
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:02.000Z",
+        sequence: 2,
+        event: .done(status: "completed", summary: "", usage: nil, turnId: "turn-1", model: nil, modelId: nil)
+      ),
+    ]
+
+    XCTAssertFalse(workChatShouldShowInterruptControl(isStreamingTurn: true, transcript: transcript))
+  }
+
+  func testWorkInterruptControlShowsForFreshAssistantTextAfterDone() {
+    let transcript = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:00.000Z",
+        sequence: 0,
+        event: .done(status: "completed", summary: "", usage: nil, turnId: "turn-1", model: nil, modelId: nil)
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:01.000Z",
+        sequence: 1,
+        event: .assistantText(text: "New streamed text", turnId: "turn-2", itemId: "msg-2")
+      ),
+    ]
+
+    XCTAssertTrue(workChatShouldShowInterruptControl(isStreamingTurn: true, transcript: transcript))
   }
 
   /// Regression: the chat_subscribe ack now carries live turn state so a
@@ -10471,6 +10919,76 @@ final class ADETests: XCTestCase {
     }
     XCTAssertEqual(latest.id, "tool-2")
     XCTAssertEqual(latest.status, .running)
+  }
+
+  func testBuildWorkTimelineWrapsSingleCommandInToolGroup() {
+    let transcript: [WorkChatEnvelope] = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-04-20T00:00:01.000Z",
+        sequence: 1,
+        event: .command(
+          command: "/bin/zsh -lc 'rg WorkDiffOutputBlock'",
+          cwd: "/tmp/project",
+          output: "apps/ios/ADE/Views/Work/WorkChatRichCardViews.swift:823:struct WorkDiffOutputBlock",
+          status: .completed,
+          itemId: "cmd-1",
+          exitCode: 0,
+          durationMs: 42,
+          turnId: "turn-1"
+        )
+      ),
+    ]
+
+    let snapshot = buildWorkChatTimelineSnapshot(
+      transcript: transcript,
+      fallbackEntries: [],
+      artifacts: [],
+      localEchoMessages: []
+    )
+
+    XCTAssertEqual(snapshot.timeline.count, 1)
+    guard case .toolGroup(let group) = snapshot.timeline.first?.payload else {
+      return XCTFail("Expected a single command to render through the compact tool group panel.")
+    }
+    XCTAssertEqual(group.members.count, 1)
+    XCTAssertFalse(snapshot.timeline.contains { entry in
+      if case .commandCard = entry.payload { return true }
+      return false
+    })
+  }
+
+  func testBuildWorkTimelineWrapsSingleFileChangeInChangedFilesGroup() {
+    let transcript: [WorkChatEnvelope] = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-04-20T00:00:01.000Z",
+        sequence: 1,
+        event: .fileChange(
+          path: "apps/ios/ADE/Views/Work/WorkChatRichCardViews.swift",
+          diff: "@@ -1 +1 @@\n-old\n+new",
+          kind: "modify",
+          status: .completed,
+          itemId: "file-1",
+          turnId: "turn-1"
+        )
+      ),
+    ]
+
+    let snapshot = buildWorkChatTimelineSnapshot(
+      transcript: transcript,
+      fallbackEntries: [],
+      artifacts: [],
+      localEchoMessages: []
+    )
+
+    XCTAssertEqual(snapshot.timeline.count, 1)
+    guard case .changedFiles(let group) = snapshot.timeline.first?.payload else {
+      return XCTFail("Expected a single file change to render through the compact files changed panel.")
+    }
+    XCTAssertEqual(group.files.count, 1)
+    XCTAssertEqual(group.files.first?.additions, 1)
+    XCTAssertEqual(group.files.first?.deletions, 1)
   }
 
   func testBuildWorkCommandCardsDedupesDuplicateCommandEventsByItemId() {

@@ -6,6 +6,7 @@ struct LaneManageSheet: View {
 
   let snapshot: LaneListSnapshot
   let allLaneSnapshots: [LaneListSnapshot]
+  let onDeleted: (@MainActor () async -> Void)?
   let onComplete: @MainActor () async -> Void
 
   @State private var activeTab: ManageLaneTab = .delete
@@ -23,10 +24,12 @@ struct LaneManageSheet: View {
   init(
     snapshot: LaneListSnapshot,
     allLaneSnapshots: [LaneListSnapshot],
+    onDeleted: (@MainActor () async -> Void)? = nil,
     onComplete: @escaping @MainActor () async -> Void
   ) {
     self.snapshot = snapshot
     self.allLaneSnapshots = allLaneSnapshots
+    self.onDeleted = onDeleted
     self.onComplete = onComplete
     let primaryLaneId = allLaneSnapshots.first(where: { $0.lane.laneType == "primary" })?.lane.id ?? ""
     _renameText = State(initialValue: snapshot.lane.name)
@@ -653,14 +656,31 @@ struct LaneManageSheet: View {
   @MainActor
   private func performDelete() async {
     guard deleteSelection.hasAny else { return }
-    await performAction("delete lane") {
+    guard canRunLiveActions else {
+      ADEHaptics.warning()
+      errorMessage = "Reconnect to machine before you delete lane."
+      return
+    }
+    do {
+      busyAction = "delete lane"
+      errorMessage = nil
       try await syncService.deleteLane(
         snapshot.lane.id,
         deleteBranch: deleteSelection.localBranch,
         deleteRemoteBranch: deleteSelection.remoteBranch,
         force: deleteForce
       )
+      dismiss()
+      if let onDeleted {
+        await onDeleted()
+      } else {
+        await onComplete()
+      }
+    } catch {
+      ADEHaptics.error()
+      errorMessage = error.localizedDescription
     }
+    busyAction = nil
   }
 
   @MainActor

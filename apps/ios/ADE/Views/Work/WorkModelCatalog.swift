@@ -240,10 +240,10 @@ private func workCuratedModelCatalogGroups() -> [WorkModelCatalogGroup] {
         key: "anthropic",
         displayName: "Anthropic",
         models: [
-          WorkModelOption(id: "claude-fable-5", displayName: "Claude Fable 5", tier: .flagship, tagline: "Flagship · 1M context", provider: "claude"),
-          WorkModelOption(id: "claude-opus-4-8", displayName: "Claude Opus 4.8 1M", tier: .flagship, tagline: "Flagship · 1M context", provider: "claude"),
-          WorkModelOption(id: "claude-opus-4-7", displayName: "Claude Opus 4.7", tier: .flagship, tagline: "Flagship · best for complex reasoning", provider: "claude"),
-          WorkModelOption(id: "claude-opus-4-7-1m", displayName: "Claude Opus 4.7 1M", tier: .flagship, tagline: "1M-token context window", provider: "claude"),
+          WorkModelOption(id: "claude-fable-5", displayName: "Claude Fable 5", tier: .flagship, tagline: "Flagship · 1M context", provider: "claude", serviceTiers: ["fast"]),
+          WorkModelOption(id: "claude-opus-4-8", displayName: "Claude Opus 4.8 1M", tier: .flagship, tagline: "Flagship · 1M context", provider: "claude", serviceTiers: ["fast"]),
+          WorkModelOption(id: "claude-opus-4-7", displayName: "Claude Opus 4.7", tier: .flagship, tagline: "Flagship · best for complex reasoning", provider: "claude", serviceTiers: ["fast"]),
+          WorkModelOption(id: "claude-opus-4-7-1m", displayName: "Claude Opus 4.7 1M", tier: .flagship, tagline: "1M-token context window", provider: "claude", serviceTiers: ["fast"]),
           WorkModelOption(id: "claude-sonnet-4-6", displayName: "Claude Sonnet 4.6", tier: .balanced, tagline: "Balanced · great default for coding", provider: "claude"),
           WorkModelOption(id: "claude-haiku-4-5", displayName: "Claude Haiku 4.5", tier: .fast, tagline: "Fastest · cheapest", provider: "claude"),
         ]
@@ -259,8 +259,8 @@ private func workCuratedModelCatalogGroups() -> [WorkModelCatalogGroup] {
         key: "openai",
         displayName: "OpenAI",
         models: [
-          WorkModelOption(id: "gpt-5.5", displayName: "GPT-5.5", tier: .flagship, tagline: "Flagship · 1M context", provider: "codex"),
-          WorkModelOption(id: "gpt-5.4", displayName: "GPT-5.4", tier: .flagship, tagline: "Affordable · 1M context", provider: "codex"),
+          WorkModelOption(id: "gpt-5.5", displayName: "GPT-5.5", tier: .flagship, tagline: "Flagship · 1M context", provider: "codex", serviceTiers: ["fast"]),
+          WorkModelOption(id: "gpt-5.4", displayName: "GPT-5.4", tier: .flagship, tagline: "Affordable · 1M context", provider: "codex", serviceTiers: ["fast"]),
           WorkModelOption(id: "gpt-5.4-mini", displayName: "GPT-5.4-Mini", tier: .fast, tagline: "Cheaper 1M-context variant", provider: "codex"),
           WorkModelOption(id: "gpt-5.3-codex", displayName: "GPT-5.3-Codex", tier: .balanced, tagline: "Tuned for code edits", provider: "codex"),
           WorkModelOption(id: "gpt-5.3-codex-spark", displayName: "GPT-5.3-Codex-Spark", tier: .fast, tagline: "Text-only Codex fast path", provider: "codex"),
@@ -361,10 +361,10 @@ private func workCuratedModelCatalogGroups() -> [WorkModelCatalogGroup] {
         key: "anthropic",
         displayName: "Anthropic",
         models: [
-          WorkModelOption(id: "opencode/anthropic/claude-fable-5", displayName: "Claude Fable 5", tier: .flagship, tagline: "Flagship · 1M context", provider: "claude"),
+          WorkModelOption(id: "opencode/anthropic/claude-fable-5", displayName: "Claude Fable 5", tier: .flagship, tagline: "Flagship · 1M context", provider: "claude", serviceTiers: ["fast"]),
           WorkModelOption(id: "opencode/anthropic/claude-sonnet-4-6", displayName: "Claude Sonnet 4.6", tier: .balanced, tagline: "Balanced coder", provider: "claude"),
-          WorkModelOption(id: "opencode/anthropic/claude-opus-4-8", displayName: "Claude Opus 4.8 1M", tier: .flagship, tagline: "Flagship reasoning · 1M context", provider: "claude"),
-          WorkModelOption(id: "opencode/anthropic/claude-opus-4-7", displayName: "Claude Opus 4.7", tier: .flagship, tagline: "Flagship reasoning", provider: "claude"),
+          WorkModelOption(id: "opencode/anthropic/claude-opus-4-8", displayName: "Claude Opus 4.8 1M", tier: .flagship, tagline: "Flagship reasoning · 1M context", provider: "claude", serviceTiers: ["fast"]),
+          WorkModelOption(id: "opencode/anthropic/claude-opus-4-7", displayName: "Claude Opus 4.7", tier: .flagship, tagline: "Flagship reasoning", provider: "claude", serviceTiers: ["fast"]),
           WorkModelOption(id: "opencode/anthropic/claude-haiku-4-5", displayName: "Claude Haiku 4.5", tier: .fast, tagline: "Fastest Anthropic", provider: "claude"),
         ]
       ),
@@ -372,7 +372,7 @@ private func workCuratedModelCatalogGroups() -> [WorkModelCatalogGroup] {
         key: "openai",
         displayName: "OpenAI",
         models: [
-          WorkModelOption(id: "opencode/openai/gpt-5.4", displayName: "GPT-5.4", tier: .flagship, tagline: "OpenAI flagship", provider: "codex"),
+          WorkModelOption(id: "opencode/openai/gpt-5.4", displayName: "GPT-5.4", tier: .flagship, tagline: "OpenAI flagship", provider: "codex", serviceTiers: ["fast"]),
           WorkModelOption(id: "opencode/openai/gpt-5.3-codex", displayName: "GPT-5.3-Codex", tier: .balanced, tagline: "Codex via OpenCode", provider: "codex"),
           WorkModelOption(id: "opencode/openai/gpt-4.1-mini", displayName: "GPT-4.1 Mini", tier: .fast, tagline: "Affordable general-purpose", provider: "codex"),
         ]

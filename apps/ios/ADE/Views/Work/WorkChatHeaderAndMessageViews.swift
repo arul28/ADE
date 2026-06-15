@@ -543,6 +543,36 @@ struct WorkTurnSeparatorView: View {
   }
 }
 
+struct WorkTurnEndMarkerView: View {
+  let marker: WorkTurnEndMarker
+
+  var body: some View {
+    HStack(spacing: 10) {
+      hairline
+      Text("\(workTurnSeparatorTimeLabel(marker.time)) · Worked for \(marker.workedDurationLabel)")
+        .font(.caption2)
+        .foregroundStyle(ADEColor.textMuted)
+        .lineLimit(1)
+        .minimumScaleFactor(0.9)
+        .fixedSize(horizontal: true, vertical: false)
+        .layoutPriority(1)
+      hairline
+    }
+    .frame(maxWidth: .infinity)
+    .padding(.vertical, 8)
+    .accessibilityElement(children: .combine)
+    .accessibilityLabel(
+      "Turn ended at \(workTurnSeparatorTimeLabel(marker.time)). Worked for \(marker.workedDurationLabel)"
+    )
+  }
+
+  private var hairline: some View {
+    Rectangle()
+      .fill(ADEColor.glassBorder)
+      .frame(height: 0.6)
+  }
+}
+
 private func workTurnSeparatorTimeLabel(_ iso: String) -> String {
   // Matches desktop's "01:34 AM" turn separator format. Falls back to the raw
   // string when the input isn't an ISO date so we never crash on host quirks.

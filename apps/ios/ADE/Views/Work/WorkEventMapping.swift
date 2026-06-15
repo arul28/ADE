@@ -109,12 +109,21 @@ func makeWorkChatEvent(from event: AgentChatEvent) -> WorkChatEvent {
       parts.append(model)
     }
     if let usage {
-      parts.append(prettyPrintedRemoteJSONValue(.object([
-        "inputTokens": usage.inputTokens.map { .number(Double($0)) } ?? .null,
-        "outputTokens": usage.outputTokens.map { .number(Double($0)) } ?? .null,
-        "cacheReadTokens": usage.cacheReadTokens.map { .number(Double($0)) } ?? .null,
-        "cacheCreationTokens": usage.cacheCreationTokens.map { .number(Double($0)) } ?? .null,
-      ])))
+      var usageObject: [String: RemoteJSONValue] = [
+        "inputTokens": .null,
+        "outputTokens": .null,
+        "cacheReadTokens": .null,
+        "cacheCreationTokens": .null,
+        "reasoningTokens": .null,
+        "contextWindow": .null,
+      ]
+      if let inputTokens = usage.inputTokens { usageObject["inputTokens"] = .number(Double(inputTokens)) }
+      if let outputTokens = usage.outputTokens { usageObject["outputTokens"] = .number(Double(outputTokens)) }
+      if let cacheReadTokens = usage.cacheReadTokens { usageObject["cacheReadTokens"] = .number(Double(cacheReadTokens)) }
+      if let cacheCreationTokens = usage.cacheCreationTokens { usageObject["cacheCreationTokens"] = .number(Double(cacheCreationTokens)) }
+      if let reasoningTokens = usage.reasoningTokens { usageObject["reasoningTokens"] = .number(Double(reasoningTokens)) }
+      if let contextWindow = usage.contextWindow { usageObject["contextWindow"] = .number(Double(contextWindow)) }
+      parts.append(prettyPrintedRemoteJSONValue(.object(usageObject)))
     }
     if let costUsd {
       parts.append(String(format: "$%.4f", costUsd))
@@ -127,11 +136,62 @@ func makeWorkChatEvent(from event: AgentChatEvent) -> WorkChatEvent {
         outputTokens: usage?.outputTokens,
         cacheReadTokens: usage?.cacheReadTokens,
         cacheCreationTokens: usage?.cacheCreationTokens,
+        reasoningTokens: usage?.reasoningTokens,
+        contextWindow: usage?.contextWindow,
         costUsd: costUsd
       ),
       turnId: turnId,
       model: model,
       modelId: modelId
+    )
+  case .tokens(let turnId, let itemId, let inputTokens, let outputTokens, let cacheReadTokens, let cacheWriteTokens, let contextWindow):
+    return .tokens(
+      usage: makeWorkUsageSummary(
+        inputTokens: inputTokens,
+        outputTokens: outputTokens,
+        cacheReadTokens: cacheReadTokens,
+        cacheCreationTokens: cacheWriteTokens,
+        reasoningTokens: nil,
+        totalTokens: nil,
+        contextWindow: contextWindow,
+        costUsd: nil
+      ) ?? WorkUsageSummary(
+        turnCount: 1,
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+        contextWindow: contextWindow,
+        costUsd: 0
+      ),
+      turnId: turnId,
+      itemId: itemId
+    )
+  case .codexTokenUsage(let usage, let turnId):
+    let last = usage.last
+    let total = usage.total
+    return .tokens(
+      usage: makeWorkUsageSummary(
+        inputTokens: last?.inputTokens ?? total?.inputTokens,
+        outputTokens: last?.outputTokens ?? total?.outputTokens,
+        cacheReadTokens: last?.cacheReadTokens ?? total?.cacheReadTokens,
+        cacheCreationTokens: last?.cacheWriteTokens ?? total?.cacheWriteTokens,
+        reasoningTokens: last?.reasoningTokens ?? total?.reasoningTokens,
+        totalTokens: total?.totalTokens ?? last?.totalTokens,
+        contextWindow: usage.modelContextWindow,
+        costUsd: nil
+      ) ?? WorkUsageSummary(
+        turnCount: 1,
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheCreationTokens: 0,
+        totalTokens: total?.totalTokens ?? last?.totalTokens ?? 0,
+        contextWindow: usage.modelContextWindow,
+        costUsd: 0
+      ),
+      turnId: turnId ?? usage.turnId ?? "",
+      itemId: nil
     )
   case .promptSuggestion(let suggestion, let turnId):
     return .promptSuggestion(text: suggestion, turnId: turnId)

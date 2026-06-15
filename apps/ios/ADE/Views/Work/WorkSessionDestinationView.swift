@@ -129,6 +129,7 @@ private func workChatProviderFamilyFromToolType(_ toolType: String?) -> String? 
 
 struct WorkSessionDestinationView: View {
   @EnvironmentObject var syncService: SyncService
+  @Environment(\.dismiss) var dismiss
 
   let sessionId: String
   let initialOpeningPrompt: String?
@@ -174,6 +175,10 @@ struct WorkSessionDestinationView: View {
   @State var prCreateCapabilities: PrCreateCapabilities?
   @State var createPrPresented = false
   @State var prLinkCopied = false
+  @State var sessionActionRenamePresented = false
+  @State var sessionActionRenameText = ""
+  @State var sessionIdCopied = false
+  @State var sessionDeepLinkCopied = false
   @State var lastSessionRowRefreshAt = Date.distantPast
   @State var lastTranscriptRemoteRefreshAt = Date.distantPast
   @State var lastCanonicalTranscriptRefreshAt = Date.distantPast
@@ -270,6 +275,10 @@ struct WorkSessionDestinationView: View {
 
           chatPullRequestMenuItems
         }
+
+        Divider()
+
+        chatSessionDesktopMenuItems(session)
       } label: {
         Image(systemName: "ellipsis")
           .font(.system(size: 14, weight: .semibold))
@@ -330,6 +339,49 @@ struct WorkSessionDestinationView: View {
       openSessionLane()
     } label: {
       Label("Open lane", systemImage: "arrow.triangle.branch")
+    }
+  }
+
+  @ViewBuilder
+  private func chatSessionDesktopMenuItems(_ session: TerminalSessionSummary) -> some View {
+    Button {
+      presentSessionRename()
+    } label: {
+      Label("Rename", systemImage: "pencil")
+    }
+
+    Button(role: .destructive) {
+      Task { await deleteCurrentChatSession() }
+    } label: {
+      Label("Delete chat", systemImage: "trash")
+    }
+
+    Button {
+      openSessionLane()
+    } label: {
+      Label("Go to lane", systemImage: "arrow.triangle.branch")
+    }
+    .disabled(headerMenuLaneId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+    Button {
+      copyCurrentSessionId()
+    } label: {
+      Label(sessionIdCopied ? "Copied session ID" : "Copy session ID",
+            systemImage: sessionIdCopied ? "checkmark" : "doc.on.doc")
+    }
+
+    Button {
+      copyCurrentSessionDeepLink()
+    } label: {
+      Label(sessionDeepLinkCopied ? "Copied session deep link" : "Copy session deep link",
+            systemImage: sessionDeepLinkCopied ? "checkmark" : "link")
+    }
+
+    Button {
+      Task { await toggleCurrentSessionPinned() }
+    } label: {
+      Label(session.pinned ? "Unpin from front" : "Pin to front",
+            systemImage: session.pinned ? "pin.slash" : "pin")
     }
   }
 
@@ -401,6 +453,18 @@ struct WorkSessionDestinationView: View {
       }
       .sheet(isPresented: $createPrPresented) {
         chatCreatePrWizardSheet
+      }
+      .alert("Rename session", isPresented: $sessionActionRenamePresented) {
+        TextField("Title", text: $sessionActionRenameText)
+        Button("Cancel", role: .cancel) {
+          sessionActionRenameText = ""
+        }
+        Button("Save") {
+          let title = sessionActionRenameText
+          Task { await submitCurrentSessionRename(title) }
+        }
+      } message: {
+        Text("Give this session a clearer title for search, pinning, and activity tracking.")
       }
       .task {
         session = initialSession
@@ -501,6 +565,7 @@ struct WorkSessionDestinationView: View {
           onSelectModel: selectModel,
           onSelectRuntimeMode: selectRuntimeMode,
           onSelectEffort: selectReasoningEffort,
+          onSelectCodexFastMode: selectCodexFastMode,
           lanes: lanes,
           hasOlderTranscriptHistory: hasOlderTranscriptHistory,
           onLoadOlderTranscript: loadOlderTranscriptEntries,
@@ -1052,26 +1117,32 @@ private struct WorkSessionNavigationChromeModifier<TrailingControls: View>: View
     case .pushedDetail:
       content
         .safeAreaInset(edge: .top, spacing: 0) {
-          HStack(spacing: 10) {
-            Button {
-              dismiss()
-            } label: {
-              Image(systemName: "chevron.left")
-                .font(.system(size: 17, weight: .semibold))
-                .frame(width: 38, height: 38)
-            }
-            .buttonStyle(.glass)
-            .accessibilityLabel("Back to Work")
-
+          ZStack {
             Text(title)
               .font(.headline.weight(.semibold))
               .foregroundStyle(ADEColor.textPrimary)
               .lineLimit(1)
               .truncationMode(.tail)
+              .frame(maxWidth: .infinity)
+              .padding(.horizontal, 64)
 
-            Spacer(minLength: 0)
+            HStack(spacing: 10) {
+              Button {
+                dismiss()
+              } label: {
+                Image(systemName: "chevron.left")
+                  .font(.system(size: 15, weight: .semibold))
+                  .foregroundStyle(ADEColor.accent)
+                  .frame(width: 28, height: 28)
+              }
+              .buttonStyle(.plain)
+              .contentShape(Rectangle())
+              .accessibilityLabel("Back to Work")
 
-            trailingControls()
+              Spacer(minLength: 0)
+
+              trailingControls()
+            }
           }
           .padding(.horizontal, 16)
           .padding(.bottom, 8)

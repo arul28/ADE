@@ -463,8 +463,9 @@ private enum WorkPreviewData {
       onDispatchSteerInline: nil,
       onDispatchSteerInterrupt: nil,
       onSelectModel: { _ in },
-      onSelectRuntimeMode: { _ in },
-      onSelectEffort: { _ in }
+      onSelectRuntimeMode: { _ in true },
+      onSelectEffort: { _ in },
+      onSelectCodexFastMode: { _ in true }
     )
   }
   .environmentObject(WorkPreviewData.syncService)
@@ -532,12 +533,12 @@ private struct WorkPreviewSessionListScreen: View {
             onLongPressSelect: { _ in },
             onToggleSelect: { _ in },
             onOpen: { selectedSessionId = $0.id },
-            onArchive: { _ in },
             onPin: { _ in },
             onRename: { _ in },
             onStopRuntime: { _ in },
             onDelete: { _ in },
             onCopyId: { _ in },
+            onCopyDeepLink: { _ in },
             onGoToLane: { _ in }
           )
         }
@@ -616,12 +617,12 @@ private struct WorkRootPreviewHarness: View {
                   onLongPressSelect: { _ in },
                   onToggleSelect: { _ in },
                   onOpen: { selectedSessionId = $0.id },
-                  onArchive: { _ in },
                   onPin: { _ in },
                   onRename: { _ in },
                   onStopRuntime: { _ in },
                   onDelete: { _ in },
                   onCopyId: { _ in },
+                  onCopyDeepLink: { _ in },
                   onGoToLane: { _ in }
                 )
                 .id(session.id)

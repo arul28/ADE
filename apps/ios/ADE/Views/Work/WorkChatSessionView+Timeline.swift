@@ -9,7 +9,7 @@ extension WorkChatSessionView {
   /// markdown through the tail-only streaming parser; every completed message
   /// keeps the whole-text block cache path.
   var streamingAssistantMessageId: String? {
-    guard isStreamingTurn else { return nil }
+    guard shouldShowInterruptControl else { return nil }
     for entry in timelineSnapshot.timeline.reversed() {
       guard case .message(let message) = entry.payload else { continue }
       return message.role == "assistant" ? message.id : nil
@@ -47,6 +47,8 @@ extension WorkChatSessionView {
       timelineArtifact(artifact)
     case .turnSeparator(let separator):
       WorkTurnSeparatorView(separator: separator)
+    case .turnEndMarker(let marker):
+      WorkTurnEndMarkerView(marker: marker)
     case .pendingQuestion(let question):
       // When offline, still render the card in a disabled (busy) state so the
       // transcript keeps its full context; the top-right gear icon already

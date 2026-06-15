@@ -1738,6 +1738,25 @@ struct AgentChatTurnUsage: Codable, Equatable {
   var outputTokens: Int?
   var cacheReadTokens: Int?
   var cacheCreationTokens: Int?
+  var reasoningTokens: Int?
+  var contextWindow: Int?
+}
+
+struct AgentChatCodexTokenUsageBreakdown: Codable, Equatable {
+  var inputTokens: Int?
+  var outputTokens: Int?
+  var cacheReadTokens: Int?
+  var cacheWriteTokens: Int?
+  var reasoningTokens: Int?
+  var totalTokens: Int?
+}
+
+struct AgentChatCodexThreadTokenUsage: Codable, Equatable {
+  var threadId: String?
+  var turnId: String?
+  var total: AgentChatCodexTokenUsageBreakdown?
+  var last: AgentChatCodexTokenUsageBreakdown?
+  var modelContextWindow: Int?
 }
 
 struct AgentChatEventProvenance: Decodable, Equatable {
@@ -1786,6 +1805,8 @@ enum AgentChatEvent: Decodable, Equatable {
   case delegationState(contract: RemoteJSONValue, message: String?, turnId: String?)
   case error(message: String, turnId: String?, itemId: String?, errorInfo: RemoteJSONValue?)
   case done(turnId: String, status: AgentChatTurnStatus, model: String?, modelId: String?, usage: AgentChatTurnUsage?, costUsd: Double?)
+  case tokens(turnId: String, itemId: String?, inputTokens: Int?, outputTokens: Int?, cacheReadTokens: Int?, cacheWriteTokens: Int?, contextWindow: Int?)
+  case codexTokenUsage(usage: AgentChatCodexThreadTokenUsage, turnId: String?)
   case activity(activity: AgentChatActivityKind, detail: String?, turnId: String?)
   case stepBoundary(stepNumber: Int, turnId: String?)
   case todoUpdate(items: [AgentChatTodoItem], turnId: String?)
@@ -1844,6 +1865,11 @@ extension AgentChatEvent {
     case modelId
     case usage
     case costUsd
+    case inputTokens
+    case outputTokens
+    case cacheReadTokens
+    case cacheWriteTokens
+    case contextWindow
     case activity
     case stepNumber
     case items
@@ -1987,6 +2013,21 @@ extension AgentChatEvent {
         usage: try container.decodeIfPresent(AgentChatTurnUsage.self, forKey: .usage),
         costUsd: try container.decodeIfPresent(Double.self, forKey: .costUsd)
       )
+    case "tokens":
+      self = .tokens(
+        turnId: try container.decode(String.self, forKey: .turnId),
+        itemId: try container.decodeIfPresent(String.self, forKey: .itemId),
+        inputTokens: try container.decodeIfPresent(Int.self, forKey: .inputTokens),
+        outputTokens: try container.decodeIfPresent(Int.self, forKey: .outputTokens),
+        cacheReadTokens: try container.decodeIfPresent(Int.self, forKey: .cacheReadTokens),
+        cacheWriteTokens: try container.decodeIfPresent(Int.self, forKey: .cacheWriteTokens),
+        contextWindow: try container.decodeIfPresent(Int.self, forKey: .contextWindow)
+      )
+    case "codex_token_usage":
+      self = .codexTokenUsage(
+        usage: try container.decode(AgentChatCodexThreadTokenUsage.self, forKey: .usage),
+        turnId: try container.decodeIfPresent(String.self, forKey: .turnId)
+      )
     case "activity":
       self = .activity(
         activity: try container.decode(AgentChatActivityKind.self, forKey: .activity),
@@ -2108,6 +2149,8 @@ extension AgentChatEvent {
     case .delegationState: return "delegation_state"
     case .error: return "error"
     case .done: return "done"
+    case .tokens: return "tokens"
+    case .codexTokenUsage: return "codex_token_usage"
     case .activity: return "activity"
     case .stepBoundary: return "step_boundary"
     case .todoUpdate: return "todo_update"

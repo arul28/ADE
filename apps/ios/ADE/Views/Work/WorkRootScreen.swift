@@ -334,12 +334,12 @@ struct WorkRootScreen: View {
                     onLongPressSelect: startSelection,
                     onToggleSelect: toggleSelection,
                     onOpen: openSession,
-                    onArchive: toggleArchive,
                     onPin: togglePin,
                     onRename: beginRename,
                     onStopRuntime: { session in stopRuntimeTarget = session },
                     onDelete: deleteChatSession,
                     onCopyId: copySessionId,
+                    onCopyDeepLink: copySessionDeepLink,
                     onGoToLane: goToLane
                   )
                   .id(session.id)

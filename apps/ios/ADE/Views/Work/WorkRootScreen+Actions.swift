@@ -333,6 +333,13 @@ extension WorkRootScreen {
     UIPasteboard.general.string = session.id
   }
 
+  func copySessionDeepLink(_ session: TerminalSessionSummary) {
+    UIPasteboard.general.string = workSessionDeepLink(
+      sessionId: session.id,
+      laneId: resolvedWorkNavigationLaneId(for: session, lanes: lanes)
+    )
+  }
+
   func goToLane(_ session: TerminalSessionSummary) {
     let laneId = resolvedWorkNavigationLaneId(for: session, lanes: lanes)
     Task { @MainActor in
