@@ -627,6 +627,8 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
   var goal: String?
   var reasoningEffort: String?
   var codexFastMode: Bool?
+  var fastMode: Bool?
+  var effectiveFastMode: Bool { fastMode ?? codexFastMode ?? false }
   var executionMode: String?
   var permissionMode: String?
   var interactionMode: String?
@@ -1419,6 +1421,8 @@ struct AgentChatSession: Codable, Identifiable, Equatable {
   var sessionProfile: String?
   var reasoningEffort: String?
   var codexFastMode: Bool?
+  var fastMode: Bool?
+  var effectiveFastMode: Bool { fastMode ?? codexFastMode ?? false }
   var executionMode: String?
   var permissionMode: String?
   var interactionMode: String?
@@ -1464,6 +1468,7 @@ struct AgentChatSession: Codable, Identifiable, Equatable {
     case sessionProfile
     case reasoningEffort
     case codexFastMode
+    case fastMode
     case executionMode
     case permissionMode
     case interactionMode
@@ -1510,6 +1515,7 @@ struct AgentChatSession: Codable, Identifiable, Equatable {
     sessionProfile = try container.decodeIfPresent(String.self, forKey: .sessionProfile)
     reasoningEffort = try container.decodeIfPresent(String.self, forKey: .reasoningEffort)
     codexFastMode = try container.decodeIfPresent(Bool.self, forKey: .codexFastMode)
+    fastMode = try container.decodeIfPresent(Bool.self, forKey: .fastMode)
     executionMode = try container.decodeIfPresent(String.self, forKey: .executionMode)
     permissionMode = try container.decodeIfPresent(String.self, forKey: .permissionMode)
     interactionMode = try container.decodeIfPresent(String.self, forKey: .interactionMode)
@@ -1555,6 +1561,7 @@ struct AgentChatSession: Codable, Identifiable, Equatable {
     try container.encodeIfPresent(sessionProfile, forKey: .sessionProfile)
     try container.encodeIfPresent(reasoningEffort, forKey: .reasoningEffort)
     try container.encodeIfPresent(codexFastMode, forKey: .codexFastMode)
+    try container.encodeIfPresent(fastMode, forKey: .fastMode)
     try container.encodeIfPresent(executionMode, forKey: .executionMode)
     try container.encodeIfPresent(permissionMode, forKey: .permissionMode)
     try container.encodeIfPresent(interactionMode, forKey: .interactionMode)

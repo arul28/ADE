@@ -903,7 +903,7 @@ func workModelSelectionChoice(from value: Any?) -> WorkModelSelectionChoice? {
     provider: provider,
     modelId: modelId,
     reasoningEffort: optionalString(object["reasoningEffort"]),
-    codexFastMode: workBoolValue(object["codexFastMode"])
+    codexFastMode: workBoolValue(object["fastMode"]) ?? workBoolValue(object["codexFastMode"])
   )
 }
 

@@ -677,7 +677,7 @@ struct WorkChatSessionView: View {
       .onChange(of: chatSummary) { _, _ in
         refreshTimelinePresentation()
       }
-      .onChange(of: chatSummary?.codexFastMode) { _, newValue in
+      .onChange(of: chatSummary?.effectiveFastMode) { _, newValue in
         if let pendingCodexFastMode, pendingCodexFastMode == (newValue == true) {
           self.pendingCodexFastMode = nil
         }

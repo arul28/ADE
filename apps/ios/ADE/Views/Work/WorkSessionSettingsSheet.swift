@@ -34,7 +34,7 @@ struct WorkSessionSettingsSheet: View {
     _selectedModelId = State(initialValue: summary.modelId ?? summary.model)
     _selectedReasoningEffort = State(initialValue: summary.reasoningEffort ?? "")
     _selectedRuntimeMode = State(initialValue: workInitialRuntimeMode(summary))
-    _selectedCodexFastMode = State(initialValue: summary.codexFastMode ?? false)
+    _selectedCodexFastMode = State(initialValue: summary.effectiveFastMode)
   }
 
   var selectedModel: AgentChatModelInfo? {
@@ -55,7 +55,7 @@ struct WorkSessionSettingsSheet: View {
   }
 
   var resolvedInitialCodexFastMode: Bool {
-    summary.codexFastMode ?? false
+    summary.effectiveFastMode
   }
 
   var supportsCodexFastModeToggle: Bool {
@@ -346,10 +346,11 @@ private func workRuntimeModeSubtitle(provider: String, mode: String) -> String {
     }
   case "droid", "factory":
     switch mode {
-    case "plan": return "Droid without autonomy."
-    case "edit": return "Droid with auto low."
-    case "default": return "Droid with auto medium."
-    case "full-auto": return "Droid with auto high."
+    case "read-only", "plan": return "Droid without autonomy."
+    case "auto-low", "edit": return "Droid with auto low."
+    case "auto-medium", "default": return "Droid with auto medium."
+    case "auto-high", "full-auto": return "Droid with auto high."
+    case "agi": return "Droid orchestrator mode."
     default: return "Switch this session to \(mode.capitalized)."
     }
   default:

@@ -481,10 +481,11 @@ func workRuntimeModeOptions(provider: String) -> [WorkRuntimeModeOption] {
     ]
   case "droid", "factory":
     return [
-      WorkRuntimeModeOption(id: "plan", title: "Read-only"),
-      WorkRuntimeModeOption(id: "edit", title: "Auto low"),
-      WorkRuntimeModeOption(id: "default", title: "Auto medium"),
-      WorkRuntimeModeOption(id: "full-auto", title: "Auto high"),
+      WorkRuntimeModeOption(id: "read-only", title: "Read-only"),
+      WorkRuntimeModeOption(id: "auto-low", title: "Auto low"),
+      WorkRuntimeModeOption(id: "auto-medium", title: "Auto medium"),
+      WorkRuntimeModeOption(id: "auto-high", title: "Auto high"),
+      WorkRuntimeModeOption(id: "agi", title: "AGI"),
     ]
   default:
     return []
@@ -530,6 +531,7 @@ func workRuntimeModeLabel(provider: String, mode: String) -> String {
     case "edit", "auto-low": return "Auto low"
     case "default", "auto-medium": return "Auto medium"
     case "full-auto", "auto-high": return "Auto high"
+    case "agi": return "AGI"
     default: return "Auto low"
     }
   default:
@@ -555,7 +557,7 @@ func workDefaultRuntimeMode(provider: String) -> String {
   case "claude", "codex": return "default"
   case "opencode": return "edit"
   case "cursor": return "default"
-  case "droid", "factory": return "edit"
+  case "droid", "factory": return "auto-low"
   default: return ""
   }
 }
@@ -645,20 +647,23 @@ func workRuntimeWireFields(provider: String, mode: String) -> WorkRuntimeWireFie
       fields.permissionMode = "default"
     }
   case "droid", "factory":
-    let normalizedMode = mode.isEmpty ? "edit" : mode
+    let normalizedMode = mode.isEmpty ? "auto-low" : mode
     switch normalizedMode {
-    case "plan":
+    case "read-only", "plan":
       fields.droidPermissionMode = "read-only"
       fields.permissionMode = "plan"
-    case "edit":
+    case "auto-low", "edit":
       fields.droidPermissionMode = "auto-low"
       fields.permissionMode = "edit"
-    case "default":
+    case "auto-medium", "default":
       fields.droidPermissionMode = "auto-medium"
       fields.permissionMode = "default"
-    case "full-auto":
+    case "auto-high", "full-auto":
       fields.droidPermissionMode = "auto-high"
       fields.permissionMode = "full-auto"
+    case "agi":
+      fields.droidPermissionMode = "agi"
+      fields.permissionMode = "plan"
     default:
       fields.droidPermissionMode = "auto-low"
       fields.permissionMode = "edit"
@@ -728,7 +733,7 @@ func workInitialRuntimeMode(_ summary: AgentChatSessionSummary) -> String {
     return workDroidRuntimeMode(
       droidPermissionMode: summary.droidPermissionMode,
       permissionMode: summary.permissionMode
-    ) ?? "edit"
+    ) ?? "auto-low"
   default:
     return ""
   }
@@ -736,20 +741,17 @@ func workInitialRuntimeMode(_ summary: AgentChatSessionSummary) -> String {
 
 func workDroidModeFromPermissionMode(_ permissionMode: String?) -> String? {
   switch permissionMode {
-  case "plan": return "plan"
-  case "edit": return "edit"
-  case "default": return "default"
-  case "full-auto": return "full-auto"
+  case "plan": return "read-only"
+  case "edit": return "auto-low"
+  case "default": return "auto-medium"
+  case "full-auto": return "auto-high"
   default: return nil
   }
 }
 
 func workDroidRuntimeMode(droidPermissionMode: String?, permissionMode: String?) -> String? {
   switch droidPermissionMode {
-  case "read-only": return "plan"
-  case "auto-low": return "edit"
-  case "auto-medium": return "default"
-  case "auto-high": return "full-auto"
+  case "read-only", "auto-low", "auto-medium", "auto-high", "agi": return droidPermissionMode
   default: return workDroidModeFromPermissionMode(permissionMode)
   }
 }

@@ -98,7 +98,7 @@ func workReasoningChipLabel(_ effort: String?) -> String? {
 }
 
 func workChatComposerSupportsFastMode(_ summary: AgentChatSessionSummary) -> Bool {
-  if summary.codexFastMode == true { return true }
+  if summary.effectiveFastMode { return true }
   if workChatComposerModelOption(summary)?.supportsServiceTier("fast") == true { return true }
   return workChatComposerModelRefLooksFastCapable(summary)
 }
@@ -340,7 +340,7 @@ struct WorkComposerChipStrip: View {
   @ViewBuilder
   private func fastModeToggle(summary: AgentChatSessionSummary) -> some View {
     if supportsFastMode(summary: summary) {
-      let persistedEnabled = summary.codexFastMode == true
+      let persistedEnabled = summary.effectiveFastMode
       let isEnabled = codexFastModeOverride ?? persistedEnabled
       Button {
         let next = !isEnabled

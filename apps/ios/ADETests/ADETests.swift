@@ -338,7 +338,7 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(workRuntimeModeOptions(provider: "codex").map(\.id), ["default", "edit", "plan", "full-auto", "config-toml"])
     XCTAssertEqual(workRuntimeModeOptions(provider: "opencode").map(\.id), ["default", "plan", "edit", "full-auto", "config-toml"])
     XCTAssertEqual(workRuntimeModeOptions(provider: "cursor").map(\.id), ["default", "plan", "edit", "full-auto"])
-    XCTAssertEqual(workRuntimeModeOptions(provider: "droid").map(\.id), ["plan", "edit", "default", "full-auto"])
+    XCTAssertEqual(workRuntimeModeOptions(provider: "droid").map(\.id), ["read-only", "auto-low", "auto-medium", "auto-high", "agi"])
 
     let claudeAuto = workRuntimeWireFields(provider: "claude", mode: "auto")
     XCTAssertEqual(claudeAuto.permissionMode, "auto")
@@ -354,9 +354,15 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(cursorAsk.permissionMode, "edit")
     XCTAssertEqual(cursorAsk.cursorModeId, "ask")
 
-    let droidHigh = workRuntimeWireFields(provider: "droid", mode: "full-auto")
+    let droidHigh = workRuntimeWireFields(provider: "droid", mode: "auto-high")
     XCTAssertEqual(droidHigh.permissionMode, "full-auto")
     XCTAssertEqual(droidHigh.droidPermissionMode, "auto-high")
+
+    let droidAgi = workRuntimeWireFields(provider: "droid", mode: "agi")
+    XCTAssertEqual(droidAgi.permissionMode, "plan")
+    XCTAssertEqual(droidAgi.droidPermissionMode, "agi")
+    XCTAssertEqual(workDroidRuntimeMode(droidPermissionMode: "agi", permissionMode: "plan"), "agi")
+    XCTAssertEqual(workDroidModeFromPermissionMode("edit"), "auto-low")
   }
 
   func testResolvedWorkArchivedSessionIdsKeepsLocalOverrideForKnownChat() {
@@ -7488,6 +7494,7 @@ final class ADETests: XCTestCase {
       "model": "gpt-5.4",
       "reasoningEffort": "high",
       "codexFastMode": true,
+      "fastMode": true,
       "status": "active",
       "createdAt": "2026-03-25T00:00:00.000Z",
       "lastActivityAt": "2026-03-25T00:00:01.000Z",
@@ -7495,6 +7502,8 @@ final class ADETests: XCTestCase {
     let data = try JSONSerialization.data(withJSONObject: payload)
     let session = try JSONDecoder().decode(AgentChatSession.self, from: data)
     XCTAssertEqual(session.codexFastMode, true)
+    XCTAssertEqual(session.fastMode, true)
+    XCTAssertEqual(session.effectiveFastMode, true)
 
     let summaryPayload: [String: Any] = [
       "sessionId": "chat-fast",
@@ -7502,6 +7511,7 @@ final class ADETests: XCTestCase {
       "provider": "codex",
       "model": "gpt-5.4",
       "codexFastMode": false,
+      "fastMode": true,
       "status": "active",
       "startedAt": "2026-03-25T00:00:00.000Z",
       "lastActivityAt": "2026-03-25T00:00:01.000Z",
@@ -7509,6 +7519,8 @@ final class ADETests: XCTestCase {
     let summaryData = try JSONSerialization.data(withJSONObject: summaryPayload)
     let summary = try JSONDecoder().decode(AgentChatSessionSummary.self, from: summaryData)
     XCTAssertEqual(summary.codexFastMode, false)
+    XCTAssertEqual(summary.fastMode, true)
+    XCTAssertEqual(summary.effectiveFastMode, true)
 
     // Missing key keeps the flag nil so older app servers continue to decode.
     let legacyPayload: [String: Any] = [
@@ -7523,6 +7535,29 @@ final class ADETests: XCTestCase {
     let legacyData = try JSONSerialization.data(withJSONObject: legacyPayload)
     let legacy = try JSONDecoder().decode(AgentChatSessionSummary.self, from: legacyData)
     XCTAssertNil(legacy.codexFastMode)
+    XCTAssertNil(legacy.fastMode)
+    XCTAssertEqual(legacy.effectiveFastMode, false)
+  }
+
+  func testWorkModelSelectionChoiceDecodesCanonicalFastMode() throws {
+    let canonical = try XCTUnwrap(workModelSelectionChoice(from: [
+      "provider": "codex",
+      "modelId": "gpt-5.5",
+      "reasoningEffort": "high",
+      "codexFastMode": false,
+      "fastMode": true,
+    ]))
+    XCTAssertEqual(canonical.provider, "codex")
+    XCTAssertEqual(canonical.modelId, "gpt-5.5")
+    XCTAssertEqual(canonical.reasoningEffort, "high")
+    XCTAssertEqual(canonical.codexFastMode, true)
+
+    let legacy = try XCTUnwrap(workModelSelectionChoice(from: [
+      "provider": "codex",
+      "modelId": "gpt-5.4",
+      "codexFastMode": true,
+    ]))
+    XCTAssertEqual(legacy.codexFastMode, true)
   }
 
   func testWorkReasoningChipLabelMatchesDesktopAbbreviations() {
@@ -10630,6 +10665,7 @@ final class ADETests: XCTestCase {
       goal: nil,
       reasoningEffort: nil,
       codexFastMode: nil,
+      fastMode: nil,
       executionMode: nil,
       permissionMode: nil,
       interactionMode: nil,
