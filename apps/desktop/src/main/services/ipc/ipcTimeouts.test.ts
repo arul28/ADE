@@ -69,6 +69,10 @@ describe("ipcInvokeTimeoutMs", () => {
     expect(ipcInvokeTimeoutMs(IPC.macosVmProvision)).toBe(120 * 60_000);
   });
 
+  it("lets transcription run longer than the default invoke ceiling", () => {
+    expect(ipcInvokeTimeoutMs(IPC.transcriptionTranscribe)).toBe(6 * 60_000);
+  });
+
   it("extends iOS Preview Lab matching and workspace readiness timeouts", () => {
     expect(ipcInvokeTimeoutMs(IPC.iosSimulatorResolvePreviewMatch)).toBe(2 * 60_000);
     expect(ipcInvokeTimeoutMs(IPC.iosSimulatorEnsurePreviewWorkspace)).toBe(2 * 60_000);

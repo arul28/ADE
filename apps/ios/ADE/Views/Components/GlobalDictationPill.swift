@@ -15,7 +15,7 @@ struct GlobalDictationPill: View {
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   private var isPresented: Bool {
-    (controller.isRecording || controller.isFinishing) && !controller.activeTargetIsVisible
+    (controller.isStarting || controller.isPreparing || controller.isRecording || controller.isFinishing) && !controller.activeTargetIsVisible
   }
 
   var body: some View {
@@ -24,7 +24,7 @@ struct GlobalDictationPill: View {
         RecordingPill(
           elapsedTime: controller.elapsedTime,
           audioLevel: controller.audioLevel,
-          isFinishing: controller.isFinishing,
+          isFinishing: controller.isFinishing || controller.isStarting || controller.isPreparing,
           onCancel: { controller.cancelRecording() },
           onDone: { controller.finishRecording(origin: .globalPill) },
           opaque: true

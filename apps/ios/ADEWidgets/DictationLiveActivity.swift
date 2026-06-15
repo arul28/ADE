@@ -46,6 +46,7 @@ public struct DictationLiveActivity: Widget {
                 DynamicIslandExpandedRegion(.trailing) {
                     HStack(spacing: 10) {
                         DictationIslandTimer(state: ctx.state)
+                        DictationIslandCancelButton(isDisabled: ctx.state.isFinishing)
                         DictationIslandDoneButton(isFinishing: ctx.state.isFinishing)
                     }
                 }
@@ -125,6 +126,25 @@ private struct DictationIslandWaveform: View {
     }
 }
 
+/// Interactive Cancel button for expanded / lock-screen Live Activity surfaces.
+@available(iOS 17.0, *)
+private struct DictationIslandCancelButton: View {
+    let isDisabled: Bool
+    var body: some View {
+        Button(intent: DictationCancelIntent()) {
+            Image(systemName: "xmark")
+                .font(.system(size: 12, weight: .bold))
+                .foregroundStyle(.white)
+                .frame(width: 30, height: 30)
+                .background(Circle().fill(Color.white.opacity(0.16)))
+                .overlay(Circle().stroke(Color.white.opacity(0.24), lineWidth: 0.8))
+        }
+        .buttonStyle(.plain)
+        .disabled(isDisabled)
+        .accessibilityLabel("Cancel dictation")
+    }
+}
+
 /// Interactive Done button. `isFinishing` swaps the checkmark for a spinner.
 @available(iOS 17.0, *)
 private struct DictationIslandDoneButton: View {
@@ -169,6 +189,7 @@ private struct DictationLockScreenView: View {
             DictationWaveformBars(levels: state.levels, color: Self.recordRed.opacity(0.9))
                 .frame(maxWidth: .infinity)
                 .frame(height: 22)
+            DictationIslandCancelButton(isDisabled: state.isFinishing)
             DictationIslandDoneButton(isFinishing: state.isFinishing)
         }
         .padding(.horizontal, 16)

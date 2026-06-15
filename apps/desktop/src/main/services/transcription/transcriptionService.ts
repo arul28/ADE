@@ -68,6 +68,9 @@ export type TranscriptionService = {
 const WHISPER_BINARY_BASENAMES = ["whisper-cli", "main", "whisper"];
 const WHISPER_MODEL_BASENAME = "ggml-base.en.bin";
 const TARGET_SAMPLE_RATE = 16_000;
+const MIN_SAMPLE_RATE = 8_000;
+const MAX_SAMPLE_RATE = 48_000;
+const DEFAULT_WHISPER_PROCESS_TIMEOUT_MS = 5 * 60_000;
 
 function whisperBinaryCandidates(whisperDir: string): string[] {
   const exeSuffix = process.platform === "win32" ? ".exe" : "";
@@ -83,6 +86,23 @@ function firstExisting(paths: string[]): string | null {
     }
   }
   return null;
+}
+
+function resolveWhisperProcessTimeoutMs(): number {
+  const configured = Number.parseInt(process.env.ADE_WHISPER_PROCESS_TIMEOUT_MS ?? "", 10);
+  return Number.isFinite(configured) && configured > 0
+    ? configured
+    : DEFAULT_WHISPER_PROCESS_TIMEOUT_MS;
+}
+
+function validateSampleRate(sampleRate: number): number {
+  if (!Number.isFinite(sampleRate) || sampleRate < MIN_SAMPLE_RATE || sampleRate > MAX_SAMPLE_RATE) {
+    throw new TranscriptionError(
+      "transcribe_failed",
+      `Invalid audio sample rate; expected ${MIN_SAMPLE_RATE}-${MAX_SAMPLE_RATE} Hz.`,
+    );
+  }
+  return Math.round(sampleRate);
 }
 
 /**
@@ -252,8 +272,27 @@ export function createTranscriptionService({
       const args = buildWhisperArgs(modelPath, wavPath);
       const child = spawn(binaryPath, args, { stdio: ["ignore", "pipe", "pipe"] });
       activeChildren.add(child);
+
+      const whisperTimeoutMs = resolveWhisperProcessTimeoutMs();
+      let timeoutHandle: NodeJS.Timeout | null = null;
+      let settled = false;
       let stdout = "";
       let stderr = "";
+
+      const clearChildTimeout = () => {
+        if (timeoutHandle) {
+          clearTimeout(timeoutHandle);
+          timeoutHandle = null;
+        }
+      };
+      const rejectOnce = (error: TranscriptionError, removeChild = true) => {
+        if (settled) return;
+        settled = true;
+        clearChildTimeout();
+        if (removeChild) activeChildren.delete(child);
+        reject(error);
+      };
+
       child.stdout?.on("data", (chunk) => {
         stdout += chunk.toString();
       });
@@ -261,11 +300,37 @@ export function createTranscriptionService({
         stderr += chunk.toString();
       });
       child.on("error", (error) => {
-        activeChildren.delete(child);
-        reject(new TranscriptionError("transcribe_failed", error.message));
+        rejectOnce(new TranscriptionError("transcribe_failed", error.message));
       });
+      timeoutHandle = setTimeout(() => {
+        try {
+          child.kill("SIGTERM");
+        } catch {
+          // best-effort
+        }
+        const forceKillTimer = setTimeout(() => {
+          try {
+            child.kill("SIGKILL");
+          } catch {
+            // best-effort
+          }
+        }, 1_000);
+        forceKillTimer.unref?.();
+        rejectOnce(
+          new TranscriptionError(
+            "transcribe_failed",
+            `whisper timed out after ${Math.round(whisperTimeoutMs / 1000)}s`,
+          ),
+          false,
+        );
+      }, whisperTimeoutMs);
+      timeoutHandle.unref?.();
+
       child.on("close", (exitCode) => {
+        clearChildTimeout();
         activeChildren.delete(child);
+        if (settled) return;
+        settled = true;
         if (exitCode !== 0) {
           reject(
             new TranscriptionError(
@@ -311,7 +376,7 @@ export function createTranscriptionService({
       );
     }
 
-    const sampleRate = options?.sampleRate ?? TARGET_SAMPLE_RATE;
+    const sampleRate = validateSampleRate(options?.sampleRate ?? TARGET_SAMPLE_RATE);
     fs.mkdirSync(tmpDir, { recursive: true });
     const wavPath = path.join(tmpDir, `${randomUUID()}.wav`);
     pendingTempFiles.add(wavPath);

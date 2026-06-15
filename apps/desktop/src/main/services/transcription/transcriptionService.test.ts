@@ -1,9 +1,12 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 import {
+  __resetGlossaryCacheForTests,
   cleanTranscript,
+  loadGlossary,
   prepareGlossary,
   type VoiceGlossary,
 } from "./dictationCleanup";
@@ -83,6 +86,20 @@ describe("desktop voice transcription", () => {
       expect(clean("launch codex spark now")).toBe("Launch Codex Spark now");
     });
 
+    it("sorts equal-length corrections deterministically", () => {
+      const prepared = prepareGlossary({
+        version: 1,
+        contextualTerms: [],
+        corrections: {
+          beta: "beta",
+          alfa: "alpha",
+        },
+        fillers: [],
+      });
+
+      expect(prepared.corrections.map((entry) => entry.from)).toEqual(["alfa", "beta"]);
+    });
+
     it("collapses double spaces introduced by filler removal", () => {
       expect(clean("um   uh   rebase")).toBe("Rebase");
     });
@@ -95,6 +112,28 @@ describe("desktop voice transcription", () => {
       expect(
         clean("um rebase the work tree onto main and squash then run vitest"),
       ).toBe("Rebase the worktree onto main and squash then run vitest");
+    });
+
+    it("does not cache the empty fallback after a failed glossary read", () => {
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-voice-glossary-"));
+      const explicitPath = path.join(tmpDir, "voice-glossary.json");
+      try {
+        __resetGlossaryCacheForTests();
+        expect(loadGlossary({ explicitPath }).version).toBe(0);
+        fs.writeFileSync(
+          explicitPath,
+          JSON.stringify({
+            version: 7,
+            contextualTerms: ["ADE"],
+            corrections: { codecs: "Codex" },
+            fillers: ["um"],
+          }),
+        );
+        expect(loadGlossary({ explicitPath }).version).toBe(7);
+      } finally {
+        __resetGlossaryCacheForTests();
+        fs.rmSync(tmpDir, { recursive: true, force: true });
+      }
     });
   });
 

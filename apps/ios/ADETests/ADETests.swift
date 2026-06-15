@@ -80,6 +80,12 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(cleaned, "Hello. \"Goodbye\"")
   }
 
+  func testDictationCleanupAllowsExpandedUppercaseCharacters() {
+    let cleaned = DictationCleanup.clean("ßeta", glossary: .empty)
+
+    XCTAssertEqual(cleaned, "SSeta")
+  }
+
   func testDictationBufferConverterRecreatesWhenInputFormatChanges() throws {
     let converter = DictationBufferConverter()
     let outputFormat = try XCTUnwrap(AVAudioFormat(

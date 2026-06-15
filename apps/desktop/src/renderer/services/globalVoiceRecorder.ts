@@ -278,7 +278,11 @@ class GlobalVoiceRecorder {
           } catch {
             // focus is best-effort
           }
-          target.insertText(cleaned);
+          try {
+            target.insertText(cleaned);
+          } catch {
+            // Clipboard copy below is the recovery path when the live target fails.
+          }
         }
         // Always copy to the clipboard as a recovery net (and the sole sink when
         // no composer is registered).
@@ -291,9 +295,9 @@ class GlobalVoiceRecorder {
     } catch (error) {
       const raw = error instanceof Error ? error.message : String(error);
       this.emitError(
-        raw.startsWith("model_not_installed:")
+        raw.includes("model_not_installed:")
           ? "model_not_installed"
-          : raw.startsWith("empty_audio:")
+          : raw.includes("empty_audio:")
             ? "no_audio"
             : "transcribe_failed",
       );

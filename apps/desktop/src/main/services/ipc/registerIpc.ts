@@ -1807,6 +1807,7 @@ export function registerIpc({
     [IPC.builtInBrowserNavigate]: new Set(["url"]),
     [IPC.builtInBrowserCreateTab]: new Set(["url"]),
     [IPC.builtInBrowserShowPanel]: new Set(["url"]),
+    [IPC.transcriptionTranscribe]: new Set(["pcm"]),
   };
 
   const redactIpcArgsForChannel = (channel: string, args: unknown[]): unknown[] => {
@@ -1878,6 +1879,16 @@ export function registerIpc({
     ...(args.length > 1 ? { arg1: summarizeIpcArg(args[1]) } : {}),
     ...(args.length > 2 ? { arg2: summarizeIpcArg(args[2]) } : {}),
   });
+
+  const redactIpcResultForChannel = (channel: string, result: unknown): unknown => {
+    if (channel !== IPC.transcriptionTranscribe) return result;
+    if (!result || typeof result !== "object" || Array.isArray(result)) return "[redacted]";
+    return {
+      ...(result as Record<string, unknown>),
+      raw: "[redacted]",
+      cleaned: "[redacted]",
+    };
+  };
 
   const getTraceLogger = (): Pick<Logger, "info" | "warn"> => {
     try {
@@ -2056,7 +2067,7 @@ export function registerIpc({
               channel,
               winId,
               durationMs,
-              result: summarizeIpcValue(result),
+              result: summarizeIpcValue(redactIpcResultForChannel(channel, result)),
             });
           }
           return result;
@@ -6319,6 +6330,62 @@ export function registerIpc({
   // only needs the bundled whisper binary + model + the shared glossary. It is
   // resolved from the active context, where it is threaded as a shared
   // singleton (see main.ts).
+  type TranscriptionPcmFormat = "int16" | "float32";
+  const DEFAULT_TRANSCRIPTION_SAMPLE_RATE = 16_000;
+  const MIN_TRANSCRIPTION_SAMPLE_RATE = 8_000;
+  const MAX_TRANSCRIPTION_SAMPLE_RATE = 48_000;
+  const MAX_TRANSCRIPTION_SECONDS = 5 * 60;
+
+  const normalizeTranscriptionFormat = (format: unknown): TranscriptionPcmFormat => {
+    if (format == null) return "int16";
+    if (format === "int16" || format === "float32") return format;
+    throw new Error("transcribe_failed: Unsupported audio format.");
+  };
+
+  const normalizeTranscriptionSampleRate = (sampleRate: unknown): number => {
+    if (sampleRate == null) return DEFAULT_TRANSCRIPTION_SAMPLE_RATE;
+    if (
+      typeof sampleRate !== "number"
+      || !Number.isFinite(sampleRate)
+      || sampleRate < MIN_TRANSCRIPTION_SAMPLE_RATE
+      || sampleRate > MAX_TRANSCRIPTION_SAMPLE_RATE
+    ) {
+      throw new Error(
+        `transcribe_failed: Invalid audio sample rate; expected ${MIN_TRANSCRIPTION_SAMPLE_RATE}-${MAX_TRANSCRIPTION_SAMPLE_RATE} Hz.`,
+      );
+    }
+    return Math.round(sampleRate);
+  };
+
+  const normalizeTranscriptionBuffer = (
+    pcmValue: unknown,
+    format: TranscriptionPcmFormat,
+    sampleRate: number,
+  ): ArrayBuffer => {
+    let buffer: ArrayBuffer | null = null;
+    if (pcmValue instanceof ArrayBuffer) {
+      buffer = pcmValue;
+    } else if (pcmValue instanceof Int16Array && format === "int16") {
+      buffer = new ArrayBuffer(pcmValue.byteLength);
+      new Uint8Array(buffer).set(new Uint8Array(pcmValue.buffer, pcmValue.byteOffset, pcmValue.byteLength));
+    }
+    if (!buffer || buffer.byteLength === 0) {
+      throw new Error("empty_audio: No audio was captured.");
+    }
+
+    const bytesPerSample = format === "float32" ? 4 : 2;
+    if (buffer.byteLength % bytesPerSample !== 0) {
+      throw new Error("transcribe_failed: Invalid audio buffer alignment.");
+    }
+
+    const sampleCount = buffer.byteLength / bytesPerSample;
+    if (sampleCount / sampleRate > MAX_TRANSCRIPTION_SECONDS) {
+      throw new Error(`transcribe_failed: Dictation is limited to ${Math.round(MAX_TRANSCRIPTION_SECONDS / 60)} minutes.`);
+    }
+
+    return buffer;
+  };
+
   ipcMain.handle(
     IPC.transcriptionTranscribe,
     async (
@@ -6330,20 +6397,16 @@ export function registerIpc({
         throw new Error("model_not_installed: Voice model not installed");
       }
       // PCM arrives as a transferable ArrayBuffer (or a typed array when called
-      // in-process from tests). Interpret it per the declared format.
-      const buffer = arg?.pcm instanceof ArrayBuffer
-        ? arg.pcm
-        : arg?.pcm instanceof Int16Array
-          ? arg.pcm.buffer.slice(arg.pcm.byteOffset, arg.pcm.byteOffset + arg.pcm.byteLength)
-          : null;
-      if (!buffer) {
-        throw new Error("empty_audio: No audio was captured.");
-      }
-      const pcm = arg?.format === "float32"
+      // in-process from tests). Validate before constructing a typed view so a
+      // malformed renderer-controlled payload cannot reach WAV encoding.
+      const format = normalizeTranscriptionFormat(arg?.format);
+      const sampleRate = normalizeTranscriptionSampleRate(arg?.sampleRate);
+      const buffer = normalizeTranscriptionBuffer(arg?.pcm, format, sampleRate);
+      const pcm = format === "float32"
         ? new Float32Array(buffer)
         : new Int16Array(buffer);
       try {
-        return await service.transcribe(pcm, { sampleRate: arg?.sampleRate });
+        return await service.transcribe(pcm, { sampleRate });
       } catch (error) {
         if (error instanceof TranscriptionError) {
           // Surface the typed code via the message prefix the renderer matches on.

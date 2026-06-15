@@ -5484,12 +5484,22 @@ app.whenReady().then(async () => {
     }
   };
 
+  const disposeSharedTranscriptionService = (): void => {
+    try {
+      sharedTranscriptionService?.dispose();
+    } catch {
+      // ignore
+    }
+    sharedTranscriptionService = null;
+  };
+
   const runImmediateProcessCleanup = (reason: string): void => {
     try {
       autoUpdateService?.dispose();
     } catch {
       // ignore
     }
+    disposeSharedTranscriptionService();
     try {
       localRuntimePool.dispose();
     } catch {
@@ -5967,10 +5977,7 @@ app.whenReady().then(async () => {
   });
   app.on("will-quit", () => {
     runImmediateProcessCleanup("will_quit");
-    // The transcription service is a shared singleton (not per-context), so it
-    // is only torn down on full app shutdown, never in disposeContextResources.
-    sharedTranscriptionService?.dispose();
-    sharedTranscriptionService = null;
+    disposeSharedTranscriptionService();
   });
 
   try {

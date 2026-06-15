@@ -69,6 +69,8 @@ final class DictationController: ObservableObject, DictationActivityActionHandle
     @Published private(set) var audioLevel: Float = 0
     @Published private(set) var elapsedTime: TimeInterval = 0
     @Published private(set) var isRecording = false
+    @Published private(set) var isStarting = false
+    @Published private(set) var isPreparing = false
 
     private let glossary: VoiceGlossary
 
@@ -127,6 +129,14 @@ final class DictationController: ObservableObject, DictationActivityActionHandle
             .receive(on: RunLoop.main)
             .sink { [weak self] value in self?.isRecording = value }
             .store(in: &cancellables)
+        service.$isStarting
+            .receive(on: RunLoop.main)
+            .sink { [weak self] value in self?.isStarting = value }
+            .store(in: &cancellables)
+        service.$isPreparing
+            .receive(on: RunLoop.main)
+            .sink { [weak self] value in self?.isPreparing = value }
+            .store(in: &cancellables)
     }
 
     // MARK: - Target registration
@@ -167,7 +177,7 @@ final class DictationController: ObservableObject, DictationActivityActionHandle
         if latestTargetId == id {
             latestTargetId = visibleTargetOrder.last
         }
-        if activeTargetId == id, !service.isRecording, !isFinishing {
+        if activeTargetId == id, !service.isRecording, !service.isStarting, !service.isPreparing, !isFinishing {
             activeTargetId = nil
         }
         refreshActiveTargetVisibility()
@@ -178,12 +188,15 @@ final class DictationController: ObservableObject, DictationActivityActionHandle
     /// Begin recording on behalf of the composer identified by `targetId`.
     /// No-ops if a recording is already in flight (only one at a time).
     func startRecording(targetId: String) async {
-        guard !service.isRecording, !service.isStarting, !isFinishing else { return }
+        guard !service.isRecording, !service.isStarting, !service.isPreparing, !isFinishing else { return }
         activeTargetId = targetId
         refreshActiveTargetVisibility()
         do {
             try await service.start()
             startLiveActivity()
+        } catch is CancellationError {
+            activeTargetId = nil
+            refreshActiveTargetVisibility()
         } catch {
             activeTargetId = nil
             refreshActiveTargetVisibility()
@@ -210,7 +223,7 @@ final class DictationController: ObservableObject, DictationActivityActionHandle
     /// Cancel the active recording without producing a transcript. Invoked by
     /// the composer's Cancel button AND the island Cancel intent.
     func cancelRecording() {
-        guard service.isRecording else { return }
+        guard service.isRecording || service.isStarting || service.isPreparing else { return }
         ADEHaptics.warning()
         Task { [weak self] in
             guard let self else { return }

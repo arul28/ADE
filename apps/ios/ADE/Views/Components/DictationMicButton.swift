@@ -88,6 +88,12 @@ struct DictationMicButton: View {
     .onChange(of: controller.isRecording) { _, _ in
       publishRecordingState()
     }
+    .onChange(of: controller.isStarting) { _, _ in
+      publishRecordingState()
+    }
+    .onChange(of: controller.isPreparing) { _, _ in
+      publishRecordingState()
+    }
     .onChange(of: controller.isFinishing) { _, _ in
       publishRecordingState()
     }
@@ -98,9 +104,9 @@ struct DictationMicButton: View {
   }
 
   /// True when the recording pill should be on screen for *this* composer
-  /// (recording or finalizing AND this composer owns the mic).
+  /// (starting, preparing, recording, or finalizing AND this composer owns the mic).
   private var isDictationUIActive: Bool {
-    isActiveTarget && (controller.isRecording || controller.isFinishing)
+    isActiveTarget && (controller.isStarting || controller.isPreparing || controller.isRecording || controller.isFinishing)
   }
 
   private func publishRecordingState() {
@@ -129,7 +135,7 @@ struct DictationMicButton: View {
       RecordingPill(
         elapsedTime: controller.elapsedTime,
         audioLevel: controller.audioLevel,
-        isFinishing: controller.isFinishing,
+        isFinishing: controller.isFinishing || controller.isStarting || controller.isPreparing,
         onCancel: cancelRecording,
         onDone: finishRecording
       )

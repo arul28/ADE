@@ -94,6 +94,7 @@ final class SpeechDictationService: ObservableObject {
 
   private var timerTask: Task<Void, Never>?
   private var startDate: Date?
+  private var startGeneration = 0
 
   /// Exponential moving average of the raw RMS level. Smooths the per-buffer
   /// amplitude so the published `audioLevel` rises/falls without spiky jumps,
@@ -146,17 +147,25 @@ final class SpeechDictationService: ObservableObject {
   func start() async throws {
     guard !isRecording, !isStarting else { return }
     guard Self.isAvailable else { throw DictationError.transcriptionUnavailable }
+    startGeneration += 1
+    let generation = startGeneration
     isStarting = true
-    defer { isStarting = false }
+    defer {
+      if startGeneration == generation {
+        isStarting = false
+      }
+    }
 
     if authorizationState != .authorized {
       let granted = await requestAuthorization()
+      try checkStartStillCurrent(generation)
       guard granted else { throw DictationError.notAuthorized }
     }
 
     if #available(iOS 26.0, *) {
       do {
-        try await startIOS26()
+        try await startIOS26(generation: generation)
+        try checkStartStillCurrent(generation)
       } catch {
         // Capture may have partially started (audio session active, input tap
         // installed, analyzer running) before the throw — tear it all down so a
@@ -207,9 +216,13 @@ final class SpeechDictationService: ObservableObject {
 
   /// Cancel the current recording without producing a transcript.
   func cancel() async {
-    guard isRecording else { return }
+    guard isRecording || isStarting || isPreparing else { return }
+    startGeneration += 1
+    isStarting = false
+    isPreparing = false
     isRecording = false
     stopTimer()
+    elapsedTime = 0
     audioLevel = 0
     smoothedLevel = 0
 
@@ -261,6 +274,10 @@ final class SpeechDictationService: ObservableObject {
     try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
   }
 
+  private func checkStartStillCurrent(_ generation: Int) throws {
+    guard startGeneration == generation, isStarting else { throw CancellationError() }
+  }
+
   /// Compute a normalized RMS level (0...1) from a captured buffer for the
   /// waveform. Uses a simple log-ish scaling so quiet speech is still visible.
   nonisolated private static func rmsLevel(of buffer: AVAudioPCMBuffer) -> Float {
@@ -305,7 +322,7 @@ final class SpeechDictationService: ObservableObject {
   // MARK: - iOS 26 SpeechAnalyzer implementation
 
   @available(iOS 26.0, *)
-  private func startIOS26() async throws {
+  private func startIOS26(generation: Int) async throws {
     let box = self.box
     box.finalizedTranscript = ""
 
@@ -326,6 +343,10 @@ final class SpeechDictationService: ObservableObject {
       isPreparing = true
       try await ensureModel(transcriber: transcriber, locale: Self.preferredLocale)
       isPreparing = false
+      try checkStartStillCurrent(generation)
+    } catch is CancellationError {
+      isPreparing = false
+      throw CancellationError()
     } catch {
       isPreparing = false
       throw DictationError.transcriptionUnavailable
@@ -338,11 +359,13 @@ final class SpeechDictationService: ObservableObject {
       let context = AnalysisContext()
       context.contextualStrings[.general] = glossary.contextualTerms
       try? await analyzer.setContext(context)
+      try checkStartStillCurrent(generation)
     }
 
     guard let analyzerFormat = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [transcriber]) else {
       throw DictationError.transcriptionUnavailable
     }
+    try checkStartStillCurrent(generation)
     box.analyzerFormat = analyzerFormat
 
     let (stream, continuation) = AsyncStream<AnalyzerInput>.makeStream()
@@ -363,6 +386,7 @@ final class SpeechDictationService: ObservableObject {
     }
 
     try await analyzer.start(inputSequence: stream)
+    try checkStartStillCurrent(generation)
 
     try configureAudioSession()
     try installInputTap(box: box)

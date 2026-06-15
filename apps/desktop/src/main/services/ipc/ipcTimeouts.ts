@@ -98,6 +98,8 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
       return 4 * 60_000;
     case IPC.iosSimulatorLaunch:
       return 10 * 60_000;
+    case IPC.transcriptionTranscribe:
+      return 6 * 60_000;
     case IPC.macosVmProvision:
     case IPC.macosVmStart:
     case IPC.macosVmRestart:

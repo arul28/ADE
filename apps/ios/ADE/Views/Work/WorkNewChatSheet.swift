@@ -37,11 +37,12 @@ struct WorkNewChatSheet: View {
   }
 
   var canStartChat: Bool {
-    !busy && !selectedLaneId.isEmpty && !selectedModelId.isEmpty && !trimmedInitialMessage.isEmpty
+    !busy && !isDictating && !selectedLaneId.isEmpty && !selectedModelId.isEmpty && !trimmedInitialMessage.isEmpty
   }
 
   var startDisabledReason: String? {
     if busy { return nil }
+    if isDictating { return "Finish dictation before starting." }
     if selectedLaneId.isEmpty { return "Choose a lane." }
     if selectedModelId.isEmpty { return "Choose a model." }
     if trimmedInitialMessage.isEmpty { return "Enter an opening prompt." }

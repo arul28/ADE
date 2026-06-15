@@ -64,7 +64,7 @@ export function prepareGlossary(glossary: VoiceGlossary): PreparedGlossary {
   const corrections = Object.entries(glossary.corrections ?? {})
     .map(([from, to]) => ({ from, to }))
     .filter((entry) => entry.from.trim().length > 0)
-    .sort((a, b) => b.from.length - a.from.length);
+    .sort((a, b) => b.from.length - a.from.length || a.from.localeCompare(b.from));
   return {
     version: glossary.version ?? 0,
     contextualTerms: Array.isArray(glossary.contextualTerms) ? glossary.contextualTerms : [],
@@ -182,9 +182,7 @@ export function loadGlossary(options?: {
     cachedGlossaryPath = target;
     return cachedGlossary;
   } catch {
-    cachedGlossary = EMPTY_GLOSSARY;
-    cachedGlossaryPath = target;
-    return cachedGlossary;
+    return EMPTY_GLOSSARY;
   }
 }
 

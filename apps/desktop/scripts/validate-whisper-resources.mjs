@@ -10,6 +10,7 @@ const voiceRoot = path.join(desktopRoot, "resources", "voice");
 const MODEL_BASENAME = "ggml-base.en.bin";
 const MIN_MODEL_BYTES = 50 * 1024 * 1024; // base.en is ~142 MB; guard against a truncated download.
 const GLOSSARY_BASENAME = "voice-glossary.json";
+const MAX_CONTEXTUAL_TERMS = 100;
 
 // Candidate whisper binary names accepted at runtime (transcriptionService).
 function whisperBinaryNamesForHost() {
@@ -46,9 +47,51 @@ async function firstExistingBinary() {
   return null;
 }
 
+function isPlainObject(value) {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+async function validateVoiceGlossary(glossaryPath) {
+  const raw = await fs.readFile(glossaryPath, "utf8");
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (error) {
+    fail(`Voice glossary is not valid JSON: ${glossaryPath} (${error instanceof Error ? error.message : String(error)})`);
+  }
+
+  if (!isPlainObject(parsed)) fail(`Voice glossary must be a JSON object: ${glossaryPath}`);
+  if (!Number.isFinite(parsed.version)) fail("Voice glossary must include a numeric `version`.");
+  if (!Array.isArray(parsed.contextualTerms)) fail("Voice glossary must include `contextualTerms` as an array.");
+  if (parsed.contextualTerms.length > MAX_CONTEXTUAL_TERMS) {
+    fail(`Voice glossary has ${parsed.contextualTerms.length} contextual terms; keep it at or below ${MAX_CONTEXTUAL_TERMS}.`);
+  }
+  for (const term of parsed.contextualTerms) {
+    if (typeof term !== "string" || term.trim().length === 0) {
+      fail("Voice glossary `contextualTerms` must contain only non-empty strings.");
+    }
+  }
+
+  if (!isPlainObject(parsed.corrections)) fail("Voice glossary must include `corrections` as an object.");
+  for (const [from, to] of Object.entries(parsed.corrections)) {
+    if (from.trim().length === 0 || typeof to !== "string" || to.trim().length === 0) {
+      fail("Voice glossary `corrections` must map non-empty strings to non-empty strings.");
+    }
+  }
+
+  if (!Array.isArray(parsed.fillers)) fail("Voice glossary must include `fillers` as an array.");
+  for (const filler of parsed.fillers) {
+    if (typeof filler !== "string" || filler.trim().length === 0) {
+      fail("Voice glossary `fillers` must contain only non-empty strings.");
+    }
+  }
+}
+
 async function main() {
   // Glossary is committed and always required.
-  await statFile(path.join(voiceRoot, GLOSSARY_BASENAME), "voice glossary");
+  const glossaryPath = path.join(voiceRoot, GLOSSARY_BASENAME);
+  await statFile(glossaryPath, "voice glossary");
+  await validateVoiceGlossary(glossaryPath);
 
   // Model must be present and look like the real (large) base.en weights.
   const modelStat = await statFile(path.join(whisperRoot, MODEL_BASENAME), "whisper base.en model");

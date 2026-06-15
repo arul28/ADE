@@ -18,6 +18,7 @@ const downloadTimeoutMs =
   Number.isFinite(configuredDownloadTimeoutMs) && configuredDownloadTimeoutMs > 0
     ? configuredDownloadTimeoutMs
     : 120_000;
+const universalDarwinArchs = ["arm64", "x86_64"];
 
 // ───────────────────────────────────────────────────────────────────────────
 // Whisper resources we materialize into resources/whisper/ for packaging:
@@ -48,11 +49,36 @@ const MODEL_URL =
 function whisperBinarySpecForHost() {
   const platform = process.platform;
   const arch = process.arch;
-  const target = `${platform}-${arch}`;
+  const target = isUniversalDarwinBuild()
+    ? "darwin-universal"
+    : `${platform}-${arch}`;
   const exeSuffix = platform === "win32" ? ".exe" : "";
   const envKey = `ADE_WHISPER_CLI_URL_${target.replace(/-/g, "_").toUpperCase()}`;
   const url = process.env[envKey]?.trim() || process.env.ADE_WHISPER_CLI_URL?.trim() || null;
   return { target, url, fileName: `whisper-cli${exeSuffix}` };
+}
+
+function isUniversalDarwinBuild() {
+  if (process.platform !== "darwin") return false;
+  const lifecycle = process.env.npm_lifecycle_event ?? "";
+  return process.env.ADE_WHISPER_REQUIRE_UNIVERSAL === "1"
+    || process.env.npm_config_arch === "universal"
+    || lifecycle.includes("universal");
+}
+
+function redactUrl(rawUrl) {
+  try {
+    const url = new URL(rawUrl);
+    if (url.username || url.password) {
+      url.username = "redacted";
+      url.password = "redacted";
+    }
+    if (url.search) url.search = "?redacted";
+    if (url.hash) url.hash = "#redacted";
+    return url.toString();
+  } catch {
+    return "[redacted-url]";
+  }
 }
 
 async function pathExists(targetPath) {
@@ -95,7 +121,7 @@ async function downloadFile(url, destinationPath, redirectsRemaining = maxDownlo
         ) {
           response.resume();
           if (redirectsRemaining <= 0) {
-            fail(new Error(`Too many redirects while downloading ${url}`));
+              fail(new Error(`Too many redirects while downloading ${redactUrl(url)}`));
             return;
           }
           succeed(new URL(response.headers.location, url).toString());
@@ -103,18 +129,18 @@ async function downloadFile(url, destinationPath, redirectsRemaining = maxDownlo
         }
         if (response.statusCode !== 200) {
           response.resume();
-          fail(new Error(`HTTP ${response.statusCode ?? "unknown"} for ${url}`));
+          fail(new Error(`HTTP ${response.statusCode ?? "unknown"} for ${redactUrl(url)}`));
           return;
         }
         output = createWriteStream(partialPath, { mode: 0o644 });
-        response.once("aborted", () => fail(new Error(`Download aborted for ${url}`)));
+        response.once("aborted", () => fail(new Error(`Download aborted for ${redactUrl(url)}`)));
         response.once("error", fail);
         response.pipe(output);
         output.once("finish", () => output.close(() => succeed()));
         output.once("error", fail);
       });
       request.setTimeout(downloadTimeoutMs, () => {
-        fail(new Error(`Timed out after ${Math.round(downloadTimeoutMs / 1000)}s while downloading ${url}`));
+        fail(new Error(`Timed out after ${Math.round(downloadTimeoutMs / 1000)}s while downloading ${redactUrl(url)}`));
       });
       request.once("error", fail);
     });
@@ -138,7 +164,7 @@ async function materializeModel() {
     console.log(`[whisper-resources] Model already present: ${modelPath}`);
     return;
   }
-  console.log(`[whisper-resources] Downloading ${MODEL_BASENAME} from ${MODEL_URL}`);
+  console.log(`[whisper-resources] Downloading ${MODEL_BASENAME} from ${redactUrl(MODEL_URL)}`);
   await downloadFile(MODEL_URL, modelPath);
   console.log(`[whisper-resources] Downloaded model -> ${modelPath}`);
 }
@@ -191,23 +217,15 @@ async function buildBinaryFromSource(binaryPath, target) {
   console.log(
     `[whisper-resources] Building self-contained whisper.cpp ${WHISPER_SRC_REF} for ${target} (static, CPU)`,
   );
-  try {
-    await spawnStep("git", [
-      "clone",
-      "--depth",
-      "1",
-      "--branch",
-      WHISPER_SRC_REF,
-      WHISPER_SRC_REPO,
-      srcDir,
-    ]);
-  } catch {
-    console.warn(
-      `[whisper-resources] Could not clone ref ${WHISPER_SRC_REF}; falling back to the default branch.`,
-    );
-    await fs.rm(srcDir, { recursive: true, force: true });
-    await spawnStep("git", ["clone", "--depth", "1", WHISPER_SRC_REPO, srcDir]);
-  }
+  await spawnStep("git", [
+    "clone",
+    "--depth",
+    "1",
+    "--branch",
+    WHISPER_SRC_REF,
+    WHISPER_SRC_REPO,
+    srcDir,
+  ]);
 
   const cmakeConfigureArgs = [
     "-S",
@@ -259,23 +277,42 @@ async function buildBinaryFromSource(binaryPath, target) {
   console.log(`[whisper-resources] Built + installed self-contained binary -> ${binaryPath}`);
 }
 
+async function assertDarwinUniversalBinary(binaryPath, target) {
+  if (process.platform !== "darwin" || target !== "darwin-universal") return;
+  if (!(await hasTool("lipo"))) {
+    throw new Error("Cannot validate universal whisper-cli: `lipo` is not available on PATH.");
+  }
+  const { stdout } = await execFileAsync("lipo", ["-archs", binaryPath]);
+  const actualArchs = stdout.trim().split(/\s+/).filter(Boolean);
+  const missing = universalDarwinArchs.filter((arch) => !actualArchs.includes(arch));
+  if (missing.length > 0) {
+    throw new Error(
+      `whisper-cli for ${target} is missing architecture(s): ${missing.join(", ")} ` +
+        `(found: ${actualArchs.join(", ") || "none"})`,
+    );
+  }
+}
+
 async function materializeBinary() {
   const spec = whisperBinarySpecForHost();
   const binaryPath = path.join(whisperRoot, spec.fileName);
   if (await pathExists(binaryPath)) {
     console.log(`[whisper-resources] Binary already present: ${binaryPath}`);
+    await assertDarwinUniversalBinary(binaryPath, spec.target);
     return;
   }
   if (spec.url) {
-    console.log(`[whisper-resources] Downloading whisper.cpp CLI for ${spec.target} from ${spec.url}`);
+    console.log(`[whisper-resources] Downloading whisper.cpp CLI for ${spec.target} from ${redactUrl(spec.url)}`);
     await downloadFile(spec.url, binaryPath);
     if (process.platform !== "win32") {
       await fs.chmod(binaryPath, 0o755);
     }
+    await assertDarwinUniversalBinary(binaryPath, spec.target);
     console.log(`[whisper-resources] Downloaded binary -> ${binaryPath}`);
     return;
   }
   await buildBinaryFromSource(binaryPath, spec.target);
+  await assertDarwinUniversalBinary(binaryPath, spec.target);
 }
 
 async function main() {

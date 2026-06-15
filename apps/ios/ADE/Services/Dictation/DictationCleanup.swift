@@ -92,7 +92,7 @@ enum DictationCleanup {
 
     for character in input {
       if capitalizeNext, character.isLetter {
-        result.append(Character(String(character).uppercased()))
+        result.append(String(character).uppercased())
         capitalizeNext = false
       } else {
         result.append(character)
