@@ -1,6 +1,9 @@
 import SwiftUI
 import UIKit
 import AVKit
+import OSLog
+
+private let workChatTranscriptLog = Logger(subsystem: "com.ade.ios", category: "WorkChatTranscript")
 
 struct WorkErrorPresentation {
   let title: String
@@ -81,6 +84,15 @@ func buildWorkChatMessages(from transcript: [WorkChatEnvelope]) -> [WorkChatMess
          messages[lastIndex].itemId == itemId,
          canMergeWithPreviousAssistant {
         messages[lastIndex].markdown = mergeWorkStreamingText(messages[lastIndex].markdown, text)
+      } else if let duplicateIndex = duplicateAssistantFragmentIndex(
+        in: messages,
+        turnId: turnId,
+        incoming: text
+      ), let merged = mergedDuplicateAssistantText(
+        existing: messages[duplicateIndex].markdown,
+        incoming: text
+      ) {
+        messages[duplicateIndex].markdown = merged
       } else {
         messages.append(WorkChatMessage(
           id: envelope.id,
@@ -101,6 +113,40 @@ func buildWorkChatMessages(from transcript: [WorkChatEnvelope]) -> [WorkChatMess
   }
 
   return messages
+}
+
+private func duplicateAssistantFragmentIndex(
+  in messages: [WorkChatMessage],
+  turnId: String?,
+  incoming: String
+) -> Int? {
+  messages.indices.reversed().first { index in
+    let message = messages[index]
+    guard message.role == "assistant" else { return false }
+    guard assistantTurnIdsAreCompatible(message.turnId, turnId) else { return false }
+    return mergedDuplicateAssistantText(existing: message.markdown, incoming: incoming) != nil
+  }
+}
+
+private func assistantTurnIdsAreCompatible(_ lhs: String?, _ rhs: String?) -> Bool {
+  let left = lhs?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  let right = rhs?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  return !left.isEmpty && left == right
+}
+
+private func mergedDuplicateAssistantText(existing: String, incoming: String) -> String? {
+  let normalizedExisting = existing.trimmingCharacters(in: .whitespacesAndNewlines)
+  let normalizedIncoming = incoming.trimmingCharacters(in: .whitespacesAndNewlines)
+  guard !normalizedExisting.isEmpty, !normalizedIncoming.isEmpty else { return nil }
+  if normalizedExisting == normalizedIncoming || normalizedExisting.hasSuffix(normalizedIncoming) {
+    return existing
+  }
+  if normalizedIncoming.hasPrefix(normalizedExisting) {
+    return incoming
+  }
+
+  let merged = mergeWorkStreamingText(existing, incoming)
+  return merged == existing + incoming ? nil : merged
 }
 
 func mergeWorkStreamingText(_ existing: String, _ incoming: String) -> String {
@@ -187,12 +233,45 @@ func preferredWorkTranscript(
     // this, the final assistant reply after e.g. a plan rejection vanishes
     // from mobile while it still shows on desktop.
     let backfilled = backfillMissingTextEnvelopes(into: merged, fallback: fallback)
-    return pruneResolvedQueuedSteerEnvelopes(backfilled)
+    let pruned = pruneResolvedQueuedSteerEnvelopes(backfilled)
+    logPreferredWorkTranscriptResult(
+      currentCount: current.count,
+      fallbackCount: fallback.count,
+      eventCount: eventTranscript.count,
+      mergedCount: merged.count,
+      backfilledCount: backfilled.count,
+      prunedCount: pruned.count,
+      usedEventStream: true,
+      result: pruned
+    )
+    return pruned
   }
   if !fallback.isEmpty {
-    return pruneResolvedQueuedSteerEnvelopes(fallback)
+    let pruned = pruneResolvedQueuedSteerEnvelopes(fallback)
+    logPreferredWorkTranscriptResult(
+      currentCount: current.count,
+      fallbackCount: fallback.count,
+      eventCount: eventTranscript.count,
+      mergedCount: fallback.count,
+      backfilledCount: fallback.count,
+      prunedCount: pruned.count,
+      usedEventStream: false,
+      result: pruned
+    )
+    return pruned
   }
-  return pruneResolvedQueuedSteerEnvelopes(current)
+  let pruned = pruneResolvedQueuedSteerEnvelopes(current)
+  logPreferredWorkTranscriptResult(
+    currentCount: current.count,
+    fallbackCount: fallback.count,
+    eventCount: eventTranscript.count,
+    mergedCount: current.count,
+    backfilledCount: current.count,
+    prunedCount: pruned.count,
+    usedEventStream: false,
+    result: pruned
+  )
+  return pruned
 }
 
 /// When an idle session prefers the canonical text transcript, keep tool /
@@ -232,12 +311,18 @@ private func backfillMissingTextEnvelopes(
     if shouldSkipBackfillPlainUserMessage(fallback: envelope, merged: merged) {
       continue
     }
+    if textEnvelopeAlreadyPresentForBackfill(fallback: envelope, merged: merged) {
+      continue
+    }
     let keys = workTextBackfillDedupeKeys(for: envelope)
     guard !keys.isEmpty, keys.allSatisfy({ !seen.contains($0) }) else { continue }
     keys.forEach { seen.insert($0) }
     missing.append(envelope)
   }
   guard didReplace || !missing.isEmpty else { return transcript }
+  workChatTranscriptLog.notice(
+    "text_backfill_changed session=\(workTranscriptSessionId(transcript, fallback: fallback), privacy: .public) replaced=\(didReplace, privacy: .public) missing=\(missing.count, privacy: .public) before=\(transcript.count, privacy: .public) after=\(merged.count + missing.count, privacy: .public) fallback=\(fallback.count, privacy: .public)"
+  )
   merged.append(contentsOf: missing)
   return merged.sorted { lhs, rhs in
     if lhs.timestamp == rhs.timestamp {
@@ -278,16 +363,18 @@ private func replaceTruncatedTextEnvelope(
 /// Fallback entries set `itemId: nil`, live envelopes carry an SDK-assigned
 /// id — so plain equality on merge keys would treat "same message, different
 /// source" as two rows. Keying on role + turnId + normalized text collapses
-/// those correctly while leaving tool-calls and other events untouched
-/// (returns nil → skipped).
+/// those correctly; missing turn IDs fall back to timestamp so repeated short
+/// messages in separate turns do not collapse together.
 private func workTextContentKey(for envelope: WorkChatEnvelope) -> String? {
   switch envelope.event {
   case .userMessage(let text, _, let turnId, let steerId, _, _):
     let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines)
-    return "user|\(turnId ?? "")|\(steerId ?? "")|\(normalized)"
+    let turnKey = workTextDedupeTurnKey(turnId, timestamp: envelope.timestamp)
+    return "user|\(turnKey)|\(steerId ?? "")|\(normalized)"
   case .assistantText(let text, let turnId, _):
     let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines)
-    return "assistant|\(turnId ?? "")|\(normalized)"
+    let turnKey = workTextDedupeTurnKey(turnId, timestamp: envelope.timestamp)
+    return "assistant|\(turnKey)|\(normalized)"
   default:
     return nil
   }
@@ -298,7 +385,8 @@ private func workTextBackfillDedupeKeys(for envelope: WorkChatEnvelope) -> [Stri
   switch envelope.event {
   case .userMessage(let text, _, let turnId, _, _, _):
     let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines)
-    return [key, "user|\(turnId ?? "")|\(normalized)"]
+    let turnKey = workTextDedupeTurnKey(turnId, timestamp: envelope.timestamp)
+    return [key, "user|\(turnKey)|\(normalized)"]
   default:
     return [key]
   }
@@ -307,12 +395,19 @@ private func workTextBackfillDedupeKeys(for envelope: WorkChatEnvelope) -> [Stri
 private func workTextRoleTurnKey(for envelope: WorkChatEnvelope) -> String? {
   switch envelope.event {
   case .userMessage(_, _, let turnId, let steerId, _, _):
-    return "user|\(turnId ?? "")|\(steerId ?? "")"
+    let turnKey = workTextDedupeTurnKey(turnId, timestamp: envelope.timestamp)
+    return "user|\(turnKey)|\(steerId ?? "")"
   case .assistantText(_, let turnId, _):
-    return "assistant|\(turnId ?? "")"
+    let turnKey = workTextDedupeTurnKey(turnId, timestamp: envelope.timestamp)
+    return "assistant|\(turnKey)"
   default:
     return nil
   }
+}
+
+private func workTextDedupeTurnKey(_ turnId: String?, timestamp: String) -> String {
+  let normalizedTurnId = turnId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  return normalizedTurnId.isEmpty ? "timestamp:\(timestamp)" : "turn:\(normalizedTurnId)"
 }
 
 private func workTextEnvelopeText(_ envelope: WorkChatEnvelope) -> String? {
@@ -348,6 +443,91 @@ private func shouldSkipBackfillPlainUserMessage(
     if liveText.trimmingCharacters(in: .whitespacesAndNewlines) == normalizedText { return true }
   }
   return false
+}
+
+private func textEnvelopeAlreadyPresentForBackfill(
+  fallback: WorkChatEnvelope,
+  merged: [WorkChatEnvelope]
+) -> Bool {
+  guard let fallbackText = workTextEnvelopeText(fallback)?.trimmingCharacters(in: .whitespacesAndNewlines),
+        !fallbackText.isEmpty
+  else { return false }
+  let fallbackTurnId = workTextTurnId(for: fallback)
+  for candidate in merged {
+    guard workTextRole(for: candidate) == workTextRole(for: fallback),
+          let candidateText = workTextEnvelopeText(candidate)?.trimmingCharacters(in: .whitespacesAndNewlines),
+          candidateText == fallbackText
+    else { continue }
+    let candidateTurnId = workTextTurnId(for: candidate)
+    if !fallbackTurnId.isEmpty, !candidateTurnId.isEmpty {
+      guard fallbackTurnId == candidateTurnId else { continue }
+      return true
+    }
+    if candidate.timestamp == fallback.timestamp {
+      return true
+    }
+  }
+  return false
+}
+
+private func workTextRole(for envelope: WorkChatEnvelope) -> String? {
+  switch envelope.event {
+  case .userMessage:
+    return "user"
+  case .assistantText:
+    return "assistant"
+  default:
+    return nil
+  }
+}
+
+private func workTextTurnId(for envelope: WorkChatEnvelope) -> String {
+  let raw: String?
+  switch envelope.event {
+  case .userMessage(_, _, let turnId, _, _, _):
+    raw = turnId
+  case .assistantText(_, let turnId, _):
+    raw = turnId
+  default:
+    raw = nil
+  }
+  return raw?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+}
+
+private func workTranscriptSessionId(_ transcript: [WorkChatEnvelope], fallback: [WorkChatEnvelope]) -> String {
+  transcript.first?.sessionId ?? fallback.first?.sessionId ?? "unknown"
+}
+
+private func logPreferredWorkTranscriptResult(
+  currentCount: Int,
+  fallbackCount: Int,
+  eventCount: Int,
+  mergedCount: Int,
+  backfilledCount: Int,
+  prunedCount: Int,
+  usedEventStream: Bool,
+  result: [WorkChatEnvelope]
+) {
+  let duplicateTextCount = duplicateWorkTextEnvelopeCount(result)
+  workChatTranscriptLog.notice(
+    "preferred_transcript session=\(result.first?.sessionId ?? "unknown", privacy: .public) current=\(currentCount, privacy: .public) fallback=\(fallbackCount, privacy: .public) event=\(eventCount, privacy: .public) merged=\(mergedCount, privacy: .public) backfilled=\(backfilledCount, privacy: .public) pruned=\(prunedCount, privacy: .public) usedEvents=\(usedEventStream, privacy: .public) duplicateText=\(duplicateTextCount, privacy: .public) tail=\(result.last?.id ?? "none", privacy: .public)"
+  )
+}
+
+private func duplicateWorkTextEnvelopeCount(_ transcript: [WorkChatEnvelope]) -> Int {
+  var seen = Set<String>()
+  var duplicateCount = 0
+  for envelope in transcript {
+    guard let role = workTextRole(for: envelope),
+          let text = workTextEnvelopeText(envelope)?.trimmingCharacters(in: .whitespacesAndNewlines),
+          !text.isEmpty
+    else { continue }
+    let key = "\(role)|\(workTextTurnId(for: envelope))|\(text)"
+    if !seen.insert(key).inserted {
+      duplicateCount += 1
+    }
+  }
+  return duplicateCount
 }
 
 /// Drop stale queued `user_message` rows once the same steerId has graduated
@@ -723,7 +903,7 @@ func workModelSelectionChoice(from value: Any?) -> WorkModelSelectionChoice? {
     provider: provider,
     modelId: modelId,
     reasoningEffort: optionalString(object["reasoningEffort"]),
-    codexFastMode: workBoolValue(object["codexFastMode"])
+    fastMode: workBoolValue(object["fastMode"]) ?? workBoolValue(object["codexFastMode"])
   )
 }
 
@@ -957,6 +1137,8 @@ func workChatEventMergeKey(_ event: WorkChatEvent) -> String {
     return ["error", turnId ?? "", category, message, detail ?? ""].joined(separator: "|")
   case .done(let status, let summary, let usage, let turnId, let model, let modelId):
     return ["done", turnId, status, model ?? "", modelId ?? "", summary, workUsageSummaryMergeKey(usage)].joined(separator: "|")
+  case .tokens(let usage, let turnId, let itemId):
+    return ["tokens", turnId, itemId ?? "", workUsageSummaryMergeKey(usage)].joined(separator: "|")
   case .promptSuggestion(let text, let turnId):
     return ["prompt_suggestion", turnId ?? "", text].joined(separator: "|")
   case .contextCompact(let summary, let turnId):
@@ -1002,6 +1184,9 @@ func workUsageSummaryMergeKey(_ usage: WorkUsageSummary?) -> String {
     String(usage.outputTokens),
     String(usage.cacheReadTokens),
     String(usage.cacheCreationTokens),
+    String(usage.reasoningTokens),
+    String(usage.totalTokens),
+    usage.contextWindow.map(String.init) ?? "",
     String(usage.costUsd),
   ].joined(separator: "|")
 }

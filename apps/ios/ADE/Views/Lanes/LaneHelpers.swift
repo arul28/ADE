@@ -261,6 +261,10 @@ func laneStackGraphOrder(_ snapshots: [LaneListSnapshot]) -> [LaneListSnapshot] 
   return primaryBranch + groupedRemaining
 }
 
+func laneTreeDisplayDepth(for lane: LaneSummary) -> Int {
+  max(0, lane.stackDepth)
+}
+
 func runtimeTint(bucket: String) -> Color {
   switch bucket {
   case "running":

@@ -19,6 +19,7 @@ enum WidgetReloadBridge {
 }
 
 private let syncConnectLog = Logger(subsystem: "com.ade.sync", category: "connect")
+private let syncChatLog = Logger(subsystem: "com.ade.ios", category: "WorkChatSync")
 
 enum RemoteConnectionState: String {
   case disconnected
@@ -2665,6 +2666,9 @@ final class SyncService: ObservableObject {
     }
     if prefersReducedSyncLoad != next {
       prefersReducedSyncLoad = next
+      syncChatLog.notice(
+        "reduced_load_changed enabled=\(next, privacy: .public) route=\(route ?? "none", privacy: .public) poorSamples=\(self.poorConnectionSampleCount, privacy: .public) healthySamples=\(self.healthyConnectionSampleCount, privacy: .public) forced=\(forcedReduced, privacy: .public) path=\(syncLogPathSummary(self.lastNetworkPathSnapshot), privacy: .public)"
+      )
       restoreChatEventSubscriptions()
     }
   }
@@ -2692,6 +2696,9 @@ final class SyncService: ObservableObject {
     forceReducedSyncLoadUntil = ProcessInfo.processInfo.systemUptime + duration
     poorConnectionSampleCount = max(poorConnectionSampleCount, 1)
     healthyConnectionSampleCount = 0
+    syncChatLog.notice(
+      "connection_load_strained duration=\(duration, privacy: .public) state=\(self.connectionState.rawValue, privacy: .public) generation=\(self.connectionGeneration, privacy: .public) lastInbound=\(self.lastInboundMessageAt ?? -1, privacy: .public)"
+    )
     refreshReducedSyncLoad()
   }
 
@@ -2720,6 +2727,9 @@ final class SyncService: ObservableObject {
     syncConnectLog.info(
       "ADE_SYNC_TRACE path changed path=\(syncLogPathSummary(snapshot), privacy: .public) connectedOverTailnet=\(connectedOverTailnet) hasTailnet=\(hasTailnetRoute) shouldRoamToTailnet=\(shouldRoamToTailnet) current=\(self.currentAddress ?? "none", privacy: .public)"
     )
+    syncChatLog.notice(
+      "path_changed state=\(self.connectionState.rawValue, privacy: .public) path=\(syncLogPathSummary(snapshot), privacy: .public) current=\(self.currentAddress ?? "none", privacy: .public) roamToTailnet=\(shouldRoamToTailnet, privacy: .public) liveRequests=\(self.canSendLiveRequests(), privacy: .public)"
+    )
 
     if shouldRoamToTailnet {
       preferTailnetForUpcomingReconnect()
@@ -2741,11 +2751,17 @@ final class SyncService: ObservableObject {
     forceSocketReset: Bool,
     delayNanoseconds: UInt64 = 250_000_000
   ) {
+    syncChatLog.notice(
+      "network_path_reconnect_scheduled forceReset=\(forceSocketReset, privacy: .public) delayNs=\(delayNanoseconds, privacy: .public) state=\(self.connectionState.rawValue, privacy: .public) generation=\(self.connectionGeneration, privacy: .public) current=\(self.currentAddress ?? "none", privacy: .public)"
+    )
     networkPathReconnectTask?.cancel()
     networkPathReconnectTask = Task { @MainActor [weak self] in
       try? await Task.sleep(nanoseconds: delayNanoseconds)
       guard let self, !Task.isCancelled else { return }
       if forceSocketReset {
+        syncChatLog.notice(
+          "network_path_reconnect_forcing_reset state=\(self.connectionState.rawValue, privacy: .public) generation=\(self.connectionGeneration, privacy: .public) current=\(self.currentAddress ?? "none", privacy: .public)"
+        )
         self.teardownSocket(reason: "Network route changed.")
       }
       await self.reconnectIfPossible()
@@ -4025,10 +4041,14 @@ final class SyncService: ObservableObject {
     if canSendLiveRequests() && supportsChatStreaming && (!wasSubscribed || requestSnapshot) {
       // Explicit snapshot requests must not advertise a resume point — the
       // caller wants the full history, not a delta replay.
+      let payload = chatSubscriptionPayload(sessionId: trimmedSessionId, maxBytes: maxBytes, includeSinceSeq: !requestSnapshot)
+      syncChatLog.notice(
+        "chat_subscribe_send session=\(trimmedSessionId, privacy: .public) requestSnapshot=\(requestSnapshot, privacy: .public) wasSubscribed=\(wasSubscribed, privacy: .public) maxBytes=\((payload["maxBytes"] as? Int) ?? -1, privacy: .public) sinceSeq=\((payload["sinceSeq"] as? Int) ?? -1, privacy: .public) reducedLoad=\(self.prefersReducedSyncLoad, privacy: .public) state=\(self.connectionState.rawValue, privacy: .public)"
+      )
       sendEnvelope(
         type: "chat_subscribe",
         requestId: nil,
-        payload: chatSubscriptionPayload(sessionId: trimmedSessionId, maxBytes: maxBytes, includeSinceSeq: !requestSnapshot)
+        payload: payload
       )
     }
   }
@@ -7381,7 +7401,9 @@ final class SyncService: ObservableObject {
          let dict = payload as? [String: Any],
          let snapshot = try? decode(dict, as: SyncChatSubscribeSnapshotPayload.self),
          subscribedChatSessionIds.contains(snapshot.sessionId) {
-        if (dict["resumed"] as? Bool) != true {
+        let resumed = (dict["resumed"] as? Bool) == true
+        let previousLastSeq = chatEventLastSeqBySession[snapshot.sessionId]
+        if !resumed {
           // Full snapshot: the host did not (or could not) resume from our
           // sinceSeq, so its seq stream may have restarted (host reboot,
           // replay buffer eviction). Drop the stale watermark and re-track
@@ -7399,6 +7421,9 @@ final class SyncService: ObservableObject {
           // transcript-derived streaming state.
           clearChatTurnActiveHint(sessionId: snapshot.sessionId)
         }
+        syncChatLog.notice(
+          "chat_subscribe_ack session=\(snapshot.sessionId, privacy: .public) resumed=\(resumed, privacy: .public) events=\(snapshot.events.count, privacy: .public) firstSeq=\(snapshot.events.compactMap(\.sequence).first ?? -1, privacy: .public) lastSeq=\(snapshot.events.compactMap(\.sequence).last ?? -1, privacy: .public) previousLastSeq=\(previousLastSeq ?? -1, privacy: .public) currentLastSeq=\(self.chatEventLastSeqBySession[snapshot.sessionId] ?? -1, privacy: .public) turnActive=\(snapshot.turnActive.map(String.init) ?? "nil", privacy: .public) truncated=\(snapshot.truncated, privacy: .public)"
+        )
       }
     case "chat_event":
       if supportsChatStreaming,
@@ -7413,11 +7438,17 @@ final class SyncService: ObservableObject {
           // per-session watermark used as sinceSeq on re-subscribe. Events
           // without seq (older hosts) keep today's behavior unchanged.
           if let lastSeq = chatEventLastSeqBySession[envelope.sessionId], seq <= lastSeq {
+            syncChatLog.debug(
+              "chat_event_dropped_old session=\(envelope.sessionId, privacy: .public) seq=\(seq, privacy: .public) lastSeq=\(lastSeq, privacy: .public) type=\(envelope.event.typeName, privacy: .public)"
+            )
             break
           }
           chatEventLastSeqBySession[envelope.sessionId] = seq
         }
         recordChatEventEnvelope(envelope)
+        syncChatLog.debug(
+          "chat_event_applied session=\(envelope.sessionId, privacy: .public) seq=\(envelope.sequence ?? -1, privacy: .public) type=\(envelope.event.typeName, privacy: .public) history=\(self.chatEventEnvelopesBySession[envelope.sessionId]?.count ?? 0, privacy: .public) revision=\(self.chatEventRevisionsBySession[envelope.sessionId] ?? 0, privacy: .public)"
+        )
       }
     case "terminal_data":
       if let dict = payload as? [String: Any], let sessionId = dict["sessionId"] as? String, let chunk = dict["data"] as? String {
@@ -7858,6 +7889,9 @@ final class SyncService: ObservableObject {
       resolve(requestId: requestId, result: .failure(SyncUserFacingError.error(from: SyncRequestTimeout.error(
         message: "The machine took too long to respond. Try again."
       ))))
+      syncChatLog.notice(
+        "request_timeout_probe_scheduled requestId=\(requestId, privacy: .public) state=\(self.connectionState.rawValue, privacy: .public) generation=\(self.connectionGeneration, privacy: .public) lastInbound=\(self.lastInboundMessageAt ?? -1, privacy: .public)"
+      )
       verifyTransportAliveAfterRequestTimeout(timeoutError)
     } else {
       // The default `timeoutError` is `SyncRequestTimeout.error()`, whose
@@ -7876,6 +7910,9 @@ final class SyncService: ObservableObject {
         resolvedError = timeoutError
       }
       markConnectionLoadStrained()
+      syncChatLog.notice(
+        "request_timeout_resolved_without_reconnect requestId=\(requestId, privacy: .public) disconnectOnTimeout=\(disconnectOnTimeout, privacy: .public) state=\(self.connectionState.rawValue, privacy: .public) generation=\(self.connectionGeneration, privacy: .public) lastInbound=\(self.lastInboundMessageAt ?? -1, privacy: .public)"
+      )
       resolve(requestId: requestId, result: .failure(resolvedError))
     }
   }
@@ -7886,9 +7923,17 @@ final class SyncService: ObservableObject {
   /// kept; total silence means the connection is actually dead and the normal
   /// transport-failure teardown runs. One probe at a time.
   private func verifyTransportAliveAfterRequestTimeout(_ timeoutError: NSError) {
-    guard transportProbeTask == nil, canSendLiveRequests() else { return }
+    guard transportProbeTask == nil, canSendLiveRequests() else {
+      syncChatLog.notice(
+        "request_timeout_probe_skipped probeInFlight=\((self.transportProbeTask != nil), privacy: .public) liveRequests=\(self.canSendLiveRequests(), privacy: .public) state=\(self.connectionState.rawValue, privacy: .public) generation=\(self.connectionGeneration, privacy: .public)"
+      )
+      return
+    }
     let generation = connectionGeneration
     let probeStartedAt = ProcessInfo.processInfo.systemUptime
+    syncChatLog.notice(
+      "request_timeout_probe_sent generation=\(generation, privacy: .public) state=\(self.connectionState.rawValue, privacy: .public) lastInbound=\(self.lastInboundMessageAt ?? -1, privacy: .public)"
+    )
     sendEnvelope(type: "heartbeat", requestId: nil, payload: [
       "kind": "ping",
       "sentAt": ISO8601DateFormatter().string(from: Date()),
@@ -7899,7 +7944,15 @@ final class SyncService: ObservableObject {
       guard let self else { return }
       self.transportProbeTask = nil
       guard !Task.isCancelled, self.connectionGeneration == generation else { return }
-      if let lastInbound = self.lastInboundMessageAt, lastInbound > probeStartedAt { return }
+      if let lastInbound = self.lastInboundMessageAt, lastInbound > probeStartedAt {
+        syncChatLog.notice(
+          "request_timeout_probe_succeeded generation=\(generation, privacy: .public) lastInbound=\(lastInbound, privacy: .public) probeStartedAt=\(probeStartedAt, privacy: .public)"
+        )
+        return
+      }
+      syncChatLog.notice(
+        "request_timeout_probe_failed generation=\(generation, privacy: .public) lastInbound=\(self.lastInboundMessageAt ?? -1, privacy: .public) probeStartedAt=\(probeStartedAt, privacy: .public)"
+      )
       self.handleTransportFailure(
         timeoutError,
         connectionState: syncConnectionStateAfterRequestTimeout(
@@ -8228,10 +8281,14 @@ final class SyncService: ObservableObject {
     for sessionId in subscribedChatSessionIds.sorted() {
       // Pass the last applied seq so the host can replay only the missed
       // events; it falls back to a full snapshot when the gap is too old.
+      let payload = chatSubscriptionPayload(sessionId: sessionId, includeSinceSeq: true)
+      syncChatLog.notice(
+        "chat_subscribe_restore session=\(sessionId, privacy: .public) sinceSeq=\((payload["sinceSeq"] as? Int) ?? -1, privacy: .public) maxBytes=\((payload["maxBytes"] as? Int) ?? -1, privacy: .public) reducedLoad=\(self.prefersReducedSyncLoad, privacy: .public) state=\(self.connectionState.rawValue, privacy: .public)"
+      )
       sendEnvelope(
         type: "chat_subscribe",
         requestId: nil,
-        payload: chatSubscriptionPayload(sessionId: sessionId, includeSinceSeq: true)
+        payload: payload
       )
     }
   }

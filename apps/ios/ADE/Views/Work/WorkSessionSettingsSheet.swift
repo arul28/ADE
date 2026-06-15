@@ -16,7 +16,6 @@ struct WorkSessionSettingsSheet: View {
   @State var selectedModelId: String
   @State var selectedReasoningEffort: String
   @State var selectedRuntimeMode: String
-  @State var selectedCursorModeId: String
   @State var selectedCodexFastMode: Bool
   @State var busy = false
   @State var errorMessage: String?
@@ -35,8 +34,7 @@ struct WorkSessionSettingsSheet: View {
     _selectedModelId = State(initialValue: summary.modelId ?? summary.model)
     _selectedReasoningEffort = State(initialValue: summary.reasoningEffort ?? "")
     _selectedRuntimeMode = State(initialValue: workInitialRuntimeMode(summary))
-    _selectedCursorModeId = State(initialValue: workInitialCursorModeId(summary))
-    _selectedCodexFastMode = State(initialValue: summary.codexFastMode ?? false)
+    _selectedCodexFastMode = State(initialValue: summary.effectiveFastMode)
   }
 
   var selectedModel: AgentChatModelInfo? {
@@ -57,7 +55,7 @@ struct WorkSessionSettingsSheet: View {
   }
 
   var resolvedInitialCodexFastMode: Bool {
-    summary.codexFastMode ?? false
+    summary.effectiveFastMode
   }
 
   var supportsCodexFastModeToggle: Bool {
@@ -65,51 +63,11 @@ struct WorkSessionSettingsSheet: View {
   }
 
   var runtimeOptions: [WorkRuntimeOption] {
-    switch summary.provider {
-    case "claude":
-      return [
-        WorkRuntimeOption(id: "default", title: "Default", subtitle: "Standard approval flow."),
-        WorkRuntimeOption(id: "plan", title: "Plan", subtitle: "Analysis and planning turns."),
-        WorkRuntimeOption(id: "edit", title: "Edit", subtitle: "Auto-approve file edits."),
-        WorkRuntimeOption(id: "full-auto", title: "Full auto", subtitle: "Skip permission prompts."),
-      ]
-    case "codex":
-      return [
-        WorkRuntimeOption(id: "default", title: "Default permissions", subtitle: "Workspace-write with approval on request."),
-        WorkRuntimeOption(id: "plan", title: "Plan mode", subtitle: "Read-only browsing with approval on request."),
-        WorkRuntimeOption(id: "full-auto", title: "Full access", subtitle: "No sandbox and no approval prompts."),
-        WorkRuntimeOption(id: "config-toml", title: "Custom (config.toml)", subtitle: "Use the Codex config on the machine."),
-      ]
-    case "opencode":
-      return [
-        WorkRuntimeOption(id: "plan", title: "Plan", subtitle: "Read-first access mode."),
-        WorkRuntimeOption(id: "edit", title: "Edit", subtitle: "Normal edit loop."),
-        WorkRuntimeOption(id: "full-auto", title: "Full auto", subtitle: "Let the agent operate freely."),
-      ]
-    case "droid", "factory":
-      // Route Droid/Factory through the shared per-runtime mode catalog so the
-      // sheet exposes Read-only/Auto low/Auto medium/Auto high/AGI, matching the
-      // New Chat composer and desktop. AGI maps to the orchestrator mode.
-      return workRuntimeModeOptions(provider: summary.provider).map { option in
-        WorkRuntimeOption(
-          id: option.id,
-          title: option.title,
-          subtitle: workDroidRuntimeSubtitle(option.id)
-        )
-      }
-    default:
-      return []
-    }
-  }
-
-  var cursorModeOptions: [WorkRuntimeOption] {
-    workCursorModeIds(summary.cursorModeSnapshot, fallback: workInitialCursorModeId(summary)).map { modeId in
+    workRuntimeModeOptions(provider: summary.provider).map { option in
       WorkRuntimeOption(
-        id: modeId,
-        title: workCursorModeLabel(modeId),
-        subtitle: modeId == (summary.cursorModeId ?? workInitialCursorModeId(summary))
-          ? "Current cursor mode."
-          : "Switch this session to \(workCursorModeLabel(modeId))."
+        id: option.id,
+        title: option.title,
+        subtitle: workRuntimeModeSubtitle(provider: summary.provider, mode: option.id)
       )
     }
   }
@@ -276,20 +234,7 @@ struct WorkSessionSettingsSheet: View {
             }
           }
 
-          if summary.provider == "cursor", !cursorModeOptions.isEmpty {
-            GlassSection(title: "Cursor mode") {
-              VStack(alignment: .leading, spacing: 12) {
-                ForEach(cursorModeOptions) { option in
-                  Button {
-                    selectedCursorModeId = option.id
-                  } label: {
-                    runtimeCard(option: option, isSelected: selectedCursorModeId == option.id)
-                  }
-                  .buttonStyle(.plain)
-                }
-              }
-            }
-          } else if !runtimeOptions.isEmpty {
+          if !runtimeOptions.isEmpty {
             GlassSection(title: "Access mode") {
               VStack(alignment: .leading, spacing: 12) {
                 ForEach(runtimeOptions) { option in
@@ -366,15 +311,49 @@ struct WorkSessionSettingsSheet: View {
   }
 }
 
-/// Per-mode descriptions for the Droid/Factory access-mode cards in the
-/// session-settings sheet. Mirrors the desktop run-mode subtitles.
-private func workDroidRuntimeSubtitle(_ mode: String) -> String {
-  switch mode {
-  case "read-only": return "Inspect only; no edits or commands."
-  case "auto-low": return "Auto-approve low-risk actions."
-  case "auto-medium": return "Auto-approve up to medium-risk actions."
-  case "auto-high": return "Auto-approve high-risk actions."
-  case "agi": return "Orchestrator mode (plans and delegates to workers)."
-  default: return "Switch this session to \(mode.capitalized)."
+private func workRuntimeModeSubtitle(provider: String, mode: String) -> String {
+  switch provider.lowercased() {
+  case "claude":
+    switch mode {
+    case "auto": return "Claude judges each tool call."
+    case "edit": return "Auto-approve file edits; shell still asks."
+    case "plan": return "Read-only planning mode."
+    case "full-auto": return "Skip permission prompts."
+    default: return "Standard approval flow."
+    }
+  case "codex":
+    switch mode {
+    case "edit": return "Auto-approve trusted workspace changes."
+    case "plan": return "Read-only browsing with approval on request."
+    case "full-auto": return "No sandbox and no approval prompts."
+    case "config-toml": return "Use the Codex config on the machine."
+    default: return "Workspace-write with approval on request."
+    }
+  case "opencode":
+    switch mode {
+    case "plan": return "Read-only plan agent."
+    case "edit": return "Allow edits; ask for the rest."
+    case "full-auto": return "Allow configured OpenCode tools."
+    case "config-toml": return "Use OpenCode config."
+    default: return "Allow edits; ask for the rest."
+    }
+  case "cursor":
+    switch mode {
+    case "plan": return "Read-only planning mode."
+    case "edit": return "Read-only Q&A mode."
+    case "full-auto": return "Cursor force mode."
+    default: return "Cursor Agent's normal approval flow."
+    }
+  case "droid", "factory":
+    switch mode {
+    case "read-only", "plan": return "Droid without autonomy."
+    case "auto-low", "edit": return "Droid with auto low."
+    case "auto-medium", "default": return "Droid with auto medium."
+    case "auto-high", "full-auto": return "Droid with auto high."
+    case "agi": return "Droid orchestrator mode."
+    default: return "Switch this session to \(mode.capitalized)."
+    }
+  default:
+    return "Switch this session to \(mode.capitalized)."
   }
 }

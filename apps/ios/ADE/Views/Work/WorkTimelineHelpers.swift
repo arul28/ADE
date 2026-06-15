@@ -76,12 +76,44 @@ func workTranscriptIndicatesActiveTurn(_ transcript: [WorkChatEnvelope]) -> Bool
   return bootstrapStartOpen || !activeTurnIds.isEmpty
 }
 
+func workTranscriptLatestTurnEnded(_ transcript: [WorkChatEnvelope]) -> Bool {
+  for envelope in sortedWorkChatEnvelopes(transcript).reversed() {
+    switch envelope.event {
+    case .done:
+      return true
+    case .userMessage:
+      return false
+    case .status(let turnStatus, _, _):
+      switch turnStatus.lowercased() {
+      case "completed", "failed", "interrupted", "cancelled", "canceled", "ended":
+        return true
+      case "started", "active", "running", "inprogress", "in_progress", "in-progress":
+        return false
+      default:
+        continue
+      }
+    default:
+      continue
+    }
+  }
+  return false
+}
+
 func workChatIsStreaming(
   sessionStatus: String,
   isLive: Bool,
-  transcriptIndicatesActiveTurn: Bool
+  transcriptIndicatesActiveTurn: Bool,
+  liveTurnActiveHint: Bool = false,
+  transcriptLatestTurnEnded: Bool = false,
+  rowEndedAfterLatestTranscript: Bool = false
 ) -> Bool {
-  isLive && (sessionStatus == "active" || transcriptIndicatesActiveTurn)
+  guard isLive else { return false }
+  if sessionStatus == "ended" { return false }
+  if rowEndedAfterLatestTranscript { return false }
+  if transcriptIndicatesActiveTurn { return true }
+  if liveTurnActiveHint { return true }
+  if transcriptLatestTurnEnded { return false }
+  return sessionStatus == "active"
 }
 
 /// Collapse `subagent_*` events into one snapshot per taskId. Preserves host
@@ -271,6 +303,16 @@ func buildWorkTimeline(
     )
   })
 
+  let turnEndMarkers = workTurnEndMarkers(from: transcript)
+  entries.append(contentsOf: turnEndMarkers.enumerated().map { index, marker in
+    WorkTimelineEntry(
+      id: "turn-end-\(marker.turnId)",
+      timestamp: marker.time,
+      rank: 1_700 + index,
+      payload: .turnEndMarker(marker)
+    )
+  })
+
   entries.append(contentsOf: artifacts.enumerated().map { index, artifact in
     WorkTimelineEntry(id: "artifact-\(artifact.id)", timestamp: artifact.createdAt, rank: 2_000 + index, payload: .artifact(artifact))
   })
@@ -325,8 +367,10 @@ func buildWorkTimeline(
 /// at all. They are buffered and re-emitted after the cluster so the
 /// narrative order (tools first, then reasoning) stays readable. Hard
 /// boundaries (messages, turn separators, approvals, pending inputs, usage
-/// summaries, artifacts) flush the cluster so the group never swallows a
-/// different turn's work. Runs of size 1 stay ungrouped.
+/// summaries, turn-end markers, artifacts) flush the cluster so the group never swallows a
+/// different turn's work. Singletons still use the same compact panels so iOS
+/// matches desktop's `Tool calls (1)` / `Files changed (1)` surfaces instead
+/// of falling back to bulky standalone cards.
 func collapseConsecutiveWorkToolEntries(_ entries: [WorkTimelineEntry]) -> [WorkTimelineEntry] {
   var result: [WorkTimelineEntry] = []
   result.reserveCapacity(entries.count)
@@ -336,9 +380,7 @@ func collapseConsecutiveWorkToolEntries(_ entries: [WorkTimelineEntry]) -> [Work
   func flushCluster() {
     if !cluster.isEmpty {
       let members = cluster.compactMap(workToolGroupMember(from:))
-      if cluster.count == 1 {
-        result.append(contentsOf: cluster)
-      } else if members.count == cluster.count {
+      if members.count == cluster.count {
         let anchor = cluster[0]
         var readOnly: [WorkToolGroupMember] = []
         var codeChange: [WorkToolGroupMember] = []
@@ -1162,6 +1204,85 @@ func injectWorkTurnSeparators(
   return output
 }
 
+func workTurnEndMarkers(from transcript: [WorkChatEnvelope]) -> [WorkTurnEndMarker] {
+  var startByTurn: [String: String] = [:]
+  var markers: [WorkTurnEndMarker] = []
+  var seenEndedTurns = Set<String>()
+
+  for envelope in sortedWorkChatEnvelopes(transcript) {
+    switch envelope.event {
+    case .userMessage(_, _, let turnId, _, _, _):
+      guard let key = normalizedWorkTurnId(turnId), startByTurn[key] == nil else { continue }
+      startByTurn[key] = envelope.timestamp
+    case .status(let turnStatus, _, let turnId):
+      switch turnStatus.lowercased() {
+      case "started", "active", "running", "inprogress", "in_progress", "in-progress":
+        guard let key = normalizedWorkTurnId(turnId), startByTurn[key] == nil else { continue }
+        startByTurn[key] = envelope.timestamp
+      default:
+        continue
+      }
+    case .done(_, _, _, let turnId, _, _):
+      guard let key = normalizedWorkTurnId(turnId) else { continue }
+      guard !seenEndedTurns.contains(key), let start = startByTurn[key] else { continue }
+      seenEndedTurns.insert(key)
+      markers.append(WorkTurnEndMarker(
+        turnId: key,
+        time: envelope.timestamp,
+        workedDurationLabel: formattedSessionDuration(startedAt: start, endedAt: envelope.timestamp)
+      ))
+    default:
+      guard let key = normalizedWorkTurnId(workTurnId(for: envelope.event)), startByTurn[key] == nil else { continue }
+      startByTurn[key] = envelope.timestamp
+    }
+  }
+
+  return markers
+}
+
+private func normalizedWorkTurnId(_ turnId: String?) -> String? {
+  let key = turnId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  return key.isEmpty ? nil : key
+}
+
+private func workTurnId(for event: WorkChatEvent) -> String? {
+  switch event {
+  case .userMessage(_, _, let turnId, _, _, _),
+       .assistantText(_, let turnId, _),
+       .toolCall(_, _, _, _, let turnId),
+       .toolResult(_, _, _, _, let turnId, _),
+       .activity(_, _, let turnId),
+       .plan(_, _, let turnId),
+       .subagentStarted(_, _, _, let turnId),
+       .subagentProgress(_, _, _, _, let turnId),
+       .subagentResult(_, _, _, let turnId),
+       .structuredQuestion(_, _, _, let turnId),
+       .approvalRequest(_, _, _, let turnId),
+       .pendingInputResolved(_, _, let turnId),
+       .todoUpdate(_, let turnId),
+       .systemNotice(_, _, _, let turnId, _),
+       .error(_, _, _, let turnId),
+       .promptSuggestion(_, let turnId),
+       .contextCompact(_, let turnId),
+       .autoApprovalReview(_, let turnId),
+       .webSearch(_, _, _, _, let turnId),
+       .planText(_, let turnId),
+       .toolUseSummary(_, let turnId),
+       .status(_, _, let turnId),
+       .reasoning(_, let turnId, _, _),
+       .completionReport(_, _, _, _, let turnId),
+       .command(_, _, _, _, _, _, _, let turnId),
+       .fileChange(_, _, _, _, _, let turnId):
+    return turnId
+  case .tokens(_, let turnId, _):
+    return turnId
+  case .done(_, _, _, let turnId, _, _):
+    return turnId
+  case .unknown:
+    return nil
+  }
+}
+
 struct WorkTurnModelMetadata {
   let provider: String
   let modelLabel: String
@@ -1233,9 +1354,20 @@ func makeWorkUsageSummary(
   outputTokens: Int?,
   cacheReadTokens: Int?,
   cacheCreationTokens: Int?,
+  reasoningTokens: Int? = nil,
+  totalTokens: Int? = nil,
+  contextWindow: Int? = nil,
   costUsd: Double?
 ) -> WorkUsageSummary? {
-  guard inputTokens != nil || outputTokens != nil || cacheReadTokens != nil || cacheCreationTokens != nil || costUsd != nil else {
+  guard inputTokens != nil
+    || outputTokens != nil
+    || cacheReadTokens != nil
+    || cacheCreationTokens != nil
+    || reasoningTokens != nil
+    || totalTokens != nil
+    || contextWindow != nil
+    || costUsd != nil
+  else {
     return nil
   }
 
@@ -1245,6 +1377,9 @@ func makeWorkUsageSummary(
     outputTokens: outputTokens ?? 0,
     cacheReadTokens: cacheReadTokens ?? 0,
     cacheCreationTokens: cacheCreationTokens ?? 0,
+    reasoningTokens: reasoningTokens ?? 0,
+    totalTokens: totalTokens ?? 0,
+    contextWindow: contextWindow,
     costUsd: costUsd ?? 0
   )
 }
@@ -1256,6 +1391,8 @@ func summarizeWorkSessionUsage(from transcript: [WorkChatEnvelope]) -> WorkUsage
     outputTokens: 0,
     cacheReadTokens: 0,
     cacheCreationTokens: 0,
+    reasoningTokens: 0,
+    totalTokens: 0,
     costUsd: 0
   )
 
@@ -1266,10 +1403,116 @@ func summarizeWorkSessionUsage(from transcript: [WorkChatEnvelope]) -> WorkUsage
     summary.outputTokens += usage.outputTokens
     summary.cacheReadTokens += usage.cacheReadTokens
     summary.cacheCreationTokens += usage.cacheCreationTokens
+    summary.reasoningTokens += usage.reasoningTokens
+    summary.totalTokens += usage.totalTokens
+    summary.contextWindow = usage.contextWindow ?? summary.contextWindow
     summary.costUsd += usage.costUsd
   }
 
   return summary.turnCount > 0 ? summary : nil
+}
+
+func workContextUsageViewModel(
+  transcript: [WorkChatEnvelope],
+  summary: AgentChatSessionSummary?
+) -> WorkContextUsageViewModel? {
+  let provider = summary?.provider ?? ""
+  let fallbackWindow = workContextWindowFallback(summary: summary)
+
+  for envelope in sortedWorkChatEnvelopes(transcript).reversed() {
+    switch envelope.event {
+    case .tokens(let usage, _, _):
+      return makeWorkContextUsageViewModel(
+        usage: usage,
+        provider: provider,
+        fallbackContextWindow: fallbackWindow
+      )
+    case .done(_, _, let usage, _, _, _):
+      if let usage {
+        return makeWorkContextUsageViewModel(
+          usage: usage,
+          provider: provider,
+          fallbackContextWindow: fallbackWindow
+        )
+      }
+    default:
+      continue
+    }
+  }
+
+  return nil
+}
+
+private func makeWorkContextUsageViewModel(
+  usage: WorkUsageSummary,
+  provider: String,
+  fallbackContextWindow: Int?
+) -> WorkContextUsageViewModel? {
+  let inputTokens = positiveWorkTokenCount(usage.inputTokens)
+  let outputTokens = positiveWorkTokenCount(usage.outputTokens)
+  let cacheReadTokens = positiveWorkTokenCount(usage.cacheReadTokens)
+  let cacheWriteTokens = positiveWorkTokenCount(usage.cacheCreationTokens)
+  let reasoningTokens = positiveWorkTokenCount(usage.reasoningTokens)
+  let totalTokens = positiveWorkTokenCount(usage.totalTokens)
+  let runtimeWindow = positiveWorkTokenCount(usage.contextWindow)
+  let contextWindow = runtimeWindow ?? positiveWorkTokenCount(fallbackContextWindow)
+  let usedTokens: Int? = {
+    if workProviderUsesCodexTokenOccupancy(provider) {
+      return inputTokens ?? positiveWorkTokenCount(usage.inputTokens + usage.outputTokens) ?? totalTokens
+    }
+    let occupancy = (inputTokens ?? 0) + (cacheReadTokens ?? 0) + (cacheWriteTokens ?? 0)
+    return occupancy > 0 ? occupancy : positiveWorkTokenCount(usage.inputTokens + usage.outputTokens) ?? totalTokens
+  }()
+
+  guard usedTokens != nil || inputTokens != nil || outputTokens != nil || totalTokens != nil else { return nil }
+
+  let ratio = contextWindow.flatMap { window -> Double? in
+    guard let usedTokens, window > 0 else { return nil }
+    return min(1, max(0, Double(usedTokens) / Double(window)))
+  }
+
+  return WorkContextUsageViewModel(
+    provider: provider,
+    contextWindow: contextWindow,
+    usedTokens: usedTokens,
+    inputTokens: inputTokens,
+    outputTokens: outputTokens,
+    cacheReadTokens: cacheReadTokens,
+    cacheWriteTokens: cacheWriteTokens,
+    reasoningTokens: reasoningTokens,
+    totalTokens: totalTokens ?? positiveWorkTokenCount(usage.inputTokens + usage.outputTokens),
+    ratio: ratio,
+    windowSource: runtimeWindow != nil ? .runtime : (contextWindow != nil ? .registry : nil)
+  )
+}
+
+private func positiveWorkTokenCount(_ value: Int?) -> Int? {
+  guard let value, value > 0 else { return nil }
+  return value
+}
+
+private func workProviderUsesCodexTokenOccupancy(_ provider: String) -> Bool {
+  let normalized = provider.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+  return normalized == "codex" || normalized == "openai"
+}
+
+private func workContextWindowFallback(summary: AgentChatSessionSummary?) -> Int? {
+  guard let summary else { return nil }
+  let model = [summary.modelId, summary.model]
+    .compactMap { $0?.lowercased() }
+    .joined(separator: " ")
+
+  if model.contains("1m") || model.contains("1-million") { return 1_000_000 }
+  if model.contains("gpt-5") {
+    return 258_400
+  }
+  if model.contains("claude") || model.contains("sonnet") || model.contains("opus") || model.contains("haiku") || model.contains("fable") {
+    return 200_000
+  }
+  if model.contains("gpt-4.1") || model.contains("gpt-4o") {
+    return 128_000
+  }
+  return nil
 }
 
 func formattedTokenCount(_ value: Int) -> String {

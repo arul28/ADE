@@ -34,48 +34,12 @@ struct LaneTreeView: View {
   let onTogglePin: (String) -> Void
   let onSelectLane: (String) -> Void
 
-  private var depthByLane: [String: Int] {
-    let visibleLaneIds = Set(snapshots.map { $0.lane.id })
-    // Snapshots can overlap during sync reconciliation; coalesce instead of crashing.
-    let laneById = Dictionary(allLaneSnapshots.map { ($0.lane.id, $0.lane) }, uniquingKeysWith: { _, new in new })
-
-    var memo: [String: Int] = [:]
-
-    func depthFor(_ laneId: String, visiting: Set<String> = []) -> Int {
-      if let cached = memo[laneId] { return cached }
-      if visiting.contains(laneId) { return 0 }
-      guard visibleLaneIds.contains(laneId), let lane = laneById[laneId] else {
-        memo[laneId] = 0
-        return 0
-      }
-      if lane.laneType == "primary" {
-        memo[laneId] = 0
-        return 0
-      }
-      guard let parentId = lane.parentLaneId, parentId != laneId, visibleLaneIds.contains(parentId) else {
-        memo[laneId] = 0
-        return 0
-      }
-      var next = visiting
-      next.insert(laneId)
-      let depth = depthFor(parentId, visiting: next) + 1
-      memo[laneId] = depth
-      return depth
-    }
-
-    for snapshot in allLaneSnapshots {
-      _ = depthFor(snapshot.lane.id)
-    }
-    return memo
-  }
-
   var body: some View {
-    let depths = depthByLane
     VStack(spacing: LaneTreeMetrics.rowSpacing) {
       ForEach(snapshots) { snapshot in
         LaneTreeRow(
           snapshot: snapshot,
-          depth: depths[snapshot.lane.id] ?? 0,
+          depth: laneTreeDisplayDepth(for: snapshot.lane),
           allLaneSnapshots: allLaneSnapshots,
           pullRequest: lanePrTagsByLaneId[snapshot.lane.id],
           isPinned: pinnedLaneIds.contains(snapshot.lane.id),

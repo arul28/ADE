@@ -53,7 +53,6 @@ extension WorkSessionSettingsSheet {
     let effectiveCodexFastMode = supportsCodexFastModeToggle ? selectedCodexFastMode : false
     let codexFastModeChanged = effectiveCodexFastMode != resolvedInitialCodexFastMode
     let initialRuntimeMode = workInitialRuntimeMode(summary)
-    let initialCursorModeId = workInitialCursorModeId(summary)
 
     var permissionMode: String?
     var interactionMode: String?
@@ -70,24 +69,10 @@ extension WorkSessionSettingsSheet {
     case "claude":
       if selectedRuntimeMode != initialRuntimeMode {
         runtimeChanged = true
-        switch selectedRuntimeMode {
-        case "plan":
-          interactionMode = "plan"
-          claudePermissionMode = "default"
-          permissionMode = "plan"
-        case "edit":
-          interactionMode = "default"
-          claudePermissionMode = "acceptEdits"
-          permissionMode = "edit"
-        case "full-auto":
-          interactionMode = "default"
-          claudePermissionMode = "bypassPermissions"
-          permissionMode = "full-auto"
-        default:
-          interactionMode = "default"
-          claudePermissionMode = "default"
-          permissionMode = "default"
-        }
+        let wire = workRuntimeWireFields(provider: summary.provider, mode: selectedRuntimeMode)
+        permissionMode = wire.permissionMode
+        interactionMode = wire.interactionMode
+        claudePermissionMode = wire.claudePermissionMode
       }
     case "codex":
       if selectedRuntimeMode != initialRuntimeMode {
@@ -101,8 +86,9 @@ extension WorkSessionSettingsSheet {
     case "opencode":
       if selectedRuntimeMode != initialRuntimeMode {
         runtimeChanged = true
-        opencodePermissionMode = selectedRuntimeMode
-        permissionMode = selectedRuntimeMode
+        let wire = workRuntimeWireFields(provider: summary.provider, mode: selectedRuntimeMode)
+        opencodePermissionMode = wire.opencodePermissionMode
+        permissionMode = wire.permissionMode
       }
     case "droid", "factory":
       if selectedRuntimeMode != initialRuntimeMode {
@@ -112,9 +98,11 @@ extension WorkSessionSettingsSheet {
         permissionMode = wire.permissionMode
       }
     case "cursor":
-      if !selectedCursorModeId.isEmpty && selectedCursorModeId != initialCursorModeId {
+      if selectedRuntimeMode != initialRuntimeMode {
         runtimeChanged = true
-        cursorModeId = selectedCursorModeId
+        let wire = workRuntimeWireFields(provider: summary.provider, mode: selectedRuntimeMode)
+        permissionMode = wire.permissionMode
+        cursorModeId = wire.cursorModeId
       }
     default:
       break

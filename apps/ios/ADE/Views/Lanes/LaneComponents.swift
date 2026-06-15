@@ -604,11 +604,6 @@ struct LaneStackCard: View, Equatable {
 
   var body: some View {
     HStack(spacing: 0) {
-      RoundedRectangle(cornerRadius: 2, style: .continuous)
-        .fill(laneTint.accentBar)
-        .frame(width: 3)
-        .padding(.vertical, 10)
-
       VStack(alignment: .leading, spacing: 8) {
         HStack(alignment: .center, spacing: 8) {
           WorkLaneLogoMark(color: laneLabelColor, laneIcon: snapshot.lane.icon, size: 12)
@@ -684,7 +679,7 @@ struct LaneStackCard: View, Equatable {
           LaneCardRebaseWarning(presentation: warning)
         }
       }
-      .padding(.leading, 11)
+      .padding(.leading, 14)
       .padding(.trailing, 14)
       .padding(.vertical, 12)
     }

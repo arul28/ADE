@@ -1,6 +1,13 @@
 import SwiftUI
 import UIKit
 import AVKit
+import OSLog
+
+let workChatScrollLog = Logger(subsystem: "com.ade.ios", category: "WorkChatScroll")
+let workChatScrollCoordinateSpace = "WorkChatScrollCoordinateSpace"
+let workChatStickThreshold: CGFloat = 160
+let workChatStickResumeThreshold: CGFloat = 24
+let workChatTouchScrollDeadband: CGFloat = 2
 
 struct WorkChatSessionView: View {
   @Environment(\.accessibilityReduceMotion) var reduceMotion
@@ -26,10 +33,16 @@ struct WorkChatSessionView: View {
   @State var isNearBottom = true
   @State var unreadBelowCount = 0
   @State var lastTimelineTailId: String?
+  @State var scrollViewportHeight: CGFloat = 0
+  @State var lastScrollDistanceFromBottom: CGFloat = 0
+  @State var timelineDragActive = false
   @State var timelineSnapshot = WorkChatTimelineSnapshot.empty
   @State var timelinePresentation = WorkTimelinePresentation.empty
   @State var timelineRebuildTask: Task<Void, Never>?
   @State var timelineRebuildGeneration = 0
+  @State var composerSettingMutationInFlight = false
+  @State var composerSettingMutationGeneration = 0
+  @State var pendingCodexFastMode: Bool?
   let isLive: Bool
   let canComposeMessages: Bool
   let canSendMessages: Bool
@@ -53,8 +66,9 @@ struct WorkChatSessionView: View {
   let onDispatchSteerInline: (@MainActor (String) async -> Void)?
   let onDispatchSteerInterrupt: (@MainActor (String) async -> Void)?
   let onSelectModel: @MainActor (String) async -> Void
-  let onSelectRuntimeMode: @MainActor (String) async -> Void
+  let onSelectRuntimeMode: @MainActor (String) async -> Bool
   let onSelectEffort: @MainActor (String) async -> Void
+  let onSelectCodexFastMode: @MainActor (Bool) async -> Bool
 
   var lanes: [LaneSummary] = []
   // Host-side scroll-back: true while older transcript pages remain on the
@@ -75,12 +89,31 @@ struct WorkChatSessionView: View {
     normalizedWorkChatSessionStatus(session: session, summary: chatSummary)
   }
 
-  /// Combined "a turn is active" signal: transcript-derived (status/done
-  /// events in the local window) OR the live host hint. Either alone can
-  /// miss — the transcript window may have dropped the `status: started`
-  /// event, and the hint is absent on older hosts.
-  var transcriptOrHintIndicatesActiveTurn: Bool {
-    timelineSnapshot.transcriptIndicatesActiveTurn || liveTurnActiveHint
+  /// Terminal transcript signal from the local event window. When present, it
+  /// beats stale session rows / subscribe hints that can lag a just-finished
+  /// turn by a few seconds.
+  var transcriptLatestTurnEnded: Bool {
+    workTranscriptLatestTurnEnded(transcript)
+  }
+
+  /// The live turn hint can be stale if mobile misses the final `done` event.
+  /// When the synced row has an idle/end timestamp newer than our transcript
+  /// tail, prefer the row so the working indicator clears promptly.
+  var sessionRowEndedAfterLatestTranscript: Bool {
+    guard sessionStatus == "idle" || sessionStatus == "ended" else { return false }
+    let rowEndedAt = [
+      chatSummary?.idleSinceAt,
+      chatSummary?.endedAt,
+      session.chatIdleSinceAt,
+      session.endedAt
+    ]
+    .compactMap(workParsedDate)
+    .max()
+    guard let rowEndedAt else { return false }
+    guard let latestTranscriptAt = transcript.compactMap({ workParsedDate($0.timestamp) }).max() else {
+      return false
+    }
+    return rowEndedAt >= latestTranscriptAt.addingTimeInterval(-0.25)
   }
 
   /// Single source of truth for "the assistant is generating right now".
@@ -90,8 +123,15 @@ struct WorkChatSessionView: View {
     workChatIsStreaming(
       sessionStatus: sessionStatus,
       isLive: isLive,
-      transcriptIndicatesActiveTurn: transcriptOrHintIndicatesActiveTurn
+      transcriptIndicatesActiveTurn: timelineSnapshot.transcriptIndicatesActiveTurn,
+      liveTurnActiveHint: liveTurnActiveHint,
+      transcriptLatestTurnEnded: transcriptLatestTurnEnded,
+      rowEndedAfterLatestTranscript: sessionRowEndedAfterLatestTranscript
     )
+  }
+
+  var shouldShowInterruptControl: Bool {
+    workChatShouldShowInterruptControl(isStreamingTurn: isStreamingTurn, transcript: transcript)
   }
 
   var pendingInputs: [WorkPendingInputItem] {
@@ -133,6 +173,25 @@ struct WorkChatSessionView: View {
       .first
   }
 
+  @MainActor
+  private func runComposerSettingMutation(
+    onFailure: @MainActor @escaping () -> Void = {},
+    operation: @MainActor @escaping () async -> Bool
+  ) {
+    let generation = composerSettingMutationGeneration + 1
+    composerSettingMutationGeneration = generation
+    composerSettingMutationInFlight = true
+
+    Task { @MainActor in
+      let succeeded = await operation()
+      guard generation == composerSettingMutationGeneration else { return }
+      composerSettingMutationInFlight = false
+      if !succeeded {
+        onFailure()
+      }
+    }
+  }
+
   var toolCards: [WorkToolCardModel] {
     timelineSnapshot.toolCards
   }
@@ -170,14 +229,29 @@ struct WorkChatSessionView: View {
 
   @MainActor
   func refreshTimelinePresentation(sourceTimeline: [WorkTimelineEntry]? = nil) {
-    let nextPresentation = makeWorkTimelinePresentation(
-      timeline: sourceTimeline ?? timelineSnapshot.timeline,
+    let timeline = sourceTimeline ?? timelineSnapshot.timeline
+    var nextPresentation = makeWorkTimelinePresentation(
+      timeline: timeline,
       visibleCount: visibleTimelineCount,
       chatSummary: chatSummary,
       transcript: transcript
     )
+    if isNearBottom,
+       timelinePresentation.hiddenCount > 0,
+       nextPresentation.entries.count > timelinePresentation.entries.count {
+      visibleTimelineCount += nextPresentation.entries.count - timelinePresentation.entries.count
+      nextPresentation = makeWorkTimelinePresentation(
+        timeline: timeline,
+        visibleCount: visibleTimelineCount,
+        chatSummary: chatSummary,
+        transcript: transcript
+      )
+    }
     guard nextPresentation != timelinePresentation else { return }
     timelinePresentation = nextPresentation
+    workChatScrollLog.notice(
+      "presentation_update session=\(session.id, privacy: .public) timeline=\(timeline.count, privacy: .public) visible=\(nextPresentation.visibleEntries.count, privacy: .public) hidden=\(nextPresentation.hiddenCount, privacy: .public) firstVisible=\(nextPresentation.visibleEntries.first?.id ?? "none", privacy: .public) lastVisible=\(nextPresentation.visibleEntries.last?.id ?? "none", privacy: .public) tail=\(timeline.last?.id ?? "none", privacy: .public) limit=\(visibleTimelineCount, privacy: .public) nearBottom=\(isNearBottom, privacy: .public) unread=\(unreadBelowCount, privacy: .public)"
+    )
   }
 
   var canCompose: Bool {
@@ -198,10 +272,11 @@ struct WorkChatSessionView: View {
     if sending && !sendWillQueue {
       return "Sending message to machine..."
     }
+    if sendWillQueue, sessionStatus == "active" {
+      return "Message will stage behind the active turn."
+    }
     if sendWillQueue, pendingSteers.isEmpty {
-      return sessionStatus == "active"
-        ? "Message will stage behind the active turn."
-        : "Machine is reconnecting. Send will queue until it is back."
+      return "Machine is reconnecting. Send will queue until it is back."
     }
     if !canSendMessages {
       return "Reconnect to send messages."
@@ -390,29 +465,35 @@ struct WorkChatSessionView: View {
 
       WorkChatComposerCard(
         chatSummary: chatSummary,
+        usageViewModel: workContextUsageViewModel(transcript: transcript, summary: chatSummary),
         pendingInputCount: pendingInputs.count,
         awaitingInputGate: hasPendingInputGate,
         canCompose: canCompose,
-        canSend: canSend,
+        canSend: canSend && !composerSettingMutationInFlight,
         sending: sending && !sendWillQueue,
-        // Show a Stop affordance on the Send button while the assistant is
-        // generating. The chip strip stays usable so users can switch
-        // access/model mid-turn; interruption replaces "Send" with a
-        // warning-tinted button. Gated on the combined streaming signal, not
-        // just the session row status — the row arrives via the (slower)
-        // changeset pump and a desktop-started turn would otherwise stream
-        // output with no way to stop it from the phone.
-        showInterrupt: isStreamingTurn,
+        settingsMutationInFlight: composerSettingMutationInFlight,
+        codexFastModeOverride: pendingCodexFastMode,
+        // Show Stop while a live turn has current transcript activity. The
+        // broader live hint can lag after `done`; this stricter gate keeps the
+        // composer from showing Stop after the completed-turn separator appears.
+        showInterrupt: shouldShowInterruptControl,
         interruptInFlight: actionInFlight,
         onInterrupt: {
           await runSessionAction(onInterrupt)
         },
         onOpenModelPicker: chatSummary == nil ? nil : { modelPickerPresented = true },
         onSelectRuntimeMode: chatSummary == nil ? nil : { mode in
-          Task { await onSelectRuntimeMode(mode) }
+          runComposerSettingMutation {
+            await onSelectRuntimeMode(mode)
+          }
         },
-        onSelectEffort: chatSummary == nil ? nil : { effort in
-          Task { await onSelectEffort(effort) }
+        onToggleCodexFastMode: chatSummary == nil ? nil : { enabled in
+          pendingCodexFastMode = enabled
+          runComposerSettingMutation(onFailure: {
+            pendingCodexFastMode = nil
+          }) {
+            await onSelectCodexFastMode(enabled)
+          }
         },
         onSend: onSend,
         onSent: {
@@ -439,11 +520,23 @@ struct WorkChatSessionView: View {
           Color.clear
             .frame(height: 1)
             .id("chat-end")
+            .background(
+              GeometryReader { geometry in
+                Color.clear.preference(
+                  key: WorkChatContentBottomPreferenceKey.self,
+                  value: geometry.frame(in: .named(workChatScrollCoordinateSpace)).maxY
+                )
+              }
+            )
             .onAppear {
-              isNearBottom = true
+              workChatScrollLog.notice(
+                "bottom_sentinel_appeared session=\(session.id, privacy: .public) timeline=\(timeline.count, privacy: .public) visible=\(visibleTimeline.count, privacy: .public) tail=\(timeline.last?.id ?? "none", privacy: .public) lastVisible=\(visibleTimeline.last?.id ?? "none", privacy: .public) unread=\(unreadBelowCount, privacy: .public) distance=\(lastScrollDistanceFromBottom, privacy: .public)"
+              )
             }
             .onDisappear {
-              isNearBottom = false
+              workChatScrollLog.notice(
+                "bottom_sentinel_disappeared session=\(session.id, privacy: .public) timeline=\(timeline.count, privacy: .public) visible=\(visibleTimeline.count, privacy: .public) tail=\(timeline.last?.id ?? "none", privacy: .public) lastVisible=\(visibleTimeline.last?.id ?? "none", privacy: .public) unread=\(unreadBelowCount, privacy: .public) distance=\(lastScrollDistanceFromBottom, privacy: .public)"
+              )
             }
         }
         .padding(16)
@@ -459,8 +552,30 @@ struct WorkChatSessionView: View {
       }
       .scrollIndicators(.hidden)
       .scrollDismissesKeyboard(.interactively)
+      .coordinateSpace(name: workChatScrollCoordinateSpace)
+      .background(
+        GeometryReader { geometry in
+          Color.clear.preference(
+            key: WorkChatViewportHeightPreferenceKey.self,
+            value: geometry.size.height
+          )
+        }
+      )
       .background(workChatCanvasBackground.ignoresSafeArea())
       .adeNavigationGlass()
+      .simultaneousGesture(
+        DragGesture(minimumDistance: 0)
+          .onChanged { value in
+            timelineDragActive = true
+            if value.translation.height > workChatTouchScrollDeadband {
+              releaseBottomStickinessForUserScroll(reason: "drag")
+            }
+          }
+          .onEnded { _ in
+            timelineDragActive = false
+            updateBottomStickiness(distanceFromBottom: lastScrollDistanceFromBottom, proxy: proxy)
+          }
+      )
       .safeAreaInset(edge: .bottom, spacing: 0) {
         composerInset(proxy: proxy)
           .background(alignment: .bottom) {
@@ -471,8 +586,13 @@ struct WorkChatSessionView: View {
         WorkChatNavigationBackdrop()
       }
       .overlay(alignment: .bottomTrailing) {
-        if unreadBelowCount > 0 {
+        if unreadBelowCount > 0 || !isNearBottom {
           WorkJumpToLatestPill(count: unreadBelowCount) {
+            workChatScrollLog.notice(
+              "jump_to_latest_tapped session=\(session.id, privacy: .public) unread=\(unreadBelowCount, privacy: .public) timeline=\(timeline.count, privacy: .public) visible=\(visibleTimeline.count, privacy: .public) tail=\(timeline.last?.id ?? "none", privacy: .public) lastVisible=\(visibleTimeline.last?.id ?? "none", privacy: .public)"
+            )
+            isNearBottom = true
+            timelineDragActive = false
             scrollToLatest(proxy, animated: true)
             unreadBelowCount = 0
           }
@@ -481,19 +601,45 @@ struct WorkChatSessionView: View {
           .transition(.move(edge: .trailing).combined(with: .opacity))
         }
       }
+      .onPreferenceChange(WorkChatViewportHeightPreferenceKey.self) { height in
+        scrollViewportHeight = height
+      }
+      .onPreferenceChange(WorkChatContentBottomPreferenceKey.self) { bottomY in
+        guard scrollViewportHeight > 1 else { return }
+        updateBottomStickiness(
+          distanceFromBottom: max(0, bottomY - scrollViewportHeight),
+          proxy: proxy
+        )
+      }
       .onChange(of: timeline.count) { oldCount, newCount in
         let previousTailId = lastTimelineTailId
         lastTimelineTailId = timeline.last?.id
         let delta = newCount - oldCount
-        guard delta > 0 else { return }
+        guard delta > 0 else {
+          workChatScrollLog.notice(
+            "timeline_count_changed_no_growth session=\(session.id, privacy: .public) old=\(oldCount, privacy: .public) new=\(newCount, privacy: .public) tail=\(timeline.last?.id ?? "none", privacy: .public) previousTail=\(previousTailId ?? "none", privacy: .public) nearBottom=\(isNearBottom, privacy: .public) unread=\(unreadBelowCount, privacy: .public)"
+          )
+          return
+        }
         // Older-page prepends grow the timeline above the viewport — the
         // newest entry stays put. Don't autoscroll to the bottom or flag
         // the prepended entries as "new messages below".
-        if let previousTailId, previousTailId == timeline.last?.id { return }
+        if let previousTailId, previousTailId == timeline.last?.id {
+          workChatScrollLog.notice(
+            "timeline_growth_skipped_prepended session=\(session.id, privacy: .public) old=\(oldCount, privacy: .public) new=\(newCount, privacy: .public) delta=\(delta, privacy: .public) tail=\(timeline.last?.id ?? "none", privacy: .public) nearBottom=\(isNearBottom, privacy: .public) unread=\(unreadBelowCount, privacy: .public)"
+          )
+          return
+        }
         if isNearBottom {
-          scrollToLatest(proxy, animated: false)
+          workChatScrollLog.notice(
+            "timeline_growth_autoscroll session=\(session.id, privacy: .public) old=\(oldCount, privacy: .public) new=\(newCount, privacy: .public) delta=\(delta, privacy: .public) tail=\(timeline.last?.id ?? "none", privacy: .public) previousTail=\(previousTailId ?? "none", privacy: .public)"
+          )
+          pinToLatestAfterLayout(proxy, reason: "timeline-growth")
         } else {
           let nextCount = unreadBelowCount + delta
+          workChatScrollLog.notice(
+            "timeline_growth_unread session=\(session.id, privacy: .public) old=\(oldCount, privacy: .public) new=\(newCount, privacy: .public) delta=\(delta, privacy: .public) tail=\(timeline.last?.id ?? "none", privacy: .public) unread=\(nextCount, privacy: .public)"
+          )
           if unreadBelowCount == 0 {
             withAnimation(ADEMotion.standard(reduceMotion: reduceMotion)) {
               unreadBelowCount = nextCount
@@ -503,8 +649,20 @@ struct WorkChatSessionView: View {
           }
         }
       }
+      .onChange(of: timeline.last?.id) { oldTailId, newTailId in
+        guard oldTailId != newTailId else { return }
+        workChatScrollLog.notice(
+          "timeline_tail_changed session=\(session.id, privacy: .public) oldTail=\(oldTailId ?? "none", privacy: .public) newTail=\(newTailId ?? "none", privacy: .public) timeline=\(timeline.count, privacy: .public) visible=\(visibleTimeline.count, privacy: .public) lastVisible=\(visibleTimeline.last?.id ?? "none", privacy: .public) nearBottom=\(isNearBottom, privacy: .public) unread=\(unreadBelowCount, privacy: .public)"
+        )
+        lastTimelineTailId = newTailId
+        guard oldTailId != nil, newTailId != nil, isNearBottom else { return }
+        pinToLatestAfterLayout(proxy, reason: "timeline-tail")
+      }
       .onChange(of: isNearBottom) { _, nearBottom in
         guard nearBottom, unreadBelowCount > 0 else { return }
+        workChatScrollLog.notice(
+          "near_bottom_clears_unread session=\(session.id, privacy: .public) unread=\(unreadBelowCount, privacy: .public) timeline=\(timeline.count, privacy: .public) tail=\(timeline.last?.id ?? "none", privacy: .public)"
+        )
         withAnimation(ADEMotion.quick(reduceMotion: reduceMotion)) {
           unreadBelowCount = 0
         }
@@ -518,6 +676,16 @@ struct WorkChatSessionView: View {
       }
       .onChange(of: chatSummary) { _, _ in
         refreshTimelinePresentation()
+      }
+      .onChange(of: chatSummary?.effectiveFastMode) { _, newValue in
+        if let pendingCodexFastMode, pendingCodexFastMode == (newValue == true) {
+          self.pendingCodexFastMode = nil
+        }
+      }
+      .onChange(of: session.id) { _, _ in
+        pendingCodexFastMode = nil
+        composerSettingMutationInFlight = false
+        composerSettingMutationGeneration &+= 1
       }
       .onChange(of: transcript) { _, _ in
         scheduleTimelineSnapshotRebuild()
@@ -571,6 +739,23 @@ struct WorkChatSessionView: View {
         )
       }
     }
+  }
+}
+
+private struct WorkChatViewportHeightPreferenceKey: PreferenceKey {
+  static var defaultValue: CGFloat = 0
+
+  static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+    let next = nextValue()
+    if next > 0 { value = next }
+  }
+}
+
+private struct WorkChatContentBottomPreferenceKey: PreferenceKey {
+  static var defaultValue: CGFloat = 0
+
+  static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+    value = nextValue()
   }
 }
 
@@ -664,11 +849,14 @@ func mergeWorkPendingSteers(
 
 private struct WorkChatComposerCard: View {
   let chatSummary: AgentChatSessionSummary?
+  let usageViewModel: WorkContextUsageViewModel?
   let pendingInputCount: Int
   let awaitingInputGate: Bool
   let canCompose: Bool
   let canSend: Bool
   let sending: Bool
+  let settingsMutationInFlight: Bool
+  let codexFastModeOverride: Bool?
   /// True while the assistant is streaming a response. Swaps the Send button
   /// Desktop parity: red bordered stop control in the composer while a turn is
   /// active (`border-red-500/25 bg-red-500/[0.08] text-red-400/80`).
@@ -678,29 +866,32 @@ private struct WorkChatComposerCard: View {
   let onInterrupt: @MainActor () async -> Void
   let onOpenModelPicker: (() -> Void)?
   let onSelectRuntimeMode: ((String) -> Void)?
-  let onSelectEffort: ((String) -> Void)?
+  let onToggleCodexFastMode: ((Bool) -> Void)?
   let onSend: @MainActor (String) async -> Bool
   let onSent: () -> Void
 
   var body: some View {
     WorkChatComposerDraftInput(
       chatSummary: chatSummary,
+      usageViewModel: usageViewModel,
       pendingInputCount: pendingInputCount,
       awaitingInputGate: awaitingInputGate,
       canCompose: canCompose,
       canSend: canSend,
       sending: sending,
+      settingsMutationInFlight: settingsMutationInFlight,
+      codexFastModeOverride: codexFastModeOverride,
       showInterrupt: showInterrupt,
       interruptInFlight: interruptInFlight,
       onInterrupt: onInterrupt,
       onOpenModelPicker: onOpenModelPicker,
       onSelectRuntimeMode: onSelectRuntimeMode,
-      onSelectEffort: onSelectEffort,
+      onToggleCodexFastMode: onToggleCodexFastMode,
       onSend: onSend,
       onSent: onSent
     )
-    .padding(.horizontal, 14)
-    .padding(.vertical, 14)
+    .padding(.horizontal, 12)
+    .padding(.vertical, 10)
     .background(composerSurface)
   }
 
@@ -729,24 +920,28 @@ private struct WorkChatComposerCard: View {
 
 private struct WorkChatComposerDraftInput: View {
   let chatSummary: AgentChatSessionSummary?
+  let usageViewModel: WorkContextUsageViewModel?
   let pendingInputCount: Int
   let awaitingInputGate: Bool
   let canCompose: Bool
   let canSend: Bool
   let sending: Bool
+  let settingsMutationInFlight: Bool
+  let codexFastModeOverride: Bool?
   let showInterrupt: Bool
   let interruptInFlight: Bool
   let onInterrupt: @MainActor () async -> Void
   let onOpenModelPicker: (() -> Void)?
   let onSelectRuntimeMode: ((String) -> Void)?
-  let onSelectEffort: ((String) -> Void)?
+  let onToggleCodexFastMode: ((Bool) -> Void)?
   let onSend: @MainActor (String) async -> Bool
   let onSent: () -> Void
 
   @StateObject private var draftState = WorkChatComposerDraftState()
+  @State private var contextUsagePresented = false
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 12) {
+    VStack(alignment: .leading, spacing: 8) {
       WorkChatComposerTextField(
         draftState: draftState,
         canCompose: canCompose,
@@ -756,20 +951,50 @@ private struct WorkChatComposerDraftInput: View {
         )
       )
 
-      HStack(alignment: .center, spacing: 8) {
+      if showInterrupt && draftState.hasSendableText {
+        Text("Message will stage behind the active turn.")
+          .font(.caption2)
+          .foregroundStyle(ADEColor.textMuted)
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .accessibilityIdentifier("Work.Chat.Composer.StagingHint")
+      }
+
+      HStack(alignment: .center, spacing: 6) {
         WorkComposerChipStrip(
           chatSummary: chatSummary,
           pendingInputCount: pendingInputCount,
+          settingsMutationInFlight: settingsMutationInFlight,
+          codexFastModeOverride: codexFastModeOverride,
           onOpenModelPicker: onOpenModelPicker,
           onSelectRuntimeMode: onSelectRuntimeMode,
-          onSelectEffort: onSelectEffort
+          onToggleCodexFastMode: onToggleCodexFastMode
         )
 
         Spacer(minLength: 0)
 
+        if let usageViewModel {
+          WorkContextUsageMeter(
+            usage: usageViewModel,
+            active: showInterrupt,
+            isPresented: $contextUsagePresented
+          )
+          .popover(
+            isPresented: $contextUsagePresented,
+            attachmentAnchor: .rect(.bounds),
+            arrowEdge: .bottom
+          ) {
+            WorkContextUsagePopover(
+              usage: usageViewModel,
+              modelLabel: chatSummary?.model
+            )
+            .frame(maxWidth: 320, alignment: .leading)
+            .presentationCompactAdaptation(.popover)
+          }
+        }
+
         if showInterrupt {
           if draftState.hasSendableText {
-            stopButton(compact: true)
+            stopButton()
             WorkChatComposerSendButton(
               draftState: draftState,
               canSend: canSend,
@@ -792,34 +1017,27 @@ private struct WorkChatComposerDraftInput: View {
         }
       }
     }
+    .onChange(of: usageViewModel) { _, newValue in
+      if newValue == nil {
+        contextUsagePresented = false
+      }
+    }
   }
 
   @ViewBuilder
-  private func stopButton(compact: Bool = false) -> some View {
+  private func stopButton() -> some View {
     Button {
       Task { await onInterrupt() }
     } label: {
-      Group {
-        if compact {
-          stopButtonIcon(compact: true)
-        } else {
-          HStack(spacing: 5) {
-            stopButtonIcon(compact: false)
-            Text("Stop")
-              .font(.caption.weight(.semibold))
-          }
-          .padding(.horizontal, 12)
-          .padding(.vertical, 8)
-        }
-      }
+      stopButtonIcon()
       .foregroundStyle(ADEColor.danger.opacity(0.85))
-      .frame(width: compact ? 28 : nil, height: compact ? 28 : nil)
+      .frame(width: 28, height: 28)
       .background(
-        RoundedRectangle(cornerRadius: compact ? 8 : 10, style: .continuous)
+        RoundedRectangle(cornerRadius: 8, style: .continuous)
           .fill(ADEColor.danger.opacity(0.08))
       )
       .overlay(
-        RoundedRectangle(cornerRadius: compact ? 8 : 10, style: .continuous)
+        RoundedRectangle(cornerRadius: 8, style: .continuous)
           .stroke(ADEColor.danger.opacity(0.25), lineWidth: 1)
       )
     }
@@ -836,15 +1054,182 @@ private struct WorkChatComposerDraftInput: View {
   }
 
   @ViewBuilder
-  private func stopButtonIcon(compact: Bool) -> some View {
+  private func stopButtonIcon() -> some View {
     if interruptInFlight {
       ProgressView()
         .controlSize(.mini)
         .tint(ADEColor.danger)
     } else {
       Image(systemName: "stop.fill")
-        .font(.system(size: compact ? 10 : 12, weight: .bold))
+        .font(.system(size: 10, weight: .bold))
     }
+  }
+}
+
+private struct WorkContextUsageMeter: View {
+  let usage: WorkContextUsageViewModel
+  let active: Bool
+  @Binding var isPresented: Bool
+
+  private var percent: Int? {
+    usage.ratio.map { Int(($0 * 100).rounded()) }
+  }
+
+  private var ringColor: Color {
+    guard let ratio = usage.ratio else { return ADEColor.textSecondary }
+    if ratio >= 0.9 { return ADEColor.danger }
+    if ratio >= 0.7 { return ADEColor.warning }
+    return Color(red: 0.22, green: 0.74, blue: 0.97)
+  }
+
+  var body: some View {
+    if usage.ratio != nil || usage.usedTokens != nil {
+      Button {
+        withAnimation(.easeInOut(duration: 0.18)) {
+          isPresented.toggle()
+        }
+      } label: {
+        ZStack {
+          if let ratio = usage.ratio, let percent {
+            Circle()
+              .stroke(Color.white.opacity(0.10), lineWidth: 2.5)
+              .frame(width: 22, height: 22)
+
+            Circle()
+              .trim(from: 0, to: CGFloat(ratio))
+              .stroke(ringColor, style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
+              .rotationEffect(.degrees(-90))
+              .frame(width: 22, height: 22)
+
+            Text("\(percent)")
+              .font(.system(size: percent >= 100 ? 7 : 8, weight: .semibold, design: .rounded))
+              .monospacedDigit()
+              .foregroundStyle(ADEColor.textPrimary.opacity(0.78))
+              .minimumScaleFactor(0.65)
+          } else if let usedTokens = usage.usedTokens {
+            Text(workAbbreviateCount(usedTokens))
+              .font(.system(size: 10, weight: .semibold, design: .rounded))
+              .monospacedDigit()
+              .foregroundStyle(ADEColor.textSecondary)
+              .minimumScaleFactor(0.7)
+          }
+        }
+        .frame(width: 28, height: 28)
+        .contentShape(Rectangle())
+        .opacity(active ? 1 : 0.92)
+      }
+      .buttonStyle(.plain)
+      .accessibilityLabel(percent.map { "Context usage: \($0)% full" } ?? "Context usage")
+      .accessibilityHint(isPresented ? "Dismisses context usage details" : "Shows context usage details")
+      .adeInspectable(
+        "Work.Chat.Composer.ContextUsageMeter",
+        metadata: [
+          "label": percent.map { "Context usage: \($0)% full" } ?? "Context usage",
+          "role": "button"
+        ]
+      )
+    }
+  }
+}
+
+private struct WorkContextUsagePopover: View {
+  let usage: WorkContextUsageViewModel
+  let modelLabel: String?
+
+  private var percent: Int? {
+    usage.ratio.map { Int(($0 * 100).rounded()) }
+  }
+
+  private var windowLabel: String? {
+    usage.contextWindow.map { workAbbreviateCount($0) }
+  }
+
+  private var usedLabel: String? {
+    usage.usedTokens.map { workAbbreviateCount($0) }
+  }
+
+  private var description: String {
+    let model = modelLabel?.trimmingCharacters(in: .whitespacesAndNewlines)
+    if let percent, let windowLabel {
+      let owner: String
+      if let model, !model.isEmpty {
+        owner = "\(model)'s "
+      } else {
+        owner = "the "
+      }
+      let estimated = usage.windowSource == .registry ? " (estimated)" : ""
+      return "Using \(percent)% of \(owner)\(windowLabel)-token context window\(estimated)."
+    }
+    let used = usedLabel ?? "--"
+    if let model, !model.isEmpty {
+      return "\(used) tokens used so far by \(model); context window unknown."
+    }
+    return "\(used) tokens used so far; context window unknown."
+  }
+
+  private var breakdown: String? {
+    var segments: [String] = []
+    if let value = usage.inputTokens { segments.append("in \(workAbbreviateCount(value))") }
+    if let value = usage.outputTokens { segments.append("out \(workAbbreviateCount(value))") }
+    if let value = usage.cacheReadTokens { segments.append("cached \(workAbbreviateCount(value)) *") }
+    if let value = usage.reasoningTokens { segments.append("reasoning \(workAbbreviateCount(value))") }
+    return segments.isEmpty ? nil : segments.joined(separator: " · ")
+  }
+
+  private var effect: String? {
+    guard let percent, let windowLabel else { return nil }
+    return "\(usedLabel ?? "--") / \(windowLabel) tokens · \(percent)% full"
+  }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 7) {
+      Text("Context usage")
+        .font(.caption.weight(.semibold))
+        .foregroundStyle(ADEColor.textPrimary)
+
+      Text(description)
+        .font(.caption)
+        .foregroundStyle(ADEColor.textSecondary)
+        .fixedSize(horizontal: false, vertical: true)
+
+      if breakdown != nil || effect != nil {
+        Rectangle()
+          .fill(ADEColor.border.opacity(0.35))
+          .frame(height: 1)
+      }
+
+      if let breakdown {
+        Text(breakdown)
+          .font(.caption.monospaced())
+          .foregroundStyle(ADEColor.textMuted)
+          .lineLimit(2)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+
+      if let effect {
+        Text(effect)
+          .font(.caption.monospacedDigit())
+          .foregroundStyle((usage.ratio ?? 0) >= 0.8 ? ADEColor.warning : ADEColor.success)
+          .lineLimit(1)
+          .minimumScaleFactor(0.7)
+      }
+
+      if let ratio = usage.ratio, ratio >= 0.8 {
+        Text("Nearing the limit; older context may be auto-trimmed or compacted.")
+          .font(.caption2)
+          .foregroundStyle(ADEColor.warning)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+    }
+    .padding(.horizontal, 12)
+    .padding(.vertical, 10)
+    .background(ADEColor.surfaceBackground.opacity(0.94), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+    .overlay(
+      RoundedRectangle(cornerRadius: 10, style: .continuous)
+        .stroke(ADEColor.glassBorder.opacity(0.9), lineWidth: 1)
+    )
+    .shadow(color: Color.black.opacity(0.32), radius: 14, y: 8)
+    .accessibilityIdentifier("Work.Chat.Composer.ContextUsagePopover")
   }
 }
 
@@ -893,7 +1278,7 @@ private struct WorkChatComposerTextField: View {
       .autocorrectionDisabled(false)
       .textInputAutocapitalization(.sentences)
       .focused($composerFocused)
-      .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
+      .frame(maxWidth: .infinity, minHeight: 24, alignment: .leading)
   }
 }
 

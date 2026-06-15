@@ -86,7 +86,7 @@ struct WorkJumpToLatestPill: View {
       HStack(spacing: 6) {
         Image(systemName: "arrow.down")
           .font(.caption.weight(.bold))
-        Text("\(count) new")
+        Text(count > 0 ? "\(count) new" : "Latest")
           .font(.caption.weight(.semibold))
       }
       .foregroundStyle(Color.white)
@@ -96,7 +96,9 @@ struct WorkJumpToLatestPill: View {
       .shadow(color: ADEColor.purpleGlow, radius: 10, y: 2)
     }
     .buttonStyle(.plain)
-    .accessibilityLabel("\(count) new message\(count == 1 ? "" : "s"). Tap to scroll to latest.")
+    .accessibilityLabel(count > 0
+      ? "\(count) new message\(count == 1 ? "" : "s"). Tap to scroll to latest."
+      : "Jump to latest message.")
   }
 }
 

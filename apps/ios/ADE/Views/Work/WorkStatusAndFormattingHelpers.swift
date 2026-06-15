@@ -26,6 +26,18 @@ func isStoppableRuntimeSession(_ session: TerminalSessionSummary, summary: Agent
   return status == "active" || status == "awaiting-input" || status == "idle"
 }
 
+func workSessionDeepLink(sessionId: String, laneId: String?) -> String {
+  let pathAllowed = CharacterSet.urlPathAllowed.subtracting(CharacterSet(charactersIn: "/?#[]@!$&'()*+,;="))
+  let queryAllowed = CharacterSet.urlQueryAllowed.subtracting(CharacterSet(charactersIn: "#&="))
+  let encodedSessionId = sessionId.addingPercentEncoding(withAllowedCharacters: pathAllowed) ?? sessionId
+  let trimmedLaneId = laneId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  guard !trimmedLaneId.isEmpty else {
+    return "ade://session/\(encodedSessionId)"
+  }
+  let encodedLaneId = trimmedLaneId.addingPercentEncoding(withAllowedCharacters: queryAllowed) ?? trimmedLaneId
+  return "ade://session/\(encodedSessionId)?lane=\(encodedLaneId)"
+}
+
 func workChatComposerBlocksFreeformInput(pendingInputCount: Int, sessionStatus: String) -> Bool {
   pendingInputCount > 0 || sessionStatus == "awaiting-input"
 }
@@ -428,8 +440,7 @@ func workChatStatusIcon(_ status: String) -> String {
 }
 
 /// Shared menu options for the access-mode pill in both the in-session composer and the
-/// New Chat composer. Matches the desktop composer's per-provider set. Empty when the
-/// provider has no runtime mode (e.g. cursor — which uses `cursorModeId` instead).
+/// New Chat composer. Matches the desktop composer's per-provider set.
 struct WorkRuntimeModeOption: Identifiable, Hashable {
   let id: String
   let title: String
@@ -441,13 +452,14 @@ func workRuntimeModeOptions(provider: String) -> [WorkRuntimeModeOption] {
     return [
       WorkRuntimeModeOption(id: "default", title: "Default"),
       WorkRuntimeModeOption(id: "auto", title: "Auto"),
+      WorkRuntimeModeOption(id: "edit", title: "Accept Edits"),
       WorkRuntimeModeOption(id: "plan", title: "Plan"),
-      WorkRuntimeModeOption(id: "edit", title: "Auto edit"),
       WorkRuntimeModeOption(id: "full-auto", title: "Bypass"),
     ]
   case "codex":
     return [
       WorkRuntimeModeOption(id: "default", title: "Default permissions"),
+      WorkRuntimeModeOption(id: "edit", title: "Edit mode"),
       WorkRuntimeModeOption(id: "plan", title: "Plan mode"),
       WorkRuntimeModeOption(id: "full-auto", title: "Full access"),
       WorkRuntimeModeOption(id: "config-toml", title: "Custom (config.toml)"),
@@ -456,14 +468,15 @@ func workRuntimeModeOptions(provider: String) -> [WorkRuntimeModeOption] {
     return [
       WorkRuntimeModeOption(id: "plan", title: "Plan"),
       WorkRuntimeModeOption(id: "edit", title: "Edit"),
-      WorkRuntimeModeOption(id: "full-auto", title: "Full auto"),
+      WorkRuntimeModeOption(id: "full-auto", title: "Allow"),
+      WorkRuntimeModeOption(id: "config-toml", title: "Config"),
     ]
   case "cursor":
     return [
-      WorkRuntimeModeOption(id: "agent", title: "Agent"),
-      WorkRuntimeModeOption(id: "ask", title: "Ask"),
+      WorkRuntimeModeOption(id: "default", title: "Agent"),
       WorkRuntimeModeOption(id: "plan", title: "Plan"),
-      WorkRuntimeModeOption(id: "full-auto", title: "Full auto"),
+      WorkRuntimeModeOption(id: "edit", title: "Ask"),
+      WorkRuntimeModeOption(id: "full-auto", title: "Force"),
     ]
   case "droid", "factory":
     return [
@@ -471,7 +484,7 @@ func workRuntimeModeOptions(provider: String) -> [WorkRuntimeModeOption] {
       WorkRuntimeModeOption(id: "auto-low", title: "Auto low"),
       WorkRuntimeModeOption(id: "auto-medium", title: "Auto medium"),
       WorkRuntimeModeOption(id: "auto-high", title: "Auto high"),
-      WorkRuntimeModeOption(id: "agi", title: "AGI (orchestrator)"),
+      WorkRuntimeModeOption(id: "agi", title: "AGI"),
     ]
   default:
     return []
@@ -484,29 +497,41 @@ func workRuntimeModeLabel(provider: String, mode: String) -> String {
     switch mode {
     case "auto": return "Auto"
     case "plan": return "Plan"
-    case "edit": return "Auto edit"
+    case "edit": return "Accept Edits"
     case "full-auto": return "Bypass"
     default: return "Default"
     }
   case "codex":
     switch mode {
+    case "edit": return "Edit mode"
     case "plan": return "Plan mode"
     case "full-auto": return "Full access"
     case "config-toml": return "Custom"
     default: return "Default permissions"
     }
   case "opencode":
-    return mode.isEmpty ? "Edit" : mode.capitalized
+    switch mode {
+    case "plan": return "Plan"
+    case "edit": return "Edit"
+    case "full-auto": return "Allow"
+    case "config-toml": return "Config"
+    default: return "Edit"
+    }
   case "cursor":
-    return workCursorModeLabel(mode.isEmpty ? "agent" : mode)
+    switch mode {
+    case "plan": return "Plan"
+    case "edit", "ask": return "Ask"
+    case "full-auto": return "Force"
+    default: return "Agent"
+    }
   case "droid", "factory":
     switch mode {
-    case "read-only": return "Read-only"
-    case "auto-low": return "Auto low"
-    case "auto-medium": return "Auto medium"
-    case "auto-high": return "Auto high"
-    case "agi": return "AGI (orchestrator)"
-    default: return mode.isEmpty ? "Auto low" : mode.capitalized
+    case "plan", "read-only": return "Read-only"
+    case "edit", "auto-low": return "Auto low"
+    case "default", "auto-medium": return "Auto medium"
+    case "full-auto", "auto-high": return "Auto high"
+    case "agi": return "AGI"
+    default: return "Auto low"
     }
   default:
     return mode.isEmpty ? "Access" : mode.capitalized
@@ -516,7 +541,7 @@ func workRuntimeModeLabel(provider: String, mode: String) -> String {
 func workRuntimeModeTint(_ mode: String) -> Color {
   switch mode {
   case "full-auto", "auto-high": return ADEColor.danger
-  case "edit", "auto", "ask", "auto-low", "auto-medium": return ADEColor.warning
+  case "edit", "auto", "ask", "auto-low", "auto-medium", "default": return ADEColor.warning
   case "agi": return ADEColor.purpleAccent
   case "plan", "read-only": return ADEColor.accent
   default: return ADEColor.textSecondary
@@ -530,7 +555,7 @@ func workDefaultRuntimeMode(provider: String) -> String {
   switch provider.lowercased() {
   case "claude", "codex": return "default"
   case "opencode": return "edit"
-  case "cursor": return "agent"
+  case "cursor": return "default"
   case "droid", "factory": return "auto-low"
   default: return ""
   }
@@ -577,6 +602,11 @@ func workRuntimeWireFields(provider: String, mode: String) -> WorkRuntimeWireFie
     }
   case "codex":
     switch mode {
+    case "edit":
+      fields.codexConfigSource = "flags"
+      fields.codexApprovalPolicy = "untrusted"
+      fields.codexSandbox = "workspace-write"
+      fields.permissionMode = "edit"
     case "plan":
       fields.codexConfigSource = "flags"
       fields.codexApprovalPolicy = "on-request"
@@ -597,36 +627,45 @@ func workRuntimeWireFields(provider: String, mode: String) -> WorkRuntimeWireFie
       fields.permissionMode = "default"
     }
   case "opencode":
-    fields.opencodePermissionMode = mode
-    fields.permissionMode = mode
+    let normalizedMode = workNormalizedOpenCodeRuntimeMode(mode)
+    fields.opencodePermissionMode = normalizedMode
+    fields.permissionMode = normalizedMode
   case "cursor":
-    fields.cursorModeId = mode.isEmpty ? "agent" : mode
-    switch fields.cursorModeId {
+    let normalizedMode = mode.isEmpty ? "default" : mode
+    switch normalizedMode {
     case "plan":
+      fields.cursorModeId = "plan"
       fields.permissionMode = "plan"
-    case "ask":
+    case "edit":
+      fields.cursorModeId = "ask"
       fields.permissionMode = "edit"
     case "full-auto":
+      fields.cursorModeId = "full-auto"
       fields.permissionMode = "full-auto"
     default:
+      fields.cursorModeId = "agent"
       fields.permissionMode = "default"
     }
   case "droid", "factory":
-    fields.droidPermissionMode = mode.isEmpty ? "auto-low" : mode
-    switch fields.droidPermissionMode {
-    case "read-only":
+    let normalizedMode = mode.isEmpty ? "auto-low" : mode
+    switch normalizedMode {
+    case "read-only", "plan":
+      fields.droidPermissionMode = "read-only"
       fields.permissionMode = "plan"
-    case "agi":
-      // AGI puts Droid in orchestrator mode: it decomposes a mission into
-      // features and spawns workers while keeping read-only tools at the top
-      // level, so the companion permission mode is "plan" (desktop parity:
-      // AgentChatPane maps AGI -> plan, autonomy off).
-      fields.permissionMode = "plan"
-    case "auto-medium":
+    case "auto-low", "edit":
+      fields.droidPermissionMode = "auto-low"
+      fields.permissionMode = "edit"
+    case "auto-medium", "default":
+      fields.droidPermissionMode = "auto-medium"
       fields.permissionMode = "default"
-    case "auto-high":
+    case "auto-high", "full-auto":
+      fields.droidPermissionMode = "auto-high"
       fields.permissionMode = "full-auto"
+    case "agi":
+      fields.droidPermissionMode = "agi"
+      fields.permissionMode = "plan"
     default:
+      fields.droidPermissionMode = "auto-low"
       fields.permissionMode = "edit"
     }
   default:
@@ -674,18 +713,38 @@ func workInitialRuntimeMode(_ summary: AgentChatSessionSummary) -> String {
     if (summary.codexApprovalPolicy == "on-request" || summary.codexApprovalPolicy == "untrusted") && summary.codexSandbox == "read-only" {
       return "plan"
     }
+    if summary.codexApprovalPolicy == "untrusted" && summary.codexSandbox == "workspace-write" {
+      return "edit"
+    }
     if summary.codexApprovalPolicy == "never" && summary.codexSandbox == "danger-full-access" {
       return "full-auto"
     }
     return "default"
   case "opencode":
-    return summary.opencodePermissionMode ?? summary.permissionMode ?? "edit"
+    return workNormalizedOpenCodeRuntimeMode(summary.opencodePermissionMode ?? summary.permissionMode)
   case "cursor":
-    return summary.cursorModeId ?? workCursorCurrentModeId(summary.cursorModeSnapshot) ?? "agent"
+    switch summary.cursorModeId ?? workCursorCurrentModeId(summary.cursorModeSnapshot) {
+    case "plan": return "plan"
+    case "ask": return "edit"
+    case "full-auto": return "full-auto"
+    default: return "default"
+    }
   case "droid", "factory":
-    return summary.droidPermissionMode ?? workDroidModeFromPermissionMode(summary.permissionMode) ?? "auto-low"
+    return workDroidRuntimeMode(
+      droidPermissionMode: summary.droidPermissionMode,
+      permissionMode: summary.permissionMode
+    ) ?? "auto-low"
   default:
     return ""
+  }
+}
+
+func workNormalizedOpenCodeRuntimeMode(_ mode: String?) -> String {
+  switch mode {
+  case "plan", "edit", "full-auto", "config-toml":
+    return mode ?? "edit"
+  default:
+    return "edit"
   }
 }
 
@@ -696,6 +755,13 @@ func workDroidModeFromPermissionMode(_ permissionMode: String?) -> String? {
   case "default": return "auto-medium"
   case "full-auto": return "auto-high"
   default: return nil
+  }
+}
+
+func workDroidRuntimeMode(droidPermissionMode: String?, permissionMode: String?) -> String? {
+  switch droidPermissionMode {
+  case "read-only", "auto-low", "auto-medium", "auto-high", "agi": return droidPermissionMode
+  default: return workDroidModeFromPermissionMode(permissionMode)
   }
 }
 

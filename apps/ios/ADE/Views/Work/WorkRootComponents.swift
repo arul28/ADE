@@ -467,12 +467,12 @@ struct WorkSessionListRow: View {
   let onLongPressSelect: (TerminalSessionSummary) -> Void
   let onToggleSelect: (TerminalSessionSummary) -> Void
   let onOpen: (TerminalSessionSummary) -> Void
-  let onArchive: (TerminalSessionSummary) -> Void
   let onPin: (TerminalSessionSummary) -> Void
   let onRename: (TerminalSessionSummary) -> Void
   let onStopRuntime: (TerminalSessionSummary) -> Void
   let onDelete: (TerminalSessionSummary) -> Void
   let onCopyId: (TerminalSessionSummary) -> Void
+  let onCopyDeepLink: (TerminalSessionSummary) -> Void
   let onGoToLane: (TerminalSessionSummary) -> Void
 
   var body: some View {
@@ -514,17 +514,12 @@ struct WorkSessionListRow: View {
           onStopRuntime(session)
         }
         .tint(ADEColor.danger)
+      } else if shouldShowDeleteAction {
+        Button("Delete", role: .destructive) {
+          onDelete(session)
+        }
+        .tint(ADEColor.danger)
       }
-
-      Button(isArchived ? "Restore" : "Archive") {
-        onArchive(session)
-      }
-      .tint(ADEColor.warning)
-
-      Button(session.pinned ? "Unpin" : "Pin") {
-        onPin(session)
-      }
-      .tint(ADEColor.accent)
     }
     .contextMenu {
       Button {
@@ -532,30 +527,46 @@ struct WorkSessionListRow: View {
       } label: {
         Label("Select", systemImage: "checkmark.circle")
       }
-      Button("Rename") {
+      Button {
         onRename(session)
-      }
-      Button(session.pinned ? "Unpin" : "Pin") {
-        onPin(session)
-      }
-      Button(isArchived ? "Restore from archive" : "Archive") {
-        onArchive(session)
+      } label: {
+        Label("Rename", systemImage: "pencil")
       }
       if shouldShowStopRuntimeAction {
-        Button("Stop runtime", role: .destructive) {
+        Button(role: .destructive) {
           onStopRuntime(session)
+        } label: {
+          Label("Stop runtime", systemImage: "stop.fill")
         }
       }
       if shouldShowDeleteAction {
-        Button("Delete chat", role: .destructive) {
+        Button(role: .destructive) {
           onDelete(session)
+        } label: {
+          Label("Delete chat", systemImage: "trash")
         }
       }
-      Button("Copy session ID") {
-        onCopyId(session)
-      }
-      Button("Go to lane") {
+      Divider()
+      Button {
         onGoToLane(session)
+      } label: {
+        Label("Go to lane", systemImage: "arrow.triangle.branch")
+      }
+      Button {
+        onCopyId(session)
+      } label: {
+        Label("Copy session ID", systemImage: "doc.on.doc")
+      }
+      Button {
+        onCopyDeepLink(session)
+      } label: {
+        Label("Copy session deep link", systemImage: "link")
+      }
+      Button {
+        onPin(session)
+      } label: {
+        Label(session.pinned ? "Unpin from front" : "Pin to front",
+              systemImage: session.pinned ? "pin.slash" : "pin")
       }
     }
   }

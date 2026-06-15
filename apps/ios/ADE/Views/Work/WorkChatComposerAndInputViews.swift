@@ -81,6 +81,63 @@ private func formatWorkAbbreviation(_ value: Double, suffix: String) -> String {
   return String(format: "%.1f%@", rounded, suffix)
 }
 
+func workReasoningChipLabel(_ effort: String?) -> String? {
+  guard let effort else { return nil }
+  let lower = effort.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+  guard !lower.isEmpty else { return nil }
+  switch lower {
+  case "minimal": return "MIN"
+  case "low": return "LOW"
+  case "medium": return "MED"
+  case "high": return "HI"
+  case "xhigh", "extra-high", "extra_high", "extra high": return "XH"
+  case "max": return "MAX"
+  case "ultracode": return "ULTRA"
+  default: return String(lower.prefix(3)).uppercased()
+  }
+}
+
+func workChatComposerSupportsFastMode(_ summary: AgentChatSessionSummary) -> Bool {
+  if summary.effectiveFastMode { return true }
+  if workChatComposerModelOption(summary)?.supportsServiceTier("fast") == true { return true }
+  return workChatComposerModelRefLooksFastCapable(summary)
+}
+
+private func workChatComposerModelOption(_ summary: AgentChatSessionSummary) -> WorkModelOption? {
+  let currentModelId = (summary.modelId ?? summary.model).trimmingCharacters(in: .whitespacesAndNewlines)
+  guard !currentModelId.isEmpty else { return nil }
+  let family = providerFamilyKey(summary.provider)
+  let groups = workModelCatalogGroups(currentModelId: currentModelId, currentProvider: summary.provider)
+  let familyGroups = groups.filter { $0.key == family }
+  let searchGroups = familyGroups.isEmpty ? groups : familyGroups
+
+  for group in searchGroups {
+    for provider in group.providers {
+      if let match = provider.models.first(where: { workModelIdsEquivalent($0.id, currentModelId) }) {
+        return match
+      }
+    }
+  }
+  return nil
+}
+
+private func workChatComposerModelRefLooksFastCapable(_ summary: AgentChatSessionSummary) -> Bool {
+  let refs = [summary.modelId, summary.model]
+    .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+    .filter { !$0.isEmpty }
+  let fastRefs: Set<String> = [
+    "gpt-5.5", "gpt-5.5-codex", "openai/gpt-5.5", "openai/gpt-5.5-codex",
+    "gpt-5.4", "gpt-5.4-codex", "openai/gpt-5.4", "openai/gpt-5.4-codex",
+    "opencode/openai/gpt-5.4",
+    "fable", "claude-fable-5", "anthropic/claude-fable-5", "opencode/anthropic/claude-fable-5",
+    "opus", "claude-opus-4-7", "anthropic/claude-opus-4-7", "opencode/anthropic/claude-opus-4-7",
+    "opus-1m", "opus[1m]", "claude-opus-4-7-1m", "anthropic/claude-opus-4-7-1m",
+    "opus-4.8", "opus-4-8", "claude-opus-4-8", "anthropic/claude-opus-4-8",
+    "opencode/anthropic/claude-opus-4-8",
+  ]
+  return refs.contains { fastRefs.contains($0) || $0.hasSuffix("-fast") }
+}
+
 struct WorkComposerInputBanner: View {
   let title: String
   let message: String
@@ -119,20 +176,22 @@ struct WorkComposerInputBanner: View {
 }
 
 /// Compact horizontal strip matching the desktop composer toolbar: small
-/// single-line pills for access / model / reasoning, pending status
-/// chips, and nothing else. Runtime and reasoning choices are visible chips
-/// so mobile does not hide critical steering behind a native menu.
+/// single-line pills for access, model, fast mode, pending status chips,
+/// and nothing else. Reasoning is summarized in the model chip and changed
+/// through the full model picker.
 struct WorkComposerChipStrip: View {
   let chatSummary: AgentChatSessionSummary?
   let pendingInputCount: Int
+  let settingsMutationInFlight: Bool
+  let codexFastModeOverride: Bool?
   let onOpenModelPicker: (() -> Void)?
   let onSelectRuntimeMode: ((String) -> Void)?
-  let onSelectEffort: ((String) -> Void)?
+  let onToggleCodexFastMode: ((Bool) -> Void)?
 
-  /// Width below which the access / reasoning controls collapse from the full
-  /// segmented chip rows to a single dot-only Menu button — mirroring the
-  /// desktop composer's ≤560px container query (tuned down for the phone, where
-  /// the full strip still wants to leave room for the model pill + Send button).
+  /// Width below which the access control collapses from the full segmented
+  /// chip row to a single dot-only Menu button — mirroring the desktop
+  /// composer's ≤560px container query (tuned down for the phone, where the full
+  /// strip still wants to leave room for the model pill + Send button).
   private let collapseThreshold: CGFloat = 360
 
   /// Live measurement of the strip's available width, fed by a background
@@ -145,11 +204,11 @@ struct WorkComposerChipStrip: View {
 
   var body: some View {
     ScrollView(.horizontal, showsIndicators: false) {
-      HStack(spacing: 10) {
+      HStack(spacing: 8) {
         if let chatSummary {
           accessControl(summary: chatSummary)
           modelPill(summary: chatSummary)
-          effortControl(summary: chatSummary)
+          fastModeToggle(summary: chatSummary)
         }
 
         if pendingInputCount > 0 {
@@ -159,6 +218,8 @@ struct WorkComposerChipStrip: View {
       .padding(.horizontal, 2)
     }
     .frame(maxWidth: .infinity, alignment: .leading)
+    .disabled(settingsMutationInFlight)
+    .opacity(settingsMutationInFlight ? 0.72 : 1)
     .background(
       GeometryReader { proxy in
         Color.clear
@@ -179,17 +240,6 @@ struct WorkComposerChipStrip: View {
       collapsedAccessControl(summary: summary)
     } else {
       accessPill(summary: summary)
-    }
-  }
-
-  /// Reasoning-effort control: full per-tier chips above the threshold, a single
-  /// dot-plus-glyph Menu button below it.
-  @ViewBuilder
-  private func effortControl(summary: AgentChatSessionSummary) -> some View {
-    if isCollapsed {
-      collapsedEffortControl(summary: summary)
-    } else {
-      effortPill(summary: summary)
     }
   }
 
@@ -220,37 +270,6 @@ struct WorkComposerChipStrip: View {
     }
   }
 
-  @ViewBuilder
-  private func collapsedEffortControl(summary: AgentChatSessionSummary) -> some View {
-    if let onSelectEffort,
-       let tiers = ADEColor.reasoningTiers(for: summary.modelId ?? summary.model),
-       !tiers.isEmpty {
-      let current = (summary.reasoningEffort ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-      let menuTiers: [String] = {
-        if !current.isEmpty && !tiers.contains(where: { $0.lowercased() == current.lowercased() }) {
-          return tiers + [current]
-        }
-        return tiers
-      }()
-      Menu {
-        Picker("Reasoning effort", selection: Binding(
-          get: { current },
-          set: { onSelectEffort($0) }
-        )) {
-          ForEach(menuTiers, id: \.self) { option in
-            Text(option.capitalized).tag(option)
-          }
-        }
-      } label: {
-        collapsedDotButton(
-          tint: ADEColor.accent,
-          glyph: current.isEmpty ? nil : String(current.prefix(1)).uppercased()
-        )
-      }
-      .accessibilityLabel("Reasoning effort\(current.isEmpty ? "" : ": \(current)"). Tap to change.")
-    }
-  }
-
   /// Compact ~1.5rem square showing just the tone dot (and an optional short
   /// glyph), mirroring the desktop collapsed permission control.
   private func collapsedDotButton(tint: Color, glyph: String?) -> some View {
@@ -266,55 +285,18 @@ struct WorkComposerChipStrip: View {
       }
     }
     .frame(width: 28, height: 28)
-    .background(tint.opacity(0.1), in: Capsule(style: .continuous))
+    .background(ADEColor.surfaceBackground.opacity(0.38), in: Capsule(style: .continuous))
     .overlay(
       Capsule(style: .continuous)
-        .stroke(tint.opacity(0.35), lineWidth: 0.5)
+        .stroke(ADEColor.border.opacity(0.24), lineWidth: 0.5)
     )
-    .frame(minWidth: 44, minHeight: 44)
     .contentShape(Rectangle())
-  }
-
-  /// Reasoning-effort chip tuned to the active model. Each model advertises
-  /// its own tier set in `ADEColor.reasoningTiers` (mirror of the desktop
-  /// registry) — Opus has low/medium/high/max, Sonnet has low/medium/high,
-  /// Haiku has no tiers at all, GPT-5.x Codex has low/medium/high/xhigh, etc.
-  /// The pill hides entirely when the current model doesn't support tiers so
-  /// we never offer a setting the host will reject.
-  @ViewBuilder
-  private func effortPill(summary: AgentChatSessionSummary) -> some View {
-    if let onSelectEffort,
-       let tiers = ADEColor.reasoningTiers(for: summary.modelId ?? summary.model),
-       !tiers.isEmpty {
-      let current = (summary.reasoningEffort ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-      // Include the current stored value even if it isn't in the model's
-      // advertised set — protects against registry drift so users never get
-      // stuck with an un-selectable tier.
-      let menuTiers: [String] = {
-        if !current.isEmpty && !tiers.contains(where: { $0.lowercased() == current.lowercased() }) {
-          return tiers + [current]
-        }
-        return tiers
-      }()
-      HStack(spacing: 6) {
-        ForEach(menuTiers, id: \.self) { option in
-          composerOptionChip(
-            title: option.capitalized,
-            systemImage: "gauge.with.dots.needle.50percent",
-            tint: ADEColor.accent,
-            isSelected: option.lowercased() == current.lowercased(),
-            accessibilityPrefix: "Reasoning effort"
-          ) {
-            onSelectEffort(option)
-          }
-        }
-      }
-    }
   }
 
   @ViewBuilder
   private func modelPill(summary: AgentChatSessionSummary) -> some View {
     let reasoning = (summary.reasoningEffort ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    let reasoningLabel = workReasoningChipLabel(reasoning)
     Button {
       onOpenModelPicker?()
     } label: {
@@ -329,11 +311,11 @@ struct WorkComposerChipStrip: View {
           .font(.caption.weight(.semibold))
           .foregroundStyle(ADEColor.textPrimary)
           .lineLimit(1)
-        if !reasoning.isEmpty {
+        if let reasoningLabel {
           Text("·")
             .font(.caption2)
             .foregroundStyle(ADEColor.textMuted.opacity(0.5))
-          Text(reasoning.capitalized)
+          Text(reasoningLabel)
             .font(.system(size: 10, weight: .medium))
             .foregroundStyle(ADEColor.textMuted)
             .lineLimit(1)
@@ -342,8 +324,8 @@ struct WorkComposerChipStrip: View {
           .font(.system(size: 9, weight: .bold))
           .foregroundStyle(ADEColor.textMuted)
       }
-      .padding(.horizontal, 9)
-      .padding(.vertical, 6)
+      .padding(.horizontal, 8)
+      .padding(.vertical, 5)
       .background(Color.clear, in: Capsule(style: .continuous))
       .overlay(
         Capsule(style: .continuous)
@@ -353,6 +335,41 @@ struct WorkComposerChipStrip: View {
     .buttonStyle(.plain)
     .disabled(onOpenModelPicker == nil)
     .accessibilityLabel("Model: \(summary.model)\(reasoning.isEmpty ? "" : ", reasoning \(reasoning)"). Tap to switch.")
+  }
+
+  @ViewBuilder
+  private func fastModeToggle(summary: AgentChatSessionSummary) -> some View {
+    if supportsFastMode(summary: summary) {
+      let persistedEnabled = summary.effectiveFastMode
+      let isEnabled = codexFastModeOverride ?? persistedEnabled
+      Button {
+        let next = !isEnabled
+        onToggleCodexFastMode?(next)
+      } label: {
+        Image(systemName: "bolt.fill")
+          .font(.system(size: 11, weight: .bold))
+          .foregroundStyle(isEnabled ? ADEColor.warning : ADEColor.textMuted)
+          .frame(width: 28, height: 28)
+          .background(
+            Capsule(style: .continuous)
+              .fill(ADEColor.surfaceBackground.opacity(isEnabled ? 0.56 : 0.34))
+          )
+          .overlay(
+            Capsule(style: .continuous)
+              .stroke(isEnabled ? ADEColor.warning.opacity(0.38) : ADEColor.border.opacity(0.22), lineWidth: 0.5)
+          )
+      }
+      .buttonStyle(.plain)
+      .disabled(onToggleCodexFastMode == nil || settingsMutationInFlight)
+      .contentShape(Rectangle())
+      .accessibilityLabel("Fast mode \(isEnabled ? "on" : "off"). Tap to turn \(isEnabled ? "off" : "on").")
+      .accessibilityValue(settingsMutationInFlight ? "\(isEnabled ? "On" : "Off"), saving" : (isEnabled ? "On" : "Off"))
+      .accessibilityIdentifier("Work.Chat.Composer.FastModeToggle")
+    }
+  }
+
+  private func supportsFastMode(summary: AgentChatSessionSummary) -> Bool {
+    workChatComposerSupportsFastMode(summary)
   }
 
   @ViewBuilder
@@ -408,9 +425,12 @@ struct WorkComposerChipStrip: View {
             .foregroundStyle(tint)
         }
       }
-      .padding(.horizontal, 9)
-      .padding(.vertical, 6)
-      .background((isSelected ? tint.opacity(0.12) : Color.clear), in: Capsule(style: .continuous))
+      .padding(.horizontal, 8)
+      .padding(.vertical, 5)
+      .background(
+        ADEColor.surfaceBackground.opacity(isSelected ? 0.56 : 0.28),
+        in: Capsule(style: .continuous)
+      )
       .overlay(
         Capsule(style: .continuous)
           .stroke(isSelected ? tint.opacity(0.4) : ADEColor.border.opacity(0.22), lineWidth: 0.5)
@@ -437,12 +457,12 @@ struct WorkComposerChipStrip: View {
           .foregroundStyle(ADEColor.textMuted)
       }
     }
-    .padding(.horizontal, 9)
-    .padding(.vertical, 6)
-    .background(dotColor.opacity(0.06), in: Capsule(style: .continuous))
+    .padding(.horizontal, 8)
+    .padding(.vertical, 5)
+    .background(ADEColor.surfaceBackground.opacity(0.38), in: Capsule(style: .continuous))
     .overlay(
       Capsule(style: .continuous)
-        .stroke(dotColor.opacity(0.22), lineWidth: 0.5)
+        .stroke(ADEColor.border.opacity(0.24), lineWidth: 0.5)
     )
   }
 
@@ -456,8 +476,8 @@ struct WorkComposerChipStrip: View {
         .lineLimit(1)
     }
     .foregroundStyle(tint)
-    .padding(.horizontal, 9)
-    .padding(.vertical, 6)
+    .padding(.horizontal, 8)
+    .padding(.vertical, 5)
     .background(tint.opacity(0.1), in: Capsule(style: .continuous))
     .overlay(
       Capsule(style: .continuous)
@@ -1279,7 +1299,7 @@ struct WorkModelSelectionPendingCard: View {
     _selectedModelId = State(initialValue: suggested?.modelId ?? "")
     _selectedProvider = State(initialValue: suggested?.provider ?? "claude")
     _selectedReasoningEffort = State(initialValue: suggested?.reasoningEffort ?? "")
-    _selectedCodexFastMode = State(initialValue: suggested?.codexFastMode ?? false)
+    _selectedCodexFastMode = State(initialValue: suggested?.fastMode ?? false)
     _selectedModel = State(initialValue: nil)
   }
 
@@ -1447,7 +1467,7 @@ struct WorkModelSelectionPendingCard: View {
       provider: trimmedProvider.isEmpty ? "claude" : trimmedProvider,
       modelId: trimmedModelId,
       reasoningEffort: trimmedEffort.isEmpty ? nil : trimmedEffort,
-      codexFastMode: selectedCodexFastMode ? true : nil
+      fastMode: selectedCodexFastMode ? true : nil
     )
     guard let json = workModelSelectionJSONString(answer) else { return }
     await onConfirm(json)

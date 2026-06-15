@@ -409,6 +409,9 @@ extension LanesTabView {
       if nextPinnedLaneIds != pinnedLaneIds {
         pinnedLaneIds = nextPinnedLaneIds
       }
+      if let selectedLaneTransitionId, !visibleIds.contains(selectedLaneTransitionId) {
+        self.selectedLaneTransitionId = nil
+      }
       if errorMessage != nil {
         errorMessage = nil
       }

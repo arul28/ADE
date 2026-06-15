@@ -12,6 +12,13 @@ func workFallbackItemID(
   "fallback-\(workStableDigest([sessionId, timestamp, String(sequence ?? -1), type, seed].joined(separator: "|")))"
 }
 
+func optionalWorkInt(_ value: Any?) -> Int? {
+  if let value = value as? Int { return value }
+  if let value = value as? NSNumber { return value.intValue }
+  if let value = value as? String { return Int(value.trimmingCharacters(in: .whitespacesAndNewlines)) }
+  return nil
+}
+
 func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
   extractLooseJSONObjects(from: raw)
     .compactMap { chunk -> WorkChatEnvelope? in
@@ -213,6 +220,7 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
       case "done":
         let usage = prettyPrintedJSONString(eventDict["usage"])
         let cost = eventDict["costUsd"] as? NSNumber
+        let usageDict = eventDict["usage"] as? [String: Any]
         var summaryParts: [String] = []
         if let status = optionalString(eventDict["status"]) {
           summaryParts.append(status.replacingOccurrences(of: "_", with: " ").capitalized)
@@ -227,18 +235,13 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
           summaryParts.append(String(format: "$%.4f", cost.doubleValue))
         }
         let usageSummary = makeWorkUsageSummary(
-          inputTokens: eventDict["usage"].flatMap { value in
-            (value as? [String: Any])?["inputTokens"] as? Int
-          },
-          outputTokens: eventDict["usage"].flatMap { value in
-            (value as? [String: Any])?["outputTokens"] as? Int
-          },
-          cacheReadTokens: eventDict["usage"].flatMap { value in
-            (value as? [String: Any])?["cacheReadTokens"] as? Int
-          },
-          cacheCreationTokens: eventDict["usage"].flatMap { value in
-            (value as? [String: Any])?["cacheCreationTokens"] as? Int
-          },
+          inputTokens: optionalWorkInt(usageDict?["inputTokens"]),
+          outputTokens: optionalWorkInt(usageDict?["outputTokens"]),
+          cacheReadTokens: optionalWorkInt(usageDict?["cacheReadTokens"]),
+          cacheCreationTokens: optionalWorkInt(usageDict?["cacheCreationTokens"]),
+          reasoningTokens: optionalWorkInt(usageDict?["reasoningTokens"]),
+          totalTokens: optionalWorkInt(usageDict?["totalTokens"]),
+          contextWindow: optionalWorkInt(usageDict?["contextWindow"]),
           costUsd: cost?.doubleValue
         )
         event = .done(
@@ -248,6 +251,58 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
           turnId: stringValue(eventDict["turnId"]),
           model: optionalString(eventDict["model"]),
           modelId: optionalString(eventDict["modelId"])
+        )
+      case "tokens":
+        event = .tokens(
+          usage: makeWorkUsageSummary(
+            inputTokens: optionalWorkInt(eventDict["inputTokens"]),
+            outputTokens: optionalWorkInt(eventDict["outputTokens"]),
+            cacheReadTokens: optionalWorkInt(eventDict["cacheReadTokens"]),
+            cacheCreationTokens: optionalWorkInt(eventDict["cacheWriteTokens"]),
+            reasoningTokens: nil,
+            totalTokens: optionalWorkInt(eventDict["totalTokens"]),
+            contextWindow: optionalWorkInt(eventDict["contextWindow"]),
+            costUsd: nil
+          ) ?? WorkUsageSummary(
+            turnCount: 1,
+            inputTokens: 0,
+            outputTokens: 0,
+            cacheReadTokens: 0,
+            cacheCreationTokens: 0,
+            totalTokens: optionalWorkInt(eventDict["totalTokens"]) ?? 0,
+            contextWindow: optionalWorkInt(eventDict["contextWindow"]),
+            costUsd: 0
+          ),
+          turnId: stringValue(eventDict["turnId"]),
+          itemId: itemId
+        )
+      case "codex_token_usage":
+        let usageDict = eventDict["usage"] as? [String: Any] ?? [:]
+        let lastUsage = usageDict["last"] as? [String: Any]
+        let totalUsage = usageDict["total"] as? [String: Any]
+        let contextWindow = optionalWorkInt(usageDict["modelContextWindow"])
+        event = .tokens(
+          usage: makeWorkUsageSummary(
+            inputTokens: optionalWorkInt(lastUsage?["inputTokens"]) ?? optionalWorkInt(totalUsage?["inputTokens"]),
+            outputTokens: optionalWorkInt(lastUsage?["outputTokens"]) ?? optionalWorkInt(totalUsage?["outputTokens"]),
+            cacheReadTokens: optionalWorkInt(lastUsage?["cacheReadTokens"]) ?? optionalWorkInt(totalUsage?["cacheReadTokens"]),
+            cacheCreationTokens: optionalWorkInt(lastUsage?["cacheWriteTokens"]) ?? optionalWorkInt(totalUsage?["cacheWriteTokens"]),
+            reasoningTokens: optionalWorkInt(lastUsage?["reasoningTokens"]) ?? optionalWorkInt(totalUsage?["reasoningTokens"]),
+            totalTokens: optionalWorkInt(totalUsage?["totalTokens"]) ?? optionalWorkInt(lastUsage?["totalTokens"]),
+            contextWindow: contextWindow,
+            costUsd: nil
+          ) ?? WorkUsageSummary(
+            turnCount: 1,
+            inputTokens: 0,
+            outputTokens: 0,
+            cacheReadTokens: 0,
+            cacheCreationTokens: 0,
+            totalTokens: optionalWorkInt(totalUsage?["totalTokens"]) ?? optionalWorkInt(lastUsage?["totalTokens"]) ?? 0,
+            contextWindow: contextWindow,
+            costUsd: 0
+          ),
+          turnId: turnId ?? optionalString(usageDict["turnId"]) ?? "",
+          itemId: nil
         )
       case "completion_report":
         let report = eventDict["report"] as? [String: Any] ?? [:]
