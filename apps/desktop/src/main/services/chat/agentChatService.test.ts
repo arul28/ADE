@@ -17098,6 +17098,88 @@ describe("createAgentChatService", () => {
     await sendPromise;
   });
 
+  it("dedupes repeated OpenCode compaction part updates", async () => {
+    const events: AgentChatEventEnvelope[] = [];
+    let releaseStream!: () => void;
+    const streamGate = new Promise<void>((resolve) => {
+      releaseStream = () => resolve();
+    });
+
+    vi.mocked(streamText).mockImplementation(() => ({
+      fullStream: (async function* () {
+        await streamGate;
+        yield { type: "finish", usage: {} };
+      })(),
+    }) as any);
+
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "opencode",
+      model: "opencode/openai/gpt-5.4",
+      modelId: "opencode/openai/gpt-5.4",
+    });
+
+    const sendPromise = service.sendMessage({
+      sessionId: session.id,
+      text: "Compact this context.",
+    });
+
+    await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope & {
+        event: Extract<AgentChatEventEnvelope["event"], { type: "status" }>;
+      } => event.event.type === "status" && event.event.turnStatus === "started",
+    );
+
+    const state = [...mockState.openCodeSessions.values()][0]!;
+    state.events.push(
+      {
+        type: "message.part.updated",
+        properties: {
+          part: { id: "compact-part-1", sessionID: "opencode-session-1", type: "compaction", auto: false },
+          delta: "",
+        },
+      },
+      {
+        type: "message.part.updated",
+        properties: {
+          part: { id: "compact-part-1", sessionID: "opencode-session-1", type: "compaction", auto: false },
+          delta: "",
+        },
+      },
+      {
+        type: "session.compacted",
+        properties: { sessionID: "opencode-session-1" },
+      },
+    );
+    const waiters = [...state.waiters];
+    state.waiters.length = 0;
+    waiters.forEach((waiter) => waiter());
+
+    await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope & {
+        event: Extract<AgentChatEventEnvelope["event"], { type: "context_compact" }>;
+      } => event.event.type === "context_compact" && event.event.state === "completed",
+    );
+
+    const compactionEvents = events
+      .map((event) => event.event)
+      .filter((event): event is Extract<AgentChatEventEnvelope["event"], { type: "context_compact" }> =>
+        event.type === "context_compact"
+      );
+    expect(compactionEvents).toHaveLength(2);
+    expect(compactionEvents.map((event) => event.state)).toEqual(["started", "completed"]);
+    expect(compactionEvents.every((event) => event.trigger === "manual")).toBe(true);
+
+    releaseStream();
+    await sendPromise;
+  });
+
   it("emits immediate startup activity before Claude SDK stream output arrives", async () => {
     const events: AgentChatEventEnvelope[] = [];
     const setPermissionMode = vi.fn().mockResolvedValue(undefined);

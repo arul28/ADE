@@ -302,10 +302,10 @@ function SubProviderTabs({
   selectedIndex: number;
   width: number;
 }) {
+  const hoveredId = useHoveredHitId();
   if (tabs.length <= 1) return null;
   const safe = Math.max(0, Math.min(selectedIndex, tabs.length - 1));
   if (!tabs[safe]) return null;
-  const hoveredId = useHoveredHitId();
   const visible = providerTabSegments(tabs, safe, width);
   return (
     <Box flexDirection="row" marginBottom={1}>

@@ -334,6 +334,10 @@ _    ____  _____
     $ ade code remote session --target <machine> --project <project> --session <session>
                                                      Open a specific remote chat or Claude terminal session
     $ ade code remote --list-targets               List saved remote machines
+    $ ade code remote --target <machine> --list-projects
+                                                     List ADE projects available on the remote machine
+    $ ade code remote session --target <machine> --project <project> --list-sessions
+                                                     List remote chat and Claude terminal sessions
     $ ade --project-root <path> code                Launch against a specific ADE project
 
   Keys:

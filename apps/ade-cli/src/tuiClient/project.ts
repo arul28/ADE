@@ -51,8 +51,8 @@ export function detectProjectLaunchContext(args: {
   remoteLabel?: string | null;
 } = {}): ProjectLaunchContext {
   const launchCwd = normalizeRoot(args.cwd ?? process.cwd());
-  const explicitProjectRoot = args.projectRoot?.trim();
-  const explicitWorkspaceRoot = args.workspaceRoot?.trim();
+  const explicitProjectRoot = args.projectRoot?.trim() || null;
+  const explicitWorkspaceRoot = args.workspaceRoot?.trim() || null;
   const remote = args.remote === true;
   const worktree = findAdeWorktreeContext(launchCwd);
   const gitRoot = findGitRoot(launchCwd);

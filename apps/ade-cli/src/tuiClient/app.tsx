@@ -13182,7 +13182,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   // to fit (matches the single-view resize). Single-tile fallback (the grid is too
   // small to split) is left to the single-view resize effect.
   useEffect(() => {
-    const conn = connectionRef.current;
+    const conn = connection;
     if (!conn || !gridViewActive || !multiView) return;
     const tiles = multiView.tiles.slice(0, 6);
     if (!canRenderMultiChatGrid(tiles.length, chatWrapWidth, gridRowBudget)) return;
@@ -13195,7 +13195,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       const rows = claudeTerminalRowsForPane(Math.max(1, rect.h - 3));
       void resizeTerminal(conn, tile.sessionId, cols, rows).catch(() => undefined);
     });
-  }, [gridViewActive, multiView, chatWrapWidth, gridRowBudget]);
+  }, [connection, gridViewActive, multiView, chatWrapWidth, gridRowBudget]);
 
   // Whether the grid's focused tile is a running Claude terminal — drives the
   // footer "^t control (single)" hint so the unavailable-in-grid control is clear.

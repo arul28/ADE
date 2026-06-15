@@ -829,6 +829,7 @@ type OpenCodeRuntime = {
   textByPartId: Map<string, string>;
   reasoningByPartId: Map<string, string>;
   toolStateByPartId: Map<string, string>;
+  compactionStartedPartIds: Set<string>;
   /** IDs of OpenCode child sessions already announced as subagents this run. */
   subagentSessionIds: Set<string>;
   /**
@@ -7783,6 +7784,7 @@ export function createAgentChatService(args: {
       textByPartId: new Map(),
       reasoningByPartId: new Map(),
       toolStateByPartId: new Map(),
+      compactionStartedPartIds: new Set(),
       subagentSessionIds: new Set(),
       lastCompactionTrigger: null,
     };
@@ -13053,6 +13055,7 @@ export function createAgentChatService(args: {
       runtime.textByPartId.clear();
       runtime.reasoningByPartId.clear();
       runtime.toolStateByPartId.clear();
+      runtime.compactionStartedPartIds.clear();
 
       const toPromptFiles = resolvedAttachments
         .map((attachment) => ({
@@ -13285,6 +13288,11 @@ export function createAgentChatService(args: {
           // session.compacted lands when it finishes. Surface this as a live begin so
           // the chat shows "compacting…" instead of feeling stuck.
           if (part.type === "compaction") {
+            const partId = typeof (part as { id?: unknown }).id === "string" ? (part as { id: string }).id : null;
+            if (partId) {
+              if (runtime.compactionStartedPartIds.has(partId)) continue;
+              runtime.compactionStartedPartIds.add(partId);
+            }
             const trigger = (part as { auto?: boolean }).auto === false ? "manual" : "auto";
             runtime.lastCompactionTrigger = trigger;
             emitChatEvent(managed, {

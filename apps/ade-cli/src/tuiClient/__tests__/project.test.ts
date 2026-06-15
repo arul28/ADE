@@ -72,6 +72,18 @@ describe("chooseInitialLane", () => {
     expect(context.remoteLabel).toBe("Mac Studio");
   });
 
+  it("falls back from blank remote roots", () => {
+    const context = detectProjectLaunchContext({
+      cwd: "/tmp",
+      projectRoot: "   ",
+      workspaceRoot: "",
+      remote: true,
+    });
+
+    expect(context.projectRoot).toBe(path.resolve("/tmp"));
+    expect(context.workspaceRoot).toBe(path.resolve("/tmp"));
+  });
+
   it("prefers the ADE worktree lane hint", () => {
     const lanes = [
       lane({ id: "main", name: "main", laneType: "primary", worktreePath: "/repo" }),
