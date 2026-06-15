@@ -4410,7 +4410,7 @@ app.whenReady().then(async () => {
     const logger = createFileLogger(path.join(adePaths.logsDir, "main.jsonl"));
     const project = toProjectInfo(projectRoot, baseRef);
     const runtimeProject = await localRuntimePool.ensureProject(projectRoot);
-    const shellContext = createDormantProjectContext(projectRoot);
+    const shellContext = createDormantProjectContext(projectRoot, { enableUsageTracking: false });
     let macosVmLaunchProviderForProject: MacosVmLaunchProvider | null = null;
     const macosVmService = isMacosVmEnabledForPackagedState(app.isPackaged)
       ? createMacosVmService({
@@ -4523,7 +4523,10 @@ app.whenReady().then(async () => {
     };
   };
 
-  const createDormantProjectContext = (projectRoot = ""): AppContext => {
+  const createDormantProjectContext = (
+    projectRoot = "",
+    options: { enableUsageTracking?: boolean } = {},
+  ): AppContext => {
     const rootIsDefined =
       typeof projectRoot === "string" && projectRoot.trim().length > 0;
     const normalizedRoot = rootIsDefined ? path.resolve(projectRoot) : "";
@@ -4558,6 +4561,22 @@ app.whenReady().then(async () => {
     });
     adeCliService.applyToProcessEnv();
     installAdeCliForTerminalInBackground(adeCliService, logger);
+    let usageTrackingService: ReturnType<typeof createUsageTrackingService> | null = null;
+    if (options.enableUsageTracking !== false) {
+      usageTrackingService = createUsageTrackingService({
+        logger,
+        pollIntervalMs: 120_000,
+        onUpdate: (snapshot) => {
+          const currentDormantUsageService =
+            (dormantContext as AppContext | undefined)?.usageTrackingService;
+          if (currentDormantUsageService !== usageTrackingService || projectContexts.size > 0) {
+            return;
+          }
+          broadcast(IPC.usageEvent, snapshot);
+        },
+        projectRoot: normalizedRoot || null,
+      });
+    }
     return {
       db: null,
       logger,
@@ -4610,7 +4629,7 @@ app.whenReady().then(async () => {
       automationPlannerService: null,
       automationIngressService: null,
       githubPollingService: null,
-      usageTrackingService: null,
+      usageTrackingService,
       budgetCapService: null,
       syncHostService: null,
       syncService: null,
@@ -4637,6 +4656,29 @@ app.whenReady().then(async () => {
       linearSyncService: null,
       configReloadService: null,
     };
+  };
+
+  const syncDormantUsageTrackingState = (): void => {
+    const usageTrackingService = (dormantContext as AppContext | undefined)?.usageTrackingService;
+    if (!usageTrackingService) return;
+    if (projectContexts.size > 0) {
+      usageTrackingService.stop();
+      return;
+    }
+    usageTrackingService.start();
+  };
+
+  const replaceDormantContext = (projectRoot = ""): void => {
+    const previous = dormantContext as AppContext | undefined;
+    if (previous) {
+      try {
+        previous.usageTrackingService?.dispose();
+      } catch {
+        // ignore
+      }
+    }
+    dormantContext = createDormantProjectContext(projectRoot);
+    syncDormantUsageTrackingState();
   };
 
   const disposeContextResources = async (ctx: AppContext): Promise<void> => {
@@ -4829,6 +4871,7 @@ app.whenReady().then(async () => {
     const closePromise = (async () => {
       await disposeContextResources(ctx);
       projectContexts.delete(normalizedRoot);
+      syncDormantUsageTrackingState();
       projectLastActivatedAt.delete(normalizedRoot);
       const leaseTimer = mobileSyncHandoffLeaseTimers.get(normalizedRoot);
       if (leaseTimer) {
@@ -4961,6 +5004,7 @@ app.whenReady().then(async () => {
           userSelectedProject: false,
         });
         projectContexts.set(normalizedRoot, ctx);
+        syncDormantUsageTrackingState();
         return ctx;
       })().finally(() => {
         projectInitPromises.delete(normalizedRoot);
@@ -5299,6 +5343,7 @@ app.whenReady().then(async () => {
             durationMs: Date.now() - initStartedAt,
           });
           projectContexts.set(repoRoot!, ctx);
+          syncDormantUsageTrackingState();
           projectOpenLogger.info("project.open.context_registered", {
             selectedPath,
             repoRoot,
@@ -5368,7 +5413,7 @@ app.whenReady().then(async () => {
     await closeProjectContext(normalizedRoot);
     if (wasActive) {
       setForegroundProject(firstOpenWindowProjectRoot());
-      dormantContext = createDormantProjectContext(normalizedRoot);
+      replaceDormantContext(normalizedRoot);
     }
   };
 
@@ -5388,7 +5433,7 @@ app.whenReady().then(async () => {
       if (nextRoot == null && (activeProjectRoot === previousRoot || activeProjectRoot == null)) {
         setForegroundProject(firstOpenWindowProjectRoot());
       }
-      dormantContext = createDormantProjectContext(previousRoot);
+      replaceDormantContext(previousRoot);
       scheduleProjectContextRebalance();
       return;
     }
@@ -5396,10 +5441,10 @@ app.whenReady().then(async () => {
       await closeProjectContext(activeProjectRoot);
     }
     setForegroundProject(firstOpenWindowProjectRoot());
-    dormantContext = createDormantProjectContext(previousRoot);
+    replaceDormantContext(previousRoot);
   };
 
-  dormantContext = createDormantProjectContext();
+  replaceDormantContext();
   configureBuiltInBrowserWebAuthn({
     getLogger: () => getActiveContext().logger,
   });
@@ -5546,7 +5591,7 @@ app.whenReady().then(async () => {
         // ignore
       }
       setForegroundProject(null);
-      dormantContext = createDormantProjectContext(previousRoot);
+      replaceDormantContext(previousRoot);
 
       try {
         await closeAllProjectContexts();
@@ -6287,7 +6332,7 @@ app.whenReady().then(async () => {
       await switchProjectFromDialog(startupProject.rootPath);
     } catch {
       setForegroundProject(null);
-      dormantContext = createDormantProjectContext();
+      replaceDormantContext();
     }
   }
 

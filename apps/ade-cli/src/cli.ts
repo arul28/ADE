@@ -12391,6 +12391,9 @@ async function spawnMachineRuntimeDaemon(
   const { args, buildHash: runtimeBuildHash } =
     prepareMachineRuntimeDaemonCommand(serviceCommand);
   args.push("--socket", socketPath);
+  if (isEphemeralRuntimeSocketPath(socketPath) && !args.includes("--no-sync")) {
+    args.push("--no-sync");
+  }
 
   const env: NodeJS.ProcessEnv = {
     ...process.env,

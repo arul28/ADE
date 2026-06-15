@@ -899,12 +899,13 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     let cancelled = false;
-    if (!currentProjectRoot || !shouldLoadShellAiStatus(location.pathname, isRemoteProject)) {
+    if (!shouldLoadShellAiStatus(location.pathname, isRemoteProject)) {
       setAiStatus(null);
       setAiStatusLoaded(false);
       return;
     }
-    const cachedStatus = peekAiStatusCached(currentProjectRoot);
+    const aiStatusProjectRoot = currentProjectRoot ?? null;
+    const cachedStatus = peekAiStatusCached(aiStatusProjectRoot);
     setAiStatus(cachedStatus);
     setAiStatusLoaded(Boolean(cachedStatus));
 
@@ -915,7 +916,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     const refreshAiStatus = (options: { force?: boolean } = {}) => {
       if (document.visibilityState !== "visible") return;
       const serial = ++refreshSerial;
-      void getAiStatusCached({ projectRoot: currentProjectRoot, force: options.force === true }).then((status) => {
+      void getAiStatusCached({ projectRoot: aiStatusProjectRoot, force: options.force === true }).then((status) => {
         if (cancelled) return;
         if (serial !== refreshSerial) return;
         lastKnownHasProvider = hasConfiguredAiProvider(status);
@@ -957,7 +958,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     });
     const onAiStatusCacheInvalidated = (event: Event) => {
       const detail = (event as CustomEvent<AiStatusCacheInvalidatedEventDetail>).detail;
-      if (detail && !detail.allProjects && detail.projectRoot !== currentProjectRoot) return;
+      if (detail && !detail.allProjects && detail.projectRoot !== aiStatusProjectRoot) return;
       refreshAiStatus({ force: true });
     };
     window.addEventListener(AI_STATUS_CACHE_INVALIDATED_EVENT, onAiStatusCacheInvalidated);

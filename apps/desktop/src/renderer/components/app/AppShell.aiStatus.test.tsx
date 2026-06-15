@@ -231,6 +231,33 @@ describe("AppShell AI provider status", () => {
     });
   });
 
+  it("warms AI status on the main menu before a project is open", async () => {
+    getStatusMock.mockResolvedValue(makeAiStatus(true));
+    (window.ade.app.getWindowSession as any).mockResolvedValue({
+      project: null,
+      binding: null,
+    });
+
+    render(
+      <MemoryRouter initialEntries={["/project"]}>
+        <AppShell>
+          <div>Main menu</div>
+        </AppShell>
+      </MemoryRouter>,
+    );
+
+    await act(async () => {
+      vi.advanceTimersByTime(1_000);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(getStatusMock).toHaveBeenCalledWith({
+      force: false,
+      refreshOpenCodeInventory: false,
+    });
+  });
+
   it("skips shell GitHub auth discovery on remote Work startup", async () => {
     getStatusMock.mockResolvedValue(makeAiStatus(true));
     useAppStore.setState({

@@ -252,6 +252,31 @@ describe("usage components", () => {
       expect(screen.queryByText("Claude")).toBeNull();
     });
 
+    it("keeps providers visible when local auth exists before CLI detection warms up", async () => {
+      vi.mocked(window.ade.ai.getStatus).mockResolvedValue(
+        makeAiStatus({
+          claude: makeProviderConnection("claude", {
+            runtimeDetected: false,
+            runtimeAvailable: false,
+            authAvailable: true,
+            usageAvailable: true,
+          }),
+          codex: makeProviderConnection("codex", {
+            runtimeDetected: false,
+            runtimeAvailable: false,
+            authAvailable: true,
+            usageAvailable: true,
+          }),
+        }),
+      );
+
+      render(<UsageQuotaPanel />);
+
+      expect((await screen.findAllByText("Claude")).length).toBeGreaterThan(0);
+      expect((await screen.findAllByText("Codex")).length).toBeGreaterThan(0);
+      expect(screen.queryByText("No provider CLIs detected")).toBeNull();
+    });
+
     it("dims the provider card when the CLI is installed but not signed in", async () => {
       vi.mocked(window.ade.ai.getStatus).mockResolvedValue(
         makeAiStatus({
@@ -321,6 +346,31 @@ describe("usage components", () => {
         expect(window.ade.usage.getSnapshot).toHaveBeenCalled();
         expect(window.ade.ai.getStatus).toHaveBeenCalled();
       });
+    });
+
+    it("shows configured auth-only providers in the main-menu row before usage windows load", async () => {
+      vi.mocked(window.ade.usage.getSnapshot).mockResolvedValue(makeEmptySnapshot());
+      vi.mocked(window.ade.ai.getStatus).mockResolvedValue(
+        makeAiStatus({
+          claude: makeProviderConnection("claude", {
+            runtimeDetected: false,
+            runtimeAvailable: false,
+            authAvailable: true,
+            usageAvailable: true,
+          }),
+          codex: makeProviderConnection("codex", {
+            runtimeDetected: false,
+            runtimeAvailable: false,
+            authAvailable: true,
+            usageAvailable: true,
+          }),
+        }),
+      );
+
+      render(<HeaderUsageControl variant="menu-row" />);
+
+      expect(await screen.findByRole("menuitem", { name: /Claude/ })).toBeTruthy();
+      expect(screen.getByRole("menuitem", { name: /Codex/ })).toBeTruthy();
     });
 
     it("applies pushed usage updates without forcing a refresh", async () => {

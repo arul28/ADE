@@ -11,6 +11,9 @@ import { IPC } from "../../../shared/ipc";
 import { getModelById } from "../../../shared/modelRegistry";
 import { appendEvent as perfAppend, isRunActive as isPerfRunActive } from "../perf/perfLog";
 import { buildPrAiResolutionContextKey } from "../../../shared/types";
+import { detectCliAuthStatuses } from "../ai/authDetector";
+import { resolveClaudeCodeExecutable } from "../ai/claudeCodeExecutable";
+import { buildProviderConnections } from "../ai/providerConnectionStatus";
 import { browseProjectDirectories } from "../projects/projectBrowserService";
 import { getProjectDetail } from "../projects/projectDetailService";
 import { deleteTerminalSessionWithRuntimeCleanup } from "../sessions/deleteTerminalSession";
@@ -421,7 +424,10 @@ import type {
   UpdateIntegrationProposalArgs,
   UpdateLaneAppearanceArgs,
   WriteTextAtomicArgs,
+  AiClaudeAvailability,
+  AiDetectedAuth,
   AiFeatureKey,
+  AiProviderConnections,
   AiApiKeyVerificationResult,
   AiConfig,
   AiSettingsStatus,
@@ -1148,6 +1154,117 @@ function getUnavailableAiStatus(): AiSettingsStatus {
     availableModelIds: [],
     opencodeBinaryInstalled: false,
     opencodeBinarySource: "missing" as const,
+    opencodeInventoryError: null,
+    opencodeProviders: [],
+  };
+}
+
+function detectClaudeAuthModeFromConnection(
+  connection: AiProviderConnections["claude"],
+): AiClaudeAvailability["auth"]["mode"] {
+  const localCredentials = connection.sources.find((source) => source.kind === "local-credentials" && source.detected);
+  if (localCredentials?.source === "claude-credentials-file" || localCredentials?.source === "macos-keychain") return "oauth";
+  if (localCredentials) return "api_key";
+  const cli = connection.sources.find((source) => source.kind === "cli" && source.detected);
+  if (cli || connection.authAvailable) return "oauth";
+  return "none";
+}
+
+function resolveBundledClaudeBinary(): Pick<AiClaudeAvailability["binary"], "present" | "source" | "path"> {
+  const resolved = resolveClaudeCodeExecutable({ env: { PATH: "" } });
+  return resolved.source === "bundled"
+    ? { present: true, source: "bundled", path: resolved.path }
+    : { present: false, source: "missing", path: null };
+}
+
+function buildClaudeAvailabilityFromConnection(
+  connection: AiProviderConnections["claude"],
+): AiClaudeAvailability {
+  const bundledBinary = resolveBundledClaudeBinary();
+  const binary = bundledBinary.present
+    ? bundledBinary
+    : {
+        present: connection.runtimeDetected,
+        source: connection.runtimeDetected ? "path" as const : "missing" as const,
+        path: connection.path,
+      };
+  const normalizedBlocker = connection.blocker?.toLowerCase() ?? "";
+  const blockerIsOnlyAboutPath = binary.source === "bundled"
+    && [
+      "could not find the claude cli",
+      "cli not found",
+      "claude cli is installed",
+      "add that bin directory",
+    ].some((needle) => normalizedBlocker.includes(needle));
+  const ready = binary.present
+    && connection.authAvailable
+    && (connection.runtimeAvailable || blockerIsOnlyAboutPath || !connection.blocker);
+  const authMode = detectClaudeAuthModeFromConnection(connection);
+  return {
+    binary,
+    auth: {
+      ready,
+      mode: ready ? authMode : "none",
+      detail: ready ? null : connection.blocker,
+    },
+  };
+}
+
+function redactedCliAuthFromStatuses(
+  cliStatuses: Awaited<ReturnType<typeof detectCliAuthStatuses>>,
+): AiDetectedAuth[] {
+  return cliStatuses
+    .filter((status) => status.installed)
+    .map((status) => ({
+      type: "cli-subscription" as const,
+      cli: status.cli,
+      path: status.path ?? status.cli,
+      authenticated: status.authenticated,
+      verified: status.verified,
+    }));
+}
+
+async function buildGlobalAiStatus(args?: { force?: boolean }): Promise<AiSettingsStatus> {
+  const cliStatuses = await detectCliAuthStatuses({
+    force: args?.force === true,
+    skipAuthProbe: args?.force !== true,
+  });
+  const providerConnections = await buildProviderConnections(cliStatuses);
+  const hasConfirmedSubscriptionProvider =
+    providerConnections.claude.authAvailable ||
+    providerConnections.codex.authAvailable ||
+    providerConnections.cursor.authAvailable ||
+    providerConnections.droid.authAvailable ||
+    cliStatuses.some((entry) => entry.installed && entry.authenticated);
+
+  // This no-project fallback reports machine-level provider/auth signals only;
+  // feature flags, usage counters, and model catalogs remain project-scoped.
+  return {
+    mode: hasConfirmedSubscriptionProvider ? "subscription" : "guest",
+    availableProviders: {
+      claude: buildClaudeAvailabilityFromConnection(providerConnections.claude),
+      codex: providerConnections.codex.runtimeAvailable,
+      cursor: providerConnections.cursor.runtimeAvailable,
+      droid: providerConnections.droid.runtimeAvailable,
+    },
+    models: {
+      claude: [],
+      codex: [],
+      cursor: [],
+      droid: [],
+    },
+    detectedAuth: redactedCliAuthFromStatuses(cliStatuses),
+    providerConnections,
+    features: AI_USAGE_FEATURE_KEYS.map((feature) => ({
+      feature,
+      enabled: false,
+      dailyUsage: 0,
+      dailyLimit: null,
+    })),
+    runtimeConnections: {},
+    availableModelIds: [],
+    opencodeBinaryInstalled: false,
+    opencodeBinarySource: "missing",
     opencodeInventoryError: null,
     opencodeProviders: [],
   };
@@ -4139,7 +4256,14 @@ export function registerIpc({
     const ctx = getCtx();
     const aiIntegrationService = ctx.aiIntegrationService;
     if (!aiIntegrationService) {
-      return getUnavailableAiStatus();
+      try {
+        return await buildGlobalAiStatus({ force: arg?.force === true });
+      } catch (error) {
+        ctx.logger.warn("ai.get_status.global_fallback_failed", {
+          error: getErrorMessage(error),
+        });
+        return getUnavailableAiStatus();
+      }
     }
     try {
       const status = await aiIntegrationService.getStatus({

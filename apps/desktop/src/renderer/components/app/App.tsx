@@ -1027,8 +1027,7 @@ export function App() {
   }, []);
 
   React.useEffect(() => {
-    if (!projectRoot) return;
-    void getAiStatusCached({ projectRoot }).catch(() => undefined);
+    void getAiStatusCached({ projectRoot: projectRoot ?? null }).catch(() => undefined);
   }, [projectRoot]);
 
   React.useEffect(() => {
