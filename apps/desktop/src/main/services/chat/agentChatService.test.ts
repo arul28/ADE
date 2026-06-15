@@ -2323,6 +2323,7 @@ describe("createAgentChatService", () => {
       const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as {
         managedSettings?: Record<string, unknown>;
         settingSources?: string[];
+        strictMcpConfig?: boolean;
       } | undefined;
       expect(opts).toBeTruthy();
       // Project/user setting sources stay enabled so the SDK reads the user's
@@ -2332,6 +2333,9 @@ describe("createAgentChatService", () => {
       // and it no longer locks MCP to managed-only — so the user's servers can load.
       expect(opts).not.toHaveProperty("mcpServers");
       expect(opts?.managedSettings).toBeUndefined();
+      // Inverse of the lightweight test: strictMcpConfig must NOT leak into normal
+      // chats, or it would silently re-block the user's MCP servers we just enabled.
+      expect(opts?.strictMcpConfig).toBeUndefined();
     });
 
     it("keeps lightweight sessions lean by ignoring on-disk MCP config (strictMcpConfig)", async () => {
