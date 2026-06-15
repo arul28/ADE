@@ -42,6 +42,9 @@ const BLANK_ROW_TEXT = " ";
 // read the animation frame, so any fixed value keeps their rows identical while
 // letting us memoize them independently of the spinner tick.
 const STATIC_SPIN_FRAME = "◐";
+// Shared empty set so callers that don't track group expansion (plain-text
+// export, scroll-height probe) don't each allocate one per call.
+const EMPTY_EXPANDED_GROUP_IDS: Set<string> = new Set();
 
 type RenderedChatRow = {
   id: string;
@@ -54,6 +57,12 @@ type RenderedChatRow = {
   rail?: string | null;
   runs?: InlineRun[];
   sourceRowIndex?: number | null;
+  /**
+   * When set, this row is a clickable work-group header (tool calls / file
+   * changes). The transcript click handler maps a click on this row back to
+   * this id and toggles it in `expandedLineIds` to collapse/expand the group.
+   */
+  expandableGroupId?: string;
 };
 
 export type ChatTextSelection = {
@@ -66,7 +75,19 @@ export type ChatTextSelection = {
 export type ChatVisibleSelectionRow = {
   sourceRow: number | null;
   text: string;
+  /** Set when this visible row is a clickable work-group header (see
+   *  RenderedChatRow.expandableGroupId). Lets the click handler toggle the
+   *  group without re-deriving block layout. */
+  expandableId?: string | null;
 };
+
+// Expansion keys for collapsible work-log groups (tool calls / file changes)
+// live in the same `expandedLineIds` set as failure expansions. The prefix
+// keeps a group key from colliding with a raw event line id used elsewhere.
+export const WORK_GROUP_EXPAND_PREFIX = "workgroup:";
+export function workGroupExpandKey(blockId: string): string {
+  return `${WORK_GROUP_EXPAND_PREFIX}${blockId}`;
+}
 
 function textWidth(value: string): number {
   return [...value].length;
@@ -686,36 +707,73 @@ function visibleEntries<T>(entries: T[]): { shown: T[]; remaining: number } {
   return { shown, remaining: entries.length - shown.length };
 }
 
-// No group header row: the desktop work log just stacks the per-call lines,
-// and the bottom-of-transcript "model working" indicator already conveys live
-// state — repeated "Tool calls (N)" headers only added clutter between the
-// assistant-text fragments of a turn.
+// Build the indented per-call line shown when a tool group is expanded. ChatRow
+// truncates to the pane width so a long arg can never wrap onto a second row.
+function toolCallEntryRow(
+  blockId: string,
+  entry: ToolCallEntry,
+  spinFrame: string,
+): RenderedChatRow {
+  const glyph = statusGlyph(entry.status, spinFrame);
+  const dur = formatDurationMs(entry.durationMs);
+  const arg = entry.arg ? truncateLongLine(entry.arg) : "";
+  const runs: InlineRun[] = [
+    { text: "    " },
+    { text: glyph, color: WORK_STATUS_COLOR[entry.status] },
+    { text: ` ${entry.tool}`, color: theme.color.t1 },
+  ];
+  if (arg) runs.push({ text: `  ${arg}`, color: theme.color.t3 });
+  if (dur) runs.push({ text: `  ${dur}`, color: theme.color.t4 });
+  return {
+    id: `${blockId}:${entry.itemId}`,
+    tone: "work",
+    text: runsPlainText(runs),
+    runs,
+    rail: null,
+  };
+}
+
+// Tool calls collapse to ONE clickable header row by default — desktop/mobile
+// work-log parity: `▸ Tool calls (N)  ✓ shell <last command>`. The collapsed
+// preview shows the most recent call so live progress stays visible without the
+// turn's calls stacking into a tall block. Clicking the header (see the
+// transcript click handler in app.tsx, keyed off `expandableGroupId`) flips its
+// id in `expandedLineIds`, stacking every call one line each under a `▾` header.
 function toolCallsGroupRows(
   block: Extract<AggregatedBlock, { kind: "tool-calls-group" }>,
   spinFrame: string,
+  expandedGroupIds: Set<string>,
 ): RenderedChatRow[] {
   if (!block.entries.length) return [];
-  const out: RenderedChatRow[] = [];
-  // Every tool call renders as one stacked line (desktop work-log parity);
-  // ChatRow truncates to the pane width so a long arg can never wrap.
+  const expandKey = workGroupExpandKey(block.id);
+  const expanded = expandedGroupIds.has(expandKey);
+  const total = block.entries.length;
+
+  const headerRuns: InlineRun[] = [
+    { text: expanded ? "▾ " : "▸ ", color: theme.color.t3 },
+    { text: "Tool calls", color: theme.color.t2, bold: true },
+    { text: ` (${total})`, color: theme.color.t4 },
+  ];
+  if (!expanded) {
+    const latest = block.entries[block.entries.length - 1]!;
+    const glyph = statusGlyph(latest.status, spinFrame);
+    const arg = latest.arg ? truncateLongLine(latest.arg) : "";
+    headerRuns.push({ text: "  " });
+    headerRuns.push({ text: glyph, color: WORK_STATUS_COLOR[latest.status] });
+    headerRuns.push({ text: ` ${latest.tool}`, color: theme.color.t1 });
+    if (arg) headerRuns.push({ text: `  ${arg}`, color: theme.color.t3 });
+  }
+  const out: RenderedChatRow[] = [{
+    id: block.id,
+    tone: "work",
+    text: runsPlainText(headerRuns),
+    runs: headerRuns,
+    rail: null,
+    expandableGroupId: expandKey,
+  }];
+  if (!expanded) return out;
   for (const entry of block.entries) {
-    const glyph = statusGlyph(entry.status, spinFrame);
-    const dur = formatDurationMs(entry.durationMs);
-    const arg = entry.arg ? truncateLongLine(entry.arg) : "";
-    const runs: InlineRun[] = [
-      { text: "  " },
-      { text: glyph, color: WORK_STATUS_COLOR[entry.status] },
-      { text: ` ${entry.tool}`, color: theme.color.t1 },
-    ];
-    if (arg) runs.push({ text: `  ${arg}`, color: theme.color.t3 });
-    if (dur) runs.push({ text: `  ${dur}`, color: theme.color.t4 });
-    out.push({
-      id: `${block.id}:${entry.itemId}`,
-      tone: "work",
-      text: `  ${glyph} ${entry.tool}${arg ? `  ${arg}` : ""}${dur ? `  ${dur}` : ""}`,
-      runs,
-      rail: null,
-    });
+    out.push(toolCallEntryRow(block.id, entry, spinFrame));
   }
   return out;
 }
@@ -730,41 +788,85 @@ function fileBadgeFor(entry: FileChangeEntry): { label: string; color: string } 
   return { label, color };
 }
 
-// Header-less for the same reason as toolCallsGroupRows — the badge/stats
-// file rows carry all the signal on their own.
+function fileChangeEntryRow(
+  blockId: string,
+  entry: FileChangeEntry,
+  pathWidth: number,
+  spinFrame: string,
+  indent: string,
+): RenderedChatRow {
+  const badge = fileBadgeFor(entry);
+  const glyph = statusGlyph(entry.status, spinFrame);
+  const trimmedPath = compactPath(entry.path, pathWidth);
+  const stats = entry.deleted ? "Deleted" : `+${entry.additions} −${entry.deletions}`;
+  const statsColor = entry.deleted ? theme.color.error : theme.color.t4;
+  const runs: InlineRun[] = [
+    { text: indent },
+    { text: glyph, color: WORK_STATUS_COLOR[entry.status] },
+    { text: " " },
+    { text: badge.label.padEnd(3, " "), color: badge.color, bold: true },
+    { text: "  " },
+    { text: trimmedPath, color: theme.color.t1 },
+    { text: "  " },
+    { text: stats, color: statsColor },
+  ];
+  return {
+    id: `${blockId}:${entry.itemId}`,
+    tone: "work",
+    text: runsPlainText(runs),
+    runs,
+    rail: null,
+  };
+}
+
+// File changes collapse to ONE clickable header row by default, exactly like
+// toolCallsGroupRows — `▸ Files changed (N)  M src/foo.ts  +12 −3` previewing
+// the most recent edit. Clicking the header expands every edit one line each.
 function filesChangedGroupRows(
   block: Extract<AggregatedBlock, { kind: "files-changed-group" }>,
   width: number,
   spinFrame: string,
+  expandedGroupIds: Set<string>,
 ): RenderedChatRow[] {
   if (!block.entries.length) return [];
-  const out: RenderedChatRow[] = [];
-  const pathWidth = Math.max(20, width - 18);
+  const expandKey = workGroupExpandKey(block.id);
+  const expanded = expandedGroupIds.has(expandKey);
+  const total = block.entries.length;
+  const collapsedPathWidth = Math.max(20, width - 26);
+  const expandedPathWidth = Math.max(20, width - 18);
+
+  const headerRuns: InlineRun[] = [
+    { text: expanded ? "▾ " : "▸ ", color: theme.color.t3 },
+    { text: "Files changed", color: theme.color.t2, bold: true },
+    { text: ` (${total})`, color: theme.color.t4 },
+  ];
+  if (!expanded) {
+    const latest = block.entries[block.entries.length - 1]!;
+    const badge = fileBadgeFor(latest);
+    const glyph = statusGlyph(latest.status, spinFrame);
+    const trimmedPath = compactPath(latest.path, collapsedPathWidth);
+    const stats = latest.deleted ? "Deleted" : `+${latest.additions} −${latest.deletions}`;
+    const statsColor = latest.deleted ? theme.color.error : theme.color.t4;
+    headerRuns.push({ text: "  " });
+    headerRuns.push({ text: glyph, color: WORK_STATUS_COLOR[latest.status] });
+    headerRuns.push({ text: " " });
+    headerRuns.push({ text: badge.label.padEnd(3, " "), color: badge.color, bold: true });
+    headerRuns.push({ text: "  " });
+    headerRuns.push({ text: trimmedPath, color: theme.color.t1 });
+    headerRuns.push({ text: "  " });
+    headerRuns.push({ text: stats, color: statsColor });
+  }
+  const out: RenderedChatRow[] = [{
+    id: block.id,
+    tone: "work",
+    text: runsPlainText(headerRuns),
+    runs: headerRuns,
+    rail: null,
+    expandableGroupId: expandKey,
+  }];
+  if (!expanded) return out;
   for (const entry of block.entries) {
-    const badge = fileBadgeFor(entry);
-    const glyph = statusGlyph(entry.status, spinFrame);
-    const trimmedPath = compactPath(entry.path, pathWidth);
-    const stats = entry.deleted
-      ? "Deleted"
-      : `+${entry.additions} −${entry.deletions}`;
-    const statsColor = entry.deleted ? theme.color.error : theme.color.t4;
-    const runs: InlineRun[] = [
-      { text: "  " },
-      { text: glyph, color: WORK_STATUS_COLOR[entry.status] },
-      { text: " " },
-      { text: badge.label.padEnd(3, " "), color: badge.color, bold: true },
-      { text: "  " },
-      { text: trimmedPath, color: theme.color.t1 },
-      { text: "  " },
-      { text: stats, color: statsColor },
-    ];
-    out.push({
-      id: `${block.id}:${entry.itemId}`,
-      tone: "work",
-      text: `  ${glyph} ${badge.label} ${trimmedPath}  ${stats}`,
-      runs,
-      rail: null,
-    });
+    out.push(fileChangeEntryRow(block.id, entry, expandedPathWidth, spinFrame, "    "));
   }
   return out;
 }
@@ -937,7 +1039,7 @@ function modelInterruptedRows(): RenderedChatRow[] {
     id: "model-interrupted",
     tone: "work",
     text: "Interrupted · chat to continue",
-    color: theme.color.mutedFg,
+    color: theme.color.error,
     bold: true,
     rail: null,
   }];
@@ -1000,6 +1102,7 @@ function rowsForBlock(
   width: number,
   brailleFrame: string,
   spinFrame: string,
+  expandedGroupIds: Set<string>,
 ): RenderedChatRow[] {
   switch (block.kind) {
     case "user-bubble":
@@ -1010,9 +1113,9 @@ function rowsForBlock(
     case "assistant-text":
       return passthroughRows(block.line, width);
     case "tool-calls-group":
-      return toolCallsGroupRows(block, spinFrame);
+      return toolCallsGroupRows(block, spinFrame, expandedGroupIds);
     case "files-changed-group":
-      return filesChangedGroupRows(block, width, spinFrame);
+      return filesChangedGroupRows(block, width, spinFrame, expandedGroupIds);
     case "runtime-activity":
       return runtimeActivityRows(block, spinFrame);
     case "reasoning":
@@ -1033,6 +1136,7 @@ function rowsForBlocks(
   width: number,
   brailleFrame: string,
   spinFrame: string,
+  expandedGroupIds: Set<string> = EMPTY_EXPANDED_GROUP_IDS,
 ): RenderedChatRow[] {
   const rows: RenderedChatRow[] = [];
   let prevKind: AggregatedBlock["kind"] | null = null;
@@ -1040,7 +1144,7 @@ function rowsForBlocks(
     if (prevKind && shouldInsertSpacer(prevKind, block.kind)) {
       rows.push(spacerRow(`${block.id}:spacer`));
     }
-    rows.push(...rowsForBlock(block, width, brailleFrame, spinFrame));
+    rows.push(...rowsForBlock(block, width, brailleFrame, spinFrame, expandedGroupIds));
     prevKind = block.kind;
   }
   return rows;
@@ -1277,6 +1381,7 @@ function selectableRowsForBlocks({
   spinFrame = "◐",
   dotPulse = "",
   showWorkingIndicator = true,
+  expandedGroupIds = EMPTY_EXPANDED_GROUP_IDS,
 }: {
   blocks: AggregatedBlock[];
   width?: number;
@@ -1286,9 +1391,10 @@ function selectableRowsForBlocks({
   spinFrame?: string;
   dotPulse?: string;
   showWorkingIndicator?: boolean;
+  expandedGroupIds?: Set<string>;
 }): RenderedChatRow[] {
   const innerWidth = Math.max(24, width - 4);
-  const baseRows = rowsForBlocks(blocks, innerWidth, brailleFrame, spinFrame);
+  const baseRows = rowsForBlocks(blocks, innerWidth, brailleFrame, spinFrame, expandedGroupIds);
   if (streaming) return [...baseRows, ...activeTurnRows(dotPulse, showWorkingIndicator)];
   if (interrupted) return [...baseRows, ...modelInterruptedRows()];
   return baseRows;
@@ -1306,6 +1412,7 @@ function visibleRowsForBlocks({
   spinFrame = "◐",
   dotPulse = "",
   showWorkingIndicator = true,
+  expandedGroupIds = EMPTY_EXPANDED_GROUP_IDS,
 }: {
   blocks: AggregatedBlock[];
   maxRows?: number;
@@ -1318,6 +1425,7 @@ function visibleRowsForBlocks({
   spinFrame?: string;
   dotPulse?: string;
   showWorkingIndicator?: boolean;
+  expandedGroupIds?: Set<string>;
 }): RenderedChatRow[] {
   return sliceRows(
     selectableRowsForBlocks({
@@ -1329,6 +1437,7 @@ function visibleRowsForBlocks({
       spinFrame,
       dotPulse,
       showWorkingIndicator,
+      expandedGroupIds,
     }),
     maxRows,
     scrollOffsetRows,
@@ -1376,6 +1485,7 @@ export function renderChatVisibleRowTexts({
     streaming,
     interrupted,
     showWorkingIndicator,
+    expandedGroupIds: expandedLineIds,
   }).map(renderedRowText);
 }
 
@@ -1421,9 +1531,11 @@ export function renderChatVisibleSelectionRows({
     streaming,
     interrupted,
     showWorkingIndicator,
+    expandedGroupIds: expandedLineIds,
   }).map((row) => ({
     sourceRow: typeof row.sourceRowIndex === "number" ? row.sourceRowIndex : null,
     text: renderedRowText(row),
+    expandableId: row.expandableGroupId ?? null,
   }));
 }
 
@@ -1460,6 +1572,7 @@ export function renderChatSelectableRowTexts({
     streaming,
     interrupted,
     showWorkingIndicator,
+    expandedGroupIds: expandedLineIds,
   }).map(renderedRowText);
 }
 
@@ -1503,7 +1616,7 @@ export function renderChatTranscriptPlainText({
     expandedLineIds,
   });
   const innerWidth = Math.max(24, width - 4);
-  return sliceRows(rowsForBlocks(blocks, innerWidth, "·", "◐"), maxRows, scrollOffsetRows)
+  return sliceRows(rowsForBlocks(blocks, innerWidth, "·", "◐", expandedLineIds), maxRows, scrollOffsetRows)
     .filter((row) => !isPaginationIndicatorRow(row))
     .map(renderedRowText)
     .join("\n")
@@ -1553,7 +1666,7 @@ export function computeChatScrollMaxOffset({
   let statusRows = 0;
   if (streaming) statusRows = activeTurnRows("", showWorkingIndicator).length;
   else if (interrupted) statusRows = modelInterruptedRows().length;
-  const rowCount = rowsForBlocks(blocks, innerWidth, "·", "◐").length + statusRows;
+  const rowCount = rowsForBlocks(blocks, innerWidth, "·", "◐", expandedLineIds).length + statusRows;
   return maxScrollOffsetForRows(rowCount, maxRows);
 }
 
@@ -1643,13 +1756,13 @@ export function ChatView({
     // Pre-index historical rows by their final position (they always occupy
     // slots 0..H-1, before the seam spacer + live tail). sliceRows then reuses
     // these stable objects instead of cloning them every tick.
-    () => rowsForBlocks(historicalBlocks, rowInnerWidth, STATIC_SPIN_FRAME, STATIC_SPIN_FRAME)
+    () => rowsForBlocks(historicalBlocks, rowInnerWidth, STATIC_SPIN_FRAME, STATIC_SPIN_FRAME, expandedLineIds)
       .map((row, index) => ({ ...row, sourceRowIndex: index })),
-    [historicalBlocks, rowInnerWidth],
+    [historicalBlocks, rowInnerWidth, expandedLineIds],
   );
   const rows = useMemo(() => {
     const tailRows = tailBlocks.length
-      ? rowsForBlocks(tailBlocks, rowInnerWidth, brailleFrame, spinFrame)
+      ? rowsForBlocks(tailBlocks, rowInnerWidth, brailleFrame, spinFrame, expandedLineIds)
       : [];
     let baseRows: RenderedChatRow[];
     if (historicalBlocks.length && tailBlocks.length) {
@@ -1677,7 +1790,7 @@ export function ChatView({
       withSuffix = [...baseRows, ...modelInterruptedRows()];
     }
     return sliceRows(withSuffix, bodyRows, scrollOffsetRows, unseenMessageCount, olderHistory === "loading");
-  }, [historicalRows, historicalBlocks, tailBlocks, rowInnerWidth, brailleFrame, spinFrame, dotPulse, shimmerTick, streaming, interrupted, showWorkingIndicator, bodyRows, scrollOffsetRows, unseenMessageCount, olderHistory]);
+  }, [historicalRows, historicalBlocks, tailBlocks, rowInnerWidth, brailleFrame, spinFrame, dotPulse, shimmerTick, streaming, interrupted, showWorkingIndicator, bodyRows, scrollOffsetRows, unseenMessageCount, olderHistory, expandedLineIds]);
   const isEmpty = !hasConversationContent(blocks) && !streaming && !interrupted;
   let content: React.ReactNode;
   if (isEmpty && tileMode) {

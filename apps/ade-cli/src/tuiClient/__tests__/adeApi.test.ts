@@ -618,6 +618,7 @@ describe("listTerminalSessions", () => {
       { terminalId: "claude-1", toolType: "claude" },
       { terminalId: "claude-orch-1", toolType: "claude-orchestrated" },
       { terminalId: "legacy-claude-1", toolType: "shell", resumeMetadata: { provider: "claude" } },
+      { terminalId: "legacy-claude-command-1", toolType: "shell", resumeCommand: "claude --resume session-1" },
       { terminalId: "codex-1", toolType: "codex" },
       { terminalId: "codex-orch-1", toolType: "codex-orchestrated" },
       { terminalId: "legacy-codex-1", toolType: "shell", resumeMetadata: { provider: "codex" } },
@@ -646,6 +647,7 @@ describe("listTerminalSessions", () => {
       "claude-1",
       "claude-orch-1",
       "legacy-claude-1",
+      "legacy-claude-command-1",
     ]);
   });
 });

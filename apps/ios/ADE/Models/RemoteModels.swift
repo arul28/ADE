@@ -1739,6 +1739,15 @@ enum AgentChatContextCompactTrigger: String, Codable, Equatable {
   case auto
 }
 
+/// Lifecycle state for a context-compaction event. Hosts emit `started` when
+/// compaction begins and `completed` when it finishes. Legacy `context_compact`
+/// events omit the field entirely; callers treat a missing state as completed
+/// so the end-only divider keeps rendering exactly as before.
+enum AgentChatContextCompactState: String, Codable, Equatable {
+  case started
+  case completed
+}
+
 enum AgentChatInputAnswerValue: Equatable {
   case string(String)
   case strings([String])
@@ -1880,7 +1889,8 @@ enum AgentChatEvent: Decodable, Equatable {
   case subagentResult(taskId: String, status: AgentChatSubagentStatus, summary: String, usage: AgentChatSubagentUsage?, turnId: String?)
   case structuredQuestion(question: String, options: [AgentChatStructuredQuestionOption]?, itemId: String, turnId: String?)
   case toolUseSummary(summary: String, toolUseIds: [String], turnId: String?)
-  case contextCompact(trigger: AgentChatContextCompactTrigger, preTokens: Int?, turnId: String?)
+  case contextCompact(trigger: AgentChatContextCompactTrigger, preTokens: Int?, state: AgentChatContextCompactState?, turnId: String?)
+  case codexContextCompaction(state: AgentChatContextCompactState, trigger: AgentChatContextCompactTrigger, turnId: String)
   case systemNotice(noticeKind: AgentChatNoticeKind, message: String, detail: RemoteJSONValue?, turnId: String?, steerId: String?)
   case completionReport(report: ChatCompletionReport, turnId: String?)
   case webSearch(query: String, action: String?, itemId: String, logicalItemId: String?, turnId: String?, status: String)
@@ -1946,6 +1956,7 @@ extension AgentChatEvent {
     case toolUseIds
     case trigger
     case preTokens
+    case state
     case noticeKind
     case report
     case query
@@ -2150,7 +2161,14 @@ extension AgentChatEvent {
       self = .contextCompact(
         trigger: try container.decode(AgentChatContextCompactTrigger.self, forKey: .trigger),
         preTokens: try container.decodeIfPresent(Int.self, forKey: .preTokens),
+        state: try container.decodeIfPresent(AgentChatContextCompactState.self, forKey: .state),
         turnId: try container.decodeIfPresent(String.self, forKey: .turnId)
+      )
+    case "codex_context_compaction":
+      self = .codexContextCompaction(
+        state: try container.decode(AgentChatContextCompactState.self, forKey: .state),
+        trigger: try container.decode(AgentChatContextCompactTrigger.self, forKey: .trigger),
+        turnId: try container.decode(String.self, forKey: .turnId)
       )
     case "system_notice":
       self = .systemNotice(
@@ -2225,6 +2243,7 @@ extension AgentChatEvent {
     case .structuredQuestion: return "structured_question"
     case .toolUseSummary: return "tool_use_summary"
     case .contextCompact: return "context_compact"
+    case .codexContextCompaction: return "codex_context_compaction"
     case .systemNotice: return "system_notice"
     case .completionReport: return "completion_report"
     case .webSearch: return "web_search"

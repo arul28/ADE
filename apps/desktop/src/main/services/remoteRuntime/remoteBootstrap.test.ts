@@ -430,11 +430,13 @@ function createFakeSpawnProcess(options: { closeCode?: number; error?: Error; st
 
 function createTempResources(
   archLabel = "linux-x64",
-  options: { nativeDeps?: boolean; ptyHostWorker?: boolean } = {},
+  options: { agentSkills?: boolean; nativeDeps?: boolean; ptyHostWorker?: boolean } = {},
 ): {
   resourcesPath: string;
   binaryPath: string;
   binarySha256: string;
+  agentSkillPath: string | null;
+  agentSkillSha256: string | null;
   ptyHostWorkerPath: string | null;
   ptyHostWorkerSha256: string | null;
   cleanup: () => void;
@@ -446,6 +448,15 @@ function createTempResources(
   fs.writeFileSync(binaryPath, "#!/bin/sh\n");
   if (options.nativeDeps) {
     fs.writeFileSync(path.join(runtimeDir, `ade-${archLabel}.native.tar.gz`), "native deps fixture\n");
+  }
+  let agentSkillPath: string | null = null;
+  let agentSkillSha256: string | null = null;
+  if (options.agentSkills) {
+    const skillDir = path.join(resourcesPath, "agent-skills", "ade-cli-control-plane");
+    fs.mkdirSync(skillDir, { recursive: true });
+    agentSkillPath = path.join(skillDir, "SKILL.md");
+    fs.writeFileSync(agentSkillPath, "# ADE CLI control plane\n");
+    agentSkillSha256 = crypto.createHash("sha256").update(fs.readFileSync(agentSkillPath)).digest("hex");
   }
   let ptyHostWorkerPath: string | null = null;
   let ptyHostWorkerSha256: string | null = null;
@@ -461,6 +472,8 @@ function createTempResources(
     resourcesPath,
     binaryPath,
     binarySha256,
+    agentSkillPath,
+    agentSkillSha256,
     ptyHostWorkerPath,
     ptyHostWorkerSha256,
     cleanup: () => fs.rmSync(resourcesPath, { recursive: true, force: true }),
@@ -1039,6 +1052,80 @@ describe("bootstrapRemoteRuntime upload flow", () => {
       version: APP_VERSION,
       projects: [{ projectId: "project-1", rootPath: "/srv/ade" }],
     });
+  });
+
+  it("uploads bundled ADE agent skills into the selected remote runtime home", async () => {
+    const resources = createTempResources("linux-x64", { agentSkills: true });
+    cleanupResources = resources.cleanup;
+    const fakeSsh = createFakeSsh();
+    const registry = createRegistry();
+    connectSshWithRouteMock.mockResolvedValue({
+      client: fakeSsh.ssh,
+      route: uploadRoute,
+    });
+    const commands: string[] = [];
+    execSshMock.mockImplementation(async (_client: Client, command: string) => {
+      commands.push(command);
+      const remotePath = resolvedRemotePath(command);
+      if (remotePath) return remotePath;
+      if (command === "uname -sm") return ok("Linux x86_64\n");
+      if (isRemoteRuntimeIdentityCommand(command)) return remoteRuntimeIdentityOk({});
+      if (command === "mkdir -p $HOME/.ade/bin && chmod 700 $HOME/.ade/bin") return ok("");
+      if (command.match(/^rm -f \$HOME\/\.ade\/bin\/ade\.upload-.* && umask 077 && : > \$HOME\/\.ade\/bin\/ade\.upload-.* && chmod 600 \$HOME\/\.ade\/bin\/ade\.upload-/)) return ok("");
+      if (
+        command.includes("wc -c < $HOME/.ade/bin/ade.upload-") &&
+        !command.includes("shasum") &&
+        !command.includes("mv -f")
+      ) return ok(`${fs.statSync(resources.binaryPath).size}\n`);
+      if (
+        command.includes("wc -c < $HOME/.ade/bin/ade.upload-") &&
+        command.includes("mv -f $HOME/.ade/bin/ade.upload-") &&
+        command.includes("printf '%s\\n' '2.0.0' > $HOME/.ade/bin/ade.version")
+      ) return ok("");
+      if (command.includes("$HOME/.ade/bin/ade --version")) return ok("ade 2.0.0\n");
+      if (command.includes("test -d $HOME/.ade/agent-skills") && command.includes("agent-skills.sha256")) return ok("");
+      if (command.match(/^rm -rf \$HOME\/\.ade\/agent-skills\.upload-.* && mkdir -p \$HOME\/\.ade\/agent-skills\.upload-/)) return ok("");
+      if (command.match(/^mkdir -p \$HOME\/\.ade\/agent-skills\.upload-.*\/ade-cli-control-plane$/)) return ok("");
+      if (command.match(/^rm -f \$HOME\/\.ade\/agent-skills\.upload-.*\/ade-cli-control-plane\/SKILL\.md\.upload-.* && umask 077 && : > \$HOME\/\.ade\/agent-skills\.upload-.*\/ade-cli-control-plane\/SKILL\.md\.upload-.* && chmod 600 \$HOME\/\.ade\/agent-skills\.upload-.*\/ade-cli-control-plane\/SKILL\.md\.upload-/)) return ok("");
+      if (
+        command.includes("wc -c < $HOME/.ade/agent-skills.upload-") &&
+        command.includes("/ade-cli-control-plane/SKILL.md.upload-") &&
+        command.includes("shasum -a 256") &&
+        command.includes("mv -f $HOME/.ade/agent-skills.upload-")
+      ) return ok("");
+      if (
+        command.startsWith("rm -rf $HOME/.ade/agent-skills && mv -f $HOME/.ade/agent-skills.upload-") &&
+        command.includes("> $HOME/.ade/agent-skills.sha256")
+      ) return ok("");
+      return defaultRemoteBootstrapCommand(command);
+    });
+
+    await bootstrapRemoteRuntime({
+      target: uploadTarget,
+      registry,
+      resourcesPath: resources.resourcesPath,
+      appVersion: APP_VERSION,
+    });
+
+    expect(fakeSsh.sftp).toHaveBeenCalledTimes(2);
+    expect(fakeSsh.sftpWrapper.fastPut).toHaveBeenCalledWith(
+      resources.agentSkillPath,
+      expect.stringMatching(/^\/home\/ade\/\.ade\/agent-skills\.upload-.*\/ade-cli-control-plane\/SKILL\.md\.upload-.*\.tmp$/),
+      expect.objectContaining({ fileSize: fs.statSync(resources.agentSkillPath!).size, mode: 0o600 }),
+      expect.any(Function),
+    );
+    expect(commands.some((command) =>
+      command.includes("test -d $HOME/.ade/agent-skills") &&
+      command.includes("agent-skills.sha256"),
+    )).toBe(true);
+    expect(commands.some((command) =>
+      command.startsWith("rm -rf $HOME/.ade/agent-skills && mv -f $HOME/.ade/agent-skills.upload-") &&
+      command.includes("> $HOME/.ade/agent-skills.sha256"),
+    )).toBe(true);
+    expect(openSshRuntimeTransportMock).toHaveBeenCalledWith(
+      fakeSsh.ssh,
+      'ADE_HOME="$HOME/.ade" PATH="$HOME/.ade/bin:$HOME/.local/bin:$HOME/.npm-global/bin${PATH:+:$PATH}" ADE_DEFAULT_ROLE="cto" $HOME/.ade/bin/ade --socket $HOME/.ade/sock/ade.sock rpc --stdio',
+    );
   });
 
   it("fails closed when an uploaded runtime reports the wrong version", async () => {

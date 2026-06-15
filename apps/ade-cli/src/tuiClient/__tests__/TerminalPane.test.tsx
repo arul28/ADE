@@ -37,6 +37,7 @@ function preview(
     status?: "running" | "completed" | "failed" | "disposed" | "detached";
     runtimeState?: "running" | "waiting-input" | "idle" | "exited" | "killed";
     resumeCommand?: string | null;
+    serialized?: string;
   } = {},
 ): ChatTerminalPreviewResult {
   return {
@@ -55,7 +56,7 @@ function preview(
       cursorY: 0,
       baseY: 0,
       viewportY: 0,
-      serialized: "",
+      serialized: overrides.serialized ?? "",
       visibleRows: rows,
     },
     transcript: overrides.transcript ?? null,
@@ -147,6 +148,82 @@ describe("TerminalPane", () => {
     expect(frame).toContain("Ctrl+T returns to ADE");
     expect(frame).toContain("Ctrl+] escape");
     expect(frame).toContain("permission prompt");
+  });
+
+  it("shows live PTY chunks instead of waiting for the next snapshot refresh", async () => {
+    const result = render(
+      <TerminalPane
+        title="Claude Code"
+        preview={preview([row("stale snapshot")])}
+        liveChunks={[]}
+        attached
+        width={80}
+        height={5}
+        hiddenBottomRows={2}
+      />,
+    );
+
+    result.rerender(
+      <TerminalPane
+        title="Claude Code"
+        preview={preview([row("stale snapshot")])}
+        liveChunks={["fresh echo\r\n"]}
+        attached
+        width={80}
+        height={5}
+        hiddenBottomRows={2}
+      />,
+    );
+
+    await waitFor(() => stripAnsi(result.lastFrame() ?? "").includes("fresh echo"));
+    expect(stripAnsi(result.lastFrame() ?? "")).toContain("fresh echo");
+  });
+
+  it("applies live PTY chunks on top of the newest snapshot seed", async () => {
+    const result = render(
+      <TerminalPane
+        title="Claude Code"
+        terminalId="terminal-1"
+        preview={preview([row("old snapshot")], { serialized: "old snapshot\r\n" })}
+        liveChunks={[]}
+        attached
+        width={80}
+        height={5}
+        hiddenBottomRows={2}
+      />,
+    );
+
+    result.rerender(
+      <TerminalPane
+        title="Claude Code"
+        terminalId="terminal-1"
+        preview={preview([row("new snapshot")], { serialized: "new snapshot\r\n" })}
+        liveChunks={[]}
+        attached
+        width={80}
+        height={5}
+        hiddenBottomRows={2}
+      />,
+    );
+
+    result.rerender(
+      <TerminalPane
+        title="Claude Code"
+        terminalId="terminal-1"
+        preview={preview([row("new snapshot")], { serialized: "new snapshot\r\n" })}
+        liveChunks={["fresh echo\r\n"]}
+        attached
+        width={80}
+        height={5}
+        hiddenBottomRows={2}
+      />,
+    );
+
+    await waitFor(() => stripAnsi(result.lastFrame() ?? "").includes("fresh echo"));
+    const frame = stripAnsi(result.lastFrame() ?? "");
+    expect(frame).toContain("new snapshot");
+    expect(frame).toContain("fresh echo");
+    expect(frame).not.toContain("old snapshot");
   });
 
   it("uses transcript history for closed terminal sessions instead of the final resume-only snapshot", async () => {

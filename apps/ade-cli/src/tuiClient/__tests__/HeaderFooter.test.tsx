@@ -58,6 +58,13 @@ describe("Header", () => {
     expect(frame).not.toContain("GPT");
   });
 
+  it("shows the connected remote machine when launched remotely", () => {
+    const result = render(<Header projectName="ADE" lane={lane()} remoteLabel="Mac Studio" />);
+    const frame = stripAnsi(result.lastFrame() ?? "");
+
+    expect(frame).toContain("connected to Mac Studio");
+  });
+
   it("suppresses the project label when it repeats the branch basename", () => {
     const result = render(
       <Header
@@ -203,6 +210,35 @@ describe("FooterControls", () => {
     const frame = stripAnsi(result.lastFrame() ?? "");
 
     expect(frame).toContain("chat info · 2");
+  });
+
+  it("renders context usage as a single circle dial, not the 10-cell bar", () => {
+    const result = render(
+      <FooterControls
+        provider="codex"
+        modelDisplay="GPT-5.5"
+        permissionLabel="default"
+        contextPercent={50}
+      />,
+    );
+    const frame = stripAnsi(result.lastFrame() ?? "");
+
+    expect(frame).toContain("50%");
+    // A half-filled pie-circle glyph (50% → ◑) stands in for the meter…
+    expect(frame).toContain("◑");
+    // …and the old multi-cell bar fill is no longer in the footer.
+    expect(frame).not.toContain("▓▓");
+  });
+
+  it("fills the context dial toward a solid circle as usage climbs", () => {
+    const frameAt = (percent: number) => {
+      const result = render(
+        <FooterControls provider="codex" modelDisplay="GPT-5.5" permissionLabel="default" contextPercent={percent} />,
+      );
+      return stripAnsi(result.lastFrame() ?? "");
+    };
+    expect(frameAt(0)).toContain("○");
+    expect(frameAt(100)).toContain("●");
   });
 
   it("renders the approval prompt hints when an approval is active", () => {

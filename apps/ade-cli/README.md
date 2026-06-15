@@ -25,6 +25,7 @@ Default routing for typed commands: prefer the machine brain endpoint if reachab
 | `$ADE_HOME/projects.json` | Project catalog. |
 | `~/.ade/secrets/` | Machine credential store (`credentials.safe.enc` for desktop safeStorage, `credentials.json.enc` plus `.machine-key` for headless fallback storage, and per-store `*.lock` files). |
 | `~/.ade/bin/ade` | Bundled static runtime binary (release installs / remote uploads). |
+| `~/.ade/agent-skills/` | Bundled, version-locked ADE agent skills. Desktop remote bootstrap uploads this beside the remote runtime; CLI launch then re-seeds ADE-managed skills into runtime-native home skill directories. |
 | `~/.ade/runtime/<platform-arch>/` | Native node modules for that runtime binary. |
 | `~/.ade/runtime/launchd.{out,err}.log` | Runtime stdout/stderr when running as a login service on macOS. |
 
@@ -211,9 +212,19 @@ The `sync.connectToBrain`, `sync.disconnectFromBrain`, and `sync.transferBrainTo
 ade code                           # attach to the machine brain, auto-spawn it if missing
 ade code --embedded                # force the in-process embedded runtime
 ade code --print-state             # smoke-test the connection and exit
+ade code remote --target mac --project ADE
+                                   # attach to a saved desktop remote machine
+ade code remote session --target mac --project ADE --session chat-1
+                                   # open a remote chat or Claude terminal session
 ade --socket /path/to/ade.sock code   # attach to a specific local endpoint
 ade --project-root /repo code      # bind to a specific project root
 ```
+
+`ade code remote` reads the same saved remote-machine registry as desktop ADE,
+starts `ade rpc --stdio` over SSH, and bridges it back into the normal TUI with
+`--remote`, `--remote-label`, `--require-socket`, remote project roots, and an
+optional `--session` hint. Use `--list-targets`, `--list-projects`, and
+`--list-sessions` for non-interactive discovery.
 
 **Browser mirror (dev):** from the repo root, `npm run dev:code:web` runs **one** `ade code` in a **single PTY** and mirrors that TTY to the browser (xterm). Use Cursor’s browser tools against that page like any other local URL. This is not the same as running `ade code` in a terminal app **and** in the browser at once—that would be two separate processes.
 

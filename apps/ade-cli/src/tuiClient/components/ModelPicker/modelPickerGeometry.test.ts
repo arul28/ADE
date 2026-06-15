@@ -11,6 +11,7 @@ import {
   hasSubProviderSelector,
   isSearching,
   modelPickerGeometry,
+  providerTabSegments,
   rowWindow,
   settingsChipWidth,
 } from "./modelPickerGeometry";
@@ -229,6 +230,20 @@ describe("modelPickerGeometry — rail vs search mode", () => {
 });
 
 describe("modelPickerGeometry — sub-provider selector", () => {
+  it("computes visible tab segments with stable offsets", () => {
+    const tabs: ModelPickerProviderTab[] = [
+      { key: "alpha", label: "Alpha" },
+      { key: "beta", label: "Beta" },
+      { key: "gamma", label: "Gamma" },
+    ];
+
+    expect(providerTabSegments(tabs, 1, 24).filter((segment) => segment.tabKey)).toEqual([
+      { index: 0, tabKey: "alpha", text: " Alpha ", active: false, x: 0, w: 7 },
+      { index: 1, tabKey: "beta", text: "[Beta]", active: true, x: 8, w: 6 },
+      { index: 2, tabKey: "gamma", text: " Gamma ", active: false, x: 15, w: 7 },
+    ]);
+  });
+
   it("does not reserve a selector row when there is at most one provider tab", () => {
     const oneTab: ModelPickerProviderTab[] = [{ key: "k", label: "L" }];
     const state = makeState({ providerTabs: oneTab, entries: [entry({ modelId: "a" })] });
@@ -250,6 +265,31 @@ describe("modelPickerGeometry — sub-provider selector", () => {
     const regionTop = PANE_TOP + 1 + 1 + 1 + 1; // header+mb+search+mb
     const listTopWithSelector = regionTop + 2;
     expect(at(g.entries, 0).rect.y).toBe(listTopWithSelector);
+  });
+
+  it("registers clickable rects for visible provider tabs", () => {
+    const tabs: ModelPickerProviderTab[] = [
+      { key: "alpha", label: "Alpha" },
+      { key: "beta", label: "Beta" },
+    ];
+    const state = makeState({ providerTabs: tabs, providerTabIndex: 0, entries: [entry({ modelId: "a" })] });
+    const g = geo(state);
+    const listLeft = PANE_LEFT + RAIL_WIDTH + RAIL_TO_LIST_GAP;
+
+    expect(g.providerTabs).toEqual([
+      {
+        id: "right:model-picker:provider-tab:0",
+        index: 0,
+        tabKey: "alpha",
+        rect: { x: listLeft, y: PANE_TOP + 1 + 3, w: 7, h: 1 },
+      },
+      {
+        id: "right:model-picker:provider-tab:1",
+        index: 1,
+        tabKey: "beta",
+        rect: { x: listLeft + 8, y: PANE_TOP + 1 + 3, w: 6, h: 1 },
+      },
+    ]);
   });
 });
 

@@ -8,9 +8,13 @@ const renderMock = vi.hoisted(() =>
 
 const detectProjectLaunchContextMock = vi.hoisted(() =>
   vi.fn(() => ({
+    launchCwd: "/repo",
     projectRoot: "/repo",
     workspaceRoot: "/repo",
     laneHint: null,
+    sessionHint: null,
+    remote: false,
+    remoteLabel: null,
   })),
 );
 
@@ -45,6 +49,34 @@ describe("ade code CLI entrypoint", () => {
 
   it("accepts packaged service-repair opt-in", () => {
     expect(parseArgs(["--prefer-service-repair"]).preferServiceRepair).toBe(true);
+  });
+
+  it("accepts remote launch context flags", () => {
+    expect(parseArgs([
+      "--remote",
+      "--project-root",
+      "/remote/project",
+      "--workspace-root",
+      "/remote/project",
+      "--lane",
+      "lane-1",
+      "--session",
+      "session-1",
+      "--remote-label",
+      "Mac Studio",
+      "--socket",
+      "tcp://127.0.0.1:43333",
+      "--require-socket",
+    ])).toMatchObject({
+      remote: true,
+      projectRoot: "/remote/project",
+      workspaceRoot: "/remote/project",
+      laneHint: "lane-1",
+      sessionHint: "session-1",
+      remoteLabel: "Mac Studio",
+      socketPath: "tcp://127.0.0.1:43333",
+      requireSocket: true,
+    });
   });
 
   it("passes Ctrl+C handling through to ADE Code instead of Ink", async () => {

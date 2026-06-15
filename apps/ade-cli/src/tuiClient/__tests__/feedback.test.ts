@@ -86,6 +86,9 @@ describe("ADE Code feedback helpers", () => {
       projectRoot: "/tmp/project",
       workspaceRoot: "/tmp/project",
       laneHint: null,
+      sessionHint: null,
+      remote: false,
+      remoteLabel: null,
     }, lane());
     const fields = feedbackFormFields(environment);
 

@@ -603,6 +603,10 @@ export function renderChatLines(args: {
       continue;
     }
     if (event.type === "context_compact") {
+      if (event.state === "started") {
+        lines.push({ id, tone: "notice", body: `⟳ compacting · ${event.trigger}` });
+        continue;
+      }
       const preTokens = typeof event.preTokens === "number" ? ` · before ${event.preTokens.toLocaleString()} tokens` : "";
       lines.push({
         id,
@@ -621,9 +625,12 @@ export function renderChatLines(args: {
       continue;
     }
     if (event.type === "status") {
-      const tone: "error" | "notice" = event.turnStatus === "failed" || event.turnStatus === "interrupted"
-        ? "error"
-        : "notice";
+      // The interrupted state is conveyed by the dedicated "Interrupted · chat to continue"
+      // suffix row, so suppress the redundant [status] interrupted transcript line.
+      if (event.turnStatus === "interrupted") {
+        continue;
+      }
+      const tone: "error" | "notice" = event.turnStatus === "failed" ? "error" : "notice";
       lines.push({ id, tone, body: `[status] ${event.turnStatus}${event.message ? ` · ${singleLine(event.message, 120)}` : ""}` });
       continue;
     }

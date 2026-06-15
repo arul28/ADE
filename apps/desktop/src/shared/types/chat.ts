@@ -665,6 +665,12 @@ export type AgentChatEvent =
       type: "context_compact";
       trigger: "manual" | "auto";
       preTokens?: number;
+      // Lifecycle of the compaction. Runtimes that expose a begin signal (Claude's
+      // `compacting` status, OpenCode's compaction part) emit a "started" event when
+      // compaction begins and a "completed" event when it ends, so the UI can show a
+      // live "compacting…" indicator instead of only the finished result. Omitted by
+      // legacy/completion-only sources (treated as "completed").
+      state?: "started" | "completed";
       turnId?: string;
     }
   | {

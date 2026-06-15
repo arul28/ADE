@@ -4793,6 +4793,59 @@ describe("createAgentChatService", () => {
       expect(flushedSends).toHaveLength(0);
     });
 
+    it("emits a context_compact begin (started) when Claude reports compacting status", async () => {
+      const send = vi.fn().mockResolvedValue(undefined);
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      let streamCall = 0;
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "system", subtype: "init", session_id: "sdk-session-compacting", slash_commands: [] };
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+          return;
+        }
+        // Begin: SDK status flips to "compacting" before the boundary lands.
+        yield { type: "system", subtype: "status", session_id: "sdk-session-compacting", status: "compacting" };
+        // End: the compact boundary marks completion with the real trigger/tokens.
+        yield {
+          type: "system",
+          subtype: "compact_boundary",
+          session_id: "sdk-session-compacting",
+          compact_metadata: { trigger: "manual", pre_tokens: 120_000 },
+        };
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send,
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-session-compacting",
+        setPermissionMode,
+      } as any);
+
+      const onEvent = vi.fn();
+      const { service } = createService({ onEvent });
+      const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      await service.runSessionTurn({ sessionId: session.id, text: "keep going", timeoutMs: 15_000 });
+      await new Promise((resolve) => setTimeout(resolve, 25));
+
+      const compactEvents = onEvent.mock.calls
+        .map((call) => call[0])
+        .filter((env: any) => env?.event?.type === "context_compact")
+        .map((env: any) => env.event);
+      // A live begin, then a completed end — no longer a plain gray "Compacting..." notice.
+      expect(compactEvents).toEqual([
+        expect.objectContaining({ type: "context_compact", state: "started" }),
+        expect.objectContaining({ type: "context_compact", state: "completed", trigger: "manual", preTokens: 120_000 }),
+      ]);
+      const compactingNotices = onEvent.mock.calls
+        .map((call) => call[0])
+        .filter((env: any) => env?.event?.type === "system_notice"
+          && typeof env.event.message === "string"
+          && env.event.message.includes("Compacting conversation context"));
+      expect(compactingNotices).toHaveLength(0);
+    });
+
     it("emits a rate-limit notice when the Claude SDK reports usage pressure", async () => {
       vi.useFakeTimers();
       const send = vi.fn().mockResolvedValue(undefined);
@@ -17095,6 +17148,88 @@ describe("createAgentChatService", () => {
     );
 
     expect(startupActivity.event.detail).toBeTruthy();
+
+    releaseStream();
+    await sendPromise;
+  });
+
+  it("dedupes repeated OpenCode compaction part updates without relying on part ids", async () => {
+    const events: AgentChatEventEnvelope[] = [];
+    let releaseStream!: () => void;
+    const streamGate = new Promise<void>((resolve) => {
+      releaseStream = () => resolve();
+    });
+
+    vi.mocked(streamText).mockImplementation(() => ({
+      fullStream: (async function* () {
+        await streamGate;
+        yield { type: "finish", usage: {} };
+      })(),
+    }) as any);
+
+    const { service } = createService({
+      onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+    });
+
+    const session = await service.createSession({
+      laneId: "lane-1",
+      provider: "opencode",
+      model: "opencode/openai/gpt-5.4",
+      modelId: "opencode/openai/gpt-5.4",
+    });
+
+    const sendPromise = service.sendMessage({
+      sessionId: session.id,
+      text: "Compact this context.",
+    });
+
+    await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope & {
+        event: Extract<AgentChatEventEnvelope["event"], { type: "status" }>;
+      } => event.event.type === "status" && event.event.turnStatus === "started",
+    );
+
+    const state = [...mockState.openCodeSessions.values()][0]!;
+    state.events.push(
+      {
+        type: "message.part.updated",
+        properties: {
+          part: { sessionID: "opencode-session-1", type: "compaction", auto: false },
+          delta: "",
+        },
+      },
+      {
+        type: "message.part.updated",
+        properties: {
+          part: { sessionID: "opencode-session-1", type: "compaction", auto: false },
+          delta: "",
+        },
+      },
+      {
+        type: "session.compacted",
+        properties: { sessionID: "opencode-session-1" },
+      },
+    );
+    const waiters = [...state.waiters];
+    state.waiters.length = 0;
+    waiters.forEach((waiter) => waiter());
+
+    await waitForEvent(
+      events,
+      (event): event is AgentChatEventEnvelope & {
+        event: Extract<AgentChatEventEnvelope["event"], { type: "context_compact" }>;
+      } => event.event.type === "context_compact" && event.event.state === "completed",
+    );
+
+    const compactionEvents = events
+      .map((event) => event.event)
+      .filter((event): event is Extract<AgentChatEventEnvelope["event"], { type: "context_compact" }> =>
+        event.type === "context_compact"
+      );
+    expect(compactionEvents).toHaveLength(2);
+    expect(compactionEvents.map((event) => event.state)).toEqual(["started", "completed"]);
+    expect(compactionEvents.every((event) => event.trigger === "manual")).toBe(true);
 
     releaseStream();
     await sendPromise;

@@ -21,10 +21,12 @@ export function Header({
   projectName,
   lane,
   chatTitle,
+  remoteLabel,
 }: {
   projectName: string;
   lane: LaneSummary | null;
   chatTitle?: string | null;
+  remoteLabel?: string | null;
 }) {
   const laneColor = theme.lane(lane);
   const normalizedProject = projectName.trim().toLowerCase();
@@ -40,6 +42,7 @@ export function Header({
   );
   const showProject = Boolean(normalizedProject && normalizedProject !== "ade" && !projectRepeatsBranch);
   const chatLabel = chatTitle?.trim() || null;
+  const remote = remoteLabel?.trim() || null;
   return (
     <Box
       paddingX={1}
@@ -84,6 +87,11 @@ export function Header({
           </>
         ) : null}
       </Text>
+      {remote ? (
+        <Text color={theme.color.t4} wrap="truncate-end">
+          connected to <Text color={theme.color.accent}>{remote}</Text>
+        </Text>
+      ) : null}
     </Box>
   );
 }

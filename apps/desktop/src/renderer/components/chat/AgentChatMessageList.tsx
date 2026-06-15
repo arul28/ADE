@@ -2485,14 +2485,16 @@ function renderEvent(
     return <CodexContextCompactionChip event={event} timestamp={envelope.timestamp} />;
   }
 
-  /* ── Legacy Context Compact (kept for any pre-A.3 transcripts) ── */
+  /* ── Generic Context Compact (Claude/OpenCode; legacy pre-A.3 transcripts) ── */
   if (event.type === "context_compact") {
+    // Honor the begin/end lifecycle when the runtime provides it so a live
+    // "compacting…" chip shows; sources without state render as completed.
     return (
       <CodexContextCompactionChip
         event={{
           type: "codex_context_compaction",
           turnId: event.turnId ?? "",
-          state: "completed",
+          state: event.state ?? "completed",
           trigger: event.trigger,
         }}
         timestamp={envelope.timestamp}

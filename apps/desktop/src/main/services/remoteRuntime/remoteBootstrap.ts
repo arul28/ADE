@@ -175,6 +175,8 @@ type RemoteRuntimeLayout = {
   binaryRelative: string;
   versionExpr: string;
   sha256Expr: string;
+  agentSkillsDirExpr: string;
+  agentSkillsSha256Expr: string;
   ptyHostWorkerExpr: string;
   ptyHostWorkerSha256Expr: string;
 };
@@ -208,6 +210,8 @@ export function resolveRemoteRuntimeLayout(env: NodeJS.ProcessEnv = process.env)
     binaryRelative: `${homeDirName}/bin/ade`,
     versionExpr: `${binDirExpr}/ade.version`,
     sha256Expr: `${binDirExpr}/ade.sha256`,
+    agentSkillsDirExpr: `${homeDirExpr}/agent-skills`,
+    agentSkillsSha256Expr: `${homeDirExpr}/agent-skills.sha256`,
     ptyHostWorkerExpr: `${runtimeDirExpr}/ptyHostWorker.cjs`,
     ptyHostWorkerSha256Expr: `${runtimeDirExpr}/ptyHostWorker.cjs.sha256`,
   };
@@ -324,6 +328,23 @@ function bundledPtyHostWorkerPath(resourcesPath: string, localBinaryPath: string
   }) ?? null;
 }
 
+function bundledAgentSkillsPath(resourcesPath: string, localBinaryPath: string | null): string | null {
+  const candidates = [
+    path.join(resourcesPath, "agent-skills"),
+    path.join(resourcesPath, "app.asar.unpacked", "agent-skills"),
+  ];
+  if (localBinaryPath) {
+    candidates.push(path.resolve(path.dirname(localBinaryPath), "..", "agent-skills"));
+  }
+  return candidates.find((candidate) => {
+    try {
+      return fs.statSync(candidate).isDirectory();
+    } catch {
+      return false;
+    }
+  }) ?? null;
+}
+
 type LocalArtifactHashCacheEntry = {
   size: number;
   mtimeMs: number;
@@ -333,7 +354,7 @@ type LocalArtifactHashCacheEntry = {
 
 const localArtifactHashCache = new Map<string, LocalArtifactHashCacheEntry>();
 
-function hashRuntimeBinary(localPath: string): string {
+function hashLocalFile(localPath: string): string {
   const stat = fs.statSync(localPath);
   const cached = localArtifactHashCache.get(localPath);
   if (
@@ -354,8 +375,60 @@ function hashRuntimeBinary(localPath: string): string {
   return sha256;
 }
 
+function hashRuntimeBinary(localPath: string): string {
+  return hashLocalFile(localPath);
+}
+
 function fileSizeBytes(localPath: string): number {
   return fs.statSync(localPath).size;
+}
+
+type LocalAgentSkillFile = {
+  localPath: string;
+  relativePath: string;
+  sha256: string;
+};
+
+function listLocalAgentSkillFiles(root: string): LocalAgentSkillFile[] {
+  const files: LocalAgentSkillFile[] = [];
+  const visit = (dir: string): void => {
+    const entries = fs.readdirSync(dir, { withFileTypes: true })
+      .sort((left, right) => left.name.localeCompare(right.name, undefined, { sensitivity: "base" }));
+    for (const entry of entries) {
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        visit(fullPath);
+      } else if (entry.isFile()) {
+        files.push({
+          localPath: fullPath,
+          relativePath: path.relative(root, fullPath).split(path.sep).join("/"),
+          sha256: hashLocalFile(fullPath),
+        });
+      }
+    }
+  };
+  visit(root);
+  return files.sort((left, right) => left.relativePath.localeCompare(right.relativePath, undefined, { sensitivity: "base" }));
+}
+
+function hashAgentSkillsDirectory(files: readonly LocalAgentSkillFile[]): string {
+  const hash = crypto.createHash("sha256");
+  for (const file of files) {
+    hash.update(file.relativePath);
+    hash.update("\0");
+    hash.update(file.sha256);
+    hash.update("\0");
+  }
+  return hash.digest("hex");
+}
+
+function shellPathSegment(segment: string): string {
+  return /^[A-Za-z0-9._-]+$/.test(segment) ? segment : shellQuote(segment);
+}
+
+function remoteChildExpr(rootExpr: string, relativePath: string): string {
+  const parts = relativePath.split(/[\\/]+/).filter(Boolean).map(shellPathSegment);
+  return [rootExpr.replace(/\/+$/, ""), ...parts].join("/");
 }
 
 function remoteUploadTempSuffix(): string {
@@ -1036,6 +1109,73 @@ async function uploadNativeDepsBundle(
   }
 }
 
+async function uploadBundledAgentSkills(
+  client: Client,
+  target: RemoteRuntimeTarget,
+  route: ConnectedSshRoute,
+  connectedConfig: OpenSshUploadConfig | null | undefined,
+  layout: RemoteRuntimeLayout,
+  localRoot: string,
+): Promise<void> {
+  const files = listLocalAgentSkillFiles(localRoot);
+  const directorySha256 = hashAgentSkillsDirectory(files);
+  const remoteStatus = await execSsh(
+    client,
+    `test -d ${layout.agentSkillsDirExpr} && test "$(cat ${layout.agentSkillsSha256Expr} 2>/dev/null)" = ${shellQuote(directorySha256)} && echo ok || true`,
+  );
+  if (remoteStatus.stdout.trim() === "ok") return;
+
+  const stagingExpr = `${layout.agentSkillsDirExpr}.${remoteUploadTempSuffix()}`;
+  try {
+    await execSshOrThrow(
+      client,
+      `rm -rf ${stagingExpr} && mkdir -p ${stagingExpr}`,
+      "Unable to prepare remote ADE agent skills upload.",
+    );
+    const createdDirs = new Set<string>([""]);
+    for (const file of files) {
+      const relativeDir = path.posix.dirname(file.relativePath);
+      if (relativeDir !== "." && !createdDirs.has(relativeDir)) {
+        await execSshOrThrow(
+          client,
+          `mkdir -p ${remoteChildExpr(stagingExpr, relativeDir)}`,
+          "Unable to create remote ADE agent skills directory.",
+        );
+        createdDirs.add(relativeDir);
+      }
+      const remoteFileExpr = remoteChildExpr(stagingExpr, file.relativePath);
+      const tempExpr = `${remoteFileExpr}.${remoteUploadTempSuffix()}`;
+      try {
+        await uploadSshFile(client, target, route, connectedConfig, file.localPath, tempExpr);
+        await execSshOrThrow(
+          client,
+          [
+            remoteFileMatchesCommand(tempExpr, fileSizeBytes(file.localPath), file.sha256),
+            `mv -f ${tempExpr} ${remoteFileExpr}`,
+          ].join(" && "),
+          "Uploaded ADE agent skill did not pass size and checksum verification.",
+        );
+      } catch (error) {
+        await execSsh(client, `rm -f ${tempExpr}`).catch(() => undefined);
+        throw error;
+      }
+    }
+    await execSshOrThrow(
+      client,
+      [
+        `rm -rf ${layout.agentSkillsDirExpr}`,
+        `mv -f ${stagingExpr} ${layout.agentSkillsDirExpr}`,
+        `printf '%s\\n' ${shellQuote(directorySha256)} > ${layout.agentSkillsSha256Expr}`,
+        `chmod 600 ${layout.agentSkillsSha256Expr}`,
+      ].join(" && "),
+      "Unable to finalize remote ADE agent skills upload.",
+    );
+  } catch (error) {
+    await execSsh(client, `rm -rf ${stagingExpr}`).catch(() => undefined);
+    throw error;
+  }
+}
+
 async function uploadPtyHostWorker(
   client: Client,
   target: RemoteRuntimeTarget,
@@ -1200,6 +1340,7 @@ export async function bootstrapRemoteRuntime(args: {
     const nativeDepsBundle = bundledNativeDepsPath(args.resourcesPath, arch.label);
     const localPtyHostWorker = bundledPtyHostWorkerPath(args.resourcesPath, localBinary);
     const localPtyHostWorkerSha256 = localPtyHostWorker ? hashRuntimeBinary(localPtyHostWorker) : null;
+    const localAgentSkillsRoot = bundledAgentSkillsPath(args.resourcesPath, localBinary);
     let remoteBinaryMatchesLocal: boolean | null = null;
 
     if (!localBinary && !executableRuntimeVersion) {
@@ -1339,6 +1480,18 @@ export async function bootstrapRemoteRuntime(args: {
       await verifyUploadedRuntime();
     }
 
+    const ensureAgentSkillsReady = async (targetLayout: RemoteRuntimeLayout): Promise<void> => {
+      if (!localAgentSkillsRoot) return;
+      await uploadBundledAgentSkills(
+        ssh,
+        args.target,
+        connectedRoute,
+        uploadConnectionConfig,
+        targetLayout,
+        localAgentSkillsRoot,
+      );
+    };
+
     if (!runtimeVersion) {
       const pathVersionCheck = await execSsh(ssh, `${runtimeEnvPrefix}ade --version || true`);
       runtimeVersion = normalizeRuntimeVersion(pathVersionCheck.stdout);
@@ -1346,6 +1499,8 @@ export async function bootstrapRemoteRuntime(args: {
         throw new Error(`ADE service is not installed on the remote machine and no bundled ADE service is available for ${arch.label}.`);
       }
     }
+
+    await ensureAgentSkillsReady(layout);
 
     const command = localBinary || runtimeUploaded
       ? remoteRuntimeRpcCommand(layout, runtimeEnvPrefix, layout.binaryExpr)
@@ -1384,6 +1539,7 @@ export async function bootstrapRemoteRuntime(args: {
         });
         const candidateCommand = remoteRuntimeRpcCommand(candidateLayout, candidateRuntimeEnvPrefix, "ade");
         try {
+          await ensureAgentSkillsReady(candidateLayout);
           openedRuntime = await openValidatedRuntimeClient({
             ssh,
             command: candidateCommand,

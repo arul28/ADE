@@ -11006,6 +11006,31 @@ final class ADETests: XCTestCase {
     XCTAssertNil(parsed.tokensFreedLabel)
   }
 
+  func testWorkContextCompactLifecycleMergesStartedAndCompletedCard() {
+    let transcript: [WorkChatEnvelope] = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-06-15T00:00:01.000Z",
+        sequence: 1,
+        event: .contextCompact(summary: "Manual", isInProgress: true, turnId: "turn-compact")
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-06-15T00:00:02.000Z",
+        sequence: 2,
+        event: .contextCompact(summary: "Manual\nPre-compact tokens: 12000", isInProgress: false, turnId: "turn-compact")
+      ),
+    ]
+
+    let cards = buildWorkEventCards(from: transcript).filter { $0.kind == "contextCompact" }
+
+    XCTAssertEqual(cards.count, 1)
+    XCTAssertEqual(cards.first?.id, "context-compact:chat-1:turn:turn-compact")
+    XCTAssertEqual(cards.first?.title, "Context compacted")
+    XCTAssertEqual(cards.first?.body, "Manual\nPre-compact tokens: 12000")
+    XCTAssertEqual(cards.first?.isInProgress, false)
+  }
+
   // MARK: - Timeline dedup + ask_user regression tests
 
   func testBuildWorkToolCardsDedupesDuplicateToolCallsByItemId() {

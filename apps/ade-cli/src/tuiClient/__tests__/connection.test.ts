@@ -82,6 +82,9 @@ const project: ProjectLaunchContext = {
   projectRoot: "/tmp/ade-code",
   workspaceRoot: "/tmp/ade-code",
   laneHint: null,
+  sessionHint: null,
+  remote: false,
+  remoteLabel: null,
 };
 
 const originalArgv1 = process.argv[1];
@@ -274,6 +277,50 @@ describe("connectToAde embedded mode", () => {
       project,
       socketPath,
     })).rejects.toThrow(/stale .*default role agent is not cto/);
+
+    expect(requests).toEqual(["ade/initialize", "ade/initialized"]);
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("allows remote sockets to differ by build hash and project root", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-code-remote-socket-"));
+    const socketPath = path.join(tmpDir, "ade.sock");
+    const requests: string[] = [];
+    const server = net.createServer((socket) => {
+      let buffer = "";
+      socket.on("data", (chunk) => {
+        buffer += chunk.toString("utf8");
+        while (true) {
+          const newline = buffer.indexOf("\n");
+          if (newline < 0) return;
+          const line = buffer.slice(0, newline).trim();
+          buffer = buffer.slice(newline + 1);
+          if (!line) continue;
+          const request = JSON.parse(line) as { id: number; method: string };
+          requests.push(request.method);
+          const result = request.method === "ade/initialize"
+            ? {
+                runtimeInfo: {
+                  defaultRole: "cto",
+                  projectRoot: "/remote/project",
+                  buildHash: "remote-build",
+                },
+              }
+            : null;
+          socket.write(`${JSON.stringify({ jsonrpc: "2.0", id: request.id, result })}\n`);
+        }
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(socketPath, resolve));
+
+    const connection = await connectToAde({
+      project,
+      socketPath,
+      requireSocket: true,
+      remote: true,
+    });
+    await connection.close();
 
     expect(requests).toEqual(["ade/initialize", "ade/initialized"]);
     await new Promise<void>((resolve) => server.close(() => resolve()));

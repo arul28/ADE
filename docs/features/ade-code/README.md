@@ -247,10 +247,28 @@ Lane selection persists `lastLaneId` and updates the runtime's session state so 
 ade code                                 # attached to the machine runtime for the current project
 ade code --print-state                   # smoke-test: print mode + socket and exit
 ade code --embedded                      # in-process runtime fallback
+ade code remote --target mac --project ADE
+                                         # attach through SSH to a saved desktop remote target/project
+ade code remote session --target mac --project ADE --session chat-1
+                                         # open a specific remote chat or Claude terminal session
+ade code remote --list-targets           # list saved desktop remote machines
+ade code remote --target mac --list-projects
+                                         # list projects registered on that remote runtime
+ade code remote session --target mac --project ADE --list-sessions
+                                         # list launchable remote chats/Claude terminals
 ade --project-root /repo code            # bind to a different project
 ade --socket /tmp/ade-runtime-dev.sock code
                                          # attach to a specific socket (dev runtime, peer machine, etc.)
 ```
+
+`ade code remote` is a launcher around the same TUI. It reads saved desktop
+remote targets, probes stable/beta/alpha ADE homes over SSH, starts
+`ade rpc --stdio` on the selected machine, exposes that stdio stream as a local
+loopback `tcp://` JSON-RPC socket, and then invokes the normal `runAdeCodeCli`
+with `--remote`, `--remote-label`, `--require-socket`, remote project roots,
+and the selected `--lane` / `--session` hints. Remote launches skip local
+project-root and build-hash compatibility checks because the authoritative
+runtime and filesystem are on the target machine.
 
 After local changes, run `npm run build` inside `apps/ade-cli` so both `dist/cli.cjs` and `dist/tuiClient/cli.mjs` exist for packaged and linked use. The CLI build verifier imports `dist/tuiClient/cli.mjs` from an isolated temp directory, checks that bundled `__dirname` / `__filename` references have ESM shims, and confirms `runAdeCodeCli(["--help"])` prints the ADE Code help banner without relying on repo-local `node_modules`. During repo development, `npm run dev:code` runs the source TUI in the terminal against the shared dev runtime at `/tmp/ade-runtime-dev.sock`; `npm run dev:code:web` mirrors that same process in the browser (see [Browser mirror](#browser-mirror-development)).
 

@@ -407,6 +407,11 @@ struct WorkEventCardModel: Identifiable, Equatable {
   /// Populated for `kind == "plan"`. Each step keeps its status so the rich plan
   /// card can paint per-step checkmarks/colors instead of prefixed bullets.
   let planSteps: [WorkPlanStep]
+  /// Set for lifecycle-style cards (e.g. `kind == "contextCompact"`) that begin
+  /// in a live state and later settle. When true the card renders its
+  /// in-progress affordance (spinner + "Compacting context…"); once the host
+  /// emits the completed event the merged card flips this back to false.
+  let isInProgress: Bool
 
   init(
     id: String,
@@ -418,7 +423,8 @@ struct WorkEventCardModel: Identifiable, Equatable {
     body: String?,
     bullets: [String],
     metadata: [String],
-    planSteps: [WorkPlanStep] = []
+    planSteps: [WorkPlanStep] = [],
+    isInProgress: Bool = false
   ) {
     self.id = id
     self.kind = kind
@@ -430,6 +436,7 @@ struct WorkEventCardModel: Identifiable, Equatable {
     self.bullets = bullets
     self.metadata = metadata
     self.planSteps = planSteps
+    self.isInProgress = isInProgress
   }
 }
 
@@ -518,7 +525,7 @@ enum WorkChatEvent: Equatable {
   case done(status: String, summary: String, usage: WorkUsageSummary?, turnId: String, model: String?, modelId: String?)
   case tokens(usage: WorkUsageSummary, turnId: String, itemId: String?)
   case promptSuggestion(text: String, turnId: String?)
-  case contextCompact(summary: String, turnId: String?)
+  case contextCompact(summary: String, isInProgress: Bool, turnId: String?)
   case autoApprovalReview(summary: String, turnId: String?)
   case webSearch(query: String, action: String?, status: WorkToolCardStatus, itemId: String, turnId: String?)
   case planText(text: String, turnId: String?)

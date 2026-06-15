@@ -8,10 +8,13 @@ type CliOptions = {
   printState: boolean;
   forceEmbedded: boolean;
   requireSocket: boolean;
+  remote: boolean;
   projectRoot: string | null;
   workspaceRoot: string | null;
   laneHint: string | null;
+  sessionHint: string | null;
   socketPath: string | null;
+  remoteLabel: string | null;
   preferServiceRepair: boolean;
 };
 
@@ -29,10 +32,13 @@ export function parseArgs(argv: string[]): CliOptions {
     printState: false,
     forceEmbedded: false,
     requireSocket: false,
+    remote: false,
     projectRoot: null,
     workspaceRoot: null,
     laneHint: null,
+    sessionHint: null,
     socketPath: null,
+    remoteLabel: null,
     preferServiceRepair: false,
   };
   for (let i = 0; i < argv.length; i += 1) {
@@ -41,6 +47,7 @@ export function parseArgs(argv: string[]): CliOptions {
     else if (arg === "--print-state") options.printState = true;
     else if (arg === "--embedded") options.forceEmbedded = true;
     else if (arg === "--require-socket") options.requireSocket = true;
+    else if (arg === "--remote") options.remote = true;
     else if (arg === "--prefer-service-repair") options.preferServiceRepair = true;
     else if (arg === "--project-root") {
       options.projectRoot = readRequiredFlagValue(argv, i, arg);
@@ -50,6 +57,12 @@ export function parseArgs(argv: string[]): CliOptions {
       i += 1;
     } else if (arg === "--lane") {
       options.laneHint = readRequiredFlagValue(argv, i, arg);
+      i += 1;
+    } else if (arg === "--session" || arg === "--chat") {
+      options.sessionHint = readRequiredFlagValue(argv, i, arg);
+      i += 1;
+    } else if (arg === "--remote-label") {
+      options.remoteLabel = readRequiredFlagValue(argv, i, arg);
       i += 1;
     } else if (arg === "--socket") {
       options.socketPath = readRequiredFlagValue(argv, i, arg);
@@ -68,6 +81,7 @@ Terminal-native ADE Work chat.
 
 Usage:
   ade code [--project-root <path>] [--workspace-root <path>] [--lane <id|name|branch>] [--socket <path>]
+  ade code remote [project|session]
   ade code --embedded
   ade code --require-socket
   ade code --print-state
@@ -117,6 +131,9 @@ async function printState(options: CliOptions): Promise<void> {
     projectRoot: options.projectRoot,
     workspaceRoot: options.workspaceRoot,
     laneHint: options.laneHint,
+    sessionHint: options.sessionHint,
+    remote: options.remote,
+    remoteLabel: options.remoteLabel,
   });
   const connection = await connectToAde({
     project,
@@ -124,6 +141,7 @@ async function printState(options: CliOptions): Promise<void> {
     requireSocket: options.requireSocket,
     socketPath: options.socketPath,
     preferServiceRepair: options.preferServiceRepair,
+    remote: options.remote,
   });
   try {
     const lanes = await listLanes(connection);
@@ -158,6 +176,9 @@ export async function runAdeCodeCli(argv: string[] = process.argv.slice(2)): Pro
     projectRoot: options.projectRoot,
     workspaceRoot: options.workspaceRoot,
     laneHint: options.laneHint,
+    sessionHint: options.sessionHint,
+    remote: options.remote,
+    remoteLabel: options.remoteLabel,
   });
   const instance = render(
     <AdeCodeApp
@@ -166,6 +187,7 @@ export async function runAdeCodeCli(argv: string[] = process.argv.slice(2)): Pro
       requireSocket={options.requireSocket}
       socketPath={options.socketPath}
       preferServiceRepair={options.preferServiceRepair}
+      remote={options.remote}
     />,
     { exitOnCtrlC: false },
   );

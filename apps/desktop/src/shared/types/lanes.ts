@@ -42,6 +42,7 @@ export type LaneSummary = {
   baseRef: string;
   branchRef: string;
   worktreePath: string;
+  worktreeAvailable?: boolean;
   attachedRootPath?: string | null;
   parentLaneId: string | null;
   childCount: number;

@@ -53,6 +53,37 @@ describe("chooseInitialLane", () => {
     expect(context.laneHint).toBe("feature-a");
   });
 
+  it("allows remote-only roots and carries the initial session hint", () => {
+    const context = detectProjectLaunchContext({
+      cwd: "/tmp",
+      projectRoot: "/remote/project",
+      workspaceRoot: "/remote/project/.ade/worktrees/work",
+      laneHint: "work",
+      sessionHint: "session-remote",
+      remote: true,
+      remoteLabel: "Mac Studio",
+    });
+
+    expect(context.projectRoot).toBe("/remote/project");
+    expect(context.workspaceRoot).toBe("/remote/project/.ade/worktrees/work");
+    expect(context.laneHint).toBe("work");
+    expect(context.sessionHint).toBe("session-remote");
+    expect(context.remote).toBe(true);
+    expect(context.remoteLabel).toBe("Mac Studio");
+  });
+
+  it("falls back from blank remote roots", () => {
+    const context = detectProjectLaunchContext({
+      cwd: "/tmp",
+      projectRoot: "   ",
+      workspaceRoot: "",
+      remote: true,
+    });
+
+    expect(context.projectRoot).toBe(path.resolve("/tmp"));
+    expect(context.workspaceRoot).toBe(path.resolve("/tmp"));
+  });
+
   it("prefers the ADE worktree lane hint", () => {
     const lanes = [
       lane({ id: "main", name: "main", laneType: "primary", worktreePath: "/repo" }),
@@ -131,6 +162,34 @@ describe("chooseMostRecentSessionLane", () => {
 });
 
 describe("resolveTuiChatRefreshTarget", () => {
+  it("uses the active session lane when an initial session hint points outside the default lane", () => {
+    const lanes = [
+      lane({ id: "main", name: "main", laneType: "primary", worktreePath: "/repo" }),
+      lane({ id: "feature-a", name: "Feature A", laneType: "worktree", worktreePath: "/repo/.ade/worktrees/feature-a" }),
+    ];
+    const hinted = chat("hinted-chat", "feature-a", "2026-01-02T00:00:00.000Z");
+
+    const target = resolveTuiChatRefreshTarget({
+      lanes,
+      sessions: [
+        chat("main-chat", "main", "2026-01-01T00:00:00.000Z"),
+        hinted,
+      ],
+      context: { workspaceRoot: "/repo", laneHint: null },
+      lastLaneId: "main",
+      activeLaneId: null,
+      activeSessionId: "hinted-chat",
+      draftChatActive: false,
+      initialNewChatPreview: false,
+      newChatPreviewLaneId: null,
+      selectedDrawerChatAction: null,
+      drawerLaneId: null,
+    });
+
+    expect(target.laneId).toBe("feature-a");
+    expect(target.session?.sessionId).toBe("hinted-chat");
+  });
+
   it("launches into a new-chat preview for the most recent runtime lane without hydrating its last chat", () => {
     const lanes = [
       lane({ id: "main", name: "main", laneType: "primary", worktreePath: "/repo" }),

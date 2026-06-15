@@ -683,6 +683,23 @@ private func workReasoningCardId(
   return fallback
 }
 
+/// Stable identity for a context-compaction divider. Both the `started` and
+/// `completed` events for one compaction share this id (keyed on the turn) so
+/// `buildWorkEventCards` merges them into a single card that flips from the
+/// live "Compacting context…" state to "Context compacted" in place. Without a
+/// turnId — legacy end-only `context_compact` events — we fall back to the
+/// envelope id, which preserves the prior one-card-per-event behavior.
+private func workContextCompactCardId(
+  sessionId: String,
+  turnId: String?,
+  fallback: String
+) -> String {
+  if let turnId, !turnId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+    return ["context-compact", sessionId, "turn", turnId].joined(separator: ":")
+  }
+  return fallback
+}
+
 private func mergeWorkInlineText(_ existing: String, _ incoming: String) -> String {
   if existing.isEmpty { return incoming }
   if incoming.isEmpty { return existing }
@@ -1008,17 +1025,22 @@ private func eventCard(for envelope: WorkChatEnvelope) -> WorkEventCardModel? {
         bullets: [],
         metadata: []
       )
-    case .contextCompact(let summary, _):
+    case .contextCompact(let summary, let isInProgress, let turnId):
       return WorkEventCardModel(
-        id: envelope.id,
+        // Use a turn-scoped merge key so the `started` card UPDATES in place to
+        // `completed` (the later event wins via `mergedWorkEventCard`) instead
+        // of stacking two dividers. Falls back to the envelope id when the host
+        // omits a turnId (legacy end-only events have nothing to merge against).
+        id: workContextCompactCardId(sessionId: envelope.sessionId, turnId: turnId, fallback: envelope.id),
         kind: "contextCompact",
-        title: "Context compacted",
+        title: isInProgress ? "Compacting context…" : "Context compacted",
         icon: "rectangle.compress.vertical",
         tint: .secondary,
         timestamp: envelope.timestamp,
         body: summary,
         bullets: [],
-        metadata: []
+        metadata: [],
+        isInProgress: isInProgress
       )
     case .autoApprovalReview(let summary, _):
       return WorkEventCardModel(
@@ -1263,7 +1285,7 @@ private func workTurnId(for event: WorkChatEvent) -> String? {
        .systemNotice(_, _, _, let turnId, _),
        .error(_, _, _, let turnId),
        .promptSuggestion(_, let turnId),
-       .contextCompact(_, let turnId),
+       .contextCompact(_, _, let turnId),
        .autoApprovalReview(_, let turnId),
        .webSearch(_, _, _, _, let turnId),
        .planText(_, let turnId),

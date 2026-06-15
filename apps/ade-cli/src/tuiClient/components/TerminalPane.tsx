@@ -17,12 +17,20 @@ const { Terminal: HeadlessTerminal } = headlessXtermModule;
 
 type TerminalPaneProps = {
   title: string;
+  terminalId?: string | null;
   preview: ChatTerminalPreviewResult | null;
   liveChunks: string[];
   attached: boolean;
   width: number;
   height: number;
   hiddenBottomRows?: number;
+  /**
+   * Render only the terminal content rows (no header line, no outer box). Used by
+   * grid tiles, which supply their own bordered chrome + title via MultiChatGrid.
+   */
+  bodyOnly?: boolean;
+  /** Claude session still on a placeholder title: show a subtle "naming…" hint. */
+  namingHint?: boolean;
   /** Rows scrolled up from the live bottom. 0 = pinned (auto-follow). */
   scrollOffset?: number;
   /** Count of new lines that arrived while scrolled up; renders the "↓ N new" chip. */
@@ -368,12 +376,15 @@ function terminalControlBorderColor(frame: string): string {
 
 export function TerminalPane({
   title,
+  terminalId,
   preview,
   liveChunks,
   attached,
   width,
   height,
   hiddenBottomRows = 0,
+  bodyOnly = false,
+  namingHint = false,
   scrollOffset = 0,
   pendingNewCount = 0,
   onViewportMetrics,
@@ -403,10 +414,19 @@ export function TerminalPane({
       : null,
     [cols, preview?.snapshot, rows, useSnapshotRows],
   );
-  const seed = useSnapshotRows ? "" : preview?.transcript ?? "";
+  const terminalKey = terminalId ?? preview?.terminalId ?? title;
+  const seed = (useSnapshotRows ? preview?.snapshot?.serialized : preview?.transcript) ?? "";
+  const seedKind = preview?.session.status === "running" ? "running" : "static";
+  const seedKey = `${seedKind}:${terminalKey}:${seed}`;
+  const seedEagerly = !useSnapshotRows;
+  const terminalInstanceSeedKey = liveChunks.length === 0 && seedEagerly ? seedKey : "";
+  const latestSeedRef = useRef({ key: terminalKey, kind: seedKind, seed, seedKey, eager: seedEagerly });
   const terminalRef = useRef<HeadlessTerminalInstance | null>(null);
   const chunkIndexRef = useRef(0);
+  const seededKeyRef = useRef<string | null>(null);
   const [renderTick, setRenderTick] = useState(0);
+
+  latestSeedRef.current = { key: terminalKey, kind: seedKind, seed, seedKey, eager: seedEagerly };
 
   useEffect(() => {
     const terminal = new HeadlessTerminal({
@@ -417,8 +437,11 @@ export function TerminalPane({
     });
     terminalRef.current = terminal;
     chunkIndexRef.current = 0;
-    if (seed) {
-      terminal.write(seed, () => setRenderTick((tick) => tick + 1));
+    seededKeyRef.current = null;
+    const seedState = latestSeedRef.current;
+    if (seedState.eager && seedState.seed) {
+      seededKeyRef.current = seedState.seedKey;
+      terminal.write(seedState.seed, () => setRenderTick((tick) => tick + 1));
     } else {
       setRenderTick((tick) => tick + 1);
     }
@@ -426,7 +449,23 @@ export function TerminalPane({
       terminal.dispose();
       if (terminalRef.current === terminal) terminalRef.current = null;
     };
-  }, [cols, emulatedRows, preview?.terminalId, seed]);
+  }, [cols, emulatedRows, terminalInstanceSeedKey, terminalKey]);
+
+  useEffect(() => {
+    const terminal = terminalRef.current;
+    if (!terminal || liveChunks.length > 0) return;
+    const seedState = latestSeedRef.current;
+    if (!seedState.eager) return;
+    if (!seedState.seed) return;
+    if (seededKeyRef.current === seedState.seedKey) return;
+    if (seedState.kind === "running" && seededKeyRef.current?.startsWith(`running:${seedState.key}:`)) {
+      return;
+    }
+    terminal.reset();
+    chunkIndexRef.current = 0;
+    seededKeyRef.current = seedState.seedKey;
+    terminal.write(`\x1bc${seedState.seed}`, () => setRenderTick((tick) => tick + 1));
+  }, [liveChunks.length, seed, seedEagerly, seedKey, seedKind, terminalKey]);
 
   useEffect(() => {
     const terminal = terminalRef.current;
@@ -446,18 +485,30 @@ export function TerminalPane({
     // that would pin length and freeze this loop). If the owner trims the array
     // (length shrinks below our cursor), reset xterm and replay the retained
     // tail so the visible buffer stays consistent without duplication.
+    let resetBeforeWrite = false;
     if (liveChunks.length < chunkIndexRef.current) {
       terminal.reset();
       chunkIndexRef.current = 0;
+      resetBeforeWrite = true;
     }
-    for (let index = chunkIndexRef.current; index < liveChunks.length; index += 1) {
-      terminal.write(liveChunks[index] ?? "", () => setRenderTick((tick) => tick + 1));
+    const nextChunks = liveChunks.slice(chunkIndexRef.current);
+    const data = nextChunks.join("");
+    if (data) {
+      const seedState = latestSeedRef.current;
+      let writeData = data;
+      if (chunkIndexRef.current === 0 && seedState.seed && seededKeyRef.current !== seedState.seedKey) {
+        terminal.reset();
+        seededKeyRef.current = seedState.seedKey;
+        resetBeforeWrite = true;
+        writeData = `${seedState.seed}${data}`;
+      }
+      terminal.write(`${resetBeforeWrite ? "\x1bc" : ""}${writeData}`, () => setRenderTick((tick) => tick + 1));
     }
     chunkIndexRef.current = liveChunks.length;
   }, [liveChunks]);
 
   const lines = useMemo(() => {
-    if (snapshotRows?.length) return snapshotRows.slice(0, rows);
+    if (snapshotRows?.length && liveChunks.length === 0) return snapshotRows.slice(0, rows);
     if (preview?.transcript && preview.session.status !== "running" && !liveChunks.length) {
       return transcriptPreviewRows(preview.transcript, rows);
     }
@@ -488,6 +539,36 @@ export function TerminalPane({
 
   const scrolledBack = !attached && effectiveScrollOffset > 0;
   const showNewChip = scrolledBack && pendingNewCount > 0;
+  const bodyContent = (
+    <Box flexDirection="column" width={contentWidth} height={visibleHeight} overflow="hidden">
+      {lines.slice(0, visibleHeight).map((line, index) => (
+        <Text key={index} wrap="truncate">
+          {line.runs.map((run, runIndex) => (
+            <Text
+              key={`${runIndex}:${run.text}`}
+              color={run.style.color}
+              backgroundColor={run.style.backgroundColor}
+              bold={run.style.bold}
+              dimColor={run.style.dim}
+              italic={run.style.italic}
+              underline={run.style.underline}
+              inverse={run.style.inverse}
+              strikethrough={run.style.strikethrough}
+            >
+              {run.text || " "}
+            </Text>
+          ))}
+        </Text>
+      ))}
+    </Box>
+  );
+
+  // Grid tiles draw their own border + title chrome (MultiChatGrid), so they
+  // render the terminal body only — no header line, no outer box height padding.
+  if (bodyOnly) {
+    return bodyContent;
+  }
+
   const content = (
     <>
       <Box width={contentWidth}>
@@ -495,6 +576,9 @@ export function TerminalPane({
           {attached ? `${spinFrame} ${title}` : title}
         </Text>
         <Text color={theme.color.mutedFg}>  {status}</Text>
+        {namingHint && !attached ? (
+          <Text color={theme.color.accent}>{`  ${spinFrame} naming…`}</Text>
+        ) : null}
         {showNewChip ? (
           // Amber "attention" chip: new output landed while the user is reading
           // scrollback. Press End / Shift+Down-to-bottom to jump and clear it.
@@ -503,27 +587,7 @@ export function TerminalPane({
           <Text color={theme.color.mutedFg}>{`  ↑ scrollback · End to follow`}</Text>
         ) : null}
       </Box>
-      <Box flexDirection="column" width={contentWidth} height={visibleHeight} overflow="hidden">
-        {lines.slice(0, visibleHeight).map((line, index) => (
-          <Text key={index} wrap="truncate">
-            {line.runs.map((run, runIndex) => (
-              <Text
-                key={`${runIndex}:${run.text}`}
-                color={run.style.color}
-                backgroundColor={run.style.backgroundColor}
-                bold={run.style.bold}
-                dimColor={run.style.dim}
-                italic={run.style.italic}
-                underline={run.style.underline}
-                inverse={run.style.inverse}
-                strikethrough={run.style.strikethrough}
-              >
-                {run.text || " "}
-              </Text>
-            ))}
-          </Text>
-        ))}
-      </Box>
+      {bodyContent}
     </>
   );
 

@@ -79,6 +79,10 @@ import type { AdeRuntime } from "./bootstrap";
 import { reseedBundledAdeSkillsForCli } from "./bootstrap";
 import { EncryptedFileCredentialStore } from "./services/credentials/credentialStore";
 import { DEFAULT_SYNC_HOST_PORT } from "./services/sync/syncProtocol";
+import {
+  runAdeCodeRemote,
+  takeAdeCodeRemoteArgs,
+} from "./tuiClient/remoteLauncher";
 
 type JsonObject = Record<string, unknown>;
 
@@ -1138,6 +1142,15 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade code --require-socket                    Fail instead of starting an embedded runtime when no runtime endpoint exists
     $ ade code --socket /tmp/ade.sock              Attach to a specific local endpoint
     $ ade code --lane <id|name|branch>             Launch focused on a specific lane
+    $ ade code remote --target <machine> --project <project>
+                                                     Launch against a saved desktop remote machine
+    $ ade code remote session --target <machine> --project <project> --session <session>
+                                                     Open a specific remote chat or Claude terminal session
+    $ ade code remote --list-targets               List saved remote machines
+    $ ade code remote --target <machine> --list-projects
+                                                     List ADE projects available on the remote machine
+    $ ade code remote session --target <machine> --project <project> --list-sessions
+                                                     List remote chat and Claude terminal sessions
     $ ade --project-root <path> code                Launch against a specific ADE project
 
   Keys:
@@ -10591,6 +10604,11 @@ async function runAdeCode(
 ): Promise<{ output: string; exitCode: number }> {
   const modulePath = resolveAdeCodeModulePath();
   const { runAdeCodeCli } = await import(pathToFileURL(modulePath).href);
+  const remoteArgs = takeAdeCodeRemoteArgs(rest);
+  if (remoteArgs) {
+    const exitCode = await runAdeCodeRemote(remoteArgs, runAdeCodeCli);
+    return { output: "", exitCode };
+  }
   const exitCode = await runAdeCodeCli(buildAdeCodeArgs(rest, options));
   return { output: "", exitCode };
 }

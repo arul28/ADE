@@ -81,7 +81,7 @@ When opening a remote project, ADE checks local projects with the same git origi
 1. Add a machine from the remote machines panel or command palette. Discovered machines (LAN + Tailscale) prefill the form with the Tailscale FQDN as the primary host plus every other reachable route (LAN address, mDNS host, alt IPs) on the saved target so reconnects can fall back automatically.
 2. Enter a display name, hostname, SSH user, port, and optionally a private key path. If no key path is provided, ADE uses the user's local ssh-agent when `SSH_AUTH_SOCK` is available and reads matching `HostName` / `IdentityFile` entries from `~/.ssh/config`.
 3. Connect. If the machine's SSH host key has not been trusted on this Mac before, the Remote pane shows the key fingerprint and records the user's explicit "Trust & connect" decision in `known_hosts`; users should not need to run `ssh <host>` manually. ADE then opens an SSH session with a bounded handshake timeout, detects the remote platform with `uname -sm`, and starts `ade rpc --stdio`. If the primary host is unreachable, ADE walks alternate `routes` ranked by most-recent success and records the route that wins.
-4. If the bundled ADE runtime for that platform is present and the remote ADE binary is missing, stale, or hash-mismatched, ADE uploads `ade-<platform-arch>` to `~/.ade/bin/ade` (or the matching channel home), uploads native dependencies to `~/.ade/runtime/<platform-arch>/`, uploads the PTY host worker used by remote terminals, and verifies `~/.ade/bin/ade --version`. Uploads prefer SFTP and fall back to bounded SSH chunk uploads / OpenSSH when needed. If the desktop has no bundled binary for that arch, bootstrap probes the alternate channel homes (`.ade`, `.ade-alpha`, `.ade-beta`) for a working `ade` and uses whichever already serves a compatible RPC; the chosen home is recorded as a `compatibilityWarnings` entry so the UI explains why a non-default home was used.
+4. If the bundled ADE runtime for that platform is present and the remote ADE binary is missing, stale, or hash-mismatched, ADE uploads `ade-<platform-arch>` to `~/.ade/bin/ade` (or the matching channel home), uploads native dependencies to `~/.ade/runtime/<platform-arch>/`, uploads the PTY host worker used by remote terminals, uploads bundled ADE agent skills to `<ADE_HOME>/agent-skills`, and verifies `~/.ade/bin/ade --version`. Uploads prefer SFTP and fall back to bounded SSH chunk uploads / OpenSSH when needed. The skills upload is content-hashed and skipped when the remote `<ADE_HOME>/agent-skills.sha256` marker is current, so remote `ade skill` and agent launches see the same version-locked ADE skills as the desktop bundle. If the desktop has no bundled binary for that arch, bootstrap probes the alternate channel homes (`.ade`, `.ade-alpha`, `.ade-beta`) for a working `ade` and uses whichever already serves a compatible RPC; the chosen home is recorded as a `compatibilityWarnings` entry so the UI explains why a non-default home was used.
 5. Pick an existing remote project or register a new remote path; the desktop
    calls `projects.add { rootPath }` against the remote runtime to bind it.
    If the same window starts multiple remote opens concurrently, both preload
@@ -89,7 +89,7 @@ When opening a remote project, ADE checks local projects with the same git origi
 
 After connecting, the desktop persists the active remote project to `globalState.lastRemoteProjectBinding`. When the app relaunches with no startup project path, the first window restores that binding and reconnects to the same target / project automatically. A user-triggered disconnect records manual intent on the target and suppresses restore/autoconnect until the user presses Connect again; repeated implicit reconnect failures also pause automatic reconnects and surface a "Press Connect to try again" message.
 
-Per-channel layout: builds with `ADE_PACKAGE_CHANNEL=alpha|beta` upload to `~/.ade-alpha/` or `~/.ade-beta/` instead of `~/.ade/` so a remote machine can host stable, beta, and alpha runtimes side by side. Remote compatibility launches keep `ADE_DISABLE_RUNTIME_SERVICE_INSTALL=1` so remote probes do not fight the user's login service.
+Per-channel layout: builds with `ADE_PACKAGE_CHANNEL=alpha|beta` upload to `~/.ade-alpha/` or `~/.ade-beta/` instead of `~/.ade/` so a remote machine can host stable, beta, and alpha runtimes side by side. Runtime binaries, native deps, PTY workers, and bundled ADE agent skills all live under the selected home. Remote compatibility launches keep `ADE_DISABLE_RUNTIME_SERVICE_INSTALL=1` so remote probes do not fight the user's login service.
 
 ## Compatibility warnings
 
@@ -103,6 +103,11 @@ Version skew and capability skew no longer fail the connect outright. The bootst
 ## Runtime artifact layout
 
 Desktop distributable builds require `apps/desktop/resources/runtime/` to contain every supported `ade-<platform-arch>` binary and matching `.native.tar.gz` archive, plus the packaged ADE CLI resources that include `ptyHostWorker.cjs` for remote terminal hosting. The supported targets are `darwin-arm64`, `darwin-x64`, `linux-arm64`, `linux-x64`.
+
+Desktop distributable builds also package `apps/desktop/resources/agent-skills/`.
+Remote bootstrap copies that directory into the selected remote ADE home as
+`agent-skills/`; the CLI then re-seeds ADE-managed skills into runtime-native
+home skill directories on launch.
 
 `apps/desktop/scripts/validate-runtime-resources.mjs` is the preflight that fails the package step when artifacts are missing. Release builds populate the resource directory from the runtime-binary CI workflow's artifacts via `materialize-runtime-resources.mjs`. For local same-platform packaging, build into the resource directory directly:
 

@@ -59,10 +59,13 @@ import {
   resolveContextDefault,
   resolveDrawerPaneWidth,
   resolveModelPickerEscape,
+  nextModelPickerProviderTabKey,
   resolveChatWrapWidth,
   resolveTerminalPaneWidth,
   splitTerminalControlInput,
   subagentSnapshotsFromEvents,
+  isClaudePlaceholderTitle,
+  mergeOptimisticTerminalSessions,
 } from "../app";
 import { clampTerminalPaneCols } from "../components/TerminalPane";
 import type { ChatInfoSnapshot, RightPaneContent } from "../types";
@@ -583,6 +586,18 @@ describe("model picker provider normalization and locking", () => {
       laneLabel: "New lane",
       settingsRows: [{ kind: "permission", label: "Permissions", value: "auto" }],
     });
+  });
+
+  it("wraps model picker provider tabs in both directions", () => {
+    const providerTabs = [
+      { key: "chat" },
+      { key: "agent" },
+      { key: "composer" },
+    ];
+
+    expect(nextModelPickerProviderTabKey({ providerTabs, providerTabIndex: 0, delta: 1 })).toBe("agent");
+    expect(nextModelPickerProviderTabKey({ providerTabs, providerTabIndex: 0, delta: -1 })).toBe("composer");
+    expect(nextModelPickerProviderTabKey({ providerTabs: [{ key: "only" }], providerTabIndex: 0, delta: 1 })).toBeNull();
   });
 });
 
@@ -1277,5 +1292,61 @@ describe("encodeTerminalPromptSubmit", () => {
   it("uses a delayed confirm enter for live Claude terminal submissions", () => {
     expect(encodeTerminalPromptSubmitConfirm()).toBe("\r");
     expect(CLAUDE_TERMINAL_SUBMIT_CONFIRM_DELAY_MS).toBeGreaterThanOrEqual(1000);
+  });
+});
+
+describe("mergeOptimisticTerminalSessions", () => {
+  const makeTerminal = (terminalId: string): ChatTerminalSession => ({
+    terminalId,
+    ptyId: null,
+    chatSessionId: null,
+    laneId: "lane-1",
+    laneName: "Lane 1",
+    title: "Claude Code",
+    toolType: "claude",
+    goal: null,
+    status: "running",
+    runtimeState: "running",
+    active: true,
+    startedAt: "2026-01-01T00:00:00.000Z",
+    endedAt: null,
+    exitCode: null,
+    pid: null,
+    resumeCommand: null,
+    resumeMetadata: null,
+    lastOutputPreview: null,
+    summary: null,
+  });
+
+  it("returns the listed sessions unchanged when there are no optimistic entries", () => {
+    const listed = [makeTerminal("a")];
+    expect(mergeOptimisticTerminalSessions(listed, new Map())).toBe(listed);
+  });
+
+  it("prepends an optimistic terminal the runtime list has not surfaced yet", () => {
+    // This is the new-chat reroute fix: a freshly-created Claude terminal must be
+    // present so resolveTuiChatRefreshTarget keeps it selected.
+    const optimistic = new Map([["new", makeTerminal("new")]]);
+    const merged = mergeOptimisticTerminalSessions([makeTerminal("old")], optimistic);
+    expect(merged.map((session) => session.terminalId)).toEqual(["new", "old"]);
+  });
+
+  it("self-cleans an optimistic entry once the real list reports it (no duplicate)", () => {
+    const optimistic = new Map([["a", makeTerminal("a")]]);
+    const merged = mergeOptimisticTerminalSessions([makeTerminal("a")], optimistic);
+    expect(merged.map((session) => session.terminalId)).toEqual(["a"]);
+    expect(optimistic.has("a")).toBe(false);
+  });
+});
+
+describe("isClaudePlaceholderTitle", () => {
+  it("treats generic/empty Claude titles as placeholders awaiting auto-naming", () => {
+    for (const title of ["Claude Code", "claude", "Claude CLI", "claude session", "", "   "]) {
+      expect(isClaudePlaceholderTitle(title)).toBe(true);
+    }
+  });
+
+  it("treats a real generated title as named", () => {
+    expect(isClaudePlaceholderTitle("Fix the sync race")).toBe(false);
   });
 });
