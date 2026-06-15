@@ -1230,15 +1230,17 @@ async function buildGlobalAiStatus(args?: { force?: boolean }): Promise<AiSettin
     skipAuthProbe: args?.force !== true,
   });
   const providerConnections = await buildProviderConnections(cliStatuses);
-  const hasSubscriptionProvider =
+  const hasConfirmedSubscriptionProvider =
     providerConnections.claude.authAvailable ||
     providerConnections.codex.authAvailable ||
     providerConnections.cursor.authAvailable ||
     providerConnections.droid.authAvailable ||
-    cliStatuses.some((entry) => entry.installed && (entry.authenticated || !entry.verified));
+    cliStatuses.some((entry) => entry.installed && entry.authenticated);
 
+  // This no-project fallback reports machine-level provider/auth signals only;
+  // feature flags, usage counters, and model catalogs remain project-scoped.
   return {
-    mode: hasSubscriptionProvider ? "subscription" : "guest",
+    mode: hasConfirmedSubscriptionProvider ? "subscription" : "guest",
     availableProviders: {
       claude: buildClaudeAvailabilityFromConnection(providerConnections.claude),
       codex: providerConnections.codex.runtimeAvailable,
@@ -4256,7 +4258,10 @@ export function registerIpc({
     if (!aiIntegrationService) {
       try {
         return await buildGlobalAiStatus({ force: arg?.force === true });
-      } catch {
+      } catch (error) {
+        ctx.logger.warn("ai.get_status.global_fallback_failed", {
+          error: getErrorMessage(error),
+        });
         return getUnavailableAiStatus();
       }
     }

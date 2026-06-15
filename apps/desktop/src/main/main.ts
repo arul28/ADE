@@ -4561,17 +4561,22 @@ app.whenReady().then(async () => {
     });
     adeCliService.applyToProcessEnv();
     installAdeCliForTerminalInBackground(adeCliService, logger);
-    const usageTrackingService = options.enableUsageTracking === false
-      ? null
-      : createUsageTrackingService({
-          logger,
-          pollIntervalMs: 120_000,
-          onUpdate: (snapshot) => {
-            broadcast(IPC.usageEvent, snapshot);
-          },
-          projectRoot: normalizedRoot || null,
-        });
-    usageTrackingService?.start();
+    let usageTrackingService: ReturnType<typeof createUsageTrackingService> | null = null;
+    if (options.enableUsageTracking !== false) {
+      usageTrackingService = createUsageTrackingService({
+        logger,
+        pollIntervalMs: 120_000,
+        onUpdate: (snapshot) => {
+          const currentDormantUsageService =
+            (dormantContext as AppContext | undefined)?.usageTrackingService;
+          if (currentDormantUsageService !== usageTrackingService || projectContexts.size > 0) {
+            return;
+          }
+          broadcast(IPC.usageEvent, snapshot);
+        },
+        projectRoot: normalizedRoot || null,
+      });
+    }
     return {
       db: null,
       logger,
@@ -4665,15 +4670,15 @@ app.whenReady().then(async () => {
 
   const replaceDormantContext = (projectRoot = ""): void => {
     const previous = dormantContext as AppContext | undefined;
-    dormantContext = createDormantProjectContext(projectRoot);
-    syncDormantUsageTrackingState();
-    if (previous && previous !== dormantContext) {
+    if (previous) {
       try {
         previous.usageTrackingService?.dispose();
       } catch {
         // ignore
       }
     }
+    dormantContext = createDormantProjectContext(projectRoot);
+    syncDormantUsageTrackingState();
   };
 
   const disposeContextResources = async (ctx: AppContext): Promise<void> => {

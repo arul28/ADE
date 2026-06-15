@@ -23,7 +23,7 @@ const PROVIDER_ORDER: UsageProvider[] = ["claude", "codex"];
 
 const PROVIDER_META: Record<UsageProvider, { label: string; color: string }> = {
   claude: { label: "Claude", color: "#D97757" },
-  codex: { label: "Codex", color: providerChatAccent("codex") ?? "#E7E5E4" },
+  codex: { label: "Codex", color: providerChatAccent("codex")! },
   cursor: { label: "Cursor", color: "#00BFA5" },
 };
 
