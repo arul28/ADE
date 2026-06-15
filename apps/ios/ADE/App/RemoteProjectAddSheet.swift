@@ -338,7 +338,7 @@ private struct RemoteProjectDirectoryBrowser: View {
 
   let mode: RemoteProjectDirectoryBrowserMode
   @Binding var path: String
-  let isSubmitting: Bool = false
+  var isSubmitting: Bool = false
   let onCancel: () -> Void
   let onChoose: (String) -> Void
 
