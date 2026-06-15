@@ -1299,7 +1299,7 @@ struct WorkModelSelectionPendingCard: View {
     _selectedModelId = State(initialValue: suggested?.modelId ?? "")
     _selectedProvider = State(initialValue: suggested?.provider ?? "claude")
     _selectedReasoningEffort = State(initialValue: suggested?.reasoningEffort ?? "")
-    _selectedCodexFastMode = State(initialValue: suggested?.codexFastMode ?? false)
+    _selectedCodexFastMode = State(initialValue: suggested?.fastMode ?? false)
     _selectedModel = State(initialValue: nil)
   }
 
@@ -1467,7 +1467,7 @@ struct WorkModelSelectionPendingCard: View {
       provider: trimmedProvider.isEmpty ? "claude" : trimmedProvider,
       modelId: trimmedModelId,
       reasoningEffort: trimmedEffort.isEmpty ? nil : trimmedEffort,
-      codexFastMode: selectedCodexFastMode ? true : nil
+      fastMode: selectedCodexFastMode ? true : nil
     )
     guard let json = workModelSelectionJSONString(answer) else { return }
     await onConfirm(json)

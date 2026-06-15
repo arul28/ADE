@@ -113,7 +113,48 @@ struct WorkModelSelectionChoice: Codable, Equatable {
   let provider: String
   let modelId: String
   let reasoningEffort: String?
-  let codexFastMode: Bool?
+  let fastMode: Bool?
+
+  var codexFastMode: Bool? { fastMode }
+
+  init(
+    provider: String,
+    modelId: String,
+    reasoningEffort: String?,
+    fastMode: Bool? = nil,
+    codexFastMode: Bool? = nil
+  ) {
+    self.provider = provider
+    self.modelId = modelId
+    self.reasoningEffort = reasoningEffort
+    self.fastMode = fastMode ?? codexFastMode
+  }
+
+  enum CodingKeys: String, CodingKey {
+    case provider
+    case modelId
+    case reasoningEffort
+    case fastMode
+    case codexFastMode
+  }
+
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    provider = try container.decode(String.self, forKey: .provider)
+    modelId = try container.decode(String.self, forKey: .modelId)
+    reasoningEffort = try container.decodeIfPresent(String.self, forKey: .reasoningEffort)
+    let canonicalFastMode = try container.decodeIfPresent(Bool.self, forKey: .fastMode)
+    let legacyFastMode = try container.decodeIfPresent(Bool.self, forKey: .codexFastMode)
+    fastMode = canonicalFastMode ?? legacyFastMode
+  }
+
+  func encode(to encoder: Encoder) throws {
+    var container = encoder.container(keyedBy: CodingKeys.self)
+    try container.encode(provider, forKey: .provider)
+    try container.encode(modelId, forKey: .modelId)
+    try container.encodeIfPresent(reasoningEffort, forKey: .reasoningEffort)
+    try container.encodeIfPresent(fastMode, forKey: .fastMode)
+  }
 }
 
 struct WorkPendingModelSelectionModel: Identifiable, Equatable {

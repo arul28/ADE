@@ -7559,13 +7559,20 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(canonical.provider, "codex")
     XCTAssertEqual(canonical.modelId, "gpt-5.5")
     XCTAssertEqual(canonical.reasoningEffort, "high")
+    XCTAssertEqual(canonical.fastMode, true)
     XCTAssertEqual(canonical.codexFastMode, true)
+
+    let encodedData = try JSONEncoder().encode(canonical)
+    let encoded = try XCTUnwrap(JSONSerialization.jsonObject(with: encodedData) as? [String: Any])
+    XCTAssertEqual(encoded["fastMode"] as? Bool, true)
+    XCTAssertNil(encoded["codexFastMode"])
 
     let legacy = try XCTUnwrap(workModelSelectionChoice(from: [
       "provider": "codex",
       "modelId": "gpt-5.4",
       "codexFastMode": true,
     ]))
+    XCTAssertEqual(legacy.fastMode, true)
     XCTAssertEqual(legacy.codexFastMode, true)
   }
 
