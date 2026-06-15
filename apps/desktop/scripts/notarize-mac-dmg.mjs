@@ -172,18 +172,17 @@ async function verifyAppSignature(appPath, description) {
 }
 
 async function verifyDmgBeforeNotarization(dmgPath) {
-  const mountPoint = await fs.mkdtemp(path.join(os.tmpdir(), "ade-dmg-notary-preflight-"));
-  try {
-    await execFileAsync("hdiutil", ["attach", dmgPath, "-nobrowse", "-quiet", "-mountpoint", mountPoint], {
-      maxBuffer: 1024 * 1024 * 10,
-    });
-    const mountedAppPath = path.join(mountPoint, "ADE.app");
-    await assertPathExists(mountedAppPath, "mounted ADE.app");
-    await verifyAppSignature(mountedAppPath, "mounted DMG app signature before notarization");
-  } finally {
-    await execFileAsync("hdiutil", ["detach", mountPoint, "-quiet"]).catch(() => {});
-    await fs.rm(mountPoint, { recursive: true, force: true });
-  }
+  // Verify the SOURCE app on disk (release/mac[-arm64]/ADE.app), NOT the app
+  // mounted from the dmg. `codesign --verify` on an app inside a read-only,
+  // compressed DMG returns a FALSE "code object is not signed at all" for the
+  // large Electron Framework — even when the app is validly signed AND
+  // Apple-notarized (notarization would reject an unsigned app). The on-disk
+  // source app the dmg was built from verifies reliably.
+  const name = path.basename(dmgPath);
+  const archDir = name.includes("arm64") ? "mac-arm64" : "mac";
+  const sourceApp = path.join(releaseDir, archDir, "ADE.app");
+  await assertPathExists(sourceApp, `source app for ${name} (${archDir}/ADE.app)`);
+  await verifyAppSignature(sourceApp, `source app signature before notarizing ${name}`);
 }
 
 // Per-arch builds emit one DMG per architecture. Notarize + staple each so the
