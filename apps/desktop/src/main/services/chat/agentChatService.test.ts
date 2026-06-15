@@ -17098,7 +17098,7 @@ describe("createAgentChatService", () => {
     await sendPromise;
   });
 
-  it("dedupes repeated OpenCode compaction part updates", async () => {
+  it("dedupes repeated OpenCode compaction part updates without relying on part ids", async () => {
     const events: AgentChatEventEnvelope[] = [];
     let releaseStream!: () => void;
     const streamGate = new Promise<void>((resolve) => {
@@ -17140,14 +17140,14 @@ describe("createAgentChatService", () => {
       {
         type: "message.part.updated",
         properties: {
-          part: { id: "compact-part-1", sessionID: "opencode-session-1", type: "compaction", auto: false },
+          part: { sessionID: "opencode-session-1", type: "compaction", auto: false },
           delta: "",
         },
       },
       {
         type: "message.part.updated",
         properties: {
-          part: { id: "compact-part-1", sessionID: "opencode-session-1", type: "compaction", auto: false },
+          part: { sessionID: "opencode-session-1", type: "compaction", auto: false },
           delta: "",
         },
       },

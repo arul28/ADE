@@ -13276,6 +13276,7 @@ export function createAgentChatService(args: {
             turnId,
           });
           runtime.lastCompactionTrigger = null;
+          runtime.compactionStartedPartIds.clear();
           continue;
         }
 
@@ -13289,10 +13290,9 @@ export function createAgentChatService(args: {
           // the chat shows "compacting…" instead of feeling stuck.
           if (part.type === "compaction") {
             const partId = typeof (part as { id?: unknown }).id === "string" ? (part as { id: string }).id : null;
-            if (partId) {
-              if (runtime.compactionStartedPartIds.has(partId)) continue;
-              runtime.compactionStartedPartIds.add(partId);
-            }
+            const compactionKey = partId ?? `turn:${turnId}`;
+            if (runtime.compactionStartedPartIds.has(compactionKey)) continue;
+            runtime.compactionStartedPartIds.add(compactionKey);
             const trigger = (part as { auto?: boolean }).auto === false ? "manual" : "auto";
             runtime.lastCompactionTrigger = trigger;
             emitChatEvent(managed, {
