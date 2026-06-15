@@ -603,6 +603,10 @@ export function renderChatLines(args: {
       continue;
     }
     if (event.type === "context_compact") {
+      if (event.state === "started") {
+        lines.push({ id, tone: "notice", body: `⟳ compacting · ${event.trigger}` });
+        continue;
+      }
       const preTokens = typeof event.preTokens === "number" ? ` · before ${event.preTokens.toLocaleString()} tokens` : "";
       lines.push({
         id,

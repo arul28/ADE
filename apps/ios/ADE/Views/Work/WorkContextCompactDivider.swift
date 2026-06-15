@@ -9,6 +9,10 @@ import SwiftUI
 /// (apps/desktop/src/renderer/components/chat/AgentChatMessageList.tsx:1627).
 struct WorkContextCompactDivider: View {
   let summary: String?
+  /// True while the host is mid-compaction (`state: "started"`). Renders a live
+  /// "Compacting context…" chip with a spinner; flips to the static
+  /// "Context compacted" chip once the completed event merges into this card.
+  var isInProgress: Bool = false
 
   private var parsed: WorkContextCompactSummary {
     WorkContextCompactSummary.parse(summary)
@@ -26,7 +30,42 @@ struct WorkContextCompactDivider: View {
         )
         .frame(height: 0.6)
 
-      HStack(spacing: 6) {
+      chip
+
+      Rectangle()
+        .fill(
+          LinearGradient(
+            colors: [.clear, ADEColor.warning.opacity(0.22), .clear],
+            startPoint: .trailing,
+            endPoint: .leading
+          )
+        )
+        .frame(height: 0.6)
+    }
+    .padding(.vertical, 4)
+    .accessibilityElement(children: .combine)
+    .accessibilityLabel(isInProgress ? "Compacting context" : parsed.accessibilityLabel)
+  }
+
+  @ViewBuilder
+  private var chip: some View {
+    HStack(spacing: 6) {
+      if isInProgress {
+        ProgressView()
+          .controlSize(.mini)
+          .tint(ADEColor.warning)
+        Text("Compacting context…")
+          .font(.caption2.weight(.semibold))
+          .tracking(0.3)
+        if let triggerLabel = parsed.triggerLabel {
+          Text(triggerLabel)
+            .font(.caption2.weight(.bold))
+            .tracking(0.3)
+            .padding(.horizontal, 5)
+            .padding(.vertical, 1)
+            .background(ADEColor.warning.opacity(0.14), in: Capsule())
+        }
+      } else {
         Image(systemName: "rectangle.compress.vertical")
           .font(.caption2.weight(.bold))
         Text("Context compacted")
@@ -47,27 +86,14 @@ struct WorkContextCompactDivider: View {
             .background(ADEColor.warning.opacity(0.14), in: Capsule())
         }
       }
-      .foregroundStyle(ADEColor.warning)
-      .padding(.horizontal, 10)
-      .padding(.vertical, 5)
-      .background(ADEColor.warning.opacity(0.08), in: Capsule())
-      .overlay(
-        Capsule().stroke(ADEColor.warning.opacity(0.2), lineWidth: 0.5)
-      )
-
-      Rectangle()
-        .fill(
-          LinearGradient(
-            colors: [.clear, ADEColor.warning.opacity(0.22), .clear],
-            startPoint: .trailing,
-            endPoint: .leading
-          )
-        )
-        .frame(height: 0.6)
     }
-    .padding(.vertical, 4)
-    .accessibilityElement(children: .combine)
-    .accessibilityLabel(parsed.accessibilityLabel)
+    .foregroundStyle(ADEColor.warning)
+    .padding(.horizontal, 10)
+    .padding(.vertical, 5)
+    .background(ADEColor.warning.opacity(0.08), in: Capsule())
+    .overlay(
+      Capsule().stroke(ADEColor.warning.opacity(0.2), lineWidth: 0.5)
+    )
   }
 }
 

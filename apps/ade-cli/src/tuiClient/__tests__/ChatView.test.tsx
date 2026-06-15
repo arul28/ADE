@@ -306,6 +306,20 @@ describe("ChatView", () => {
     expect(frame).not.toContain("waiting for runtime events");
   });
 
+  it("renders a generic context_compact begin (Claude/OpenCode) as an active state", () => {
+    const frame = renderEvents([
+      {
+        sessionId: "s1",
+        timestamp: "2026-01-01T12:00:00.000Z",
+        sequence: 1,
+        event: { type: "context_compact", state: "started", trigger: "auto", turnId: "turn-active" },
+      },
+    ], { width: 80 });
+
+    expect(frame).toContain("compacting context");
+    expect(frame).not.toContain("model working");
+  });
+
   it("renders queued steer messages as staged instead of normal sent bubbles", () => {
     const frame = renderEvents([
       {

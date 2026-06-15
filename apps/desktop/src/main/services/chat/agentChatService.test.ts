@@ -4738,6 +4738,59 @@ describe("createAgentChatService", () => {
       expect(flushedSends).toHaveLength(0);
     });
 
+    it("emits a context_compact begin (started) when Claude reports compacting status", async () => {
+      const send = vi.fn().mockResolvedValue(undefined);
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      let streamCall = 0;
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield { type: "system", subtype: "init", session_id: "sdk-session-compacting", slash_commands: [] };
+          yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+          return;
+        }
+        // Begin: SDK status flips to "compacting" before the boundary lands.
+        yield { type: "system", subtype: "status", session_id: "sdk-session-compacting", status: "compacting" };
+        // End: the compact boundary marks completion with the real trigger/tokens.
+        yield {
+          type: "system",
+          subtype: "compact_boundary",
+          session_id: "sdk-session-compacting",
+          compact_metadata: { trigger: "manual", pre_tokens: 120_000 },
+        };
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send,
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-session-compacting",
+        setPermissionMode,
+      } as any);
+
+      const onEvent = vi.fn();
+      const { service } = createService({ onEvent });
+      const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      await service.runSessionTurn({ sessionId: session.id, text: "keep going", timeoutMs: 15_000 });
+      await new Promise((resolve) => setTimeout(resolve, 25));
+
+      const compactEvents = onEvent.mock.calls
+        .map((call) => call[0])
+        .filter((env: any) => env?.event?.type === "context_compact")
+        .map((env: any) => env.event);
+      // A live begin, then a completed end — no longer a plain gray "Compacting..." notice.
+      expect(compactEvents).toEqual([
+        expect.objectContaining({ type: "context_compact", state: "started" }),
+        expect.objectContaining({ type: "context_compact", state: "completed", trigger: "manual", preTokens: 120_000 }),
+      ]);
+      const compactingNotices = onEvent.mock.calls
+        .map((call) => call[0])
+        .filter((env: any) => env?.event?.type === "system_notice"
+          && typeof env.event.message === "string"
+          && env.event.message.includes("Compacting conversation context"));
+      expect(compactingNotices).toHaveLength(0);
+    });
+
     it("emits a rate-limit notice when the Claude SDK reports usage pressure", async () => {
       vi.useFakeTimers();
       const send = vi.fn().mockResolvedValue(undefined);

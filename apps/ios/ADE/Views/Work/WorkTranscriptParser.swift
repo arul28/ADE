@@ -325,7 +325,13 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
       case "context_compact":
         let trigger = stringValue(eventDict["trigger"]).replacingOccurrences(of: "_", with: " ").capitalized
         let preTokens = optionalString(eventDict["preTokens"])
-        event = .contextCompact(summary: [trigger, preTokens.map { "Pre-compact tokens: \($0)" }].compactMap { $0 }.joined(separator: "\n"), turnId: turnId)
+        // Missing state = legacy end-only event; render as completed.
+        let isInProgress = optionalString(eventDict["state"]) == "started"
+        event = .contextCompact(summary: [trigger, preTokens.map { "Pre-compact tokens: \($0)" }].compactMap { $0 }.joined(separator: "\n"), isInProgress: isInProgress, turnId: turnId)
+      case "codex_context_compaction":
+        let trigger = stringValue(eventDict["trigger"]).replacingOccurrences(of: "_", with: " ").capitalized
+        let isInProgress = optionalString(eventDict["state"]) == "started"
+        event = .contextCompact(summary: trigger, isInProgress: isInProgress, turnId: turnId)
       case "auto_approval_review":
         let action = optionalString(eventDict["action"])
         let review = optionalString(eventDict["review"])

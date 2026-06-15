@@ -177,6 +177,34 @@ describe("aggregateChatBlocks typed groups", () => {
     expect(activity!.entries[0]).toMatchObject({ label: "compacting memory", detail: "trimming context" });
   });
 
+  it("collapses a context_compact begin→end into one block that flips live→done", () => {
+    const events: AgentChatEventEnvelope[] = [
+      env("2026-01-01T12:00:00.000Z", { type: "context_compact", trigger: "auto", state: "started", turnId: "turn-1" }),
+      env("2026-01-01T12:00:02.000Z", { type: "context_compact", trigger: "auto", state: "completed", preTokens: 120_000, turnId: "turn-1" }),
+    ];
+    const blocks = aggregate(events).filter((b) => b.kind === "compaction");
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0]).toMatchObject({ kind: "compaction", live: false, trigger: "auto", preTokens: 120_000 });
+  });
+
+  it("renders a context_compact begin as a live (in-progress) compaction block", () => {
+    const events: AgentChatEventEnvelope[] = [
+      env("2026-01-01T12:00:00.000Z", { type: "context_compact", trigger: "manual", state: "started", turnId: "turn-1" }),
+    ];
+    const blocks = aggregate(events).filter((b) => b.kind === "compaction");
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0]).toMatchObject({ kind: "compaction", live: true, trigger: "manual" });
+  });
+
+  it("treats a stateless context_compact as a completed (done) block", () => {
+    const events: AgentChatEventEnvelope[] = [
+      env("2026-01-01T12:00:00.000Z", { type: "context_compact", trigger: "auto", turnId: "turn-1" }),
+    ];
+    const blocks = aggregate(events).filter((b) => b.kind === "compaction");
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0]).toMatchObject({ kind: "compaction", live: false });
+  });
+
   it("keeps one tool-calls-group when activity status events are interleaved", () => {
     const events: AgentChatEventEnvelope[] = [
       env("2026-01-01T12:00:00.000Z", { type: "activity", activity: "tool_calling", detail: "Processing tool input", turnId: "turn-1" }),

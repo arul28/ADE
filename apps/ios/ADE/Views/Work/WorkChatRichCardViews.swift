@@ -977,7 +977,7 @@ struct WorkEventCardView: View {
 
   var body: some View {
     if card.kind == "contextCompact" {
-      WorkContextCompactDivider(summary: card.body)
+      WorkContextCompactDivider(summary: card.body, isInProgress: card.isInProgress)
     } else if isRibbonKind(card.kind) {
       ribbonBody
     } else {

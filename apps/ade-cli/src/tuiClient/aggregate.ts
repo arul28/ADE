@@ -792,12 +792,22 @@ export function aggregateChatBlocks(args: {
       continue;
     }
     if (event.type === "context_compact") {
+      // Runtimes that expose a begin signal send state:"started" then "completed";
+      // flip the existing block live→done on completion instead of stacking a second
+      // block. Legacy/completion-only sources omit state and render as done.
+      const existing = event.state ? findLastBlock(blocks, "compaction", turnId) : null;
+      if (existing && event.state === "completed") {
+        existing.live = false;
+        existing.trigger = event.trigger;
+        if (event.preTokens !== undefined) existing.preTokens = event.preTokens;
+        continue;
+      }
       blocks.push({
         kind: "compaction",
         id,
         turnId,
         trigger: event.trigger,
-        live: false,
+        live: event.state === "started",
         preTokens: event.preTokens,
       });
       continue;

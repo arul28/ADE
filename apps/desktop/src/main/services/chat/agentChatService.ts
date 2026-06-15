@@ -831,6 +831,12 @@ type OpenCodeRuntime = {
   toolStateByPartId: Map<string, string>;
   /** IDs of OpenCode child sessions already announced as subagents this run. */
   subagentSessionIds: Set<string>;
+  /**
+   * Trigger (manual/auto) captured from the most recent compaction "begin" part, so
+   * the matching session.compacted end event can report the same trigger. Cleared
+   * once consumed.
+   */
+  lastCompactionTrigger: "manual" | "auto" | null;
 };
 
 type CursorPermissionWaiter =
@@ -7778,6 +7784,7 @@ export function createAgentChatService(args: {
       reasoningByPartId: new Map(),
       toolStateByPartId: new Map(),
       subagentSessionIds: new Set(),
+      lastCompactionTrigger: null,
     };
     handle.setEvictionHandler((reason) => {
       if (managed.runtime?.kind === "opencode" && managed.runtime.handle === handle) {
@@ -11485,23 +11492,27 @@ export function createAgentChatService(args: {
             }
           }
           if (statusMsg.status === "compacting") {
+            // Begin marker so the UI shows a live "compacting…" indicator instead of
+            // feeling stuck until the compact_boundary lands. The real trigger arrives
+            // with the boundary (completed) event, so default to "auto" here.
             emitChatEvent(managed, {
-              type: "system_notice",
-              noticeKind: "info",
-              message: "Compacting conversation context...",
+              type: "context_compact",
+              trigger: "auto",
+              state: "started",
               turnId,
             });
           }
           continue;
         }
 
-        // system:compact_boundary — context window compaction
+        // system:compact_boundary — context window compaction (end marker)
         if (msg.type === "system" && (msg as any).subtype === "compact_boundary") {
           const compactMsg = msg as any;
           emitChatEvent(managed, {
             type: "context_compact",
             trigger: compactMsg.compact_metadata?.trigger === "manual" ? "manual" : "auto",
             preTokens: typeof compactMsg.compact_metadata?.pre_tokens === "number" ? compactMsg.compact_metadata.pre_tokens : undefined,
+            state: "completed",
             turnId,
           });
           // Re-inject identity context after compaction so identity-backed
@@ -13253,17 +13264,37 @@ export function createAgentChatService(args: {
         }
 
         if (event.type === "session.compacted") {
+          // End marker. The begin is emitted from the "compaction" message part below
+          // (which also carries the real manual/auto trigger).
           emitChatEvent(managed, {
             type: "context_compact",
-            trigger: "auto",
+            trigger: runtime.lastCompactionTrigger ?? "auto",
+            state: "completed",
             turnId,
           });
+          runtime.lastCompactionTrigger = null;
           continue;
         }
 
         if (event.type === "message.part.updated") {
           const { part, delta } = event.properties;
           markFirstStreamEvent(part.type);
+
+          // Compaction begin marker. OpenCode has no dedicated "started" event, but it
+          // streams a compaction part as soon as it begins summarizing; the matching
+          // session.compacted lands when it finishes. Surface this as a live begin so
+          // the chat shows "compacting…" instead of feeling stuck.
+          if (part.type === "compaction") {
+            const trigger = (part as { auto?: boolean }).auto === false ? "manual" : "auto";
+            runtime.lastCompactionTrigger = trigger;
+            emitChatEvent(managed, {
+              type: "context_compact",
+              trigger,
+              state: "started",
+              turnId,
+            });
+            continue;
+          }
 
           if (part.type === "step-start") {
             stepNumber += 1;
@@ -15675,10 +15706,19 @@ export function createAgentChatService(args: {
         { markStarted: false },
       );
     }
+    // Context-compaction items can arrive at a turn boundary (e.g. auto-compaction as
+    // a turn winds down) carrying a turnId that no longer matches the active lifecycle
+    // turn. Never drop them — otherwise the "compacting…" begin (and its matching end)
+    // never reaches the UI and a long compaction looks like the agent is stuck.
+    const isContextCompactionItem =
+      (method === "item/started" || method === "item/completed"
+        || method === "codex/event/item_started" || method === "codex/event/item_completed")
+      && stringOrNull((asRecord(params.item) ?? params).type) === "contextCompaction";
     if (
       turnIdFromParams
       && !isExpectedTurnStart
       && !isResumedInProgressTurnStart
+      && !isContextCompactionItem
       && !isCurrentCodexLifecycleTurn(runtime, turnIdFromParams)
     ) {
       logger.warn(`[codex] ignoring ${method} for inactive turn ${turnIdFromParams} in session ${managed.session.id}`);
