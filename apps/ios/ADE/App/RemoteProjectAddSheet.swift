@@ -361,6 +361,9 @@ private struct RemoteProjectDirectoryBrowser: View {
           .font(.system(.callout, design: .monospaced))
           .foregroundStyle(ADEColor.textPrimary)
           .submitLabel(.go)
+          .onChange(of: path) { _, _ in
+            clearBrowseState()
+          }
           .onSubmit {
             Task { await load() }
           }
@@ -384,7 +387,6 @@ private struct RemoteProjectDirectoryBrowser: View {
           selected: false,
           symbol: "arrow.up"
         ) {
-          selectedPath = nil
           path = parentPath
         }
       }
@@ -401,7 +403,6 @@ private struct RemoteProjectDirectoryBrowser: View {
             if mode == .open && entry.isGitRepo {
               selectedPath = entry.fullPath
             } else {
-              selectedPath = nil
               path = entry.fullPath
             }
           }
@@ -436,15 +437,24 @@ private struct RemoteProjectDirectoryBrowser: View {
     guard !trimmed.isEmpty else { return }
     loading = true
     errorMessage = nil
+    defer { loading = false }
     do {
-      result = try await syncService.browseMachineProjectDirectories(partialPath: trimmed)
+      let nextResult = try await syncService.browseMachineProjectDirectories(partialPath: trimmed)
+      guard path.trimmingCharacters(in: .whitespacesAndNewlines) == trimmed else { return }
+      result = nextResult
       if mode == .open {
         selectedPath = result?.openableProjectRoot
       }
     } catch {
+      guard path.trimmingCharacters(in: .whitespacesAndNewlines) == trimmed else { return }
       errorMessage = SyncUserFacingError.message(for: error)
     }
-    loading = false
+  }
+
+  private func clearBrowseState() {
+    result = nil
+    selectedPath = nil
+    errorMessage = nil
   }
 }
 
@@ -575,6 +585,9 @@ private struct RemoteProjectCloneForm: View {
   private var trimmedUrl: String { url.trimmingCharacters(in: .whitespacesAndNewlines) }
   private var trimmedName: String { name.trimmingCharacters(in: .whitespacesAndNewlines) }
   private var hasGitHubHost: Bool {
+    if trimmedUrl.lowercased().hasPrefix("git@github.com:") {
+      return true
+    }
     guard let host = URL(string: trimmedUrl)?.host?.lowercased() else { return false }
     return host == "github.com" || host.hasSuffix(".github.com")
   }
