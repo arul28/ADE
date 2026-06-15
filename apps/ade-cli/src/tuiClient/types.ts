@@ -31,6 +31,8 @@ export type ProjectLaunchContext = {
   projectRoot: string;
   workspaceRoot: string;
   laneHint: string | null;
+  sessionHint: string | null;
+  remote: boolean;
 };
 
 export type ChatHistorySnapshot = AgentChatEventHistorySnapshot;
@@ -320,6 +322,11 @@ export type LocalNotice = {
   timestamp: string;
   tone: "info" | "error" | "success";
   text: string;
+  // Session the notice belongs to, captured at creation. Notices are global UI
+  // feedback, but most ("Model set to…", "Attached clipboard image.") describe an
+  // action in a specific chat, so they are only rendered in that chat's transcript.
+  // null = session-less feedback that falls back to the active chat.
+  sessionId?: string | null;
 };
 
 export type MentionSuggestion = {

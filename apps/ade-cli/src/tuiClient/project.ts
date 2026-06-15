@@ -46,30 +46,37 @@ export function detectProjectLaunchContext(args: {
   projectRoot?: string | null;
   workspaceRoot?: string | null;
   laneHint?: string | null;
+  sessionHint?: string | null;
+  remote?: boolean;
 } = {}): ProjectLaunchContext {
   const launchCwd = normalizeRoot(args.cwd ?? process.cwd());
   const explicitProjectRoot = args.projectRoot?.trim();
   const explicitWorkspaceRoot = args.workspaceRoot?.trim();
+  const remote = args.remote === true;
   const worktree = findAdeWorktreeContext(launchCwd);
   const gitRoot = findGitRoot(launchCwd);
 
-  const projectRoot = normalizeRoot(
-    explicitProjectRoot
-      ?? worktree?.projectRoot
-      ?? gitRoot
-      ?? launchCwd,
-  );
-  const workspaceRoot = normalizeRoot(
-    explicitWorkspaceRoot
-      ?? worktree?.workspaceRoot
-      ?? gitRoot
-      ?? projectRoot,
-  );
+  const projectRoot = remote
+    ? (explicitProjectRoot ?? worktree?.projectRoot ?? gitRoot ?? launchCwd)
+    : normalizeRoot(
+      explicitProjectRoot
+        ?? worktree?.projectRoot
+        ?? gitRoot
+        ?? launchCwd,
+    );
+  const workspaceRoot = remote
+    ? (explicitWorkspaceRoot ?? worktree?.workspaceRoot ?? gitRoot ?? projectRoot)
+    : normalizeRoot(
+      explicitWorkspaceRoot
+        ?? worktree?.workspaceRoot
+        ?? gitRoot
+        ?? projectRoot,
+    );
 
-  if (!fs.existsSync(projectRoot)) {
+  if (!remote && !fs.existsSync(projectRoot)) {
     throw new Error(`Project root does not exist: ${projectRoot}`);
   }
-  if (!fs.existsSync(workspaceRoot)) {
+  if (!remote && !fs.existsSync(workspaceRoot)) {
     throw new Error(`Workspace root does not exist: ${workspaceRoot}`);
   }
 
@@ -78,6 +85,8 @@ export function detectProjectLaunchContext(args: {
     projectRoot,
     workspaceRoot,
     laneHint: args.laneHint?.trim() || worktree?.laneHint || null,
+    sessionHint: args.sessionHint?.trim() || null,
+    remote,
   };
 }
 
@@ -204,9 +213,16 @@ export function resolveTuiChatRefreshTarget(args: {
   const previewLane = args.newChatPreviewLaneId
     ? args.lanes.find((lane) => lane.id === args.newChatPreviewLaneId) ?? null
     : null;
+  const activeSession = args.activeSessionId
+    ? args.sessions.find((session) => session.sessionId === args.activeSessionId) ?? null
+    : null;
+  const activeSessionLane = activeSession
+    ? args.lanes.find((lane) => lane.id === activeSession.laneId) ?? null
+    : null;
   const activeLane = args.lanes.find((entry) => entry.id === args.activeLaneId) ?? null;
   const contextLaunchLane = chooseTuiLaunchLane(args.lanes, args.context, args.lastLaneId);
-  const fallbackLane = activeLane
+  const fallbackLane = activeSessionLane
+    ?? activeLane
     ?? socketRecentLane
     ?? previewLane
     ?? contextLaunchLane;
@@ -226,8 +242,7 @@ export function resolveTuiChatRefreshTarget(args: {
   const seedSession = args.draftChatActive || previewMode ? newestChatSession(laneSessions) : null;
   const session = args.draftChatActive || previewMode
     ? null
-    : args.sessions.find((entry) => entry.sessionId === args.activeSessionId)
-      ?? newestChatSession(laneSessions);
+    : activeSession ?? newestChatSession(laneSessions);
   return {
     lane,
     laneId,

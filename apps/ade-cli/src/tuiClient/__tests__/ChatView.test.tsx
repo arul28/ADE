@@ -6,8 +6,12 @@ import {
   computeChatScrollMaxOffset,
   renderChatSelectableRowTexts,
   renderChatTranscriptPlainText,
+  renderChatVisibleSelectionRows,
   selectedTextFromChatRows,
+  workGroupExpandKey,
 } from "../components/ChatView";
+import { aggregateChatBlocks } from "../aggregate";
+import { chatEventLineId } from "../format";
 import { buildSubagentTranscriptEvents } from "../subagentPane";
 import {
   parseAssistantMarkdown,
@@ -34,16 +38,34 @@ function stripAnsi(value: string): string {
   return value.replace(/\[[0-9;]*m/g, "");
 }
 
+// Tool-call / file-change groups collapse to a single header row by default.
+// Tests that assert per-entry rendering (every call/file, glyphs, durations,
+// badges) pass `expanded: true` to open every work group.
+function expandAllWorkGroups(
+  events: AgentChatEventEnvelope[],
+  activeSession: AgentChatSessionSummary | null,
+): Set<string> {
+  const blocks = aggregateChatBlocks({ events, notices: [], activeSession });
+  const ids = new Set<string>();
+  for (const block of blocks) {
+    if (block.kind === "tool-calls-group" || block.kind === "files-changed-group") {
+      ids.add(workGroupExpandKey(block.id));
+    }
+  }
+  return ids;
+}
+
 function renderEvents(
   events: AgentChatEventEnvelope[],
-  options: { maxRows?: number; scrollOffsetRows?: number; width?: number; streaming?: boolean; interrupted?: boolean; provider?: AdeCodeProvider; olderHistory?: "loading" | "available" | "exhausted" | null } = {},
+  options: { maxRows?: number; scrollOffsetRows?: number; width?: number; streaming?: boolean; interrupted?: boolean; provider?: AdeCodeProvider; olderHistory?: "loading" | "available" | "exhausted" | null; expanded?: boolean } = {},
 ): string {
   const provider = options.provider ?? "codex";
+  const activeSession = { ...session, provider };
   const result = render(
     <ChatView
       events={events}
       notices={[]}
-      activeSession={{ ...session, provider }}
+      activeSession={activeSession}
       projectName="ADE"
       laneName="Primary"
       provider={provider}
@@ -53,6 +75,7 @@ function renderEvents(
       scrollOffsetRows={options.scrollOffsetRows}
       olderHistory={options.olderHistory}
       width={options.width}
+      expandedLineIds={options.expanded ? expandAllWorkGroups(events, activeSession) : undefined}
     />,
   );
   return stripAnsi(result.lastFrame() ?? "");
@@ -416,10 +439,13 @@ describe("ChatView", () => {
     });
 
     expect(frame).not.toContain("Runtime");
-    // Headerless: the per-call lines stack directly, no "Tool calls (N)" rows.
-    expect(frame).not.toContain("Tool calls");
-    expect(frame).toContain("grep");
+    expect(frame).not.toContain("Processing tool input");
+    // The two real tool calls collapse to a single header row; the latest call
+    // (read) previews, the earlier one (grep) hides behind the collapsed group.
+    expect(frame).toContain("Tool calls");
+    expect(frame).toContain("(2)");
     expect(frame).toContain("read");
+    expect(frame).not.toContain("grep");
     expect(frame).toContain("Let me look at the sendMessage flow more carefully and what events are emitted when a session is resumed.");
   });
 
@@ -635,7 +661,7 @@ describe("ChatView", () => {
     expect(transcriptLines(frame).at(-1)).toContain("↓ newer messages");
   });
 
-  it("renders a command as a headerless stacked tool line with shell label and command", () => {
+  it("renders an expanded command as a shell tool line with label, command, and duration", () => {
     const frame = renderEvents([
       {
         sessionId: "s1",
@@ -643,8 +669,9 @@ describe("ChatView", () => {
         sequence: 1,
         event: { type: "command", command: "git branch", cwd: "/repo", output: "main", itemId: "cmd-1", status: "completed", exitCode: 0, durationMs: 12 },
       },
-    ], { width: 100 });
-    expect(frame).not.toContain("Tool calls");
+    ], { width: 100, expanded: true });
+    expect(frame).toContain("Tool calls");
+    expect(frame).toContain("(1)");
     expect(frame).toMatch(/✓ shell\s+git branch\s+12ms/);
   });
 
@@ -671,14 +698,15 @@ describe("ChatView", () => {
       },
     ];
     const frame = renderEvents(events, { width: 100 });
-    // Headerless groups: the tool lines and the badge/stats file row stack
-    // directly, in event order, without "Tool calls"/"files changed" rows.
-    expect(frame).not.toContain("Tool calls");
-    expect(frame).not.toContain("file changed");
+    // Typed split: the command group and the file-change group each get their
+    // own collapsible header (in event order). Each single-entry group previews
+    // its call/file inline, so the collapsed headers still carry the signal.
+    expect(frame).toContain("Tool calls");
+    expect(frame).toContain("Files changed");
     expect(frame).toContain("npm test");
     expect(frame).toContain("npm run typecheck");
     expect(frame).toContain("auth.ts");
-    // File rows keep their badge + diff stats format.
+    // The collapsed file header keeps the badge + diff stats format.
     expect(frame).toContain("TS");
     expect(frame).toContain("+2 −1");
   });
@@ -763,7 +791,9 @@ describe("ChatView", () => {
       },
     ], { width: 100 });
 
-    expect(frame).not.toContain("Tool calls");
+    // The top-level spawn collapses into a single "Tool calls" header that
+    // previews it; the subagent's own child tool chatter stays suppressed.
+    expect(frame).toContain("Tool calls");
     expect(frame).toContain("spawn_agent");
     expect(frame).toContain("Explore renderer");
     expect(frame).not.toContain("child launch spam");
@@ -834,7 +864,7 @@ describe("ChatView", () => {
     expect(transcriptBody).not.toContain("unrelated agent result");
   });
 
-  it("collapses tool-calls-group on done with failed and ok summary", () => {
+  it("renders per-call ok/failed glyphs for an expanded finished tool group", () => {
     const turnId = "turn-done";
     const events: AgentChatEventEnvelope[] = [
       {
@@ -868,12 +898,13 @@ describe("ChatView", () => {
         event: { type: "done", turnId, status: "completed", usage: { inputTokens: 4000, outputTokens: 2200 }, costUsd: 0.31 },
       },
     ];
-    const frame = renderEvents(events, { width: 100 });
-    // Headerless: ok/failed status lives on each line's glyph, not a summary row.
-    expect(frame).not.toContain("Tool calls");
+    const frame = renderEvents(events, { width: 100, expanded: true });
+    // Expanded group: ok/failed status lives on each call's glyph.
+    expect(frame).toContain("Tool calls");
+    expect(frame).toContain("(4)");
     expect(frame.match(/✓/g)).toHaveLength(3);
     expect(frame.match(/✗/g)).toHaveLength(1);
-    // Most recent shell commands visible.
+    // Every shell command is visible when expanded.
     expect(frame).toContain("npm test");
     expect(frame).toContain("echo two");
     expect(frame).not.toContain("8.3s");
@@ -902,7 +933,7 @@ describe("ChatView", () => {
       },
     ];
 
-    const frame = renderEvents(events, { width: 100 });
+    const frame = renderEvents(events, { width: 100, expanded: true });
     expect(frame).toContain("instant");
     expect(frame).toContain("measured");
     expect(frame).toContain("12ms");
@@ -988,7 +1019,7 @@ describe("ChatView", () => {
     expect(text).not.toContain("gpt");
   });
 
-  it("stacks every tool call as its own line like the desktop work log", () => {
+  it("collapses many tool calls to one header row and expands to stack every call", () => {
     const turnId = "turn-many";
     const events: AgentChatEventEnvelope[] = Array.from({ length: 12 }, (_, index): AgentChatEventEnvelope => ({
       sessionId: "s1",
@@ -1006,13 +1037,22 @@ describe("ChatView", () => {
         turnId,
       },
     }));
-    const frame = renderEvents(events, { width: 120, maxRows: 40 });
-    expect(frame).not.toContain("Tool calls");
-    expect(frame).not.toContain("more");
-    // Every consecutive call stacks as its own single line (desktop parity).
-    expect(frame).toContain("cmd-1");
-    expect(frame).toContain("cmd-5");
-    expect(frame).toContain("cmd-12");
+
+    // Collapsed (default): one header row with the count + the latest call's
+    // preview; the earlier calls are hidden behind the collapsed group.
+    const collapsed = renderEvents(events, { width: 120, maxRows: 40 });
+    expect(collapsed).toContain("Tool calls");
+    expect(collapsed).toContain("(12)");
+    expect(collapsed).toContain("cmd-12");
+    expect(collapsed).not.toContain("cmd-1 ");
+    expect(collapsed).not.toContain("cmd-5");
+
+    // Expanded: the header stays, and every consecutive call stacks one per line.
+    const expanded = renderEvents(events, { width: 120, maxRows: 40, expanded: true });
+    expect(expanded).toContain("Tool calls");
+    expect(expanded).toContain("cmd-1");
+    expect(expanded).toContain("cmd-5");
+    expect(expanded).toContain("cmd-12");
   });
 
   it("strips the /bin/zsh -lc launcher wrapper from shell commands", () => {
@@ -1048,7 +1088,7 @@ describe("ChatView", () => {
         },
       },
     ];
-    const frame = renderEvents(events, { width: 120 });
+    const frame = renderEvents(events, { width: 120, expanded: true });
     expect(frame).toContain("git status --short");
     expect(frame).toContain("npm test");
     // Launcher prefix is gone.
@@ -1077,13 +1117,81 @@ describe("ChatView", () => {
         event: { type: "file_change", path: "docs/notes.md", diff: "+line1", kind: "create", itemId: "f3", status: "completed", turnId: "t1" },
       },
     ];
-    const frame = renderEvents(events, { width: 120 });
-    expect(frame).not.toContain("files changed");
+    const frame = renderEvents(events, { width: 120, expanded: true });
+    expect(frame).toContain("Files changed");
+    expect(frame).toContain("(3)");
     expect(frame).toContain("TSX");
     expect(frame).toContain("JS");
     expect(frame).toContain("MD");
     expect(frame).toContain("Component.tsx");
     expect(frame).toContain("Deleted");
+  });
+
+  it("collapses file changes to one header row by default, previewing the latest edit", () => {
+    const events: AgentChatEventEnvelope[] = [
+      {
+        sessionId: "s1",
+        timestamp: "2026-01-01T12:00:00.000Z",
+        sequence: 1,
+        event: { type: "file_change", path: "src/early.ts", diff: "+a\n+b\n-c", kind: "modify", itemId: "f1", status: "completed", turnId: "t1" },
+      },
+      {
+        sessionId: "s1",
+        timestamp: "2026-01-01T12:00:01.000Z",
+        sequence: 2,
+        event: { type: "file_change", path: "src/recent.ts", diff: "+x", kind: "modify", itemId: "f2", status: "completed", turnId: "t1" },
+      },
+    ];
+    const collapsed = renderEvents(events, { width: 120 });
+    expect(collapsed).toContain("Files changed");
+    expect(collapsed).toContain("(2)");
+    // Latest edit previews; the earlier file hides behind the collapsed group.
+    expect(collapsed).toContain("recent.ts");
+    expect(collapsed).not.toContain("early.ts");
+
+    const expanded = renderEvents(events, { width: 120, expanded: true });
+    expect(expanded).toContain("early.ts");
+    expect(expanded).toContain("recent.ts");
+  });
+
+  it("tags a collapsed work-group header with an expandable click-target id", () => {
+    const events: AgentChatEventEnvelope[] = [
+      {
+        sessionId: "s1",
+        timestamp: "2026-01-01T12:00:00.000Z",
+        sequence: 1,
+        event: { type: "command", command: "alpha", cwd: "/repo", output: "", itemId: "c1", status: "completed", exitCode: 0, durationMs: 10, turnId: "t1" },
+      },
+      {
+        sessionId: "s1",
+        timestamp: "2026-01-01T12:00:01.000Z",
+        sequence: 2,
+        event: { type: "command", command: "beta", cwd: "/repo", output: "", itemId: "c2", status: "completed", exitCode: 0, durationMs: 10, turnId: "t1" },
+      },
+    ];
+    const expectedKey = workGroupExpandKey(chatEventLineId(events[0]!, 0));
+    const rows = renderChatVisibleSelectionRows({
+      events,
+      notices: [],
+      activeSession: session,
+      width: 120,
+    });
+    const headerRow = rows.find((row) => row.expandableId != null);
+    // The collapsed group renders exactly one clickable header carrying the
+    // expand key the transcript click handler toggles in expandedLineIds.
+    expect(headerRow?.expandableId).toBe(expectedKey);
+    expect(rows.filter((row) => row.expandableId != null)).toHaveLength(1);
+
+    const expandedRows = renderChatVisibleSelectionRows({
+      events,
+      notices: [],
+      activeSession: session,
+      expandedLineIds: new Set([expectedKey]),
+      width: 120,
+    });
+    // Still exactly one clickable header (now ▾) plus the stacked call rows.
+    expect(expandedRows.filter((row) => row.expandableId != null)).toHaveLength(1);
+    expect(expandedRows.length).toBeGreaterThan(rows.length);
   });
 
   it("renders fenced code with highlight.js-derived per-line tokens", () => {

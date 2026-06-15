@@ -16,6 +16,7 @@ import {
   isSearching,
   modelEntryHeightForState,
   modelListRowsForState,
+  providerTabSegments,
   RAIL_WIDTH,
   RAIL_TO_LIST_GAP,
   rowWindow,
@@ -304,48 +305,22 @@ function SubProviderTabs({
   if (tabs.length <= 1) return null;
   const safe = Math.max(0, Math.min(selectedIndex, tabs.length - 1));
   if (!tabs[safe]) return null;
-  const tabMax = Math.max(8, Math.min(16, Math.floor(width / 2)));
-  const segments = tabs.map((tab, index) => {
-    const activeTab = index === safe;
-    const label = endTruncate(titleCaseProvider(tab.label), tabMax);
-    return activeTab ? `[${label}]` : ` ${label} `;
-  });
-  let start = 0;
-  if (segments.join("").length > width) {
-    start = safe;
-    while (start > 0 && segments.slice(start - 1, safe + 1).join("").length < Math.floor(width * 0.7)) {
-      start -= 1;
-    }
-  }
-  let used = 0;
-  const visible: Array<{ text: string; active: boolean; index: number }> = [];
-  if (start > 0 && width > 2) {
-    visible.push({ text: "‹ ", active: false, index: -1 });
-    used += 2;
-  }
-  for (let index = start; index < segments.length; index += 1) {
-    const text = segments[index] ?? "";
-    if (!text) continue;
-    const nextUsed = used + text.length + (visible.length ? 1 : 0);
-    if (nextUsed > width - (index < segments.length - 1 ? 1 : 0)) {
-      if (used < width) visible.push({ text: "…", active: false, index: -2 });
-      break;
-    }
-    if (visible.length && used < width) {
-      visible.push({ text: " ", active: false, index: -3 });
-      used += 1;
-    }
-    visible.push({ text, active: index === safe, index });
-    used += text.length;
-  }
+  const hoveredId = useHoveredHitId();
+  const visible = providerTabSegments(tabs, safe, width);
   return (
     <Box flexDirection="row" marginBottom={1}>
       {visible.map((segment, index) => (
         <Text
           key={`${segment.index}:${index}`}
-          color={segment.active ? theme.color.violet : theme.color.t3}
+          color={
+            segment.active
+              ? theme.color.violet
+              : hoveredId === `right:model-picker:provider-tab:${segment.index}`
+                ? theme.color.t1
+                : theme.color.t3
+          }
           bold={segment.active}
-          dimColor={!segment.active}
+          dimColor={!segment.active && hoveredId !== `right:model-picker:provider-tab:${segment.index}`}
         >
           {segment.text}
         </Text>
@@ -706,8 +681,8 @@ export function ModelPickerPane({
           ["←→", "rail / list"],
           ["↑↓", "move"],
           ["↵", "pick"],
-          ["[ ]", "tabs"],
-          ["tab", "rail"],
+          ...(state.providerTabs.length > 1 ? ([["[ ]", "tabs"]] as Array<[string, string]>) : []),
+          ["tab", state.providerTabs.length > 1 ? "tabs" : "rail"],
           ["f", "fav"],
           ["/", "search"],
           ["esc", "close"],

@@ -432,6 +432,7 @@ function computeCliEntrypointBuildHash(): string | null {
 function attachedRuntimeMismatchReason(
   result: InitializeResult,
   project: ProjectLaunchContext,
+  options: { skipBuildHash?: boolean; skipProjectRoot?: boolean } = {},
 ): { reason: string; pid: number | null } | null {
   const info = readAttachedRuntimeInfo(result);
   if (info.defaultRole !== "cto") {
@@ -442,14 +443,14 @@ function attachedRuntimeMismatchReason(
   }
 
   const expectedBuildHash = computeCliEntrypointBuildHash();
-  if (expectedBuildHash && info.buildHash !== expectedBuildHash) {
+  if (!options.skipBuildHash && expectedBuildHash && info.buildHash !== expectedBuildHash) {
     return {
       reason: info.buildHash ? "build hash changed" : "build hash missing",
       pid: info.pid,
     };
   }
 
-  if (!isMultiProjectRuntime(result)) {
+  if (!options.skipProjectRoot && !isMultiProjectRuntime(result)) {
     const expectedProjectRoot = path.resolve(project.projectRoot);
     if (info.projectRoot !== expectedProjectRoot) {
       return {
@@ -496,6 +497,7 @@ async function connectAttachedSocket(args: {
   socketPath: string;
   project: ProjectLaunchContext;
   shutdownOnStale?: boolean;
+  skipRuntimeCompatibilityCheck?: boolean;
 }): Promise<AdeCodeConnection> {
   let client: JsonRpcClient | null = await JsonRpcClient.connect(
     args.socketPath,
@@ -509,7 +511,10 @@ async function connectAttachedSocket(args: {
       3000,
       "ADE RPC socket did not finish initialization.",
     );
-    const runtimeMismatch = attachedRuntimeMismatchReason(initializeResult, args.project);
+    const runtimeMismatch = attachedRuntimeMismatchReason(initializeResult, args.project, {
+      skipBuildHash: args.skipRuntimeCompatibilityCheck,
+      skipProjectRoot: args.skipRuntimeCompatibilityCheck,
+    });
     if (runtimeMismatch) {
       if (args.shutdownOnStale) {
         await connectedClient.request("shutdown").catch(() => null);
@@ -647,6 +652,7 @@ async function connectAttachedSocketWithRetry(args: {
   attempts: number;
   delayMs: number;
   shutdownOnStale?: boolean;
+  skipRuntimeCompatibilityCheck?: boolean;
 }): Promise<AdeCodeConnection> {
   let lastError: unknown = null;
   for (let attempt = 0; attempt < Math.max(1, args.attempts); attempt += 1) {
@@ -655,6 +661,7 @@ async function connectAttachedSocketWithRetry(args: {
         socketPath: args.socketPath,
         project: args.project,
         shutdownOnStale: args.shutdownOnStale,
+        skipRuntimeCompatibilityCheck: args.skipRuntimeCompatibilityCheck,
       });
     } catch (error) {
       lastError = error;
@@ -671,6 +678,7 @@ export async function connectToAde(args: {
   requireSocket?: boolean;
   socketPath?: string | null;
   preferServiceRepair?: boolean;
+  remote?: boolean;
 }): Promise<AdeCodeConnection> {
   const layout = resolveAdeLayout(args.project.projectRoot);
   const explicitSocketPath =
@@ -693,6 +701,7 @@ export async function connectToAde(args: {
         project: args.project,
         attempts: 1,
         delayMs: 0,
+        skipRuntimeCompatibilityCheck: args.remote === true,
       });
     } catch (error) {
       const message = errorMessage(error);

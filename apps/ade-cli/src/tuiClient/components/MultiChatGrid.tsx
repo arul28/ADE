@@ -2,9 +2,12 @@ import React, { useMemo } from "react";
 import { Box, Text } from "ink";
 import type { AgentChatEventEnvelope, AgentChatSessionSummary } from "../../../../desktop/src/shared/types/chat";
 import type { LaneSummary } from "../../../../desktop/src/shared/types/lanes";
+import type { ChatTerminalPreviewResult, ChatTerminalSession } from "../../../../desktop/src/shared/types";
 import type { LocalNotice, AdeCodeProvider } from "../types";
 import type { ChatTextSelection } from "./ChatView";
 import { ChatView } from "./ChatView";
+import { TerminalPane } from "./TerminalPane";
+import { readTerminalScroll, type TerminalScrollBySessionId } from "./TerminalScrollState";
 import {
   asTileCount,
   canRenderMultiChatGrid,
@@ -20,9 +23,98 @@ type TileData = {
   lane: LaneSummary | null;
 };
 
-// Local notices are session-agnostic UI feedback (e.g. "Created lane x."), so
-// they must not be spliced into every tile's transcript — only the focused
-// tile shows them. Stable identity keeps ChatView's aggregation memo intact.
+// Mirrors app.tsx isClaudePlaceholderTitle: a Claude session still on a generic
+// title is awaiting the background auto-naming job (shown as "naming…").
+const CLAUDE_PLACEHOLDER_TILE_TITLES = new Set(["claude", "claude cli", "claude session", "claude code"]);
+function isPlaceholderTerminalTitle(title: string | null | undefined): boolean {
+  const normalized = String(title ?? "").trim().toLowerCase();
+  return normalized.length === 0 || CLAUDE_PLACEHOLDER_TILE_TITLES.has(normalized);
+}
+
+// Mirrors ChatView's tile frame so terminal tiles read the same as chat tiles:
+// border accents the focused tile (violet/double), lane identity lives inside via
+// a colored rail + title, and a × remove affordance sits top-right.
+function TerminalChatTile({
+  terminal,
+  laneName,
+  laneAccent,
+  rect,
+  focused,
+  hovered,
+  removeHovered,
+  preview,
+  liveChunks,
+  attached,
+  scrollOffset,
+  pendingNewCount,
+  onRemove,
+}: {
+  terminal: ChatTerminalSession;
+  laneName: string;
+  laneAccent: string | null;
+  rect: { w: number; h: number };
+  focused: boolean;
+  hovered: boolean;
+  removeHovered: boolean;
+  preview: ChatTerminalPreviewResult | null;
+  liveChunks: string[];
+  attached: boolean;
+  scrollOffset: number;
+  pendingNewCount: number;
+  onRemove: () => void;
+}) {
+  const running = terminal.status === "running";
+  const statusGlyph = running ? "●" : "○";
+  const statusColor = running ? theme.color.running : theme.color.t5;
+  const tileBorderColor = focused
+    ? theme.color.violet
+    : hovered
+      ? theme.color.borderActive
+      : theme.color.border;
+  const headerColor = focused ? theme.color.violet : running ? theme.color.t2 : theme.color.t4;
+  const naming = running && isPlaceholderTerminalTitle(terminal.title);
+  const railSlot = laneAccent ? 2 : 0;
+  const innerWidth = Math.max(4, rect.w - 2);
+  const header = `${laneName} / ${terminal.title}`.slice(0, Math.max(4, innerWidth - railSlot - 4));
+  return (
+    <Box
+      flexDirection="column"
+      borderStyle={focused ? "double" : "round"}
+      borderColor={tileBorderColor}
+      height={rect.h}
+      width={rect.w}
+    >
+      <Box paddingX={1} flexDirection="row" justifyContent="space-between" flexShrink={0}>
+        <Box flexDirection="row" flexShrink={1}>
+          {laneAccent ? <Text color={laneAccent}>{"▎ "}</Text> : null}
+          <Text color={headerColor} wrap="truncate-end">{header}</Text>
+          {naming ? <Text color={theme.color.accent}>{" · naming…"}</Text> : null}
+        </Box>
+        <Box flexDirection="row" flexShrink={0}>
+          <Text color={statusColor}>{statusGlyph}</Text>
+          <Text color={removeHovered ? theme.color.error : theme.color.t4} inverse={removeHovered}>
+            {" ×"}
+          </Text>
+        </Box>
+      </Box>
+      <TerminalPane
+        bodyOnly
+        title={terminal.title}
+        terminalId={terminal.terminalId}
+        preview={preview}
+        liveChunks={liveChunks}
+        attached={attached}
+        width={innerWidth}
+        height={Math.max(1, rect.h - 3)}
+        scrollOffset={scrollOffset}
+        pendingNewCount={pendingNewCount}
+      />
+    </Box>
+  );
+}
+
+// Stable empty array for tiles with no notices, so ChatView's aggregation memo
+// stays intact instead of re-running on a fresh [] every render.
 const NO_NOTICES: LocalNotice[] = [];
 
 function groupRows<T extends { rect: { x: number; y: number } }>(entries: T[]): T[][] {
@@ -68,6 +160,11 @@ function MultiChatTile({
   expandedLineIds,
   scrollOffsetRows,
   selection,
+  terminalSession,
+  terminalPreview,
+  terminalLiveChunks,
+  terminalScroll,
+  terminalAttached,
   onFocusTile,
   onRemoveTile,
 }: {
@@ -87,6 +184,11 @@ function MultiChatTile({
   expandedLineIds?: Set<string>;
   scrollOffsetRows: number;
   selection: ChatTextSelection | null;
+  terminalSession?: ChatTerminalSession | null;
+  terminalPreview?: ChatTerminalPreviewResult | null;
+  terminalLiveChunks?: string[];
+  terminalScroll?: { scrollOffset: number; pendingNewCount: number };
+  terminalAttached?: boolean;
   onFocusTile: (index: number) => void;
   onRemoveTile: (index: number) => void;
 }) {
@@ -114,6 +216,25 @@ function MultiChatTile({
     onClick: () => onRemoveTile(index),
     zIndex: 10,
   });
+  if (terminalSession) {
+    return (
+      <TerminalChatTile
+        terminal={terminalSession}
+        laneName={data.lane?.name ?? data.tile.laneId}
+        laneAccent={data.lane?.color ?? null}
+        rect={rect}
+        focused={focused}
+        hovered={hovered}
+        removeHovered={removeHovered}
+        preview={terminalPreview ?? null}
+        liveChunks={terminalLiveChunks ?? []}
+        attached={Boolean(terminalAttached)}
+        scrollOffset={terminalScroll?.scrollOffset ?? 0}
+        pendingNewCount={terminalScroll?.pendingNewCount ?? 0}
+        onRemove={() => onRemoveTile(index)}
+      />
+    );
+  }
   return (
     <ChatView
       events={events}
@@ -158,6 +279,11 @@ export function MultiChatGrid({
   scrollBySessionId,
   selectionBySessionId,
   expandedLineIds,
+  terminalSessionById,
+  terminalPreviewById,
+  terminalLiveChunksById,
+  terminalScrollBySessionId,
+  attachedTerminalId,
   onFocusTile,
   onRemoveTile,
 }: {
@@ -179,6 +305,11 @@ export function MultiChatGrid({
   scrollBySessionId: Record<string, number>;
   selectionBySessionId: Record<string, ChatTextSelection | null>;
   expandedLineIds?: Set<string>;
+  terminalSessionById?: Record<string, ChatTerminalSession>;
+  terminalPreviewById?: Record<string, ChatTerminalPreviewResult>;
+  terminalLiveChunksById?: Record<string, string[]>;
+  terminalScrollBySessionId?: TerminalScrollBySessionId;
+  attachedTerminalId?: string | null;
   onFocusTile: (index: number) => void;
   onRemoveTile: (index: number) => void;
 }) {
@@ -190,6 +321,33 @@ export function MultiChatGrid({
     index,
     rect: rects[index] ?? rects[0]!,
   }))), [rects, safeTiles]);
+  // Each notice is tagged with the chat that fired it, so a tile only shows its own
+  // session's notices. Session-less notices attach to the focused tile so global
+  // feedback stays visible. Resolved once per (notices, tiles, focus) change so token
+  // streaming keeps stable array identities and ChatView's aggregation memo intact.
+  const noticesByTileSession = useMemo(() => {
+    const bySession = new Map<string, LocalNotice[]>();
+    const global: LocalNotice[] = [];
+    for (const notice of notices) {
+      if (notice.sessionId) {
+        const bucket = bySession.get(notice.sessionId);
+        if (bucket) bucket.push(notice);
+        else bySession.set(notice.sessionId, [notice]);
+      } else {
+        global.push(notice);
+      }
+    }
+    const focusedSessionId = safeTiles[Math.max(0, Math.min(focusedIndex, safeTiles.length - 1))]?.sessionId;
+    const resolved = new Map<string, LocalNotice[]>();
+    for (const tile of safeTiles) {
+      const own = bySession.get(tile.sessionId) ?? NO_NOTICES;
+      resolved.set(
+        tile.sessionId,
+        tile.sessionId === focusedSessionId && global.length ? [...own, ...global] : own,
+      );
+    }
+    return resolved;
+  }, [notices, safeTiles, focusedIndex]);
 
   if (!safeTiles.length) {
     return (
@@ -215,12 +373,17 @@ export function MultiChatGrid({
         modelDisplay={modelDisplay}
         focused
         events={eventsBySessionId[tile.sessionId] ?? []}
-        notices={notices}
+        notices={noticesByTileSession.get(tile.sessionId) ?? NO_NOTICES}
         streaming={!!streamingBySessionId[tile.sessionId]}
         interrupted={!!interruptedBySessionId[tile.sessionId]}
         expandedLineIds={expandedLineIds}
         scrollOffsetRows={scrollBySessionId[tile.sessionId] ?? 0}
         selection={selectionBySessionId[tile.sessionId] ?? null}
+        terminalSession={terminalSessionById?.[tile.sessionId] ?? null}
+        terminalPreview={terminalPreviewById?.[tile.sessionId] ?? null}
+        terminalLiveChunks={terminalLiveChunksById?.[tile.sessionId] ?? []}
+        terminalScroll={readTerminalScroll(terminalScrollBySessionId ?? {}, tile.sessionId)}
+        terminalAttached={attachedTerminalId === tile.sessionId}
         onFocusTile={onFocusTile}
         onRemoveTile={onRemoveTile}
       />
@@ -251,12 +414,17 @@ export function MultiChatGrid({
                   modelDisplay={modelDisplay}
                   focused={index === focusedIndex}
                   events={eventsBySessionId[tile.sessionId] ?? []}
-                  notices={index === focusedIndex ? notices : NO_NOTICES}
+                  notices={noticesByTileSession.get(tile.sessionId) ?? NO_NOTICES}
                   streaming={!!streamingBySessionId[tile.sessionId]}
                   interrupted={!!interruptedBySessionId[tile.sessionId]}
                   expandedLineIds={expandedLineIds}
                   scrollOffsetRows={scrollBySessionId[tile.sessionId] ?? 0}
                   selection={selectionBySessionId[tile.sessionId] ?? null}
+                  terminalSession={terminalSessionById?.[tile.sessionId] ?? null}
+                  terminalPreview={terminalPreviewById?.[tile.sessionId] ?? null}
+                  terminalLiveChunks={terminalLiveChunksById?.[tile.sessionId] ?? []}
+                  terminalScroll={readTerminalScroll(terminalScrollBySessionId ?? {}, tile.sessionId)}
+                  terminalAttached={attachedTerminalId === tile.sessionId}
                   onFocusTile={onFocusTile}
                   onRemoveTile={onRemoveTile}
                 />

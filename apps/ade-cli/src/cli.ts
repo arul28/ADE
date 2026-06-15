@@ -79,6 +79,10 @@ import type { AdeRuntime } from "./bootstrap";
 import { reseedBundledAdeSkillsForCli } from "./bootstrap";
 import { EncryptedFileCredentialStore } from "./services/credentials/credentialStore";
 import { DEFAULT_SYNC_HOST_PORT } from "./services/sync/syncProtocol";
+import {
+  runAdeCodeRemote,
+  takeAdeCodeRemoteArgs,
+} from "./tuiClient/remoteLauncher";
 
 type JsonObject = Record<string, unknown>;
 
@@ -10591,6 +10595,11 @@ async function runAdeCode(
 ): Promise<{ output: string; exitCode: number }> {
   const modulePath = resolveAdeCodeModulePath();
   const { runAdeCodeCli } = await import(pathToFileURL(modulePath).href);
+  const remoteArgs = takeAdeCodeRemoteArgs(rest);
+  if (remoteArgs) {
+    const exitCode = await runAdeCodeRemote(remoteArgs, runAdeCodeCli);
+    return { output: "", exitCode };
+  }
   const exitCode = await runAdeCodeCli(buildAdeCodeArgs(rest, options));
   return { output: "", exitCode };
 }

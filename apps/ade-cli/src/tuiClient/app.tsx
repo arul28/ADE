@@ -213,6 +213,9 @@ import {
   type HitTarget,
 } from "./hitTestRegistry";
 import {
+  asTileCount,
+  canRenderMultiChatGrid,
+  computeTileRects,
   focusedSessionIdForMultiView,
   type MultiViewState,
   type MultiViewTile,
@@ -399,6 +402,16 @@ export function modelPickerProviderSwitchBlocked(args: {
   return args.surface === "chat"
     && args.providerLocked
     && args.currentProvider !== args.nextProvider;
+}
+
+export function nextModelPickerProviderTabKey(args: {
+  providerTabs: ReadonlyArray<{ key: string }>;
+  providerTabIndex: number;
+  delta: -1 | 1;
+}): string | null {
+  if (args.providerTabs.length <= 1) return null;
+  const nextIndex = (args.providerTabIndex + args.delta + args.providerTabs.length) % args.providerTabs.length;
+  return args.providerTabs[nextIndex]?.key ?? null;
 }
 
 export function mergeNewChatModelPickerContext(
@@ -665,6 +678,22 @@ export function mergeOptimisticChatSessions(
   return pending.length ? [...pending, ...sessions] : sessions;
 }
 
+// Terminal-session analogue of mergeOptimisticChatSessions. A freshly-created
+// Claude CLI terminal (or a just-resumed one) is not always returned by the very
+// next `terminal.list` poll, so without this its session id is absent from the
+// merged session list when `resolveTuiChatRefreshTarget` runs — and the resolver
+// falls back to the newest existing chat, yanking focus onto a different session.
+// Keyed by terminalId; self-cleans an entry once the real list reports it.
+export function mergeOptimisticTerminalSessions(
+  sessions: ChatTerminalSession[],
+  optimistic: Map<string, ChatTerminalSession>,
+): ChatTerminalSession[] {
+  if (optimistic.size === 0) return sessions;
+  for (const session of sessions) optimistic.delete(session.terminalId);
+  const pending = [...optimistic.values()];
+  return pending.length ? [...pending, ...sessions] : sessions;
+}
+
 const DESKTOP_COMMAND_ROUTES: Record<string, string> = {
   "/app-control": "/app-control",
   "/browser": "/browser",
@@ -683,6 +712,7 @@ type AdeCodeAppProps = {
   requireSocket?: boolean;
   socketPath?: string | null;
   preferServiceRepair?: boolean;
+  remote?: boolean;
 };
 
 type RefreshStateOptions = {
@@ -2428,6 +2458,14 @@ export function isTerminalControlToggle(input: string, key: { ctrl?: boolean; me
   return isCtrlInput(input, key, "t");
 }
 
+// Mirrors ptyService.isCliPlaceholderTitle for Claude: a session still showing a
+// generic default title is awaiting the background auto-naming job (when enabled).
+const CLAUDE_PLACEHOLDER_TITLES = new Set(["claude", "claude cli", "claude session", "claude code"]);
+export function isClaudePlaceholderTitle(title: string | null | undefined): boolean {
+  const normalized = String(title ?? "").trim().toLowerCase();
+  return normalized.length === 0 || CLAUDE_PLACEHOLDER_TITLES.has(normalized);
+}
+
 export function splitTerminalControlInput(raw: string): { detach: boolean; forwarded: string } {
   const forwarded = raw.replace(/[\x14\x1d]/g, "");
   return { detach: forwarded.length !== raw.length, forwarded };
@@ -2562,7 +2600,7 @@ function resolveCenterPaneWidth(columns: number, drawerOpen: boolean, rightPaneW
   );
 }
 
-export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, preferServiceRepair }: AdeCodeAppProps) {
+export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, preferServiceRepair, remote }: AdeCodeAppProps) {
   const { exit } = useApp();
   const [columns, rows] = useTerminalDimensions();
   useTerminalAlternateScreen();
@@ -2579,6 +2617,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   const [sessions, setSessions] = useState<AgentChatSessionSummary[]>([]);
   const [terminalSessions, setTerminalSessions] = useState<ChatTerminalSession[]>([]);
   const [terminalPreview, setTerminalPreview] = useState<ChatTerminalPreviewResult | null>(null);
+  // Per-terminal seed snapshots for grid tiles (the single-view pane uses
+  // `terminalPreview`). Live updates after the seed arrive via terminalLiveChunks,
+  // which the global pty subscription already buffers per session id.
+  const [terminalPreviewById, setTerminalPreviewById] = useState<Record<string, ChatTerminalPreviewResult>>({});
   const [attachedTerminalId, setAttachedTerminalId] = useState<string | null>(null);
   const [terminalLiveChunks, setTerminalLiveChunks] = useState<Record<string, string[]>>({});
   // Scrollback position + "↓ N new" counter per Claude PTY session.
@@ -2600,7 +2642,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     visibleText: "",
   });
   const [activeLaneId, setActiveLaneId] = useState<string | null>(null);
-  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(project.sessionHint);
   const [events, setEvents] = useState<AgentChatEventEnvelope[]>([]);
   const [notices, setNotices] = useState<LocalNotice[]>([]);
   const [slashCommands, setSlashCommands] = useState<AgentChatSlashCommand[]>([]);
@@ -2710,7 +2752,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   const connectionRef = useRef<AdeCodeConnection | null>(null);
   const connectionLostRef = useRef(false);
   const activeLaneIdRef = useRef<string | null>(null);
-  const activeSessionIdRef = useRef<string | null>(null);
+  const activeSessionIdRef = useRef<string | null>(project.sessionHint);
+  const initialSessionHintRef = useRef<string | null>(project.sessionHint);
   const multiViewRef = useRef<MultiViewState | null>(null);
   const gridViewActiveRef = useRef(false);
   // Show/hide the grid without destroying it. Sets the ref synchronously so the
@@ -2787,9 +2830,16 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   const activeSessionRef = useRef<AgentChatSessionSummary | null>(null);
   const sessionsRef = useRef<AgentChatSessionSummary[]>([]);
   const optimisticChatSessionsRef = useRef<Map<string, AgentChatSessionSummary>>(new Map());
+  const optimisticTerminalSessionsRef = useRef<Map<string, ChatTerminalSession>>(new Map());
   const activeTerminalSessionRef = useRef<ChatTerminalSession | null>(null);
   const terminalSessionsRef = useRef<ChatTerminalSession[]>([]);
   const attachedTerminalIdRef = useRef<string | null>(null);
+  // When Ctrl+T control is entered from a grid tile, remember the tile's session id
+  // so exiting control (Ctrl+T / Ctrl+]) drops back into the grid focused on it.
+  const controlReturnToGridRef = useRef<string | null>(null);
+  // Show the auto-naming directive once per process when the first Claude CLI
+  // session is created, so the "naming…" loading hint has context.
+  const claudeAutoNamingHintShownRef = useRef(false);
   const claudeTerminalSubmitQueueRef = useRef<Promise<unknown>>(Promise.resolve());
   const lastModelPickerClaudeSentKeyRef = useRef<string | null>(null);
   const exitRequestedRef = useRef(false);
@@ -3334,7 +3384,20 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     for (const session of displaySessions) out[session.sessionId] = session;
     return out;
   }, [displaySessions]);
-  const tileableSessionIds = useMemo(() => new Set(sessions.filter((session) => !session.archivedAt).map((session) => session.sessionId)), [sessions]);
+  // Keyed by terminalId; lets the grid tell a terminal tile from a chat tile and
+  // render a live TerminalPane for it.
+  const terminalSessionById = useMemo(() => {
+    const out: Record<string, ChatTerminalSession> = {};
+    for (const terminal of terminalSessions) out[terminal.terminalId] = terminal;
+    return out;
+  }, [terminalSessions]);
+  // Both agent chats and Claude CLI terminal sessions can be tiled in the grid.
+  // Terminal tiles render a live TerminalPane instead of a ChatView transcript.
+  const tileableSessionIds = useMemo(() => {
+    const ids = new Set(sessions.filter((session) => !session.archivedAt).map((session) => session.sessionId));
+    for (const terminal of terminalSessions) ids.add(terminal.terminalId);
+    return ids;
+  }, [sessions, terminalSessions]);
   const tileableDisplaySessions = useMemo(
     () => displaySessions.filter((session) => tileableSessionIds.has(session.sessionId)),
     [displaySessions, tileableSessionIds],
@@ -3944,7 +4007,14 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       .catch(() => { /* keep the locally-reconstructed transcript */ });
     return () => { cancelled = true; };
   }, [activeLane?.id, activeSessionId, chatInfo.capability.canViewFullTranscript, realSubagentTranscript, selectedAgentSnapshot]);
-  const displayNotices = useMemo(() => (selectedAgentSnapshot ? [] : notices), [notices, selectedAgentSnapshot]);
+  // Notices are a single global list, but each one is tagged with the chat that was
+  // active when it fired. Only show a notice in its own chat (session-less notices
+  // fall back to whichever chat is active) so cross-chat feedback like "Model set
+  // to…" or "Attached clipboard image." can't bleed into the selected transcript.
+  const displayNotices = useMemo(
+    () => (selectedAgentSnapshot ? [] : notices.filter((notice) => !notice.sessionId || notice.sessionId === activeSessionId)),
+    [notices, selectedAgentSnapshot, activeSessionId],
+  );
   // Aggregate the transcript exactly once per render and thread the result into
   // every consumer (scroll math, selection rows, selectable text, and ChatView
   // itself). Previously each of those re-walked the full event list, so a single
@@ -4139,6 +4209,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
 
   useEffect(() => {
     if (!connection || !activeTerminalSession) return;
+    // In grid view the per-tile resize effect owns terminal sizing; running the
+    // single-view (full-pane) resize too would thrash the PTY between sizes.
+    if (gridViewActive) return;
     const cols = clampTerminalPaneCols(claudeTerminalControlActive ? terminalPaneWidth - 2 : terminalPaneWidth);
     const terminalRows = claudeTerminalControlActive
       ? Math.max(4, chatRowBudget - 1)
@@ -4155,10 +4228,13 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     return () => {
       cancelled = true;
     };
-  }, [activeTerminalSession, chatRowBudget, claudeTerminalControlActive, connection, terminalPaneWidth]);
+  }, [activeTerminalSession, chatRowBudget, claudeTerminalControlActive, connection, gridViewActive, terminalPaneWidth]);
 
   useEffect(() => {
     if (!connection || !activeTerminalSession) return;
+    if (claudeTerminalControlActive) return;
+    // Single-view preview poll only; grid tiles follow live pty chunks instead.
+    if (gridViewActive) return;
     let cancelled = false;
     const refreshPreview = () => {
       void previewTerminal(connection, activeTerminalSession.terminalId)
@@ -4179,7 +4255,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       cancelled = true;
       clearInterval(timer);
     };
-  }, [activeTerminalSession, chatRowBudget, connection, terminalPaneWidth]);
+  }, [activeTerminalSession, chatRowBudget, claudeTerminalControlActive, connection, gridViewActive, terminalPaneWidth]);
 
   useEffect(() => {
     modelStateRef.current = modelState;
@@ -4863,7 +4939,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   const addNotice = useCallback((text: string, tone: LocalNotice["tone"] = "info") => {
     setNotices((prev) => [
       ...prev.slice(-10),
-      { id: noticeId(), timestamp: new Date().toISOString(), text, tone },
+      { id: noticeId(), timestamp: new Date().toISOString(), text, tone, sessionId: activeSessionIdRef.current },
     ]);
   }, []);
 
@@ -4930,6 +5006,33 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       setPromptHistoryBySessionId((prev) => ({ ...prev, [sessionId]: historyPrompts }));
     }
   }, [clearedAt]);
+
+  const isTerminalTileSessionId = useCallback((sessionId: string | null | undefined) => {
+    if (!sessionId) return false;
+    return terminalSessionsRef.current.some((terminal) => terminal.terminalId === sessionId);
+  }, []);
+
+  // Seed a terminal tile's preview snapshot once when it joins the grid. Live
+  // output then flows through the per-session terminalLiveChunks buffer.
+  const hydrateTerminalTilePreview = useCallback(async (terminalId: string) => {
+    const conn = connectionRef.current;
+    if (!conn) return;
+    try {
+      const preview = await previewTerminal(conn, terminalId);
+      setTerminalPreviewById((prev) => ({ ...prev, [terminalId]: preview }));
+    } catch {
+      // Non-fatal: the tile renders from live chunks / fallback until the next poll.
+    }
+  }, []);
+
+  // For a freshly-added tile, fetch chat history or terminal preview as fitting.
+  const hydrateTileTarget = useCallback((sessionId: string) => {
+    if (isTerminalTileSessionId(sessionId)) {
+      void hydrateTerminalTilePreview(sessionId);
+      return;
+    }
+    void hydrateTileHistory(sessionId).catch((err) => addNotice(err instanceof Error ? err.message : String(err), "error"));
+  }, [addNotice, hydrateTerminalTilePreview, hydrateTileHistory, isTerminalTileSessionId]);
 
   const focusMultiViewTile = useCallback((index: number) => {
     setMultiView((prev) => {
@@ -5009,14 +5112,15 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
 
   const isTileableChatSessionId = useCallback((sessionId: string | null | undefined) => {
     if (!sessionId) return false;
-    return sessionsRef.current.some((session) => session.sessionId === sessionId);
+    return sessionsRef.current.some((session) => session.sessionId === sessionId)
+      || terminalSessionsRef.current.some((terminal) => terminal.terminalId === sessionId);
   }, []);
 
   const addTileToGrid = useCallback((sessionId: string, laneId: string) => {
     if (!sessionId || !laneId) return;
     if (!isTileableChatSessionId(sessionId)) {
-      flashMultiViewNotice("Only agent chats can be split right now");
-      addNotice("Only agent chats can be added to split view.", "info");
+      flashMultiViewNotice("That session can't be split right now");
+      addNotice("Only active agent chats and Claude CLI sessions can be added to split view.", "info");
       setPaneFocus("addMode");
       return;
     }
@@ -5069,14 +5173,20 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         setGridView(true);
       }
     }
-    void hydrateTileHistory(sessionId).catch((err) => addNotice(err instanceof Error ? err.message : String(err), "error"));
+    hydrateTileTarget(sessionId);
     const currentSessionId = activeSessionIdRef.current;
-    if (currentSessionId && isTileableChatSessionId(currentSessionId) && !eventsBySessionIdRef.current[currentSessionId]) {
+    if (
+      currentSessionId
+      && currentSessionId !== sessionId
+      && isTileableChatSessionId(currentSessionId)
+      && !isTerminalTileSessionId(currentSessionId)
+      && !eventsBySessionIdRef.current[currentSessionId]
+    ) {
       void hydrateTileHistory(currentSessionId).catch(() => undefined);
     }
     setAddMode(null);
     setPaneFocus("chat");
-  }, [addNotice, flashMultiViewNotice, hydrateTileHistory, isTileableChatSessionId, selectActiveLaneId, selectActiveSessionId, setGridView, setPaneFocus]);
+  }, [addNotice, flashMultiViewNotice, hydrateTileHistory, hydrateTileTarget, isTerminalTileSessionId, isTileableChatSessionId, selectActiveLaneId, selectActiveSessionId, setGridView, setPaneFocus]);
 
   const startAddMode = useCallback(() => {
     const firstLane = orderedDrawerLanes[0] ?? null;
@@ -5871,7 +5981,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     const nextLanes = await listLanes(conn);
     const listedSessions = await listChatSessions(conn);
     const nextSessions = mergeOptimisticChatSessions(listedSessions, optimisticChatSessionsRef.current);
-    const nextTerminalSessions = await listTerminalSessions(conn).catch(() => []);
+    const listedTerminalSessions = await listTerminalSessions(conn).catch(() => []);
+    const nextTerminalSessions = mergeOptimisticTerminalSessions(listedTerminalSessions, optimisticTerminalSessionsRef.current);
     const nextDisplaySessions = [...nextSessions, ...nextTerminalSessions.map(terminalSessionToChatSummary)];
     const draftMode = draftChatActiveRef.current;
     const target = resolveTuiChatRefreshTarget({
@@ -6322,24 +6433,26 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     let cancelled = false;
     void (async () => {
       try {
-        const conn = await connectToAde({ project, forceEmbedded, requireSocket, socketPath, preferServiceRepair });
+        const conn = await connectToAde({ project, forceEmbedded, requireSocket, socketPath, preferServiceRepair, remote });
         if (cancelled) {
           await conn.close();
           return;
         }
-        heartbeatRef.current = startTuiHeartbeat(project.projectRoot, {
-          beforeSignalExit: () => {
-            signalActiveTerminalForExitSync();
-            return signalActiveTerminalForExit();
-          },
-        });
+        heartbeatRef.current = remote
+          ? null
+          : startTuiHeartbeat(project.projectRoot, {
+            beforeSignalExit: () => {
+              signalActiveTerminalForExitSync();
+              return signalActiveTerminalForExit();
+            },
+          });
         connectionRef.current = conn;
         setConnection(conn);
         setMode(conn.mode);
         draftSeededFromHistoryRef.current = false;
         newChatPreviewLaneIdRef.current = null;
         setDraftChatMode(false);
-        selectActiveSessionId(null);
+        selectActiveSessionId(initialSessionHintRef.current);
         eventDedupKeysRef.current.clear();
         eventDedupKeyOrderRef.current = [];
         eventCountRef.current = 0;
@@ -6377,7 +6490,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       connectionRef.current = null;
       void conn?.close().catch(() => {});
     };
-  }, [forceEmbedded, preferServiceRepair, project, requireSocket, signalActiveTerminalForExit, signalActiveTerminalForExitSync, socketPath]);
+  }, [forceEmbedded, preferServiceRepair, project, remote, requireSocket, signalActiveTerminalForExit, signalActiveTerminalForExitSync, socketPath]);
 
   // Stable handle to the latest refreshState so the chat-event subscription can
   // call it without listing refreshState as a dependency (its identity churns on
@@ -6773,6 +6886,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
             requireSocket: true,
             socketPath,
             preferServiceRepair,
+            remote,
           });
           if (attached.mode !== "attached") {
             await attached.close().catch(() => {});
@@ -6945,6 +7059,44 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     return next;
   }, [models]);
 
+  // Make a just-created / just-resumed Claude terminal immediately visible to the
+  // session list and to refreshState's target resolver, so selecting it sticks
+  // instead of getting clobbered back to the newest existing chat while the
+  // runtime's `terminal.list` catches up. Mirrors the optimistic-chat path.
+  const registerOptimisticTerminalSession = useCallback((args: {
+    sessionId: string;
+    laneId: string;
+    title?: string | null;
+    session?: ChatTerminalSession | null;
+  }) => {
+    const lane = lanesById[args.laneId] ?? null;
+    const optimistic: ChatTerminalSession = args.session
+      ? { ...args.session, terminalId: args.sessionId }
+      : {
+        terminalId: args.sessionId,
+        ptyId: null,
+        chatSessionId: null,
+        laneId: args.laneId,
+        laneName: lane?.name ?? args.laneId,
+        title: args.title?.trim() || "Claude Code",
+        toolType: "claude",
+        goal: null,
+        status: "running",
+        runtimeState: "running",
+        active: true,
+        startedAt: new Date().toISOString(),
+        endedAt: null,
+        exitCode: null,
+        pid: null,
+        resumeCommand: null,
+        resumeMetadata: null,
+        lastOutputPreview: null,
+        summary: null,
+      };
+    optimisticTerminalSessionsRef.current.set(optimistic.terminalId, optimistic);
+    setTerminalSessions((current) => mergeOptimisticTerminalSessions(current, optimisticTerminalSessionsRef.current));
+  }, [lanesById]);
+
   const submitClaudePromptToTerminal = useCallback(async (terminal: ChatTerminalSession, text: string) => {
     const conn = connectionRef.current;
     const trimmed = text.trim();
@@ -6976,6 +7128,12 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       pendingNewChatTitleRef.current = null;
       setDraftChatMode(false);
       activeTerminalSessionRef.current = normalizeChatTerminalSession(created.session);
+      registerOptimisticTerminalSession({
+        sessionId: created.sessionId,
+        laneId: terminal.laneId,
+        title: terminal.title,
+        session: normalizeChatTerminalSession(created.session),
+      });
       selectActiveSessionId(created.sessionId);
       showChatInfoAfterDraftCommit();
       await refreshState();
@@ -6986,7 +7144,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       .then(run);
     claudeTerminalSubmitQueueRef.current = queued;
     return await queued;
-  }, [addNotice, chatRowBudget, refreshState, refreshTerminalPreview, selectActiveSessionId, setDraftChatMode, showChatInfoAfterDraftCommit, terminalPaneWidth]);
+  }, [addNotice, chatRowBudget, refreshState, refreshTerminalPreview, registerOptimisticTerminalSession, selectActiveSessionId, setDraftChatMode, showChatInfoAfterDraftCommit, terminalPaneWidth]);
 
   const resumeClosedTerminalSession = useCallback(async (terminal: ChatTerminalSession): Promise<boolean> => {
     const conn = connectionRef.current;
@@ -7003,11 +7161,17 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     pendingNewChatTitleRef.current = null;
     setDraftChatMode(false);
     activeTerminalSessionRef.current = normalizeChatTerminalSession(resumed.session);
+    registerOptimisticTerminalSession({
+      sessionId: resumed.sessionId,
+      laneId: terminal.laneId,
+      title: terminal.title,
+      session: normalizeChatTerminalSession(resumed.session),
+    });
     selectActiveSessionId(resumed.sessionId);
     showChatInfoAfterDraftCommit();
     await refreshState();
     return true;
-  }, [chatRowBudget, refreshState, selectActiveSessionId, setDraftChatMode, showChatInfoAfterDraftCommit, terminalPaneWidth]);
+  }, [chatRowBudget, refreshState, registerOptimisticTerminalSession, selectActiveSessionId, setDraftChatMode, showChatInfoAfterDraftCommit, terminalPaneWidth]);
 
   const startClaudeTerminalForPrompt = useCallback(async (text: string): Promise<string | null> => {
     const conn = connectionRef.current;
@@ -7045,11 +7209,21 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     pendingNewChatTitleRef.current = null;
     setDraftChatMode(false);
     if (created.session) activeTerminalSessionRef.current = created.session;
+    registerOptimisticTerminalSession({
+      sessionId: created.sessionId,
+      laneId,
+      title,
+      session: created.session,
+    });
+    if (!claudeAutoNamingHintShownRef.current) {
+      claudeAutoNamingHintShownRef.current = true;
+      addNotice("Claude sessions auto-name in the background when enabled — toggle in ADE desktop → Settings → AI Features.", "info");
+    }
     selectActiveSessionId(created.sessionId);
     showChatInfoAfterDraftCommit();
     await refreshState();
     return created.sessionId;
-  }, [addNotice, chatRowBudget, lanes, refreshState, selectActiveSessionId, setDraftChatMode, showChatInfoAfterDraftCommit, terminalPaneWidth]);
+  }, [addNotice, chatRowBudget, lanes, refreshState, registerOptimisticTerminalSession, selectActiveSessionId, setDraftChatMode, showChatInfoAfterDraftCommit, terminalPaneWidth]);
 
   const sendClaudeModelCommandToTerminal = useCallback(async (modelRef?: string | null): Promise<boolean> => {
     const terminal = activeTerminalSessionRef.current;
@@ -8329,7 +8503,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         addNotice(result.message ?? "Desktop route unavailable; launched ADE.", "info");
         for (let attempt = 0; attempt < 8; attempt += 1) {
           await delay(750);
-          const attached = await connectToAde({ project, forceEmbedded: false, socketPath, preferServiceRepair }).catch(() => null);
+          const attached = await connectToAde({ project, forceEmbedded: false, socketPath, preferServiceRepair, remote }).catch(() => null);
           if (!attached || attached.mode !== "attached") {
             await attached?.close().catch(() => {});
             continue;
@@ -8916,21 +9090,29 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         return;
       }
       const terminalPrompt = promptTextForTerminal(text, promptAttachments);
-      const activeTerminal = activeTerminalSessionRef.current;
+      // In grid view the focused tile is the sole submit target. If it's a Claude
+      // terminal tile, route the prompt there; otherwise fall through to the chat
+      // path with that tile's session id. We never spawn a NEW terminal from a grid
+      // submit — that would replace the focused tile out from under the user.
+      const focusedSessionId = (gridViewActiveRef.current ? focusedSessionIdForMultiView(multiViewRef.current) : null);
+      const activeTerminal = gridViewActiveRef.current
+        ? (focusedSessionId
+          ? terminalSessionsRef.current.find((entry) => entry.terminalId === focusedSessionId) ?? null
+          : null)
+        : activeTerminalSessionRef.current;
       if (activeTerminal) {
         if (await submitClaudePromptToTerminal(activeTerminal, terminalPrompt)) {
           setSelectedMentions((prev) => prev.filter((mention) => !mention.attachment));
         }
         return;
       }
-      if (modelStateRef.current.provider === "claude") {
+      if (!gridViewActiveRef.current && modelStateRef.current.provider === "claude") {
         const terminalId = await startClaudeTerminalForPrompt(terminalPrompt || " ");
         if (terminalId) {
           setSelectedMentions((prev) => prev.filter((mention) => !mention.attachment));
         }
         return;
       }
-      const focusedSessionId = (gridViewActiveRef.current ? focusedSessionIdForMultiView(multiViewRef.current) : null);
       const sessionId = focusedSessionId ?? await ensureActiveSession();
       if (!sessionId) {
         addNotice("No active lane is available for chat.", "error");
@@ -8997,10 +9179,11 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         const cols = clampTerminalPaneCols(terminalPaneWidth);
         const terminalRows = claudeTerminalRowsForPane(chatRowBudget);
         const terminalPrompt = promptTextForTerminal(text, promptAttachments);
-        await startClaudeTerminalSession({
+        const claudeTitle = pendingNewChatTitleRef.current ?? "Claude Code";
+        const createdTerminal = await startClaudeTerminalSession({
           connection: conn,
           laneId,
-          title: pendingNewChatTitleRef.current ?? "Claude Code",
+          title: claudeTitle,
           model: normalized.modelId ?? normalized.model,
           reasoningEffort: normalized.reasoningEffort,
           permissionMode: normalized.permissionMode,
@@ -9008,6 +9191,16 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           cols,
           rows: terminalRows,
         });
+        registerOptimisticTerminalSession({
+          sessionId: createdTerminal.sessionId,
+          laneId,
+          title: claudeTitle,
+          session: createdTerminal.session,
+        });
+        if (!claudeAutoNamingHintShownRef.current) {
+          claudeAutoNamingHintShownRef.current = true;
+          addNotice("Claude sessions auto-name in the background when enabled — toggle in ADE desktop → Settings → AI Features.", "info");
+        }
         launched = true;
       } else {
         const requestedTitle = pendingNewChatTitleRef.current;
@@ -9056,7 +9249,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       setError(message);
       addNotice(launched ? `Launched chat, but follow-up failed: ${message}` : message, "error");
     }
-  }, [addNotice, chatRowBudget, lanes, refreshState, selectedMentions, setChatScrollOffset, setDraftChatMode, terminalPaneWidth]);
+  }, [addNotice, chatRowBudget, lanes, refreshState, registerOptimisticTerminalSession, selectedMentions, setChatScrollOffset, setDraftChatMode, terminalPaneWidth]);
 
   const insertMention = useCallback((suggestion: MentionSuggestion) => {
     const range = activeMention(prompt);
@@ -9517,7 +9710,6 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         setStreaming(false);
         setInterrupted(true);
         void interruptChat(conn, sessionId)
-          .then(() => addNotice("Interrupted chat.", "info"))
           .catch((err) => addNotice(err instanceof Error ? err.message : String(err), "error"));
       } else {
         addNotice("No active response to interrupt.", "info");
@@ -9844,6 +10036,34 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     return chatSelectionPointFromVisibleRows(visibleChatSelectionRows, visibleRow, column, clampToChat);
   }, [addModeRows, chatRowBudget, chatWrapWidth, drawerOpen, goalBannerRows, visibleChatSelectionRows]);
 
+  // Map a transcript click to a collapsible work-group header id (tool calls /
+  // file changes), if the click landed on one. Mirrors chatPointFromMouse's
+  // viewport math but returns the row's expandableId instead of a text point so
+  // a plain click can toggle the group's collapse state.
+  const expandableGroupIdFromMouse = useCallback((
+    x: number | null,
+    y: number | null,
+  ): string | null => {
+    if (x == null || y == null) return null;
+    const drawerWidth = resolveDrawerPaneWidth(columns, drawerOpen);
+    const textStartColumn = drawerWidth + 2;
+    const textEndColumn = textStartColumn + Math.max(1, chatWrapWidth) - 1;
+    const topRow = 3 + goalBannerRows + addModeRows;
+    const bottomRow = topRow + Math.max(1, chatRowBudget) - 1;
+    if (x < textStartColumn || x > textEndColumn || y < topRow || y > bottomRow) return null;
+    const visibleRow = Math.max(0, Math.min(y - topRow, Math.max(0, chatRowBudget - 1)));
+    return visibleChatSelectionRows[visibleRow]?.expandableId ?? null;
+  }, [addModeRows, chatRowBudget, chatWrapWidth, columns, drawerOpen, goalBannerRows, visibleChatSelectionRows]);
+
+  const toggleExpandedLineId = useCallback((lineId: string) => {
+    setExpandedLineIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(lineId)) next.delete(lineId);
+      else next.add(lineId);
+      return next;
+    });
+  }, []);
+
   const chatSelectionEdgeFromMouseY = useCallback((y: number | null): ChatSelectionEdgeDirection | null => {
     const topRow = 3 + goalBannerRows + addModeRows;
     return chatSelectionEdgeDirectionForMouseY({
@@ -9857,10 +10077,39 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
 
   useInput((input, key) => {
     if (attachedTerminalIdRef.current) {
-      if (input === "\x1d" || isTerminalControlToggle(input, key)) setAttachedTerminalId(null);
+      if (input === "\x1d" || isTerminalControlToggle(input, key)) {
+        setAttachedTerminalId(null);
+        // If we popped out of the grid to take control, drop back into it.
+        const returnSessionId = controlReturnToGridRef.current;
+        controlReturnToGridRef.current = null;
+        if (returnSessionId && multiViewRef.current) {
+          const idx = multiViewRef.current.tiles.findIndex((tile) => tile.sessionId === returnSessionId);
+          if (idx >= 0) focusMultiViewTile(idx);
+        }
+      }
       return;
     }
     if (isTerminalControlToggle(input, key)) {
+      // Grid view: Ctrl+T pops the focused Claude terminal tile out to single view
+      // and enters control; exiting control returns to the grid (handled above).
+      if (gridViewActiveRef.current) {
+        const focusedId = focusedSessionIdForMultiView(multiViewRef.current);
+        const tile = focusedId
+          ? multiViewRef.current?.tiles.find((entry) => entry.sessionId === focusedId) ?? null
+          : null;
+        const terminal = focusedId
+          ? terminalSessionsRef.current.find((entry) => entry.terminalId === focusedId) ?? null
+          : null;
+        if (tile && terminal && terminal.status === "running" && terminalSessionProvider(terminal) === "claude") {
+          controlReturnToGridRef.current = focusedId;
+          setGridView(false);
+          selectActiveLaneId(tile.laneId);
+          selectActiveSessionId(focusedId);
+          focusChat();
+          setAttachedTerminalId(focusedId);
+        }
+        return;
+      }
       const terminal = activeTerminalSession ?? activeTerminalSessionRef.current;
       if (
         terminal?.terminalId === activeSessionIdRef.current
@@ -10051,6 +10300,20 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
             if (nextIndex != null) setRightSelectionIndex(nextIndex + resumeOffset);
           }
           return;
+        }
+        // A plain click on a collapsible work-group header (▸ Tool calls (N) /
+        // ▸ Files changed (N)) toggles it open/closed instead of starting a text
+        // selection. Shift-click still extends a selection across the header.
+        if (!mouse.shift) {
+          const groupId = expandableGroupIdFromMouse(mouse.x, mouse.y);
+          if (groupId) {
+            stopChatSelectionEdgeScroll();
+            chatSelectionAnchorRef.current = null;
+            if (activeSelection) updateChatMouseSelection(null);
+            focusChat();
+            toggleExpandedLineId(groupId);
+            return;
+          }
         }
         stopChatSelectionEdgeScroll();
         const point = chatPointFromMouse(mouse.x, mouse.y, false);
@@ -10548,6 +10811,46 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         return;
       }
     }
+    if (
+      pane === "details"
+      && rightOpen
+      && rightPane.kind === "model-picker"
+      && key.tab
+      && !key.ctrl
+      && !key.meta
+      && !rightPane.searchMode
+      && rightPane.footerFocus == null
+    ) {
+      const picker = rightPane;
+      const layout = buildModelPickerLayout({
+        models,
+        catalog: modelCatalogRef.current ?? modelCatalog,
+        favorites: modelPickerFavorites,
+        recents: modelPickerRecents,
+        activeModelId: modelState.modelId,
+        activeReasoningEffort: modelState.reasoningEffort,
+        aiStatus,
+        settingsRows: picker.settingsRows ?? [],
+        footerFocus: picker.footerFocus ?? null,
+        laneLabel: picker.laneLabel ?? null,
+        query: picker.query,
+        selection: picker.selection,
+        providerTabKey: picker.providerTabKey ?? null,
+        focusedIndex: picker.focusedIndex,
+        searchMode: picker.searchMode,
+      });
+      const nextTabKey = nextModelPickerProviderTabKey({
+        providerTabs: layout.providerTabs,
+        providerTabIndex: layout.providerTabIndex,
+        delta: key.shift ? -1 : 1,
+      });
+      if (nextTabKey) {
+        setRightPane({ ...picker, providerTabKey: nextTabKey, focusedIndex: 0, footerFocus: null, railFocused: false });
+      } else {
+        setRightPane({ ...picker, railFocused: picker.railFocused !== true });
+      }
+      return;
+    }
     const keybindingContext = pane === "details"
       ? rightPane.kind === "help" ? "Help" : "Select"
       : pane === "drawer" ? "Tabs" : "Chat";
@@ -10870,7 +11173,6 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         setStreaming(false);
         setInterrupted(true);
         void interruptChat(conn, sessionId)
-          .then(() => addNotice("Interrupted chat.", "info"))
           .catch((err) => addNotice(err instanceof Error ? err.message : String(err), "error"));
         return;
       }
@@ -10891,7 +11193,6 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         setStreaming(false);
         setInterrupted(true);
         void interruptChat(conn, sessionId)
-          .then(() => addNotice("Interrupted chat.", "info"))
           .catch((err) => addNotice(err instanceof Error ? err.message : String(err), "error"));
         return;
       }
@@ -11320,10 +11621,13 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       }
 	      if ((input === "[" || input === "]") && !picker.searchMode && layout.providerTabs.length > 1) {
 	        const delta = input === "[" ? -1 : 1;
-	        const nextIndex = (layout.providerTabIndex + delta + layout.providerTabs.length) % layout.providerTabs.length;
-		        const nextTab = layout.providerTabs[nextIndex];
-		        if (nextTab) {
-		          setRightPane({ ...picker, providerTabKey: nextTab.key, focusedIndex: 0, footerFocus: null, railFocused: false });
+	        const nextTabKey = nextModelPickerProviderTabKey({
+	          providerTabs: layout.providerTabs,
+	          providerTabIndex: layout.providerTabIndex,
+	          delta,
+	        });
+		        if (nextTabKey) {
+		          setRightPane({ ...picker, providerTabKey: nextTabKey, focusedIndex: 0, footerFocus: null, railFocused: false });
 		        }
 	        return;
 	      }
@@ -12395,6 +12699,24 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
             zIndex: 4,
           });
         });
+        geometry.providerTabs.forEach(({ id, tabKey, rect }) => {
+          addTarget({
+            id,
+            rect,
+            onClick: () => {
+              setRightPane({
+                ...picker,
+                providerTabKey: tabKey,
+                focusedIndex: 0,
+                footerFocus: null,
+                railFocused: false,
+                query: "",
+                searchMode: false,
+              });
+            },
+            zIndex: 6,
+          });
+        });
         geometry.favorites.forEach(({ modelId, rect }) => {
           addTarget({
             id: `right:model-picker:favorite:${modelId}`,
@@ -12820,15 +13142,6 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     };
   }, [addModeRows, addNotice, chatRowBudget, drawerPaneWidth, goalBannerRows, visibleChatSelectionRows]);
 
-  if (error && !connection) {
-    return (
-      <Box flexDirection="column">
-        <Text color="red">ade-code failed to start</Text>
-        <Text>{error}</Text>
-      </Box>
-    );
-  }
-
   // The multi-chat grid draws its own bottom border, so it must span the REAL
   // height of the center flex row — chatRowBudget is 2 rows short of it. The
   // fixed chrome around the center area is header (2) + prompt box
@@ -12849,6 +13162,43 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       - (attachedImageChips.length ? 1 : 0)
       - (modeChangeNotice ? 3 : 0),
   );
+
+  // Grid view: size each tiled Claude terminal's PTY to its tile so output reflows
+  // to fit (matches the single-view resize). Single-tile fallback (the grid is too
+  // small to split) is left to the single-view resize effect.
+  useEffect(() => {
+    const conn = connectionRef.current;
+    if (!conn || !gridViewActive || !multiView) return;
+    const tiles = multiView.tiles.slice(0, 6);
+    if (!canRenderMultiChatGrid(tiles.length, chatWrapWidth, gridRowBudget)) return;
+    const rects = computeTileRects(asTileCount(tiles.length), chatWrapWidth, gridRowBudget);
+    tiles.forEach((tile, index) => {
+      if (!terminalSessionsRef.current.some((entry) => entry.terminalId === tile.sessionId)) return;
+      const rect = rects[index] ?? rects[0];
+      if (!rect) return;
+      const cols = clampTerminalPaneCols(Math.max(1, rect.w - 2));
+      const rows = claudeTerminalRowsForPane(Math.max(1, rect.h - 3));
+      void resizeTerminal(conn, tile.sessionId, cols, rows).catch(() => undefined);
+    });
+  }, [gridViewActive, multiView, chatWrapWidth, gridRowBudget]);
+
+  // Whether the grid's focused tile is a running Claude terminal — drives the
+  // footer "^t control (single)" hint so the unavailable-in-grid control is clear.
+  const gridFocusedTileIsClaudeTerminal = useMemo(() => {
+    if (!gridViewActive || !multiView) return false;
+    const focusedId = multiView.tiles[multiView.focusedIndex]?.sessionId ?? null;
+    const terminal = focusedId ? terminalSessionById[focusedId] ?? null : null;
+    return Boolean(terminal && terminal.status === "running" && terminalSessionProvider(terminal) === "claude");
+  }, [gridViewActive, multiView, terminalSessionById]);
+
+  if (error && !connection) {
+    return (
+      <Box flexDirection="column">
+        <Text color="red">ade-code failed to start</Text>
+        <Text>{error}</Text>
+      </Box>
+    );
+  }
 
   // Footer mini-map: show tile state when multi-view is open, or just the
   // transient notice when we have something to flash but no grid yet.
@@ -12917,23 +13267,32 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
                 lanesById={lanesById}
                 sessionBySessionId={sessionBySessionId}
                 eventsBySessionId={eventsBySessionId}
-                notices={displayNotices}
+                notices={notices}
                 streamingBySessionId={streamingBySessionId}
                 interruptedBySessionId={interruptedBySessionId}
                 scrollBySessionId={scrollBySessionId}
                 selectionBySessionId={selectionBySessionId}
                 expandedLineIds={expandedLineIds}
+                terminalSessionById={terminalSessionById}
+                terminalPreviewById={terminalPreviewById}
+                terminalLiveChunksById={terminalLiveChunks}
+                terminalScrollBySessionId={terminalScrollBySessionId}
+                attachedTerminalId={attachedTerminalId}
                 onFocusTile={focusMultiViewTile}
                 onRemoveTile={removeMultiViewTile}
               />
             ) : activeTerminalSession ? (
               <TerminalPane
                 title={activeTerminalSession.title}
+                terminalId={activeTerminalSession.terminalId}
                 preview={terminalPreview}
                 liveChunks={terminalLiveChunks[activeTerminalSession.terminalId] ?? []}
                 attached={attachedTerminalId === activeTerminalSession.terminalId}
                 width={terminalPaneWidth}
                 height={chatRowBudget}
+                namingHint={activeTerminalProvider === "claude"
+                  && activeTerminalSession.status === "running"
+                  && isClaudePlaceholderTitle(activeTerminalSession.title)}
                 hiddenBottomRows={CLAUDE_TERMINAL_HIDDEN_INPUT_ROWS}
                 scrollOffset={readTerminalScroll(terminalScrollBySessionId, activeTerminalSession.terminalId).scrollOffset}
                 pendingNewCount={readTerminalScroll(terminalScrollBySessionId, activeTerminalSession.terminalId).pendingNewCount}
@@ -13106,6 +13465,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           planMode={isPlanMode(modelState)}
           terminalControlAvailable={claudeTerminalControlAvailable}
           terminalControlActive={claudeTerminalControlActive}
+          gridTerminalControlHint={gridFocusedTileIsClaudeTerminal}
           multiViewActive={Boolean(multiView)}
           multiViewMap={footerMultiViewMap}
         />

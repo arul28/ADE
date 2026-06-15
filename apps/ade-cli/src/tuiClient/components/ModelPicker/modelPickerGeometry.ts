@@ -1,4 +1,4 @@
-import type { ModelPickerState } from "./types";
+import type { ModelPickerProviderTab, ModelPickerState } from "./types";
 
 /**
  * Screen rectangle in 1-based terminal cells. Structurally identical to
@@ -79,6 +79,111 @@ export function hasSubProviderSelector(state: ModelPickerState): boolean {
   return !isSearching(state) && state.providerTabs.length > 1;
 }
 
+function endTruncate(value: string, max: number): string {
+  if (max <= 1) return value.length ? "…" : "";
+  if (value.length <= max) return value;
+  return `${value.slice(0, Math.max(0, max - 1))}…`;
+}
+
+function normalizeProviderToken(value: string | null | undefined): string {
+  return (value ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "");
+}
+
+const PROVIDER_TAB_LABELS: Record<string, string> = {
+  anthropic: "Anthropic",
+  claude: "Anthropic",
+  openai: "OpenAI",
+  codex: "OpenAI",
+  google: "Google",
+  gemini: "Google",
+  deepseek: "DeepSeek",
+  mistral: "Mistral",
+  xai: "xAI",
+  grok: "xAI",
+  groq: "Groq",
+  together: "Together",
+  openrouter: "OpenRouter",
+  opencode: "OpenCode",
+  droid: "Droid",
+  factory: "Droid",
+  cursor: "Cursor",
+  kimi: "Kimi",
+  moonshot: "Kimi",
+  ollama: "Ollama",
+  lmstudio: "LM Studio",
+};
+
+export function formatProviderTabLabel(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  const known = PROVIDER_TAB_LABELS[normalizeProviderToken(trimmed)];
+  if (known) return known;
+  return trimmed
+    .replace(/\b\w/g, (ch) => ch.toUpperCase())
+    .replace(/\bAi\b/g, "AI");
+}
+
+export type ProviderTabSegment = {
+  index: number;
+  tabKey: string | null;
+  text: string;
+  active: boolean;
+  x: number;
+  w: number;
+};
+
+export function providerTabSegments(
+  tabs: ModelPickerProviderTab[],
+  selectedIndex: number,
+  width: number,
+  formatLabel: (label: string) => string = formatProviderTabLabel,
+): ProviderTabSegment[] {
+  if (tabs.length <= 1) return [];
+  const safe = Math.max(0, Math.min(selectedIndex, tabs.length - 1));
+  if (!tabs[safe]) return [];
+  const tabMax = Math.max(8, Math.min(16, Math.floor(width / 2)));
+  const segments = tabs.map((tab, index) => {
+    const activeTab = index === safe;
+    const label = endTruncate(formatLabel(tab.label), tabMax);
+    return activeTab ? `[${label}]` : ` ${label} `;
+  });
+  let start = 0;
+  if (segments.join("").length > width) {
+    start = safe;
+    while (start > 0 && segments.slice(start - 1, safe + 1).join("").length < Math.floor(width * 0.7)) {
+      start -= 1;
+    }
+  }
+
+  let used = 0;
+  const visible: ProviderTabSegment[] = [];
+  const pushSegment = (segment: Omit<ProviderTabSegment, "x" | "w">) => {
+    visible.push({ ...segment, x: used, w: segment.text.length });
+    used += segment.text.length;
+  };
+
+  if (start > 0 && width > 2) {
+    pushSegment({ text: "‹ ", active: false, index: -1, tabKey: null });
+  }
+  for (let index = start; index < segments.length; index += 1) {
+    const text = segments[index] ?? "";
+    if (!text) continue;
+    const nextUsed = used + text.length + (visible.length ? 1 : 0);
+    if (nextUsed > width - (index < segments.length - 1 ? 1 : 0)) {
+      if (used < width) pushSegment({ text: "…", active: false, index: -2, tabKey: null });
+      break;
+    }
+    if (visible.length && used < width) {
+      pushSegment({ text: " ", active: false, index: -3, tabKey: null });
+    }
+    pushSegment({ text, active: index === safe, index, tabKey: tabs[index]?.key ?? null });
+  }
+  return visible;
+}
+
 export function usesCompactProviderRows(state: ModelPickerState): boolean {
   if (isSearching(state)) return false;
   return state.railEntries[state.railIndex]?.kind === "provider";
@@ -117,6 +222,8 @@ export type ModelPickerGeometry = {
   search: HitRect;
   /** One rect per rail entry (empty while searching — rail is hidden). */
   rail: GeometryRect[];
+  /** One rect per visible sub-provider tab. */
+  providerTabs: Array<{ id: string; index: number; tabKey: string; rect: HitRect }>;
   /** One rect per visible (windowed) model entry. */
   entries: Array<{ id: string; index: number; modelId: string; rect: HitRect }>;
   /** Star toggle hotspot per visible model entry (left edge of the row). */
@@ -190,6 +297,17 @@ export function modelPickerGeometry(input: GeometryInput): ModelPickerGeometry {
     });
   }
 
+  const providerTabs = hasSubProviderSelector(state)
+    ? providerTabSegments(state.providerTabs, state.providerTabIndex, listWidth)
+      .filter((segment): segment is ProviderTabSegment & { tabKey: string } => Boolean(segment.tabKey))
+      .map((segment) => ({
+        id: `right:model-picker:provider-tab:${segment.index}`,
+        index: segment.index,
+        tabKey: segment.tabKey,
+        rect: { x: listLeft + segment.x, y: modelRegionTop, w: segment.w, h: 1 },
+      }))
+    : [];
+
   // Model entries: each is EXACTLY entryHeight lines (matches ModelListRow),
   // windowed.
   const entries: ModelPickerGeometry["entries"] = [];
@@ -252,6 +370,7 @@ export function modelPickerGeometry(input: GeometryInput): ModelPickerGeometry {
     window,
     search,
     rail,
+    providerTabs,
     entries,
     favorites,
     settings,

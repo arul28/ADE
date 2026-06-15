@@ -137,6 +137,7 @@ export function FooterControls({
   planMode,
   terminalControlAvailable,
   terminalControlActive,
+  gridTerminalControlHint,
   multiViewActive,
   multiViewMap,
 }: {
@@ -158,6 +159,8 @@ export function FooterControls({
   planMode?: boolean;
   terminalControlAvailable?: boolean;
   terminalControlActive?: boolean;
+  /** Grid view, focused tile is a running Claude terminal: Ctrl+T opens it in single view to control. */
+  gridTerminalControlHint?: boolean;
   multiViewActive?: boolean;
   multiViewMap?: { count: number; focusedIndex: number; notice?: string | null } | null;
 }) {
@@ -356,6 +359,12 @@ export function FooterControls({
                 <Hint keyLabel="tab" action="tile" />
                 <Text dimColor>{"  "}</Text>
                 <Hint keyLabel="^w" action="close tile" />
+                {gridTerminalControlHint ? (
+                  <>
+                    <Text dimColor>{"  "}</Text>
+                    <Hint keyLabel="^t" action="control (single)" />
+                  </>
+                ) : null}
               </>
             ) : null}
             <Text dimColor>{"  "}</Text>

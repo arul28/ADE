@@ -118,6 +118,8 @@ describe("AdeCodeApp polling", () => {
     projectRoot: "/repo",
     workspaceRoot: "/repo",
     laneHint: null,
+    sessionHint: null,
+    remote: false,
   };
 
   beforeEach(() => {
