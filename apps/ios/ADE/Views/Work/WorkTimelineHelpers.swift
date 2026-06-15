@@ -1500,7 +1500,10 @@ private func workContextWindowFallback(summary: AgentChatSessionSummary?) -> Int
     .joined(separator: " ")
 
   if model.contains("1m") || model.contains("1-million") { return 1_000_000 }
-  if model.contains("claude") || model.contains("sonnet") || model.contains("opus") || model.contains("haiku") {
+  if model.contains("gpt-5") {
+    return 258_400
+  }
+  if model.contains("claude") || model.contains("sonnet") || model.contains("opus") || model.contains("haiku") || model.contains("fable") {
     return 200_000
   }
   if model.contains("gpt-4.1") || model.contains("gpt-4o") {

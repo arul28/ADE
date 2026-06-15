@@ -853,7 +853,7 @@ struct WorkInlineDiffPreview: View {
 
   var body: some View {
     ScrollView([.horizontal, .vertical]) {
-      VStack(alignment: .leading, spacing: 2) {
+      LazyVStack(alignment: .leading, spacing: 2) {
         ForEach(Array(diff.components(separatedBy: "\n").enumerated()), id: \.offset) { _, line in
           Text(line.isEmpty ? " " : line)
             .font(.system(.caption, design: .monospaced))

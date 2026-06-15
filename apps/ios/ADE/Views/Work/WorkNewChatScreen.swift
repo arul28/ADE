@@ -84,16 +84,6 @@ struct WorkSessionTypeSwitcher: View {
   }
 }
 
-/// How a new session is launched from the composer: `foreground` navigates into
-/// the live chat (current behaviour); `background` keeps the user on this screen
-/// and surfaces a transient "launched" confirmation while the session appears in
-/// the Work list via the normal sync path. Mirrors the desktop's primary Send vs
-/// secondary background-Send affordances.
-enum WorkNewChatDisposition {
-  case foreground
-  case background
-}
-
 /// `yyyyMMdd-HHmmss` stamp for the auto-created lane fallback name, mirroring
 /// the desktop `chat-YYYYMMDD-HHMMSS` convention.
 private let workAutoLaneNameFormatter: DateFormatter = {
@@ -129,8 +119,6 @@ struct WorkNewChatScreen: View {
   @State private var runtimeMode: String = "default"
   @State private var reasoningEffort: String = ""
   @State private var sessionMode: WorkNewSessionMode = .chat
-  @State private var launchedNotice: String?
-  @State private var backgroundNoticeToken: UUID?
 
   /// Whether the synthetic "Auto-create lane" entry is the current selection.
   private var isAutoCreateLane: Bool {
@@ -179,23 +167,6 @@ struct WorkNewChatScreen: View {
           .foregroundStyle(ADEColor.danger)
           .padding(.horizontal, 20)
           .padding(.bottom, 6)
-      }
-
-      if let launchedNotice {
-        HStack(spacing: 8) {
-          Image(systemName: "bolt.fill")
-            .font(.system(size: 11, weight: .bold))
-            .foregroundStyle(ADEColor.success)
-          Text(launchedNotice)
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(ADEColor.textPrimary)
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .background(ADEColor.success.opacity(0.14), in: Capsule(style: .continuous))
-        .overlay(Capsule(style: .continuous).stroke(ADEColor.success.opacity(0.35), lineWidth: 0.6))
-        .padding(.bottom, 8)
-        .transition(.move(edge: .bottom).combined(with: .opacity))
       }
 
       composerBar
@@ -326,11 +297,10 @@ struct WorkNewChatScreen: View {
       modelName: prettyNewChatModelName(modelId),
       busy: busy,
       canStart: !busy && (isAutoCreateLane || !selectedLaneId.isEmpty) && !modelId.isEmpty,
-      isAutoCreateLane: isAutoCreateLane,
       runtimeMode: $runtimeMode,
       reasoningEffort: $reasoningEffort,
       onOpenModelPicker: { modelPickerPresented = true },
-      onSubmit: submit(openingMessage:disposition:)
+      onSubmit: submit(openingMessage:)
     )
   }
 
@@ -361,16 +331,14 @@ struct WorkNewChatScreen: View {
   }
 
   @MainActor
-  private func submit(openingMessage: String, disposition: WorkNewChatDisposition) async -> Bool {
+  private func submit(openingMessage: String) async -> Bool {
     let opener = openingMessage.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !busy && (isAutoCreateLane || !selectedLaneId.isEmpty) else { return false }
     guard !opener.isEmpty && !modelId.isEmpty else { return false }
     busy = true
     errorMessage = nil
-    launchedNotice = nil
     let wire = workRuntimeWireFields(provider: provider, mode: runtimeMode)
     let normalizedReasoning = reasoningEffort.trimmingCharacters(in: .whitespacesAndNewlines)
-    let isBackground = disposition == .background
 
     // Resolve the target lane. When auto-create is selected we mint a fresh
     // lane first; on failure we surface the error and never create the session.
@@ -415,9 +383,7 @@ struct WorkNewChatScreen: View {
           cols: 48,
           rows: 24
         )
-        if isBackground {
-          finishBackgroundLaunch()
-        } else if let session = result.session {
+        if let session = result.session {
           await onCliStarted(session)
         } else {
           let lane = lanes.first(where: { $0.id == targetLaneId })
@@ -465,11 +431,7 @@ struct WorkNewChatScreen: View {
         droidPermissionMode: wire.droidPermissionMode,
         cursorModeId: wire.cursorModeId
       )
-      if isBackground {
-        finishBackgroundLaunch()
-      } else {
-        await onStarted(summary, opener)
-      }
+      await onStarted(summary, opener)
       busy = false
       return true
     } catch {
@@ -483,28 +445,6 @@ struct WorkNewChatScreen: View {
       }
       busy = false
       return false
-    }
-  }
-
-  /// Resets the composer state and surfaces a transient "launched in background"
-  /// confirmation. The new session shows up in the Work list via normal sync.
-  @MainActor
-  private func finishBackgroundLaunch() {
-    ADEHaptics.success()
-    if isAutoCreateLane {
-      selectedLaneId = preferredLaneId ?? lanes.first?.id ?? ""
-    }
-    withAnimation(.snappy(duration: 0.2)) {
-      launchedNotice = "Launched in background"
-    }
-    let token = UUID()
-    backgroundNoticeToken = token
-    Task {
-      try? await Task.sleep(nanoseconds: 2_600_000_000)
-      guard backgroundNoticeToken == token else { return }
-      withAnimation(.easeOut(duration: 0.25)) {
-        launchedNotice = nil
-      }
     }
   }
 
@@ -623,11 +563,10 @@ private struct WorkNewChatComposerBar: View {
   let modelName: String
   let busy: Bool
   let canStart: Bool
-  let isAutoCreateLane: Bool
   @Binding var runtimeMode: String
   @Binding var reasoningEffort: String
   let onOpenModelPicker: () -> Void
-  let onSubmit: @MainActor (String, WorkNewChatDisposition) async -> Bool
+  let onSubmit: @MainActor (String) async -> Bool
 
   @State private var draft: String = ""
   @FocusState private var composerFocused: Bool
@@ -660,18 +599,12 @@ private struct WorkNewChatComposerBar: View {
     "Send"
   }
 
-  /// Accessibility / label for the secondary background-launch button. When the
-  /// target is an auto-created lane we mirror desktop's "Auto-create" label.
-  private var backgroundSendLabel: String {
-    isAutoCreateLane ? "Auto-create" : "Background"
-  }
-
   @MainActor
-  private func dispatch(_ disposition: WorkNewChatDisposition) {
+  private func dispatch() {
     let text = trimmedDraft
     draft = ""
     Task {
-      let started = await onSubmit(text, disposition)
+      let started = await onSubmit(text)
       if !started {
         draft = text
       }
@@ -715,10 +648,7 @@ private struct WorkNewChatComposerBar: View {
           .padding(.trailing, 4)
         }
 
-        HStack(spacing: 8) {
-          backgroundSendButton
-          foregroundSendButton
-        }
+        foregroundSendButton
       }
     }
     .padding(.horizontal, 14)
@@ -751,7 +681,7 @@ private struct WorkNewChatComposerBar: View {
   /// Primary foreground launch button — navigates into the new live chat.
   private var foregroundSendButton: some View {
     Button {
-      dispatch(.foreground)
+      dispatch()
     } label: {
       HStack(spacing: 5) {
         if busy {
@@ -781,31 +711,6 @@ private struct WorkNewChatComposerBar: View {
     .buttonStyle(.plain)
     .disabled(!canSend || busy)
     .accessibilityLabel(canSend ? "Send" : "Enter a message to send")
-  }
-
-  /// Secondary background launch button — creates the session but stays on the
-  /// new-chat screen, surfacing a transient "launched" confirmation. Mirrors the
-  /// desktop's green rocket-style background send.
-  private var backgroundSendButton: some View {
-    Button {
-      dispatch(.background)
-    } label: {
-      Image(systemName: "bolt.fill")
-        .font(.system(size: 13, weight: .bold))
-        .foregroundStyle(canSend ? ADEColor.success : ADEColor.textSecondary)
-        .frame(width: 34, height: 34)
-        .background(
-          Circle()
-            .fill(canSend ? ADEColor.success.opacity(0.16) : ADEColor.surfaceBackground.opacity(0.85))
-        )
-        .overlay(
-          Circle()
-            .stroke(canSend ? ADEColor.success.opacity(0.45) : ADEColor.border.opacity(0.35), lineWidth: 0.8)
-        )
-    }
-    .buttonStyle(.plain)
-    .disabled(!canSend || busy)
-    .accessibilityLabel(canSend ? "\(backgroundSendLabel) in background" : "Enter a message to start in background")
   }
 
   private func compactChoiceChip(

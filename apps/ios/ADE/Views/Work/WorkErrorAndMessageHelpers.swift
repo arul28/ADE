@@ -364,16 +364,18 @@ private func replaceTruncatedTextEnvelope(
 /// Fallback entries set `itemId: nil`, live envelopes carry an SDK-assigned
 /// id — so plain equality on merge keys would treat "same message, different
 /// source" as two rows. Keying on role + turnId + normalized text collapses
-/// those correctly while leaving tool-calls and other events untouched
-/// (returns nil → skipped).
+/// those correctly; missing turn IDs fall back to timestamp so repeated short
+/// messages in separate turns do not collapse together.
 private func workTextContentKey(for envelope: WorkChatEnvelope) -> String? {
   switch envelope.event {
   case .userMessage(let text, _, let turnId, let steerId, _, _):
     let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines)
-    return "user|\(turnId ?? "")|\(steerId ?? "")|\(normalized)"
+    let turnKey = workTextDedupeTurnKey(turnId, timestamp: envelope.timestamp)
+    return "user|\(turnKey)|\(steerId ?? "")|\(normalized)"
   case .assistantText(let text, let turnId, _):
     let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines)
-    return "assistant|\(turnId ?? "")|\(normalized)"
+    let turnKey = workTextDedupeTurnKey(turnId, timestamp: envelope.timestamp)
+    return "assistant|\(turnKey)|\(normalized)"
   default:
     return nil
   }
@@ -384,7 +386,8 @@ private func workTextBackfillDedupeKeys(for envelope: WorkChatEnvelope) -> [Stri
   switch envelope.event {
   case .userMessage(let text, _, let turnId, _, _, _):
     let normalized = text.trimmingCharacters(in: .whitespacesAndNewlines)
-    return [key, "user|\(turnId ?? "")|\(normalized)"]
+    let turnKey = workTextDedupeTurnKey(turnId, timestamp: envelope.timestamp)
+    return [key, "user|\(turnKey)|\(normalized)"]
   default:
     return [key]
   }
@@ -393,12 +396,19 @@ private func workTextBackfillDedupeKeys(for envelope: WorkChatEnvelope) -> [Stri
 private func workTextRoleTurnKey(for envelope: WorkChatEnvelope) -> String? {
   switch envelope.event {
   case .userMessage(_, _, let turnId, let steerId, _, _):
-    return "user|\(turnId ?? "")|\(steerId ?? "")"
+    let turnKey = workTextDedupeTurnKey(turnId, timestamp: envelope.timestamp)
+    return "user|\(turnKey)|\(steerId ?? "")"
   case .assistantText(_, let turnId, _):
-    return "assistant|\(turnId ?? "")"
+    let turnKey = workTextDedupeTurnKey(turnId, timestamp: envelope.timestamp)
+    return "assistant|\(turnKey)"
   default:
     return nil
   }
+}
+
+private func workTextDedupeTurnKey(_ turnId: String?, timestamp: String) -> String {
+  let normalizedTurnId = turnId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  return normalizedTurnId.isEmpty ? "timestamp:\(timestamp)" : "turn:\(normalizedTurnId)"
 }
 
 private func workTextEnvelopeText(_ envelope: WorkChatEnvelope) -> String? {
@@ -450,11 +460,11 @@ private func textEnvelopeAlreadyPresentForBackfill(
           candidateText == fallbackText
     else { continue }
     let candidateTurnId = workTextTurnId(for: candidate)
-    let turnMatches = fallbackTurnId == candidateTurnId
-      || fallbackTurnId.isEmpty
-      || candidateTurnId.isEmpty
-    guard turnMatches else { continue }
-    if candidate.timestamp == fallback.timestamp || fallbackTurnId.isEmpty || candidateTurnId.isEmpty {
+    if !fallbackTurnId.isEmpty, !candidateTurnId.isEmpty {
+      guard fallbackTurnId == candidateTurnId else { continue }
+      return true
+    }
+    if candidate.timestamp == fallback.timestamp {
       return true
     }
   }

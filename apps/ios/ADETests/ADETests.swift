@@ -7125,6 +7125,39 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(viewModel?.ratio ?? 0, Double(169600) / Double(258400), accuracy: 0.0001)
   }
 
+  func testWorkContextUsageViewModelFallsBackForGpt5Models() {
+    let transcript = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:04.000Z",
+        sequence: 5,
+        event: .tokens(
+          usage: WorkUsageSummary(
+            turnCount: 1,
+            inputTokens: 129200,
+            outputTokens: 100,
+            cacheReadTokens: 0,
+            cacheCreationTokens: 0,
+            contextWindow: nil,
+            costUsd: 0
+          ),
+          turnId: "turn-1",
+          itemId: "tok-1"
+        )
+      )
+    ]
+
+    let viewModel = workContextUsageViewModel(
+      transcript: transcript,
+      summary: makeAgentChatSessionSummary(provider: "codex", model: "openai/gpt-5.5-codex", status: "active")
+    )
+
+    XCTAssertEqual(viewModel?.usedTokens, 129200)
+    XCTAssertEqual(viewModel?.contextWindow, 258400)
+    XCTAssertEqual(viewModel?.windowSource, .registry)
+    XCTAssertEqual(viewModel?.ratio ?? 0, 0.5, accuracy: 0.0001)
+  }
+
   func testWorkContextUsageViewModelSumsGenericInputAndCache() {
     let transcript = [
       WorkChatEnvelope(
@@ -7817,6 +7850,43 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(preferred.compactMap(\.sequence), [42])
     XCTAssertEqual(messages.filter { $0.role == "assistant" }.map(\.markdown), [paragraph])
     XCTAssertEqual(messages.filter { $0.role == "assistant" }.map(\.turnId), ["turn-1"])
+  }
+
+  func testPreferredWorkTranscriptKeepsRepeatedTextWhenTurnIdIsMissing() {
+    let live = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-04-20T00:00:01.000Z",
+        sequence: 1,
+        event: .userMessage(text: "ok", attachments: nil, turnId: nil, steerId: nil, deliveryState: nil, processed: nil)
+      ),
+    ]
+    let fallback = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-04-20T00:00:01.000Z",
+        sequence: nil,
+        event: .userMessage(text: "ok", attachments: nil, turnId: nil, steerId: nil, deliveryState: nil, processed: nil)
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-04-20T00:00:05.000Z",
+        sequence: nil,
+        event: .userMessage(text: "ok", attachments: nil, turnId: nil, steerId: nil, deliveryState: nil, processed: nil)
+      ),
+    ]
+
+    let preferred = preferredWorkTranscript(
+      current: live,
+      fallback: fallback,
+      eventTranscript: live
+    )
+
+    XCTAssertEqual(buildWorkChatMessages(from: preferred).map(\.markdown), ["ok", "ok"])
+    XCTAssertEqual(preferred.map(\.timestamp), [
+      "2026-04-20T00:00:01.000Z",
+      "2026-04-20T00:00:05.000Z",
+    ])
   }
 
   func testPreferredWorkTranscriptReplacesTrimmedLiveTailWithFullFallbackText() {

@@ -272,7 +272,10 @@ struct WorkChatSessionView: View {
     if sending && !sendWillQueue {
       return "Sending message to machine..."
     }
-    if sendWillQueue, sessionStatus != "active", pendingSteers.isEmpty {
+    if sendWillQueue, sessionStatus == "active" {
+      return "Message will stage behind the active turn."
+    }
+    if sendWillQueue, pendingSteers.isEmpty {
       return "Machine is reconnecting. Send will queue until it is back."
     }
     if !canSendMessages {
