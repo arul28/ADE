@@ -6420,10 +6420,42 @@ export function registerIpc({
   ipcMain.handle(IPC.transcriptionStatus, async (): Promise<TranscriptionStatus> => {
     const service = getCtx().transcriptionService;
     if (!service) {
-      return { installed: false, binaryPath: null, modelPath: null };
+      return {
+        installed: false,
+        binaryInstalled: false,
+        modelInstalled: false,
+        downloading: false,
+        binaryPath: null,
+        modelPath: null,
+      };
     }
     return service.getStatus();
   });
+
+  // Download the ~141 MB speech model on demand (first dictation). Streams to
+  // disk in the main process; progress is pushed to the requesting renderer.
+  ipcMain.handle(
+    IPC.transcriptionDownloadModel,
+    async (event): Promise<TranscriptionStatus> => {
+      const service = getCtx().transcriptionService;
+      if (!service) {
+        throw new Error("model_not_installed: Voice model not installed");
+      }
+      let lastEmit = 0;
+      await service.downloadModel((progress) => {
+        // Throttle progress pushes to ~10/s so we don't flood IPC for a 141 MB file.
+        const nowMs = Date.now();
+        if (nowMs - lastEmit < 100 && progress.receivedBytes < (progress.totalBytes ?? Infinity)) {
+          return;
+        }
+        lastEmit = nowMs;
+        if (!event.sender.isDestroyed()) {
+          event.sender.send(IPC.transcriptionModelDownloadProgress, progress);
+        }
+      });
+      return service.getStatus();
+    },
+  );
 
   // Ensure macOS microphone access before the renderer calls getUserMedia.
   // Electron on macOS returns a silent (all-zero) audio track instead of

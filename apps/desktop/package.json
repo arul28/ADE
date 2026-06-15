@@ -24,6 +24,7 @@
     "prepare:mac:universal": "node ./scripts/prepare-universal-mac-inputs.mjs",
     "dist:mac:universal:signed": "node ./scripts/require-macos-release-secrets.cjs && npm run materialize:runtime-resources && npm run validate:runtime-resources && npm run materialize:whisper-resources && npm run validate:whisper-resources && npm run build && electron-builder --mac --universal --dir --publish never && node ./scripts/resign-mac-universal-app.mjs && electron-builder --mac zip --universal --prepackaged release/mac-universal/ADE.app --publish never && node ./scripts/create-mac-dmg.mjs",
     "dist:mac:universal:signed:zip": "node ./scripts/require-macos-release-secrets.cjs && npm run materialize:runtime-resources && npm run validate:runtime-resources && npm run materialize:whisper-resources && npm run validate:whisper-resources && npm run build && electron-builder --mac zip --universal --publish never",
+    "dist:mac:perarch:signed": "node ./scripts/require-macos-release-secrets.cjs && npm run materialize:runtime-resources && npm run validate:runtime-resources && npm run materialize:whisper-resources && npm run validate:whisper-resources && npm run build && electron-builder --mac --arm64 --x64 --publish never",
     "notarize:mac:dmg": "node ./scripts/notarize-mac-dmg.mjs",
     "validate:mac:artifacts": "node ./scripts/validate-mac-artifacts.mjs",
     "materialize:runtime-resources": "node ./scripts/materialize-runtime-resources.mjs",
@@ -281,7 +282,8 @@
         "from": "resources/whisper",
         "to": "whisper",
         "filter": [
-          "**/*"
+          "**/*",
+          "!ggml-base.en.bin"
         ]
       },
       {
@@ -333,7 +335,7 @@
       "entitlementsInherit": "build/entitlements.mac.inherit.plist",
       "notarize": true,
       "mergeASARs": false,
-      "x64ArchFiles": "Contents/Resources/{app.asar.unpacked/node_modules,app.asar.unpacked/vendor,runtime,whisper}/**/*"
+      "artifactName": "${productName}-${version}-${arch}.${ext}"
     }
   }
 }

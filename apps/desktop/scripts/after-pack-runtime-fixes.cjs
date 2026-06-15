@@ -154,6 +154,28 @@ function removeIfPresent(rootPath, relativePath) {
   return true;
 }
 
+// Per-arch builds bundle only their matching remote-runtime sidecar. CI stages
+// BOTH ade-darwin-arm64 and ade-darwin-x64 into resources/runtime; here we drop
+// the non-matching arch so each per-arch app only carries its own (~300 MB
+// saved — the main reason the per-arch update zip fits Squirrel's download
+// path). Universal builds keep both.
+function pruneNonMatchingDarwinRuntimeSidecar(resourcesRoot, context) {
+  const appOutDir = String(context?.appOutDir || "");
+  if (/mac-universal/.test(appOutDir) || context?.arch === 4) return;
+  const isArm64 = /arm64/.test(appOutDir) || context?.arch === 3;
+  const otherArch = isArm64 ? "x64" : "arm64";
+  const runtimeDir = path.join(resourcesRoot, "runtime");
+  const pruned = [];
+  for (const name of [`ade-darwin-${otherArch}`, `ade-darwin-${otherArch}.native.tar.gz`]) {
+    if (removeIfPresent(runtimeDir, name)) pruned.push(name);
+  }
+  if (pruned.length > 0) {
+    console.log(
+      `[afterPack] Pruned non-target runtime sidecar for ${isArm64 ? "arm64" : "x64"}: ${pruned.join(", ")}`,
+    );
+  }
+}
+
 function claudeNativePackagesToPrune(platform) {
   const byPlatform = {
     darwin: [
@@ -346,6 +368,9 @@ module.exports = async function afterPack(context) {
   }
 
   pruneUnneededRuntimePayload(runtimeRoot, platform);
+  if (platform === "darwin") {
+    pruneNonMatchingDarwinRuntimeSidecar(resourcesRoot, context);
+  }
   ensureOpenCodeRuntimePackages(runtimeRoot, platform);
 
   const normalized = normalizeDesktopRuntimeBinaries(runtimeRoot);

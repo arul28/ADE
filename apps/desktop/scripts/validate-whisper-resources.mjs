@@ -93,13 +93,24 @@ async function main() {
   await statFile(glossaryPath, "voice glossary");
   await validateVoiceGlossary(glossaryPath);
 
-  // Model must be present and look like the real (large) base.en weights.
-  const modelStat = await statFile(path.join(whisperRoot, MODEL_BASENAME), "whisper base.en model");
-  if (modelStat.size < MIN_MODEL_BYTES) {
-    fail(
-      `Whisper model looks truncated (${modelStat.size} bytes, expected >= ${MIN_MODEL_BYTES}): ` +
-        path.join(whisperRoot, MODEL_BASENAME),
-    );
+  // Model is downloaded at runtime (whisperModelStore), NOT bundled — so it is
+  // optional at build/package time. Validate it only if a copy is present
+  // (e.g. an offline build with ADE_WHISPER_BUNDLE_MODEL=1).
+  const modelPath = path.join(whisperRoot, MODEL_BASENAME);
+  let modelStat = null;
+  try {
+    modelStat = await fs.stat(modelPath);
+  } catch {
+    modelStat = null;
+  }
+  if (modelStat) {
+    if (!modelStat.isFile() || modelStat.size < MIN_MODEL_BYTES) {
+      fail(
+        `Whisper model looks truncated (${modelStat.size} bytes, expected >= ${MIN_MODEL_BYTES}): ${modelPath}`,
+      );
+    }
+  } else {
+    console.log("[whisper-resources] Model not bundled (runtime-downloaded) — skipping model validation.");
   }
 
   // A whisper.cpp CLI binary for the host platform must be present + executable.
@@ -113,8 +124,11 @@ async function main() {
     fail(`Expected whisper.cpp CLI binary to be executable: ${binary.candidate}`);
   }
 
+  const modelSummary = modelStat
+    ? `base.en model (${Math.round(modelStat.size / 1024 / 1024)} MB), `
+    : "model deferred to runtime download, ";
   console.log(
-    `[whisper-resources] Validated voice glossary, base.en model (${Math.round(modelStat.size / 1024 / 1024)} MB), ` +
+    `[whisper-resources] Validated voice glossary, ${modelSummary}` +
       `and host CLI binary (${path.basename(binary.candidate)}).`,
   );
 }

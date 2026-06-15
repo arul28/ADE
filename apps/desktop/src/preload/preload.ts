@@ -3783,9 +3783,32 @@ contextBridge.exposeInMainWorld("ade", {
       }),
     status: async (): Promise<{
       installed: boolean;
+      binaryInstalled: boolean;
+      modelInstalled: boolean;
+      downloading: boolean;
       binaryPath: string | null;
       modelPath: string | null;
     }> => ipcRenderer.invoke(IPC.transcriptionStatus),
+    // Download the ~141 MB speech model on demand (first dictation). Resolves
+    // with the post-download status. Subscribe to progress via onModelDownloadProgress.
+    downloadModel: async (): Promise<{
+      installed: boolean;
+      binaryInstalled: boolean;
+      modelInstalled: boolean;
+      downloading: boolean;
+      binaryPath: string | null;
+      modelPath: string | null;
+    }> => ipcRenderer.invoke(IPC.transcriptionDownloadModel),
+    onModelDownloadProgress: (
+      handler: (progress: { receivedBytes: number; totalBytes: number | null }) => void,
+    ): (() => void) => {
+      const listener = (
+        _event: unknown,
+        progress: { receivedBytes: number; totalBytes: number | null },
+      ) => handler(progress);
+      ipcRenderer.on(IPC.transcriptionModelDownloadProgress, listener);
+      return () => ipcRenderer.removeListener(IPC.transcriptionModelDownloadProgress, listener);
+    },
     // Check/request macOS microphone permission before capturing. Electron
     // returns a silent track instead of throwing when access is missing, so the
     // renderer must gate getUserMedia on this.

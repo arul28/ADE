@@ -172,31 +172,33 @@ function commandLineText(): string {
   return [process.execPath, ...args.slice(1)].join(" ");
 }
 
-function buildQuitCommand(args: {
+export function buildQuitCommand(args: {
   pid: number;
   commandLine: string | null;
   appName: string | null;
   packageChannel: string | null;
   adeHome: string | null;
+  serviceName?: string | null;
 }): string {
   const commandLine = args.commandLine ?? "";
   const channel = normalizedChannel(args.packageChannel)
     ?? (/ADE Beta\.app|ade-beta|\bADE Beta\b/i.test(commandLine) ? "beta" : null)
     ?? (/ADE Alpha\.app|ade-alpha|\bADE Alpha\b/i.test(commandLine) ? "alpha" : null);
-  const adeHome = args.adeHome
-    ?? (channel === "beta" ? path.join(os.homedir(), ".ade-beta") : null)
-    ?? (channel === "alpha" ? path.join(os.homedir(), ".ade-alpha") : null)
-    ?? path.join(os.homedir(), ".ade");
-  if (channel === "beta") {
-    const betaCli = "/Applications/ADE Beta.app/Contents/Resources/ade-cli/bin/ade-beta";
-    return withPidKillFallback(`ADE_PACKAGE_CHANNEL=beta ADE_HOME=${shellQuote(adeHome)} ${shellQuote(betaCli)} brain stop --text`, args.pid);
+  // The sync-host brain runs as a launchd LaunchAgent (com.ade.runtime[.channel])
+  // in the persistent/headless runtime-service mode, with KeepAlive — so a plain
+  // `kill` just respawns it. Stop it the right way: `launchctl bootout` the
+  // service. This works no matter where the app actually lives (/Applications, a
+  // dev worktree, anywhere) — unlike the old hardcoded `/Applications/<App>.app`
+  // CLI path, which broke for non-standard installs. Fall back to killing the pid
+  // for a child-process (non-launchd) brain.
+  const label = args.serviceName && args.serviceName.trim()
+    ? args.serviceName.trim()
+    : `com.ade.runtime${channel ? `.${channel}` : ""}`;
+  const parts = [`launchctl bootout gui/$(id -u)/${label} 2>/dev/null || true`];
+  if (Number.isFinite(args.pid) && args.pid > 0) {
+    parts.push(`/bin/kill ${args.pid} 2>/dev/null || true`);
   }
-  if (channel === "alpha") {
-    const alphaCli = "/Applications/ADE Alpha.app/Contents/Resources/ade-cli/bin/ade-alpha";
-    return withPidKillFallback(`ADE_PACKAGE_CHANNEL=alpha ADE_HOME=${shellQuote(adeHome)} ${shellQuote(alphaCli)} brain stop --text`, args.pid);
-  }
-  const stableCli = "/Applications/ADE.app/Contents/Resources/ade-cli/bin/ade";
-  return withPidKillFallback(`ADE_HOME=${shellQuote(adeHome)} ${shellQuote(stableCli)} brain stop --text`, args.pid);
+  return parts.join("; ");
 }
 
 function currentOwner(args: {
@@ -207,6 +209,7 @@ function currentOwner(args: {
   const channel = normalizedChannel(process.env.ADE_PACKAGE_CHANNEL);
   const appName = process.env.ADE_DESKTOP_APP_NAME?.trim() || defaultAppName(channel);
   const commandLine = commandLineText();
+  const serviceName = process.env.ADE_RUNTIME_SERVICE_NAME?.trim() || null;
   return {
     id: randomUUID(),
     pid: process.pid,
@@ -214,7 +217,7 @@ function currentOwner(args: {
     appName,
     packageChannel: channel,
     adeHome: process.env.ADE_HOME?.trim() || null,
-    serviceName: process.env.ADE_RUNTIME_SERVICE_NAME?.trim() || null,
+    serviceName,
     socketPath: process.env.ADE_RUNTIME_SOCKET_PATH?.trim() || process.env.ADE_RPC_SOCKET_PATH?.trim() || null,
     projectRoot: args.projectRoot ? path.resolve(args.projectRoot) : null,
     commandLine,
@@ -224,6 +227,7 @@ function currentOwner(args: {
       appName,
       packageChannel: channel,
       adeHome: process.env.ADE_HOME?.trim() || null,
+      serviceName,
     }),
     createdAt: now,
     updatedAt: now,

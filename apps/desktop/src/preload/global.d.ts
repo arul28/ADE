@@ -888,9 +888,23 @@ declare global {
         ) => Promise<{ raw: string; cleaned: string }>;
         status: () => Promise<{
           installed: boolean;
+          binaryInstalled: boolean;
+          modelInstalled: boolean;
+          downloading: boolean;
           binaryPath: string | null;
           modelPath: string | null;
         }>;
+        downloadModel: () => Promise<{
+          installed: boolean;
+          binaryInstalled: boolean;
+          modelInstalled: boolean;
+          downloading: boolean;
+          binaryPath: string | null;
+          modelPath: string | null;
+        }>;
+        onModelDownloadProgress: (
+          handler: (progress: { receivedBytes: number; totalBytes: number | null }) => void,
+        ) => () => void;
         requestMicAccess: () => Promise<{
           status: "granted" | "denied" | "not-determined" | "restricted" | "unknown";
         }>;

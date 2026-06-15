@@ -1,0 +1,22 @@
+---
+title: "v1.2.5"
+description: "Release notes for ADE v1.2.5 - June 15, 2026"
+---
+
+v1.2.5 makes macOS auto-updates reliable again with smaller, per-architecture builds, and adds remote ADE Code plus MCP support in Claude chats.
+
+---
+
+## Desktop
+
+- **Reliable auto-updates.** macOS now ships separate Apple Silicon and Intel builds instead of one universal bundle, roughly halving the update download. This fixes a case where the larger universal update could crash the macOS updater mid-download.
+- **Lighter install.** The on-device voice dictation model (~141 MB) is no longer bundled — it downloads once on first use (from Settings → Voice input), shrinking both the app and every update.
+- **MCP servers in Claude chats.** Claude chats now load your configured MCP servers, matching the ADE CLI.
+- **Remote ADE Code.** `ade code` gains remote launch support, so you can drive a Work chat against a remote machine.
+- **Launch-conflict fix.** When another ADE build — or a leftover background runtime — is hosting phone sync, the "stop the other brain" instructions now work regardless of where that build is installed, and correctly stop a `launchd`-managed runtime.
+
+---
+
+## iOS
+
+- **Work tab.** Richer chat cards, steadier event mapping and transcript parsing, and timeline rendering improvements.

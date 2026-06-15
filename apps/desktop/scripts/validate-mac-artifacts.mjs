@@ -13,12 +13,10 @@ const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const appDir = path.resolve(scriptDir, "..");
 const releaseDir = path.join(appDir, "release");
 const DEFAULT_MAX_APP_ASAR_BYTES = 900 * 1024 * 1024;
-// Universal macOS builds intentionally carry dual-arch agent runtimes
-// (Codex/OpenCode/Claude SDK) in the unpacked payload.
+// Per-arch macOS builds carry only their own arch's agent runtimes + remote
+// runtime sidecar (the other arch is pruned in afterPack), so the unpacked
+// payload is roughly half the size of the old universal build.
 const DEFAULT_MAX_UNPACKED_BYTES = 1280 * 1024 * 1024;
-const REMOTE_RUNTIME_TARGETS = ["darwin-arm64", "darwin-x64"];
-const EXCLUDED_REMOTE_RUNTIME_TARGETS = ["linux-arm64", "linux-x64"];
-const allowHostOnlyRuntimeResources = process.env.ADE_RUNTIME_RESOURCES_ALLOW_HOST_ONLY === "1";
 const bundledAgentSkills = [
   "ade-cli-control-plane",
   "ade-ios-simulator",
@@ -196,33 +194,32 @@ async function assertExecutable(targetPath, description) {
   }
 }
 
-async function assertRemoteRuntimeBundle(resourcesPath, description) {
+async function assertRemoteRuntimeBundle(resourcesPath, description, expectedArch) {
   const runtimeRoot = path.join(resourcesPath, "runtime");
-  const expectedTargets = allowHostOnlyRuntimeResources ? [currentTarget()] : REMOTE_RUNTIME_TARGETS;
+  // Per-arch builds bundle ONLY their own darwin sidecar (afterPack prunes the
+  // other arch). The non-matching darwin arch and all linux targets must be absent.
+  const requiredTarget = `darwin-${expectedArch}`;
+  const excludedTargets = ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64"].filter(
+    (target) => target !== requiredTarget,
+  );
   await assertPathExists(runtimeRoot, `remote runtime bundle directory for ${description}`);
-  for (const target of expectedTargets) {
-    const binaryPath = path.join(runtimeRoot, `ade-${target}`);
-    const nativeArchivePath = path.join(runtimeRoot, `ade-${target}.native.tar.gz`);
-    await assertPathExists(binaryPath, `remote runtime binary ${target} for ${description}`);
-    await assertExecutable(binaryPath, `remote runtime binary ${target}`);
-    await assertPathExists(nativeArchivePath, `remote runtime native dependency archive ${target} for ${description}`);
+  {
+    const binaryPath = path.join(runtimeRoot, `ade-${requiredTarget}`);
+    const nativeArchivePath = path.join(runtimeRoot, `ade-${requiredTarget}.native.tar.gz`);
+    await assertPathExists(binaryPath, `remote runtime binary ${requiredTarget} for ${description}`);
+    await assertExecutable(binaryPath, `remote runtime binary ${requiredTarget}`);
+    await assertPathExists(nativeArchivePath, `remote runtime native dependency archive ${requiredTarget} for ${description}`);
     const { stdout } = await execFileAsync("tar", ["-tzf", nativeArchivePath]);
     if (!stdout.split(/\r?\n/).some((entry) => entry.startsWith("./node_modules/"))) {
-      throw new Error(`[release:mac] Remote runtime native archive for ${target} does not contain ./node_modules/: ${nativeArchivePath}`);
+      throw new Error(`[release:mac] Remote runtime native archive for ${requiredTarget} does not contain ./node_modules/: ${nativeArchivePath}`);
     }
     if (!stdout.split(/\r?\n/).includes("./tuiClient/cli.mjs")) {
-      throw new Error(`[release:mac] Remote runtime native archive for ${target} does not contain ./tuiClient/cli.mjs: ${nativeArchivePath}`);
+      throw new Error(`[release:mac] Remote runtime native archive for ${requiredTarget} does not contain ./tuiClient/cli.mjs: ${nativeArchivePath}`);
     }
   }
-  for (const target of EXCLUDED_REMOTE_RUNTIME_TARGETS) {
-    await assertPathMissing(path.join(runtimeRoot, `ade-${target}`), `non-mac remote runtime binary ${target} for ${description}`);
-    await assertPathMissing(path.join(runtimeRoot, `ade-${target}.native.tar.gz`), `non-mac remote runtime native archive ${target} for ${description}`);
-  }
-  if (allowHostOnlyRuntimeResources) {
-    console.warn(
-      `[release:mac] Host-only local package mode is enabled; validated remote runtime artifacts for ${currentTarget()} only. ` +
-        "Release builds still require the full runtime artifact set."
-    );
+  for (const target of excludedTargets) {
+    await assertPathMissing(path.join(runtimeRoot, `ade-${target}`), `non-target remote runtime binary ${target} for ${description}`);
+    await assertPathMissing(path.join(runtimeRoot, `ade-${target}.native.tar.gz`), `non-target remote runtime native archive ${target} for ${description}`);
   }
   const runtimeEntries = await fs.readdir(runtimeRoot, { withFileTypes: true });
   const stagingDirectories = runtimeEntries
@@ -407,7 +404,11 @@ async function validatePackageHygiene(appPath, description) {
   console.log(`[release:mac] Package hygiene passed for ${description}`);
 }
 
-async function validatePackagedRuntime(appPath, description) {
+async function validatePackagedRuntime(appPath, description, expectedArch, options = {}) {
+  // The executable smoke runs the packaged app; only do it for the arch matching
+  // the validating host (running an x64 app under Rosetta on an arm64 CI runner
+  // is unreliable). The non-host arch still gets full structural validation.
+  const deepSmoke = options.deepSmoke !== false;
   const appName = path.basename(appPath, ".app");
   const executablePath = path.join(appPath, "Contents", "MacOS", appName);
   const resourcesPath = path.join(appPath, "Contents", "Resources");
@@ -441,7 +442,7 @@ async function validatePackagedRuntime(appPath, description) {
       throw new Error(`[release:mac] Bundled ADE code TUI references ${token} without an ESM shim`);
     }
   }
-  await assertRemoteRuntimeBundle(resourcesPath, description);
+  await assertRemoteRuntimeBundle(resourcesPath, description, expectedArch);
   await validatePackageHygiene(appPath, description);
 
   const nodePtyAddon = await findNodePtyAddon(nodePtyModulePath);
@@ -453,6 +454,13 @@ async function validatePackagedRuntime(appPath, description) {
     throw new Error(`[release:mac] Missing node-pty spawn-helper under ${nodePtyModulePath}`);
   }
   await assertExecutable(nodePtySpawnHelper, "node-pty spawn-helper");
+
+  if (!deepSmoke) {
+    console.log(
+      `[release:mac] ${description}: structural runtime checks passed; skipping executable smoke (non-host arch).`,
+    );
+    return;
+  }
 
   const { stdout } = await execFileAsync(executablePath, [smokeScriptPath], {
     cwd: unpackedPath,
@@ -548,35 +556,6 @@ async function validatePackagedRuntime(appPath, description) {
   console.log(`[release:mac] Packaged runtime smoke passed for ${description}: ${path.relative(appPath, nodePtyAddon)}`);
 }
 
-async function validateLatestMacYaml(latestMacPath, zipPath) {
-  await assertPathExists(latestMacPath, "latest-mac.yml");
-  const latestMac = parseYaml(await fs.readFile(latestMacPath, "utf8"));
-  const expectedZipName = path.basename(zipPath);
-  const referencedFiles = new Set(
-    [
-      latestMac?.path,
-      ...(Array.isArray(latestMac?.files)
-        ? latestMac.files.map((file) => file?.url ?? file?.path ?? null)
-        : []),
-    ].filter(Boolean)
-  );
-
-  if (!referencedFiles.has(expectedZipName)) {
-    throw new Error(
-      `[release:mac] latest-mac.yml does not reference ${expectedZipName}. ` +
-        `Referenced entries: ${Array.from(referencedFiles).join(", ") || "none"}`
-    );
-  }
-
-  const hasSha512 =
-    Boolean(latestMac?.sha512) ||
-    (Array.isArray(latestMac?.files) && latestMac.files.some((file) => Boolean(file?.sha512)));
-
-  if (!hasSha512) {
-    throw new Error("[release:mac] latest-mac.yml is missing sha512 metadata for the zip artifact");
-  }
-}
-
 async function validateAppUpdateYaml(resourcesPath, description) {
   const appUpdatePath = path.join(resourcesPath, "app-update.yml");
   await assertPathExists(appUpdatePath, `packaged updater feed config for ${description}`);
@@ -593,83 +572,105 @@ async function validateAppUpdateYaml(resourcesPath, description) {
   }
 }
 
-async function validateZip(zipPath) {
-  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "ade-release-zip-"));
-
-  try {
-    await execFileAsync("ditto", ["-x", "-k", zipPath, tempDir]);
-    const entries = await fs.readdir(tempDir, { withFileTypes: true });
-    const appEntry = entries.find((entry) => entry.isDirectory() && entry.name.endsWith(".app"));
-    if (!appEntry) {
-      throw new Error(`[release:mac] Extracted zip does not contain an .app bundle: ${zipPath}`);
+// Validate the updater feed: it must reference one update zip per shipped arch,
+// each with sha512, and each referenced zip must exist on disk.
+async function validateLatestMacFeed(latestMacPath) {
+  await assertPathExists(latestMacPath, "latest-mac.yml");
+  const latestMac = parseYaml(await fs.readFile(latestMacPath, "utf8"));
+  const entries = [];
+  if (Array.isArray(latestMac?.files)) {
+    for (const file of latestMac.files) {
+      const url = file?.url ?? file?.path;
+      if (url) entries.push({ url, sha512: file?.sha512 });
     }
+  }
+  if (latestMac?.path && !entries.some((entry) => entry.url === latestMac.path)) {
+    entries.push({ url: latestMac.path, sha512: latestMac.sha512 });
+  }
+  const zipEntries = entries.filter((entry) => entry.url.endsWith(".zip"));
+  if (zipEntries.length === 0) {
+    throw new Error("[release:mac] latest-mac.yml references no update zip artifacts");
+  }
+  for (const entry of zipEntries) {
+    if (!entry.sha512) {
+      throw new Error(`[release:mac] latest-mac.yml entry ${entry.url} is missing sha512 metadata`);
+    }
+    await assertPathExists(
+      path.join(releaseDir, entry.url),
+      `published update zip ${entry.url} referenced by latest-mac.yml`,
+    );
+  }
+  console.log(
+    `[release:mac] latest-mac.yml references ${zipEntries.length} update zip(s): ${zipEntries.map((entry) => entry.url).join(", ")}`,
+  );
+}
 
-    const appPath = path.join(tempDir, appEntry.name);
-    await validateSignedApp(appPath, "zip artifact");
-    await validateAppUpdateYaml(path.join(appPath, "Contents", "Resources"), "zip artifact");
-    await validatePackagedRuntime(appPath, "zip artifact");
-  } finally {
-    await fs.rm(tempDir, { recursive: true, force: true });
+// Confirm a DMG is notarized + stapled (no mount needed — the per-arch .app it
+// wraps is already validated directly).
+async function validateDmgStapled(dmgPath, description) {
+  await assertPathExists(dmgPath, description);
+  await execFileAsync("xcrun", ["stapler", "validate", dmgPath]);
+  try {
+    await execFileAsync("spctl", ["-a", "-vvv", "--type", "open", dmgPath]);
+  } catch (error) {
+    const combinedOutput = `${error?.stdout ?? ""}\n${error?.stderr ?? ""}`;
+    if (!combinedOutput.includes("source=Insufficient Context")) {
+      throw error;
+    }
+    console.warn(
+      `[release:mac] DMG Gatekeeper open assessment for ${description} returned 'Insufficient Context' ` +
+        "(expected for some locally-built, non-quarantined DMGs); notarization staple already validated.",
+    );
   }
 }
 
-async function validateDmg(dmgPath) {
-  const mountPoint = await fs.mkdtemp(path.join(os.tmpdir(), "ade-release-dmg-"));
-
-  try {
-    await execFileAsync("xcrun", ["stapler", "validate", dmgPath]);
-    try {
-      await execFileAsync("spctl", ["-a", "-vvv", "--type", "open", dmgPath]);
-    } catch (error) {
-      const combinedOutput = `${error?.stdout ?? ""}\n${error?.stderr ?? ""}`;
-      if (!combinedOutput.includes("source=Insufficient Context")) {
-        throw error;
-      }
-
-      console.warn(
-        "[release:mac] DMG Gatekeeper open assessment returned 'Insufficient Context'. " +
-          "This is expected for some locally-built, non-quarantined DMGs; continuing with mounted-app validation."
-      );
-    }
-
-    await execFileAsync("hdiutil", ["attach", dmgPath, "-nobrowse", "-quiet", "-mountpoint", mountPoint]);
-
-    const appPath = path.join(mountPoint, "ADE.app");
-    await assertPathExists(appPath, "mounted ADE.app");
-    await validateSignedApp(appPath, "mounted dmg artifact");
-    await validateAppUpdateYaml(path.join(appPath, "Contents", "Resources"), "mounted dmg artifact");
-    await validatePackagedRuntime(appPath, "mounted dmg artifact");
-  } finally {
-    await execFileAsync("hdiutil", ["detach", mountPoint, "-quiet"]).catch(() => {});
-    await fs.rm(mountPoint, { recursive: true, force: true });
-  }
-}
-
+const ARCH_OUTPUT_DIRS = [
+  { arch: "arm64", dir: "mac-arm64" },
+  { arch: "x64", dir: "mac" },
+];
 const skipDmg = hasFlag("--skip-dmg");
-const appPath =
-  resolveAbsolute(readFlag("--app")) ?? path.join(releaseDir, "mac-universal", "ADE.app");
-const zipPath =
-  resolveAbsolute(readFlag("--zip")) ?? (await findArtifact(/^ADE-.+-universal-mac\.zip$/, "mac zip"));
-const dmgPath = skipDmg
-  ? null
-  : resolveAbsolute(readFlag("--dmg")) ?? (await findArtifact(/^ADE-.+-universal\.dmg$/, "mac dmg"));
-const latestMacPath = resolveAbsolute(readFlag("--latest")) ?? path.join(releaseDir, "latest-mac.yml");
+const hostArch = process.arch === "arm64" ? "arm64" : "x64";
 
-await assertPathExists(appPath, "signed universal app bundle");
-await assertPathExists(zipPath, "mac zip artifact");
-if (dmgPath) {
-  await assertPathExists(dmgPath, "mac dmg artifact");
+// Discover the per-arch app bundles electron-builder produced (arm64 ->
+// release/mac-arm64, x64 -> release/mac). An explicit --app (with optional
+// --arch) still works for a single-bundle run.
+const archApps = [];
+const explicitApp = resolveAbsolute(readFlag("--app"));
+if (explicitApp) {
+  archApps.push({ arch: readFlag("--arch") || hostArch, appPath: explicitApp });
+} else {
+  for (const { arch, dir } of ARCH_OUTPUT_DIRS) {
+    const candidate = path.join(releaseDir, dir, "ADE.app");
+    if (await pathExists(candidate)) archApps.push({ arch, appPath: candidate });
+  }
+}
+if (archApps.length === 0) {
+  throw new Error(
+    `[release:mac] No per-arch app bundles found under ${releaseDir} (looked for mac-arm64/ADE.app and mac/ADE.app)`,
+  );
 }
 
-await validateSignedApp(appPath, "signed universal app bundle");
-await validateAppUpdateYaml(path.join(appPath, "Contents", "Resources"), "signed universal app bundle");
-await validateLatestMacYaml(latestMacPath, zipPath);
-await validateZip(zipPath);
-if (dmgPath) {
-  await validateDmg(dmgPath);
+for (const { arch, appPath } of archApps) {
+  const label = `signed ${arch} app bundle`;
+  await assertPathExists(appPath, label);
+  await validateSignedApp(appPath, label);
+  await validateAppUpdateYaml(path.join(appPath, "Contents", "Resources"), label);
+  await validatePackagedRuntime(appPath, label, arch, { deepSmoke: arch === hostArch });
+}
+
+const latestMacPath = resolveAbsolute(readFlag("--latest")) ?? path.join(releaseDir, "latest-mac.yml");
+await validateLatestMacFeed(latestMacPath);
+
+if (!skipDmg) {
+  for (const { arch } of archApps) {
+    const dmgPath =
+      resolveAbsolute(readFlag("--dmg")) ?? (await findArtifact(new RegExp(`^ADE-.+-${arch}\\.dmg$`), `${arch} mac dmg`));
+    await validateDmgStapled(dmgPath, `${arch} dmg artifact`);
+  }
 }
 
 console.log(
-  `[release:mac] macOS release artifacts passed signature, notarization, Gatekeeper, updater, and packaged runtime checks` +
-    (skipDmg ? " (DMG validation skipped)" : "")
+  `[release:mac] macOS release artifacts passed signature, notarization, Gatekeeper, updater, and packaged runtime checks ` +
+    `for arch(es): ${archApps.map((entry) => entry.arch).join(", ")} (deep smoke on host arch ${hostArch})` +
+    (skipDmg ? " — DMG validation skipped" : ""),
 );

@@ -10,6 +10,13 @@ import {
   loadGlossary,
   type PreparedGlossary,
 } from "./dictationCleanup";
+import {
+  WHISPER_MODEL_BASENAME,
+  type DownloadProgress,
+  type WhisperModelSource,
+  downloadWhisperModel,
+  whisperModelPath,
+} from "./whisperModelStore";
 
 /**
  * Voice-to-text transcription service (desktop / Electron, v1).
@@ -23,12 +30,13 @@ import {
  * Calls are serialized: only one whisper process runs at a time (mirroring the
  * single-flight queue style of `services/jobs/jobEngine.ts`).
  *
- * Distribution note: the whisper binary + model are shipped under the packaged
- * app's `resources/whisper/`. The release packaging + auto-updater MUST deliver
- * these to existing installs on update (see package.json `extraResources` and
- * `scripts/materialize-whisper-resources.mjs`). If they are absent at runtime we
- * return a typed `model_not_installed` error the UI surfaces as
- * "Voice model not installed".
+ * Distribution note: the whisper BINARY is bundled under the packaged app's
+ * `resources/whisper/` (small). The ~141 MB MODEL is NOT bundled — it is
+ * downloaded once at runtime into `<userData>/whisper/` (see whisperModelStore),
+ * because bundling it inflated the macOS auto-update zip past Squirrel.Mac's
+ * in-memory download limit and crashed the updater. If the binary is missing we
+ * return `model_not_installed`; if only the model is missing the UI offers a
+ * one-time download via `downloadModel`.
  */
 
 export type TranscriptionResult = {
@@ -37,7 +45,14 @@ export type TranscriptionResult = {
 };
 
 export type TranscriptionStatus = {
+  /** True only when BOTH the binary and the model are present (ready to transcribe). */
   installed: boolean;
+  /** Bundled whisper binary present. */
+  binaryInstalled: boolean;
+  /** Runtime model present (downloaded). */
+  modelInstalled: boolean;
+  /** A model download is currently in flight. */
+  downloading: boolean;
   /** Resolved whisper binary path, when present. */
   binaryPath: string | null;
   /** Resolved ggml model path, when present. */
@@ -62,11 +77,15 @@ export class TranscriptionError extends Error {
 export type TranscriptionService = {
   transcribe: (pcm: Int16Array | Float32Array, options?: { sampleRate?: number }) => Promise<TranscriptionResult>;
   getStatus: () => TranscriptionStatus;
+  /**
+   * Download the speech model into the runtime model dir (idempotent + single-
+   * flight). Resolves when the model is installed; rejects on download failure.
+   */
+  downloadModel: (onProgress?: (p: DownloadProgress) => void) => Promise<void>;
   dispose: () => void;
 };
 
 const WHISPER_BINARY_BASENAMES = ["whisper-cli", "main", "whisper"];
-const WHISPER_MODEL_BASENAME = "ggml-base.en.bin";
 const TARGET_SAMPLE_RATE = 16_000;
 const MIN_SAMPLE_RATE = 8_000;
 const MAX_SAMPLE_RATE = 48_000;
@@ -223,15 +242,27 @@ export function createTranscriptionService({
   logger,
   isPackaged,
   resourcesPath,
+  modelDir,
+  modelSource,
   glossary,
 }: {
   logger: Logger;
   isPackaged: boolean;
   resourcesPath?: string | null;
+  /**
+   * Writable runtime directory for the downloaded model (`<userData>/whisper`).
+   * If omitted, falls back to the bundled `resources/whisper` dir (dev / tests).
+   */
+  modelDir?: string | null;
+  /** Override the model download source (mainly for tests). */
+  modelSource?: WhisperModelSource;
   /** Optional pre-loaded glossary (mainly for tests). */
   glossary?: PreparedGlossary;
 }): TranscriptionService {
   const whisperDir = resolveWhisperDir({ isPackaged, resourcesPath });
+  // Runtime model dir: the model is downloaded here (not bundled). Fall back to
+  // the bundled whisper dir so a dev/test checkout with a local model still works.
+  const runtimeModelDir = modelDir?.trim() ? modelDir.trim() : whisperDir;
   const tmpDir = path.join(os.tmpdir(), "ade-voice");
   const activeChildren = new Set<ReturnType<typeof spawn>>();
   const pendingTempFiles = new Set<string>();
@@ -241,10 +272,15 @@ export function createTranscriptionService({
   // at a time, like the per-lane refresh serialization in jobEngine.
   let queueTail: Promise<unknown> = Promise.resolve();
 
+  let modelDownloadPromise: Promise<void> | null = null;
+
   const resolveBinary = (): string | null => firstExisting(whisperBinaryCandidates(whisperDir));
   const resolveModel = (): string | null => {
-    const modelPath = path.join(whisperDir, WHISPER_MODEL_BASENAME);
-    return firstExisting([modelPath]);
+    // Runtime (downloaded) location first, then the bundled dir (dev fallback).
+    return firstExisting([
+      whisperModelPath(runtimeModelDir),
+      path.join(whisperDir, WHISPER_MODEL_BASENAME),
+    ]);
   };
 
   const getStatus = (): TranscriptionStatus => {
@@ -252,9 +288,41 @@ export function createTranscriptionService({
     const modelPath = resolveModel();
     return {
       installed: Boolean(binaryPath && modelPath),
+      binaryInstalled: Boolean(binaryPath),
+      modelInstalled: Boolean(modelPath),
+      downloading: modelDownloadPromise != null,
       binaryPath,
       modelPath,
     };
+  };
+
+  const downloadModel = (onProgress?: (p: DownloadProgress) => void): Promise<void> => {
+    if (resolveModel()) return Promise.resolve();
+    // Single-flight: concurrent callers (UI button + auto-trigger) share one download.
+    if (!modelDownloadPromise) {
+      const startedAt = Date.now();
+      logger.info("transcription.model_download_started", { runtimeModelDir });
+      modelDownloadPromise = downloadWhisperModel({
+        modelDir: runtimeModelDir,
+        source: modelSource,
+        onProgress,
+      })
+        .then(() => {
+          logger.info("transcription.model_download_done", {
+            durationMs: Date.now() - startedAt,
+          });
+        })
+        .catch((error: unknown) => {
+          logger.warn("transcription.model_download_failed", {
+            message: error instanceof Error ? error.message : String(error),
+          });
+          throw error;
+        })
+        .finally(() => {
+          modelDownloadPromise = null;
+        });
+    }
+    return modelDownloadPromise;
   };
 
   const cleanupTempFile = (filePath: string) => {
@@ -418,6 +486,7 @@ export function createTranscriptionService({
   return {
     transcribe,
     getStatus,
+    downloadModel,
     dispose() {
       disposed = true;
       for (const child of activeChildren) {

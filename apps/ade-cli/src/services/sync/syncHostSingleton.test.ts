@@ -4,6 +4,7 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   acquireSyncHostSingleton,
+  buildQuitCommand,
   detectSyncHostSingletonConflict,
   formatSyncHostSingletonConflictMessage,
   isSameChannelSyncHostOwner,
@@ -201,5 +202,57 @@ describe("isSameChannelSyncHostOwner", () => {
     const stableEnv = {} as NodeJS.ProcessEnv;
     expect(isSameChannelSyncHostOwner(owner(), stableEnv)).toBe(true);
     expect(isSameChannelSyncHostOwner(owner({ adeHome: "/Users/example/.ade-beta" }), stableEnv)).toBe(false);
+  });
+});
+
+describe("buildQuitCommand (launch-gate stop command)", () => {
+  it("stops a launchd-managed brain via launchctl bootout, not a hardcoded app path", () => {
+    const command = buildQuitCommand({
+      pid: 4242,
+      commandLine: "/Applications/ADE.app/Contents/MacOS/ADE /Applications/ADE.app/Contents/Resources/ade-cli/cli.cjs serve",
+      appName: "ADE",
+      packageChannel: null,
+      adeHome: "/Users/example/.ade",
+    });
+    expect(command).toContain("launchctl bootout gui/$(id -u)/com.ade.runtime");
+    expect(command).toContain("/bin/kill 4242");
+    // Must NOT depend on a hardcoded /Applications path (that broke worktree
+    // installs) and no longer shells out to the channel CLI `brain stop`.
+    expect(command).not.toContain("/Applications/");
+    expect(command).not.toContain("brain stop");
+  });
+
+  it("derives the per-channel launchd label", () => {
+    expect(
+      buildQuitCommand({ pid: 1, commandLine: null, appName: "ADE Beta", packageChannel: "beta", adeHome: null }),
+    ).toContain("com.ade.runtime.beta");
+    expect(
+      buildQuitCommand({ pid: 1, commandLine: null, appName: "ADE Alpha", packageChannel: "alpha", adeHome: null }),
+    ).toContain("com.ade.runtime.alpha");
+  });
+
+  it("prefers an explicit service name (launchd label) when recorded", () => {
+    const command = buildQuitCommand({
+      pid: 7,
+      commandLine: null,
+      appName: "ADE",
+      packageChannel: null,
+      adeHome: null,
+      serviceName: "com.ade.runtime.custom",
+    });
+    expect(command).toContain("launchctl bootout gui/$(id -u)/com.ade.runtime.custom");
+  });
+
+  it("infers the channel from a worktree command line and never hardcodes /Applications", () => {
+    const command = buildQuitCommand({
+      pid: 35709,
+      commandLine:
+        "/Users/admin/Projects/ADE/.ade/worktrees/x/apps/desktop/release-alpha/mac-arm64/ADE Alpha.app/Contents/MacOS/ADE Alpha /…/cli.cjs serve",
+      appName: "ADE Alpha",
+      packageChannel: null,
+      adeHome: null,
+    });
+    expect(command).toContain("launchctl bootout gui/$(id -u)/com.ade.runtime.alpha");
+    expect(command).not.toContain("/Applications/");
   });
 });

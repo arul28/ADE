@@ -11,7 +11,11 @@ type AutoUpdaterLike = {
   logger: typeof autoUpdater.logger;
   autoDownload: boolean;
   autoInstallOnAppQuit: boolean;
-  setFeedURL?: (options: { provider: "github"; owner: string; repo: string }) => void;
+  setFeedURL?: (
+    options:
+      | { provider: "github"; owner: string; repo: string }
+      | { provider: "generic"; url: string },
+  ) => void;
   checkForUpdates: () => Promise<unknown>;
   quitAndInstall: (isSilent?: boolean, isForceRunAfter?: boolean) => void;
   on: (event: string, listener: (...args: any[]) => void) => unknown;
@@ -263,11 +267,20 @@ export function createAutoUpdateService({
   updater.autoDownload = true;
   updater.autoInstallOnAppQuit = false;
   try {
-    updater.setFeedURL?.({
-      provider: "github",
-      owner: "arul28",
-      repo: "ADE",
-    });
+    // Dev/test override: ADE_UPDATE_FEED_URL points the updater at a local/staging
+    // feed (generic provider) instead of the GitHub release feed. Used to exercise
+    // the real Install-update flow against a local server. Unset in production.
+    const overrideFeedUrl = process.env.ADE_UPDATE_FEED_URL?.trim();
+    if (overrideFeedUrl) {
+      updater.setFeedURL?.({ provider: "generic", url: overrideFeedUrl });
+      logger.info("autoUpdate.feed_override", { url: overrideFeedUrl });
+    } else {
+      updater.setFeedURL?.({
+        provider: "github",
+        owner: "arul28",
+        repo: "ADE",
+      });
+    }
   } catch (error) {
     logger.warn("autoUpdate.feed_config_failed", {
       message: formatErrorMessage(error),

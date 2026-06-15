@@ -388,7 +388,18 @@ async function materializeBinary() {
 
 async function main() {
   await fs.mkdir(whisperRoot, { recursive: true });
-  await materializeModel();
+  // The ~141 MB base.en model is NO LONGER bundled — it's downloaded at runtime
+  // (whisperModelStore) so it never bloats the auto-update zip. Only the small
+  // whisper-cli binary is materialized for packaging. Set ADE_WHISPER_BUNDLE_MODEL=1
+  // to also fetch the model (e.g. for an offline/bundled build).
+  if (process.env.ADE_WHISPER_BUNDLE_MODEL === "1") {
+    await materializeModel();
+  } else {
+    console.log(
+      "[whisper-resources] Skipping model bundling (runtime-downloaded). " +
+        "Set ADE_WHISPER_BUNDLE_MODEL=1 to bundle ggml-base.en.bin.",
+    );
+  }
   await materializeBinary();
   console.log("[whisper-resources] Done.");
 }

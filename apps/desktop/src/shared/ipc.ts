@@ -782,6 +782,8 @@ export const IPC = {
   transcriptionTranscribe: "ade.transcription.transcribe",
   transcriptionStatus: "ade.transcription.status",
   transcriptionRequestMicAccess: "ade.transcription.requestMicAccess",
+  transcriptionDownloadModel: "ade.transcription.downloadModel",
+  transcriptionModelDownloadProgress: "ade.transcription.modelDownloadProgress",
   perfGetConfig: "ade.perf.getConfig",
   perfRecordEvent: "ade.perf.recordEvent",
   perfFinalize: "ade.perf.finalize",

@@ -186,33 +186,42 @@ async function verifyDmgBeforeNotarization(dmgPath) {
   }
 }
 
-const dmgPath =
-  resolveAbsolute(readFlag("--dmg")) ?? (await findArtifact(/^ADE-.+-universal\.dmg$/, "mac dmg"));
-const dmgBlockmapPath = `${dmgPath}.blockmap`;
-
-await assertPathExists(dmgPath, "mac dmg artifact");
-await verifyDmgBeforeNotarization(dmgPath);
-
-console.log(`[release:mac] Submitting DMG for notarization: ${dmgPath}`);
-const { stdout: notarytoolOutput } = await execFileAsync("xcrun", buildNotarytoolArgs(dmgPath), {
-  maxBuffer: 1024 * 1024 * 10,
-});
-const notaryResult = JSON.parse(notarytoolOutput);
-if (notaryResult.status !== "Accepted") {
-  throw new Error(
-    `[release:mac] DMG notarization failed with status ${notaryResult.status ?? "unknown"} ` +
-      `for ${path.basename(dmgPath)} (${notaryResult.id ?? "no submission id"})`
-  );
+// Per-arch builds emit one DMG per architecture. Notarize + staple each so the
+// artifact validator's `stapler validate` passes for every published DMG.
+const explicitDmg = resolveAbsolute(readFlag("--dmg"));
+const dmgPaths = explicitDmg
+  ? [explicitDmg]
+  : (await fs.readdir(releaseDir))
+      .filter((name) => name.endsWith(".dmg"))
+      .map((name) => path.join(releaseDir, name))
+      .sort();
+if (dmgPaths.length === 0) {
+  throw new Error(`[release:mac] No .dmg artifacts found to notarize in ${releaseDir}`);
 }
-console.log(`[release:mac] DMG notarization accepted: ${notaryResult.id ?? path.basename(dmgPath)}`);
 
-await stapleDmgWithRetry(dmgPath);
+for (const dmgPath of dmgPaths) {
+  await assertPathExists(dmgPath, "mac dmg artifact");
+  await verifyDmgBeforeNotarization(dmgPath);
 
-try {
-  await fs.rm(dmgBlockmapPath, { force: true });
-  console.log(
-    `[release:mac] Removed stale DMG blockmap after stapling: ${path.basename(dmgBlockmapPath)}`
-  );
-} catch {
-  // ignore cleanup failures
+  console.log(`[release:mac] Submitting DMG for notarization: ${dmgPath}`);
+  const { stdout: notarytoolOutput } = await execFileAsync("xcrun", buildNotarytoolArgs(dmgPath), {
+    maxBuffer: 1024 * 1024 * 10,
+  });
+  const notaryResult = JSON.parse(notarytoolOutput);
+  if (notaryResult.status !== "Accepted") {
+    throw new Error(
+      `[release:mac] DMG notarization failed with status ${notaryResult.status ?? "unknown"} ` +
+        `for ${path.basename(dmgPath)} (${notaryResult.id ?? "no submission id"})`
+    );
+  }
+  console.log(`[release:mac] DMG notarization accepted: ${notaryResult.id ?? path.basename(dmgPath)}`);
+
+  await stapleDmgWithRetry(dmgPath);
+
+  try {
+    await fs.rm(`${dmgPath}.blockmap`, { force: true });
+    console.log(`[release:mac] Removed stale DMG blockmap after stapling: ${path.basename(dmgPath)}.blockmap`);
+  } catch {
+    // ignore cleanup failures
+  }
 }
