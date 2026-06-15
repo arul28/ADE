@@ -941,82 +941,80 @@ private struct WorkChatComposerDraftInput: View {
   @State private var contextUsagePresented = false
 
   var body: some View {
-    ZStack(alignment: .bottomTrailing) {
-      VStack(alignment: .leading, spacing: 8) {
-        WorkChatComposerTextField(
-          draftState: draftState,
-          canCompose: canCompose,
-          placeholder: workChatComposerPlaceholder(
-            pendingInputCount: pendingInputCount,
-            sessionStatus: awaitingInputGate ? "awaiting-input" : ""
-          )
+    VStack(alignment: .leading, spacing: 8) {
+      WorkChatComposerTextField(
+        draftState: draftState,
+        canCompose: canCompose,
+        placeholder: workChatComposerPlaceholder(
+          pendingInputCount: pendingInputCount,
+          sessionStatus: awaitingInputGate ? "awaiting-input" : ""
+        )
+      )
+
+      if showInterrupt && draftState.hasSendableText {
+        Text("Message will stage behind the active turn.")
+          .font(.caption2)
+          .foregroundStyle(ADEColor.textMuted)
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .accessibilityIdentifier("Work.Chat.Composer.StagingHint")
+      }
+
+      HStack(alignment: .center, spacing: 6) {
+        WorkComposerChipStrip(
+          chatSummary: chatSummary,
+          pendingInputCount: pendingInputCount,
+          settingsMutationInFlight: settingsMutationInFlight,
+          codexFastModeOverride: codexFastModeOverride,
+          onOpenModelPicker: onOpenModelPicker,
+          onSelectRuntimeMode: onSelectRuntimeMode,
+          onToggleCodexFastMode: onToggleCodexFastMode
         )
 
-        if showInterrupt && draftState.hasSendableText {
-          Text("Message will stage behind the active turn.")
-            .font(.caption2)
-            .foregroundStyle(ADEColor.textMuted)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .accessibilityIdentifier("Work.Chat.Composer.StagingHint")
+        Spacer(minLength: 0)
+
+        if let usageViewModel {
+          WorkContextUsageMeter(
+            usage: usageViewModel,
+            active: showInterrupt,
+            isPresented: $contextUsagePresented
+          )
+          .popover(
+            isPresented: $contextUsagePresented,
+            attachmentAnchor: .rect(.bounds),
+            arrowEdge: .bottom
+          ) {
+            WorkContextUsagePopover(
+              usage: usageViewModel,
+              modelLabel: chatSummary?.model
+            )
+            .frame(maxWidth: 320, alignment: .leading)
+            .presentationCompactAdaptation(.popover)
+          }
         }
 
-        HStack(alignment: .center, spacing: 6) {
-          WorkComposerChipStrip(
-            chatSummary: chatSummary,
-            pendingInputCount: pendingInputCount,
-            settingsMutationInFlight: settingsMutationInFlight,
-            codexFastModeOverride: codexFastModeOverride,
-            onOpenModelPicker: onOpenModelPicker,
-            onSelectRuntimeMode: onSelectRuntimeMode,
-            onToggleCodexFastMode: onToggleCodexFastMode
-          )
-
-          Spacer(minLength: 0)
-
-          if let usageViewModel {
-            WorkContextUsageMeter(
-              usage: usageViewModel,
-              active: showInterrupt,
-              isPresented: $contextUsagePresented
-            )
-          }
-
-          if showInterrupt {
-            if draftState.hasSendableText {
-              stopButton()
-              WorkChatComposerSendButton(
-                draftState: draftState,
-                canSend: canSend,
-                sending: sending,
-                accessibilityLabelText: "Stage message",
-                onSend: onSend,
-                onSent: onSent
-              )
-            } else {
-              stopButton()
-            }
-          } else {
+        if showInterrupt {
+          if draftState.hasSendableText {
+            stopButton()
             WorkChatComposerSendButton(
               draftState: draftState,
               canSend: canSend,
               sending: sending,
+              accessibilityLabelText: "Stage message",
               onSend: onSend,
               onSent: onSent
             )
+          } else {
+            stopButton()
           }
+        } else {
+          WorkChatComposerSendButton(
+            draftState: draftState,
+            canSend: canSend,
+            sending: sending,
+            onSend: onSend,
+            onSent: onSent
+          )
         }
-      }
-
-      if contextUsagePresented, let usageViewModel {
-        WorkContextUsagePopover(
-          usage: usageViewModel,
-          modelLabel: chatSummary?.model
-        )
-        .frame(maxWidth: 320, alignment: .leading)
-        .padding(.trailing, 30)
-        .offset(y: -42)
-        .transition(.opacity.combined(with: .move(edge: .bottom)))
-        .zIndex(3)
       }
     }
     .onChange(of: usageViewModel) { _, newValue in

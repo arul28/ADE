@@ -7015,11 +7015,12 @@ final class ADETests: XCTestCase {
     {"sessionId":"chat-1","timestamp":"2026-03-25T00:00:02.000Z","sequence":3,"event":{"type":"completion_report","report":{"timestamp":"2026-03-25T00:00:02.000Z","summary":"Finished","status":"completed","artifacts":[{"type":"file","description":"Updated the transcript","reference":"docs/transcript.md"}]}}}
     {"sessionId":"chat-1","timestamp":"2026-03-25T00:00:03.000Z","sequence":4,"event":{"type":"done","turnId":"turn-1","status":"completed","model":"claude-sonnet-4","usage":{"inputTokens":120,"outputTokens":45,"cacheReadTokens":12,"cacheCreationTokens":3,"reasoningTokens":7,"contextWindow":200000},"costUsd":1.23}}
     {"sessionId":"chat-1","timestamp":"2026-03-25T00:00:04.000Z","sequence":5,"event":{"type":"tokens","turnId":"turn-1","itemId":"tok-1","inputTokens":169600,"outputTokens":701,"cacheReadTokens":168300,"cacheWriteTokens":1200,"contextWindow":258400}}
+    {"sessionId":"chat-1","timestamp":"2026-03-25T00:00:05.000Z","sequence":6,"event":{"type":"codex_token_usage","turnId":"turn-2","usage":{"threadId":"thread-1","turnId":"turn-2","modelContextWindow":258400,"last":{"inputTokens":170000,"outputTokens":800,"cacheReadTokens":168500,"cacheWriteTokens":1300,"reasoningTokens":21},"total":{"totalTokens":170800}}}}
     """
 
     let transcript = parseWorkChatTranscript(raw)
 
-    XCTAssertEqual(transcript.count, 5)
+    XCTAssertEqual(transcript.count, 6)
 
     guard case .command(let command, let cwd, let output, let status, let itemId, let exitCode, let durationMs, let turnId) = transcript[0].event else {
       return XCTFail("Expected command event.")
@@ -7078,6 +7079,19 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(tokenUsage.contextWindow, 258400)
     XCTAssertEqual(tokenTurnId, "turn-1")
     XCTAssertEqual(tokenItemId, "tok-1")
+
+    guard case .tokens(let codexUsage, let codexTurnId, let codexItemId) = transcript[5].event else {
+      return XCTFail("Expected codex token usage to normalize to a tokens event.")
+    }
+    XCTAssertEqual(codexUsage.inputTokens, 170000)
+    XCTAssertEqual(codexUsage.outputTokens, 800)
+    XCTAssertEqual(codexUsage.cacheReadTokens, 168500)
+    XCTAssertEqual(codexUsage.cacheCreationTokens, 1300)
+    XCTAssertEqual(codexUsage.reasoningTokens, 21)
+    XCTAssertEqual(codexUsage.totalTokens, 170800)
+    XCTAssertEqual(codexUsage.contextWindow, 258400)
+    XCTAssertEqual(codexTurnId, "turn-2")
+    XCTAssertEqual(codexItemId, nil)
 
     let sessionUsage = summarizeWorkSessionUsage(from: transcript)
     XCTAssertEqual(sessionUsage?.turnCount, 1)

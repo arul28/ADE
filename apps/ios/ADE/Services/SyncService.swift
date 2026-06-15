@@ -7438,7 +7438,7 @@ final class SyncService: ObservableObject {
           // per-session watermark used as sinceSeq on re-subscribe. Events
           // without seq (older hosts) keep today's behavior unchanged.
           if let lastSeq = chatEventLastSeqBySession[envelope.sessionId], seq <= lastSeq {
-            syncChatLog.notice(
+            syncChatLog.debug(
               "chat_event_dropped_old session=\(envelope.sessionId, privacy: .public) seq=\(seq, privacy: .public) lastSeq=\(lastSeq, privacy: .public) type=\(envelope.event.typeName, privacy: .public)"
             )
             break
@@ -7446,7 +7446,7 @@ final class SyncService: ObservableObject {
           chatEventLastSeqBySession[envelope.sessionId] = seq
         }
         recordChatEventEnvelope(envelope)
-        syncChatLog.notice(
+        syncChatLog.debug(
           "chat_event_applied session=\(envelope.sessionId, privacy: .public) seq=\(envelope.sequence ?? -1, privacy: .public) type=\(envelope.event.typeName, privacy: .public) history=\(self.chatEventEnvelopesBySession[envelope.sessionId]?.count ?? 0, privacy: .public) revision=\(self.chatEventRevisionsBySession[envelope.sessionId] ?? 0, privacy: .public)"
         )
       }

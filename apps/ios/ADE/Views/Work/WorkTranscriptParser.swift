@@ -276,6 +276,34 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
           turnId: stringValue(eventDict["turnId"]),
           itemId: itemId
         )
+      case "codex_token_usage":
+        let usageDict = eventDict["usage"] as? [String: Any] ?? [:]
+        let lastUsage = usageDict["last"] as? [String: Any]
+        let totalUsage = usageDict["total"] as? [String: Any]
+        let contextWindow = optionalWorkInt(usageDict["modelContextWindow"])
+        event = .tokens(
+          usage: makeWorkUsageSummary(
+            inputTokens: optionalWorkInt(lastUsage?["inputTokens"]) ?? optionalWorkInt(totalUsage?["inputTokens"]),
+            outputTokens: optionalWorkInt(lastUsage?["outputTokens"]) ?? optionalWorkInt(totalUsage?["outputTokens"]),
+            cacheReadTokens: optionalWorkInt(lastUsage?["cacheReadTokens"]) ?? optionalWorkInt(totalUsage?["cacheReadTokens"]),
+            cacheCreationTokens: optionalWorkInt(lastUsage?["cacheWriteTokens"]) ?? optionalWorkInt(totalUsage?["cacheWriteTokens"]),
+            reasoningTokens: optionalWorkInt(lastUsage?["reasoningTokens"]) ?? optionalWorkInt(totalUsage?["reasoningTokens"]),
+            totalTokens: optionalWorkInt(totalUsage?["totalTokens"]) ?? optionalWorkInt(lastUsage?["totalTokens"]),
+            contextWindow: contextWindow,
+            costUsd: nil
+          ) ?? WorkUsageSummary(
+            turnCount: 1,
+            inputTokens: 0,
+            outputTokens: 0,
+            cacheReadTokens: 0,
+            cacheCreationTokens: 0,
+            totalTokens: optionalWorkInt(totalUsage?["totalTokens"]) ?? optionalWorkInt(lastUsage?["totalTokens"]) ?? 0,
+            contextWindow: contextWindow,
+            costUsd: 0
+          ),
+          turnId: turnId ?? optionalString(usageDict["turnId"]) ?? "",
+          itemId: nil
+        )
       case "completion_report":
         let report = eventDict["report"] as? [String: Any] ?? [:]
         let artifacts = (report["artifacts"] as? [[String: Any]] ?? []).map { artifact in
