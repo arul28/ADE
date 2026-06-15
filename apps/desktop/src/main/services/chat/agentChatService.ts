@@ -16937,11 +16937,23 @@ export function createAgentChatService(args: {
       cwd: managed.laneWorktreePath,
       env: claudeEnv,
       pathToClaudeCodeExecutable: claudeExecutable.path,
-      managedSettings: {
-        allowedMcpServers: [],
-        allowManagedMcpServersOnly: true,
-        strictPluginOnlyCustomization: ["mcp"],
-      },
+      // User-configured MCP servers (~/.claude.json, project .mcp.json) load via
+      // settingSources below, matching a terminal `claude` session. We previously
+      // locked this to managed-only (allowManagedMcpServersOnly + empty allowlist) as
+      // a context/perf trim in #294, but that silently stripped the user's MCP tools
+      // from chats — e.g. iOS-automation servers — making the SDK chat strictly less
+      // capable than an `ade` CLI session for the same task. ENABLE_TOOL_SEARCH now
+      // keeps large tool catalogs cheap, so the trim is no longer worth the capability
+      // loss. Orchestration sessions re-apply managed-only isolation in their own block.
+      // Lightweight side-jobs (auto-title / lane-naming) get no settingSources, and the
+      // SDK loads all MCP sources when unconstrained — so keep them lean with
+      // strictMcpConfig (ignores on-disk .mcp.json / user MCP), preserving prior behavior.
+      // Orchestration LEAD sessions are read-only planners (their direct Claude tools are
+      // denied below); isolate their MCP the same way so user/project MCP servers can't
+      // hand a draft lead (no bundle yet → orchestration block skipped) tool capability
+      // back. Workers/validators do real work and keep user MCP. strictMcpConfig still
+      // permits the programmatic orchestration MCP server added below for bundled leads.
+      ...((lightweight || isOrchestrationLeadSession(managed.session)) ? { strictMcpConfig: true } : {}),
       settings: {
         outputStyle,
         enabledPlugins: CLAUDE_SESSION_DISABLED_PLUGINS,

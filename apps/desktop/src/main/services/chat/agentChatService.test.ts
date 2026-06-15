@@ -2291,7 +2291,7 @@ describe("createAgentChatService", () => {
       ]);
     });
 
-    it("disables Claude MCP while keeping project setting source enabled", async () => {
+    it("loads user/project MCP servers in normal chats (no managed-only lock)", async () => {
       fs.writeFileSync(path.join(tmpRoot, ".mcp.json"), JSON.stringify({
         mcpServers: {
           projectTools: {
@@ -2323,15 +2323,63 @@ describe("createAgentChatService", () => {
       const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as {
         managedSettings?: Record<string, unknown>;
         settingSources?: string[];
+        strictMcpConfig?: boolean;
       } | undefined;
       expect(opts).toBeTruthy();
+      // Project/user setting sources stay enabled so the SDK reads the user's
+      // configured MCP servers (.mcp.json / ~/.claude.json) — same as a terminal session.
       expect(opts?.settingSources).toEqual(expect.arrayContaining(["project"]));
+      // ADE does not inject mcpServers into a normal chat (only orchestration does),
+      // and it no longer locks MCP to managed-only — so the user's servers can load.
       expect(opts).not.toHaveProperty("mcpServers");
-      expect(opts?.managedSettings).toMatchObject({
-        allowedMcpServers: [],
-        allowManagedMcpServersOnly: true,
-        strictPluginOnlyCustomization: ["mcp"],
+      expect(opts?.managedSettings).toBeUndefined();
+      // Inverse of the lightweight test: strictMcpConfig must NOT leak into normal
+      // chats, or it would silently re-block the user's MCP servers we just enabled.
+      expect(opts?.strictMcpConfig).toBeUndefined();
+    });
+
+    it("keeps lightweight sessions lean by ignoring on-disk MCP config (strictMcpConfig)", async () => {
+      fs.writeFileSync(path.join(tmpRoot, ".mcp.json"), JSON.stringify({
+        mcpServers: {
+          projectTools: {
+            command: "node",
+            args: ["mcp-server.js"],
+          },
+        },
+      }));
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send: vi.fn(),
+        stream: vi.fn(async function* () {
+          return;
+        }),
+        close: vi.fn(),
+        sessionId: "sdk-session-light-mcp",
+      } as any);
+
+      const { service } = createService();
+      await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        sessionProfile: "light",
       });
+
+      await vi.waitFor(() => {
+        expect(claudeSdkCreateSessionCompat).toHaveBeenCalled();
+      });
+
+      const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as {
+        strictMcpConfig?: boolean;
+        managedSettings?: Record<string, unknown>;
+        settingSources?: string[];
+      } | undefined;
+      expect(opts).toBeTruthy();
+      // Lightweight side-jobs (auto-title / lane-naming) don't get settingSources,
+      // and the SDK loads all MCP sources when unconstrained — so strictMcpConfig must
+      // be set to keep them from spawning the user's whole MCP fleet for a trivial job.
+      expect(opts?.settingSources).toBeUndefined();
+      expect(opts?.strictMcpConfig).toBe(true);
+      expect(opts?.managedSettings).toBeUndefined();
     });
 
     it("attaches ADE orchestration tools to Claude lead sessions through an SDK MCP server", async () => {
@@ -2406,6 +2454,10 @@ describe("createAgentChatService", () => {
 
       const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as any;
       expect(opts?.mcpServers?.["ade-orchestration"]).toBeUndefined();
+      // Regression guard (removed base MCP lock): a draft lead has no managed MCP block
+      // yet, so strictMcpConfig must isolate it — user/project MCP servers must not restore
+      // tool capability the read-only lead is denied.
+      expect(opts?.strictMcpConfig).toBe(true);
       expect(opts?.disallowedTools).toEqual(expect.arrayContaining([
         "Agent",
         "Bash",
@@ -2443,6 +2495,9 @@ describe("createAgentChatService", () => {
       });
 
       const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as any;
+      // Role-marked lead (no interactionMode, no bundle) is still a read-only lead, so it
+      // must be MCP-isolated too (regression guard for the removed base MCP lock).
+      expect(opts?.strictMcpConfig).toBe(true);
       expect(opts?.disallowedTools).toEqual(expect.arrayContaining([
         "Agent",
         "Bash",
