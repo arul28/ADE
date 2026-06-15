@@ -56,6 +56,7 @@
 		26C8992F8D661707E9360503 /* Database.swift in Sources */ = {isa = PBXBuildFile; fileRef = 51942BAC0965C7D0CCE6E8B8 /* Database.swift */; };
 		28CFE3D489EA1B208D231519 /* SyncService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 66B5024B0A05F3D9754101F1 /* SyncService.swift */; };
 		4DC17C7C8E82D387043B01FD /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 73B17472FAC08845853BC6B4 /* ContentView.swift */; };
+		B2B52EED21B04E9700000002 /* RemoteProjectAddSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = B2B52EED21B04E9700000001 /* RemoteProjectAddSheet.swift */; };
 		56223CC3AF5A01B710CDC4CF /* WorkTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0C6ECFA9D57E70E57A60E8AB /* WorkTabView.swift */; };
 		B10000000000000000000020 /* WorkBrowserHelpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000020 /* WorkBrowserHelpers.swift */; };
 		E10000000000000000000022 /* WorkRootScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000022 /* WorkRootScreen.swift */; };
@@ -348,6 +349,7 @@
 		5EE4D463D21266B62B422D11 /* PRsTabView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PRsTabView.swift; path = ADE/Views/PRsTabView.swift; sourceTree = "<group>"; };
 		66B5024B0A05F3D9754101F1 /* SyncService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SyncService.swift; path = ADE/Services/SyncService.swift; sourceTree = "<group>"; };
 		73B17472FAC08845853BC6B4 /* ContentView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ContentView.swift; path = ADE/App/ContentView.swift; sourceTree = "<group>"; };
+		B2B52EED21B04E9700000001 /* RemoteProjectAddSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = RemoteProjectAddSheet.swift; path = ADE/App/RemoteProjectAddSheet.swift; sourceTree = "<group>"; };
 		8943C47805A871A4E4A4BF68 /* Assets.xcassets */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = folder.assetcatalog; name = Assets.xcassets; path = ADE/Assets.xcassets; sourceTree = "<group>"; };
 		9270CF8A67F3FA79089F39C1 /* LanesTabView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LanesTabView.swift; path = ADE/Views/LanesTabView.swift; sourceTree = "<group>"; };
 		A10000000000000000000002 /* LaneAttachSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneAttachSheet.swift; path = ADE/Views/Lanes/LaneAttachSheet.swift; sourceTree = "<group>"; };
@@ -700,6 +702,7 @@
 			children = (
 				C9411193AF56B236BA32EFF5 /* ADEApp.swift */,
 				73B17472FAC08845853BC6B4 /* ContentView.swift */,
+				B2B52EED21B04E9700000001 /* RemoteProjectAddSheet.swift */,
 				AA5300000000000000000011 /* AppDelegate.swift */,
 				AA5300000000000000000012 /* DeepLinkRouter.swift */,
 				K20000000000000000000002 /* DeepLinkURLParsing.swift */,
@@ -1040,6 +1043,7 @@
 				F2A1C9D8456E7B3C1D2E4F90 /* FilesCodeSupport.swift in Sources */,
 				1558E44876BBE931C02D5640 /* ADEApp.swift in Sources */,
 				4DC17C7C8E82D387043B01FD /* ContentView.swift in Sources */,
+				B2B52EED21B04E9700000002 /* RemoteProjectAddSheet.swift in Sources */,
 				FBEEF09EFB4911FEAC6A7E87 /* RemoteModels.swift in Sources */,
 				26C8992F8D661707E9360503 /* Database.swift in Sources */,
 				0375D32BA5870617FA1758C6 /* KeychainService.swift in Sources */,

@@ -25,9 +25,11 @@ import type {
   SyncBrainStatusPayload,
   SyncChangesetAckPayload,
   SyncChangesetBatchPayload,
+  CloneProjectInput,
   SyncCommandAckPayload,
   SyncCommandPayload,
   SyncCommandResultPayload,
+  CreateProjectInput,
   SyncEnvelope,
   SyncChatEventPayload,
   SyncChatSubscribeSnapshotPayload,
@@ -41,10 +43,15 @@ import type {
   SyncPairingRequestPayload,
   SyncPeerConnectionState,
   SyncPeerMetadata,
+  SyncProjectOpenRequestPayload,
   SyncProjectCatalogChunkPayload,
   SyncProjectCatalogPayload,
   SyncProjectSwitchRequestPayload,
   SyncProjectSwitchResultPayload,
+  ListMyGitHubReposInput,
+  ListMyGitHubReposResult,
+  ProjectBrowseInput,
+  ProjectBrowseResult,
   SyncRemoteCommandDescriptor,
   SyncTailnetDiscoveryStatus,
   SyncTerminalHistoryResponsePayload,
@@ -333,6 +340,21 @@ function addMobileCommandWaiter(record: CachedMobileCommand, peer: PeerState, re
   record.waiters.push({ peer, requestId });
 }
 
+export type SyncProjectCatalogProvider = {
+  listProjects: () => Promise<SyncProjectCatalogPayload>;
+  prepareProjectConnection: (args: SyncProjectSwitchRequestPayload) => Promise<SyncProjectSwitchResultPayload>;
+  completeProjectConnection?: (
+    args: SyncProjectSwitchRequestPayload,
+    result: SyncProjectSwitchResultPayload,
+  ) => Promise<void>;
+  browseDirectories?: (args: ProjectBrowseInput) => Promise<ProjectBrowseResult>;
+  getDefaultParentDir?: () => Promise<string>;
+  openProject?: (args: SyncProjectOpenRequestPayload) => Promise<SyncMobileProjectSummary>;
+  createProject?: (args: CreateProjectInput) => Promise<SyncMobileProjectSummary>;
+  cloneProject?: (args: CloneProjectInput) => Promise<SyncMobileProjectSummary>;
+  listMyGitHubRepos?: (args: ListMyGitHubReposInput) => Promise<ListMyGitHubReposResult>;
+};
+
 type SyncHostServiceArgs = {
   db: AdeDb;
   logger: Logger;
@@ -393,14 +415,7 @@ type SyncHostServiceArgs = {
   brainStatusIntervalMs?: number;
   compressionThresholdBytes?: number;
   deviceRegistryService?: DeviceRegistryService;
-  projectCatalogProvider?: {
-    listProjects: () => Promise<SyncProjectCatalogPayload>;
-    prepareProjectConnection: (args: SyncProjectSwitchRequestPayload) => Promise<SyncProjectSwitchResultPayload>;
-    completeProjectConnection?: (
-      args: SyncProjectSwitchRequestPayload,
-      result: SyncProjectSwitchResultPayload,
-    ) => Promise<void>;
-  };
+  projectCatalogProvider?: SyncProjectCatalogProvider;
   onStateChanged?: () => void;
   notificationEventBus?: NotificationEventBus | null;
   remoteCommandService?: SyncRemoteCommandService;
@@ -599,6 +614,7 @@ export function buildSyncHostHelloOkPayload(args: {
   pollIntervalMs: number;
   projectCatalog: SyncProjectCatalogPayload;
   projectCatalogEnabled: boolean;
+  projectActionsEnabled: boolean;
   remoteCommandSupportedActions: string[];
   remoteCommandDescriptors: SyncRemoteCommandDescriptor[];
   localCommandDescriptors: SyncRemoteCommandDescriptor[];
@@ -625,6 +641,9 @@ export function buildSyncHostHelloOkPayload(args: {
       },
       projectCatalog: {
         enabled: args.projectCatalogEnabled,
+      },
+      projectActions: {
+        enabled: args.projectActionsEnabled,
       },
       changesetAck: {
         enabled: true,
@@ -2460,6 +2479,103 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     }
   }
 
+  async function handleProjectBrowseRequest(
+    peer: PeerState,
+    requestId: string | null | undefined,
+    payload: ProjectBrowseInput | null,
+  ): Promise<void> {
+    if (!args.projectCatalogProvider?.browseDirectories) {
+      sendRequired(peer, "project_browse_result", {
+        ok: false,
+        message: "Project browsing is not available from this machine.",
+      }, requestId);
+      return;
+    }
+    try {
+      const result = await args.projectCatalogProvider.browseDirectories(payload ?? {});
+      sendRequired(peer, "project_browse_result", { ok: true, result }, requestId);
+    } catch (error) {
+      sendRequired(peer, "project_browse_result", {
+        ok: false,
+        message: error instanceof Error ? error.message : String(error),
+      }, requestId);
+    }
+  }
+
+  async function handleProjectDefaultParentDirRequest(
+    peer: PeerState,
+    requestId: string | null | undefined,
+  ): Promise<void> {
+    if (!args.projectCatalogProvider?.getDefaultParentDir) {
+      sendRequired(peer, "project_default_parent_dir", {
+        ok: false,
+        message: "Default project directory is not available from this machine.",
+      }, requestId);
+      return;
+    }
+    try {
+      const parentDir = await args.projectCatalogProvider.getDefaultParentDir();
+      sendRequired(peer, "project_default_parent_dir", { ok: true, parentDir }, requestId);
+    } catch (error) {
+      sendRequired(peer, "project_default_parent_dir", {
+        ok: false,
+        message: error instanceof Error ? error.message : String(error),
+      }, requestId);
+    }
+  }
+
+  async function handleProjectActionRequest<TPayload>(
+    peer: PeerState,
+    requestId: string | null | undefined,
+    resultType: "project_open_result" | "project_create_result" | "project_clone_result",
+    unavailableMessage: string,
+    payload: TPayload,
+    action: ((payload: TPayload) => Promise<SyncMobileProjectSummary>) | undefined,
+  ): Promise<void> {
+    if (!action) {
+      sendRequired(peer, resultType, {
+        ok: false,
+        message: unavailableMessage,
+      }, requestId);
+      return;
+    }
+    try {
+      const project = await action(payload);
+      sendRequired(peer, resultType, { ok: true, project }, requestId);
+      if (args.projectCatalogProvider) {
+        sendProjectCatalog(peer, await buildProjectCatalogPayload());
+      }
+    } catch (error) {
+      sendRequired(peer, resultType, {
+        ok: false,
+        message: error instanceof Error ? error.message : String(error),
+      }, requestId);
+    }
+  }
+
+  async function handleProjectListMyGitHubReposRequest(
+    peer: PeerState,
+    requestId: string | null | undefined,
+    payload: ListMyGitHubReposInput | null,
+  ): Promise<void> {
+    if (!args.projectCatalogProvider?.listMyGitHubRepos) {
+      sendRequired(peer, "project_list_my_github_repos_result", {
+        ok: false,
+        message: "GitHub repository listing is not available from this machine.",
+      }, requestId);
+      return;
+    }
+    try {
+      const result = await args.projectCatalogProvider.listMyGitHubRepos(payload ?? {});
+      sendRequired(peer, "project_list_my_github_repos_result", { ok: true, result }, requestId);
+    } catch (error) {
+      sendRequired(peer, "project_list_my_github_repos_result", {
+        ok: false,
+        message: error instanceof Error ? error.message : String(error),
+      }, requestId);
+    }
+  }
+
   function buildBrainStatus(): SyncBrainStatusPayload {
     const brainMetadata = readBrainMetadata();
     if (disposed) {
@@ -3395,6 +3511,14 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         lastPort: peer.remotePort,
       });
       const projectCatalog = await buildProjectCatalogPayload();
+      const projectActionsEnabled = Boolean(
+        args.projectCatalogProvider?.browseDirectories
+          && args.projectCatalogProvider.getDefaultParentDir
+          && args.projectCatalogProvider.openProject
+          && args.projectCatalogProvider.createProject
+          && args.projectCatalogProvider.cloneProject
+          && args.projectCatalogProvider.listMyGitHubRepos,
+      );
       send(peer.ws, "hello_ok", buildSyncHostHelloOkPayload({
         peer: hello.peer,
         brain: readBrainMetadata(),
@@ -3404,6 +3528,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         pollIntervalMs,
         projectCatalog,
         projectCatalogEnabled: Boolean(args.projectCatalogProvider),
+        projectActionsEnabled,
         remoteCommandSupportedActions: remoteCommandService.getSupportedActions(),
         remoteCommandDescriptors: remoteCommandService.getDescriptors(),
         localCommandDescriptors: localPresenceCommandDescriptors,
@@ -3437,6 +3562,51 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       }
       case "project_switch_request": {
         await handleProjectSwitchRequest(peer, envelope.requestId, envelope.payload as SyncProjectSwitchRequestPayload);
+        break;
+      }
+      case "project_browse_request": {
+        await handleProjectBrowseRequest(peer, envelope.requestId, envelope.payload as ProjectBrowseInput);
+        break;
+      }
+      case "project_default_parent_dir_request": {
+        await handleProjectDefaultParentDirRequest(peer, envelope.requestId);
+        break;
+      }
+      case "project_open_request": {
+        await handleProjectActionRequest(
+          peer,
+          envelope.requestId,
+          "project_open_result",
+          "Opening projects is not available from this machine.",
+          (envelope.payload ?? {}) as SyncProjectOpenRequestPayload,
+          args.projectCatalogProvider?.openProject,
+        );
+        break;
+      }
+      case "project_create_request": {
+        await handleProjectActionRequest(
+          peer,
+          envelope.requestId,
+          "project_create_result",
+          "Creating projects is not available from this machine.",
+          (envelope.payload ?? {}) as CreateProjectInput,
+          args.projectCatalogProvider?.createProject,
+        );
+        break;
+      }
+      case "project_clone_request": {
+        await handleProjectActionRequest(
+          peer,
+          envelope.requestId,
+          "project_clone_result",
+          "Cloning projects is not available from this machine.",
+          (envelope.payload ?? {}) as CloneProjectInput,
+          args.projectCatalogProvider?.cloneProject,
+        );
+        break;
+      }
+      case "project_list_my_github_repos_request": {
+        await handleProjectListMyGitHubReposRequest(peer, envelope.requestId, envelope.payload as ListMyGitHubReposInput);
         break;
       }
       case "heartbeat": {

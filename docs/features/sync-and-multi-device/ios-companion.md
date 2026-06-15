@@ -59,7 +59,12 @@ apps/ios/
 │   │   │                            # running-chat badge); the system tab
 │   │   │                            # strip is hidden and individual screens
 │   │   │                            # can hide the custom bar via
-│   │   │                            # `adeRootTabBarHidden()`
+│   │   │                            # `adeRootTabBarHidden()`; project
+│   │   │                            # home includes Add project when the
+│   │   │                            # runtime advertises projectActions
+│   │   ├── RemoteProjectAddSheet.swift # Open/create/clone project flow
+│   │   │                               # backed by runtime-scoped
+│   │   │                               # project action envelopes
 │   │   ├── DeepLinkRouter.swift     # ade:// URL handler. ade://session/<id>,
 │   │   │                            # ade://pr/<n>, and ade://pr/<owner>/<repo>/<num>
 │   │   │                            # flip tabs via .adeDeepLinkRequested.
@@ -87,6 +92,7 @@ apps/ios/
 │   │                                # PIN pairing, lane presence, terminal
 │   │                                # subscribe/unsubscribe + input/resize,
 │   │                                # CLI launcher (startCliSession), chat push,
+│   │                                # machine project browse/open/create/clone,
 │   │                                # lane reparent stack-base override payloads,
 │   │                                # push-token registration, worktree discovery
 │   ├── Shared/
@@ -365,6 +371,12 @@ Implemented envelope types on iOS:
 | `pairing_request` / `pairing_result` | Phone → runtime / runtime → phone | 6-digit PIN pairing |
 | `project_catalog_request` / `project_catalog` | Phone → runtime / runtime → phone | Refresh recent/available machine projects |
 | `project_switch_request` / `project_switch_result` | Phone → runtime / runtime → phone | Prepare a sync connection for a selected machine project |
+| `project_browse_request` / `project_browse_result` | Phone → runtime / runtime → phone | Browse machine directories for Open project / parent-directory picker |
+| `project_default_parent_dir_request` / `project_default_parent_dir` | Phone → runtime / runtime → phone | Resolve the default parent directory for Create/Clone project forms |
+| `project_open_request` / `project_open_result` | Phone → runtime / runtime → phone | Register/open an existing Git repository from the machine filesystem |
+| `project_create_request` / `project_create_result` | Phone → runtime / runtime → phone | Create a new local Git project under a selected parent directory |
+| `project_clone_request` / `project_clone_result` | Phone → runtime / runtime → phone | Clone a GitHub repository on the machine and register it in the project catalog |
+| `project_list_my_github_repos_request` / `project_list_my_github_repos_result` | Phone → runtime / runtime → phone | List the runtime machine's authenticated GitHub repositories for the Clone flow |
 | `changeset_batch` | Bidirectional | cr-sqlite changeset batch |
 | `changeset_ack` | Bidirectional | Per-batch apply confirmation (or error code); the sender retransmits on timeout |
 | `command` | Phone → runtime | Execution request |
@@ -902,7 +914,7 @@ reflected in the phone's UI on the next descriptor read.
 | WebSocket client | Implemented |
 | PIN pairing flow | Implemented |
 | QR pairing payload (v2, address candidates + port) | Implemented |
-| Project home + machine project switching | Implemented |
+| Project home + machine project switching | Implemented, including Add project actions for browsing/opening existing Git repos, creating local projects, and cloning GitHub repos on the paired machine |
 | Lanes tab | Implemented to live machine parity (with `devicesOpen`, multi-attach, stack canvas, stack-position/base-branch editing in Manage Lane, and template environment progress) |
 | Files tab | Implemented with `mobileReadOnly` workspace gate and capped search/quick-open result rendering |
 | Work tab | Implemented; live chat-event push from runtime, subscribed terminal input/resize control with `terminal_unsubscribe` on view disappear, in-app CLI session launcher (`work.startCliSession`), message-to-continue on ended agent CLI rows |

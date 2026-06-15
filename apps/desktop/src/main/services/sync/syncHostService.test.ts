@@ -694,6 +694,45 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
       isCached: false,
       isOpen: false,
     };
+    const browseResult = {
+      inputPath: "~/Projects",
+      resolvedPath: "/Users/admin/Projects",
+      directoryPath: "/Users/admin/Projects",
+      parentPath: "/Users/admin",
+      exactDirectoryPath: "/Users/admin/Projects",
+      openableProjectRoot: null,
+      entries: [
+        {
+          name: "ADE",
+          fullPath: projectRoot,
+          isGitRepo: true,
+        },
+      ],
+    };
+    const openedProject = {
+      ...project,
+      id: "project-opened",
+      rootPath: path.join(projectRoot, "opened"),
+      displayName: "Opened",
+      isOpen: true,
+      isCached: true,
+    };
+    const createdProject = {
+      ...project,
+      id: "project-created",
+      rootPath: path.join(projectRoot, "created"),
+      displayName: "Created",
+      isOpen: true,
+      isCached: true,
+    };
+    const clonedProject = {
+      ...project,
+      id: "project-cloned",
+      rootPath: path.join(projectRoot, "cloned"),
+      displayName: "Cloned",
+      isOpen: true,
+      isCached: true,
+    };
     const connection = {
       authKind: "bootstrap" as const,
       token: "project-bootstrap-token",
@@ -715,6 +754,26 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
         connection,
       })),
       completeProjectConnection: vi.fn(async () => {}),
+      browseDirectories: vi.fn(async () => browseResult),
+      getDefaultParentDir: vi.fn(async () => "/Users/admin/Projects"),
+      openProject: vi.fn(async () => openedProject),
+      createProject: vi.fn(async () => createdProject),
+      cloneProject: vi.fn(async () => clonedProject),
+      listMyGitHubRepos: vi.fn(async () => ({
+        repos: [
+          {
+            owner: "ade",
+            name: "mobile",
+            fullName: "ade/mobile",
+            isPrivate: true,
+            pushedAt: "2026-04-22T12:00:00.000Z",
+            defaultBranch: "main",
+            htmlUrl: "https://github.com/ade/mobile",
+            cloneUrl: "https://github.com/ade/mobile.git",
+            sshUrl: "git@github.com:ade/mobile.git",
+          },
+        ],
+      })),
     };
 
     const host = createSyncHostService({
@@ -776,10 +835,14 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
 
     const helloPayload = client.helloOk.payload as {
       projects?: unknown[];
-      features: { projectCatalog?: { enabled: boolean } };
+      features: {
+        projectCatalog?: { enabled: boolean };
+        projectActions?: { enabled: boolean };
+      };
     };
     expect(helloPayload.projects).toEqual([project]);
     expect(helloPayload.features.projectCatalog?.enabled).toBe(true);
+    expect(helloPayload.features.projectActions?.enabled).toBe(true);
 
     client.ws.send(encodeSyncEnvelope({
       type: "project_catalog_request",
@@ -814,6 +877,102 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
         projectId: project.id,
         rootPath: project.rootPath,
       }, switchResult.payload);
+    });
+
+    client.ws.send(encodeSyncEnvelope({
+      type: "project_browse_request",
+      requestId: "browse-1",
+      payload: {
+        partialPath: "~/Projects",
+        limit: 20,
+      },
+    }));
+    const browse = await client.queue.next("project_browse_result");
+    expect(browse.requestId).toBe("browse-1");
+    expect(projectCatalogProvider.browseDirectories).toHaveBeenCalledWith({
+      partialPath: "~/Projects",
+      limit: 20,
+    });
+    expect(browse.payload).toEqual({ ok: true, result: browseResult });
+
+    client.ws.send(encodeSyncEnvelope({
+      type: "project_default_parent_dir_request",
+      requestId: "parent-1",
+      payload: {},
+    }));
+    const defaultParent = await client.queue.next("project_default_parent_dir");
+    expect(defaultParent.requestId).toBe("parent-1");
+    expect(defaultParent.payload).toEqual({ ok: true, parentDir: "/Users/admin/Projects" });
+
+    client.ws.send(encodeSyncEnvelope({
+      type: "project_open_request",
+      requestId: "open-1",
+      payload: { rootPath: openedProject.rootPath },
+    }));
+    const openResult = await client.queue.next("project_open_result");
+    expect(openResult.requestId).toBe("open-1");
+    expect(projectCatalogProvider.openProject).toHaveBeenCalledWith({ rootPath: openedProject.rootPath });
+    expect(openResult.payload).toEqual({ ok: true, project: openedProject });
+    await client.queue.next("project_catalog");
+
+    client.ws.send(encodeSyncEnvelope({
+      type: "project_create_request",
+      requestId: "create-1",
+      payload: { name: "Created", parentDir: "/Users/admin/Projects" },
+    }));
+    const createResult = await client.queue.next("project_create_result");
+    expect(createResult.requestId).toBe("create-1");
+    expect(projectCatalogProvider.createProject).toHaveBeenCalledWith({
+      name: "Created",
+      parentDir: "/Users/admin/Projects",
+    });
+    expect(createResult.payload).toEqual({ ok: true, project: createdProject });
+    await client.queue.next("project_catalog");
+
+    client.ws.send(encodeSyncEnvelope({
+      type: "project_clone_request",
+      requestId: "clone-1",
+      payload: {
+        url: "https://github.com/ade/mobile.git",
+        name: "mobile",
+        parentDir: "/Users/admin/Projects",
+      },
+    }));
+    const cloneResult = await client.queue.next("project_clone_result");
+    expect(cloneResult.requestId).toBe("clone-1");
+    expect(projectCatalogProvider.cloneProject).toHaveBeenCalledWith({
+      url: "https://github.com/ade/mobile.git",
+      name: "mobile",
+      parentDir: "/Users/admin/Projects",
+    });
+    expect(cloneResult.payload).toEqual({ ok: true, project: clonedProject });
+    await client.queue.next("project_catalog");
+
+    client.ws.send(encodeSyncEnvelope({
+      type: "project_list_my_github_repos_request",
+      requestId: "repos-1",
+      payload: { search: "mobile" },
+    }));
+    const reposResult = await client.queue.next("project_list_my_github_repos_result");
+    expect(reposResult.requestId).toBe("repos-1");
+    expect(projectCatalogProvider.listMyGitHubRepos).toHaveBeenCalledWith({ search: "mobile" });
+    expect(reposResult.payload).toEqual({
+      ok: true,
+      result: {
+        repos: [
+          {
+            owner: "ade",
+            name: "mobile",
+            fullName: "ade/mobile",
+            isPrivate: true,
+            pushedAt: "2026-04-22T12:00:00.000Z",
+            defaultBranch: "main",
+            htmlUrl: "https://github.com/ade/mobile",
+            cloneUrl: "https://github.com/ade/mobile.git",
+            sshUrl: "git@github.com:ade/mobile.git",
+          },
+        ],
+      },
     });
 
     projectCatalogProvider.listProjects.mockResolvedValueOnce({

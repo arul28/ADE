@@ -8,9 +8,6 @@ import type {
   SyncDeviceRuntimeState,
   SyncGetStatusArgs,
   SyncPairingConnectInfo,
-  SyncProjectCatalogPayload,
-  SyncProjectSwitchRequestPayload,
-  SyncProjectSwitchResultPayload,
   SyncRoleSnapshot,
   SyncTailnetDiscoveryStatus,
   SyncTransferBlocker,
@@ -54,6 +51,7 @@ import {
   SYNC_TAILNET_DISCOVERY_SERVICE_NAME,
   SYNC_TAILNET_DISCOVERY_SERVICE_PORT,
   type SyncHostService,
+  type SyncProjectCatalogProvider,
   type SyncRuntimeKind,
 } from "./syncHostService";
 import { createSyncPairingStore } from "./syncPairingStore";
@@ -134,14 +132,7 @@ type SyncServiceArgs = {
    * connected iOS peers.
    */
   notificationEventBus?: NotificationEventBus | null;
-  projectCatalogProvider?: {
-    listProjects: () => Promise<SyncProjectCatalogPayload>;
-    prepareProjectConnection: (args: SyncProjectSwitchRequestPayload) => Promise<SyncProjectSwitchResultPayload>;
-    completeProjectConnection?: (
-      args: SyncProjectSwitchRequestPayload,
-      result: SyncProjectSwitchResultPayload,
-    ) => Promise<void>;
-  };
+  projectCatalogProvider?: SyncProjectCatalogProvider;
   remoteCommandExecutor?: Pick<SyncRemoteCommandService, "execute">;
   /**
    * Lazy accessor for the model picker store. iOS uses the `modelPicker.*`

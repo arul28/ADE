@@ -1,4 +1,12 @@
 import type { AgentChatEventEnvelope, AgentChatPermissionMode } from "./chat";
+import type {
+  CloneProjectInput,
+  CreateProjectInput,
+  ListMyGitHubReposInput,
+  ListMyGitHubReposResult,
+  ProjectBrowseInput,
+  ProjectBrowseResult,
+} from "./core";
 import type { PtySendToSessionResult, TerminalSessionSummary } from "./sessions";
 
 export type SyncScalarBytes = {
@@ -234,6 +242,9 @@ export type SyncFeatureFlags = {
   projectCatalog: {
     enabled: boolean;
   };
+  projectActions: {
+    enabled: boolean;
+  };
   changesetAck: {
     enabled: boolean;
   };
@@ -299,6 +310,34 @@ export type SyncProjectSwitchResultPayload = {
   message?: string | null;
   project?: SyncMobileProjectSummary | null;
   connection?: SyncProjectConnectionPayload | null;
+};
+
+export type SyncProjectOpenRequestPayload = {
+  rootPath?: string | null;
+};
+
+export type SyncProjectBrowseResultPayload = {
+  ok: boolean;
+  message?: string | null;
+  result?: ProjectBrowseResult | null;
+};
+
+export type SyncProjectDefaultParentDirPayload = {
+  ok: boolean;
+  message?: string | null;
+  parentDir?: string | null;
+};
+
+export type SyncProjectActionResultPayload = {
+  ok: boolean;
+  message?: string | null;
+  project?: SyncMobileProjectSummary | null;
+};
+
+export type SyncProjectListMyGitHubReposResultPayload = {
+  ok: boolean;
+  message?: string | null;
+  result?: ListMyGitHubReposResult | null;
 };
 
 export type SyncHelloAuth =
@@ -1069,6 +1108,18 @@ export type SyncProjectCatalogEnvelope = SyncEnvelopeWithPayload<"project_catalo
 export type SyncProjectCatalogChunkEnvelope = SyncEnvelopeWithPayload<"project_catalog_chunk", SyncProjectCatalogChunkPayload>;
 export type SyncProjectSwitchRequestEnvelope = SyncEnvelopeWithPayload<"project_switch_request", SyncProjectSwitchRequestPayload>;
 export type SyncProjectSwitchResultEnvelope = SyncEnvelopeWithPayload<"project_switch_result", SyncProjectSwitchResultPayload>;
+export type SyncProjectBrowseRequestEnvelope = SyncEnvelopeWithPayload<"project_browse_request", ProjectBrowseInput>;
+export type SyncProjectBrowseResultEnvelope = SyncEnvelopeWithPayload<"project_browse_result", SyncProjectBrowseResultPayload>;
+export type SyncProjectDefaultParentDirRequestEnvelope = SyncEnvelopeWithPayload<"project_default_parent_dir_request", Record<string, never>>;
+export type SyncProjectDefaultParentDirEnvelope = SyncEnvelopeWithPayload<"project_default_parent_dir", SyncProjectDefaultParentDirPayload>;
+export type SyncProjectOpenRequestEnvelope = SyncEnvelopeWithPayload<"project_open_request", SyncProjectOpenRequestPayload>;
+export type SyncProjectOpenResultEnvelope = SyncEnvelopeWithPayload<"project_open_result", SyncProjectActionResultPayload>;
+export type SyncProjectCreateRequestEnvelope = SyncEnvelopeWithPayload<"project_create_request", CreateProjectInput>;
+export type SyncProjectCreateResultEnvelope = SyncEnvelopeWithPayload<"project_create_result", SyncProjectActionResultPayload>;
+export type SyncProjectCloneRequestEnvelope = SyncEnvelopeWithPayload<"project_clone_request", CloneProjectInput>;
+export type SyncProjectCloneResultEnvelope = SyncEnvelopeWithPayload<"project_clone_result", SyncProjectActionResultPayload>;
+export type SyncProjectListMyGitHubReposRequestEnvelope = SyncEnvelopeWithPayload<"project_list_my_github_repos_request", ListMyGitHubReposInput>;
+export type SyncProjectListMyGitHubReposResultEnvelope = SyncEnvelopeWithPayload<"project_list_my_github_repos_result", SyncProjectListMyGitHubReposResultPayload>;
 export type SyncPairingRequestEnvelope = SyncEnvelopeWithPayload<"pairing_request", SyncPairingRequestPayload>;
 export type SyncPairingResultEnvelope = SyncEnvelopeWithPayload<"pairing_result", SyncPairingResultPayload>;
 export type SyncChangesetBatchEnvelope = SyncEnvelopeWithPayload<"changeset_batch", SyncChangesetBatchPayload>;
@@ -1119,6 +1170,18 @@ export type SyncEnvelope =
   | SyncProjectCatalogChunkEnvelope
   | SyncProjectSwitchRequestEnvelope
   | SyncProjectSwitchResultEnvelope
+  | SyncProjectBrowseRequestEnvelope
+  | SyncProjectBrowseResultEnvelope
+  | SyncProjectDefaultParentDirRequestEnvelope
+  | SyncProjectDefaultParentDirEnvelope
+  | SyncProjectOpenRequestEnvelope
+  | SyncProjectOpenResultEnvelope
+  | SyncProjectCreateRequestEnvelope
+  | SyncProjectCreateResultEnvelope
+  | SyncProjectCloneRequestEnvelope
+  | SyncProjectCloneResultEnvelope
+  | SyncProjectListMyGitHubReposRequestEnvelope
+  | SyncProjectListMyGitHubReposResultEnvelope
   | SyncPairingRequestEnvelope
   | SyncPairingResultEnvelope
   | SyncChangesetBatchEnvelope
