@@ -483,13 +483,19 @@ final class DictationBufferConverter: @unchecked Sendable {
   }
 
   private var converter: AVAudioConverter?
+  private var converterInputFormat: AVAudioFormat?
+  private var converterOutputFormat: AVAudioFormat?
 
   func convert(_ buffer: AVAudioPCMBuffer, to format: AVAudioFormat) throws -> AVAudioPCMBuffer {
     let inputFormat = buffer.format
     guard inputFormat != format else { return buffer }
 
-    if converter == nil || converter?.outputFormat != format {
+    let inputFormatChanged = converterInputFormat?.isEqual(inputFormat) != true
+    let outputFormatChanged = converterOutputFormat?.isEqual(format) != true
+    if converter == nil || inputFormatChanged || outputFormatChanged {
       converter = AVAudioConverter(from: inputFormat, to: format)
+      converterInputFormat = inputFormat
+      converterOutputFormat = format
       converter?.primeMethod = .none
     }
     guard let converter else { throw ConversionError.failedToCreateConverter }
