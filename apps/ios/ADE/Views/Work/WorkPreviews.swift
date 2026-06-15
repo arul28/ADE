@@ -10,6 +10,7 @@ private enum WorkPreviewData {
   static let threeHoursAgo = iso(minutesAgo: 180)
   static let twoDaysAgo = iso(minutesAgo: 60 * 48)
   static let syncService = SyncService()
+  static let dictationController = DictationController()
 
   static let lane = LaneSummary(
     id: "558f15ec-b705-4f7c-9db5-c8a930343f4f",
@@ -471,6 +472,7 @@ private enum WorkPreviewData {
     )
   }
   .environmentObject(WorkPreviewData.syncService)
+  .environmentObject(WorkPreviewData.dictationController)
 }
 
 #Preview("New chat") {
@@ -483,6 +485,7 @@ private enum WorkPreviewData {
       onRefreshLanes: {}
     )
     .environmentObject(WorkPreviewData.syncService)
+    .environmentObject(WorkPreviewData.dictationController)
   }
 }
 

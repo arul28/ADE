@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, desktopCapturer, dialog, ipcMain, nativeImage, shell } from "electron";
+import { app, BrowserWindow, clipboard, desktopCapturer, dialog, ipcMain, nativeImage, shell, systemPreferences } from "electron";
 import type { IpcMainInvokeEvent } from "electron";
 import { compareUpdateVersions, createEmptyAutoUpdateSnapshot, type createAutoUpdateService } from "../updates/autoUpdateService";
 import { spawn } from "node:child_process";
@@ -570,6 +570,12 @@ import type { createGitOperationsService } from "../git/gitOperationsService";
 import type { createOperationService } from "../history/operationService";
 import type { createConflictService } from "../conflicts/conflictService";
 import type { createJobEngine } from "../jobs/jobEngine";
+import {
+  type createTranscriptionService,
+  type TranscriptionResult,
+  type TranscriptionStatus,
+  TranscriptionError,
+} from "../transcription/transcriptionService";
 import type { createAiIntegrationService } from "../ai/aiIntegrationService";
 import { fetchAdeLatestRelease, type createGithubService } from "../github/githubService";
 import type { createPrService } from "../prs/prService";
@@ -971,6 +977,7 @@ export type AppContext = {
   autoUpdateService?: ReturnType<typeof createAutoUpdateService> | null;
   updateInstallImpactProvider?: (() => Promise<UpdateInstallImpact>) | null;
   feedbackReporterService?: ReturnType<typeof createFeedbackReporterService> | null;
+  transcriptionService?: ReturnType<typeof createTranscriptionService> | null;
 };
 
 type AppContextWith<K extends keyof AppContext> = AppContext & {
@@ -6306,6 +6313,82 @@ export function registerIpc({
     const ctx = getCtx();
     return ctx.sessionDeltaService?.getSessionDelta(arg.sessionId) ?? null;
   });
+
+  // ── Voice-to-text dictation ──────────────────────────────────────────────
+  // The transcription service is project-independent (no DB / lane deps): it
+  // only needs the bundled whisper binary + model + the shared glossary. It is
+  // resolved from the active context, where it is threaded as a shared
+  // singleton (see main.ts).
+  ipcMain.handle(
+    IPC.transcriptionTranscribe,
+    async (
+      _event,
+      arg: { pcm: ArrayBuffer | Int16Array; sampleRate?: number; format?: "int16" | "float32" },
+    ): Promise<TranscriptionResult> => {
+      const service = getCtx().transcriptionService;
+      if (!service) {
+        throw new Error("model_not_installed: Voice model not installed");
+      }
+      // PCM arrives as a transferable ArrayBuffer (or a typed array when called
+      // in-process from tests). Interpret it per the declared format.
+      const buffer = arg?.pcm instanceof ArrayBuffer
+        ? arg.pcm
+        : arg?.pcm instanceof Int16Array
+          ? arg.pcm.buffer.slice(arg.pcm.byteOffset, arg.pcm.byteOffset + arg.pcm.byteLength)
+          : null;
+      if (!buffer) {
+        throw new Error("empty_audio: No audio was captured.");
+      }
+      const pcm = arg?.format === "float32"
+        ? new Float32Array(buffer)
+        : new Int16Array(buffer);
+      try {
+        return await service.transcribe(pcm, { sampleRate: arg?.sampleRate });
+      } catch (error) {
+        if (error instanceof TranscriptionError) {
+          // Surface the typed code via the message prefix the renderer matches on.
+          throw new Error(`${error.code}: ${error.message}`);
+        }
+        throw error;
+      }
+    },
+  );
+
+  ipcMain.handle(IPC.transcriptionStatus, async (): Promise<TranscriptionStatus> => {
+    const service = getCtx().transcriptionService;
+    if (!service) {
+      return { installed: false, binaryPath: null, modelPath: null };
+    }
+    return service.getStatus();
+  });
+
+  // Ensure macOS microphone access before the renderer calls getUserMedia.
+  // Electron on macOS returns a silent (all-zero) audio track instead of
+  // throwing when the OS hasn't granted mic access, so we must check/request
+  // the system-level permission explicitly (electron/electron#23792, #42714).
+  ipcMain.handle(
+    IPC.transcriptionRequestMicAccess,
+    async (): Promise<{ status: "granted" | "denied" | "not-determined" | "restricted" | "unknown" }> => {
+      if (process.platform !== "darwin") {
+        return { status: "granted" };
+      }
+      const current = systemPreferences.getMediaAccessStatus("microphone");
+      if (current === "granted") {
+        return { status: "granted" };
+      }
+      if (current === "not-determined") {
+        try {
+          const ok = await systemPreferences.askForMediaAccess("microphone");
+          return { status: ok ? "granted" : "denied" };
+        } catch {
+          return { status: "denied" };
+        }
+      }
+      // "denied" | "restricted" | "unknown" — the user must change this in
+      // System Settings; askForMediaAccess will not re-prompt.
+      return { status: current };
+    },
+  );
 
   ipcMain.handle(IPC.agentChatList, async (_event, arg: AgentChatListArgs = {}): Promise<AgentChatSessionSummary[]> => {
     const ctx = getCtx();

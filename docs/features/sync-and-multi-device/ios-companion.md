@@ -77,12 +77,16 @@ apps/ios/
 │   │   ├── RemoteModels.swift       # Codable structs mirroring shared types
 │   │   └── NotificationPreferences.swift # 13-toggle prefs + quiet hours + per-session overrides
 │   ├── Resources/
-│   │   └── DatabaseBootstrap.sql    # generated from desktop kvDb.ts
+│   │   ├── DatabaseBootstrap.sql    # generated from desktop kvDb.ts
+│   │   └── VoiceGlossary.json       # shared dictation cleanup glossary
 │   ├── Services/
 │   │   ├── Database.swift           # SQLite + pure-SQL CRR + offline caches
 │   │   ├── KeychainService.swift    # paired device secret storage
 │   │   ├── LiveActivityCoordinator.swift # workspace Live Activity lifecycle +
 │   │   │                                  # push-token collection
+│   │   ├── Dictation/               # SpeechDictationService,
+│   │   │                            # DictationController, deterministic
+│   │   │                            # cleanup, VoiceGlossary loader
 │   │   └── SyncService.swift        # WebSocket client, command routing,
 │   │                                # PIN pairing, lane presence, terminal
 │   │                                # subscribe/unsubscribe + input/resize,
@@ -93,6 +97,8 @@ apps/ios/
 │   │   ├── ADESharedContainer.swift # App Group UserDefaults + WorkspaceSnapshot helpers
 │   │   ├── ADESharedModels.swift    # AgentSnapshot, PrSnapshot — shared with widgets
 │   │   ├── ADESharedTheme.swift     # Provider color/icon table mirrored from desktop
+│   │   ├── DictationActivityShared.swift # Dictation Live Activity attributes,
+│   │   │                            # waveform, Done/Cancel intents
 │   │   ├── LiveActivityIntentsForward.swift # ADEIntentCommandKind, ADEIntentCommandRegistry
 │   │   └── WidgetAppIntents.swift   # OpenADEIntent, ToggleMutePushIntent (iOS 18+)
 │   ├── Views/
@@ -100,7 +106,9 @@ apps/ios/
 │   │   │                            # ADEUIKitAppearance.configureTabBar(),
 │   │   │                            # ADERootTabBarHiddenPreferenceKey),
 │   │   │                            # haptics, ADEMobilePrimitives (incl.
-│   │   │                            # ADEOptionButton for selection rows)
+│   │   │                            # ADEOptionButton for selection rows),
+│   │   │                            # dictation mic, recording pill, global
+│   │   │                            # dictation pill
 │   │   │                            # — `ADEStreamingShimmer.swift` was retired
 │   │   ├── Cto/                     # CtoRootScreen, CtoSessionDestinationView
 │   │   ├── Lanes/                   # LaneDetailScreen, LaneActionsCard,
@@ -136,7 +144,8 @@ apps/ios/
 │   │   ├── Settings/                # ConnectionSettingsView, NotificationsCenterView,
 │   │   │                            # QuietHoursEditorView, PerSessionOverrideView,
 │   │   │                            # SettingsPairingSection, SettingsConnectionHeader,
-│   │   │                            # SettingsPinSheet, SettingsNotificationsSection
+│   │   │                            # SettingsPinSheet, SettingsNotificationsSection,
+│   │   │                            # SettingsVoiceInputSection
 │   │   └── LanesTabView.swift
 │   └── Assets.xcassets/             # App icon, brand mark, provider logos
 │                                    # (Anthropic, Claude, Codex, Cursor,
@@ -148,6 +157,7 @@ apps/ios/
 │   ├── ADEWidgetBundle.swift        # WidgetBundle registering all three widget surfaces
 │   ├── ADELiveActivity.swift        # ADESessionAttributes (ActivityKit), ADELiveActivity widget
 │   ├── ADELiveActivityViews.swift   # Lock Screen / banner + Dynamic Island view hierarchy
+│   ├── DictationLiveActivity.swift  # Dictation Lock Screen + Dynamic Island surface
 │   ├── ADEWorkspaceWidget.swift     # Home Screen widget (small/medium/large)
 │   ├── ADEWorkspaceWidgetViews.swift# Widget entry views
 │   ├── ADELockScreenWidget.swift    # Lock Screen accessory widget
@@ -612,13 +622,18 @@ over Apple Push Notification service. The full stack is implemented:
 ### Live Activities
 
 Source: `apps/ios/ADE/Services/LiveActivityCoordinator.swift`,
-`apps/ios/ADEWidgets/ADELiveActivity.swift`.
+`apps/ios/ADE/Services/Dictation/DictationController.swift`,
+`apps/ios/ADE/Shared/DictationActivityShared.swift`,
+`apps/ios/ADEWidgets/ADELiveActivity.swift`, and
+`apps/ios/ADEWidgets/DictationLiveActivity.swift`.
 
 A single workspace Live Activity (`ADESessionAttributes`) shows the
 current agent roster + the single most important pending action on the
-Lock Screen and in the Dynamic Island. Apple enforces one active
-activity per app at a time; the coordinator ends stale per-session
-activities from older builds on launch.
+Lock Screen and in the Dynamic Island. The coordinator keeps one
+workspace activity alive at a time and ends stale per-session activities
+from older builds on launch. ADE can also run a separate dictation Live
+Activity while voice capture is active; when both activities share the
+Dynamic Island, iOS may demote one or both to compact/minimal regions.
 
 `ADESessionAttributes.ContentState` carries:
 - `sessions: [ActiveSession]` — currently-streaming chats only,
@@ -648,6 +663,17 @@ attention-eligible event fires.
 The `ADELiveActivity` widget registers the `ActivityConfiguration`
 for the lock-screen / banner presentation and the Dynamic Island
 expanded/leading/trailing/minimal regions.
+
+The dictation activity (`DictationActivityAttributes`) is owned by
+`DictationController`, the same app-level singleton that owns
+`SpeechDictationService`. It carries a rolling waveform, elapsed timer,
+and finalizing flag to `DictationLiveActivity`. The Done/Cancel buttons
+are `LiveActivityIntent`s declared in `DictationActivityShared.swift`;
+they call back into the in-process `DictationActivityActionRegistry` so
+the app can finish or cancel the active local recording. The main app
+declares `UIBackgroundModes = audio` and keeps its `.playAndRecord`
+session active until SpeechAnalyzer finalization completes, so Dynamic
+Island Done can finish a recording after ADE leaves the foreground.
 
 ### Widgets
 

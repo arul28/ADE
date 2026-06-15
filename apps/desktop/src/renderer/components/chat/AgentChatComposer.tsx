@@ -1,6 +1,6 @@
-import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { ArrowBendDownRight, ArrowUp, At, Bug, CaretDown, Check, CloudArrowUp, Cube, Desktop, DeviceMobile, GithubLogo, Globe, Image, Lightning, Paperclip, PencilSimple, Plus, RocketLaunch, Square, SquareSplitHorizontal, Strategy, Trash, X } from "@phosphor-icons/react";
+import { ArrowBendDownRight, ArrowUp, At, Bug, CaretDown, Check, CloudArrowUp, Cube, Desktop, DeviceMobile, GithubLogo, Globe, Image, Lightning, MicrophoneSlash, Paperclip, PencilSimple, Plus, RocketLaunch, Square, SquareSplitHorizontal, Strategy, Trash, X } from "@phosphor-icons/react";
 import { BorderBeam } from "border-beam";
 import {
   inferAttachmentType,
@@ -63,6 +63,9 @@ import { ChatModelSelectionPendingCard } from "./ChatModelSelectionPendingCard";
 import { ChatCommandMenu, type ChatCommandMenuItem, type ChatCommandMenuHandle } from "./ChatCommandMenu";
 import { modifierKeyLabel } from "../../lib/platform";
 import { SmartTooltip } from "../ui/SmartTooltip";
+import { VoiceDictationButton } from "./VoiceDictationButton";
+import { useAppStore, rootAppStoreApi } from "../../state/appStore";
+import { useVoiceModelInstalled } from "../../hooks/useVoiceModelInstalled";
 
 const MAX_TEMP_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 const CLIPBOARD_IMAGE_PASTE_FALLBACK_DELAY_MS = 80;
@@ -71,6 +74,36 @@ const ISSUE_CONTEXT_MENU_WIDTH = 256;
 const ISSUE_CONTEXT_MENU_GAP = 8;
 const ISSUE_CONTEXT_MENU_VIEWPORT_GUTTER = 8;
 const IMAGE_URL_EXTENSION_RE = /\.(png|jpe?g|gif|webp|bmp|svg|ico|tiff?)$/i;
+
+const voiceShimmerStyleId = "ade-voice-shimmer-effects";
+
+/** Inject the dictation insert-shimmer keyframes once; reduce-motion disables it. */
+function ensureVoiceShimmerStyles(): void {
+  if (typeof document === "undefined") return;
+  if (document.getElementById(voiceShimmerStyleId)) return;
+  const sheet = document.createElement("style");
+  sheet.id = voiceShimmerStyleId;
+  sheet.textContent = `
+    @keyframes ade-voice-shimmer-sweep {
+      0% { background-position: -150% 0; }
+      100% { background-position: 250% 0; }
+    }
+    .ade-voice-shimmer::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      border-radius: inherit;
+      background: linear-gradient(100deg, transparent 30%, color-mix(in srgb, var(--chat-accent) 22%, transparent) 50%, transparent 70%);
+      background-size: 200% 100%;
+      animation: ade-voice-shimmer-sweep 1s ease-out 1;
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .ade-voice-shimmer::after { animation: none; background: none; }
+    }
+  `;
+  document.head.appendChild(sheet);
+}
 
 /**
  * Best-effort decoder for the `providerMetadata` payload carried on a
@@ -1148,6 +1181,12 @@ export function AgentChatComposer({
     && !composerInputLocked
     && draft.trim().length > 0;
 
+  // ── Voice dictation ──────────────────────────────────────────────────────
+  const voiceInputEnabled = useAppStore((s) => s.voiceInputEnabled);
+  const voiceModelInstalled = useVoiceModelInstalled(voiceInputEnabled);
+  const [voiceError, setVoiceError] = useState<string | null>(null);
+  const [voiceShimmer, setVoiceShimmer] = useState(false);
+
   const resizeTextarea = useCallback(() => {
     if (useRichComposer) return;
     const el = textareaRef.current;
@@ -1626,6 +1665,95 @@ export function AgentChatComposer({
     document.execCommand("insertText", false, text);
     syncRichDraft();
   }, [syncRichDraft]);
+
+  // Brief shimmer over the composer (CSS honors prefers-reduced-motion). Fired
+  // both on the optimistic mic-down (recording start) and on transcript insert.
+  const voiceShimmerTimerRef = useRef<number | null>(null);
+  const triggerVoiceShimmer = useCallback(() => {
+    ensureVoiceShimmerStyles();
+    setVoiceShimmer(false);
+    // Re-arm on the next frame so a back-to-back trigger restarts the sweep.
+    requestAnimationFrame(() => {
+      setVoiceShimmer(true);
+      if (voiceShimmerTimerRef.current != null) {
+        window.clearTimeout(voiceShimmerTimerRef.current);
+      }
+      voiceShimmerTimerRef.current = window.setTimeout(() => setVoiceShimmer(false), 1000);
+    });
+  }, []);
+  useEffect(() => () => {
+    if (voiceShimmerTimerRef.current != null) {
+      window.clearTimeout(voiceShimmerTimerRef.current);
+    }
+  }, []);
+
+  // Insert dictated text at the current caret without destroying existing text.
+  // Handles both the plain textarea and the contenteditable rich editor.
+  const insertDictatedText = useCallback((text: string) => {
+    const insertion = text.trim();
+    if (!insertion) return;
+    setVoiceError(null);
+    if (useRichComposer) {
+      // Rich editor: insert at the saved selection range (or end), then sync draft.
+      insertTextIntoRichEditor(insertion);
+    } else {
+      const current = draft;
+      const caret = lastPlainSelectionRef.current ?? current.length;
+      const start = Math.max(0, Math.min(caret, current.length));
+      const before = current.slice(0, start);
+      const after = current.slice(start);
+      // Add a separating space when butting up against existing words.
+      const needsLeadingSpace = before.length > 0 && !/\s$/.test(before);
+      const needsTrailingSpace = after.length > 0 && !/^\s/.test(after);
+      const piece = `${needsLeadingSpace ? " " : ""}${insertion}${needsTrailingSpace ? " " : ""}`;
+      const next = `${before}${piece}${after}`;
+      onDraftChange(next);
+      const nextCaret = before.length + piece.length;
+      lastPlainSelectionRef.current = nextCaret;
+      // Restore focus + caret after React applies the new value.
+      requestAnimationFrame(() => {
+        const node = textareaRef.current;
+        if (!node) return;
+        node.focus({ preventScroll: true });
+        try {
+          node.setSelectionRange(nextCaret, nextCaret);
+        } catch {
+          // selection may not apply if the node is detached; ignore
+        }
+        resizeTextarea();
+      });
+    }
+    // Brief shimmer over the insert (CSS honors prefers-reduced-motion).
+    triggerVoiceShimmer();
+  }, [draft, insertTextIntoRichEditor, onDraftChange, resizeTextarea, triggerVoiceShimmer, useRichComposer]);
+
+  // ── App-global dictation target registration ─────────────────────────────
+  // Register this composer as the active dictation target so the app-global
+  // recorder (which writes to the ROOT store and survives this component
+  // unmounting / navigation) inserts the cleaned transcript here. We keep the
+  // registered functions in refs so a single stable target object can be
+  // (re)registered on focus without re-running on every callback identity change.
+  const dictationTargetId = useId();
+  const insertDictatedTextRef = useRef(insertDictatedText);
+  const focusComposerInputRef = useRef(focusComposerInput);
+  insertDictatedTextRef.current = insertDictatedText;
+  focusComposerInputRef.current = focusComposerInput;
+  const registerAsDictationTarget = useCallback(() => {
+    rootAppStoreApi.getState().registerDictationTarget({
+      id: dictationTargetId,
+      insertText: (text: string) => insertDictatedTextRef.current(text),
+      focus: () => focusComposerInputRef.current(),
+    });
+  }, [dictationTargetId]);
+  useEffect(() => {
+    // Claim the target on mount (and whenever the composer becomes active), and
+    // release it on unmount ONLY if we're still the registered target — a newer
+    // composer that focused after us must not be clobbered by our teardown.
+    if (isActive) registerAsDictationTarget();
+    return () => {
+      rootAppStoreApi.getState().unregisterDictationTarget(dictationTargetId);
+    };
+  }, [dictationTargetId, isActive, registerAsDictationTarget]);
 
   const insertNodeAtTextOffset = useCallback((editor: HTMLElement, node: Node, offset: number) => {
     const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT);
@@ -2988,6 +3116,21 @@ export function AgentChatComposer({
           </button>
         </div>
       ) : null}
+      {voiceError ? (
+        <div
+          role="status"
+          className="mx-auto mb-1.5 flex w-full max-w-[var(--chat-column,52rem)] items-center justify-between gap-2 px-1 font-sans text-[length:calc(var(--chat-font-size)*10/14)] text-amber-300/80"
+        >
+          <span>{voiceError}</span>
+          <button
+            type="button"
+            className="text-amber-200/60 underline decoration-amber-200/20 underline-offset-2 transition-colors hover:text-amber-100"
+            onClick={() => setVoiceError(null)}
+          >
+            Dismiss
+          </button>
+        </div>
+      ) : null}
       <BorderBeam
         size="md"
         colorVariant={composerBeamVariant}
@@ -3848,6 +3991,38 @@ export function AgentChatComposer({
               </SmartTooltip>
             ) : null}
 
+            {/* Voice dictation — paired just left of the send control. */}
+            {voiceInputEnabled && !composerInputLocked && !parallelChatMode ? (
+              voiceModelInstalled === false ? (
+                <SmartTooltip
+                  forceEnabled
+                  content={{
+                    label: "Voice input unavailable",
+                    description: "The on-device voice model isn't installed yet. It ships with a future update.",
+                  }}
+                >
+                  <button
+                    type="button"
+                    disabled
+                    className="inline-flex h-7 w-7 shrink-0 cursor-not-allowed items-center justify-center rounded-full text-muted-fg/20"
+                    aria-label="Voice input unavailable"
+                  >
+                    <MicrophoneSlash size={14} weight="regular" />
+                  </button>
+                </SmartTooltip>
+              ) : voiceModelInstalled ? (
+                <VoiceDictationButton
+                  onOptimisticStart={() => {
+                    // This composer is the one being dictated into: claim the
+                    // target and shimmer immediately, before getUserMedia.
+                    registerAsDictationTarget();
+                    triggerVoiceShimmer();
+                  }}
+                  onError={(message) => setVoiceError(message)}
+                />
+              ) : null
+            ) : null}
+
             {turnActive ? (
               <>
                 {draft.trim().length > 0 && onClearDraft ? (
@@ -4002,8 +4177,13 @@ export function AgentChatComposer({
 
         <div
           ref={composerFocusRegionRef}
-          className="relative"
-          onFocusCapture={() => setComposerFocused(true)}
+          className={cn("relative", voiceShimmer ? "ade-voice-shimmer" : "")}
+          onFocusCapture={() => {
+            setComposerFocused(true);
+            // Focusing this composer makes it the dictation insertion target so
+            // a transcript lands in whichever composer the user is typing into.
+            registerAsDictationTarget();
+          }}
           onBlurCapture={(event) => {
             const nextTarget = event.relatedTarget as Node | null;
             if (nextTarget && composerFocusRegionRef.current?.contains(nextTarget)) return;

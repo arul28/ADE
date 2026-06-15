@@ -35,6 +35,7 @@ import {
   primaryButton,
 } from "../lanes/laneDesignTokens";
 import { ChatAppearancePreview } from "./ChatAppearancePreview";
+import { DictationSection } from "./DictationSection";
 
 const sectionLabelStyle: React.CSSProperties = {
   ...LABEL_STYLE,
@@ -699,6 +700,8 @@ export function AppearanceSection() {
           </div>
         </div>
       </section>
+
+      <DictationSection />
     </div>
   );
 }

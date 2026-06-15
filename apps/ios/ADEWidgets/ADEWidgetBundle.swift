@@ -11,6 +11,9 @@ struct ADEWidgetBundle: WidgetBundle {
         if #available(iOS 16.2, *) {
             ADELiveActivity()
         }
+        if #available(iOS 17.0, *) {
+            DictationLiveActivity()
+        }
         ADEWorkspaceWidget()
         ADELockScreenWidget()
         if #available(iOS 18.0, *) {

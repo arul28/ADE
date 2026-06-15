@@ -19,6 +19,9 @@ struct WorkNewChatSheet: View {
   @State var initialMessage = ""
   @State var busy = false
   @State var errorMessage: String?
+  @StateObject private var dictationCoordinator = DictationInsertionCoordinator()
+  @State private var isDictating = false
+  private let dictationTargetId = "work-new-chat-sheet"
 
   let providerColumns = [
     GridItem(.flexible(), spacing: 12),
@@ -323,6 +326,20 @@ struct WorkNewChatSheet: View {
                 .autocorrectionDisabled(false)
                 .adeInsetField(cornerRadius: 14, padding: 12)
                 .disabled(busy)
+
+              HStack(spacing: 8) {
+                if !isDictating {
+                  DictationRawUndoChip(coordinator: dictationCoordinator, draft: $initialMessage)
+                  Spacer(minLength: 0)
+                }
+                DictationMicButton(
+                  draft: $initialMessage,
+                  coordinator: dictationCoordinator,
+                  targetId: dictationTargetId,
+                  onRecordingChange: { isDictating = $0 }
+                )
+                .frame(maxWidth: isDictating ? .infinity : nil)
+              }
 
               if let startDisabledReason {
                 Label(startDisabledReason, systemImage: "info.circle")

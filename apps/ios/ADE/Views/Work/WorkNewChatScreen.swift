@@ -570,6 +570,9 @@ private struct WorkNewChatComposerBar: View {
 
   @State private var draft: String = ""
   @FocusState private var composerFocused: Bool
+  @StateObject private var dictationCoordinator = DictationInsertionCoordinator()
+  @State private var isDictating = false
+  private let dictationTargetId = "work-new-chat-screen"
 
   private var trimmedDraft: String {
     draft.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -625,30 +628,44 @@ private struct WorkNewChatComposerBar: View {
         .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
 
       HStack(alignment: .center, spacing: 8) {
-        ScrollView(.horizontal, showsIndicators: false) {
-          HStack(alignment: .center, spacing: 10) {
-            modelPickerButton
+        if !isDictating {
+          ScrollView(.horizontal, showsIndicators: false) {
+            HStack(alignment: .center, spacing: 10) {
+              modelPickerButton
 
-            if !runtimeOptions.isEmpty {
-              HStack(spacing: 6) {
-                ForEach(runtimeOptions) { option in
-                  compactChoiceChip(
-                    title: option.title,
-                    systemImage: nil,
-                    tint: workRuntimeModeTint(option.id),
-                    isSelected: option.id == runtimeMode,
-                    accessibilityPrefix: "Access mode"
-                  ) {
-                    runtimeMode = option.id
+              if !runtimeOptions.isEmpty {
+                HStack(spacing: 6) {
+                  ForEach(runtimeOptions) { option in
+                    compactChoiceChip(
+                      title: option.title,
+                      systemImage: nil,
+                      tint: workRuntimeModeTint(option.id),
+                      isSelected: option.id == runtimeMode,
+                      accessibilityPrefix: "Access mode"
+                    ) {
+                      runtimeMode = option.id
+                    }
                   }
                 }
               }
             }
+            .padding(.trailing, 4)
           }
-          .padding(.trailing, 4)
+
+          DictationRawUndoChip(coordinator: dictationCoordinator, draft: $draft)
         }
 
-        foregroundSendButton
+        DictationMicButton(
+          draft: $draft,
+          coordinator: dictationCoordinator,
+          targetId: dictationTargetId,
+          onRecordingChange: { isDictating = $0 }
+        )
+        .frame(maxWidth: isDictating ? .infinity : nil)
+
+        if !isDictating {
+          foregroundSendButton
+        }
       }
     }
     .padding(.horizontal, 14)

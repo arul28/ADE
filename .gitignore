@@ -77,6 +77,12 @@ package-lock.json
 /apps/desktop/release-alpha
 /apps/desktop/release-beta
 apps/desktop/resources/runtime/ade-*
+# Large whisper.cpp binary + ~140 MB ggml model are materialized at build time,
+# never committed (see scripts/materialize-whisper-resources.mjs). Keep the dir +
+# its README/.gitkeep tracked; ignore the heavy binaries/model.
+apps/desktop/resources/whisper/*
+!apps/desktop/resources/whisper/.gitkeep
+!apps/desktop/resources/whisper/README.md
 
 .claude/scheduled_tasks.lock
 apps/web/public/images/updatedImages/

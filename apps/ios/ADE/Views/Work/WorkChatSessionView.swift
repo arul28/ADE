@@ -466,6 +466,7 @@ struct WorkChatSessionView: View {
       WorkChatComposerCard(
         chatSummary: chatSummary,
         usageViewModel: workContextUsageViewModel(transcript: transcript, summary: chatSummary),
+        dictationTargetId: "work-chat:\(session.id)",
         pendingInputCount: pendingInputs.count,
         awaitingInputGate: hasPendingInputGate,
         canCompose: canCompose,
@@ -850,6 +851,7 @@ func mergeWorkPendingSteers(
 private struct WorkChatComposerCard: View {
   let chatSummary: AgentChatSessionSummary?
   let usageViewModel: WorkContextUsageViewModel?
+  let dictationTargetId: String
   let pendingInputCount: Int
   let awaitingInputGate: Bool
   let canCompose: Bool
@@ -874,6 +876,7 @@ private struct WorkChatComposerCard: View {
     WorkChatComposerDraftInput(
       chatSummary: chatSummary,
       usageViewModel: usageViewModel,
+      dictationTargetId: dictationTargetId,
       pendingInputCount: pendingInputCount,
       awaitingInputGate: awaitingInputGate,
       canCompose: canCompose,
@@ -921,6 +924,7 @@ private struct WorkChatComposerCard: View {
 private struct WorkChatComposerDraftInput: View {
   let chatSummary: AgentChatSessionSummary?
   let usageViewModel: WorkContextUsageViewModel?
+  let dictationTargetId: String
   let pendingInputCount: Int
   let awaitingInputGate: Bool
   let canCompose: Bool
@@ -939,6 +943,8 @@ private struct WorkChatComposerDraftInput: View {
 
   @StateObject private var draftState = WorkChatComposerDraftState()
   @State private var contextUsagePresented = false
+  @StateObject private var dictationCoordinator = DictationInsertionCoordinator()
+  @State private var isDictating = false
 
   var body: some View {
     VStack(alignment: .leading, spacing: 8) {
@@ -959,61 +965,79 @@ private struct WorkChatComposerDraftInput: View {
           .accessibilityIdentifier("Work.Chat.Composer.StagingHint")
       }
 
-      HStack(alignment: .center, spacing: 6) {
-        WorkComposerChipStrip(
-          chatSummary: chatSummary,
-          pendingInputCount: pendingInputCount,
-          settingsMutationInFlight: settingsMutationInFlight,
-          codexFastModeOverride: codexFastModeOverride,
-          onOpenModelPicker: onOpenModelPicker,
-          onSelectRuntimeMode: onSelectRuntimeMode,
-          onToggleCodexFastMode: onToggleCodexFastMode
-        )
-
-        Spacer(minLength: 0)
-
-        if let usageViewModel {
-          WorkContextUsageMeter(
-            usage: usageViewModel,
-            active: showInterrupt,
-            isPresented: $contextUsagePresented
+      HStack(alignment: .center, spacing: 8) {
+        // Leading controls collapse while dictating so the recording pill can
+        // expand into the row without a layout jump.
+        if !isDictating {
+          WorkComposerChipStrip(
+            chatSummary: chatSummary,
+            pendingInputCount: pendingInputCount,
+            settingsMutationInFlight: settingsMutationInFlight,
+            codexFastModeOverride: codexFastModeOverride,
+            onOpenModelPicker: onOpenModelPicker,
+            onSelectRuntimeMode: onSelectRuntimeMode,
+            onToggleCodexFastMode: onToggleCodexFastMode
           )
-          .popover(
-            isPresented: $contextUsagePresented,
-            attachmentAnchor: .rect(.bounds),
-            arrowEdge: .bottom
-          ) {
-            WorkContextUsagePopover(
+
+          DictationRawUndoChip(coordinator: dictationCoordinator, draft: $draftState.text)
+
+          Spacer(minLength: 0)
+
+          if let usageViewModel {
+            WorkContextUsageMeter(
               usage: usageViewModel,
-              modelLabel: chatSummary?.model
+              active: showInterrupt,
+              isPresented: $contextUsagePresented
             )
-            .frame(maxWidth: 320, alignment: .leading)
-            .presentationCompactAdaptation(.popover)
+            .popover(
+              isPresented: $contextUsagePresented,
+              attachmentAnchor: .rect(.bounds),
+              arrowEdge: .bottom
+            ) {
+              WorkContextUsagePopover(
+                usage: usageViewModel,
+                modelLabel: chatSummary?.model
+              )
+              .frame(maxWidth: 320, alignment: .leading)
+              .presentationCompactAdaptation(.popover)
+            }
           }
         }
 
-        if showInterrupt {
-          if draftState.hasSendableText {
-            stopButton()
+        // Single mic control: renders the 28×28 mic when idle and the inline
+        // recording pill (full-width) while recording.
+        DictationMicButton(
+          draft: $draftState.text,
+          coordinator: dictationCoordinator,
+          targetId: dictationTargetId,
+          onRecordingChange: { isDictating = $0 }
+        )
+        .frame(maxWidth: isDictating ? .infinity : nil)
+
+        if !isDictating {
+          if showInterrupt {
+            if draftState.hasSendableText {
+              stopButton()
+              WorkChatComposerSendButton(
+                draftState: draftState,
+                canSend: canSend,
+                sending: sending,
+                accessibilityLabelText: "Stage message",
+                onSend: onSend,
+                onSent: onSent
+              )
+            } else {
+              stopButton()
+            }
+          } else {
             WorkChatComposerSendButton(
               draftState: draftState,
               canSend: canSend,
               sending: sending,
-              accessibilityLabelText: "Stage message",
               onSend: onSend,
               onSent: onSent
             )
-          } else {
-            stopButton()
           }
-        } else {
-          WorkChatComposerSendButton(
-            draftState: draftState,
-            canSend: canSend,
-            sending: sending,
-            onSend: onSend,
-            onSent: onSent
-          )
         }
       }
     }

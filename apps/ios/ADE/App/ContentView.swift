@@ -50,6 +50,13 @@ struct ContentView: View {
         rootTabs
       }
     }
+      // Global capture popup: the in-app stand-in for the Dynamic Island (which
+      // iOS won't show while ADE is foreground). Sits just below the notch on
+      // every tab, stays in sync with the composer's pill (both observe the same
+      // global DictationController), and lets you Done/Cancel from anywhere.
+      .safeAreaInset(edge: .top, spacing: 0) {
+        GlobalDictationPill()
+      }
       .tint(adeAccent)
       .adeScreenBackground()
       .adeNavigationGlass()

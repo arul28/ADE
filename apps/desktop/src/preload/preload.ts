@@ -3769,6 +3769,30 @@ contextBridge.exposeInMainWorld("ade", {
         ipcRenderer.invoke(IPC.aiCursorCloudOpenChat, args),
       ),
   },
+  transcription: {
+    // Hand the captured 16 kHz mono PCM to the main process as a transferable
+    // ArrayBuffer. Returns the raw + deterministically-cleaned transcript.
+    transcribe: async (
+      pcm: ArrayBuffer,
+      options?: { sampleRate?: number; format?: "int16" | "float32" },
+    ): Promise<{ raw: string; cleaned: string }> =>
+      ipcRenderer.invoke(IPC.transcriptionTranscribe, {
+        pcm,
+        sampleRate: options?.sampleRate,
+        format: options?.format ?? "int16",
+      }),
+    status: async (): Promise<{
+      installed: boolean;
+      binaryPath: string | null;
+      modelPath: string | null;
+    }> => ipcRenderer.invoke(IPC.transcriptionStatus),
+    // Check/request macOS microphone permission before capturing. Electron
+    // returns a silent track instead of throwing when access is missing, so the
+    // renderer must gate getUserMedia on this.
+    requestMicAccess: async (): Promise<{
+      status: "granted" | "denied" | "not-determined" | "restricted" | "unknown";
+    }> => ipcRenderer.invoke(IPC.transcriptionRequestMicAccess),
+  },
   modelPicker: {
     getFavorites: async (): Promise<{ favorites: string[] }> =>
       callProjectRuntimeSyncOr("modelPicker.getFavorites", {}, async () => ({ favorites: [] })),

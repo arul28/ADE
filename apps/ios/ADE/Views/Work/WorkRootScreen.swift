@@ -46,6 +46,10 @@ struct WorkRootSessionPresentationTaskKey: Equatable {
 struct WorkRootScreen: View {
   @Environment(\.accessibilityReduceMotion) var reduceMotion
   @EnvironmentObject var syncService: SyncService
+  /// App-level dictation singleton. Re-injected into pushed composer
+  /// destinations below since `navigationDestination` builds outside the view
+  /// tree and does not inherit environment objects.
+  @EnvironmentObject var dictationController: DictationController
   @Namespace var sessionTransitionNamespace
   var isTabActive = true
 
@@ -505,6 +509,7 @@ struct WorkRootScreen: View {
           lanes: lanes
         )
         .environmentObject(syncService)
+        .environmentObject(dictationController)
       }
       .navigationDestination(for: WorkNewChatRoute.self) { route in
         WorkNewChatScreen(
@@ -542,6 +547,7 @@ struct WorkRootScreen: View {
           onRefreshLanes: { await reload(refreshRemote: true) }
         )
         .environmentObject(syncService)
+        .environmentObject(dictationController)
       }
       .alert("Rename session", isPresented: renamePresentedBinding) {
         TextField("Title", text: $renameText)
