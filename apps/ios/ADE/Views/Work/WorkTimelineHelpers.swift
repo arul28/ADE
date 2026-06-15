@@ -111,8 +111,9 @@ func workChatIsStreaming(
   if sessionStatus == "ended" { return false }
   if rowEndedAfterLatestTranscript { return false }
   if transcriptIndicatesActiveTurn { return true }
+  if liveTurnActiveHint { return true }
   if transcriptLatestTurnEnded { return false }
-  return sessionStatus == "active" || liveTurnActiveHint
+  return sessionStatus == "active"
 }
 
 /// Collapse `subagent_*` events into one snapshot per taskId. Preserves host

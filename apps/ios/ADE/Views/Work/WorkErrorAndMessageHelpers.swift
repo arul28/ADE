@@ -138,10 +138,10 @@ private func mergedDuplicateAssistantText(existing: String, incoming: String) ->
   let normalizedExisting = existing.trimmingCharacters(in: .whitespacesAndNewlines)
   let normalizedIncoming = incoming.trimmingCharacters(in: .whitespacesAndNewlines)
   guard !normalizedExisting.isEmpty, !normalizedIncoming.isEmpty else { return nil }
-  if normalizedExisting == normalizedIncoming || normalizedExisting.contains(normalizedIncoming) {
+  if normalizedExisting == normalizedIncoming || normalizedExisting.hasSuffix(normalizedIncoming) {
     return existing
   }
-  if normalizedIncoming.contains(normalizedExisting) {
+  if normalizedIncoming.hasPrefix(normalizedExisting) {
     return incoming
   }
 

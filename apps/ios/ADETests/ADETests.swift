@@ -6903,6 +6903,37 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(assistantMessages.map(\.markdown), [fullText])
   }
 
+  func testWorkChatMessagesKeepRepeatedAssistantSubstringAcrossTools() {
+    let transcript: [WorkChatEnvelope] = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-04-22T22:10:01.000Z",
+        sequence: 1,
+        event: .assistantText(text: "The cache entry is already present.", turnId: "turn-1", itemId: "msg-1")
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-04-22T22:10:02.000Z",
+        sequence: 2,
+        event: .toolCall(tool: "shell", argsText: "{}", itemId: "tool-1", parentItemId: nil, turnId: "turn-1")
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-04-22T22:10:03.000Z",
+        sequence: 3,
+        event: .assistantText(text: "cache", turnId: "turn-1", itemId: "msg-2")
+      ),
+    ]
+
+    let assistantMessages = buildWorkChatMessages(from: transcript)
+      .filter { $0.role == "assistant" }
+
+    XCTAssertEqual(assistantMessages.map(\.markdown), [
+      "The cache entry is already present.",
+      "cache",
+    ])
+  }
+
   func testWorkSessionGroupsByLaneSurfacesOrphanLanesPerLaneId() {
     let knownLane = LaneSummary(
       id: "lane-primary",
@@ -9391,6 +9422,15 @@ final class ADETests: XCTestCase {
     XCTAssertFalse(
       workChatIsStreaming(
         sessionStatus: "active",
+        isLive: true,
+        transcriptIndicatesActiveTurn: false,
+        liveTurnActiveHint: false,
+        transcriptLatestTurnEnded: true
+      )
+    )
+    XCTAssertTrue(
+      workChatIsStreaming(
+        sessionStatus: "idle",
         isLive: true,
         transcriptIndicatesActiveTurn: false,
         liveTurnActiveHint: true,
