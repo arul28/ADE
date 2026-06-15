@@ -52,7 +52,7 @@ vi.mock("../adeApi", async () => {
   };
 });
 
-import { AdeCodeApp, shouldHydrateRefreshHistory } from "../app";
+import { AdeCodeApp, isLaneWorktreeAvailable, shouldHydrateRefreshHistory } from "../app";
 
 function lane(overrides: Partial<LaneSummary> = {}): LaneSummary {
   return {
@@ -196,6 +196,49 @@ describe("AdeCodeApp polling", () => {
     expect(mocks.getChatHistory).toHaveBeenCalledTimes(0);
 
     instance.unmount();
+  });
+
+  it("starts remote project launches from remote context instead of local saved lane state", async () => {
+    mocks.listLanes.mockResolvedValue([
+      lane({
+        id: "lane-1",
+        name: "saved lane",
+        laneType: "worktree",
+        branchRef: "saved/client-lane",
+        worktreePath: "/remote/repo/.ade/worktrees/saved-client-lane",
+      }),
+      lane({
+        id: "main",
+        name: "main",
+        laneType: "primary",
+        branchRef: "main",
+        worktreePath: "/remote/repo",
+      }),
+    ]);
+    mocks.listChatSessions.mockResolvedValue([]);
+
+    const instance = render(<AdeCodeApp project={{ ...project, remote: true }} remote />);
+    await flushAsyncEffects();
+
+    const frame = instance.lastFrame() ?? "";
+    expect(frame).toContain("branch");
+    expect(frame).toContain("main");
+    expect(frame).not.toContain("saved/client-lane");
+    expect(mocks.startTuiHeartbeat).not.toHaveBeenCalled();
+
+    instance.unmount();
+  });
+});
+
+describe("isLaneWorktreeAvailable", () => {
+  it("does not mark a remote-only path missing just because it is absent locally", () => {
+    const remoteLane = lane({
+      worktreePath: `/tmp/ade-remote-only-${Date.now()}`,
+    });
+
+    expect(isLaneWorktreeAvailable(remoteLane)).toBe(false);
+    expect(isLaneWorktreeAvailable(remoteLane, { remote: true })).toBe(true);
+    expect(isLaneWorktreeAvailable({ ...remoteLane, worktreeAvailable: false }, { remote: true })).toBe(false);
   });
 });
 

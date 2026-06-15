@@ -506,6 +506,7 @@ function toLaneSummary(args: {
   parentStatus: LaneStatus | null;
   childCount: number;
   stackDepth: number;
+  worktreeAvailable?: boolean;
   activeBranchProfile?: LaneBranchProfile | null;
   linearIssue?: LaneLinearIssue | null;
   linearIssueLinks?: LaneLinearIssueLink[];
@@ -520,6 +521,7 @@ function toLaneSummary(args: {
     baseRef: row.base_ref,
     branchRef: row.branch_ref,
     worktreePath: row.worktree_path,
+    ...(typeof args.worktreeAvailable === "boolean" ? { worktreeAvailable: args.worktreeAvailable } : {}),
     attachedRootPath: row.attached_root_path,
     parentLaneId: row.parent_lane_id,
     childCount,
@@ -2335,6 +2337,7 @@ export function createLaneService({
     const rowsById = new Map(contextRows.map((row) => [row.id, row] as const));
     const depthMemo = new Map<string, number>();
     const statusCache = new Map<string, LaneStatus>();
+    const worktreeAvailabilityCache = new Map<string, boolean>();
     const childCountMap = new Map<string, number>();
 
     // Fetch all lane_linear_issues in a single query and build a map keyed by
@@ -2419,11 +2422,25 @@ export function createLaneService({
       );
     }
 
+    const resolveWorktreeAvailable = async (row: LaneRow): Promise<boolean> => {
+      const cached = worktreeAvailabilityCache.get(row.id);
+      if (cached != null) return cached;
+      const available = await isExpectedGitWorktreeRoot(row.worktree_path);
+      worktreeAvailabilityCache.set(row.id, available);
+      return available;
+    };
+
     const resolveStatus = async (laneId: string): Promise<LaneStatus> => {
       const cached = statusCache.get(laneId);
       if (cached) return cached;
       const row = rowsById.get(laneId);
       if (!row) return DEFAULT_LANE_STATUS;
+      const worktreeAvailable = await resolveWorktreeAvailable(row);
+      if (!worktreeAvailable) {
+        const status = cloneLaneStatus(DEFAULT_LANE_STATUS);
+        statusCache.set(laneId, status);
+        return status;
+      }
       const parent = row.parent_lane_id ? rowsById.get(row.parent_lane_id) : null;
       const queueOverride = queueOverrideCache.get(row.id) ?? null;
       let baseRef = queueOverride?.comparisonRef ?? (rowTracksParent(row, parent) ? parent?.branch_ref ?? row.base_ref : row.base_ref);
@@ -2460,8 +2477,14 @@ export function createLaneService({
       try {
         let status: LaneStatus = cloneLaneStatus(DEFAULT_LANE_STATUS);
         let parentStatus: LaneStatus | null = row.parent_lane_id ? cloneLaneStatus(DEFAULT_LANE_STATUS) : null;
+        let worktreeAvailable: boolean | undefined;
 
         if (includeStatus) {
+          try {
+            worktreeAvailable = await resolveWorktreeAvailable(row);
+          } catch {
+            worktreeAvailable = false;
+          }
           try {
             status = await resolveStatus(row.id);
           } catch {
@@ -2491,6 +2514,7 @@ export function createLaneService({
             parentStatus,
             childCount: childCountMap.get(row.id) ?? 0,
             stackDepth,
+            worktreeAvailable,
             activeBranchProfile: ensureBranchProfileForRow(row),
             linearIssue: linearIssueByLaneId.get(row.id) ?? null,
             linearIssueLinks: linearIssueLinksByLaneId.get(row.id) ?? [],

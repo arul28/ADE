@@ -108,6 +108,52 @@ describe("laneService createFromUnstaged", () => {
     vi.mocked(runGitOrThrow).mockReset();
   });
 
+  it("includes worktree availability in lane summaries", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-worktree-available-"));
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    await seedProjectAndStack(db, { projectId: "proj-worktree-available", repoRoot });
+    const missingChildPath = path.join(repoRoot, "child");
+
+    vi.mocked(runGit).mockImplementation(async (args: string[], opts?: { cwd?: string }) => {
+      const laneBranchGitStub = defaultLaneBranchGitStub(args);
+      if (laneBranchGitStub) return laneBranchGitStub;
+      const cwd = opts?.cwd ?? repoRoot;
+      if (args[0] === "worktree" && args[1] === "list") return { exitCode: 0, stdout: "", stderr: "" };
+      if (args[0] === "rev-parse" && args[1] === "--abbrev-ref" && args[2] === "HEAD") {
+        return { exitCode: 0, stdout: "main\n", stderr: "" };
+      }
+      if (args[0] === "rev-parse" && args[1] === "--path-format=absolute" && args[2] === "--show-toplevel") {
+        return cwd === missingChildPath
+          ? { exitCode: 128, stdout: "", stderr: "missing worktree" }
+          : { exitCode: 0, stdout: `${cwd}\n`, stderr: "" };
+      }
+      if (args[0] === "rev-parse" && args[1] === "--verify") return { exitCode: 1, stdout: "", stderr: "" };
+      if (args[0] === "status") return { exitCode: 0, stdout: "", stderr: "" };
+      if (args[0] === "rev-list" && args[1] === "--left-right") return { exitCode: 0, stdout: "0\t0\n", stderr: "" };
+      if (args[0] === "rev-parse" && args[1] === "--abbrev-ref" && args.includes("@{upstream}")) {
+        return { exitCode: 1, stdout: "", stderr: "" };
+      }
+      if (args[0] === "rev-parse" && args[1] === "--path-format=absolute" && args[2] === "--git-dir") {
+        return { exitCode: 1, stdout: "", stderr: "" };
+      }
+      throw new Error(`Unexpected git call: ${args.join(" ")}`);
+    });
+
+    const service = createLaneService({
+      db,
+      projectRoot: repoRoot,
+      projectId: "proj-worktree-available",
+      defaultBaseRef: "main",
+      worktreesDir: path.join(repoRoot, "worktrees"),
+    });
+
+    const lanes = await service.list({ includeStatus: true });
+
+    expect(lanes.find((lane) => lane.id === "lane-main")?.worktreeAvailable).toBe(true);
+    expect(lanes.find((lane) => lane.id === "lane-parent")?.worktreeAvailable).toBe(true);
+    expect(lanes.find((lane) => lane.id === "lane-child")?.worktreeAvailable).toBe(false);
+  });
+
   it("recreates the primary lane when the only stored primary lane is archived", async () => {
     const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-primary-archived-"));
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());

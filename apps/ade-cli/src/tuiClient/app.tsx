@@ -1111,9 +1111,16 @@ function normalizeWorktreePath(root: string): string {
   }
 }
 
-export function isLaneWorktreeAvailable(lane: LaneSummary | null | undefined): boolean {
+export function isLaneWorktreeAvailable(
+  lane: LaneSummary | null | undefined,
+  options: { remote?: boolean } = {},
+): boolean {
   const root = lane?.worktreePath?.trim();
   if (!root) return false;
+  if (typeof lane?.worktreeAvailable === "boolean") {
+    return lane.worktreeAvailable;
+  }
+  if (options.remote) return true;
   const resolvedRoot = normalizeWorktreePath(root);
   let stat: fs.Stats;
   try {
@@ -2601,6 +2608,7 @@ function resolveCenterPaneWidth(columns: number, drawerOpen: boolean, rightPaneW
 }
 
 export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, preferServiceRepair, remote }: AdeCodeAppProps) {
+  const remoteLaunch = remote === true || project.remote === true;
   const { exit } = useApp();
   const [columns, rows] = useTerminalDimensions();
   useTerminalAlternateScreen();
@@ -2817,7 +2825,11 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   const draftSeededFromHistoryRef = useRef(false);
   const initialNewChatPreviewRef = useRef(true);
   const attachProbeInFlightRef = useRef(false);
-  const [initialAdeCodeState] = useState(() => scopedAdeCodeState(loadAdeCodeState(), project.projectRoot));
+  const [initialAdeCodeState] = useState(() => (
+    remoteLaunch
+      ? { lastChatByLane: {}, lastLaneId: null }
+      : scopedAdeCodeState(loadAdeCodeState(), project.projectRoot)
+  ));
   const lastChatByLaneRef = useRef<Map<string, string>>(new Map(Object.entries(initialAdeCodeState.lastChatByLane)));
   const lastLaneIdRef = useRef<string | null>(initialAdeCodeState.lastLaneId);
   const lastChatByLaneWriteTimerRef = useRef<NodeJS.Timeout | null>(null);
@@ -2938,6 +2950,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   const streaming = activeSessionId ? !!streamingBySessionId[activeSessionId] : false;
 
   const persistAdeCodeState = useCallback(() => {
+    if (remoteLaunch) return;
     if (lastChatByLaneWriteTimerRef.current) {
       clearTimeout(lastChatByLaneWriteTimerRef.current);
     }
@@ -2949,7 +2962,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       }
       saveAdeCodeProjectState(project.projectRoot, { lastChatByLane, lastLaneId: lastLaneIdRef.current });
     }, 500);
-  }, [project.projectRoot]);
+  }, [project.projectRoot, remoteLaunch]);
 
   const setChatScrollOffset = useCallback((value: number | ((previous: number) => number)) => {
     const multiSessionId = (gridViewActiveRef.current ? focusedSessionIdForMultiView(multiViewRef.current) : null);
@@ -3345,10 +3358,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   const unavailableLaneIds = useMemo(() => {
     const ids = new Set<string>();
     for (const lane of lanes) {
-      if (!isLaneWorktreeAvailable(lane)) ids.add(lane.id);
+      if (!isLaneWorktreeAvailable(lane, { remote: remoteLaunch })) ids.add(lane.id);
     }
     return ids;
-  }, [lanes]);
+  }, [lanes, remoteLaunch]);
   const drawerLane = useMemo(
     () => lanes.find((lane) => lane.id === drawerLaneId) ?? null,
     [drawerLaneId, lanes],
@@ -6433,12 +6446,12 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     let cancelled = false;
     void (async () => {
       try {
-        const conn = await connectToAde({ project, forceEmbedded, requireSocket, socketPath, preferServiceRepair, remote });
+        const conn = await connectToAde({ project, forceEmbedded, requireSocket, socketPath, preferServiceRepair, remote: remoteLaunch });
         if (cancelled) {
           await conn.close();
           return;
         }
-        heartbeatRef.current = remote
+        heartbeatRef.current = remoteLaunch
           ? null
           : startTuiHeartbeat(project.projectRoot, {
             beforeSignalExit: () => {
@@ -6471,11 +6484,13 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       if (lastChatByLaneWriteTimerRef.current) {
         clearTimeout(lastChatByLaneWriteTimerRef.current);
         lastChatByLaneWriteTimerRef.current = null;
-        const lastChatByLane: Record<string, string> = {};
-        for (const [laneId, sessionId] of lastChatByLaneRef.current) {
-          lastChatByLane[laneId] = sessionId;
+        if (!remoteLaunch) {
+          const lastChatByLane: Record<string, string> = {};
+          for (const [laneId, sessionId] of lastChatByLaneRef.current) {
+            lastChatByLane[laneId] = sessionId;
+          }
+          saveAdeCodeProjectState(project.projectRoot, { lastChatByLane, lastLaneId: lastLaneIdRef.current });
         }
-        saveAdeCodeProjectState(project.projectRoot, { lastChatByLane, lastLaneId: lastLaneIdRef.current });
       }
       if (pendingModelCommitTimerRef.current) {
         clearTimeout(pendingModelCommitTimerRef.current);
@@ -6490,7 +6505,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       connectionRef.current = null;
       void conn?.close().catch(() => {});
     };
-  }, [forceEmbedded, preferServiceRepair, project, remote, requireSocket, signalActiveTerminalForExit, signalActiveTerminalForExitSync, socketPath]);
+  }, [forceEmbedded, preferServiceRepair, project, remoteLaunch, requireSocket, signalActiveTerminalForExit, signalActiveTerminalForExitSync, socketPath]);
 
   // Stable handle to the latest refreshState so the chat-event subscription can
   // call it without listing refreshState as a dependency (its identity churns on
@@ -6886,7 +6901,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
             requireSocket: true,
             socketPath,
             preferServiceRepair,
-            remote,
+            remote: remoteLaunch,
           });
           if (attached.mode !== "attached") {
             await attached.close().catch(() => {});
@@ -6911,7 +6926,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       })();
     }, 3_000);
     return () => clearInterval(timer);
-  }, [addNotice, connection, connectionLost, forceEmbedded, mode, preferServiceRepair, project, refreshState, socketPath, streaming]);
+  }, [addNotice, connection, connectionLost, forceEmbedded, mode, preferServiceRepair, project, refreshState, remoteLaunch, socketPath, streaming]);
 
   // First-send draft commit → Chat Info. While a draft new chat is being set
   // up, the right pane shows the new-chat setup surface (model-picker, surface
@@ -8503,7 +8518,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         addNotice(result.message ?? "Desktop route unavailable; launched ADE.", "info");
         for (let attempt = 0; attempt < 8; attempt += 1) {
           await delay(750);
-          const attached = await connectToAde({ project, forceEmbedded: false, socketPath, preferServiceRepair, remote }).catch(() => null);
+          const attached = await connectToAde({ project, forceEmbedded: false, socketPath, preferServiceRepair, remote: remoteLaunch }).catch(() => null);
           if (!attached || attached.mode !== "attached") {
             await attached?.close().catch(() => {});
             continue;
@@ -8526,7 +8541,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         addNotice(result.message ?? "Desktop route unavailable from this runtime.", "error");
       }
     }
-  }, [activeSession?.provider, addNotice, applyLocalModelArg, clearOlderHistoryCursor, displaySessions, loadProviderModels, modelState.provider, pendingSteers, preferServiceRepair, project, refreshAiSetupStatus, refreshState, requestAppExit, scheduleModelStateCommit, sendClaudeModelCommandToTerminal, setChatScrollOffset, socketPath]);
+  }, [activeSession?.provider, addNotice, applyLocalModelArg, clearOlderHistoryCursor, displaySessions, loadProviderModels, modelState.provider, pendingSteers, preferServiceRepair, project, refreshAiSetupStatus, refreshState, remoteLaunch, requestAppExit, scheduleModelStateCommit, sendClaudeModelCommandToTerminal, setChatScrollOffset, socketPath]);
 
   const submitRightForm = useCallback(async (
     form: Extract<RightPaneContent, { kind: "form" }>,
