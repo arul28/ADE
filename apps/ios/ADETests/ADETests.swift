@@ -73,6 +73,12 @@ private actor LaneBatchDeleteRecorder {
 }
 
 final class ADETests: XCTestCase {
+  func testDictationCleanupCapitalizesAfterLeadingSentencePunctuation() {
+    let cleaned = DictationCleanup.clean("hello. \"goodbye\"", glossary: .empty)
+
+    XCTAssertEqual(cleaned, "Hello. \"Goodbye\"")
+  }
+
   func testTerminalDisplayReplaysCarriageReturnProgressUpdates() {
     let output = sanitizeTerminalOutputForDisplay("Downloading 10%\rDownloading 80%\rDownloading 100%\nDone")
 

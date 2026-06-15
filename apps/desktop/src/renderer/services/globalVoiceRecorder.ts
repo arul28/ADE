@@ -71,6 +71,7 @@ class GlobalVoiceRecorder {
   private audioContext: AudioContext | null = null;
   private analyser: AnalyserNode | null = null;
   private processor: ScriptProcessorNode | null = null;
+  private silentSink: GainNode | null = null;
   private sourceNode: MediaStreamAudioSourceNode | null = null;
   private chunks: Float32Array[] = [];
   private sampleRate = TARGET_SAMPLE_RATE;
@@ -79,6 +80,8 @@ class GlobalVoiceRecorder {
   private elapsed = 0;
   /** Guards against double-start while a `start()` is mid-flight (pre-getUserMedia). */
   private starting = false;
+  /** Invalidates an optimistic start when Cancel fires before getUserMedia resolves. */
+  private startGeneration = 0;
   private readonly errorListeners = new Set<ErrorListener>();
 
   onError(listener: ErrorListener): () => void {
@@ -117,6 +120,8 @@ class GlobalVoiceRecorder {
    */
   async start(): Promise<void> {
     if (this.isBusy()) return;
+    const generation = this.startGeneration + 1;
+    this.startGeneration = generation;
     this.starting = true;
     this.chunks = [];
     this.elapsed = 0;
@@ -135,6 +140,7 @@ class GlobalVoiceRecorder {
       const ensureAccess = window.ade?.transcription?.requestMicAccess;
       if (ensureAccess) {
         const access = await ensureAccess();
+        if (!this.isActiveStart(generation)) return;
         if (access.status !== "granted") {
           this.teardown();
           rootAppStoreApi.getState().resetDictationSession();
@@ -148,6 +154,12 @@ class GlobalVoiceRecorder {
       }
 
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      if (!this.isActiveStart(generation)) {
+        for (const track of stream.getTracks()) {
+          track.stop();
+        }
+        return;
+      }
       this.mediaStream = stream;
 
       const AudioCtor =
@@ -168,8 +180,10 @@ class GlobalVoiceRecorder {
       this.analyser = analyser;
       source.connect(analyser);
 
-      // ScriptProcessorNode is deprecated but universally available and keeps the
-      // PCM capture path dependency-free (no AudioWorklet module to bundle).
+      // ScriptProcessorNode is deprecated but still the broadest Electron-safe
+      // option for dependency-free PCM capture. Migrate this to AudioWorkletNode
+      // once the renderer can bundle a worklet module without changing the
+      // downstream 16 kHz PCM pipeline.
       const processor = audioContext.createScriptProcessor(4096, 1, 1);
       this.processor = processor;
       processor.onaudioprocess = (event) => {
@@ -177,7 +191,11 @@ class GlobalVoiceRecorder {
         this.chunks.push(new Float32Array(channel));
       };
       source.connect(processor);
-      processor.connect(audioContext.destination);
+      const silentSink = audioContext.createGain();
+      silentSink.gain.value = 0;
+      this.silentSink = silentSink;
+      processor.connect(silentSink);
+      silentSink.connect(audioContext.destination);
 
       // Phase was already flipped to "recording" optimistically above.
       this.startWaveform();
@@ -186,6 +204,7 @@ class GlobalVoiceRecorder {
         rootAppStoreApi.getState().setDictationElapsed(this.elapsed);
       }, 1000);
     } catch (error) {
+      if (this.startGeneration !== generation) return;
       this.teardown();
       rootAppStoreApi.getState().resetDictationSession();
       const denied = error instanceof DOMException && error.name === "NotAllowedError";
@@ -197,10 +216,18 @@ class GlobalVoiceRecorder {
 
   /** Discard the in-flight recording and return to idle. */
   cancel(): void {
+    this.startGeneration += 1;
     this.teardown();
     this.chunks = [];
     this.elapsed = 0;
     rootAppStoreApi.getState().resetDictationSession();
+  }
+
+  private isActiveStart(generation: number): boolean {
+    return (
+      this.startGeneration === generation
+      && rootAppStoreApi.getState().dictationPhase === "recording"
+    );
   }
 
   /**
@@ -317,6 +344,11 @@ class GlobalVoiceRecorder {
       // ignore
     }
     try {
+      this.silentSink?.disconnect();
+    } catch {
+      // ignore
+    }
+    try {
       this.sourceNode?.disconnect();
     } catch {
       // ignore
@@ -327,6 +359,7 @@ class GlobalVoiceRecorder {
       // ignore
     }
     this.processor = null;
+    this.silentSink = null;
     this.sourceNode = null;
     this.analyser = null;
     if (this.audioContext && this.audioContext.state !== "closed") {

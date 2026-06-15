@@ -13,6 +13,11 @@ const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const desktopRoot = path.resolve(scriptDir, "..");
 const whisperRoot = path.join(desktopRoot, "resources", "whisper");
 const maxDownloadRedirects = 10;
+const configuredDownloadTimeoutMs = Number.parseInt(process.env.ADE_WHISPER_DOWNLOAD_TIMEOUT_MS ?? "", 10);
+const downloadTimeoutMs =
+  Number.isFinite(configuredDownloadTimeoutMs) && configuredDownloadTimeoutMs > 0
+    ? configuredDownloadTimeoutMs
+    : 120_000;
 
 // ───────────────────────────────────────────────────────────────────────────
 // Whisper resources we materialize into resources/whisper/ for packaging:
@@ -61,38 +66,70 @@ async function pathExists(targetPath) {
 
 async function downloadFile(url, destinationPath, redirectsRemaining = maxDownloadRedirects) {
   await fs.mkdir(path.dirname(destinationPath), { recursive: true });
-  await new Promise((resolve, reject) => {
-    const request = https.get(url, (response) => {
-      if (
-        response.statusCode &&
-        response.statusCode >= 300 &&
-        response.statusCode < 400 &&
-        response.headers.location
-      ) {
-        response.resume();
-        if (redirectsRemaining <= 0) {
-          reject(new Error(`Too many redirects while downloading ${url}`));
+  const partialPath = `${destinationPath}.part`;
+  await fs.rm(partialPath, { force: true });
+  try {
+    const redirectUrl = await new Promise((resolve, reject) => {
+      let output = null;
+      let settled = false;
+      let request = null;
+      const fail = (error) => {
+        if (settled) return;
+        settled = true;
+        output?.destroy();
+        request?.destroy();
+        reject(error);
+      };
+      const succeed = (nextUrl = null) => {
+        if (settled) return;
+        settled = true;
+        resolve(nextUrl);
+      };
+
+      request = https.get(url, { timeout: downloadTimeoutMs }, (response) => {
+        if (
+          response.statusCode &&
+          response.statusCode >= 300 &&
+          response.statusCode < 400 &&
+          response.headers.location
+        ) {
+          response.resume();
+          if (redirectsRemaining <= 0) {
+            fail(new Error(`Too many redirects while downloading ${url}`));
+            return;
+          }
+          succeed(new URL(response.headers.location, url).toString());
           return;
         }
-        downloadFile(
-          new URL(response.headers.location, url).toString(),
-          destinationPath,
-          redirectsRemaining - 1,
-        ).then(resolve, reject);
-        return;
-      }
-      if (response.statusCode !== 200) {
-        response.resume();
-        reject(new Error(`HTTP ${response.statusCode ?? "unknown"} for ${url}`));
-        return;
-      }
-      const output = createWriteStream(destinationPath, { mode: 0o644 });
-      response.pipe(output);
-      output.once("finish", () => output.close(resolve));
-      output.once("error", reject);
+        if (response.statusCode !== 200) {
+          response.resume();
+          fail(new Error(`HTTP ${response.statusCode ?? "unknown"} for ${url}`));
+          return;
+        }
+        output = createWriteStream(partialPath, { mode: 0o644 });
+        response.once("aborted", () => fail(new Error(`Download aborted for ${url}`)));
+        response.once("error", fail);
+        response.pipe(output);
+        output.once("finish", () => output.close(() => succeed()));
+        output.once("error", fail);
+      });
+      request.setTimeout(downloadTimeoutMs, () => {
+        fail(new Error(`Timed out after ${Math.round(downloadTimeoutMs / 1000)}s while downloading ${url}`));
+      });
+      request.once("error", fail);
     });
-    request.once("error", reject);
-  });
+
+    if (redirectUrl) {
+      await fs.rm(partialPath, { force: true });
+      await downloadFile(redirectUrl, destinationPath, redirectsRemaining - 1);
+      return;
+    }
+
+    await fs.rename(partialPath, destinationPath);
+  } catch (error) {
+    await fs.rm(partialPath, { force: true });
+    throw error;
+  }
 }
 
 async function materializeModel() {

@@ -83,7 +83,8 @@ enum DictationCleanup {
   /// Capitalize the first alphabetic character at the start of the string and
   /// after each sentence terminator (`.`, `!`, `?`). Only the leading letter is
   /// touched; the remainder of every word keeps its casing so canonical terms
-  /// like "OpenAI" survive.
+  /// like "OpenAI" survive. Leading punctuation such as quotes does not consume
+  /// the pending capitalization; this matches the desktop cleanup pass.
   private static func capitalizeSentences(_ input: String) -> String {
     var result = ""
     result.reserveCapacity(input.count)
@@ -97,9 +98,6 @@ enum DictationCleanup {
         result.append(character)
         if character == "." || character == "!" || character == "?" {
           capitalizeNext = true
-        } else if !character.isWhitespace {
-          // Any other non-space character begins/continues a sentence body.
-          capitalizeNext = false
         }
       }
     }
