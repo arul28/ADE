@@ -131,8 +131,7 @@ private func duplicateAssistantFragmentIndex(
 private func assistantTurnIdsAreCompatible(_ lhs: String?, _ rhs: String?) -> Bool {
   let left = lhs?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
   let right = rhs?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-  if left.isEmpty || right.isEmpty { return true }
-  return left == right
+  return !left.isEmpty && left == right
 }
 
 private func mergedDuplicateAssistantText(existing: String, incoming: String) -> String? {

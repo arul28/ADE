@@ -7903,6 +7903,34 @@ final class ADETests: XCTestCase {
     ])
   }
 
+  func testWorkChatMessagesKeepRepeatedAssistantTextWhenTurnIdIsMissing() {
+    let transcript = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-04-20T00:00:01.000Z",
+        sequence: 1,
+        event: .assistantText(text: "Done", turnId: nil, itemId: nil)
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-04-20T00:00:02.000Z",
+        sequence: 2,
+        event: .userMessage(text: "again", attachments: nil, turnId: nil, steerId: nil, deliveryState: nil, processed: nil)
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-04-20T00:00:03.000Z",
+        sequence: 3,
+        event: .assistantText(text: "Done", turnId: nil, itemId: nil)
+      ),
+    ]
+
+    let messages = buildWorkChatMessages(from: transcript)
+
+    XCTAssertEqual(messages.map(\.role), ["assistant", "user", "assistant"])
+    XCTAssertEqual(messages.map(\.markdown), ["Done", "again", "Done"])
+  }
+
   func testPreferredWorkTranscriptReplacesTrimmedLiveTailWithFullFallbackText() {
     let fullText = (1...200).map(String.init).joined(separator: "\n")
     let tailText = (121...200).map(String.init).joined(separator: "\n")
@@ -9251,6 +9279,12 @@ final class ADETests: XCTestCase {
       sequence: 1,
       event: .status(turnStatus: "completed", message: nil, turnId: "turn-1")
     )
+    let nextUserTurn = WorkChatEnvelope(
+      sessionId: "chat-1",
+      timestamp: "2026-03-25T00:00:02.000Z",
+      sequence: 2,
+      event: .userMessage(text: "next", attachments: nil, turnId: "turn-2", steerId: nil, deliveryState: nil, processed: nil)
+    )
 
     let activeSnapshot = buildWorkChatTimelineSnapshot(
       transcript: [started],
@@ -9269,6 +9303,7 @@ final class ADETests: XCTestCase {
     XCTAssertFalse(completedSnapshot.transcriptIndicatesActiveTurn)
     XCTAssertFalse(workTranscriptLatestTurnEnded([started]))
     XCTAssertTrue(workTranscriptLatestTurnEnded([started, completed]))
+    XCTAssertFalse(workTranscriptLatestTurnEnded([started, completed, nextUserTurn]))
   }
 
   func testWorkChatStreamingRequiresLiveConnectionForTranscriptActiveTurn() {

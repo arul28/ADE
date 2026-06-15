@@ -81,6 +81,8 @@ func workTranscriptLatestTurnEnded(_ transcript: [WorkChatEnvelope]) -> Bool {
     switch envelope.event {
     case .done:
       return true
+    case .userMessage:
+      return false
     case .status(let turnStatus, _, _):
       switch turnStatus.lowercased() {
       case "completed", "failed", "interrupted", "cancelled", "canceled", "ended":
