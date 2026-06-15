@@ -1,9 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   buildRemoteRuntimeRpcCommand,
   listRemoteSessions,
   parseRemoteAdeCodeArgs,
   remoteRuntimeLayoutCandidates,
+  selectProject,
   takeAdeCodeRemoteArgs,
 } from "../remoteLauncher";
 
@@ -206,5 +207,28 @@ describe("ade code remote launcher", () => {
     await expect(listRemoteSessions(client as never, "project-1")).resolves.toMatchObject([
       { sessionId: "claude-metadata-1", kind: "terminal", title: "Claude metadata terminal" },
     ]);
+  });
+
+  it("does not register a new remote project when a path query is ambiguous", async () => {
+    const request = vi.fn();
+    await expect(selectProject(request as never, [
+      {
+        projectId: "frontend",
+        displayName: "frontend",
+        rootPath: "/home/alice/frontend",
+        addedAt: 0,
+        lastOpenedAt: 0,
+        gitOriginUrl: null,
+      },
+      {
+        projectId: "backend",
+        displayName: "backend",
+        rootPath: "/home/alice/backend",
+        addedAt: 0,
+        lastOpenedAt: 0,
+        gitOriginUrl: null,
+      },
+    ], "/home/alice")).rejects.toThrow("matches multiple entries");
+    expect(request).not.toHaveBeenCalled();
   });
 });

@@ -942,7 +942,7 @@ async function selectScope(options: RemoteCliOptions): Promise<RemoteLaunchScope
   );
 }
 
-async function selectProject(
+export async function selectProject(
   client: ProcessJsonRpcClient,
   projects: RemoteRuntimeProjectRecord[],
   query: string | null,
@@ -956,7 +956,8 @@ async function selectProject(
         "Remote project",
       );
     } catch (error) {
-      if (query.startsWith("/") || query.startsWith("~")) {
+      const message = errorMessage(error);
+      if ((query.startsWith("/") || query.startsWith("~")) && message.startsWith("Remote project not found:")) {
         return await ensureProject(client, query);
       }
       throw error;
