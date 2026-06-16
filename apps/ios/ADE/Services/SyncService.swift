@@ -8957,6 +8957,11 @@ extension SyncService {
         args["prNumber"] = pr
       }
     case .openPr:
+      if let prId = (payload["prId"] as? String)?
+        .trimmingCharacters(in: .whitespacesAndNewlines),
+        !prId.isEmpty {
+        args["prId"] = prId
+      }
       if let prNumber = payload["prNumber"] {
         args["prNumber"] = prNumber
       }
