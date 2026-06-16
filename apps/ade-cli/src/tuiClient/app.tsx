@@ -85,6 +85,7 @@ import {
   resizeTerminal,
   reloadClaudePlugins,
   respondToInput,
+  saveRuntimeTempAttachment,
   sendChatMessage,
   sendToTerminalSession,
   signalTerminal,
@@ -164,7 +165,7 @@ import { chatSelectionCopyText, resolveDrawerChatSelection } from "./drawerSelec
 import { sortLanesForStackGraph } from "./laneTree";
 import { latestExpandableFailureId, renderObject, summarizeDiffChanges } from "./format";
 import { startTuiHeartbeat, type TuiHeartbeat } from "./heartbeat";
-import { isImageFilePath, latestOpenableImageTarget, readClipboardImageAttachment, readImageDimensions } from "./imageTargets";
+import { clipboardScratchDir, isImageFilePath, latestOpenableImageTarget, readClipboardImageAttachment, readImageDimensions } from "./imageTargets";
 import { appendReservedTuiEvent, dedupeTuiEvents, reserveTuiEventDedupKey, syncTuiEventDedupKeys } from "./eventDedup";
 import { advanceOlderHistoryCursor, prependOlderTuiHistory, splitSnapshotForDisplay, takeNewestChunk, TUI_LOADED_EVENT_CAP } from "./olderHistory";
 import { coalesceTextDeltaEnvelopes } from "./assistantTextIdentity";
@@ -9651,8 +9652,36 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     setPaneFocus("details");
   }, [setPaneFocus]);
 
+  const addImageMention = useCallback((filePath: string): void => {
+    const insertText = `@${path.basename(filePath)}`;
+    setSelectedMentions((prev) => {
+      if (prev.some((entry) => entry.filePath === filePath)) return prev;
+      return [...prev, {
+        kind: "file" as const,
+        label: path.basename(filePath),
+        insertText,
+        detail: filePath,
+        filePath,
+        attachment: true,
+      }].slice(-12);
+    });
+    addNotice("Attached clipboard image.", "success");
+  }, [addNotice]);
+
   const attachClipboardImage = useCallback((): boolean => {
-    const attachment = readClipboardImageAttachment(project.workspaceRoot);
+    // The clipboard always lives on the machine running the TUI. When the
+    // runtime is remote, `project.workspaceRoot` points at a path on the other
+    // machine — writing there locally fails (and would be unreadable by the
+    // agent anyway), so materialize into a local scratch dir and upload the
+    // bytes to the runtime, mirroring the desktop composer.
+    const cacheRoot = remoteLaunch ? os.tmpdir() : project.workspaceRoot;
+    let attachment: AgentChatFileRef | null = null;
+    try {
+      attachment = readClipboardImageAttachment(cacheRoot);
+    } catch (err) {
+      addNotice(`Could not read the clipboard image: ${err instanceof Error ? err.message : String(err)}`, "error");
+      return true;
+    }
     if (!attachment) {
       addNotice("No clipboard image was found. On macOS, copy an image or image file path; ADE Code checks pngpaste and pbpaste.", "error");
       return true;
@@ -9660,21 +9689,38 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     if (activePaneRef.current !== "chat") {
       focusChat();
     }
-    const insertText = `@${path.basename(attachment.path)}`;
-    setSelectedMentions((prev) => {
-      if (prev.some((entry) => entry.filePath === attachment.path)) return prev;
-      return [...prev, {
-        kind: "file" as const,
-        label: path.basename(attachment.path),
-        insertText,
-        detail: attachment.path,
-        filePath: attachment.path,
-        attachment: true,
-      }].slice(-12);
-    });
-    addNotice("Attached clipboard image.", "success");
+
+    if (!remoteLaunch) {
+      addImageMention(attachment.path);
+      return true;
+    }
+
+    const conn = connectionRef.current;
+    if (!conn) {
+      addNotice("Not connected to the remote runtime — can't attach the image yet.", "error");
+      return true;
+    }
+    const localPath = attachment.path;
+    // Only the temp files ADE materialized under the scratch dir are ours to
+    // delete. The clipboard may instead reference a pre-existing user file
+    // (copied image file / file path) — upload its bytes, but never delete it.
+    const isScratchTemp = localPath.startsWith(`${clipboardScratchDir(cacheRoot)}${path.sep}`);
+    void (async () => {
+      try {
+        const data = await fs.promises.readFile(localPath);
+        const { path: remotePath } = await saveRuntimeTempAttachment(conn, {
+          data: data.toString("base64"),
+          filename: path.basename(localPath),
+        });
+        addImageMention(remotePath);
+      } catch (err) {
+        addNotice(`Could not upload the clipboard image to the remote runtime: ${err instanceof Error ? err.message : String(err)}`, "error");
+      } finally {
+        if (isScratchTemp) await fs.promises.rm(localPath, { force: true }).catch(() => {});
+      }
+    })();
     return true;
-  }, [addNotice, focusChat, project.workspaceRoot]);
+  }, [addImageMention, addNotice, focusChat, project.workspaceRoot, remoteLaunch]);
 
   // Resolve the deeplink target for the row/pane currently focused in the
   // lanes-picker or PR-picker contexts. Returns `null` when the focus is on
