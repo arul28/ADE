@@ -405,7 +405,10 @@ struct WorkNewChatScreen: View {
         provider: provider,
         model: modelId,
         reasoningEffort: normalizedReasoning.isEmpty ? nil : normalizedReasoning,
-        codexFastMode: (fastModeSupported && codexFastMode) ? true : nil,
+        // Send an explicit true/false when the model supports fast mode so the
+        // user's choice (including an explicit OFF) is honored rather than
+        // falling back to the host default; nil only when fast mode is N/A.
+        codexFastMode: fastModeSupported ? codexFastMode : nil,
         permissionMode: wire.permissionMode,
         interactionMode: wire.interactionMode,
         claudePermissionMode: wire.claudePermissionMode,
