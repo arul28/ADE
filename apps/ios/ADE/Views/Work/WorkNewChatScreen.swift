@@ -119,6 +119,9 @@ struct WorkNewChatScreen: View {
   @State private var runtimeMode: String = "default"
   @State private var reasoningEffort: String = ""
   @State private var sessionMode: WorkNewSessionMode = .chat
+  /// Status banner shown above the composer during auto-create lane naming,
+  /// mirroring desktop's "Naming lane with <model>… → Creating lane…" flow.
+  @State private var autoCreateStatus: String?
 
   /// Whether the synthetic "Auto-create lane" entry is the current selection.
   private var isAutoCreateLane: Bool {
@@ -160,6 +163,20 @@ struct WorkNewChatScreen: View {
       }
       .scrollBounceBehavior(.basedOnSize)
       .scrollDismissesKeyboard(.interactively)
+
+      if let autoCreateStatus, busy {
+        HStack(spacing: 8) {
+          ProgressView().controlSize(.mini)
+          Text(autoCreateStatus)
+            .font(.caption)
+            .foregroundStyle(ADEColor.textSecondary)
+            .lineLimit(1)
+          Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 20)
+        .padding(.bottom, 6)
+        .transition(.opacity)
+      }
 
       if let errorMessage {
         Text(errorMessage)
@@ -347,10 +364,49 @@ struct WorkNewChatScreen: View {
     let targetLaneId: String
     var createdLaneId: String?
     if isAutoCreateLane {
+      // Resolve the lane name first (desktop parity): try the host's small
+      // naming model, but never let naming block or fail lane creation. Any
+      // error / timeout / offline / host-disabled falls back to the same
+      // deterministic name mobile already used.
+      let deterministicName = autoCreatedLaneName(opener: opener)
+      var resolvedName = deterministicName
+      if let contextLaneId = autoCreateToolsLane?.id, !contextLaneId.isEmpty {
+        withAnimation(.snappy(duration: 0.16)) {
+          autoCreateStatus = "Naming lane with \(prettyNewChatModelName(modelId))…"
+        }
+        // Race the naming call against a 10s deadline (mirrors desktop's
+        // Promise.race([suggestLaneName, timeout])). First result wins; the
+        // loser is cancelled. The naming task swallows its own errors into the
+        // deterministic fallback so a host/offline failure never throws here.
+        resolvedName = await withTaskGroup(of: String.self) { group in
+          group.addTask {
+            do {
+              return try await syncService.suggestLaneName(
+                laneId: contextLaneId,
+                prompt: opener,
+                modelId: modelId,
+                fallbackName: deterministicName
+              )
+            } catch {
+              return deterministicName
+            }
+          }
+          group.addTask {
+            try? await Task.sleep(nanoseconds: 10_000_000_000)
+            return deterministicName
+          }
+          let first = await group.next() ?? deterministicName
+          group.cancelAll()
+          return first
+        }
+      }
+
+      withAnimation(.snappy(duration: 0.16)) {
+        autoCreateStatus = "Creating lane…"
+      }
       do {
-        let laneName = autoCreatedLaneName(opener: opener)
         let lane = try await syncService.createLane(
-          name: laneName,
+          name: resolvedName,
           description: opener.isEmpty ? "" : String(opener.prefix(280))
         )
         targetLaneId = lane.id
@@ -359,12 +415,17 @@ struct WorkNewChatScreen: View {
       } catch {
         ADEHaptics.error()
         errorMessage = error.localizedDescription
+        autoCreateStatus = nil
         busy = false
         return false
       }
     } else {
       targetLaneId = selectedLaneId
     }
+
+    // Lane is ready; the naming/creating banner is done — the composer + nav
+    // spinner carry the remaining "starting session" state.
+    autoCreateStatus = nil
 
     do {
       if sessionMode == .cli {

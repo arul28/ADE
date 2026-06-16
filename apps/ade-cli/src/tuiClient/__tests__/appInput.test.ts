@@ -58,6 +58,8 @@ import {
   isNewChatSetupPane,
   resolveContextDefault,
   resolveDrawerPaneWidth,
+  resolvePromptChatSubmitTarget,
+  shouldHandlePendingQuestionKey,
   resolveModelPickerEscape,
   nextModelPickerProviderTabKey,
   resolveChatWrapWidth,
@@ -80,6 +82,65 @@ describe("session activity helpers", () => {
     expect(isChatSessionAnimating({ status: "active", awaitingInput: true, idleSinceAt: null })).toBe(false);
     expect(isChatSessionAnimating({ status: "active", awaitingInput: false, idleSinceAt: "2026-05-20T07:00:00.000Z" })).toBe(false);
     expect(isChatSessionAnimating({ status: "idle", awaitingInput: false, idleSinceAt: null })).toBe(false);
+  });
+
+  it("routes prompt submission to an existing chat before starting a provider-specific fallback", () => {
+    expect(resolvePromptChatSubmitTarget({
+      draftChatActive: false,
+      focusedSessionId: null,
+      activeSessionId: "claude-sdk-chat",
+    })).toBe("claude-sdk-chat");
+
+    expect(resolvePromptChatSubmitTarget({
+      draftChatActive: true,
+      focusedSessionId: null,
+      activeSessionId: "previous-chat",
+    })).toBeNull();
+
+    expect(resolvePromptChatSubmitTarget({
+      draftChatActive: true,
+      focusedSessionId: "grid-chat",
+      activeSessionId: "previous-chat",
+    })).toBe("grid-chat");
+  });
+
+  it("only captures pending question hotkeys in the blank chat prompt", () => {
+    expect(shouldHandlePendingQuestionKey({
+      pane: "chat",
+      hasPendingQuestion: true,
+      prompt: "",
+      ctrl: false,
+      meta: false,
+    })).toBe(true);
+
+    expect(shouldHandlePendingQuestionKey({
+      pane: "details",
+      hasPendingQuestion: true,
+      prompt: "",
+      ctrl: false,
+      meta: false,
+    })).toBe(false);
+    expect(shouldHandlePendingQuestionKey({
+      pane: "chat",
+      hasPendingQuestion: true,
+      prompt: "typed answer",
+      ctrl: false,
+      meta: false,
+    })).toBe(false);
+    expect(shouldHandlePendingQuestionKey({
+      pane: "chat",
+      hasPendingQuestion: true,
+      prompt: "",
+      ctrl: true,
+      meta: false,
+    })).toBe(false);
+    expect(shouldHandlePendingQuestionKey({
+      pane: "chat",
+      hasPendingQuestion: false,
+      prompt: "",
+      ctrl: false,
+      meta: false,
+    })).toBe(false);
   });
 
   it("does not animate an idle terminal process but keeps fast polling while it is busy", () => {

@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest";
 import type { AgentChatEventEnvelope, PendingInputRequest } from "../../../../desktop/src/shared/types/chat";
-import { buildPendingInputAnswers, latestPendingApproval } from "../pendingInput";
+import {
+  buildPendingInputAnswers,
+  createPendingQuestionSelectionState,
+  latestPendingApproval,
+  movePendingQuestionFocus,
+  movePendingQuestionOption,
+  pendingQuestionAnsweredCount,
+  pendingQuestionSelectionValue,
+} from "../pendingInput";
 
 const baseRequest: PendingInputRequest = {
   requestId: "req-1",
@@ -130,5 +138,52 @@ describe("pendingInput", () => {
       mode: "approval",
       highStakes: false,
     }));
+  });
+
+  it("tracks arrow-key selection across multi-question input", () => {
+    const request: PendingInputRequest = {
+      ...baseRequest,
+      questions: [
+        baseRequest.questions[0]!,
+        {
+          id: "banner",
+          question: "Which banner text?",
+          options: [
+            { label: "Short", value: "short" },
+            { label: "Detailed", value: "detailed", recommended: true },
+          ],
+        },
+      ],
+    };
+    const approval = {
+      itemId: "item-questions",
+      description: "Need input",
+      highStakes: false,
+      mode: "question" as const,
+      request,
+    };
+
+    const initial = createPendingQuestionSelectionState(approval)!;
+    expect(pendingQuestionSelectionValue(request, initial)).toBe("recommended");
+
+    const movedOption = movePendingQuestionOption(request, initial, 1);
+    expect(pendingQuestionSelectionValue(request, movedOption)).toBe("manual");
+
+    const movedQuestion = movePendingQuestionFocus(request, movedOption, 1);
+    expect(movedQuestion.activeQuestionIndex).toBe(1);
+    expect(pendingQuestionSelectionValue(request, movedQuestion)).toBe("detailed");
+  });
+
+  it("counts answered pending questions by id", () => {
+    const request: PendingInputRequest = {
+      ...baseRequest,
+      questions: [
+        baseRequest.questions[0]!,
+        { id: "second", question: "Second?", options: [{ label: "Yes", value: "yes" }] },
+      ],
+    };
+
+    expect(pendingQuestionAnsweredCount(request, { path: "manual" })).toBe(1);
+    expect(pendingQuestionAnsweredCount(request, { path: "manual", second: "yes" })).toBe(2);
   });
 });

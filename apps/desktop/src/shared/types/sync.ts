@@ -695,6 +695,7 @@ export type SyncRemoteCommandAction =
   | "lanes.refreshSnapshots"
   | "lanes.getDetail"
   | "lanes.create"
+  | "lanes.suggestName"
   | "lanes.createChild"
   | "lanes.createFromUnstaged"
   | "lanes.importBranch"

@@ -83,6 +83,126 @@ function answerForQuestion(question: PendingInputQuestion, text: string): string
   return matched[0] ?? trimmed;
 }
 
+export type PendingQuestionSelectionState = {
+  itemId: string;
+  activeQuestionIndex: number;
+  answers: Record<string, string | string[]>;
+  optionIndexByQuestionId: Record<string, number>;
+};
+
+export function optionsForPendingQuestion(
+  request: PendingInputRequest | undefined,
+  question: PendingInputQuestion | undefined,
+  questionIndex: number,
+): PendingInputOption[] {
+  if (question?.options?.length) return question.options;
+  // Only the first question inherits the request-level `options` fallback (the
+  // legacy single-question shape); later questions must carry their own options.
+  return questionIndex === 0 ? request?.options ?? [] : [];
+}
+
+function defaultOptionIndex(options: PendingInputOption[]): number {
+  if (!options.length) return -1;
+  const recommendedIndex = options.findIndex((option) => option.recommended);
+  return recommendedIndex >= 0 ? recommendedIndex : 0;
+}
+
+export function createPendingQuestionSelectionState(
+  approval: PendingApproval,
+): PendingQuestionSelectionState | null {
+  if (approval.mode !== "question") return null;
+  const request = approval.request;
+  const questions = request?.questions ?? [];
+  if (!questions.length) return null;
+  const optionIndexByQuestionId: Record<string, number> = {};
+  questions.forEach((question, index) => {
+    optionIndexByQuestionId[question.id] = defaultOptionIndex(optionsForPendingQuestion(request, question, index));
+  });
+  return {
+    itemId: approval.itemId,
+    activeQuestionIndex: 0,
+    answers: {},
+    optionIndexByQuestionId,
+  };
+}
+
+export function ensurePendingQuestionSelectionState(
+  approval: PendingApproval | null,
+  previous: PendingQuestionSelectionState | null,
+): PendingQuestionSelectionState | null {
+  if (!approval || approval.mode !== "question") return null;
+  if (previous?.itemId === approval.itemId) return previous;
+  return createPendingQuestionSelectionState(approval);
+}
+
+export function pendingQuestionAnsweredCount(
+  request: PendingInputRequest | undefined,
+  answers: Record<string, string | string[]>,
+): number {
+  return (request?.questions ?? []).filter((question) => Object.prototype.hasOwnProperty.call(answers, question.id)).length;
+}
+
+export function pendingQuestionSelectionValue(
+  request: PendingInputRequest | undefined,
+  state: PendingQuestionSelectionState,
+  questionIndex = state.activeQuestionIndex,
+): string | null {
+  const question = request?.questions?.[questionIndex];
+  if (!question) return null;
+  const options = optionsForPendingQuestion(request, question, questionIndex);
+  const selectedIndex = state.optionIndexByQuestionId[question.id] ?? defaultOptionIndex(options);
+  const option = options[selectedIndex] ?? null;
+  return option?.value ?? question.defaultAssumption ?? null;
+}
+
+export function setPendingQuestionOptionIndex(
+  request: PendingInputRequest | undefined,
+  state: PendingQuestionSelectionState,
+  optionIndex: number,
+): PendingQuestionSelectionState {
+  const questions = request?.questions ?? [];
+  const question = questions[state.activeQuestionIndex];
+  if (!question) return state;
+  const options = optionsForPendingQuestion(request, question, state.activeQuestionIndex);
+  if (!options.length) return state;
+  const clamped = Math.max(0, Math.min(options.length - 1, optionIndex));
+  return {
+    ...state,
+    optionIndexByQuestionId: {
+      ...state.optionIndexByQuestionId,
+      [question.id]: clamped,
+    },
+  };
+}
+
+export function movePendingQuestionOption(
+  request: PendingInputRequest | undefined,
+  state: PendingQuestionSelectionState,
+  delta: number,
+): PendingQuestionSelectionState {
+  const questions = request?.questions ?? [];
+  const question = questions[state.activeQuestionIndex];
+  if (!question) return state;
+  const options = optionsForPendingQuestion(request, question, state.activeQuestionIndex);
+  if (!options.length) return state;
+  const current = state.optionIndexByQuestionId[question.id] ?? defaultOptionIndex(options);
+  const next = (current + delta + options.length) % options.length;
+  return setPendingQuestionOptionIndex(request, state, next);
+}
+
+export function movePendingQuestionFocus(
+  request: PendingInputRequest | undefined,
+  state: PendingQuestionSelectionState,
+  delta: number,
+): PendingQuestionSelectionState {
+  const count = request?.questions?.length ?? 0;
+  if (count <= 0) return state;
+  return {
+    ...state,
+    activeQuestionIndex: (state.activeQuestionIndex + delta + count) % count,
+  };
+}
+
 export function buildPendingInputAnswers(
   request: PendingInputRequest | undefined,
   text: string,
