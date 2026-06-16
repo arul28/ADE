@@ -28,6 +28,7 @@ public enum ADEIntentCommandKind: String, Sendable {
     case replyToSession
     case retryPrChecks
     case openPr
+    case openDeeplink
     /// Restart a failed session from the Live Activity "Failed" action row.
     case restartSession
 }

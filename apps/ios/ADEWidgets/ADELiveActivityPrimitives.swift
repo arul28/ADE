@@ -509,7 +509,7 @@ public struct OpenADEDeepLinkIntent: AppIntent {
     @MainActor
     public func perform() async throws -> some IntentResult {
         await ADEIntentCommandRegistry.dispatch(
-            .openPr,
+            .openDeeplink,
             payload: ["url": urlString]
         )
         return .result()

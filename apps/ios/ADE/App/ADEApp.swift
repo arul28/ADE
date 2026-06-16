@@ -14,15 +14,17 @@ struct ADEApp: App {
   /// Driven by `.adeSendToMacRequested` notifications from `DeepLinkRouter`.
   @State private var sendToMacTarget: SendToMacTarget?
 
+  @MainActor
+  init() {
+    ADEIntentCommandRegistry.register(ADESyncIntentBridge.shared)
+  }
+
   var body: some Scene {
     WindowGroup {
       ContentView()
         .environmentObject(syncService)
         .environmentObject(dictationController)
         .task {
-          await MainActor.run {
-            ADEIntentCommandRegistry.register(ADESyncIntentBridge.shared)
-          }
           guard !didBootstrapSync else { return }
           didBootstrapSync = true
           lastActivationSyncAt = Date()
@@ -86,6 +88,7 @@ private final class ADESyncIntentBridge: ADEIntentCommandBridge {
     case .restartSession: mapped = .restartSession
     case .retryPrChecks: mapped = .retryPrChecks
     case .openPr: mapped = .openPr
+    case .openDeeplink: mapped = .openDeeplink
     }
     await SyncService.shared?.sendRemoteCommand(mapped, payload: payload)
   }
