@@ -1130,6 +1130,7 @@ struct WorkSessionDestinationView: View {
 private struct WorkSessionNavigationChromeModifier<TrailingControls: View>: ViewModifier {
   @Environment(\.dismiss) private var dismiss
   @Environment(\.layoutDirection) private var layoutDirection
+  @State private var contentWidth: CGFloat = 0
 
   let mode: WorkSessionNavigationChrome
   let title: String
@@ -1140,7 +1141,18 @@ private struct WorkSessionNavigationChromeModifier<TrailingControls: View>: View
     switch mode {
     case .pushedDetail:
       content
-        .overlay { edgeSwipeDismissOverlay }
+        .background {
+          GeometryReader { geometry in
+            Color.clear
+              .preference(key: WorkSessionNavigationChromeWidthPreferenceKey.self, value: geometry.size.width)
+          }
+        }
+        .onPreferenceChange(WorkSessionNavigationChromeWidthPreferenceKey.self) { width in
+          contentWidth = width
+        }
+        // Keep the edge gesture pass-through: vertical scrolls and row gestures
+        // still reach the chat, while the helper only dismisses true edge swipes.
+        .simultaneousGesture(edgeSwipeDismissGesture(containerWidth: contentWidth))
         .safeAreaInset(edge: .top, spacing: 0) {
           ZStack {
             Text(title)
@@ -1187,35 +1199,12 @@ private struct WorkSessionNavigationChromeModifier<TrailingControls: View>: View
     }
   }
 
-  private var edgeSwipeDismissOverlay: some View {
-    GeometryReader { geometry in
-      HStack(spacing: 0) {
-        if layoutDirection == .rightToLeft {
-          Spacer(minLength: 0)
-        }
-        Color.clear
-          .frame(width: workSessionEdgeSwipeActivationWidth)
-          .contentShape(Rectangle())
-          .gesture(edgeSwipeDismissGesture(
-            containerWidth: geometry.size.width,
-            edgeOriginX: layoutDirection == .rightToLeft
-              ? max(0, geometry.size.width - workSessionEdgeSwipeActivationWidth)
-              : 0
-          ))
-        if layoutDirection == .leftToRight {
-          Spacer(minLength: 0)
-        }
-      }
-      .frame(maxWidth: .infinity, maxHeight: .infinity)
-    }
-    .allowsHitTesting(true)
-  }
-
-  private func edgeSwipeDismissGesture(containerWidth: CGFloat, edgeOriginX: CGFloat) -> some Gesture {
+  private func edgeSwipeDismissGesture(containerWidth: CGFloat) -> some Gesture {
     DragGesture(minimumDistance: 16, coordinateSpace: .local)
       .onEnded { value in
+        guard containerWidth > 0 else { return }
         guard workSessionShouldDismissForEdgeSwipe(
-          startX: edgeOriginX + value.startLocation.x,
+          startX: value.startLocation.x,
           containerWidth: containerWidth,
           layoutDirection: layoutDirection,
           translation: value.translation,
@@ -1223,6 +1212,14 @@ private struct WorkSessionNavigationChromeModifier<TrailingControls: View>: View
         ) else { return }
         dismiss()
       }
+  }
+}
+
+private struct WorkSessionNavigationChromeWidthPreferenceKey: PreferenceKey {
+  static var defaultValue: CGFloat = 0
+
+  static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+    value = nextValue()
   }
 }
 
