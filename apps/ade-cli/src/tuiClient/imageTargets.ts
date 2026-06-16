@@ -59,15 +59,27 @@ export function readImageDimensions(filePath: string): ImageDimensions | null {
   }
 }
 
-export function readClipboardImageAttachment(workspaceRoot: string): AgentChatFileRef | null {
+/**
+ * Materialize the current clipboard image into `cacheRoot`.
+ *
+ * `cacheRoot` is the directory the image is written under locally — NOT
+ * necessarily the agent workspace. In local runtimes the caller passes the
+ * workspace root so the file lands in `.ade/cache/...` next to the project; in
+ * remote runtimes the workspace path lives on another machine, so the caller
+ * passes a local scratch directory and uploads the bytes to the runtime
+ * afterwards (see `attachClipboardImage`). Every disk interaction is
+ * best-effort: a permission or IO failure yields `null` (and falls through to
+ * the next backend) rather than throwing, which would crash the TUI render.
+ */
+export function readClipboardImageAttachment(cacheRoot: string): AgentChatFileRef | null {
   if (process.platform === "darwin") {
-    const pngpasteAttachment = readMacClipboardWithPngpaste(workspaceRoot);
+    const pngpasteAttachment = readMacClipboardWithPngpaste(cacheRoot);
     if (pngpasteAttachment) return pngpasteAttachment;
 
-    const applescriptAttachment = readMacClipboardWithAppleScript(workspaceRoot);
+    const applescriptAttachment = readMacClipboardWithAppleScript(cacheRoot);
     if (applescriptAttachment) return applescriptAttachment;
 
-    const pbpasteAttachment = readMacClipboardWithPbpaste(workspaceRoot);
+    const pbpasteAttachment = readMacClipboardWithPbpaste(cacheRoot);
     if (pbpasteAttachment) return pbpasteAttachment;
 
     const filePath = readMacClipboardFilePath();
@@ -75,7 +87,8 @@ export function readClipboardImageAttachment(workspaceRoot: string): AgentChatFi
   }
 
   if (process.platform === "win32" && commandAvailable("powershell")) {
-    const target = clipboardImageTarget(workspaceRoot);
+    const target = clipboardImageTarget(cacheRoot);
+    if (!target) return null;
     const command = [
       "Add-Type -AssemblyName System.Windows.Forms;",
       "Add-Type -AssemblyName System.Drawing;",
@@ -87,7 +100,8 @@ export function readClipboardImageAttachment(workspaceRoot: string): AgentChatFi
   }
 
   if (process.platform === "linux") {
-    const target = clipboardImageTarget(workspaceRoot);
+    const target = clipboardImageTarget(cacheRoot);
+    if (!target) return null;
     const commands: string[][] = commandAvailable("wl-paste")
       ? [["wl-paste", "-t", "image/png"]]
       : commandAvailable("xclip")
@@ -95,8 +109,7 @@ export function readClipboardImageAttachment(workspaceRoot: string): AgentChatFi
         : [];
     for (const [command, ...args] of commands) {
       const result = spawnSync(command, args, { encoding: "buffer", maxBuffer: 30 * 1024 * 1024 });
-      if (result.status === 0 && result.stdout.length) {
-        fs.writeFileSync(target, result.stdout);
+      if (result.status === 0 && result.stdout.length && safeWriteFile(target, result.stdout)) {
         if (nonEmptyFile(target)) return { path: target, type: "image" };
       }
     }
@@ -148,11 +161,37 @@ function commandAvailable(command: string): boolean {
   return result.status === 0;
 }
 
-function clipboardImageTarget(workspaceRoot: string, extension = "png"): string {
-  const dir = path.join(workspaceRoot, ".ade", "cache", "ade-code-clipboard");
-  fs.mkdirSync(dir, { recursive: true });
+/**
+ * Directory under `cacheRoot` where clipboard images are materialized. Exported
+ * so callers can tell a file ADE wrote (safe to delete after upload) from a
+ * pre-existing user file the clipboard merely referenced (must never be
+ * deleted) — see the remote-upload cleanup in `attachClipboardImage`.
+ */
+export function clipboardScratchDir(cacheRoot: string): string {
+  return path.join(cacheRoot, ".ade", "cache", "ade-code-clipboard");
+}
+
+function clipboardImageTarget(cacheRoot: string, extension = "png"): string | null {
+  const dir = clipboardScratchDir(cacheRoot);
+  try {
+    fs.mkdirSync(dir, { recursive: true });
+  } catch {
+    // The cache root may be unwritable (e.g. a read-only mount, or a remote
+    // workspace path mistakenly used locally). Surface as "no image" rather
+    // than throwing out of the React event handler and crashing the TUI.
+    return null;
+  }
   clipboardTargetCounter += 1;
   return path.join(dir, `pasted-screenshot-${Date.now()}-${clipboardTargetCounter}.${extension}`);
+}
+
+function safeWriteFile(target: string, contents: Buffer): boolean {
+  try {
+    fs.writeFileSync(target, contents);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function powershellQuoted(value: string): string {
@@ -201,21 +240,22 @@ function normalizeClipboardPathText(value: string): string | null {
   return trimmed;
 }
 
-function readMacClipboardWithPngpaste(workspaceRoot: string): AgentChatFileRef | null {
+function readMacClipboardWithPngpaste(cacheRoot: string): AgentChatFileRef | null {
   if (!commandAvailable("pngpaste")) return null;
-  const target = clipboardImageTarget(workspaceRoot);
+  const target = clipboardImageTarget(cacheRoot);
+  if (!target) return null;
   const result = spawnSync("pngpaste", [target], { stdio: "ignore" });
   return result.status === 0 && nonEmptyFile(target) ? { path: target, type: "image" } : null;
 }
 
-function readMacClipboardWithPbpaste(workspaceRoot: string): AgentChatFileRef | null {
+function readMacClipboardWithPbpaste(cacheRoot: string): AgentChatFileRef | null {
   if (!commandAvailable("pbpaste")) return null;
   const result = spawnSync("pbpaste", ["-Prefer", "image"], { encoding: "buffer", maxBuffer: 30 * 1024 * 1024 });
   if (result.status !== 0 || !result.stdout.length) return null;
-  return writeClipboardImageBuffer(workspaceRoot, result.stdout);
+  return writeClipboardImageBuffer(cacheRoot, result.stdout);
 }
 
-function readMacClipboardWithAppleScript(workspaceRoot: string): AgentChatFileRef | null {
+function readMacClipboardWithAppleScript(cacheRoot: string): AgentChatFileRef | null {
   if (!commandAvailable("osascript")) return null;
   for (const clipboardClass of ["PNGf", "TIFF"]) {
     const result = spawnSync("osascript", ["-e", `try`, "-e", `the clipboard as «class ${clipboardClass}»`, "-e", "end try"], {
@@ -225,7 +265,7 @@ function readMacClipboardWithAppleScript(workspaceRoot: string): AgentChatFileRe
     if (result.status !== 0 || !result.stdout) continue;
     const buffer = parseAppleScriptClipboardData(result.stdout);
     if (!buffer?.length) continue;
-    const attachment = writeClipboardImageBuffer(workspaceRoot, buffer, clipboardClass === "TIFF" ? "tiff" : "png");
+    const attachment = writeClipboardImageBuffer(cacheRoot, buffer, clipboardClass === "TIFF" ? "tiff" : "png");
     if (attachment) return attachment;
   }
   return null;
@@ -252,21 +292,21 @@ function readMacClipboardFilePath(): string | null {
     .find((candidate): candidate is string => Boolean(candidate && fs.existsSync(candidate) && isImageFilePath(candidate))) ?? null;
 }
 
-function writeClipboardImageBuffer(workspaceRoot: string, buffer: Buffer, preferredExtension = imageExtensionForBuffer(buffer)): AgentChatFileRef | null {
+function writeClipboardImageBuffer(cacheRoot: string, buffer: Buffer, preferredExtension = imageExtensionForBuffer(buffer)): AgentChatFileRef | null {
   if (!preferredExtension) return null;
   if (preferredExtension === "tiff" || preferredExtension === "tif") {
-    return writeConvertedTiffClipboardImage(workspaceRoot, buffer);
+    return writeConvertedTiffClipboardImage(cacheRoot, buffer);
   }
-  const target = clipboardImageTarget(workspaceRoot, preferredExtension);
-  fs.writeFileSync(target, buffer);
+  const target = clipboardImageTarget(cacheRoot, preferredExtension);
+  if (!target || !safeWriteFile(target, buffer)) return null;
   return nonEmptyFile(target) ? { path: target, type: "image" } : null;
 }
 
-function writeConvertedTiffClipboardImage(workspaceRoot: string, buffer: Buffer): AgentChatFileRef | null {
+function writeConvertedTiffClipboardImage(cacheRoot: string, buffer: Buffer): AgentChatFileRef | null {
   if (!commandAvailable("sips")) return null;
-  const source = clipboardImageTarget(workspaceRoot, "tiff");
-  const target = clipboardImageTarget(workspaceRoot, "png");
-  fs.writeFileSync(source, buffer);
+  const source = clipboardImageTarget(cacheRoot, "tiff");
+  const target = clipboardImageTarget(cacheRoot, "png");
+  if (!source || !target || !safeWriteFile(source, buffer)) return null;
   const result = spawnSync("sips", ["-s", "format", "png", source, "--out", target], { stdio: "ignore" });
   try {
     fs.rmSync(source, { force: true });

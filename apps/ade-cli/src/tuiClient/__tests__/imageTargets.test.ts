@@ -5,6 +5,7 @@ import { spawnSync } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentChatEventEnvelope } from "../../../../desktop/src/shared/types/chat";
 import {
+  clipboardScratchDir,
   latestOpenableImageTarget,
   normalizeOpenableImageTarget,
   parseAppleScriptClipboardData,
@@ -160,5 +161,62 @@ describe("clipboard image helpers", () => {
 
     expect(readClipboardImageAttachment(workspaceRoot)).toBeNull();
     expect(fs.existsSync(path.join(workspaceRoot, ".ade", "cache", "ade-code-clipboard"))).toBe(false);
+  });
+
+  it("returns null without throwing when the cache root is not writable", () => {
+    // Regression: pasting an image in a remote runtime passed the remote
+    // workspace path as the cache root, so the local mkdir threw EACCES and
+    // crashed the TUI render. Simulate an unwritable root with a regular file
+    // standing in for the directory; clipboard reads must degrade to null.
+    setPlatform("darwin");
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-code-image-targets-"));
+    const fileAsRoot = path.join(dir, "not-a-directory");
+    fs.writeFileSync(fileAsRoot, "x");
+    const payload = pngBuffer(8, 8);
+    spawnSyncMock.mockImplementation((command, args) => {
+      if (command === "command" && Array.isArray(args) && args[1] === "osascript") {
+        return { status: 0, stdout: "" } as ReturnType<typeof spawnSync>;
+      }
+      if (command === "osascript") {
+        return { status: 0, stdout: `«data PNGf${payload.toString("hex").toUpperCase()}»` } as ReturnType<typeof spawnSync>;
+      }
+      return { status: 1, stdout: "" } as ReturnType<typeof spawnSync>;
+    });
+
+    expect(() => readClipboardImageAttachment(fileAsRoot)).not.toThrow();
+    expect(readClipboardImageAttachment(fileAsRoot)).toBeNull();
+  });
+
+  it("returns a referenced user file outside the scratch dir so remote cleanup never deletes it", () => {
+    // Regression: in remote mode the pasted bytes are uploaded to the runtime
+    // and the local source is removed. The cleanup must delete ONLY files ADE
+    // materialized under the scratch dir — when the clipboard references a
+    // pre-existing user file (e.g. an image copied in Finder), that file is
+    // returned as-is and must fall outside the scratch dir so it is preserved.
+    setPlatform("darwin");
+    const cacheRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-code-image-targets-"));
+    const userDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-code-user-pics-"));
+    const userFile = path.join(userDir, "photo.png");
+    fs.writeFileSync(userFile, pngBuffer(4, 4));
+    spawnSyncMock.mockImplementation((command, args) => {
+      // Only pbpaste is available, and only its plain-text read resolves —
+      // every image-bitmap backend misses, so the clipboard-text path wins.
+      if (command === "command" && Array.isArray(args) && args[1] === "pbpaste") {
+        return { status: 0, stdout: "" } as ReturnType<typeof spawnSync>;
+      }
+      if (command === "pbpaste" && Array.isArray(args) && args.includes("-Prefer")) {
+        return { status: 1, stdout: "" } as ReturnType<typeof spawnSync>;
+      }
+      if (command === "pbpaste") {
+        return { status: 0, stdout: userFile } as ReturnType<typeof spawnSync>;
+      }
+      return { status: 1, stdout: "" } as ReturnType<typeof spawnSync>;
+    });
+
+    const attachment = readClipboardImageAttachment(cacheRoot);
+
+    expect(attachment?.path).toBe(userFile);
+    expect(userFile.startsWith(`${clipboardScratchDir(cacheRoot)}${path.sep}`)).toBe(false);
+    expect(fs.existsSync(userFile)).toBe(true);
   });
 });

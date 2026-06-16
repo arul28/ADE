@@ -515,6 +515,21 @@ export async function cancelSteerMessage(
   await connection.action("chat", "cancelSteer", { sessionId, steerId });
 }
 
+/**
+ * Upload raw attachment bytes to the runtime and get back a path that is valid
+ * on the runtime's filesystem. This is the only correct way to attach a locally
+ * sourced file (e.g. a pasted clipboard image) when the runtime is remote: the
+ * bytes are written under `<runtime projectRoot>/.ade/attachments/...` on the
+ * runtime machine, so the agent can actually read them. Mirrors the desktop
+ * composer's `window.ade.agentChat.saveTempAttachment`.
+ */
+export async function saveRuntimeTempAttachment(
+  connection: AdeCodeConnection,
+  args: { data: string; filename: string },
+): Promise<{ path: string }> {
+  return await connection.action<{ path: string }>("chat", "saveTempAttachment", args);
+}
+
 export async function editSteerMessage(
   connection: AdeCodeConnection,
   sessionId: string,
