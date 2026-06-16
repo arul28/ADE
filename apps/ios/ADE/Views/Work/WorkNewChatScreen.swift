@@ -133,13 +133,16 @@ struct WorkNewChatScreen: View {
 
   /// Fast mode only applies to in-app chat sessions on fast-tier models — the
   /// CLI launcher has no fast-mode parameter — so the lightning toggle (and the
-  /// value we send) is gated on both. When the picker's option still matches the
-  /// current model, trust its live service tiers; otherwise fall back to the
-  /// catalog derivation (covers the initial default before any pick).
+  /// value we send) is gated on both. The picker's option can only *add* support
+  /// (a live host-advertised fast tier the curated catalog may miss); it never
+  /// suppresses the catalog/allow-list fallback, so a known-fast model whose
+  /// option ships empty `serviceTiers` still shows the toggle.
   private var fastModeSupported: Bool {
     guard sessionMode == .chat else { return false }
-    if let option = selectedModelOption, workModelIdsEquivalent(option.id, modelId) {
-      return option.supportsServiceTier("fast")
+    if let option = selectedModelOption,
+       workModelIdsEquivalent(option.id, modelId),
+       option.supportsServiceTier("fast") {
+      return true
     }
     return workComposerSupportsFastMode(modelId: modelId, provider: provider)
   }
