@@ -1,0 +1,20 @@
+---
+title: "v1.2.6"
+description: "Release notes for ADE v1.2.6 - June 16, 2026"
+---
+
+v1.2.6 unblocks on-device voice input from the chat mic, fixes image paste in remote ADE Code, and makes phone sync hold onto projects through hide, unhide, and forget.
+
+---
+
+## Desktop
+
+- **Voice input you can actually turn on.** The voice dictation model now downloads straight from the chat mic — and from Settings → General — instead of the old dead-end "ships with a future update" tooltip. The ~141 MB download runs in the background, survives leaving Settings, verifies its checksum, and retries on failure.
+- **Image paste in remote ADE Code.** Pasting an image into `ade code` connected to a remote machine no longer crashes with a permission error. The image is materialized locally and uploaded to the runtime, mirroring the desktop composer; local mode is unchanged.
+- **Steadier phone sync.** Mobile sync now resolves project identity aliases, so a paired phone keeps tracking the right project through hide, unhide, and forget instead of losing it.
+
+---
+
+## iOS
+
+- **Reliable project sync.** The companion app stays mapped to the correct project across identity changes (hide / unhide / forget), fixing cases where a project could drop off the phone after those actions.
