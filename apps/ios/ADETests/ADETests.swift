@@ -8828,6 +8828,32 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(message?.assistantPreview?.totalLineCount, 5000)
   }
 
+  func testWorkChatMessagesPrecomputeAssistantPreviewAfterStreamingMerge() {
+    let firstChunk = (1...2500).map { "\($0). Line \($0)" }.joined(separator: "\n")
+    let secondChunk = "\n" + (2501...5000).map { "\($0). Line \($0)" }.joined(separator: "\n")
+    let transcript = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:01.000Z",
+        sequence: 1,
+        event: .assistantText(text: firstChunk, turnId: "turn-1", itemId: "msg-1")
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:02.000Z",
+        sequence: 2,
+        event: .assistantText(text: secondChunk, turnId: "turn-1", itemId: "msg-1")
+      )
+    ]
+
+    let message = buildWorkChatMessages(from: transcript).first
+
+    XCTAssertEqual(message?.markdown, firstChunk + secondChunk)
+    XCTAssertTrue(message?.assistantPreview?.isTruncated == true)
+    XCTAssertEqual(message?.assistantPreview?.visibleLineCount, workAssistantMessageInitialLineBudget)
+    XCTAssertEqual(message?.assistantPreview?.totalLineCount, 5000)
+  }
+
   func testWorkChatAccessibilityPreviewCapsHugeMessages() {
     let text = String(repeating: "x", count: workChatAccessibilityPreviewLimit + 50)
     let preview = workChatAccessibilityPreview(text)
