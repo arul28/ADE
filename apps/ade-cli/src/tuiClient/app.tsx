@@ -9673,8 +9673,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     // runtime is remote, `project.workspaceRoot` points at a path on the other
     // machine — writing there locally fails (and would be unreadable by the
     // agent anyway), so materialize into a local scratch dir and upload the
-    // bytes to the runtime, mirroring the desktop composer.
-    const cacheRoot = remoteLaunch ? os.tmpdir() : project.workspaceRoot;
+    // bytes to the runtime, mirroring the desktop composer. For a local runtime
+    // write into the active lane's worktree so the file lands in the checkout
+    // the chat actually belongs to.
+    const cacheRoot = remoteLaunch ? os.tmpdir() : (activeLane?.worktreePath ?? project.workspaceRoot);
     let attachment: AgentChatFileRef | null = null;
     try {
       attachment = readClipboardImageAttachment(cacheRoot);
@@ -9695,16 +9697,29 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       return true;
     }
 
-    const conn = connectionRef.current;
-    if (!conn) {
-      addNotice("Not connected to the remote runtime — can't attach the image yet.", "error");
-      return true;
-    }
     const localPath = attachment.path;
     // Only the temp files ADE materialized under the scratch dir are ours to
     // delete. The clipboard may instead reference a pre-existing user file
     // (copied image file / file path) — upload its bytes, but never delete it.
     const isScratchTemp = localPath.startsWith(`${clipboardScratchDir(cacheRoot)}${path.sep}`);
+    const cleanupScratchTemp = (): void => {
+      if (isScratchTemp) void fs.promises.rm(localPath, { force: true }).catch(() => {});
+    };
+
+    const conn = connectionRef.current;
+    if (!conn) {
+      addNotice("Not connected to the remote runtime — can't attach the image yet.", "error");
+      cleanupScratchTemp();
+      return true;
+    }
+
+    // The upload is async, so the attachment chip only appears after the
+    // round-trip. Give immediate feedback, and capture the chat this paste
+    // belongs to: if the user switches chats mid-upload, attaching the mention
+    // to whatever chat is now focused would drop the image into the wrong
+    // context — so only attach when still on the same session.
+    const targetSessionId = activeSessionIdRef.current;
+    addNotice("Uploading clipboard image to the remote runtime…", "info");
     void (async () => {
       try {
         const data = await fs.promises.readFile(localPath);
@@ -9712,15 +9727,19 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           data: data.toString("base64"),
           filename: path.basename(localPath),
         });
+        if (activeSessionIdRef.current !== targetSessionId) {
+          addNotice("Clipboard image uploaded, but you switched chats — not attaching it here.", "info");
+          return;
+        }
         addImageMention(remotePath);
       } catch (err) {
         addNotice(`Could not upload the clipboard image to the remote runtime: ${err instanceof Error ? err.message : String(err)}`, "error");
       } finally {
-        if (isScratchTemp) await fs.promises.rm(localPath, { force: true }).catch(() => {});
+        cleanupScratchTemp();
       }
     })();
     return true;
-  }, [addImageMention, addNotice, focusChat, project.workspaceRoot, remoteLaunch]);
+  }, [activeLane?.worktreePath, addImageMention, addNotice, focusChat, project.workspaceRoot, remoteLaunch]);
 
   // Resolve the deeplink target for the row/pane currently focused in the
   // lanes-picker or PR-picker contexts. Returns `null` when the focus is on
