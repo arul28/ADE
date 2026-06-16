@@ -242,9 +242,9 @@ payloads are compacted before storage for rows users rarely need in full after
 the turn is over. Large command output, tool results, file diffs, and reasoning
 text are replaced with a short head/tail preview plus original/omitted byte
 metadata on the event (`outputOriginalBytes`, `resultOmittedBytes`,
-`diffOmittedBytes`, `textOmittedBytes`, etc.). The renderer, iOS client, CLI,
-and TUI still consume the normal `output` / `result` / `diff` / `text` fields;
-they simply see the persisted preview instead of the original large body.
+`diffOmittedBytes`, `textOmittedBytes`, etc.). Live subscribers still receive
+the full event payload while a turn is active; the renderer, iOS client, CLI,
+and TUI see the persisted preview only when replaying stored history.
 
 `sessionRecovery.ts` implements version-2 reconstruction:
 

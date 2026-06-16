@@ -11397,6 +11397,50 @@ describe("createAgentChatService", () => {
       });
     });
 
+    it("reads active transcripts from the uncapped dedicated transcript after the legacy cap", async () => {
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      const legacyEnvelope: AgentChatEventEnvelope = {
+        sessionId: session.id,
+        timestamp: "2026-04-23T10:00:00.000Z",
+        event: { type: "text", text: "legacy-before-cap" },
+        sequence: 1,
+      };
+      const dedicatedEnvelope: AgentChatEventEnvelope = {
+        sessionId: session.id,
+        timestamp: "2026-04-23T10:01:00.000Z",
+        event: { type: "text", text: "dedicated-post-cap" },
+        sequence: 2,
+      };
+
+      const legacyTranscriptFile = path.join(tmpRoot, "transcripts", `${session.id}.chat.jsonl`);
+      const dedicatedTranscriptFile = path.join(tmpRoot, ".ade", "transcripts", "chat", `${session.id}.jsonl`);
+      fs.writeFileSync(
+        legacyTranscriptFile,
+        `${JSON.stringify(legacyEnvelope)}\n[ADE] chat transcript limit reached (8MB). Further events omitted.\n`,
+        "utf8",
+      );
+      fs.writeFileSync(dedicatedTranscriptFile, `${JSON.stringify(dedicatedEnvelope)}\n`, "utf8");
+      fs.utimesSync(dedicatedTranscriptFile, new Date("2026-04-23T10:01:00.000Z"), new Date("2026-04-23T10:01:00.000Z"));
+      fs.utimesSync(legacyTranscriptFile, new Date("2026-04-23T10:02:00.000Z"), new Date("2026-04-23T10:02:00.000Z"));
+      vi.mocked(parseAgentChatTranscript).mockImplementation((raw) =>
+        raw.includes("dedicated-post-cap")
+          ? [dedicatedEnvelope]
+          : raw.includes("legacy-before-cap")
+            ? [legacyEnvelope]
+            : [],
+      );
+
+      const transcript = await service.getChatTranscript({ sessionId: session.id });
+
+      expect(transcript.entries.map((entry) => entry.text)).toEqual(["dedicated-post-cap"]);
+    });
+
     it("coalesces streamed assistant fragments before applying transcript limits", async () => {
       const { service } = createService();
       const session = await service.createSession({
@@ -14455,20 +14499,22 @@ describe("createAgentChatService", () => {
         event: Extract<AgentChatEventEnvelope["event"], { type: "command" }>;
       } => event.event.type === "command" && event.event.itemId === "cmd-large-output");
 
-      expect(commandEvent.event.output).toContain("Large command output was shortened");
-      expect(commandEvent.event.output).toContain("head-marker");
-      expect(commandEvent.event.output).toContain("tail-marker");
-      expect(commandEvent.event.output).not.toContain("x".repeat(80 * 1024));
-      expect(commandEvent.event.outputOriginalBytes).toBe(Buffer.byteLength(output, "utf8"));
-      expect(commandEvent.event.outputOmittedBytes).toBeGreaterThan(0);
-      expect(Buffer.byteLength(commandEvent.event.output, "utf8")).toBeLessThan(20 * 1024);
+      expect(commandEvent.event.output).toBe(output);
+      expect(commandEvent.event.outputOriginalBytes).toBeUndefined();
+      expect(commandEvent.event.outputOmittedBytes).toBeUndefined();
 
       const historyEvent = service.getChatEventHistory(session.id).events.find((event) =>
         event.event.type === "command" && event.event.itemId === "cmd-large-output"
       );
       expect(historyEvent?.event.type).toBe("command");
       if (historyEvent?.event.type !== "command") throw new Error("Expected command history event");
-      expect(historyEvent.event.output).toBe(commandEvent.event.output);
+      expect(historyEvent.event.output).toContain("Large command output was shortened");
+      expect(historyEvent.event.output).toContain("head-marker");
+      expect(historyEvent.event.output).toContain("tail-marker");
+      expect(historyEvent.event.output).not.toContain("x".repeat(80 * 1024));
+      expect(historyEvent.event.outputOriginalBytes).toBe(Buffer.byteLength(output, "utf8"));
+      expect(historyEvent.event.outputOmittedBytes).toBeGreaterThan(0);
+      expect(Buffer.byteLength(historyEvent.event.output, "utf8")).toBeLessThan(20 * 1024);
     });
 
     it("bounds stored Codex command output while streaming deltas", async () => {
@@ -14517,13 +14563,21 @@ describe("createAgentChatService", () => {
       await vi.waitFor(() => {
         expect(events.filter((event) =>
           event.event.type === "command" && event.event.itemId === "cmd-stream-output"
-        )).toHaveLength(2);
+        )).toHaveLength(4);
       });
 
       const commandEvents = events.filter((event) =>
         event.event.type === "command" && event.event.itemId === "cmd-stream-output"
       );
-      const compactedEvent = commandEvents.at(-1);
+      expect(commandEvents.map((event) =>
+        event.event.type === "command" ? event.event.output : "",
+      )).toEqual(chunks);
+
+      const storedCommandEvents = service.getChatEventHistory(session.id).events.filter((event) =>
+        event.event.type === "command" && event.event.itemId === "cmd-stream-output"
+      );
+      expect(storedCommandEvents).toHaveLength(2);
+      const compactedEvent = storedCommandEvents.at(-1);
       expect(compactedEvent?.event.type).toBe("command");
       if (compactedEvent?.event.type !== "command") throw new Error("Expected compacted command event");
       expect(compactedEvent.event.output).toContain("Large command output was shortened");
@@ -14532,11 +14586,6 @@ describe("createAgentChatService", () => {
       expect(compactedEvent.event.output).not.toContain("after-close");
       expect(compactedEvent.event.outputOriginalBytes).toBe(Buffer.byteLength(`${chunks[0]}${chunks[1]}`, "utf8"));
       expect(compactedEvent.event.outputOmittedBytes).toBeGreaterThan(0);
-
-      const storedCommandEvents = service.getChatEventHistory(session.id).events.filter((event) =>
-        event.event.type === "command" && event.event.itemId === "cmd-stream-output"
-      );
-      expect(storedCommandEvents).toHaveLength(2);
       expect(Buffer.byteLength(storedCommandEvents.map((event) =>
         event.event.type === "command" ? event.event.output : "",
       ).join(""), "utf8")).toBeLessThan(12 * 1024);
@@ -14620,13 +14669,9 @@ describe("createAgentChatService", () => {
       const toolEvent = await waitForEvent(events, (event): event is AgentChatEventEnvelope & {
         event: Extract<AgentChatEventEnvelope["event"], { type: "tool_result" }>;
       } => event.event.type === "tool_result" && event.event.itemId === "tool-large-result");
-      expect(toolEvent.event.resultOriginalBytes).toBeGreaterThan(80 * 1024);
-      expect(toolEvent.event.resultOmittedBytes).toBeGreaterThan(0);
-      expect(toolEvent.event.result).toMatchObject({
-        summary: expect.stringContaining("Large tool result was shortened"),
-        preview: expect.stringContaining("tool-tail"),
-      });
-      expect(JSON.stringify(toolEvent.event.result)).not.toContain("a".repeat(64 * 1024));
+      expect(toolEvent.event.result).toStrictEqual(toolResult);
+      expect(toolEvent.event.resultOriginalBytes).toBeUndefined();
+      expect(toolEvent.event.resultOmittedBytes).toBeUndefined();
 
       const emptyToolEvent = await waitForEvent(events, (event): event is AgentChatEventEnvelope & {
         event: Extract<AgentChatEventEnvelope["event"], { type: "tool_result" }>;
@@ -14637,24 +14682,35 @@ describe("createAgentChatService", () => {
       const fileEvent = await waitForEvent(events, (event): event is AgentChatEventEnvelope & {
         event: Extract<AgentChatEventEnvelope["event"], { type: "file_change" }>;
       } => event.event.type === "file_change" && event.event.itemId === "file-large-diff");
-      expect(fileEvent.event.diff).toContain("Large file diff was shortened");
-      expect(fileEvent.event.diff).toContain("diff-head");
-      expect(fileEvent.event.diff).toContain("diff-tail");
-      expect(fileEvent.event.diffOriginalBytes).toBe(Buffer.byteLength(diff, "utf8"));
-      expect(fileEvent.event.diffOmittedBytes).toBeGreaterThan(0);
-      expect(Buffer.byteLength(fileEvent.event.diff, "utf8")).toBeLessThan(36 * 1024);
+      expect(fileEvent.event.diff).toBe(diff);
+      expect(fileEvent.event.diffOriginalBytes).toBeUndefined();
+      expect(fileEvent.event.diffOmittedBytes).toBeUndefined();
 
       const history = service.getChatEventHistory(session.id).events;
-      expect(history.some((event) =>
-        event.event.type === "tool_result"
-        && event.event.itemId === "tool-large-result"
-        && event.event.resultOmittedBytes
-      )).toBe(true);
-      expect(history.some((event) =>
-        event.event.type === "file_change"
-        && event.event.itemId === "file-large-diff"
-        && event.event.diffOmittedBytes
-      )).toBe(true);
+      const storedToolEvent = history.find((event) =>
+        event.event.type === "tool_result" && event.event.itemId === "tool-large-result"
+      );
+      expect(storedToolEvent?.event.type).toBe("tool_result");
+      if (storedToolEvent?.event.type !== "tool_result") throw new Error("Expected stored tool event");
+      expect(storedToolEvent.event.resultOriginalBytes).toBeGreaterThan(80 * 1024);
+      expect(storedToolEvent.event.resultOmittedBytes).toBeGreaterThan(0);
+      expect(storedToolEvent.event.result).toMatchObject({
+        summary: expect.stringContaining("Large tool result was shortened"),
+        preview: expect.stringContaining("tool-tail"),
+      });
+      expect(JSON.stringify(storedToolEvent.event.result)).not.toContain("a".repeat(64 * 1024));
+
+      const storedFileEvent = history.find((event) =>
+        event.event.type === "file_change" && event.event.itemId === "file-large-diff"
+      );
+      expect(storedFileEvent?.event.type).toBe("file_change");
+      if (storedFileEvent?.event.type !== "file_change") throw new Error("Expected stored file event");
+      expect(storedFileEvent.event.diff).toContain("Large file diff was shortened");
+      expect(storedFileEvent.event.diff).toContain("diff-head");
+      expect(storedFileEvent.event.diff).toContain("diff-tail");
+      expect(storedFileEvent.event.diffOriginalBytes).toBe(Buffer.byteLength(diff, "utf8"));
+      expect(storedFileEvent.event.diffOmittedBytes).toBeGreaterThan(0);
+      expect(Buffer.byteLength(storedFileEvent.event.diff, "utf8")).toBeLessThan(36 * 1024);
     });
 
     it("ignores deprecation/warning notifications with missing or empty message", async () => {

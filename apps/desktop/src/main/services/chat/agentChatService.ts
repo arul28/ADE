@@ -6532,11 +6532,7 @@ export function createAgentChatService(args: {
 
   const readTranscriptConversationEntries = (managed: ManagedChatSession): string[] => {
     try {
-      const transcriptPath = resolveReadableChatPath(managed.transcriptPath, "agent_chat.transcript_read_skipped_path_outside_ade");
-      if (!transcriptPath) return [];
-      const raw = fs.readFileSync(transcriptPath, "utf8");
-      return parseAgentChatTranscript(raw)
-        .filter((entry) => entry.sessionId === managed.session.id)
+      return readTranscriptEnvelopes(managed)
         .flatMap((entry) => {
           if (entry.event.type === "user_message") {
             const text = entry.event.text.trim();
@@ -6652,34 +6648,19 @@ export function createAgentChatService(args: {
   };
 
   const readTranscriptEntries = (managed: ManagedChatSession): AgentChatTranscriptEntry[] => {
-    try {
-      const transcriptPath = resolveReadableChatPath(managed.transcriptPath, "agent_chat.transcript_read_skipped_path_outside_ade");
-      if (!transcriptPath) return [];
-      const raw = fs.readFileSync(transcriptPath, "utf8");
-      return transcriptEntriesFromEnvelopes(managed.session.id, parseAgentChatTranscript(raw));
-    } catch {
-      return [];
-    }
+    return transcriptEntriesFromEnvelopes(managed.session.id, readTranscriptEnvelopes(managed));
   };
 
   const readLatestTranscriptTodoItems = (
     managed: ManagedChatSession,
   ): Extract<AgentChatEvent, { type: "todo_update" }>["items"] => {
-    try {
-      const transcriptPath = resolveReadableChatPath(managed.transcriptPath, "agent_chat.transcript_read_skipped_path_outside_ade");
-      if (!transcriptPath) return [];
-      const raw = fs.readFileSync(transcriptPath, "utf8");
-      let latest: Extract<AgentChatEvent, { type: "todo_update" }>["items"] = [];
-      for (const entry of parseAgentChatTranscript(raw)) {
-        if (entry.sessionId !== managed.session.id) continue;
-        if (entry.event.type === "todo_update") {
-          latest = entry.event.items;
-        }
+    let latest: Extract<AgentChatEvent, { type: "todo_update" }>["items"] = [];
+    for (const entry of readTranscriptEnvelopes(managed)) {
+      if (entry.event.type === "todo_update") {
+        latest = entry.event.items;
       }
-      return latest;
-    } catch {
-      return [];
     }
+    return latest;
   };
 
   const getChatTranscript = async ({
@@ -6748,7 +6729,7 @@ export function createAgentChatService(args: {
 
   const readTranscriptEnvelopes = (managed: ManagedChatSession): AgentChatEventEnvelope[] => {
     try {
-      const transcriptPath = resolveReadableChatPath(managed.transcriptPath, "agent_chat.transcript_read_skipped_path_outside_ade");
+      const transcriptPath = resolveBestTranscriptPathForSessionId(managed.session.id, managed);
       if (!transcriptPath) return [];
       return parseAgentChatTranscript(fs.readFileSync(transcriptPath, "utf8"))
         .filter((entry) => entry.sessionId === managed.session.id);
@@ -9193,12 +9174,21 @@ export function createAgentChatService(args: {
     };
   };
 
-  const commitChatEvent = (managed: ManagedChatSession, event: AgentChatEvent): void => {
+  type CommitChatEventOptions = {
+    liveEvent?: AgentChatEvent;
+  };
+
+  const commitChatEvent = (
+    managed: ManagedChatSession,
+    event: AgentChatEvent,
+    options: CommitChatEventOptions = {},
+  ): void => {
     const decoratedEvent = event.type === "error" ? decorateAgentCliError(managed, event) : event;
+    const liveEvent = options.liveEvent ?? decoratedEvent;
     const storedEvent = compactChatEventForStorage(decoratedEvent);
     managed.session.lastActivityAt = nowIso();
-    trackSubagentEvent(managed, storedEvent);
-    appendRecentConversationEntry(managed, storedEvent);
+    trackSubagentEvent(managed, liveEvent);
+    appendRecentConversationEntry(managed, liveEvent);
 
     if (storedEvent.type === "text") {
       updatePreviewFromText(managed, storedEvent);
@@ -9216,22 +9206,32 @@ export function createAgentChatService(args: {
     // Session summaries are generated only when the chat is explicitly ended in ADE,
     // so "done" events intentionally do not produce a summary here.
 
-    const envelope: AgentChatEventEnvelope = {
+    const timestamp = nowIso();
+    const sequence = ++managed.eventSequence;
+    const storedEnvelope: AgentChatEventEnvelope = {
       sessionId: managed.session.id,
-      timestamp: nowIso(),
+      timestamp,
       event: storedEvent,
-      sequence: ++managed.eventSequence,
+      sequence,
     };
+    const liveEnvelope: AgentChatEventEnvelope = liveEvent === storedEvent
+      ? storedEnvelope
+      : {
+          sessionId: managed.session.id,
+          timestamp,
+          event: liveEvent,
+          sequence,
+        };
 
-    writeTranscript(managed, envelope);
-    recordChatEventInHistory(envelope);
-    onEvent?.(envelope);
+    writeTranscript(managed, storedEnvelope);
+    recordChatEventInHistory(storedEnvelope);
+    onEvent?.(liveEnvelope);
     for (const subscriber of eventSubscribers) {
       try {
-        subscriber(envelope);
+        subscriber(liveEnvelope);
       } catch (error) {
         logger.warn("agent_chat.event_subscriber_failed", {
-          sessionId: envelope.sessionId,
+          sessionId: liveEnvelope.sessionId,
           error: error instanceof Error ? error.message : String(error),
         });
       }
@@ -9240,24 +9240,24 @@ export function createAgentChatService(args: {
     const collector = sessionTurnCollectors.get(managed.session.id);
     if (!collector) return;
 
-    if (storedEvent.type === "text") {
-      collector.outputText += storedEvent.text;
+    if (liveEvent.type === "text") {
+      collector.outputText += liveEvent.text;
       return;
     }
 
-    if (storedEvent.type === "error") {
-      collector.lastError = storedEvent.message;
+    if (liveEvent.type === "error") {
+      collector.lastError = liveEvent.message;
       return;
     }
 
-    if (storedEvent.type === "status" && storedEvent.turnStatus === "failed" && storedEvent.message) {
-      collector.lastError = storedEvent.message;
+    if (liveEvent.type === "status" && liveEvent.turnStatus === "failed" && liveEvent.message) {
+      collector.lastError = liveEvent.message;
       return;
     }
 
-    if (storedEvent.type !== "done") return;
+    if (liveEvent.type !== "done") return;
 
-    collector.usage = storedEvent.usage;
+    collector.usage = liveEvent.usage;
     if (collector.timeout) {
       clearTimeout(collector.timeout);
     }
@@ -9269,14 +9269,18 @@ export function createAgentChatService(args: {
       ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
       outputText: collector.outputText.trim() || managed.preview?.trim() || "",
       ...(collector.usage ? { usage: collector.usage } : {}),
-      ...(storedEvent.turnId ? { turnId: storedEvent.turnId } : {}),
+      ...(liveEvent.turnId ? { turnId: liveEvent.turnId } : {}),
       ...(managed.session.threadId ? { threadId: managed.session.threadId } : {}),
       ...(managed.runtime?.kind === "claude" ? { sdkSessionId: managed.runtime.sdkSessionId ?? null } : {}),
     });
   };
 
-  const commitChatEventWithCanonical = (managed: ManagedChatSession, event: AgentChatEvent): void => {
-    commitChatEvent(managed, event);
+  const commitChatEventWithCanonical = (
+    managed: ManagedChatSession,
+    event: AgentChatEvent,
+    options: CommitChatEventOptions = {},
+  ): void => {
+    commitChatEvent(managed, event, options);
     const canonical = buildCanonicalAgentChatRuntimeEvent(event);
     if (canonical) {
       commitChatEvent(managed, canonical);
@@ -9306,6 +9310,11 @@ export function createAgentChatService(args: {
         });
       }
     }
+  };
+
+  const emitLiveOnlyChatEvent = (managed: ManagedChatSession, event: AgentChatEvent): void => {
+    managed.lastActivityTimestamp = Date.now();
+    emitTransientChatEnvelope(managed.session.id, event);
   };
 
   const flushBufferedText = (managed: ManagedChatSession): void => {
@@ -9410,7 +9419,11 @@ export function createAgentChatService(args: {
     }
   };
 
-  const emitChatEvent = (managed: ManagedChatSession, event: AgentChatEvent): void => {
+  const emitChatEvent = (
+    managed: ManagedChatSession,
+    event: AgentChatEvent,
+    options: CommitChatEventOptions = {},
+  ): void => {
     managed.lastActivityTimestamp = Date.now();
     const normalizedEvent = (() => {
       switch (event.type) {
@@ -9448,7 +9461,7 @@ export function createAgentChatService(args: {
         flushBufferedText(managed);
       }
       managed.lastActivitySignature = signature;
-      commitChatEvent(managed, normalizedEvent);
+      commitChatEvent(managed, normalizedEvent, options);
       return;
     }
 
@@ -9472,7 +9485,7 @@ export function createAgentChatService(args: {
       managed.todoItems = normalizedEvent.items;
     }
 
-    commitChatEventWithCanonical(managed, normalizedEvent);
+    commitChatEventWithCanonical(managed, normalizedEvent, options);
   };
 
   const setCodexGoalAndMaybeEmitUpdate = (
@@ -15381,27 +15394,16 @@ export function createAgentChatService(args: {
       const output = String(item.aggregatedOutput ?? runtime.commandOutputByItemId.get(itemId) ?? "");
       runtime.commandOutputByItemId.set(itemId, output);
       evictOldestEntries(runtime.commandOutputByItemId, MAX_SESSION_MAP_ENTRIES);
-      const compacted = eventKind === "completed"
-        ? compactStoredTextPayload(
-            "command output",
-            output,
-            status === "failed" ? STORED_COMMAND_OUTPUT_FAILED_MAX_BYTES : STORED_COMMAND_OUTPUT_COMPLETED_MAX_BYTES,
-          )
-        : compactStoredTextPayload("command output", output, STORED_COMMAND_OUTPUT_RUNNING_MAX_BYTES);
       emitChatEvent(managed, {
         type: "command",
         command: String(item.command ?? "command"),
         cwd: String(item.cwd ?? managed.laneWorktreePath),
-        output: compacted?.text ?? output,
+        output,
         itemId,
         turnId,
         exitCode: typeof item.exitCode === "number" ? item.exitCode : null,
         durationMs: typeof item.durationMs === "number" ? item.durationMs : null,
-        status,
-        ...(compacted ? {
-          outputOriginalBytes: compacted.originalBytes,
-          outputOmittedBytes: compacted.omittedBytes,
-        } : {}),
+        status
       });
       if (eventKind === "completed") {
         runtime.commandOutputByItemId.delete(itemId);
@@ -16192,6 +16194,15 @@ export function createAgentChatService(args: {
         evictOldestEntries(runtime.commandOutputByItemId, MAX_SESSION_MAP_ENTRIES);
         if (compacted) runtime.commandOutputStorageClosedItemIds.add(itemId);
       }
+      const liveCommandEvent: AgentChatEvent = {
+        type: "command",
+        command: "command",
+        cwd: managed.laneWorktreePath,
+        output: delta,
+        itemId,
+        turnId,
+        status: "running",
+      };
       emitChatEvent(managed, {
         type: "activity",
         activity: "running_command",
@@ -16199,9 +16210,10 @@ export function createAgentChatService(args: {
         turnId,
       });
       if (storageClosed) {
+        emitLiveOnlyChatEvent(managed, liveCommandEvent);
         return;
       }
-      emitChatEvent(managed, {
+      const storedCommandEvent: AgentChatEvent = {
         type: "command",
         command: "command",
         cwd: managed.laneWorktreePath,
@@ -16213,7 +16225,12 @@ export function createAgentChatService(args: {
           outputOriginalBytes: compacted.originalBytes,
           outputOmittedBytes: compacted.omittedBytes,
         } : {}),
-      });
+      };
+      emitChatEvent(
+        managed,
+        storedCommandEvent,
+        compacted ? { liveEvent: liveCommandEvent } : undefined,
+      );
       return;
     }
 
