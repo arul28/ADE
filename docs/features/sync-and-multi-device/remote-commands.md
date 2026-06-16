@@ -317,6 +317,21 @@ A handful have more logic:
 - **`chat.create`** — resolves a missing `model` to the first
   available provider model via `agentChatService.getAvailableModels`
   before forwarding.
+- **`lanes.suggestName`** — background lane naming for the mobile
+  auto-create flow (desktop parity with
+  `agentChatService.suggestLaneNameFromPrompt`). Takes `{ prompt,
+  modelId, laneId, fallbackName? }`, calls the host's small naming model,
+  and returns `{ name }`. The handler is deliberately **not queueable**
+  so an offline phone fails fast and the client uses its own
+  deterministic fallback instead of receiving a stale queued suggestion.
+  Naming honors the host `titleGenerationEnabled` setting and clamps the
+  result; a missing `agentChatService`, a thrown error, or an empty name
+  all fall back to the supplied `fallbackName` (or, when none was passed,
+  a prompt-derived `deriveDeterministicLaneNameFromPrompt`), so naming
+  can never block or fail lane creation. The iOS caller
+  (`SyncService.suggestLaneName`, raced against a 10s deadline in
+  `WorkNewChatScreen`) catches any throw and uses the same deterministic
+  name.
 - **`lanes.initEnv` / `lanes.applyTemplate`** — resolves the lane's
   overlay context (`resolveLaneOverlayContext`), merges overrides with
   the template's env init config, and invokes

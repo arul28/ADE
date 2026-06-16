@@ -12,6 +12,7 @@ import type {
   AgentChatGetSummaryArgs,
   AgentChatListArgs,
   AgentChatModelCatalogArgs,
+  AgentChatSuggestLaneNameArgs,
   AgentChatModelCatalogMode,
   AgentChatModelCatalogRefreshProvider,
   AgentChatProvider,
@@ -133,6 +134,7 @@ import {
   type TrackedCliLaunchCommand,
 } from "../../../../desktop/src/shared/cliLaunch";
 import { parseDeeplink, type ParseError } from "../../../../desktop/src/shared/deeplinks";
+import { deriveDeterministicLaneNameFromPrompt } from "../../../../desktop/src/shared/laneNameFallback";
 import { normalizePrCreationStrategy } from "../../../../desktop/src/shared/prStrategy";
 import type { createAgentChatService } from "../../../../desktop/src/main/services/chat/agentChatService";
 import type { createCtoStateService } from "../../../../desktop/src/main/services/cto/ctoStateService";
@@ -444,7 +446,15 @@ function parseCreateLaneArgs(value: Record<string, unknown>): CreateLaneArgs {
     ...(asTrimmedString(value.branchName) ? { branchName: asTrimmedString(value.branchName)! } : {}),
     ...(asTrimmedString(value.startPoint) ? { startPoint: asTrimmedString(value.startPoint)! } : {}),
     ...(isRecord(value.linearIssue) ? { linearIssue: value.linearIssue as CreateLaneArgs["linearIssue"] } : {}),
-    ...(asTrimmedString(value.runtimePlacement) ? { runtimePlacement: asTrimmedString(value.runtimePlacement)! as CreateLaneArgs["runtimePlacement"] } : {}),
+  };
+}
+
+function parseSuggestLaneNameArgs(value: Record<string, unknown>): AgentChatSuggestLaneNameArgs {
+  return {
+    prompt: requireString(value.prompt, "lanes.suggestName requires prompt."),
+    modelId: requireString(value.modelId, "lanes.suggestName requires modelId."),
+    laneId: requireString(value.laneId, "lanes.suggestName requires laneId."),
+    ...(asTrimmedString(value.fallbackName) ? { fallbackName: asTrimmedString(value.fallbackName)! } : {}),
   };
 }
 
@@ -457,7 +467,6 @@ function parseCreateChildLaneArgs(value: Record<string, unknown>): CreateChildLa
     ...(asTrimmedString(value.baseBranchRef) ? { baseBranchRef: asTrimmedString(value.baseBranchRef)! } : {}),
     ...(asTrimmedString(value.branchName) ? { branchName: asTrimmedString(value.branchName)! } : {}),
     ...(isRecord(value.linearIssue) ? { linearIssue: value.linearIssue as CreateChildLaneArgs["linearIssue"] } : {}),
-    ...(asTrimmedString(value.runtimePlacement) ? { runtimePlacement: asTrimmedString(value.runtimePlacement)! as CreateChildLaneArgs["runtimePlacement"] } : {}),
   };
 }
 
@@ -1934,6 +1943,35 @@ function registerLaneRemoteCommands({ args, register }: RemoteCommandRegistratio
   register("lanes.getDetail", { viewerAllowed: true }, async (payload) =>
     buildLaneDetailPayload(args, requireString(payload.laneId, "lanes.getDetail requires laneId.")));
   register("lanes.create", { viewerAllowed: true, queueable: true }, async (payload) => args.laneService.create(parseCreateLaneArgs(payload)));
+  // Background lane naming for mobile auto-create. Deliberately NOT queueable:
+  // when the phone is offline we want the call to fail fast so the client uses
+  // its deterministic fallback name, never a stale queued suggestion. The naming
+  // job (suggestLaneNameFromPrompt) already honors the host `titleGenerationEnabled`
+  // setting and clamps the name; any null service / error here falls back to the
+  // same deterministic name the client would have used on its own.
+  register("lanes.suggestName", { viewerAllowed: true }, async (payload) => {
+    const parsed = parseSuggestLaneNameArgs(payload);
+    // Last-resort fallback: prefer the client's own deterministic name (so the
+    // mobile fallback matches exactly what it used before this feature), then
+    // derive one from the prompt if the client supplied none.
+    const fallback = () => {
+      const provided = parsed.fallbackName?.trim();
+      return provided && provided.length ? provided : deriveDeterministicLaneNameFromPrompt(parsed.prompt);
+    };
+    if (!args.agentChatService) return { name: fallback() };
+    try {
+      const name = await args.agentChatService.suggestLaneNameFromPrompt(parsed);
+      const trimmed = typeof name === "string" ? name.trim() : "";
+      return { name: trimmed.length ? trimmed : fallback() };
+    } catch (error) {
+      args.logger.warn("sync.lanes_suggest_name_failed", {
+        laneId: parsed.laneId,
+        modelId: parsed.modelId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return { name: fallback() };
+    }
+  });
   register("lanes.createChild", { viewerAllowed: true, queueable: true }, async (payload) => args.laneService.createChild(parseCreateChildLaneArgs(payload)));
   register("lanes.createFromUnstaged", { viewerAllowed: true, queueable: true }, async (payload) =>
     args.laneService.createFromUnstaged(parseCreateLaneFromUnstagedArgs(payload)));

@@ -144,9 +144,8 @@ the caller context and then branching on role:
 - `cto` — base tools + CTO operator tools + Linear sync tools.
 - `agent`, `external`, `orchestrator`, `evaluator` — base tools only.
 
-A visibility filter removes computer-use and macOS VM tools when those
-backends are unavailable or when the caller lacks local-computer-use
-permission.
+A visibility filter removes computer-use tools when those backends are
+unavailable or when the caller lacks local-computer-use permission.
 
 The final `.filter(...)` applies standalone-chat restrictions: if the
 session has `chatSessionId` but no worker context,

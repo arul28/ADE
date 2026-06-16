@@ -25,15 +25,12 @@ create table if not exists lanes (
       icon text,
       tags_json text,
       folder text,
-      runtime_placement text not null default 'local',
       status text not null,
       created_at text not null,
       archived_at text,
       foreign key(project_id) references projects(id),
       foreign key(parent_lane_id) references lanes(id)
     );
-
-alter table lanes add column runtime_placement text not null default 'local';
 
 create index if not exists idx_lanes_project_id on lanes(project_id);
 

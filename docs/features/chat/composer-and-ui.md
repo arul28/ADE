@@ -39,7 +39,7 @@ stream plus session metadata.
 | `AgentQuestionModal.tsx` | Pending input modal for question-type requests. |
 | `CodeHighlighter.tsx`, `chatStatusVisuals.tsx`, `chatSurfaceTheme.ts`, `chatToolAppearance.tsx` | Supporting visuals. `chatStatusVisuals.ChatStatusGlyph` takes an `animate` prop so non-active rows skip the ping/spin animation; `AgentChatMessageList.ActivityIndicator` mirrors this and switches to a dimmed static tone plus a non-looping thinking lottie once the turn ends. |
 | `pendingInput.ts`, `chatExecutionSummary.ts`, `chatNavigation.ts`, `chatTranscriptRows.ts` | Pure state derivations consumed by the UI. |
-| `apps/desktop/src/renderer/lib/visualContextFormatting.ts` | Prompt formatting for visual/tool context. Automatic macOS VM capability context is attached only when the outgoing prompt asks for ADE VM / macOS VM / Lume / isolated macOS GUI use, unless a caller forces it. |
+| `apps/desktop/src/renderer/lib/visualContextFormatting.ts` | Prompt formatting for visual/tool context from attachments, iOS Simulator, App Control, and built-in browser selections. |
 | `apps/desktop/src/shared/types/chat.ts` | Shared composer/session DTOs, including `PARALLEL_CHAT_MAX_ATTACHMENTS`, parallel launch state types, the `AgentChatModelCatalog*` set, `AgentChatModelCatalogRefreshProvider` (`opencode` / `cursor` / `droid` / `lmstudio` / `ollama`), and `AgentChatModelCatalogArgs` (`mode`, `refreshProvider`). |
 | `apps/desktop/src/renderer/components/shared/ModelPicker/` | Modular ModelPicker (see [ModelPicker structure](#modelpicker-structure)): `ModelPicker.tsx`, `ModelPickerContent.tsx`, `ModelPickerRail.tsx`, `ModelListRow.tsx`, `ReasoningEffortPicker.tsx`, `modelCatalog.ts`, `modelOrdering.ts`, `modelPickerSearch.ts`, `providerEmptyState.tsx`, `runtimeCatalogCache.ts`, plus the `useProviderAuthStatus` / `useAuthOnlyFilter` / `useModelFavorites` / `useModelRecents` / `usePerSurfaceModelDefaults` / `useReasoningByFamily` hooks. |
 
@@ -625,11 +625,6 @@ These modules are pure and unit-testable:
   recovery intentionally follows for a few animation frames after row
   measurement changes; removing that follow-up can make active streams
   appear to stop short of the newest output.
-- **Automatic macOS VM context is intent-gated.** `submit()` passes the
-  outgoing prompt text into `buildAutomaticMacosVmContextForPrompt()`.
-  Ordinary sends should not call `ade.macosVm.getStatus` or inject VM
-  state; only prompts that mention ADE VM / macOS VM / Lume / isolated
-  macOS GUI usage get the automatic capability block.
 - **Native permission picker updates serialize before submit.**
   `AgentChatPane` tracks the in-flight native-control update through
   `pendingNativeControlUpdateRef` (sessionId + monotonic `updateId` +

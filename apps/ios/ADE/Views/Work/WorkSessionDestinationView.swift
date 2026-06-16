@@ -7,6 +7,29 @@ enum WorkSessionNavigationChrome {
   case embedded
 }
 
+let workSessionEdgeSwipeActivationWidth: CGFloat = 36
+let workSessionEdgeSwipeMinimumTranslation: CGFloat = 88
+let workSessionEdgeSwipePredictedTranslation: CGFloat = 140
+
+func workSessionShouldDismissForEdgeSwipe(
+  startX: CGFloat,
+  containerWidth: CGFloat,
+  layoutDirection: LayoutDirection,
+  translation: CGSize,
+  predictedEndTranslation: CGSize
+) -> Bool {
+  let isRTL = layoutDirection == .rightToLeft
+  let leadingEdgeDistance = isRTL ? max(0, containerWidth - startX) : startX
+  let horizontalTranslation = isRTL ? -translation.width : translation.width
+  let predictedHorizontalTranslation = isRTL ? -predictedEndTranslation.width : predictedEndTranslation.width
+
+  guard leadingEdgeDistance <= workSessionEdgeSwipeActivationWidth else { return false }
+  guard horizontalTranslation > 0 else { return false }
+  guard abs(translation.height) <= max(48, horizontalTranslation * 0.75) else { return false }
+  return horizontalTranslation >= workSessionEdgeSwipeMinimumTranslation
+    || predictedHorizontalTranslation >= workSessionEdgeSwipePredictedTranslation
+}
+
 func workChatCanSendMessages(
   isLive: Bool,
   hostReachable: Bool,
@@ -1106,6 +1129,8 @@ struct WorkSessionDestinationView: View {
 
 private struct WorkSessionNavigationChromeModifier<TrailingControls: View>: ViewModifier {
   @Environment(\.dismiss) private var dismiss
+  @Environment(\.layoutDirection) private var layoutDirection
+  @State private var contentWidth: CGFloat = 0
 
   let mode: WorkSessionNavigationChrome
   let title: String
@@ -1116,6 +1141,18 @@ private struct WorkSessionNavigationChromeModifier<TrailingControls: View>: View
     switch mode {
     case .pushedDetail:
       content
+        .background {
+          GeometryReader { geometry in
+            Color.clear
+              .preference(key: WorkSessionNavigationChromeWidthPreferenceKey.self, value: geometry.size.width)
+          }
+        }
+        .onPreferenceChange(WorkSessionNavigationChromeWidthPreferenceKey.self) { width in
+          contentWidth = width
+        }
+        // Keep the edge gesture pass-through: vertical scrolls and row gestures
+        // still reach the chat, while the helper only dismisses true edge swipes.
+        .simultaneousGesture(edgeSwipeDismissGesture(containerWidth: contentWidth))
         .safeAreaInset(edge: .top, spacing: 0) {
           ZStack {
             Text(title)
@@ -1160,6 +1197,29 @@ private struct WorkSessionNavigationChromeModifier<TrailingControls: View>: View
     case .embedded:
       content
     }
+  }
+
+  private func edgeSwipeDismissGesture(containerWidth: CGFloat) -> some Gesture {
+    DragGesture(minimumDistance: 16, coordinateSpace: .local)
+      .onEnded { value in
+        guard containerWidth > 0 else { return }
+        guard workSessionShouldDismissForEdgeSwipe(
+          startX: value.startLocation.x,
+          containerWidth: containerWidth,
+          layoutDirection: layoutDirection,
+          translation: value.translation,
+          predictedEndTranslation: value.predictedEndTranslation
+        ) else { return }
+        dismiss()
+      }
+  }
+}
+
+private struct WorkSessionNavigationChromeWidthPreferenceKey: PreferenceKey {
+  static var defaultValue: CGFloat = 0
+
+  static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+    value = nextValue()
   }
 }
 

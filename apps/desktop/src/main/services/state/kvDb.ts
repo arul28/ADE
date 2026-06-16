@@ -1272,7 +1272,6 @@ function migrate(db: MigrationDb) {
       icon text,
       tags_json text,
       folder text,
-      runtime_placement text not null default 'local',
       status text not null,
       created_at text not null,
       archived_at text,
@@ -1280,7 +1279,6 @@ function migrate(db: MigrationDb) {
       foreign key(parent_lane_id) references lanes(id)
     )
   `);
-  safeAddColumn(db, "alter table lanes add column runtime_placement text not null default 'local'");
   db.run("create index if not exists idx_lanes_project_id on lanes(project_id)");
   db.run("create index if not exists idx_lanes_project_type on lanes(project_id, lane_type)");
   db.run("create index if not exists idx_lanes_project_parent on lanes(project_id, parent_lane_id)");

@@ -228,7 +228,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Added mobile push notifications through APNS, external MCP OAuth, auto-rebase suggestions, PR issue resolver, smart tooltips, and the diagnostics dashboard.
+- Added external MCP OAuth, auto-rebase suggestions, PR issue resolver, smart tooltips, and the diagnostics dashboard.
 - Added legacy Cursor integration and OpenCode runtime integration for managed AI backends.
 
 ## [1.0.18] - 2026-04-14

@@ -206,6 +206,25 @@ final class ADETests: XCTestCase {
   }
 
   @MainActor
+  func testPrIntentPayloadRequestsLocalPrNavigation() throws {
+    let previousShared = SyncService.shared
+    defer { SyncService.shared = previousShared }
+
+    let database = makeDatabase(baseURL: makeTemporaryDirectory())
+    defer { database.close() }
+    let service = SyncService(database: database)
+    SyncService.shared = service
+
+    requestPrNavigationFromIntentPayload([
+      "prId": "pr_123",
+      "prNumber": "42",
+    ])
+
+    XCTAssertEqual(service.requestedPrNavigation?.prId, "pr_123")
+    XCTAssertEqual(service.requestedPrNavigation?.prNumber, 42)
+  }
+
+  @MainActor
   func testDeepLinkRouterSendsHttpsAdePrLinksToMac() throws {
     let expected = "https://ade-app.dev/open?type=pr&repo=arul/ADE&number=42"
     let received = expectation(description: "send to Mac request posted")
@@ -303,70 +322,6 @@ final class ADETests: XCTestCase {
         view: view
       )
     )
-  }
-
-  func testNotificationPreferencesSavePrunesInactivePerSessionOverrides() throws {
-    let suiteName = "ADETests.NotificationPreferences.\(UUID().uuidString)"
-    let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
-    defer { defaults.removePersistentDomain(forName: suiteName) }
-
-    var prefs = NotificationPreferences()
-    prefs.perSessionOverrides = [
-      "inactive": SessionNotificationOverride(),
-      "muted": SessionNotificationOverride(muted: true),
-      "awaiting": SessionNotificationOverride(awaitingInputOnly: true),
-    ]
-
-    prefs.save(to: defaults)
-
-    let loaded = NotificationPreferences.load(from: defaults)
-    XCTAssertNil(loaded.perSessionOverrides["inactive"])
-    XCTAssertEqual(loaded.perSessionOverrides["muted"], SessionNotificationOverride(muted: true))
-    XCTAssertEqual(loaded.perSessionOverrides["awaiting"], SessionNotificationOverride(awaitingInputOnly: true))
-  }
-
-  @MainActor
-  func testSyncNotificationPrefsPayloadOmitsInactivePerSessionOverrides() {
-    var prefs = NotificationPreferences()
-    prefs.perSessionOverrides = [
-      "inactive": SessionNotificationOverride(),
-      "active": SessionNotificationOverride(awaitingInputOnly: true),
-    ]
-
-    let payload = SyncService.encodeNotificationPrefsForDesktop(prefs)
-    let overrides = payload["perSessionOverrides"] as? [String: [String: Bool]]
-
-    XCTAssertNil(overrides?["inactive"])
-    XCTAssertEqual(overrides?["active"]?["muted"], false)
-    XCTAssertEqual(overrides?["active"]?["awaitingInputOnly"], true)
-  }
-
-  func testNotificationStaleOverrideIdsKeepSavedOverridesVisible() {
-    let agent = AgentSnapshot(
-      sessionId: "active-session",
-      provider: "codex",
-      laneName: "Primary",
-      title: "Active",
-      status: "idle",
-      awaitingInput: false,
-      lastActivityAt: Date(),
-      elapsedSeconds: 0,
-      preview: nil,
-      progress: nil,
-      phase: nil,
-      toolCalls: 0
-    )
-
-    let staleIds = notificationStaleOverrideIds(
-      overrides: [
-        "inactive-stale": SessionNotificationOverride(),
-        "active-session": SessionNotificationOverride(muted: true),
-        "saved-stale": SessionNotificationOverride(awaitingInputOnly: true),
-      ],
-      agents: [agent]
-    )
-
-    XCTAssertEqual(staleIds, ["saved-stale"])
   }
 
   func testShellCliPermissionModeDoesNotInheritRuntimeMode() {
@@ -662,9 +617,6 @@ final class ADETests: XCTestCase {
       "project_clone_request",
       "project_list_my_github_repos_request",
       "heartbeat",
-      "register_push_token",
-      "notification_prefs",
-      "send_test_push",
     ]
 
     for type in runtimeScopedTypes {
@@ -2137,6 +2089,30 @@ final class ADETests: XCTestCase {
 
     XCTAssertEqual(service.terminalBuffers["terminal-1"], "full terminal history")
     XCTAssertEqual(service.subscribedTerminalSessionIds, Set(["terminal-1"]))
+  }
+
+  @MainActor
+  func testTerminalFallbackFingerprintUsesPerSessionRevision() {
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+
+    service.seedTerminalBufferForTesting(sessionId: "terminal-1", transcript: "first history")
+    let firstFingerprint = workRootLiveTranscriptFingerprint(
+      chatEventRevision: 0,
+      streamedEventCount: 0,
+      terminalBufferRevision: service.terminalBufferRevisionsBySessionId["terminal-1"],
+      terminalTail: service.terminalBuffers["terminal-1"]
+    )
+
+    service.seedTerminalBufferForTesting(sessionId: "terminal-2", transcript: "second history")
+    let unchangedFingerprint = workRootLiveTranscriptFingerprint(
+      chatEventRevision: 0,
+      streamedEventCount: 0,
+      terminalBufferRevision: service.terminalBufferRevisionsBySessionId["terminal-1"],
+      terminalTail: service.terminalBuffers["terminal-1"]
+    )
+
+    XCTAssertEqual(unchangedFingerprint, firstFingerprint)
+    XCTAssertEqual(service.terminalBufferRevisionsBySessionId["terminal-2"], 1)
   }
 
   @MainActor
@@ -6357,6 +6333,101 @@ final class ADETests: XCTestCase {
     )
   }
 
+  func testWorkSessionEdgeSwipeDismissRequiresLeadingHorizontalDrag() {
+    XCTAssertTrue(
+      workSessionShouldDismissForEdgeSwipe(
+        startX: 12,
+        containerWidth: 390,
+        layoutDirection: .leftToRight,
+        translation: CGSize(width: 96, height: 12),
+        predictedEndTranslation: CGSize(width: 120, height: 12)
+      )
+    )
+    XCTAssertFalse(
+      workSessionShouldDismissForEdgeSwipe(
+        startX: 60,
+        containerWidth: 390,
+        layoutDirection: .leftToRight,
+        translation: CGSize(width: 160, height: 0),
+        predictedEndTranslation: CGSize(width: 180, height: 0)
+      )
+    )
+    XCTAssertFalse(
+      workSessionShouldDismissForEdgeSwipe(
+        startX: 12,
+        containerWidth: 390,
+        layoutDirection: .leftToRight,
+        translation: CGSize(width: 80, height: 90),
+        predictedEndTranslation: CGSize(width: 180, height: 120)
+      )
+    )
+    XCTAssertTrue(
+      workSessionShouldDismissForEdgeSwipe(
+        startX: 378,
+        containerWidth: 390,
+        layoutDirection: .rightToLeft,
+        translation: CGSize(width: -96, height: 8),
+        predictedEndTranslation: CGSize(width: -132, height: 8)
+      )
+    )
+    XCTAssertFalse(
+      workSessionShouldDismissForEdgeSwipe(
+        startX: 12,
+        containerWidth: 390,
+        layoutDirection: .rightToLeft,
+        translation: CGSize(width: -160, height: 0),
+        predictedEndTranslation: CGSize(width: -180, height: 0)
+      )
+    )
+  }
+
+  func testWorkSessionEdgeSwipeAllowsFastFlickBeforeDistanceThreshold() {
+    XCTAssertTrue(
+      workSessionShouldDismissForEdgeSwipe(
+        startX: 8,
+        containerWidth: 390,
+        layoutDirection: .leftToRight,
+        translation: CGSize(width: 52, height: 4),
+        predictedEndTranslation: CGSize(width: 160, height: 8)
+      )
+    )
+  }
+
+  func testWorkRootLiveTranscriptFingerprintIgnoresTerminalTailWhenEventsExist() {
+    let firstTail = String(repeating: "A", count: 200_000)
+    let secondTail = String(repeating: "B", count: 200_000)
+
+    XCTAssertEqual(
+      workRootLiveTranscriptFingerprint(
+        chatEventRevision: 12,
+        streamedEventCount: 42,
+        terminalBufferRevision: 1,
+        terminalTail: firstTail
+      ),
+      workRootLiveTranscriptFingerprint(
+        chatEventRevision: 12,
+        streamedEventCount: 42,
+        terminalBufferRevision: 2,
+        terminalTail: secondTail
+      )
+    )
+
+    XCTAssertNotEqual(
+      workRootLiveTranscriptFingerprint(
+        chatEventRevision: 12,
+        streamedEventCount: 0,
+        terminalBufferRevision: 1,
+        terminalTail: firstTail
+      ),
+      workRootLiveTranscriptFingerprint(
+        chatEventRevision: 12,
+        streamedEventCount: 0,
+        terminalBufferRevision: 2,
+        terminalTail: firstTail
+      )
+    )
+  }
+
   func testBuildPullRequestTimelineOrdersStateReviewsAndComments() {
     let pr = PullRequestListItem(
       id: "pr-9",
@@ -8713,6 +8784,54 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(secondPage.visibleLineCount, 96)
     XCTAssertTrue(secondPage.text.contains("96. Line 96"))
     XCTAssertFalse(secondPage.text.contains("97. Line 97"))
+  }
+
+  func testAssistantPreviewCacheHydratesBuiltChatMessages() {
+    let markdown = (1...5000).map { "\($0). Line \($0)" }.joined(separator: "\n")
+    let transcript = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:01.000Z",
+        sequence: 1,
+        event: .assistantText(text: markdown, turnId: "turn-1", itemId: "msg-1")
+      )
+    ]
+
+    let message = buildWorkChatMessages(from: transcript).first
+    let preview = message.map { WorkAssistantPreviewCache().preview(for: $0) }
+
+    XCTAssertNil(message?.assistantPreview)
+    XCTAssertTrue(preview?.isTruncated == true)
+    XCTAssertEqual(preview?.visibleLineCount, workAssistantMessageInitialLineBudget)
+    XCTAssertEqual(preview?.totalLineCount, 5000)
+  }
+
+  func testAssistantPreviewCacheHydratesAfterStreamingMerge() {
+    let firstChunk = (1...2500).map { "\($0). Line \($0)" }.joined(separator: "\n")
+    let secondChunk = "\n" + (2501...5000).map { "\($0). Line \($0)" }.joined(separator: "\n")
+    let transcript = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:01.000Z",
+        sequence: 1,
+        event: .assistantText(text: firstChunk, turnId: "turn-1", itemId: "msg-1")
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:02.000Z",
+        sequence: 2,
+        event: .assistantText(text: secondChunk, turnId: "turn-1", itemId: "msg-1")
+      )
+    ]
+
+    let message = buildWorkChatMessages(from: transcript).first
+    let preview = message.map { WorkAssistantPreviewCache().preview(for: $0) }
+
+    XCTAssertEqual(message?.markdown, firstChunk + secondChunk)
+    XCTAssertNil(message?.assistantPreview)
+    XCTAssertTrue(preview?.isTruncated == true)
+    XCTAssertEqual(preview?.visibleLineCount, workAssistantMessageInitialLineBudget)
+    XCTAssertEqual(preview?.totalLineCount, 5000)
   }
 
   func testWorkChatAccessibilityPreviewCapsHugeMessages() {
@@ -11163,7 +11282,15 @@ final class ADETests: XCTestCase {
     )
     let toolEntries = snapshot.timeline.filter { $0.id.hasPrefix("tool-") }
     XCTAssertEqual(toolEntries.count, 1)
-    XCTAssertEqual(toolEntries.first?.id, "tool-call-dup")
+    XCTAssertEqual(toolEntries.first?.id, "tool-group:tool-call-dup")
+    guard case .toolGroup(let group)? = toolEntries.first?.payload else {
+      return XCTFail("Expected duplicate tool calls to collapse into one tool group.")
+    }
+    XCTAssertEqual(group.members.count, 1)
+    guard case .tool(let groupedCard)? = group.members.first else {
+      return XCTFail("Expected the collapsed group to retain the deduped tool card.")
+    }
+    XCTAssertEqual(groupedCard.id, "call-dup")
   }
 
   func testWorkChatToolLifecycleUsesLogicalItemIdForStableCards() {

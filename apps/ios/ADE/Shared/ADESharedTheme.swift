@@ -1,7 +1,7 @@
 import SwiftUI
 
-/// Minimal theme subset needed by widgets and the notification service
-/// extension. Extensions cannot import main-app sources directly, so the
+/// Minimal theme subset needed by widgets. Extensions cannot import
+/// main-app sources directly, so the
 /// provider brand map is duplicated here and must be kept in sync with
 /// `ADEDesignSystem.swift:brandClaude..brandGroq` and `providerBrand(for:)`.
 public enum ADESharedTheme {

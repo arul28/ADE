@@ -19,9 +19,8 @@ legacy in-process IPC handlers (the desktop's `ptyService.ts`,
 `sessionService.ts`, `processService.ts`) only when no runtime is
 bound, such as tests or pre-binding diagnostics. A local-bound daemon
 failure is surfaced to the caller instead of being retried against the
-desktop process. The same source files run on both paths. The macOS VM controls
-(`window.ade.macosVm.*`) are local-only — they require local hardware
-access and are intentionally disabled for remote-bound windows.
+desktop process. The same source files run on both paths. Remote-bound windows
+now rely on the same terminal/session APIs as local windows.
 
 These services are large and have been repeatedly rewritten:
 `ptyService.ts`, `sessionService.ts`, and `processService.ts`. Treat
@@ -104,10 +103,6 @@ and in tests.
   managed process tests.
 - `apps/desktop/src/main/services/lanes/laneLaunchContext.ts` —
   per-lane cwd resolution that gates PTY creation to the lane worktree.
-  For macOS VM-backed lanes it also owns the cached launch target and
-  invalidates/refreshes that cache from VM operation events so PTY or
-  agent launches do not reuse a stale SSH endpoint during stop/restart/delete
-  windows.
 
 Shared types and IPC:
 
@@ -157,17 +152,13 @@ Shared types and IPC:
   `ade.processes.*`, plus the
   chat-scoped `ade.terminal.*` family (`list`, `read`, `preview` —
   serialized xterm snapshot for the TUI / mobile renderers, `write`,
-  `signal`, `activeForChat`), the lane-tied `ade.macosVm.*` family
-  (`getStatus`, `provision`, `start`, `stop`, `delete`,
-  `getAgentGuide`, `getSharePolicy`, `focusWindow`,
-  `captureScreenshot`, `selectPoint`, `click`, `typeText`, event push),
-  and the localhost-probe helper `ade.localhost.probePort`.
+  `signal`, `activeForChat`), and the localhost-probe helper
+  `ade.localhost.probePort`.
 
 Preload bridge:
 
 - `apps/desktop/src/preload/preload.ts` — `window.ade.sessions`,
-  `window.ade.pty`, `window.ade.processes`, and `window.ade.macosVm`
-  APIs.
+  `window.ade.pty`, and `window.ade.processes` APIs.
 
 IPC registration:
 
@@ -246,11 +237,6 @@ Renderer surfaces:
   current chat, draft, or CLI target. The tab strip must stay reachable
   when the Work pane is narrow: labels collapse to accessible icon
   buttons while preserving stable hit targets and tooltips.
-- `apps/desktop/src/renderer/components/vm/MacVmPage.tsx` —
-  dedicated `/vm` route for the lane-tied macOS VM. It shows host and
-  Lume readiness, the single-VM lane reservation, stale attachment
-  cleanup, runtime sign-in confirmation, embedded noVNC display, and
-  diagnostic frame/focus/click/type controls.
 - `apps/desktop/src/renderer/components/terminals/SessionListPane.tsx` —
   sidebar list with three organization modes (lane / status / time),
   sticky group headers, search/filter. Renders a bulk action bar at the
@@ -466,30 +452,6 @@ Renderer surfaces:
   for a list of selected sessions; `triggerBrowserDownload` writes it
   to disk via a transient anchor + Object URL. Used by the bulk-export
   action in the session list.
-- `apps/desktop/src/main/services/macosVm/macosVmService.ts` —
-  lane-tied macOS VM lifecycle and control service. Uses Lume as the
-  first provider, stores per-lane records under `.ade/cache/macos-vms`,
-  keeps VNC credentials in `.ade/secrets`, enforces a machine-wide
-  single-VM lease, mounts direct lane roots when safe, and otherwise
-  maintains a sanitized rsync mirror that excludes ADE secrets, runtime
-  databases, caches, transcripts, generated local history,
-  worktrees, agents, and `.git`.
-- `apps/desktop/src/main/services/macosVm/rfbDirectClient.ts` —
-  headless VNC bridge for screenshot, click, and type operations. It
-  disables unsupported audio negotiation for Lume VNC sessions and
-  encodes captured RGBA frames as PNGs for proof/context flows. Screenshot
-  capture waits through transient black frames, wakes the VNC display with a
-  pointer move plus a Shift key tap, and fails instead of returning a persistent
-  black frame as usable context.
-- `apps/desktop/src/main/services/macosVm/rfbDirectClient.test.ts` —
-  focused coverage for direct-VNC blank-frame detection so boot/sleep frames
-  do not become misleading screenshot proof.
-- `apps/desktop/src/main/services/macosVm/macosVmService.test.ts` —
-  macOS VM provider, share-policy, lifecycle, guidance, and direct-VNC
-  control tests.
-- `apps/desktop/src/shared/types/macosVm.ts` — `MacosVmStatus`,
-  `MacosVmRecord`, provision/start/control arguments, event payloads,
-  screenshot results, and `MacosVmContextItem`.
 
 iOS Work surfaces:
 

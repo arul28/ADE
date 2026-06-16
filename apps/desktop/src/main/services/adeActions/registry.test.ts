@@ -110,13 +110,11 @@ describe("isAllowedAdeAction", () => {
 });
 
 describe("getAdeActionDomainServices feature gates", () => {
-  it("hides Automations, Linear ingress, and macOS VM domains in packaged builds", () => {
+  it("hides Automations and Linear ingress domains in packaged builds", () => {
     withEnv(
       {
         ADE_ENABLE_AUTOMATIONS: undefined,
         ADE_DISABLE_AUTOMATIONS: undefined,
-        ADE_ENABLE_MACOS_VM: undefined,
-        ADE_DISABLE_MACOS_VM: undefined,
       },
       () => {
         const services = getAdeActionDomainServices({
@@ -125,13 +123,11 @@ describe("getAdeActionDomainServices feature gates", () => {
           automationPlannerService: {},
           automationIngressService: {},
           linearIngressService: {},
-          macosVmService: {},
         } as never);
 
         expect(services.automation_planner).toBeNull();
         expect(services.automations).toBeNull();
         expect(services.linear_ingress).toBeNull();
-        expect(services.macos_vm).toBeNull();
       },
     );
   });
@@ -141,20 +137,16 @@ describe("getAdeActionDomainServices feature gates", () => {
       {
         ADE_ENABLE_AUTOMATIONS: undefined,
         ADE_DISABLE_AUTOMATIONS: undefined,
-        ADE_ENABLE_MACOS_VM: undefined,
-        ADE_DISABLE_MACOS_VM: undefined,
       },
       () => {
         const services = getAdeActionDomainServices({
           isPackaged: false,
           automationPlannerService: { parseNaturalLanguage: () => undefined },
           linearIngressService: { getStatus: () => undefined },
-          macosVmService: { getStatus: () => undefined },
         } as never);
 
         expect(services.automation_planner).not.toBeNull();
         expect(services.linear_ingress).not.toBeNull();
-        expect(services.macos_vm).not.toBeNull();
       },
     );
   });
@@ -265,13 +257,6 @@ describe("ADE_ACTION_ALLOWLIST shape", () => {
     }
   });
 
-  it("exposes mobile push settings through runtime APNs actions", () => {
-    const actions = ADE_ACTION_ALLOWLIST.notifications_apns ?? [];
-    for (const name of ["getStatus", "saveConfig", "uploadKey", "clearKey", "sendTestPush"]) {
-      expect(actions).toContain(name);
-    }
-  });
-
   it("exposes lane.listSnapshots for runtime-backed lane snapshot parity", () => {
     const actions = ADE_ACTION_ALLOWLIST.lane ?? [];
     expect(actions).toContain("listSnapshots");
@@ -372,82 +357,8 @@ describe("ADE_ACTION_ALLOWLIST shape", () => {
     }
   });
 
-  it("exposes the macOS VM computer-use control surface", () => {
-    const actions = ADE_ACTION_ALLOWLIST.macos_vm ?? [];
-    for (const name of ["getStatus", "start", "getAgentGuide", "captureScreenshot", "click", "selectPoint", "typeText"]) {
-      expect(actions).toContain(name);
-    }
-  });
 });
 
-describe("runtime APNs action service", () => {
-  it("does not read APNs dependencies when resolving an unrelated domain", () => {
-    const runtime = {
-      laneService: {
-        list: vi.fn(),
-      },
-      projectConfigService: {
-        get: vi.fn(),
-      },
-      get apnsService() {
-        throw new Error("apnsService should not be read for lane actions");
-      },
-      get apnsKeyStore() {
-        throw new Error("apnsKeyStore should not be read for lane actions");
-      },
-    } as unknown as Parameters<typeof getAdeActionDomainServices>[0];
-
-    const services = getAdeActionDomainServices(runtime);
-    const laneService = services.lane as Record<string, unknown>;
-
-    expect(Object.keys(services)).toContain("notifications_apns");
-    expect(laneService.list).toEqual(expect.any(Function));
-  });
-
-  it("reuses the APNs bridge for repeated lookups on a stable runtime", () => {
-    const runtime = {
-      projectConfigService: {
-        get: vi.fn(() => ({ effective: {}, shared: {}, local: {} })),
-      },
-      apnsService: {
-        isConfigured: vi.fn(() => false),
-      },
-      apnsKeyStore: {
-        has: vi.fn(() => false),
-      },
-    } as unknown as Parameters<typeof getAdeActionDomainServices>[0];
-
-    const first = getAdeActionDomainServices(runtime).notifications_apns;
-    const second = getAdeActionDomainServices(runtime).notifications_apns;
-
-    expect(second).toBe(first);
-  });
-
-  it("refreshes the cached APNs bridge when late-bound dependencies change", async () => {
-    const runtime = {
-      projectConfigService: {
-        get: vi.fn(() => ({ effective: {}, shared: {}, local: {} })),
-      },
-      apnsService: {
-        isConfigured: vi.fn(() => false),
-      },
-      apnsKeyStore: {
-        has: vi.fn(() => false),
-      },
-    } as any as Parameters<typeof getAdeActionDomainServices>[0];
-
-    const first = getAdeActionDomainServices(runtime).notifications_apns;
-    (runtime as any).apnsService = {
-      isConfigured: vi.fn(() => true),
-    };
-    const second = getAdeActionDomainServices(runtime).notifications_apns as {
-      getStatus: () => Promise<{ configured: boolean }>;
-    };
-
-    expect(second).not.toBe(first);
-    await expect(second.getStatus()).resolves.toMatchObject({ configured: true });
-  });
-});
 
 describe("runtime Linear issue tracker actions", () => {
   it("builds catalog and picker payloads from tracker reads", async () => {

@@ -24,7 +24,7 @@ ade help proof
 ## What counts as proof
 
 - Screenshot or video of the UI state.
-- App Control, iOS Simulator, ADE browser, or macOS VM capture.
+- App Control, iOS Simulator, or ADE browser capture.
 - Test output or log bundle when visual proof is not the right artifact.
 
 ## Gotchas

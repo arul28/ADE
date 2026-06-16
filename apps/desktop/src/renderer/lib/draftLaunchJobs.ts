@@ -13,7 +13,6 @@ import type {
   AppControlContextItem,
   BuiltInBrowserContextItem,
   IosElementContextItem,
-  MacosVmContextItem,
 } from "../../shared/types";
 
 // Active jobs are never capped; this only limits retained terminal rows.
@@ -46,7 +45,6 @@ export type DraftLaunchSnapshot = {
   iosContextItems: IosElementContextItem[];
   appControlContextItems: AppControlContextItem[];
   builtInBrowserContextItems: BuiltInBrowserContextItem[];
-  macosVmContextItems: MacosVmContextItem[];
   visualContextPrefix: string;
   visualContextDisplayChips: string;
   isLiteralSlashCommand: boolean;

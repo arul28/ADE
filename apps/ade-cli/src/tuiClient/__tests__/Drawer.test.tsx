@@ -333,55 +333,6 @@ describe("Drawer PR pill", () => {
   });
 });
 
-describe("Drawer macOS VM badge", () => {
-  it("flags lanes with runtimePlacement=macos-vm with a VM badge", () => {
-    const frame = stripAnsi(render(
-      <Drawer
-        lanes={[
-          lane(
-            "lane-vm",
-            "vm lane",
-            "feature/vm",
-            "2026-05-12T11:55:00.000Z",
-            0,
-            0,
-            "worktree",
-            { runtimePlacement: "macos-vm" },
-          ),
-        ]}
-        sessions={[]}
-        activeLaneId={null}
-        activeSessionId={null}
-        browsingLaneId={null}
-        selectedLaneIndex={0}
-        selectedChatIndex={-1}
-        panelHeight={20}
-      />,
-    ).lastFrame() ?? "");
-
-    expect(frame).toContain("VM");
-  });
-
-  it("omits the VM badge for local lanes", () => {
-    const frame = stripAnsi(render(
-      <Drawer
-        lanes={[lane("lane-local", "local lane", "feature/local", "2026-05-12T11:55:00.000Z")]}
-        sessions={[]}
-        activeLaneId={null}
-        activeSessionId={null}
-        browsingLaneId={null}
-        selectedLaneIndex={0}
-        selectedChatIndex={-1}
-        panelHeight={20}
-      />,
-    ).lastFrame() ?? "");
-
-    // Status chip is "idle" for plain worktree lanes; ensure no VM token leaks.
-    const lines = frame.split("\n");
-    expect(lines.some((line) => /\bVM\b/.test(line))).toBe(false);
-  });
-});
-
 describe("Drawer active chat indicator", () => {
   it("uses a spinning frame for active chats", () => {
     const activeSession: AgentChatSessionSummary = {

@@ -2,8 +2,6 @@ import type {
   AppControlContextItem,
   BuiltInBrowserContextItem,
   IosElementContextItem,
-  MacosVmContextItem,
-  MacosVmStatus,
 } from "../../shared/types";
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -236,108 +234,6 @@ export function formatAppControlContextForPrompt(items: AppControlContextItem[])
     ...rows,
     "",
   ].join("\n");
-}
-
-function macosVmContextLabel(item: MacosVmContextItem): string {
-  return item.vmName || "macOS VM";
-}
-
-export function formatMacosVmContextChipsForDisplay(items: MacosVmContextItem[]): string {
-  if (!items.length) return "";
-  return items.map((item) => `\`${macosVmContextLabel(item)}\``).join(" ");
-}
-
-export function createMacosVmContextInstanceId(item: MacosVmContextItem): string {
-  return `${item.id}::${contextInstanceSuffix()}`;
-}
-
-export function getMacosVmContextAttachmentPath(item: MacosVmContextItem): string | null {
-  const value = item.metadata?.screenshotPath ?? item.metadata?.attachmentPath;
-  return typeof value === "string" && value.length ? value : null;
-}
-
-export function formatMacosVmContextForPrompt(items: MacosVmContextItem[]): string {
-  if (!items.length) return "";
-  const rows = items.map((item, index) => {
-    const metadata = item.metadata ?? {};
-    const attachmentPath = getMacosVmContextAttachmentPath(item);
-    const packet = {
-      contextId: item.id,
-      provider: item.provider,
-      state: item.state,
-      visualAttachmentPath: attachmentPath,
-      laneId: item.laneId,
-      laneName: item.laneName,
-      vmName: item.vmName,
-      hostLanePath: item.hostLanePath,
-      guestLanePath: item.guestLanePath,
-      runCommand: item.runCommand,
-      sshCommand: item.sshCommand,
-      vncUrl: item.vncUrl,
-      windowTitleQuery: item.windowTitleQuery,
-      selectedAt: item.selectedAt,
-      selectedPoint: metadata.selectedPoint,
-      screenshotPath: metadata.screenshotPath,
-      metadata,
-    };
-    return `${index + 1}. ${macosVmContextLabel(item)} (${item.state}, lane=${item.laneName})\nPacket:\n${JSON.stringify(packet, null, 2)}`;
-  });
-  return [
-    "macOS VM target context attached by the user.",
-    "Use this VM for isolated GUI validation tied to the active lane. The host lane path is shared into the guest with VirtioFS, so edits in the mounted folder stay synced between host and guest. When visualAttachmentPath or selectedPoint is present, treat it as screenshot-backed VM context.",
-    "For GUI work, use the VM itself as the target machine. The ADE VM tab owns the user-facing console; agents that need GUI automation should run inside a VM-backed lane rather than driving the host ADE window.",
-    "For shell commands inside the guest, use sshCommand when present or configure SSH/in-guest agent access, then work from guestLanePath.",
-    "Keep secrets out of the VM; ADE blocks lane roots that contain .ade/secrets from being mounted.",
-    ...rows,
-    "",
-  ].join("\n");
-}
-
-function formatAutomaticMacosVmContextForPrompt(status: MacosVmStatus, laneId: string): string {
-  if (!status.supported || !status.activeProvider.available) return "";
-  const vm = status.laneVm;
-  const state = vm?.state ?? "not_created";
-  const guestPath = vm?.guestSharedPath ?? "/Volumes/My Shared Files";
-  const lines = [
-    "ADE macOS VM capability for this lane (automatic context).",
-    `- Lane id: ${laneId}`,
-    `- Provider: ${status.activeProvider.kind}${status.activeProvider.version ? ` ${status.activeProvider.version}` : ""}`,
-    vm
-      ? `- VM: ${vm.name} (${state})`
-      : "- VM: not provisioned yet",
-    `- Guest lane path: ${guestPath}`,
-    vm?.sshCommand ? `- Guest SSH command: ${vm.sshCommand}` : "- Guest SSH command: not configured yet",
-    state === "running"
-      ? "- VM is running. Use in-guest agent/runtime capabilities for GUI automation."
-      : "- Use the ADE VM tab to prepare and attach a VM-backed lane before doing VM work.",
-    "- Do not rely on host-side ADE screenshot/click/type VM tools for new work.",
-    "",
-  ];
-  return lines.filter((line): line is string => Boolean(line)).join("\n");
-}
-
-export function shouldAttachAutomaticMacosVmContext(promptText: string): boolean {
-  const text = promptText.toLowerCase();
-  return /\b(ade\s+)?mac\s*os\s+vm\b/.test(text)
-    || /\bade\s+vm\b/.test(text)
-    || /\bisolated\s+mac(?:os)?\s+gui\b/.test(text)
-    || /\blane[-\s]?tied\s+mac(?:os)?\s+vm\b/.test(text)
-    || /\blume\b/.test(text);
-}
-
-export async function buildAutomaticMacosVmContextForPrompt(
-  laneId: string,
-  options: { promptText?: string; force?: boolean } = {},
-): Promise<string> {
-  if (!options.force) return "";
-  const api = window.ade?.macosVm;
-  if (!api?.getStatus) return "";
-  try {
-    const status = await api.getStatus({ laneId });
-    return formatAutomaticMacosVmContextForPrompt(status, laneId);
-  } catch {
-    return "";
-  }
 }
 
 export function normalizeBuiltInBrowserContextItem(value: unknown): BuiltInBrowserContextItem | null {

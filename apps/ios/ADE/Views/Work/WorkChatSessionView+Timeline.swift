@@ -18,12 +18,18 @@ extension WorkChatSessionView {
   }
 
   @ViewBuilder
-  func timelineEntryView(for entry: WorkTimelineEntry, proxy: ScrollViewProxy) -> some View {
+  func timelineEntryView(
+    for entry: WorkTimelineEntry,
+    proxy: ScrollViewProxy,
+    streamingAssistantMessageId: String?,
+    maxUserBubbleWidth: CGFloat?
+  ) -> some View {
     switch entry.payload {
     case .message(let message):
       WorkChatMessageBubble(
         message: message,
-        isStreaming: message.id == streamingAssistantMessageId
+        isStreaming: message.id == streamingAssistantMessageId,
+        maxUserBubbleWidth: maxUserBubbleWidth
       )
     case .toolCard(let toolCard):
       timelineToolCard(toolCard)

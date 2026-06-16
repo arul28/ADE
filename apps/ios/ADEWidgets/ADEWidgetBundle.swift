@@ -18,7 +18,6 @@ struct ADEWidgetBundle: WidgetBundle {
         ADELockScreenWidget()
         if #available(iOS 18.0, *) {
             ADEControlWidget()
-            ADEMuteControlWidget()
         }
     }
 }

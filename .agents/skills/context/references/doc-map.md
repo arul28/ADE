@@ -42,10 +42,10 @@ Internal docs live under `docs/` (rebuilt tree). The public Mintlify site
 |---|---|---|
 | `apps/desktop/src/renderer/components/lanes/**` | `docs/features/lanes/` | `ade-perf-lanes` |
 | `apps/desktop/src/renderer/components/prs/**` | `docs/features/pull-requests/` | `ade-perf-prs` |
-| `apps/desktop/src/renderer/components/chat/**`, Work tab panes (Tools, Git, Files, iOS, App Control, Browser, Mac VM) | `docs/features/chat/` + relevant feature | `ade-perf-work` |
+| `apps/desktop/src/renderer/components/chat/**`, Work tab panes (Tools, Git, Files, iOS, App Control, Browser) | `docs/features/chat/` + relevant feature | `ade-perf-work` |
 | `apps/desktop/src/renderer/components/app/**` (App shell) | `docs/ARCHITECTURE.md` (UI framework) | `ade-perf-boot` |
 | `apps/desktop/src/renderer/components/graph/**` | `docs/features/workspace-graph/` | — |
-| `apps/desktop/src/renderer/components/<area>/**` | `docs/features/<same-area>/` (note: renderer dir names don't always equal feature dir names — e.g. `graph/`→`workspace-graph/`, `vm/`→no doc) | match by area above |
+| `apps/desktop/src/renderer/components/<area>/**` | `docs/features/<same-area>/` (note: renderer dir names don't always equal feature dir names — e.g. `graph/`→`workspace-graph/`) | match by area above |
 | `apps/desktop/src/renderer/state/` (incl. `appStore.ts`) | `docs/ARCHITECTURE.md` (UI framework) | `ade-perf-lanes` |
 | `apps/desktop/src/shared/**` | `docs/ARCHITECTURE.md` + the touching feature's doc | — |
 

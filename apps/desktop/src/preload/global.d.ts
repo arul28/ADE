@@ -203,11 +203,6 @@ import type {
   SyncRoleSnapshot,
   SyncStatusEventPayload,
   SyncTransferReadiness,
-  ApnsBridgeStatus,
-  ApnsBridgeSaveConfigArgs,
-  ApnsBridgeUploadKeyArgs,
-  ApnsBridgeSendTestPushArgs,
-  ApnsBridgeSendTestPushResult,
   CtoGetStateArgs,
   CtoEnsureSessionArgs,
   CtoListSessionLogsArgs,
@@ -598,37 +593,6 @@ import type {
   BuiltInBrowserStatus,
   BuiltInBrowserTabArgs,
   BuiltInBrowserTabTargetArgs,
-  MacosVmAgentGuide,
-  MacosVmAgentGuideArgs,
-  MacosVmCaptureScreenshotArgs,
-  MacosVmCaptureScreenshotResult,
-  MacosVmClickArgs,
-  MacosVmDeleteArgs,
-  MacosVmDetachLaneArgs,
-  MacosVmDetachLaneResult,
-  MacosVmDisplaySession,
-  MacosVmDisplaySessionArgs,
-  MacosVmEventPayload,
-  MacosVmFocusWindowArgs,
-  MacosVmGetCredentialsArgs,
-  MacosVmInstallRuntimeArgs,
-  MacosVmProvisionArgs,
-  MacosVmRecord,
-  MacosVmRestartArgs,
-  MacosVmRuntimeInstallStatus,
-  MacosVmSelectPointArgs,
-  MacosVmSelectPointResult,
-  MacosVmSetCredentialsArgs,
-  MacosVmStartArgs,
-  MacosVmStatus,
-  MacosVmStatusArgs,
-  MacosVmStopArgs,
-  MacosVmStorageInfo,
-  MacosVmStoredCredentialsSummary,
-  MacosVmTypeTextArgs,
-  MacosVmWindowTarget,
-  MacosVmWipeArgs,
-  MacosVmWipeResult,
   RemoteRuntimeActionRequest,
   RemoteRuntimeActionResult,
   RemoteRuntimeConnectionSnapshot,
@@ -942,21 +906,6 @@ declare global {
         clearRuntimeName: () => Promise<SyncRoleSnapshot>;
         setActiveLanePresence: (args: { laneIds: string[] }) => Promise<void>;
         onEvent: (cb: (event: SyncStatusEventPayload) => void) => () => void;
-      };
-      notifications: {
-        apns: {
-          getStatus: () => Promise<ApnsBridgeStatus>;
-          saveConfig: (
-            args: ApnsBridgeSaveConfigArgs,
-          ) => Promise<ApnsBridgeStatus>;
-          uploadKey: (
-            args: ApnsBridgeUploadKeyArgs,
-          ) => Promise<ApnsBridgeStatus>;
-          clearKey: () => Promise<ApnsBridgeStatus>;
-          sendTestPush: (
-            args: ApnsBridgeSendTestPushArgs,
-          ) => Promise<ApnsBridgeSendTestPushResult>;
-        };
       };
       agentTools: {
         detect: () => Promise<AgentTool[]>;
@@ -1628,53 +1577,6 @@ declare global {
         selectCurrent: (args?: BuiltInBrowserProjectScopeArgs) => Promise<BuiltInBrowserSelectResult>;
         clearSelection: (args?: BuiltInBrowserProjectScopeArgs) => Promise<{ ok: true }>;
         onEvent: (cb: (ev: BuiltInBrowserEventPayload) => void) => () => void;
-      };
-      macosVm: {
-        getStatus: (args?: MacosVmStatusArgs) => Promise<MacosVmStatus>;
-        provision: (args: MacosVmProvisionArgs) => Promise<MacosVmRecord>;
-        start: (args: MacosVmStartArgs) => Promise<MacosVmRecord>;
-        stop: (args: MacosVmStopArgs) => Promise<MacosVmRecord | null>;
-        delete: (
-          args: MacosVmDeleteArgs,
-        ) => Promise<{ deleted: boolean; previous: MacosVmRecord | null }>;
-        getAgentGuide: (
-          args: MacosVmAgentGuideArgs,
-        ) => Promise<MacosVmAgentGuide>;
-        focusWindow: (
-          args: MacosVmFocusWindowArgs,
-        ) => Promise<MacosVmWindowTarget>;
-        getDisplaySession: (
-          args: MacosVmDisplaySessionArgs,
-        ) => Promise<MacosVmDisplaySession>;
-        captureScreenshot: (
-          args: MacosVmCaptureScreenshotArgs,
-        ) => Promise<MacosVmCaptureScreenshotResult>;
-        selectPoint: (
-          args: MacosVmSelectPointArgs,
-        ) => Promise<MacosVmSelectPointResult>;
-        click: (
-          args: MacosVmClickArgs,
-        ) => Promise<{
-          ok: true;
-          window: MacosVmWindowTarget;
-          x: number;
-          y: number;
-        }>;
-        typeText: (
-          args: MacosVmTypeTextArgs,
-        ) => Promise<{ ok: true; window: MacosVmWindowTarget }>;
-        restart: (args?: MacosVmRestartArgs) => Promise<MacosVmRecord | null>;
-        wipe: (args: MacosVmWipeArgs) => Promise<MacosVmWipeResult>;
-        installRuntime: (
-          args?: MacosVmInstallRuntimeArgs,
-        ) => Promise<MacosVmRuntimeInstallStatus>;
-        setCredentials: (args: MacosVmSetCredentialsArgs) => Promise<{ ok: true }>;
-        getCredentials: (
-          args: MacosVmGetCredentialsArgs,
-        ) => Promise<MacosVmStoredCredentialsSummary>;
-        detachLane: (args: MacosVmDetachLaneArgs) => Promise<MacosVmDetachLaneResult>;
-        getStorageInfo: () => Promise<MacosVmStorageInfo>;
-        onEvent: (cb: (ev: MacosVmEventPayload) => void) => () => void;
       };
       terminal: {
         list: (args?: ChatTerminalListArgs) => Promise<ChatTerminalSession[]>;

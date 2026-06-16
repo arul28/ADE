@@ -1,7 +1,7 @@
 import Foundation
 
-/// Shared access point for the App Group used by the main app, the Widget
-/// extension, and the Notification Service extension.
+/// Shared access point for the App Group used by the main app and the Widget
+/// extension.
 ///
 /// The App Group identifier is the single source of truth and is used to
 /// derive the shared `UserDefaults` suite and the on-disk container URL.

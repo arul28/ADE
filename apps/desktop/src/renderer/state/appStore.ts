@@ -120,7 +120,6 @@ function normalizeChatShellGeometry(value: unknown): ChatShellGeometry {
   return "default";
 }
 export type TerminalAttentionIndicator = "none" | "running-active" | "running-needs-attention";
-export type MacosVmTabIndicator = "blocker" | "failed" | null;
 export type WorkSidebarTab = "git" | "files" | "ios" | "app-control" | "browser";
 export type WorkStatusFilter = "all" | "running" | "awaiting-input" | "ended";
 export type WorkDraftKind = "chat" | "cli";
@@ -775,7 +774,6 @@ export type AppState = {
   laneInspectorTabs: Record<string, LaneInspectorTab>;
   keybindings: KeybindingsSnapshot | null;
   terminalAttention: TerminalAttentionSnapshot;
-  macosVmTabIndicator: MacosVmTabIndicator;
   smartTooltipsEnabled: boolean;
   onboardingEnabled: boolean;
   didYouKnowEnabled: boolean;
@@ -858,7 +856,6 @@ export type AppState = {
       | ((prev: TerminalPreferences) => TerminalPreferences)
   ) => void;
   setTerminalAttention: (snapshot: TerminalAttentionSnapshot) => void;
-  setMacosVmTabIndicator: (indicator: MacosVmTabIndicator) => void;
   setSmartTooltipsEnabled: (enabled: boolean) => void;
   setOnboardingEnabled: (enabled: boolean) => void;
   setDidYouKnowEnabled: (enabled: boolean) => void;
@@ -1052,7 +1049,6 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   laneInspectorTabs: {},
   keybindings: null,
   terminalAttention: EMPTY_TERMINAL_ATTENTION,
-  macosVmTabIndicator: null,
   smartTooltipsEnabled: initialUserPreferences.smartTooltipsEnabled,
   onboardingEnabled: initialUserPreferences.onboardingEnabled,
   didYouKnowEnabled: initialUserPreferences.didYouKnowEnabled,
@@ -1125,7 +1121,6 @@ const createAppState: StateCreator<AppState> = (set, get) => {
               focusedSessionId: restoredSelection?.sessionId ?? null,
               laneInspectorTabs: {},
               terminalAttention: EMPTY_TERMINAL_ATTENTION,
-              macosVmTabIndicator: null,
               laneCacheByProject: nextLaneCacheByProject,
             }
           : {}),
@@ -1301,7 +1296,6 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       return { terminalPreferences: updated };
     }),
   setTerminalAttention: (terminalAttention) => set({ terminalAttention }),
-  setMacosVmTabIndicator: (macosVmTabIndicator) => set({ macosVmTabIndicator }),
   setSmartTooltipsEnabled: (enabled) =>
     set((prev) => {
       persistUserPreferencesFrom({ ...prev, smartTooltipsEnabled: enabled });
@@ -1652,7 +1646,6 @@ const createAppState: StateCreator<AppState> = (set, get) => {
           laneInspectorTabs: {},
           keybindings: null,
           terminalAttention: EMPTY_TERMINAL_ATTENTION,
-          macosVmTabIndicator: null,
           dismissedMissingAiBannerRoots: pickDismissMapForRoots(prev.dismissedMissingAiBannerRoots, [project.rootPath]),
           dismissedGithubBannerRoots: pickDismissMapForRoots(prev.dismissedGithubBannerRoots, [project.rootPath]),
         };
@@ -1729,7 +1722,6 @@ const createAppState: StateCreator<AppState> = (set, get) => {
             laneInspectorTabs: {},
             keybindings: null,
             terminalAttention: EMPTY_TERMINAL_ATTENTION,
-            macosVmTabIndicator: null,
           }
         : {}),
       ...(outgoingProjectRoot
@@ -1777,7 +1769,6 @@ const createAppState: StateCreator<AppState> = (set, get) => {
             laneInspectorTabs: {},
             keybindings: null,
             terminalAttention: EMPTY_TERMINAL_ATTENTION,
-            macosVmTabIndicator: null,
           });
       invalidateAiDiscoveryCache(rootPath);
       invalidateProjectConfigCache(rootPath);
@@ -1916,7 +1907,6 @@ const createAppState: StateCreator<AppState> = (set, get) => {
           laneInspectorTabs: {},
           keybindings: null,
           terminalAttention: EMPTY_TERMINAL_ATTENTION,
-          macosVmTabIndicator: null,
           workViewByProject,
           laneWorkViewByScope,
           laneSelectionByProject,
@@ -1977,7 +1967,6 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         keybindings: null,
         terminalAttention: EMPTY_TERMINAL_ATTENTION,
         openProjectTabRoots: [],
-        macosVmTabIndicator: null,
         // No active project: drop every dismiss entry so reopening the same project later starts with a clean slate.
         dismissedMissingAiBannerRoots: {},
         dismissedGithubBannerRoots: {},

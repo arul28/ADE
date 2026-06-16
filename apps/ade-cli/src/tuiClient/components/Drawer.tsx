@@ -427,7 +427,7 @@ function DrawerHintLine({ items, keyColor }: { items: Array<[string, string]>; k
 
 /**
  * Single-line lane card row (rendered inside a per-lane rounded card):
- *   [tree-prefix] ● bold-name [VM] [PR pill] … +adds −dels
+ *   [tree-prefix] ● bold-name [PR pill] … +adds −dels
  *
  * The card's border color conveys selection; the status dot conveys run/await/
  * fail; the right edge carries the live diff (+adds/−dels), which replaces the
@@ -501,15 +501,7 @@ function LaneCard({
   const canShowPrPill = Boolean(prPillText)
     && contentWidth >= 22
     && contentWidth - indicatorWidth - LEAD_WIDTH - rightReservation - prPillWidth - 1 >= 4;
-  // VM lanes live on the Mac VM, not the host worktree path. Surface a small
-  // badge so users know `/commit`, `/push`, etc. operate against the VM-attached
-  // lane (not a normal local worktree).
-  const isVmLane = lane.runtimePlacement === "macos-vm";
-  const VM_BADGE_WIDTH = 2;
-  const rightReservationWithoutVm = rightReservation + (canShowPrPill ? prPillWidth + 1 : 0);
-  const canShowVmBadge = isVmLane
-    && contentWidth - indicatorWidth - LEAD_WIDTH - rightReservationWithoutVm - VM_BADGE_WIDTH - 1 >= 3;
-  const reservedRight = rightReservationWithoutVm + (canShowVmBadge ? VM_BADGE_WIDTH + 1 : 0);
+  const reservedRight = rightReservation + (canShowPrPill ? prPillWidth + 1 : 0);
   const nameMax = Math.max(3, contentWidth - indicatorWidth - LEAD_WIDTH - reservedRight);
   const name = truncate(lane.name, nameMax);
 
@@ -521,14 +513,6 @@ function LaneCard({
         <Text color={nameColor} bold>
           {pad(name, nameMax)}
         </Text>
-        {canShowVmBadge ? (
-          <>
-            <Text> </Text>
-            <Text color={theme.color.info} bold>
-              VM
-            </Text>
-          </>
-        ) : null}
         {canShowPrPill && pr ? (
           <>
             <Text> </Text>
@@ -801,11 +785,9 @@ function MiniDrawer({
         // lanes is sliced by laneStart; selectedLaneIndex is window-relative.
         const selected = index === selectedLaneIndex;
         const hovered = hoveredId?.startsWith(`drawer:lane:${lane.id}:`) ?? false;
-        const isVmLane = lane.runtimePlacement === "macos-vm";
-        const vmSuffixWidth = isVmLane ? 3 : 0;
         // Leading chrome: selection rail (1) + status dot (1) + space (1) = 3.
         const dot = statusGlyph(laneStatusDot(status));
-        const nameMax = Math.max(4, inner - 3 - meta.prefix.length - vmSuffixWidth);
+        const nameMax = Math.max(4, inner - 3 - meta.prefix.length);
         return (
           <Box key={lane.id} paddingX={1}>
             <Rail on={selected} />
@@ -819,11 +801,6 @@ function MiniDrawer({
             >
               {pad(truncate(lane.name, nameMax), nameMax)}
             </Text>
-            {isVmLane ? (
-              <Text color={theme.color.info} bold>
-                {" "}VM
-              </Text>
-            ) : null}
           </Box>
         );
       })}

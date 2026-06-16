@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { SyncCommandPayload } from "../../../../desktop/src/shared/types";
+import { deriveDeterministicLaneNameFromPrompt } from "../../../../desktop/src/shared/laneNameFallback";
 import { createSyncRemoteCommandService } from "./syncRemoteCommandService";
 
 function makePayload(action: string, args: Record<string, unknown> = {}): SyncCommandPayload {
@@ -16,6 +17,7 @@ function createService(options?: {
       session: { id: "session-1", status: "running" },
     }),
   };
+  const logger = { debug: vi.fn(), warn: vi.fn(), error: vi.fn(), info: vi.fn() };
   const service = createSyncRemoteCommandService({
     laneService: {},
     prService: {},
@@ -23,9 +25,9 @@ function createService(options?: {
     sessionService: {},
     fileService: {},
     ...(options?.agentChatService ? { agentChatService: options.agentChatService } : {}),
-    logger: { debug: vi.fn(), warn: vi.fn(), error: vi.fn(), info: vi.fn() },
+    logger,
   } as any);
-  return { service, ptyService };
+  return { service, ptyService, logger };
 }
 
 describe("createSyncRemoteCommandService", () => {
@@ -114,5 +116,89 @@ describe("createSyncRemoteCommandService", () => {
       hasMore: true,
       sessionFound: true,
     });
+  });
+});
+
+describe("lanes.suggestName", () => {
+  it("exposes a non-queueable, viewer-allowed descriptor", () => {
+    const { service } = createService();
+
+    expect(service.getDescriptor("lanes.suggestName")).toEqual({
+      action: "lanes.suggestName",
+      scope: "project",
+      policy: { viewerAllowed: true },
+    });
+  });
+
+  it("returns the model-suggested name on success", async () => {
+    const suggestLaneNameFromPrompt = vi.fn().mockResolvedValue("refactor-auth-flow");
+    const { service } = createService({ agentChatService: { suggestLaneNameFromPrompt } });
+
+    const result = await service.execute(makePayload("lanes.suggestName", {
+      laneId: "lane-1",
+      prompt: "please refactor the auth flow",
+      modelId: "anthropic/claude-haiku-4-5",
+    }));
+
+    expect(result).toEqual({ name: "refactor-auth-flow" });
+    expect(suggestLaneNameFromPrompt).toHaveBeenCalledWith({
+      laneId: "lane-1",
+      prompt: "please refactor the auth flow",
+      modelId: "anthropic/claude-haiku-4-5",
+    });
+  });
+
+  it("falls back to the client's deterministic name and logs when the naming service throws", async () => {
+    const suggestLaneNameFromPrompt = vi.fn().mockRejectedValue(new Error("boom"));
+    const { service, logger } = createService({ agentChatService: { suggestLaneNameFromPrompt } });
+
+    const result = await service.execute(makePayload("lanes.suggestName", {
+      laneId: "lane-1",
+      prompt: "fix the flaky login test",
+      modelId: "m",
+      fallbackName: "fix the flaky login test",
+    }));
+
+    expect(result).toEqual({ name: "fix the flaky login test" });
+    expect(logger.warn).toHaveBeenCalledWith(
+      "sync.lanes_suggest_name_failed",
+      expect.objectContaining({ laneId: "lane-1", modelId: "m" }),
+    );
+  });
+
+  it("falls back when the naming service is unavailable, deriving from the prompt without a client fallback", async () => {
+    const { service } = createService();
+
+    const result = await service.execute(makePayload("lanes.suggestName", {
+      laneId: "lane-1",
+      prompt: "Please help me fix the login bug",
+      modelId: "m",
+    }));
+
+    expect(result).toEqual({
+      name: deriveDeterministicLaneNameFromPrompt("Please help me fix the login bug"),
+    });
+  });
+
+  it("falls back when the naming service returns an empty string", async () => {
+    const suggestLaneNameFromPrompt = vi.fn().mockResolvedValue("   ");
+    const { service } = createService({ agentChatService: { suggestLaneNameFromPrompt } });
+
+    const result = await service.execute(makePayload("lanes.suggestName", {
+      laneId: "lane-1",
+      prompt: "build the dashboard",
+      modelId: "m",
+      fallbackName: "build the dashboard",
+    }));
+
+    expect(result).toEqual({ name: "build the dashboard" });
+  });
+
+  it("rejects when prompt is missing", async () => {
+    const { service } = createService();
+
+    await expect(
+      service.execute(makePayload("lanes.suggestName", { laneId: "lane-1", modelId: "m" })),
+    ).rejects.toThrow("lanes.suggestName requires prompt.");
   });
 });

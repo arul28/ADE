@@ -42,7 +42,6 @@ import type { createPrService } from "../../../../desktop/src/main/services/prs/
 import type { createQueueLandingService } from "../../../../desktop/src/main/services/prs/queueLandingService";
 import type { createPtyService } from "../../../../desktop/src/main/services/pty/ptyService";
 import type { createSessionService } from "../../../../desktop/src/main/services/sessions/sessionService";
-import type { NotificationEventBus } from "../../../../desktop/src/main/services/notifications/notificationEventBus";
 import type { AdeDb } from "../../../../desktop/src/main/services/state/kvDb";
 import { nowIso, safeJsonParse, sleep, writeTextAtomic } from "../../../../desktop/src/main/services/shared/utils";
 import { createDeviceRegistryService } from "./deviceRegistryService";
@@ -127,12 +126,6 @@ type SyncServiceArgs = {
    */
   forceHostRole?: boolean;
   onStatusChanged?: (snapshot: SyncRoleSnapshot) => void;
-  /**
-   * Optional notification bus forwarded to the sync host. The host publishes
-   * chat/PR/system events and invokes `sendInAppNotification` for
-   * connected iOS peers.
-   */
-  notificationEventBus?: NotificationEventBus | null;
   projectCatalogProvider?: SyncProjectCatalogProvider;
   remoteCommandExecutor?: Pick<SyncRemoteCommandService, "execute">;
   /**
@@ -728,7 +721,6 @@ export function createSyncService(args: SyncServiceArgs) {
       runtimeKind: args.runtimeKind ?? "desktop-embedded",
       runtimeVersion: args.appVersion ?? "",
       deviceRegistryService,
-      notificationEventBus: args.notificationEventBus ?? null,
       projectCatalogProvider: args.projectCatalogProvider,
       remoteCommandService,
       remoteCommandExecutor: args.remoteCommandExecutor,

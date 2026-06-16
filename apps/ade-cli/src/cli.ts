@@ -24,9 +24,7 @@ import {
 import { buildDeeplink } from "../../desktop/src/shared/deeplinks";
 import {
   AUTOMATIONS_COMING_SOON_MESSAGE,
-  MACOS_VM_COMING_SOON_MESSAGE,
   readAutomationsEnvOverride,
-  readMacosVmEnvOverride,
 } from "../../desktop/src/shared/automationAvailability";
 import { parseLinearGraphQLInput } from "../../desktop/src/main/services/cto/linearGraphQLInput";
 import { browseProjectDirectories } from "../../desktop/src/main/services/projects/projectBrowserService";
@@ -71,7 +69,6 @@ import type {
   SyncProjectSwitchRequestPayload,
   SyncProjectSwitchResultPayload,
 } from "../../desktop/src/shared/types/sync";
-import { MACOS_VM_PHASES } from "../../desktop/src/shared/types/macosVm";
 import {
   isCurrentProcessDescendantOfPid,
   type AdeServiceCommand,
@@ -167,11 +164,6 @@ type FormatterId =
   | "browser-sessions"
   | "browser-observation"
   | "browser-trace"
-  | "macos-vm-status"
-  | "macos-vm-share-policy"
-  | "macos-vm-guide"
-  | "macos-vm-capture"
-  | "macos-vm-selection"
   | "terminal-list"
   | "terminal-read"
   | "history-list"
@@ -308,12 +300,6 @@ function automationsCliEnabled(): boolean {
   return isSourceCheckoutCliEntryPath(CLI_ENTRY_PATH);
 }
 
-function macosVmCliEnabled(): boolean {
-  const override = readMacosVmEnvOverride(process.env);
-  if (override !== null) return override;
-  return isSourceCheckoutCliEntryPath(CLI_ENTRY_PATH);
-}
-
 function internalFeatureUnavailableHelp(title: string, message: string, enableEnv: string): string {
   return `${ADE_BANNER}
   ${title}
@@ -327,13 +313,6 @@ function assertAutomationsCliEnabled(): void {
   if (automationsCliEnabled()) return;
   throw new CliUsageError(
     `${AUTOMATIONS_COMING_SOON_MESSAGE} Internal testing can opt in with ADE_ENABLE_AUTOMATIONS=1.`,
-  );
-}
-
-function assertMacosVmCliEnabled(): void {
-  if (macosVmCliEnabled()) return;
-  throw new CliUsageError(
-    `${MACOS_VM_COMING_SOON_MESSAGE} Internal testing can opt in with ADE_ENABLE_MACOS_VM=1.`,
   );
 }
 
@@ -504,8 +483,6 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade proof status | list | screenshot | record Manage proof and computer-use artifacts
     $ ade ios-sim devices | apps | launch | tap    Control iOS Simulator apps, capture, and input
     $ ade app-control launch | snapshot | click    Inspect and drive Electron apps
-    $ ade macos-vm status | start | restart | wipe | install-runtime | set-credentials | get-credentials | storage | display-session | detach
-                                                    Run ADE's singleton Apple silicon macOS VM
     $ ade browser open | tabs | screenshot         Use ADE's built-in browser pane
     $ ade usage snapshot | refresh | budget         Read provider quota usage and budget guardrails
     $ ade settings pr-transcript-gists enable      Attach ADE chat transcript links to new PRs
@@ -539,8 +516,6 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade ios-sim apps --text
     $ ade ios-sim launch --target <id> --text
     $ ade app-control launch --command "pnpm dev" --text
-    $ ade macos-vm start --lane <lane> --create --text
-    $ ade macos-vm guide --lane <lane> --text
     $ ade --socket browser open http://localhost:5173 --new-tab --text
     $ ade terminal read --chat-session <id> --text
 
@@ -567,15 +542,6 @@ function topLevelHelpText(): string {
       "",
     );
   }
-  if (!macosVmCliEnabled()) {
-    text = text
-      .replace(
-        /    \$ ade macos-vm status \| start \| restart \| wipe \| install-runtime \| set-credentials \| get-credentials \| storage \| display-session \| detach\n\s+Run ADE's singleton Apple silicon macOS VM\n/,
-        "",
-      )
-      .replace(/    \$ ade macos-vm start --lane <lane> --create --text\n/, "")
-      .replace(/    \$ ade macos-vm guide --lane <lane> --text\n/, "");
-  }
   return text;
 }
 
@@ -585,13 +551,6 @@ function commandHelpText(key: string): string | undefined {
       "Automations",
       AUTOMATIONS_COMING_SOON_MESSAGE,
       "ADE_ENABLE_AUTOMATIONS",
-    );
-  }
-  if (key === "macos-vm" && !macosVmCliEnabled()) {
-    return internalFeatureUnavailableHelp(
-      "macOS VM",
-      MACOS_VM_COMING_SOON_MESSAGE,
-      "ADE_ENABLE_MACOS_VM",
     );
   }
   if (key === "linear" && !automationsCliEnabled()) {
@@ -1451,69 +1410,6 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade ios-sim drag 120 700 120 250             Drag in the simulator
     $ ade ios-sim swipe 120 700 120 250            Swipe in the simulator
     $ ade ios-sim type "hello" --text              Type into the launched app
-`,
-  "macos-vm": `${ADE_BANNER}
-  macOS VM
-
-  ADE manages a singleton Apple silicon macOS VM for agent work: one VM per
-  install, with at most one VM-backed lane attached at a time. Onboarding
-  advances through a fixed 10-phase model (status reports the current phase
-  number and label). Detaching a VM lane converts it back to a local lane.
-
-  Discovery and lifecycle:
-    $ ade macos-vm status --text                  Show provider readiness, current phase, attached VM lane
-    $ ade macos-vm status --lane <lane> --text    Show one lane's VM record
-    $ ade macos-vm provision --lane <lane>        Pull/create a VM for a lane
-    $ ade macos-vm start --lane <lane> --create   Start the VM, provisioning if missing
-    $ ade macos-vm restart --vm-name <name>       Restart the VM (stop, wait, start)
-    $ ade macos-vm restart --lane <lane> --force  Restart and treat any in-flight ops as cancellable
-    $ ade macos-vm stop --lane <lane>             Stop the lane VM
-    $ ade macos-vm delete --lane <lane> --force   Delete the VM record and provider VM
-    $ ade macos-vm wipe --force                   Destroy the VM disk and IPSW cache (next create re-onboards)
-    $ ade macos-vm install-runtime --vm-name <n>  Install ade-runtime inside the guest over SSH
-    $ ade macos-vm set-credentials --vm-name <n> --username ade
-                                                    Save guest username + password to macOS Keychain
-    $ ade macos-vm set-credentials --vm-name <n> --username ade --password-stdin
-                                                    Pipe password via stdin instead of being prompted
-    $ ade macos-vm get-credentials --vm-name <n>  Show saved guest username / savedAt (never the password)
-    $ ade macos-vm storage --text                 Show IPSW cache + VM disk volumes and free-space estimates
-    $ ade macos-vm display-session --lane <lane>  Issue a short-lived VNC websocket session for the lane VM
-    $ ade macos-vm detach --lane <lane>           Detach the lane from the Mac VM (lane becomes local)
-    $ ade macos-vm guide --lane <lane> --text     Print agent VM guidance
-    $ ade macos-vm focus --lane <lane>            Select the VM GUI target or raise its viewer
-    $ ade macos-vm screenshot --lane <lane>        Capture the VM through VNC or its viewer
-    $ ade macos-vm select --lane <lane> --x 120 --y 420
-                                                    Attach screenshot-backed VM point context
-    $ ade macos-vm click --lane <lane> 120 420     Click window-relative coordinates
-    $ ade macos-vm type --lane <lane> "hello"      Type into the VM GUI target
-    $ ade macos-vm actions --text                 List callable macos_vm actions
-
-  Phase model (status --text prints "phase N/10 \xb7 <label>"):
-    1 Lane attached            6 First-boot setup
-    2 Download restore image   7 Enable Remote Login
-    3 Create VM                8 Save credentials
-    4 Install macOS            9 Install agent runtime
-    5 Boot                    10 Ready for VM lanes
-
-  Provisioning flags:
-    --mode pull-image|create      Pull a Lume image or create from an IPSW.
-    --image, --source-image <id>  Lume image, default macos-tahoe-vanilla:latest.
-    --ipsw <path|latest>          Restore image for --mode create.
-    --cpu, --cpu-cores <n>        Virtual CPU count.
-    --memory <size>               Memory, for example 8GB.
-    --disk, --disk-size <size>    Disk size, for example 80GB.
-    --display <WxH>               Display size, for example 1920x1200.
-    --unattended <preset>         Run Lume's unattended setup preset during create.
-    --no-display                  Start without opening the VM display window.
-    --window-title <text>          Override the VM window title match.
-    --coordinate-space window|screen Coordinates for click; default window.
-
-  Wipe and credentials:
-    wipe without --force prints a warning and requires typing "yes" on stdin
-    before destroying the VM disk and IPSW cache. With --force, the wipe runs
-    immediately. set-credentials prompts for the password without echoing
-    unless --password-stdin is set, in which case the password is read from
-    stdin (and never printed to the terminal).
 `,
   "app-control": `${ADE_BANNER}
   App Control
@@ -7453,499 +7349,6 @@ function buildAppControlPlan(args: string[]): CliPlan {
   };
 }
 
-function buildMacosVmPlan(args: string[]): CliPlan {
-  const sub = firstPositional(args) ?? "status";
-  if (sub === "help")
-    return { kind: "help", text: HELP_BY_COMMAND["macos-vm"] };
-  const numericPositionals = () =>
-    args.filter((value) => /^\d+(\.\d+)?$/.test(value));
-  const readCoordinate = (flag: string, index: number): number => {
-    const value =
-      readNumberOption(args, [flag]) ?? Number(numericPositionals()[index]);
-    if (!Number.isFinite(value))
-      throw new CliUsageError(`${flag} is required and must be a number.`);
-    return value;
-  };
-
-  const readVmLaneId = (required: boolean): string | null => {
-    const laneId =
-      readValue(args, ["--lane", "--lane-id"]) ?? firstPositional(args);
-    if (required) return requireValue(laneId, "laneId");
-    return laneId;
-  };
-
-  const readVmName = (): string | null =>
-    readValue(args, ["--vm-name", "--name"]);
-
-  const readVmTarget = (
-    required: boolean,
-  ): { vmName?: string; laneId?: string } => {
-    const vmName = readVmName();
-    // Accept the lane via flag OR positional argument so sibling commands
-    // such as `ade macos-vm wipe <lane> --force`, `ade macos-vm restart
-    // <lane>`, and `ade macos-vm install-runtime <lane>` consume the
-    // positional lane id consistently with the rest of `macos-vm`.
-    const laneId =
-      readValue(args, ["--lane", "--lane-id"]) ?? firstPositional(args);
-    if (vmName && laneId) {
-      throw new CliUsageError(
-        "Use either --vm-name <name> or --lane <lane>, not both.",
-      );
-    }
-    if (required && !vmName && !laneId) {
-      throw new CliUsageError(
-        "Provide --vm-name <name> or --lane <lane> to identify the VM.",
-      );
-    }
-    const target: { vmName?: string; laneId?: string } = {};
-    if (vmName) target.vmName = vmName;
-    if (laneId) target.laneId = laneId;
-    return target;
-  };
-
-  const readProvisionOptions = (): JsonObject => {
-    const options: JsonObject = {
-      name: readValue(args, ["--name", "--vm-name"]),
-      cpuCores: readIntOption(args, ["--cpu", "--cpu-cores"]),
-      memory: readValue(args, ["--memory"]),
-      diskSize: readValue(args, ["--disk", "--disk-size"]),
-      display: readValue(args, ["--display"]),
-      mode: readValue(args, ["--mode"]),
-      ipsw: readValue(args, ["--ipsw"]),
-      sourceImage: readValue(args, ["--image", "--source-image"]),
-      unattendedPreset: readValue(args, [
-        "--unattended",
-        "--unattended-preset",
-      ]),
-    };
-    return Object.fromEntries(
-      Object.entries(options).filter(
-        ([, value]) => value !== undefined && value !== null && value !== "",
-      ),
-    );
-  };
-
-  if (sub === "actions")
-    return {
-      kind: "execute",
-      label: "macOS VM actions",
-      steps: [listActionsStep("actions", "macos_vm")],
-    };
-  if (sub === "status" || sub === "list" || sub === "ls") {
-    return {
-      kind: "execute",
-      label: "macOS VM status",
-      steps: [
-        actionStep(
-          "result",
-          "macos_vm",
-          "getStatus",
-          collectGenericObjectArgs(args, { laneId: readVmLaneId(false) }),
-        ),
-      ],
-    };
-  }
-  if (sub === "share" || sub === "share-policy") {
-    return {
-      kind: "execute",
-      label: "macOS VM share policy",
-      steps: [
-        actionStep(
-          "result",
-          "macos_vm",
-          "getSharePolicy",
-          collectGenericObjectArgs(args, { laneId: readVmLaneId(true) }),
-        ),
-      ],
-    };
-  }
-  if (sub === "provision" || sub === "create" || sub === "pull") {
-    const provisionOptions = readProvisionOptions();
-    const mode =
-      sub === "create"
-        ? "create"
-        : sub === "pull"
-          ? "pull-image"
-          : provisionOptions.mode;
-    return {
-      kind: "execute",
-      label: "macOS VM provision",
-      steps: [
-        actionStep(
-          "result",
-          "macos_vm",
-          "provision",
-          collectGenericObjectArgs(args, {
-            laneId: readVmLaneId(true),
-            ...provisionOptions,
-            mode,
-            force: readFlag(args, ["--force", "-f"]) ? true : undefined,
-          }),
-        ),
-      ],
-    };
-  }
-  if (sub === "start" || sub === "run" || sub === "open") {
-    const noDisplay = readFlag(args, ["--no-display", "--headless"]);
-    const openDisplay = noDisplay
-      ? false
-      : readFlag(args, ["--open-display", "--display-window"])
-        ? true
-        : undefined;
-    return {
-      kind: "execute",
-      label: "macOS VM start",
-      steps: [
-        actionStep(
-          "result",
-          "macos_vm",
-          "start",
-          collectGenericObjectArgs(args, {
-            laneId: readVmLaneId(true),
-            ...readProvisionOptions(),
-            openDisplay,
-            createIfMissing: readFlag(args, ["--create", "--create-if-missing"])
-              ? true
-              : undefined,
-          }),
-        ),
-      ],
-    };
-  }
-  if (sub === "stop" || sub === "shutdown") {
-    return {
-      kind: "execute",
-      label: "macOS VM stop",
-      steps: [
-        actionStep(
-          "result",
-          "macos_vm",
-          "stop",
-          collectGenericObjectArgs(args, {
-            laneId: readVmLaneId(true),
-            force: readFlag(args, ["--force", "-f"]) ? true : undefined,
-          }),
-        ),
-      ],
-    };
-  }
-  if (sub === "restart" || sub === "reboot") {
-    const target = readVmTarget(true);
-    return {
-      kind: "execute",
-      label: "macOS VM restart",
-      steps: [
-        actionStep(
-          "result",
-          "macos_vm",
-          "restart",
-          collectGenericObjectArgs(args, {
-            ...target,
-            force: readFlag(args, ["--force", "-f"]) ? true : undefined,
-          }),
-        ),
-      ],
-    };
-  }
-  if (sub === "wipe" || sub === "wipe-and-reinstall") {
-    const target = readVmTarget(false);
-    const force = readFlag(args, ["--force", "-f"]);
-    if (!force) {
-      process.stderr.write(
-        "This destroys the VM disk and removes the IPSW cache.\n" +
-          "Type 'yes' to continue: ",
-      );
-      const reply = readLineFromStdinSync().trim().toLowerCase();
-      if (reply !== "yes") {
-        throw new CliUsageError(
-          "Wipe cancelled. Re-run with --force to skip the prompt.",
-        );
-      }
-    }
-    return {
-      kind: "execute",
-      label: "macOS VM wipe",
-      steps: [
-        actionStep(
-          "result",
-          "macos_vm",
-          "wipe",
-          collectGenericObjectArgs(args, { ...target, confirm: true }),
-        ),
-      ],
-    };
-  }
-  if (sub === "install-runtime" || sub === "runtime-install") {
-    const target = readVmTarget(true);
-    return {
-      kind: "execute",
-      label: "macOS VM install runtime",
-      steps: [
-        actionStep(
-          "result",
-          "macos_vm",
-          "installRuntime",
-          collectGenericObjectArgs(args, target),
-        ),
-      ],
-    };
-  }
-  if (sub === "set-credentials" || sub === "credentials") {
-    const vmName = requireValue(readVmName(), "vmName");
-    const username = requireValue(readValue(args, ["--username", "--user"]), "username");
-    const passwordStdin = readFlag(args, ["--password-stdin"]);
-    const password = passwordStdin
-      ? readAllStdinSync().replace(/\r?\n$/, "")
-      : promptPasswordSync("Guest password: ");
-    if (!password) {
-      throw new CliUsageError("password is required.");
-    }
-    return {
-      kind: "execute",
-      label: "macOS VM set credentials",
-      steps: [
-        actionStep(
-          "result",
-          "macos_vm",
-          "setCredentials",
-          collectGenericObjectArgs(args, { vmName, username, password }),
-        ),
-      ],
-    };
-  }
-  if (sub === "get-credentials" || sub === "show-credentials") {
-    const vmName = requireValue(readVmName(), "vmName");
-    return {
-      kind: "execute",
-      label: "macOS VM get credentials",
-      steps: [
-        actionStep(
-          "result",
-          "macos_vm",
-          "getCredentials",
-          collectGenericObjectArgs(args, { vmName }),
-        ),
-      ],
-    };
-  }
-  if (sub === "storage" || sub === "storage-info" || sub === "disk") {
-    return {
-      kind: "execute",
-      label: "macOS VM storage info",
-      steps: [
-        actionStep(
-          "result",
-          "macos_vm",
-          "getStorageInfo",
-          collectGenericObjectArgs(args),
-        ),
-      ],
-    };
-  }
-  if (
-    sub === "display-session" ||
-    sub === "display" ||
-    sub === "vnc-session"
-  ) {
-    return {
-      kind: "execute",
-      label: "macOS VM display session",
-      steps: [
-        actionStep(
-          "result",
-          "macos_vm",
-          "getDisplaySession",
-          collectGenericObjectArgs(args, { laneId: readVmLaneId(true) }),
-        ),
-      ],
-    };
-  }
-  if (sub === "detach" || sub === "detach-lane") {
-    return {
-      kind: "execute",
-      label: "macOS VM detach lane",
-      steps: [
-        actionStep(
-          "result",
-          "macos_vm",
-          "detachLane",
-          collectGenericObjectArgs(args, { laneId: readVmLaneId(true) }),
-        ),
-      ],
-    };
-  }
-  if (
-    sub === "delete" ||
-    sub === "rm" ||
-    sub === "remove" ||
-    sub === "destroy"
-  ) {
-    return {
-      kind: "execute",
-      label: "macOS VM delete",
-      steps: [
-        actionStep(
-          "result",
-          "macos_vm",
-          "delete",
-          collectGenericObjectArgs(args, {
-            laneId: readVmLaneId(true),
-            force: readFlag(args, ["--force", "-f"]) ? true : undefined,
-          }),
-        ),
-      ],
-    };
-  }
-  if (
-    sub === "guide" ||
-    sub === "agent-guide" ||
-    sub === "handoff" ||
-    sub === "target"
-  ) {
-    return {
-      kind: "execute",
-      label: "macOS VM guide",
-      steps: [
-        actionStep(
-          "result",
-          "macos_vm",
-          "getAgentGuide",
-          collectGenericObjectArgs(args, { laneId: readVmLaneId(true) }),
-        ),
-      ],
-    };
-  }
-  if (sub === "focus" || sub === "focus-window") {
-    return {
-      kind: "execute",
-      label: "macOS VM focus",
-      steps: [
-        actionStep(
-          "result",
-          "macos_vm",
-          "focusWindow",
-          collectGenericObjectArgs(args, {
-            laneId: readVmLaneId(true),
-            windowTitleQuery: readValue(args, [
-              "--window-title",
-              "--title-query",
-            ]),
-          }),
-        ),
-      ],
-    };
-  }
-  if (sub === "screenshot" || sub === "capture") {
-    return {
-      kind: "execute",
-      label: "macOS VM screenshot",
-      steps: [
-        actionStep(
-          "result",
-          "macos_vm",
-          "captureScreenshot",
-          collectGenericObjectArgs(args, {
-            laneId: readVmLaneId(true),
-            windowTitleQuery: readValue(args, [
-              "--window-title",
-              "--title-query",
-            ]),
-            outputPath: readValue(args, ["--output", "--path"]),
-          }),
-        ),
-      ],
-    };
-  }
-  if (sub === "select" || sub === "select-point" || sub === "inspect") {
-    return {
-      kind: "execute",
-      label: "macOS VM select",
-      steps: [
-        actionStep(
-          "result",
-          "macos_vm",
-          "selectPoint",
-          collectGenericObjectArgs(args, {
-            laneId: readVmLaneId(true),
-            x: readCoordinate("--x", 0),
-            y: readCoordinate("--y", 1),
-            coordinateSpace: readValue(args, [
-              "--coordinate-space",
-              "--coords",
-            ]),
-            windowTitleQuery: readValue(args, [
-              "--window-title",
-              "--title-query",
-            ]),
-            includeScreenshot: readFlag(args, ["--no-screenshot"])
-              ? false
-              : undefined,
-          }),
-        ),
-      ],
-    };
-  }
-  if (sub === "click" || sub === "tap") {
-    return {
-      kind: "execute",
-      label: "macOS VM click",
-      steps: [
-        actionStep(
-          "result",
-          "macos_vm",
-          "click",
-          collectGenericObjectArgs(args, {
-            laneId: readVmLaneId(true),
-            x: readCoordinate("--x", 0),
-            y: readCoordinate("--y", 1),
-            coordinateSpace: readValue(args, [
-              "--coordinate-space",
-              "--coords",
-            ]),
-            windowTitleQuery: readValue(args, [
-              "--window-title",
-              "--title-query",
-            ]),
-          }),
-        ),
-      ],
-    };
-  }
-  if (sub === "type" || sub === "text") {
-    return {
-      kind: "execute",
-      label: "macOS VM type",
-      steps: [
-        actionStep(
-          "result",
-          "macos_vm",
-          "typeText",
-          collectGenericObjectArgs(args, {
-            laneId: readVmLaneId(true),
-            text: requireValue(
-              readValue(args, ["--value", "--message", "--input-text"]) ??
-                readCommandTextValue(args, ["--text"]) ??
-                args.filter((arg) => arg !== "--text").join(" "),
-              "text",
-            ),
-            windowTitleQuery: readValue(args, [
-              "--window-title",
-              "--title-query",
-            ]),
-          }),
-        ),
-      ],
-    };
-  }
-  return {
-    kind: "execute",
-    label: `macos-vm ${sub}`,
-    steps: [
-      actionStep("result", "macos_vm", sub, collectGenericObjectArgs(args)),
-    ],
-  };
-}
-
 const BROWSER_SESSION_ACTION_MODES = new Set([
   "observe",
   "snapshot",
@@ -10014,7 +9417,6 @@ const VALUE_CARRIER_FLAGS: ReadonlySet<string> = new Set([
   "--input-json",
   "--input-text",
   "--instructions",
-  "--ipsw",
   "--kind",
   "--json-input",
   "--lane",
@@ -10120,11 +9522,8 @@ const VALUE_CARRIER_FLAGS: ReadonlySet<string> = new Set([
   "--tool-type",
   "--title-query",
   "--udid",
-  "--unattended",
-  "--unattended-preset",
   "--url",
   "--value",
-  "--vm-name",
   "--window-title",
   "--workspace",
   "--workspace-id",
@@ -10193,9 +9592,6 @@ function buildCliPlan(
     app: "app-control",
     apps: "app-control",
     electron: "app-control",
-    macos: "macos-vm",
-    "mac-vm": "macos-vm",
-    macvm: "macos-vm",
     "ade-browser": "browser",
     "built-in-browser": "browser",
     "builtin-browser": "browser",
@@ -10421,15 +9817,6 @@ function buildCliPlan(
     primary === "electron"
   )
     return buildAppControlPlan(args);
-  if (
-    primary === "macos-vm" ||
-    primary === "macos" ||
-    primary === "mac-vm" ||
-    primary === "macvm"
-  ) {
-    assertMacosVmCliEnabled();
-    return buildMacosVmPlan(args);
-  }
   if (
     primary === "browser" ||
     primary === "ade-browser" ||
@@ -14562,196 +13949,6 @@ function formatIosSimPreview(value: unknown): string {
   ]);
 }
 
-function describeMacosVmPhase(vm: Record<string, unknown> | null): string | null {
-  if (!vm) return null;
-  const raw = vm.currentPhase;
-  const num = typeof raw === "number" ? raw : null;
-  if (num == null) return null;
-  const phase = MACOS_VM_PHASES.find((entry) => entry.number === num);
-  if (!phase) return `phase ${num}/10`;
-  return `phase ${phase.number}/10 \xb7 ${phase.label}`;
-}
-
-function macosVmRuntimeInstallState(vm: Record<string, unknown> | null): string | null {
-  if (!vm) return null;
-  const status = vm.runtimeInstall;
-  if (!isRecord(status)) return null;
-  return typeof status.state === "string" && status.state ? status.state : null;
-}
-
-function describeMacosVmRuntimeInstall(
-  vm: Record<string, unknown> | null,
-): string | null {
-  const state = macosVmRuntimeInstallState(vm);
-  if (!state) return null;
-  const status = vm?.runtimeInstall;
-  const detail = isRecord(status) && typeof status.detail === "string" && status.detail ? status.detail : null;
-  return detail ? `${state} \xb7 ${detail}` : state;
-}
-
-function formatMacosVmStatus(value: unknown): string {
-  const status = isRecord(value) ? value : {};
-  if (isRecord(status.previous) || status.name || status.laneId) {
-    const vm = isRecord(status.previous) ? status.previous : status;
-    return renderKeyValues("ADE macOS VM", [
-      ["deleted", "deleted" in status ? status.deleted : null],
-      ["lane", vm.laneName ?? vm.laneId],
-      ["vm", vm.name],
-      ["state", vm.state],
-      ["phase", describeMacosVmPhase(vm)],
-      ["runtime install", describeMacosVmRuntimeInstall(vm)],
-      ["guest path", vm.guestSharedPath],
-      ["host path", vm.sharedDirectory ?? vm.laneRoot],
-      ["guest readiness", isRecord(vm.guestReadiness) ? vm.guestReadiness.state : null],
-      ["guest detail", isRecord(vm.guestReadiness) ? vm.guestReadiness.detail : null],
-      ["ssh", vm.sshCommand],
-      ["vnc", vm.vncUrl],
-      ["ip", vm.ipAddress],
-      ["share mode", isRecord(vm.metadata) ? vm.metadata.shareMode : null],
-      ["last error", vm.lastError],
-    ]);
-  }
-  const provider = isRecord(status.activeProvider) ? status.activeProvider : {};
-  const tools = Array.isArray(status.tools)
-    ? status.tools.filter(isRecord)
-    : [];
-  const laneVm = isRecord(status.laneVm) ? status.laneVm : null;
-  const vms = Array.isArray(status.vms) ? status.vms.filter(isRecord) : [];
-  const attachedShare = laneVm && Array.isArray(laneVm.shareEntries)
-    ? laneVm.shareEntries
-        .filter(isRecord)
-        .find((entry) => entry.state === "live")
-    : null;
-  function resolveAttachedLaneId(): string | null {
-    if (laneVm && typeof laneVm.laneId === "string" && laneVm.laneId) return laneVm.laneId;
-    if (attachedShare && typeof attachedShare.laneId === "string") return attachedShare.laneId;
-    return null;
-  }
-  const attachedLaneId = resolveAttachedLaneId();
-  const lines = [
-    renderKeyValues("ADE macOS VM", [
-      ["supported", status.supported],
-      ["platform", status.platform],
-      ["arch", status.arch],
-      ["provider", provider.kind],
-      ["provider ready", provider.available],
-      ["provider detail", provider.detail],
-      [
-        "lane VM",
-        laneVm
-          ? `${laneVm.name ?? laneVm.id} (${laneVm.state ?? "unknown"})`
-          : null,
-      ],
-      ["phase", describeMacosVmPhase(laneVm)],
-      ["attached lane", attachedLaneId],
-      ["runtime install", describeMacosVmRuntimeInstall(laneVm)],
-      ["guest path", laneVm?.guestSharedPath],
-      ["host path", laneVm?.sharedDirectory ?? laneVm?.laneRoot],
-      ["guest readiness", isRecord(laneVm?.guestReadiness) ? laneVm.guestReadiness.state : null],
-      ["ssh", laneVm?.sshCommand],
-      ["vnc", laneVm?.vncUrl],
-    ]),
-    "",
-    renderTable(
-      ["lane", "vm", "state", "phase", "runtime", "host path"],
-      vms.map((vm) => [
-        vm.laneName ?? vm.laneId,
-        vm.name,
-        vm.state,
-        describeMacosVmPhase(vm) ?? "",
-        macosVmRuntimeInstallState(vm) ?? "",
-        vm.sharedDirectory ?? vm.laneRoot,
-      ]),
-      "Lane VMs\n(none)",
-    ),
-    "",
-    renderTable(
-      ["tool", "ready", "detail"],
-      tools.map((tool) => [
-        tool.name,
-        tool.available ? "yes" : "no",
-        tool.detail,
-      ]),
-      "Tools\n(none)",
-    ),
-  ];
-  return lines.join("\n");
-}
-
-function formatMacosVmSharePolicy(value: unknown): string {
-  const policy = isRecord(value) ? value : {};
-  const excludedPaths = Array.isArray(policy.excludedPaths)
-    ? policy.excludedPaths.filter((entry) => typeof entry === "string")
-    : [];
-  return renderKeyValues("ADE macOS VM share policy", [
-    ["allowed", policy.allowed],
-    ["mode", policy.syncMode],
-    ["host path", policy.hostPath],
-    ["original host path", policy.originalHostPath],
-    ["guest path", policy.guestPath],
-    ["mirror path", policy.mirrorPath],
-    ["read only", policy.readOnly],
-    ["detail", policy.detail],
-    ["blocked", policy.blockedReason],
-    ["excluded", excludedPaths.length ? excludedPaths.join(", ") : null],
-  ]);
-}
-
-function formatMacosVmGuide(value: unknown): string {
-  if (isRecord(value) && typeof value.text === "string") return value.text;
-  return renderKeyValues(
-    "ADE macOS VM guide",
-    Object.entries(isRecord(value) ? value : {}).slice(0, 24),
-  );
-}
-
-function formatMacosVmCapture(value: unknown): string {
-  const capture = isRecord(value) ? value : {};
-  const window = isRecord(capture.window) ? capture.window : {};
-  const frame = isRecord(window.frame) ? window.frame : null;
-  return renderKeyValues("ADE macOS VM capture", [
-    ["ok", capture.ok],
-    ["lane", capture.laneId],
-    ["vm", capture.vmName],
-    ["path", capture.path],
-    ["mode", capture.captureMode],
-    ["window", window.windowTitle],
-    ["process", window.processName],
-    [
-      "frame",
-      frame ? `${frame.x},${frame.y} ${frame.width}x${frame.height}` : null,
-    ],
-    ["captured", capture.capturedAt],
-    ["image data", capture.dataUrl ? "included" : null],
-  ]);
-}
-
-function formatMacosVmSelection(value: unknown): string {
-  const result = isRecord(value) ? value : {};
-  const item = isRecord(result.item) ? result.item : {};
-  const metadata = isRecord(item.metadata) ? item.metadata : {};
-  const selectedPoint = isRecord(metadata.selectedPoint)
-    ? metadata.selectedPoint
-    : {};
-  const screenshot = isRecord(result.screenshot) ? result.screenshot : {};
-  return renderKeyValues("ADE macOS VM selection", [
-    ["source", result.source],
-    ["lane", item.laneId],
-    ["vm", item.vmName],
-    [
-      "point",
-      selectedPoint.x != null && selectedPoint.y != null
-        ? `${selectedPoint.x},${selectedPoint.y}`
-        : null,
-    ],
-    ["coordinate space", selectedPoint.coordinateSpace],
-    ["guest path", item.guestLanePath],
-    ["host path", item.hostLanePath],
-    ["screenshot", screenshot.path ?? metadata.screenshotPath],
-    ["image data", item.screenshotDataUrl ? "included" : null],
-  ]);
-}
-
 function formatAppControlStatus(value: unknown): string {
   const status = isRecord(value) ? value : {};
   const providers = Array.isArray(status.providers)
@@ -15424,16 +14621,6 @@ function formatTextOutput(
       return formatBrowserObservation(value);
     case "browser-trace":
       return formatBrowserTrace(value);
-    case "macos-vm-status":
-      return formatMacosVmStatus(value);
-    case "macos-vm-share-policy":
-      return formatMacosVmSharePolicy(value);
-    case "macos-vm-guide":
-      return formatMacosVmGuide(value);
-    case "macos-vm-capture":
-      return formatMacosVmCapture(value);
-    case "macos-vm-selection":
-      return formatMacosVmSelection(value);
     case "terminal-list":
       return formatTerminalList(value);
     case "terminal-read":
@@ -15560,22 +14747,6 @@ function inferFormatter(
   )
     return "browser-observation";
   if (label === "browser trace") return "browser-trace";
-  if (
-    label === "macos vm status" ||
-    label === "macos vm start" ||
-    label === "macos vm stop" ||
-    label === "macos vm restart" ||
-    label === "macos vm provision" ||
-    label === "macos vm delete" ||
-    label === "macos vm wipe" ||
-    label === "macos vm install runtime" ||
-    label === "macos vm set credentials"
-  )
-    return "macos-vm-status";
-  if (label === "macos vm share policy") return "macos-vm-share-policy";
-  if (label === "macos vm guide") return "macos-vm-guide";
-  if (label === "macos vm screenshot") return "macos-vm-capture";
-  if (label === "macos vm select") return "macos-vm-selection";
   if (label === "terminal list" || label === "terminal active")
     return "terminal-list";
   if (label === "terminal read") return "terminal-read";

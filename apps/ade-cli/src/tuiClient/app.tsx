@@ -126,7 +126,6 @@ import {
   normalizeNewLaneBranchSource,
   normalizeNewLaneStart,
   toggleNewLaneBranchSource,
-  toggleNewLaneRuntime,
 } from "./newLaneForm";
 import {
   ChatView,
@@ -195,7 +194,20 @@ import {
   type FeedbackFormState,
   type FeedbackType,
 } from "./feedbackForm";
-import { buildPendingInputAnswers, latestPendingApproval } from "./pendingInput";
+import {
+  answerForQuestion,
+  buildPendingInputAnswers,
+  createPendingQuestionSelectionState,
+  ensurePendingQuestionSelectionState,
+  latestPendingApproval,
+  movePendingQuestionFocus,
+  movePendingQuestionOption,
+  optionsForPendingQuestion,
+  pendingQuestionAnsweredCount,
+  pendingQuestionSelectionValue,
+  setPendingQuestionOptionIndex,
+  type PendingQuestionSelectionState,
+} from "./pendingInput";
 import { claudeHomePath, defaultKeybindingsPath, dispatchKeybinding, openKeybindingsFile, readClaudeKeybindingsFile, type KeybindingDispatchState, type TuiKeybindingAction } from "./keybindings";
 import { buildDeeplinkForRow, type DeeplinkRow } from "./deeplinkRow";
 import { copyToClipboard } from "../lib/clipboard";
@@ -790,7 +802,6 @@ const DESKTOP_COMMAND_ROUTES: Record<string, string> = {
   "/computer-use": "/proof",
   "/ios": "/ios-sim",
   "/ios-sim": "/ios-sim",
-  "/macos-vm": "/macos-vm",
   "/pencil": "/pencil",
   "/proof": "/proof",
 };
@@ -2378,8 +2389,7 @@ export function formFieldUsesPromptInput(command: string, fieldName: string): bo
   if (command === "lane-delete" && (fieldName === "scope" || fieldName === "force")) return false;
   if (
     command === "new-lane"
-    && (fieldName === "start" || fieldName === "runtime" || fieldName === "color"
-      || fieldName === "branchSource" || fieldName === "create")
+    && (fieldName === "start" || fieldName === "color" || fieldName === "branchSource" || fieldName === "create")
   ) return false;
   return true;
 }
@@ -2639,6 +2649,25 @@ function promptTextForTerminal(text: string, attachments: AgentChatFileRef[]): s
   if (!attachmentPaths.length) return text;
   const attachmentBlock = ["Attached files:", ...attachmentPaths.map((filePath) => `- ${filePath}`)].join("\n");
   return text ? `${text}\n\n${attachmentBlock}` : attachmentBlock;
+}
+
+export function resolvePromptChatSubmitTarget(args: {
+  draftChatActive: boolean;
+  focusedSessionId: string | null;
+  activeSessionId: string | null;
+}): string | null {
+  if (args.focusedSessionId) return args.focusedSessionId;
+  return args.draftChatActive ? null : args.activeSessionId;
+}
+
+export function shouldHandlePendingQuestionKey(args: {
+  pane: PaneFocus;
+  hasPendingQuestion: boolean;
+  prompt: string;
+  ctrl: boolean;
+  meta: boolean;
+}): boolean {
+  return args.pane === "chat" && args.hasPendingQuestion && !args.prompt.trim() && !args.ctrl && !args.meta;
 }
 
 function signalTerminalWithCliSync(args: {
@@ -4123,6 +4152,14 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     setCommandPaletteIndex((index) => Math.max(0, Math.min(index, Math.max(0, commandPaletteItems.length - 1))));
   }, [commandPaletteItems.length, commandPaletteOpen]);
   const pendingApproval = useMemo(() => latestPendingApproval(events), [events]);
+  const [pendingQuestionState, setPendingQuestionState] = useState<PendingQuestionSelectionState | null>(null);
+  const pendingQuestionStateRef = useRef<PendingQuestionSelectionState | null>(null);
+  useEffect(() => {
+    setPendingQuestionState((previous) => ensurePendingQuestionSelectionState(pendingApproval, previous));
+  }, [pendingApproval]);
+  useEffect(() => {
+    pendingQuestionStateRef.current = pendingQuestionState;
+  }, [pendingQuestionState]);
   const pendingSteers = useMemo(() => derivePendingSteers(events), [events]);
   const activeFormField = rightPane.kind === "form"
     ? rightPane.fields[formFieldIndex] ?? rightPane.fields[0] ?? null
@@ -7247,6 +7284,68 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     await refreshState();
   }, [addNotice, refreshState]);
 
+  const submitSelectedPendingQuestion = useCallback(async (
+    approval: PendingApproval,
+    typedAnswer?: string,
+  ): Promise<boolean> => {
+    const request = approval.request;
+    const questions = request?.questions ?? [];
+    if (!request || questions.length === 0) return false;
+    const baseState =
+      pendingQuestionStateRef.current?.itemId === approval.itemId
+        ? pendingQuestionStateRef.current
+        : createPendingQuestionSelectionState(approval);
+    if (!baseState) return false;
+    const activeQuestion = questions[baseState.activeQuestionIndex] ?? questions[0] ?? null;
+    if (!activeQuestion) return false;
+    // A typed answer for the active question is mapped through answerForQuestion
+    // (option-label matching + multi-select comma split) and merged into the
+    // accumulated answers, so it advances the multi-question flow instead of
+    // rebuilding a single-shot payload that would drop earlier answers.
+    const typed = typedAnswer?.trim();
+    const activeAnswer: string | string[] | null = typed
+      ? answerForQuestion(activeQuestion, typed)
+      : pendingQuestionSelectionValue(request, baseState);
+    if (activeAnswer == null || (typeof activeAnswer === "string" && activeAnswer.length === 0)) {
+      addNotice("Type an answer in the prompt for this question.", "info");
+      return true;
+    }
+    const answers = { ...baseState.answers, [activeQuestion.id]: activeAnswer };
+    const answeredCount = pendingQuestionAnsweredCount(request, answers);
+    if (answeredCount >= questions.length) {
+      const conn = connectionRef.current;
+      const sessionId = activeSessionIdRef.current;
+      if (!conn || !sessionId) return false;
+      await respondToInput({
+        connection: conn,
+        sessionId,
+        itemId: approval.itemId,
+        decision: "accept",
+        answers,
+        responseText: questions.map((question) => {
+          const answer = answers[question.id];
+          return `${question.header?.trim() || question.id}: ${Array.isArray(answer) ? answer.join(", ") : answer ?? ""}`;
+        }).join("\n"),
+      });
+      // Clear the synchronous ref alongside React state so a fast second
+      // Enter/click can't reuse the now-submitted answers before the next render.
+      pendingQuestionStateRef.current = null;
+      setPendingQuestionState(null);
+      addNotice("Answered request.", "success");
+      await refreshState();
+      return true;
+    }
+    const nextUnansweredIndex = questions.findIndex((question) => !Object.prototype.hasOwnProperty.call(answers, question.id));
+    const nextState = {
+      ...baseState,
+      answers,
+      activeQuestionIndex: nextUnansweredIndex >= 0 ? nextUnansweredIndex : baseState.activeQuestionIndex,
+    };
+    pendingQuestionStateRef.current = nextState;
+    setPendingQuestionState(nextState);
+    return true;
+  }, [addNotice, refreshState]);
+
   const refreshTerminalPreview = useCallback(async (
     conn: AdeCodeConnection,
     terminalId: string,
@@ -9242,6 +9341,16 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         return;
       }
       if (pendingApproval?.mode === "question") {
+        const lowered = value.trim().toLowerCase();
+        const isDecline = lowered === "deny" || lowered === "decline" || lowered === "cancel";
+        // Multi-question requests accumulate answers across questions in the
+        // selection state, so a typed answer must merge into that state (keeping
+        // earlier option/free-text answers and advancing) rather than rebuilding
+        // the whole payload. Single-question + decline keep the original path.
+        if (!isDecline && (pendingApproval.request?.questions?.length ?? 0) > 1) {
+          await submitSelectedPendingQuestion(pendingApproval, value);
+          return;
+        }
         await answerPendingInput(pendingApproval, value);
         return;
       }
@@ -9322,6 +9431,17 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         }
         return;
       }
+      const activeChatSessionId = resolvePromptChatSubmitTarget({
+        draftChatActive: draftChatActiveRef.current,
+        focusedSessionId,
+        activeSessionId: activeSessionRef.current?.sessionId ?? null,
+      });
+      if (activeChatSessionId) {
+        lastLocalSendAtRef.current = Date.now();
+        await sendOrSteerChatMessage(activeChatSessionId, text || "Use the attached image.", promptAttachments);
+        setSelectedMentions((prev) => prev.filter((mention) => !mention.attachment));
+        return;
+      }
       if (!gridViewActiveRef.current && modelStateRef.current.provider === "claude") {
         const terminalId = await startClaudeTerminalForPrompt(terminalPrompt || " ");
         if (terminalId) {
@@ -9348,7 +9468,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       }
       addNotice(message, "error");
     }
-  }, [activeCommandProvider, activeFormField, addNotice, answerPendingInput, clearChatPromptDraft, ensureActiveSession, formValues, interceptLocalSlashCommand, pendingApproval, resolvePendingApproval, resumeClosedTerminalSession, rightPane, runInlineCommand, runRightCommand, selectedMentions, sendOrSteerChatMessage, setChatScrollOffset, slashCommands, slashIndex, slashRows, startClaudeTerminalForPrompt, submitClaudePromptToTerminal, submitRightForm]);
+  }, [activeCommandProvider, activeFormField, addNotice, answerPendingInput, clearChatPromptDraft, ensureActiveSession, formValues, interceptLocalSlashCommand, pendingApproval, resolvePendingApproval, resumeClosedTerminalSession, rightPane, runInlineCommand, runRightCommand, selectedMentions, sendOrSteerChatMessage, setChatScrollOffset, slashCommands, slashIndex, slashRows, startClaudeTerminalForPrompt, submitClaudePromptToTerminal, submitRightForm, submitSelectedPendingQuestion]);
 
   const launchPromptInBackground = useCallback(async (value: string) => {
     const text = value.trim();
@@ -10720,6 +10840,14 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     const detailsFormActive = pane === "details" && rightOpen && rightPane.kind === "form";
     const footerActive = footerControlRef.current != null;
     const textInputActive = (pane === "chat" && !footerActive) || detailsFormActive;
+    const pendingQuestionApproval = pendingApproval?.mode === "question" ? pendingApproval : null;
+    const pendingQuestionKeyActive = shouldHandlePendingQuestionKey({
+      pane,
+      hasPendingQuestion: pendingQuestionApproval !== null,
+      prompt,
+      ctrl: key.ctrl === true,
+      meta: key.meta === true,
+    });
 
     // Searchable /help command reference: filter type-ahead + ↑↓ navigation + ↵
     // run. Handled before the command palette so the help pane owns keystrokes
@@ -10991,7 +11119,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       }
     }
 
-    if (pane === "chat" && textInputActive && !key.ctrl && !key.meta) {
+    if (pane === "chat" && textInputActive && !key.ctrl && !key.meta && !pendingQuestionKeyActive) {
       if (key.leftArrow) {
         movePromptCursor(-1);
         return;
@@ -11044,7 +11172,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       const end = Boolean((key as { end?: boolean }).end);
       const paletteOpen = (activeMentionRange != null && mentionSuggestions.length > 0) || slashRows.length > 0;
       const pageRows = Math.max(1, chatRowBudget - 2);
-      if (!paletteOpen && key.downArrow && effectiveChatScrollOffsetRows <= 0) {
+      if (!paletteOpen && key.downArrow && effectiveChatScrollOffsetRows <= 0 && !pendingQuestionKeyActive) {
         setInlineRowFocus({ cell: providerLockedRef.current ? "model" : "provider" });
         return;
       }
@@ -11094,7 +11222,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           return;
         }
       }
-      if (!paletteOpen && (key.upArrow || key.downArrow)) {
+      if (!paletteOpen && (key.upArrow || key.downArrow) && !pendingQuestionKeyActive) {
         setChatScrollOffset((offset) => offset + (key.upArrow ? 1 : -1));
         return;
       }
@@ -11335,6 +11463,54 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       return;
     }
 
+    if (pendingQuestionKeyActive) {
+      if (!pendingQuestionApproval) return;
+      const updateQuestionState = (
+        updater: (state: PendingQuestionSelectionState) => PendingQuestionSelectionState,
+      ): boolean => {
+        const current = ensurePendingQuestionSelectionState(pendingQuestionApproval, pendingQuestionStateRef.current);
+        if (!current) return false;
+        const next = updater(current);
+        pendingQuestionStateRef.current = next;
+        setPendingQuestionState(next);
+        return true;
+      };
+      if (key.upArrow || key.downArrow) {
+        updateQuestionState((state) => {
+          const question = pendingQuestionApproval.request?.questions[state.activeQuestionIndex];
+          const options = optionsForPendingQuestion(pendingQuestionApproval.request, question, state.activeQuestionIndex);
+          return options.length
+            ? movePendingQuestionOption(pendingQuestionApproval.request, state, key.upArrow ? -1 : 1)
+            : movePendingQuestionFocus(pendingQuestionApproval.request, state, key.upArrow ? -1 : 1);
+        });
+        return;
+      }
+      if (key.leftArrow || key.rightArrow) {
+        updateQuestionState((state) => movePendingQuestionFocus(pendingQuestionApproval.request, state, key.leftArrow ? -1 : 1));
+        return;
+      }
+      if (/^[1-9]$/.test(input)) {
+        let selected = false;
+        updateQuestionState((state) => {
+          const question = pendingQuestionApproval.request?.questions[state.activeQuestionIndex];
+          const options = optionsForPendingQuestion(pendingQuestionApproval.request, question, state.activeQuestionIndex);
+          if (!options[Number(input) - 1]) return state;
+          selected = true;
+          return setPendingQuestionOptionIndex(pendingQuestionApproval.request, state, Number(input) - 1);
+        });
+        if (selected) {
+          void submitSelectedPendingQuestion(pendingQuestionApproval)
+            .catch((err) => addNotice(err instanceof Error ? err.message : String(err), "error"));
+          return;
+        }
+      }
+      if (key.return) {
+        void submitSelectedPendingQuestion(pendingQuestionApproval)
+          .catch((err) => addNotice(err instanceof Error ? err.message : String(err), "error"));
+        return;
+      }
+    }
+
     if (
       pane === "chat"
       && textInputActive
@@ -11493,17 +11669,6 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         .catch((err) => addNotice(err instanceof Error ? err.message : String(err), "error"));
       return;
     }
-    if (pendingApproval?.mode === "question" && /^[1-6]$/.test(input)) {
-      const question = pendingApproval.request?.questions[0] ?? null;
-      const options = question?.options?.length ? question.options : pendingApproval.request?.options ?? [];
-      const option = options[Number(input) - 1] ?? null;
-      if (option) {
-        void answerPendingInput(pendingApproval, option.value)
-          .catch((err) => addNotice(err instanceof Error ? err.message : String(err), "error"));
-        return;
-      }
-    }
-
     if (pane === "details" && rightOpen && rightPane.kind === "form" && rightPane.command === "lane-delete") {
       const fields = rightPane.fields;
       const field = fields[formFieldIndex] ?? fields[0] ?? null;
@@ -11581,14 +11746,6 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       if (field?.name === "branchSource") {
         if (key.leftArrow || key.rightArrow || input === " ") {
           setFormValues({ ...nextValues, branchSource: toggleNewLaneBranchSource(nextValues.branchSource) });
-          setPrompt("");
-          return;
-        }
-        if (printableInput(input) && !key.ctrl && !key.meta && !key.return) return;
-      }
-      if (field?.name === "runtime") {
-        if (key.leftArrow || key.rightArrow || input === " ") {
-          setFormValues({ ...nextValues, runtime: toggleNewLaneRuntime(nextValues.runtime) });
           setPrompt("");
           return;
         }
@@ -12896,20 +13053,34 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         zIndex: 8,
       });
     } else if (pendingApproval?.mode === "question") {
-      const question = pendingApproval.request?.questions[0] ?? null;
-      const options = question?.options?.length ? question.options : pendingApproval.request?.options ?? [];
+      const questions = pendingApproval.request?.questions ?? [];
       const centerStart = drawerPaneWidth + 1;
       const optionStartY = Math.max(1, 4 + goalBannerRows + addModeRows + chatRowBudget - 2);
-      options.slice(0, 6).forEach((option, index) => {
-        addTarget({
-          id: `approval:question-option:${option.value}:${index}`,
-          rect: { x: centerStart + 1, y: optionStartY + index, w: Math.max(12, centerWidth - 2), h: 1 },
-          onClick: () => {
-            void answerPendingInput(pendingApproval, option.value)
-              .catch((err) => addNotice(err instanceof Error ? err.message : String(err), "error"));
-          },
-          zIndex: 8,
+      let optionRow = optionStartY;
+      questions.forEach((question, questionIndex) => {
+        optionRow += questionIndex === 0 ? 0 : 2;
+        const options = optionsForPendingQuestion(pendingApproval.request, question, questionIndex);
+        options.forEach((option, index) => {
+          addTarget({
+            id: `approval:question-option:${questionIndex}:${option.value}:${index}`,
+            rect: { x: centerStart + 1, y: optionRow + index, w: Math.max(12, centerWidth - 2), h: 1 },
+            onClick: () => {
+              const current = ensurePendingQuestionSelectionState(pendingApproval, pendingQuestionStateRef.current);
+              if (!current) return;
+              const next = setPendingQuestionOptionIndex(
+                pendingApproval.request,
+                { ...current, activeQuestionIndex: questionIndex },
+                index,
+              );
+              pendingQuestionStateRef.current = next;
+              setPendingQuestionState(next);
+              void submitSelectedPendingQuestion(pendingApproval)
+                .catch((err) => addNotice(err instanceof Error ? err.message : String(err), "error"));
+            },
+            zIndex: 8,
+          });
         });
+        optionRow += Math.max(1, options.length);
       });
     }
 
@@ -13253,11 +13424,6 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
                 setPrompt("");
                 return;
               }
-              if (rightPane.command === "new-lane" && field.name === "runtime") {
-                setFormValues((prev) => ({ ...prev, runtime: toggleNewLaneRuntime(prev.runtime) }));
-                setPrompt("");
-                return;
-              }
               if (rightPane.command === "new-lane" && field.name === "create") {
                 setPrompt("");
                 void submitRightForm(rightPane, formValues)
@@ -13401,6 +13567,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     startAddMode,
     subagentPaneCommandAvailable,
     claudeTerminalControlAvailable,
+    submitSelectedPendingQuestion,
     submitPrompt,
     tileableDisplaySessions,
     toggleDetailsPane,
@@ -13554,7 +13721,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           ) : null}
           <Box width={centerWidth} flexDirection="column">
             {pendingApproval?.highStakes ? (
-              <ApprovalPrompt approval={pendingApproval} modal />
+              <ApprovalPrompt approval={pendingApproval} modal questionState={pendingQuestionState} />
             ) : (gridViewActive && multiView) ? (
               <MultiChatGrid
                 tiles={multiView.tiles}
@@ -13627,7 +13794,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
                   selection={chatMouseSelection}
                   width={chatWrapWidth}
                 />
-                <ApprovalPrompt approval={pendingApproval} />
+                <ApprovalPrompt approval={pendingApproval} questionState={pendingQuestionState} width={centerWidth} />
               </>
             )}
           </Box>

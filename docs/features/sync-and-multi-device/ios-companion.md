@@ -51,8 +51,6 @@ apps/ios/
 ├── ADE/
 │   ├── App/
 │   │   ├── ADEApp.swift             # SwiftUI app entry
-│   │   ├── AppDelegate.swift        # APNs registration, notification-category
-│   │   │                            # setup, response/action routing, deep-link dispatch
 │   │   ├── ContentView.swift        # 5-tab TabView with a custom
 │   │   │                            # `ADERootBottomTabBar` overlay
 │   │   │                            # (Work/Lanes/PRs/Files/CTO + Work
@@ -74,21 +72,16 @@ apps/ios/
 │   │   │                            # post .adeSendToMacRequested instead so the
 │   │   │                            # SendToMacCard sheet can bounce the URL to
 │   │   │                            # a paired host via the deeplinks.open sync
-│   │   │                            # command. Also dispatches notification
-│   │   │                            # userInfo (sessionId / prId / prNumber → prId
-│   │   │                            # via WorkspaceSnapshot lookup).
-│   │   └── NotificationCategories.swift # UNNotificationCategory / UNNotificationAction set
+│   │   │                            # command.
 │   ├── Models/
-│   │   ├── RemoteModels.swift       # Codable structs mirroring shared types
-│   │   └── NotificationPreferences.swift # 13-toggle prefs + quiet hours + per-session overrides
+│   │   └── RemoteModels.swift       # Codable structs mirroring shared types
 │   ├── Resources/
 │   │   ├── DatabaseBootstrap.sql    # generated from desktop kvDb.ts
 │   │   └── VoiceGlossary.json       # shared dictation cleanup glossary
 │   ├── Services/
 │   │   ├── Database.swift           # SQLite + pure-SQL CRR + offline caches
 │   │   ├── KeychainService.swift    # paired device secret storage
-│   │   ├── LiveActivityCoordinator.swift # workspace Live Activity lifecycle +
-│   │   │                                  # push-token collection
+│   │   ├── LiveActivityCoordinator.swift # workspace Live Activity lifecycle
 │   │   ├── Dictation/               # SpeechDictationService,
 │   │   │                            # DictationController, deterministic
 │   │   │                            # cleanup, VoiceGlossary loader
@@ -98,7 +91,7 @@ apps/ios/
 │   │                                # CLI launcher (startCliSession), chat push,
 │   │                                # machine project browse/open/create/clone,
 │   │                                # lane reparent stack-base override payloads,
-│   │                                # push-token registration, worktree discovery
+│   │                                # worktree discovery
 │   ├── Shared/
 │   │   ├── ADESharedContainer.swift # App Group UserDefaults + WorkspaceSnapshot helpers
 │   │   ├── ADESharedModels.swift    # AgentSnapshot, PrSnapshot — shared with widgets
@@ -106,7 +99,7 @@ apps/ios/
 │   │   ├── DictationActivityShared.swift # Dictation Live Activity attributes,
 │   │   │                            # waveform, Done/Cancel intents
 │   │   ├── LiveActivityIntentsForward.swift # ADEIntentCommandKind, ADEIntentCommandRegistry
-│   │   └── WidgetAppIntents.swift   # OpenADEIntent, ToggleMutePushIntent (iOS 18+)
+│   │   └── WidgetAppIntents.swift   # widget configuration intents
 │   ├── Views/
 │   │   ├── Components/              # ADEDesignSystem (incl. ADEConnectionDot,
 │   │   │                            # ADEUIKitAppearance.configureTabBar(),
@@ -147,18 +140,13 @@ apps/ios/
 │   │   │                            # per-tab views, PrWorkflowCards,
 │   │   │                            # PrStackSheet, CreatePrWizardView,
 │   │   │                            # PrTargetBranchPickerDropdown
-│   │   ├── Settings/                # ConnectionSettingsView, NotificationsCenterView,
-│   │   │                            # QuietHoursEditorView, PerSessionOverrideView,
-│   │   │                            # SettingsPairingSection, SettingsConnectionHeader,
-│   │   │                            # SettingsPinSheet, SettingsNotificationsSection,
+│   │   ├── Settings/                # ConnectionSettingsView, SettingsPairingSection,
+│   │   │                            # SettingsConnectionHeader, SettingsPinSheet,
 │   │   │                            # SettingsVoiceInputSection
 │   │   └── LanesTabView.swift
 │   └── Assets.xcassets/             # App icon, brand mark, provider logos
 │                                    # (Anthropic, Claude, Codex, Cursor,
 │                                    # Droid, OpenAI, OpenCode)
-├── ADENotificationService/
-│   └── NotificationService.swift    # UNNotificationServiceExtension: brand-prefix
-│                                    # title, set threadIdentifier, raise interruption level
 ├── ADEWidgets/
 │   ├── ADEWidgetBundle.swift        # WidgetBundle registering all three widget surfaces
 │   ├── ADELiveActivity.swift        # ADESessionAttributes (ActivityKit), ADELiveActivity widget
@@ -291,7 +279,7 @@ Navigation:
 
 - `TabView` at the root with five tabs (Lanes, Files, Work, PRs, Settings).
 - `NavigationStack` per tab for push/pop.
-- Deep links from push notifications jump to specific screens.
+- Deep links jump to specific screens.
 
 ## Database: native SQLite + pure-SQL CRR
 
@@ -505,132 +493,8 @@ per-IP rate limiting (5 failures → 10-minute cooldown).
 - Registers `BGAppRefreshTask` for periodic state sync when the app
   is backgrounded.
 - iOS grants ~30 seconds per fetch window.
-- Priority order: sync cr-sqlite changesets, update notification badges.
-
-### Push Notifications (APNs)
-
-ADE delivers push notifications from the runtime to the iOS app
-over Apple Push Notification service. The full stack is implemented:
-
-**Runtime side** (`apps/desktop/src/main/services/notifications/`):
-
-- `apnsService.ts` — HTTP/2 APNs client using `node:http2` + JWT
-  signed with `node:crypto` (ES256). No native binary dependency.
-  The `.p8` private key is encrypted at rest via Electron
-  `safeStorage.encryptString` and stored at
-  `<userData>/apns.key.enc`; decrypted in-memory only during signing.
-  Key configured via `ApnsConfigureOptions` (keyP8Pem, keyId, teamId,
-  bundleId, env). JWTs are refreshed every 50 minutes to stay within
-  Apple's 60-minute limit. `ApnsKeyStore` manages encrypted
-  persistence; `signApnsJwt` is the pure signing function.
-  `APNS_INVALID_TOKEN_REASONS` lists token-dead reasons
-  (`BadDeviceToken`, `Unregistered`, `DeviceTokenNotForTopic`).
-  `Http2ApnsTransport` is the default transport; tests inject a mock
-  via the `ApnsTransport` interface seam.
-
-- `notificationMapper.ts` — side-effect-free mapping from ADE domain
-  events to `MappedNotification` values. Thirteen `NotificationCategory`
-  values across four families:
-
-  | Category | Family | Push type | Priority |
-  |---|---|---|---|
-  | `CHAT_AWAITING_INPUT` | chat | alert | 10 (time-sensitive) |
-  | `CHAT_FAILED` | chat | alert | 10 |
-  | `CHAT_COMPLETED` | chat | alert | 5 |
-  | `CTO_SUBAGENT_STARTED` | cto | alert | 5 |
-  | `CTO_SUBAGENT_FINISHED` | cto | alert | 5 |
-  | `PR_CI_FAILING` | pr | alert | 10 |
-  | `PR_REVIEW_REQUESTED` | pr | alert | 10 |
-  | `PR_CHANGES_REQUESTED` | pr | alert | 10 |
-  | `PR_MERGE_READY` | pr | alert | 5 |
-  | `SYSTEM_PROVIDER_OUTAGE` | system | alert | 10 |
-  | `SYSTEM_AUTH_RATE_LIMIT` | system | alert | 10 |
-  | `SYSTEM_HOOK_FAILURE` | system | alert | 5 |
-
-  Each notification carries a `deepLink` (`ade://session/<id>` or
-  `ade://pr/<n>`), a `collapseId` for de-duplication, and a
-  `metadata` bag that lets the iOS side set `threadIdentifier`.
-
-- `notificationEventBus.ts` — routes domain events to APNs and/or
-  in-app WebSocket delivery. Call surface: `publishChatEvent`,
-  `publishPrEvent`, `publishSystemEvent`,
-  `sendTestPush`. The bus asks `listPushTargets()` and
-  `getPrefsForDevice()` at send time so preference toggles take effect
-  immediately. If the device is currently connected over WebSocket,
-  the bus also delivers an in-app notification via
-  `sendInAppNotification` even when APNs is disabled. `apns-expiration`
-  is set to `+1h` for priority-10 pushes and `+10m` for priority-5
-  pushes; stale banners are not queued after the window.
-  Also sends Live Activity `liveactivity` pushes to per-activity
-  update tokens when the notification maps to an attention value (chat
-  awaiting input / failed, PR CI failing / review requested / merge
-  ready). `sendTestPush` has an explicit fallback: when APNs is not
-  configured but the target device is currently connected, the bus
-  delivers an in-app `system` notification and returns
-  `{ ok: true, reason: "in_app_only" }`, and the `ade serve` runtime's
-  `syncHostService` does the same when no notification bus is wired at
-  all, so "Send test push" on the phone always produces a visible
-  confirmation when the WebSocket is alive.
-
-**iOS client side**:
-
-- `AppDelegate.swift` — owns APNs registration
-  (`registerForRemoteNotifications`), notification-category setup
-  (`NotificationCategories.register()`), and response routing:
-  `Approve`/`Deny`/`Reply` actions forward to
-  `SyncService.sendRemoteCommand(approveSession/denySession/replyToSession)`;
-  `Restart` calls `restartSession`; `RetryChecks` calls
-  `retryPrChecks`; tapping the banner body dispatches to
-  `DeepLinkRouter`.
-  Requests `.alert`, `.badge`, `.sound`, `.providesAppNotificationSettings`,
-  and `.timeSensitive` (iOS 15+) at first launch.
-  Token registration calls
-  `SyncService.shared?.registerPushToken(hex, kind: .alert, ...)` which
-  transmits the token to the runtime via the sync command surface.
-
-- `NotificationCategories.swift` — declares ten
-  `UNNotificationCategory` / `UNNotificationAction` values matching
-  the desktop `NotificationCategory` identifiers 1:1.
-  `CHAT_AWAITING_INPUT` gets Approve + Deny + Reply (text input);
-  `CHAT_FAILED` gets Open agent + Restart; `PR_CI_FAILING` gets
-  Open PR + Retry checks; `PR_MERGE_READY` gets View PR; CTO
-  and system categories get generic Open actions.
-
-- `ADENotificationService/NotificationService.swift` — Notification
-  Service Extension that decorates inbound APNs payloads before
-  display: prefixes the title with the provider brand slug (e.g.
-  `Claude · Awaiting approval`), sets `threadIdentifier` from
-  `sessionId` or `prNumber` so the OS groups banners per session/PR,
-  and raises `interruptionLevel` / `relevanceScore` based on category.
-
-- `DeepLinkRouter.swift` — `ade://` URL handler and notification-
-  payload dispatcher. Parses `ade://session/<id>` and
-  `ade://pr/<n>` URLs, plus notification `userInfo` bags carrying
-  `sessionId`, `prId`, or `prNumber`, and posts
-  `.adeDeepLinkRequested` to `NotificationCenter` so individual tab
-  views can flip their selection. PR deep links specifically resolve
-  to a stable `prId`: when the inbound identifier is the GitHub PR
-  number (from a widget / Live Activity URL or a legacy `prNumber`
-  payload), `resolvePrId` looks it up against the App Group
-  `WorkspaceSnapshot` and stashes the matching id on
-  `SyncService.requestedPrNavigation` (a `PrNavigationRequest`) so
-  `PrsRootScreen` opens the same row the desktop would. When the
-  payload already carries a `prId`, that is used verbatim.
-
-**Notification preferences** (`apps/ios/ADE/Models/NotificationPreferences.swift`):
-
-- `NotificationPreferences` — 13 per-category toggles (chat 3,
-  CTO 3, PR 4, system 3), a quiet-hours window (start/end time-of-day
-  `Date`), and `perSessionOverrides` keyed by `sessionId`
-  (`muted`, `awaitingInputOnly`). Persisted as JSON in the App Group
-  `UserDefaults` at key `ade.notifications.prefs`.
-- Synced to the runtime so the runtime can gate APNs sends by
-  device preferences without requiring an extra round-trip.
-- `NotificationsCenterView.swift` — unified notifications settings
-  screen with category toggles, quiet-hours picker
-  (`QuietHoursEditorView`), per-session overrides
-  (`PerSessionOverrideView`), authorization status banner, and "Send
-  test push" action.
+- Priority order: sync cr-sqlite changesets and update shared workspace
+  snapshots.
 
 ### Live Activities
 
@@ -668,10 +532,8 @@ as the system-header suffix (`ADE · <lane>`). Because
 focus-lane change forces the coordinator to end the existing activity
 and request a new one, so the header always matches the lane the user
 is watching. Push-to-start (iOS 17.2+) and per-activity update tokens
-are collected via `pushTokenUpdates` and forwarded to the runtime through
-`LiveActivityHost.sendPushToken`. The runtime sends `liveactivity` APNs
-pushes to the update tokens via `notificationEventBus` whenever an
-attention-eligible event fires.
+are not used; the app updates the activity from local sync state while
+it is running.
 
 The `ADELiveActivity` widget registers the `ActivityConfiguration`
 for the lock-screen / banner presentation and the Dynamic Island
@@ -703,16 +565,12 @@ Three widget / control surfaces are registered by `ADEWidgetBundle`:
 - `ADELockScreenWidget` — accessory rectangular/circular sizes
   for the iOS Lock Screen; reads from the same shared snapshot.
 
-- `ADEControlWidget` (iOS 18+) — Control Center "Open ADE" button
-  and "Mute ADE" toggle. The mute toggle persists a window via
-  `ADEMutePreferences.setMute(until:)` and forwards the ISO timestamp
-  to the runtime via the intent command bridge
-  (`ADEIntentCommandRegistry` / `ADESyncIntentBridge`).
+- `ADEControlWidget` (iOS 18+) — Control Center "Open ADE" button.
 
 Shared DTOs live in `apps/ios/ADE/Shared/ADESharedModels.swift`:
 `AgentSnapshot` and `PrSnapshot` — lightweight Codable structs
-readable by the widget extension and the notification service
-extension without importing the main app's heavier renderer code.
+readable by the widget extension without importing the main app's
+heavier renderer code.
 
 ### Haptic Feedback
 
@@ -807,10 +665,10 @@ Opening or selecting the project again clears those hidden keys.
 |---|---|---|---|
 | **Lanes** | `square.stack.3d.up` | `/lanes` | Full lane surface: search/filter chips, open/create/attach/manage, multi-attach for unregistered worktrees, stack canvas, git/diff/rebase/conflicts, template-backed environment setup progress, lane-scoped sessions and AI chats. `devicesOpen` presence chips show which other devices currently have the lane open. The lane detail screen (full-screen, custom tab bar hidden) embeds `LaneDetailGitActionsPane`, a port of desktop's git actions pane: commit message field with amend toggle and an AI "Suggest message" button (gated by runtime capability, with a setup-hint when the runtime reports "AI commit messages are off"), pull (rebase/merge mode) / push (with force-with-lease) / fetch, staged + unstaged file lists with per-file and bulk stage / unstage / discard / restore / open-diff / open-files, stash push/apply/pop/drop, recent-commit history with context-menu view-files / copy-message / revert / cherry-pick, and a "more actions" menu holding switch branch plus the destructive escape hatches (rebase lane, rebase + descendants, rebase and push, force push). A conflict banner offers rebase **and merge** continue/abort (`git.rebaseContinue`/`Abort`, `git.mergeContinue`/`Abort`), and a rescue sheet creates a new lane from uncommitted changes. The lane options menu copies shareable deeplinks (`LaneDeeplinkHelpers`: `ade://lane/<id>`, `ade://repo/<owner>/<repo>/branch/<branch>`) and opens `LaneManageSheet`, now a tabbed manage dialog (delete / appearance / stack / archive) mirroring desktop's `ManageLaneDialog`. The previous `LaneAdvancedScreen`, `LaneCommitSheet`, `LaneStashesScreen`, and `LaneCommitHistoryScreen` destinations were deleted in favor of this single pane. |
 | **Files** | `doc.text` | `/files` | Lane-backed workspace picker (`FilesWorkspacePickerDropdown`, a desktop-shaped searchable dropdown that replaced the horizontal workspace chip row), live file tree/search/read, protected-workspace read-only parity. `mobileReadOnly` on the workspace payload gates mutating file actions on the phone via `ensureMobileFileMutationsAllowed`; quick-open and text-search result lists cap visible rows at 40 and ask the user to refine when more matches exist. |
-| **Work** | `terminal` | `/work` | Terminal + chat session list, cached history with persisted lane names, output streaming, native key-passthrough terminal input (keystrokes from the iOS keyboard flow straight into the PTY as `terminal_input`, coalesced ~16 ms; PTY echo is the only source of truth), Ctrl-C forwarding for subscribed live PTYs, in-app CLI session launcher (Claude / Codex / Cursor / OpenCode / Droid), message-to-continue on ended agent CLI rows, session pinning, live chat-event push from the runtime (no polling lag once subscribed). The new-session screen (`WorkNewChatScreen`) toggles between **Chat** and **CLI** via a compact nav-bar pill toggle (desktop `ModeSwitcherPills` parity); the lane is chosen through `WorkLanePickerDropdown` (searchable, with an auto-create-lane row), and in CLI mode the provider is derived from the picked model via `workResolveCliProvider` instead of a separate provider row — the explicit `workCliProviderOptions` picker (and its plain "Shell" launch option) was removed. CLI mode submits `work.startCliSession` with the resolved provider, permission mode (Claude additionally supports `auto`), an optional `reasoningEffort`, and an optional opening message. For most providers the runtime types the opening message into the spawned PTY; for Codex the opening message is forwarded as the final argv positional through `buildTrackedCliLaunchCommand`, so the prompt is treated as a real first turn instead of a typed shell line. The terminal viewer (`TerminalSessionScreen` + `SwiftTermSessionView`) is a full-bleed SwiftTerm (real VT100/xterm) emulator: tap-to-focus raises the iOS keyboard for direct passthrough, a single-row key bar provides esc/tab/latching-Ctrl/arrows/return plus an overflow menu, pinch adjusts font size, and the phone owns the PTY's cols×rows while the screen is open (sent as `terminal_resize`; the runtime restores the desktop size on detach). Live output streams via offset-stamped `terminal_data` with gap detection + `sinceOffset` delta resume (no snapshot polling); scrolling near the top auto-pages older transcript via `terminal_history`, and a floating "↓ Live N" pill snaps back to the live tail. When the hosted program enables mouse reporting (Claude Code, htop), vertical pans are translated into SGR wheel events so the TUI scrolls itself; mouse-off sessions scroll native scrollback. Against pre-offset hosts (older brains, whose PTY→sync bridge never pushed terminal output) the screen detects the missing offsets and falls back to a 2s tail-refresh poll until offsets appear. The screen unsubscribes via `terminal_unsubscribe` on disappear. The legacy `WorkTerminalEmulatorView`/`WorkTerminalScreen` mini-parser remains only for inline preview cards. The earlier "activity feed" section was retired — running chats are surfaced through the session list and a Work tab badge bound to `SyncService.runningChatSessionCount`. In chat sessions, user-message attachments render through `WorkChatAttachmentTray` (image thumbnails embedded in the bubble, desktop `ChatAttachmentTray` parity, placeholder tiles when the image bytes have not synced from the host yet), and the chat header's PR menu opens the lane's open PR on GitHub, copies its link, or launches the create-PR wizard in `singleModeOnly` mode (eligibility read from `prs.getMobileSnapshot.createCapabilities`). |
+| **Work** | `terminal` | `/work` | Terminal + chat session list, cached history with persisted lane names, output streaming, native key-passthrough terminal input (keystrokes from the iOS keyboard flow straight into the PTY as `terminal_input`, coalesced ~16 ms; PTY echo is the only source of truth), Ctrl-C forwarding for subscribed live PTYs, in-app CLI session launcher (Claude / Codex / Cursor / OpenCode / Droid), message-to-continue on ended agent CLI rows, session pinning, live chat-event push from the runtime (no polling lag once subscribed). The new-session screen (`WorkNewChatScreen`) toggles between **Chat** and **CLI** via a compact nav-bar pill toggle (desktop `ModeSwitcherPills` parity); the lane is chosen through `WorkLanePickerDropdown` (searchable, with an auto-create-lane row), and in CLI mode the provider is derived from the picked model via `workResolveCliProvider` instead of a separate provider row — the explicit `workCliProviderOptions` picker (and its plain "Shell" launch option) was removed. The new-chat composer shares the in-session chat composer's `WorkComposerControlsRow` (the same controls strip used by `WorkComposerChipStrip`): a permission/access control that collapses to a single tone-dot dropdown when space is tight and expands to segmented chips when wide, a model pill, and a fast-mode lightning toggle. The fast-mode toggle is shown only in **Chat** mode for fast-capable models (threaded into `chat.create` via `codexFastMode`) and is hidden in CLI mode, where the launcher has no fast-mode parameter. CLI mode submits `work.startCliSession` with the resolved provider, permission mode (Claude additionally supports `auto`), an optional `reasoningEffort`, and an optional opening message. For most providers the runtime types the opening message into the spawned PTY; for Codex the opening message is forwarded as the final argv positional through `buildTrackedCliLaunchCommand`, so the prompt is treated as a real first turn instead of a typed shell line. The terminal viewer (`TerminalSessionScreen` + `SwiftTermSessionView`) is a full-bleed SwiftTerm (real VT100/xterm) emulator: tap-to-focus raises the iOS keyboard for direct passthrough, a single-row key bar provides esc/tab/latching-Ctrl/arrows/return plus an overflow menu, pinch adjusts font size, and the phone owns the PTY's cols×rows while the screen is open (sent as `terminal_resize`; the runtime restores the desktop size on detach). Live output streams via offset-stamped `terminal_data` with gap detection + `sinceOffset` delta resume (no snapshot polling); scrolling near the top auto-pages older transcript via `terminal_history`, and a floating "↓ Live N" pill snaps back to the live tail. When the hosted program enables mouse reporting (Claude Code, htop), vertical pans are translated into SGR wheel events so the TUI scrolls itself; mouse-off sessions scroll native scrollback. Against pre-offset hosts (older brains, whose PTY→sync bridge never pushed terminal output) the screen detects the missing offsets and falls back to a 2s tail-refresh poll until offsets appear. The screen unsubscribes via `terminal_unsubscribe` on disappear. The legacy `WorkTerminalEmulatorView`/`WorkTerminalScreen` mini-parser remains only for inline preview cards. The earlier "activity feed" section was retired — running chats are surfaced through the session list and a Work tab badge bound to `SyncService.runningChatSessionCount`. In chat sessions, user-message attachments render through `WorkChatAttachmentTray` (image thumbnails embedded in the bubble, desktop `ChatAttachmentTray` parity, placeholder tiles when the image bytes have not synced from the host yet), and the chat header's PR menu opens the lane's open PR on GitHub, copies its link, or launches the create-PR wizard in `singleModeOnly` mode (eligibility read from `prs.getMobileSnapshot.createCapabilities`). |
 | **PRs** | `arrow.triangle.pull` | `/prs` | PR list/detail driven by `prs.getMobileSnapshot`: stack visibility (`PrStackSheet`), create-PR wizard (`CreatePrWizardView`) gated by per-lane eligibility, workflow cards (queue / integration / rebase) rendered from `PrWorkflowCard`, per-PR action capabilities. |
 | **CTO** | `brain.head.profile` | `/cto` | CTO snapshot: Chat / Team / Workflows segments, with the mobile workflows screen mirroring the desktop workflow policy/dashboard and preserving the shared glass navigation chrome. Drills into per-worker chat sessions via `CtoSessionDestinationView`. |
-| **Settings** | `gearshape` | `/settings` (sync subset) | PIN pairing (`SettingsPinSheet`), notification preferences (`NotificationsCenterView`), quiet hours, per-session overrides, appearance, diagnostics, connection header with QR payload and address candidates, reconnect, forget. `ConnectionSettingsView` binds to `SettingsConnectionPresentationModel`, which feeds plain `SettingsConnectionSnapshot` / `SettingsPairingSnapshot` / `SettingsDiagnosticsSnapshot` DTOs into the section views (`SettingsConnectionHeader`, `SettingsPairingSection`, `SettingsDiagnosticsSection`) instead of having them reach into `SyncService` directly. `sendTestPush` is now `async` and returns a `SyncSendTestPushResult` (`ok`, `message`); the Notifications section renders that message verbatim so APNs-not-configured / in-app-only / wire failure cases all surface to the user. |
+| **Settings** | `gearshape` | `/settings` (sync subset) | PIN pairing (`SettingsPinSheet`), appearance, diagnostics, connection header with QR payload and address candidates, reconnect, forget. `ConnectionSettingsView` binds to `SettingsConnectionPresentationModel`, which feeds plain `SettingsConnectionSnapshot` / `SettingsPairingSnapshot` / `SettingsDiagnosticsSnapshot` DTOs into the section views (`SettingsConnectionHeader`, `SettingsPairingSection`, `SettingsDiagnosticsSection`) instead of having them reach into `SyncService` directly. |
 
 ### Planned
 
@@ -957,7 +815,6 @@ reflected in the phone's UI on the next descriptor read.
 | Settings tab (pairing / appearance / diagnostics) | Implemented |
 | CTO / Automations / Graph / History tabs | Planned |
 | Full Settings parity | Planned |
-| Push notifications (APNs) | Implemented (categories, actions, Notification Service Extension, per-device preferences) |
 | Widgets (Home Screen / Lock Screen / Control) | Implemented |
 | Live Activities (workspace roster + attention) | Implemented |
 | iPad adaptive layout | Planned |
@@ -1049,6 +906,21 @@ reflected in the phone's UI on the next descriptor read.
   which caps retained events at `chatEventHistoryMaxEvents = 1_000`
   (up from the previous 500-event cap) so very long chats don't evict
   their own recent turns on reconnect.
+- **Long Work chats must keep row work and root polling cheap.** The
+  Work chat detail keeps the full timeline snapshot preview-free, then
+  attaches cached initial assistant-message previews only to the visible
+  presentation rows. That avoids splitting or line-counting huge hidden
+  markdown strings during live-delta rebuilds or SwiftUI body evaluation.
+  User-bubble width is measured once at the scroll viewport rather than
+  with a `GeometryReader` on every row. The Work root's live-chat
+  prefetch cache is intentionally a quiet reference cache
+  (`WorkRootTranscriptCache`), not value `@State`, so transcript-cache
+  updates do not repaint the session list. Root polling also ignores
+  terminal-buffer invalidation when structured chat events exist; terminal
+  fallback cache keys use per-session terminal-buffer revisions, and any
+  needed transcript cache entries are built on a utility task. Detail
+  screens still fetch full history through `chat.getTranscript` cursor
+  paging and `chat_subscribe` resume.
 - **Work transcript parser uses `messageId` as a fallback item id.**
   `makeWorkChatEvent` (`WorkEventMapping.swift`) and
   `parseWorkChatTranscript` (`WorkTranscriptParser.swift`) now fall back
@@ -1104,14 +976,6 @@ reflected in the phone's UI on the next descriptor read.
   awaiting-input or a PR that goes red again resurfaces automatically.
   Do not turn this into a permanent allowlist; recurrence visibility
   is the whole point.
-- **`NotificationPreferences.save(to:)` writes the pruned struct.**
-  Per-session overrides with both switches off are equivalent to no
-  override; the iOS save path calls
-  `pruningInactivePerSessionOverrides` before encoding so toggling
-  agents on and then back off does not bloat the App Group
-  `UserDefaults` payload. The same pruning happens on the desktop
-  side in `normalizeNotificationPreferences` to keep both ends in
-  agreement after a round-trip.
 - **The runtime's iOS sync wants `ADE_PROJECT_ROOT` for
   preferred project.** `ade serve` reads `ADE_PROJECT_ROOT` and
   pre-registers the project through `ProjectRegistry.add` so the sync

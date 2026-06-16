@@ -34,12 +34,14 @@ struct WorkChatSessionView: View {
   @State var unreadBelowCount = 0
   @State var lastTimelineTailId: String?
   @State var scrollViewportHeight: CGFloat = 0
+  @State var scrollViewportWidth: CGFloat = 0
   @State var lastScrollDistanceFromBottom: CGFloat = 0
   @State var timelineDragActive = false
   @State var timelineSnapshot = WorkChatTimelineSnapshot.empty
   @State var timelinePresentation = WorkTimelinePresentation.empty
   @State var timelineRebuildTask: Task<Void, Never>?
   @State var timelineRebuildGeneration = 0
+  @State var assistantPreviewCache = WorkAssistantPreviewCache()
   @State var composerSettingMutationInFlight = false
   @State var composerSettingMutationGeneration = 0
   @State var pendingCodexFastMode: Bool?
@@ -234,7 +236,8 @@ struct WorkChatSessionView: View {
       timeline: timeline,
       visibleCount: visibleTimelineCount,
       chatSummary: chatSummary,
-      transcript: transcript
+      transcript: transcript,
+      assistantPreviewCache: assistantPreviewCache
     )
     if isNearBottom,
        timelinePresentation.hiddenCount > 0,
@@ -244,7 +247,8 @@ struct WorkChatSessionView: View {
         timeline: timeline,
         visibleCount: visibleTimelineCount,
         chatSummary: chatSummary,
-        transcript: transcript
+        transcript: transcript,
+        assistantPreviewCache: assistantPreviewCache
       )
     }
     guard nextPresentation != timelinePresentation else { return }
@@ -297,6 +301,11 @@ struct WorkChatSessionView: View {
     if !pendingSteers.isEmpty { return 220 }
     if !pendingInputs.isEmpty { return 150 }
     return 116
+  }
+
+  var maxUserBubbleWidth: CGFloat? {
+    guard scrollViewportWidth > 32 else { return nil }
+    return (scrollViewportWidth - 32) * 0.92
   }
 
   @ViewBuilder
@@ -383,8 +392,15 @@ struct WorkChatSessionView: View {
         .accessibilityLabel("Load earlier messages")
       }
 
+      let streamingMessageId = streamingAssistantMessageId
+      let userBubbleWidth = maxUserBubbleWidth
       ForEach(visibleTimeline) { entry in
-        timelineEntryView(for: entry, proxy: proxy)
+        timelineEntryView(
+          for: entry,
+          proxy: proxy,
+          streamingAssistantMessageId: streamingMessageId,
+          maxUserBubbleWidth: userBubbleWidth
+        )
       }
     }
   }
@@ -560,6 +576,10 @@ struct WorkChatSessionView: View {
             key: WorkChatViewportHeightPreferenceKey.self,
             value: geometry.size.height
           )
+          .preference(
+            key: WorkChatViewportWidthPreferenceKey.self,
+            value: geometry.size.width
+          )
         }
       )
       .background(workChatCanvasBackground.ignoresSafeArea())
@@ -604,6 +624,9 @@ struct WorkChatSessionView: View {
       }
       .onPreferenceChange(WorkChatViewportHeightPreferenceKey.self) { height in
         scrollViewportHeight = height
+      }
+      .onPreferenceChange(WorkChatViewportWidthPreferenceKey.self) { width in
+        scrollViewportWidth = width
       }
       .onPreferenceChange(WorkChatContentBottomPreferenceKey.self) { bottomY in
         guard scrollViewportHeight > 1 else { return }
@@ -752,6 +775,15 @@ private struct WorkChatViewportHeightPreferenceKey: PreferenceKey {
   }
 }
 
+private struct WorkChatViewportWidthPreferenceKey: PreferenceKey {
+  static var defaultValue: CGFloat = 0
+
+  static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+    let next = nextValue()
+    if next > 0 { value = next }
+  }
+}
+
 private struct WorkChatContentBottomPreferenceKey: PreferenceKey {
   static var defaultValue: CGFloat = 0
 
@@ -818,19 +850,46 @@ private func makeWorkTimelinePresentation(
   timeline: [WorkTimelineEntry],
   visibleCount: Int,
   chatSummary: AgentChatSessionSummary?,
-  transcript: [WorkChatEnvelope]
+  transcript: [WorkChatEnvelope],
+  assistantPreviewCache: WorkAssistantPreviewCache
 ) -> WorkTimelinePresentation {
   let entries = injectWorkTurnSeparators(
     into: timeline,
     chatSummary: chatSummary,
     transcript: transcript
   )
-  let visibleEntries = visibleWorkTimelineEntries(from: entries, visibleCount: visibleCount)
+  let visibleEntries = workTimelineEntriesWithAssistantPreviews(
+    visibleWorkTimelineEntries(from: entries, visibleCount: visibleCount),
+    cache: assistantPreviewCache
+  )
   return WorkTimelinePresentation(
     entries: entries,
     visibleEntries: visibleEntries,
     hiddenCount: max(entries.count - visibleEntries.count, 0)
   )
+}
+
+private func workTimelineEntriesWithAssistantPreviews(
+  _ entries: [WorkTimelineEntry],
+  cache: WorkAssistantPreviewCache
+) -> [WorkTimelineEntry] {
+  var visibleAssistantMessageIds = Set<String>()
+  let hydratedEntries = entries.map { entry -> WorkTimelineEntry in
+    guard case .message(var message) = entry.payload,
+          message.role == "assistant"
+    else { return entry }
+
+    visibleAssistantMessageIds.insert(message.id)
+    message.assistantPreview = cache.preview(for: message)
+    return WorkTimelineEntry(
+      id: entry.id,
+      timestamp: entry.timestamp,
+      rank: entry.rank,
+      payload: .message(message)
+    )
+  }
+  cache.prune(keeping: visibleAssistantMessageIds)
+  return hydratedEntries
 }
 
 func mergeWorkPendingSteers(

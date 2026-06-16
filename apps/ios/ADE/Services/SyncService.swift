@@ -3,7 +3,6 @@ import Foundation
 import Network
 import SwiftUI
 import UIKit
-import UserNotifications
 import WidgetKit
 import os
 import zlib
@@ -1120,11 +1119,6 @@ func syncOutboundEnvelopeProjectId(type: String, activeProjectId: String?) -> St
   return syncNormalizedCommandScopeValue(activeProjectId)
 }
 
-struct SyncSendTestPushResult: Equatable {
-  var ok: Bool
-  var message: String
-}
-
 /// Delivery events for the full-screen terminal. The active screen attaches a
 /// handler per session id and receives hydration snapshots, ordered live
 /// chunks, and process exit without polling `terminalBuffers`.
@@ -1209,6 +1203,7 @@ final class SyncService: ObservableObject {
 
   private(set) var terminalBuffers: [String: String] = [:]
   private(set) var terminalBufferUpdatedAt: [String: Date] = [:]
+  private(set) var terminalBufferRevisionsBySessionId: [String: Int] = [:]
   /// Transcript END byte offset (UTF-8) confirmed per terminal session, fed by
   /// `terminal_data.offset` and snapshot `endOffset`. Nil for hosts that do not
   /// emit offsets; all gap/dedupe logic disables itself in that case.
@@ -4204,7 +4199,7 @@ final class SyncService: ObservableObject {
     }
     terminalBuffers[sessionId] = trimmedTerminalBuffer((terminalBuffers[sessionId] ?? "") + deliverableChunk)
     terminalBufferUpdatedAt[sessionId] = Date()
-    markTerminalBufferChanged()
+    markTerminalBufferChanged(sessionId: sessionId)
     terminalStreamHandlers[sessionId]?(.chunk(text: deliverableChunk, endOffset: endOffset))
   }
 
@@ -4231,7 +4226,7 @@ final class SyncService: ObservableObject {
       // replacing would drop everything the screen already rendered.
       if !snapshot.transcript.isEmpty {
         terminalBuffers[sessionId] = trimmedTerminalBuffer((terminalBuffers[sessionId] ?? "") + snapshot.transcript)
-        markTerminalBufferChanged(immediate: true)
+        markTerminalBufferChanged(sessionId: sessionId, immediate: true)
         terminalStreamHandlers[sessionId]?(.hydrate(
           text: snapshot.transcript,
           replacing: false,
@@ -4474,8 +4469,7 @@ final class SyncService: ObservableObject {
     baseBranch: String? = nil,
     branchName: String? = nil,
     startPoint: String? = nil,
-    linearIssue: LaneLinearIssue? = nil,
-    runtimePlacement: String? = nil
+    linearIssue: LaneLinearIssue? = nil
   ) async throws -> LaneSummary {
     var args: [String: Any] = [
       "name": name,
@@ -4499,10 +4493,43 @@ final class SyncService: ObservableObject {
         args["branchName"] = branchName
       }
     }
-    if let runtimePlacement, !runtimePlacement.isEmpty {
-      args["runtimePlacement"] = runtimePlacement
-    }
     return try await sendDecodableCommand(action: "lanes.create", args: args, as: LaneSummary.self)
+  }
+
+  private struct SuggestLaneNameResult: Decodable { let name: String }
+
+  /// Asks the host's small naming model for a lane name (desktop parity with
+  /// `agentChatService.suggestLaneNameFromPrompt`). The host honors its own
+  /// `titleGenerationEnabled` setting and clamps the name; it returns a
+  /// deterministic fallback when naming is disabled/unavailable. This command is
+  /// NOT queueable, so an offline phone throws here rather than queueing — the
+  /// caller is expected to catch and fall back to its own deterministic name.
+  ///
+  /// The request is short (10s) and non-disconnecting: it's a best-effort lookup
+  /// that the caller races against its own 10s UI deadline, so a slow/stuck host
+  /// must not strain the connection or trigger a probe/reconnect that could
+  /// disrupt the chat/CLI session started right after the lane is created.
+  func suggestLaneName(
+    laneId: String,
+    prompt: String,
+    modelId: String,
+    fallbackName: String
+  ) async throws -> String {
+    let args: [String: Any] = [
+      "laneId": laneId,
+      "prompt": prompt,
+      "modelId": modelId,
+      "fallbackName": fallbackName,
+    ]
+    let result = try await sendDecodableCommand(
+      action: "lanes.suggestName",
+      args: args,
+      disconnectOnTimeout: false,
+      timeoutNanoseconds: 10_000_000_000,
+      as: SuggestLaneNameResult.self
+    )
+    let trimmed = result.name.trimmingCharacters(in: .whitespacesAndNewlines)
+    return trimmed.isEmpty ? fallbackName : trimmed
   }
 
   func createFromUnstaged(sourceLaneId: String, name: String, description: String = "") async throws -> LaneSummary {
@@ -4546,8 +4573,7 @@ final class SyncService: ObservableObject {
     folder: String? = nil,
     baseBranchRef: String? = nil,
     branchName: String? = nil,
-    linearIssue: LaneLinearIssue? = nil,
-    runtimePlacement: String? = nil
+    linearIssue: LaneLinearIssue? = nil
   ) async throws -> LaneSummary {
     var args: [String: Any] = [
       "name": name,
@@ -4568,9 +4594,6 @@ final class SyncService: ObservableObject {
       if args["branchName"] == nil, let branchName = linearIssue.branchName, !branchName.isEmpty {
         args["branchName"] = branchName
       }
-    }
-    if let runtimePlacement, !runtimePlacement.isEmpty {
-      args["runtimePlacement"] = runtimePlacement
     }
     return try await sendDecodableCommand(action: "lanes.createChild", args: args, as: LaneSummary.self)
   }
@@ -7209,6 +7232,7 @@ final class SyncService: ObservableObject {
     subscribedTerminalSessionIds.insert(sessionId)
     terminalBuffers[sessionId] = transcript
     terminalBufferUpdatedAt[sessionId] = Date()
+    terminalBufferRevisionsBySessionId[sessionId, default: 0] += 1
     terminalBufferRevision += 1
   }
 
@@ -7341,7 +7365,6 @@ final class SyncService: ObservableObject {
     lastPairingErrorCode = nil
     lastSyncAt = Date()
     saveRemoteCommandDescriptors(commandDescriptors)
-    uploadSavedNotificationPreferences()
 
     let matchingDiscovery = discoveredHosts.first { discovered in
       discovered.hostIdentity == remoteHostIdentity
@@ -7655,10 +7678,6 @@ final class SyncService: ObservableObject {
       }
     case "command_result", "file_response", "terminal_snapshot", "terminal_history":
       resolve(requestId: requestId, result: .success(payload))
-    case "in_app_notification":
-      if let dict = payload as? [String: Any] {
-        presentInAppNotification(dict)
-      }
     case "chat_subscribe":
       if supportsChatStreaming,
          let dict = payload as? [String: Any],
@@ -7724,7 +7743,7 @@ final class SyncService: ObservableObject {
         let exitCode = dict["exitCode"] as? Int
         terminalBuffers[sessionId] = trimmedTerminalBuffer((terminalBuffers[sessionId] ?? "") + "\n\n[process exited\(exitCode.map { " with \($0)" } ?? "")]")
         terminalBufferUpdatedAt[sessionId] = Date()
-        markTerminalBufferChanged(immediate: true)
+        markTerminalBufferChanged(sessionId: sessionId, immediate: true)
         terminalStreamHandlers[sessionId]?(.exit(code: exitCode))
       }
     default:
@@ -7987,50 +8006,6 @@ final class SyncService: ObservableObject {
     }
   }
 
-  private func presentInAppNotification(_ payload: [String: Any]) {
-    guard let title = (payload["title"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
-          !title.isEmpty,
-          let body = (payload["body"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
-          !body.isEmpty else {
-      return
-    }
-    let content = UNMutableNotificationContent()
-    content.title = title
-    content.body = body
-    content.sound = .default
-    content.categoryIdentifier = notificationCategoryIdentifier(for: payload["category"] as? String)
-    if let metadata = payload["metadata"] as? [String: Any] {
-      content.userInfo = metadata
-    }
-    if let deepLink = payload["deepLink"] as? String, !deepLink.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-      var next = content.userInfo
-      next["deepLink"] = deepLink
-      content.userInfo = next
-    }
-    let collapseId = (payload["collapseId"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
-    let requestId: String
-    if let collapseId, !collapseId.isEmpty {
-      requestId = "ade.in-app.\(collapseId)"
-    } else {
-      requestId = "ade.in-app.\(UUID().uuidString)"
-    }
-    let request = UNNotificationRequest(identifier: requestId, content: content, trigger: nil)
-    UNUserNotificationCenter.current().add(request)
-  }
-
-  private func notificationCategoryIdentifier(for category: String?) -> String {
-    switch category {
-    case "chat":
-      return NotificationCategories.Identifier.chatAwaitingInput
-    case "cto":
-      return NotificationCategories.Identifier.ctoSubagentFinished
-    case "pr":
-      return NotificationCategories.Identifier.prReviewRequested
-    default:
-      return NotificationCategories.Identifier.systemAlert
-    }
-  }
-
   private func awaitSocketOpen(_ task: URLSessionWebSocketTask) async throws {
     try await withCheckedThrowingContinuation { continuation in
       let taskIdentifier = task.taskIdentifier
@@ -8250,8 +8225,19 @@ final class SyncService: ObservableObject {
     return try decoder.decode(T.self, from: data)
   }
 
-  private func sendDecodableCommand<T: Decodable>(action: String, args: [String: Any] = [:], as type: T.Type) async throws -> T {
-    let response = try await sendCommand(action: action, args: args)
+  private func sendDecodableCommand<T: Decodable>(
+    action: String,
+    args: [String: Any] = [:],
+    disconnectOnTimeout: Bool = true,
+    timeoutNanoseconds: UInt64? = nil,
+    as type: T.Type
+  ) async throws -> T {
+    let response = try await sendCommand(
+      action: action,
+      args: args,
+      disconnectOnTimeout: disconnectOnTimeout,
+      timeoutNanoseconds: timeoutNanoseconds
+    )
     if let payload = response as? [String: Any], payload["queued"] as? Bool == true {
       throw QueuedRemoteCommandError(action: action)
     }
@@ -8674,6 +8660,11 @@ final class SyncService: ObservableObject {
     }
     terminalBuffers[sessionId] = nextBuffer
     terminalBufferUpdatedAt[sessionId] = Date()
+    markTerminalBufferChanged(sessionId: sessionId, immediate: immediate)
+  }
+
+  private func markTerminalBufferChanged(sessionId: String, immediate: Bool = false) {
+    terminalBufferRevisionsBySessionId[sessionId, default: 0] += 1
     markTerminalBufferChanged(immediate: immediate)
   }
 
@@ -8746,6 +8737,7 @@ final class SyncService: ObservableObject {
       subscribedTerminalSessionIds.removeAll()
       terminalBuffers.removeAll()
       terminalBufferUpdatedAt.removeAll()
+      terminalBufferRevisionsBySessionId.removeAll()
       terminalEndOffsets.removeAll()
       terminalGapRecoveryInFlight.removeAll()
     }
@@ -8886,13 +8878,12 @@ final class SyncService: ObservableObject {
   }
 }
 
-// MARK: - Push notifications, Live Activities, and remote commands (WS6)
+// MARK: - Live Activities and remote commands (WS6)
 
 /// Kinds of remote commands the iOS client sends to the ADE brain.
 ///
 /// Each case maps to a verb on the desktop `syncRemoteCommandService` and the
-/// notification-bus router. Keep this enum in sync with the action switch
-/// inside `SyncService.sendRemoteCommand(_:payload:)`.
+/// action switch inside `SyncService.sendRemoteCommand(_:payload:)`.
 enum RemoteCommandKind: String, Sendable {
   case approveSession
   case denySession
@@ -8901,111 +8892,17 @@ enum RemoteCommandKind: String, Sendable {
   case restartSession
   case retryPrChecks
   case openPr
-  case setMutePush
   /// Ask the paired desktop to open an `ade://...` deep link locally.
   /// Used when iOS encounters a link it can't render itself (lane, repo
   /// branch, owner/repo PR) and the user wants to bounce it to their Mac.
   case openDeeplink
 }
 
-extension SyncService: LiveActivityHost {
-  /// `LiveActivityHost` conformance — called by `LiveActivityCoordinator` when
-  /// the OS hands us a new push-to-start or per-activity update token.
-  func sendPushToken(_ token: String, kind: PushTokenKind, sessionId: String?) async {
-    await registerPushToken(token, kind: kind, sessionId: sessionId)
-  }
-}
+extension SyncService: LiveActivityHost {}
 
 extension SyncService {
-  /// Send the `register_push_token` sync message to the currently connected
-  /// host. No-ops when offline — APNs tokens are stable for the app install,
-  /// so we simply re-upload on the next successful reconnect.
-  func registerPushToken(_ hex: String, kind: PushTokenKind, sessionId: String?) async {
-    let trimmed = hex.trimmingCharacters(in: .whitespaces).lowercased()
-    guard !trimmed.isEmpty else { return }
-
-    let wireKind: String
-    switch kind {
-    case .alert: wireKind = "alert"
-    case .activityStart: wireKind = "activity-start"
-    case .activityUpdate: wireKind = "activity-update"
-    }
-
-    let bundleId = Bundle.main.bundleIdentifier ?? "com.ade.ios"
-    #if DEBUG
-    let env = "sandbox"
-    #else
-    let env = "production"
-    #endif
-
-    var payload: [String: Any] = [
-      "token": trimmed,
-      "kind": wireKind,
-      "env": env,
-      "bundleId": bundleId,
-    ]
-    if let sessionId, !sessionId.isEmpty {
-      payload["activityId"] = sessionId
-    }
-
-    sendEnvelope(type: "register_push_token", requestId: nil, payload: payload)
-  }
-
-  /// Upload the current notification preferences as a `notification_prefs`
-  /// message. Serializes the flat iOS struct into the nested shape the desktop
-  /// `NotificationPreferences` TypeScript type expects.
-  func uploadNotificationPrefs(_ prefs: NotificationPreferences) {
-    let nested = Self.encodeNotificationPrefsForDesktop(prefs)
-    sendEnvelope(type: "notification_prefs", requestId: nil, payload: ["prefs": nested])
-  }
-
-  private func uploadSavedNotificationPreferences() {
-    uploadNotificationPrefs(NotificationPreferences.load(from: ADESharedContainer.defaults))
-  }
-
-  /// Ask the host to deliver a test push to this device. The desktop decides
-  /// which token kind (alert vs activity) to target based on what it last saw
-  /// from us.
-  func sendTestPush() async -> SyncSendTestPushResult {
-    // Fail fast when the socket is offline. Without this guard, `sendEnvelope`
-    // silently drops the frame and `awaitResponse` would sit until timeout,
-    // making the test-push button look unresponsive.
-    guard canSendLiveRequests() else {
-      return SyncSendTestPushResult(ok: false, message: "The paired machine is offline.")
-    }
-    let requestId = makeRequestId()
-    do {
-      let raw = try await awaitResponse(
-        requestId: requestId,
-        disconnectOnTimeout: false,
-        timeoutMessage: "The paired machine did not respond to the test push request."
-      ) {
-        self.sendEnvelope(type: "send_test_push", requestId: requestId, payload: ["kind": "alert"])
-      }
-      guard let dict = raw as? [String: Any] else {
-        return SyncSendTestPushResult(ok: false, message: "The paired machine returned an unreadable test push response.")
-      }
-      if dict["ok"] as? Bool == true {
-        let result = dict["result"] as? [String: Any]
-        let message = (result?["message"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let message, !message.isEmpty {
-          return SyncSendTestPushResult(ok: true, message: message)
-        }
-        return SyncSendTestPushResult(ok: true, message: "Test push sent.")
-      }
-      let error = dict["error"] as? [String: Any]
-      let message = (error?["message"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
-      if let message, !message.isEmpty {
-        return SyncSendTestPushResult(ok: false, message: message)
-      }
-      return SyncSendTestPushResult(ok: false, message: "The paired machine could not send a test push.")
-    } catch {
-      return SyncSendTestPushResult(ok: false, message: error.localizedDescription)
-    }
-  }
 
   /// Dispatch a remote command over the existing sync WebSocket. Used by:
-  ///   • Notification action handlers in `AppDelegate`
   ///   • Live Activity `LiveActivityIntent` perform handlers (WS7)
   ///   • Control Widget intents (WS7)
   ///
@@ -9024,7 +8921,6 @@ extension SyncService {
     case .restartSession: action = "chat.restart"
     case .retryPrChecks: action = "prs.rerunChecks"
     case .openPr: action = "prs.getDetail"
-    case .setMutePush: action = "notification_prefs"
     case .openDeeplink: action = "deeplinks.open"
     }
 
@@ -9061,17 +8957,13 @@ extension SyncService {
         args["prNumber"] = pr
       }
     case .openPr:
+      if let prId = (payload["prId"] as? String)?
+        .trimmingCharacters(in: .whitespacesAndNewlines),
+        !prId.isEmpty {
+        args["prId"] = prId
+      }
       if let prNumber = payload["prNumber"] {
         args["prNumber"] = prNumber
-      }
-    case .setMutePush:
-      // Route through the preferences updater — we overload the same envelope
-      // rather than add yet another message type. The desktop honours the
-      // `muteUntil` field it finds on the preferences payload.
-      if let until = payload["muteUntil"] as? String {
-        args["muteUntil"] = until
-      } else {
-        args["muteUntil"] = NSNull()
       }
     case .openDeeplink:
       // Desktop `deeplinks.open` expects a `url` arg — the same `ade://...`
@@ -9094,8 +8986,7 @@ extension SyncService {
     }
 
     // For now we send via the opaque command envelope — the desktop's
-    // `syncRemoteCommandService` dispatches on `action`. Notification actions
-    // may still ignore the result, while interactive surfaces can render it.
+    // `syncRemoteCommandService` dispatches on `action`.
     do {
       let result = try await performCommandRequestSafe(action: action, args: args)
       if let result = result as? [String: Any] {
@@ -9374,72 +9265,6 @@ extension SyncService {
       workspaceSnapshotRevision += 1
       WidgetReloadBridge.reloadAllTimelines()
     }
-  }
-
-  // MARK: - NotificationPreferences shape translation
-
-  /// Translate the flat iOS `NotificationPreferences` into the nested shape
-  /// the desktop `SyncNotificationPrefsPayload` expects. Keeping the mapping
-  /// local (rather than rewriting the iOS struct) avoids touching the
-  /// persistence format that `NotificationsCenterView` already reads/writes.
-  static func encodeNotificationPrefsForDesktop(
-    _ prefs: NotificationPreferences
-  ) -> [String: Any] {
-    let anyEnabled = prefs.enabledCategoryCount > 0
-    var dict: [String: Any] = [
-      "enabled": anyEnabled,
-      "chat": [
-        "awaitingInput": prefs.chatAwaitingInput,
-        "chatFailed": prefs.chatFailed,
-        "turnCompleted": prefs.chatTurnCompleted,
-      ],
-      "cto": [
-        "subagentStarted": prefs.ctoSubagentStarted,
-        "subagentFinished": prefs.ctoSubagentFinished,
-      ],
-      "prs": [
-        "ciFailing": prefs.prCiFailing,
-        "reviewRequested": prefs.prReviewRequested,
-        "changesRequested": prefs.prChangesRequested,
-        "mergeReady": prefs.prMergeReady,
-      ],
-      "system": [
-        "providerOutage": prefs.systemProviderOutage,
-        "authRateLimit": prefs.systemAuthRateLimit,
-        "hookFailure": prefs.systemHookFailure,
-      ],
-    ]
-
-    if let start = prefs.quietHoursStart, let end = prefs.quietHoursEnd {
-      dict["quietHours"] = [
-        "enabled": true,
-        "start": Self.formatTimeOfDay(start),
-        "end": Self.formatTimeOfDay(end),
-        "timezone": TimeZone.current.identifier,
-      ]
-    }
-
-    let activeOverrides = prefs.perSessionOverrides.filter { _, override in
-      override.muted || override.awaitingInputOnly
-    }
-    if !activeOverrides.isEmpty {
-      dict["perSessionOverrides"] = activeOverrides.mapValues { override in
-        [
-          "muted": override.muted,
-          "awaitingInputOnly": override.awaitingInputOnly,
-        ]
-      }
-    }
-
-    return dict
-  }
-
-  private static func formatTimeOfDay(_ date: Date) -> String {
-    let formatter = DateFormatter()
-    formatter.locale = Locale(identifier: "en_US_POSIX")
-    formatter.timeZone = .current
-    formatter.dateFormat = "HH:mm"
-    return formatter.string(from: date)
   }
 
   private static func parseIso8601(_ raw: String) -> Date? {

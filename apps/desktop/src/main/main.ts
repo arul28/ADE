@@ -1,4 +1,4 @@
-import { app, BrowserWindow, desktopCapturer, dialog, ipcMain, Menu, nativeImage, Notification, protocol, safeStorage, shell } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, protocol, safeStorage, shell } from "electron";
 import { AsyncLocalStorage } from "node:async_hooks";
 import os from "node:os";
 import path from "node:path";
@@ -8,7 +8,6 @@ type NodePtyType = typeof NodePty;
 import { isAdeRuntimeNamedPipePath } from "../shared/adeRuntimeIpc";
 import {
   areAutomationsEnabledForPackagedState,
-  isMacosVmEnabledForPackagedState,
 } from "../shared/automationAvailability";
 import {
   handleDeeplinkUrl,
@@ -28,13 +27,6 @@ import {
   writeGlobalState,
 } from "./services/state/globalState";
 import { createLaneService, type LaneDeleteTeardownDeps } from "./services/lanes/laneService";
-import {
-  invalidateVmLaneLaunchCache,
-  type MacosVmLaunchProvider,
-  refreshVmLaneLaunchCache,
-  setMacosVmLaunchProvider,
-  syncMacosVmLaunchCacheFromEvent,
-} from "./services/lanes/laneLaunchContext";
 import { createLaneEnvironmentService } from "./services/lanes/laneEnvironmentService";
 import { createLaneTemplateService } from "./services/lanes/laneTemplateService";
 import { createLaneWorktreeLockService } from "./services/lanes/laneWorktreeLockService";
@@ -98,7 +90,6 @@ import type {
   CreateProjectInput,
   LaneDeleteProgress,
   LaneLinearIssue,
-  LaneSummary,
   ListMyGitHubReposInput,
   PortLease,
   PrEventPayload,
@@ -200,18 +191,9 @@ import {
   BUILT_IN_BROWSER_PROFILE_PREFIX,
 } from "./services/builtInBrowser/builtInBrowserConstants";
 import { startBuiltInBrowserDesktopBridgeServer } from "./services/builtInBrowser/desktopBridgeServer";
-import { createMacosVmService } from "./services/macosVm/macosVmService";
 import { configureBuiltInBrowserWebAuthn } from "./services/builtInBrowser/builtInBrowserWebAuthn";
 import { LocalRuntimeConnectionPool } from "./services/localRuntime/localRuntimeConnectionPool";
 import { createSyncService } from "./services/sync/syncService";
-import { ApnsService, ApnsKeyStore } from "./services/notifications/apnsService";
-import {
-  createNotificationEventBus,
-  type DevicePushTarget,
-  type NotificationEventBus,
-} from "./services/notifications/notificationEventBus";
-import type { SyncService } from "./services/sync/syncService";
-import type { DeviceRegistryService } from "./services/sync/deviceRegistryService";
 import { blockPackagedLaunchForCrossChannelSyncConflict } from "./services/sync/packagedSyncHostLaunchGate";
 import { createAutoUpdateService } from "./services/updates/autoUpdateService";
 import { cleanupStaleTempArtifacts } from "./services/runtime/tempCleanupService";
@@ -2045,7 +2027,6 @@ app.whenReady().then(async () => {
 
     const operationService = createOperationService({ db, projectId });
     const automationsEnabled = areAutomationsEnabledForPackagedState(app.isPackaged);
-    const macosVmEnabled = isMacosVmEnabledForPackagedState(app.isPackaged);
 
     let jobEngine: ReturnType<typeof createJobEngine> | null = null;
     let automationService: ReturnType<typeof createAutomationService> | null =
@@ -2152,7 +2133,6 @@ app.whenReady().then(async () => {
 
     const laneTeardownDeps: LaneDeleteTeardownDeps = {};
     let autoRebaseActivityReady = false;
-    let macosVmLaunchProviderForProject: MacosVmLaunchProvider | null = null;
     const laneService = createLaneService({
       db,
       projectRoot,
@@ -2176,38 +2156,6 @@ app.whenReady().then(async () => {
         }
       },
       onDeleteEvent: (event) => emitProjectEvent(projectRoot, IPC.lanesDeleteEvent, event),
-      onPlacementChanged: async (event) => {
-        // Refresh the VM launch-context cache so subsequent
-        // resolveLaneLaunchContext() calls see the new placement.
-        // TODO(mac-vm-onboarding): emit a renderer-facing IPC event so the
-        // CreateLaneDialog re-gate + Work-tab banner can react without
-        // polling. Requires adding a new IPC channel in shared/ipc.ts.
-        invalidateVmLaneLaunchCache(event.laneId, projectRoot);
-        if (event.to === "macos-vm") {
-          void refreshVmLaneLaunchCache({
-            laneId: event.laneId,
-            projectRoot,
-            provider: macosVmLaunchProviderForProject,
-          }).catch((error) => {
-            logger.warn("lane.placement_changed_refresh_failed", {
-              laneId: event.laneId,
-              error: error instanceof Error ? error.message : String(error),
-            });
-          });
-        }
-        try {
-          await agentChatServiceRef?.handleLanePlacementChanged?.({
-            laneId: event.laneId,
-            from: event.from,
-            to: event.to,
-          });
-        } catch (error) {
-          logger.warn("lane.placement_changed_chat_propagate_failed", {
-            laneId: event.laneId,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
-      },
       onLinearIssueLinked: ({ lane, issue, linkedAt }) => {
         const tracker = linearIssueTrackerRef;
         if (!tracker) return;
@@ -2540,103 +2488,6 @@ app.whenReady().then(async () => {
     });
     prServiceRef = prService;
 
-    // --- Mobile push notifications (APNs + event bus) -----------------------
-    // ApnsService is instantiated but left unconfigured here; the Mobile Push
-    // settings panel calls into it once the user uploads a `.p8` key. The
-    // notification event bus is always wired so in-app WebSocket delivery
-    // works even when APNs is disabled.
-    let syncServiceForNotifications: SyncService | null = null;
-    const apnsService = new ApnsService({ logger });
-    const apnsKeyStore = new ApnsKeyStore({
-      encryptedKeyPath: path.join(projectRoot, ".ade", "secrets", "apns.key.enc"),
-      safeStorage,
-    });
-    // Attempt to restore a previously-stored key + config on project load so
-    // push delivery survives restarts without user intervention.
-    try {
-      const effective = projectConfigService.get().effective;
-      const apnsConfig = effective.notifications?.apns ?? null;
-      logger.info("apns.configure_on_startup_attempt", {
-        hasConfig: apnsConfig != null,
-        enabled: apnsConfig?.enabled === true,
-        keyStored: apnsKeyStore.has(),
-        hasKeyId: Boolean(apnsConfig?.keyId),
-        hasTeamId: Boolean(apnsConfig?.teamId),
-        hasBundleId: Boolean(apnsConfig?.bundleId),
-        env: apnsConfig?.env ?? null,
-      });
-      if (apnsConfig?.enabled && apnsKeyStore.has() && apnsConfig.keyId && apnsConfig.teamId && apnsConfig.bundleId) {
-        const pem = apnsKeyStore.load();
-        if (pem) {
-          apnsService.configure({
-            keyP8Pem: pem,
-            keyId: apnsConfig.keyId,
-            teamId: apnsConfig.teamId,
-            bundleId: apnsConfig.bundleId,
-            env: apnsConfig.env ?? "sandbox",
-          });
-          logger.info("apns.configure_on_startup_ok", { keyId: apnsConfig.keyId });
-        }
-      }
-    } catch (error) {
-      logger.warn("apns.configure_on_startup_failed", {
-        error: error instanceof Error ? error.message : String(error),
-        stack: error instanceof Error ? error.stack : undefined,
-      });
-    }
-    const listPushTargets = (): DevicePushTarget[] => {
-      const registry: DeviceRegistryService | null =
-        syncServiceForNotifications?.getDeviceRegistryService?.() ?? null;
-      if (!registry) return [];
-      const effective = projectConfigService.get().effective;
-      const apnsConfig = effective.notifications?.apns ?? null;
-      const bundleId = apnsConfig?.bundleId?.trim() ?? "";
-      const env = apnsConfig?.env === "production" ? "production" : "sandbox";
-      return registry
-        .listDevices()
-        .filter((device) => device.deviceType === "phone" && device.platform === "iOS")
-        .map((device) => {
-          const meta = device.metadata ?? {};
-          const alertToken = typeof meta.apnsAlertToken === "string" ? meta.apnsAlertToken : null;
-          const activityStartToken = typeof meta.apnsActivityStartToken === "string" ? meta.apnsActivityStartToken : null;
-          const activityUpdateTokens =
-            meta.apnsActivityUpdateTokens && typeof meta.apnsActivityUpdateTokens === "object"
-              ? (meta.apnsActivityUpdateTokens as Record<string, string>)
-              : null;
-          const perDeviceBundleId =
-            typeof meta.apnsBundleId === "string" && meta.apnsBundleId.trim().length > 0
-              ? meta.apnsBundleId
-              : bundleId;
-          return {
-            deviceId: device.deviceId,
-            bundleId: perDeviceBundleId,
-            env: (meta.apnsEnv === "production" ? "production" : env) as "sandbox" | "production",
-            alertToken,
-            activityStartToken,
-            activityUpdateTokens,
-          } satisfies DevicePushTarget;
-        })
-        .filter((target) => target.bundleId.trim().length > 0);
-    };
-    const notificationEventBus: NotificationEventBus = createNotificationEventBus({
-      logger,
-      apnsService,
-      listPushTargets,
-      getPrefsForDevice: (deviceId) =>
-        syncServiceForNotifications?.getHostService()?.getNotificationPrefsForDevice(deviceId) ?? null,
-      sendInAppNotification: (deviceId, payload) => {
-        syncServiceForNotifications?.getHostService()?.sendInAppNotification(deviceId, payload);
-      },
-      isDeviceConnected: (deviceId) =>
-        syncServiceForNotifications?.getHostService()?.isIosPeerConnected(deviceId) ?? false,
-    });
-    // When APNs reports an invalid token, drop it from the registry so we
-    // stop fanning out to a dead device.
-    apnsService.onTokenInvalidated(({ deviceToken }) => {
-      const registry = syncServiceForNotifications?.getDeviceRegistryService?.() ?? null;
-      registry?.invalidateApnsToken?.(deviceToken);
-    });
-
     const rpcEventBuffer = createEventBuffer();
     const emitPrEvent = (event: PrEventPayload): void => {
       emitProjectEvent(projectRoot, IPC.prsEvent, event);
@@ -2660,7 +2511,6 @@ app.whenReady().then(async () => {
       prService,
       projectConfigService,
       db,
-      notificationEventBus,
       onEvent: emitPrEvent,
       onPullRequestsChanged: async ({ changedPrs, changes }) => {
         if (changedPrs.length > 0) {
@@ -2832,7 +2682,7 @@ app.whenReady().then(async () => {
     const onTrackedSessionEnded = ({
       laneId,
       sessionId,
-      exitCode,
+      exitCode: _exitCode,
     }: {
       laneId: string;
       sessionId: string;
@@ -3480,104 +3330,6 @@ app.whenReady().then(async () => {
       onEvent: (payload) =>
         emitProjectEvent(projectRoot, IPC.appControlEvent, payload),
     });
-    const macosVmService = macosVmEnabled
-      ? createMacosVmService({
-          projectRoot,
-          logger,
-          resolveLanes: async () => laneService.list({ includeArchived: false }),
-          onEvent: (payload) => {
-            syncMacosVmLaunchCacheFromEvent(payload, (event, fields) => {
-              logger.warn(event, fields);
-            }, {
-              projectRoot,
-              provider: macosVmLaunchProviderForProject,
-            });
-            emitProjectEvent(projectRoot, IPC.macosVmEvent, payload);
-          },
-          captureWindowSources: async () => {
-            const sources = await desktopCapturer.getSources({
-              types: ["window"],
-              thumbnailSize: { width: 1280, height: 1280 },
-            });
-            return sources.map((source) => ({
-              id: source.id,
-              name: source.name,
-              thumbnailDataUrl: source.thumbnail.isEmpty() ? null : source.thumbnail.toDataURL(),
-            }));
-          },
-          // TODO: once the in-guest ade-runtime install lands, route this to
-          // RemoteConnectionPool.registerMacosVmTarget so chat exec can RPC into
-          // the VM. The pool currently lives inside registerRuntimeBridge; this
-          // wire-up needs the pool/registry to be lifted into a shared scope.
-          onRuntimeReady: ({ vmName, ipAddress, username }) => {
-            logger.info("macos_vm.runtime_ready", { vmName, ipAddress, username });
-            const vmLane = laneService.findExistingVmLane();
-            if (!vmLane) return;
-            invalidateVmLaneLaunchCache(vmLane.id, projectRoot);
-            void refreshVmLaneLaunchCache({
-              laneId: vmLane.id,
-              projectRoot,
-              provider: macosVmLaunchProviderForProject,
-            }).catch((error) => {
-              logger.warn("macos_vm.runtime_ready_cache_refresh_failed", {
-                laneId: vmLane.id,
-                error: error instanceof Error ? error.message : String(error),
-              });
-            });
-          },
-        })
-      : null;
-    // Wire macosVmService into laneService now that both exist. The hooks let
-    // detachVmLane / attachLaneToVm trigger share-stale + mirror-sync teardown
-    // without laneService importing the macosVm barrel.
-    if (macosVmService) {
-      const macosVmSvcAny = macosVmService as unknown as {
-        markShareStale?: (args: { laneId: string }) => Promise<void> | void;
-        stopMirrorSyncForLane?: (args: { laneId: string }) => Promise<void> | void;
-        startMirrorSyncForLane?: (args: { laneId: string }) => Promise<void> | void;
-        linkLaneToCurrentVm?: (args: { laneId: string }) => Promise<void> | void;
-        getStatus?: ReturnType<typeof createMacosVmService>["getStatus"];
-        getCredentials?: (args: { vmName: string }) => Promise<{
-          vmName: string;
-          username: string | null;
-          hasPassword: boolean;
-        }>;
-      };
-      if (typeof laneService.setMacosVmHooks === "function" && typeof macosVmSvcAny.getStatus === "function") {
-        laneService.setMacosVmHooks({
-          getStatus: macosVmSvcAny.getStatus.bind(macosVmService),
-          markShareStale: async ({ laneId }) => {
-            if (typeof macosVmSvcAny.markShareStale === "function") {
-              await macosVmSvcAny.markShareStale({ laneId });
-            }
-          },
-          stopMirrorSyncForLane: async ({ laneId }) => {
-            if (typeof macosVmSvcAny.stopMirrorSyncForLane === "function") {
-              await macosVmSvcAny.stopMirrorSyncForLane({ laneId });
-            }
-          },
-          startMirrorSyncForLane: async ({ laneId }) => {
-            if (typeof macosVmSvcAny.startMirrorSyncForLane === "function") {
-              await macosVmSvcAny.startMirrorSyncForLane({ laneId });
-            }
-          },
-          linkLaneToCurrentVm: async ({ laneId }) => {
-            if (typeof macosVmSvcAny.linkLaneToCurrentVm === "function") {
-              await macosVmSvcAny.linkLaneToCurrentVm({ laneId });
-            }
-          },
-        });
-      }
-      // Register the launch-context provider so resolveLaneLaunchContext can
-      // synthesize an SSH launch context for VM lanes.
-      if (typeof macosVmSvcAny.getStatus === "function" && typeof macosVmSvcAny.getCredentials === "function") {
-        macosVmLaunchProviderForProject = {
-          getStatus: macosVmSvcAny.getStatus.bind(macosVmService),
-          getCredentials: macosVmSvcAny.getCredentials.bind(macosVmService),
-        };
-        setMacosVmLaunchProvider(macosVmLaunchProviderForProject);
-      }
-    }
     // Phone sync is owned by the per-machine ADE service. The desktop
     // keeps a non-host sync service for legacy viewer state and explicit
     // diagnostics only; ADE_ENABLE_DESKTOP_SYNC_HOST=1 re-enables the old
@@ -3627,7 +3379,6 @@ app.whenReady().then(async () => {
       phonePairingStateDir: machineAdeLayout.secretsDir,
       hostDiscoveryEnabled: isMobileSyncHostContext,
       forceHostRole: false,
-      notificationEventBus,
       projectCatalogProvider: {
         listProjects: listMobileSyncProjects,
         prepareProjectConnection: prepareMobileSyncProjectConnection,
@@ -3683,9 +3434,6 @@ app.whenReady().then(async () => {
       },
     });
     syncServiceRef = syncService;
-    // Late-bind the sync service into the notification bus dependencies so
-    // push targets / prefs / in-app delivery are resolved at send time.
-    syncServiceForNotifications = syncService;
     scheduleBackgroundProjectTask(
       "sync.initialize",
       () => measureProjectInitStep("sync.initialize", () => syncService.initialize()),
@@ -4143,7 +3891,6 @@ app.whenReady().then(async () => {
       iosSimulatorService: iosSimulatorRpcService,
       appControlService,
       builtInBrowserService,
-      macosVmService,
       syncHostService: syncService.getHostService(),
       syncService,
       automationIngressService,
@@ -4341,7 +4088,6 @@ app.whenReady().then(async () => {
         iosSimulatorService,
         appControlService,
         builtInBrowserService,
-        macosVmService,
         automationService,
         automationPlannerService,
         githubService,
@@ -4396,7 +4142,6 @@ app.whenReady().then(async () => {
       computerUseArtifactBrokerService,
       iosSimulatorService,
       appControlService,
-      macosVmService,
       queueLandingService,
       prSummaryService,
       reviewService,
@@ -4410,9 +4155,6 @@ app.whenReady().then(async () => {
       budgetCapService,
       syncHostService: syncService.getHostService(),
       syncService,
-      apnsService,
-      apnsKeyStore,
-      notificationEventBus,
       orchestrationService,
       agentChatService,
       projectConfigService,
@@ -4453,89 +4195,6 @@ app.whenReady().then(async () => {
     const project = toProjectInfo(projectRoot, baseRef);
     const runtimeProject = await localRuntimePool.ensureProject(projectRoot);
     const shellContext = createDormantProjectContext(projectRoot, { enableUsageTracking: false });
-    let macosVmLaunchProviderForProject: MacosVmLaunchProvider | null = null;
-    const macosVmService = isMacosVmEnabledForPackagedState(app.isPackaged)
-      ? createMacosVmService({
-          projectRoot,
-          logger,
-          resolveLanes: async () => {
-            const response = await localRuntimePool.callActionForRoot(projectRoot, {
-              domain: "lane",
-              action: "list",
-              args: { includeArchived: false, includeStatus: false },
-            });
-            const lanes = Array.isArray(response.result) ? response.result as LaneSummary[] : [];
-            return lanes.map((lane) => ({
-              id: lane.id,
-              name: lane.name,
-              worktreePath: lane.worktreePath,
-            }));
-          },
-          onEvent: (payload) => {
-            syncMacosVmLaunchCacheFromEvent(payload, (event, fields) => {
-              logger.warn(event, fields);
-            }, {
-              projectRoot,
-              provider: macosVmLaunchProviderForProject,
-            });
-            emitProjectEvent(projectRoot, IPC.macosVmEvent, payload);
-          },
-          captureWindowSources: async () => {
-            const sources = await desktopCapturer.getSources({
-              types: ["window"],
-              thumbnailSize: { width: 1280, height: 1280 },
-            });
-            return sources.map((source) => ({
-              id: source.id,
-              name: source.name,
-              thumbnailDataUrl: source.thumbnail.isEmpty() ? null : source.thumbnail.toDataURL(),
-            }));
-          },
-          // TODO: route to RemoteConnectionPool.registerMacosVmTarget once the
-          // in-guest ade-runtime bootstrap installs the binary (today the
-          // bootstrap script only writes a marker file).
-          onRuntimeReady: ({ vmName, ipAddress, username }) => {
-            logger.info("macos_vm.runtime_ready", { vmName, ipAddress, username });
-            void (async () => {
-              const response = await localRuntimePool.callActionForRoot(projectRoot, {
-                domain: "lane",
-                action: "list",
-                args: { includeArchived: false, includeStatus: false },
-              });
-              const lanes = Array.isArray(response.result) ? response.result as LaneSummary[] : [];
-              const vmLane = lanes.find((lane) => lane.runtimePlacement === "macos-vm") ?? null;
-              if (!vmLane) return;
-              invalidateVmLaneLaunchCache(vmLane.id, projectRoot);
-              await refreshVmLaneLaunchCache({
-                laneId: vmLane.id,
-                projectRoot,
-                provider: macosVmLaunchProviderForProject,
-              });
-            })().catch((error) => {
-              logger.warn("macos_vm.runtime_ready_cache_refresh_failed", {
-                error: error instanceof Error ? error.message : String(error),
-              });
-            });
-          },
-        })
-      : null;
-    if (macosVmService) {
-      const macosVmSvcAny = macosVmService as unknown as {
-        getStatus?: ReturnType<typeof createMacosVmService>["getStatus"];
-        getCredentials?: (args: { vmName: string }) => Promise<{
-          vmName: string;
-          username: string | null;
-          hasPassword: boolean;
-        }>;
-      };
-      if (typeof macosVmSvcAny.getStatus === "function" && typeof macosVmSvcAny.getCredentials === "function") {
-        macosVmLaunchProviderForProject = {
-          getStatus: macosVmSvcAny.getStatus.bind(macosVmService),
-          getCredentials: macosVmSvcAny.getCredentials.bind(macosVmService),
-        };
-        setMacosVmLaunchProvider(macosVmLaunchProviderForProject);
-      }
-    }
     const usageTrackingService = createUsageTrackingService({
       logger,
       pollIntervalMs: 120_000,
@@ -4560,7 +4219,6 @@ app.whenReady().then(async () => {
       hasUserSelectedProject: userSelectedProject,
       adeCliService: shellContext.adeCliService,
       builtInBrowserService,
-      macosVmService,
       usageTrackingService,
     };
   };
@@ -4657,7 +4315,6 @@ app.whenReady().then(async () => {
       iosSimulatorService: null,
       appControlService: null,
       builtInBrowserService: null,
-      macosVmService: null,
       githubService: dormantGithubService,
       projectScaffoldService: dormantProjectScaffoldService,
       feedbackReporterService: null,
@@ -4676,9 +4333,6 @@ app.whenReady().then(async () => {
       budgetCapService: null,
       syncHostService: null,
       syncService: null,
-      apnsService: null,
-      apnsKeyStore: null,
-      notificationEventBus: null,
       orchestrationService: null,
       projectConfigService: null,
       processService: null,
@@ -4849,11 +4503,6 @@ app.whenReady().then(async () => {
       // ignore
     }
     try {
-      ctx.macosVmService?.dispose?.();
-    } catch {
-      // ignore
-    }
-    try {
       ctx.testService?.disposeAll();
     } catch {
       // ignore
@@ -4880,11 +4529,6 @@ app.whenReady().then(async () => {
     }
     try {
       await ctx.syncHostService?.dispose?.();
-    } catch {
-      // ignore
-    }
-    try {
-      await ctx.apnsService?.dispose?.();
     } catch {
       // ignore
     }
@@ -5916,8 +5560,8 @@ app.whenReady().then(async () => {
     const recordPeers = (peers: readonly SyncPeerConnectionState[] | undefined): void => {
       for (const peer of peers ?? []) {
         // Match the canonical connected-phone convention used by the phone
-        // device list (main.ts ~2535) and APNS targeting: a phone is both
-        // deviceType "phone" AND platform "iOS". The looser OR form belongs to
+        // device list: a phone is both deviceType "phone" AND platform "iOS".
+        // The looser OR form belongs to
         // host-side sync gating, not user-facing phone copy.
         if (peer.deviceType !== "phone" || peer.platform !== "iOS") continue;
         phonesById.set(peer.deviceId, peer.deviceName?.trim() || "Connected phone");

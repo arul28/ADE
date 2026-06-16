@@ -92,11 +92,10 @@ struct WorkChatMessageBubble: View {
   /// Switches its markdown block parsing to the tail-only streaming parser so
   /// each delta re-parses just the growing tail instead of the whole message.
   var isStreaming: Bool = false
+  /// Computed once by the parent transcript view. Avoids installing one
+  /// GeometryReader per user row while preserving the desktop-style max width.
+  var maxUserBubbleWidth: CGFloat? = nil
   @State private var assistantLineBudget = workAssistantMessageInitialLineBudget
-  /// Measured column width, used to cap the user bubble at ~82% (desktop's
-  /// `max-width`). Probed via a zero-impact background GeometryReader so the
-  /// bubble still shrinks to its content for short replies.
-  @State private var columnWidth: CGFloat = 0
 
   /// Provider string for the current chat session (e.g. "claude", "codex", "cursor").
   /// Injected via `.environment(\.workChatProvider, ...)` by the session view.
@@ -154,11 +153,7 @@ struct WorkChatMessageBubble: View {
     // canvas — NO card, NO border, NO background. Just left-aligned text that
     // reads like a document. The truncation / "Show more" affordance stays but
     // unstyled so it doesn't reintroduce a boxed feel.
-    let preview = workAssistantMessagePreview(
-      message.markdown,
-      lineBudget: assistantLineBudget,
-      characterBudget: workAssistantMessageCharacterBudget(forLineBudget: assistantLineBudget)
-    )
+    let preview = assistantPreview
 
     return VStack(alignment: .leading, spacing: 10) {
       if preview.isTruncated {
@@ -243,7 +238,7 @@ struct WorkChatMessageBubble: View {
     let attachments = message.attachments ?? []
     let hasAttachments = !attachments.isEmpty
     let hasText = !message.markdown.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    let maxBubbleWidth = columnWidth > 0 ? columnWidth * 0.92 : 360
+    let maxBubbleWidth = maxUserBubbleWidth ?? 360
 
     return HStack(alignment: .top, spacing: 8) {
       Spacer(minLength: 0)
@@ -298,13 +293,6 @@ struct WorkChatMessageBubble: View {
       }
     }
     .frame(maxWidth: .infinity)
-    .background(
-      GeometryReader { geo in
-        Color.clear
-          .onAppear { columnWidth = geo.size.width }
-          .onChange(of: geo.size.width) { _, newValue in columnWidth = newValue }
-      }
-    )
     .contextMenu {
       Button {
         UIPasteboard.general.string = message.markdown
@@ -322,6 +310,18 @@ struct WorkChatMessageBubble: View {
         "turnId": message.turnId ?? "",
         "itemId": message.itemId ?? ""
       ]
+    )
+  }
+
+  private var assistantPreview: WorkAssistantMessagePreview {
+    if assistantLineBudget == workAssistantMessageInitialLineBudget,
+       let preview = message.assistantPreview {
+      return preview
+    }
+    return workAssistantMessagePreview(
+      message.markdown,
+      lineBudget: assistantLineBudget,
+      characterBudget: workAssistantMessageCharacterBudget(forLineBudget: assistantLineBudget)
     )
   }
 
@@ -407,11 +407,46 @@ let workAssistantMessageInitialCharacterBudget = 4_000
 let workAssistantMessageCharacterBudgetStep = 4_000
 let workChatAccessibilityPreviewLimit = 800
 
-struct WorkAssistantMessagePreview {
+struct WorkAssistantMessagePreview: Equatable {
   let text: String
   let isTruncated: Bool
   let visibleLineCount: Int
   let totalLineCount: Int
+}
+
+final class WorkAssistantPreviewCache {
+  private struct Entry {
+    let utf8Count: Int
+    let markdown: String
+    let preview: WorkAssistantMessagePreview
+  }
+
+  private var entries: [String: Entry] = [:]
+
+  func preview(for message: WorkChatMessage) -> WorkAssistantMessagePreview {
+    let utf8Count = message.markdown.utf8.count
+    if let entry = entries[message.id],
+       entry.utf8Count == utf8Count,
+       entry.markdown == message.markdown {
+      return entry.preview
+    }
+
+    let preview = workInitialAssistantMessagePreview(message.markdown)
+    entries[message.id] = Entry(utf8Count: utf8Count, markdown: message.markdown, preview: preview)
+    return preview
+  }
+
+  func prune(keeping messageIds: Set<String>) {
+    entries = entries.filter { messageIds.contains($0.key) }
+  }
+}
+
+func workInitialAssistantMessagePreview(_ markdown: String) -> WorkAssistantMessagePreview {
+  workAssistantMessagePreview(
+    markdown,
+    lineBudget: workAssistantMessageInitialLineBudget,
+    characterBudget: workAssistantMessageCharacterBudget(forLineBudget: workAssistantMessageInitialLineBudget)
+  )
 }
 
 func workAssistantMessageCharacterBudget(forLineBudget lineBudget: Int) -> Int {
@@ -425,49 +460,68 @@ func workAssistantMessagePreview(
   characterBudget: Int
 ) -> WorkAssistantMessagePreview {
   let normalized = markdown.replacingOccurrences(of: "\r\n", with: "\n")
-  let lines = normalized.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
-  guard !lines.isEmpty else {
+  guard !normalized.isEmpty else {
     return WorkAssistantMessagePreview(text: markdown, isTruncated: false, visibleLineCount: 0, totalLineCount: 0)
   }
 
   let clampedLineBudget = max(lineBudget, 1)
   let clampedCharacterBudget = max(characterBudget, 256)
-  if lines.count <= clampedLineBudget && normalized.count <= clampedCharacterBudget {
+  let totalLineCount = workAssistantMessageLineCount(normalized)
+  if totalLineCount <= clampedLineBudget && normalized.count <= clampedCharacterBudget {
     return WorkAssistantMessagePreview(
       text: markdown,
       isTruncated: false,
-      visibleLineCount: lines.count,
-      totalLineCount: lines.count
+      visibleLineCount: totalLineCount,
+      totalLineCount: totalLineCount
     )
   }
 
-  var renderedLines: [String] = []
-  renderedLines.reserveCapacity(min(lines.count, clampedLineBudget))
+  var rendered = String()
+  rendered.reserveCapacity(min(normalized.count, clampedCharacterBudget))
   var usedCharacters = 0
+  var visibleLineCount = 0
+  var lineStart = normalized.startIndex
 
-  for line in lines {
-    guard renderedLines.count < clampedLineBudget else { break }
-    let newlineCost = renderedLines.isEmpty ? 0 : 1
+  while lineStart <= normalized.endIndex, visibleLineCount < clampedLineBudget {
+    let lineEnd = normalized[lineStart...].firstIndex(of: "\n") ?? normalized.endIndex
+    let newlineCost = visibleLineCount == 0 ? 0 : 1
     let remaining = clampedCharacterBudget - usedCharacters - newlineCost
     guard remaining > 0 else { break }
 
-    if line.count > remaining {
-      renderedLines.append(String(line.prefix(remaining)))
+    if visibleLineCount > 0 {
+      rendered.append("\n")
+      usedCharacters += 1
+    }
+
+    let lineLength = normalized.distance(from: lineStart, to: lineEnd)
+    if lineLength > remaining {
+      let prefixEnd = normalized.index(lineStart, offsetBy: remaining)
+      rendered.append(contentsOf: normalized[lineStart..<prefixEnd])
       usedCharacters = clampedCharacterBudget
+      visibleLineCount += 1
       break
     }
 
-    renderedLines.append(line)
-    usedCharacters += line.count + newlineCost
+    rendered.append(contentsOf: normalized[lineStart..<lineEnd])
+    usedCharacters += lineLength
+    visibleLineCount += 1
+
+    guard lineEnd < normalized.endIndex else { break }
+    lineStart = normalized.index(after: lineEnd)
   }
 
-  let previewText = renderedLines.joined(separator: "\n")
   return WorkAssistantMessagePreview(
-    text: previewText,
-    isTruncated: renderedLines.count < lines.count || previewText.count < normalized.count,
-    visibleLineCount: renderedLines.count,
-    totalLineCount: lines.count
+    text: rendered,
+    isTruncated: visibleLineCount < totalLineCount || rendered.count < normalized.count,
+    visibleLineCount: visibleLineCount,
+    totalLineCount: totalLineCount
   )
+}
+
+private func workAssistantMessageLineCount(_ text: String) -> Int {
+  text.reduce(1) { count, character in
+    character == "\n" ? count + 1 : count
+  }
 }
 
 func workAssistantMessageAccessibilityLabel(_ preview: WorkAssistantMessagePreview) -> String {

@@ -6,20 +6,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 const RUNTIME_ACTION_CHANNEL: Record<string, Record<string, string>> = {
-  macos_vm: {
-    provision: IPC.macosVmProvision,
-    start: IPC.macosVmStart,
-    stop: IPC.macosVmStop,
-    restart: IPC.macosVmRestart,
-    delete: IPC.macosVmDelete,
-    wipe: IPC.macosVmWipe,
-    installRuntime: IPC.macosVmInstallRuntime,
-    focusWindow: IPC.macosVmFocusWindow,
-    click: IPC.macosVmClick,
-    selectPoint: IPC.macosVmSelectPoint,
-    typeText: IPC.macosVmTypeText,
-    captureScreenshot: IPC.macosVmCaptureScreenshot,
-  },
   lane: {
     create: IPC.lanesCreate,
     createChild: IPC.lanesCreateChild,
@@ -100,28 +86,6 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
       return 10 * 60_000;
     case IPC.transcriptionTranscribe:
       return 6 * 60_000;
-    case IPC.macosVmProvision:
-    case IPC.macosVmStart:
-    case IPC.macosVmRestart:
-    case IPC.macosVmInstallRuntime:
-      return 120 * 60_000;
-    case IPC.macosVmStop:
-      return 2 * 60_000;
-    case IPC.macosVmDelete:
-    case IPC.macosVmWipe:
-      // wipe() and deleteVm() both call `runLume("delete", …)` with a
-      // 10-minute internal budget. A shorter IPC ceiling would fire while
-      // the lume process is still running, leaving the store record
-      // unchanged (VM appears to still exist) but the underlying process
-      // orphaned. Match the internal budget so the renderer sees the real
-      // completion outcome.
-      return 10 * 60_000;
-    case IPC.macosVmCaptureScreenshot:
-    case IPC.macosVmFocusWindow:
-    case IPC.macosVmClick:
-    case IPC.macosVmSelectPoint:
-    case IPC.macosVmTypeText:
-      return 60_000;
     case IPC.iosSimulatorListLaunchTargets:
     case IPC.iosSimulatorGetScreenSnapshot:
     case IPC.iosSimulatorInspectPoint:

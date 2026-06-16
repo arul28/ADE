@@ -1,6 +1,6 @@
 ---
 name: ade-perf-work
-description: Performance and UX patterns discovered for ADE's Work tab, including chat/CLI/shell launch surfaces, the Work tools pane, Git/Files/iOS/App Control/Browser/Mac VM panels, and local-runtime-disabled perf runs. Read before editing Work tab code.
+description: Performance and UX patterns discovered for ADE's Work tab, including chat/CLI/shell launch surfaces, the Work tools pane, Git/Files/iOS/App Control/Browser panels, and local-runtime-disabled perf runs. Read before editing Work tab code.
 metadata:
   author: ADE
   version: 0.1.0
@@ -17,7 +17,7 @@ Read this before editing Work tab surfaces:
 - `apps/desktop/src/renderer/components/files/FilesPage.tsx` when embedded
 - `apps/desktop/src/preload/preload.ts`
 - `apps/desktop/src/main/services/ipc/registerIpc.ts`
-- Work-facing tool services for iOS Simulator, App Control, built-in browser, and macOS VM
+- Work-facing tool services for iOS Simulator, App Control, and built-in browser
 
 ## Measurement pattern
 
@@ -49,7 +49,7 @@ Drive actual Work UI actions and record `work.audit.*` markers for:
 - Work tools pane open/close
 - Git: status, More menu, history refresh, diff selection
 - Files: mount and path filtering
-- iOS Sim, App Control, Browser, Mac VM panel mounts
+- iOS Sim, App Control, and Browser panel mounts
 
 Do not start from a fixed deterministic scenario list. Scenario files are only
 optional evidence after the Work UI inventory exposes a real workflow. The
@@ -139,7 +139,7 @@ The Work tools pane can be narrow after the session list, chat surface, and tool
 
 Measured UI pass after compact tabs:
 
-- Git, Files, iOS Sim, App Control, Browser, and Mac VM tabs were all visible and clickable in the narrow tools pane.
+- Git, Files, iOS Sim, App Control, and Browser tabs were all visible and clickable in the narrow tools pane.
 - No tools tab had a bounding rect beyond the renderer viewport.
 
 If changing `WorkSidebar`, verify with a small Work pane and a larger audit window. The target is no clipped or unreachable tool tabs, not merely no TypeScript errors.
@@ -336,15 +336,6 @@ Measured Work run `work-chat-controls-20260512-02`:
   element, selecting a source-context point, and re-attaching that selected
   point. Do not use it as evidence for screenshot control clicks,
   element-crop attachment, Type/send, Stop, Run, or Connect.
-- Mac VM provisioning fields are safe to measure as state-only controls when
-  restored afterward: CPU, memory, disk, display, source mode, source image, and
-  local viewer checkbox. Do not click Start, Provision, Stop, Focus,
-  Screenshot, Delete, or Setup docs during a normal inventory pass unless the
-  row state explicitly allows that sandbox/external/prompt path.
-- `MacosVmPanel.test.tsx` can cover selecting a mocked VM screenshot point and
-  editing the local VM text input without clicking the externally visible
-  Click/Type actions. Keep actual VM click/type/send rows sandbox-only unless a
-  throwaway VM run is explicitly allowed.
 - For iOS Simulator tools, switch the Work lane to a real existing worktree
   before measuring status, launch-target, or Preview Lab refresh. Missing lane
   worktrees produce useful fixture evidence but should not be the only proof for
@@ -454,5 +445,5 @@ Do not expose the raw `Error invoking remote method ...` prefix in Work Git hist
   local-runtime-disabled perf pass, around `260ms`. Optimize only after checking
   model/provider availability behavior in Settings and launch surfaces.
 - Browser panel mount creates built-in browser tabs and can cost about `400-500ms` per tab creation in UI probes. Optimize only after checking that tab reuse and hidden WebContentsView bounds behavior remain correct.
-- iOS Simulator and macOS VM status calls are visible costs when those panels mount. Keep them lazy to the active tools tab.
-- Avoid hidden panel polling. App Control, iOS Simulator, Browser, and Mac VM should subscribe or poll only while their tab is active, unless a feature explicitly needs background state.
+- iOS Simulator status calls are visible costs when those panels mount. Keep them lazy to the active tools tab.
+- Avoid hidden panel polling. App Control, iOS Simulator, and Browser should subscribe or poll only while their tab is active, unless a feature explicitly needs background state.
