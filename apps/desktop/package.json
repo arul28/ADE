@@ -65,7 +65,7 @@
     "@lobehub/fluent-emoji": "^4.1.0",
     "@lobehub/icons": "^5.2.0",
     "@lobehub/icons-static-svg": "^1.84.0",
-    "@lobehub/ui": "^5.6.3",
+    "@lobehub/ui": "^5.15.16",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@novnc/novnc": "^1.7.0",
     "@openai/codex": "0.133.0",
