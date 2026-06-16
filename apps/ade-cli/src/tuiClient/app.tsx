@@ -10967,7 +10967,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       const end = Boolean((key as { end?: boolean }).end);
       const paletteOpen = (activeMentionRange != null && mentionSuggestions.length > 0) || slashRows.length > 0;
       const pageRows = Math.max(1, chatRowBudget - 2);
-      if (!paletteOpen && key.downArrow && effectiveChatScrollOffsetRows <= 0) {
+      if (!paletteOpen && key.downArrow && effectiveChatScrollOffsetRows <= 0 && !pendingQuestionKeyActive) {
         setInlineRowFocus({ cell: providerLockedRef.current ? "model" : "provider" });
         return;
       }
@@ -11017,7 +11017,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           return;
         }
       }
-      if (!paletteOpen && (key.upArrow || key.downArrow)) {
+      if (!paletteOpen && (key.upArrow || key.downArrow) && !pendingQuestionKeyActive) {
         setChatScrollOffset((offset) => offset + (key.upArrow ? 1 : -1));
         return;
       }
