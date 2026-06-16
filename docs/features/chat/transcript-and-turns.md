@@ -233,8 +233,8 @@ Chat replay prefers the dedicated per-session JSONL at
 `.ade/transcripts/chat/<sessionId>.jsonl`; the legacy managed transcript path
 can still exist for compatibility and may be byte-capped by the terminal/session
 storage budget. When multiple transcript candidates are present, recovery uses
-the most complete readable candidate so old capped files do not hide newer chat
-history.
+the newest readable candidate and falls back to file size only as a tie-breaker,
+so older raw/capped files do not hide newer compacted chat history.
 
 Persisted chat events keep the same public `AgentChatEvent` shape, but bulky
 payloads are compacted before storage for rows users rarely need in full after

@@ -6875,8 +6875,8 @@ export function createAgentChatService(args: {
         if (!stat.isFile()) continue;
         if (
           !best
-          || stat.size > best.size
-          || (stat.size === best.size && stat.mtimeMs > best.mtimeMs)
+          || stat.mtimeMs > best.mtimeMs
+          || (stat.mtimeMs === best.mtimeMs && stat.size > best.size)
         ) {
           best = { path: transcriptPath, size: stat.size, mtimeMs: stat.mtimeMs };
         }
@@ -6905,10 +6905,10 @@ export function createAgentChatService(args: {
     return { envelopes: [], truncated: false, startOffset: 0 };
   };
 
-  // Resolve the most complete on-disk transcript path for a session the same
+  // Resolve the best on-disk transcript path for a session the same
   // way readTranscriptEnvelopesForSessionId does. The dedicated chat transcript
-  // can continue beyond the legacy transcript_path cap, so prefer the largest
-  // readable candidate rather than blindly taking the row's transcript_path.
+  // can continue beyond the legacy transcript_path cap and compact bulky rows,
+  // so prefer the newest readable candidate and use size only as a tie-breaker.
   // Used by getChatEventHistoryPage.
   const resolveTranscriptPathForSessionId = (sessionId: string): string | null => {
     return resolveBestTranscriptPathForSessionId(sessionId, managedSessions.get(sessionId));

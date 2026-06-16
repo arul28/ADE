@@ -11561,6 +11561,55 @@ describe("createAgentChatService", () => {
       )).toEqual(["legacy-before-cap", "dedicated-after-cap"]);
     });
 
+    it("hydrates from the newer dedicated chat transcript even when compacted storage makes it smaller", async () => {
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      const staleLegacyEnvelope: AgentChatEventEnvelope = {
+        sessionId: session.id,
+        timestamp: "2026-04-23T10:00:00.000Z",
+        event: { type: "text", text: "legacy-stale-large" },
+        sequence: 1,
+      };
+      const newerDedicatedEnvelope: AgentChatEventEnvelope = {
+        sessionId: session.id,
+        timestamp: "2026-04-23T10:01:00.000Z",
+        event: { type: "text", text: "dedicated-newer-compacted" },
+        sequence: 2,
+      };
+
+      const legacyTranscriptFile = path.join(tmpRoot, "transcripts", `${session.id}.chat.jsonl`);
+      const dedicatedTranscriptFile = path.join(tmpRoot, ".ade", "transcripts", "chat", `${session.id}.jsonl`);
+      fs.writeFileSync(
+        legacyTranscriptFile,
+        `${JSON.stringify(staleLegacyEnvelope)}\n${"raw-legacy-padding\n".repeat(4096)}`,
+        "utf8",
+      );
+      fs.writeFileSync(
+        dedicatedTranscriptFile,
+        `${JSON.stringify(newerDedicatedEnvelope)}\n`,
+        "utf8",
+      );
+      fs.utimesSync(legacyTranscriptFile, new Date("2026-04-23T10:00:00.000Z"), new Date("2026-04-23T10:00:00.000Z"));
+      fs.utimesSync(dedicatedTranscriptFile, new Date("2026-04-23T10:01:00.000Z"), new Date("2026-04-23T10:01:00.000Z"));
+      vi.mocked(parseAgentChatTranscript).mockImplementation((raw) =>
+        raw.includes("dedicated-newer-compacted")
+          ? [newerDedicatedEnvelope]
+          : [staleLegacyEnvelope],
+      );
+
+      const history = service.getChatEventHistory(session.id);
+
+      expect(fs.statSync(legacyTranscriptFile).size).toBeGreaterThan(fs.statSync(dedicatedTranscriptFile).size);
+      expect(history.events.map((envelope) =>
+        envelope.event.type === "text" ? envelope.event.text : "",
+      )).toEqual(["dedicated-newer-compacted"]);
+    });
+
     it("bounds oversized transcript hydration before parsing", async () => {
       const { service } = createService();
       const session = await service.createSession({
@@ -11888,7 +11937,7 @@ describe("createAgentChatService", () => {
         event: { type: "text", text: "before-delete" },
         sequence: 1,
       };
-      // The legacy transcript is larger than the session_init-only dedicated
+      // The legacy transcript is newer than the session_init-only dedicated
       // transcript, so hydration reads this seeded file.
       const transcriptFile = path.join(tmpRoot, "transcripts", `${session.id}.chat.jsonl`);
       fs.mkdirSync(path.dirname(transcriptFile), { recursive: true });
