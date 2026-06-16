@@ -1,9 +1,9 @@
 import { motion } from "framer-motion";
 
 const SLIDES = [
-    { src: "/images/splash/left.png", alt: "ADE — worktrees and automations" },
-    { src: "/images/splash/middle.png", alt: "ADE — main workspace" },
-    { src: "/images/splash/right.png", alt: "ADE — editor and tools" },
+    { src: "/images/hero/hero-tui.png", alt: "ADE Code TUI — terminal Work chat" },
+    { src: "/images/hero/hero-desktop.png", alt: "ADE on macOS — desktop workspace" },
+    { src: "/images/hero/hero-mobile.png", alt: "ADE on iOS — mobile companion" },
 ] as const;
 
 export function HeroVisual() {

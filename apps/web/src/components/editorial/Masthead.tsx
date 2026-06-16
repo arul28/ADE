@@ -1,9 +1,8 @@
 import { LINKS } from "../../lib/links";
-import { EDITORIAL_ISSUE } from "./issue";
 
 /**
  * Magazine masthead — top bar on the dark cover.
- * Real ADE wordmark on the left, issue label centered, small nav on right.
+ * ADE wordmark on the left, small nav on the right.
  */
 export function Masthead() {
   return (
@@ -17,12 +16,6 @@ export function Masthead() {
             style={{ filter: "brightness(1.05)" }}
           />
         </a>
-
-        <div className="hidden flex-1 text-center md:block">
-          <span className="text-[11px] uppercase tracking-[0.22em] text-[color:var(--color-cream-muted)]">
-            {EDITORIAL_ISSUE.volume} &middot; {EDITORIAL_ISSUE.version} &middot; {EDITORIAL_ISSUE.monthYear}
-          </span>
-        </div>
 
         <nav className="ml-auto flex shrink-0 items-center gap-3 text-[11px] uppercase tracking-[0.12em] sm:gap-5 sm:text-[12px] sm:tracking-[0.14em]">
           <a

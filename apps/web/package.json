@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:detach": "nohup vite >> .vite-dev.log 2>&1 & echo \"Vite detached on http://localhost:4180/ (log: .vite-dev.log)\"",
     "build": "tsc -p tsconfig.json --noEmit && vite build",
     "preview": "vite preview",
     "typecheck": "tsc -p tsconfig.json --noEmit"

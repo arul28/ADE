@@ -145,12 +145,43 @@ body {
   animation: gradient-shift 4s ease-in-out infinite alternate;
 }
 
+.ade-rainbow-text {
+  background: linear-gradient(
+    90deg,
+    #ff6b6b 0%,
+    #feca57 16%,
+    #48dbfb 33%,
+    #1dd1a1 50%,
+    #a78bfa 66%,
+    #ff9ff3 83%,
+    #ff6b6b 100%
+  );
+  background-size: 250% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: ade-rainbow-flow 7s linear infinite;
+}
+
+@keyframes ade-rainbow-flow {
+  from { background-position: 0% center; }
+  to { background-position: 250% center; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .animate-marquee,
   .animate-marquee-reverse,
   .animate-splash-marquee-ltr,
-  .animate-gradient-text {
+  .animate-gradient-text,
+  .ade-rainbow-text {
     animation: none;
+  }
+
+  .ade-rainbow-text {
+    background: none;
+    -webkit-background-clip: unset;
+    background-clip: unset;
+    color: var(--color-violet-bright);
   }
 
   .hero-splash-carousel .animate-splash-marquee-ltr {

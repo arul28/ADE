@@ -1,89 +1,110 @@
 import { motion, useReducedMotion } from "framer-motion";
-import { EDITORIAL_ISSUE } from "./issue";
+
+const HERO_IMAGES = {
+  tui: { src: "/images/hero/hero-tui.png", alt: "ADE Code TUI — terminal-native Work chat" },
+  desktop: { src: "/images/hero/hero-desktop.png", alt: "ADE on macOS — desktop Work workspace" },
+  mobile: { src: "/images/hero/hero-mobile.png", alt: "ADE on iOS — mobile companion" },
+} as const;
+
+const panelFrame =
+  "overflow-hidden border border-[color:var(--color-hairline-strong)] bg-[#07070b] ring-1 ring-white/[0.04]";
 
 /**
- * Right column of the fold — MacBook + iPhone on violet halo + Fig. 1 caption.
+ * Hero product trio — desktop hero with smaller TUI + iOS in the bottom corners.
  */
 export function DeviceComposition() {
   const reduceMotion = useReducedMotion() ?? true;
+
+  const panel = (delay: number) =>
+    reduceMotion
+      ? {}
+      : {
+          initial: { opacity: 0, y: 24 },
+          animate: { opacity: 1, y: 0 },
+          transition: { duration: 0.85, delay, ease: [0.22, 1, 0.36, 1] as const },
+        };
 
   return (
     <motion.div
       initial={reduceMotion ? false : { opacity: 0, y: 30 }}
       animate={reduceMotion ? undefined : { opacity: 1, y: 0 }}
       transition={{ duration: 0.9, delay: 0.55, ease: [0.22, 1, 0.36, 1] }}
-      className="relative flex flex-col items-center"
+      className="relative w-full self-stretch"
     >
-      {/* Violet halo */}
       <div
         aria-hidden
-        className="pointer-events-none absolute inset-0 -m-6"
+        className="pointer-events-none absolute inset-0 -m-10"
         style={{
           background:
-            "radial-gradient(ellipse 55% 55% at 50% 45%, rgba(124,58,237,0.5) 0%, rgba(124,58,237,0.14) 40%, transparent 75%)",
-          filter: "blur(10px)",
+            "radial-gradient(ellipse 70% 60% at 50% 50%, rgba(124,58,237,0.45) 0%, rgba(124,58,237,0.12) 45%, transparent 78%)",
+          filter: "blur(14px)",
           zIndex: 0,
         }}
       />
 
-      <div className="relative z-[1] aspect-[1/0.78] w-full">
-        {/* MacBook */}
-        <div
-          className="absolute left-[-2%] top-[8%] w-[104%] 2xl:left-[-9%] 2xl:w-[122%]"
-          style={{
-            boxShadow: "0 30px 50px rgba(0,0,0,0.55)",
-            borderRadius: "10px 10px 14px 14px",
-          }}
+      <div className="@container relative isolate mx-auto w-full max-w-[1650px] min-w-0 overflow-visible pb-[8%] @md:pb-[10%] @xl:pb-[12%]">
+        {/* Desktop — primary layer; container height follows this image */}
+        <motion.div
+          {...panel(0.65)}
+          className="relative z-0 motion-safe:transition-transform motion-safe:duration-500"
+          style={{ filter: "drop-shadow(0 36px 64px rgba(0,0,0,0.58))" }}
         >
-          <div className="relative aspect-[2556/1411] overflow-hidden rounded-t-[10px] border border-[color:var(--color-hairline-strong)] bg-[#07070b]">
+          <div className={`${panelFrame} rounded-[clamp(8px,1vw,14px)]`}>
             <img
-              src="/images/screenshots/hero-mac.png"
-              alt="ADE on macOS"
+              src={HERO_IMAGES.desktop.src}
+              alt={HERO_IMAGES.desktop.alt}
               loading="eager"
               fetchPriority="high"
               decoding="sync"
-              className="block h-full w-full object-cover object-top"
+              className="block h-auto w-full"
             />
           </div>
-          <div
-            className="relative h-[10px] border-x border-b border-[color:var(--color-hairline)] rounded-b-[14px]"
-            style={{
-              background: "linear-gradient(180deg, #1e1e24, #0d0d12)",
-            }}
-          >
-            <span
-              className="absolute left-1/2 top-0 h-[3px] w-[80px] -translate-x-1/2 rounded-b-[3px]"
-              style={{ background: "rgba(0,0,0,0.6)" }}
-            />
-          </div>
-        </div>
+        </motion.div>
 
-        {/* iPhone */}
-        <div
-          className="absolute right-[-4%] bottom-[-6%] w-[26%] 2xl:right-[-19%] 2xl:w-[31%]"
-          style={{
-            boxShadow: "0 30px 50px rgba(124,58,237,0.55)",
-            borderRadius: "36px",
-          }}
+        {/* TUI — bottom-left corner of desktop; sizes track container, not viewport */}
+        <motion.div
+          {...panel(0.8)}
+          className="absolute bottom-[16%] left-[-4%] z-20 w-[44%] origin-bottom-left -rotate-[2deg] motion-safe:transition-transform motion-safe:duration-500 motion-safe:ease-out @md:bottom-[18%] @md:left-[-10%] @md:w-[50%] @xl:bottom-[20%] @xl:left-[-18%] @xl:w-[54%] [@media(hover:hover)]:hover:z-40 [@media(hover:hover)]:hover:scale-[1.14] [@media(hover:hover)]:hover:rotate-0"
+          style={{ filter: "drop-shadow(0 24px 40px rgba(0,0,0,0.65))" }}
         >
-          <div className="relative aspect-[1206/2622] overflow-hidden rounded-[36px] border-[6px] border-[#0c0c12] bg-black ring-1 ring-[color:var(--color-hairline-strong)]">
+          <div className={`${panelFrame} rounded-[clamp(6px,0.7vw,10px)]`}>
             <img
-              src="/images/screenshots/hero-iphone.png"
-              alt="ADE on iOS"
+              src={HERO_IMAGES.tui.src}
+              alt={HERO_IMAGES.tui.alt}
               loading="eager"
-              decoding="sync"
-              className="block h-full w-full object-cover object-top"
+              decoding="async"
+              className="block h-auto w-full"
             />
           </div>
-        </div>
-      </div>
+        </motion.div>
 
-      <div className="relative z-[1] mt-8 max-w-[380px] self-end text-right font-serif italic text-[color:var(--color-cream-muted)]"
-           style={{ fontSize: "16px", lineHeight: 1.4 }}>
-        <span className="mr-[10px] inline-block align-middle font-sans text-[10px] uppercase tracking-[0.22em] not-italic text-[color:var(--color-violet-bright)]">
-          Fig. 1
-        </span>
-        ADE, <em className="text-[color:var(--color-cream)]">on desk and in hand</em>. Photographed {EDITORIAL_ISSUE.monthYear}.
+        {/* iOS — wrapped in a real iPhone bezel: dark border, rounded corners,
+            Dynamic Island, inner violet glow. */}
+        <motion.div
+          {...panel(0.9)}
+          className="absolute bottom-[10%] right-[-2%] z-30 w-[17%] origin-bottom-right rotate-[3deg] motion-safe:transition-transform motion-safe:duration-500 motion-safe:ease-out @md:bottom-[12%] @md:right-[-6%] @md:w-[19%] @xl:bottom-[14%] @xl:right-[-10%] @xl:w-[21%] [@media(hover:hover)]:hover:z-40 [@media(hover:hover)]:hover:scale-[1.14] [@media(hover:hover)]:hover:rotate-0"
+          style={{ filter: "drop-shadow(0 28px 48px rgba(124,58,237,0.45))" }}
+        >
+          <div className="relative aspect-[9/19.5] overflow-hidden rounded-[clamp(22px,2.6vw,40px)] border-[clamp(4px,0.55vw,8px)] border-[#0c0c12] bg-black ring-1 ring-[color:var(--color-hairline-strong)]">
+            {/* Dynamic Island */}
+            <div
+              aria-hidden="true"
+              className="absolute left-1/2 top-[clamp(4px,0.5vw,8px)] z-[2] h-[clamp(9px,1vw,18px)] w-[38%] -translate-x-1/2 rounded-full bg-black"
+            />
+            <img
+              src={HERO_IMAGES.mobile.src}
+              alt={HERO_IMAGES.mobile.alt}
+              loading="eager"
+              decoding="async"
+              className="block h-full w-full object-cover object-top"
+            />
+            <div
+              aria-hidden
+              className="pointer-events-none absolute inset-0"
+              style={{ boxShadow: "inset 0 0 30px rgba(124,58,237,0.28)" }}
+            />
+          </div>
+        </motion.div>
       </div>
     </motion.div>
   );
