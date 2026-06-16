@@ -1,36 +1,35 @@
 <p align="center">
   <a href="https://ade-app.dev">
-    <img src="assets/logo.png" alt="ADE" width="260" />
+    <img src="assets/logo.png" alt="ADE" width="240" />
   </a>
 </p>
 
 <p align="center">
   <strong>A single native workspace for every AI coding agent.</strong><br />
-  <em>macOS, Windows, iOS, CLI — synced in real time.</em>
+  <em>macOS, iOS, CLI — synced in real time.</em>
 </p>
 
 <p align="center">
-  <a href="https://ade-app.dev"><strong>Website</strong></a>
-  &nbsp;·&nbsp;
-  <a href="https://ade-app.dev/docs"><strong>Docs</strong></a>
-  &nbsp;·&nbsp;
-  <a href="https://github.com/arul28/ADE/releases/latest"><strong>Download</strong></a>
-  &nbsp;·&nbsp;
-  <a href="https://www.ade-app.dev/docs/changelog"><strong>Changelog</strong></a>
-</p>
-
-<p align="center">
-  <img src="https://img.shields.io/badge/100%25%20Free-7c3aed?style=flat-square&labelColor=1a1a24" alt="100% Free" />
-  <img src="https://img.shields.io/badge/Open%20Source-a78bfa?style=flat-square&labelColor=1a1a24" alt="Open source" />
-  <a href="LICENSE"><img src="https://img.shields.io/badge/AGPL--3.0-efe6d0?style=flat-square&labelColor=1a1a24" alt="AGPL-3.0 license" /></a>
-  <a href="https://github.com/arul28/ADE/releases/latest"><img src="https://img.shields.io/github/v/release/arul28/ADE?label=latest&style=flat-square&labelColor=1a1a24&color=a78bfa" alt="Latest release" /></a>
-  <a href="https://github.com/arul28/ADE/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/arul28/ADE/ci.yml?branch=main&label=CI&style=flat-square&labelColor=1a1a24" alt="CI status" /></a>
-</p>
-
-<p align="center">
-  <img src="assets/readme/hero-desktop.png" alt="ADE on macOS" width="720" />
+  <a href="https://github.com/arul28/ADE/releases/latest"><img src="https://img.shields.io/badge/Download_for_macOS-7C3AED?style=for-the-badge&logo=apple&logoColor=white" alt="Download for macOS" /></a>
   &nbsp;
-  <img src="assets/readme/hero-iphone.png" alt="ADE on iOS" width="180" />
+  <a href="https://ade-app.dev"><img src="https://img.shields.io/badge/Website-12101a?style=for-the-badge&logo=googlechrome&logoColor=a78bfa" alt="Website" /></a>
+  &nbsp;
+  <a href="https://ade-app.dev/docs"><img src="https://img.shields.io/badge/Docs-12101a?style=for-the-badge&logo=readthedocs&logoColor=a78bfa" alt="Docs" /></a>
+  &nbsp;
+  <a href="https://github.com/arul28/ADE"><img src="https://img.shields.io/badge/GitHub-12101a?style=for-the-badge&logo=github&logoColor=a78bfa" alt="GitHub" /></a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/arul28/ADE/releases/latest"><img src="https://img.shields.io/github/v/release/arul28/ADE?style=flat-square&label=release&labelColor=12101a&color=a78bfa" alt="Latest release" /></a>
+  <a href="https://github.com/arul28/ADE/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/arul28/ADE/ci.yml?branch=main&style=flat-square&label=CI&labelColor=12101a&color=7c3aed" alt="CI" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-7c3aed?style=flat-square&labelColor=12101a" alt="AGPL-3.0" /></a>
+  <img src="https://img.shields.io/github/downloads/arul28/ADE/total?style=flat-square&label=downloads&labelColor=12101a&color=a78bfa" alt="Downloads" />
+  <a href="https://github.com/arul28/ADE/stargazers"><img src="https://img.shields.io/github/stars/arul28/ADE?style=flat-square&labelColor=12101a&color=a78bfa" alt="Stars" /></a>
+  <img src="https://img.shields.io/badge/macOS-13%2B-efe6d0?style=flat-square&labelColor=12101a" alt="macOS 13+" />
+</p>
+
+<p align="center">
+  <a href="https://ade-app.dev"><img src="assets/readme/hero.png" alt="ADE — every AI coding tool, one app that runs everywhere" width="900" /></a>
 </p>
 
 ADE runs **Claude Code, Codex, Cursor, Factory Droid, OpenCode** — every major AI coding agent — inside one native workspace. Claude runs through the bundled Claude Agent SDK, while desktop and `ade code` share the same worktree-scoped chat runtime. Every task is its own git worktree, so agents ship features in parallel. Review and merge PRs in-app. Approve a diff from your phone while another agent tests on your Mac.
@@ -42,12 +41,12 @@ Free, open source, local-first. Bring your own keys or subs.
 <table>
 <tr>
 <td width="55%" valign="middle">
-  <img src="apps/web/public/images/screenshots/lanes.png" alt="Parallel worktrees" />
+  <img src="assets/readme/auto-worktrees.gif" alt="Auto-create a git worktree from a task" />
 </td>
 <td width="45%" valign="middle">
 
 ### Manage worktrees. In parallel.
-Every task gets its own git worktree. Branch, edit, test, and commit side by side — no stashing, no rebasing, no context switch.
+Every task gets its own git worktree. Describe it and ADE spins up the branch — edit, test, and commit side by side, with no stashing, no rebasing, no context switch.
 
 </td>
 </tr>
@@ -56,52 +55,70 @@ Every task gets its own git worktree. Branch, edit, test, and commit side by sid
 <td width="45%" valign="middle">
 
 ### Every coding agent. One workspace.
-Claude Code, Codex, Cursor, Factory Droid, OpenCode — pick whichever model fits the task. All run against the same worktree, with live diffs and approval gates.
+Claude Code, Codex, Cursor, Factory Droid, OpenCode — pick whichever model fits the task. All run against the same worktree, with live diffs and approval gates. Grid view tiles every run side by side.
 
 </td>
 <td width="55%" valign="middle">
-  <img src="apps/web/public/images/screenshots/run.png" alt="An agent executing live" />
+  <img src="assets/readme/grid-view.gif" alt="Grid view — multiple agents running in parallel" />
 </td>
 </tr>
 
 <tr>
 <td width="55%" valign="middle">
-  <img src="apps/web/public/images/screenshots/prs.png" alt="Pull request review" />
+  <img src="assets/readme/ade-code-tui.gif" alt="ADE Code — the terminal-native TUI" />
 </td>
+<td width="45%" valign="middle">
+
+### The whole IDE. In your terminal.
+`ade code` is ADE, terminal-native — the same worktrees, chats, and PRs in a fast TUI. Start in the shell, finish on the desktop or your phone.
+
+</td>
+</tr>
+
+<tr>
 <td width="45%" valign="middle">
 
 ### Open, review, and merge PRs.
 Every PR your agents open lands in ADE — diff, CI, comments, merge button. No GitHub tab. Auto-merge when green.
 
 </td>
+<td width="55%" valign="middle">
+  <img src="assets/readme/pr-review.webp" alt="Pull request review inside ADE" />
+</td>
 </tr>
 
 <tr>
+<td width="55%" valign="middle">
+  <img src="assets/readme/cto.webp" alt="The CTO — a team of worker agents" />
+</td>
 <td width="45%" valign="middle">
 
 ### The conductor for your agents.
 An always-on CTO with context across every worktree. Pulls work from Linear, dispatches to the right worker, reports back when it's done.
 
 </td>
-<td width="55%" valign="middle">
-  <img src="apps/web/public/images/screenshots/cto.png" alt="The CTO agent" />
-</td>
 </tr>
 
 <tr>
-<td width="55%" valign="middle" align="center">
-  <img src="apps/web/public/images/screenshots/agent-chat.png" alt="ADE on iOS" width="240" />
-</td>
 <td width="45%" valign="middle">
 
 ### Everything above. On your phone.
 Every worktree, every agent, every PR — synced to iOS. Start a task on macOS, approve the diff from the train.
 
 </td>
+<td width="55%" valign="middle" align="center">
+  <img src="assets/readme/mobile-chat.webp" alt="ADE on iOS — agent chat" width="216" />
+  &nbsp;
+  <img src="assets/readme/mobile-pr.webp" alt="ADE on iOS — pull requests" width="216" />
+</td>
 </tr>
 </table>
 
-Plus files, terminals, git history, workspace graph, multi-tasking, Linear sync, cron automations, computer-use proofs, and the `ade` CLI.
+<p align="center">
+  <img src="assets/readme/worktree-graph.webp" alt="The worktree graph — dependencies, conflict risk, and rebase order" width="900" />
+</p>
+
+Plus files, terminals, git history, the workspace graph, multi-tasking, Linear sync, cron automations, computer-use proofs, and the `ade` CLI.
 
 ## Install
 

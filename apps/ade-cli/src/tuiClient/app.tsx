@@ -271,6 +271,9 @@ type DrawerChatAction = "new-chat";
 // — fewer, larger renders means far less per-token transcript re-wrap/flicker,
 // while staying well within smooth-streaming range for text.
 const CHAT_EVENT_FLUSH_MS = 48;
+const PTY_ATTACHED_FLUSH_MS = 16;
+const PTY_PREVIEW_FLUSH_MS = 32;
+const TERMINAL_PREVIEW_POLL_MS = 1_000;
 
 function isChatFlushEdge(eventType: string): boolean {
   // Only the event types that drive an immediate side-effect below (spinner /
@@ -469,6 +472,91 @@ export function isTerminalSessionFastPollActive(session: TerminalSessionActivity
   return session.status === "running"
     && (session.runtimeState === "running" || session.runtimeState === "waiting-input")
     && isProcessLikelyAlive(session.pid);
+}
+
+export function shouldBufferPtyDataForSession(args: {
+  sessionId: string;
+  activeSessionId: string | null;
+  multiView: { tiles: ReadonlyArray<{ sessionId: string }> } | null;
+  gridViewActive: boolean;
+}): boolean {
+  if (args.sessionId === args.activeSessionId) return true;
+  return args.gridViewActive
+    && Boolean(args.multiView?.tiles.some((tile) => tile.sessionId === args.sessionId));
+}
+
+export function gridTabNavigationTarget(args: {
+  drawerOpen: boolean;
+  rightOpen: boolean;
+  tileCount: number;
+}): "panes" | "tiles" {
+  if (args.drawerOpen || args.rightOpen) return "panes";
+  return args.tileCount > 1 ? "tiles" : "panes";
+}
+
+function terminalPreviewFrameKey(preview: ChatTerminalPreviewResult | null): string {
+  if (!preview) return "null";
+  const snapshot = preview.snapshot ?? null;
+  const snapshotBody = snapshot
+    ? snapshot.serialized || JSON.stringify(snapshot.visibleRows)
+    : "";
+  return [
+    preview.terminalId,
+    preview.source,
+    preview.session.status,
+    preview.session.runtimeState,
+    preview.session.title,
+    preview.session.resumeCommand ?? "",
+    snapshot?.cols ?? "",
+    snapshot?.rows ?? "",
+    snapshot?.bufferType ?? "",
+    snapshot?.baseY ?? "",
+    snapshot?.viewportY ?? "",
+    snapshot?.cursorX ?? "",
+    snapshot?.cursorY ?? "",
+    snapshotBody,
+    preview.transcript ?? "",
+  ].join("\u001f");
+}
+
+export function sameTerminalPreviewFrame(
+  previous: ChatTerminalPreviewResult | null,
+  next: ChatTerminalPreviewResult | null,
+): boolean {
+  return terminalPreviewFrameKey(previous) === terminalPreviewFrameKey(next);
+}
+
+// Scope tag captured when a notice fires. A live chat uses its session id; a
+// new-chat draft uses its per-draft key so feedback can't leak across drafts;
+// anything else is null (global) and falls back to whatever chat is active.
+export function noticeScopeId(args: {
+  activeSessionId: string | null;
+  draftChatActive: boolean;
+  draftScopeKey: string | null;
+}): string | null {
+  if (args.activeSessionId) return args.activeSessionId;
+  if (args.draftChatActive) return args.draftScopeKey;
+  return null;
+}
+
+// Which notices render for the current view. A new-chat draft shows only the
+// notices fired in that exact draft — global/lane feedback and prior drafts'
+// notices must not persist into a fresh chat. Every other view keeps the legacy
+// "this chat, or global fallback" rule.
+export function selectVisibleNotices(args: {
+  notices: LocalNotice[];
+  hasSelectedAgentSnapshot: boolean;
+  draftChatActive: boolean;
+  draftScopeKey: string | null;
+  activeSessionId: string | null;
+}): LocalNotice[] {
+  if (args.hasSelectedAgentSnapshot) return [];
+  if (args.draftChatActive) {
+    return args.notices.filter((notice) => notice.sessionId === args.draftScopeKey);
+  }
+  return args.notices.filter(
+    (notice) => !notice.sessionId || notice.sessionId === args.activeSessionId,
+  );
 }
 
 const URL_IN_TEXT_RE = /\bhttps?:\/\/[^\s<>"')\]]+/gi;
@@ -1843,8 +1931,34 @@ export function previousPromptLineBoundary(value: string, cursor = value.length)
   return index === -1 ? 0 : index + 1;
 }
 
+function modifierDeletesPromptWord(modifier: number): boolean {
+  if (!Number.isInteger(modifier) || modifier < 2) return false;
+  const mask = modifier - 1;
+  const alt = 2;
+  const ctrl = 4;
+  const superKey = 8;
+  const hyper = 16;
+  const meta = 32;
+  return (mask & (alt | ctrl | superKey | hyper | meta)) !== 0;
+}
+
+function isModifiedPromptBackspaceSequence(input: string): boolean {
+  const kittyBackspace = input.match(/^\x1b\[(?:8|127);(\d+)u$/);
+  if (kittyBackspace) return modifierDeletesPromptWord(Number(kittyBackspace[1]));
+
+  const modifiedDelete = input.match(/^\x1b\[3;(\d+)~$/);
+  if (modifiedDelete) return modifierDeletesPromptWord(Number(modifiedDelete[1]));
+
+  const modifyOtherKeysBackspace = input.match(/^\x1b\[27;(\d+);(?:8|127)~$/);
+  if (modifyOtherKeysBackspace) return modifierDeletesPromptWord(Number(modifyOtherKeysBackspace[1]));
+
+  return false;
+}
+
 export function isPromptWordBackspace(input: string, key: { ctrl?: boolean; meta?: boolean; backspace?: boolean; delete?: boolean }): boolean {
   if (isCtrlInput(input, key, "w")) return true;
+  if (input === "\x1b\u007f" || input === "\x1b\b") return true;
+  if (isModifiedPromptBackspaceSequence(input)) return true;
   if (key.ctrl && (key.backspace || key.delete)) return true;
   if (key.meta && (key.backspace || key.delete)) return true;
   if (key.meta && (input === "\u007f" || input === "\b" || input === "\x1b\u007f" || input === "\x1b\b")) return true;
@@ -2126,6 +2240,13 @@ function useTerminalDimensions(): [number, number] {
   return dimensions;
 }
 
+export function stableInkViewportRows(terminalRows: number): number {
+  // Ink 5 falls back to clearing the entire terminal when rendered output is
+  // at least the terminal height. Keep a spare row so prompt edits stay on the
+  // cheaper erase/repaint path instead of flashing the whole alternate screen.
+  return Math.max(1, Math.floor(terminalRows) - 1);
+}
+
 function useTerminalAlternateScroll(): void {
   useEffect(() => {
     if (!process.stdin.isTTY || !process.stdout.isTTY) return;
@@ -2361,20 +2482,30 @@ export function chatSelectionEdgeDirectionForMouseY({
   return null;
 }
 
-export function isTerminalMouseTrackingEnabled(value?: string): boolean {
-  return !/^(0|false|no|off)$/i.test((value ?? "").trim());
+export function terminalMouseTrackingEnableSequence(): string {
+  return "\x1b[?1000h\x1b[?1002h\x1b[?1006h";
+}
+
+export function terminalMouseTrackingDisableSequence(): string {
+  return "\x1b[?1015l\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l";
 }
 
 function disableTerminalMouseTracking(): void {
-  process.stdout.write("\x1b[?1015l\x1b[?1006l\x1b[?1003l\x1b[?1002l\x1b[?1000l");
+  process.stdout.write(terminalMouseTrackingDisableSequence());
+}
+
+function enableTerminalMouseTracking(): void {
+  // Universal baseline: button press/release + button-drag in SGR 1006 mode.
+  // Avoid 1003 all-motion; it turns every hover into terminal input and makes
+  // selection feel broken in terminals that faithfully report it.
+  process.stdout.write(terminalMouseTrackingEnableSequence());
 }
 
 function useTerminalMouseTracking(): void {
   useEffect(() => {
     if (!process.stdin.isTTY || !process.stdout.isTTY) return;
     disableTerminalMouseTracking();
-    if (!isTerminalMouseTrackingEnabled(process.env.ADE_TUI_MOUSE)) return;
-    process.stdout.write("\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h\x1b[?1015h");
+    enableTerminalMouseTracking();
     return () => {
       disableTerminalMouseTracking();
     };
@@ -2611,7 +2742,8 @@ function resolveCenterPaneWidth(columns: number, drawerOpen: boolean, rightPaneW
 export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, preferServiceRepair, remote }: AdeCodeAppProps) {
   const remoteLaunch = remote === true || project.remote === true;
   const { exit } = useApp();
-  const [columns, rows] = useTerminalDimensions();
+  const [columns, terminalRows] = useTerminalDimensions();
+  const rows = stableInkViewportRows(terminalRows);
   useTerminalAlternateScreen();
   useTerminalAlternateScroll();
   useTerminalMouseTracking();
@@ -2634,11 +2766,13 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   const [terminalLiveChunks, setTerminalLiveChunks] = useState<Record<string, string[]>>({});
   // Scrollback position + "↓ N new" counter per Claude PTY session.
   const [terminalScrollBySessionId, setTerminalScrollBySessionId] = useState<TerminalScrollBySessionId>({});
-  // Pending pty_data chunks buffered off-React; flushed on a ~16ms timer so the
-  // write cursor keeps advancing (no per-chunk O(n) array rebuild + slice(-500)
-  // that would pin the buffer at 500 and freeze TerminalPane's incremental write).
+  // Pending pty_data chunks buffered off-React; flushed at a bounded frame rate
+  // so Claude Code terminal output doesn't force a full Ink repaint per byte.
+  // The chunks still append monotonically, preserving TerminalPane's incremental
+  // write cursor (no per-chunk slice(-500) that would freeze xterm replay).
   const pendingPtyChunksRef = useRef<Map<string, string[]>>(new Map());
   const ptyFlushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const ptyFlushDelayRef = useRef<number | null>(null);
   // Owns the feedback success auto-close timer so it can be cleared on
   // unmount / re-open and never fire against a different right pane.
   const feedbackCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
@@ -2665,6 +2799,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   // fire the banner. Session-load background syncs do not.
   const userInitiatedModeChangeRef = useRef<boolean>(false);
   const [draftChatActive, setDraftChatActive] = useState(false);
+  // Render-time mirror of draftScopeKeyRef so the notice filter recomputes when
+  // a new draft is entered. null whenever no new-chat draft is active.
+  const [draftScopeKey, setDraftScopeKey] = useState<string | null>(null);
   const [aiStatus, setAiStatus] = useState<AiSettingsStatus | null>(null);
   const [aiStatusCheckedAt, setAiStatusCheckedAt] = useState<string | null>(null);
   const [storedApiKeyProviders, setStoredApiKeyProviders] = useState<string[]>([]);
@@ -2787,6 +2924,12 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   const chatLinkTargetIdsRef = useRef<string[]>([]);
   const previousDimensionsRef = useRef<[number, number]>([columns, rows]);
   const draftChatActiveRef = useRef(false);
+  // Each new-chat draft gets a fresh notice scope key so transient feedback
+  // ("Model set to…", "Press Esc again…") fired in one draft can't persist into
+  // the next. A monotonic counter keys each draft; the ref mirrors the state so
+  // addNotice can tag notices synchronously inside callbacks.
+  const draftScopeSeqRef = useRef(0);
+  const draftScopeKeyRef = useRef<string | null>(null);
   const formDiscardArmedRef = useRef(false);
   const activePaneRef = useRef<PaneFocus>("chat");
   const keybindingDispatchStateRef = useRef<KeybindingDispatchState>({ prefix: null, prefixAt: 0 });
@@ -3081,6 +3224,18 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
 
   const setDraftChatMode = useCallback((active: boolean) => {
     setChatScrollOffset(0);
+    // Mint a fresh scope key on every draft entry (each call is a deliberate
+    // new-chat action) and drop it on exit, so notices tagged to a previous
+    // draft never render in a new one.
+    if (active) {
+      draftScopeSeqRef.current += 1;
+      const key = `draft:${draftScopeSeqRef.current}`;
+      draftScopeKeyRef.current = key;
+      setDraftScopeKey(key);
+    } else {
+      draftScopeKeyRef.current = null;
+      setDraftScopeKey(null);
+    }
     draftChatActiveRef.current = active;
     setDraftChatActive(active);
   }, [setChatScrollOffset]);
@@ -3723,7 +3878,6 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         laneId: lane.id,
         chatCount: drawerSessionsSource.filter((session) => session.laneId === lane.id).length,
         worktreeAvailable: !unavailableLaneIds.has(lane.id),
-        hasDiffRow: Boolean(diffByLaneId?.[lane.id]),
       })),
       expandedLaneIndex: expandedAbsolute,
       selectedLaneIndex: selectedAbsolute,
@@ -3734,7 +3888,6 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     addMode,
     addModeLaneIndex,
     chatRowBudget,
-    diffByLaneId,
     drawerLaneId,
     drawerScrollOffsetRows,
     drawerSection,
@@ -4021,13 +4174,21 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       .catch(() => { /* keep the locally-reconstructed transcript */ });
     return () => { cancelled = true; };
   }, [activeLane?.id, activeSessionId, chatInfo.capability.canViewFullTranscript, realSubagentTranscript, selectedAgentSnapshot]);
-  // Notices are a single global list, but each one is tagged with the chat that was
-  // active when it fired. Only show a notice in its own chat (session-less notices
-  // fall back to whichever chat is active) so cross-chat feedback like "Model set
-  // to…" or "Attached clipboard image." can't bleed into the selected transcript.
+  // Notices are a single global list, but each one is tagged with the scope it
+  // fired in (a chat session, a specific new-chat draft, or null/global). A
+  // new-chat draft shows only the notices fired in that exact draft so global
+  // and prior-draft feedback ("Model set to…", "Created lane…") can't persist
+  // into a fresh chat; every other view keeps the "this chat, or global
+  // fallback" rule so cross-chat feedback can't bleed into the wrong transcript.
   const displayNotices = useMemo(
-    () => (selectedAgentSnapshot ? [] : notices.filter((notice) => !notice.sessionId || notice.sessionId === activeSessionId)),
-    [notices, selectedAgentSnapshot, activeSessionId],
+    () => selectVisibleNotices({
+      notices,
+      hasSelectedAgentSnapshot: Boolean(selectedAgentSnapshot),
+      draftChatActive,
+      draftScopeKey,
+      activeSessionId,
+    }),
+    [notices, selectedAgentSnapshot, draftChatActive, draftScopeKey, activeSessionId],
   );
   // Aggregate the transcript exactly once per render and thread the result into
   // every consumer (scroll math, selection rows, selectable text, and ChatView
@@ -4052,7 +4213,6 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   const spinTickActive = displayStreaming
     || (multiView?.tiles.some((tile) => streamingBySessionId[tile.sessionId]) ?? false)
     || mode === "connecting"
-    || (activeTerminalSession != null && isTerminalSessionWorking(activeTerminalSession))
     || liveAgentCount > 0;
   const showChatWorkingIndicator = modelState.provider !== "claude" && activeSession?.provider !== "claude";
   const chatScrollMaxOffset = useMemo(() => computeChatScrollMaxOffset({
@@ -4235,7 +4395,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       .then(() => previewTerminal(connection, activeTerminalSession.terminalId))
       .then((preview) => {
         if (!cancelled && activeSessionIdRef.current === activeTerminalSession.terminalId) {
-          setTerminalPreview(preview);
+          setTerminalPreview((previous) => sameTerminalPreviewFrame(previous, preview) ? previous : preview);
         }
       })
       .catch(() => {});
@@ -4254,17 +4414,17 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       void previewTerminal(connection, activeTerminalSession.terminalId)
         .then((preview) => {
           if (!cancelled && activeSessionIdRef.current === activeTerminalSession.terminalId) {
-            setTerminalPreview(preview);
+            setTerminalPreview((previous) => sameTerminalPreviewFrame(previous, preview) ? previous : preview);
           }
         })
         .catch(() => {
           if (!cancelled && activeSessionIdRef.current === activeTerminalSession.terminalId) {
-            setTerminalPreview(null);
+            setTerminalPreview((previous) => previous === null ? previous : null);
           }
         });
     };
     refreshPreview();
-    const timer = setInterval(refreshPreview, 500);
+    const timer = setInterval(refreshPreview, TERMINAL_PREVIEW_POLL_MS);
     return () => {
       cancelled = true;
       clearInterval(timer);
@@ -4951,9 +5111,14 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   }, [prompt]);
 
   const addNotice = useCallback((text: string, tone: LocalNotice["tone"] = "info") => {
+    const sessionId = noticeScopeId({
+      activeSessionId: activeSessionIdRef.current,
+      draftChatActive: draftChatActiveRef.current,
+      draftScopeKey: draftScopeKeyRef.current,
+    });
     setNotices((prev) => [
       ...prev.slice(-10),
-      { id: noticeId(), timestamp: new Date().toISOString(), text, tone, sessionId: activeSessionIdRef.current },
+      { id: noticeId(), timestamp: new Date().toISOString(), text, tone, sessionId },
     ]);
   }, []);
 
@@ -5033,7 +5198,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     if (!conn) return;
     try {
       const preview = await previewTerminal(conn, terminalId);
-      setTerminalPreviewById((prev) => ({ ...prev, [terminalId]: preview }));
+      setTerminalPreviewById((prev) => {
+        if (sameTerminalPreviewFrame(prev[terminalId] ?? null, preview)) return prev;
+        return { ...prev, [terminalId]: preview };
+      });
     } catch {
       // Non-fatal: the tile renders from live chunks / fallback until the next poll.
     }
@@ -6164,10 +6332,14 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     if (nextTerminalSession && nextSessionId) {
       void previewTerminal(conn, nextSessionId)
         .then((preview) => {
-          if (activeSessionIdRef.current === nextSessionId) setTerminalPreview(preview);
+          if (activeSessionIdRef.current === nextSessionId) {
+            setTerminalPreview((previous) => sameTerminalPreviewFrame(previous, preview) ? previous : preview);
+          }
         })
         .catch(() => {
-          if (activeSessionIdRef.current === nextSessionId) setTerminalPreview(null);
+          if (activeSessionIdRef.current === nextSessionId) {
+            setTerminalPreview((previous) => previous === null ? previous : null);
+          }
         });
     } else {
       setTerminalPreview(null);
@@ -6699,6 +6871,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
 
     const flushPendingPty = () => {
       ptyFlushTimerRef.current = null;
+      ptyFlushDelayRef.current = null;
       const pending = pendingPtyChunksRef.current;
       if (pending.size === 0) return;
       const drained = new Map(pending);
@@ -6739,9 +6912,16 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       });
     };
 
-    const scheduleFlush = () => {
-      if (ptyFlushTimerRef.current) return; // timer only while chunks pending → idle cost zero
-      ptyFlushTimerRef.current = setTimeout(flushPendingPty, 16);
+    const scheduleFlush = (delayMs: number) => {
+      // Timer only while chunks are pending → idle cost zero. If direct Claude
+      // control asks for the lower-latency path while a preview flush is queued,
+      // reschedule sooner so typed characters don't wait behind passive output.
+      if (ptyFlushTimerRef.current) {
+        if ((ptyFlushDelayRef.current ?? Number.POSITIVE_INFINITY) <= delayMs) return;
+        clearTimeout(ptyFlushTimerRef.current);
+      }
+      ptyFlushDelayRef.current = delayMs;
+      ptyFlushTimerRef.current = setTimeout(flushPendingPty, delayMs);
     };
 
     void connection.subscribeRuntimeEvents({ category: "pty", cursor: 0, limit: 50, replay: false }, (event) => {
@@ -6750,10 +6930,21 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       const sessionId = typeof terminalEvent?.sessionId === "string" ? terminalEvent.sessionId : null;
       if (!sessionId) return;
       if (payload.type === "pty_data" && typeof terminalEvent?.data === "string") {
+        if (!shouldBufferPtyDataForSession({
+          sessionId,
+          activeSessionId: activeSessionIdRef.current,
+          multiView: multiViewRef.current,
+          gridViewActive: gridViewActiveRef.current,
+        })) {
+          return;
+        }
         const buf = pendingPtyChunksRef.current.get(sessionId);
         if (buf) buf.push(terminalEvent.data);
         else pendingPtyChunksRef.current.set(sessionId, [terminalEvent.data]);
-        scheduleFlush();
+        const flushDelay = sessionId === attachedTerminalIdRef.current
+          ? PTY_ATTACHED_FLUSH_MS
+          : PTY_PREVIEW_FLUSH_MS;
+        scheduleFlush(flushDelay);
         return;
       }
       if (payload.type === "pty_exit") {
@@ -6772,6 +6963,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       if (ptyFlushTimerRef.current) {
         clearTimeout(ptyFlushTimerRef.current);
         ptyFlushTimerRef.current = null;
+        ptyFlushDelayRef.current = null;
       }
       // Flush whatever is buffered so a reconnect doesn't strand chunks.
       flushPendingPty();
@@ -6826,14 +7018,18 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       }
     };
     void refreshDiffStats();
+    // The drawer shows every lane's +adds/−dels inline now, so refresh briskly
+    // while an agent is actively editing (it's a single batched RPC for all
+    // lanes) and fall back to a calm cadence when idle.
+    const intervalMs = chatRefreshPollActive ? 2_000 : 10_000;
     const timer = setInterval(() => {
       void refreshDiffStats();
-    }, 10_000);
+    }, intervalMs);
     return () => {
       cancelled = true;
       clearInterval(timer);
     };
-  }, [connection, diffLaneIdsKey]);
+  }, [chatRefreshPollActive, connection, diffLaneIdsKey]);
 
   useEffect(() => {
     if (!connection) {
@@ -7057,10 +7253,14 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   ): Promise<ChatTerminalPreviewResult | null> => {
     try {
       const preview = await previewTerminal(conn, terminalId);
-      if (activeSessionIdRef.current === terminalId) setTerminalPreview(preview);
+      if (activeSessionIdRef.current === terminalId) {
+        setTerminalPreview((previous) => sameTerminalPreviewFrame(previous, preview) ? previous : preview);
+      }
       return preview;
     } catch {
-      if (activeSessionIdRef.current === terminalId) setTerminalPreview(null);
+      if (activeSessionIdRef.current === terminalId) {
+        setTerminalPreview((previous) => previous === null ? previous : null);
+      }
       return null;
     }
   }, []);
@@ -10676,9 +10876,17 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     }
 
     if (pane === "chat" && gridViewActiveRef.current && multiViewRef.current && key.tab) {
-      // Tab focuses the next tile; Shift+Tab the previous. Scoped to a SHOWN grid
-      // so Shift+Tab still cycles permission mode in single-chat view and Ctrl+W
-      // doesn't remove a tile from a dormant (hidden) grid.
+      // With side panes visible, Tab treats the grid as the center pane so
+      // keyboard users can reach lanes/details even when terminal mouse clicks
+      // are unreliable. When the grid is the only pane, Tab stays local to tiles.
+      if (gridTabNavigationTarget({
+        drawerOpen,
+        rightOpen,
+        tileCount: multiViewRef.current.tiles.length,
+      }) === "panes") {
+        cyclePaneFocus(key.shift ? -1 : 1);
+        return;
+      }
       const direction = key.shift ? -1 : 1;
       setMultiView((prev) => {
         if (!prev) return prev;
@@ -12440,13 +12648,24 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         onClick: () => toggleGridView(),
       });
       if (multiView) {
+        const tabTarget = gridTabNavigationTarget({
+          drawerOpen,
+          rightOpen,
+          tileCount: multiView.tiles.length,
+        });
         rightFooterItems.push(
           {
             id: "footer:tile-next",
-            label: "tab tile",
-            onClick: () => setMultiView((prev) => prev
-              ? { ...prev, focusedIndex: (prev.focusedIndex + 1) % Math.max(1, prev.tiles.length) }
-              : prev),
+            label: tabTarget === "tiles" ? "tab tile" : "tab pane",
+            onClick: () => {
+              if (tabTarget === "panes") {
+                cyclePaneFocus(1);
+                return;
+              }
+              setMultiView((prev) => prev
+                ? { ...prev, focusedIndex: (prev.focusedIndex + 1) % Math.max(1, prev.tiles.length) }
+                : prev);
+            },
           },
           {
             id: "footer:tile-close",
@@ -13112,6 +13331,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     commandPaletteVisibleRows,
     commandPaletteWindowStart,
     cycleModel,
+    cyclePaneFocus,
     cyclePermission,
     cycleProvider,
     cycleReasoning,
@@ -13156,6 +13376,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     removeMultiViewTile,
     resumeClosedTerminalSession,
     rightPane,
+    rightOpen,
     rightPaneScrollOffsetRows,
     rightPaneVisible,
     rightPaneWidth,

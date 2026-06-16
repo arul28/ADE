@@ -34,12 +34,10 @@ export function AnnotatedFigure({
   return (
     <figure className={className}>
       <motion.div
-        initial={reduceMotion ? false : { opacity: 0.35, filter: "blur(10px)" }}
-        whileInView={
-          reduceMotion ? undefined : { opacity: 1, filter: "blur(0px)" }
-        }
+        initial={reduceMotion ? false : { opacity: 0, y: 24 }}
+        whileInView={reduceMotion ? undefined : { opacity: 1, y: 0 }}
         viewport={{ once: true, amount: 0.3 }}
-        transition={{ duration: 0.9, ease: [0.22, 1, 0.36, 1] }}
+        transition={{ duration: 0.7, ease: [0.22, 1, 0.36, 1] }}
         className="relative"
       >
         <div className="relative overflow-hidden border border-[color:var(--color-ink-hairline)] shadow-[0_24px_48px_-24px_rgba(24,21,15,0.45)]">

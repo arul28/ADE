@@ -7,6 +7,7 @@ import { OpenPage } from "./pages/OpenPage";
 import { PrivacyPage } from "./pages/PrivacyPage";
 import { TermsPage } from "./pages/TermsPage";
 import { NotFoundPage } from "./pages/NotFoundPage";
+import { OgImage } from "../components/OgImage";
 
 function useScrollRestoration() {
   const location = useLocation();
@@ -39,6 +40,7 @@ export function SiteRoutes() {
     <AnimatePresence mode="wait">
       <Routes location={location} key={location.pathname}>
         <Route path="/" element={<HomePage />} />
+        <Route path="/_og" element={<OgImage />} />
         <Route path="/download" element={<DownloadPage />} />
         <Route path="/open" element={<OpenPage />} />
         <Route path="/privacy" element={<PrivacyPage />} />

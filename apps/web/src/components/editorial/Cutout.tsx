@@ -30,12 +30,10 @@ export function Cutout({
       style={{ transform: `rotate(${rotate}deg)` }}
     >
       <motion.div
-        initial={reduceMotion ? false : { opacity: 0.3, filter: "blur(12px)" }}
-        whileInView={
-          reduceMotion ? undefined : { opacity: 1, filter: "blur(0px)" }
-        }
+        initial={reduceMotion ? false : { opacity: 0, y: 28 }}
+        whileInView={reduceMotion ? undefined : { opacity: 1, y: 0 }}
         viewport={{ once: true, amount: 0.3 }}
-        transition={{ duration: 0.9, ease: [0.22, 1, 0.36, 1] }}
+        transition={{ duration: 0.7, ease: [0.22, 1, 0.36, 1] }}
         className={cn(
           "overflow-hidden",
           tone === "ink"

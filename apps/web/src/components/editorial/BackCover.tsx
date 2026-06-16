@@ -142,7 +142,7 @@ export function BackCover() {
                   <span className="h-2 w-2 rounded-full bg-[#28c840]" />
                 </div>
                 <img
-                  src="/images/screenshots/lanes.png"
+                  src="/images/screenshots/lanes.webp"
                   alt="ADE on macOS"
                   loading="lazy"
                   decoding="async"
@@ -167,7 +167,7 @@ export function BackCover() {
               >
                 <div className="absolute left-1/2 top-[6px] z-[2] h-[17px] w-[42%] -translate-x-1/2 rounded-full bg-black" />
                 <img
-                  src="/images/screenshots/agent-chat.png"
+                  src="/images/screenshots/agent-chat.webp"
                   alt="ADE on iOS"
                   loading="lazy"
                   decoding="async"

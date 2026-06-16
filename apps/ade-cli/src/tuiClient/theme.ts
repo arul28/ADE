@@ -40,14 +40,17 @@ const WARNING = ATTENTION;
 const DANGER = ERROR;
 
 // Provider brand colors (used both by FooterControls.tsx via `theme.color.*`
-// and by the per-provider glyph chips in PROVIDER_THEME below).
+// and by the per-provider glyph chips in PROVIDER_THEME below). These mirror the
+// model picker's brand marks (PROVIDER_MARKS in ModelPickerPane.tsx) 1:1 so the
+// glyph + color you see beside a chat in the drawer matches the one in the
+// picker — no more bespoke/off-brand provider marks.
 const CLAUDE = "#D97757";
-const CODEX = "#22C55E";
+const CODEX = "#F0F0F2";
 const CURSOR = "#0EA5E9";
-const OPENCODE = "#6366F1";
+const OPENCODE = "#F0F0F2";
 const DROID = "#06B6D4";
-const OLLAMA = "#10B981";
-const LMSTUDIO = "#F97316";
+const OLLAMA = "#F0F0F2";
+const LMSTUDIO = "#8B5CF6";
 const SHELL = "#F59E0B";
 const COPILOT = "#A855F7";
 
@@ -79,17 +82,19 @@ type ProviderTheme = {
   label: string;
 };
 
-// Provider brand glyphs: closest single-cell unicode approximations of each
-// provider's official mark. `✻` (U+273B) is Anthropic's own canonical sparkle
-// (same glyph Claude Code uses in its spinner).
+// Provider brand glyphs: the exact terminal-fallback marks the model picker
+// uses (PROVIDER_MARKS / ROW_MARKS in ModelPickerPane.tsx). `✻` (U+273B) is
+// Anthropic's canonical sparkle; `◎` is OpenAI's mark for Codex; `⬢`/`✺` map to
+// Cursor/Droid. Keeping these in sync with the picker means a lane's runtime is
+// shown with the same brand glyph everywhere in the TUI.
 const PROVIDER_THEME: Record<AdeCodeProvider, ProviderTheme> = {
   claude: { glyph: "✻", wordmark: "Claude", color: CLAUDE, label: "Claude" },
-  codex: { glyph: "❋", wordmark: "Codex", color: CODEX, label: "Codex" },
-  cursor: { glyph: "▰", wordmark: "Cursor", color: CURSOR, label: "Cursor" },
-  droid: { glyph: "◉", wordmark: "Droid", color: DROID, label: "Droid" },
-  opencode: { glyph: "▲", wordmark: "OpenCode", color: OPENCODE, label: "OpenCode" },
-  ollama: { glyph: "●", wordmark: "Ollama", color: OLLAMA, label: "Ollama" },
-  lmstudio: { glyph: "◆", wordmark: "LM Studio", color: LMSTUDIO, label: "LM Studio" },
+  codex: { glyph: "◎", wordmark: "Codex", color: CODEX, label: "Codex" },
+  cursor: { glyph: "⬢", wordmark: "Cursor", color: CURSOR, label: "Cursor" },
+  droid: { glyph: "✺", wordmark: "Droid", color: DROID, label: "Droid" },
+  opencode: { glyph: "▣", wordmark: "OpenCode", color: OPENCODE, label: "OpenCode" },
+  ollama: { glyph: "◕", wordmark: "Ollama", color: OLLAMA, label: "Ollama" },
+  lmstudio: { glyph: "≋", wordmark: "LM Studio", color: LMSTUDIO, label: "LM Studio" },
 };
 
 const FALLBACK_PROVIDER: ProviderTheme = { glyph: "•", wordmark: "Agent", color: T4, label: "Agent" };

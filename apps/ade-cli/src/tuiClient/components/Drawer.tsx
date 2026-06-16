@@ -88,52 +88,6 @@ function pad(text: string, width: number): string {
   return text + " ".repeat(width - text.length);
 }
 
-function formatAgeMs(ms: number): string {
-  if (!Number.isFinite(ms) || ms < 0) return "";
-  const s = Math.floor(ms / 1000);
-  if (s < 60) return `${s}s`;
-  const m = Math.floor(s / 60);
-  if (m < 60) return `${m}m`;
-  const h = Math.floor(m / 60);
-  if (h < 24) return `${h}h`;
-  const d = Math.floor(h / 24);
-  return `${d}d`;
-}
-
-function formatLaneAge(lane: LaneSummary): string {
-  const ts = Date.parse(lane.createdAt);
-  if (Number.isNaN(ts)) return "";
-  return formatAgeMs(Date.now() - ts);
-}
-
-function formatSessionAge(session: AgentChatSessionSummary): string {
-  const ref = session.endedAt ?? session.idleSinceAt ?? session.startedAt;
-  if (!ref) return "";
-  const ts = Date.parse(ref);
-  if (Number.isNaN(ts)) return "";
-  if (session.status === "active") return "now";
-  return formatAgeMs(Date.now() - ts);
-}
-
-function laneDetailSuffix(lane: LaneSummary, diffStats: DiffLineStats | null, worktreeAvailable: boolean): {
-  diff: { add: number; del: number } | null;
-  hint: string | null;
-} {
-  if (!worktreeAvailable) {
-    return { diff: null, hint: "missing worktree" };
-  }
-  if (diffStats) {
-    return { diff: { add: diffStats.additions, del: diffStats.deletions }, hint: null };
-  }
-  if (lane.status?.rebaseInProgress) {
-    return { diff: null, hint: "rebase in progress" };
-  }
-  if (lane.status?.dirty) {
-    return { diff: null, hint: "dirty" };
-  }
-  return { diff: null, hint: `checkpoint ${formatLaneAge(lane)}` };
-}
-
 export function Drawer({
   lanes,
   sessions,
@@ -206,7 +160,6 @@ export function Drawer({
       laneId: lane.id,
       chatCount: sessions.filter((s) => s.laneId === lane.id).length,
       worktreeAvailable: !unavailableLaneIds.has(lane.id),
-      hasDiffRow: Boolean(diffByLaneId[lane.id]),
     })),
     expandedLaneIndex: expandedAbsoluteIndex,
     selectedLaneIndex: selectedAbsoluteIndex,
@@ -323,7 +276,6 @@ export function Drawer({
                 selected={isSelected}
                 hovered={isHovered}
                 active={lane.id === activeLaneId}
-                provider={sessionProviderFor(lane, sessions)}
                 pr={prByLaneId[lane.id] ?? null}
                 diffStats={diffByLaneId[lane.id] ?? null}
                 worktreeAvailable={worktreeAvailable}
@@ -474,12 +426,14 @@ function DrawerHintLine({ items, keyColor }: { items: Array<[string, string]>; k
 }
 
 /**
- * Full two-line lane row rendered inside a per-lane card:
- *   line 1: [tree-prefix] name [chip if active state] [PR pill if any]
- *   line 2: [indent] exec branch · detail · age
+ * Single-line lane card row (rendered inside a per-lane rounded card):
+ *   [tree-prefix] ● bold-name [VM] [PR pill] … +adds −dels
  *
- * The card's border color already conveys the lane status, so we drop the rail
- * glyph and the redundant "idle" / "PRIMARY" chips.
+ * The card's border color conveys selection; the status dot conveys run/await/
+ * fail; the right edge carries the live diff (+adds/−dels), which replaces the
+ * old "run" status chip and updates in place as the agent edits files. There is
+ * no second meta line and no timestamp — the chats listed below already show
+ * their own age, and the lane name is always bold.
  */
 function LaneCard({
   lane,
@@ -488,7 +442,6 @@ function LaneCard({
   width,
   selected,
   active,
-  provider,
   pr,
   diffStats,
   worktreeAvailable,
@@ -500,152 +453,103 @@ function LaneCard({
   width: number;
   selected: boolean;
   active: boolean;
-  provider: AdeCodeProvider | null;
   pr: DrawerPrSummary | null;
   diffStats: DiffLineStats | null;
   worktreeAvailable: boolean;
   hovered?: boolean;
 }) {
-  // Lane identity is now conveyed by tinting the NAME with the user-assigned
-  // lane color (when set) instead of stacking a second vertical accent bar next
-  // to the selection rail. Selection/active/hover/primary still win with violet
-  // so the highlighted lane always reads as violet.
+  // Selection/active/hover/primary win with violet; otherwise the lane keeps its
+  // user-assigned color (or default text). The name is always bold so the lane
+  // identity stays the row's anchor.
   const highlighted = selected || active || hovered || status === "primary";
   const nameColor = highlighted
     ? theme.color.violet
     : lane.color ?? theme.color.t1;
-  const detail = laneDetailSuffix(lane, diffStats, worktreeAvailable);
-  const exec = theme.provider(provider);
-  const age = formatLaneAge(lane);
   const contentWidth = Math.max(10, width);
 
-  // Hide the chip for idle (default) and primary (the lane is literally named
-  // "Primary" — chip would just repeat it). Surface every other transient
-  // state in plain text.
-  const chipText = ((): string | null => {
-    switch (status) {
-      case "primary":
-      case "idle":
-        return null;
-      case "running": return "run";
-      case "attention": return "wait";
-      case "failed": return worktreeAvailable ? "fail" : "no worktree";
-      default: return null;
-    }
-  })();
-  const chipColor = ((): string => {
-    switch (status) {
-      case "running": return theme.color.running;
-      case "attention": return theme.color.attention;
-      case "failed": return theme.color.error;
-      default: return theme.color.t4;
-    }
-  })();
-
-  // Status dot leads line 1 so a running/awaiting/failed lane pops at a glance
-  // without parsing the chip text. Green is reserved for the live dot, amber for
-  // awaiting, red for failed; idle stays a dim hollow ○, primary an info dot.
+  // Status dot leads the row so a running/awaiting/failed lane pops at a glance:
+  // live ● green, awaiting ◔ amber, failed red, idle a dim hollow ○, primary an
+  // info dot.
   const dot = statusGlyph(laneStatusDot(status));
-  // Leading chrome on line 1: the status dot (1 cell) + space. (The selection
-  // rail is gone — the card's box border now indicates selection.)
-  const LEAD_WIDTH = 2;
+  const LEAD_WIDTH = 2; // status dot + space
+
+  // Right cluster, in priority order: a missing/rebasing worktree wins over the
+  // live diff. The diff is the common case and refreshes in place.
+  const diff = worktreeAvailable && diffStats
+    ? { add: diffStats.additions, del: diffStats.deletions }
+    : null;
+  type RightCluster =
+    | { kind: "text"; text: string; color: string }
+    | { kind: "diff"; add: number; del: number };
+  const rightCluster: RightCluster | null = !worktreeAvailable
+    ? { kind: "text", text: "no worktree", color: theme.color.error }
+    : lane.status?.rebaseInProgress
+      ? { kind: "text", text: "rebasing", color: theme.color.attention }
+      : diff
+        ? { kind: "diff", add: diff.add, del: diff.del }
+        : null;
+  const rightWidth = rightCluster == null
+    ? 0
+    : rightCluster.kind === "text"
+      ? rightCluster.text.length
+      : `+${rightCluster.add} −${rightCluster.del}`.length;
 
   const indicatorWidth = prefix.length;
-  const chipWidth = chipText ? chipText.length : 0;
   const prPillText = pr?.state === "open" ? formatPrPillText(pr) : null;
   const prPillWidth = prPillText?.length ?? 0;
-  const chipReservation = chipWidth ? chipWidth + 1 : 0;
+  const rightReservation = rightWidth ? rightWidth + 1 : 0;
   const canShowPrPill = Boolean(prPillText)
     && contentWidth >= 22
-    && contentWidth - indicatorWidth - chipReservation - prPillWidth - 1 >= 4;
+    && contentWidth - indicatorWidth - LEAD_WIDTH - rightReservation - prPillWidth - 1 >= 4;
   // VM lanes live on the Mac VM, not the host worktree path. Surface a small
-  // badge so users in the TUI know `/commit`, `/push`, etc. operate against
-  // the VM-attached lane (not a normal local worktree).
+  // badge so users know `/commit`, `/push`, etc. operate against the VM-attached
+  // lane (not a normal local worktree).
   const isVmLane = lane.runtimePlacement === "macos-vm";
   const VM_BADGE_WIDTH = 2;
-  const rightReservationWithoutVm = chipReservation + (canShowPrPill ? prPillWidth + 1 : 0);
+  const rightReservationWithoutVm = rightReservation + (canShowPrPill ? prPillWidth + 1 : 0);
   const canShowVmBadge = isVmLane
-    && contentWidth - indicatorWidth - rightReservationWithoutVm - VM_BADGE_WIDTH - 1 >= 3;
+    && contentWidth - indicatorWidth - LEAD_WIDTH - rightReservationWithoutVm - VM_BADGE_WIDTH - 1 >= 3;
   const reservedRight = rightReservationWithoutVm + (canShowVmBadge ? VM_BADGE_WIDTH + 1 : 0);
   const nameMax = Math.max(3, contentWidth - indicatorWidth - LEAD_WIDTH - reservedRight);
   const name = truncate(lane.name, nameMax);
 
-  // Line 2 indents under the name (past prefix + lead chrome), capped so deep
-  // stacks don't push the meta line off a narrow drawer. The branch ref is
-  // deliberately NOT rendered here — it was clutter; lane details / the header
-  // still surface it when needed.
-  const line2Indent = " ".repeat(Math.min(indicatorWidth + LEAD_WIDTH, 6));
-  // Diff is rendered on its own third line under selected cards; never inline
-  // on line 2. Hints (missing worktree, dirty, rebase, checkpoint Xd) appear
-  // before the age on line 2.
-  const inlineHint = detail.hint ?? "";
-  const canShowAge = Boolean(age) && contentWidth >= 22;
-  const metaWidth = contentWidth - line2Indent.length - 2 - (canShowAge ? age.length + 3 : 0);
-  const truncHint = inlineHint ? truncate(inlineHint, Math.max(3, metaWidth)) : "";
-  // Diff renders only when the card is selected — otherwise the line list stays
-  // calm. Selected cards get an extra row under the branch with +adds/−dels.
-  const showDiffLine = selected && detail.diff !== null;
-
   return (
-    <Box flexDirection="column">
-      <Box>
-        <Text>
-          {prefix ? <Text color={theme.color.t4}>{prefix}</Text> : null}
-          <Text color={dot.color} bold={status === "running" || status === "attention"}>{dot.glyph} </Text>
-          <Text color={nameColor} bold={selected || status === "primary"}>
-            {pad(name, nameMax)}
-          </Text>
-          {chipText ? (
-            <>
-              <Text> </Text>
-              <Text color={chipColor}>{chipText}</Text>
-            </>
-          ) : null}
-          {canShowPrPill && pr ? (
-            <>
-              <Text> </Text>
-              <PrPill pr={pr} />
-            </>
-          ) : null}
-          {canShowVmBadge ? (
-            <>
-              <Text> </Text>
-              <Text color={theme.color.info} bold>
-                VM
-              </Text>
-            </>
-          ) : null}
+    <Box>
+      <Text>
+        {prefix ? <Text color={theme.color.t4}>{prefix}</Text> : null}
+        <Text color={dot.color} bold={status === "running" || status === "attention"}>{dot.glyph} </Text>
+        <Text color={nameColor} bold>
+          {pad(name, nameMax)}
         </Text>
-      </Box>
-      <Box>
-        <Text>
-          <Text>{line2Indent}</Text>
-          {provider ? (
-            <Text color={exec.color}>{exec.glyph} </Text>
-          ) : (
-            <Text color={theme.color.t5}>· </Text>
-          )}
-          {truncHint ? (
-            <Text color={theme.color.t3}>{truncHint}</Text>
-          ) : null}
-          {canShowAge && age ? (
-            <>
-              {truncHint ? <Text color={theme.color.t5}> · </Text> : null}
-              <Text color={theme.color.t3}>{age}</Text>
-            </>
-          ) : null}
-        </Text>
-      </Box>
-      {showDiffLine && detail.diff ? (
-        <Box>
-          <Text>
-            <Text>{line2Indent}</Text>
-            <Text color={theme.color.running}>+{detail.diff.add}</Text>
+        {canShowVmBadge ? (
+          <>
             <Text> </Text>
-            <Text color={theme.color.error}>−{detail.diff.del}</Text>
-          </Text>
-        </Box>
-      ) : null}
+            <Text color={theme.color.info} bold>
+              VM
+            </Text>
+          </>
+        ) : null}
+        {canShowPrPill && pr ? (
+          <>
+            <Text> </Text>
+            <PrPill pr={pr} />
+          </>
+        ) : null}
+        {rightCluster ? (
+          <>
+            <Text> </Text>
+            {rightCluster.kind === "diff" ? (
+              <Text>
+                <Text color={theme.color.running}>+{rightCluster.add}</Text>
+                <Text> </Text>
+                <Text color={theme.color.error}>−{rightCluster.del}</Text>
+              </Text>
+            ) : (
+              <Text color={rightCluster.color}>{rightCluster.text}</Text>
+            )}
+          </>
+        ) : null}
+      </Text>
     </Box>
   );
 }
@@ -668,7 +572,68 @@ function PrPill({ pr }: { pr: DrawerPrSummary }) {
   );
 }
 
-/** Chat block rendered beneath the browsing lane row as a compact subsection. */
+/**
+ * One chat row, identical whether it renders under a selected (expanded) lane or
+ * a non-selected one — only the highlight/brightness differs. Layout:
+ *   ● ◎ title …  spinner  ●(active)
+ * The status dot leads (the running spinner replaces it for active chats), then
+ * the provider brand glyph (same mark the model picker uses), the title, and a
+ * trailing violet dot for the active chat. There is no timestamp — the panel
+ * carries no ages. Always exactly one row tall so the mouse hit-test stays
+ * aligned.
+ */
+function ChatRow({
+  session,
+  activeSessionId,
+  max,
+  selected,
+  hovered,
+  dimTitle,
+}: {
+  session: AgentChatSessionSummary;
+  activeSessionId: string | null;
+  max: number;
+  selected: boolean;
+  hovered: boolean;
+  dimTitle: boolean;
+}) {
+  const running = session.status === "active";
+  const provider = (session.provider as AdeCodeProvider) ?? null;
+  const exec = theme.provider(provider);
+  const dot = statusGlyph(chatStatusDot(session));
+  // The age used to reserve trailing room; without it the title can run wider,
+  // keeping just a little space for the spinner + active dot.
+  const label = truncate(formatSessionLabel(session), max - 4);
+  // Selection/hover wins with violet; awaiting-input tints amber as a calm
+  // "needs you" signal; otherwise the title sits a touch dimmer under a
+  // non-selected lane (dimTitle) than under the focused one.
+  const titleColor: string = selected || hovered
+    ? theme.color.violet
+    : session.awaitingInput && !running
+      ? theme.color.attention
+      : dimTitle ? theme.color.t2 : theme.color.t1;
+  return (
+    <Box>
+      <Text wrap="truncate-end">
+        {running ? <Text>{"  "}</Text> : <Text color={dot.color} bold={session.awaitingInput}>{dot.glyph} </Text>}
+        <Text color={exec.color}>{exec.glyph} </Text>
+        <Text color={titleColor}>{label}</Text>
+        {running ? <Text> <ActiveChatSpin /></Text> : null}
+        {session.sessionId === activeSessionId ? (
+          <Text color={theme.color.violet}> ●</Text>
+        ) : null}
+      </Text>
+    </Box>
+  );
+}
+
+/**
+ * Chat block under the selected (expanded) lane: the same tight chat rows every
+ * lane shows, plus a trailing interactive "+ new chat" row. There is no "CHATS"
+ * header and no top margin, so an expanded lane looks just like a collapsed one
+ * apart from its violet border + the extra new-chat affordance. An unavailable
+ * worktree collapses to a single "worktree missing" row.
+ */
 function ChatBlock({
   sessions,
   activeSessionId,
@@ -688,74 +653,27 @@ function ChatBlock({
 }) {
   if (!worktreeAvailable) {
     return (
-      <Box flexDirection="column" marginTop={1}>
-        <Box>
-          <DrawerSectionRule title="CHATS" count="unavailable" color={theme.color.t4} width={width} />
-        </Box>
-        <Box>
-          <Text color={theme.color.error}>worktree missing</Text>
-        </Box>
+      <Box>
+        <Text color={theme.color.error}>worktree missing</Text>
       </Box>
     );
   }
-  // An empty lane still falls through to the normal render below, which shows
-  // the "CHATS · 0" header and a working "+ new chat" row — matching the
-  // hit-test, which always expects a new-chat row at the block start. (Returning
-  // early here used to drop the button, leaving chatless lanes with no way to
-  // start a chat.)
   const max = Math.max(8, width - 4);
   return (
-    <Box flexDirection="column" marginTop={1}>
-      <Box>
-        <DrawerSectionRule title="CHATS" count={String(sessions.length)} color={theme.color.t3} width={width} />
-      </Box>
+    <Box flexDirection="column">
       {sessions.map((session, index) => {
-        const running = session.status === "active";
         const selected = interactive && index === selectedChatIndex;
         const hovered = hoveredId?.startsWith(`drawer:chat:${session.sessionId}:`) ?? false;
-        const provider = (session.provider as AdeCodeProvider) ?? null;
-        const exec = theme.provider(provider);
-        const when = formatSessionAge(session);
-        // Status dot leads each chat row so live/awaiting/ended state pops at a
-        // glance: live ● (the running spinner takes over for the active chat),
-        // awaiting ◔ amber, ended ✓, otherwise an idle ○. The provider brand
-        // glyph follows to keep the agent identity, then the title.
-        const dot = statusGlyph(chatStatusDot(session));
-        const label = truncate(formatSessionLabel(session), max - 8);
-        // White by default. Violet on selection (the only highlight state in a
-        // TUI). The running spinner + activeSession dot already convey activity
-        // — no need to also recolor the title, and bold is avoided because some
-        // xterm builds render bold characters slightly wider, which makes the
-        // selected row look outdented next to its neighbours.
-        // Awaiting-input chats tint amber (a calm "needs you" signal) when not
-        // selected; selection/hover still wins with violet. Running activity is
-        // conveyed by the spinner, not a recolor.
-        const titleColor: string = selected || hovered
-          ? theme.color.violet
-          : session.awaitingInput && !running
-            ? theme.color.attention
-            : theme.color.t1;
         return (
-          <Box key={session.sessionId} marginTop={index > 0 ? 1 : 0}>
-            {running ? (
-              // Running chats carry their live signal via the trailing spinner
-              // (kept adjacent to the age); lead with a blank so names stay
-              // aligned with the idle/awaiting/done rows above and below.
-              <Text>{"  "}</Text>
-            ) : (
-              <Text color={dot.color} bold={session.awaitingInput}>{dot.glyph} </Text>
-            )}
-            <Text color={exec.color}>{exec.glyph} </Text>
-            <Text color={titleColor}>
-              {label}
-            </Text>
-            <Text> </Text>
-            {running ? <ActiveChatSpin /> : null}
-            <Text color={theme.color.t4}>{when}</Text>
-            {session.sessionId === activeSessionId ? (
-              <Text color={theme.color.violet}> ●</Text>
-            ) : null}
-          </Box>
+          <ChatRow
+            key={session.sessionId}
+            session={session}
+            activeSessionId={activeSessionId}
+            max={max}
+            selected={selected}
+            hovered={hovered}
+            dimTitle={false}
+          />
         );
       })}
       <Box>
@@ -773,11 +691,11 @@ function ActiveChatSpin() {
 }
 
 /**
- * Always-visible compact chat rows under non-expanded lane cards: one row per
- * chat (status dot + provider glyph + title + age) and an optional dim
- * "+N more" row. No header, no "+ new chat" — those stay on the expanded
- * card. Row count MUST match the lane's DrawerLanePlan (visibleChatCount +
- * moreCount-row) so the drawer mouse hit-test stays aligned.
+ * Always-visible chat rows under non-expanded lane cards: the same tight rows
+ * the expanded block uses, plus an optional dim "+N more" row when the row
+ * budget can't fit them all. No "+ new chat" — that stays on the selected card.
+ * Row count MUST match the lane's DrawerLanePlan (visibleChatCount + moreCount
+ * row) so the drawer mouse hit-test stays aligned.
  */
 function CompactChatPreview({
   sessions,
@@ -797,32 +715,17 @@ function CompactChatPreview({
   return (
     <Box flexDirection="column">
       {sessions.map((session) => {
-        const running = session.status === "active";
         const hovered = hoveredId?.startsWith(`drawer:chat:${session.sessionId}:`) ?? false;
-        const provider = (session.provider as AdeCodeProvider) ?? null;
-        const exec = theme.provider(provider);
-        const when = formatSessionAge(session);
-        const dot = statusGlyph(chatStatusDot(session));
-        const label = truncate(formatSessionLabel(session), max - 8);
-        const titleColor: string = hovered
-          ? theme.color.violet
-          : session.awaitingInput && !running
-            ? theme.color.attention
-            : theme.color.t2;
         return (
-          <Box key={session.sessionId}>
-            <Text wrap="truncate-end">
-              {running ? <Text>{"  "}</Text> : <Text color={dot.color} bold={session.awaitingInput}>{dot.glyph} </Text>}
-              <Text color={exec.color}>{exec.glyph} </Text>
-              <Text color={titleColor}>{label}</Text>
-              <Text> </Text>
-              {running ? <ActiveChatSpin /> : null}
-              <Text color={theme.color.t4}>{when}</Text>
-              {session.sessionId === activeSessionId ? (
-                <Text color={theme.color.violet}> ●</Text>
-              ) : null}
-            </Text>
-          </Box>
+          <ChatRow
+            key={session.sessionId}
+            session={session}
+            activeSessionId={activeSessionId}
+            max={max}
+            selected={false}
+            hovered={hovered}
+            dimTitle
+          />
         );
       })}
       {moreCount > 0 ? (
@@ -898,12 +801,11 @@ function MiniDrawer({
         // lanes is sliced by laneStart; selectedLaneIndex is window-relative.
         const selected = index === selectedLaneIndex;
         const hovered = hoveredId?.startsWith(`drawer:lane:${lane.id}:`) ?? false;
-        const detail = formatLaneAge(lane);
         const isVmLane = lane.runtimePlacement === "macos-vm";
         const vmSuffixWidth = isVmLane ? 3 : 0;
         // Leading chrome: selection rail (1) + status dot (1) + space (1) = 3.
         const dot = statusGlyph(laneStatusDot(status));
-        const nameMax = Math.max(4, inner - 5 - detail.length - meta.prefix.length - vmSuffixWidth);
+        const nameMax = Math.max(4, inner - 3 - meta.prefix.length - vmSuffixWidth);
         return (
           <Box key={lane.id} paddingX={1}>
             <Rail on={selected} />
@@ -922,7 +824,6 @@ function MiniDrawer({
                 {" "}VM
               </Text>
             ) : null}
-            <Text color={theme.color.t4}> {detail}</Text>
           </Box>
         );
       })}
@@ -939,9 +840,8 @@ function MiniDrawer({
             const hovered = hoveredId?.startsWith(`drawer:chat:${session.sessionId}:`) ?? false;
             const provider = (session.provider as AdeCodeProvider) ?? null;
             const exec = theme.provider(provider);
-            const when = formatSessionAge(session);
             const dot = statusGlyph(chatStatusDot(session));
-            const nameMax = Math.max(4, inner - 5 - when.length);
+            const nameMax = Math.max(4, inner - 4);
             return (
               <Box key={session.sessionId} paddingX={1}>
                 {running ? <ActiveChatSpin /> : <Text color={dot.color} bold={session.awaitingInput}>{dot.glyph} </Text>}
@@ -957,7 +857,6 @@ function MiniDrawer({
                 >
                   {pad(truncate(formatSessionLabel(session), nameMax), nameMax)}
                 </Text>
-                <Text color={theme.color.t4}> {when}</Text>
               </Box>
             );
           })}
@@ -993,23 +892,4 @@ function MiniDrawer({
       </Box>
     </Box>
   );
-}
-
-/** Best-effort: detect the exec/provider for a lane from its sessions. */
-function sessionProviderFor(
-  lane: LaneSummary,
-  sessions: AgentChatSessionSummary[],
-): AdeCodeProvider | null {
-  // Prefer the most recently-active session in the lane. Fall back to the
-  // most-recently-started.
-  const laneSessions = sessions.filter((s) => s.laneId === lane.id);
-  if (!laneSessions.length) return null;
-  const ordered = [...laneSessions].sort((a, b) => {
-    const aTs = Date.parse(a.lastActivityAt ?? a.startedAt ?? "");
-    const bTs = Date.parse(b.lastActivityAt ?? b.startedAt ?? "");
-    if (!Number.isNaN(aTs) && !Number.isNaN(bTs)) return bTs - aTs;
-    return 0;
-  });
-  const top = ordered[0];
-  return (top?.provider as AdeCodeProvider) ?? null;
 }

@@ -42,7 +42,7 @@ afterEach(() => {
 });
 
 describe("Drawer diff stats", () => {
-  it("renders the selected lane's diff stats from line stats, not ahead/behind, and hides others", () => {
+  it("renders every lane's diff stats inline (not just the selected one) and shows no timestamp", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-05-12T12:00:00.000Z"));
 
@@ -55,7 +55,7 @@ describe("Drawer diff stats", () => {
       "lane-2": { additions: 428, deletions: 112, files: 6 },
     };
 
-    const frameSelectFirst = stripAnsi(render(
+    const frame = stripAnsi(render(
       <Drawer
         lanes={lanes}
         sessions={[]}
@@ -69,36 +69,17 @@ describe("Drawer diff stats", () => {
       />,
     ).lastFrame() ?? "");
 
-    // lane-1 is selected → its diff renders; lane-2 stays hidden.
-    expect(frameSelectFirst).toContain("+64");
-    expect(frameSelectFirst).toContain("−18");
-    expect(frameSelectFirst).toContain("5m");
-    expect(frameSelectFirst).not.toContain("+428");
-    expect(frameSelectFirst).not.toContain("−112");
-    expect(frameSelectFirst).not.toContain("+492");
-    expect(frameSelectFirst).not.toContain("−130");
-    expect(frameSelectFirst).not.toContain("+141 / −112");
-    expect(frameSelectFirst).not.toContain("-18");
-
-    const frameSelectSecond = stripAnsi(render(
-      <Drawer
-        lanes={lanes}
-        sessions={[]}
-        activeLaneId="lane-2"
-        activeSessionId={null}
-        browsingLaneId="lane-2"
-        selectedLaneIndex={1}
-        selectedChatIndex={-1}
-        panelHeight={30}
-        diffByLaneId={diffByLaneId}
-      />,
-    ).lastFrame() ?? "");
-
-    // lane-2 selected → its diff shows; lane-1 stays hidden.
-    expect(frameSelectSecond).toContain("+428");
-    expect(frameSelectSecond).toContain("−112");
-    expect(frameSelectSecond).not.toContain("+64");
-    expect(frameSelectSecond).not.toContain("−18");
+    // The diff is shown on every lane card, selected or not — it replaced the
+    // green "run" chip and refreshes in place.
+    expect(frame).toContain("+64");
+    expect(frame).toContain("−18");
+    expect(frame).toContain("+428");
+    expect(frame).toContain("−112");
+    // ahead/behind line stats are not surfaced, and the lane card no longer
+    // carries a "Xm" age timestamp.
+    expect(frame).not.toContain("+141 / −112");
+    expect(frame).not.toContain("-18");
+    expect(frame).not.toContain("5m");
   });
 });
 
@@ -166,7 +147,11 @@ describe("Drawer lane and chat navigation layout", () => {
     expect(laneModeFrame).toContain("First chat");
     expect(laneModeFrame).toContain("enter chats");
     expect(laneModeFrame).not.toContain("││");
-    expect(chatModeFrame).toContain("CHATS · 1");
+    // The expanded chat list no longer carries a "CHATS · N" sub-header — a
+    // selected lane looks like a collapsed one plus its violet border and the
+    // trailing "+ new chat" row.
+    expect(chatModeFrame).not.toContain("CHATS ·");
+    expect(chatModeFrame).toContain("First chat");
     expect(chatModeFrame.indexOf("First chat")).toBeLessThan(chatModeFrame.indexOf("+ new chat"));
     expect(chatModeFrame).not.toContain("││");
     // Chats-mode footer now hints at how to escape the chat list since arrows
@@ -277,7 +262,6 @@ describe("Drawer lane and chat navigation layout", () => {
     ).lastFrame() ?? "");
 
     expect(frame).toContain("miss");
-    expect(frame).toContain("CHATS · unavailable");
     expect(frame).toContain("worktree missing");
     expect(frame).toContain("lane unavailable");
     expect(frame).not.toContain("+ new chat");
@@ -429,6 +413,9 @@ describe("Drawer active chat indicator", () => {
       />,
     ).lastFrame() ?? "");
 
-    expect(frame).toMatch(/[◐◓◑◒] now/);
+    // The active chat carries a live spinner (no "now"/age text — the panel
+    // shows no timestamps).
+    expect(frame).toMatch(/[◐◓◑◒]/);
+    expect(frame).not.toContain("now");
   });
 });

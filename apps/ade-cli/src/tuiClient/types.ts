@@ -323,10 +323,11 @@ export type LocalNotice = {
   timestamp: string;
   tone: "info" | "error" | "success";
   text: string;
-  // Session the notice belongs to, captured at creation. Notices are global UI
-  // feedback, but most ("Model set to…", "Attached clipboard image.") describe an
-  // action in a specific chat, so they are only rendered in that chat's transcript.
-  // null = session-less feedback that falls back to the active chat.
+  // Scope the notice belongs to, captured at creation. Most feedback ("Model set
+  // to…", "Attached clipboard image.") describes an action in a specific chat, so
+  // it is only rendered in that scope. Holds a chat session id, a per-draft key
+  // ("draft:N") when fired in a new-chat draft so feedback can't bleed across
+  // drafts, or null = global feedback that falls back to the active chat.
   sessionId?: string | null;
 };
 
