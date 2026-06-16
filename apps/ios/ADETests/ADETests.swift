@@ -2689,14 +2689,26 @@ final class ADETests: XCTestCase {
   func testSyncServiceForgetProjectHidesCachedAndRemoteRowsByRoot() throws {
     let activeProjectIdKey = "ade.sync.activeProjectId"
     let activeProjectRootPathKey = "ade.sync.activeProjectRootPath"
+    let activeProjectHostIdentityKey = "ade.sync.activeProjectHostIdentity"
+    let profileKey = "ade.sync.hostProfile"
+    let profilesKey = "ade.sync.hostProfiles"
     let hiddenProjectsKey = "ade.sync.hiddenProjects"
+    let hostHiddenProjectsKey = "\(hiddenProjectsKey).host-1"
     UserDefaults.standard.removeObject(forKey: activeProjectIdKey)
     UserDefaults.standard.removeObject(forKey: activeProjectRootPathKey)
+    UserDefaults.standard.removeObject(forKey: activeProjectHostIdentityKey)
+    UserDefaults.standard.removeObject(forKey: profileKey)
+    UserDefaults.standard.removeObject(forKey: profilesKey)
     UserDefaults.standard.removeObject(forKey: hiddenProjectsKey)
+    UserDefaults.standard.removeObject(forKey: hostHiddenProjectsKey)
     defer {
       UserDefaults.standard.removeObject(forKey: activeProjectIdKey)
       UserDefaults.standard.removeObject(forKey: activeProjectRootPathKey)
+      UserDefaults.standard.removeObject(forKey: activeProjectHostIdentityKey)
+      UserDefaults.standard.removeObject(forKey: profileKey)
+      UserDefaults.standard.removeObject(forKey: profilesKey)
       UserDefaults.standard.removeObject(forKey: hiddenProjectsKey)
+      UserDefaults.standard.removeObject(forKey: hostHiddenProjectsKey)
     }
 
     let baseURL = makeTemporaryDirectory()
@@ -2710,22 +2722,31 @@ final class ADETests: XCTestCase {
     """)
 
     let service = SyncService(database: database)
+    try service.applyHelloPayloadForTesting([
+      "brain": [
+        "deviceId": "host-1",
+        "deviceName": "Mac Studio",
+      ],
+      "features": [
+        "projectCatalog": true,
+      ],
+      "projects": [],
+    ])
     let cachedProject = try XCTUnwrap(service.projects.first(where: { $0.id == "db-project" }))
-    service.selectProject(cachedProject)
+    service.setActiveProjectForTesting(projectId: cachedProject.id, rootPath: cachedProject.rootPath)
     XCTAssertEqual(service.activeProjectId, "db-project")
 
-    service.seedRemoteProjectCatalogForTesting([
-      MobileProjectSummary(
-        id: "registry-project",
-        displayName: "Project One",
-        rootPath: "/tmp/project-one/",
-        defaultBaseRef: "main",
-        lastOpenedAt: "2026-04-22T02:00:00.000Z",
-        laneCount: 2,
-        isAvailable: true,
-        isCached: false
-      ),
-    ])
+    let registryProject = MobileProjectSummary(
+      id: "registry-project",
+      displayName: "Project One",
+      rootPath: "/tmp/project-one/",
+      defaultBaseRef: "main",
+      lastOpenedAt: "2026-04-22T02:00:00.000Z",
+      laneCount: 2,
+      isAvailable: true,
+      isCached: false
+    )
+    service.seedRemoteProjectCatalogForTesting([registryProject])
     XCTAssertTrue(service.projects.contains { $0.id == "db-project" || $0.id == "registry-project" })
 
     service.forgetProject(cachedProject)
@@ -2735,8 +2756,9 @@ final class ADETests: XCTestCase {
     XCTAssertTrue(service.shouldShowProjectHome)
     XCTAssertFalse(service.projects.contains { $0.id == "db-project" })
     XCTAssertFalse(service.projects.contains { $0.id == "registry-project" })
+    XCTAssertNil(UserDefaults.standard.stringArray(forKey: hiddenProjectsKey))
     XCTAssertEqual(
-      UserDefaults.standard.stringArray(forKey: hiddenProjectsKey),
+      UserDefaults.standard.stringArray(forKey: hostHiddenProjectsKey),
       ["id:db-project", "root:/tmp/project-one"]
     )
 
@@ -2754,6 +2776,10 @@ final class ADETests: XCTestCase {
     ])
     XCTAssertFalse(service.projects.contains { $0.id == "db-project" })
     XCTAssertFalse(service.projects.contains { $0.id == "registry-project" })
+
+    service.disconnect(clearCredentials: false, suspendAutoReconnect: true)
+    service.selectProject(registryProject)
+    XCTAssertNil(UserDefaults.standard.stringArray(forKey: hostHiddenProjectsKey))
 
     database.close()
   }

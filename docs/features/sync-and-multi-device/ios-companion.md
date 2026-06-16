@@ -796,9 +796,10 @@ catalog rows from different OS reports of the same path don't
 duplicate. Project list dedup runs as a final pass
 (`deduplicateProjectListByRoot`) keyed on the normalised root path.
 Project removal stores the same normalised-root key in addition to the
-project id, so a DB-cached row and a runtime-catalog row representing
-the same filesystem path disappear together. Opening or selecting the
-project again clears those hidden keys.
+project id under the active host profile, so a DB-cached row and a
+runtime-catalog row representing the same filesystem path disappear
+together without hiding matching paths from other paired machines.
+Opening or selecting the project again clears those hidden keys.
 
 ### Shipped
 

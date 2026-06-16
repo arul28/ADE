@@ -3592,6 +3592,7 @@ app.whenReady().then(async () => {
       logger,
       projectRoot,
       projectId,
+      runtimeProjectId: recentProjectInspectionForRoot(projectRoot)?.projectId ?? projectId,
       appVersion: app.getVersion(),
       localDeviceIdPath: path.join(machineAdeLayout.secretsDir, "sync-device-id"),
       fileService,
@@ -5095,19 +5096,36 @@ app.whenReady().then(async () => {
 
     const state = readGlobalState(globalStatePath);
     const inspected = (state.recentProjects ?? []).map(inspectRecentProject);
-    const recent = inspected.find((entry) => {
-      const entryRoot = normalizeProjectRoot(entry.summary.rootPath);
-      return (requestedRoot != null && entryRoot === requestedRoot)
-        || (requestedProjectId != null && entry.projectId === requestedProjectId);
-    }) ?? null;
-    const contextMatch = [...projectContexts.entries()].find(([root, ctx]) =>
-      (requestedRoot != null && root === requestedRoot)
-        || (requestedProjectId != null && ctx.projectId === requestedProjectId)
-    ) ?? null;
-    const rootToForget = requestedRoot
-      ?? (recent ? normalizeProjectRoot(recent.summary.rootPath) : null)
-      ?? contextMatch?.[0]
+    const recentByRoot = requestedRoot == null
+      ? null
+      : inspected.find((entry) => normalizeProjectRoot(entry.summary.rootPath) === requestedRoot) ?? null;
+    const recentById = requestedProjectId == null
+      ? null
+      : inspected.find((entry) => entry.projectId === requestedProjectId) ?? null;
+    const contextByRoot = requestedRoot == null
+      ? null
+      : [...projectContexts.entries()].find(([root]) => root === requestedRoot) ?? null;
+    const contextById = requestedProjectId == null
+      ? null
+      : [...projectContexts.entries()].find(([, ctx]) => ctx.projectId === requestedProjectId) ?? null;
+    const rootFromPath = requestedRoot
+      ?? (recentByRoot ? normalizeProjectRoot(recentByRoot.summary.rootPath) : null)
+      ?? contextByRoot?.[0]
       ?? null;
+    const rootFromId = (recentById ? normalizeProjectRoot(recentById.summary.rootPath) : null)
+      ?? contextById?.[0]
+      ?? null;
+    if (rootFromPath && rootFromId && rootFromPath !== rootFromId) {
+      return {
+        ok: false,
+        message: "projectId and rootPath refer to different projects.",
+        projectId: requestedProjectId,
+        rootPath: requestedRoot,
+      };
+    }
+    const recent = recentByRoot ?? recentById;
+    const contextMatch = contextByRoot ?? contextById;
+    const rootToForget = rootFromPath ?? rootFromId;
     if (!rootToForget) {
       return {
         ok: true,

@@ -13136,6 +13136,7 @@ async function runServe(
     requestedId: string;
     requestedRootPath: string;
     record: ProjectRecord | null;
+    conflict: boolean;
   } => {
     const requestedId =
       typeof input.projectId === "string" && input.projectId.trim()
@@ -13145,24 +13146,32 @@ async function runServe(
       typeof input.rootPath === "string" && input.rootPath.trim()
         ? path.resolve(input.rootPath)
         : "";
-    const record =
-      projectRegistry
-        .list()
-        .find(
-          (candidate) =>
-            (requestedId.length > 0 && candidate.projectId === requestedId) ||
-            (requestedRootPath.length > 0 && path.resolve(candidate.rootPath) === requestedRootPath),
-        ) ?? null;
-    return { requestedId, requestedRootPath, record };
+    const records = projectRegistry.list();
+    const idRecord =
+      requestedId.length > 0
+        ? records.find((candidate) => candidate.projectId === requestedId) ?? null
+        : null;
+    const rootRecord =
+      requestedRootPath.length > 0
+        ? records.find((candidate) => path.resolve(candidate.rootPath) === requestedRootPath) ?? null
+        : null;
+    const conflict = Boolean(idRecord && rootRecord && idRecord.projectId !== rootRecord.projectId);
+    return { requestedId, requestedRootPath, record: conflict ? null : idRecord ?? rootRecord, conflict };
   };
   const forgetHeadlessMobileProject = async (
     input: SyncProjectForgetRequestPayload,
   ): Promise<SyncProjectForgetResultPayload> => {
-    const { requestedId, requestedRootPath, record } = resolveHeadlessMobileProjectRequest(input);
+    const { requestedId, requestedRootPath, record, conflict } = resolveHeadlessMobileProjectRequest(input);
     if (!requestedId && !requestedRootPath) {
       return {
         ok: false,
         message: "Project id or path is required.",
+      };
+    }
+    if (conflict) {
+      return {
+        ok: false,
+        message: "projectId and rootPath refer to different projects.",
       };
     }
     if (!record) {
@@ -13173,8 +13182,16 @@ async function runServe(
         rootPath: requestedRootPath || null,
       };
     }
-    await scopeRegistry.dispose(record.projectId);
     projectRegistry.remove(record.projectId);
+    const disposeTimer = setImmediate(() => {
+      void scopeRegistry.dispose(record.projectId).catch((error) => {
+        headlessProjectLogger.warn("headless_project_forget_dispose_failed", {
+          projectId: record.projectId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+    });
+    disposeTimer.unref?.();
     return {
       ok: true,
       projectId: record.projectId,
@@ -13193,10 +13210,17 @@ async function runServe(
     prepareProjectConnection: async (
       request: SyncProjectSwitchRequestPayload,
     ): Promise<SyncProjectSwitchResultPayload> => {
-      const { record } = resolveHeadlessMobileProjectRequest(request);
+      const { record, conflict } = resolveHeadlessMobileProjectRequest(request);
       const project = record
         ? toMobileProjectSummary(record, { isOpen: true })
         : null;
+      if (conflict) {
+        return {
+          ok: false,
+          message: "projectId and rootPath refer to different projects.",
+          project,
+        };
+      }
       if (!record) {
         return {
           ok: false,

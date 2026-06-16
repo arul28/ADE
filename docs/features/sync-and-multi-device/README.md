@@ -393,10 +393,10 @@ When a project host is active, `syncHostService` handles them; when no
 project host owns the shared listener, `brainProjectActionsSyncHandler`
 handles the same envelopes so the phone can add a first project or
 remove stale recents on a headless or freshly-started machine. On the
-phone, removal also stores a local hidden key by project id and
-normalised root path so a cached DB row and a remote catalog row for the
-same project do not reappear until the user opens/selects that project
-again.
+phone, removal also stores host-scoped local hidden keys by project id
+and normalised root path so a cached DB row and a remote catalog row for
+the same project do not reappear until the user opens/selects that
+project again.
 
 Project catalog snapshots are also chunked
 (`MAX_PROJECT_CATALOG_ENVELOPE_BYTES = 768 KB`,

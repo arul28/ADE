@@ -1539,6 +1539,8 @@ final class SyncService: ObservableObject {
     refreshProjectCatalog()
     if wasActive {
       _ = beginProjectSelection()
+      resetChatEventState(clearHistory: false)
+      resetTerminalSubscriptionState(clearHistory: true)
       setActiveProjectId(nil)
       latestRemoteDbVersion = 0
       resetOutboundCursorStateForActiveProject()
@@ -2237,25 +2239,55 @@ final class SyncService: ObservableObject {
     !hiddenProjectKeys.isDisjoint(with: hiddenKeys(for: project))
   }
 
+  private func hiddenProjectsStorageKey() -> String {
+    if let hostKey = activeHostStorageKey() {
+      return "\(hiddenProjectsKey).\(hostKey)"
+    }
+    return hiddenProjectsKey
+  }
+
   private func loadHiddenProjectKeys() -> Set<String> {
-    Set(UserDefaults.standard.stringArray(forKey: hiddenProjectsKey) ?? [])
+    let key = hiddenProjectsStorageKey()
+    if key != hiddenProjectsKey,
+       UserDefaults.standard.stringArray(forKey: key) == nil,
+       let legacyKeys = UserDefaults.standard.stringArray(forKey: hiddenProjectsKey),
+       !legacyKeys.isEmpty {
+      UserDefaults.standard.set(legacyKeys, forKey: key)
+      UserDefaults.standard.removeObject(forKey: hiddenProjectsKey)
+      return Set(legacyKeys)
+    }
+    return Set(UserDefaults.standard.stringArray(forKey: key) ?? [])
   }
 
   private func saveHiddenProjectKeys() {
+    let key = hiddenProjectsStorageKey()
     if hiddenProjectKeys.isEmpty {
-      UserDefaults.standard.removeObject(forKey: hiddenProjectsKey)
+      UserDefaults.standard.removeObject(forKey: key)
     } else {
-      UserDefaults.standard.set(hiddenProjectKeys.sorted(), forKey: hiddenProjectsKey)
+      UserDefaults.standard.set(hiddenProjectKeys.sorted(), forKey: key)
+    }
+    if key != hiddenProjectsKey {
+      UserDefaults.standard.removeObject(forKey: hiddenProjectsKey)
     }
   }
 
   private func rememberHiddenProject(_ project: MobileProjectSummary) {
-    hiddenProjectKeys.formUnion(hiddenKeys(for: project))
+    let keys = hiddenKeys(for: project)
+    guard !keys.isEmpty else { return }
+    let previous = hiddenProjectKeys
+    hiddenProjectKeys.formUnion(keys)
+    guard hiddenProjectKeys != previous else { return }
     saveHiddenProjectKeys()
   }
 
   private func unhideProject(_ project: MobileProjectSummary) {
-    let keys = hiddenKeys(for: project)
+    var keys = hiddenKeys(for: project)
+    if let root = normalizedProjectRoot(project.rootPath) {
+      let aliases = projects + remoteProjectCatalog + database.listMobileProjects()
+      for alias in aliases where normalizedProjectRoot(alias.rootPath) == root {
+        keys.formUnion(hiddenKeys(for: alias))
+      }
+    }
     guard !keys.isEmpty, !hiddenProjectKeys.isDisjoint(with: keys) else { return }
     hiddenProjectKeys.subtract(keys)
     saveHiddenProjectKeys()
@@ -2316,6 +2348,8 @@ final class SyncService: ObservableObject {
     activeProjectId = UserDefaults.standard.string(forKey: activeProjectIdKey)
     activeProjectRootPath = normalizedProjectRoot(UserDefaults.standard.string(forKey: activeProjectRootPathKey))
     activeProjectHostIdentity = UserDefaults.standard.string(forKey: activeProjectHostIdentityKey)
+    activeHostProfile = loadProfile()
+    hostName = activeHostProfile?.hostName
     database.setActiveProjectId(activeProjectId)
     hiddenProjectKeys = loadHiddenProjectKeys()
     projects = deduplicateProjectListByRoot(
@@ -2328,8 +2362,6 @@ final class SyncService: ObservableObject {
     }
     pendingOperationCount = loadPendingOperations().count
     resetOutboundCursorStateForActiveProject()
-    activeHostProfile = loadProfile()
-    hostName = activeHostProfile?.hostName
     latestRemoteDbVersion = activeHostProfile?.lastRemoteDbVersion ?? 0
     remoteCommandDescriptors = loadRemoteCommandDescriptors()
     refreshReducedSyncLoad()
@@ -5724,6 +5756,7 @@ final class SyncService: ObservableObject {
       }
       activeHostProfile = profile
       hostName = profile.hostName
+      hiddenProjectKeys = loadHiddenProjectKeys()
       if activeProjectId != nil {
         let hostIdentity = syncNormalizedCommandScopeValue(profile.hostIdentity)
           ?? syncNormalizedCommandScopeValue(profile.lastHostDeviceId)
@@ -5739,6 +5772,7 @@ final class SyncService: ObservableObject {
       UserDefaults.standard.removeObject(forKey: legacyDraftKey)
       activeHostProfile = nil
       hostName = nil
+      hiddenProjectKeys = loadHiddenProjectKeys()
       activeProjectHostIdentity = nil
       UserDefaults.standard.removeObject(forKey: activeProjectHostIdentityKey)
     }
@@ -8734,7 +8768,7 @@ final class SyncService: ObservableObject {
       try await InitialHydrationGate.waitForProjectRow(
         currentProjectId: {
           guard let activeProjectId = self.activeProjectId else {
-            let cachedProjects = self.database.listMobileProjects()
+            let cachedProjects = self.database.listMobileProjects().filter { !self.isProjectHidden($0) }
             guard cachedProjects.count == 1, let onlyProject = cachedProjects.first else {
               return nil
             }
@@ -8766,7 +8800,7 @@ final class SyncService: ObservableObject {
 
     guard isCurrentConnectionGeneration(connectionGeneration) else { return }
     if activeProjectId == nil {
-      let cachedProjects = database.listMobileProjects()
+      let cachedProjects = database.listMobileProjects().filter { !isProjectHidden($0) }
       if cachedProjects.count == 1, let onlyProject = cachedProjects.first {
         if supportsProjectCatalog {
           guard remoteProjectCatalog.count == 1,
