@@ -472,11 +472,11 @@ public struct AttentionActionRow: View {
         return OpenADEDeepLinkIntent(urlString: "ade://session/\(sessionId)")
     }
 
-    private func openPrIntent(_ prNumber: Int?) -> OpenADEDeepLinkIntent {
+    private func openPrIntent(_ prNumber: Int?) -> OpenADEPrIntent {
         guard let prNumber, prNumber > 0 else {
-            return OpenADEDeepLinkIntent(urlString: "ade://workspace")
+            return OpenADEPrIntent(prNumber: 0)
         }
-        return OpenADEDeepLinkIntent(urlString: "ade://pr/\(prNumber)")
+        return OpenADEPrIntent(prNumber: prNumber)
     }
 
     private func prLabel(_ verb: String, _ number: Int?) -> String {
@@ -484,6 +484,32 @@ public struct AttentionActionRow: View {
             return "\(verb) #\(number)"
         }
         return "\(verb) PR"
+    }
+}
+
+@available(iOS 17.0, *)
+public struct OpenADEPrIntent: AppIntent {
+    public static var title: LocalizedStringResource = "Open PR"
+    public static var description = IntentDescription("Open the linked ADE pull request.")
+    public static var openAppWhenRun: Bool = true
+
+    @Parameter(title: "PR Number")
+    public var prNumber: Int
+
+    public init() {}
+
+    public init(prNumber: Int) {
+        self.prNumber = prNumber
+    }
+
+    @MainActor
+    public func perform() async throws -> some IntentResult {
+        guard prNumber > 0 else { return .result() }
+        await ADEIntentCommandRegistry.dispatch(
+            .openPr,
+            payload: ["prNumber": prNumber]
+        )
+        return .result()
     }
 }
 
@@ -508,6 +534,7 @@ public struct OpenADEDeepLinkIntent: AppIntent {
 
     @MainActor
     public func perform() async throws -> some IntentResult {
+        guard urlString != "ade://workspace" else { return .result() }
         await ADEIntentCommandRegistry.dispatch(
             .openDeeplink,
             payload: ["url": urlString]
