@@ -4506,6 +4506,42 @@ final class SyncService: ObservableObject {
     return try await sendDecodableCommand(action: "lanes.create", args: args, as: LaneSummary.self)
   }
 
+  private struct SuggestLaneNameResult: Decodable { let name: String }
+
+  /// Asks the host's small naming model for a lane name (desktop parity with
+  /// `agentChatService.suggestLaneNameFromPrompt`). The host honors its own
+  /// `titleGenerationEnabled` setting and clamps the name; it returns a
+  /// deterministic fallback when naming is disabled/unavailable. This command is
+  /// NOT queueable, so an offline phone throws here rather than queueing — the
+  /// caller is expected to catch and fall back to its own deterministic name.
+  ///
+  /// The request is short (10s) and non-disconnecting: it's a best-effort lookup
+  /// that the caller races against its own 10s UI deadline, so a slow/stuck host
+  /// must not strain the connection or trigger a probe/reconnect that could
+  /// disrupt the chat/CLI session started right after the lane is created.
+  func suggestLaneName(
+    laneId: String,
+    prompt: String,
+    modelId: String,
+    fallbackName: String
+  ) async throws -> String {
+    let args: [String: Any] = [
+      "laneId": laneId,
+      "prompt": prompt,
+      "modelId": modelId,
+      "fallbackName": fallbackName,
+    ]
+    let result = try await sendDecodableCommand(
+      action: "lanes.suggestName",
+      args: args,
+      disconnectOnTimeout: false,
+      timeoutNanoseconds: 10_000_000_000,
+      as: SuggestLaneNameResult.self
+    )
+    let trimmed = result.name.trimmingCharacters(in: .whitespacesAndNewlines)
+    return trimmed.isEmpty ? fallbackName : trimmed
+  }
+
   func createFromUnstaged(sourceLaneId: String, name: String, description: String = "") async throws -> LaneSummary {
     var args: [String: Any] = [
       "sourceLaneId": sourceLaneId,
@@ -8252,8 +8288,19 @@ final class SyncService: ObservableObject {
     return try decoder.decode(T.self, from: data)
   }
 
-  private func sendDecodableCommand<T: Decodable>(action: String, args: [String: Any] = [:], as type: T.Type) async throws -> T {
-    let response = try await sendCommand(action: action, args: args)
+  private func sendDecodableCommand<T: Decodable>(
+    action: String,
+    args: [String: Any] = [:],
+    disconnectOnTimeout: Bool = true,
+    timeoutNanoseconds: UInt64? = nil,
+    as type: T.Type
+  ) async throws -> T {
+    let response = try await sendCommand(
+      action: action,
+      args: args,
+      disconnectOnTimeout: disconnectOnTimeout,
+      timeoutNanoseconds: timeoutNanoseconds
+    )
     if let payload = response as? [String: Any], payload["queued"] as? Bool == true {
       throw QueuedRemoteCommandError(action: action)
     }

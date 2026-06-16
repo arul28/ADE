@@ -160,6 +160,20 @@ iOS companion (`apps/ios/ADE/Views/Lanes/`):
   shareable `ade://lane/<id>` and
   `ade://repo/<owner>/<repo>/branch/<branch>` links the lane options
   menu copies to the pasteboard.
+- `apps/ios/ADE/Views/Work/WorkNewChatScreen.swift` — mobile
+  auto-create (the "Auto-create lane" sentinel) now names the new lane
+  with the host's small AI model, mirroring desktop's draft-launch
+  flow. `submit()` resolves the name **before** creating the lane:
+  it calls `SyncService.suggestLaneName` (the non-queueable
+  `lanes.suggestName` sync command → `agentChatService.suggestLaneNameFromPrompt`
+  on the host), raced against a 10s deadline, and shows a banner above
+  the composer (`Naming lane with <model>… → Creating lane…`). Any
+  failure / timeout / offline / host-disabled state falls back to the
+  existing deterministic `autoCreatedLaneName(opener:)`, so lane
+  creation is never blocked or failed by naming. The host command is
+  deliberately not queueable so an offline phone fails fast to the
+  deterministic name instead of queueing a stale suggestion. Covers
+  both the Chat and CLI auto-create paths.
 
 Detail docs in this folder:
 
