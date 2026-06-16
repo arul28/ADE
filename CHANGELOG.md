@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.6] - 2026-06-16
+
+### Fixed
+
+- Voice input is reachable again: the on-device dictation model now downloads straight from the chat mic and from Settings → General instead of a dead-end "ships with a future update" tooltip. The download runs in the background, survives leaving Settings, and verifies its checksum with retry.
+- ADE Code: pasting an image while connected to a remote machine no longer crashes with a permission error — the image is materialized locally and uploaded to the runtime.
+- Mobile sync resolves project identity aliases, so a paired phone keeps tracking the right project through hide, unhide, and forget (desktop + iOS).
+
 ## [1.2.5] - 2026-06-16
 
 ### Added
@@ -402,6 +410,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Initial public release.
 
 [Unreleased]: https://github.com/arul28/ADE/compare/v1.2.5...HEAD
+[1.2.6]: https://github.com/arul28/ADE/compare/v1.2.5...v1.2.6
 [1.2.5]: https://github.com/arul28/ADE/compare/v1.2.4...v1.2.5
 [1.2.4]: https://github.com/arul28/ADE/compare/v1.2.3...v1.2.4
 [1.2.3]: https://github.com/arul28/ADE/compare/v1.2.2...v1.2.3
