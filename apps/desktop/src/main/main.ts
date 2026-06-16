@@ -5130,7 +5130,7 @@ app.whenReady().then(async () => {
     if (projectContexts.has(rootToForget)) {
       const rootToClose = rootToForget;
       const closeTimer = setTimeout(() => {
-        void closeProjectContext(rootToClose).catch((error) => {
+        void closeProjectByPath(rootToClose).catch((error) => {
           console.warn("sync.mobile_project_forget_close_failed", {
             rootPath: rootToClose,
             error: error instanceof Error ? error.message : String(error),

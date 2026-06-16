@@ -13173,6 +13173,7 @@ async function runServe(
         rootPath: requestedRootPath || null,
       };
     }
+    await scopeRegistry.dispose(record.projectId);
     projectRegistry.remove(record.projectId);
     return {
       ok: true,
