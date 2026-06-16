@@ -41,6 +41,7 @@ struct WorkChatSessionView: View {
   @State var timelinePresentation = WorkTimelinePresentation.empty
   @State var timelineRebuildTask: Task<Void, Never>?
   @State var timelineRebuildGeneration = 0
+  @State var assistantPreviewCache = WorkAssistantPreviewCache()
   @State var composerSettingMutationInFlight = false
   @State var composerSettingMutationGeneration = 0
   @State var pendingCodexFastMode: Bool?
@@ -235,7 +236,8 @@ struct WorkChatSessionView: View {
       timeline: timeline,
       visibleCount: visibleTimelineCount,
       chatSummary: chatSummary,
-      transcript: transcript
+      transcript: transcript,
+      assistantPreviewCache: assistantPreviewCache
     )
     if isNearBottom,
        timelinePresentation.hiddenCount > 0,
@@ -245,7 +247,8 @@ struct WorkChatSessionView: View {
         timeline: timeline,
         visibleCount: visibleTimelineCount,
         chatSummary: chatSummary,
-        transcript: transcript
+        transcript: transcript,
+        assistantPreviewCache: assistantPreviewCache
       )
     }
     guard nextPresentation != timelinePresentation else { return }
@@ -847,19 +850,46 @@ private func makeWorkTimelinePresentation(
   timeline: [WorkTimelineEntry],
   visibleCount: Int,
   chatSummary: AgentChatSessionSummary?,
-  transcript: [WorkChatEnvelope]
+  transcript: [WorkChatEnvelope],
+  assistantPreviewCache: WorkAssistantPreviewCache
 ) -> WorkTimelinePresentation {
   let entries = injectWorkTurnSeparators(
     into: timeline,
     chatSummary: chatSummary,
     transcript: transcript
   )
-  let visibleEntries = visibleWorkTimelineEntries(from: entries, visibleCount: visibleCount)
+  let visibleEntries = workTimelineEntriesWithAssistantPreviews(
+    visibleWorkTimelineEntries(from: entries, visibleCount: visibleCount),
+    cache: assistantPreviewCache
+  )
   return WorkTimelinePresentation(
     entries: entries,
     visibleEntries: visibleEntries,
     hiddenCount: max(entries.count - visibleEntries.count, 0)
   )
+}
+
+private func workTimelineEntriesWithAssistantPreviews(
+  _ entries: [WorkTimelineEntry],
+  cache: WorkAssistantPreviewCache
+) -> [WorkTimelineEntry] {
+  var visibleAssistantMessageIds = Set<String>()
+  let hydratedEntries = entries.map { entry -> WorkTimelineEntry in
+    guard case .message(var message) = entry.payload,
+          message.role == "assistant"
+    else { return entry }
+
+    visibleAssistantMessageIds.insert(message.id)
+    message.assistantPreview = cache.preview(for: message)
+    return WorkTimelineEntry(
+      id: entry.id,
+      timestamp: entry.timestamp,
+      rank: entry.rank,
+      payload: .message(message)
+    )
+  }
+  cache.prune(keeping: visibleAssistantMessageIds)
+  return hydratedEntries
 }
 
 func mergeWorkPendingSteers(

@@ -203,7 +203,6 @@ func buildWorkTimeline(
           id: "fallback-\($0.id)",
           role: $0.role,
           markdown: $0.text,
-          assistantPreview: $0.role == "assistant" ? workInitialAssistantMessagePreview($0.text) : nil,
           timestamp: $0.timestamp,
           turnId: $0.turnId,
           itemId: nil

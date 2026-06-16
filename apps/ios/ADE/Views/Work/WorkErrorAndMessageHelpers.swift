@@ -112,10 +112,6 @@ func buildWorkChatMessages(from transcript: [WorkChatEnvelope]) -> [WorkChatMess
     }
   }
 
-  for index in messages.indices where messages[index].role == "assistant" {
-    messages[index].assistantPreview = workInitialAssistantMessagePreview(messages[index].markdown)
-  }
-
   return messages
 }
 

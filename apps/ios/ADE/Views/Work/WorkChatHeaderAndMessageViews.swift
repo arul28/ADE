@@ -414,6 +414,33 @@ struct WorkAssistantMessagePreview: Equatable {
   let totalLineCount: Int
 }
 
+final class WorkAssistantPreviewCache {
+  private struct Entry {
+    let utf8Count: Int
+    let markdown: String
+    let preview: WorkAssistantMessagePreview
+  }
+
+  private var entries: [String: Entry] = [:]
+
+  func preview(for message: WorkChatMessage) -> WorkAssistantMessagePreview {
+    let utf8Count = message.markdown.utf8.count
+    if let entry = entries[message.id],
+       entry.utf8Count == utf8Count,
+       entry.markdown == message.markdown {
+      return entry.preview
+    }
+
+    let preview = workInitialAssistantMessagePreview(message.markdown)
+    entries[message.id] = Entry(utf8Count: utf8Count, markdown: message.markdown, preview: preview)
+    return preview
+  }
+
+  func prune(keeping messageIds: Set<String>) {
+    entries = entries.filter { messageIds.contains($0.key) }
+  }
+}
+
 func workInitialAssistantMessagePreview(_ markdown: String) -> WorkAssistantMessagePreview {
   workAssistantMessagePreview(
     markdown,

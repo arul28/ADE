@@ -8810,7 +8810,7 @@ final class ADETests: XCTestCase {
     XCTAssertFalse(secondPage.text.contains("97. Line 97"))
   }
 
-  func testWorkChatMessagesPrecomputeAssistantPreview() {
+  func testAssistantPreviewCacheHydratesBuiltChatMessages() {
     let markdown = (1...5000).map { "\($0). Line \($0)" }.joined(separator: "\n")
     let transcript = [
       WorkChatEnvelope(
@@ -8822,13 +8822,15 @@ final class ADETests: XCTestCase {
     ]
 
     let message = buildWorkChatMessages(from: transcript).first
+    let preview = message.map { WorkAssistantPreviewCache().preview(for: $0) }
 
-    XCTAssertTrue(message?.assistantPreview?.isTruncated == true)
-    XCTAssertEqual(message?.assistantPreview?.visibleLineCount, workAssistantMessageInitialLineBudget)
-    XCTAssertEqual(message?.assistantPreview?.totalLineCount, 5000)
+    XCTAssertNil(message?.assistantPreview)
+    XCTAssertTrue(preview?.isTruncated == true)
+    XCTAssertEqual(preview?.visibleLineCount, workAssistantMessageInitialLineBudget)
+    XCTAssertEqual(preview?.totalLineCount, 5000)
   }
 
-  func testWorkChatMessagesPrecomputeAssistantPreviewAfterStreamingMerge() {
+  func testAssistantPreviewCacheHydratesAfterStreamingMerge() {
     let firstChunk = (1...2500).map { "\($0). Line \($0)" }.joined(separator: "\n")
     let secondChunk = "\n" + (2501...5000).map { "\($0). Line \($0)" }.joined(separator: "\n")
     let transcript = [
@@ -8847,11 +8849,13 @@ final class ADETests: XCTestCase {
     ]
 
     let message = buildWorkChatMessages(from: transcript).first
+    let preview = message.map { WorkAssistantPreviewCache().preview(for: $0) }
 
     XCTAssertEqual(message?.markdown, firstChunk + secondChunk)
-    XCTAssertTrue(message?.assistantPreview?.isTruncated == true)
-    XCTAssertEqual(message?.assistantPreview?.visibleLineCount, workAssistantMessageInitialLineBudget)
-    XCTAssertEqual(message?.assistantPreview?.totalLineCount, 5000)
+    XCTAssertNil(message?.assistantPreview)
+    XCTAssertTrue(preview?.isTruncated == true)
+    XCTAssertEqual(preview?.visibleLineCount, workAssistantMessageInitialLineBudget)
+    XCTAssertEqual(preview?.totalLineCount, 5000)
   }
 
   func testWorkChatAccessibilityPreviewCapsHugeMessages() {
