@@ -72,9 +72,21 @@ jobs:
     needs:
       - verify
       - build-runtime-binaries
-    runs-on: macos-15
+    # One job per arch, in parallel on native runners (arm64 -> macos-15,
+    # x64 -> macos-15-intel). Wall-clock ~= one arch's build+notarize instead of
+    # both serialized. Each job signs+notarizes+staples its own arch; the
+    # per-arch updater manifests are merged in publish-release.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-15
+          - arch: x64
+            runner: macos-15-intel
+    runs-on: ${{ matrix.runner }}
     concurrency:
-      group: release-${{ inputs.release_tag }}-mac
+      group: release-${{ inputs.release_tag }}-mac-${{ matrix.arch }}
       cancel-in-progress: true
     steps:
       - uses: actions/checkout@v4
@@ -178,7 +190,7 @@ jobs:
           security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
           echo "CSC_KEYCHAIN=$KEYCHAIN" >> "$GITHUB_ENV"
 
-      - name: Build signed per-arch (arm64 + x64) macOS release
+      - name: Build signed ${{ matrix.arch }} macOS release
         env:
           CSC_LINK: ${{ secrets.CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
@@ -186,25 +198,28 @@ jobs:
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           ELECTRON_CACHE: ${{ github.workspace }}/apps/desktop/.cache/electron
           ELECTRON_BUILDER_CACHE: ${{ github.workspace }}/apps/desktop/.cache/electron-builder
-        run: cd apps/desktop && npm run dist:mac:perarch:signed
+        run: cd apps/desktop && npm run dist:mac:${{ matrix.arch }}:signed
 
-      - name: Notarize and staple DMG artifacts (per arch)
+      - name: Notarize and staple ${{ matrix.arch }} DMG
         env:
           APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
         run: cd apps/desktop && npm run notarize:mac:dmg
 
-      - name: Validate macOS release artifacts and runtime payloads
+      - name: Validate ${{ matrix.arch }} release artifacts
         run: cd apps/desktop && npm run validate:mac:artifacts
 
-      - name: Upload validated artifacts to workflow run
+      - name: Rename per-arch updater manifest
+        run: cd apps/desktop && mv release/latest-mac.yml release/latest-mac-${{ matrix.arch }}.yml
+
+      - name: Upload ${{ matrix.arch }} artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ade-mac-release-${{ inputs.release_tag }}
+          name: ade-mac-release-${{ inputs.release_tag }}-${{ matrix.arch }}
           path: |
             apps/desktop/release/*.dmg
             apps/desktop/release/*.zip
-            apps/desktop/release/latest-mac.yml
+            apps/desktop/release/latest-mac-${{ matrix.arch }}.yml
           if-no-files-found: error
 
   # Windows release builds are disabled for now — ADE ships macOS-only releases.
@@ -420,11 +435,30 @@ jobs:
           ref: ${{ inputs.target_ref }}
           fetch-depth: 1
 
-      - name: Download macOS release artifacts
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Download per-arch macOS release artifacts
         uses: actions/download-artifact@v4
         with:
-          name: ade-mac-release-${{ inputs.release_tag }}
+          pattern: ade-mac-release-${{ inputs.release_tag }}-*
           path: release-assets/mac
+          merge-multiple: true
+
+      - name: Merge per-arch updater manifests into latest-mac.yml
+        run: |
+          set -euo pipefail
+          # Each per-arch build uploaded latest-mac-<arch>.yml; merge them into a
+          # single latest-mac.yml whose files[] lists both arch zips (electron-updater
+          # picks the right one by arch). --ignore-scripts skips the heavy electron
+          # postinstall — we only need the pure-JS `yaml` dep for the merge.
+          (cd apps/desktop && npm ci --ignore-scripts)
+          node apps/desktop/scripts/merge-mac-latest-yml.mjs \
+            release-assets/mac/latest-mac-arm64.yml \
+            release-assets/mac/latest-mac-x64.yml \
+            release-assets/mac/latest-mac.yml
+          rm -f release-assets/mac/latest-mac-arm64.yml release-assets/mac/latest-mac-x64.yml
 
       # Windows artifacts and the standalone runtime assets (ade-* binaries,
       # native tarballs, install.sh) are intentionally NOT published right now.
