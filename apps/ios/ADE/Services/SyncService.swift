@@ -4513,6 +4513,11 @@ final class SyncService: ObservableObject {
   /// deterministic fallback when naming is disabled/unavailable. This command is
   /// NOT queueable, so an offline phone throws here rather than queueing — the
   /// caller is expected to catch and fall back to its own deterministic name.
+  ///
+  /// The request is short (10s) and non-disconnecting: it's a best-effort lookup
+  /// that the caller races against its own 10s UI deadline, so a slow/stuck host
+  /// must not strain the connection or trigger a probe/reconnect that could
+  /// disrupt the chat/CLI session started right after the lane is created.
   func suggestLaneName(
     laneId: String,
     prompt: String,
@@ -4528,6 +4533,8 @@ final class SyncService: ObservableObject {
     let result = try await sendDecodableCommand(
       action: "lanes.suggestName",
       args: args,
+      disconnectOnTimeout: false,
+      timeoutNanoseconds: 10_000_000_000,
       as: SuggestLaneNameResult.self
     )
     let trimmed = result.name.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -8279,8 +8286,19 @@ final class SyncService: ObservableObject {
     return try decoder.decode(T.self, from: data)
   }
 
-  private func sendDecodableCommand<T: Decodable>(action: String, args: [String: Any] = [:], as type: T.Type) async throws -> T {
-    let response = try await sendCommand(action: action, args: args)
+  private func sendDecodableCommand<T: Decodable>(
+    action: String,
+    args: [String: Any] = [:],
+    disconnectOnTimeout: Bool = true,
+    timeoutNanoseconds: UInt64? = nil,
+    as type: T.Type
+  ) async throws -> T {
+    let response = try await sendCommand(
+      action: action,
+      args: args,
+      disconnectOnTimeout: disconnectOnTimeout,
+      timeoutNanoseconds: timeoutNanoseconds
+    )
     if let payload = response as? [String: Any], payload["queued"] as? Bool == true {
       throw QueuedRemoteCommandError(action: action)
     }
