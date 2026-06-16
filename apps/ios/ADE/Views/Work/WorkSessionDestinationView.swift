@@ -13,14 +13,21 @@ let workSessionEdgeSwipePredictedTranslation: CGFloat = 140
 
 func workSessionShouldDismissForEdgeSwipe(
   startX: CGFloat,
+  containerWidth: CGFloat,
+  layoutDirection: LayoutDirection,
   translation: CGSize,
   predictedEndTranslation: CGSize
 ) -> Bool {
-  guard startX <= workSessionEdgeSwipeActivationWidth else { return false }
-  guard translation.width > 0 else { return false }
-  guard abs(translation.height) <= max(48, translation.width * 0.75) else { return false }
-  return translation.width >= workSessionEdgeSwipeMinimumTranslation
-    || predictedEndTranslation.width >= workSessionEdgeSwipePredictedTranslation
+  let isRTL = layoutDirection == .rightToLeft
+  let leadingEdgeDistance = isRTL ? max(0, containerWidth - startX) : startX
+  let horizontalTranslation = isRTL ? -translation.width : translation.width
+  let predictedHorizontalTranslation = isRTL ? -predictedEndTranslation.width : predictedEndTranslation.width
+
+  guard leadingEdgeDistance <= workSessionEdgeSwipeActivationWidth else { return false }
+  guard horizontalTranslation > 0 else { return false }
+  guard abs(translation.height) <= max(48, horizontalTranslation * 0.75) else { return false }
+  return horizontalTranslation >= workSessionEdgeSwipeMinimumTranslation
+    || predictedHorizontalTranslation >= workSessionEdgeSwipePredictedTranslation
 }
 
 func workChatCanSendMessages(
@@ -1122,6 +1129,7 @@ struct WorkSessionDestinationView: View {
 
 private struct WorkSessionNavigationChromeModifier<TrailingControls: View>: ViewModifier {
   @Environment(\.dismiss) private var dismiss
+  @Environment(\.layoutDirection) private var layoutDirection
 
   let mode: WorkSessionNavigationChrome
   let title: String
@@ -1132,7 +1140,7 @@ private struct WorkSessionNavigationChromeModifier<TrailingControls: View>: View
     switch mode {
     case .pushedDetail:
       content
-        .simultaneousGesture(edgeSwipeDismissGesture)
+        .overlay { edgeSwipeDismissOverlay }
         .safeAreaInset(edge: .top, spacing: 0) {
           ZStack {
             Text(title)
@@ -1179,11 +1187,37 @@ private struct WorkSessionNavigationChromeModifier<TrailingControls: View>: View
     }
   }
 
-  private var edgeSwipeDismissGesture: some Gesture {
+  private var edgeSwipeDismissOverlay: some View {
+    GeometryReader { geometry in
+      HStack(spacing: 0) {
+        if layoutDirection == .rightToLeft {
+          Spacer(minLength: 0)
+        }
+        Color.clear
+          .frame(width: workSessionEdgeSwipeActivationWidth)
+          .contentShape(Rectangle())
+          .gesture(edgeSwipeDismissGesture(
+            containerWidth: geometry.size.width,
+            edgeOriginX: layoutDirection == .rightToLeft
+              ? max(0, geometry.size.width - workSessionEdgeSwipeActivationWidth)
+              : 0
+          ))
+        if layoutDirection == .leftToRight {
+          Spacer(minLength: 0)
+        }
+      }
+      .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+    .allowsHitTesting(true)
+  }
+
+  private func edgeSwipeDismissGesture(containerWidth: CGFloat, edgeOriginX: CGFloat) -> some Gesture {
     DragGesture(minimumDistance: 16, coordinateSpace: .local)
       .onEnded { value in
         guard workSessionShouldDismissForEdgeSwipe(
-          startX: value.startLocation.x,
+          startX: edgeOriginX + value.startLocation.x,
+          containerWidth: containerWidth,
+          layoutDirection: layoutDirection,
           translation: value.translation,
           predictedEndTranslation: value.predictedEndTranslation
         ) else { return }

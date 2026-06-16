@@ -1058,10 +1058,12 @@ reflected in the phone's UI on the next descriptor read.
   The Work root's live-chat prefetch cache is intentionally a quiet
   reference cache (`WorkRootTranscriptCache`), not value `@State`,
   so transcript-cache updates do not repaint the session list. Root
-  polling also ignores terminal-buffer fingerprints when structured
-  chat events exist and builds any needed transcript cache entries on
-  a utility task; detail screens still fetch full history through
-  `chat.getTranscript` cursor paging and `chat_subscribe` resume.
+  polling also ignores terminal-buffer invalidation when structured
+  chat events exist; terminal fallback cache keys use
+  `SyncService.terminalBufferRevision`, and any needed transcript cache
+  entries are built on a utility task. Detail screens still fetch full
+  history through `chat.getTranscript` cursor paging and
+  `chat_subscribe` resume.
 - **Work transcript parser uses `messageId` as a fallback item id.**
   `makeWorkChatEvent` (`WorkEventMapping.swift`) and
   `parseWorkChatTranscript` (`WorkTranscriptParser.swift`) now fall back

@@ -44,6 +44,9 @@ struct WorkRootSessionPresentationTaskKey: Equatable {
 }
 
 final class WorkRootTranscriptCache {
+  /// Reference cache by design: live transcript prefetches should not repaint
+  /// the Work list. Opening a session mutates `path`, which re-evaluates the
+  /// destination closure and reads the latest storage for `initialTranscript`.
   private var storage: [String: [WorkChatEnvelope]] = [:]
 
   subscript(sessionId: String) -> [WorkChatEnvelope]? {

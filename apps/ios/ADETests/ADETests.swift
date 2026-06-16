@@ -6361,6 +6361,8 @@ final class ADETests: XCTestCase {
     XCTAssertTrue(
       workSessionShouldDismissForEdgeSwipe(
         startX: 12,
+        containerWidth: 390,
+        layoutDirection: .leftToRight,
         translation: CGSize(width: 96, height: 12),
         predictedEndTranslation: CGSize(width: 120, height: 12)
       )
@@ -6368,6 +6370,8 @@ final class ADETests: XCTestCase {
     XCTAssertFalse(
       workSessionShouldDismissForEdgeSwipe(
         startX: 60,
+        containerWidth: 390,
+        layoutDirection: .leftToRight,
         translation: CGSize(width: 160, height: 0),
         predictedEndTranslation: CGSize(width: 180, height: 0)
       )
@@ -6375,8 +6379,28 @@ final class ADETests: XCTestCase {
     XCTAssertFalse(
       workSessionShouldDismissForEdgeSwipe(
         startX: 12,
+        containerWidth: 390,
+        layoutDirection: .leftToRight,
         translation: CGSize(width: 80, height: 90),
         predictedEndTranslation: CGSize(width: 180, height: 120)
+      )
+    )
+    XCTAssertTrue(
+      workSessionShouldDismissForEdgeSwipe(
+        startX: 378,
+        containerWidth: 390,
+        layoutDirection: .rightToLeft,
+        translation: CGSize(width: -96, height: 8),
+        predictedEndTranslation: CGSize(width: -132, height: 8)
+      )
+    )
+    XCTAssertFalse(
+      workSessionShouldDismissForEdgeSwipe(
+        startX: 12,
+        containerWidth: 390,
+        layoutDirection: .rightToLeft,
+        translation: CGSize(width: -160, height: 0),
+        predictedEndTranslation: CGSize(width: -180, height: 0)
       )
     )
   }
@@ -6385,6 +6409,8 @@ final class ADETests: XCTestCase {
     XCTAssertTrue(
       workSessionShouldDismissForEdgeSwipe(
         startX: 8,
+        containerWidth: 390,
+        layoutDirection: .leftToRight,
         translation: CGSize(width: 52, height: 4),
         predictedEndTranslation: CGSize(width: 160, height: 8)
       )
@@ -6399,11 +6425,13 @@ final class ADETests: XCTestCase {
       workRootLiveTranscriptFingerprint(
         chatEventRevision: 12,
         streamedEventCount: 42,
+        terminalBufferRevision: 1,
         terminalTail: firstTail
       ),
       workRootLiveTranscriptFingerprint(
         chatEventRevision: 12,
         streamedEventCount: 42,
+        terminalBufferRevision: 2,
         terminalTail: secondTail
       )
     )
@@ -6412,12 +6440,14 @@ final class ADETests: XCTestCase {
       workRootLiveTranscriptFingerprint(
         chatEventRevision: 12,
         streamedEventCount: 0,
+        terminalBufferRevision: 1,
         terminalTail: firstTail
       ),
       workRootLiveTranscriptFingerprint(
         chatEventRevision: 12,
         streamedEventCount: 0,
-        terminalTail: firstTail + "new"
+        terminalBufferRevision: 2,
+        terminalTail: firstTail
       )
     )
   }

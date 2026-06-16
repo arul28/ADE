@@ -2,9 +2,6 @@ import SwiftUI
 import UIKit
 import AVKit
 
-private let workRootTerminalFingerprintPrefixLimit = 128
-private let workRootTerminalFingerprintSuffixLimit = 512
-
 private struct WorkRootLiveTranscriptBuildInput {
   let sessionId: String
   let streamedEvents: [AgentChatEventEnvelope]
@@ -14,6 +11,7 @@ private struct WorkRootLiveTranscriptBuildInput {
 func workRootLiveTranscriptFingerprint(
   chatEventRevision: Int,
   streamedEventCount: Int,
+  terminalBufferRevision: Int?,
   terminalTail: String?
 ) -> String {
   guard streamedEventCount == 0 else {
@@ -22,11 +20,12 @@ func workRootLiveTranscriptFingerprint(
   guard let terminalTail, !terminalTail.isEmpty else {
     return "empty"
   }
+  if let terminalBufferRevision {
+    return "terminal:\(terminalBufferRevision):\(terminalTail.utf8.count)"
+  }
 
   var hasher = Hasher()
-  hasher.combine(terminalTail.utf8.count)
-  hasher.combine(String(terminalTail.prefix(workRootTerminalFingerprintPrefixLimit)))
-  hasher.combine(String(terminalTail.suffix(workRootTerminalFingerprintSuffixLimit)))
+  hasher.combine(terminalTail)
   return "terminal:\(terminalTail.utf8.count):\(hasher.finalize())"
 }
 
@@ -264,6 +263,7 @@ extension WorkRootScreen {
         let fingerprint = workRootLiveTranscriptFingerprint(
           chatEventRevision: revision,
           streamedEventCount: streamed.count,
+          terminalBufferRevision: streamed.isEmpty ? syncService.terminalBufferRevision : nil,
           terminalTail: streamed.isEmpty ? terminalTail : nil
         )
         if lastTranscriptFingerprint[session.id] == fingerprint {
