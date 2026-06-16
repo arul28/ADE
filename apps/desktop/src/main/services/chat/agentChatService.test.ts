@@ -11548,6 +11548,8 @@ describe("createAgentChatService", () => {
         `${JSON.stringify(cappedLegacyEnvelope)}\n${JSON.stringify(dedicatedEnvelope)}\n`,
         "utf8",
       );
+      fs.utimesSync(dedicatedTranscriptFile, new Date("2026-04-23T10:01:00.000Z"), new Date("2026-04-23T10:01:00.000Z"));
+      fs.utimesSync(legacyTranscriptFile, new Date("2026-04-23T10:02:00.000Z"), new Date("2026-04-23T10:02:00.000Z"));
       vi.mocked(parseAgentChatTranscript).mockImplementation((raw) =>
         raw.includes("dedicated-after-cap")
           ? [cappedLegacyEnvelope, dedicatedEnvelope]
@@ -11559,6 +11561,86 @@ describe("createAgentChatService", () => {
       expect(history.events.map((envelope) =>
         envelope.event.type === "text" ? envelope.event.text : "",
       )).toEqual(["legacy-before-cap", "dedicated-after-cap"]);
+    });
+
+    it("hydrates from the uncapped dedicated chat transcript when the capped legacy transcript is newer", async () => {
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      const cappedLegacyEnvelope: AgentChatEventEnvelope = {
+        sessionId: session.id,
+        timestamp: "2026-04-23T10:00:00.000Z",
+        event: { type: "text", text: "legacy-capped-boundary" },
+        sequence: 1,
+      };
+      const dedicatedEnvelope: AgentChatEventEnvelope = {
+        sessionId: session.id,
+        timestamp: "2026-04-23T10:00:00.000Z",
+        event: { type: "text", text: "dedicated-uncapped-boundary" },
+        sequence: 1,
+      };
+
+      const legacyTranscriptFile = path.join(tmpRoot, "transcripts", `${session.id}.chat.jsonl`);
+      const dedicatedTranscriptFile = path.join(tmpRoot, ".ade", "transcripts", "chat", `${session.id}.jsonl`);
+      fs.writeFileSync(
+        legacyTranscriptFile,
+        `${JSON.stringify(cappedLegacyEnvelope)}\n[ADE] chat transcript limit reached (8MB). Further events omitted.\n`,
+        "utf8",
+      );
+      fs.writeFileSync(dedicatedTranscriptFile, `${JSON.stringify(dedicatedEnvelope)}\n`, "utf8");
+      fs.utimesSync(dedicatedTranscriptFile, new Date("2026-04-23T10:00:00.000Z"), new Date("2026-04-23T10:00:00.000Z"));
+      fs.utimesSync(legacyTranscriptFile, new Date("2026-04-23T10:02:00.000Z"), new Date("2026-04-23T10:02:00.000Z"));
+      vi.mocked(parseAgentChatTranscript).mockImplementation((raw) =>
+        raw.includes("dedicated-uncapped-boundary")
+          ? [dedicatedEnvelope]
+          : [cappedLegacyEnvelope],
+      );
+
+      const history = service.getChatEventHistory(session.id);
+
+      expect(history.events.map((envelope) =>
+        envelope.event.type === "text" ? envelope.event.text : "",
+      )).toEqual(["dedicated-uncapped-boundary"]);
+    });
+
+    it("hydrates from the legacy transcript when the newest dedicated transcript has only a header", async () => {
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      const legacyEnvelope: AgentChatEventEnvelope = {
+        sessionId: session.id,
+        timestamp: "2026-04-23T10:00:00.000Z",
+        event: { type: "text", text: "legacy-chat-event" },
+        sequence: 1,
+      };
+
+      const legacyTranscriptFile = path.join(tmpRoot, "transcripts", `${session.id}.chat.jsonl`);
+      const dedicatedTranscriptFile = path.join(tmpRoot, ".ade", "transcripts", "chat", `${session.id}.jsonl`);
+      fs.writeFileSync(legacyTranscriptFile, `${JSON.stringify(legacyEnvelope)}\n`, "utf8");
+      fs.writeFileSync(
+        dedicatedTranscriptFile,
+        `${JSON.stringify({ type: "session_init", sessionId: session.id })}\n`,
+        "utf8",
+      );
+      fs.utimesSync(legacyTranscriptFile, new Date("2026-04-23T10:00:00.000Z"), new Date("2026-04-23T10:00:00.000Z"));
+      fs.utimesSync(dedicatedTranscriptFile, new Date("2026-04-23T10:05:00.000Z"), new Date("2026-04-23T10:05:00.000Z"));
+      vi.mocked(parseAgentChatTranscript).mockImplementation((raw) =>
+        raw.includes("legacy-chat-event") ? [legacyEnvelope] : [],
+      );
+
+      const history = service.getChatEventHistory(session.id);
+
+      expect(history.events.map((envelope) =>
+        envelope.event.type === "text" ? envelope.event.text : "",
+      )).toEqual(["legacy-chat-event"]);
     });
 
     it("hydrates from the newer dedicated chat transcript even when compacted storage makes it smaller", async () => {
@@ -11796,14 +11878,16 @@ describe("createAgentChatService", () => {
       const transcriptFile = path.join(tmpRoot, "transcripts", `${session.id}.chat.jsonl`);
       fs.writeFileSync(transcriptFile, `${JSON.stringify(envelope)}\n`, "utf8");
       vi.mocked(parseAgentChatTranscript).mockClear();
-      vi.mocked(parseAgentChatTranscript).mockReturnValue([envelope]);
+      vi.mocked(parseAgentChatTranscript).mockImplementation((raw) =>
+        raw.includes("persisted-once") ? [envelope] : [],
+      );
 
       const firstHistory = service.getChatEventHistory(session.id);
       const secondHistory = service.getChatEventHistory(session.id);
 
       expect(firstHistory.events).toHaveLength(1);
       expect(secondHistory.events).toHaveLength(1);
-      expect(parseAgentChatTranscript).toHaveBeenCalledTimes(1);
+      expect(parseAgentChatTranscript).toHaveBeenCalledTimes(2);
     });
 
     it("re-reads the on-disk transcript on repeated history snapshots", async () => {
@@ -11829,9 +11913,11 @@ describe("createAgentChatService", () => {
 
       const transcriptFile = path.join(tmpRoot, "transcripts", `${session.id}.chat.jsonl`);
       fs.writeFileSync(transcriptFile, `${JSON.stringify(envelope1)}\n`, "utf8");
-      vi.mocked(parseAgentChatTranscript)
-        .mockReturnValueOnce([envelope1])
-        .mockReturnValueOnce([envelope1, envelope2]);
+      vi.mocked(parseAgentChatTranscript).mockImplementation((raw) => {
+        if (raw.includes("persisted-after-switch")) return [envelope1, envelope2];
+        if (raw.includes("persisted-before-switch")) return [envelope1];
+        return [];
+      });
 
       const firstHistory = service.getChatEventHistory(session.id);
       expect(firstHistory.events.map((envelope) =>
@@ -14383,6 +14469,80 @@ describe("createAgentChatService", () => {
       expect(historyEvent?.event.type).toBe("command");
       if (historyEvent?.event.type !== "command") throw new Error("Expected command history event");
       expect(historyEvent.event.output).toBe(commandEvent.event.output);
+    });
+
+    it("bounds stored Codex command output while streaming deltas", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.5",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Run a streaming noisy command.",
+      }, { awaitDispatch: true });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "status" }>;
+        } =>
+          event.event.type === "status"
+          && event.event.turnStatus === "started"
+          && event.event.turnId === "turn-1",
+      );
+
+      const chunks = [
+        `stream-head\n${"a".repeat(2048)}`,
+        `${"b".repeat(2048)}\nstream-tail`,
+        `${"z".repeat(4096)}\nafter-close-1`,
+        `${"z".repeat(4096)}\nafter-close-2`,
+      ];
+      for (const chunk of chunks) {
+        mockState.emitCodexPayload({
+          jsonrpc: "2.0",
+          method: "item/commandExecution/outputDelta",
+          params: {
+            turnId: "turn-1",
+            itemId: "cmd-stream-output",
+            delta: chunk,
+          },
+        });
+      }
+
+      await vi.waitFor(() => {
+        expect(events.filter((event) =>
+          event.event.type === "command" && event.event.itemId === "cmd-stream-output"
+        )).toHaveLength(2);
+      });
+
+      const commandEvents = events.filter((event) =>
+        event.event.type === "command" && event.event.itemId === "cmd-stream-output"
+      );
+      const compactedEvent = commandEvents.at(-1);
+      expect(compactedEvent?.event.type).toBe("command");
+      if (compactedEvent?.event.type !== "command") throw new Error("Expected compacted command event");
+      expect(compactedEvent.event.output).toContain("Large command output was shortened");
+      expect(compactedEvent.event.output).toContain("stream-head");
+      expect(compactedEvent.event.output).toContain("stream-tail");
+      expect(compactedEvent.event.output).not.toContain("after-close");
+      expect(compactedEvent.event.outputOriginalBytes).toBe(Buffer.byteLength(`${chunks[0]}${chunks[1]}`, "utf8"));
+      expect(compactedEvent.event.outputOmittedBytes).toBeGreaterThan(0);
+
+      const storedCommandEvents = service.getChatEventHistory(session.id).events.filter((event) =>
+        event.event.type === "command" && event.event.itemId === "cmd-stream-output"
+      );
+      expect(storedCommandEvents).toHaveLength(2);
+      expect(Buffer.byteLength(storedCommandEvents.map((event) =>
+        event.event.type === "command" ? event.event.output : "",
+      ).join(""), "utf8")).toBeLessThan(12 * 1024);
+      expect(storedCommandEvents.some((event) =>
+        event.event.type === "command" && event.event.output.includes("after-close")
+      )).toBe(false);
     });
 
     it("compacts large tool result and file diff payloads before storing chat history", async () => {

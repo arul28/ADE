@@ -552,6 +552,7 @@ type CodexSubagentThreadState = {
   activeTurnId: string | null;
   itemTurnIdByItemId: Map<string, string>;
   commandOutputByItemId: Map<string, string>;
+  commandOutputStorageClosedItemIds: Set<string>;
   fileDeltaByItemId: Map<string, string>;
   fileChangesByItemId: Map<string, Array<{ path: string; kind: "create" | "modify" | "delete" }>>;
   transcriptKeys: Set<string>;
@@ -580,6 +581,7 @@ type CodexRuntime = {
   canAttachResumedTurnStart: boolean;
   itemTurnIdByItemId: Map<string, string>;
   commandOutputByItemId: Map<string, string>;
+  commandOutputStorageClosedItemIds: Set<string>;
   fileDeltaByItemId: Map<string, string>;
   fileChangesByItemId: Map<string, Array<{ path: string; kind: "create" | "modify" | "delete" }>>;
   planTextByItemId: Map<string, string>;
@@ -5551,15 +5553,17 @@ export function createAgentChatService(args: {
         : envelopes,
       CHAT_EVENT_HISTORY_BUFFER_MAX_CHARS,
     );
-  const transcriptHistoryCacheBySession = new Map<string, {
+  type TranscriptHistoryCacheEntry = {
     transcriptPath: string;
     size: number;
     mtimeMs: number;
     truncated: boolean;
     /** Byte offset (line start) where the cached tail window begins; 0 when not truncated. */
     startOffset: number;
+    hasCapNotice: boolean;
     envelopes: AgentChatEventEnvelope[];
-  }>();
+  };
+  const transcriptHistoryCacheBySession = new Map<string, Map<string, TranscriptHistoryCacheEntry>>();
 
   const recordChatEventInHistory = (envelope: AgentChatEventEnvelope): void => {
     const current = eventHistoryBySession.get(envelope.sessionId) ?? [];
@@ -5569,17 +5573,12 @@ export function createAgentChatService(args: {
 
   const rememberTranscriptHistoryCache = (
     sessionId: string,
-    entry: {
-      transcriptPath: string;
-      size: number;
-      mtimeMs: number;
-      truncated: boolean;
-      startOffset: number;
-      envelopes: AgentChatEventEnvelope[];
-    },
+    entry: TranscriptHistoryCacheEntry,
   ): void => {
+    const sessionEntries = transcriptHistoryCacheBySession.get(sessionId) ?? new Map<string, TranscriptHistoryCacheEntry>();
+    sessionEntries.set(entry.transcriptPath, entry);
     transcriptHistoryCacheBySession.delete(sessionId);
-    transcriptHistoryCacheBySession.set(sessionId, entry);
+    transcriptHistoryCacheBySession.set(sessionId, sessionEntries);
     while (transcriptHistoryCacheBySession.size > CHAT_EVENT_HISTORY_TRANSCRIPT_CACHE_MAX_SESSIONS) {
       const oldestSessionId = transcriptHistoryCacheBySession.keys().next().value;
       if (typeof oldestSessionId !== "string") break;
@@ -6823,9 +6822,9 @@ export function createAgentChatService(args: {
   const parseTranscriptHistoryTail = (
     sessionId: string,
     transcriptPath: string,
-  ): { envelopes: AgentChatEventEnvelope[]; truncated: boolean; startOffset: number } => {
+  ): { envelopes: AgentChatEventEnvelope[]; truncated: boolean; startOffset: number; hasCapNotice: boolean } => {
     const stat = fs.statSync(transcriptPath);
-    const cached = transcriptHistoryCacheBySession.get(sessionId);
+    const cached = transcriptHistoryCacheBySession.get(sessionId)?.get(transcriptPath);
     if (
       cached
       && cached.transcriptPath === transcriptPath
@@ -6833,10 +6832,16 @@ export function createAgentChatService(args: {
       && cached.mtimeMs === stat.mtimeMs
     ) {
       rememberTranscriptHistoryCache(sessionId, cached);
-      return { envelopes: cached.envelopes.slice(), truncated: cached.truncated, startOffset: cached.startOffset };
+      return {
+        envelopes: cached.envelopes.slice(),
+        truncated: cached.truncated,
+        startOffset: cached.startOffset,
+        hasCapNotice: cached.hasCapNotice,
+      };
     }
 
     const { raw, truncated, startOffset } = readTranscriptTailForHistory(transcriptPath, stat);
+    const hasCapNotice = raw.includes(CHAT_TRANSCRIPT_LIMIT_NOTICE.trim());
     const envelopes = parseAgentChatTranscript(raw)
       .filter((entry) => entry.sessionId === sessionId);
     rememberTranscriptHistoryCache(sessionId, {
@@ -6845,9 +6850,10 @@ export function createAgentChatService(args: {
       mtimeMs: stat.mtimeMs,
       truncated,
       startOffset,
+      hasCapNotice,
       envelopes,
     });
-    return { envelopes: envelopes.slice(), truncated, startOffset };
+    return { envelopes: envelopes.slice(), truncated, startOffset, hasCapNotice };
   };
 
   const transcriptPathCandidatesForSessionId = (
@@ -6866,19 +6872,38 @@ export function createAgentChatService(args: {
     sessionId: string,
     managed?: ManagedChatSession | null,
   ): string | null => {
-    let best: { path: string; size: number; mtimeMs: number } | null = null;
+    type Candidate = {
+      path: string;
+      size: number;
+      mtimeMs: number;
+      envelopeCount: number;
+      hasCapNotice: boolean;
+    };
+    let best: Candidate | null = null;
+    const isBetterCandidate = (candidate: Candidate, currentBest: Candidate): boolean => {
+      const candidateHasEvents = candidate.envelopeCount > 0;
+      const bestHasEvents = currentBest.envelopeCount > 0;
+      if (candidateHasEvents !== bestHasEvents) return candidateHasEvents;
+      if (candidate.hasCapNotice !== currentBest.hasCapNotice) return !candidate.hasCapNotice;
+      if (candidate.mtimeMs !== currentBest.mtimeMs) return candidate.mtimeMs > currentBest.mtimeMs;
+      return candidate.size > currentBest.size;
+    };
     for (const candidatePath of transcriptPathCandidatesForSessionId(sessionId, managed)) {
       try {
         const transcriptPath = resolveReadableChatPath(candidatePath, "agent_chat.transcript_read_skipped_path_outside_ade");
         if (!transcriptPath || !fs.existsSync(transcriptPath)) continue;
         const stat = fs.statSync(transcriptPath);
         if (!stat.isFile()) continue;
-        if (
-          !best
-          || stat.mtimeMs > best.mtimeMs
-          || (stat.mtimeMs === best.mtimeMs && stat.size > best.size)
-        ) {
-          best = { path: transcriptPath, size: stat.size, mtimeMs: stat.mtimeMs };
+        const parsed = parseTranscriptHistoryTail(sessionId, transcriptPath);
+        const candidate: Candidate = {
+          path: transcriptPath,
+          size: stat.size,
+          mtimeMs: stat.mtimeMs,
+          envelopeCount: parsed.envelopes.length,
+          hasCapNotice: parsed.hasCapNotice,
+        };
+        if (!best || isBetterCandidate(candidate, best)) {
+          best = candidate;
         }
       } catch {
         // try next candidate
@@ -6907,8 +6932,9 @@ export function createAgentChatService(args: {
 
   // Resolve the best on-disk transcript path for a session the same
   // way readTranscriptEnvelopesForSessionId does. The dedicated chat transcript
-  // can continue beyond the legacy transcript_path cap and compact bulky rows,
-  // so prefer the newest readable candidate and use size only as a tie-breaker.
+  // can continue beyond the legacy transcript_path cap and compact bulky rows.
+  // Prefer candidates that actually contain chat envelopes, then uncapped files,
+  // then newest readable candidate, using size only as a tie-breaker.
   // Used by getChatEventHistoryPage.
   const resolveTranscriptPathForSessionId = (sessionId: string): string | null => {
     return resolveBestTranscriptPathForSessionId(sessionId, managedSessions.get(sessionId));
@@ -14617,6 +14643,7 @@ export function createAgentChatService(args: {
     resetAssistantMessageStream(managed);
     runtime.itemTurnIdByItemId.clear();
     runtime.commandOutputByItemId.clear();
+    runtime.commandOutputStorageClosedItemIds.clear();
     runtime.fileDeltaByItemId.clear();
     runtime.fileChangesByItemId.clear();
     runtime.planTextByItemId.clear();
@@ -14947,6 +14974,7 @@ export function createAgentChatService(args: {
       itemTurnIdByItemId: new Map<string, string>(),
       commandOutputByItemId: new Map<string, string>(),
       fileDeltaByItemId: new Map<string, string>(),
+      commandOutputStorageClosedItemIds: new Set<string>(),
       fileChangesByItemId: new Map<string, Array<{ path: string; kind: "create" | "modify" | "delete" }>>(),
       transcriptKeys: new Set<string>(),
     };
@@ -15145,18 +15173,30 @@ export function createAgentChatService(args: {
       const itemId = stringOrNull(params.itemId) ?? randomUUID();
       const delta = typeof params.delta === "string" ? params.delta : "";
       const turnId = turnIdFromParams ?? state.itemTurnIdByItemId.get(itemId) ?? state.activeTurnId;
+      if (state.commandOutputStorageClosedItemIds.has(itemId)) return true;
       const next = `${state.commandOutputByItemId.get(itemId) ?? ""}${delta}`;
-      state.commandOutputByItemId.set(itemId, next);
+      const compacted = compactStoredTextPayload("command output", next, STORED_COMMAND_OUTPUT_RUNNING_MAX_BYTES);
+      state.commandOutputByItemId.set(itemId, compacted?.text ?? next);
+      evictOldestEntries(state.commandOutputByItemId, MAX_SESSION_MAP_ENTRIES);
+      if (compacted) state.commandOutputStorageClosedItemIds.add(itemId);
+      const commandEvent: AgentChatEvent = {
+        type: "command",
+        command: "command",
+        cwd: managed.laneWorktreePath,
+        output: compacted?.text ?? delta,
+        itemId,
+        status: "running",
+        ...(turnId ? { turnId } : {}),
+        ...(compacted ? {
+          outputOriginalBytes: compacted.originalBytes,
+          outputOmittedBytes: compacted.omittedBytes,
+        } : {}),
+      };
       recordCodexSubagentTranscriptMessages(managed, runtime, threadId, [
-        transcriptMessageWithMetadata(codexLiveTranscriptMessage(threadId, {
-          type: "command",
-          command: "command",
-          cwd: managed.laneWorktreePath,
-          output: delta,
-          itemId,
-          status: "running",
-          ...(turnId ? { turnId } : {}),
-        }, "system", delta), codexSubagentMetadataForThread(runtime, threadId)),
+        transcriptMessageWithMetadata(
+          codexLiveTranscriptMessage(threadId, commandEvent, "system", compacted?.text ?? delta),
+          codexSubagentMetadataForThread(runtime, threadId),
+        ),
       ]);
       return true;
     }
@@ -15231,6 +15271,7 @@ export function createAgentChatService(args: {
       }
       if (itemId && stringOrNull(item.type) === "commandExecution") {
         state.commandOutputByItemId.delete(itemId);
+        state.commandOutputStorageClosedItemIds.delete(itemId);
       }
       recordCodexSubagentItem(managed, runtime, state, item, "completed", turnIdFromParams);
       return true;
@@ -15340,17 +15381,32 @@ export function createAgentChatService(args: {
       const output = String(item.aggregatedOutput ?? runtime.commandOutputByItemId.get(itemId) ?? "");
       runtime.commandOutputByItemId.set(itemId, output);
       evictOldestEntries(runtime.commandOutputByItemId, MAX_SESSION_MAP_ENTRIES);
+      const compacted = eventKind === "completed"
+        ? compactStoredTextPayload(
+            "command output",
+            output,
+            status === "failed" ? STORED_COMMAND_OUTPUT_FAILED_MAX_BYTES : STORED_COMMAND_OUTPUT_COMPLETED_MAX_BYTES,
+          )
+        : compactStoredTextPayload("command output", output, STORED_COMMAND_OUTPUT_RUNNING_MAX_BYTES);
       emitChatEvent(managed, {
         type: "command",
         command: String(item.command ?? "command"),
         cwd: String(item.cwd ?? managed.laneWorktreePath),
-        output,
+        output: compacted?.text ?? output,
         itemId,
         turnId,
         exitCode: typeof item.exitCode === "number" ? item.exitCode : null,
         durationMs: typeof item.durationMs === "number" ? item.durationMs : null,
-        status
+        status,
+        ...(compacted ? {
+          outputOriginalBytes: compacted.originalBytes,
+          outputOmittedBytes: compacted.omittedBytes,
+        } : {}),
       });
+      if (eventKind === "completed") {
+        runtime.commandOutputByItemId.delete(itemId);
+        runtime.commandOutputStorageClosedItemIds.delete(itemId);
+      }
       return;
     }
 
@@ -16125,23 +16181,38 @@ export function createAgentChatService(args: {
       const itemId = String((params.itemId as string | undefined) ?? randomUUID());
       const delta = String((params.delta as string | undefined) ?? "");
       const turnId = turnIdFromParams ?? runtime.itemTurnIdByItemId.get(itemId) ?? runtime.activeTurnId ?? undefined;
-      const next = `${runtime.commandOutputByItemId.get(itemId) ?? ""}${delta}`;
-      runtime.commandOutputByItemId.set(itemId, next);
-      evictOldestEntries(runtime.commandOutputByItemId, MAX_SESSION_MAP_ENTRIES);
+      const storageClosed = runtime.commandOutputStorageClosedItemIds.has(itemId);
+      const currentOutput = runtime.commandOutputByItemId.get(itemId) ?? "";
+      const next = storageClosed ? currentOutput : `${currentOutput}${delta}`;
+      const compacted = storageClosed
+        ? null
+        : compactStoredTextPayload("command output", next, STORED_COMMAND_OUTPUT_RUNNING_MAX_BYTES);
+      if (!storageClosed) {
+        runtime.commandOutputByItemId.set(itemId, compacted?.text ?? next);
+        evictOldestEntries(runtime.commandOutputByItemId, MAX_SESSION_MAP_ENTRIES);
+        if (compacted) runtime.commandOutputStorageClosedItemIds.add(itemId);
+      }
       emitChatEvent(managed, {
         type: "activity",
         activity: "running_command",
         detail: "Shell command running",
         turnId,
       });
+      if (storageClosed) {
+        return;
+      }
       emitChatEvent(managed, {
         type: "command",
         command: "command",
         cwd: managed.laneWorktreePath,
-        output: delta,
+        output: compacted?.text ?? delta,
         itemId,
         turnId,
-        status: "running"
+        status: "running",
+        ...(compacted ? {
+          outputOriginalBytes: compacted.originalBytes,
+          outputOmittedBytes: compacted.omittedBytes,
+        } : {}),
       });
       return;
     }
@@ -16247,6 +16318,7 @@ export function createAgentChatService(args: {
       resetAssistantMessageStream(managed);
       runtime.itemTurnIdByItemId.clear();
       runtime.commandOutputByItemId.clear();
+      runtime.commandOutputStorageClosedItemIds.clear();
       runtime.fileDeltaByItemId.clear();
       runtime.fileChangesByItemId.clear();
       runtime.planTextByItemId.clear();
@@ -16553,6 +16625,7 @@ export function createAgentChatService(args: {
       canAttachResumedTurnStart: false,
       itemTurnIdByItemId: new Map<string, string>(),
       commandOutputByItemId: new Map<string, string>(),
+      commandOutputStorageClosedItemIds: new Set<string>(),
       fileDeltaByItemId: new Map<string, string>(),
       fileChangesByItemId: new Map<string, Array<{ path: string; kind: "create" | "modify" | "delete" }>>(),
       planTextByItemId: new Map<string, string>(),
@@ -18872,6 +18945,7 @@ export function createAgentChatService(args: {
       managed.runtime.pendingTurnPlanningApprovalGuarded = null;
       managed.runtime.itemTurnIdByItemId.clear();
       managed.runtime.commandOutputByItemId.clear();
+      managed.runtime.commandOutputStorageClosedItemIds.clear();
       managed.runtime.fileDeltaByItemId.clear();
       managed.runtime.fileChangesByItemId.clear();
       managed.runtime.planTextByItemId.clear();
