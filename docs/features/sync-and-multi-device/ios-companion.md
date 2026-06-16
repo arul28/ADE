@@ -1049,6 +1049,21 @@ reflected in the phone's UI on the next descriptor read.
   which caps retained events at `chatEventHistoryMaxEvents = 1_000`
   (up from the previous 500-event cap) so very long chats don't evict
   their own recent turns on reconnect.
+- **Long Work chats must keep row work and root polling cheap.** The
+  Work chat detail keeps the full timeline snapshot preview-free, then
+  attaches cached initial assistant-message previews only to the visible
+  presentation rows. That avoids splitting or line-counting huge hidden
+  markdown strings during live-delta rebuilds or SwiftUI body evaluation.
+  User-bubble width is measured once at the scroll viewport rather than
+  with a `GeometryReader` on every row. The Work root's live-chat
+  prefetch cache is intentionally a quiet reference cache
+  (`WorkRootTranscriptCache`), not value `@State`, so transcript-cache
+  updates do not repaint the session list. Root polling also ignores
+  terminal-buffer invalidation when structured chat events exist; terminal
+  fallback cache keys use per-session terminal-buffer revisions, and any
+  needed transcript cache entries are built on a utility task. Detail
+  screens still fetch full history through `chat.getTranscript` cursor
+  paging and `chat_subscribe` resume.
 - **Work transcript parser uses `messageId` as a fallback item id.**
   `makeWorkChatEvent` (`WorkEventMapping.swift`) and
   `parseWorkChatTranscript` (`WorkTranscriptParser.swift`) now fall back

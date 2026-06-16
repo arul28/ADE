@@ -2140,6 +2140,30 @@ final class ADETests: XCTestCase {
   }
 
   @MainActor
+  func testTerminalFallbackFingerprintUsesPerSessionRevision() {
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+
+    service.seedTerminalBufferForTesting(sessionId: "terminal-1", transcript: "first history")
+    let firstFingerprint = workRootLiveTranscriptFingerprint(
+      chatEventRevision: 0,
+      streamedEventCount: 0,
+      terminalBufferRevision: service.terminalBufferRevisionsBySessionId["terminal-1"],
+      terminalTail: service.terminalBuffers["terminal-1"]
+    )
+
+    service.seedTerminalBufferForTesting(sessionId: "terminal-2", transcript: "second history")
+    let unchangedFingerprint = workRootLiveTranscriptFingerprint(
+      chatEventRevision: 0,
+      streamedEventCount: 0,
+      terminalBufferRevision: service.terminalBufferRevisionsBySessionId["terminal-1"],
+      terminalTail: service.terminalBuffers["terminal-1"]
+    )
+
+    XCTAssertEqual(unchangedFingerprint, firstFingerprint)
+    XCTAssertEqual(service.terminalBufferRevisionsBySessionId["terminal-2"], 1)
+  }
+
+  @MainActor
   func testChatEventHistoryStoresDecodedEnvelopes() async throws {
     let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
     let globalRevision = service.localStateRevision
@@ -6357,6 +6381,101 @@ final class ADETests: XCTestCase {
     )
   }
 
+  func testWorkSessionEdgeSwipeDismissRequiresLeadingHorizontalDrag() {
+    XCTAssertTrue(
+      workSessionShouldDismissForEdgeSwipe(
+        startX: 12,
+        containerWidth: 390,
+        layoutDirection: .leftToRight,
+        translation: CGSize(width: 96, height: 12),
+        predictedEndTranslation: CGSize(width: 120, height: 12)
+      )
+    )
+    XCTAssertFalse(
+      workSessionShouldDismissForEdgeSwipe(
+        startX: 60,
+        containerWidth: 390,
+        layoutDirection: .leftToRight,
+        translation: CGSize(width: 160, height: 0),
+        predictedEndTranslation: CGSize(width: 180, height: 0)
+      )
+    )
+    XCTAssertFalse(
+      workSessionShouldDismissForEdgeSwipe(
+        startX: 12,
+        containerWidth: 390,
+        layoutDirection: .leftToRight,
+        translation: CGSize(width: 80, height: 90),
+        predictedEndTranslation: CGSize(width: 180, height: 120)
+      )
+    )
+    XCTAssertTrue(
+      workSessionShouldDismissForEdgeSwipe(
+        startX: 378,
+        containerWidth: 390,
+        layoutDirection: .rightToLeft,
+        translation: CGSize(width: -96, height: 8),
+        predictedEndTranslation: CGSize(width: -132, height: 8)
+      )
+    )
+    XCTAssertFalse(
+      workSessionShouldDismissForEdgeSwipe(
+        startX: 12,
+        containerWidth: 390,
+        layoutDirection: .rightToLeft,
+        translation: CGSize(width: -160, height: 0),
+        predictedEndTranslation: CGSize(width: -180, height: 0)
+      )
+    )
+  }
+
+  func testWorkSessionEdgeSwipeAllowsFastFlickBeforeDistanceThreshold() {
+    XCTAssertTrue(
+      workSessionShouldDismissForEdgeSwipe(
+        startX: 8,
+        containerWidth: 390,
+        layoutDirection: .leftToRight,
+        translation: CGSize(width: 52, height: 4),
+        predictedEndTranslation: CGSize(width: 160, height: 8)
+      )
+    )
+  }
+
+  func testWorkRootLiveTranscriptFingerprintIgnoresTerminalTailWhenEventsExist() {
+    let firstTail = String(repeating: "A", count: 200_000)
+    let secondTail = String(repeating: "B", count: 200_000)
+
+    XCTAssertEqual(
+      workRootLiveTranscriptFingerprint(
+        chatEventRevision: 12,
+        streamedEventCount: 42,
+        terminalBufferRevision: 1,
+        terminalTail: firstTail
+      ),
+      workRootLiveTranscriptFingerprint(
+        chatEventRevision: 12,
+        streamedEventCount: 42,
+        terminalBufferRevision: 2,
+        terminalTail: secondTail
+      )
+    )
+
+    XCTAssertNotEqual(
+      workRootLiveTranscriptFingerprint(
+        chatEventRevision: 12,
+        streamedEventCount: 0,
+        terminalBufferRevision: 1,
+        terminalTail: firstTail
+      ),
+      workRootLiveTranscriptFingerprint(
+        chatEventRevision: 12,
+        streamedEventCount: 0,
+        terminalBufferRevision: 2,
+        terminalTail: firstTail
+      )
+    )
+  }
+
   func testBuildPullRequestTimelineOrdersStateReviewsAndComments() {
     let pr = PullRequestListItem(
       id: "pr-9",
@@ -8713,6 +8832,54 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(secondPage.visibleLineCount, 96)
     XCTAssertTrue(secondPage.text.contains("96. Line 96"))
     XCTAssertFalse(secondPage.text.contains("97. Line 97"))
+  }
+
+  func testAssistantPreviewCacheHydratesBuiltChatMessages() {
+    let markdown = (1...5000).map { "\($0). Line \($0)" }.joined(separator: "\n")
+    let transcript = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:01.000Z",
+        sequence: 1,
+        event: .assistantText(text: markdown, turnId: "turn-1", itemId: "msg-1")
+      )
+    ]
+
+    let message = buildWorkChatMessages(from: transcript).first
+    let preview = message.map { WorkAssistantPreviewCache().preview(for: $0) }
+
+    XCTAssertNil(message?.assistantPreview)
+    XCTAssertTrue(preview?.isTruncated == true)
+    XCTAssertEqual(preview?.visibleLineCount, workAssistantMessageInitialLineBudget)
+    XCTAssertEqual(preview?.totalLineCount, 5000)
+  }
+
+  func testAssistantPreviewCacheHydratesAfterStreamingMerge() {
+    let firstChunk = (1...2500).map { "\($0). Line \($0)" }.joined(separator: "\n")
+    let secondChunk = "\n" + (2501...5000).map { "\($0). Line \($0)" }.joined(separator: "\n")
+    let transcript = [
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:01.000Z",
+        sequence: 1,
+        event: .assistantText(text: firstChunk, turnId: "turn-1", itemId: "msg-1")
+      ),
+      WorkChatEnvelope(
+        sessionId: "chat-1",
+        timestamp: "2026-03-25T00:00:02.000Z",
+        sequence: 2,
+        event: .assistantText(text: secondChunk, turnId: "turn-1", itemId: "msg-1")
+      )
+    ]
+
+    let message = buildWorkChatMessages(from: transcript).first
+    let preview = message.map { WorkAssistantPreviewCache().preview(for: $0) }
+
+    XCTAssertEqual(message?.markdown, firstChunk + secondChunk)
+    XCTAssertNil(message?.assistantPreview)
+    XCTAssertTrue(preview?.isTruncated == true)
+    XCTAssertEqual(preview?.visibleLineCount, workAssistantMessageInitialLineBudget)
+    XCTAssertEqual(preview?.totalLineCount, 5000)
   }
 
   func testWorkChatAccessibilityPreviewCapsHugeMessages() {

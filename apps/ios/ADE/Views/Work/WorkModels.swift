@@ -27,6 +27,7 @@ struct WorkChatMessage: Identifiable, Equatable {
   let id: String
   let role: String
   var markdown: String
+  var assistantPreview: WorkAssistantMessagePreview? = nil
   let timestamp: String
   let turnId: String?
   let itemId: String?
