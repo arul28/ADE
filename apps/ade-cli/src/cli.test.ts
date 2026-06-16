@@ -221,20 +221,17 @@ describe("ADE CLI", () => {
     expect(plan.kind).toBe("help");
   });
 
-  it("hides internal Automations and macOS VM commands when disabled", () => {
+  it("hides internal Automations commands when disabled", () => {
     withEnv(
       {
         ADE_DISABLE_AUTOMATIONS: "1",
-        ADE_DISABLE_MACOS_VM: "1",
         ADE_ENABLE_AUTOMATIONS: undefined,
-        ADE_ENABLE_MACOS_VM: undefined,
       },
       () => {
         const plan = buildCliPlan(["--help"]);
         expect(plan.kind).toBe("help");
         if (plan.kind !== "help") return;
         expect(plan.text).not.toContain("ade automations");
-        expect(plan.text).not.toContain("ade macos-vm");
       },
     );
   });
@@ -243,25 +240,16 @@ describe("ADE CLI", () => {
     withEnv(
       {
         ADE_DISABLE_AUTOMATIONS: "1",
-        ADE_DISABLE_MACOS_VM: "1",
         ADE_ENABLE_AUTOMATIONS: undefined,
-        ADE_ENABLE_MACOS_VM: undefined,
       },
       () => {
         expect(() => buildCliPlan(["automations", "list"])).toThrow(/coming soon/);
         expect(() => buildCliPlan(["linear", "ingress", "status"])).toThrow(/coming soon/);
-        expect(() => buildCliPlan(["macos-vm", "status"])).toThrow(/coming soon/);
 
         const automationHelp = buildCliPlan(["help", "automations"]);
         expect(automationHelp.kind).toBe("help");
         if (automationHelp.kind === "help") {
           expect(automationHelp.text).toContain("ADE_ENABLE_AUTOMATIONS=1");
-        }
-
-        const vmHelp = buildCliPlan(["help", "macos-vm"]);
-        expect(vmHelp.kind).toBe("help");
-        if (vmHelp.kind === "help") {
-          expect(vmHelp.text).toContain("ADE_ENABLE_MACOS_VM=1");
         }
       },
     );
@@ -4611,184 +4599,6 @@ describe("ADE CLI", () => {
       if (previousChat === undefined) delete process.env.ADE_CHAT_SESSION_ID;
       else process.env.ADE_CHAT_SESSION_ID = previousChat;
     }
-  });
-
-  it("macos-vm lifecycle commands map to macos_vm actions", () => {
-    const status = buildCliPlan(["macos-vm", "status", "--lane", "lane-1"]);
-    expect(status.kind).toBe("execute");
-    if (status.kind !== "execute") return;
-    expect(status.steps[0]?.params).toMatchObject({
-      arguments: {
-        domain: "macos_vm",
-        action: "getStatus",
-        args: { laneId: "lane-1" },
-      },
-    });
-
-    const provision = buildCliPlan([
-      "macos-vm",
-      "provision",
-      "--lane",
-      "lane-1",
-      "--mode",
-      "create",
-      "--ipsw",
-      "latest",
-      "--cpu",
-      "6",
-      "--memory",
-      "12GB",
-      "--disk",
-      "120GB",
-    ]);
-    expect(provision.kind).toBe("execute");
-    if (provision.kind !== "execute") return;
-    expect(provision.steps[0]?.params).toMatchObject({
-      arguments: {
-        domain: "macos_vm",
-        action: "provision",
-        args: {
-          laneId: "lane-1",
-          mode: "create",
-          ipsw: "latest",
-          cpuCores: 6,
-          memory: "12GB",
-          diskSize: "120GB",
-        },
-      },
-    });
-
-    const start = buildCliPlan([
-      "mac-vm",
-      "start",
-      "lane-1",
-      "--create",
-      "--no-display",
-    ]);
-    expect(start.kind).toBe("execute");
-    if (start.kind !== "execute") return;
-    expect(start.steps[0]?.params).toMatchObject({
-      arguments: {
-        domain: "macos_vm",
-        action: "start",
-        args: {
-          laneId: "lane-1",
-          createIfMissing: true,
-          openDisplay: false,
-        },
-      },
-    });
-  });
-
-  it("macos-vm guide and actions are available for agent guidance", () => {
-    const guide = buildCliPlan(["macos", "guide", "--lane", "lane-1"]);
-    expect(guide.kind).toBe("execute");
-    if (guide.kind !== "execute") return;
-    expect(guide.steps[0]?.params).toMatchObject({
-      arguments: {
-        domain: "macos_vm",
-        action: "getAgentGuide",
-        args: { laneId: "lane-1" },
-      },
-    });
-
-    const actions = buildCliPlan(["macos-vm", "actions"]);
-    expect(actions.kind).toBe("execute");
-    if (actions.kind !== "execute") return;
-    expect(actions.steps[0]?.params).toMatchObject({
-      name: "list_ade_actions",
-      arguments: { domain: "macos_vm" },
-    });
-  });
-
-  it("macos-vm window control commands map to VM computer-use actions", () => {
-    const screenshot = buildCliPlan([
-      "macos-vm",
-      "screenshot",
-      "--lane",
-      "lane-1",
-      "--output",
-      "/tmp/vm.png",
-    ]);
-    expect(screenshot.kind).toBe("execute");
-    if (screenshot.kind !== "execute") return;
-    expect(screenshot.steps[0]?.params).toMatchObject({
-      arguments: {
-        domain: "macos_vm",
-        action: "captureScreenshot",
-        args: {
-          laneId: "lane-1",
-          outputPath: "/tmp/vm.png",
-        },
-      },
-    });
-
-    const click = buildCliPlan([
-      "macos-vm",
-      "click",
-      "--lane",
-      "lane-1",
-      "120",
-      "420",
-    ]);
-    expect(click.kind).toBe("execute");
-    if (click.kind !== "execute") return;
-    expect(click.steps[0]?.params).toMatchObject({
-      arguments: {
-        domain: "macos_vm",
-        action: "click",
-        args: {
-          laneId: "lane-1",
-          x: 120,
-          y: 420,
-        },
-      },
-    });
-
-    const select = buildCliPlan([
-      "macos-vm",
-      "select",
-      "--lane",
-      "lane-1",
-      "--x",
-      "120",
-      "--y",
-      "420",
-    ]);
-    expect(select.kind).toBe("execute");
-    if (select.kind !== "execute") return;
-    expect(select.steps[0]?.params).toMatchObject({
-      arguments: {
-        domain: "macos_vm",
-        action: "selectPoint",
-        args: {
-          laneId: "lane-1",
-          x: 120,
-          y: 420,
-        },
-      },
-    });
-
-    const type = buildCliPlan([
-      "macos-vm",
-      "type",
-      "--lane",
-      "lane-1",
-      "--value",
-      "hello",
-    ]);
-    expect(type.kind).toBe("execute");
-    if (type.kind !== "execute") return;
-    expect(type.steps[0]?.params).toMatchObject({
-      arguments: {
-        domain: "macos_vm",
-        action: "typeText",
-        args: {
-          laneId: "lane-1",
-          text: "hello",
-        },
-      },
-    });
   });
 
   it("terminal read and write map to terminal actions", () => {

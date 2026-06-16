@@ -110,13 +110,11 @@ describe("isAllowedAdeAction", () => {
 });
 
 describe("getAdeActionDomainServices feature gates", () => {
-  it("hides Automations, Linear ingress, and macOS VM domains in packaged builds", () => {
+  it("hides Automations and Linear ingress domains in packaged builds", () => {
     withEnv(
       {
         ADE_ENABLE_AUTOMATIONS: undefined,
         ADE_DISABLE_AUTOMATIONS: undefined,
-        ADE_ENABLE_MACOS_VM: undefined,
-        ADE_DISABLE_MACOS_VM: undefined,
       },
       () => {
         const services = getAdeActionDomainServices({
@@ -125,13 +123,11 @@ describe("getAdeActionDomainServices feature gates", () => {
           automationPlannerService: {},
           automationIngressService: {},
           linearIngressService: {},
-          macosVmService: {},
         } as never);
 
         expect(services.automation_planner).toBeNull();
         expect(services.automations).toBeNull();
         expect(services.linear_ingress).toBeNull();
-        expect(services.macos_vm).toBeNull();
       },
     );
   });
@@ -141,20 +137,16 @@ describe("getAdeActionDomainServices feature gates", () => {
       {
         ADE_ENABLE_AUTOMATIONS: undefined,
         ADE_DISABLE_AUTOMATIONS: undefined,
-        ADE_ENABLE_MACOS_VM: undefined,
-        ADE_DISABLE_MACOS_VM: undefined,
       },
       () => {
         const services = getAdeActionDomainServices({
           isPackaged: false,
           automationPlannerService: { parseNaturalLanguage: () => undefined },
           linearIngressService: { getStatus: () => undefined },
-          macosVmService: { getStatus: () => undefined },
         } as never);
 
         expect(services.automation_planner).not.toBeNull();
         expect(services.linear_ingress).not.toBeNull();
-        expect(services.macos_vm).not.toBeNull();
       },
     );
   });
@@ -372,12 +364,6 @@ describe("ADE_ACTION_ALLOWLIST shape", () => {
     }
   });
 
-  it("exposes the macOS VM computer-use control surface", () => {
-    const actions = ADE_ACTION_ALLOWLIST.macos_vm ?? [];
-    for (const name of ["getStatus", "start", "getAgentGuide", "captureScreenshot", "click", "selectPoint", "typeText"]) {
-      expect(actions).toContain(name);
-    }
-  });
 });
 
 describe("runtime APNs action service", () => {

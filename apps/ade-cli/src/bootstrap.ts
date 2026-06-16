@@ -39,12 +39,6 @@ import { createOAuthRedirectService } from "../../desktop/src/main/services/lane
 import { createRuntimeDiagnosticsService } from "../../desktop/src/main/services/lanes/runtimeDiagnosticsService";
 import { createRebaseSuggestionService } from "../../desktop/src/main/services/lanes/rebaseSuggestionService";
 import { createAutoRebaseService } from "../../desktop/src/main/services/lanes/autoRebaseService";
-import {
-  invalidateVmLaneLaunchCache,
-  refreshVmLaneLaunchCache,
-  setMacosVmLaunchProvider,
-  syncMacosVmLaunchCacheFromEvent,
-} from "../../desktop/src/main/services/lanes/laneLaunchContext";
 import { createProcessService } from "../../desktop/src/main/services/processes/processService";
 import { augmentProcessPathWithShellAndKnownCliDirs, setPathEnvValue } from "../../desktop/src/main/services/ai/cliExecutableResolver";
 import { createAgentChatService } from "../../desktop/src/main/services/chat/agentChatService";
@@ -108,7 +102,6 @@ import {
   createAppControlService,
   type AppControlService,
 } from "../../desktop/src/main/services/appControl/appControlService";
-import { createMacosVmService } from "../../desktop/src/main/services/macosVm/macosVmService";
 import type { BuiltInBrowserService } from "../../desktop/src/main/services/builtInBrowser/builtInBrowserService";
 import {
   createBuiltInBrowserDesktopBridgeClient,
@@ -133,10 +126,7 @@ import { createLaneWorktreeLockService, type LaneWorktreeLockService } from "../
 import { createHeadlessLinearServices } from "./headlessLinearServices";
 import { EncryptedFileCredentialStore } from "./services/credentials/credentialStore";
 import { createEventBuffer, type BufferedEvent, type EventBuffer } from "./eventBuffer";
-import {
-  readAutomationsEnvOverride,
-  readMacosVmEnvOverride,
-} from "../../desktop/src/shared/automationAvailability";
+import { readAutomationsEnvOverride } from "../../desktop/src/shared/automationAvailability";
 
 export { createEventBuffer, type BufferedEvent, type EventBuffer };
 
@@ -239,7 +229,6 @@ export type AdeRuntime = {
   iosSimulatorService?: IosSimulatorService | null;
   appControlService?: AppControlService | null;
   builtInBrowserService?: BuiltInBrowserService | BuiltInBrowserDesktopBridgeClient | null;
-  macosVmService?: ReturnType<typeof createMacosVmService> | null;
   syncHostService?: ReturnType<typeof createSyncHostService> | null;
   syncService?: ReturnType<typeof createSyncService> | null;
   apnsService?: ApnsService | null;
@@ -288,12 +277,6 @@ const currentModulePath =
 
 function automationsEnabledForHeadlessRuntime(): boolean {
   const override = readAutomationsEnvOverride(process.env);
-  if (override !== null) return override;
-  return isSourceCheckoutRuntimeModule(currentModulePath);
-}
-
-function macosVmEnabledForHeadlessRuntime(): boolean {
-  const override = readMacosVmEnvOverride(process.env);
   if (override !== null) return override;
   return isSourceCheckoutRuntimeModule(currentModulePath);
 }
@@ -516,18 +499,6 @@ export async function createAdeRuntime(args: {
       }
     },
     onDeleteEvent: (event) => pushEvent("runtime", { type: "lane_delete_event", event }),
-    onPlacementChanged: (event) => {
-      pushEvent("runtime", { type: "lane_placement_changed", event });
-      invalidateVmLaneLaunchCache(event.laneId);
-      if (event.to === "macos-vm") {
-        void refreshVmLaneLaunchCache({ laneId: event.laneId }).catch((error) => {
-          logger.warn("lane.placement_changed_refresh_failed", {
-            laneId: event.laneId,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        });
-      }
-    },
     onLinearIssueLinked: ({ lane, issue, linkedAt }) => {
       const tracker = linearIssueTrackerRef;
       if (!tracker) return;
@@ -927,31 +898,6 @@ export async function createAdeRuntime(args: {
           return matchingLane?.id ?? lanes[0]?.id ?? null;
         },
       });
-  const macosVmFeatureEnabled = macosVmEnabledForHeadlessRuntime();
-  const macosVmService = chatOnlyRuntime || !macosVmFeatureEnabled
-    ? null
-    : createMacosVmService({
-        projectRoot,
-        logger,
-        resolveLanes: async () => laneService.list({ includeArchived: false }),
-        onEvent: (event) => {
-          syncMacosVmLaunchCacheFromEvent(event, (name, fields) => {
-            logger.warn(name, fields);
-          });
-          pushEvent("runtime", {
-            ...(event as unknown as Record<string, unknown>),
-            type: "macos_vm",
-            eventType: event.type,
-          });
-        },
-      });
-  if (macosVmService) {
-    setMacosVmLaunchProvider({
-      getStatus: macosVmService.getStatus.bind(macosVmService),
-      getCredentials: macosVmService.getCredentials.bind(macosVmService),
-    });
-  }
-
   // `built_in_browser` is hosted by the desktop's Electron main process (the
   // browser pane owns a WebContentsView). The runtime daemon proxies calls
   // through `<adeHome>/sock/desktop-bridge.sock`; if no desktop is running,
@@ -1381,7 +1327,6 @@ export async function createAdeRuntime(args: {
     iosSimulatorService,
     appControlService,
     builtInBrowserService: builtInBrowserBridge,
-    macosVmService,
     eventBuffer,
     isPackaged: !isSourceCheckoutRuntimeModule(currentModulePath),
     dispose: () => {
@@ -1404,9 +1349,6 @@ export async function createAdeRuntime(args: {
       swallow(() => iosSimulatorService?.dispose());
       swallow(() => appControlService?.dispose());
       swallow(() => builtInBrowserBridge?.dispose());
-      swallow(() => macosVmService?.dispose());
-      swallow(() => setMacosVmLaunchProvider(null));
-      swallow(() => invalidateVmLaneLaunchCache());
       swallow(() => linearOAuthService.dispose());
       swallow(() => headlessLinearServices.dispose());
       swallow(() => agentChatService?.forceDisposeAll?.());

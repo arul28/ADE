@@ -42,7 +42,6 @@ import {
   type IosSimulatorDrawerMode,
   type LaneLinearIssue,
   type AiSettingsStatus,
-  type MacosVmContextItem,
   type TerminalSessionDetail,
   type TerminalToolType,
 } from "../../../shared/types";
@@ -113,8 +112,6 @@ import { buildRewindPreviewFiles, deriveRewindDiffSummaries } from "./rewindFile
 import { ChatCursorCloudPanel, type ChatCursorCloudPanelHandle } from "./ChatCursorCloudPanel";
 import { CursorCloudInlineLaunch, type CursorCloudInlineLaunchHandle } from "./CursorCloudInlineLaunch";
 import { QuickRunInlineList } from "../run/QuickRunMenu";
-import { ChatGitToolbar } from "./ChatGitToolbar";
-import { LaneChip } from "../terminals/LaneChip";
 import { getLaneAccent } from "../lanes/laneColorPalette";
 import { openLaneInLanesTabPath } from "../../lib/laneNavigation";
 import { ChatTerminalDrawer, ChatTerminalToggle } from "./ChatTerminalDrawer";
@@ -145,7 +142,6 @@ import {
   type WorkPtyLaunchArgs,
   type WorkPtyLaunchResult,
 } from "../terminals/cliLaunch";
-import { ClaudeCacheTtlBadge } from "../shared/ClaudeCacheTtlBadge";
 import { WorkSurfaceHeader } from "../work/WorkSurfaceHeader";
 import { branchNameFromRef } from "../prs/shared/laneBranchTargets";
 import { shouldShowClaudeCacheTtl } from "../../lib/claudeCacheTtl";
@@ -170,19 +166,15 @@ import {
   type PreparedDraftLaunch,
 } from "../../lib/draftLaunchJobs";
 import {
-  buildAutomaticMacosVmContextForPrompt,
   createAppControlContextInstanceId,
   createBuiltInBrowserContextInstanceId,
   createIosContextInstanceId,
-  createMacosVmContextInstanceId,
   formatAppControlContextChipsForDisplay,
   formatAppControlContextForPrompt,
   formatBuiltInBrowserContextChipsForDisplay,
   formatBuiltInBrowserContextForPrompt,
   formatIosElementContextChipsForDisplay,
   formatIosElementContextForPrompt,
-  formatMacosVmContextChipsForDisplay,
-  formatMacosVmContextForPrompt,
   getAppControlContextAttachmentPath,
   getBuiltInBrowserContextAttachmentPath,
   getIosContextAttachmentPath,
@@ -1081,7 +1073,6 @@ type ComposerDraftStorageSnapshot = {
   iosContextItems: IosElementContextItem[];
   appControlContextItems: AppControlContextItem[];
   builtInBrowserContextItems: BuiltInBrowserContextItem[];
-  macosVmContextItems: MacosVmContextItem[];
   draftLaunchTargetId: string | null;
   updatedAt: string;
 };
@@ -1906,19 +1897,6 @@ const OPENCODE_PERMISSION_MODES: readonly AgentChatOpenCodePermissionMode[] = ["
 const DROID_PERMISSION_MODES: readonly AgentChatDroidPermissionMode[] = ["read-only", "auto-low", "auto-medium", "auto-high"];
 const EXECUTION_MODES: readonly AgentChatExecutionMode[] = ["focused", "parallel", "subagents", "teams"];
 const APP_CONTROL_PROVIDERS: readonly AppControlContextItem["provider"][] = ["cdp", "os-accessibility", "computer-use", "external", "coordinate-fallback"];
-const MACOS_VM_PROVIDERS: readonly MacosVmContextItem["provider"][] = ["lume", "apple-virtualization-helper"];
-const MACOS_VM_STATES: readonly MacosVmContextItem["state"][] = [
-  "not_created",
-  "creating",
-  "installing",
-  "stopped",
-  "starting",
-  "running",
-  "stopping",
-  "paused",
-  "failed",
-  "unknown",
-];
 const EMPTY_CHAT_EVENTS: AgentChatEventEnvelope[] = [];
 const EMPTY_REASONING_TIERS: string[] = [];
 
@@ -2300,35 +2278,6 @@ function normalizeComposerBuiltInBrowserContextItems(value: unknown): BuiltInBro
   });
 }
 
-function normalizeComposerMacosVmContextItems(value: unknown): MacosVmContextItem[] {
-  if (!Array.isArray(value)) return [];
-  return value.flatMap((entry) => {
-    if (!isRecord(entry) || entry.kind !== "macos_vm_target") return [];
-    const id = nonEmptyString(entry.id);
-    const laneId = nonEmptyString(entry.laneId);
-    const vmName = nonEmptyString(entry.vmName);
-    if (!id || !laneId || !vmName) return [];
-    return [{
-      kind: "macos_vm_target",
-      id,
-      laneId,
-      laneName: nonEmptyString(entry.laneName) ?? laneId,
-      vmName,
-      provider: pickStringEnum(entry.provider, MACOS_VM_PROVIDERS, "lume"),
-      state: pickStringEnum(entry.state, MACOS_VM_STATES, "unknown"),
-      hostLanePath: nonEmptyString(entry.hostLanePath) ?? "",
-      guestLanePath: nonEmptyString(entry.guestLanePath) ?? "",
-      runCommand: nonEmptyString(entry.runCommand) ?? "",
-      sshCommand: nullableString(entry.sshCommand),
-      vncUrl: nullableString(entry.vncUrl),
-      windowTitleQuery: nonEmptyString(entry.windowTitleQuery) ?? vmName,
-      screenshotDataUrl: nullableString(entry.screenshotDataUrl) ?? undefined,
-      selectedAt: nonEmptyString(entry.selectedAt) ?? new Date(0).toISOString(),
-      metadata: isRecord(entry.metadata) ? entry.metadata : {},
-    }];
-  });
-}
-
 function mergeComposerItemsById<T extends { id: string }>(current: T[], incoming: T[]): T[] {
   if (!incoming.length) return current;
   const merged = new Map<string, T>();
@@ -2362,7 +2311,6 @@ function normalizeStoredComposerDraft(
     iosContextItems: normalizeComposerIosContextItems(value.iosContextItems),
     appControlContextItems: normalizeComposerAppControlContextItems(value.appControlContextItems),
     builtInBrowserContextItems: normalizeComposerBuiltInBrowserContextItems(value.builtInBrowserContextItems),
-    macosVmContextItems: normalizeComposerMacosVmContextItems(value.macosVmContextItems),
     draftLaunchTargetId: nonEmptyString(value.draftLaunchTargetId),
     updatedAt: nonEmptyString(value.updatedAt) ?? new Date(0).toISOString(),
   };
@@ -2415,9 +2363,6 @@ function stripComposerDraftScreenshots(snapshot: ComposerDraftStorageSnapshot): 
     )),
     builtInBrowserContextItems: snapshot.builtInBrowserContextItems.map((item) => (
       item.screenshotDataUrl ? { ...item, screenshotDataUrl: null } : item
-    )),
-    macosVmContextItems: snapshot.macosVmContextItems.map((item) => (
-      item.screenshotDataUrl ? { ...item, screenshotDataUrl: undefined } : item
     )),
   };
 }
@@ -3165,7 +3110,6 @@ export function AgentChatPane({
   const [appControlAvailable, setAppControlAvailable] = useState(false);
   const [appControlContextItems, setAppControlContextItems] = useState<AppControlContextItem[]>([]);
   const [builtInBrowserContextItems, setBuiltInBrowserContextItems] = useState<BuiltInBrowserContextItem[]>([]);
-  const [macosVmContextItems, setMacosVmContextItems] = useState<MacosVmContextItem[]>([]);
   const latestAttachmentRef = useRef<{ path: string; type: AgentChatFileRef["type"]; addedAt: number } | null>(null);
   const linkedIosAttachmentPathsRef = useRef<Set<string>>(new Set());
   const linkedAppControlAttachmentPathsRef = useRef<Set<string>>(new Set());
@@ -3471,9 +3415,6 @@ export function AgentChatPane({
       linkedBuiltInBrowserAttachmentPathsRef.current.delete(linkedAttachmentPath);
       setAttachments((current) => current.filter((entry) => entry.path !== linkedAttachmentPath));
     }
-  }, []);
-  const removeMacosVmContext = useCallback((id: string) => {
-    setMacosVmContextItems((current) => current.filter((entry) => entry.id !== id));
   }, []);
   const updateComposerDraft = useCallback((value: string) => {
     setDraft(value);
@@ -6183,23 +6124,6 @@ export function AgentChatPane({
     ]);
   }, [addAttachment, selectedSessionId]);
 
-  const addMacosVmContext = useCallback((item: MacosVmContextItem) => {
-    const instanceId = createMacosVmContextInstanceId(item);
-    setMacosVmContextItems((current) => [
-      {
-        ...item,
-        id: instanceId,
-        metadata: {
-          ...item.metadata,
-          originalTargetId: item.metadata.originalTargetId ?? item.id,
-          contextInstanceId: instanceId,
-          ...(selectedSessionId ? { chatSessionId: selectedSessionId } : {}),
-        },
-      },
-      ...current.filter((entry) => entry.laneId !== item.laneId),
-    ]);
-  }, [selectedSessionId]);
-
   useEffect(() => {
     const matchesThisChat = (sessionId: unknown): boolean => (
       typeof sessionId === "string" && sessionId === selectedSessionIdRef.current
@@ -6247,11 +6171,6 @@ export function AgentChatPane({
       if (!detail?.item) return;
       void addBuiltInBrowserContext(detail.item);
     };
-    const onAddMacosVmContext = (event: Event) => {
-      const detail = composerDetail(event);
-      if (!detail?.item) return;
-      addMacosVmContext(detail.item as MacosVmContextItem);
-    };
     // Plan-panel annotation events (goal.md §10.7). The popover composes an
     // OrchestrationContextItem, dispatches `ade:agent-chat:add-plan-annotation`,
     // and the listener below merges it into the composer attachment tray via
@@ -6272,7 +6191,6 @@ export function AgentChatPane({
     window.addEventListener("ade:agent-chat:add-ios-context", onAddIosContext);
     window.addEventListener("ade:agent-chat:add-app-control-context", onAddAppControlContext);
     window.addEventListener("ade:agent-chat:add-builtin-browser-context", onAddBuiltInBrowserContext);
-    window.addEventListener("ade:agent-chat:add-macos-vm-context", onAddMacosVmContext);
     window.addEventListener("ade:agent-chat:add-plan-annotation", onAddPlanAnnotation);
     return () => {
       window.removeEventListener("ade:agent-chat:add-attachment", onAddAttachment);
@@ -6280,7 +6198,6 @@ export function AgentChatPane({
       window.removeEventListener("ade:agent-chat:add-ios-context", onAddIosContext);
       window.removeEventListener("ade:agent-chat:add-app-control-context", onAddAppControlContext);
       window.removeEventListener("ade:agent-chat:add-builtin-browser-context", onAddBuiltInBrowserContext);
-      window.removeEventListener("ade:agent-chat:add-macos-vm-context", onAddMacosVmContext);
       window.removeEventListener("ade:agent-chat:add-plan-annotation", onAddPlanAnnotation);
     };
   }, [
@@ -6288,7 +6205,6 @@ export function AgentChatPane({
     addAttachment,
     addBuiltInBrowserContext,
     addIosElementContext,
-    addMacosVmContext,
     draftContextTargetId,
     forceDraft,
     insertComposerDraft,
@@ -6409,7 +6325,6 @@ export function AgentChatPane({
       setIosElementContextItems(saved.iosContextItems);
       setAppControlContextItems(saved.appControlContextItems);
       setBuiltInBrowserContextItems(saved.builtInBrowserContextItems);
-      setMacosVmContextItems(saved.macosVmContextItems);
       setDraftLaunchTargetId(saved.draftLaunchTargetId);
       if (!selectedSessionId && saved.modelId) {
         draftLaunchConfigTouchedKeyRef.current = draftLaunchConfigScopeKey;
@@ -6433,7 +6348,6 @@ export function AgentChatPane({
     setIosElementContextItems([]);
     setAppControlContextItems([]);
     setBuiltInBrowserContextItems([]);
-    setMacosVmContextItems([]);
     setDraftLaunchTargetId(null);
   }, [
     applyLaunchConfigToComposer,
@@ -6468,7 +6382,6 @@ export function AgentChatPane({
       iosContextItems: iosElementContextItems,
       appControlContextItems,
       builtInBrowserContextItems,
-      macosVmContextItems,
       draftLaunchTargetId,
       updatedAt: new Date().toISOString(),
     };
@@ -6500,7 +6413,6 @@ export function AgentChatPane({
     draftLaunchTargetId,
     executionMode,
     iosElementContextItems,
-    macosVmContextItems,
     modelId,
     reasoningEffort,
   ]);
@@ -6756,19 +6668,16 @@ export function AgentChatPane({
     const iosContextSnapshot = [...iosElementContextItems];
     const appControlContextSnapshot = [...appControlContextItems];
     const builtInBrowserContextSnapshot = [...builtInBrowserContextItems];
-    const macosVmContextSnapshot = [...macosVmContextItems];
     const contextAttachmentsSnapshot = [...contextAttachments];
     const visualContextPrefix = [
       formatIosElementContextForPrompt(iosContextSnapshot),
       formatAppControlContextForPrompt(appControlContextSnapshot),
       formatBuiltInBrowserContextForPrompt(builtInBrowserContextSnapshot),
-      formatMacosVmContextForPrompt(macosVmContextSnapshot),
     ].filter(Boolean).join("\n");
     const visualContextDisplayChips = [
       formatIosElementContextChipsForDisplay(iosContextSnapshot),
       formatAppControlContextChipsForDisplay(appControlContextSnapshot),
       formatBuiltInBrowserContextChipsForDisplay(builtInBrowserContextSnapshot),
-      formatMacosVmContextChipsForDisplay(macosVmContextSnapshot),
     ].filter(Boolean).join(" ");
     if (
       !text.length
@@ -6795,7 +6704,6 @@ export function AgentChatPane({
       iosContextItems: iosContextSnapshot,
       appControlContextItems: appControlContextSnapshot,
       builtInBrowserContextItems: builtInBrowserContextSnapshot,
-      macosVmContextItems: macosVmContextSnapshot,
       visualContextPrefix,
       visualContextDisplayChips,
       isLiteralSlashCommand: isProviderSlashCommandInput(text),
@@ -6812,19 +6720,15 @@ export function AgentChatPane({
     interactionMode,
     iosElementContextItems,
     isWorkCliLaunchDraft,
-    macosVmContextItems,
     modelId,
     reasoningEffort,
   ]);
 
   const prepareDraftLaunchForSend = useCallback(async (
     snapshot: DraftLaunchSnapshot,
-    targetLaneId: string,
+    _targetLaneId: string,
   ): Promise<PreparedDraftLaunch> => {
-    const automaticMacosVmContextPrefix = await buildAutomaticMacosVmContextForPrompt(targetLaneId, {
-      promptText: snapshot.text,
-    });
-    const finalTextPrefix = [automaticMacosVmContextPrefix, snapshot.visualContextPrefix].filter(Boolean).join("\n");
+    const finalTextPrefix = snapshot.visualContextPrefix;
     let finalText = finalTextPrefix ? `${finalTextPrefix}${snapshot.text}` : snapshot.text;
     if (!finalText.trim().length && snapshot.contextAttachments.length) {
       finalText = "Use the attached issue context.";
@@ -6865,7 +6769,6 @@ export function AgentChatPane({
     setIosElementContextItems((current) => mergeComposerItemsById(current, snapshot.iosContextItems));
     setAppControlContextItems((current) => mergeComposerItemsById(current, snapshot.appControlContextItems));
     setBuiltInBrowserContextItems((current) => mergeComposerItemsById(current, snapshot.builtInBrowserContextItems));
-    setMacosVmContextItems((current) => mergeComposerItemsById(current, snapshot.macosVmContextItems));
     if (snapshot.modelId) {
       draftLaunchConfigTouchedKeyRef.current = draftLaunchConfigScopeKey;
       draftLaunchConfigHydratedRef.current = `${draftLaunchConfigScopeKey}:restored-launch`;
@@ -7041,7 +6944,6 @@ export function AgentChatPane({
     setIosElementContextItems([]);
     setAppControlContextItems([]);
     setBuiltInBrowserContextItems([]);
-    setMacosVmContextItems([]);
   }, [companionStateKey]);
 
   const cleanupDraftChatSession = useCallback(async (
@@ -7545,8 +7447,7 @@ export function AgentChatPane({
           || contextAttachments.length > 0
           || iosElementContextItems.length > 0
           || appControlContextItems.length > 0
-          || builtInBrowserContextItems.length > 0
-          || macosVmContextItems.length > 0;
+          || builtInBrowserContextItems.length > 0;
         if (hasUnsupportedRevisionContext) {
           setError("Plan revisions from the ready gate are text-only. Remove attachments or click Keep planning first.");
           return;
@@ -7835,18 +7736,15 @@ export function AgentChatPane({
     const iosContextSnapshot = [...iosElementContextItems];
     const appControlContextSnapshot = [...appControlContextItems];
     const builtInBrowserContextSnapshot = [...builtInBrowserContextItems];
-    const macosVmContextSnapshot = [...macosVmContextItems];
     const contextAttachmentsSnapshot = [...contextAttachments];
     const iosContextPrefix = formatIosElementContextForPrompt(iosContextSnapshot);
     const appControlContextPrefix = formatAppControlContextForPrompt(appControlContextSnapshot);
     const builtInBrowserContextPrefix = formatBuiltInBrowserContextForPrompt(builtInBrowserContextSnapshot);
-    const macosVmContextPrefix = formatMacosVmContextForPrompt(macosVmContextSnapshot);
     const iosContextDisplayChips = formatIosElementContextChipsForDisplay(iosContextSnapshot);
     const appControlContextDisplayChips = formatAppControlContextChipsForDisplay(appControlContextSnapshot);
     const builtInBrowserContextDisplayChips = formatBuiltInBrowserContextChipsForDisplay(builtInBrowserContextSnapshot);
-    const macosVmContextDisplayChips = formatMacosVmContextChipsForDisplay(macosVmContextSnapshot);
-    const visualContextPrefix = [iosContextPrefix, appControlContextPrefix, builtInBrowserContextPrefix, macosVmContextPrefix].filter(Boolean).join("\n");
-    const visualContextDisplayChips = [iosContextDisplayChips, appControlContextDisplayChips, builtInBrowserContextDisplayChips, macosVmContextDisplayChips].filter(Boolean).join(" ");
+    const visualContextPrefix = [iosContextPrefix, appControlContextPrefix, builtInBrowserContextPrefix].filter(Boolean).join("\n");
+    const visualContextDisplayChips = [iosContextDisplayChips, appControlContextDisplayChips, builtInBrowserContextDisplayChips].filter(Boolean).join(" ");
     if (
       (!text.length && !visualContextPrefix.length && !contextAttachmentsSnapshot.length && !(isWorkCliLaunchDraft && attachments.length))
       || !laneId
@@ -7937,8 +7835,8 @@ export function AgentChatPane({
     }
 
     // Show the optimistic bubble immediately when we already have a session.
-    // Awaiting the macOS VM IPC and any session-create roundtrip before this
-    // setter delays the bubble by hundreds of ms on a typical send.
+    // Awaiting session-create roundtrips before this setter delays the bubble
+    // by hundreds of ms on a typical send.
     const selectedAttachmentsForOptimistic = isLiteralSlashCommand ? [] : attachmentsSnapshot;
     const selectedContextAttachmentsForOptimistic = isLiteralSlashCommand ? [] : contextAttachmentsSnapshot;
     const optimisticDisplayText = visualContextDisplayChips
@@ -7968,11 +7866,8 @@ export function AgentChatPane({
     }
 
     try {
-      const automaticMacosVmContextPrefix = await buildAutomaticMacosVmContextForPrompt(laneId, {
-        promptText: text,
-      });
       let justCreatedSession = false;
-      const finalTextPrefix = [automaticMacosVmContextPrefix, visualContextPrefix].filter(Boolean).join("\n");
+      const finalTextPrefix = visualContextPrefix;
       let finalText = finalTextPrefix ? `${finalTextPrefix}${text}` : text;
       if (!finalText.trim().length && contextAttachmentsSnapshot.length) {
         finalText = "Use the attached issue context.";
@@ -8127,7 +8022,6 @@ export function AgentChatPane({
       setIosElementContextItems([]);
       setAppControlContextItems([]);
       setBuiltInBrowserContextItems([]);
-      setMacosVmContextItems([]);
     } catch (submitError) {
       const message = submitError instanceof Error ? submitError.message : String(submitError);
       setDraft((current) => (current.trim().length ? current : draftSnapshot));
@@ -8136,7 +8030,6 @@ export function AgentChatPane({
       setIosElementContextItems((current) => (current.length ? current : iosContextSnapshot));
       setAppControlContextItems((current) => (current.length ? current : appControlContextSnapshot));
       setBuiltInBrowserContextItems((current) => (current.length ? current : builtInBrowserContextSnapshot));
-      setMacosVmContextItems((current) => (current.length ? current : macosVmContextSnapshot));
       setOptimisticOutgoingMessageSynced(null);
       setError(message);
       if (
@@ -8207,7 +8100,6 @@ export function AgentChatPane({
     iosElementContextItems,
     appControlContextItems,
     builtInBrowserContextItems,
-    macosVmContextItems,
     workDraftKind,
     orchestratorEnabled,
   ]);
@@ -9325,7 +9217,6 @@ export function AgentChatPane({
             iosElementContextItems={iosElementContextItems}
             appControlContextItems={appControlContextItems}
             builtInBrowserContextItems={builtInBrowserContextItems}
-            macosVmContextItems={macosVmContextItems}
             executionModeOptions={launchModeEditable ? executionModeOptions : []}
             modelSelectionLocked={modelSelectionLocked || sessionMutationKind === "model" || turnActive || projectTransitionBlocksChat}
             permissionModeLocked={permissionModeLocked || identitySessionSettingsBusy || projectTransitionBlocksChat}
@@ -9362,7 +9253,6 @@ export function AgentChatPane({
             onRemoveIosElementContext={removeIosElementContext}
             onRemoveAppControlContext={removeAppControlContext}
             onRemoveBuiltInBrowserContext={removeBuiltInBrowserContext}
-            onRemoveMacosVmContext={removeMacosVmContext}
             onOpenAiSettings={openAiProvidersSettings}
             onOpenLinearSettings={openLinearSettings}
             launchPromptClipboardEnabled={launchPromptClipboardEnabled}

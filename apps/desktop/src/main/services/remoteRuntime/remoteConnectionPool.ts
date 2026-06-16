@@ -277,34 +277,6 @@ export class RemoteConnectionPool {
     };
   }
 
-  /**
-   * Register a running Mac VM (with installed ade-runtime) as a remote target.
-   * Called by macosVmService when guestReadiness reaches `runtime_ready`. The
-   * entry is keyed on the SSH triple so re-registering the same VM is a no-op
-   * — we look up an existing target before save() to avoid touching mtime /
-   * triggering downstream consumers on repeated runtime-ready events.
-   */
-  registerMacosVmTarget(args: {
-    vmName: string;
-    ipAddress: string;
-    username: string;
-  }): RemoteRuntimeTarget {
-    const existing = this.registry.list().find(
-      (target) =>
-        target.hostname === args.ipAddress
-        && target.sshUser === args.username
-        && target.port === 22,
-    );
-    if (existing) return existing;
-    return this.registry.save({
-      name: `Mac VM · ${args.vmName}`,
-      hostname: args.ipAddress,
-      sshUser: args.username,
-      port: 22,
-      sshKeyPath: null,
-    });
-  }
-
   private async connectEntry(
     target: RemoteRuntimeTarget,
     options: RemoteConnectionPoolConnectOptions = {},
@@ -429,7 +401,7 @@ export class RemoteConnectionPool {
     }
 
     const pending = (async (): Promise<LocalPortForwardEntry> => {
-      const entry = await this.requireEntry(targetId);
+      await this.requireEntry(targetId);
       const createdAt = Date.now();
       const label =
         typeof request.label === "string" && request.label.trim()

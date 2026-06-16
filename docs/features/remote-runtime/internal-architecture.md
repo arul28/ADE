@@ -43,7 +43,7 @@ Runtime event streaming uses `ade/actions/call` with `name: "stream_events"` for
 
 Each `stream_events` response carries a per-runtime `eventEpoch` UUID minted when the daemon's `eventBuffer` is constructed. The preload event pump compares it against the last seen epoch for the active binding; if it changes (daemon restart, ssh reconnect to a fresh process) the cursor and dedup set reset and the next poll starts from `cursor=0`. The `startedAtMs` "drop events older than the pump start" filter is only applied to **local** bindings — remote pumps rely on the epoch reset instead, so older events backfilled after a reconnect are still delivered.
 
-The remote event buffer categories are intentionally narrow: `orchestrator`, `dag_mutation`, `runtime`, and `pty`. Preload dispatches `runtime` events by their payload `type` so domain-specific updates such as agent chat, terminal, lane, PR, file-watch, process, test, project-state, usage, automation, conflict, GitHub, Linear, feedback, Computer Use, iOS Simulator, App Control, and macOS VM changes still reach their dedicated remote subscribers without expanding the wire-level category enum. ade-cli wires these source-tagged payloads into the runtime event buffer in `bootstrap.ts` so a remote-bound window sees the same event fanout as the local host. Headless runtimes start `usageTrackingService` during `createAdeRuntime()` after the ADE action registry is bound, so the usage poller and threshold events run only once the runtime can answer the matching usage/budget actions.
+The remote event buffer categories are intentionally narrow: `orchestrator`, `dag_mutation`, `runtime`, and `pty`. Preload dispatches `runtime` events by their payload `type` so domain-specific updates such as agent chat, terminal, lane, PR, file-watch, process, test, project-state, usage, automation, conflict, GitHub, Linear, feedback, Computer Use, iOS Simulator, and App Control changes still reach their dedicated remote subscribers without expanding the wire-level category enum. ade-cli wires these source-tagged payloads into the runtime event buffer in `bootstrap.ts` so a remote-bound window sees the same event fanout as the local host. Headless runtimes start `usageTrackingService` during `createAdeRuntime()` after the ADE action registry is bound, so the usage poller and threshold events run only once the runtime can answer the matching usage/budget actions.
 
 ## SSH transport
 
@@ -123,7 +123,7 @@ Operations with desktop-only side effects, such as some automation hooks and UI-
 Preload also guards two classes of API against remote bindings:
 
 - `assertNotRemoteProjectPathAction` rejects `app.revealPath`, `app.openPath`, `app.openPathInEditor`, `app.getImageDataUrl`, and `app.writeClipboardImage` when the input path is the remote project root or any descendant of it. A remote project's filesystem is not mounted locally, so revealing or opening those paths on the desktop would point at the wrong machine.
-- `assertLocalProjectHostAction` rejects iOS Simulator window-state / window-source lookups and the local-only macOS VM operations (`getDisplaySession`, `setCredentials`, `detachLane`) on remote-bound windows; those need direct Electron / OS access on the host that owns the simulator or VM.
+- `assertLocalProjectHostAction` rejects iOS Simulator window-state / window-source lookups on remote-bound windows; those need direct Electron / OS access on the host that owns the simulator.
 
 ## Remote connection pool lifecycle
 

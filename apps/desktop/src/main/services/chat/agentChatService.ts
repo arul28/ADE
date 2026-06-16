@@ -1886,13 +1886,6 @@ const DEFAULT_TRANSCRIPT_READ_LIMIT = 20;
 const MAX_TRANSCRIPT_READ_LIMIT = 100;
 const DEFAULT_TRANSCRIPT_READ_CHARS = 8_000;
 const MAX_TRANSCRIPT_READ_CHARS = 120_000;
-const AUTOMATIC_MACOS_VM_CONTEXT_HEADER = "ADE macOS VM capability for this lane (automatic context).";
-const AUTOMATIC_MACOS_VM_CONTEXT_ENDINGS = [
-  "- Do not rely on host-side ADE screenshot/click/type VM tools for new work.",
-  "- Tools: macos_vm_status, macos_vm_start, macos_vm_screenshot, macos_vm_click, macos_vm_type.",
-  "- This lane uses a sanitized mirror for the VM share; ADE syncs code while excluding secrets, runtime databases, caches, transcripts, generated local history, and .git.",
-  "- Keep VM-side edits inside the mounted guest lane path so the host lane and guest stay aligned.",
-] as const;
 const AUTO_TITLE_MAX_CHARS = 48;
 const REASONING_ACTIVITY_DETAIL = "Thinking through the answer";
 const WORKING_ACTIVITY_DETAIL = "Preparing response";
@@ -6736,27 +6729,6 @@ export function createAgentChatService(args: {
     } catch {
       return [];
     }
-  };
-
-  const isAutomaticMacosVmContextUserMessage = (entry: AgentChatEventEnvelope): boolean =>
-    entry.event.type === "user_message"
-    && entry.event.text.trimStart().startsWith(AUTOMATIC_MACOS_VM_CONTEXT_HEADER);
-
-  const hasAutomaticMacosVmContextInTranscript = (managed: ManagedChatSession): boolean =>
-    (eventHistoryBySession.get(managed.session.id) ?? []).some(isAutomaticMacosVmContextUserMessage)
-    || readTranscriptEnvelopes(managed).some(isAutomaticMacosVmContextUserMessage);
-
-  const stripAutomaticMacosVmContextPrefix = (text: string): string | null => {
-    const leadingTrimmed = text.trimStart();
-    if (!leadingTrimmed.startsWith(AUTOMATIC_MACOS_VM_CONTEXT_HEADER)) return null;
-    const leadingWhitespaceLength = text.length - leadingTrimmed.length;
-    const contextStart = leadingWhitespaceLength;
-    for (const ending of AUTOMATIC_MACOS_VM_CONTEXT_ENDINGS) {
-      const endingIndex = text.indexOf(ending, contextStart);
-      if (endingIndex === -1) continue;
-      return text.slice(endingIndex + ending.length).trimStart();
-    }
-    return null;
   };
 
   const readTranscriptTailForHistory = (
@@ -18732,13 +18704,7 @@ export function createAgentChatService(args: {
   }: AgentChatSendArgs & { allowActiveSession?: boolean }): PreparedSendMessage | null => {
     const managed = ensureManagedSession(sessionId);
     const publicContextAttachments = normalizeChatContextAttachments(contextAttachments);
-    const strippedSubmittedText = stripAutomaticMacosVmContextPrefix(text);
-    const stripRepeatedAutomaticContext = strippedSubmittedText != null
-      && hasAutomaticMacosVmContextInTranscript(managed);
-    const submittedRawText = stripRepeatedAutomaticContext
-      ? strippedSubmittedText
-      : text;
-    const trimmedText = submittedRawText.trim();
+    const trimmedText = text.trim();
     const trimmed = trimmedText.length || !publicContextAttachments.length
       ? trimmedText
       : "Use the attached issue context.";
@@ -18746,10 +18712,7 @@ export function createAgentChatService(args: {
     const slashCommand = extractLeadingSlashCommand(trimmed);
     const providerSlashCommand = isProviderSlashCommandInput(trimmed);
     const rawDisplayText = displayText?.trim().length ? displayText : undefined;
-    const cleanedDisplayText = stripRepeatedAutomaticContext && rawDisplayText
-      ? stripAutomaticMacosVmContextPrefix(rawDisplayText) ?? rawDisplayText
-      : rawDisplayText;
-    const visibleText = cleanedDisplayText?.trim().length ? cleanedDisplayText.trim() : trimmed;
+    const visibleText = rawDisplayText?.trim().length ? rawDisplayText.trim() : trimmed;
 
     if (hasLivePendingInput(managed)) {
       throw new Error(PENDING_INPUT_SEND_BLOCKED_MESSAGE);
@@ -26696,114 +26659,6 @@ export function createAgentChatService(args: {
     };
   };
 
-  /**
-   * Called from main.ts when laneService emits a `lane-placement-changed`
-   * event (i.e. a VM lane was detached, or a local lane was attached to the
-   * VM). Refreshes the launch context for every managed chat that references
-   * the lane and emits a system notice so the chat banner can flip between
-   * "Running locally" and "Running inside Mac VM" without a reload.
-   */
-  const handleLanePlacementChanged = async (event: {
-    laneId: string;
-    from: "macos-vm" | "local" | "none";
-    to: "macos-vm" | "local";
-  }): Promise<void> => {
-    const laneId = String(event?.laneId ?? "").trim();
-    if (!laneId.length) return;
-    const relocations: Promise<void>[] = [];
-    const changedLane = (() => {
-      try {
-        return laneService.getLaneBaseAndBranch(laneId);
-      } catch {
-        return null;
-      }
-    })();
-    const changedLaneWorktreePathRaw = trimLine(changedLane?.worktreePath);
-    const changedLaneWorktreePath = changedLaneWorktreePathRaw
-      ? safeRealpath(changedLaneWorktreePathRaw) ?? changedLaneWorktreePathRaw
-      : null;
-    const touchedSessionIds = new Set<string>();
-    for (const managed of managedSessions.values()) {
-      const candidateLaneIds = [
-        managed.session.laneId,
-        managed.preferredExecutionLaneId,
-        managed.selectedExecutionLaneId,
-      ];
-      if (!candidateLaneIds.includes(laneId)) continue;
-      touchedSessionIds.add(managed.session.id);
-      try {
-        refreshManagedLaneLaunchContext(managed, { purpose: "follow lane placement change" });
-      } catch (error) {
-        logger.warn("agent_chat.refresh_after_placement_change_failed", {
-          laneId,
-          sessionId: managed.session.id,
-          from: event.from,
-          to: event.to,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-      const runId = managed.session.orchestrationRunId?.trim();
-      const worktree = managed.laneWorktreePath?.trim();
-      if (runId && worktree) {
-        const nextBundlePath = orchestrationBundlePathForRun(worktree, runId);
-        const currentBundlePath = managed.session.orchestrationBundlePath?.trim();
-        if (currentBundlePath !== nextBundlePath) {
-          managed.session.orchestrationBundlePath = nextBundlePath;
-          persistChatState(managed);
-          relocations.push(relocateOrchestrationRunBundle(runId, nextBundlePath, managed.session.id));
-        }
-      }
-      const message = event.to === "local"
-        ? "Lane detached from Mac VM; further turns run locally."
-        : "Lane attached to Mac VM; further turns run inside the VM at /Volumes/My Shared Files.";
-      try {
-        emitChatEvent(managed, {
-          type: "system_notice",
-          noticeKind: "info",
-          message,
-        });
-      } catch (error) {
-        logger.warn("agent_chat.placement_change_notice_failed", {
-          laneId,
-          sessionId: managed.session.id,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-    }
-    if (changedLaneWorktreePath) {
-      const rows = sessionService.list({ laneId, limit: null });
-      for (const row of rows) {
-        if (!isChatToolType(row.toolType) || touchedSessionIds.has(row.id)) continue;
-        const persisted = readPersistedState(row.id);
-        if (!persisted) continue;
-        const runId = persisted.orchestrationRunId?.trim();
-        if (!runId) continue;
-        const executionLaneId =
-          trimLine(persisted.preferredExecutionLaneId)
-          ?? trimLine(persisted.selectedExecutionLaneId)
-          ?? row.laneId;
-        if (executionLaneId !== laneId) continue;
-        const nextBundlePath = orchestrationBundlePathForRun(changedLaneWorktreePath, runId);
-        if (persisted.orchestrationBundlePath === nextBundlePath) continue;
-        const metadataPath = metadataPathFor(row.id);
-        try {
-          const raw = JSON.parse(fs.readFileSync(metadataPath, "utf8")) as Record<string, unknown>;
-          raw.orchestrationBundlePath = nextBundlePath;
-          raw.updatedAt = nowIso();
-          fs.writeFileSync(metadataPath, JSON.stringify(raw, null, 2), "utf8");
-          relocations.push(relocateOrchestrationRunBundle(runId, nextBundlePath, row.id));
-        } catch (error) {
-          logger.warn("agent_chat.persisted_orchestration_bundle_repoint_failed", {
-            laneId,
-            sessionId: row.id,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
-      }
-    }
-    await Promise.all(relocations);
-  };
-
   const readTranscript = async (
     sessionId: string,
     limit?: number,
@@ -27173,7 +27028,6 @@ export function createAgentChatService(args: {
         eventSubscribers.delete(callback);
       };
     },
-    handleLanePlacementChanged,
     /** Clean up temp attachment files older than 7 days. Call on app startup. */
     cleanupStaleAttachments() {
       try {

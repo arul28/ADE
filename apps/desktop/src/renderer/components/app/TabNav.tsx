@@ -11,7 +11,6 @@ import {
   ClockCounterClockwise,
   Robot,
   Brain,
-  DesktopTower,
   GearSix,
 } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
@@ -33,7 +32,6 @@ const mainItems = [
   { to: "/graph", label: "Graph", icon: Graph },
   { to: "/history", label: "History", icon: ClockCounterClockwise },
   { to: "/automations", label: "Automations", icon: Robot },
-  { to: "/vm", label: "VM", icon: DesktopTower },
 ] as const;
 
 const settingsItem = { to: "/settings", label: "Settings", icon: GearSix } as const;
@@ -55,7 +53,6 @@ export function TabNav({ githubStatus }: { githubStatus?: GitHubStatus | null })
   const projectBinding = useAppStore((s) => s.projectBinding);
   const showWelcome = useAppStore((s) => s.showWelcome);
   const terminalAttention = useAppStore((s) => s.terminalAttention);
-  const macosVmTabIndicator = useAppStore((s) => s.macosVmTabIndicator);
   const location = useLocation();
   const activeProjectRoot =
     projectBinding?.kind === "remote" ? projectBinding.rootPath : (project?.rootPath ?? null);
@@ -177,22 +174,7 @@ export function TabNav({ githubStatus }: { githubStatus?: GitHubStatus | null })
                 )}
               />
             ) : null}
-            {it.to === "/vm" && macosVmTabIndicator ? (
-              <span
-                title={
-                  macosVmTabIndicator === "failed"
-                    ? "Mac VM is in a failed state"
-                    : "Mac VM setup has an open step"
-                }
-                className={cn(
-                  "absolute -right-1 -top-1 ade-status-dot",
-                  macosVmTabIndicator === "failed"
-                    ? "ade-status-dot-error"
-                    : "ade-status-dot-warning",
-                )}
-              />
-            ) : null}
-            {(it.to === "/vm" || it.to === "/automations") && isPackaged ? (
+            {it.to === "/automations" && isPackaged ? (
               <span
                 title={`${it.label} is coming soon in production builds`}
                 className="absolute -right-2 -top-1 rounded border border-emerald-300/40 bg-emerald-400 px-1 font-mono text-[7px] font-bold uppercase leading-[10px] text-[#07110B]"

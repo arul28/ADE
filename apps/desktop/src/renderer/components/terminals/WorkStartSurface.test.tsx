@@ -96,30 +96,13 @@ describe("WorkStartSurface", () => {
     });
   });
 
-  it("does not render any VM banner or block for a macos-vm lane", async () => {
-    render(
-      <WorkStartSurface
-        draftKind="chat"
-        draftLaneId="lane-vm"
-        lanes={[{ id: "lane-vm", name: "VM lane", runtimePlacement: "macos-vm" } as any]}
-        onOpenChatSession={vi.fn()}
-        onLaunchPtySession={vi.fn()}
-      />,
-    );
-
-    expect(await screen.findByTestId("agent-chat-pane")).toBeTruthy();
-    expect(screen.queryByTestId("work-vm-banner")).toBeNull();
-    expect(screen.queryByTestId("work-vm-not-ready")).toBeNull();
-    expect(screen.queryByText("Open VM tab")).toBeNull();
-  });
-
-  it("does not render the VM banner for a local lane", async () => {
+  it("passes draft context options through to the chat pane", async () => {
     render(
       <WorkStartSurface
         draftKind="chat"
         draftLaneId="lane-local"
         draftContextTargetId="work:draft:lane-local:chat"
-        lanes={[{ id: "lane-local", name: "Local", runtimePlacement: "local" } as any]}
+        lanes={[{ id: "lane-local", name: "Local" } as any]}
         onOpenChatSession={vi.fn()}
         onLaunchPtySession={vi.fn()}
         suppressDraftLaunchNavigation
@@ -129,7 +112,5 @@ describe("WorkStartSurface", () => {
     expect(await screen.findByTestId("agent-chat-pane")).toBeTruthy();
     expect(agentChatPaneProps.latest?.draftContextTargetId).toBe("work:draft:lane-local:chat");
     expect(agentChatPaneProps.latest?.suppressDraftLaunchNavigation).toBe(true);
-    expect(screen.queryByTestId("work-vm-banner")).toBeNull();
-    expect(screen.queryByTestId("work-vm-not-ready")).toBeNull();
   });
 });

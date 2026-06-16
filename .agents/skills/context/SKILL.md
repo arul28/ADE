@@ -117,8 +117,8 @@ open the relevant one only when a task needs it.
   proof, runtime/socket). Ground truth is `ade help <command>` and
   `ade actions list --text`, not memory. → `ade-cli-control-plane`.
 - **Lanes & git** → `ade-lanes-git`. **PR workflows** → `ade-pr-workflows`.
-- **App / browser / iOS-sim / macOS-VM control** → `ade-app-control`,
-  `ade-browser`, `ade-ios-simulator`, `ade-macos-vm`.
+- **App / browser / iOS-sim control** → `ade-app-control`,
+  `ade-browser`, `ade-ios-simulator`.
 - **Linear** (no API key needed; routed through ADE) → `ade-linear`.
 - **Proof & computer-use** (screenshots, video, traces → proof drawer) →
   `ade-proof-artifacts`. **Deeplinks** → `ade-deeplinks`.

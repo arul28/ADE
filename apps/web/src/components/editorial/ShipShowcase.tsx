@@ -40,7 +40,7 @@ type ShowcaseTab = {
  * sync/lanes/tui.png, desktop.png, mobile.png
  * sync/chat/tui.png, desktop.png, mobile.png, grid-view.png, model-picker.png
  * sync/prs/tui.png, desktop.png, mobile.png
- * sync/tools/browser.png, ios-sim.png, app-control.png, macos-vm.png, files.png
+ * sync/tools/browser.png, ios-sim.png, app-control.png, files.png
  */
 const TABS: ShowcaseTab[] = [
   {
@@ -101,18 +101,18 @@ const TABS: ShowcaseTab[] = [
     id: "tools",
     number: "04",
     label: "Work tools",
-    title: "Browser, sim, VM — beside the chat.",
+    title: "Browser, sim, tools — beside the chat.",
     summary: "The proof and control surfaces agents need, built in.",
     bullets: [
       "Shared browser pane for web QA and proof capture.",
-      "iOS Simulator and macOS VM in the tools drawer.",
+      "iOS Simulator and App Control in the tools drawer.",
       "Every tool scoped to the active worktree.",
     ],
     footnote: "Agents get computer use; you get the same controls, one click away.",
     images: [
       { src: "/images/sync/tools/browser.png", label: "Browser", file: "sync/tools/browser.png" },
       { src: "/images/sync/tools/ios-sim.png", label: "iOS Simulator", file: "sync/tools/ios-sim.png" },
-      { src: "/images/sync/tools/macos-vm.png", label: "macOS VM", file: "sync/tools/macos-vm.png" },
+      { src: "/images/sync/tools/app-control.png", label: "App Control", file: "sync/tools/app-control.png" },
       { src: "/images/sync/tools/files.png", label: "Files & git", file: "sync/tools/files.png" },
     ],
   },

@@ -82,36 +82,6 @@ import type {
   BuiltInBrowserSelectPointArgs,
   BuiltInBrowserTabArgs,
   BuiltInBrowserTabTargetArgs,
-  MacosVmAgentGuide,
-  MacosVmAgentGuideArgs,
-  MacosVmCaptureScreenshotArgs,
-  MacosVmCaptureScreenshotResult,
-  MacosVmClickArgs,
-  MacosVmDeleteArgs,
-  MacosVmDetachLaneArgs,
-  MacosVmDetachLaneResult,
-  MacosVmDisplaySession,
-  MacosVmDisplaySessionArgs,
-  MacosVmFocusWindowArgs,
-  MacosVmGetCredentialsArgs,
-  MacosVmInstallRuntimeArgs,
-  MacosVmProvisionArgs,
-  MacosVmRecord,
-  MacosVmRestartArgs,
-  MacosVmRuntimeInstallStatus,
-  MacosVmSelectPointArgs,
-  MacosVmSelectPointResult,
-  MacosVmSetCredentialsArgs,
-  MacosVmStartArgs,
-  MacosVmStatus,
-  MacosVmStatusArgs,
-  MacosVmStopArgs,
-  MacosVmStorageInfo,
-  MacosVmStoredCredentialsSummary,
-  MacosVmTypeTextArgs,
-  MacosVmWindowTarget,
-  MacosVmWipeArgs,
-  MacosVmWipeResult,
   ReviewListRunsArgs,
   ReviewRun,
   ReviewRunDetail,
@@ -589,7 +559,6 @@ import { buildComputerUseOwnerSnapshot } from "../computerUse/controlPlane";
 import type { createIosSimulatorService } from "../ios/iosSimulatorService";
 import type { createAppControlService } from "../appControl/appControlService";
 import type { createBuiltInBrowserService } from "../builtInBrowser/builtInBrowserService";
-import type { createMacosVmService } from "../macosVm/macosVmService";
 import { ipcInvokeTimeoutMs } from "./ipcTimeouts";
 import { readGlobalState, writeGlobalState, reorderRecentProjects } from "../state/globalState";
 import type { createKeybindingsService } from "../keybindings/keybindingsService";
@@ -652,7 +621,6 @@ import { quoteWindowsCmdArg } from "../shared/processExecution";
 import { sanitizeResumeTargetId } from "../../utils/terminalSessionSignals";
 import { probeLocalhostPort } from "../probeLocalhostPort";
 import type { ProcessRegistryService } from "../runtime/processRegistryService";
-import { deleteMacosVmFromProjectState } from "../macosVm/macosVmRecovery";
 
 type ElectronProcessMetric = ReturnType<typeof app.getAppMetrics>[number];
 const APP_RESOURCE_USAGE_CACHE_MS = 900;
@@ -933,7 +901,6 @@ export type AppContext = {
   iosSimulatorService?: ReturnType<typeof createIosSimulatorService> | null;
   appControlService?: ReturnType<typeof createAppControlService> | null;
   builtInBrowserService?: ReturnType<typeof createBuiltInBrowserService> | null;
-  macosVmService?: ReturnType<typeof createMacosVmService> | null;
   githubService: ReturnType<typeof createGithubService>;
   projectScaffoldService: ReturnType<typeof createProjectScaffoldService>;
   prService: ReturnType<typeof createPrService> | null;
@@ -1660,7 +1627,6 @@ export function registerIpc({
   let linearOAuthServiceAdeDir: string | null = null;
   const appControlRateBuckets = new Map<string, { windowStartMs: number; count: number }>();
   const builtInBrowserRateBuckets = new Map<string, { windowStartMs: number; count: number }>();
-  const macosVmRateBuckets = new Map<string, { windowStartMs: number; count: number }>();
 
   const getOptionalSyncService = (): ReturnType<typeof createSyncService> | null => {
     if (getSyncService) return getSyncService() ?? null;
@@ -2244,46 +2210,6 @@ export function registerIpc({
     return builtInBrowserService;
   };
 
-  const ensureMacosVm = (): NonNullable<AppContext["macosVmService"]> => {
-    const service = getCtx().macosVmService;
-    if (!service) {
-      throw new Error("macOS VM service is not available.");
-    }
-    return service;
-  };
-
-  /**
-   * The macOS VM feature is unsigned-dev only — `MacVmProductionGate` hides
-   * the renderer UI in packaged builds, but the IPC handlers were still
-   * reachable from anywhere in the renderer. Block side-effectful VM
-   * operations in packaged builds so a packaged build cannot reach VM
-   * provisioning, runtime install, or credential storage even if a stale tab
-   * or compromised renderer asks for it. Read-only `getStatus`/`getStorageInfo`
-   * remain reachable so other UI surfaces (e.g. LanesPage gating logic) keep
-   * working. Bypassable via ADE_FORCE_ENABLE_MACOS_VM=1 for QA.
-   */
-  const requireMacosVmEnabledInProduction = (channel: string): void => {
-    if (!app.isPackaged) return;
-    if (process.env.ADE_FORCE_ENABLE_MACOS_VM === "1") return;
-    throw new Error(
-      `macOS VM is disabled in packaged builds (${channel}). Run from source or set ADE_FORCE_ENABLE_MACOS_VM=1.`,
-    );
-  };
-
-  const resolveMacosVmProjectRootForEvent = (event: IpcMainInvokeEvent): string => {
-    const windowId = BrowserWindow.fromWebContents(event.sender)?.id ?? null;
-    const session = getWindowSession?.(windowId) ?? null;
-    if (session?.binding?.kind === "local") return session.binding.rootPath;
-    if (session?.project?.rootPath) return session.project.rootPath;
-    // `ctx.project` is otherwise treated as unsafe unless the user has
-    // explicitly selected a project — without that guard a window with no
-    // selected project would silently delete VM state from whichever project
-    // happened to be in ctx, instead of failing closed.
-    const ctx = getCtx();
-    if (ctx.hasUserSelectedProject && ctx.project?.rootPath) return ctx.project.rootPath;
-    throw new Error("A project is required to remove a macOS VM.");
-  };
-
   const isTrustedAppControlRendererUrl = (rawUrl: string | null | undefined): boolean => {
     if (!rawUrl) return false;
     try {
@@ -2398,37 +2324,6 @@ export function registerIpc({
     }
     assertBuiltInBrowserRateLimit(event, channel, limit);
     return win;
-  };
-
-  const guardMacosVmIpc = (
-    event: IpcMainInvokeEvent,
-    channel: string,
-    limit: { windowMs: number; max: number } = { windowMs: 10_000, max: 30 },
-  ): void => {
-    assertTrustedAppControlSender(event, channel);
-    const now = Date.now();
-    const key = `${event.sender.id}:${channel}`;
-    for (const [k, v] of macosVmRateBuckets) {
-      if (now - v.windowStartMs > limit.windowMs) {
-        macosVmRateBuckets.delete(k);
-      }
-    }
-    const bucket = macosVmRateBuckets.get(key);
-    if (!bucket || now - bucket.windowStartMs > limit.windowMs) {
-      macosVmRateBuckets.set(key, { windowStartMs: now, count: 1 });
-      return;
-    }
-    if (bucket.count >= limit.max) {
-      const win = BrowserWindow.fromWebContents(event.sender);
-      getCtx().logger.warn("ipc.macos_vm.rate_limited", {
-        channel,
-        windowId: win?.id ?? null,
-        count: bucket.count,
-        windowMs: limit.windowMs,
-      });
-      throw new Error("Too many macOS VM requests. Try again shortly.");
-    }
-    bucket.count += 1;
   };
 
   const invalidBuiltInBrowserArg = (channel: string, reason: string): never => {
@@ -2594,283 +2489,6 @@ export function registerIpc({
       x: builtInBrowserNumber(record, "x", channel, { min: 0, max: 100_000 }),
       y: builtInBrowserNumber(record, "y", channel, { min: 0, max: 100_000 }),
       includeScreenshot,
-    };
-  };
-
-  const invalidMacosVmArg = (channel: string, reason: string): never => {
-    getCtx().logger.warn("ipc.macos_vm.invalid_args", { channel, reason });
-    throw new Error(`Invalid macOS VM payload: ${reason}`);
-  };
-
-  const macosVmRecord = (value: unknown, channel: string, required = false): Record<string, unknown> => {
-    if (value == null) {
-      if (required) invalidMacosVmArg(channel, "payload object is required");
-      return {};
-    }
-    if (!isRecord(value)) invalidMacosVmArg(channel, "payload must be an object");
-    return value as Record<string, unknown>;
-  };
-
-  const macosVmString = (
-    record: Record<string, unknown>,
-    field: string,
-    channel: string,
-    maxLength: number,
-    required = false,
-  ): string | null | undefined => {
-    const value = record[field];
-    if (value == null) {
-      if (required) invalidMacosVmArg(channel, `${field} is required`);
-      return undefined;
-    }
-    if (typeof value !== "string") return invalidMacosVmArg(channel, `${field} must be a string`);
-    const trimmed = (value as string).trim();
-    if (!trimmed.length) {
-      if (required) invalidMacosVmArg(channel, `${field} is required`);
-      return null;
-    }
-    if (trimmed.length > maxLength || trimmed.includes("\0")) invalidMacosVmArg(channel, `${field} is invalid`);
-    return trimmed;
-  };
-
-  const macosVmRawString = (
-    record: Record<string, unknown>,
-    field: string,
-    channel: string,
-    maxLength: number,
-    required = false,
-  ): string | null | undefined => {
-    const value = record[field];
-    if (value == null) {
-      if (required) invalidMacosVmArg(channel, `${field} is required`);
-      return undefined;
-    }
-    if (typeof value !== "string") return invalidMacosVmArg(channel, `${field} must be a string`);
-    if (!value.length) {
-      if (required) invalidMacosVmArg(channel, `${field} is required`);
-      return null;
-    }
-    if (value.length > maxLength || value.includes("\0")) invalidMacosVmArg(channel, `${field} is invalid`);
-    return value as AppControlCoordinateSpace;
-  };
-
-  const macosVmNumber = (
-    record: Record<string, unknown>,
-    field: string,
-    channel: string,
-    options: { integer?: boolean; min?: number; max?: number } = {},
-  ): number | undefined => {
-    const value = record[field];
-    if (value == null) return undefined;
-    if (typeof value !== "number" || !Number.isFinite(value)) invalidMacosVmArg(channel, `${field} must be a finite number`);
-    const numberValue = value as number;
-    if (options.integer && !Number.isInteger(numberValue)) invalidMacosVmArg(channel, `${field} must be an integer`);
-    if (options.min != null && numberValue < options.min) invalidMacosVmArg(channel, `${field} is below the minimum`);
-    if (options.max != null && numberValue > options.max) invalidMacosVmArg(channel, `${field} is above the maximum`);
-    return numberValue;
-  };
-
-  const macosVmBoolean = (record: Record<string, unknown>, field: string, channel: string): boolean | undefined => {
-    const value = record[field];
-    if (value == null) return undefined;
-    if (typeof value !== "boolean") return invalidMacosVmArg(channel, `${field} must be a boolean`);
-    return value as boolean;
-  };
-
-  const macosVmLaneArgs = (value: unknown, channel: string): { laneId: string } => {
-    const record = macosVmRecord(value, channel, true);
-    const laneId = macosVmString(record, "laneId", channel, 512, true);
-    return { laneId: laneId as string };
-  };
-
-  const parseMacosVmStatusArgs = (value: unknown, channel: string): MacosVmStatusArgs => {
-    const record = macosVmRecord(value, channel, false);
-    const laneId = macosVmString(record, "laneId", channel, 512);
-    return { laneId };
-  };
-
-  const parseMacosVmProvisionArgs = (value: unknown, channel: string): MacosVmProvisionArgs => {
-    const record = macosVmRecord(value, channel, true);
-    const laneId = macosVmString(record, "laneId", channel, 512, true) as string;
-    const modeValue = record.mode;
-    if (modeValue != null && modeValue !== "create" && modeValue !== "pull-image") {
-      invalidMacosVmArg(channel, "mode must be create or pull-image");
-    }
-    return {
-      laneId,
-      name: macosVmString(record, "name", channel, 256),
-      cpuCores: macosVmNumber(record, "cpuCores", channel, { integer: true, min: 1, max: 32 }),
-      memory: macosVmString(record, "memory", channel, 32),
-      diskSize: macosVmString(record, "diskSize", channel, 32),
-      display: macosVmString(record, "display", channel, 32),
-      mode: modeValue === "pull-image" ? "pull-image" : modeValue === "create" ? "create" : undefined,
-      ipsw: macosVmString(record, "ipsw", channel, 4096),
-      sourceImage: macosVmString(record, "sourceImage", channel, 256),
-      unattendedPreset: macosVmString(record, "unattendedPreset", channel, 128),
-      force: macosVmBoolean(record, "force", channel),
-    };
-  };
-
-  const parseMacosVmStartArgs = (value: unknown, channel: string): MacosVmStartArgs => {
-    const record = macosVmRecord(value, channel, true);
-    const laneId = macosVmString(record, "laneId", channel, 512, true) as string;
-    const modeValue = record.mode;
-    if (modeValue != null && modeValue !== "create" && modeValue !== "pull-image") {
-      invalidMacosVmArg(channel, "mode must be create or pull-image");
-    }
-    return {
-      laneId,
-      openDisplay: macosVmBoolean(record, "openDisplay", channel),
-      createIfMissing: macosVmBoolean(record, "createIfMissing", channel),
-      cpuCores: macosVmNumber(record, "cpuCores", channel, { integer: true, min: 1, max: 32 }),
-      memory: macosVmString(record, "memory", channel, 32),
-      diskSize: macosVmString(record, "diskSize", channel, 32),
-      display: macosVmString(record, "display", channel, 32),
-      mode: modeValue === "pull-image" ? "pull-image" : modeValue === "create" ? "create" : undefined,
-      ipsw: macosVmString(record, "ipsw", channel, 4096),
-      sourceImage: macosVmString(record, "sourceImage", channel, 256),
-      unattendedPreset: macosVmString(record, "unattendedPreset", channel, 128),
-    };
-  };
-
-  const parseMacosVmStopArgs = (value: unknown, channel: string): MacosVmStopArgs => {
-    const record = macosVmRecord(value, channel, true);
-    return {
-      laneId: macosVmString(record, "laneId", channel, 512, true) as string,
-      force: macosVmBoolean(record, "force", channel),
-    };
-  };
-
-  const parseMacosVmDeleteArgs = (value: unknown, channel: string): MacosVmDeleteArgs => {
-    const record = macosVmRecord(value, channel, true);
-    const laneId = macosVmString(record, "laneId", channel, 512);
-    const vmName = macosVmString(record, "vmName", channel, 256);
-    if (!laneId && !vmName) invalidMacosVmArg(channel, "laneId or vmName is required");
-    return {
-      laneId,
-      vmName,
-      force: macosVmBoolean(record, "force", channel),
-    };
-  };
-
-  const parseMacosVmAgentGuideArgs = (value: unknown, channel: string): MacosVmAgentGuideArgs =>
-    macosVmLaneArgs(value, channel);
-
-  const parseMacosVmFocusWindowArgs = (value: unknown, channel: string): MacosVmFocusWindowArgs => {
-    const record = macosVmRecord(value, channel, true);
-    return {
-      laneId: macosVmString(record, "laneId", channel, 512, true) as string,
-      windowTitleQuery: macosVmString(record, "windowTitleQuery", channel, 256),
-    };
-  };
-
-  const parseMacosVmDisplaySessionArgs = (value: unknown, channel: string): MacosVmDisplaySessionArgs =>
-    macosVmLaneArgs(value, channel);
-
-  const parseMacosVmCaptureScreenshotArgs = (value: unknown, channel: string): MacosVmCaptureScreenshotArgs => {
-    const record = macosVmRecord(value, channel, true);
-    return {
-      laneId: macosVmString(record, "laneId", channel, 512, true) as string,
-      windowTitleQuery: macosVmString(record, "windowTitleQuery", channel, 256),
-      outputPath: macosVmString(record, "outputPath", channel, 4096),
-    };
-  };
-
-  const parseMacosVmClickArgs = (value: unknown, channel: string): MacosVmClickArgs => {
-    const record = macosVmRecord(value, channel, true);
-    const coordinateSpace = record.coordinateSpace;
-    if (coordinateSpace != null && coordinateSpace !== "window" && coordinateSpace !== "screen") {
-      invalidMacosVmArg(channel, "coordinateSpace must be window or screen");
-    }
-    const x = macosVmNumber(record, "x", channel, { min: 0, max: 100_000 });
-    const y = macosVmNumber(record, "y", channel, { min: 0, max: 100_000 });
-    if (x == null) invalidMacosVmArg(channel, "x is required");
-    if (y == null) invalidMacosVmArg(channel, "y is required");
-    return {
-      laneId: macosVmString(record, "laneId", channel, 512, true) as string,
-      x: x as number,
-      y: y as number,
-      coordinateSpace: coordinateSpace === "screen" ? "screen" : coordinateSpace === "window" ? "window" : undefined,
-      windowTitleQuery: macosVmString(record, "windowTitleQuery", channel, 256),
-    };
-  };
-
-  const parseMacosVmSelectPointArgs = (value: unknown, channel: string): MacosVmSelectPointArgs => {
-    const record = macosVmRecord(value, channel, true);
-    const coordinateSpace = record.coordinateSpace;
-    if (coordinateSpace != null && coordinateSpace !== "window" && coordinateSpace !== "screen") {
-      invalidMacosVmArg(channel, "coordinateSpace must be window or screen");
-    }
-    const x = macosVmNumber(record, "x", channel, { min: 0, max: 100_000 });
-    const y = macosVmNumber(record, "y", channel, { min: 0, max: 100_000 });
-    if (x == null) invalidMacosVmArg(channel, "x is required");
-    if (y == null) invalidMacosVmArg(channel, "y is required");
-    return {
-      laneId: macosVmString(record, "laneId", channel, 512, true) as string,
-      x: x as number,
-      y: y as number,
-      coordinateSpace: coordinateSpace === "screen" ? "screen" : coordinateSpace === "window" ? "window" : undefined,
-      windowTitleQuery: macosVmString(record, "windowTitleQuery", channel, 256),
-      includeScreenshot: macosVmBoolean(record, "includeScreenshot", channel),
-    };
-  };
-
-  const parseMacosVmTypeTextArgs = (value: unknown, channel: string): MacosVmTypeTextArgs => {
-    const record = macosVmRecord(value, channel, true);
-    return {
-      laneId: macosVmString(record, "laneId", channel, 512, true) as string,
-      text: macosVmRawString(record, "text", channel, 20_000, true) as string,
-      windowTitleQuery: macosVmString(record, "windowTitleQuery", channel, 256),
-    };
-  };
-
-  const parseMacosVmRestartArgs = (value: unknown, channel: string): MacosVmRestartArgs => {
-    const record = macosVmRecord(value, channel, false);
-    return {
-      vmName: macosVmString(record, "vmName", channel, 256),
-      laneId: macosVmString(record, "laneId", channel, 512),
-      force: macosVmBoolean(record, "force", channel),
-    };
-  };
-
-  const parseMacosVmWipeArgs = (value: unknown, channel: string): MacosVmWipeArgs => {
-    const record = macosVmRecord(value, channel, true);
-    const confirm = macosVmBoolean(record, "confirm", channel);
-    if (confirm !== true) invalidMacosVmArg(channel, "confirm must be true to wipe a VM");
-    return {
-      vmName: macosVmString(record, "vmName", channel, 256),
-      laneId: macosVmString(record, "laneId", channel, 512),
-      confirm: true,
-    };
-  };
-
-  const parseMacosVmInstallRuntimeArgs = (value: unknown, channel: string): MacosVmInstallRuntimeArgs => {
-    const record = macosVmRecord(value, channel, false);
-    return {
-      vmName: macosVmString(record, "vmName", channel, 256),
-      laneId: macosVmString(record, "laneId", channel, 512),
-    };
-  };
-
-  const parseMacosVmSetCredentialsArgs = (value: unknown, channel: string): MacosVmSetCredentialsArgs => {
-    const record = macosVmRecord(value, channel, true);
-    const vmName = macosVmString(record, "vmName", channel, 256, true) as string;
-    const username = macosVmString(record, "username", channel, 64, true) as string;
-    const password = macosVmRawString(record, "password", channel, 1024, true) as string;
-    return { vmName, username, password };
-  };
-
-  const parseMacosVmGetCredentialsArgs = (value: unknown, channel: string): MacosVmGetCredentialsArgs => {
-    const record = macosVmRecord(value, channel, true);
-    return {
-      vmName: macosVmString(record, "vmName", channel, 256, true) as string,
-    };
-  };
-
-  const parseMacosVmDetachLaneArgs = (value: unknown, channel: string): MacosVmDetachLaneArgs => {
-    const record = macosVmRecord(value, channel, true);
-    return {
-      laneId: macosVmString(record, "laneId", channel, 512, true) as string,
     };
   };
 
@@ -5375,7 +4993,6 @@ export function registerIpc({
       baseBranch: arg.baseBranch,
       branchName: arg.branchName,
       linearIssue: arg.linearIssue ?? null,
-      runtimePlacement: arg.runtimePlacement,
     });
     await ensureLanePortLease(ctx, lane.id);
     notifyLaneCreated(ctx, lane);
@@ -7596,165 +7213,6 @@ export function registerIpc({
   ipcMain.handle(IPC.builtInBrowserClearSelection, async (event, arg) => {
     const win = guardBuiltInBrowserIpc(event, IPC.builtInBrowserClearSelection, { windowMs: 10_000, max: 80 });
     return ensureBuiltInBrowser().clearSelection(parseBuiltInBrowserProjectScopeInput(arg, IPC.builtInBrowserClearSelection), win);
-  });
-
-  ipcMain.handle(IPC.macosVmGetStatus, async (event, arg = {}): Promise<MacosVmStatus> => {
-    guardMacosVmIpc(event, IPC.macosVmGetStatus, { windowMs: 10_000, max: 80 });
-    return ensureMacosVm().getStatus(parseMacosVmStatusArgs(arg, IPC.macosVmGetStatus));
-  });
-
-  ipcMain.handle(IPC.macosVmProvision, async (event, arg): Promise<MacosVmRecord> => {
-    requireMacosVmEnabledInProduction(IPC.macosVmProvision);
-    guardMacosVmIpc(event, IPC.macosVmProvision, { windowMs: 60_000, max: 4 });
-    return ensureMacosVm().provision(parseMacosVmProvisionArgs(arg, IPC.macosVmProvision));
-  });
-
-  ipcMain.handle(IPC.macosVmStart, async (event, arg): Promise<MacosVmRecord> => {
-    requireMacosVmEnabledInProduction(IPC.macosVmStart);
-    guardMacosVmIpc(event, IPC.macosVmStart, { windowMs: 60_000, max: 8 });
-    return ensureMacosVm().start(parseMacosVmStartArgs(arg, IPC.macosVmStart));
-  });
-
-  ipcMain.handle(IPC.macosVmStop, async (event, arg): Promise<MacosVmRecord | null> => {
-    requireMacosVmEnabledInProduction(IPC.macosVmStop);
-    guardMacosVmIpc(event, IPC.macosVmStop, { windowMs: 60_000, max: 12 });
-    return ensureMacosVm().stop(parseMacosVmStopArgs(arg, IPC.macosVmStop));
-  });
-
-  ipcMain.handle(IPC.macosVmDelete, async (event, arg): Promise<{ deleted: boolean; previous: MacosVmRecord | null }> => {
-    requireMacosVmEnabledInProduction(IPC.macosVmDelete);
-    guardMacosVmIpc(event, IPC.macosVmDelete, { windowMs: 60_000, max: 4 });
-    const args = parseMacosVmDeleteArgs(arg, IPC.macosVmDelete);
-    const service = getCtx().macosVmService;
-    if (service) return service.delete(args);
-    return deleteMacosVmFromProjectState({
-      projectRoot: resolveMacosVmProjectRootForEvent(event),
-      args,
-    });
-  });
-
-  ipcMain.handle(IPC.macosVmGetAgentGuide, async (event, arg): Promise<MacosVmAgentGuide> => {
-    guardMacosVmIpc(event, IPC.macosVmGetAgentGuide, { windowMs: 10_000, max: 40 });
-    return ensureMacosVm().getAgentGuide(parseMacosVmAgentGuideArgs(arg, IPC.macosVmGetAgentGuide));
-  });
-
-  ipcMain.handle(IPC.macosVmFocusWindow, async (event, arg): Promise<MacosVmWindowTarget> => {
-    requireMacosVmEnabledInProduction(IPC.macosVmFocusWindow);
-    guardMacosVmIpc(event, IPC.macosVmFocusWindow, { windowMs: 10_000, max: 30 });
-    return ensureMacosVm().focusWindow(parseMacosVmFocusWindowArgs(arg, IPC.macosVmFocusWindow));
-  });
-
-  ipcMain.handle(IPC.macosVmGetDisplaySession, async (event, arg): Promise<MacosVmDisplaySession> => {
-    requireMacosVmEnabledInProduction(IPC.macosVmGetDisplaySession);
-    guardMacosVmIpc(event, IPC.macosVmGetDisplaySession, { windowMs: 10_000, max: 30 });
-    return ensureMacosVm().getDisplaySession(parseMacosVmDisplaySessionArgs(arg, IPC.macosVmGetDisplaySession));
-  });
-
-  ipcMain.handle(IPC.macosVmCaptureScreenshot, async (event, arg): Promise<MacosVmCaptureScreenshotResult> => {
-    requireMacosVmEnabledInProduction(IPC.macosVmCaptureScreenshot);
-    guardMacosVmIpc(event, IPC.macosVmCaptureScreenshot, { windowMs: 30_000, max: 20 });
-    return ensureMacosVm().captureScreenshot(parseMacosVmCaptureScreenshotArgs(arg, IPC.macosVmCaptureScreenshot));
-  });
-
-  ipcMain.handle(IPC.macosVmSelectPoint, async (event, arg): Promise<MacosVmSelectPointResult> => {
-    requireMacosVmEnabledInProduction(IPC.macosVmSelectPoint);
-    guardMacosVmIpc(event, IPC.macosVmSelectPoint, { windowMs: 30_000, max: 40 });
-    return ensureMacosVm().selectPoint(parseMacosVmSelectPointArgs(arg, IPC.macosVmSelectPoint));
-  });
-
-  ipcMain.handle(IPC.macosVmClick, async (event, arg): Promise<{ ok: true; window: MacosVmWindowTarget; x: number; y: number }> => {
-    requireMacosVmEnabledInProduction(IPC.macosVmClick);
-    guardMacosVmIpc(event, IPC.macosVmClick, { windowMs: 10_000, max: 80 });
-    return ensureMacosVm().click(parseMacosVmClickArgs(arg, IPC.macosVmClick));
-  });
-
-  ipcMain.handle(IPC.macosVmTypeText, async (event, arg): Promise<{ ok: true; window: MacosVmWindowTarget }> => {
-    requireMacosVmEnabledInProduction(IPC.macosVmTypeText);
-    guardMacosVmIpc(event, IPC.macosVmTypeText, { windowMs: 10_000, max: 40 });
-    return ensureMacosVm().typeText(parseMacosVmTypeTextArgs(arg, IPC.macosVmTypeText));
-  });
-
-  // ---------------------------------------------------------------------------
-  // Singleton-VM onboarding handlers.
-  //
-  // These methods are now implemented on `macosVmService`, but the IPC surface
-  // continues to runtime-check before invoking so a partially-initialized
-  // service or stale build cannot reach a missing method. The narrow extension
-  // interface below preserves compile-time argument checking (the previous
-  // `Record<string, (...a: unknown[]) => unknown>` cast lost all type info).
-  // ---------------------------------------------------------------------------
-  type MacosVmExtensionService = NonNullable<AppContext["macosVmService"]> & {
-    restart?: (args: MacosVmRestartArgs) => Promise<MacosVmRecord | null>;
-    wipe?: (args: MacosVmWipeArgs) => Promise<MacosVmWipeResult>;
-    installRuntime?: (args: MacosVmInstallRuntimeArgs) => Promise<MacosVmRuntimeInstallStatus>;
-    setCredentials?: (args: MacosVmSetCredentialsArgs) => Promise<{ ok: true }>;
-    getCredentials?: (args: MacosVmGetCredentialsArgs) => Promise<MacosVmStoredCredentialsSummary>;
-    getStorageInfo?: () => Promise<MacosVmStorageInfo>;
-  };
-
-  const callMacosVmExtension = async <T>(
-    methodName: keyof MacosVmExtensionService,
-    invoke: (svc: MacosVmExtensionService) => Promise<T> | T,
-  ): Promise<T> => {
-    const svc = ensureMacosVm() as MacosVmExtensionService;
-    if (typeof svc[methodName] !== "function") {
-      throw new Error(`macosVmService.${String(methodName)} is not implemented yet`);
-    }
-    return invoke(svc);
-  };
-
-  ipcMain.handle(IPC.macosVmRestart, async (event, arg): Promise<MacosVmRecord | null> => {
-    requireMacosVmEnabledInProduction(IPC.macosVmRestart);
-    guardMacosVmIpc(event, IPC.macosVmRestart, { windowMs: 60_000, max: 6 });
-    const args = parseMacosVmRestartArgs(arg, IPC.macosVmRestart);
-    return callMacosVmExtension("restart", (svc) => svc.restart!(args));
-  });
-
-  ipcMain.handle(IPC.macosVmWipe, async (event, arg): Promise<MacosVmWipeResult> => {
-    requireMacosVmEnabledInProduction(IPC.macosVmWipe);
-    guardMacosVmIpc(event, IPC.macosVmWipe, { windowMs: 60_000, max: 2 });
-    const args = parseMacosVmWipeArgs(arg, IPC.macosVmWipe);
-    return callMacosVmExtension("wipe", (svc) => svc.wipe!(args));
-  });
-
-  ipcMain.handle(IPC.macosVmInstallRuntime, async (event, arg): Promise<MacosVmRuntimeInstallStatus> => {
-    requireMacosVmEnabledInProduction(IPC.macosVmInstallRuntime);
-    guardMacosVmIpc(event, IPC.macosVmInstallRuntime, { windowMs: 300_000, max: 4 });
-    const args = parseMacosVmInstallRuntimeArgs(arg, IPC.macosVmInstallRuntime);
-    return callMacosVmExtension("installRuntime", (svc) => svc.installRuntime!(args));
-  });
-
-  ipcMain.handle(IPC.macosVmSetCredentials, async (event, arg): Promise<{ ok: true }> => {
-    requireMacosVmEnabledInProduction(IPC.macosVmSetCredentials);
-    guardMacosVmIpc(event, IPC.macosVmSetCredentials, { windowMs: 60_000, max: 12 });
-    const args = parseMacosVmSetCredentialsArgs(arg, IPC.macosVmSetCredentials);
-    return callMacosVmExtension("setCredentials", (svc) => svc.setCredentials!(args));
-  });
-
-  ipcMain.handle(IPC.macosVmGetCredentials, async (event, arg): Promise<MacosVmStoredCredentialsSummary> => {
-    requireMacosVmEnabledInProduction(IPC.macosVmGetCredentials);
-    guardMacosVmIpc(event, IPC.macosVmGetCredentials, { windowMs: 10_000, max: 60 });
-    const args = parseMacosVmGetCredentialsArgs(arg, IPC.macosVmGetCredentials);
-    return callMacosVmExtension("getCredentials", (svc) => svc.getCredentials!(args));
-  });
-
-  ipcMain.handle(IPC.macosVmGetStorageInfo, async (event): Promise<MacosVmStorageInfo> => {
-    guardMacosVmIpc(event, IPC.macosVmGetStorageInfo, { windowMs: 10_000, max: 30 });
-    return callMacosVmExtension("getStorageInfo", (svc) => svc.getStorageInfo!());
-  });
-
-  ipcMain.handle(IPC.macosVmDetachLane, async (event, arg): Promise<MacosVmDetachLaneResult> => {
-    requireMacosVmEnabledInProduction(IPC.macosVmDetachLane);
-    guardMacosVmIpc(event, IPC.macosVmDetachLane, { windowMs: 60_000, max: 12 });
-    const args = parseMacosVmDetachLaneArgs(arg, IPC.macosVmDetachLane);
-    const ctx = getCtx();
-    const laneService = requireAppContextValue(ctx, "laneService") as NonNullable<AppContext["laneService"]> & {
-      detachVmLane?: (a: MacosVmDetachLaneArgs) => Promise<MacosVmDetachLaneResult>;
-    };
-    if (typeof laneService.detachVmLane !== "function") {
-      throw new Error("laneService.detachVmLane is not implemented yet");
-    }
-    return laneService.detachVmLane(args);
   });
 
   const requirePtyService = (): ReturnType<typeof createPtyService> => {

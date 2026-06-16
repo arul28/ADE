@@ -18,12 +18,10 @@ import {
   shouldApplyLaneIdsDeepLink,
   sortLaneListRows,
 } from "./lanePageModel";
-import { buildLaneSplitColumnsKey, createVmRuntimeStatusReason, shouldMountGitActionsPane } from "./LanesPage";
+import { buildLaneSplitColumnsKey, shouldMountGitActionsPane } from "./LanesPage";
 import type {
   GitHubPrListItem,
   LaneSummary,
-  MacosVmRecord,
-  MacosVmStatus,
   PrSummary,
 } from "../../../shared/types";
 
@@ -742,142 +740,6 @@ describe("sortLaneListRows", () => {
     });
 
     expect(result.map((lane) => lane.id)).toEqual(["running-pinned", "running-a"]);
-  });
-});
-
-function makeVmStatus(overrides: Partial<MacosVmStatus> = {}): MacosVmStatus {
-  return {
-    platform: "darwin" as NodeJS.Platform,
-    arch: "arm64",
-    supported: true,
-    checkedAt: "2026-05-18T00:00:00.000Z",
-    activeProvider: {
-      kind: "lume",
-      available: true,
-      version: "1.0",
-      detail: "",
-      docsUrl: "",
-    } as MacosVmStatus["activeProvider"],
-    tools: [],
-    laneVm: null,
-    vms: [],
-    globalLease: null,
-    docs: { appleVirtualization: "", appleSharedDirectories: "", lume: "" },
-    ...overrides,
-  };
-}
-
-function makeVm(state: MacosVmRecord["guestReadiness"] extends infer R ? R extends { state: infer S } ? S : never : never): MacosVmRecord {
-  return {
-    id: "vm-1",
-    provider: "lume",
-    name: "ade-vm",
-    laneId: "lane-vm",
-    laneName: "vm lane",
-    laneRoot: "/tmp/lane",
-    state: "running",
-    cpuCores: 4,
-    memory: "8G",
-    diskSize: "80G",
-    display: "1280x800",
-    guestSharedPath: "/Volumes/My Shared Files",
-    sharedDirectory: "/tmp/lane",
-    createdAt: "",
-    updatedAt: "",
-    lastStartedAt: null,
-    lastStoppedAt: null,
-    ipAddress: "192.168.64.11",
-    sshCommand: "ssh ade@192.168.64.11",
-    vncUrl: null,
-    lastError: null,
-    guestReadiness: {
-      state: state as any,
-      canControlGui: true,
-      canRunCode: true,
-      sshAvailable: true,
-      setupAssistantLikely: false,
-      detail: "",
-      nextAction: "",
-    },
-    metadata: {},
-  } as MacosVmRecord;
-}
-
-describe("createVmRuntimeStatusReason", () => {
-  it("returns the loading message while the status fetch is in flight", () => {
-    expect(
-      createVmRuntimeStatusReason({ loading: true, status: null, error: null }),
-    ).toBe("Checking VM setup...");
-  });
-
-  it("surfaces the fetch error", () => {
-    expect(
-      createVmRuntimeStatusReason({ loading: false, status: null, error: "boom" }),
-    ).toBe("boom");
-  });
-
-  it("asks the user to set up the VM when no status is loaded", () => {
-    expect(
-      createVmRuntimeStatusReason({ loading: false, status: null, error: null }),
-    ).toBe("Set up your Mac VM first.");
-  });
-
-  it("explains when ADE is not on Apple silicon", () => {
-    expect(
-      createVmRuntimeStatusReason({
-        loading: false,
-        status: makeVmStatus({ supported: false }),
-        error: null,
-      }),
-    ).toBe("Mac VMs require ADE on Apple silicon macOS.");
-  });
-
-  it("points at Lume install when the provider is unavailable", () => {
-    expect(
-      createVmRuntimeStatusReason({
-        loading: false,
-        status: makeVmStatus({
-          activeProvider: {
-            kind: "lume",
-            available: false,
-            version: null,
-            detail: "Lume CLI not found.",
-            docsUrl: "",
-          } as MacosVmStatus["activeProvider"],
-        }),
-        error: null,
-      }),
-    ).toBe("Lume CLI not found.");
-  });
-
-  it("asks the user to set up the VM when no VM record exists", () => {
-    expect(
-      createVmRuntimeStatusReason({
-        loading: false,
-        status: makeVmStatus({ vms: [] }),
-        error: null,
-      }),
-    ).toBe("Set up your Mac VM first.");
-  });
-
-  it("describes the active phase when the VM is not runtime_ready", () => {
-    expect(
-      createVmRuntimeStatusReason({
-        loading: false,
-        status: makeVmStatus({ vms: [makeVm("setup_required")] }),
-        error: null,
-      }),
-    ).toBe("Finish Mac VM setup first (current phase: First-boot setup).");
-  });
-
-  it("returns null when the VM is runtime_ready", () => {
-    expect(
-      createVmRuntimeStatusReason({
-        loading: false,
-        status: makeVmStatus({ vms: [makeVm("runtime_ready")] }),
-        error: null,
-      }),
-    ).toBeNull();
   });
 });
 
