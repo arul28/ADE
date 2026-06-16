@@ -2,6 +2,34 @@ import SwiftUI
 import UIKit
 import AVKit
 
+private let workRootTerminalFingerprintPrefixLimit = 128
+private let workRootTerminalFingerprintSuffixLimit = 512
+
+private struct WorkRootLiveTranscriptBuildInput {
+  let sessionId: String
+  let streamedEvents: [AgentChatEventEnvelope]
+  let terminalTail: String
+}
+
+func workRootLiveTranscriptFingerprint(
+  chatEventRevision: Int,
+  streamedEventCount: Int,
+  terminalTail: String?
+) -> String {
+  guard streamedEventCount == 0 else {
+    return "events:\(chatEventRevision):\(streamedEventCount)"
+  }
+  guard let terminalTail, !terminalTail.isEmpty else {
+    return "empty"
+  }
+
+  var hasher = Hasher()
+  hasher.combine(terminalTail.utf8.count)
+  hasher.combine(String(terminalTail.prefix(workRootTerminalFingerprintPrefixLimit)))
+  hasher.combine(String(terminalTail.suffix(workRootTerminalFingerprintSuffixLimit)))
+  return "terminal:\(terminalTail.utf8.count):\(hasher.finalize())"
+}
+
 extension WorkRootScreen {
   @MainActor
   func scheduleSessionPresentationRebuild() {
@@ -218,28 +246,49 @@ extension WorkRootScreen {
   @MainActor
   func pollRunningChats() async {
     guard isLive, isWorkRootActive else { return }
-    let running = liveChatSessions
-    guard !running.isEmpty else { return }
+    guard !liveChatSessions.isEmpty else { return }
 
     var lastTranscriptFingerprint: [String: String] = [:]
     while !Task.isCancelled && isLive && isWorkRootActive && !liveChatSessions.isEmpty {
-      for session in liveChatSessions {
+      let liveSessions = liveChatSessions
+      let liveSessionIds = Set(liveSessions.map(\.id))
+      transcriptCache.prune(keeping: liveSessionIds)
+
+      var buildInputs: [WorkRootLiveTranscriptBuildInput] = []
+      buildInputs.reserveCapacity(liveSessions.count)
+      for session in liveSessions {
         try? await syncService.subscribeToChatEvents(sessionId: session.id)
         let streamed = syncService.chatEventHistory(sessionId: session.id)
         let revision = syncService.chatEventRevision(for: session.id)
-        let terminalTail = syncService.terminalBuffers[session.id] ?? ""
-        var terminalHasher = Hasher()
-        terminalHasher.combine(terminalTail)
-        let fingerprint = "\(revision)|\(streamed.count)|\(terminalHasher.finalize())"
+        let terminalTail = streamed.isEmpty ? (syncService.terminalBuffers[session.id] ?? "") : ""
+        let fingerprint = workRootLiveTranscriptFingerprint(
+          chatEventRevision: revision,
+          streamedEventCount: streamed.count,
+          terminalTail: streamed.isEmpty ? terminalTail : nil
+        )
         if lastTranscriptFingerprint[session.id] == fingerprint {
           continue
         }
         lastTranscriptFingerprint[session.id] = fingerprint
-        let nextTranscript: [WorkChatEnvelope] = streamed.isEmpty
-          ? parseWorkChatTranscript(syncService.terminalBuffers[session.id] ?? "")
-          : makeWorkChatTranscript(from: streamed)
-        if transcriptCache[session.id] != nextTranscript {
-          transcriptCache[session.id] = nextTranscript
+        buildInputs.append(WorkRootLiveTranscriptBuildInput(
+          sessionId: session.id,
+          streamedEvents: streamed,
+          terminalTail: terminalTail
+        ))
+      }
+
+      if !buildInputs.isEmpty {
+        let builtTranscripts = await Task.detached(priority: .utility) {
+          buildInputs.map { input -> (String, [WorkChatEnvelope]) in
+            let transcript = input.streamedEvents.isEmpty
+              ? parseWorkChatTranscript(input.terminalTail)
+              : makeWorkChatTranscript(from: input.streamedEvents)
+            return (input.sessionId, transcript)
+          }
+        }.value
+        guard !Task.isCancelled, isLive, isWorkRootActive else { return }
+        for (sessionId, transcript) in builtTranscripts where liveSessionIds.contains(sessionId) {
+          transcriptCache[sessionId] = transcript
         }
       }
       try? await Task.sleep(nanoseconds: syncService.prefersReducedSyncLoad ? 1_800_000_000 : 900_000_000)

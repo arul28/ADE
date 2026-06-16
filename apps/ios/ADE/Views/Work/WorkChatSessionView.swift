@@ -34,6 +34,7 @@ struct WorkChatSessionView: View {
   @State var unreadBelowCount = 0
   @State var lastTimelineTailId: String?
   @State var scrollViewportHeight: CGFloat = 0
+  @State var scrollViewportWidth: CGFloat = 0
   @State var lastScrollDistanceFromBottom: CGFloat = 0
   @State var timelineDragActive = false
   @State var timelineSnapshot = WorkChatTimelineSnapshot.empty
@@ -299,6 +300,11 @@ struct WorkChatSessionView: View {
     return 116
   }
 
+  var maxUserBubbleWidth: CGFloat? {
+    guard scrollViewportWidth > 32 else { return nil }
+    return (scrollViewportWidth - 32) * 0.92
+  }
+
   @ViewBuilder
   var sessionOverviewSection: some View {
     // When live, approval_request cards (tool approval gates) render at the
@@ -383,8 +389,15 @@ struct WorkChatSessionView: View {
         .accessibilityLabel("Load earlier messages")
       }
 
+      let streamingMessageId = streamingAssistantMessageId
+      let userBubbleWidth = maxUserBubbleWidth
       ForEach(visibleTimeline) { entry in
-        timelineEntryView(for: entry, proxy: proxy)
+        timelineEntryView(
+          for: entry,
+          proxy: proxy,
+          streamingAssistantMessageId: streamingMessageId,
+          maxUserBubbleWidth: userBubbleWidth
+        )
       }
     }
   }
@@ -560,6 +573,10 @@ struct WorkChatSessionView: View {
             key: WorkChatViewportHeightPreferenceKey.self,
             value: geometry.size.height
           )
+          .preference(
+            key: WorkChatViewportWidthPreferenceKey.self,
+            value: geometry.size.width
+          )
         }
       )
       .background(workChatCanvasBackground.ignoresSafeArea())
@@ -604,6 +621,9 @@ struct WorkChatSessionView: View {
       }
       .onPreferenceChange(WorkChatViewportHeightPreferenceKey.self) { height in
         scrollViewportHeight = height
+      }
+      .onPreferenceChange(WorkChatViewportWidthPreferenceKey.self) { width in
+        scrollViewportWidth = width
       }
       .onPreferenceChange(WorkChatContentBottomPreferenceKey.self) { bottomY in
         guard scrollViewportHeight > 1 else { return }
@@ -744,6 +764,15 @@ struct WorkChatSessionView: View {
 }
 
 private struct WorkChatViewportHeightPreferenceKey: PreferenceKey {
+  static var defaultValue: CGFloat = 0
+
+  static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+    let next = nextValue()
+    if next > 0 { value = next }
+  }
+}
+
+private struct WorkChatViewportWidthPreferenceKey: PreferenceKey {
   static var defaultValue: CGFloat = 0
 
   static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {

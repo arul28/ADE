@@ -84,6 +84,7 @@ func buildWorkChatMessages(from transcript: [WorkChatEnvelope]) -> [WorkChatMess
          messages[lastIndex].itemId == itemId,
          canMergeWithPreviousAssistant {
         messages[lastIndex].markdown = mergeWorkStreamingText(messages[lastIndex].markdown, text)
+        messages[lastIndex].assistantPreview = workInitialAssistantMessagePreview(messages[lastIndex].markdown)
       } else if let duplicateIndex = duplicateAssistantFragmentIndex(
         in: messages,
         turnId: turnId,
@@ -93,11 +94,13 @@ func buildWorkChatMessages(from transcript: [WorkChatEnvelope]) -> [WorkChatMess
         incoming: text
       ) {
         messages[duplicateIndex].markdown = merged
+        messages[duplicateIndex].assistantPreview = workInitialAssistantMessagePreview(messages[duplicateIndex].markdown)
       } else {
         messages.append(WorkChatMessage(
           id: envelope.id,
           role: "assistant",
           markdown: text,
+          assistantPreview: workInitialAssistantMessagePreview(text),
           timestamp: envelope.timestamp,
           turnId: turnId,
           itemId: itemId,

@@ -7,6 +7,22 @@ enum WorkSessionNavigationChrome {
   case embedded
 }
 
+let workSessionEdgeSwipeActivationWidth: CGFloat = 36
+let workSessionEdgeSwipeMinimumTranslation: CGFloat = 88
+let workSessionEdgeSwipePredictedTranslation: CGFloat = 140
+
+func workSessionShouldDismissForEdgeSwipe(
+  startX: CGFloat,
+  translation: CGSize,
+  predictedEndTranslation: CGSize
+) -> Bool {
+  guard startX <= workSessionEdgeSwipeActivationWidth else { return false }
+  guard translation.width > 0 else { return false }
+  guard abs(translation.height) <= max(48, translation.width * 0.75) else { return false }
+  return translation.width >= workSessionEdgeSwipeMinimumTranslation
+    || predictedEndTranslation.width >= workSessionEdgeSwipePredictedTranslation
+}
+
 func workChatCanSendMessages(
   isLive: Bool,
   hostReachable: Bool,
@@ -1116,6 +1132,7 @@ private struct WorkSessionNavigationChromeModifier<TrailingControls: View>: View
     switch mode {
     case .pushedDetail:
       content
+        .simultaneousGesture(edgeSwipeDismissGesture)
         .safeAreaInset(edge: .top, spacing: 0) {
           ZStack {
             Text(title)
@@ -1160,6 +1177,18 @@ private struct WorkSessionNavigationChromeModifier<TrailingControls: View>: View
     case .embedded:
       content
     }
+  }
+
+  private var edgeSwipeDismissGesture: some Gesture {
+    DragGesture(minimumDistance: 16, coordinateSpace: .local)
+      .onEnded { value in
+        guard workSessionShouldDismissForEdgeSwipe(
+          startX: value.startLocation.x,
+          translation: value.translation,
+          predictedEndTranslation: value.predictedEndTranslation
+        ) else { return }
+        dismiss()
+      }
   }
 }
 

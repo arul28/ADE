@@ -43,6 +43,20 @@ struct WorkRootSessionPresentationTaskKey: Equatable {
   let sessionOrganizationRaw: String
 }
 
+final class WorkRootTranscriptCache {
+  private var storage: [String: [WorkChatEnvelope]] = [:]
+
+  subscript(sessionId: String) -> [WorkChatEnvelope]? {
+    get { storage[sessionId] }
+    set { storage[sessionId] = newValue }
+  }
+
+  func prune(keeping sessionIds: Set<String>) {
+    guard storage.keys.contains(where: { !sessionIds.contains($0) }) else { return }
+    storage = storage.filter { sessionIds.contains($0.key) }
+  }
+}
+
 struct WorkRootScreen: View {
   @Environment(\.accessibilityReduceMotion) var reduceMotion
   @EnvironmentObject var syncService: SyncService
@@ -56,7 +70,7 @@ struct WorkRootScreen: View {
   @State var sessions: [TerminalSessionSummary] = []
   @State var chatSummaries: [String: AgentChatSessionSummary] = [:]
   @State var lanes: [LaneSummary] = []
-  @State var transcriptCache: [String: [WorkChatEnvelope]] = [:]
+  @State var transcriptCache = WorkRootTranscriptCache()
   @State var sessionPresentation = WorkRootSessionPresentation.empty
   @State var sessionPresentationRebuildTask: Task<Void, Never>?
   @State var sessionPresentationRebuildGeneration = 0
