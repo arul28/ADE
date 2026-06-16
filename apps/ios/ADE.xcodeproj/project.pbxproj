@@ -25,7 +25,6 @@
 		AA5500000000000000000014 /* WidgetAppIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5500000000000000000004 /* WidgetAppIntents.swift */; };
 		AA5500000000000000000015 /* WidgetAppIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5500000000000000000004 /* WidgetAppIntents.swift */; };
 		AA5500000000000000000016 /* WidgetAppIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5500000000000000000004 /* WidgetAppIntents.swift */; };
-		AA5400000000000000000016 /* NotificationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5400000000000000000004 /* NotificationService.swift */; };
 		AA5100000000000000000017 /* ADELiveActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5100000000000000000001 /* ADELiveActivity.swift */; };
 		AA5100000000000000000018 /* ADELiveActivityViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5100000000000000000002 /* ADELiveActivityViews.swift */; };
 		AA5600000000000000000011 /* ADELiveActivityPrimitives.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5600000000000000000001 /* ADELiveActivityPrimitives.swift */; };
@@ -34,14 +33,7 @@
 		AA5800000000000000000012 /* DictationActivityShared.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5800000000000000000001 /* DictationActivityShared.swift */; };
 		AA5800000000000000000022 /* DictationLiveActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5800000000000000000002 /* DictationLiveActivity.swift */; };
 		D1C7A70000000000000001B1 /* DictationController.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1C7A70000000000000001A1 /* DictationController.swift */; };
-		F300000000000000000000F0 /* NotificationPreferences.swift in Sources */ = {isa = PBXBuildFile; fileRef = F300000000000000000000E0 /* NotificationPreferences.swift */; };
-		F300000000000000000000F1 /* NotificationsCenterView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F300000000000000000000E1 /* NotificationsCenterView.swift */; };
-		F300000000000000000000F2 /* SettingsNotificationsSection.swift in Sources */ = {isa = PBXBuildFile; fileRef = F300000000000000000000E2 /* SettingsNotificationsSection.swift */; };
-		F300000000000000000000F3 /* QuietHoursEditorView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F300000000000000000000E3 /* QuietHoursEditorView.swift */; };
-		F300000000000000000000F4 /* PerSessionOverrideView.swift in Sources */ = {isa = PBXBuildFile; fileRef = F300000000000000000000E4 /* PerSessionOverrideView.swift */; };
-		AA5300000000000000000001 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5300000000000000000011 /* AppDelegate.swift */; };
 		AA5300000000000000000002 /* DeepLinkRouter.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5300000000000000000012 /* DeepLinkRouter.swift */; };
-		AA5300000000000000000003 /* NotificationCategories.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5300000000000000000013 /* NotificationCategories.swift */; };
 		K10000000000000000000001 /* SendToMacCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = K20000000000000000000001 /* SendToMacCard.swift */; };
 		K10000000000000000000002 /* DeepLinkURLParsing.swift in Sources */ = {isa = PBXBuildFile; fileRef = K20000000000000000000002 /* DeepLinkURLParsing.swift */; };
 		AA5200000000000000000011 /* ADEWidgetBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5200000000000000000001 /* ADEWidgetBundle.swift */; };
@@ -52,7 +44,6 @@
 		AA5200000000000000000016 /* ADEWidgetPreviewData.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5200000000000000000006 /* ADEWidgetPreviewData.swift */; };
 		AA5700000000000000000012 /* ADELiveActivityPreviews.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5700000000000000000002 /* ADELiveActivityPreviews.swift */; };
 		AA2200000000000000000001 /* ADEWidgets.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000002 /* ADEWidgets.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
-		BB2200000000000000000001 /* ADENotificationService.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = BB0000000000000000000002 /* ADENotificationService.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		0375D32BA5870617FA1758C6 /* KeychainService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B5D5B5B87564C73F2FF34B0D /* KeychainService.swift */; };
 		0A1E077A24A5367ED58900F9 /* ADEDesignSystem.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A9E6135ED52117E41DE95F7 /* ADEDesignSystem.swift */; };
 		1558E44876BBE931C02D5640 /* ADEApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = C9411193AF56B236BA32EFF5 /* ADEApp.swift */; };
@@ -232,13 +223,6 @@
 			remoteGlobalIDString = AA0000000000000000000001;
 			remoteInfo = ADEWidgets;
 		};
-		BB4400000000000000000001 /* PBXContainerItemProxy */ = {
-			isa = PBXContainerItemProxy;
-			containerPortal = 9CBC925352322D208431EFAA /* Project object */;
-			proxyType = 1;
-			remoteGlobalIDString = BB0000000000000000000001;
-			remoteInfo = ADENotificationService;
-		};
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
@@ -246,7 +230,6 @@
 		AA1000000000000000000002 /* ADESharedModels.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADESharedModels.swift; path = ADE/Shared/ADESharedModels.swift; sourceTree = "<group>"; };
 		AA1000000000000000000003 /* ADESharedTheme.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADESharedTheme.swift; path = ADE/Shared/ADESharedTheme.swift; sourceTree = "<group>"; };
 		AA0000000000000000000002 /* ADEWidgets.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = ADEWidgets.appex; sourceTree = BUILT_PRODUCTS_DIR; };
-		BB0000000000000000000002 /* ADENotificationService.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = ADENotificationService.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		AA5000000000000000000001 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; name = Info.plist; path = ADEWidgets/Info.plist; sourceTree = "<group>"; };
 		AA5000000000000000000002 /* ADEWidgets.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; name = ADEWidgets.entitlements; path = ADEWidgets/ADEWidgets.entitlements; sourceTree = "<group>"; };
 		AA5100000000000000000001 /* ADELiveActivity.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADELiveActivity.swift; path = ADEWidgets/ADELiveActivity.swift; sourceTree = "<group>"; };
@@ -254,15 +237,7 @@
 		AA5100000000000000000003 /* LiveActivityCoordinator.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LiveActivityCoordinator.swift; path = ADE/Services/LiveActivityCoordinator.swift; sourceTree = "<group>"; };
 		AA5100000000000000000004 /* LiveActivityIntentsForward.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LiveActivityIntentsForward.swift; path = ADE/Shared/LiveActivityIntentsForward.swift; sourceTree = "<group>"; };
 		AA5500000000000000000004 /* WidgetAppIntents.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WidgetAppIntents.swift; path = ADE/Shared/WidgetAppIntents.swift; sourceTree = "<group>"; };
-		AA5400000000000000000004 /* NotificationService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = NotificationService.swift; path = ADENotificationService/NotificationService.swift; sourceTree = "<group>"; };
-		F300000000000000000000E0 /* NotificationPreferences.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = NotificationPreferences.swift; path = ADE/Models/NotificationPreferences.swift; sourceTree = "<group>"; };
-		F300000000000000000000E1 /* NotificationsCenterView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = NotificationsCenterView.swift; path = ADE/Views/Settings/NotificationsCenterView.swift; sourceTree = "<group>"; };
-		F300000000000000000000E2 /* SettingsNotificationsSection.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SettingsNotificationsSection.swift; path = ADE/Views/Settings/SettingsNotificationsSection.swift; sourceTree = "<group>"; };
-		F300000000000000000000E3 /* QuietHoursEditorView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = QuietHoursEditorView.swift; path = ADE/Views/Settings/QuietHoursEditorView.swift; sourceTree = "<group>"; };
-		F300000000000000000000E4 /* PerSessionOverrideView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PerSessionOverrideView.swift; path = ADE/Views/Settings/PerSessionOverrideView.swift; sourceTree = "<group>"; };
-		AA5300000000000000000011 /* AppDelegate.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AppDelegate.swift; path = ADE/App/AppDelegate.swift; sourceTree = "<group>"; };
 		AA5300000000000000000012 /* DeepLinkRouter.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DeepLinkRouter.swift; path = ADE/App/DeepLinkRouter.swift; sourceTree = "<group>"; };
-		AA5300000000000000000013 /* NotificationCategories.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = NotificationCategories.swift; path = ADE/App/NotificationCategories.swift; sourceTree = "<group>"; };
 		K20000000000000000000001 /* SendToMacCard.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SendToMacCard.swift; path = ADE/Views/Deeplinks/SendToMacCard.swift; sourceTree = "<group>"; };
 		K20000000000000000000002 /* DeepLinkURLParsing.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DeepLinkURLParsing.swift; path = ADE/App/DeepLinkURLParsing.swift; sourceTree = "<group>"; };
 		AA5200000000000000000001 /* ADEWidgetBundle.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADEWidgetBundle.swift; path = ADEWidgets/ADEWidgetBundle.swift; sourceTree = "<group>"; };
@@ -276,8 +251,6 @@
 		AA5800000000000000000001 /* DictationActivityShared.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DictationActivityShared.swift; path = ADE/Shared/DictationActivityShared.swift; sourceTree = "<group>"; };
 		AA5800000000000000000002 /* DictationLiveActivity.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DictationLiveActivity.swift; path = ADEWidgets/DictationLiveActivity.swift; sourceTree = "<group>"; };
 		D1C7A70000000000000001A1 /* DictationController.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DictationController.swift; path = ADE/Services/Dictation/DictationController.swift; sourceTree = "<group>"; };
-		BB5000000000000000000001 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; name = Info.plist; path = ADENotificationService/Info.plist; sourceTree = "<group>"; };
-		BB5000000000000000000002 /* ADENotificationService.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; name = ADENotificationService.entitlements; path = ADENotificationService/ADENotificationService.entitlements; sourceTree = "<group>"; };
 		CC5000000000000000000001 /* ADE.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; name = ADE.entitlements; path = ADE/ADE.entitlements; sourceTree = "<group>"; };
 		0C6ECFA9D57E70E57A60E8AB /* WorkTabView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkTabView.swift; path = ADE/Views/WorkTabView.swift; sourceTree = "<group>"; };
 		A10000000000000000000020 /* WorkBrowserHelpers.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkBrowserHelpers.swift; path = ADE/Views/Work/WorkBrowserHelpers.swift; sourceTree = "<group>"; };
@@ -463,13 +436,6 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		AA0000000000000000000011 /* Frameworks */ = {
-			isa = PBXFrameworksBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-		BB0000000000000000000011 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -697,10 +663,6 @@
 				F20000000000000000000005 /* SettingsAppearanceSection.swift */,
 				AB92EA06D5B7FD42F715A80C /* SettingsVoiceInputSection.swift */,
 				F20000000000000000000006 /* SettingsDiagnosticsSection.swift */,
-				F300000000000000000000E1 /* NotificationsCenterView.swift */,
-				F300000000000000000000E2 /* SettingsNotificationsSection.swift */,
-				F300000000000000000000E3 /* QuietHoursEditorView.swift */,
-				F300000000000000000000E4 /* PerSessionOverrideView.swift */,
 			);
 			name = Settings;
 			sourceTree = "<group>";
@@ -742,10 +704,8 @@
 				C9411193AF56B236BA32EFF5 /* ADEApp.swift */,
 				73B17472FAC08845853BC6B4 /* ContentView.swift */,
 				B2B52EED21B04E9700000001 /* RemoteProjectAddSheet.swift */,
-				AA5300000000000000000011 /* AppDelegate.swift */,
 				AA5300000000000000000012 /* DeepLinkRouter.swift */,
 				K20000000000000000000002 /* DeepLinkURLParsing.swift */,
-				AA5300000000000000000013 /* NotificationCategories.swift */,
 			);
 			name = App;
 			sourceTree = "<group>";
@@ -757,7 +717,6 @@
 				6AC81F4E8475EA47F592B212 /* Frameworks */,
 				7A6120AF79287BB301D63A58 /* ADE */,
 				AA3000000000000000000001 /* ADEWidgets */,
-				BB3000000000000000000001 /* ADENotificationService */,
 				C77DE76E58CC8D681F4D4619 /* ADETests */,
 			);
 			sourceTree = "<group>";
@@ -795,16 +754,6 @@
 			name = ADEWidgets;
 			sourceTree = "<group>";
 		};
-		BB3000000000000000000001 /* ADENotificationService */ = {
-			isa = PBXGroup;
-			children = (
-				BB5000000000000000000001 /* Info.plist */,
-				BB5000000000000000000002 /* ADENotificationService.entitlements */,
-				AA5400000000000000000004 /* NotificationService.swift */,
-			);
-			name = ADENotificationService;
-			sourceTree = "<group>";
-		};
 		6AC81F4E8475EA47F592B212 /* Frameworks */ = {
 			isa = PBXGroup;
 			children = (
@@ -835,7 +784,6 @@
 				E3A5721EB84321D201716BC3 /* ADETests.xctest */,
 				CCAB2414C359E971B780BF99 /* PreviewHost.app */,
 				AA0000000000000000000002 /* ADEWidgets.appex */,
-				BB0000000000000000000002 /* ADENotificationService.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -844,7 +792,6 @@
 			isa = PBXGroup;
 			children = (
 				483C5F1818BAE74B19B84617 /* RemoteModels.swift */,
-				F300000000000000000000E0 /* NotificationPreferences.swift */,
 			);
 			name = Models;
 			sourceTree = "<group>";
@@ -903,7 +850,6 @@
 			);
 			dependencies = (
 				AA4400000000000000000002 /* PBXTargetDependency */,
-				BB4400000000000000000002 /* PBXTargetDependency */,
 			);
 			name = ADE;
 			packageProductDependencies = (
@@ -930,23 +876,6 @@
 			productReference = AA0000000000000000000002 /* ADEWidgets.appex */;
 			productType = "com.apple.product-type.app-extension";
 		};
-		BB0000000000000000000001 /* ADENotificationService */ = {
-			isa = PBXNativeTarget;
-			buildConfigurationList = BB6000000000000000000001 /* Build configuration list for PBXNativeTarget "ADENotificationService" */;
-			buildPhases = (
-				BB0000000000000000000010 /* Sources */,
-				BB0000000000000000000011 /* Frameworks */,
-				BB0000000000000000000012 /* Resources */,
-			);
-			buildRules = (
-			);
-			dependencies = (
-			);
-			name = ADENotificationService;
-			productName = ADENotificationService;
-			productReference = BB0000000000000000000002 /* ADENotificationService.appex */;
-			productType = "com.apple.product-type.app-extension";
-		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -957,7 +886,6 @@
 			dstSubfolderSpec = 13;
 			files = (
 				AA2200000000000000000001 /* ADEWidgets.appex in Embed Foundation Extensions */,
-				BB2200000000000000000001 /* ADENotificationService.appex in Embed Foundation Extensions */,
 			);
 			name = "Embed Foundation Extensions";
 			runOnlyForDeploymentPostprocessing = 0;
@@ -999,16 +927,6 @@
 							};
 						};
 					};
-					BB0000000000000000000001 = {
-						CreatedOnToolsVersion = 16.0;
-						DevelopmentTeam = VQ372F39G6;
-						ProvisioningStyle = Automatic;
-						SystemCapabilities = {
-							com.apple.ApplicationGroups.iOS = {
-								enabled = 1;
-							};
-						};
-					};
 				};
 			};
 			buildConfigurationList = 966E640F465400271B948B96 /* Build configuration list for PBXProject "ADE" */;
@@ -1029,7 +947,6 @@
 			targets = (
 				928432ECB10B6E8870725B02 /* ADE */,
 				AA0000000000000000000001 /* ADEWidgets */,
-				BB0000000000000000000001 /* ADENotificationService */,
 				62C217CE2C1C31B3127D1ACF /* ADETests */,
 			);
 		};
@@ -1054,13 +971,6 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		AA0000000000000000000012 /* Resources */ = {
-			isa = PBXResourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-		BB0000000000000000000012 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -1237,15 +1147,8 @@
 				AA5100000000000000000017 /* ADELiveActivity.swift in Sources */,
 				AA5100000000000000000018 /* ADELiveActivityViews.swift in Sources */,
 				AA5600000000000000000011 /* ADELiveActivityPrimitives.swift in Sources */,
-				F300000000000000000000F0 /* NotificationPreferences.swift in Sources */,
-				F300000000000000000000F1 /* NotificationsCenterView.swift in Sources */,
-				F300000000000000000000F2 /* SettingsNotificationsSection.swift in Sources */,
-				F300000000000000000000F3 /* QuietHoursEditorView.swift in Sources */,
-				F300000000000000000000F4 /* PerSessionOverrideView.swift in Sources */,
-				AA5300000000000000000001 /* AppDelegate.swift in Sources */,
 				AA5300000000000000000002 /* DeepLinkRouter.swift in Sources */,
 				K10000000000000000000002 /* DeepLinkURLParsing.swift in Sources */,
-				AA5300000000000000000003 /* NotificationCategories.swift in Sources */,
 				K10000000000000000000001 /* SendToMacCard.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -1285,19 +1188,6 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		BB0000000000000000000010 /* Sources */ = {
-			isa = PBXSourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-				AA1100000000000000000021 /* ADESharedContainer.swift in Sources */,
-				AA1100000000000000000022 /* ADESharedModels.swift in Sources */,
-				AA1100000000000000000023 /* ADESharedTheme.swift in Sources */,
-				AA5100000000000000000016 /* LiveActivityIntentsForward.swift in Sources */,
-				AA5500000000000000000016 /* WidgetAppIntents.swift in Sources */,
-				AA5400000000000000000016 /* NotificationService.swift in Sources */,
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -1312,12 +1202,6 @@
 			name = ADEWidgets;
 			target = AA0000000000000000000001 /* ADEWidgets */;
 			targetProxy = AA4400000000000000000001 /* PBXContainerItemProxy */;
-		};
-		BB4400000000000000000002 /* PBXTargetDependency */ = {
-			isa = PBXTargetDependency;
-			name = ADENotificationService;
-			target = BB0000000000000000000001 /* ADENotificationService */;
-			targetProxy = BB4400000000000000000001 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -1344,7 +1228,6 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
-				APS_ENVIRONMENT = development;
 				CLANG_ENABLE_OBJC_WEAK = NO;
 				CODE_SIGNING_ALLOWED = YES;
 				CODE_SIGN_ENTITLEMENTS = ADE/ADE.entitlements;
@@ -1422,7 +1305,6 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
-				APS_ENVIRONMENT = production;
 				CLANG_ENABLE_OBJC_WEAK = NO;
 				CODE_SIGNING_ALLOWED = YES;
 				CODE_SIGN_ENTITLEMENTS = ADE/ADE.entitlements;
@@ -1581,65 +1463,6 @@
 			};
 			name = Release;
 		};
-		BB6000000000000000000010 /* Debug */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				CLANG_ENABLE_OBJC_WEAK = NO;
-				CODE_SIGNING_ALLOWED = YES;
-				CODE_SIGN_ENTITLEMENTS = ADENotificationService/ADENotificationService.entitlements;
-				CODE_SIGN_IDENTITY = "Apple Development";
-				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = VQ372F39G6;
-				GENERATE_INFOPLIST_FILE = NO;
-				INFOPLIST_FILE = ADENotificationService/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = "ADE Notifications";
-				INFOPLIST_KEY_NSHumanReadableCopyright = "";
-				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/Frameworks",
-					"@executable_path/../../Frameworks",
-				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.ade.ios.notificationservice;
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				SDKROOT = iphoneos;
-				SKIP_INSTALL = YES;
-				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_VERSION = 5.0;
-				TARGETED_DEVICE_FAMILY = "1,2";
-			};
-			name = Debug;
-		};
-		BB6000000000000000000011 /* Release */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				CLANG_ENABLE_OBJC_WEAK = NO;
-				CODE_SIGNING_ALLOWED = YES;
-				CODE_SIGN_ENTITLEMENTS = ADENotificationService/ADENotificationService.entitlements;
-				CODE_SIGN_IDENTITY = "Apple Development";
-				CODE_SIGN_STYLE = Automatic;
-				DEVELOPMENT_TEAM = VQ372F39G6;
-				GENERATE_INFOPLIST_FILE = NO;
-				INFOPLIST_FILE = ADENotificationService/Info.plist;
-				INFOPLIST_KEY_CFBundleDisplayName = "ADE Notifications";
-				INFOPLIST_KEY_NSHumanReadableCopyright = "";
-				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				LD_RUNPATH_SEARCH_PATHS = (
-					"$(inherited)",
-					"@executable_path/Frameworks",
-					"@executable_path/../../Frameworks",
-				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.ade.ios.notificationservice;
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				SDKROOT = iphoneos;
-				SKIP_INSTALL = YES;
-				SWIFT_EMIT_LOC_STRINGS = YES;
-				SWIFT_VERSION = 5.0;
-				TARGETED_DEVICE_FAMILY = "1,2";
-				VALIDATE_PRODUCT = YES;
-			};
-			name = Release;
-		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -1675,15 +1498,6 @@
 			buildConfigurations = (
 				AA6000000000000000000010 /* Debug */,
 				AA6000000000000000000011 /* Release */,
-			);
-			defaultConfigurationIsVisible = 0;
-			defaultConfigurationName = Release;
-		};
-		BB6000000000000000000001 /* Build configuration list for PBXNativeTarget "ADENotificationService" */ = {
-			isa = XCConfigurationList;
-			buildConfigurations = (
-				BB6000000000000000000010 /* Debug */,
-				BB6000000000000000000011 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

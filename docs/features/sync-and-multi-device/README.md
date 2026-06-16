@@ -310,44 +310,17 @@ iOS service files (`apps/ios/ADE/Services/`):
   PR mobile snapshot fetch, live chat-event push listener, lane
   reparent payload building with the optional stack base-branch
   override, project home/catalog state, active-project scoping,
-  unregistered-worktree discovery, and APNs push-token registration
-  to the runtime, plus local project-list hiding for "Remove from list"
-  so cached DB rows and runtime catalog rows for the same root disappear
-  together.
+  unregistered-worktree discovery, and local project-list hiding for
+  "Remove from list" so cached DB rows and runtime catalog rows for
+  the same root disappear together.
 - `KeychainService.swift` — iOS Keychain Services for paired device
   secrets (per-machine token shelf included).
 - `LiveActivityCoordinator.swift` — owns the single workspace
-  `Activity<ADESessionAttributes>` lifecycle and forwards
-  push-to-start / per-activity update tokens to the runtime.
+  `Activity<ADESessionAttributes>` lifecycle.
 
-Notification services (`apps/desktop/src/main/services/notifications/`):
+iOS widget files (under `apps/ios/`):
 
-- `apnsService.ts` — HTTP/2 APNs client, ES256 JWT signing,
-  `ApnsKeyStore` (`.p8` persisted via Electron `safeStorage` in the
-  desktop process or an `EncryptedFileCredentialStore` rooted at
-  `.ade/secrets/` when the runtime runs headless on a remote machine),
-  `Http2ApnsTransport` (injectable via `ApnsTransport` for tests).
-- `apnsBridgeService.ts` — exposes the `notifications_apns` ADE action
-  domain (`getStatus`, `saveConfig`, `uploadKey`, `clearKey`,
-  `sendTestPush`) so a desktop window bound to a remote runtime
-  configures APNs against the remote runtime instead of the local
-  Electron process. ade-cli `bootstrap.ts` constructs the service +
-  key store and re-applies any persisted config on startup so push
-  works without a desktop attached.
-- `notificationMapper.ts` — pure domain-event → `MappedNotification`
-  mapping across 13 categories in 4 families (chat, cto, pr, system).
-- `notificationEventBus.ts` — `publishChatEvent`, `publishPrEvent`,
-  `publishSystemEvent`, `sendTestPush`. Routes
-  to APNs (alert + Live Activity update pushes) and/or in-app WS
-  delivery, filtered by per-device `NotificationPreferences`.
-
-iOS notification / widget files (under `apps/ios/`):
-
-- `ADE/App/AppDelegate.swift`, `ADE/App/NotificationCategories.swift`,
-  `ADE/App/DeepLinkRouter.swift`, `ADE/Models/NotificationPreferences.swift`.
-- `ADENotificationService/NotificationService.swift` —
-  `UNNotificationServiceExtension` (brand prefix, `threadIdentifier`,
-  `interruptionLevel` / `relevanceScore`).
+- `ADE/App/DeepLinkRouter.swift`.
 - `ADEWidgets/ADELiveActivity.swift`, `ADEWorkspaceWidget.swift`,
   `ADELockScreenWidget.swift`, `ADEControlWidget.swift` (Control
   Center widgets, iOS 18+).

@@ -43,16 +43,6 @@ struct ConnectionSettingsView: View {
           )
             .padding(.horizontal, 16)
 
-          SettingsNotificationsSection(
-            onPreferencesChanged: { prefs in
-              syncService.uploadNotificationPrefs(prefs)
-            },
-            onSendTestPush: {
-              await syncService.sendTestPush()
-            }
-          )
-          .padding(.horizontal, 16)
-
           SettingsAppearanceSection()
             .padding(.horizontal, 16)
 

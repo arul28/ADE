@@ -3494,66 +3494,6 @@ describe("preload OAuth bridge", () => {
     expect(invoke).not.toHaveBeenCalledWith(IPC.aiCursorCloudStreamRun, expect.anything());
   });
 
-  it("routes APNs settings reads through a bound remote runtime", async () => {
-    const binding = {
-      kind: "remote",
-      key: "remote:target-1:project-1",
-      targetId: "target-1",
-      runtimeName: "Remote",
-      projectId: "project-1",
-      rootPath: "/remote/project",
-      displayName: "Project",
-    };
-    const status = {
-      enabled: true,
-      configured: true,
-      keyStored: true,
-      keyId: "KEY123",
-      teamId: "TEAM123",
-      bundleId: "com.ade.ios",
-      env: "sandbox",
-    };
-    const invoke = vi.fn(async (channel: string) => {
-      if (channel === IPC.appGetWindowSession) {
-        return { windowId: 1, project: null, binding };
-      }
-      if (channel === IPC.remoteRuntimeCallAction) {
-        return { ok: true, domain: "notifications_apns", action: "getStatus", result: status, statusHints: {} };
-      }
-      return undefined;
-    });
-    const on = vi.fn();
-    const removeListener = vi.fn();
-    const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
-      (globalThis as any).__bridgeName = name;
-      (globalThis as any).__adeBridge = value;
-    });
-
-    vi.doMock("electron", () => ({
-      contextBridge: { exposeInMainWorld },
-      ipcRenderer: { invoke, on, removeListener },
-      webFrame: {
-        getZoomLevel: vi.fn(() => 0),
-        setZoomLevel: vi.fn(),
-        getZoomFactor: vi.fn(() => 1),
-      },
-    }));
-
-    await import("./preload");
-
-    const bridge = (globalThis as any).__adeBridge;
-    await expect(bridge.notifications.apns.getStatus()).resolves.toEqual(status);
-    expect(invoke).toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, {
-      id: "target-1",
-      projectId: "project-1",
-      request: {
-        domain: "notifications_apns",
-        action: "getStatus",
-      },
-    });
-    expect(invoke).not.toHaveBeenCalledWith(IPC.notificationsApnsGetStatus);
-  });
-
   it("fans out remote PTY data notifications from the live runtime event stream", async () => {
     const binding = {
       kind: "remote",

@@ -21,11 +21,10 @@ const sections: Section[] = [
   {
     title: "What the iOS app collects",
     body: [
-      "The iOS app (bundle ID com.ade.ios) handles only what is needed to pair with an ADE machine and receive notifications:",
+      "The iOS app (bundle ID com.ade.ios) handles only what is needed to pair with and control an ADE machine:",
       {
         list: [
           "A pairing identifier and the machine address you scan or enter, stored on the device.",
-          "An Apple Push Notification (APNs) device token, sent only to the ADE machine you have paired with.",
           "Camera access, used solely on-device for QR code pairing. Frames are not stored or transmitted.",
           "Local network discovery (Bonjour, _ade-sync._tcp) to find your own ADE machine on the same network.",
         ],
@@ -51,7 +50,6 @@ const sections: Section[] = [
       "ADE relies on a small set of infrastructure services. None of them receive your project content unless you opt in to a feature that uses them.",
       {
         list: [
-          "Apple — Apple Push Notification service for delivery to the iOS app.",
           "GitHub — desktop releases are distributed through GitHub Releases.",
           "Vercel — this website is hosted on Vercel; standard request logs apply.",
           "Mintlify — documentation is served at /docs through Mintlify.",
@@ -64,7 +62,7 @@ const sections: Section[] = [
   {
     title: "Retention",
     body: [
-      "Pairing identifiers and push tokens persist on the iOS device until you uninstall the app or unpair from the machine. Computer data persists on your local disk and is yours to keep, move, or delete. Data sent to AI providers is governed by each provider's retention policy.",
+      "Pairing identifiers persist on the iOS device until you uninstall the app or unpair from the machine. Computer data persists on your local disk and is yours to keep, move, or delete. Data sent to AI providers is governed by each provider's retention policy.",
     ],
   },
   {

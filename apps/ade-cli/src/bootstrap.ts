@@ -75,10 +75,6 @@ import { createAutomationSecretService } from "../../desktop/src/main/services/a
 import type { createGithubService } from "../../desktop/src/main/services/github/githubService";
 import { createFeedbackReporterService } from "../../desktop/src/main/services/feedback/feedbackReporterService";
 import {
-  ApnsKeyStore,
-  ApnsService,
-} from "../../desktop/src/main/services/notifications/apnsService";
-import {
   ADE_AGENT_SKILLS_DIRS_ENV,
   getAdeAgentSkillRootsForPrompt,
   joinAdeAgentSkillRoots,
@@ -231,8 +227,6 @@ export type AdeRuntime = {
   builtInBrowserService?: BuiltInBrowserService | BuiltInBrowserDesktopBridgeClient | null;
   syncHostService?: ReturnType<typeof createSyncHostService> | null;
   syncService?: ReturnType<typeof createSyncService> | null;
-  apnsService?: ApnsService | null;
-  apnsKeyStore?: ApnsKeyStore | null;
   automationIngressService?: ReturnType<typeof createAutomationIngressService> | null;
   feedbackReporterService?: ReturnType<typeof createFeedbackReporterService> | null;
   usageTrackingService?: ReturnType<typeof createUsageTrackingService> | null;
@@ -1158,39 +1152,6 @@ export async function createAdeRuntime(args: {
     projectConfigService,
     usageTrackingService,
   });
-  const apnsService = new ApnsService({ logger });
-  const projectSecretsDir = path.join(projectRoot, ".ade", "secrets");
-  const apnsKeyStore = new ApnsKeyStore({
-    encryptedKeyPath: path.join(projectSecretsDir, "apns.key.enc"),
-    credentialStore: new EncryptedFileCredentialStore({
-      secretsDir: projectSecretsDir,
-    }),
-  });
-  try {
-    const apnsConfig = projectConfigService.get().effective.notifications?.apns;
-    if (
-      apnsConfig?.enabled &&
-      apnsKeyStore.has() &&
-      apnsConfig.keyId &&
-      apnsConfig.teamId &&
-      apnsConfig.bundleId
-    ) {
-      const pem = apnsKeyStore.load();
-      if (pem) {
-        apnsService.configure({
-          keyP8Pem: pem,
-          keyId: apnsConfig.keyId,
-          teamId: apnsConfig.teamId,
-          bundleId: apnsConfig.bundleId,
-          env: apnsConfig.env ?? "sandbox",
-        });
-      }
-    }
-  } catch (error) {
-    logger.warn("apns.configure_on_startup_failed", {
-      error: error instanceof Error ? error.message : String(error),
-    });
-  }
   let syncService: ReturnType<typeof createSyncService> | null = null;
   if (resolvedArgs.syncRuntime?.enabled && agentChatService) {
     const { createSyncService } = await import("./services/sync/syncService");
@@ -1287,8 +1248,6 @@ export async function createAdeRuntime(args: {
     diffService,
     syncService,
     syncHostService: syncService?.getHostService() ?? null,
-    apnsService,
-    apnsKeyStore,
     laneWorktreeLockService,
     ptyService,
     testService,
@@ -1338,7 +1297,6 @@ export async function createAdeRuntime(args: {
       swallow(() => automationIngressService?.dispose());
       swallow(() => automationService?.dispose());
       swallow(() => usageTrackingService.dispose());
-      swallow(() => apnsService.dispose());
       swallow(() => syncService?.dispose());
       swallow(() => processService.disposeAll());
       swallow(() => runtimeDiagnosticsService.dispose());

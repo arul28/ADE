@@ -3,7 +3,6 @@ import Foundation
 import Network
 import SwiftUI
 import UIKit
-import UserNotifications
 import WidgetKit
 import os
 import zlib
@@ -1118,11 +1117,6 @@ func syncOutboundEnvelopeProjectId(type: String, activeProjectId: String?) -> St
   ]
   guard projectScopedTypes.contains(type) else { return nil }
   return syncNormalizedCommandScopeValue(activeProjectId)
-}
-
-struct SyncSendTestPushResult: Equatable {
-  var ok: Bool
-  var message: String
 }
 
 /// Delivery events for the full-screen terminal. The active screen attaches a
@@ -7371,7 +7365,6 @@ final class SyncService: ObservableObject {
     lastPairingErrorCode = nil
     lastSyncAt = Date()
     saveRemoteCommandDescriptors(commandDescriptors)
-    uploadSavedNotificationPreferences()
 
     let matchingDiscovery = discoveredHosts.first { discovered in
       discovered.hostIdentity == remoteHostIdentity
@@ -7685,10 +7678,6 @@ final class SyncService: ObservableObject {
       }
     case "command_result", "file_response", "terminal_snapshot", "terminal_history":
       resolve(requestId: requestId, result: .success(payload))
-    case "in_app_notification":
-      if let dict = payload as? [String: Any] {
-        presentInAppNotification(dict)
-      }
     case "chat_subscribe":
       if supportsChatStreaming,
          let dict = payload as? [String: Any],
@@ -8014,50 +8003,6 @@ final class SyncService: ObservableObject {
           self.handleTransportFailure(error)
         }
       }
-    }
-  }
-
-  private func presentInAppNotification(_ payload: [String: Any]) {
-    guard let title = (payload["title"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
-          !title.isEmpty,
-          let body = (payload["body"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
-          !body.isEmpty else {
-      return
-    }
-    let content = UNMutableNotificationContent()
-    content.title = title
-    content.body = body
-    content.sound = .default
-    content.categoryIdentifier = notificationCategoryIdentifier(for: payload["category"] as? String)
-    if let metadata = payload["metadata"] as? [String: Any] {
-      content.userInfo = metadata
-    }
-    if let deepLink = payload["deepLink"] as? String, !deepLink.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-      var next = content.userInfo
-      next["deepLink"] = deepLink
-      content.userInfo = next
-    }
-    let collapseId = (payload["collapseId"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
-    let requestId: String
-    if let collapseId, !collapseId.isEmpty {
-      requestId = "ade.in-app.\(collapseId)"
-    } else {
-      requestId = "ade.in-app.\(UUID().uuidString)"
-    }
-    let request = UNNotificationRequest(identifier: requestId, content: content, trigger: nil)
-    UNUserNotificationCenter.current().add(request)
-  }
-
-  private func notificationCategoryIdentifier(for category: String?) -> String {
-    switch category {
-    case "chat":
-      return NotificationCategories.Identifier.chatAwaitingInput
-    case "cto":
-      return NotificationCategories.Identifier.ctoSubagentFinished
-    case "pr":
-      return NotificationCategories.Identifier.prReviewRequested
-    default:
-      return NotificationCategories.Identifier.systemAlert
     }
   }
 
@@ -8933,13 +8878,12 @@ final class SyncService: ObservableObject {
   }
 }
 
-// MARK: - Push notifications, Live Activities, and remote commands (WS6)
+// MARK: - Live Activities and remote commands (WS6)
 
 /// Kinds of remote commands the iOS client sends to the ADE brain.
 ///
 /// Each case maps to a verb on the desktop `syncRemoteCommandService` and the
-/// notification-bus router. Keep this enum in sync with the action switch
-/// inside `SyncService.sendRemoteCommand(_:payload:)`.
+/// action switch inside `SyncService.sendRemoteCommand(_:payload:)`.
 enum RemoteCommandKind: String, Sendable {
   case approveSession
   case denySession
@@ -8948,111 +8892,17 @@ enum RemoteCommandKind: String, Sendable {
   case restartSession
   case retryPrChecks
   case openPr
-  case setMutePush
   /// Ask the paired desktop to open an `ade://...` deep link locally.
   /// Used when iOS encounters a link it can't render itself (lane, repo
   /// branch, owner/repo PR) and the user wants to bounce it to their Mac.
   case openDeeplink
 }
 
-extension SyncService: LiveActivityHost {
-  /// `LiveActivityHost` conformance — called by `LiveActivityCoordinator` when
-  /// the OS hands us a new push-to-start or per-activity update token.
-  func sendPushToken(_ token: String, kind: PushTokenKind, sessionId: String?) async {
-    await registerPushToken(token, kind: kind, sessionId: sessionId)
-  }
-}
+extension SyncService: LiveActivityHost {}
 
 extension SyncService {
-  /// Send the `register_push_token` sync message to the currently connected
-  /// host. No-ops when offline — APNs tokens are stable for the app install,
-  /// so we simply re-upload on the next successful reconnect.
-  func registerPushToken(_ hex: String, kind: PushTokenKind, sessionId: String?) async {
-    let trimmed = hex.trimmingCharacters(in: .whitespaces).lowercased()
-    guard !trimmed.isEmpty else { return }
-
-    let wireKind: String
-    switch kind {
-    case .alert: wireKind = "alert"
-    case .activityStart: wireKind = "activity-start"
-    case .activityUpdate: wireKind = "activity-update"
-    }
-
-    let bundleId = Bundle.main.bundleIdentifier ?? "com.ade.ios"
-    #if DEBUG
-    let env = "sandbox"
-    #else
-    let env = "production"
-    #endif
-
-    var payload: [String: Any] = [
-      "token": trimmed,
-      "kind": wireKind,
-      "env": env,
-      "bundleId": bundleId,
-    ]
-    if let sessionId, !sessionId.isEmpty {
-      payload["activityId"] = sessionId
-    }
-
-    sendEnvelope(type: "register_push_token", requestId: nil, payload: payload)
-  }
-
-  /// Upload the current notification preferences as a `notification_prefs`
-  /// message. Serializes the flat iOS struct into the nested shape the desktop
-  /// `NotificationPreferences` TypeScript type expects.
-  func uploadNotificationPrefs(_ prefs: NotificationPreferences) {
-    let nested = Self.encodeNotificationPrefsForDesktop(prefs)
-    sendEnvelope(type: "notification_prefs", requestId: nil, payload: ["prefs": nested])
-  }
-
-  private func uploadSavedNotificationPreferences() {
-    uploadNotificationPrefs(NotificationPreferences.load(from: ADESharedContainer.defaults))
-  }
-
-  /// Ask the host to deliver a test push to this device. The desktop decides
-  /// which token kind (alert vs activity) to target based on what it last saw
-  /// from us.
-  func sendTestPush() async -> SyncSendTestPushResult {
-    // Fail fast when the socket is offline. Without this guard, `sendEnvelope`
-    // silently drops the frame and `awaitResponse` would sit until timeout,
-    // making the test-push button look unresponsive.
-    guard canSendLiveRequests() else {
-      return SyncSendTestPushResult(ok: false, message: "The paired machine is offline.")
-    }
-    let requestId = makeRequestId()
-    do {
-      let raw = try await awaitResponse(
-        requestId: requestId,
-        disconnectOnTimeout: false,
-        timeoutMessage: "The paired machine did not respond to the test push request."
-      ) {
-        self.sendEnvelope(type: "send_test_push", requestId: requestId, payload: ["kind": "alert"])
-      }
-      guard let dict = raw as? [String: Any] else {
-        return SyncSendTestPushResult(ok: false, message: "The paired machine returned an unreadable test push response.")
-      }
-      if dict["ok"] as? Bool == true {
-        let result = dict["result"] as? [String: Any]
-        let message = (result?["message"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let message, !message.isEmpty {
-          return SyncSendTestPushResult(ok: true, message: message)
-        }
-        return SyncSendTestPushResult(ok: true, message: "Test push sent.")
-      }
-      let error = dict["error"] as? [String: Any]
-      let message = (error?["message"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
-      if let message, !message.isEmpty {
-        return SyncSendTestPushResult(ok: false, message: message)
-      }
-      return SyncSendTestPushResult(ok: false, message: "The paired machine could not send a test push.")
-    } catch {
-      return SyncSendTestPushResult(ok: false, message: error.localizedDescription)
-    }
-  }
 
   /// Dispatch a remote command over the existing sync WebSocket. Used by:
-  ///   • Notification action handlers in `AppDelegate`
   ///   • Live Activity `LiveActivityIntent` perform handlers (WS7)
   ///   • Control Widget intents (WS7)
   ///
@@ -9071,7 +8921,6 @@ extension SyncService {
     case .restartSession: action = "chat.restart"
     case .retryPrChecks: action = "prs.rerunChecks"
     case .openPr: action = "prs.getDetail"
-    case .setMutePush: action = "notification_prefs"
     case .openDeeplink: action = "deeplinks.open"
     }
 
@@ -9111,15 +8960,6 @@ extension SyncService {
       if let prNumber = payload["prNumber"] {
         args["prNumber"] = prNumber
       }
-    case .setMutePush:
-      // Route through the preferences updater — we overload the same envelope
-      // rather than add yet another message type. The desktop honours the
-      // `muteUntil` field it finds on the preferences payload.
-      if let until = payload["muteUntil"] as? String {
-        args["muteUntil"] = until
-      } else {
-        args["muteUntil"] = NSNull()
-      }
     case .openDeeplink:
       // Desktop `deeplinks.open` expects a `url` arg — the same `ade://...`
       // string the user tapped on iOS. We pass it through verbatim so the
@@ -9141,8 +8981,7 @@ extension SyncService {
     }
 
     // For now we send via the opaque command envelope — the desktop's
-    // `syncRemoteCommandService` dispatches on `action`. Notification actions
-    // may still ignore the result, while interactive surfaces can render it.
+    // `syncRemoteCommandService` dispatches on `action`.
     do {
       let result = try await performCommandRequestSafe(action: action, args: args)
       if let result = result as? [String: Any] {
@@ -9421,72 +9260,6 @@ extension SyncService {
       workspaceSnapshotRevision += 1
       WidgetReloadBridge.reloadAllTimelines()
     }
-  }
-
-  // MARK: - NotificationPreferences shape translation
-
-  /// Translate the flat iOS `NotificationPreferences` into the nested shape
-  /// the desktop `SyncNotificationPrefsPayload` expects. Keeping the mapping
-  /// local (rather than rewriting the iOS struct) avoids touching the
-  /// persistence format that `NotificationsCenterView` already reads/writes.
-  static func encodeNotificationPrefsForDesktop(
-    _ prefs: NotificationPreferences
-  ) -> [String: Any] {
-    let anyEnabled = prefs.enabledCategoryCount > 0
-    var dict: [String: Any] = [
-      "enabled": anyEnabled,
-      "chat": [
-        "awaitingInput": prefs.chatAwaitingInput,
-        "chatFailed": prefs.chatFailed,
-        "turnCompleted": prefs.chatTurnCompleted,
-      ],
-      "cto": [
-        "subagentStarted": prefs.ctoSubagentStarted,
-        "subagentFinished": prefs.ctoSubagentFinished,
-      ],
-      "prs": [
-        "ciFailing": prefs.prCiFailing,
-        "reviewRequested": prefs.prReviewRequested,
-        "changesRequested": prefs.prChangesRequested,
-        "mergeReady": prefs.prMergeReady,
-      ],
-      "system": [
-        "providerOutage": prefs.systemProviderOutage,
-        "authRateLimit": prefs.systemAuthRateLimit,
-        "hookFailure": prefs.systemHookFailure,
-      ],
-    ]
-
-    if let start = prefs.quietHoursStart, let end = prefs.quietHoursEnd {
-      dict["quietHours"] = [
-        "enabled": true,
-        "start": Self.formatTimeOfDay(start),
-        "end": Self.formatTimeOfDay(end),
-        "timezone": TimeZone.current.identifier,
-      ]
-    }
-
-    let activeOverrides = prefs.perSessionOverrides.filter { _, override in
-      override.muted || override.awaitingInputOnly
-    }
-    if !activeOverrides.isEmpty {
-      dict["perSessionOverrides"] = activeOverrides.mapValues { override in
-        [
-          "muted": override.muted,
-          "awaitingInputOnly": override.awaitingInputOnly,
-        ]
-      }
-    }
-
-    return dict
-  }
-
-  private static func formatTimeOfDay(_ date: Date) -> String {
-    let formatter = DateFormatter()
-    formatter.locale = Locale(identifier: "en_US_POSIX")
-    formatter.timeZone = .current
-    formatter.dateFormat = "HH:mm"
-    return formatter.string(from: date)
   }
 
   private static func parseIso8601(_ raw: String) -> Date? {

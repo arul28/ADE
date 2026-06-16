@@ -4,11 +4,10 @@ import Foundation
 /// Widget configuration intents. These let users pin a specific session to a
 /// small widget and surface suggestions in the Shortcuts app.
 ///
-/// Compiled into the main ADE target, the ADEWidgets extension, and the
-/// ADENotificationService extension for symbol parity across processes that
-/// host interactive regions. The underlying data source (`ADESharedContainer
-/// .readWorkspaceSnapshot()`) is populated by the main app and read by the
-/// extensions via the App Group.
+/// Compiled into the main ADE target and the ADEWidgets extension for symbol
+/// parity across processes that host interactive regions. The underlying data
+/// source (`ADESharedContainer.readWorkspaceSnapshot()`) is populated by the
+/// main app and read by the extension via the App Group.
 
 // MARK: - SessionEntity
 

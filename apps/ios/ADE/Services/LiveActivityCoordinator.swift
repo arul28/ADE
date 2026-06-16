@@ -2,17 +2,6 @@ import ActivityKit
 import Combine
 import Foundation
 
-/// Push-token kind reported up to the host so the desktop can tell which
-/// APNs topic / token it should use for a given payload.
-public enum PushTokenKind: String, Sendable {
-    /// Regular user-visible alert topic (bundle id).
-    case alert
-    /// Live Activity push-to-start token (iOS 17.2+).
-    case activityStart
-    /// Per-activity `pushTokenUpdates` token.
-    case activityUpdate
-}
-
 /// Host contract — wired to `SyncService` by the iOS app-wiring layer.
 /// The coordinator deliberately does not import `SyncService` so it can be
 /// unit-tested in isolation.
@@ -21,14 +10,6 @@ public protocol LiveActivityHost: AnyObject {
     /// Snapshot of the sessions that should currently drive the workspace
     /// Live Activity. `reconcile(...)` consults this on each tick.
     var activeSessions: [AgentSnapshot] { get }
-
-    /// Upload an APNs token acquired locally — alert token, push-to-start
-    /// token, or per-activity update token.
-    func sendPushToken(
-        _ token: String,
-        kind: PushTokenKind,
-        sessionId: String?
-    ) async
 }
 
 /// Owns the lifecycle of the **single** workspace `Activity<ADESessionAttributes>`.
@@ -83,10 +64,6 @@ public final class LiveActivityCoordinator: ObservableObject {
     /// renaming is the only way to keep the system header in sync.
     private var workspaceName: String
 
-    /// One listener task for push-token updates on the current activity.
-    private var pushTokenTask: Task<Void, Never>?
-    /// Push-to-start listener (iOS 17.2+).
-    private var pushToStartTask: Task<Void, Never>?
     /// Per-activity state listener that flips `lastUserDismissalAt` when iOS
     /// reports the user dismissed the LA from the Lock Screen / Dynamic Island.
     private var activityStateTask: Task<Void, Never>?
@@ -113,8 +90,6 @@ public final class LiveActivityCoordinator: ObservableObject {
         self.workspaceName = workspaceName
         self.configuration = configuration
 
-        startPushToStartListenerIfPossible()
-
         // Aggressive cleanup: older builds ran one activity per chat
         // session, leaving the Lock Screen littered with per-chat pills.
         // End anything we find on launch so the user gets a clean slate —
@@ -125,8 +100,6 @@ public final class LiveActivityCoordinator: ObservableObject {
 
     deinit {
         MainActor.assumeIsolated {
-            pushTokenTask?.cancel()
-            pushToStartTask?.cancel()
             activityStateTask?.cancel()
             reconcileTask?.cancel()
         }
@@ -379,9 +352,8 @@ public final class LiveActivityCoordinator: ObservableObject {
             let activity = try Activity<ADESessionAttributes>.request(
                 attributes: attrs,
                 content: content,
-                pushType: .token
+                pushType: nil
             )
-            observePushTokenUpdates(for: activity)
             observeActivityStateUpdates(for: activity)
         } catch {
             // Common failure modes: user disabled Live Activities in
@@ -408,14 +380,12 @@ public final class LiveActivityCoordinator: ObservableObject {
         for activity in Activity<ADESessionAttributes>.activities {
             await activity.end(nil, dismissalPolicy: dismissalPolicy)
         }
-        pushTokenTask?.cancel()
-        pushTokenTask = nil
         activityStateTask?.cancel()
         activityStateTask = nil
         observedActivityId = nil
     }
 
-    // MARK: - Push tokens
+    // MARK: - Activity state
 
     /// Observe the user-dismissal signal on a live activity. ActivityKit flips
     /// state to `.dismissed` when the user swipes the LA away on the Lock
@@ -447,31 +417,4 @@ public final class LiveActivityCoordinator: ObservableObject {
         }
     }
 
-    private func observePushTokenUpdates(for activity: Activity<ADESessionAttributes>) {
-        pushTokenTask?.cancel()
-        pushTokenTask = Task { [weak self] in
-            for await tokenData in activity.pushTokenUpdates {
-                let hex = tokenData.map { String(format: "%02x", $0) }.joined()
-                await self?.host?.sendPushToken(
-                    hex,
-                    kind: .activityUpdate,
-                    sessionId: nil
-                )
-            }
-        }
-    }
-
-    private func startPushToStartListenerIfPossible() {
-        guard #available(iOS 17.2, *) else { return }
-        pushToStartTask = Task { [weak self] in
-            for await tokenData in Activity<ADESessionAttributes>.pushToStartTokenUpdates {
-                let hex = tokenData.map { String(format: "%02x", $0) }.joined()
-                await self?.host?.sendPushToken(
-                    hex,
-                    kind: .activityStart,
-                    sessionId: nil
-                )
-            }
-        }
-    }
 }

@@ -1,7 +1,6 @@
 import Foundation
 
-/// Lightweight Codable DTOs shared by the main app, widgets, and the
-/// notification service extension.
+/// Lightweight Codable DTOs shared by the main app and widgets.
 ///
 /// Intentionally decoupled from `RemoteModels.swift` — widgets must not import
 /// heavyweight renderer code, and the shapes here only carry what we actually

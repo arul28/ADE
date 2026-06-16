@@ -305,70 +305,6 @@ final class ADETests: XCTestCase {
     )
   }
 
-  func testNotificationPreferencesSavePrunesInactivePerSessionOverrides() throws {
-    let suiteName = "ADETests.NotificationPreferences.\(UUID().uuidString)"
-    let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
-    defer { defaults.removePersistentDomain(forName: suiteName) }
-
-    var prefs = NotificationPreferences()
-    prefs.perSessionOverrides = [
-      "inactive": SessionNotificationOverride(),
-      "muted": SessionNotificationOverride(muted: true),
-      "awaiting": SessionNotificationOverride(awaitingInputOnly: true),
-    ]
-
-    prefs.save(to: defaults)
-
-    let loaded = NotificationPreferences.load(from: defaults)
-    XCTAssertNil(loaded.perSessionOverrides["inactive"])
-    XCTAssertEqual(loaded.perSessionOverrides["muted"], SessionNotificationOverride(muted: true))
-    XCTAssertEqual(loaded.perSessionOverrides["awaiting"], SessionNotificationOverride(awaitingInputOnly: true))
-  }
-
-  @MainActor
-  func testSyncNotificationPrefsPayloadOmitsInactivePerSessionOverrides() {
-    var prefs = NotificationPreferences()
-    prefs.perSessionOverrides = [
-      "inactive": SessionNotificationOverride(),
-      "active": SessionNotificationOverride(awaitingInputOnly: true),
-    ]
-
-    let payload = SyncService.encodeNotificationPrefsForDesktop(prefs)
-    let overrides = payload["perSessionOverrides"] as? [String: [String: Bool]]
-
-    XCTAssertNil(overrides?["inactive"])
-    XCTAssertEqual(overrides?["active"]?["muted"], false)
-    XCTAssertEqual(overrides?["active"]?["awaitingInputOnly"], true)
-  }
-
-  func testNotificationStaleOverrideIdsKeepSavedOverridesVisible() {
-    let agent = AgentSnapshot(
-      sessionId: "active-session",
-      provider: "codex",
-      laneName: "Primary",
-      title: "Active",
-      status: "idle",
-      awaitingInput: false,
-      lastActivityAt: Date(),
-      elapsedSeconds: 0,
-      preview: nil,
-      progress: nil,
-      phase: nil,
-      toolCalls: 0
-    )
-
-    let staleIds = notificationStaleOverrideIds(
-      overrides: [
-        "inactive-stale": SessionNotificationOverride(),
-        "active-session": SessionNotificationOverride(muted: true),
-        "saved-stale": SessionNotificationOverride(awaitingInputOnly: true),
-      ],
-      agents: [agent]
-    )
-
-    XCTAssertEqual(staleIds, ["saved-stale"])
-  }
-
   func testShellCliPermissionModeDoesNotInheritRuntimeMode() {
     XCTAssertNil(workCliPermissionMode(provider: "shell", runtimeMode: "plan"))
     XCTAssertEqual(workCliPermissionMode(provider: "codex", runtimeMode: "plan"), "plan")
@@ -662,9 +598,6 @@ final class ADETests: XCTestCase {
       "project_clone_request",
       "project_list_my_github_repos_request",
       "heartbeat",
-      "register_push_token",
-      "notification_prefs",
-      "send_test_push",
     ]
 
     for type in runtimeScopedTypes {
@@ -11330,7 +11263,15 @@ final class ADETests: XCTestCase {
     )
     let toolEntries = snapshot.timeline.filter { $0.id.hasPrefix("tool-") }
     XCTAssertEqual(toolEntries.count, 1)
-    XCTAssertEqual(toolEntries.first?.id, "tool-call-dup")
+    XCTAssertEqual(toolEntries.first?.id, "tool-group:tool-call-dup")
+    guard case .toolGroup(let group)? = toolEntries.first?.payload else {
+      return XCTFail("Expected duplicate tool calls to collapse into one tool group.")
+    }
+    XCTAssertEqual(group.members.count, 1)
+    guard case .tool(let groupedCard)? = group.members.first else {
+      return XCTFail("Expected the collapsed group to retain the deduped tool card.")
+    }
+    XCTAssertEqual(groupedCard.id, "call-dup")
   }
 
   func testWorkChatToolLifecycleUsesLogicalItemIdForStableCards() {

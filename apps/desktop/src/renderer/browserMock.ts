@@ -3088,16 +3088,6 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
     platform: "darwin",
   };
 
-  const BROWSER_MOCK_APNS_STATUS: any = {
-    enabled: false,
-    configured: false,
-    keyStored: false,
-    keyId: null,
-    teamId: null,
-    bundleId: null,
-    env: "sandbox" as const,
-  };
-
   (window as any).ade = {
     app: {
       ping: resolved("pong" as const),
@@ -3475,15 +3465,6 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
     },
     agentTools: {
       detect: resolved([]),
-    },
-    notifications: {
-      apns: {
-        getStatus: resolved(BROWSER_MOCK_APNS_STATUS),
-        saveConfig: resolvedArg({ ...BROWSER_MOCK_APNS_STATUS }),
-        uploadKey: resolvedArg({ ...BROWSER_MOCK_APNS_STATUS }),
-        clearKey: resolved(BROWSER_MOCK_APNS_STATUS),
-        sendTestPush: resolvedArg({ ok: false, reason: "browser mock" }),
-      },
     },
     devTools: {
       detect: resolved(BROWSER_MOCK_DEVTOOLS_CHECK),

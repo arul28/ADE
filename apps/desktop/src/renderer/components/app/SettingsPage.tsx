@@ -1,6 +1,6 @@
 import React, { useState, useCallback, useEffect } from "react";
 import { useSearchParams, useLocation, useNavigate } from "react-router-dom";
-import { Brain, ChartLineUp, GearSix, Stack, Plugs, Palette, DeviceMobile, Robot } from "@phosphor-icons/react";
+import { Brain, ChartLineUp, GearSix, Stack, Plugs, Palette, Robot } from "@phosphor-icons/react";
 import { GeneralSection } from "../settings/GeneralSection";
 import { AppearanceSection } from "../settings/AppearanceSection";
 import { LaneTemplatesSection } from "../settings/LaneTemplatesSection";
@@ -8,7 +8,6 @@ import { LaneBehaviorSection } from "../settings/LaneBehaviorSection";
 import { ProvidersSection } from "../settings/ProvidersSection";
 import { AiFeaturesSection } from "../settings/AiFeaturesSection";
 import { IntegrationsSettingsSection } from "../settings/IntegrationsSettingsSection";
-import { MobilePushPanel } from "../settings/MobilePushPanel";
 import { AdeUsageSection } from "../settings/AdeUsageSection";
 import { RemoteSettingsBanner } from "../settings/RemoteContextBadge";
 import { COLORS, SANS_FONT, LABEL_STYLE } from "../lanes/laneDesignTokens";
@@ -18,7 +17,6 @@ const SECTIONS = [
   { id: "appearance", label: "Appearance", icon: Palette },
   { id: "ai", label: "AI Connections", icon: Brain },
   { id: "background-jobs", label: "Background Jobs", icon: Robot },
-  { id: "mobile-push", label: "Mobile Push", icon: DeviceMobile },
   { id: "integrations", label: "Integrations", icon: Plugs },
   { id: "lane-templates", label: "Lane Templates", icon: Stack },
   { id: "ade-usage", label: "Stats", icon: ChartLineUp },
@@ -32,9 +30,9 @@ const TAB_ALIASES: Record<string, SectionId> = {
   context: "general",
   providers: "ai",
   automations: "background-jobs",
-  sync: "mobile-push",
-  devices: "mobile-push",
-  "multi-device": "mobile-push",
+  sync: "general",
+  devices: "general",
+  "multi-device": "general",
   github: "integrations",
   linear: "integrations",
   "computer-use": "integrations",
@@ -166,7 +164,7 @@ export function SettingsPage({ active = true }: { active?: boolean } = {}) {
             <button
               key={s.id}
               type="button"
-              data-tour={`settings.${s.id === "lane-templates" ? "laneTemplates" : s.id === "mobile-push" ? "mobilePush" : s.id === "background-jobs" ? "backgroundJobs" : s.id}`}
+              data-tour={`settings.${s.id === "lane-templates" ? "laneTemplates" : s.id === "background-jobs" ? "backgroundJobs" : s.id}`}
               onClick={() => navigateToSection(s.id)}
               onMouseEnter={() => setHoveredId(s.id)}
               onMouseLeave={() => setHoveredId(null)}
@@ -194,7 +192,6 @@ export function SettingsPage({ active = true }: { active?: boolean } = {}) {
         {section === "ai" && <ProvidersSection />}
         {section === "background-jobs" && <AiFeaturesSection />}
         {section === "ade-usage" && <AdeUsageSection />}
-        {section === "mobile-push" && <MobilePushPanel />}
         {section === "integrations" && <IntegrationsSettingsSection />}
         {section === "lane-templates" && (
           <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>

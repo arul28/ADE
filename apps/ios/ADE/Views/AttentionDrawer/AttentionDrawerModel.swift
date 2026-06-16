@@ -65,7 +65,7 @@ public struct AttentionItem: Identifiable, Equatable {
 
 /// Source of truth for the in-app Attention Drawer.
 ///
-/// Reducer-only — never opens its own WebSocket or APNs channel. It
+/// Reducer-only: never opens its own WebSocket. It
 /// subscribes to the `SyncService` `@Published var activeSessions` +
 /// `@Published var localStateRevision` publishers and rebuilds its
 /// `items` array from the `WorkspaceSnapshot` written to the App Group by

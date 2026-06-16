@@ -2497,10 +2497,10 @@ Land the three P0 performance fixes first (coalescer → shared aggregation → 
       ]
     },
     {
-      "feature": "Integrations config (GitHub / Linear / Mobile Push / ADE CLI)",
+      "feature": "Integrations config (GitHub / Linear / ADE CLI)",
       "status": "partial",
-      "details": "commands.ts wires operational /linear * (55-66) and /pr * (50-54), not settings config. No enablement, prPollingIntervalSeconds, or mobile-push pairing.",
-      "gap": "Integration config is desktop-only; Mobile Push pairing absent.",
+      "details": "commands.ts wires operational /linear * (55-66) and /pr * (50-54), not settings config. No enablement or prPollingIntervalSeconds.",
+      "gap": "Integration config is desktop-only.",
       "tuiFiles": [
         "apps/ade-cli/src/tuiClient/commands.ts",
         "apps/ade-cli/src/tuiClient/app.tsx"
