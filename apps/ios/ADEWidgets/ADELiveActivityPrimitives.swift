@@ -428,7 +428,7 @@ public struct AttentionActionRow: View {
                     label: prLabel("Open", attention.prNumber),
                     systemImage: compact ? nil : "arrow.triangle.branch",
                     variant: .primary(tint: ADESharedTheme.brandCursor),
-                    intent: openPrIntent(attention.prNumber)
+                    intent: openPrIntent(prNumber: attention.prNumber, prId: attention.prId)
                 )
                 ActionPill(
                     label: "Rerun CI",
@@ -444,20 +444,20 @@ public struct AttentionActionRow: View {
                     label: prLabel("Review", attention.prNumber),
                     systemImage: compact ? nil : "eye",
                     variant: .primary(tint: ADESharedTheme.brandCursor),
-                    intent: openPrIntent(attention.prNumber)
+                    intent: openPrIntent(prNumber: attention.prNumber, prId: attention.prId)
                 )
             case .mergeReady:
                 ActionPill(
                     label: prLabel("Merge", attention.prNumber),
                     systemImage: compact ? nil : "checkmark.seal",
                     variant: .primary(tint: ADESharedTheme.statusSuccess),
-                    intent: openPrIntent(attention.prNumber)
+                    intent: openPrIntent(prNumber: attention.prNumber, prId: attention.prId)
                 )
                 ActionPill(
                     label: "View",
                     systemImage: compact ? nil : "arrow.right",
                     variant: .secondary,
-                    intent: openPrIntent(attention.prNumber)
+                    intent: openPrIntent(prNumber: attention.prNumber, prId: attention.prId)
                 )
             }
         }
@@ -472,11 +472,11 @@ public struct AttentionActionRow: View {
         return OpenADEDeepLinkIntent(urlString: "ade://session/\(sessionId)")
     }
 
-    private func openPrIntent(_ prNumber: Int?) -> OpenADEPrIntent {
+    private func openPrIntent(prNumber: Int?, prId: String?) -> OpenADEPrIntent {
         guard let prNumber, prNumber > 0 else {
-            return OpenADEPrIntent(prNumber: 0)
+            return OpenADEPrIntent(prNumber: 0, prId: "")
         }
-        return OpenADEPrIntent(prNumber: prNumber)
+        return OpenADEPrIntent(prNumber: prNumber, prId: prId ?? "")
     }
 
     private func prLabel(_ verb: String, _ number: Int?) -> String {
@@ -496,18 +496,23 @@ public struct OpenADEPrIntent: AppIntent {
     @Parameter(title: "PR Number")
     public var prNumber: Int
 
+    @Parameter(title: "PR ID", default: "")
+    public var prId: String
+
     public init() {}
 
-    public init(prNumber: Int) {
+    public init(prNumber: Int, prId: String = "") {
         self.prNumber = prNumber
+        self.prId = prId
     }
 
     @MainActor
     public func perform() async throws -> some IntentResult {
-        guard prNumber > 0 else { return .result() }
+        let trimmedPrId = prId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard prNumber > 0, !trimmedPrId.isEmpty else { return .result() }
         await ADEIntentCommandRegistry.dispatch(
             .openPr,
-            payload: ["prNumber": prNumber]
+            payload: ["prNumber": prNumber, "prId": trimmedPrId]
         )
         return .result()
     }
