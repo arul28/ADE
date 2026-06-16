@@ -206,6 +206,25 @@ final class ADETests: XCTestCase {
   }
 
   @MainActor
+  func testPrIntentPayloadRequestsLocalPrNavigation() throws {
+    let previousShared = SyncService.shared
+    defer { SyncService.shared = previousShared }
+
+    let database = makeDatabase(baseURL: makeTemporaryDirectory())
+    defer { database.close() }
+    let service = SyncService(database: database)
+    SyncService.shared = service
+
+    requestPrNavigationFromIntentPayload([
+      "prId": "pr_123",
+      "prNumber": "42",
+    ])
+
+    XCTAssertEqual(service.requestedPrNavigation?.prId, "pr_123")
+    XCTAssertEqual(service.requestedPrNavigation?.prNumber, 42)
+  }
+
+  @MainActor
   func testDeepLinkRouterSendsHttpsAdePrLinksToMac() throws {
     let expected = "https://ade-app.dev/open?type=pr&repo=arul/ADE&number=42"
     let received = expectation(description: "send to Mac request posted")

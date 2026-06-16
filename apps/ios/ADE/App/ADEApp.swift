@@ -79,6 +79,10 @@ private final class ADESyncIntentBridge: ADEIntentCommandBridge {
   private init() {}
 
   func dispatch(_ kind: ADEIntentCommandKind, payload: [String: Any]) async {
+    if kind == .openPr {
+      requestPrNavigationFromIntentPayload(payload)
+    }
+
     let mapped: RemoteCommandKind
     switch kind {
     case .approveSession: mapped = .approveSession
@@ -92,4 +96,32 @@ private final class ADESyncIntentBridge: ADEIntentCommandBridge {
     }
     await SyncService.shared?.sendRemoteCommand(mapped, payload: payload)
   }
+}
+
+@MainActor
+func requestPrNavigationFromIntentPayload(_ payload: [String: Any]) {
+  let prId = (payload["prId"] as? String)?
+    .trimmingCharacters(in: .whitespacesAndNewlines)
+  let prNumber = intentPayloadPrNumber(payload["prNumber"])
+
+  if let prId, !prId.isEmpty {
+    SyncService.shared?.requestedPrNavigation = PrNavigationRequest(prId: prId, prNumber: prNumber)
+  } else if let prNumber {
+    SyncService.shared?.requestedPrNavigation = PrNavigationRequest(prNumber: prNumber)
+  }
+}
+
+private func intentPayloadPrNumber(_ rawValue: Any?) -> Int? {
+  if let value = rawValue as? Int, value > 0 {
+    return value
+  }
+  if let value = rawValue as? NSNumber, value.intValue > 0 {
+    return value.intValue
+  }
+  if let string = rawValue as? String,
+    let value = Int(string.trimmingCharacters(in: .whitespacesAndNewlines)),
+    value > 0 {
+    return value
+  }
+  return nil
 }
