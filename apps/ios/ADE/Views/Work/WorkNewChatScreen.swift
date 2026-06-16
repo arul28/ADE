@@ -119,6 +119,11 @@ struct WorkNewChatScreen: View {
   @State private var runtimeMode: String = "default"
   @State private var reasoningEffort: String = ""
   @State private var codexFastMode: Bool = false
+  /// The catalog option the picker handed us, kept so fast-tier support is read
+  /// from the live host-advertised model (its `serviceTiers`) rather than
+  /// re-derived from the curated iOS catalog — which can miss a freshly
+  /// advertised fast model and wrongly hide the toggle.
+  @State private var selectedModelOption: WorkModelOption?
   @State private var sessionMode: WorkNewSessionMode = .chat
 
   /// Whether the synthetic "Auto-create lane" entry is the current selection.
@@ -128,9 +133,15 @@ struct WorkNewChatScreen: View {
 
   /// Fast mode only applies to in-app chat sessions on fast-tier models — the
   /// CLI launcher has no fast-mode parameter — so the lightning toggle (and the
-  /// value we send) is gated on both.
+  /// value we send) is gated on both. When the picker's option still matches the
+  /// current model, trust its live service tiers; otherwise fall back to the
+  /// catalog derivation (covers the initial default before any pick).
   private var fastModeSupported: Bool {
-    sessionMode == .chat && workComposerSupportsFastMode(modelId: modelId, provider: provider)
+    guard sessionMode == .chat else { return false }
+    if let option = selectedModelOption, workModelIdsEquivalent(option.id, modelId) {
+      return option.supportsServiceTier("fast")
+    }
+    return workComposerSupportsFastMode(modelId: modelId, provider: provider)
   }
 
   var body: some View {
@@ -224,6 +235,7 @@ struct WorkNewChatScreen: View {
         cursorAvailabilityMode: sessionMode == .cli ? .cli : .chat,
         isBusy: false,
         onSelect: { option, pickedReasoning, runtimeProvider in
+          selectedModelOption = option
           modelId = option.id
           provider = sessionMode == .chat
             ? workNormalizedNewChatProvider(runtimeProvider)
