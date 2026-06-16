@@ -29,7 +29,6 @@ import {
   isTerminalSessionResumable,
   shouldToggleLatestFailedLineOnBlankEnter,
   isTerminalControlToggle,
-  isTerminalMouseTrackingEnabled,
   isChatTextSelectionRange,
   isChatCopyShortcut,
   isCtrlCCopyPlatform,
@@ -62,21 +61,36 @@ import {
   shouldHandlePendingQuestionKey,
   resolveModelPickerEscape,
   nextModelPickerProviderTabKey,
+  gridTabNavigationTarget,
+  noticeScopeId,
   resolveChatWrapWidth,
   resolveTerminalPaneWidth,
+  sameTerminalPreviewFrame,
+  selectVisibleNotices,
+  shouldBufferPtyDataForSession,
   splitTerminalControlInput,
+  stableInkViewportRows,
   subagentSnapshotsFromEvents,
+  terminalMouseTrackingDisableSequence,
+  terminalMouseTrackingEnableSequence,
   isClaudePlaceholderTitle,
   mergeOptimisticTerminalSessions,
 } from "../app";
 import { clampTerminalPaneCols } from "../components/TerminalPane";
-import type { ChatInfoSnapshot, RightPaneContent } from "../types";
+import type { ChatInfoSnapshot, LocalNotice, RightPaneContent } from "../types";
 import { resolveSubagentCapability } from "../../../../desktop/src/shared/subagentCapabilities";
 import type { AgentChatSession, AgentChatSessionSummary } from "../../../../desktop/src/shared/types/chat";
 import type { LaneSummary } from "../../../../desktop/src/shared/types/lanes";
 import type { ChatTerminalSession } from "../../../../desktop/src/shared/types/sessions";
+import type { ChatTerminalPreviewResult } from "../../../../desktop/src/shared/types";
 
 describe("session activity helpers", () => {
+  it("keeps Ink output below the terminal height to avoid full-screen clears", () => {
+    expect(stableInkViewportRows(40)).toBe(39);
+    expect(stableInkViewportRows(2)).toBe(1);
+    expect(stableInkViewportRows(1)).toBe(1);
+  });
+
   it("does not animate idle or input-blocked chat sessions", () => {
     expect(isChatSessionAnimating({ status: "active", awaitingInput: false, idleSinceAt: null })).toBe(true);
     expect(isChatSessionAnimating({ status: "active", awaitingInput: true, idleSinceAt: null })).toBe(false);
@@ -154,6 +168,80 @@ describe("session activity helpers", () => {
     expect(isTerminalSessionFastPollActive({ status: "running", runtimeState: "running", pid: null })).toBe(false);
     expect(isTerminalSessionFastPollActive({ status: "running", runtimeState: "idle", pid: process.pid })).toBe(false);
     expect(isTerminalSessionFastPollActive({ status: "completed", runtimeState: "exited", pid: process.pid })).toBe(false);
+  });
+
+  it("only buffers live PTY bytes for visible terminal sessions", () => {
+    expect(shouldBufferPtyDataForSession({
+      sessionId: "term-1",
+      activeSessionId: "term-1",
+      multiView: null,
+      gridViewActive: false,
+    })).toBe(true);
+    expect(shouldBufferPtyDataForSession({
+      sessionId: "term-2",
+      activeSessionId: "term-1",
+      multiView: { tiles: [{ sessionId: "term-2" }] },
+      gridViewActive: true,
+    })).toBe(true);
+    expect(shouldBufferPtyDataForSession({
+      sessionId: "term-2",
+      activeSessionId: "term-1",
+      multiView: { tiles: [{ sessionId: "term-2" }] },
+      gridViewActive: false,
+    })).toBe(false);
+  });
+
+  it("treats unchanged terminal previews as the same render frame", () => {
+    const makePreview = (
+      text: string,
+      capturedAt = "2026-05-13T12:00:00.000Z",
+      cursorX = 0,
+    ): ChatTerminalPreviewResult => ({
+      terminalId: "term-1",
+      source: "snapshot",
+      snapshot: {
+        version: 1,
+        terminalId: "term-1",
+        cols: 80,
+        rows: 1,
+        capturedAt,
+        status: "running",
+        runtimeState: "running",
+        bufferType: "normal",
+        cursorX,
+        cursorY: 0,
+        baseY: 0,
+        viewportY: 0,
+        serialized: "",
+        visibleRows: [{ text, wrapped: false, cells: [] }],
+      },
+      transcript: null,
+      capturedAt,
+      session: {
+        terminalId: "term-1",
+        ptyId: "pty-1",
+        chatSessionId: null,
+        laneId: "lane-1",
+        laneName: "Lane 1",
+        title: "Claude Code",
+        toolType: "claude",
+        goal: null,
+        status: "running",
+        runtimeState: "running",
+        active: true,
+        startedAt: "2026-05-13T12:00:00.000Z",
+        endedAt: null,
+        exitCode: null,
+        pid: process.pid,
+        resumeCommand: null,
+        lastOutputPreview: null,
+        summary: null,
+      },
+    });
+
+    expect(sameTerminalPreviewFrame(makePreview("same"), makePreview("same", "2026-05-13T12:00:01.000Z"))).toBe(true);
+    expect(sameTerminalPreviewFrame(makePreview("same"), makePreview("changed"))).toBe(false);
+    expect(sameTerminalPreviewFrame(makePreview("same"), makePreview("same", "2026-05-13T12:00:01.000Z", 1))).toBe(false);
   });
 
   it("recognizes closed resumable terminal sessions", () => {
@@ -794,6 +882,19 @@ describe("footer control ordering", () => {
   });
 });
 
+describe("grid tab navigation", () => {
+  it("keeps Tab on grid tiles only when the grid is the only visible pane", () => {
+    expect(gridTabNavigationTarget({ drawerOpen: false, rightOpen: false, tileCount: 2 })).toBe("tiles");
+    expect(gridTabNavigationTarget({ drawerOpen: false, rightOpen: false, tileCount: 1 })).toBe("panes");
+  });
+
+  it("lets Tab escape the grid when side panes are visible", () => {
+    expect(gridTabNavigationTarget({ drawerOpen: true, rightOpen: false, tileCount: 3 })).toBe("panes");
+    expect(gridTabNavigationTarget({ drawerOpen: false, rightOpen: true, tileCount: 3 })).toBe("panes");
+    expect(gridTabNavigationTarget({ drawerOpen: true, rightOpen: true, tileCount: 3 })).toBe("panes");
+  });
+});
+
 describe("firstUrlInText", () => {
   it("finds a bare URL with its index + width and strips trailing punctuation", () => {
     const hit = firstUrlInText("see https://example.com/docs. thanks");
@@ -1208,6 +1309,14 @@ describe("prompt editing helpers", () => {
     expect(isPromptWordBackspace("", { ctrl: true, backspace: true })).toBe(true);
     expect(isPromptWordBackspace("", { meta: true, backspace: true })).toBe(true);
     expect(isPromptWordBackspace("\x1b\u007f", { meta: true })).toBe(true);
+    expect(isPromptWordBackspace("\x1b\u007f", {})).toBe(true);
+    expect(isPromptWordBackspace("\x1b\b", {})).toBe(true);
+    expect(isPromptWordBackspace("\x1b[127;5u", {})).toBe(true);
+    expect(isPromptWordBackspace("\x1b[127;9u", {})).toBe(true);
+    expect(isPromptWordBackspace("\x1b[127;17u", {})).toBe(true);
+    expect(isPromptWordBackspace("\x1b[3;5~", {})).toBe(true);
+    expect(isPromptWordBackspace("\x1b[27;5;127~", {})).toBe(true);
+    expect(isPromptWordBackspace("\x1b[127;2u", {})).toBe(false);
     expect(isPromptWordBackspace("x", {})).toBe(false);
   });
 
@@ -1330,13 +1439,13 @@ describe("optimistic chat summaries", () => {
 });
 
 describe("terminal mouse tracking", () => {
-  it("is enabled by default for pane-safe chat selection and can be disabled", () => {
-    expect(isTerminalMouseTrackingEnabled(undefined)).toBe(true);
-    expect(isTerminalMouseTrackingEnabled("")).toBe(true);
-    expect(isTerminalMouseTrackingEnabled("0")).toBe(false);
-    expect(isTerminalMouseTrackingEnabled("false")).toBe(false);
-    expect(isTerminalMouseTrackingEnabled("1")).toBe(true);
-    expect(isTerminalMouseTrackingEnabled("yes")).toBe(true);
+  it("uses one conservative cross-terminal mouse baseline", () => {
+    expect(terminalMouseTrackingEnableSequence()).toBe("\x1b[?1000h\x1b[?1002h\x1b[?1006h");
+    expect(terminalMouseTrackingEnableSequence()).not.toContain("\x1b[?1003h");
+    expect(terminalMouseTrackingEnableSequence()).not.toContain("\x1b[?1015h");
+
+    expect(terminalMouseTrackingDisableSequence()).toContain("\x1b[?1003l");
+    expect(terminalMouseTrackingDisableSequence()).toContain("\x1b[?1015l");
   });
 });
 
@@ -1408,5 +1517,72 @@ describe("isClaudePlaceholderTitle", () => {
 
   it("treats a real generated title as named", () => {
     expect(isClaudePlaceholderTitle("Fix the sync race")).toBe(false);
+  });
+});
+
+describe("notice scoping", () => {
+  const notice = (text: string, sessionId: string | null): LocalNotice => ({
+    id: text,
+    timestamp: "2026-01-01T00:00:00.000Z",
+    tone: "info",
+    text,
+    sessionId,
+  });
+
+  it("tags notices with the live chat, then the draft key, then null", () => {
+    expect(noticeScopeId({ activeSessionId: "chat-1", draftChatActive: false, draftScopeKey: null })).toBe("chat-1");
+    // An active chat always wins over a stale draft key.
+    expect(noticeScopeId({ activeSessionId: "chat-1", draftChatActive: true, draftScopeKey: "draft:2" })).toBe("chat-1");
+    expect(noticeScopeId({ activeSessionId: null, draftChatActive: true, draftScopeKey: "draft:2" })).toBe("draft:2");
+    expect(noticeScopeId({ activeSessionId: null, draftChatActive: false, draftScopeKey: "draft:2" })).toBeNull();
+  });
+
+  it("shows a new-chat draft only the notices fired in that exact draft", () => {
+    const notices = [
+      notice("Created lane annoyin flicker.", null),
+      notice("Model set to GPT-5.5.", "draft:1"),
+      notice("Press Esc again to discard this chat draft.", "draft:2"),
+      notice("Done.", "chat-9"),
+    ];
+    const visible = selectVisibleNotices({
+      notices,
+      hasSelectedAgentSnapshot: false,
+      draftChatActive: true,
+      draftScopeKey: "draft:2",
+      activeSessionId: null,
+    });
+    // Global ("Created lane"), prior-draft ("draft:1"), and other-chat notices
+    // must not bleed into a fresh draft — only this draft's own feedback.
+    expect(visible.map((entry) => entry.text)).toEqual(["Press Esc again to discard this chat draft."]);
+  });
+
+  it("keeps the chat-or-global fallback when not in a draft", () => {
+    const notices = [
+      notice("Reconnected to the ADE runtime.", null),
+      notice("Model set to Claude Opus 4.8 1M.", "chat-1"),
+      notice("Other chat feedback.", "chat-2"),
+    ];
+    const visible = selectVisibleNotices({
+      notices,
+      hasSelectedAgentSnapshot: false,
+      draftChatActive: false,
+      draftScopeKey: null,
+      activeSessionId: "chat-1",
+    });
+    expect(visible.map((entry) => entry.text)).toEqual([
+      "Reconnected to the ADE runtime.",
+      "Model set to Claude Opus 4.8 1M.",
+    ]);
+  });
+
+  it("hides every notice while a subagent snapshot is selected", () => {
+    const visible = selectVisibleNotices({
+      notices: [notice("Created lane.", null)],
+      hasSelectedAgentSnapshot: true,
+      draftChatActive: true,
+      draftScopeKey: "draft:1",
+      activeSessionId: null,
+    });
+    expect(visible).toEqual([]);
   });
 });

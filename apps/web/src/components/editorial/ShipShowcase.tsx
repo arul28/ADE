@@ -1,9 +1,8 @@
-import { useCallback, useEffect, useReducer, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { cn } from "../../lib/cn";
 
 const ROTATE_MS = 18000;
-const TICK_MS = 50;
 
 type ShowcaseImage = {
   src: string;
@@ -13,11 +12,38 @@ type ShowcaseImage = {
   file: string;
 };
 
+type Shot = { src: string; label: string };
+
 /** Hero-style device trio (desktop centerpiece + TUI + iPhone), same proportions as the fold. */
 type DeviceTrio = {
-  desktop: { src: string; label: string };
-  tui: { src: string; label: string };
-  mobile: { src: string; label: string };
+  desktop: Shot;
+  tui: Shot;
+  mobile: Shot;
+};
+
+/**
+ * Agent-chat composition. Desktop hero (largest) anchored by three supporting
+ * shots: TUI (bottom-left, large), model picker (top-right) and a phone
+ * (bottom-right).
+ */
+type ChatShots = {
+  desktop: Shot;
+  tui: Shot;
+  picker: Shot;
+  mobile: Shot;
+};
+
+/** Two-image PR composition: a dominant desktop hero + a phone bottom-right. */
+type PrShots = {
+  desktop: Shot;
+  mobile: Shot;
+};
+
+/** Three desktop views: a hero on top, two smaller ones flanking the bottom. */
+type ToolsShots = {
+  hero: Shot;
+  left: Shot;
+  right: Shot;
 };
 
 type ShowcaseTab = {
@@ -30,6 +56,12 @@ type ShowcaseTab = {
   footnote: string;
   /** Real assets ready → render the hero-style device composition. */
   composition?: DeviceTrio;
+  /** Four-image agent-chat composition. */
+  chatComposition?: ChatShots;
+  /** Two-image pull-request composition (desktop hero + phone). */
+  prComposition?: PrShots;
+  /** Three-desktop work-tools composition. */
+  toolsComposition?: ToolsShots;
   /** Fallback deck: first image is the large primary, the rest are thumbnails. */
   images?: ShowcaseImage[];
 };
@@ -56,9 +88,9 @@ const TABS: ShowcaseTab[] = [
     ],
     footnote: "Create one once — it's in your terminal, desktop, and pocket instantly.",
     composition: {
-      desktop: { src: "/images/secondPage/lanesDesktop.png", label: "ADE on macOS — Lanes" },
-      tui: { src: "/images/secondPage/lanesTUI.png", label: "ADE Code — lanes in the terminal" },
-      mobile: { src: "/images/secondPage/lanesMobile.png", label: "ADE on iOS — a worktree in your pocket" },
+      desktop: { src: "/images/secondPage/lanesDesktop.webp", label: "ADE on macOS — Lanes" },
+      tui: { src: "/images/secondPage/lanesTUI.webp", label: "ADE Code — lanes in the terminal" },
+      mobile: { src: "/images/secondPage/lanesMobile.webp", label: "ADE on iOS — a worktree in your pocket" },
     },
   },
   {
@@ -73,12 +105,12 @@ const TABS: ShowcaseTab[] = [
       "Messages, tool calls, and proofs sync to every screen.",
     ],
     footnote: "Every turn stays mirrored — no copy-paste between surfaces.",
-    images: [
-      { src: "/images/sync/chat/desktop.png", label: "Desktop", file: "sync/chat/desktop.png", caption: "Work" },
-      { src: "/images/sync/chat/tui.png", label: "Terminal", file: "sync/chat/tui.png", caption: "ADE Code" },
-      { src: "/images/sync/chat/grid-view.png", label: "Grid view", file: "sync/chat/grid-view.png", caption: "Parallel chats" },
-      { src: "/images/sync/chat/mobile.png", label: "Pocket iOS", file: "sync/chat/mobile.png", caption: "iOS" },
-    ],
+    chatComposition: {
+      desktop: { src: "/images/secondPage/chatDesktop.webp", label: "ADE on macOS — agent chat across panes" },
+      tui: { src: "/images/secondPage/chatTui.webp", label: "ADE Code — agent chat in the terminal" },
+      picker: { src: "/images/secondPage/chatModelPicker.webp", label: "Model picker — every agent in one menu" },
+      mobile: { src: "/images/secondPage/chatMobile.webp", label: "ADE on iOS — agent chat in your pocket" },
+    },
   },
   {
     id: "prs",
@@ -91,11 +123,10 @@ const TABS: ShowcaseTab[] = [
       "Merge when green — synced on every client.",
     ],
     footnote: "The PR your agent opened is the same object everywhere.",
-    images: [
-      { src: "/images/sync/prs/desktop.png", label: "Desktop", file: "sync/prs/desktop.png", caption: "PRs tab" },
-      { src: "/images/sync/prs/tui.png", label: "Terminal", file: "sync/prs/tui.png", caption: "ADE Code" },
-      { src: "/images/sync/prs/mobile.png", label: "Pocket iOS", file: "sync/prs/mobile.png", caption: "iOS" },
-    ],
+    prComposition: {
+      desktop: { src: "/images/secondPage/prDesktop.webp", label: "ADE on macOS — pull requests" },
+      mobile: { src: "/images/secondPage/prMobile.webp", label: "ADE on iOS — pull requests in your pocket" },
+    },
   },
   {
     id: "tools",
@@ -109,12 +140,11 @@ const TABS: ShowcaseTab[] = [
       "Every tool scoped to the active worktree.",
     ],
     footnote: "Agents get computer use; you get the same controls, one click away.",
-    images: [
-      { src: "/images/sync/tools/browser.png", label: "Browser", file: "sync/tools/browser.png" },
-      { src: "/images/sync/tools/ios-sim.png", label: "iOS Simulator", file: "sync/tools/ios-sim.png" },
-      { src: "/images/sync/tools/app-control.png", label: "App Control", file: "sync/tools/app-control.png" },
-      { src: "/images/sync/tools/files.png", label: "Files & git", file: "sync/tools/files.png" },
-    ],
+    toolsComposition: {
+      hero: { src: "/images/secondPage/workBrowser.webp", label: "ADE on macOS — built-in browser pane beside the chat" },
+      left: { src: "/images/secondPage/workGit.webp", label: "ADE on macOS — Git pane" },
+      right: { src: "/images/secondPage/workFiles.webp", label: "ADE on macOS — Files pane" },
+    },
   },
 ];
 
@@ -273,11 +303,271 @@ function ShowcaseComposition({ trio }: { trio: DeviceTrio }) {
   );
 }
 
+/**
+ * Agent-chat composition — a dominant desktop hero anchored by three supporting
+ * shots: a large TUI (bottom-left), the model picker (top-right) and a bezeled
+ * iPhone (bottom-right). Mirrors the Worktrees composition's depth language.
+ */
+function ChatComposition({ shots }: { shots: ChatShots }) {
+  return (
+    <div className="relative w-full self-center">
+      {/* localized violet glow */}
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-0 -m-8"
+        style={{
+          background:
+            "radial-gradient(ellipse 72% 62% at 50% 50%, rgba(124,58,237,0.42) 0%, rgba(124,58,237,0.1) 46%, transparent 78%)",
+          filter: "blur(16px)",
+          zIndex: 0,
+        }}
+      />
+
+      <div className="relative isolate w-full pb-[6%] pt-[3%]">
+        {/* #6 Desktop — base hero; defines composition height (largest) */}
+        <div
+          className="relative z-0 mx-auto w-[95%] motion-safe:transition-transform motion-safe:duration-500"
+          style={{ filter: "drop-shadow(0 30px 56px rgba(0,0,0,0.6))" }}
+        >
+          <div className={`${compositionFrame} rounded-[clamp(8px,1vw,14px)]`}>
+            <img
+              src={shots.desktop.src}
+              alt={shots.desktop.label}
+              loading="lazy"
+              decoding="async"
+              className="block h-auto w-full"
+            />
+          </div>
+        </div>
+
+        {/* #7 TUI — bottom-left (large) */}
+        <div
+          className="absolute bottom-[5%] left-[-1%] z-20 w-[48%] origin-bottom-left -rotate-[1deg] motion-safe:transition-transform motion-safe:duration-500 motion-safe:ease-out [@media(hover:hover)]:hover:z-40 [@media(hover:hover)]:hover:scale-[1.05] [@media(hover:hover)]:hover:rotate-0"
+          style={{ filter: "drop-shadow(0 22px 40px rgba(0,0,0,0.66))" }}
+        >
+          <div className={`${compositionFrame} rounded-[clamp(6px,0.7vw,10px)]`}>
+            <img
+              src={shots.tui.src}
+              alt={shots.tui.label}
+              loading="lazy"
+              decoding="async"
+              className="block h-auto w-full"
+            />
+          </div>
+        </div>
+
+        {/* #4 Model picker — top-right accent (smallest card) */}
+        <div
+          className="absolute right-[-3%] top-[3%] z-40 w-[23%] origin-top-right rotate-[2deg] motion-safe:transition-transform motion-safe:duration-500 motion-safe:ease-out [@media(hover:hover)]:hover:scale-[1.06] [@media(hover:hover)]:hover:rotate-0"
+          style={{ filter: "drop-shadow(0 18px 34px rgba(124,58,237,0.38))" }}
+        >
+          <div className={`${compositionFrame} rounded-[clamp(5px,0.6vw,9px)]`}>
+            <img
+              src={shots.picker.src}
+              alt={shots.picker.label}
+              loading="lazy"
+              decoding="async"
+              className="block h-auto w-full"
+            />
+          </div>
+        </div>
+
+        {/* #8 iPhone — bottom-right bezel (mobile) */}
+        <div
+          className="absolute bottom-[2%] right-[0%] z-30 w-[16.5%] origin-bottom-right rotate-[2deg] motion-safe:transition-transform motion-safe:duration-500 motion-safe:ease-out [@media(hover:hover)]:hover:z-40 [@media(hover:hover)]:hover:scale-[1.08] [@media(hover:hover)]:hover:rotate-0"
+          style={{ filter: "drop-shadow(0 24px 44px rgba(124,58,237,0.45))" }}
+        >
+          <div className="relative aspect-[9/19.5] overflow-hidden rounded-[clamp(14px,1.6vw,26px)] border-[clamp(3px,0.4vw,6px)] border-[#0c0c12] bg-black ring-1 ring-[color:var(--color-hairline-strong)]">
+            <div
+              aria-hidden
+              className="absolute left-1/2 top-[clamp(3px,0.4vw,6px)] z-[2] h-[clamp(6px,0.8vw,14px)] w-[40%] -translate-x-1/2 rounded-full bg-black"
+            />
+            <img
+              src={shots.mobile.src}
+              alt={shots.mobile.label}
+              loading="lazy"
+              decoding="async"
+              className="block h-full w-full object-cover object-top"
+            />
+            <div
+              aria-hidden
+              className="pointer-events-none absolute inset-0"
+              style={{ boxShadow: "inset 0 0 22px rgba(124,58,237,0.26)" }}
+            />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Pull-request composition — a dominant desktop PR view with a bezeled iPhone
+ * tucked into the bottom-right. Two surfaces, one PR object.
+ */
+function PrComposition({ shots }: { shots: PrShots }) {
+  return (
+    <div className="relative w-full self-center">
+      {/* localized violet glow */}
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-0 -m-8"
+        style={{
+          background:
+            "radial-gradient(ellipse 72% 62% at 48% 50%, rgba(124,58,237,0.42) 0%, rgba(124,58,237,0.1) 46%, transparent 78%)",
+          filter: "blur(16px)",
+          zIndex: 0,
+        }}
+      />
+
+      <div className="relative isolate w-full pb-[5%]">
+        {/* Desktop — hero (largest) */}
+        <div
+          className="relative z-0 mx-auto w-[97%] motion-safe:transition-transform motion-safe:duration-500"
+          style={{ filter: "drop-shadow(0 30px 56px rgba(0,0,0,0.6))" }}
+        >
+          <div className={`${compositionFrame} rounded-[clamp(8px,1vw,14px)]`}>
+            <img
+              src={shots.desktop.src}
+              alt={shots.desktop.label}
+              loading="lazy"
+              decoding="async"
+              className="block h-auto w-full"
+            />
+          </div>
+        </div>
+
+        {/* iPhone — bottom-right bezel */}
+        <div
+          className="absolute bottom-[1%] right-[1%] z-30 w-[17.5%] origin-bottom-right rotate-[2deg] motion-safe:transition-transform motion-safe:duration-500 motion-safe:ease-out [@media(hover:hover)]:hover:z-40 [@media(hover:hover)]:hover:scale-[1.08] [@media(hover:hover)]:hover:rotate-0"
+          style={{ filter: "drop-shadow(0 24px 44px rgba(124,58,237,0.45))" }}
+        >
+          <div className="relative aspect-[9/19.5] overflow-hidden rounded-[clamp(14px,1.6vw,26px)] border-[clamp(3px,0.4vw,6px)] border-[#0c0c12] bg-black ring-1 ring-[color:var(--color-hairline-strong)]">
+            <div
+              aria-hidden
+              className="absolute left-1/2 top-[clamp(3px,0.4vw,6px)] z-[2] h-[clamp(6px,0.8vw,14px)] w-[40%] -translate-x-1/2 rounded-full bg-black"
+            />
+            <img
+              src={shots.mobile.src}
+              alt={shots.mobile.label}
+              loading="lazy"
+              decoding="async"
+              className="block h-full w-full object-cover object-top"
+            />
+            <div
+              aria-hidden
+              className="pointer-events-none absolute inset-0"
+              style={{ boxShadow: "inset 0 0 22px rgba(124,58,237,0.26)" }}
+            />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Work-tools composition — a dominant desktop hero (browser pane) with two
+ * smaller desktop views flanking the bottom (Git + Files panes).
+ */
+function WorkToolsComposition({ shots }: { shots: ToolsShots }) {
+  const frame = `${compositionFrame} rounded-[clamp(6px,0.8vw,12px)]`;
+  return (
+    <div className="relative w-full self-center">
+      {/* localized violet glow */}
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-0 -m-8"
+        style={{
+          background:
+            "radial-gradient(ellipse 74% 64% at 50% 48%, rgba(124,58,237,0.42) 0%, rgba(124,58,237,0.1) 46%, transparent 78%)",
+          filter: "blur(16px)",
+          zIndex: 0,
+        }}
+      />
+
+      <div className="relative isolate w-full pb-[7%]">
+        {/* Hero — browser pane (largest) */}
+        <div
+          className="relative z-0 mx-auto w-[88%] motion-safe:transition-transform motion-safe:duration-500"
+          style={{ filter: "drop-shadow(0 30px 56px rgba(0,0,0,0.6))" }}
+        >
+          <div className={`${compositionFrame} rounded-[clamp(8px,1vw,14px)]`}>
+            <img
+              src={shots.hero.src}
+              alt={shots.hero.label}
+              loading="lazy"
+              decoding="async"
+              className="block h-auto w-full"
+            />
+          </div>
+        </div>
+
+        {/* Git pane — bottom-left */}
+        <div
+          className="absolute bottom-[2%] left-[-1%] z-20 w-[49%] origin-bottom-left -rotate-[1.5deg] motion-safe:transition-transform motion-safe:duration-500 motion-safe:ease-out [@media(hover:hover)]:hover:z-40 [@media(hover:hover)]:hover:scale-[1.05] [@media(hover:hover)]:hover:rotate-0"
+          style={{ filter: "drop-shadow(0 22px 40px rgba(0,0,0,0.66))" }}
+        >
+          <div className={frame}>
+            <img
+              src={shots.left.src}
+              alt={shots.left.label}
+              loading="lazy"
+              decoding="async"
+              className="block h-auto w-full"
+            />
+          </div>
+        </div>
+
+        {/* Files pane — bottom-right */}
+        <div
+          className="absolute bottom-[2%] right-[-1%] z-30 w-[49%] origin-bottom-right rotate-[1.5deg] motion-safe:transition-transform motion-safe:duration-500 motion-safe:ease-out [@media(hover:hover)]:hover:z-40 [@media(hover:hover)]:hover:scale-[1.05] [@media(hover:hover)]:hover:rotate-0"
+          style={{ filter: "drop-shadow(0 22px 40px rgba(0,0,0,0.66))" }}
+        >
+          <div className={frame}>
+            <img
+              src={shots.right.src}
+              alt={shots.right.label}
+              loading="lazy"
+              decoding="async"
+              className="block h-auto w-full"
+            />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function ImageStage({ tab }: { tab: ShowcaseTab }) {
   if (tab.composition) {
     return (
-      <div className="flex h-full items-center">
+      <div className="flex h-full items-center lg:pl-[clamp(6px,1.4vw,30px)]">
         <ShowcaseComposition trio={tab.composition} />
+      </div>
+    );
+  }
+
+  if (tab.chatComposition) {
+    return (
+      <div className="flex h-full items-center lg:pl-[clamp(6px,1.4vw,30px)]">
+        <ChatComposition shots={tab.chatComposition} />
+      </div>
+    );
+  }
+
+  if (tab.prComposition) {
+    return (
+      <div className="flex h-full items-center lg:pl-[clamp(6px,1.4vw,30px)]">
+        <PrComposition shots={tab.prComposition} />
+      </div>
+    );
+  }
+
+  if (tab.toolsComposition) {
+    return (
+      <div className="flex h-full items-center lg:pl-[clamp(6px,1.4vw,30px)]">
+        <WorkToolsComposition shots={tab.toolsComposition} />
       </div>
     );
   }
@@ -339,42 +629,30 @@ function CopyPanel({ tab }: { tab: ShowcaseTab }) {
 export function ShipShowcase() {
   const reduceMotion = useReducedMotion() ?? true;
   const [active, setActive] = useState(0);
-  const [progress, setProgress] = useState(0);
-  const [, bump] = useReducer((n: number) => n + 1, 0);
 
   const tab = TABS[active]!;
 
   const selectTab = useCallback((index: number) => {
     setActive(index);
-    setProgress(0);
-    bump();
   }, []);
 
+  // Auto-advance only. The progress bar is a keyed CSS-transform animation
+  // (see below) that restarts itself whenever `active` changes — no per-frame
+  // React state, so switching tabs can't make the bar lag or run backwards.
   useEffect(() => {
     if (reduceMotion) return;
 
-    const started = Date.now();
-    const tick = window.setInterval(() => {
-      const elapsed = Date.now() - started;
-      setProgress(Math.min(1, elapsed / ROTATE_MS));
-    }, TICK_MS);
-
     const advance = window.setTimeout(() => {
       setActive((current) => (current + 1) % TABS.length);
-      setProgress(0);
-      bump();
     }, ROTATE_MS);
 
-    return () => {
-      window.clearInterval(tick);
-      window.clearTimeout(advance);
-    };
+    return () => window.clearTimeout(advance);
   }, [active, reduceMotion]);
 
   return (
     <section
       id="ship-showcase"
-      className="relative mx-auto w-full max-w-[1760px] pt-[clamp(40px,4.5vw,72px)]"
+      className="relative mx-auto w-full max-w-[1760px] pt-[clamp(6px,0.8vw,14px)]"
     >
       {/* gradient top rule — more color than a flat hairline */}
       <div
@@ -398,8 +676,8 @@ export function ShipShowcase() {
         }}
       />
 
-      {/* Heading on the left, tab rail to its right on wide screens */}
-      <div className="grid gap-x-[clamp(32px,4vw,72px)] gap-y-[clamp(28px,3.4vw,44px)] 2xl:grid-cols-[minmax(0,1fr)_auto] 2xl:items-end">
+      {/* Heading on the left, tab rail beside it (aligned to the headline) on wide screens */}
+      <div className="grid gap-x-[clamp(28px,3vw,56px)] gap-y-[clamp(24px,3vw,38px)] 2xl:grid-cols-[auto_auto] 2xl:items-start 2xl:justify-start">
         <header className="max-w-[60ch] 2xl:max-w-none">
           <p className="text-[11px] uppercase tracking-[0.26em] text-[color:var(--color-violet-bright)]">
             One repo, every surface
@@ -422,8 +700,8 @@ export function ShipShowcase() {
           </p>
         </header>
 
-        {/* Tab rail */}
-        <div className="w-full 2xl:w-auto">
+        {/* Tab rail — nudged down + slightly right on wide screens to line up with the headline row */}
+        <div className="w-full 2xl:ml-[clamp(14px,1.8vw,40px)] 2xl:w-auto 2xl:pt-[clamp(30px,2.2vw,42px)]">
           <div
             role="tablist"
             aria-label="Product walkthrough"
@@ -467,16 +745,19 @@ export function ShipShowcase() {
           className="mt-3 h-[2px] overflow-hidden rounded-full bg-[color:var(--color-hairline)]"
           aria-hidden
         >
-          <div
-            className="h-full origin-left rounded-full bg-[color:var(--color-violet-bright)] shadow-[0_0_10px_rgba(124,58,237,0.7)] transition-[width] duration-100 ease-linear"
-            style={{ width: reduceMotion ? "100%" : `${progress * 100}%` }}
+          <motion.div
+            key={active}
+            className="h-full w-full origin-left rounded-full bg-[color:var(--color-violet-bright)] shadow-[0_0_10px_rgba(124,58,237,0.7)]"
+            initial={{ scaleX: reduceMotion ? 1 : 0 }}
+            animate={{ scaleX: 1 }}
+            transition={{ duration: reduceMotion ? 0 : ROTATE_MS / 1000, ease: "linear" }}
           />
         </div>
         </div>
       </div>
 
       {/* Stage — copy + big image deck, crossfaded on tab change */}
-      <div className="relative mt-[clamp(28px,3.4vw,48px)] min-h-[clamp(460px,50vw,700px)]">
+      <div className="relative mt-[clamp(10px,1.4vw,22px)] min-h-[clamp(520px,56vw,820px)]">
         <AnimatePresence mode="wait" initial={false}>
           <motion.div
             key={tab.id}
@@ -484,7 +765,7 @@ export function ShipShowcase() {
             animate={{ opacity: 1, y: 0 }}
             exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: -10 }}
             transition={{ duration: 0.42, ease: [0.22, 1, 0.36, 1] }}
-            className="grid gap-[clamp(24px,3vw,56px)] lg:grid-cols-[minmax(0,0.58fr)_minmax(0,1.42fr)] lg:items-center"
+            className="grid gap-[clamp(14px,1.8vw,32px)] lg:grid-cols-[minmax(0,0.24fr)_minmax(0,1.76fr)] lg:items-center"
           >
             <CopyPanel tab={tab} />
             <ImageStage tab={tab} />

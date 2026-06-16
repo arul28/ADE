@@ -1,9 +1,9 @@
 import { motion, useReducedMotion } from "framer-motion";
 
 const HERO_IMAGES = {
-  tui: { src: "/images/hero/hero-tui.png", alt: "ADE Code TUI — terminal-native Work chat" },
-  desktop: { src: "/images/hero/hero-desktop.png", alt: "ADE on macOS — desktop Work workspace" },
-  mobile: { src: "/images/hero/hero-mobile.png", alt: "ADE on iOS — mobile companion" },
+  tui: { src: "/images/hero/hero-tui.webp", alt: "ADE Code TUI — terminal-native Work chat" },
+  desktop: { src: "/images/hero/hero-desktop.webp", alt: "ADE on macOS — desktop Work workspace" },
+  mobile: { src: "/images/hero/hero-mobile.webp", alt: "ADE on iOS — mobile companion" },
 } as const;
 
 const panelFrame =

@@ -2,16 +2,16 @@ import { Fragment } from "react";
 import { motion, useReducedMotion } from "framer-motion";
 
 const COMPETITORS = [
-  { name: "Claude Code", short: "Claude", logo: "/images/competitors/claude-code.png" },
-  { name: "Codex", short: "Codex", logo: "/images/competitors/codex.png" },
-  { name: "OpenCode", short: "OpenC.", logo: "/images/competitors/opencode.png" },
-  { name: "T3 Code", short: "T3", logo: "/images/competitors/t3-code.png" },
-  { name: "Cursor", short: "Cursor", logo: "/images/competitors/cursor.png" },
-  { name: "Superset", short: "Superset", logo: "/images/competitors/superset.png" },
-  { name: "Conductor", short: "Cond.", logo: "/images/competitors/conductor.png" },
-  { name: "Factory", short: "Factory", logo: "/images/competitors/factory.png" },
-  { name: "Paperclip", short: "Paperc.", logo: "/images/competitors/paperclip.png" },
-  { name: "GitHub", short: "GitHub", logo: "/images/competitors/github.png" },
+  { name: "Claude Code", short: "Claude", logo: "/images/competitors/claude-code.webp" },
+  { name: "Codex", short: "Codex", logo: "/images/competitors/codex.webp" },
+  { name: "OpenCode", short: "OpenC.", logo: "/images/competitors/opencode.webp" },
+  { name: "T3 Code", short: "T3", logo: "/images/competitors/t3-code.webp" },
+  { name: "Cursor", short: "Cursor", logo: "/images/competitors/cursor.webp" },
+  { name: "Superset", short: "Superset", logo: "/images/competitors/superset.webp" },
+  { name: "Conductor", short: "Cond.", logo: "/images/competitors/conductor.webp" },
+  { name: "Factory", short: "Factory", logo: "/images/competitors/factory.webp" },
+  { name: "Paperclip", short: "Paperc.", logo: "/images/competitors/paperclip.webp" },
+  { name: "GitHub", short: "GitHub", logo: "/images/competitors/github.webp" },
 ] as const;
 
 /**
@@ -118,7 +118,7 @@ export function CompetitorEquation() {
             />
           )}
           <img
-            src="/images/ade-dock-icon.png"
+            src="/images/ade-dock-icon.webp"
             alt="ADE"
             className="relative h-[80px] w-[80px] rounded-[22%] object-contain drop-shadow-[0_14px_48px_rgba(124,58,237,0.6)] sm:h-[96px] sm:w-[96px]"
           />
