@@ -203,11 +203,6 @@ import type {
   SyncRoleSnapshot,
   SyncStatusEventPayload,
   SyncTransferReadiness,
-  ApnsBridgeStatus,
-  ApnsBridgeSaveConfigArgs,
-  ApnsBridgeUploadKeyArgs,
-  ApnsBridgeSendTestPushArgs,
-  ApnsBridgeSendTestPushResult,
   CtoGetStateArgs,
   CtoEnsureSessionArgs,
   CtoListSessionLogsArgs,
@@ -911,21 +906,6 @@ declare global {
         clearRuntimeName: () => Promise<SyncRoleSnapshot>;
         setActiveLanePresence: (args: { laneIds: string[] }) => Promise<void>;
         onEvent: (cb: (event: SyncStatusEventPayload) => void) => () => void;
-      };
-      notifications: {
-        apns: {
-          getStatus: () => Promise<ApnsBridgeStatus>;
-          saveConfig: (
-            args: ApnsBridgeSaveConfigArgs,
-          ) => Promise<ApnsBridgeStatus>;
-          uploadKey: (
-            args: ApnsBridgeUploadKeyArgs,
-          ) => Promise<ApnsBridgeStatus>;
-          clearKey: () => Promise<ApnsBridgeStatus>;
-          sendTestPush: (
-            args: ApnsBridgeSendTestPushArgs,
-          ) => Promise<ApnsBridgeSendTestPushResult>;
-        };
       };
       agentTools: {
         detect: () => Promise<AgentTool[]>;

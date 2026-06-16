@@ -1354,32 +1354,6 @@ export type AiConfig = {
   sessionIntelligence?: SessionIntelligenceConfig;
 };
 
-/**
- * Mobile push notification configuration. The `.p8` key itself is never
- * stored in config — it lives in an Electron `safeStorage`-encrypted blob
- * under `userData/apns.key.enc`. Only metadata needed to reconstruct the
- * APNs JWT sits here.
- */
-export type NotificationApnsConfig = {
-  enabled: boolean;
-  /** Apple Developer Key ID (10-char). */
-  keyId?: string;
-  /** Apple Developer Team ID (10-char). */
-  teamId?: string;
-  /** iOS app bundle id, e.g. `com.ade.ios`. */
-  bundleId?: string;
-  env: "sandbox" | "production";
-  /**
-   * Set to `true` once a `.p8` has been saved to the encrypted blob.
-   * The config does NOT carry the key bytes themselves.
-   */
-  keyStored?: boolean;
-};
-
-export type NotificationsConfig = {
-  apns?: NotificationApnsConfig;
-};
-
 export type ProjectIdentityConfig = {
   /**
    * Project-root-relative path to the icon shown in ADE project tabs/catalogs.
@@ -1456,8 +1430,6 @@ export type ProjectConfigFile = {
   providers?: Record<string, unknown>;
   linearSync?: LinearSyncConfig;
   ui?: ProjectUiConfig;
-  /** Mobile push notification configuration (APNs). */
-  notifications?: NotificationsConfig;
 };
 
 export type ProjectConfigCandidate = {
@@ -1508,7 +1480,6 @@ export type EffectiveProjectConfig = {
       claudeProjectsRoot?: string;
     };
   };
-  notifications?: NotificationsConfig;
 };
 
 export type ProjectConfigValidationIssue = {

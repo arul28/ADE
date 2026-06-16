@@ -93,17 +93,6 @@ import type { AdeDb } from "../../../../desktop/src/main/services/state/kvDb";
 import { hasNullByte, normalizeRelative, nowIso, resolvePathWithinRoot, safeJsonParse, toOptionalString, uniqueStrings, writeTextAtomic } from "../../../../desktop/src/main/services/shared/utils";
 import type { DeviceRegistryService } from "./deviceRegistryService";
 import { createSyncPairingStore, type SyncPairingRecord } from "./syncPairingStore";
-import type { NotificationEventBus } from "../../../../desktop/src/main/services/notifications/notificationEventBus";
-import type {
-  ApnsEnvironment,
-  ApnsPushTokenKind,
-  NotificationPreferences,
-  SyncInAppNotificationPayload,
-  SyncNotificationPrefsPayload,
-  SyncRegisterPushTokenPayload,
-  SyncSendTestPushPayload,
-} from "../../../../desktop/src/shared/types/sync";
-import { DEFAULT_NOTIFICATION_PREFERENCES, normalizeNotificationPreferences } from "../../../../desktop/src/shared/types/sync";
 import type { SyncPinStore } from "./syncPinStore";
 import type { SyncRuntimeNameStore } from "./syncRuntimeNameStore";
 import { DEFAULT_SYNC_COMPRESSION_THRESHOLD_BYTES, DEFAULT_SYNC_HOST_PORT, DEFAULT_SYNC_MAX_FRAME_BYTES, encodeSyncEnvelope, encodeSyncEnvelopeFrames, mapPlatform, parseSyncEnvelope, SYNC_CHUNKED_ENVELOPES_CAPABILITY, wsDataToText } from "./syncProtocol";
@@ -255,7 +244,6 @@ type PersistedMobileCommand = {
 const PERSISTED_MOBILE_COMMAND_ACTIONS = new Set<string>([
   "lanes.presence.announce",
   "lanes.presence.release",
-  "notification_prefs",
   "work.runQuickCommand",
   "work.startCliSession",
   "work.sendToSession",
@@ -421,7 +409,6 @@ type SyncHostServiceArgs = {
   deviceRegistryService?: DeviceRegistryService;
   projectCatalogProvider?: SyncProjectCatalogProvider;
   onStateChanged?: () => void;
-  notificationEventBus?: NotificationEventBus | null;
   remoteCommandService?: SyncRemoteCommandService;
   remoteCommandExecutor?: Pick<SyncRemoteCommandService, "execute">;
 };
@@ -1149,19 +1136,6 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     }
   };
   loadPersistedCommandLedger();
-  /** Notification preferences keyed by deviceId. The map is a hot cache;
-   * device metadata is the restart-safe source for offline push fan-out. */
-  const notificationPrefsByDeviceId = new Map<string, NotificationPreferences>();
-  const storeNotificationPrefsForDevice = (deviceId: string, prefs: NotificationPreferences): void => {
-    const normalizedPrefs = normalizeNotificationPreferences(prefs);
-    notificationPrefsByDeviceId.set(deviceId, normalizedPrefs);
-    args.deviceRegistryService?.setNotificationPreferences?.(deviceId, normalizedPrefs);
-  };
-  const readNotificationPrefsForDevice = (deviceId: string): NotificationPreferences => {
-    return notificationPrefsByDeviceId.get(deviceId)
-      ?? args.deviceRegistryService?.getNotificationPreferences?.(deviceId)
-      ?? DEFAULT_NOTIFICATION_PREFERENCES;
-  };
   const lanePresenceByLaneId = new Map<string, Map<string, LanePresenceEntry>>();
   let localActiveLaneIds = new Set<string>();
   const PAIR_FAILURE_THRESHOLD = 5;
@@ -1544,15 +1518,6 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   const chatEventSubscription = args.agentChatService?.subscribeToEvents(
     (event) => {
       broadcastChatEvent(event);
-      // Let the notification bus (mobile push fan-out) observe chat events.
-      // Failures here must never break chat delivery to the UI.
-      try {
-        args.notificationEventBus?.publishChatEvent(event);
-      } catch (error) {
-        args.logger.warn("sync_host.notification_publish_failed", {
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
     },
   ) ?? null;
 
@@ -3209,36 +3174,6 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       reject("This ADE machine is hosting a different project. Select the project again and retry.", "project_not_open");
       return;
     }
-    if (payload.action === "notification_prefs") {
-      // iOS bridges `SyncService.setMutePush` through the command envelope
-      // rather than a second `notification_prefs` envelope. We translate by
-      // merging `{ muteUntil }` into the device's existing prefs (or the
-      // default prefs if none have been uploaded yet) so the notification
-      // bus starts gating immediately — the same `isAllowedByPrefs` path the
-      // envelope-based update feeds.
-      const deviceId = peer.metadata?.deviceId;
-      if (!deviceId) {
-        reject("notification_prefs requires an authenticated device.", "invalid_command");
-        return;
-      }
-      const rawArgs = (payload.args as Record<string, unknown> | null | undefined) ?? {};
-      const rawMute = rawArgs.muteUntil;
-      const muteUntil = typeof rawMute === "string" && rawMute.length > 0 ? rawMute : null;
-      const existing = readNotificationPrefsForDevice(deviceId);
-      storeNotificationPrefsForDevice(deviceId, { ...existing, muteUntil });
-      const ack: SyncCommandAckPayload = {
-        commandId,
-        accepted: true,
-        status: "accepted",
-        message: muteUntil ? `Muted pushes until ${muteUntil}.` : "Cleared push mute.",
-      };
-      sendResult(startCommandRecord(ack), {
-        commandId,
-        ok: true,
-        result: { ok: true, muteUntil },
-      });
-      return;
-    }
     if (payload.action === "lanes.presence.announce" || payload.action === "lanes.presence.release") {
       if (requestedProjectId && hostProjectId && !matchesHostProject) {
         reject("Lane presence is not available for a project that is not open in this phone sync host.", "project_not_open");
@@ -4007,170 +3942,9 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
             : {}),
         });
         break;
-      case "register_push_token": {
-        const payload = envelope.payload as SyncRegisterPushTokenPayload | null;
-        handleRegisterPushToken(peer, envelope.requestId, payload);
-        break;
-      }
-      case "notification_prefs": {
-        const payload = envelope.payload as SyncNotificationPrefsPayload | null;
-        handleNotificationPrefs(peer, payload);
-        break;
-      }
-      case "send_test_push": {
-        const payload = envelope.payload as SyncSendTestPushPayload | null;
-        await handleSendTestPush(peer, envelope.requestId, payload);
-        break;
-      }
       default:
         break;
     }
-  }
-
-  function handleRegisterPushToken(
-    peer: PeerState,
-    requestId: string | null | undefined,
-    payload: SyncRegisterPushTokenPayload | null,
-  ): void {
-    const deviceId = peer.metadata?.deviceId;
-    if (!deviceId) {
-      args.logger.warn("sync_host.push_token_missing_device", {});
-      sendRequired(peer, "command_ack", {
-        commandId: "push-token:unknown",
-        accepted: false,
-        status: "missing_device_id",
-        message: "Cannot store push token before device registration completes.",
-      }, requestId ?? null);
-      return;
-    }
-    if (!payload || typeof payload.token !== "string" || payload.token.trim().length === 0) {
-      args.logger.warn("sync_host.push_token_missing", { deviceId });
-      sendRequired(peer, "command_ack", {
-        commandId: `push-token:${deviceId}:unknown`,
-        accepted: false,
-        status: "invalid_payload",
-        message: "Push token registration did not include a token.",
-      }, requestId ?? null);
-      return;
-    }
-    const kind: ApnsPushTokenKind =
-      payload.kind === "alert" || payload.kind === "activity-start" || payload.kind === "activity-update"
-        ? payload.kind
-        : "alert";
-    if (kind === "activity-update" && !payload.activityId?.trim()) {
-      args.logger.warn("sync_host.push_token_missing_activity_id", { deviceId });
-      sendRequired(peer, "command_ack", {
-        commandId: `push-token:${deviceId}:${kind}`,
-        accepted: false,
-        status: "missing_activity_id",
-        message: "Live Activity update tokens require an activity id.",
-      }, requestId ?? null);
-      return;
-    }
-    const env: ApnsEnvironment = payload.env === "production" ? "production" : "sandbox";
-    const stored = args.deviceRegistryService?.setApnsToken?.(deviceId, payload.token.trim(), kind, env, {
-      bundleId: payload.bundleId,
-      activityId: payload.activityId,
-    });
-    if (!stored) {
-      sendRequired(peer, "command_ack", {
-        commandId: `push-token:${deviceId}:${kind}`,
-        accepted: false,
-        status: "device_not_found",
-        message: `Could not store ${kind} push token for ${deviceId}.`,
-      }, requestId ?? null);
-      return;
-    }
-    // Optional ack so the client can retry on failure.
-    sendRequired(peer, "command_ack", {
-      commandId: `push-token:${deviceId}:${kind}`,
-      accepted: true,
-      status: "accepted",
-      message: `Stored ${kind} push token for ${deviceId}.`,
-    }, requestId ?? null);
-  }
-
-  function handleNotificationPrefs(peer: PeerState, payload: SyncNotificationPrefsPayload | null): void {
-    const deviceId = peer.metadata?.deviceId;
-    if (!deviceId || !payload || !payload.prefs) return;
-    storeNotificationPrefsForDevice(deviceId, normalizeNotificationPreferences(payload.prefs));
-  }
-
-  async function handleSendTestPush(
-    peer: PeerState,
-    requestId: string | null | undefined,
-    payload: SyncSendTestPushPayload | null,
-  ): Promise<void> {
-    const deviceId = peer.metadata?.deviceId;
-    if (!deviceId) return;
-    const kind = payload?.kind === "activity" ? "activity" : "alert";
-    if (!args.notificationEventBus) {
-      if (isIosPeerConnected(deviceId)) {
-        sendInAppNotification(deviceId, {
-          category: "system",
-          title: payload?.title?.trim() || "ADE test push",
-          body: payload?.body?.trim() || "This device reached its paired ADE machine.",
-          collapseId: "ade:test",
-        });
-        sendRequired(peer, "command_result", {
-          commandId: `push-test:${deviceId}:${kind}`,
-          ok: true,
-          result: {
-            mode: "in_app",
-            message: "Test notification delivered in app. APNs is not wired in this runtime.",
-          },
-        }, requestId ?? null);
-        return;
-      }
-      sendRequired(peer, "command_result", {
-        commandId: `push-test:${deviceId}:${kind}`,
-        ok: false,
-        error: {
-          code: "test_push_failed",
-          message: "Notifications are not wired in this ADE runtime.",
-        },
-      }, requestId ?? null);
-      return;
-    }
-    const result = await args.notificationEventBus.sendTestPush(deviceId, kind);
-    sendRequired(peer, "command_result", {
-      commandId: `push-test:${deviceId}:${kind}`,
-      ok: result.ok,
-      ...(result.ok ? {} : { error: { code: "test_push_failed", message: result.reason ?? "unknown" } }),
-    }, requestId ?? null);
-  }
-
-  /**
-   * Deliver a foreground-only notification to a specific iOS peer over the
-   * existing WebSocket. Used by the notification bus when the device is
-   * currently connected, in place of (or alongside) an APNs alert.
-   */
-  function sendInAppNotification(
-    deviceId: string,
-    payload: Omit<SyncInAppNotificationPayload, "generatedAt">,
-  ): void {
-    const fullPayload: SyncInAppNotificationPayload = {
-      ...payload,
-      generatedAt: nowIso(),
-    };
-    for (const peer of peers) {
-      if (!peer.authenticated || peer.ws.readyState !== WebSocket.OPEN) continue;
-      if (peer.metadata?.deviceId !== deviceId) continue;
-      send(peer.ws, "in_app_notification", fullPayload);
-    }
-  }
-
-  function getNotificationPrefsForDevice(deviceId: string): NotificationPreferences | null {
-    return readNotificationPrefsForDevice(deviceId);
-  }
-
-  function isIosPeerConnected(deviceId: string): boolean {
-    for (const peer of peers) {
-      if (peer.metadata?.deviceId !== deviceId) continue;
-      if (!peer.authenticated || peer.ws.readyState !== WebSocket.OPEN) continue;
-      return true;
-    }
-    return false;
   }
 
   const getLanePresenceSnapshot = (): Array<{ laneId: string; devicesOpen: DeviceMarker[] }> => {
@@ -4358,27 +4132,6 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         if (!peer.authenticated || peer.ws.readyState !== WebSocket.OPEN) continue;
         sendProjectCatalog(peer, payload);
       }
-    },
-
-    /**
-     * Push an in-app notification to a specific iOS peer over the WebSocket.
-     * Used by the notification event bus as the foreground-delivery path.
-     */
-    sendInAppNotification(
-      deviceId: string,
-      payload: Omit<SyncInAppNotificationPayload, "generatedAt">,
-    ): void {
-      sendInAppNotification(deviceId, payload);
-    },
-
-    /** Returns the latest announced notification prefs for a device, or null. */
-    getNotificationPrefsForDevice(deviceId: string): NotificationPreferences | null {
-      return getNotificationPrefsForDevice(deviceId);
-    },
-
-    /** Whether a given device is currently connected + authenticated. */
-    isIosPeerConnected(deviceId: string): boolean {
-      return isIosPeerConnected(deviceId);
     },
 
     handlePtyData(event: PtyDataEvent): void {

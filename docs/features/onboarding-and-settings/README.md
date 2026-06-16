@@ -182,8 +182,8 @@ Renderer — settings:
 
 - `apps/desktop/src/renderer/components/app/SettingsPage.tsx` — tab
   container. The current top-level sections are General, Appearance,
-  AI Connections, Background Jobs, Mobile Push, Integrations, Lane
-  Templates, and Lane Behavior. Legacy `workspace`, `project`, and
+  AI Connections, Background Jobs, Integrations, Lane Templates, and
+  Lane Behavior. Legacy `workspace`, `project`, and
   `context` deep links land in General; `providers` lands in AI
   Connections; `automations` lands in Background Jobs. Tutorial replay
   and tour entry points live under the Help menu in the top bar, not
@@ -267,7 +267,7 @@ Renderer — settings:
   only `claude` and `codex` are tracked in `TRACKED_PROVIDERS`. Budget
   caps round-trip through `ade.usage.getBudgetConfig` /
   `saveBudgetConfig`. Threshold crossings (25 / 50 / 75 / 100 %) emit
-  `UsageThresholdEvent`s the notification bus turns into APNs alerts.
+  `UsageThresholdEvent`s for local usage handling.
 - `apps/desktop/src/renderer/components/settings/AdeUsageSection.tsx`
   — Settings > Stats. Reads `window.ade.usage.getAdeStats({ preset })`
   for today / 7d / 30d / all-time stats and calls
@@ -434,7 +434,6 @@ changing rather than which service backs it:
 | Appearance | `AppearanceSection.tsx` (renders `ChatAppearancePreview`) | Theme, code-block copy-button position, agent-turn completion sound + volume + quiet-when-focused, chat font size (`chatFontSizePx`), chat transcript density (`chatTranscriptDensity` — `compact` / `comfortable` / `spacious`), chat chrome tint (`chatChromeTint` — `colored` default vs `neutral` for monochrome chrome; the legacy `chatLaneAccentEmphasis` preset slug is still read so older user-pref blobs migrate cleanly), chat shell geometry (`chatShellGeometry` — `soft` / `default` / `sharp` corners), the user-message minimap toggle (`chatUserMinimapEnabled` — drives the inline `ChatUserMinimap`), and the Work launch-prompt clipboard preferences (`launchPromptClipboardEnabled` for copying submitted prompts, `launchPromptClipboardNoticeEnabled` for the composer reminder). Persisted to `localStorage` under `ade.userPreferences.v1`. |
 | Workspace | `WorkspaceSettingsSection.tsx`, `ProjectSection.tsx` | Project identity, paths, skill files. (`SyncDevicesSection.tsx` — multi-device sync, host transfer, peer status, pairing PIN, Tailscale discovery — is mounted from the top bar's Sync popover, not as a Settings tab.) |
 | AI | `AiSettingsSection.tsx`, `AiFeaturesSection.tsx`, `ProvidersSection.tsx` | Provider CLIs, models, API-key status, provider readiness, OpenCode runtime diagnostics, and AI feature flags. The same status surface is exposed through ADE actions for `ade code` model setup. |
-| Mobile Push | `MobilePushPanel.tsx` | APNs registration, paired-device push tokens, per-category preferences |
 | Integrations | `IntegrationsSettingsSection.tsx`, `GitHubSection.tsx`, `LinearSection.tsx` | GitHub, Linear, and computer-use backend readiness. The GitHub section reads `status.connected` (the backend's single "GitHub is usable" gate) to decide between CONNECTED / LIMITED ACCESS / NOT CONNECTED, surfaces a dedicated repo-probe error when a fine-grained token authenticates as a user but cannot access the active repo, and the REFRESH button calls `getStatus({ forceRefresh: true })` so users who fix permissions on github.com see the change immediately. See [`pull-requests/README.md`](../pull-requests/README.md#github-connectivity-model) for the full status-shape and `connected` derivation. |
 | Lane Templates | `LaneTemplatesSection.tsx`, `LaneBehaviorSection.tsx` | Lane init recipes and lane lifecycle policy |
 | Stats | `AdeUsageSection.tsx` | Local runtime token / cost summaries and GitHub-backed PR, commit, and code movement totals. Deep links from `?tab=usage` and `?tab=stats` land here. |

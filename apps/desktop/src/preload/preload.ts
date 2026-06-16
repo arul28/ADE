@@ -83,11 +83,6 @@ import type {
   SyncRoleSnapshot,
   SyncStatusEventPayload,
   SyncTransferReadiness,
-  ApnsBridgeStatus,
-  ApnsBridgeSaveConfigArgs,
-  ApnsBridgeUploadKeyArgs,
-  ApnsBridgeSendTestPushArgs,
-  ApnsBridgeSendTestPushResult,
   DraftPrDescriptionArgs,
   CtoGetStateArgs,
   CtoEnsureSessionArgs,
@@ -3822,36 +3817,6 @@ contextBridge.exposeInMainWorld("ade", {
         removeRemote();
         ipcRenderer.removeListener(IPC.syncEvent, listener);
       };
-    },
-  },
-  notifications: {
-    apns: {
-      getStatus: async (): Promise<ApnsBridgeStatus> =>
-        callProjectRuntimeActionOr("notifications_apns", "getStatus", {}, () =>
-          ipcRenderer.invoke(IPC.notificationsApnsGetStatus),
-        ),
-      saveConfig: async (
-        args: ApnsBridgeSaveConfigArgs,
-      ): Promise<ApnsBridgeStatus> =>
-        callProjectRuntimeActionOr("notifications_apns", "saveConfig", { args }, () =>
-          ipcRenderer.invoke(IPC.notificationsApnsSaveConfig, args),
-        ),
-      uploadKey: async (
-        args: ApnsBridgeUploadKeyArgs,
-      ): Promise<ApnsBridgeStatus> =>
-        callProjectRuntimeActionOr("notifications_apns", "uploadKey", { args }, () =>
-          ipcRenderer.invoke(IPC.notificationsApnsUploadKey, args),
-        ),
-      clearKey: async (): Promise<ApnsBridgeStatus> =>
-        callProjectRuntimeActionOr("notifications_apns", "clearKey", {}, () =>
-          ipcRenderer.invoke(IPC.notificationsApnsClearKey),
-        ),
-      sendTestPush: async (
-        args: ApnsBridgeSendTestPushArgs,
-      ): Promise<ApnsBridgeSendTestPushResult> =>
-        callProjectRuntimeActionOr("notifications_apns", "sendTestPush", { args }, () =>
-          ipcRenderer.invoke(IPC.notificationsApnsSendTestPush, args),
-        ),
     },
   },
   agentTools: {

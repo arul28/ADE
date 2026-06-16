@@ -42,10 +42,3 @@ ai:
       endpoint: http://127.0.0.1:1234
       autoDetect: true
       preferredModelId: null
-notifications:
-  apns:
-    enabled: true
-    env: sandbox
-    keyId: 8HYA5AWCGP
-    teamId: VQ372F39G6
-    bundleId: com.ade.ios

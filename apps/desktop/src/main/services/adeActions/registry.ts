@@ -73,7 +73,6 @@ import { mapPermissionModeForModelFamily } from "../prs/resolverUtils";
 import { getErrorMessage, isRecord, nowIso } from "../shared/utils";
 import { parseLinearGraphQLInput } from "../cto/linearGraphQLInput";
 import { launchAgentChatCli } from "../chat/agentChatCliLaunch";
-import { createApnsBridgeService } from "../notifications/apnsBridgeService";
 import { deleteTerminalSessionWithRuntimeCleanup } from "../sessions/deleteTerminalSession";
 import { createOrchestrationDomainService } from "../orchestration/orchestrationDomain";
 
@@ -122,7 +121,6 @@ export const ADE_ACTION_DOMAIN_NAMES = [
   "automations",
   "review",
   "issue",
-  "notifications_apns",
   "orchestration",
 ] as const;
 
@@ -689,13 +687,6 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "assign",
     "setTitle",
   ],
-  notifications_apns: [
-    "getStatus",
-    "saveConfig",
-    "uploadKey",
-    "clearKey",
-    "sendTestPush",
-  ],
   orchestration: [
     "runCreate",
     "bundleRead",
@@ -826,44 +817,6 @@ function buildOrchestrationDomainService(runtime: AdeRuntime): OpaqueService | n
     laneService: { getLaneWorktreePath: (laneId: string) => laneService.getLaneWorktreePath(laneId) },
     agentChatService,
   }) as unknown as OpaqueService;
-}
-
-type CachedApnsBridgeDomainService = {
-  projectConfigService: AdeRuntime["projectConfigService"];
-  apnsService: AdeRuntime["apnsService"];
-  apnsKeyStore: AdeRuntime["apnsKeyStore"];
-  service: OpaqueService;
-};
-
-const apnsBridgeDomainServices = new WeakMap<AdeRuntime, CachedApnsBridgeDomainService>();
-
-function getApnsBridgeDomainService(runtime: AdeRuntime): OpaqueService {
-  const projectConfigService = runtime.projectConfigService;
-  const apnsService = runtime.apnsService;
-  const apnsKeyStore = runtime.apnsKeyStore;
-  const cached = apnsBridgeDomainServices.get(runtime);
-  if (
-    cached &&
-    cached.projectConfigService === projectConfigService &&
-    cached.apnsService === apnsService &&
-    cached.apnsKeyStore === apnsKeyStore
-  ) {
-    return cached.service;
-  }
-  const service = createApnsBridgeService({
-    projectConfigService,
-    apnsService,
-    apnsKeyStore,
-    getDeviceRegistryService: () =>
-      runtime.syncService?.getDeviceRegistryService?.() ?? null,
-  }) as OpaqueService;
-  apnsBridgeDomainServices.set(runtime, {
-    projectConfigService,
-    apnsService,
-    apnsKeyStore,
-    service,
-  });
-  return service;
 }
 
 const MAX_TEMP_ATTACHMENT_BYTES = 10 * 1024 * 1024;
@@ -2736,9 +2689,6 @@ export function getAdeActionDomainServices(
     review: toService(runtime.reviewService),
     issue: toService(buildIssueDomainService(runtime)),
     orchestration: toService(buildOrchestrationDomainService(runtime)),
-    get notifications_apns() {
-      return toService(getApnsBridgeDomainService(runtime));
-    },
   };
 }
 
