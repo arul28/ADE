@@ -263,7 +263,7 @@ extension WorkRootScreen {
         let fingerprint = workRootLiveTranscriptFingerprint(
           chatEventRevision: revision,
           streamedEventCount: streamed.count,
-          terminalBufferRevision: streamed.isEmpty ? syncService.terminalBufferRevision : nil,
+          terminalBufferRevision: streamed.isEmpty ? syncService.terminalBufferRevisionsBySessionId[session.id] : nil,
           terminalTail: streamed.isEmpty ? terminalTail : nil
         )
         if lastTranscriptFingerprint[session.id] == fingerprint {

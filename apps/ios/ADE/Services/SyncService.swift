@@ -1209,6 +1209,7 @@ final class SyncService: ObservableObject {
 
   private(set) var terminalBuffers: [String: String] = [:]
   private(set) var terminalBufferUpdatedAt: [String: Date] = [:]
+  private(set) var terminalBufferRevisionsBySessionId: [String: Int] = [:]
   /// Transcript END byte offset (UTF-8) confirmed per terminal session, fed by
   /// `terminal_data.offset` and snapshot `endOffset`. Nil for hosts that do not
   /// emit offsets; all gap/dedupe logic disables itself in that case.
@@ -4204,7 +4205,7 @@ final class SyncService: ObservableObject {
     }
     terminalBuffers[sessionId] = trimmedTerminalBuffer((terminalBuffers[sessionId] ?? "") + deliverableChunk)
     terminalBufferUpdatedAt[sessionId] = Date()
-    markTerminalBufferChanged()
+    markTerminalBufferChanged(sessionId: sessionId)
     terminalStreamHandlers[sessionId]?(.chunk(text: deliverableChunk, endOffset: endOffset))
   }
 
@@ -4231,7 +4232,7 @@ final class SyncService: ObservableObject {
       // replacing would drop everything the screen already rendered.
       if !snapshot.transcript.isEmpty {
         terminalBuffers[sessionId] = trimmedTerminalBuffer((terminalBuffers[sessionId] ?? "") + snapshot.transcript)
-        markTerminalBufferChanged(immediate: true)
+        markTerminalBufferChanged(sessionId: sessionId, immediate: true)
         terminalStreamHandlers[sessionId]?(.hydrate(
           text: snapshot.transcript,
           replacing: false,
@@ -7209,6 +7210,7 @@ final class SyncService: ObservableObject {
     subscribedTerminalSessionIds.insert(sessionId)
     terminalBuffers[sessionId] = transcript
     terminalBufferUpdatedAt[sessionId] = Date()
+    terminalBufferRevisionsBySessionId[sessionId, default: 0] += 1
     terminalBufferRevision += 1
   }
 
@@ -7724,7 +7726,7 @@ final class SyncService: ObservableObject {
         let exitCode = dict["exitCode"] as? Int
         terminalBuffers[sessionId] = trimmedTerminalBuffer((terminalBuffers[sessionId] ?? "") + "\n\n[process exited\(exitCode.map { " with \($0)" } ?? "")]")
         terminalBufferUpdatedAt[sessionId] = Date()
-        markTerminalBufferChanged(immediate: true)
+        markTerminalBufferChanged(sessionId: sessionId, immediate: true)
         terminalStreamHandlers[sessionId]?(.exit(code: exitCode))
       }
     default:
@@ -8674,6 +8676,11 @@ final class SyncService: ObservableObject {
     }
     terminalBuffers[sessionId] = nextBuffer
     terminalBufferUpdatedAt[sessionId] = Date()
+    markTerminalBufferChanged(sessionId: sessionId, immediate: immediate)
+  }
+
+  private func markTerminalBufferChanged(sessionId: String, immediate: Bool = false) {
+    terminalBufferRevisionsBySessionId[sessionId, default: 0] += 1
     markTerminalBufferChanged(immediate: immediate)
   }
 
@@ -8746,6 +8753,7 @@ final class SyncService: ObservableObject {
       subscribedTerminalSessionIds.removeAll()
       terminalBuffers.removeAll()
       terminalBufferUpdatedAt.removeAll()
+      terminalBufferRevisionsBySessionId.removeAll()
       terminalEndOffsets.removeAll()
       terminalGapRecoveryInFlight.removeAll()
     }

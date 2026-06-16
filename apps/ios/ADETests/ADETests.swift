@@ -2140,6 +2140,30 @@ final class ADETests: XCTestCase {
   }
 
   @MainActor
+  func testTerminalFallbackFingerprintUsesPerSessionRevision() {
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+
+    service.seedTerminalBufferForTesting(sessionId: "terminal-1", transcript: "first history")
+    let firstFingerprint = workRootLiveTranscriptFingerprint(
+      chatEventRevision: 0,
+      streamedEventCount: 0,
+      terminalBufferRevision: service.terminalBufferRevisionsBySessionId["terminal-1"],
+      terminalTail: service.terminalBuffers["terminal-1"]
+    )
+
+    service.seedTerminalBufferForTesting(sessionId: "terminal-2", transcript: "second history")
+    let unchangedFingerprint = workRootLiveTranscriptFingerprint(
+      chatEventRevision: 0,
+      streamedEventCount: 0,
+      terminalBufferRevision: service.terminalBufferRevisionsBySessionId["terminal-1"],
+      terminalTail: service.terminalBuffers["terminal-1"]
+    )
+
+    XCTAssertEqual(unchangedFingerprint, firstFingerprint)
+    XCTAssertEqual(service.terminalBufferRevisionsBySessionId["terminal-2"], 1)
+  }
+
+  @MainActor
   func testChatEventHistoryStoresDecodedEnvelopes() async throws {
     let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
     let globalRevision = service.localStateRevision
