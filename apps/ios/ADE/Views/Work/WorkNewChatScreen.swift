@@ -118,6 +118,7 @@ struct WorkNewChatScreen: View {
   @State private var modelPickerPresented = false
   @State private var runtimeMode: String = "default"
   @State private var reasoningEffort: String = ""
+  @State private var codexFastMode: Bool = false
   @State private var sessionMode: WorkNewSessionMode = .chat
 
   /// Whether the synthetic "Auto-create lane" entry is the current selection.
@@ -125,13 +126,11 @@ struct WorkNewChatScreen: View {
     selectedLaneId == workAutoCreateLaneSentinelId
   }
 
-  /// The fallback lane whose tools run until the auto-created lane is ready —
-  /// the preferred lane if available, otherwise the first known lane.
-  private var autoCreateToolsLane: LaneSummary? {
-    if let preferredLaneId, let match = lanes.first(where: { $0.id == preferredLaneId }) {
-      return match
-    }
-    return lanes.first
+  /// Fast mode only applies to in-app chat sessions on fast-tier models — the
+  /// CLI launcher has no fast-mode parameter — so the lightning toggle (and the
+  /// value we send) is gated on both.
+  private var fastModeSupported: Bool {
+    sessionMode == .chat && workComposerSupportsFastMode(modelId: modelId, provider: provider)
   }
 
   var body: some View {
@@ -153,7 +152,6 @@ struct WorkNewChatScreen: View {
           }
 
           laneSelector
-          autoCreateHelperText
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 16)
@@ -203,6 +201,9 @@ struct WorkNewChatScreen: View {
       if !modelSupportsReasoning(modelId: modelId, provider: newProvider) {
         reasoningEffort = ""
       }
+      if !fastModeSupported {
+        codexFastMode = false
+      }
     }
     .onChange(of: sessionMode) { _, newMode in
       normalizeSelection(for: newMode)
@@ -210,6 +211,9 @@ struct WorkNewChatScreen: View {
     .onChange(of: modelId) { _, newModel in
       if !modelSupportsReasoning(modelId: newModel, provider: provider) {
         reasoningEffort = ""
+      }
+      if !fastModeSupported {
+        codexFastMode = false
       }
     }
     .sheet(isPresented: $modelPickerPresented) {
@@ -266,28 +270,6 @@ struct WorkNewChatScreen: View {
     }
   }
 
-  /// Helper text shown when auto-create is selected, mirroring desktop's
-  /// "Tools use {lane} until the lane is created" notice. Falls back to a generic
-  /// phrasing when there is no existing lane to run tools against yet.
-  @ViewBuilder
-  private var autoCreateHelperText: some View {
-    if isAutoCreateLane {
-      HStack(spacing: 6) {
-        Image(systemName: "info.circle")
-          .font(.system(size: 10, weight: .semibold))
-          .foregroundStyle(ADEColor.accent)
-        Text(autoCreateToolsLane.map { "Tools use \($0.name) until the lane is created." }
-          ?? "A fresh lane is created on launch.")
-          .font(.caption2)
-          .foregroundStyle(ADEColor.textSecondary)
-          .multilineTextAlignment(.leading)
-        Spacer(minLength: 0)
-      }
-      .padding(.horizontal, 4)
-      .transition(.opacity)
-    }
-  }
-
   @ViewBuilder
   private var composerBar: some View {
     WorkNewChatComposerBar(
@@ -299,6 +281,8 @@ struct WorkNewChatScreen: View {
       canStart: !busy && (isAutoCreateLane || !selectedLaneId.isEmpty) && !modelId.isEmpty,
       runtimeMode: $runtimeMode,
       reasoningEffort: $reasoningEffort,
+      fastModeSupported: fastModeSupported,
+      codexFastMode: $codexFastMode,
       onOpenModelPicker: { modelPickerPresented = true },
       onSubmit: submit(openingMessage:)
     )
@@ -421,6 +405,7 @@ struct WorkNewChatScreen: View {
         provider: provider,
         model: modelId,
         reasoningEffort: normalizedReasoning.isEmpty ? nil : normalizedReasoning,
+        codexFastMode: (fastModeSupported && codexFastMode) ? true : nil,
         permissionMode: wire.permissionMode,
         interactionMode: wire.interactionMode,
         claudePermissionMode: wire.claudePermissionMode,
@@ -488,6 +473,9 @@ struct WorkNewChatScreen: View {
     runtimeMode = workDefaultRuntimeMode(provider: provider)
     if !modelSupportsReasoning(modelId: modelId, provider: provider) {
       reasoningEffort = ""
+    }
+    if !fastModeSupported {
+      codexFastMode = false
     }
   }
 }
@@ -568,6 +556,8 @@ private struct WorkNewChatComposerBar: View {
   let canStart: Bool
   @Binding var runtimeMode: String
   @Binding var reasoningEffort: String
+  let fastModeSupported: Bool
+  @Binding var codexFastMode: Bool
   let onOpenModelPicker: () -> Void
   let onSubmit: @MainActor (String) async -> Bool
 
@@ -575,6 +565,9 @@ private struct WorkNewChatComposerBar: View {
   @FocusState private var composerFocused: Bool
   @StateObject private var dictationCoordinator = DictationInsertionCoordinator()
   @State private var isDictating = false
+  /// Live viewport width of the controls scroll area, so the access control
+  /// collapses to the in-session composer's dot-Menu at the same threshold.
+  @State private var controlsWidth: CGFloat = 0
   private let dictationTargetId = "work-new-chat-screen"
 
   private var trimmedDraft: String {
@@ -589,12 +582,8 @@ private struct WorkNewChatComposerBar: View {
     workRuntimeModeOptions(provider: provider)
   }
 
-  private var runtimeLabel: String {
-    workRuntimeModeLabel(provider: provider, mode: runtimeMode)
-  }
-
-  private var runtimeTint: Color {
-    workRuntimeModeTint(runtimeMode)
+  private var isControlsCollapsed: Bool {
+    controlsWidth > 0 && controlsWidth <= workComposerControlsCollapseThreshold
   }
 
   private var placeholder: String {
@@ -633,27 +622,32 @@ private struct WorkNewChatComposerBar: View {
       HStack(alignment: .center, spacing: 8) {
         if !isDictating {
           ScrollView(.horizontal, showsIndicators: false) {
-            HStack(alignment: .center, spacing: 10) {
-              modelPickerButton
-
-              if !runtimeOptions.isEmpty {
-                HStack(spacing: 6) {
-                  ForEach(runtimeOptions) { option in
-                    compactChoiceChip(
-                      title: option.title,
-                      systemImage: nil,
-                      tint: workRuntimeModeTint(option.id),
-                      isSelected: option.id == runtimeMode,
-                      accessibilityPrefix: "Access mode"
-                    ) {
-                      runtimeMode = option.id
-                    }
-                  }
-                }
-              }
-            }
+            WorkComposerControlsRow(
+              provider: provider,
+              modelDisplayName: modelName,
+              reasoningEffort: reasoningEffort,
+              currentMode: runtimeMode,
+              modeOptions: runtimeOptions,
+              modeLabel: workRuntimeModeLabel(provider: provider, mode: runtimeMode),
+              isCollapsed: isControlsCollapsed,
+              fastModeSupported: fastModeSupported,
+              fastModeEnabled: codexFastMode,
+              settingsMutationInFlight: busy,
+              onOpenModelPicker: onOpenModelPicker,
+              onSelectMode: { runtimeMode = $0 },
+              onToggleFastMode: { codexFastMode = $0 }
+            )
             .padding(.trailing, 4)
           }
+          .background(
+            GeometryReader { proxy in
+              Color.clear
+                .onAppear { controlsWidth = proxy.size.width }
+                .onChange(of: proxy.size.width) { _, newValue in
+                  controlsWidth = newValue
+                }
+            }
+          )
 
           DictationRawUndoChip(coordinator: dictationCoordinator, draft: $draft)
         }
@@ -733,84 +727,6 @@ private struct WorkNewChatComposerBar: View {
     .accessibilityLabel(canSend ? "Send" : "Enter a message to send")
   }
 
-  private func compactChoiceChip(
-    title: String,
-    systemImage: String?,
-    tint: Color,
-    isSelected: Bool,
-    accessibilityPrefix: String,
-    action: @escaping () -> Void
-  ) -> some View {
-    Button(action: action) {
-      HStack(spacing: 6) {
-        Circle().fill(tint).frame(width: 6, height: 6)
-        if let systemImage {
-          Image(systemName: systemImage)
-            .font(.system(size: 10, weight: .semibold))
-            .foregroundStyle(isSelected ? tint : ADEColor.textMuted)
-        }
-        Text(title)
-          .font(.caption.weight(.semibold))
-          .foregroundStyle(isSelected ? ADEColor.textPrimary : ADEColor.textSecondary)
-          .lineLimit(1)
-        if isSelected {
-          Image(systemName: "checkmark")
-            .font(.system(size: 9, weight: .bold))
-            .foregroundStyle(tint)
-        }
-      }
-      .padding(.horizontal, 9)
-      .padding(.vertical, 6)
-      .background((isSelected ? tint.opacity(0.12) : Color.clear), in: Capsule(style: .continuous))
-      .overlay(
-        Capsule(style: .continuous)
-          .stroke(isSelected ? tint.opacity(0.4) : ADEColor.border.opacity(0.22), lineWidth: 0.5)
-      )
-    }
-    .buttonStyle(.plain)
-    .accessibilityLabel("\(accessibilityPrefix): \(title)")
-    .accessibilityValue(isSelected ? "Selected" : "")
-  }
-
-  private var modelPickerButton: some View {
-    Button {
-      onOpenModelPicker()
-    } label: {
-      HStack(spacing: 6) {
-        WorkProviderLogo(
-          provider: provider,
-          fallbackSymbol: providerIcon(provider),
-          tint: providerTint(provider),
-          size: 16
-        )
-        Text(modelName)
-          .font(.caption.weight(.semibold))
-          .foregroundStyle(ADEColor.textPrimary)
-          .lineLimit(1)
-        if !reasoningEffort.isEmpty {
-          Text("·")
-            .font(.caption2)
-            .foregroundStyle(ADEColor.textMuted.opacity(0.5))
-          Text(reasoningEffort.capitalized)
-            .font(.system(size: 10, weight: .medium))
-            .foregroundStyle(ADEColor.textMuted)
-            .lineLimit(1)
-        }
-        Image(systemName: "chevron.down")
-          .font(.system(size: 9, weight: .bold))
-          .foregroundStyle(ADEColor.textMuted)
-      }
-      .padding(.horizontal, 9)
-      .padding(.vertical, 6)
-      .background(Color.clear, in: Capsule(style: .continuous))
-      .overlay(
-        Capsule(style: .continuous)
-          .stroke(ADEColor.border.opacity(0.22), lineWidth: 0.5)
-      )
-    }
-    .buttonStyle(.plain)
-    .accessibilityLabel("Model: \(modelName). Tap to change.")
-  }
 }
 
 struct WorkNewChatRoute: Hashable {
