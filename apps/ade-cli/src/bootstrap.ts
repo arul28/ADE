@@ -1252,6 +1252,7 @@ export async function createAdeRuntime(args: {
       db,
       logger,
       projectId: resolvedArgs.syncRuntime.registryProjectId ?? projectId,
+      runtimeProjectId: projectId,
       projectRoot,
       appVersion: resolvedArgs.syncRuntime.appVersion ?? "ade-cli",
       runtimeKind: resolvedArgs.syncRuntime.runtimeKind ?? "headless",

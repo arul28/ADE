@@ -166,7 +166,8 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   into subscribed PTYs, desktop-size restore after the last phone
   detaches, lane presence decoration, project catalog/switch envelopes,
   runtime-scoped project action envelopes (browse/open/create/clone/
-  list GitHub repos/default parent directory), per-IP pairing rate
+  list GitHub repos/default parent directory/forget), project-id alias
+  matching between the machine catalog id and the hosted DB id, per-IP pairing rate
   limiter, and the Tailscale Serve / mDNS
   publication paths. Runtime
   kind is one of `desktop-embedded`, `headless`, `remote-stdio`,
@@ -193,7 +194,7 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   authenticates the same PIN / paired-secret / bootstrap paths as the
   per-project host, applies the same failed-PIN cooldown, and serves
   project catalog plus runtime-scoped project actions so a phone can
-  add/open/create/clone a project even from the project-home state.
+  add/open/create/clone/remove a project even from the project-home state.
 - `changesetPump.ts` — batch-chunk selection for changeset fan-out.
   Splits an export into `changeset_batch` envelopes at ~256 KB / 250
   rows while never splitting rows that share a `db_version` (the ack
@@ -310,7 +311,9 @@ iOS service files (`apps/ios/ADE/Services/`):
   reparent payload building with the optional stack base-branch
   override, project home/catalog state, active-project scoping,
   unregistered-worktree discovery, and APNs push-token registration
-  to the runtime.
+  to the runtime, plus local project-list hiding for "Remove from list"
+  so cached DB rows and runtime catalog rows for the same root disappear
+  together.
 - `KeychainService.swift` — iOS Keychain Services for paired device
   secrets (per-machine token shelf included).
 - `LiveActivityCoordinator.swift` — owns the single workspace
@@ -383,12 +386,17 @@ port across project switches. The phone flow:
 The project home can also manage machine projects without first binding
 to a project DB. `project_browse_request`,
 `project_default_parent_dir_request`, `project_open_request`,
-`project_create_request`, `project_clone_request`, and
-`project_list_my_github_repos_request` are runtime-scoped envelopes.
+`project_create_request`, `project_clone_request`,
+`project_list_my_github_repos_request`, and `project_forget_request`
+are runtime-scoped envelopes.
 When a project host is active, `syncHostService` handles them; when no
 project host owns the shared listener, `brainProjectActionsSyncHandler`
-handles the same envelopes so the phone can add a first project on a
-headless or freshly-started machine.
+handles the same envelopes so the phone can add a first project or
+remove stale recents on a headless or freshly-started machine. On the
+phone, removal also stores host-scoped local hidden keys by project id
+and normalised root path so a cached DB row and a remote catalog row for
+the same project do not reappear until the user opens/selects that
+project again.
 
 Project catalog snapshots are also chunked
 (`MAX_PROJECT_CATALOG_ENVELOPE_BYTES = 768 KB`,
@@ -405,6 +413,11 @@ At dispatch time:
 - If the command is `project`-scoped and the runtime has a `hostProjectId`
   but the caller did not include `requestedProjectId`, the runtime rejects
   the command with `"requires projectId"` (`code: missing_project`).
+- If the runtime was opened from the machine project registry with one id
+  and the project DB already contains a different persisted project id,
+  the host accepts either id as an alias for the same open project. This
+  keeps older mobile caches and DB-scoped command payloads from being
+  misrouted as `project_not_open`.
 - If the command is `project`-scoped and the runtime has no project open,
   the runtime rejects it with `"requires an open project on this ADE
   machine"` (`code: project_not_open`).
@@ -614,7 +627,7 @@ payload.
 | Chat stream | Agent chat transcript events. Each `chat_event` carries a host-assigned per-session monotonic `seq` backed by a capped replay buffer (500 events / 2 MB per session, 64-session LRU). `chat_subscribe` accepts `sinceSeq`: gaps the buffer covers replay as ordinary events; uncoverable gaps fall back to a snapshot, and a non-resumed ack tells the client to drop its stale seq watermark (seq epochs restart at 1 on a new host). The ack also carries `turnActive` from the live agent chat service — snapshots are byte-capped tails, so a long turn's `status: started` event can fall outside the window and the flag is what lets a mid-turn subscriber render streaming/stop affordances without waiting on the changeset pump (a full ack without the flag tells the client to drop any latched hint) | iOS Work tab, controller chat |
 | Command routing | Send named actions (`chat.send`, `lanes.create`, `git.push`, `prs.getMobileSnapshot`, etc.) | Controller devices |
 | Project switching | `project_catalog` + `project_switch_request/result` for multi-project runtimes | iOS project home |
-| Project actions | Runtime-scoped project browser plus open/create/clone/list-GitHub-repos/default-parent-dir envelopes. Available from the active project host or the machine-wide fallback handler before a project is selected | iOS project home |
+| Project actions | Runtime-scoped project browser plus open/create/clone/list-GitHub-repos/default-parent-dir/forget envelopes. Available from the active project host or the machine-wide fallback handler before a project is selected | iOS project home |
 | Runtime status | Runtime broadcasts cluster/version status (`brain_status` is the legacy envelope name) | All devices |
 | Lane presence | Controllers call `lanes.presence.announce` / `lanes.presence.release`; the runtime decorates `LaneSummary.devicesOpen` for 60 s TTL | iOS Lanes tab; desktop runtime presence heartbeat |
 
@@ -705,7 +718,7 @@ project scope split.
 | PIN-based phone pairing + per-device secrets | Implemented |
 | Live chat-event push from runtime | Implemented |
 | Mobile project catalog + project switch handoff | Implemented |
-| Mobile project actions (browse/open/create/clone/list GitHub repos) | Implemented |
+| Mobile project actions (browse/open/create/clone/list GitHub repos/remove from list) | Implemented |
 | Brain-level shared listener (peers adopted across project switches) | Implemented |
 | Chunked envelopes (`envelope_chunk`, 720 KB frame budget) | Implemented |
 | Per-host-DB sync cursors (`serverDbSiteId` / `remoteDbVersionBySite`) | Implemented |
@@ -734,7 +747,9 @@ project scope split.
 - **Project-scoped commands need `projectId`.** A runtime hosting
   multiple projects has no implicit "current project". Forward the
   active `projectId` on every project-scoped command or the runtime
-  rejects with `code: missing_project`.
+  rejects with `code: missing_project`. The host accepts the runtime
+  catalog id and the DB-local project id as aliases for the same open
+  project when both are known.
 - **CRR retrofit strips non-PK UNIQUE constraints.** Upserts on
   synced tables must target the primary key only. Use explicit
   select-then-update for non-PK merge cases.

@@ -296,6 +296,11 @@ export type SyncProjectSwitchRequestPayload = {
   rootPath?: string | null;
 };
 
+export type SyncProjectForgetRequestPayload = {
+  projectId?: string | null;
+  rootPath?: string | null;
+};
+
 export type SyncProjectConnectionPayload = {
   authKind: "bootstrap" | "paired";
   token?: string | null;
@@ -310,6 +315,13 @@ export type SyncProjectSwitchResultPayload = {
   message?: string | null;
   project?: SyncMobileProjectSummary | null;
   connection?: SyncProjectConnectionPayload | null;
+};
+
+export type SyncProjectForgetResultPayload = {
+  ok: boolean;
+  message?: string | null;
+  projectId?: string | null;
+  rootPath?: string | null;
 };
 
 export type SyncProjectOpenRequestPayload = {
@@ -1108,6 +1120,8 @@ export type SyncProjectCatalogEnvelope = SyncEnvelopeWithPayload<"project_catalo
 export type SyncProjectCatalogChunkEnvelope = SyncEnvelopeWithPayload<"project_catalog_chunk", SyncProjectCatalogChunkPayload>;
 export type SyncProjectSwitchRequestEnvelope = SyncEnvelopeWithPayload<"project_switch_request", SyncProjectSwitchRequestPayload>;
 export type SyncProjectSwitchResultEnvelope = SyncEnvelopeWithPayload<"project_switch_result", SyncProjectSwitchResultPayload>;
+export type SyncProjectForgetRequestEnvelope = SyncEnvelopeWithPayload<"project_forget_request", SyncProjectForgetRequestPayload>;
+export type SyncProjectForgetResultEnvelope = SyncEnvelopeWithPayload<"project_forget_result", SyncProjectForgetResultPayload>;
 export type SyncProjectBrowseRequestEnvelope = SyncEnvelopeWithPayload<"project_browse_request", ProjectBrowseInput>;
 export type SyncProjectBrowseResultEnvelope = SyncEnvelopeWithPayload<"project_browse_result", SyncProjectBrowseResultPayload>;
 export type SyncProjectDefaultParentDirRequestEnvelope = SyncEnvelopeWithPayload<"project_default_parent_dir_request", Record<string, never>>;
@@ -1170,6 +1184,8 @@ export type SyncEnvelope =
   | SyncProjectCatalogChunkEnvelope
   | SyncProjectSwitchRequestEnvelope
   | SyncProjectSwitchResultEnvelope
+  | SyncProjectForgetRequestEnvelope
+  | SyncProjectForgetResultEnvelope
   | SyncProjectBrowseRequestEnvelope
   | SyncProjectBrowseResultEnvelope
   | SyncProjectDefaultParentDirRequestEnvelope

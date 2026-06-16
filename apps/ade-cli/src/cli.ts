@@ -65,6 +65,8 @@ import {
 } from "../../desktop/src/shared/cliLaunch";
 import type {
   SyncMobileProjectSummary,
+  SyncProjectForgetRequestPayload,
+  SyncProjectForgetResultPayload,
   SyncProjectOpenRequestPayload,
   SyncProjectSwitchRequestPayload,
   SyncProjectSwitchResultPayload,
@@ -13128,6 +13130,74 @@ async function runServe(
       await createHeadlessProjectScaffoldService().cloneRepository(input);
     return await registerHeadlessMobileProject(result.rootPath);
   };
+  const resolveHeadlessMobileProjectRequest = (
+    input: SyncProjectForgetRequestPayload | SyncProjectSwitchRequestPayload,
+  ): {
+    requestedId: string;
+    requestedRootPath: string;
+    record: ProjectRecord | null;
+    conflict: boolean;
+  } => {
+    const requestedId =
+      typeof input.projectId === "string" && input.projectId.trim()
+        ? input.projectId.trim()
+        : "";
+    const requestedRootPath =
+      typeof input.rootPath === "string" && input.rootPath.trim()
+        ? path.resolve(input.rootPath)
+        : "";
+    const records = projectRegistry.list();
+    const idRecord =
+      requestedId.length > 0
+        ? records.find((candidate) => candidate.projectId === requestedId) ?? null
+        : null;
+    const rootRecord =
+      requestedRootPath.length > 0
+        ? records.find((candidate) => path.resolve(candidate.rootPath) === requestedRootPath) ?? null
+        : null;
+    const conflict = Boolean(idRecord && rootRecord && idRecord.projectId !== rootRecord.projectId);
+    return { requestedId, requestedRootPath, record: conflict ? null : idRecord ?? rootRecord, conflict };
+  };
+  const forgetHeadlessMobileProject = async (
+    input: SyncProjectForgetRequestPayload,
+  ): Promise<SyncProjectForgetResultPayload> => {
+    const { requestedId, requestedRootPath, record, conflict } = resolveHeadlessMobileProjectRequest(input);
+    if (!requestedId && !requestedRootPath) {
+      return {
+        ok: false,
+        message: "Project id or path is required.",
+      };
+    }
+    if (conflict) {
+      return {
+        ok: false,
+        message: "projectId and rootPath refer to different projects.",
+      };
+    }
+    if (!record) {
+      return {
+        ok: true,
+        message: "Project is already removed from this ADE machine.",
+        projectId: requestedId || null,
+        rootPath: requestedRootPath || null,
+      };
+    }
+    projectRegistry.remove(record.projectId);
+    const disposeTimer = setImmediate(() => {
+      void scopeRegistry.dispose(record.projectId).catch((error) => {
+        headlessProjectLogger.warn("headless_project_forget_dispose_failed", {
+          projectId: record.projectId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+    });
+    disposeTimer.unref?.();
+    return {
+      ok: true,
+      projectId: record.projectId,
+      rootPath: record.rootPath,
+    };
+  };
   const machineProjectCatalogProvider: SyncProjectCatalogProvider = {
     listProjects: async () => ({
       projects: projectRegistry
@@ -13140,27 +13210,17 @@ async function runServe(
     prepareProjectConnection: async (
       request: SyncProjectSwitchRequestPayload,
     ): Promise<SyncProjectSwitchResultPayload> => {
-      const requestedId =
-        typeof request.projectId === "string"
-          ? request.projectId.trim()
-          : "";
-      const requestedRootPath =
-        typeof request.rootPath === "string"
-          ? path.resolve(request.rootPath)
-          : "";
-      const record =
-        projectRegistry
-          .list()
-          .find(
-            (candidate) =>
-              (requestedId.length > 0 &&
-                candidate.projectId === requestedId) ||
-              (requestedRootPath.length > 0 &&
-                path.resolve(candidate.rootPath) === requestedRootPath),
-          ) ?? null;
+      const { record, conflict } = resolveHeadlessMobileProjectRequest(request);
       const project = record
         ? toMobileProjectSummary(record, { isOpen: true })
         : null;
+      if (conflict) {
+        return {
+          ok: false,
+          message: "projectId and rootPath refer to different projects.",
+          project,
+        };
+      }
       if (!record) {
         return {
           ok: false,
@@ -13253,6 +13313,7 @@ async function runServe(
     openProject: openHeadlessMobileProject,
     createProject: createHeadlessMobileProject,
     cloneProject: cloneHeadlessMobileProject,
+    forgetProject: forgetHeadlessMobileProject,
     listMyGitHubRepos: async (input: ListMyGitHubReposInput) =>
       createHeadlessProjectScaffoldService().listMyGitHubRepos(input),
   };

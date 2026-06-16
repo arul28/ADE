@@ -68,6 +68,7 @@ type SyncServiceArgs = {
   db: AdeDb;
   logger: Logger;
   projectId?: string | null;
+  runtimeProjectId?: string | null;
   projectRoot: string;
   appVersion?: string;
   runtimeKind?: SyncRuntimeKind;
@@ -685,6 +686,9 @@ export function createSyncService(args: SyncServiceArgs) {
       db: args.db,
       logger: args.logger,
       projectId: args.projectId ?? null,
+      projectIdAliases: args.runtimeProjectId && args.runtimeProjectId !== args.projectId
+        ? [args.runtimeProjectId]
+        : [],
       projectRoot: args.projectRoot,
       fileService: args.fileService,
       laneService: args.laneService,

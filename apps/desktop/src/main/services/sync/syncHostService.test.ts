@@ -2848,6 +2848,77 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
     expect(laneList).not.toHaveBeenCalled();
   });
 
+  it("executes project-scoped commands locally when the phone sends the hosted DB project id alias", async () => {
+    const brainDb = await openKvDb(makeDbPath("ade-sync-command-project-alias-"), createLogger() as any);
+    const projectRoot = makeProjectRoot("ade-sync-command-project-alias-project-");
+    const workspaceRoot = path.join(projectRoot, "workspace");
+    fs.mkdirSync(workspaceRoot, { recursive: true });
+    const execute = vi.fn(async () => ({ routed: true }));
+    const laneList = vi.fn().mockResolvedValue([]);
+
+    const host = createSyncHostService({
+      db: brainDb,
+      logger: createLogger() as any,
+      projectId: "project_80c9b7785de5e4060adf68c2",
+      projectIdAliases: ["24b96ceb-7ff6-4852-af99-2c36ffa6e9bf"],
+      projectRoot,
+      port: 0,
+      pinStore: createStubPinStore(),
+      fileService: createStubFileService(workspaceRoot) as any,
+      laneService: {
+        list: laneList,
+        create: vi.fn(),
+        archive: vi.fn(),
+      } as any,
+      prService: {
+        listAll: vi.fn().mockResolvedValue([]),
+        refresh: vi.fn().mockResolvedValue([]),
+      } as any,
+      ptyService: {
+        create: vi.fn(),
+        enrichSessions: (rows: any[]) => rows,
+      } as any,
+      sessionService: { list: () => [] } as any,
+      computerUseArtifactBrokerService: {
+        listArtifacts: () => [],
+      } as any,
+      remoteCommandExecutor: { execute },
+    });
+    activeDisposers.push(async () => {
+      await host.dispose();
+      brainDb.close();
+    });
+
+    const client = await connectClient({
+      port: await host.waitUntilListening(),
+      token: host.getBootstrapToken(),
+      deviceId: "peer-project-alias",
+      deviceName: "Project Alias Phone",
+      siteId: brainDb.sync.getSiteId(),
+      dbVersion: brainDb.sync.getDbVersion(),
+      deviceType: "phone",
+    });
+    activeDisposers.push(client.close);
+
+    client.ws.send(encodeSyncEnvelope({
+      type: "command",
+      projectId: "24b96ceb-7ff6-4852-af99-2c36ffa6e9bf",
+      requestId: "cmd-db-project-alias",
+      payload: {
+        commandId: "cmd-db-project-alias",
+        action: "lanes.list",
+        args: {},
+      },
+    }));
+
+    const ack = await client.queue.next("command_ack");
+    expect((ack.payload as { accepted: boolean }).accepted).toBe(true);
+    const result = await client.queue.next("command_result");
+    expect((result.payload as { ok: boolean }).ok).toBe(true);
+    expect(execute).not.toHaveBeenCalled();
+    expect(laneList).toHaveBeenCalledTimes(1);
+  });
+
   it("clears prior PIN failures after a successful pair and still allows paired hello", async () => {
     const brainDb = await openKvDb(makeDbPath("ade-sync-pairing-cooldown-"), createLogger() as any);
     const projectRoot = makeProjectRoot("ade-sync-pairing-cooldown-project-");

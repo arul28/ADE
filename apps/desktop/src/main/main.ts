@@ -106,6 +106,8 @@ import type {
   ProjectInfo,
   PtyDataEvent,
   SyncMobileProjectSummary,
+  SyncProjectForgetRequestPayload,
+  SyncProjectForgetResultPayload,
   SyncProjectOpenRequestPayload,
   SyncPeerConnectionState,
   SyncProjectConnectionPayload,
@@ -3590,6 +3592,7 @@ app.whenReady().then(async () => {
       logger,
       projectRoot,
       projectId,
+      runtimeProjectId: recentProjectInspectionForRoot(projectRoot)?.projectId ?? projectId,
       appVersion: app.getVersion(),
       localDeviceIdPath: path.join(machineAdeLayout.secretsDir, "sync-device-id"),
       fileService,
@@ -3638,6 +3641,7 @@ app.whenReady().then(async () => {
           createMobileSyncProject(input, projectScaffoldService),
         cloneProject: (input: CloneProjectInput) =>
           cloneMobileSyncProject(input, projectScaffoldService),
+        forgetProject: forgetMobileSyncProject,
         listMyGitHubRepos: async (input: ListMyGitHubReposInput) =>
           projectScaffoldService.listMyGitHubRepos(input),
       },
@@ -5072,6 +5076,93 @@ app.whenReady().then(async () => {
   ): Promise<SyncMobileProjectSummary> {
     const result = await scaffoldService.cloneRepository(input);
     return await mobileProjectSummaryForRoot(result.rootPath);
+  }
+
+  async function forgetMobileSyncProject(
+    input: SyncProjectForgetRequestPayload,
+  ): Promise<SyncProjectForgetResultPayload> {
+    const requestedProjectId = typeof input.projectId === "string" && input.projectId.trim()
+      ? input.projectId.trim()
+      : null;
+    const requestedRoot = typeof input.rootPath === "string" && input.rootPath.trim()
+      ? normalizeProjectRoot(input.rootPath)
+      : null;
+    if (!requestedProjectId && !requestedRoot) {
+      return {
+        ok: false,
+        message: "Project id or path is required.",
+      };
+    }
+
+    const state = readGlobalState(globalStatePath);
+    const inspected = (state.recentProjects ?? []).map(inspectRecentProject);
+    const recentByRoot = requestedRoot == null
+      ? null
+      : inspected.find((entry) => normalizeProjectRoot(entry.summary.rootPath) === requestedRoot) ?? null;
+    const recentById = requestedProjectId == null
+      ? null
+      : inspected.find((entry) => entry.projectId === requestedProjectId) ?? null;
+    const contextByRoot = requestedRoot == null
+      ? null
+      : [...projectContexts.entries()].find(([root]) => root === requestedRoot) ?? null;
+    const contextById = requestedProjectId == null
+      ? null
+      : [...projectContexts.entries()].find(([, ctx]) => ctx.projectId === requestedProjectId) ?? null;
+    const rootFromPath = requestedRoot
+      ?? (recentByRoot ? normalizeProjectRoot(recentByRoot.summary.rootPath) : null)
+      ?? contextByRoot?.[0]
+      ?? null;
+    const rootFromId = (recentById ? normalizeProjectRoot(recentById.summary.rootPath) : null)
+      ?? contextById?.[0]
+      ?? null;
+    if (rootFromPath && rootFromId && rootFromPath !== rootFromId) {
+      return {
+        ok: false,
+        message: "projectId and rootPath refer to different projects.",
+        projectId: requestedProjectId,
+        rootPath: requestedRoot,
+      };
+    }
+    const recent = recentByRoot ?? recentById;
+    const contextMatch = contextByRoot ?? contextById;
+    const rootToForget = rootFromPath ?? rootFromId;
+    if (!rootToForget) {
+      return {
+        ok: true,
+        message: "Project is already removed from this ADE machine.",
+        projectId: requestedProjectId,
+        rootPath: requestedRoot,
+      };
+    }
+
+    const nextRecentProjects = (state.recentProjects ?? []).filter((entry) => {
+      return normalizeProjectRoot(entry.rootPath) !== rootToForget;
+    });
+    writeGlobalState(globalStatePath, {
+      ...state,
+      recentProjects: nextRecentProjects,
+      lastProjectRoot: state.lastProjectRoot && normalizeProjectRoot(state.lastProjectRoot) === rootToForget
+        ? undefined
+        : state.lastProjectRoot,
+    });
+    if (projectContexts.has(rootToForget)) {
+      const rootToClose = rootToForget;
+      const closeTimer = setTimeout(() => {
+        void closeProjectByPath(rootToClose).catch((error) => {
+          console.warn("sync.mobile_project_forget_close_failed", {
+            rootPath: rootToClose,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
+      }, 0);
+      closeTimer.unref?.();
+    }
+    notifyMobileSyncProjectCatalogChanged();
+    return {
+      ok: true,
+      projectId: requestedProjectId ?? contextMatch?.[1].projectId ?? recent?.projectId ?? null,
+      rootPath: rootToForget,
+    };
   }
 
   async function ensureProjectContextForMobileSync(projectRoot: string): Promise<AppContext> {

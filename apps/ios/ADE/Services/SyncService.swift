@@ -1256,6 +1256,7 @@ final class SyncService: ObservableObject {
   private let activeProjectIdKey = "ade.sync.activeProjectId"
   private let activeProjectRootPathKey = "ade.sync.activeProjectRootPath"
   private let activeProjectHostIdentityKey = "ade.sync.activeProjectHostIdentity"
+  private let hiddenProjectsKey = "ade.sync.hiddenProjects"
   private let pendingOperationsKey = "ade.sync.pendingOperations"
   private let remoteCommandDescriptorsKey = "ade.sync.remoteCommandDescriptors"
   private let outboundSyncCursorsKey = "ade.sync.outboundSyncCursors"
@@ -1357,6 +1358,7 @@ final class SyncService: ObservableObject {
   private(set) var deviceId: String
   private var remoteCommandDescriptors: [SyncRemoteCommandDescriptor] = []
   private var remoteProjectCatalog: [MobileProjectSummary] = []
+  private var hiddenProjectKeys: Set<String> = []
   private var pendingProjectCatalogChunks: [String: [Int: [MobileProjectSummary]]] = [:]
   private var supportsProjectCatalog = false
   private var supportsProjectActions = false
@@ -1475,6 +1477,7 @@ final class SyncService: ObservableObject {
 
   func selectProject(_ project: MobileProjectSummary) {
     let selectionGeneration = beginProjectSelection()
+    unhideProject(project)
 
     if isActiveProject(project) {
       projectHomePresented = false
@@ -1525,8 +1528,57 @@ final class SyncService: ObservableObject {
     }
   }
 
+  func forgetProject(_ project: MobileProjectSummary) {
+    let wasActive = isActiveProject(project)
+    rememberHiddenProject(project)
+    remoteProjectCatalog.removeAll { existing in
+      existing.id == project.id
+        || (normalizedProjectRoot(existing.rootPath) != nil
+          && normalizedProjectRoot(existing.rootPath) == normalizedProjectRoot(project.rootPath))
+    }
+    refreshProjectCatalog()
+    if wasActive {
+      _ = beginProjectSelection()
+      resetChatEventState(clearHistory: false)
+      resetTerminalSubscriptionState(clearHistory: true)
+      setActiveProjectId(nil)
+      latestRemoteDbVersion = 0
+      resetOutboundCursorStateForActiveProject()
+      projectHomePresented = true
+      localStateRevision += 1
+      refreshActiveSessionsAndSnapshot()
+      scheduleWorkspaceSnapshotWrite()
+    }
+
+    guard canSendLiveRequests() else { return }
+    let requestId = makeRequestId()
+    var payload: [String: Any] = ["projectId": project.id]
+    if let rootPath = project.rootPath?.trimmingCharacters(in: .whitespacesAndNewlines), !rootPath.isEmpty {
+      payload["rootPath"] = rootPath
+    }
+    Task { @MainActor [weak self] in
+      guard let self else { return }
+      do {
+        let raw = try await awaitResponse(
+          requestId: requestId,
+          disconnectOnTimeout: false,
+          timeoutMessage: "Timed out removing that project.",
+          timeoutNanoseconds: 8_000_000_000
+        ) {
+          self.sendEnvelope(type: "project_forget_request", requestId: requestId, payload: payload)
+        }
+        let result = try decode(raw, as: MobileProjectForgetResultPayload.self)
+        if !result.ok {
+          syncConnectLog.info("project forget failed message=\((result.message ?? "unknown"), privacy: .public)")
+        }
+      } catch {
+        syncConnectLog.info("project forget request failed error=\(String(describing: error), privacy: .public)")
+      }
+    }
+  }
+
   func refreshProjectCatalog(preferRemoteSelection: Bool = false) {
-    let cachedProjects = database.listMobileProjects()
+    let cachedProjects = database.listMobileProjects().filter { !isProjectHidden($0) }
     let remoteCatalog = deduplicatedRemoteProjectCatalog()
     let hasRemoteCatalog = !remoteCatalog.isEmpty
     var mergedById = Dictionary(uniqueKeysWithValues: remoteCatalog.map { ($0.id, $0) })
@@ -1612,6 +1664,9 @@ final class SyncService: ObservableObject {
     var idByRoot: [String: String] = [:]
 
     for project in remoteProjectCatalog {
+      if isProjectHidden(project) {
+        continue
+      }
       let rootKey = normalizedProjectRoot(project.rootPath)
       if let rootKey, let existingId = idByRoot[rootKey], let existing = byId[existingId] {
         if shouldPreferProject(project, over: existing) {
@@ -1692,7 +1747,7 @@ final class SyncService: ObservableObject {
     _ catalog: MobileProjectCatalogPayload,
     preferRemoteSelection: Bool = true
   ) {
-    remoteProjectCatalog = catalog.projects
+    remoteProjectCatalog = catalog.projects.filter { !isProjectHidden($0) }
     refreshProjectCatalog(preferRemoteSelection: preferRemoteSelection)
   }
 
@@ -1821,6 +1876,7 @@ final class SyncService: ObservableObject {
         NSLocalizedDescriptionKey: response.message ?? fallbackMessage
       ])
     }
+    unhideProject(project)
     remoteProjectCatalog.removeAll { existing in
       existing.id == project.id
         || (normalizedProjectRoot(existing.rootPath) != nil
@@ -2168,6 +2224,75 @@ final class SyncService: ObservableObject {
     syncNormalizedProjectRootScope(rootPath)
   }
 
+  private func hiddenKeys(for project: MobileProjectSummary) -> Set<String> {
+    var keys = Set<String>()
+    if let id = normalizedProjectId(project.id) {
+      keys.insert("id:\(id)")
+    }
+    if let root = normalizedProjectRoot(project.rootPath) {
+      keys.insert("root:\(root)")
+    }
+    return keys
+  }
+
+  private func isProjectHidden(_ project: MobileProjectSummary) -> Bool {
+    !hiddenProjectKeys.isDisjoint(with: hiddenKeys(for: project))
+  }
+
+  private func hiddenProjectsStorageKey() -> String {
+    if let hostKey = activeHostStorageKey() {
+      return "\(hiddenProjectsKey).\(hostKey)"
+    }
+    return hiddenProjectsKey
+  }
+
+  private func loadHiddenProjectKeys() -> Set<String> {
+    let key = hiddenProjectsStorageKey()
+    if key != hiddenProjectsKey,
+       UserDefaults.standard.stringArray(forKey: key) == nil,
+       let legacyKeys = UserDefaults.standard.stringArray(forKey: hiddenProjectsKey),
+       !legacyKeys.isEmpty {
+      UserDefaults.standard.set(legacyKeys, forKey: key)
+      UserDefaults.standard.removeObject(forKey: hiddenProjectsKey)
+      return Set(legacyKeys)
+    }
+    return Set(UserDefaults.standard.stringArray(forKey: key) ?? [])
+  }
+
+  private func saveHiddenProjectKeys() {
+    let key = hiddenProjectsStorageKey()
+    if hiddenProjectKeys.isEmpty {
+      UserDefaults.standard.removeObject(forKey: key)
+    } else {
+      UserDefaults.standard.set(hiddenProjectKeys.sorted(), forKey: key)
+    }
+    if key != hiddenProjectsKey {
+      UserDefaults.standard.removeObject(forKey: hiddenProjectsKey)
+    }
+  }
+
+  private func rememberHiddenProject(_ project: MobileProjectSummary) {
+    let keys = hiddenKeys(for: project)
+    guard !keys.isEmpty else { return }
+    let previous = hiddenProjectKeys
+    hiddenProjectKeys.formUnion(keys)
+    guard hiddenProjectKeys != previous else { return }
+    saveHiddenProjectKeys()
+  }
+
+  private func unhideProject(_ project: MobileProjectSummary) {
+    var keys = hiddenKeys(for: project)
+    if let root = normalizedProjectRoot(project.rootPath) {
+      let aliases = projects + remoteProjectCatalog + database.listMobileProjects()
+      for alias in aliases where normalizedProjectRoot(alias.rootPath) == root {
+        keys.formUnion(hiddenKeys(for: alias))
+      }
+    }
+    guard !keys.isEmpty, !hiddenProjectKeys.isDisjoint(with: keys) else { return }
+    hiddenProjectKeys.subtract(keys)
+    saveHiddenProjectKeys()
+  }
+
   private let queueableFileActions: Set<String> = [
     "writeText",
     "createFile",
@@ -2223,8 +2348,13 @@ final class SyncService: ObservableObject {
     activeProjectId = UserDefaults.standard.string(forKey: activeProjectIdKey)
     activeProjectRootPath = normalizedProjectRoot(UserDefaults.standard.string(forKey: activeProjectRootPathKey))
     activeProjectHostIdentity = UserDefaults.standard.string(forKey: activeProjectHostIdentityKey)
+    activeHostProfile = loadProfile()
+    hostName = activeHostProfile?.hostName
     database.setActiveProjectId(activeProjectId)
-    projects = deduplicateProjectListByRoot(sortedProjectList(database.listMobileProjects()))
+    hiddenProjectKeys = loadHiddenProjectKeys()
+    projects = deduplicateProjectListByRoot(
+      sortedProjectList(database.listMobileProjects().filter { !isProjectHidden($0) })
+    )
     outboundLocalDbVersion = loadOutboundCursorVersionForActiveProject(defaultVersion: database.currentDbVersion())
     normalizeActiveProjectSelection(allowSingleProjectFallback: false)
     if activeProjectId != nil {
@@ -2232,8 +2362,6 @@ final class SyncService: ObservableObject {
     }
     pendingOperationCount = loadPendingOperations().count
     resetOutboundCursorStateForActiveProject()
-    activeHostProfile = loadProfile()
-    hostName = activeHostProfile?.hostName
     latestRemoteDbVersion = activeHostProfile?.lastRemoteDbVersion ?? 0
     remoteCommandDescriptors = loadRemoteCommandDescriptors()
     refreshReducedSyncLoad()
@@ -5628,6 +5756,7 @@ final class SyncService: ObservableObject {
       }
       activeHostProfile = profile
       hostName = profile.hostName
+      hiddenProjectKeys = loadHiddenProjectKeys()
       if activeProjectId != nil {
         let hostIdentity = syncNormalizedCommandScopeValue(profile.hostIdentity)
           ?? syncNormalizedCommandScopeValue(profile.lastHostDeviceId)
@@ -5643,6 +5772,7 @@ final class SyncService: ObservableObject {
       UserDefaults.standard.removeObject(forKey: legacyDraftKey)
       activeHostProfile = nil
       hostName = nil
+      hiddenProjectKeys = loadHiddenProjectKeys()
       activeProjectHostIdentity = nil
       UserDefaults.standard.removeObject(forKey: activeProjectHostIdentityKey)
     }
@@ -7416,6 +7546,7 @@ final class SyncService: ObservableObject {
          "project_open_result",
          "project_create_result",
          "project_clone_result",
+         "project_forget_result",
          "project_list_my_github_repos_result":
       resolve(requestId: requestId, result: .success(payload))
     case "hello_error":
@@ -8637,7 +8768,7 @@ final class SyncService: ObservableObject {
       try await InitialHydrationGate.waitForProjectRow(
         currentProjectId: {
           guard let activeProjectId = self.activeProjectId else {
-            let cachedProjects = self.database.listMobileProjects()
+            let cachedProjects = self.database.listMobileProjects().filter { !self.isProjectHidden($0) }
             guard cachedProjects.count == 1, let onlyProject = cachedProjects.first else {
               return nil
             }
@@ -8669,7 +8800,7 @@ final class SyncService: ObservableObject {
 
     guard isCurrentConnectionGeneration(connectionGeneration) else { return }
     if activeProjectId == nil {
-      let cachedProjects = database.listMobileProjects()
+      let cachedProjects = database.listMobileProjects().filter { !isProjectHidden($0) }
       if cachedProjects.count == 1, let onlyProject = cachedProjects.first {
         if supportsProjectCatalog {
           guard remoteProjectCatalog.count == 1,

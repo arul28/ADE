@@ -387,6 +387,7 @@ Implemented envelope types on iOS:
 | `project_create_request` / `project_create_result` | Phone → runtime / runtime → phone | Create a new local Git project under a selected parent directory |
 | `project_clone_request` / `project_clone_result` | Phone → runtime / runtime → phone | Clone a GitHub repository on the machine and register it in the project catalog |
 | `project_list_my_github_repos_request` / `project_list_my_github_repos_result` | Phone → runtime / runtime → phone | List the runtime machine's authenticated GitHub repositories for the Clone flow |
+| `project_forget_request` / `project_forget_result` | Phone → runtime / runtime → phone | Remove a project from the machine recent-project catalog |
 | `changeset_batch` | Bidirectional | cr-sqlite changeset batch |
 | `changeset_ack` | Bidirectional | Per-batch apply confirmation (or error code); the sender retransmits on timeout |
 | `command` | Phone → runtime | Execution request |
@@ -773,7 +774,10 @@ when no active project is selected or the user taps the Projects toolbar
 button. It merges the runtime-provided catalog with projects already present
 in the local replicated DB, marks cached/unavailable rows, and requests a
 fresh bootstrap connection for the selected machine project through
-`project_switch_request`. Each tile renders `MobileProjectSummary.iconDataUrl`
+`project_switch_request`. Each tile exposes a long-press "Remove from list"
+action that hides the project locally and sends `project_forget_request`
+to the runtime so the machine catalog drops the matching recent entry.
+Each tile renders `MobileProjectSummary.iconDataUrl`
 when the runtime's `projectIconResolver` found a favicon for the project,
 falling back to the brand glyph otherwise. The runtime pre-renders icons
 to a 64×64 PNG via Electron `nativeImage` before they reach the phone,
@@ -791,6 +795,11 @@ false`) and normalises the `rootPath` (trim, drop trailing `/`) so
 catalog rows from different OS reports of the same path don't
 duplicate. Project list dedup runs as a final pass
 (`deduplicateProjectListByRoot`) keyed on the normalised root path.
+Project removal stores the same normalised-root key in addition to the
+project id under the active host profile, so a DB-cached row and a
+runtime-catalog row representing the same filesystem path disappear
+together without hiding matching paths from other paired machines.
+Opening or selecting the project again clears those hidden keys.
 
 ### Shipped
 
@@ -940,7 +949,7 @@ reflected in the phone's UI on the next descriptor read.
 | WebSocket client | Implemented |
 | PIN pairing flow | Implemented |
 | QR pairing payload (v2, address candidates + port) | Implemented |
-| Project home + machine project switching | Implemented, including Add project actions for browsing/opening existing Git repos, creating local projects, and cloning GitHub repos on the paired machine |
+| Project home + machine project switching | Implemented, including Add project actions for browsing/opening existing Git repos, creating local projects, cloning GitHub repos on the paired machine, and removing projects from the list |
 | Lanes tab | Implemented to live machine parity (with `devicesOpen`, multi-attach, stack canvas, stack-position/base-branch editing in Manage Lane, and template environment progress) |
 | Files tab | Implemented with `mobileReadOnly` workspace gate and capped search/quick-open result rendering |
 | Work tab | Implemented; live chat-event push from runtime, subscribed terminal input/resize control with `terminal_unsubscribe` on view disappear, in-app CLI session launcher (`work.startCliSession`), message-to-continue on ended agent CLI rows |

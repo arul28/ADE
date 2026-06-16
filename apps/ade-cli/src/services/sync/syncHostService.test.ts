@@ -117,6 +117,19 @@ describe("resolveSyncHostInboundProjectScope", () => {
     });
   });
 
+  it("accepts project-scoped envelopes that use the hosted DB project id alias", () => {
+    expect(resolveSyncHostInboundProjectScope(
+      "changeset_ack",
+      "24b96ceb-7ff6-4852-af99-2c36ffa6e9bf",
+      "project_80c9b7785de5e4060adf68c2",
+      ["24b96ceb-7ff6-4852-af99-2c36ffa6e9bf"],
+    )).toEqual({
+      ok: true,
+      projectId: "project_80c9b7785de5e4060adf68c2",
+      usedSingleProjectFallback: false,
+    });
+  });
+
   it("rejects project-scoped envelopes for a different active project", () => {
     expect(resolveSyncHostInboundProjectScope("changeset_ack", "project-2", "project-1")).toMatchObject({
       ok: false,
