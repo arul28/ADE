@@ -152,6 +152,13 @@ struct WorkNewChatScreen: View {
     selectedLaneId == workAutoCreateLaneSentinelId
   }
 
+  private var autoCreateToolsLane: LaneSummary? {
+    if let preferredLaneId, let lane = lanes.first(where: { $0.id == preferredLaneId }) {
+      return lane
+    }
+    return lanes.first
+  }
+
   /// Fast mode only applies to in-app chat sessions on fast-tier models — the
   /// CLI launcher has no fast-mode parameter — so the lightning toggle (and the
   /// value we send) is gated on both. The picker's option can only *add* support

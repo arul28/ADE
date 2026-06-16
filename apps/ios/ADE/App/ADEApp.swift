@@ -20,6 +20,9 @@ struct ADEApp: App {
         .environmentObject(syncService)
         .environmentObject(dictationController)
         .task {
+          await MainActor.run {
+            ADEIntentCommandRegistry.register(ADESyncIntentBridge.shared)
+          }
           guard !didBootstrapSync else { return }
           didBootstrapSync = true
           lastActivationSyncAt = Date()
@@ -60,5 +63,30 @@ struct ADEApp: App {
           .environmentObject(syncService)
         }
     }
+  }
+}
+
+// MARK: - Live Activity / Control Widget command bridge
+
+/// Maps the cross-target intent commands to main-app remote commands.
+/// Kept in the main ADE target so widgets never link `SyncService`.
+@MainActor
+private final class ADESyncIntentBridge: ADEIntentCommandBridge {
+  static let shared = ADESyncIntentBridge()
+
+  private init() {}
+
+  func dispatch(_ kind: ADEIntentCommandKind, payload: [String: Any]) async {
+    let mapped: RemoteCommandKind
+    switch kind {
+    case .approveSession: mapped = .approveSession
+    case .denySession: mapped = .denySession
+    case .pauseSession: mapped = .pauseSession
+    case .replyToSession: mapped = .replyToSession
+    case .restartSession: mapped = .restartSession
+    case .retryPrChecks: mapped = .retryPrChecks
+    case .openPr: mapped = .openPr
+    }
+    await SyncService.shared?.sendRemoteCommand(mapped, payload: payload)
   }
 }
