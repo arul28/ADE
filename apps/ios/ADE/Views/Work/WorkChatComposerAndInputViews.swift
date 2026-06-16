@@ -99,15 +99,28 @@ func workReasoningChipLabel(_ effort: String?) -> String? {
 
 func workChatComposerSupportsFastMode(_ summary: AgentChatSessionSummary) -> Bool {
   if summary.effectiveFastMode { return true }
-  if workChatComposerModelOption(summary)?.supportsServiceTier("fast") == true { return true }
-  return workChatComposerModelRefLooksFastCapable(summary)
+  if workComposerModelOption(modelId: summary.modelId ?? summary.model, provider: summary.provider)?
+    .supportsServiceTier("fast") == true { return true }
+  return workModelRefsLookFastCapable([summary.modelId, summary.model])
 }
 
-private func workChatComposerModelOption(_ summary: AgentChatSessionSummary) -> WorkModelOption? {
-  let currentModelId = (summary.modelId ?? summary.model).trimmingCharacters(in: .whitespacesAndNewlines)
+/// Whether a model (by raw id + provider family) can use the "fast" service
+/// tier. Shared by the in-session and new-chat composers so both surfaces show
+/// the fast-mode lightning toggle for the same models.
+func workComposerSupportsFastMode(modelId: String, provider: String) -> Bool {
+  if workComposerModelOption(modelId: modelId, provider: provider)?.supportsServiceTier("fast") == true {
+    return true
+  }
+  return workModelRefsLookFastCapable([modelId])
+}
+
+/// Resolve the catalog `WorkModelOption` for a raw model id, preferring the
+/// model's own provider-family group before falling back to a global search.
+func workComposerModelOption(modelId: String, provider: String) -> WorkModelOption? {
+  let currentModelId = modelId.trimmingCharacters(in: .whitespacesAndNewlines)
   guard !currentModelId.isEmpty else { return nil }
-  let family = providerFamilyKey(summary.provider)
-  let groups = workModelCatalogGroups(currentModelId: currentModelId, currentProvider: summary.provider)
+  let family = providerFamilyKey(provider)
+  let groups = workModelCatalogGroups(currentModelId: currentModelId, currentProvider: provider)
   let familyGroups = groups.filter { $0.key == family }
   let searchGroups = familyGroups.isEmpty ? groups : familyGroups
 
@@ -121,8 +134,10 @@ private func workChatComposerModelOption(_ summary: AgentChatSessionSummary) -> 
   return nil
 }
 
-private func workChatComposerModelRefLooksFastCapable(_ summary: AgentChatSessionSummary) -> Bool {
-  let refs = [summary.modelId, summary.model]
+/// Hardcoded fallback for hosts that don't advertise service tiers yet: a small
+/// allow-list of fast-capable model refs plus any "-fast" suffixed id.
+private func workModelRefsLookFastCapable(_ rawRefs: [String?]) -> Bool {
+  let refs = rawRefs
     .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
     .filter { !$0.isEmpty }
   let fastRefs: Set<String> = [
@@ -175,98 +190,75 @@ struct WorkComposerInputBanner: View {
   }
 }
 
-/// Compact horizontal strip matching the desktop composer toolbar: small
-/// single-line pills for access, model, fast mode, pending status chips,
-/// and nothing else. Reasoning is summarized in the model chip and changed
-/// through the full model picker.
-struct WorkComposerChipStrip: View {
-  let chatSummary: AgentChatSessionSummary?
-  let pendingInputCount: Int
+/// Width below which the access/permission control collapses from the full
+/// segmented chip row to a single dot-only Menu button — mirroring the desktop
+/// composer's container query, tuned down for the phone. Shared so the
+/// in-session and new-chat composers collapse at the same point.
+let workComposerControlsCollapseThreshold: CGFloat = 360
+
+/// The composer's access/model/fast-mode controls, shared verbatim by the
+/// in-session composer (`WorkComposerChipStrip`) and the new-chat composer
+/// (`WorkNewChatComposerBar`) so the two surfaces stay visually and
+/// behaviorally identical: a permission/access control (single tone-dot Menu
+/// when space is tight, segmented chips when wide), a model pill, and a
+/// fast-mode lightning toggle. The caller owns width measurement and passes
+/// `isCollapsed` so the GeometryReader can sit on the scroll viewport.
+struct WorkComposerControlsRow: View {
+  let provider: String
+  let modelDisplayName: String
+  let reasoningEffort: String
+  let currentMode: String
+  let modeOptions: [WorkRuntimeModeOption]
+  let modeLabel: String
+  let isCollapsed: Bool
+  let fastModeSupported: Bool
+  let fastModeEnabled: Bool
   let settingsMutationInFlight: Bool
-  let codexFastModeOverride: Bool?
   let onOpenModelPicker: (() -> Void)?
-  let onSelectRuntimeMode: ((String) -> Void)?
-  let onToggleCodexFastMode: ((Bool) -> Void)?
-
-  /// Width below which the access control collapses from the full segmented
-  /// chip row to a single dot-only Menu button — mirroring the desktop
-  /// composer's ≤560px container query (tuned down for the phone, where the full
-  /// strip still wants to leave room for the model pill + Send button).
-  private let collapseThreshold: CGFloat = 360
-
-  /// Live measurement of the strip's available width, fed by a background
-  /// GeometryReader so the collapse decision tracks rotation / split-view.
-  @State private var availableWidth: CGFloat = 0
-
-  private var isCollapsed: Bool {
-    availableWidth > 0 && availableWidth <= collapseThreshold
-  }
+  let onSelectMode: ((String) -> Void)?
+  let onToggleFastMode: ((Bool) -> Void)?
 
   var body: some View {
-    ScrollView(.horizontal, showsIndicators: false) {
-      HStack(spacing: 8) {
-        if let chatSummary {
-          accessControl(summary: chatSummary)
-          modelPill(summary: chatSummary)
-          fastModeToggle(summary: chatSummary)
-        }
-
-        if pendingInputCount > 0 {
-          statusChip(icon: "hand.raised.circle.fill", label: "\(pendingInputCount) waiting", tint: ADEColor.warning)
-        }
-      }
-      .padding(.horizontal, 2)
+    HStack(spacing: 8) {
+      accessControl
+      modelPill
+      fastModeToggle
     }
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .disabled(settingsMutationInFlight)
-    .opacity(settingsMutationInFlight ? 0.72 : 1)
-    .background(
-      GeometryReader { proxy in
-        Color.clear
-          .onAppear { availableWidth = proxy.size.width }
-          .onChange(of: proxy.size.width) { _, newValue in
-            availableWidth = newValue
-          }
-      }
-    )
   }
 
   /// Access/permission control: full segmented chips above the threshold, a
   /// single tone-dot Menu button below it (label + caret hidden, color encodes
   /// the safety tier via `workRuntimeModeTint`).
   @ViewBuilder
-  private func accessControl(summary: AgentChatSessionSummary) -> some View {
+  private var accessControl: some View {
     if isCollapsed {
-      collapsedAccessControl(summary: summary)
+      collapsedAccessControl
     } else {
-      accessPill(summary: summary)
+      accessPill
     }
   }
 
   @ViewBuilder
-  private func collapsedAccessControl(summary: AgentChatSessionSummary) -> some View {
-    let options = workRuntimeModeOptions(provider: summary.provider)
-    let currentMode = workInitialRuntimeMode(summary)
+  private var collapsedAccessControl: some View {
     let tint = workRuntimeModeTint(currentMode)
-    let label = workRuntimeModeLabel(provider: summary.provider, mode: currentMode)
 
-    if options.isEmpty || onSelectRuntimeMode == nil {
+    if modeOptions.isEmpty || onSelectMode == nil {
       collapsedDotButton(tint: tint, glyph: nil)
-        .accessibilityLabel("Access mode: \(label)")
+        .accessibilityLabel("Access mode: \(modeLabel)")
     } else {
       Menu {
         Picker("Access mode", selection: Binding(
           get: { currentMode },
-          set: { onSelectRuntimeMode?($0) }
+          set: { onSelectMode?($0) }
         )) {
-          ForEach(options) { option in
+          ForEach(modeOptions) { option in
             Text(option.title).tag(option.id)
           }
         }
       } label: {
         collapsedDotButton(tint: tint, glyph: nil)
       }
-      .accessibilityLabel("Access mode: \(label). Tap to change.")
+      .accessibilityLabel("Access mode: \(modeLabel). Tap to change.")
     }
   }
 
@@ -294,103 +286,19 @@ struct WorkComposerChipStrip: View {
   }
 
   @ViewBuilder
-  private func modelPill(summary: AgentChatSessionSummary) -> some View {
-    let reasoning = (summary.reasoningEffort ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-    let reasoningLabel = workReasoningChipLabel(reasoning)
-    Button {
-      onOpenModelPicker?()
-    } label: {
-      HStack(spacing: 6) {
-        WorkProviderLogo(
-          provider: summary.provider,
-          fallbackSymbol: providerIcon(summary.provider),
-          tint: providerTint(summary.provider),
-          size: 16
-        )
-        Text(prettyModelName(summary.model))
-          .font(.caption.weight(.semibold))
-          .foregroundStyle(ADEColor.textPrimary)
-          .lineLimit(1)
-        if let reasoningLabel {
-          Text("·")
-            .font(.caption2)
-            .foregroundStyle(ADEColor.textMuted.opacity(0.5))
-          Text(reasoningLabel)
-            .font(.system(size: 10, weight: .medium))
-            .foregroundStyle(ADEColor.textMuted)
-            .lineLimit(1)
-        }
-        Image(systemName: "chevron.down")
-          .font(.system(size: 9, weight: .bold))
-          .foregroundStyle(ADEColor.textMuted)
-      }
-      .padding(.horizontal, 8)
-      .padding(.vertical, 5)
-      .background(Color.clear, in: Capsule(style: .continuous))
-      .overlay(
-        Capsule(style: .continuous)
-          .stroke(ADEColor.border.opacity(0.22), lineWidth: 0.5)
-      )
-    }
-    .buttonStyle(.plain)
-    .disabled(onOpenModelPicker == nil)
-    .accessibilityLabel("Model: \(summary.model)\(reasoning.isEmpty ? "" : ", reasoning \(reasoning)"). Tap to switch.")
-  }
-
-  @ViewBuilder
-  private func fastModeToggle(summary: AgentChatSessionSummary) -> some View {
-    if supportsFastMode(summary: summary) {
-      let persistedEnabled = summary.effectiveFastMode
-      let isEnabled = codexFastModeOverride ?? persistedEnabled
-      Button {
-        let next = !isEnabled
-        onToggleCodexFastMode?(next)
-      } label: {
-        Image(systemName: "bolt.fill")
-          .font(.system(size: 11, weight: .bold))
-          .foregroundStyle(isEnabled ? ADEColor.warning : ADEColor.textMuted)
-          .frame(width: 28, height: 28)
-          .background(
-            Capsule(style: .continuous)
-              .fill(ADEColor.surfaceBackground.opacity(isEnabled ? 0.56 : 0.34))
-          )
-          .overlay(
-            Capsule(style: .continuous)
-              .stroke(isEnabled ? ADEColor.warning.opacity(0.38) : ADEColor.border.opacity(0.22), lineWidth: 0.5)
-          )
-      }
-      .buttonStyle(.plain)
-      .disabled(onToggleCodexFastMode == nil || settingsMutationInFlight)
-      .contentShape(Rectangle())
-      .accessibilityLabel("Fast mode \(isEnabled ? "on" : "off"). Tap to turn \(isEnabled ? "off" : "on").")
-      .accessibilityValue(settingsMutationInFlight ? "\(isEnabled ? "On" : "Off"), saving" : (isEnabled ? "On" : "Off"))
-      .accessibilityIdentifier("Work.Chat.Composer.FastModeToggle")
-    }
-  }
-
-  private func supportsFastMode(summary: AgentChatSessionSummary) -> Bool {
-    workChatComposerSupportsFastMode(summary)
-  }
-
-  @ViewBuilder
-  private func accessPill(summary: AgentChatSessionSummary) -> some View {
-    let options = workRuntimeModeOptions(provider: summary.provider)
-    let currentMode = workInitialRuntimeMode(summary)
-    let tint = workRuntimeModeTint(currentMode)
-
-    if options.isEmpty || onSelectRuntimeMode == nil {
-      pillContent(dotColor: tint, label: workRuntimeModeLabel(provider: summary.provider, mode: currentMode), showChevron: false)
+  private var accessPill: some View {
+    if modeOptions.isEmpty || onSelectMode == nil {
+      pillContent(dotColor: workRuntimeModeTint(currentMode), label: modeLabel, showChevron: false)
     } else {
       HStack(spacing: 6) {
-        ForEach(options) { option in
+        ForEach(modeOptions) { option in
           composerOptionChip(
             title: option.title,
-            systemImage: nil,
             tint: workRuntimeModeTint(option.id),
             isSelected: option.id == currentMode,
             accessibilityPrefix: "Access mode"
           ) {
-            onSelectRuntimeMode?(option.id)
+            onSelectMode?(option.id)
           }
         }
       }
@@ -399,7 +307,6 @@ struct WorkComposerChipStrip: View {
 
   private func composerOptionChip(
     title: String,
-    systemImage: String?,
     tint: Color,
     isSelected: Bool,
     accessibilityPrefix: String,
@@ -410,11 +317,6 @@ struct WorkComposerChipStrip: View {
         Circle()
           .fill(tint)
           .frame(width: 6, height: 6)
-        if let systemImage {
-          Image(systemName: systemImage)
-            .font(.system(size: 10, weight: .semibold))
-            .foregroundStyle(isSelected ? tint : ADEColor.textMuted)
-        }
         Text(title)
           .font(.caption.weight(.semibold))
           .foregroundStyle(isSelected ? ADEColor.textPrimary : ADEColor.textSecondary)
@@ -463,6 +365,148 @@ struct WorkComposerChipStrip: View {
     .overlay(
       Capsule(style: .continuous)
         .stroke(ADEColor.border.opacity(0.24), lineWidth: 0.5)
+    )
+  }
+
+  @ViewBuilder
+  private var modelPill: some View {
+    let reasoning = reasoningEffort.trimmingCharacters(in: .whitespacesAndNewlines)
+    let reasoningLabel = workReasoningChipLabel(reasoning)
+    Button {
+      onOpenModelPicker?()
+    } label: {
+      HStack(spacing: 6) {
+        WorkProviderLogo(
+          provider: provider,
+          fallbackSymbol: providerIcon(provider),
+          tint: providerTint(provider),
+          size: 16
+        )
+        Text(modelDisplayName)
+          .font(.caption.weight(.semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+          .lineLimit(1)
+        if let reasoningLabel {
+          Text("·")
+            .font(.caption2)
+            .foregroundStyle(ADEColor.textMuted.opacity(0.5))
+          Text(reasoningLabel)
+            .font(.system(size: 10, weight: .medium))
+            .foregroundStyle(ADEColor.textMuted)
+            .lineLimit(1)
+        }
+        Image(systemName: "chevron.down")
+          .font(.system(size: 9, weight: .bold))
+          .foregroundStyle(ADEColor.textMuted)
+      }
+      .padding(.horizontal, 8)
+      .padding(.vertical, 5)
+      .background(Color.clear, in: Capsule(style: .continuous))
+      .overlay(
+        Capsule(style: .continuous)
+          .stroke(ADEColor.border.opacity(0.22), lineWidth: 0.5)
+      )
+    }
+    .buttonStyle(.plain)
+    .disabled(onOpenModelPicker == nil)
+    .accessibilityLabel("Model: \(modelDisplayName)\(reasoning.isEmpty ? "" : ", reasoning \(reasoning)"). Tap to switch.")
+  }
+
+  @ViewBuilder
+  private var fastModeToggle: some View {
+    if fastModeSupported {
+      Button {
+        onToggleFastMode?(!fastModeEnabled)
+      } label: {
+        Image(systemName: "bolt.fill")
+          .font(.system(size: 11, weight: .bold))
+          .foregroundStyle(fastModeEnabled ? ADEColor.warning : ADEColor.textMuted)
+          .frame(width: 28, height: 28)
+          .background(
+            Capsule(style: .continuous)
+              .fill(ADEColor.surfaceBackground.opacity(fastModeEnabled ? 0.56 : 0.34))
+          )
+          .overlay(
+            Capsule(style: .continuous)
+              .stroke(fastModeEnabled ? ADEColor.warning.opacity(0.38) : ADEColor.border.opacity(0.22), lineWidth: 0.5)
+          )
+      }
+      .buttonStyle(.plain)
+      .disabled(onToggleFastMode == nil || settingsMutationInFlight)
+      .contentShape(Rectangle())
+      .accessibilityLabel("Fast mode \(fastModeEnabled ? "on" : "off"). Tap to turn \(fastModeEnabled ? "off" : "on").")
+      .accessibilityValue(settingsMutationInFlight ? "\(fastModeEnabled ? "On" : "Off"), saving" : (fastModeEnabled ? "On" : "Off"))
+      .accessibilityIdentifier("Work.Chat.Composer.FastModeToggle")
+    }
+  }
+}
+
+/// Compact horizontal strip matching the desktop composer toolbar: small
+/// single-line pills for access, model, fast mode, pending status chips,
+/// and nothing else. Reasoning is summarized in the model chip and changed
+/// through the full model picker.
+struct WorkComposerChipStrip: View {
+  let chatSummary: AgentChatSessionSummary?
+  let pendingInputCount: Int
+  let settingsMutationInFlight: Bool
+  let codexFastModeOverride: Bool?
+  let onOpenModelPicker: (() -> Void)?
+  let onSelectRuntimeMode: ((String) -> Void)?
+  let onToggleCodexFastMode: ((Bool) -> Void)?
+
+  /// Width below which the access control collapses from the full segmented
+  /// chip row to a single dot-only Menu button — mirroring the desktop
+  /// composer's ≤560px container query (tuned down for the phone, where the full
+  /// strip still wants to leave room for the model pill + Send button).
+  private let collapseThreshold: CGFloat = workComposerControlsCollapseThreshold
+
+  /// Live measurement of the strip's available width, fed by a background
+  /// GeometryReader so the collapse decision tracks rotation / split-view.
+  @State private var availableWidth: CGFloat = 0
+
+  private var isCollapsed: Bool {
+    availableWidth > 0 && availableWidth <= collapseThreshold
+  }
+
+  var body: some View {
+    ScrollView(.horizontal, showsIndicators: false) {
+      HStack(spacing: 8) {
+        if let chatSummary {
+          let currentMode = workInitialRuntimeMode(chatSummary)
+          WorkComposerControlsRow(
+            provider: chatSummary.provider,
+            modelDisplayName: prettyModelName(chatSummary.model),
+            reasoningEffort: chatSummary.reasoningEffort ?? "",
+            currentMode: currentMode,
+            modeOptions: workRuntimeModeOptions(provider: chatSummary.provider),
+            modeLabel: workRuntimeModeLabel(provider: chatSummary.provider, mode: currentMode),
+            isCollapsed: isCollapsed,
+            fastModeSupported: workChatComposerSupportsFastMode(chatSummary),
+            fastModeEnabled: codexFastModeOverride ?? chatSummary.effectiveFastMode,
+            settingsMutationInFlight: settingsMutationInFlight,
+            onOpenModelPicker: onOpenModelPicker,
+            onSelectMode: onSelectRuntimeMode,
+            onToggleFastMode: onToggleCodexFastMode
+          )
+        }
+
+        if pendingInputCount > 0 {
+          statusChip(icon: "hand.raised.circle.fill", label: "\(pendingInputCount) waiting", tint: ADEColor.warning)
+        }
+      }
+      .padding(.horizontal, 2)
+    }
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .disabled(settingsMutationInFlight)
+    .opacity(settingsMutationInFlight ? 0.72 : 1)
+    .background(
+      GeometryReader { proxy in
+        Color.clear
+          .onAppear { availableWidth = proxy.size.width }
+          .onChange(of: proxy.size.width) { _, newValue in
+            availableWidth = newValue
+          }
+      }
     )
   }
 
