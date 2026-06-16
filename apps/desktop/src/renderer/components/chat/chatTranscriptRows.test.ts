@@ -709,6 +709,27 @@ describe("summarizeDiffStats", () => {
     const diff = "  unchanged line 1\n  unchanged line 2\n";
     expect(summarizeDiffStats(diff)).toEqual({ additions: 0, deletions: 0 });
   });
+
+  it("does not report exact line counts from a compacted stored diff preview", () => {
+    const diff = [
+      "[ADE] Large file diff was shortened for stored chat history.",
+      "Original size: 120000 bytes. Full content was not stored.",
+      "",
+      "----- BEGIN FIRST PREVIEW -----",
+      "+ first preview line",
+      "- first removed line",
+      "----- END FIRST PREVIEW -----",
+      "",
+      "[ADE] 87000 bytes omitted from stored chat history.",
+      "",
+      "----- BEGIN LAST PREVIEW -----",
+      "+ last preview line",
+      "- last removed line",
+      "----- END LAST PREVIEW -----",
+    ].join("\n");
+
+    expect(summarizeDiffStats(diff)).toEqual({ additions: 0, deletions: 0 });
+  });
 });
 
 describe("readRecord", () => {

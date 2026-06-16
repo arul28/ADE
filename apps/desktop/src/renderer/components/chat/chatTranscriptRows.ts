@@ -227,6 +227,13 @@ export function eventHasPayload(value: unknown): boolean {
 }
 
 export function summarizeDiffStats(diff: string): { additions: number; deletions: number } {
+  if (
+    diff.includes("[ADE] Large file diff was shortened for stored chat history.")
+    && diff.includes("bytes omitted from stored chat history.")
+  ) {
+    return { additions: 0, deletions: 0 };
+  }
+
   let additions = 0;
   let deletions = 0;
   for (const line of diff.split(/\r?\n/)) {
