@@ -5365,6 +5365,183 @@ export function createAgentChatService(args: {
     maxChars: number,
   ): AgentChatEventEnvelope[] => keepNewestWithinCharBudget(envelopes, maxChars, estimateEnvelopeChars);
 
+  const STORED_COMMAND_OUTPUT_RUNNING_MAX_BYTES = 4 * 1024;
+  const STORED_COMMAND_OUTPUT_COMPLETED_MAX_BYTES = 16 * 1024;
+  const STORED_COMMAND_OUTPUT_FAILED_MAX_BYTES = 64 * 1024;
+  const STORED_TOOL_RESULT_MAX_BYTES = 16 * 1024;
+  const STORED_TOOL_RESULT_FAILED_MAX_BYTES = 64 * 1024;
+  const STORED_FILE_DIFF_MAX_BYTES = 32 * 1024;
+  const STORED_REASONING_MAX_BYTES = 8 * 1024;
+
+  const utf8Bytes = (value: string): number => Buffer.byteLength(value, "utf8");
+
+  const sliceUtf8FromStart = (value: string, maxBytes: number): string => {
+    if (maxBytes <= 0) return "";
+    if (utf8Bytes(value) <= maxBytes) return value;
+    let low = 0;
+    let high = value.length;
+    while (low < high) {
+      const mid = Math.ceil((low + high) / 2);
+      if (utf8Bytes(value.slice(0, mid)) <= maxBytes) {
+        low = mid;
+      } else {
+        high = mid - 1;
+      }
+    }
+    return value.slice(0, low);
+  };
+
+  const sliceUtf8FromEnd = (value: string, maxBytes: number): string => {
+    if (maxBytes <= 0) return "";
+    if (utf8Bytes(value) <= maxBytes) return value;
+    let low = 0;
+    let high = value.length;
+    while (low < high) {
+      const mid = Math.ceil((low + high) / 2);
+      if (utf8Bytes(value.slice(value.length - mid)) <= maxBytes) {
+        low = mid;
+      } else {
+        high = mid - 1;
+      }
+    }
+    return value.slice(value.length - low);
+  };
+
+  const compactStoredTextPayload = (
+    label: string,
+    text: string,
+    maxBytes: number,
+  ): { text: string; originalBytes: number; omittedBytes: number } | null => {
+    const originalBytes = utf8Bytes(text);
+    if (originalBytes <= maxBytes) return null;
+
+    const prefix = [
+      `[ADE] Large ${label} was shortened for stored chat history.`,
+      `Original size: ${originalBytes} bytes. Full content was not stored.`,
+      "",
+      "----- BEGIN FIRST PREVIEW -----",
+      "",
+    ].join("\n");
+    const suffix = [
+      "",
+      "----- END LAST PREVIEW -----",
+    ].join("\n");
+    const overheadBytes = utf8Bytes(prefix) + utf8Bytes(suffix) + 512;
+    const previewBudgetBytes = Math.max(512, maxBytes - overheadBytes);
+    const halfBudgetBytes = Math.max(256, Math.floor(previewBudgetBytes / 2));
+    const head = sliceUtf8FromStart(text, halfBudgetBytes);
+    const tail = sliceUtf8FromEnd(text, Math.max(256, previewBudgetBytes - utf8Bytes(head)));
+    const omittedBytes = Math.max(0, originalBytes - utf8Bytes(head) - utf8Bytes(tail));
+    const omitted = [
+      "",
+      "----- END FIRST PREVIEW -----",
+      "",
+      `[ADE] ${omittedBytes} bytes omitted from stored chat history.`,
+      "",
+      "----- BEGIN LAST PREVIEW -----",
+      "",
+    ].join("\n");
+    return {
+      text: `${prefix}${head}${omitted}${tail}${suffix}`,
+      originalBytes,
+      omittedBytes,
+    };
+  };
+
+  const stringifyPayloadForCompaction = (value: unknown): { text: string; structured: boolean } => {
+    if (typeof value === "string") return { text: value, structured: false };
+    try {
+      const json = JSON.stringify(value, null, 2);
+      if (typeof json === "string") return { text: json, structured: true };
+      return { text: String(value), structured: false };
+    } catch {
+      return { text: String(value), structured: false };
+    }
+  };
+
+  const compactStoredUnknownPayload = (
+    label: string,
+    value: unknown,
+    maxBytes: number,
+  ): { value: unknown; originalBytes: number; omittedBytes: number } | null => {
+    const serialized = stringifyPayloadForCompaction(value);
+    const compacted = compactStoredTextPayload(label, serialized.text, maxBytes);
+    if (!compacted) return null;
+    if (!serialized.structured) {
+      return { value: compacted.text, originalBytes: compacted.originalBytes, omittedBytes: compacted.omittedBytes };
+    }
+    return {
+      value: {
+        summary: `[ADE] Large ${label} was shortened for stored chat history.`,
+        originalBytes: compacted.originalBytes,
+        omittedBytes: compacted.omittedBytes,
+        preview: compacted.text,
+      },
+      originalBytes: compacted.originalBytes,
+      omittedBytes: compacted.omittedBytes,
+    };
+  };
+
+  const compactChatEventForStorage = (event: AgentChatEvent): AgentChatEvent => {
+    if (event.type === "command") {
+      const maxBytes = event.status === "failed"
+        ? STORED_COMMAND_OUTPUT_FAILED_MAX_BYTES
+        : event.status === "running"
+          ? STORED_COMMAND_OUTPUT_RUNNING_MAX_BYTES
+          : STORED_COMMAND_OUTPUT_COMPLETED_MAX_BYTES;
+      const compacted = compactStoredTextPayload("command output", event.output, maxBytes);
+      return compacted
+        ? {
+            ...event,
+            output: compacted.text,
+            outputOriginalBytes: compacted.originalBytes,
+            outputOmittedBytes: compacted.omittedBytes,
+          }
+        : event;
+    }
+
+    if (event.type === "tool_result") {
+      const maxBytes = event.status === "failed" || event.status === "interrupted"
+        ? STORED_TOOL_RESULT_FAILED_MAX_BYTES
+        : STORED_TOOL_RESULT_MAX_BYTES;
+      const compacted = compactStoredUnknownPayload("tool result", event.result, maxBytes);
+      return compacted
+        ? {
+            ...event,
+            result: compacted.value,
+            resultOriginalBytes: compacted.originalBytes,
+            resultOmittedBytes: compacted.omittedBytes,
+          }
+        : event;
+    }
+
+    if (event.type === "file_change") {
+      const compacted = compactStoredTextPayload("file diff", event.diff, STORED_FILE_DIFF_MAX_BYTES);
+      return compacted
+        ? {
+            ...event,
+            diff: compacted.text,
+            diffOriginalBytes: compacted.originalBytes,
+            diffOmittedBytes: compacted.omittedBytes,
+          }
+        : event;
+    }
+
+    if (event.type === "reasoning") {
+      const compacted = compactStoredTextPayload("reasoning", event.text, STORED_REASONING_MAX_BYTES);
+      return compacted
+        ? {
+            ...event,
+            text: compacted.text,
+            textOriginalBytes: compacted.originalBytes,
+            textOmittedBytes: compacted.omittedBytes,
+          }
+        : event;
+    }
+
+    return event;
+  };
+
   // The single policy for what bounds the in-memory event ring: an event-count
   // cap, then a byte budget. Applied wherever the ring is (re)written.
   const boundRingEnvelopes = (envelopes: AgentChatEventEnvelope[]): AgentChatEventEnvelope[] =>
@@ -6673,6 +6850,43 @@ export function createAgentChatService(args: {
     return { envelopes: envelopes.slice(), truncated, startOffset };
   };
 
+  const transcriptPathCandidatesForSessionId = (
+    sessionId: string,
+    managed?: ManagedChatSession | null,
+  ): string[] => {
+    const candidates = [
+      path.join(chatTranscriptsDir, `${sessionId}.jsonl`),
+      managed?.transcriptPath,
+      path.join(transcriptsDir, `${sessionId}.chat.jsonl`),
+    ].filter((candidate): candidate is string => typeof candidate === "string" && candidate.trim().length > 0);
+    return [...new Set(candidates)];
+  };
+
+  const resolveBestTranscriptPathForSessionId = (
+    sessionId: string,
+    managed?: ManagedChatSession | null,
+  ): string | null => {
+    let best: { path: string; size: number; mtimeMs: number } | null = null;
+    for (const candidatePath of transcriptPathCandidatesForSessionId(sessionId, managed)) {
+      try {
+        const transcriptPath = resolveReadableChatPath(candidatePath, "agent_chat.transcript_read_skipped_path_outside_ade");
+        if (!transcriptPath || !fs.existsSync(transcriptPath)) continue;
+        const stat = fs.statSync(transcriptPath);
+        if (!stat.isFile()) continue;
+        if (
+          !best
+          || stat.size > best.size
+          || (stat.size === best.size && stat.mtimeMs > best.mtimeMs)
+        ) {
+          best = { path: transcriptPath, size: stat.size, mtimeMs: stat.mtimeMs };
+        }
+      } catch {
+        // try next candidate
+      }
+    }
+    return best?.path ?? null;
+  };
+
   // Read a bounded on-disk transcript tail for a session without requiring an
   // active ManagedChatSession. Used by getChatEventHistory to hydrate the
   // in-memory ring buffer without allocating huge historical transcripts.
@@ -6680,90 +6894,35 @@ export function createAgentChatService(args: {
     sessionId: string,
   ): { envelopes: AgentChatEventEnvelope[]; truncated: boolean; startOffset: number } => {
     const managed = managedSessions.get(sessionId);
-    if (managed?.transcriptPath) {
+    const transcriptPath = resolveBestTranscriptPathForSessionId(sessionId, managed);
+    if (transcriptPath) {
       try {
-        const transcriptPath = resolveReadableChatPath(managed.transcriptPath, "agent_chat.transcript_read_skipped_path_outside_ade");
-        if (!transcriptPath) return { envelopes: [], truncated: false, startOffset: 0 };
         return parseTranscriptHistoryTail(sessionId, transcriptPath);
       } catch {
         return { envelopes: [], truncated: false, startOffset: 0 };
       }
     }
-    // Fall back to the known transcript layout so sessions that were never
-    // ensured into managedSessions (e.g. because they were torn down and
-    // haven't been reopened yet) still surface their history.
-    const candidates = [
-      path.join(transcriptsDir, `${sessionId}.chat.jsonl`),
-      path.join(chatTranscriptsDir, `${sessionId}.jsonl`),
-    ];
-    for (const candidatePath of candidates) {
-      try {
-        const transcriptPath = resolveReadableChatPath(candidatePath, "agent_chat.transcript_read_skipped_path_outside_ade");
-        if (!transcriptPath) continue;
-        return parseTranscriptHistoryTail(sessionId, transcriptPath);
-      } catch {
-        // try next candidate
-      }
-    }
     return { envelopes: [], truncated: false, startOffset: 0 };
   };
 
-  // Resolve the on-disk transcript path for a session the same way
-  // readTranscriptEnvelopesForSessionId does (managed transcriptPath first,
-  // then the known transcript layouts), returning null when nothing readable
-  // exists. Used by getChatEventHistoryPage.
+  // Resolve the most complete on-disk transcript path for a session the same
+  // way readTranscriptEnvelopesForSessionId does. The dedicated chat transcript
+  // can continue beyond the legacy transcript_path cap, so prefer the largest
+  // readable candidate rather than blindly taking the row's transcript_path.
+  // Used by getChatEventHistoryPage.
   const resolveTranscriptPathForSessionId = (sessionId: string): string | null => {
-    const managed = managedSessions.get(sessionId);
-    if (managed?.transcriptPath) {
-      try {
-        return resolveReadableChatPath(managed.transcriptPath, "agent_chat.transcript_read_skipped_path_outside_ade");
-      } catch {
-        return null;
-      }
-    }
-    const candidates = [
-      path.join(transcriptsDir, `${sessionId}.chat.jsonl`),
-      path.join(chatTranscriptsDir, `${sessionId}.jsonl`),
-    ];
-    for (const candidatePath of candidates) {
-      try {
-        const transcriptPath = resolveReadableChatPath(candidatePath, "agent_chat.transcript_read_skipped_path_outside_ade");
-        if (!transcriptPath) continue;
-        if (fs.existsSync(transcriptPath)) return transcriptPath;
-      } catch {
-        // try next candidate
-      }
-    }
-    return null;
+    return resolveBestTranscriptPathForSessionId(sessionId, managedSessions.get(sessionId));
   };
 
   const readFullTranscriptEnvelopesForSessionId = (sessionId: string): AgentChatEventEnvelope[] => {
-    const managed = managedSessions.get(sessionId);
-    if (managed?.transcriptPath) {
-      try {
-        const transcriptPath = resolveReadableChatPath(managed.transcriptPath, "agent_chat.transcript_read_skipped_path_outside_ade");
-        if (!transcriptPath) return [];
-        return parseAgentChatTranscript(fs.readFileSync(transcriptPath, "utf8"))
-          .filter((entry) => entry.sessionId === sessionId);
-      } catch {
-        return [];
-      }
+    const transcriptPath = resolveBestTranscriptPathForSessionId(sessionId, managedSessions.get(sessionId));
+    if (!transcriptPath) return [];
+    try {
+      return parseAgentChatTranscript(fs.readFileSync(transcriptPath, "utf8"))
+        .filter((entry) => entry.sessionId === sessionId);
+    } catch {
+      return [];
     }
-    const candidates = [
-      path.join(transcriptsDir, `${sessionId}.chat.jsonl`),
-      path.join(chatTranscriptsDir, `${sessionId}.jsonl`),
-    ];
-    for (const candidatePath of candidates) {
-      try {
-        const transcriptPath = resolveReadableChatPath(candidatePath, "agent_chat.transcript_read_skipped_path_outside_ade");
-        if (!transcriptPath) continue;
-        return parseAgentChatTranscript(fs.readFileSync(transcriptPath, "utf8"))
-          .filter((entry) => entry.sessionId === sessionId);
-      } catch {
-        // try next candidate
-      }
-    }
-    return [];
   };
 
   const envelopeDedupKey = (entry: AgentChatEventEnvelope): string => {
@@ -8722,6 +8881,10 @@ export function createAgentChatService(args: {
   };
 
   const writeTranscript = (managed: ManagedChatSession, envelope: AgentChatEventEnvelope): void => {
+    // The legacy transcript_path is byte-capped because it also backs
+    // terminal-session storage. The dedicated chat transcript is the durable
+    // replay source and must keep receiving events after that cap is reached.
+    writeChatTranscriptLine(managed.session.id, envelope);
     if (managed.transcriptLimitReached) return;
     try {
       fs.mkdirSync(path.dirname(managed.transcriptPath), { recursive: true });
@@ -8746,9 +8909,6 @@ export function createAgentChatService(args: {
     } catch {
       // ignore transcript write failures
     }
-
-    // Also write to the dedicated transcript cache directory for persistence
-    writeChatTranscriptLine(managed.session.id, envelope);
   };
 
   const writeChatTranscriptLine = (sessionId: string, envelope: AgentChatEventEnvelope): void => {
@@ -8833,10 +8993,11 @@ export function createAgentChatService(args: {
       const key = codexSubagentTranscriptMessageKey(threadId, message);
       if (state?.transcriptKeys.has(key)) continue;
       state?.transcriptKeys.add(key);
+      const storedEvent = compactChatEventForStorage(event);
       const envelope: AgentChatEventEnvelope = {
         sessionId: managed.session.id,
         timestamp: nowIso(),
-        event,
+        event: storedEvent,
         sequence: ++managed.eventSequence,
         provenance: {
           messageId: key,
@@ -9007,7 +9168,8 @@ export function createAgentChatService(args: {
   };
 
   const commitChatEvent = (managed: ManagedChatSession, event: AgentChatEvent): void => {
-    const storedEvent = event.type === "error" ? decorateAgentCliError(managed, event) : event;
+    const decoratedEvent = event.type === "error" ? decorateAgentCliError(managed, event) : event;
+    const storedEvent = compactChatEventForStorage(decoratedEvent);
     managed.session.lastActivityAt = nowIso();
     trackSubagentEvent(managed, storedEvent);
     appendRecentConversationEntry(managed, storedEvent);

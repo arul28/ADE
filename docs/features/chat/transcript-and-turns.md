@@ -229,6 +229,22 @@ count. Notable rendering rules:
 ## Persisted transcript
 
 Sessions persist the transcript to disk under the `.ade` layout.
+Chat replay prefers the dedicated per-session JSONL at
+`.ade/transcripts/chat/<sessionId>.jsonl`; the legacy managed transcript path
+can still exist for compatibility and may be byte-capped by the terminal/session
+storage budget. When multiple transcript candidates are present, recovery uses
+the most complete readable candidate so old capped files do not hide newer chat
+history.
+
+Persisted chat events keep the same public `AgentChatEvent` shape, but bulky
+payloads are compacted before storage for rows users rarely need in full after
+the turn is over. Large command output, tool results, file diffs, and reasoning
+text are replaced with a short head/tail preview plus original/omitted byte
+metadata on the event (`outputOriginalBytes`, `resultOmittedBytes`,
+`diffOmittedBytes`, `textOmittedBytes`, etc.). The renderer, iOS client, CLI,
+and TUI still consume the normal `output` / `result` / `diff` / `text` fields;
+they simply see the persisted preview instead of the original large body.
+
 `sessionRecovery.ts` implements version-2 reconstruction:
 
 - Recent entries (bounded) are parsed back into envelopes.

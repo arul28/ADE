@@ -375,6 +375,8 @@ export type AgentChatEvent =
       type: "tool_result";
       tool: string;
       result: unknown;
+      resultOriginalBytes?: number;
+      resultOmittedBytes?: number;
       itemId: string;
       logicalItemId?: string;
       parentItemId?: string;
@@ -386,6 +388,8 @@ export type AgentChatEvent =
       type: "file_change";
       path: string;
       diff: string;
+      diffOriginalBytes?: number;
+      diffOmittedBytes?: number;
       kind: "create" | "modify" | "delete";
       itemId: string;
       logicalItemId?: string;
@@ -397,6 +401,8 @@ export type AgentChatEvent =
       command: string;
       cwd: string;
       output: string;
+      outputOriginalBytes?: number;
+      outputOmittedBytes?: number;
       itemId: string;
       logicalItemId?: string;
       turnId?: string;
@@ -417,6 +423,8 @@ export type AgentChatEvent =
   | {
       type: "reasoning";
       text: string;
+      textOriginalBytes?: number;
+      textOmittedBytes?: number;
       turnId?: string;
       itemId?: string;
       summaryIndex?: number;
