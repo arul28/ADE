@@ -198,9 +198,35 @@ function DemoTile({
 
 /** Full-screen player opened on tile click. Esc / backdrop / button to close. */
 function Lightbox({ demo, onClose }: { demo: Demo; onClose: () => void }) {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const closeRef = useRef<HTMLButtonElement>(null);
+  const restoreFocusRef = useRef<HTMLElement | null>(null);
   useEffect(() => {
+    // Modal a11y: move focus into the dialog, trap Tab inside it, and restore
+    // focus to the trigger on close so keyboard users can't reach the page behind.
+    restoreFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    closeRef.current?.focus();
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape") {
+        onClose();
+        return;
+      }
+      if (e.key !== "Tab") return;
+      const root = dialogRef.current;
+      if (!root) return;
+      const focusables = root.querySelectorAll<HTMLElement>(
+        'button,[href],input,select,textarea,video,[tabindex]:not([tabindex="-1"])',
+      );
+      if (focusables.length === 0) return;
+      const first = focusables[0]!;
+      const last = focusables[focusables.length - 1]!;
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
     };
     window.addEventListener("keydown", onKey);
     const prev = document.body.style.overflow;
@@ -208,6 +234,7 @@ function Lightbox({ demo, onClose }: { demo: Demo; onClose: () => void }) {
     return () => {
       window.removeEventListener("keydown", onKey);
       document.body.style.overflow = prev;
+      restoreFocusRef.current?.focus();
     };
   }, [onClose]);
 
@@ -224,6 +251,7 @@ function Lightbox({ demo, onClose }: { demo: Demo; onClose: () => void }) {
       className="fixed inset-0 z-[100] flex items-center justify-center bg-black/80 p-[clamp(16px,4vw,64px)] backdrop-blur-md"
     >
       <motion.div
+        ref={dialogRef}
         initial={{ scale: 0.96, y: 8 }}
         animate={{ scale: 1, y: 0 }}
         exit={{ scale: 0.97, y: 6 }}
@@ -232,6 +260,7 @@ function Lightbox({ demo, onClose }: { demo: Demo; onClose: () => void }) {
         className="relative w-full max-w-[1180px]"
       >
         <button
+          ref={closeRef}
           type="button"
           onClick={onClose}
           aria-label="Close"
