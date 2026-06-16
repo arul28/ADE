@@ -203,15 +203,45 @@ for (const dmgPath of dmgPaths) {
   await verifyDmgBeforeNotarization(dmgPath);
 
   console.log(`[release:mac] Submitting DMG for notarization: ${dmgPath}`);
-  const { stdout: notarytoolOutput } = await execFileAsync("xcrun", buildNotarytoolArgs(dmgPath), {
-    maxBuffer: 1024 * 1024 * 10,
-  });
-  const notaryResult = JSON.parse(notarytoolOutput);
-  if (notaryResult.status !== "Accepted") {
-    throw new Error(
-      `[release:mac] DMG notarization failed with status ${notaryResult.status ?? "unknown"} ` +
-        `for ${path.basename(dmgPath)} (${notaryResult.id ?? "no submission id"})`
-    );
+  // Apple's notary service + the runner's network are flaky — a transient
+  // -1009 "offline" / timeout / 5xx must NOT sink a 40-minute release. Retry the
+  // submit on transient errors; a real Invalid/Rejected verdict throws immediately.
+  const maxNotaryAttempts = 4;
+  let notaryResult = null;
+  let lastNotaryError = null;
+  for (let attempt = 1; attempt <= maxNotaryAttempts; attempt += 1) {
+    try {
+      const { stdout: notarytoolOutput } = await execFileAsync("xcrun", buildNotarytoolArgs(dmgPath), {
+        maxBuffer: 1024 * 1024 * 10,
+      });
+      const parsed = JSON.parse(notarytoolOutput);
+      if (parsed.status === "Accepted") {
+        notaryResult = parsed;
+        break;
+      }
+      // A definite verdict (Invalid/Rejected) is not transient — fail fast.
+      throw new Error(
+        `[release:mac] DMG notarization failed with status ${parsed.status ?? "unknown"} ` +
+          `for ${path.basename(dmgPath)} (${parsed.id ?? "no submission id"})`
+      );
+    } catch (error) {
+      lastNotaryError = error;
+      const message = `${error?.message ?? ""}\n${error?.stderr ?? ""}`;
+      const isTransient =
+        /-1009|offline|No network route|timed out|timeout|ECONNRESET|ETIMEDOUT|EAI_AGAIN|connection (?:reset|refused)|temporarily unavailable|HTTP(?:Error)?.*(?:nil|5\d\d)/i.test(message);
+      if (!isTransient || attempt === maxNotaryAttempts) {
+        throw error;
+      }
+      const backoffMs = Math.min(60_000, 5_000 * 2 ** (attempt - 1));
+      console.warn(
+        `[release:mac] Notarization submit attempt ${attempt}/${maxNotaryAttempts} hit a transient error ` +
+          `for ${path.basename(dmgPath)}; retrying in ${Math.round(backoffMs / 1000)}s.`
+      );
+      await sleep(backoffMs);
+    }
+  }
+  if (!notaryResult) {
+    throw lastNotaryError ?? new Error(`[release:mac] Notarization failed for ${path.basename(dmgPath)}`);
   }
   console.log(`[release:mac] DMG notarization accepted: ${notaryResult.id ?? path.basename(dmgPath)}`);
 
