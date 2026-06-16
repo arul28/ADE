@@ -2256,7 +2256,7 @@ final class SyncService: ObservableObject {
 
   private func unhideProject(_ project: MobileProjectSummary) {
     let keys = hiddenKeys(for: project)
-    guard !keys.isEmpty else { return }
+    guard !keys.isEmpty, !hiddenProjectKeys.isDisjoint(with: keys) else { return }
     hiddenProjectKeys.subtract(keys)
     saveHiddenProjectKeys()
   }
