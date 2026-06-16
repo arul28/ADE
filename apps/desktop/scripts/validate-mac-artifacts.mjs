@@ -233,15 +233,14 @@ async function assertRemoteRuntimeBundle(resourcesPath, description, expectedArc
   }
 }
 
-async function assertBundledOpenCodeRuntime(nodeModulesPath, description) {
-  const requiredBinaries = [
-    path.join(nodeModulesPath, "opencode-darwin-arm64", "bin", "opencode"),
-    path.join(nodeModulesPath, "opencode-darwin-x64", "bin", "opencode"),
-  ];
-  for (const binaryPath of requiredBinaries) {
-    await assertPathExists(binaryPath, `bundled OpenCode runtime binary for ${description}`);
-    await assertExecutable(binaryPath, `bundled OpenCode runtime binary for ${description}`);
-  }
+async function assertBundledOpenCodeRuntime(nodeModulesPath, description, expectedArch) {
+  // Per-arch builds bundle ONLY their own arch's OpenCode binary (electron-builder
+  // excludes the non-target arch's optional native dep). Require just that one;
+  // we don't assert the other arch is absent (a harmless extra copy must not fail
+  // the release).
+  const binaryPath = path.join(nodeModulesPath, `opencode-darwin-${expectedArch}`, "bin", "opencode");
+  await assertPathExists(binaryPath, `bundled OpenCode runtime binary for ${description}`);
+  await assertExecutable(binaryPath, `bundled OpenCode runtime binary for ${description}`);
 }
 
 function assertAppAsarContains(appAsarPath, relativePaths, description) {
@@ -435,7 +434,7 @@ async function validatePackagedRuntime(appPath, description, expectedArch, optio
   await assertExecutable(adeCliInstallerPath, "bundled ADE CLI PATH installer");
   await assertPathExists(nodePtyModulePath, "unpacked node-pty module");
   await assertPathExists(smokeScriptPath, "unpacked packaged runtime smoke script");
-  await assertBundledOpenCodeRuntime(nodeModulesPath, description);
+  await assertBundledOpenCodeRuntime(nodeModulesPath, description, expectedArch);
   const adeCliTuiContents = await fs.readFile(adeCliTuiPath, "utf8");
   for (const token of ["__dirname", "__filename"]) {
     if (adeCliTuiContents.includes(token) && !adeCliTuiContents.includes(`const ${token} =`)) {
