@@ -3997,15 +3997,18 @@ export function AgentChatComposer({
                 <SmartTooltip
                   forceEnabled
                   content={{
-                    label: "Voice input unavailable",
-                    description: "The on-device voice model isn't installed yet. It ships with a future update.",
+                    label: "Voice model not installed",
+                    description: "Tap to download the on-device voice model in Settings → General.",
                   }}
                 >
                   <button
                     type="button"
-                    disabled
-                    className="inline-flex h-7 w-7 shrink-0 cursor-not-allowed items-center justify-center rounded-full text-muted-fg/20"
-                    aria-label="Voice input unavailable"
+                    onClick={() => {
+                      // HashRouter deep-link to the voice-input card under General.
+                      window.location.hash = "#/settings?tab=general#voice-input";
+                    }}
+                    className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-muted-fg/30 transition-all hover:bg-[color:color-mix(in_srgb,var(--chat-accent)_10%,transparent)] hover:text-[var(--chat-accent)] active:scale-[0.97]"
+                    aria-label="Set up voice input"
                   >
                     <MicrophoneSlash size={14} weight="regular" />
                   </button>

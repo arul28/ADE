@@ -10,6 +10,7 @@ import {
 import { AdeCliSection } from "./AdeCliSection";
 import { AboutSection } from "./AboutSection";
 import { ProjectSection } from "./ProjectSection";
+import { DictationSection } from "./DictationSection";
 
 const sectionLabelStyle: React.CSSProperties = {
   ...LABEL_STYLE,
@@ -83,6 +84,8 @@ export function GeneralSection() {
       </section>
 
       <ProjectSection />
+
+      <DictationSection />
 
       <section>
         <div style={sectionLabelStyle}>ADE CLI</div>

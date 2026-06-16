@@ -50,6 +50,7 @@ const TAB_ALIASES: Record<string, SectionId> = {
 const HASH_TARGET_SECTIONS: Partial<Record<string, SectionId>> = {
   "ai-providers": "ai",
   "chat-launch-clipboard": "appearance",
+  "voice-input": "general",
 };
 
 function padIndex(i: number): string {
