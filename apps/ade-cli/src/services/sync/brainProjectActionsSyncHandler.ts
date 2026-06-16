@@ -12,6 +12,8 @@ import type {
   SyncMobileProjectSummary,
   SyncPairingRequestPayload,
   SyncPeerMetadata,
+  SyncProjectForgetRequestPayload,
+  SyncProjectForgetResultPayload,
   SyncProjectCatalogPayload,
   SyncProjectOpenRequestPayload,
   SyncProjectSwitchRequestPayload,
@@ -387,6 +389,30 @@ export function createBrainProjectActionsSyncHandler(
               message: error instanceof Error ? error.message : String(error),
             }, envelope.requestId);
           }
+        }
+        break;
+      }
+      case "project_forget_request": {
+        if (!args.projectCatalogProvider.forgetProject) {
+          send(peer.ws, "project_forget_result", {
+            ok: false,
+            message: "Removing projects is not available from this machine.",
+          } satisfies SyncProjectForgetResultPayload, envelope.requestId);
+          break;
+        }
+        try {
+          const result = await args.projectCatalogProvider.forgetProject(
+            (envelope.payload ?? {}) as SyncProjectForgetRequestPayload,
+          );
+          send(peer.ws, "project_forget_result", result, envelope.requestId);
+          if (result.ok) {
+            send(peer.ws, "project_catalog", await projectCatalog(args.projectCatalogProvider, args.logger));
+          }
+        } catch (error) {
+          send(peer.ws, "project_forget_result", {
+            ok: false,
+            message: error instanceof Error ? error.message : String(error),
+          } satisfies SyncProjectForgetResultPayload, envelope.requestId);
         }
         break;
       }

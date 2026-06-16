@@ -147,6 +147,13 @@ struct MobileProjectSwitchResultPayload: Codable, Equatable {
   var connection: MobileProjectConnectionPayload?
 }
 
+struct MobileProjectForgetResultPayload: Codable, Equatable {
+  var ok: Bool
+  var message: String?
+  var projectId: String?
+  var rootPath: String?
+}
+
 struct MobileProjectBrowseEntry: Codable, Equatable, Identifiable {
   var id: String { fullPath }
   var name: String

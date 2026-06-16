@@ -2643,11 +2643,14 @@ final class ADETests: XCTestCase {
   func testSyncServiceProjectHomeUsesCachedProjectsAndLocalSelection() throws {
     let activeProjectIdKey = "ade.sync.activeProjectId"
     let activeProjectRootPathKey = "ade.sync.activeProjectRootPath"
+    let hiddenProjectsKey = "ade.sync.hiddenProjects"
     UserDefaults.standard.removeObject(forKey: activeProjectIdKey)
     UserDefaults.standard.removeObject(forKey: activeProjectRootPathKey)
+    UserDefaults.standard.removeObject(forKey: hiddenProjectsKey)
     defer {
       UserDefaults.standard.removeObject(forKey: activeProjectIdKey)
       UserDefaults.standard.removeObject(forKey: activeProjectRootPathKey)
+      UserDefaults.standard.removeObject(forKey: hiddenProjectsKey)
     }
 
     let baseURL = makeTemporaryDirectory()
@@ -2678,6 +2681,79 @@ final class ADETests: XCTestCase {
     XCTAssertTrue(service.shouldShowProjectHome)
     service.closeProjectHome()
     XCTAssertFalse(service.shouldShowProjectHome)
+
+    database.close()
+  }
+
+  @MainActor
+  func testSyncServiceForgetProjectHidesCachedAndRemoteRowsByRoot() throws {
+    let activeProjectIdKey = "ade.sync.activeProjectId"
+    let activeProjectRootPathKey = "ade.sync.activeProjectRootPath"
+    let hiddenProjectsKey = "ade.sync.hiddenProjects"
+    UserDefaults.standard.removeObject(forKey: activeProjectIdKey)
+    UserDefaults.standard.removeObject(forKey: activeProjectRootPathKey)
+    UserDefaults.standard.removeObject(forKey: hiddenProjectsKey)
+    defer {
+      UserDefaults.standard.removeObject(forKey: activeProjectIdKey)
+      UserDefaults.standard.removeObject(forKey: activeProjectRootPathKey)
+      UserDefaults.standard.removeObject(forKey: hiddenProjectsKey)
+    }
+
+    let baseURL = makeTemporaryDirectory()
+    let database = makeControllerHydrationDatabase(baseURL: baseURL)
+    XCTAssertNil(database.initializationError)
+    try database.executeSqlForTesting("""
+      insert into projects (
+        id, root_path, display_name, default_base_ref, created_at, last_opened_at
+      ) values
+        ('db-project', '/tmp/project-one', 'Project One', 'main', '2026-04-22T00:00:00.000Z', '2026-04-22T01:00:00.000Z');
+    """)
+
+    let service = SyncService(database: database)
+    let cachedProject = try XCTUnwrap(service.projects.first(where: { $0.id == "db-project" }))
+    service.selectProject(cachedProject)
+    XCTAssertEqual(service.activeProjectId, "db-project")
+
+    service.seedRemoteProjectCatalogForTesting([
+      MobileProjectSummary(
+        id: "registry-project",
+        displayName: "Project One",
+        rootPath: "/tmp/project-one/",
+        defaultBaseRef: "main",
+        lastOpenedAt: "2026-04-22T02:00:00.000Z",
+        laneCount: 2,
+        isAvailable: true,
+        isCached: false
+      ),
+    ])
+    XCTAssertTrue(service.projects.contains { $0.id == "db-project" || $0.id == "registry-project" })
+
+    service.forgetProject(cachedProject)
+
+    XCTAssertNil(service.activeProjectId)
+    XCTAssertNil(service.activeProjectRootPath)
+    XCTAssertTrue(service.shouldShowProjectHome)
+    XCTAssertFalse(service.projects.contains { $0.id == "db-project" })
+    XCTAssertFalse(service.projects.contains { $0.id == "registry-project" })
+    XCTAssertEqual(
+      UserDefaults.standard.stringArray(forKey: hiddenProjectsKey),
+      ["id:db-project", "root:/tmp/project-one"]
+    )
+
+    service.seedRemoteProjectCatalogForTesting([
+      MobileProjectSummary(
+        id: "registry-project",
+        displayName: "Project One",
+        rootPath: "/tmp/project-one/",
+        defaultBaseRef: "main",
+        lastOpenedAt: "2026-04-22T03:00:00.000Z",
+        laneCount: 3,
+        isAvailable: true,
+        isCached: false
+      ),
+    ])
+    XCTAssertFalse(service.projects.contains { $0.id == "db-project" })
+    XCTAssertFalse(service.projects.contains { $0.id == "registry-project" })
 
     database.close()
   }

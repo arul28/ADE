@@ -314,6 +314,8 @@ private struct ProjectHomeView: View {
               isDisabled: syncService.isProjectSwitching
             ) {
               syncService.selectProject(project)
+            } onForget: {
+              syncService.forgetProject(project)
             }
           }
         }
@@ -484,6 +486,7 @@ private struct ProjectHomeRow: View {
   let isSwitching: Bool
   let isDisabled: Bool
   let action: () -> Void
+  let onForget: () -> Void
 
   var body: some View {
     Button(action: action) {
@@ -535,6 +538,12 @@ private struct ProjectHomeRow: View {
     }
     .buttonStyle(.plain)
     .disabled(isDisabled)
+    .contextMenu {
+      Button(role: .destructive, action: onForget) {
+        Label("Remove from list", systemImage: "trash")
+      }
+    }
+    .accessibilityAction(named: "Remove from list", onForget)
   }
 }
 

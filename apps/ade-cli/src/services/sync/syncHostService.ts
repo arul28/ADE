@@ -46,6 +46,8 @@ import type {
   SyncProjectOpenRequestPayload,
   SyncProjectCatalogChunkPayload,
   SyncProjectCatalogPayload,
+  SyncProjectForgetRequestPayload,
+  SyncProjectForgetResultPayload,
   SyncProjectSwitchRequestPayload,
   SyncProjectSwitchResultPayload,
   ListMyGitHubReposInput,
@@ -353,12 +355,14 @@ export type SyncProjectCatalogProvider = {
   createProject?: (args: CreateProjectInput) => Promise<SyncMobileProjectSummary>;
   cloneProject?: (args: CloneProjectInput) => Promise<SyncMobileProjectSummary>;
   listMyGitHubRepos?: (args: ListMyGitHubReposInput) => Promise<ListMyGitHubReposResult>;
+  forgetProject?: (args: SyncProjectForgetRequestPayload) => Promise<SyncProjectForgetResultPayload>;
 };
 
 type SyncHostServiceArgs = {
   db: AdeDb;
   logger: Logger;
   projectId?: string | null;
+  projectIdAliases?: string[];
   projectRoot: string;
   fileService: ReturnType<typeof createFileService>;
   laneService: ReturnType<typeof createLaneService>;
@@ -570,10 +574,22 @@ type SyncHostProjectScopeResolution =
       receivedProjectId: string | null;
     };
 
+function projectIdMatchesHost(
+  receivedProjectId: string | null | undefined,
+  hostProjectId: string | null | undefined,
+  hostProjectIdAliases: readonly (string | null | undefined)[] = [],
+): boolean {
+  const received = toOptionalString(receivedProjectId);
+  const host = toOptionalString(hostProjectId);
+  if (!received || !host) return false;
+  return received === host || hostProjectIdAliases.some((alias) => toOptionalString(alias) === received);
+}
+
 export function resolveSyncHostInboundProjectScope(
   type: SyncEnvelope["type"],
   receivedProjectId: string | null | undefined,
   hostProjectId: string | null | undefined,
+  hostProjectIdAliases: readonly (string | null | undefined)[] = [],
 ): SyncHostProjectScopeResolution {
   if (!SYNC_HOST_PROJECT_SCOPED_INBOUND_ENVELOPE_TYPES.has(type)) {
     return { ok: true, projectId: null, usedSingleProjectFallback: false };
@@ -593,7 +609,7 @@ export function resolveSyncHostInboundProjectScope(
   if (!received) {
     return { ok: true, projectId: host, usedSingleProjectFallback: true };
   }
-  if (received !== host) {
+  if (!projectIdMatchesHost(received, host, hostProjectIdAliases)) {
     return {
       ok: false,
       code: "project_mismatch",
@@ -989,6 +1005,11 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   const maxChangesetBatchRows = DEFAULT_MAX_CHANGESET_BATCH_ROWS;
   const maxProjectCatalogEnvelopeBytes = MAX_PROJECT_CATALOG_ENVELOPE_BYTES;
   const maxProjectCatalogChunkBytes = 192 * 1024;
+  const hostProjectIdAliases = uniqueStrings(
+    (args.projectIdAliases ?? [])
+      .map((alias) => toOptionalString(alias))
+      .filter((alias): alias is string => Boolean(alias) && alias !== toOptionalString(args.projectId)),
+  );
   const localPresenceCommandDescriptors: SyncRemoteCommandDescriptor[] = [
     {
       action: "lanes.presence.announce",
@@ -2479,6 +2500,32 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     }
   }
 
+  async function handleProjectForgetRequest(
+    peer: PeerState,
+    requestId: string | null | undefined,
+    payload: SyncProjectForgetRequestPayload | null,
+  ): Promise<void> {
+    if (!args.projectCatalogProvider?.forgetProject) {
+      sendRequired(peer, "project_forget_result", {
+        ok: false,
+        message: "Removing projects is not available from this machine.",
+      } satisfies SyncProjectForgetResultPayload, requestId);
+      return;
+    }
+    try {
+      const result = await args.projectCatalogProvider.forgetProject(payload ?? {});
+      sendRequired(peer, "project_forget_result", result, requestId);
+      if (result.ok) {
+        broadcastProjectCatalogToConnectedPeers(await buildProjectCatalogPayload());
+      }
+    } catch (error) {
+      sendRequired(peer, "project_forget_result", {
+        ok: false,
+        message: error instanceof Error ? error.message : String(error),
+      } satisfies SyncProjectForgetResultPayload, requestId);
+    }
+  }
+
   function broadcastProjectCatalogToConnectedPeers(
     projectCatalog: SyncProjectCatalogPayload,
   ): void {
@@ -3056,7 +3103,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     const commandId = toOptionalString(payload.commandId) ?? requestId ?? `cmd-${Date.now()}`;
     const requestedProjectId = toOptionalString(payload.projectId);
     const hostProjectId = toOptionalString(args.projectId);
-    const commandScopeKey = requestedProjectId ?? hostProjectId ?? args.projectRoot;
+    const matchesHostProject = projectIdMatchesHost(requestedProjectId, hostProjectId, hostProjectIdAliases);
+    const commandScopeKey = matchesHostProject
+      ? hostProjectId ?? args.projectRoot
+      : requestedProjectId ?? hostProjectId ?? args.projectRoot;
     const commandCacheKey = mobileCommandCacheKey(commandScopeKey, peer, commandId);
     const commandArgsKey = stableJsonKey(payload.args ?? {});
     const commandArgsFingerprint = mobileCommandArgsFingerprint(commandArgsKey);
@@ -3154,8 +3204,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     const shouldRouteToProject =
       Boolean(args.remoteCommandExecutor)
       && Boolean(requestedProjectId)
-      && requestedProjectId !== hostProjectId;
-    if (requestedProjectId && hostProjectId && requestedProjectId !== hostProjectId && !shouldRouteToProject) {
+      && !matchesHostProject;
+    if (requestedProjectId && hostProjectId && !matchesHostProject && !shouldRouteToProject) {
       reject("This ADE machine is hosting a different project. Select the project again and retry.", "project_not_open");
       return;
     }
@@ -3190,7 +3240,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       return;
     }
     if (payload.action === "lanes.presence.announce" || payload.action === "lanes.presence.release") {
-      if (requestedProjectId && hostProjectId && requestedProjectId !== hostProjectId) {
+      if (requestedProjectId && hostProjectId && !matchesHostProject) {
         reject("Lane presence is not available for a project that is not open in this phone sync host.", "project_not_open");
         return;
       }
@@ -3272,7 +3322,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       const executor = shouldRouteToProject && args.remoteCommandExecutor
         ? args.remoteCommandExecutor
         : remoteCommandService;
-      const created = await executor.execute(payload);
+      const routedPayload = matchesHostProject && hostProjectId
+        ? { ...payload, projectId: hostProjectId }
+        : payload;
+      const created = await executor.execute(routedPayload);
       sendResult(acceptedRecord, {
         commandId,
         ok: true,
@@ -3553,7 +3606,12 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       return;
     }
 
-    const projectScope = resolveSyncHostInboundProjectScope(envelope.type, envelope.projectId, args.projectId);
+    const projectScope = resolveSyncHostInboundProjectScope(
+      envelope.type,
+      envelope.projectId,
+      args.projectId,
+      hostProjectIdAliases,
+    );
     if (!projectScope.ok) {
       rejectProjectScopedEnvelope(peer, envelope.type, envelope.requestId, envelope.payload, projectScope);
       return;
@@ -3574,6 +3632,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       }
       case "project_switch_request": {
         await handleProjectSwitchRequest(peer, envelope.requestId, envelope.payload as SyncProjectSwitchRequestPayload);
+        break;
+      }
+      case "project_forget_request": {
+        await handleProjectForgetRequest(peer, envelope.requestId, envelope.payload as SyncProjectForgetRequestPayload);
         break;
       }
       case "project_browse_request": {
