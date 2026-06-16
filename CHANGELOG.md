@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.5] - 2026-06-16
+
+### Added
+
+- On-device voice dictation model now downloads on first use (from Settings → Voice input) instead of being bundled, shrinking the app and every update.
+- MCP servers configured for ADE now load in Claude chats, matching the ADE CLI.
+- Remote ADE Code: `ade code` can launch a Work chat against a remote machine.
+
+### Changed
+
+- macOS now ships separate Apple Silicon and Intel builds instead of one universal bundle, roughly halving the auto-update download and fixing a case where the larger universal update could crash the macOS updater mid-download.
+- The macOS release pipeline builds each architecture in parallel for faster, more reliable releases.
+
+### Fixed
+
+- The "stop the other ADE brain" launch-conflict instructions now work regardless of where the conflicting build is installed, and correctly stop a `launchd`-managed runtime.
+
 ## [1.2.4] - 2026-06-15
 
 ### Added
@@ -384,7 +401,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.4...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.5...HEAD
+[1.2.5]: https://github.com/arul28/ADE/compare/v1.2.4...v1.2.5
 [1.2.4]: https://github.com/arul28/ADE/compare/v1.2.3...v1.2.4
 [1.2.3]: https://github.com/arul28/ADE/compare/v1.2.2...v1.2.3
 [1.2.2]: https://github.com/arul28/ADE/compare/v1.2.1...v1.2.2
