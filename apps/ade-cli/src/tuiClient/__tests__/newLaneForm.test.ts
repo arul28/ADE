@@ -17,7 +17,6 @@ import {
   newLaneTypeaheadField,
   normalizeNewLaneStart,
   toggleNewLaneBranchSource,
-  toggleNewLaneRuntime,
 } from "../newLaneForm";
 
 function lane(id: string, name: string): LaneSummary {
@@ -27,10 +26,10 @@ function lane(id: string, name: string): LaneSummary {
 describe("newLaneFormFields", () => {
   it("shows mode-specific fields for each start mode, always ending in the create button", () => {
     const primary = newLaneFormFields("primary").map((field) => field.name);
-    expect(primary).toEqual(["name", "color", "start", "baseBranch", "runtime", "create"]);
+    expect(primary).toEqual(["name", "color", "start", "baseBranch", "create"]);
 
     const child = newLaneFormFields("child", { activeLaneName: "Current" }).map((field) => field.name);
-    expect(child).toEqual(["name", "color", "start", "parent", "baseBranch", "runtime", "create"]);
+    expect(child).toEqual(["name", "color", "start", "parent", "baseBranch", "create"]);
 
     const imported = newLaneFormFields("import").map((field) => field.name);
     expect(imported).toEqual(["name", "color", "start", "branchSource", "branch", "baseBranch", "create"]);
@@ -53,19 +52,13 @@ describe("newLaneFormFields", () => {
   });
 });
 
-describe("start/runtime/source cycling", () => {
+describe("start/source/color cycling", () => {
   it("cycles through the start modes in display order (primary → branch → child)", () => {
     expect(cycleNewLaneStart("primary", 1)).toBe("import");
     expect(cycleNewLaneStart("import", 1)).toBe("child");
     expect(cycleNewLaneStart("child", 1)).toBe("primary");
     expect(cycleNewLaneStart("primary", -1)).toBe("child");
     expect(normalizeNewLaneStart("nonsense")).toBe("primary");
-  });
-
-  it("toggles runtime between local and the mac vm", () => {
-    expect(toggleNewLaneRuntime("local")).toBe("macos-vm");
-    expect(toggleNewLaneRuntime("macos-vm")).toBe("local");
-    expect(toggleNewLaneRuntime(undefined)).toBe("macos-vm");
   });
 
   it("toggles the branch source between remote and local (remote default)", () => {
@@ -120,10 +113,10 @@ describe("branch typeahead", () => {
 
 describe("newLaneFormFieldRowOffsets", () => {
   it("matches the NewLaneFormPane block heights (start = 5 rows, typeahead +4, create = 2)", () => {
-    // primary: name(1), color(4), start(7), baseBranch(12, +typeahead), runtime(19), create(22)
-    expect(newLaneFormFieldRowOffsets(newLaneFormFields("primary"))).toEqual([1, 4, 7, 12, 19, 22]);
-    // child has no typeahead: name(1), color(4), start(7), parent(12), base(15), runtime(18), create(21)
-    expect(newLaneFormFieldRowOffsets(newLaneFormFields("child"))).toEqual([1, 4, 7, 12, 15, 18, 21]);
+    // primary: name(1), color(4), start(7), baseBranch(12, +typeahead), create(19)
+    expect(newLaneFormFieldRowOffsets(newLaneFormFields("primary"))).toEqual([1, 4, 7, 12, 19]);
+    // child has no typeahead: name(1), color(4), start(7), parent(12), base(15), create(18)
+    expect(newLaneFormFieldRowOffsets(newLaneFormFields("child"))).toEqual([1, 4, 7, 12, 15, 18]);
     // import: name(1), color(4), start(7), source(12), branch(15, +typeahead), base(22), create(25)
     expect(newLaneFormFieldRowOffsets(newLaneFormFields("import"))).toEqual([1, 4, 7, 12, 15, 22, 25]);
     expect(NEW_LANE_TYPEAHEAD_ROWS).toBe(4);
@@ -168,18 +161,12 @@ describe("newLaneCreateAction", () => {
 describe("buildNewLaneSubmission", () => {
   const lanes = [lane("lane-1", "Primary"), lane("lane-2", "Auth work")];
 
-  it("builds a plain create payload, only sending macos-vm placement explicitly", () => {
+  it("builds a plain create payload without runtime placement", () => {
     expect(buildNewLaneSubmission({
-      values: { name: "feature-x", start: "primary", baseBranch: "develop", runtime: "local" },
+      values: { name: "feature-x", start: "primary", baseBranch: "develop" },
       lanes,
       activeLaneId: "lane-1",
     })).toEqual({ kind: "create", payload: { name: "feature-x", baseBranch: "develop" } });
-
-    expect(buildNewLaneSubmission({
-      values: { name: "feature-x", start: "primary", runtime: "macos-vm" },
-      lanes,
-      activeLaneId: null,
-    })).toEqual({ kind: "create", payload: { name: "feature-x", runtimePlacement: "macos-vm" } });
   });
 
   it("carries the chosen color alongside the payload (auto/empty omitted)", () => {

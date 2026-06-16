@@ -444,7 +444,6 @@ function parseCreateLaneArgs(value: Record<string, unknown>): CreateLaneArgs {
     ...(asTrimmedString(value.branchName) ? { branchName: asTrimmedString(value.branchName)! } : {}),
     ...(asTrimmedString(value.startPoint) ? { startPoint: asTrimmedString(value.startPoint)! } : {}),
     ...(isRecord(value.linearIssue) ? { linearIssue: value.linearIssue as CreateLaneArgs["linearIssue"] } : {}),
-    ...(asTrimmedString(value.runtimePlacement) ? { runtimePlacement: asTrimmedString(value.runtimePlacement)! as CreateLaneArgs["runtimePlacement"] } : {}),
   };
 }
 
@@ -457,7 +456,6 @@ function parseCreateChildLaneArgs(value: Record<string, unknown>): CreateChildLa
     ...(asTrimmedString(value.baseBranchRef) ? { baseBranchRef: asTrimmedString(value.baseBranchRef)! } : {}),
     ...(asTrimmedString(value.branchName) ? { branchName: asTrimmedString(value.branchName)! } : {}),
     ...(isRecord(value.linearIssue) ? { linearIssue: value.linearIssue as CreateChildLaneArgs["linearIssue"] } : {}),
-    ...(asTrimmedString(value.runtimePlacement) ? { runtimePlacement: asTrimmedString(value.runtimePlacement)! as CreateChildLaneArgs["runtimePlacement"] } : {}),
   };
 }
 

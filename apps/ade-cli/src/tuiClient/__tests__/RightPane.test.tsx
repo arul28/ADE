@@ -397,7 +397,7 @@ describe("RightPane new-lane form", () => {
           fields: newLaneFormFields("primary"),
           branches,
         }}
-        formValues={{ name: "auth-refresh", color: "", start: "primary", baseBranch: "", runtime: "local" }}
+        formValues={{ name: "auth-refresh", color: "", start: "primary", baseBranch: "" }}
         activeFormField={2}
         focused
         width={44}
@@ -423,9 +423,8 @@ describe("RightPane new-lane form", () => {
     expect(frame).toContain("auto");
     expect(frame).toContain("[ create lane ]");
 
-    // Base-branch typeahead lists remote branches; runtime toggle still there.
+    // Base-branch typeahead lists remote branches.
     expect(frame).toContain("origin/main");
-    expect(frame).toContain("[local mac]");
 
     // The footer hint fits a single 44-col row.
     const hintLine = lines.find((line) => line.includes("↑↓ rows"));
@@ -471,7 +470,7 @@ describe("RightPane new-lane form", () => {
           command: "new-lane",
           fields: newLaneFormFields("primary"),
         }}
-        formValues={{ name: "", color: "", start: "primary", baseBranch: "", runtime: "local" }}
+        formValues={{ name: "", color: "", start: "primary", baseBranch: "" }}
         activeFormField={0}
         focused
         width={44}

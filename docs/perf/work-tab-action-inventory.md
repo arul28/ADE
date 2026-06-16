@@ -17,9 +17,8 @@ Coverage states:
   only inside the throwaway perf-pass setup.
 - `prompt-only`: destructive or externally visible path. Open and measure the
   confirmation/preflight, then cancel unless explicitly allowed.
-- `external-skip`: opens another app, browser, Xcode, docs, Simulator.app, or
-  host VM viewer. Measure only up to the ADE preflight/button state unless
-  explicitly allowed.
+- `external-skip`: opens another app, browser, Xcode, docs, or Simulator.app.
+  Measure only up to the ADE preflight/button state unless explicitly allowed.
 - `moved`: no longer a Work-tab surface. Historical evidence stays below for
   traceability, but current coverage belongs to the destination route's matrix.
 
@@ -59,7 +58,6 @@ Coverage states:
 | work.sidebar.tab.ios | Select iOS Sim tools tab | measured | `WorkSidebar.tsx` |
 | work.sidebar.tab.app-control | Select App Control tools tab | measured | `WorkSidebar.tsx` |
 | work.sidebar.tab.browser | Select Browser tools tab | measured | `WorkSidebar.tsx` |
-| work.sidebar.tab.macos-vm | Select Mac VM tools tab | moved | Mac VM moved from `WorkSidebar.tsx` to `/vm` (`MacVmPage.tsx`) |
 | work.sidebar.compact-tabs | Verify all tools tabs remain reachable in narrow pane | measured | `WorkSidebar.tsx` |
 
 ## Session list
@@ -233,7 +231,7 @@ Coverage states:
 | work.chat.cursor-cloud.auto-pr | Toggle Auto-PR | external-skip | `CursorCloudInlineLaunch.tsx` |
 | work.chat.cursor-cloud.current-branch | Toggle Work on current branch | external-skip | `CursorCloudInlineLaunch.tsx` |
 | work.chat.cursor-cloud.cancel | Cancel Cursor Cloud launch | measured | `CursorCloudInlineLaunch.tsx` |
-| work.chat.dismiss.preview | Dismiss attached iOS/App Control/browser/VM preview | measured | `AgentChatComposer.tsx` |
+| work.chat.dismiss.preview | Dismiss attached iOS/App Control/browser preview | measured | `AgentChatComposer.tsx` |
 | work.chat.dismiss.error | Dismiss composer attach error | measured | `AgentChatComposer.tsx` |
 
 ## Git tools
@@ -438,36 +436,6 @@ Coverage states:
 | work.ios.sim.type-input | Type into active simulator app field | measured | `ChatIosSimulatorPanel.tsx` |
 | work.ios.sim.type-send | Send typed text to simulator | sandbox-only | `ChatIosSimulatorPanel.tsx` |
 
-## Mac VM tools
-
-Current status: these rows describe the retired Work-sidebar
-`MacosVmPanel.tsx`. The current desktop surface is `/vm`
-(`apps/desktop/src/renderer/components/vm/MacVmPage.tsx`), so new VM coverage
-belongs in a VM-tab inventory rather than this Work matrix.
-
-| id | action | state | source |
-| --- | --- | --- | --- |
-| work.vm.mount | Mount Mac VM tab | moved | `/vm` (`MacVmPage.tsx`) |
-| work.vm.refresh | Refresh macOS VM status | moved | `/vm` (`MacVmPage.tsx`) |
-| work.vm.setup-docs | Open provider setup docs | moved | `/vm` (`MacVmPage.tsx`) |
-| work.vm.cpu | Change CPU cores | moved | retired panel control |
-| work.vm.memory | Change memory value | moved | retired panel control |
-| work.vm.disk | Change disk size value | moved | retired panel control |
-| work.vm.display | Change display value | moved | retired panel control |
-| work.vm.source-mode | Change source mode | moved | retired panel control |
-| work.vm.source-image | Change source image | moved | retired panel control |
-| work.vm.open-viewer | Toggle local viewer window | moved | retired panel control |
-| work.vm.start | Start VM | moved | `/vm` (`MacVmPage.tsx`) |
-| work.vm.provision | Provision VM | moved | `/vm` (`MacVmPage.tsx`) |
-| work.vm.stop | Stop VM | moved | `/vm` (`MacVmPage.tsx`) |
-| work.vm.focus | Focus VM window | moved | `/vm` (`MacVmPage.tsx`) |
-| work.vm.screenshot | Capture VM screenshot | moved | `/vm` (`MacVmPage.tsx`) |
-| work.vm.delete | Delete VM | moved | `/vm` (`MacVmPage.tsx`) |
-| work.vm.select-point | Select point on screenshot | moved | ADE CLI / `macos_vm` action |
-| work.vm.click-point | Click selected point | moved | `/vm` (`MacVmPage.tsx`) |
-| work.vm.type-input | Type text input | moved | `/vm` (`MacVmPage.tsx`) |
-| work.vm.type-send | Send text to VM | moved | `/vm` (`MacVmPage.tsx`) |
-
 ## Run evidence
 
 ### `work-inventory-batch-20260511-01`
@@ -511,9 +479,8 @@ Rows promoted to `measured` from this run:
 - Work tools tabs/panel mounts: `work.sidebar.tab.git`,
   `work.sidebar.tab.files`, `work.sidebar.tab.ios`,
   `work.sidebar.tab.app-control`, `work.sidebar.tab.browser`,
-  `work.sidebar.tab.macos-vm`, plus `work.git.mount`, `work.files.mount`,
-  `work.ios.mount`, `work.app-control.mount`, `work.browser.mount`,
-  `work.vm.mount`.
+  plus `work.git.mount`, `work.files.mount`, `work.ios.mount`,
+  `work.app-control.mount`, `work.browser.mount`.
 - Git tools: `work.git.more.open`.
 
 Invalid current-run markers:
@@ -535,9 +502,6 @@ Skipped current-run rows that were unpromoted at this stage:
   `work.browser.inspect.toggle`, `work.browser.screenshot.start`, and
   `work.browser.screenshot.cancel` skipped because the browser chrome controls
   were not visible to the driver.
-- `work.vm.refresh` and `work.vm.cpu` skipped because the Mac VM controls were
-  not visible to the driver.
-
 Two Git IPCs failed early against stale perf-pass worktree state
 (`ade.git.listRecentCommits`, `ade.git.stashList`); the worktrees were repaired
 and later Git status calls succeeded. Those failures are run setup caveats, not
@@ -958,14 +922,6 @@ Rows promoted to `measured`:
 - `work.browser.inspect.toggle`.
 - `work.app-control.launch-input`.
 - `work.app-control.cdp-port`.
-- `work.vm.refresh`.
-- `work.vm.cpu`.
-- `work.vm.memory`.
-- `work.vm.disk`.
-- `work.vm.display`.
-- `work.vm.source-mode`.
-- `work.vm.source-image`.
-- `work.vm.open-viewer`.
 - `work.ios.surface.preview`.
 - `work.ios.surface.simulator`.
 - `work.ios.refresh-state`.
@@ -1198,43 +1154,6 @@ App Control coverage:
   `Inspect` buttons disabled in the no-session tools pane. That marker is not
   a row promotion; it explains why those rows need an active app fixture.
 
-Mac VM coverage:
-
-- The valid `work.vm.refresh` marker clicked `Refresh macOS VM status` and
-  observed a safe `ade.macosVm.getStatus` call against the active lane.
-- The valid `work.vm.cpu`, `work.vm.memory`, `work.vm.disk`, and
-  `work.vm.display` markers changed values from `4 -> 6`, `8GB -> 12GB`,
-  `80GB -> 96GB`, and `1920x1200 -> 1440x900`, then restored the defaults.
-- The valid `work.vm.source-mode` marker changed source mode
-  `pull-image -> create`, then restored `pull-image`.
-- The valid `work.vm.source-image` marker changed
-  `macos-tahoe-vanilla:latest -> macos-test:latest`, then restored the
-  default image value.
-- The valid `work.vm.open-viewer` marker toggled the local viewer checkbox
-  `false -> true`, then restored it to `false`.
-- No Mac VM lifecycle or external actions were invoked: Start, Provision, Stop,
-  Focus, Screenshot, Delete, and Setup docs remain governed by their existing
-  `sandbox-only`, `prompt-only`, or `external-skip` states.
-
-Focused fixture command:
-
-```bash
-npm --prefix apps/desktop run test -- src/renderer/components/terminals/MacosVmPanel.test.tsx
-```
-
-Result: passed (`1` focused test).
-
-Rows promoted to `measured`:
-
-- `work.vm.select-point`: the MacosVmPanel fixture mocked a running VM and
-  screenshot, clicked a screenshot coordinate, verified
-  `macosVm.selectPoint({ x: 50, y: 25, coordinateSpace: "window",
-  includeScreenshot: true })`, verified `onAddContext` received the VM context
-  item, and verified the selected coordinate badge rendered.
-- `work.vm.type-input`: the same fixture typed `hello vm` into the local VM
-  text input and verified `macosVm.typeText` was not called without pressing
-  the `Type` action.
-
 iOS Simulator coverage:
 
 - The first iOS probe used the missing `ui audit lane 1` worktree and is only
@@ -1295,8 +1214,8 @@ Rows promoted to `measured`:
 - `work.start.chat.mount`: clicked the visible `Chat` start-surface mode and
   verified `Start a new conversation`, the composer input, and disabled `Send`.
 - `work.sidebar.compact-tabs`: with a `1164x818` renderer viewport and narrow
-  Work tools pane, verified all six Work tools tabs (`Git`, `Files`, `iOS Sim`,
-  `App Control`, `Browser`, `Mac VM`) had `31.99px` hit targets inside the
+  Work tools pane, verified all five Work tools tabs (`Git`, `Files`, `iOS Sim`,
+  `App Control`, `Browser`) had `31.99px` hit targets inside the
   viewport. A DOM-click retry selected each tab and observed `aria-pressed=true`
   for the clicked tab.
 - `work.git.history.refresh`: selected the Git tools tab, clicked the commit
@@ -1354,9 +1273,6 @@ Invalid / setup markers:
   tabs reliably in Electron/CDP and is not treated as user evidence. The valid
   retry used visible DOM button clicks, consistent with prior UI-derived probes
   in this audit.
-- The first `work.git.history.refresh` marker failed while the Mac VM tools tab
-  was still active and did not find the commit timeline. The later
-  `attempt=mouseevent-refresh` marker is the valid evidence.
 - The first `work.git.files.back` marker clicked the right control but used a
   too-strict `WORKING TREE` verification that is absent in the clean perf-pass
   Git view. A second retry still matched broad text from ancestor nodes. The
@@ -1722,11 +1638,6 @@ Rows promoted to `measured`:
 - `work.chat.composer.tab-suggestion`: the suggestion test rendered an empty,
   idle composer with `promptSuggestion`, pressed Tab in the textbox, and
   verified `onDraftChange` received the suggestion text.
-- `work.chat.composer.rich-chip-select` and
-  `work.chat.composer.rich-chip-remove`: the composer chip test rendered a
-  macOS VM target chip, clicked the visible `ade-lane-one` chip to reveal
-  `/Volumes/My Shared Files`, clicked the chip remove affordance, and verified
-  `onRemoveMacosVmContext("vm-target-1")`.
 - `work.chat.command.select`: the full composer test opened the slash-command
   picker, clicked `/status`, and verified `onDraftChange("/status ")`.
 - `work.chat.dismiss.error`: the full composer test selected an oversized file

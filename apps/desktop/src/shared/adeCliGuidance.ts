@@ -35,7 +35,7 @@ export const ADE_CLI_INLINE_GUIDANCE = buildAdeCliInlineGuidance();
  * Minimal always-on bootstrap that replaces the heavier {@link buildAdeCliAgentGuidance}
  * blob. It teaches the habit (reach for the matching `ade-*` skill on demand) and the
  * ground-truth fallback (`ade help` / `ade actions list`) instead of inlining every
- * socket/browser/proof/VM rule on every turn — those now live in their skills, which each
+ * socket/browser/proof rule on every turn — those now live in their skills, which each
  * runtime discovers natively (progressive disclosure). Keep this short; do not re-grow it.
  */
 export function buildAdeBootstrapGuidance(

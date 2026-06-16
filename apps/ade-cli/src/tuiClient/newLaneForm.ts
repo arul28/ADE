@@ -4,14 +4,13 @@ import { LANE_COLOR_PALETTE } from "../../../desktop/src/shared/laneColorPalette
 /**
  * Pure model for the /new lane form — mirrors the desktop CreateLaneDialog's
  * "Start from" modes (primary base branch / start from an existing branch /
- * child of an existing lane) plus the color picker and runtime placement
- * choice, adapted to the TUI's right-pane form system. The form's field list
+ * child of an existing lane) plus the color picker, adapted to the TUI's
+ * right-pane form system. The form's field list
  * is rebuilt when the start mode cycles so each mode only shows the inputs it
  * actually uses.
  */
 
 export type NewLaneStart = "primary" | "child" | "import";
-export type NewLaneRuntime = "local" | "macos-vm";
 export type NewLaneBranchSource = "remote" | "local";
 
 /**
@@ -30,14 +29,6 @@ export function cycleNewLaneStart(value: string | null | undefined, delta: numbe
   const index = NEW_LANE_START_ORDER.indexOf(current);
   const next = (index + delta + NEW_LANE_START_ORDER.length) % NEW_LANE_START_ORDER.length;
   return NEW_LANE_START_ORDER[next] ?? "primary";
-}
-
-export function normalizeNewLaneRuntime(value: string | null | undefined): NewLaneRuntime {
-  return value === "macos-vm" ? "macos-vm" : "local";
-}
-
-export function toggleNewLaneRuntime(value: string | null | undefined): NewLaneRuntime {
-  return normalizeNewLaneRuntime(value) === "local" ? "macos-vm" : "local";
 }
 
 export function normalizeNewLaneBranchSource(value: string | null | undefined): NewLaneBranchSource {
@@ -125,9 +116,6 @@ export function newLaneFormFields(
     fields.push({ name: "baseBranch", label: "Base branch", placeholder: "default" });
   } else {
     fields.push({ name: "baseBranch", label: "Base branch", placeholder: "default" });
-  }
-  if (start !== "import") {
-    fields.push({ name: "runtime", label: "Runtime", initialValue: "local" });
   }
   fields.push({ name: "create", label: "Create" });
   return fields;
@@ -252,10 +240,10 @@ export function newLaneCreateAction(args: {
 // ---------------------------------------------------------------------------
 
 export type NewLaneSubmission =
-  | { kind: "create"; payload: { name: string; baseBranch?: string; runtimePlacement?: NewLaneRuntime }; color?: string }
+  | { kind: "create"; payload: { name: string; baseBranch?: string }; color?: string }
   | {
       kind: "createChild";
-      payload: { name: string; parentLaneId: string; baseBranchRef?: string; runtimePlacement?: NewLaneRuntime };
+      payload: { name: string; parentLaneId: string; baseBranchRef?: string };
       color?: string;
     }
   | { kind: "importBranch"; payload: { branchRef: string; name: string; baseBranch?: string }; color?: string }
@@ -270,7 +258,6 @@ export function buildNewLaneSubmission(args: {
   const name = args.values.name?.trim() ?? "";
   if (!name) return { kind: "error", message: "Name is required." };
   const baseBranch = args.values.baseBranch?.trim() || undefined;
-  const runtimePlacement = normalizeNewLaneRuntime(args.values.runtime);
   const color = args.values.color?.trim() || undefined;
   const withColor = color ? { color } : {};
 
@@ -308,7 +295,6 @@ export function buildNewLaneSubmission(args: {
         name,
         parentLaneId: parent.id,
         ...(baseBranch ? { baseBranchRef: baseBranch } : {}),
-        ...(runtimePlacement === "macos-vm" ? { runtimePlacement } : {}),
       },
       ...withColor,
     };
@@ -319,7 +305,6 @@ export function buildNewLaneSubmission(args: {
     payload: {
       name,
       ...(baseBranch ? { baseBranch } : {}),
-      ...(runtimePlacement === "macos-vm" ? { runtimePlacement } : {}),
     },
     ...withColor,
   };

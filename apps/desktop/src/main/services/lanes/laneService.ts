@@ -1,6 +1,4 @@
 import fs from "node:fs";
-import fsp from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
@@ -21,10 +19,6 @@ import {
 } from "../../../shared/laneLinearIssue";
 import type { createOperationService } from "../history/operationService";
 import type { Logger } from "../logging/logger";
-import type {
-  MacosVmDetachLaneArgs,
-  MacosVmDetachLaneResult,
-} from "../../../shared/types/macosVm";
 import type {
   AdoptAttachedLaneArgs,
   AttachLaneArgs,
@@ -47,7 +41,6 @@ import type {
   LaneLinearIssueLink,
   LaneLinearIssueLinkRole,
   LaneLinearIssueLinkSource,
-  LaneRuntimePlacement,
   LaneStateSnapshotSummary,
   LaneStatus,
   LaneSummary,
@@ -89,7 +82,6 @@ type LaneRow = {
   icon: string | null;
   tags_json: string | null;
   folder: string | null;
-  runtime_placement: LaneRuntimePlacement | null;
   created_at: string;
   archived_at: string | null;
   status: string;
@@ -352,10 +344,6 @@ function parseLaneIcon(value: string | null): LaneIcon {
   return null;
 }
 
-function normalizeRuntimePlacement(value: unknown): LaneRuntimePlacement {
-  return value === "macos-vm" ? "macos-vm" : "local";
-}
-
 function parseLaneTags(raw: string | null): string[] {
   if (!raw) return [];
   try {
@@ -533,7 +521,6 @@ function toLaneSummary(args: {
     icon: parseLaneIcon(row.icon),
     tags: parseLaneTags(row.tags_json),
     folder: row.folder,
-    runtimePlacement: normalizeRuntimePlacement(row.runtime_placement),
     createdAt: row.created_at,
     archivedAt: row.archived_at,
     activeBranchProfile: activeBranchProfile ?? null,
@@ -908,31 +895,6 @@ function isTerminalLaneDeleteProgress(progress: LaneDeleteProgress): boolean {
   return progress.overallStatus !== "running";
 }
 
-export type LanePlacementChangedEvent = {
-  type: "lane-placement-changed";
-  laneId: string;
-  from: "macos-vm" | "local" | "none";
-  to: "macos-vm" | "local";
-  changedAt: string;
-};
-
-/**
- * Minimal projection of the macosVmService surface this lane service depends
- * on for VM-lane attachment + detachment. The macosVmService implements these
- * methods; defining the shape here keeps laneService loose-coupled and
- * trivially mockable in tests.
- */
-export type LaneMacosVmHooks = {
-  markShareStale: (args: { laneId: string }) => Promise<void> | void;
-  stopMirrorSyncForLane?: (args: { laneId: string }) => Promise<void> | void;
-  startMirrorSyncForLane?: (args: { laneId: string }) => Promise<void> | void;
-  linkLaneToCurrentVm?: (args: { laneId: string }) => Promise<void> | void;
-  getStatus: (args: { laneId?: string | null }) => Promise<{
-    laneVm: { name: string; guestReadiness?: { state: string } | undefined } | null;
-    vms: Array<{ name: string; guestReadiness?: { state: string } | undefined }>;
-  }>;
-};
-
 export type LaneDeleteTeardownDeps = {
   processService?: {
     listRuntime: (laneId: string) => ProcessRuntime[];
@@ -968,11 +930,9 @@ export function createLaneService({
   onHeadChanged,
   onRebaseEvent,
   onDeleteEvent,
-  onPlacementChanged,
   onLinearIssueLinked,
   onLinearIssueSessionLinked,
   teardownDeps,
-  macosVmHooks,
   logger: injectedLogger
 }: {
   db: AdeDb;
@@ -984,7 +944,6 @@ export function createLaneService({
   onHeadChanged?: (args: { laneId: string; reason: string; preHeadSha: string | null; postHeadSha: string | null }) => void;
   onRebaseEvent?: (event: RebaseRunEventPayload) => void;
   onDeleteEvent?: (event: LaneDeleteEvent) => void;
-  onPlacementChanged?: (event: LanePlacementChangedEvent) => void | Promise<void>;
   onLinearIssueLinked?: (args: { lane: LaneSummary; issue: LaneLinearIssue; linkedAt: string }) => void | Promise<void>;
   onLinearIssueSessionLinked?: (args: {
     laneId: string;
@@ -994,7 +953,6 @@ export function createLaneService({
     linkedAt: string;
   }) => void | Promise<void>;
   teardownDeps?: LaneDeleteTeardownDeps;
-  macosVmHooks?: LaneMacosVmHooks | null;
   logger?: Logger;
 }) {
   const logger: Logger = injectedLogger ?? {
@@ -1004,25 +962,11 @@ export function createLaneService({
     error: (event, meta) => console.error(event, meta ?? ""),
   };
 
-  let activeMacosVmHooks: LaneMacosVmHooks | null = macosVmHooks ?? null;
-
   // Late-bound hook fired after a worktree lane is successfully created. Used by
   // the PR service to auto-map an existing open PR on the lane's branch. Set via
   // `setOnWorktreeLaneCreated` because the PR service is constructed after the
   // lane service. Best-effort: failures are swallowed, never blocking creation.
   let onWorktreeLaneCreated: ((lane: LaneSummary) => void | Promise<void>) | null = null;
-
-  const emitPlacementChanged = async (event: LanePlacementChangedEvent): Promise<void> => {
-    if (!onPlacementChanged) return;
-    try {
-      await onPlacementChanged(event);
-    } catch (error) {
-      logger.warn("laneService.placement_changed_emit_failed", {
-        laneId: event.laneId,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-  };
 
   const resolveSessionTitle = (sessionId: string): string | null => {
     const id = sessionId.trim();
@@ -2549,7 +2493,6 @@ export function createLaneService({
     folder?: string;
     branchName?: string | null;
     linearIssue?: LaneLinearIssue | null;
-    runtimePlacement?: LaneRuntimePlacement | null;
   }): Promise<LaneSummary> => {
     const laneId = randomUUID();
     const now = new Date().toISOString();
@@ -2561,7 +2504,6 @@ export function createLaneService({
       branchName: args.branchName,
       linearIssue: args.linearIssue,
     });
-    const runtimePlacement = normalizeRuntimePlacement(args.runtimePlacement);
     const worktreePath = path.join(worktreesDir, `${slug}-${suffix}`);
 
     // The worktree is visible to `git worktree list` the moment `worktree add`
@@ -2580,8 +2522,8 @@ export function createLaneService({
       );
 
       // From this point the worktree exists on disk. Any failure persisting the lane
-      // row (or its dependent inserts / VM wiring) must remove the worktree, otherwise
-      // we orphan a checkout that no lane row references.
+      // row or dependent inserts must remove the worktree, otherwise we orphan a
+      // checkout that no lane row references.
       try {
         linkExistingDependencyInstalls(worktreePath);
 
@@ -2604,9 +2546,9 @@ export function createLaneService({
             `
               insert into lanes(
                 id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path,
-                attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, folder, runtime_placement, status, created_at, archived_at
+                attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, folder, status, created_at, archived_at
               )
-              values(?, ?, ?, ?, 'worktree', ?, ?, ?, null, 0, ?, ?, null, null, ?, ?, 'active', ?, null)
+              values(?, ?, ?, ?, 'worktree', ?, ?, ?, null, 0, ?, ?, null, null, ?, 'active', ?, null)
             `,
             [
               laneId,
@@ -2619,7 +2561,6 @@ export function createLaneService({
               args.parentLaneId,
               laneColor,
               args.folder ?? null,
-              runtimePlacement,
               now
             ]
           );
@@ -2659,13 +2600,6 @@ export function createLaneService({
           : null;
         invalidateLaneListCache();
 
-        if (runtimePlacement === "macos-vm") {
-          await wireMacosVmLanePlacement({
-            laneId,
-            previousPlacement: "none",
-            rollbackPlacementOnLinkFailure: true,
-          });
-        }
       } catch (error) {
         await cleanupCreatedWorktreeLaneAfterCreateFailure({
           laneId,
@@ -2727,59 +2661,6 @@ export function createLaneService({
     }
 
     return summary;
-  };
-
-  const wireMacosVmLanePlacement = async (args: {
-    laneId: string;
-    previousPlacement: LaneRuntimePlacement | "none";
-    rollbackPlacementOnLinkFailure: boolean;
-  }): Promise<void> => {
-    const laneId = String(args.laneId ?? "").trim();
-    if (!laneId.length) return;
-    const hooks = activeMacosVmHooks;
-    if (hooks?.linkLaneToCurrentVm) {
-      try {
-        await hooks.linkLaneToCurrentVm({ laneId });
-      } catch (error) {
-        logger.warn("laneService.wire_vm_link_failed", {
-          laneId,
-          error: error instanceof Error ? error.message : String(error),
-        });
-        if (args.rollbackPlacementOnLinkFailure) {
-          db.run(
-            `
-              update lanes
-              set runtime_placement = 'local'
-              where id = ?
-                and project_id = ?
-            `,
-            [laneId, projectId],
-          );
-          invalidateLaneListCache();
-        }
-        throw error;
-      }
-    }
-    if (hooks?.startMirrorSyncForLane) {
-      try {
-        await hooks.startMirrorSyncForLane({ laneId });
-      } catch (error) {
-        logger.warn("laneService.wire_vm_mirror_sync_failed", {
-          laneId,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-    }
-
-    if (args.previousPlacement !== "macos-vm") {
-      await emitPlacementChanged({
-        type: "lane-placement-changed",
-        laneId,
-        from: args.previousPlacement,
-        to: "macos-vm",
-        changedAt: new Date().toISOString(),
-      });
-    }
   };
 
   const getRowsById = (includeArchived = true): Map<string, LaneRow> =>
@@ -3341,7 +3222,7 @@ export function createLaneService({
       return true;
     },
 
-    async create({ name, description, parentLaneId, baseBranch, branchName, startPoint, linearIssue, runtimePlacement }: CreateLaneArgs): Promise<LaneSummary> {
+    async create({ name, description, parentLaneId, baseBranch, branchName, startPoint, linearIssue }: CreateLaneArgs): Promise<LaneSummary> {
       const requestedStartPoint = startPoint?.trim() ?? "";
       if (parentLaneId) {
         const parent = getLaneRow(parentLaneId);
@@ -3401,7 +3282,6 @@ export function createLaneService({
           parentLaneId: parent.lane_type === "primary" ? null : parent.id,
           branchName,
           linearIssue,
-          runtimePlacement,
         });
       }
 
@@ -3427,7 +3307,6 @@ export function createLaneService({
         parentLaneId: null,
         branchName,
         linearIssue,
-        runtimePlacement,
       });
     },
 
@@ -3475,7 +3354,6 @@ export function createLaneService({
           folder: args.folder,
           branchName: args.branchName,
           linearIssue: args.linearIssue ?? null,
-          runtimePlacement: args.runtimePlacement,
         });
       }
 
@@ -3495,7 +3373,6 @@ export function createLaneService({
           folder: args.folder,
           branchName: args.branchName,
           linearIssue: args.linearIssue ?? null,
-          runtimePlacement: args.runtimePlacement,
         });
       }
 
@@ -3510,7 +3387,6 @@ export function createLaneService({
         folder: args.folder,
         branchName: args.branchName,
         linearIssue: args.linearIssue ?? null,
-        runtimePlacement: args.runtimePlacement,
       });
     },
 
@@ -5361,7 +5237,7 @@ export function createLaneService({
       return row.worktree_path;
     },
 
-    getLaneBaseAndBranch(laneId: string): { baseRef: string; branchRef: string; worktreePath: string; laneType: LaneType; runtimePlacement: LaneRuntimePlacement; linearIssue: LaneLinearIssue | null } {
+    getLaneBaseAndBranch(laneId: string): { baseRef: string; branchRef: string; worktreePath: string; laneType: LaneType; linearIssue: LaneLinearIssue | null } {
       const row = getLaneRow(laneId);
       if (!row) throw new Error(`Lane not found: ${laneId}`);
       return {
@@ -5369,13 +5245,8 @@ export function createLaneService({
         branchRef: row.branch_ref,
         worktreePath: row.worktree_path,
         laneType: row.lane_type,
-        runtimePlacement: normalizeRuntimePlacement(row.runtime_placement),
         linearIssue: getLaneLinearIssue(laneId),
       };
-    },
-
-    setMacosVmHooks(hooks: LaneMacosVmHooks | null): void {
-      activeMacosVmHooks = hooks ?? null;
     },
 
     /**
@@ -5386,217 +5257,6 @@ export function createLaneService({
       onWorktreeLaneCreated = hook ?? null;
     },
 
-    /**
-     * Returns the existing VM lane, if any. Singleton-VM invariant: at most
-     * one lane has `runtime_placement = 'macos-vm'` at a time.
-     */
-    findExistingVmLane(): LaneSummary | null {
-      const row = db.get<LaneRow>(
-        `
-          select * from lanes
-          where project_id = ?
-            and runtime_placement = 'macos-vm'
-            and status = 'active'
-          limit 1
-        `,
-        [projectId],
-      );
-      if (!row) return null;
-      const emptyStatus: LaneStatus = {
-        dirty: false,
-        ahead: 0,
-        behind: 0,
-        remoteBehind: -1,
-        rebaseInProgress: false,
-      };
-      return toLaneSummary({
-        row,
-        status: emptyStatus,
-        parentStatus: null,
-        childCount: 0,
-        stackDepth: 0,
-      });
-    },
-
-    /**
-     * Throws if creating a new VM lane is not currently allowed:
-     *   - macosVmService is not initialized
-     *   - singleton VM is not in `runtime_ready` state
-     *   - another active VM lane already exists
-     */
-    async assertVmLaneCreatable(): Promise<void> {
-      const hooks = activeMacosVmHooks;
-      if (!hooks) {
-        const error = new Error("Mac VM service is not initialized in this process.");
-        (error as Error & { code: string }).code = "macos-vm-not-initialized";
-        throw error;
-      }
-      const status = await hooks.getStatus({}).catch(() => null);
-      const vm = status?.laneVm ?? status?.vms[0] ?? null;
-      const readiness = vm?.guestReadiness?.state ?? null;
-      if (readiness !== "runtime_ready") {
-        const error = new Error(
-          `Mac VM is not ready for new lanes (state: ${readiness ?? "unknown"}). Finish setup in the VM tab first.`,
-        );
-        (error as Error & { code: string }).code = "macos-vm-not-ready";
-        throw error;
-      }
-      const existing = db.get<{ id: string; name: string }>(
-        `
-          select id, name from lanes
-          where project_id = ?
-            and runtime_placement = 'macos-vm'
-            and status = 'active'
-          limit 1
-        `,
-        [projectId],
-      );
-      if (existing) {
-        const error = new Error(
-          `A Mac VM lane already exists: '${existing.name}'. Detach it before creating a new one.`,
-        );
-        (error as Error & { code: string }).code = "macos-vm-lane-exists";
-        (error as Error & { code: string; existingLaneId: string }).existingLaneId = existing.id;
-        throw error;
-      }
-    },
-
-    /**
-     * Atomically converts a Mac VM lane into a local lane. Idempotent: if the
-     * lane is already local, no-op. Emits `lane-placement-changed` so chat /
-     * VM-tab consumers can react without polling.
-     */
-    async detachVmLane(args: MacosVmDetachLaneArgs): Promise<MacosVmDetachLaneResult> {
-      const laneId = String(args?.laneId ?? "").trim();
-      if (!laneId.length) throw new Error("laneId is required to detach a VM lane.");
-      const row = getLaneRow(laneId);
-      if (!row) throw new Error(`Lane not found: ${laneId}`);
-      const previous = normalizeRuntimePlacement(row.runtime_placement);
-      if (previous !== "macos-vm") {
-        // Idempotent: already local. Return noOp:true so consumers can
-        // suppress "detached from Mac VM" UI cues that would otherwise lie.
-        return {
-          laneId: row.id,
-          previousPlacement: previous,
-          newPlacement: "local",
-          mirrorRemoved: false,
-          shareMarkedStale: false,
-          noOp: true,
-        };
-      }
-
-      db.run("begin");
-      try {
-        db.run(
-          `
-            update lanes
-            set runtime_placement = 'local'
-            where id = ?
-              and project_id = ?
-          `,
-          [row.id, projectId],
-        );
-        db.run("commit");
-      } catch (err) {
-        try { db.run("rollback"); } catch { /* swallow rollback failures */ }
-        throw err;
-      }
-      invalidateLaneListCache();
-
-      const hooks = activeMacosVmHooks;
-      let shareMarkedStale = false;
-      if (hooks) {
-        try {
-          await hooks.markShareStale({ laneId: row.id });
-          shareMarkedStale = true;
-        } catch (error) {
-          logger.warn("laneService.detach_mark_share_stale_failed", {
-            laneId: row.id,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
-        if (hooks.stopMirrorSyncForLane) {
-          try {
-            await hooks.stopMirrorSyncForLane({ laneId: row.id });
-          } catch (error) {
-            logger.warn("laneService.detach_stop_mirror_sync_failed", {
-              laneId: row.id,
-              error: error instanceof Error ? error.message : String(error),
-            });
-          }
-        }
-      }
-
-      let mirrorRemoved = false;
-      const mirrorDir = path.join(
-        os.homedir(),
-        ".ade",
-        "cache",
-        "macos-vms",
-        "shares",
-        row.id,
-        "worktree",
-      );
-      try {
-        await fsp.rm(mirrorDir, { recursive: true, force: true });
-        mirrorRemoved = true;
-      } catch (error) {
-        logger.warn("laneService.detach_mirror_remove_failed", {
-          laneId: row.id,
-          mirrorDir,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
-
-      await emitPlacementChanged({
-        type: "lane-placement-changed",
-        laneId: row.id,
-        from: "macos-vm",
-        to: "local",
-        changedAt: new Date().toISOString(),
-      });
-
-      return {
-        laneId: row.id,
-        previousPlacement: "macos-vm",
-        newPlacement: "local",
-        mirrorRemoved,
-        shareMarkedStale,
-        noOp: false,
-      };
-    },
-
-    /**
-     * Wires an existing local lane into the singleton VM: sets placement to
-     * `macos-vm`, links to the current VM, and starts mirror sync. Used by
-     * the CreateLaneDialog handler when the "Mac VM" radio is chosen.
-     */
-    async attachLaneToVm(args: { laneId: string }): Promise<void> {
-      const laneId = String(args?.laneId ?? "").trim();
-      if (!laneId.length) throw new Error("laneId is required to attach a lane to the Mac VM.");
-      const row = getLaneRow(laneId);
-      if (!row) throw new Error(`Lane not found: ${laneId}`);
-      const previous = normalizeRuntimePlacement(row.runtime_placement);
-
-      if (previous !== "macos-vm") {
-        db.run(
-          `
-            update lanes
-            set runtime_placement = 'macos-vm'
-            where id = ?
-              and project_id = ?
-          `,
-          [row.id, projectId],
-        );
-        invalidateLaneListCache();
-      }
-
-      await wireMacosVmLanePlacement({
-        laneId: row.id,
-        previousPlacement: previous,
-        rollbackPlacementOnLinkFailure: previous !== "macos-vm",
-      });
-    },
 
     updateBranchRef(laneId: string, branchRef: string): void {
       const row = getLaneRow(laneId);

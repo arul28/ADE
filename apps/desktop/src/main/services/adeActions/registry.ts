@@ -26,10 +26,7 @@ import type {
   AgentChatTurnFileDiff,
 } from "../../../shared/types/chat";
 import type { AutomationRule } from "../../../shared/types/config";
-import {
-  areAutomationsEnabledForPackagedState,
-  isMacosVmEnabledForPackagedState,
-} from "../../../shared/automationAvailability";
+import { areAutomationsEnabledForPackagedState } from "../../../shared/automationAvailability";
 import { buildPrAiResolutionContextKey } from "../../../shared/types";
 import type {
   AiConfig,
@@ -122,7 +119,6 @@ export const ADE_ACTION_DOMAIN_NAMES = [
   "ios_simulator",
   "app_control",
   "built_in_browser",
-  "macos_vm",
   "automations",
   "review",
   "issue",
@@ -657,17 +653,6 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   ios_simulator: ["getStatus", "claim", "listDevices", "listLaunchTargets", "launch", "attachToChatSession", "shutdown", "screenshot", "getScreenSnapshot", "getInspectorSnapshot", "inspectPoint", "getPreviewCapability", "listPreviewTargets", "resolvePreviewMatch", "ensurePreviewWorkspace", "renderCurrentPreview", "renderPreview", "openPreviewWorkspace", "startStream", "stopStream", "getStreamStatus", "tap", "typeText", "drag", "swipe", "selectPoint"],
   app_control: ["getStatus", "claim", "launch", "launchInTerminal", "connect", "stop", "focusWindow", "minimizeWindow", "screenshot", "getSnapshot", "inspectPoint", "selectPoint", "click", "typeText", "scroll", "dispatchKey", "listTargets", "attachToTarget", "readTerminal", "writeTerminal", "signalTerminal"],
   built_in_browser: [...BUILT_IN_BROWSER_DESKTOP_BRIDGE_METHODS],
-  // Note: detachLane is intentionally NOT in this allowlist — it lives on
-  // laneService.detachVmLane, not on macosVmService. Wire it through a lane
-  // action if/when it needs to be agent-callable.
-  //
-  // Note: setCredentials and getDisplaySession are intentionally NOT in this
-  // allowlist either. setCredentials mutates Keychain-backed VM credentials;
-  // getDisplaySession returns the live VNC password. Neither belongs on the
-  // generic agent-callable surface — keep them behind the typed CLI / IPC
-  // paths (`ade macos-vm set-credentials`, `ade macos-vm display-session`)
-  // which run with CTO-level authentication.
-  macos_vm: ["getStatus", "getStorageInfo", "provision", "start", "stop", "restart", "delete", "wipe", "installRuntime", "getCredentials", "getAgentGuide", "getSharePolicy", "focusWindow", "captureScreenshot", "click", "selectPoint", "typeText"],
   automations: [
     "list",
     "get",
@@ -2705,7 +2690,6 @@ export function getAdeActionDomainServices(
   runtime: AdeRuntime,
 ): Partial<Record<AdeActionDomain, OpaqueService | null | undefined>> {
   const automationsEnabled = areAutomationsEnabledForPackagedState(Boolean(runtime.isPackaged));
-  const macosVmEnabled = isMacosVmEnabledForPackagedState(Boolean(runtime.isPackaged));
   return {
     lane: toService(buildLaneDomainService(runtime)),
     git: toService(runtime.gitService),
@@ -2748,7 +2732,6 @@ export function getAdeActionDomainServices(
     ios_simulator: toService(runtime.iosSimulatorService),
     app_control: toService(runtime.appControlService),
     built_in_browser: toService(runtime.builtInBrowserService),
-    macos_vm: macosVmEnabled ? toService(runtime.macosVmService) : null,
     automations: automationsEnabled ? toService(buildAutomationsDomainService(runtime)) : null,
     review: toService(runtime.reviewService),
     issue: toService(buildIssueDomainService(runtime)),

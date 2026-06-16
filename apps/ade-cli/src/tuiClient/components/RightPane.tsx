@@ -1578,8 +1578,8 @@ type NewLaneFormContent = FormPaneContent & { command: "new-lane" };
 /**
  * Desktop CreateLaneDialog parity for /new lane: name + color swatches, a
  * vertical "Start from" option list (radio style — never wraps in a narrow
- * pane), mode-specific inputs with a branch typeahead, the runtime placement
- * toggle, and an explicit create button. Text fields render through the
+ * pane), mode-specific inputs with a branch typeahead, and an explicit create
+ * button. Text fields render through the
  * shared prompt input like every other form. Row geometry must stay in sync
  * with newLaneFormFieldRowOffsets (the mouse hit-target source of truth).
  */
@@ -1598,7 +1598,6 @@ function NewLaneFormPane({
   const inner = Math.max(12, width - 4);
   const fields = content.fields;
   const start = normalizeNewLaneStart(formValues.start);
-  const runtime = formValues.runtime === "macos-vm" ? "macos-vm" : "local";
   const branchSource = normalizeNewLaneBranchSource(formValues.branchSource);
   const activeName = fields[activeFormField]?.name ?? fields[0]?.name ?? "name";
   const active = (name: string) => activeName === name || hoveredId === `right:form:${name}`;
@@ -1698,22 +1697,6 @@ function NewLaneFormPane({
               <Text> </Text>
               <Text color={branchSource === "local" ? theme.color.violet : theme.color.t3} bold={branchSource === "local"}>
                 {branchSource === "local" ? "[local]" : " local "}
-              </Text>
-            </Text>
-          </Box>
-        );
-      case "runtime":
-        return (
-          <Box key="runtime" flexDirection="column" marginTop={1}>
-            {labelRow("runtime", "Runtime")}
-            <Text>
-              {"  "}
-              <Text color={runtime === "local" ? theme.color.violet : theme.color.t3} bold={runtime === "local"}>
-                {runtime === "local" ? "[local mac]" : " local mac "}
-              </Text>
-              <Text> </Text>
-              <Text color={runtime === "macos-vm" ? theme.color.info : theme.color.t3} bold={runtime === "macos-vm"}>
-                {runtime === "macos-vm" ? "[mac vm]" : " mac vm "}
               </Text>
             </Text>
           </Box>

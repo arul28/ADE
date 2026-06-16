@@ -390,7 +390,6 @@ struct LaneSummary: Codable, Identifiable, Equatable {
   var icon: LaneIcon?
   var tags: [String]
   var folder: String?
-  var runtimePlacement: String?
   var linearIssue: LaneLinearIssue?
   var linearIssueLinks: [LaneLinearIssueLink]?
   var createdAt: String

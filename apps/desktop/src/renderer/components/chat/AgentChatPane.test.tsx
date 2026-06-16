@@ -2045,114 +2045,6 @@ describe("AgentChatPane submit recovery", () => {
     });
   });
 
-  it("does not automatically inject lane macOS VM capability context into sends", async () => {
-    const session = buildSession("session-1", { status: "idle" });
-    const { send } = installAdeMocks({ sessions: [session] });
-    (window.ade as any).macosVm = {
-      getStatus: vi.fn().mockResolvedValue({
-        platform: "darwin",
-        arch: "arm64",
-        supported: true,
-        checkedAt: "2026-05-07T00:00:00.000Z",
-        activeProvider: {
-          kind: "lume",
-          available: true,
-          version: "0.3.9",
-          detail: "Lume is available.",
-          docsUrl: "https://cua.ai/docs/lume/guide/fundamentals/vm-management",
-        },
-        tools: [],
-        laneVm: {
-          id: "macos-vm:lane-1",
-          provider: "lume",
-          name: "ade-lane-one",
-          laneId: "lane-1",
-          laneName: "Lane 1",
-          laneRoot: "/repo/.ade/worktrees/lane-one",
-          state: "running",
-          cpuCores: 4,
-          memory: "8GB",
-          diskSize: "80GB",
-          display: "1920x1200",
-          guestSharedPath: "/Volumes/My Shared Files",
-          sharedDirectory: "/repo/.ade/cache/macos-vms/shares/lane-1/worktree",
-          createdAt: "2026-05-07T00:00:00.000Z",
-          updatedAt: "2026-05-07T00:00:00.000Z",
-          lastStartedAt: "2026-05-07T00:00:00.000Z",
-          lastStoppedAt: null,
-          ipAddress: "192.168.64.3",
-          sshCommand: "ssh lume@192.168.64.3",
-          vncUrl: "vnc://127.0.0.1:5900",
-          lastError: null,
-          metadata: { shareMode: "sanitized-mirror" },
-        },
-        vms: [],
-        docs: {
-          appleVirtualization: "https://developer.apple.com/documentation/virtualization",
-          appleSharedDirectories: "https://developer.apple.com/documentation/virtualization/vzvirtiofilesystemdeviceconfiguration",
-          lume: "https://cua.ai/docs/lume/guide/fundamentals/vm-management",
-        },
-      }),
-      onEvent: vi.fn().mockImplementation(() => () => undefined),
-    };
-
-    renderPane(session);
-
-    const textbox = await screen.findByRole("textbox");
-    fireEvent.change(textbox, { target: { value: "Use the ADE VM to check the app." } });
-    fireEvent.click(await screen.findByRole("button", { name: "Send" }));
-
-    await waitFor(() => {
-      expect(window.ade.macosVm.getStatus).not.toHaveBeenCalled();
-      expect(send).toHaveBeenCalledWith(expect.objectContaining({
-        sessionId: session.sessionId,
-        displayText: "Use the ADE VM to check the app.",
-        text: "Use the ADE VM to check the app.",
-      }));
-    });
-  });
-
-  it("does not inject lane macOS VM context into unrelated sends", async () => {
-    const session = buildSession("session-1", { status: "idle" });
-    const { send } = installAdeMocks({ sessions: [session] });
-    (window.ade as any).macosVm = {
-      getStatus: vi.fn().mockResolvedValue({
-        platform: "darwin",
-        arch: "arm64",
-        supported: true,
-        checkedAt: "2026-05-07T00:00:00.000Z",
-        activeProvider: {
-          kind: "lume",
-          available: true,
-          version: "0.3.9",
-          detail: "Lume is available.",
-          docsUrl: "https://cua.ai/docs/lume/guide/fundamentals/vm-management",
-        },
-        tools: [],
-        laneVm: null,
-        vms: [],
-        docs: {},
-      }),
-      onEvent: vi.fn().mockImplementation(() => () => undefined),
-    };
-
-    renderPane(session);
-
-    const textbox = await screen.findByRole("textbox");
-    fireEvent.change(textbox, { target: { value: "Fix the PR header action." } });
-    fireEvent.click(await screen.findByRole("button", { name: "Send" }));
-
-    await waitFor(() => {
-      expect(window.ade.macosVm.getStatus).not.toHaveBeenCalled();
-      expect(send).toHaveBeenCalledWith(expect.objectContaining({
-        sessionId: session.sessionId,
-        displayText: "Fix the PR header action.",
-        text: "Fix the PR header action.",
-      }));
-      expect((window.ade as any).app.writeClipboardText).toHaveBeenCalledWith("Fix the PR header action.");
-    });
-  });
-
   it("shows an optimistic queued bubble immediately for Cursor-style sends", async () => {
     const session = buildSession("session-1", { status: "idle" });
     let resolveSend!: () => void;
@@ -3959,7 +3851,6 @@ describe("AgentChatPane submit recovery", () => {
       iosContextItems: [],
       appControlContextItems: [],
       builtInBrowserContextItems: [],
-      macosVmContextItems: [],
       draftLaunchTargetId: null,
       updatedAt: "2026-05-27T00:00:00.000Z",
     }));
@@ -4032,24 +3923,6 @@ describe("AgentChatPane submit recovery", () => {
         screenshotDataUrl: "data:image/png;base64,browser",
         selectedAt: "2026-05-27T00:00:00.000Z",
       }],
-      macosVmContextItems: [{
-        kind: "macos_vm_target",
-        id: "vm-context-1",
-        laneId: "lane-1",
-        laneName: "Lane 1",
-        vmName: "ADE VM",
-        provider: "lume",
-        state: "running",
-        hostLanePath: "/tmp/project-under-test",
-        guestLanePath: "/workspace",
-        runCommand: "npm test",
-        sshCommand: null,
-        vncUrl: null,
-        windowTitleQuery: "ADE",
-        screenshotDataUrl: "data:image/png;base64,vm",
-        selectedAt: "2026-05-27T00:00:00.000Z",
-        metadata: {},
-      }],
       draftLaunchTargetId: null,
       updatedAt: "2026-05-27T00:00:00.000Z",
     }));
@@ -4069,7 +3942,6 @@ describe("AgentChatPane submit recovery", () => {
       expect(stored.iosContextItems[0]).not.toHaveProperty("screenshotDataUrl");
       expect(stored.appControlContextItems[0]).not.toHaveProperty("screenshotDataUrl");
       expect(stored.builtInBrowserContextItems[0].screenshotDataUrl).toBeNull();
-      expect(stored.macosVmContextItems[0]).not.toHaveProperty("screenshotDataUrl");
     });
   });
 
@@ -4095,7 +3967,6 @@ describe("AgentChatPane submit recovery", () => {
       iosContextItems: [{ kind: "ios_element", id: "bad" }],
       appControlContextItems: [{ kind: "app_control_element", componentId: "missing-id" }],
       builtInBrowserContextItems: [{ kind: "built_in_browser_element" }],
-      macosVmContextItems: [{ kind: "macos_vm_target", id: "vm-1" }],
     }));
 
     renderAutoCreateDraftPane();
@@ -4248,7 +4119,6 @@ describe("AgentChatPane submit recovery", () => {
             iosContextItems: [],
             appControlContextItems: [],
             builtInBrowserContextItems: [],
-            macosVmContextItems: [],
             visualContextPrefix: "",
             visualContextDisplayChips: "",
             isLiteralSlashCommand: false,
@@ -4724,7 +4594,6 @@ describe("AgentChatPane submit recovery", () => {
       iosContextItems: [],
       appControlContextItems: [],
       builtInBrowserContextItems: [],
-      macosVmContextItems: [],
       draftLaunchTargetId: null,
       updatedAt: "2026-05-27T00:00:00.000Z",
     }));

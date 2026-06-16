@@ -4474,8 +4474,7 @@ final class SyncService: ObservableObject {
     baseBranch: String? = nil,
     branchName: String? = nil,
     startPoint: String? = nil,
-    linearIssue: LaneLinearIssue? = nil,
-    runtimePlacement: String? = nil
+    linearIssue: LaneLinearIssue? = nil
   ) async throws -> LaneSummary {
     var args: [String: Any] = [
       "name": name,
@@ -4498,9 +4497,6 @@ final class SyncService: ObservableObject {
       if args["branchName"] == nil, let branchName = linearIssue.branchName, !branchName.isEmpty {
         args["branchName"] = branchName
       }
-    }
-    if let runtimePlacement, !runtimePlacement.isEmpty {
-      args["runtimePlacement"] = runtimePlacement
     }
     return try await sendDecodableCommand(action: "lanes.create", args: args, as: LaneSummary.self)
   }
@@ -4546,8 +4542,7 @@ final class SyncService: ObservableObject {
     folder: String? = nil,
     baseBranchRef: String? = nil,
     branchName: String? = nil,
-    linearIssue: LaneLinearIssue? = nil,
-    runtimePlacement: String? = nil
+    linearIssue: LaneLinearIssue? = nil
   ) async throws -> LaneSummary {
     var args: [String: Any] = [
       "name": name,
@@ -4568,9 +4563,6 @@ final class SyncService: ObservableObject {
       if args["branchName"] == nil, let branchName = linearIssue.branchName, !branchName.isEmpty {
         args["branchName"] = branchName
       }
-    }
-    if let runtimePlacement, !runtimePlacement.isEmpty {
-      args["runtimePlacement"] = runtimePlacement
     }
     return try await sendDecodableCommand(action: "lanes.createChild", args: args, as: LaneSummary.self)
   }

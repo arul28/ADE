@@ -30,7 +30,6 @@ const bundledAgentSkills = [
   "ade-lanes-git",
   "ade-linear",
   "ade-proof-artifacts",
-  "ade-macos-vm",
   "ade-deeplinks",
   "ade-orchestrator",
 ];

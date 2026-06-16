@@ -122,7 +122,7 @@ Even with `dev:vite:live`, these stay on the mock until wired to the bridge or a
 - Terminals / PTY / live chat sessions
 - PR list/detail/actions, git read/write, files on disk
 - Remote runtime connection UI (Electron IPC)
-- Computer use, App Control, iOS simulator, Mac VM
+- Computer use, App Control, iOS simulator
 - Agent chat send/receive, orchestration runs
 - Most settings persistence beyond Linear token via bridge
 

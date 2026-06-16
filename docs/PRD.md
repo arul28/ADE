@@ -109,7 +109,7 @@ ADE is the control plane. It owns ADE Browser automation for its built-in projec
 
 ### Workspace surfaces
 
-- [**Terminals and Sessions**](./features/terminals-and-sessions/README.md) — PTY, session, managed-process, and lane-tied macOS VM services. Process lifecycle tracking, AI-title pipeline, lazy resume-target hydration, stale reconciliation, VM-backed GUI validation.
+- [**Terminals and Sessions**](./features/terminals-and-sessions/README.md) — PTY, session, and managed-process services. Process lifecycle tracking, AI-title pipeline, lazy resume-target hydration, and stale reconciliation.
 - [**Files and Editor**](./features/files-and-editor/README.md) — Atomic writes, ref-counted chokidar watcher, file search index, Monaco surfaces (edit/diff/conflict), preload trust boundary.
 - [**Project Home**](./features/project-home/README.md) — Combined welcome + per-lane runtime dashboard. Loads lane-independent metadata vs lane runtime separately.
 - [**Onboarding and Settings**](./features/onboarding-and-settings/README.md) — First-run wizard (stack detection, suggested config, import), 9-tab settings, configuration schema with trust model.
@@ -117,7 +117,7 @@ ADE is the control plane. It owns ADE Browser automation for its built-in projec
 ### Integrations
 
 - [**Linear Integration**](./features/linear-integration/README.md) — Webhook + relay + reconciliation. Workflow presets, target types (session/worker/PR), bidirectional sync.
-- [**Computer Use**](./features/computer-use/README.md) — Intentional proof capture plus active App Control and macOS VM bridges. Canonical artifact model, ownership-linked storage.
+- [**Computer Use**](./features/computer-use/README.md) — Intentional proof capture plus active App Control. Canonical artifact model, ownership-linked storage.
 - [**iOS Simulator**](./features/ios-simulator/README.md) — Chat-side macOS-only drawer that builds, launches, mirrors, inspects, and controls a booted iOS Simulator. ADEInspector publishes per-frame SwiftUI element metadata so taps become source-anchored chat context.
 - [**Sync and Multi-Device**](./features/sync-and-multi-device/README.md) — cr-sqlite CRDT (desktop native ext, iOS pure-SQL emulation). Host/controller model. WebSocket envelope. Remote commands.
 

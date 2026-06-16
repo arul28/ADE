@@ -126,7 +126,6 @@ import {
   normalizeNewLaneBranchSource,
   normalizeNewLaneStart,
   toggleNewLaneBranchSource,
-  toggleNewLaneRuntime,
 } from "./newLaneForm";
 import {
   ChatView,
@@ -702,7 +701,6 @@ const DESKTOP_COMMAND_ROUTES: Record<string, string> = {
   "/computer-use": "/proof",
   "/ios": "/ios-sim",
   "/ios-sim": "/ios-sim",
-  "/macos-vm": "/macos-vm",
   "/pencil": "/pencil",
   "/proof": "/proof",
 };
@@ -2257,8 +2255,7 @@ export function formFieldUsesPromptInput(command: string, fieldName: string): bo
   if (command === "lane-delete" && (fieldName === "scope" || fieldName === "force")) return false;
   if (
     command === "new-lane"
-    && (fieldName === "start" || fieldName === "runtime" || fieldName === "color"
-      || fieldName === "branchSource" || fieldName === "create")
+    && (fieldName === "start" || fieldName === "color" || fieldName === "branchSource" || fieldName === "create")
   ) return false;
   return true;
 }
@@ -11378,14 +11375,6 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         }
         if (printableInput(input) && !key.ctrl && !key.meta && !key.return) return;
       }
-      if (field?.name === "runtime") {
-        if (key.leftArrow || key.rightArrow || input === " ") {
-          setFormValues({ ...nextValues, runtime: toggleNewLaneRuntime(nextValues.runtime) });
-          setPrompt("");
-          return;
-        }
-        if (printableInput(input) && !key.ctrl && !key.meta && !key.return) return;
-      }
       if (field?.name === "create") {
         // ↵ falls through to the generic form submit below; everything else
         // is inert on the button row.
@@ -13031,11 +13020,6 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
               }
               if (rightPane.command === "new-lane" && field.name === "branchSource") {
                 setFormValues((prev) => ({ ...prev, branchSource: toggleNewLaneBranchSource(prev.branchSource) }));
-                setPrompt("");
-                return;
-              }
-              if (rightPane.command === "new-lane" && field.name === "runtime") {
-                setFormValues((prev) => ({ ...prev, runtime: toggleNewLaneRuntime(prev.runtime) }));
                 setPrompt("");
                 return;
               }

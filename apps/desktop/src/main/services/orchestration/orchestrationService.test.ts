@@ -252,7 +252,7 @@ describe("orchestrationService", () => {
 
   it("relocates a cached runtime and writes subsequent changes to the moved bundle", async () => {
     const svc = createOrchestrationService({ resolveLaneWorktree: () => lane });
-    const movedWorktree = path.join(lane, "vm-mirror-worktree");
+    const movedWorktree = path.join(lane, "moved-worktree");
     const { runId, manifest } = await svc.runCreate({
       laneId: "L-1",
       leadSessionId: "S-lead",
@@ -327,7 +327,7 @@ describe("orchestrationService", () => {
       bundleRoot: lane,
       title: "Cached placement move",
     });
-    const movedBundlePath = path.join(lane, "vm-mirror-cached", ".ade", "orchestration", runId);
+    const movedBundlePath = path.join(lane, "moved-cached", ".ade", "orchestration", runId);
     await fsp.mkdir(path.dirname(movedBundlePath), { recursive: true });
     await fsp.cp(manifest.bundlePath, movedBundlePath, { recursive: true });
 
@@ -345,7 +345,7 @@ describe("orchestrationService", () => {
       bundleRoot: lane,
       title: "Stale path move",
     });
-    const movedBundlePath = path.join(lane, "vm-mirror-stale-caller", ".ade", "orchestration", runId);
+    const movedBundlePath = path.join(lane, "moved-stale-caller", ".ade", "orchestration", runId);
     await fsp.mkdir(path.dirname(movedBundlePath), { recursive: true });
     await fsp.cp(manifest.bundlePath, movedBundlePath, { recursive: true });
     await svc.relocateRunBundle(runId, movedBundlePath);
@@ -385,7 +385,7 @@ describe("orchestrationService", () => {
     });
     await svc.subscribe(runId, manifest.bundlePath);
     const manifestPath = path.join(manifest.bundlePath, "manifest.json");
-    const movedBundlePath = path.join(lane, "vm-mirror-worktree-late", ".ade", "orchestration", runId);
+    const movedBundlePath = path.join(lane, "moved-worktree-late", ".ade", "orchestration", runId);
     const originalRename = fsp.rename.bind(fsp);
     let relocatePromise: Promise<void> | null = null;
     const renameSpy = vi.spyOn(fsp, "rename").mockImplementation((async (from: any, to: any) => {

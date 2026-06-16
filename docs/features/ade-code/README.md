@@ -175,7 +175,7 @@ Right pane (open the contextual drawer):
 | Command | Pane |
 | --- | --- |
 | `/steer` | Show staged steer messages and their delivery state. |
-| `/new lane` | Lane creation form (desktop CreateLaneDialog parity): "Start from" mode chips — primary base branch / child of a lane / import an existing branch — swap the visible fields, plus a local-mac / mac-vm runtime toggle. Backed by `newLaneForm.ts` and the `lane.create` / `lane.createChild` / `lane.importBranch` actions. |
+| `/new lane` | Lane creation form (desktop CreateLaneDialog parity): "Start from" mode chips — primary base branch / child of a lane / import an existing branch — swap the visible fields. Backed by `newLaneForm.ts` and the `lane.create` / `lane.createChild` / `lane.importBranch` actions. |
 | `/new chat [title]` | New chat in the active lane. |
 | `/rename [title]` | Rename the active chat. |
 | `/tag <tag\|clear>` | Tag the active Claude chat (Claude only). |
@@ -224,7 +224,6 @@ Several slash commands forward to a desktop route when issued from `ade code`:
 /computer             -> /proof
 /computer-use         -> /proof
 /ios, /ios-sim        -> /ios-sim
-/macos-vm             -> /vm
 /pencil               -> /pencil
 /proof                -> /proof
 ```
