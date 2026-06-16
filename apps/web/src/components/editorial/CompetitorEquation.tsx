@@ -15,9 +15,7 @@ const COMPETITORS = [
 ] as const;
 
 /**
- * Two-row competitor equation.
- *   Row 1: 10 competitor chips + `+` separators, staggered in left→right.
- *   Row 2: italic serif "equals" + ADE dock icon with violet halo pulse.
+ * Single-row competitor equation: tools + equals + ADE dock icon.
  */
 export function CompetitorEquation() {
   const reduceMotion = useReducedMotion() ?? true;
@@ -46,13 +44,12 @@ export function CompetitorEquation() {
   };
 
   return (
-    <div className="flex flex-col items-center gap-3 py-4 sm:gap-4 sm:py-6">
-      {/* Row 1 — competitor chips */}
+    <div className="flex flex-wrap items-center justify-center gap-2 px-2 pt-2 pb-0 sm:gap-3 sm:px-4 sm:pt-3">
       <motion.div
         variants={container}
         initial="hidden"
         animate="show"
-        className="flex max-w-full flex-wrap items-center justify-center gap-1 overflow-x-auto px-4 sm:gap-1.5"
+        className="flex max-w-full flex-wrap items-center justify-center gap-1 overflow-x-auto px-2 sm:gap-1.5 sm:px-4"
       >
         {COMPETITORS.map((app, i) => (
           <Fragment key={app.name}>
@@ -81,7 +78,6 @@ export function CompetitorEquation() {
         ))}
       </motion.div>
 
-      {/* Row 2 — equals + giant ADE side by side */}
       <motion.div
         initial={reduceMotion ? false : { opacity: 0, y: 12 }}
         animate={reduceMotion ? undefined : { opacity: 1, y: 0 }}
@@ -90,7 +86,7 @@ export function CompetitorEquation() {
           delay: reduceMotion ? 0 : rowEnd + 0.05,
           ease: [0.22, 1, 0.36, 1],
         }}
-        className="relative flex items-center gap-4 sm:gap-5"
+        className="relative flex shrink-0 items-center gap-3 sm:gap-4"
       >
         <span
           className="font-serif italic text-[color:var(--color-violet-bright)]"

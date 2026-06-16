@@ -1,0 +1,496 @@
+import { useCallback, useEffect, useReducer, useState } from "react";
+import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
+import { cn } from "../../lib/cn";
+
+const ROTATE_MS = 18000;
+const TICK_MS = 50;
+
+type ShowcaseImage = {
+  src: string;
+  label: string;
+  caption?: string;
+  /** Filename hint for asset drops — shown when image is missing. */
+  file: string;
+};
+
+/** Hero-style device trio (desktop centerpiece + TUI + iPhone), same proportions as the fold. */
+type DeviceTrio = {
+  desktop: { src: string; label: string };
+  tui: { src: string; label: string };
+  mobile: { src: string; label: string };
+};
+
+type ShowcaseTab = {
+  id: string;
+  number: string;
+  label: string;
+  title: string;
+  summary: string;
+  bullets: string[];
+  footnote: string;
+  /** Real assets ready → render the hero-style device composition. */
+  composition?: DeviceTrio;
+  /** Fallback deck: first image is the large primary, the rest are thumbnails. */
+  images?: ShowcaseImage[];
+};
+
+/**
+ * Drop final PNGs here (paths relative to `apps/web/public/`):
+ *
+ * sync/lanes/tui.png, desktop.png, mobile.png
+ * sync/chat/tui.png, desktop.png, mobile.png, grid-view.png, model-picker.png
+ * sync/prs/tui.png, desktop.png, mobile.png
+ * sync/tools/browser.png, ios-sim.png, app-control.png, macos-vm.png, files.png
+ */
+const TABS: ShowcaseTab[] = [
+  {
+    id: "lanes",
+    number: "01",
+    label: "Worktrees",
+    title: "Git worktrees on the fly.",
+    summary: "Spin up an isolated branch and worktree in a single action.",
+    bullets: [
+      "Its own checkout, terminals, ports, and history.",
+      "Stack worktrees on a graph; rebase when parents land.",
+      "The same list in the terminal, desktop, and iOS.",
+    ],
+    footnote: "Create one once — it's in your terminal, desktop, and pocket instantly.",
+    composition: {
+      desktop: { src: "/images/secondPage/lanesDesktop.png", label: "ADE on macOS — Lanes" },
+      tui: { src: "/images/secondPage/lanesTUI.png", label: "ADE Code — lanes in the terminal" },
+      mobile: { src: "/images/secondPage/lanesMobile.png", label: "ADE on iOS — a worktree in your pocket" },
+    },
+  },
+  {
+    id: "chat",
+    number: "02",
+    label: "Agent chat",
+    title: "One prompt box. Every agent.",
+    summary: "Claude Code, Codex, Cursor, OpenCode, Droid — one Work surface.",
+    bullets: [
+      "Launch an ADE chat or a headless CLI session.",
+      "Grid view tiles every run side by side.",
+      "Messages, tool calls, and proofs sync to every screen.",
+    ],
+    footnote: "Every turn stays mirrored — no copy-paste between surfaces.",
+    images: [
+      { src: "/images/sync/chat/desktop.png", label: "Desktop", file: "sync/chat/desktop.png", caption: "Work" },
+      { src: "/images/sync/chat/tui.png", label: "Terminal", file: "sync/chat/tui.png", caption: "ADE Code" },
+      { src: "/images/sync/chat/grid-view.png", label: "Grid view", file: "sync/chat/grid-view.png", caption: "Parallel chats" },
+      { src: "/images/sync/chat/mobile.png", label: "Pocket iOS", file: "sync/chat/mobile.png", caption: "iOS" },
+    ],
+  },
+  {
+    id: "prs",
+    number: "03",
+    label: "Pull requests",
+    title: "Review and merge. No GitHub tab.",
+    summary: "Open a PR from a finished chat and review it inside ADE.",
+    bullets: [
+      "Diff, CI, and review threads next to the worktree.",
+      "Merge when green — synced on every client.",
+    ],
+    footnote: "The PR your agent opened is the same object everywhere.",
+    images: [
+      { src: "/images/sync/prs/desktop.png", label: "Desktop", file: "sync/prs/desktop.png", caption: "PRs tab" },
+      { src: "/images/sync/prs/tui.png", label: "Terminal", file: "sync/prs/tui.png", caption: "ADE Code" },
+      { src: "/images/sync/prs/mobile.png", label: "Pocket iOS", file: "sync/prs/mobile.png", caption: "iOS" },
+    ],
+  },
+  {
+    id: "tools",
+    number: "04",
+    label: "Work tools",
+    title: "Browser, sim, VM — beside the chat.",
+    summary: "The proof and control surfaces agents need, built in.",
+    bullets: [
+      "Shared browser pane for web QA and proof capture.",
+      "iOS Simulator and macOS VM in the tools drawer.",
+      "Every tool scoped to the active worktree.",
+    ],
+    footnote: "Agents get computer use; you get the same controls, one click away.",
+    images: [
+      { src: "/images/sync/tools/browser.png", label: "Browser", file: "sync/tools/browser.png" },
+      { src: "/images/sync/tools/ios-sim.png", label: "iOS Simulator", file: "sync/tools/ios-sim.png" },
+      { src: "/images/sync/tools/macos-vm.png", label: "macOS VM", file: "sync/tools/macos-vm.png" },
+      { src: "/images/sync/tools/files.png", label: "Files & git", file: "sync/tools/files.png" },
+    ],
+  },
+];
+
+function ImagePanel({
+  image,
+  primary = false,
+}: {
+  image: ShowcaseImage;
+  primary?: boolean;
+}) {
+  const [missing, setMissing] = useState(false);
+
+  return (
+    <div
+      className={cn(
+        "group relative overflow-hidden border border-[color:var(--color-hairline-strong)] bg-[#07070b] ring-1 ring-white/[0.04]",
+        primary
+          ? "aspect-[16/10] rounded-[clamp(12px,1.1vw,18px)] shadow-[0_30px_60px_-24px_rgba(0,0,0,0.7)]"
+          : "h-[clamp(66px,7vw,108px)] rounded-[clamp(8px,0.8vw,12px)]"
+      )}
+    >
+      {/* Surface label chip */}
+      <div className="pointer-events-none absolute left-2.5 top-2.5 z-10 flex items-center gap-1.5 rounded-full border border-[color:var(--color-hairline-strong)] bg-black/55 px-2.5 py-1 backdrop-blur-sm">
+        <span className="h-1 w-1 rounded-full bg-[color:var(--color-violet-bright)] shadow-[0_0_6px_rgba(124,58,237,0.9)]" />
+        <span className="text-[9px] uppercase tracking-[0.14em] text-[color:var(--color-cream)]">
+          {image.label}
+        </span>
+        {image.caption ? (
+          <span className="text-[9px] text-[color:var(--color-cream-faint)]">· {image.caption}</span>
+        ) : null}
+      </div>
+
+      {!missing ? (
+        <img
+          src={image.src}
+          alt={image.label}
+          loading="lazy"
+          decoding="async"
+          className="h-full w-full object-cover object-left-top transition-transform duration-500 ease-out motion-safe:group-hover:scale-[1.03]"
+          onError={() => setMissing(true)}
+        />
+      ) : (
+        <div
+          className="flex h-full flex-col items-center justify-center gap-1.5 px-3 text-center"
+          style={{
+            background:
+              "radial-gradient(ellipse 80% 70% at 50% 40%, rgba(124,58,237,0.18) 0%, transparent 72%)",
+          }}
+        >
+          <span
+            className="font-serif italic text-[color:var(--color-violet-bright)]"
+            style={{ fontSize: primary ? "clamp(20px,2.2vw,30px)" : "13px" }}
+          >
+            {image.label}
+          </span>
+          {primary ? (
+            <code className="font-mono text-[10px] tracking-tight text-[color:var(--color-cream-faint)]">
+              images/{image.file}
+            </code>
+          ) : null}
+        </div>
+      )}
+
+      {/* violet sheen on hover */}
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-0 opacity-0 transition-opacity duration-500 group-hover:opacity-100"
+        style={{ background: "linear-gradient(160deg, rgba(124,58,237,0.16), transparent 55%)" }}
+      />
+    </div>
+  );
+}
+
+const compositionFrame =
+  "overflow-hidden border border-[color:var(--color-hairline-strong)] bg-[#07070b] ring-1 ring-white/[0.04]";
+
+/**
+ * Hero-style device trio — desktop centerpiece with the TUI tucked into the
+ * bottom-left and a bezeled iPhone bottom-right. Proportions mirror the fold's
+ * DeviceComposition so the two read as the same product family.
+ */
+function ShowcaseComposition({ trio }: { trio: DeviceTrio }) {
+  return (
+    <div className="relative w-full self-center">
+      {/* localized violet glow */}
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-0 -m-8"
+        style={{
+          background:
+            "radial-gradient(ellipse 70% 60% at 50% 52%, rgba(124,58,237,0.42) 0%, rgba(124,58,237,0.1) 46%, transparent 78%)",
+          filter: "blur(16px)",
+          zIndex: 0,
+        }}
+      />
+
+      <div className="relative isolate w-full pb-[3%]">
+        {/* Desktop — base layer; defines composition height */}
+        <div
+          className="relative z-0 motion-safe:transition-transform motion-safe:duration-500"
+          style={{ filter: "drop-shadow(0 30px 56px rgba(0,0,0,0.6))" }}
+        >
+          <div className={`${compositionFrame} rounded-[clamp(8px,1vw,14px)]`}>
+            <img
+              src={trio.desktop.src}
+              alt={trio.desktop.label}
+              loading="lazy"
+              decoding="async"
+              className="block h-auto w-full"
+            />
+          </div>
+        </div>
+
+        {/* TUI — bottom-left corner */}
+        <div
+          className="absolute bottom-[12%] left-[-3%] z-20 w-[50%] origin-bottom-left -rotate-[2deg] motion-safe:transition-transform motion-safe:duration-500 motion-safe:ease-out [@media(hover:hover)]:hover:z-40 [@media(hover:hover)]:hover:scale-[1.06] [@media(hover:hover)]:hover:rotate-0"
+          style={{ filter: "drop-shadow(0 22px 40px rgba(0,0,0,0.66))" }}
+        >
+          <div className={`${compositionFrame} rounded-[clamp(6px,0.7vw,10px)]`}>
+            <img
+              src={trio.tui.src}
+              alt={trio.tui.label}
+              loading="lazy"
+              decoding="async"
+              className="block h-auto w-full"
+            />
+          </div>
+        </div>
+
+        {/* iPhone — bottom-right corner, real bezel */}
+        <div
+          className="absolute bottom-[1%] right-[-1%] z-30 w-[18%] origin-bottom-right rotate-[3deg] motion-safe:transition-transform motion-safe:duration-500 motion-safe:ease-out [@media(hover:hover)]:hover:z-40 [@media(hover:hover)]:hover:scale-[1.08] [@media(hover:hover)]:hover:rotate-0"
+          style={{ filter: "drop-shadow(0 24px 44px rgba(124,58,237,0.45))" }}
+        >
+          <div className="relative aspect-[9/19.5] overflow-hidden rounded-[clamp(16px,1.9vw,30px)] border-[clamp(3px,0.45vw,7px)] border-[#0c0c12] bg-black ring-1 ring-[color:var(--color-hairline-strong)]">
+            <div
+              aria-hidden
+              className="absolute left-1/2 top-[clamp(3px,0.4vw,7px)] z-[2] h-[clamp(7px,0.9vw,16px)] w-[40%] -translate-x-1/2 rounded-full bg-black"
+            />
+            <img
+              src={trio.mobile.src}
+              alt={trio.mobile.label}
+              loading="lazy"
+              decoding="async"
+              className="block h-full w-full object-cover object-top"
+            />
+            <div
+              aria-hidden
+              className="pointer-events-none absolute inset-0"
+              style={{ boxShadow: "inset 0 0 26px rgba(124,58,237,0.26)" }}
+            />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ImageStage({ tab }: { tab: ShowcaseTab }) {
+  if (tab.composition) {
+    return (
+      <div className="flex h-full items-center">
+        <ShowcaseComposition trio={tab.composition} />
+      </div>
+    );
+  }
+
+  const [primary, ...rest] = tab.images ?? [];
+  return (
+    <div className="flex flex-col gap-[clamp(10px,1.2vw,16px)]">
+      {primary ? <ImagePanel image={primary} primary /> : null}
+      {rest.length > 0 ? (
+        <div
+          className="grid gap-[clamp(10px,1.2vw,16px)]"
+          style={{ gridTemplateColumns: `repeat(${rest.length}, minmax(0,1fr))` }}
+        >
+          {rest.map((image) => (
+            <ImagePanel key={image.file} image={image} />
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function CopyPanel({ tab }: { tab: ShowcaseTab }) {
+  return (
+    <div className="flex flex-col justify-center">
+      <p className="text-[11px] uppercase tracking-[0.22em] text-[color:var(--color-violet-bright)]">
+        {tab.number} · {tab.label}
+      </p>
+      <h3
+        className="mt-3 font-serif font-normal tracking-[-0.015em] text-[color:var(--color-cream)]"
+        style={{ fontSize: "clamp(28px,3.6vw,48px)", lineHeight: 1.04 }}
+      >
+        {tab.title}
+      </h3>
+      <p
+        className="mt-4 max-w-[42ch] text-[color:var(--color-cream-muted)]"
+        style={{ fontSize: "clamp(16px,1.5vw,19px)", lineHeight: 1.5 }}
+      >
+        {tab.summary}
+      </p>
+      <ul className="mt-7 space-y-3.5">
+        {tab.bullets.map((bullet) => (
+          <li
+            key={bullet}
+            className="flex gap-3 text-[15px] leading-snug text-[color:var(--color-cream-muted)]"
+          >
+            <span className="mt-[0.5em] h-1.5 w-1.5 shrink-0 rounded-full bg-[color:var(--color-violet-bright)] shadow-[0_0_8px_rgba(124,58,237,0.85)]" />
+            <span>{bullet}</span>
+          </li>
+        ))}
+      </ul>
+      <p className="mt-8 border-l-2 border-[color:var(--color-violet-bright)]/50 pl-4 font-serif text-[14px] italic leading-relaxed text-[color:var(--color-cream)]">
+        {tab.footnote}
+      </p>
+    </div>
+  );
+}
+
+export function ShipShowcase() {
+  const reduceMotion = useReducedMotion() ?? true;
+  const [active, setActive] = useState(0);
+  const [progress, setProgress] = useState(0);
+  const [, bump] = useReducer((n: number) => n + 1, 0);
+
+  const tab = TABS[active]!;
+
+  const selectTab = useCallback((index: number) => {
+    setActive(index);
+    setProgress(0);
+    bump();
+  }, []);
+
+  useEffect(() => {
+    if (reduceMotion) return;
+
+    const started = Date.now();
+    const tick = window.setInterval(() => {
+      const elapsed = Date.now() - started;
+      setProgress(Math.min(1, elapsed / ROTATE_MS));
+    }, TICK_MS);
+
+    const advance = window.setTimeout(() => {
+      setActive((current) => (current + 1) % TABS.length);
+      setProgress(0);
+      bump();
+    }, ROTATE_MS);
+
+    return () => {
+      window.clearInterval(tick);
+      window.clearTimeout(advance);
+    };
+  }, [active, reduceMotion]);
+
+  return (
+    <section
+      id="ship-showcase"
+      className="relative mx-auto w-full max-w-[1760px] pt-[clamp(40px,4.5vw,72px)]"
+    >
+      {/* gradient top rule — more color than a flat hairline */}
+      <div
+        aria-hidden
+        className="absolute inset-x-0 top-0 h-px"
+        style={{
+          background:
+            "linear-gradient(90deg, transparent, rgba(167,139,250,0.45) 28%, rgba(124,58,237,0.6) 50%, rgba(167,139,250,0.45) 72%, transparent)",
+        }}
+      />
+      {/* layered violet + indigo glow */}
+      <div
+        aria-hidden
+        className="pointer-events-none absolute inset-x-[-12%] top-[6%] bottom-[-10%] -z-10"
+        style={{
+          background: [
+            "radial-gradient(ellipse 50% 46% at 78% 42%, rgba(124,58,237,0.36) 0%, transparent 72%)",
+            "radial-gradient(ellipse 44% 42% at 10% 72%, rgba(99,102,241,0.18) 0%, transparent 74%)",
+          ].join(", "),
+          filter: "blur(22px)",
+        }}
+      />
+
+      {/* Heading on the left, tab rail to its right on wide screens */}
+      <div className="grid gap-x-[clamp(32px,4vw,72px)] gap-y-[clamp(28px,3.4vw,44px)] 2xl:grid-cols-[minmax(0,1fr)_auto] 2xl:items-end">
+        <header className="max-w-[60ch] 2xl:max-w-none">
+          <p className="text-[11px] uppercase tracking-[0.26em] text-[color:var(--color-violet-bright)]">
+            One repo, every surface
+          </p>
+          <h2
+            className="mt-4 font-serif font-normal tracking-[-0.02em] text-[color:var(--color-cream)] 2xl:whitespace-nowrap"
+            style={{ fontSize: "clamp(38px, 4vw, 62px)", lineHeight: 1.02 }}
+          >
+            Ship code from{" "}
+            <em className="bg-gradient-to-r from-[#b6a3ff] via-[#dcc9ff] to-[#7c3aed] bg-clip-text text-transparent">
+              any screen.
+            </em>
+          </h2>
+          <p
+            className="mt-5 max-w-[48ch] text-[color:var(--color-cream-muted)]"
+            style={{ fontSize: "clamp(16px, 1.6vw, 19px)", lineHeight: 1.55 }}
+          >
+            A terminal app, a desktop app, and an iOS companion — always in sync. Start on one,
+            finish on another.
+          </p>
+        </header>
+
+        {/* Tab rail */}
+        <div className="w-full 2xl:w-auto">
+          <div
+            role="tablist"
+            aria-label="Product walkthrough"
+            className="flex flex-wrap gap-2 sm:gap-3"
+          >
+          {TABS.map((item, index) => {
+            const selected = index === active;
+            return (
+              <button
+                key={item.id}
+                type="button"
+                role="tab"
+                aria-selected={selected}
+                onClick={() => selectTab(index)}
+                className={cn(
+                  "group relative overflow-hidden rounded-[8px] border px-4 py-3 text-left transition-all duration-300 sm:px-5 sm:py-3.5",
+                  selected
+                    ? "border-[color:var(--color-violet-bright)] bg-[color:var(--color-violet-bright)]/[0.12] text-[color:var(--color-cream)] shadow-[0_0_30px_-6px_rgba(124,58,237,0.6)]"
+                    : "border-[color:var(--color-hairline-strong)] bg-transparent text-[color:var(--color-cream-muted)] hover:border-[color:var(--color-violet-bright)]/50 hover:text-[color:var(--color-cream)]"
+                )}
+              >
+                <span
+                  className={cn(
+                    "block text-[11px] uppercase tracking-[0.18em] transition-colors",
+                    selected
+                      ? "text-[color:var(--color-violet-bright)]"
+                      : "text-[color:var(--color-cream-faint)] group-hover:text-[color:var(--color-violet-bright)]"
+                  )}
+                >
+                  {item.number}
+                </span>
+                <span className="mt-1 block text-[14px] font-medium sm:text-[15.5px]">
+                  {item.label}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+
+        <div
+          className="mt-3 h-[2px] overflow-hidden rounded-full bg-[color:var(--color-hairline)]"
+          aria-hidden
+        >
+          <div
+            className="h-full origin-left rounded-full bg-[color:var(--color-violet-bright)] shadow-[0_0_10px_rgba(124,58,237,0.7)] transition-[width] duration-100 ease-linear"
+            style={{ width: reduceMotion ? "100%" : `${progress * 100}%` }}
+          />
+        </div>
+        </div>
+      </div>
+
+      {/* Stage — copy + big image deck, crossfaded on tab change */}
+      <div className="relative mt-[clamp(28px,3.4vw,48px)] min-h-[clamp(460px,50vw,700px)]">
+        <AnimatePresence mode="wait" initial={false}>
+          <motion.div
+            key={tab.id}
+            initial={reduceMotion ? false : { opacity: 0, y: 14 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={reduceMotion ? { opacity: 0 } : { opacity: 0, y: -10 }}
+            transition={{ duration: 0.42, ease: [0.22, 1, 0.36, 1] }}
+            className="grid gap-[clamp(24px,3vw,56px)] lg:grid-cols-[minmax(0,0.58fr)_minmax(0,1.42fr)] lg:items-center"
+          >
+            <CopyPanel tab={tab} />
+            <ImageStage tab={tab} />
+          </motion.div>
+        </AnimatePresence>
+      </div>
+    </section>
+  );
+}

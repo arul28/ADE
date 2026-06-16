@@ -2,7 +2,15 @@ import { useCallback, useMemo, useState } from "react";
 import { Check, Copy } from "lucide-react";
 import { cn } from "../lib/cn";
 
-export function CopyButton({ value, className }: { value: string; className?: string }) {
+export function CopyButton({
+  value,
+  className,
+  compact = false,
+}: {
+  value: string;
+  className?: string;
+  compact?: boolean;
+}) {
   const [copied, setCopied] = useState(false);
 
   const canCopy = useMemo(() => typeof navigator !== "undefined" && !!navigator.clipboard, []);
@@ -23,6 +31,7 @@ export function CopyButton({ value, className }: { value: string; className?: st
       type="button"
       className={cn(
         "focus-ring inline-flex h-9 items-center gap-2 rounded-lg border border-border bg-card/70 px-3 text-sm text-fg transition-all",
+        compact && "gap-0",
         "duration-200 [transition-timing-function:var(--ease-out)] hover:bg-card hover:shadow-glass-sm",
         "disabled:opacity-60",
         className
@@ -32,7 +41,7 @@ export function CopyButton({ value, className }: { value: string; className?: st
       aria-label={copied ? "Copied" : "Copy to clipboard"}
     >
       {copied ? <Check className="h-4 w-4" /> : <Copy className="h-4 w-4" />}
-      {copied ? "Copied" : "Copy"}
+      {!compact && (copied ? "Copied" : "Copy")}
     </button>
   );
 }

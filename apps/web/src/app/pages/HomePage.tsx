@@ -1,4 +1,3 @@
-import { motion, useReducedMotion } from "framer-motion";
 import { useDocumentTitle } from "../../lib/useDocumentTitle";
 import { Page } from "../../components/Page";
 
@@ -6,6 +5,8 @@ import { Masthead } from "../../components/editorial/Masthead";
 import { CompetitorEquation } from "../../components/editorial/CompetitorEquation";
 import { Lede } from "../../components/editorial/Lede";
 import { DeviceComposition } from "../../components/editorial/DeviceComposition";
+import { HeroAgentBadges } from "../../components/editorial/HeroAgentBadges";
+import { ShipShowcase } from "../../components/editorial/ShipShowcase";
 import { FadeBand } from "../../components/editorial/FadeBand";
 import {
   Chapter,
@@ -23,53 +24,13 @@ import { EDITORIAL_ISSUE } from "../../components/editorial/issue";
 
 const MOBILE_BYLINE_DATE = `${EDITORIAL_ISSUE.monthYear} · iOS 17+`;
 
-function AgentBadge({
-  src,
-  name,
-  className = "",
-  rotate = 0,
-  variant = "light",
-}: {
-  src: string;
-  name: string;
-  className?: string;
-  rotate?: number;
-  variant?: "light" | "dark";
-}) {
-  const reduceMotion = useReducedMotion() ?? true;
-  const bg =
-    variant === "dark"
-      ? "bg-[#0f0d0a] border-[color:var(--color-ink)]"
-      : "bg-[color:var(--color-paper)] border-[color:var(--color-ink-hairline-strong)]";
-  return (
-    <motion.div
-      initial={reduceMotion ? false : { opacity: 0, scale: 0.6, rotate: 0 }}
-      whileInView={reduceMotion ? undefined : { opacity: 1, scale: 1, rotate }}
-      viewport={{ once: true, amount: 0.3 }}
-      transition={{ duration: 0.6, delay: 0.15, ease: [0.22, 1, 0.36, 1] }}
-      style={{ transform: `rotate(${rotate}deg)` }}
-      className={`absolute z-10 flex h-[54px] w-[54px] items-center justify-center rounded-full border shadow-[0_10px_24px_-12px_rgba(24,21,15,0.5)] ${bg} ${className}`}
-      aria-label={name}
-      title={name}
-    >
-      <img
-        src={src}
-        alt={name}
-        loading="lazy"
-        decoding="async"
-        className="h-[34px] w-[34px] object-contain"
-      />
-    </motion.div>
-  );
-}
-
 export function HomePage() {
   useDocumentTitle("ADE — Agentic Development Environment");
 
   return (
     <Page>
       {/* ═══════ DARK COVER ═══════ */}
-      <section className="relative overflow-hidden bg-[color:var(--color-bg)] text-[color:var(--color-cream)]">
+      <section className="relative overflow-x-clip bg-[color:var(--color-bg)] text-[color:var(--color-cream)]">
         <div
           aria-hidden
           className="pointer-events-none absolute inset-0"
@@ -94,36 +55,21 @@ export function HomePage() {
         <Masthead />
 
         <div className="relative mx-auto max-w-[1760px] px-[clamp(20px,3vw,48px)]">
-          <div className="border-b border-[color:var(--color-hairline)]">
-            <CompetitorEquation />
-          </div>
-
-          <div className="grid grid-cols-1 items-center gap-[clamp(24px,3vw,48px)] py-[clamp(20px,3vw,40px)] lg:grid-cols-[minmax(0,4fr)_minmax(0,9fr)]">
-            <Lede />
-            <DeviceComposition />
-          </div>
-
-          <div className="flex items-center justify-center gap-3 border-t border-[color:var(--color-hairline)] py-[clamp(18px,2vw,26px)] text-[11px] uppercase tracking-[0.34em] text-[color:var(--color-cream-faint)]">
-            Turn the page
-            <span
-              className="ade-turn-page-arrow font-serif italic text-[color:var(--color-violet-bright)]"
-              style={{
-                fontSize: "15px",
-                animation: "nudge 2.4s ease-in-out infinite",
-              }}
-            >
-              ↓
-            </span>
-            Chapter I · Worktrees
-            <style>{`
-              @keyframes nudge {
-                0%, 100% { transform: translateY(0); }
-                50% { transform: translateY(4px); }
-              }
-              @media (prefers-reduced-motion: reduce) {
-                .ade-turn-page-arrow { animation: none !important; }
-              }
-            `}</style>
+          <div className="mx-auto flex w-full max-w-[1760px] flex-col items-center gap-[clamp(32px,4vw,56px)] pb-[clamp(20px,3vw,40px)] pt-0">
+            <div className="relative w-full min-w-0 overflow-visible">
+              {/* Badges span the full hero height (headline + devices) so they
+                  scatter through the upper empty gutters, not just beside the
+                  device stack. */}
+              <HeroAgentBadges />
+              <div className="relative z-10 mx-auto flex w-full max-w-[1200px] flex-col items-center gap-[clamp(4px,1vw,12px)]">
+                <CompetitorEquation />
+                <Lede />
+              </div>
+              <div className="relative z-0 w-full min-w-0 overflow-visible px-[clamp(8px,2vw,32px)] py-[clamp(12px,2vw,24px)]">
+                <DeviceComposition />
+              </div>
+            </div>
+            <ShipShowcase />
           </div>
         </div>
       </section>
@@ -206,78 +152,6 @@ export function HomePage() {
               caption="An agent executing — tool calls, test output, and a diff ready for review."
               rotate={-0.5}
               tone="ink"
-            />
-            <AgentBadge
-              src="/images/models/claude-color.svg"
-              name="Claude"
-              className="-top-6 -left-5"
-              rotate={-8}
-            />
-            <AgentBadge
-              src="/images/models/openai.svg"
-              name="OpenAI"
-              className="-top-7 left-[28%]"
-              rotate={5}
-            />
-            <AgentBadge
-              src="/images/models/gemini-color.svg"
-              name="Gemini"
-              className="-top-5 -right-6"
-              rotate={10}
-            />
-            <AgentBadge
-              src="/images/models/grok.svg"
-              name="Grok"
-              className="top-[18%] -left-8"
-              rotate={-5}
-            />
-            <AgentBadge
-              src="/images/models/deepseek-color.svg"
-              name="DeepSeek"
-              className="top-[22%] -right-8"
-              rotate={7}
-            />
-            <AgentBadge
-              src="/images/models/mistral-color.svg"
-              name="Mistral"
-              className="top-[46%] -left-10"
-              rotate={4}
-            />
-            <AgentBadge
-              src="/images/models/meta-color.svg"
-              name="Meta Llama"
-              className="top-[50%] -right-9"
-              rotate={-6}
-            />
-            <AgentBadge
-              src="/images/models/cohere-color.svg"
-              name="Cohere"
-              className="top-[72%] -left-7"
-              rotate={-4}
-            />
-            <AgentBadge
-              src="/images/models/qwen-color.svg"
-              name="Qwen"
-              className="top-[74%] -right-6"
-              rotate={8}
-            />
-            <AgentBadge
-              src="/images/models/perplexity-color.svg"
-              name="Perplexity"
-              className="bottom-[18%] left-[22%]"
-              rotate={-7}
-            />
-            <AgentBadge
-              src="/images/models/ollama.svg"
-              name="Ollama"
-              className="bottom-[14%] right-[22%]"
-              rotate={6}
-            />
-            <AgentBadge
-              src="/images/models/anthropic.svg"
-              name="Anthropic"
-              className="top-[40%] left-[8%]"
-              rotate={-3}
             />
           </div>
         </div>
