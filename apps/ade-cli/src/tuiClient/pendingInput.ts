@@ -71,7 +71,7 @@ function optionMatches(input: string, option: PendingInputOption, index: number)
     || normalized === option.label.toLowerCase();
 }
 
-function answerForQuestion(question: PendingInputQuestion, text: string): string | string[] {
+export function answerForQuestion(question: PendingInputQuestion, text: string): string | string[] {
   const trimmed = text.trim();
   if (!question.options?.length) return trimmed;
   const values = trimmed.split(",").map((entry) => entry.trim()).filter(Boolean);

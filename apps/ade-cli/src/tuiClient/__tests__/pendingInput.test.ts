@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { AgentChatEventEnvelope, PendingInputRequest } from "../../../../desktop/src/shared/types/chat";
 import {
+  answerForQuestion,
   buildPendingInputAnswers,
   createPendingQuestionSelectionState,
   latestPendingApproval,
@@ -172,6 +173,19 @@ describe("pendingInput", () => {
     const movedQuestion = movePendingQuestionFocus(request, movedOption, 1);
     expect(movedQuestion.activeQuestionIndex).toBe(1);
     expect(pendingQuestionSelectionValue(request, movedQuestion)).toBe("detailed");
+  });
+
+  it("maps a typed answer for the active question by option label, index, or free text", () => {
+    const question = baseRequest.questions[0]!; // options: Recommended/recommended, Manual/manual
+    // Typed answers route through answerForQuestion so the multi-question flow
+    // preserves option-label matching and multi-select splitting (not raw text).
+    expect(answerForQuestion(question, "Manual")).toBe("manual");
+    expect(answerForQuestion(question, "2")).toBe("manual");
+    expect(answerForQuestion({ ...question, multiSelect: true }, "1, manual")).toEqual([
+      "recommended",
+      "manual",
+    ]);
+    expect(answerForQuestion({ id: "free", question: "Notes?" }, "  ship it  ")).toBe("ship it");
   });
 
   it("counts answered pending questions by id", () => {

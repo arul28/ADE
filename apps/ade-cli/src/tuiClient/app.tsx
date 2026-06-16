@@ -196,6 +196,7 @@ import {
   type FeedbackType,
 } from "./feedbackForm";
 import {
+  answerForQuestion,
   buildPendingInputAnswers,
   createPendingQuestionSelectionState,
   ensurePendingQuestionSelectionState,
@@ -7090,7 +7091,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     await refreshState();
   }, [addNotice, refreshState]);
 
-  const submitSelectedPendingQuestion = useCallback(async (approval: PendingApproval): Promise<boolean> => {
+  const submitSelectedPendingQuestion = useCallback(async (
+    approval: PendingApproval,
+    typedAnswer?: string,
+  ): Promise<boolean> => {
     const request = approval.request;
     const questions = request?.questions ?? [];
     if (!request || questions.length === 0) return false;
@@ -7101,12 +7105,19 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     if (!baseState) return false;
     const activeQuestion = questions[baseState.activeQuestionIndex] ?? questions[0] ?? null;
     if (!activeQuestion) return false;
-    const selectedValue = pendingQuestionSelectionValue(request, baseState);
-    if (!selectedValue) {
+    // A typed answer for the active question is mapped through answerForQuestion
+    // (option-label matching + multi-select comma split) and merged into the
+    // accumulated answers, so it advances the multi-question flow instead of
+    // rebuilding a single-shot payload that would drop earlier answers.
+    const typed = typedAnswer?.trim();
+    const activeAnswer: string | string[] | null = typed
+      ? answerForQuestion(activeQuestion, typed)
+      : pendingQuestionSelectionValue(request, baseState);
+    if (activeAnswer == null || (typeof activeAnswer === "string" && activeAnswer.length === 0)) {
       addNotice("Type an answer in the prompt for this question.", "info");
       return true;
     }
-    const answers = { ...baseState.answers, [activeQuestion.id]: selectedValue };
+    const answers = { ...baseState.answers, [activeQuestion.id]: activeAnswer };
     const answeredCount = pendingQuestionAnsweredCount(request, answers);
     if (answeredCount >= questions.length) {
       const conn = connectionRef.current;
@@ -7123,6 +7134,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           return `${question.header?.trim() || question.id}: ${Array.isArray(answer) ? answer.join(", ") : answer ?? ""}`;
         }).join("\n"),
       });
+      // Clear the synchronous ref alongside React state so a fast second
+      // Enter/click can't reuse the now-submitted answers before the next render.
+      pendingQuestionStateRef.current = null;
       setPendingQuestionState(null);
       addNotice("Answered request.", "success");
       await refreshState();
@@ -9130,6 +9144,16 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         return;
       }
       if (pendingApproval?.mode === "question") {
+        const lowered = value.trim().toLowerCase();
+        const isDecline = lowered === "deny" || lowered === "decline" || lowered === "cancel";
+        // Multi-question requests accumulate answers across questions in the
+        // selection state, so a typed answer must merge into that state (keeping
+        // earlier option/free-text answers and advancing) rather than rebuilding
+        // the whole payload. Single-question + decline keep the original path.
+        if (!isDecline && (pendingApproval.request?.questions?.length ?? 0) > 1) {
+          await submitSelectedPendingQuestion(pendingApproval, value);
+          return;
+        }
         await answerPendingInput(pendingApproval, value);
         return;
       }
@@ -9247,7 +9271,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       }
       addNotice(message, "error");
     }
-  }, [activeCommandProvider, activeFormField, addNotice, answerPendingInput, clearChatPromptDraft, ensureActiveSession, formValues, interceptLocalSlashCommand, pendingApproval, resolvePendingApproval, resumeClosedTerminalSession, rightPane, runInlineCommand, runRightCommand, selectedMentions, sendOrSteerChatMessage, setChatScrollOffset, slashCommands, slashIndex, slashRows, startClaudeTerminalForPrompt, submitClaudePromptToTerminal, submitRightForm]);
+  }, [activeCommandProvider, activeFormField, addNotice, answerPendingInput, clearChatPromptDraft, ensureActiveSession, formValues, interceptLocalSlashCommand, pendingApproval, resolvePendingApproval, resumeClosedTerminalSession, rightPane, runInlineCommand, runRightCommand, selectedMentions, sendOrSteerChatMessage, setChatScrollOffset, slashCommands, slashIndex, slashRows, startClaudeTerminalForPrompt, submitClaudePromptToTerminal, submitRightForm, submitSelectedPendingQuestion]);
 
   const launchPromptInBackground = useCallback(async (value: string) => {
     const text = value.trim();
