@@ -1614,10 +1614,8 @@ function buildInlineQuestionsFromPendingRequest(request: PendingInputRequest): I
     return options.flatMap((option) => {
       if (!option) return [];
       const label = typeof option.label === "string" ? option.label.trim() : "";
-      const value = typeof option.value === "string" && option.value.trim().length
-        ? option.value.trim()
-        : label;
-      if (!label.length || !value.length) return [];
+      const value = typeof option.value === "string" ? option.value : label;
+      if (!label.length || !value.trim().length) return [];
       const entry: InlineQuestionOption = { label, value };
       if (typeof option.description === "string" && option.description.trim().length) {
         entry.description = option.description.trim();

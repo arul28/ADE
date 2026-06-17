@@ -2257,6 +2257,28 @@ describe("AgentChatMessageList inline ask-user card", () => {
     expect(onApproval).toHaveBeenCalledWith("approval-ask", "accept", null, { plan_choice: "rebase" });
   });
 
+  it("preserves exact structured option values when submitting", () => {
+    const onApproval = vi.fn();
+    renderMessageList([
+      buildStructuredApprovalEvent({
+        questions: [
+          {
+            id: "plan_choice",
+            header: "Plan",
+            question: "Which plan should we follow?",
+            options: [
+              { label: "  Rebase  ", value: " rebase " },
+            ],
+            allowsFreeform: false,
+          },
+        ],
+      }),
+    ], { onApproval });
+
+    fireEvent.click(findButtonByTextContent(/^Rebase/));
+    expect(onApproval).toHaveBeenCalledWith("approval-ask", "accept", null, { plan_choice: " rebase " });
+  });
+
   it("number keys select single-choice answers without submitting immediately", () => {
     const onApproval = vi.fn();
     renderMessageList([

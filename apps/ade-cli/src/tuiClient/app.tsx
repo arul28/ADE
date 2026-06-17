@@ -205,6 +205,7 @@ import {
   optionsForPendingQuestion,
   pendingQuestionAnsweredCount,
   pendingQuestionSelectionValue,
+  selectPendingQuestionOptionIndex,
   setPendingQuestionOptionIndex,
   type PendingQuestionSelectionState,
 } from "./pendingInput";
@@ -11491,18 +11492,21 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       }
       if (/^[1-9]$/.test(input)) {
         let selected = false;
+        let submitAfterSelect = false;
         updateQuestionState((state) => {
           const question = pendingQuestionApproval.request?.questions[state.activeQuestionIndex];
           const options = optionsForPendingQuestion(pendingQuestionApproval.request, question, state.activeQuestionIndex);
           if (!options[Number(input) - 1]) return state;
           selected = true;
-          return setPendingQuestionOptionIndex(pendingQuestionApproval.request, state, Number(input) - 1);
+          submitAfterSelect = question?.multiSelect !== true;
+          return selectPendingQuestionOptionIndex(pendingQuestionApproval.request, state, Number(input) - 1);
         });
-        if (selected) {
+        if (selected && submitAfterSelect) {
           void submitSelectedPendingQuestion(pendingQuestionApproval)
             .catch((err) => addNotice(err instanceof Error ? err.message : String(err), "error"));
           return;
         }
+        if (selected) return;
       }
       if (key.return) {
         void submitSelectedPendingQuestion(pendingQuestionApproval)
@@ -13067,15 +13071,17 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
             onClick: () => {
               const current = ensurePendingQuestionSelectionState(pendingApproval, pendingQuestionStateRef.current);
               if (!current) return;
-              const next = setPendingQuestionOptionIndex(
+              const next = selectPendingQuestionOptionIndex(
                 pendingApproval.request,
                 { ...current, activeQuestionIndex: questionIndex },
                 index,
               );
               pendingQuestionStateRef.current = next;
               setPendingQuestionState(next);
-              void submitSelectedPendingQuestion(pendingApproval)
-                .catch((err) => addNotice(err instanceof Error ? err.message : String(err), "error"));
+              if (question.multiSelect !== true) {
+                void submitSelectedPendingQuestion(pendingApproval)
+                  .catch((err) => addNotice(err instanceof Error ? err.message : String(err), "error"));
+              }
             },
             zIndex: 8,
           });

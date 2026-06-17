@@ -226,6 +226,7 @@ export function ApprovalPrompt({
             const activeQuestion = (questionState?.activeQuestionIndex ?? 0) === questionIndex;
             const questionOptions = optionsForPendingQuestion(approval.request, entry, questionIndex);
             const selectedIndex = questionState?.optionIndexByQuestionId[entry.id] ?? 0;
+            const selectedValues = questionState?.selectedValuesByQuestionId[entry.id] ?? [];
             const answered = Object.prototype.hasOwnProperty.call(questionState?.answers ?? {}, entry.id);
             const header = entry.header?.trim() || `Question ${questionIndex + 1}`;
             return (
@@ -246,15 +247,16 @@ export function ApprovalPrompt({
                     {questionOptions.map((option, index) => {
                       const optionId = `approval:question-option:${questionIndex}:${option.value}:${index}`;
                       const hovered = hoveredId === optionId;
-                      const selected = index === selectedIndex;
-                      const active = activeQuestion && (hovered || selected);
+                      const highlighted = index === selectedIndex;
+                      const selected = entry.multiSelect ? selectedValues.includes(option.value) : highlighted;
+                      const active = activeQuestion && (hovered || highlighted);
                       const detail = option.description ? ` - ${option.description}` : "";
                       const line = `${option.label}${detail}`;
                       return (
                         <Box key={`${option.value}:${index}`} flexDirection="column">
                           <Box flexDirection="row">
                             <Text color={active ? theme.color.violet : selected ? theme.color.attention2 : theme.color.t4} bold={active}>
-                              {`${selected ? "●" : "○"} `}
+                              {entry.multiSelect ? `${selected ? "☑" : "☐"} ` : `${selected ? "●" : "○"} `}
                             </Text>
                             <Text color={active ? theme.color.violet : theme.color.t2} bold={active} dimColor={!activeQuestion} wrap="truncate-end">
                               {truncateEnd(line, Math.max(8, textWidth - 2))}

@@ -88,6 +88,7 @@ export type PendingQuestionSelectionState = {
   activeQuestionIndex: number;
   answers: Record<string, string | string[]>;
   optionIndexByQuestionId: Record<string, number>;
+  selectedValuesByQuestionId: Record<string, string[]>;
 };
 
 export function optionsForPendingQuestion(
@@ -123,6 +124,7 @@ export function createPendingQuestionSelectionState(
     activeQuestionIndex: 0,
     answers: {},
     optionIndexByQuestionId,
+    selectedValuesByQuestionId: {},
   };
 }
 
@@ -131,7 +133,12 @@ export function ensurePendingQuestionSelectionState(
   previous: PendingQuestionSelectionState | null,
 ): PendingQuestionSelectionState | null {
   if (!approval || approval.mode !== "question") return null;
-  if (previous?.itemId === approval.itemId) return previous;
+  if (previous?.itemId === approval.itemId) {
+    return {
+      ...previous,
+      selectedValuesByQuestionId: previous.selectedValuesByQuestionId ?? {},
+    };
+  }
   return createPendingQuestionSelectionState(approval);
 }
 
@@ -146,10 +153,14 @@ export function pendingQuestionSelectionValue(
   request: PendingInputRequest | undefined,
   state: PendingQuestionSelectionState,
   questionIndex = state.activeQuestionIndex,
-): string | null {
+): string | string[] | null {
   const question = request?.questions?.[questionIndex];
   if (!question) return null;
   const options = optionsForPendingQuestion(request, question, questionIndex);
+  if (question.multiSelect) {
+    const selectedValues = state.selectedValuesByQuestionId[question.id] ?? [];
+    return selectedValues.length ? selectedValues : null;
+  }
   const selectedIndex = state.optionIndexByQuestionId[question.id] ?? defaultOptionIndex(options);
   const option = options[selectedIndex] ?? null;
   return option?.value ?? question.defaultAssumption ?? null;
@@ -171,6 +182,33 @@ export function setPendingQuestionOptionIndex(
     optionIndexByQuestionId: {
       ...state.optionIndexByQuestionId,
       [question.id]: clamped,
+    },
+  };
+}
+
+export function selectPendingQuestionOptionIndex(
+  request: PendingInputRequest | undefined,
+  state: PendingQuestionSelectionState,
+  optionIndex: number,
+): PendingQuestionSelectionState {
+  const highlighted = setPendingQuestionOptionIndex(request, state, optionIndex);
+  const questions = request?.questions ?? [];
+  const question = questions[state.activeQuestionIndex];
+  if (!question?.multiSelect) return highlighted;
+  const options = optionsForPendingQuestion(request, question, state.activeQuestionIndex);
+  const clamped = Math.max(0, Math.min(options.length - 1, optionIndex));
+  const option = options[clamped];
+  if (!option) return highlighted;
+  const current = highlighted.selectedValuesByQuestionId[question.id] ?? [];
+  const toggled = current.includes(option.value)
+    ? current.filter((value) => value !== option.value)
+    : [...current, option.value];
+  const ordered = options.map((entry) => entry.value).filter((value) => toggled.includes(value));
+  return {
+    ...highlighted,
+    selectedValuesByQuestionId: {
+      ...highlighted.selectedValuesByQuestionId,
+      [question.id]: ordered,
     },
   };
 }

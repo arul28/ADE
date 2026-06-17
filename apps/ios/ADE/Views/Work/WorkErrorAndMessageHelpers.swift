@@ -654,8 +654,15 @@ func workBoolValue(_ value: Any?) -> Bool? {
 func workPendingQuestionOption(from value: Any?) -> WorkPendingQuestionOption? {
   guard let object = value as? [String: Any] else { return nil }
   let label = optionalString(object["label"]) ?? optionalString(object["value"]) ?? ""
-  let rawValue = optionalString(object["value"]) ?? label
-  guard !label.isEmpty, !rawValue.isEmpty else { return nil }
+  let rawValue: String
+  if object.keys.contains("value") {
+    let text = stringValue(object["value"])
+    guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+    rawValue = text
+  } else {
+    rawValue = label
+  }
+  guard !label.isEmpty else { return nil }
   return WorkPendingQuestionOption(
     label: label,
     value: rawValue,

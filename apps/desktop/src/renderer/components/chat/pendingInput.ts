@@ -27,8 +27,8 @@ function readPendingInputOption(value: unknown): PendingInputOption | null {
   const record = readRecord(value);
   if (!record) return null;
   const label = typeof record.label === "string" ? record.label.trim() : "";
-  const rawValue = typeof record.value === "string" ? record.value.trim() : label;
-  if (!label.length || !rawValue.length) return null;
+  const rawValue = typeof record.value === "string" ? record.value : label;
+  if (!label.length || !rawValue.trim().length) return null;
   return {
     label,
     value: rawValue,
