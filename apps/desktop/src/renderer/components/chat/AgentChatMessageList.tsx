@@ -1869,6 +1869,9 @@ function InlineQuestionRequestCard({
     const target = event.target as HTMLElement | null;
     const tag = target?.tagName?.toLowerCase();
     const typingInField = tag === "input" || tag === "textarea" || target?.isContentEditable === true;
+    const nestedInteractiveTarget = target !== event.currentTarget
+      && Boolean(target?.closest("button,a,input,textarea,select,[contenteditable='true'],[role='button'],[role='checkbox'],[role='radio'],[role='tab']"));
+    if (nestedInteractiveTarget) return;
     const q = activeQuestion;
     if (!q) return;
     if (!typingInField && /^[1-9]$/.test(event.key)) {

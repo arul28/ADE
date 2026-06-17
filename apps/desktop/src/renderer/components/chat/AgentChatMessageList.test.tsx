@@ -2293,6 +2293,37 @@ describe("AgentChatMessageList inline ask-user card", () => {
     expect(onApproval).toHaveBeenCalledWith("approval-ask", "accept", null, { plan_choice: "rebase" });
   });
 
+  it("lets focused controls handle Enter inside inline questions", () => {
+    const onApproval = vi.fn();
+    renderMessageList([
+      buildStructuredApprovalEvent({
+        questions: [
+          {
+            id: "plan_choice",
+            header: "Plan",
+            question: "Which plan should we follow?",
+            options: [
+              { label: "Rebase", value: "rebase" },
+              { label: "Merge", value: "merge" },
+            ],
+            allowsFreeform: true,
+          },
+        ],
+      }),
+    ], { onApproval });
+
+    fireEvent.keyDown(screen.getByRole("group", { name: /ade asks/i }), { key: "1" });
+    expect(findButtonByTextContent(/^Rebase/).getAttribute("aria-checked")).toBe("true");
+
+    const declineButton = screen.getByRole("button", { name: /decline/i });
+    declineButton.focus();
+    fireEvent.keyDown(declineButton, { key: "Enter" });
+
+    expect(onApproval).not.toHaveBeenCalled();
+    fireEvent.click(declineButton);
+    expect(onApproval.mock.calls[0]?.slice(0, 2)).toEqual(["approval-ask", "decline"]);
+  });
+
   it("does not discard freeform drafts when selecting a single-choice option", () => {
     const onApproval = vi.fn();
     renderMessageList([
