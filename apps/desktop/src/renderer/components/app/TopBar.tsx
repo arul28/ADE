@@ -1034,11 +1034,17 @@ export function TopBar() {
     openRemoteProjectTabsRef.current = openRemoteProjectTabs;
   }, [openRemoteProjectTabs]);
 
+  // Mirrors the latest applied zoom so menu/keyboard commands compound off the
+  // current level. Updated synchronously inside applyZoom (not via a passive
+  // effect) so back-to-back commands before the next render don't reuse a stale
+  // value and collapse multiple steps into one.
+  const zoomRef = useRef(zoom);
   const applyZoom = useCallback((pct: number) => {
     const clamped = Math.max(MIN_ZOOM_LEVEL, Math.min(MAX_ZOOM_LEVEL, pct));
     window.ade.zoom.setLevel(displayZoomToLevel(clamped));
     localStorage.setItem(ZOOM_LEVEL_KEY, String(clamped));
     applyShellHeaderInset(clamped);
+    zoomRef.current = clamped;
     setZoom(clamped);
   }, []);
 
@@ -1047,11 +1053,6 @@ export function TopBar() {
 
   // Route native View-menu (and keyboard) zoom through the same applyZoom path
   // so display %, persistence, and the macOS traffic-light inset stay in sync.
-  // A ref holds the latest zoom so the listener stays subscribed across changes.
-  const zoomRef = useRef(zoom);
-  useEffect(() => {
-    zoomRef.current = zoom;
-  }, [zoom]);
   useEffect(() => {
     const onCommand = window.ade?.zoom?.onCommand;
     if (typeof onCommand !== "function") return;

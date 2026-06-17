@@ -4,6 +4,7 @@ import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, createEvent, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { TopBar } from "./TopBar";
+import { applyShellHeaderInset } from "../../lib/zoom";
 import { useAppStore } from "../../state/appStore";
 import { requestLinearIssueQuickView } from "../../lib/linearIssueQuickViewNavigation";
 import {
@@ -46,7 +47,7 @@ vi.mock("../../lib/zoom", () => ({
   ZOOM_STEP: 10,
   displayZoomToLevel: (value: number) => value,
   getStoredZoomLevel: () => 100,
-  applyShellHeaderInset: () => {},
+  applyShellHeaderInset: vi.fn(),
 }));
 
 function makeSyncSnapshot(overrides: Record<string, unknown> = {}) {
@@ -1431,6 +1432,7 @@ describe("TopBar", () => {
 
     expect(globalThis.window.ade.zoom.setLevel).toHaveBeenLastCalledWith(110);
     expect(globalThis.window.localStorage.getItem("ade.zoomLevel")).toBe("110");
+    expect(vi.mocked(applyShellHeaderInset)).toHaveBeenLastCalledWith(110);
   });
 
   it("zooms out via the View-menu command, applying and persisting the new level", () => {
@@ -1441,6 +1443,7 @@ describe("TopBar", () => {
 
     expect(globalThis.window.ade.zoom.setLevel).toHaveBeenLastCalledWith(90);
     expect(globalThis.window.localStorage.getItem("ade.zoomLevel")).toBe("90");
+    expect(vi.mocked(applyShellHeaderInset)).toHaveBeenLastCalledWith(90);
   });
 
   it("resets to the default level via the View-menu command regardless of current zoom", () => {
@@ -1452,5 +1455,21 @@ describe("TopBar", () => {
 
     expect(globalThis.window.ade.zoom.setLevel).toHaveBeenLastCalledWith(100);
     expect(globalThis.window.localStorage.getItem("ade.zoomLevel")).toBe("100");
+    expect(vi.mocked(applyShellHeaderInset)).toHaveBeenLastCalledWith(100);
+  });
+
+  it("compounds back-to-back menu zoom-in commands without a render in between", () => {
+    render(<TopBar />);
+    const handler = getZoomCommandHandler();
+
+    // Two commands dispatched before React re-renders must each build on the
+    // last applied level (110 → 120), not collapse onto a stale ref (both 110).
+    act(() => {
+      handler("in");
+      handler("in");
+    });
+
+    expect(globalThis.window.ade.zoom.setLevel).toHaveBeenLastCalledWith(120);
+    expect(globalThis.window.localStorage.getItem("ade.zoomLevel")).toBe("120");
   });
 });
