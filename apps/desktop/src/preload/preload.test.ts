@@ -639,6 +639,67 @@ describe("preload OAuth bridge", () => {
     expect(invoke).not.toHaveBeenCalledWith(IPC.appOpenPathInEditor, expect.anything());
   });
 
+  it("routes chat image preview reads through the remote runtime for remote project paths", async () => {
+    const binding = {
+      kind: "remote",
+      key: "remote:target-1:project-1",
+      targetId: "target-1",
+      runtimeName: "Remote",
+      projectId: "project-1",
+      rootPath: "/remote/project",
+      displayName: "Project",
+    };
+    const invoke = vi.fn(async (channel: string, payload?: unknown) => {
+      if (channel === IPC.appGetWindowSession) {
+        return { windowId: 1, project: null, binding };
+      }
+      if (channel === IPC.remoteRuntimeCallAction) {
+        const request = (payload as { request?: { domain?: string; action?: string } } | undefined)?.request;
+        return {
+          ok: true,
+          domain: request?.domain,
+          action: request?.action,
+          result: { dataUrl: "data:image/png;base64,REMOTE" },
+          statusHints: {},
+        };
+      }
+      throw new Error(`unexpected IPC: ${channel}`);
+    });
+    const on = vi.fn();
+    const removeListener = vi.fn();
+    const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
+      (globalThis as any).__bridgeName = name;
+      (globalThis as any).__adeBridge = value;
+    });
+
+    vi.doMock("electron", () => ({
+      contextBridge: { exposeInMainWorld },
+      ipcRenderer: { invoke, on, removeListener },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+
+    await import("./preload");
+
+    const bridge = (globalThis as any).__adeBridge;
+    await expect(bridge.agentChat.getImageDataUrl("/remote/project/.ade/attachments/image.png"))
+      .resolves.toEqual({ dataUrl: "data:image/png;base64,REMOTE" });
+
+    expect(invoke).toHaveBeenCalledWith(IPC.remoteRuntimeCallAction, {
+      id: "target-1",
+      projectId: "project-1",
+      request: {
+        domain: "chat",
+        action: "getImageDataUrl",
+        args: { path: "/remote/project/.ade/attachments/image.png" },
+      },
+    });
+    expect(invoke).not.toHaveBeenCalledWith(IPC.appGetImageDataUrl, expect.anything());
+  });
+
   it("allows local temp path actions while a remote project is bound", async () => {
     const binding = {
       kind: "remote",

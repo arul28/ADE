@@ -1379,6 +1379,7 @@ declare global {
           data: string;
           filename: string;
         }) => Promise<{ path: string }>;
+        getImageDataUrl: (path: string) => Promise<{ dataUrl: string }>;
         getEventHistory: (args: {
           sessionId: string;
           maxEvents?: number;

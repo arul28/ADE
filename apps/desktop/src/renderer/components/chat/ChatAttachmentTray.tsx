@@ -222,11 +222,24 @@ function ImageAttachmentPreview({
         cancelled = true;
       };
     }
-    if (!window.ade?.app?.getImageDataUrl) {
+    const runtimeImageDataUrl = window.ade?.agentChat?.getImageDataUrl;
+    const localImageDataUrl = window.ade?.app?.getImageDataUrl;
+    if (!runtimeImageDataUrl && !localImageDataUrl) {
       setPreviewFailed(true);
       return;
     }
-    window.ade.app.getImageDataUrl(attachment.path)
+    const readPreview = async (): Promise<{ dataUrl: string }> => {
+      if (!runtimeImageDataUrl) {
+        return localImageDataUrl!(attachment.path);
+      }
+      try {
+        return await runtimeImageDataUrl(attachment.path);
+      } catch (error) {
+        if (!localImageDataUrl) throw error;
+        return localImageDataUrl(attachment.path);
+      }
+    };
+    readPreview()
       .then((result) => {
         if (!cancelled) setDataUrl(result.dataUrl);
       })

@@ -74,10 +74,15 @@ import {
   terminalMouseTrackingDisableSequence,
   terminalMouseTrackingEnableSequence,
   isClaudePlaceholderTitle,
+  isClipboardScratchTemp,
   mergeOptimisticTerminalSessions,
+  promptTextForTerminal,
+  clipboardImageCacheRootForRuntime,
+  uploadClipboardImageAttachmentToRuntime,
 } from "../app";
 import { clampTerminalPaneCols } from "../components/TerminalPane";
-import type { ChatInfoSnapshot, LocalNotice, RightPaneContent } from "../types";
+import { clipboardScratchDir } from "../imageTargets";
+import type { AdeCodeConnection, ChatInfoSnapshot, LocalNotice, RightPaneContent } from "../types";
 import { resolveSubagentCapability } from "../../../../desktop/src/shared/subagentCapabilities";
 import type { AgentChatSession, AgentChatSessionSummary } from "../../../../desktop/src/shared/types/chat";
 import type { LaneSummary } from "../../../../desktop/src/shared/types/lanes";
@@ -1461,6 +1466,73 @@ describe("encodeTerminalPromptSubmit", () => {
   it("uses a delayed confirm enter for live Claude terminal submissions", () => {
     expect(encodeTerminalPromptSubmitConfirm()).toBe("\r");
     expect(CLAUDE_TERMINAL_SUBMIT_CONFIRM_DELAY_MS).toBeGreaterThanOrEqual(1000);
+  });
+});
+
+describe("clipboard image attachment routing", () => {
+  it("captures remote clipboard images into a local scratch root", () => {
+    expect(clipboardImageCacheRootForRuntime({
+      remoteLaunch: true,
+      activeLaneWorktreePath: "/remote/repo/.ade/worktrees/lane",
+      workspaceRoot: "/remote/repo",
+      tmpDir: "/local/tmp",
+    })).toBe("/local/tmp");
+
+    expect(clipboardImageCacheRootForRuntime({
+      remoteLaunch: false,
+      activeLaneWorktreePath: "/repo/.ade/worktrees/lane",
+      workspaceRoot: "/repo",
+      tmpDir: "/local/tmp",
+    })).toBe("/repo/.ade/worktrees/lane");
+
+    expect(clipboardImageCacheRootForRuntime({
+      remoteLaunch: false,
+      activeLaneWorktreePath: null,
+      workspaceRoot: "/repo",
+      tmpDir: "/local/tmp",
+    })).toBe("/repo");
+  });
+
+  it("uploads local clipboard image bytes through the runtime temp attachment API", async () => {
+    const localRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-code-upload-"));
+    const localImagePath = path.join(localRoot, "clipboard.png");
+    const bytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a]);
+    fs.writeFileSync(localImagePath, bytes);
+    const remotePath = "/remote/repo/.ade/attachments/clipboard.png";
+    const calls: unknown[][] = [];
+    const connection = {
+      action: async (...args: unknown[]) => {
+        calls.push(args);
+        return { path: remotePath };
+      },
+    } as unknown as AdeCodeConnection;
+
+    const result = await uploadClipboardImageAttachmentToRuntime(connection, localImagePath);
+
+    expect(result).toEqual({ path: remotePath });
+    expect(calls).toEqual([[
+      "chat",
+      "saveTempAttachment",
+      { data: bytes.toString("base64"), filename: "clipboard.png" },
+    ]]);
+  });
+
+  it("tracks scratch ownership without treating user image files as disposable", () => {
+    const cacheRoot = path.join(os.tmpdir(), "ade-code-cache-root");
+    const scratchImage = path.join(clipboardScratchDir(cacheRoot), "pasted-screenshot.png");
+    const userImage = path.join(os.tmpdir(), "photo.png");
+
+    expect(isClipboardScratchTemp(scratchImage, cacheRoot)).toBe(true);
+    expect(isClipboardScratchTemp(userImage, cacheRoot)).toBe(false);
+  });
+
+  it("adds image paths to terminal prompts without inlining binary data", () => {
+    const remotePath = "/remote/repo/.ade/attachments/clipboard.png";
+    const prompt = promptTextForTerminal("describe this", [{ type: "image", path: remotePath }]);
+
+    expect(prompt).toBe(`describe this\n\nAttached files:\n- ${remotePath}`);
+    expect(prompt).not.toContain("data:image");
+    expect(prompt).not.toContain(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a]).toString("base64"));
   });
 });
 

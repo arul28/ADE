@@ -683,6 +683,7 @@ function SessionSurface({
             sessionId={session.id}
             isActive={surfaceActive}
             isVisible={pageActive && terminalVisible}
+            imagePasteMode="runtime-attachment"
             className="min-h-0 w-full flex-1"
           />
         </div>
@@ -1044,4 +1045,3 @@ export function WorkViewArea({
     </div>
   );
 }
-

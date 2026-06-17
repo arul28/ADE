@@ -100,6 +100,7 @@ type CachedRuntime = {
   inputEnabled: boolean;
   active: boolean;
   visible: boolean;
+  imagePasteMode: TerminalImagePasteMode;
   bracketedPasteMode: boolean;
   mouseTrackingModes: Set<number>;
   shiftMouseBridgeCleanup: (() => void) | null;
@@ -142,6 +143,7 @@ const TERMINAL_BRACKETED_PASTE_END = "\x1b[201~";
 const TERMINAL_BRACKETED_PASTE_MODE = 2004;
 const TERMINAL_LINK_PATTERN = /(?:https?:\/\/[^\s<>"'`]+|(?:localhost|127\.0\.0\.1|\[::1\])(?::\d+)?(?:\/[^\s<>"'`]*)?)/gi;
 const TERMINAL_MOUSE_TRACKING_EVENT_MODES = new Set([1000, 1002, 1003]);
+type TerminalImagePasteMode = "native-shortcut" | "runtime-attachment";
 const runtimeCache = new Map<string, CachedRuntime>();
 const ptyDataRuntimesByPtyId = new Map<string, Set<CachedRuntime>>();
 const ptyExitRuntimesByPtyId = new Map<string, Set<CachedRuntime>>();
@@ -931,6 +933,42 @@ async function pasteNativeClipboardImageShortcut(runtime: CachedRuntime): Promis
   } catch {
     return false;
   }
+}
+
+function bracketedPaste(text: string): string {
+  return `${TERMINAL_BRACKETED_PASTE_START}${text.trimEnd()}\n${TERMINAL_BRACKETED_PASTE_END}`;
+}
+
+function formatClipboardImageForPty(path: string, mimeType: string): string {
+  return [
+    "ADE clipboard image attached.",
+    `Path: ${path}`,
+    `Type: ${mimeType || "image/png"}`,
+    "",
+  ].join("\n");
+}
+
+async function pasteRuntimeClipboardImageAttachment(runtime: CachedRuntime): Promise<boolean> {
+  if (runtime.disposed) return false;
+  try {
+    const image = await window.ade.app.readClipboardImage();
+    if (!image || runtime.disposed) return false;
+    const saved = await window.ade.agentChat.saveTempAttachment({
+      data: image.data,
+      filename: image.filename || "clipboard.png",
+    });
+    if (runtime.disposed) return false;
+    writePtyInput(runtime, bracketedPaste(formatClipboardImageForPty(saved.path, image.mimeType)));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function pasteClipboardImageShortcut(runtime: CachedRuntime, mode: TerminalImagePasteMode): Promise<boolean> {
+  return mode === "runtime-attachment"
+    ? pasteRuntimeClipboardImageAttachment(runtime)
+    : pasteNativeClipboardImageShortcut(runtime);
 }
 
 function teardownRuntime(runtime: CachedRuntime) {
@@ -1723,6 +1761,7 @@ function createRuntime(args: {
   projectRevision: number;
   theme: XtermTheme;
   preferences: TerminalRenderPreferences;
+  imagePasteMode: TerminalImagePasteMode;
 }): CachedRuntime {
   const host = document.createElement("div");
   host.className = "h-full w-full m-0 p-0 border-0 overflow-hidden";
@@ -1812,6 +1851,7 @@ function createRuntime(args: {
     inputEnabled: true,
     active: true,
     visible: true,
+    imagePasteMode: args.imagePasteMode,
     bracketedPasteMode: false,
     mouseTrackingModes: new Set(),
     shiftMouseBridgeCleanup: null,
@@ -1835,7 +1875,7 @@ function createRuntime(args: {
       writePtyInput(runtime, text);
       return;
     }
-    void pasteNativeClipboardImageShortcut(runtime);
+    void pasteClipboardImageShortcut(runtime, runtime.imagePasteMode);
   }, true);
   installShiftMouseBridge(runtime);
 
@@ -1858,7 +1898,7 @@ function createRuntime(args: {
         if (lastPasteEventAt !== before || runtime.disposed) return;
         const readText = navigator.clipboard?.readText;
         if (typeof readText !== "function") {
-          void pasteNativeClipboardImageShortcut(runtime);
+          void pasteClipboardImageShortcut(runtime, runtime.imagePasteMode);
           return;
         }
         readText.call(navigator.clipboard).then((text) => {
@@ -1866,9 +1906,9 @@ function createRuntime(args: {
             writePtyInput(runtime, text);
             return;
           }
-          void pasteNativeClipboardImageShortcut(runtime);
+          void pasteClipboardImageShortcut(runtime, runtime.imagePasteMode);
         }).catch(() => {
-          void pasteNativeClipboardImageShortcut(runtime);
+          void pasteClipboardImageShortcut(runtime, runtime.imagePasteMode);
         });
       }, 120);
       return false;
@@ -1942,6 +1982,7 @@ function ensureRuntime(args: {
   projectRevision: number;
   theme: XtermTheme;
   preferences: TerminalRenderPreferences;
+  imagePasteMode: TerminalImagePasteMode;
 }): CachedRuntime {
   const key = terminalRuntimeKey(args);
   const existing = runtimeCache.get(key);
@@ -1952,6 +1993,7 @@ function ensureRuntime(args: {
     ) {
       clearDisposeTimer(existing);
       existing.projectRevision = args.projectRevision;
+      existing.imagePasteMode = args.imagePasteMode;
       applyRuntimeVisualOptions(existing, {
         theme: args.theme,
         preferences: args.preferences,
@@ -1994,12 +2036,14 @@ export function TerminalView({
   className,
   isActive,
   isVisible = isActive,
+  imagePasteMode = "native-shortcut",
 }: {
   ptyId: string;
   sessionId: string;
   className?: string;
   isActive: boolean;
   isVisible?: boolean;
+  imagePasteMode?: TerminalImagePasteMode;
 }) {
   const appTheme = useAppStore((s) => s.theme);
   const terminalPreferences = useAppStore((s) => s.terminalPreferences);
@@ -2055,6 +2099,7 @@ export function TerminalView({
       projectRevision: runtimeProjectRevision,
       theme: mountConfig.theme,
       preferences: mountConfig.preferences,
+      imagePasteMode,
     });
     runtimeRef.current = runtime;
     const wasReceivingBeforeRef = shouldRuntimeReceivePtyData(runtime);
@@ -2259,7 +2304,7 @@ export function TerminalView({
         scheduleRuntimeDispose(runtime, EXITED_RUNTIME_KEEPALIVE_MS);
       }
     };
-  }, [runtimeProjectRevision, runtimeProjectRoot, ptyId, sessionId]);
+  }, [imagePasteMode, runtimeProjectRevision, runtimeProjectRoot, ptyId, sessionId]);
 
   useEffect(() => {
     const runtime = runtimeRef.current;

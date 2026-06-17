@@ -2644,11 +2644,35 @@ function terminalSessionResumeProvider(session: ChatTerminalSession | null | und
   return null;
 }
 
-function promptTextForTerminal(text: string, attachments: AgentChatFileRef[]): string {
+export function promptTextForTerminal(text: string, attachments: AgentChatFileRef[]): string {
   const attachmentPaths = attachments.map((attachment) => attachment.path).filter(Boolean);
   if (!attachmentPaths.length) return text;
   const attachmentBlock = ["Attached files:", ...attachmentPaths.map((filePath) => `- ${filePath}`)].join("\n");
   return text ? `${text}\n\n${attachmentBlock}` : attachmentBlock;
+}
+
+export function clipboardImageCacheRootForRuntime(args: {
+  remoteLaunch: boolean;
+  activeLaneWorktreePath?: string | null;
+  workspaceRoot: string;
+  tmpDir?: string;
+}): string {
+  return args.remoteLaunch ? (args.tmpDir ?? os.tmpdir()) : (args.activeLaneWorktreePath ?? args.workspaceRoot);
+}
+
+export function isClipboardScratchTemp(filePath: string, cacheRoot: string): boolean {
+  return filePath.startsWith(`${clipboardScratchDir(cacheRoot)}${path.sep}`);
+}
+
+export async function uploadClipboardImageAttachmentToRuntime(
+  connection: AdeCodeConnection,
+  localPath: string,
+): Promise<{ path: string }> {
+  const data = await fs.promises.readFile(localPath);
+  return await saveRuntimeTempAttachment(connection, {
+    data: data.toString("base64"),
+    filename: path.basename(localPath),
+  });
 }
 
 export function resolvePromptChatSubmitTarget(args: {
@@ -9996,7 +10020,11 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     // bytes to the runtime, mirroring the desktop composer. For a local runtime
     // write into the active lane's worktree so the file lands in the checkout
     // the chat actually belongs to.
-    const cacheRoot = remoteLaunch ? os.tmpdir() : (activeLane?.worktreePath ?? project.workspaceRoot);
+    const cacheRoot = clipboardImageCacheRootForRuntime({
+      remoteLaunch,
+      activeLaneWorktreePath: activeLane?.worktreePath,
+      workspaceRoot: project.workspaceRoot,
+    });
     let attachment: AgentChatFileRef | null = null;
     try {
       attachment = readClipboardImageAttachment(cacheRoot);
@@ -10021,7 +10049,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     // Only the temp files ADE materialized under the scratch dir are ours to
     // delete. The clipboard may instead reference a pre-existing user file
     // (copied image file / file path) — upload its bytes, but never delete it.
-    const isScratchTemp = localPath.startsWith(`${clipboardScratchDir(cacheRoot)}${path.sep}`);
+    const isScratchTemp = isClipboardScratchTemp(localPath, cacheRoot);
     const cleanupScratchTemp = (): void => {
       if (isScratchTemp) void fs.promises.rm(localPath, { force: true }).catch(() => {});
     };
@@ -10042,11 +10070,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     addNotice("Uploading clipboard image to the remote runtime…", "info");
     void (async () => {
       try {
-        const data = await fs.promises.readFile(localPath);
-        const { path: remotePath } = await saveRuntimeTempAttachment(conn, {
-          data: data.toString("base64"),
-          filename: path.basename(localPath),
-        });
+        const { path: remotePath } = await uploadClipboardImageAttachmentToRuntime(conn, localPath);
         if (activeSessionIdRef.current !== targetSessionId) {
           addNotice("Clipboard image uploaded, but you switched chats — not attaching it here.", "info");
           return;

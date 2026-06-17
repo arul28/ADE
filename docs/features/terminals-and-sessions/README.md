@@ -300,7 +300,10 @@ Renderer surfaces:
   xterm.js wrapper; WebGL renderer with DOM fallback, fit retries, health
   counters, and transcript replay mode for disposed chat-CLI sessions so an
   ended tracked CLI tab can repaint the full retained transcript before falling
-  back to `terminal.preview`.
+  back to `terminal.preview`. Work-tracked agent CLI terminals paste clipboard
+  images by saving the bytes as chat temp attachments through the active runtime
+  and bracketed-pasting a short path/type stub into the PTY, while standalone
+  terminals keep the native clipboard-image shortcut behavior.
 - `apps/desktop/src/renderer/components/terminals/workSessionTiling.ts` —
   pure helper that produces the seed `PaneSplit` for the Work grid from
   an ordered list of session IDs. Accepts a `TilingPreset` of
