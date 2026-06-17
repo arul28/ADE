@@ -31,8 +31,8 @@ function formatMb(bytes: number): string {
  * The ~141 MB speech model is NOT bundled (it would bloat the auto-update). When
  * voice input is enabled but the model hasn't been downloaded, this offers a
  * one-time download driven by the app-global installer — so it keeps running in
- * the background even if the user leaves Settings. After it lands, ADE must be
- * restarted for voice input to take effect everywhere.
+ * the background even if the user leaves Settings. When it lands, every chat mic
+ * (which subscribes to the same installer) enables live — no restart needed.
  */
 export function DictationSection() {
   const voiceInputEnabled = useAppStore((s) => s.voiceInputEnabled);
@@ -51,9 +51,8 @@ export function DictationSection() {
       : null;
 
   const isDownloading = install.phase === "downloading";
-  const justDownloaded = install.phase === "installed" && install.restartRequired;
-  const alreadyInstalled = install.modelInstalled && !install.restartRequired && !isDownloading;
-  const needsDownload = !isDownloading && !justDownloaded && !alreadyInstalled;
+  const alreadyInstalled = install.modelInstalled && !isDownloading;
+  const needsDownload = !isDownloading && !alreadyInstalled;
 
   return (
     <section id="voice-input">
@@ -109,11 +108,6 @@ export function DictationSection() {
               You can leave this page — the download continues in the background.
             </span>
           </div>
-        ) : justDownloaded ? (
-          <div style={detailStyle}>
-            <span style={{ color: COLORS.accent, fontWeight: 600 }}>✓ Voice model downloaded.</span>{" "}
-            Restart ADE to enable voice input.
-          </div>
         ) : alreadyInstalled ? (
           <div style={detailStyle}>
             <span style={{ color: COLORS.accent, fontWeight: 600 }}>✓ Voice model installed.</span>{" "}
@@ -122,8 +116,8 @@ export function DictationSection() {
         ) : needsDownload ? (
           <div style={{ marginLeft: 24, display: "flex", flexDirection: "column", gap: 8 }}>
             <span style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textMuted, lineHeight: 1.5 }}>
-              The on-device speech model (~{VOICE_MODEL_SIZE_LABEL}) downloads once, then runs fully offline. ADE
-              must be restarted after it installs.
+              The on-device speech model (~{VOICE_MODEL_SIZE_LABEL}) downloads once, then runs fully offline. The
+              mic enables as soon as it finishes — no restart.
             </span>
             <button
               type="button"

@@ -10,10 +10,10 @@
  * so any surface (Settings, the chat mic) reads a consistent state and a
  * navigation away never loses an in-flight download.
  *
- * Restart note: after a successful download we set `restartRequired`. The model
- * is resolved dynamically by the main process, but the renderer probes
- * install-state on mount and won't live-flip every open composer — so we tell
- * the user to restart ADE for voice input to take effect everywhere.
+ * Live flip: the main process resolves the model dynamically (it stats disk on
+ * every status/transcribe call), and every voice surface — Settings and each
+ * chat mic — subscribes to this singleton. So when a download completes we just
+ * push the new state and the mic enables everywhere immediately; no app restart.
  */
 
 export type VoiceModelPhase = "idle" | "downloading" | "installed" | "error";
@@ -27,8 +27,8 @@ export interface VoiceModelInstallState {
   receivedBytes: number;
   totalBytes: number | null;
   error: string | null;
-  /** A successful download happened this session → restart ADE to enable it everywhere. */
-  restartRequired: boolean;
+  /** True once we've probed the main process at least once (else state is unknown). */
+  probed: boolean;
 }
 
 type Listener = (state: VoiceModelInstallState) => void;
@@ -49,7 +49,7 @@ class VoiceModelInstaller {
     receivedBytes: 0,
     totalBytes: null,
     error: null,
-    restartRequired: false,
+    probed: false,
   };
 
   private readonly listeners = new Set<Listener>();
@@ -81,12 +81,13 @@ class VoiceModelInstaller {
 
   /**
    * Probe whether the binary + model are present. Safe to call repeatedly; never
-   * clobbers an in-flight download or the restart-required flag.
+   * clobbers an in-flight download. Marks `probed` so consumers can distinguish
+   * "unknown" from "known absent".
    */
   async refresh(): Promise<void> {
     const api = window.ade?.transcription;
     if (!api?.status) {
-      this.set({ binaryInstalled: false, modelInstalled: false });
+      this.set({ binaryInstalled: false, modelInstalled: false, probed: true });
       return;
     }
     if (this.refreshing) return;
@@ -94,13 +95,11 @@ class VoiceModelInstaller {
     try {
       const status = await api.status();
       const modelInstalled = Boolean(status.modelInstalled);
-      // Never downgrade an in-flight download, a this-session restart-required
-      // state, or a sticky error; otherwise reflect on-disk presence.
+      // Never downgrade an in-flight download or a sticky error; otherwise
+      // reflect on-disk presence.
       let phase = this.state.phase;
       if (phase !== "downloading") {
-        if (this.state.restartRequired) {
-          phase = "installed";
-        } else if (modelInstalled) {
+        if (modelInstalled) {
           phase = "installed";
         } else if (phase !== "error") {
           phase = "idle";
@@ -110,6 +109,7 @@ class VoiceModelInstaller {
         binaryInstalled: Boolean(status.binaryInstalled),
         modelInstalled,
         phase,
+        probed: true,
       });
     } catch {
       // Best-effort probe — leave prior state intact on failure.
@@ -155,11 +155,13 @@ class VoiceModelInstaller {
     this.inFlight = (async () => {
       try {
         const next = await api.downloadModel();
+        // Main resolves the model on every call, and every mic subscribes here,
+        // so this push enables voice input live — no restart.
         this.set({
           phase: "installed",
           modelInstalled: next?.modelInstalled ?? true,
           binaryInstalled: next?.binaryInstalled ?? this.state.binaryInstalled,
-          restartRequired: true,
+          probed: true,
           error: null,
         });
       } catch (error) {
