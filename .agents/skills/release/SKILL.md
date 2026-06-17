@@ -188,14 +188,48 @@ If only one platform is in scope, include only that section (no placeholder "No 
 
 Open `docs.json`, find the `"Changelog"` group's `pages` array, and insert `"changelog/v<VERSION>"` at the **top** of the list (above the current latest). Do not touch any other `docs.json` entries.
 
-### 3d. Self-check
+### 3d. Satisfy `validate-docs` — the easy-to-miss trio
+
+> **Why this exists:** CI runs `node scripts/validate-docs.mjs`, and the release `verify` job will not run until `ci-pass` is green. The changelog MDX + `docs.json` entry is **not enough** — `validate-docs` also enforces the three things below. Skipping any one makes the whole release fail at `verify` with the build already tagged. (Learned the hard way on v1.2.7.)
+
+1. **Root `CHANGELOG.md`** (Keep a Changelog format). Insert a new section directly under `## [Unreleased]` and above the previous release:
+
+   ```md
+   ## [<VERSION>] - <Month Day, Year>
+
+   ### Added
+   - ...
+   ### Changed
+   - ...
+   ### Removed
+   - ...
+   ### Fixed
+   - ...
+   ```
+
+   Then, at the bottom link-reference block, add a `[<VERSION>]:` line and repoint `[Unreleased]`:
+
+   ```md
+   [Unreleased]: https://github.com/arul28/ADE/compare/v<VERSION>...HEAD
+   [<VERSION>]: https://github.com/arul28/ADE/compare/v<PREV_VERSION>...v<VERSION>
+   ```
+
+   The validator checks: the top release heading equals the latest git tag, the heading for `v<VERSION>` exists, and the `[<VERSION>]` link reference exists. Use only `### Added/Changed/Removed/Fixed` subsections.
+
+2. **`changelog/index.mdx`** — update the "Latest release" `<Card>` so its `href` is `/changelog/v<VERSION>` **and** the copy mentions `v<VERSION>`. The validator checks both.
+
+3. **Brand assets referenced by `docs.json` must be committed.** `docs.json` points `logo`/`favicon` at files like `/logo/ade-wordmark.png` and `/favicon.png`. The repo **gitignores `*.png`**, so a plain `git add -A` silently skips them and the validator reports `missing target /...png`. Any such asset must be force-added in Phase 4 (`git add -f <file>`).
+
+### 3e. Self-check — run the validator locally before committing
 
 ```bash
 ls changelog/v<VERSION>.mdx
 grep -n "changelog/v<VERSION>" docs.json
+node scripts/validate-docs.mjs        # MUST print "Documentation validation passed"
+mint broken-links                     # optional but cheap; should be clean
 ```
 
-Both must succeed before moving on.
+Do not proceed to Phase 4 until `scripts/validate-docs.mjs` passes locally. It catches every gotcha above before CI does.
 
 ---
 
@@ -208,14 +242,17 @@ The user's standing guidance is to land changes through a lane/worktree, not by 
 1. **Preferred path — PR merge:**
    - From the current ADE worktree branch, commit the changelog + `docs.json` change:
      ```bash
-     git add changelog/v<VERSION>.mdx docs.json
+     # Stage the changelog page + docs.json + the Phase 3d trio, and FORCE-ADD
+     # any gitignored brand assets docs.json references (*.png is gitignored).
+     git add changelog/v<VERSION>.mdx docs.json CHANGELOG.md changelog/index.mdx
+     git add -f favicon.png logo/*.png 2>/dev/null || true
      git commit -m "release: changelog for v<VERSION>"
      git push -u origin HEAD
      gh pr create --fill --title "release: changelog for v<VERSION>" \
        --body "Changelog for v<VERSION>. Tag will be cut after this lands on main."
      ```
    - Then hand off to `/ship` to drive the PR to merge, OR merge it yourself with `gh pr merge --admin --squash` if the user has already said "merge it".
-   - Wait for `origin/main` to contain the new commit before Phase 5.
+   - Wait for `origin/main` to contain the new commit, **then wait for `ci-pass` to be green on it** (CI gate below) before Phase 5. Admin-merging does **not** wait for CI — and the release `verify` job rejects any tag whose `ci-pass` is not `success`.
 
 2. **Admin-bypass path (only if user explicitly says "push directly"):**
    - `git push origin HEAD:main` with admin bypass. Note in the summary that the ruleset was bypassed.
@@ -229,15 +266,42 @@ git fetch origin main
 RELEASE_SHA=$(git rev-parse origin/main)
 ```
 
+### CI gate — `ci-pass` MUST be green on `RELEASE_SHA` before you tag
+
+The release `verify` job calls `repos/<repo>/commits/<tag>/check-runs` and fails if there is no `ci-pass` check run, or if it is not `completed/success`. Push-to-`main` CI takes a few minutes; admin-merge does not wait for it. Poll until terminal **before** Phase 5:
+
+```bash
+# wait until ci-pass is completed on RELEASE_SHA, then assert success
+for i in $(seq 1 40); do
+  row=$(gh api "repos/$GH_REPO/commits/$RELEASE_SHA/check-runs" \
+    --jq '[.check_runs[]|select(.name=="ci-pass")]|sort_by(.completed_at//"")|last//empty | "\(.status)\t\(.conclusion//"")"')
+  status=$(printf '%s' "$row" | cut -f1); concl=$(printf '%s' "$row" | cut -f2)
+  echo "ci-pass: $status/$concl"
+  [ "$status" = "completed" ] && break
+  sleep 30
+done
+[ "$concl" = "success" ] || { echo "ci-pass is $concl — fix CI before tagging"; }
+```
+
+If `ci-pass` is red, **do not tag.** Fix the failing check on a new commit, land it on `main`, re-fetch `RELEASE_SHA`, and re-run this gate. (For docs-only releases the usual culprit is `validate-docs` — see Phase 3d.)
+
 ---
 
 ## Phase 5 — Tag and trigger the release workflow
 
-1. Create the tag on the exact release SHA:
+1. Create the tag on the exact release SHA (only after the CI gate above is green):
 
    ```bash
    git tag -a "v<VERSION>" "$RELEASE_SHA" -m "v<VERSION>"
    git push origin "v<VERSION>"
+   ```
+
+   **Recovery — re-pointing a prematurely-created tag.** If `verify` already failed because the tag landed on a red-CI commit, fix CI, land it, wait for green `ci-pass` on the new SHA, then move the tag to it. Force-updating the tag is acceptable here **only because no release was published** from the bad tag (the draft is created by `publish-release`, which never ran):
+
+   ```bash
+   git fetch origin main --tags
+   git tag -f "v<VERSION>" "$NEW_RELEASE_SHA"
+   git push origin "v<VERSION>" --force   # re-fires release.yml on the tag-update push
    ```
 
 2. `.github/workflows/release.yml` triggers on `push` of `v*` tags and calls `release-core.yml`. Confirm the workflow registered:
@@ -271,9 +335,9 @@ RELEASE_SHA=$(git rev-parse origin/main)
 
    Leave `isDraft=true`. Do not publish.
 
-   Expect the draft to carry the macOS-only asset set once `publish-release` runs
-   (the Windows/runtime surface is currently disabled in `release-core.yml`):
-   - `ADE-<version>-universal.dmg`, `ADE-<version>-universal-mac.zip`, `ADE-<version>-universal-mac.zip.blockmap`, `latest-mac.yml`
+   Expect the draft to carry the macOS-only **per-arch** asset set once `publish-release`
+   runs (the Windows/runtime surface is currently disabled in `release-core.yml`):
+   - `ADE-<version>-arm64.dmg`, `ADE-<version>-arm64.zip`, `ADE-<version>-x64.dmg`, `ADE-<version>-x64.zip`, `latest-mac.yml`
 
 ---
 
@@ -385,54 +449,62 @@ Fail fast if keychain auth is broken.
   Pull current values from `~/.asc/config.json`; do not hard-code.
 - Override the build number at archive time via `--archive-xcodebuild-flag "CURRENT_PROJECT_VERSION=<N>"` so you do not need to commit a `pbxproj` bump just to ship a build.
 
-### 7d. Do NOT use the one-shot `asc publish testflight --group ... --wait` in local-build mode
+### 7d. `asc publish testflight` requires `--group` — don't use it for the build/upload step
 
-That form races: `--wait` returns as soon as `processingState=VALID`, but the build's `usesNonExemptEncryption` is still `None` at that instant. The subsequent `add-groups` then fails with `Build is not in an externally assignable state` because Apple blocks group attachment until the encryption question is answered. Seen on asc 1.2.x.
+In the current `asc`, `asc publish testflight` **requires `--group`** and will just print help (exit 0, nothing uploaded) without it. Its one-shot local-build form also races encryption (`--wait` returns at `processingState=VALID` while `usesNonExemptEncryption` is still unanswered). So **do not** use `asc publish testflight` to build+upload. Use the explicit sequence in 7e instead. (Both gotchas hit on v1.2.7.)
 
-### 7e. Safe sequenced flow
+### 7e. Safe sequenced flow (archive → export → upload → wait → encryption → distribute)
 
-Split the publish into explicit steps so encryption is answered before any group attachment:
+Each step is its own command so you can see exactly where it fails. Run the heavy steps with `run_in_background` and poll the log.
 
 ```bash
-# 1) Archive + export + upload + wait for VALID (no --group here)
-asc publish testflight \
-  --app "$APP_ID" \
-  --project apps/ios/ADE.xcodeproj \
-  --scheme ADE \
-  --version "$MARKETING_VERSION" \
+APP_ID=6762759870
+BUILD_NUMBER=<N+1>
+MARKETING_VERSION=<x.y.z>           # keep the SAME version, bump only the build
+OUT=/tmp/ade-ios-build${BUILD_NUMBER}; mkdir -p "$OUT"
+# ASC_KEY_PATH/ID/ISSUER from ~/.asc/config.json + `asc doctor`
+
+# 1) Archive (automatic signing needs the ASC API key for -allowProvisioningUpdates)
+asc xcode archive \
+  --project apps/ios/ADE.xcodeproj --scheme ADE \
+  --archive-path "$OUT/ADE.xcarchive" --overwrite --output json \
+  --xcodebuild-flag=-allowProvisioningUpdates \
+  --xcodebuild-flag=-authenticationKeyPath --xcodebuild-flag="$ASC_KEY_PATH" \
+  --xcodebuild-flag=-authenticationKeyID --xcodebuild-flag="$ASC_KEY_ID" \
+  --xcodebuild-flag=-authenticationKeyIssuerID --xcodebuild-flag="$ASC_ISSUER_ID" \
+  --xcodebuild-flag=CURRENT_PROJECT_VERSION=$BUILD_NUMBER \
+  --xcodebuild-flag=MARKETING_VERSION=$MARKETING_VERSION
+
+# 2) Export the IPA (auto-signing variant)
+asc xcode export \
+  --archive-path "$OUT/ADE.xcarchive" \
   --export-options apps/ios/ExportOptions.auto.plist \
-  --initial-build-number "$BUILD_NUMBER" \
-  --archive-path "/tmp/ade-ios-build${BUILD_NUMBER}/ADE.xcarchive" \
-  --ipa-path "/tmp/ade-ios-build${BUILD_NUMBER}/ADE.ipa" \
-  --wait \
-  --timeout 60m \
-  --pretty \
-  --archive-xcodebuild-flag "-allowProvisioningUpdates" \
-  --archive-xcodebuild-flag "-authenticationKeyPath" \
-  --archive-xcodebuild-flag "$ASC_KEY_PATH" \
-  --archive-xcodebuild-flag "-authenticationKeyID" \
-  --archive-xcodebuild-flag "$ASC_KEY_ID" \
-  --archive-xcodebuild-flag "-authenticationKeyIssuerID" \
-  --archive-xcodebuild-flag "$ASC_ISSUER_ID" \
-  --archive-xcodebuild-flag "CURRENT_PROJECT_VERSION=$BUILD_NUMBER" \
-  --archive-xcodebuild-flag "MARKETING_VERSION=$MARKETING_VERSION"
+  --ipa-path "$OUT/ADE.ipa" --output json
 
-# 2) Resolve the build ID by build number
-BUILD_ID=$(asc builds list --app "$APP_ID" --limit 5 \
-  | jq -r --arg v "$BUILD_NUMBER" '.data[] | select(.attributes.version == $v) | .id' \
-  | head -n 1)
+# 3) Upload — NOTE: `asc builds upload` has NO --timeout (only --wait / --poll-interval).
+#    Passing --timeout makes it print help and upload nothing.
+asc builds upload --app "$APP_ID" --ipa "$OUT/ADE.ipa"
 
-# 3) Answer encryption BEFORE any group attachment
+# 4) Wait for VALID (this is where --timeout lives)
+asc builds wait --app "$APP_ID" --build-number "$BUILD_NUMBER" --version "$MARKETING_VERSION" \
+  --platform IOS --timeout 40m
+
+# 5) Resolve the build ID, then answer encryption
+BUILD_ID=$(asc builds list --app "$APP_ID" --limit 8 \
+  | jq -r --arg v "$BUILD_NUMBER" '.data[]|select(.attributes.version==$v)|.id' | head -n1)
 asc builds update --build-id "$BUILD_ID" --uses-non-exempt-encryption=false
 
-# 4) Distribute to chosen group(s). --submit --confirm is a no-op if the group is internal
-#    or if Apple already auto-approved the marketing version.
-for gid in "${GROUP_IDS[@]}"; do
+# 6) Distribute. INTERNAL groups auto-receive every processed build — do NOT add-groups them
+#    (it errors "Cannot add internal group to a build"). add-groups is for EXTERNAL groups only:
+for gid in "${EXTERNAL_GROUP_IDS[@]}"; do
   asc builds add-groups --build-id "$BUILD_ID" --group "$gid" --submit --confirm
 done
+# If you have a mixed list, pass --skip-internal so internal IDs are ignored.
 ```
 
-If `--wait` times out, fall back to polling via `asc builds info --build-id "$BUILD_ID"` every 5 minutes using the `ScheduleWakeup` pattern from Phase 6. Update `.ade/release/v<VERSION>.json` with `status=ios-running`.
+For **internal-only** releases (the common case — "ship to internal testers") steps 1–5 are the whole job: once the build is `VALID` with encryption answered, it is already live for every internal group. There is no add-groups step.
+
+If a heavy step (archive/upload) errors, the IPA from a successful export is reusable — re-run only from the failing step. Update `.ade/release/v<VERSION>.json` with `status=ios-running` while waiting.
 
 ### 7f. Post-upload verification (always run this)
 
@@ -450,10 +522,12 @@ done
 
 All three must be true for a given group:
 - `testers > 0` (otherwise no humans see the build)
-- build appears in the group's builds list
-- internal → `READY_FOR_BETA_TESTING`; external → `BETA_APPROVED`
+- build appears in the group's builds list — **automatic for internal groups** the moment the build is `VALID` + encryption answered; only present for external groups after `add-groups`
+- internal → `internalBuildState` is `READY_FOR_BETA_TESTING` or `IN_BETA_TESTING`; external → `externalBuildState` is `BETA_APPROVED`
 
 If any fails, fix it explicitly and re-verify. Do not trust `autoNotifyEnabled=true` alone — it only controls push notifications, not distribution.
+
+**External (public-link) builds need Beta App Review.** A freshly uploaded external build sits at `externalBuildState=WAITING_FOR_BETA_REVIEW` until Apple approves it — and the public TestFlight link keeps serving the **last approved** build until then. Review is per *marketing version*, not per build: the first external build of a new version is reviewed (hours–a day); later builds of the **same** version generally auto-clear. Internal distribution never needs review.
 
 ---
 
@@ -465,17 +539,33 @@ Before printing the summary, verify the draft release carries every expected ass
 gh release view "v<VERSION>" --json assets --jq '.assets[].name' | sort
 ```
 
-Expected asset set when `scope.desktop=true` (releases are macOS-only right now;
-Windows publishing is commented out in `release-core.yml`):
-- `ADE-<version>-universal.dmg`
-- `ADE-<version>-universal-mac.zip`
-- `ADE-<version>-universal-mac.zip.blockmap`
+The mac build runs a **per-arch matrix** (arm64 + x64), so the expected set is
+**5 assets** (releases are macOS-only; Windows publishing is commented out in
+`release-core.yml`):
+- `ADE-<version>-arm64.dmg`
+- `ADE-<version>-arm64.zip`
+- `ADE-<version>-x64.dmg`
+- `ADE-<version>-x64.zip`
 - `latest-mac.yml`
 
-These four are the complete set — the zip + blockmap + `latest-mac.yml` are what
-electron-updater consumes for auto-update (macOS updates install from the zip,
-not the DMG), so a release missing any of them silently bricks auto-update.
-If any asset is missing → mac build or upload broke; re-inspect the `build-mac-release` job.
+> This skill previously expected a single `-universal.*` set plus a `.blockmap`.
+> That changed when the build moved to the parallel-arch matrix (v1.2.5). There
+> are **no** separate `.blockmap` assets in this layout — do not flag their absence.
+
+electron-updater consumes `latest-mac.yml` → the per-arch `.zip`s (macOS updates
+install from the zip, not the DMG). The real check is that `latest-mac.yml`
+references only assets that are actually present — otherwise auto-update breaks:
+
+```bash
+gh release download "v<VERSION>" --pattern latest-mac.yml --dir /tmp --clobber
+assets=$(gh release view "v<VERSION>" --json assets --jq '.assets[].name')
+grep -oE 'ADE-[^ ]+\.(zip|dmg)' /tmp/latest-mac.yml | sort -u | while read f; do
+  echo "$assets" | grep -qx "$f" && echo "  ok $f" || echo "  MISSING referenced asset: $f"
+done
+```
+
+If a referenced file is missing, or the 5-asset set is incomplete → the mac build
+or upload broke; re-inspect the `build-mac-release` matrix jobs.
 
 Then print a single final block and stop:
 
