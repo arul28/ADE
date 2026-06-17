@@ -168,6 +168,10 @@ function installWindowAde() {
   (window as any).ade = {
     app: {
       hasClipboardImage: vi.fn().mockResolvedValue(false),
+      readClipboardImage: vi.fn().mockResolvedValue(null),
+    },
+    agentChat: {
+      saveTempAttachment: vi.fn().mockResolvedValue({ path: "/project/a/.ade/attachments/clipboard.png" }),
     },
     pty: {
       resize: vi.fn().mockResolvedValue(undefined),
@@ -1089,6 +1093,51 @@ describe("TerminalView", () => {
         });
       }
     }
+  });
+
+  it("uploads image-only paste to runtime attachments for tracked agent CLI terminals", async () => {
+    (window.ade.app.readClipboardImage as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: "abc123",
+      filename: "clipboard.png",
+      mimeType: "image/png",
+    });
+    (window.ade.agentChat.saveTempAttachment as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      path: "/remote/project/.ade/attachments/clipboard.png",
+    });
+
+    render(
+      <TerminalView
+        ptyId="pty-runtime-image-paste"
+        sessionId="session-runtime-image-paste"
+        isActive
+        imagePasteMode="runtime-attachment"
+      />,
+    );
+    await flushAllTimers();
+
+    const terminal = mockState.terminalInstances.at(-1) as {
+      element: HTMLElement | null;
+    } | undefined;
+    expect(terminal?.element).toBeTruthy();
+
+    const ptyWrite = window.ade.pty.write as unknown as ReturnType<typeof vi.fn>;
+    ptyWrite.mockClear();
+
+    const event = createPasteEvent("");
+    terminal!.element!.dispatchEvent(event);
+    await flushPromises();
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(window.ade.app.readClipboardImage).toHaveBeenCalledTimes(1);
+    expect(window.ade.app.hasClipboardImage).not.toHaveBeenCalled();
+    expect(window.ade.agentChat.saveTempAttachment).toHaveBeenCalledWith({
+      data: "abc123",
+      filename: "clipboard.png",
+    });
+    expect(ptyWrite).toHaveBeenCalledWith({
+      ptyId: "pty-runtime-image-paste",
+      data: "\x1b[200~ADE clipboard image attached.\nPath: /remote/project/.ade/attachments/clipboard.png\nType: image/png\n\x1b[201~",
+    });
   });
 
   it("sends Shift+Enter as a bracketed-paste newline only while the terminal requests bracketed paste mode", async () => {

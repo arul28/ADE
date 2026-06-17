@@ -1477,31 +1477,21 @@ export function AgentChatComposer({
     setAttachError(null);
     const pendingImage = addPendingImageAttachment("clipboard.png", null);
     try {
-      const payload = window.ade.app.saveClipboardImageAttachment
-        ? await window.ade.app.saveClipboardImageAttachment()
-        : await (async () => {
-            const legacyPayload = await window.ade.app.readClipboardImage();
-            if (!legacyPayload) return null;
-            const { path: tempPath } = await window.ade.agentChat.saveTempAttachment({
-              data: legacyPayload.data,
-              filename: legacyPayload.filename || "clipboard.png",
-            });
-            return {
-              path: tempPath,
-              mimeType: legacyPayload.mimeType,
-              previewDataUrl: `data:${legacyPayload.mimeType};base64,${legacyPayload.data}`,
-            };
-          })();
-      if (!payload) {
+      const image = await window.ade.app.readClipboardImage();
+      if (!image) {
         dropPendingImageAttachment(pendingImage.id);
         return;
       }
+      const { path: tempPath } = await window.ade.agentChat.saveTempAttachment({
+        data: image.data,
+        filename: image.filename || "clipboard.png",
+      });
       if (cancelledPendingImageAttachmentsRef.current.has(pendingImage.id)) {
         cancelledPendingImageAttachmentsRef.current.delete(pendingImage.id);
         return;
       }
-      if (payload.previewDataUrl) rememberPreviewUrl(payload.path, payload.previewDataUrl);
-      onAddAttachment({ path: payload.path, type: inferAttachmentType(payload.path, payload.mimeType) });
+      rememberPreviewUrl(tempPath, `data:${image.mimeType};base64,${image.data}`);
+      onAddAttachment({ path: tempPath, type: inferAttachmentType(tempPath, image.mimeType) });
       dropPendingImageAttachment(pendingImage.id);
     } catch {
       dropPendingImageAttachment(pendingImage.id);

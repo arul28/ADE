@@ -1,3 +1,6 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { LaneListSnapshot, LaneSummary, TerminalSessionSummary } from "../../../shared/types";
 import {
@@ -348,6 +351,46 @@ describe("ADE_ACTION_ALLOWLIST shape", () => {
     })).resolves.toEqual([]);
     expect(listAllowedAdeActionNames("chat", chat as Record<string, unknown>)).toContain("listSessions");
     expect(listSessions).toHaveBeenCalledWith("lane-1", { includeAutomation: true });
+  });
+
+  it("exposes bounded project-local image preview reads through chat actions", async () => {
+    const projectRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), "ade-chat-preview-"));
+    let outsidePath: string | null = null;
+    try {
+      const imagePath = path.join(projectRoot, ".ade", "attachments", "image.png");
+      await fs.promises.mkdir(path.dirname(imagePath), { recursive: true });
+      await fs.promises.writeFile(
+        imagePath,
+        Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII=", "base64"),
+      );
+      const textPath = path.join(projectRoot, "not-image.txt");
+      await fs.promises.writeFile(textPath, "not an image");
+      outsidePath = path.join(os.tmpdir(), `outside-${Date.now()}.png`);
+      await fs.promises.writeFile(outsidePath, Buffer.from([0x89, 0x50, 0x4E, 0x47]));
+      const symlinkPath = path.join(projectRoot, ".ade", "attachments", "outside-link.png");
+      await fs.promises.symlink(outsidePath, symlinkPath);
+
+      const runtime = {
+        projectRoot,
+        agentChatService: {},
+      } as unknown as Parameters<typeof getAdeActionDomainServices>[0];
+      const chat = getAdeActionDomainServices(runtime).chat as {
+        getImageDataUrl: (args: { path: string }) => Promise<{ dataUrl: string }>;
+      } & Record<string, unknown>;
+
+      expect(listAllowedAdeActionNames("chat", chat)).toContain("getImageDataUrl");
+      await expect(chat.getImageDataUrl({ path: imagePath })).resolves.toEqual(
+        expect.objectContaining({ dataUrl: expect.stringMatching(/^data:image\/png;base64,/) }),
+      );
+      await expect(chat.getImageDataUrl({ path: textPath })).rejects.toThrow(/not an image/i);
+      await expect(chat.getImageDataUrl({ path: outsidePath })).rejects.toThrow(/inside the project/i);
+      await expect(chat.getImageDataUrl({ path: symlinkPath })).rejects.toThrow(/inside the project|escapes root/i);
+    } finally {
+      await fs.promises.rm(projectRoot, { recursive: true, force: true });
+      if (outsidePath) {
+        await fs.promises.rm(outsidePath, { force: true });
+      }
+    }
   });
 
   it("exposes the browser panel and tab control surface", () => {

@@ -5345,6 +5345,10 @@ contextBridge.exposeInMainWorld("ade", {
       callProjectRuntimeActionOr("chat", "saveTempAttachment", { args }, () =>
         ipcRenderer.invoke(IPC.agentChatSaveTempAttachment, args),
       ),
+    getImageDataUrl: async (path: string): Promise<{ dataUrl: string }> =>
+      callProjectRuntimeActionOr("chat", "getImageDataUrl", { args: { path } }, () =>
+        ipcRenderer.invoke(IPC.appGetImageDataUrl, { path }),
+      ),
     getEventHistory: async (args: {
       sessionId: string;
       maxEvents?: number;

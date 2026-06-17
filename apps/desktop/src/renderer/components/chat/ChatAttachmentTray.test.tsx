@@ -40,10 +40,12 @@ function makeIssue(overrides: Partial<LaneLinearIssue> = {}): LaneLinearIssue {
 
 describe("ChatAttachmentTray", () => {
   const getImageDataUrl = vi.fn();
+  const getRuntimeImageDataUrl = vi.fn();
   const writeClipboardImage = vi.fn();
 
   beforeEach(() => {
     getImageDataUrl.mockResolvedValue({ dataUrl: "data:image/png;base64,abc123" });
+    getRuntimeImageDataUrl.mockResolvedValue({ dataUrl: "data:image/png;base64,runtime123" });
     writeClipboardImage.mockResolvedValue(undefined);
     Object.defineProperty(window, "ade", {
       configurable: true,
@@ -51,6 +53,9 @@ describe("ChatAttachmentTray", () => {
         app: {
           getImageDataUrl,
           writeClipboardImage,
+        },
+        agentChat: {
+          getImageDataUrl: getRuntimeImageDataUrl,
         },
       },
     });
@@ -69,10 +74,10 @@ describe("ChatAttachmentTray", () => {
       />,
     );
 
-    await waitFor(() => expect(getImageDataUrl).toHaveBeenCalledWith("/tmp/screenshot.png"));
+    await waitFor(() => expect(getRuntimeImageDataUrl).toHaveBeenCalledWith("/tmp/screenshot.png"));
 
     const openButton = screen.getByRole("button", { name: "Open screenshot.png" });
-    expect(screen.getByAltText("screenshot.png").getAttribute("src")).toBe("data:image/png;base64,abc123");
+    expect(screen.getByAltText("screenshot.png").getAttribute("src")).toBe("data:image/png;base64,runtime123");
 
     fireEvent.click(openButton);
 
@@ -90,6 +95,44 @@ describe("ChatAttachmentTray", () => {
 
     expect(screen.getByAltText("pasted-image.png").getAttribute("src")).toBe("blob:ade-paste-preview");
     expect(getImageDataUrl).not.toHaveBeenCalled();
+    expect(getRuntimeImageDataUrl).not.toHaveBeenCalled();
+  });
+
+  it("falls back to the local app image reader when no runtime preview reader is exposed", async () => {
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      value: {
+        app: {
+          getImageDataUrl,
+          writeClipboardImage,
+        },
+      },
+    });
+
+    render(
+      <ChatAttachmentTray
+        attachments={[{ path: "/tmp/local-screenshot.png", type: "image" }]}
+        mode="standard"
+      />,
+    );
+
+    await waitFor(() => expect(getImageDataUrl).toHaveBeenCalledWith("/tmp/local-screenshot.png"));
+    expect(screen.getByAltText("local-screenshot.png").getAttribute("src")).toBe("data:image/png;base64,abc123");
+  });
+
+  it("falls back to the guarded local image reader when runtime preview read fails", async () => {
+    getRuntimeImageDataUrl.mockRejectedValueOnce(new Error("outside project"));
+
+    render(
+      <ChatAttachmentTray
+        attachments={[{ path: "/tmp/local-outside-project.png", type: "image" }]}
+        mode="standard"
+      />,
+    );
+
+    await waitFor(() => expect(getRuntimeImageDataUrl).toHaveBeenCalledWith("/tmp/local-outside-project.png"));
+    await waitFor(() => expect(getImageDataUrl).toHaveBeenCalledWith("/tmp/local-outside-project.png"));
+    expect(screen.getByAltText("local-outside-project.png").getAttribute("src")).toBe("data:image/png;base64,abc123");
   });
 
   it("renders pending image attachments with cancellable previews", () => {

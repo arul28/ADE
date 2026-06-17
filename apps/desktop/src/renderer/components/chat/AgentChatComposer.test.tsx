@@ -1108,7 +1108,7 @@ describe("AgentChatComposer", () => {
     }
   });
 
-  it("uses the native clipboard attachment IPC for macOS Cmd+V fallback when available", async () => {
+  it("uses runtime temp attachments for native macOS clipboard image fallback even when local save IPC is available", async () => {
     const originalPlatform = navigator.platform;
     Object.defineProperty(navigator, "platform", {
       configurable: true,
@@ -1119,8 +1119,12 @@ describe("AgentChatComposer", () => {
       mimeType: "image/png",
       previewDataUrl: "data:image/png;base64,preview",
     });
-    const readClipboardImage = vi.fn();
-    const saveTempAttachment = vi.fn();
+    const readClipboardImage = vi.fn().mockResolvedValue({
+      data: "abc123",
+      filename: "clipboard.png",
+      mimeType: "image/png",
+    });
+    const saveTempAttachment = vi.fn().mockResolvedValue({ path: "/remote/project/.ade/attachments/clipboard.png" });
     (window as any).ade = {
       app: { saveClipboardImageAttachment, readClipboardImage },
       agentChat: { saveTempAttachment },
@@ -1137,11 +1141,14 @@ describe("AgentChatComposer", () => {
         metaKey: true,
       });
 
-      await waitFor(() => expect(saveClipboardImageAttachment).toHaveBeenCalledTimes(1));
-      expect(readClipboardImage).not.toHaveBeenCalled();
-      expect(saveTempAttachment).not.toHaveBeenCalled();
+      await waitFor(() => expect(readClipboardImage).toHaveBeenCalledTimes(1));
+      expect(saveClipboardImageAttachment).not.toHaveBeenCalled();
+      expect(saveTempAttachment).toHaveBeenCalledWith({
+        data: "abc123",
+        filename: "clipboard.png",
+      });
       expect(props.onAddAttachment).toHaveBeenCalledWith({
-        path: "/tmp/ade-native-clipboard.png",
+        path: "/remote/project/.ade/attachments/clipboard.png",
         type: "image",
       });
     } finally {
