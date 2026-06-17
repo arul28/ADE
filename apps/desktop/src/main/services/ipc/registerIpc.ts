@@ -615,6 +615,7 @@ import { quoteWindowsCmdArg } from "../shared/processExecution";
 import { sanitizeResumeTargetId } from "../../utils/terminalSessionSignals";
 import { probeLocalhostPort } from "../probeLocalhostPort";
 import type { ProcessRegistryService } from "../runtime/processRegistryService";
+import { openExternalUrl } from "../shared/externalLinks";
 
 type ElectronProcessMetric = ReturnType<typeof app.getAppMetrics>[number];
 const APP_RESOURCE_USAGE_CACHE_MS = 900;
@@ -3011,19 +3012,7 @@ export function registerIpc({
   });
 
   ipcMain.handle(IPC.appOpenExternal, async (_event, arg: { url: string }): Promise<void> => {
-    const urlRaw = typeof arg?.url === "string" ? arg.url.trim() : "";
-    if (!urlRaw) return;
-    let parsed: URL;
-    try {
-      parsed = new URL(urlRaw);
-    } catch {
-      throw new Error("Invalid URL");
-    }
-    const ALLOWED_URL_SCHEMES = new Set(["http:", "https:", "mailto:"]);
-    if (!ALLOWED_URL_SCHEMES.has(parsed.protocol)) {
-      throw new Error("Only http(s) and mailto: URLs are allowed.");
-    }
-    await shell.openExternal(parsed.toString());
+    await openExternalUrl(arg?.url);
   });
 
   const resolveRendererSuppliedPath = (rawPath: string, projectRoot: string): string => {

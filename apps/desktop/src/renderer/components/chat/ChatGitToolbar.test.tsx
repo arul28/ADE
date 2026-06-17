@@ -31,6 +31,9 @@ function installAdeMocks() {
       getChecks: vi.fn().mockResolvedValue([]),
       openInGitHub: vi.fn().mockResolvedValue(undefined),
     },
+    app: {
+      openExternal: vi.fn().mockResolvedValue(undefined),
+    },
     projectConfig: {
       get: vi.fn().mockResolvedValue({
         effective: {
@@ -130,15 +133,14 @@ describe("ChatGitToolbar", () => {
     );
   });
 
-  it("does not load diff or PR state when mounted for a remote project", async () => {
+  it("loads remote PR state on mount without fetching remote diff status", async () => {
     resetStore({ remote: true });
 
     renderToolbar();
 
-    await Promise.resolve();
+    await waitFor(() => expect(window.ade.prs.getForLane).toHaveBeenCalledWith("lane-1"));
 
     expect(window.ade.diff.getChanges).not.toHaveBeenCalled();
-    expect(window.ade.prs.getForLane).not.toHaveBeenCalled();
   });
 
   it("resolves the linked PR on first remote PR click before routing", async () => {
@@ -157,12 +159,38 @@ describe("ChatGitToolbar", () => {
 
     renderToolbar();
 
-    fireEvent.click(await screen.findByRole("button", { name: "PR" }));
+    const badge = await screen.findByRole("button", { name: /PR #/ });
+    fireEvent.click(badge);
+    fireEvent.click(screen.getByRole("button", { name: /ADE/ }));
 
     await waitFor(() => {
       expect(screen.getByTestId("location").textContent).toBe("/prs?tab=normal&prId=pr-1");
     });
-    expect(window.ade.prs.getForLane).toHaveBeenCalledTimes(1);
+    expect(window.ade.prs.getForLane).toHaveBeenCalledWith("lane-1");
     expect(window.ade.diff.getChanges).not.toHaveBeenCalled();
+  });
+
+  it("opens a linked PR URL through the local app bridge", async () => {
+    vi.mocked(window.ade.prs.getForLane).mockResolvedValue({
+      id: "pr-1",
+      laneId: "lane-1",
+      title: "Linked PR",
+      state: "open",
+      checksStatus: "unknown",
+      githubUrl: "https://github.com/acme/ade/pull/1",
+      additions: 0,
+      deletions: 0,
+      updatedAt: null,
+    } as any);
+
+    renderToolbar();
+
+    fireEvent.click(await screen.findByRole("button", { name: /PR #/ }));
+    fireEvent.click(screen.getByRole("button", { name: /GitHub/ }));
+
+    await waitFor(() => {
+      expect(window.ade.app.openExternal).toHaveBeenCalledWith("https://github.com/acme/ade/pull/1");
+    });
+    expect(window.ade.prs.openInGitHub).not.toHaveBeenCalled();
   });
 });
