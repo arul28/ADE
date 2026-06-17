@@ -6,8 +6,6 @@ import React, {
   useState,
 } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
-import ReactMarkdown, { type Components } from "react-markdown";
-import remarkGfm from "remark-gfm";
 import {
   ArrowLeft,
   ArrowRight,
@@ -28,6 +26,7 @@ import type {
   ProjectBrowseInput,
   ProjectBrowseResult,
   ProjectDetail,
+  ProjectIcon,
   RemoteRuntimeConnectionSnapshot,
   RemoteRuntimeConnectionStatus,
   RemoteRuntimeLocalWorkCheckResult,
@@ -43,6 +42,7 @@ import { AddProjectChooser } from "../projects/AddProjectChooser";
 import { CloneProjectForm } from "../projects/CloneProjectForm";
 import { CreateProjectForm } from "../projects/CreateProjectForm";
 import { ProjectActionSuccess } from "../projects/ProjectActionSuccess";
+import { ReadmeMarkdown } from "./ReadmeMarkdown";
 import { RemoteProjectOpenDialog } from "../projects/RemoteProjectOpenDialog";
 import { RemoteTargetList } from "../remoteTargets/RemoteTargetList";
 
@@ -174,6 +174,68 @@ function defaultBrowseInput(projectRoot: string | null | undefined): string {
   return projectRoot ? "../" : "~/";
 }
 
+// Per-location browse-path memory. The local explorer and each remote target
+// have their own filesystem, so a single shared `browseInput` would leak one
+// machine's path into another (showing a blank list because the path doesn't
+// exist there). Keyed by `locationKey` and persisted across restarts.
+const LAST_BROWSE_PATH_STORAGE_KEY = "ade.projectBrowser.lastPath.v1";
+
+function locationKeyFor(remoteTargetId: string | null): string {
+  return remoteTargetId ? `remote:${remoteTargetId}` : "local";
+}
+
+function readLastBrowsePathMap(): Record<string, string> {
+  try {
+    const raw = globalThis.localStorage?.getItem(LAST_BROWSE_PATH_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object") return {};
+    const out: Record<string, string> = {};
+    for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+      if (typeof value === "string") out[key] = value;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+function loadLastBrowsePath(locationKey: string): string | null {
+  const map = readLastBrowsePathMap();
+  const value = map[locationKey];
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function saveLastBrowsePath(locationKey: string, path: string): void {
+  try {
+    if (!globalThis.localStorage) return;
+    const map = readLastBrowsePathMap();
+    if (map[locationKey] === path) return;
+    map[locationKey] = path;
+    globalThis.localStorage.setItem(
+      LAST_BROWSE_PATH_STORAGE_KEY,
+      JSON.stringify(map),
+    );
+  } catch {
+    // Ignore unavailable/quota-exceeded localStorage.
+  }
+}
+
+// Resolved project icons are stable for a given root path within a session, so
+// cache them module-wide to avoid rescanning the disk on every re-highlight.
+const PROJECT_ICON_CACHE_MAX = 64;
+const PROJECT_ICON_CACHE = new Map<string, ProjectIcon>();
+
+function rememberProjectIcon(rootPath: string, icon: ProjectIcon): void {
+  PROJECT_ICON_CACHE.delete(rootPath);
+  PROJECT_ICON_CACHE.set(rootPath, icon);
+  while (PROJECT_ICON_CACHE.size > PROJECT_ICON_CACHE_MAX) {
+    const oldestKey = PROJECT_ICON_CACHE.keys().next().value;
+    if (typeof oldestKey !== "string") break;
+    PROJECT_ICON_CACHE.delete(oldestKey);
+  }
+}
+
 function isTourStepTarget(target: EventTarget | null): boolean {
   return target instanceof Element && target.closest(".ade-tour-step") !== null;
 }
@@ -222,6 +284,7 @@ export function CommandPalette({
   const [detail, setDetail] = useState<ProjectDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailPath, setDetailPath] = useState<string | null>(null);
+  const [detailIcon, setDetailIcon] = useState<ProjectIcon | null>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [selectedProjectLocation, setSelectedProjectLocation] =
     useState<ProjectLocation | null>(null);
@@ -234,6 +297,10 @@ export function CommandPalette({
   const listRef = useRef<HTMLUListElement>(null);
   const browseRequestRef = useRef(0);
   const detailRequestRef = useRef(0);
+  // Tracks the location whose path is currently loaded into `browseInput`, so
+  // the location-change effect can restore the right per-location path without
+  // re-running on every browseInput keystroke.
+  const browseLocationKeyRef = useRef<string | null>(null);
   const dragCounterRef = useRef(0);
   const openIntentRef = useRef<{
     open: boolean;
@@ -270,6 +337,23 @@ export function CommandPalette({
       : null
     : (project?.rootPath ?? null);
   const browseMachineName = activeProjectLocation.name;
+
+  // Derive the browse root for a location DIRECTLY from the location, not from
+  // the memoized `activeBrowseRoot` above — that value is stale within the same
+  // render right after a `setSelectedProjectLocation` call, which would seed the
+  // wrong default path for the location we're switching to.
+  const browseRootForLocation = useCallback(
+    (location: ProjectLocation): string | null => {
+      if (location.kind === "remote") {
+        return projectBinding?.kind === "remote" &&
+          projectBinding.targetId === location.targetId
+          ? projectBinding.rootPath
+          : null;
+      }
+      return project?.rootPath ?? null;
+    },
+    [project?.rootPath, projectBinding],
+  );
 
   const browseDirectoriesForActiveLocation = useCallback(
     (input: ProjectBrowseInput) =>
@@ -320,11 +404,16 @@ export function CommandPalette({
     setMode("project-browse");
     setQ("");
     setSelectedIdx(0);
-    setBrowseInput(defaultBrowseInput(activeBrowseRoot));
+    const location = activeProjectLocation;
+    const locationKey = locationKeyFor(
+      location.kind === "remote" ? location.targetId : null,
+    );
+    const root = browseRootForLocation(location);
+    setBrowseInput(loadLastBrowsePath(locationKey) ?? defaultBrowseInput(root));
     setBrowseResult(null);
     setBrowseError(null);
     setBrowseSelectedIdx(0);
-  }, [activeBrowseRoot]);
+  }, [activeProjectLocation, browseRootForLocation]);
 
   const startProjectAdd = useCallback(() => {
     setMode("project-add");
@@ -765,6 +854,45 @@ export function CommandPalette({
     typeof navigator !== "undefined" && /mac/i.test(navigator.platform);
   const openShortcutLabel = `${isMac ? "⌘" : "Ctrl"}↵`;
 
+  // Restore the per-location last path whenever browsing begins or the active
+  // location changes. `startProjectBrowse` already seeds the path for the
+  // initial location; this guards against later switches (e.g., via the
+  // location chooser) leaking the previous machine's path into the new one.
+  const browseLocationKey = locationKeyFor(activeRemoteTargetId);
+  useEffect(() => {
+    if (!open || mode !== "project-browse") {
+      browseLocationKeyRef.current = null;
+      return;
+    }
+    if (browseLocationKeyRef.current === browseLocationKey) return;
+    browseLocationKeyRef.current = browseLocationKey;
+    const root = browseRootForLocation(activeProjectLocation);
+    setBrowseInput(
+      loadLastBrowsePath(browseLocationKey) ?? defaultBrowseInput(root),
+    );
+  }, [
+    activeProjectLocation,
+    browseLocationKey,
+    browseRootForLocation,
+    mode,
+    open,
+  ]);
+
+  // Persist the typed/navigated path per location (debounced) so each machine
+  // restores its own last path across restarts.
+  useEffect(() => {
+    if (!open || mode !== "project-browse") return;
+    const locationKey = browseLocationKey;
+    const value = browseInput;
+    const timeout = globalThis.setTimeout(() => {
+      if (value.trim().length === 0) return;
+      saveLastBrowsePath(locationKey, value);
+    }, 400);
+    return () => {
+      globalThis.clearTimeout(timeout);
+    };
+  }, [browseInput, browseLocationKey, mode, open]);
+
   useEffect(() => {
     if (!open || mode !== "project-browse") return;
     const requestId = ++browseRequestRef.current;
@@ -868,6 +996,39 @@ export function CommandPalette({
     mode,
     open,
   ]);
+
+  // Resolve the project logo for the highlighted repo (local locations only —
+  // there is no remote icon resolver, so remote previews keep the glyph). Cached
+  // module-wide to avoid rescanning when the user re-highlights the same repo.
+  const isLocalLocation = activeRemoteTargetId == null;
+  useEffect(() => {
+    if (!open || mode !== "project-browse") return;
+    if (!isLocalLocation || !detailTarget || !highlightedIsRepo) {
+      setDetailIcon(null);
+      return;
+    }
+    const cached = PROJECT_ICON_CACHE.get(detailTarget);
+    if (cached) {
+      setDetailIcon(cached);
+      return;
+    }
+    let cancelled = false;
+    setDetailIcon(null);
+    void Promise.resolve()
+      .then(() => window.ade.project.resolveIcon(detailTarget))
+      .then((icon) => {
+        if (cancelled) return;
+        rememberProjectIcon(detailTarget, icon);
+        setDetailIcon(icon);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setDetailIcon(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [detailTarget, highlightedIsRepo, isLocalLocation, mode, open]);
 
   useEffect(() => {
     if (mode !== "project-browse") return;
@@ -1603,11 +1764,10 @@ export function CommandPalette({
                               const isSelected = index === browseSelectedIdx;
                               return (
                                 <li key={row.id}>
-                                  <button
-                                    type="button"
+                                  <div
                                     data-cmd-item
                                     className={cn(
-                                      "mx-2 flex w-[calc(100%-1rem)] items-center justify-between gap-3 rounded-lg border px-3 py-2 text-left transition-all duration-150",
+                                      "mx-2 flex w-[calc(100%-1rem)] items-center gap-1.5 rounded-lg border px-1 py-0.5 text-left transition-all duration-150",
                                       isSelected
                                         ? "border-[var(--color-accent)] bg-[color-mix(in_srgb,var(--color-accent)_14%,transparent)] -translate-y-[0.5px]"
                                         : "border-transparent hover:border-[color-mix(in_srgb,var(--color-accent)_20%,var(--color-border))] hover:bg-[color-mix(in_srgb,var(--color-accent)_5%,transparent)]",
@@ -1623,60 +1783,92 @@ export function CommandPalette({
                                     onMouseEnter={() =>
                                       setBrowseSelectedIdx(index)
                                     }
-                                    onClick={() => activateBrowseRow(row)}
                                   >
-                                    <div className="flex min-w-0 items-center gap-2.5">
-                                      {row.kind === "parent" ? (
-                                        <ArrowRight
-                                          size={14}
-                                          weight="regular"
-                                          className="shrink-0 rotate-180 text-[var(--color-muted-fg)]"
-                                        />
-                                      ) : row.isGitRepo ? (
-                                        <span
-                                          className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md"
-                                          style={{
-                                            background:
-                                              "linear-gradient(135deg, rgba(167,139,250,0.30), rgba(167,139,250,0.08))",
-                                            boxShadow:
-                                              "0 0 0 1px rgba(167,139,250,0.30) inset",
-                                          }}
-                                        >
-                                          <LaneIcon
-                                            size={12}
-                                            weight="bold"
-                                            className="text-[var(--color-accent)]"
-                                          />
-                                        </span>
-                                      ) : (
-                                        <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-[var(--color-border)]">
-                                          <Folder
-                                            size={12}
+                                    <button
+                                      type="button"
+                                      className="flex min-w-0 flex-1 items-center justify-between gap-3 rounded-md px-2 py-1.5 text-left"
+                                      onClick={() => activateBrowseRow(row)}
+                                    >
+                                      <div className="flex min-w-0 items-center gap-2.5">
+                                        {row.kind === "parent" ? (
+                                          <ArrowRight
+                                            size={14}
                                             weight="regular"
-                                            className="text-[var(--color-muted-fg)]"
+                                            className="shrink-0 rotate-180 text-[var(--color-muted-fg)]"
                                           />
-                                        </span>
-                                      )}
-                                      <div className="min-w-0">
-                                        <div className="truncate text-sm font-medium text-[var(--color-fg)]">
-                                          {row.title}
-                                        </div>
-                                        <div className="mt-0.5 truncate font-mono text-[11px] text-[var(--color-muted-fg)]">
-                                          {row.hint}
+                                        ) : row.isGitRepo ? (
+                                          <span
+                                            className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md"
+                                            style={{
+                                              background:
+                                                "linear-gradient(135deg, rgba(167,139,250,0.30), rgba(167,139,250,0.08))",
+                                              boxShadow:
+                                                "0 0 0 1px rgba(167,139,250,0.30) inset",
+                                            }}
+                                          >
+                                            <LaneIcon
+                                              size={12}
+                                              weight="bold"
+                                              className="text-[var(--color-accent)]"
+                                            />
+                                          </span>
+                                        ) : (
+                                          <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md border border-[var(--color-border)]">
+                                            <Folder
+                                              size={12}
+                                              weight="regular"
+                                              className="text-[var(--color-muted-fg)]"
+                                            />
+                                          </span>
+                                        )}
+                                        <div className="min-w-0">
+                                          <div className="truncate text-sm font-medium text-[var(--color-fg)]">
+                                            {row.title}
+                                          </div>
+                                          <div className="mt-0.5 truncate font-mono text-[11px] text-[var(--color-muted-fg)]">
+                                            {row.hint}
+                                          </div>
                                         </div>
                                       </div>
-                                    </div>
-                                    <ArrowRight
-                                      size={13}
-                                      weight="regular"
-                                      className={cn(
-                                        "shrink-0 transition-opacity",
-                                        isSelected
-                                          ? "opacity-100 text-[var(--color-accent)]"
-                                          : "opacity-40 text-[var(--color-muted-fg)]",
+                                      {!(
+                                        row.kind === "directory" &&
+                                        row.isGitRepo
+                                      ) && (
+                                        <ArrowRight
+                                          size={13}
+                                          weight="regular"
+                                          className={cn(
+                                            "shrink-0 transition-opacity",
+                                            isSelected
+                                              ? "opacity-100 text-[var(--color-accent)]"
+                                              : "opacity-40 text-[var(--color-muted-fg)]",
+                                          )}
+                                        />
                                       )}
-                                    />
-                                  </button>
+                                    </button>
+                                    {row.kind === "directory" &&
+                                    row.isGitRepo ? (
+                                      <button
+                                        type="button"
+                                        aria-label={`Open ${row.title}`}
+                                        className={cn(
+                                          "inline-flex h-7 shrink-0 items-center gap-1 rounded-md border px-2.5 text-xs font-semibold transition-all disabled:cursor-not-allowed disabled:opacity-50",
+                                          isSelected
+                                            ? "border-transparent bg-[var(--color-accent)] text-[var(--color-accent-fg)] hover:brightness-110"
+                                            : "border-[color-mix(in_srgb,var(--color-accent)_40%,var(--color-border))] bg-transparent text-[var(--color-accent)] hover:bg-[color-mix(in_srgb,var(--color-accent)_12%,transparent)]",
+                                        )}
+                                        disabled={openProjectPending}
+                                        onClick={(event) => {
+                                          event.stopPropagation();
+                                          void handleOpenProject(
+                                            stripTrailingSeparator(row.path),
+                                          );
+                                        }}
+                                      >
+                                        Open
+                                      </button>
+                                    ) : null}
+                                  </div>
                                 </li>
                               );
                             })}
@@ -1688,6 +1880,7 @@ export function CommandPalette({
                         detail={detail}
                         detailLoading={detailLoading}
                         detailPath={detailPath}
+                        detailIcon={detailIcon}
                         highlightedPath={highlightedPath}
                         highlightedIsRepo={highlightedIsRepo}
                         browseResult={browseResult}
@@ -1744,7 +1937,7 @@ export function CommandPalette({
                             <kbd className="ml-2 rounded border border-[var(--color-border)] bg-[var(--color-surface)] px-1.5 py-0.5 font-mono text-[10px]">
                               {openShortcutLabel}
                             </kbd>
-                            <span>open directory</span>
+                            <span>open project</span>
                           </>
                         )}
                       </div>
@@ -1769,7 +1962,7 @@ export function CommandPalette({
                             ) : (
                               <FolderOpen size={14} weight="regular" />
                             )}
-                            Open directory…
+                            Choose folder…
                           </button>
                         ) : null}
                         <button
@@ -1971,6 +2164,7 @@ type BrowsePreviewProps = {
   detail: ProjectDetail | null;
   detailLoading: boolean;
   detailPath: string | null;
+  detailIcon: ProjectIcon | null;
   highlightedPath: string | null;
   highlightedIsRepo: boolean;
   browseResult: ProjectBrowseResult | null;
@@ -1981,6 +2175,7 @@ function BrowsePreview({
   detail,
   detailLoading,
   detailPath,
+  detailIcon,
   highlightedPath,
   highlightedIsRepo,
   browseResult,
@@ -2009,6 +2204,11 @@ function BrowsePreview({
 
   const displayName = pathLabel(highlightedPath) || highlightedPath;
   const isActiveProject = activeProjectPath === highlightedPath;
+  // Only trust the resolved icon when it's for the row we're showing — the
+  // parent resets it to null when the highlight changes, so a stale icon can't
+  // bleed across repos.
+  const logoForPath =
+    detailPath === highlightedPath ? (detailIcon?.dataUrl ?? null) : null;
 
   return (
     <div className="relative min-h-0 overflow-auto">
@@ -2024,7 +2224,14 @@ function BrowsePreview({
       <div className="relative space-y-5 p-6">
         <div className="space-y-2">
           <div className="flex items-center gap-2.5">
-            {highlightedIsRepo ? (
+            {highlightedIsRepo && logoForPath ? (
+              <img
+                src={logoForPath}
+                alt=""
+                className="h-8 w-8 shrink-0 rounded-lg object-cover"
+                style={{ boxShadow: "0 0 0 1px rgba(167,139,250,0.25) inset" }}
+              />
+            ) : highlightedIsRepo ? (
               <span
                 className="flex h-8 w-8 items-center justify-center rounded-lg"
                 style={{
@@ -2078,11 +2285,23 @@ function BrowsePreview({
   );
 }
 
+function dirtyBreakdownTooltip(
+  breakdown: ProjectDetail["dirtyBreakdown"],
+): string | undefined {
+  if (!breakdown) return undefined;
+  const parts: string[] = [];
+  if (breakdown.staged > 0) parts.push(`${breakdown.staged} staged`);
+  if (breakdown.unstaged > 0) parts.push(`${breakdown.unstaged} unstaged`);
+  if (breakdown.untracked > 0) parts.push(`${breakdown.untracked} untracked`);
+  return parts.length > 0 ? parts.join(" · ") : "no changes";
+}
+
 function RepoDetailBlocks({ detail }: { detail: ProjectDetail }) {
   const lastCommitRelative = detail.lastCommit
     ? relativeFromNow(detail.lastCommit.isoDate)
     : null;
   const lastOpenedRelative = relativeFromNow(detail.lastOpenedAt);
+  const dirtyTooltip = dirtyBreakdownTooltip(detail.dirtyBreakdown);
 
   return (
     <>
@@ -2107,7 +2326,9 @@ function RepoDetailBlocks({ detail }: { detail: ProjectDetail }) {
             </StatusChip>
           )}
         {typeof detail.dirtyCount === "number" && detail.dirtyCount > 0 && (
-          <StatusChip tone="warn">{detail.dirtyCount} uncommitted</StatusChip>
+          <StatusChip tone="warn" title={dirtyTooltip}>
+            {detail.dirtyCount} changed
+          </StatusChip>
         )}
         {typeof detail.dirtyCount === "number" &&
           detail.dirtyCount === 0 &&
@@ -2212,100 +2433,6 @@ function PlainDirectoryBlock({
   );
 }
 
-const README_COMPONENTS: Components = {
-  h1: ({ children }) => (
-    <h3 className="mt-3 mb-1.5 text-[13px] font-semibold text-[var(--color-fg)] first:mt-0">
-      {children}
-    </h3>
-  ),
-  h2: ({ children }) => (
-    <h4 className="mt-3 mb-1.5 text-[12px] font-semibold text-[var(--color-fg)] first:mt-0">
-      {children}
-    </h4>
-  ),
-  h3: ({ children }) => (
-    <h5 className="mt-2.5 mb-1 text-[11px] font-semibold uppercase tracking-wide text-[var(--color-muted-fg)] first:mt-0">
-      {children}
-    </h5>
-  ),
-  h4: ({ children }) => (
-    <h6 className="mt-2 mb-1 text-[11px] font-semibold text-[var(--color-muted-fg)] first:mt-0">
-      {children}
-    </h6>
-  ),
-  p: ({ children }) => <p className="mb-2 last:mb-0">{children}</p>,
-  ul: ({ children }) => (
-    <ul className="mb-2 list-disc pl-5 last:mb-0 marker:text-[var(--color-muted-fg)]">
-      {children}
-    </ul>
-  ),
-  ol: ({ children }) => (
-    <ol className="mb-2 list-decimal pl-5 last:mb-0 marker:text-[var(--color-muted-fg)]">
-      {children}
-    </ol>
-  ),
-  li: ({ children }) => <li className="mb-0.5">{children}</li>,
-  a: ({ children, href }) => (
-    <a
-      href={href}
-      onClick={(event) => {
-        event.preventDefault();
-        if (href) void window.ade?.app?.openExternal?.(href).catch(() => {});
-      }}
-      className="text-[var(--color-accent)] underline decoration-[var(--color-accent)]/40 underline-offset-2 hover:decoration-[var(--color-accent)]"
-    >
-      {children}
-    </a>
-  ),
-  code: ({ children, className }) => {
-    if (className && /language-/.test(className)) {
-      return <code className={className}>{children}</code>;
-    }
-    return (
-      <code className="rounded bg-black/40 px-1 py-0.5 font-mono text-[11px] text-[var(--color-accent)]/90">
-        {children}
-      </code>
-    );
-  },
-  pre: ({ children }) => (
-    <pre className="mb-2 overflow-x-auto rounded-lg border border-[var(--color-border)] bg-black/40 p-2.5 font-mono text-[11px] leading-relaxed last:mb-0">
-      {children}
-    </pre>
-  ),
-  blockquote: ({ children }) => (
-    <blockquote className="mb-2 border-l-2 border-[var(--color-accent)]/40 pl-3 text-[var(--color-muted-fg)] last:mb-0">
-      {children}
-    </blockquote>
-  ),
-  hr: () => <hr className="my-3 border-t border-[var(--color-border)]" />,
-  table: ({ children }) => (
-    <div className="mb-2 overflow-x-auto rounded-md border border-[var(--color-border)] last:mb-0">
-      <table className="w-full text-left text-[12px]">{children}</table>
-    </div>
-  ),
-  th: ({ children }) => (
-    <th className="border-b border-[var(--color-border)] bg-black/20 px-2 py-1 font-semibold">
-      {children}
-    </th>
-  ),
-  td: ({ children }) => (
-    <td className="border-b border-[var(--color-border)] px-2 py-1 align-top">
-      {children}
-    </td>
-  ),
-  img: () => null,
-};
-
-function ReadmeMarkdown({ content }: { content: string }) {
-  return (
-    <div className="text-[13px] leading-relaxed text-[var(--color-fg)]/90">
-      <ReactMarkdown remarkPlugins={[remarkGfm]} components={README_COMPONENTS}>
-        {content}
-      </ReactMarkdown>
-    </div>
-  );
-}
-
 function PreviewSkeleton() {
   return (
     <div className="space-y-4" aria-hidden>
@@ -2328,10 +2455,12 @@ function StatusChip({
   children,
   icon,
   tone,
+  title,
 }: {
   children: React.ReactNode;
   icon?: React.ReactNode;
   tone: "accent" | "muted" | "warn";
+  title?: string;
 }) {
   const toneStyle =
     tone === "accent"
@@ -2357,6 +2486,7 @@ function StatusChip({
     <span
       className="inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-medium"
       style={toneStyle}
+      title={title}
     >
       {icon}
       {children}

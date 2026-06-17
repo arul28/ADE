@@ -632,7 +632,9 @@ when no active project is selected or the user taps the Projects toolbar
 button. It merges the runtime-provided catalog with projects already present
 in the local replicated DB, marks cached/unavailable rows, and requests a
 fresh bootstrap connection for the selected machine project through
-`project_switch_request`. Each tile exposes a long-press "Remove from list"
+`project_switch_request`. The runtime-provided catalog is local to the
+paired machine and excludes desktop SSH remote recents, so the phone never
+tries to switch into another machine's path. Each tile exposes a long-press "Remove from list"
 action that hides the project locally and sends `project_forget_request`
 to the runtime so the machine catalog drops the matching recent entry.
 Each tile renders `MobileProjectSummary.iconDataUrl`

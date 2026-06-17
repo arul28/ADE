@@ -3,7 +3,14 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 
-import { readGlobalState, upsertRecentProject, writeGlobalState, type GlobalState } from "./globalState";
+import {
+  readGlobalState,
+  recentProjectKey,
+  setRecentProjectPinned,
+  upsertRecentProject,
+  writeGlobalState,
+  type GlobalState,
+} from "./globalState";
 
 describe("upsertRecentProject", () => {
   it("keeps an existing project in place when preserving recent order", () => {
@@ -63,6 +70,94 @@ describe("upsertRecentProject", () => {
     );
 
     expect(next.lastProjectRoot).toBe("/projects/a");
+  });
+
+  it("stores a remote project as a recent keyed by target + project id", () => {
+    const remote = {
+      targetId: "t1",
+      projectId: "p1",
+      runtimeName: "mac-mini",
+      hostname: "mac-mini.local",
+    };
+    const next = upsertRecentProject(
+      {},
+      { rootPath: "/home/u/webapp", displayName: "webapp", remote },
+    );
+
+    expect(next.recentProjects).toHaveLength(1);
+    expect(next.recentProjects?.[0]?.remote).toEqual(remote);
+    expect(recentProjectKey(next.recentProjects![0]!)).toBe("remote:t1:p1");
+  });
+
+  it("dedupes remote recents by remote key, not by root path", () => {
+    const remote = {
+      targetId: "t1",
+      projectId: "p1",
+      runtimeName: "mac-mini",
+      hostname: "mac-mini.local",
+    };
+    const localCollision: GlobalState = {
+      recentProjects: [
+        // Same path string, but local — must NOT be treated as the remote one.
+        { rootPath: "/home/u/webapp", displayName: "local copy", lastOpenedAt: "2026-04-01T00:00:00.000Z" },
+        { rootPath: "/home/u/webapp", displayName: "webapp", lastOpenedAt: "2026-04-02T00:00:00.000Z", remote },
+      ],
+    };
+
+    const next = upsertRecentProject(
+      localCollision,
+      { rootPath: "/home/u/webapp", displayName: "webapp v2", remote },
+    );
+
+    // The local entry survives; only the remote entry is replaced + moved to front.
+    expect(next.recentProjects).toHaveLength(2);
+    expect(next.recentProjects?.[0]?.remote).toEqual(remote);
+    expect(next.recentProjects?.[0]?.displayName).toBe("webapp v2");
+    expect(next.recentProjects?.some((p) => !p.remote && p.displayName === "local copy")).toBe(true);
+  });
+
+  it("preserves the pinned flag across re-open", () => {
+    const state: GlobalState = {
+      recentProjects: [
+        { rootPath: "/projects/a", displayName: "A", lastOpenedAt: "2026-04-01T00:00:00.000Z", pinned: true },
+      ],
+    };
+
+    const next = upsertRecentProject(state, { rootPath: "/projects/a", displayName: "A" });
+    expect(next.recentProjects?.[0]?.pinned).toBe(true);
+  });
+
+  it("retains pinned projects beyond the recency cap", () => {
+    const recentProjects = Array.from({ length: 30 }, (_, i) => ({
+      rootPath: `/projects/p${i}`,
+      displayName: `P${i}`,
+      lastOpenedAt: `2026-04-${String((i % 28) + 1).padStart(2, "0")}T00:00:00.000Z`,
+      ...(i === 29 ? { pinned: true } : {}),
+    }));
+    const state: GlobalState = { recentProjects };
+
+    const next = upsertRecentProject(state, { rootPath: "/projects/new", displayName: "New" });
+
+    expect(next.recentProjects?.some((p) => p.rootPath === "/projects/p29" && p.pinned)).toBe(true);
+  });
+});
+
+describe("setRecentProjectPinned", () => {
+  it("toggles pinned on the matching entry by key", () => {
+    const remote = { targetId: "t1", projectId: "p1", runtimeName: "box", hostname: "box" };
+    const state: GlobalState = {
+      recentProjects: [
+        { rootPath: "/projects/a", displayName: "A", lastOpenedAt: "2026-04-01T00:00:00.000Z" },
+        { rootPath: "/home/u/web", displayName: "web", lastOpenedAt: "2026-04-02T00:00:00.000Z", remote },
+      ],
+    };
+
+    const pinnedLocal = setRecentProjectPinned(state, "/projects/a", true);
+    expect(pinnedLocal.recentProjects?.[0]?.pinned).toBe(true);
+    expect(pinnedLocal.recentProjects?.[1]?.pinned).toBeUndefined();
+
+    const pinnedRemote = setRecentProjectPinned(state, "remote:t1:p1", true);
+    expect(pinnedRemote.recentProjects?.[1]?.pinned).toBe(true);
   });
 });
 

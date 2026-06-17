@@ -3206,6 +3206,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         isGitRepo: true,
         branchName: MOCK_PROJECT.gitDefaultBranch,
         dirtyCount: 0,
+        dirtyBreakdown: null,
         aheadBehind: null,
         lastCommit: null,
         readmeExcerpt: null,
@@ -3236,6 +3237,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       switchToPath: resolvedArg(MOCK_PROJECT),
       forgetRecent: resolvedArg([]),
       reorderRecent: resolvedArg([]),
+      setRecentPinned: resolvedArg([]),
       getSnapshot: resolved({
         rootPath: MOCK_PROJECT.rootPath,
         adeDir: `${MOCK_PROJECT.rootPath}/.ade`,
@@ -3326,6 +3328,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         isGitRepo: true,
         branchName: "main",
         dirtyCount: 0,
+        dirtyBreakdown: null,
         aheadBehind: { ahead: 0, behind: 0 },
         lastCommit: null,
         readmeExcerpt: null,

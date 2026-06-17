@@ -532,6 +532,7 @@ describe("toRecentProjectSummary", () => {
       displayName: "demo",
       lastOpenedAt: "2026-04-02T12:00:00.000Z",
       exists: true,
+      kind: "local",
     });
   });
 

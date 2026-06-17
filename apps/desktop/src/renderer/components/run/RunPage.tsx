@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  ArrowsClockwise,
   CaretDown,
   CaretUp,
+  DesktopTower,
   Folder,
   Play,
   Plus,
+  PushPin,
   Stop,
   Terminal,
   X,
@@ -20,6 +23,7 @@ import {
 } from "../lanes/laneDesignTokens";
 import { CommandCard } from "./CommandCard";
 import { CommandPalette } from "../app/CommandPalette";
+import { deriveIconAccentColor } from "../../lib/iconAccent";
 import { LaneRuntimeBar } from "./LaneRuntimeBar";
 import {
   AddCommandDialog,
@@ -45,7 +49,9 @@ import type {
   ProjectConfigSnapshot,
   ConfigProcessGroupDefinition,
   ProjectIcon,
+  RecentProjectSummary,
   RemoteRuntimeConnectionSnapshot,
+  RemoteRuntimeConnectionState,
 } from "../../../shared/types";
 
 function generateId(): string {
@@ -330,7 +336,15 @@ function runPageLaneStateEqual(
   );
 }
 
-function RecentProjectIcon({ rootPath }: { rootPath: string }) {
+function RecentProjectIcon({
+  rootPath,
+  onAccentColor,
+}: {
+  rootPath: string;
+  // Reports the icon's sampled accent color (or null) so the row can tint its
+  // tile to match the logo. Fires null until an icon resolves.
+  onAccentColor?: (color: string | null) => void;
+}) {
   const [icon, setIcon] = useState<ProjectIcon | null>(null);
   const [failed, setFailed] = useState(false);
 
@@ -350,6 +364,27 @@ function RecentProjectIcon({ rootPath }: { rootPath: string }) {
       cancelled = true;
     };
   }, [rootPath]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const dataUrl = icon?.dataUrl;
+    if (!dataUrl || failed) {
+      onAccentColor?.(null);
+      return () => {
+        cancelled = true;
+      };
+    }
+    deriveIconAccentColor(dataUrl)
+      .then((color) => {
+        if (!cancelled) onAccentColor?.(color);
+      })
+      .catch(() => {
+        if (!cancelled) onAccentColor?.(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [failed, icon?.dataUrl, onAccentColor]);
 
   if (icon?.dataUrl && !failed) {
     return (
@@ -371,22 +406,367 @@ function RecentProjectIcon({ rootPath }: { rootPath: string }) {
   return <Folder size={16} weight="regular" />;
 }
 
+const REMOTE_ACCENT = "#F59E0B";
+
+function recentKey(rp: RecentProjectSummary): string {
+  return rp.kind === "remote" && rp.remote
+    ? `remote:${rp.remote.targetId}:${rp.remote.projectId}`
+    : rp.rootPath;
+}
+
+// Abbreviate the user's home directory to `~` for compact local paths.
+function abbreviateHome(path: string): string {
+  const home =
+    typeof process !== "undefined" ? (process.env?.HOME ?? "") : "";
+  if (home && (path === home || path.startsWith(`${home}/`))) {
+    return `~${path.slice(home.length)}`;
+  }
+  return path;
+}
+
+// A single recents row. Local rows resolve a project icon (and tint their tile
+// with the sampled accent); remote rows use the amber DesktopTower glyph and a
+// connection dot. Offline remote rows are dimmed with a Reconnect affordance.
+function RecentProjectRow({
+  rp,
+  connectionState,
+  isOpen,
+  isForgetting,
+  onOpen,
+  onTogglePin,
+  onForget,
+}: {
+  rp: RecentProjectSummary;
+  connectionState: RemoteRuntimeConnectionState | null;
+  isOpen: boolean;
+  isForgetting: boolean;
+  onOpen: () => void;
+  onTogglePin: () => void;
+  onForget: () => void;
+}) {
+  const [accentColor, setAccentColor] = useState<string | null>(null);
+  const isRemote = rp.kind === "remote" && Boolean(rp.remote);
+  const connected = connectionState === "connected";
+  const connecting = connectionState === "connecting";
+  // Remote rows are "offline" until their target reports a live connection.
+  const offline = isRemote && !connected;
+  const tileAccent = isRemote ? REMOTE_ACCENT : accentColor;
+  const tileBg = tileAccent
+    ? `color-mix(in srgb, ${tileAccent} 18%, transparent)`
+    : "color-mix(in srgb, var(--color-accent) 15%, transparent)";
+  const tileColor = tileAccent ?? COLORS.accent;
+  const edgeColor = tileAccent ?? COLORS.accent;
+
+  const dotColor = connected
+    ? "#34D399"
+    : connecting
+      ? REMOTE_ACCENT
+      : "rgba(148,163,184,0.7)";
+
+  return (
+    <div className="group" style={{ position: "relative" }}>
+      <button
+        type="button"
+        data-tour="project.recentProject"
+        onClick={onOpen}
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 12,
+          padding: "12px 16px",
+          width: "100%",
+          background: "rgba(255,255,255,0.02)",
+          border: `1px solid ${COLORS.border}`,
+          borderLeft: `3px solid color-mix(in srgb, ${edgeColor} 60%, transparent)`,
+          borderRadius: 12,
+          color: COLORS.textPrimary,
+          fontFamily: MONO_FONT,
+          fontSize: 12,
+          cursor: "pointer",
+          textAlign: "left",
+          transition: "all 0.2s ease",
+          backdropFilter: "blur(10px)",
+          opacity: offline ? 0.6 : 1,
+        }}
+      >
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            width: 32,
+            height: 32,
+            borderRadius: 8,
+            background: tileBg,
+            color: tileColor,
+            flexShrink: 0,
+          }}
+        >
+          {isRemote ? (
+            <DesktopTower size={18} weight="duotone" />
+          ) : (
+            <RecentProjectIcon
+              rootPath={rp.rootPath}
+              onAccentColor={setAccentColor}
+            />
+          )}
+        </div>
+        <div style={{ overflow: "hidden", flex: 1 }}>
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              marginBottom: 2,
+            }}
+          >
+            <span
+              style={{
+                fontWeight: 600,
+                fontSize: 13,
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
+              }}
+            >
+              {rp.displayName}
+            </span>
+            {isRemote && rp.remote ? (
+              <span
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 5,
+                  fontSize: 9,
+                  fontWeight: 700,
+                  letterSpacing: "0.04em",
+                  textTransform: "uppercase",
+                  padding: "2px 7px",
+                  borderRadius: 8,
+                  background: "color-mix(in srgb, #F59E0B 16%, transparent)",
+                  color: "#FBBF24",
+                  border: "1px solid color-mix(in srgb, #F59E0B 30%, transparent)",
+                  flexShrink: 0,
+                }}
+              >
+                <span
+                  aria-hidden
+                  style={{
+                    width: 6,
+                    height: 6,
+                    borderRadius: "50%",
+                    background: dotColor,
+                    animation: connecting
+                      ? "ade-recent-dot-pulse 1.1s ease-in-out infinite"
+                      : undefined,
+                  }}
+                />
+                {rp.remote.runtimeName}
+              </span>
+            ) : null}
+          </div>
+          <div
+            style={{
+              fontSize: 10,
+              color: COLORS.textDim,
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+            }}
+          >
+            {isRemote ? rp.rootPath : abbreviateHome(rp.rootPath)}
+          </div>
+        </div>
+        <div
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "flex-end",
+            gap: 4,
+            flexShrink: 0,
+          }}
+        >
+          {offline ? (
+            <span
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                gap: 4,
+                fontSize: 9,
+                fontWeight: 700,
+                letterSpacing: "0.04em",
+                textTransform: "uppercase",
+                color: connecting ? "#FBBF24" : COLORS.textMuted,
+              }}
+            >
+              <ArrowsClockwise
+                size={11}
+                weight="bold"
+                style={
+                  connecting
+                    ? { animation: "ade-recent-spin 0.9s linear infinite" }
+                    : undefined
+                }
+              />
+              {connecting ? "Connecting" : "Reconnect"}
+            </span>
+          ) : rp.laneCount !== undefined ? (
+            <span
+              style={{
+                fontSize: 10,
+                background:
+                  "color-mix(in srgb, var(--color-accent) 20%, transparent)",
+                color: COLORS.accent,
+                padding: "2px 6px",
+                borderRadius: 10,
+                fontWeight: 600,
+              }}
+            >
+              {rp.laneCount} lane{rp.laneCount !== 1 ? "s" : ""}
+            </span>
+          ) : null}
+          {rp.lastOpenedAt ? (
+            <span style={{ fontSize: 9, color: COLORS.textDim }}>
+              {toRelativeTime(rp.lastOpenedAt)}
+            </span>
+          ) : null}
+        </div>
+      </button>
+      <div
+        className={
+          rp.pinned ? undefined : "opacity-0 group-hover:opacity-100"
+        }
+        style={{
+          position: "absolute",
+          top: 6,
+          right: 6,
+          display: "flex",
+          gap: 4,
+          transition: "opacity 0.15s ease",
+          zIndex: 2,
+        }}
+      >
+        <button
+          type="button"
+          aria-label={
+            rp.pinned
+              ? `Unpin ${rp.displayName}`
+              : `Pin ${rp.displayName} to top`
+          }
+          aria-pressed={rp.pinned ? true : false}
+          onClick={(e) => {
+            e.stopPropagation();
+            onTogglePin();
+          }}
+          style={{
+            width: 22,
+            height: 22,
+            borderRadius: 6,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            background: rp.pinned
+              ? "color-mix(in srgb, var(--color-accent) 26%, transparent)"
+              : "rgba(255,255,255,0.06)",
+            border: rp.pinned
+              ? "1px solid color-mix(in srgb, var(--color-accent) 45%, transparent)"
+              : "1px solid rgba(255,255,255,0.08)",
+            color: rp.pinned ? COLORS.accent : COLORS.textDim,
+            cursor: "pointer",
+            transition: "background 0.15s ease, color 0.15s ease",
+            padding: 0,
+          }}
+          title={rp.pinned ? "Unpin" : "Pin to top"}
+        >
+          <PushPin size={12} weight={rp.pinned ? "fill" : "regular"} />
+        </button>
+        <button
+          type="button"
+          aria-label={`Remove ${rp.displayName} from recents`}
+          onClick={(e) => {
+            e.stopPropagation();
+            onForget();
+          }}
+          disabled={isForgetting}
+          style={{
+            width: 22,
+            height: 22,
+            borderRadius: 6,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            background: "rgba(255,255,255,0.06)",
+            border: "1px solid rgba(255,255,255,0.08)",
+            color: COLORS.textDim,
+            cursor: "pointer",
+            transition: "background 0.15s ease, color 0.15s ease",
+            padding: 0,
+          }}
+          onMouseEnter={(e) => {
+            e.currentTarget.style.background = "rgba(239,68,68,0.18)";
+            e.currentTarget.style.color = "#EF4444";
+          }}
+          onMouseLeave={(e) => {
+            e.currentTarget.style.background = "rgba(255,255,255,0.06)";
+            e.currentTarget.style.color = COLORS.textDim;
+          }}
+          title="Remove from recents"
+        >
+          <X size={12} weight="bold" />
+        </button>
+      </div>
+      {isOpen ? (
+        <span
+          aria-hidden
+          style={{
+            position: "absolute",
+            top: 6,
+            left: 10,
+            fontSize: 8,
+            fontWeight: 700,
+            letterSpacing: "0.06em",
+            textTransform: "uppercase",
+            color: COLORS.accent,
+            pointerEvents: "none",
+          }}
+        >
+          Open
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
+// How long the "Removed — Undo" toast stays before the forget is committed.
+const FORGET_UNDO_WINDOW_MS = 5_000;
+
 function WelcomeScreen() {
   const switchProjectToPath = useAppStore((s) => s.switchProjectToPath);
+  const switchRemoteProject = useAppStore((s) => s.switchRemoteProject);
   const project = useAppStore((s) => s.project);
   const cancelNewTab = useAppStore((s) => s.cancelNewTab);
-  const [recentProjects, setRecentProjects] = useState<
-    Array<{
-      rootPath: string;
-      displayName: string;
-      exists: boolean;
-      lastOpenedAt?: string;
-      laneCount?: number;
-    }>
-  >([]);
+  const [recentProjects, setRecentProjects] = useState<RecentProjectSummary[]>(
+    [],
+  );
   const [projectBrowserOpen, setProjectBrowserOpen] = useState(false);
   const [remoteSnapshot, setRemoteSnapshot] =
     useState<RemoteRuntimeConnectionSnapshot | null>(null);
+  // Keys hidden by a pending deferred forget (committed only after the undo
+  // window expires). Reconnect/open state is keyed the same way.
+  const [pendingForgetKeys, setPendingForgetKeys] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const [forgetToast, setForgetToast] = useState<{
+    key: string;
+    name: string;
+  } | null>(null);
+  const [connectingKeys, setConnectingKeys] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const [rowError, setRowError] = useState<string | null>(null);
+  const [isDragOver, setIsDragOver] = useState(false);
+  const forgetTimerRef = useRef<number | null>(null);
+  const dragDepthRef = useRef(0);
 
   useEffect(() => {
     window.ade.project
@@ -417,29 +797,251 @@ function WelcomeScreen() {
     };
   }, []);
 
-  const realProjects = recentProjects.filter(
-    (rp) => rp.exists && !rp.rootPath.includes("ade-project"),
+  useEffect(
+    () => () => {
+      if (forgetTimerRef.current != null) {
+        window.clearTimeout(forgetTimerRef.current);
+      }
+    },
+    [],
   );
+
+  // Live connection state per remote target, used to pick the dot color and
+  // decide whether a remote row needs a reconnect before opening.
+  const connectionByTarget = useMemo(() => {
+    const map = new Map<string, RemoteRuntimeConnectionState>();
+    for (const connection of remoteSnapshot?.connections ?? []) {
+      map.set(connection.target.id, connection.state);
+    }
+    return map;
+  }, [remoteSnapshot]);
+
+  const visibleProjects = useMemo(() => {
+    const kept = recentProjects.filter((rp) => {
+      if (pendingForgetKeys.has(recentKey(rp))) return false;
+      if (rp.kind === "remote") return true;
+      return rp.exists && !rp.rootPath.includes("ade-project");
+    });
+    // Pinned rows float to the top while preserving the recency order within
+    // each group (stable sort).
+    return kept
+      .map((rp, index) => ({ rp, index }))
+      .sort((a, b) => {
+        const pinnedDelta =
+          (b.rp.pinned ? 1 : 0) - (a.rp.pinned ? 1 : 0);
+        return pinnedDelta !== 0 ? pinnedDelta : a.index - b.index;
+      })
+      .map((entry) => entry.rp);
+  }, [recentProjects, pendingForgetKeys]);
+
   const connectedRemoteCount = remoteSnapshot?.connectedCount ?? 0;
 
-  const forgetProject = async (rootPath: string) => {
+  const handleOpen = useCallback(
+    (rp: RecentProjectSummary) => {
+      setRowError(null);
+      if (rp.kind === "remote" && rp.remote) {
+        const key = recentKey(rp);
+        const targetId = rp.remote.targetId;
+        const projectId = rp.remote.projectId;
+        const state = connectionByTarget.get(targetId) ?? null;
+        if (state === "connected") {
+          void switchRemoteProject(targetId, projectId).catch((error) => {
+            setRowError(
+              error instanceof Error ? error.message : String(error),
+            );
+          });
+          return;
+        }
+        // Offline: establish the SSH connection first, then bind the project.
+        setConnectingKeys((prev) => new Set(prev).add(key));
+        void (async () => {
+          try {
+            await window.ade.remoteRuntime.connect(targetId);
+            await switchRemoteProject(targetId, projectId);
+          } catch (error) {
+            setRowError(
+              error instanceof Error ? error.message : String(error),
+            );
+          } finally {
+            setConnectingKeys((prev) => {
+              const next = new Set(prev);
+              next.delete(key);
+              return next;
+            });
+          }
+        })();
+        return;
+      }
+      if (project?.rootPath === rp.rootPath) {
+        cancelNewTab();
+        return;
+      }
+      void switchProjectToPath(rp.rootPath);
+    },
+    [
+      cancelNewTab,
+      connectionByTarget,
+      project?.rootPath,
+      switchProjectToPath,
+      switchRemoteProject,
+    ],
+  );
+
+  const handleTogglePin = useCallback(async (rp: RecentProjectSummary) => {
     try {
-      const next = await window.ade.project.forgetRecent(rootPath);
+      const next = await window.ade.project.setRecentPinned(
+        recentKey(rp),
+        !rp.pinned,
+      );
       setRecentProjects(next);
-    } catch { /* best-effort */ }
-  };
+    } catch (error) {
+      setRowError(error instanceof Error ? error.message : String(error));
+    }
+  }, []);
+
+  // Deferred-commit forget: hide the row immediately and show an undo toast.
+  // Only after the window elapses do we call the backend forget. Undo cancels
+  // the timer and unhides the row, with no backend call.
+  const commitForget = useCallback((key: string) => {
+    if (forgetTimerRef.current != null) {
+      window.clearTimeout(forgetTimerRef.current);
+      forgetTimerRef.current = null;
+    }
+    window.ade.project
+      .forgetRecent(key)
+      .then((next) => setRecentProjects(next))
+      .catch(() => {});
+    setPendingForgetKeys((prev) => {
+      const next = new Set(prev);
+      next.delete(key);
+      return next;
+    });
+    setForgetToast(null);
+  }, []);
+
+  const handleForget = useCallback(
+    (rp: RecentProjectSummary) => {
+      const key = recentKey(rp);
+      // Flush any prior pending forget so we never stack timers.
+      const previousKey = forgetToast?.key ?? null;
+      if (previousKey && previousKey !== key) {
+        commitForget(previousKey);
+      } else if (forgetTimerRef.current != null) {
+        window.clearTimeout(forgetTimerRef.current);
+        forgetTimerRef.current = null;
+      }
+      setForgetToast({ key, name: rp.displayName });
+      setPendingForgetKeys((prev) => new Set(prev).add(key));
+      forgetTimerRef.current = window.setTimeout(() => {
+        forgetTimerRef.current = null;
+        commitForget(key);
+      }, FORGET_UNDO_WINDOW_MS);
+    },
+    [commitForget, forgetToast?.key],
+  );
+
+  const handleUndoForget = useCallback(() => {
+    if (forgetTimerRef.current != null) {
+      window.clearTimeout(forgetTimerRef.current);
+      forgetTimerRef.current = null;
+    }
+    setForgetToast((current) => {
+      if (current) {
+        setPendingForgetKeys((prev) => {
+          const next = new Set(prev);
+          next.delete(current.key);
+          return next;
+        });
+      }
+      return null;
+    });
+  }, []);
+
+  const handleDropFolder = useCallback(
+    (event: React.DragEvent) => {
+      event.preventDefault();
+      dragDepthRef.current = 0;
+      setIsDragOver(false);
+      const file = event.dataTransfer.files?.[0];
+      if (!file) return;
+      try {
+        const path = window.ade.project.getDroppedPath(file);
+        if (path) {
+          setRowError(null);
+          void switchProjectToPath(path);
+        }
+      } catch (error) {
+        setRowError(error instanceof Error ? error.message : String(error));
+      }
+    },
+    [switchProjectToPath],
+  );
 
   return (
     <div
+      onDragEnter={(event) => {
+        event.preventDefault();
+        dragDepthRef.current += 1;
+        setIsDragOver(true);
+      }}
+      onDragOver={(event) => {
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "copy";
+      }}
+      onDragLeave={() => {
+        dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+        if (dragDepthRef.current === 0) setIsDragOver(false);
+      }}
+      onDrop={handleDropFolder}
       style={{
+        position: "relative",
         display: "flex",
         flexDirection: "column",
         alignItems: "center",
         height: "100%",
         background: `radial-gradient(circle at 50% 30%, color-mix(in srgb, var(--color-accent) 15%, transparent) 0%, ${COLORS.pageBg} 40%)`,
         overflow: "hidden",
+        outline: isDragOver
+          ? "2px dashed color-mix(in srgb, var(--color-accent) 70%, transparent)"
+          : "none",
+        outlineOffset: -8,
+        transition: "outline-color 0.15s ease",
       }}
     >
+      <style>
+        {`@keyframes ade-recent-dot-pulse {
+            0%, 100% { opacity: 1; transform: scale(1); }
+            50% { opacity: 0.4; transform: scale(0.7); }
+          }
+          @keyframes ade-recent-spin {
+            to { transform: rotate(360deg); }
+          }`}
+      </style>
+      {isDragOver ? (
+        <div
+          aria-hidden
+          style={{
+            position: "absolute",
+            inset: 16,
+            borderRadius: 16,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            background:
+              "color-mix(in srgb, var(--color-accent) 10%, transparent)",
+            color: COLORS.accent,
+            fontFamily: MONO_FONT,
+            fontSize: 13,
+            fontWeight: 700,
+            letterSpacing: "0.08em",
+            textTransform: "uppercase",
+            zIndex: 30,
+            pointerEvents: "none",
+          }}
+        >
+          Drop a folder to open
+        </div>
+      ) : null}
       {/* Top spacer: pushes the logo title down to ~1/3 of the screen height.
           Paired with the 2x bottom region below so free space splits 1:2. */}
       <div aria-hidden style={{ flex: "1 1 0%", minHeight: 32 }} />
@@ -525,7 +1127,7 @@ function WelcomeScreen() {
       </div>
 
       {/* Scrollable recent projects list (takes ~2/3 of the free space) */}
-      {realProjects.length > 0 ? (
+      {visibleProjects.length > 0 ? (
         <div style={{ flex: "2 1 0%", minHeight: 0, width: "100%", display: "flex", justifyContent: "center", overflow: "hidden" }}>
           <div style={{ width: "100%", maxWidth: 440, overflowY: "auto", paddingLeft: 16, paddingRight: 16, paddingBottom: 48 }}>
             <div
@@ -538,143 +1140,104 @@ function WelcomeScreen() {
             >
               RECENT PROJECTS
             </div>
+            {rowError ? (
+              <div
+                role="alert"
+                style={{
+                  marginBottom: 10,
+                  padding: "8px 10px",
+                  borderRadius: 8,
+                  border:
+                    "1px solid color-mix(in srgb, var(--color-error) 40%, transparent)",
+                  background:
+                    "color-mix(in srgb, var(--color-error) 12%, transparent)",
+                  color: COLORS.textPrimary,
+                  fontFamily: MONO_FONT,
+                  fontSize: 10,
+                  whiteSpace: "pre-wrap",
+                }}
+              >
+                {rowError}
+              </div>
+            ) : null}
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              {realProjects.map((rp) => (
-                <div
-                  key={rp.rootPath}
-                  className="group"
-                  style={{ position: "relative" }}
-                >
-                  <button
-                    type="button"
-                    data-tour="project.recentProject"
-                    onClick={() => {
-                      if (project?.rootPath === rp.rootPath) {
-                        cancelNewTab();
-                        return;
-                      }
-                      void switchProjectToPath(rp.rootPath);
-                    }}
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 12,
-                      padding: "12px 16px",
-                      width: "100%",
-                      background: "rgba(255,255,255,0.02)",
-                      border: `1px solid ${COLORS.border}`,
-                      borderRadius: 12,
-                      color: COLORS.textPrimary,
-                      fontFamily: MONO_FONT,
-                      fontSize: 12,
-                      cursor: "pointer",
-                      textAlign: "left",
-                      transition: "all 0.2s ease",
-                      backdropFilter: "blur(10px)",
-                    }}
-                  >
-                    <div
-                      style={{
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        width: 32,
-                        height: 32,
-                        borderRadius: 8,
-                        background:
-                          "color-mix(in srgb, var(--color-accent) 15%, transparent)",
-                        color: COLORS.accent,
-                        flexShrink: 0,
-                      }}
-                    >
-                      <RecentProjectIcon rootPath={rp.rootPath} />
-                    </div>
-                    <div style={{ overflow: "hidden", flex: 1 }}>
-                      <div
-                        style={{ fontWeight: 600, fontSize: 13, marginBottom: 2 }}
-                      >
-                        {rp.displayName}
-                      </div>
-                      <div
-                        style={{
-                          fontSize: 10,
-                          color: COLORS.textDim,
-                          overflow: "hidden",
-                          textOverflow: "ellipsis",
-                          whiteSpace: "nowrap",
-                        }}
-                      >
-                        {rp.rootPath}
-                      </div>
-                    </div>
-                    <div
-                      style={{
-                        display: "flex",
-                        flexDirection: "column",
-                        alignItems: "flex-end",
-                        gap: 4,
-                        flexShrink: 0,
-                      }}
-                    >
-                      {rp.laneCount !== undefined ? (
-                        <span
-                          style={{
-                            fontSize: 10,
-                            background:
-                              "color-mix(in srgb, var(--color-accent) 20%, transparent)",
-                            color: COLORS.accent,
-                            padding: "2px 6px",
-                            borderRadius: 10,
-                            fontWeight: 600,
-                          }}
-                        >
-                          {rp.laneCount} lane{rp.laneCount !== 1 ? "s" : ""}
-                        </span>
-                      ) : null}
-                      {rp.lastOpenedAt ? (
-                        <span style={{ fontSize: 9, color: COLORS.textDim }}>
-                          {toRelativeTime(rp.lastOpenedAt)}
-                        </span>
-                      ) : null}
-                    </div>
-                  </button>
-                  <button
-                    type="button"
-                    aria-label={`Remove ${rp.displayName} from recents`}
-                    onClick={(e) => { e.stopPropagation(); void forgetProject(rp.rootPath); }}
-                    className="opacity-0 group-hover:opacity-100"
-                    style={{
-                      position: "absolute",
-                      top: 6,
-                      right: 6,
-                      width: 22,
-                      height: 22,
-                      borderRadius: 6,
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      background: "rgba(255,255,255,0.06)",
-                      border: "1px solid rgba(255,255,255,0.08)",
-                      color: COLORS.textDim,
-                      cursor: "pointer",
-                      transition: "opacity 0.15s ease, background 0.15s ease, color 0.15s ease",
-                      padding: 0,
-                      zIndex: 2,
-                    }}
-                    onMouseEnter={(e) => { e.currentTarget.style.background = "rgba(239,68,68,0.18)"; e.currentTarget.style.color = "#EF4444"; }}
-                    onMouseLeave={(e) => { e.currentTarget.style.background = "rgba(255,255,255,0.06)"; e.currentTarget.style.color = COLORS.textDim; }}
-                    title="Remove from recents"
-                  >
-                    <X size={12} weight="bold" />
-                  </button>
-                </div>
-              ))}
+              {visibleProjects.map((rp) => {
+                const key = recentKey(rp);
+                const isRemote = rp.kind === "remote" && Boolean(rp.remote);
+                const targetId = rp.remote?.targetId;
+                const baseState = isRemote && targetId
+                  ? (connectionByTarget.get(targetId) ?? "idle")
+                  : null;
+                const connectionState: RemoteRuntimeConnectionState | null =
+                  connectingKeys.has(key) ? "connecting" : baseState;
+                const isOpenLocal =
+                  !isRemote && project?.rootPath === rp.rootPath;
+                return (
+                  <RecentProjectRow
+                    key={key}
+                    rp={rp}
+                    connectionState={connectionState}
+                    isOpen={isOpenLocal}
+                    isForgetting={pendingForgetKeys.has(key)}
+                    onOpen={() => handleOpen(rp)}
+                    onTogglePin={() => void handleTogglePin(rp)}
+                    onForget={() => handleForget(rp)}
+                  />
+                );
+              })}
             </div>
           </div>
         </div>
       ) : (
         <div aria-hidden style={{ flex: "2 1 0%" }} />
       )}
+
+      {forgetToast ? (
+        <div
+          role="status"
+          style={{
+            position: "absolute",
+            bottom: 24,
+            left: "50%",
+            transform: "translateX(-50%)",
+            display: "flex",
+            alignItems: "center",
+            gap: 12,
+            padding: "10px 14px",
+            borderRadius: 12,
+            background: "rgba(20,18,28,0.96)",
+            border: `1px solid ${COLORS.border}`,
+            boxShadow: "0 10px 32px rgba(0,0,0,0.45)",
+            color: COLORS.textPrimary,
+            fontFamily: MONO_FONT,
+            fontSize: 12,
+            zIndex: 40,
+          }}
+        >
+          <span>
+            Removed{" "}
+            <span style={{ fontWeight: 700 }}>{forgetToast.name}</span>
+          </span>
+          <button
+            type="button"
+            onClick={handleUndoForget}
+            style={{
+              fontFamily: MONO_FONT,
+              fontSize: 11,
+              fontWeight: 700,
+              letterSpacing: "0.04em",
+              textTransform: "uppercase",
+              color: COLORS.accent,
+              background: "transparent",
+              border: "none",
+              cursor: "pointer",
+              padding: 0,
+            }}
+          >
+            Undo
+          </button>
+        </div>
+      ) : null}
 
       <CommandPalette
         open={projectBrowserOpen}
@@ -686,7 +1249,6 @@ function WelcomeScreen() {
 }
 
 export function RunPage() {
-  const project = useAppStore((s) => s.project);
   const lanes = useAppStore((s) => s.lanes);
   const showWelcome = useAppStore((s) => s.showWelcome);
 

@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import type {
   ProjectDetail,
+  ProjectDirtyBreakdown,
   ProjectLanguageShare,
   ProjectLastCommit,
   RecentProjectSummary,
@@ -188,7 +189,32 @@ async function isGitRepo(rootPath: string): Promise<boolean> {
   }
 }
 
-async function readGitMetadata(rootPath: string): Promise<Pick<ProjectDetail, "branchName" | "dirtyCount" | "lastCommit" | "aheadBehind">> {
+export function parseDirtyStatus(raw: string): {
+  count: number;
+  breakdown: ProjectDirtyBreakdown;
+} {
+  let staged = 0;
+  let unstaged = 0;
+  let untracked = 0;
+  let count = 0;
+  for (const line of raw.split(/\r?\n/)) {
+    if (line.trim().length === 0) continue;
+    count += 1;
+    // Porcelain v1: "XY <path>" — X = index/staged state, Y = worktree state.
+    // "??" = untracked, "!!" = ignored (not emitted without -uall/--ignored).
+    const x = line[0] ?? " ";
+    const y = line[1] ?? " ";
+    if (x === "?" && y === "?") {
+      untracked += 1;
+      continue;
+    }
+    if (x !== " " && x !== "?") staged += 1;
+    if (y !== " " && y !== "?") unstaged += 1;
+  }
+  return { count, breakdown: { staged, unstaged, untracked } };
+}
+
+async function readGitMetadata(rootPath: string): Promise<Pick<ProjectDetail, "branchName" | "dirtyCount" | "dirtyBreakdown" | "lastCommit" | "aheadBehind">> {
   const [branchRes, dirtyRes, lastCommitRes, aheadBehindRes] = await Promise.all([
     runGit(["rev-parse", "--abbrev-ref", "HEAD"], { cwd: rootPath, timeoutMs: 5_000 }),
     runGit(["status", "--porcelain"], { cwd: rootPath, timeoutMs: 8_000 }),
@@ -197,13 +223,13 @@ async function readGitMetadata(rootPath: string): Promise<Pick<ProjectDetail, "b
   ]);
 
   const branchName = branchRes.exitCode === 0 ? branchRes.stdout.trim() || null : null;
-  const dirtyCount = dirtyRes.exitCode === 0
-    ? dirtyRes.stdout.split("\n").filter((line) => line.trim().length > 0).length
-    : null;
+  const dirty = dirtyRes.exitCode === 0 ? parseDirtyStatus(dirtyRes.stdout) : null;
+  const dirtyCount = dirty?.count ?? null;
+  const dirtyBreakdown = dirty?.breakdown ?? null;
   const lastCommit = lastCommitRes.exitCode === 0 ? parseLastCommitLine(lastCommitRes.stdout) : null;
   const aheadBehind = aheadBehindRes.exitCode === 0 ? parseAheadBehind(aheadBehindRes.stdout) : null;
 
-  return { branchName, dirtyCount, lastCommit, aheadBehind };
+  return { branchName, dirtyCount, dirtyBreakdown, lastCommit, aheadBehind };
 }
 
 async function readWorktreeSummary(args: {
@@ -285,7 +311,8 @@ function lookupRecentProjectEntry(globalStatePath: string | null | undefined, ro
   if (!globalStatePath) return null;
   try {
     const state = readGlobalState(globalStatePath);
-    const entry = (state.recentProjects ?? []).find((rp) => rp.rootPath === rootPath);
+    const entry = (state.recentProjects ?? [])
+      .find((rp) => !rp.remote && path.resolve(rp.rootPath) === rootPath);
     return entry ? toRecentProjectSummary(entry) : null;
   } catch {
     return null;
@@ -307,6 +334,7 @@ export async function getProjectDetail(rootPath: string, options: GetProjectDeta
       isGitRepo: false,
       branchName: null,
       dirtyCount: null,
+      dirtyBreakdown: null,
       aheadBehind: null,
       lastCommit: null,
       readmeExcerpt: null,
@@ -328,6 +356,7 @@ export async function getProjectDetail(rootPath: string, options: GetProjectDeta
     isGitRepo: gitRepo,
     branchName: gitMeta.branchName,
     dirtyCount: gitMeta.dirtyCount,
+    dirtyBreakdown: gitMeta.dirtyBreakdown,
     aheadBehind: gitMeta.aheadBehind,
     lastCommit: gitMeta.lastCommit,
     readmeExcerpt,

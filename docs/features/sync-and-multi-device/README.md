@@ -335,7 +335,10 @@ The machine runtime knows **every** project the user has opened on that machine
 transport is one brain-level WebSocket listener on a stable port; one
 project's host service owns the connected peers at a time. The phone
 pairs with the machine once, sees the catalog, and stays on the same
-port across project switches. The phone flow:
+port across project switches. Desktop SSH remote recents are not part of
+this phone catalog: the catalog is local to the paired machine/runtime, so
+remote-machine paths are filtered out before mobile summaries are built. The
+phone flow:
 
 1. Phone connects and sends `hello`. The runtime responds with
    `hello_ok` containing the current project catalog (when supported).

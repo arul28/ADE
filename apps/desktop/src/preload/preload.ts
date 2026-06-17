@@ -3273,12 +3273,22 @@ contextBridge.exposeInMainWorld("ade", {
         throw error;
       }
     },
-    forgetRecent: async (rootPath: string): Promise<RecentProjectSummary[]> =>
-      ipcRenderer.invoke(IPC.projectForgetRecent, { rootPath }),
+    forgetRecent: async (keyOrRootPath: string): Promise<RecentProjectSummary[]> =>
+      // For local recents the key equals the root path; for remote recents the
+      // caller passes the remote key. Send both so the handler can match either.
+      ipcRenderer.invoke(IPC.projectForgetRecent, {
+        key: keyOrRootPath,
+        rootPath: keyOrRootPath,
+      }),
     reorderRecent: async (
-      orderedPaths: string[],
+      orderedKeys: string[],
     ): Promise<RecentProjectSummary[]> =>
-      ipcRenderer.invoke(IPC.projectReorderRecent, { orderedPaths }),
+      ipcRenderer.invoke(IPC.projectReorderRecent, { orderedPaths: orderedKeys }),
+    setRecentPinned: async (
+      key: string,
+      pinned: boolean,
+    ): Promise<RecentProjectSummary[]> =>
+      ipcRenderer.invoke(IPC.projectSetRecentPinned, { key, pinned }),
     createLocal: async (
       input: CreateProjectInput,
     ): Promise<CreateProjectResult> =>

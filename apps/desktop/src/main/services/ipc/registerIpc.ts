@@ -554,7 +554,8 @@ import type { createIosSimulatorService } from "../ios/iosSimulatorService";
 import type { createAppControlService } from "../appControl/appControlService";
 import type { createBuiltInBrowserService } from "../builtInBrowser/builtInBrowserService";
 import { ipcInvokeTimeoutMs } from "./ipcTimeouts";
-import { readGlobalState, writeGlobalState, reorderRecentProjects } from "../state/globalState";
+import { readGlobalState, writeGlobalState, reorderRecentProjects, setRecentProjectPinned, recentProjectKey } from "../state/globalState";
+import type { RecentProject } from "../state/globalState";
 import type { createKeybindingsService } from "../keybindings/keybindingsService";
 import type { createAgentToolsService } from "../agentTools/agentToolsService";
 import type { createDevToolsService } from "../devTools/devToolsService";
@@ -3563,6 +3564,7 @@ export function registerIpc({
     return Array.from(new Set([
       getCtx().project.rootPath,
       ...(state.recentProjects ?? [])
+        .filter((entry) => !entry.remote)
         .map((entry) => entry.rootPath)
         .filter((root): root is string => typeof root === "string" && root.trim().length > 0),
     ]));
@@ -3702,11 +3704,13 @@ export function registerIpc({
     expiresAtMs: number;
   } | null = null;
   const recentProjectSignature = (
-    entries: Array<{ rootPath: string; displayName: string; lastOpenedAt: string }>,
+    entries: RecentProject[],
   ): string => JSON.stringify(entries.map((entry) => [
     entry.rootPath,
     entry.displayName,
     entry.lastOpenedAt,
+    entry.remote ? recentProjectKey(entry) : null,
+    entry.pinned ? 1 : 0,
   ]));
   const listRecentProjectSummaries = (options?: { force?: boolean }): RecentProjectSummary[] => {
     const state = readGlobalState(globalStatePath);
@@ -3729,6 +3733,8 @@ export function registerIpc({
     };
     return rows;
   };
+  const listLocalRecentProjectSummaries = (): RecentProjectSummary[] =>
+    listRecentProjectSummaries().filter((entry) => entry.kind !== "remote");
   const clearRecentProjectSummaryCache = (): void => {
     recentProjectSummaryCache = null;
   };
@@ -3791,31 +3797,53 @@ export function registerIpc({
 
   ipcMain.handle(IPC.projectGetDefaultParentDir, async (): Promise<string> => {
     const ctx = getCtx();
-    return ctx.projectScaffoldService.getDefaultParentDir(listRecentProjectSummaries());
+    return ctx.projectScaffoldService.getDefaultParentDir(listLocalRecentProjectSummaries());
   });
 
   ipcMain.handle(IPC.projectCloseCurrent, async (): Promise<void> => {
     await closeCurrentProject();
   });
 
-  ipcMain.handle(IPC.projectForgetRecent, async (_event, arg: { rootPath: string }): Promise<RecentProjectSummary[]> => {
-    const rootPath = typeof arg?.rootPath === "string" ? arg.rootPath.trim() : "";
+  ipcMain.handle(IPC.projectForgetRecent, async (_event, arg: { rootPath?: string; key?: string }): Promise<RecentProjectSummary[]> => {
+    // `key` is the stable recent identity (rootPath for local, remote:… for
+    // remote). Older callers pass only `rootPath`; for local entries the key
+    // and the rootPath are identical, so this stays backward compatible.
+    const targetKey = (typeof arg?.key === "string" && arg.key.trim())
+      || (typeof arg?.rootPath === "string" && arg.rootPath.trim())
+      || "";
     const state = readGlobalState(globalStatePath);
-    if (!rootPath) {
+    if (!targetKey) {
       return listRecentProjectSummaries();
     }
-    const filtered = (state.recentProjects ?? []).filter((entry) => entry.rootPath !== rootPath);
+    const entries = state.recentProjects ?? [];
+    const removed = entries.find((entry) => recentProjectKey(entry) === targetKey);
+    const filtered = entries.filter((entry) => recentProjectKey(entry) !== targetKey);
     const next = { ...state, recentProjects: filtered };
-    if (next.lastProjectRoot === rootPath) {
+    if (removed && !removed.remote && next.lastProjectRoot === removed.rootPath) {
       delete next.lastProjectRoot;
     }
     writeGlobalState(globalStatePath, next);
     clearRecentProjectSummaryCache();
-    try {
-      await closeProjectByPath(rootPath);
-    } catch {
-      // Best effort; forgetting a project should still update recents even if teardown fails.
+    // Only local projects have foreground services / open windows to tear down.
+    if (removed && !removed.remote) {
+      try {
+        await closeProjectByPath(removed.rootPath);
+      } catch {
+        // Best effort; forgetting a project should still update recents even if teardown fails.
+      }
     }
+    return listRecentProjectSummaries({ force: true });
+  });
+
+  ipcMain.handle(IPC.projectSetRecentPinned, async (_event, arg: { key?: string; pinned?: boolean }): Promise<RecentProjectSummary[]> => {
+    const key = typeof arg?.key === "string" ? arg.key.trim() : "";
+    if (!key) {
+      return listRecentProjectSummaries();
+    }
+    const state = readGlobalState(globalStatePath);
+    const next = setRecentProjectPinned(state, key, Boolean(arg?.pinned));
+    writeGlobalState(globalStatePath, next);
+    clearRecentProjectSummaryCache();
     return listRecentProjectSummaries({ force: true });
   });
 

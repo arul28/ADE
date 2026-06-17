@@ -100,6 +100,62 @@ describe("normalizeStartupProjectState", () => {
     expect(result.changed).toBe(true);
   });
 
+  it("keeps remote recents without disk-checking or stripping their remote metadata", () => {
+    const remote = {
+      targetId: "t1",
+      projectId: "p1",
+      runtimeName: "mac-mini",
+      hostname: "mac-mini.local",
+    };
+    const result = normalizeStartupProjectState({
+      saved: {
+        recentProjects: [
+          // A remote path that does NOT exist on this machine — must survive.
+          { rootPath: "/home/u/webapp", displayName: "webapp", lastOpenedAt: "2026-05-10T00:00:00.000Z", remote, pinned: true },
+          { rootPath: "valid-project", displayName: "Local", lastOpenedAt: "2026-05-09T00:00:00.000Z" },
+        ],
+      },
+      isLikelyRepoRoot,
+      normalizeProjectPath,
+      nowIso,
+    });
+
+    const remoteEntry = result.recentProjects.find((p) => p.remote);
+    expect(remoteEntry).toBeDefined();
+    expect(remoteEntry?.remote).toEqual(remote);
+    expect(remoteEntry?.rootPath).toBe("/home/u/webapp"); // not normalized to a local path
+    expect(remoteEntry?.pinned).toBe(true);
+    // The local entry is still cleaned/normalized as before.
+    expect(result.recentProjects.some((p) => !p.remote && p.rootPath === "/valid-project")).toBe(true);
+  });
+
+  it("reports changed when cleanup only normalizes pinned metadata", () => {
+    const result = normalizeStartupProjectState({
+      saved: {
+        recentProjects: [
+          {
+            rootPath: "/valid-project",
+            displayName: "Local",
+            lastOpenedAt: "2026-05-09T00:00:00.000Z",
+            pinned: false,
+          },
+        ],
+      },
+      isLikelyRepoRoot,
+      normalizeProjectPath,
+      nowIso,
+    });
+
+    expect(result.recentProjects).toEqual([
+      {
+        rootPath: "/valid-project",
+        displayName: "Local",
+        lastOpenedAt: "2026-05-09T00:00:00.000Z",
+      },
+    ]);
+    expect(result.changed).toBe(true);
+  });
+
   it("preserves the last remote project binding across startup cleanup", () => {
     const lastRemoteProjectBinding = {
       kind: "remote" as const,

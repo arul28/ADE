@@ -1,8 +1,14 @@
 /* @vitest-environment jsdom */
 
 import React from "react";
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { CommandPalette } from "./CommandPalette";
 import { PROJECT_BROWSER_CLOSE_EVENT } from "../../lib/projectBrowserEvents";
@@ -44,6 +50,7 @@ describe("CommandPalette", () => {
     isGitRepo: true,
     branchName: "main",
     dirtyCount: 0,
+    dirtyBreakdown: null,
     aheadBehind: null,
     lastCommit: null,
     readmeExcerpt: null,
@@ -52,12 +59,21 @@ describe("CommandPalette", () => {
     lastOpenedAt: null,
     subdirectoryCount: null,
   });
+  const resolveIcon = vi.fn(async () => ({
+    dataUrl: null,
+    sourcePath: null,
+    mimeType: null,
+  }));
   const getDroppedPath = vi.fn(() => "");
 
   beforeEach(() => {
     browseDirectories.mockReset();
     chooseDirectory.mockReset();
     getDetail.mockClear();
+    resolveIcon.mockClear();
+    // The per-location browse-path memory is localStorage-backed; clear it so a
+    // path persisted by one test can't seed `browseInput` in the next.
+    globalThis.localStorage?.clear();
     seedStore();
     globalThis.window.ade = {
       app: {
@@ -68,8 +84,16 @@ describe("CommandPalette", () => {
         chooseDirectory,
         getDetail,
         getDroppedPath,
+        resolveIcon,
       },
     } as any;
+  });
+
+  // The shared test setup doesn't auto-unmount, so without this each test's
+  // dialog would linger in the DOM and `getAll*` queries would match elements
+  // (e.g. the inline "Open" buttons) from previously mounted components.
+  afterEach(() => {
+    cleanup();
   });
 
   it("opens the ADE project browser in browse intent mode", async () => {
@@ -104,9 +128,52 @@ describe("CommandPalette", () => {
     });
 
     expect(
-      await screen.findByRole("button", { name: /open directory/i }),
+      await screen.findByRole("button", { name: /choose folder/i }),
     ).toBeTruthy();
     expect(screen.getByText("Versic")).toBeTruthy();
+  });
+
+  it("opens a git repo row directly from its inline Open button", async () => {
+    const switchProjectToPath = vi.fn(async () => {});
+    seedStore({ switchProjectToPath });
+    browseDirectories.mockResolvedValue({
+      inputPath: "../",
+      resolvedPath: "/Users/admin/Projects",
+      directoryPath: "/Users/admin/Projects",
+      parentPath: "/Users/admin",
+      exactDirectoryPath: "/Users/admin/Projects",
+      openableProjectRoot: null,
+      entries: [
+        {
+          name: "Versic",
+          fullPath: "/Users/admin/Projects/Versic",
+          isGitRepo: true,
+        },
+      ],
+    });
+
+    render(
+      <MemoryRouter>
+        <CommandPalette open intent="project-browse" onOpenChange={vi.fn()} />
+      </MemoryRouter>,
+    );
+
+    // Both the row's inline Open button and the footer Open button advertise
+    // "Open Versic"; pick the row one (the footer carries a data-tour marker).
+    const rowOpenButton = await waitFor(() => {
+      const match = screen
+        .getAllByRole("button", { name: /open versic/i })
+        .find((button) => !button.hasAttribute("data-tour"));
+      if (!match) throw new Error("row Open button not found yet");
+      return match;
+    });
+    fireEvent.click(rowOpenButton);
+
+    await waitFor(() => {
+      expect(switchProjectToPath).toHaveBeenCalledWith(
+        "/Users/admin/Projects/Versic",
+      );
+    });
   });
 
   it("can fall back to the directory picker from the browser footer", async () => {
@@ -137,7 +204,7 @@ describe("CommandPalette", () => {
       });
     });
     const button = await screen.findByRole("button", {
-      name: /open directory/i,
+      name: /choose folder/i,
     });
     fireEvent.click(button);
 
@@ -338,6 +405,7 @@ describe("CommandPalette", () => {
         isGitRepo: true,
         branchName: "main",
         dirtyCount: 0,
+        dirtyBreakdown: null,
         aheadBehind: null,
         lastCommit: null,
         readmeExcerpt: null,

@@ -4,6 +4,7 @@ import { createRequire } from "node:module";
 import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
 import type { RecentProjectSummary } from "../../../shared/types";
+import type { RecentProjectRemote } from "../state/globalState";
 
 type DatabaseSyncConstructor = new (dbPath: string, options?: { allowExtension?: boolean }) => DatabaseSyncType;
 
@@ -14,6 +15,8 @@ type RecentProjectEntry = {
   rootPath: string;
   displayName: string;
   lastOpenedAt: string;
+  remote?: RecentProjectRemote;
+  pinned?: boolean;
 };
 
 export type RecentProjectInspection = {
@@ -151,7 +154,29 @@ function readGitLaneCount(projectRoot: string): number | undefined {
   }
 }
 
+function remoteRecentSummary(entry: RecentProjectEntry): RecentProjectSummary {
+  return {
+    rootPath: entry.rootPath,
+    displayName: entry.displayName,
+    lastOpenedAt: entry.lastOpenedAt,
+    // A remote project always "exists" from the desktop's point of view — its
+    // reachability is a live connection concern resolved by the renderer
+    // against the remote connection snapshot, not a local-disk check.
+    exists: true,
+    kind: "remote",
+    remote: entry.remote,
+    ...(entry.pinned ? { pinned: true } : {}),
+  };
+}
+
 export function inspectRecentProject(entry: RecentProjectEntry): RecentProjectInspection {
+  if (entry.remote) {
+    return {
+      summary: remoteRecentSummary(entry),
+      projectId: null,
+      defaultBaseRef: null,
+    };
+  }
   const exists = fs.existsSync(entry.rootPath);
   const adeProject = exists ? inspectAdeProject(entry.rootPath) : EMPTY_ADE_PROJECT;
   const laneCount = exists ? (adeProject.laneCount ?? readGitLaneCount(entry.rootPath)) : undefined;
@@ -163,6 +188,8 @@ export function inspectRecentProject(entry: RecentProjectEntry): RecentProjectIn
       lastOpenedAt: entry.lastOpenedAt,
       exists,
       laneCount,
+      kind: "local",
+      ...(entry.pinned ? { pinned: true } : {}),
     },
     projectId: adeProject.projectId,
     defaultBaseRef: adeProject.defaultBaseRef,
@@ -170,11 +197,16 @@ export function inspectRecentProject(entry: RecentProjectEntry): RecentProjectIn
 }
 
 export function toShallowRecentProjectSummary(entry: RecentProjectEntry): RecentProjectSummary {
+  if (entry.remote) {
+    return remoteRecentSummary(entry);
+  }
   return {
     rootPath: entry.rootPath,
     displayName: entry.displayName,
     lastOpenedAt: entry.lastOpenedAt,
     exists: fs.existsSync(entry.rootPath),
+    kind: "local",
+    ...(entry.pinned ? { pinned: true } : {}),
   };
 }
 
