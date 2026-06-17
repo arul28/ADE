@@ -6120,6 +6120,18 @@ app.whenReady().then(async () => {
             click: (_item, browserWindow) =>
               sendZoomCommand("in", browserWindow),
           },
+          // Electron's native zoomIn role also bound Cmd/Ctrl+= (the unshifted
+          // "+" key most keyboards use). A single CmdOrCtrl+Plus accelerator
+          // drops it, so register the "=" variant on a hidden twin to preserve
+          // the shortcut (acceleratorWorksWhenHidden defaults true on macOS).
+          {
+            label: "Zoom In",
+            accelerator: "CmdOrCtrl+=",
+            visible: false,
+            acceleratorWorksWhenHidden: true,
+            click: (_item, browserWindow) =>
+              sendZoomCommand("in", browserWindow),
+          },
           {
             label: "Zoom Out",
             accelerator: "CmdOrCtrl+-",
