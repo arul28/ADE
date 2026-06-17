@@ -9,6 +9,7 @@ import {
   movePendingQuestionOption,
   pendingQuestionAnsweredCount,
   pendingQuestionSelectionValue,
+  selectPendingQuestionOptionIndex,
 } from "../pendingInput";
 
 const baseRequest: PendingInputRequest = {
@@ -186,6 +187,35 @@ describe("pendingInput", () => {
       "manual",
     ]);
     expect(answerForQuestion({ id: "free", question: "Notes?" }, "  ship it  ")).toBe("ship it");
+  });
+
+  it("toggles multi-select option picker values without collapsing to a scalar", () => {
+    const request: PendingInputRequest = {
+      ...baseRequest,
+      questions: [{
+        ...baseRequest.questions[0]!,
+        multiSelect: true,
+      }],
+    };
+    const approval = {
+      itemId: "item-multi",
+      description: "Need input",
+      highStakes: false,
+      mode: "question" as const,
+      request,
+    };
+
+    const initial = createPendingQuestionSelectionState(approval)!;
+    expect(pendingQuestionSelectionValue(request, initial)).toBeNull();
+
+    const withRecommended = selectPendingQuestionOptionIndex(request, initial, 0);
+    expect(pendingQuestionSelectionValue(request, withRecommended)).toEqual(["recommended"]);
+
+    const withBoth = selectPendingQuestionOptionIndex(request, withRecommended, 1);
+    expect(pendingQuestionSelectionValue(request, withBoth)).toEqual(["recommended", "manual"]);
+
+    const withoutRecommended = selectPendingQuestionOptionIndex(request, withBoth, 0);
+    expect(pendingQuestionSelectionValue(request, withoutRecommended)).toEqual(["manual"]);
   });
 
   it("counts answered pending questions by id", () => {

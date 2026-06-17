@@ -150,6 +150,12 @@ export function ProviderLogo({
   switch (raw) {
     case "anthropic":
       return <Anthropic.Avatar size={size} className={c} />;
+    // Runtime `source` values ("claude", "codex") map to the branded product
+    // marks — used by the chat question/plan card header.
+    case "claude":
+      return <Claude.Avatar size={size} className={c} />;
+    case "codex":
+      return <Codex.Avatar size={size} className={lobeMarkClass(cn("opacity-95", className))} />;
     case "openai":
       return <OpenAI size={size} className={c} />;
     case "cursor":

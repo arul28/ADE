@@ -80,6 +80,11 @@ struct WorkPendingQuestionModel: Identifiable, Equatable {
   let questions: [WorkPendingQuestion]
   var title: String? = nil
   var body: String? = nil
+  /// Provider/source that asked the question ("claude", "codex", "cursor"…),
+  /// threaded through from the approval/tool-call detail so the card header can
+  /// render "{Provider} asks" and tint per-provider. Optional because some
+  /// legacy `structured_question` envelopes don't carry it.
+  var source: String? = nil
 
   var primary: WorkPendingQuestion { questions.first ?? WorkPendingQuestion(questionId: "response", question: "", options: [], allowsFreeform: true) }
   var questionId: String { primary.questionId }
@@ -90,6 +95,57 @@ struct WorkPendingQuestionModel: Identifiable, Equatable {
   var impact: String? { primary.impact }
   var multiSelect: Bool { primary.multiSelect }
   var isSecret: Bool { primary.isSecret }
+}
+
+/// Shared provider-display-name mapping for chat-surface card headers, mirroring
+/// the desktop redesign's `chatSurfaceProviderName`:
+///   claude/anthropic → "Claude", codex/openai → "Codex", cursor → "Cursor",
+///   droid/factory → "Droid", opencode → "OpenCode", else Title-case the source.
+/// Distinct from `providerLabel(_:)` (which says "Anthropic" / "Cursor Composer"
+/// / "OpenAI") so the question/plan header verbs read with the short brand name.
+func workChatSurfaceProviderName(_ source: String?) -> String {
+  let raw = (source ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+  guard !raw.isEmpty else { return "Agent" }
+  switch raw {
+  case "claude", "anthropic": return "Claude"
+  case "codex", "openai": return "Codex"
+  case "cursor": return "Cursor"
+  case "droid", "factory": return "Droid"
+  case "opencode": return "OpenCode"
+  case "ade": return "ADE"
+  default:
+    return raw
+      .replacingOccurrences(of: "-", with: " ")
+      .replacingOccurrences(of: "_", with: " ")
+      .split(separator: " ")
+      .map { $0.prefix(1).uppercased() + $0.dropFirst() }
+      .joined(separator: " ")
+  }
+}
+
+func workChatPendingInputHeaderVerb(source: String?, fallbackProvider: String?, kind: String) -> String {
+  let rawSource = source?.trimmingCharacters(in: .whitespacesAndNewlines)
+  let provider = rawSource?.isEmpty == false ? rawSource : fallbackProvider
+  let name = workChatSurfaceProviderName(provider)
+  return kind == "plan_approval" ? "\(name) · Plan ready" : "\(name) asks"
+}
+
+extension WorkPendingQuestionModel {
+  /// Header verb shown beside the provider logo: "{Provider} asks".
+  var providerHeaderVerb: String { "\(workChatSurfaceProviderName(source)) asks" }
+
+  func providerHeaderVerb(fallbackProvider: String?) -> String {
+    workChatPendingInputHeaderVerb(source: source, fallbackProvider: fallbackProvider, kind: "question")
+  }
+}
+
+extension WorkPendingPlanApprovalModel {
+  /// Header verb shown beside the provider logo: "{Provider} · Plan ready".
+  var providerHeaderVerb: String { "\(workChatSurfaceProviderName(source)) · Plan ready" }
+
+  func providerHeaderVerb(fallbackProvider: String?) -> String {
+    workChatPendingInputHeaderVerb(source: source, fallbackProvider: fallbackProvider, kind: "plan_approval")
+  }
 }
 
 struct WorkPendingPermissionModel: Identifiable, Equatable {

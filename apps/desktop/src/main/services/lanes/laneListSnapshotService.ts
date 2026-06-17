@@ -113,10 +113,13 @@ function summarizeLaneRuntime(
     lastOutputPreview: string | null;
     runtimeState?: string | null;
     toolType?: string | null;
+    pendingInputItemId?: string | null;
+    pendingInputWaiting?: boolean;
   }>,
 ): LaneRuntimeSummary {
   let runningCount = 0;
   let awaitingInputCount = 0;
+  let pendingInputCount = 0;
   let endedCount = 0;
   let sessionCount = 0;
 
@@ -125,8 +128,12 @@ function summarizeLaneRuntime(
     sessionCount += 1;
     const bucket = sessionStatusBucket(session);
     if (bucket === "running") runningCount += 1;
-    else if (bucket === "awaiting-input") awaitingInputCount += 1;
-    else endedCount += 1;
+    else if (bucket === "awaiting-input") {
+      awaitingInputCount += 1;
+      if (session.pendingInputItemId) pendingInputCount += 1;
+    } else {
+      endedCount += 1;
+    }
   }
 
   let bucket: LaneRuntimeSummary["bucket"];
@@ -139,6 +146,7 @@ function summarizeLaneRuntime(
     bucket,
     runningCount,
     awaitingInputCount,
+    pendingInputCount,
     endedCount,
     sessionCount,
   };
@@ -196,6 +204,7 @@ async function enrichSessionsForLaneList(
         runtimeState: "waiting-input" as const,
         chatIdleSinceAt: null,
         pendingInputItemId: chat.pendingInputItemId ?? session.pendingInputItemId ?? null,
+        pendingInputWaiting: true,
       };
     }
     if (chat.status === "active") return { ...session, runtimeState: "running" as const, chatIdleSinceAt: null };

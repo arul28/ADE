@@ -616,6 +616,8 @@ describe("AgentChatComposer", () => {
     });
 
     expect(screen.getByText("Answer in the inline question card, or decline.")).toBeTruthy();
+    expect(screen.getByText("ADE asks")).toBeTruthy();
+    expect(screen.queryByText("Input needed · ade")).toBeNull();
     expect(screen.queryByText("Answer in the inline question card, or pick an option there.")).toBeNull();
   });
 
@@ -777,7 +779,7 @@ describe("AgentChatComposer", () => {
     expect(props.onApproval).toHaveBeenCalledWith("decline");
   });
 
-  it("labels multi-question prompts explicitly in the pending banner", () => {
+  it("uses the shared provider verb in the pending banner", () => {
     renderComposer({
       pendingInput: {
         requestId: "req-3",
@@ -807,7 +809,8 @@ describe("AgentChatComposer", () => {
       },
     });
 
-    expect(screen.getByText("2 Questions · codex")).toBeTruthy();
+    expect(screen.getByText("Codex asks")).toBeTruthy();
+    expect(screen.queryByText("2 Questions · codex")).toBeNull();
   });
 
   it("allows attachments while steering an active Codex turn", () => {

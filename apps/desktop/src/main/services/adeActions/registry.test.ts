@@ -1000,6 +1000,7 @@ describe("runtime lane snapshot actions", () => {
             sessionId: "awaiting-chat",
             status: "active",
             awaitingInput: true,
+            pendingInputItemId: "pending-1",
             identityKey: null,
           },
         ]),
@@ -1050,6 +1051,7 @@ describe("runtime lane snapshot actions", () => {
           bucket: "awaiting-input",
           runningCount: 1,
           awaitingInputCount: 1,
+          pendingInputCount: 1,
           endedCount: 1,
           sessionCount: 3,
         },
@@ -1060,11 +1062,15 @@ describe("runtime lane snapshot actions", () => {
         adoptableAttached: false,
       },
       {
-        lane: attachedLane,
+        lane: {
+          ...attachedLane,
+          devicesOpen: undefined,
+        },
         runtime: {
           bucket: "running",
           runningCount: 1,
           awaitingInputCount: 0,
+          pendingInputCount: 0,
           endedCount: 0,
           sessionCount: 1,
         },

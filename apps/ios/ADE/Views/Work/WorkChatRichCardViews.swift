@@ -1325,6 +1325,9 @@ struct WorkPlanReviewCard: View {
   let plan: WorkPendingPlanApprovalModel
   let busy: Bool
   let onDecision: @MainActor (AgentChatApprovalDecision, String?) async -> Void
+  /// Provider fallback for when the plan-approval detail carried no `source`.
+  /// Usually the session provider.
+  var fallbackProvider: String? = nil
 
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -1341,11 +1344,22 @@ struct WorkPlanReviewCard: View {
     plan.planText.count > collapseThreshold
   }
 
+  /// Resolved asking provider: the parsed plan source, else the session
+  /// fallback. Drives the header verb, logo, and per-provider accent.
+  private var resolvedProvider: String? {
+    let trimmed = plan.source.trimmingCharacters(in: .whitespacesAndNewlines)
+    return trimmed.isEmpty ? fallbackProvider : trimmed
+  }
+
+  /// Per-provider accent (Claude amber, Codex warm white, Cursor/Droid violet,
+  /// OpenCode blue). Replaces the single hardcoded gold the card used to carry.
+  private var accent: Color { ADEColor.providerChatAccent(for: resolvedProvider) }
+
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
-      // Amber accent gradient line at the top — matches desktop's `border-b` gradient.
+      // Per-provider accent gradient line at the top — matches desktop's `border-b` gradient.
       LinearGradient(
-        colors: [Color.clear, Color(red: 0.95, green: 0.72, blue: 0.15).opacity(0.55), Color.clear],
+        colors: [Color.clear, accent.opacity(0.55), Color.clear],
         startPoint: .leading,
         endPoint: .trailing
       )
@@ -1363,48 +1377,39 @@ struct WorkPlanReviewCard: View {
     }
     .background(
       RoundedRectangle(cornerRadius: 18, style: .continuous)
-        .fill(Color(red: 0.08, green: 0.06, blue: 0.04).opacity(0.92))
+        .fill(ADEColor.cardBackground.opacity(0.92))
     )
     .overlay(
       RoundedRectangle(cornerRadius: 18, style: .continuous)
-        .stroke(Color(red: 0.95, green: 0.72, blue: 0.15).opacity(0.18), lineWidth: 0.8)
+        .stroke(accent.opacity(0.22), lineWidth: 0.8)
     )
     .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
     .accessibilityElement(children: .contain)
-    .accessibilityLabel("Plan approval required. \(plan.title). \(plan.planText.prefix(120))")
+    .accessibilityLabel("\(workChatSurfaceProviderName(resolvedProvider)) · Plan ready. \(plan.title). \(plan.planText.prefix(120))")
   }
 
   // MARK: - Header
 
   private var planHeader: some View {
     HStack(alignment: .center, spacing: 8) {
-      // Amber waiting glyph — mirrors desktop's `ChatStatusGlyph status="waiting"`.
-      Image(systemName: "clock.badge.exclamationmark")
-        .font(.system(size: 13, weight: .semibold))
-        .foregroundStyle(Color(red: 0.95, green: 0.72, blue: 0.15).opacity(0.85))
-        .frame(width: 26, height: 26)
-        .background(
-          Color(red: 0.95, green: 0.72, blue: 0.15).opacity(0.12),
-          in: RoundedRectangle(cornerRadius: 9, style: .continuous)
-        )
+      // Provider-identified header: logo + "{Provider} · Plan ready". Replaces
+      // the old clock glyph + "PLAN APPROVAL" label from the desktop redesign.
+      WorkProviderBareLogo(
+        provider: resolvedProvider,
+        fallbackSymbol: providerIcon(resolvedProvider ?? ""),
+        tint: accent,
+        size: 18
+      )
 
-      VStack(alignment: .leading, spacing: 2) {
-        Text("PLAN APPROVAL")
-          .font(.system(size: 9, weight: .bold, design: .monospaced))
-          .tracking(1.4)
-          .foregroundStyle(Color(red: 0.95, green: 0.72, blue: 0.15).opacity(0.60))
-        if !plan.source.isEmpty {
-          Text(plan.source.capitalized)
-            .font(.caption2.weight(.semibold))
-            .foregroundStyle(ADEColor.textMuted)
-        }
-      }
+      Text(plan.providerHeaderVerb(fallbackProvider: fallbackProvider))
+        .font(.caption.weight(.semibold))
+        .foregroundStyle(accent)
 
       Spacer(minLength: 8)
 
       Image(systemName: "list.bullet.clipboard")
         .font(.system(size: 12, weight: .semibold))
-        .foregroundStyle(Color(red: 0.95, green: 0.72, blue: 0.15).opacity(0.45))
+        .foregroundStyle(accent.opacity(0.45))
     }
   }
 
@@ -1432,7 +1437,7 @@ struct WorkPlanReviewCard: View {
       )
       .overlay(
         RoundedRectangle(cornerRadius: 12, style: .continuous)
-          .stroke(Color(red: 0.95, green: 0.72, blue: 0.15).opacity(0.10), lineWidth: 0.5)
+          .stroke(accent.opacity(0.10), lineWidth: 0.5)
       )
       .animation(.spring(duration: 0.28), value: planExpanded)
 
@@ -1450,7 +1455,7 @@ struct WorkPlanReviewCard: View {
                 .font(.system(size: 10, weight: .semibold, design: .monospaced))
                 .tracking(0.6)
             }
-            .foregroundStyle(Color(red: 0.95, green: 0.72, blue: 0.15).opacity(0.60))
+            .foregroundStyle(accent.opacity(0.60))
           }
           .buttonStyle(.plain)
           .accessibilityLabel(planExpanded ? "Collapse plan" : "View full plan")
@@ -1458,12 +1463,12 @@ struct WorkPlanReviewCard: View {
           Spacer(minLength: 8)
 
           // Copy plan button
-          WorkPlanCopyButton(text: plan.planText)
+          WorkPlanCopyButton(text: plan.planText, accent: accent)
         }
       } else {
         HStack {
           Spacer(minLength: 0)
-          WorkPlanCopyButton(text: plan.planText)
+          WorkPlanCopyButton(text: plan.planText, accent: accent)
         }
       }
     }
@@ -1592,6 +1597,7 @@ struct WorkPlanReviewCard: View {
 /// Compact copy-to-clipboard button used in the plan body footer.
 private struct WorkPlanCopyButton: View {
   let text: String
+  var accent: Color = ADEColor.warning
   @State private var copied = false
 
   var body: some View {
@@ -1610,11 +1616,7 @@ private struct WorkPlanCopyButton: View {
           .font(.system(size: 10, weight: .semibold, design: .monospaced))
           .tracking(0.6)
       }
-      .foregroundStyle(
-        copied
-          ? ADEColor.success
-          : Color(red: 0.95, green: 0.72, blue: 0.15).opacity(0.45)
-      )
+      .foregroundStyle(copied ? ADEColor.success : accent.opacity(0.55))
     }
     .buttonStyle(.plain)
     .accessibilityLabel(copied ? "Copied to clipboard" : "Copy plan to clipboard")

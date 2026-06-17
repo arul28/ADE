@@ -86,6 +86,12 @@ struct WorkChatSessionView: View {
   @State var steerEditDrafts: [String: String] = [:]
   @State var modelPickerPresented = false
   @State var modelUpdateInFlight = false
+  /// Bumped each time a NEW blocking pending input arrives so the body can fire
+  /// a single light haptic — keeps a question/plan gate from being missed.
+  @State var blockingPendingHapticToken = 0
+  /// Last blocking pending-input id we reacted to, so re-renders that keep the
+  /// same gate open don't re-fire the haptic or re-scroll.
+  @State var lastBlockingPendingInputId: String?
 
   var sessionStatus: String {
     normalizedWorkChatSessionStatus(session: session, summary: chatSummary)
@@ -153,6 +159,44 @@ struct WorkChatSessionView: View {
 
   var hasPendingInputGate: Bool {
     workChatComposerBlocksFreeformInput(pendingInputCount: pendingInputs.count, sessionStatus: sessionStatus)
+  }
+
+  /// Stable id of the first blocking pending input awaiting a reply, or nil when
+  /// none is open. Drives the arrival haptic + elevate-into-view so a blocking
+  /// question/plan gate can't be silently missed. Only fires when the session is
+  /// live (an offline read-only card isn't actionable, so no haptic).
+  var blockingPendingInputId: String? {
+    guard isLive else { return nil }
+    return primaryPendingInput?.id
+  }
+
+  /// Scroll anchor for the first blocking inline pending card. Questions and
+  /// plan approvals render inline under "pending-question-<id>"; approval gates
+  /// render in the top overview section, so we just pin to the top for those.
+  private var blockingPendingScrollAnchor: String? {
+    switch primaryPendingInput {
+    case .question(let model): return "pending-question-\(model.id)"
+    case .planApproval(let model): return "pending-question-\(model.id)"
+    case .permission, .modelSelection, .approval, .none: return nil
+    }
+  }
+
+  /// React to a newly-arrived blocking pending input: fire one light haptic and
+  /// elevate the card into view. No-ops when the same gate is already open.
+  @MainActor
+  func handleBlockingPendingInputChange(_ id: String?, proxy: ScrollViewProxy) {
+    guard id != lastBlockingPendingInputId else { return }
+    lastBlockingPendingInputId = id
+    guard id != nil else { return }
+    blockingPendingHapticToken &+= 1
+    guard let anchor = blockingPendingScrollAnchor else { return }
+    Task { @MainActor in
+      // Let the card land in the timeline before elevating it into view.
+      try? await Task.sleep(nanoseconds: 250_000_000)
+      withAnimation(.easeInOut(duration: 0.28)) {
+        proxy.scrollTo(anchor, anchor: .center)
+      }
+    }
   }
 
   var awaitingPromptDetailsMissing: Bool {
@@ -694,6 +738,9 @@ struct WorkChatSessionView: View {
       .onAppear {
         refreshTimelinePresentation()
         scheduleTimelineSnapshotRebuild()
+        // Seed the blocking-input tracker so an already-open gate on first
+        // render doesn't re-fire the haptic, but a gate that arrives later does.
+        lastBlockingPendingInputId = blockingPendingInputId
       }
       .onDisappear {
         cancelScheduledTimelineSnapshotRebuild()
@@ -723,6 +770,10 @@ struct WorkChatSessionView: View {
       .onChange(of: localEchoMessages) { _, _ in
         scheduleTimelineSnapshotRebuild()
       }
+      .onChange(of: blockingPendingInputId) { _, newId in
+        handleBlockingPendingInputChange(newId, proxy: proxy)
+      }
+      .sensoryFeedback(.impact(weight: .light), trigger: blockingPendingHapticToken)
       .sheet(isPresented: $artifactDrawerPresented) {
         WorkArtifactDrawerSheet(
           artifacts: artifacts,

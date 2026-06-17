@@ -94,7 +94,8 @@ extension WorkChatSessionView {
               proxy.scrollTo("pending-question-\(question.id)", anchor: .bottom)
             }
           }
-        }
+        },
+        fallbackProvider: chatSummary?.provider
       )
       .id("pending-question-\(question.id)")
     case .pendingPermission(let permission):
@@ -122,8 +123,10 @@ extension WorkChatSessionView {
               _ = await onSend(feedback)
             }
           }
-        }
+        },
+        fallbackProvider: chatSummary?.provider
       )
+      .id("pending-question-\(plan.id)")
     case .pendingModelSelection(let request):
       WorkModelSelectionPendingCard(
         request: request,

@@ -2,6 +2,22 @@ import SwiftUI
 import UIKit
 import AVKit
 
+func workFilteredQuestionAnswersForSubmit(
+  _ answers: [String: AgentChatInputAnswerValue]
+) -> [String: AgentChatInputAnswerValue] {
+  answers.reduce(into: [:]) { acc, pair in
+    switch pair.value {
+    case .string(let raw):
+      if !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        acc[pair.key] = .string(raw)
+      }
+    case .strings(let values):
+      let filtered = values.filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+      if !filtered.isEmpty { acc[pair.key] = .strings(filtered) }
+    }
+  }
+}
+
 extension WorkSessionDestinationView {
   @MainActor
   func sendMessage(_ text: String) async -> Bool {
@@ -230,18 +246,7 @@ extension WorkSessionDestinationView {
   ) async {
     do {
       let responseValue = responseText?.trimmingCharacters(in: .whitespacesAndNewlines)
-      let filtered: [String: AgentChatInputAnswerValue] = answers.reduce(into: [:]) { acc, pair in
-        switch pair.value {
-        case .string(let raw):
-          let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-          if !trimmed.isEmpty { acc[pair.key] = .string(trimmed) }
-        case .strings(let values):
-          let cleaned = values
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-          if !cleaned.isEmpty { acc[pair.key] = .strings(cleaned) }
-        }
-      }
+      let filtered = workFilteredQuestionAnswersForSubmit(answers)
       try await syncService.respondToChatInput(
         sessionId: sessionId,
         itemId: itemId,
@@ -268,16 +273,8 @@ extension WorkSessionDestinationView {
       let responseValue = responseText?.trimmingCharacters(in: .whitespacesAndNewlines)
       let answers: [String: AgentChatInputAnswerValue]? = {
         guard let answer else { return nil }
-        switch answer {
-        case .string(let raw):
-          let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-          return trimmed.isEmpty ? nil : [questionId: .string(trimmed)]
-        case .strings(let values):
-          let filtered = values
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-          return filtered.isEmpty ? nil : [questionId: .strings(filtered)]
-        }
+        let filtered = workFilteredQuestionAnswersForSubmit([questionId: answer])
+        return filtered.isEmpty ? nil : filtered
       }()
       try await syncService.respondToChatInput(
         sessionId: sessionId,

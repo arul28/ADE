@@ -654,8 +654,15 @@ func workBoolValue(_ value: Any?) -> Bool? {
 func workPendingQuestionOption(from value: Any?) -> WorkPendingQuestionOption? {
   guard let object = value as? [String: Any] else { return nil }
   let label = optionalString(object["label"]) ?? optionalString(object["value"]) ?? ""
-  let rawValue = optionalString(object["value"]) ?? label
-  guard !label.isEmpty, !rawValue.isEmpty else { return nil }
+  let rawValue: String
+  if object.keys.contains("value") {
+    let text = stringValue(object["value"])
+    guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
+    rawValue = text
+  } else {
+    rawValue = label
+  }
+  guard !label.isEmpty else { return nil }
   return WorkPendingQuestionOption(
     label: label,
     value: rawValue,
@@ -743,7 +750,8 @@ func pendingWorkQuestionFromApproval(
       id: itemId,
       questions: questions,
       title: optionalString(request["title"]),
-      body: optionalString(request["body"]) ?? optionalString(request["description"])
+      body: optionalString(request["body"]) ?? optionalString(request["description"]),
+      source: optionalString(request["source"]) ?? optionalString(detailObject["source"])
     )
   }
 
@@ -772,7 +780,9 @@ func pendingWorkQuestionFromApproval(
     id: itemId,
     questions: [single],
     title: optionalString(detailObject["title"]),
-    body: optionalString(detailObject["body"]) ?? optionalString(detailObject["description"])
+    body: optionalString(detailObject["body"]) ?? optionalString(detailObject["description"]),
+    source: optionalString(request["source"])
+      ?? optionalString(detailObject["source"])
   )
 }
 
@@ -811,7 +821,8 @@ func pendingWorkQuestionFromAskUserToolCall(
     id: itemId,
     questions: questions,
     title: optionalString(sourceObject["title"]) ?? optionalString(object["title"]),
-    body: optionalString(sourceObject["body"]) ?? optionalString(request["description"]) ?? optionalString(object["body"])
+    body: optionalString(sourceObject["body"]) ?? optionalString(request["description"]) ?? optionalString(object["body"]),
+    source: optionalString(sourceObject["source"]) ?? optionalString(object["source"])
   )
 }
 

@@ -1,6 +1,5 @@
 import type * as DroidSdkTypes from "@factory/droid-sdk";
 import type {
-  DroidSdkAskUserRequest,
   DroidSdkAskUserResponse,
   DroidSdkPermissionDecision,
   DroidSdkPermissionRequest,
@@ -12,6 +11,7 @@ import type {
   DroidSdkWorkerResponse,
 } from "./droidSdkProtocol";
 import { loadDroidSdk } from "../ai/droidSdkLoader";
+import { summarizeDroidAskUser } from "./droidSdkAskUser";
 
 type DroidSdkModule = typeof DroidSdkTypes;
 type DroidSession = Awaited<ReturnType<DroidSdkModule["createSession"]>>;
@@ -196,24 +196,8 @@ async function requestPermission(
   };
 }
 
-function summarizeAskUser(params: DroidSdkTypes.AskUserRequestParams): DroidSdkAskUserRequest {
-  const questions = (params.questions ?? []).map((question, index) => ({
-    id: `q_${question.index ?? index + 1}`,
-    header: question.topic,
-    question: question.question,
-    options: question.options?.map((option) => ({ label: option, value: option })),
-  }));
-  return {
-    id: params.toolCallId || `droid-ask-user-${Date.now()}`,
-    toolCallId: params.toolCallId,
-    title: questions.length === 1 ? "Question from Droid" : "Questions from Droid",
-    questions,
-    raw: params,
-  };
-}
-
 async function requestAskUser(params: DroidSdkTypes.AskUserRequestParams): Promise<DroidSdkTypes.AskUserResult> {
-  const request = summarizeAskUser(params);
+  const request = summarizeDroidAskUser(params);
   const waiterId = nextWaiterId("droid-ask-user");
   const requestWithId = { ...request, id: waiterId };
   const response = await new Promise<DroidSdkAskUserResponse>((resolve) => {

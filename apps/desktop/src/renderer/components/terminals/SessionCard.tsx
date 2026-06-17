@@ -1,8 +1,8 @@
 import React from "react";
-import { GridFour, WarningCircle } from "@phosphor-icons/react";
+import { GridFour, WarningCircle, Question } from "@phosphor-icons/react";
 import type { LaneSummary, TerminalSessionSummary } from "../../../shared/types";
 import type { OrchestrationRole } from "../../../shared/types/orchestration";
-import { sessionStatusDot, sanitizeTerminalInlineText } from "../../lib/terminalAttention";
+import { sessionStatusDot, sanitizeTerminalInlineText, sessionNeedsChatTabHighlight } from "../../lib/terminalAttention";
 import {
   getStaleRunningCliSessionAgeHours,
   primarySessionLabel,
@@ -143,6 +143,13 @@ export const SessionCard = React.memo(function SessionCard({
   gridBadge?: "active" | "inactive" | null;
 }) {
   const dot = sessionStatusDot(session);
+  // Blocked on a chat question/plan only the user can answer (distinct from a
+  // merely idle/ready chat, which the amber status dot can't disambiguate).
+  const awaitingUser = sessionNeedsChatTabHighlight({
+    runtimeState: session.runtimeState,
+    toolType: session.toolType,
+    pendingInputItemId: session.pendingInputItemId,
+  });
   const isRemoteProject = useAppStore((s) => s.projectBinding?.kind === "remote");
   const delta = useSessionDelta(session.id, !isRemoteProject || isSelected);
   const primaryText = primarySessionLabel(session);
@@ -258,6 +265,24 @@ export const SessionCard = React.memo(function SessionCard({
                     aria-label={gridLabel}
                   >
                     <GridFour size={11} weight={isActiveGrid ? "fill" : "bold"} />
+                  </span>
+                ) : null}
+                {awaitingUser ? (
+                  <span
+                    className={cn(
+                      "inline-flex shrink-0 items-center gap-0.5 rounded-full font-semibold uppercase tracking-wide leading-none",
+                      compact ? "px-1 py-0.5 text-[8px]" : "px-1.5 py-0.5 text-[9px]",
+                    )}
+                    style={{
+                      color: laneAccent ?? "rgb(252, 211, 77)",
+                      background: `color-mix(in srgb, ${laneAccent ?? "rgb(252, 211, 77)"} 16%, transparent)`,
+                      border: `1px solid color-mix(in srgb, ${laneAccent ?? "rgb(252, 211, 77)"} 34%, transparent)`,
+                    }}
+                    title="This chat is waiting for your answer"
+                    aria-label="Awaiting your input"
+                  >
+                    <Question size={compact ? 9 : 10} weight="bold" />
+                    {compact ? null : "Awaiting you"}
                   </span>
                 ) : null}
                 <span

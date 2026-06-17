@@ -11617,6 +11617,100 @@ final class ADETests: XCTestCase {
     XCTAssertNil(second.preview)
   }
 
+  func testPendingWorkQuestionOptionsPreserveExactValues() {
+    let detail = """
+    {
+      "request": {
+        "itemId": "approval-exact",
+        "kind": "structured_question",
+        "source": "droid",
+        "questions": [
+          {
+            "id": "choice",
+            "question": "Which exact option should Droid receive?",
+            "options": [
+              { "label": "  Yes  ", "value": " yes " },
+              { "label": "Blank", "value": "   " }
+            ]
+          }
+        ]
+      }
+    }
+    """
+
+    let model = pendingWorkQuestionFromApproval(
+      description: "Which exact option should Droid receive?",
+      detail: detail,
+      itemId: "approval-exact"
+    )
+
+    guard let model else {
+      return XCTFail("Expected exact-value pending question model.")
+    }
+    XCTAssertEqual(model.options.count, 1)
+    XCTAssertEqual(model.options.first?.label, "Yes")
+    XCTAssertEqual(model.options.first?.value, " yes ")
+  }
+
+  func testQuestionAnswerFilteringPreservesExactOptionValues() {
+    let filtered = workFilteredQuestionAnswersForSubmit([
+      "choice": .string(" yes "),
+      "files": .strings([" one ", "   ", "two"]),
+      "blank": .string("   ")
+    ])
+
+    XCTAssertEqual(filtered["choice"], .string(" yes "))
+    XCTAssertEqual(filtered["files"], .strings([" one ", "two"]))
+    XCTAssertNil(filtered["blank"])
+  }
+
+  func testPendingInputHeaderVerbUsesFallbackProviderWhenSourceIsMissing() {
+    XCTAssertEqual(
+      workChatPendingInputHeaderVerb(source: nil, fallbackProvider: "claude", kind: "question"),
+      "Claude asks"
+    )
+    XCTAssertEqual(
+      workChatPendingInputHeaderVerb(source: "", fallbackProvider: "codex", kind: "plan_approval"),
+      "Codex · Plan ready"
+    )
+    XCTAssertEqual(
+      workChatPendingInputHeaderVerb(source: "droid", fallbackProvider: "claude", kind: "question"),
+      "Droid asks"
+    )
+    XCTAssertEqual(workChatSurfaceProviderName("ade"), "ADE")
+    XCTAssertEqual(workChatSurfaceProviderName("my_provider-runtime"), "My Provider Runtime")
+  }
+
+  func testLegacyAskUserApprovalLeavesSourceForProviderFallback() {
+    let detail = """
+    {
+      "tool": "askUser",
+      "question": "Which follow-up should I run?",
+      "options": [
+        { "label": "Desktop", "value": "desktop" },
+        { "label": "iOS", "value": "ios" }
+      ]
+    }
+    """
+
+    let model = pendingWorkQuestionFromApproval(
+      description: "Which follow-up should I run?",
+      detail: detail,
+      itemId: "legacy-ask-user"
+    )
+
+    guard let model else {
+      return XCTFail("Expected legacy askUser approval to become a pending question.")
+    }
+    XCTAssertNil(model.source)
+    XCTAssertEqual(model.providerHeaderVerb(fallbackProvider: "claude"), "Claude asks")
+  }
+
+  func testWorkPreviewIsWireframeMatchesDesktopIndentationHeuristic() {
+    XCTAssertTrue(workPreviewIsWireframe("Home\n  Primary action\n  Secondary action"))
+    XCTAssertFalse(workPreviewIsWireframe("Line one\nLine two"))
+  }
+
   func testPendingWorkPermissionFromApprovalReturnsCardForGenericTools() {
     let detail = """
     {

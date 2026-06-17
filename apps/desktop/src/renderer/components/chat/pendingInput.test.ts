@@ -815,6 +815,38 @@ describe("derivePendingInputRequests", () => {
     expect(q.options).toHaveLength(1);
   });
 
+  it("preserves structured option values with significant whitespace", () => {
+    const structuredRequest = {
+      requestId: "req-q",
+      source: "droid",
+      kind: "structured_question",
+      questions: [
+        {
+          id: "q-exact",
+          question: "Which exact option should Droid receive?",
+          options: [
+            { label: "  Yes  ", value: " yes " },
+            { label: "Blank", value: "   " },
+          ],
+        },
+      ],
+    };
+    const events: AgentChatEventEnvelope[] = [
+      envelope({
+        type: "approval_request",
+        itemId: "item-q-exact",
+        kind: "tool_call",
+        description: "test",
+        turnId: "turn-1",
+        detail: { request: structuredRequest },
+      }),
+    ];
+
+    const result = derivePendingInputRequests(events);
+    const options = result[0]!.request.questions[0]!.options!;
+    expect(options).toEqual([{ label: "Yes", value: " yes " }]);
+  });
+
   it("omits optional question fields when not provided or empty", () => {
     const structuredRequest = {
       requestId: "req-q-min",

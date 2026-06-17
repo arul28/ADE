@@ -323,6 +323,14 @@ enum ADEColor {
     return Color(uiColor: hex(0x71717A))
   }
 
+  /// Per-provider chat-surface accent resolved from a bare source/provider id
+  /// ("claude", "codex", "cursor"…). Thin wrapper over `chatSurfaceAccent` for
+  /// the question/plan cards, which only know the asking provider. Falls back to
+  /// the neutral grey when the provider isn't recognized.
+  static func providerChatAccent(for provider: String?) -> Color {
+    chatSurfaceAccent(modelId: nil, provider: provider)
+  }
+
   private static func parseHexColor(_ input: String) -> Color? {
     var s = input
     if s.hasPrefix("#") { s.removeFirst() }

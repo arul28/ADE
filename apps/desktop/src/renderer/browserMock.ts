@@ -1227,13 +1227,14 @@ function makeLaneSnapshot(lane: any): any {
           : "none";
   return {
     lane: { ...lane },
-    runtime: {
-      bucket: runtimeBucket,
-      runningCount: runtimeBucket === "running" ? 1 : 0,
-      awaitingInputCount: runtimeBucket === "awaiting-input" ? 1 : 0,
-      endedCount: runtimeBucket === "ended" ? 1 : 0,
-      sessionCount: runtimeBucket === "none" ? 0 : 1,
-    },
+      runtime: {
+        bucket: runtimeBucket,
+        runningCount: runtimeBucket === "running" ? 1 : 0,
+        awaitingInputCount: runtimeBucket === "awaiting-input" ? 1 : 0,
+        pendingInputCount: runtimeBucket === "awaiting-input" ? 1 : 0,
+        endedCount: runtimeBucket === "ended" ? 1 : 0,
+        sessionCount: runtimeBucket === "none" ? 0 : 1,
+      },
     rebaseSuggestion:
       lane.id === "lane-dashboard" || lane.id === "lane-onboard"
         ? {

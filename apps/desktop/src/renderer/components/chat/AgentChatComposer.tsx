@@ -54,15 +54,16 @@ import {
 import { ChatComposerShell } from "./ChatComposerShell";
 import { LinearIssueSelectModal } from "../app/LinearIssueSelectModal";
 import { LinearMark, LINEAR_BRAND } from "../lanes/linearBrand";
-import { getPendingInputQuestionCount, hasPendingInputOptions } from "./pendingInput";
+import { hasPendingInputOptions } from "./pendingInput";
 import { CURSOR_MODE_LABELS } from "../../../shared/cursorModes";
-import { ChatStatusGlyph } from "./chatStatusVisuals";
 import { ChatProposedPlanCard } from "./ChatProposedPlanCard";
 import { ChatModelSelectionPendingCard } from "./ChatModelSelectionPendingCard";
 import { ChatCommandMenu, type ChatCommandMenuItem, type ChatCommandMenuHandle } from "./ChatCommandMenu";
 import { modifierKeyLabel } from "../../lib/platform";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { VoiceDictationButton } from "./VoiceDictationButton";
+import { ProviderLogo } from "../shared/ProviderLogos";
+import { pendingInputHeaderLabel } from "../../../shared/pendingInputLabels";
 import { useAppStore, rootAppStoreApi } from "../../state/appStore";
 import { useVoiceModelInstalled } from "../../hooks/useVoiceModelInstalled";
 
@@ -366,12 +367,6 @@ export type ParallelComposerControlSlot = {
   onCursorModeChange: (modeId: string) => void;
   onCursorConfigChange: (configId: string, value: string | boolean) => void;
 };
-
-function pendingHeaderLabel(kind: PendingInputRequest["kind"], questionCount: number): string {
-  if (kind === "approval" || kind === "permissions") return "Approval";
-  if (questionCount > 1) return `${questionCount} Questions`;
-  return "Input needed";
-}
 
 function getComposerInputLockMessage(pendingInput: PendingInputRequest | null | undefined): string | null {
   if (!pendingInput) return null;
@@ -2841,7 +2836,6 @@ export function AgentChatComposer({
     onSubmit();
   }, [appControlContextItems.length, attachments, builtInBrowserContextItems.length, busy, contextAttachmentCount, contextAttachments, cursorCloudAvailable, cursorCloudCanLaunch, cursorCloudLaunchModeOpen, draft, iosElementContextItems.length, onDraftChange, onSubmit, onSubmitBlocked, onSubmitToCloud, pendingImageAttachments.length, pendingInput, parallelChatMode, parallelLaunchBusy, parallelModelSlots.length, singleModelBlockedMessage, singleModelReady]);
 
-  const pendingQuestionCount = getPendingInputQuestionCount(pendingInput);
   const showPendingInputOptionsHint = hasPendingInputOptions(pendingInput);
   const selectedIosContext = iosElementContextItems.find((item) => item.id === selectedIosContextId) ?? null;
   const selectedAppControlContext = appControlContextItems.find((item) => item.id === selectedAppControlContextId) ?? null;
@@ -3102,11 +3096,11 @@ export function AgentChatComposer({
         ) : (
           <div className="px-4 py-3">
             <div className="mb-2 flex items-center gap-2">
-              <span className="inline-flex h-6 w-6 items-center justify-center rounded-[var(--chat-radius-pill)] border border-amber-400/20 bg-amber-500/10">
-                <ChatStatusGlyph status="waiting" size={11} />
+              <span className="inline-flex h-6 w-6 items-center justify-center rounded-[var(--chat-radius-pill)] border border-[color:color-mix(in_srgb,var(--chat-accent)_22%,transparent)] bg-black/20">
+                <ProviderLogo family={pendingInput.source} size={12} />
               </span>
-              <span className="font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-widest text-amber-200">
-                {pendingHeaderLabel(pendingInput.kind, pendingQuestionCount)} · {pendingInput.source}
+              <span className="font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-widest text-[color:color-mix(in_srgb,var(--chat-accent)_82%,white_18%)]">
+                {pendingInputHeaderLabel(pendingInput.source, pendingInput.kind)}
               </span>
             </div>
             {pendingInput.kind === "approval" || pendingInput.kind === "permissions" ? (
@@ -3122,7 +3116,7 @@ export function AgentChatComposer({
               </>
             ) : (
               <div className="flex items-center gap-1.5">
-                <span className="font-mono text-[length:calc(var(--chat-font-size)*10/14)] uppercase tracking-[0.14em] text-amber-200/60">
+                <span className="font-mono text-[length:calc(var(--chat-font-size)*10/14)] uppercase tracking-[0.14em] text-[color:color-mix(in_srgb,var(--chat-accent)_66%,white_34%)]">
                   {showPendingInputOptionsHint
                     ? "Answer in the inline question card, or pick an option there."
                     : "Answer in the inline question card, or decline."}
