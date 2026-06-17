@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.7] - 2026-06-16
+
+### Added
+
+- ADE Code: multi-question approvals in the terminal — arrow keys choose an option and move between questions, number keys pick and submit — replacing the old single-question quick-select.
+- Mobile: auto-created lanes are now named from your prompt by the host's small AI model (Chat and CLI), with a deterministic fallback if the model is offline or times out.
+- iOS: the new-chat composer now matches an in-session thread (single permission dropdown when space is tight, model pill, fast-mode toggle), with fast mode honored on create.
+
+### Changed
+
+- ADE Code: selecting a lane no longer reflows the drawer — single-line lane cards, a shared chat row, and reserved viewport rows kill the flicker; provider glyphs and colors now match the model picker, and grid navigation escapes cleanly with Tab.
+- iOS: faster Work chat scrolling, with assistant previews cached for visible rows and deferred until after the stream merges.
+- Stored chat transcripts are compacted while preserving durable replay and live output.
+
+### Removed
+
+- macOS VM runtime, UI, and `ade vm` CLI commands.
+- Mobile push notifications; the app now relies on its live sync connection, and PR actions from widgets navigate in-app.
+
 ## [1.2.6] - 2026-06-16
 
 ### Fixed
@@ -409,7 +428,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.5...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.7...HEAD
+[1.2.7]: https://github.com/arul28/ADE/compare/v1.2.6...v1.2.7
 [1.2.6]: https://github.com/arul28/ADE/compare/v1.2.5...v1.2.6
 [1.2.5]: https://github.com/arul28/ADE/compare/v1.2.4...v1.2.5
 [1.2.4]: https://github.com/arul28/ADE/compare/v1.2.3...v1.2.4
