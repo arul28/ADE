@@ -15,6 +15,7 @@ import type {
   AppResourceUsageSnapshot,
   LatestReleaseInfo,
   AppNavigationRequest,
+  AppZoomCommand,
   AutoUpdateSnapshot,
   UpdateInstallImpact,
   ClearLocalAdeDataArgs,
@@ -2066,6 +2067,7 @@ declare global {
         getLevel: () => number;
         setLevel: (level: number) => void;
         getFactor: () => number;
+        onCommand: (cb: (command: AppZoomCommand) => void) => () => void;
       };
       cto?: {
         getState: (args?: CtoGetStateArgs) => Promise<CtoSnapshot>;

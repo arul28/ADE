@@ -4,6 +4,7 @@ import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, createEvent, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { TopBar } from "./TopBar";
+import { applyShellHeaderInset } from "../../lib/zoom";
 import { useAppStore } from "../../state/appStore";
 import { requestLinearIssueQuickView } from "../../lib/linearIssueQuickViewNavigation";
 import {
@@ -42,8 +43,11 @@ vi.mock("../../lib/zoom", () => ({
   ZOOM_LEVEL_KEY: "ade.zoomLevel",
   MIN_ZOOM_LEVEL: 50,
   MAX_ZOOM_LEVEL: 200,
+  DEFAULT_ZOOM: 100,
+  ZOOM_STEP: 10,
   displayZoomToLevel: (value: number) => value,
   getStoredZoomLevel: () => 100,
+  applyShellHeaderInset: vi.fn(),
 }));
 
 function makeSyncSnapshot(overrides: Record<string, unknown> = {}) {
@@ -304,6 +308,7 @@ describe("TopBar", () => {
       },
       zoom: {
         setLevel: vi.fn(),
+        onCommand: vi.fn(() => () => {}),
       },
       lanes: { list: vi.fn(async () => []) },
       sessions: { list: vi.fn(async () => []) },
@@ -1403,5 +1408,68 @@ describe("TopBar", () => {
       expect(useAppStore.getState().closeProject).toHaveBeenCalledTimes(1);
     });
     expect(globalThis.window.ade.project.forgetRecent).not.toHaveBeenCalled();
+  });
+
+  // The native View-menu zoom items dispatch an appZoomCommand that the renderer
+  // routes through the same applyZoom path as the in-app zoom counter, so the
+  // applied level and persistence stay consistent. displayZoomToLevel is mocked
+  // as identity, so setLevel receives the display percentage directly; the
+  // stored level starts at 100 (getStoredZoomLevel mock).
+  const getZoomCommandHandler = (): ((command: string) => void) => {
+    const onCommand = globalThis.window.ade.zoom.onCommand as unknown as {
+      mock: { calls: Array<[(command: string) => void]> };
+    };
+    const handler = onCommand.mock.calls[0]?.[0];
+    expect(handler, "TopBar must subscribe to zoom.onCommand").toBeTruthy();
+    return handler;
+  };
+
+  it("zooms in via the View-menu command, applying and persisting the new level", () => {
+    render(<TopBar />);
+    const handler = getZoomCommandHandler();
+
+    act(() => handler("in"));
+
+    expect(globalThis.window.ade.zoom.setLevel).toHaveBeenLastCalledWith(110);
+    expect(globalThis.window.localStorage.getItem("ade.zoomLevel")).toBe("110");
+    expect(vi.mocked(applyShellHeaderInset)).toHaveBeenLastCalledWith(110);
+  });
+
+  it("zooms out via the View-menu command, applying and persisting the new level", () => {
+    render(<TopBar />);
+    const handler = getZoomCommandHandler();
+
+    act(() => handler("out"));
+
+    expect(globalThis.window.ade.zoom.setLevel).toHaveBeenLastCalledWith(90);
+    expect(globalThis.window.localStorage.getItem("ade.zoomLevel")).toBe("90");
+    expect(vi.mocked(applyShellHeaderInset)).toHaveBeenLastCalledWith(90);
+  });
+
+  it("resets to the default level via the View-menu command regardless of current zoom", () => {
+    render(<TopBar />);
+    const handler = getZoomCommandHandler();
+
+    act(() => handler("in"));
+    act(() => handler("reset"));
+
+    expect(globalThis.window.ade.zoom.setLevel).toHaveBeenLastCalledWith(100);
+    expect(globalThis.window.localStorage.getItem("ade.zoomLevel")).toBe("100");
+    expect(vi.mocked(applyShellHeaderInset)).toHaveBeenLastCalledWith(100);
+  });
+
+  it("compounds back-to-back menu zoom-in commands without a render in between", () => {
+    render(<TopBar />);
+    const handler = getZoomCommandHandler();
+
+    // Two commands dispatched before React re-renders must each build on the
+    // last applied level (110 → 120), not collapse onto a stale ref (both 110).
+    act(() => {
+      handler("in");
+      handler("in");
+    });
+
+    expect(globalThis.window.ade.zoom.setLevel).toHaveBeenLastCalledWith(120);
+    expect(globalThis.window.localStorage.getItem("ade.zoomLevel")).toBe("120");
   });
 });

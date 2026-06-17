@@ -87,6 +87,7 @@ import { resolveAdeLayout } from "../shared/adeLayout";
 import type {
   OpenProjectBinding,
   AppNavigationRequest,
+  AppZoomCommand,
   CloneProjectInput,
   CreateProjectInput,
   LaneDeleteProgress,
@@ -6045,6 +6046,21 @@ app.whenReady().then(async () => {
   };
 
   const installApplicationMenu = (): void => {
+    // Route menu/keyboard zoom through the renderer so it follows the same path
+    // as the in-app zoom counter (display %, persistence, macOS traffic-light
+    // inset). Falls back to the focused window when the click handler omits one
+    // (e.g. accelerator fired with no menu-provided window reference).
+    const sendZoomCommand = (
+      command: AppZoomCommand,
+      browserWindow?: Electron.BaseWindow,
+    ): void => {
+      const target =
+        browserWindow instanceof BrowserWindow
+          ? browserWindow
+          : BrowserWindow.getFocusedWindow();
+      if (!target || target.isDestroyed()) return;
+      target.webContents.send(IPC.appZoomCommand, command);
+    };
     const template: Electron.MenuItemConstructorOptions[] = [
       ...(process.platform === "darwin"
         ? [{
@@ -6092,9 +6108,36 @@ app.whenReady().then(async () => {
           { role: "reload" },
           { role: "toggleDevTools" },
           { type: "separator" },
-          { role: "resetZoom" },
-          { role: "zoomIn" },
-          { role: "zoomOut" },
+          {
+            label: "Actual Size",
+            accelerator: "CmdOrCtrl+0",
+            click: (_item, browserWindow) =>
+              sendZoomCommand("reset", browserWindow),
+          },
+          {
+            label: "Zoom In",
+            accelerator: "CmdOrCtrl+Plus",
+            click: (_item, browserWindow) =>
+              sendZoomCommand("in", browserWindow),
+          },
+          // Electron's native zoomIn role also bound Cmd/Ctrl+= (the unshifted
+          // "+" key most keyboards use). A single CmdOrCtrl+Plus accelerator
+          // drops it, so register the "=" variant on a hidden twin to preserve
+          // the shortcut (acceleratorWorksWhenHidden defaults true on macOS).
+          {
+            label: "Zoom In",
+            accelerator: "CmdOrCtrl+=",
+            visible: false,
+            acceleratorWorksWhenHidden: true,
+            click: (_item, browserWindow) =>
+              sendZoomCommand("in", browserWindow),
+          },
+          {
+            label: "Zoom Out",
+            accelerator: "CmdOrCtrl+-",
+            click: (_item, browserWindow) =>
+              sendZoomCommand("out", browserWindow),
+          },
           { type: "separator" },
           { role: "togglefullscreen" },
         ],

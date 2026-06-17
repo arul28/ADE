@@ -59,7 +59,11 @@ import {
   snoozeStaleCliNotice,
 } from "../../lib/staleCliNoticeSnooze";
 import { summarizeTerminalAttention } from "../../lib/terminalAttention";
-import { getStoredZoomLevel, displayZoomToLevel } from "../../lib/zoom";
+import {
+  getStoredZoomLevel,
+  displayZoomToLevel,
+  applyShellHeaderInset,
+} from "../../lib/zoom";
 import { ONBOARDING_STATUS_UPDATED_EVENT } from "../../lib/onboardingStatusEvents";
 import { logRendererDebugEvent } from "../../lib/debugLog";
 import { cn } from "../ui/cn";
@@ -1067,6 +1071,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       const clamped = getStoredZoomLevel();
       const zoomLevel = displayZoomToLevel(clamped);
       window.ade.zoom.setLevel(zoomLevel);
+      applyShellHeaderInset(clamped);
     } catch {
       // ignore
     }

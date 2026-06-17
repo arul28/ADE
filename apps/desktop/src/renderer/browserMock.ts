@@ -5748,6 +5748,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       getLevel: () => 0,
       setLevel: (_level: number) => {},
       getFactor: () => 1,
+      onCommand: () => () => {},
     },
     updateCheckForUpdates: resolved(undefined),
     updateGetState: resolved({
