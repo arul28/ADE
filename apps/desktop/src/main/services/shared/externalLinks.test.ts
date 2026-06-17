@@ -46,34 +46,40 @@ describe("externalLinks", () => {
 
   it("uses /usr/bin/open on macOS", async () => {
     const restorePlatform = mockPlatform("darwin");
-    mockedExecFile.mockImplementation((_file, _args, _options, cb) => {
-      cb?.(null as never, "" as never, "" as never);
-      return {} as never;
-    });
+    try {
+      mockedExecFile.mockImplementation((_file, _args, _options, cb) => {
+        cb?.(null as never, "" as never, "" as never);
+        return {} as never;
+      });
 
-    await openExternalUrl("https://github.com/acme/ade/pull/1");
+      await openExternalUrl("https://github.com/acme/ade/pull/1");
 
-    expect(mockedExecFile).toHaveBeenCalledWith(
-      "/usr/bin/open",
-      ["https://github.com/acme/ade/pull/1"],
-      { timeout: 5_000, windowsHide: true },
-      expect.any(Function),
-    );
-    expect(shellOpenExternal).not.toHaveBeenCalled();
-    restorePlatform();
+      expect(mockedExecFile).toHaveBeenCalledWith(
+        "/usr/bin/open",
+        ["https://github.com/acme/ade/pull/1"],
+        { timeout: 5_000, windowsHide: true },
+        expect.any(Function),
+      );
+      expect(shellOpenExternal).not.toHaveBeenCalled();
+    } finally {
+      restorePlatform();
+    }
   });
 
   it("falls back to Electron shell when macOS open fails", async () => {
     const restorePlatform = mockPlatform("darwin");
-    mockedExecFile.mockImplementation((_file, _args, _options, cb) => {
-      cb?.(new Error("open failed") as never, "" as never, "" as never);
-      return {} as never;
-    });
-    shellOpenExternal.mockResolvedValue(undefined);
+    try {
+      mockedExecFile.mockImplementation((_file, _args, _options, cb) => {
+        cb?.(new Error("open failed") as never, "" as never, "" as never);
+        return {} as never;
+      });
+      shellOpenExternal.mockResolvedValue(undefined);
 
-    await openExternalUrl("https://github.com/acme/ade/pull/1");
+      await openExternalUrl("https://github.com/acme/ade/pull/1");
 
-    expect(shellOpenExternal).toHaveBeenCalledWith("https://github.com/acme/ade/pull/1");
-    restorePlatform();
+      expect(shellOpenExternal).toHaveBeenCalledWith("https://github.com/acme/ade/pull/1");
+    } finally {
+      restorePlatform();
+    }
   });
 });

@@ -1762,6 +1762,7 @@ export function registerIpc({
     [IPC.terminalWrite]: new Set(["data"]),
     [IPC.ptySendToSession]: new Set(["text"]),
     [IPC.ptyWrite]: new Set(["data"]),
+    [IPC.appOpenExternal]: new Set(["url"]),
     [IPC.builtInBrowserNavigate]: new Set(["url"]),
     [IPC.builtInBrowserCreateTab]: new Set(["url"]),
     [IPC.builtInBrowserShowPanel]: new Set(["url"]),
