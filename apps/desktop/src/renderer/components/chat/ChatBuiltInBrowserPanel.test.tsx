@@ -322,17 +322,22 @@ describe("ChatBuiltInBrowserPanel", () => {
     overlay.style.height = "180px";
     document.body.appendChild(overlay);
 
-    await waitFor(() => {
-      expect(api.setBounds).toHaveBeenLastCalledWith(expect.objectContaining({
-        width: 640,
-        height: 360,
-        visible: false,
-      }));
-    });
+    try {
+      await waitFor(() => {
+        expect(api.setBounds).toHaveBeenLastCalledWith(expect.objectContaining({
+          width: 640,
+          height: 360,
+          visible: false,
+        }));
+      });
+    } finally {
+      overlay.remove();
+    }
   });
 
   it("does not hide the native browser for overlay candidates painted behind other ADE UI", async () => {
     const restoreElementFromPoint = stubElementFromPoint(() => document.body);
+    let overlay: HTMLDivElement | null = null;
     try {
       const { api } = installBrowserApi();
 
@@ -346,7 +351,7 @@ describe("ChatBuiltInBrowserPanel", () => {
         }));
       });
 
-      const overlay = document.createElement("div");
+      overlay = document.createElement("div");
       overlay.setAttribute("role", "dialog");
       overlay.style.position = "fixed";
       overlay.style.zIndex = "9999";
@@ -354,7 +359,13 @@ describe("ChatBuiltInBrowserPanel", () => {
       overlay.style.height = "180px";
       document.body.appendChild(overlay);
 
-      await new Promise((resolve) => setTimeout(resolve, 20));
+      await waitFor(() => {
+        expect(api.setBounds).toHaveBeenLastCalledWith(expect.objectContaining({
+          width: 640,
+          height: 360,
+          visible: true,
+        }));
+      });
 
       expect(api.setBounds).not.toHaveBeenCalledWith(expect.objectContaining({
         width: 640,
@@ -362,6 +373,7 @@ describe("ChatBuiltInBrowserPanel", () => {
         visible: false,
       }));
     } finally {
+      overlay?.remove();
       restoreElementFromPoint();
     }
   });
@@ -396,7 +408,13 @@ describe("ChatBuiltInBrowserPanel", () => {
       overlay.style.height = "180px";
       document.body.appendChild(overlay);
 
-      await new Promise((resolve) => setTimeout(resolve, 20));
+      await waitFor(() => {
+        expect(api.setBounds).toHaveBeenLastCalledWith(expect.objectContaining({
+          width: 640,
+          height: 360,
+          visible: true,
+        }));
+      });
       expect(api.setBounds).not.toHaveBeenLastCalledWith(expect.objectContaining({ visible: false }));
 
       overlayOverlapsBrowser = true;
@@ -410,6 +428,7 @@ describe("ChatBuiltInBrowserPanel", () => {
         }));
       });
     } finally {
+      overlay?.remove();
       restoreElementFromPoint();
     }
   });

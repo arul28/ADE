@@ -150,7 +150,7 @@ const fakes = vi.hoisted(() => {
   const beforeRequestHandlers: BeforeRequestHandler[] = [];
   const requestCompletedHandlers: RequestFinishedHandler[] = [];
   const requestErrorHandlers: RequestFinishedHandler[] = [];
-  const sessionEventHandlers: Array<{ event: string; handler: (...args: unknown[]) => void }> = [];
+  const sessionEventHandlers: Array<{ session: FakeSession; event: string; handler: (...args: unknown[]) => void }> = [];
   const appGetPath = vi.fn((name: string): string => name === "downloads" ? "/Users/test/Downloads" : "/tmp");
   let permissionCheckHandler: PermissionCheckHandler | null = null;
   let permissionRequestHandler: PermissionRequestHandler | null = null;
@@ -187,14 +187,22 @@ const fakes = vi.hoisted(() => {
         },
       },
       on: (event: string, handler: (...args: unknown[]) => void) => {
-        sessionEventHandlers.push({ event, handler });
+        sessionEventHandlers.push({ session: nextSession, event, handler });
       },
       off: (event: string, handler: (...args: unknown[]) => void) => {
-        const index = sessionEventHandlers.findIndex((entry) => entry.event === event && entry.handler === handler);
+        const index = sessionEventHandlers.findIndex((entry) => (
+          entry.session === nextSession
+          && entry.event === event
+          && entry.handler === handler
+        ));
         if (index >= 0) sessionEventHandlers.splice(index, 1);
       },
       removeListener: (event: string, handler: (...args: unknown[]) => void) => {
-        const index = sessionEventHandlers.findIndex((entry) => entry.event === event && entry.handler === handler);
+        const index = sessionEventHandlers.findIndex((entry) => (
+          entry.session === nextSession
+          && entry.event === event
+          && entry.handler === handler
+        ));
         if (index >= 0) sessionEventHandlers.splice(index, 1);
       },
       setPermissionCheckHandler: (handler: unknown) => {
@@ -308,7 +316,11 @@ const fakes = vi.hoisted(() => {
       downloadWebContents: FakeWebContents | null = webContentsInstances[0] ?? null,
     ): { preventDefault: ReturnType<typeof vi.fn> } => {
       const event = { preventDefault: vi.fn() };
-      const handler = sessionEventHandlers.findLast((entry) => entry.event === "will-download")?.handler;
+      const downloadSession = downloadWebContents?.session as FakeSession | null | undefined;
+      const handler = sessionEventHandlers.findLast((entry) => (
+        entry.session === downloadSession
+        && entry.event === "will-download"
+      ))?.handler;
       handler?.(event, item, downloadWebContents);
       return event;
     },
@@ -1095,16 +1107,20 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
       fakes.appGetPath.mockImplementationOnce(() => downloadDir);
       const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
       await service.createTab({ url: "https://example.test", activate: true });
+      const doneHandlers: Array<(_event: unknown, state: "completed" | "cancelled" | "interrupted") => void> = [];
       const item = {
         getFilename: vi.fn(() => "report.zip"),
         getURL: vi.fn(() => "https://example.test/report.zip"),
         setSavePath: vi.fn(),
-        once: vi.fn(),
+        once: vi.fn((event: "done", handler: (_event: unknown, state: "completed" | "cancelled" | "interrupted") => void) => {
+          if (event === "done") doneHandlers.push(handler);
+        }),
       };
 
       fakes.dispatchWillDownload(item);
 
       expect(item.setSavePath).toHaveBeenCalledWith(path.join(downloadDir, "report (2).zip"));
+      doneHandlers[0]?.({}, "completed");
     } finally {
       fs.rmSync(downloadDir, { recursive: true, force: true });
     }
@@ -1140,6 +1156,102 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     fakes.dispatchWillDownload(third);
 
     expect(third.setSavePath).toHaveBeenCalledWith(path.join("/Users/test/Downloads", "report.zip"));
+    doneHandlers[1]?.[0]?.({}, "completed");
+    doneHandlers[2]?.[0]?.({}, "completed");
+  });
+
+  it("reserves in-flight browser download filenames across project browser profiles", async () => {
+    const projectRootByWindow = new Map<number, string>();
+    const service = createBuiltInBrowserService({
+      getProjectRootForWindow: (win) => projectRootByWindow.get(win.id) ?? null,
+      onEvent: collector.onEvent,
+    });
+    const winA = fakeBrowserWindow();
+    const winB = fakeBrowserWindow();
+    projectRootByWindow.set(winA.id, "/Users/ade/project-alpha");
+    projectRootByWindow.set(winB.id, "/Users/ade/project-beta");
+    const browserWinA = winA as unknown as Parameters<typeof service.attachToWindow>[0];
+    const browserWinB = winB as unknown as Parameters<typeof service.attachToWindow>[0];
+    service.attachToWindow(browserWinA);
+    service.attachToWindow(browserWinB);
+    await service.createTab({ url: "https://alpha.example.test", activate: true }, browserWinA);
+    await service.createTab({ url: "https://beta.example.test", activate: true }, browserWinB);
+    const doneHandlers: Array<Array<(_event: unknown, state: "completed" | "cancelled" | "interrupted") => void>> = [];
+    const itemFor = (index: number) => {
+      doneHandlers[index] = [];
+      return {
+        getFilename: vi.fn(() => "report.zip"),
+        getURL: vi.fn(() => "https://example.test/report.zip"),
+        setSavePath: vi.fn(),
+        once: vi.fn((event: "done", handler: (_event: unknown, state: "completed" | "cancelled" | "interrupted") => void) => {
+          if (event === "done") doneHandlers[index]?.push(handler);
+        }),
+      };
+    };
+    const first = itemFor(0);
+    const second = itemFor(1);
+
+    fakes.dispatchWillDownload(first, fakes.webContentsInstances[0] ?? null);
+    fakes.dispatchWillDownload(second, fakes.webContentsInstances[1] ?? null);
+
+    expect(first.setSavePath).toHaveBeenCalledWith(path.join("/Users/test/Downloads", "report.zip"));
+    expect(second.setSavePath).toHaveBeenCalledWith(path.join("/Users/test/Downloads", "report (1).zip"));
+
+    doneHandlers[0]?.[0]?.({}, "completed");
+    doneHandlers[1]?.[0]?.({}, "completed");
+  });
+
+  it("treats in-flight download reservations as case-insensitive on case-insensitive platforms", async () => {
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+    await service.createTab({ url: "https://example.test", activate: true });
+    const doneHandlers: Array<Array<(_event: unknown, state: "completed" | "cancelled" | "interrupted") => void>> = [];
+    const itemFor = (index: number, filename: string) => {
+      doneHandlers[index] = [];
+      return {
+        getFilename: vi.fn(() => filename),
+        getURL: vi.fn(() => `https://example.test/${filename}`),
+        setSavePath: vi.fn(),
+        once: vi.fn((event: "done", handler: (_event: unknown, state: "completed" | "cancelled" | "interrupted") => void) => {
+          if (event === "done") doneHandlers[index]?.push(handler);
+        }),
+      };
+    };
+    const first = itemFor(0, "Report.zip");
+    const second = itemFor(1, "report.zip");
+
+    fakes.dispatchWillDownload(first);
+    fakes.dispatchWillDownload(second);
+
+    expect(first.setSavePath).toHaveBeenCalledWith(path.join("/Users/test/Downloads", "Report.zip"));
+    const expectedSecondPath = process.platform === "darwin" || process.platform === "win32"
+      ? path.join("/Users/test/Downloads", "report (1).zip")
+      : path.join("/Users/test/Downloads", "report.zip");
+    expect(second.setSavePath).toHaveBeenCalledWith(expectedSecondPath);
+
+    doneHandlers[0]?.[0]?.({}, "completed");
+    doneHandlers[1]?.[0]?.({}, "completed");
+  });
+
+  it("blocks a download that cannot be mapped to a managed browser tab", async () => {
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+    await service.createTab({ url: "https://example.test", activate: true });
+    const managedWebContents = fakes.webContentsInstances[0];
+    const unmanagedWebContents = { session: managedWebContents?.session ?? null } as typeof managedWebContents;
+    const item = {
+      getFilename: vi.fn(() => "report.zip"),
+      getURL: vi.fn(() => "https://example.test/report.zip"),
+      setSavePath: vi.fn(),
+      once: vi.fn(),
+    };
+
+    const event = fakes.dispatchWillDownload(item, unmanagedWebContents);
+
+    expect(event.preventDefault).toHaveBeenCalled();
+    expect(item.setSavePath).not.toHaveBeenCalled();
+    expect(collector.events.at(-1)).toMatchObject({
+      type: "error",
+      message: expect.stringContaining("unmanaged webContents"),
+    });
   });
 
   it("cancels a download when no unique filename is available", async () => {

@@ -89,6 +89,8 @@ const DEFAULT_OBSERVATION_MAX_AGE_MS = 30 * 60_000;
 const OBSERVATION_CACHE_DIR = path.join(".ade", "cache", "browser-observations");
 const INSPECT_BINDING_NAME = "__adeBuiltInBrowserInspectSelect";
 const DOWNLOAD_FILENAME_UNSAFE_RE = /[<>:"/\\|?*\x00-\x1F]/g;
+const RESERVED_BROWSER_DOWNLOAD_PATH_KEYS = new Set<string>();
+const MANAGED_BROWSER_WEB_CONTENTS = new WeakSet<WebContents>();
 
 type BrowserProfile = {
   key: string;
@@ -574,7 +576,6 @@ function createBuiltInBrowserWindowService(args: {
   let lastEmittedStatusKey: string | null = null;
   const configuredWebContents = new WeakSet<WebContents>();
   let configuredBrowserSession: ReturnType<typeof browserSessionForProfile> | null = null;
-  const reservedBrowserDownloadPaths = new Set<string>();
 
   const logger = (): Logger | null => {
     try {
@@ -1059,6 +1060,7 @@ function createBuiltInBrowserWindowService(args: {
   const configureBrowserWebContents = (wc: WebContents): void => {
     if (configuredWebContents.has(wc)) return;
     configuredWebContents.add(wc);
+    MANAGED_BROWSER_WEB_CONTENTS.add(wc);
     wc.on("console-message", (_event, level, message, line, sourceId) => {
       const tab = tabForWebContents(wc);
       if (!tab) return;
@@ -1287,15 +1289,20 @@ function createBuiltInBrowserWindowService(args: {
     });
     browserDownloadListener = (event, item, downloadWebContents) => {
       const tab = tabForWebContents(downloadWebContents);
-      if (!tab) return;
+      if (!tab) {
+        if (downloadWebContents && MANAGED_BROWSER_WEB_CONTENTS.has(downloadWebContents)) return;
+        event.preventDefault();
+        emitError(new Error("Blocked ADE browser download from unmanaged webContents."));
+        return;
+      }
       const startedAt = new Date().toISOString();
       const downloadUrl = stringOrNull(item.getURL());
       const fileName = sanitizeDownloadFilename(item.getFilename());
       let savePath: string | null = null;
       try {
-        savePath = builtInBrowserDownloadPath(fileName, reservedBrowserDownloadPaths);
+        savePath = builtInBrowserDownloadPath(fileName, RESERVED_BROWSER_DOWNLOAD_PATH_KEYS);
         item.setSavePath(savePath);
-        reservedBrowserDownloadPaths.add(savePath);
+        RESERVED_BROWSER_DOWNLOAD_PATH_KEYS.add(downloadPathReservationKey(savePath));
       } catch (error) {
         event.preventDefault();
         emitError(new Error(`Could not start ADE browser download: ${errorMessage(error)}`));
@@ -1308,7 +1315,7 @@ function createBuiltInBrowserWindowService(args: {
       });
 
       item.once("done", (_doneEvent, state) => {
-        if (savePath) reservedBrowserDownloadPaths.delete(savePath);
+        if (savePath) RESERVED_BROWSER_DOWNLOAD_PATH_KEYS.delete(downloadPathReservationKey(savePath));
         const endedAt = new Date().toISOString();
         const error = state === "completed" ? null : `Download ${state}`;
         if (tab) {
@@ -2115,7 +2122,6 @@ function createBuiltInBrowserWindowService(args: {
     browserSessions = [];
     activeTabId = null;
     configuredBrowserSession = null;
-    reservedBrowserDownloadPaths.clear();
   }
 
   const attachDebuggerListeners = (wc: WebContents): void => {
@@ -2911,13 +2917,25 @@ function sanitizeDownloadFilename(value: string | null | undefined): string {
 function uniqueDownloadPath(directory: string, filename: string, reservedPaths: ReadonlySet<string>): string {
   const parsed = path.parse(filename);
   let candidate = path.join(directory, filename);
-  for (let index = 1; index < 1_000 && (existsSync(candidate) || reservedPaths.has(candidate)); index += 1) {
+  for (let index = 1; index < 1_000 && downloadPathUnavailable(candidate, reservedPaths); index += 1) {
     candidate = path.join(directory, `${parsed.name} (${index})${parsed.ext}`);
   }
-  if (existsSync(candidate) || reservedPaths.has(candidate)) {
+  if (downloadPathUnavailable(candidate, reservedPaths)) {
     throw new Error(`Could not find an unused download filename for ${filename}`);
   }
   return candidate;
+}
+
+function downloadPathUnavailable(candidate: string, reservedPaths: ReadonlySet<string>): boolean {
+  return existsSync(candidate) || reservedPaths.has(downloadPathReservationKey(candidate));
+}
+
+function downloadPathReservationKey(filePath: string): string {
+  const normalized = path.normalize(path.resolve(filePath));
+  if (process.platform === "darwin" || process.platform === "win32") {
+    return normalized.toLocaleLowerCase("en-US");
+  }
+  return normalized;
 }
 
 function downloadUrlOrigin(value: string | null | undefined): string | null {
