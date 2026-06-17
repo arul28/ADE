@@ -1830,7 +1830,8 @@ function InlineQuestionRequestCard({
 
   const handleOption = useCallback((question: InlineQuestion, option: InlineQuestionOption, opts?: { submitSingle?: boolean }) => {
     const submitSingle = opts?.submitSingle ?? true;
-    if (submitSingle && !question.multiSelect && questions.length === 1) {
+    const hasFreeformDraft = question.allowsFreeform && (drafts[question.id]?.trim().length ?? 0) > 0;
+    if (submitSingle && !question.multiSelect && !hasFreeformDraft && questions.length === 1) {
       onApproval?.(itemId, "accept", null, { [question.id]: option.value });
       return;
     }
@@ -1847,7 +1848,7 @@ function InlineQuestionRequestCard({
       }
       return { ...prev, [question.id]: next };
     });
-  }, [itemId, onApproval, questions.length]);
+  }, [drafts, itemId, onApproval, questions.length]);
 
   const canSend = isPaged ? allAnswered : anyAnswered;
   const sendLabel = isResponding ? "Sending..." : isPaged ? "Send answers" : "Send answer";

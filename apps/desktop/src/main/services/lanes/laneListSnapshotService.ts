@@ -130,7 +130,7 @@ function summarizeLaneRuntime(
     if (bucket === "running") runningCount += 1;
     else if (bucket === "awaiting-input") {
       awaitingInputCount += 1;
-      if (session.pendingInputWaiting || session.pendingInputItemId) pendingInputCount += 1;
+      if (session.pendingInputItemId) pendingInputCount += 1;
     } else {
       endedCount += 1;
     }

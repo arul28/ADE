@@ -23,7 +23,6 @@ describe("summarizeDroidAskUser", () => {
         options: [
           { label: "yes", value: " yes " },
           { label: "no", value: "no" },
-          { label: "   ", value: "   " },
         ],
       },
     ]);

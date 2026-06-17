@@ -957,6 +957,7 @@ describe("runtime lane snapshot actions", () => {
             sessionId: "awaiting-chat",
             status: "active",
             awaitingInput: true,
+            pendingInputItemId: "pending-1",
             identityKey: null,
           },
         ]),

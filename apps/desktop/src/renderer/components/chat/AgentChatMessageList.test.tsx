@@ -2293,6 +2293,38 @@ describe("AgentChatMessageList inline ask-user card", () => {
     expect(onApproval).toHaveBeenCalledWith("approval-ask", "accept", null, { plan_choice: "rebase" });
   });
 
+  it("does not discard freeform drafts when selecting a single-choice option", () => {
+    const onApproval = vi.fn();
+    renderMessageList([
+      buildStructuredApprovalEvent({
+        questions: [
+          {
+            id: "plan_choice",
+            header: "Plan",
+            question: "Which plan should we follow?",
+            options: [
+              { label: "Rebase", value: "rebase" },
+              { label: "Merge", value: "merge" },
+            ],
+            allowsFreeform: true,
+          },
+        ],
+      }),
+    ], { onApproval });
+
+    fireEvent.change(screen.getByPlaceholderText("Optional response"), {
+      target: { value: "Keep the release note." },
+    });
+    fireEvent.click(findButtonByTextContent(/^Rebase/));
+
+    expect(onApproval).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: /send answer/i }));
+    expect(onApproval).toHaveBeenCalledWith("approval-ask", "accept", null, {
+      plan_choice: ["rebase", "Keep the release note."],
+    });
+  });
+
   it("accumulates multi-select values and submits as an array when Send is clicked", () => {
     const onApproval = vi.fn();
     renderMessageList([

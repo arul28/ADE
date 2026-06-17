@@ -10,7 +10,7 @@ export function summarizeDroidAskUser(params: DroidSdkTypes.AskUserRequestParams
   const questions = (params.questions ?? []).map((question, index) => {
     const topic = typeof question.topic === "string" ? question.topic.trim() : "";
     const options = (question.options ?? [])
-      .filter((option): option is string => typeof option === "string" && option.length > 0)
+      .filter((option): option is string => typeof option === "string" && option.trim().length > 0)
       .map((option) => ({
         label: option.trim() || option,
         value: option,
