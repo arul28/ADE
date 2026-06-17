@@ -33,6 +33,13 @@ const fakes = vi.hoisted(() => {
     callback: (granted: boolean) => void,
     details: { requestingUrl: string; isMainFrame: boolean; requestingOrigin?: string },
   ) => void;
+  type DownloadDoneHandler = (_event: unknown, state: "completed" | "cancelled" | "interrupted") => void;
+  type FakeDownloadItem = {
+    getFilename: () => string;
+    getURL: () => string;
+    setSavePath: (path: string) => void;
+    once: (event: "done", handler: DownloadDoneHandler) => void;
+  };
 
   class FakeDebugger {
     attached = false;
@@ -143,7 +150,8 @@ const fakes = vi.hoisted(() => {
   const beforeRequestHandlers: BeforeRequestHandler[] = [];
   const requestCompletedHandlers: RequestFinishedHandler[] = [];
   const requestErrorHandlers: RequestFinishedHandler[] = [];
-  const sessionEventHandlers: Array<{ event: string; handler: (...args: unknown[]) => void }> = [];
+  const sessionEventHandlers: Array<{ session: FakeSession; event: string; handler: (...args: unknown[]) => void }> = [];
+  const appGetPath = vi.fn((name: string): string => name === "downloads" ? "/Users/test/Downloads" : "/tmp");
   let permissionCheckHandler: PermissionCheckHandler | null = null;
   let permissionRequestHandler: PermissionRequestHandler | null = null;
   type FakeSession = {
@@ -154,6 +162,8 @@ const fakes = vi.hoisted(() => {
       onErrorOccurred: (handler: unknown) => void;
     };
     on: (event: string, handler: (...args: unknown[]) => void) => void;
+    off: (event: string, handler: (...args: unknown[]) => void) => void;
+    removeListener: (event: string, handler: (...args: unknown[]) => void) => void;
     setPermissionCheckHandler: (handler: unknown) => void;
     setPermissionRequestHandler: (handler: unknown) => void;
   };
@@ -177,7 +187,23 @@ const fakes = vi.hoisted(() => {
         },
       },
       on: (event: string, handler: (...args: unknown[]) => void) => {
-        sessionEventHandlers.push({ event, handler });
+        sessionEventHandlers.push({ session: nextSession, event, handler });
+      },
+      off: (event: string, handler: (...args: unknown[]) => void) => {
+        const index = sessionEventHandlers.findIndex((entry) => (
+          entry.session === nextSession
+          && entry.event === event
+          && entry.handler === handler
+        ));
+        if (index >= 0) sessionEventHandlers.splice(index, 1);
+      },
+      removeListener: (event: string, handler: (...args: unknown[]) => void) => {
+        const index = sessionEventHandlers.findIndex((entry) => (
+          entry.session === nextSession
+          && entry.event === event
+          && entry.handler === handler
+        ));
+        if (index >= 0) sessionEventHandlers.splice(index, 1);
       },
       setPermissionCheckHandler: (handler: unknown) => {
         permissionCheckHandler = handler as PermissionCheckHandler;
@@ -284,6 +310,20 @@ const fakes = vi.hoisted(() => {
       sessionEventHandlers.length = 0;
     },
     sessionEventHandlers,
+    appGetPath,
+    dispatchWillDownload: (
+      item: FakeDownloadItem,
+      downloadWebContents: FakeWebContents | null = webContentsInstances[0] ?? null,
+    ): { preventDefault: ReturnType<typeof vi.fn> } => {
+      const event = { preventDefault: vi.fn() };
+      const downloadSession = downloadWebContents?.session as FakeSession | null | undefined;
+      const handler = sessionEventHandlers.findLast((entry) => (
+        entry.session === downloadSession
+        && entry.event === "will-download"
+      ))?.handler;
+      handler?.(event, item, downloadWebContents);
+      return event;
+    },
     setPermissionCheckHandler: (handler: PermissionCheckHandler | null) => {
       permissionCheckHandler = handler;
     },
@@ -328,6 +368,7 @@ const fakes = vi.hoisted(() => {
 
 vi.mock("electron", () => ({
   WebContentsView: fakes.WebContentsView,
+  app: { getPath: fakes.appGetPath },
   nativeImage: { createFromDataURL: () => ({ getSize: () => ({ width: 0, height: 0 }) }) },
   screen: fakes.screen,
   session: {
@@ -397,6 +438,8 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     fakes.clearSessionEventHandlers();
     fakes.clearPermissionHandlers();
     fakes.openExternal.mockClear();
+    fakes.appGetPath.mockClear();
+    fakes.appGetPath.mockImplementation((name: string) => name === "downloads" ? "/Users/test/Downloads" : "/tmp");
   });
 
   it("getStatus returns sane defaults before any window or tab is attached", () => {
@@ -1014,6 +1057,264 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
       url: "https://accounts.google.com/gsi/select",
       tabId: service.getStatus().activeTabId,
     });
+  });
+
+  it("assigns ADE browser downloads to the user's Downloads folder", async () => {
+    const logger = {
+      debug: vi.fn(),
+      error: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+    };
+    const service = createBuiltInBrowserService({ getLogger: () => logger, onEvent: collector.onEvent });
+    await service.createTab({ url: "https://example.test", activate: true });
+    const doneHandlers: Array<(_event: unknown, state: "completed" | "cancelled" | "interrupted") => void> = [];
+    const item = {
+      getFilename: vi.fn(() => "report?:final.zip"),
+      getURL: vi.fn(() => "https://example.test/report.zip?token=secret"),
+      setSavePath: vi.fn(),
+      once: vi.fn((event: "done", handler: (_event: unknown, state: "completed" | "cancelled" | "interrupted") => void) => {
+        if (event === "done") doneHandlers.push(handler);
+      }),
+    };
+
+    const event = fakes.dispatchWillDownload(item);
+
+    expect(event.preventDefault).not.toHaveBeenCalled();
+    expect(item.setSavePath).toHaveBeenCalledWith(path.join("/Users/test/Downloads", "report__final.zip"));
+    expect(item.once).toHaveBeenCalledWith("done", expect.any(Function));
+
+    doneHandlers[0]?.({}, "completed");
+
+    const tab = service.getStatus().tabs[0];
+    expect(tab?.id).toEqual(expect.any(String));
+    expect(collector.events.at(-1)).toMatchObject({ type: "status" });
+    expect(logger.info).toHaveBeenCalledWith("built_in_browser.download_started", expect.objectContaining({
+      fileName: "report__final.zip",
+      tabId: tab?.id,
+      urlOrigin: "https://example.test",
+    }));
+    const logPayload = JSON.stringify(logger.info.mock.calls);
+    expect(logPayload).not.toContain("token=secret");
+    expect(logPayload).not.toContain("/Users/test/Downloads");
+  });
+
+  it("uses a unique filename when a browser download would overwrite an existing file", async () => {
+    const downloadDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-browser-download-"));
+    try {
+      fs.writeFileSync(path.join(downloadDir, "report.zip"), "");
+      fs.writeFileSync(path.join(downloadDir, "report (1).zip"), "");
+      fakes.appGetPath.mockImplementationOnce(() => downloadDir);
+      const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+      await service.createTab({ url: "https://example.test", activate: true });
+      const doneHandlers: Array<(_event: unknown, state: "completed" | "cancelled" | "interrupted") => void> = [];
+      const item = {
+        getFilename: vi.fn(() => "report.zip"),
+        getURL: vi.fn(() => "https://example.test/report.zip"),
+        setSavePath: vi.fn(),
+        once: vi.fn((event: "done", handler: (_event: unknown, state: "completed" | "cancelled" | "interrupted") => void) => {
+          if (event === "done") doneHandlers.push(handler);
+        }),
+      };
+
+      fakes.dispatchWillDownload(item);
+
+      expect(item.setSavePath).toHaveBeenCalledWith(path.join(downloadDir, "report (2).zip"));
+      doneHandlers[0]?.({}, "completed");
+    } finally {
+      fs.rmSync(downloadDir, { recursive: true, force: true });
+    }
+  });
+
+  it("reserves in-flight browser download filenames until the download completes", async () => {
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+    await service.createTab({ url: "https://example.test", activate: true });
+    const doneHandlers: Array<Array<(_event: unknown, state: "completed" | "cancelled" | "interrupted") => void>> = [];
+    const itemFor = (index: number) => {
+      doneHandlers[index] = [];
+      return {
+        getFilename: vi.fn(() => "report.zip"),
+        getURL: vi.fn(() => "https://example.test/report.zip"),
+        setSavePath: vi.fn(),
+        once: vi.fn((event: "done", handler: (_event: unknown, state: "completed" | "cancelled" | "interrupted") => void) => {
+          if (event === "done") doneHandlers[index]?.push(handler);
+        }),
+      };
+    };
+
+    const first = itemFor(0);
+    const second = itemFor(1);
+    const third = itemFor(2);
+
+    fakes.dispatchWillDownload(first);
+    fakes.dispatchWillDownload(second);
+
+    expect(first.setSavePath).toHaveBeenCalledWith(path.join("/Users/test/Downloads", "report.zip"));
+    expect(second.setSavePath).toHaveBeenCalledWith(path.join("/Users/test/Downloads", "report (1).zip"));
+
+    doneHandlers[0]?.[0]?.({}, "completed");
+    fakes.dispatchWillDownload(third);
+
+    expect(third.setSavePath).toHaveBeenCalledWith(path.join("/Users/test/Downloads", "report.zip"));
+    doneHandlers[1]?.[0]?.({}, "completed");
+    doneHandlers[2]?.[0]?.({}, "completed");
+  });
+
+  it("reserves in-flight browser download filenames across project browser profiles", async () => {
+    const projectRootByWindow = new Map<number, string>();
+    const service = createBuiltInBrowserService({
+      getProjectRootForWindow: (win) => projectRootByWindow.get(win.id) ?? null,
+      onEvent: collector.onEvent,
+    });
+    const winA = fakeBrowserWindow();
+    const winB = fakeBrowserWindow();
+    projectRootByWindow.set(winA.id, "/Users/ade/project-alpha");
+    projectRootByWindow.set(winB.id, "/Users/ade/project-beta");
+    const browserWinA = winA as unknown as Parameters<typeof service.attachToWindow>[0];
+    const browserWinB = winB as unknown as Parameters<typeof service.attachToWindow>[0];
+    service.attachToWindow(browserWinA);
+    service.attachToWindow(browserWinB);
+    await service.createTab({ url: "https://alpha.example.test", activate: true }, browserWinA);
+    await service.createTab({ url: "https://beta.example.test", activate: true }, browserWinB);
+    const doneHandlers: Array<Array<(_event: unknown, state: "completed" | "cancelled" | "interrupted") => void>> = [];
+    const itemFor = (index: number) => {
+      doneHandlers[index] = [];
+      return {
+        getFilename: vi.fn(() => "report.zip"),
+        getURL: vi.fn(() => "https://example.test/report.zip"),
+        setSavePath: vi.fn(),
+        once: vi.fn((event: "done", handler: (_event: unknown, state: "completed" | "cancelled" | "interrupted") => void) => {
+          if (event === "done") doneHandlers[index]?.push(handler);
+        }),
+      };
+    };
+    const first = itemFor(0);
+    const second = itemFor(1);
+
+    fakes.dispatchWillDownload(first, fakes.webContentsInstances[0] ?? null);
+    fakes.dispatchWillDownload(second, fakes.webContentsInstances[1] ?? null);
+
+    expect(first.setSavePath).toHaveBeenCalledWith(path.join("/Users/test/Downloads", "report.zip"));
+    expect(second.setSavePath).toHaveBeenCalledWith(path.join("/Users/test/Downloads", "report (1).zip"));
+
+    doneHandlers[0]?.[0]?.({}, "completed");
+    doneHandlers[1]?.[0]?.({}, "completed");
+  });
+
+  it("treats in-flight download reservations as case-insensitive on case-insensitive platforms", async () => {
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+    await service.createTab({ url: "https://example.test", activate: true });
+    const doneHandlers: Array<Array<(_event: unknown, state: "completed" | "cancelled" | "interrupted") => void>> = [];
+    const itemFor = (index: number, filename: string) => {
+      doneHandlers[index] = [];
+      return {
+        getFilename: vi.fn(() => filename),
+        getURL: vi.fn(() => `https://example.test/${filename}`),
+        setSavePath: vi.fn(),
+        once: vi.fn((event: "done", handler: (_event: unknown, state: "completed" | "cancelled" | "interrupted") => void) => {
+          if (event === "done") doneHandlers[index]?.push(handler);
+        }),
+      };
+    };
+    const first = itemFor(0, "Report.zip");
+    const second = itemFor(1, "report.zip");
+
+    fakes.dispatchWillDownload(first);
+    fakes.dispatchWillDownload(second);
+
+    expect(first.setSavePath).toHaveBeenCalledWith(path.join("/Users/test/Downloads", "Report.zip"));
+    const expectedSecondPath = process.platform === "darwin" || process.platform === "win32"
+      ? path.join("/Users/test/Downloads", "report (1).zip")
+      : path.join("/Users/test/Downloads", "report.zip");
+    expect(second.setSavePath).toHaveBeenCalledWith(expectedSecondPath);
+
+    doneHandlers[0]?.[0]?.({}, "completed");
+    doneHandlers[1]?.[0]?.({}, "completed");
+  });
+
+  it("blocks a download that cannot be mapped to a managed browser tab", async () => {
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+    await service.createTab({ url: "https://example.test", activate: true });
+    const managedWebContents = fakes.webContentsInstances[0];
+    const unmanagedWebContents = { session: managedWebContents?.session ?? null } as typeof managedWebContents;
+    const item = {
+      getFilename: vi.fn(() => "report.zip"),
+      getURL: vi.fn(() => "https://example.test/report.zip"),
+      setSavePath: vi.fn(),
+      once: vi.fn(),
+    };
+
+    const event = fakes.dispatchWillDownload(item, unmanagedWebContents);
+
+    expect(event.preventDefault).toHaveBeenCalled();
+    expect(item.setSavePath).not.toHaveBeenCalled();
+    expect(collector.events.at(-1)).toMatchObject({
+      type: "error",
+      message: expect.stringContaining("unmanaged webContents"),
+    });
+  });
+
+  it("cancels a download when no unique filename is available", async () => {
+    const downloadDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-browser-download-full-"));
+    try {
+      fs.writeFileSync(path.join(downloadDir, "report.zip"), "");
+      for (let index = 1; index < 1_000; index += 1) {
+        fs.writeFileSync(path.join(downloadDir, `report (${index}).zip`), "");
+      }
+      fakes.appGetPath.mockImplementationOnce(() => downloadDir);
+      const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+      await service.createTab({ url: "https://example.test", activate: true });
+      const item = {
+        getFilename: vi.fn(() => "report.zip"),
+        getURL: vi.fn(() => "https://example.test/report.zip"),
+        setSavePath: vi.fn(),
+        once: vi.fn(),
+      };
+
+      const event = fakes.dispatchWillDownload(item);
+
+      expect(event.preventDefault).toHaveBeenCalled();
+      expect(item.setSavePath).not.toHaveBeenCalled();
+      expect(collector.events.at(-1)).toMatchObject({
+        type: "error",
+        message: expect.stringContaining("Could not find an unused download filename"),
+      });
+    } finally {
+      fs.rmSync(downloadDir, { recursive: true, force: true });
+    }
+  });
+
+  it("cancels a download instead of letting setup errors escape the session handler", async () => {
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+    await service.createTab({ url: "https://example.test", activate: true });
+    fakes.appGetPath.mockImplementationOnce(() => {
+      throw new Error("Downloads folder unavailable");
+    });
+    const item = {
+      getFilename: vi.fn(() => "report.zip"),
+      getURL: vi.fn(() => "https://example.test/report.zip"),
+      setSavePath: vi.fn(),
+      once: vi.fn(),
+    };
+
+    const event = fakes.dispatchWillDownload(item);
+
+    expect(event.preventDefault).toHaveBeenCalled();
+    expect(item.setSavePath).not.toHaveBeenCalled();
+    expect(collector.events.at(-1)).toMatchObject({
+      type: "error",
+      message: expect.stringContaining("Could not start ADE browser download"),
+    });
+  });
+
+  it("removes the browser download listener when the window service is disposed", async () => {
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+    await service.createTab({ url: "https://example.test", activate: true });
+    expect(fakes.sessionEventHandlers.some((entry) => entry.event === "will-download")).toBe(true);
+
+    service.dispose();
+
+    expect(fakes.sessionEventHandlers.some((entry) => entry.event === "will-download")).toBe(false);
   });
 
   it("emits an open request so the Work sidebar can reveal the browser panel", async () => {
@@ -1963,6 +2264,8 @@ describe("createBuiltInBrowserService — switchTab and navigate inspect/selecti
     fakes.clearSessionEventHandlers();
     fakes.clearPermissionHandlers();
     fakes.openExternal.mockClear();
+    fakes.appGetPath.mockClear();
+    fakes.appGetPath.mockImplementation((name: string) => name === "downloads" ? "/Users/test/Downloads" : "/tmp");
   });
 
   it("switchTab to the currently active tab does not clear an existing selection", async () => {

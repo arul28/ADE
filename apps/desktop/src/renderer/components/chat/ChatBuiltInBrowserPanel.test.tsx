@@ -46,6 +46,38 @@ let nextFrameId = 0;
 let nextFrameNow = 0;
 const frameTimers = new Map<number, ReturnType<typeof setTimeout>>();
 
+function makeRect(left: number, top: number, width: number, height: number): DOMRect {
+  return {
+    bottom: top + height,
+    height,
+    left,
+    right: left + width,
+    top,
+    width,
+    x: left,
+    y: top,
+    toJSON: () => ({}),
+  } as DOMRect;
+}
+
+function stubElementFromPoint(impl: (x: number, y: number) => Element | null): () => void {
+  const original = document.elementFromPoint;
+  Object.defineProperty(document, "elementFromPoint", {
+    configurable: true,
+    value: vi.fn(impl),
+  });
+  return () => {
+    if (original) {
+      Object.defineProperty(document, "elementFromPoint", {
+        configurable: true,
+        value: original,
+      });
+      return;
+    }
+    delete (document as unknown as { elementFromPoint?: unknown }).elementFromPoint;
+  };
+}
+
 function installBrowserApi() {
   let eventListener: ((event: unknown) => void) | null = null;
   const api = {
@@ -228,6 +260,177 @@ describe("ChatBuiltInBrowserPanel", () => {
         visible: true,
       }));
     });
+  });
+
+  it("hides the native browser while ADE overlays overlap the browser surface", async () => {
+    const { api } = installBrowserApi();
+
+    render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
+
+    await waitFor(() => {
+      expect(api.setBounds).toHaveBeenCalledWith(expect.objectContaining({
+        width: 640,
+        height: 360,
+        visible: true,
+      }));
+    });
+
+    const overlay = document.createElement("div");
+    overlay.setAttribute("role", "dialog");
+    overlay.style.position = "fixed";
+    overlay.style.zIndex = "9999";
+    overlay.style.width = "320px";
+    overlay.style.height = "180px";
+    document.body.appendChild(overlay);
+
+    await waitFor(() => {
+      expect(api.setBounds).toHaveBeenLastCalledWith(expect.objectContaining({
+        width: 640,
+        height: 360,
+        visible: false,
+      }));
+    });
+
+    overlay.remove();
+
+    await waitFor(() => {
+      expect(api.setBounds).toHaveBeenLastCalledWith(expect.objectContaining({
+        width: 640,
+        height: 360,
+        visible: true,
+      }));
+    });
+  });
+
+  it("hides positioned ADE overlays even when their z-index is low", async () => {
+    const { api } = installBrowserApi();
+
+    render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
+
+    await waitFor(() => {
+      expect(api.setBounds).toHaveBeenCalledWith(expect.objectContaining({
+        width: 640,
+        height: 360,
+        visible: true,
+      }));
+    });
+
+    const overlay = document.createElement("div");
+    overlay.style.position = "fixed";
+    overlay.style.zIndex = "1";
+    overlay.style.width = "320px";
+    overlay.style.height = "180px";
+    document.body.appendChild(overlay);
+
+    try {
+      await waitFor(() => {
+        expect(api.setBounds).toHaveBeenLastCalledWith(expect.objectContaining({
+          width: 640,
+          height: 360,
+          visible: false,
+        }));
+      });
+    } finally {
+      overlay.remove();
+    }
+  });
+
+  it("does not hide the native browser for overlay candidates painted behind other ADE UI", async () => {
+    const restoreElementFromPoint = stubElementFromPoint(() => document.body);
+    let overlay: HTMLDivElement | null = null;
+    try {
+      const { api } = installBrowserApi();
+
+      render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
+
+      await waitFor(() => {
+        expect(api.setBounds).toHaveBeenCalledWith(expect.objectContaining({
+          width: 640,
+          height: 360,
+          visible: true,
+        }));
+      });
+
+      overlay = document.createElement("div");
+      overlay.setAttribute("role", "dialog");
+      overlay.style.position = "fixed";
+      overlay.style.zIndex = "9999";
+      overlay.style.width = "320px";
+      overlay.style.height = "180px";
+      document.body.appendChild(overlay);
+
+      await waitFor(() => {
+        expect(api.setBounds).toHaveBeenLastCalledWith(expect.objectContaining({
+          width: 640,
+          height: 360,
+          visible: true,
+        }));
+      });
+
+      expect(api.setBounds).not.toHaveBeenCalledWith(expect.objectContaining({
+        width: 640,
+        height: 360,
+        visible: false,
+      }));
+    } finally {
+      overlay?.remove();
+      restoreElementFromPoint();
+    }
+  });
+
+  it("rechecks overlays that move over the browser during transitions", async () => {
+    let overlay: HTMLDivElement | null = null;
+    let overlayOverlapsBrowser = false;
+    const restoreElementFromPoint = stubElementFromPoint(() => overlayOverlapsBrowser ? overlay : document.body);
+    vi.mocked(HTMLElement.prototype.getBoundingClientRect).mockImplementation(function getBoundingClientRect(this: HTMLElement) {
+      if (this === overlay) {
+        return overlayOverlapsBrowser ? makeRect(30, 40, 320, 180) : makeRect(900, 40, 320, 180);
+      }
+      return makeRect(10, 20, 640, 360);
+    });
+    try {
+      const { api } = installBrowserApi();
+
+      render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
+
+      await waitFor(() => {
+        expect(api.setBounds).toHaveBeenCalledWith(expect.objectContaining({
+          width: 640,
+          height: 360,
+          visible: true,
+        }));
+      });
+
+      overlay = document.createElement("div");
+      overlay.setAttribute("role", "dialog");
+      overlay.style.position = "fixed";
+      overlay.style.width = "320px";
+      overlay.style.height = "180px";
+      document.body.appendChild(overlay);
+
+      await waitFor(() => {
+        expect(api.setBounds).toHaveBeenLastCalledWith(expect.objectContaining({
+          width: 640,
+          height: 360,
+          visible: true,
+        }));
+      });
+      expect(api.setBounds).not.toHaveBeenLastCalledWith(expect.objectContaining({ visible: false }));
+
+      overlayOverlapsBrowser = true;
+      overlay.dispatchEvent(new Event("transitionend", { bubbles: true }));
+
+      await waitFor(() => {
+        expect(api.setBounds).toHaveBeenLastCalledWith(expect.objectContaining({
+          width: 640,
+          height: 360,
+          visible: false,
+        }));
+      });
+    } finally {
+      overlay?.remove();
+      restoreElementFromPoint();
+    }
   });
 
   it("starts and cancels screenshot crop mode when chat context is available", async () => {

@@ -1,5 +1,6 @@
-import { WebContentsView, nativeImage, screen, session, webContents as electronWebContents } from "electron";
-import type { BrowserWindow, WebContents } from "electron";
+import { existsSync } from "node:fs";
+import { WebContentsView, app, nativeImage, screen, session, webContents as electronWebContents } from "electron";
+import type { BrowserWindow, DownloadItem, WebContents } from "electron";
 import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -87,6 +88,9 @@ const MAX_TAB_LEASE_TTL_MS = 60 * 60_000;
 const DEFAULT_OBSERVATION_MAX_AGE_MS = 30 * 60_000;
 const OBSERVATION_CACHE_DIR = path.join(".ade", "cache", "browser-observations");
 const INSPECT_BINDING_NAME = "__adeBuiltInBrowserInspectSelect";
+const DOWNLOAD_FILENAME_UNSAFE_RE = /[<>:"/\\|?*\x00-\x1F]/g;
+const RESERVED_BROWSER_DOWNLOAD_PATH_KEYS = new Set<string>();
+const MANAGED_BROWSER_WEB_CONTENTS = new WeakSet<WebContents>();
 
 type BrowserProfile = {
   key: string;
@@ -202,6 +206,11 @@ type BrowserSessionState = {
 };
 
 type BuiltInBrowserElementTargetInput = BuiltInBrowserObservationArgs & BuiltInBrowserElementTargetArgs;
+type BrowserDownloadListener = (
+  event: { preventDefault: () => void },
+  item: DownloadItem,
+  downloadWebContents: WebContents,
+) => void;
 
 function normalizedProjectRoot(value: string | null | undefined): string | null {
   if (typeof value !== "string") return null;
@@ -560,11 +569,13 @@ function createBuiltInBrowserWindowService(args: {
   let debuggerMessageListener: DebuggerMessageListener | null = null;
   let debuggerDetachListener: DebuggerDetachListener | null = null;
   let inspectListenerWebContents: WebContents | null = null;
+  let browserDownloadListener: BrowserDownloadListener | null = null;
   let lastSelectedItem: BuiltInBrowserContextItem | null = null;
   let handlingInspectNode = false;
   let browserSessionConfigured = false;
   let lastEmittedStatusKey: string | null = null;
   const configuredWebContents = new WeakSet<WebContents>();
+  let configuredBrowserSession: ReturnType<typeof browserSessionForProfile> | null = null;
 
   const logger = (): Logger | null => {
     try {
@@ -1049,6 +1060,7 @@ function createBuiltInBrowserWindowService(args: {
   const configureBrowserWebContents = (wc: WebContents): void => {
     if (configuredWebContents.has(wc)) return;
     configuredWebContents.add(wc);
+    MANAGED_BROWSER_WEB_CONTENTS.add(wc);
     wc.on("console-message", (_event, level, message, line, sourceId) => {
       const tab = tabForWebContents(wc);
       if (!tab) return;
@@ -1237,9 +1249,28 @@ function createBuiltInBrowserWindowService(args: {
 
   const browserSessionForProfile = () => session.fromPartition(args.profile.partition);
 
+  const removeBrowserDownloadListener = (): void => {
+    if (!browserDownloadListener) return;
+    const browserSession = configuredBrowserSession as (ReturnType<typeof browserSessionForProfile> & {
+      off?: (event: "will-download", listener: BrowserDownloadListener) => void;
+      removeListener?: (event: "will-download", listener: BrowserDownloadListener) => void;
+    }) | null;
+    try {
+      if (typeof browserSession?.off === "function") {
+        browserSession.off("will-download", browserDownloadListener);
+      } else {
+        browserSession?.removeListener?.("will-download", browserDownloadListener);
+      }
+    } catch {
+      // ignore session teardown races
+    }
+    browserDownloadListener = null;
+  };
+
   const configureBrowserSession = (): void => {
     if (browserSessionConfigured) return;
     const browserSession = browserSessionForProfile();
+    configuredBrowserSession = browserSession;
     configureBuiltInBrowserSessionWebAuthn(browserSession, logger);
     const webRequest = browserSession.webRequest as unknown as {
       onBeforeRequest?: (listener: (details: Record<string, unknown>, callback?: (response: { cancel?: boolean }) => void) => void) => void;
@@ -1256,6 +1287,61 @@ function createBuiltInBrowserWindowService(args: {
     webRequest.onErrorOccurred?.((details) => {
       trackNetworkRequestEnd(details, stringOrNull(details.error) ?? "request failed");
     });
+    browserDownloadListener = (event, item, downloadWebContents) => {
+      const tab = tabForWebContents(downloadWebContents);
+      if (!tab) {
+        if (downloadWebContents && MANAGED_BROWSER_WEB_CONTENTS.has(downloadWebContents)) return;
+        event.preventDefault();
+        emitError(new Error("Blocked ADE browser download from unmanaged webContents."));
+        return;
+      }
+      const startedAt = new Date().toISOString();
+      const downloadUrl = stringOrNull(item.getURL());
+      const fileName = sanitizeDownloadFilename(item.getFilename());
+      let savePath: string | null = null;
+      try {
+        savePath = builtInBrowserDownloadPath(fileName, RESERVED_BROWSER_DOWNLOAD_PATH_KEYS);
+        item.setSavePath(savePath);
+        RESERVED_BROWSER_DOWNLOAD_PATH_KEYS.add(downloadPathReservationKey(savePath));
+      } catch (error) {
+        event.preventDefault();
+        emitError(new Error(`Could not start ADE browser download: ${errorMessage(error)}`));
+        return;
+      }
+      logger()?.info("built_in_browser.download_started", {
+        urlOrigin: downloadUrlOrigin(downloadUrl),
+        fileName,
+        tabId: tab?.id ?? null,
+      });
+
+      item.once("done", (_doneEvent, state) => {
+        if (savePath) RESERVED_BROWSER_DOWNLOAD_PATH_KEYS.delete(downloadPathReservationKey(savePath));
+        const endedAt = new Date().toISOString();
+        const error = state === "completed" ? null : `Download ${state}`;
+        if (tab) {
+          pushNetworkDiagnostic(tab, {
+            url: downloadUrlForDiagnostics(downloadUrl) ?? "about:blank",
+            method: "GET",
+            resourceType: "download",
+            statusCode: null,
+            error,
+            startedAt,
+            endedAt,
+            durationMs: Math.max(0, Date.parse(endedAt) - Date.parse(startedAt)),
+          });
+          noteNetworkActivity(tab);
+        }
+        logger()?.info(state === "completed" ? "built_in_browser.download_completed" : "built_in_browser.download_finished_non_success", {
+          urlOrigin: downloadUrlOrigin(downloadUrl),
+          fileName,
+          state,
+          tabId: tab?.id ?? null,
+        });
+        if (error) emitError(new Error(error));
+        emitStatus();
+      });
+    };
+    browserSession.on("will-download", browserDownloadListener);
     browserSession.setPermissionCheckHandler((_webContents, permission, requestingOrigin, details) => {
       if (shouldAllowGoogleAuthPermissionCheck(permission, requestingOrigin, details)) {
         logger()?.debug("built_in_browser.permission_check_allowed", {
@@ -2020,6 +2106,7 @@ function createBuiltInBrowserWindowService(args: {
       win.removeListener("closed", winClosedListener);
       winClosedListener = null;
     }
+    removeBrowserDownloadListener();
     removeTabViewsFromWindow();
     for (const tab of tabs) {
       if (tab.ownsWebContents) {
@@ -2034,6 +2121,7 @@ function createBuiltInBrowserWindowService(args: {
     tabs = [];
     browserSessions = [];
     activeTabId = null;
+    configuredBrowserSession = null;
   }
 
   const attachDebuggerListeners = (wc: WebContents): void => {
@@ -2812,6 +2900,63 @@ function normalizeTraceLimit(value: unknown): number {
 function normalizeLeaseTtlMs(value: unknown): number {
   const raw = typeof value === "number" && Number.isFinite(value) ? Math.floor(value) : DEFAULT_TAB_LEASE_TTL_MS;
   return Math.max(1_000, Math.min(MAX_TAB_LEASE_TTL_MS, raw));
+}
+
+function builtInBrowserDownloadPath(filename: string, reservedPaths: ReadonlySet<string>): string {
+  const downloadsDir = app.getPath("downloads");
+  return uniqueDownloadPath(downloadsDir, filename, reservedPaths);
+}
+
+function sanitizeDownloadFilename(value: string | null | undefined): string {
+  const base = path.basename(value?.trim() || "");
+  const sanitized = base.replace(DOWNLOAD_FILENAME_UNSAFE_RE, "_").trim();
+  if (sanitized && sanitized !== "." && sanitized !== "..") return sanitized;
+  return `ade-browser-download-${Date.now()}`;
+}
+
+function uniqueDownloadPath(directory: string, filename: string, reservedPaths: ReadonlySet<string>): string {
+  const parsed = path.parse(filename);
+  let candidate = path.join(directory, filename);
+  for (let index = 1; index < 1_000 && downloadPathUnavailable(candidate, reservedPaths); index += 1) {
+    candidate = path.join(directory, `${parsed.name} (${index})${parsed.ext}`);
+  }
+  if (downloadPathUnavailable(candidate, reservedPaths)) {
+    throw new Error(`Could not find an unused download filename for ${filename}`);
+  }
+  return candidate;
+}
+
+function downloadPathUnavailable(candidate: string, reservedPaths: ReadonlySet<string>): boolean {
+  return existsSync(candidate) || reservedPaths.has(downloadPathReservationKey(candidate));
+}
+
+function downloadPathReservationKey(filePath: string): string {
+  const normalized = path.normalize(path.resolve(filePath));
+  if (process.platform === "darwin" || process.platform === "win32") {
+    return normalized.toLocaleLowerCase("en-US");
+  }
+  return normalized;
+}
+
+function downloadUrlOrigin(value: string | null | undefined): string | null {
+  if (!value) return null;
+  try {
+    const url = new URL(value);
+    return url.origin === "null" ? url.protocol : url.origin;
+  } catch {
+    return null;
+  }
+}
+
+function downloadUrlForDiagnostics(value: string | null | undefined): string | null {
+  if (!value) return null;
+  try {
+    const url = new URL(value);
+    if (url.origin === "null") return url.protocol;
+    return `${url.origin}${url.pathname}`;
+  } catch {
+    return null;
+  }
 }
 
 function isLeaseExpired(value: string | null): boolean {

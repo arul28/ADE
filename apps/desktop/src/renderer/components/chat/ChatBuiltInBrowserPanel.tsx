@@ -185,6 +185,26 @@ type BrowserCrop = {
 const BOUNDS_SETTLE_MS = 1_200;
 const BOUNDS_SETTLE_MIN_FRAME_MS = 32;
 const DEFAULT_BROWSER_URL = "https://www.google.com/";
+const OVERLAY_ROLES = new Set(["alertdialog", "dialog", "listbox", "menu", "tooltip"]);
+const OVERLAY_MOTION_EVENTS = ["animationend", "animationiteration", "animationstart", "transitioncancel", "transitionend", "transitionrun", "transitionstart"] as const;
+const OVERLAY_CANDIDATE_SELECTOR = [
+  '[role="alertdialog"]',
+  '[role="dialog"]',
+  '[role="listbox"]',
+  '[role="menu"]',
+  '[role="tooltip"]',
+  '[aria-modal="true"]',
+  "[data-radix-popper-content-wrapper]",
+  "[data-radix-dialog-content]",
+  "[data-radix-menu-content]",
+  "[data-radix-popover-content]",
+  "[data-radix-select-content]",
+  "[data-side][data-align]",
+  ".fixed",
+  ".absolute",
+  ".sticky",
+  '[style*="position"]',
+].join(",");
 // Renderer-owned <webview> nodes lose their backing webContents when the panel unmounts.
 // Keep tabs owned by the main browser service so tab state survives Work sidebar tab switches.
 const USE_RENDERER_BROWSER_WEBVIEWS = false;
@@ -513,6 +533,87 @@ function measureNativeBrowserBounds(element: HTMLElement): BrowserBounds {
   };
 }
 
+function rectsOverlap(a: DOMRect, b: DOMRect): boolean {
+  return a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
+}
+
+type BrowserOverlayRect = Pick<DOMRect, "bottom" | "height" | "left" | "right" | "top" | "width">;
+
+function rectIntersection(a: BrowserOverlayRect, b: BrowserOverlayRect): BrowserOverlayRect | null {
+  const left = Math.max(a.left, b.left);
+  const right = Math.min(a.right, b.right);
+  const top = Math.max(a.top, b.top);
+  const bottom = Math.min(a.bottom, b.bottom);
+  const width = right - left;
+  const height = bottom - top;
+  if (width <= 0 || height <= 0) return null;
+  return { bottom, height, left, right, top, width };
+}
+
+function isBrowserOverlayCandidate(element: HTMLElement): boolean {
+  const style = window.getComputedStyle(element);
+  if (
+    style.display === "none"
+    || style.visibility === "hidden"
+    || style.opacity === "0"
+    || style.pointerEvents === "none"
+    || element.hidden
+    || element.getAttribute("aria-hidden") === "true"
+  ) {
+    return false;
+  }
+  const rect = element.getBoundingClientRect();
+  if (rect.width < 4 || rect.height < 4) return false;
+  const role = element.getAttribute("role");
+  if (role && OVERLAY_ROLES.has(role)) return true;
+  if (element.getAttribute("aria-modal") === "true") return true;
+  if (
+    element.matches(
+      "[data-radix-popper-content-wrapper], [data-radix-dialog-content], [data-radix-menu-content], [data-radix-popover-content], [data-radix-select-content], [data-side][data-align]",
+    )
+  ) {
+    return true;
+  }
+  return style.position === "fixed" || style.position === "absolute" || style.position === "sticky";
+}
+
+function overlayCandidateOwnsPoint(element: HTMLElement, x: number, y: number): boolean {
+  if (typeof document.elementFromPoint !== "function") return true;
+  const topElement = document.elementFromPoint(x, y);
+  return topElement === element || (topElement != null && element.contains(topElement));
+}
+
+function overlayCandidatePaintsOverSurface(element: HTMLElement, surfaceRect: DOMRect): boolean {
+  const overlap = rectIntersection(surfaceRect, element.getBoundingClientRect());
+  if (!overlap) return false;
+  const points = [
+    [overlap.left + overlap.width / 2, overlap.top + overlap.height / 2],
+    [overlap.left + 1, overlap.top + 1],
+    [overlap.right - 1, overlap.top + 1],
+    [overlap.left + 1, overlap.bottom - 1],
+    [overlap.right - 1, overlap.bottom - 1],
+  ];
+  return points.some(([x, y]) => overlayCandidateOwnsPoint(element, x, y));
+}
+
+function collectBrowserOverlayCandidates(surface: HTMLElement): HTMLElement[] {
+  return Array.from(document.body.querySelectorAll<HTMLElement>(OVERLAY_CANDIDATE_SELECTOR)).filter((element) => {
+    if (element === surface || surface.contains(element) || element.contains(surface)) return false;
+    return isBrowserOverlayCandidate(element);
+  });
+}
+
+function browserSurfaceHasExternalOverlay(surface: HTMLElement): boolean {
+  if (!surface.isConnected || !document.body) return false;
+  const surfaceRect = surface.getBoundingClientRect();
+  if (surfaceRect.width < 4 || surfaceRect.height < 4) return false;
+  for (const element of collectBrowserOverlayCandidates(surface)) {
+    const elementRect = element.getBoundingClientRect();
+    if (rectsOverlap(surfaceRect, elementRect) && overlayCandidatePaintsOverSurface(element, surfaceRect)) return true;
+  }
+  return false;
+}
+
 function clampBrowserFrame(frame: BrowserFrame, width: number, height: number): BrowserFrame {
   const cropWidth = Math.max(1, Math.min(width, Math.round(frame.width)));
   const cropHeight = Math.max(1, Math.min(height, Math.round(frame.height)));
@@ -636,6 +737,7 @@ export function ChatBuiltInBrowserPanel({
   const selectedItemRef = useRef<BuiltInBrowserContextItem | null>(null);
   const captureModeRef = useRef(false);
   const browserInputSuppressedRef = useRef(false);
+  const browserOverlayOccludedRef = useRef(false);
   const browserViewSuppressionCountRef = useRef(0);
   const autoAttachedContextIdsRef = useRef(new Set<string>());
   const editingUrlRef = useRef(false);
@@ -659,6 +761,9 @@ export function ChatBuiltInBrowserPanel({
   const withBrowserScope = useCallback(<T extends Record<string, unknown>>(args: T): T & BrowserProjectScopeArgs => (
     (projectRoot ? { ...args, projectRoot } : args) as T & BrowserProjectScopeArgs
   ), [projectRoot]);
+  const syncBrowserInputSuppressedState = useCallback(() => {
+    setBrowserInputSuppressed(browserInputSuppressedRef.current || browserOverlayOccludedRef.current);
+  }, []);
 
   const statusInfo = useMemo(() => buildStatusInfo(apiAvailable, status), [apiAvailable, status]);
   const browserTabs = useMemo(() => status?.tabs ?? [], [status?.tabs]);
@@ -784,7 +889,12 @@ export function ChatBuiltInBrowserPanel({
     const measured = measureNativeBrowserBounds(element);
     const next: BrowserBounds = {
       ...measured,
-      visible: visibleOverride ?? (!browserInputSuppressedRef.current && !captureModeRef.current && measured.visible),
+      visible: visibleOverride ?? (
+        !browserInputSuppressedRef.current
+        && !browserOverlayOccludedRef.current
+        && !captureModeRef.current
+        && measured.visible
+      ),
     };
     if (boundsEqual(latestBoundsRef.current, next)) return;
     latestBoundsRef.current = next;
@@ -820,14 +930,14 @@ export function ChatBuiltInBrowserPanel({
       cancelRestoreFrame();
       browserViewSuppressionCountRef.current += 1;
       browserInputSuppressedRef.current = true;
-      setBrowserInputSuppressed(true);
+      syncBrowserInputSuppressedState();
       reportBounds(false);
     };
     const restoreInput = () => {
       browserViewSuppressionCountRef.current = Math.max(0, browserViewSuppressionCountRef.current - 1);
       if (browserViewSuppressionCountRef.current > 0) return;
       browserInputSuppressedRef.current = false;
-      setBrowserInputSuppressed(false);
+      syncBrowserInputSuppressedState();
       cancelRestoreFrame();
       restoreFrame = window.requestAnimationFrame(() => {
         restoreFrame = null;
@@ -845,7 +955,73 @@ export function ChatBuiltInBrowserPanel({
       window.removeEventListener(ADE_BROWSER_VIEW_OCCLUSION_END_EVENT, restoreInput);
       cancelRestoreFrame();
     };
-  }, [reportBounds]);
+  }, [reportBounds, syncBrowserInputSuppressedState]);
+
+  useEffect(() => {
+    const element = browserSurfaceRef.current;
+    if (!element || typeof MutationObserver === "undefined") return undefined;
+    let animationFrame: number | null = null;
+    const cancelFrame = () => {
+      if (animationFrame == null) return;
+      window.cancelAnimationFrame(animationFrame);
+      animationFrame = null;
+    };
+    const setOverlayOccluded = (next: boolean) => {
+      if (browserOverlayOccludedRef.current === next) return;
+      browserOverlayOccludedRef.current = next;
+      syncBrowserInputSuppressedState();
+      reportBounds(next ? false : undefined);
+    };
+    const checkForOverlay = () => {
+      animationFrame = null;
+      setOverlayOccluded(browserSurfaceHasExternalOverlay(element));
+      refreshObservedOverlays();
+    };
+    const scheduleCheck = () => {
+      if (animationFrame != null) return;
+      animationFrame = window.requestAnimationFrame(checkForOverlay);
+    };
+    const resizeObserver = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(scheduleCheck);
+    const observedOverlays = new Set<HTMLElement>();
+    const refreshObservedOverlays = () => {
+      if (!resizeObserver || !document.body) return;
+      const nextOverlays = new Set(collectBrowserOverlayCandidates(element));
+      for (const overlay of observedOverlays) {
+        if (nextOverlays.has(overlay)) continue;
+        resizeObserver.unobserve(overlay);
+        observedOverlays.delete(overlay);
+      }
+      for (const overlay of nextOverlays) {
+        if (observedOverlays.has(overlay)) continue;
+        resizeObserver.observe(overlay);
+        observedOverlays.add(overlay);
+      }
+    };
+    const observer = new MutationObserver(scheduleCheck);
+    observer.observe(document.body, {
+      attributes: true,
+      attributeFilter: ["aria-hidden", "aria-modal", "class", "data-state", "hidden", "role", "style"],
+      childList: true,
+      subtree: true,
+    });
+    scheduleCheck();
+    window.addEventListener("resize", scheduleCheck);
+    window.addEventListener("scroll", scheduleCheck, true);
+    for (const eventName of OVERLAY_MOTION_EVENTS) {
+      document.addEventListener(eventName, scheduleCheck, true);
+    }
+    return () => {
+      observer.disconnect();
+      resizeObserver?.disconnect();
+      window.removeEventListener("resize", scheduleCheck);
+      window.removeEventListener("scroll", scheduleCheck, true);
+      for (const eventName of OVERLAY_MOTION_EVENTS) {
+        document.removeEventListener(eventName, scheduleCheck, true);
+      }
+      cancelFrame();
+      browserOverlayOccludedRef.current = false;
+    };
+  }, [reportBounds, syncBrowserInputSuppressedState]);
 
   useLayoutEffect(() => {
     const element = browserSurfaceRef.current;
