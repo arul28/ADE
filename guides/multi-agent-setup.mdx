@@ -1,16 +1,22 @@
 ---
 title: "Multi-agent setup"
-description: "Run several agents safely by giving each task its own lane and review path."
+description: "Run several agents safely by giving each task its own lane, watching for collisions, and choosing the grid when you want to compare attempts."
 icon: "users"
 ---
 
-The safest multi-agent setup is simple: one lane per task, one clear goal per agent, and a review pass before merge.
+The safest multi-agent setup is simple: one lane per task, one clear goal per agent, and a review pass before merge. Isolation is what keeps parallel agents from writing over each other — give each its own worktree and the collisions disappear.
 
-## Recommended pattern
+<Frame caption="Launch agents in the background and supervise them as they work.">
+  <img src="/media/features/agent-chat/launch-in-background.webp" alt="Launching agents in the background and supervising them" />
+</Frame>
+
+## One lane per task
+
+Every lane is its own git worktree — its own branch, files, and sessions. That isolation is the whole game: two agents in two lanes can't touch each other's working tree, so they run in parallel without stashing, rebasing, or fighting over the same files.
 
 <Steps>
   <Step title="Split the work">
-    Turn a large goal into small lane-sized tasks.
+    Turn a large goal into small, independent, lane-sized tasks.
   </Step>
   <Step title="Create one lane per task">
     Name lanes after the outcome, not the agent.
@@ -19,34 +25,59 @@ The safest multi-agent setup is simple: one lane per task, one clear goal per ag
     Keep each prompt scoped to that lane's goal.
   </Step>
   <Step title="Watch Work and Graph">
-    Use Work for live sessions and Graph for branch relationships.
+    Use Work for live sessions and Graph for branch relationships and merge risk.
   </Step>
   <Step title="Review independently">
-    Inspect each diff, run tests, and create PRs separately.
+    Inspect each diff, run tests, and open PRs separately.
   </Step>
 </Steps>
 
 ## Good task splits
 
+A clean split has slices that touch different files and can be reviewed on their own.
+
 | Goal | Better split |
 |------|--------------|
 | "Improve onboarding" | Copy fixes, provider validation, first-run UI, tests. |
-| "Fix checkout bugs" | Repro failing case, patch backend, patch UI, add regression tests. |
+| "Fix checkout bugs" | Repro the failing case, patch backend, patch UI, add regression tests. |
 | "Ship mobile sync polish" | Desktop status, iOS display, reconnect behavior, docs. |
 
-## Keep agents from colliding
+## Watch for collisions
 
-- Do not send two agents into the same lane for unrelated work.
-- Avoid broad prompts that invite repo-wide edits.
-- Use stacked lanes when one task depends on another.
+Parallel agents stay safe as long as their work doesn't overlap. Most collisions come from scope creep, not from the tool.
+
+- Don't send two agents into the same lane for unrelated work.
+- Avoid broad prompts that invite repo-wide edits — keep each agent narrow.
+- Use [child lanes](/lanes/stacks) when one task genuinely depends on another, rather than racing them.
 - Merge parent work before rebasing children when possible.
-- Use History to understand what each session changed.
+- Use History to see exactly what each session changed.
+
+## Grid vs. separate lanes
+
+Both run agents in parallel, but they answer different questions.
 
 <CardGroup cols={2}>
-  <Card title="Lanes" icon="code-branch" href="/lanes/overview">
-    Isolate each task.
+  <Card title="Grid view" icon="grid-2" href="/chat/grid">
+    Same task, several models — race a narrow, well-specified change and keep the best diff. Each tile is a full chat.
   </Card>
-  <Card title="Workspace graph" icon="diagram-project" href="/tools/workspace-graph">
-    See how parallel work relates.
+  <Card title="Separate lanes" icon="code-branch" href="/lanes/overview">
+    Different tasks — give each its own worktree so broad, multi-step work never competes for the same files.
+  </Card>
+</CardGroup>
+
+<Frame caption="Grid view tiles several agents side by side — best for comparing attempts at one task.">
+  <img src="/media/demos/grid-view.gif" alt="Grid view with multiple agents running at once" />
+</Frame>
+
+<Tip>
+Use the grid for narrow, well-specified work where comparing a few attempts is cheap. For broad, multi-step features, give each agent its own lane instead.
+</Tip>
+
+<CardGroup cols={2}>
+  <Card title="Grid & multi-model" icon="grid-2" href="/chat/grid">
+    Run several agents at once and compare side by side.
+  </Card>
+  <Card title="Lanes overview" icon="code-branch" href="/lanes/overview">
+    Isolate each task in its own worktree.
   </Card>
 </CardGroup>

@@ -6,18 +6,22 @@ icon: "rocket"
 
 This page is the shortest useful path. You can tune providers, permissions, Linear, mobile, and worker settings later.
 
+<Frame>
+  <img src="/media/landing/hero/desktop.webp" alt="The ADE desktop app" />
+</Frame>
+
 <Steps>
   <Step title="Install ADE">
     Download the latest macOS DMG from [GitHub Releases](https://github.com/arul28/ADE/releases), open it, and drag **ADE.app** into `/Applications`.
   </Step>
   <Step title="Connect one AI provider">
-    Open **Settings -> AI Providers** and verify at least one provider. Claude, Codex, Cursor, and OpenCode are the main agent paths.
+    Open **Settings -> AI Providers** and verify at least one provider. Claude Code, Codex, Cursor, Factory Droid, and OpenCode are the agent paths.
   </Step>
   <Step title="Open a Git repository">
     Use **Open Repository** on the welcome screen or press `Cmd+O`. Choose the repository root, not a subfolder.
   </Step>
   <Step title="Create a lane">
-    In **Lanes**, create a new lane from your default branch. The lane gets its own branch and worktree under `.ade/worktrees/`.
+    In **Lanes**, create a new lane from your default branch. A lane is ADE's name for a git worktree — it gets its own branch and working copy under `.ade/worktrees/`, isolated from your main checkout.
   </Step>
   <Step title="Ask for one small change">
     Open the lane in **Work** or **Chat** and send a narrow task. Start with something easy to inspect.

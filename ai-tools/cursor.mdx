@@ -1,98 +1,54 @@
 ---
-title: "Cursor Integration"
-description: "Use Cursor as an agent provider in ADE — launch sessions, route models, and track work through the Cursor SDK."
+title: "Cursor"
+description: "Run Cursor as an agent provider in ADE through the Cursor SDK — one of ADE's five agents, scoped to a lane."
 icon: "arrow-pointer"
 ---
 
-## Overview
+[Cursor](https://cursor.com) runs inside ADE as one of its five agent providers, alongside Claude Code, Codex, Factory Droid, and OpenCode. ADE drives Cursor's agent through the official **Cursor SDK** — ADE owns the lane scope, permissions, and system prompt; the SDK owns the model and tool execution.
 
-ADE integrates with [Cursor](https://cursor.com) in two ways:
+## Connect Cursor
 
-1. **Launch Cursor from ADE** — open your project or a lane's worktree in Cursor from the Run tab
-2. **Cursor as an agent provider** — use Cursor's AI agent as a chat provider inside ADE via the Cursor SDK
+Cursor chat authenticates with an API key. Add a Cursor API key in **Settings → AI**, or set `CURSOR_API_KEY` in the environment ADE launches from — ADE accepts either.
 
-The SDK integration means Cursor's agent capabilities are available directly in ADE's chat interface, alongside Claude, Codex, and other providers. You can switch between providers per-session.
-
----
-
-## Requirements
-
-| Requirement | Details |
-|------------|---------|
-| **Cursor installed** | Cursor desktop app must be installed to launch Cursor from ADE |
-| **Cursor SDK auth** | Cursor chat requires `CURSOR_API_KEY` or a Cursor API key saved in ADE Settings |
-| **Authentication** | ADE uses API-key authentication for Cursor chat. Cursor desktop sign-in is only needed for launching the editor. |
-
-ADE checks Cursor API-key authentication during onboarding and in **Settings → AI**. When `CURSOR_API_KEY` is present, ADE recognizes it as a valid authentication signal. You can also save the key in ADE's encrypted provider settings.
-
----
-
-## Launching Cursor from ADE
-
-Open the **Run** tab and click the **Cursor** launcher. ADE opens the current project (or the selected lane's worktree) in Cursor as a separate application window.
-
-The session is linked back to the active lane for tracking. File changes made in Cursor appear in the lane's diff view as soon as they are saved.
-
----
-
-## Cursor as an agent provider
-
-When Cursor API-key auth is configured, ADE can use Cursor as a chat provider through the **Cursor SDK**.
-
-### How it works
-
-1. ADE starts an isolated SDK worker for the active lane
-2. The worker creates or resumes a Cursor SDK agent with the selected model
-3. Chat messages are routed through SDK runs, and Cursor has access to the `ade` CLI for ADE workflows
-4. Model discovery queries Cursor SDK metadata for available models and capabilities
-
-### Selecting Cursor in chat
-
-In any Agent Chat session, use the **model selector** in the chat header to choose a Cursor-provided model. Models discovered from Cursor appear alongside Claude, GPT, and other configured providers.
-
-### Model discovery
-
-ADE queries Cursor for its available models at startup and caches the result. The discovered models appear in:
-- The chat model selector
-- The worker run model configuration
-- The unified model selector throughout the app
-
-### Session behavior
-
-| Behavior | Details |
-|----------|---------|
-| **Session lifecycle** | Managed by the Cursor SDK pool; sessions are reused when possible |
-| **Event mapping** | SDK events are mapped to ADE's chat event model for consistent UI |
-| **ADE CLI access** | The `ade` CLI is on `PATH` so Cursor agents can call ADE lane, git, PR, and action tools |
-| **Interrupts** | Supported via SDK run cancel |
-
----
-
-## Connection status
-
-ADE shows Cursor's connection status in **Settings → AI**:
-
-| Status | Meaning |
-|--------|---------|
-| **Connected** (green) | Cursor API key found and ready |
-| **Not authenticated** (amber) | Cursor API key is missing or invalid |
-| **Not found** (gray) | Cursor desktop is not detected for editor launch |
-
----
-
-## Troubleshooting
+Once connected, ADE discovers Cursor's available models and they appear in the model picker alongside every other provider. Pick one in any chat header to route that session through Cursor.
 
 <AccordionGroup>
-  <Accordion title="Cursor not detected" icon="circle-question">
-    ADE checks standard installation paths for the Cursor desktop app when launching the editor. If Cursor is installed in a non-standard location, open the project directly from Cursor or add the app to the standard Applications location.
+  <Accordion title="How the SDK provider works" icon="gear">
+    When a Cursor key is configured, ADE runs the official `@cursor/sdk` in a Node worker pool. The worker creates or resumes a Cursor SDK agent with the selected model in the active lane's worktree, and routes chat turns through SDK runs. Sessions are pooled and reused, SDK events map to ADE's chat event model, and interrupts cancel the run. Because the `ade` CLI is on `PATH`, Cursor agents can call ADE's lane, git, PR, and action tools.
   </Accordion>
-  <Accordion title="Authentication failed" icon="lock">
-    Add a Cursor API key in **Settings → AI Providers** or set `CURSOR_API_KEY` in the environment used to launch ADE.
+  <Accordion title="Connection status" icon="signal">
+    ADE shows Cursor's status in **Settings → AI**:
+
+    | Status | Meaning |
+    |--------|---------|
+    | **Connected** (green) | Cursor API key found and ready. |
+    | **Not authenticated** (amber) | Cursor API key is missing or invalid. |
   </Accordion>
-  <Accordion title="Models not appearing" icon="list">
-    Model discovery runs at ADE startup. If you installed Cursor after starting ADE, restart ADE or go to **Settings → AI** and click **Refresh** to re-run model discovery.
+  <Accordion title="Cursor Agent CLI in the Work tab" icon="terminal">
+    You can also launch the `cursor-agent` CLI as a tracked terminal session in the Work tab. ADE probes `cursor-agent` for CLI-only models and merges them into the picker, so the chat-vs-CLI distinction stays clear. This needs the `cursor-agent` binary on your `PATH`.
   </Accordion>
-  <Accordion title="Session errors" icon="circle-exclamation">
-    If SDK sessions fail, check that the Cursor API key is configured and that the selected model is available. Check ADE's developer logs (**Settings → Developer → Log file**) for detailed SDK worker errors.
+  <Accordion title="Cursor Cloud agents" icon="cloud">
+    Kick off Cursor's hosted cloud agents from ADE and follow them in a lane:
+
+    ```bash
+    ade cursor cloud agents list --text
+    ade cursor cloud agents create --repo https://github.com/owner/repo --prompt "fix flaky test" --auto-pr
+    ```
+
+    The chat panel can open a cloud agent as an ADE chat (replies still run in the cloud) or jump to it on cursor.com.
+  </Accordion>
+  <Accordion title="Troubleshooting" icon="circle-question">
+    - **Authentication failed** — add a Cursor API key in **Settings → AI**, or set `CURSOR_API_KEY` in ADE's launch environment.
+    - **Models not appearing** — discovery serves last-known-good rows and revalidates in the background. If Cursor was just connected, restart ADE or refresh in **Settings → AI**.
+    - **Session errors** — confirm the key is valid and the selected model is available; check developer logs at **Settings → Developer → Log file**.
   </Accordion>
 </AccordionGroup>
+
+<CardGroup cols={2}>
+  <Card title="AI providers" icon="brain" href="/configuration/ai-providers">
+    Connect each agent and set defaults.
+  </Card>
+  <Card title="Agent chat" icon="comments" href="/chat/overview">
+    Run Cursor in a lane and compare it with other providers.
+  </Card>
+</CardGroup>

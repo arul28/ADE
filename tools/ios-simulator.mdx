@@ -1,0 +1,114 @@
+---
+title: "iOS Simulator"
+description: "A macOS-only drawer in Work that builds, launches, mirrors, inspects, and controls a booted iOS Simulator — and turns a tapped SwiftUI view into source-anchored chat context."
+icon: "mobile"
+---
+
+The **iOS Simulator** drawer drives the system iOS Simulator from inside ADE's Work tab. It discovers your launchable iOS targets, builds and launches the app, mirrors the running Simulator window into the drawer, and turns drawer gestures into either simulator input or context for the active chat. When you tap a SwiftUI view in inspect mode, the agent gets the element's **source file and line** — not a guess from stale code.
+
+<Note>
+This feature is **macOS-only**. `xcrun`, `xcodebuild`, and Simulator.app must be available on the runtime host. `idb` and `idb_companion` are optional but unlock direct tap, drag, text, and accessibility-backed inspection.
+</Note>
+
+## What the drawer does
+
+<CardGroup cols={2}>
+  <Card title="Build & launch" icon="play">
+    Discover Xcode projects, DerivedData app bundles, and installed simulator apps, then build, install, and launch the one you pick.
+  </Card>
+  <Card title="Mirror the live view" icon="display">
+    Stream the real Simulator.app window into the drawer, parked behind ADE so it stays out of your way.
+  </Card>
+  <Card title="Inspect & select" icon="crosshairs">
+    Tap an element to capture it as chat context — with its component id, source file, and line when the app is annotated.
+  </Card>
+  <Card title="Control" icon="hand-pointer">
+    Tap, drag, swipe, and type into the running app when `idb` and `idb_companion` are installed.
+  </Card>
+</CardGroup>
+
+## Source-anchored inspection
+
+The magic of the drawer is **ADE Inspector**, a debug-only Swift kit that lives inside the iOS app under inspection. When you annotate a view with `.adeInspectable("settingsButton")`, the kit publishes a per-frame JSON snapshot of every annotated view's frame, component id, and source location into the app's data container.
+
+When you tap in inspect mode, ADE correlates that snapshot with a fresh screenshot and attaches the matched element to your chat as a context chip carrying the component id, the source file and line, and a screenshot of the hit. The agent reasons about *that* view at *that* line, not the surrounding container.
+
+<Steps>
+  <Step title="Annotate the views you care about">
+    Wrap buttons, list rows, and headline labels with `.adeInspectable("componentId")` and mount `.adeInspectorHost()` once near the root. The kit is `#if DEBUG`-only — release builds compile it to a no-op.
+  </Step>
+  <Step title="Launch the app in the drawer">
+    ADE builds and launches your selected target, then mirrors the Simulator window into Work.
+  </Step>
+  <Step title="Tap in inspect mode">
+    A tap resolves the SwiftUI view under your finger and produces a context item.
+  </Step>
+  <Step title="Send it to the agent">
+    The element lands in the chat composer as a chip with the source file and line baked in.
+  </Step>
+</Steps>
+
+<Tip>
+Annotate selectively. The snapshot already drops zero-area and off-screen frames, but tagging every structural container inflates the JSON and creates ambiguous hit-tests. Tag the views you'll actually want to talk about.
+</Tip>
+
+## When the app isn't annotated
+
+ADE Inspector is opt-in, and inspection degrades gracefully:
+
+- **Accessibility fallback** — with `idb` installed, a tap falls through to the OS accessibility tree, so the agent still gets labels and roles (just no source file or line).
+- **Coordinate fallback** — without `idb`, ADE still attaches the screenshot and the hit coordinates, so the agent can reason about the region.
+
+## Preview Lab
+
+Beyond a running app, the drawer can render SwiftUI **previews**. It discovers nearby `#Preview` and `PreviewProvider` definitions, ranks the best match for your selected source file or last-tapped element, opens Xcode when needed, and renders the preview into ADE's Preview drawer — a one-shot bridge from "the view I just selected" to "show me what it looks like."
+
+## One owner per session
+
+Each launched simulator session has one owning chat or lane. If a second chat tries to launch against an active session, it's told the simulator is owned by another session until the current owner releases it or you force a shutdown.
+
+## Drive it from the CLI
+
+Everything the drawer does is also available from the `ade ios-sim` command group, so an agent can build, launch, inspect, and control the simulator headlessly. Use `--socket` so the CLI and the desktop drawer share the same live session, selection, and proof state.
+
+<AccordionGroup>
+  <Accordion title="ade ios-sim commands" icon="terminal">
+    ```bash
+    ade --socket ios-sim status --text          # tool readiness checklist
+    ade --socket ios-sim devices --text         # list simulators
+    ade --socket ios-sim apps --text             # list launch targets
+    ade --socket ios-sim launch --target <id> --text
+    ade --socket ios-sim live-start --text       # start the mirrored window stream
+    ade --socket ios-sim snapshot --text         # capture screen + elements
+    ade --socket ios-sim select --x 120 --y 420 --text   # tap → chat context
+    ade --socket ios-sim tap --x 120 --y 420 --text      # tap as input (needs idb)
+    ade --socket ios-sim preview-current --text  # render the selected element's preview
+    ade --socket ios-sim shutdown --text
+    ```
+
+    A `no-context` result from a preview command means ADE has no selected source-backed element yet — `select` one first rather than guessing the screen.
+  </Accordion>
+</AccordionGroup>
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="The live view is blank" icon="display">
+    Verify Simulator.app is running and not minimized. The drawer reports the specific macOS window issue when capture is blocked.
+  </Accordion>
+  <Accordion title="Taps or text don't work, but the view does" icon="hand-pointer">
+    Install `idb` and `idb_companion` — they back direct input and accessibility inspection. Without them you still get the mirrored live view.
+  </Accordion>
+  <Accordion title="A launch is blocked by another owner" icon="lock">
+    Run `ade --socket ios-sim shutdown --force --text`, or use the drawer's takeover action.
+  </Accordion>
+</AccordionGroup>
+
+<CardGroup cols={2}>
+  <Card title="Browser" icon="compass" href="/tools/browser">
+    The same inspect-and-hand-off flow, for web pages.
+  </Card>
+  <Card title="Agent chat" icon="comments" href="/chat/overview">
+    Act on the element you tapped, in context.
+  </Card>
+</CardGroup>

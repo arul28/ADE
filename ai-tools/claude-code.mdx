@@ -1,42 +1,70 @@
 ---
 title: "Claude Code"
-description: "Use Claude Code as an ADE chat and worker backend."
-icon: "terminal"
+description: "Claude Code runs inside ADE through the bundled Claude Agent SDK — scoped to a lane, with permission modes and transcripts handled for you."
+icon: "robot"
 ---
 
-Claude Code can run inside ADE as a coding agent. ADE starts sessions in the selected lane, passes the right project context, and records the transcript and tool activity.
+<Frame>
+  <div style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: "1rem 0.5rem" }}>
+    <img src="/media/logos/models/claude-color.svg" alt="Claude" style={{ height: "48px", background: "#fff", borderRadius: "12px", padding: "10px 16px" }} />
+  </div>
+</Frame>
+
+Claude Code runs inside ADE through the **bundled Claude Agent SDK** — there's no separate `claude` CLI to install. Pick a Claude model in any chat and ADE starts the session in the selected lane's worktree, applies your permission mode, streams tool calls live, and records the transcript to History.
 
 ## Setup
 
 <Steps>
-  <Step title="Install or authenticate Claude Code">
-    Make sure the `claude` CLI works in a normal terminal.
+  <Step title="Connect Claude in Settings → AI">
+    Sign in with a Claude subscription or paste an Anthropic API key. A green status means Claude is ready.
   </Step>
-  <Step title="Open Settings -> AI Providers">
-    Refresh provider detection and verify Claude Code.
-  </Step>
-  <Step title="Start a lane chat">
-    Choose Claude from the model/provider selector.
+  <Step title="Pick a Claude model in chat">
+    Open the model picker in the chat header and choose a Claude model. That session now runs on Claude.
   </Step>
 </Steps>
 
-## What ADE adds
+## What ADE handles for you
 
-- Lane-scoped working directories.
-- Session transcripts in History.
-- File and Git attribution.
-- Provider permission controls.
-- Links to PRs, Linear issues, and proof artifacts when used.
+<CardGroup cols={2}>
+  <Card title="Lane-scoped worktree" icon="code-branch">
+    Every session runs in the active lane's worktree, so Claude edits and runs commands against that task's isolated checkout.
+  </Card>
+  <Card title="Live transcripts" icon="comments">
+    Tool calls, thinking, and diffs stream into chat and are saved to History.
+  </Card>
+  <Card title="Permission gates" icon="shield-halved">
+    A native permission mode decides what Claude can do without asking.
+  </Card>
+  <Card title="In-context links" icon="link">
+    Changes attribute to Files and Git, and link out to PRs, Linear issues, and proof when used.
+  </Card>
+</CardGroup>
 
 ## Permission modes
 
-Claude Code uses Claude's native permission model. Pick a stricter mode when exploring an unfamiliar repo, and a more permissive mode only when you trust the lane and task.
+Claude Code uses Claude's native permission model. Pick a stricter mode when exploring an unfamiliar repo, and a more permissive one only when you trust the lane and task.
+
+<AccordionGroup>
+  <Accordion title="The Claude permission modes" icon="shield-halved">
+    | Mode | Behavior |
+    |------|----------|
+    | `default` | Claude's built-in permission flow — asks before risky operations. |
+    | `plan` | Read-only. Writing and executing are blocked until you approve a plan. |
+    | `acceptEdits` | File writes allowed; shell commands still require approval. |
+    | `bypassPermissions` | Proceeds without asking. |
+
+    The mode can change mid-session from the permission picker. See [Permissions](/configuration/permissions) for how modes map across providers.
+  </Accordion>
+  <Accordion title="Where Claude runs" icon="terminal">
+    Claude is also one of the providers you can launch as a CLI session in the Work tab, and as a CTO worker backend. Wherever it runs, it's the same bundled Claude Agent SDK against the same lane worktree — desktop, [`ade code`](/tools/ade-code), and your phone all see the session.
+  </Accordion>
+</AccordionGroup>
 
 <CardGroup cols={2}>
-  <Card title="Agent chat" icon="comments" href="/chat/overview">
-    Run Claude in a lane.
-  </Card>
   <Card title="AI providers" icon="brain" href="/configuration/ai-providers">
-    Configure provider defaults.
+    Connect each agent and set defaults.
+  </Card>
+  <Card title="Agent chat" icon="comments" href="/chat/overview">
+    Run Claude in a lane and watch tool calls stream.
   </Card>
 </CardGroup>

@@ -1,57 +1,89 @@
 ---
 title: "Permissions and security"
-description: "How ADE keeps agent work scoped, reviewable, and local-first."
+description: "How ADE keeps agent work scoped to a lane, makes shared config trusted before it runs, and keeps secrets local."
 icon: "shield-check"
 ---
 
-ADE agents can edit files and run commands, so permissions matter. The goal is to keep work scoped to the right lane and make risky actions visible before they happen.
+ADE agents edit files and run commands, so permissions matter. The goal is simple: keep each agent's work scoped to the right lane, make shared config trusted before it can run on your machine, and keep secrets off disk in plaintext.
 
 ## Main controls
 
 <CardGroup cols={2}>
   <Card title="Lane scope" icon="code-branch">
-    Sessions run inside a selected lane worktree.
+    Sessions run inside the selected lane's worktree under `.ade/worktrees/`, isolated from your primary checkout and from other lanes.
   </Card>
-  <Card title="Provider permissions" icon="robot">
-    Claude, Codex, Cursor, and OpenCode each expose provider-specific approval modes.
+  <Card title="Provider permission modes" icon="robot">
+    Claude Code, Codex, Cursor, Factory Droid, and OpenCode each expose their own approval modes; ADE maps them to a common set.
   </Card>
-  <Card title="Command trust" icon="terminal">
-    Shared command definitions may require local approval before they run.
+  <Card title="Shared-config trust" icon="lock">
+    Shared config that can spawn processes requires a trust confirmation before ADE will run it.
   </Card>
   <Card title="Secrets" icon="key">
-    Credentials stay in local encrypted stores or gitignored files.
+    Provider keys and credentials stay in local encrypted stores or gitignored files — never in shared config.
   </Card>
 </CardGroup>
 
+## Lane scope
+
+A lane is a git worktree. Chats, terminals, CLI sessions, and the processes they start are scoped to that worktree, so an agent working a task can't reach into your primary checkout or another lane's files. Do agent edits in lanes and keep the primary checkout for inspection — it's your real working tree and the safer default to leave alone.
+
+## Per-agent tool control
+
+Each agent runs with a permission mode that governs how freely it can edit files and run commands. Set a stricter mode for unfamiliar repositories, and a more permissive one only when you trust the lane and the task. You can also scope which tools a session may use from the chat header.
+
+<Frame caption="Control which tools an agent may use, per session.">
+  <img src="/media/features/agent-chat/chat-tools-button.webp" alt="The chat tools button in ADE" />
+</Frame>
+
+## Provider permission modes
+
+<Accordion title="How provider modes map" icon="sliders">
+  Permission names vary by provider, but ADE groups them into a common set:
+
+  | Mode | Meaning |
+  |------|---------|
+  | Plan / read-only | The agent can inspect and propose, but cannot freely edit. |
+  | Edit / default | The agent works in the lane with normal approval guardrails. |
+  | Full auto | The agent runs with fewer prompts. Use only when the environment is trusted. |
+  | Custom | The provider's own configuration decides. |
+
+  Set defaults per provider in **Settings → AI Connections**, and override per chat or worker as needed.
+</Accordion>
+
+## The trust model for shared config
+
+ADE splits project configuration into shared, version-controlled `.ade/ade.yaml` and a per-user, gitignored `.ade/local.yaml`. Shared config can introduce new commands — processes, stacks, test suites — that you haven't approved. ADE treats that as sensitive: when the shared config changes, it must be **trusted** again before ADE will return an executable config that spawns processes. Cloning a repo and opening it requires confirming trust on its shared config the first time.
+
+Local config isn't trust-gated — you only need to trust your own overrides. Treat a shared-config change the same way you'd review a CI script or Dockerfile.
+
 ## Practical defaults
 
-- Use worktree lanes for agent edits.
+- Do agent edits in worktree lanes, not the primary checkout.
 - Keep the primary checkout for inspection or manual commands.
 - Review diffs before committing or pushing.
-- Use stricter provider approval modes for unfamiliar repositories.
-- Do not store provider keys in committed files.
-- Treat shared command changes like CI or Dockerfile changes: review them carefully.
-
-## Provider modes
-
-Permission names vary by provider. In general:
-
-| Mode style | Meaning |
-|------------|---------|
-| Read-only / plan | The agent can inspect and propose, but cannot freely edit. |
-| Default / edit | The agent can work in the lane with normal guardrails. |
-| Full access | The agent can run with fewer prompts. Use only when the environment is trusted. |
+- Use stricter approval modes for unfamiliar repositories.
+- Keep provider keys and tokens out of shared config and out of Git.
+- Review shared-config changes carefully before confirming trust.
 
 ## Sensitive actions
 
 Be extra careful with:
 
 - Force pushes.
-- Commands outside the repository.
+- Commands that run outside the repository.
 - Secret files and `.env` files.
 - Scripts pulled from unreviewed branches.
 - Networked deployment or release commands.
 
 <Warning>
-ADE helps enforce boundaries, but it is still running tools on your machine. Review what agents ask to do, especially in new repositories.
+ADE helps enforce boundaries, but agents still run tools on your machine. Review what they ask to do, especially in new repositories and the first time you open a teammate's shared config.
 </Warning>
+
+<CardGroup cols={2}>
+  <Card title="AI providers" icon="brain" href="/configuration/ai-providers">
+    Connect each agent and set permission presets.
+  </Card>
+  <Card title="Configuration overview" icon="folder-tree" href="/configuration/overview">
+    The `.ade/` directory, the trust model, and what not to commit.
+  </Card>
+</CardGroup>

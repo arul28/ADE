@@ -1,54 +1,116 @@
 ---
 title: "Pull requests"
-description: "Create, review, and merge GitHub PRs that are tied to ADE lanes."
+description: "Open, review, and merge GitHub PRs from inside ADE — with stacked PRs, a merge queue, and auto-merge."
 icon: "code-pull-request"
 ---
 
-The PRs tab connects ADE lanes to GitHub review. It shows open PRs, CI, reviews, comments, changed files, stack relationships, and merge readiness.
+Every PR your agents open lands in ADE's **PRs** tab — the diff, CI checks, comments, and a merge button, without a GitHub browser tab. ADE keeps remote GitHub state warm through background polling while treating your local git state as the source of truth for merge and conflict simulation.
 
-## What PRs gives you
+<video autoPlay muted loop playsInline className="w-full aspect-video rounded-xl" src="/media/demos/creatingPRfromChat.mp4"></video>
+
+## Open a PR from a lane
+
+Because every lane is its own branch, opening a PR is one step. Pick the lane, confirm the base branch, and ADE creates the PR — from the lane, from a chat, or straight from the PRs tab. The draft title and body are prefilled from the lane's commits and diff, and ADE returns both the GitHub URL and an ADE deep link so an agent can drop both into its closeout note.
+
+<Frame caption="Create a PR from a lane — choose the base branch and ADE handles the rest.">
+  <img src="/media/features/pull-requests/make-new-pr.webp" alt="Create a new pull request from a lane" />
+</Frame>
+
+<Note>
+Branch names are validated before submission, so an invalid git ref fails in ADE with a clear message instead of an opaque GitHub API error.
+</Note>
+
+## Inspect the PR
+
+The detail view splits a PR into focused tabs — **Overview**, **Files**, **CI / Checks**, and **Activity** — and each one loads on its own, so a slow comments fetch never holds up the checks or files.
+
+<Frame caption="Files changed and CI checks for a PR.">
+  <img src="/media/features/pull-requests/files-and-ci-checks.webp" alt="Files changed and CI checks for a pull request" />
+</Frame>
+
+The Overview renders as a **Timeline + Rails** layout: a central event timeline (commits, comments, reviews, label changes, merges, deployments), a left rail with the commit list and push-time checks, and a right rail with merge readiness, reviewers, labels, and participants. A dismissible AI summary card sits above the timeline — risk areas, reviewer hotspots, unresolved concerns — and regenerates when new commits land.
+
+<Frame caption="The PR review and comments view — threads, replies, and resolution inline.">
+  <img src="/media/features/pull-requests/review-tab.webp" alt="The PR review and comments view" />
+</Frame>
+
+You can reply to review threads, resolve them, react to comments, request reviewers, and submit your own review — approve, request changes, or comment — without leaving ADE.
+
+<Columns cols={2}>
+  <Frame caption="The PRs sidebar lists every PR in the repo with CI and review state.">
+    <img src="/media/features/pull-requests/prs-sidebar.webp" alt="The PRs tab sidebar" />
+  </Frame>
+  <Frame caption="Each PR's commits, grouped on the timeline.">
+    <img src="/media/features/pull-requests/commits-section.webp" alt="The commits section of a PR" />
+  </Frame>
+</Columns>
+
+The GitHub tab lists every PR in the repository — including ones opened outside ADE — with label filters, CI badges, review indicators, and the linked lane's color, so a glance correlates a PR with the lane that produced it.
+
+## Merge it
+
+When checks pass and reviews are in, merge from the readiness panel. Pick the method — **squash**, **merge**, or **rebase** — and land it.
 
 <CardGroup cols={3}>
-  <Card title="Lane links" icon="link">
-    Know which lane produced which PR.
+  <Card title="Auto-merge" icon="circle-play">
+    Let the PR merge itself the moment it's green — useful for stacked work where each child waits on its parent.
   </Card>
-  <Card title="Review state" icon="circle-check">
-    See approvals, requested changes, comments, and CI failures.
+  <Card title="Merge bypass" icon="shield-halved">
+    When branch protection blocks a clean merge, opt in to retry with an admin merge. GitHub still decides whether the bypass is allowed.
   </Card>
-  <Card title="Stack support" icon="layer-group">
-    Keep stacked PRs targeted at the right base branches.
+  <Card title="Post-merge cleanup" icon="broom">
+    ADE deletes the branch, archives the lane if configured, refreshes the base, and rescans rebase needs — all best-effort, so cleanup never undoes a good merge.
   </Card>
 </CardGroup>
 
-## Create a PR from a lane
-
-<Steps>
-  <Step title="Finish the lane change">
-    Review the diff, run the right tests, and commit the work.
-  </Step>
-  <Step title="Open PR action">
-    Use the lane inspector, PRs tab, or chat prompt to create a PR.
-  </Step>
-  <Step title="Review the generated draft">
-    ADE can prefill the title and body from commits, diff, linked issues, and proof.
-  </Step>
-  <Step title="Create in GitHub">
-    Submit as draft or ready for review.
-  </Step>
-</Steps>
-
-## Handle review feedback
-
-Open the PR, read comments and failing checks, then ask an agent in the PR's lane to address a specific issue. Keep the loop narrow:
-
-```text
-Fix the failing lint check on PR #142. Read the check output first and only change what is needed.
-```
-
 ## Stacked PRs
 
-When lanes are stacked, ADE keeps each PR targeted at the correct parent branch. After a parent lands, use the PR and Lanes views to rebase or retarget the remaining work.
+A PR opened from a child lane targets its **parent lane's branch**, not `main` — so a chain of dependent PRs each gets reviewed on its own but merges in dependency order. When a parent PR merges, ADE retargets and rebases the child onto the new base automatically.
+
+<CardGroup cols={2}>
+  <Card title="Dependency-ordered landing" icon="layer-group">
+    Land a whole stack in one action: ADE merges the root, then each downstream PR in order, auto-rebasing any descendant that drifted and stopping on the first failure.
+  </Card>
+  <Card title="Upstream rebase chain" icon="arrow-up-from-bracket">
+    When a child is behind its parent — which may itself be behind *its* parent — the Rebase view shows the full chain so you can fix several descendants by rebasing one ancestor.
+  </Card>
+</CardGroup>
+
+See [Stack lanes](/lanes/stacks) for the lane side of stacking.
+
+## Merge queue
+
+For landing several PRs in sequence, a **merge queue** runs each one through an explicit state machine with visibility into every step.
+
+<AccordionGroup>
+  <Accordion title="How the queue lands PRs" icon="list-check">
+    The queue picks the next pending entry, optionally rebases it if it's behind, waits for CI when **CI gating** is on, then merges it with your chosen method. Each entry moves through `pending` → `rebasing` → `landing` → `landed` (or pauses for attention), and the tab shows where it's stuck and why.
+  </Accordion>
+  <Accordion title="Auto-resolve conflicts" icon="wand-magic-sparkles">
+    With auto-resolve on, a merge conflict during landing launches a Codex or Claude CLI resolver in the lane's worktree. ADE commits and pushes the resolution, then retries the land — so a conflict mid-queue doesn't stall the whole stack.
+  </Accordion>
+  <Accordion title="Pause, resume, cancel, reorder" icon="sliders">
+    A paused queue waits for you; resume it when ready. Cancelling force-fails any in-flight entry cleanly rather than leaving it half-landed, and you can reorder entries before they land.
+  </Accordion>
+</AccordionGroup>
+
+## Conflict simulation
+
+Before you hit Merge, ADE predicts whether the PR lands cleanly on its base by running `git merge-tree` locally — no actual merge required. A predicted conflict disables the merge button (unless you opt into bypass) and surfaces the conflicting files. The same engine powers integration (merge-plan) proposals and the Rebase view.
+
+<Frame caption="Rebase options when a lane is behind its PR target.">
+  <img src="/media/features/pull-requests/pr-sources.webp" alt="PR sources and rebase options" />
+</Frame>
 
 <Note>
 ADE uses your GitHub authentication. If PR data is missing, check GitHub access in Settings.
 </Note>
+
+<CardGroup cols={2}>
+  <Card title="Review" icon="magnifying-glass" href="/tools/review">
+    Run an on-demand AI review on a PR — or any diff — before you merge.
+  </Card>
+  <Card title="Conflicts" icon="code-merge" href="/tools/conflicts">
+    Detection, simulation, and AI-assisted resolution across lanes and PRs.
+  </Card>
+</CardGroup>

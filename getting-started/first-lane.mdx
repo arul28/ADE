@@ -4,7 +4,11 @@ description: "Create an isolated branch and worktree for your first agent task."
 icon: "code-branch"
 ---
 
-A lane keeps agent work out of your primary checkout. Use one lane per task.
+A **lane** is ADE's name for a git worktree — an isolated branch and working copy for one task. It keeps agent work out of your primary checkout, so you can run several tasks in parallel without colliding. Use one lane per feature, fix, or experiment.
+
+<Note>
+Your repo root is already the **primary lane** — it always exists and is edit-protected. You don't pick a "lane type"; you simply add a new worktree lane for the task. This first one branches a fresh worktree off your default branch.
+</Note>
 
 ## Create the lane
 
@@ -13,15 +17,31 @@ A lane keeps agent work out of your primary checkout. Use one lane per task.
     Choose **Lanes** from the sidebar.
   </Step>
   <Step title="Click New lane">
-    Give the lane a short task name, such as `add-health-endpoint` or `fix-login-copy`.
+    Give it a short task name, like `add-health-endpoint` or `fix-login-copy`.
   </Step>
-  <Step title="Choose the base branch">
-    For your first lane, use your default branch, usually `main`.
+  <Step title="Pick the base branch">
+    For your first lane, use your default branch — usually `main`.
   </Step>
   <Step title="Create">
     ADE creates a Git worktree under `.ade/worktrees/` and checks out a branch for the lane.
   </Step>
 </Steps>
+
+<Frame caption="Start a new lane">
+  <img src="/media/features/worktrees/new-lane-button.webp" alt="Start a new lane from the Lanes tab" />
+</Frame>
+
+<Frame caption="Name it and pick the base branch">
+  <img src="/media/features/worktrees/new-lane-options.webp" alt="Name a lane and choose its base branch" />
+</Frame>
+
+## Let ADE name it for you
+
+You don't have to create lanes by hand. Describe a task in chat and ADE spins up a fresh worktree, auto-named from the task — no stashing, no context switch.
+
+<Frame caption="Describe a task and ADE creates the worktree for you, auto-named from the prompt.">
+  <img src="/media/demos/auto-worktrees.gif" alt="Auto-create a git worktree from a task" />
+</Frame>
 
 ## Good lane names
 
@@ -33,13 +53,13 @@ A lane keeps agent work out of your primary checkout. Use one lane per task.
 
 ## When the lane is ready
 
-The lane should show a clean diff and no active sessions. Open it in **Work** to start chat or a terminal.
+The lane should show a clean diff and no active sessions. Open it in **Work** to start a chat or a terminal.
 
 <CardGroup cols={2}>
   <Card title="Run your first agent" icon="robot" href="/getting-started/first-agent">
     Start a small lane-scoped chat.
   </Card>
-  <Card title="Lanes overview" icon="code-branch" href="/lanes/overview">
-    Learn how lanes, stacks, and cleanup work.
+  <Card title="Lanes" icon="code-branch" href="/lanes/overview">
+    How lanes, stacks, and cleanup work.
   </Card>
 </CardGroup>

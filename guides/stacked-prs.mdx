@@ -1,68 +1,78 @@
 ---
 title: "Guide: stacked PRs"
 sidebarTitle: "Stacked PRs"
-description: "Create, review, and land a chain of dependent PRs with ADE lanes."
+description: "Land a stack of dependent PRs in order using child lanes — small, ordered diffs that build on each other."
 icon: "layer-group"
 ---
 
-Use stacked PRs when one feature is too large for a single review but each slice depends on the previous slice.
+Use stacked PRs when one feature is too large for a single review but each slice depends on the previous one. Each lane in the stack becomes its own PR, targeting the lane below it instead of `main` — so reviewers see small, ordered diffs.
+
+ADE builds the stack out of **child lanes**: a lane branched off another lane instead of `main`. The child-lane chain *is* the PR stack.
+
+<Frame caption="A stacked PR targets its parent lane's branch, not main.">
+  <img src="/media/features/pull-requests/pr-sources.webp" alt="A stacked PR targeting its parent lane's branch" />
+</Frame>
 
 ## 1. Create the base lane
 
-Create a lane from `main` for the first slice of work. Commit the foundation there.
+Create a lane from `main` for the first slice of work and commit the foundation there.
 
-## 2. Create child lanes
+## 2. Stack child lanes
 
-Select the base lane and create a child lane for the next slice. Repeat only as needed.
+Select the base lane and create a **child lane** for the next slice — it branches off the base lane, not `main`. Repeat only as far as the dependency is real.
 
 ```text
 main
-  feature-auth-models
-    feature-auth-ui
-      feature-auth-tests
+  feature-auth-models      (base lane, off main)
+    feature-auth-ui        (child of the base lane)
+      feature-auth-tests   (child of feature-auth-ui)
 ```
 
-## 3. Open PRs
+<Frame caption="The worktree graph shows stack order, PR links, and merge risk at a glance.">
+  <img src="/media/features/worktrees/worktree-graph.webp" alt="The worktree graph showing a child-lane stack" />
+</Frame>
 
-Open PRs from the bottom of the stack upward:
+## 3. Open PRs in order
 
-- Base lane targets `main`.
-- First child targets the base lane branch.
-- Next child targets the first child branch.
+Open PRs from the bottom of the stack upward. Each PR targets the branch of the lane it was stacked on.
+
+- The base lane targets `main`.
+- The first child lane targets the base lane's branch.
+- The next child lane targets the first child's branch.
 
 ADE keeps this relationship visible in Lanes, Graph, and PRs.
 
-## 4. Review in order
+## 4. Review bottom-up
 
-Review the base PR first. Child PRs will be easier to understand once the parent is approved.
+Review the base PR first. Each child PR is easier to understand — and to merge — once its parent is approved.
 
 ## 5. Land the stack
 
 <Steps>
   <Step title="Merge the base PR">
-    Land the first PR into `main`.
+    Land the bottom PR into `main`.
   </Step>
-  <Step title="Update the child">
+  <Step title="Retarget the next child">
     Rebase or retarget the next PR so it now builds on `main`.
   </Step>
-  <Step title="Repeat">
-    Continue up the stack until all slices are merged.
+  <Step title="Repeat up the stack">
+    Continue child by child until every slice is merged.
   </Step>
 </Steps>
 
 ## Tips
 
-- Keep each PR small enough to review independently.
-- Avoid deep stacks unless the dependency is real.
-- Use Graph to see the chain.
-- Run tests again after rebasing a child.
-- If a child becomes independent, split it into a sibling lane.
+- Keep each PR small enough to review on its own.
+- Avoid deep stacks unless the dependency between slices is real.
+- Use the worktree graph to see the chain and its merge order.
+- Re-run tests after rebasing a child lane.
+- If a child lane stops depending on its parent, split it into a sibling lane off `main`.
 
 <CardGroup cols={2}>
-  <Card title="Stacked lanes" icon="layer-group" href="/lanes/stacks">
-    Understand the lane model.
+  <Card title="Stack lanes" icon="layer-group" href="/lanes/stacks">
+    The lane model behind a stack — child lanes in detail.
   </Card>
   <Card title="Pull requests" icon="code-pull-request" href="/tools/pull-requests">
-    Review and merge from ADE.
+    Create, review, and merge PRs from ADE.
   </Card>
 </CardGroup>

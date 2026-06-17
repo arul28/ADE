@@ -1,44 +1,84 @@
 ---
-title: "Lane environment"
-description: "Ports, environment variables, startup commands, and preview links for lane-scoped work."
+title: "Lane runtime"
+description: "Each lane can be a full parallel dev environment — its own port range, .localhost hostname, OAuth callback routing, and optional env init. Advanced, and automatic for most."
 icon: "server"
 ---
 
-Each lane can have its own runtime environment. This keeps parallel tasks from fighting over ports, credentials, and local state.
-
-## What can vary by lane
-
-| Area | Example |
-|------|---------|
-| Port | Lane A uses `3001`, lane B uses `3002`. |
-| Environment variables | A lane points at a test database or feature flag. |
-| Startup command | A lane starts `npm run dev` or another local server. |
-| Preview URL | A clickable local URL opens the lane's running app. |
-
-## Basic setup
-
-<Steps>
-  <Step title="Create or select a lane">
-    Open the lane that needs custom runtime settings.
-  </Step>
-  <Step title="Open environment settings">
-    Add only the variables or command overrides that are specific to this lane.
-  </Step>
-  <Step title="Start the process">
-    Use Run or the lane terminal to start the app.
-  </Step>
-  <Step title="Verify the preview">
-    Open the preview URL and make sure it points at the selected lane.
-  </Step>
-</Steps>
-
-## Keep it simple
-
-- Prefer project defaults until a lane truly needs an override.
-- Never paste production secrets into lane settings.
-- Use clear variable names and document unusual overrides in the lane prompt.
-- Stop unused lane processes so ports return to the pool.
+Worktree isolation already keeps each lane's files, branch, and git operations separate. **Lane runtime** isolation goes further: it makes a lane a complete parallel dev environment, so two agents can each run the app — with its own ports, its own preview URL, and its own auth — without colliding.
 
 <Note>
-Agents inherit the lane environment when they run commands. If a test depends on a lane-specific variable, mention that in the prompt.
+This is advanced and mostly automatic. ADE leases ports and routes previews for you; most users never open a single setting here. Reach for the manual pieces only when a lane needs custom environment setup.
 </Note>
+
+## What's isolated per lane
+
+<Columns cols={2}>
+  <Card title="Port range" icon="ethernet">
+    Each lane gets its own non-overlapping range of ports, leased automatically, so lanes never fight over `3000`.
+  </Card>
+  <Card title="Preview URL" icon="window">
+    A `<slug>.localhost` hostname proxies to the lane's dev server and opens as a clickable preview.
+  </Card>
+  <Card title="OAuth callbacks" icon="key">
+    A single callback URL is routed back to the correct lane, so multi-lane sign-in flows work side by side.
+  </Card>
+  <Card title="Env init" icon="screwdriver-wrench">
+    Optional per-lane setup — env files, Docker services, dependency installs, copy and mount paths.
+  </Card>
+</Columns>
+
+## Ports and previews are automatic
+
+When you create a lane, ADE leases it a port range and can route a `<slug>.localhost` hostname to whatever your dev server binds inside that range. Start your app in the **Run** tab or a lane terminal, and the preview URL resolves to that lane's server. Because browsers scope cookies by hostname, `feat-auth.localhost` and `bugfix.localhost` never share a session — auth isolation comes for free.
+
+The **Run** tab's lane runtime bar shows the live state at a glance: a health dot, the responding port, proxy and preview status, and the OAuth callback URL for the selected lane.
+
+<Tip>
+Stop a lane's dev server when you're done with it, or delete the lane — both return its leased ports to the pool. If a lane ever flaps unhealthy on a slow cold start, the health bar settles once the server finishes binding.
+</Tip>
+
+## Per-lane environment init
+
+For lanes that need more than a running server, ADE can run an **env-init** sequence when the lane is created and show each step's progress right inside the create dialog. Every step validates its paths against the worktree root, so setup can't escape the lane.
+
+<AccordionGroup>
+  <Accordion title="Env-init steps" icon="list-check">
+    Env init runs in order, and each step is optional:
+
+    | Step | What it does |
+    |------|--------------|
+    | **Env files** | Copy or template `.env` files with lane-specific substitutions (port, hostname, keys). |
+    | **Docker** | Start lane-specific Docker Compose services. |
+    | **Dependencies** | Run an install command from an allowlist (`npm`, `yarn`, `pnpm`, `pip`, `bundle`, `cargo`, `go`, `bun`, and a few more). Anything outside the list is rejected. |
+    | **Mount points** | Configure runtime mount points for agent profiles and context. |
+    | **Copy paths** | Copy non-template files from the project root into the worktree. |
+
+    Each step reports `pending → running → done` (or `failed`) with a duration, so you can watch the lane bootstrap.
+  </Accordion>
+  <Accordion title="Reusable templates" icon="copy">
+    Rather than configure env init lane by lane, package it once as a **template** — a complete init recipe plus an optional setup script. Manage templates in **Settings → Lane Templates**, set a default, and new lanes pick it up. The setup script can carry platform-specific variants (Unix vs. Windows commands) and expose the primary worktree's path to its commands.
+  </Accordion>
+  <Accordion title="Where to find these settings" icon="sliders">
+    - **Run tab** — the lane runtime bar (health, port, proxy, preview, OAuth) and process dashboards.
+    - **Settings → Proxy & Preview** — start/stop the proxy and configure OAuth redirect.
+    - **Settings → Lane Templates** — manage reusable init recipes and the default template.
+    - **Settings → Diagnostics** — the global health view across lanes.
+  </Accordion>
+</AccordionGroup>
+
+## Health and fallback
+
+ADE aggregates port, proxy, and process signals into a per-lane health status (`healthy`, `degraded`, `unhealthy`, `unknown`) and surfaces fixes — reassign a conflicting port, restart the proxy, re-init env. If isolation itself fails, ADE prompts you to enable **fallback mode** for that lane rather than switching silently, because fallback drops the per-hostname cookie isolation and that's a contract worth opting into deliberately.
+
+<Warning>
+Never paste production secrets into lane env files or templates. Lane runtime is for local, disposable dev environments — point lanes at test databases and feature flags, not live credentials.
+</Warning>
+
+<CardGroup cols={2}>
+  <Card title="Run & processes" icon="play" href="/tools/project-home">
+    Start dev servers, run tests, and watch lane runtime health.
+  </Card>
+  <Card title="Lanes overview" icon="code-branch" href="/lanes/overview">
+    How lanes isolate work and sync across surfaces.
+  </Card>
+</CardGroup>

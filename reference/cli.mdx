@@ -1,0 +1,144 @@
+---
+title: "ade CLI"
+description: "The ade command is the typed control plane for ADE from any shell — the same lanes, chats, PRs, and tests, scriptable for humans and agents alike."
+icon: "terminal"
+---
+
+`ade` is the typed control plane for ADE. Everything you do in the desktop app — create lanes, run agents, ship PRs, kick off tests, attach Linear issues — has a CLI command, so you can drive ADE from any shell. Agents running inside ADE use the same commands, which is how they inspect and operate the workspace they live in.
+
+```bash
+ade lanes create "fix-checkout-flow"   # spin up a worktree for a task
+ade brain status --text                # check the machine runtime
+ade code                               # open the terminal UI
+```
+
+<Tip>
+Two commands discover everything: `ade <group> --help` for exact flags on any command, and `ade actions list --text` for the full service-backed action catalog behind the typed commands.
+</Tip>
+
+## Output modes
+
+Most commands take an explicit output mode. Use `--text` for a human-readable summary and `--json` for stable, scriptable fields (the default when output is piped).
+
+```bash
+ade lanes list --text   # readable summary
+ade lanes list --json   # stable JSON for scripts and agents
+```
+
+## Command groups
+
+<AccordionGroup>
+  <Accordion title="Project & lanes" icon="code-branch">
+    Register projects and manage worktrees (lanes).
+
+    ```bash
+    ade init                                # add the current directory as a project
+    ade projects list --text                # list registered projects
+    ade lanes list --text                   # list lanes in the active project
+    ade lanes create "fix-checkout-flow"    # create a lane from the default branch
+    ade lanes create "auth-ui" --parent auth-base  # stack a lane on another lane
+    ade lanes reparent auth-ui --parent auth-base  # restack an existing lane
+    ade lanes delete <lane-id> --force --delete-branch
+    ```
+  </Accordion>
+
+  <Accordion title="Chats & sessions" icon="comments">
+    Start and inspect agent chats, terminals, and CLI sessions inside a lane.
+
+    ```bash
+    ade chat list --lane <lane-id> --text
+    ade chat create --lane <lane-id> --model gpt-5.5
+    ade shell start-cli codex --lane <lane-id> --permission-mode edit --message "fix failing tests"
+    ade shell start --lane <lane-id> -- npm test
+    ade code                                # open the terminal UI
+    ```
+  </Accordion>
+
+  <Accordion title="Git & PRs" icon="code-pull-request">
+    Commit, push, and turn a lane into a pull request; read CI and comments.
+
+    ```bash
+    ade git commit --lane <lane-id>
+    ade git push --lane <lane-id>
+    ade prs create --lane <lane-id> --base main --title "Fix checkout flow" --text
+    ade prs list-open --text
+    ade prs checks <pr> --text              # CI status for a PR
+    ade prs comments <pr> --text
+    ```
+  </Accordion>
+
+  <Accordion title="Tests & run" icon="flask">
+    Start dev processes and run test suites in a lane.
+
+    ```bash
+    ade run defs --text                     # list configured run targets
+    ade run start web --lane <lane-id>
+    ade tests run --lane <lane-id> --suite unit --wait
+    ```
+  </Accordion>
+
+  <Accordion title="Linear" icon="list-check">
+    Attach and update Linear issues through ADE's own Linear connection — no API key needed.
+
+    ```bash
+    ade lanes create-from-linear --issue-id ENG-431 --start-chat --provider codex
+    ade linear attach --this-session --issue-id ENG-431
+    ade linear comment "Pushed a fix; CI running"
+    ade linear set-state ENG-431 <state-id>
+    ```
+  </Accordion>
+
+  <Accordion title="Brain & pairing" icon="microchip">
+    Control the machine-owned ADE runtime (the brain) and pair a phone.
+
+    ```bash
+    ade brain status --text                 # endpoint, service, and sync state
+    ade brain start                         # load the login service
+    ade brain stop                          # unload the login service
+    ade brain restart                       # re-exec after an app update
+    ade brain pin generate                  # generate a phone pairing PIN
+    ade brain pin set 123456                # set an explicit pairing PIN
+    ```
+  </Accordion>
+
+  <Accordion title="Proof" icon="camera">
+    List the computer-use proof artifacts ADE captured for a chat or session.
+
+    ```bash
+    ade proof list --arg ownerKind=chat --arg ownerId=<session-id>
+    ```
+  </Accordion>
+
+  <Accordion title="Discovery" icon="compass">
+    Find commands, flags, and the full action catalog, and check local readiness.
+
+    ```bash
+    ade <group> --help                      # exact flags for any command
+    ade actions list --text                 # full service-backed action catalog
+    ade actions run git.stageFile --arg laneId=<lane-id> --arg path=src/index.ts
+    ade doctor                              # local runtime, git, provider readiness
+    ade skill list --text                   # bundled agent skills
+    ```
+  </Accordion>
+</AccordionGroup>
+
+<Note>
+Prefer typed commands — they validate arguments and return stable fields. Reach for `ade actions run <domain.action>` only when no typed command covers the workflow yet.
+</Note>
+
+## Full reference
+
+For every command, subcommand, flag, and the runtime modes behind them, see the complete CLI README on GitHub.
+
+<Card title="ade CLI README" icon="github" href="https://github.com/arul28/ADE/blob/main/apps/ade-cli/README.md">
+  The full `ade` command reference, runtime modes, and install paths.
+</Card>
+
+<CardGroup cols={2}>
+  <Card title="ade code (terminal)" icon="rectangle-terminal" href="/tools/ade-code">
+    The interactive terminal UI built on the same runtime.
+  </Card>
+  <Card title="Architecture" icon="sitemap" href="/architecture">
+    How the control plane, runtime, and clients fit together.
+  </Card>
+</CardGroup>

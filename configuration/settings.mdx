@@ -1,67 +1,88 @@
 ---
 title: "Settings"
-description: "The main ADE settings sections and when to use them."
+description: "The real ADE settings tabs, a recommended first pass, and the first-run setup that detects your stack."
 icon: "sliders"
 ---
 
-Open Settings with `Cmd+,` or the gear icon.
+Settings is where you connect providers, link GitHub and Linear, tune how ADE looks and behaves, and shape how lanes are created. It's organized by the kind of thing you're changing, not by which service backs it.
 
-## Main sections
+<Frame caption="The Settings page — every section in one place.">
+  <img src="/media/features/settings/settings-tab.webp" alt="The ADE Settings page" />
+</Frame>
+
+## The tabs
 
 <CardGroup cols={2}>
   <Card title="General" icon="sliders">
-    App updates, startup behavior, onboarding, help, and basic preferences.
+    AI mode, task routing, terminal preferences, keybindings, project setup re-entry, and the `ade` CLI install / health surface.
   </Card>
   <Card title="Appearance" icon="palette">
-    Theme, density, terminal appearance, and UI preferences.
+    Theme, chat density and font size, code-block options, completion sound, and voice dictation.
   </Card>
-  <Card title="AI Providers" icon="brain">
-    Provider keys, CLI detection, default models, and session preferences.
+  <Card title="AI Connections" icon="brain">
+    Provider CLIs, sign-in and API keys, model availability, and provider readiness for the five agents.
+  </Card>
+  <Card title="Background Jobs" icon="robot">
+    Lightweight AI helpers: auto-naming chats and lanes, summarizing finished work, and drafting PR and commit messages.
   </Card>
   <Card title="Integrations" icon="plug">
-    GitHub, Linear, proof, and external service connections.
+    GitHub, Linear, and the `ade` CLI integration tabs.
   </Card>
-  <Card title="Mobile" icon="mobile-screen">
-    Pair the iOS app, manage devices, and choose notification behavior.
+  <Card title="Lane Templates & Behavior" icon="code-branch">
+    Lane initialization recipes and lifecycle policies — what new lanes set up, and when old ones get cleaned up.
   </Card>
-  <Card title="Usage" icon="chart-line">
-    Review provider usage, budget signals, and session spend.
+  <Card title="Stats" icon="chart-line">
+    A retrospective dashboard: local AI token / cost summaries and GitHub-backed PR, commit, and code-movement totals.
   </Card>
 </CardGroup>
 
+<Note>
+A few controls live in the **top bar**, not in Settings: live provider quota windows and the automation budget sit in the **Usage** popup, and phone pairing and multi-device sync sit in the **Sync** popover. Settings → Stats is the retrospective view; the Usage popup is the live one.
+</Note>
+
+## First-run setup
+
+When you open a project for the first time, ADE shows a setup dashboard — a single page of status cards rather than a blocking step-by-step wizard. It detects your stack and suggests config so you don't have to write it by hand:
+
+- **Developer tools** — checks for `git` and the GitHub CLI.
+- **Stack detection** — looks for `package.json`, `Cargo.toml`, `go.mod`, `pyproject.toml`, a `Makefile`, `docker-compose`, and `.github/workflows/`, then suggests processes, test commands, and stacks.
+- **AI runtimes** — a compact band to set up Claude, Codex, Cursor, Factory Droid, and OpenCode.
+- **GitHub and Linear** — optional cards for repository auth and Linear connection.
+- **Existing worktrees** — import git branches you already have as lanes in one click.
+
+Nothing here blocks you. You can skip any card and re-run setup later from **General**.
+
 ## Recommended first pass
+
+Only the first step is required to start running agents — the rest unlock GitHub, Linear, and mobile workflows.
 
 <Steps>
   <Step title="Verify one provider">
-    Make sure at least one agent provider is green.
+    In **AI Connections**, make sure at least one of Claude Code, Codex, Cursor, Factory Droid, or OpenCode is green. That's all you need to start a lane chat.
   </Step>
   <Step title="Connect GitHub">
-    Do this if you want PR creation, CI state, comments, and merge workflows.
+    Do this for PR creation, CI state, comments, and merge workflows.
   </Step>
   <Step title="Connect Linear">
     Do this if issues should link to lanes, CTO work, and PR updates.
   </Step>
-  <Step title="Pair mobile">
-    Do this if you want iPhone updates for agent work and PR activity.
+  <Step title="Pair your phone">
+    From the top-bar **Sync** popover, reveal the pairing PIN to bring agent work and PR activity to iOS.
   </Step>
-  <Step title="Check usage">
-    Set budgets or choose cheaper default models before running many agents in parallel.
+  <Step title="Watch spend">
+    Check the top-bar **Usage** popup and set a budget cap before running many agents in parallel.
   </Step>
 </Steps>
 
-## Provider settings
+## Shared vs. local config
 
-Provider settings control which agents can run. Keep at least one reliable default model configured, then override per chat or worker when needed.
-
-## Local-first behavior
-
-Settings that include secrets are stored locally. ADE does not commit credentials to your repository.
+ADE splits project configuration into two files: shared, version-controlled team config (`.ade/ade.yaml`) and a per-user, gitignored overlay (`.ade/local.yaml`). Saving shared config triggers a trust confirmation, since shared settings can introduce commands that run on every teammate's machine. Anything with a secret — provider keys, GitHub and Linear tokens — stays in a local encrypted store and is never committed.
 
 <CardGroup cols={2}>
   <Card title="AI providers" icon="brain" href="/configuration/ai-providers">
-    Provider-specific setup and permission presets.
+    Connect each agent, set permission presets, and control cost.
   </Card>
-  <Card title="iOS companion" icon="mobile-screen" href="/tools/ios-companion">
-    Pair your phone and manage mobile notifications.
+  <Card title="Project configuration" icon="folder-tree" href="/configuration/overview">
+    Where ADE stores local state and what to keep out of Git.
   </Card>
 </CardGroup>

@@ -1,52 +1,93 @@
 ---
 title: "iOS companion"
-description: "Pair the ADE iOS app with desktop to follow work, receive updates, and act on project state from your phone."
+description: "Pair the ADE iOS app with your Mac over a live WebSocket and mirror lanes, chats, and PRs in real time — start chats, review and merge PRs, all from your phone."
 icon: "mobile-screen"
 ---
 
-The ADE iOS app is a companion to the desktop runtime. It does not run coding agents on the phone. Your Mac remains the execution host.
+The ADE iOS app is a client for your Mac. It pairs over a live WebSocket and mirrors your lanes, chats, and PRs in real time. Start or continue a chat, review and merge a PR, or browse a lane's diff — from your phone. Your source code never leaves the Mac. The phone is a thin client; the agents run on the desktop runtime.
+
+<CardGroup cols={2}>
+  <Frame caption="Chat with agents from your phone">
+    <img src="/media/features/mobile/agent-chat.webp" alt="Agent chat on the ADE iOS app" width="300" />
+  </Frame>
+  <Frame caption="Review and merge PRs on the go">
+    <img src="/media/features/mobile/pull-requests.webp" alt="Pull request review on the ADE iOS app" width="300" />
+  </Frame>
+</CardGroup>
 
 ## What mobile is for
 
 <CardGroup cols={2}>
   <Card title="Follow active work" icon="eye">
-    See lanes, chats, PRs, and worker activity while away from the desktop.
+    See lanes, chats, PRs, and worker activity update live while you are away from the desktop.
   </Card>
-  <Card title="Get notifications" icon="bell">
-    Receive push updates for completed work, failures, questions, and review events.
+  <Card title="Run agents" icon="robot">
+    Start a new chat or continue an existing one — the agent runs on the Mac, the transcript streams to your phone.
   </Card>
-  <Card title="Respond quickly" icon="reply">
-    Review status and send small follow-up commands when the desktop runtime is reachable.
+  <Card title="Review and merge PRs" icon="code-pull-request">
+    Read the diff, CI status, and comments, then merge when it is green — without opening a laptop.
   </Card>
   <Card title="Stay synced" icon="rotate">
-    Pair with the local runtime so project state can mirror to the phone.
+    The same lanes and sessions follow you between desktop, `ade code`, and the phone over one live connection.
   </Card>
 </CardGroup>
 
 ## Pair your phone
 
+Pairing links the app to your Mac's runtime with a one-time PIN. Generate the PIN on the desktop (or from the CLI), enter it on the phone, and the app connects.
+
 <Steps>
-  <Step title="Open Settings -> Mobile">
-    The desktop app shows pairing status and a QR code when mobile support is available.
+  <Step title="Generate a PIN on the Mac">
+    Open desktop **Settings -> Mobile** and generate a pairing PIN, or run `ade brain pin generate` from any shell.
   </Step>
-  <Step title="Open ADE on iOS">
-    Scan the QR code from the iOS app.
+  <Step title="Enter the PIN on iOS">
+    Open the ADE app on your iPhone and type the PIN to pair with your machine.
   </Step>
-  <Step title="Confirm connection">
-    Desktop should show the device as paired. The phone should show the project catalog or current project state.
-  </Step>
-  <Step title="Choose notifications">
-    Keep the events you care about, such as agent completed, agent failed, PR ready, or question waiting.
+  <Step title="Confirm the connection">
+    The phone shows your project catalog and current lanes; the desktop lists the device as paired. From here, lanes, chats, and PRs stream live.
   </Step>
 </Steps>
 
+<AccordionGroup>
+  <Accordion title="Pair from the terminal" icon="terminal">
+    The pairing PIN is owned by the machine's ADE brain, so you can manage it without the desktop UI:
+
+    ```bash
+    ade brain pin generate   # generate a one-time phone pairing PIN
+    ade brain pin set 123456  # set an explicit PIN
+    ade brain pin clear       # invalidate the current PIN
+    ade brain status --text   # endpoint, service, and sync state
+    ```
+
+    Run `ade brain --help` to see every flag.
+  </Accordion>
+</AccordionGroup>
+
+## Review and merge from anywhere
+
+A PR your agents opened shows up on the phone with its diff, CI status, and comments. Read it, leave the work running on the Mac, and merge when it goes green.
+
+<Frame caption="The full PR thread on iOS — diff, checks, and the merge button.">
+  <img src="/media/landing/showcase/pull-requests-mobile.webp" alt="Pull request review and merge on the ADE iOS app" />
+</Frame>
+
 ## What to expect
 
-- Desktop must be running for local command execution.
-- Network reachability matters. Local Wi-Fi is simplest; tailnet setups can make reconnection easier.
-- Large artifacts may load on demand.
-- Sensitive source and project data remain tied to the paired desktop/runtime.
+- The Mac must be running — agents execute on the desktop runtime, and the phone mirrors them.
+- Connection is a live WebSocket, so lanes, transcripts, and PR state update as they change. No manual refresh.
+- Network reachability matters. Local Wi-Fi is simplest; a tailnet makes reconnection easy when you leave the house.
+- Large artifacts and diffs load on demand.
+- Source and project data stay tied to the paired Mac. The phone holds no checkout.
 
 <Note>
-If mobile looks connected but updates do not arrive, check desktop Settings -> Mobile first, then verify both devices are on a reachable network.
+If the app looks connected but updates do not arrive, check desktop **Settings -> Mobile** first, then confirm both devices can reach each other on the network.
 </Note>
+
+<CardGroup cols={2}>
+  <Card title="ade code (terminal)" icon="rectangle-terminal" href="/tools/ade-code">
+    The same lanes and chats in a fast terminal UI.
+  </Card>
+  <Card title="Pull requests" icon="code-pull-request" href="/tools/pull-requests">
+    How PRs are created, reviewed, and merged in ADE.
+  </Card>
+</CardGroup>

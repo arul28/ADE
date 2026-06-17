@@ -10,11 +10,11 @@
   "background": {
     "decoration": "grid"
   },
-  "favicon": "/favicon.svg",
+  "favicon": "/favicon.png",
   "logo": {
-    "light": "/logo/light.svg",
-    "dark": "/logo/dark.svg",
-    "href": "https://github.com/arul28/ADE"
+    "light": "/logo/ade-wordmark.png",
+    "dark": "/logo/ade-wordmark.png",
+    "href": "https://ade-app.dev"
   },
   "seo": {
     "metatags": {
@@ -27,18 +27,17 @@
   "navigation": {
     "tabs": [
       {
-        "tab": "Get Started",
-        "icon": "rocket",
+        "tab": "Documentation",
+        "icon": "book-open",
         "groups": [
           {
-            "group": "Welcome",
+            "group": "Start here",
             "icon": "hand-wave",
             "expanded": true,
             "pages": [
               "welcome",
               "quickstart",
-              "key-concepts",
-              "architecture"
+              "key-concepts"
             ]
           },
           {
@@ -47,22 +46,9 @@
             "pages": [
               "getting-started/install",
               "getting-started/connect-provider",
-              "getting-started/project-setup",
+              "getting-started/open-project",
               "getting-started/first-lane",
               "getting-started/first-agent"
-            ]
-          }
-        ]
-      },
-      {
-        "tab": "App Guide",
-        "icon": "grid-2",
-        "groups": [
-          {
-            "group": "Run",
-            "icon": "play",
-            "pages": [
-              "tools/project-home"
             ]
           },
           {
@@ -72,100 +58,64 @@
               "lanes/overview",
               "lanes/creating",
               "lanes/stacks",
-              "lanes/packs",
-              "lanes/environment",
-              "guides/multi-agent-setup"
+              "lanes/environment"
             ]
           },
           {
-            "group": "Agent Chat",
+            "group": "Agent chat",
             "icon": "comments",
             "pages": [
               "chat/overview",
               "chat/capabilities",
-              "chat/context"
+              "chat/grid",
+              "chat/context",
+              "guides/multi-agent-setup"
             ]
           },
           {
-            "group": "Terminals",
-            "icon": "rectangle-terminal",
+            "group": "Work surfaces",
+            "icon": "window-restore",
             "pages": [
-              "tools/terminals"
+              "tools/files-editor",
+              "tools/terminals",
+              "tools/browser",
+              "tools/ios-simulator",
+              "tools/project-home"
             ]
           },
           {
-            "group": "Files",
-            "icon": "file-code",
-            "pages": [
-              "tools/files-editor"
-            ]
-          },
-          {
-            "group": "Graph",
-            "icon": "diagram-project",
-            "pages": [
-              "tools/workspace-graph"
-            ]
-          },
-          {
-            "group": "Pull Requests",
+            "group": "Review & ship",
             "icon": "code-pull-request",
             "pages": [
+              "tools/review",
               "tools/pull-requests",
+              "guides/stacked-prs",
               "tools/conflicts",
-              "guides/stacked-prs"
-            ]
-          },
-          {
-            "group": "History",
-            "icon": "clock-rotate-left",
-            "pages": [
+              "tools/workspace-graph",
               "tools/history"
             ]
           },
           {
-            "group": "CTO and Workers",
+            "group": "CTO & automation",
             "icon": "crown",
             "pages": [
               "cto/overview",
               "cto/setup",
-              "cto/linear",
-              "cto/workers"
+              "cto/workers",
+              "tools/automations"
             ]
           },
           {
-            "group": "Mobile",
-            "icon": "mobile-screen",
+            "group": "Integrations",
+            "icon": "plug",
             "pages": [
-              "tools/ios-companion"
-            ]
-          }
-        ]
-      },
-      {
-        "tab": "Settings",
-        "icon": "gear",
-        "groups": [
-          {
-            "group": "Settings Reference",
-            "icon": "sliders",
-            "expanded": true,
-            "pages": [
-              "configuration/settings",
-              "configuration/ai-providers"
+              "integrations/github",
+              "integrations/linear"
             ]
           },
           {
-            "group": "Project Configuration",
-            "icon": "folder-tree",
-            "pages": [
-              "configuration/overview",
-              "configuration/permissions"
-            ]
-          },
-          {
-            "group": "Computer Use",
-            "icon": "desktop",
+            "group": "Proof & computer use",
+            "icon": "camera",
             "pages": [
               "computer-use/overview",
               "computer-use/setup",
@@ -174,12 +124,47 @@
             ]
           },
           {
-            "group": "AI Tool Integrations",
-            "icon": "wand-magic-sparkles",
+            "group": "Mobile & terminal",
+            "icon": "mobile-screen",
             "pages": [
+              "tools/ios-companion",
+              "tools/ade-code",
+              "tools/remote-machines"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Settings & dev guide",
+        "icon": "sliders",
+        "groups": [
+          {
+            "group": "Settings",
+            "icon": "gear",
+            "expanded": true,
+            "pages": [
+              "configuration/settings",
+              "configuration/permissions",
+              "configuration/overview"
+            ]
+          },
+          {
+            "group": "AI Connections",
+            "icon": "brain",
+            "pages": [
+              "configuration/ai-providers",
               "ai-tools/claude-code",
               "ai-tools/cursor",
               "ai-tools/windsurf"
+            ]
+          },
+          {
+            "group": "For developers",
+            "icon": "code",
+            "pages": [
+              "reference/cli",
+              "architecture",
+              "reference/troubleshooting"
             ]
           }
         ]
@@ -194,6 +179,7 @@
             "expanded": true,
             "pages": [
               "changelog",
+              "changelog/v1.2.7",
               "changelog/v1.2.6",
               "changelog/v1.2.5",
               "changelog/v1.2.4",
@@ -239,6 +225,11 @@
     "global": {
       "anchors": [
         {
+          "anchor": "Download",
+          "href": "https://github.com/arul28/ADE/releases/latest",
+          "icon": "apple"
+        },
+        {
           "anchor": "GitHub",
           "href": "https://github.com/arul28/ADE",
           "icon": "github"
@@ -251,7 +242,7 @@
     "primary": {
       "type": "button",
       "label": "Download ADE",
-      "href": "https://github.com/arul28/ADE/releases"
+      "href": "https://github.com/arul28/ADE/releases/latest"
     }
   },
   "contextual": {
@@ -274,17 +265,17 @@
       {
         "header": "Product",
         "items": [
-          { "label": "Features", "href": "/lanes/overview" },
-          { "label": "Download", "href": "https://github.com/arul28/ADE/releases" },
+          { "label": "Download", "href": "https://github.com/arul28/ADE/releases/latest" },
+          { "label": "Lanes", "href": "/lanes/overview" },
           { "label": "Changelog", "href": "/changelog" }
         ]
       },
       {
-        "header": "Resources",
+        "header": "Get started",
         "items": [
-          { "label": "Documentation", "href": "/welcome" },
-          { "label": "Quick start", "href": "/quickstart" },
-          { "label": "App Guide", "href": "/tools/project-home" }
+          { "label": "Welcome", "href": "/welcome" },
+          { "label": "Quickstart", "href": "/quickstart" },
+          { "label": "Key concepts", "href": "/key-concepts" }
         ]
       },
       {

@@ -1,32 +1,59 @@
 ---
 title: "Connect an AI provider"
-description: "Add one working provider so ADE can run coding agents."
+description: "Add one provider — by API key or your existing subscription — so ADE can run coding agents."
 icon: "key"
 ---
 
-Open **Settings -> AI Providers**. ADE needs at least one verified provider before it can run agent chat, workers, CTO delegation, auto-titles, or AI summaries.
+ADE runs the agents you already use. Connect at least one provider and you can start chats, workers, CTO delegation, auto-titles, and AI summaries. Bring your own API key, or sign in with a subscription you already pay for.
 
-## Common choices
+<Frame caption="Connect providers in Settings">
+  <img src="/media/features/settings/settings-tab.webp" alt="Connect AI providers in ADE Settings" />
+</Frame>
 
-| Provider | Best for | Setup |
-|----------|----------|-------|
-| **Claude / Claude Code** | Strong default for coding tasks and project reasoning | API key or authenticated `claude` CLI |
-| **Codex** | OpenAI coding agent workflows | Authenticated Codex CLI or configured OpenAI access |
-| **Cursor** | Cursor agent runs from inside ADE | Cursor API key |
-| **OpenCode** | Local or OpenRouter-backed CLI workflows | OpenCode config and provider key |
-| **OpenRouter / local providers** | Cost control or local experimentation | API key or local endpoint |
+## The five agents
+
+Open **Settings → AI Providers** and connect whichever you use. Each runs against your lanes with live diffs and approval gates.
+
+<CardGroup cols={2}>
+  <Card title="Claude Code" icon="anthropic">
+    Strong default for coding and project reasoning. API key or an authenticated `claude` CLI.
+  </Card>
+  <Card title="Codex" icon="openai">
+    OpenAI's coding agent. Authenticated Codex CLI or configured OpenAI access.
+  </Card>
+  <Card title="Cursor" icon="arrow-pointer">
+    Cursor agent runs from inside ADE. Cursor API key or signed-in CLI.
+  </Card>
+  <Card title="Factory Droid" icon="robot">
+    Factory's Droid agent, including AGI mode. Droid CLI or API key.
+  </Card>
+  <Card title="OpenCode" icon="code">
+    Local or OpenRouter-backed CLI workflows. OpenCode config and a provider key.
+  </Card>
+</CardGroup>
+
+One reaches dozens of models — Anthropic, OpenAI, Gemini, Qwen, and more — depending on the provider you connect.
+
+<Frame>
+  <div style={{ display: "flex", flexWrap: "wrap", gap: "1rem", alignItems: "center", justifyContent: "center", padding: "1.25rem 0.5rem" }}>
+    <img src="/media/logos/models/anthropic.svg" alt="Anthropic" style={{ height: "36px", background: "#fff", borderRadius: "12px", padding: "10px 14px" }} />
+    <img src="/media/logos/models/openai.svg" alt="OpenAI" style={{ height: "36px", background: "#fff", borderRadius: "12px", padding: "10px 14px" }} />
+    <img src="/media/logos/models/gemini-color.svg" alt="Gemini" style={{ height: "36px", background: "#fff", borderRadius: "12px", padding: "10px 14px" }} />
+    <img src="/media/logos/models/qwen-color.svg" alt="Qwen" style={{ height: "36px", background: "#fff", borderRadius: "12px", padding: "10px 14px" }} />
+  </div>
+</Frame>
 
 ## Add and verify
 
 <Steps>
   <Step title="Choose the provider">
-    Pick the provider you already use, or start with Claude if you are unsure.
+    Pick the one you already use, or start with Claude Code if you're unsure.
   </Step>
   <Step title="Add credentials">
-    Paste the API key or make sure the provider CLI is installed and authenticated.
+    Paste an API key, or make sure the provider CLI is installed and signed in.
   </Step>
-  <Step title="Click verify or refresh">
-    ADE checks the provider and shows whether it can start sessions.
+  <Step title="Verify">
+    Click **Verify** or **Refresh**. ADE checks the provider and confirms it can start sessions.
   </Step>
   <Step title="Set a default model">
     Choose a default model for chat. You can override it per session later.
@@ -34,12 +61,27 @@ Open **Settings -> AI Providers**. ADE needs at least one verified provider befo
 </Steps>
 
 <Warning>
-Provider calls go from your machine to the provider. ADE does not proxy model requests through an ADE-hosted service.
+Provider calls go from your machine straight to the provider. ADE does not proxy model requests through an ADE-hosted service.
 </Warning>
 
 ## If verification fails
 
-- Confirm the key is active and has model access.
-- Restart ADE after installing a new CLI.
-- Open a terminal and test the provider CLI directly.
-- Check **Settings -> AI Providers** again and click **Refresh**.
+<AccordionGroup>
+  <Accordion title="Troubleshoot a failed provider" icon="triangle-exclamation">
+    - Confirm the key is active and has model access.
+    - Restart ADE after installing a new provider CLI.
+    - Open a terminal and run the provider CLI directly to confirm it's authenticated.
+    - Return to **Settings → AI Providers** and click **Refresh**.
+  </Accordion>
+</AccordionGroup>
+
+## Next
+
+<CardGroup cols={2}>
+  <Card title="Open a project" icon="folder-open" href="/getting-started/open-project">
+    Point ADE at the Git repository you want it to manage.
+  </Card>
+  <Card title="AI providers" icon="sliders" href="/configuration/ai-providers">
+    Per-provider setup, models, and defaults in detail.
+  </Card>
+</CardGroup>

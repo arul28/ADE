@@ -1,35 +1,76 @@
 ---
 title: "Set up the CTO"
-description: "Prepare the CTO agent for project-level planning and delegation."
+description: "Give the CTO a persona and model, connect GitHub and Linear, add a worker or two, and start with a planning prompt."
 icon: "wand-magic-sparkles"
 ---
 
-The CTO needs a working AI provider and enough project context to make useful decisions.
+The CTO is usable in minutes. First-run setup is intentionally short — you pick a **personality** for the operator and it's ready to chat. A capable model, GitHub, Linear, and workers all layer in afterward, only when you need them.
 
-## Setup checklist
+<Frame caption="Start the CTO from a chat and let it operate across the project.">
+  <img src="/media/features/agent-chat/run-orchestrator.webp" alt="Running the CTO operator from a chat" />
+</Frame>
+
+## First run
+
+The first time you open the CTO tab, a short wizard asks you to pick a **personality preset** — the only required step. Everything else is deferred to Settings and the relevant tabs.
 
 <Steps>
-  <Step title="Verify a strong provider">
-    In **Settings -> AI Providers**, choose a model you trust for planning and review.
+  <Step title="Pick a personality">
+    Choose a preset — strategic, professional, hands-on, casual, minimal, or custom. Custom lets you write your own overlay. This sets the CTO's tone; its core doctrine is fixed by ADE and not editable.
+  </Step>
+  <Step title="Choose a model (optional)">
+    In CTO Settings, set the provider, model, and reasoning effort. The CTO reasons across the whole project, so favor a capable model over a fast one. Until you pick one, the CTO uses the project's default model.
   </Step>
   <Step title="Connect GitHub">
-    Recommended for PR summaries, CI explanations, and review follow-up.
+    Recommended for PR summaries, CI explanations, and review follow-up across lanes.
   </Step>
-  <Step title="Connect Linear">
-    Optional. Use it when issues should map to lanes, PRs, and CTO updates.
+  <Step title="Connect Linear (optional)">
+    Connect it when issues should drive lanes, PRs, and status updates. See [Linear](/integrations/linear).
   </Step>
-  <Step title="Create or review workers">
-    Add worker identities for recurring responsibilities, such as testing or PR review.
-  </Step>
-  <Step title="Ask for a summary">
-    Start with: `Summarize the current project state and identify the highest-risk open work.`
+  <Step title="Add workers (optional)">
+    Create worker identities for recurring responsibilities such as testing or review. See [Workers](/cto/workers).
   </Step>
 </Steps>
 
+<Note>
+Setup finishes without Linear, a model choice, or any workers — those connect later. The CTO is meant to be a daily chat surface first.
+</Note>
+
+## Personality presets
+
+The preset shapes the CTO's communication style. The underlying operator doctrine and capability set are owned by ADE and stay fixed across presets — you're choosing tone, not rewriting the agent.
+
+<CardGroup cols={3}>
+  <Card title="Strategic" icon="chess">
+    Big-picture framing and trade-offs.
+  </Card>
+  <Card title="Professional" icon="briefcase">
+    Measured, businesslike updates.
+  </Card>
+  <Card title="Hands-on" icon="wrench">
+    Pragmatic and execution-focused.
+  </Card>
+  <Card title="Casual" icon="handshake">
+    Relaxed, conversational tone.
+  </Card>
+  <Card title="Minimal" icon="bolt">
+    Terse, low-noise replies.
+  </Card>
+  <Card title="Custom" icon="sparkles">
+    Write your own personality overlay.
+  </Card>
+</CardGroup>
+
+<Tip>
+You can re-run the wizard any time from **CTO &rarr; Settings &rarr; Reset Onboarding**, and edit the persona and model from the identity editor without resetting anything.
+</Tip>
+
 ## First useful prompts
 
+Lead with planning and summarization before delegation — that's where the CTO earns its keep.
+
 ```text
-Look across active lanes and tell me what is ready for review.
+Summarize the current project state and identify the highest-risk open work.
 ```
 
 ```text
@@ -40,11 +81,15 @@ Plan how to split this feature into reviewable lanes before anyone starts coding
 Read Linear issue ENG-142 and recommend the first lane to create.
 ```
 
+<Tip>
+Treat the CTO's first plan as a draft. Refine the split in chat until the lanes are small and independent, then approve before any worker starts coding.
+</Tip>
+
 <CardGroup cols={2}>
-  <Card title="CTO overview" icon="crown" href="/cto/overview">
-    What the CTO is for.
-  </Card>
   <Card title="Workers" icon="users" href="/cto/workers">
-    Manage delegated agent identities.
+    Manage the delegated agent identities the CTO assigns work to.
+  </Card>
+  <Card title="Linear" icon="layers" href="/integrations/linear">
+    Connect Linear so the CTO can triage and route issues.
   </Card>
 </CardGroup>

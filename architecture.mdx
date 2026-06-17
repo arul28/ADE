@@ -1,69 +1,77 @@
 ---
 title: "Architecture"
-description: "How ADE desktop, the local runtime, project state, CLI, iOS companion, and optional remote runtimes fit together."
+description: "How the ADE brain, project state, the desktop app, ade code, iOS, and optional remote runtimes over SSH fit together."
 icon: "diagram-project"
 ---
 
-ADE is local-first. The desktop app is the visible control plane, and a machine-local ADE runtime owns the durable project state and action surface.
+ADE is local-first. The center is the **brain** — the always-on, machine-owned ADE process for a channel. The brain owns the project catalog, the durable project state, the sync websocket, and the authority to run agents. Everything you see is a **client** of that brain: the desktop app, `ade code`, the iOS app, and any SSH-attached desktop window.
 
 ```mermaid
 flowchart TB
   Desktop["ADE desktop app"]
-  Work["Work tab<br/>chats and terminals"]
-  CLI["ade CLI and ade code"]
-  Runtime["Local ADE runtime<br/>~/.ade/sock/ade.sock"]
+  CLI["ade CLI + ade code"]
+  IOS["iOS app"]
+  Brain["ADE brain<br/>~/.ade/sock/ade.sock"]
   Project["Project .ade/<br/>database, worktrees, artifacts"]
-  IOS["iOS companion"]
-  Remote["Optional remote ADE runtime"]
+  Remote["Remote ADE brain<br/>(another machine)"]
 
-  Desktop --> Runtime
-  Work --> Runtime
-  CLI --> Runtime
-  Runtime --> Project
-  IOS <-->|"paired sync and commands"| Runtime
-  Desktop <-->|"SSH/RPC when configured"| Remote
+  Desktop --> Brain
+  CLI --> Brain
+  IOS <-->|"paired sync + commands"| Brain
+  Brain --> Project
+  Desktop <-->|"SSH · ade rpc --stdio"| Remote
 ```
 
-## The desktop app
+## The brain
 
-Desktop owns the window, navigation, renderer UI, and Mac-only integrations. It displays lanes, Work sessions, files, PRs, History, Settings, CTO, and mobile pairing state.
+The brain is the source of truth on a machine. It owns lanes, agent chats, terminals, Git operations, PR actions, provider sessions, proof artifacts, the project catalog, and the sync service. It runs every agent — **Claude Code, Codex, Cursor, Factory Droid, and OpenCode** — against the same projects. Because desktop and CLI clients call the same brain, a chat you start in the app and one you start with [`ade code`](/tools/ade-code) operate on the same project state.
 
-## The ADE runtime
+The brain installs as a per-user login service (launchd on macOS), so it stays running even when no window is open.
 
-The runtime is the local service that reads and writes project state. It handles lanes, chats, terminals, Git operations, PR actions, provider sessions, proof artifacts, and mobile sync. Desktop and CLI clients call the same runtime surface, so a chat in the app and `ade code` in a terminal operate on the same project.
+## Clients
+
+<CardGroup cols={2}>
+  <Card title="Desktop app" icon="display">
+    The Electron control plane — windows, navigation, the renderer UI, and Mac-only integrations. Each window attaches to a local brain, or binds to a remote one over SSH.
+  </Card>
+  <Card title="ade code" icon="rectangle-terminal" href="/tools/ade-code">
+    The terminal-native client. Attaches to the same brain — the same lanes, chats, and PRs in a fast TUI.
+  </Card>
+  <Card title="iOS app" icon="mobile-screen">
+    A SwiftUI controller that pairs with a machine over WebSocket. It mirrors state and sends commands; it never runs agents itself.
+  </Card>
+  <Card title="ade CLI" icon="terminal" href="/reference/cli">
+    The typed control plane for any shell — used by humans and by the agents running inside ADE.
+  </Card>
+</CardGroup>
 
 ## Project state
 
-ADE writes local state under the repository's `.ade/` directory:
+ADE writes local state under each repository's `.ade/` directory and leaves your source tree under Git's control:
 
 ```text
 .ade/
-  ade.db
-  worktrees/
-  artifacts/
-  cache/
-  secrets/
+  ade.db        # the project database
+  worktrees/    # one git worktree per lane
+  artifacts/    # proof and capture artifacts
+  secrets/      # encrypted project credentials
 ```
 
-The source repository remains a normal Git checkout. ADE uses Git branches, worktrees, commits, and PRs rather than replacing them.
+A **lane** is a git worktree under `worktrees/`. ADE uses real Git branches, worktrees, commits, and PRs rather than replacing them, so a lane is a normal checkout on disk you can also open in any editor.
 
-## CLI and terminal clients
+## Remote runtimes over SSH
 
-The `ade` CLI gives agents and humans a typed way to reach ADE actions from a shell. `ade code` is the terminal-native Work client for people who prefer to stay in a terminal while sharing the same runtime and project state as desktop.
+A desktop window can bind to a brain on **another machine** over SSH. ADE runs `ade rpc --stdio` on the remote and tunnels the same JSON-RPC back, so lanes, chats, diffs, and PRs behave exactly as they do locally — but the agents, builds, and tests run on the remote, against its filesystem and its own GitHub, Linear, and provider credentials. The desktop stays local and stays the control plane.
 
-## iOS companion
-
-The iOS app pairs with the local runtime. It mirrors useful state and can send commands back to the Mac. Agents still run on the Mac or configured remote runtime.
-
-## Optional remote runtimes
-
-ADE can connect to another machine over SSH and talk to an ADE runtime there. Use this when the repository or dev stack lives on a remote box, but you still want the desktop control plane locally.
+<Note>
+iOS does not SSH into machines. The phone pairs with a brain and connects to its sync websocket over the LAN or a Tailscale tailnet — install Tailscale on both when they aren't on the same network.
+</Note>
 
 <CardGroup cols={2}>
   <Card title="Key concepts" icon="lightbulb" href="/key-concepts">
-    Learn the product vocabulary.
+    The product vocabulary — brain, lane, stack, CTO — in two minutes.
   </Card>
-  <Card title="iOS companion" icon="mobile-screen" href="/tools/ios-companion">
-    Pair your phone and understand what mobile can do.
+  <Card title="ade CLI" icon="terminal" href="/reference/cli">
+    The typed control plane behind everything ADE does.
   </Card>
 </CardGroup>
