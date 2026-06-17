@@ -776,7 +776,6 @@ func pendingWorkQuestionFromApproval(
     body: optionalString(detailObject["body"]) ?? optionalString(detailObject["description"]),
     source: optionalString(request["source"])
       ?? optionalString(detailObject["source"])
-      ?? (tool.isEmpty ? nil : tool)
   )
 }
 

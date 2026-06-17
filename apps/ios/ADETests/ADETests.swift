@@ -11634,6 +11634,31 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(workChatSurfaceProviderName("my_provider-runtime"), "My Provider Runtime")
   }
 
+  func testLegacyAskUserApprovalLeavesSourceForProviderFallback() {
+    let detail = """
+    {
+      "tool": "askUser",
+      "question": "Which follow-up should I run?",
+      "options": [
+        { "label": "Desktop", "value": "desktop" },
+        { "label": "iOS", "value": "ios" }
+      ]
+    }
+    """
+
+    let model = pendingWorkQuestionFromApproval(
+      description: "Which follow-up should I run?",
+      detail: detail,
+      itemId: "legacy-ask-user"
+    )
+
+    guard let model else {
+      return XCTFail("Expected legacy askUser approval to become a pending question.")
+    }
+    XCTAssertNil(model.source)
+    XCTAssertEqual(model.providerHeaderVerb(fallbackProvider: "claude"), "Claude asks")
+  }
+
   func testWorkPreviewIsWireframeMatchesDesktopIndentationHeuristic() {
     XCTAssertTrue(workPreviewIsWireframe("Home\n  Primary action\n  Secondary action"))
     XCTAssertFalse(workPreviewIsWireframe("Line one\nLine two"))

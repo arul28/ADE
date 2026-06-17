@@ -126,6 +126,7 @@ extension WorkChatSessionView {
         },
         fallbackProvider: chatSummary?.provider
       )
+      .id("pending-question-\(plan.id)")
     case .pendingModelSelection(let request):
       WorkModelSelectionPendingCard(
         request: request,
