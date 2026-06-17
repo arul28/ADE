@@ -1,33 +1,42 @@
 ---
 title: "Run your first agent"
-description: "Start a lane-scoped chat, watch the agent work, and review the result."
+description: "Start a lane-scoped chat, watch the tool calls, and review the diff."
 icon: "robot"
 ---
 
-Start with Agent Chat. It is the fastest way to learn ADE because it shows the full loop: prompt, tool calls, file changes, terminal output, review, and commit.
+Agent chat is the fastest way to learn ADE — it shows the whole loop: prompt, tool calls, file changes, terminal output, review, and commit.
 
 ## Start the chat
 
 <Steps>
-  <Step title="Select the lane">
-    Open the lane you created for this task.
+  <Step title="Start a new chat">
+    In **Work**, open a new chat. You can pick an existing lane or let ADE create one for the task.
   </Step>
-  <Step title="Open Work or Chat">
-    Start a new chat session in that lane. The session header should show the lane name.
-  </Step>
-  <Step title="Choose a provider">
-    Use the default provider or pick another verified provider from the model selector.
+  <Step title="Pick a provider and model">
+    Use the default, or choose any verified provider — Claude Code, Codex, Cursor, Factory Droid, or OpenCode — from the model selector.
   </Step>
   <Step title="Send a narrow task">
-    Ask for one contained change. Avoid broad prompts like "clean up the whole app" for your first run.
+    Ask for one contained change. Skip broad prompts like "clean up the whole app" for your first run.
   </Step>
   <Step title="Watch tool calls">
-    The transcript shows reads, edits, shell commands, and test output as the agent works.
+    The transcript streams reads, edits, shell commands, and test output as the agent works.
   </Step>
   <Step title="Review the diff">
     Open **Files**, inspect every changed file, run tests if needed, then commit.
   </Step>
 </Steps>
+
+<Frame caption="Start a new chat">
+  <img src="/media/features/agent-chat/new-chat-button.webp" alt="Start a new agent chat" />
+</Frame>
+
+<Frame caption="Pick a provider and model">
+  <img src="/media/features/agent-chat/model-selection.webp" alt="Pick a provider and model for the chat" />
+</Frame>
+
+<Frame caption="Run it in a lane — choose one or let ADE create it">
+  <img src="/media/features/agent-chat/choose-or-autocreate-lane.webp" alt="Choose an existing lane or let ADE auto-create one" />
+</Frame>
 
 ## First prompt
 
@@ -37,18 +46,22 @@ Add a GET /health endpoint that returns { "status": "ok" } and add one test for 
 
 ## If the agent gets stuck
 
-- Press **Stop** and ask for a shorter plan.
-- Paste the exact test or build error back into the chat.
-- Switch to a stronger model for the session.
-- Keep the task inside the lane; do not move it to your primary checkout.
+<AccordionGroup>
+  <Accordion title="Unstick a run" icon="triangle-exclamation">
+    - Press **Stop** and ask for a shorter plan.
+    - Paste the exact test or build error back into the chat.
+    - Switch to a stronger model for the session.
+    - Keep the task inside the lane — don't move it to your primary checkout.
+  </Accordion>
+</AccordionGroup>
 
-## After the task
+## Next
 
 <CardGroup cols={2}>
-  <Card title="Files" icon="file-code" href="/tools/files-editor">
-    Review and edit the changed files.
+  <Card title="Agent chat" icon="comments" href="/chat/overview">
+    How chats, providers, and tool calls work.
   </Card>
   <Card title="Pull requests" icon="code-pull-request" href="/tools/pull-requests">
-    Create a PR once the lane is ready.
+    Open a PR once the lane is ready.
   </Card>
 </CardGroup>

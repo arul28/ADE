@@ -1,0 +1,62 @@
+---
+title: "GitHub"
+description: "Connect GitHub so ADE can open, review, and merge pull requests for your lanes — without leaving the app."
+icon: "github"
+---
+
+Connecting GitHub turns a finished lane into a reviewable, mergeable pull request inside ADE. Once connected, ADE opens PRs from your lanes, pulls in CI status and review comments, and merges — so you never leave for a browser tab.
+
+<CardGroup cols={2}>
+  <Card title="Open PRs from a lane" icon="code-pull-request" href="/tools/pull-requests">
+    Turn a lane's branch into a GitHub PR in a click, with the title and body pre-filled.
+  </Card>
+  <Card title="CI, comments, merge" icon="circle-check">
+    Read checks, reply to review threads, and merge — including auto-merge when the checks go green.
+  </Card>
+</CardGroup>
+
+## Connect GitHub
+
+Open **Settings → Integrations → GitHub** and authenticate. ADE stores the token in your machine's encrypted credential store — it's never written into project files or committed.
+
+<Steps>
+  <Step title="Add a token">
+    Authenticate in the GitHub section of Settings. A token that can read and write the repositories you work in is all ADE needs.
+  </Step>
+  <Step title="Let ADE verify it">
+    ADE probes access to the active repository and reports a single connection state (below). Hit **Refresh** after changing permissions on github.com to re-check immediately.
+  </Step>
+</Steps>
+
+## Connection states
+
+ADE reduces GitHub auth to one "is it usable here" signal, shown the same way in Settings and in the app banner.
+
+<CardGroup cols={3}>
+  <Card title="Connected" icon="circle-check">
+    The token is valid and can reach the active repository. PR creation, CI, comments, and merge are all available.
+  </Card>
+  <Card title="Limited access" icon="triangle-exclamation">
+    The token authenticates, but can't reach the active repo — common with fine-grained tokens missing that repository. Grant it access and refresh.
+  </Card>
+  <Card title="Not connected" icon="circle-xmark">
+    No token, or the token can't identify a user. PR features stay disabled until you connect.
+  </Card>
+</CardGroup>
+
+<Note>
+**Fine-grained tokens** are only considered connected once a repository probe passes — it's the one reliable check that the token can actually act on your repo. If Settings shows Limited access, add the active repository to the token's allowed list.
+</Note>
+
+<Tip>
+GitHub is optional. ADE runs fine without it — you just won't get in-app PRs until it's connected. Everything else (lanes, chat, diffs, history) works regardless.
+</Tip>
+
+<CardGroup cols={2}>
+  <Card title="Pull requests" icon="code-pull-request" href="/tools/pull-requests">
+    Create, review, and merge PRs once GitHub is connected.
+  </Card>
+  <Card title="Linear" icon="list-check" href="/integrations/linear">
+    Link issues to lanes and PRs, and let merges close them.
+  </Card>
+</CardGroup>

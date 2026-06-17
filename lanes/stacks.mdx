@@ -1,51 +1,83 @@
 ---
 title: "Stacked lanes"
-description: "Use stacked lanes when a large change is easier to review as several dependent PRs."
+description: "Child lanes branch off another lane instead of main, so one big change ships as a stack of small, dependent PRs that merge in order."
 icon: "layer-group"
 ---
 
-A stack is a chain of lanes. Each child lane is based on the lane above it instead of directly on `main`.
+A **stack** is a chain of lanes linked parent → child. A **child lane**'s branch is based on its parent's branch instead of on `main`, so a large change ships as several small, reviewable PRs that land in order rather than one giant branch.
 
 ```text
 main
-  auth-models
-    auth-ui
-      auth-tests
+└─ auth-models      ← base lane (parent)
+   └─ auth-ui       ← child of auth-models
+      └─ auth-tests ← child of auth-ui
 ```
 
-Each lane can become its own PR. Reviewers see small diffs instead of one giant branch.
+Each lane in the stack opens its own PR. Reviewers see small diffs, and each **child PR targets its parent's branch** — not `main` — so the diff shows only that slice's changes.
+
+## Why stack
+
+<CardGroup cols={3}>
+  <Card title="Smaller reviews" icon="file-magnifying-glass">
+    One reviewable PR per slice instead of a thousand-line branch nobody wants to read.
+  </Card>
+  <Card title="Build before landing" icon="layer-group">
+    Start feature B on top of feature A before A merges, without waiting or duplicating work.
+  </Card>
+  <Card title="Land in order" icon="list-ol">
+    Merge the base PR first, then each child in turn — ADE keeps the chain rebased as you go.
+  </Card>
+</CardGroup>
 
 ## Create a stack
 
 <Steps>
   <Step title="Create the base lane">
-    Start the first slice from `main` or your default branch.
+    Branch the first slice from `main` or your default branch like any other lane.
   </Step>
-  <Step title="Create a child lane">
-    Select the parent lane and choose **New child lane**.
+  <Step title="Add a child lane">
+    Select the parent lane and choose **New child lane**. Its branch is based on the parent's branch, so its diff starts from the parent's work.
   </Step>
-  <Step title="Repeat only when needed">
-    Keep stacks shallow. Two or three levels are much easier to review than six.
+  <Step title="Repeat only as needed">
+    Each new child stacks on the one above it. Keep stacks shallow — two or three levels are far easier to review than six.
   </Step>
 </Steps>
 
+<Note>
+A child only tracks its parent when the parent is a real (non-primary) lane. A lane parented to the primary lane compares against your default branch instead — which is why you create children off other working lanes, not off the repo root.
+</Note>
+
 ## Work with a stack
 
-- Open PRs from bottom to top.
-- Child PRs target their parent branch.
-- Merge the base PR first.
-- Rebase or retarget child PRs after the parent lands.
-- Use Graph when the stack gets hard to picture.
+- Open each lane's PR, bottom to top.
+- Child PRs automatically target their parent's branch.
+- Merge the base PR first, then walk up the stack.
+- When the parent advances, ADE keeps the children current (below).
+- Open the [graph](/tools/workspace-graph) when the stack gets hard to picture.
+
+<Frame caption="The worktree graph shows the stack, its PR links, and merge order at a glance.">
+  <img src="/media/features/worktrees/worktree-graph.webp" alt="A stack of child lanes in the worktree graph with PR links and merge order" />
+</Frame>
+
+## Rebase propagation when the parent moves
+
+When a parent lane's branch advances — new commits, or the base PR merges — its children are now behind. ADE notices and **suggests a rebase** on the affected child lanes, surfaced as an inline banner with **Rebase now**, **Snooze**, or **Hide**. Run it and ADE rebases the lane (and, by default, its descendants) onto the freshly advanced parent, in parent-to-child order so each child rebases onto an already-rebased parent.
+
+<Tip>
+Prefer not to click? Turn on **Settings → Lane Behavior → Auto-rebase child lanes** and ADE rebases children for you whenever a parent moves. If a rebase hits a conflict, the lane pauses and surfaces the conflicting files so you can resolve and continue.
+</Tip>
+
+You can also reorganize a stack after the fact: the manage dialog's stack section lets you pick a new parent lane (or override the base branch), and ADE rebases the lane onto the new base. It refuses moves that would create a cycle — you can't reparent a lane under one of its own descendants, and the primary lane can never become a child.
 
 ## When not to stack
 
-Do not stack unrelated work. If two tasks can merge independently, use two sibling lanes instead.
+Stack only genuinely dependent work. If two tasks can merge in either order, give them **sibling lanes** off your default branch instead — independent PRs are simpler to review and don't block each other. A stack is the right tool only when slice B literally builds on slice A's not-yet-merged changes.
 
 <CardGroup cols={2}>
-  <Card title="Stacked PR guide" icon="layer-group" href="/guides/stacked-prs">
-    Follow the end-to-end review flow.
+  <Card title="Stacked PRs guide" icon="code-pull-request" href="/guides/stacked-prs">
+    The end-to-end review and merge flow for a stack.
   </Card>
   <Card title="Workspace graph" icon="diagram-project" href="/tools/workspace-graph">
-    Visualize stack relationships.
+    See stack relationships, PR links, and merge order.
   </Card>
 </CardGroup>

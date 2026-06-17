@@ -1,63 +1,76 @@
 ---
-title: "Proof workflow"
-description: "Capture, review, and attach evidence to chats, lanes, PRs, Linear issues, and worker activity."
+title: "Review proof"
+description: "The capture → review → attach lifecycle: owners, review states, and good habits."
 icon: "camera"
 ---
 
-Proof is only useful when it is easy to review and tied to the work it supports.
+Proof is only useful when it's easy to review and tied to the work it supports. A screenshot without an owner is just a file; the same screenshot linked to a PR and chat explains what it proves. The lifecycle is short — capture, review, attach — and every artifact carries an owner and a review state.
 
-## Proof kinds
+## Where proof surfaces
 
-| Kind | Typical use |
-|------|-------------|
-| Screenshot | Confirm a UI state or visible result. |
-| Recording | Show a short flow or reproduction. |
-| Browser trace | Preserve structured browser diagnostics from a test tool. |
-| Console logs | Attach useful runtime or browser output. |
-| Verification note | Record what was checked and what passed. |
+Proof shows up in two places:
+
+- **Chat** — the proof drawer below the composer shows a thumbnail grid for the current session. Captions render in full under each thumbnail; click to preview at full size.
+- **Lane and PR review** — linked proof is surfaced alongside lane work and at PR closeout, where reviewers actually look.
 
 ## Owners
 
-A proof can be linked to more than one owner:
+A single proof can be linked to more than one owner. That link is what makes the artifact useful later, and adding an owner never drops the existing ones — provenance is preserved as evidence flows downstream.
 
-- Lane.
-- Chat session.
-- Pull request.
-- Linear issue.
-- Worker task or worker activity.
-
-That link is what makes the artifact useful later. A screenshot without an owner is just a file; a screenshot linked to a PR and chat explains what it proves.
+- **Chat session** — the conversation that produced it.
+- **Lane** — the worktree the work happened in.
+- **Pull request** — where reviewers actually look.
+- **Linear issue** — when Linear is connected; attached at closeout.
+- **Automation run** — when a dispatched agent or CTO worker captured it.
 
 ## Review states
 
+Every artifact moves through a small set of states so reviewers know what's been judged:
+
 | State | Meaning |
 |-------|---------|
-| Pending | Not reviewed yet. |
-| Accepted | Good evidence for the claim. |
-| Needs more | Useful but incomplete. |
-| Dismissed | Not relevant. |
+| **Pending** | Captured, not reviewed yet (the default). |
+| **Accepted** | Good evidence for the claim. |
+| **Needs more** | Useful but incomplete — capture again. |
+| **Dismissed** | Not relevant to the final result. |
+| **Published** | Promoted to a PR comment or Linear issue. |
 
-## Basic lifecycle
+Accept / request-more / dismiss are first-class controls on each proof in the drawer.
+
+## The lifecycle
 
 <Steps>
   <Step title="Capture">
-    Capture a screenshot, recording, trace, log, or verification note.
+    Capture a screenshot, recording, trace, log, or verification note from the relevant chat or lane.
   </Step>
   <Step title="Review">
-    Open the proof and decide whether it supports the work.
+    Open the proof and decide whether it supports the work — accept, request more, or dismiss.
   </Step>
   <Step title="Attach">
-    Link accepted proof to the PR, Linear issue, lane, chat, or worker activity.
+    Link accepted proof to the PR, Linear issue, lane, or chat. The same artifact can ride along to several owners at once.
   </Step>
   <Step title="Reference">
-    Use the proof during review so the result is inspectable.
+    Use the proof during review so the result is inspectable, not just asserted.
   </Step>
 </Steps>
 
 ## Good proof habits
 
-- Capture after the relevant change is visible.
-- Give the artifact a plain title.
-- Attach test output when the proof is about correctness.
-- Prefer one clear screenshot over a long unrelated recording.
-- Dismiss proof that no longer supports the final result.
+- Capture **after** the relevant change is visible, not during the work.
+- Write a caption that names the exact state being proven — "checkout succeeds, confirmation visible," not "screenshot 3."
+- Keep a set to three to eight captures a reviewer can read in one pass; avoid dumping a screenshot after every click.
+- Attach test output or a verification note when the proof is about correctness.
+- Dismiss proof that no longer supports the final result, so the record stays honest.
+
+<Tip>
+For a reviewer, the strongest PR pairs a visual proof with a short verification note: a screenshot of the result plus one line on what was checked and why it passed.
+</Tip>
+
+<CardGroup cols={2}>
+  <Card title="Proof overview" icon="camera" href="/computer-use/overview">
+    What proof is and why it matters.
+  </Card>
+  <Card title="Proof configuration" icon="sliders" href="/computer-use/config">
+    Storage, retention, and troubleshooting.
+  </Card>
+</CardGroup>

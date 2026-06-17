@@ -1,44 +1,81 @@
 ---
 title: "Workspace graph"
-description: "See lanes, branches, PRs, stacks, and merge risk in one visual map."
+description: "A visual map of your lanes, stacks, PRs, and merge risk — rendered on a live canvas."
 icon: "diagram-project"
 ---
 
-The Graph view turns your repository state into a map. Use it when the lane list is not enough and you need to see how work relates.
+The **Graph** tab turns your repository state into a spatial map. It projects the same lanes, conflicts, PRs, and git state the rest of the app uses onto a React Flow canvas — topology, stack structure, PR overlays, and pairwise merge risk — so you can see how work relates when the lane list isn't enough.
+
+<video autoPlay muted loop playsInline className="w-full aspect-video rounded-xl" src="/media/demos/graphsTab.mp4"></video>
 
 <CardGroup cols={3}>
   <Card title="Topology" icon="diagram-project">
-    See lanes, branches, PR links, and stack relationships.
+    Lanes laid out from the primary down, each child under its parent, with stack edges drawn between them.
   </Card>
   <Card title="Merge risk" icon="triangle-exclamation">
-    Spot branches that are likely to conflict before merge time.
+    Risk-colored edges and a pairwise matrix show which branches are likely to collide before merge time.
   </Card>
   <Card title="Navigation" icon="arrow-pointer">
-    Jump from the graph into a lane or PR.
+    Click into a lane, open an agent, or jump straight into a conflict's resolution panel.
   </Card>
 </CardGroup>
 
-## What appears on the graph
+## What the graph shows
 
-| Node | Meaning |
-|------|---------|
-| Lane | A registered ADE lane and its branch. |
-| PR | A GitHub pull request linked to a lane. |
-| Branch | A branch ADE can see but has not registered as a lane. |
+The canvas builds up in layers so it's usable before every overlay finishes loading: topology first, then risk, PR, and sync overlays stage in after the first paint.
 
-Edges show base-branch and stack relationships.
+<Frame caption="The workspace graph — lane topology, PR overlays, and merge risk.">
+  <img src="/media/features/worktrees/worktree-graph.webp" alt="The workspace graph showing lane topology, PR links, and merge risk" />
+</Frame>
 
-## When to use it
+Every lane is a node carrying its own state — role (primary, attached, worktree, or integration), conflict status, sync state, PR badge, and a live count of the agents running in it. Edges encode the relationships:
 
-- Before merging several active lanes.
-- When a stack gets hard to reason about.
-- When you need to know which work depends on another branch.
-- When an agent has created several lanes and you want the map.
+- **Stack edges** — parent-to-child links that read top to bottom.
+- **Risk edges** — colored by pairwise conflict risk between overlapping lanes.
+- **PR overlays** — per-lane badges and edge coloring derived from PR state.
+- **Integration proposal nodes** — merge-plan proposals with their source lanes chipped in.
+
+## View modes
+
+All four modes share the same primary-centric layout, so switching between them never rearranges the canvas.
+
+| Mode | What it emphasizes |
+|------|--------------------|
+| **Overview** | The stack tree. The risk "overlap web" is hidden by default — one click away. |
+| **Dependencies** | Parent-child stack edges; drag a node to reparent it. |
+| **Conflict Risk** | Risk edges always drawn between overlapping lanes, with the matrix for file-level detail. |
+| **Activity** | The same layout, with busy lanes sorted and sized up by recent activity. |
+
+## Interact with it
+
+<CardGroup cols={2}>
+  <Card title="Click an edge" icon="arrows-left-right-to-line">
+    Open the conflict panel: merge simulation outcome, the overlapping file list, and the AI proposal apply flow.
+  </Card>
+  <Card title="Right-click a lane" icon="arrow-pointer">
+    Reparent, archive, delete, create a child, view the diff, or open a terminal — straight from the node.
+  </Card>
+  <Card title="Collapse a subtree" icon="chevron-down">
+    Hide a lane's descendants; the parent shows how many are tucked away.
+  </Card>
+  <Card title="Filter and search" icon="filter">
+    Narrow by status, lane type, tags, or text; pan, zoom, and use the minimap to navigate large graphs.
+  </Card>
+</CardGroup>
 
 ## Merge simulation
 
-ADE can simulate merges and surface likely conflicts. Treat the result as a warning system, not a substitute for final CI and review. Re-run simulation after major commits.
+Clicking an edge runs a real merge simulation and surfaces likely conflicts inline, alongside the overlapping files and an AI resolution flow. Treat the result as a warning system, not a substitute for final CI and review — re-run it after major commits.
 
 <Tip>
-Graph is most useful late in a work session, when you are deciding merge order and cleanup.
+Graph is most useful late in a work session, when you're deciding merge order and cleanup across several lanes at once.
 </Tip>
+
+<CardGroup cols={2}>
+  <Card title="Conflicts" icon="code-merge" href="/tools/conflicts">
+    Predict, simulate, and resolve overlapping changes before they reach a PR.
+  </Card>
+  <Card title="Stack lanes" icon="layer-group" href="/lanes/stacks">
+    Build branch chains and reviewable stacks.
+  </Card>
+</CardGroup>

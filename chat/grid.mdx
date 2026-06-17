@@ -1,0 +1,52 @@
+---
+title: "Grid & multi-model"
+description: "Run several agents at once and compare their work side by side in grid view."
+icon: "grid-2"
+---
+
+Grid view tiles multiple chat sessions next to each other so you can run several agents in parallel — across lanes or against the same task — and watch them all at once.
+
+<video autoPlay muted loop playsInline className="w-full aspect-video rounded-xl" src="/media/demos/gridViewDemo.mp4"></video>
+
+## When to use the grid
+
+<CardGroup cols={3}>
+  <Card title="One task, many models" icon="layer-group">
+    Send the same prompt to Claude, Codex, and Cursor, then keep the best result.
+  </Card>
+  <Card title="Many tasks, one screen" icon="table-cells">
+    Tile one agent per lane and supervise a whole batch of parallel work.
+  </Card>
+  <Card title="Race a hard problem" icon="flag-checkered">
+    Let several agents attempt the same fix and compare diffs before committing.
+  </Card>
+</CardGroup>
+
+## Send one prompt to several models
+
+Compose a prompt once and launch it across the models you pick. Each runs in its own tile with its own transcript, diff, and approval gate.
+
+<Frame caption="Pick the models to run, then launch them together from one prompt.">
+  <img src="/media/features/agent-chat/multi-model-prompt.webp" alt="Compose a prompt for multiple models at once" />
+</Frame>
+
+<Frame caption="Every run lands in its own tile — compare side by side.">
+  <img src="/media/features/agent-chat/grid-view.webp" alt="Grid view with multiple agents" />
+</Frame>
+
+## Keep what works
+
+Each tile is a full chat. Open one to read the full transcript, inspect its diff in Files, or promote its work to a PR — and close the rest. Nothing is committed until you say so.
+
+<Tip>
+Grid view is most useful for narrow, well-specified tasks where comparing a few attempts is cheap. For broad, multi-step work, give each agent its own lane instead so they don't compete for the same files.
+</Tip>
+
+<CardGroup cols={2}>
+  <Card title="Agent chat" icon="comments" href="/chat/overview">
+    How a single lane-scoped chat works.
+  </Card>
+  <Card title="Multi-agent setup" icon="users-gear" href="/guides/multi-agent-setup">
+    Patterns for splitting work cleanly across agents.
+  </Card>
+</CardGroup>

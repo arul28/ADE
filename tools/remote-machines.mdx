@@ -1,0 +1,74 @@
+---
+title: "Remote machines"
+description: "Point ADE at a repository or dev stack that lives on another box over SSH, while the desktop stays your control plane."
+icon: "server"
+---
+
+A remote machine lets you drive a repository that lives somewhere else — a Linux dev box, a beefy build server, a cloud VM — without copying the code to your laptop. ADE connects over SSH and runs the agents, builds, and tests on that box. Your desktop app stays local and stays in charge: it is the control plane, the remote is the workspace.
+
+<video autoPlay muted loop playsInline className="w-full aspect-video rounded-xl" src="/media/demos/remoteConnect.mp4"></video>
+
+## When to use it
+
+<CardGroup cols={3}>
+  <Card title="Code that lives elsewhere" icon="server">
+    The repository and its dev stack are on another machine and you would rather not clone or sync it locally.
+  </Card>
+  <Card title="Heavier compute" icon="microchip">
+    Builds, tests, and agents run on a box with more cores, more RAM, or the right GPU.
+  </Card>
+  <Card title="The right environment" icon="boxes-stacked">
+    Services, databases, and toolchains are already set up on the remote and you want agents to run against them.
+  </Card>
+</CardGroup>
+
+## How it connects
+
+ADE adds the remote over SSH using the same connection details you already use from a shell. The desktop spawns a lightweight ADE bridge on the far side and tunnels its control protocol back over the SSH channel — so lanes, chats, diffs, and PRs all behave exactly as they do locally, just backed by the remote's filesystem and runtime.
+
+<Frame caption="Add a remote machine over SSH">
+  <img src="/media/features/remote/remote-connect.webp" alt="Adding a remote machine to ADE over SSH" />
+</Frame>
+
+<Steps>
+  <Step title="Add the machine">
+    Give ADE the SSH target for the remote box. ADE bootstraps its runtime there on first connect.
+  </Step>
+  <Step title="Pick a project">
+    Choose the repository on the remote you want to work in. It becomes a normal ADE project, backed by the remote filesystem.
+  </Step>
+  <Step title="Work as usual">
+    Create lanes, run agents, review diffs, and open PRs from the desktop. Everything executes on the remote.
+  </Step>
+</Steps>
+
+## The desktop still drives everything
+
+Connecting a remote does not move ADE off your Mac. The desktop app remains the control plane: you compose prompts, approve diffs, and merge PRs locally, while the agent processes, builds, and tests live on the remote. The remote's own GitHub, Linear, and provider credentials are used for work that happens there.
+
+<Note>
+`ade code` can attach to the same saved remote machines from a terminal — useful when you are already SSH'd somewhere and want the TUI instead of the desktop window. See [ade code](/tools/ade-code).
+</Note>
+
+<AccordionGroup>
+  <Accordion title="Attach to a remote from the terminal" icon="terminal">
+    `ade code remote` reads the same saved remote-machine registry as the desktop app:
+
+    ```bash
+    ade code remote --list-targets                       # list saved remote machines
+    ade code remote --target mac --project ADE           # attach to a remote project
+    ade code remote session --target mac --project ADE --session chat-1
+    ```
+
+    Run `ade code remote --help` to see every flag.
+  </Accordion>
+</AccordionGroup>
+
+<CardGroup cols={2}>
+  <Card title="ade code (terminal)" icon="rectangle-terminal" href="/tools/ade-code">
+    Drive ADE from a fast terminal UI, locally or over SSH.
+  </Card>
+  <Card title="Architecture" icon="sitemap" href="/architecture">
+    How the control plane, runtime, and clients fit together.
+  </Card>
+</CardGroup>

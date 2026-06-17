@@ -1,0 +1,71 @@
+---
+title: "ade code (terminal)"
+description: "ADE, terminal-native. The same lanes, chats, and PRs in a fast TUI you can drive over SSH."
+icon: "rectangle-terminal"
+---
+
+`ade code` is ADE in your terminal — the same lanes, chats, and PRs as the desktop app, rendered as a fast TUI. It attaches to the same machine, so a chat you start in the terminal shows up on the desktop and your phone, and vice versa. Start in the shell, finish anywhere.
+
+<video autoPlay muted loop playsInline className="w-full aspect-video rounded-xl" src="/media/demos/adecodeDemo.mp4"></video>
+
+## Launch it
+
+```bash
+ade code
+```
+
+That attaches to your machine's ADE runtime and opens the workspace. From there you get a lane and chat drawer, a chat pane, and a side pane for PR details, lane info, the model picker, and Linear status.
+
+<Frame caption="ade code — lanes and chats on the left, the live transcript in the center.">
+  <img src="/media/features/tui/ade-code.webp" alt="The ade code terminal UI" />
+</Frame>
+
+## What you can do
+
+<CardGroup cols={2}>
+  <Card title="Run agents" icon="robot">
+    Start and steer chats with any provider, watch tool calls stream, and approve diffs.
+  </Card>
+  <Card title="Manage lanes" icon="code-branch">
+    Create, switch, and inspect lanes without leaving the keyboard.
+  </Card>
+  <Card title="Ship PRs" icon="code-pull-request">
+    Commit, push, and open PRs with slash commands; check CI from the side pane.
+  </Card>
+  <Card title="Work over SSH" icon="server">
+    Run it on a remote box and drive ADE entirely from a terminal session.
+  </Card>
+</CardGroup>
+
+## Slash commands
+
+Most actions have a slash command. A few of the common ones:
+
+<AccordionGroup>
+  <Accordion title="Common slash commands" icon="terminal">
+    | Command | Does |
+    |---------|------|
+    | `/new lane` | Create a new lane |
+    | `/model` | Open the provider and model picker |
+    | `/commit` | Stage and commit the lane's changes |
+    | `/push` | Push the lane's branch |
+    | `/pr` | Open a pull request from the lane |
+    | `/linear` | Attach or update a Linear issue |
+    | `/info` | Show plan steps, token usage, and PR status |
+
+    Type `/` in the composer to see the full list for the current session.
+  </Accordion>
+</AccordionGroup>
+
+<Note>
+`ade code` is a client of the same runtime as the desktop app — it isn't a separate copy of your project. Both read and write the same lanes, transcripts, and PR state.
+</Note>
+
+<CardGroup cols={2}>
+  <Card title="Agent chat" icon="comments" href="/chat/overview">
+    How chats, providers, and tool calls work.
+  </Card>
+  <Card title="Remote machines" icon="server" href="/tools/remote-machines">
+    Point ADE at a repository that lives on another box.
+  </Card>
+</CardGroup>

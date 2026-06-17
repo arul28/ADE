@@ -1,39 +1,84 @@
 ---
 title: "Chat capabilities"
-description: "What ADE chat agents can do inside a lane or PR context."
+description: "The tools a chat agent can use inside a lane — read and edit files, run commands, drive Git, open PRs, and capture proof."
 icon: "toolbox"
 ---
 
-The exact tools depend on provider, permissions, and project setup, but most ADE chat sessions can do the following.
+A chat agent works like a teammate who has the lane checked out. ADE gives every agent a set of tools scoped to its role, so a regular lane chat can do real work — read and edit files, run commands, create lanes and PRs, pull in Linear context, and capture proof — without reaching the elevated control-plane tools reserved for the CTO.
+
+## Universal tools
+
+Every agent gets these, in every session.
 
 <CardGroup cols={2}>
-  <Card title="Read and edit files" icon="file-code">
-    Search the repo, inspect files, apply edits, and explain changes.
+  <Card title="Read files" icon="file-magnifying-glass">
+    Range-aware file reads, plus `grep` and `glob` search across the worktree. Always allowed, even in read-only plan mode.
+  </Card>
+  <Card title="Edit and write files" icon="file-pen">
+    Apply a single-file edit or create and replace a file. Each write produces a file-change event and a diff. Blocked in plan mode.
   </Card>
   <Card title="Run commands" icon="terminal">
-    Use the lane terminal for tests, builds, package managers, scripts, and local tools.
+    Run shell commands for tests, builds, package managers, and scripts. Emits command events with output and exit code. Blocked in plan mode and gated by your approval in edit mode.
   </Card>
-  <Card title="Use Git" icon="code-branch">
-    Check status, inspect diffs, stage files, commit, push, and manage branches.
+  <Card title="Search the web" icon="globe">
+    Fetch a URL or run a web search when the task needs outside information. Always allowed.
   </Card>
-  <Card title="Work with PRs" icon="code-pull-request">
-    Create PRs, update descriptions, read CI failures, respond to comments, and help resolve review feedback.
-  </Card>
-  <Card title="Use Linear" icon="layers">
-    Read linked issues, update issue context, and attach useful outcomes when Linear is connected.
-  </Card>
-  <Card title="Capture proof" icon="camera">
-    Attach screenshots, recordings, traces, logs, or verification notes to the work.
-  </Card>
-  <Card title="Handle images" icon="image">
-    Accept screenshots, mockups, and diagrams as message attachments.
+  <Card title="Track a task list" icon="list-check">
+    Maintain a session todo list so multi-step work stays visible in the transcript.
   </Card>
   <Card title="Ask for input" icon="circle-question">
-    Pause cleanly for a choice or clarification instead of guessing.
+    Pause cleanly and ask you for a choice or clarification instead of guessing. The composer locks until you answer.
   </Card>
 </CardGroup>
 
+## Workflow tools
+
+Chat agents also get the tools that turn a conversation into shipped work.
+
+<CardGroup cols={2}>
+  <Card title="Create a lane" icon="code-branch">
+    Branch a fresh git worktree for a new piece of work, optionally stacked on the current lane.
+  </Card>
+  <Card title="Open a PR" icon="code-pull-request">
+    Create a pull request from the lane's changes, with a generated title and body.
+  </Card>
+  <Card title="Resolve PR issues" icon="list-check">
+    When a chat is launched to fix a PR, it can refresh checks, re-run failed CI, reply to review threads, and resolve them.
+  </Card>
+  <Card title="Capture proof" icon="camera">
+    Screenshot the environment and file the result to the proof drawer (macOS), or attach an existing image with `ade proof attach`.
+  </Card>
+  <Card title="Report completion" icon="flag-checkered">
+    Persist a structured closeout — status, summary, artifacts, and any blocker — as a card in the transcript.
+  </Card>
+  <Card title="Attach Linear" icon="layer-group">
+    When Linear is connected, a chat can read a linked issue's context; attaching an issue links it back to the lane and the next PR body.
+  </Card>
+</CardGroup>
+
+<Note>
+The exact set depends on the session: writes and commands are gated by the permission mode, screenshot capture needs a supported platform, and Linear tools appear only when the integration is connected. The CTO additionally gets operator tools (spawning chats, managing workers, dispatching Linear) that regular chats never see.
+</Note>
+
+## See what an agent can reach
+
+Open the tools panel from the composer to see what a session has available and which actions need your approval before they run.
+
+<Frame caption="Open the tools the agent can use.">
+  <img src="/media/features/agent-chat/chat-tools-button.webp" alt="Open the tools an agent chat can use" />
+</Frame>
+
+## The right agent for the tool
+
+Capabilities are shared across providers, but the model still matters. Pick the provider and model that suits the task when you start the session — a fast model for a small fix, a stronger one for a gnarly refactor — and switch within the same family mid-session.
+
+<Frame caption="Pick the agent and model that fits the work.">
+  <img src="/media/landing/showcase/agent-chat-model-picker.webp" alt="Provider and model picker for an agent chat" />
+</Frame>
+
 ## Good chat requests
+
+Specific, verifiable asks get better results than open-ended cleanup.
 
 ```text
 Find why the billing test fails and fix the smallest underlying bug.
@@ -49,4 +94,13 @@ Read the auth module and explain where the redirect state is stored.
 
 ## Review before trusting
 
-Agent chat is powerful because it can change real files. Treat the result like any human contribution: inspect the diff, run relevant checks, and read the final summary.
+Agent chat is powerful because it changes real files. Treat the result like any contribution: inspect the diff in **Files**, run the relevant checks, and read the closeout summary before you commit or merge.
+
+<CardGroup cols={2}>
+  <Card title="Context and artifacts" icon="database" href="/chat/context">
+    What's in context, and how to keep a session focused.
+  </Card>
+  <Card title="Files & diffs" icon="file-code" href="/tools/files-editor">
+    Read, stage, and resolve the changes an agent makes.
+  </Card>
+</CardGroup>

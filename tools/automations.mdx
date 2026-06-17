@@ -1,0 +1,117 @@
+---
+title: "Automations"
+description: "Rule-based background workflows: a trigger fires, an agent session or built-in action runs, and guardrails gate anything that publishes externally."
+icon: "robot"
+---
+
+**Automations** are rule-based background workflows. Each rule pairs a **trigger** — a schedule, an event, or a webhook — with an **execution surface**, then runs either a scoped AI chat session or a sequence of deterministic built-in actions. **Guardrails** gate anything that would publish externally, so a low-confidence or unreviewed run never writes to GitHub, Linear, or the web on its own.
+
+Automations sit between the CTO (heavy, stateful, chat-driven) and raw cron (deterministic, no AI). They're for the repeatable background work you'd otherwise do by hand — a nightly audit, a review on every PR, a summary when a chat ends.
+
+<Note>
+The **Automations** tab is rolling out. In production builds it currently shows a **"Soon"** badge while the surface lands — the rule engine and run history described here are how it works once enabled.
+</Note>
+
+## Anatomy of a rule
+
+<CardGroup cols={2}>
+  <Card title="Trigger" icon="bolt">
+    What starts the rule — a cron schedule, an action event, or an inbound webhook.
+  </Card>
+  <Card title="Execution surface" icon="play">
+    Either an `agent-session` (a scoped AI chat) or `built-in` (deterministic ADE actions).
+  </Card>
+  <Card title="Guardrails" icon="shield-halved">
+    Confidence threshold, duration cap, human review, and path/lane allowlists.
+  </Card>
+  <Card title="Output" icon="paper-plane">
+    Where results go — a comment, a follow-up lane or task, a draft PR, or evidence only.
+  </Card>
+</CardGroup>
+
+## Triggers
+
+A rule fires from one of three broad classes of trigger.
+
+<Tabs>
+  <Tab title="Time-based">
+    A 5-field cron schedule (minute, hour, day-of-month, month, day-of-week). Seconds aren't supported. The editor previews the next fire time.
+
+    ```text
+    0 9 * * 1-5   # weekdays at 09:00
+    ```
+  </Tab>
+  <Tab title="Action events">
+    Git and lifecycle events: `git.commit`, `git.push`, `lane.created`, `lane.archived`, `file.change`, `session-end`, and `manual`. GitHub events cover PR and issue lifecycle (`github.pr_opened`, `github.pr_merged`, `github.issue_opened`, `github.issue_labeled`, and more), with filters for labels, authors, target branch, repo, and title/body regex.
+  </Tab>
+  <Tab title="Webhooks & Linear">
+    Inbound `webhook` and signed `github-webhook` events, plus `linear.*` events consumed as context. GitHub events arrive over a real webhook, a relay, or direct polling — matching is identical regardless of source.
+  </Tab>
+</Tabs>
+
+<Note>
+Linear triggers here are **context only**. The CTO owns Linear issue intake and routing — automations react to Linear events for their own work but never duplicate that pipeline. See [Linear](/integrations/linear).
+</Note>
+
+## Execution surfaces
+
+Choosing the surface is the key decision — it sets how much orchestration a rule carries.
+
+<CardGroup cols={2}>
+  <Card title="agent-session" icon="comments">
+    A scoped AI chat thread with the rule's prompt and allowed tools. Best for reviews, audits, and short summaries. Appears in run history as a thread.
+  </Card>
+  <Card title="built-in" icon="list-check">
+    A sequence of deterministic ADE actions — create a lane, run a command, run tests, predict conflicts, or dispatch an allowlisted ADE action. No AI in the loop; sandboxed to the target lane's worktree.
+  </Card>
+</CardGroup>
+
+<Tip>
+Built-in actions are deterministic by design — they shouldn't wrap an AI call. When a step needs reasoning, use an `agent-session` (a built-in chain can embed one as a step).
+</Tip>
+
+## Guardrails
+
+Automations publish effects — comments, PRs, Linear updates, webhooks. Guardrails decide whether a run is allowed to publish, or whether it parks in a review queue first.
+
+| Guardrail | What it does |
+|-----------|--------------|
+| Confidence threshold | A run below the threshold (baseline ~0.65) lands in review instead of publishing. |
+| Duration cap | Runs that exceed `maxDurationMin` (baseline 10 min) are cancelled. |
+| Require human | Force human review regardless of confidence. |
+| Verify before publish | The run must pass a verification step — or a reviewer's approval — before external effects apply. |
+| Path / lane allowlists | Built-in shell and file actions are sandboxed to specific lane worktrees or subpaths. |
+
+Each rule also carries a **review profile** (quick, incremental, full, security, release-risk, cross-repo-contract) that sets the base confidence — `security` and `release-risk` start higher than `quick`.
+
+<Note>
+Runs that need a human land in a queue with statuses like **pending review**, **verification required**, and **completed clean**. The dashboard shows a severity summary so you can triage without opening every run.
+</Note>
+
+### Secrets and scope
+
+<CardGroup cols={2}>
+  <Card title="Env-ref secrets only" icon="key">
+    Webhook secrets and access tokens must be `${env:VAR_NAME}` references — raw secret values are rejected and resolved at run time.
+  </Card>
+  <Card title="Sandboxed actions" icon="lock">
+    Built-in shell actions stay inside the allowed workdirs; paths that escape the lane worktree or project root are rejected.
+  </Card>
+</CardGroup>
+
+## Authoring a rule
+
+You can write a rule from a free-text brief — a planner turns the brief into a draft rule (triggers plus actions) that you review before saving — or build it directly in the rule editor by picking a trigger, an execution surface, and guardrails. Templates seed a new draft to start from.
+
+<Tip>
+Use the **simulate** path to dry-run a rule against a synthetic trigger before enabling it — it lists exactly which actions would fire, with nothing published.
+</Tip>
+
+<CardGroup cols={2}>
+  <Card title="CTO overview" icon="crown" href="/cto/overview">
+    The persistent operator that owns Linear intake and worker delegation.
+  </Card>
+  <Card title="Linear" icon="layers" href="/integrations/linear">
+    Why Linear routing lives with the CTO, not automations.
+  </Card>
+</CardGroup>

@@ -1,50 +1,71 @@
 ---
 title: "Install ADE"
-description: "Download the macOS app, move it to Applications, and launch it."
+description: "Download ADE for macOS — DMG or Homebrew — launch it, and run in guest mode with no account."
 icon: "download"
 ---
+
+ADE is a native macOS app. Download it, drag it to Applications, and launch — no account required. You can be in a project in under a minute.
+
+<Frame caption="Add your first repository from the welcome screen">
+  <img src="/media/features/project/add-project-button.webp" alt="Add your first repository from the ADE welcome screen" />
+</Frame>
 
 ## Requirements
 
 <CardGroup cols={3}>
-  <Card title="macOS" icon="apple">
-    ADE ships as a macOS desktop app for Apple Silicon and Intel Macs.
+  <Card title="macOS 13+" icon="apple">
+    Apple Silicon or Intel. ADE ships as a signed, notarized macOS app.
   </Card>
   <Card title="Git" icon="git-alt">
-    Required. ADE uses branches and worktrees for lanes.
+    Required — ADE uses branches and worktrees to run lanes.
   </Card>
   <Card title="One AI provider" icon="key">
-    Needed for agent work. You can connect it after launch.
+    Needed to run agents. Connect it after launch — guest mode lets you explore first.
   </Card>
 </CardGroup>
 
 ## Install
 
-<Steps>
-  <Step title="Download the DMG">
-    Open [GitHub Releases](https://github.com/arul28/ADE/releases) and download the latest ADE macOS release.
-  </Step>
-  <Step title="Move ADE into Applications">
-    Open the DMG and drag **ADE.app** into `/Applications`.
-  </Step>
-  <Step title="Launch ADE">
-    Open ADE from `/Applications` or Spotlight. If macOS asks for confirmation, choose **Open**.
-  </Step>
-</Steps>
+The fastest path is Homebrew. Prefer a download? Grab the DMG from GitHub Releases.
+
+<AccordionGroup>
+  <Accordion title="Homebrew (recommended)" icon="terminal">
+    ```bash
+    brew install --cask arul28/ade/ade
+    ```
+
+    This taps the ADE cask and installs the latest macOS build into `/Applications`. Update later with:
+
+    ```bash
+    brew upgrade --cask ade
+    ```
+  </Accordion>
+  <Accordion title="Download the DMG" icon="download">
+    1. Open [GitHub Releases](https://github.com/arul28/ADE/releases/latest) and download the latest ADE macOS `.dmg`.
+    2. Open the DMG and drag **ADE.app** into `/Applications`.
+    3. Launch ADE from `/Applications` or Spotlight. If macOS asks for confirmation, choose **Open**.
+  </Accordion>
+</AccordionGroup>
+
+## Launch and explore
+
+Open ADE and you land on the welcome screen. ADE starts in **guest mode** — no sign-up, no account — so you can add a repository and look around right away. Connect a provider whenever you're ready to run agents.
 
 <Note>
-ADE stores project state inside each repository's `.ade/` directory and app preferences under your user Library. It does not require admin privileges.
+ADE keeps itself current with a built-in auto-updater: it downloads new releases in the background and applies them on relaunch. Installed via Homebrew? Run `brew upgrade --cask ade` instead.
 </Note>
 
-## First launch
+<Info>
+ADE is macOS-only today. A Windows build is paused — releases ship for macOS.
+</Info>
 
-After the app opens, continue with:
+## Next
 
 <CardGroup cols={2}>
   <Card title="Connect a provider" icon="key" href="/getting-started/connect-provider">
-    Verify Claude, Codex, Cursor, OpenCode, or another supported provider.
+    Add Claude Code, Codex, Cursor, Factory Droid, or OpenCode.
   </Card>
   <Card title="Open a project" icon="folder-open" href="/getting-started/open-project">
-    Choose the Git repository you want ADE to manage.
+    Point ADE at the Git repository you want it to manage.
   </Card>
 </CardGroup>

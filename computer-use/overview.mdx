@@ -1,52 +1,74 @@
 ---
 title: "Proof"
-description: "Capture screenshots, recordings, traces, logs, and verification notes as evidence for agent work."
+description: "Capture screenshots, recordings, browser traces, console logs, and verification notes as evidence for agent work — linked to the chat, lane, PR, or Linear issue they belong to."
 icon: "camera"
 ---
 
-Proof is ADE's evidence system. It lets an agent or human attach concrete verification to a chat, lane, PR, Linear issue, or worker task.
+**Proof** in ADE is *intentional* evidence — a screenshot, recording, browser trace, console log, or verification note — captured at the moment a result is visible to show that a change actually does what it claims. Agents often say they tested something; proof makes that claim inspectable, and ties it to the work it belongs to.
+
+Nothing watches your agent and files screenshots for it. When the agent (or you) reaches a checkpoint worth showing — a login succeeds, a form submits, an error reproduces, a test passes — proof is captured on purpose and normalized into one canonical artifact model that a reviewer can skim in under a minute.
+
+<CardGroup cols={3}>
+  <Card title="Evidence, not chatter" icon="camera">
+    Concrete artifacts a reviewer can open, instead of a claim buried in a transcript.
+  </Card>
+  <Card title="Tied to the work" icon="link">
+    Every proof links to a chat, lane, PR, or Linear issue — and can link to several at once.
+  </Card>
+  <Card title="Intentional capture" icon="hand-pointer">
+    Captures are deliberate. There's no auto-observer; the agent or you decide a moment deserves evidence.
+  </Card>
+</CardGroup>
 
 ## Proof kinds
 
+ADE normalizes every capture into one of five canonical kinds, whatever tool produced it.
+
 | Kind | Use it for |
 |------|------------|
-| Screenshot | Show the visible state of an app or browser. |
-| Recording | Capture a short interaction or repro. |
-| Browser trace | Preserve browser steps and diagnostics. |
-| Console logs | Attach useful runtime output. |
-| Verification note | Record what was checked and why it passed. |
+| **Screenshot** | Show the visible state of an app or browser. |
+| **Recording** | Capture a short interaction or repro. |
+| **Browser trace** | Preserve browser steps and diagnostics from a test tool. |
+| **Console logs** | Attach useful runtime or browser output. |
+| **Verification note** | Record what was checked and why it passed. |
 
-## Why proof matters
+<Frame caption="Capture exactly what the agent sees — the same view a reviewer needs.">
+  <img src="/media/features/browser/browser-inspect.webp" alt="Inspecting a page in ADE's browser pane" />
+</Frame>
 
-Agents often say they tested something. Proof makes that claim inspectable. A PR with a screenshot, a test log, and a short summary is easier to review than a PR with only a chat transcript.
+## What proof attaches to
 
-## Where proof appears
+Every artifact carries at least one owner. A single artifact can link to more than one, so it surfaces wherever the work is reviewed — and evidence can flow from an exploratory chat to a PR comment without losing provenance.
 
-- Chat artifact panels.
-- Lane and History records.
-- PR detail views.
-- Linear issue updates when connected.
-- Worker activity when a worker captures it.
+- **Chat** — the proof drawer below the composer in the session that produced it.
+- **Lane** — alongside the worktree's diff and review.
+- **PR** — surfaced at pull request closeout, where reviewers look.
+- **Linear issue** — attached to the issue when Linear is connected.
+- **Automation run** — captured as part of a dispatched agent or worker run.
 
-## Basic flow
+## Where it fits
 
 <Steps>
-  <Step title="Capture">
-    Use the proof controls or ask the agent to capture evidence for a completed step.
+  <Step title="An agent reaches a checkpoint">
+    A UI change renders, a flow completes, a test passes, an error reproduces.
   </Step>
-  <Step title="Review">
-    Open the artifact and confirm it shows the right thing.
+  <Step title="Proof is captured">
+    The agent or you capture a screenshot, recording, trace, log, or note with a short caption.
   </Step>
-  <Step title="Attach">
-    Link it to the PR, Linear issue, chat, or lane that needs the evidence.
+  <Step title="A reviewer sees it">
+    The artifact rides along with the chat, lane, PR, or issue — so the result is verifiable, not just asserted.
   </Step>
 </Steps>
 
+<Tip>
+Capture proof at the moment the result is visible, and write captions like a teammate is reading them. A good proof set is three to eight captures with captions a reviewer can read in one pass — not a screenshot after every click.
+</Tip>
+
 <CardGroup cols={2}>
-  <Card title="Proof workflow" icon="camera" href="/computer-use/proofs">
-    More detail on ownership and publishing.
+  <Card title="Capture proof" icon="terminal" href="/computer-use/setup">
+    Prerequisites and the `ade proof` capture commands.
   </Card>
-  <Card title="Proof setup" icon="terminal" href="/computer-use/setup">
-    Capture prerequisites and CLI usage.
+  <Card title="Review proof" icon="camera" href="/computer-use/proofs">
+    The capture, review, and attach lifecycle in detail.
   </Card>
 </CardGroup>

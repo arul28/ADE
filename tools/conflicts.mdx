@@ -1,54 +1,89 @@
 ---
 title: "Conflicts"
-description: "Find likely merge conflicts between lanes before they block a PR."
-icon: "triangle-exclamation"
+description: "Predict, simulate, and resolve merge conflicts between lanes before they ever block a merge."
+icon: "code-merge"
 ---
 
-ADE helps you see conflict risk while work is still in progress. It compares active lanes and shows where two branches are likely to collide.
+ADE surfaces integration risk before it becomes a merge-time emergency. A single engine predicts conflicts, computes pairwise risk, runs pre-flight merge simulations, and drives AI-assisted resolution — so you can reorder, rebase, or fix a collision while work is still in progress.
 
-## Where conflicts appear
+There's no standalone "Conflicts" tab; the signal is projected into the surfaces where it matters: lane status badges, the **Graph** risk matrix, and the **PRs** rebase and integration views.
 
-- Lane status badges.
-- Workspace Graph edges.
-- PR detail views.
-- The Conflicts page.
+## Pre-flight detection
 
-## How to use conflict signals
+ADE compares your active lanes — against each other and against their base — by running `git merge-tree` on the host that owns the worktrees. It predicts whether a merge or rebase *would* conflict without actually performing one, then caches the result and surfaces it as a status.
 
-<Steps>
-  <Step title="Notice the warning">
-    A lane, graph edge, or PR shows conflict risk.
-  </Step>
-  <Step title="Open the details">
-    Review the lanes, files, and summary of the overlap.
-  </Step>
-  <Step title="Decide the merge order">
-    Sometimes the easiest fix is to land one branch first and rebase the other.
-  </Step>
-  <Step title="Resolve if needed">
-    Use Files, Git, or an agent-assisted pass to resolve the conflict.
-  </Step>
-  <Step title="Re-run checks">
-    Run tests and recheck PR state after the conflict is gone.
-  </Step>
-</Steps>
+| Status | Meaning |
+|--------|---------|
+| **Merge-ready** | A base prediction exists, no predicted conflicts, and the lane isn't behind. |
+| **Behind base** | No conflicts, but the lane is behind its base and should rebase. |
+| **Conflict predicted** | A dry merge predicts conflicts with the base or a peer lane. |
+| **Conflict active** | A real merge or rebase is in progress and has produced actual conflicts. |
+
+<Note>
+Predictions older than five minutes are marked **stale** and shown with a clock indicator rather than silently refetched — the UI annotates them, and clicking re-runs the prediction for that pair.
+</Note>
 
 ## Risk levels
 
+For each lane pair, ADE derives a risk level from how many files overlap and whether a real conflict is predicted.
+
 | Level | Meaning |
 |-------|---------|
-| Low | Some overlap, but likely easy to merge. |
-| Medium | Shared files or nearby changes need review. |
-| High | Merge is likely to block or require manual resolution. |
+| **None** | No overlapping files. |
+| **Low** | A small overlap — likely an easy merge. |
+| **Medium** | Several shared files; review before merging. |
+| **High** | Marker-level conflicts predicted, or heavy overlap — expect manual resolution. |
+
+The project-wide **risk matrix** in the Graph tab renders every pair at once, animating cells as risk levels change between prediction sweeps. Hover a cell for the overlapping file list; click an edge to open merge simulation and resolution.
+
+## Live merge simulation
+
+From a Graph edge or a lane's merge panel, you can run a one-shot **merge simulation** between two lanes (or a lane and its base). ADE computes the merge base, runs `git merge-tree`, and returns one of:
+
+- **Clean** — no conflicts; the merged file list and diff stat.
+- **Conflict** — the conflicting files, each with rendered conflict-marker previews.
+- **Error** — a bad ref or corrupt index, surfaced rather than assumed clean.
+
+This is the same primitive that backs the PR merge-readiness check and integration (merge-plan) proposals, so the simulation you see in Graph matches what the PRs tab predicts.
+
+## Rebase when a lane drifts
+
+When a lane falls behind its base, a rebase pulls it forward and is usually the cleanest way to clear a predicted conflict before it reaches a PR. ADE resolves the right comparison ref for you — a queue's tracking branch if the lane is in a merge queue, the parent branch for a stacked lane, or `origin/<base>` otherwise.
+
+<Frame caption="Rebase options when a lane drifts from its base.">
+  <img src="/media/features/pull-requests/rebase-options.webp" alt="Rebase options for a lane that drifted from its base" />
+</Frame>
+
+## AI-assisted resolution
+
+When a conflict needs more than a reorder, ADE can resolve it for you in two ways:
+
+<CardGroup cols={2}>
+  <Card title="Proposal flow" icon="wand-magic-sparkles">
+    ADE builds a bounded context for the specific conflict, asks a model for a patch, and lets you apply it unstaged, staged, or as a commit — with one-click undo. If required file context is incomplete, it refuses to guess and tells you why.
+  </Card>
+  <Card title="External CLI resolver" icon="terminal">
+    For bigger merges, ADE spawns a Codex or Claude CLI session in the lane's worktree (or a dedicated integration lane), captures the changes, and commits them as an explicit, reviewable step.
+  </Card>
+</CardGroup>
 
 ## Prevention
 
-- Keep lanes narrow.
+- Keep lanes narrow so they touch fewer shared files.
 - Stack related changes instead of editing the same area from unrelated lanes.
 - Rebase long-running lanes regularly.
-- Use Graph before merging several PRs.
+- Check Graph before merging several PRs at once.
 - Ask an agent to explain a conflict before asking it to fix one.
 
 <Warning>
 Conflict prediction is a warning system. Always verify with Git, tests, and PR checks before merging.
 </Warning>
+
+<CardGroup cols={2}>
+  <Card title="Graph" icon="diagram-project" href="/tools/workspace-graph">
+    See lane topology, stack order, and the risk matrix at a glance.
+  </Card>
+  <Card title="Pull requests" icon="code-pull-request" href="/tools/pull-requests">
+    Review CI, comments, and merge readiness for each PR.
+  </Card>
+</CardGroup>

@@ -1,144 +1,78 @@
 ---
-title: "Windsurf & OpenCode"
-description: "Launch Windsurf from ADE for editor sessions, or run OpenCode as a local AI backend directly inside ADE."
+title: "OpenCode & Windsurf"
+description: "Run OpenCode as a managed agent provider inside ADE — and keep using Windsurf as your editor on the same worktrees."
 icon: "water"
 ---
 
-## OpenCode Integration
+This page covers two things: **OpenCode**, one of ADE's five agent providers, and how to keep using **Windsurf** as your editor next to ADE.
 
-[OpenCode](https://opencode.ai) runs as a local server process and exposes an OpenAI-compatible endpoint. ADE manages the OpenCode process lifecycle — starting, stopping, and monitoring it — and routes chat and worker run requests through it like any other provider.
+## OpenCode as a provider
 
-### How it works
-
-ADE's OpenCode integration has three layers:
-- **Binary manager** — downloads and verifies the OpenCode binary, checks for updates
-- **Server manager** — starts and monitors the OpenCode process, detects crashes, and restarts automatically
-- **Runtime** — handles session lifecycle, model discovery, and event routing
+[OpenCode](https://opencode.ai) is one of ADE's five agents, alongside Claude Code, Codex, Cursor, and Factory Droid. ADE runs it as a local server and routes chat and worker turns through it like any other provider. OpenCode gives you the broadest model reach — back it with a provider API key, OpenRouter, or a local model (Ollama, LM Studio, vLLM).
 
 ### Setup
 
 <Steps>
-  <Step title="Open Settings → AI Providers">
-    Navigate to **Settings → AI Providers → OpenCode**.
-  </Step>
-  <Step title="Enable OpenCode">
-    Toggle OpenCode on. ADE downloads the binary if it is not already present and starts the local server.
+  <Step title="Open Settings → AI → OpenCode">
+    Turn OpenCode on. ADE downloads the binary if needed and starts the local server.
   </Step>
   <Step title="Configure the backend">
-    OpenCode supports three backend modes:
-
     | Mode | Config |
     |------|--------|
-    | **API key** | Provide an Anthropic or OpenAI key — OpenCode calls the provider directly |
-    | **OpenRouter** | Provide an OpenRouter key for access to any model |
-    | **Local** | No key — use Ollama or another local OpenAI-compatible endpoint |
+    | **API key** | An Anthropic, OpenAI, Google, or other supported key — OpenCode calls the provider directly. |
+    | **OpenRouter** | An OpenRouter key for broad model access. |
+    | **Local** | No key — point at Ollama, LM Studio, or another local endpoint. |
   </Step>
-  <Step title="Select OpenCode in chat">
-    OpenCode models appear in the model selector alongside Claude, Codex, and Cursor. Choose any discovered model to route that session through OpenCode.
+  <Step title="Pick OpenCode in chat">
+    OpenCode models appear in the model picker alongside the other agents. Choose one to route that session through OpenCode.
+  </Step>
+</Steps>
+
+<AccordionGroup>
+  <Accordion title="How ADE manages OpenCode" icon="gear">
+    ADE owns the full lifecycle:
+    - **Binary manager** — downloads and verifies the OpenCode binary and checks for updates.
+    - **Server manager** — starts and monitors the local server process, detects crashes, and restarts it.
+    - **Runtime** — handles session lifecycle, model discovery, and event routing into ADE's chat model.
+  </Accordion>
+  <Accordion title="Permission modes" icon="shield-halved">
+    OpenCode uses its own permission modes:
+
+    | Mode | Behavior |
+    |------|----------|
+    | `plan` | Read-only. |
+    | `edit` | Read and write allowed; bash commands are gated. |
+    | `full-auto` | Proceeds without asking. |
+
+    See [Permissions](/configuration/permissions) for how modes map across providers.
+  </Accordion>
+</AccordionGroup>
+
+## Using Windsurf alongside ADE
+
+ADE doesn't run [Windsurf](https://windsurf.com) as an agent provider — ADE's five agents are Claude Code, Codex, Cursor, Factory Droid, and OpenCode. But you can still use Windsurf as your editor on the same code, because a lane is just a git worktree on disk.
+
+<Steps>
+  <Step title="Find the lane's worktree path">
+    Open the lane in ADE; its worktree path is shown in the lane detail header (under `.ade/worktrees/`).
+  </Step>
+  <Step title="Open that folder in Windsurf">
+    Open the worktree directory in Windsurf the way you normally open any project — from Windsurf, or with `windsurf <path>` if its CLI is on your `PATH`.
+  </Step>
+  <Step title="Edit, and ADE keeps up">
+    ADE watches the worktree, so edits you save in Windsurf show up in the lane's diff, Files view, and Git status in real time. Use Windsurf's own AI features in the editor; ADE doesn't route requests through Windsurf.
   </Step>
 </Steps>
 
 <Note>
-OpenCode and Windsurf use different approaches: OpenCode integrates as a managed backend inside ADE, while Windsurf is an external editor you launch from ADE. You can use both independently.
+Edit inside the **lane's worktree** (`.ade/worktrees/<lane>/…`), not the primary checkout — otherwise your changes won't land in that lane's diff.
 </Note>
 
----
-
-## Windsurf Editor Integration
-
-ADE can launch [Windsurf](https://codeium.com/windsurf) (by Codeium) as an external editor for any lane. When you open Windsurf through ADE, the session is tracked in the lane's history, the correct worktree directory is opened, and any file changes you make in Windsurf appear in the lane's diff view as soon as they are saved.
-
-This is a one-way integration — ADE launches Windsurf and tracks the session, but does not route AI agent requests through Windsurf or manage Windsurf's internal AI features. You use Windsurf's built-in AI capabilities directly within the Windsurf editor.
-
----
-
-## Requirements
-
-| Requirement | Details |
-|------------|---------|
-| **Windsurf installed** | The Windsurf desktop app must be installed on your machine |
-| **CLI available** | The `windsurf` command must be available in your PATH. Windsurf typically adds this during installation. Verify with `which windsurf` in a terminal. |
-
----
-
-## Launching Windsurf from ADE
-
-<Steps>
-  <Step title="Select a lane">
-    Navigate to the lane you want to work in. Windsurf will open the lane's worktree directory — not the primary checkout.
-  </Step>
-  <Step title="Open the Run tab or Project Home">
-    Click the **Run** tab in the lane's toolbar, or open **Project Home** from the sidebar.
-  </Step>
-  <Step title="Click the Windsurf launcher">
-    If Windsurf is detected or configured, a **Windsurf** button appears alongside other external tool launchers (Cursor, VS Code, Claude Code, etc.). Click it.
-  </Step>
-  <Step title="Windsurf opens">
-    ADE launches Windsurf pointed at the lane's worktree path. The session is registered in ADE's history system.
-  </Step>
-</Steps>
-
----
-
-## What ADE Tracks
-
-When you launch Windsurf through ADE:
-
-- **Session registration** — the launch is recorded as a managed session in the lane, visible in the History view
-- **File change detection** — ADE watches the lane's worktree for filesystem changes. Edits made in Windsurf appear in the lane's diff view in real time.
-- **Environment inheritance** — Windsurf inherits the lane's environment variable overlays and port assignments
-
-ADE does not monitor Windsurf's internal AI usage, chat history, or token consumption. Those are managed entirely within Windsurf.
-
----
-
-## Configuring a Custom Launcher
-
-If Windsurf does not appear in the Run tab by default, you can add it as a custom CLI launcher:
-
-<Steps>
-  <Step title="Open Settings">
-    Navigate to **Settings > Project Home > Custom CLI Launchers**.
-  </Step>
-  <Step title="Add a new launcher">
-    Click **Add Launcher** and configure:
-    - **Name:** `Windsurf`
-    - **Command:** `windsurf` (or the full path to the Windsurf executable if it is not in PATH)
-    - **Arguments:** `{worktreePath}` — ADE substitutes the lane's worktree directory at launch time
-  </Step>
-  <Step title="Save and verify">
-    Save the launcher. It now appears in the Run tab for all lanes.
-  </Step>
-</Steps>
-
----
-
-## Windsurf vs. Cursor vs. Claude Code
-
-ADE supports multiple external AI tools. Here is how Windsurf compares:
-
-| Capability | Windsurf | Cursor | Claude Code |
-|-----------|----------|--------|-------------|
-| **Launch from ADE** | Yes | Yes | Yes |
-| **Session tracking** | Yes | Yes | Yes |
-| **Agent provider in ADE chat** | No | Yes (via SDK) | Yes (via CLI) |
-| **ADE CLI access** | No | Yes | Yes |
-| **Model routing through ADE** | No | Yes | Yes |
-
-Windsurf is a good choice when you want to use Codeium's AI features directly in the editor while keeping the session tracked in ADE. For deeper integration where ADE manages the AI agent lifecycle, use Cursor (via SDK) or Claude Code (via CLI).
-
----
-
-## Troubleshooting
-
-<AccordionGroup>
-  <Accordion title="Windsurf launcher does not appear" icon="circle-question">
-    ADE may not detect Windsurf automatically. Add it as a custom CLI launcher in **Settings > Project Home > Custom CLI Launchers** using the `windsurf` command.
-  </Accordion>
-  <Accordion title="Windsurf opens the wrong directory" icon="folder">
-    Verify you selected the correct lane before launching. If Windsurf opens the primary checkout instead of the lane worktree, check that the lane was created as a Worktree Lane (not the primary lane).
-  </Accordion>
-  <Accordion title="File changes not appearing in ADE" icon="file">
-    ADE watches the lane's worktree for filesystem changes. If changes are not appearing, check that you are editing files inside the lane's worktree path (visible in the lane detail header), not in a different directory.
-  </Accordion>
-</AccordionGroup>
+<CardGroup cols={2}>
+  <Card title="AI providers" icon="brain" href="/configuration/ai-providers">
+    Connect each agent and set defaults.
+  </Card>
+  <Card title="Agent chat" icon="comments" href="/chat/overview">
+    Run OpenCode in a lane and compare it with other providers.
+  </Card>
+</CardGroup>

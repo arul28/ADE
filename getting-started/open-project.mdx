@@ -1,10 +1,14 @@
 ---
 title: "Open your first project"
-description: "Point ADE at a Git repository and let it create local project state."
+description: "Point ADE at a Git repository — open a local folder or clone from GitHub — and let it create local project state."
 icon: "folder-open"
 ---
 
-Use **Open Repository** on the welcome screen or press `Cmd+O`. Choose the root of a Git repository. If you choose a subfolder, ADE tries to find the repository root automatically.
+Use **Open Repository** on the welcome screen or press `Cmd+O`. Choose the root of a Git repository, or clone one straight from GitHub. If you pick a subfolder, ADE finds the repository root automatically.
+
+<Frame caption="Open a repository or clone from GitHub">
+  <img src="/media/features/project/add-project-options.webp" alt="Open a local repository or clone from GitHub" />
+</Frame>
 
 ## What ADE creates
 
@@ -19,7 +23,9 @@ On first open, ADE creates a local `.ade/` directory:
   secrets/
 ```
 
-This directory contains local runtime state, lane worktrees, transcripts, proof, and credentials. It should normally be gitignored.
+This holds local runtime state, lane worktrees, transcripts, proof, and credentials. It should normally be gitignored.
+
+Your repository root becomes the **primary lane** — it always exists and is edit-protected. Every other lane you add is a separate worktree under `.ade/worktrees/`, so agent work never touches your main checkout until you choose to merge it.
 
 <Warning>
 Do not commit `.ade/` wholesale. It contains machine-local paths and state. If your project needs shared ADE defaults later, use the project configuration flow rather than committing local secrets or runtime files.
@@ -35,7 +41,7 @@ The setup flow checks the basics:
 - Linear is available if your team uses it.
 - Optional mobile pairing can be configured later in Settings.
 
-You can skip setup steps and return to them from **Settings**.
+You can skip any step and return to it from **Settings**.
 
 ## After opening
 
@@ -45,7 +51,7 @@ Create a lane before running your first agent. That keeps your primary checkout 
   <Card title="Create your first lane" icon="code-branch" href="/getting-started/first-lane">
     Start isolated work for a small task.
   </Card>
-  <Card title="Project setup" icon="wand-magic-sparkles" href="/getting-started/project-setup">
-    Review what the onboarding flow checks.
+  <Card title="Connect a provider" icon="plug" href="/getting-started/connect-provider">
+    Make sure at least one agent is ready to run.
   </Card>
 </CardGroup>

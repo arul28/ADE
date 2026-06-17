@@ -1,49 +1,82 @@
 ---
 title: "History"
-description: "Search the record of chats, terminals, commits, PRs, lane changes, proof, and checkpoints."
+description: "A per-project timeline with two surfaces: a commit graph for each lane and a unified activity feed."
 icon: "clock-rotate-left"
 ---
 
-History answers the question: what happened in this project?
+The **History** tab is your project's timeline. It has two surfaces sharing one page: a **Commits** view — a GitKraken-style commit graph for the focused lane — and an **Activity** view that merges operations, chat sessions, CTO sessions, and worker runs into one feed. Use it to recover context, audit agent work, or recover from a lane that wandered off.
 
-It records sessions, commits, lane changes, PR events, proof artifacts, checkpoints, and worker activity. Use it to recover context, audit agent work, or pick up where a session ended.
+## Commits
 
-## Common uses
+The Commits surface draws the commit DAG for whichever lane you pick from the toolbar. Each row shows the short SHA, optional `HEAD` and merge pills, branch ref pills, the subject, the author, and a relative timestamp — laid out as a virtualized graph that stays fast on long histories.
+
+Right-click any commit (or use the actions strip in the detail panel) for a full set of git actions:
 
 <CardGroup cols={2}>
-  <Card title="Find a session" icon="comments">
-    Search a previous chat or terminal transcript.
+  <Card title="Inspect" icon="magnifying-glass">
+    Check out, compare with parent, view changed files, or open the commit in the Lanes git pane.
   </Card>
-  <Card title="Explain a change" icon="code-commit">
-    Trace a commit back to the lane and session that produced it.
+  <Card title="Create" icon="code-branch">
+    Branch, tag, or fork a brand-new lane from this exact commit with **Create lane here**.
   </Card>
-  <Card title="Recover context" icon="rotate-left">
-    Reopen an old session summary or checkpoint.
+  <Card title="Apply" icon="wand-magic-sparkles">
+    Cherry-pick, revert, or soft/mixed/hard reset to the commit.
   </Card>
-  <Card title="Review evidence" icon="camera">
-    Find proof artifacts attached to a lane, PR, or chat.
+  <Card title="Share" icon="link">
+    Open or copy the GitHub link, copy the patch, the SHA, or the subject.
   </Card>
 </CardGroup>
 
-## Event types
+A search box above the graph supports bare text plus prefixed keys — `message:`, `author:` (or `@`), `commit:` (or `#`), `branch:`, `parent:`, and filters like `is:merge`, `is:local`, `is:pushed`. The Commits toolbar also carries a **lane git actions** menu for fetch, pull, push, rename, archive, rebase, and other lane-scoped operations without leaving History.
 
-| Event | Examples |
-|-------|----------|
-| Session | Chat started, terminal ended, agent interrupted. |
-| Git | Commit, branch change, rebase, merge. |
-| Lane | Created, archived, deleted, stacked. |
-| PR | Opened, updated, reviewed, CI changed, merged. |
-| Worker | Assigned, completed, failed, paused. |
-| Proof | Screenshot, recording, trace, log, verification note. |
+<Tip>
+The Commits view also exposes per-lane **undo / redo** for the last HEAD-changing operation. ADE re-reads HEAD before it touches git and refuses if the branch moved since, so a reset never clobbers work you did afterward.
+</Tip>
 
-## Search and filters
+## Activity
 
-Filter by lane, event type, date range, agent/provider, PR, or worker. Search text includes titles, summaries, command output snippets, commit messages, and PR metadata.
+The Activity surface is a unified feed. It combines recorded **operations** — discrete, typed actions that changed state — with synthesized rows pulled from chat sessions, CTO snapshots, and worker runs, sorted newest-first.
 
-## Checkpoints
+| Source | Examples |
+|--------|----------|
+| **Git operations** | Commit, checkout, merge, rebase, push, pull, fetch, cherry-pick, revert, tag, reset, stash, undo/redo. |
+| **PR operations** | PR creation and related actions. |
+| **Pack refreshes** | Lane and project context-pack regeneration. |
+| **Chat sessions** | Agent chats, with provider, model, and status. |
+| **CTO & workers** | CTO sessions and worker runs with their status and wakeup reason. |
 
-Checkpoints are useful moments in a lane's timeline. They let you inspect what changed around a session or commit and, when needed, branch new follow-up work from that point.
+Pick from three view modes — **Graph** (per-lane swimlanes), **List** (a sortable table), or **Compact** (one dense line per event). A **scope** selector sets how much detail shows (Key → Standard → Detailed → All), and you can further filter by lane, category, status, and time range, or search across labels, kinds, and metadata. Running events auto-refresh while the tab is focused.
 
 <Note>
-History is local project evidence. It is meant to make agent work inspectable, not to replace Git history or GitHub review.
+Synthesized chat/CTO/worker rows are rebuilt on every refresh for display only — they're never written into the operations table, and they don't appear in an export.
 </Note>
+
+## Export
+
+Export the operations history to **CSV or JSON** with the current lane and status filters applied. ADE returns the rows and the desktop writes the file through a native save dialog.
+
+<AccordionGroup>
+  <Accordion title="Browse history from the terminal" icon="terminal">
+    History is also available from the `ade` CLI and `ade code`:
+
+    ```bash
+    ade history list                 # recent operations in the active project
+    ade history list --lane <id>     # scope to one lane's timeline
+    ```
+
+    Run `ade history --help` to see every filter and flag.
+  </Accordion>
+</AccordionGroup>
+
+<Note>
+History is local project evidence — it makes agent work inspectable. The Commits view reads real `git log`; it doesn't replace Git history or GitHub review.
+</Note>
+
+<CardGroup cols={2}>
+  <Card title="Files & diffs" icon="file-code" href="/tools/files-editor">
+    Open the diff behind any commit you find in History.
+  </Card>
+  <Card title="Review" icon="magnifying-glass" href="/tools/review">
+    Run an on-demand AI review over a commit range you spot in the graph.
+  </Card>
+</CardGroup>

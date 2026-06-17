@@ -1,0 +1,94 @@
+---
+title: "Review"
+description: "On-demand AI code review. Pick a scope, run a review, and act on the findings — separate from PR comments."
+icon: "magnifying-glass"
+---
+
+The **Review** tab runs an AI code review on demand. You choose exactly what to review — a lane's uncommitted changes, a range of commits, a whole pull request, or one lane's diff against another — and ADE runs a read-only inspection and returns **findings** you can act on, plus the evidence and transcript behind each one.
+
+This is separate from the review-comments thread on a PR. Review runs are local by default: nothing is posted to GitHub unless you choose to publish. Think of it as a second pair of eyes you can summon for any slice of work, at any point, without opening a PR first.
+
+<Note>
+The review agent is read-only. It can read and inspect files but never edits, commits, or pushes. A run produces findings and saved artifacts — acting on them is up to you.
+</Note>
+
+## Pick a review scope
+
+Every run starts by choosing a **lane** and a **target mode**. The mode decides which diff gets reviewed.
+
+<CardGroup cols={2}>
+  <Card title="Lane diff" icon="code-branch">
+    Review a lane's branch changes against the default branch — or against another lane. The most common scope: everything the lane has done since it split off.
+  </Card>
+  <Card title="Commit range" icon="git-alt">
+    Review only a slice of a lane's history. Pick an earlier base commit and a later head commit from ordered dropdowns; the base is excluded, the head is included.
+  </Card>
+  <Card title="Uncommitted changes" icon="pen-to-square">
+    Review the staged, unstaged, and untracked changes in a lane right now — the working tree against the checked-out HEAD. No commit required.
+  </Card>
+  <Card title="Pull request" icon="code-pull-request">
+    Review a whole PR's diff as one scope, with findings you can optionally publish back as a GitHub review.
+  </Card>
+</CardGroup>
+
+For a lane diff, you choose what to **compare against**: the lane's default branch, or another lane (lane-to-lane). The launch dialog draws a small before/after diagram of the scope you've picked — which branch or commit is on each side — so you can confirm the comparison before spending a run.
+
+<Tip>
+Comparisons run against your **local** refs. If you want the latest remote changes included, fetch or pull the base branch first, then launch the review.
+</Tip>
+
+## Run a review
+
+Open **Launch new review** from the toolbar, set the lane, target mode, and (for lane diffs) the comparison, then pick a model and reasoning effort. Start the run and it appears in the runs list on the left while it works.
+
+A run moves through `queued` → `running` → `completed` (or `failed` / `cancelled`). Several specialist reviewers look at the diff from different angles — diff risk, cross-file impact, checks and tests, security and data, UI and regression — and ADE adjudicates their candidates into one merged set of findings. You can cancel a running review at any time, and **Rerun** re-runs the same scope after you've pushed more changes.
+
+## Read the findings
+
+Each finding is a card you can act on. Cards carry a **severity** (critical, high, medium, low, info), a **confidence** score, the file and line they anchor to, and an evidence trail — quotes, diff hunks, file snapshots, and tool signals (typecheck, test, lint, build, CI) that back the claim.
+
+<CardGroup cols={3}>
+  <Card title="Open in Files" icon="file-code">
+    Jump straight to the file and line in the Files tab to see the change in context.
+  </Card>
+  <Card title="Open in editor" icon="arrow-up-right-from-square">
+    Send the finding's location to your external editor.
+  </Card>
+  <Card title="Copy findings" icon="copy">
+    Copy one finding — or all of a run's findings — as a single message to paste into a chat or issue.
+  </Card>
+</CardGroup>
+
+Filter the list by severity, and act on each card to teach the engine: **acknowledge** it, **dismiss** it with a reason, **snooze** it, or **suppress** it so similar findings are filtered out of future runs.
+
+## Review learnings
+
+Findings you dismiss or suppress feed a learning loop. The **Learnings** panel shows quality over time and the suppressions you've built up.
+
+<AccordionGroup>
+  <Accordion title="Quality over time" icon="chart-line">
+    Counters for total runs, total findings, how many were addressed, and a **noise rate** — dismissed plus suppressed over total findings — so you can see how much of the review output the team actually acts on. A breakdown by finding class shows how well each category is being addressed.
+  </Accordion>
+  <Accordion title="Active suppressions" icon="shield-halved">
+    Every suppression you've created, scoped to the repo, a path pattern, or globally. Each shows how many times it has filtered a matching finding, and you can remove any of them to let those findings surface again. Suppressions are matched by title and scope and persist across runs.
+  </Accordion>
+</AccordionGroup>
+
+## Review notes and evidence
+
+Beyond the findings, each completed run keeps the full audit trail so you can check the engine's work:
+
+- **Review scope** — the before/after diagram of exactly what was compared, the model used, and whether the run was kept local or published.
+- **Review process** — the specialist reviewers that ran, the context they were given (changed-file manifest, risk map, rule overlays, validation signals), and per-reviewer candidate counts.
+- **Reviewer outputs** — candidate counts, adjudication results, and the merged final set.
+- **Artifacts** — the raw diff bundle, prompts, and payloads for audit.
+- **Review agent transcript** — open the saved read-only session in **Work** for the full turn-by-turn trace.
+
+<CardGroup cols={2}>
+  <Card title="Pull requests" icon="code-pull-request" href="/tools/pull-requests">
+    Open, review, and merge GitHub PRs — and request an AI review on one.
+  </Card>
+  <Card title="Conflicts" icon="code-merge" href="/tools/conflicts">
+    Predict, simulate, and resolve merge conflicts before they bite.
+  </Card>
+</CardGroup>

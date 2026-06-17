@@ -1,41 +1,59 @@
 ---
 title: "Proof configuration"
-description: "Storage, retention, and troubleshooting for proof artifacts."
+description: "Where proof artifacts are stored, how long they last, and how to troubleshoot capture."
 icon: "sliders"
 ---
 
+Proof artifacts live with the project, under its `.ade/` directory on the machine that owns the project. Files sit on disk; their owners, review state, captions, and kind live in ADE's project database. The pairing is what lets an artifact still know which PR and chat it belongs to even though the file on disk is just an image or video.
+
 ## Storage
 
-Proof files live under the project's `.ade/` directory:
+Captured files land under the project's `.ade/` scaffold:
 
 ```text
 .ade/artifacts/computer-use/
-  <artifact-id>.png
-  <artifact-id>.mp4
-  <artifact-id>.zip
+  <uuid>.png      # screenshots
+  <uuid>.mp4      # recordings
+  <uuid>.zip      # browser traces
 ```
 
-Metadata such as owner links, review state, notes, and file type lives in ADE's local database.
+Each capture also writes one row to the project database (`.ade/ade.db`) with the artifact's kind, caption, storage URI, and owner link. That metadata — not the file itself — is what surfaces the proof in the chat drawer and at PR review.
 
-## Retention
+<Note>
+For a project opened on a **remote runtime**, proof is stored on the remote host, not your desktop machine. The desktop drawer fetches preview bytes over the same connection as the rest of the remote project; the raw files are not synced back, so proof is viewable while the runtime that captured it is reachable.
+</Note>
 
-ADE keeps proof artifacts until you dismiss or delete them. This preserves review evidence after a PR or task is complete.
-
-Clean up old proof from the UI when artifacts are no longer useful. Avoid deleting files directly from `.ade/artifacts/`, because that leaves database records pointing at missing files.
-
-## Troubleshooting
+## Configuration and troubleshooting
 
 <AccordionGroup>
+  <Accordion title="Retention and cleanup" icon="broom">
+    There is no automatic retention policy — captures persist until the project is cleaned up. Disk is the budget; nothing ages out on its own.
+
+    Dismiss or remove proof through ADE rather than deleting files directly from `.ade/artifacts/computer-use/` — deleting on disk leaves database rows pointing at missing files. Removing through ADE clears the metadata too.
+  </Accordion>
+
   <Accordion title="Screenshots are blank" icon="image">
-    Grant Screen Recording permission to ADE in macOS System Settings, then quit and relaunch ADE.
+    Grant **Screen Recording** permission to ADE in **System Settings → Privacy & Security**, then quit and relaunch ADE. macOS only applies the permission to a fresh launch.
   </Accordion>
+
   <Accordion title="Capture is unavailable" icon="circle-question">
-    Run `ade proof status --text` and confirm the local capture tools are available.
+    Run `ade proof status --text` and confirm capture is reported as available. Capture relies on the macOS built-in `screencapture`; on unsupported platforms the command exits non-zero. If status looks wrong, relaunch ADE.
   </Accordion>
-  <Accordion title="A proof is not attached to a PR" icon="code-pull-request">
-    Open the proof, check its owners, and publish or attach it to the PR again.
+
+  <Accordion title="A capture has no owner" icon="link-slash">
+    `ade proof capture` exits non-zero when it can't resolve an owner and no `--owner-kind`/`--owner-id` flags were passed — an un-owned proof has no home in the UI. Run it from inside an ADE chat or lane session, or pass the owner explicitly.
   </Accordion>
-  <Accordion title="Ingest fails" icon="triangle-exclamation">
-    Confirm each input has real content through `path`, `uri`, `text`, or `json`.
+
+  <Accordion title="Ingest is rejected" icon="triangle-exclamation">
+    Each input needs real content through `path`, `uri`, `text`, or `json`; an input with none of these is skipped. Path-based inputs must resolve inside an allowed import root — the project's `.ade/artifacts` or `.ade/tmp`, the OS temp dir, or `~/.agent-browser`. Paths outside those roots are rejected.
   </Accordion>
 </AccordionGroup>
+
+<CardGroup cols={2}>
+  <Card title="Capture proof" icon="terminal" href="/computer-use/setup">
+    The `ade proof` capture, attach, and ingest commands.
+  </Card>
+  <Card title="Configuration overview" icon="folder-tree" href="/configuration/overview">
+    Where ADE keeps the rest of your project state.
+  </Card>
+</CardGroup>

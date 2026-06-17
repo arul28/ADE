@@ -1,0 +1,24 @@
+---
+title: "v1.2.7"
+description: "Release notes for ADE v1.2.7 - June 16, 2026"
+---
+
+v1.2.7 sharpens ADE Code in the terminal — no more drawer flicker, plus multi-question approvals — auto-names your lanes with AI on mobile, speeds up chat scrolling on iOS, and retires the macOS VM and mobile push surfaces.
+
+---
+
+## Desktop
+
+- **ADE Code, without the flicker.** Selecting a lane in `ade code` no longer reflows the whole drawer — lane cards are single-line, the expanded and compact chat lists render through one shared row, and the TUI reserves viewport rows to avoid Ink full-screen redraws. Provider glyphs and colors now match the model picker one-to-one, grid navigation escapes cleanly with Tab, and terminal previews dedupe their frames.
+- **Multi-question approvals in the terminal.** When an agent asks several questions at once, `ade code` shows a proper multi-question selector — arrow keys to choose an option and move between questions, number keys to pick and submit — replacing the old single-question quick-select.
+- **Leaner stored transcripts.** Bulky chat transcript payloads are compacted in storage while keeping durable replay and live output intact, fixing cases where a transcript could return missing content.
+- **macOS VM removed.** ADE's macOS VM runtime, its UI, and the related `ade vm` CLI commands have been removed.
+
+---
+
+## iOS
+
+- **AI-named lanes.** Auto-creating a lane on mobile now names it from your prompt using the host's small AI model — for both Chat and CLI — with a deterministic fallback if the model is offline or times out. Lane creation is never blocked by naming.
+- **New-chat composer parity.** The new-chat composer now matches an in-session thread: a single permission dropdown when space is tight, the model pill, and the fast-mode toggle, all from one shared control row, with fast mode honored on create.
+- **Smoother chat scrolling.** Scrolling through Work chats is faster — assistant previews are cached for visible rows and deferred until after the stream merges, with per-session terminal fingerprints.
+- **Mobile push removed.** Push notifications have been removed; the app relies on its live sync connection, and PR actions from widgets now navigate in-app.

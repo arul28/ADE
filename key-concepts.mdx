@@ -20,7 +20,7 @@ ADE has a small set of ideas. Learn these and the rest of the app becomes easier
 
 ## Lane
 
-A lane is ADE's unit of parallel work. It is a Git branch in an isolated worktree, usually under `.ade/worktrees/<lane-name>/`. Agents, terminals, diffs, tests, and PRs are scoped to that lane.
+A lane is ADE's name for a git worktree — its unit of parallel work. It is a Git branch in an isolated working copy, usually under `.ade/worktrees/<lane-name>/`. Agents, terminals, diffs, tests, and PRs are all scoped to that lane.
 
 Use one lane for one feature, bug fix, experiment, or review thread. If the work grows, split it into another lane or stack a child lane on top of it.
 
@@ -32,7 +32,7 @@ Work is where active execution happens. A Work session can be a chat, a terminal
 
 Agent chat is a conversation with a coding agent inside a lane. The agent can read files, edit files, run shell commands, inspect diffs, create commits, and help open PRs. Tool calls and results stay in the transcript.
 
-Provider support depends on what you have configured, but the main paths are Claude, Codex, Cursor, and OpenCode.
+Provider support depends on what you have configured, but the agent paths are Claude Code, Codex, Cursor, Factory Droid, and OpenCode.
 
 ## CTO
 

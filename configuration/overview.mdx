@@ -1,47 +1,60 @@
 ---
 title: "Configuration overview"
-description: "Where ADE stores local project state, shared defaults, credentials, and runtime files."
+description: "The `.ade/` directory, the shared-vs-local trust model, and what stays out of Git."
 icon: "folder-tree"
 ---
 
-ADE keeps project state local. Most of what ADE creates belongs under `.ade/` in your repository and should not be committed.
+ADE keeps project state local. Everything ADE creates for a project lives under `.ade/` at the repository root, alongside your source tree but outside Git's control. Your code stays under normal version control; ADE's runtime bookkeeping stays out of it.
 
 ```text
 .ade/
-  ade.db
-  worktrees/
-  artifacts/
-  cache/
-  secrets/
+  ade.db        # lanes, sessions, PR mappings, proof metadata, settings
+  ade.yaml      # shared, version-controlled team config
+  local.yaml    # per-user overrides (gitignored)
+  worktrees/    # managed lane worktrees (one directory per lane)
+  artifacts/    # proof artifacts (screenshots, recordings, traces)
+  cache/        # derived data ADE can rebuild
+  secrets/      # encrypted, machine-local credentials
 ```
 
-## What is local
+## Shared vs. local config
+
+ADE splits configuration into two files, both merged into one effective config at read time:
+
+| File | Scope | In Git? | Holds |
+|------|-------|---------|-------|
+| `.ade/ade.yaml` | Shared | Committed | Team-wide processes, stacks, tests, lane templates, automations, AI mode, and provider/Linear preferences. |
+| `.ade/local.yaml` | Local | Gitignored | Personal overrides: ports, env vars, machine-specific paths, local-only processes. |
+
+Keep secrets and machine-specific paths in local config. Shared config is visible to the whole team, so anything in it ships to every teammate.
+
+## What stays local
 
 | Area | Contains |
 |------|----------|
-| Database | Lanes, sessions, PR mappings, settings, History metadata. |
-| Worktrees | Managed lane worktrees. |
-| Artifacts | Proof, transcripts, exported evidence, and supporting files. |
-| Secrets | Encrypted or machine-local credentials. |
-| Cache | Derived data ADE can rebuild. |
-
-## What can be shared
-
-Some teams choose to share project defaults, such as recommended processes, test commands, provider preferences, or lane templates. Keep secrets and machine paths out of shared files.
-
-<Warning>
-Never commit provider keys, tokens, local secret files, or the whole `.ade/` directory.
-</Warning>
+| Database (`ade.db`) | Lanes, sessions, PR mappings, proof metadata, and settings. |
+| Worktrees | The isolated working copy for each lane. |
+| Artifacts | Proof captures — screenshots, recordings, and traces. |
+| Secrets | Encrypted, machine-local credentials. |
+| Cache | Derived data ADE can regenerate on demand. |
 
 ## Trust model
 
-Commands saved as shared project defaults can run on developer machines. ADE treats those changes as sensitive and may require local approval before using newly changed command definitions.
+Commands saved as shared project defaults can run on developer machines. ADE treats those definitions as sensitive: when the shared config changes, it requires a local trust confirmation before the new version can spawn processes. Review such changes the same way you'd review a CI script or Dockerfile. Local config isn't trust-gated — you only need to trust your own overrides.
+
+## What's committed, and what isn't
+
+ADE manages this for you. It writes a `.ade/.gitignore` that ignores everything under `.ade/` by default and allowlists only the authored files meant to travel with the repo — `ade.yaml`, lane templates, skills, and project icons. Runtime files (the database, worktrees, artifacts, cache, and secrets) stay out of Git automatically, so you don't have to maintain ignore rules by hand.
+
+<Warning>
+Never put provider keys, tokens, or other secrets in `.ade/ade.yaml` or any committed file. Secrets belong in the local encrypted store or `.ade/local.yaml`, both of which stay off the shared path.
+</Warning>
 
 <CardGroup cols={2}>
+  <Card title="Permissions" icon="shield-check" href="/configuration/permissions">
+    Lane scope, provider modes, and the shared-config trust model.
+  </Card>
   <Card title="Settings" icon="sliders" href="/configuration/settings">
     Configure the app from the UI.
-  </Card>
-  <Card title="Permissions" icon="shield-check" href="/configuration/permissions">
-    Review security and permission controls.
   </Card>
 </CardGroup>

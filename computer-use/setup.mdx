@@ -1,55 +1,110 @@
 ---
-title: "Proof setup and CLI"
-description: "Use local capture tools and `ade proof` commands to record evidence."
+title: "Capture proof"
+description: "Capture evidence from the CLI with the real `ade proof` commands — capture, attach, list, and status."
 icon: "terminal"
 ---
 
-On macOS, ADE uses built-in tools for screenshots and short recordings. The first capture may require Screen Recording permission in **System Settings -> Privacy & Security**.
+On macOS, ADE captures screenshots and short recordings with the system's built-in tools — no extra install. The first capture may ask for **Screen Recording** permission in **System Settings → Privacy & Security**; grant it to ADE, then quit and relaunch.
 
-## Common commands
+Both you and agents capture proof the same way, through the `ade proof` CLI. Captures are intentional — you run a command when a moment deserves evidence. Each capture is scoped to the chat or lane it runs in: agents launched inside ADE pick up the right owner automatically from the session they're running in, so most captures need no owner flags at all.
 
-| Command | Use |
-|---------|-----|
-| `ade proof status --text` | Check available capture capabilities. |
-| `ade proof list --text` | List proof artifacts for the current scope. |
-| `ade proof screenshot` | Capture a screenshot. |
-| `ade proof record --seconds 20` | Capture a short recording. |
-| `ade proof ingest --input-json '{...}'` | Ingest a trace, log, or verification from another tool. |
-
-## Typical flow
+## Capture, then it's filed
 
 <Steps>
-  <Step title="Capture evidence">
-    Run a screenshot, recording, or ingest command from the relevant lane/session.
+  <Step title="Capture or attach">
+    Run `ade proof capture` to screenshot the current state, or `ade proof attach <path>` to promote a file you already produced.
   </Step>
-  <Step title="Store locally">
-    ADE writes the file under `.ade/artifacts/computer-use/` and records metadata in the local database.
-  </Step>
-  <Step title="Attach owners">
-    Link the proof to a chat, lane, PR, Linear issue, or worker activity.
+  <Step title="ADE files it">
+    The file is copied under `.ade/artifacts/computer-use/` and a row is written to the project database with its owner link.
   </Step>
   <Step title="Review in ADE">
-    Open the proof from the UI and accept, request more, or dismiss it.
+    The proof appears in the chat drawer and at lane / PR review, where you can accept it, request more, or dismiss it.
   </Step>
 </Steps>
 
-## Ingest external evidence
+## Command reference
 
-Use `ade proof ingest` for output from browser tests or other verification tools:
+<AccordionGroup>
+  <Accordion title="ade proof capture — screenshot the current state" icon="camera">
+    Take a screenshot now and file it as proof for the current session.
 
-```bash
-ade proof ingest --input-json '{
-  "backend": { "name": "playwright" },
-  "inputs": [
-    { "kind": "browser_trace", "title": "checkout flow", "path": "/tmp/trace.zip" },
-    { "kind": "console_logs", "title": "checkout console", "text": "..." }
-  ],
-  "owners": [
-    { "kind": "pull_request", "id": "123" }
-  ]
-}'
-```
+    ```bash
+    ade proof capture --caption "logged in as admin"
+    ade proof capture --caption "order #1234 submitted, confirmation visible"
+    ```
+
+    | Flag | Use |
+    |------|-----|
+    | `--caption "<text>"` | Short label, prominent in the drawer grid. Write it like a teammate is reading it. |
+    | `--owner-kind chat\|lane` | Override the inferred owner. Rarely needed. |
+    | `--owner-id <id>` | Pair with `--owner-kind` to target a specific chat or lane. |
+
+    The owner is inferred from the session you're in. If no owner can be resolved and no flags are passed, the command exits non-zero — an un-owned proof has no home in the UI.
+  </Accordion>
+
+  <Accordion title="ade proof attach — promote an existing file" icon="file-import">
+    Promote an image, video, or browser-trace file you produced out-of-band — a headless-browser screenshot, a Playwright trace rendered as PNG, anything on disk.
+
+    ```bash
+    ade proof attach /tmp/playwright-run/checkout-success.png \
+      --caption "checkout flow completes on Firefox"
+    ```
+
+    The proof kind is inferred from the file extension: images become **screenshots**, `.mov`/`.mp4`/`.webm` become **recordings**, `.zip`/`.har` become **browser traces**. The original file is left in place; ADE copies it into `.ade/artifacts/computer-use/`.
+  </Accordion>
+
+  <Accordion title="ade proof list — see what you've captured" icon="list">
+    Print the proof set for the current session as JSON. Primarily for agents to see what they've already captured.
+
+    ```bash
+    ade proof list --text
+    ade proof list --owner-kind lane --owner-id <id> --limit 20
+    ```
+  </Accordion>
+
+  <Accordion title="ade proof status — check capture capabilities" icon="circle-check">
+    Report whether the runtime can capture (`screencapture` availability, OS support).
+
+    ```bash
+    ade proof status --text
+    ```
+
+    `ade proof record --seconds <n>` records a short video proof where supported.
+  </Accordion>
+
+  <Accordion title="ade proof ingest — bring in evidence from another tool" icon="arrows-to-dot">
+    Ingest externally produced artifacts directly through the proof broker, with owners set in one call. Owner kinds are `chat` (alias for `chat_session`), `lane`, `pr` (alias for `github_pr`), `linear_issue`, and `automation_run`.
+
+    ```bash
+    ade proof ingest --input-json '{
+      "backend": { "name": "playwright" },
+      "inputs": [
+        { "kind": "browser_trace", "title": "checkout flow", "path": "/tmp/trace.zip" },
+        { "kind": "console_logs", "title": "checkout console", "text": "..." }
+      ],
+      "owners": [
+        { "kind": "pr", "id": "123" }
+      ]
+    }'
+    ```
+
+    Each input needs real content through `path`, `uri`, `text`, or `json`. Paths must resolve inside an allowed import root (the project's `.ade/artifacts` or `.ade/tmp`, the OS temp dir, or `~/.agent-browser`).
+  </Accordion>
+</AccordionGroup>
 
 <Note>
-If screenshots are blank, restart ADE after granting Screen Recording permission.
+Run `ade help proof` for the complete, current flag list. The `ade proof` commands print a JSON summary on success and exit non-zero on failure.
 </Note>
+
+<Tip>
+If screenshots come out blank, grant Screen Recording permission to ADE and relaunch — macOS only applies the permission to a fresh launch.
+</Tip>
+
+<CardGroup cols={2}>
+  <Card title="Review proof" icon="camera" href="/computer-use/proofs">
+    The capture, review, and attach lifecycle.
+  </Card>
+  <Card title="Proof configuration" icon="sliders" href="/computer-use/config">
+    Storage, retention, and troubleshooting.
+  </Card>
+</CardGroup>

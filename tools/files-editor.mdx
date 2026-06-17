@@ -1,50 +1,109 @@
 ---
 title: "Files"
-description: "Review and edit lane-scoped files, diffs, conflicts, and Git changes."
+description: "ADE's review workbench — a lane-scoped file tree, Monaco editor, diffs, conflict resolution, and a Git panel for staging, committing, and pushing."
 icon: "file-code"
 ---
 
-Files is ADE's review workbench. It shows the selected lane's file tree, editor tabs, diffs, staged changes, and Git actions.
+**Files** is ADE's review workbench: the place you read exactly what an agent changed, fix anything that's off, and turn a reviewed diff into a commit. It pairs a lane-scoped file tree and a full Monaco editor with diff and conflict views and a Git panel for staging, committing, stashing, and pushing — all without leaving the tab.
+
+<Columns cols={2}>
+  <Frame caption="The lane's file tree, editor, and diff in one pane.">
+    <img src="/media/landing/showcase/work-tools-files.webp" alt="Files review workbench inside ADE" />
+  </Frame>
+  <Frame caption="Stage, commit, stash, and push from the Git panel.">
+    <img src="/media/landing/showcase/work-tools-git.webp" alt="The Git panel inside ADE" />
+  </Frame>
+</Columns>
 
 ## What Files is for
 
 <CardGroup cols={3}>
   <Card title="Inspect agent edits" icon="magnifying-glass">
-    Review exactly what changed before committing.
+    Read every hunk an agent touched before it ever reaches a commit.
   </Card>
   <Card title="Make manual fixes" icon="pen">
-    Edit files directly when a small human adjustment is faster than another prompt.
+    Open a file in Monaco and edit it directly when a small human adjustment beats another prompt.
   </Card>
   <Card title="Commit cleanly" icon="code-commit">
-    Stage files, write a commit message, amend, stash, or push.
+    Stage related files together, write a message, and push the lane's branch from the Git panel.
   </Card>
 </CardGroup>
 
-## Lane scope
+## Pick a workspace
 
-The file tree is scoped to one lane at a time. Switching lanes changes the worktree you are editing. Check the lane selector before saving if you have several lanes open.
+The file tree is scoped to one **workspace** at a time. A workspace is a directory Files can browse, and there are three kinds:
 
-## Common flow
+| Workspace | Where it comes from |
+|---|---|
+| **Primary** | Your repository root — always present. |
+| **Lane worktree** | The isolated worktree behind a lane, under `.ade/worktrees/`. |
+| **Attached** | An external worktree path you linked in. |
+
+ADE shows the active workspace name prominently so you never edit the primary checkout when you meant to edit a lane. Switching workspaces changes the tree, diffs, and Git panel together — confirm the selector before you save.
+
+<Frame caption="Pick the lane whose changes you want to review.">
+  <img src="/media/features/files/choose-worktree.webp" alt="Choose the lane worktree to review in Files" />
+</Frame>
+
+## Read the diff
+
+Open a changed file to inspect its hunks. Diffs come from a few sources — staged vs. working tree, `HEAD` vs. working tree, or commit-to-commit — and you can switch how they render:
+
+- **Preview** for prose and markup, where you want the rendered result.
+- **Raw** for the unified diff, where you want to read code line by line.
+
+The file tree itself carries Git status decorations, so changed, added, and deleted files are colored in place before you even open them.
+
+<Frame caption="Toggle a rendered preview or the raw diff.">
+  <img src="/media/features/files/preview-or-raw.webp" alt="Toggle between rendered preview and raw diff" />
+</Frame>
+
+## Edit in Monaco
+
+Files opens in a real Monaco editor with syntax highlighting and read/write semantics. Saves are **atomic** — ADE writes to a temp file and renames it into place — so a dev server watching the file never catches a half-written save. Markdown files add a per-tab preview toggle that swaps the editor for a rendered view.
+
+<Note>
+Read-only workspaces are enforced end to end: the editor opens read-only and the create, rename, and delete controls are disabled, so you can browse a protected worktree without risking an accidental write.
+</Note>
+
+## Stage, commit, and push
+
+The Git panel turns a reviewed diff into a commit. Stage related files together, write a message, stash or amend when you need to, and push the lane's branch — all from the same surface.
+
+<Frame caption="Stage, commit, and push from the Git panel.">
+  <img src="/media/features/git/git-actions.webp" alt="Stage, commit, and push from the Git panel" />
+</Frame>
+
+## The review flow
 
 <Steps>
   <Step title="Open the changed lane">
-    Choose the lane an agent worked in.
+    Choose the lane worktree an agent worked in from the workspace selector.
   </Step>
   <Step title="Read the diff">
-    Open each modified file and inspect the hunks.
+    Open each modified file and inspect the hunks, raw or rendered.
   </Step>
   <Step title="Fix anything obvious">
-    Edit directly or ask the agent to continue from the review notes.
+    Edit directly in Monaco, or send the agent back with specific review notes.
   </Step>
   <Step title="Stage and commit">
-    Stage related files together and commit once the work is coherent.
+    Stage related files together, commit once the work is coherent, then push.
   </Step>
 </Steps>
 
 ## Conflicts
 
-When a merge or rebase produces conflicts, Files shows the conflicted files and lets you resolve them in the editor. After resolving, continue the Git operation from the lane or PR workflow.
+When a merge or rebase produces conflicts, Files opens a three-way merge view with **Base**, **Ours**, **Theirs**, and **Result** panes, plus *Accept Ours*, *Accept Theirs*, and *Accept Both* actions. Resolve the file, then continue the Git operation from the lane or PR workflow. See [Conflicts](/tools/conflicts) for the full risk model and prevention tips.
 
 <Tip>
-Use Files as the final human checkpoint. Even when an agent says tests passed, inspect the diff yourself before pushing.
+Use Files as the final human checkpoint. Even when an agent reports that tests passed, read the diff yourself before you push.
 </Tip>
+
+<CardGroup cols={2}>
+  <Card title="Pull requests" icon="code-pull-request" href="/tools/pull-requests">
+    Turn a reviewed, committed lane into a GitHub PR.
+  </Card>
+  <Card title="History" icon="clock-rotate-left" href="/tools/history">
+    Trace any commit back to the lane and session that produced it.
+  </Card>
+</CardGroup>

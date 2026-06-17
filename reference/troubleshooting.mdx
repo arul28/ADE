@@ -1,0 +1,94 @@
+---
+title: "Troubleshooting"
+description: "Fixes for the common snags — the brain not running, providers with no models, mobile sync, stuck lanes, and remote SSH connections."
+icon: "wrench"
+---
+
+Most issues come down to one of a few things: the brain isn't running, a provider isn't authenticated, two devices aren't on the same network, or a remote SSH route is down. Two commands answer most questions:
+
+```bash
+ade brain status --text   # endpoint, service, and sync state
+ade doctor                # local runtime, git, GitHub, Linear, and provider readiness
+```
+
+<Tip>
+`ade doctor` reports local readiness only — it never calls provider, GitHub, or Linear networks and never prints secret values. It's safe to run anytime.
+</Tip>
+
+<AccordionGroup>
+  <Accordion title="The app won't connect / nothing loads" icon="plug">
+    The desktop app, `ade code`, and the iOS app are all clients of the **brain** — the always-on ADE process for your channel. If it isn't running, clients have nothing to attach to.
+
+    ```bash
+    ade brain status --text   # is the endpoint listening? is the service loaded?
+    ade brain start           # load the login service
+    ade brain restart         # re-exec after an app update
+    ade doctor                # broader local readiness check
+    ```
+
+    After a desktop update, the brain re-execs the new bundled CLI on first launch. If clients still look stale, `ade brain restart` forces it. Before restarting, close active chats, terminals, and mobile sessions that depend on the brain.
+  </Accordion>
+
+  <Accordion title="A provider shows no models" icon="brain">
+    A provider only lists models once it's authenticated.
+
+    - **Add the key.** Open **Settings → AI**, connect the provider (Claude subscription or Anthropic key, Cursor API key, OpenCode backend, etc.), and confirm a green status.
+    - **Give discovery a moment.** Cursor and Droid model lists are discovered live and served stale-while-revalidate — a freshly connected provider may need a refresh in **Settings → AI**, or an ADE restart.
+    - **For CLI-launched agents** (a provider run as a terminal session that isn't installed or signed in), ADE surfaces an inline auth card in chat with install / login buttons that open a tracked terminal on the active machine.
+    - **Check `ade doctor`** — it reports provider/model readiness from local config, API-key references, and provider CLI availability.
+  </Accordion>
+
+  <Accordion title="My phone isn't syncing" icon="mobile">
+    The phone pairs with a brain and connects to its sync websocket. Two things have to be true:
+
+    1. **Paired with a PIN.** Generate or set a pairing PIN on the machine and enter it on the phone:
+       ```bash
+       ade brain pin generate
+       ade brain pin set 123456
+       ```
+       You can also manage the PIN from the desktop Mobile control.
+    2. **Reachable on the network.** The phone and the machine must be on the same LAN, or both on a Tailscale tailnet. Install Tailscale on both when they aren't on the same local network.
+
+    Confirm the brain's sync is up with `ade brain status --text` (it reports sync state). Note that a **manual runtime** (`ade runtime run`) has sync off by design — pairing only works against the brain.
+  </Accordion>
+
+  <Accordion title="A lane won't delete or is stuck dirty" icon="code-branch">
+    A lane is a git worktree, so a normal delete refuses when the worktree has uncommitted changes. Force it (and optionally remove the branch):
+
+    ```bash
+    ade lanes list --text                            # find the lane id
+    ade lanes delete <lane-id> --force --delete-branch
+    ```
+
+    If the lane is an **attached external worktree** (one you created with `git worktree` outside ADE), ADE tracks it but never moves or cleans it — detach it in ADE and remove the worktree yourself with `git worktree remove`.
+  </Accordion>
+
+  <Accordion title="A remote machine won't connect over SSH" icon="server">
+    Remote machines connect over SSH and run `ade rpc --stdio` on the far side. ADE surfaces the specific failure inline on the remote target; common ones:
+
+    - **`SSH server at <host:port> closed the connection before ADE could finish the SSH handshake`** — the TCP route opened but the server reset the handshake. Check Remote Login / sshd, firewall rules, and any Tailscale SSH policy.
+    - **`Remote machine was manually disconnected. Connect again to use this remote project.`** — you explicitly disconnected; ADE won't reconnect until you press **Connect**.
+    - **`ADE stopped automatic reconnecting after 10 failed attempts. Press Connect to try again.`** — implicit reconnects were paused after repeated failures. Press **Connect** once the box is reachable.
+    - **`ADE service is not installed … no bundled ADE service is available`** — the desktop has no bundled runtime for that remote's architecture. Use a release build that includes runtime resources for it, or install `ade` on the remote.
+    - **`Remote ADE service version mismatch` / `does not support multi-project mode`** — the remote is running an older or mismatched runtime. Re-bootstrap from a current desktop build.
+
+    Authentication failures for an agent CLI on the remote (Claude / Codex / Cursor / Droid not installed or signed in) appear as an inline auth card whose install / login buttons run on the **remote** machine.
+  </Accordion>
+
+  <Accordion title="Models or providers behave differently in a remote project" icon="cloud">
+    A remote project uses the **remote machine's** GitHub, Linear, and provider credentials — not your laptop's. Authenticate providers on the box that's actually running the agents (the inline auth card targets the active runtime), and expect the remote's Linear and GitHub connections to drive work that happens there.
+  </Accordion>
+</AccordionGroup>
+
+<Note>
+When in doubt, run `ade doctor` and `ade actions list --text`. The first reports what's ready locally; the second confirms the brain is reachable and lists every action it exposes.
+</Note>
+
+<CardGroup cols={2}>
+  <Card title="ade CLI" icon="terminal" href="/reference/cli">
+    The full command reference behind these fixes.
+  </Card>
+  <Card title="Architecture" icon="diagram-project" href="/architecture">
+    How the brain, clients, and remote runtimes fit together.
+  </Card>
+</CardGroup>

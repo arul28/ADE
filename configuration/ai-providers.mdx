@@ -1,41 +1,81 @@
 ---
 title: "AI providers"
-description: "Configure Claude, Codex, Cursor, OpenCode, and other providers for ADE agent sessions."
+description: "Connect Claude Code, Codex, Cursor, Factory Droid, and OpenCode — with your own key or an existing subscription."
 icon: "brain"
 ---
 
-ADE can route chats, CTO work, and workers through multiple providers. Configure at least one provider before starting agent work.
+ADE runs **Claude Code, Codex, Cursor, Factory Droid, and OpenCode** — every chat, CTO task, and worker routes through one of these five agents. Connect at least one before starting agent work. Each can use your own API key or, where supported, an existing subscription sign-in.
 
-## Supported paths
+## The five agents
 
-| Provider | Typical use |
-|----------|-------------|
-| Claude / Claude Code | General coding, planning, review, and worker tasks. |
-| Codex | OpenAI coding workflows and CLI-backed sessions. |
-| Cursor | Cursor agent sessions through the Cursor SDK. |
-| OpenCode | Local or provider-backed OpenCode workflows. |
-| OpenRouter / local endpoints | Cost routing, experimentation, or local models. |
+| Agent | Connect with | Typical use |
+|-------|--------------|-------------|
+| **Claude Code** | Claude subscription or Anthropic API key | General coding, planning, review, worker tasks. |
+| **Codex** | OpenAI sign-in or API key | OpenAI coding workflows and CLI-backed sessions. |
+| **Cursor** | Cursor API key (`CURSOR_API_KEY`) | Cursor agent sessions through the Cursor SDK. |
+| **Factory Droid** | Factory sign-in or API key | Droid agent sessions, including AGI mode. |
+| **OpenCode** | API key, OpenRouter, or local endpoint | Broadest model reach; local or provider-backed. |
 
-## Configure a provider
+## The models you can reach through ADE's agents
+
+These agents — plus OpenCode and OpenRouter routing — give you access to models from every major lab. Pick whichever fits the task.
+
+<Frame>
+  <div style={{ display: "flex", flexWrap: "wrap", gap: "1rem", alignItems: "center", justifyContent: "center", padding: "1.25rem 0.5rem" }}>
+    <img src="/media/logos/models/anthropic.svg" alt="Anthropic Claude" style={{ height: "40px", background: "#fff", borderRadius: "12px", padding: "10px 14px" }} />
+    <img src="/media/logos/models/openai.svg" alt="OpenAI" style={{ height: "40px", background: "#fff", borderRadius: "12px", padding: "10px 14px" }} />
+    <img src="/media/logos/models/gemini-color.svg" alt="Google Gemini" style={{ height: "40px", background: "#fff", borderRadius: "12px", padding: "10px 14px" }} />
+    <img src="/media/logos/models/deepseek-color.svg" alt="DeepSeek" style={{ height: "40px", background: "#fff", borderRadius: "12px", padding: "10px 14px" }} />
+    <img src="/media/logos/models/qwen-color.svg" alt="Qwen" style={{ height: "40px", background: "#fff", borderRadius: "12px", padding: "10px 14px" }} />
+    <img src="/media/logos/models/mistral-color.svg" alt="Mistral" style={{ height: "40px", background: "#fff", borderRadius: "12px", padding: "10px 14px" }} />
+    <img src="/media/logos/models/meta-color.svg" alt="Meta Llama" style={{ height: "40px", background: "#fff", borderRadius: "12px", padding: "10px 14px" }} />
+    <img src="/media/logos/models/grok.svg" alt="Grok" style={{ height: "40px", background: "#fff", borderRadius: "12px", padding: "10px 14px" }} />
+    <img src="/media/logos/models/ollama.svg" alt="Ollama" style={{ height: "40px", background: "#fff", borderRadius: "12px", padding: "10px 14px" }} />
+    <img src="/media/logos/models/perplexity-color.svg" alt="Perplexity" style={{ height: "40px", background: "#fff", borderRadius: "12px", padding: "10px 14px" }} />
+    <img src="/media/logos/models/cohere-color.svg" alt="Cohere" style={{ height: "40px", background: "#fff", borderRadius: "12px", padding: "10px 14px" }} />
+  </div>
+</Frame>
+
+## Connect a provider
 
 <Steps>
-  <Step title="Open Settings -> AI Providers">
-    Choose the provider you want to use.
+  <Step title="Open Settings → AI Connections">
+    Choose the agent you want to connect.
   </Step>
   <Step title="Add credentials or sign in">
-    Paste an API key, configure a local endpoint, or authenticate the provider CLI.
+    Paste an API key, sign in with a subscription, configure a local endpoint, or authenticate the provider CLI.
   </Step>
   <Step title="Verify">
-    Run the provider check and make sure ADE can start a session.
+    ADE probes the provider CLI and lists its available models. A green status means it's ready to start a session.
   </Step>
   <Step title="Choose defaults">
-    Set your default chat model and any role-specific overrides you need.
+    Set your default chat model and any role-specific overrides for CTO, workers, or specific lanes.
   </Step>
 </Steps>
 
+Per-agent key steps are below.
+
+<AccordionGroup>
+  <Accordion title="Claude Code" icon="anthropic">
+    Sign in with a Claude subscription or paste an Anthropic API key. ADE runs Claude through the bundled Claude Agent SDK, so the `claude` CLI does not need to be installed separately. See [Claude Code](/ai-tools/claude-code) for lane context and permission modes.
+  </Accordion>
+  <Accordion title="Codex" icon="openai">
+    Sign in with your OpenAI account or provide an API key. Codex runs as a CLI-backed session and reaches OpenAI models.
+  </Accordion>
+  <Accordion title="Cursor" icon="arrow-pointer">
+    Provide a Cursor API key (or set `CURSOR_API_KEY` in the environment ADE launches from). ADE recognizes the key as valid auth and discovers Cursor's available models at startup. See [Cursor](/ai-tools/cursor).
+  </Accordion>
+  <Accordion title="Factory Droid" icon="robot">
+    Sign in with Factory or provide an API key. Droid runs as an agent provider and supports AGI mode for larger autonomous tasks.
+  </Accordion>
+  <Accordion title="OpenCode" icon="layer-group">
+    Toggle OpenCode on; ADE downloads and manages the binary and local server. OpenCode is what powers API-backed and local-model chats — back it with an Anthropic or OpenAI key, an OpenRouter key for any model, or a local OpenAI-compatible endpoint such as LM Studio or Ollama. See [OpenCode & Windsurf](/ai-tools/windsurf).
+  </Accordion>
+</AccordionGroup>
+
 ## Permission presets
 
-Providers expose different native permission models. ADE maps them into a small set of practical choices:
+Providers expose different native permission models. ADE maps them into a small set of practical choices.
 
 | Preset style | Use it when |
 |--------------|-------------|
@@ -44,10 +84,25 @@ Providers expose different native permission models. ADE maps them into a small 
 | Full access | You are in a trusted environment and want minimal prompts. |
 | Custom | You want the provider's own config to decide. |
 
-## Cost control
+Set stricter modes for unfamiliar repositories. The full mapping lives in [Permissions](/configuration/permissions).
 
-Running several agents in parallel can spend quickly. Use cheaper models for routine follow-up and stronger models for planning, architecture, and hard debugging. Review usage from **Settings -> Usage**.
+## Cost and usage
+
+Running several agents in parallel can spend quickly. Use cheaper models for routine follow-up and stronger models for planning, architecture, and hard debugging. The top-bar **Usage** popup shows live provider quota windows and lets you set a budget cap; **Settings → Stats** is the retrospective view of token, cost, and GitHub activity.
+
+<Frame caption="Live provider usage and quota windows in the top-bar Usage popup.">
+  <img src="/media/features/settings/provider-usage.webp" alt="Per-provider usage and quota windows in ADE" />
+</Frame>
 
 <Warning>
-Provider calls go directly from your machine to the provider or local endpoint you configure. Keep keys out of committed files.
+Provider calls go directly from your machine to the provider or local endpoint you configure. Keep keys out of committed files — ADE stores them in local encrypted settings.
 </Warning>
+
+<CardGroup cols={2}>
+  <Card title="Permissions" icon="shield-check" href="/configuration/permissions">
+    Lane scope, provider modes, and how secrets are handled.
+  </Card>
+  <Card title="Settings" icon="sliders" href="/configuration/settings">
+    Every Settings section and a first-pass order.
+  </Card>
+</CardGroup>
