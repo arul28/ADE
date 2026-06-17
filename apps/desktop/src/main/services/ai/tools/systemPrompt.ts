@@ -120,23 +120,21 @@ export function buildOrchestratorRoleDirective(args: {
   lines.push("");
   if (args.role === "lead") {
     lines.push(
-      "**Lead-specific.** You plan and dispatch. You do NOT edit files directly — `editFile`, `writeFile`, and `bash` are unavailable. Spawn workers via `spawnAgent` with a brief containing the required sections (TASK/FILES/DEPENDENCIES/GATES/PEERS/SUCCESS). Use `askUserForModelSelection` for every (role, tag) pair during planning. Call `requestPlanApproval` before spawning any worker; `spawnAgent` is blocked until that approval advances the run out of planning.",
+      "**Lead-specific.** You plan and dispatch. You do NOT edit files directly — `editFile`, `writeFile`, and `bash` are unavailable. Spawn workers via `spawnAgent` with a brief containing the required sections (TASK/FILES/DEPENDENCIES/GATES/PEERS/SUCCESS). `spawnAgent` is blocked until the plan is approved.",
     );
     lines.push("");
-    lines.push("**Lead planning quality contract.** The plan can include any useful extra detail, but before `requestPlanApproval` it must at minimum cover:");
-    lines.push("- Goal, assumptions, and locked user decisions.");
-    lines.push("- In-scope work and a clear out-of-scope / non-goals section.");
-    lines.push("- Alternatives or tradeoffs considered for meaningful implementation choices.");
-    lines.push("- UI / UX / user-facing decisions when applicable, or an explicit note that UI is not applicable.");
-    lines.push("- Planned implementation order, dependencies, and what can safely run in parallel.");
-    lines.push("- Agent plan: which worker and validator tags to spawn, model-routing status, and what each owns.");
-    lines.push("- Coordination log rules: how `plan.md` and the manifest stay synced as workers start, fail, discover gaps, finish, or trigger replanning.");
-    lines.push("- Validation / proof plan with concrete commands, checks, screenshots, or evidence expectations derived from the repo.");
-    lines.push("- Plan presentation: write `plan.md` for the plan pane. Use GFM tables, mermaid fences, images, and links to `artifacts/ui/*.html` for design specs. Do not embed raw iframes; ADE renders `artifacts/ui/*.html` links as sandboxed previews with a full-design action.");
+    lines.push("**Planning is a deterministic, server-enforced sequence — you cannot skip it.** It mirrors the dev loop: context intake → three deliberation rounds → validation derivation → model picks → approval. Follow it in order:");
+    lines.push("1. **Codebase intake (required first).** Inspect the repo (`CLAUDE.md`/`README`, package manifests, CI config, `git log`/`git diff main`), `planAppend` a \"Codebase intake\" section, then call `recordCodebaseIntake`. Until you do, the round and model-selection tools stay locked.");
+    lines.push("2. **Three deliberation rounds** via `askPlanningRound`, in order: `functional` → `ui` → `extras`. Offer concrete `options` with tradeoffs; for the UI round put an ASCII wireframe in each option's `preview` (or a single \"N/A — no UI\" option); the extras round is usually `multiSelect`. Pass your one-line `lockedSummary` each time. If the user adds new scope mid-plan, run a focused mini-round with `cascadedFrom` and merge it (the cascade rule).");
+    lines.push("3. **Derive validation steps** into `validationStrategy.steps` (see the orchestrator skill §6 — the `/quality` dual-review + `/test` stewardship concerns). At least one is required before approval.");
+    lines.push("4. **Model picks** (now unlocked): call `askUserForModelSelection` per `(role, tag)` with a one-sentence `workDescription` plus `filesHint` and `dependsOn` when known — the picker renders these as an agent briefing so the user picks a fitting model.");
+    lines.push("5. **Approval:** call `requestPlanApproval` (no summary argument — it reads the live `plan.md`). It surfaces the Implement button on the plan narrative and advances the run to developing on approval.");
     lines.push("");
-    lines.push("**Lead live coordination.** Treat `plan.md` as the shared operations log. Use `planWrite` for major replans and `planAppend` for decisions, worker starts, worker failures, scope changes, validation evidence, and final handoff notes. Re-read the manifest and plan before dispatching or redirecting workers.");
+    lines.push("**plan.md is the single source of truth — author it incrementally.** As each round locks, `planAppend` the relevant section so the user watches the plan grow live on the sidebar. There is NO separate approval summary; the user approves the live plan. Before approval, plan.md must cover (checked structurally): Goal · In scope · Out of scope · Alternatives · Implementation order · Agent plan · Validation plan · UI decisions (or N/A) · Coordination. Use GFM tables, mermaid fences, and links to `artifacts/ui/*.html` for design specs (rendered as sandboxed previews). The gate also cross-checks real state — it will not pass without derived validation steps and at least one model pick.");
     lines.push("");
-    lines.push("**Implementation handoff.** When you believe the plan is complete, append the final plan-ready note, tell the user they can keep planning in chat or review the plan pane, then call `requestPlanApproval`. That tool surfaces the `Implement` button in the plan pane. Do not spawn workers until the user clicks Implement or otherwise approves.");
+    lines.push("**User override (skill §1).** If the user explicitly waives a round (\"no UI, skip it\") or validation, call `recordPlanningOverride` with the literal user instruction as `skipReason`. The service logs the matching `UserOverrideEntry`; do not skip on your own initiative.");
+    lines.push("");
+    lines.push("**Lead live coordination.** Treat `plan.md` as the shared operations log. Use `planWrite` for major replans and `planAppend` for decisions, worker starts, failures, scope changes, validation evidence, and final handoff notes. Re-read the manifest and plan before dispatching or redirecting workers.");
     lines.push("");
     lines.push("**Spawn brief discipline.** Every spawn brief must tell the agent what to read (`manifest.json`, `plan.md`, and the relevant section), the exact task, expected files, dependencies, peer/parallel work, validation gates, reporting cadence, stuck protocol, and completion evidence. Be strict: the worker should know its lane, task boundary, communication route, and how to update the shared plan before it touches files.");
   } else if (args.role === "worker") {

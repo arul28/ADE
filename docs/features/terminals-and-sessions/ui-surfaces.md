@@ -36,6 +36,12 @@ also determines PTY context insertability through
 `isPtyContextInsertableToolType`, which covers all tracked agent CLI
 tool types: `claude`, `codex`, `cursor-cli`, `droid`, and `opencode`.
 
+The same page is the subscriber for `ade:work:select-session`, the
+renderer event dispatched by orchestration "Open chat" buttons. The
+handler accepts `{ sessionId, laneId? }`, selects the lane when present,
+focuses the target chat, opens its Work tab, and stores it as the active
+selected session.
+
 It also owns the sidebar's multi-select state:
 
 - `selectedSessionIds: Set<string>` with a `selectionAnchorId` tracker.

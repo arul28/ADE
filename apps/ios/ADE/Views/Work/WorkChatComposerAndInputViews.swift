@@ -1443,12 +1443,32 @@ struct WorkModelSelectionPendingCard: View {
     self.busy = busy
     self.onConfirm = onConfirm
     self.onCancel = onCancel
-    let suggested = request.suggested
-    _selectedModelId = State(initialValue: suggested?.modelId ?? "")
-    _selectedProvider = State(initialValue: suggested?.provider ?? "claude")
-    _selectedReasoningEffort = State(initialValue: suggested?.reasoningEffort ?? "")
-    _selectedCodexFastMode = State(initialValue: suggested?.fastMode ?? false)
+    _selectedModelId = State(initialValue: "")
+    _selectedProvider = State(initialValue: "claude")
+    _selectedReasoningEffort = State(initialValue: "")
+    _selectedCodexFastMode = State(initialValue: false)
     _selectedModel = State(initialValue: nil)
+  }
+
+  private var requestResetKey: String {
+    [
+      request.id,
+      request.role,
+      request.tag,
+      request.workDescription ?? "",
+      request.filesHint.joined(separator: "\u{1F}"),
+      request.dependsOn.joined(separator: "\u{1F}"),
+      request.availableModelIds?.joined(separator: "\u{1F}") ?? ""
+    ].joined(separator: "\u{1E}")
+  }
+
+  private func resetSelectionState() {
+    selectedModelId = ""
+    selectedProvider = "claude"
+    selectedReasoningEffort = ""
+    selectedCodexFastMode = false
+    selectedModel = nil
+    pickerPresented = false
   }
 
   var body: some View {
@@ -1481,6 +1501,9 @@ struct WorkModelSelectionPendingCard: View {
       )
       .environmentObject(syncService)
     }
+    .onChange(of: requestResetKey) { _, _ in
+      resetSelectionState()
+    }
   }
 
   @ViewBuilder
@@ -1500,6 +1523,32 @@ struct WorkModelSelectionPendingCard: View {
           .foregroundStyle(ADEColor.textSecondary)
           .frame(maxWidth: .infinity, alignment: .leading)
       }
+      briefingList(label: "Files it touches", values: request.filesHint)
+      briefingList(label: "Runs after", values: request.dependsOn)
+    }
+  }
+
+  @ViewBuilder
+  private func briefingList(label: String, values: [String]) -> some View {
+    if !values.isEmpty {
+      VStack(alignment: .leading, spacing: 3) {
+        Text(label.uppercased())
+          .font(.caption2.weight(.bold))
+          .foregroundStyle(ADEColor.textMuted)
+        ForEach(Array(values.prefix(4).enumerated()), id: \.offset) { _, value in
+          Text(value)
+            .font(.caption.monospaced())
+            .foregroundStyle(ADEColor.textSecondary)
+            .lineLimit(1)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        if values.count > 4 {
+          Text("+\(values.count - 4) more")
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(ADEColor.textMuted)
+        }
+      }
+      .padding(.top, 2)
     }
   }
 

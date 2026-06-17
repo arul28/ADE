@@ -46,6 +46,38 @@ function pendingInputAccent(source: string | null | undefined): string {
   return theme.provider(normalized as AdeCodeProvider).color;
 }
 
+function stringValue(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function stringListValue(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.flatMap((entry) => {
+        if (typeof entry !== "string") return [];
+        const trimmed = entry.trim();
+        return trimmed.length ? [trimmed] : [];
+      })
+    : [];
+}
+
+function compactList(values: string[], limit = 3): string {
+  const visible = values.slice(0, limit);
+  const suffix = values.length > limit ? `, +${values.length - limit} more` : "";
+  return `${visible.join(", ")}${suffix}`;
+}
+
+function modelSelectionBriefing(metadata: Record<string, unknown> | undefined): Array<[string, string]> {
+  if (!metadata) return [];
+  const rows: Array<[string, string]> = [];
+  const description = stringValue(metadata.workDescription);
+  const files = stringListValue(metadata.filesHint);
+  const dependsOn = stringListValue(metadata.dependsOn);
+  if (description) rows.push(["Description", description]);
+  if (files.length) rows.push(["Files", compactList(files)]);
+  if (dependsOn.length) rows.push(["Runs after", compactList(dependsOn)]);
+  return rows;
+}
+
 /**
  * An access-key prefix shown immediately before an action's pill, e.g. the `a`
  * in `a [ approve ]`. Accentuated when the action is highlighted.
@@ -174,6 +206,9 @@ export function ApprovalPrompt({
   const answeredCount = isQuestion
     ? pendingQuestionAnsweredCount(approval.request, questionState?.answers ?? {})
     : 0;
+  const briefingRows = kind === "model_selection"
+    ? modelSelectionBriefing(approval.request?.providerMetadata)
+    : [];
 
   const card = (
     <Box
@@ -218,6 +253,16 @@ export function ApprovalPrompt({
         <Text color={theme.color.t3} dimColor wrap="truncate-end">
           {truncateEnd(secondary, textWidth)}
         </Text>
+      ) : null}
+
+      {briefingRows.length ? (
+        <Box flexDirection="column" marginTop={1}>
+          {briefingRows.map(([label, value]) => (
+            <Text key={label} color={theme.color.t3} wrap="truncate-end">
+              {truncateEnd(`${label}: ${value}`, textWidth)}
+            </Text>
+          ))}
+        </Box>
       ) : null}
 
       {isQuestion && questions.length ? (

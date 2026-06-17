@@ -119,6 +119,16 @@ function readOrchestrationModelSelectionMetadata(
   const role = value.role;
   if (role !== "lead" && role !== "worker" && role !== "validator") return null;
   const tag = typeof value.tag === "string" ? value.tag : "";
+  const workDescription =
+    typeof value.workDescription === "string" && value.workDescription.trim()
+      ? value.workDescription
+      : null;
+  const filesHint = Array.isArray(value.filesHint)
+    ? value.filesHint.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
+    : undefined;
+  const dependsOn = Array.isArray(value.dependsOn)
+    ? value.dependsOn.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
+    : undefined;
   const rawSuggested = value.suggested;
   let suggested: ModelSelection | undefined;
   if (rawSuggested && typeof rawSuggested === "object") {
@@ -139,6 +149,9 @@ function readOrchestrationModelSelectionMetadata(
   return {
     role,
     tag,
+    ...(workDescription ? { workDescription } : {}),
+    ...(filesHint && filesHint.length ? { filesHint } : {}),
+    ...(dependsOn && dependsOn.length ? { dependsOn } : {}),
     ...(suggested ? { suggested } : {}),
     ...(value.availableModels !== undefined ? { availableModels: value.availableModels } : {}),
   };
@@ -3082,7 +3095,6 @@ export function AgentChatComposer({
             return (
               <ChatModelSelectionPendingCard
                 metadata={meta}
-                {...(meta?.suggested ? { suggested: meta.suggested } : {})}
                 {...(availableModelIdsForPicker ? { availableModelIds: availableModelIdsForPicker } : {})}
                 {...(providerAuthStatus ? { providerAuthStatus } : {})}
                 responding={approvalResponding ?? false}

@@ -9805,10 +9805,13 @@ export function AgentChatPane({
         void handleApproval(itemId, decision, responseText, answers);
       }}
       onOpenSession={(sessionId) => {
-        // Switch the Work tab to the target chat session.
+        // Switch the Work tab to the target chat session (a peer worker/validator
+        // in the same orchestration lane). TerminalsPage listens for this event.
         try {
           window.dispatchEvent(
-            new CustomEvent("ade:work:select-session", { detail: { sessionId } }),
+            new CustomEvent("ade:work:select-session", {
+              detail: { sessionId, laneId: selectedSession?.laneId ?? laneId ?? "" },
+            }),
           );
         } catch {
           /* no-op */
@@ -9944,7 +9947,7 @@ export function AgentChatPane({
                               try {
                                 window.dispatchEvent(
                                   new CustomEvent("ade:work:select-session", {
-                                    detail: { sessionId: targetId },
+                                    detail: { sessionId: targetId, laneId: selectedSession.laneId },
                                   }),
                                 );
                               } catch {

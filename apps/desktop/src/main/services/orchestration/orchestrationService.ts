@@ -28,6 +28,12 @@ import {
   type OrchestrationRunCreateRequest,
   type OrchestrationRunCreateResponse,
   type OrchestrationTaskStatus,
+  type PlanningIntakeArtifact,
+  type PlanningRoundKind,
+  type PlanningRoundRecord,
+  type PlanningStage,
+  type PlanSpecApprovalState,
+  type ValidationFinding,
 } from "../../../shared/types/orchestration";
 import {
   checkPatchOp,
@@ -46,7 +52,14 @@ import {
   inferValidationRerunSupersedes,
   mergeSupersedes,
   taskSupersedesIds,
+  createInitialPlanningState,
+  createInitialPlanSpec,
 } from "./manifestNormalization";
+import {
+  hasExplicitValidationWaiver,
+  hasOrchestrationModelRouting,
+  isExplicitValidationWaiverEntry,
+} from "./runtimeProfile";
 
 // Lightweight async mutex — small, dependency-free, FIFO. Replicates the
 // pattern used elsewhere in agentChatService.ts so behaviour is consistent.
@@ -822,7 +835,12 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
         assets: [],
         decisions: [],
         userOverrides: [],
-        leadState: { lastSnapshotEtag: etag, lastSnapshotSeenAt: createdAt },
+        leadState: {
+          lastSnapshotEtag: etag,
+          lastSnapshotSeenAt: createdAt,
+          planning: createInitialPlanningState(),
+        },
+        planSpec: createInitialPlanSpec(),
         history: [
           { etag, at: createdAt, summary: "run created", patchKindSummary: "init" },
         ],
@@ -1403,6 +1421,18 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
 
       const startedAt = req.startedAt?.trim() || nowIso();
       const runId = `run-${escapeId(req.taskId)}-${escapeId(req.stepId)}-${shortRand()}`;
+      const findings: ValidationFinding[] = (req.findings ?? [])
+        .filter((f) => f && typeof f.title === "string" && f.title.trim())
+        .map((f, index) => ({
+          id: f.id?.trim() || `F-${escapeId(req.taskId)}-${escapeId(req.stepId)}-${index + 1}-${shortRand()}`,
+          severity: f.severity,
+          title: f.title.trim(),
+          ...(f.locus?.trim() ? { locus: f.locus.trim() } : {}),
+          ...(f.detail?.trim() ? { detail: f.detail.trim() } : {}),
+          ...(f.fix?.trim() ? { fix: f.fix.trim() } : {}),
+          ...(typeof f.behaviorPreserving === "boolean" ? { behaviorPreserving: f.behaviorPreserving } : {}),
+          ...(f.regressionTestTarget?.trim() ? { regressionTestTarget: f.regressionTestTarget.trim() } : {}),
+        }));
       const run = {
         id: runId,
         runBySessionId: req.sessionId,
@@ -1411,6 +1441,7 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
         ...(req.status !== "running" ? { endedAt: req.endedAt?.trim() || startedAt } : {}),
         ...(req.notes?.trim() ? { notes: req.notes.trim() } : {}),
         ...(req.attachedEvidence?.length ? { attachedEvidence: req.attachedEvidence } : {}),
+        ...(findings.length ? { findings } : {}),
       };
       const existing = manifest.validationStrategy.checklist.find(
         (entry) => entry.taskId === req.taskId && entry.stepId === req.stepId,
@@ -1683,6 +1714,455 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
     });
   }
 
+  // --------------------------------------------------------------------------
+  // Planning state machine (deterministic dev-loop sequence).
+  //
+  // Each method mutates gate-controlled state (`leadState.planning`, `planSpec`)
+  // through directPatch only — the lead is denied raw access to these paths
+  // (see patchPolicy), so the intake → 3 rounds → ready → approved sequence
+  // cannot be skipped or forged. Mirrors /context intake + /plan deliberation.
+  // --------------------------------------------------------------------------
+
+  type PlanningMutationResult =
+    | { ok: true; manifest: OrchestrationManifest; etag: string }
+    | { ok: false; error: string; message: string; missing?: string[] };
+
+  async function runPlanningMutation(
+    runId: string,
+    bundlePath: string,
+    fn: (runtime: RunRuntime) => Promise<PlanningMutationResult>,
+  ): Promise<PlanningMutationResult> {
+    const runtime = getOrCreateRuntime(runId, bundlePath);
+    return runtime.mutex.run(async () => {
+      await loadIntoRuntime(runtime);
+      if (runtime.suspended) {
+        return { ok: false, error: "run_suspended", message: RUN_SUSPENDED_MESSAGE };
+      }
+      if (!runtime.manifest) {
+        return { ok: false, error: "run_not_found", message: `run ${runId} not found` };
+      }
+      try {
+        return await fn(runtime);
+      } catch (err) {
+        if (err instanceof OrchestrationRunSuspendedError) {
+          return { ok: false, error: "run_suspended", message: RUN_SUSPENDED_MESSAGE };
+        }
+        if (err instanceof OrchestrationPersistConflictError) {
+          return {
+            ok: false,
+            error: "etag_conflict",
+            message: `manifest advanced to generation ${err.onDisk.serverGeneration}`,
+          };
+        }
+        throw err;
+      }
+    });
+  }
+
+  function planningOf(
+    manifest: OrchestrationManifest,
+  ): NonNullable<OrchestrationManifest["leadState"]["planning"]> {
+    return manifest.leadState.planning ?? createInitialPlanningState();
+  }
+
+  function dedupeStrings(values: readonly string[] | undefined): string[] {
+    const out: string[] = [];
+    const seen = new Set<string>();
+    for (const value of values ?? []) {
+      if (typeof value !== "string") continue;
+      const trimmed = value.trim();
+      if (!trimmed || seen.has(trimmed)) continue;
+      seen.add(trimmed);
+      out.push(trimmed);
+    }
+    return out;
+  }
+
+  async function recordPlanningIntake(
+    runId: string,
+    bundlePath: string,
+    intake: PlanningIntakeArtifact,
+  ): Promise<PlanningMutationResult> {
+    return runPlanningMutation(runId, bundlePath, async (runtime) => {
+      const planning = planningOf(runtime.manifest!);
+      if (planning.stage !== "intake") {
+        return {
+          ok: false,
+          error: "stage_conflict",
+          message: `codebase intake already recorded (planning stage: ${planning.stage})`,
+        };
+      }
+      const missing: string[] = [];
+      if (!intake.projectShape?.trim()) missing.push("projectShape");
+      if (!intake.testStack?.trim()) missing.push("testStack");
+      if (!intake.inFlightWork?.trim()) missing.push("inFlightWork");
+      if (missing.length) {
+        return {
+          ok: false,
+          error: "validation_failed",
+          message: `codebase intake missing required fields: ${missing.join(", ")}`,
+          missing,
+        };
+      }
+      const recorded: PlanningIntakeArtifact = {
+        recordedAt: nowIso(),
+        projectShape: intake.projectShape.trim(),
+        testStack: intake.testStack.trim(),
+        ancillarySurfaces: dedupeStrings(intake.ancillarySurfaces),
+        ...(intake.docMap?.trim() ? { docMap: intake.docMap.trim() } : {}),
+        inFlightWork: intake.inFlightWork.trim(),
+        ciGates: dedupeStrings(intake.ciGates),
+      };
+      const res = await directPatch(
+        runtime,
+        [
+          { op: "replace", path: "/leadState/planning/intake", value: recorded },
+          { op: "replace", path: "/leadState/planning/stage", value: "round_functional" },
+        ],
+        "planning: codebase intake recorded",
+      );
+      return { ok: true, manifest: res.manifest, etag: res.etag };
+    });
+  }
+
+  async function recordPlanningRound(
+    runId: string,
+    bundlePath: string,
+    round: PlanningRoundRecord,
+  ): Promise<PlanningMutationResult> {
+    return runPlanningMutation(runId, bundlePath, async (runtime) => {
+      const planning = planningOf(runtime.manifest!);
+      if (!round.question?.trim()) {
+        return { ok: false, error: "validation_failed", message: "round.question is required" };
+      }
+      if (!round.lockedSummary?.trim()) {
+        return { ok: false, error: "validation_failed", message: "round.lockedSummary is required" };
+      }
+      const hasAnswer =
+        Boolean(round.answeredAt?.trim()) &&
+        ((round.selectedOptionIds?.length ?? 0) > 0 || Boolean(round.freeText?.trim()));
+      if (!hasAnswer) {
+        return {
+          ok: false,
+          error: "round_unanswered",
+          message:
+            "a planning round can only be recorded once the user has answered it (needs answeredAt + a selection or free-text)",
+        };
+      }
+      const isCascade = Boolean(round.cascadedFrom?.trim());
+      const expectedStage: Record<PlanningRoundKind, PlanningStage> = {
+        functional: "round_functional",
+        ui: "round_ui",
+        extras: "round_extras",
+      };
+      if (!isCascade) {
+        const want = expectedStage[round.kind];
+        if (planning.stage !== want) {
+          return {
+            ok: false,
+            error: "stage_conflict",
+            message: `the ${round.kind} round can only be recorded at stage ${want}; current stage is ${planning.stage}`,
+          };
+        }
+      } else if (planning.stage === "intake") {
+        return {
+          ok: false,
+          error: "stage_conflict",
+          message: "cannot record a cascade round before codebase intake",
+        };
+      }
+      const record: PlanningRoundRecord = {
+        id: round.id?.trim() || `PR-${round.kind}-${shortRand()}`,
+        kind: round.kind,
+        askedAt: round.askedAt?.trim() || nowIso(),
+        question: round.question.trim(),
+        ...(round.options?.length ? { options: round.options } : {}),
+        ...(round.multiSelect ? { multiSelect: true } : {}),
+        ...(round.selectedOptionIds?.length ? { selectedOptionIds: round.selectedOptionIds } : {}),
+        ...(round.freeText?.trim() ? { freeText: round.freeText.trim() } : {}),
+        lockedSummary: round.lockedSummary.trim(),
+        ...(isCascade ? { cascadedFrom: round.cascadedFrom!.trim() } : {}),
+        answeredAt: round.answeredAt!.trim(),
+      };
+      const ops: ManifestPatchOp[] = [
+        { op: "add", path: "/leadState/planning/rounds/-", value: record },
+      ];
+      if (!isCascade) {
+        const rawNextStage: PlanningStage =
+          round.kind === "functional"
+            ? "round_ui"
+            : round.kind === "ui"
+              ? "round_extras"
+              : "rounds_complete";
+        const nextStage = advancePlanningStagePastSkipped(
+          rawNextStage,
+          planning.overrides?.skippedRounds ?? [],
+        );
+        ops.push({ op: "replace", path: "/leadState/planning/stage", value: nextStage });
+      }
+      const res = await directPatch(
+        runtime,
+        ops,
+        `planning: ${round.kind} round recorded${isCascade ? " (cascade)" : ""}`,
+      );
+      return { ok: true, manifest: res.manifest, etag: res.etag };
+    });
+  }
+
+  async function recordPlanningOverride(
+    runId: string,
+    bundlePath: string,
+    override: { skippedRounds?: PlanningRoundKind[]; skipReason?: string },
+  ): Promise<PlanningMutationResult> {
+    return runPlanningMutation(runId, bundlePath, async (runtime) => {
+      const planning = planningOf(runtime.manifest!);
+      const validKinds: PlanningRoundKind[] = ["functional", "ui", "extras"];
+      const skipped = (override.skippedRounds ?? []).filter((k): k is PlanningRoundKind =>
+        validKinds.includes(k),
+      );
+      const skipReason = override.skipReason?.trim() ?? "";
+      const validationWaived = isExplicitValidationWaiverEntry({ instruction: skipReason });
+      if (skipped.length && !skipReason) {
+        return {
+          ok: false,
+          error: "override_reason_required",
+          message: "skipping planning rounds requires the literal user instruction as skipReason",
+        };
+      }
+      if (!skipped.length && !validationWaived) {
+        return {
+          ok: false,
+          error: "override_empty",
+          message: "recordPlanningOverride requires skippedRounds or an explicit skip-validation instruction",
+        };
+      }
+      const nextSkipped = Array.from(
+        new Set([...(planning.overrides?.skippedRounds ?? []), ...skipped]),
+      );
+      const value = {
+        ...(nextSkipped.length ? { skippedRounds: nextSkipped } : {}),
+        ...(skipReason ? { skipReason } : {}),
+      };
+      const ops: ManifestPatchOp[] = [
+        { op: "replace", path: "/leadState/planning/overrides", value },
+      ];
+      const at = nowIso();
+      for (const kind of skipped) {
+        ops.push({
+          op: "add",
+          path: "/userOverrides/-",
+          value: {
+            id: `UO-${kind}-${shortRand()}`,
+            at,
+            scope: "phase",
+            appliedToId: "planning",
+            instruction: skipReason,
+            affectedDefault: `planning.round.${kind}`,
+          },
+        });
+      }
+      if (validationWaived) {
+        ops.push({
+          op: "add",
+          path: "/userOverrides/-",
+          value: {
+            id: `UO-validation-${shortRand()}`,
+            at,
+            scope: "phase",
+            appliedToId: "planning",
+            instruction: skipReason,
+            affectedDefault: "validation",
+          },
+        });
+      }
+      const stage = advancePlanningStagePastSkipped(planning.stage, nextSkipped);
+      if (stage !== planning.stage) {
+        ops.push({ op: "replace", path: "/leadState/planning/stage", value: stage });
+      }
+      const res = await directPatch(runtime, ops, "planning: user override recorded");
+      return { ok: true, manifest: res.manifest, etag: res.etag };
+    });
+  }
+
+  function planningReadinessMissing(manifest: OrchestrationManifest): string[] {
+      const planning = planningOf(manifest);
+      const missing: string[] = [];
+      if (!planning.intake) missing.push("codebase intake");
+      const skipped = new Set(
+        (planning.overrides?.skippedRounds ?? []).filter((kind) =>
+          hasSkippedRoundUserOverride(manifest, kind),
+        ),
+      );
+      for (const kind of ["functional", "ui", "extras"] as PlanningRoundKind[]) {
+        if (skipped.has(kind)) continue;
+        if (!planning.rounds.some((r) => r.kind === kind && !r.cascadedFrom)) {
+          missing.push(`${kind} deliberation round`);
+        }
+      }
+      const validationWaived = hasExplicitValidationWaiver(manifest);
+      if (!validationWaived && manifest.validationStrategy.steps.length === 0) {
+        missing.push("validation steps (derive at least one, or log a skip-validation user override)");
+      }
+      if (!hasOrchestrationModelRouting(manifest)) {
+        missing.push("model routing (pick a model for at least one role/tag before approval)");
+      }
+      return missing;
+  }
+
+  async function checkPlanningReady(
+    runId: string,
+    bundlePath: string,
+  ): Promise<PlanningMutationResult> {
+    return runPlanningMutation(runId, bundlePath, async (runtime) => {
+      const manifest = runtime.manifest!;
+      const missing = planningReadinessMissing(manifest);
+      if (missing.length) {
+        return {
+          ok: false,
+          error: "planning_incomplete",
+          message: `planning is not ready — still missing: ${missing.join("; ")}`,
+          missing,
+        };
+      }
+      return { ok: true, manifest, etag: manifest.etag };
+    });
+  }
+
+  async function markPlanningReady(
+    runId: string,
+    bundlePath: string,
+  ): Promise<PlanningMutationResult> {
+    return runPlanningMutation(runId, bundlePath, async (runtime) => {
+      const manifest = runtime.manifest!;
+      const missing = planningReadinessMissing(manifest);
+      if (missing.length) {
+        return {
+          ok: false,
+          error: "planning_incomplete",
+          message: `planning is not ready — still missing: ${missing.join("; ")}`,
+          missing,
+        };
+      }
+      const requestedAt = nowIso();
+      const res = await directPatch(
+        runtime,
+        [
+          { op: "replace", path: "/leadState/planning/stage", value: "ready" },
+          { op: "replace", path: "/planSpec/approval/state", value: "ready" },
+          { op: "replace", path: "/planSpec/approval/requestedAt", value: requestedAt },
+        ],
+        "planning: marked ready for approval",
+      );
+      return { ok: true, manifest: res.manifest, etag: res.etag };
+    });
+  }
+
+  /**
+   * Single privileged mutator for plan-approval transitions. On `approved` it
+   * also writes the legacy approval markers and advances planning → developing,
+   * replacing the patch block the old requestPlanApproval tool built inline.
+   */
+  async function setPlanApprovalState(
+    runId: string,
+    bundlePath: string,
+    args: { state: PlanSpecApprovalState; sessionId?: string; planContentHash?: string },
+  ): Promise<PlanningMutationResult> {
+    return runPlanningMutation(runId, bundlePath, async (runtime) => {
+      const at = nowIso();
+      const ops: ManifestPatchOp[] = [
+        { op: "replace", path: "/planSpec/approval/state", value: args.state },
+      ];
+      if (args.state === "ready") {
+        ops.push({ op: "replace", path: "/planSpec/approval/requestedAt", value: at });
+      }
+      if (args.state === "changes_requested" && args.planContentHash) {
+        ops.push({
+          op: "replace",
+          path: "/planSpec/approval/lastReviewedPlanContentHash",
+          value: args.planContentHash,
+        });
+      }
+      if (args.state === "approved") {
+        ops.push(
+          { op: "replace", path: "/planSpec/approval/approvedAt", value: at },
+          ...(args.sessionId
+            ? [{ op: "replace" as const, path: "/planSpec/approval/approvedBySessionId", value: args.sessionId }]
+            : []),
+          ...(args.planContentHash
+            ? [{ op: "replace" as const, path: "/planSpec/approval/approvedPlanContentHash", value: args.planContentHash }]
+            : []),
+          { op: "replace", path: "/leadState/planning/stage", value: "ready" },
+          { op: "replace", path: "/leadState/planApprovedAt", value: at },
+          ...(args.sessionId
+            ? [{ op: "replace" as const, path: "/leadState/planApprovedBySessionId", value: args.sessionId }]
+            : []),
+          { op: "replace", path: "/currentPhase", value: "developing" },
+          { op: "replace", path: "/phases/{id:planning}/status", value: "done" },
+          { op: "replace", path: "/phases/{id:planning}/completedAt", value: at },
+          { op: "replace", path: "/phases/{id:developing}/status", value: "active" },
+          { op: "replace", path: "/phases/{id:developing}/startedAt", value: at },
+        );
+      }
+      const res = await directPatch(runtime, ops, `plan approval → ${args.state}`);
+      return { ok: true, manifest: res.manifest, etag: res.etag };
+    });
+  }
+
+  /**
+   * Crash-resume primitive: reset any claimed/in-progress task whose claim lease
+   * has expired back to `pending` and clear its assignee, so the lead can
+   * re-dispatch work a dead worker abandoned. The manifest already survives
+   * restarts on disk; this recovers the in-flight claims that outlived a worker.
+   */
+  async function releaseStaleClaims(
+    runId: string,
+    bundlePath: string,
+  ): Promise<
+    | { ok: true; manifest: OrchestrationManifest; etag: string; recovered: string[] }
+    | { ok: false; error: string; message: string; recovered: string[] }
+  > {
+    const runtime = getOrCreateRuntime(runId, bundlePath);
+    return runtime.mutex.run(async () => {
+      await loadIntoRuntime(runtime);
+      if (runtime.suspended) {
+        return { ok: false, error: "run_suspended", message: RUN_SUSPENDED_MESSAGE, recovered: [] };
+      }
+      const manifest = runtime.manifest;
+      if (!manifest) {
+        return { ok: false, error: "run_not_found", message: `run ${runId} not found`, recovered: [] };
+      }
+      const nowMs = now().getTime();
+      const stale = manifest.tasks.filter(
+        (task) =>
+          (task.status === "claimed" || task.status === "in_progress") &&
+          typeof task.claimLeaseUntil === "string" &&
+          Number.isFinite(Date.parse(task.claimLeaseUntil)) &&
+          Date.parse(task.claimLeaseUntil) <= nowMs,
+      );
+      if (!stale.length) {
+        return { ok: true, manifest, etag: manifest.etag, recovered: [] };
+      }
+      const ops: ManifestPatchOp[] = [];
+      for (const task of stale) {
+        ops.push(
+          { op: "replace", path: `/tasks/{id:${task.id}}/status`, value: "pending" },
+          { op: "remove", path: `/tasks/{id:${task.id}}/assigneeSessionId` },
+          { op: "remove", path: `/tasks/{id:${task.id}}/claimedAt` },
+          { op: "remove", path: `/tasks/{id:${task.id}}/claimLeaseUntil` },
+        );
+      }
+      try {
+        const res = await directPatch(runtime, ops, `recover ${stale.length} stale task(s)`);
+        return { ok: true, manifest: res.manifest, etag: res.etag, recovered: stale.map((t) => t.id) };
+      } catch (err) {
+        if (err instanceof OrchestrationRunSuspendedError) {
+          return { ok: false, error: "run_suspended", message: RUN_SUSPENDED_MESSAGE, recovered: [] };
+        }
+        throw err;
+      }
+    });
+  }
+
   async function relocateRunBundle(runId: string, bundlePath: string): Promise<void> {
     const runtime = runs.get(runId);
     if (!runtime) return;
@@ -1709,6 +2189,13 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
     recordValidationRun,
     agentHeartbeat,
     approvePlan,
+    recordPlanningIntake,
+    recordPlanningRound,
+    recordPlanningOverride,
+    checkPlanningReady,
+    markPlanningReady,
+    setPlanApprovalState,
+    releaseStaleClaims,
     runList,
     subscribe,
     release,
@@ -1738,6 +2225,43 @@ function shortRand(): string {
 
 function escapeId(value: string): string {
   return value.replace(/[^a-zA-Z0-9_-]/g, "_");
+}
+
+function hasSkippedRoundUserOverride(
+  manifest: OrchestrationManifest,
+  kind: PlanningRoundKind,
+): boolean {
+  return manifest.userOverrides.some(
+    (entry) =>
+      entry.scope === "phase" &&
+      entry.appliedToId === "planning" &&
+      entry.affectedDefault === `planning.round.${kind}` &&
+      entry.instruction.trim().length > 0,
+  );
+}
+
+function advancePlanningStagePastSkipped(
+  currentStage: PlanningStage,
+  skippedRounds: PlanningRoundKind[],
+): PlanningStage {
+  const order: PlanningStage[] = [
+    "round_functional",
+    "round_ui",
+    "round_extras",
+    "rounds_complete",
+  ];
+  const stageKind: Partial<Record<PlanningStage, PlanningRoundKind>> = {
+    round_functional: "functional",
+    round_ui: "ui",
+    round_extras: "extras",
+  };
+  let stage = currentStage;
+  while (stageKind[stage] && skippedRounds.includes(stageKind[stage]!)) {
+    const idx = order.indexOf(stage);
+    if (idx < 0 || idx + 1 >= order.length) break;
+    stage = order[idx + 1]!;
+  }
+  return stage;
 }
 
 function initialPlanMd(manifest: OrchestrationManifest): string {

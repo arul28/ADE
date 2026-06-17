@@ -96,7 +96,36 @@ export type ValidationConcern =
   | "surface_parity"
   | "pre_completion_gate"
   | "deep_maintainability"
+  // Quality/test methodology concerns (the /quality dual-review + /test stewardship
+  // run as a perspective-diverse validation panel; see SKILL.md §6).
+  | "dual_review_correctness_security"
+  | "dual_review_maintainability"
+  | "test_stewardship"
+  | "regression_pinning"
   | "custom";
+
+/** Severity rank for a structured validation finding (mirrors /quality). */
+export type ValidationFindingSeverity = "blocker" | "high" | "medium" | "low";
+
+/**
+ * A single structured finding emitted by a validator and rolled up by the
+ * synthesis step. Carried inside `ValidationChecklistRun.findings` so the panel
+ * can render a severity table and each Blocker/High can become a regression
+ * test target. Authored via `recordValidationRun`.
+ */
+export type ValidationFinding = {
+  id: string;
+  severity: ValidationFindingSeverity;
+  /** `file:line` or a short locus the finding lives at. */
+  locus?: string;
+  title: string;
+  detail?: string;
+  /** Smallest behavior-preserving fix, when the validator can name one. */
+  fix?: string;
+  behaviorPreserving?: boolean;
+  /** Set when a Blocker/High has been pinned as a named regression test. */
+  regressionTestTarget?: string;
+};
 
 export type ValidationEvidenceKind =
   | "plan_md_section"
@@ -136,6 +165,8 @@ export type ValidationChecklistRun = {
   status: "running" | "passed" | "failed";
   attachedEvidence?: EvidenceRef[];
   notes?: string;
+  /** Structured findings for review-style concerns (dual_review_*). */
+  findings?: ValidationFinding[];
   startedAt: string;
   endedAt?: string;
   supersedes?: string;
@@ -250,6 +281,135 @@ export type OrchestrationHistoryEntry = {
   patchKindSummary?: string;
 };
 
+// ---------------------------------------------------------------------------
+// Planning state machine (lead-only, deterministic dev-loop sequence)
+//
+// The lead must walk this sequence before model-picks/approval are unlocked:
+//   intake → round_functional → round_ui → round_extras → rounds_complete → ready
+// Each transition is written ONLY through dedicated service methods (never raw
+// manifestPatch — see patchPolicy LEAD_DENY_PATTERNS), so the sequence cannot be
+// forged. Mirrors the /context intake + /plan three-round deliberation.
+// ---------------------------------------------------------------------------
+
+export type PlanningStage =
+  | "intake"
+  | "round_functional"
+  | "round_ui"
+  | "round_extras"
+  | "rounds_complete"
+  | "ready";
+
+export type PlanningRoundKind = "functional" | "ui" | "extras";
+
+/** The /context-style codebase intake, recorded as gate-checked state. */
+export type PlanningIntakeArtifact = {
+  recordedAt: string;
+  /** Monorepo/app/lib shape + primary languages. */
+  projectShape: string;
+  /** Test frameworks + globs, or "none detected". */
+  testStack: string;
+  /** docs/, mobile apps, SDKs, OpenAPI, etc. that may need lockstep updates. */
+  ancillarySurfaces: string[];
+  /** Where docs live / how they're organized. */
+  docMap?: string;
+  /** git log/diff summary of in-flight work, or "fresh lane". */
+  inFlightWork: string;
+  /** Detected typecheck/lint/test/build commands. */
+  ciGates: string[];
+};
+
+/** One option offered in a planning round-question (mirrors a pending-input option). */
+export type PlanningRoundOption = {
+  id: string;
+  label: string;
+  description?: string;
+  /** Markdown preview (e.g. an ASCII wireframe for the UI round). */
+  preview?: string;
+};
+
+/**
+ * A recorded deliberation round. Append-only; cascade mini-rounds set
+ * `cascadedFrom` to the round they branched off. A round is only accepted by
+ * the service once it carries a real user answer (`answeredAt` + a selection or
+ * free-text), so the lead cannot self-author a stub.
+ */
+export type PlanningRoundRecord = {
+  id: string;
+  kind: PlanningRoundKind;
+  askedAt: string;
+  question: string;
+  options?: PlanningRoundOption[];
+  multiSelect?: boolean;
+  selectedOptionIds?: string[];
+  freeText?: string;
+  /** The lead's locked outcome for the round (one-liner). */
+  lockedSummary: string;
+  /** Set when this is a cascade mini-round spawned by new mid-plan scope. */
+  cascadedFrom?: string;
+  answeredAt?: string;
+};
+
+export type PlanningState = {
+  stage: PlanningStage;
+  intake?: PlanningIntakeArtifact;
+  rounds: PlanningRoundRecord[];
+  overrides?: {
+    /** Rounds the user explicitly waived (§1 user authority override). */
+    skippedRounds?: PlanningRoundKind[];
+    skipReason?: string;
+  };
+};
+
+// ---------------------------------------------------------------------------
+// PlanSpec — coverage index over plan.md + approval state.
+//
+// plan.md remains the single human-readable source of truth; this is a thin,
+// machine-checkable index of which required sections the narrative covers, plus
+// approval provenance. Replaces the old free-text approval summary + regex gate.
+// ---------------------------------------------------------------------------
+
+export type PlanSpecSectionId =
+  | "goal"
+  | "assumptions"
+  | "in_scope"
+  | "out_of_scope"
+  | "alternatives"
+  | "implementation_order"
+  | "agent_plan"
+  | "validation_plan"
+  | "ui_decisions"
+  | "coordination";
+
+export type PlanSpecSection = {
+  id: PlanSpecSectionId;
+  required: boolean;
+  /** The plan.md heading slug that covers this section, once present. */
+  planSectionId?: string;
+  status: "missing" | "drafted" | "locked";
+  /** Escape hatch (e.g. UI on a backend-only run), with a reason. */
+  notApplicable?: { reason: string };
+};
+
+export type PlanSpecApprovalState =
+  | "drafting"
+  | "ready"
+  | "approved"
+  | "changes_requested";
+
+export type PlanSpec = {
+  sections: PlanSpecSection[];
+  approval: {
+    state: PlanSpecApprovalState;
+    requestedAt?: string;
+    approvedAt?: string;
+    approvedBySessionId?: string;
+    /** sha256 of plan.md at approval — proves approved bytes == rendered bytes. */
+    approvedPlanContentHash?: string;
+    /** plan.md hash at the previous review, for the re-approval diff. */
+    lastReviewedPlanContentHash?: string;
+  };
+};
+
 export type OrchestrationManifest = {
   version: 1;
   schemaCompatibility?: { minReader: 1; maxKnown: 1 };
@@ -276,8 +436,13 @@ export type OrchestrationManifest = {
     lastSnapshotSeenAt?: string;
     planApprovedAt?: string;
     planApprovedBySessionId?: string;
+    /** @deprecated Superseded by plan.md + planSpec; kept for legacy reads. */
     planApprovalSummary?: string;
+    /** Deterministic planning sequence; see PlanningState. */
+    planning?: PlanningState;
   };
+  /** Coverage index over plan.md + approval state (replaces planApprovalSummary). */
+  planSpec?: PlanSpec;
   history: OrchestrationHistoryEntry[];
   defaultBudget?: AgentBudget;
 
@@ -458,6 +623,8 @@ export type OrchestrationRecordValidationRunRequest = {
   status: ValidationChecklistRun["status"];
   notes?: string;
   attachedEvidence?: EvidenceRef[];
+  /** Structured findings for review-style concerns; rolled up into the panel's severity table. The service assigns ids. */
+  findings?: (Omit<ValidationFinding, "id"> & { id?: string })[];
   startedAt?: string;
   endedAt?: string;
 };
@@ -514,6 +681,10 @@ export type OrchestrationModelSelectionMetadata = {
   tag: string;
   /** Short description of what this agent will work on. */
   workDescription?: string | null;
+  /** Files this agent is most likely to touch (briefing context for model choice). */
+  filesHint?: string[];
+  /** Tags/tasks this agent runs after (briefing context). */
+  dependsOn?: string[];
   suggested?: ModelSelection;
   /** Optional snapshot of available models — server-provided when needed. */
   availableModels?: unknown;

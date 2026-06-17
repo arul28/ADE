@@ -449,7 +449,10 @@ ade.ai.cursorCloud.*         # Cursor background-agents bridge: listRepositories
 ade.automations.*
 ade.orchestration.*          # work-tab orchestration: runCreate, bundleRead, manifestReadSection,
                              # manifestPatch, planAppend, planWrite, spawnAgent, agentInject,
-                             # assetRegister, claimTask, subscribe (push). Preload bridge in
+                             # assetRegister, claimTask, subscribe (push). Lead-only planning
+                             # and validation transitions are service methods exposed through
+                             # orchestration runtime tools, not raw renderer IPC patches.
+                             # Preload bridge in
                              # preload/orchestrationBridge.ts; renderer consumes via
                              # components/orchestration/orchestrationDataSource.ts.
 ade.processes.* / ade.tests.* # processes also expose group bulk ops:
@@ -533,7 +536,7 @@ Most services described here live under `apps/desktop/src/main/services/<domain>
 | `localRuntime/` | `localRuntimeConnectionPool.ts` | Desktop-side client for the local brain endpoint. Spawns or attaches to the machine endpoint, registers local projects with `projects.add`, dispatches local runtime actions with per-call timeouts where needed, emits `local_runtime.action_slow` warn logs (with `ensureProjectMs` / `connectMs` / `daemonCallMs` breakdown) whenever a call exceeds 500 ms or throws, polls runtime events, and installs the background service best-effort in packaged builds. |
 | `onboarding/` | `onboardingService.ts`, `onboardingSuggestedConfig.ts` | First-run flow, defaults detection, existing lane discovery. `onboardingSuggestedConfig.ts` contains pure workflow parsing and suggested `.ade/ade.yaml` generation. |
 | `opencode/` | `openCodeRuntime.ts`, `openCodeServerManager.ts`, `openCodeBinaryManager.ts`, `openCodeInventory.ts`, `openCodeModelCatalog.ts` | OpenCode server spawn, binary resolution, model discovery. |
-| `orchestration/` | `orchestrationService.ts`, `applyPatches.ts`, `patchPolicy.ts`, `manifestNormalization.ts`, `runtimeProfile.ts` | Work-tab orchestration for multi-phase plans. `orchestrationService` manages run lifecycle, manifest persistence, plan markdown, and asset bundles. `applyPatches` + `patchPolicy` handle lead/worker manifest patches with safety constraints. `runtimeProfile` resolves the active orchestration profile per session. The renderer surfaces live in `renderer/components/orchestration/` (see §7.3). The former `orchestrator/` and `missions/` directories were consolidated into this service. |
+| `orchestration/` | `orchestrationService.ts`, `applyPatches.ts`, `patchPolicy.ts`, `manifestNormalization.ts`, `runtimeProfile.ts` | Work-tab orchestration for multi-phase plans. `orchestrationService` manages run lifecycle, manifest persistence, the `leadState.planning` state machine, `plan.md`, validation strategy/findings, and asset bundles. `patchPolicy` keeps privileged planning fields (`leadState.planning`, `planSpec`) behind service methods so the lead cannot forge intake, planning rounds, model routing, or approval readiness with a raw patch. `runtimeProfile` resolves the active orchestration profile per session and gates model selection / plan approval on planning readiness. The renderer surfaces live in `renderer/components/orchestration/` (see §7.3). The former `orchestrator/` and `missions/` directories were consolidated into this service. |
 | `processes/` | `processService.ts` | Managed-process lifecycle per lane, readiness probes, restart policies. |
 | `projects/` | `adeProjectService.ts`, `configReloadService.ts`, `projectService.ts`, `logIntegrityService.ts`, `recentProjectSummary.ts`, `projectBrowserService.ts`, `projectDetailService.ts` | Project detection + `.ade` repair/bootstrap, reload on config change, recent-project metadata. `recentProjectSummary.ts` emits local and remote recent summaries without disk-inspecting remote paths. `projectBrowserService` is the in-app directory autocomplete used by the Command Palette project browser (typed-path completion, `.git` detection, home expansion, system-picker fallback); `projectDetailService` returns repo metadata (branch, dirty count plus staged/unstaged/untracked breakdown, ahead/behind, last commit, README excerpt inputs, language mix, lane count, last-opened) for the palette's preview pane. |
 | `prs/` | `prService.ts`, `prPollingService.ts`, `prSummaryService.ts`, `queueLandingService.ts`, `prIssueResolver.ts`, `prRebaseResolver.ts`, `integrationPlanning.ts`, `integrationValidation.ts` | PR CRUD, polling (with per-PR `last_polled_at` cursor), AI summary cache keyed by `(prId, head_sha)`, stacked-queue landing, AI-assisted issue resolution, rebase resolution, integration planning, and merge-into-existing-lane proposal adoption. |
@@ -613,7 +616,7 @@ prs/            # PR list/detail, stacked queue, shared/
 history/        # operation timeline
 automations/    # rule list, pipeline builder
 cto/            # CTO page, identity editor, team panel, pipeline, shared/designTokens.ts
-orchestration/  # OrchestrationPanel, TaskCard, PlanMarkdown, PhaseAccordion, AnnotationPopover, SpecPreviewCard
+orchestration/  # OrchestrationPanel, TaskCard, PlanMarkdown, PhaseAccordion, PlanningTimeline, ValidationFindings
 onboarding/     # first-run flows
 settings/       # keybindings, agents, data, context, sync
 chat/           # AgentChatPane + composer + subpanels

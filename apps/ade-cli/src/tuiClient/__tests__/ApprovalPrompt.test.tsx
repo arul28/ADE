@@ -66,4 +66,51 @@ describe("ApprovalPrompt", () => {
     expect(frame).toContain("enter");
     expect(frame).toContain("next/send");
   });
+
+  it("renders orchestration model-selection briefing metadata", () => {
+    const approval: PendingApproval = {
+      itemId: "model-1",
+      description: "Build the orchestration roster.",
+      highStakes: false,
+      mode: "question",
+      request: {
+        requestId: "model-1",
+        source: "ade",
+        kind: "model_selection",
+        title: "Pick a model for the web-ui worker",
+        description: "Build the orchestration roster.",
+        allowsFreeform: true,
+        blocking: true,
+        canProceedWithoutAnswer: false,
+        providerMetadata: {
+          role: "worker",
+          tag: "web-ui",
+          workDescription: "Build the orchestration roster.",
+          filesHint: [" OrchestrationPanel.tsx ", "TaskCard.tsx"],
+          dependsOn: [" planning-rounds ", "model-routing"],
+        },
+        questions: [
+          {
+            id: "model",
+            header: "Model",
+            question: "Which model should the web-ui worker use?",
+          },
+        ],
+      },
+    };
+
+    const frame = stripAnsi(render(
+      <ApprovalPrompt
+        approval={approval}
+        questionState={createPendingQuestionSelectionState(approval)}
+        width={100}
+      />,
+    ).lastFrame() ?? "");
+
+    expect(frame).toContain("MODEL SELECTION");
+    expect(frame).toContain("Description: Build the orchestration roster.");
+    expect(frame).toContain("Files: OrchestrationPanel.tsx, TaskCard.tsx");
+    expect(frame).toContain("Runs after: planning-rounds, model-routing");
+    expect(frame).toContain("Which model should the web-ui worker use?");
+  });
 });

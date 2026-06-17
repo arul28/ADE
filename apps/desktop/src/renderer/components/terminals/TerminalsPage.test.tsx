@@ -354,6 +354,27 @@ describe("TerminalsPage chat session activation", () => {
     });
   });
 
+  it("focuses orchestration-selected chats from the Work select-session event", async () => {
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) } },
+    });
+
+    render(<TerminalsPage />);
+    await screen.findByTestId("work-view-area");
+
+    window.dispatchEvent(
+      new CustomEvent("ade:work:select-session", {
+        detail: { sessionId: "chat-worker", laneId: "lane-background" },
+      }),
+    );
+
+    expect(workMocks.fns.selectLane).toHaveBeenCalledWith("lane-background");
+    expect(workMocks.fns.focusSession).toHaveBeenCalledWith("chat-worker");
+    expect(workMocks.fns.openSessionTab).toHaveBeenCalledWith("chat-worker");
+    expect(workMocks.currentWork.setSelectedSessionId).toHaveBeenCalledWith("chat-worker");
+  });
+
   it("opens the Browser sidebar only for matching project open requests", async () => {
     workMocks.projectRoot = "/repo-one";
     const browserEventListener: {

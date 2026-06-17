@@ -1,4 +1,5 @@
 /* @vitest-environment node */
+import crypto from "node:crypto";
 import { promises as fsp } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -6,7 +7,6 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createOrchestrationService } from "../../orchestration/orchestrationService";
 import {
-  assessOrchestrationPlanQuality,
   buildOrchestrationSandboxConfig,
   createOrchestrationToolSet,
   type OrchestrationAgentChatHandle,
@@ -69,6 +69,10 @@ Workers use plan.md and manifest updates for progress updates, stuck reports, fa
 ## Validation plan
 Run targeted vitest files, typecheck, and diff checks as proof.
 `.trim();
+
+function sha256Text(value: string): string {
+  return crypto.createHash("sha256").update(value, "utf8").digest("hex");
+}
 
 function makeChatStub(): OrchestrationAgentChatHandle & {
   createSession: ReturnType<typeof vi.fn>;
@@ -459,62 +463,321 @@ describe("spawnAgent tool", () => {
   });
 });
 
+// Walk the deterministic planning sequence to `rounds_complete` so the gated
+// tools (askUserForModelSelection) unlock.
+async function completeDeliberationRounds(setup: Setup): Promise<void> {
+  const at = () => new Date().toISOString();
+  const intake = await setup.svc.recordPlanningIntake(setup.runId, setup.bundlePath, {
+    recordedAt: at(),
+    projectShape: "monorepo · TS",
+    testStack: "vitest",
+    inFlightWork: "fresh lane",
+    ancillarySurfaces: [],
+    ciGates: ["npm run typecheck"],
+  });
+  expect(intake.ok).toBe(true);
+  for (const kind of ["functional", "ui", "extras"] as const) {
+    const round = await setup.svc.recordPlanningRound(setup.runId, setup.bundlePath, {
+      id: "",
+      kind,
+      askedAt: at(),
+      question: `Round ${kind}?`,
+      lockedSummary: `${kind} locked`,
+      selectedOptionIds: ["a"],
+      answeredAt: at(),
+    });
+    expect(round.ok).toBe(true);
+  }
+}
+
+// Full planning so requestPlanApproval reaches the approval pending input:
+// intake + rounds + a derived validation step + model routing + a plan.md that
+// covers the required sections.
+async function completePlanningSequence(
+  setup: Setup,
+  opts: { planMd?: string } = {},
+): Promise<void> {
+  await completeDeliberationRounds(setup);
+  const patch = async (op: ManifestPatchOpForTest) => {
+    const m = setup.svc.getManifestForRun(setup.runId)!;
+    const res = await setup.svc.manifestPatch(
+      { runId: setup.runId, ifMatchEtag: m.etag, actorRole: "lead", actorSessionId: "S-lead", patches: [op] },
+      setup.bundlePath,
+    );
+    expect(res.ok).toBe(true);
+  };
+  await patch({
+    op: "add",
+    path: "/validationStrategy/steps/-",
+    value: {
+      id: "VS-1",
+      concern: "reverify_changes",
+      scope: "per_worker",
+      required: true,
+      prompt: "re-verify the changed files",
+      evidenceRequired: ["plan_md_section"],
+    },
+  });
+  await patch({
+    op: "add",
+    path: "/modelRouting/byRoleTag",
+    value: { "worker:prompt-tools": { provider: "codex", modelId: "gpt-5.4" } },
+  });
+  const m = setup.svc.getManifestForRun(setup.runId)!;
+  const wrote = await setup.svc.planWrite(
+    { runId: setup.runId, nextPlanMd: opts.planMd ?? VALID_APPROVAL_PLAN, ifMatchEtag: m.etag },
+    setup.bundlePath,
+  );
+  expect("error" in wrote).toBe(false);
+}
+
+type ManifestPatchOpForTest = { op: "add" | "replace"; path: string; value: unknown };
+
 describe("requestPlanApproval and model routing tools", () => {
   let setup: Setup;
   afterEach(async () => {
     if (setup) await cleanup(setup);
   });
 
-  it("records plan approval through a plan_approval pending input", async () => {
+  it("records plan approval against the live plan after the gated sequence", async () => {
     setup = await setupWithRun("lead");
+    await completePlanningSequence(setup);
     const onAskUser = vi.fn(async () => ({ answer: "approved", decision: "accept" as const }));
     const tools = makeToolSet(setup, "lead", "S-lead", {
       universal: { permissionMode: "full-auto", onAskUser },
     });
-    const result: any = await tools.requestPlanApproval!.execute({
-      planSummary: VALID_APPROVAL_PLAN,
-    });
+    const result: any = await tools.requestPlanApproval!.execute({});
     expect(result.ok).toBe(true);
     expect(onAskUser).toHaveBeenCalledWith(expect.objectContaining({
       pendingInputKind: "plan_approval",
+      body: VALID_APPROVAL_PLAN,
       providerMetadata: expect.objectContaining({
         orchestrationPlanApproval: true,
-        planQuality: expect.objectContaining({ ok: true }),
+        planContentHash: expect.any(String),
+        planContent: VALID_APPROVAL_PLAN,
       }),
     }));
     const manifest = setup.svc.getManifestForRun(setup.runId)!;
     expect(manifest.currentPhase).toBe("developing");
     expect(manifest.leadState.planApprovedAt).toBeTruthy();
     expect(manifest.leadState.planApprovedBySessionId).toBe("S-lead");
+    expect(manifest.planSpec?.approval.state).toBe("approved");
   });
 
-  it("blocks plan approval until the minimum plan sections are present", async () => {
+  it("requires fresh approval when plan.md changes while approval is pending", async () => {
+    setup = await setupWithRun("lead");
+    await completePlanningSequence(setup);
+    const changedPlan = `${VALID_APPROVAL_PLAN}\n\n## Late edit\nThis should need another approval.`;
+    const onAskUser = vi.fn(async () => {
+      const manifest = setup.svc.getManifestForRun(setup.runId)!;
+      const wrote = await setup.svc.planWrite(
+        { runId: setup.runId, nextPlanMd: changedPlan, ifMatchEtag: manifest.etag },
+        setup.bundlePath,
+      );
+      expect("error" in wrote).toBe(false);
+      return { answer: "approved", decision: "accept" as const };
+    });
+    const tools = makeToolSet(setup, "lead", "S-lead", {
+      universal: { permissionMode: "full-auto", onAskUser },
+    });
+
+    const result: any = await tools.requestPlanApproval!.execute({});
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe("plan_changed_after_review");
+    expect(result.reviewedPlanContentHash).toBe(sha256Text(VALID_APPROVAL_PLAN));
+    expect(result.currentPlanContentHash).toBe(sha256Text(changedPlan));
+    const manifest = setup.svc.getManifestForRun(setup.runId)!;
+    expect(manifest.currentPhase).toBe("planning");
+    expect(manifest.leadState.planApprovedAt).toBeUndefined();
+    expect(manifest.planSpec?.approval.state).toBe("changes_requested");
+    expect(manifest.planSpec?.approval.lastReviewedPlanContentHash).toBe(
+      sha256Text(VALID_APPROVAL_PLAN),
+    );
+    expect(manifest.planSpec?.approval.approvedPlanContentHash).toBeUndefined();
+  });
+
+  it("blocks approval until the deterministic planning sequence is complete", async () => {
     setup = await setupWithRun("lead");
     const onAskUser = vi.fn(async () => ({ answer: "approved", decision: "accept" as const }));
     const tools = makeToolSet(setup, "lead", "S-lead", {
       universal: { permissionMode: "full-auto", onAskUser },
     });
-    const result: any = await tools.requestPlanApproval!.execute({
-      planSummary: "1. do it\n2. verify something",
-    });
+    const result: any = await tools.requestPlanApproval!.execute({});
     expect(result.ok).toBe(false);
-    expect(result.error).toBe("plan_quality_missing_sections");
-    expect(result.missing).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: "out_of_scope" }),
-      expect.objectContaining({ id: "agent_plan" }),
-      expect.objectContaining({ id: "ui_impact" }),
-      expect.objectContaining({ id: "coordination_log" }),
-    ]));
+    expect(result.error).toBe("planning_incomplete");
     expect(onAskUser).not.toHaveBeenCalled();
   });
 
-  it("accepts concise plans that include the minimum approval anatomy", () => {
-    const assessment = assessOrchestrationPlanQuality(VALID_APPROVAL_PLAN);
-    expect(assessment).toEqual({ ok: true, missing: [] });
+  it("blocks approval until plan.md covers the required sections", async () => {
+    setup = await setupWithRun("lead");
+    await completePlanningSequence(setup, { planMd: "# Plan\n\n## Goal\nDo the one thing only." });
+    const onAskUser = vi.fn(async () => ({ answer: "approved", decision: "accept" as const }));
+    const tools = makeToolSet(setup, "lead", "S-lead", {
+      universal: { permissionMode: "full-auto", onAskUser },
+    });
+    const result: any = await tools.requestPlanApproval!.execute({});
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe("plan_not_ready");
+    expect(result.missing.map((entry: any) => entry.id)).toEqual(
+      expect.arrayContaining(["out_of_scope", "coordination"]),
+    );
+    expect(onAskUser).not.toHaveBeenCalled();
+    const manifest = setup.svc.getManifestForRun(setup.runId)!;
+    expect(manifest.leadState.planning?.stage).toBe("rounds_complete");
+    expect(manifest.planSpec?.approval.state).not.toBe("ready");
   });
 
-  it("writes model picker selections into role/tag routing", async () => {
+  it("blocks model selection until the deliberation rounds are recorded", async () => {
     setup = await setupWithRun("lead");
+    const onAskUser = vi.fn(async () => ({ answer: "{}", decision: "accept" as const }));
+    const tools = makeToolSet(setup, "lead", "S-lead", {
+      universal: { permissionMode: "full-auto", onAskUser },
+    });
+    const result: any = await tools.askUserForModelSelection!.execute({ role: "worker", tag: "web-ui" });
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe("planning_not_ready");
+    expect(onAskUser).not.toHaveBeenCalled();
+  });
+
+  it("validates planning-round stage before prompting the user", async () => {
+    setup = await setupWithRun("lead");
+    const onAskUser = vi.fn(async () => ({ answer: "ui", decision: "accept" as const }));
+    const tools = makeToolSet(setup, "lead", "S-lead", {
+      universal: { permissionMode: "full-auto", onAskUser },
+    });
+
+    const result: any = await tools.askPlanningRound!.execute({
+      kind: "ui",
+      question: "Which UI path?",
+      options: [{ id: "ui", label: "UI path" }],
+      lockedSummary: "Choose the UI path.",
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe("stage_conflict");
+    expect(onAskUser).not.toHaveBeenCalled();
+  });
+
+  it("does not copy selected option ids into planning round free text", async () => {
+    setup = await setupWithRun("lead");
+    const onAskUser = vi.fn(async () => ({
+      answer: "safe",
+      answers: { "round-functional": ["safe"] },
+      responseText: null,
+      decision: "accept" as const,
+    }));
+    const tools = makeToolSet(setup, "lead", "S-lead", {
+      universal: { permissionMode: "full-auto", onAskUser },
+    });
+    const intake: any = await tools.recordCodebaseIntake!.execute({
+      projectShape: "desktop app",
+      testStack: "vitest",
+      inFlightWork: "fresh lane",
+    });
+    expect(intake.ok).toBe(true);
+
+    const result: any = await tools.askPlanningRound!.execute({
+      kind: "functional",
+      question: "Which path?",
+      options: [
+        { id: "safe", label: "Safe path", description: "Small scoped fix." },
+        { id: "broad", label: "Broad path", description: "Larger refactor." },
+      ],
+      lockedSummary: "Use the safe path.",
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.selectedOptionIds).toEqual(["safe"]);
+    expect(result.freeText).toBeUndefined();
+    const manifest = setup.svc.getManifestForRun(setup.runId)!;
+    const planning = manifest.leadState.planning;
+    expect(planning).toBeDefined();
+    expect(planning!.rounds[0]).toMatchObject({
+      kind: "functional",
+      selectedOptionIds: ["safe"],
+    });
+    expect(planning!.rounds[0]!.freeText).toBeUndefined();
+  });
+
+  it("splits custom answer text from selected planning option ids", async () => {
+    setup = await setupWithRun("lead");
+    const onAskUser = vi.fn(async () => ({
+      answer: "safe",
+      answers: { "round-functional": ["safe", "Keep the migration reversible."] },
+      responseText: "Prefer a small first pass.",
+      decision: "accept" as const,
+    }));
+    const tools = makeToolSet(setup, "lead", "S-lead", {
+      universal: { permissionMode: "full-auto", onAskUser },
+    });
+    const intake: any = await tools.recordCodebaseIntake!.execute({
+      projectShape: "desktop app",
+      testStack: "vitest",
+      inFlightWork: "fresh lane",
+    });
+    expect(intake.ok).toBe(true);
+
+    const result: any = await tools.askPlanningRound!.execute({
+      kind: "functional",
+      question: "Which path?",
+      options: [
+        { id: "safe", label: "Safe path", description: "Small scoped fix." },
+        { id: "broad", label: "Broad path", description: "Larger refactor." },
+      ],
+      lockedSummary: "Use the safe path.",
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.selectedOptionIds).toEqual(["safe"]);
+    expect(result.freeText).toBe("Prefer a small first pass.\n\nKeep the migration reversible.");
+    const manifest = setup.svc.getManifestForRun(setup.runId)!;
+    const round = manifest.leadState.planning!.rounds[0]!;
+    expect(round.selectedOptionIds).toEqual(["safe"]);
+    expect(round.freeText).toBe("Prefer a small first pass.\n\nKeep the migration reversible.");
+    expect(round.lockedSummary).toBe("Selected: Safe path. Notes: Prefer a small first pass. Keep the migration reversible.");
+  });
+
+  it("derives planning round summary from the actual user response", async () => {
+    setup = await setupWithRun("lead");
+    const onAskUser = vi.fn(async () => ({
+      answer: "broad",
+      answers: { "round-functional": ["broad"] },
+      responseText: "Include the shared service migration.",
+      decision: "accept" as const,
+    }));
+    const tools = makeToolSet(setup, "lead", "S-lead", {
+      universal: { permissionMode: "full-auto", onAskUser },
+    });
+    const intake: any = await tools.recordCodebaseIntake!.execute({
+      projectShape: "desktop app",
+      testStack: "vitest",
+      inFlightWork: "fresh lane",
+    });
+    expect(intake.ok).toBe(true);
+
+    const result: any = await tools.askPlanningRound!.execute({
+      kind: "functional",
+      question: "Which path?",
+      options: [
+        { id: "safe", label: "Safe path", description: "Small scoped fix." },
+        { id: "broad", label: "Broad path", description: "Larger refactor." },
+      ],
+      lockedSummary: "Use the safe path.",
+    });
+
+    expect(result.ok).toBe(true);
+    const round = setup.svc.getManifestForRun(setup.runId)!.leadState.planning!.rounds[0]!;
+    expect(round.selectedOptionIds).toEqual(["broad"]);
+    expect(round.lockedSummary).toBe(
+      "Selected: Broad path. Notes: Include the shared service migration.",
+    );
+    expect(round.lockedSummary).not.toContain("safe");
+  });
+
+  it("writes model picker selections into role/tag routing once rounds are complete", async () => {
+    setup = await setupWithRun("lead");
+    await completeDeliberationRounds(setup);
     const selection = {
       provider: "codex",
       modelId: "gpt-5.4",
@@ -531,6 +794,8 @@ describe("requestPlanApproval and model routing tools", () => {
     const result: any = await tools.askUserForModelSelection!.execute({
       role: "worker",
       tag: "web-ui",
+      workDescription: "Build the web UI",
+      filesHint: ["src/web/app.tsx"],
     });
     expect(result.ok).toBe(true);
     expect(onAskUser).toHaveBeenCalledWith(expect.objectContaining({
@@ -538,10 +803,49 @@ describe("requestPlanApproval and model routing tools", () => {
       providerMetadata: expect.objectContaining({
         role: "worker",
         tag: "web-ui",
+        workDescription: "Build the web UI",
+        filesHint: ["src/web/app.tsx"],
       }),
     }));
     const manifest = setup.svc.getManifestForRun(setup.runId)!;
     expect(manifest.modelRouting.byRoleTag?.["worker:web-ui"]).toEqual(selection);
+  });
+
+  it("rejects model selection for non-spawnable lead role", async () => {
+    setup = await setupWithRun("lead");
+    await completeDeliberationRounds(setup);
+    const onAskUser = vi.fn(async () => ({ answer: "{}", decision: "accept" as const }));
+    const tools = makeToolSet(setup, "lead", "S-lead", {
+      universal: { permissionMode: "full-auto", onAskUser },
+    });
+    const result: any = await tools.askUserForModelSelection!.execute({
+      role: "lead",
+      tag: "web-ui",
+      workDescription: "Lead should not be routed for spawn",
+    } as any);
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe("unsupported_model_role");
+    expect(onAskUser).not.toHaveBeenCalled();
+  });
+
+  it("reports an error when declined-plan state cannot be persisted", async () => {
+    setup = await setupWithRun("lead");
+    await completePlanningSequence(setup);
+    vi.spyOn(setup.svc, "setPlanApprovalState").mockResolvedValueOnce({
+      ok: false,
+      error: "manifest_patch_failed",
+      message: "write failed",
+    } as any);
+    const onAskUser = vi.fn(async () => ({ answer: "Please revise", decision: "decline" as const }));
+    const tools = makeToolSet(setup, "lead", "S-lead", {
+      universal: { permissionMode: "full-auto", onAskUser },
+    });
+
+    const result: any = await tools.requestPlanApproval!.execute({});
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe("manifest_patch_failed");
+    expect(result.detail).toBe("write failed");
   });
 
   it.each([
@@ -550,18 +854,18 @@ describe("requestPlanApproval and model routing tools", () => {
     ["Please revise before we proceed", "decline"],
   ] as const)("does not treat rejection text %j as approval when decision is %s", async (answer, decision) => {
     setup = await setupWithRun("lead");
+    await completePlanningSequence(setup);
     const onAskUser = vi.fn(async () => ({ answer, decision }));
     const tools = makeToolSet(setup, "lead", "S-lead", {
       universal: { permissionMode: "full-auto", onAskUser },
     });
-    const result: any = await tools.requestPlanApproval!.execute({
-      planSummary: VALID_APPROVAL_PLAN,
-    });
+    const result: any = await tools.requestPlanApproval!.execute({});
     expect(result.ok).toBe(false);
     expect(result.error).toBe("plan_rejected");
     const manifest = setup.svc.getManifestForRun(setup.runId)!;
     expect(manifest.currentPhase).toBe("planning");
     expect(manifest.leadState.planApprovedAt).toBeUndefined();
+    expect(manifest.planSpec?.approval.state).toBe("changes_requested");
   });
 });
 

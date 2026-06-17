@@ -2,6 +2,9 @@ import type {
   ManifestPatchOp,
   OrchestrationManifest,
   OrchestrationTaskStatus,
+  PlanningStage,
+  PlanSpec,
+  PlanSpecSectionId,
   ValidationChecklistRun,
 } from "../../../shared/types/orchestration";
 
@@ -23,6 +26,96 @@ export function isPhaseId(value: unknown): value is OrchestrationManifest["curre
   return typeof value === "string" && ORCHESTRATION_PHASE_IDS.has(value);
 }
 
+// ---------------------------------------------------------------------------
+// Planning state machine + PlanSpec seeds
+// ---------------------------------------------------------------------------
+
+export const PLANNING_STAGES = new Set<string>([
+  "intake",
+  "round_functional",
+  "round_ui",
+  "round_extras",
+  "rounds_complete",
+  "ready",
+]);
+
+export function isPlanningStage(value: unknown): value is PlanningStage {
+  return typeof value === "string" && PLANNING_STAGES.has(value);
+}
+
+/** Required-section coverage map for plan.md (drives the readiness gate). */
+const PLAN_SPEC_SECTION_DEFS: { id: PlanSpecSectionId; required: boolean }[] = [
+  { id: "goal", required: true },
+  { id: "assumptions", required: false },
+  { id: "in_scope", required: true },
+  { id: "out_of_scope", required: true },
+  { id: "alternatives", required: true },
+  { id: "implementation_order", required: true },
+  { id: "agent_plan", required: true },
+  { id: "validation_plan", required: true },
+  { id: "ui_decisions", required: true },
+  { id: "coordination", required: true },
+];
+
+export function createInitialPlanningState(): NonNullable<OrchestrationManifest["leadState"]["planning"]> {
+  return { stage: "intake", rounds: [] };
+}
+
+export function createInitialPlanSpec(): PlanSpec {
+  return {
+    sections: PLAN_SPEC_SECTION_DEFS.map((def) => ({
+      id: def.id,
+      required: def.required,
+      status: "missing" as const,
+    })),
+    approval: { state: "drafting" },
+  };
+}
+
+function createApprovedLegacyPlanSpec(
+  approvedAt: string,
+  approvedBySessionId?: string,
+): PlanSpec {
+  return {
+    sections: PLAN_SPEC_SECTION_DEFS.map((def) => ({
+      id: def.id,
+      required: def.required,
+      status: "locked" as const,
+      notApplicable: { reason: "legacy run (created before planSpec)" },
+    })),
+    approval: {
+      state: "approved",
+      approvedAt,
+      ...(approvedBySessionId ? { approvedBySessionId } : {}),
+    },
+  };
+}
+
+/**
+ * Seed / repair the deterministic planning state machine and the PlanSpec
+ * coverage index. Idempotent — preserves existing well-formed values. A legacy
+ * run that was already approved (planApprovedAt set) gets an approved PlanSpec
+ * so the readiness gate never retroactively blocks it.
+ */
+function ensurePlanningAndSpec(manifest: OrchestrationManifest): void {
+  const lead = (manifest.leadState ?? ((manifest as { leadState: OrchestrationManifest["leadState"] }).leadState = {})) as OrchestrationManifest["leadState"];
+  const planning = lead.planning;
+  if (!planning || !isPlanningStage(planning.stage) || !Array.isArray(planning.rounds)) {
+    lead.planning = {
+      stage: isPlanningStage(planning?.stage) ? (planning!.stage as PlanningStage) : "intake",
+      rounds: Array.isArray(planning?.rounds) ? planning!.rounds : [],
+      ...(planning?.intake ? { intake: planning.intake } : {}),
+      ...(planning?.overrides ? { overrides: planning.overrides } : {}),
+    };
+  }
+  const spec = manifest.planSpec;
+  if (!spec || !Array.isArray(spec.sections) || !spec.approval || typeof spec.approval !== "object") {
+    manifest.planSpec = lead.planApprovedAt
+      ? createApprovedLegacyPlanSpec(lead.planApprovedAt, lead.planApprovedBySessionId)
+      : createInitialPlanSpec();
+  }
+}
+
 export function isTaskStatus(value: unknown): value is OrchestrationTaskStatus {
   return typeof value === "string" && ORCHESTRATION_TASK_STATUSES.has(value);
 }
@@ -38,6 +131,7 @@ export function normalizeManifestShape(manifest: OrchestrationManifest): Orchest
   next.tasks = (next.tasks ?? []).map((task) => normalizeTask(task));
   normalizeValidationRerunSupersedes(next.tasks);
   normalizeChecklist(next);
+  ensurePlanningAndSpec(next);
   reconcileActivePhaseProgress(next);
   return next;
 }
@@ -133,6 +227,7 @@ function normalizeValidationChecklistRun(
       : status !== "running" ? { endedAt: startedAt } : {}),
     ...(typeof record.notes === "string" ? { notes: record.notes } : {}),
     ...(Array.isArray(record.attachedEvidence) ? { attachedEvidence: record.attachedEvidence as ValidationChecklistRun["attachedEvidence"] } : {}),
+    ...(Array.isArray(record.findings) ? { findings: record.findings as ValidationChecklistRun["findings"] } : {}),
     ...(typeof record.supersedes === "string" && record.supersedes.trim() ? { supersedes: record.supersedes } : {}),
   };
 }
@@ -284,6 +379,40 @@ export function validateManifestShape(manifest: OrchestrationManifest): string |
   if (taskError) return taskError;
   const vsError = validateValidationStrategy(manifest.validationStrategy);
   if (vsError) return vsError;
+  const planningError = validatePlanningState(manifest.leadState?.planning);
+  if (planningError) return planningError;
+  return null;
+}
+
+function validatePlanningState(
+  planning: OrchestrationManifest["leadState"]["planning"],
+): string | null {
+  if (planning === undefined) return null;
+  if (!planning || typeof planning !== "object") {
+    return "manifest.leadState.planning must be an object";
+  }
+  if (!isPlanningStage(planning.stage)) {
+    return `manifest.leadState.planning.stage must be one of ${[...PLANNING_STAGES].join(", ")}`;
+  }
+  if (!Array.isArray(planning.rounds)) {
+    return "manifest.leadState.planning.rounds must be an array";
+  }
+  const seen = new Set<string>();
+  for (const round of planning.rounds) {
+    if (!round || typeof round !== "object") return "planning round entries must be objects";
+    if (typeof round.id !== "string" || !round.id.trim()) return "planning round entries must include a non-empty id";
+    if (seen.has(round.id)) return `planning rounds contain duplicate id ${round.id}`;
+    seen.add(round.id);
+    if (round.kind !== "functional" && round.kind !== "ui" && round.kind !== "extras") {
+      return `planning round ${round.id} has invalid kind`;
+    }
+    if (typeof round.question !== "string" || !round.question.trim()) {
+      return `planning round ${round.id} must include a non-empty question`;
+    }
+    if (typeof round.lockedSummary !== "string" || !round.lockedSummary.trim()) {
+      return `planning round ${round.id} must include a non-empty lockedSummary`;
+    }
+  }
   return null;
 }
 

@@ -186,28 +186,35 @@ export function TaskCard({
         </div>
       ) : null}
 
-      {/* Row 5: owner + elapsed */}
+      {/* Row 5: owner + elapsed + explicit jump-to-chat */}
       {(owner || elapsedLabel) ? (
-        <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 font-sans text-[11px] text-muted-fg/50">
+        <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 font-sans text-[11px] text-muted-fg/50">
           {owner ? (
-            <button
-              type="button"
-              onClick={() => onOpenSession?.(owner.sessionId)}
-              className="inline-flex items-center gap-1 text-fg/60 hover:text-fg/85"
-              title={`Open ${owner.role} chat`}
-            >
+            <span className="inline-flex items-center gap-1 text-fg/60">
               <UserCircle size={11} weight="duotone" />
               <span>
                 {owner.role}
                 {owner.tag ? ` · ${owner.tag}` : ""}
               </span>
-            </button>
+            </span>
           ) : null}
           {elapsedLabel ? (
             <span className="inline-flex items-center gap-1">
               <ClockClockwise size={11} weight="duotone" />
               <span className="tabular-nums">{elapsedLabel}</span>
             </span>
+          ) : null}
+          {owner ? (
+            <button
+              type="button"
+              data-testid="orchestration-task-open-chat"
+              onClick={() => onOpenSession?.(owner.sessionId)}
+              className="ml-auto inline-flex items-center gap-1 rounded-md border border-sky-300/30 bg-sky-300/10 px-1.5 py-0.5 text-[10px] font-medium text-sky-100 transition-colors hover:bg-sky-300/[0.18]"
+              title={`Open ${owner.role}${owner.tag ? ` · ${owner.tag}` : ""} chat`}
+            >
+              <ChatTeardropDots size={10} weight="duotone" />
+              Open chat
+            </button>
           ) : null}
         </div>
       ) : null}

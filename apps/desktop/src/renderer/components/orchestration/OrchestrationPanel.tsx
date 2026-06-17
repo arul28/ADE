@@ -30,13 +30,14 @@
 
 import {
   type CSSProperties,
+  useCallback,
   useEffect,
   useMemo,
   useReducer,
   useRef,
   useState,
 } from "react";
-import { ChatTeardropDots } from "@phosphor-icons/react";
+import { ChatTeardropDots, UsersThree } from "@phosphor-icons/react";
 import type {
   OrchestrationAgent,
   OrchestrationEventPayload,
@@ -62,9 +63,11 @@ import {
   CollapsedRail,
   RunHeader,
   PlanReadyBar,
+  PlanApprovalFooter,
   SectionHeader,
 } from "./PanelChrome";
 import { PhaseAccordion } from "./PhaseAccordion";
+import { ValidationFindings } from "./ValidationFindings";
 
 /* ──────────────────────────────────────────────────────────────────────────
    Test IDs (stable cross-file references)
@@ -264,6 +267,19 @@ export function OrchestrationPanel({
     return map;
   }, [manifest]);
 
+  // Route the task context-menu "open worker chat" action to the jump handler
+  // (it previously bubbled to an unhandled onTaskAction and did nothing).
+  const handleTaskAction = useCallback(
+    (action: OrchestrationTaskAction, task: OrchestrationTask) => {
+      if (action.kind === "open-worker-chat") {
+        if (task.assigneeSessionId) onOpenSession?.(task.assigneeSessionId);
+        return;
+      }
+      onTaskAction?.(action, task);
+    },
+    [onTaskAction, onOpenSession],
+  );
+
   if (collapsed) {
     return (
       <CollapsedRail
@@ -274,6 +290,21 @@ export function OrchestrationPanel({
       />
     );
   }
+
+  // Plan-diff signal: the lead changed plan.md since the last time the user
+  // reviewed it (decline records the reviewed hash; re-approval carries the
+  // current one). We surface a lightweight "updated" badge on re-approval.
+  const pendingPlanHash = ((): string | null => {
+    const meta = (planApprovalPending?.request as { providerMetadata?: Record<string, unknown> } | undefined)
+      ?.providerMetadata;
+    const h = meta?.planContentHash;
+    return typeof h === "string" ? h : null;
+  })();
+  const lastReviewedHash = manifest?.planSpec?.approval.lastReviewedPlanContentHash ?? null;
+  const changedSinceLastReview = Boolean(
+    pendingPlanHash && lastReviewedHash && pendingPlanHash !== lastReviewedHash,
+  );
+  const hasPlanNarrative = state.planMd.trim().length > 0;
 
   return (
     <aside
@@ -295,7 +326,10 @@ export function OrchestrationPanel({
         error={state.error}
       />
 
-      {planApprovalPending ? (
+      {/* Approval normally docks to the live plan narrative below; this top bar
+          is only a fallback for the rare case where approval is pending but no
+          plan.md has been authored yet. */}
+      {planApprovalPending && !hasPlanNarrative ? (
         <PlanReadyBar
           pending={planApprovalPending}
           onImplement={onPlanApproval}
@@ -303,6 +337,9 @@ export function OrchestrationPanel({
       ) : null}
 
       <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+        {/* Agents roster — every agent in the run with a one-click jump to its chat */}
+        <AgentsRoster agents={manifest?.agents ?? []} onOpenSession={onOpenSession} />
+
         {/* Phases */}
         <div className="flex flex-col gap-2 px-3 pt-3">
           {phases.map((phase) => (
@@ -314,20 +351,24 @@ export function OrchestrationPanel({
               isLead={isLead}
               agents={agentsBySessionId}
               validation={manifest?.validationStrategy}
-              onTaskAction={onTaskAction}
+              onTaskAction={handleTaskAction}
               onOpenSession={onOpenSession}
               registerTaskRef={(id, el) => {
                 if (el) taskRefs.current.set(id, el);
                 else taskRefs.current.delete(id);
               }}
               decisions={manifest?.decisions ?? []}
+              planning={manifest?.leadState?.planning}
               highlightedTaskId={highlightedTaskId}
             />
           ))}
         </div>
 
-        {/* plan.md narrative */}
-        {state.planMd.trim() ? (
+        {/* Validation findings — severity-ranked roll-up of the validator panel */}
+        <ValidationFindings manifest={manifest} />
+
+        {/* plan.md narrative — the single source of truth, and where approval docks */}
+        {hasPlanNarrative ? (
           <div className="mt-4 border-t border-white/[0.05] px-3 py-3">
             <SectionHeader icon={<ChatTeardropDots size={11} weight="duotone" />}>
               Plan narrative
@@ -341,6 +382,13 @@ export function OrchestrationPanel({
                 resolveAsset={resolveAsset}
                 bundleRoot={bundleRoot ?? manifest?.bundlePath ?? null}
               />
+              {planApprovalPending ? (
+                <PlanApprovalFooter
+                  pending={planApprovalPending}
+                  onImplement={onPlanApproval}
+                  changedSinceLastReview={changedSinceLastReview}
+                />
+              ) : null}
             </div>
           </div>
         ) : null}
@@ -349,6 +397,74 @@ export function OrchestrationPanel({
         <div className="h-6 shrink-0" />
       </div>
     </aside>
+  );
+}
+
+/* ──────────────────────────────────────────────────────────────────────────
+   Agents roster — every agent in the run + a one-click jump to its chat
+   ────────────────────────────────────────────────────────────────────────── */
+
+function AgentStatusDot({ status }: { status: OrchestrationAgent["status"] }) {
+  const color =
+    status === "running"
+      ? "rgb(110, 231, 183)"
+      : status === "completed"
+        ? "rgb(110, 231, 183)"
+        : status === "failed"
+          ? "rgb(252, 165, 165)"
+          : status === "blocked"
+            ? "rgb(253, 224, 71)"
+            : "rgba(255,255,255,0.35)";
+  return (
+    <span
+      aria-hidden
+      title={status}
+      className={cn("inline-block h-2 w-2 shrink-0 rounded-full", status === "running" && "animate-pulse")}
+      style={{ background: color }}
+    />
+  );
+}
+
+function AgentsRoster({
+  agents,
+  onOpenSession,
+}: {
+  agents: OrchestrationAgent[];
+  onOpenSession?: (sessionId: string) => void;
+}) {
+  if (!agents.length) return null;
+  return (
+    <div
+      data-testid="orchestration-agents-roster"
+      className="border-b border-white/[0.05] px-3 py-2.5"
+    >
+      <SectionHeader icon={<UsersThree size={11} weight="duotone" />}>Agents</SectionHeader>
+      <div className="mt-2 flex flex-col gap-0.5">
+        {agents.map((agent) => (
+          <div
+            key={agent.sessionId}
+            className="flex items-center gap-2 rounded-md px-1.5 py-1 transition-colors hover:bg-white/[0.02]"
+          >
+            <AgentStatusDot status={agent.status} />
+            <span className="min-w-0 flex-1 truncate font-sans text-[12px] text-fg/75">
+              {agent.role}
+              {agent.tag ? <span className="text-fg/55"> · {agent.tag}</span> : null}
+            </span>
+            <button
+              type="button"
+              data-testid="orchestration-roster-open-chat"
+              aria-label={`Open ${agent.role}${agent.tag ? ` · ${agent.tag}` : ""} chat`}
+              onClick={() => onOpenSession?.(agent.sessionId)}
+              className="inline-flex items-center gap-1 rounded-md border border-sky-300/30 bg-sky-300/10 px-1.5 py-0.5 text-[10px] font-medium text-sky-100 transition-colors hover:bg-sky-300/[0.18]"
+              title={`Open ${agent.role}${agent.tag ? ` · ${agent.tag}` : ""} chat`}
+            >
+              <ChatTeardropDots size={10} weight="duotone" />
+              Open chat
+            </button>
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
 
