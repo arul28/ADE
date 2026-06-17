@@ -185,8 +185,8 @@ type BrowserCrop = {
 const BOUNDS_SETTLE_MS = 1_200;
 const BOUNDS_SETTLE_MIN_FRAME_MS = 32;
 const DEFAULT_BROWSER_URL = "https://www.google.com/";
-const OVERLAY_Z_INDEX_THRESHOLD = 20;
 const OVERLAY_ROLES = new Set(["alertdialog", "dialog", "listbox", "menu", "tooltip"]);
+const OVERLAY_MOTION_EVENTS = ["animationend", "animationiteration", "animationstart", "transitioncancel", "transitionend", "transitionrun", "transitionstart"] as const;
 const OVERLAY_CANDIDATE_SELECTOR = [
   '[role="alertdialog"]',
   '[role="dialog"]',
@@ -537,6 +537,19 @@ function rectsOverlap(a: DOMRect, b: DOMRect): boolean {
   return a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
 }
 
+type BrowserOverlayRect = Pick<DOMRect, "bottom" | "height" | "left" | "right" | "top" | "width">;
+
+function rectIntersection(a: BrowserOverlayRect, b: BrowserOverlayRect): BrowserOverlayRect | null {
+  const left = Math.max(a.left, b.left);
+  const right = Math.min(a.right, b.right);
+  const top = Math.max(a.top, b.top);
+  const bottom = Math.min(a.bottom, b.bottom);
+  const width = right - left;
+  const height = bottom - top;
+  if (width <= 0 || height <= 0) return null;
+  return { bottom, height, left, right, top, width };
+}
+
 function isBrowserOverlayCandidate(element: HTMLElement): boolean {
   const style = window.getComputedStyle(element);
   if (
@@ -561,20 +574,42 @@ function isBrowserOverlayCandidate(element: HTMLElement): boolean {
   ) {
     return true;
   }
-  const zIndex = Number.parseInt(style.zIndex, 10);
-  const hasZIndex = Number.isFinite(zIndex);
-  if (!hasZIndex || zIndex < OVERLAY_Z_INDEX_THRESHOLD) return false;
   return style.position === "fixed" || style.position === "absolute" || style.position === "sticky";
+}
+
+function overlayCandidateOwnsPoint(element: HTMLElement, x: number, y: number): boolean {
+  if (typeof document.elementFromPoint !== "function") return true;
+  const topElement = document.elementFromPoint(x, y);
+  return topElement === element || (topElement != null && element.contains(topElement));
+}
+
+function overlayCandidatePaintsOverSurface(element: HTMLElement, surfaceRect: DOMRect): boolean {
+  const overlap = rectIntersection(surfaceRect, element.getBoundingClientRect());
+  if (!overlap) return false;
+  const points = [
+    [overlap.left + overlap.width / 2, overlap.top + overlap.height / 2],
+    [overlap.left + 1, overlap.top + 1],
+    [overlap.right - 1, overlap.top + 1],
+    [overlap.left + 1, overlap.bottom - 1],
+    [overlap.right - 1, overlap.bottom - 1],
+  ];
+  return points.some(([x, y]) => overlayCandidateOwnsPoint(element, x, y));
+}
+
+function collectBrowserOverlayCandidates(surface: HTMLElement): HTMLElement[] {
+  return Array.from(document.body.querySelectorAll<HTMLElement>(OVERLAY_CANDIDATE_SELECTOR)).filter((element) => {
+    if (element === surface || surface.contains(element) || element.contains(surface)) return false;
+    return isBrowserOverlayCandidate(element);
+  });
 }
 
 function browserSurfaceHasExternalOverlay(surface: HTMLElement): boolean {
   if (!surface.isConnected || !document.body) return false;
   const surfaceRect = surface.getBoundingClientRect();
   if (surfaceRect.width < 4 || surfaceRect.height < 4) return false;
-  for (const element of Array.from(document.body.querySelectorAll<HTMLElement>(OVERLAY_CANDIDATE_SELECTOR))) {
-    if (element === surface || surface.contains(element) || element.contains(surface)) continue;
-    if (!isBrowserOverlayCandidate(element)) continue;
-    if (rectsOverlap(surfaceRect, element.getBoundingClientRect())) return true;
+  for (const element of collectBrowserOverlayCandidates(surface)) {
+    const elementRect = element.getBoundingClientRect();
+    if (rectsOverlap(surfaceRect, elementRect) && overlayCandidatePaintsOverSurface(element, surfaceRect)) return true;
   }
   return false;
 }
@@ -940,10 +975,27 @@ export function ChatBuiltInBrowserPanel({
     const checkForOverlay = () => {
       animationFrame = null;
       setOverlayOccluded(browserSurfaceHasExternalOverlay(element));
+      refreshObservedOverlays();
     };
     const scheduleCheck = () => {
       if (animationFrame != null) return;
       animationFrame = window.requestAnimationFrame(checkForOverlay);
+    };
+    const resizeObserver = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(scheduleCheck);
+    const observedOverlays = new Set<HTMLElement>();
+    const refreshObservedOverlays = () => {
+      if (!resizeObserver || !document.body) return;
+      const nextOverlays = new Set(collectBrowserOverlayCandidates(element));
+      for (const overlay of observedOverlays) {
+        if (nextOverlays.has(overlay)) continue;
+        resizeObserver.unobserve(overlay);
+        observedOverlays.delete(overlay);
+      }
+      for (const overlay of nextOverlays) {
+        if (observedOverlays.has(overlay)) continue;
+        resizeObserver.observe(overlay);
+        observedOverlays.add(overlay);
+      }
     };
     const observer = new MutationObserver(scheduleCheck);
     observer.observe(document.body, {
@@ -955,10 +1007,17 @@ export function ChatBuiltInBrowserPanel({
     scheduleCheck();
     window.addEventListener("resize", scheduleCheck);
     window.addEventListener("scroll", scheduleCheck, true);
+    for (const eventName of OVERLAY_MOTION_EVENTS) {
+      document.addEventListener(eventName, scheduleCheck, true);
+    }
     return () => {
       observer.disconnect();
+      resizeObserver?.disconnect();
       window.removeEventListener("resize", scheduleCheck);
       window.removeEventListener("scroll", scheduleCheck, true);
+      for (const eventName of OVERLAY_MOTION_EVENTS) {
+        document.removeEventListener(eventName, scheduleCheck, true);
+      }
       cancelFrame();
       browserOverlayOccludedRef.current = false;
     };

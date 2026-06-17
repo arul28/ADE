@@ -574,6 +574,7 @@ function createBuiltInBrowserWindowService(args: {
   let lastEmittedStatusKey: string | null = null;
   const configuredWebContents = new WeakSet<WebContents>();
   let configuredBrowserSession: ReturnType<typeof browserSessionForProfile> | null = null;
+  const reservedBrowserDownloadPaths = new Set<string>();
 
   const logger = (): Logger | null => {
     try {
@@ -1288,28 +1289,31 @@ function createBuiltInBrowserWindowService(args: {
       const tab = tabForWebContents(downloadWebContents);
       if (!tab) return;
       const startedAt = new Date().toISOString();
+      const downloadUrl = stringOrNull(item.getURL());
+      const fileName = sanitizeDownloadFilename(item.getFilename());
       let savePath: string | null = null;
       try {
-        savePath = builtInBrowserDownloadPath(item);
+        savePath = builtInBrowserDownloadPath(fileName, reservedBrowserDownloadPaths);
         item.setSavePath(savePath);
-        logger()?.info("built_in_browser.download_started", {
-          url: stringOrNull(item.getURL()),
-          fileName: stringOrNull(item.getFilename()),
-          savePath,
-          tabId: tab?.id ?? null,
-        });
+        reservedBrowserDownloadPaths.add(savePath);
       } catch (error) {
         event.preventDefault();
         emitError(new Error(`Could not start ADE browser download: ${errorMessage(error)}`));
         return;
       }
+      logger()?.info("built_in_browser.download_started", {
+        urlOrigin: downloadUrlOrigin(downloadUrl),
+        fileName,
+        tabId: tab?.id ?? null,
+      });
 
       item.once("done", (_doneEvent, state) => {
+        if (savePath) reservedBrowserDownloadPaths.delete(savePath);
         const endedAt = new Date().toISOString();
         const error = state === "completed" ? null : `Download ${state}`;
         if (tab) {
           pushNetworkDiagnostic(tab, {
-            url: stringOrNull(item.getURL()) ?? "about:blank",
+            url: downloadUrlForDiagnostics(downloadUrl) ?? "about:blank",
             method: "GET",
             resourceType: "download",
             statusCode: null,
@@ -1321,9 +1325,8 @@ function createBuiltInBrowserWindowService(args: {
           noteNetworkActivity(tab);
         }
         logger()?.info(state === "completed" ? "built_in_browser.download_completed" : "built_in_browser.download_finished_non_success", {
-          url: stringOrNull(item.getURL()),
-          fileName: stringOrNull(item.getFilename()),
-          savePath,
+          urlOrigin: downloadUrlOrigin(downloadUrl),
+          fileName,
           state,
           tabId: tab?.id ?? null,
         });
@@ -2112,6 +2115,7 @@ function createBuiltInBrowserWindowService(args: {
     browserSessions = [];
     activeTabId = null;
     configuredBrowserSession = null;
+    reservedBrowserDownloadPaths.clear();
   }
 
   const attachDebuggerListeners = (wc: WebContents): void => {
@@ -2892,9 +2896,9 @@ function normalizeLeaseTtlMs(value: unknown): number {
   return Math.max(1_000, Math.min(MAX_TAB_LEASE_TTL_MS, raw));
 }
 
-function builtInBrowserDownloadPath(item: DownloadItem): string {
+function builtInBrowserDownloadPath(filename: string, reservedPaths: ReadonlySet<string>): string {
   const downloadsDir = app.getPath("downloads");
-  return uniqueDownloadPath(downloadsDir, sanitizeDownloadFilename(item.getFilename()));
+  return uniqueDownloadPath(downloadsDir, filename, reservedPaths);
 }
 
 function sanitizeDownloadFilename(value: string | null | undefined): string {
@@ -2904,13 +2908,37 @@ function sanitizeDownloadFilename(value: string | null | undefined): string {
   return `ade-browser-download-${Date.now()}`;
 }
 
-function uniqueDownloadPath(directory: string, filename: string): string {
+function uniqueDownloadPath(directory: string, filename: string, reservedPaths: ReadonlySet<string>): string {
   const parsed = path.parse(filename);
   let candidate = path.join(directory, filename);
-  for (let index = 1; index < 1_000 && existsSync(candidate); index += 1) {
+  for (let index = 1; index < 1_000 && (existsSync(candidate) || reservedPaths.has(candidate)); index += 1) {
     candidate = path.join(directory, `${parsed.name} (${index})${parsed.ext}`);
   }
+  if (existsSync(candidate) || reservedPaths.has(candidate)) {
+    throw new Error(`Could not find an unused download filename for ${filename}`);
+  }
   return candidate;
+}
+
+function downloadUrlOrigin(value: string | null | undefined): string | null {
+  if (!value) return null;
+  try {
+    const url = new URL(value);
+    return url.origin === "null" ? url.protocol : url.origin;
+  } catch {
+    return null;
+  }
+}
+
+function downloadUrlForDiagnostics(value: string | null | undefined): string | null {
+  if (!value) return null;
+  try {
+    const url = new URL(value);
+    if (url.origin === "null") return url.protocol;
+    return `${url.origin}${url.pathname}`;
+  } catch {
+    return null;
+  }
 }
 
 function isLeaseExpired(value: string | null): boolean {

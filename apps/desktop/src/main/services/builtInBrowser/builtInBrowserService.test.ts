@@ -1048,12 +1048,18 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
   });
 
   it("assigns ADE browser downloads to the user's Downloads folder", async () => {
-    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+    const logger = {
+      debug: vi.fn(),
+      error: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+    };
+    const service = createBuiltInBrowserService({ getLogger: () => logger, onEvent: collector.onEvent });
     await service.createTab({ url: "https://example.test", activate: true });
     const doneHandlers: Array<(_event: unknown, state: "completed" | "cancelled" | "interrupted") => void> = [];
     const item = {
       getFilename: vi.fn(() => "report?:final.zip"),
-      getURL: vi.fn(() => "https://example.test/report.zip"),
+      getURL: vi.fn(() => "https://example.test/report.zip?token=secret"),
       setSavePath: vi.fn(),
       once: vi.fn((event: "done", handler: (_event: unknown, state: "completed" | "cancelled" | "interrupted") => void) => {
         if (event === "done") doneHandlers.push(handler);
@@ -1071,6 +1077,14 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
     const tab = service.getStatus().tabs[0];
     expect(tab?.id).toEqual(expect.any(String));
     expect(collector.events.at(-1)).toMatchObject({ type: "status" });
+    expect(logger.info).toHaveBeenCalledWith("built_in_browser.download_started", expect.objectContaining({
+      fileName: "report__final.zip",
+      tabId: tab?.id,
+      urlOrigin: "https://example.test",
+    }));
+    const logPayload = JSON.stringify(logger.info.mock.calls);
+    expect(logPayload).not.toContain("token=secret");
+    expect(logPayload).not.toContain("/Users/test/Downloads");
   });
 
   it("uses a unique filename when a browser download would overwrite an existing file", async () => {
@@ -1091,6 +1105,68 @@ describe("createBuiltInBrowserService — bounds and status dedupe", () => {
       fakes.dispatchWillDownload(item);
 
       expect(item.setSavePath).toHaveBeenCalledWith(path.join(downloadDir, "report (2).zip"));
+    } finally {
+      fs.rmSync(downloadDir, { recursive: true, force: true });
+    }
+  });
+
+  it("reserves in-flight browser download filenames until the download completes", async () => {
+    const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+    await service.createTab({ url: "https://example.test", activate: true });
+    const doneHandlers: Array<Array<(_event: unknown, state: "completed" | "cancelled" | "interrupted") => void>> = [];
+    const itemFor = (index: number) => {
+      doneHandlers[index] = [];
+      return {
+        getFilename: vi.fn(() => "report.zip"),
+        getURL: vi.fn(() => "https://example.test/report.zip"),
+        setSavePath: vi.fn(),
+        once: vi.fn((event: "done", handler: (_event: unknown, state: "completed" | "cancelled" | "interrupted") => void) => {
+          if (event === "done") doneHandlers[index]?.push(handler);
+        }),
+      };
+    };
+
+    const first = itemFor(0);
+    const second = itemFor(1);
+    const third = itemFor(2);
+
+    fakes.dispatchWillDownload(first);
+    fakes.dispatchWillDownload(second);
+
+    expect(first.setSavePath).toHaveBeenCalledWith(path.join("/Users/test/Downloads", "report.zip"));
+    expect(second.setSavePath).toHaveBeenCalledWith(path.join("/Users/test/Downloads", "report (1).zip"));
+
+    doneHandlers[0]?.[0]?.({}, "completed");
+    fakes.dispatchWillDownload(third);
+
+    expect(third.setSavePath).toHaveBeenCalledWith(path.join("/Users/test/Downloads", "report.zip"));
+  });
+
+  it("cancels a download when no unique filename is available", async () => {
+    const downloadDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-browser-download-full-"));
+    try {
+      fs.writeFileSync(path.join(downloadDir, "report.zip"), "");
+      for (let index = 1; index < 1_000; index += 1) {
+        fs.writeFileSync(path.join(downloadDir, `report (${index}).zip`), "");
+      }
+      fakes.appGetPath.mockImplementationOnce(() => downloadDir);
+      const service = createBuiltInBrowserService({ onEvent: collector.onEvent });
+      await service.createTab({ url: "https://example.test", activate: true });
+      const item = {
+        getFilename: vi.fn(() => "report.zip"),
+        getURL: vi.fn(() => "https://example.test/report.zip"),
+        setSavePath: vi.fn(),
+        once: vi.fn(),
+      };
+
+      const event = fakes.dispatchWillDownload(item);
+
+      expect(event.preventDefault).toHaveBeenCalled();
+      expect(item.setSavePath).not.toHaveBeenCalled();
+      expect(collector.events.at(-1)).toMatchObject({
+        type: "error",
+        message: expect.stringContaining("Could not find an unused download filename"),
+      });
     } finally {
       fs.rmSync(downloadDir, { recursive: true, force: true });
     }
