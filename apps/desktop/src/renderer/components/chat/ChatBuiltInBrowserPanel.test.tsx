@@ -230,6 +230,46 @@ describe("ChatBuiltInBrowserPanel", () => {
     });
   });
 
+  it("hides the native browser while ADE overlays overlap the browser surface", async () => {
+    const { api } = installBrowserApi();
+
+    render(<ChatBuiltInBrowserPanel sessionId="chat-1" />);
+
+    await waitFor(() => {
+      expect(api.setBounds).toHaveBeenCalledWith(expect.objectContaining({
+        width: 640,
+        height: 360,
+        visible: true,
+      }));
+    });
+
+    const overlay = document.createElement("div");
+    overlay.setAttribute("role", "dialog");
+    overlay.style.position = "fixed";
+    overlay.style.zIndex = "9999";
+    overlay.style.width = "320px";
+    overlay.style.height = "180px";
+    document.body.appendChild(overlay);
+
+    await waitFor(() => {
+      expect(api.setBounds).toHaveBeenLastCalledWith(expect.objectContaining({
+        width: 640,
+        height: 360,
+        visible: false,
+      }));
+    });
+
+    overlay.remove();
+
+    await waitFor(() => {
+      expect(api.setBounds).toHaveBeenLastCalledWith(expect.objectContaining({
+        width: 640,
+        height: 360,
+        visible: true,
+      }));
+    });
+  });
+
   it("starts and cancels screenshot crop mode when chat context is available", async () => {
     const { api } = installBrowserApi();
     api.captureScreenshot.mockResolvedValue({
