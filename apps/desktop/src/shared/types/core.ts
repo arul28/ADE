@@ -202,6 +202,13 @@ export type AppNavigationRequest = {
   source?: "ade-code" | "desktop" | "cli" | string;
 };
 
+/**
+ * Window-zoom command dispatched from the native View menu to the renderer so
+ * menu/keyboard zoom flows through the same path as the in-app zoom counter
+ * (display %, persistence, and the macOS traffic-light inset stay in sync).
+ */
+export type AppZoomCommand = "in" | "out" | "reset";
+
 export type AppNavigationResult = {
   ok: boolean;
   mode: "desktop" | "unavailable";

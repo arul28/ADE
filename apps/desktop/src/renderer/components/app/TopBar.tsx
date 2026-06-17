@@ -31,8 +31,11 @@ import {
   ZOOM_LEVEL_KEY,
   MIN_ZOOM_LEVEL,
   MAX_ZOOM_LEVEL,
+  DEFAULT_ZOOM,
+  ZOOM_STEP,
   displayZoomToLevel,
   getStoredZoomLevel,
+  applyShellHeaderInset,
 } from "../../lib/zoom";
 import { cn } from "../ui/cn";
 import { SmartTooltip } from "../ui/SmartTooltip";
@@ -1035,11 +1038,29 @@ export function TopBar() {
     const clamped = Math.max(MIN_ZOOM_LEVEL, Math.min(MAX_ZOOM_LEVEL, pct));
     window.ade.zoom.setLevel(displayZoomToLevel(clamped));
     localStorage.setItem(ZOOM_LEVEL_KEY, String(clamped));
+    applyShellHeaderInset(clamped);
     setZoom(clamped);
   }, []);
 
-  const zoomIn = useCallback(() => applyZoom(zoom + 10), [applyZoom, zoom]);
-  const zoomOut = useCallback(() => applyZoom(zoom - 10), [applyZoom, zoom]);
+  const zoomIn = useCallback(() => applyZoom(zoom + ZOOM_STEP), [applyZoom, zoom]);
+  const zoomOut = useCallback(() => applyZoom(zoom - ZOOM_STEP), [applyZoom, zoom]);
+
+  // Route native View-menu (and keyboard) zoom through the same applyZoom path
+  // so display %, persistence, and the macOS traffic-light inset stay in sync.
+  // A ref holds the latest zoom so the listener stays subscribed across changes.
+  const zoomRef = useRef(zoom);
+  useEffect(() => {
+    zoomRef.current = zoom;
+  }, [zoom]);
+  useEffect(() => {
+    const onCommand = window.ade?.zoom?.onCommand;
+    if (typeof onCommand !== "function") return;
+    return onCommand((command) => {
+      if (command === "in") applyZoom(zoomRef.current + ZOOM_STEP);
+      else if (command === "out") applyZoom(zoomRef.current - ZOOM_STEP);
+      else applyZoom(DEFAULT_ZOOM);
+    });
+  }, [applyZoom]);
 
   const fetchRecent = useCallback((options?: { force?: boolean }) => {
     listRecentProjectsCached(options)

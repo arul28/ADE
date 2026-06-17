@@ -21,6 +21,7 @@ import type {
   AppResourceUsageSnapshot,
   LatestReleaseInfo,
   AppNavigationRequest,
+  AppZoomCommand,
   AutoUpdateSnapshot,
   UpdateInstallImpact,
   ClearLocalAdeDataArgs,
@@ -8054,6 +8055,14 @@ contextBridge.exposeInMainWorld("ade", {
     getLevel: (): number => webFrame.getZoomLevel(),
     setLevel: (level: number): void => webFrame.setZoomLevel(level),
     getFactor: (): number => webFrame.getZoomFactor(),
+    onCommand: (cb: (command: AppZoomCommand) => void) => {
+      const listener = (
+        _event: Electron.IpcRendererEvent,
+        payload: AppZoomCommand,
+      ) => cb(payload);
+      ipcRenderer.on(IPC.appZoomCommand, listener);
+      return () => ipcRenderer.removeListener(IPC.appZoomCommand, listener);
+    },
   },
   cto: {
     getState: async (args: CtoGetStateArgs = {}): Promise<CtoSnapshot> =>

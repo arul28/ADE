@@ -10,6 +10,7 @@ export const IPC = {
   appOpenProjectInNewWindow: "ade.app.openProjectInNewWindow",
   appCloseWindow: "ade.app.closeWindow",
   appNavigate: "ade.app.navigate",
+  appZoomCommand: "ade.app.zoomCommand",
   appProjectChanged: "ade.app.projectChanged",
   appProjectBindingChanged: "ade.app.projectBindingChanged",
   appOpenExternal: "ade.app.openExternal",
