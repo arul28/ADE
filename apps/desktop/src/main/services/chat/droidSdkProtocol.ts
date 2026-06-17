@@ -80,8 +80,9 @@ export type DroidSdkPermissionDecision = {
 // `AskUserRequestParamsSchema`). The SDK exposes exactly `topic`, `question`,
 // and `options: string[]` per question — there is no per-option description,
 // no multiSelect/allowMultiple flag, and no default-value field, so options are
-// surfaced as bare label=value choices and the topic becomes the question
-// header. This is the full ceiling of the Droid ask-user contract.
+// surfaced as bare choices and the topic becomes the question header. Display
+// labels may be trimmed, but values preserve Droid's original option strings.
+// This is the full ceiling of the Droid ask-user contract.
 export type DroidSdkAskUserRequest = {
   id: string;
   toolCallId: string;
@@ -91,7 +92,7 @@ export type DroidSdkAskUserRequest = {
     /** Droid's per-question `topic` (short label), surfaced as the card header. */
     header?: string;
     question: string;
-    /** Droid options are plain strings; label and value are identical. */
+    /** Droid options are plain strings; value preserves the exact SDK string. */
     options?: Array<{ label: string; value: string }>;
   }>;
   raw: unknown;

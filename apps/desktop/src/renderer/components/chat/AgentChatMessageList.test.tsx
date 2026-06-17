@@ -2257,6 +2257,42 @@ describe("AgentChatMessageList inline ask-user card", () => {
     expect(onApproval).toHaveBeenCalledWith("approval-ask", "accept", null, { plan_choice: "rebase" });
   });
 
+  it("number keys select single-choice answers without submitting immediately", () => {
+    const onApproval = vi.fn();
+    renderMessageList([
+      buildStructuredApprovalEvent({
+        questions: [
+          {
+            id: "plan_choice",
+            header: "Plan",
+            question: "Which plan should we follow?",
+            options: [
+              {
+                label: "Rebase",
+                value: "rebase",
+                preview: "Replay commits on main.",
+                previewFormat: "markdown",
+              },
+              { label: "Merge", value: "merge" },
+            ],
+            allowsFreeform: true,
+          },
+        ],
+      }),
+    ], { onApproval });
+
+    const questionCard = screen.getByRole("group", { name: /ade asks/i });
+
+    fireEvent.keyDown(questionCard, { key: "1" });
+
+    expect(onApproval).not.toHaveBeenCalled();
+    expect(findButtonByTextContent(/^Rebase/).getAttribute("aria-checked")).toBe("true");
+    expect(screen.getByTestId("inline-question-preview-plan_choice").textContent ?? "").toContain("Replay commits on main.");
+
+    fireEvent.keyDown(questionCard, { key: "Enter" });
+    expect(onApproval).toHaveBeenCalledWith("approval-ask", "accept", null, { plan_choice: "rebase" });
+  });
+
   it("accumulates multi-select values and submits as an array when Send is clicked", () => {
     const onApproval = vi.fn();
     renderMessageList([

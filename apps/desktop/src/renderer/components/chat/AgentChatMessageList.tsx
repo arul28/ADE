@@ -1828,8 +1828,9 @@ function InlineQuestionRequestCard({
     onApproval?.(itemId, "accept", null, { ...answers, ...(extraAnswers ?? {}) });
   }, [drafts, itemId, onApproval, questions, selected]);
 
-  const handleOption = useCallback((question: InlineQuestion, option: InlineQuestionOption) => {
-    if (!question.multiSelect && questions.length === 1) {
+  const handleOption = useCallback((question: InlineQuestion, option: InlineQuestionOption, opts?: { submitSingle?: boolean }) => {
+    const submitSingle = opts?.submitSingle ?? true;
+    if (submitSingle && !question.multiSelect && questions.length === 1) {
       onApproval?.(itemId, "accept", null, { [question.id]: option.value });
       return;
     }
@@ -1873,7 +1874,7 @@ function InlineQuestionRequestCard({
       const option = q.options[Number(event.key) - 1];
       if (option) {
         event.preventDefault();
-        handleOption(q, option);
+        handleOption(q, option, { submitSingle: false });
       }
       return;
     }
