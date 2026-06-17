@@ -1,5 +1,10 @@
 import path from "node:path";
 import type { GlobalState, RecentProject } from "../state/globalState";
+import { recentProjectKey } from "../state/globalState";
+
+// Keep more than the visible window so pinned-but-stale projects don't crowd
+// out fresh ones; pinned entries are retained beyond the cap entirely.
+const STARTUP_RECENT_CAP = 24;
 
 export type StartupProjectSource = "env" | "pending-open" | "none";
 
@@ -14,6 +19,24 @@ export type StartupProjectStateNormalization = {
   changed: boolean;
 };
 
+function recentProjectEntryChanged(
+  project: RecentProject,
+  savedProject: RecentProject | undefined,
+): boolean {
+  if (!savedProject) return true;
+  const projectRemote = project.remote ?? null;
+  const savedRemote = savedProject.remote ?? null;
+  return recentProjectKey(savedProject) !== recentProjectKey(project) ||
+    savedProject.rootPath !== project.rootPath ||
+    savedProject.displayName !== project.displayName ||
+    savedProject.lastOpenedAt !== project.lastOpenedAt ||
+    savedProject.pinned !== project.pinned ||
+    (savedRemote?.targetId ?? null) !== (projectRemote?.targetId ?? null) ||
+    (savedRemote?.projectId ?? null) !== (projectRemote?.projectId ?? null) ||
+    (savedRemote?.runtimeName ?? null) !== (projectRemote?.runtimeName ?? null) ||
+    (savedRemote?.hostname ?? null) !== (projectRemote?.hostname ?? null);
+}
+
 export function normalizeStartupProjectState(args: {
   saved: GlobalState;
   additionalRecentProjects?: RecentProject[];
@@ -27,23 +50,46 @@ export function normalizeStartupProjectState(args: {
     ...(args.additionalRecentProjects ?? []),
   ];
   const baseCleanedRecentProjects = candidateRecentProjects.reduce((acc, entry) => {
+    const fallbackOpenedAt =
+      typeof entry?.lastOpenedAt === "string" &&
+      entry.lastOpenedAt.trim().length > 0
+        ? entry.lastOpenedAt
+        : args.nowIso ?? new Date().toISOString();
+    // Remote recents point at projects on another machine — never disk-check,
+    // normalize, or strip them. Dedup by their stable remote key.
+    if (entry?.remote) {
+      const key = recentProjectKey(entry);
+      if (acc.some((item) => recentProjectKey(item) === key)) return acc;
+      const remoteRoot = typeof entry.rootPath === "string" ? entry.rootPath : "";
+      acc.push({
+        rootPath: remoteRoot,
+        displayName:
+          typeof entry.displayName === "string" && entry.displayName.trim().length > 0
+            ? entry.displayName
+            : path.basename(remoteRoot) || entry.remote.runtimeName,
+        lastOpenedAt: fallbackOpenedAt,
+        remote: entry.remote,
+        ...(entry.pinned ? { pinned: true } : {}),
+      });
+      return acc;
+    }
     const rootPath =
       typeof entry?.rootPath === "string"
         ? args.normalizeProjectPath(entry.rootPath)
         : "";
     if (!args.isLikelyRepoRoot(rootPath)) return acc;
-    if (acc.some((item) => item.rootPath === rootPath)) return acc;
+    if (acc.some((item) => !item.remote && item.rootPath === rootPath)) return acc;
     const displayName =
       typeof entry?.displayName === "string" &&
       entry.displayName.trim().length > 0
         ? entry.displayName
         : path.basename(rootPath);
-    const lastOpenedAt =
-      typeof entry?.lastOpenedAt === "string" &&
-      entry.lastOpenedAt.trim().length > 0
-        ? entry.lastOpenedAt
-        : args.nowIso ?? new Date().toISOString();
-    acc.push({ rootPath, displayName, lastOpenedAt });
+    acc.push({
+      rootPath,
+      displayName,
+      lastOpenedAt: fallbackOpenedAt,
+      ...(entry?.pinned ? { pinned: true } : {}),
+    });
     return acc;
   }, [] as RecentProject[]);
   const cleanedLastProjectRoot = args.saved.lastProjectRoot
@@ -54,7 +100,9 @@ export function normalizeStartupProjectState(args: {
     : "";
   const recentProjects =
     validLastProjectRoot &&
-    !baseCleanedRecentProjects.some((project) => project.rootPath === validLastProjectRoot)
+    !baseCleanedRecentProjects.some(
+      (project) => !project.remote && project.rootPath === validLastProjectRoot,
+    )
       ? [
         {
           rootPath: validLastProjectRoot,
@@ -62,17 +110,13 @@ export function normalizeStartupProjectState(args: {
           lastOpenedAt: args.nowIso ?? new Date().toISOString(),
         },
         ...baseCleanedRecentProjects,
-      ].slice(0, 12)
+      ].filter((entry, index) => entry.pinned || index < STARTUP_RECENT_CAP)
       : baseCleanedRecentProjects;
   const recentProjectsChanged =
     recentProjects.length !== savedRecentProjects.length ||
-    recentProjects.some((project, index) => {
-      const savedProject = savedRecentProjects[index];
-      return !savedProject ||
-        savedProject.rootPath !== project.rootPath ||
-        savedProject.displayName !== project.displayName ||
-        savedProject.lastOpenedAt !== project.lastOpenedAt;
-    });
+    recentProjects.some((project, index) =>
+      recentProjectEntryChanged(project, savedRecentProjects[index])
+    );
   const lastProjectRootChanged =
     args.saved.lastProjectRoot !== undefined;
   const stateWithoutLastProject: GlobalState = { ...args.saved };

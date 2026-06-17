@@ -697,6 +697,7 @@ export function registerRuntimeBridge({
           key: `remote:${target.id}:${project.projectId}`,
           targetId: target.id,
           runtimeName: target.name,
+          hostname: target.hostname,
           projectId: project.projectId,
           rootPath: project.rootPath,
           displayName: project.displayName || path.basename(project.rootPath),
@@ -1100,6 +1101,7 @@ export function registerRuntimeBridge({
 
       const state = readGlobalState(globalStatePath);
       const recents = (state.recentProjects ?? [])
+        .filter((entry) => !entry.remote)
         .slice(0, 100)
         .map((entry) => ({
           rootPath: entry.rootPath,

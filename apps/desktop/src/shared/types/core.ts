@@ -146,6 +146,7 @@ export type OpenProjectBinding =
       key: string;
       targetId: string;
       runtimeName: string;
+      hostname?: string;
       projectId: string;
       rootPath: string;
       displayName: string;
@@ -240,11 +241,19 @@ export type ProjectLastCommit = {
   shortSha: string;
 };
 
+export type ProjectDirtyBreakdown = {
+  staged: number;
+  unstaged: number;
+  untracked: number;
+};
+
 export type ProjectDetail = {
   rootPath: string;
   isGitRepo: boolean;
   branchName: string | null;
   dirtyCount: number | null;
+  /** Split of the dirty count into staged / unstaged / untracked for the hover tooltip. */
+  dirtyBreakdown: ProjectDirtyBreakdown | null;
   aheadBehind: { ahead: number; behind: number } | null;
   lastCommit: ProjectLastCommit | null;
   readmeExcerpt: string | null;
@@ -275,12 +284,26 @@ export type ClearLocalAdeDataResult = {
   clearedAt: string;
 };
 
+export type RecentProjectRemoteRef = {
+  targetId: string;
+  projectId: string;
+  /** Human-friendly machine name shown on the recents row chip. */
+  runtimeName: string;
+  hostname: string;
+};
+
 export type RecentProjectSummary = {
   rootPath: string;
   displayName: string;
   lastOpenedAt: string;
   exists: boolean;
   laneCount?: number;
+  /** Defaults to "local" when absent (back-compat with older callers). */
+  kind?: "local" | "remote";
+  /** Present iff kind === "remote". */
+  remote?: RecentProjectRemoteRef;
+  /** Pinned recents sort above the recency order. */
+  pinned?: boolean;
 };
 
 export type CreateProjectInput = {

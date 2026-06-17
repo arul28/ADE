@@ -23,6 +23,7 @@ import { openKvDb } from "./services/state/kvDb";
 import { ensureAdeDirs } from "./services/state/projectState";
 import {
   readGlobalState,
+  type RecentProject,
   upsertRecentProject,
   writeGlobalState,
 } from "./services/state/globalState";
@@ -1040,6 +1041,7 @@ app.whenReady().then(async () => {
     const targetId = readString(record, "targetId");
     const projectId = readString(record, "projectId");
     const rootPath = readString(record, "rootPath");
+    const hostname = readString(record, "hostname");
     if (record.kind !== "remote" || !targetId || !projectId || !rootPath) {
       return null;
     }
@@ -1048,6 +1050,7 @@ app.whenReady().then(async () => {
       key: readString(record, "key") ?? `remote:${targetId}:${projectId}`,
       targetId,
       runtimeName: readString(record, "runtimeName") ?? "Remote",
+      ...(hostname ? { hostname } : {}),
       projectId,
       rootPath,
       displayName: readString(record, "displayName") ?? path.basename(rootPath),
@@ -1060,6 +1063,9 @@ app.whenReady().then(async () => {
     parseSavedRemoteProjectBinding(
       readGlobalState(globalStatePath).lastRemoteProjectBinding,
     );
+  const readLocalRecentProjects = (): RecentProject[] =>
+    (readGlobalState(globalStatePath).recentProjects ?? [])
+      .filter((entry) => !entry.remote);
 
   const machineAdeLayout = resolveMachineAdeLayout();
   const startupState = normalizeStartupProjectState({
@@ -1407,7 +1413,7 @@ app.whenReady().then(async () => {
   };
 
   const firstAvailableRecentProjectRoot = (): string | null => {
-    const recentProjects = readGlobalState(globalStatePath).recentProjects ?? [];
+    const recentProjects = readLocalRecentProjects();
     for (const project of recentProjects) {
       if (typeof project.rootPath !== "string") continue;
       const rootPath = normalizeProjectRoot(project.rootPath);
@@ -1547,8 +1553,25 @@ app.whenReady().then(async () => {
     binding: RemoteOpenProjectBinding,
   ): void => {
     const state = readGlobalState(globalStatePath);
+    // Record the remote project in recents so it appears in the unified recents
+    // list on the welcome screen (alongside local projects) — no need to re-add
+    // it from the remote panel next time.
+    const withRecent = upsertRecentProject(
+      state,
+      {
+        rootPath: binding.rootPath,
+        displayName: binding.displayName,
+        remote: {
+          targetId: binding.targetId,
+          projectId: binding.projectId,
+          runtimeName: binding.runtimeName,
+          hostname: binding.hostname || binding.runtimeName,
+        },
+      },
+      { recordLastProject: false, recordRecent: true },
+    );
     const next = {
-      ...state,
+      ...withRecent,
       lastRemoteProjectBinding: {
         ...binding,
         updatedAt: new Date().toISOString(),
@@ -3386,7 +3409,7 @@ app.whenReady().then(async () => {
         browseDirectories: async (input: ProjectBrowseInput) =>
           browseProjectDirectories(input),
         getDefaultParentDir: async () =>
-          projectScaffoldService.getDefaultParentDir(readGlobalState(globalStatePath).recentProjects ?? []),
+          projectScaffoldService.getDefaultParentDir(readLocalRecentProjects()),
         openProject: openMobileSyncProject,
         createProject: (input: CreateProjectInput) =>
           createMobileSyncProject(input, projectScaffoldService),
@@ -4640,7 +4663,9 @@ app.whenReady().then(async () => {
   }
 
   async function listMobileSyncProjects(): Promise<{ projects: SyncMobileProjectSummary[] }> {
-    const recentProjects = (readGlobalState(globalStatePath).recentProjects ?? [])
+    // Remote recents belong to another machine; the paired phone pairs to this
+    // host's local catalog, so skip them (and avoid disk-inspecting remote paths).
+    const recentProjects = readLocalRecentProjects()
       .map(inspectRecentProject);
     const recentByRoot = new Map(
       recentProjects.map((entry) => [normalizeProjectRoot(entry.summary.rootPath), entry] as const),
@@ -4671,7 +4696,7 @@ app.whenReady().then(async () => {
 
   function recentProjectInspectionForRoot(rootPath: string): RecentProjectInspection | null {
     const normalizedRoot = normalizeProjectRoot(rootPath);
-    return (readGlobalState(globalStatePath).recentProjects ?? [])
+    return readLocalRecentProjects()
       .map(inspectRecentProject)
       .find((entry) => normalizeProjectRoot(entry.summary.rootPath) === normalizedRoot) ?? null;
   }
@@ -4739,7 +4764,8 @@ app.whenReady().then(async () => {
     }
 
     const state = readGlobalState(globalStatePath);
-    const inspected = (state.recentProjects ?? []).map(inspectRecentProject);
+    const localRecentProjects = (state.recentProjects ?? []).filter((entry) => !entry.remote);
+    const inspected = localRecentProjects.map(inspectRecentProject);
     const recentByRoot = requestedRoot == null
       ? null
       : inspected.find((entry) => normalizeProjectRoot(entry.summary.rootPath) === requestedRoot) ?? null;
@@ -4780,7 +4806,7 @@ app.whenReady().then(async () => {
     }
 
     const nextRecentProjects = (state.recentProjects ?? []).filter((entry) => {
-      return normalizeProjectRoot(entry.rootPath) !== rootToForget;
+      return entry.remote || normalizeProjectRoot(entry.rootPath) !== rootToForget;
     });
     writeGlobalState(globalStatePath, {
       ...state,
@@ -4899,7 +4925,7 @@ app.whenReady().then(async () => {
         ctx.syncService.setHostDiscoveryEnabled?.(true);
         await ctx.syncService.setHostStartupEnabled?.(true);
         await ctx.syncService.initialize();
-        const recent = (readGlobalState(globalStatePath).recentProjects ?? [])
+        const recent = readLocalRecentProjects()
           .map(inspectRecentProject)
           .find((entry) => normalizeProjectRoot(entry.summary.rootPath) === targetRoot) ?? null;
         const project = await mobileProjectSummaryForContext(ctx, recent);
@@ -5108,7 +5134,7 @@ app.whenReady().then(async () => {
           });
           return "main";
         });
-      const isKnownRecentProject = (readGlobalState(globalStatePath).recentProjects ?? []).some((entry) => {
+      const isKnownRecentProject = readLocalRecentProjects().some((entry) => {
         if (typeof entry?.rootPath !== "string") return false;
         return normalizeProjectRoot(entry.rootPath) === repoRoot;
       });

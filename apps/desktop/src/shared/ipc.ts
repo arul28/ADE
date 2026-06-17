@@ -42,6 +42,7 @@ export const IPC = {
   projectSwitchToPath: "ade.project.switchToPath",
   projectForgetRecent: "ade.project.forgetRecent",
   projectReorderRecent: "ade.project.reorderRecent",
+  projectSetRecentPinned: "ade.project.setRecentPinned",
   projectMissing: "ade.project.missing",
   remoteRuntimeListTargets: "ade.remoteRuntime.listTargets",
   remoteRuntimeListDiscoveredMachines:

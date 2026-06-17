@@ -78,6 +78,15 @@ Related pages for the broader "home" experience:
   open project tab root.
 - `apps/desktop/src/renderer/components/app/AppShell.tsx` — top-level
   nav, routes `/run` to `RunPage`.
+- `apps/desktop/src/renderer/components/app/CommandPalette.tsx` —
+  keyboard-first project browser and create/clone/open flows used by the
+  welcome screen and global command palette.
+- `apps/desktop/src/renderer/components/app/ReadmeMarkdown.tsx` —
+  sanitized README preview renderer for the project browser. It preserves
+  common README alignment markup but renders image sources as alt text so
+  browsing a folder does not make passive network or data-URL loads.
+- `apps/desktop/src/renderer/lib/iconAccent.ts` — derives balanced accent
+  colors from project icons for welcome rows and project tabs.
 - `apps/desktop/src/renderer/components/app/TabNav.tsx` — nav rail
   where the Run tab is pinned.
 - `apps/desktop/src/renderer/components/onboarding/ProjectSetupPage.tsx`
@@ -134,15 +143,20 @@ main process because they execute before a runtime binding exists.
   the result for 60s keyed by token prefix; `search` is a
   case-insensitive `fullName` substring filter applied to the cached
   list. `getDefaultParentDir(recentProjects)` returns the parent of
-  the most recent project's `rootPath`, falling back to `~/Projects`.
+  the most recent local project's `rootPath`, falling back to
+  `~/Projects`; remote recents are excluded because their paths belong
+  to another machine.
 - `apps/desktop/src/main/services/projects/projectDetailService.ts` —
-  produces the palette's preview pane: branch name, dirty-file count,
-  ahead/behind counts, last commit (subject / ISO date / short sha),
+  produces the palette's preview pane: branch name, dirty-file count
+  with staged / unstaged / untracked breakdown, ahead/behind counts,
+  last commit (subject / ISO date / short sha),
   README excerpt (first ~1,600 chars, trimmed on paragraph / sentence
   boundary), top-four languages by file count (extension-mapped,
   depth-2 walk capped at 2,000 files), subdirectory count, and — when
-  the path matches a recent-projects row in the global state file —
-  lane count and last-opened timestamp.
+  the path matches a local recent-projects row in the global state file —
+  lane count and last-opened timestamp. Remote recent rows are ignored
+  for local detail metadata so a remote and local project with the same
+  path string cannot collide.
   `registerIpc.ts` wraps `project.getDetail(rootPath)` in a short
   per-root promise cache (10 s, capped at 64 entries) so moving through
   the project browser does not recompute git/README/language metadata
@@ -220,13 +234,21 @@ Shared types:
   `ProcessRuntime`, `StackButtonDefinition`, `TestSuiteDefinition`,
   `LaneOverlayPolicy`, `ProxyConfig`, `PortLease`, `LanePreviewInfo`.
 - `apps/desktop/src/shared/types/core.ts` — `ProjectIcon` (`{ dataUrl,
-  sourcePath, mimeType }`), the return shape of `resolveProjectIcon`
-  consumed by the TopBar tab strip and the iOS project list.
+  sourcePath, mimeType }`), `RecentProjectSummary` (`kind`, `remote`,
+  `pinned`), remote `OpenProjectBinding` metadata, and `ProjectDetail`
+  dirty breakdowns consumed by the TopBar tab strip, welcome rows,
+  project browser preview, and mobile-facing project catalog.
 
 Preload bridge:
 
 - `apps/desktop/src/preload/preload.ts` — `window.ade.processes`,
-  `window.ade.project`, `window.ade.tests`.
+  `window.ade.project`, `window.ade.remoteRuntime`, `window.ade.tests`.
+  The project surface includes recent-list operations (`listRecent`,
+  key-based `forgetRecent` / `reorderRecent`, `setRecentPinned`), local
+  project open/create/clone/detail/icon helpers, and drag-drop path
+  extraction (`getDroppedPath`). Remote project browsing/opening uses
+  `window.ade.remoteRuntime.*` until a window is bound to the selected
+  remote project.
 
 ## Composition
 
@@ -239,15 +261,28 @@ a prior session. Shows:
 - ADE logo with a subtle pulse-glow
 - "ADD PROJECT" primary button → opens the Command Palette in
   `intent="project-add"` mode (see the next subsection)
-- recent projects list from `window.ade.project.listRecent()`, with
-  display name, host path, lane count, and last-opened timestamp.
-  `registerIpc.ts` caches the converted summaries for 5 seconds keyed
-  by the recent-project signature, and clears the cache after forget /
-  reorder writes.
+- unified recent projects list from `window.ade.project.listRecent()`,
+  with local and remote rows. Local rows show display name, path, lane
+  count, last-opened timestamp, and availability. Remote rows show the
+  remote machine/project metadata and use live remote connection state
+  for their connected / reconnecting affordance.
+- per-row pin / unpin; pinned rows float above unpinned rows while
+  preserving recency order inside each group.
+- deferred remove with an Undo toast. The renderer hides the row
+  immediately and calls `window.ade.project.forgetRecent(key)` only
+  after the undo window elapses. Remote rows are forgotten by stable
+  `remote:<targetId>:<projectId>` key; local rows use their root path.
+- drag-and-drop folder open, routed through
+  `window.ade.project.getDroppedPath(file)`.
 
-Clicking a recent project calls `appStore.switchProjectToPath(path)`
-which goes through the project open flow
-(`adeProjectService.openProject`).
+`registerIpc.ts` caches converted recent summaries for 5 seconds keyed by
+root/display/last-opened plus remote identity and pinned state, and clears
+the cache after forget / reorder / pin writes. Local project rows open via
+`appStore.switchProjectToPath(path)` and the normal project open flow
+(`adeProjectService.openProject`). Connected remote rows open via
+`appStore.switchRemoteProject(targetId, projectId)`; disconnected remote
+rows first call `window.ade.remoteRuntime.connect(targetId)` and then bind
+the project if the connection succeeds.
 
 ### Command Palette project flows
 
@@ -280,16 +315,21 @@ returns to the chooser.
 Project-browse behavior:
 
 1. The input field debounces into `window.ade.project.browseDirectories({
-   partialPath, cwd, limit })`. `cwd` is the active project root
-   (so `../` is a usable starting point); if no project is open the
-   default input is `~/`.
+   partialPath, cwd, limit })` for local browsing, or the matching
+   remote-runtime directory browser for a selected remote target. The
+   palette remembers the last browse path separately for the local
+   machine and each remote target so a path from one filesystem is never
+   reused on another.
 2. Results render as a list: a "Go up" row if the current directory
    has a parent, then matching subdirectories (alphabetically sorted,
-   `.git`-detected marked with a branch icon).
+   `.git`-detected marked with a branch icon). Git repo rows expose an
+   inline Open button in addition to keyboard activation.
 3. A debounced `window.ade.project.getDetail(target)` populates a
-   preview pane alongside the list — branch, dirty/ahead/behind,
-   last commit, README excerpt (rendered through `react-markdown` +
-   `remark-gfm`), language swatches, lane count, last-opened. The
+   preview pane alongside the list — branch, dirty/ahead/behind with
+   staged / unstaged / untracked tooltip, last commit, README excerpt
+   (sanitized raw HTML + GitHub-flavored Markdown), project icon
+   preview, language swatches, lane count, last-opened. README images
+   render as alt text so browsing does not load external assets. The
    main process dedupes repeated detail reads for the same root for a
    short window.
 4. Enter activates the highlighted directory (walks into it). ⌘/Ctrl+

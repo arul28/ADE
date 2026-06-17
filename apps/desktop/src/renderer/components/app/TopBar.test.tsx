@@ -371,6 +371,38 @@ describe("TopBar", () => {
     expect(globalThis.window.ade.project.resolveIcon).not.toHaveBeenCalled();
   });
 
+  it("uses local recent metadata for local tabs when a remote recent has the same path", async () => {
+    const rootPath = "/Users/arul/ADE";
+    (globalThis.window.ade.project.listRecent as any).mockResolvedValueOnce([
+      {
+        rootPath,
+        displayName: "Remote ADE",
+        exists: true,
+        lastOpenedAt: "2026-04-23T00:00:00.000Z",
+        kind: "remote",
+        remote: {
+          targetId: "studio",
+          projectId: "remote-project",
+          runtimeName: "Mac Studio",
+          hostname: "studio.local",
+        },
+      },
+      {
+        rootPath,
+        displayName: "Local ADE",
+        exists: true,
+        lastOpenedAt: "2026-04-22T00:00:00.000Z",
+        kind: "local",
+      },
+    ]);
+
+    render(<TopBar />);
+
+    expect(await screen.findByText("Local ADE")).toBeTruthy();
+    expect(screen.queryByText("Remote ADE")).toBeNull();
+    expect(screen.getByTitle(rootPath)).toBeTruthy();
+  });
+
   it("renders a remote project tab without local sync polling", async () => {
     (globalThis.window.ade.remoteRuntime.getConnectionSnapshot as any)
       .mockResolvedValue(makeRemoteConnectionSnapshot("studio"));

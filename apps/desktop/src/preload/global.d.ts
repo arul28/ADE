@@ -706,9 +706,13 @@ declare global {
         listRecent: () => Promise<RecentProjectSummary[]>;
         closeCurrent: () => Promise<void>;
         switchToPath: (rootPath: string) => Promise<ProjectInfo>;
-        forgetRecent: (rootPath: string) => Promise<RecentProjectSummary[]>;
+        forgetRecent: (keyOrRootPath: string) => Promise<RecentProjectSummary[]>;
         reorderRecent: (
-          orderedPaths: string[],
+          orderedKeys: string[],
+        ) => Promise<RecentProjectSummary[]>;
+        setRecentPinned: (
+          key: string,
+          pinned: boolean,
         ) => Promise<RecentProjectSummary[]>;
         createLocal: (
           input: CreateProjectInput,

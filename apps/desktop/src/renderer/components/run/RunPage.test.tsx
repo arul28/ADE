@@ -209,13 +209,42 @@ function getRuntimeBarAdeStub(): RuntimeBarAdeStub {
   return (window as unknown as { ade: RuntimeBarAdeStub }).ade;
 }
 
+function testLocalStorage(): Storage {
+  try {
+    if (window.localStorage) return window.localStorage;
+  } catch {
+    // Fall through to the in-memory test storage below.
+  }
+  const values = new Map<string, string>();
+  const storage = {
+    get length() {
+      return values.size;
+    },
+    clear: () => values.clear(),
+    getItem: (key: string) => values.get(key) ?? null,
+    key: (index: number) => Array.from(values.keys())[index] ?? null,
+    removeItem: (key: string) => {
+      values.delete(key);
+    },
+    setItem: (key: string, value: string) => {
+      values.set(key, value);
+    },
+  } satisfies Storage;
+  Object.defineProperty(window, "localStorage", {
+    value: storage,
+    configurable: true,
+  });
+  return storage;
+}
+
 let originalAde: unknown;
 
 beforeEach(() => {
   originalAde = (globalThis.window as unknown as { ade?: unknown }).ade;
   installAdeStub();
-  localStorage.removeItem("ade.runPageLaneSelections.v1");
-  localStorage.removeItem(STORAGE_KEY);
+  const storage = testLocalStorage();
+  storage.removeItem("ade.runPageLaneSelections.v1");
+  storage.removeItem(STORAGE_KEY);
   useAppStore.setState({
     showWelcome: false,
     project: stubProject,
@@ -283,15 +312,15 @@ describe("RunPage Advanced lane runtime drawer", () => {
     expect(toggle.getAttribute("aria-expanded")).toBe("true");
     expect(await screen.findByTestId("lane-runtime-bar-mock")).toBeTruthy();
     expect(mocks.laneBarSpy).toHaveBeenCalledWith(expect.objectContaining({ laneId: "lane-a" }));
-    expect(localStorage.getItem(STORAGE_KEY)).toBe("true");
+    expect(testLocalStorage().getItem(STORAGE_KEY)).toBe("true");
 
     fireEvent.click(toggle);
     expect(toggle.getAttribute("aria-expanded")).toBe("false");
-    expect(localStorage.getItem(STORAGE_KEY)).toBe("false");
+    expect(testLocalStorage().getItem(STORAGE_KEY)).toBe("false");
   });
 
   it("restores open state from localStorage on first mount", async () => {
-    localStorage.setItem(STORAGE_KEY, "true");
+    testLocalStorage().setItem(STORAGE_KEY, "true");
     render(<RunPage />);
     const toggle = screen.getByRole("button", { name: /^advanced$/i });
     expect(toggle.getAttribute("aria-expanded")).toBe("true");

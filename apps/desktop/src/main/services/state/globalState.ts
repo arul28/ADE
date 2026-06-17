@@ -3,11 +3,35 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import type { OpenProjectBinding, RecentlyInstalledUpdate } from "../../../shared/types";
 
+export type RecentProjectRemote = {
+  targetId: string;
+  projectId: string;
+  runtimeName: string;
+  hostname: string;
+};
+
 export type RecentProject = {
   rootPath: string;
   displayName: string;
   lastOpenedAt: string;
+  /** Present iff this recent points at a project on a remote machine. */
+  remote?: RecentProjectRemote;
+  /** Pinned projects are kept above the recency order and never auto-evicted. */
+  pinned?: boolean;
 };
+
+/**
+ * Stable identity for a recent project. Local projects are keyed by their
+ * absolute root path (so a remote path string can never collide with a local
+ * one); remote projects are keyed by their owning target + remote project id.
+ */
+export function recentProjectKey(
+  proj: { rootPath: string; remote?: RecentProjectRemote },
+): string {
+  return proj.remote
+    ? `remote:${proj.remote.targetId}:${proj.remote.projectId}`
+    : proj.rootPath;
+}
 
 export type PendingInstallUpdate = {
   fromVersion: string;
@@ -78,9 +102,14 @@ type UpsertRecentProjectOptions = {
   preserveRecentOrder?: boolean;
 };
 
+// Recents are recency-ordered. We keep more than the visible window so a few
+// pinned-but-stale projects don't crowd out fresh ones, and pinned entries are
+// retained beyond the cap entirely (they are never auto-evicted).
+const RECENT_PROJECT_CAP = 24;
+
 export function upsertRecentProject(
   state: GlobalState,
-  proj: { rootPath: string; displayName: string },
+  proj: { rootPath: string; displayName: string; remote?: RecentProjectRemote },
   options: UpsertRecentProjectOptions = {}
 ): GlobalState {
   const next: GlobalState = { ...state };
@@ -94,37 +123,58 @@ export function upsertRecentProject(
     return next;
   }
   const prev = next.recentProjects ?? [];
-  const nextEntry = { rootPath: proj.rootPath, displayName: proj.displayName, lastOpenedAt: now };
+  const key = recentProjectKey(proj);
+  const existing = prev.find((p) => recentProjectKey(p) === key);
+  const nextEntry: RecentProject = {
+    rootPath: proj.rootPath,
+    displayName: proj.displayName,
+    lastOpenedAt: now,
+    ...(proj.remote ? { remote: proj.remote } : {}),
+    ...(existing?.pinned ? { pinned: true } : {}),
+  };
   if (options.preserveRecentOrder === true) {
-    const existingIndex = prev.findIndex((p) => p.rootPath === proj.rootPath);
-    if (existingIndex >= 0 && existingIndex < 12) {
-      const updated = prev.slice(0, 12);
+    const existingIndex = prev.findIndex((p) => recentProjectKey(p) === key);
+    if (existingIndex >= 0 && existingIndex < RECENT_PROJECT_CAP) {
+      const updated = prev.slice();
       updated[existingIndex] = nextEntry;
       next.recentProjects = updated;
       return next;
     }
   }
-  const filtered = prev.filter((p) => p.rootPath !== proj.rootPath);
-  next.recentProjects = [nextEntry, ...filtered].slice(0, 12);
+  const filtered = prev.filter((p) => recentProjectKey(p) !== key);
+  const merged = [nextEntry, ...filtered];
+  next.recentProjects = merged.filter((entry, index) => entry.pinned || index < RECENT_PROJECT_CAP);
   return next;
+}
+
+export function setRecentProjectPinned(
+  state: GlobalState,
+  key: string,
+  pinned: boolean,
+): GlobalState {
+  const prev = state.recentProjects ?? [];
+  const nextProjects = prev.map((p) =>
+    recentProjectKey(p) === key ? { ...p, pinned } : p,
+  );
+  return { ...state, recentProjects: nextProjects };
 }
 
 export function reorderRecentProjects(
   state: GlobalState,
-  orderedPaths: string[]
+  orderedKeys: string[]
 ): GlobalState {
   const prev = state.recentProjects ?? [];
-  const byPath = new Map(prev.map((p) => [p.rootPath, p]));
+  const byKey = new Map(prev.map((p) => [recentProjectKey(p), p]));
   const reordered: RecentProject[] = [];
-  for (const rp of orderedPaths) {
-    const entry = byPath.get(rp);
+  for (const key of orderedKeys) {
+    const entry = byKey.get(key);
     if (entry) {
       reordered.push(entry);
-      byPath.delete(rp);
+      byKey.delete(key);
     }
   }
   // Append any entries not in the new order (shouldn't happen, but be safe).
-  for (const entry of byPath.values()) {
+  for (const entry of byKey.values()) {
     reordered.push(entry);
   }
   return { ...state, recentProjects: reordered };
