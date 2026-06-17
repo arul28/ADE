@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { motion } from "motion/react";
@@ -62,7 +62,9 @@ import { transcriptRowGapPx, useChatChromeTint } from "./chatAppearance";
 import { ChatAttachmentTray } from "./ChatAttachmentTray";
 import { getToolMeta } from "./chatToolAppearance";
 import { ClaudeLogo, CodexLogo, CursorAgentLogo } from "../terminals/ToolLogos";
-import { ModelRowLogo } from "../shared/ProviderLogos";
+import { ModelRowLogo, ProviderLogo } from "../shared/ProviderLogos";
+import { ChatMarkdown } from "./chatMarkdown";
+import { pendingInputHeaderLabel } from "../../../shared/pendingInputLabels";
 import type { ChatSubagentSnapshot } from "./chatExecutionSummary";
 import { ChatWorkLogBlock } from "./ChatWorkLogBlock";
 import { ChatStatusGlyph } from "./chatStatusVisuals";
@@ -1667,18 +1669,93 @@ function buildInlineQuestionsFromPendingRequest(request: PendingInputRequest): I
   }];
 }
 
+// Focus a question card once on first appearance so keyboard answering works
+// without a click — guarded by a module-level set so the virtualized list
+// re-mounting the row mid-scroll does not keep re-stealing focus.
+const focusedQuestionCardKeys = new Set<string>();
+
+// Play the gentle entrance once per card so a scroll-back re-mount doesn't
+// replay the fade — the question shouldn't "pop in" hard, but it also
+// shouldn't shimmer every time the row recycles.
+const enteredQuestionCardKeys = new Set<string>();
+
+function rememberQuestionCardKey(keys: Set<string>, key: string): void {
+  if (keys.size > 512) {
+    const oldest = keys.values().next().value;
+    if (oldest) keys.delete(oldest);
+  }
+  keys.add(key);
+}
+
+// Accent-driven class fragments. The chat surface already sets `--chat-accent`
+// per provider (Claude amber, Codex warm-white, Cursor violet, …) and honours
+// the neutral-chrome preference, so the question/plan card inherits the right
+// tint instead of a hardcoded amber.
+const Q_ACCENT_BORDER = "border-[color:color-mix(in_srgb,var(--chat-accent)_22%,transparent)]";
+const Q_ACCENT_BORDER_STRONG = "border-[color:color-mix(in_srgb,var(--chat-accent)_55%,transparent)]";
+const Q_ACCENT_BG_FAINT = "bg-[color:color-mix(in_srgb,var(--chat-accent)_5%,transparent)]";
+const Q_ACCENT_BG = "bg-[color:color-mix(in_srgb,var(--chat-accent)_14%,transparent)]";
+const Q_ACCENT_TEXT = "text-[color:color-mix(in_srgb,var(--chat-accent)_82%,white_18%)]";
+const Q_ACCENT_TEXT_SOFT = "text-[color:color-mix(in_srgb,var(--chat-accent)_66%,white_34%)]";
+
+// Wireframe / ASCII previews must render in a true monospace block with columns
+// preserved; the old path piped them through proportional markdown, which
+// collapsed the alignment the user flagged. Genuine markdown previews still get
+// the rich, code-fence-aware pipeline.
+const WIREFRAME_CHARS = /[│┌┐└┘├┤┬┴┼─━┃┏┓┗┛┣┫┳┻╋╭╮╰╯║╔╗╚╝╠╣╦╩╬▸▹◂◃▪▫■□●○◦◆◇]/;
+
+export function looksLikeWireframe(text: string): boolean {
+  if (WIREFRAME_CHARS.test(text)) return true;
+  const lines = text.split("\n");
+  if (lines.length < 2) return false;
+  const indented = lines.filter((line) => /^\s{2,}\S/.test(line)).length;
+  return indented >= 2;
+}
+
+function QuestionOptionPreview({ preview, previewFormat }: { preview: string; previewFormat?: "markdown" | "html" }) {
+  const monospace = previewFormat === "html" || looksLikeWireframe(preview);
+  if (monospace) {
+    return (
+      <pre className="m-0 max-h-[320px] overflow-auto whitespace-pre font-mono text-[length:calc(var(--chat-font-size)*11/14)] leading-[1.5] text-fg/80 [tab-size:2]">
+        {preview}
+      </pre>
+    );
+  }
+  return (
+    <div className="max-w-none text-[length:calc(var(--chat-font-size)*11.5/14)] [&_p]:my-1">
+      <ChatMarkdown>{preview}</ChatMarkdown>
+    </div>
+  );
+}
+
+function pickComparePreviewOptions(
+  focused: InlineQuestionOption | null,
+  options: InlineQuestionOption[],
+): InlineQuestionOption[] {
+  const withPreview = options.filter((option) => option.preview);
+  const ordered: InlineQuestionOption[] = [];
+  if (focused?.preview) ordered.push(focused);
+  for (const option of withPreview) {
+    if (ordered.length >= 2) break;
+    if (!ordered.some((entry) => entry.value === option.value)) ordered.push(option);
+  }
+  return ordered.slice(0, 2);
+}
+
 function InlineQuestionRequestCard({
   itemId,
+  lifecycleKey,
   source,
-  title,
+  kind,
   description,
   questions,
   isResponding,
   onApproval,
 }: {
   itemId: string;
+  lifecycleKey: string;
   source: string;
-  title: string;
+  kind: PendingInputRequest["kind"];
   description: string;
   questions: InlineQuestion[];
   isResponding: boolean;
@@ -1687,11 +1764,47 @@ function InlineQuestionRequestCard({
   const [selected, setSelected] = useState<Record<string, string[]>>({});
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [focusedOption, setFocusedOption] = useState<Record<string, string>>({});
+  const [comparing, setComparing] = useState<Record<string, boolean>>({});
   const [page, setPage] = useState(0);
+  const rootRef = useRef<HTMLDivElement | null>(null);
 
   const isPaged = questions.length > 1;
   const safePage = Math.min(Math.max(page, 0), Math.max(questions.length - 1, 0));
   const activeQuestion = questions[safePage] ?? questions[0];
+
+  // Pre-focus the recommended option per question so its preview shows first
+  // and the common path is one keystroke / click away.
+  useEffect(() => {
+    setFocusedOption((prev) => {
+      let changed = false;
+      const next = { ...prev };
+      for (const q of questions) {
+        if (next[q.id]) continue;
+        const recommended = q.options.find((option) => option.recommended);
+        if (recommended) {
+          next[q.id] = recommended.value;
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [questions]);
+
+  // Focus the card the first time it appears so keyboard answering works
+  // without a click.
+  useEffect(() => {
+    if (focusedQuestionCardKeys.has(lifecycleKey)) return;
+    rememberQuestionCardKey(focusedQuestionCardKeys, lifecycleKey);
+    const node = rootRef.current;
+    if (node && !node.contains(document.activeElement)) {
+      node.focus({ preventScroll: true });
+    }
+  }, [lifecycleKey]);
+
+  const animateInRef = useRef(!enteredQuestionCardKeys.has(lifecycleKey));
+  useEffect(() => {
+    rememberQuestionCardKey(enteredQuestionCardKeys, lifecycleKey);
+  }, [lifecycleKey]);
 
   const isAnswered = useCallback((q: InlineQuestion) => {
     const sel = selected[q.id]?.length ?? 0;
@@ -1735,10 +1848,63 @@ function InlineQuestionRequestCard({
     });
   }, [itemId, onApproval, questions.length]);
 
-  if (!activeQuestion) return null;
-
   const canSend = isPaged ? allAnswered : anyAnswered;
   const sendLabel = isResponding ? "Sending..." : isPaged ? "Send answers" : "Send answer";
+  const headerLabel = pendingInputHeaderLabel(source, kind);
+  // Show the request-level description only when it adds context beyond the
+  // question text itself — otherwise it's the duplication the user flagged
+  // (header + question + the same question again).
+  const trimmedDescription = description.trim();
+  const extraContext = trimmedDescription && !questions.some((q) => q.questionText.trim() === trimmedDescription)
+    ? trimmedDescription
+    : "";
+
+  // Keyboard-first answering: digits toggle the active question's options,
+  // ↑↓ move the highlight (and its preview), ←→ page between questions, and
+  // Enter advances or sends. Typing in the freeform field is never hijacked.
+  const onKeyDownCard = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (isResponding) return;
+    const target = event.target as HTMLElement | null;
+    const tag = target?.tagName?.toLowerCase();
+    const typingInField = tag === "input" || tag === "textarea" || target?.isContentEditable === true;
+    const q = activeQuestion;
+    if (!q) return;
+    if (!typingInField && /^[1-9]$/.test(event.key)) {
+      const option = q.options[Number(event.key) - 1];
+      if (option) {
+        event.preventDefault();
+        handleOption(q, option);
+      }
+      return;
+    }
+    if (!typingInField && (event.key === "ArrowDown" || event.key === "ArrowUp") && q.options.length) {
+      event.preventDefault();
+      const currentValue = focusedOption[q.id];
+      let index = q.options.findIndex((option) => option.value === currentValue);
+      if (index < 0) index = 0;
+      const delta = event.key === "ArrowDown" ? 1 : -1;
+      const nextOption = q.options[(index + delta + q.options.length) % q.options.length]!;
+      setFocusedOption((prev) => ({ ...prev, [q.id]: nextOption.value }));
+      return;
+    }
+    if (!typingInField && isPaged && (event.key === "ArrowRight" || event.key === "ArrowLeft")) {
+      event.preventDefault();
+      setPage((prev) => event.key === "ArrowRight"
+        ? Math.min(prev + 1, questions.length - 1)
+        : Math.max(prev - 1, 0));
+      return;
+    }
+    if (event.key === "Enter" && !event.shiftKey && !typingInField) {
+      event.preventDefault();
+      if (isPaged && safePage < questions.length - 1 && isAnswered(q)) {
+        setPage(safePage + 1);
+      } else if (canSend) {
+        submit();
+      }
+    }
+  }, [activeQuestion, canSend, focusedOption, handleOption, isAnswered, isPaged, isResponding, questions.length, safePage, submit]);
+
+  if (!activeQuestion) return null;
 
   const renderQuestion = (question: InlineQuestion) => {
     const selectedForQuestion = selected[question.id];
@@ -1749,17 +1915,22 @@ function InlineQuestionRequestCard({
       ? question.options.find((option) => option.value === focusValue)
       : null;
     const useGrid = question.options.length >= 3;
+    const previewOptions = question.options.filter((option) => option.preview);
+    const canCompare = previewOptions.length >= 2;
+    const isComparing = canCompare && (comparing[question.id] ?? false);
+    const comparePair = isComparing ? pickComparePreviewOptions(focused ?? null, question.options) : [];
+    const toggleCompare = () => setComparing((prev) => ({ ...prev, [question.id]: !(prev[question.id] ?? false) }));
 
     return (
-      <div className="rounded-[max(0px,calc(var(--chat-radius-card)-4px))] border border-amber-400/14 bg-amber-400/[0.045] p-4">
+      <div className={cn("rounded-[max(0px,calc(var(--chat-radius-card)-4px))] border p-4", Q_ACCENT_BORDER, Q_ACCENT_BG_FAINT)}>
         {question.header ? (
-          <div className="mb-1.5 font-mono text-[length:calc(var(--chat-font-size)*9.5/14)] font-bold uppercase tracking-widest text-amber-200/80">
+          <div className={cn("mb-1.5 font-mono text-[length:calc(var(--chat-font-size)*9.5/14)] font-bold uppercase tracking-widest", Q_ACCENT_TEXT)}>
             {question.header}
           </div>
         ) : null}
         <div className="text-[length:calc(var(--chat-font-size)*14/14)] font-semibold leading-[1.45] text-fg/92">{question.questionText}</div>
         {question.multiSelect ? (
-          <div className="mt-1.5 inline-flex items-center gap-1 rounded-full border border-amber-300/20 bg-amber-300/8 px-2 py-0.5 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-widest text-amber-200/80">
+          <div className={cn("mt-1.5 inline-flex items-center gap-1 rounded-full border px-2 py-0.5 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-widest", Q_ACCENT_BORDER, Q_ACCENT_TEXT)}>
             <ListChecks size={10} weight="bold" /> Pick all that apply
           </div>
         ) : null}
@@ -1768,6 +1939,8 @@ function InlineQuestionRequestCard({
         ) : null}
         {question.options.length ? (
           <div
+            role={question.multiSelect ? "group" : "radiogroup"}
+            aria-label={question.questionText}
             className={cn(
               "mt-3.5 gap-2",
               useGrid ? "grid grid-cols-1 sm:grid-cols-2" : "flex flex-col",
@@ -1776,21 +1949,26 @@ function InlineQuestionRequestCard({
           >
             {question.options.map((option) => {
               const active = selected[question.id]?.includes(option.value) ?? false;
+              const isHighlighted = (focused?.value ?? null) === option.value;
               return (
                 <button
                   key={option.value}
                   type="button"
                   disabled={isResponding}
+                  role={question.multiSelect ? "checkbox" : "radio"}
+                  aria-checked={active}
                   data-testid={`inline-question-option-${question.id}-${option.value}`}
                   className={cn(
                     "group relative flex w-full flex-col items-start gap-1 rounded-[max(0px,calc(var(--chat-radius-card)-6px))] border px-3.5 py-3 text-left transition-colors disabled:pointer-events-none disabled:opacity-45",
                     active
-                      ? "border-amber-300/55 bg-amber-300/12 shadow-[inset_0_0_0_1px_rgba(252,211,77,0.18)]"
-                      : "border-amber-300/18 bg-amber-300/[0.03] hover:border-amber-300/35 hover:bg-amber-300/8",
+                      ? cn(Q_ACCENT_BORDER_STRONG, Q_ACCENT_BG)
+                      : isHighlighted
+                        ? "border-[color:color-mix(in_srgb,var(--chat-accent)_40%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_7%,transparent)]"
+                        : "border-[color:color-mix(in_srgb,var(--chat-accent)_18%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_3%,transparent)] hover:border-[color:color-mix(in_srgb,var(--chat-accent)_35%,transparent)] hover:bg-[color:color-mix(in_srgb,var(--chat-accent)_8%,transparent)]",
                   )}
                   onClick={() => handleOption(question, option)}
                   onFocus={() => setFocusedOption((prev) => ({ ...prev, [question.id]: option.value }))}
-                  onMouseEnter={() => setFocusedOption((prev) => prev[question.id] ? prev : { ...prev, [question.id]: option.value })}
+                  onMouseEnter={() => setFocusedOption((prev) => ({ ...prev, [question.id]: option.value }))}
                 >
                   <div className="flex w-full items-start gap-2">
                     <span
@@ -1798,8 +1976,8 @@ function InlineQuestionRequestCard({
                         "mt-0.5 inline-flex h-4 w-4 flex-none items-center justify-center border transition-colors",
                         question.multiSelect ? "rounded-[4px]" : "rounded-full",
                         active
-                          ? "border-amber-300/80 bg-amber-300/85 text-black"
-                          : "border-amber-300/35 bg-transparent text-transparent",
+                          ? "border-[color:color-mix(in_srgb,var(--chat-accent)_80%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_85%,transparent)] text-black"
+                          : "border-[color:color-mix(in_srgb,var(--chat-accent)_35%,transparent)] bg-transparent text-transparent",
                       )}
                     >
                       {active ? (
@@ -1827,21 +2005,56 @@ function InlineQuestionRequestCard({
             })}
           </div>
         ) : null}
-        {focused && focused.preview ? (
+        {focused?.preview && !isComparing ? (
           <div
-            className="mt-3 rounded-[max(0px,calc(var(--chat-radius-card)-8px))] border border-amber-300/14 bg-black/22 p-3 text-[length:calc(var(--chat-font-size)*11.5/14)] leading-relaxed text-fg/78"
+            className={cn("mt-3 rounded-[max(0px,calc(var(--chat-radius-card)-8px))] border bg-black/22 p-3", Q_ACCENT_BORDER)}
             data-testid={`inline-question-preview-${question.id}`}
           >
-            <div className="mb-1 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-widest text-amber-200/60">
-              Preview · {focused.label}
+            <div className="mb-1.5 flex items-center justify-between gap-2">
+              <span className={cn("font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-widest", Q_ACCENT_TEXT_SOFT)}>
+                Preview · {focused.label}
+              </span>
+              {canCompare ? (
+                <button
+                  type="button"
+                  onClick={toggleCompare}
+                  data-testid={`inline-question-compare-toggle-${question.id}`}
+                  className={cn("rounded-[var(--chat-radius-pill)] border px-2 py-0.5 font-mono text-[length:calc(var(--chat-font-size)*8.5/14)] font-bold uppercase tracking-widest transition-colors hover:bg-[color:color-mix(in_srgb,var(--chat-accent)_10%,transparent)]", Q_ACCENT_BORDER, Q_ACCENT_TEXT_SOFT)}
+                >
+                  ⇄ Compare
+                </button>
+              ) : null}
             </div>
-            {focused.previewFormat === "html" ? (
-              <div className="whitespace-pre-wrap break-words font-mono text-[length:calc(var(--chat-font-size)*11/14)] text-fg/70">{focused.preview}</div>
-            ) : (
-              <div className="prose prose-invert max-w-none text-[length:calc(var(--chat-font-size)*11.5/14)] [&_p]:my-1">
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>{focused.preview}</ReactMarkdown>
-              </div>
-            )}
+            <QuestionOptionPreview preview={focused.preview} previewFormat={focused.previewFormat} />
+          </div>
+        ) : null}
+        {isComparing && comparePair.length ? (
+          <div
+            className={cn("mt-3 rounded-[max(0px,calc(var(--chat-radius-card)-8px))] border bg-black/22 p-3", Q_ACCENT_BORDER)}
+            data-testid={`inline-question-compare-${question.id}`}
+          >
+            <div className="mb-1.5 flex items-center justify-between gap-2">
+              <span className={cn("font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-widest", Q_ACCENT_TEXT_SOFT)}>
+                Compare
+              </span>
+              <button
+                type="button"
+                onClick={toggleCompare}
+                className={cn("rounded-[var(--chat-radius-pill)] border px-2 py-0.5 font-mono text-[length:calc(var(--chat-font-size)*8.5/14)] font-bold uppercase tracking-widest transition-colors hover:bg-[color:color-mix(in_srgb,var(--chat-accent)_10%,transparent)]", Q_ACCENT_BORDER, Q_ACCENT_TEXT_SOFT)}
+              >
+                Single
+              </button>
+            </div>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              {comparePair.map((option) => (
+                <div key={option.value} className="min-w-0">
+                  <div className={cn("mb-1 truncate font-mono text-[length:calc(var(--chat-font-size)*8.5/14)] font-bold uppercase tracking-widest", Q_ACCENT_TEXT_SOFT)}>
+                    {option.label}
+                  </div>
+                  <QuestionOptionPreview preview={option.preview ?? ""} previewFormat={option.previewFormat} />
+                </div>
+              ))}
+            </div>
           </div>
         ) : null}
         {question.allowsFreeform ? (
@@ -1850,7 +2063,7 @@ function InlineQuestionRequestCard({
             value={drafts[question.id] ?? ""}
             disabled={isResponding}
             placeholder={question.options.length ? "Optional response" : "Response"}
-            className="mt-3 w-full rounded-[var(--chat-radius-card)] border border-white/10 bg-black/22 px-3 py-2 text-[length:calc(var(--chat-font-size)*12.5/14)] text-fg/85 outline-none placeholder:text-fg/30 focus:border-amber-300/40 focus:bg-black/28"
+            className="mt-3 w-full rounded-[var(--chat-radius-card)] border border-white/10 bg-black/22 px-3 py-2 text-[length:calc(var(--chat-font-size)*12.5/14)] text-fg/85 outline-none placeholder:text-fg/30 focus:border-[color:color-mix(in_srgb,var(--chat-accent)_40%,transparent)] focus:bg-black/28"
             onChange={(event) => setDrafts((prev) => ({ ...prev, [question.id]: event.target.value }))}
             onKeyDown={(event) => {
               if (event.key === "Enter") {
@@ -1872,14 +2085,25 @@ function InlineQuestionRequestCard({
   };
 
   return (
-    <div className={cn(GLASS_CARD_CLASS, "p-4")} style={MESSAGE_CARD_STYLE}>
+    <motion.div
+      ref={rootRef}
+      tabIndex={0}
+      role="group"
+      aria-label={headerLabel}
+      onKeyDown={onKeyDownCard}
+      className={cn(GLASS_CARD_CLASS, "p-4 outline-none")}
+      style={MESSAGE_CARD_STYLE}
+      initial={animateInRef.current ? { opacity: 0, y: 4 } : false}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.18, ease: "easeOut" }}
+    >
       <div className="mb-3 flex items-center justify-between gap-3">
         <div className="flex items-center gap-2">
-          <span className="inline-flex h-6 w-6 items-center justify-center rounded-[var(--chat-radius-pill)] border border-amber-400/20 bg-amber-500/10">
-            <ChatStatusGlyph status="waiting" size={11} />
+          <span className={cn("inline-flex h-6 w-6 items-center justify-center rounded-[var(--chat-radius-pill)] border bg-black/20", Q_ACCENT_BORDER)}>
+            <ProviderLogo family={source} size={13} />
           </span>
-          <span className="font-mono text-[length:calc(var(--chat-font-size)*10/14)] font-bold uppercase tracking-widest text-amber-200">
-            Input needed{source ? ` · ${source}` : ""}
+          <span className={cn("font-mono text-[length:calc(var(--chat-font-size)*10.5/14)] font-bold uppercase tracking-widest", Q_ACCENT_TEXT)}>
+            {headerLabel}
           </span>
         </div>
         {isPaged ? (
@@ -1889,10 +2113,9 @@ function InlineQuestionRequestCard({
         ) : null}
       </div>
 
-      <div className="mb-3">
-        <div className="text-[length:calc(var(--chat-font-size)*13.5/14)] font-semibold text-fg/92">{title || (isPaged ? "Questions from Claude" : "Question")}</div>
-        {description ? <div className="mt-1 text-[length:calc(var(--chat-font-size)*12/14)] leading-relaxed text-fg/62">{description}</div> : null}
-      </div>
+      {extraContext ? (
+        <div className="mb-3 text-[length:calc(var(--chat-font-size)*12/14)] leading-relaxed text-fg/62">{extraContext}</div>
+      ) : null}
 
       {isPaged ? (
         <div
@@ -1917,17 +2140,17 @@ function InlineQuestionRequestCard({
                 className={cn(
                   "group inline-flex max-w-[180px] items-center gap-1.5 rounded-[var(--chat-radius-pill)] border px-2.5 py-1 font-mono text-[length:calc(var(--chat-font-size)*9.5/14)] font-bold uppercase tracking-widest transition-colors disabled:pointer-events-none disabled:opacity-45",
                   active
-                    ? "border-amber-300/55 bg-amber-300/14 text-amber-100"
+                    ? cn(Q_ACCENT_BORDER_STRONG, Q_ACCENT_BG, Q_ACCENT_TEXT)
                     : answered
                       ? "border-emerald-300/30 bg-emerald-300/[0.06] text-emerald-200/80 hover:bg-emerald-300/12"
-                      : "border-amber-300/18 bg-transparent text-fg/55 hover:bg-amber-300/8",
+                      : "border-[color:color-mix(in_srgb,var(--chat-accent)_18%,transparent)] bg-transparent text-fg/55 hover:bg-[color:color-mix(in_srgb,var(--chat-accent)_8%,transparent)]",
                 )}
               >
                 <span
                   className={cn(
                     "inline-flex h-3.5 w-3.5 flex-none items-center justify-center rounded-full border text-[length:calc(var(--chat-font-size)*9/14)]",
                     active
-                      ? "border-amber-200/70 bg-amber-200/25 text-amber-100"
+                      ? "border-[color:color-mix(in_srgb,var(--chat-accent)_70%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_25%,transparent)] text-[color:color-mix(in_srgb,var(--chat-accent)_90%,white_10%)]"
                       : answered
                         ? "border-emerald-300/55 bg-emerald-300/30 text-emerald-50"
                         : "border-fg/25 bg-transparent text-fg/55",
@@ -1961,7 +2184,7 @@ function InlineQuestionRequestCard({
               disabled={isResponding || safePage >= questions.length - 1}
               onClick={() => setPage(Math.min(safePage + 1, questions.length - 1))}
               data-testid="inline-question-next"
-              className="inline-flex items-center gap-1 rounded-[var(--chat-radius-pill)] border border-amber-300/24 bg-amber-300/[0.06] px-2.5 py-1.5 font-mono text-[length:calc(var(--chat-font-size)*10/14)] font-bold uppercase tracking-wider text-amber-100/90 transition-colors hover:bg-amber-300/12 disabled:pointer-events-none disabled:opacity-30"
+              className={cn("inline-flex items-center gap-1 rounded-[var(--chat-radius-pill)] border px-2.5 py-1.5 font-mono text-[length:calc(var(--chat-font-size)*10/14)] font-bold uppercase tracking-wider transition-colors hover:bg-[color:color-mix(in_srgb,var(--chat-accent)_12%,transparent)] disabled:pointer-events-none disabled:opacity-30", Q_ACCENT_BORDER, Q_ACCENT_TEXT)}
             >
               Next <CaretRight size={11} weight="bold" />
             </button>
@@ -1977,8 +2200,8 @@ function InlineQuestionRequestCard({
           className={cn(
             "rounded-[var(--chat-radius-pill)] border px-3.5 py-1.5 font-mono text-[length:calc(var(--chat-font-size)*10/14)] font-bold uppercase tracking-wider transition-colors disabled:pointer-events-none disabled:opacity-40",
             canSend
-              ? "border-amber-300/45 bg-amber-300/16 text-amber-100 hover:bg-amber-300/24"
-              : "border-amber-300/24 bg-amber-300/8 text-amber-100/60",
+              ? cn(Q_ACCENT_BORDER_STRONG, Q_ACCENT_BG, Q_ACCENT_TEXT, "hover:bg-[color:color-mix(in_srgb,var(--chat-accent)_24%,transparent)]")
+              : cn(Q_ACCENT_BORDER, "bg-[color:color-mix(in_srgb,var(--chat-accent)_8%,transparent)]", Q_ACCENT_TEXT_SOFT),
           )}
           onClick={() => submit()}
         >
@@ -1993,7 +2216,7 @@ function InlineQuestionRequestCard({
           Decline
         </button>
       </div>
-    </div>
+    </motion.div>
   );
 }
 
@@ -2872,8 +3095,9 @@ function renderEvent(
       return (
         <InlineQuestionRequestCard
           itemId={event.itemId}
+          lifecycleKey={`${options?.sessionId ?? "unknown-session"}:${event.itemId}`}
           source={requestSource || "agent"}
-          title={typeof request?.title === "string" ? request.title : "Question"}
+          kind={pendingRequest?.kind ?? "question"}
           description={bodyText}
           questions={inlineQuestions}
           isResponding={isResponding}
@@ -2885,6 +3109,11 @@ function renderEvent(
     return (
       <div className={cn(GLASS_CARD_CLASS, "px-4 py-2.5")} style={SURFACE_INLINE_CARD_STYLE}>
         <div className="flex items-center gap-2">
+          {requestSource ? (
+            <span className={cn("inline-flex h-5 w-5 items-center justify-center rounded-[var(--chat-radius-pill)] border bg-black/20", Q_ACCENT_BORDER)}>
+              <ProviderLogo family={requestSource} size={11} />
+            </span>
+          ) : null}
           {isResolved ? (
             <span
               className={cn(

@@ -1,14 +1,18 @@
 /* @vitest-environment jsdom */
 
 import React from "react";
-import { render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { cleanup, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { LaneSummary, TerminalSessionSummary } from "../../../shared/types";
 import { SessionCard } from "./SessionCard";
 
 vi.mock("./useSessionDelta", () => ({
   useSessionDelta: () => null,
 }));
+
+afterEach(() => {
+  cleanup();
+});
 
 function makeSession(overrides: Partial<TerminalSessionSummary> = {}): TerminalSessionSummary {
   return {
@@ -62,5 +66,41 @@ describe("SessionCard orchestration identity", () => {
     expect(screen.getByText("Worker · ui")).toBeTruthy();
     expect(screen.getByText("WORKER · ui")).toBeTruthy();
     expect(screen.getByRole("button", { name: /Worker · ui: Build the plan panel/ })).toBeTruthy();
+  });
+
+  it("shows the awaiting badge for chat pending input", () => {
+    render(
+      <SessionCard
+        session={makeSession({
+          runtimeState: "waiting-input",
+          pendingInputItemId: "pending-1",
+        })}
+        lane={lane}
+        isSelected={false}
+        onSelect={vi.fn()}
+        onContextMenu={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByLabelText("Awaiting your input")).toBeTruthy();
+  });
+
+  it("does not label plain CLI prompts as chat questions", () => {
+    render(
+      <SessionCard
+        session={makeSession({
+          toolType: "codex",
+          title: "Codex CLI",
+          runtimeState: "waiting-input",
+          pendingInputItemId: null,
+        })}
+        lane={lane}
+        isSelected={false}
+        onSelect={vi.fn()}
+        onContextMenu={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByLabelText("Awaiting your input")).toBeNull();
   });
 });

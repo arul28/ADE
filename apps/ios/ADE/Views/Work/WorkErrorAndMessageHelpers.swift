@@ -743,7 +743,8 @@ func pendingWorkQuestionFromApproval(
       id: itemId,
       questions: questions,
       title: optionalString(request["title"]),
-      body: optionalString(request["body"]) ?? optionalString(request["description"])
+      body: optionalString(request["body"]) ?? optionalString(request["description"]),
+      source: optionalString(request["source"]) ?? optionalString(detailObject["source"])
     )
   }
 
@@ -772,7 +773,10 @@ func pendingWorkQuestionFromApproval(
     id: itemId,
     questions: [single],
     title: optionalString(detailObject["title"]),
-    body: optionalString(detailObject["body"]) ?? optionalString(detailObject["description"])
+    body: optionalString(detailObject["body"]) ?? optionalString(detailObject["description"]),
+    source: optionalString(request["source"])
+      ?? optionalString(detailObject["source"])
+      ?? (tool.isEmpty ? nil : tool)
   )
 }
 
@@ -811,7 +815,8 @@ func pendingWorkQuestionFromAskUserToolCall(
     id: itemId,
     questions: questions,
     title: optionalString(sourceObject["title"]) ?? optionalString(object["title"]),
-    body: optionalString(sourceObject["body"]) ?? optionalString(request["description"]) ?? optionalString(object["body"])
+    body: optionalString(sourceObject["body"]) ?? optionalString(request["description"]) ?? optionalString(object["body"]),
+    source: optionalString(sourceObject["source"]) ?? optionalString(object["source"])
   )
 }
 

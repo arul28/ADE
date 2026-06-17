@@ -2,6 +2,7 @@ import React from "react";
 import { Box, Text, useStdout } from "ink";
 import type { PendingApproval } from "../types";
 import { theme } from "../theme";
+import type { AdeCodeProvider } from "../types";
 import { useHoveredHitId } from "../hitTestRegistry";
 import { SectionHeader, Pill, StatusDot, KeyHints, Rule } from "./designKit";
 import {
@@ -9,6 +10,7 @@ import {
   pendingQuestionAnsweredCount,
   type PendingQuestionSelectionState,
 } from "../pendingInput";
+import { pendingInputHeaderLabel } from "../../../../desktop/src/shared/pendingInputLabels";
 
 // Default inner widths. The parent never passes a width, so the card sizes
 // itself: a fixed, centered column when modal (high-stakes), and a comfortable
@@ -20,6 +22,28 @@ function truncateEnd(value: string, max: number): string {
   if (max <= 1) return value.length ? "…" : "";
   if (value.length <= max) return value;
   return `${value.slice(0, Math.max(0, max - 1))}…`;
+}
+
+// Split a preview into individual lines so the terminal renders them verbatim,
+// preserving column alignment (diffs, box-drawing, indented plans). Each line is
+// truncated to the card width rather than soft-wrapped mid-box — a wrap would
+// reflow box-drawing columns onto the next row and break the layout. A cap keeps
+// a giant plan/diff from blowing past the card; the truncation marker tells the
+// user there's more.
+const PREVIEW_MAX_LINES = 12;
+const PROVIDER_ACCENT_SOURCES = new Set(["claude", "codex", "cursor", "droid", "opencode", "ollama", "lmstudio"]);
+
+function previewLines(value: string, max: number): string[] {
+  const rows = value.replace(/\r\n?/g, "\n").split("\n");
+  const clipped = rows.slice(0, PREVIEW_MAX_LINES).map((row) => truncateEnd(row, max));
+  if (rows.length > PREVIEW_MAX_LINES) clipped.push("…");
+  return clipped;
+}
+
+function pendingInputAccent(source: string | null | undefined): string {
+  const normalized = source?.trim().toLowerCase();
+  if (!normalized || !PROVIDER_ACCENT_SOURCES.has(normalized)) return theme.color.violet;
+  return theme.provider(normalized as AdeCodeProvider).color;
 }
 
 /**
@@ -61,25 +85,34 @@ export function ApprovalPrompt({
   const highStakes = approval.highStakes;
   const isQuestion = approval.mode === "question";
   const kind = approval.request?.kind;
+  const source = approval.request?.source;
+  const providerAccent = pendingInputAccent(source);
 
   // Accent + glyph for the titled header. Green is never used here — amber for a
   // routine permission ask, red for a high-stakes/destructive one, violet for
   // selection/input requests (informational, not a warning).
+  //
+  // Question + plan_approval headers read as the source-derived
+  // `pendingInputHeaderLabel` ("Claude asks" / "Claude · Plan ready"), matching
+  // the desktop redesign — no more kind-based "INPUT REQUESTED" double-labelling.
   let title: string;
   let glyph: string;
   let accent: string;
   if (kind === "model_selection") {
     title = "MODEL SELECTION";
     glyph = "◆";
-    accent = theme.color.violet;
+    accent = providerAccent;
   } else if (kind === "plan_approval") {
-    title = "PLAN APPROVAL";
+    title = pendingInputHeaderLabel(source, kind);
     glyph = "◇";
-    accent = theme.color.violet;
+    accent = providerAccent;
   } else if (isQuestion) {
-    title = "INPUT REQUESTED";
+    // `kind` may be undefined (legacy/freeform questions); the helper's default
+    // branch ("{Provider} asks") is exactly right for any question kind, so
+    // coalesce to "" rather than special-casing.
+    title = pendingInputHeaderLabel(source, kind ?? "");
     glyph = "?";
-    accent = theme.color.violet;
+    accent = providerAccent;
   } else if (highStakes) {
     title = "HIGH-STAKES PERMISSION";
     glyph = "▲";
@@ -113,6 +146,18 @@ export function ApprovalPrompt({
         ? approval.description
         : null;
   const secondary = secondaryRaw && secondaryRaw !== primary ? secondaryRaw : null;
+
+  // For questions, the request-level description is shown as a single context
+  // kicker above the questions — but ONLY when it adds detail beyond the question
+  // text itself, otherwise it's the header + question + same-question-again
+  // duplication the desktop redesign removed.
+  const requestDescription = approval.request?.description?.trim() ?? "";
+  const extraContext =
+    isQuestion
+    && requestDescription
+    && !questions.some((entry) => entry.question.trim() === requestDescription)
+      ? requestDescription
+      : null;
 
   const showChips = !isQuestion && !highStakes;
 
@@ -152,6 +197,14 @@ export function ApprovalPrompt({
         <Text color={theme.color.t3}>
           {`${answeredCount} of ${questions.length} answered`}
         </Text>
+      ) : null}
+
+      {extraContext ? (
+        <Box marginTop={1}>
+          <Text color={theme.color.t3} dimColor wrap="truncate-end">
+            {truncateEnd(extraContext, textWidth)}
+          </Text>
+        </Box>
       ) : null}
 
       {primary && !isQuestion ? (
@@ -208,9 +261,13 @@ export function ApprovalPrompt({
                             </Text>
                           </Box>
                           {option.preview && active ? (
-                            <Text color={theme.color.t3} dimColor wrap="truncate-end">
-                              {truncateEnd(option.preview, Math.max(8, textWidth - 2))}
-                            </Text>
+                            <Box flexDirection="column">
+                              {previewLines(option.preview, Math.max(8, textWidth - 2)).map((previewLine, previewIndex) => (
+                                <Text key={previewIndex} color={theme.color.t3} dimColor wrap="truncate-end">
+                                  {previewLine.length ? previewLine : " "}
+                                </Text>
+                              ))}
+                            </Box>
                           ) : null}
                         </Box>
                       );

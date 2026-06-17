@@ -32,11 +32,11 @@ stream plus session metadata.
 | `ChatBuiltInBrowserPanel.tsx` | In-app browser panel mounted under the Work right-edge sidebar's `browser` tab. Renders the address bar, navigation/tab strip, inspect toolbar, screenshot capture, and an empty/error state derived from `BuiltInBrowserStatus`; the actual page content is painted by a main-process `WebContentsView` whose bounds the panel reports back to the broker via `ade.builtInBrowser.setBounds`. Inspect-mode hit-tests emit `BuiltInBrowserContextItem` payloads through `onAddContext`; the sidebar then dispatches `ade:agent-chat:add-builtin-browser-context` to the active chat. The panel does not run inside `AgentChatPane` directly — instead, anywhere in the renderer that wants to open a URL calls `openUrlInAdeBrowser()` (in `apps/desktop/src/renderer/lib/openExternal.ts`), which fires `ADE_OPEN_BUILT_IN_BROWSER_EVENT` and asks the broker to open a new tab. |
 | `ChatTerminalDrawer.tsx` | Collapsible terminal drawer at the bottom of the chat. |
 | `ChatGitToolbar.tsx` | Git status and quick-action toolbar above the composer. The PR action opens a linked PR when one exists, otherwise opens the PR creation handoff for the current lane targeting the primary branch. |
-| `ChatProposedPlanCard.tsx` | Plan approval card inline in the transcript. Renders the plan description or question text as rich markdown (`ChatMarkdown`) inside a scrollable container (capped at `min(34vh, 360px)`). |
+| `ChatProposedPlanCard.tsx` | Composer-level plan approval card shown while input is locked. Renders the plan description or question text as rich markdown (`ChatMarkdown`) inside a scrollable container (capped at `min(34vh, 360px)`). Transcript plan events render through `AgentChatMessageList` / `CodexPlanCard`. |
 | `codex/CodexPlanCard.tsx` | Codex plan card rendered inline in the transcript for `plan` events. Shows plan state (Planning / Plan ready), step progress with status glyphs, and streaming plan text as rich markdown via `ChatMarkdown`. Completed plans with no discrete steps render the full markdown body inline; plans with steps offer a toggle to expand the raw markdown details (labelled "details" when complete, "live" while streaming). Handles missing `steps` arrays gracefully. |
 | `codex/CodexGoalCard.tsx`, `codex/CodexGoalBanner.tsx` | Codex goal surfaces. The card is the active desktop surface and routes edits/clears through typed ADE APIs (`ade.agentChat.codex.*`) rather than prompt text. It shows objective, status, token count, and elapsed time, while hiding provider budgets because ADE keeps goals unlimited. The banner remains available for compact surfaces that need a horizontal goal strip. |
 | `ChatWorkLogBlock.tsx` | Collapsible work-log group (see `chatTranscriptRows.ts`). Accepts `animate` so completed groups render a static glyph while in-flight ones pulse; prefers `waiting` over `working` when any entry is `interrupted`. Also renders a `LocalhostServersStrip` above the panels when any work-log entry produced a `localhost`/`127.0.0.1`/`0.0.0.0`/`[::1]` URL: a sky-toned chip per detected URL routes through `openUrlInAdeBrowser()` (so the click opens the Work sidebar Browser tab in a new tab), and a sibling Logs button either reveals the chat's currently active terminal (via `onRevealChatTerminal`) or — when no terminal exists — drafts a "please move this server into the ADE chat terminal" prompt for the agent through `onInsertDraft`. |
-| `AgentQuestionModal.tsx` | Pending input modal for question-type requests. |
+| `AgentChatMessageList.tsx` → `InlineQuestionRequestCard` | Inline question / structured-question card (provider logo + verb header, dedup body, monospace/markdown previews, per-provider accent, keyboard-first answering, A/B compare). See [Pending input card](#pending-input-card). |
 | `CodeHighlighter.tsx`, `chatStatusVisuals.tsx`, `chatSurfaceTheme.ts`, `chatToolAppearance.tsx` | Supporting visuals. `chatStatusVisuals.ChatStatusGlyph` takes an `animate` prop so non-active rows skip the ping/spin animation; `AgentChatMessageList.ActivityIndicator` mirrors this and switches to a dimmed static tone plus a non-looping thinking lottie once the turn ends. |
 | `pendingInput.ts`, `chatExecutionSummary.ts`, `chatNavigation.ts`, `chatTranscriptRows.ts` | Pure state derivations consumed by the UI. |
 | `apps/desktop/src/renderer/lib/visualContextFormatting.ts` | Prompt formatting for visual/tool context from attachments, iOS Simulator, App Control, and built-in browser selections. |
@@ -511,28 +511,84 @@ Work sidebar owns lane-scoped tools there; in that mode the header
 toggle is absent and the pane does not call `ade.terminal.list` just to
 hydrate a hidden drawer.
 
-## Pending input modal
+## Pending input card
 
-`AgentQuestionModal` renders the first pending input inline in the
-chat transcript with Accept / Accept-for-Session / Decline / Cancel
-buttons plus optional freeform text.
+`InlineQuestionRequestCard` (in `AgentChatMessageList.tsx`) renders the
+first question / structured-question pending input inline in the chat
+transcript. (There is no longer a separate `AgentQuestionModal`.)
 
-Key behaviors:
+Anatomy:
 
-- Questions with predefined options support multi-select: users can
-  toggle multiple values for a single question, and a preview pane
-  renders the selected option's description as sanitized HTML/Markdown.
-- Options can carry `preview` content and `previewFormat` (`markdown`
-  or `html`) for rich inline previews.
-- Responses are sent back via `ade.agentChat.respondToInput` (accepts
-  `AgentChatRespondToInputArgs` with structured `answers`, values may
-  be `string` or `string[]` for multi-select, and optional `decision`).
-- Legacy `ade.agentChat.approve` is still supported for backward
-  compatibility.
+- **Header** — the provider logo (`ProviderLogo(source)`) plus a
+  kind-derived verb from `pendingInputHeaderLabel(source, kind)`:
+  `{Provider} asks` for questions, `{Provider} · Plan ready` for plan
+  approvals. No clock icon and no generic "Question from {provider}"
+  title — those were the repetition that made the old card noisy. A
+  `N of M answered` counter sits on the right for paged sets.
+- **Body** — the question's short `header` renders as a kicker, then the
+  question text exactly **once**, then the options. A request-level
+  `description` only renders when it differs from the question text
+  (`extraContext`), so it never duplicates the question.
+- **Options** — carry `role="radio"`/`"checkbox"` (in a `radiogroup`/
+  `group` container) for accessibility, support multi-select, and show a
+  `(Recommended)` badge. The recommended option auto-focuses so its
+  preview shows first.
+- **Previews** — `QuestionOptionPreview` is format-aware: wireframe/ASCII
+  content (detected by `looksLikeWireframe`, or `previewFormat: "html"`)
+  renders in a column-preserving monospace `<pre>` (`white-space: pre`,
+  horizontal scroll), and prose markdown routes through the shared
+  code-fence-aware `ChatMarkdown`. This replaced a bare `ReactMarkdown`
+  that collapsed ASCII alignment. When ≥2 options carry previews, a
+  `⇄ Compare` toggle shows two previews side by side.
+- **Keyboard-first** — digits toggle the active question's options, ↑↓
+  move the highlight (and its preview), ←→ page between questions, and
+  Enter advances or sends. The card focuses itself once on first
+  appearance (guarded so the virtualized list doesn't re-steal focus).
+- **Accent** — all chrome uses `var(--chat-accent)`, which the chat
+  surface sets per provider, so the card is amber for Claude, warm-white
+  for Codex, violet for Cursor/Droid, blue for OpenCode (and honours the
+  neutral-chrome preference). The same treatment is applied to
+  `ChatProposedPlanCard`.
 
-Plan approval cards receive the plan text from the `ExitPlanMode` tool
-input so the UI displays meaningful content rather than a generic
-label.
+Responses are sent back via `ade.agentChat.respondToInput` (accepts
+`AgentChatRespondToInputArgs` with structured `answers`; values may be
+`string` or `string[]` for multi-select, plus an optional `decision`).
+Legacy `ade.agentChat.approve` is still supported. Plan approval cards
+receive the plan text from the `ExitPlanMode` tool input so the UI shows
+meaningful content rather than a generic label.
+
+### Cross-surface parity
+
+The card's data contract (`PendingInputRequest` / `PendingInputQuestion`
+/ `PendingInputOption` in `shared/types/chat.ts`) is the single source of
+truth: the TUI (`apps/ade-cli/src/tuiClient/components/ApprovalPrompt.tsx`)
+and iOS (`WorkStructuredQuestionCard` / `WorkPlanReviewCard`) render the
+same header verb, dedup, monospace preview, and per-provider accent. The
+verb/name helpers live in `shared/pendingInputLabels.ts` so desktop and
+TUI share them; iOS mirrors them in Swift. A blocking pending input also
+surfaces an "Awaiting you" badge on the Lanes row and the Work grid tile
+(derived from exact pending-input counts, not idle CLI attention heuristics),
+and iOS elevates the card with a light haptic on arrival.
+
+### Per-runtime question richness (ceilings)
+
+Each runtime populates as much of the schema as its SDK exposes; the card
+renders whatever is present:
+
+- **Claude** — full: `header`, options `description`/`preview`/
+  `previewFormat`/`recommended`, `multiSelect` (from the `AskUserQuestion`
+  tool).
+- **Codex** — full via the app-server `item/tool/requestUserInput`
+  payload (header, multiSelect, isSecret, per-option description/preview).
+- **Cursor** — full via `normalizeCursorControlQuestions` (incl.
+  `defaultAssumption`, `impact`, `isSecret`).
+- **OpenCode** — `header`, `multiSelect` (from `multiple`),
+  `allowsFreeform` (from `custom`), per-option `description`. **Ceiling:**
+  no `recommended`/`preview`/`isSecret`.
+- **Droid** — `topic` → `header` and bare-string `options` only.
+  **Ceiling:** the `@factory/droid-sdk` ask-user schema
+  (`AskUserQuestionSchema`) exposes no per-option description, no
+  `multiSelect`, and no preview, so those fields stay empty for Droid.
 
 ## Presentation profiles
 
@@ -611,10 +667,14 @@ These modules are pure and unit-testable:
   stamps each request with a sequence number to discard stale results.
   Stale-result handling is easy to regress when adjusting the
   debounce.
-- **Question drafts persistence.** `QuestionDraft` state is local to
-  `AgentQuestionModal`. If the user navigates away and back, drafts
-  reset. This is intentional to avoid stale answers leaking across
-  sessions.
+- **Question drafts persistence.** Question answer state (selected
+  options + freeform drafts) is local to `InlineQuestionRequestCard`. If
+  the user navigates away and back, drafts reset. This is intentional to
+  avoid stale answers leaking across sessions. The card's one-time focus
+  and entrance animation are guarded by module-level sets
+  (`focusedQuestionCardKeys` / `enteredQuestionCardKeys`) so the
+  virtualized list re-mounting the row mid-scroll doesn't re-steal focus
+  or replay the fade.
 - **Terminal drawer tab lifecycle.** PTY exit must trigger tab removal,
   and the last-tab-removed condition must collapse the drawer; the
   `ChatTerminalDrawer` state machine is the canonical source.

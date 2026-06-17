@@ -53,10 +53,18 @@ import {
   reconcileMeasuredScrollTop,
   shouldAbsorbProgrammaticScrollEvent,
   shouldStickToBottomAfterScroll,
+  looksLikeWireframe,
 } from "./AgentChatMessageList";
 
 function findButtonByTextContent(matcher: RegExp): HTMLButtonElement {
-  const match = screen.getAllByRole("button").find((button) => matcher.test(button.textContent ?? ""));
+  // Option buttons carry role="radio"/"checkbox" for accessibility, so search
+  // every interactive role rather than just "button".
+  const candidates = [
+    ...screen.queryAllByRole("button"),
+    ...screen.queryAllByRole("radio"),
+    ...screen.queryAllByRole("checkbox"),
+  ];
+  const match = candidates.find((node) => matcher.test(node.textContent ?? ""));
   if (!match) {
     throw new Error(`Unable to find button matching ${String(matcher)}`);
   }
@@ -2312,6 +2320,85 @@ describe("AgentChatMessageList inline ask-user card", () => {
     expect(preview).toBeTruthy();
     expect(preview.textContent ?? "").toContain("Squash merge");
     expect(preview.textContent ?? "").toContain("Collapses to one commit.");
+  });
+
+  it("updates the option preview when hovering another preview option", () => {
+    renderMessageList([
+      buildStructuredApprovalEvent({
+        questions: [
+          {
+            id: "strategy",
+            header: "Strategy",
+            question: "Pick a merge strategy",
+            options: [
+              {
+                label: "Squash",
+                value: "squash",
+                recommended: true,
+                preview: "Squash preview",
+                previewFormat: "markdown",
+              },
+              {
+                label: "Rebase",
+                value: "rebase",
+                preview: "Rebase preview",
+                previewFormat: "markdown",
+              },
+            ],
+          },
+        ],
+      }),
+    ]);
+
+    const preview = screen.getByTestId("inline-question-preview-strategy");
+    expect(preview.textContent ?? "").toContain("Squash preview");
+
+    fireEvent.mouseEnter(findButtonByTextContent(/^Rebase/));
+
+    expect(screen.getByTestId("inline-question-preview-strategy").textContent ?? "").toContain("Rebase preview");
+  });
+
+  it("renders a wireframe option preview in an aligned monospace block", () => {
+    const wireframe = "┌──────────┐\n│ Home     │\n├──────────┤\n│ ▸ item   │\n└──────────┘";
+    renderMessageList([
+      buildStructuredApprovalEvent({
+        questions: [
+          {
+            id: "layout",
+            header: "Layout",
+            question: "Pick a layout",
+            multiSelect: true,
+            options: [
+              // previewFormat is "markdown" but the content is ASCII art — it
+              // must still render column-preserved, not collapsed into prose.
+              { label: "Boxed", value: "boxed", preview: wireframe, previewFormat: "markdown" },
+              { label: "Plain", value: "plain" },
+            ],
+          },
+        ],
+      }),
+    ]);
+
+    fireEvent.click(findButtonByTextContent(/^Boxed/));
+    const preview = screen.getByTestId("inline-question-preview-layout");
+    const pre = preview.querySelector("pre");
+    expect(pre).toBeTruthy();
+    expect(pre?.textContent ?? "").toContain("│ Home     │");
+  });
+
+  describe("looksLikeWireframe", () => {
+    it("detects box-drawing and bullet wireframes", () => {
+      expect(looksLikeWireframe("┌──┐\n│ x│\n└──┘")).toBe(true);
+      expect(looksLikeWireframe("● one\n○ two")).toBe(true);
+    });
+    it("detects indentation-significant multi-line art", () => {
+      expect(looksLikeWireframe("Home\n    nested one\n    nested two")).toBe(true);
+    });
+    it("treats normal prose / short markdown as not a wireframe", () => {
+      expect(looksLikeWireframe("**Bold** and a sentence.")).toBe(false);
+      expect(looksLikeWireframe("One line only")).toBe(false);
+      expect(looksLikeWireframe("Line one\nLine two")).toBe(false);
+    });
   });
 
   it("pages through inline questions, keeps per-question answers, and submits all answers", () => {

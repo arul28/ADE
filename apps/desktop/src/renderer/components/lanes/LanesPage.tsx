@@ -2,7 +2,7 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "rea
 import { useClickOutside } from "../../hooks/useClickOutside";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { Group, Panel } from "react-resizable-panels";
-import { Check, CaretDown, FileCode, Stack, Link, ArrowsOutSimple, ArrowsInSimple, PushPin, Plus, MagnifyingGlass, Terminal, X, ArrowSquareOut, Info, ArrowCounterClockwise, UsersThree, CircleNotch } from "@phosphor-icons/react";
+import { Check, CaretDown, FileCode, Stack, Link, ArrowsOutSimple, ArrowsInSimple, PushPin, Plus, MagnifyingGlass, Terminal, X, ArrowSquareOut, Info, ArrowCounterClockwise, UsersThree, CircleNotch, Question } from "@phosphor-icons/react";
 import { BranchIcon, LaneIcon } from "../ui/vcsIcons";
 import { selectActiveProjectRoot, useAppStore, useAppStoreApi, type LaneInspectorTab } from "../../state/appStore";
 import { buildIntegrationSourcesByLaneId } from "../../lib/integrationLanes";
@@ -676,15 +676,16 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
       summaryByLane.set(snapshot.lane.id, snapshot.runtime);
     }
     for (const lane of sortedLanes) {
-      if (!summaryByLane.has(lane.id)) {
-        summaryByLane.set(lane.id, {
-          bucket: "none",
-          runningCount: 0,
-          awaitingInputCount: 0,
-          endedCount: 0,
-          sessionCount: 0,
-        });
-      }
+          if (!summaryByLane.has(lane.id)) {
+            summaryByLane.set(lane.id, {
+              bucket: "none",
+              runningCount: 0,
+              awaitingInputCount: 0,
+              pendingInputCount: 0,
+              endedCount: 0,
+              sessionCount: 0,
+            });
+          }
     }
     return summaryByLane;
   }, [sortedLanes, laneSnapshots]);
@@ -3672,9 +3673,11 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
             bucket: "none",
             runningCount: 0,
             awaitingInputCount: 0,
+            pendingInputCount: 0,
             endedCount: 0,
             sessionCount: 0,
           };
+          const pendingInputCount = laneRuntime.pendingInputCount ?? 0;
           const rebaseSuggestion = suppressTourDistractions ? null : laneSnapshot?.rebaseSuggestion ?? null;
           const autoRebaseStatus = laneSnapshot?.autoRebaseStatus ?? null;
           const devicesOpen = lane.devicesOpen ?? [];
@@ -3821,6 +3824,36 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
                   className="shrink-0"
                   style={{ width: 8, height: 8, borderRadius: "50%", background: COLORS.danger }}
                 />
+              ) : null}
+              {/* Awaiting-your-input pill — a chat in this lane is blocked on a
+                  question/plan only you can answer. Reuses the device-presence
+                  pill shape, tinted with the warning accent to match the dot. */}
+              {!isDeleting && pendingInputCount > 0 ? (
+                <span
+                  style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    gap: 3,
+                    padding: "2px 6px",
+                    borderRadius: 6,
+                    fontFamily: MONO_FONT,
+                    fontSize: 9,
+                    fontWeight: 700,
+                    textTransform: "uppercase",
+                    letterSpacing: "0.04em",
+                    color: COLORS.warning,
+                    background: `color-mix(in srgb, ${COLORS.warning} 14%, transparent)`,
+                    border: `1px solid color-mix(in srgb, ${COLORS.warning} 32%, transparent)`,
+                  }}
+                  title={
+                    pendingInputCount > 1
+                      ? `${pendingInputCount} chats are waiting for your answer`
+                      : "A chat is waiting for your answer"
+                  }
+                >
+                  <Question size={10} weight="bold" />
+                  Awaiting you
+                </span>
               ) : null}
               {!isDeleting ? (
                 <span

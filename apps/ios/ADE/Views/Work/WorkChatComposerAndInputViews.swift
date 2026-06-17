@@ -887,6 +887,29 @@ struct WorkApprovalRequestCard: View {
   }
 }
 
+/// Whether an option preview should render as a fixed-column monospace block
+/// rather than markdown. True when the text contains ASCII box-drawing or
+/// wireframe glyphs (│┌┐└┘├┤┼─ ╭╮╰╯ ●○◉◯ ▢▣ etc.) or repeated indentation
+/// whose alignment matters.
+/// Mirrors the desktop redesign's wireframe detection on the question card.
+func workPreviewIsWireframe(_ text: String) -> Bool {
+  let wireframeScalars: Set<Character> = [
+    "│", "┌", "┐", "└", "┘", "├", "┤", "┼", "─",
+    "╭", "╮", "╰", "╯", "║", "═", "╔", "╗", "╚", "╝", "╠", "╣", "╬",
+    "▌", "▐", "█", "▓", "▒", "░", "▢", "▣", "□", "■",
+    "●", "○", "◉", "◯", "◦",
+  ]
+  if text.contains(where: { wireframeScalars.contains($0) }) {
+    return true
+  }
+  let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
+  guard lines.count >= 2 else { return false }
+  let indentedLines = lines.filter { line in
+    line.range(of: #"^\s{2,}\S"#, options: .regularExpression) != nil
+  }
+  return indentedLines.count >= 2
+}
+
 struct WorkStructuredQuestionCard: View {
   let question: WorkPendingQuestionModel
   let busy: Bool
@@ -900,6 +923,20 @@ struct WorkStructuredQuestionCard: View {
   let onSubmitAll: @MainActor ([String: AgentChatInputAnswerValue], String?) async -> Void
   let onDecline: @MainActor () async -> Void
   var onFreeformFocusChange: ((Bool) -> Void)? = nil
+  /// Provider to fall back on when the parsed question carries no `source`
+  /// (legacy `structured_question` envelopes). Usually the session provider.
+  var fallbackProvider: String? = nil
+
+  /// Resolved asking provider: the parsed question source, else the session
+  /// fallback. Drives the header verb, logo, and per-provider accent.
+  private var resolvedProvider: String? {
+    if let source = question.source?.trimmingCharacters(in: .whitespacesAndNewlines), !source.isEmpty {
+      return source
+    }
+    return fallbackProvider
+  }
+
+  private var providerAccent: Color { ADEColor.providerChatAccent(for: resolvedProvider) }
 
   @State private var currentPage: Int = 0
   @State private var singleQuestionFreeformText: String = ""
@@ -940,41 +977,65 @@ struct WorkStructuredQuestionCard: View {
       footerRow
     }
     .adeGlassCard(cornerRadius: 18, padding: 14)
+    .overlay(
+      RoundedRectangle(cornerRadius: 18, style: .continuous)
+        .stroke(providerAccent.opacity(0.30), lineWidth: 1)
+    )
     .onChange(of: freeformFocused) { _, focused in
       onFreeformFocusChange?(focused)
     }
+    .accessibilityElement(children: .contain)
+    .accessibilityLabel("\(workChatSurfaceProviderName(resolvedProvider)) asks. \(activeQuestion.question)")
   }
 
   @ViewBuilder
   private var headerRow: some View {
-    VStack(alignment: .leading, spacing: 6) {
-      if isPaged {
-        Text("Question \(currentPage + 1) of \(question.questions.count)")
-          .font(.caption.weight(.bold))
-          .tracking(0.6)
-          .foregroundStyle(ADEColor.textMuted)
-      } else if let title = question.title, !title.isEmpty {
-        Text(title)
-          .font(.headline)
-          .foregroundStyle(ADEColor.textPrimary)
+    VStack(alignment: .leading, spacing: 8) {
+      // Provider-identified header: logo + "{Provider} asks" verb. Replaces the
+      // old clock-icon "Input needed · Claude" treatment from the desktop redesign.
+      HStack(spacing: 8) {
+        WorkProviderBareLogo(
+          provider: resolvedProvider,
+          fallbackSymbol: providerIcon(resolvedProvider ?? ""),
+          tint: providerAccent,
+          size: 18
+        )
+        Text(question.providerHeaderVerb(fallbackProvider: fallbackProvider))
+          .font(.caption.weight(.semibold))
+          .foregroundStyle(providerAccent)
+        Spacer(minLength: 0)
+        if isPaged {
+          Text("\(currentPage + 1) of \(question.questions.count)")
+            .font(.caption2.weight(.bold).monospacedDigit())
+            .foregroundStyle(ADEColor.textMuted)
+        }
       }
-      if !isPaged, let body = question.body, !body.isEmpty,
-         normalizedText(body) != normalizedText(activeQuestion.question) {
-        Text(body)
-          .font(.caption)
-          .foregroundStyle(ADEColor.textSecondary)
-          .frame(maxWidth: .infinity, alignment: .leading)
-      }
+      .accessibilityHidden(true)
+
+      // Optional kicker: the question's short `header` shown above the prompt.
       if let header = activeQuestion.header, !header.isEmpty {
         Text(header.uppercased())
           .font(.caption2.weight(.bold))
           .tracking(0.6)
           .foregroundStyle(ADEColor.textMuted)
       }
+
+      // The question text, rendered once. The old top-level title that simply
+      // echoed the question is gone; only a request-level description that
+      // differs from the question text is shown (below).
       Text(activeQuestion.question)
         .font(.subheadline.weight(.semibold))
         .foregroundStyle(ADEColor.textPrimary)
         .frame(maxWidth: .infinity, alignment: .leading)
+
+      if !isPaged, let body = question.body, !body.isEmpty,
+         normalizedText(body) != normalizedText(activeQuestion.question),
+         normalizedText(body) != normalizedText(question.title ?? "") {
+        Text(body)
+          .font(.caption)
+          .foregroundStyle(ADEColor.textSecondary)
+          .frame(maxWidth: .infinity, alignment: .leading)
+      }
     }
   }
 
@@ -1059,7 +1120,7 @@ struct WorkStructuredQuestionCard: View {
         Task { await submitAll() }
       }
       .buttonStyle(.glassProminent)
-      .tint(ADEColor.accent)
+      .tint(providerAccent)
       .disabled(busy || !canSubmit)
     }
   }
@@ -1187,6 +1248,7 @@ struct WorkStructuredQuestionCard: View {
     let selected = selectedSet.contains(option.value)
     let expanded = expandedPreviews.contains(previewKey(for: q, option: option))
     let showsCheckbox = q.multiSelect
+    let accent = providerAccent
     VStack(alignment: .leading, spacing: 6) {
       HStack(alignment: .top, spacing: 10) {
         Button {
@@ -1196,10 +1258,10 @@ struct WorkStructuredQuestionCard: View {
             HStack(spacing: 6) {
               if showsCheckbox {
                 Image(systemName: selected ? "checkmark.square.fill" : "square")
-                  .foregroundStyle(selected ? ADEColor.warning : ADEColor.textSecondary)
+                  .foregroundStyle(selected ? accent : ADEColor.textSecondary)
               } else if selected {
                 Image(systemName: "largecircle.fill.circle")
-                  .foregroundStyle(ADEColor.warning)
+                  .foregroundStyle(accent)
               }
               Text(option.label)
                 .font(.subheadline.weight(.semibold))
@@ -1225,15 +1287,24 @@ struct WorkStructuredQuestionCard: View {
           .padding(10)
           .background(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-              .fill(selected ? ADEColor.warning.opacity(0.18) : ADEColor.surfaceBackground.opacity(0.6))
+              .fill(selected ? accent.opacity(0.18) : ADEColor.surfaceBackground.opacity(0.6))
           )
           .overlay(
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-              .stroke(selected ? ADEColor.warning.opacity(0.6) : ADEColor.border.opacity(0.25), lineWidth: 0.8)
+              .stroke(selected ? accent.opacity(0.6) : ADEColor.border.opacity(0.25), lineWidth: 0.8)
           )
         }
         .buttonStyle(.plain)
         .disabled(busy)
+        // Expose options as radio buttons (single-select) or checkboxes
+        // (multi-select) so VoiceOver announces selection state like a form.
+        // The Button already carries `.isButton`; add `.isSelected` so the
+        // current choice is read as selected, and describe the control kind.
+        .accessibilityAddTraits(selected ? .isSelected : [])
+        .accessibilityValue(showsCheckbox
+          ? "Checkbox, \(selected ? "checked" : "unchecked")"
+          : (selected ? "Selected" : "Not selected"))
+        .accessibilityLabel(option.recommended ? "\(option.label), recommended" : option.label)
 
         if let preview = option.preview, !preview.isEmpty {
           Button {
@@ -1264,13 +1335,26 @@ struct WorkStructuredQuestionCard: View {
 
   @ViewBuilder
   private func previewPanel(text: String, format: String?) -> some View {
+    let isMarkdownFormat = (format?.lowercased() ?? "markdown") == "markdown"
     Group {
-      if (format?.lowercased() ?? "markdown") == "markdown" {
-        WorkMarkdownRenderer(markdown: text)
+      // Wireframes (ASCII box-drawing / bullet glyphs) must keep their column
+      // alignment, so they render in a true monospace block with whitespace and
+      // newlines preserved and horizontal scrolling allowed — collapsing them
+      // through the markdown renderer destroyed the alignment. Plain markdown
+      // previews without box-drawing chars still go through the markdown path.
+      if workPreviewIsWireframe(text) || !isMarkdownFormat {
+        // Horizontal ScrollView + intrinsic-width monospace Text: columns stay
+        // aligned and wide wireframes scroll sideways instead of wrapping.
+        ScrollView(.horizontal, showsIndicators: false) {
+          Text(text)
+            .font(.system(.caption, design: .monospaced))
+            .foregroundStyle(ADEColor.textPrimary)
+            .fixedSize(horizontal: true, vertical: true)
+            .textSelection(.enabled)
+            .multilineTextAlignment(.leading)
+        }
       } else {
-        Text(text)
-          .font(.caption)
-          .foregroundStyle(ADEColor.textPrimary)
+        WorkMarkdownRenderer(markdown: text)
           .frame(maxWidth: .infinity, alignment: .leading)
       }
     }

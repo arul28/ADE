@@ -11617,6 +11617,28 @@ final class ADETests: XCTestCase {
     XCTAssertNil(second.preview)
   }
 
+  func testPendingInputHeaderVerbUsesFallbackProviderWhenSourceIsMissing() {
+    XCTAssertEqual(
+      workChatPendingInputHeaderVerb(source: nil, fallbackProvider: "claude", kind: "question"),
+      "Claude asks"
+    )
+    XCTAssertEqual(
+      workChatPendingInputHeaderVerb(source: "", fallbackProvider: "codex", kind: "plan_approval"),
+      "Codex · Plan ready"
+    )
+    XCTAssertEqual(
+      workChatPendingInputHeaderVerb(source: "droid", fallbackProvider: "claude", kind: "question"),
+      "Droid asks"
+    )
+    XCTAssertEqual(workChatSurfaceProviderName("ade"), "ADE")
+    XCTAssertEqual(workChatSurfaceProviderName("my_provider-runtime"), "My Provider Runtime")
+  }
+
+  func testWorkPreviewIsWireframeMatchesDesktopIndentationHeuristic() {
+    XCTAssertTrue(workPreviewIsWireframe("Home\n  Primary action\n  Secondary action"))
+    XCTAssertFalse(workPreviewIsWireframe("Line one\nLine two"))
+  }
+
   func testPendingWorkPermissionFromApprovalReturnsCardForGenericTools() {
     let detail = """
     {

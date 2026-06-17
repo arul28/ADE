@@ -1,8 +1,9 @@
 import React, { useCallback, useState } from "react";
-import { ListChecks, CopySimple } from "@phosphor-icons/react";
+import { CopySimple } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
 import { ChatMarkdown } from "./chatMarkdown";
-import { ChatStatusGlyph } from "./chatStatusVisuals";
+import { ProviderLogo } from "../shared/ProviderLogos";
+import { pendingInputHeaderLabel } from "../../../shared/pendingInputLabels";
 
 /* ── Types ── */
 
@@ -27,6 +28,9 @@ const ChatProposedPlanCard = React.memo(function ChatProposedPlanCard({
 }: ChatProposedPlanCardProps) {
   const [copied, setCopied] = useState(false);
   const bodyText = description?.trim() || question?.trim() || "The agent has prepared a plan.";
+  // Provider-identified header — "{Provider} · Plan ready" — matching the
+  // question card. The card chrome inherits the per-provider `--chat-accent`.
+  const headerLabel = pendingInputHeaderLabel(source, "plan_approval");
 
   const handleCopy = useCallback(() => {
     if (!navigator.clipboard) return;
@@ -37,16 +41,15 @@ const ChatProposedPlanCard = React.memo(function ChatProposedPlanCard({
   }, [bodyText]);
 
   return (
-    <div className="relative overflow-hidden rounded-xl border border-emerald-500/[0.12] bg-gradient-to-br from-emerald-950/10 via-[#12101A] to-[#12101A] p-4">
-      <div className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-emerald-400/20 to-transparent" />
+    <div className="relative overflow-hidden rounded-xl border border-[color:color-mix(in_srgb,var(--chat-accent)_22%,transparent)] bg-[#12101A] p-4">
+      <div className="absolute inset-x-0 top-0 h-px bg-[color:color-mix(in_srgb,var(--chat-accent)_30%,transparent)]" />
 
       <div className="mb-2 flex items-center gap-2">
-        <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-emerald-500/[0.10] shadow-[0_0_0_3px_rgba(16,185,129,0.08)]">
-          <ChatStatusGlyph status="waiting" size={11} />
+        <span className="inline-flex h-5 w-5 items-center justify-center rounded-[var(--chat-radius-pill)] border border-[color:color-mix(in_srgb,var(--chat-accent)_22%,transparent)] bg-black/20">
+          <ProviderLogo family={source} size={11} />
         </span>
-        <ListChecks size={13} weight="bold" className="text-emerald-400/60" />
-        <span className="text-emerald-300/60 font-mono text-[9px] uppercase tracking-[0.16em]">
-          Plan ready &middot; {source}
+        <span className="font-mono text-[9px] uppercase tracking-[0.16em] text-[color:color-mix(in_srgb,var(--chat-accent)_82%,white_18%)]">
+          {headerLabel}
         </span>
       </div>
 
@@ -59,8 +62,8 @@ const ChatProposedPlanCard = React.memo(function ChatProposedPlanCard({
           type="button"
           disabled={disabled}
           className={cn(
-            "rounded-lg border border-emerald-400/25 bg-emerald-500/[0.10] px-3 py-1.5 text-[11px] font-medium text-emerald-300 transition-colors",
-            "hover:bg-emerald-500/[0.16] disabled:pointer-events-none disabled:opacity-40",
+            "rounded-lg border px-3 py-1.5 text-[11px] font-medium transition-colors disabled:pointer-events-none disabled:opacity-40",
+            "border-[color:color-mix(in_srgb,var(--chat-accent)_45%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_14%,transparent)] text-[color:color-mix(in_srgb,var(--chat-accent)_88%,white_12%)] hover:bg-[color:color-mix(in_srgb,var(--chat-accent)_22%,transparent)]",
           )}
           onClick={onApprove}
         >

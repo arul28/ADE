@@ -163,6 +163,8 @@ export type LaneRuntimeSummary = {
   bucket: LaneRuntimeBucket;
   runningCount: number;
   awaitingInputCount: number;
+  /** Exact pending input requests from chat sessions; excludes idle CLI heuristics. */
+  pendingInputCount?: number;
   endedCount: number;
   sessionCount: number;
 };

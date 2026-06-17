@@ -196,13 +196,26 @@ async function requestPermission(
   };
 }
 
+// Droid's ask-user payload (`AskUserQuestion`) exposes only `topic`, `question`,
+// and `options: string[]` — there is no per-option description, no multiSelect,
+// and no default-value field in the SDK schema (the zod object is "passthrough",
+// but no richer fields are documented or emitted). So we carry the topic through
+// as the question header and surface each option as a bare label=value choice;
+// that is the full ceiling of what the SDK provides. See `DroidSdkAskUserRequest`.
 function summarizeAskUser(params: DroidSdkTypes.AskUserRequestParams): DroidSdkAskUserRequest {
-  const questions = (params.questions ?? []).map((question, index) => ({
-    id: `q_${question.index ?? index + 1}`,
-    header: question.topic,
-    question: question.question,
-    options: question.options?.map((option) => ({ label: option, value: option })),
-  }));
+  const questions = (params.questions ?? []).map((question, index) => {
+    const topic = typeof question.topic === "string" ? question.topic.trim() : "";
+    const options = (question.options ?? [])
+      .map((option) => (typeof option === "string" ? option.trim() : ""))
+      .filter((option) => option.length > 0)
+      .map((option) => ({ label: option, value: option }));
+    return {
+      id: `q_${question.index ?? index + 1}`,
+      ...(topic.length ? { header: topic } : {}),
+      question: question.question,
+      ...(options.length ? { options } : {}),
+    };
+  });
   return {
     id: params.toolCallId || `droid-ask-user-${Date.now()}`,
     toolCallId: params.toolCallId,
