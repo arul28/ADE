@@ -156,8 +156,7 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
     setPrLoaded(false);
     setPrMenuOpen(false);
     setPrChecks(null);
-    if (isRemoteProject) return;
-    void refreshStatus();
+    if (!isRemoteProject) void refreshStatus();
     void refreshPr();
   }, [isRemoteProject, refreshStatus, refreshPr]);
 
@@ -165,32 +164,32 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
   const prevBusy = React.useRef(runtime.busyAction);
   useEffect(() => {
     if (prevBusy.current && !runtime.busyAction) {
-      if (isRemoteProject && !prLoaded) {
-        prevBusy.current = runtime.busyAction;
-        return;
-      }
-      void refreshStatus();
+      if (!isRemoteProject) void refreshStatus();
       void refreshPr();
     }
     prevBusy.current = runtime.busyAction;
-  }, [isRemoteProject, prLoaded, runtime.busyAction, refreshStatus, refreshPr]);
+  }, [isRemoteProject, runtime.busyAction, refreshStatus, refreshPr]);
 
   // Subscribe to backend PR events so the linked-PR pill reflects external
   // changes (PR closed, merged, checks finished, etc.) without a manual refresh.
   useEffect(() => {
     const unsubscribe = window.ade.prs.onEvent((event) => {
+      if (event.type === "pr-notification") {
+        if (event.laneId === laneId || event.prId === linkedPr?.id) void refreshPr();
+        return;
+      }
       if (event.type !== "prs-updated") return;
-      // Only re-fetch when an update could plausibly touch this lane's PR.
-      if (event.prs.some((pr) => pr.laneId === laneId)) {
-        if (isRemoteProject && !prLoaded && !linkedPr) return;
+      const eventIncludesLanePr = event.prs.some((pr) => pr.laneId === laneId);
+      const eventIncludesLinkedPr = linkedPr ? event.prs.some((pr) => pr.id === linkedPr.id) : false;
+      if (eventIncludesLanePr || eventIncludesLinkedPr) {
         void refreshPr();
-      } else if (linkedPr && !event.prs.some((pr) => pr.id === linkedPr.id)) {
+      } else if (linkedPr) {
         // The linked PR vanished from the latest snapshot — clear the pill.
         setLinkedPr(null);
       }
     });
     return unsubscribe;
-  }, [isRemoteProject, laneId, linkedPr, prLoaded, refreshPr]);
+  }, [laneId, linkedPr, refreshPr]);
 
   const handlePr = useCallback(async () => {
     if (linkedPr) {
@@ -266,7 +265,7 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
   const handleOpenInGitHub = useCallback(async () => {
     if (!linkedPr) return;
     try {
-      await window.ade.prs.openInGitHub(linkedPr.id);
+      await window.ade.app.openExternal(linkedPr.githubUrl);
     } catch {
       // Best-effort fallback: let the OS handle the URL directly.
       try { window.open(linkedPr.githubUrl, "_blank", "noopener,noreferrer"); } catch { /* noop */ }

@@ -157,7 +157,7 @@ export const ChatPrPane = React.memo(function ChatPrPane({
   const openInGitHub = useCallback(async () => {
     if (!pr) return;
     try {
-      await window.ade.prs.openInGitHub(pr.id);
+      await window.ade.app.openExternal(pr.githubUrl);
     } catch {
       try { window.open(pr.githubUrl, "_blank", "noopener,noreferrer"); } catch { /* noop */ }
     }

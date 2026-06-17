@@ -69,6 +69,7 @@ import { createPrService } from "./services/prs/prService";
 import { createPrPollingService } from "./services/prs/prPollingService";
 import { createQueueLandingService } from "./services/prs/queueLandingService";
 import { createPrSummaryService } from "./services/prs/prSummaryService";
+import { openExternalUrl } from "./services/shared/externalLinks";
 import {
   detectDefaultBaseRef,
   resolveRepoRoot,
@@ -2482,9 +2483,7 @@ app.whenReady().then(async () => {
       onHotRefreshChanged: () => {
         prPollingServiceRef?.poke();
       },
-      openExternal: async (url) => {
-        await shell.openExternal(url);
-      },
+      openExternal: openExternalUrl,
     });
     prServiceRef = prService;
 
