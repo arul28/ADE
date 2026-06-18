@@ -156,7 +156,9 @@ struct WorkNewChatScreen: View {
     if let preferredLaneId, let lane = lanes.first(where: { $0.id == preferredLaneId }) {
       return lane
     }
-    return lanes.first
+    return lanes.first { $0.laneType == "primary" }
+      ?? lanes.first { $0.name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "primary" }
+      ?? lanes.first
   }
 
   /// Fast mode only applies to in-app chat sessions on fast-tier models — the

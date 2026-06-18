@@ -349,10 +349,13 @@ Source: `apps/ios/ADE/Services/SyncService.swift`.
    in detached tasks (the SQLite connection is FULLMUTEX). The receive
    loop awaits frames in order, so application order is unchanged —
    the UI just never freezes under sync load.
-7. On disconnect: a fast exponential-backoff reconnect burst, then an
-   indefinite ~30 s slow-heartbeat retry loop. The phone never
+7. On transport disconnect: a fast exponential-backoff reconnect burst,
+   then an indefinite ~30 s slow-heartbeat retry loop. The phone never
    permanently gives up — a paired machine that comes back minutes
-   later reconnects without the user touching anything.
+   later reconnects without the user touching anything. User-initiated
+   disconnects from Settings (including the connecting-state Cancel
+   button) cancel scheduled reconnect work and leave the phone in the
+   disconnected state until the user reconnects or pairs again.
 8. After pairing completes, the phone announces currently-open lanes
    via `lanes.presence.announce` so the runtime decorates
    `LaneSummary.devicesOpen` for other controllers; the phone calls
