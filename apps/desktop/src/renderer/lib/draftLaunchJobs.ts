@@ -19,6 +19,35 @@ import type {
 export const MAX_DRAFT_LAUNCH_TERMINAL_JOBS = 8;
 export const DRAFT_LAUNCH_JOB_STALE_AFTER_MS = 2 * 60 * 1000;
 
+// Hard ceiling on how long a single draft launch may run before we fail it.
+// Without this, a remote runtime call that neither resolves nor rejects (e.g. a
+// connection dropped mid-switch) would wedge the job in a non-terminal state
+// forever, blocking re-submission of the same draft.
+export const DRAFT_LAUNCH_TIMEOUT_MS = 90 * 1000;
+
+// Thrown when the active project changes out from under an in-flight draft
+// launch. The launch captures the originating project's binding when it starts
+// and aborts before any mutating runtime call (lane create / session start) if
+// the active project has drifted, so it can never create a lane or session in
+// the wrong project. The job surfaces as a Restorable failure.
+export const LAUNCH_PROJECT_CHANGED_MESSAGE =
+  "Project changed before the launch finished — it was not started. Use Restore to run it in the current project.";
+
+// Reject `promise` if it has not settled within DRAFT_LAUNCH_TIMEOUT_MS. The
+// underlying runtime call is not cancellable (Electron IPC), so on timeout it
+// keeps running detached; the timeout only unwedges the renderer-side job.
+export function withDraftLaunchTimeout<T>(promise: Promise<T>, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(`${label} timed out. The runtime may have disconnected — use Restore to try again.`));
+    }, DRAFT_LAUNCH_TIMEOUT_MS);
+    promise.then(
+      (value) => { clearTimeout(timer); resolve(value); },
+      (error: unknown) => { clearTimeout(timer); reject(error); },
+    );
+  });
+}
+
 export type NativeControlState = {
   interactionMode: AgentChatInteractionMode;
   claudePermissionMode: AgentChatClaudePermissionMode;

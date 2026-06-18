@@ -3744,8 +3744,10 @@ describe("AgentChatPane submit recovery", () => {
         sessionId: "created-session",
         text: "This first send will fail.",
       }));
-      expect(deleteChat).toHaveBeenCalledWith({ sessionId: "created-session" });
-      expect(deleteLane).toHaveBeenCalledWith({ laneId: "lane-created", force: true });
+      // Rollback is pinned to the originating project's binding (null here in
+      // the default test store) so a concurrent project switch can't misroute it.
+      expect(deleteChat).toHaveBeenCalledWith({ sessionId: "created-session" }, null);
+      expect(deleteLane).toHaveBeenCalledWith({ laneId: "lane-created", force: true }, null);
       expect(onSessionCreated).not.toHaveBeenCalled();
     });
   });
@@ -3825,10 +3827,115 @@ describe("AgentChatPane submit recovery", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Send" }));
 
     await waitFor(() => {
-      expect(deleteLane).toHaveBeenCalledWith({ laneId: "lane-created", force: true });
+      expect(deleteLane).toHaveBeenCalledWith({ laneId: "lane-created", force: true }, null);
       expect(deleteChat).not.toHaveBeenCalled();
       expect(send).not.toHaveBeenCalled();
       expect(onSessionCreated).not.toHaveBeenCalled();
+    });
+  });
+
+  it("aborts an auto-create launch before creating a lane when the project changes mid-naming", async () => {
+    const { createLane, suggestLaneName, deleteLane } = installAdeMocks({ sessions: [] });
+    let resolveName!: (name: string) => void;
+    suggestLaneName.mockImplementation(() => new Promise<string>((resolve) => {
+      resolveName = resolve;
+    }));
+    // The originating project's binding is captured when the launch starts.
+    useAppStore.setState({
+      projectBinding: {
+        kind: "local",
+        key: "local:/tmp/project-under-test",
+        rootPath: "/tmp/project-under-test",
+        displayName: "project-under-test",
+      } as any,
+    });
+
+    renderAutoCreateDraftPane();
+
+    const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
+    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    fireEvent.pointerDown(modelTrigger, { button: 0 });
+    fireEvent.click(modelTrigger);
+    fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
+    await clickEnabledModelOption(new RegExp(escapeRegExp(codexLabel), "i"));
+
+    fireEvent.click(await screen.findByRole("button", { name: "Select lane" }));
+    fireEvent.click(await screen.findByRole("button", { name: /Auto-create lane/i }));
+
+    const textbox = await screen.findByRole("textbox");
+    fireEvent.change(textbox, { target: { value: "Switch projects mid-launch." } });
+    fireEvent.click(await screen.findByRole("button", { name: "Send" }));
+
+    await waitFor(() => expect(suggestLaneName).toHaveBeenCalledTimes(1));
+
+    // Switch the active project to a different one, then let lane naming resolve.
+    // selectActiveProjectRoot reads project.rootPath for local bindings, so the
+    // scope key (and thus the status banner) stays addressable while only the
+    // binding key drifts.
+    await act(async () => {
+      useAppStore.setState({
+        projectBinding: {
+          kind: "local",
+          key: "local:/tmp/other-project",
+          rootPath: "/tmp/other-project",
+          displayName: "other-project",
+        } as any,
+      });
+      resolveName("would-be-lane");
+      await Promise.resolve();
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText(/Launch failed: Project changed/i)).toBeTruthy();
+    });
+    // The guard fired before the irreversible mutation: no lane was created in
+    // the now-active project, and there was nothing to roll back.
+    expect(createLane).not.toHaveBeenCalled();
+    expect(deleteLane).not.toHaveBeenCalled();
+  });
+
+  it("pins the rollback delete to the originating project's binding", async () => {
+    const binding = {
+      kind: "local" as const,
+      key: "local:/tmp/project-under-test",
+      rootPath: "/tmp/project-under-test",
+      displayName: "project-under-test",
+    };
+    const { createLane, suggestLaneName, deleteLane } = installAdeMocks({
+      sessions: [],
+      sendError: new Error("send failed"),
+    });
+    suggestLaneName.mockResolvedValue("pinned-rollback-lane");
+    createLane.mockResolvedValue({
+      id: "lane-created",
+      name: "pinned-rollback-lane",
+      laneType: "worktree",
+      branchRef: "refs/heads/pinned-rollback-lane",
+      worktreePath: "/tmp/project-under-test/pinned-rollback-lane",
+      parentLaneId: "lane-primary",
+    });
+    useAppStore.setState({ projectBinding: binding as any });
+
+    renderAutoCreateDraftPane();
+
+    const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
+    const codexLabel = getModelById("openai/gpt-5.4")?.displayName ?? "GPT-5.4";
+    fireEvent.pointerDown(modelTrigger, { button: 0 });
+    fireEvent.click(modelTrigger);
+    fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
+    await clickEnabledModelOption(new RegExp(escapeRegExp(codexLabel), "i"));
+
+    fireEvent.click(await screen.findByRole("button", { name: "Select lane" }));
+    fireEvent.click(await screen.findByRole("button", { name: /Auto-create lane/i }));
+
+    const textbox = await screen.findByRole("textbox");
+    fireEvent.change(textbox, { target: { value: "Roll back to the right project." } });
+    fireEvent.click(await screen.findByRole("button", { name: "Send" }));
+
+    await waitFor(() => {
+      // Same project throughout, so the lane is created, the send fails, and the
+      // rollback is routed at the captured binding (not the global one).
+      expect(deleteLane).toHaveBeenCalledWith({ laneId: "lane-created", force: true }, binding);
     });
   });
 

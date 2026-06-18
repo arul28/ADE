@@ -42,6 +42,7 @@ import {
   type IosSimulatorDrawerMode,
   type LaneLinearIssue,
   type AiSettingsStatus,
+  type OpenProjectBinding,
   type TerminalSessionDetail,
   type TerminalToolType,
 } from "../../../shared/types";
@@ -125,7 +126,7 @@ import { ConfirmDialog, useConfirmDialog } from "../shared/InlineDialogs";
 import { ChatActionsDrawerPanel, type ChatActionsTab } from "./ChatActionsDrawerPanel";
 import { CodexPlanCard } from "./codex/CodexPlanCard";
 import { ChatPrPane } from "./ChatPrPane";
-import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
+import { rootAppStoreApi, selectActiveProjectRoot, useAppStore, useRootAppStore } from "../../state/appStore";
 import { buildChatAppearanceRootStyle } from "./chatAppearance";
 import { copyLaunchPromptToClipboard } from "../../lib/launchPromptClipboard";
 import { LaneAccentDot } from "../lanes/LaneAccentDot";
@@ -157,6 +158,8 @@ import {
   isDraftLaunchJobStale,
   isDraftLaunchJobTerminal,
   pruneDraftLaunchJobs,
+  withDraftLaunchTimeout,
+  LAUNCH_PROJECT_CHANGED_MESSAGE,
   type BackgroundLaunchNotice,
   type DraftLaunchJob,
   type DraftLaunchKind,
@@ -2847,6 +2850,9 @@ export function AgentChatPane({
   const projectRoot = useAppStore(selectActiveProjectRoot);
   const projectTransition = useAppStore((s) => s.projectTransition);
   const isRemoteProject = useAppStore((s) => s.projectBinding?.kind === "remote");
+  // The originating project's binding, captured per launch to pin cleanup and
+  // detect a project switch mid-launch (see LAUNCH_PROJECT_CHANGED_MESSAGE).
+  const projectBinding = useAppStore((s) => s.projectBinding);
   const agentTurnCompletionSound = useAppStore((s) => s.agentTurnCompletionSound);
   const agentTurnCompletionSoundVolume = useAppStore((s) => s.agentTurnCompletionSoundVolume);
   const agentTurnCompletionSoundQuietWhenFocused = useAppStore((s) => s.agentTurnCompletionSoundQuietWhenFocused);
@@ -2931,13 +2937,22 @@ export function AgentChatPane({
     ].map(encodeURIComponent).join(":"),
     [laneId, projectRoot, surfaceProfile, workDraftStorageKind],
   );
-  const draftLaunchJobs = useAppStore((s) => s.draftLaunchJobsByScope[draftLaunchJobsScopeKey] ?? EMPTY_DRAFT_LAUNCH_JOBS);
-  const setDraftLaunchJobsInStore = useAppStore((s) => s.setDraftLaunchJobs);
+  // Draft-launch job state lives in the ROOT store, not the project-scoped
+  // store. A launch can outlive the pane (and its project surface) that started
+  // it: switching to another remote project tears down the originating
+  // project's scoped store entirely (App.tsx mounts only the active remote
+  // surface), which would otherwise drop the in-flight job with no trace. The
+  // root store survives that teardown, so the job re-surfaces (and ready jobs
+  // auto-open / failures show a Restore) when the user returns. The scope key
+  // is already projectRoot-keyed, so jobs stay correctly partitioned per
+  // project. Reads (useRootAppStore / rootAppStoreApi.getState) and writes
+  // (rootAppStoreApi.getState().setDraftLaunchJobs) both target the root store.
+  const draftLaunchJobs = useRootAppStore((s) => s.draftLaunchJobsByScope[draftLaunchJobsScopeKey] ?? EMPTY_DRAFT_LAUNCH_JOBS);
   const setDraftLaunchJobs = useCallback((
     next: DraftLaunchJob[] | ((prev: DraftLaunchJob[]) => DraftLaunchJob[]),
   ) => {
-    setDraftLaunchJobsInStore(draftLaunchJobsScopeKey, next);
-  }, [draftLaunchJobsScopeKey, setDraftLaunchJobsInStore]);
+    rootAppStoreApi.getState().setDraftLaunchJobs(draftLaunchJobsScopeKey, next);
+  }, [draftLaunchJobsScopeKey]);
   const hasActiveDraftLaunchJobs = useMemo(
     () => draftLaunchJobs.some((job) => !isDraftLaunchJobTerminal(job.status)),
     [draftLaunchJobs],
@@ -6791,7 +6806,8 @@ export function AgentChatPane({
   }, [setDraftLaunchJobs]);
 
   const draftLaunchJobExists = useCallback((jobId: string) => {
-    return (useAppStore.getState().draftLaunchJobsByScope[draftLaunchJobsScopeKey] ?? EMPTY_DRAFT_LAUNCH_JOBS)
+    // Read from the ROOT store, matching where setDraftLaunchJobs writes.
+    return (rootAppStoreApi.getState().draftLaunchJobsByScope[draftLaunchJobsScopeKey] ?? EMPTY_DRAFT_LAUNCH_JOBS)
       .some((job) => job.id === jobId);
   }, [draftLaunchJobsScopeKey]);
 
@@ -6870,6 +6886,7 @@ export function AgentChatPane({
     onAutoCreateNameResolved?: () => void,
     onAutoCreateNameFallback?: (message: string) => void,
     onAutoCreateNameModelResolved?: (modelId: string) => void,
+    assertActive?: () => void,
   ): Promise<DraftLaunchLaneTarget> => {
     if (draftLaunchTargetIsAutoCreate) {
       if (!laneId) throw new Error("Select a lane before auto-creating a new lane.");
@@ -6908,6 +6925,10 @@ export function AgentChatPane({
         primaryBaseRef,
       });
       const baseBranch = selectedBaseBranch;
+      // Last checkpoint before the irreversible mutation: if the user switched
+      // projects while the lane name was being generated, abort rather than
+      // create a lane in the wrong project.
+      assertActive?.();
       const createdLane = await window.ade.lanes.create({
         name: laneName,
         ...(baseBranch ? { baseBranch } : {}),
@@ -6949,8 +6970,11 @@ export function AgentChatPane({
   const cleanupDraftChatSession = useCallback(async (
     session: AgentChatSession,
     targetLane: DraftLaunchLaneTarget,
+    pin?: OpenProjectBinding | null,
   ) => {
-    await window.ade.agentChat.delete({ sessionId: session.id }).catch((cleanupError: unknown) => {
+    // Pin the rollback to the project that owns the session so a concurrent
+    // project switch can't route the delete at the now-active project.
+    await window.ade.agentChat.delete({ sessionId: session.id }, pin).catch((cleanupError: unknown) => {
       console.warn("draft chat launch session cleanup failed", cleanupError);
     });
     loadedHistoryRef.current.delete(session.id);
@@ -6967,6 +6991,7 @@ export function AgentChatPane({
   const startDraftChatLaunch = useCallback(async (
     prepared: PreparedDraftLaunch,
     targetLane: DraftLaunchLaneTarget,
+    pin?: OpenProjectBinding | null,
   ): Promise<StartedDraftLaunch> => {
     let createdSession: AgentChatSession | null = null;
     try {
@@ -6996,7 +7021,7 @@ export function AgentChatPane({
       };
     } catch (launchError) {
       if (createdSession) {
-        await cleanupDraftChatSession(createdSession, targetLane);
+        await cleanupDraftChatSession(createdSession, targetLane, pin);
       }
       throw launchError;
     }
@@ -7112,6 +7137,20 @@ export function AgentChatPane({
     draftLaunchInFlightKeysRef.current.add(requestKey);
     void copyPromptForLaunch(snapshot.text);
 
+    // Pin this launch to the project that started it. The chain runs detached
+    // from the pane's lifecycle, so if the user switches projects mid-launch we
+    // must (a) abort before any mutating call rather than create a lane/session
+    // in the now-active project, and (b) route rollback at the originating
+    // project. `launchBinding` is this pane's (project-scoped) binding; the root
+    // store's binding tracks whichever project is currently active.
+    const launchBinding = projectBinding;
+    const assertLaunchProjectActive = () => {
+      const activeBinding = rootAppStoreApi.getState().projectBinding;
+      if (launchBinding && activeBinding?.key !== launchBinding.key) {
+        throw new Error(LAUNCH_PROJECT_CHANGED_MESSAGE);
+      }
+    };
+
     const jobId = createDraftLaunchJobId();
     if (mode === "foreground") {
       latestForegroundDraftLaunchJobIdRef.current = jobId;
@@ -7147,13 +7186,13 @@ export function AgentChatPane({
     let targetLane: DraftLaunchLaneTarget | null = null;
 
     try {
-      targetLane = await resolveDraftLaunchLane(snapshot, () => {
+      targetLane = await withDraftLaunchTimeout(resolveDraftLaunchLane(snapshot, () => {
         patchDraftLaunchJob(jobId, { status: "creating-lane" });
       }, (message) => {
         patchDraftLaunchJob(jobId, { warning: message });
       }, (modelId) => {
         patchDraftLaunchJob(jobId, { namingModelId: modelId });
-      });
+      }, assertLaunchProjectActive), "Lane setup");
       patchDraftLaunchJob(jobId, {
         status: "starting-session",
         laneId: targetLane.laneId,
@@ -7165,9 +7204,15 @@ export function AgentChatPane({
         laneId: targetLane.laneId,
         laneName: targetLane.laneName,
       });
-      const launched = kind === "chat"
-        ? await startDraftChatLaunch(prepared, targetLane)
-        : await startDraftCliLaunch(prepared, targetLane, mode);
+      // Re-check before starting the session: a switch during prepare must not
+      // start a session in the now-active project.
+      assertLaunchProjectActive();
+      const launched = await withDraftLaunchTimeout(
+        kind === "chat"
+          ? startDraftChatLaunch(prepared, targetLane, launchBinding)
+          : startDraftCliLaunch(prepared, targetLane, mode),
+        "Session start",
+      );
       invalidateSessionListCache();
       invalidateAgentChatSessionListCache({ laneId: targetLane.laneId });
       if (launched.draftKind === "chat" && targetLane.laneId === laneId) {
@@ -7202,7 +7247,9 @@ export function AgentChatPane({
       }
     } catch (launchError) {
       if (targetLane?.autoCreated) {
-        await window.ade.lanes.delete({ laneId: targetLane.laneId, force: true }).catch((cleanupError: unknown) => {
+        // Pin the rollback to the originating project so it deletes the lane we
+        // created, even if the active project has since changed.
+        await window.ade.lanes.delete({ laneId: targetLane.laneId, force: true }, launchBinding).catch((cleanupError: unknown) => {
           console.warn(`draft ${kind} launch lane cleanup failed`, cleanupError);
         });
         await refreshLanesStore().catch(() => undefined);
@@ -7235,6 +7282,7 @@ export function AgentChatPane({
     patchDraftLaunchJob,
     parallelLaunchBusy,
     prepareDraftLaunchForSend,
+    projectBinding,
     projectTransitionBlocksChat,
     copyPromptForLaunch,
     refreshLanesStore,
