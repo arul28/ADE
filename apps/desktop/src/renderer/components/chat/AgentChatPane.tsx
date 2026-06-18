@@ -6992,14 +6992,22 @@ export function AgentChatPane({
     prepared: PreparedDraftLaunch,
     targetLane: DraftLaunchLaneTarget,
     pin?: OpenProjectBinding | null,
+    assertActive?: () => void,
   ): Promise<StartedDraftLaunch> => {
     let createdSession: AgentChatSession | null = null;
     try {
+      // Re-assert immediately before each mutating call (not just once up the
+      // stack): both session creation and the prompt send resolve the project
+      // binding at call time, so a project switch or a timed-out launch between
+      // them must abort before the irreversible step rather than create/send in
+      // the wrong project.
+      assertActive?.();
       createdSession = await createSessionForLane(targetLane.laneId, { select: false, launchState: prepared });
       touchSession(createdSession.id);
       const sendInteractionMode = createdSession.provider === "claude"
         ? createdSession.interactionMode ?? prepared.interactionMode
         : null;
+      assertActive?.();
       await window.ade.agentChat.send({
         sessionId: createdSession.id,
         text: prepared.finalText,
@@ -7036,6 +7044,7 @@ export function AgentChatPane({
     prepared: PreparedDraftLaunch,
     targetLane: DraftLaunchLaneTarget,
     mode: DraftLaunchMode,
+    assertActive?: () => void,
   ): Promise<StartedDraftLaunch> => {
     if (!onLaunchCliSession) throw new Error("CLI sessions are not available from this surface.");
     if (!prepared.modelId) throw new Error("Select a model before launching a CLI session.");
@@ -7085,6 +7094,9 @@ export function AgentChatPane({
     const initialInputDelayMs = launch.initialInputDelayMs ?? (
       initialInput && provider === "codex" && !codexUsesPromptArg ? 750 : undefined
     );
+    // Final checkpoint before the PTY/session is spawned: abort if the project
+    // switched or the launch timed out while building the launch command.
+    assertActive?.();
     const result = await onLaunchCliSession({
       laneId: targetLane.laneId,
       profile: provider,
@@ -7143,12 +7155,25 @@ export function AgentChatPane({
     // in the now-active project, and (b) route rollback at the originating
     // project. `launchBinding` is this pane's (project-scoped) binding; the root
     // store's binding tracks whichever project is currently active.
+    //
+    // `launchTimedOut` covers the other abort source: withDraftLaunchTimeout
+    // rejects the renderer wait but cannot cancel the underlying (detached) IPC,
+    // so a timed-out step that keeps running must also be stopped before its
+    // next mutation. assertLaunchActive() is therefore called immediately before
+    // every irreversible call (lane create, session/PTY create, prompt send).
     const launchBinding = projectBinding;
-    const assertLaunchProjectActive = () => {
+    let launchTimedOut = false;
+    const assertLaunchActive = () => {
+      if (launchTimedOut) {
+        throw new Error("Draft launch aborted after timeout.");
+      }
       const activeBinding = rootAppStoreApi.getState().projectBinding;
       if (launchBinding && activeBinding?.key !== launchBinding.key) {
         throw new Error(LAUNCH_PROJECT_CHANGED_MESSAGE);
       }
+    };
+    const markLaunchTimedOut = () => {
+      launchTimedOut = true;
     };
 
     const jobId = createDraftLaunchJobId();
@@ -7192,7 +7217,7 @@ export function AgentChatPane({
         patchDraftLaunchJob(jobId, { warning: message });
       }, (modelId) => {
         patchDraftLaunchJob(jobId, { namingModelId: modelId });
-      }, assertLaunchProjectActive), "Lane setup");
+      }, assertLaunchActive), "Lane setup", markLaunchTimedOut);
       patchDraftLaunchJob(jobId, {
         status: "starting-session",
         laneId: targetLane.laneId,
@@ -7205,13 +7230,15 @@ export function AgentChatPane({
         laneName: targetLane.laneName,
       });
       // Re-check before starting the session: a switch during prepare must not
-      // start a session in the now-active project.
-      assertLaunchProjectActive();
+      // start a session in the now-active project. The start functions also
+      // re-assert immediately before each of their own mutating calls.
+      assertLaunchActive();
       const launched = await withDraftLaunchTimeout(
         kind === "chat"
-          ? startDraftChatLaunch(prepared, targetLane, launchBinding)
-          : startDraftCliLaunch(prepared, targetLane, mode),
+          ? startDraftChatLaunch(prepared, targetLane, launchBinding, assertLaunchActive)
+          : startDraftCliLaunch(prepared, targetLane, mode, assertLaunchActive),
         "Session start",
+        markLaunchTimedOut,
       );
       invalidateSessionListCache();
       invalidateAgentChatSessionListCache({ laneId: targetLane.laneId });

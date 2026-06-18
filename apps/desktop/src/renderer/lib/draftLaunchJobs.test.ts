@@ -36,12 +36,24 @@ describe("withDraftLaunchTimeout", () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it("rejects with a labeled timeout error when the call never settles", async () => {
-    const promise = withDraftLaunchTimeout(new Promise<never>(() => {}), "Session start");
+  it("rejects with a labeled timeout error and fires onTimeout when the call never settles", async () => {
+    const onTimeout = vi.fn();
+    const promise = withDraftLaunchTimeout(new Promise<never>(() => {}), "Session start", onTimeout);
     // Attach the rejection handler before advancing so the rejection is not unhandled.
     const expectation = expect(promise).rejects.toThrow(/Session start timed out/);
     await vi.advanceTimersByTimeAsync(DRAFT_LAUNCH_TIMEOUT_MS);
     await expectation;
+    // onTimeout lets the caller raise its abort flag so the detached promise
+    // cannot perform a late irreversible step.
+    expect(onTimeout).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not fire onTimeout when the call settles before the timeout", async () => {
+    const onTimeout = vi.fn();
+    await expect(
+      withDraftLaunchTimeout(Promise.resolve("ok"), "Lane setup", onTimeout),
+    ).resolves.toBe("ok");
+    expect(onTimeout).not.toHaveBeenCalled();
   });
 });
 

@@ -35,10 +35,17 @@ export const LAUNCH_PROJECT_CHANGED_MESSAGE =
 
 // Reject `promise` if it has not settled within DRAFT_LAUNCH_TIMEOUT_MS. The
 // underlying runtime call is not cancellable (Electron IPC), so on timeout it
-// keeps running detached; the timeout only unwedges the renderer-side job.
-export function withDraftLaunchTimeout<T>(promise: Promise<T>, label: string): Promise<T> {
+// keeps running detached — `onTimeout` lets the caller raise an abort flag that
+// its per-mutation guard checks, so the detached promise cannot perform a late
+// irreversible step (create a lane/session) after the job is already failed.
+export function withDraftLaunchTimeout<T>(
+  promise: Promise<T>,
+  label: string,
+  onTimeout?: () => void,
+): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const timer = setTimeout(() => {
+      onTimeout?.();
       reject(new Error(`${label} timed out. The runtime may have disconnected — use Restore to try again.`));
     }, DRAFT_LAUNCH_TIMEOUT_MS);
     promise.then(
