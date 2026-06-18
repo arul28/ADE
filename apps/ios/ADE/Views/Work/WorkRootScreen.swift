@@ -199,7 +199,7 @@ struct WorkRootScreen: View {
 
   func pushNewChatRoute() {
     guard !navigationMutationPending else { return }
-    let preferred = selectedLaneId == "all" ? lanes.first?.id : selectedLaneId
+    let preferred = selectedLaneId == "all" ? nil : selectedLaneId
     navigationMutationPending = true
     selectedSessionTransitionId = nil
     Task { @MainActor in

@@ -1632,6 +1632,27 @@ final class ADETests: XCTestCase {
     )
   }
 
+  @MainActor
+  func testSyncDisconnectCancelsScheduledReconnectWork() {
+    let pausedKey = "ade.sync.autoReconnectPausedByUser"
+    UserDefaults.standard.removeObject(forKey: pausedKey)
+    defer {
+      UserDefaults.standard.removeObject(forKey: pausedKey)
+    }
+
+    let database = makeDatabase(baseURL: makeTemporaryDirectory())
+    defer { database.close() }
+    let service = SyncService(database: database)
+    service.scheduleNetworkPathReconnectForTesting(delayNanoseconds: 60_000_000_000)
+    XCTAssertTrue(service.hasScheduledReconnectWorkForTesting())
+
+    service.disconnect()
+
+    XCTAssertFalse(service.hasScheduledReconnectWorkForTesting())
+    XCTAssertEqual(service.connectionState, .disconnected)
+    XCTAssertTrue(UserDefaults.standard.bool(forKey: pausedKey))
+  }
+
   func testSyncMessageTooLongTransportFailureForcesErrorState() {
     let fatalError = NSError(
       domain: "ADE",

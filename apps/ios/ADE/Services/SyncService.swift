@@ -3288,7 +3288,7 @@ final class SyncService: ObservableObject {
     }
     allowAutoReconnect = false
     reconnectConnectInFlight = false
-    reconnectTask?.cancel()
+    cancelReconnectLoop()
     teardownSocket(closeCode: .normalClosure)
     connectionState = .disconnected
     hostName = activeHostProfile?.hostName
@@ -6710,6 +6710,8 @@ final class SyncService: ObservableObject {
     reconnectState.reset()
     reconnectTask?.cancel()
     reconnectTask = nil
+    networkPathReconnectTask?.cancel()
+    networkPathReconnectTask = nil
   }
 
   private func shouldInvalidateSavedPairing(for error: Error) -> Bool {
@@ -7174,6 +7176,14 @@ final class SyncService: ObservableObject {
       isExpensive: isExpensive,
       isConstrained: isConstrained
     )
+  }
+
+  func scheduleNetworkPathReconnectForTesting(delayNanoseconds: UInt64) {
+    scheduleNetworkPathReconnect(forceSocketReset: false, delayNanoseconds: delayNanoseconds)
+  }
+
+  func hasScheduledReconnectWorkForTesting() -> Bool {
+    reconnectTask != nil || networkPathReconnectTask != nil
   }
 
   func setActiveProjectForTesting(projectId: String?, rootPath: String?) {
