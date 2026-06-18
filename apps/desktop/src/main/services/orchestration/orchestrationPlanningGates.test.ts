@@ -311,6 +311,36 @@ describe("planning state machine gates", () => {
     expect((await s.svc.markPlanningReady(s.runId, s.bundlePath)).ok).toBe(true);
   });
 
+  it("does not let task-scoped validation waiver text skip planning validation steps", async () => {
+    await recordIntake(s);
+    await recordRound(s, "functional");
+    await recordRound(s, "ui");
+    await recordRound(s, "extras");
+    await patchManifest(s, [{
+      op: "add",
+      path: "/userOverrides/-",
+      value: {
+        id: "O-task-validation",
+        at: new Date().toISOString(),
+        scope: "task",
+        appliedToId: "T-1",
+        instruction: "skip validation for this task",
+        affectedDefault: "validation",
+      },
+    }]);
+    await addModelRouting(s);
+
+    const ready = await s.svc.markPlanningReady(s.runId, s.bundlePath);
+    expect(ready.ok).toBe(false);
+    expect(ready.ok ? [] : ready.missing).toContain(
+      "validation steps (derive at least one, or log a skip-validation user override)",
+    );
+
+    const proseReady = assessPlanReadiness(manifestOf(s), FULL_PLAN_MD);
+    expect(proseReady.ok).toBe(false);
+    expect(proseReady.missing.map((m) => m.id)).toContain("validation_plan");
+  });
+
   it("does not treat incidental no-validation text as a validation waiver", async () => {
     await recordIntake(s);
     const ov = await s.svc.recordPlanningOverride(s.runId, s.bundlePath, {

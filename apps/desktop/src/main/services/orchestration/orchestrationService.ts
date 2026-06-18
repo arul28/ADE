@@ -1433,6 +1433,18 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
           ...(typeof f.behaviorPreserving === "boolean" ? { behaviorPreserving: f.behaviorPreserving } : {}),
           ...(f.regressionTestTarget?.trim() ? { regressionTestTarget: f.regressionTestTarget.trim() } : {}),
         }));
+      if (
+        req.status === "passed" &&
+        findings.some((finding) => finding.severity === "blocker" || finding.severity === "high")
+      ) {
+        return {
+          ok: false,
+          error: "validation_failed",
+          message: "passed validation runs cannot include blocker or high severity findings",
+          manifest,
+          etag: manifest.etag,
+        };
+      }
       const run = {
         id: runId,
         runBySessionId: req.sessionId,
@@ -1930,7 +1942,12 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
         validKinds.includes(k),
       );
       const skipReason = override.skipReason?.trim() ?? "";
-      const validationWaived = isExplicitValidationWaiverEntry({ instruction: skipReason });
+      const validationWaived = isExplicitValidationWaiverEntry({
+        scope: "phase",
+        appliedToId: "planning",
+        instruction: skipReason,
+        affectedDefault: "validation",
+      });
       if (skipped.length && !skipReason) {
         return {
           ok: false,

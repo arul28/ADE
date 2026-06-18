@@ -699,6 +699,25 @@ describe("requestPlanApproval and model routing tools", () => {
     expect(onAskUser).not.toHaveBeenCalled();
   });
 
+  it("returns the actual next stage after intake skips pre-waived rounds", async () => {
+    setup = await setupWithRun("lead");
+    const override = await setup.svc.recordPlanningOverride(setup.runId, setup.bundlePath, {
+      skippedRounds: ["functional"],
+      skipReason: "skip the functional round",
+    });
+    expect(override.ok).toBe(true);
+    const tools = makeToolSet(setup, "lead", "S-lead");
+
+    const intake: any = await tools.recordCodebaseIntake!.execute({
+      projectShape: "desktop app",
+      testStack: "vitest",
+      inFlightWork: "fresh lane",
+    });
+
+    expect(intake.ok).toBe(true);
+    expect(intake.nextStage).toBe("round_ui");
+  });
+
   it("validates planning-round stage before prompting the user", async () => {
     setup = await setupWithRun("lead");
     const onAskUser = vi.fn(async () => ({ answer: "ui", decision: "accept" as const }));
@@ -1253,6 +1272,22 @@ describe("recordValidationRun tool", () => {
     expect(seeded.ok).toBe(true);
 
     const tools = makeToolSet(setup, "worker", "S-worker");
+    const blocked: any = await tools.recordValidationRun!.execute({
+      taskId: "T-1",
+      stepId: "V-1",
+      status: "passed",
+      notes: "Still found a blocking regression.",
+      findings: [{
+        severity: "blocker",
+        title: "Release still loses validation evidence",
+        regressionTestTarget: "recordValidationRun rejects passed blocker findings",
+      }],
+    });
+    expect(blocked.ok).toBe(false);
+    expect(blocked.error).toBe("validation_failed");
+    expect(blocked.message).toContain("blocker or high");
+    expect(setup.svc.getManifestForRun(setup.runId)!.validationStrategy.checklist).toEqual([]);
+
     const result: any = await tools.recordValidationRun!.execute({
       taskId: "T-1",
       stepId: "V-1",

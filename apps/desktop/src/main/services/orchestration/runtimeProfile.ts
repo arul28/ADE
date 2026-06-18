@@ -68,8 +68,15 @@ const POSITIVE_VALIDATION_WAIVER_RE =
   /\b(?:skip|waive|bypass)\s+(?:the\s+)?validation\b|\bno\s+validation\s+(?:required|needed|necessary|for\s+(?:this\s+)?run)\b|\bwithout\s+(?:running\s+)?validation\b|\bvalidation\s+(?:is\s+)?(?:waived|skipped|not\s+required|unnecessary|unneeded)\b/i;
 
 export function isExplicitValidationWaiverEntry(
-  entry: Pick<UserOverrideEntry, "instruction">,
+  entry: Pick<UserOverrideEntry, "scope" | "appliedToId" | "instruction" | "affectedDefault">,
 ): boolean {
+  if (
+    entry.scope !== "phase" ||
+    entry.appliedToId !== "planning" ||
+    entry.affectedDefault !== "validation"
+  ) {
+    return false;
+  }
   const instruction = entry.instruction.trim();
   if (!instruction) return false;
   if (NEGATED_VALIDATION_WAIVER_RE.test(instruction)) return false;

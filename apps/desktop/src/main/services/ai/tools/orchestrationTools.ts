@@ -1313,7 +1313,11 @@ function createRecordCodebaseIntakeTool(
         if (!res.ok) {
           return { ok: false as const, error: res.error, missing: res.missing, message: res.message };
         }
-        return { ok: true as const, etag: res.etag, nextStage: "round_functional" };
+        return {
+          ok: true as const,
+          etag: res.etag,
+          nextStage: res.manifest.leadState.planning?.stage ?? "round_functional",
+        };
       }),
   });
 }
