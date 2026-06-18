@@ -19,7 +19,12 @@ import {
 } from "../../../shared/types/orchestration";
 import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
 import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPicker";
-import { getModelById, modelSupportsFastMode, type ProviderFamily } from "../../../shared/modelRegistry";
+import {
+  modelSupportsFastMode,
+  resolveModelDescriptor,
+  resolveProviderGroupForModel,
+  type ProviderFamily,
+} from "../../../shared/modelRegistry";
 import type { AgentChatProvider } from "../../../shared/types";
 import type { AuthStatus } from "../shared/ModelPicker/ModelPickerRail";
 import { cn } from "../ui/cn";
@@ -39,6 +44,41 @@ export type ChatModelSelectionPendingCardProps = {
   onCancel: () => void;
 };
 
+const DEFAULT_SELECTION_PROVIDER: AgentChatProvider = "opencode";
+const MODEL_ID_PROVIDER_PREFIXES: Record<string, AgentChatProvider> = {
+  anthropic: "claude",
+  claude: "claude",
+  codex: "codex",
+  openai: "codex",
+  cursor: "cursor",
+  droid: "droid",
+  factory: "droid",
+  deepseek: "opencode",
+  google: "opencode",
+  groq: "opencode",
+  lmstudio: "opencode",
+  mistral: "opencode",
+  ollama: "opencode",
+  opencode: "opencode",
+  openrouter: "opencode",
+  together: "opencode",
+  xai: "opencode",
+};
+
+function resolveSelectionProvider(
+  nextModelId: string,
+  fallback: AgentChatProvider,
+): AgentChatProvider {
+  const desc = resolveModelDescriptor(nextModelId);
+  if (desc) return resolveProviderGroupForModel(desc);
+  const normalized = nextModelId.trim().toLowerCase();
+  const prefix = normalized.split(/[/-]/, 1)[0] ?? "";
+  if (MODEL_ID_PROVIDER_PREFIXES[prefix]) return MODEL_ID_PROVIDER_PREFIXES[prefix];
+  if (/^(opus|sonnet|haiku)\b/.test(normalized)) return "claude";
+  if (/^(gpt|o\d|chatgpt)\b/.test(normalized)) return "codex";
+  return fallback;
+}
+
 export const ChatModelSelectionPendingCard = memo(function ChatModelSelectionPendingCard({
   metadata,
   availableModelIds,
@@ -50,26 +90,28 @@ export const ChatModelSelectionPendingCard = memo(function ChatModelSelectionPen
   // No recommended/suggested model — the user picks from scratch so they can
   // match the model to what this agent actually does (see the briefing below).
   const [modelId, setModelId] = useState<string>("");
-  const [provider, setProvider] = useState<AgentChatProvider>("claude");
+  const [provider, setProvider] = useState<AgentChatProvider>(DEFAULT_SELECTION_PROVIDER);
   const [reasoningEffort, setReasoningEffort] = useState<string | null>(null);
   const [fastMode, setFastMode] = useState<boolean>(false);
+  const fallbackProvider = metadata?.suggested?.provider ?? DEFAULT_SELECTION_PROVIDER;
   const requestKey = JSON.stringify({
     role: metadata?.role ?? null,
     tag: metadata?.tag ?? null,
+    fallbackProvider,
     workDescription: metadata?.workDescription ?? null,
     filesHint: metadata?.filesHint ?? [],
     dependsOn: metadata?.dependsOn ?? [],
   });
 
-  const descriptor = getModelById(modelId);
+  const descriptor = resolveModelDescriptor(modelId);
   const fastModeSupported = modelSupportsFastMode(descriptor);
 
   useEffect(() => {
     setModelId("");
-    setProvider("claude");
+    setProvider(fallbackProvider);
     setReasoningEffort(null);
     setFastMode(false);
-  }, [requestKey]);
+  }, [fallbackProvider, requestKey]);
 
   // Clear fast mode when the picked model doesn't support it, so a stale toggle
   // can't be submitted after switching to an unsupported model.
@@ -78,19 +120,12 @@ export const ChatModelSelectionPendingCard = memo(function ChatModelSelectionPen
   }, [fastModeSupported, fastMode]);
 
   // When the user picks a different model, infer the new provider from the
-  // model registry so the dispatched ModelSelection stays internally
-  // consistent (provider + modelId always agree).
+  // model registry or runtime-catalog prefix so the dispatched ModelSelection
+  // stays internally consistent (provider + modelId always agree).
   const handleModelChange = useCallback((nextModelId: string) => {
     setModelId(nextModelId);
-    const desc = getModelById(nextModelId);
-    if (desc?.family === "anthropic") setProvider("claude");
-    else if (desc?.family === "openai") setProvider("codex");
-    else if (desc?.family === "cursor") setProvider("cursor");
-    else if (desc?.family === "factory") setProvider("droid");
-    else if (desc?.family === "opencode") setProvider("opencode");
-    // For local / other families we keep the previous provider — the lead
-    // resolves provider-family routing server-side.
-  }, []);
+    setProvider(resolveSelectionProvider(nextModelId, fallbackProvider));
+  }, [fallbackProvider]);
 
   const submit = useCallback(() => {
     if (!modelId.trim().length) return;
@@ -147,7 +182,7 @@ export const ChatModelSelectionPendingCard = memo(function ChatModelSelectionPen
       {filesHint.length > 0 ? (
         <div className="mb-1.5 flex flex-wrap items-center gap-1.5">
           <span className="font-sans text-[length:calc(var(--chat-font-size)*9.5/14)] uppercase tracking-wide text-fg/40">
-            Touches
+            Files it touches
           </span>
           {filesHint.slice(0, FILE_CHIP_CAP).map((path) => (
             <span
@@ -171,7 +206,7 @@ export const ChatModelSelectionPendingCard = memo(function ChatModelSelectionPen
           <span className="font-sans text-[length:calc(var(--chat-font-size)*9.5/14)] uppercase tracking-wide text-fg/40">
             Runs after
           </span>
-          {dependsOn.map((dep) => (
+          {dependsOn.slice(0, FILE_CHIP_CAP).map((dep) => (
             <span
               key={dep}
               className="inline-flex items-center rounded-[var(--chat-radius-pill)] border border-white/[0.07] bg-white/[0.02] px-1.5 py-0.5 font-sans text-[length:calc(var(--chat-font-size)*10/14)] text-fg/62"
@@ -179,6 +214,11 @@ export const ChatModelSelectionPendingCard = memo(function ChatModelSelectionPen
               {dep}
             </span>
           ))}
+          {dependsOn.length > FILE_CHIP_CAP ? (
+            <span className="font-sans text-[length:calc(var(--chat-font-size)*9.5/14)] text-fg/40">
+              +{dependsOn.length - FILE_CHIP_CAP}
+            </span>
+          ) : null}
         </div>
       ) : null}
 

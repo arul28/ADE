@@ -119,6 +119,9 @@ export function ApprovalPrompt({
   const kind = approval.request?.kind;
   const source = approval.request?.source;
   const providerAccent = pendingInputAccent(source);
+  const planApprovalContent = kind === "plan_approval"
+    ? stringValue(approval.request?.providerMetadata?.planContent)
+    : null;
 
   // Accent + glyph for the titled header. Green is never used here — amber for a
   // routine permission ask, red for a high-stakes/destructive one, violet for
@@ -177,7 +180,9 @@ export function ApprovalPrompt({
       : !question?.question && approval.request?.title && approval.description !== primary
         ? approval.description
         : null;
-  const secondary = secondaryRaw && secondaryRaw !== primary ? secondaryRaw : null;
+  const secondary = !planApprovalContent && secondaryRaw && secondaryRaw !== primary
+    ? secondaryRaw
+    : null;
 
   // For questions, the request-level description is shown as a single context
   // kicker above the questions — but ONLY when it adds detail beyond the question
@@ -208,6 +213,9 @@ export function ApprovalPrompt({
     : 0;
   const briefingRows = kind === "model_selection"
     ? modelSelectionBriefing(approval.request?.providerMetadata)
+    : [];
+  const planApprovalPreview = planApprovalContent
+    ? previewLines(planApprovalContent, textWidth)
     : [];
 
   const card = (
@@ -260,6 +268,16 @@ export function ApprovalPrompt({
           {briefingRows.map(([label, value]) => (
             <Text key={label} color={theme.color.t3} wrap="truncate-end">
               {truncateEnd(`${label}: ${value}`, textWidth)}
+            </Text>
+          ))}
+        </Box>
+      ) : null}
+
+      {planApprovalPreview.length ? (
+        <Box flexDirection="column" marginTop={1}>
+          {planApprovalPreview.map((line, index) => (
+            <Text key={index} color={theme.color.t2} wrap="truncate-end">
+              {line.length ? line : " "}
             </Text>
           ))}
         </Box>

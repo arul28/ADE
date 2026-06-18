@@ -337,6 +337,31 @@ describe("planning state machine gates", () => {
     expect(m.planSpec?.approval.state).toBe("approved");
     expect(m.planSpec?.approval.approvedPlanContentHash).toBe("deadbeef");
   });
+
+  it("setPlanApprovalState approved rechecks manifest readiness atomically", async () => {
+    await recordIntake(s);
+    await recordRound(s, "functional");
+    await recordRound(s, "ui");
+    await recordRound(s, "extras");
+    await addValidationStepAndRouting(s);
+    await s.svc.markPlanningReady(s.runId, s.bundlePath);
+    await patchManifest(s, [{ op: "remove", path: "/modelRouting/byRoleTag" }]);
+
+    const res = await s.svc.setPlanApprovalState(s.runId, s.bundlePath, {
+      state: "approved",
+      sessionId: "S-lead",
+      planContentHash: "deadbeef",
+    });
+
+    expect(res.ok).toBe(false);
+    expect(res.ok ? [] : res.missing).toContain(
+      "model routing (pick a model for at least one role/tag before approval)",
+    );
+    const m = manifestOf(s);
+    expect(m.currentPhase).toBe("planning");
+    expect(m.leadState.planApprovedAt).toBeUndefined();
+    expect(m.planSpec?.approval.state).toBe("ready");
+  });
 });
 
 describe("assessPlanReadiness (structural, un-gameable)", () => {
@@ -408,6 +433,17 @@ describe("assessPlanReadiness (structural, un-gameable)", () => {
       "```markdown\n## Goal\nMake remote CLI image paste work end to end.\n```",
     );
     const res = assessPlanReadiness(manifestOf(s), fencedGoalOnly);
+    expect(res.ok).toBe(false);
+    expect(res.missing.map((m) => m.id)).toContain("goal");
+  });
+
+  it("keeps heading parsing disabled inside mixed fence markers", async () => {
+    await addValidationStepAndRouting(s);
+    const mixedFenceGoalOnly = FULL_PLAN_MD.replace(
+      "## Goal\nMake remote CLI image paste work end to end.",
+      "```markdown\n~~~\n## Goal\nMake remote CLI image paste work end to end.\n~~~\n```",
+    );
+    const res = assessPlanReadiness(manifestOf(s), mixedFenceGoalOnly);
     expect(res.ok).toBe(false);
     expect(res.missing.map((m) => m.id)).toContain("goal");
   });

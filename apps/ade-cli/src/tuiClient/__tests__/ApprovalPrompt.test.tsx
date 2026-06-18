@@ -113,4 +113,37 @@ describe("ApprovalPrompt", () => {
     expect(frame).toContain("Runs after: planning-rounds, model-routing");
     expect(frame).toContain("Which model should the web-ui worker use?");
   });
+
+  it("renders plan approval metadata as a multiline plan preview", () => {
+    const approval: PendingApproval = {
+      itemId: "plan-1",
+      description: "# Plan\n\n## Goal\nShip the work.\n\n## Validation plan\nRun the focused checks.",
+      highStakes: false,
+      mode: "approval",
+      request: {
+        requestId: "plan-1",
+        source: "ade",
+        kind: "plan_approval",
+        title: "Plan ready",
+        description: "# Plan\n\n## Goal\nShip the work.\n\n## Validation plan\nRun the focused checks.",
+        allowsFreeform: false,
+        blocking: true,
+        canProceedWithoutAnswer: false,
+        providerMetadata: {
+          orchestrationPlanApproval: true,
+          planContent: "# Plan\n\n## Goal\nShip the work.\n\n## Validation plan\nRun the focused checks.",
+        },
+        questions: [],
+      },
+    };
+
+    const frame = stripAnsi(render(
+      <ApprovalPrompt approval={approval} width={100} />,
+    ).lastFrame() ?? "");
+
+    expect(frame).toContain("Plan ready");
+    expect(frame).toContain("## Goal");
+    expect(frame).toContain("Ship the work.");
+    expect(frame).toContain("## Validation plan");
+  });
 });

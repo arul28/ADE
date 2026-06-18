@@ -30,6 +30,9 @@ vi.mock("../shared/ModelPicker/ModelPicker", () => ({
       <button data-testid="mock-pick-claude-opus" onClick={() => onChange("opus[1m]")}>
         Pick opus[1m]
       </button>
+      <button data-testid="mock-pick-ollama" onClick={() => onChange("ollama/llama3.1")}>
+        Pick ollama/llama3.1
+      </button>
     </div>
   ),
 }));
@@ -76,6 +79,7 @@ describe("ChatModelSelectionPendingCard", () => {
       .toContain("web-ui");
     expect(screen.getByText(/Build the settings page/)).toBeTruthy();
     expect(screen.getByText("src/renderer/components/SettingsPage.tsx")).toBeTruthy();
+    expect(screen.getByText("Files it touches")).toBeTruthy();
     expect(screen.getByText("Runs after")).toBeTruthy();
     expect(screen.getByText("backend")).toBeTruthy();
     // No recommended model — picker starts empty and confirm is disabled.
@@ -159,6 +163,40 @@ describe("ChatModelSelectionPendingCard", () => {
     const args = onConfirm.mock.calls[0]![0];
     expect(args.modelId).toBe("opus[1m]");
     expect(args.provider).toBe("claude");
+  });
+
+  it("routes local runtime catalog picks through OpenCode", () => {
+    const onConfirm = vi.fn<[selection: ModelSelection], void>();
+    render(
+      <ChatModelSelectionPendingCard
+        metadata={metadata}
+        responding={false}
+        onConfirm={onConfirm}
+        onCancel={vi.fn()}
+      />,
+    );
+    fireEvent.click(screen.getByTestId("mock-pick-ollama"));
+    fireEvent.click(screen.getByTestId("orchestration-model-selection-confirm"));
+    const args = onConfirm.mock.calls[0]![0];
+    expect(args.modelId).toBe("ollama/llama3.1");
+    expect(args.provider).toBe("opencode");
+  });
+
+  it("caps dependency chips with an overflow marker", () => {
+    render(
+      <ChatModelSelectionPendingCard
+        metadata={{
+          ...metadata,
+          dependsOn: ["one", "two", "three", "four", "five", "six", "seven"],
+        }}
+        responding={false}
+        onConfirm={vi.fn()}
+        onCancel={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("one")).toBeTruthy();
+    expect(screen.queryByText("seven")).toBeNull();
+    expect(screen.getByText("+1")).toBeTruthy();
   });
 
   it("Cancel triggers onCancel", () => {

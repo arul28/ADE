@@ -2068,6 +2068,18 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
     args: { state: PlanSpecApprovalState; sessionId?: string; planContentHash?: string },
   ): Promise<PlanningMutationResult> {
     return runPlanningMutation(runId, bundlePath, async (runtime) => {
+      const manifest = runtime.manifest!;
+      if (args.state === "approved") {
+        const missing = planningReadinessMissing(manifest);
+        if (missing.length) {
+          return {
+            ok: false,
+            error: "planning_incomplete",
+            message: `planning is not ready — still missing: ${missing.join("; ")}`,
+            missing,
+          };
+        }
+      }
       const at = nowIso();
       const ops: ManifestPatchOp[] = [
         { op: "replace", path: "/planSpec/approval/state", value: args.state },

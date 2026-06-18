@@ -597,6 +597,65 @@ describe("requestPlanApproval and model routing tools", () => {
     expect(manifest.planSpec?.approval.approvedPlanContentHash).toBeUndefined();
   });
 
+  it("does not approve if manifest readiness changes while approval is pending", async () => {
+    setup = await setupWithRun("lead");
+    await completePlanningSequence(setup);
+    const onAskUser = vi.fn(async () => {
+      const manifest = setup.svc.getManifestForRun(setup.runId)!;
+      const res = await setup.svc.manifestPatch(
+        {
+          runId: setup.runId,
+          ifMatchEtag: manifest.etag,
+          actorRole: "lead",
+          actorSessionId: "S-lead",
+          patches: [{ op: "remove", path: "/modelRouting/byRoleTag" }],
+        },
+        setup.bundlePath,
+      );
+      expect(res.ok).toBe(true);
+      return { answer: "approved", decision: "accept" as const };
+    });
+    const tools = makeToolSet(setup, "lead", "S-lead", {
+      universal: { permissionMode: "full-auto", onAskUser },
+    });
+
+    const result: any = await tools.requestPlanApproval!.execute({});
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe("planning_incomplete");
+    expect(result.missing).toContain(
+      "model routing (pick a model for at least one role/tag before approval)",
+    );
+    const manifest = setup.svc.getManifestForRun(setup.runId)!;
+    expect(manifest.currentPhase).toBe("planning");
+    expect(manifest.leadState.planApprovedAt).toBeUndefined();
+    expect(manifest.planSpec?.approval.state).toBe("ready");
+  });
+
+  it("records changes requested when the plan approval prompt cannot be shown", async () => {
+    setup = await setupWithRun("lead");
+    await completePlanningSequence(setup);
+    const onAskUser = vi.fn(async () => {
+      throw new Error("renderer disconnected");
+    });
+    const tools = makeToolSet(setup, "lead", "S-lead", {
+      universal: { permissionMode: "full-auto", onAskUser },
+    });
+
+    const result: any = await tools.requestPlanApproval!.execute({});
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toBe("approval_prompt_failed");
+    expect(result.detail).toBe("renderer disconnected");
+    const manifest = setup.svc.getManifestForRun(setup.runId)!;
+    expect(manifest.currentPhase).toBe("planning");
+    expect(manifest.leadState.planApprovedAt).toBeUndefined();
+    expect(manifest.planSpec?.approval.state).toBe("changes_requested");
+    expect(manifest.planSpec?.approval.lastReviewedPlanContentHash).toBe(
+      sha256Text(VALID_APPROVAL_PLAN),
+    );
+  });
+
   it("blocks approval until the deterministic planning sequence is complete", async () => {
     setup = await setupWithRun("lead");
     const onAskUser = vi.fn(async () => ({ answer: "approved", decision: "accept" as const }));
@@ -736,6 +795,37 @@ describe("requestPlanApproval and model routing tools", () => {
     expect(round.selectedOptionIds).toEqual(["safe"]);
     expect(round.freeText).toBe("Prefer a small first pass.\n\nKeep the migration reversible.");
     expect(round.lockedSummary).toBe("Selected: Safe path. Notes: Prefer a small first pass. Keep the migration reversible.");
+  });
+
+  it("preserves plain string answers for option-based planning rounds", async () => {
+    setup = await setupWithRun("lead");
+    const onAskUser = vi.fn(async () => "Use a smaller reversible change.");
+    const tools = makeToolSet(setup, "lead", "S-lead", {
+      universal: { permissionMode: "full-auto", onAskUser },
+    });
+    const intake: any = await tools.recordCodebaseIntake!.execute({
+      projectShape: "desktop app",
+      testStack: "vitest",
+      inFlightWork: "fresh lane",
+    });
+    expect(intake.ok).toBe(true);
+
+    const result: any = await tools.askPlanningRound!.execute({
+      kind: "functional",
+      question: "Which path?",
+      options: [
+        { id: "safe", label: "Safe path", description: "Small scoped fix." },
+        { id: "broad", label: "Broad path", description: "Larger refactor." },
+      ],
+      lockedSummary: "Use the safe path.",
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.selectedOptionIds).toEqual([]);
+    expect(result.freeText).toBe("Use a smaller reversible change.");
+    const round = setup.svc.getManifestForRun(setup.runId)!.leadState.planning!.rounds[0]!;
+    expect(round.freeText).toBe("Use a smaller reversible change.");
+    expect(round.lockedSummary).toBe("Notes: Use a smaller reversible change.");
   });
 
   it("derives planning round summary from the actual user response", async () => {

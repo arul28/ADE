@@ -779,19 +779,40 @@ function createRequestPlanApprovalTool(
       // Step 3 — surface the Implement button. The desktop renderer approves
       // the live plan narrative in the sidebar; mobile/TUI clients receive the
       // same plan.md bytes here because they do not have that sidebar.
-      const response = await universalOpts.onAskUser({
-        title: "Plan ready",
-        body: [input.note?.trim(), bundle.planMd].filter(Boolean).join("\n\n"),
-        question:
-          input.question ??
-          "Review the plan on the sidebar. Keep refining in chat if anything should change, or click Implement to start the build.",
-        pendingInputKind: "plan_approval",
-        providerMetadata: {
-          orchestrationPlanApproval: true,
-          planContentHash,
-          planContent: bundle.planMd,
-        },
-      });
+      let response: Awaited<ReturnType<NonNullable<UniversalToolSetOptions["onAskUser"]>>>;
+      try {
+        response = await universalOpts.onAskUser({
+          title: "Plan ready",
+          body: [input.note?.trim(), bundle.planMd].filter(Boolean).join("\n\n"),
+          question:
+            input.question ??
+            "Review the plan on the sidebar. Keep refining in chat if anything should change, or click Implement to start the build.",
+          pendingInputKind: "plan_approval",
+          providerMetadata: {
+            orchestrationPlanApproval: true,
+            planContentHash,
+            planContent: bundle.planMd,
+          },
+        });
+      } catch (err) {
+        let resetError: string | undefined;
+        try {
+          const resetRes = await svc.setPlanApprovalState(ctx.runId, ctx.bundlePath, {
+            state: "changes_requested",
+            planContentHash,
+          });
+          if (!resetRes.ok) resetError = resetRes.message;
+        } catch (resetErr) {
+          resetError = errorMessage(resetErr);
+        }
+        return {
+          ok: false as const,
+          error: "approval_prompt_failed",
+          message: "Plan is ready, but ADE could not surface the approval prompt. Request approval again.",
+          detail: errorMessage(err),
+          ...(resetError ? { resetError } : {}),
+        };
+      }
       const result = typeof response === "string"
         ? { answer: response, decision: undefined as string | undefined, responseText: undefined as string | undefined }
         : response;
@@ -858,9 +879,9 @@ function createRequestPlanApprovalTool(
       if (!approvalRes.ok) {
         return {
           ok: false as const,
-          error: "manifest_patch_failed",
-          message: "Plan was approved, but ADE could not record approval in the manifest.",
-          detail: approvalRes.message,
+          error: approvalRes.error,
+          missing: approvalRes.missing,
+          message: approvalRes.message,
         };
       }
       return {
@@ -1454,7 +1475,7 @@ function createAskPlanningRoundTool(
         const responseText =
           typeof result.responseText === "string" ? result.responseText.trim() : "";
         const fallbackAnswer =
-          input.options?.length || answerValues.length ? "" : (result.answer ?? "").trim();
+          answerValues.length ? "" : (result.answer ?? "").trim();
         const freeText = [responseText, customAnswerText, fallbackAnswer]
           .filter(Boolean)
           .join("\n\n");

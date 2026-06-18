@@ -47,16 +47,23 @@ export function parsePlanSections(planMd: string): ParsedPlanSection[] {
   const lines = (planMd ?? "").split(/\r?\n/);
   const out: ParsedPlanSection[] = [];
   const openSections: ParsedPlanSection[] = [];
-  let inFence = false;
+  let activeFence: { marker: "`" | "~"; length: number } | null = null;
   for (const line of lines) {
-    if (/^\s*(?:```|~~~)/.test(line)) {
-      inFence = !inFence;
+    const fenceMatch = /^\s{0,3}(`{3,}|~{3,})/.exec(line);
+    if (fenceMatch) {
+      const fenceRun = fenceMatch[1]!;
+      const marker = fenceRun[0] as "`" | "~";
+      if (!activeFence) {
+        activeFence = { marker, length: fenceRun.length };
+      } else if (activeFence.marker === marker && fenceRun.length >= activeFence.length) {
+        activeFence = null;
+      }
       for (const section of openSections) {
         section.body += `${line}\n`;
       }
       continue;
     }
-    const m = inFence ? null : /^(#{1,6})\s+(.*)$/.exec(line);
+    const m = activeFence ? null : /^(#{1,6})\s+(.*)$/.exec(line);
     if (m) {
       const level = m[1]!.length;
       while (openSections.length && openSections[openSections.length - 1]!.level >= level) {
