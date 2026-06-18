@@ -125,6 +125,22 @@ describe("rightPaneFormatters", () => {
     expect(readiness.headline).not.toBe("Blocked");
   });
 
+  it("treats a mergeable PR that is behind base as Ready, not Blocked (info-only)", () => {
+    const readiness = derivePrMergeReadiness({
+      mergeStateStatus: "clean",
+      reviewDecision: "approved",
+      approvalsCount: 1,
+      requiredApprovals: 1,
+      behindBaseBy: 3,
+      mergeConflicts: false,
+      canBypass: false,
+    });
+
+    expect(readiness.blockers).not.toContain("3 commits behind base");
+    expect(readiness.headline).toBe("Ready");
+    expect(readiness.ready).toBe(true);
+  });
+
   it("flags conflicts and surfaces the bypass hint when the viewer can override", () => {
     const body = formatPrMergeState({
       status: {

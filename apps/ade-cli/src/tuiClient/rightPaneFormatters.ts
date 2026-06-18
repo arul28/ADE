@@ -231,7 +231,11 @@ export function derivePrMergeReadiness(value: unknown): PrMergeReadiness {
     blockers.push("changes requested");
   }
 
-  if (behind != null && behind > 0) {
+  // Behind base only hard-blocks when the PR isn't otherwise mergeable. For
+  // clean/unstable/has_hooks the PR IS mergeable even when behind, so it's
+  // informational — mirror the desktop's buildMergeChecklist treatment.
+  const behindMergeable = mergeState === "clean" || mergeState === "unstable" || mergeState === "has_hooks";
+  if (behind != null && behind > 0 && !behindMergeable) {
     blockers.push(`${behind} commit${behind === 1 ? "" : "s"} behind base`);
   } else if (mergeState === "behind") {
     blockers.push("behind base branch");
@@ -267,13 +271,14 @@ export function derivePrMergeReadiness(value: unknown): PrMergeReadiness {
     headline = "Behind";
   } else if (uniqueBlockers.length > 0) {
     headline = "Blocked";
+  } else if (mergeState === "clean" || mergeState === "has_hooks" || mergeState === "unstable" || isMergeable === true) {
+    // Mergeable (incl. `unstable` = non-required checks failing) → Ready even when
+    // behind, mirroring the desktop's isMergeableFromMergeState. Checked BEFORE the
+    // bare-behind branch so a mergeable-but-behind PR isn't mislabeled "Behind".
+    headline = "Ready";
   } else if (behind != null && behind > 0) {
     // Behind base with no other blocker and no explicit merge-state signal.
     headline = "Behind";
-  } else if (mergeState === "clean" || mergeState === "has_hooks" || mergeState === "unstable" || isMergeable === true) {
-    // `unstable` = mergeable with non-required checks failing → Ready, mirroring
-    // the desktop's isMergeableFromMergeState (don't depend on the mergeable flag).
-    headline = "Ready";
   } else if (mergeState) {
     headline = "Blocked";
   } else {

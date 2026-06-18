@@ -69,8 +69,12 @@ export const PrMergeDialog = memo(function PrMergeDialog({
 
   const methodMenuRef = useRef<HTMLDivElement | null>(null);
   const overrideArmTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // Head SHA captured when the dialog opened — drives the stale-head guard.
+  // Head SHA captured when the dialog opened — FROZEN; drives the stale-head
+  // guard (submitted as expectedHeadSha). Never advanced while the dialog is open.
   const openedHeadShaRef = useRef<string | null>(null);
+  // Last head we refreshed the commit-message defaults for — lets us refresh the
+  // message once per drift WITHOUT advancing the frozen capture above.
+  const acknowledgedHeadRef = useRef<string | null>(null);
 
   const showCommitEditor = method !== "rebase";
   const canBypass = Boolean(status?.canBypass) && status?.mergeStateStatus === "blocked";
@@ -101,6 +105,7 @@ export const PrMergeDialog = memo(function PrMergeDialog({
     setOverrideArmed(false);
     setStaleHead(false);
     openedHeadShaRef.current = status?.headSha ?? null;
+    acknowledgedHeadRef.current = status?.headSha ?? null;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
@@ -125,10 +130,15 @@ export const PrMergeDialog = memo(function PrMergeDialog({
     const current = status?.headSha ?? null;
     if (captured && current && captured !== current) {
       setStaleHead(true);
-      openedHeadShaRef.current = current;
-      const defaults = computeDefaults(method);
-      setCommitTitle(defaults.title);
-      setCommitBody(defaults.body);
+      // Refresh the commit-message defaults once per new head, but DON'T advance
+      // openedHeadShaRef — expectedHeadSha must stay frozen so GitHub still
+      // rejects a merge against commits pushed after the dialog opened.
+      if (acknowledgedHeadRef.current !== current) {
+        acknowledgedHeadRef.current = current;
+        const defaults = computeDefaults(method);
+        setCommitTitle(defaults.title);
+        setCommitBody(defaults.body);
+      }
     }
   }, [computeDefaults, method, open, status?.headSha]);
 

@@ -2041,13 +2041,15 @@ function PrReviewCard({
         <span style={{ color: reviewStateColor(state) }}>{reviewStateLabel(state)}</span>
         <Timestamp ts={timestamp} />
       </div>
-      {near ? (
-        <PrMarkdown repoOwner={repoOwner} repoName={repoName} dense>
-          {body as string}
-        </PrMarkdown>
-      ) : (
-        <BodySkeleton />
-      )}
+      {body ? (
+        near ? (
+          <PrMarkdown repoOwner={repoOwner} repoName={repoName} dense>
+            {body as string}
+          </PrMarkdown>
+        ) : (
+          <BodySkeleton />
+        )
+      ) : null}
     </div>
   );
 }
