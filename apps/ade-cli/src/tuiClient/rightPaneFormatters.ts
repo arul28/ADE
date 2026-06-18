@@ -242,7 +242,9 @@ export function derivePrMergeReadiness(value: unknown): PrMergeReadiness {
   }
 
   if (mergeState === "draft") blockers.push("PR is a draft");
-  if (mergeState === "unstable") blockers.push("required checks failing");
+  // `unstable` = mergeable, but non-required checks are failing/pending. It is
+  // NOT a blocker — mirror the desktop's isMergeableFromMergeState treatment, so
+  // the TUI lands on "Ready" rather than a false "Blocked — required checks".
   if (mergeState === "blocked" && blockers.length === 0) {
     // `blocked` with no more specific reason → branch protection (needs admin).
     blockers.push("blocked by branch protection");
@@ -268,7 +270,9 @@ export function derivePrMergeReadiness(value: unknown): PrMergeReadiness {
   } else if (behind != null && behind > 0) {
     // Behind base with no other blocker and no explicit merge-state signal.
     headline = "Behind";
-  } else if (mergeState === "clean" || mergeState === "has_hooks" || isMergeable === true) {
+  } else if (mergeState === "clean" || mergeState === "has_hooks" || mergeState === "unstable" || isMergeable === true) {
+    // `unstable` = mergeable with non-required checks failing → Ready, mirroring
+    // the desktop's isMergeableFromMergeState (don't depend on the mergeable flag).
     headline = "Ready";
   } else if (mergeState) {
     headline = "Blocked";

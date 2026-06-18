@@ -886,14 +886,17 @@ export function PrDetailPane({
           strategy,
           expectedHeadSha: status?.headSha ?? undefined,
         });
-        if (!result.success || result.error) {
-          setUpdateBranchNotice({ tone: "error", text: result.error ?? "Update branch failed." });
-        } else if (result.hasConflicts) {
+        // Conflicts come back as `{ success: false, hasConflicts: true, error }`,
+        // so check hasConflicts FIRST — otherwise the generic failure branch
+        // shadows the conflict UX (resolve-in-Rebase message + onOpenRebaseTab).
+        if (result.hasConflicts) {
           setUpdateBranchNotice({
             tone: "error",
             text: "Update hit conflicts — resolve in the Rebase tab / launch resolver.",
           });
           if (pr.laneId && onOpenRebaseTab) onOpenRebaseTab(pr.laneId);
+        } else if (!result.success || result.error) {
+          setUpdateBranchNotice({ tone: "error", text: result.error ?? "Update branch failed." });
         } else {
           setUpdateBranchNotice({ tone: "success", text: "Branch updated with base." });
         }

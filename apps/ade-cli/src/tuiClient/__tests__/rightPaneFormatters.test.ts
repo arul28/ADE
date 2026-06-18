@@ -109,6 +109,22 @@ describe("rightPaneFormatters", () => {
     ]);
   });
 
+  it("treats `unstable` as mergeable (non-required checks failing is not a blocker)", () => {
+    const readiness = derivePrMergeReadiness({
+      mergeStateStatus: "unstable",
+      reviewDecision: "approved",
+      approvalsCount: 1,
+      requiredApprovals: 1,
+      behindBaseBy: 0,
+      mergeConflicts: false,
+      canBypass: false,
+    });
+
+    expect(readiness.blockers).not.toContain("required checks failing");
+    expect(readiness.ready).toBe(true);
+    expect(readiness.headline).not.toBe("Blocked");
+  });
+
   it("flags conflicts and surfaces the bypass hint when the viewer can override", () => {
     const body = formatPrMergeState({
       status: {
