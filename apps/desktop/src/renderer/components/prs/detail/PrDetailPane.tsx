@@ -854,6 +854,14 @@ export function PrDetailPane({
   ) => {
     setActionResult(null);
     return runAction(async () => {
+      // `land` is row-based; an unmapped GitHub-tab PR has a synthetic `gh:` id
+      // with no DB row, so it would throw "PR not found". Surface a clear reason
+      // instead of crashing — these PRs are merged from their project lane / GitHub.
+      if (isUnmapped) {
+        throw new Error(
+          "This PR isn't mapped to an ADE lane — open it from its project lane or merge it on GitHub.",
+        );
+      }
       const res = await window.ade.prs.land({
         prId: pr.id,
         method,

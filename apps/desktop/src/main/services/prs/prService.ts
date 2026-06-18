@@ -5814,6 +5814,11 @@ export function createPrService({
         pushMode: "none",
         actor: "user",
         reason: "pr_update_branch",
+        // Rebase onto the PR's CURRENT base (it may have been retargeted in
+        // GitHub) rather than the lane's stored base_ref. Empty → no override.
+        ...(String(row.base_branch ?? "").trim()
+          ? { baseBranchOverride: String(row.base_branch) }
+          : {}),
       });
     } catch (error) {
       return baseResult(false, { error: getErrorMessage(error) });
