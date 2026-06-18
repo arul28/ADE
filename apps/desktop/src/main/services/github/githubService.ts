@@ -670,6 +670,12 @@ export function createGithubService({
     query?: Record<string, string | number | boolean | undefined | null>;
     body?: unknown;
     token?: string;
+    /**
+     * Override the default `Accept` header. Used to request GitHub schema
+     * previews (e.g. `application/vnd.github.merge-info-preview+json` for the
+     * GraphQL `mergeStateStatus` field). Ignored when blank.
+     */
+    accept?: string;
   }): Promise<{ data: T; response: Response | null; linkHeader?: string | null }> => {
     const token = (args.token ?? readAuthToken().token ?? "").trim();
     if (!token) {
@@ -685,7 +691,7 @@ export function createGithubService({
 
     const urlKey = url.toString();
     const headers: Record<string, string> = {
-      accept: "application/vnd.github+json",
+      accept: args.accept?.trim() || "application/vnd.github+json",
       authorization: `Bearer ${token}`,
       "content-type": args.body != null ? "application/json" : "text/plain",
       "user-agent": "ade-desktop"

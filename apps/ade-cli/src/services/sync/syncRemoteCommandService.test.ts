@@ -9,6 +9,7 @@ function makePayload(action: string, args: Record<string, unknown> = {}): SyncCo
 
 function createService(options?: {
   agentChatService?: Record<string, unknown>;
+  prService?: Record<string, unknown>;
 }) {
   const ptyService = {
     resumeSession: vi.fn().mockResolvedValue({
@@ -20,7 +21,7 @@ function createService(options?: {
   const logger = { debug: vi.fn(), warn: vi.fn(), error: vi.fn(), info: vi.fn() };
   const service = createSyncRemoteCommandService({
     laneService: {},
-    prService: {},
+    prService: options?.prService ?? {},
     ptyService,
     sessionService: {},
     fileService: {},
@@ -116,6 +117,85 @@ describe("createSyncRemoteCommandService", () => {
       hasMore: true,
       sessionFound: true,
     });
+  });
+});
+
+describe("prs.land", () => {
+  it("forwards bypass + editable commit message to prService.land", async () => {
+    const land = vi.fn().mockResolvedValue({ prId: "pr-1", success: true });
+    const { service } = createService({ prService: { land } });
+
+    const result = await service.execute(makePayload("prs.land", {
+      prId: "pr-1",
+      method: "squash",
+      bypassRules: true,
+      commitTitle: "Land it",
+      commitBody: "Body text",
+      expectedHeadSha: "abc123",
+    }));
+
+    expect(land).toHaveBeenCalledWith({
+      prId: "pr-1",
+      method: "squash",
+      bypassRules: true,
+      commitTitle: "Land it",
+      commitBody: "Body text",
+      expectedHeadSha: "abc123",
+    });
+    expect(result).toEqual({ prId: "pr-1", success: true });
+  });
+
+  it("omits optional fields that are absent or blank", async () => {
+    const land = vi.fn().mockResolvedValue({ prId: "pr-1", success: true });
+    const { service } = createService({ prService: { land } });
+
+    await service.execute(makePayload("prs.land", {
+      prId: "pr-1",
+      method: "merge",
+      commitTitle: "   ",
+    }));
+
+    expect(land).toHaveBeenCalledWith({ prId: "pr-1", method: "merge" });
+  });
+
+  it("rejects an invalid method", async () => {
+    const land = vi.fn();
+    const { service } = createService({ prService: { land } });
+
+    await expect(
+      service.execute(makePayload("prs.land", { prId: "pr-1", method: "fast-forward" })),
+    ).rejects.toThrow("prs.land requires method to be merge, squash, or rebase.");
+    expect(land).not.toHaveBeenCalled();
+  });
+});
+
+describe("prs.updateBranch", () => {
+  it("forwards strategy + expected head sha to prService.updateBranch", async () => {
+    const updateBranch = vi.fn().mockResolvedValue({ prId: "pr-1", success: true, hasConflicts: false });
+    const { service } = createService({ prService: { updateBranch } });
+
+    const result = await service.execute(makePayload("prs.updateBranch", {
+      prId: "pr-1",
+      strategy: "rebase",
+      expectedHeadSha: "abc123",
+    }));
+
+    expect(updateBranch).toHaveBeenCalledWith({
+      prId: "pr-1",
+      strategy: "rebase",
+      expectedHeadSha: "abc123",
+    });
+    expect(result).toEqual({ prId: "pr-1", success: true, hasConflicts: false });
+  });
+
+  it("rejects an invalid strategy", async () => {
+    const updateBranch = vi.fn();
+    const { service } = createService({ prService: { updateBranch } });
+
+    await expect(
+      service.execute(makePayload("prs.updateBranch", { prId: "pr-1", strategy: "squash" })),
+    ).rejects.toThrow("prs.updateBranch requires strategy to be merge or rebase.");
+    expect(updateBranch).not.toHaveBeenCalled();
   });
 });
 

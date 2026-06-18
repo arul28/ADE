@@ -19,6 +19,31 @@ export type PrReviewStatus = "none" | "requested" | "approved" | "changes_reques
 export type MergeMethod = "merge" | "squash" | "rebase";
 export type PrNotificationKind = "checks_failing" | "review_requested" | "changes_requested" | "merge_ready";
 
+/**
+ * GitHub's merge-box state, mirrored from the GraphQL `mergeStateStatus` enum
+ * (normalized to lowercase). Drives the requirement checklist and bypass UI.
+ * - `behind`   — head is out of date with base (update branch).
+ * - `blocked`  — merging blocked by branch protection (needs approval / admin override).
+ * - `clean`    — mergeable and all requirements met.
+ * - `dirty`    — merge conflicts.
+ * - `draft`    — PR is a draft.
+ * - `has_hooks`— mergeable with passing checks but a pre-receive hook exists.
+ * - `unknown`  — GitHub is still computing mergeability (keep polling).
+ * - `unstable` — mergeable, but non-required checks are failing/pending.
+ */
+export type MergeStateStatus =
+  | "behind"
+  | "blocked"
+  | "clean"
+  | "dirty"
+  | "draft"
+  | "has_hooks"
+  | "unknown"
+  | "unstable";
+
+/** GitHub GraphQL `reviewDecision` for a PR; null when no reviews are required. */
+export type PrReviewDecision = "approved" | "changes_requested" | "review_required" | null;
+
 export type PrSummary = {
   id: string;
   laneId: string;
@@ -61,6 +86,25 @@ export type PrStatus = {
   isMergeable: boolean;
   mergeConflicts: boolean;
   behindBaseBy: number | null;
+  /**
+   * GitHub merge-box state from GraphQL `mergeStateStatus` (normalized lowercase).
+   * Optional/null for older runtimes or while still computing.
+   */
+  mergeStateStatus?: MergeStateStatus | null;
+  /** GitHub GraphQL `reviewDecision`. */
+  reviewDecision?: PrReviewDecision;
+  /** Approving reviews counted, and required count, when GitHub exposes them (for "0 of 1"). */
+  approvalsCount?: number | null;
+  requiredApprovals?: number | null;
+  /**
+   * True when GitHub is still computing mergeability (`mergeStateStatus === unknown`
+   * or REST `mergeable === null`). The merge UI keeps polling while this is true.
+   */
+  mergeabilityComputing?: boolean;
+  /** Viewer can bypass branch protection (admin / bypass permission). Gates the bypass UI. */
+  canBypass?: boolean;
+  /** Head SHA at the time status was computed; used for the stale-head guard. */
+  headSha?: string | null;
 };
 
 export type PrCheck = {
@@ -101,6 +145,8 @@ export type PrReviewThreadComment = {
   url: string | null;
   createdAt: string | null;
   updatedAt: string | null;
+  /** Surrounding diff context for the inline comment (GitHub `diff_hunk`). */
+  diffHunk?: string | null;
 };
 
 export type PrReviewThread = {
@@ -381,6 +427,36 @@ export type LandPrArgs = {
   archiveLane?: boolean;
   /** When true, retry blocked merges with `gh pr merge --admin`. */
   bypassRules?: boolean;
+  /** Custom merge commit title (`commit_title`). Ignored for the `rebase` method. */
+  commitTitle?: string;
+  /** Custom merge commit body (`commit_message`). Ignored for the `rebase` method. */
+  commitBody?: string;
+  /**
+   * Expected head SHA. When set, the merge is rejected if the PR head advanced
+   * since the dialog opened (passed as `sha` to GitHub's merge API → 409).
+   */
+  expectedHeadSha?: string;
+};
+
+export type UpdateBranchStrategy = "merge" | "rebase";
+
+export type UpdateBranchArgs = {
+  prId: string;
+  /** `merge` → GitHub update-branch API; `rebase` → ADE's local rebase + push. */
+  strategy: UpdateBranchStrategy;
+  /** Expected head SHA for the stale-head guard. */
+  expectedHeadSha?: string;
+};
+
+export type UpdateBranchResult = {
+  prId: string;
+  success: boolean;
+  strategy: UpdateBranchStrategy;
+  /** New head SHA after the update, when known. */
+  headSha: string | null;
+  /** True when the update could not auto-apply because of conflicts. */
+  hasConflicts: boolean;
+  error: string | null;
 };
 
 export type DeletePrArgs = {
@@ -1195,6 +1271,7 @@ export type PrCommit = {
     login: string | null;
     name: string;
     email: string | null;
+    avatarUrl?: string | null;
   };
   committedDate: string;
   checkStatus?: "success" | "failure" | "pending" | "none";
@@ -1235,7 +1312,22 @@ export type PrActionStep = {
 /** Unified activity event for the PR timeline. */
 export type PrActivityEvent = {
   id: string;
-  type: "comment" | "review" | "commit" | "label" | "ci_run" | "state_change" | "review_request" | "deployment" | "force_push";
+  type:
+    | "comment"
+    | "review"
+    | "commit"
+    | "label"
+    | "ci_run"
+    | "state_change"
+    | "review_request"
+    | "deployment"
+    | "force_push"
+    | "cross_referenced"
+    | "renamed"
+    | "assigned"
+    | "head_ref_change"
+    | "review_dismissed"
+    | "milestoned";
   author: string;
   avatarUrl: string | null;
   body: string | null;
@@ -1575,6 +1667,13 @@ export type PrTimelineEvent =
       subject: string;
       commitCount: number;
       forcePushed: boolean;
+      /** Extended commit body (lines after the subject), when available. */
+      bodyText?: string | null;
+      /** Force-push before/after head SHAs, for "from <a> to <b>". */
+      beforeSha?: string | null;
+      afterSha?: string | null;
+      /** Per-commit status rollup (filled by a follow-up fetch; null-tolerant). */
+      commitStatus?: "success" | "failure" | "pending" | null;
     })
   | (PrTimelineEventBase & {
       type: "review";
@@ -1589,10 +1688,15 @@ export type PrTimelineEvent =
       path: string | null;
       line: number | null;
       startLine: number | null;
+      originalLine: number | null;
+      originalStartLine: number | null;
+      diffSide: "LEFT" | "RIGHT" | null;
       isResolved: boolean;
       isOutdated: boolean;
       commentCount: number;
       firstCommentBody: string | null;
+      /** Full thread comments (incl. replies + diff hunks) so the card renders them. */
+      comments: PrReviewThreadComment[];
     })
   | (PrTimelineEventBase & {
       type: "issue_comment";
@@ -1624,6 +1728,49 @@ export type PrTimelineEvent =
       type: "merge";
       mergeCommitSha: string | null;
       method: MergeMethod | null;
+      baseBranch?: string | null;
+    })
+  | (PrTimelineEventBase & {
+      // closed / reopened / ready_for_review / converted_to_draft
+      type: "lifecycle";
+      state: "closed" | "reopened" | "ready_for_review" | "converted_to_draft";
+      commitSha?: string | null;
+    })
+  | (PrTimelineEventBase & {
+      type: "cross_reference";
+      refNumber: number;
+      refTitle: string;
+      refUrl: string;
+      referencedState: "open" | "closed" | "merged" | "draft";
+      isPullRequest: boolean;
+    })
+  | (PrTimelineEventBase & {
+      type: "renamed";
+      from: string;
+      to: string;
+    })
+  | (PrTimelineEventBase & {
+      type: "branch_ref";
+      action: "deleted" | "restored" | "base_changed";
+      branch: string;
+      fromBranch?: string | null;
+    })
+  | (PrTimelineEventBase & {
+      type: "assignment";
+      action: "added" | "removed";
+      assignee: string;
+      assigneeAvatarUrl: string | null;
+    })
+  | (PrTimelineEventBase & {
+      type: "review_request";
+      reviewer: string;
+      team: string | null;
+      action: "added" | "removed";
+    })
+  | (PrTimelineEventBase & {
+      type: "review_dismissed";
+      reviewer: string | null;
+      reason: string | null;
     });
 
 export type PrTimelineEventType = PrTimelineEvent["type"];
@@ -1750,6 +1897,12 @@ export type PrActionCapabilities = {
   canDelete: boolean;
   /** Reason the PR cannot be merged right now. Null when merge is allowed. */
   mergeBlockedReason: string | null;
+  /** GitHub merge-box state, so mobile can render the same blocker detail as desktop. */
+  mergeStateStatus?: MergeStateStatus | null;
+  /** Viewer can bypass branch protection (admin / bypass permission). */
+  canBypass?: boolean;
+  /** Branch is behind base and can be updated from the merge surface. */
+  canUpdateBranch?: boolean;
   /** True when any live-only action is offered — lets mobile gate in offline mode. */
   requiresLive: boolean;
 };

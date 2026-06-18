@@ -708,7 +708,7 @@ webPreferences: {
 }
 ```
 
-**CSP**: `default-src 'self'`; `script-src 'self'` (no eval, no inline scripts); `style-src 'self' 'unsafe-inline'` (required for Tailwind); `connect-src 'self'`; `img-src 'self' data:`.
+**CSP** (`rendererCsp.ts`): `default-src 'self'`; `script-src 'self'` (no eval, no inline scripts); `style-src 'self' 'unsafe-inline'` (required for Tailwind); `connect-src 'self'`; `img-src 'self' data:` plus a host-scoped allowlist (no blanket `https:`) for the image origins PR/README surfaces actually load — the GitHub avatar/asset hosts (`*.githubusercontent.com`, `github.githubassets.com`, …) and `www.gravatar.com` / `secure.gravatar.com` (commit-author identicon fallback).
 
 Every IPC handler **validates** its arguments; invalid args return structured errors, never crash. Every handler has a **30s timeout** by default; `ipcTimeouts.ts` carries per-channel overrides for long-running operations and inspects the payload of `localRuntime.callAction` / `remoteRuntime.callAction` so action-specific timeouts (e.g. `lane.create` / `lane.delete` → 4 min; `ios_simulator.launch` → 10 min) apply even when the channel itself is generic. Every handler emits structured tracing.
 

@@ -173,9 +173,11 @@ import { SpinTickProvider } from "./spinTick";
 import { ACTIVE_SESSION_PLACEHOLDER, buildLinearToolRequest } from "./linearCommands";
 import {
   formatLinearIssueComments,
+  derivePrMergeReadiness,
   formatLinearStatus,
   formatPrChecks,
   formatPrComments,
+  formatPrMergeState,
   formatPrReview,
   formatPrSummary,
   formatSystemDetails,
@@ -8234,12 +8236,17 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           return;
         }
         // Combined detail view (desktop ChatPrPane parity): summary + live
-        // checks in one pane, with the deeper sub-commands hinted at the end.
-        const checks = prId
-          ? await conn.actionList("pr", "getChecks", [prId]).catch((err) => ({ error: err instanceof Error ? err.message : String(err) }))
-          : null;
+        // merge-readiness + checks in one pane, with the deeper sub-commands
+        // hinted at the end.
+        const [checks, status] = prId
+          ? await Promise.all([
+              conn.actionList("pr", "getChecks", [prId]).catch((err) => ({ error: err instanceof Error ? err.message : String(err) })),
+              conn.actionList("pr", "getStatus", [prId]).catch(() => null),
+            ])
+          : [null, null];
         const sections = [
           formatPrSummary(activePr),
+          ...(status ? ["", formatPrMergeState(status)] : []),
           ...(checks ? ["", formatPrChecks(checks)] : []),
           "",
           "More: /pr checks · /pr review · /pr comments · /pr land",
@@ -8298,31 +8305,95 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       }
       const prRef = typeof activePr?.number === "number" ? `PR #${activePr.number}` : "the PR";
       if (name === "/pr land") {
+        // Tokens: an optional leading `confirm`, a merge method, and an optional
+        // `bypass`/`admin` token (order-independent after `confirm`). e.g.
+        //   /pr land squash
+        //   /pr land confirm squash bypass
         const parts = args.trim().split(/\s+/).filter(Boolean);
-        const confirmed = parts[0]?.toLowerCase() === "confirm";
-        const methodArg = (confirmed ? parts[1] : parts[0])?.toLowerCase();
-        const method = (["merge", "squash", "rebase"].includes(methodArg ?? "") ? methodArg : "squash") as "merge" | "squash" | "rebase";
+        const tokens = parts.map((token) => token.toLowerCase());
+        const confirmed = tokens[0] === "confirm";
+        const rest = confirmed ? tokens.slice(1) : tokens;
+        const methodArg = rest.find((token) => ["merge", "squash", "rebase"].includes(token));
+        const method = (methodArg ?? "squash") as "merge" | "squash" | "rebase";
+        const bypassRules = rest.some((token) => ["bypass", "admin", "--admin"].includes(token));
+
+        // Pull the authoritative merge state so the confirm step shows the same
+        // blockers the desktop merge box does (and explains why bypass is needed).
+        const status = await conn.actionList("pr", "getStatus", [prId]).catch(() => null);
+        const readiness = status ? derivePrMergeReadiness(status) : null;
         if (!confirmed) {
           // Merging is irreversible and runs post-merge cleanup, so require an
           // explicit confirm step rather than landing on the first keystroke.
+          const blockerLines = readiness && readiness.blockers.length
+            ? ["", `Merge state: ${readiness.headline}`, ...readiness.blockers.map((b) => `  ✗ ${b}`)]
+            : readiness
+              ? ["", `Merge state: ${readiness.headline}`]
+              : [];
+          const bypassHint = readiness?.blockers.length
+            ? readiness.canBypass
+              ? `Add  bypass  to override branch protection:  /pr land confirm ${method} bypass`
+              : "These must clear before the merge succeeds (you cannot bypass branch protection)."
+            : null;
           setRightPane({
             kind: "details",
             title: "Land PR",
             body: [
               `About to merge ${prRef} using the "${method}" method.`,
+              ...blockerLines,
               "",
               "This merges on GitHub and runs post-merge cleanup (branch delete, child rebase). It cannot be undone.",
               "",
-              `Run  /pr land confirm ${method}  to proceed.`,
+              `Run  /pr land confirm ${method}${bypassRules ? " bypass" : ""}  to proceed.`,
               "Choose a method:  /pr land confirm merge | squash | rebase",
+              ...(bypassHint ? [bypassHint] : []),
             ].join("\n"),
           });
           return;
         }
         try {
-          const landed = await conn.action("pr", "land", { prId, method });
-          addNotice(`Merged ${prRef} (${method}).`, "success");
+          const landed = await conn.action("pr", "land", { prId, method, ...(bypassRules ? { bypassRules: true } : {}) });
+          addNotice(`Merged ${prRef} (${method}${bypassRules ? ", bypass" : ""}).`, "success");
           setRightPane({ kind: "details", title: "PR landed", body: renderObject(landed, 24) });
+          await refreshState();
+        } catch (err) {
+          addNotice(err instanceof Error ? err.message : String(err), "error");
+        }
+        return;
+      }
+      if (name === "/pr update-branch") {
+        // Sync the PR branch with its base. `merge` uses GitHub's update-branch
+        // API (no local lane needed); `rebase` reuses ADE's local rebase + push
+        // and therefore requires a mapped lane. Mirrors the desktop merge box's
+        // "Update branch" control, including the stale-head guard.
+        const strategyArg = args.trim().toLowerCase();
+        const strategy = (strategyArg === "rebase" ? "rebase" : "merge") as "merge" | "rebase";
+        // Pass the current head as the expected SHA so an update is rejected if
+        // the head advanced since we last looked (matches LandPrArgs.expectedHeadSha).
+        const status = await conn.actionList<Record<string, unknown>>("pr", "getStatus", [prId]).catch(() => null);
+        const statusRecord = status && typeof status === "object" ? status : {};
+        const expectedHeadSha =
+          typeof statusRecord.headSha === "string" && statusRecord.headSha.trim()
+            ? statusRecord.headSha.trim()
+            : undefined;
+        try {
+          const result = await conn.action("pr", "updateBranch", {
+            prId,
+            strategy,
+            ...(expectedHeadSha ? { expectedHeadSha } : {}),
+          });
+          const record = result && typeof result === "object" ? (result as Record<string, unknown>) : {};
+          if (record.success === true) {
+            addNotice(`Updated ${prRef} branch (${strategy}).`, "success");
+          } else if (record.hasConflicts === true) {
+            addNotice(
+              `Updating ${prRef} (${strategy}) hit conflicts — resolve them in the lane, then retry.`,
+              "error",
+            );
+          } else {
+            const reason = typeof record.error === "string" && record.error.trim() ? record.error.trim() : "unknown error";
+            addNotice(`Could not update ${prRef} branch: ${reason}`, "error");
+          }
+          setRightPane({ kind: "details", title: "PR update-branch", body: renderObject(result, 24) });
           await refreshState();
         } catch (err) {
           addNotice(err instanceof Error ? err.message : String(err), "error");

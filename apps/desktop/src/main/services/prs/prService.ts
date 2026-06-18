@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type {
   AgentChatSessionSummary,
   BranchPullRequest,
@@ -44,6 +44,10 @@ import type {
   LandResult,
   LandPrArgs,
   MergeMethod,
+  MergeStateStatus,
+  PrReviewDecision,
+  UpdateBranchArgs,
+  UpdateBranchResult,
   LandQueueNextArgs,
   LandStackArgs,
   LandStackEnhancedArgs,
@@ -294,6 +298,23 @@ function syntheticGithubPrId(coords: PrGithubCoords): string {
   return `gh:${coords.repoOwner}/${coords.repoName}#${coords.githubPrNumber}`;
 }
 
+// GitHub falls back to a Gravatar identicon (keyed on the commit author email)
+// when a commit isn't linked to a GitHub account — this mirrors that so commit
+// rows show the same avatar GitHub does instead of a generic placeholder.
+function gravatarIdenticon(email: string): string | null {
+  const normalized = email.trim().toLowerCase();
+  if (!normalized) return null;
+  const hash = createHash("md5").update(normalized).digest("hex");
+  return `https://www.gravatar.com/avatar/${hash}?d=identicon&s=80`;
+}
+
+/** Reverse of `syntheticGithubPrId`: "gh:owner/repo#num" → coords (else null). */
+function parseSyntheticGithubPrId(prId: string): PrGithubCoords | null {
+  const m = /^gh:([^/]+)\/(.+)#(\d+)$/.exec(prId);
+  if (!m) return null;
+  return { repoOwner: m[1]!, repoName: m[2]!, githubPrNumber: Number(m[3]!) };
+}
+
 /**
  * Build the unified PR activity timeline from already-fetched comments,
  * reviews, checks, and raw GitHub timeline entries. Pure — shared by both the
@@ -442,19 +463,177 @@ function buildActivityEvents(
           color: asString(entry?.label?.color),
         }
       });
-    } else if (eventType === "review_requested") {
+    } else if (eventType === "review_requested" || eventType === "review_request_removed") {
       const id = `review-req-${nodeId}`;
       if (seenIds.has(id)) continue;
       seenIds.add(id);
+      const action = eventType === "review_request_removed" ? "removed" : "added";
       const reviewer = asString(entry?.requested_reviewer?.login);
+      const team = asString(entry?.requested_team?.name) || asString(entry?.requested_team?.slug);
+      const target = reviewer || team;
       events.push({
         id,
         type: "review_request",
         author: asString(entry?.actor?.login) || "unknown",
         avatarUrl: asString(entry?.actor?.avatar_url) || null,
-        body: reviewer ? `Requested review from ${reviewer}` : "Requested a review",
+        body: action === "removed"
+          ? (target ? `Removed review request for ${target}` : "Removed a review request")
+          : (target ? `Requested review from ${target}` : "Requested a review"),
         timestamp: asString(entry?.created_at) || "",
-        metadata: { reviewer }
+        metadata: { action, reviewer: reviewer || null, team: team || null }
+      });
+    } else if (eventType === "cross-referenced") {
+      const issue = entry?.source?.issue;
+      const refNumber = asNumber(issue?.number);
+      if (!issue || !refNumber) continue;
+      const id = `cross-ref-${nodeId}`;
+      if (seenIds.has(id)) continue;
+      seenIds.add(id);
+      const isPullRequest = Boolean(issue?.pull_request);
+      const rawState = asString(issue?.state).toLowerCase();
+      const referencedState = asString(issue?.pull_request?.merged_at)
+        ? "merged"
+        : isPullRequest && Boolean(issue?.draft)
+          ? "draft"
+          : rawState === "closed"
+            ? "closed"
+            : "open";
+      events.push({
+        id,
+        type: "cross_referenced",
+        author: asString(entry?.actor?.login) || "unknown",
+        avatarUrl: asString(entry?.actor?.avatar_url) || null,
+        body: asString(issue?.title) || null,
+        timestamp: asString(entry?.created_at) || "",
+        metadata: {
+          refNumber,
+          refTitle: asString(issue?.title),
+          refUrl: asString(issue?.html_url),
+          isPullRequest,
+          referencedState,
+        }
+      });
+    } else if (eventType === "renamed") {
+      const from = asString(entry?.rename?.from);
+      const to = asString(entry?.rename?.to);
+      if (!from && !to) continue;
+      const id = `renamed-${nodeId}`;
+      if (seenIds.has(id)) continue;
+      seenIds.add(id);
+      events.push({
+        id,
+        type: "renamed",
+        author: asString(entry?.actor?.login) || "unknown",
+        avatarUrl: asString(entry?.actor?.avatar_url) || null,
+        body: `Renamed from "${from}" to "${to}"`,
+        timestamp: asString(entry?.created_at) || "",
+        metadata: { from, to }
+      });
+    } else if (eventType === "ready_for_review" || eventType === "convert_to_draft") {
+      const id = `lifecycle-${nodeId}`;
+      if (seenIds.has(id)) continue;
+      seenIds.add(id);
+      const state = eventType === "ready_for_review" ? "ready_for_review" : "converted_to_draft";
+      events.push({
+        id,
+        type: "state_change",
+        author: asString(entry?.actor?.login) || "unknown",
+        avatarUrl: asString(entry?.actor?.avatar_url) || null,
+        body: state === "ready_for_review" ? "Marked ready for review" : "Converted to draft",
+        timestamp: asString(entry?.created_at) || "",
+        metadata: { state }
+      });
+    } else if (eventType === "closed" || eventType === "reopened") {
+      const id = `lifecycle-${nodeId}`;
+      if (seenIds.has(id)) continue;
+      seenIds.add(id);
+      const state = eventType === "closed" ? "closed" : "reopened";
+      events.push({
+        id,
+        type: "state_change",
+        author: asString(entry?.actor?.login) || "unknown",
+        avatarUrl: asString(entry?.actor?.avatar_url) || null,
+        body: state === "closed" ? "Closed this" : "Reopened this",
+        timestamp: asString(entry?.created_at) || "",
+        metadata: { state, commitSha: asString(entry?.commit_id) || null }
+      });
+    } else if (eventType === "assigned" || eventType === "unassigned") {
+      const assignee = asString(entry?.assignee?.login);
+      if (!assignee) continue;
+      const id = `assign-${nodeId}`;
+      if (seenIds.has(id)) continue;
+      seenIds.add(id);
+      const action = eventType === "assigned" ? "added" : "removed";
+      events.push({
+        id,
+        type: "assigned",
+        author: asString(entry?.actor?.login) || "unknown",
+        avatarUrl: asString(entry?.actor?.avatar_url) || null,
+        body: action === "added" ? `Assigned ${assignee}` : `Unassigned ${assignee}`,
+        timestamp: asString(entry?.created_at) || "",
+        metadata: {
+          action,
+          assignee,
+          assigneeAvatarUrl: asString(entry?.assignee?.avatar_url) || null,
+        }
+      });
+    } else if (
+      eventType === "head_ref_deleted"
+      || eventType === "head_ref_restored"
+      || eventType === "base_ref_changed"
+    ) {
+      const id = `head-ref-${nodeId}`;
+      if (seenIds.has(id)) continue;
+      seenIds.add(id);
+      const action = eventType === "head_ref_deleted"
+        ? "deleted"
+        : eventType === "head_ref_restored"
+          ? "restored"
+          : "base_changed";
+      // The REST timeline does not always carry the branch name; read the common
+      // candidate fields and fall back to null so the renderer can still show a
+      // generic message.
+      const branch = asString(entry?.ref)
+        || asString(entry?.head_ref)
+        || asString(entry?.base_ref)
+        || asString(entry?.to)
+        || null;
+      const fromBranch = asString(entry?.from)
+        || asString(entry?.before)
+        || null;
+      events.push({
+        id,
+        type: "head_ref_change",
+        author: asString(entry?.actor?.login) || "unknown",
+        avatarUrl: asString(entry?.actor?.avatar_url) || null,
+        body: action === "deleted"
+          ? "Deleted the head branch"
+          : action === "restored"
+            ? "Restored the head branch"
+            : "Changed the base branch",
+        timestamp: asString(entry?.created_at) || "",
+        metadata: { action, branch, fromBranch }
+      });
+    } else if (eventType === "review_dismissed") {
+      const id = `review-dismissed-${nodeId}`;
+      if (seenIds.has(id)) continue;
+      seenIds.add(id);
+      // The dismissed review's author login isn't carried directly on the event;
+      // GitHub only exposes the dismissal message + the dismissed review's id.
+      const reviewer = asString(entry?.dismissed_review?.reviewer?.login)
+        || asString(entry?.dismissed_review?.user?.login)
+        || null;
+      const reason = asString(entry?.dismissed_review?.dismissal_message)
+        || asString(entry?.dismissed_review?.state)
+        || null;
+      events.push({
+        id,
+        type: "review_dismissed",
+        author: asString(entry?.actor?.login) || "unknown",
+        avatarUrl: asString(entry?.actor?.avatar_url) || null,
+        body: reviewer ? `Dismissed ${reviewer}'s review` : "Dismissed a review",
+        timestamp: asString(entry?.created_at) || "",
+        metadata: { reviewer, reason }
       });
     }
   }
@@ -856,6 +1035,43 @@ function mergeConflictsFromPull(pr: any): boolean | null {
   if (!hasMergeabilityFields(pr)) return null;
   if (isMergeabilityPending(pr)) return null;
   return asString(pr?.mergeable_state).trim().toLowerCase() === "dirty";
+}
+
+const MERGE_STATE_STATUS_VALUES: ReadonlySet<MergeStateStatus> = new Set([
+  "behind",
+  "blocked",
+  "clean",
+  "dirty",
+  "draft",
+  "has_hooks",
+  "unknown",
+  "unstable",
+]);
+
+/** Normalize a GitHub GraphQL `mergeStateStatus` enum (UPPERCASE) to our lowercase union. */
+function normalizeMergeStateStatus(raw: unknown): MergeStateStatus | null {
+  const value = asString(raw).trim().toLowerCase();
+  if (!value) return null;
+  return MERGE_STATE_STATUS_VALUES.has(value as MergeStateStatus) ? (value as MergeStateStatus) : null;
+}
+
+/** Normalize a GitHub GraphQL `reviewDecision` enum to our lowercase union (null when no reviews required). */
+function normalizeReviewDecision(raw: unknown): PrReviewDecision {
+  const value = asString(raw).trim().toLowerCase();
+  if (value === "approved") return "approved";
+  if (value === "changes_requested") return "changes_requested";
+  if (value === "review_required") return "review_required";
+  return null;
+}
+
+/**
+ * Whether a PR is mergeable based purely on GitHub's authoritative
+ * `mergeStateStatus`. Mergeable when the merge box is clean, only non-required
+ * checks are pending/failing (`unstable`), or a pre-receive hook is present
+ * (`has_hooks`). `blocked`/`behind`/`dirty`/`draft`/`unknown` are not mergeable.
+ */
+function isMergeableFromMergeState(state: MergeStateStatus): boolean {
+  return state === "clean" || state === "unstable" || state === "has_hooks";
 }
 
 function rowMergeConflicts(row: PullRequestRow): boolean | null {
@@ -1450,6 +1666,32 @@ export function createPrService({
     owner: row.repo_owner,
     name: row.repo_name
   });
+
+  // Repo + PR number for a review-thread mutation, from either a real DB row
+  // (mapped PR) or a synthetic "gh:owner/repo#num" id (unmapped GitHub-tab PR).
+  // The mutations key on the global thread/comment node id, so they work for
+  // both — this only locates the repo for the ownership check.
+  const resolvePrThreadTarget = (prId: string): { repo: GitHubRepoRef; prNumber: number } => {
+    const coords = parseSyntheticGithubPrId(prId);
+    if (coords) return { repo: { owner: coords.repoOwner, name: coords.repoName }, prNumber: coords.githubPrNumber };
+    const row = requireRow(prId);
+    return { repo: repoFromRow(row), prNumber: Number(row.github_pr_number) };
+  };
+
+  // Security guard for thread-state mutations: confirm the thread actually
+  // belongs to the (mapped or synthetic) PR before mutating, so a UI-supplied
+  // threadId can't target a foreign thread. One copy → can't drift.
+  const assertThreadBelongsToPr = async (
+    prId: string,
+    threadId: string,
+  ): Promise<{ repo: GitHubRepoRef; prNumber: number }> => {
+    const target = resolvePrThreadTarget(prId);
+    const threads = await fetchReviewThreads(target.repo, target.prNumber);
+    if (!threads.some((t) => t.id === threadId)) {
+      throw new Error(`Thread ${threadId} does not belong to PR ${prId}`);
+    }
+    return target;
+  };
 
   const getRowForLane = (laneId: string): PullRequestRow | null => {
     const rows = db.all<PullRequestRow>(
@@ -3221,7 +3463,11 @@ export function createPrService({
     }
   };
 
-  const graphqlRequest = async <T>(query: string, variables: Record<string, unknown>): Promise<T> => {
+  const graphqlRequest = async <T>(
+    query: string,
+    variables: Record<string, unknown>,
+    options: { accept?: string } = {},
+  ): Promise<T> => {
     const { data: payload } = await githubService.apiRequest<{
       data?: T;
       errors?: Array<{ message?: unknown }>;
@@ -3229,6 +3475,7 @@ export function createPrService({
       method: "POST",
       path: "/graphql",
       body: { query, variables },
+      ...(options.accept ? { accept: options.accept } : {}),
     });
 
     const errors = Array.isArray(payload?.errors)
@@ -3514,6 +3761,7 @@ export function createPrService({
                     id
                     body
                     url
+                    diffHunk
                     createdAt
                     updatedAt
                     author {
@@ -3559,6 +3807,7 @@ export function createPrService({
               authorAvatarUrl: asString(entry?.author?.avatarUrl) || null,
               body: asString(entry?.body) || null,
               url: asString(entry?.url) || null,
+              diffHunk: asString(entry?.diffHunk) || null,
               createdAt: asString(entry?.createdAt) || null,
               updatedAt: asString(entry?.updatedAt) || null,
             }))
@@ -3778,18 +4027,113 @@ export function createPrService({
     }
   };
 
-  const computeStatus = async (summary: PrSummary): Promise<PrStatus> => {
-    const repo: GitHubRepoRef = { owner: summary.repoOwner, name: summary.repoName };
-    const pr = await fetchPr(repo, summary.githubPrNumber, { waitForKnownMergeability: true });
-    const headSha = asString(pr?.head?.sha);
+  /**
+   * Best-effort GraphQL fetch of the authoritative merge box. Returns null on
+   * any failure (permissions, schema drift, transient errors) so callers fall
+   * back to the REST-derived signals. Never throws.
+   */
+  const fetchMergeStateViaGraphql = async (
+    repo: GitHubRepoRef,
+    prNumber: number,
+  ): Promise<{
+    mergeStateStatus: MergeStateStatus | null;
+    mergeableUnknown: boolean;
+    reviewDecision: PrReviewDecision;
+    requiredApprovals: number | null;
+    approvalsCount: number | null;
+    canBypass: boolean;
+    headSha: string | null;
+  } | null> => {
+    const query = `query($owner:String!,$name:String!,$number:Int!){
+  repository(owner:$owner,name:$name){
+    viewerPermission
+    pullRequest(number:$number){
+      mergeable mergeStateStatus reviewDecision headRefOid
+      baseRef { branchProtectionRule { requiredApprovingReviewCount } }
+      latestOpinionatedReviews(first:100){ nodes { state } }
+    }
+  }
+}`;
+    try {
+      const data = await graphqlRequest<{
+        repository?: {
+          viewerPermission?: unknown;
+          pullRequest?: {
+            mergeable?: unknown;
+            mergeStateStatus?: unknown;
+            reviewDecision?: unknown;
+            headRefOid?: unknown;
+            baseRef?: { branchProtectionRule?: { requiredApprovingReviewCount?: unknown } | null } | null;
+            latestOpinionatedReviews?: { nodes?: Array<{ state?: unknown } | null> | null } | null;
+          } | null;
+        } | null;
+      }>(
+        query,
+        { owner: repo.owner, name: repo.name, number: prNumber },
+        // `mergeStateStatus` is part of GitHub's `merge-info-preview` schema
+        // preview and errors ("field requires preview header") without this Accept.
+        { accept: "application/vnd.github.merge-info-preview+json" },
+      );
+
+      const repository = data?.repository ?? null;
+      const pull = repository?.pullRequest ?? null;
+      if (!pull) return null;
+
+      const requiredRaw = pull.baseRef?.branchProtectionRule?.requiredApprovingReviewCount;
+      const requiredApprovals = Number.isFinite(Number(requiredRaw)) ? Number(requiredRaw) : null;
+      const reviewNodes = Array.isArray(pull.latestOpinionatedReviews?.nodes)
+        ? pull.latestOpinionatedReviews!.nodes!
+        : [];
+      const approvalsCount = reviewNodes.filter(
+        (node) => asString(node?.state).trim().toUpperCase() === "APPROVED",
+      ).length;
+
+      return {
+        mergeStateStatus: normalizeMergeStateStatus(pull.mergeStateStatus),
+        mergeableUnknown: asString(pull.mergeable).trim().toUpperCase() === "UNKNOWN",
+        reviewDecision: normalizeReviewDecision(pull.reviewDecision),
+        requiredApprovals,
+        approvalsCount: reviewNodes.length > 0 || requiredApprovals != null ? approvalsCount : null,
+        canBypass: asString(repository?.viewerPermission).trim().toUpperCase() === "ADMIN",
+        headSha: asString(pull.headRefOid).trim() || null,
+      };
+    } catch (error) {
+      // Warn (not debug) so a silent fall-back to REST — which would leave the
+      // authoritative merge box null — is visible in default logs. This is the
+      // exact failure we want to catch (e.g. a missing preview header on GHES).
+      logger.warn("prs.computeStatus.graphql_failed", {
+        repo: `${repo.owner}/${repo.name}`,
+        prNumber,
+        error: getErrorMessage(error),
+      });
+      return null;
+    }
+  };
+
+  // Shared live merge-status compute, keyed purely on GitHub coordinates. Used
+  // by both the row-backed `computeStatus` (which also upserts the PR row) and
+  // `getStatusByCoords` (unmapped GitHub-tab PRs that have no DB row). Returns
+  // the PrStatus plus the raw PR payload + raw merge-conflict tri-state so the
+  // row-backed path can refresh additions/deletions/mergeConflicts unchanged.
+  const computeMergeStatus = async (
+    repo: GitHubRepoRef,
+    prNumber: number,
+    prId: string,
+  ): Promise<{ status: PrStatus; pr: any; mergeConflictsRaw: boolean | null }> => {
+    // Do NOT block on the long mergeability poll here — each renderer re-poll
+    // must stay cheap. When REST mergeability is still unknown we mark
+    // `mergeabilityComputing: true` and return promptly; the renderer re-polls.
+    const pr = await fetchPr(repo, prNumber);
+    const restHeadSha = asString(pr?.head?.sha);
     const baseSha = asString(pr?.base?.sha);
     const mergeConflicts = mergeConflictsFromPull(pr);
 
-    const [combinedStatus, checkRuns, reviews, compare] = await Promise.all([
-      headSha ? fetchCombinedStatus(repo, headSha) : Promise.resolve({ state: "", statuses: [] }),
-      headSha ? bestEffort("computeStatus.fetchCheckRuns", fetchCheckRuns(repo, headSha), [] as any[]) : Promise.resolve([]),
-      bestEffort("computeStatus.fetchReviews", fetchReviews(repo, summary.githubPrNumber), []),
-      baseSha && headSha ? bestEffort("computeStatus.fetchCompare", fetchCompare(repo, baseSha, headSha), { behindBy: null as number | null }) : Promise.resolve({ behindBy: null as number | null })
+    const [combinedStatus, checkRuns, reviews, compare, mergeState] = await Promise.all([
+      restHeadSha ? fetchCombinedStatus(repo, restHeadSha) : Promise.resolve({ state: "", statuses: [] }),
+      restHeadSha ? bestEffort("computeStatus.fetchCheckRuns", fetchCheckRuns(repo, restHeadSha), [] as any[]) : Promise.resolve([]),
+      bestEffort("computeStatus.fetchReviews", fetchReviews(repo, prNumber), []),
+      baseSha && restHeadSha ? bestEffort("computeStatus.fetchCompare", fetchCompare(repo, baseSha, restHeadSha), { behindBy: null as number | null }) : Promise.resolve({ behindBy: null as number | null }),
+      fetchMergeStateViaGraphql(repo, prNumber),
     ]);
 
     const requestedReviewers = Array.isArray(pr?.requested_reviewers) ? pr.requested_reviewers.map((u: any) => asString(u?.login)).filter(Boolean) : [];
@@ -3807,32 +4151,72 @@ export function createPrService({
     });
     const checksStatus = toChecksStatusFromCheckRuns(checkRuns) ?? toChecksStatus(combinedStatus.state);
     const reviewStatus = computeReviewStatus({ requestedReviewers, requestedTeams, reviewStatesByUser });
-    const isMergeable = Boolean(pr?.mergeable) && checksStatus !== "failing" && reviewStatus !== "changes_requested";
     const behindBaseBy = compare.behindBy;
+
+    const mergeStateStatus = mergeState?.mergeStateStatus ?? null;
+    const headSha = mergeState?.headSha ?? restHeadSha ?? null;
+    // GitHub is still computing when the GraphQL box is `unknown`, GraphQL
+    // `mergeable === UNKNOWN`, or REST `mergeable == null`.
+    const mergeabilityComputing =
+      mergeStateStatus === "unknown" ||
+      mergeState?.mergeableUnknown === true ||
+      (mergeStateStatus == null && pr?.mergeable == null && hasMergeabilityFields(pr));
+
+    // Prefer the authoritative GraphQL merge box when present; otherwise fall
+    // back to the legacy REST-derived heuristic.
+    const isMergeable = mergeStateStatus
+      ? isMergeableFromMergeState(mergeStateStatus)
+      : Boolean(pr?.mergeable) && checksStatus !== "failing" && reviewStatus !== "changes_requested";
+
+    return {
+      pr,
+      mergeConflictsRaw: mergeConflicts,
+      status: {
+        prId,
+        state: nextState,
+        checksStatus,
+        reviewStatus,
+        isMergeable,
+        mergeConflicts: mergeConflicts === true,
+        behindBaseBy,
+        mergeStateStatus,
+        reviewDecision: mergeState?.reviewDecision ?? undefined,
+        approvalsCount: mergeState?.approvalsCount ?? null,
+        requiredApprovals: mergeState?.requiredApprovals ?? null,
+        mergeabilityComputing,
+        canBypass: mergeState?.canBypass ?? undefined,
+        headSha,
+      },
+    };
+  };
+
+  const computeStatus = async (summary: PrSummary): Promise<PrStatus> => {
+    const repo: GitHubRepoRef = { owner: summary.repoOwner, name: summary.repoName };
+    const { status, pr, mergeConflictsRaw } = await computeMergeStatus(repo, summary.githubPrNumber, summary.id);
 
     const refreshed: PrSummary = {
       ...summary,
-      state: nextState,
-      checksStatus,
-      reviewStatus,
+      state: status.state,
+      checksStatus: status.checksStatus,
+      reviewStatus: status.reviewStatus,
       additions: Number(pr?.additions ?? summary.additions),
       deletions: Number(pr?.deletions ?? summary.deletions),
-      mergeConflicts,
-      behindBaseBy,
+      mergeConflicts: mergeConflictsRaw,
+      behindBaseBy: status.behindBaseBy,
       lastSyncedAt: nowIso(),
       updatedAt: nowIso()
     };
     upsertRow(refreshed);
 
-    return {
-      prId: summary.id,
-      state: nextState,
-      checksStatus,
-      reviewStatus,
-      isMergeable,
-      mergeConflicts: mergeConflicts === true,
-      behindBaseBy
-    };
+    return status;
+  };
+
+  // Live merge status for an unmapped GitHub-tab PR (no DB row). Same compute as
+  // `computeStatus`, keyed on coords, without persisting a row.
+  const getStatusByCoords = async (coords: PrGithubCoords): Promise<PrStatus> => {
+    const repo: GitHubRepoRef = { owner: coords.repoOwner, name: coords.repoName };
+    const { status } = await computeMergeStatus(repo, Number(coords.githubPrNumber), syntheticGithubPrId(coords));
+    return status;
   };
 
   const getChecksByCoords = async (coords: PrGithubCoords): Promise<PrCheck[]> => {
@@ -4168,6 +4552,10 @@ export function createPrService({
           login: asString(topAuthor?.login) || null,
           name: asString(commitAuthor?.name) || asString(topAuthor?.login) || "",
           email: asString(commitAuthor?.email) || null,
+          // Linked GitHub avatar when available, else Gravatar identicon (what
+          // GitHub renders for commits whose email isn't a GitHub account).
+          avatarUrl: asString(topAuthor?.avatar_url)
+            || (asString(commitAuthor?.email) ? gravatarIdenticon(asString(commitAuthor.email)) : null),
         },
         committedDate,
         checkStatus: "none" as const,
@@ -5163,6 +5551,8 @@ export function createPrService({
   const attemptAdminMerge = async (args: {
     row: PullRequestRow;
     method: MergeMethod;
+    commitTitle?: string;
+    commitBody?: string;
   }): Promise<{ success: true; mergeCommitSha: string | null } | { success: false; error: string }> => {
     let laneWorktreePath: string;
     try {
@@ -5174,8 +5564,18 @@ export function createPrService({
       };
     }
 
+    // `--subject`/`--body` only apply to merge/squash commits — rebase has no
+    // merge commit to title. Pass as separate argv entries (never shell-interpolated).
+    const messageArgs: string[] = [];
+    if (args.method !== "rebase") {
+      const subject = asString(args.commitTitle).trim();
+      const body = asString(args.commitBody);
+      if (subject) messageArgs.push("--subject", subject);
+      if (body) messageArgs.push("--body", body);
+    }
+
     const adminRes = await runGh(
-      ["pr", "merge", String(Number(args.row.github_pr_number)), `--${args.method}`, "--admin"],
+      ["pr", "merge", String(Number(args.row.github_pr_number)), `--${args.method}`, "--admin", ...messageArgs],
       { cwd: laneWorktreePath, timeoutMs: 90_000 },
     );
     if (adminRes.exitCode !== 0) {
@@ -5226,6 +5626,12 @@ export function createPrService({
       if (rawMsg.includes("405") || rawMsg.includes("Method Not Allowed")) {
         return "PR cannot be merged — branch protection rules may require status checks or reviews to pass first.";
       }
+      // A 409 from the merge API with an explicit `sha` we supplied means the
+      // head advanced since the merge dialog was opened (`Head branch was
+      // modified`). Distinguish it from a generic conflict.
+      if (args.expectedHeadSha && (rawMsg.includes("409") || /head branch was modified/i.test(rawMsg))) {
+        return "PR head changed since you opened the merge dialog — refresh and retry.";
+      }
       if (rawMsg.includes("409") || rawMsg.includes("Conflict")) {
         return "PR has merge conflicts. Rebase or resolve conflicts before merging.";
       }
@@ -5253,12 +5659,24 @@ export function createPrService({
     }
 
     try {
+      // `commit_title`/`commit_message` only apply to merge/squash commits, not
+      // rebase. `sha` guards against the head advancing since the dialog opened
+      // (GitHub returns 409 if it no longer matches).
+      const commitTitle = asString(args.commitTitle).trim();
+      const commitBody = asString(args.commitBody);
+      const mergeBody: Record<string, unknown> = { merge_method: args.method };
+      if (args.method !== "rebase") {
+        if (commitTitle) mergeBody.commit_title = commitTitle;
+        if (commitBody) mergeBody.commit_message = commitBody;
+      }
+      if (args.expectedHeadSha?.trim()) {
+        mergeBody.sha = args.expectedHeadSha.trim();
+      }
+
       const merge = await githubService.apiRequest<any>({
         method: "PUT",
         path: `/repos/${repo.owner}/${repo.name}/pulls/${Number(row.github_pr_number)}/merge`,
-        body: {
-          merge_method: args.method
-        }
+        body: mergeBody
       });
 
       const mergeCommitSha = asString(merge.data?.sha) || null;
@@ -5284,7 +5702,12 @@ export function createPrService({
       const userMsg = formatMergeError(rawMsg);
 
       if (args.bypassRules && shouldAttemptAdminMergeForRestError(rawMsg, { allowForceMerge: true })) {
-        const adminAttempt = await attemptAdminMerge({ row, method: args.method });
+        const adminAttempt = await attemptAdminMerge({
+          row,
+          method: args.method,
+          commitTitle: args.commitTitle,
+          commitBody: args.commitBody,
+        });
         if (adminAttempt.success) {
           const cleanup = await runPostMergeCleanup({
             prId: row.id,
@@ -5319,6 +5742,121 @@ export function createPrService({
       body: { base: baseBranch }
     });
     await refreshOne(prId);
+  };
+
+  /**
+   * Bring a PR's head branch up to date with its base.
+   * - `merge`  → GitHub's `update-branch` API (merge commit, no force-push).
+   * - `rebase` → ADE's local lane rebase-onto-base + `--force-with-lease` push,
+   *              reusing `laneService.rebaseStart`/`rebasePush`. On conflict the
+   *              rebase auto-aborts and we report `hasConflicts` so the renderer
+   *              can launch the existing resolver.
+   */
+  const updateBranch = async (args: UpdateBranchArgs): Promise<UpdateBranchResult> => {
+    const row = getRow(args.prId);
+    if (!row) throw new Error(`PR not found: ${args.prId}`);
+    const repo: GitHubRepoRef = { owner: row.repo_owner, name: row.repo_name };
+    const prNumber = Number(row.github_pr_number);
+    const baseResult = (
+      success: boolean,
+      extra: Partial<UpdateBranchResult> = {},
+    ): UpdateBranchResult => ({
+      prId: args.prId,
+      success,
+      strategy: args.strategy,
+      headSha: null,
+      hasConflicts: false,
+      error: null,
+      ...extra,
+    });
+
+    if (args.strategy === "merge") {
+      try {
+        const body: Record<string, unknown> = {};
+        if (args.expectedHeadSha?.trim()) body.expected_head_sha = args.expectedHeadSha.trim();
+        await githubService.apiRequest<any>({
+          method: "PUT",
+          path: `/repos/${repo.owner}/${repo.name}/pulls/${prNumber}/update-branch`,
+          body,
+        });
+        // 202 Accepted: GitHub queues the update asynchronously. Re-fetch to
+        // surface the new head once it lands; fall back to the prior head sha.
+        const refreshed = await fetchPr(repo, prNumber).catch(() => null);
+        const headSha = asString(refreshed?.head?.sha).trim() || null;
+        invalidateGithubSnapshotCache();
+        await refreshOne(args.prId).catch(() => null);
+        return baseResult(true, { headSha });
+      } catch (error) {
+        const rawMsg = getErrorMessage(error);
+        // 422 from update-branch means the merge would conflict or the branch is
+        // not behind — surface as a conflict so the UI can route to resolution.
+        if (rawMsg.includes("422") || /merge conflict|not ahead|cannot be updated/i.test(rawMsg)) {
+          return baseResult(false, { hasConflicts: true, error: rawMsg });
+        }
+        return baseResult(false, { error: rawMsg });
+      }
+    }
+
+    // strategy === "rebase": reuse the lane rebase pipeline (rebase onto
+    // origin/<base>, then force-with-lease push). Requires a local lane.
+    const laneId = asString(row.lane_id).trim();
+    if (!laneId) {
+      return baseResult(false, {
+        error: "This PR is not mapped to an ADE lane, so it can't be rebased locally. Update via merge instead.",
+      });
+    }
+
+    let runResult: Awaited<ReturnType<typeof laneService.rebaseStart>>;
+    try {
+      runResult = await laneService.rebaseStart({
+        laneId,
+        scope: "lane_only",
+        pushMode: "none",
+        actor: "user",
+        reason: "pr_update_branch",
+      });
+    } catch (error) {
+      return baseResult(false, { error: getErrorMessage(error) });
+    }
+
+    const run = runResult.run;
+    const laneItem = run.lanes.find((entry) => entry.laneId === laneId) ?? run.lanes[0] ?? null;
+
+    if (laneItem?.status === "conflict") {
+      // rebaseStart already ran `git rebase --abort`; the worktree is clean.
+      return baseResult(false, {
+        hasConflicts: true,
+        headSha: laneItem.postHeadSha ?? null,
+        error: laneItem.error ?? run.error ?? "Rebase hit conflicts.",
+      });
+    }
+
+    if (run.state === "failed" || laneItem?.status === "blocked") {
+      return baseResult(false, {
+        error: laneItem?.error ?? run.error ?? "Rebase failed.",
+      });
+    }
+
+    // Nothing to do (already up to date) — succeed with the unchanged head.
+    if (laneItem?.status === "skipped") {
+      invalidateGithubSnapshotCache();
+      await refreshOne(args.prId).catch(() => null);
+      return baseResult(true, { headSha: laneItem.postHeadSha ?? null });
+    }
+
+    // Clean rebase → force-push the rebased lane.
+    try {
+      const pushed = await laneService.rebasePush({ runId: run.runId, laneIds: [laneId] });
+      const pushedLane = pushed.lanes.find((entry) => entry.laneId === laneId) ?? null;
+      invalidateGithubSnapshotCache();
+      await refreshOne(args.prId).catch(() => null);
+      return baseResult(true, { headSha: pushedLane?.postHeadSha ?? laneItem?.postHeadSha ?? null });
+    } catch (error) {
+      return baseResult(false, {
+        headSha: laneItem?.postHeadSha ?? null,
+        error: `Rebase succeeded but the force-push failed: ${getErrorMessage(error)}`,
+      });
+    }
   };
 
   const landStack = async (args: LandStackArgs): Promise<LandResult[]> => {
@@ -8128,6 +8666,10 @@ export function createPrService({
       await retargetBase(prId, baseBranch);
     },
 
+    async updateBranch(args: UpdateBranchArgs): Promise<UpdateBranchResult> {
+      return await updateBranch(args);
+    },
+
     async openInGitHub(prId: string): Promise<void> {
       const row = getRow(prId);
       if (!row) throw new Error(`PR not found: ${prId}`);
@@ -8353,6 +8895,10 @@ export function createPrService({
       return await getCommitsSnapshotByCoords(coords);
     },
 
+    async getStatusByGithub(coords: PrGithubCoords): Promise<PrStatus> {
+      return await getStatusByCoords(coords);
+    },
+
     async getChecksByGithub(coords: PrGithubCoords): Promise<PrCheck[]> {
       return await getChecksByCoords(coords);
     },
@@ -8532,12 +9078,7 @@ export function createPrService({
     },
 
     async postReviewComment(args: PostPrReviewCommentArgs): Promise<PrReviewThreadComment> {
-      const row = requireRow(args.prId);
-      const repo = repoFromRow(row);
-      const threads = await fetchReviewThreads(repo, Number(row.github_pr_number));
-      if (!threads.some((t) => t.id === args.threadId)) {
-        throw new Error(`Thread ${args.threadId} does not belong to PR ${args.prId}`);
-      }
+      await assertThreadBelongsToPr(args.prId, args.threadId);
       const data = await graphqlRequest<{
         addPullRequestReviewThreadReply?: {
           comment?: {
@@ -8582,12 +9123,7 @@ export function createPrService({
     },
 
     async setReviewThreadResolved(args: SetPrReviewThreadResolvedArgs): Promise<SetPrReviewThreadResolvedResult> {
-      const row = requireRow(args.prId);
-      const repo = repoFromRow(row);
-      const threads = await fetchReviewThreads(repo, Number(row.github_pr_number));
-      if (!threads.some((t) => t.id === args.threadId)) {
-        throw new Error(`Thread ${args.threadId} does not belong to PR ${args.prId}`);
-      }
+      await assertThreadBelongsToPr(args.prId, args.threadId);
       if (args.resolved) {
         const data = await graphqlRequest<{
           resolveReviewThread?: { thread?: { id?: unknown; isResolved?: unknown } | null } | null;
@@ -8632,7 +9168,9 @@ export function createPrService({
       // comments, or review threads — validating ownership for every node type
       // would require an extra GraphQL round-trip per click and offers little
       // defense given the user already has write access to the PR's comments.
-      requireRow(args.prId);
+      // Unmapped GitHub-tab PRs carry a synthetic "gh:" id with no row — the
+      // reaction keys on the global commentId, so skip the row gate for those.
+      if (!parseSyntheticGithubPrId(args.prId)) requireRow(args.prId);
       const contentEnum = reactionToGraphqlEnum(args.content);
       await graphqlRequest(
         `
@@ -9162,18 +9700,27 @@ export function createPrService({
     const isDraft = state === "draft";
     const isClosedOrMerged = state === "closed" || state === "merged";
     const checksFailing = pr.checksStatus === "failing";
+    const hasConflicts = pr.mergeConflicts === true;
+    const behindBy = Math.max(0, Number(pr.behindBaseBy ?? 0) || 0);
+    // PrSummary doesn't carry the live GraphQL merge box, so we derive the
+    // reason from the cheap signals it does have. Keep defensive: a PR row may
+    // not have mergeConflicts/behindBaseBy computed yet.
     let mergeBlockedReason: string | null = null;
     if (isDraft) {
       mergeBlockedReason = "Draft PRs cannot be merged until marked ready for review.";
-    } else if (checksFailing) {
-      mergeBlockedReason = "Required checks are failing.";
     } else if (isClosedOrMerged) {
       mergeBlockedReason = `PR is already ${state}.`;
+    } else if (hasConflicts) {
+      mergeBlockedReason = "This branch has conflicts that must be resolved.";
+    } else if (checksFailing) {
+      mergeBlockedReason = "Required checks are failing.";
+    } else if (behindBy > 0) {
+      mergeBlockedReason = `The head branch is ${behindBy} commit${behindBy === 1 ? "" : "s"} behind the base branch.`;
     }
     return {
       prId: pr.id,
       canOpenInGithub: true,
-      canMerge: isOpen && !checksFailing,
+      canMerge: isOpen && !checksFailing && !hasConflicts,
       canClose: isOpen || isDraft,
       canReopen: state === "closed",
       canRequestReviewers: isOpen || isDraft,
@@ -9182,6 +9729,10 @@ export function createPrService({
       canUpdateDescription: state !== "merged",
       canDelete: true,
       mergeBlockedReason,
+      // PrSummary has no live merge-box state; leave mergeStateStatus/canBypass
+      // for the per-PR status fetch (computeStatus) to populate on demand.
+      mergeStateStatus: null,
+      canUpdateBranch: (isOpen || isDraft) && behindBy > 0,
       requiresLive: true,
     };
   }

@@ -215,29 +215,56 @@ describe("PrReviewThreadCard", () => {
     expect(card.style.outline).toContain("2px solid");
   });
 
+  it("renders the diff-hunk context block when the thread carries a diff hunk", () => {
+    // GitHub attaches `diff_hunk` to each inline comment; the card reads it off
+    // the first comment (PrReviewThreadComment.diffHunk).
+    const { container } = renderCard({
+      comments: [
+        {
+          id: "comment-1",
+          author: "reviewer",
+          authorAvatarUrl: null,
+          body: "Please tighten this logic.",
+          url: null,
+          diffHunk: "@@ -10,3 +10,4 @@\n const a = 1;\n-const b = 2;\n+const b = 3;",
+          createdAt: "2026-04-14T10:00:00.000Z",
+          updatedAt: null,
+        },
+      ],
+    });
+    const hunk = container.querySelector("[data-pr-thread-diff-hunk]");
+    expect(hunk).toBeTruthy();
+    expect(screen.getByText("@@ -10,3 +10,4 @@")).toBeTruthy();
+    expect(screen.getByText("+const b = 3;")).toBeTruthy();
+    expect(screen.getByText("-const b = 2;")).toBeTruthy();
+  });
+
+  it("renders no diff-hunk block when the thread has no hunk", () => {
+    const { container } = renderCard();
+    expect(container.querySelector("[data-pr-thread-diff-hunk]")).toBeNull();
+  });
+
   describe("when the PR is unmapped (laneId is null)", () => {
-    it("hides Reply / Resolve write affordances but stays readable", () => {
+    it("still shows Reply / Resolve write affordances (they work via the synthetic gh: prId)", () => {
       renderCard({}, { laneId: null });
-      // Thread content remains visible and the read-only diff link survives.
       expect(screen.getByText(/please tighten this logic/i)).toBeTruthy();
       expect(screen.getByRole("button", { name: /view file diff/i })).toBeTruthy();
-      // Write affordances are gone.
-      expect(screen.queryByRole("button", { name: /^reply$/i })).toBeNull();
-      expect(screen.queryByRole("button", { name: /resolve/i })).toBeNull();
-      expect(screen.queryByRole("button", { name: /unresolve/i })).toBeNull();
-      expect(screen.queryByRole("button", { name: /add reaction/i })).toBeNull();
+      // Thread mutations key on the global GraphQL node id, so reply/resolve work
+      // for unmapped GitHub-tab PRs too — the affordances stay available.
+      expect(screen.getByRole("button", { name: /^reply$/i })).toBeTruthy();
+      expect(screen.getByRole("button", { name: /resolve|unresolve/i })).toBeTruthy();
     });
 
-    it("no-ops the 'r' and 'x' keyboard shortcuts without calling bridges", async () => {
+    it("the 'r' shortcut opens the reply box and 'x' toggles resolve", async () => {
       const { container } = renderCard({}, { laneId: null });
       const card = container.querySelector("[data-pr-review-thread-card]") as HTMLElement;
 
       fireEvent.keyDown(card, { key: "r" });
-      expect(screen.queryByPlaceholderText(/reply/i)).toBeNull();
+      expect(screen.getByPlaceholderText(/reply/i)).toBeTruthy();
 
       fireEvent.keyDown(card, { key: "x" });
       await Promise.resolve();
-      expect(setReviewThreadResolved).not.toHaveBeenCalled();
+      expect(setReviewThreadResolved).toHaveBeenCalled();
     });
   });
 });

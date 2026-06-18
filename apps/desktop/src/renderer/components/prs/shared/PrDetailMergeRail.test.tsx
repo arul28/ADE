@@ -42,12 +42,13 @@ function makeStatus(overrides: Partial<PrStatus> = {}): PrStatus {
     isMergeable: true,
     mergeConflicts: false,
     behindBaseBy: 0,
+    mergeStateStatus: "clean",
     ...overrides,
   };
 }
 
 describe("PrDetailMergeRail", () => {
-  it("merges with the selected method", () => {
+  it("opens the merge dialog and merges with the remembered method + commit fields", () => {
     const onMerge = vi.fn();
     render(
       <PrDetailMergeRail
@@ -61,28 +62,52 @@ describe("PrDetailMergeRail", () => {
       />,
     );
 
+    // Rail shows the readiness checklist + a single "Merge…" button (no inline dropdown).
+    expect(screen.getByTestId("pr-merge-checklist")).toBeTruthy();
+    fireEvent.click(screen.getByTestId("pr-merge-open-dialog-button"));
+
+    // The portaled dialog hosts the actual merge button.
     fireEvent.click(screen.getByTestId("pr-merge-primary-button"));
-    expect(onMerge).toHaveBeenCalledWith("squash", { bypassRules: false });
+    expect(onMerge).toHaveBeenCalledTimes(1);
+    const [method, options] = onMerge.mock.calls[0]!;
+    expect(method).toBe("squash");
+    expect(options?.bypassRules).toBe(false);
+    expect(options?.commitTitle).toBe("Test PR (#42)");
   });
 
-  it("shows blocked reasons and passes bypassRules when enabled", () => {
-    const onMerge = vi.fn();
+  it("renders the blocked header when merge requirements are unmet", () => {
     render(
       <PrDetailMergeRail
         pr={makePr()}
-        status={makeStatus({ isMergeable: false, reviewStatus: "requested" })}
+        status={makeStatus({ isMergeable: false, mergeStateStatus: "blocked", reviewDecision: "review_required" })}
         checks={[]}
         reviews={[]}
         mergeMethod="merge"
         actionBusy={false}
-        onMerge={onMerge}
+        onMerge={() => {}}
       />,
     );
 
     expect(screen.getByTestId("pr-merge-blocked")).toBeTruthy();
-    fireEvent.click(screen.getByRole("checkbox"));
-    fireEvent.click(screen.getByTestId("pr-merge-primary-button"));
-    expect(onMerge).toHaveBeenCalledWith("merge", { bypassRules: true });
+  });
+
+  it("offers the inline update-branch action when behind base", () => {
+    const onUpdateBranch = vi.fn();
+    render(
+      <PrDetailMergeRail
+        pr={makePr()}
+        status={makeStatus({ mergeStateStatus: "behind", behindBaseBy: 3 })}
+        checks={[]}
+        reviews={[]}
+        mergeMethod="squash"
+        actionBusy={false}
+        onMerge={() => {}}
+        onUpdateBranch={onUpdateBranch}
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId("pr-merge-update-branch"));
+    expect(onUpdateBranch).toHaveBeenCalledWith("merge");
   });
 
   it("shows merged banner and delete branch action", () => {

@@ -5434,11 +5434,25 @@ final class SyncService: ObservableObject {
     _ = try await sendCommand(action: "prs.createFromLane", args: args)
   }
 
-  func mergePullRequest(prId: String, method: String) async throws {
-    _ = try await sendCommand(action: "prs.land", args: [
+  func mergePullRequest(
+    prId: String,
+    method: String,
+    bypassRules: Bool = false,
+    commitTitle: String? = nil,
+    commitBody: String? = nil,
+    expectedHeadSha: String? = nil
+  ) async throws {
+    var args: [String: Any] = [
       "prId": prId,
       "method": method,
-    ])
+    ]
+    if bypassRules { args["bypassRules"] = true }
+    // Commit title/body are ignored by the host for the `rebase` method; only
+    // forward non-empty values so squash/merge get GitHub-fidelity messages.
+    if let commitTitle, !commitTitle.isEmpty { args["commitTitle"] = commitTitle }
+    if let commitBody, !commitBody.isEmpty { args["commitBody"] = commitBody }
+    if let expectedHeadSha, !expectedHeadSha.isEmpty { args["expectedHeadSha"] = expectedHeadSha }
+    _ = try await sendCommand(action: "prs.land", args: args)
   }
 
   func closePullRequest(prId: String) async throws {

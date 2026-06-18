@@ -1,6 +1,6 @@
 import { memo, useRef, type CSSProperties } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { GitCommit } from "@phosphor-icons/react";
+import { ArrowsClockwise, GitCommit } from "@phosphor-icons/react";
 
 import { COLORS, MONO_FONT, SANS_FONT } from "../../lanes/laneDesignTokens";
 import { relativeWhen } from "../../../lib/format";
@@ -13,6 +13,8 @@ export type PrCommitRailCommit = {
   authoredAt: string;
   threadCount: number;
   resolvedCount: number;
+  /** True for the force-push entry (a branch action, not a real commit). */
+  forcePushed?: boolean;
 };
 
 export type PrCommitRailProps = {
@@ -172,15 +174,25 @@ function CommitRow({
       data-testid="pr-commit-rail-row"
     >
       <div className="flex items-center gap-2">
-        <span
-          className="text-[10px] font-semibold"
-          style={{
-            color: isActive ? COLORS.accent : COLORS.textMuted,
-            fontFamily: MONO_FONT,
-          }}
-        >
-          {commit.shortSha}
-        </span>
+        {commit.forcePushed ? (
+          <span
+            className="inline-flex items-center gap-1 text-[10px] font-semibold"
+            style={{ color: isActive ? COLORS.accent : COLORS.textMuted, fontFamily: SANS_FONT }}
+          >
+            <ArrowsClockwise size={11} weight="bold" />
+            Force-push
+          </span>
+        ) : (
+          <span
+            className="text-[10px] font-semibold"
+            style={{
+              color: isActive ? COLORS.accent : COLORS.textMuted,
+              fontFamily: MONO_FONT,
+            }}
+          >
+            {commit.shortSha}
+          </span>
+        )}
         <span
           className="ml-auto text-[10px]"
           style={{ color: COLORS.textDim, fontFamily: SANS_FONT }}

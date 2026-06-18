@@ -221,6 +221,8 @@ import type {
   SimulateIntegrationArgs,
   UpdatePrDescriptionArgs,
   LandPrArgs,
+  UpdateBranchArgs,
+  UpdateBranchResult,
   LandStackArgs,
   GetLaneConflictStatusArgs,
   GetDiffChangesArgs,
@@ -8244,6 +8246,13 @@ export function registerIpc({
     return result;
   });
 
+  ipcMain.handle(IPC.prsUpdateBranch, async (_event, arg: UpdateBranchArgs): Promise<UpdateBranchResult> => {
+    const ctx = ensurePrMutationContext();
+    const result = await ctx.prService.updateBranch(arg);
+    ctx.prPollingService.poke();
+    return result;
+  });
+
   ipcMain.handle(IPC.prsLandStack, async (_event, arg: LandStackArgs): Promise<LandResult[]> => {
     const ctx = ensurePrMutationContext();
     const result = await ctx.prService.landStack(arg);
@@ -8706,6 +8715,14 @@ export function registerIpc({
   });
   ipcMain.handle(IPC.prsGetActivityByGithub, (_e, coords: PrGithubCoords) => {
     return ensurePrReadContext().prService.getActivityByGithub(coords);
+  });
+  ipcMain.handle(IPC.prsGetStatusByGithub, async (_e, coords: PrGithubCoords): Promise<PrStatus | null> => {
+    try {
+      return await ensurePrReadContext().prService.getStatusByGithub(coords);
+    } catch (err) {
+      if (err instanceof Error && err.message.includes("PR not found")) return null;
+      throw err;
+    }
   });
   ipcMain.handle(IPC.prsGetChecksByGithub, async (_e, coords: PrGithubCoords): Promise<PrCheck[]> => {
     try {

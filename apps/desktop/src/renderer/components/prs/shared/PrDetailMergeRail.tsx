@@ -1,32 +1,62 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
 import {
-  CaretDown,
-  CheckCircle,
   GitMerge,
-  Terminal,
   Trash,
-  Warning,
   XCircle,
 } from "@phosphor-icons/react";
 
-import type { MergeMethod, PrCheck, PrReview, PrStatus, PrWithConflicts } from "../../../../shared/types/prs";
-import { COLORS, MONO_FONT, SANS_FONT } from "../../lanes/laneDesignTokens";
-import {
-  buildMergeCommandLineInstructions,
-  canAttemptMerge,
-  deriveMergeBlockers,
-  mergeMethodLabel,
-  mergeMethodShortLabel,
-} from "./prMergeRailUtils";
+import type {
+  MergeMethod,
+  PrCheck,
+  PrCommit,
+  PrReview,
+  PrStatus,
+  PrWithConflicts,
+  UpdateBranchStrategy,
+} from "../../../../shared/types/prs";
+import { COLORS, SANS_FONT } from "../../lanes/laneDesignTokens";
+import { canAttemptMerge } from "./prMergeRailUtils";
+import { PrMergeChecklist } from "./PrMergeChecklist";
+import { PrMergeDialog, type PrMergeDialogResult } from "./PrMergeDialog";
+
+/** localStorage key for the remembered merge method (dialog default). */
+const LAST_MERGE_METHOD_KEY = "ade:prs:lastMergeMethod";
+
+function readLastMergeMethod(fallback: MergeMethod): MergeMethod {
+  try {
+    const raw = window.localStorage.getItem(LAST_MERGE_METHOD_KEY);
+    if (raw === "squash" || raw === "merge" || raw === "rebase") return raw;
+  } catch {
+    // localStorage can be unavailable in private/test environments.
+  }
+  return fallback;
+}
+
+function writeLastMergeMethod(method: MergeMethod): void {
+  try {
+    window.localStorage.setItem(LAST_MERGE_METHOD_KEY, method);
+  } catch {
+    // ignore
+  }
+}
 
 export type PrDetailMergeRailProps = {
   pr: PrWithConflicts;
   status: PrStatus | null;
   checks: PrCheck[];
   reviews: PrReview[];
+  commits?: PrCommit[];
   mergeMethod: MergeMethod;
   actionBusy: boolean;
-  onMerge: (method: MergeMethod, options?: { bypassRules?: boolean }) => void;
+  onMerge: (method: MergeMethod, options?: {
+    bypassRules?: boolean;
+    commitTitle?: string;
+    commitBody?: string;
+    expectedHeadSha?: string;
+  }) => void;
+  onUpdateBranch?: (strategy: UpdateBranchStrategy) => void;
+  updateBranchBusy?: boolean;
+  updateBranchNotice?: { tone: "success" | "error"; text: string } | null;
   onDeleteBranch?: () => void;
   deleteBranchBusy?: boolean;
   onOpenManageLane?: () => void;
@@ -34,29 +64,28 @@ export type PrDetailMergeRailProps = {
   onReopen?: () => void;
 };
 
-const MERGE_METHODS: MergeMethod[] = ["squash", "merge", "rebase"];
-
 export const PrDetailMergeRail = memo(function PrDetailMergeRail({
   pr,
   status,
   checks,
   reviews,
+  commits = [],
   mergeMethod,
   actionBusy,
   onMerge,
+  onUpdateBranch,
+  updateBranchBusy = false,
+  updateBranchNotice = null,
   onDeleteBranch,
   deleteBranchBusy = false,
   onOpenManageLane,
   onClose,
   onReopen,
 }: PrDetailMergeRailProps) {
-  const [localMergeMethod, setLocalMergeMethod] = useState<MergeMethod>(mergeMethod);
-  const [bypassRules, setBypassRules] = useState(false);
-  const [menuOpen, setMenuOpen] = useState(false);
-  const [showCliInstructions, setShowCliInstructions] = useState(false);
+  const [dialogOpen, setDialogOpen] = useState(false);
+  const [defaultMethod, setDefaultMethod] = useState<MergeMethod>(() => readLastMergeMethod(mergeMethod));
   const [deleteBranchArmed, setDeleteBranchArmed] = useState(false);
   const [closePrArmed, setClosePrArmed] = useState(false);
-  const menuRef = useRef<HTMLDivElement | null>(null);
   const deleteBranchArmTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const closePrArmTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -95,50 +124,36 @@ export const PrDetailMergeRail = memo(function PrDetailMergeRail({
     setClosePrArmed(false);
   }, [pr.id]);
 
-  useEffect(() => {
-    setLocalMergeMethod(mergeMethod);
-  }, [mergeMethod]);
-
-  const blockers = useMemo(
-    () => deriveMergeBlockers({ pr, status, checks, reviews }),
-    [pr, status, checks, reviews],
-  );
-  const mergeEnabled = canAttemptMerge({ pr, status, bypassRules });
+  const mergeEnabled = canAttemptMerge({ pr, status, bypassRules: false })
+    || (Boolean(status?.canBypass) && status?.mergeStateStatus === "blocked");
   const isMerged = pr.state === "merged";
   const isClosed = pr.state === "closed";
   const isTerminal = isMerged || isClosed;
-  const showBypass = !isMerged && !isClosed && pr.state !== "draft" && Boolean(status) && !status?.isMergeable && !status?.mergeConflicts;
 
   const handleRailClick = useCallback(() => {
     if (!onOpenManageLane || !pr.laneId) return;
     onOpenManageLane();
   }, [onOpenManageLane, pr.laneId]);
 
-  useEffect(() => {
-    if (!showBypass) setBypassRules(false);
-  }, [showBypass]);
+  const handleMethodChange = useCallback((method: MergeMethod) => {
+    setDefaultMethod(method);
+    writeLastMergeMethod(method);
+  }, []);
 
-  useEffect(() => {
-    if (!menuOpen) return;
-    const onPointerDown = (event: MouseEvent) => {
-      if (!menuRef.current?.contains(event.target as Node)) setMenuOpen(false);
-    };
-    document.addEventListener("mousedown", onPointerDown);
-    return () => document.removeEventListener("mousedown", onPointerDown);
-  }, [menuOpen]);
-
-  const cliInstructions = buildMergeCommandLineInstructions({
-    repoOwner: pr.repoOwner,
-    repoName: pr.repoName,
-    prNumber: pr.githubPrNumber,
-    method: localMergeMethod,
-    bypassRules,
-  });
-
-  const handleMerge = useCallback(() => {
-    if (!mergeEnabled || actionBusy) return;
-    onMerge(localMergeMethod, { bypassRules });
-  }, [actionBusy, bypassRules, localMergeMethod, mergeEnabled, onMerge]);
+  const handleDialogMerge = useCallback(
+    (result: PrMergeDialogResult) => {
+      writeLastMergeMethod(result.method);
+      setDefaultMethod(result.method);
+      onMerge(result.method, {
+        bypassRules: result.bypassRules,
+        commitTitle: result.commitTitle,
+        commitBody: result.commitBody,
+        expectedHeadSha: result.expectedHeadSha,
+      });
+      setDialogOpen(false);
+    },
+    [onMerge],
+  );
 
   if (isTerminal) {
     return (
@@ -255,159 +270,69 @@ export const PrDetailMergeRail = memo(function PrDetailMergeRail({
       style={{ background: "transparent" }}
     >
       <div className="overflow-y-auto">
+        <PrMergeChecklist
+          pr={pr}
+          status={status}
+          checks={checks}
+          reviews={reviews}
+          onUpdateBranch={onUpdateBranch}
+          updateBranchBusy={updateBranchBusy}
+          updateBranchNotice={updateBranchNotice}
+        />
 
-        <div className="px-3 py-3">
-          {blockers.length > 0 ? (
-              <div data-testid="pr-merge-blocked">
-                <div className="mb-2 flex items-center gap-1.5 text-[12px] font-semibold" style={{ color: COLORS.danger, fontFamily: SANS_FONT }}>
-                  <Warning size={14} weight="fill" />
-                  Merging is blocked
-                </div>
-                <ul className="flex list-disc flex-col gap-1 pl-4">
-                  {blockers.map((blocker) => (
-                    <li key={blocker.id} className="text-[11px]" style={{ color: COLORS.textSecondary, fontFamily: SANS_FONT }}>
-                      {blocker.label}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            ) : status?.isMergeable ? (
-              <div className="flex items-center gap-1.5 text-[12px] font-semibold" style={{ color: COLORS.success, fontFamily: SANS_FONT }}>
-                <CheckCircle size={14} weight="fill" />
-                Ready to merge
-              </div>
-            ) : (
-              <div className="text-[12px]" style={{ color: COLORS.textMuted, fontFamily: SANS_FONT }}>
-                Checking mergeability…
-              </div>
-            )}
+        <div className="px-3 pb-3">
+          <button
+            type="button"
+            disabled={!mergeEnabled || actionBusy}
+            onClick={() => setDialogOpen(true)}
+            className="inline-flex min-h-8 w-full items-center justify-center gap-1.5 rounded-md px-3 text-[11px] font-semibold"
+            style={{
+              color: mergeEnabled ? "#fff" : COLORS.textMuted,
+              background: mergeEnabled
+                ? `linear-gradient(135deg, ${COLORS.success} 0%, #16a34a 100%)`
+                : COLORS.recessedBg,
+              border: `1px solid ${mergeEnabled ? COLORS.success : COLORS.border}`,
+              opacity: actionBusy ? 0.6 : 1,
+              fontFamily: SANS_FONT,
+            }}
+            data-testid="pr-merge-open-dialog-button"
+          >
+            <GitMerge size={12} weight="bold" />
+            {actionBusy ? "Merging…" : "Merge…"}
+          </button>
 
-            {showBypass ? (
-              <label className="mt-3 flex items-start gap-2 text-[11px]" style={{ color: COLORS.textMuted, fontFamily: SANS_FONT, lineHeight: 1.45 }}>
-                <input
-                  type="checkbox"
-                  checked={bypassRules}
-                  disabled={actionBusy}
-                  onChange={(event) => setBypassRules(event.target.checked)}
-                  className="mt-0.5"
-                  style={{ accentColor: COLORS.warning }}
-                />
-                Merge without waiting for requirements to be met (bypass rules)
-              </label>
-            ) : null}
-
-            <div className="relative mt-3 flex items-stretch gap-1" ref={menuRef}>
-              <button
-                type="button"
-                disabled={!mergeEnabled || actionBusy}
-                onClick={handleMerge}
-                className="inline-flex min-h-8 flex-1 items-center justify-center gap-1.5 rounded-l-md px-3 text-[11px] font-semibold"
-                style={{
-                  color: mergeEnabled ? "#fff" : COLORS.textMuted,
-                  background: mergeEnabled
-                    ? `linear-gradient(135deg, ${COLORS.success} 0%, #16a34a 100%)`
-                    : COLORS.recessedBg,
-                  border: `1px solid ${mergeEnabled ? COLORS.success : COLORS.border}`,
-                  opacity: actionBusy ? 0.6 : 1,
-                }}
-                data-testid="pr-merge-primary-button"
-              >
-                <GitMerge size={12} weight="bold" />
-                {actionBusy ? "Merging..." : mergeMethodLabel(localMergeMethod)}
-              </button>
-              <button
-                type="button"
-                disabled={actionBusy}
-                onClick={() => setMenuOpen((open) => !open)}
-                aria-label="Choose merge method"
-                className="inline-flex w-8 items-center justify-center rounded-r-md"
-                style={{
-                  color: mergeEnabled ? "#fff" : COLORS.textMuted,
-                  background: mergeEnabled ? COLORS.success : COLORS.recessedBg,
-                  borderTop: `1px solid ${mergeEnabled ? COLORS.success : COLORS.border}`,
-                  borderRight: `1px solid ${mergeEnabled ? COLORS.success : COLORS.border}`,
-                  borderBottom: `1px solid ${mergeEnabled ? COLORS.success : COLORS.border}`,
-                  borderLeft: "none",
-                }}
-              >
-                <CaretDown size={12} weight="bold" />
-              </button>
-              {menuOpen ? (
-                <div
-                  className="absolute right-0 bottom-full z-20 mb-1 min-w-[180px] rounded-md py-1 shadow-lg"
-                  style={{
-                    background: COLORS.cardBgSolid,
-                    border: `1px solid ${COLORS.outlineBorder}`,
-                  }}
-                >
-                  {MERGE_METHODS.map((method) => (
-                    <button
-                      key={method}
-                      type="button"
-                      onClick={() => {
-                        setLocalMergeMethod(method);
-                        setMenuOpen(false);
-                      }}
-                      className="flex w-full items-center justify-between px-3 py-2 text-left text-[11px]"
-                      style={{
-                        color: localMergeMethod === method ? COLORS.accent : COLORS.textPrimary,
-                        fontFamily: SANS_FONT,
-                        background: "transparent",
-                        border: "none",
-                        cursor: "pointer",
-                      }}
-                    >
-                      {mergeMethodLabel(method)}
-                      <span style={{ color: COLORS.textDim, fontFamily: MONO_FONT }}>{mergeMethodShortLabel(method)}</span>
-                    </button>
-                  ))}
-                </div>
-              ) : null}
-            </div>
-
-            {onClose && pr.state === "open" ? (
-              <button
-                type="button"
-                disabled={actionBusy}
-                onClick={handleClosePrClick}
-                className="mt-3 inline-flex h-8 w-full items-center justify-center gap-1.5 rounded-md text-[11px] font-medium"
-                style={{
-                  color: COLORS.danger,
-                  background: "color-mix(in srgb, var(--color-error) 8%, transparent)",
-                  border: "1px solid color-mix(in srgb, var(--color-error) 30%, transparent)",
-                  opacity: actionBusy ? 0.6 : 1,
-                  fontFamily: SANS_FONT,
-                }}
-              >
-                <XCircle size={12} />
-                {closePrArmed ? "Click again to close PR" : "Close pull request"}
-              </button>
-            ) : null}
-
+          {onClose && pr.state === "open" ? (
             <button
               type="button"
-              onClick={() => setShowCliInstructions((open) => !open)}
-              className="mt-2 inline-flex items-center gap-1 text-[11px]"
-              style={{ color: COLORS.accent, fontFamily: SANS_FONT, background: "none", border: "none", cursor: "pointer" }}
+              disabled={actionBusy}
+              onClick={handleClosePrClick}
+              className="mt-3 inline-flex h-8 w-full items-center justify-center gap-1.5 rounded-md text-[11px] font-medium"
+              style={{
+                color: COLORS.danger,
+                background: "color-mix(in srgb, var(--color-error) 8%, transparent)",
+                border: "1px solid color-mix(in srgb, var(--color-error) 30%, transparent)",
+                opacity: actionBusy ? 0.6 : 1,
+                fontFamily: SANS_FONT,
+              }}
             >
-              <Terminal size={12} />
-              View command line instructions
+              <XCircle size={12} />
+              {closePrArmed ? "Click again to close PR" : "Close pull request"}
             </button>
-            {showCliInstructions ? (
-              <pre
-                className="mt-2 overflow-x-auto rounded-md px-2.5 py-2 text-[10px]"
-                style={{
-                  fontFamily: MONO_FONT,
-                  color: COLORS.textSecondary,
-                  background: COLORS.recessedBg,
-                  border: `1px solid ${COLORS.border}`,
-                }}
-              >
-                {cliInstructions}
-              </pre>
-            ) : null}
+          ) : null}
         </div>
       </div>
+
+      <PrMergeDialog
+        open={dialogOpen}
+        onOpenChange={setDialogOpen}
+        pr={pr}
+        status={status}
+        commits={commits}
+        defaultMethod={defaultMethod}
+        actionBusy={actionBusy}
+        onMerge={handleDialogMerge}
+        onMethodChange={handleMethodChange}
+      />
     </div>
   );
 });

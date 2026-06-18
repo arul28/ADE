@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  derivePrMergeReadiness,
   formatLinearStatus,
   formatPrChecks,
   formatPrComments,
+  formatPrMergeState,
   formatPrReview,
   formatPrSummary,
   formatSystemDetails,
@@ -72,6 +74,75 @@ describe("rightPaneFormatters", () => {
 
     expect(body).toContain("github   https://github.com/acme/ade/pull/7");
     expect(body).toContain("ade      https://ade-app.dev/open?type=pr&repo=acme%2Fade&number=7");
+  });
+
+  it("renders a Ready merge block when GitHub merge state is clean", () => {
+    const body = formatPrMergeState({
+      mergeStateStatus: "clean",
+      reviewDecision: "approved",
+      isMergeable: true,
+      mergeConflicts: false,
+      behindBaseBy: 0,
+    });
+
+    expect(body).toContain("Merge · Ready");
+    expect(body).toContain("✓ all requirements met");
+  });
+
+  it("lists the GitHub merge blockers in priority order", () => {
+    const readiness = derivePrMergeReadiness({
+      mergeStateStatus: "blocked",
+      reviewDecision: "review_required",
+      approvalsCount: 0,
+      requiredApprovals: 1,
+      behindBaseBy: 3,
+      mergeConflicts: false,
+      canBypass: true,
+    });
+
+    expect(readiness.headline).toBe("Blocked");
+    expect(readiness.ready).toBe(false);
+    expect(readiness.canBypass).toBe(true);
+    expect(readiness.blockers).toEqual([
+      "review required (0/1 approved)",
+      "3 commits behind base",
+    ]);
+  });
+
+  it("flags conflicts and surfaces the bypass hint when the viewer can override", () => {
+    const body = formatPrMergeState({
+      status: {
+        mergeStateStatus: "dirty",
+        mergeConflicts: true,
+        canBypass: true,
+      },
+    });
+
+    expect(body).toContain("Merge · Conflicts");
+    expect(body).toContain("✗ merge conflicts");
+    expect(body).toContain("/pr land confirm <method> bypass");
+  });
+
+  it("reports a Checking state while GitHub computes mergeability", () => {
+    const readiness = derivePrMergeReadiness({
+      mergeStateStatus: "unknown",
+      mergeabilityComputing: true,
+    });
+
+    expect(readiness.headline).toBe("Checking…");
+    expect(readiness.computing).toBe(true);
+    expect(readiness.ready).toBe(false);
+  });
+
+  it("falls back to legacy conflict/behind fields for older runtimes", () => {
+    const readiness = derivePrMergeReadiness({
+      mergeConflicts: true,
+      behindBaseBy: 2,
+    });
+
+    expect(readiness.headline).toBe("Conflicts");
+    expect(readiness.blockers).toContain("2 commits behind base");
+    expect(readiness.blockers).toContain("merge conflicts");
   });
 
   it("summarizes PR checks", () => {

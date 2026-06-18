@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import type { PrCheck, PrReview, PrStatus, PrWithConflicts } from "../../../../shared/types/prs";
+import type { PrCheck, PrCommit, PrReview, PrStatus, PrWithConflicts } from "../../../../shared/types/prs";
 import {
+  buildDefaultCommitMessage,
+  buildMergeChecklist,
   buildMergeCommandLineInstructions,
   canAttemptMerge,
   deriveMergeBlockers,
@@ -116,5 +118,146 @@ describe("prMergeRailUtils", () => {
       method: "merge",
       bypassRules: true,
     })).toBe("gh pr merge 42 --merge --admin --repo acme/repo");
+  });
+
+  it("uses mergeStateStatus to gate merge attempts when present", () => {
+    // clean → mergeable even if the legacy boolean disagrees.
+    expect(canAttemptMerge({
+      pr: makePr(),
+      status: makeStatus({ mergeStateStatus: "clean", isMergeable: false }),
+      bypassRules: false,
+    })).toBe(true);
+    // unstable (non-required checks failing) is still mergeable.
+    expect(canAttemptMerge({
+      pr: makePr(),
+      status: makeStatus({ mergeStateStatus: "unstable" }),
+      bypassRules: false,
+    })).toBe(true);
+    // blocked is not mergeable without bypass.
+    expect(canAttemptMerge({
+      pr: makePr(),
+      status: makeStatus({ mergeStateStatus: "blocked" }),
+      bypassRules: false,
+    })).toBe(false);
+    // blocked + bypass can land.
+    expect(canAttemptMerge({
+      pr: makePr(),
+      status: makeStatus({ mergeStateStatus: "blocked" }),
+      bypassRules: true,
+    })).toBe(true);
+    // dirty (conflicts) never merges, even with bypass.
+    expect(canAttemptMerge({
+      pr: makePr(),
+      status: makeStatus({ mergeStateStatus: "dirty" }),
+      bypassRules: true,
+    })).toBe(false);
+  });
+});
+
+describe("buildMergeChecklist", () => {
+  it("derives review / checks / conflict / behind rows from merge-box state", () => {
+    const checks: PrCheck[] = [{
+      name: "ci",
+      status: "completed",
+      conclusion: "success",
+      detailsUrl: null,
+      startedAt: null,
+      completedAt: null,
+    }];
+    const items = buildMergeChecklist({
+      pr: makePr(),
+      status: makeStatus({
+        mergeStateStatus: "blocked",
+        reviewDecision: "review_required",
+        approvalsCount: 0,
+        requiredApprovals: 1,
+        behindBaseBy: 2,
+        canBypass: true,
+      }),
+      checks,
+      reviews: [],
+    });
+
+    const review = items.find((i) => i.id === "review");
+    expect(review?.state).toBe("fail");
+    expect(review?.detail).toContain("0 of 1");
+
+    expect(items.find((i) => i.id === "checks")?.state).toBe("pass");
+    expect(items.find((i) => i.id === "conflicts")?.state).toBe("pass");
+
+    const behind = items.find((i) => i.id === "behind");
+    expect(behind?.state).toBe("neutral");
+    expect(behind?.label).toContain("2 commits behind");
+
+    expect(items.find((i) => i.id === "protected")?.state).toBe("neutral");
+  });
+
+  it("marks conflicts and approval as pass/fail correctly", () => {
+    const cleanItems = buildMergeChecklist({
+      pr: makePr(),
+      status: makeStatus({ mergeStateStatus: "clean", reviewDecision: "approved", approvalsCount: 1, requiredApprovals: 1 }),
+      checks: [],
+      reviews: [],
+    });
+    expect(cleanItems.find((i) => i.id === "review")?.state).toBe("pass");
+    expect(cleanItems.find((i) => i.id === "conflicts")?.label).toContain("No conflicts");
+
+    const dirtyItems = buildMergeChecklist({
+      pr: makePr(),
+      status: makeStatus({ mergeStateStatus: "dirty", mergeConflicts: true }),
+      checks: [],
+      reviews: [],
+    });
+    expect(dirtyItems.find((i) => i.id === "conflicts")?.state).toBe("fail");
+  });
+});
+
+describe("buildDefaultCommitMessage", () => {
+  const commits: PrCommit[] = [
+    { sha: "a1", shortSha: "a1", message: "First commit", author: { login: "a", name: "A", email: null }, committedDate: "" },
+    { sha: "b2", shortSha: "b2", message: "Second commit", author: { login: "b", name: "B", email: null }, committedDate: "" },
+  ];
+
+  it("squash → '<title> (#n)' with concatenated commit messages", () => {
+    const result = buildDefaultCommitMessage({
+      method: "squash",
+      prTitle: "Add feature",
+      prNumber: 7,
+      headBranch: "feature",
+      baseBranch: "main",
+      repoOwner: "acme",
+      commits,
+    });
+    expect(result.title).toBe("Add feature (#7)");
+    expect(result.body).toContain("First commit");
+    expect(result.body).toContain("Second commit");
+  });
+
+  it("merge → 'Merge pull request #n from owner/head', body = PR title", () => {
+    const result = buildDefaultCommitMessage({
+      method: "merge",
+      prTitle: "Add feature",
+      prNumber: 7,
+      headBranch: "feature",
+      baseBranch: "main",
+      repoOwner: "acme",
+      commits,
+    });
+    expect(result.title).toBe("Merge pull request #7 from acme/feature");
+    expect(result.body).toBe("Add feature");
+  });
+
+  it("rebase → empty", () => {
+    const result = buildDefaultCommitMessage({
+      method: "rebase",
+      prTitle: "Add feature",
+      prNumber: 7,
+      headBranch: "feature",
+      baseBranch: "main",
+      repoOwner: "acme",
+      commits,
+    });
+    expect(result.title).toBe("");
+    expect(result.body).toBe("");
   });
 });

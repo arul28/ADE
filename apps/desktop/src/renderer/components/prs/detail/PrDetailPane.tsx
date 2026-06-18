@@ -359,6 +359,11 @@ export function PrDetailPane({
   const [files, setFiles] = React.useState<PrFile[]>(() => initialSnapshotHydration?.files ?? []);
   const [commits, setCommits] = React.useState<PrCommit[]>(() => initialSnapshotHydration?.commits ?? []);
   const [snapshotStatus, setSnapshotStatus] = React.useState<PrStatus | null>(() => initialSnapshotHydration?.status ?? null);
+  // Latest direct mergeability re-poll for the selected PR. Used to resolve the
+  // "Checking mergeability…" spinner promptly for BOTH mapped (live-backed) and
+  // unmapped PRs — it only overrides while the base status is still computing,
+  // so it never shadows a fresher live status once GitHub settles.
+  const [polledStatus, setPolledStatus] = React.useState<PrStatus | null>(null);
   const [snapshotChecks, setSnapshotChecks] = React.useState<PrCheck[]>(() => initialSnapshotHydration?.checks ?? []);
   const [snapshotReviews, setSnapshotReviews] = React.useState<PrReview[]>(() => initialSnapshotHydration?.reviews ?? []);
   const [snapshotComments, setSnapshotComments] = React.useState<PrComment[]>(() => initialSnapshotHydration?.comments ?? []);
@@ -371,7 +376,10 @@ export function PrDetailPane({
     || snapshotChecks.length > 0
     || snapshotReviews.length > 0
     || snapshotComments.length > 0;
-  const status = liveDetailReady ? liveStatus : (hasSnapshotDetail ? snapshotStatus : liveStatus);
+  const baseStatus = liveDetailReady ? liveStatus : (hasSnapshotDetail ? snapshotStatus : liveStatus);
+  // While the base (live/snapshot) status still reports GitHub computing
+  // mergeability, prefer the latest direct re-poll result for this PR.
+  const status = polledStatus && baseStatus?.mergeabilityComputing ? polledStatus : baseStatus;
   const checks = liveDetailReady ? liveChecks : (hasSnapshotDetail ? snapshotChecks : liveChecks);
   const reviews = liveDetailReady ? liveReviews : (hasSnapshotDetail ? snapshotReviews : liveReviews);
   const comments = liveDetailReady ? liveComments : (hasSnapshotDetail ? snapshotComments : liveComments);
@@ -636,7 +644,15 @@ export function PrDetailPane({
       const actionRunsPromise = fetchActionRuns()
         .then(applyIfCurrent((value) => setActionRuns(value)))
         .catch(() => []);
-      await Promise.allSettled([detailPromise, filesPromise, commitsPromise, actionRunsPromise]);
+      // Unmapped GitHub-tab PRs have no DB row and no PrsContext live status, so
+      // fetch the live merge box by coords and feed it into snapshotStatus (which
+      // `status` falls back to). Mapped PRs get their live status from PrsContext.
+      const statusPromise = (isUnmapped && coordsRef.current && typeof window.ade.prs.getStatusByGithub === "function")
+        ? window.ade.prs.getStatusByGithub(coordsRef.current)
+            .then(applyIfCurrent((value) => { if (value) setSnapshotStatus(value); }))
+            .catch(() => null)
+        : Promise.resolve(null);
+      await Promise.allSettled([detailPromise, filesPromise, commitsPromise, actionRunsPromise, statusPromise]);
     } catch {
       // silently fail - basic data still available from context
     } finally {
@@ -644,7 +660,7 @@ export function PrDetailPane({
         snapshotPrefillPendingRef.current = false;
       }
     }
-  }, [applySnapshotHydration, fetchActionRuns, fetchCommits, fetchDetail, fetchFiles, pr.id]);
+  }, [applySnapshotHydration, fetchActionRuns, fetchCommits, fetchDetail, fetchFiles, isUnmapped, pr.id]);
 
   const refreshReviewThreads = React.useCallback(async () => {
     const requestId = detailLoadSeqRef.current;
@@ -667,6 +683,7 @@ export function PrDetailPane({
     liveDetailLoadedForPrRef.current = null;
     liveFilesLoadedForPrRef.current = null;
     liveCommitsLoadedForPrRef.current = null;
+    setPolledStatus(null); // transient re-poll value is per-PR
     const contextSnapshot = snapshotHydrationRef.current?.prId === pr.id ? snapshotHydrationRef.current : null;
     if (contextSnapshot) {
       applySnapshotHydration(contextSnapshot);
@@ -767,6 +784,51 @@ export function PrDetailPane({
     };
   }, [activeTab, fetchActionRuns, fetchActivity, fetchReviewThreadsApi, pr.id]);
 
+  // While GitHub is still computing mergeability for the selected PR, re-poll
+  // its status every ~2.5s until it resolves so the merge checklist stops
+  // showing the "Checking mergeability…" shimmer once the merge box settles.
+  // The result feeds `polledStatus`, which the status selector prefers while the
+  // base status is still computing — so this resolves the spinner for BOTH
+  // mapped (live-backed) and unmapped PRs. Bounded so it never polls forever.
+  const mergeabilityComputing = Boolean(status?.mergeabilityComputing);
+  React.useEffect(() => {
+    if (!mergeabilityComputing) return undefined;
+    // Unmapped PRs have a synthetic `gh:` id that getStatus(prId) can't resolve,
+    // so re-poll them by coords instead.
+    const pollStatus = (): Promise<PrStatus | null> => {
+      if (isUnmapped && coordsRef.current && typeof window.ade.prs.getStatusByGithub === "function") {
+        return window.ade.prs.getStatusByGithub(coordsRef.current);
+      }
+      if (typeof window.ade.prs.getStatus === "function") return window.ade.prs.getStatus(pr.id);
+      return Promise.resolve(null);
+    };
+    let cancelled = false;
+    let attempts = 0;
+    const MAX_ATTEMPTS = 24; // ~1 minute ceiling, then defer to background poll
+    const seqAtStart = detailLoadSeqRef.current;
+    const id = window.setInterval(() => {
+      if (attempts >= MAX_ATTEMPTS) {
+        window.clearInterval(id);
+        return;
+      }
+      attempts += 1;
+      pollStatus()
+        .then((next) => {
+          // Drop if cancelled, empty, or a newer detail load superseded us.
+          if (cancelled || !next || seqAtStart !== detailLoadSeqRef.current) return;
+          setPolledStatus(next);
+          if (!next.mergeabilityComputing) {
+            window.clearInterval(id);
+          }
+        })
+        .catch(() => {});
+    }, 2_500);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [mergeabilityComputing, isUnmapped, pr.id]);
+
   // ---- Action helper to reduce repetitive try/catch/finally ----
   const runAction = async (fn: () => Promise<void>) => {
     setActionBusy(true);
@@ -781,14 +843,70 @@ export function PrDetailPane({
   };
 
   // ---- Actions ----
-  const handleMerge = (method: MergeMethod, options?: { bypassRules?: boolean }) => {
+  const handleMerge = (
+    method: MergeMethod,
+    options?: {
+      bypassRules?: boolean;
+      commitTitle?: string;
+      commitBody?: string;
+      expectedHeadSha?: string;
+    },
+  ) => {
     setActionResult(null);
     return runAction(async () => {
-      const res = await window.ade.prs.land({ prId: pr.id, method, bypassRules: options?.bypassRules });
+      const res = await window.ade.prs.land({
+        prId: pr.id,
+        method,
+        bypassRules: options?.bypassRules,
+        commitTitle: options?.commitTitle,
+        commitBody: options?.commitBody,
+        expectedHeadSha: options?.expectedHeadSha,
+      });
       setActionResult(res);
       await onRefresh();
     });
   };
+
+  const [updateBranchBusy, setUpdateBranchBusy] = React.useState(false);
+  const [updateBranchNotice, setUpdateBranchNotice] = React.useState<{ tone: "success" | "error"; text: string } | null>(null);
+
+  // Reset the inline update-branch notice when switching PRs.
+  React.useEffect(() => {
+    setUpdateBranchNotice(null);
+    setUpdateBranchBusy(false);
+  }, [pr.id]);
+
+  const handleUpdateBranch = React.useCallback(
+    async (strategy: "merge" | "rebase") => {
+      setUpdateBranchBusy(true);
+      setUpdateBranchNotice(null);
+      try {
+        const result = await window.ade.prs.updateBranch({
+          prId: pr.id,
+          strategy,
+          expectedHeadSha: status?.headSha ?? undefined,
+        });
+        if (!result.success || result.error) {
+          setUpdateBranchNotice({ tone: "error", text: result.error ?? "Update branch failed." });
+        } else if (result.hasConflicts) {
+          setUpdateBranchNotice({
+            tone: "error",
+            text: "Update hit conflicts — resolve in the Rebase tab / launch resolver.",
+          });
+          if (pr.laneId && onOpenRebaseTab) onOpenRebaseTab(pr.laneId);
+        } else {
+          setUpdateBranchNotice({ tone: "success", text: "Branch updated with base." });
+        }
+        // Re-poll status + detail so the checklist refreshes off the new head.
+        await Promise.all([onRefresh({ prId: pr.id }), loadDetail({ forceLive: true })]);
+      } catch (err: unknown) {
+        setUpdateBranchNotice({ tone: "error", text: err instanceof Error ? err.message : String(err) });
+      } finally {
+        setUpdateBranchBusy(false);
+      }
+    },
+    [loadDetail, onOpenRebaseTab, onRefresh, pr.id, pr.laneId, status?.headSha],
+  );
 
   const handleDeleteBranch = () => runAction(async () => {
     await window.ade.prs.cleanupBranch({
@@ -1174,6 +1292,9 @@ export function PrDetailPane({
             labelInput={labelInput}
             setLabelInput={setLabelInput}
             onMerge={handleMerge}
+            onUpdateBranch={pr.laneId ? handleUpdateBranch : undefined}
+            updateBranchBusy={updateBranchBusy}
+            updateBranchNotice={updateBranchNotice}
             onRequestReviewers={handleRequestReviewers}
             onSetLabels={handleSetLabels}
             onDeleteBranch={pr.laneId ? handleDeleteBranch : undefined}

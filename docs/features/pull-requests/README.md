@@ -62,7 +62,7 @@ Service files (`apps/desktop/src/main/services/prs/`):
 
 | File | Responsibility |
 |------|---------------|
-| `prService.ts` | PR CRUD, GitHub sync, merge context, draft descriptions, check/review/comment hydration, cached detail snapshots (`listSnapshots`), commit snapshots (`getCommits`), integration proposals, merge-into-existing-lane adoption, merge bypass, post-merge cleanup, standalone PR branch cleanup (`cleanupBranch`), deployment listing, review-thread reply/resolve/react mutations for the timeline, the aggregate `getMobileSnapshot` that powers the iOS PRs tab, and `listOpenPullRequests` — a paginated `/repos/{owner}/{name}/pulls?state=open` fetch returning `BranchPullRequest[]` for the lane-creation branch picker. `getForLane(laneId)` resolves through `getDisplayRowForCurrentLaneBranch`: it returns the most recently updated PR whose head branch matches the lane's current branch ref, ranked open/draft → merged → closed, so a freshly merged PR still shows in lane-scoped UI instead of disappearing the moment GitHub flips the state. `getGitHubSnapshot` fetches repo PRs, backfills same-repo lane PR rows by branch, and performs a capped per-branch fallback (`head=<owner>:<branch>`) for active lane branches missing from the repo snapshot window so old merged/closed externally-created PRs can still badge lanes. On PR open, `publishLinearPrCardsForLane` combines the lane's own Linear references with `collectLinearPrIssueReferencesForLaneSessions(laneId)` — issues attached only to a chat/CLI session in the lane (via `laneService.listLinearIssuesForLaneSessions`, authoritative for sessions whose lane mirror never landed) — deduped via `dedupeLinearPrIssueReferences`, so a session-only issue still gets a PR attachment. When the optional live-status round-trip is enabled (`getLinearLiveStatusService`, gated by `ADE_LINEAR_LIVE_STATUS_ROUNDTRIP=1`) it also posts a PR-link comment back to each linked issue. See [Linear integration](../linear-integration/README.md#session-scoped-issue-attachment-and-cli-context-injection). |
+| `prService.ts` | PR CRUD, GitHub sync, merge context, draft descriptions, check/review/comment hydration, cached detail snapshots (`listSnapshots`), commit snapshots (`getCommits`), integration proposals, merge-into-existing-lane adoption, merge bypass, post-merge cleanup, standalone PR branch cleanup (`cleanupBranch`), deployment listing, review-thread reply/resolve/react mutations for the timeline, the aggregate `getMobileSnapshot` that powers the iOS PRs tab, and `listOpenPullRequests` — a paginated `/repos/{owner}/{name}/pulls?state=open` fetch returning `BranchPullRequest[]` for the lane-creation branch picker. `getForLane(laneId)` resolves through `getDisplayRowForCurrentLaneBranch`: it returns the most recently updated PR whose head branch matches the lane's current branch ref, ranked open/draft → merged → closed, so a freshly merged PR still shows in lane-scoped UI instead of disappearing the moment GitHub flips the state. `getGitHubSnapshot` fetches repo PRs, backfills same-repo lane PR rows by branch, and performs a capped per-branch fallback (`head=<owner>:<branch>`) for active lane branches missing from the repo snapshot window so old merged/closed externally-created PRs can still badge lanes. On PR open, `publishLinearPrCardsForLane` combines the lane's own Linear references with `collectLinearPrIssueReferencesForLaneSessions(laneId)` — issues attached only to a chat/CLI session in the lane (via `laneService.listLinearIssuesForLaneSessions`, authoritative for sessions whose lane mirror never landed) — deduped via `dedupeLinearPrIssueReferences`, so a session-only issue still gets a PR attachment. When the optional live-status round-trip is enabled (`getLinearLiveStatusService`, gated by `ADE_LINEAR_LIVE_STATUS_ROUNDTRIP=1`) it also posts a PR-link comment back to each linked issue. See [Linear integration](../linear-integration/README.md#session-scoped-issue-attachment-and-cli-context-injection). `computeStatus` / `getStatusByGithub` fetch the authoritative GitHub merge box over GraphQL (`mergeStateStatus`, `reviewDecision`, required/approving review counts, `viewerPermission` for bypass) and fold it into `PrStatus`; `getStatusByGithub` does the same for unmapped GitHub-tab PRs keyed only on `owner/repo#num` coords. `land` takes an editable commit title/body (`commit_title`/`commit_message`, `--subject`/`--body` on the admin retry; ignored for `rebase`) and an `expectedHeadSha` stale-head guard, and `updateBranch` brings a behind branch up to date via GitHub's `update-branch` API (`merge` strategy) or ADE's local lane rebase + force-with-lease push (`rebase` strategy, conflict-aware). Review-thread reply/resolve/react mutations work on unmapped GitHub-tab PRs through synthetic `gh:owner/repo#num` ids (`parseSyntheticGithubPrId` resolves the repo; `assertThreadBelongsToPr` still verifies thread ownership). Commit rows carry an avatar URL — the linked GitHub avatar when present, else a Gravatar identicon derived from the commit-author email. |
 | `prService.mobileSnapshot.test.ts` | Coverage for the mobile snapshot builder: stack chaining, capability gates, per-lane create eligibility, workflow-card aggregation |
 | `prService.mergeInto.test.ts` | Coverage for integration proposals that preview or adopt an existing merge target lane, including dirty-worktree handling and drift metadata. |
 | `prPollingService.ts` | 60 s polling loop, fingerprint-based change detection, notification emission. Writes `last_polled_at` per PR so callers can run delta polls on the next tick |
@@ -95,19 +95,21 @@ Renderer components (`apps/desktop/src/renderer/components/prs/`):
 | `shared/PrTimeline.tsx` | Timeline column: renders the pre-computed `PrTimelineEvent[]` from `PrDetailTimelineRails`, handles per-PR filters (`PrTimelineFilters`), and groups events |
 | `shared/PrDetailLeftRail.tsx` | Left timeline rail. Stacks the commit list (`PrCommitRail` in `layout: "pane"` mode) on top of `PrPushChecksRail`, sharing the same accent gradient that bleeds into the timeline background. |
 | `shared/PrDetailRightRail.tsx` | Right timeline rail. Splits into two resizable panels: a top `PrDetailMergeRail` (merge readiness + actions) and a bottom `PrDetailRightMetadataRail` (reviewers, labels, participants, review-submit affordance). |
-| `shared/PrDetailMergeRail.tsx` | Merge readiness panel: status pill, merge-blockers list, merge-method picker, "Merge" button, bypass-rules toggle, branch-cleanup affordance, and inline lane-management entry. Calls helpers from `prMergeRailUtils.ts` to derive blockers and merge-method labels. |
+| `shared/PrDetailMergeRail.tsx` | Merge readiness panel. Hosts the GitHub-style `PrMergeChecklist` (one row per requirement, with the inline "Update branch" split button on the behind-base row), the primary "Merge" button that opens the portaled `PrMergeDialog`, the branch-cleanup affordance, and the inline lane-management entry. Owns the per-PR live-status re-poll loop that keeps `mergeStateStatus` fresh and clears the "Checking mergeability…" state. Calls helpers from `prMergeRailUtils.ts` to build the checklist and derive merge-method labels. |
+| `shared/PrMergeDialog.tsx` | Portaled merge dialog (in `LaneDialogShell`, so its method dropdown is never clipped by the rail). Method picker (`squash` / `merge` / `rebase`, remembered default), editable commit title/body seeded from `buildDefaultCommitMessage` with a "reset to GitHub default" affordance (hidden for `rebase`), collapsible command-line instructions, a stale-head guard that re-seeds defaults if the PR head advances while open, and an admin "Override & merge" path (two-click arm/confirm) shown only when the viewer `canBypass` and the merge box is `blocked`. Returns `{ method, commitTitle, commitBody, bypassRules, expectedHeadSha }`. |
+| `shared/PrMergeChecklist.tsx` | GitHub-parity requirement checklist for the merge surface: a header pill (`Checking mergeability…` while `mergeabilityComputing`, `Draft`, `Merging is blocked`, or `Ready to merge`) over a row per requirement (conflicts, behind base, checks, review). Renders approving-review avatars on the review row and the inline update-branch split button (merge commit / rebase) on the behind row. |
 | `shared/PrDetailRightMetadataRail.tsx` | Reviewers / labels / participants metadata strip in the right rail, plus the "Request AI review" affordance (`PrRequestAiReviewDialog`) and the modal-driven review-submit flow (`PrReviewSubmitModal`). |
 | `shared/PrCommitRail.tsx` | Commit list rail. Reused inside both the left timeline rail (pane layout) and standalone surfaces (rail layout); resolves commit selection via `activeSha` + `onSelectCommit`. |
 | `shared/PrPushChecksRail.tsx` | Compact checks summary inside the left rail; renders the green "checks passing" header strip and a scrollable `PrCheckList`. |
 | `shared/prCheckList.tsx` | Pure check rendering: `PrCheckList` groups checks into `ci` / `security` / `bots` / `other` buckets and `summarizeChecks(checks)` returns the per-bucket counters used by `PrPushChecksRail` and `PrDetailMergeRail`. |
-| `shared/prMergeRailUtils.ts` | Shared merge-rail helpers: `mergeMethodLabel` / `mergeMethodShortLabel`, `canAttemptMerge`, `deriveMergeBlockers`, `buildMergeCommandLineInstructions`, `deriveParticipants`, `reviewStateForLogin`, `isBotLogin`. Consumed by the merge/metadata rails and the timeline composer plumbing. |
+| `shared/prMergeRailUtils.ts` | Shared merge-rail helpers: `mergeMethodLabel` / `mergeMethodShortLabel`, `canAttemptMerge` (prefers `status.mergeStateStatus`, falls back to the legacy boolean), `buildMergeChecklist` (the per-requirement rows driven by `mergeStateStatus` + `reviewDecision`), `buildDefaultCommitMessage` (GitHub-style default merge/squash commit title + body), `deriveMergeBlockers`, `buildMergeCommandLineInstructions`, `deriveParticipants`, `reviewStateForLogin`, `isBotLogin`. Consumed by the merge dialog, checklist, metadata rail, and the timeline composer plumbing. |
 | `shared/prUnifiedChecks.ts` | Reconciler between GitHub `PrCheck` rows and `PrActionRun.jobs`. Produces `UnifiedCheckItem[]` so the Checks sub-tab can display Actions jobs and named checks in a single list with steps + duration + details URL. |
 | `shared/PrCommentComposer.tsx` | Inline comment composer used at the bottom of the timeline view; thin wrapper around `ChatComposerShell` with Enter-to-submit semantics. |
 | `shared/PrReviewSubmitModal.tsx` | Modal that captures the optional review body and `Approve` / `Request changes` / `Comment` event before submitting through `ade.prs.submitReview`. |
 | `shared/PrRequestAiReviewDialog.tsx` | "Request AI review" launcher rendered from the metadata rail; opens `LaneDialogShell`, picks a default Codex model + reasoning, and dispatches `startReviewRun`. |
 | `shared/PrManageLaneDialogHost.tsx` | Hosts the shared `ManageLaneDialog` (delete / archive / adopt / appearance) from PR surfaces. Owns the local delete-confirmation state so the lane dialog can mount without polluting the PR detail pane. |
 | `shared/GitHubPrSearchInput.tsx`, `shared/GitHubRepoSyncBar.tsx` | Repo-PR header chrome shared by the GitHub tab and detail views: the magnifying-glass search input and the "syncing…" toolbar that drives manual snapshot refreshes. |
-| `shared/PrUserAvatar.tsx` | Shared GitHub user avatar with a fallback `UserCircle` glyph for users that don't have a cached avatar URL. |
+| `shared/PrUserAvatar.tsx` | Shared GitHub user avatar with a fallback `UserCircle` glyph for users that don't have a cached avatar URL. Commit rows without a linked GitHub account use the Gravatar identicon URL the service derives from the commit-author email (see `prService.getCommits`), so the CSP allowlist includes `gravatar.com`. |
 | `shared/PrCommandPalettes.tsx` | `g c` (commits) / `g t` (threads) / `g f` (files) palettes opened by the keyboard chord and by the timeline toolbar |
 | `shared/PrAiSummaryCard.tsx` | AI summary card above the timeline; dismissible per PR (state in `PrsContext.dismissedAiSummaries`), with a "Regenerate" action wired to `prSummaryService.regenerateSummary` |
 | `shared/PrReviewThreadCard.tsx`, `shared/PrBotReviewCard.tsx` | Rich thread cards for the timeline (bot-review collapse, reply box, resolve/react actions) |
@@ -129,7 +131,7 @@ Shared contracts:
 
 | File | Responsibility |
 |------|---------------|
-| `apps/desktop/src/shared/types/prs.ts` | PR DTOs and integration proposal contracts, including `preferredIntegrationLaneId`, `mergeIntoHeadSha`, `integrationLaneOrigin`, and `additionalInstructions` fields. `LandPrArgs.bypassRules` opts the merge into a `gh pr merge --admin` retry when GitHub rejects the standard merge. `PrTimelineEvent` carries a `pr_opened` variant with title, PR number, head/base branches, draft flag, and additions/deletions so the timeline can render the synthetic "PR opened" card at the top of every detail view. |
+| `apps/desktop/src/shared/types/prs.ts` | PR DTOs and integration proposal contracts, including `preferredIntegrationLaneId`, `mergeIntoHeadSha`, `integrationLaneOrigin`, and `additionalInstructions` fields. `MergeStateStatus` (lowercase mirror of GitHub's GraphQL merge-box enum) and `PrReviewDecision` drive the merge checklist; `PrStatus` carries `mergeStateStatus`, `reviewDecision`, `approvalsCount` / `requiredApprovals`, `mergeabilityComputing`, `canBypass`, and `headSha`. `LandPrArgs` adds `commitTitle` / `commitBody` (editable merge-commit message) and `expectedHeadSha` (stale-head guard) alongside `bypassRules`, which opts the merge into a `gh pr merge --admin` retry when GitHub rejects the standard merge. `UpdateBranchArgs` / `UpdateBranchResult` back the `merge` / `rebase` update-branch flow. `PrActionCapabilities` adds `mergeStateStatus`, `canBypass`, and `canUpdateBranch` so mobile renders the same merge state. `PrTimelineEvent` carries a `pr_opened` variant plus `lifecycle`, `cross_reference`, `renamed`, `branch_ref`, `assignment`, expanded `review_request`, and `review_dismissed` variants so the timeline reaches GitHub event parity; review-thread events now carry the full `comments` list (with `diffHunk`) and force-push commit events carry before/after SHAs. |
 | `apps/desktop/src/shared/types/git.ts` | `BranchPullRequest` (branch / prNumber / title / state / url / author / updatedAt) — the lightweight PR shape returned by `prService.listOpenPullRequests` and consumed by the branch picker without going through `PrSummary`. `GitHubAutolink` (id / keyPrefix / urlTemplate / isAlphanumeric) backs the new `ade.github.listRepoAutolinks` / `ade.github.createRepoAutolink` IPC channels. |
 | `apps/desktop/src/shared/types/conflicts.ts` | Conflict resolver DTOs; `PrepareResolverSessionArgs.additionalInstructions` is appended to generated resolver prompts. |
 | `apps/desktop/src/shared/linearMagicWords.ts` | Pure helpers for PR/commit Linear references. `linearPrMagicWord` / `buildLinearPrReference` / `ensureLinearPrReference` (single-issue magic word in the PR body), `dedupeLinearPrIssueReferences` / `ensureLinearPrReferences` (multi-issue dedupe + injection), and `renderLinearPrIssueLinkSection` / `ensureLinearPrIssueLinkSection` (the `<!-- ade:linear-links v=1 -->`-fenced "Linked Linear issues" markdown block appended to PR bodies by `prService.applyLinearPrLinkage`). |
@@ -175,6 +177,8 @@ Selected channels exposed through `preload.ts`:
 - `ade.prs.listAll`, `ade.prs.listProposals`, `ade.prs.listQueueStates`
 - `ade.prs.listOpenForRepo` — flat list of open PRs in the project's GitHub repo as `BranchPullRequest[]` (branch / number / title / state / url / author / updatedAt). Independent of `pull_requests` cache so the lane-creation branch picker can attach PR pills to branches that have no lane yet. See [features/lanes/README.md](../lanes/README.md) for the consumer.
 - `ade.prs.land`, `ade.prs.landStack`, `ade.prs.landStackEnhanced`, `ade.prs.landQueueNext`
+- `ade.prs.updateBranch` — bring a behind PR head up to date with its base (`strategy: "merge"` uses GitHub's update-branch API; `strategy: "rebase"` runs ADE's local lane rebase + force-with-lease push and reports `hasConflicts` when it can't auto-apply)
+- `ade.prs.getStatusByGithub` — live `PrStatus` (incl. the GraphQL merge box) for an unmapped GitHub-tab PR addressed by `owner/repo#num` coords, without a `pull_requests` row
 - `ade.prs.getMergeContext`, `ade.prs.getMergeContexts`, `ade.prs.listSnapshots`, `ade.prs.getStatus`, `ade.prs.getChecks`, `ade.prs.getReviews`, `ade.prs.getComments`, `ade.prs.getFiles`, `ade.prs.getCommits`
 - `ade.prs.cleanupBranch` — delete a merged/closed PR's local and/or remote branch without touching the lane (protected against deleting any primary-lane branch)
 - `ade.prs.updateDescription`, `ade.prs.updateTitle`, `ade.prs.updateBody`, `ade.prs.setLabels`, `ade.prs.requestReviewers`, `ade.prs.submitReview`, `ade.prs.close`, `ade.prs.reopen`
@@ -344,16 +348,50 @@ The PR page no longer assumes every tab loads every workflow query:
 - Background refresh updates only the stale subset using
   fingerprints, not every PR on every cycle.
 
-## Merge bypass
+## Merge flow
 
-When GitHub reports a PR as not mergeable (typically branch
-protection), ADE surfaces an explicit opt-in to attempt the merge
-anyway. The detail pane shows a checkbox when the PR is open, has
-no merge conflicts, but is flagged `isMergeable: false`. Setting
-`LandPrArgs.bypassRules = true` instructs `prService.land` to retry
-with `gh pr merge --admin` after the standard REST merge call comes
-back blocked. The merge request still goes through GitHub's merge
-API — GitHub itself decides whether the bypass is allowed.
+The merge surface mirrors GitHub's merge box. `prService.computeStatus`
+(and `getStatusByGithub` for unmapped GitHub-tab PRs) fetches the
+authoritative state over GraphQL — `mergeStateStatus`, `reviewDecision`,
+required/approving review counts, and `viewerPermission` (for the bypass
+gate) — behind the `merge-info-preview` Accept header, falling back to the
+REST-derived `isMergeable` heuristic when GraphQL is unavailable. The
+GraphQL path never blocks on the long mergeability poll: while GitHub is
+still computing (`mergeStateStatus === "unknown"` or REST `mergeable ==
+null`) the status carries `mergeabilityComputing: true` and the renderer
+re-polls, so the merge UI never gets stuck on a dead "Checking
+mergeability…" spinner.
+
+`PrMergeChecklist` renders that state as a GitHub-style requirement list
+(conflicts, behind base, checks, review) under a single header pill
+(`Checking mergeability…` / `Draft` / `Merging is blocked` / `Ready to
+merge`). The behind-base row carries an inline "Update branch" split
+button that calls `prService.updateBranch` with `strategy: "merge"`
+(GitHub's update-branch API) or `strategy: "rebase"` (ADE's local lane
+rebase onto the base + `--force-with-lease` push; on conflict the rebase
+auto-aborts and `hasConflicts` routes the user to the existing resolver).
+
+The actual merge runs through the portaled `PrMergeDialog`. It is
+mounted in `LaneDialogShell` so the method dropdown is never clipped by
+the rail. The dialog offers the method picker (remembered default), an
+editable commit title/body seeded from `buildDefaultCommitMessage` (sent
+as `commit_title` / `commit_message` on the REST merge and `--subject` /
+`--body` on the admin retry; ignored for `rebase`), collapsible
+command-line instructions, and a stale-head guard: it captures the head
+SHA on open, passes it as `expectedHeadSha` (GitHub returns 409 if the
+head advanced), and re-seeds the default commit message if the head
+changes while the dialog is open.
+
+### Admin bypass
+
+When GitHub reports the merge box as `blocked` and the viewer has bypass
+permission (`status.canBypass`, derived from `viewerPermission ===
+"ADMIN"`), the dialog shows an "Override & merge" path instead of the
+normal confirm button. It requires a deliberate two-click arm/confirm and
+sets `LandPrArgs.bypassRules = true`, which instructs `prService.land` to
+retry with `gh pr merge --admin` (carrying the same commit title/body)
+after the standard REST merge comes back blocked. The merge request still
+goes through GitHub — GitHub itself decides whether the bypass is allowed.
 
 ## Post-merge cleanup
 
@@ -455,11 +493,13 @@ depending on `prsTimelineRailsEnabled` in `PrsContext`:
 The right rail is itself split into two resizable panels via
 `react-resizable-panels`:
 
-- **Top: `PrDetailMergeRail`** — merge status pill, derived merge
-  blockers, merge-method picker (`squash` / `merge` / `rebase`), merge
-  button, command-line merge instructions, bypass-rules toggle, branch
-  cleanup affordance, lane-management entry, and (for non-open PRs)
-  reopen / close actions.
+- **Top: `PrDetailMergeRail`** — hosts the `PrMergeChecklist`
+  (requirement rows + inline update-branch split button), the primary
+  merge button that opens the portaled `PrMergeDialog` (method picker,
+  editable commit message, command-line instructions, admin override),
+  the live-status re-poll loop that clears the "Checking mergeability…"
+  state, the branch cleanup affordance, the lane-management entry, and
+  (for non-open PRs) reopen / close actions. See [Merge flow](#merge-flow).
 - **Bottom: `PrDetailRightMetadataRail`** — reviewers + labels editors,
   participants list, "Request AI review" entry (`PrRequestAiReviewDialog`),
   and the review-submit modal launcher (`PrReviewSubmitModal`).
@@ -497,14 +537,24 @@ user's last PR selection when they click the PRs tab from elsewhere.
 Event sources: `buildTimelineEvents` prepends a synthetic `pr_opened`
 event (title, PR number, head/base branches, draft flag, additions /
 deletions) before folding in description, review threads, activity
-entries (commits, comments, reviews, label changes, merges,
-deployments), and per-check status. Commits are deduplicated across
-`PrActivityEvent.commit_push` entries and the `getCommits` snapshot —
-with the activity path winning so force-push metadata survives — and
-render as a full-width "commit divider" between review / comment
-activity bands. The reconciler also derefs comments/reviews seen in
-both review-thread and activity sources by comment / review id so the
-timeline never double-renders a thread reply.
+entries, and per-check status. The activity stream reaches GitHub-event
+parity: alongside commits, comments, reviews, label changes, merges, and
+deployments it carries lifecycle changes (closed / reopened / ready /
+converted-to-draft), cross-references, renames, head/base branch ref
+changes, assignment changes, review requests and removals, and review
+dismissals. Inline review threads render as grouped "X reviewed" blocks
+(matching GitHub's merge-box framing) with the full reply chain and diff
+hunks; commits are grouped and force-push entries render "from `<a>` to
+`<b>`" with the before/after SHAs. Usernames, SHAs, and PR/issue
+references are clickable and open on github.com externally via
+`window.ade.app.openExternal`, and authors render real avatars (with the
+Gravatar identicon fallback for unlinked commit authors). Commits are
+deduplicated across `PrActivityEvent.commit_push` entries and the
+`getCommits` snapshot — with the activity path winning so force-push
+metadata survives — and render as a full-width "commit divider" between
+review / comment activity bands. The reconciler also derefs
+comments/reviews seen in both review-thread and activity sources by
+comment / review id so the timeline never double-renders a thread reply.
 
 Keyboard shortcuts (bound only when Timeline+Rails is active and the
 Overview tab is selected):
@@ -637,4 +687,15 @@ on open and re-fetches on focus or after a successful mutation.
 - **Review thread resolution uses GraphQL.** `prService`'s GraphQL
   path backs `getReviewThreads`, `replyToReviewThread`, and
   `resolveReviewThread`. The REST API does not expose all the
-  required fields.
+  required fields. These mutations also work on unmapped GitHub-tab
+  PRs that have no `pull_requests` row: the renderer addresses them by
+  a synthetic `gh:owner/repo#num` id, `parseSyntheticGithubPrId`
+  resolves the repo for the ownership check, and the mutations key on
+  the global thread / comment node id. `assertThreadBelongsToPr` still
+  confirms the thread belongs to the PR before mutating, so a
+  UI-supplied `threadId` can't target a foreign thread.
+- **`mergeStateStatus` needs the merge-info preview header.** The
+  GraphQL merge-box query passes
+  `Accept: application/vnd.github.merge-info-preview+json`; without it
+  GitHub errors with "field requires preview header" and the merge box
+  silently falls back to the REST heuristic (logged at `warn`).

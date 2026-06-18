@@ -117,6 +117,7 @@ import type {
   UpdateSessionMetaArgs,
   UpdateIntegrationProposalArgs,
   TerminalToolType,
+  UpdateBranchArgs,
   UpdateLaneAppearanceArgs,
   UpdatePrBodyArgs,
   UpdatePrTitleArgs,
@@ -1314,7 +1315,37 @@ function parseLandPrArgs(value: Record<string, unknown>): LandPrArgs {
   if (!method || !["merge", "squash", "rebase"].includes(method)) {
     throw new Error("prs.land requires method to be merge, squash, or rebase.");
   }
-  return { prId, method };
+  const bypassRules = asOptionalBoolean(value.bypassRules);
+  const archiveLane = asOptionalBoolean(value.archiveLane);
+  // Optional pass-through so the mobile/remote merge surface can drive the same
+  // bypass + editable commit-message flow as desktop (commit message ignored by
+  // the `rebase` method downstream). Strings are trimmed; blanks are dropped.
+  const commitTitle = asTrimmedString(value.commitTitle);
+  const commitBody = asTrimmedString(value.commitBody);
+  const expectedHeadSha = asTrimmedString(value.expectedHeadSha);
+  return {
+    prId,
+    method,
+    ...(bypassRules !== undefined ? { bypassRules } : {}),
+    ...(archiveLane !== undefined ? { archiveLane } : {}),
+    ...(commitTitle ? { commitTitle } : {}),
+    ...(commitBody ? { commitBody } : {}),
+    ...(expectedHeadSha ? { expectedHeadSha } : {}),
+  };
+}
+
+function parseUpdateBranchArgs(value: Record<string, unknown>): UpdateBranchArgs {
+  const prId = requirePrId(value, "prs.updateBranch");
+  const strategy = asTrimmedString(value.strategy) as UpdateBranchArgs["strategy"];
+  if (!strategy || !["merge", "rebase"].includes(strategy)) {
+    throw new Error("prs.updateBranch requires strategy to be merge or rebase.");
+  }
+  const expectedHeadSha = asTrimmedString(value.expectedHeadSha);
+  return {
+    prId,
+    strategy,
+    ...(expectedHeadSha ? { expectedHeadSha } : {}),
+  };
 }
 
 function parseClosePrArgs(value: Record<string, unknown>): ClosePrArgs {
@@ -2917,6 +2948,7 @@ function registerPrAndDeeplinkRemoteCommands({ args, register }: RemoteCommandRe
   register("prs.getCommitsByGithub", { viewerAllowed: true }, async (payload) => args.prService.getCommitsByGithub(requirePrGithubCoords(payload, "prs.getCommitsByGithub")));
   register("prs.getActionRunsByGithub", { viewerAllowed: true }, async (payload) => args.prService.getActionRunsByGithub(requirePrGithubCoords(payload, "prs.getActionRunsByGithub")));
   register("prs.getActivityByGithub", { viewerAllowed: true }, async (payload) => args.prService.getActivityByGithub(requirePrGithubCoords(payload, "prs.getActivityByGithub")));
+  register("prs.getStatusByGithub", { viewerAllowed: true }, async (payload) => args.prService.getStatusByGithub(requirePrGithubCoords(payload, "prs.getStatusByGithub")));
   register("prs.getChecksByGithub", { viewerAllowed: true }, async (payload) => args.prService.getChecksByGithub(requirePrGithubCoords(payload, "prs.getChecksByGithub")));
   register("prs.getReviewsByGithub", { viewerAllowed: true }, async (payload) => args.prService.getReviewsByGithub(requirePrGithubCoords(payload, "prs.getReviewsByGithub")));
   register("prs.getCommentsByGithub", { viewerAllowed: true }, async (payload) => args.prService.getCommentsByGithub(requirePrGithubCoords(payload, "prs.getCommentsByGithub")));
@@ -2929,6 +2961,7 @@ function registerPrAndDeeplinkRemoteCommands({ args, register }: RemoteCommandRe
   register("prs.draftDescription", { viewerAllowed: true, queueable: true }, async (payload) =>
     args.prService.draftDescription(parseDraftPrDescriptionArgs(payload)));
   register("prs.land", { viewerAllowed: true, queueable: true }, async (payload) => args.prService.land(parseLandPrArgs(payload)));
+  register("prs.updateBranch", { viewerAllowed: true, queueable: true }, async (payload) => args.prService.updateBranch(parseUpdateBranchArgs(payload)));
   register("prs.close", { viewerAllowed: true, queueable: true }, async (payload) => {
     await args.prService.closePr(parseClosePrArgs(payload));
     return { ok: true };

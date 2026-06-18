@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 // ---------------------------------------------------------------------------
@@ -1443,67 +1444,149 @@ describe("prService.getStatus", () => {
     vi.clearAllMocks();
   });
 
-  it("polls unknown GitHub mergeability before reporting and caching conflicts", async () => {
-    vi.useFakeTimers();
-    try {
-      const row = makePrRow({ id: "pr-status", github_pr_number: 90 });
-      const db = makeMockDb();
-      installPullRequestRowStore(db, [row]);
-      let pullFetches = 0;
-      const githubService = makeGithubService({
-        apiRequest: vi.fn(async (args: { path: string }) => {
-          if (args.path === "/repos/test-owner/test-repo/pulls/90") {
-            pullFetches += 1;
-            return {
-              data: makeGitHubPull({
-                number: 90,
-                html_url: row.github_url,
-                title: row.title,
-                mergeable: pullFetches === 1 ? null : false,
-                mergeable_state: pullFetches === 1 ? "unknown" : "dirty",
-                head: { ref: "my-feature", sha: "head-sha" },
-                base: { ref: "main", sha: "base-sha" },
-              }),
-            };
-          }
-          if (args.path === "/repos/test-owner/test-repo/commits/head-sha/status") {
-            return { data: { state: "success", statuses: [] } };
-          }
-          if (args.path === "/repos/test-owner/test-repo/commits/head-sha/check-runs") {
-            return { data: { check_runs: [] } };
-          }
-          if (args.path === "/repos/test-owner/test-repo/pulls/90/reviews") {
-            return { data: [] };
-          }
-          if (args.path === "/repos/test-owner/test-repo/compare/base-sha...head-sha") {
-            return { data: { behind_by: 2 } };
-          }
-          throw new Error(`Unexpected GitHub API path: ${args.path}`);
-        }),
-      });
-      const { service } = buildService({ db, githubService });
+  it("returns promptly without polling when GitHub mergeability is unknown", async () => {
+    // getStatus must stay cheap so the renderer can re-poll: it does NOT block on
+    // the long mergeability wait. When mergeability is still unknown it flags
+    // `mergeabilityComputing` and returns after a single fetch.
+    const row = makePrRow({ id: "pr-status", github_pr_number: 90 });
+    const db = makeMockDb();
+    installPullRequestRowStore(db, [row]);
+    let pullFetches = 0;
+    const githubService = makeGithubService({
+      apiRequest: vi.fn(async (args: { method?: string; path: string }) => {
+        if (args.path === "/repos/test-owner/test-repo/pulls/90") {
+          pullFetches += 1;
+          return {
+            data: makeGitHubPull({
+              number: 90,
+              html_url: row.github_url,
+              title: row.title,
+              mergeable: null,
+              mergeable_state: "unknown",
+              head: { ref: "my-feature", sha: "head-sha" },
+              base: { ref: "main", sha: "base-sha" },
+            }),
+          };
+        }
+        if (args.path === "/repos/test-owner/test-repo/commits/head-sha/status") {
+          return { data: { state: "success", statuses: [] } };
+        }
+        if (args.path === "/repos/test-owner/test-repo/commits/head-sha/check-runs") {
+          return { data: { check_runs: [] } };
+        }
+        if (args.path === "/repos/test-owner/test-repo/pulls/90/reviews") {
+          return { data: [] };
+        }
+        if (args.path === "/repos/test-owner/test-repo/compare/base-sha...head-sha") {
+          return { data: { behind_by: 2 } };
+        }
+        // Authoritative merge box still computing.
+        if (args.method === "POST" && args.path === "/graphql") {
+          return {
+            data: {
+              data: {
+                repository: {
+                  viewerPermission: "WRITE",
+                  pullRequest: {
+                    mergeable: "UNKNOWN",
+                    mergeStateStatus: "UNKNOWN",
+                    reviewDecision: null,
+                    headRefOid: "head-sha",
+                    baseRef: { branchProtectionRule: null },
+                    latestOpinionatedReviews: { nodes: [] },
+                  },
+                },
+              },
+            },
+          };
+        }
+        throw new Error(`Unexpected GitHub API path: ${args.path}`);
+      }),
+    });
+    const { service } = buildService({ db, githubService });
 
-      const statusPromise = service.getStatus("pr-status");
-      await flushMicrotasks();
-      await vi.advanceTimersByTimeAsync(500);
-      const status = await statusPromise;
+    const status = await service.getStatus("pr-status");
 
-      expect(pullFetches).toBe(2);
-      expect(status).toEqual(expect.objectContaining({
-        mergeConflicts: true,
-        behindBaseBy: 2,
-        isMergeable: false,
-      }));
-      const updateCall = db.run.mock.calls.find(([sql]: [unknown]) =>
-        String(sql).includes("update pull_requests")
-        && String(sql).includes("merge_conflicts")
-        && String(sql).includes("behind_base_by")
-      );
-      const updateParams = updateCall?.[1] as unknown[] | undefined;
-      expect(updateParams?.slice(-6)).toEqual([1, 1, 1, 2, "pr-status", "proj-1"]);
-    } finally {
-      vi.useRealTimers();
-    }
+    expect(pullFetches).toBe(1);
+    expect(status).toEqual(expect.objectContaining({
+      behindBaseBy: 2,
+      mergeStateStatus: "unknown",
+      mergeabilityComputing: true,
+      isMergeable: false,
+    }));
+  });
+
+  it("maps the authoritative GraphQL merge box into status", async () => {
+    const row = makePrRow({ id: "pr-mergebox", github_pr_number: 95 });
+    const db = makeMockDb();
+    installPullRequestRowStore(db, [row]);
+    const githubService = makeGithubService({
+      apiRequest: vi.fn(async (args: { method?: string; path: string }) => {
+        if (args.path === "/repos/test-owner/test-repo/pulls/95") {
+          return {
+            data: makeGitHubPull({
+              number: 95,
+              html_url: row.github_url,
+              title: row.title,
+              // REST mergeable disagrees; GraphQL merge box should win.
+              mergeable: false,
+              mergeable_state: "blocked",
+              head: { ref: "my-feature", sha: "head-95" },
+              base: { ref: "main", sha: "base-95" },
+            }),
+          };
+        }
+        if (args.path === "/repos/test-owner/test-repo/commits/head-95/status") {
+          return { data: { state: "success", statuses: [] } };
+        }
+        if (args.path === "/repos/test-owner/test-repo/commits/head-95/check-runs") {
+          return { data: { check_runs: [] } };
+        }
+        if (args.path === "/repos/test-owner/test-repo/pulls/95/reviews") {
+          return { data: [] };
+        }
+        if (args.path === "/repos/test-owner/test-repo/compare/base-95...head-95") {
+          return { data: { behind_by: 0 } };
+        }
+        if (args.method === "POST" && args.path === "/graphql") {
+          return {
+            data: {
+              data: {
+                repository: {
+                  viewerPermission: "ADMIN",
+                  pullRequest: {
+                    mergeable: "MERGEABLE",
+                    mergeStateStatus: "UNSTABLE",
+                    reviewDecision: "APPROVED",
+                    headRefOid: "head-95",
+                    baseRef: { branchProtectionRule: { requiredApprovingReviewCount: 1 } },
+                    latestOpinionatedReviews: {
+                      nodes: [{ state: "APPROVED" }, { state: "COMMENTED" }],
+                    },
+                  },
+                },
+              },
+            },
+          };
+        }
+        throw new Error(`Unexpected GitHub API path: ${args.path}`);
+      }),
+    });
+    const { service } = buildService({ db, githubService });
+
+    const status = await service.getStatus("pr-mergebox");
+
+    expect(status).toEqual(expect.objectContaining({
+      mergeStateStatus: "unstable",
+      reviewDecision: "approved",
+      approvalsCount: 1,
+      requiredApprovals: 1,
+      canBypass: true,
+      headSha: "head-95",
+      mergeabilityComputing: false,
+      // `unstable` is mergeable even though REST said blocked/false.
+      isMergeable: true,
+    }));
   });
 
   it("keeps behindBaseBy unknown when GitHub compare fails", async () => {
@@ -1866,7 +1949,9 @@ describe("prService coordinate-based detail (unmapped PRs)", () => {
           return { data: [{ filename: "a.ts", status: "modified", additions: 1, deletions: 0 }] };
         }
         if (args.path === "/repos/up-owner/up-repo/pulls/77/commits") {
-          return { data: [{ sha: "abcdef1", commit: { message: "fix", author: { date: "2026-01-01T00:00:00Z" } } }] };
+          // No top-level `author` (email not linked to a GitHub account) → the
+          // commit avatar must fall back to a Gravatar identicon from the email.
+          return { data: [{ sha: "abcdef1", commit: { message: "fix", author: { email: "Dev@Example.com", date: "2026-01-01T00:00:00Z" } } }] };
         }
         if (args.path === "/repos/up-owner/up-repo/actions/runs") {
           return { data: { workflow_runs: [] } };
@@ -1893,6 +1978,9 @@ describe("prService coordinate-based detail (unmapped PRs)", () => {
     const commits = await service.getCommitsByGithub(coords);
     expect(commits).toHaveLength(1);
     expect(commits[0]?.shortSha).toBe("abcdef1");
+    // Gravatar identicon fallback, keyed on the lowercased+trimmed email.
+    const gravatarHash = createHash("md5").update("dev@example.com").digest("hex");
+    expect(commits[0]?.author.avatarUrl).toBe(`https://www.gravatar.com/avatar/${gravatarHash}?d=identicon&s=80`);
 
     const runs = await service.getActionRunsByGithub(coords);
     expect(runs).toEqual([]);

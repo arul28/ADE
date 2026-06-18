@@ -301,6 +301,24 @@ struct PrDetailView: View {
     return reasons
   }
 
+  /// GitHub-style requirement checklist for the merge sheet. Mirrors desktop's
+  /// `buildMergeChecklist`, driven by the structured merge-state fields.
+  private var mergeChecklistItems: [PrMergeChecklistItem] {
+    PrMergeChecklist.build(
+      prState: snapshot?.status?.state ?? currentPr.state,
+      summaryReviewStatus: snapshot?.status?.reviewStatus ?? currentPr.reviewStatus,
+      status: snapshot?.status,
+      checks: snapshot?.checks ?? [],
+      reviews: snapshot?.reviews ?? []
+    )
+  }
+
+  /// The bypass toggle is shown ONLY when the viewer can bypass and the
+  /// merge-box state is `blocked` (branch protection). Mirrors desktop gating.
+  private var showsMergeBypassToggle: Bool {
+    canRunPrActions && PrMergeChecklist.showsBypassToggle(status: snapshot?.status, capabilities: capabilities)
+  }
+
   /// Builds the inline merge-rail model for the unified Overview thread.
   private var overviewMergeRailModel: PrOverviewMergeRailModel {
     let state = snapshot?.status?.state ?? currentPr.state
@@ -578,16 +596,24 @@ struct PrDetailView: View {
     .sheet(isPresented: $mergeMethodSheetPresented) {
       PrMergeStrategySheet(
         selected: $mergeMethod,
+        checklist: mergeChecklistItems,
         canAttemptBlockedMerge: canAttemptBlockedMerge,
-        onMerge: {
+        showsBypassToggle: showsMergeBypassToggle,
+        prTitle: currentPr.title,
+        prNumber: currentPr.githubPrNumber,
+        headBranch: currentPr.headBranch,
+        repoOwner: currentPr.repoOwner,
+        commits: snapshot?.commits ?? [],
+        onMerge: { method, bypass, commitTitle, commitBody in
+          mergeMethod = method
           mergeMethodSheetPresented = false
-          mergeCurrentPr()
+          mergeCurrentPr(bypassRules: bypass, commitTitle: commitTitle, commitBody: commitBody)
         },
         onCancel: {
           mergeMethodSheetPresented = false
         }
       )
-      .presentationDetents([.height(520)])
+      .presentationDetents([.large])
       .presentationDragIndicator(.hidden)
       .presentationBackground(.clear)
     }
@@ -1285,8 +1311,25 @@ struct PrDetailView: View {
     )
   }
 
-  private func mergeCurrentPr() {
-    runPrAction("Merging pull request") { try await syncService.mergePullRequest(prId: effectivePrId, method: mergeMethod.rawValue) }
+  private func mergeCurrentPr(
+    bypassRules: Bool = false,
+    commitTitle: String? = nil,
+    commitBody: String? = nil
+  ) {
+    // Stale-head guard: pass the SHA the status was computed against so GitHub
+    // rejects (409) if the head advanced while the sheet was open.
+    let expectedHeadSha = snapshot?.status?.headSha
+    let label = bypassRules ? "Merging (admin bypass)" : "Merging pull request"
+    runPrAction(label) {
+      try await syncService.mergePullRequest(
+        prId: effectivePrId,
+        method: mergeMethod.rawValue,
+        bypassRules: bypassRules,
+        commitTitle: commitTitle,
+        commitBody: commitBody,
+        expectedHeadSha: expectedHeadSha
+      )
+    }
   }
 
   private func closeCurrentPr() {
@@ -1940,101 +1983,269 @@ private struct PrReviewDecisionTab: View {
 }
 
 /// Merge-strategy dialog (radio rows + Cancel + Merge).
+/// GitHub-style merge box: requirement checklist, method picker, editable
+/// commit title/body (squash & merge only), and an admin-bypass toggle gated
+/// on `showsBypassToggle`. `onMerge` returns the chosen method, bypass flag,
+/// and (when applicable) the edited commit title/body.
 private struct PrMergeStrategySheet: View {
   @Binding var selected: PrMergeMethodOption
+  let checklist: [PrMergeChecklistItem]
+  /// True when ADE sees blockers but the merge can still be force-requested
+  /// (drives the warning tone + "Merge anyway" copy).
   let canAttemptBlockedMerge: Bool
-  let onMerge: () -> Void
+  /// Whether the admin-bypass toggle is offered (canBypass && blocked).
+  let showsBypassToggle: Bool
+  let prTitle: String
+  let prNumber: Int
+  let headBranch: String
+  let repoOwner: String
+  let commits: [PrCommit]
+  let onMerge: (_ method: PrMergeMethodOption, _ bypass: Bool, _ commitTitle: String?, _ commitBody: String?) -> Void
   let onCancel: () -> Void
 
+  @State private var bypassEnabled = false
+  @State private var commitTitle = ""
+  @State private var commitBody = ""
+  /// User edited the message — stop auto-overwriting on method changes.
+  @State private var commitMessageEdited = false
+  /// Suppresses edit-tracking while we set the fields programmatically.
+  @State private var applyingDefaults = false
+
+  /// Commit title/body editor is shown for squash & merge, hidden for rebase.
+  private var showsCommitEditor: Bool { selected != .rebase }
+
+  private var primaryTint: Color {
+    (canAttemptBlockedMerge || bypassEnabled) ? PrGlassPalette.warning : PrGlassPalette.purpleDeep
+  }
+
+  private var mergeButtonTitle: String {
+    if bypassEnabled { return "Merge with bypass" }
+    return canAttemptBlockedMerge ? "Merge anyway" : "Merge"
+  }
+
   var body: some View {
-    ZStack(alignment: .bottom) {
+    ZStack {
       Color.black.opacity(0.55)
         .ignoresSafeArea()
         .onTapGesture(perform: onCancel)
 
       VStack(spacing: 0) {
-        prLiquidGlassBackdrop()
-          .opacity(0.0)
-          .frame(height: 0)
+        // Grab handle.
+        Capsule(style: .continuous)
+          .fill(Color.white.opacity(0.25))
+          .frame(width: 36, height: 5)
+          .padding(.top, 10)
+          .padding(.bottom, 4)
 
-        VStack(spacing: 14) {
-          // Grab handle.
-          Capsule(style: .continuous)
-            .fill(Color.white.opacity(0.25))
-            .frame(width: 36, height: 5)
-            .padding(.top, 2)
+        ScrollView {
+          VStack(alignment: .leading, spacing: 16) {
+            header
 
-          VStack(alignment: .leading, spacing: 4) {
-            PrEyebrow(text: "Merge strategy", tint: PrGlassPalette.purple)
-            Text(canAttemptBlockedMerge ? "Force-request merge" : "Pick how to merge")
-              .font(.system(size: 17, weight: .semibold))
-              .foregroundStyle(Color(red: 0xF0 / 255, green: 0xF0 / 255, blue: 0xF2 / 255))
-              .tracking(-0.2)
-            Text(canAttemptBlockedMerge
-              ? "ADE sees merge blockers, but this will still ask GitHub to merge. GitHub may reject unless your account can bypass requirements."
-              : "Machine rules may override your choice. All checks will be verified before merging.")
-              .font(.system(size: 11))
-              .foregroundStyle(Color(red: 0xA8 / 255, green: 0xA8 / 255, blue: 0xB4 / 255))
-              .fixedSize(horizontal: false, vertical: true)
-          }
-          .frame(maxWidth: .infinity, alignment: .leading)
-
-          VStack(spacing: 8) {
-            ForEach(PrMergeMethodOption.allCases) { option in
-              PrGlassRadioRow(
-                title: option.title,
-                subtitle: option.description,
-                icon: iconFor(option),
-                isSelected: selected == option
-              ) {
-                selected = option
+            if !checklist.isEmpty {
+              section(title: "Requirements") {
+                PrMergeChecklistView(items: checklist)
               }
             }
-          }
 
-          HStack(spacing: 10) {
-            Button(action: onCancel) {
-              Text("Cancel")
+            section(title: "Merge method") {
+              VStack(spacing: 8) {
+                ForEach(PrMergeMethodOption.allCases) { option in
+                  PrGlassRadioRow(
+                    title: option.title,
+                    subtitle: option.description,
+                    icon: iconFor(option),
+                    isSelected: selected == option
+                  ) {
+                    guard selected != option else { return }
+                    selected = option
+                    // Re-derive the default message for the newly chosen method
+                    // (GitHub regenerates it per method).
+                    commitMessageEdited = false
+                    syncCommitMessageForMethod()
+                  }
+                }
+              }
             }
-            .buttonStyle(PrDetailGlassOutlineButtonStyle())
 
-            Button(action: onMerge) {
-              Label(canAttemptBlockedMerge ? "Merge anyway" : "Merge", systemImage: "arrow.triangle.merge")
+            if showsCommitEditor {
+              section(title: "Commit message") {
+                commitEditor
+              }
             }
-            .buttonStyle(PrDetailGlassPrimaryButtonStyle(tint: canAttemptBlockedMerge ? PrGlassPalette.warning : PrGlassPalette.purpleDeep))
+
+            if showsBypassToggle {
+              bypassRow
+            }
           }
-          .padding(.top, 2)
+          .padding(.horizontal, 18)
+          .padding(.top, 10)
+          .padding(.bottom, 16)
+        }
+
+        // Sticky action footer.
+        HStack(spacing: 10) {
+          Button(action: onCancel) {
+            Text("Cancel")
+          }
+          .buttonStyle(PrDetailGlassOutlineButtonStyle())
+
+          Button {
+            onMerge(
+              selected,
+              bypassEnabled,
+              showsCommitEditor ? commitTitle : nil,
+              showsCommitEditor ? commitBody : nil
+            )
+          } label: {
+            Label(mergeButtonTitle, systemImage: "arrow.triangle.merge")
+          }
+          .buttonStyle(PrDetailGlassPrimaryButtonStyle(tint: primaryTint))
         }
         .padding(.horizontal, 18)
-        .padding(.top, 10)
-        .padding(.bottom, 22)
-        .frame(maxWidth: .infinity)
-        .background {
-          RoundedRectangle(cornerRadius: 24, style: .continuous)
-            .fill(PrGlassPalette.ink)
-          RoundedRectangle(cornerRadius: 24, style: .continuous)
-            .fill(.ultraThinMaterial)
-        }
-        .overlay(
-          RoundedRectangle(cornerRadius: 24, style: .continuous)
-            .strokeBorder(Color.white.opacity(0.10), lineWidth: 1)
+        .padding(.top, 12)
+        .padding(.bottom, 18)
+      }
+      .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+      .background {
+        RoundedRectangle(cornerRadius: 24, style: .continuous)
+          .fill(PrGlassPalette.ink)
+        RoundedRectangle(cornerRadius: 24, style: .continuous)
+          .fill(.ultraThinMaterial)
+      }
+      .overlay(
+        RoundedRectangle(cornerRadius: 24, style: .continuous)
+          .strokeBorder(Color.white.opacity(0.10), lineWidth: 1)
+      )
+      .overlay(alignment: .top) {
+        LinearGradient(
+          colors: [PrGlassPalette.purple.opacity(0.22), .clear],
+          startPoint: .top,
+          endPoint: .bottom
         )
-        .overlay(alignment: .top) {
-          // Ambient purple glow at top edge.
-          LinearGradient(
-            colors: [PrGlassPalette.purple.opacity(0.22), .clear],
-            startPoint: .top,
-            endPoint: .bottom
-          )
-          .frame(height: 80)
-          .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
-          .allowsHitTesting(false)
-        }
-        .shadow(color: Color.black.opacity(0.55), radius: 28, x: 0, y: 10)
-        .padding(.horizontal, 12)
-        .padding(.bottom, 12)
+        .frame(height: 80)
+        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+        .allowsHitTesting(false)
+      }
+      .padding(.horizontal, 10)
+      .padding(.vertical, 12)
+    }
+    .onAppear {
+      // Seed the commit message from the current method's GitHub-style default.
+      if !commitMessageEdited { syncCommitMessageForMethod() }
+    }
+  }
+
+  private var header: some View {
+    VStack(alignment: .leading, spacing: 4) {
+      PrEyebrow(text: "Merge pull request", tint: PrGlassPalette.purple)
+      Text(canAttemptBlockedMerge ? "Force-request merge" : "Confirm merge")
+        .font(.system(size: 18, weight: .semibold))
+        .foregroundStyle(ADEColor.textPrimary)
+        .tracking(-0.2)
+      Text(canAttemptBlockedMerge
+        ? "ADE sees merge blockers, but this will still ask GitHub to merge. GitHub may reject unless your account can bypass requirements."
+        : "Review the requirements below, then merge into the base branch.")
+        .font(.system(size: 11.5))
+        .foregroundStyle(ADEColor.textSecondary)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+    .frame(maxWidth: .infinity, alignment: .leading)
+  }
+
+  private var commitEditor: some View {
+    VStack(alignment: .leading, spacing: 10) {
+      VStack(alignment: .leading, spacing: 5) {
+        Text("Title")
+          .font(.system(size: 11, weight: .semibold))
+          .foregroundStyle(ADEColor.textMuted)
+        TextField("Commit title", text: $commitTitle)
+          .font(.system(size: 13, weight: .medium))
+          .foregroundStyle(ADEColor.textPrimary)
+          .textInputAutocapitalization(.never)
+          .autocorrectionDisabled(true)
+          .padding(.horizontal, 12)
+          .padding(.vertical, 10)
+          .background(glassFieldBackground)
+          .onChange(of: commitTitle) { _, _ in if !applyingDefaults { commitMessageEdited = true } }
+      }
+
+      VStack(alignment: .leading, spacing: 5) {
+        Text("Description")
+          .font(.system(size: 11, weight: .semibold))
+          .foregroundStyle(ADEColor.textMuted)
+        TextEditor(text: $commitBody)
+          .font(.system(size: 12, design: .monospaced))
+          .foregroundStyle(ADEColor.textPrimary)
+          .scrollContentBackground(.hidden)
+          .frame(minHeight: 96, maxHeight: 160)
+          .padding(.horizontal, 8)
+          .padding(.vertical, 6)
+          .background(glassFieldBackground)
+          .onChange(of: commitBody) { _, _ in if !applyingDefaults { commitMessageEdited = true } }
       }
     }
+  }
+
+  private var bypassRow: some View {
+    Toggle(isOn: $bypassEnabled) {
+      VStack(alignment: .leading, spacing: 2) {
+        Text("Merge without waiting for requirements")
+          .font(.system(size: 13, weight: .semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+        Text("Use your administrator bypass to merge despite branch protection rules.")
+          .font(.system(size: 11))
+          .foregroundStyle(ADEColor.textSecondary)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+    }
+    .tint(PrGlassPalette.warning)
+    .padding(.horizontal, 12)
+    .padding(.vertical, 12)
+    .background(
+      RoundedRectangle(cornerRadius: 14, style: .continuous)
+        .fill(PrGlassPalette.warning.opacity(0.10))
+    )
+    .overlay(
+      RoundedRectangle(cornerRadius: 14, style: .continuous)
+        .strokeBorder(PrGlassPalette.warning.opacity(0.34), lineWidth: 0.75)
+    )
+  }
+
+  private var glassFieldBackground: some View {
+    RoundedRectangle(cornerRadius: 12, style: .continuous)
+      .fill(Color.white.opacity(0.06))
+      .overlay(
+        RoundedRectangle(cornerRadius: 12, style: .continuous)
+          .strokeBorder(Color.white.opacity(0.10), lineWidth: 0.5)
+      )
+  }
+
+  private func section<Content: View>(title: String, @ViewBuilder content: () -> Content) -> some View {
+    VStack(alignment: .leading, spacing: 10) {
+      PrEyebrow(text: title, tint: ADEColor.textSecondary)
+      content()
+    }
+    .frame(maxWidth: .infinity, alignment: .leading)
+  }
+
+  /// Recomputes the default commit message for the active method unless the user
+  /// has already edited it. Mirrors GitHub re-deriving the message on method change.
+  private func syncCommitMessageForMethod() {
+    guard !commitMessageEdited else { return }
+    let defaults = PrMergeChecklist.defaultCommitMessage(
+      method: selected,
+      prTitle: prTitle,
+      prNumber: prNumber,
+      headBranch: headBranch,
+      repoOwner: repoOwner,
+      commits: commits
+    )
+    // Set under the guard so the field `onChange` handlers don't mark these
+    // programmatic writes as user edits.
+    applyingDefaults = true
+    commitTitle = defaults.title
+    commitBody = defaults.body
+    DispatchQueue.main.async { applyingDefaults = false }
   }
 
   private func iconFor(_ option: PrMergeMethodOption) -> String {

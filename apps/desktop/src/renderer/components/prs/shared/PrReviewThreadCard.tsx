@@ -26,6 +26,7 @@ import type {
 } from "../../../../shared/types";
 import {
   COLORS,
+  MONO_FONT,
   SANS_FONT,
   cardStyle,
   inlineBadge,
@@ -33,6 +34,7 @@ import {
 } from "../../lanes/laneDesignTokens";
 import { formatTimeAgo } from "./prFormatters";
 import { PrMarkdown } from "./PrMarkdown";
+import { PrUserAvatar } from "./PrUserAvatar";
 
 export type PrReviewThreadCardHandle = {
   focus: () => void;
@@ -80,6 +82,24 @@ const REACTION_LABELS: Record<PrReactionContent, string> = {
   eyes: "👀",
 };
 
+// One-line plain-text preview of a comment body for the collapsed thread card,
+// so a resolved/outdated thread shows what was said without expanding it.
+// Bot reviewers (e.g. greptile) embed HTML badges, so strip tags — keeping
+// image alt text — before flattening the markdown.
+function commentPreview(body: string | null | undefined, max = 90): string {
+  if (!body) return "";
+  const flat = body
+    .replace(/<img[^>]*\balt=["']([^"']*)["'][^>]*>/gi, " $1 ") // keep badge alt text
+    .replace(/<[^>]+>/g, " ")              // strip remaining HTML tags
+    .replace(/```[\s\S]*?```/g, "code")    // collapse fenced code blocks
+    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, "$1") // markdown links/images → label
+    .replace(/[#>*_`~|]+/g, " ")           // strip common markdown punctuation
+    .replace(/&[a-z]+;/gi, " ")            // drop HTML entities
+    .replace(/\s+/g, " ")
+    .trim();
+  return flat.length > max ? `${flat.slice(0, max).trimEnd()}…` : flat;
+}
+
 function statusChip(thread: PrReviewThread) {
   if (thread.isResolved) {
     return { label: "Resolved", color: COLORS.success };
@@ -88,6 +108,80 @@ function statusChip(thread: PrReviewThread) {
     return { label: "Outdated", color: COLORS.textMuted };
   }
   return { label: "Open", color: COLORS.warning };
+}
+
+// GitHub attaches the surrounding diff context to each inline review comment via
+// `diff_hunk`; a thread inherits it from its first comment (typed on
+// `PrReviewThreadComment.diffHunk`). Empty/whitespace-only hunks render nothing.
+function readDiffHunk(thread: PrReviewThread): string | null {
+  const trimmed = thread.comments[0]?.diffHunk?.replace(/\s+$/, "");
+  return trimmed && trimmed.length > 0 ? trimmed : null;
+}
+
+// Last N lines of a hunk, mirroring GitHub's inline thread which only shows the
+// few lines of context immediately preceding the commented line. A leading "…"
+// marker stands in for the elided lines so the snippet stays compact.
+const DIFF_HUNK_MAX_LINES = 8;
+
+function diffLineColor(line: string): string {
+  if (line.startsWith("@@")) return COLORS.accent;
+  if (line.startsWith("+")) return COLORS.success;
+  if (line.startsWith("-")) return COLORS.danger;
+  return COLORS.textMuted;
+}
+
+function diffLineBackground(line: string): string | undefined {
+  if (line.startsWith("@@")) return "color-mix(in srgb, var(--color-accent) 9%, transparent)";
+  if (line.startsWith("+")) return "color-mix(in srgb, var(--color-success) 11%, transparent)";
+  if (line.startsWith("-")) return "color-mix(in srgb, var(--color-error) 11%, transparent)";
+  return undefined;
+}
+
+function DiffHunkBlock({ hunk, side }: { hunk: string; side: PrReviewThread["diffSide"] }) {
+  const allLines = hunk.split("\n");
+  const elided = Math.max(0, allLines.length - DIFF_HUNK_MAX_LINES);
+  const lines = elided > 0 ? allLines.slice(-DIFF_HUNK_MAX_LINES) : allLines;
+
+  return (
+    <div className="px-4 pt-3" data-pr-thread-diff-hunk>
+      <div
+        className="overflow-hidden rounded-[8px] border"
+        style={{ borderColor: COLORS.borderMuted, background: "var(--color-bg)" }}
+      >
+        <div
+          className="flex items-center gap-2 border-b px-3 py-1.5 text-[10px] font-semibold uppercase tracking-[0.6px]"
+          style={{ borderColor: COLORS.borderMuted, color: COLORS.textMuted, fontFamily: SANS_FONT }}
+        >
+          <span>Diff</span>
+          {side ? (
+            <span style={{ color: COLORS.textDim }}>· {side === "LEFT" ? "base" : "head"}</span>
+          ) : null}
+        </div>
+        <pre
+          className="m-0 overflow-x-auto py-1 text-[11px] leading-[18px]"
+          style={{ fontFamily: MONO_FONT }}
+        >
+          {elided > 0 ? (
+            <span
+              className="block px-3"
+              style={{ color: COLORS.textDim, background: COLORS.recessedBg }}
+            >
+              {`… ${elided} more line${elided === 1 ? "" : "s"} above`}
+            </span>
+          ) : null}
+          {lines.map((line, i) => (
+            <span
+              key={i}
+              className="block px-3"
+              style={{ color: diffLineColor(line), background: diffLineBackground(line) }}
+            >
+              {line.length > 0 ? line : " "}
+            </span>
+          ))}
+        </pre>
+      </div>
+    </div>
+  );
 }
 
 function getCommentReactions(comment: ReactionCommentLite): ReactionLite[] {
@@ -180,6 +274,10 @@ function CommentRow({
   return (
     <div className="flex flex-col gap-1.5 py-2" data-pr-thread-comment>
       <div className="flex items-center gap-2 text-[11px]" style={{ color: COLORS.textMuted }}>
+        <PrUserAvatar
+          user={{ login: comment.author, avatarUrl: comment.authorAvatarUrl }}
+          size={18}
+        />
         <span className="font-medium" style={{ color: COLORS.textSecondary }}>
           {comment.author}
         </span>
@@ -288,10 +386,12 @@ export const PrReviewThreadCard = memo(
     },
     ref,
   ) {
-    // Unmapped PRs (no lane row) carry a synthetic `gh:owner/repo#num` prId;
-    // the thread-mutation bridges are all row-based and fail with "PR not
-    // found" against it. Gate every write affordance on having a real lane.
-    const canMutate = Boolean(laneId);
+    // Reply / resolve / react all key on the global GraphQL thread/comment node
+    // id, so they work for both mapped (lane) PRs and unmapped GitHub-tab PRs
+    // (whose synthetic `gh:` prId the service parses for the repo). Always allow
+    // the write affordances; GitHub itself rejects them if the token lacks
+    // write access, surfaced via the card's inline error state.
+    const canMutate = Boolean(prId);
     const collapsedByDefault = thread.isResolved || thread.isOutdated;
     const [expanded, setExpanded] = useState(!collapsedByDefault);
     const [replyOpen, setReplyOpen] = useState(false);
@@ -330,6 +430,12 @@ export const PrReviewThreadCard = memo(
       const line = thread.startLine ?? thread.line ?? thread.originalLine;
       return line ? `${thread.path}:${line}` : thread.path;
     }, [thread]);
+
+    const preview = useMemo(() => commentPreview(thread.comments[0]?.body), [thread.comments]);
+
+    // Diff context above the comments (GitHub-style). Null-tolerant: renders
+    // nothing until the backend supplies a `diffHunk` on the thread/comment.
+    const diffHunk = useMemo(() => readDiffHunk(thread), [thread]);
 
     const handleViewDiff = useCallback(() => {
       if (!thread.path) return;
@@ -455,15 +561,22 @@ export const PrReviewThreadCard = memo(
           <CaretRight size={12} weight="bold" style={{ color: COLORS.textMuted, flexShrink: 0 }} />
           <AvatarStack comments={thread.comments} />
           <div className="flex min-w-0 flex-1 flex-col">
-            <span
-              className="truncate text-[12px] font-medium"
-              style={{ color: COLORS.textPrimary, fontFamily: SANS_FONT }}
-            >
-              {fileLabel ?? "Conversation"}
-            </span>
-            <span className="text-[11px]" style={{ color: COLORS.textMuted }}>
-              {thread.comments.length} {thread.comments.length === 1 ? "comment" : "comments"}
-            </span>
+            <div className="flex items-center gap-2">
+              <span
+                className="truncate text-[12px] font-medium"
+                style={{ color: COLORS.textPrimary, fontFamily: SANS_FONT }}
+              >
+                {fileLabel ?? "Conversation"}
+              </span>
+              <span className="shrink-0 text-[11px]" style={{ color: COLORS.textMuted }}>
+                · {thread.comments.length} {thread.comments.length === 1 ? "comment" : "comments"}
+              </span>
+            </div>
+            {preview ? (
+              <span className="truncate text-[11px]" style={{ color: COLORS.textMuted }}>
+                <span style={{ color: COLORS.textSecondary }}>{thread.comments[0]?.author}</span>: {preview}
+              </span>
+            ) : null}
           </div>
           <span style={inlineBadge(chip.color, { padding: "2px 8px", marginRight: 2 })}>{chip.label}</span>
         </div>
@@ -511,6 +624,8 @@ export const PrReviewThreadCard = memo(
             <X size={12} weight="bold" />
           </button>
         </div>
+
+        {diffHunk ? <DiffHunkBlock hunk={diffHunk} side={thread.diffSide} /> : null}
 
         <div className="flex flex-col px-4">
           {thread.comments.map((c, idx) => (
