@@ -2930,12 +2930,16 @@ export function AgentChatPane({
   const draftLaunchJobsScopeKey = useMemo(
     () => [
       "draft-launch-jobs",
-      projectRoot?.trim() || "project",
+      // Partition by the project BINDING, not just projectRoot: jobs now live in
+      // the shared root store, and two remote targets can have the same rootPath
+      // (e.g. /home/user/project on two machines). Without the binding key,
+      // switching remote A → B could surface A's ready/failed job against B.
+      projectBinding?.key ?? (projectRoot?.trim() || "project"),
       laneId ?? "no-lane",
       surfaceProfile,
       workDraftStorageKind,
     ].map(encodeURIComponent).join(":"),
-    [laneId, projectRoot, surfaceProfile, workDraftStorageKind],
+    [laneId, projectBinding?.key, projectRoot, surfaceProfile, workDraftStorageKind],
   );
   // Draft-launch job state lives in the ROOT store, not the project-scoped
   // store. A launch can outlive the pane (and its project surface) that started
@@ -6539,6 +6543,10 @@ export function AgentChatPane({
       notify?: boolean;
       notifyOptions?: AgentChatSessionCreatedOptions;
       launchState?: DraftLaunchSnapshot;
+      // Draft launches pass a guard that throws if the originating project
+      // changed (or the launch timed out); checked before the inner
+      // orchestration mutation so a bundle is never allocated in the wrong project.
+      assertActive?: () => void;
     } = {},
   ): Promise<AgentChatSession> => {
       if (constrainedModelSelectionError) {
@@ -6591,6 +6599,7 @@ export function AgentChatPane({
       // first prompt so a half-created lead chat cannot start working.
       if (orchestratorEnabled) {
         try {
+          options.assertActive?.();
           const runCreate = await window.ade.orchestration.runCreate({
             laneId: targetLaneId,
             leadSessionId: created.id,
@@ -6887,6 +6896,7 @@ export function AgentChatPane({
     onAutoCreateNameFallback?: (message: string) => void,
     onAutoCreateNameModelResolved?: (modelId: string) => void,
     assertActive?: () => void,
+    pin?: OpenProjectBinding | null,
   ): Promise<DraftLaunchLaneTarget> => {
     if (draftLaunchTargetIsAutoCreate) {
       if (!laneId) throw new Error("Select a lane before auto-creating a new lane.");
@@ -6933,6 +6943,19 @@ export function AgentChatPane({
         name: laneName,
         ...(baseBranch ? { baseBranch } : {}),
       });
+      // lanes.create is not cancellable, so if the launch was aborted while it
+      // was in flight (timeout, or a project switch), the outer wait has already
+      // rejected with targetLane === null and will not roll this lane back.
+      // Clean it up here, pinned to the originating project, before returning.
+      try {
+        assertActive?.();
+      } catch (abortError) {
+        await window.ade.lanes.delete({ laneId: createdLane.id, force: true }, pin).catch((cleanupError: unknown) => {
+          console.warn("draft launch lane cleanup after abort failed", cleanupError);
+        });
+        await refreshLanesStore().catch(() => undefined);
+        throw abortError;
+      }
       await refreshLanesStore().catch((refreshError: unknown) => {
         console.warn("draft launch lane refresh failed", refreshError);
       });
@@ -7002,12 +7025,15 @@ export function AgentChatPane({
       // them must abort before the irreversible step rather than create/send in
       // the wrong project.
       assertActive?.();
-      createdSession = await createSessionForLane(targetLane.laneId, { select: false, launchState: prepared });
+      createdSession = await createSessionForLane(targetLane.laneId, { select: false, launchState: prepared, assertActive });
+      // Re-assert after creation: if the launch timed out (or the project
+      // switched) while the session was being created, abort now so the catch
+      // tears the session down rather than sending into the wrong project.
+      assertActive?.();
       touchSession(createdSession.id);
       const sendInteractionMode = createdSession.provider === "claude"
         ? createdSession.interactionMode ?? prepared.interactionMode
         : null;
-      assertActive?.();
       await window.ade.agentChat.send({
         sessionId: createdSession.id,
         text: prepared.finalText,
@@ -7019,6 +7045,9 @@ export function AgentChatPane({
         interactionMode: sendInteractionMode,
         ...(createdSession.provider === "cursor" ? { runtime: "local" as const } : {}),
       });
+      // If the launch was aborted while the prompt was in flight, tear the
+      // session down rather than leaving a started-but-orphaned chat.
+      assertActive?.();
       notifySessionCreated(createdSession, {
         activate: false,
         source: "draft-launch",
@@ -7111,6 +7140,17 @@ export function AgentChatPane({
       tracked: true,
       disposition: mode,
     });
+    // The PTY spawn is not cancellable, so if the launch was aborted while it
+    // was starting (timeout or project switch), dispose the freshly-created
+    // session instead of leaving an orphaned terminal in the wrong project.
+    try {
+      assertActive?.();
+    } catch (abortError) {
+      await window.ade.pty.dispose({ ptyId: result.ptyId, sessionId: result.sessionId }).catch((disposeError: unknown) => {
+        console.warn("draft cli launch pty cleanup failed", disposeError);
+      });
+      throw abortError;
+    }
     return {
       sessionId: result.sessionId,
       draftKind: "cli",
@@ -7217,7 +7257,7 @@ export function AgentChatPane({
         patchDraftLaunchJob(jobId, { warning: message });
       }, (modelId) => {
         patchDraftLaunchJob(jobId, { namingModelId: modelId });
-      }, assertLaunchActive), "Lane setup", markLaunchTimedOut);
+      }, assertLaunchActive, launchBinding), "Lane setup", markLaunchTimedOut);
       patchDraftLaunchJob(jobId, {
         status: "starting-session",
         laneId: targetLane.laneId,

@@ -3885,8 +3885,12 @@ describe("AgentChatPane submit recovery", () => {
       await Promise.resolve();
     });
 
+    // After the switch the pane renders the new project's scope, so assert the
+    // failed job directly in the (root) store, under the originating scope.
     await waitFor(() => {
-      expect(screen.getByText(/Launch failed: Project changed/i)).toBeTruthy();
+      const jobs = Object.values(useAppStore.getState().draftLaunchJobsByScope).flat();
+      const failed = jobs.find((job) => job.status === "failed");
+      expect(failed?.error).toMatch(/Project changed/i);
     });
     // The guard fired before the irreversible mutation: no lane was created in
     // the now-active project, and there was nothing to roll back.
