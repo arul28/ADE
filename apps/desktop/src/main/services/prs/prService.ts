@@ -5553,6 +5553,7 @@ export function createPrService({
     method: MergeMethod;
     commitTitle?: string;
     commitBody?: string;
+    expectedHeadSha?: string;
   }): Promise<{ success: true; mergeCommitSha: string | null } | { success: false; error: string }> => {
     let laneWorktreePath: string;
     try {
@@ -5574,8 +5575,14 @@ export function createPrService({
       if (body) messageArgs.push("--body", body);
     }
 
+    // Preserve the stale-head guard through the admin bypass: `--match-head-commit`
+    // aborts the merge if the PR head advanced past the SHA the user reviewed, so
+    // an admin override can't silently land commits pushed after the dialog opened.
+    const matchHeadArgs = asString(args.expectedHeadSha).trim()
+      ? ["--match-head-commit", asString(args.expectedHeadSha).trim()]
+      : [];
     const adminRes = await runGh(
-      ["pr", "merge", String(Number(args.row.github_pr_number)), `--${args.method}`, "--admin", ...messageArgs],
+      ["pr", "merge", String(Number(args.row.github_pr_number)), `--${args.method}`, "--admin", ...matchHeadArgs, ...messageArgs],
       { cwd: laneWorktreePath, timeoutMs: 90_000 },
     );
     if (adminRes.exitCode !== 0) {
@@ -5707,6 +5714,7 @@ export function createPrService({
           method: args.method,
           commitTitle: args.commitTitle,
           commitBody: args.commitBody,
+          expectedHeadSha: args.expectedHeadSha,
         });
         if (adminAttempt.success) {
           const cleanup = await runPostMergeCleanup({
@@ -5806,20 +5814,31 @@ export function createPrService({
       });
     }
 
-    // Stale-head guard: the local rebase rewrites the lane, so verify the PR head
-    // hasn't advanced since the UI captured it (mirrors the merge API's
-    // expected_head_sha). Otherwise we could rebase from a stale branch and clobber
-    // newer remote commits.
-    const expectedHead = args.expectedHeadSha?.trim();
-    if (expectedHead) {
-      const livePr = await fetchPr(repo, prNumber).catch(() => null);
-      const liveHead = asString(livePr?.head?.sha).trim();
-      if (liveHead && liveHead !== expectedHead) {
-        return baseResult(false, {
-          error: `PR head advanced (${expectedHead.slice(0, 7)} → ${liveHead.slice(0, 7)}); refresh before updating the branch.`,
-        });
-      }
+    // The local rebase rewrites + force-pushes the lane, so fail CLOSED: read the
+    // live PR once and bail if we can't. Verify the head hasn't advanced past what
+    // the UI captured (mirrors the merge API's expected_head_sha), and rebase onto
+    // the PR's CURRENT base (handles a GitHub retarget) rather than the cached row.
+    let livePr: Awaited<ReturnType<typeof fetchPr>>;
+    try {
+      livePr = await fetchPr(repo, prNumber);
+    } catch (error) {
+      return baseResult(false, {
+        error: `Couldn't verify the PR before updating the branch: ${getErrorMessage(error)}`,
+      });
     }
+    const liveHead = asString(livePr?.head?.sha).trim();
+    if (!liveHead) {
+      return baseResult(false, {
+        error: "Couldn't read the PR head before updating the branch; try again.",
+      });
+    }
+    const expectedHead = args.expectedHeadSha?.trim();
+    if (expectedHead && liveHead !== expectedHead) {
+      return baseResult(false, {
+        error: `PR head advanced (${expectedHead.slice(0, 7)} → ${liveHead.slice(0, 7)}); refresh before updating the branch.`,
+      });
+    }
+    const liveBase = asString(livePr?.base?.ref).trim() || String(row.base_branch ?? "").trim();
 
     let runResult: Awaited<ReturnType<typeof laneService.rebaseStart>>;
     try {
@@ -5829,11 +5848,7 @@ export function createPrService({
         pushMode: "none",
         actor: "user",
         reason: "pr_update_branch",
-        // Rebase onto the PR's CURRENT base (it may have been retargeted in
-        // GitHub) rather than the lane's stored base_ref. Empty → no override.
-        ...(String(row.base_branch ?? "").trim()
-          ? { baseBranchOverride: String(row.base_branch) }
-          : {}),
+        ...(liveBase ? { baseBranchOverride: liveBase } : {}),
       });
     } catch (error) {
       return baseResult(false, { error: getErrorMessage(error) });
