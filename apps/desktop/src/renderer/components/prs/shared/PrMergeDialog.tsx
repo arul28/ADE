@@ -178,9 +178,12 @@ export const PrMergeDialog = memo(function PrMergeDialog({
       commitTitle: showCommitEditor ? commitTitle : undefined,
       commitBody: showCommitEditor ? commitBody : undefined,
       bypassRules,
-      expectedHeadSha: status?.headSha ?? undefined,
+      // Submit the head SHA captured when the dialog OPENED, not the live one —
+      // otherwise a status refresh while the dialog is open advances the guard
+      // and GitHub would accept commits pushed after the user opened the dialog.
+      expectedHeadSha: openedHeadShaRef.current ?? undefined,
     });
-  }, [actionBusy, bypassRules, commitBody, commitTitle, mergeEnabled, method, onMerge, showCommitEditor, status?.headSha]);
+  }, [actionBusy, bypassRules, commitBody, commitTitle, mergeEnabled, method, onMerge, showCommitEditor]);
 
   const handlePrimaryClick = useCallback(() => {
     // Override path requires a deliberate second click (arm/confirm).

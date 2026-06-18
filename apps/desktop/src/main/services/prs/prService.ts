@@ -5806,6 +5806,21 @@ export function createPrService({
       });
     }
 
+    // Stale-head guard: the local rebase rewrites the lane, so verify the PR head
+    // hasn't advanced since the UI captured it (mirrors the merge API's
+    // expected_head_sha). Otherwise we could rebase from a stale branch and clobber
+    // newer remote commits.
+    const expectedHead = args.expectedHeadSha?.trim();
+    if (expectedHead) {
+      const livePr = await fetchPr(repo, prNumber).catch(() => null);
+      const liveHead = asString(livePr?.head?.sha).trim();
+      if (liveHead && liveHead !== expectedHead) {
+        return baseResult(false, {
+          error: `PR head advanced (${expectedHead.slice(0, 7)} → ${liveHead.slice(0, 7)}); refresh before updating the branch.`,
+        });
+      }
+    }
+
     let runResult: Awaited<ReturnType<typeof laneService.rebaseStart>>;
     try {
       runResult = await laneService.rebaseStart({
