@@ -48,6 +48,17 @@ function pickPositiveInteger(record: JsonRecord, keys: string[]): number | null 
   return null;
 }
 
+function pickNonNegativeInteger(record: JsonRecord, keys: string[]): number | null {
+  for (const key of keys) {
+    const value = record[key];
+    let parsed = NaN;
+    if (typeof value === "number") parsed = value;
+    else if (typeof value === "string" && value.trim()) parsed = Number(value);
+    if (Number.isInteger(parsed) && parsed >= 0) return parsed;
+  }
+  return null;
+}
+
 function unwrapPrValue(value: unknown): { root: JsonRecord; pr: JsonRecord } | null {
   const root = unwrapStructured(value);
   if (!isRecord(root)) return null;
@@ -170,6 +181,139 @@ export function formatPrSummary(value: unknown): string {
     adeUrl ? `ade      ${adeUrl}` : null,
   ];
   return rows.filter((row): row is string => row != null).join("\n");
+}
+
+export type PrMergeReadiness = {
+  /** Single-word headline: Ready / Blocked / Behind / Conflicts / Draft / Checking… */
+  headline: string;
+  /** Longer status line shown beside the headline (mirrors GitHub's merge box). */
+  detail: string | null;
+  /** Human-readable reasons the merge is held up, in priority order. Empty when ready. */
+  blockers: string[];
+  /** True while GitHub is still computing mergeability (keep polling). */
+  computing: boolean;
+  /** True when the viewer can bypass branch protection (admin / bypass permission). */
+  canBypass: boolean;
+  /** True when nothing is blocking the merge. */
+  ready: boolean;
+};
+
+/**
+ * Derives the same merge-readiness picture the desktop merge box shows from a
+ * GitHub-backed PR status payload (the `pr.getStatus` action result, or a
+ * `PrSummary`/`PrStatus`-shaped record). Tolerates older runtimes that only
+ * expose `mergeConflicts`/`behindBaseBy` by falling back to those fields.
+ */
+export function derivePrMergeReadiness(value: unknown): PrMergeReadiness {
+  const root = unwrapStructured(value);
+  const status: JsonRecord = isRecord(root)
+    ? (isRecord(root.status) ? root.status : root)
+    : {};
+
+  const mergeState = pickString(status, ["mergeStateStatus"])?.toLowerCase() ?? null;
+  const reviewDecision = pickString(status, ["reviewDecision"])?.toLowerCase() ?? null;
+  const approvals = pickNonNegativeInteger(status, ["approvalsCount"]);
+  const requiredApprovals = pickNonNegativeInteger(status, ["requiredApprovals"]);
+  const behind = pickNonNegativeInteger(status, ["behindBaseBy", "behindBy"]);
+  const conflicts = pickBoolean(status, ["mergeConflicts"]) === true;
+  const isMergeable = pickBoolean(status, ["isMergeable", "mergeable"]);
+  const canBypass = pickBoolean(status, ["canBypass"]) === true;
+  const computing =
+    pickBoolean(status, ["mergeabilityComputing"]) === true || mergeState === "unknown";
+
+  const blockers: string[] = [];
+
+  if (reviewDecision === "review_required") {
+    const count =
+      requiredApprovals != null ? `${approvals ?? 0}/${requiredApprovals}` : `${approvals ?? 0}`;
+    blockers.push(`review required (${count} approved)`);
+  } else if (reviewDecision === "changes_requested") {
+    blockers.push("changes requested");
+  }
+
+  // Behind base only hard-blocks when the PR isn't otherwise mergeable. For
+  // clean/unstable/has_hooks the PR IS mergeable even when behind, so it's
+  // informational — mirror the desktop's buildMergeChecklist treatment.
+  const behindMergeable = mergeState === "clean" || mergeState === "unstable" || mergeState === "has_hooks";
+  if (behind != null && behind > 0 && !behindMergeable) {
+    blockers.push(`${behind} commit${behind === 1 ? "" : "s"} behind base`);
+  } else if (mergeState === "behind") {
+    blockers.push("behind base branch");
+  }
+
+  if (conflicts || mergeState === "dirty") {
+    blockers.push("merge conflicts");
+  }
+
+  if (mergeState === "draft") blockers.push("PR is a draft");
+  // `unstable` = mergeable, but non-required checks are failing/pending. It is
+  // NOT a blocker — mirror the desktop's isMergeableFromMergeState treatment, so
+  // the TUI lands on "Ready" rather than a false "Blocked — required checks".
+  if (mergeState === "blocked" && blockers.length === 0) {
+    // `blocked` with no more specific reason → branch protection (needs admin).
+    blockers.push("blocked by branch protection");
+  }
+
+  // De-dupe while keeping priority order (review → behind → conflicts → checks).
+  const seen = new Set<string>();
+  const uniqueBlockers = blockers.filter((b) => (seen.has(b) ? false : (seen.add(b), true)));
+
+  let headline: string;
+  let detail: string | null = null;
+  if (computing) {
+    headline = "Checking…";
+    detail = "GitHub is computing mergeability.";
+  } else if (mergeState === "draft" || uniqueBlockers.includes("PR is a draft")) {
+    headline = "Draft";
+  } else if (conflicts || mergeState === "dirty") {
+    headline = "Conflicts";
+  } else if (mergeState === "behind") {
+    headline = "Behind";
+  } else if (uniqueBlockers.length > 0) {
+    headline = "Blocked";
+  } else if (mergeState === "clean" || mergeState === "has_hooks" || mergeState === "unstable" || isMergeable === true) {
+    // Mergeable (incl. `unstable` = non-required checks failing) → Ready even when
+    // behind, mirroring the desktop's isMergeableFromMergeState. Checked BEFORE the
+    // bare-behind branch so a mergeable-but-behind PR isn't mislabeled "Behind".
+    headline = "Ready";
+  } else if (behind != null && behind > 0) {
+    // Behind base with no other blocker and no explicit merge-state signal.
+    headline = "Behind";
+  } else if (mergeState) {
+    headline = "Blocked";
+  } else {
+    headline = uniqueBlockers.length ? "Blocked" : "Ready";
+  }
+
+  const ready = !computing && uniqueBlockers.length === 0 && headline !== "Conflicts" && headline !== "Behind" && headline !== "Draft";
+
+  return {
+    headline,
+    detail,
+    blockers: uniqueBlockers,
+    computing,
+    canBypass,
+    ready,
+  };
+}
+
+/**
+ * Compact merge-readiness block for the right pane: a status line plus a short
+ * bullet list of blockers. Falls back to a single line when GitHub merge state
+ * is unavailable (older runtimes / unmapped PRs).
+ */
+export function formatPrMergeState(value: unknown): string {
+  const readiness = derivePrMergeReadiness(value);
+  const lines = [`Merge · ${readiness.headline}${readiness.detail ? ` — ${readiness.detail}` : ""}`];
+  if (readiness.blockers.length) {
+    for (const blocker of readiness.blockers) lines.push(`  ✗ ${blocker}`);
+    if (readiness.canBypass) {
+      lines.push("", "You can bypass branch protection: /pr land confirm <method> bypass");
+    }
+  } else if (readiness.ready) {
+    lines.push("  ✓ all requirements met");
+  }
+  return lines.join("\n");
 }
 
 export function formatPrChecks(value: unknown): string {

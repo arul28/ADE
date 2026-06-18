@@ -350,6 +350,8 @@ import type {
   GitHubPrSnapshot,
   LandPrArgs,
   LandResult,
+  UpdateBranchArgs,
+  UpdateBranchResult,
   LandStackArgs,
   LandStackEnhancedArgs,
   LinkPrToLaneArgs,
@@ -1853,6 +1855,7 @@ declare global {
           args: DraftPrDescriptionArgs,
         ) => Promise<{ title: string; body: string }>;
         land: (args: LandPrArgs) => Promise<LandResult>;
+        updateBranch: (args: UpdateBranchArgs) => Promise<UpdateBranchResult>;
         landStack: (args: LandStackArgs) => Promise<LandResult[]>;
         retargetBase: (args: {
           prId: string;
@@ -1955,6 +1958,7 @@ declare global {
         getActivityByGithub: (
           coords: PrGithubCoords,
         ) => Promise<PrActivityEvent[]>;
+        getStatusByGithub: (coords: PrGithubCoords) => Promise<PrStatus | null>;
         getChecksByGithub: (coords: PrGithubCoords) => Promise<PrCheck[]>;
         getReviewsByGithub: (coords: PrGithubCoords) => Promise<PrReview[]>;
         getCommentsByGithub: (coords: PrGithubCoords) => Promise<PrComment[]>;

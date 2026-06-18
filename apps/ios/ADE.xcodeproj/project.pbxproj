@@ -126,6 +126,7 @@
 		D30000000000000000000015 /* AttentionDrawerModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000005 /* AttentionDrawerModelTests.swift */; };
 		D30000000000000000000016 /* SyncEnvelopeChunkAssemblerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000006 /* SyncEnvelopeChunkAssemblerTests.swift */; };
 		D30000000000000000000017 /* WorkMarkdownStreamingParsingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000007 /* WorkMarkdownStreamingParsingTests.swift */; };
+		D30000000000000000000018 /* PrMergeMergeStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000008 /* PrMergeMergeStateTests.swift */; };
 		889573D8A5ED468D3BD12894 /* PRsTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5EE4D463D21266B62B422D11 /* PRsTabView.swift */; };
 		B10000000000000000000002 /* LaneAttachSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000002 /* LaneAttachSheet.swift */; };
 		B10000000000000000000003 /* LaneBatchManageSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000003 /* LaneBatchManageSheet.swift */; };
@@ -177,6 +178,7 @@
 		G10000000000000000000021 /* PrCommitRailView.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000021 /* PrCommitRailView.swift */; };
 		G10000000000000000000023 /* PrStackDiagramView.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000023 /* PrStackDiagramView.swift */; };
 		G10000000000000000000024 /* PrRebaseScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000024 /* PrRebaseScreen.swift */; };
+		G10000000000000000000030 /* PrMergeChecklist.swift in Sources */ = {isa = PBXBuildFile; fileRef = G20000000000000000000030 /* PrMergeChecklist.swift */; };
 		B10000000000000000000017 /* LaneTreeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000017 /* LaneTreeView.swift */; };
 		B10000000000000000000018 /* AddLaneSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000018 /* AddLaneSheet.swift */; };
 		B10000000000000000000019 /* LanesOfflineEmptyState.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000000000000000000019 /* LanesOfflineEmptyState.swift */; };
@@ -327,6 +329,7 @@
 		D30000000000000000000005 /* AttentionDrawerModelTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AttentionDrawerModelTests.swift; path = ADETests/AttentionDrawerModelTests.swift; sourceTree = "<group>"; };
 		D30000000000000000000006 /* SyncEnvelopeChunkAssemblerTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SyncEnvelopeChunkAssemblerTests.swift; path = ADETests/SyncEnvelopeChunkAssemblerTests.swift; sourceTree = "<group>"; };
 		D30000000000000000000007 /* WorkMarkdownStreamingParsingTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkMarkdownStreamingParsingTests.swift; path = ADETests/WorkMarkdownStreamingParsingTests.swift; sourceTree = "<group>"; };
+		D30000000000000000000008 /* PrMergeMergeStateTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrMergeMergeStateTests.swift; path = ADETests/PrMergeMergeStateTests.swift; sourceTree = "<group>"; };
 		27A125DE2C17BA32F9291513 /* ADE.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ADE.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		2856F8D2F2D630DD985B870A /* DatabaseBootstrap.sql */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text; name = DatabaseBootstrap.sql; path = ADE/Resources/DatabaseBootstrap.sql; sourceTree = "<group>"; };
 		781DE0B3C61717AE3057B82D /* VoiceGlossary.json */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.json; name = VoiceGlossary.json; path = ADE/Resources/VoiceGlossary.json; sourceTree = "<group>"; };
@@ -398,6 +401,7 @@
 		G20000000000000000000021 /* PrCommitRailView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrCommitRailView.swift; path = ADE/Views/PRs/PrCommitRailView.swift; sourceTree = "<group>"; };
 		G20000000000000000000023 /* PrStackDiagramView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrStackDiagramView.swift; path = ADE/Views/PRs/PrStackDiagramView.swift; sourceTree = "<group>"; };
 		G20000000000000000000024 /* PrRebaseScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrRebaseScreen.swift; path = ADE/Views/PRs/PrRebaseScreen.swift; sourceTree = "<group>"; };
+		G20000000000000000000030 /* PrMergeChecklist.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrMergeChecklist.swift; path = ADE/Views/PRs/PrMergeChecklist.swift; sourceTree = "<group>"; };
 		A10000000000000000000017 /* LaneTreeView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LaneTreeView.swift; path = ADE/Views/Lanes/LaneTreeView.swift; sourceTree = "<group>"; };
 		A10000000000000000000018 /* AddLaneSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AddLaneSheet.swift; path = ADE/Views/Lanes/AddLaneSheet.swift; sourceTree = "<group>"; };
 		A10000000000000000000019 /* LanesOfflineEmptyState.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LanesOfflineEmptyState.swift; path = ADE/Views/Lanes/LanesOfflineEmptyState.swift; sourceTree = "<group>"; };
@@ -556,6 +560,7 @@
 				G2000000000000000000000E /* CreatePrWizardView.swift */,
 				G20000000000000000000027 /* PrTargetBranchPickerDropdown.swift */,
 				G2000000000000000000000F /* PrMergeGateCard.swift */,
+				G20000000000000000000030 /* PrMergeChecklist.swift */,
 				G20000000000000000000020 /* PrAiSummaryCard.swift */,
 				G20000000000000000000021 /* PrCommitRailView.swift */,
 				G20000000000000000000023 /* PrStackDiagramView.swift */,
@@ -812,6 +817,7 @@
 				D30000000000000000000005 /* AttentionDrawerModelTests.swift */,
 				D30000000000000000000006 /* SyncEnvelopeChunkAssemblerTests.swift */,
 				D30000000000000000000007 /* WorkMarkdownStreamingParsingTests.swift */,
+				D30000000000000000000008 /* PrMergeMergeStateTests.swift */,
 			);
 			name = ADETests;
 			sourceTree = "<group>";
@@ -1076,6 +1082,7 @@
 				G1000000000000000000000E /* CreatePrWizardView.swift in Sources */,
 				G10000000000000000000027 /* PrTargetBranchPickerDropdown.swift in Sources */,
 				G1000000000000000000000F /* PrMergeGateCard.swift in Sources */,
+				G10000000000000000000030 /* PrMergeChecklist.swift in Sources */,
 				G10000000000000000000020 /* PrAiSummaryCard.swift in Sources */,
 				G10000000000000000000021 /* PrCommitRailView.swift in Sources */,
 				G10000000000000000000023 /* PrStackDiagramView.swift in Sources */,
@@ -1161,6 +1168,7 @@
 				D30000000000000000000015 /* AttentionDrawerModelTests.swift in Sources */,
 				D30000000000000000000016 /* SyncEnvelopeChunkAssemblerTests.swift in Sources */,
 				D30000000000000000000017 /* WorkMarkdownStreamingParsingTests.swift in Sources */,
+				D30000000000000000000018 /* PrMergeMergeStateTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

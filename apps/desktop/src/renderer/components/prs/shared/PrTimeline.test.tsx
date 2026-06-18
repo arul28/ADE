@@ -120,10 +120,14 @@ function makeEvent(overrides: Partial<PrTimelineEvent> & Pick<PrTimelineEvent, "
 function fixture500(): PrTimelineEvent[] {
   const events: PrTimelineEvent[] = [];
   for (let i = 0; i < 500; i += 1) {
+    // Distinct author per commit so the same-author commit-grouping fold does
+    // not collapse the list — this fixture exists to exercise virtualization
+    // over a large render-item count, not the grouping path.
     events.push(
       makeEvent({
         id: `e-${i}`,
         type: "commit_push",
+        author: `dev-${i}`,
         sha: "a".repeat(40),
         shortSha: "aaaaaaa",
         subject: `commit ${i}`,
@@ -322,6 +326,7 @@ describe("buildRenderItems", () => {
       makeEvent({
         type: "commit_push",
         id: "c1",
+        author: "solo",
         sha: "a".repeat(40),
         shortSha: "aaaaaaa",
         subject: "commit",
@@ -333,6 +338,78 @@ describe("buildRenderItems", () => {
     ]);
     expect(items.map((i) => i.kind)).toEqual(["event", "resolved-group"]);
     expect(items[0]!.id).toBe("c1");
+  });
+
+  function makeCommit(id: string, author: string): PrTimelineEvent {
+    return makeEvent({
+      id,
+      type: "commit_push",
+      author,
+      sha: "a".repeat(40),
+      shortSha: id.slice(0, 7),
+      subject: id,
+      commitCount: 1,
+      forcePushed: false,
+    });
+  }
+
+  it("folds 2+ consecutive same-author commits into one commit-group", () => {
+    const items = buildRenderItems([
+      makeCommit("c1", "alice"),
+      makeCommit("c2", "alice"),
+      makeCommit("c3", "alice"),
+    ]);
+    expect(items).toHaveLength(1);
+    const group = items[0]!;
+    expect(group.kind).toBe("commit-group");
+    if (group.kind !== "commit-group") throw new Error("expected commit-group");
+    expect(group.commits.map((c) => c.id)).toEqual(["c1", "c2", "c3"]);
+    expect(group.id).toBe("commit-group:c1");
+  });
+
+  it("breaks the commit run when the author changes", () => {
+    const items = buildRenderItems([
+      makeCommit("c1", "alice"),
+      makeCommit("c2", "alice"),
+      makeCommit("c3", "bob"),
+    ]);
+    // alice's pair folds; bob's single stays a plain event.
+    expect(items.map((i) => i.kind)).toEqual(["commit-group", "event"]);
+    expect(items[1]!.kind === "event" && items[1]!.event.id).toBe("c3");
+  });
+
+  it("synthesizes a single checks-summary before the merge from all check rows", () => {
+    const items = buildRenderItems([
+      makeEvent({
+        id: "check:lint",
+        type: "check_update",
+        checkName: "lint",
+        status: "completed",
+        conclusion: "success",
+        detailsUrl: null,
+      }),
+      makeEvent({
+        id: "check:test",
+        type: "check_update",
+        checkName: "test",
+        status: "completed",
+        conclusion: "failure",
+        detailsUrl: null,
+      }),
+      makeEvent({
+        type: "merge",
+        id: "merge:1",
+        mergeCommitSha: "abc1234",
+        method: "squash",
+        baseBranch: "main",
+      }),
+    ]);
+    // Check rows collapse into one summary placed *before* the merge.
+    expect(items.map((i) => i.kind)).toEqual(["checks-summary", "event"]);
+    const summary = items[0]!;
+    if (summary.kind !== "checks-summary") throw new Error("expected checks-summary");
+    expect(summary.checks.map((c) => c.checkName).sort()).toEqual(["lint", "test"]);
+    expect(items[1]!.kind === "event" && items[1]!.event.type).toBe("merge");
   });
 });
 

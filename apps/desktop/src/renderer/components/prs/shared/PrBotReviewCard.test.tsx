@@ -43,6 +43,15 @@ describe("detectBotProvider", () => {
     expect(detectBotProvider("sourcery-ai[bot]")).toBe("sourcery");
   });
 
+  it("identifies copilot, codex, vercel, linear, codecov bot logins", () => {
+    expect(detectBotProvider("github-copilot[bot]")).toBe("copilot");
+    expect(detectBotProvider("copilot-pull-request-reviewer[bot]")).toBe("copilot");
+    expect(detectBotProvider("chatgpt-codex-connector[bot]")).toBe("codex");
+    expect(detectBotProvider("vercel[bot]")).toBe("vercel");
+    expect(detectBotProvider("linear[bot]")).toBe("linear");
+    expect(detectBotProvider("codecov[bot]")).toBe("codecov");
+  });
+
   it("returns null for human logins", () => {
     expect(detectBotProvider("octocat")).toBeNull();
     expect(detectBotProvider("")).toBeNull();
@@ -92,6 +101,13 @@ describe("PrBotReviewCard", () => {
     expect(screen.getByText(/coderabbit/i)).toBeTruthy();
     expect(screen.getAllByText(/High/).length).toBeGreaterThanOrEqual(1);
     expect(screen.getAllByText(/3 issues/i).length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("renders an 'App' bot pill next to the reviewer name", () => {
+    render(
+      <PrBotReviewCard review={makeReview()} repoOwner="acme" repoName="ade" />,
+    );
+    expect(screen.getByText("App")).toBeTruthy();
   });
 
   it("sets data-provider for unknown reviewers to 'unknown'", () => {

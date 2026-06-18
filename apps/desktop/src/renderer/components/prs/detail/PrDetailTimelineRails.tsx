@@ -17,6 +17,7 @@ import type {
   PrStatus,
   PrTimelineEvent,
   PrWithConflicts,
+  UpdateBranchStrategy,
 } from "../../../../shared/types";
 import { PrTimeline, type PrTimelineFilters, type PrTimelineRef } from "../shared/PrTimeline";
 import { PrCommitRail, type PrCommitRailCommit } from "../shared/PrCommitRail";
@@ -93,7 +94,15 @@ type Props = {
   setShowLabelEditor: (value: boolean) => void;
   labelInput: string;
   setLabelInput: (value: string) => void;
-  onMerge: (method: MergeMethod, options?: { bypassRules?: boolean }) => void;
+  onMerge: (method: MergeMethod, options?: {
+    bypassRules?: boolean;
+    commitTitle?: string;
+    commitBody?: string;
+    expectedHeadSha?: string;
+  }) => void;
+  onUpdateBranch?: (strategy: UpdateBranchStrategy) => void;
+  updateBranchBusy?: boolean;
+  updateBranchNotice?: { tone: "success" | "error"; text: string } | null;
   onRequestReviewers: (request: ReviewerRequest) => void;
   onSetLabels: (labels: string[]) => void;
   onDeleteBranch?: () => void;
@@ -109,9 +118,25 @@ function shortenSha(sha: string): string {
   return sha.length > 7 ? sha.slice(0, 7) : sha;
 }
 
+// A "commented" review with no summary body is just a container for inline
+// thread comments — GitHub doesn't render it as a standalone "X reviewed" row,
+// so neither do we (its comments surface as the review-thread blocks).
+function isBodylessCommentedReview(state: string, body: string | null | undefined): boolean {
+  return state === "commented" && !body?.trim();
+}
+
 function readActivityString(event: PrActivityEvent, key: string): string | null {
   const value = (event.metadata as Record<string, unknown>)[key];
   return typeof value === "string" ? value : null;
+}
+
+function readActivityNumber(event: PrActivityEvent, key: string): number | null {
+  const value = (event.metadata as Record<string, unknown>)[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function readActivityBoolean(event: PrActivityEvent, key: string): boolean {
+  return Boolean((event.metadata as Record<string, unknown>)[key]);
 }
 
 function threadFirstCommentAuthor(thread: PrReviewThread): string | null {
@@ -188,6 +213,13 @@ export function buildTimelineEvents(args: {
     });
   }
 
+  // The `committed` timeline event only carries the git author (no avatar), so
+  // map each commit sha to its GitHub-user avatar from the commit snapshots.
+  const commitAvatarBySha = new Map<string, string>();
+  for (const c of args.commits ?? []) {
+    if (c.sha && c.author.avatarUrl) commitAvatarBySha.set(c.sha, c.author.avatarUrl);
+  }
+
   // Activity events split into push / label / merge.
   for (const act of args.activity) {
     if (act.type === "commit") {
@@ -198,15 +230,20 @@ export function buildTimelineEvents(args: {
         type: "commit_push",
         timestamp: act.timestamp,
         author: act.author ?? null,
-        avatarUrl: act.avatarUrl ?? null,
+        avatarUrl: act.avatarUrl ?? commitAvatarBySha.get(sha) ?? null,
         sha,
         shortSha: shortenSha(sha),
         subject,
         commitCount: 1,
         forcePushed: false,
+        bodyText: readActivityString(act, "bodyText"),
       });
     } else if (act.type === "force_push") {
-      const sha = readActivityString(act, "sha") ?? act.id;
+      const beforeSha = readActivityString(act, "beforeSha");
+      const afterSha = readActivityString(act, "afterSha");
+      // Same key the commit rail uses (`||` so an empty afterSha falls through),
+      // so selecting the rail's force-push entry scrolls to this event.
+      const sha = afterSha || readActivityString(act, "sha") || act.id;
       events.push({
         id: `fpush:${act.id}`,
         type: "commit_push",
@@ -218,6 +255,8 @@ export function buildTimelineEvents(args: {
         subject: readActivityString(act, "subject") ?? "Force-pushed",
         commitCount: 1,
         forcePushed: true,
+        beforeSha,
+        afterSha,
       });
     } else if (act.type === "label") {
       const action = readActivityString(act, "action") === "removed" ? "removed" : "added";
@@ -243,8 +282,109 @@ export function buildTimelineEvents(args: {
           avatarUrl: act.avatarUrl ?? null,
           mergeCommitSha: readActivityString(act, "mergeCommitSha"),
           method: null,
+          baseBranch: args.pr.baseBranch ?? null,
+        });
+      } else if (
+        newState === "closed"
+        || newState === "reopened"
+        || newState === "ready_for_review"
+        || newState === "converted_to_draft"
+      ) {
+        events.push({
+          id: `lifecycle:${act.id}`,
+          type: "lifecycle",
+          timestamp: act.timestamp,
+          author: act.author ?? null,
+          avatarUrl: act.avatarUrl ?? null,
+          state: newState,
+          commitSha: readActivityString(act, "commitSha"),
         });
       }
+    } else if (act.type === "review_request") {
+      const action = readActivityString(act, "action") === "removed" ? "removed" : "added";
+      const reviewer = readActivityString(act, "reviewer");
+      const team = readActivityString(act, "team");
+      // Skip empty requests where neither a reviewer nor a team is known.
+      if (reviewer || team) {
+        events.push({
+          id: `review-req:${act.id}`,
+          type: "review_request",
+          timestamp: act.timestamp,
+          author: act.author ?? null,
+          avatarUrl: act.avatarUrl ?? null,
+          reviewer: reviewer ?? team ?? "",
+          team,
+          action,
+        });
+      }
+    } else if (act.type === "cross_referenced") {
+      const refNumber = readActivityNumber(act, "refNumber");
+      const rawState = readActivityString(act, "referencedState");
+      const referencedState =
+        rawState === "closed" || rawState === "merged" || rawState === "draft" ? rawState : "open";
+      if (refNumber !== null) {
+        events.push({
+          id: `xref:${act.id}`,
+          type: "cross_reference",
+          timestamp: act.timestamp,
+          author: act.author ?? null,
+          avatarUrl: act.avatarUrl ?? null,
+          refNumber,
+          refTitle: readActivityString(act, "refTitle") ?? "",
+          refUrl: readActivityString(act, "refUrl") ?? "",
+          referencedState,
+          isPullRequest: readActivityBoolean(act, "isPullRequest"),
+        });
+      }
+    } else if (act.type === "renamed") {
+      events.push({
+        id: `renamed:${act.id}`,
+        type: "renamed",
+        timestamp: act.timestamp,
+        author: act.author ?? null,
+        avatarUrl: act.avatarUrl ?? null,
+        from: readActivityString(act, "from") ?? "",
+        to: readActivityString(act, "to") ?? "",
+      });
+    } else if (act.type === "assigned") {
+      const assignee = readActivityString(act, "assignee");
+      const action = readActivityString(act, "action") === "removed" ? "removed" : "added";
+      if (assignee) {
+        events.push({
+          id: `assign:${act.id}`,
+          type: "assignment",
+          timestamp: act.timestamp,
+          author: act.author ?? null,
+          avatarUrl: act.avatarUrl ?? null,
+          action,
+          assignee,
+          assigneeAvatarUrl: readActivityString(act, "assigneeAvatarUrl"),
+        });
+      }
+    } else if (act.type === "head_ref_change") {
+      const rawAction = readActivityString(act, "action");
+      const action =
+        rawAction === "restored" ? "restored" : rawAction === "base_changed" ? "base_changed" : "deleted";
+      events.push({
+        id: `branchref:${act.id}`,
+        type: "branch_ref",
+        timestamp: act.timestamp,
+        author: act.author ?? null,
+        avatarUrl: act.avatarUrl ?? null,
+        action,
+        branch: readActivityString(act, "branch") ?? "",
+        fromBranch: readActivityString(act, "fromBranch"),
+      });
+    } else if (act.type === "review_dismissed") {
+      events.push({
+        id: `dismissed:${act.id}`,
+        type: "review_dismissed",
+        timestamp: act.timestamp,
+        author: act.author ?? null,
+        avatarUrl: act.avatarUrl ?? null,
+        reviewer: readActivityString(act, "reviewer"),
+        reason: readActivityString(act, "reason"),
+      });
     }
   }
 
@@ -261,7 +401,7 @@ export function buildTimelineEvents(args: {
       type: "commit_push",
       timestamp: commit.committedDate || args.pr.createdAt || new Date(0).toISOString(),
       author: commit.author.login ?? commit.author.name ?? null,
-      avatarUrl: null,
+      avatarUrl: commit.author.avatarUrl ?? null,
       sha: commit.sha,
       shortSha: commit.shortSha || shortenSha(commit.sha),
       subject: commit.message,
@@ -272,6 +412,11 @@ export function buildTimelineEvents(args: {
 
   // Reviews
   for (const review of args.reviews) {
+    // Skip inline-only "commented" reviews with no summary body. GitHub does not
+    // show these as standalone "X reviewed" rows — their inline comments surface
+    // as the review-thread blocks instead. Approvals / changes-requested /
+    // dismissals (and reviews with a real summary body) still render.
+    if (isBodylessCommentedReview(review.state, review.body)) continue;
     const ts = review.submittedAt ?? args.pr.createdAt ?? new Date(0).toISOString();
     events.push({
       id: `review:${review.reviewer}:${ts}`,
@@ -298,10 +443,14 @@ export function buildTimelineEvents(args: {
       path: thread.path,
       line: thread.line,
       startLine: thread.startLine,
+      originalLine: thread.originalLine,
+      originalStartLine: thread.originalStartLine,
+      diffSide: thread.diffSide,
       isResolved: thread.isResolved,
       isOutdated: thread.isOutdated,
       commentCount: thread.comments.length,
       firstCommentBody: threadFirstCommentBody(thread),
+      comments: thread.comments,
     });
   }
 
@@ -352,6 +501,9 @@ export function buildTimelineEvents(args: {
       if (seenReviewIds.has(reviewId)) continue;
       seenReviewIds.add(reviewId);
       const state = (readActivityString(act, "state") ?? "commented") as PrReview["state"];
+      // Same as the reviews loop: inline-only commented reviews are represented
+      // by their thread blocks, not a standalone "X reviewed" row.
+      if (isBodylessCommentedReview(state, act.body)) continue;
       events.push({
         id: `activity-review:${act.id}`,
         type: "review",
@@ -386,7 +538,7 @@ export function buildTimelineEvents(args: {
   return stableSortByTs(events);
 }
 
-function buildCommitRailCommits(
+export function buildCommitRailCommits(
   activity: PrActivityEvent[],
   commitSnapshots: PrCommit[],
   reviewThreads: PrReviewThread[],
@@ -394,8 +546,13 @@ function buildCommitRailCommits(
   const commits: PrCommitRailCommit[] = [];
   for (const act of activity) {
     if (act.type !== "commit" && act.type !== "force_push") continue;
-    const sha = readActivityString(act, "sha") ?? act.id;
-    const subject = readActivityString(act, "subject") ?? act.body ?? "";
+    const forcePushed = act.type === "force_push";
+    // Match the EXACT sha the timeline event keys on (a force-push uses its
+    // afterSha) so selecting a rail entry scrolls to it. Use `||` not `??` so an
+    // empty-string sha falls through to a non-empty, unique id.
+    const afterSha = forcePushed ? readActivityString(act, "afterSha") : null;
+    const sha = afterSha || readActivityString(act, "sha") || act.id;
+    const subject = readActivityString(act, "subject") ?? act.body ?? (forcePushed ? "Force-pushed branch" : "");
     commits.push({
       sha,
       shortSha: shortenSha(sha),
@@ -404,6 +561,7 @@ function buildCommitRailCommits(
       authoredAt: act.timestamp,
       threadCount: 0,
       resolvedCount: 0,
+      forcePushed,
     });
   }
   const seen = new Set(commits.map((commit) => commit.sha));
@@ -474,6 +632,9 @@ export const PrDetailTimelineRails = forwardRef<PrDetailTimelineRailsRef, Props>
       labelInput,
       setLabelInput,
       onMerge,
+      onUpdateBranch,
+      updateBranchBusy,
+      updateBranchNotice,
       onRequestReviewers,
       onSetLabels,
       onDeleteBranch,
@@ -643,9 +804,13 @@ export const PrDetailTimelineRails = forwardRef<PrDetailTimelineRailsRef, Props>
                 status={status}
                 checks={checks}
                 reviews={reviews}
+                commits={commitSnapshots}
                 mergeMethod={mergeMethod}
                 actionBusy={actionBusy}
                 onMerge={onMerge}
+                onUpdateBranch={onUpdateBranch}
+                updateBranchBusy={updateBranchBusy}
+                updateBranchNotice={updateBranchNotice}
                 onDeleteBranch={onDeleteBranch}
                 deleteBranchBusy={deleteBranchBusy}
                 onOpenManageLane={onOpenManageLane}

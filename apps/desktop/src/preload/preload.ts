@@ -270,6 +270,8 @@ import type {
   LandPrArgs,
   LandStackArgs,
   LandResult,
+  UpdateBranchArgs,
+  UpdateBranchResult,
   GetDiffChangesArgs,
   GetLaneConflictStatusArgs,
   GetFileDiffArgs,
@@ -7254,6 +7256,10 @@ contextBridge.exposeInMainWorld("ade", {
       callProjectRuntimeActionOr("pr", "land", { args }, () =>
         ipcRenderer.invoke(IPC.prsLand, args),
       ),
+    updateBranch: async (args: UpdateBranchArgs): Promise<UpdateBranchResult> =>
+      callProjectRuntimeActionOr("pr", "updateBranch", { args }, () =>
+        ipcRenderer.invoke(IPC.prsUpdateBranch, args),
+      ),
     landStack: async (args: LandStackArgs): Promise<LandResult[]> =>
       callProjectRuntimeActionOr("pr", "landStack", { args }, () =>
         ipcRenderer.invoke(IPC.prsLandStack, args),
@@ -7546,6 +7552,10 @@ contextBridge.exposeInMainWorld("ade", {
     getActivityByGithub: async (coords: PrGithubCoords): Promise<PrActivityEvent[]> =>
       callPrReadRuntimeActionOr("getActivityByGithub", { arg: coords }, () =>
         ipcRenderer.invoke(IPC.prsGetActivityByGithub, coords),
+      ),
+    getStatusByGithub: async (coords: PrGithubCoords): Promise<PrStatus | null> =>
+      callPrReadRuntimeActionOr("getStatusByGithub", { arg: coords }, () =>
+        ipcRenderer.invoke(IPC.prsGetStatusByGithub, coords),
       ),
     getChecksByGithub: async (coords: PrGithubCoords): Promise<PrCheck[]> =>
       callPrReadRuntimeActionOr("getChecksByGithub", { arg: coords }, () =>

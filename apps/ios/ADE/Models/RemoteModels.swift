@@ -2874,6 +2874,35 @@ struct PullRequestDraftSuggestion: Codable, Equatable {
   var body: String
 }
 
+/// GitHub merge-box state, mirrored from the desktop `MergeStateStatus` union
+/// (GraphQL `mergeStateStatus`, normalized lowercase). Decoded safely: an
+/// unrecognized wire value falls back to `.unknown` rather than failing the
+/// whole snapshot decode.
+enum PrMergeStateStatus: String, Codable, Equatable {
+  case behind
+  case blocked
+  case clean
+  case dirty
+  case draft
+  case hasHooks = "has_hooks"
+  case unknown
+  case unstable
+
+  init(from decoder: Decoder) throws {
+    let raw = try decoder.singleValueContainer().decode(String.self)
+    self = PrMergeStateStatus(rawValue: raw.lowercased()) ?? .unknown
+  }
+}
+
+/// GitHub GraphQL `reviewDecision`. Null on the wire when no reviews are
+/// required; an unrecognized value decodes to nil so older/newer hosts don't
+/// break the snapshot decode.
+enum PrReviewDecisionValue: String, Codable, Equatable {
+  case approved
+  case changesRequested = "changes_requested"
+  case reviewRequired = "review_required"
+}
+
 struct PrStatus: Codable, Equatable {
   var prId: String
   var state: String
@@ -2882,6 +2911,86 @@ struct PrStatus: Codable, Equatable {
   var isMergeable: Bool
   var mergeConflicts: Bool
   var behindBaseBy: Int
+  /// GitHub merge-box state. Optional/nil for older runtimes or while computing.
+  var mergeStateStatus: PrMergeStateStatus?
+  /// GitHub GraphQL `reviewDecision`. Nil when no reviews are required.
+  var reviewDecision: PrReviewDecisionValue?
+  /// Approving reviews counted, when GitHub exposes it (for "0 of 1").
+  var approvalsCount: Int?
+  /// Required approving reviews, when GitHub exposes it.
+  var requiredApprovals: Int?
+  /// True while GitHub is still computing mergeability — the merge UI keeps polling.
+  var mergeabilityComputing: Bool?
+  /// Viewer can bypass branch protection (admin / bypass permission).
+  var canBypass: Bool?
+  /// Head SHA at the time status was computed; used for the stale-head guard.
+  var headSha: String?
+
+  /// Decodes an unknown `reviewDecision` string to nil instead of throwing, so a
+  /// new GitHub enum value never fails the whole snapshot decode. All other
+  /// fields use synthesized decoding via `decodeIfPresent` semantics.
+  private enum CodingKeys: String, CodingKey {
+    case prId, state, checksStatus, reviewStatus, isMergeable, mergeConflicts, behindBaseBy
+    case mergeStateStatus, reviewDecision, approvalsCount, requiredApprovals
+    case mergeabilityComputing, canBypass, headSha
+  }
+
+  init(from decoder: Decoder) throws {
+    let c = try decoder.container(keyedBy: CodingKeys.self)
+    prId = try c.decode(String.self, forKey: .prId)
+    state = try c.decode(String.self, forKey: .state)
+    checksStatus = try c.decode(String.self, forKey: .checksStatus)
+    reviewStatus = try c.decode(String.self, forKey: .reviewStatus)
+    isMergeable = try c.decode(Bool.self, forKey: .isMergeable)
+    mergeConflicts = try c.decode(Bool.self, forKey: .mergeConflicts)
+    behindBaseBy = try c.decode(Int.self, forKey: .behindBaseBy)
+    mergeStateStatus = try c.decodeIfPresent(PrMergeStateStatus.self, forKey: .mergeStateStatus)
+    // Unknown reviewDecision → nil rather than a decode failure.
+    if let raw = try c.decodeIfPresent(String.self, forKey: .reviewDecision) {
+      reviewDecision = PrReviewDecisionValue(rawValue: raw)
+    } else {
+      reviewDecision = nil
+    }
+    approvalsCount = try c.decodeIfPresent(Int.self, forKey: .approvalsCount)
+    requiredApprovals = try c.decodeIfPresent(Int.self, forKey: .requiredApprovals)
+    mergeabilityComputing = try c.decodeIfPresent(Bool.self, forKey: .mergeabilityComputing)
+    canBypass = try c.decodeIfPresent(Bool.self, forKey: .canBypass)
+    headSha = try c.decodeIfPresent(String.self, forKey: .headSha)
+  }
+
+  /// Memberwise init retained for previews / tests now that a custom decoder
+  /// suppresses Swift's synthesized one.
+  init(
+    prId: String,
+    state: String,
+    checksStatus: String,
+    reviewStatus: String,
+    isMergeable: Bool,
+    mergeConflicts: Bool,
+    behindBaseBy: Int,
+    mergeStateStatus: PrMergeStateStatus? = nil,
+    reviewDecision: PrReviewDecisionValue? = nil,
+    approvalsCount: Int? = nil,
+    requiredApprovals: Int? = nil,
+    mergeabilityComputing: Bool? = nil,
+    canBypass: Bool? = nil,
+    headSha: String? = nil
+  ) {
+    self.prId = prId
+    self.state = state
+    self.checksStatus = checksStatus
+    self.reviewStatus = reviewStatus
+    self.isMergeable = isMergeable
+    self.mergeConflicts = mergeConflicts
+    self.behindBaseBy = behindBaseBy
+    self.mergeStateStatus = mergeStateStatus
+    self.reviewDecision = reviewDecision
+    self.approvalsCount = approvalsCount
+    self.requiredApprovals = requiredApprovals
+    self.mergeabilityComputing = mergeabilityComputing
+    self.canBypass = canBypass
+    self.headSha = headSha
+  }
 }
 
 struct PrCheck: Codable, Identifiable, Equatable {
@@ -3552,6 +3661,12 @@ struct PrActionCapabilities: Codable, Equatable {
   var canUpdateDescription: Bool
   var canDelete: Bool
   var mergeBlockedReason: String?
+  /// GitHub merge-box state, so mobile renders the same blocker detail as desktop.
+  var mergeStateStatus: PrMergeStateStatus?
+  /// Viewer can bypass branch protection (admin / bypass permission).
+  var canBypass: Bool?
+  /// Branch is behind base and can be updated from the merge surface.
+  var canUpdateBranch: Bool?
   var requiresLive: Bool
 }
 

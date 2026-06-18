@@ -28,6 +28,25 @@ describe("commands", () => {
     }));
   });
 
+  it("parses /pr update-branch as a multi-word ADE command with a strategy arg", () => {
+    const withStrategy = parseCommand("/pr update-branch rebase");
+    expect(withStrategy?.name).toBe("/pr update-branch");
+    expect(withStrategy?.args).toBe("rebase");
+    expect(withStrategy ? commandPlacement(withStrategy) : null).toBe("right");
+
+    const bare = parseCommand("/pr update-branch");
+    expect(bare?.name).toBe("/pr update-branch");
+    expect(bare?.args).toBe("");
+
+    // Must not shadow the sibling /pr land command.
+    expect(parseCommand("/pr land confirm squash bypass")?.name).toBe("/pr land");
+
+    expect(paletteCommands("/pr update")).toContainEqual(expect.objectContaining({
+      name: "/pr update-branch",
+      source: "ade",
+    }));
+  });
+
   it("routes lane reparent to the right pane", () => {
     const parsed = parseCommand("/reparent lane-parent origin/main");
     expect(parsed?.name).toBe("/reparent");
