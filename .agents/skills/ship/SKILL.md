@@ -67,6 +67,23 @@ only user-visible output is the per-iteration status line and the final summary.
 
 ## ADE deltas to the playbook
 
+**Every push restarts the review bots — Greptile especially.** Pushing a new
+commit re-triggers Greptile and Codex from scratch; an in-progress Greptile
+review (`Greptile Review` status stuck `pending`/`IN_PROGRESS`, often 15-25 min)
+is *cancelled and restarted* by the next push, so a rapid fix-every-iteration
+cadence means Greptile never actually lands a re-review. Consequences:
+- **Batch all fixes for an iteration into ONE push**, then genuinely wait for
+  Greptile to reach a terminal state before pushing again. Do not push a follow-up
+  while its status check is still `pending` — you'll just reset its ~20-min clock.
+- Codex re-reviews fast (~3-5 min) and tends to surface the *next* instance of a
+  bug class each round (e.g. you pinned 2 of 4 cleanups → it flags the other 2).
+  **Sweep the whole class in one iteration** (every cleanup pinned, every mutating
+  call guarded) so you don't trade N fast Codex rounds for N Greptile restarts.
+- When deciding to merge: a perpetually-restarted Greptile that never completed
+  on the latest commit is not a "still reviewing" signal to wait on forever — it's
+  a signal you pushed too often. Once Codex is clean and CI is green on a commit
+  you have NOT pushed over, let Greptile finish that commit, then merge.
+
 **Rebase only on real conflicts.** `behindMain` alone does NOT trigger a rebase.
 Only rebase/merge `main` when there is an actual conflict (`mergeStateStatus`
 shows the PR is dirty/conflicting). If the branch is merely behind but cleanly

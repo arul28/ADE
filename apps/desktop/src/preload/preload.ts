@@ -6152,7 +6152,10 @@ contextBridge.exposeInMainWorld("ade", {
     dispose: async (arg: {
       ptyId: string;
       sessionId?: string;
-    }): Promise<PtyDisposeResult> => {
+    }, pin?: OpenProjectBinding | null): Promise<PtyDisposeResult> => {
+      if (pin) {
+        return callPinnedRuntimeAction<PtyDisposeResult>(pin, "pty", "dispose", { args: arg });
+      }
       const runtime = await callProjectRuntimeActionIfBound<PtyDisposeResult>(
         "pty",
         "dispose",

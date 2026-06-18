@@ -1616,7 +1616,7 @@ declare global {
           cols: number;
           rows: number;
         }) => Promise<void>;
-        dispose: (args: { ptyId: string; sessionId?: string }) => Promise<PtyDisposeResult>;
+        dispose: (args: { ptyId: string; sessionId?: string }, pin?: OpenProjectBinding | null) => Promise<PtyDisposeResult>;
         setDataSubscriptions: (args: { ptyIds: string[] }) => Promise<void>;
         onData: (cb: (ev: PtyDataEvent) => void) => () => void;
         onExit: (cb: (ev: PtyExitEvent) => void) => () => void;

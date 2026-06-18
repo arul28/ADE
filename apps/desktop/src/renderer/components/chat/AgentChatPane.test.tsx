@@ -3654,7 +3654,9 @@ describe("AgentChatPane submit recovery", () => {
         });
       });
       expect(send).not.toHaveBeenCalled();
-      expect(deleteChat).toHaveBeenCalledWith({ sessionId: "created-session" });
+      // Orchestrator lead rollback is pinned to the originating project's binding
+      // (null in the default test store).
+      expect(deleteChat).toHaveBeenCalledWith({ sessionId: "created-session" }, null);
       expect(await screen.findByText("Orchestration bundle could not be allocated: disk full")).toBeTruthy();
       expect(warnSpy).toHaveBeenCalled();
     } finally {

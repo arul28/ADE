@@ -6547,6 +6547,8 @@ export function AgentChatPane({
       // changed (or the launch timed out); checked before the inner
       // orchestration mutation so a bundle is never allocated in the wrong project.
       assertActive?: () => void;
+      // Originating project binding, used to pin the orchestrator lead rollback.
+      pin?: OpenProjectBinding | null;
     } = {},
   ): Promise<AgentChatSession> => {
       if (constrainedModelSelectionError) {
@@ -6616,7 +6618,7 @@ export function AgentChatPane({
             "[AgentChatPane] orchestration.runCreate failed; lead chat created without bundle",
             runCreateError,
           );
-          await window.ade.agentChat.delete({ sessionId: created.id }).catch((cleanupError: unknown) => {
+          await window.ade.agentChat.delete({ sessionId: created.id }, options.pin).catch((cleanupError: unknown) => {
             console.warn("[AgentChatPane] orchestration lead cleanup failed", cleanupError);
           });
           const message = runCreateError instanceof Error
@@ -6921,6 +6923,10 @@ export function AgentChatPane({
             onFallback: onAutoCreateNameFallback,
           });
       onAutoCreateNameResolved?.();
+      // Guard before branch discovery too: git.fetch/listBranches run against the
+      // primary lane through the active binding, so a switch during naming must
+      // abort here rather than fetch/list refs in the now-active project.
+      assertActive?.();
       const baseSource = effectiveNewLaneBaseSource(projectConfigSnapshot);
       const branches = await fetchNewLaneBaseBranches({
         source: baseSource,
@@ -7025,7 +7031,7 @@ export function AgentChatPane({
       // them must abort before the irreversible step rather than create/send in
       // the wrong project.
       assertActive?.();
-      createdSession = await createSessionForLane(targetLane.laneId, { select: false, launchState: prepared, assertActive });
+      createdSession = await createSessionForLane(targetLane.laneId, { select: false, launchState: prepared, assertActive, pin });
       // Re-assert after creation: if the launch timed out (or the project
       // switched) while the session was being created, abort now so the catch
       // tears the session down rather than sending into the wrong project.
@@ -7074,6 +7080,7 @@ export function AgentChatPane({
     targetLane: DraftLaunchLaneTarget,
     mode: DraftLaunchMode,
     assertActive?: () => void,
+    pin?: OpenProjectBinding | null,
   ): Promise<StartedDraftLaunch> => {
     if (!onLaunchCliSession) throw new Error("CLI sessions are not available from this surface.");
     if (!prepared.modelId) throw new Error("Select a model before launching a CLI session.");
@@ -7146,7 +7153,9 @@ export function AgentChatPane({
     try {
       assertActive?.();
     } catch (abortError) {
-      await window.ade.pty.dispose({ ptyId: result.ptyId, sessionId: result.sessionId }).catch((disposeError: unknown) => {
+      // Pin the dispose to the originating project so a concurrent switch can't
+      // route it at the now-active runtime (or throw under the transition guard).
+      await window.ade.pty.dispose({ ptyId: result.ptyId, sessionId: result.sessionId }, pin).catch((disposeError: unknown) => {
         console.warn("draft cli launch pty cleanup failed", disposeError);
       });
       throw abortError;
@@ -7276,7 +7285,7 @@ export function AgentChatPane({
       const launched = await withDraftLaunchTimeout(
         kind === "chat"
           ? startDraftChatLaunch(prepared, targetLane, launchBinding, assertLaunchActive)
-          : startDraftCliLaunch(prepared, targetLane, mode, assertLaunchActive),
+          : startDraftCliLaunch(prepared, targetLane, mode, assertLaunchActive, launchBinding),
         "Session start",
         markLaunchTimedOut,
       );
