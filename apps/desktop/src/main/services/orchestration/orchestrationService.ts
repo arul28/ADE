@@ -1817,7 +1817,16 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
         runtime,
         [
           { op: "replace", path: "/leadState/planning/intake", value: recorded },
-          { op: "replace", path: "/leadState/planning/stage", value: "round_functional" },
+          {
+            op: "replace",
+            path: "/leadState/planning/stage",
+            value: advancePlanningStagePastSkipped(
+              "round_functional",
+              (planning.overrides?.skippedRounds ?? []).filter((kind) =>
+                hasSkippedRoundUserOverride(runtime.manifest!, kind),
+              ),
+            ),
+          },
         ],
         "planning: codebase intake recorded",
       );
@@ -2145,23 +2154,28 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
       }
       const nowMs = now().getTime();
       const stale = manifest.tasks.filter(
-        (task) =>
-          (task.status === "claimed" || task.status === "in_progress") &&
-          typeof task.claimLeaseUntil === "string" &&
-          Number.isFinite(Date.parse(task.claimLeaseUntil)) &&
-          Date.parse(task.claimLeaseUntil) <= nowMs,
+        (task) => {
+          if (task.status !== "claimed" && task.status !== "in_progress") return false;
+          const leaseMs =
+            typeof task.claimLeaseUntil === "string" ? Date.parse(task.claimLeaseUntil) : NaN;
+          return !Number.isFinite(leaseMs) || leaseMs <= nowMs;
+        },
       );
       if (!stale.length) {
         return { ok: true, manifest, etag: manifest.etag, recovered: [] };
       }
       const ops: ManifestPatchOp[] = [];
       for (const task of stale) {
-        ops.push(
-          { op: "replace", path: `/tasks/{id:${task.id}}/status`, value: "pending" },
-          { op: "remove", path: `/tasks/{id:${task.id}}/assigneeSessionId` },
-          { op: "remove", path: `/tasks/{id:${task.id}}/claimedAt` },
-          { op: "remove", path: `/tasks/{id:${task.id}}/claimLeaseUntil` },
-        );
+        ops.push({ op: "replace", path: `/tasks/{id:${task.id}}/status`, value: "pending" });
+        if (task.assigneeSessionId !== undefined) {
+          ops.push({ op: "remove", path: `/tasks/{id:${task.id}}/assigneeSessionId` });
+        }
+        if (task.claimedAt !== undefined) {
+          ops.push({ op: "remove", path: `/tasks/{id:${task.id}}/claimedAt` });
+        }
+        if (task.claimLeaseUntil !== undefined) {
+          ops.push({ op: "remove", path: `/tasks/{id:${task.id}}/claimLeaseUntil` });
+        }
       }
       try {
         const res = await directPatch(runtime, ops, `recover ${stale.length} stale task(s)`);

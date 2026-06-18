@@ -247,6 +247,19 @@ describe("planning state machine gates", () => {
     expect((await s.svc.markPlanningReady(s.runId, s.bundlePath)).ok).toBe(true);
   });
 
+  it("advances intake past rounds skipped before codebase intake", async () => {
+    const ov = await s.svc.recordPlanningOverride(s.runId, s.bundlePath, {
+      skippedRounds: ["functional"],
+      skipReason: "skip the functional round",
+    });
+    expect(ov.ok).toBe(true);
+    expect(manifestOf(s).leadState.planning?.stage).toBe("intake");
+
+    await recordIntake(s);
+
+    expect(manifestOf(s).leadState.planning?.stage).toBe("round_ui");
+  });
+
   it("does not count skipped rounds when the matching user override entry is missing", async () => {
     await recordIntake(s);
     await recordRound(s, "functional");
@@ -570,6 +583,80 @@ describe("crash-resume: releaseStaleClaims", () => {
     expect(task.status).toBe("pending");
     expect(task.assigneeSessionId).toBeUndefined();
     expect(task.claimLeaseUntil).toBeUndefined();
+
+    await s.svc.dispose();
+    await fsp.rm(s.laneRoot, { recursive: true, force: true });
+  });
+
+  it("recovers claimed tasks with missing or malformed leases", async () => {
+    const s = await makeSetup();
+    const m0 = manifestOf(s);
+    const now = new Date().toISOString();
+    const future = new Date(Date.now() + 60_000).toISOString();
+    const res = await s.svc.manifestPatch(
+      {
+        runId: s.runId,
+        ifMatchEtag: m0.etag,
+        actorRole: "lead",
+        actorSessionId: "S-lead",
+        patches: [
+          {
+            op: "add",
+            path: "/tasks/-",
+            value: {
+              id: "T-missing",
+              phaseId: "developing",
+              title: "Missing lease",
+              description: "recover missing lease",
+              status: "claimed",
+              assigneeSessionId: "S-worker-dead",
+              claimedAt: now,
+              validationGate: { required: false, stepIds: [] },
+            },
+          },
+          {
+            op: "add",
+            path: "/tasks/-",
+            value: {
+              id: "T-malformed",
+              phaseId: "developing",
+              title: "Malformed lease",
+              description: "recover malformed lease",
+              status: "in_progress",
+              assigneeSessionId: "S-worker-dead",
+              claimedAt: now,
+              claimLeaseUntil: "not-a-date",
+              validationGate: { required: false, stepIds: [] },
+            },
+          },
+          {
+            op: "add",
+            path: "/tasks/-",
+            value: {
+              id: "T-future",
+              phaseId: "developing",
+              title: "Future lease",
+              description: "do not recover future lease",
+              status: "claimed",
+              assigneeSessionId: "S-worker-live",
+              claimedAt: now,
+              claimLeaseUntil: future,
+              validationGate: { required: false, stepIds: [] },
+            },
+          },
+        ],
+      },
+      s.bundlePath,
+    );
+    expect(res.ok).toBe(true);
+
+    const recovered = await s.svc.releaseStaleClaims(s.runId, s.bundlePath);
+    expect(recovered.ok).toBe(true);
+    expect(recovered.ok && recovered.recovered).toEqual(["T-missing", "T-malformed"]);
+    const tasks = manifestOf(s).tasks;
+    expect(tasks.find((t) => t.id === "T-missing")?.status).toBe("pending");
+    expect(tasks.find((t) => t.id === "T-malformed")?.status).toBe("pending");
+    expect(tasks.find((t) => t.id === "T-future")?.status).toBe("claimed");
 
     await s.svc.dispose();
     await fsp.rm(s.laneRoot, { recursive: true, force: true });
