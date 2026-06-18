@@ -11,8 +11,8 @@ stream plus session metadata.
 
 | Path | Role |
 |---|---|
-| `AgentChatPane.tsx` | Top-level pane; IPC wiring, session state, presentation profile resolution, lane navigation, parallel launch orchestration, mounting of sub-panels and composer. Visible Work grid tiles flush user/lifecycle/live events immediately and poll-recover active transcripts so inactive-but-visible tiles stay current. Draft chats preserve user-touched model/reasoning/permission controls across late lane-session hydration, and composer text is keyed by session id or lane draft key so switching draft lanes does not reuse another draft's text. Accepts an optional `draftContextTargetId` prop so the Work sidebar can target an unsaved draft composer for context insertions (attachments, iOS/App Control/browser selections, draft text) even before a chat session exists; window event handlers match on either `sessionId` or `draftTargetId`. When auto-creating a lane the draft resolves the primary lane for the `onLaneChange` callback so the sidebar lane context stays in sync. Composer draft state (text, model, reasoning, attachments, context items) is persisted to `localStorage` under the `ade.chat.composerDraft.v1` key family and restored on scope change through `ComposerDraftStorageSnapshot`. Draft launches are tracked through store-backed `DraftLaunchJob` state machines with multi-step progress (`naming-lane` -> `creating-lane` -> `starting-session` -> `sending-prompt` -> `ready` / `failed`); the composer is cleared optimistically at job start, stale active rows gain a hide-status escape hatch, and the `DraftLaunchSnapshot` captures the full control state so the async launch uses frozen settings. |
-| `apps/desktop/src/renderer/lib/draftLaunchJobs.ts` | Pure helper for Work draft-launch job DTOs, terminal/stale-state detection, and pruning. The list keeps active rows ahead of terminal rows, fills remaining retained slots with terminal rows, and keeps at least one terminal row alongside active jobs. |
+| `AgentChatPane.tsx` | Top-level pane; IPC wiring, session state, presentation profile resolution, lane navigation, parallel launch orchestration, mounting of sub-panels and composer. Visible Work grid tiles flush user/lifecycle/live events immediately and poll-recover active transcripts so inactive-but-visible tiles stay current. Draft chats preserve user-touched model/reasoning/permission controls across late lane-session hydration, and composer text is keyed by session id or lane draft key so switching draft lanes does not reuse another draft's text. Accepts an optional `draftContextTargetId` prop so the Work sidebar can target an unsaved draft composer for context insertions (attachments, iOS/App Control/browser selections, draft text) even before a chat session exists; window event handlers match on either `sessionId` or `draftTargetId`. When auto-creating a lane the draft resolves the primary lane for the `onLaneChange` callback so the sidebar lane context stays in sync. Composer draft state (text, model, reasoning, attachments, context items) is persisted to `localStorage` under the `ade.chat.composerDraft.v1` key family and restored on scope change through `ComposerDraftStorageSnapshot`. Draft launches are tracked through **root**-store-backed `DraftLaunchJob` state machines with multi-step progress (`naming-lane` -> `creating-lane` -> `starting-session` -> `sending-prompt` -> `ready` / `failed`); jobs live in the root store (not the per-project store) so an in-flight launch survives a remote project switch that tears down the originating project surface. The detached launch chain captures the originating `OpenProjectBinding`, aborts before any mutating call if the active project drifts (`LAUNCH_PROJECT_CHANGED_MESSAGE`), pins rollback to that binding, and caps each step at 90 s (`withDraftLaunchTimeout`). The composer is cleared optimistically at job start, stale active rows gain a hide-status escape hatch, and the `DraftLaunchSnapshot` captures the full control state so the async launch uses frozen settings. |
+| `apps/desktop/src/renderer/lib/draftLaunchJobs.ts` | Pure helper for Work draft-launch job DTOs, terminal/stale-state detection, and pruning. The list keeps active rows ahead of terminal rows, fills remaining retained slots with terminal rows, and keeps at least one terminal row alongside active jobs. Also owns the durability constants/helpers: `DRAFT_LAUNCH_TIMEOUT_MS` (90 s) + `withDraftLaunchTimeout` (fails a step whose runtime call never settles; the underlying IPC is not cancellable, so it keeps running detached and the timeout only unwedges the renderer-side job) and `LAUNCH_PROJECT_CHANGED_MESSAGE` (thrown when the active project drifts mid-launch). |
 | `AgentChatMessageList.tsx` | Virtualized message list (`@tanstack/react-virtual`). Renders transcript rows and turn dividers, and keeps sticky-bottom sessions pinned across streamed row growth and late virtual-height measurements. Plan-approval rows with non-empty body text render a scrollable markdown block (capped at `360px`) beneath the header so the user can review plan content inline. Codex goal lifecycle rows use user-facing text such as `Goal set`, `Goal paused`, and `Goal cleared`. |
 | `AgentChatComposer.tsx` | Text input, attachments, model selector, permission controls, slash commands, pending-input answering, voice-dictation target registration, and parallel model-slot controls. Launch-prompt clipboard reminder text is controlled by `launchPromptClipboardNoticeEnabled`, separate from the `launchPromptClipboardEnabled` copy behavior. |
 | `VoiceDictationButton.tsx`, `apps/desktop/src/renderer/services/globalVoiceRecorder.ts`, `apps/desktop/src/renderer/components/voice/*` | Desktop dictation UI and recorder. The module-level recorder owns mic capture across navigation, writes live state to the root app store, transcribes via `window.ade.transcription`, inserts cleaned text into the registered composer, and always copies the cleaned transcript to the clipboard. The header indicator and composer pill render the same recording state. |
@@ -627,15 +627,21 @@ These modules are pure and unit-testable:
 ## Fragile and tricky wiring
 
 - **Draft launch job lifecycle.** `DraftLaunchJob` tracks multi-step
-  async launches and is stored in `appStore.draftLaunchJobsByScope`
-  rather than local pane state. The composer is cleared immediately when
-  the job starts, not when it finishes. Auto-created lanes begin at
-  `naming-lane`, show the naming model, switch to `creating-lane` after
-  the suggested branch name resolves or after the deterministic fallback
-  wins, then move through session start and prompt send. If
-  the launch fails, the Restore action merges the snapshot back via
-  `restoreDraftLaunchSnapshot`, which appends rather than replaces
-  existing draft text and merges context items by id.
+  async launches and is stored in the **root** store's
+  `draftLaunchJobsByScope` (read/written via `useRootAppStore` /
+  `rootAppStoreApi.getState().setDraftLaunchJobs`) rather than the
+  per-project store or local pane state. This is load-bearing: a launch
+  routinely outlives the pane that started it, and switching to another
+  remote project tears down the originating project's scoped store
+  entirely — keeping the job in the root store is what lets it re-surface
+  (and ready jobs auto-open / failures show Restore) when the user
+  returns. The composer is cleared immediately when the job starts, not
+  when it finishes. Auto-created lanes begin at `naming-lane`, show the
+  naming model, switch to `creating-lane` after the suggested branch name
+  resolves or after the deterministic fallback wins, then move through
+  session start and prompt send. If the launch fails, the Restore action
+  merges the snapshot back via `restoreDraftLaunchSnapshot`, which appends
+  rather than replaces existing draft text and merges context items by id.
   `isDraftLaunchJobStale` makes an active row hideable after the stale
   threshold so a hung IPC call cannot leave a permanent status strip.
   `latestForegroundDraftLaunchJobIdRef` prevents stale foreground jobs
@@ -644,6 +650,26 @@ These modules are pure and unit-testable:
   (model, reasoning, execution mode, native controls) so
   `createSessionForLane` receives a `launchState` that overrides the
   live composer state during the async gap.
+- **Draft launch project-switch safety.** Because the launch chain is
+  detached from the pane lifecycle, it must never act on the wrong
+  project. It captures the originating project's `OpenProjectBinding`
+  (`launchBinding`) at the start and calls `assertLaunchProjectActive()`
+  before every irreversible step — before `lanes.create` (inside
+  `resolveDraftLaunchLane`) and again before starting the session —
+  comparing `launchBinding.key` against the **root** store's current
+  `projectBinding.key`; a mismatch throws `LAUNCH_PROJECT_CHANGED_MESSAGE`
+  and the job becomes a Restorable failure. Rollback of a
+  partially-created launch is pinned to `launchBinding`:
+  `window.ade.lanes.delete(..., launchBinding)` and
+  `window.ade.agentChat.delete(..., pin)` pass the binding as the
+  optional `pin` arg so cleanup deletes the lane/session it created even
+  after the active project changed (the preload routes a `pin` through
+  `callPinnedRuntimeAction` — see [Remote runtime internal
+  architecture](../remote-runtime/internal-architecture.md#local-runtime-routing)).
+  Each step is also wrapped in `withDraftLaunchTimeout` so a runtime call
+  that neither resolves nor rejects (`DRAFT_LAUNCH_TIMEOUT_MS = 90 s`)
+  fails the job instead of wedging it in a non-terminal state and
+  blocking re-submission.
 - **Composer draft persistence.** `ComposerDraftStorageSnapshot` is
   persisted to `localStorage` on every draft/model/attachment change
   and restored on scope switch. `composerDraftHydratingRef` suppresses

@@ -1345,6 +1345,37 @@ async function callProjectRuntimeActionStrictOr<T>(
   return localRuntime.handled ? localRuntime.result : local();
 }
 
+// Route a runtime action to an EXPLICIT project binding, bypassing the mutable
+// module-level `currentProjectBinding` and the project-transition guard. The
+// target runtime is addressed directly by id/projectId (remote) or rootPath
+// (local), exactly as the bound helpers do — the only difference is the binding
+// is supplied by the caller instead of resolved from global state. Used to pin
+// in-flight work (e.g. draft-launch rollback) to the project that started it so
+// a concurrent project switch cannot misroute the call to the now-active
+// project. Callers only pass a pin for explicitly-targeted, intentional work,
+// so the transition guard (which protects the ambiguous *active* binding) does
+// not apply.
+async function callPinnedRuntimeAction<T>(
+  pin: OpenProjectBinding,
+  domain: string,
+  action: string,
+  request: Omit<RemoteRuntimeActionRequest, "domain" | "action"> = {},
+): Promise<T> {
+  if (pin.kind === "remote") {
+    const response = (await ipcRenderer.invoke(IPC.remoteRuntimeCallAction, {
+      id: pin.targetId,
+      projectId: pin.projectId,
+      request: { domain, action, ...request },
+    })) as RemoteRuntimeActionResult;
+    return response.result as T;
+  }
+  const response = (await ipcRenderer.invoke(IPC.localRuntimeCallAction, {
+    rootPath: pin.rootPath,
+    request: { domain, action, ...request },
+  })) as RemoteRuntimeActionResult;
+  return response.result as T;
+}
+
 function callPrReadRuntimeActionOr<T>(
   action: string,
   request: Omit<RemoteRuntimeActionRequest, "domain" | "action">,
@@ -4424,11 +4455,15 @@ contextBridge.exposeInMainWorld("ade", {
       );
       clearGitReadCaches();
     },
-    delete: async (args: DeleteLaneArgs): Promise<void> => {
+    delete: async (args: DeleteLaneArgs, pin?: OpenProjectBinding | null): Promise<void> => {
       clearGitReadCaches();
-      await callProjectRuntimeActionOr("lane", "delete", { args }, () =>
-        ipcRenderer.invoke(IPC.lanesDelete, args),
-      );
+      if (pin) {
+        await callPinnedRuntimeAction<void>(pin, "lane", "delete", { args });
+      } else {
+        await callProjectRuntimeActionOr("lane", "delete", { args }, () =>
+          ipcRenderer.invoke(IPC.lanesDelete, args),
+        );
+      }
       clearGitReadCaches();
     },
     cancelDelete: async (args: {
@@ -5208,14 +5243,18 @@ contextBridge.exposeInMainWorld("ade", {
         await ipcRenderer.invoke(IPC.agentChatUnarchive, args);
       agentChatSummaryCache.clear();
     },
-    delete: async (args: AgentChatDeleteArgs): Promise<void> => {
+    delete: async (args: AgentChatDeleteArgs, pin?: OpenProjectBinding | null): Promise<void> => {
       agentChatSummaryCache.clear();
-      const runtime = await callProjectRuntimeActionIfBound<void>(
-        "chat",
-        "deleteSession",
-        { args },
-      );
-      if (!runtime.handled) await ipcRenderer.invoke(IPC.agentChatDelete, args);
+      if (pin) {
+        await callPinnedRuntimeAction<void>(pin, "chat", "deleteSession", { args });
+      } else {
+        const runtime = await callProjectRuntimeActionIfBound<void>(
+          "chat",
+          "deleteSession",
+          { args },
+        );
+        if (!runtime.handled) await ipcRenderer.invoke(IPC.agentChatDelete, args);
+      }
       agentChatSummaryCache.clear();
     },
     updateSession: async (
@@ -6113,7 +6152,10 @@ contextBridge.exposeInMainWorld("ade", {
     dispose: async (arg: {
       ptyId: string;
       sessionId?: string;
-    }): Promise<PtyDisposeResult> => {
+    }, pin?: OpenProjectBinding | null): Promise<PtyDisposeResult> => {
+      if (pin) {
+        return callPinnedRuntimeAction<PtyDisposeResult>(pin, "pty", "dispose", { args: arg });
+      }
       const runtime = await callProjectRuntimeActionIfBound<PtyDisposeResult>(
         "pty",
         "dispose",

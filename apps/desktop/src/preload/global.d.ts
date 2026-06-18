@@ -1163,7 +1163,7 @@ declare global {
         reparent: (args: ReparentLaneArgs) => Promise<ReparentLaneResult>;
         updateAppearance: (args: UpdateLaneAppearanceArgs) => Promise<void>;
         archive: (args: ArchiveLaneArgs) => Promise<void>;
-        delete: (args: DeleteLaneArgs) => Promise<void>;
+        delete: (args: DeleteLaneArgs, pin?: OpenProjectBinding | null) => Promise<void>;
         cancelDelete: (args: {
           laneId: string;
         }) => Promise<{ cancelled: boolean; reason?: string }>;
@@ -1323,7 +1323,7 @@ declare global {
         modelCatalog: (args?: AgentChatModelCatalogArgs) => Promise<AgentChatModelCatalog>;
         archive: (args: AgentChatArchiveArgs) => Promise<void>;
         unarchive: (args: AgentChatArchiveArgs) => Promise<void>;
-        delete: (args: AgentChatDeleteArgs) => Promise<void>;
+        delete: (args: AgentChatDeleteArgs, pin?: OpenProjectBinding | null) => Promise<void>;
         updateSession: (
           args: AgentChatUpdateSessionArgs,
         ) => Promise<AgentChatSession>;
@@ -1616,7 +1616,7 @@ declare global {
           cols: number;
           rows: number;
         }) => Promise<void>;
-        dispose: (args: { ptyId: string; sessionId?: string }) => Promise<PtyDisposeResult>;
+        dispose: (args: { ptyId: string; sessionId?: string }, pin?: OpenProjectBinding | null) => Promise<PtyDisposeResult>;
         setDataSubscriptions: (args: { ptyIds: string[] }) => Promise<void>;
         onData: (cb: (ev: PtyDataEvent) => void) => () => void;
         onExit: (cb: (ev: PtyExitEvent) => void) => () => void;
