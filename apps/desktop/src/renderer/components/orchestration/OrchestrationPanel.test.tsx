@@ -235,6 +235,68 @@ describe("OrchestrationPanel", () => {
     expect(onPlanApproval).toHaveBeenCalledWith("approval-1", "accept");
   });
 
+  it("opens agent and task chats from the orchestration panel", async () => {
+    const manifest = makeManifest({
+      currentPhase: "developing",
+      phases: [
+        { id: "planning", title: "Planning", status: "done" },
+        { id: "developing", title: "Developing", status: "active" },
+        { id: "validating", title: "Validating", status: "pending" },
+      ],
+      agents: [
+        {
+          sessionId: "lead-session",
+          role: "lead",
+          goalSummary: "Lead orchestrator",
+          displayName: "Lead",
+          status: "running",
+          spawnedAt: "2026-05-22T00:00:00.000Z",
+        },
+        {
+          sessionId: "worker-session",
+          role: "worker",
+          tag: "web-ui",
+          goalSummary: "Build the Work UI",
+          displayName: "Worker",
+          status: "running",
+          spawnedAt: "2026-05-22T00:01:00.000Z",
+        },
+      ],
+      tasks: [
+        {
+          id: "T-01",
+          phaseId: "developing",
+          title: "Build Work UI",
+          description: "Wire the orchestration controls.",
+          status: "in_progress",
+          tag: "web-ui",
+          assigneeSessionId: "worker-session",
+          validationGate: { required: true, stepIds: [] },
+        },
+      ],
+    });
+    const source = makeSource({ manifest });
+    const onOpenSession = vi.fn();
+    render(
+      <OrchestrationPanel
+        runId="run-1"
+        laneId="lane-1"
+        source={source}
+        initialManifest={manifest}
+        viewerRole="lead"
+        onOpenSession={onOpenSession}
+      />,
+    );
+
+    const roster = await screen.findByTestId("orchestration-agents-roster");
+    expect(roster.textContent ?? "").toMatch(/worker/);
+    fireEvent.click(screen.getByRole("button", { name: "Open worker · web-ui chat" }));
+    expect(onOpenSession).toHaveBeenCalledWith("worker-session");
+
+    fireEvent.click(await screen.findByTestId("orchestration-task-open-chat"));
+    expect(onOpenSession).toHaveBeenLastCalledWith("worker-session");
+  });
+
   it("collapses into the icon rail and expands back", async () => {
     const manifest = makeManifest({
       tasks: [

@@ -152,7 +152,7 @@ describe("buildCodingAgentSystemPrompt", () => {
       adeSkillRoots: ["/repo/apps/desktop/resources/agent-skills"],
     };
 
-    it("guides leads through bundled skill discovery and plan quality minimums", () => {
+    it("guides leads through bundled skill discovery and planning gates", () => {
       const result = buildCodingAgentSystemPrompt({
         ...orchestrationArgs,
         orchestrationRole: "lead",
@@ -162,17 +162,22 @@ describe("buildCodingAgentSystemPrompt", () => {
       expect(result).toContain("/repo/apps/desktop/resources/agent-skills");
       expect(result).toContain("read the matching `ade-*` skill");
       expect(result).toContain("ade-orchestrator/SKILL.md");
-      expect(result).toContain("Lead planning quality contract");
-      expect(result).toContain("out-of-scope / non-goals");
-      expect(result).toContain("UI / UX / user-facing decisions");
-      expect(result).toContain("Planned implementation order");
+      expect(result).toContain("Planning is a deterministic, server-enforced sequence");
+      expect(result).toContain("recordCodebaseIntake");
+      expect(result).toContain("askPlanningRound");
+      expect(result).toContain("validationStrategy.steps");
+      expect(result).toContain("askUserForModelSelection");
+      expect(result).toContain("workDescription");
+      expect(result).toContain("plan.md is the single source of truth");
+      expect(result).toContain("Out of scope");
+      expect(result).toContain("Implementation order");
       expect(result).toContain("Agent plan");
-      expect(result).toContain("Validation / proof plan");
-      expect(result).toContain("Plan presentation");
+      expect(result).toContain("Validation plan");
+      expect(result).toContain("UI decisions");
+      expect(result).toContain("Coordination");
       expect(result).toContain("artifacts/ui/*.html");
-      expect(result).toContain("Do not embed raw iframes");
-      expect(result).toContain("Implementation handoff");
-      expect(result).toContain("Implement` button");
+      expect(result).toContain("Lead live coordination");
+      expect(result).toContain("Implement button");
       expect(result).toContain("requestPlanApproval");
       expect(result).toContain("Spawn brief discipline");
     });

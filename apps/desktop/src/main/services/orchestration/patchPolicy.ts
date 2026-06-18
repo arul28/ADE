@@ -120,6 +120,14 @@ const LEAD_DENY_PATTERNS = [
   "/leadState/planApprovedAt",
   "/leadState/planApprovedBySessionId",
   "/leadState/planApprovalSummary",
+  // Planning state machine + plan-approval index are gate-controlled state:
+  // writable only through dedicated service methods (recordPlanningIntake,
+  // recordPlanningRound, markPlanningReady, setPlanApprovalState), never raw
+  // manifestPatch — so the deterministic sequence cannot be forged.
+  "/leadState/planning",
+  "/leadState/planning/**",
+  "/planSpec",
+  "/planSpec/**",
   "/phases/{id:planning}/status",
   "/phases/{id:planning}/completedAt",
   "/currentPhase",

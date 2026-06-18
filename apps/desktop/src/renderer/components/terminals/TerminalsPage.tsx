@@ -234,6 +234,24 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     [work],
   );
 
+  // Jump-to-session bridge for the orchestration panel (and the worker→lead
+  // button): `onOpenSession` dispatches `ade:work:select-session`; this is the
+  // listener that actually focuses the target chat in the Work tab. Without it
+  // the buttons are dead (the event had no subscriber).
+  useEffect(() => {
+    const handler = (event: Event) => {
+      const detail = (event as CustomEvent<{ sessionId?: string; laneId?: string }>).detail;
+      const sessionId = detail?.sessionId;
+      if (!sessionId) return;
+      if (detail.laneId) work.selectLane(detail.laneId);
+      work.focusSession(sessionId);
+      work.openSessionTab(sessionId);
+      work.setSelectedSessionId(sessionId);
+    };
+    window.addEventListener("ade:work:select-session", handler as EventListener);
+    return () => window.removeEventListener("ade:work:select-session", handler as EventListener);
+  }, [work]);
+
   const handleGoToLane = useCallback(
     (session: TerminalSessionSummary) => {
       work.selectLane(session.laneId);

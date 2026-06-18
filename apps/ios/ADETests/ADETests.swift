@@ -12144,6 +12144,50 @@ final class ADETests: XCTestCase {
     XCTAssertTrue(snapshot.eventCards.allSatisfy { $0.kind != "approval" })
   }
 
+  func testPendingModelSelectionDecodesAgentBriefingWithoutSuggestedRoute() {
+    let detail = """
+    {
+      "request": {
+        "itemId": "model-1",
+        "kind": "model_selection",
+        "description": "Choose a worker model.",
+        "providerMetadata": {
+          "role": "worker",
+          "tag": "web-ui",
+          "workDescription": "Build the orchestration roster.",
+          "filesHint": ["OrchestrationPanel.tsx", "TaskCard.tsx"],
+          "dependsOn": ["planning-rounds", "model-routing"],
+          "suggested": {
+            "provider": "codex",
+            "modelId": "gpt-5.4",
+            "reasoningEffort": "high",
+            "fastMode": true
+          },
+          "availableModels": ["gpt-5.4", "claude-sonnet-4-6"]
+        }
+      }
+    }
+    """
+
+    guard let model = pendingWorkModelSelectionFromApproval(
+      description: "Fallback description",
+      detail: detail,
+      itemId: "model-1"
+    ) else {
+      return XCTFail("Expected a model-selection pending input.")
+    }
+
+    XCTAssertEqual(model.title, "Pick a model for the \"web-ui\" worker")
+    XCTAssertEqual(model.workDescription, "Build the orchestration roster.")
+    XCTAssertEqual(model.filesHint, ["OrchestrationPanel.tsx", "TaskCard.tsx"])
+    XCTAssertEqual(model.dependsOn, ["planning-rounds", "model-routing"])
+    XCTAssertEqual(model.availableModelIds, ["gpt-5.4", "claude-sonnet-4-6"])
+    XCTAssertFalse(
+      Mirror(reflecting: model).children.contains { $0.label == "suggested" },
+      "Mobile model-selection gates should not carry a suggested route."
+    )
+  }
+
   func testSingleQuestionModelStillExposesLegacyFieldsForUnpagedRender() {
     let detail = """
     {"request":{"itemId":"one","kind":"structured_question","title":"T","questions":[{"id":"only","question":"Q","options":[{"label":"A","value":"a"}]}]}}

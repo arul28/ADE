@@ -190,6 +190,10 @@ Renderer surfaces:
   CLI sessions expose a prompt-free Resume action wired to
   `window.ade.pty.resumeSession`, alongside the continuation composer
   that sends a new prompt through `window.ade.pty.sendToSession`.
+  It also listens for the renderer-wide `ade:work:select-session` event
+  used by orchestration panels and worker-to-lead links; the listener
+  selects the lane when supplied, focuses the target session, opens its
+  Work tab, and updates `selectedSessionId`.
   Also owns the right-edge `WorkSidebar` toggle and resizer: when the
   sidebar is open and the view mode is not `grid`, the work view area
   shares its row with `WorkSidebar` via a flex container with a

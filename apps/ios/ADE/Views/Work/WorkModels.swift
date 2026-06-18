@@ -219,7 +219,8 @@ struct WorkPendingModelSelectionModel: Identifiable, Equatable {
   let role: String
   let tag: String
   let workDescription: String?
-  let suggested: WorkModelSelectionChoice?
+  let filesHint: [String]
+  let dependsOn: [String]
   let availableModelIds: [String]?
 
   var title: String {

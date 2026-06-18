@@ -24,9 +24,11 @@ import type {
   OrchestrationManifest,
   OrchestrationPhase,
   OrchestrationTask,
+  PlanningState,
 } from "../../../shared/types/orchestration";
 import { cn } from "../ui/cn";
 import { TaskCard } from "./TaskCard";
+import { PlanningTimeline } from "./PlanningTimeline";
 import { PHASE_ICON_MAP } from "./PanelChrome";
 import {
   PHASE_LABEL,
@@ -71,6 +73,7 @@ export function PhaseAccordion({
   onOpenSession,
   registerTaskRef,
   decisions,
+  planning,
   highlightedTaskId,
 }: {
   phase: OrchestrationPhase;
@@ -83,6 +86,7 @@ export function PhaseAccordion({
   onOpenSession?: (sessionId: string) => void;
   registerTaskRef: (id: string, el: HTMLDivElement | null) => void;
   decisions: DecisionLogEntry[];
+  planning?: PlanningState;
   highlightedTaskId: string | null;
 }) {
   // Active phase auto-expands; others start collapsed unless they have content.
@@ -145,9 +149,17 @@ export function PhaseAccordion({
 
       {open ? (
         <div className="space-y-1.5 px-2 pb-2">
-          {tasks.length === 0 && phase.id === "planning" ? (
-            <PlanningEmptyState decisions={decisions} />
-          ) : tasks.length === 0 ? (
+          {/* Planning phase: show the deterministic deliberation timeline when we
+              have structured planning state; otherwise fall back to the
+              decision-log Q&A scrape. */}
+          {phase.id === "planning"
+            ? planning && (planning.intake || planning.rounds.length > 0)
+              ? <PlanningTimeline planning={planning} />
+              : tasks.length === 0
+                ? <PlanningEmptyState decisions={decisions} />
+                : null
+            : null}
+          {tasks.length === 0 && phase.id !== "planning" ? (
             <div className="px-2 py-3 font-sans text-[11px] text-muted-fg/55">
               No tasks here yet.
             </div>

@@ -16,7 +16,7 @@ filtering before exposing the final list.
 | `apps/ade-cli/src/cli.ts` | User-facing `ade` command, text/JSON formatters, command plans, runtime-socket client wiring, and explicit headless fallback. |
 | `apps/ade-cli/src/jsonrpc.ts` | JSON-RPC server and socket transport helpers. |
 | `apps/desktop/src/main/services/localRuntime/localRuntimeConnectionPool.ts` | Desktop-side client for the local machine runtime at `~/.ade/sock/ade.sock`; registers projects and dispatches runtime-backed actions. |
-| `apps/desktop/src/main/services/ai/tools/` | In-process tool implementations (universal, workflow, CTO operator, Linear). |
+| `apps/desktop/src/main/services/ai/tools/` | In-process tool implementations (universal, workflow, CTO operator, Linear, and orchestration lead/worker/validator tools). |
 | `apps/desktop/src/main/services/agentTools/agentToolsService.ts` | External CLI detection (Claude Code, Codex, Cursor, Aider, Continue). |
 | `apps/desktop/src/main/services/cli/adeCliService.ts` | Desktop-side CLI install / status / uninstall. Resolves the launcher target (`$HOME/.local/bin/ade` on POSIX, `%LOCALAPPDATA%\ADE\bin\ade.cmd` on Windows) and, on POSIX install, appends a marked `export PATH=...` block to the user's shell rc when the install dir isn't already on `$PATH`. |
 | `apps/desktop/src/shared/adeCliGuidance.ts` | ADE guidance builders injected into agent system prompts and inline CLI preambles. Tells the agent how to find `ade` (PATH → `$ADE_CLI_PATH` → `$ADE_CLI_BIN_DIR/ade` → `node apps/ade-cli/dist/cli.cjs ...`), which bundled ADE skills exist, how Agent Skills are shaped (`<skill>/SKILL.md` plus optional `references/`, `scripts/`, `assets/`), which ADE-hosted surfaces receive the guidance, to try `ade doctor` / typed commands / `ade actions list` before reporting an ADE task as blocked, and to track and clean up stale or finished processes it starts. |
@@ -28,8 +28,8 @@ filtering before exposing the final list.
 
 The chat runtime (`agentChatService.ts`) instantiates tool objects
 directly from `universalTools.ts`, `workflowTools.ts`,
-`ctoOperatorTools.ts`, and `linearTools.ts`, then hands them to the
-provider adapter:
+`ctoOperatorTools.ts`, `linearTools.ts`, and `orchestrationTools.ts`,
+then hands them to the provider adapter:
 
 - **Claude Agent SDK:** the SDK `query()` stream receives ADE tools as
   SDK tool definitions alongside the runtime options for that session.
@@ -41,6 +41,20 @@ provider adapter:
   and ADE supplies a permission/hook bridge through `cursorSdkPool.ts`
   and `cursorSdkPolicy.ts`. ADE workflow actions are available through
   the `ade` CLI.
+- **Orchestration sessions:** `interactionMode` selects
+  `orchestrator-lead`, `orchestrator-worker`, or
+  `orchestrator-validator`. The lead receives a read-mostly base plus
+  gated orchestration tools (`recordCodebaseIntake`,
+  `askPlanningRound`, `proposeValidationSteps`, model selection, plan
+  approval, spawning, and stale-task recovery). Workers and validators
+  keep their edit-capable base tools plus task/validation reporting
+  tools.
+
+Orchestration planning state is server-enforced. The lead must record
+codebase intake, run the functional/UI/extras planning rounds, derive
+validation steps, and capture model routing before approval or spawning
+unlocks. Raw manifest patches cannot write `leadState.planning` or
+`planSpec`; those fields only change through privileged service methods.
 
 ### ADE CLI path
 

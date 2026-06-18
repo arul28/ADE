@@ -12,6 +12,7 @@
  * sandbox config) lives in `./orchestrationRuntime.ts`.
  */
 
+import crypto from "node:crypto";
 import { z } from "zod";
 import { executableTool as tool, type ExecutableTool } from "./executableTool";
 import { createUniversalToolSet, type UniversalToolSetOptions } from "./universalTools";
@@ -25,6 +26,10 @@ import type {
   OrchestrationRole,
   OrchestrationTaskStatus,
   ModelSelection,
+  PlanningRoundKind,
+  PlanningRoundOption,
+  PlanningRoundRecord,
+  PlanningStage,
 } from "../../../../shared/types/orchestration";
 import {
   ORCHESTRATION_SPAWN_BRIEF_REQUIRED_SECTIONS,
@@ -35,10 +40,12 @@ import { validateSpawnBrief } from "../../orchestration/orchestrationService";
 import {
   applyOrchestrationPermissionProfile,
   isOrchestrationPlanApproved,
+  isPlanningReadyForModelSelection,
   resolveOrchestrationModel,
 } from "../../orchestration/runtimeProfile";
 
-import { assessOrchestrationPlanQuality } from "./orchestrationPlanQuality";
+import { assessPlanReadiness } from "./orchestrationPlanQuality";
+import { deriveSuggestedValidationSteps } from "./orchestrationValidationDerivation";
 import {
   buildOrchestrationSandboxConfig,
   errorMessage,
@@ -49,7 +56,7 @@ import {
 } from "./orchestrationRuntime";
 
 // Re-export so existing consumers keep working
-export { assessOrchestrationPlanQuality } from "./orchestrationPlanQuality";
+export { assessPlanReadiness } from "./orchestrationPlanQuality";
 export type { OrchestrationPlanQualityMissing } from "./orchestrationPlanQuality";
 export { buildOrchestrationSandboxConfig } from "./orchestrationRuntime";
 
@@ -143,7 +150,7 @@ const ASSET_KIND_VALUES = [
   "test_log",
   "doc",
 ] as const;
-const ROLE_VALUES = ["lead", "worker", "validator"] as const;
+const MODEL_SELECTION_ROLE_VALUES = ["worker", "validator"] as const;
 
 const LEAD_READ_ONLY_BASE = new Set([
   "readFile",
@@ -695,6 +702,10 @@ function createPlanWriteTool(
   });
 }
 
+function hashPlanContent(planMd: string): string {
+  return crypto.createHash("sha256").update(planMd, "utf8").digest("hex");
+}
+
 function createRequestPlanApprovalTool(
   ctx: OrchestrationSessionContext,
   svc: ReturnType<typeof createOrchestrationService>,
@@ -702,53 +713,125 @@ function createRequestPlanApprovalTool(
 ) {
   return tool({
     description:
-      "Lead-only. Mark the orchestration plan as ready and surface the plan-pane Implement button. " +
-      "Plan summaries must include the minimum orchestration sections: out of scope, implementation order, agent plan, validation/proof, UI impact or N/A, live coordination/logging, and alternatives/tradeoffs. " +
-      "When the user clicks Implement or otherwise approves, this records approval in the manifest and advances the run into developing so spawnAgent can run.",
+      "Lead-only. Mark the plan ready and surface the plan-pane Implement button — the user approves the live plan.md narrative on the sidebar, not a separate summary. " +
+      "Blocked until the deterministic planning sequence is complete: codebase intake recorded, all three deliberation rounds answered, validation steps derived, and a model picked for at least one (role, tag). " +
+      "plan.md must cover the required sections (goal, in/out of scope, alternatives, implementation order, agent plan, validation plan, UI decisions or N/A, coordination) with real substance. " +
+      "On approval this records approval in the manifest and advances the run into developing so spawnAgent can run; on decline it records changes_requested.",
     inputSchema: z.object({
-      planSummary: z.string().min(1, "planSummary is required"),
+      /** Optional one-line chat note shown alongside the Implement prompt. */
+      note: z.string().optional(),
       question: z.string().optional(),
     }),
     execute: async (input) => withHeartbeat(ctx, svc, async () => {
-      const quality = assessOrchestrationPlanQuality(input.planSummary);
-      if (!quality.ok) {
-        return {
-          ok: false as const,
-          error: "plan_quality_missing_sections",
-          missing: quality.missing,
-          message:
-            "Plan approval requires the minimum orchestration sections before asking the user: " +
-            quality.missing.map((entry) => entry.label).join(", ") +
-            ". Add those sections to the plan summary and call requestPlanApproval again.",
-        };
-      }
       if (!universalOpts.onAskUser) {
         return {
           ok: false as const,
           error: "no_ask_user_handler",
-          message:
-            "requestPlanApproval requires an onAskUser handler — none configured.",
+          message: "requestPlanApproval requires an onAskUser handler — none configured.",
         };
       }
-      const response = await universalOpts.onAskUser({
-        title: "Plan ready",
-        body: input.planSummary,
-        question: input.question ?? "Review the plan pane. Continue planning in chat if anything should change, or click Implement when ready.",
-        pendingInputKind: "plan_approval",
-        providerMetadata: {
-          orchestrationPlanApproval: true,
-          planContent: input.planSummary,
-          planQuality: quality,
-        },
-      });
+      // Step 1 — validate the deterministic planning sequence without mutating
+      // ready state yet. Structural plan.md readiness runs before the ready
+      // manifest transition so failed approval attempts leave planning intact.
+      const planningReady = await svc.checkPlanningReady(ctx.runId, ctx.bundlePath);
+      if (!planningReady.ok) {
+        return {
+          ok: false as const,
+          error: planningReady.error,
+          missing: planningReady.missing,
+          message:
+            planningReady.error === "planning_incomplete"
+              ? `Cannot request approval yet — ${planningReady.message}. Use recordCodebaseIntake, askPlanningRound (functional → UI → extras), derive validation steps, and pick models first.`
+              : planningReady.message,
+        };
+      }
+      // Step 2 — structural readiness over the live plan.md + manifest state.
+      let bundle;
+      try {
+        bundle = await svc.bundleRead(ctx.runId, ctx.bundlePath);
+      } catch (err) {
+        return { ok: false as const, error: "bundle_read_failed", message: errorMessage(err) };
+      }
+      const readiness = assessPlanReadiness(bundle.manifest, bundle.planMd);
+      if (!readiness.ok) {
+        return {
+          ok: false as const,
+          error: "plan_not_ready",
+          missing: readiness.missing,
+          message:
+            "plan.md is not ready for approval. Address: " +
+            readiness.missing.map((entry) => `${entry.label} — ${entry.message}`).join(" "),
+        };
+      }
+      const ready = await svc.markPlanningReady(ctx.runId, ctx.bundlePath);
+      if (!ready.ok) {
+        return {
+          ok: false as const,
+          error: ready.error,
+          missing: ready.missing,
+          message:
+            ready.error === "planning_incomplete"
+              ? `Cannot request approval yet — ${ready.message}. Use recordCodebaseIntake, askPlanningRound (functional → UI → extras), derive validation steps, and pick models first.`
+              : ready.message,
+        };
+      }
+      const planContentHash = hashPlanContent(bundle.planMd);
+      // Step 3 — surface the Implement button. The desktop renderer approves
+      // the live plan narrative in the sidebar; mobile/TUI clients receive the
+      // same plan.md bytes here because they do not have that sidebar.
+      let response: Awaited<ReturnType<NonNullable<UniversalToolSetOptions["onAskUser"]>>>;
+      try {
+        response = await universalOpts.onAskUser({
+          title: "Plan ready",
+          body: [input.note?.trim(), bundle.planMd].filter(Boolean).join("\n\n"),
+          question:
+            input.question ??
+            "Review the plan on the sidebar. Keep refining in chat if anything should change, or click Implement to start the build.",
+          pendingInputKind: "plan_approval",
+          providerMetadata: {
+            orchestrationPlanApproval: true,
+            planContentHash,
+            planContent: bundle.planMd,
+          },
+        });
+      } catch (err) {
+        let resetError: string | undefined;
+        try {
+          const resetRes = await svc.setPlanApprovalState(ctx.runId, ctx.bundlePath, {
+            state: "changes_requested",
+            planContentHash,
+          });
+          if (!resetRes.ok) resetError = resetRes.message;
+        } catch (resetErr) {
+          resetError = errorMessage(resetErr);
+        }
+        return {
+          ok: false as const,
+          error: "approval_prompt_failed",
+          message: "Plan is ready, but ADE could not surface the approval prompt. Request approval again.",
+          detail: errorMessage(err),
+          ...(resetError ? { resetError } : {}),
+        };
+      }
       const result = typeof response === "string"
-        ? { answer: response, decision: undefined as string | undefined }
+        ? { answer: response, decision: undefined as string | undefined, responseText: undefined as string | undefined }
         : response;
-      // Require an explicit approval decision — do not infer approval from free-text
-      // answers. Substring regexes false-positive on rejections like "Not approved".
-      const approved = result.decision === "accept"
-        || result.decision === "accept_for_session";
+      const approved = result.decision === "accept" || result.decision === "accept_for_session";
       if (!approved) {
+        // Record changes_requested so the panel's re-approval diff can anchor on
+        // the bytes the user last reviewed.
+        const rejectRes = await svc.setPlanApprovalState(ctx.runId, ctx.bundlePath, {
+          state: "changes_requested",
+          planContentHash,
+        });
+        if (!rejectRes.ok) {
+          return {
+            ok: false as const,
+            error: "manifest_patch_failed",
+            message: "Plan changes were requested, but ADE could not record that decision in the manifest.",
+            detail: rejectRes.message,
+          };
+        }
         return {
           ok: false as const,
           error: "plan_rejected",
@@ -756,36 +839,55 @@ function createRequestPlanApprovalTool(
           message: result.answer || result.responseText || "User did not approve the plan.",
         };
       }
-
-      const approvedAt = new Date().toISOString();
-      const patches: ManifestPatchOp[] = [
-        { op: "add" as const, path: "/leadState/planApprovedAt", value: approvedAt },
-        { op: "add" as const, path: "/leadState/planApprovedBySessionId", value: ctx.sessionId },
-        { op: "add" as const, path: "/leadState/planApprovalSummary", value: input.planSummary },
-        { op: "replace" as const, path: "/currentPhase", value: "developing" },
-        { op: "replace" as const, path: "/phases/{id:planning}/status", value: "done" },
-        { op: "add" as const, path: "/phases/{id:planning}/completedAt", value: approvedAt },
-        { op: "replace" as const, path: "/phases/{id:developing}/status", value: "active" },
-        { op: "add" as const, path: "/phases/{id:developing}/startedAt", value: approvedAt },
-      ];
-      const patchRes = await svc.approvePlan(
-        ctx.runId,
-        ctx.bundlePath,
-        patches,
-        "plan approved",
-      );
-      if (!patchRes.ok) {
+      // Step 4 — record approval for the exact plan bytes surfaced above.
+      // If plan.md changes while the pending input is open, those new bytes
+      // must go through a fresh approval request instead of inheriting this one.
+      let approvalBundle;
+      try {
+        approvalBundle = await svc.bundleRead(ctx.runId, ctx.bundlePath);
+      } catch (err) {
+        return { ok: false as const, error: "bundle_read_failed", message: errorMessage(err) };
+      }
+      const currentPlanContentHash = hashPlanContent(approvalBundle.planMd);
+      if (currentPlanContentHash !== planContentHash) {
+        const changedRes = await svc.setPlanApprovalState(ctx.runId, ctx.bundlePath, {
+          state: "changes_requested",
+          planContentHash,
+        });
+        if (!changedRes.ok) {
+          return {
+            ok: false as const,
+            error: "manifest_patch_failed",
+            message: "Plan changed after approval, but ADE could not record that it needs reapproval.",
+            detail: changedRes.message,
+          };
+        }
         return {
           ok: false as const,
-          error: "manifest_patch_failed",
-          message: "Plan was approved, but ADE could not record approval in the manifest.",
-          detail: patchRes.message,
+          error: "plan_changed_after_review",
+          reviewedPlanContentHash: planContentHash,
+          currentPlanContentHash,
+          message:
+            "plan.md changed while the approval request was open. Review the updated plan and request approval again.",
+        };
+      }
+      const approvalRes = await svc.setPlanApprovalState(ctx.runId, ctx.bundlePath, {
+        state: "approved",
+        sessionId: ctx.sessionId,
+        planContentHash,
+      });
+      if (!approvalRes.ok) {
+        return {
+          ok: false as const,
+          error: approvalRes.error,
+          missing: approvalRes.missing,
+          message: approvalRes.message,
         };
       }
       return {
         ok: true as const,
-        approvedAt,
-        etag: patchRes.etag,
+        approvedAt: approvalRes.manifest.leadState.planApprovedAt,
+        etag: approvalRes.etag,
       };
     }),
   });
@@ -910,6 +1012,7 @@ function createRecordValidationRunTool(
     description:
       "Record a validation checklist run for a task/step after appending evidence to plan.md. " +
       "Workers may record only their own required per_worker gates; validators record their assigned validation gates. " +
+      "For review-style concerns (dual_review_*, deep_maintainability), pass structured `findings` (severity + locus + fix) — the panel rolls these into a Blocker/High/Medium/Low table and each Blocker/High should carry a `regressionTestTarget`. " +
       "Call this before releaseTask(status='done') when the task has required validation gates.",
     inputSchema: z.object({
       taskId: z.string().min(1),
@@ -917,6 +1020,19 @@ function createRecordValidationRunTool(
       status: z.enum(VALIDATION_RUN_STATUS_VALUES),
       notes: z.string().optional(),
       attachedEvidence: z.array(z.any()).optional(),
+      findings: z
+        .array(
+          z.object({
+            severity: z.enum(["blocker", "high", "medium", "low"]),
+            title: z.string().min(1),
+            locus: z.string().optional(),
+            detail: z.string().optional(),
+            fix: z.string().optional(),
+            behaviorPreserving: z.boolean().optional(),
+            regressionTestTarget: z.string().optional(),
+          }),
+        )
+        .optional(),
       startedAt: z.string().optional(),
       endedAt: z.string().optional(),
     }),
@@ -940,6 +1056,7 @@ function createRecordValidationRunTool(
                 ...(input.attachedEvidence?.length
                   ? { attachedEvidence: input.attachedEvidence as EvidenceRef[] }
                   : {}),
+                ...(input.findings?.length ? { findings: input.findings } : {}),
                 ...(input.startedAt ? { startedAt: input.startedAt } : {}),
                 ...(input.endedAt ? { endedAt: input.endedAt } : {}),
               },
@@ -1014,12 +1131,15 @@ function createAskUserForModelSelectionTool(
   return tool({
     description:
       "Lead-only. Ask the user to pick a model for a (role, tag) pair via the ADE ModelPicker. " +
-      "Use this once per (role, tag) during planning before spawning any worker on that tag. " +
-      "Always include a short `workDescription` so the user knows what this agent will do.",
+      "Unlocked only after codebase intake + the three deliberation rounds are recorded. " +
+      "Use once per (role, tag) before spawning any worker on that tag. " +
+      "Always include `workDescription` (one sentence on what this agent does) and, when known, `filesHint` (files it will touch) and `dependsOn` (tags/tasks it runs after) so the user can choose a fitting model.",
     inputSchema: z.object({
-      role: z.enum(ROLE_VALUES),
+      role: z.enum(MODEL_SELECTION_ROLE_VALUES),
       tag: z.string().min(1),
       workDescription: z.string().min(1, "Describe in one sentence what this agent will do").optional(),
+      filesHint: z.array(z.string().min(1)).optional(),
+      dependsOn: z.array(z.string().min(1)).optional(),
       suggested: z
         .object({
           provider: z.string(),
@@ -1032,6 +1152,13 @@ function createAskUserForModelSelectionTool(
     }),
     execute: async (input) => {
       return withHeartbeat(ctx, svc, async () => {
+        if (input.role !== "worker" && input.role !== "validator") {
+          return {
+            ok: false as const,
+            error: "unsupported_model_role",
+            message: "Model selection is only supported for spawnable worker or validator roles.",
+          };
+        }
         const manifest = manifestOrThrow(svc, ctx.runId);
         if (manifest.currentPhase !== "planning") {
           return {
@@ -1039,6 +1166,15 @@ function createAskUserForModelSelectionTool(
             error: "not_planning",
             message:
               "Model selection must happen during planning — call this before requestPlanApproval, not after.",
+          };
+        }
+        if (!isPlanningReadyForModelSelection(manifest)) {
+          return {
+            ok: false as const,
+            error: "planning_not_ready",
+            message:
+              "Model selection is locked until codebase intake and all three deliberation rounds are recorded. " +
+              "Call recordCodebaseIntake, then askPlanningRound for functional → UI → extras, then pick models.",
           };
         }
         if (!universalOpts.onAskUser) {
@@ -1065,6 +1201,8 @@ function createAskUserForModelSelectionTool(
               role: input.role,
               tag: input.tag,
               workDescription: workDesc ?? null,
+              ...(input.filesHint?.length ? { filesHint: input.filesHint } : {}),
+              ...(input.dependsOn?.length ? { dependsOn: input.dependsOn } : {}),
               ...(input.suggested ? { suggested: input.suggested } : {}),
             },
           });
@@ -1141,6 +1279,318 @@ function createAskUserForModelSelectionTool(
         }
       });
     },
+  });
+}
+
+function createRecordCodebaseIntakeTool(
+  ctx: OrchestrationSessionContext,
+  svc: ReturnType<typeof createOrchestrationService>,
+) {
+  return tool({
+    description:
+      "Lead-only. Record the /context-style codebase intake — the FIRST gated planning step. " +
+      "Read the repo first (CLAUDE.md/README, package manifests, CI config, git log/diff, top-level layout), planAppend a human-readable 'Codebase intake' section, then log the structured summary here. " +
+      "askPlanningRound, model selection, and approval are all locked until this is recorded.",
+    inputSchema: z.object({
+      projectShape: z.string().min(1, "describe the project shape + primary languages"),
+      testStack: z.string().min(1, "describe the test frameworks/globs, or 'none detected'"),
+      inFlightWork: z.string().min(1, "summarize git log/diff in-flight work, or 'fresh lane'"),
+      ancillarySurfaces: z.array(z.string().min(1)).optional(),
+      docMap: z.string().optional(),
+      ciGates: z.array(z.string().min(1)).optional(),
+    }),
+    execute: async (input) =>
+      withHeartbeat(ctx, svc, async () => {
+        const res = await svc.recordPlanningIntake(ctx.runId, ctx.bundlePath, {
+          recordedAt: new Date().toISOString(),
+          projectShape: input.projectShape,
+          testStack: input.testStack,
+          inFlightWork: input.inFlightWork,
+          ancillarySurfaces: input.ancillarySurfaces ?? [],
+          ...(input.docMap ? { docMap: input.docMap } : {}),
+          ciGates: input.ciGates ?? [],
+        });
+        if (!res.ok) {
+          return { ok: false as const, error: res.error, missing: res.missing, message: res.message };
+        }
+        return {
+          ok: true as const,
+          etag: res.etag,
+          nextStage: res.manifest.leadState.planning?.stage ?? "round_functional",
+        };
+      }),
+  });
+}
+
+function roundTitle(kind: PlanningRoundKind): string {
+  if (kind === "functional") return "Functional requirements";
+  if (kind === "ui") return "UI design";
+  return "Extras";
+}
+
+function summarizePlanningRoundAnswer(
+  options: PlanningRoundOption[] | undefined,
+  selectedOptionIds: string[],
+  freeText: string,
+  fallbackSummary: string,
+): string {
+  const optionLabelById = new Map((options ?? []).map((option) => [option.id, option.label]));
+  const selectedLabels = selectedOptionIds.map((id) => optionLabelById.get(id) ?? id);
+  const parts: string[] = [];
+  if (selectedLabels.length) {
+    parts.push(`Selected: ${selectedLabels.join(", ")}`);
+  }
+  const flattenedFreeText = freeText.replace(/\s+/g, " ").trim();
+  if (flattenedFreeText) {
+    const clipped = flattenedFreeText.length > 240
+      ? `${flattenedFreeText.slice(0, 237)}...`
+      : flattenedFreeText;
+    parts.push(`Notes: ${clipped}`);
+  }
+  return parts.join(". ") || fallbackSummary.trim();
+}
+
+function createAskPlanningRoundTool(
+  ctx: OrchestrationSessionContext,
+  svc: ReturnType<typeof createOrchestrationService>,
+  universalOpts: UniversalToolSetOptions,
+) {
+  return tool({
+    description:
+      "Lead-only. Run one /plan deliberation round by asking the user a question with concrete options, then record the answer as gated planning state. " +
+      "Round order is enforced: functional → ui → extras. For the UI round, put an ASCII wireframe in each option's `preview`. The extras round should usually be multiSelect. " +
+      "For new scope discovered mid-plan, set `cascadedFrom` to run a focused mini-round without disturbing the locked sequence (the /plan cascade rule). " +
+      "Provide `lockedSummary` — your one-line locked outcome — which is recorded with the user's answer.",
+    inputSchema: z.object({
+      kind: z.enum(["functional", "ui", "extras"]),
+      question: z.string().min(1),
+      header: z.string().optional(),
+      options: z
+        .array(
+          z.object({
+            id: z.string().min(1),
+            label: z.string().min(1),
+            description: z.string().optional(),
+            preview: z.string().optional(),
+          }),
+        )
+        .optional(),
+      multiSelect: z.boolean().optional(),
+      allowFreeText: z.boolean().optional(),
+      lockedSummary: z.string().min(1, "Provide your locked one-line outcome for this round"),
+      cascadedFrom: z.string().optional(),
+    }),
+    execute: async (input) =>
+      withHeartbeat(ctx, svc, async () => {
+        const manifest = manifestOrThrow(svc, ctx.runId);
+        if (manifest.currentPhase !== "planning") {
+          return {
+            ok: false as const,
+            error: "not_planning",
+            message: "deliberation rounds only run during the planning phase",
+          };
+        }
+        if (!universalOpts.onAskUser) {
+          return {
+            ok: false as const,
+            error: "no_ask_user_handler",
+            message: "askPlanningRound requires an onAskUser handler — none configured.",
+          };
+        }
+        const currentStage = manifest.leadState.planning?.stage;
+        const expectedStage: Record<PlanningRoundKind, PlanningStage> = {
+          functional: "round_functional",
+          ui: "round_ui",
+          extras: "round_extras",
+        };
+        if (input.cascadedFrom?.trim()) {
+          if (!currentStage || currentStage === "intake") {
+            return {
+              ok: false as const,
+              error: "stage_conflict",
+              message: "cannot ask a cascade round before codebase intake",
+            };
+          }
+        } else if (currentStage !== expectedStage[input.kind]) {
+          return {
+            ok: false as const,
+            error: "stage_conflict",
+            message: `the ${input.kind} round can only be asked at stage ${expectedStage[input.kind]}; current stage is ${currentStage ?? "unknown"}`,
+          };
+        }
+        const questionId = `round-${input.kind}`;
+        const askedAt = new Date().toISOString();
+        const multiSelect = input.multiSelect ?? input.kind === "extras";
+        const response = await universalOpts.onAskUser({
+          title: `${roundTitle(input.kind)} — deliberation`,
+          question: input.question,
+          pendingInputKind: "structured_question",
+          providerMetadata: {
+            orchestrationPlanningRound: true,
+            kind: input.kind,
+            ...(input.cascadedFrom ? { cascadedFrom: input.cascadedFrom } : {}),
+          },
+          questions: [
+            {
+              id: questionId,
+              ...(input.header ? { header: input.header } : {}),
+              question: input.question,
+              multiSelect,
+              allowsFreeform: input.allowFreeText ?? true,
+              ...(input.options?.length
+                ? {
+                    options: input.options.map((o) => ({
+                      label: o.label,
+                      value: o.id,
+                      ...(o.description ? { description: o.description } : {}),
+                      ...(o.preview ? { preview: o.preview, previewFormat: "markdown" as const } : {}),
+                    })),
+                  }
+                : {}),
+            },
+          ],
+        });
+        const result =
+          typeof response === "string"
+            ? {
+                answer: response,
+                answers: undefined as Record<string, string[]> | undefined,
+                responseText: undefined as string | null | undefined,
+                decision: undefined as string | undefined,
+              }
+            : response;
+        if (result.decision === "cancel" || result.decision === "decline") {
+          return {
+            ok: false as const,
+            error: "round_cancelled",
+            message: "User dismissed the deliberation round without answering.",
+          };
+        }
+        const answerValues = result.answers?.[questionId] ?? [];
+        const optionIds = new Set((input.options ?? []).map((o) => o.id));
+        const selectedOptionIds = input.options?.length
+          ? answerValues.filter((value) => optionIds.has(value))
+          : [];
+        const customAnswerText = answerValues
+          .filter((value) => !optionIds.has(value))
+          .map((value) => value.trim())
+          .filter(Boolean)
+          .join("\n");
+        const responseText =
+          typeof result.responseText === "string" ? result.responseText.trim() : "";
+        const fallbackAnswer =
+          answerValues.length ? "" : (result.answer ?? "").trim();
+        const freeText = [responseText, customAnswerText, fallbackAnswer]
+          .filter(Boolean)
+          .join("\n\n");
+        const round: PlanningRoundRecord = {
+          id: "",
+          kind: input.kind,
+          askedAt,
+          question: input.question,
+          ...(input.options?.length ? { options: input.options as PlanningRoundOption[] } : {}),
+          ...(multiSelect ? { multiSelect: true } : {}),
+          ...(selectedOptionIds.length ? { selectedOptionIds } : {}),
+          ...(freeText ? { freeText } : {}),
+          lockedSummary: summarizePlanningRoundAnswer(
+            input.options as PlanningRoundOption[] | undefined,
+            selectedOptionIds,
+            freeText,
+            input.lockedSummary,
+          ),
+          ...(input.cascadedFrom ? { cascadedFrom: input.cascadedFrom } : {}),
+          answeredAt: new Date().toISOString(),
+        };
+        const res = await svc.recordPlanningRound(ctx.runId, ctx.bundlePath, round);
+        if (!res.ok) {
+          return { ok: false as const, error: res.error, message: res.message };
+        }
+        return {
+          ok: true as const,
+          etag: res.etag,
+          kind: input.kind,
+          selectedOptionIds,
+          freeText: freeText || undefined,
+        };
+      }),
+  });
+}
+
+function createProposeValidationStepsTool(
+  ctx: OrchestrationSessionContext,
+  svc: ReturnType<typeof createOrchestrationService>,
+) {
+  return tool({
+    description:
+      "Lead-only. Return a suggested set of validationStrategy.steps derived from the recorded codebase intake — the /quality dual-review + /test stewardship + parity concerns, seeded with codebase-specific prompts. " +
+      "Review and edit them, then write the steps you want via manifestPatch to /validationStrategy/steps and reference their ids from each task's validationGate. Requires codebase intake first.",
+    inputSchema: z.object({}),
+    execute: async () =>
+      withHeartbeat(ctx, svc, async () => {
+        const manifest = manifestOrThrow(svc, ctx.runId);
+        if (!manifest.leadState.planning?.intake) {
+          return {
+            ok: false as const,
+            error: "no_intake",
+            message: "Record codebase intake first (recordCodebaseIntake) — validation derivation reads the intake.",
+          };
+        }
+        const steps = deriveSuggestedValidationSteps(manifest);
+        return {
+          ok: true as const,
+          steps,
+          note: "Suggestions only — review, edit, and write the steps you want via manifestPatch to /validationStrategy/steps.",
+        };
+      }),
+  });
+}
+
+function createRecoverStaleTasksTool(
+  ctx: OrchestrationSessionContext,
+  svc: ReturnType<typeof createOrchestrationService>,
+) {
+  return tool({
+    description:
+      "Lead-only. Crash-resume: recover tasks whose worker died or whose claim lease expired. " +
+      "Resets claimed/in-progress tasks with an expired lease back to pending and clears the assignee so you can re-dispatch them. Use after a worker crash or a long stall.",
+    inputSchema: z.object({}),
+    execute: async () =>
+      withHeartbeat(ctx, svc, async () => {
+        const res = await svc.releaseStaleClaims(ctx.runId, ctx.bundlePath);
+        if (!res.ok) {
+          return { ok: false as const, error: res.error, message: res.message };
+        }
+        return { ok: true as const, recovered: res.recovered, etag: res.etag };
+      }),
+  });
+}
+
+function createRecordPlanningOverrideTool(
+  ctx: OrchestrationSessionContext,
+  svc: ReturnType<typeof createOrchestrationService>,
+) {
+  return tool({
+    description:
+      "Lead-only. Record a user-authority override that waives part of the deterministic planning sequence " +
+      "(e.g. the user says 'skip the UI round — no UI here' or 'skip validation for this run'). " +
+      "The service logs matching UserOverrideEntry records from the literal skipReason; skipped rounds are only treated as satisfied when those entries exist.",
+    inputSchema: z.object({
+      skippedRounds: z.array(z.enum(["functional", "ui", "extras"])).optional(),
+      skipReason: z.string().optional(),
+    }),
+    execute: async (input) =>
+      withHeartbeat(ctx, svc, async () => {
+        const res = await svc.recordPlanningOverride(ctx.runId, ctx.bundlePath, {
+          ...(input.skippedRounds?.length
+            ? { skippedRounds: input.skippedRounds as PlanningRoundKind[] }
+            : {}),
+          ...(input.skipReason ? { skipReason: input.skipReason } : {}),
+        });
+        if (!res.ok) {
+          return { ok: false as const, error: res.error, message: res.message };
+        }
+        return { ok: true as const, etag: res.etag };
+      }),
   });
 }
 
@@ -1229,6 +1679,12 @@ export function createOrchestrationToolSet(
       svc,
       universal,
     );
+    // Deterministic planning sequence (gated): intake → 3 rounds → ready.
+    tools.recordCodebaseIntake = createRecordCodebaseIntakeTool(sessionContext, svc);
+    tools.askPlanningRound = createAskPlanningRoundTool(sessionContext, svc, universal);
+    tools.recordPlanningOverride = createRecordPlanningOverrideTool(sessionContext, svc);
+    tools.proposeValidationSteps = createProposeValidationStepsTool(sessionContext, svc);
+    tools.recoverStaleTasks = createRecoverStaleTasksTool(sessionContext, svc);
     tools.registerAsset = createRegisterAssetTool(sessionContext, svc, chat);
     // Lead may claim tasks during the planning seed (and to pin "lead is
     // working on planning" semantics). Worker-only edits still gate on lead

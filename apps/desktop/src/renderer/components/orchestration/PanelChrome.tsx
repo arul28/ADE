@@ -222,6 +222,49 @@ export function PlanReadyBar({
 }
 
 /* ──────────────────────────────────────────────────────────────────────────
+   PlanApprovalFooter — Implement docked to the bottom of the live plan
+   narrative, so the user approves the real plan they are reading (not a
+   separate, divergent summary).
+   ────────────────────────────────────────────────────────────────────────── */
+
+export function PlanApprovalFooter({
+  pending,
+  onImplement,
+  changedSinceLastReview,
+}: {
+  pending: NonNullable<OrchestrationPanelProps["planApprovalPending"]>;
+  onImplement?: OrchestrationPanelProps["onPlanApproval"];
+  changedSinceLastReview?: boolean;
+}) {
+  const disabled = pending.responding === true || !onImplement;
+  return (
+    <div className="mt-3 border-t border-white/[0.07] pt-3" data-testid="orchestration-plan-approval-footer">
+      {changedSinceLastReview ? (
+        <div className="mb-2 inline-flex items-center gap-1.5 rounded-md border border-amber-300/25 bg-amber-300/[0.08] px-2 py-1 text-[11px] text-amber-100/85">
+          <Sparkle size={11} weight="duotone" />
+          Updated since your last review
+        </div>
+      ) : null}
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <div className="text-[13px] font-medium text-fg/85">Ready to build this?</div>
+          <div className="text-[11px] text-muted-fg/55">Keep refining in chat, or start the build.</div>
+        </div>
+        <button
+          type="button"
+          data-testid="orchestration-plan-implement-button"
+          disabled={disabled}
+          onClick={() => onImplement?.(pending.itemId, "accept")}
+          className="inline-flex h-8 shrink-0 items-center justify-center rounded-lg bg-emerald-400/12 px-3.5 text-[12px] font-semibold text-emerald-100 transition-colors hover:bg-emerald-400/18 disabled:pointer-events-none disabled:opacity-40"
+        >
+          {pending.responding ? "Starting…" : "Implement"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* ──────────────────────────────────────────────────────────────────────────
    SectionHeader
    ────────────────────────────────────────────────────────────────────────── */
 

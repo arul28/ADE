@@ -939,7 +939,8 @@ func pendingWorkModelSelectionFromApproval(
     role: role,
     tag: tag,
     workDescription: workDescription.isEmpty ? nil : workDescription,
-    suggested: workModelSelectionChoice(from: metadata["suggested"]),
+    filesHint: workStringArrayValue(metadata["filesHint"]) ?? [],
+    dependsOn: workStringArrayValue(metadata["dependsOn"]) ?? [],
     availableModelIds: workStringArrayValue(metadata["availableModels"])
   )
 }
