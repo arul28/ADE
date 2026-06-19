@@ -119,7 +119,8 @@ running sync authority).
 │     project_catalog/project_switch/project actions,              │
 │     command / command_ack / command_result,                      │
 │     envelope_chunk                                               │
-│   - JSON payloads; gzip+base64 above threshold (4 KB default)    │
+│   - JSON payloads; gzip+base64 above threshold (4 KB default),   │
+│     with inflate capped at 25 MB before auth processing          │
 │   - encoded envelopes >720 KB sliced into envelope_chunk frames  │
 │     for peers declaring the "chunkedEnvelopes" capability        │
 └──────────────────────────────────────────────────────────────────┘
@@ -205,7 +206,9 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   implementation lives in `apps/ios/ADE/Services/SyncService.swift`.
 - `syncProtocol.ts` — envelope encode/decode with gzip
   threshold (`DEFAULT_SYNC_COMPRESSION_THRESHOLD_BYTES = 4 * 1024`)
-  and envelope chunking: an encoded envelope above
+  plus a bounded inflate cap
+  (`MAX_UNCOMPRESSED_SYNC_ENVELOPE_BYTES = 25 * 1024 * 1024`), and
+  envelope chunking: an encoded envelope above
   `DEFAULT_SYNC_MAX_FRAME_BYTES` (720 KB) is sliced into
   `envelope_chunk` frames for peers that declared the
   `chunkedEnvelopes` hello capability
@@ -541,9 +544,11 @@ Envelopes are JSON with fields:
 ```
 
 Payloads above `DEFAULT_SYNC_COMPRESSION_THRESHOLD_BYTES` (4 KB) are
-gzipped and base64-encoded. `parseSyncEnvelope` rejects a mismatch
-between `compression` and `payloadEncoding` and rejects unsupported
-protocol versions.
+gzipped and base64-encoded. `parseSyncEnvelope` caps gzip inflate at
+`MAX_UNCOMPRESSED_SYNC_ENVELOPE_BYTES` (25 MB), rejects declared
+oversize gzip envelopes before inflate, rejects a mismatch between
+`compression` and `payloadEncoding`, and rejects unsupported protocol
+versions.
 
 Encoded envelopes larger than 720 KB
 (`DEFAULT_SYNC_MAX_FRAME_BYTES`) are sliced into `envelope_chunk`

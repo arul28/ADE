@@ -74,6 +74,17 @@ private actor LaneBatchDeleteRecorder {
 }
 
 final class ADETests: XCTestCase {
+  func testSyncPreprocessRejectsCompressedPayloadAboveLimit() throws {
+    let encodedPayload = "H4sIAAAAAAAAE6tWKkhMScnMS1eyUkqkECjVAgB1YfDxTgAAAA=="
+    let envelope = """
+    {"version":1,"type":"hello","requestId":"oversized","compression":"gzip","payloadEncoding":"base64","payload":"\(encodedPayload)"}
+    """
+
+    XCTAssertThrowsError(try syncPreprocessIncoming(envelope, maxUncompressedBytes: 16)) { error in
+      XCTAssertTrue(error.localizedDescription.contains("Decoded sync envelope exceeds 16 bytes."))
+    }
+  }
+
   func testDictationCleanupCapitalizesAfterLeadingSentencePunctuation() {
     let cleaned = DictationCleanup.clean("hello. \"goodbye\"", glossary: .empty)
 

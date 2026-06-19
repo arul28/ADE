@@ -1,9 +1,11 @@
+import { gzipSync } from "node:zlib";
 import { describe, expect, it } from "vitest";
 import {
   createSyncEnvelopeChunkAssembler,
   DEFAULT_SYNC_MAX_FRAME_BYTES,
   encodeSyncEnvelope,
   encodeSyncEnvelopeFrames,
+  MAX_UNCOMPRESSED_SYNC_ENVELOPE_BYTES,
   parseSyncEnvelope,
   parseSyncEnvelopeChunkPayload,
 } from "./syncProtocol";
@@ -145,5 +147,37 @@ describe("parseSyncEnvelopeChunkPayload", () => {
       total: 1,
       part: "abc",
     });
+  });
+});
+
+describe("parseSyncEnvelope", () => {
+  it("rejects declared oversized compressed payloads before inflating", () => {
+    const encoded = JSON.stringify({
+      version: 1,
+      type: "hello",
+      requestId: "oversized-declared",
+      compression: "gzip",
+      payloadEncoding: "base64",
+      payload: gzipSync(Buffer.from("{}", "utf8")).toString("base64"),
+      uncompressedBytes: MAX_UNCOMPRESSED_SYNC_ENVELOPE_BYTES + 1,
+    });
+
+    expect(() => parseSyncEnvelope(encoded)).toThrow(
+      `Decoded sync envelope exceeds ${MAX_UNCOMPRESSED_SYNC_ENVELOPE_BYTES} bytes.`,
+    );
+  });
+
+  it("caps gzip output while inflating compressed payloads", () => {
+    const compressed = gzipSync(Buffer.alloc(MAX_UNCOMPRESSED_SYNC_ENVELOPE_BYTES + 1, 0x61));
+    const encoded = JSON.stringify({
+      version: 1,
+      type: "hello",
+      requestId: "oversized-inflate",
+      compression: "gzip",
+      payloadEncoding: "base64",
+      payload: compressed.toString("base64"),
+    });
+
+    expect(() => parseSyncEnvelope(encoded)).toThrow(/Failed to decode gzip sync envelope oversized-inflate/);
   });
 });

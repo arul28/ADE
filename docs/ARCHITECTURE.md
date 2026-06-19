@@ -936,6 +936,7 @@ ADE/
 │                       # validate-win-artifacts.mjs, ade-cli-windows-wrapper.cmd, etc.
 ├── apps/desktop/vendor/crsqlite/
 │   ├── darwin-arm64/
+│   ├── darwin-x64/
 │   └── win32-x64/      # Prebuilt cr-sqlite native binaries per platform
 ├── .github/workflows/
 │   ├── ci.yml
