@@ -151,68 +151,6 @@ struct FilesProofArtifactRow: View {
   }
 }
 
-struct FilesQueryCard: View {
-  let title: String
-  let prompt: String
-  @Binding var query: String
-  let disabled: Bool
-  let emptyMessage: String
-  let scopeText: String
-
-  var body: some View {
-    VStack(alignment: .leading, spacing: 10) {
-      HStack(alignment: .firstTextBaseline, spacing: 8) {
-        Text(title)
-          .font(.headline)
-          .foregroundStyle(ADEColor.textPrimary)
-        Spacer(minLength: 8)
-        Text(disabled ? "Offline" : "Ready")
-          .font(.caption2.weight(.semibold))
-          .foregroundStyle(disabled ? ADEColor.textMuted : ADEColor.success)
-      }
-
-      Label {
-        Text(scopeText)
-          .font(.caption.monospaced())
-          .foregroundStyle(ADEColor.textSecondary)
-          .lineLimit(2)
-          .truncationMode(.middle)
-      } icon: {
-        Image(systemName: "folder")
-          .font(.caption.weight(.semibold))
-          .foregroundStyle(ADEColor.textMuted)
-      }
-
-      HStack(spacing: 8) {
-        Image(systemName: "magnifyingglass")
-          .font(.caption.weight(.semibold))
-          .foregroundStyle(ADEColor.textMuted)
-        TextField(prompt, text: $query)
-          .textInputAutocapitalization(.never)
-          .autocorrectionDisabled()
-          .submitLabel(.search)
-          .disabled(disabled)
-        if !query.isEmpty {
-          Button {
-            query = ""
-          } label: {
-            Image(systemName: "xmark.circle.fill")
-              .foregroundStyle(ADEColor.textMuted)
-          }
-          .accessibilityLabel("Clear \(title.lowercased())")
-        }
-      }
-      .adeInsetField()
-      if !emptyMessage.isEmpty {
-        Text(emptyMessage)
-          .font(.caption)
-          .foregroundStyle(ADEColor.textSecondary)
-      }
-    }
-    .adeGlassCard(cornerRadius: 18)
-  }
-}
-
 struct FilesTreeNodeRow: View {
   let node: FileTreeNode
   let transitionNamespace: Namespace.ID?
@@ -330,53 +268,6 @@ struct FilesResultRow: View {
       metadata: [
         "label": "\(lastPathComponent(path)), file",
         "path": path,
-        "type": "file",
-        "role": "row"
-      ]
-    )
-  }
-}
-
-struct FilesSearchResultRow: View {
-  let result: FilesSearchTextMatch
-  let transitionNamespace: Namespace.ID?
-  let isSelectedTransitionSource: Bool
-
-  var body: some View {
-    VStack(alignment: .leading, spacing: 8) {
-      HStack(spacing: 8) {
-        Image(systemName: fileIcon(for: result.path))
-          .foregroundStyle(fileTint(for: result.path))
-          .adeMatchedGeometry(id: isSelectedTransitionSource ? "files-icon-\(result.path)" : nil, in: transitionNamespace)
-        Text(lastPathComponent(result.path))
-          .font(.subheadline.weight(.semibold))
-          .foregroundStyle(ADEColor.textPrimary)
-          .adeMatchedGeometry(id: isSelectedTransitionSource ? "files-title-\(result.path)" : nil, in: transitionNamespace)
-          .lineLimit(1)
-          .truncationMode(.tail)
-        Spacer()
-        ADEStatusPill(text: "L\(result.line)", tint: ADEColor.accent)
-      }
-      Text(result.path)
-        .font(.caption.monospaced())
-        .foregroundStyle(ADEColor.textSecondary)
-        .lineLimit(1)
-        .truncationMode(.middle)
-      Text(result.preview)
-        .font(.caption)
-        .foregroundStyle(ADEColor.textPrimary)
-        .lineLimit(2)
-    }
-    .adeListCard(cornerRadius: 16)
-    .adeMatchedTransitionSource(id: isSelectedTransitionSource ? "files-container-\(result.path)" : nil, in: transitionNamespace)
-    .accessibilityElement(children: .combine)
-    .accessibilityLabel("\(lastPathComponent(result.path)), line \(result.line), \(result.path)")
-    .adeInspectable(
-      "Files.Search.ResultRow",
-      metadata: [
-        "label": "\(lastPathComponent(result.path)), line \(result.line), \(result.path)",
-        "path": result.path,
-        "line": String(result.line),
         "type": "file",
         "role": "row"
       ]

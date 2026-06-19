@@ -447,13 +447,8 @@ private struct ProjectHomeIcon: View {
       RoundedRectangle(cornerRadius: 7, style: .continuous)
         .fill(isActive ? ADEColor.accent.opacity(0.16) : ADEColor.recessedBackground)
         .frame(width: 38, height: 38)
-      if let image = projectHomeIconImage(from: iconDataUrl) {
-        Image(uiImage: image)
-          .resizable()
-          .interpolation(.high)
-          .aspectRatio(contentMode: .fit)
-          .frame(width: 24, height: 24)
-          .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+      if let image = projectIconImage(from: iconDataUrl) {
+        Image(uiImage: image).projectIconStyle(size: 24, cornerRadius: 4)
       } else {
         Image(systemName: "folder")
           .font(.system(size: 16, weight: .semibold))
@@ -461,23 +456,6 @@ private struct ProjectHomeIcon: View {
       }
     }
   }
-}
-
-private let projectHomeIconImageCache = NSCache<NSString, UIImage>()
-
-private func projectHomeIconImage(from dataUrl: String?) -> UIImage? {
-  guard let dataUrl, !dataUrl.isEmpty else { return nil }
-  let cacheKey = dataUrl as NSString
-  if let cached = projectHomeIconImageCache.object(forKey: cacheKey) {
-    return cached
-  }
-  guard let commaIndex = dataUrl.firstIndex(of: ",") else { return nil }
-  let base64 = String(dataUrl[dataUrl.index(after: commaIndex)...])
-  guard let data = Data(base64Encoded: base64),
-        let image = UIImage(data: data)
-  else { return nil }
-  projectHomeIconImageCache.setObject(image, forKey: cacheKey)
-  return image
 }
 
 private struct ProjectHomeRow: View {

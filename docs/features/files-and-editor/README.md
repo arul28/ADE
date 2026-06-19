@@ -128,9 +128,16 @@ Renderer:
   `apps/desktop/src/renderer/components/files/monacoModelRegistry.test.ts`
   — renderer workbench state and model-lifetime tests.
 - `apps/ios/ADE/Views/Files/FilesRootScreen.swift` — mobile Files
-  root with workspace picker, quick-open and text-search cards, capped
-  visible result lists (first 40) with refine-search copy when more
-  matches exist, and live file-action gating from sync policy.
+  root with workspace picker, live file tree/read, a magnifying-glass
+  button that opens the search page, and live file-action gating from
+  sync policy.
+- `apps/ios/ADE/Views/Files/FilesSearchScreen.swift` — full-screen
+  unified search page (desktop `SearchOverlay` parity): one query
+  searches file names (`quickOpen`) and contents (`searchText`)
+  together, name matches first under "Files" and content hits grouped
+  per file with collapsible line previews. Replaced the inline
+  `FilesQueryCard` quick-open / text-search cards and their first-40
+  result caps.
 - `apps/ios/ADE/Views/Files/FilesDetailScreen.swift` and
   `FilesRootComponents.swift` — mobile file preview/detail chrome and
   proof-artifact/file-result rows.

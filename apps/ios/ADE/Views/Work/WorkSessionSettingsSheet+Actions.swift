@@ -139,6 +139,17 @@ extension WorkSessionSettingsSheet {
           manuallyNamed: true
         )
       }
+      // Mirror a model / access-mode change into the app-wide "last used"
+      // selection so the next New Chat restores it (a title-only edit doesn't).
+      if modelChanged || runtimeChanged || reasoningChanged || codexFastModeChanged {
+        WorkComposerPreferences.save(
+          provider: summary.provider,
+          modelId: selectedModelId,
+          runtimeMode: selectedRuntimeMode,
+          reasoningEffort: reasoningPayload,
+          codexFastMode: effectiveCodexFastMode
+        )
+      }
       await onSaved()
       dismiss()
     } catch {

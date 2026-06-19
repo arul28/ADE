@@ -107,6 +107,7 @@
 		E2000000000000000000004B /* FilesDetailScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000004B /* FilesDetailScreen.swift */; };
 		E2000000000000000000004C /* FilesDetailScreen+Actions.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000004C /* FilesDetailScreen+Actions.swift */; };
 		E2000000000000000000004D /* FilesWorkspacePickerDropdown.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000004D /* FilesWorkspacePickerDropdown.swift */; };
+		E2000000000000000000004E /* FilesSearchScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2000000000000000000004E /* FilesSearchScreen.swift */; };
 		60F4CDDB763C0A9F0E650B40 /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 31EC445F22FD38F90C16343E /* Foundation.framework */; };
 		63A9C60B0E0F0E2707634B2E /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 8943C47805A871A4E4A4BF68 /* Assets.xcassets */; };
 		6BDC22C6450AF0B3CBDB2650 /* FilesTabView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4EBFB65019F4C3F8A89428CE /* FilesTabView.swift */; };
@@ -322,6 +323,7 @@
 		D2000000000000000000004B /* FilesDetailScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = FilesDetailScreen.swift; path = ADE/Views/Files/FilesDetailScreen.swift; sourceTree = "<group>"; };
 		D2000000000000000000004C /* FilesDetailScreen+Actions.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "FilesDetailScreen+Actions.swift"; path = "ADE/Views/Files/FilesDetailScreen+Actions.swift"; sourceTree = "<group>"; };
 		D2000000000000000000004D /* FilesWorkspacePickerDropdown.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = FilesWorkspacePickerDropdown.swift; path = ADE/Views/Files/FilesWorkspacePickerDropdown.swift; sourceTree = "<group>"; };
+		D2000000000000000000004E /* FilesSearchScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = FilesSearchScreen.swift; path = ADE/Views/Files/FilesSearchScreen.swift; sourceTree = "<group>"; };
 		14C0DF7FEB4C2EB854BAC888 /* ADETests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADETests.swift; path = ADETests/ADETests.swift; sourceTree = "<group>"; };
 		D30000000000000000000001 /* AttentionDrawerModel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AttentionDrawerModel.swift; path = ADE/Views/AttentionDrawer/AttentionDrawerModel.swift; sourceTree = "<group>"; };
 		D30000000000000000000002 /* AttentionDrawerButton.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AttentionDrawerButton.swift; path = ADE/Views/AttentionDrawer/AttentionDrawerButton.swift; sourceTree = "<group>"; };
@@ -585,6 +587,7 @@
 				D2000000000000000000004B /* FilesDetailScreen.swift */,
 				D2000000000000000000004C /* FilesDetailScreen+Actions.swift */,
 				D2000000000000000000004D /* FilesWorkspacePickerDropdown.swift */,
+				D2000000000000000000004E /* FilesSearchScreen.swift */,
 			);
 			name = Files;
 			sourceTree = "<group>";
@@ -1029,6 +1032,7 @@
 				E2000000000000000000004B /* FilesDetailScreen.swift in Sources */,
 				E2000000000000000000004C /* FilesDetailScreen+Actions.swift in Sources */,
 				E2000000000000000000004D /* FilesWorkspacePickerDropdown.swift in Sources */,
+				E2000000000000000000004E /* FilesSearchScreen.swift in Sources */,
 				B10000000000000000000002 /* LaneAttachSheet.swift in Sources */,
 				B10000000000000000000003 /* LaneBatchManageSheet.swift in Sources */,
 				B10000000000000000000004 /* LaneChatLaunchSheet.swift in Sources */,

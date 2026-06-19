@@ -163,6 +163,26 @@ extension WorkSessionDestinationView {
       _ = try await syncService.updateChatSession(sessionId: sessionId, modelId: modelId)
       await refreshChatStateAfterAction(forceRemote: true)
       errorMessage = nil
+      // Persist as the app-wide "last used" model so the next New Chat opens on
+      // it. The inline picker is cross-provider (a Claude chat can pick e.g. a
+      // Codex model), so re-derive the provider from the picked model rather
+      // than persisting the chat's old provider — otherwise restore would seed a
+      // mismatched provider/model pair the New Chat init does not reconcile.
+      // When the provider actually changes, the chat's access mode and
+      // sub-settings no longer apply, so reset them to the new provider default.
+      if let summary = chatSummary {
+        let resolvedProvider = workModelCatalogGroupKey(for: modelId, currentProvider: summary.provider)
+        let providerChanged = resolvedProvider != summary.provider
+        WorkComposerPreferences.save(
+          provider: resolvedProvider,
+          modelId: modelId,
+          runtimeMode: providerChanged
+            ? workDefaultRuntimeMode(provider: resolvedProvider)
+            : workInitialRuntimeMode(summary),
+          reasoningEffort: providerChanged ? "" : (summary.reasoningEffort ?? ""),
+          codexFastMode: providerChanged ? false : summary.effectiveFastMode
+        )
+      }
       ADEHaptics.light()
     } catch {
       ADEHaptics.error()
@@ -229,6 +249,15 @@ extension WorkSessionDestinationView {
       )
       await refreshChatStateAfterAction(forceRemote: true)
       errorMessage = nil
+      // Persist as the app-wide "last used" access mode so the next New Chat
+      // opens on it (the model / sub-settings are unchanged by a mode change).
+      WorkComposerPreferences.save(
+        provider: summary.provider,
+        modelId: summary.modelId ?? summary.model,
+        runtimeMode: modeId,
+        reasoningEffort: summary.reasoningEffort ?? "",
+        codexFastMode: summary.effectiveFastMode
+      )
       ADEHaptics.light()
       return true
     } catch {

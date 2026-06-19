@@ -73,6 +73,10 @@ struct WorkRootScreen: View {
   @State var sessions: [TerminalSessionSummary] = []
   @State var chatSummaries: [String: AgentChatSessionSummary] = [:]
   @State var lanes: [LaneSummary] = []
+  /// ADE-mapped PRs (synced `pull_requests` table) used to tag each session's
+  /// lane with its PR status next to the lane name. Combined with
+  /// `syncService.laneGithubPrItems` for PRs opened outside ADE.
+  @State var pullRequests: [PullRequestListItem] = []
   @State var transcriptCache = WorkRootTranscriptCache()
   @State var sessionPresentation = WorkRootSessionPresentation.empty
   @State var sessionPresentationRebuildTask: Task<Void, Never>?
@@ -131,6 +135,17 @@ struct WorkRootScreen: View {
 
   var laneById: [String: LaneSummary] {
     Dictionary(lanes.map { ($0.id, $0) }, uniquingKeysWith: { _, new in new })
+  }
+
+  /// PR status tag per lane id, merging ADE-mapped PRs with branch-matched
+  /// GitHub PRs (same resolution the Lanes tab uses), so the Work session rows
+  /// can show a minimal PR indicator beside the lane name.
+  var lanePrTagsByLaneId: [String: LanePrTag] {
+    lanePrTagByLaneId(
+      lanes: lanes,
+      pullRequests: pullRequests,
+      githubPrs: syncService.laneGithubPrItems
+    )
   }
 
   var mergedSessions: [TerminalSessionSummary] {
@@ -346,6 +361,7 @@ struct WorkRootScreen: View {
                   WorkSessionListRow(
                     session: session,
                     lane: laneById[session.laneId],
+                    pullRequest: lanePrTagsByLaneId[session.laneId],
                     chatSummary: chatSummaries[session.id],
                     isArchived: archivedSessionIds.contains(session.id),
                     transitionNamespace: ADEMotion.allowsMatchedGeometry(reduceMotion: reduceMotion) ? sessionTransitionNamespace : nil,

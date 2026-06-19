@@ -1193,6 +1193,14 @@ final class SyncService: ObservableObject {
   /// re-fetches the sidecar fan-out.
   @Published private(set) var prDetailCache: [String: PrDetailWarmEntry] = [:]
 
+  /// Repo-scoped GitHub PR list shared by the Lanes and Work tabs so a lane (a
+  /// branch) can surface a PR opened directly on GitHub — not only PRs mapped
+  /// into the synced `pull_requests` table. Populated best-effort by
+  /// `refreshLaneGithubPrItems()`; empty when offline or not yet fetched, in
+  /// which case the lane-PR chip falls back to the ADE-mapped rows alone.
+  @Published private(set) var laneGithubPrItems: [GitHubPrListItem] = []
+  private var laneGithubPrItemsFetchedAt: Date?
+
   var connectionHealth: SyncConnectionHealth {
     syncConnectionHealth(
       connectionState: connectionState,
@@ -3795,6 +3803,27 @@ final class SyncService: ObservableObject {
     )
   }
 
+  /// Best-effort refresh of the shared `laneGithubPrItems` cache used by the
+  /// Lanes and Work tabs to tag lanes with GitHub PRs opened outside ADE.
+  /// Throttled (skips when refreshed within `minInterval` unless `force`), a
+  /// no-op when the transport is down, and never throws — a missing GitHub
+  /// snapshot just leaves the ADE-mapped fallback in place.
+  func refreshLaneGithubPrItems(force: Bool = false, minInterval: TimeInterval = 20) async {
+    guard connectionState == .connected || connectionState == .syncing else { return }
+    if !force, let fetchedAt = laneGithubPrItemsFetchedAt,
+      Date().timeIntervalSince(fetchedAt) < minInterval
+    {
+      return
+    }
+    do {
+      let snapshot = try await fetchGitHubPullRequestSnapshot(force: false)
+      laneGithubPrItems = snapshot.repoPullRequests.filter { $0.scope == "repo" }
+      laneGithubPrItemsFetchedAt = Date()
+    } catch {
+      // Leave the previous cache (and the ADE-mapped fallback) in place.
+    }
+  }
+
   func fetchPullRequestReviewThreads(prId: String) async throws -> [PrReviewThread] {
     try await sendDecodableCommand(action: "prs.getReviewThreads", args: ["prId": prId], as: [PrReviewThread].self)
   }
@@ -4048,19 +4077,34 @@ final class SyncService: ObservableObject {
     ])
   }
 
-  func quickOpen(workspaceId: String, query: String) async throws -> [FilesQuickOpenItem] {
+  func quickOpen(
+    workspaceId: String,
+    query: String,
+    limit: Int = 30,
+    includeIgnored: Bool = true
+  ) async throws -> [FilesQuickOpenItem] {
     try decode(
-      try await sendFileRequest(action: "quickOpen", args: ["workspaceId": workspaceId, "query": query]),
+      try await sendFileRequest(action: "quickOpen", args: [
+        "workspaceId": workspaceId,
+        "query": query,
+        "limit": limit,
+        "includeIgnored": includeIgnored,
+      ]),
       as: [FilesQuickOpenItem].self
     )
   }
 
-  func searchText(workspaceId: String, query: String, includeIgnored: Bool = true) async throws -> [FilesSearchTextMatch] {
+  func searchText(
+    workspaceId: String,
+    query: String,
+    limit: Int = 300,
+    includeIgnored: Bool = true
+  ) async throws -> [FilesSearchTextMatch] {
     try decode(
       try await sendFileRequest(action: "searchText", args: [
         "workspaceId": workspaceId,
         "query": query,
-        "limit": 200,
+        "limit": limit,
         "includeIgnored": includeIgnored,
       ]),
       as: [FilesSearchTextMatch].self
@@ -8741,6 +8785,11 @@ final class SyncService: ObservableObject {
   }
 
   private func resetChatEventState(clearHistory: Bool) {
+    // GitHub PR items are repo-scoped to the active project; drop them so a
+    // project switch / reconnect re-fetches against the new repo instead of
+    // tagging lanes with another project's PRs.
+    laneGithubPrItems = []
+    laneGithubPrItemsFetchedAt = nil
     subscribedChatSessionIds.removeAll()
     // Turn-active hints are scoped to the live connection's event stream —
     // a stale "running" hint must not survive a project switch or reconnect.
