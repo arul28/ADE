@@ -284,6 +284,74 @@ describe("operationService start/finish lifecycle", () => {
   });
 });
 
+describe("operationService.pruneOld", () => {
+  it("drops old finished ops, preserves running ops, and caps to the newest maxRows", () => {
+    const { db, raw } = createInMemoryAdeDb();
+    db.run("insert into lanes(id, project_id, name) values('lane-1', 'project-1', 'Lane 1')");
+    db.run("insert into lanes(id, project_id, name) values('lane-x', 'project-2', 'Lane X')");
+    const service = createOperationService({ db, projectId: "project-1" });
+
+    const now = Date.now();
+    const iso = (offsetMs: number) => new Date(now - offsetMs).toISOString();
+    const day = 86_400_000;
+
+    // Old (90d) finished op -> should be pruned by the age cap.
+    insertOperation(db, {
+      id: "old-finished",
+      kind: "git_pull",
+      startedAt: iso(90 * day),
+      status: "succeeded",
+    });
+    // Old (90d) running op -> must be preserved (status guard).
+    insertOperation(db, {
+      id: "old-running",
+      kind: "git_pull",
+      startedAt: iso(90 * day),
+      status: "running",
+    });
+    // A foreign-project old finished op -> must be untouched (project scope).
+    db.run(
+      `insert into operations(id, project_id, lane_id, kind, started_at, ended_at, status, pre_head_sha, post_head_sha, metadata_json)
+       values('foreign-old', 'project-2', 'lane-x', 'git_pull', ?, ?, 'succeeded', null, null, '{}')`,
+      [iso(90 * day), iso(90 * day)],
+    );
+    // 15 recent finished ops -> exercise the maxRows=10 count cap.
+    for (let i = 0; i < 15; i += 1) {
+      insertOperation(db, {
+        id: `recent-${String(i).padStart(2, "0")}`,
+        kind: "git_fetch",
+        startedAt: iso(i * 1000),
+        status: "succeeded",
+      });
+    }
+
+    service.pruneOld({ maxAgeDays: 60, maxRows: 10 });
+
+    const remaining = service.list({ limit: 1000 }).map((r) => r.id);
+    // Old finished row is gone, old running row stays.
+    expect(remaining).not.toContain("old-finished");
+    expect(remaining).toContain("old-running");
+    // Count cap keeps the running op + the 10 newest recent ops = 11 rows total.
+    expect(remaining).toHaveLength(11);
+    expect(remaining).toContain("recent-00");
+    expect(remaining).not.toContain("recent-14");
+    // Foreign project rows are never touched.
+    const foreign = mapExecRows(
+      raw.exec("select id from operations where project_id = 'project-2'"),
+    ).map((r) => r.id);
+    expect(foreign).toEqual(["foreign-old"]);
+
+    // The retention path introduces no extra index — only sqlite's implicit
+    // primary-key auto-index exists (no new UNIQUE index, honoring the CRR rule).
+    const indexes = mapExecRows(
+      raw.exec(
+        "select name from sqlite_master where type = 'index' and tbl_name = 'operations' and name not like 'sqlite_autoindex_%'",
+      ),
+    );
+    expect(indexes).toHaveLength(0);
+  });
+});
+
 describe("operationService.list", () => {
   it("filters by lane, kind, and status, ordering newest first within the clamped limit", () => {
     const { db } = createInMemoryAdeDb();

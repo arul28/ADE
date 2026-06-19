@@ -1075,7 +1075,7 @@ describe("validation concerns gating", () => {
               goalSummary: "validate T-1",
               status: "running",
               spawnedAt: "now",
-              currentStepId: "V-1",
+              currentStepId: "T-val",
             },
           },
           {
@@ -1101,6 +1101,19 @@ describe("validation concerns gating", () => {
               status: "in_progress",
               validationGate: { required: true, stepIds: ["V-1"] },
               assigneeSessionId: "S-worker",
+            },
+          },
+          {
+            op: "add",
+            path: "/tasks/-",
+            value: {
+              id: "T-val",
+              phaseId: "validating",
+              title: "validate",
+              description: "",
+              status: "claimed",
+              validationGate: { required: true, stepIds: ["V-1"] },
+              assigneeSessionId: "S-validator",
             },
           },
         ],
@@ -1159,6 +1172,157 @@ describe("validation concerns gating", () => {
       manifest.bundlePath,
     );
     expect(accepted.ok).toBe(true);
+    await svc.dispose();
+  });
+
+  it("denies a validator that self-wrote currentStepId to forge an unassigned gate", async () => {
+    const svc = createOrchestrationService({ resolveLaneWorktree: () => lane });
+    const { manifest } = await svc.runCreate({
+      laneId: "L-1",
+      leadSessionId: "S-lead",
+      bundleRoot: lane,
+    });
+    const m1 = await svc.manifestPatch(
+      {
+        runId: manifest.runId,
+        ifMatchEtag: manifest.etag,
+        actorRole: "lead",
+        actorSessionId: "S-lead",
+        patches: [
+          {
+            op: "add",
+            path: "/agents/-",
+            value: {
+              sessionId: "S-validator",
+              role: "validator",
+              tag: "review",
+              goalSummary: "validate",
+              status: "running",
+              spawnedAt: "now",
+              // Attacker-writable field pointed straight at the target step id.
+              currentStepId: "V-final",
+            },
+          },
+          {
+            op: "add",
+            path: "/validationStrategy/steps/-",
+            value: {
+              id: "V-final",
+              concern: "reverify_changes",
+              scope: "per_worker",
+              required: true,
+              prompt: "Re-read every touched file and walk error paths.",
+              evidenceRequired: ["plan_md_section"],
+            },
+          },
+          {
+            op: "add",
+            path: "/tasks/-",
+            value: {
+              id: "T-1",
+              phaseId: "developing",
+              title: "x",
+              description: "",
+              status: "in_progress",
+              validationGate: { required: true, stepIds: ["V-final"] },
+              assigneeSessionId: "S-worker",
+            },
+          },
+        ],
+      },
+      manifest.bundlePath,
+    );
+    expect(m1.ok).toBe(true);
+    if (!m1.ok) return;
+
+    const forged = await svc.recordValidationRun(
+      {
+        runId: manifest.runId,
+        taskId: "T-1",
+        stepId: "V-final",
+        sessionId: "S-validator",
+        status: "passed",
+        notes: "forged pass via self-written currentStepId",
+      },
+      manifest.bundlePath,
+    );
+    expect(forged.ok).toBe(false);
+    if (!forged.ok) {
+      expect(forged.error).toBe("policy_denied");
+    }
+    await svc.dispose();
+  });
+
+  it("lets a validator that claimed the validating task record its gate as passed", async () => {
+    const svc = createOrchestrationService({ resolveLaneWorktree: () => lane });
+    const { manifest } = await svc.runCreate({
+      laneId: "L-1",
+      leadSessionId: "S-lead",
+      bundleRoot: lane,
+    });
+    const m1 = await svc.manifestPatch(
+      {
+        runId: manifest.runId,
+        ifMatchEtag: manifest.etag,
+        actorRole: "lead",
+        actorSessionId: "S-lead",
+        patches: [
+          {
+            op: "add",
+            path: "/agents/-",
+            value: {
+              sessionId: "S-validator",
+              role: "validator",
+              tag: "review",
+              goalSummary: "validate",
+              status: "running",
+              spawnedAt: "now",
+            },
+          },
+          {
+            op: "add",
+            path: "/validationStrategy/steps/-",
+            value: {
+              id: "V-final",
+              concern: "reverify_changes",
+              scope: "per_worker",
+              required: true,
+              prompt: "Re-read every touched file and walk error paths.",
+              evidenceRequired: ["plan_md_section"],
+            },
+          },
+          {
+            op: "add",
+            path: "/tasks/-",
+            value: {
+              id: "T-1",
+              phaseId: "validating",
+              title: "x",
+              description: "",
+              status: "claimed",
+              validationGate: { required: true, stepIds: ["V-final"] },
+              assigneeSessionId: "S-validator",
+            },
+          },
+        ],
+      },
+      manifest.bundlePath,
+    );
+    expect(m1.ok).toBe(true);
+    if (!m1.ok) return;
+
+    const recorded = await svc.recordValidationRun(
+      {
+        runId: manifest.runId,
+        taskId: "T-1",
+        stepId: "V-final",
+        sessionId: "S-validator",
+        status: "passed",
+        notes: "validator proof appended to plan.md",
+      },
+      manifest.bundlePath,
+    );
+    expect(recorded.ok).toBe(true);
     await svc.dispose();
   });
 

@@ -10720,7 +10720,7 @@ async function startHeadlessRpcSocketServer(args: {
   ) {
     return null;
   }
-  fs.mkdirSync(path.dirname(args.socketPath), { recursive: true });
+  fs.mkdirSync(path.dirname(args.socketPath), { recursive: true, mode: 0o700 });
   const serverState = createHeadlessRpcServer(args.createHandler);
   const { server } = serverState;
 
@@ -10737,6 +10737,12 @@ async function startHeadlessRpcSocketServer(args: {
     server.once("error", handleError);
     server.listen(args.socketPath);
   });
+
+  if (!isAdeRuntimeNamedPipePath(args.socketPath)) {
+    try {
+      fs.chmodSync(args.socketPath, 0o600);
+    } catch {}
+  }
 
   return () => {
     stopHeadlessRpcServer(serverState);
@@ -15246,6 +15252,7 @@ export {
   resolveAdeCodeModulePath,
   resolveRoots,
   runCli,
+  startHeadlessRpcSocketServer,
   summarizeExecution,
   unwrapToolResult,
 };

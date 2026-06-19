@@ -290,6 +290,10 @@
       {
         "from": "resources/app-update.yml",
         "to": "app-update.yml"
+      },
+      {
+        "from": "../../NOTICE",
+        "to": "NOTICE"
       }
     ],
     "afterPack": "./scripts/after-pack-runtime-fixes.cjs",

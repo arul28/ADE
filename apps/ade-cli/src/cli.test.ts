@@ -20,6 +20,7 @@ import {
   resolveAdeCodeModulePath,
   resolveRoots,
   runCli,
+  startHeadlessRpcSocketServer,
   shouldAutoRegisterProjectForPlan,
   shouldBlockManualMachineRuntimeSpawn,
   shouldEnforceMachineRuntimeBuildCompatibility,
@@ -406,6 +407,39 @@ describe("ADE CLI", () => {
       ownerProcess.kill("SIGKILL");
       fs.rmSync(adeHome, { recursive: true, force: true });
     }
+  });
+
+  const posixIt = process.platform === "win32" ? it.skip : it;
+  posixIt(
+    "creates the headless RPC unix socket with 0600 perms and parent dir 0700",
+    async () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-headless-sock-"));
+      const socketPath = path.join(root, "sock", "ade.sock");
+      const stop = await startHeadlessRpcSocketServer({
+        socketPath,
+        createHandler: () => (async () => ({})) as never,
+      });
+      try {
+        expect(stop).not.toBeNull();
+        const dirMode = fs.statSync(path.dirname(socketPath)).mode & 0o777;
+        const sockMode = fs.statSync(socketPath).mode & 0o777;
+        expect(dirMode).toBe(0o700);
+        expect(sockMode).toBe(0o600);
+      } finally {
+        stop?.();
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it("returns null for a named-pipe socket path (desktop path; no dir/chmod)", async () => {
+    // isAdeRuntimeNamedPipePath matches by string prefix, so this exercises the
+    // named-pipe early-return branch on any platform without touching the fs.
+    const stop = await startHeadlessRpcSocketServer({
+      socketPath: "//./pipe/ade-headless-named-pipe-test",
+      createHandler: () => (async () => ({})) as never,
+    });
+    expect(stop).toBeNull();
   });
 
   it("recognizes the hidden PTY host worker entrypoint", () => {

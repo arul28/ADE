@@ -10,6 +10,10 @@ const mockGit = vi.hoisted(() => ({
   runGitMergeTree: vi.fn(),
 }));
 
+const mockChildProcess = vi.hoisted(() => ({
+  spawn: vi.fn(),
+}));
+
 // ---------------------------------------------------------------------------
 // vi.mock — external dependencies
 // ---------------------------------------------------------------------------
@@ -18,6 +22,10 @@ vi.mock("../git/git", () => ({
   runGit: (...args: unknown[]) => mockGit.runGit(...args),
   runGitOrThrow: (...args: unknown[]) => mockGit.runGitOrThrow(...args),
   runGitMergeTree: (...args: unknown[]) => mockGit.runGitMergeTree(...args),
+}));
+
+vi.mock("node:child_process", () => ({
+  spawn: (...args: unknown[]) => mockChildProcess.spawn(...args),
 }));
 
 vi.mock("../ai/utils", () => ({
@@ -2873,6 +2881,89 @@ describe("prService.land", () => {
     expect(result.success).toBe(false);
     expect(result.error).toMatch(/merge conflicts/i);
     expect(githubService.apiRequest).not.toHaveBeenCalledWith(expect.objectContaining({ method: "PUT" }));
+  });
+
+  // Helper: a minimal stand-in for a child_process.ChildProcess that the runGh
+  // promise consumes (stdout/stderr `.on`, top-level `.on`, `.kill`).
+  function makeFakeGhChild() {
+    const stream = { on: vi.fn() };
+    const handlers: Record<string, (arg: unknown) => void> = {};
+    return {
+      stdout: stream,
+      stderr: stream,
+      kill: vi.fn(),
+      on(event: string, cb: (arg: unknown) => void) {
+        handlers[event] = cb;
+        // Resolve runGh immediately with a successful admin merge exit.
+        if (event === "close") cb(0);
+        return this;
+      },
+    };
+  }
+
+  // The admin-merge bypass shells out to `gh pr merge --admin`. For PAT-only /
+  // packaged users (no `gh auth login`), the spawned gh must inherit the
+  // resolved ADE token via GH_TOKEN/GITHUB_TOKEN, otherwise the merge fails.
+  function buildAdminMergeScenario(githubServiceOverrides?: Record<string, unknown>) {
+    const row = makePrRow({ id: "pr-admin", github_pr_number: 94 });
+    const db = makeMockDb();
+    installPullRequestRowStore(db, [row]);
+    const githubService = makeGithubService({
+      apiRequest: vi.fn(async (args: { method: string; path: string }) => {
+        if (args.method === "GET" && args.path === "/repos/test-owner/test-repo/pulls/94") {
+          return {
+            data: makeGitHubPull({
+              number: 94,
+              draft: false,
+              state: "open",
+              mergeable: true,
+              mergeable_state: "clean",
+            }),
+          };
+        }
+        if (args.method === "PUT") {
+          // Branch-protection rejection that triggers the admin bypass.
+          throw new Error("405 At least 1 approving review is required by reviewers with write access. (branch protection)");
+        }
+        throw new Error(`Unexpected GitHub API call: ${args.method} ${args.path}`);
+      }),
+      ...githubServiceOverrides,
+    });
+    const laneService = makeLaneService();
+    laneService.getLaneBaseAndBranch.mockReturnValue({ worktreePath: "/tmp/lane-wt" });
+    const { service } = buildService({ db, githubService, laneService });
+    return { service };
+  }
+
+  it("injects the resolved PAT into the gh admin-merge child env", async () => {
+    mockChildProcess.spawn.mockImplementation(() => makeFakeGhChild());
+    const { service } = buildAdminMergeScenario({ getTokenOrThrow: vi.fn(() => "ghp_test") });
+
+    const result = await service.land({ prId: "pr-admin", method: "squash", bypassRules: true });
+
+    expect(result.success).toBe(true);
+    expect(mockChildProcess.spawn).toHaveBeenCalledWith(
+      "gh",
+      expect.arrayContaining(["pr", "merge", "--admin"]),
+      expect.objectContaining({
+        env: expect.objectContaining({ GH_TOKEN: "ghp_test", GITHUB_TOKEN: "ghp_test" }),
+      }),
+    );
+  });
+
+  it("falls back to process.env when no token is resolvable (no crash)", async () => {
+    mockChildProcess.spawn.mockImplementation(() => makeFakeGhChild());
+    const { service } = buildAdminMergeScenario({
+      getTokenOrThrow: vi.fn(() => {
+        throw new Error("no token");
+      }),
+    });
+
+    const result = await service.land({ prId: "pr-admin", method: "squash", bypassRules: true });
+
+    expect(result.success).toBe(true);
+    const spawnEnv = mockChildProcess.spawn.mock.calls[0]?.[2]?.env;
+    expect(spawnEnv).toBe(process.env);
   });
 });
 

@@ -6,9 +6,11 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { createOrchestrationService } from "./orchestrationService";
 import {
+  isOrchestrationPlanApproved,
   isPlanningReadyForApproval,
   isPlanningReadyForModelSelection,
 } from "./runtimeProfile";
+import { buildPhaseTransitionOpsAfterTaskRelease } from "./manifestNormalization";
 import { checkPatchOp } from "./patchPolicy";
 import { assessPlanReadiness } from "../ai/tools/orchestrationPlanQuality";
 import type {
@@ -567,6 +569,74 @@ describe("patch policy denies forging planning state", () => {
       { actorRole: "lead", manifest },
     );
     expect(denySpec.allowed).toBe(false);
+    await s.svc.dispose();
+    await fsp.rm(s.laneRoot, { recursive: true, force: true });
+  });
+});
+
+describe("planning phase never auto-advances out of approval gate", () => {
+  it("normalize keeps an unapproved run in planning even when a planning task is done", async () => {
+    const s = await makeSetup();
+    // Lead adds an already-done planning-phase task. The normalize pass runs
+    // reconcileActivePhaseProgress; without the planning guard it would mark
+    // planning done and auto-advance currentPhase to developing, bypassing
+    // setPlanApprovalState (the only legitimate planning→developing path).
+    await patchManifest(s, [{
+      op: "add",
+      path: "/tasks/-",
+      value: {
+        id: "T-plan",
+        phaseId: "planning",
+        title: "Sketch the plan",
+        description: "planning work",
+        status: "done",
+        validationGate: { required: false, stepIds: [] },
+      },
+    }]);
+
+    const m = manifestOf(s);
+    expect(m.currentPhase).toBe("planning");
+    expect(m.planSpec?.approval.state).not.toBe("approved");
+    expect(m.leadState.planApprovedAt).toBeUndefined();
+    expect(isOrchestrationPlanApproved(m)).toBe(false);
+
+    await s.svc.dispose();
+    await fsp.rm(s.laneRoot, { recursive: true, force: true });
+  });
+
+  it("buildPhaseTransitionOpsAfterTaskRelease emits no transition for a done planning task", async () => {
+    const s = await makeSetup();
+    await patchManifest(s, [{
+      op: "add",
+      path: "/tasks/-",
+      value: {
+        id: "T-plan",
+        phaseId: "planning",
+        title: "Sketch the plan",
+        description: "planning work",
+        status: "in_progress",
+        validationGate: { required: false, stepIds: [] },
+      },
+    }]);
+
+    // Project the manifest as the release path does (task → done) and ask the
+    // transition builder for ops. The planning guard must yield no ops, so no
+    // /currentPhase replace and no planning-phase completion are emitted.
+    const m = manifestOf(s);
+    const ops = buildPhaseTransitionOpsAfterTaskRelease(
+      m,
+      "T-plan",
+      "done",
+      new Date().toISOString(),
+    );
+    expect(ops).toEqual([]);
+
+    // The manifest itself is untouched and still gated on approval.
+    expect(m.currentPhase).toBe("planning");
+    expect(m.planSpec?.approval.state).not.toBe("approved");
+    expect(m.leadState.planApprovedAt).toBeUndefined();
+    expect(isOrchestrationPlanApproved(m)).toBe(false);
+
     await s.svc.dispose();
     await fsp.rm(s.laneRoot, { recursive: true, force: true });
   });

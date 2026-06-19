@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   CLAUDE_TERMINAL_SUBMIT_CONFIRM_DELAY_MS,
   clampChatScrollOffsetRows,
@@ -54,6 +54,7 @@ import {
   mergeNewChatModelPickerContext,
   normalizeCatalogProvider,
   planSessionStatePrune,
+  planTerminalBufferPrune,
   isNewChatSetupPane,
   resolveContextDefault,
   resolveDrawerPaneWidth,
@@ -675,6 +676,60 @@ describe("planSessionStatePrune", () => {
 
     expect(plan?.removed).toEqual(["chat-a"]);
     expect([...(plan?.nextSeen ?? [])]).toEqual(["chat-b", "chat-c"]);
+  });
+});
+
+describe("planTerminalBufferPrune", () => {
+  it("yields removed terminal ids for deletion while surviving keys remain", () => {
+    const plan = planTerminalBufferPrune(
+      new Set(["term-a", "term-b"]),
+      new Set(["term-b", "term-c"]),
+    );
+
+    expect(plan.removed).toEqual(["term-a"]);
+    expect([...plan.nextSeen]).toEqual(["term-b", "term-c"]);
+  });
+
+  it("prunes every previously-seen terminal when the list empties", () => {
+    const plan = planTerminalBufferPrune(new Set(["term-a", "term-b"]), new Set());
+
+    expect(plan.removed).toEqual(["term-a", "term-b"]);
+    expect([...plan.nextSeen]).toEqual([]);
+  });
+
+  it("removes nothing when the terminal set is unchanged", () => {
+    const plan = planTerminalBufferPrune(new Set(["term-a"]), new Set(["term-a"]));
+
+    expect(plan.removed).toEqual([]);
+  });
+});
+
+describe("status-line refresh trailing debounce", () => {
+  it("coalesces N rapid triggers into a single spawn", () => {
+    vi.useFakeTimers();
+    try {
+      let spawns = 0;
+      let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+      // Mirrors the scheduleRefresh closure in app.tsx: clear + reset a 300ms
+      // trailing timer before invoking the (shell-spawning) refresh.
+      const scheduleRefresh = () => {
+        if (debounceTimer) clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(() => {
+          debounceTimer = null;
+          spawns += 1;
+        }, 300);
+      };
+
+      for (let i = 0; i < 50; i += 1) {
+        scheduleRefresh();
+        vi.advanceTimersByTime(10);
+      }
+      expect(spawns).toBe(0);
+      vi.advanceTimersByTime(300);
+      expect(spawns).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

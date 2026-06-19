@@ -1152,9 +1152,8 @@ export function createGitOperationsService({
     async listCommitFiles(args: GitListCommitFilesArgs): Promise<string[]> {
       const lane = laneService.getLaneBaseAndBranch(args.laneId);
       await assertLaneWorktreeRoot(lane);
-      const sha = args.commitSha.trim();
-      if (!sha.length) throw new Error("commitSha is required");
-      const res = await runGitOrThrow(["show", "--pretty=format:", "--name-only", sha], {
+      const sha = normalizeCommitShaArg(args.commitSha);
+      const res = await runGitOrThrow(["show", "--pretty=format:", "--name-only", sha, "--"], {
         cwd: lane.worktreePath,
         timeoutMs: 12_000
       });
@@ -1167,9 +1166,8 @@ export function createGitOperationsService({
     async getCommitMessage(args: GitGetCommitMessageArgs): Promise<string> {
       const lane = laneService.getLaneBaseAndBranch(args.laneId);
       await assertLaneWorktreeRoot(lane);
-      const sha = args.commitSha.trim();
-      if (!sha.length) throw new Error("commitSha is required");
-      const res = await runGitOrThrow(["show", "-s", "--format=%B", sha], {
+      const sha = normalizeCommitShaArg(args.commitSha);
+      const res = await runGitOrThrow(["show", "-s", "--format=%B", sha, "--"], {
         cwd: lane.worktreePath,
         timeoutMs: 12_000
       });
@@ -1182,8 +1180,7 @@ export function createGitOperationsService({
     },
 
     async revertCommit(args: GitRevertArgs): Promise<GitActionResult> {
-      const commitSha = args.commitSha.trim();
-      if (!commitSha.length) throw new Error("Commit SHA is required");
+      const commitSha = normalizeCommitShaArg(args.commitSha);
       const { action } = await runLaneOperation({
         laneId: args.laneId,
         kind: "git_revert",
@@ -1197,8 +1194,7 @@ export function createGitOperationsService({
     },
 
     async cherryPickCommit(args: GitCherryPickArgs): Promise<GitActionResult> {
-      const commitSha = args.commitSha.trim();
-      if (!commitSha.length) throw new Error("Commit SHA is required");
+      const commitSha = normalizeCommitShaArg(args.commitSha);
       const { action } = await runLaneOperation({
         laneId: args.laneId,
         kind: "git_cherry_pick",
@@ -1212,8 +1208,7 @@ export function createGitOperationsService({
     },
 
     async createTag(args: GitCreateTagArgs): Promise<GitActionResult> {
-      const commitSha = args.commitSha.trim();
-      if (!commitSha.length) throw new Error("Commit SHA is required");
+      const commitSha = normalizeCommitShaArg(args.commitSha);
       const tagName = ensureGitTagName(args.tagName);
       const message = args.message?.trim();
       const { action } = await runLaneOperation({
@@ -1232,8 +1227,7 @@ export function createGitOperationsService({
     },
 
     async resetToCommit(args: GitResetCommitArgs): Promise<GitActionResult> {
-      const commitSha = args.commitSha.trim();
-      if (!commitSha.length) throw new Error("Commit SHA is required");
+      const commitSha = normalizeCommitShaArg(args.commitSha);
       if (!["soft", "mixed", "hard"].includes(args.mode)) {
         throw new Error("Reset mode must be soft, mixed, or hard");
       }

@@ -132,6 +132,28 @@ const MOBILE_CHANGESET_EXCLUDED_TABLES = new Set([
   "automation_action_results",
 ]);
 
+// Tables the host alone is authoritative for. `sync_cluster_state` is the
+// replicating CRR that governs brain ownership; a paired peer must never be
+// able to author a winning crsql_changes row for it (that would flip
+// brain_device_id and make the host abdicate via refreshRoleState). Brain
+// handover still happens through the explicit host-transfer RPC, not raw CRR.
+const SYNC_HOST_AUTHORITATIVE_TABLES = new Set([
+  "sync_cluster_state",
+]);
+
+// One rule for both directions: a host-authoritative table never crosses the
+// CRR boundary (peers neither receive nor author it over sync).
+const isHostAuthoritativeTable = (change: CrsqlChangeRow): boolean =>
+  SYNC_HOST_AUTHORITATIVE_TABLES.has(change.table);
+
+// Inbound peer changeset_batch ceilings. The 25MB envelope is the only other
+// bound, so a single huge batch would block the DB inside one BEGIN IMMEDIATE
+// transaction. The host's own outbound caps are 250 rows / 256KB; we allow a
+// far more generous inbound ceiling (~10k rows / ~10MB) but still reject
+// anything that could seize the DB, well under the 25MB envelope.
+const MAX_INBOUND_CHANGESET_ROWS = DEFAULT_MAX_CHANGESET_BATCH_ROWS * 40;
+const MAX_INBOUND_CHANGESET_BYTES = DEFAULT_MAX_CHANGESET_BATCH_BYTES * 40;
+
 function isMobileChangesetPeer(peer: { metadata: SyncPeerMetadata | null }): boolean {
   return peer.metadata?.deviceType === "phone" || peer.metadata?.platform === "iOS";
 }
@@ -2864,6 +2886,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       const mobilePeer = isMobileChangesetPeer(peer);
       const changes = exported
         .filter((change: CrsqlChangeRow) => change.site_id !== peer.metadata?.siteId)
+        .filter((change: CrsqlChangeRow) => !isHostAuthoritativeTable(change))
         .filter((change: CrsqlChangeRow) => !mobilePeer || !MOBILE_CHANGESET_EXCLUDED_TABLES.has(change.table));
       if (changes.length === 0) {
         const previousDbVersion = peer.lastKnownServerDbVersion;
@@ -3666,10 +3689,37 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         const payload = (envelope.payload ?? {}) as SyncChangesetBatchPayload;
         const batchId = payload.batchId || envelope.requestId || "";
         const changes = Array.isArray(payload.changes) ? payload.changes as CrsqlChangeRow[] : [];
+        // Inbound DoS guard: a single oversized batch would block the DB inside
+        // the synchronous BEGIN IMMEDIATE transaction below. Reject before
+        // applying anything so the peer can resend in smaller chunks.
+        const tooManyRows = changes.length > MAX_INBOUND_CHANGESET_ROWS;
+        // Only re-serialize to size-check when the cheap row check passed — avoids
+        // a JSON.stringify of every legitimate inbound batch on the hot path.
+        const approxBatchBytes = tooManyRows || changes.length === 0
+          ? 0
+          : Buffer.byteLength(JSON.stringify(changes), "utf8");
+        if (tooManyRows || approxBatchBytes > MAX_INBOUND_CHANGESET_BYTES) {
+          sendRequired(peer, "changeset_ack", {
+            batchId,
+            fromDbVersion: Number(payload.fromDbVersion ?? 0),
+            toDbVersion: Number(payload.toDbVersion ?? 0),
+            appliedDbVersion: args.db.sync.getDbVersion(),
+            appliedCount: 0,
+            ok: false,
+            error: {
+              code: "changeset_too_large",
+              message: `inbound changeset_batch exceeds cap (${changes.length} rows, ${approxBatchBytes} bytes)`,
+            },
+          } satisfies SyncChangesetAckPayload, envelope.requestId);
+          break;
+        }
+        // Brain-seizure guard: never let a peer's CRR rows for host-authoritative
+        // tables (e.g. sync_cluster_state) win and flip brain ownership.
+        const filtered = changes.filter((change) => !isHostAuthoritativeTable(change));
         try {
           let appliedCount = 0;
-          if (changes.length > 0) {
-            const applyResult = args.db.sync.applyChanges(changes);
+          if (filtered.length > 0) {
+            const applyResult = args.db.sync.applyChanges(filtered);
             appliedCount = applyResult.appliedCount;
             peer.lastAppliedAt = nowIso();
             lastBroadcastAt = nowIso();

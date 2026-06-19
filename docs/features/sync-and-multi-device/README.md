@@ -160,7 +160,17 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   never reads — `attempt_transcripts`, `operations`, `ai_usage_log`,
   `budget_usage_records`, `automation_runs`,
   `automation_action_results` — are filtered from phone changesets
-  while ack watermarks still advance), the per-session chat-event seq
+  while ack watermarks still advance), the host-authoritative table
+  filter (`SYNC_HOST_AUTHORITATIVE_TABLES`: `sync_cluster_state` — the
+  CRR that governs brain ownership — never crosses the CRR boundary in
+  either direction, so a peer can neither receive it nor author a
+  winning `crsql_changes` row that would flip `brain_device_id`; brain
+  handover stays on the explicit host-transfer RPC), the inbound
+  changeset-batch ceilings (`MAX_INBOUND_CHANGESET_ROWS` / `_BYTES` ≈
+  40× the outbound 250-row / 256 KB caps, i.e. ~10k rows / ~10 MB; an
+  oversized `changeset_batch` is rejected with a `changeset_too_large`
+  ack before any `applyChanges` so one giant batch cannot seize the DB
+  inside its `BEGIN IMMEDIATE` transaction), the per-session chat-event seq
   + replay buffer, terminal/chat subscription bridging, offset-stamped
   mobile terminal streams, `sinceOffset` delta snapshots, scrollback
   paging via `terminal_history`, mobile terminal input/resize forwarding

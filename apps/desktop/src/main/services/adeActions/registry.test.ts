@@ -82,6 +82,14 @@ describe("isAllowedAdeAction", () => {
     expect(isCtoOnlyAdeAction("chat", "getSubagentTranscript")).toBe(false);
   });
 
+  it("exposes Codex goal actions and getCommit through the runtime action surface", () => {
+    expect(isAllowedAdeAction("chat", "setCodexGoal")).toBe(true);
+    expect(isAllowedAdeAction("chat", "setCodexGoalStatus")).toBe(true);
+    expect(isAllowedAdeAction("chat", "clearCodexGoal")).toBe(true);
+    expect(isAllowedAdeAction("chat", "getCodexGoal")).toBe(true);
+    expect(isAllowedAdeAction("git", "getCommit")).toBe(true);
+  });
+
   it("rejects an unknown action on a known domain", () => {
     expect(isAllowedAdeAction("git", "rmRf")).toBe(false);
     expect(isAllowedAdeAction("issue", "deleteAllIssues")).toBe(false);

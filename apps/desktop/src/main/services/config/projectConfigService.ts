@@ -112,6 +112,40 @@ const STRING_MAP_SCHEMA = z.record(z.string(), z.unknown())
   .catch(() => undefined);
 const COMPUTE_BACKEND_SCHEMA = z.enum(["local", "vps", "daytona"]).optional().catch(undefined);
 
+function writeFileAtomicSync(target: string, data: string): void {
+  const dir = path.dirname(target);
+  const tmp = path.join(dir, "." + path.basename(target) + "." + process.pid + "." + Date.now() + ".tmp");
+  const fd = fs.openSync(tmp, "w");
+  try {
+    try {
+      fs.writeFileSync(fd, data, "utf8");
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
+    // Preserve the existing file's permissions: local.yaml may be chmod 600 to
+    // protect per-user env vars, but the temp file was created at the umask
+    // default (commonly 644). Copy the prior mode before swapping it in so the
+    // atomic write never widens permissions on a secrets-bearing config.
+    try {
+      fs.chmodSync(tmp, fs.statSync(target).mode & 0o777);
+    } catch {
+      // No existing target (first write) — keep the temp's default mode.
+    }
+    fs.renameSync(tmp, target);
+  } catch (error) {
+    // Any failure after the temp file was created (write/fsync/close OR rename,
+    // e.g. ENOSPC) must not leak the temp file. The live target is untouched
+    // until renameSync succeeds, so atomicity holds either way.
+    try {
+      fs.unlinkSync(tmp);
+    } catch {
+      // best-effort cleanup of the temp file
+    }
+    throw error;
+  }
+}
+
 function isPathWithinProjectRoot(projectRoot: string, candidate: string, opts: { allowMissing?: boolean } = {}): boolean {
   try {
     resolvePathWithinRoot(projectRoot, candidate, opts);
@@ -3298,9 +3332,9 @@ export function createProjectConfigService({
     }
     fs.mkdirSync(path.dirname(sharedPath), { recursive: true });
     if (shouldWriteShared) {
-      fs.writeFileSync(sharedPath, sharedYaml, "utf8");
+      writeFileAtomicSync(sharedPath, sharedYaml);
     }
-    fs.writeFileSync(localPath, localYaml, "utf8");
+    writeFileAtomicSync(localPath, localYaml);
 
     const sharedHash = hashContent(shouldWriteShared ? sharedYaml : "");
     if (shouldWriteShared) {

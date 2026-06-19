@@ -6,6 +6,9 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { compareUpdateVersions, createAutoUpdateService } from "./autoUpdateService";
 import type { Logger } from "../logging/logger";
 
+const electronAppMock = vi.hoisted(() => ({ isPackaged: false }));
+vi.mock("electron", () => ({ app: electronAppMock }));
+
 class FakeAutoUpdater extends EventEmitter {
   logger: Logger | null = null;
   autoDownload = false;
@@ -57,6 +60,8 @@ describe("createAutoUpdateService", () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.restoreAllMocks();
+    electronAppMock.isPackaged = false;
+    delete process.env.ADE_UPDATE_FEED_URL;
   });
 
   it("does not schedule startup or periodic update checks when automatic checks are disabled", () => {
@@ -94,6 +99,54 @@ describe("createAutoUpdateService", () => {
       provider: "github",
       owner: "arul28",
       repo: "ADE",
+    });
+
+    service.dispose();
+  });
+
+  it("ignores ADE_UPDATE_FEED_URL in packaged builds and uses the GitHub feed", () => {
+    electronAppMock.isPackaged = true;
+    process.env.ADE_UPDATE_FEED_URL = "https://attacker.example.com/feed";
+    const updater = new FakeAutoUpdater();
+    const service = createAutoUpdateService({
+      logger: makeLogger(),
+      currentVersion: "1.2.2",
+      globalStatePath: makeStatePath(),
+      startupDelayMs: 60_000,
+      periodicCheckMs: 60_000,
+      autoCheckEnabled: false,
+      updater,
+    });
+
+    expect(updater.setFeedURL).toHaveBeenCalledWith({
+      provider: "github",
+      owner: "arul28",
+      repo: "ADE",
+    });
+    expect(updater.setFeedURL).not.toHaveBeenCalledWith(
+      expect.objectContaining({ provider: "generic" }),
+    );
+
+    service.dispose();
+  });
+
+  it("honors ADE_UPDATE_FEED_URL in non-packaged builds", () => {
+    electronAppMock.isPackaged = false;
+    process.env.ADE_UPDATE_FEED_URL = "https://localhost:9999/feed";
+    const updater = new FakeAutoUpdater();
+    const service = createAutoUpdateService({
+      logger: makeLogger(),
+      currentVersion: "1.2.2",
+      globalStatePath: makeStatePath(),
+      startupDelayMs: 60_000,
+      periodicCheckMs: 60_000,
+      autoCheckEnabled: false,
+      updater,
+    });
+
+    expect(updater.setFeedURL).toHaveBeenCalledWith({
+      provider: "generic",
+      url: "https://localhost:9999/feed",
     });
 
     service.dispose();

@@ -2051,6 +2051,13 @@ app.whenReady().then(async () => {
     });
 
     const operationService = createOperationService({ db, projectId });
+    try {
+      operationService.pruneOld();
+    } catch (error) {
+      logger.warn("operation_prune_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
     const automationsEnabled = areAutomationsEnabledForPackagedState(app.isPackaged);
 
     let jobEngine: ReturnType<typeof createJobEngine> | null = null;

@@ -1031,6 +1031,162 @@ describe("mobile command result ledger", () => {
   });
 });
 
+describe("inbound changeset_batch guards", () => {
+  beforeEach(() => {
+    publishMock.mockReset();
+    spawnMock.mockReset();
+    bonjourDestroyMock.mockReset();
+    bonjourConstructorMock.mockReset();
+    spawnMock.mockImplementation(() => ({ kill: vi.fn(), once: vi.fn(), unref: vi.fn() }));
+  });
+
+  function makePeerChange(table: string, dbVersion: number, seq: number, val = `value-${seq}`): CrsqlChangeRow {
+    return {
+      table,
+      pk: `${table}-pk-${seq}`,
+      cid: "value",
+      val,
+      col_version: dbVersion,
+      db_version: dbVersion,
+      site_id: "peer-site-1",
+      cl: 1,
+      seq,
+    };
+  }
+
+  function createGuardHost(projectRoot: string, applyChanges: ReturnType<typeof vi.fn>) {
+    const base = createHostArgs(projectRoot, []);
+    return createSyncHostService({
+      ...base,
+      projectId: "project-1",
+      db: {
+        sync: {
+          getSiteId: () => "site-host-guard",
+          getDbVersion: () => 0,
+          exportChangesSince: () => [],
+          applyChanges,
+          discardUnpublishedChangesForTables: () => {},
+        },
+      },
+      deviceRegistryService: {
+        ...base.deviceRegistryService,
+        upsertPeerMetadata: vi.fn(),
+      },
+    } as unknown as Parameters<typeof createSyncHostService>[0]);
+  }
+
+  it("rejects an oversized inbound batch with changeset_too_large and does not apply it (M6)", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const applyChanges = vi.fn(() => ({ appliedCount: 0 }));
+    const host = createGuardHost(projectRoot, applyChanges);
+    let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    try {
+      const port = await host.waitUntilListening();
+      peer = await connectPeer(port, host.getBootstrapToken(), "ios-oversized");
+
+      // 10_001 rows is one past MAX_INBOUND_CHANGESET_ROWS (250 * 40).
+      const tooMany = Array.from({ length: 10_001 }, (_, seq) => makePeerChange("kv", 1, seq));
+      const requestId = "batch-too-large";
+      peer.ws.send(encodeSyncEnvelope({
+        type: "changeset_batch",
+        requestId,
+        payload: { batchId: requestId, fromDbVersion: 0, toDbVersion: 1, changes: tooMany },
+      }));
+
+      const ack = await waitForEnvelope(peer.envelopes, "changeset_ack", requestId);
+      const ackPayload = ack.payload as { ok?: boolean; appliedCount?: number; error?: { code?: string } };
+      expect(ackPayload.ok).toBe(false);
+      expect(ackPayload.error?.code).toBe("changeset_too_large");
+      expect(ackPayload.appliedCount).toBe(0);
+      expect(applyChanges).not.toHaveBeenCalled();
+    } finally {
+      try {
+        peer?.ws.close();
+      } catch {
+        // ignore
+      }
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("applies an at/under-cap inbound batch (M6)", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const applyChanges = vi.fn((changes: CrsqlChangeRow[]) => ({ appliedCount: changes.length }));
+    const host = createGuardHost(projectRoot, applyChanges);
+    let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    try {
+      const port = await host.waitUntilListening();
+      peer = await connectPeer(port, host.getBootstrapToken(), "ios-undercap");
+
+      const okBatch = Array.from({ length: 5 }, (_, seq) => makePeerChange("kv", 1, seq));
+      const requestId = "batch-under-cap";
+      peer.ws.send(encodeSyncEnvelope({
+        type: "changeset_batch",
+        requestId,
+        payload: { batchId: requestId, fromDbVersion: 0, toDbVersion: 1, changes: okBatch },
+      }));
+
+      const ack = await waitForEnvelope(peer.envelopes, "changeset_ack", requestId);
+      const ackPayload = ack.payload as { ok?: boolean; appliedCount?: number };
+      expect(ackPayload.ok).toBe(true);
+      expect(ackPayload.appliedCount).toBe(5);
+      expect(applyChanges).toHaveBeenCalledTimes(1);
+      expect(applyChanges.mock.calls[0]?.[0]).toHaveLength(5);
+    } finally {
+      try {
+        peer?.ws.close();
+      } catch {
+        // ignore
+      }
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("strips a peer's sync_cluster_state row so brain ownership cannot be seized (M7)", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const applyChanges = vi.fn((changes: CrsqlChangeRow[]) => ({ appliedCount: changes.length }));
+    const host = createGuardHost(projectRoot, applyChanges);
+    let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    try {
+      const port = await host.waitUntilListening();
+      peer = await connectPeer(port, host.getBootstrapToken(), "ios-seizer");
+
+      // The peer tries to author a winning sync_cluster_state row that would
+      // flip brain_device_id to itself, alongside a benign kv row.
+      const brainSeizure = makePeerChange("sync_cluster_state", 1, 0, "ios-seizer-device");
+      brainSeizure.cid = "brain_device_id";
+      brainSeizure.pk = "default-cluster";
+      const benign = makePeerChange("kv", 2, 1);
+      const requestId = "batch-seizure";
+      peer.ws.send(encodeSyncEnvelope({
+        type: "changeset_batch",
+        requestId,
+        payload: { batchId: requestId, fromDbVersion: 0, toDbVersion: 2, changes: [brainSeizure, benign] },
+      }));
+
+      const ack = await waitForEnvelope(peer.envelopes, "changeset_ack", requestId);
+      const ackPayload = ack.payload as { ok?: boolean; appliedCount?: number };
+      expect(ackPayload.ok).toBe(true);
+      // Only the benign kv row reaches applyChanges; the brain row is filtered out.
+      expect(applyChanges).toHaveBeenCalledTimes(1);
+      const appliedRows = applyChanges.mock.calls[0]?.[0] as CrsqlChangeRow[];
+      expect(appliedRows).toHaveLength(1);
+      expect(appliedRows.every((row) => row.table !== "sync_cluster_state")).toBe(true);
+      expect(ackPayload.appliedCount).toBe(1);
+    } finally {
+      try {
+        peer?.ws.close();
+      } catch {
+        // ignore
+      }
+      await host.dispose();
+      cleanup();
+    }
+  });
+});
+
 describe("sync host handoff over a shared listener", () => {
   beforeEach(() => {
     publishMock.mockReset();

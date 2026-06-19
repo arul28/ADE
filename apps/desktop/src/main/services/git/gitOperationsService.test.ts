@@ -983,6 +983,79 @@ describe("gitOperationsService commit graph actions", () => {
   });
 });
 
+describe("gitOperationsService commitSha option-injection guard", () => {
+  const VALID_SHA = "a".repeat(40);
+  const MALICIOUS_SHAS = ["--output=/tmp/x", "-foo", "abc 123", "abc\0def", "   "];
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // Let the worktree-root assertion pass so we exercise the commitSha guard,
+    // not the missing-worktree path.
+    mockGit.runGit.mockImplementation(async (args: string[]) => {
+      if (args[0] === "rev-parse" && args[1] === "--path-format=absolute" && args[2] === "--show-toplevel") {
+        return { exitCode: 0, stdout: "/tmp/ade-lane\n", stderr: "" };
+      }
+      return { exitCode: 1, stdout: "", stderr: `unexpected git command: ${args.join(" ")}` };
+    });
+    mockGit.getHeadSha.mockResolvedValue("head");
+    mockGit.runGitOrThrow.mockResolvedValue("");
+  });
+
+  const invoke = (
+    service: ReturnType<typeof createTestGitOperationsService>["service"],
+    method: string,
+    commitSha: string,
+  ): Promise<unknown> => {
+    switch (method) {
+      case "listCommitFiles":
+        return service.listCommitFiles({ laneId: "lane-1", commitSha });
+      case "getCommitMessage":
+        return service.getCommitMessage({ laneId: "lane-1", commitSha });
+      case "revertCommit":
+        return service.revertCommit({ laneId: "lane-1", commitSha });
+      case "cherryPickCommit":
+        return service.cherryPickCommit({ laneId: "lane-1", commitSha });
+      case "createTag":
+        return service.createTag({ laneId: "lane-1", commitSha, tagName: "v1.0.0" });
+      case "resetToCommit":
+        return service.resetToCommit({ laneId: "lane-1", commitSha, mode: "hard" });
+      default:
+        throw new Error(`unknown method ${method}`);
+    }
+  };
+
+  for (const method of [
+    "listCommitFiles",
+    "getCommitMessage",
+    "revertCommit",
+    "cherryPickCommit",
+    "createTag",
+    "resetToCommit",
+  ]) {
+    it(`${method} rejects option-like and malformed commit shas without invoking git`, async () => {
+      const { service } = createTestGitOperationsService();
+
+      for (const commitSha of MALICIOUS_SHAS) {
+        await expect(invoke(service, method, commitSha)).rejects.toThrow(/Invalid commit SHA|Commit SHA is required/);
+      }
+
+      // The dangerous sha must never reach a git invocation that uses it.
+      expect(mockGit.runGitOrThrow).not.toHaveBeenCalled();
+    });
+
+    it(`${method} accepts a valid 40-hex commit sha`, async () => {
+      const { service } = createTestGitOperationsService();
+
+      await expect(invoke(service, method, VALID_SHA)).resolves.toBeDefined();
+      expect(mockGit.runGitOrThrow).toHaveBeenCalled();
+      const usedShaInGit = mockGit.runGitOrThrow.mock.calls.some((call) =>
+        Array.isArray(call[0]) && (call[0] as string[]).includes(VALID_SHA),
+      );
+      expect(usedShaInGit).toBe(true);
+    });
+  }
+});
+
 describe("gitOperationsService.generateCommitMessage", () => {
   beforeEach(() => {
     vi.clearAllMocks();

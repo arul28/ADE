@@ -46,7 +46,7 @@ Main process / runtime services:
 
 | Path | Role |
 |---|---|
-| `apps/desktop/src/main/services/history/operationService.ts` | CRUD for `operations` rows; the canonical entry point for `record`, `start`, `finish`, `list`, `get`, and `listHeadChanges`. Same source backs the ADE runtime and the desktop fallback path. |
+| `apps/desktop/src/main/services/history/operationService.ts` | CRUD for `operations` rows; the canonical entry point for `record`, `start`, `finish`, `list`, `get`, `listHeadChanges`, and `pruneOld`. Same source backs the ADE runtime and the desktop fallback path. |
 | `apps/desktop/src/main/services/state/kvDb.ts` | Schema for `operations`, `checkpoints`, `pack_events`, `pack_versions`, `pack_heads`, `terminal_sessions`, and orchestration-related tables. |
 | `apps/desktop/src/main/services/git/gitOperationsService.ts` | Brackets every git operation with `operationService.start` / `finish`, captures pre/post HEAD SHAs, and owns the per-lane undo/redo head-change pipeline (`undoLastHeadChange`, `redoLastHeadChange`, `createTag`, `resetToCommit`, `pull` with `ff-only` / `rebase` / `merge` modes). Before lane git mutations or lane git reads, it verifies that the saved `worktreePath` is still the Git top-level for that lane; stale paths that resolve to the primary checkout are rejected as missing lane worktrees so History and Git Actions do not read or mutate the wrong branch. Undo selection is branch-aware: it ignores checkout/undo rows, requires the recorded operation's `metadata.branchRef` to match the lane's current branch, and rechecks the branch before running `reset --hard`. |
 | `apps/desktop/src/main/services/lanes/laneService.ts` | Lane CRUD now accepts `CreateLaneArgs.startPoint`, used by the Commits view's "Create lane here" affordance to fork a new lane from a specific commit. |
@@ -238,6 +238,24 @@ reading the `redoHeadSha` stamped into the latest undo's metadata. The
 `CommitDetailPanel.relatedEvents` view also keys off this pair: any
 operation whose `preHeadSha` or `postHeadSha` matches the focused
 commit is surfaced alongside the commit.
+
+### Retention
+
+The `operations` table is pruned by `operationService.pruneOld()`,
+invoked once per project at runtime startup (see
+`main.ts`; failures are logged as `operation_prune_failed` and
+swallowed so a prune error never blocks boot). It applies two caps,
+both scoped to the current `project_id` and both of which **never
+evict in-flight (`running`) rows**:
+
+- **Age cap** — deletes finished operations whose `started_at` is
+  older than `maxAgeDays` (default 60).
+- **Count cap** — keeps only the newest `maxRows` finished operations
+  (default 5000), deleting the rest.
+
+This keeps the timeline DB bounded on long-lived projects without
+losing recent history or orphaning operations that are still
+`running`.
 
 ## Other history-adjacent tables
 
