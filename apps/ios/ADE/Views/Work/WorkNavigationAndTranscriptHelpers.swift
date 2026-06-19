@@ -295,6 +295,10 @@ private final class WorkTerminalTextReplay {
       }
     }
     row = min(row, max(0, lines.count - 1))
+    // Trim per command, not just at end of write(): a payload with many
+    // insert-line CSI commands would otherwise grow `lines` to ~maxLines × N
+    // before the post-write trim and OOM. Mirrors WorkTerminalScreen.
+    trimLinesIfNeeded()
   }
 
   private func deleteLines(count: Int) {
@@ -316,6 +320,7 @@ private final class WorkTerminalTextReplay {
       lines = [[]]
     }
     row = min(row, max(0, lines.count - 1))
+    trimLinesIfNeeded()
   }
 
   private func deleteCharacters(count: Int) {

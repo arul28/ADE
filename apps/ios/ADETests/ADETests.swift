@@ -191,8 +191,25 @@ final class ADETests: XCTestCase {
     // Bounded: a few thousand short lines, not billions of cells.
     XCTAssertLessThan(output.count, 4_000 * 1_001)
     XCTAssertLessThanOrEqual(output.split(separator: "\n", omittingEmptySubsequences: false).count, 4_001)
-    // Printable payload survives clamping.
-    XCTAssertTrue(output.contains("x"))
+    // Printable payload survives clamping. Use the LAST glyph written ("q"):
+    // earlier glyphs ("x" on row 0) are legitimately dropped by the bounded
+    // window — the cursor-down moves past maxLines, so the front rows are trimmed.
+    XCTAssertTrue(output.contains("q"))
+  }
+
+  func testTerminalTextReplayBoundsManyInsertLineCommandsInOneWrite() {
+    // Each insert-line command is clamped to maxLines, but many of them in ONE
+    // write must not accumulate ~maxLines × N rows before the post-write trim.
+    // Pre-fix this is an O(N^2) blowup (insert into a growing multi-million-row
+    // array) that hangs/OOMs; the per-command trim keeps it linear and bounded.
+    let payload = String(repeating: "\u{001B}[4000L", count: 2_000) + "tail\n"
+    let start = Date()
+    let output = sanitizeTerminalOutputForDisplay(payload)
+    let elapsed = Date().timeIntervalSince(start)
+
+    XCTAssertLessThan(elapsed, 2.0, "many insert-line commands in one write should stay bounded")
+    XCTAssertLessThanOrEqual(output.split(separator: "\n", omittingEmptySubsequences: false).count, 4_001)
+    XCTAssertTrue(output.contains("tail"))
   }
 
   @MainActor
