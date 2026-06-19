@@ -47,11 +47,13 @@ type BrainProjectActionsSyncHandlerArgs = {
   localSiteIdPath: string;
   heartbeatIntervalMs?: number;
   pollIntervalMs?: number;
+  authTimeoutMs?: number;
 };
 
 type BrainPeerState = {
   ws: WebSocket;
   authenticated: boolean;
+  authTimeout: ReturnType<typeof setTimeout> | null;
   metadata: SyncPeerMetadata | null;
 };
 
@@ -60,6 +62,7 @@ const BOOTSTRAP_TOKEN_KEY = "sync.bootstrapToken.v1";
 const PAIR_FAILURE_THRESHOLD = 5;
 const PAIR_COOLDOWN_MS = 10 * 60_000;
 const PAIR_FAILURE_WINDOW_MS = 10 * 60_000;
+const BRAIN_SYNC_AUTH_TIMEOUT_MS = 15_000;
 
 type PairFailureEntry = {
   count: number;
@@ -313,6 +316,7 @@ export function createBrainProjectActionsSyncHandler(
   const localSiteId = ensureSecretFile(args.localSiteIdPath, 16);
   const heartbeatIntervalMs = Math.max(5_000, Math.floor(args.heartbeatIntervalMs ?? 5_000));
   const pollIntervalMs = Math.max(100, Math.floor(args.pollIntervalMs ?? 1_500));
+  const authTimeoutMs = Math.max(1_000, Math.floor(args.authTimeoutMs ?? BRAIN_SYNC_AUTH_TIMEOUT_MS));
   const pairFailures = createPairFailureTracker();
 
   const brainMetadata = (): SyncPeerMetadata => ({
@@ -519,8 +523,26 @@ export function createBrainProjectActionsSyncHandler(
     const peer: BrainPeerState = {
       ws,
       authenticated: false,
+      authTimeout: null,
       metadata: null,
     };
+    const clearAuthTimeout = (): void => {
+      if (!peer.authTimeout) return;
+      clearTimeout(peer.authTimeout);
+      peer.authTimeout = null;
+    };
+    peer.authTimeout = setTimeout(() => {
+      if (peer.authenticated || peer.ws.readyState !== WS_OPEN) return;
+      args.logger.warn("sync_brain.auth_timeout", {
+        remoteAddress: remoteAddress ?? null,
+      });
+      try {
+        peer.ws.close(4003, "Authentication timed out");
+      } catch {
+        // ignore close failures
+      }
+    }, authTimeoutMs);
+    peer.authTimeout.unref?.();
     ws.on("message", (data: RawData) => {
       void (async () => {
         let envelope: ReturnType<typeof parseSyncEnvelope>;
@@ -599,6 +621,11 @@ export function createBrainProjectActionsSyncHandler(
               code: "invalid_hello",
               message: "Authenticate with hello or pairing_request before sending other messages.",
             }, envelope.requestId);
+            try {
+              ws.close(4003, "Authentication required");
+            } catch {
+              // ignore close failures
+            }
             return;
           }
           const hello = parseHelloPayload(envelope.payload);
@@ -607,6 +634,11 @@ export function createBrainProjectActionsSyncHandler(
               code: "invalid_hello",
               message: "Invalid hello payload.",
             }, envelope.requestId);
+            try {
+              ws.close(4003, "Invalid hello");
+            } catch {
+              // ignore close failures
+            }
             return;
           }
           const auth = hello.auth;
@@ -628,6 +660,7 @@ export function createBrainProjectActionsSyncHandler(
             return;
           }
           peer.authenticated = true;
+          clearAuthTimeout();
           peer.metadata = hello.peer;
           const catalog = await projectCatalog(args.projectCatalogProvider, args.logger);
           const brain = brainMetadata();
@@ -670,6 +703,9 @@ export function createBrainProjectActionsSyncHandler(
         error: error instanceof Error ? error.message : String(error),
         peerDeviceId: peer.metadata?.deviceId ?? null,
       });
+    });
+    ws.on("close", () => {
+      clearAuthTimeout();
     });
   };
 }

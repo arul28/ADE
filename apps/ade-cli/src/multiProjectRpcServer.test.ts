@@ -494,7 +494,8 @@ describe("multi-project RPC server", () => {
         projectId: added.projectId,
         category: "runtime",
       },
-    }) as { subscriptionId: string };
+    }) as { subscriptionId: string; eventEpoch: string };
+    expect(subscribed.eventEpoch).toBe(eventBuffer.epoch());
 
     eventBuffer.push({
       timestamp: "2026-05-10T00:00:00.000Z",
@@ -511,6 +512,7 @@ describe("multi-project RPC server", () => {
     expect(notify).toHaveBeenCalledWith("runtime/event", {
       subscriptionId: subscribed.subscriptionId,
       projectId: added.projectId,
+      eventEpoch: eventBuffer.epoch(),
       event: expect.objectContaining({
         category: "runtime",
         payload: { type: "file_change", event: { path: "README.md" } },

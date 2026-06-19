@@ -300,6 +300,14 @@ function createRuntime() {
       readTranscriptTail: vi.fn(async () => ""),
       list: vi.fn(() => []),
       enrichSessions: vi.fn((sessions: unknown[]) => sessions),
+      listTerminals: vi.fn(() => []),
+      readTerminal: vi.fn(async () => ({ terminalId: "session-1", data: "", nextSince: 0 })),
+      previewTerminal: vi.fn(async () => ({ terminalId: "session-1", session: null, source: "empty", snapshot: null, transcript: null, capturedAt: new Date().toISOString() })),
+      writeTerminal: vi.fn(async () => ({ ok: true })),
+      resizeTerminal: vi.fn(() => ({ ok: true, cols: 100, rows: 30 })),
+      signalTerminal: vi.fn(() => ({ ok: true })),
+      activeForChat: vi.fn(() => null),
+      reattachChatCli: vi.fn(async () => ({ terminalId: "session-1", ptyId: "pty-1", pid: 123, relaunched: false })),
     },
     testService: {
       run: vi.fn(async () => ({ id: "test-run-1", status: "running" })),
@@ -653,8 +661,10 @@ function createRuntime() {
           { id: cursor + 1, timestamp: new Date().toISOString(), category: "orchestrator", payload: { type: "test" } }
         ],
         nextCursor: cursor + 1,
-        hasMore: false
+        hasMore: false,
+        eventEpoch: "test-event-epoch",
       })),
+      epoch: vi.fn(() => "test-event-epoch"),
       size: vi.fn(() => 1)
     } as any,
     dispose: vi.fn()
@@ -2682,6 +2692,57 @@ describe("adeRpcServer", () => {
       variables: { first: 1 },
     });
     expect(graphql.structuredContent.result).toMatchObject({ viewer: { id: "user-1" } });
+  });
+
+  it("scopes PTY and terminal ADE actions to the caller's lane or chat", async () => {
+    const fixture = createRuntime();
+    const ownChat = { id: "chat-1", laneId: "lane-1", chatSessionId: "chat-1" };
+    const ownTerminal = { id: "terminal-1", laneId: "lane-1", ptyId: "pty-1", chatSessionId: "chat-1" };
+    const otherTerminal = { id: "terminal-2", laneId: "lane-2", ptyId: "pty-2", chatSessionId: "chat-2" };
+    fixture.runtime.sessionService.get.mockImplementation((sessionId: string) => {
+      if (sessionId === "chat-1") return ownChat;
+      if (sessionId === "terminal-1") return ownTerminal;
+      if (sessionId === "terminal-2") return otherTerminal;
+      return null;
+    });
+    fixture.runtime.ptyService.list.mockReturnValue([ownTerminal, otherTerminal]);
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(handler, { callerId: "agent-1", role: "agent", chatSessionId: "chat-1" });
+
+    const listed = await callTool(handler, "run_ade_action", {
+      domain: "pty",
+      action: "list",
+      args: {},
+    });
+    expect(listed?.isError).toBeUndefined();
+    expect(listed.structuredContent.result).toEqual([ownTerminal]);
+
+    const deniedPtyWrite = await callTool(handler, "run_ade_action", {
+      domain: "pty",
+      action: "write",
+      args: { ptyId: "pty-2", data: "stop\n" },
+    });
+    expect(deniedPtyWrite.isError).toBe(true);
+    expect(fixture.runtime.ptyService.write).not.toHaveBeenCalled();
+
+    const deniedTerminalWrite = await callTool(handler, "run_ade_action", {
+      domain: "terminal",
+      action: "write",
+      args: { chatSessionId: "chat-2", data: "stop\n" },
+    });
+    expect(deniedTerminalWrite.isError).toBe(true);
+    expect(fixture.runtime.ptyService.writeTerminal).not.toHaveBeenCalled();
+
+    const ownTerminalWrite = await callTool(handler, "run_ade_action", {
+      domain: "terminal",
+      action: "write",
+      args: { data: "continue\n" },
+    });
+    expect(ownTerminalWrite?.isError).toBeUndefined();
+    expect(fixture.runtime.ptyService.writeTerminal).toHaveBeenCalledWith({
+      data: "continue\n",
+      chatSessionId: "chat-1",
+    });
   });
 
   it("invokes review.startRun through ADE actions without dropping unlimited budgets", async () => {

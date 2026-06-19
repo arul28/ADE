@@ -56,6 +56,7 @@ type RuntimeEventNotification = {
   subscriptionId: string;
   projectId: string;
   event: RemoteRuntimeBufferedEvent;
+  eventEpoch: string | null;
 };
 
 type ConnectFailureBackoff = {
@@ -734,7 +735,7 @@ export class RemoteConnectionPool {
     targetId: string,
     projectId: string,
     request: RemoteRuntimeStreamEventsRequest = {},
-    onEvent: (event: RemoteRuntimeBufferedEvent) => void,
+    onEvent: (event: RemoteRuntimeBufferedEvent, eventEpoch?: string | null) => void,
     onEnded?: () => void,
   ): Promise<() => void> {
     const entry = await this.requireEntry(targetId);
@@ -751,7 +752,7 @@ export class RemoteConnectionPool {
     target: RemoteRuntimeTarget,
     projectId: string,
     request: RemoteRuntimeStreamEventsRequest = {},
-    onEvent: (event: RemoteRuntimeBufferedEvent) => void,
+    onEvent: (event: RemoteRuntimeBufferedEvent, eventEpoch?: string | null) => void,
     onEnded?: () => void,
   ): Promise<() => void> {
     return await this.withEntryForTarget(
@@ -1053,7 +1054,7 @@ async function subscribeToRuntimeEvents(
   client: RuntimeRpcClient,
   projectId: string,
   request: RemoteRuntimeStreamEventsRequest,
-  onEvent: (event: RemoteRuntimeBufferedEvent) => void,
+  onEvent: (event: RemoteRuntimeBufferedEvent, eventEpoch?: string | null) => void,
   onEnded?: () => void,
 ): Promise<() => void> {
   const pendingNotifications: RuntimeEventNotification[] = [];
@@ -1071,7 +1072,7 @@ async function subscribeToRuntimeEvents(
         return;
       }
       if (notification.subscriptionId === subscriptionId) {
-        onEvent(notification.event);
+        onEvent(notification.event, notification.eventEpoch);
       }
     },
   );
@@ -1096,7 +1097,7 @@ async function subscribeToRuntimeEvents(
     for (const notification of pendingNotifications) {
       if (closed) break;
       if (notification.subscriptionId === subscriptionId) {
-        onEvent(notification.event);
+        onEvent(notification.event, notification.eventEpoch);
       }
     }
   } catch (error) {
@@ -1147,6 +1148,10 @@ function normalizeRuntimeEventNotification(
   const projectId =
     typeof record.projectId === "string" ? record.projectId : "";
   const event = normalizeBufferedEvent(record.event);
+  const eventEpoch =
+    typeof record.eventEpoch === "string" && record.eventEpoch.trim()
+      ? record.eventEpoch.trim()
+      : null;
   if (subscriptionId == null || !projectId || !event) return null;
-  return { subscriptionId, projectId, event };
+  return { subscriptionId, projectId, event, eventEpoch };
 }

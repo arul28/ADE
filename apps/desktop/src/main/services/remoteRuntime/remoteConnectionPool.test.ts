@@ -1206,6 +1206,7 @@ describe("RemoteConnectionPool", () => {
             category: "pty",
             payload: { type: "pty_data" },
           },
+          eventEpoch: "epoch-remote-1",
         });
         client.emitNotification("runtime/event", {
           subscriptionId: "runtime-events-8",
@@ -1216,11 +1217,13 @@ describe("RemoteConnectionPool", () => {
             category: "runtime",
             payload: { type: "other_subscription" },
           },
+          eventEpoch: "epoch-remote-1",
         });
         return {
           subscriptionId: "runtime-events-7",
           nextCursor: 13,
           hasMore: false,
+          eventEpoch: "epoch-remote-1",
         };
       }
       if (method === "runtimeEvents.unsubscribe") {
@@ -1261,7 +1264,7 @@ describe("RemoteConnectionPool", () => {
       timestamp: "2026-05-10T12:00:00.000Z",
       category: "pty",
       payload: { type: "pty_data" },
-    });
+    }, "epoch-remote-1");
 
     client.emitNotification("runtime/event", {
       subscriptionId: "runtime-events-7",
@@ -1272,6 +1275,7 @@ describe("RemoteConnectionPool", () => {
         category: "runtime",
         payload: { type: "live" },
       },
+      eventEpoch: "epoch-remote-1",
     });
     expect(onEvent).toHaveBeenCalledTimes(2);
 

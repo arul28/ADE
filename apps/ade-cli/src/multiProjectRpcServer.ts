@@ -264,11 +264,13 @@ export function createMultiProjectRpcRequestHandler(
     subscriptionId: string,
     projectId: ProjectId,
     event: BufferedEvent,
+    eventEpoch: string,
   ): void => {
     notifier?.("runtime/event", {
       subscriptionId,
       projectId,
       event,
+      eventEpoch,
     });
   };
 
@@ -325,11 +327,12 @@ export function createMultiProjectRpcRequestHandler(
     const replay = params.replay !== false;
     const scope = await scopeRegistry.get(projectId);
     const subscriptionId = `runtime-events-${nextSubscriptionId++}`;
+    const eventEpoch = scope.runtime.eventBuffer.epoch();
     const shouldForward = (event: BufferedEvent): boolean =>
       !category || event.category === category;
     const unsubscribe = scope.runtime.eventBuffer.subscribe((event) => {
       if (shouldForward(event))
-        emitRuntimeEvent(subscriptionId, projectId, event);
+        emitRuntimeEvent(subscriptionId, projectId, event, eventEpoch);
     });
     eventSubscriptions.set(subscriptionId, {
       id: subscriptionId,
@@ -339,15 +342,16 @@ export function createMultiProjectRpcRequestHandler(
 
     const replayResult = replay
       ? scope.runtime.eventBuffer.drain(cursor, limit)
-      : { events: [], nextCursor: cursor, hasMore: false };
+      : { events: [], nextCursor: cursor, hasMore: false, eventEpoch };
     for (const event of replayResult.events) {
       if (shouldForward(event))
-        emitRuntimeEvent(subscriptionId, projectId, event);
+        emitRuntimeEvent(subscriptionId, projectId, event, replayResult.eventEpoch);
     }
     return {
       subscriptionId,
       nextCursor: replayResult.nextCursor,
       hasMore: replayResult.hasMore,
+      eventEpoch: replayResult.eventEpoch,
     };
   };
 

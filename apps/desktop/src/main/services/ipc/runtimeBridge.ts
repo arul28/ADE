@@ -95,7 +95,7 @@ type RuntimeEventWindowSubscription = {
 };
 
 type RuntimeEventSubscribe = (
-  onEvent: (event: RemoteRuntimeBufferedEvent) => void,
+  onEvent: (event: RemoteRuntimeBufferedEvent, eventEpoch?: string | null) => void,
   onEnded: () => void,
 ) => Promise<() => void>;
 
@@ -385,6 +385,7 @@ export function registerRuntimeBridge({
     bindingKey: string,
     requestKey: string,
     event: RemoteRuntimeBufferedEvent,
+    eventEpoch?: string | null,
   ): void => {
     const existing = runtimeEventSubscriptions.get(sender.id);
     if (
@@ -398,6 +399,7 @@ export function registerRuntimeBridge({
     const payload: RemoteRuntimeEventNotificationPayload = {
       bindingKey,
       event,
+      ...(eventEpoch ? { eventEpoch } : {}),
     };
     try {
       sender.send(IPC.runtimeEvent, payload);
@@ -424,7 +426,8 @@ export function registerRuntimeBridge({
       }
     };
     void subscribe(
-      (event) => sendRuntimeEvent(sender, bindingKey, requestKey, event),
+      (event, eventEpoch) =>
+        sendRuntimeEvent(sender, bindingKey, requestKey, event, eventEpoch),
       onEnded,
     )
       .then((cleanup) => {

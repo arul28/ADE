@@ -3714,6 +3714,89 @@ describe("preload OAuth bridge", () => {
     });
   });
 
+  it("dispatches live runtime notifications when event ids repeat after an epoch change", async () => {
+    const binding = {
+      kind: "local",
+      key: "local:/repo/project",
+      rootPath: "/repo/project",
+      displayName: "Project",
+    };
+    const invoke = vi.fn(async (channel: string) => {
+      if (channel === IPC.appGetWindowSession) {
+        return { windowId: 1, project: null, binding };
+      }
+      if (channel === IPC.localRuntimeStreamEvents) {
+        return { events: [], nextCursor: 0, hasMore: false };
+      }
+      return undefined;
+    });
+    const on = vi.fn();
+    const removeListener = vi.fn();
+    const exposeInMainWorld = vi.fn((name: string, value: unknown) => {
+      (globalThis as any).__bridgeName = name;
+      (globalThis as any).__adeBridge = value;
+    });
+
+    vi.doMock("electron", () => ({
+      contextBridge: { exposeInMainWorld },
+      ipcRenderer: { invoke, on, removeListener },
+      webFrame: {
+        getZoomLevel: vi.fn(() => 0),
+        setZoomLevel: vi.fn(),
+        getZoomFactor: vi.fn(() => 1),
+      },
+    }));
+
+    await import("./preload");
+
+    const bridge = (globalThis as any).__adeBridge;
+    await bridge.app.getWindowSession();
+
+    const callback = vi.fn();
+    bridge.pty.onData(callback);
+
+    const runtimeListener = on.mock.calls.find(([channel]) => channel === IPC.runtimeEvent)?.[1];
+    expect(typeof runtimeListener).toBe("function");
+    runtimeListener({}, {
+      bindingKey: binding.key,
+      eventEpoch: "epoch-before-restart",
+      event: {
+        id: 1,
+        timestamp: "2026-05-10T12:00:01.000Z",
+        category: "pty",
+        payload: {
+          type: "pty_data",
+          event: { ptyId: "pty-1", sessionId: "session-1", data: "before" },
+        },
+      },
+    });
+    runtimeListener({}, {
+      bindingKey: binding.key,
+      eventEpoch: "epoch-after-restart",
+      event: {
+        id: 1,
+        timestamp: "2026-05-10T12:00:02.000Z",
+        category: "pty",
+        payload: {
+          type: "pty_data",
+          event: { ptyId: "pty-1", sessionId: "session-1", data: "after" },
+        },
+      },
+    });
+
+    expect(callback).toHaveBeenCalledTimes(2);
+    expect(callback).toHaveBeenNthCalledWith(1, {
+      ptyId: "pty-1",
+      sessionId: "session-1",
+      data: "before",
+    });
+    expect(callback).toHaveBeenNthCalledWith(2, {
+      ptyId: "pty-1",
+      sessionId: "session-1",
+      data: "after",
+    });
+  });
+
   it("fans out remote runtime events for routed project utility domains", async () => {
     const binding = {
       kind: "remote",

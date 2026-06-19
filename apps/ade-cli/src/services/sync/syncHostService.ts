@@ -150,6 +150,7 @@ const PEER_BACKPRESSURE_BYTES = 4 * 1024 * 1024;
 const MOBILE_COMMAND_RESULT_CACHE_TTL_MS = 30 * 60 * 1000;
 const MOBILE_COMMAND_RESULT_CACHE_MAX_ENTRIES = 512;
 const CHANGESET_ACK_TIMEOUT_MS = 10_000;
+const SYNC_HOST_AUTH_TIMEOUT_MS = 15_000;
 const MAX_CHANGESET_ACK_RETRIES = 6;
 const LANE_PRESENCE_TTL_MS = 60_000;
 const SYNC_MDNS_SERVICE_TYPE = "ade-sync";
@@ -182,6 +183,7 @@ type PeerState = {
   ws: WebSocket;
   metadata: SyncPeerMetadata | null;
   authenticated: boolean;
+  authTimeout: ReturnType<typeof setTimeout> | null;
   authKind: "bootstrap" | "paired" | null;
   pairedDeviceId: string | null;
   pairingRecord: SyncPairingRecord | null;
@@ -404,6 +406,7 @@ type SyncHostServiceArgs = {
   runtimeVersion?: string;
   heartbeatIntervalMs?: number;
   pollIntervalMs?: number;
+  authTimeoutMs?: number;
   brainStatusIntervalMs?: number;
   compressionThresholdBytes?: number;
   deviceRegistryService?: DeviceRegistryService;
@@ -987,6 +990,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   const heartbeatIntervalMs = Math.max(5_000, Math.floor(args.heartbeatIntervalMs ?? DEFAULT_SYNC_HEARTBEAT_INTERVAL_MS));
   const pollIntervalMs = Math.max(100, Math.floor(args.pollIntervalMs ?? DEFAULT_SYNC_POLL_INTERVAL_MS));
   const brainStatusIntervalMs = Math.max(1_000, Math.floor(args.brainStatusIntervalMs ?? DEFAULT_BRAIN_STATUS_INTERVAL_MS));
+  const authTimeoutMs = Math.max(1_000, Math.floor(args.authTimeoutMs ?? SYNC_HOST_AUTH_TIMEOUT_MS));
   const compressionThresholdBytes = Math.max(256, Math.floor(args.compressionThresholdBytes ?? DEFAULT_SYNC_COMPRESSION_THRESHOLD_BYTES));
   const maxChangesetBatchBytes = DEFAULT_MAX_CHANGESET_BATCH_BYTES;
   const maxChangesetBatchRows = DEFAULT_MAX_CHANGESET_BATCH_ROWS;
@@ -1541,11 +1545,18 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     }
   }
 
+  function clearPeerAuthTimeout(peer: PeerState): void {
+    if (!peer.authTimeout) return;
+    clearTimeout(peer.authTimeout);
+    peer.authTimeout = null;
+  }
+
   function registerPeer(ws: WebSocket, remoteAddress: string | null, remotePort: number | null): PeerState {
     const peer: PeerState = {
       ws,
       metadata: null,
       authenticated: false,
+      authTimeout: null,
       authKind: null,
       pairedDeviceId: null,
       pairingRecord: null,
@@ -1565,6 +1576,19 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       pendingChangesetBatch: null,
     };
     peers.add(peer);
+    peer.authTimeout = setTimeout(() => {
+      if (disposed || peer.authenticated || peer.ws.readyState !== WebSocket.OPEN) return;
+      args.logger.warn("sync_host.auth_timeout", {
+        remoteAddress: peer.remoteAddress ?? null,
+        connectedAt: peer.connectedAt,
+      });
+      try {
+        peer.ws.close(4003, "Authentication timed out");
+      } catch {
+        // ignore close failures
+      }
+    }, authTimeoutMs);
+    peer.authTimeout.unref?.();
     ws.on("message", (raw) => {
       void handleMessage(peer, raw).catch((error) => {
         args.logger.warn("sync_host.message_failed", {
@@ -1574,6 +1598,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       });
     });
     ws.on("close", (code, reason) => {
+      clearPeerAuthTimeout(peer);
       // The close frame is the only record of WHY a peer left: a deliberate
       // client teardown carries a code + reason string ("Network route
       // changed.", "The machine took too long to respond.", …) while 1006
@@ -1653,6 +1678,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         if (snapshot.authKind === "paired" && !pairingRecord) {
           // Pairing is not valid for this host (revoked or different secrets
           // store) — fail closed and force a fresh authenticated reconnect.
+          clearPeerAuthTimeout(peer);
           peers.delete(peer);
           try {
             ws.close(4003, "Authentication required");
@@ -1662,6 +1688,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           continue;
         }
         peer.authenticated = true;
+        clearPeerAuthTimeout(peer);
         peer.metadata = snapshot.metadata;
         peer.authKind = snapshot.authKind;
         peer.pairedDeviceId = snapshot.pairedDeviceId;
@@ -3492,6 +3519,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
 
       closeExistingPeersForDevice(hello.peer.deviceId, peer);
       peer.authenticated = true;
+      clearPeerAuthTimeout(peer);
       peer.metadata = hello.peer;
       const auth = hello.auth ?? { kind: "bootstrap", token: "" };
       peer.authKind = auth.kind;
@@ -4190,6 +4218,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         detachSharedListener = null;
         const snapshots: SyncPeerHandoffSnapshot[] = [];
         for (const peer of peers) {
+          clearPeerAuthTimeout(peer);
           peer.ws.removeAllListeners("message");
           peer.ws.removeAllListeners("close");
           peer.ws.removeAllListeners("error");
@@ -4227,6 +4256,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         await new Promise<void>((resolve) => {
           const finish = () => resolve();
           for (const peer of peers) {
+            clearPeerAuthTimeout(peer);
             try {
               peer.ws.close();
             } catch {
