@@ -31,7 +31,7 @@ function parseArgs(argv) {
 }
 
 function printHelp() {
-  process.stdout.write(`Usage: node scripts/package-native-deps.mjs [--target darwin-arm64] [--out-dir dist-static]\n`);
+  process.stdout.write(`Usage: node scripts/package-native-deps.mjs [--target <target>] [--out-dir dist-static]\n`);
 }
 
 function currentTarget() {
@@ -212,7 +212,7 @@ async function writeManifest(bundleRoot, target, packages) {
 // crsql_internal_sync_bit crash this packaging step exists to prevent, so it's
 // a hard build failure rather than a warning. Other targets (not yet vendored)
 // warn-and-skip until their extension is added.
-const CRSQLITE_REQUIRED_TARGETS = new Set(["darwin-arm64"]);
+const CRSQLITE_REQUIRED_TARGETS = new Set(["darwin-arm64", "darwin-x64"]);
 
 function crsqliteExtensionFileName(target) {
   const { platform } = targetParts(target);

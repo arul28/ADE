@@ -35,6 +35,15 @@ function requireFile(filePath, label) {
   }
 }
 
+function darwinCrsqliteTargetsForContext(context) {
+  const appOutDir = String(context?.appOutDir || "");
+  if (/mac-universal/.test(appOutDir) || context?.arch === 4) {
+    return ["darwin-arm64", "darwin-x64"];
+  }
+  const isArm64 = /arm64/.test(appOutDir) || context?.arch === 3;
+  return [isArm64 ? "darwin-arm64" : "darwin-x64"];
+}
+
 function copyDirectoryIfPresent(sourcePath, targetPath) {
   if (!fs.existsSync(sourcePath)) return false;
   fs.rmSync(targetPath, { recursive: true, force: true });
@@ -380,7 +389,9 @@ module.exports = async function afterPack(context) {
 
   const requiredScripts = [path.join(runtimeRoot, "dist", "main", "packagedRuntimeSmoke.cjs")];
   if (platform === "darwin") {
-    requiredScripts.push(path.join(runtimeRoot, "vendor", "crsqlite", "darwin-arm64", "crsqlite.dylib"));
+    for (const target of darwinCrsqliteTargetsForContext(context)) {
+      requiredScripts.push(path.join(runtimeRoot, "vendor", "crsqlite", target, "crsqlite.dylib"));
+    }
   } else if (platform === "win32") {
     requiredScripts.push(path.join(runtimeRoot, "vendor", "crsqlite", "win32-x64", "crsqlite.dll"));
   }

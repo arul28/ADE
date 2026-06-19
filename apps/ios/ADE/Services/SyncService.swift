@@ -464,7 +464,12 @@ struct SyncPreprocessedEnvelope {
   let payload: Any
 }
 
-func syncPreprocessIncoming(_ text: String) throws -> SyncPreprocessedEnvelope? {
+private let maxUncompressedSyncEnvelopeBytes = 25 * 1024 * 1024
+
+func syncPreprocessIncoming(
+  _ text: String,
+  maxUncompressedBytes: Int = maxUncompressedSyncEnvelopeBytes
+) throws -> SyncPreprocessedEnvelope? {
   guard let data = text.data(using: .utf8) else { return nil }
   guard let envelope = try JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
   let type = envelope["type"] as? String ?? ""
@@ -472,7 +477,7 @@ func syncPreprocessIncoming(_ text: String) throws -> SyncPreprocessedEnvelope? 
   let payload: Any
   let compression = envelope["compression"] as? String ?? "none"
   if compression == "gzip", let base64 = envelope["payload"] as? String, let compressed = Data(base64Encoded: base64) {
-    let inflated = try gunzip(compressed)
+    let inflated = try gunzip(compressed, maxOutputBytes: maxUncompressedBytes)
     payload = try JSONSerialization.jsonObject(with: inflated, options: [])
   } else {
     payload = envelope["payload"] ?? NSNull()
@@ -8283,7 +8288,7 @@ final class SyncService: ObservableObject {
   private func decodeEnvelopePayload(_ envelope: [String: Any]) throws -> Any {
     let compression = envelope["compression"] as? String ?? "none"
     if compression == "gzip", let base64 = envelope["payload"] as? String, let compressed = Data(base64Encoded: base64) {
-      let data = try gunzip(compressed)
+      let data = try gunzip(compressed, maxOutputBytes: maxUncompressedSyncEnvelopeBytes)
       return try JSONSerialization.jsonObject(with: data, options: [])
     }
     return envelope["payload"] ?? NSNull()
@@ -9844,7 +9849,7 @@ private func gzip(_ data: Data) -> Data {
   return status == Z_STREAM_END ? output : data
 }
 
-private func gunzip(_ data: Data) throws -> Data {
+private func gunzip(_ data: Data, maxOutputBytes: Int = maxUncompressedSyncEnvelopeBytes) throws -> Data {
   guard !data.isEmpty else { return data }
 
   var stream = z_stream()
@@ -9871,13 +9876,23 @@ private func gunzip(_ data: Data) throws -> Data {
       status = inflate(&stream, Z_SYNC_FLUSH)
       let produced = chunkSize - Int(stream.avail_out)
       if produced > 0, let baseAddress = chunkBuffer.bindMemory(to: UInt8.self).baseAddress {
+        if output.count + produced > maxOutputBytes {
+          status = Z_MEM_ERROR
+          return
+        }
         output.append(baseAddress, count: produced)
       }
     }
   } while status == Z_OK
 
   guard status == Z_STREAM_END else {
-    throw NSError(domain: "ADE", code: 10, userInfo: [NSLocalizedDescriptionKey: "Unable to decode compressed sync payload."])
+    let message: String
+    if status == Z_MEM_ERROR {
+      message = "Decoded sync envelope exceeds \(maxOutputBytes) bytes."
+    } else {
+      message = "Unable to decode compressed sync payload."
+    }
+    throw NSError(domain: "ADE", code: 10, userInfo: [NSLocalizedDescriptionKey: message])
   }
   return output
 }

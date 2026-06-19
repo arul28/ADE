@@ -209,9 +209,17 @@ export function parseSyncEnvelope(rawText: string): ParsedSyncEnvelope {
     if (decoded.payloadEncoding !== "base64" || typeof decoded.payload !== "string") {
       throw new Error("Compressed sync envelopes must use base64 payload encoding.");
     }
+    if (
+      typeof decoded.uncompressedBytes === "number"
+      && decoded.uncompressedBytes > MAX_UNCOMPRESSED_SYNC_ENVELOPE_BYTES
+    ) {
+      throw new Error(`Decoded sync envelope exceeds ${MAX_UNCOMPRESSED_SYNC_ENVELOPE_BYTES} bytes.`);
+    }
     let uncompressedBuffer: Buffer;
     try {
-      uncompressedBuffer = gunzipSync(Buffer.from(decoded.payload, "base64"));
+      uncompressedBuffer = gunzipSync(Buffer.from(decoded.payload, "base64"), {
+        maxOutputLength: MAX_UNCOMPRESSED_SYNC_ENVELOPE_BYTES,
+      });
     } catch (error) {
       throw new Error(`Failed to decode gzip sync envelope${requestId ? ` ${requestId}` : ""}${projectId ? ` for project ${projectId}` : ""}: ${error instanceof Error ? error.message : String(error)}`);
     }

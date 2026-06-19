@@ -209,11 +209,15 @@ async function assertRemoteRuntimeBundle(resourcesPath, description, expectedArc
     await assertExecutable(binaryPath, `remote runtime binary ${requiredTarget}`);
     await assertPathExists(nativeArchivePath, `remote runtime native dependency archive ${requiredTarget} for ${description}`);
     const { stdout } = await execFileAsync("tar", ["-tzf", nativeArchivePath]);
-    if (!stdout.split(/\r?\n/).some((entry) => entry.startsWith("./node_modules/"))) {
+    const archiveEntries = stdout.split(/\r?\n/);
+    if (!archiveEntries.some((entry) => entry.startsWith("./node_modules/"))) {
       throw new Error(`[release:mac] Remote runtime native archive for ${requiredTarget} does not contain ./node_modules/: ${nativeArchivePath}`);
     }
-    if (!stdout.split(/\r?\n/).includes("./tuiClient/cli.mjs")) {
+    if (!archiveEntries.includes("./tuiClient/cli.mjs")) {
       throw new Error(`[release:mac] Remote runtime native archive for ${requiredTarget} does not contain ./tuiClient/cli.mjs: ${nativeArchivePath}`);
+    }
+    if (!archiveEntries.includes(`./vendor/crsqlite/${requiredTarget}/crsqlite.dylib`)) {
+      throw new Error(`[release:mac] Remote runtime native archive for ${requiredTarget} does not contain cr-sqlite: ${nativeArchivePath}`);
     }
   }
   for (const target of excludedTargets) {
@@ -240,6 +244,11 @@ async function assertBundledOpenCodeRuntime(nodeModulesPath, description, expect
   const binaryPath = path.join(nodeModulesPath, `opencode-darwin-${expectedArch}`, "bin", "opencode");
   await assertPathExists(binaryPath, `bundled OpenCode runtime binary for ${description}`);
   await assertExecutable(binaryPath, `bundled OpenCode runtime binary for ${description}`);
+}
+
+async function assertBundledCrsqliteRuntime(unpackedPath, description, expectedArch) {
+  const dylibPath = path.join(unpackedPath, "vendor", "crsqlite", `darwin-${expectedArch}`, "crsqlite.dylib");
+  await assertPathExists(dylibPath, `bundled cr-sqlite runtime for ${description}`);
 }
 
 function assertAppAsarContains(appAsarPath, relativePaths, description) {
@@ -434,6 +443,7 @@ async function validatePackagedRuntime(appPath, description, expectedArch, optio
   await assertPathExists(nodePtyModulePath, "unpacked node-pty module");
   await assertPathExists(smokeScriptPath, "unpacked packaged runtime smoke script");
   await assertBundledOpenCodeRuntime(nodeModulesPath, description, expectedArch);
+  await assertBundledCrsqliteRuntime(unpackedPath, description, expectedArch);
   const adeCliTuiContents = await fs.readFile(adeCliTuiPath, "utf8");
   for (const token of ["__dirname", "__filename"]) {
     if (adeCliTuiContents.includes(token) && !adeCliTuiContents.includes(`const ${token} =`)) {
