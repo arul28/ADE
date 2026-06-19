@@ -209,6 +209,7 @@ export type RemoteRuntimeStreamEventsResult = {
 export type RemoteRuntimeEventNotificationPayload = {
   bindingKey: string;
   event: RemoteRuntimeBufferedEvent;
+  eventEpoch?: string | null;
 };
 
 export type RemoteRuntimeLocalWorkMatch = {

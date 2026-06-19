@@ -698,6 +698,47 @@ describe("createSyncHostService LAN discovery", () => {
     vi.restoreAllMocks();
   });
 
+  it("closes inbound sockets that never authenticate", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const host = createSyncHostService({
+      ...createHostArgs(projectRoot, [createDiscoveryProject({ id: "project-1" })]),
+      authTimeoutMs: 1_000,
+    } as unknown as Parameters<typeof createSyncHostService>[0]);
+    let client: WebSocket | null = null;
+
+    try {
+      const port = await host.waitUntilListening();
+      client = new WebSocket(`ws://127.0.0.1:${port}`);
+      await new Promise<void>((resolve, reject) => {
+        client!.once("open", () => resolve());
+        client!.once("error", reject);
+      });
+
+      const closeEvent = await Promise.race([
+        new Promise<{ code: number; reason: string }>((resolve) => {
+          client!.once("close", (code, reason) => {
+            resolve({ code, reason: reason.toString("utf8") });
+          });
+        }),
+        new Promise<never>((_, reject) => {
+          setTimeout(() => reject(new Error("Timed out waiting for unauthenticated socket close.")), 3_000);
+        }),
+      ]);
+      expect(closeEvent).toEqual({
+        code: 4003,
+        reason: "Authentication timed out",
+      });
+    } finally {
+      try {
+        client?.close();
+      } catch {
+        // ignore close failures
+      }
+      await host.dispose();
+      cleanup();
+    }
+  });
+
   it("does not publish LAN Bonjour metadata when the sync host is loopback-bound", async () => {
     const { projectRoot, cleanup } = createTempProjectRoot();
     const projects = [

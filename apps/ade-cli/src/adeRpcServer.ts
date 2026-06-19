@@ -2360,6 +2360,148 @@ function listAuthorizedPtySessions(
     .filter((target) => isPtySessionAuthorized(runtime, session, target));
 }
 
+function requireObjectArgsForScopedAdeAction(
+  domain: string,
+  action: string,
+  argsList: unknown[] | null,
+  hasScalarArg: boolean,
+  rawObjectArgs: Record<string, unknown>,
+): Record<string, unknown> {
+  if (argsList || hasScalarArg) {
+    ptyAccessDenied(`run_ade_action:${domain}.${action}`);
+  }
+  return rawObjectArgs;
+}
+
+function authorizePtyAdeActionInvocation(
+  runtime: AdeRuntime,
+  session: SessionState,
+  action: string,
+  ptyArgs: Record<string, unknown>,
+): void {
+  const method = `run_ade_action:pty.${action}`;
+  switch (action) {
+    case "create":
+      ensurePtyCreateAuthorized(runtime, session, method, ptyArgs);
+      return;
+    case "sendToSession":
+    case "resumeSession":
+    case "write":
+    case "resize":
+    case "dispose":
+      ensurePtyTargetAuthorized(runtime, session, method, ptyArgs);
+      return;
+    default:
+      ptyAccessDenied(method);
+  }
+}
+
+function scopeTerminalChatArgs(
+  runtime: AdeRuntime,
+  session: SessionState,
+  method: string,
+  terminalArgs: Record<string, unknown>,
+): Record<string, unknown> {
+  const scopedArgs = { ...terminalArgs };
+  const callerChatSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
+  const requestedChatSessionId = asOptionalTrimmedString(scopedArgs.chatSessionId);
+  const requestedLaneId = extractLaneId(scopedArgs);
+  if (requestedChatSessionId && requestedChatSessionId !== callerChatSessionId) {
+    ptyAccessDenied(method);
+  }
+  if (requestedLaneId && !authorizedPtyLaneIds(runtime, session).has(requestedLaneId)) {
+    ptyAccessDenied(method);
+  }
+  if (!requestedChatSessionId && callerChatSessionId) {
+    scopedArgs.chatSessionId = callerChatSessionId;
+  } else if (!requestedChatSessionId) {
+    ptyAccessDenied(method);
+  }
+  return scopedArgs;
+}
+
+function scopeTerminalListArgs(
+  runtime: AdeRuntime,
+  session: SessionState,
+  method: string,
+  terminalArgs: Record<string, unknown>,
+): Record<string, unknown> {
+  const scopedArgs = { ...terminalArgs };
+  const callerChatSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
+  const requestedChatSessionId = asOptionalTrimmedString(scopedArgs.chatSessionId);
+  const requestedLaneId = extractLaneId(scopedArgs);
+  const laneIds = authorizedPtyLaneIds(runtime, session);
+  if (requestedChatSessionId && requestedChatSessionId !== callerChatSessionId) {
+    ptyAccessDenied(method);
+  }
+  if (requestedLaneId && !laneIds.has(requestedLaneId)) {
+    ptyAccessDenied(method);
+  }
+  if (!requestedChatSessionId && callerChatSessionId) {
+    scopedArgs.chatSessionId = callerChatSessionId;
+  } else if (!requestedLaneId && laneIds.size === 1) {
+    scopedArgs.laneId = [...laneIds][0];
+  } else if (!requestedChatSessionId && !requestedLaneId) {
+    ptyAccessDenied(method);
+  }
+  return scopedArgs;
+}
+
+function scopeTerminalTargetArgs(
+  runtime: AdeRuntime,
+  session: SessionState,
+  method: string,
+  terminalArgs: Record<string, unknown>,
+): Record<string, unknown> {
+  const scopedArgs = { ...terminalArgs };
+  const callerChatSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
+  const requestedChatSessionId = asOptionalTrimmedString(scopedArgs.chatSessionId);
+  const terminalId = asOptionalTrimmedString(scopedArgs.terminalId);
+  const ptyId = asOptionalTrimmedString(scopedArgs.ptyId);
+
+  if (requestedChatSessionId && requestedChatSessionId !== callerChatSessionId) {
+    ptyAccessDenied(method);
+  }
+  if (!requestedChatSessionId && !terminalId && !ptyId && callerChatSessionId) {
+    scopedArgs.chatSessionId = callerChatSessionId;
+  }
+  if (terminalId || ptyId) {
+    ensurePtyTargetAuthorized(runtime, session, method, {
+      ...(terminalId ? { sessionId: terminalId } : {}),
+      ...(ptyId ? { ptyId } : {}),
+    });
+    return scopedArgs;
+  }
+  if (asOptionalTrimmedString(scopedArgs.chatSessionId) !== callerChatSessionId || !callerChatSessionId) {
+    ptyAccessDenied(method);
+  }
+  return scopedArgs;
+}
+
+function scopeTerminalAdeActionArgs(
+  runtime: AdeRuntime,
+  session: SessionState,
+  action: string,
+  terminalArgs: Record<string, unknown>,
+): Record<string, unknown> {
+  const method = `run_ade_action:terminal.${action}`;
+  switch (action) {
+    case "list":
+      return scopeTerminalListArgs(runtime, session, method, terminalArgs);
+    case "activeForChat":
+    case "reattachChatCli":
+      return scopeTerminalChatArgs(runtime, session, method, terminalArgs);
+    case "read":
+    case "preview":
+    case "write":
+    case "resize":
+    case "signal":
+      return scopeTerminalTargetArgs(runtime, session, method, terminalArgs);
+    default:
+      ptyAccessDenied(method);
+  }
+}
+
 async function runCtoOperatorBridgeTool(
   runtime: AdeRuntime,
   session: SessionState,
@@ -3233,16 +3375,37 @@ async function runTool(args: {
     const argsList = Array.isArray(toolArgs.argsList) ? toolArgs.argsList : null;
     const hasScalarArg = Object.prototype.hasOwnProperty.call(toolArgs, "arg");
     const rawObjectArgs = safeObject(toolArgs.args);
+    const callerIsCto = callerHasRoleAtLeast(callerCtx.role, "cto");
+    let scopedObjectArgs = rawObjectArgs;
+    let scopedResultHandled = false;
     let result: unknown;
-    if (argsList) {
-      result = await (callable as (...params: unknown[]) => Promise<unknown>).apply(service, argsList);
-    } else if (hasScalarArg) {
-      result = await (callable as (arg: unknown) => Promise<unknown>).call(service, toolArgs.arg);
-    } else {
-      result = await (callable as (args?: Record<string, unknown>) => Promise<unknown>).call(
-        service,
-        Object.keys(rawObjectArgs).length > 0 ? rawObjectArgs : undefined,
+    if (!callerIsCto && domain === "pty") {
+      scopedObjectArgs = requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, rawObjectArgs);
+      if (action === "list") {
+        result = listAuthorizedPtySessions(runtime, session, `run_ade_action:pty.${action}`, scopedObjectArgs);
+        scopedResultHandled = true;
+      } else {
+        authorizePtyAdeActionInvocation(runtime, session, action, scopedObjectArgs);
+      }
+    } else if (!callerIsCto && domain === "terminal") {
+      scopedObjectArgs = scopeTerminalAdeActionArgs(
+        runtime,
+        session,
+        action,
+        requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, rawObjectArgs),
       );
+    }
+    if (!scopedResultHandled) {
+      if (argsList) {
+        result = await (callable as (...params: unknown[]) => Promise<unknown>).apply(service, argsList);
+      } else if (hasScalarArg) {
+        result = await (callable as (arg: unknown) => Promise<unknown>).call(service, toolArgs.arg);
+      } else {
+        result = await (callable as (args?: Record<string, unknown>) => Promise<unknown>).call(
+          service,
+          Object.keys(scopedObjectArgs).length > 0 ? scopedObjectArgs : undefined,
+        );
+      }
     }
     const record = isRecord(result) ? result : null;
     const statusHints = {

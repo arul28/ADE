@@ -1888,6 +1888,21 @@ function handleRemoteRuntimeEventNotification(value: unknown): void {
   const binding = currentProjectBinding;
   if (!payload || !binding || payload.bindingKey !== binding.key) return;
   resetRemoteRuntimeEmptyPolls();
+  const notificationEpoch =
+    typeof payload.eventEpoch === "string" && payload.eventEpoch.trim()
+      ? payload.eventEpoch.trim()
+      : null;
+  if (notificationEpoch) {
+    const epochChanged = remoteRuntimeEventEpoch
+      ? notificationEpoch !== remoteRuntimeEventEpoch
+      : remoteRuntimeEventCursor > 0 || remoteRuntimeSeenEventIds.size > 0;
+    remoteRuntimeEventEpoch = notificationEpoch;
+    if (epochChanged) {
+      remoteRuntimeEventCursor = 0;
+      remoteRuntimeEventReplaySuppressed = binding.kind === "remote";
+      resetRemoteRuntimeEventDedup(binding.key);
+    }
+  }
   const eventTime = Date.parse(payload.event.timestamp);
   if (
     binding.kind === "local" &&
@@ -1909,8 +1924,12 @@ function toRemoteRuntimeEventNotificationPayload(
   const bindingKey =
     typeof value.bindingKey === "string" ? value.bindingKey : "";
   const event = toRemoteRuntimeBufferedEvent(value.event);
+  const eventEpoch =
+    typeof value.eventEpoch === "string" && value.eventEpoch.trim()
+      ? value.eventEpoch.trim()
+      : null;
   if (!bindingKey || !event) return null;
-  return { bindingKey, event };
+  return { bindingKey, event, ...(eventEpoch ? { eventEpoch } : {}) };
 }
 
 function isRemoteRuntimeEventCategory(

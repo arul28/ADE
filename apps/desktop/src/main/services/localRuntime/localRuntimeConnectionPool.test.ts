@@ -2031,9 +2031,10 @@ describe("local runtime connection pool", () => {
               category: "runtime",
               payload: { type: "file_change" },
             },
+            eventEpoch: "epoch-local-1",
           });
         }
-        return { subscriptionId: "runtime-events-4", nextCursor: 22, hasMore: false };
+        return { subscriptionId: "runtime-events-4", nextCursor: 22, hasMore: false, eventEpoch: "epoch-local-1" };
       }
       if (method === "runtimeEvents.unsubscribe") {
         return { removed: true };
@@ -2094,7 +2095,7 @@ describe("local runtime connection pool", () => {
       timestamp: "2026-05-10T12:00:00.000Z",
       category: "runtime",
       payload: { type: "file_change" },
-    });
+    }, "epoch-local-1");
 
     cleanup();
     expect(call).toHaveBeenCalledWith("runtimeEvents.unsubscribe", { subscriptionId: "runtime-events-4" });
