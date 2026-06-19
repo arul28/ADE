@@ -665,7 +665,11 @@ func projectIconImage(from dataUrl: String?) -> UIImage? {
   }
   guard let commaIndex = dataUrl.firstIndex(of: ",") else { return nil }
   let base64 = String(dataUrl[dataUrl.index(after: commaIndex)...])
-  guard let data = Data(base64Encoded: base64),
+  // Project icons are pre-rendered host-side to a 64×64 PNG (a few KB), so a
+  // payload past ~768 KB of base64 is malformed or hostile — reject it rather
+  // than drive a large allocation/decode on the UI path.
+  guard base64.count <= 1_048_576,
+        let data = Data(base64Encoded: base64),
         let image = UIImage(data: data)
   else { return nil }
   projectIconImageCache.setObject(image, forKey: cacheKey)

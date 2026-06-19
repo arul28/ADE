@@ -3815,8 +3815,17 @@ final class SyncService: ObservableObject {
     {
       return
     }
+    // Scope the write to the project in effect when the fetch starts. A project
+    // switch (which calls resetChatEventState and clears this cache) can land
+    // while the snapshot request is in flight; without this guard a late
+    // response from the prior project would repopulate the cache with another
+    // repo's PRs.
+    let requestedProjectId = activeProjectId
     do {
-      let snapshot = try await fetchGitHubPullRequestSnapshot(force: false)
+      let snapshot = try await fetchGitHubPullRequestSnapshot(force: force)
+      guard connectionState == .connected || connectionState == .syncing,
+        activeProjectId == requestedProjectId
+      else { return }
       laneGithubPrItems = snapshot.repoPullRequests.filter { $0.scope == "repo" }
       laneGithubPrItemsFetchedAt = Date()
     } catch {
@@ -4083,11 +4092,12 @@ final class SyncService: ObservableObject {
     limit: Int = 30,
     includeIgnored: Bool = true
   ) async throws -> [FilesQuickOpenItem] {
-    try decode(
+    let boundedLimit = min(max(limit, 1), 1000)
+    return try decode(
       try await sendFileRequest(action: "quickOpen", args: [
         "workspaceId": workspaceId,
         "query": query,
-        "limit": limit,
+        "limit": boundedLimit,
         "includeIgnored": includeIgnored,
       ]),
       as: [FilesQuickOpenItem].self
@@ -4100,11 +4110,12 @@ final class SyncService: ObservableObject {
     limit: Int = 300,
     includeIgnored: Bool = true
   ) async throws -> [FilesSearchTextMatch] {
-    try decode(
+    let boundedLimit = min(max(limit, 1), 1000)
+    return try decode(
       try await sendFileRequest(action: "searchText", args: [
         "workspaceId": workspaceId,
         "query": query,
-        "limit": limit,
+        "limit": boundedLimit,
         "includeIgnored": includeIgnored,
       ]),
       as: [FilesSearchTextMatch].self
