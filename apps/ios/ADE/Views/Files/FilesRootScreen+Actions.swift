@@ -32,14 +32,6 @@ extension FilesRootScreen {
     filesStatus.phase == .hydrating || filesStatus.phase == .syncingInitialData
   }
 
-  var quickOpenEmptyMessage: String {
-    filesSearchEmptyMessage(kind: .quickOpen, isLive: canUseLiveFileActions, needsRepairing: needsRepairing, query: quickOpenQuery)
-  }
-
-  var textSearchEmptyMessage: String {
-    filesSearchEmptyMessage(kind: .textSearch, isLive: canUseLiveFileActions, needsRepairing: needsRepairing, query: textSearchQuery)
-  }
-
   @MainActor
   func refreshFromPullGesture() async {
     await reload(refreshRemote: true)
@@ -72,14 +64,6 @@ extension FilesRootScreen {
       } ?? loadedWorkspaces.first?.id
       if selectedWorkspaceId != nextSelectedWorkspaceId {
         selectedWorkspaceId = nextSelectedWorkspaceId
-      }
-      if !canUseLiveFileActions {
-        if !quickOpenResults.isEmpty {
-          quickOpenResults = []
-        }
-        if !textSearchResults.isEmpty {
-          textSearchResults = []
-        }
       }
       if previousSelectedWorkspaceId == nextSelectedWorkspaceId {
         await loadProofArtifacts()
@@ -126,104 +110,6 @@ extension FilesRootScreen {
       let message = error.localizedDescription
       if proofErrorMessage != message {
         proofErrorMessage = message
-      }
-    }
-  }
-
-  @MainActor
-  func runQuickOpenSearch() async {
-    guard canUseLiveFileActions else {
-      if !quickOpenResults.isEmpty {
-        quickOpenResults = []
-      }
-      return
-    }
-    guard let workspaceId = selectedWorkspaceId else {
-      if !quickOpenResults.isEmpty {
-        quickOpenResults = []
-      }
-      return
-    }
-    let query = quickOpenQuery.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !query.isEmpty else {
-      if !quickOpenResults.isEmpty {
-        quickOpenResults = []
-      }
-      return
-    }
-
-    try? await Task.sleep(nanoseconds: 150_000_000)
-    guard !Task.isCancelled, isTabActive, canUseLiveFileActions else { return }
-    guard query == quickOpenQuery.trimmingCharacters(in: .whitespacesAndNewlines), workspaceId == selectedWorkspaceId else { return }
-
-    do {
-      let results = try await syncService.quickOpen(workspaceId: workspaceId, query: query)
-      guard !Task.isCancelled, isTabActive, canUseLiveFileActions else { return }
-      guard query == quickOpenQuery.trimmingCharacters(in: .whitespacesAndNewlines), workspaceId == selectedWorkspaceId else { return }
-      if quickOpenResults != results {
-        quickOpenResults = results
-      }
-      if errorMessage != nil {
-        errorMessage = nil
-      }
-    } catch {
-      guard !Task.isCancelled, isTabActive else { return }
-      guard query == quickOpenQuery.trimmingCharacters(in: .whitespacesAndNewlines), workspaceId == selectedWorkspaceId else { return }
-      let message = error.localizedDescription
-      if errorMessage != message {
-        errorMessage = message
-      }
-      if !quickOpenResults.isEmpty {
-        quickOpenResults = []
-      }
-    }
-  }
-
-  @MainActor
-  func runTextSearch() async {
-    guard canUseLiveFileActions else {
-      if !textSearchResults.isEmpty {
-        textSearchResults = []
-      }
-      return
-    }
-    guard let workspaceId = selectedWorkspaceId else {
-      if !textSearchResults.isEmpty {
-        textSearchResults = []
-      }
-      return
-    }
-    let query = textSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !query.isEmpty else {
-      if !textSearchResults.isEmpty {
-        textSearchResults = []
-      }
-      return
-    }
-
-    try? await Task.sleep(nanoseconds: 150_000_000)
-    guard !Task.isCancelled, isTabActive, canUseLiveFileActions else { return }
-    guard query == textSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines), workspaceId == selectedWorkspaceId else { return }
-
-    do {
-      let results = try await syncService.searchText(workspaceId: workspaceId, query: query)
-      guard !Task.isCancelled, isTabActive, canUseLiveFileActions else { return }
-      guard query == textSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines), workspaceId == selectedWorkspaceId else { return }
-      if textSearchResults != results {
-        textSearchResults = results
-      }
-      if errorMessage != nil {
-        errorMessage = nil
-      }
-    } catch {
-      guard !Task.isCancelled, isTabActive else { return }
-      guard query == textSearchQuery.trimmingCharacters(in: .whitespacesAndNewlines), workspaceId == selectedWorkspaceId else { return }
-      let message = error.localizedDescription
-      if errorMessage != message {
-        errorMessage = message
-      }
-      if !textSearchResults.isEmpty {
-        textSearchResults = []
       }
     }
   }

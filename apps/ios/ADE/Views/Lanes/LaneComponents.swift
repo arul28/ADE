@@ -506,7 +506,7 @@ func laneStackCardAccessibilityLabel(
   isPinned: Bool,
   isOpen: Bool,
   rebaseWarning: LaneCardRebaseWarningPresentation?,
-  pullRequest: PullRequestListItem? = nil
+  pullRequest: LanePrTag? = nil
 ) -> String {
   var parts = [snapshot.lane.name, normalizedPrBranchName(snapshot.lane.branchRef)]
   if snapshot.lane.laneType == "primary" { parts.append("primary") }
@@ -559,14 +559,14 @@ struct LaneCardRebaseWarning: View {
 // MARK: - PR tag
 
 struct LanePrTagChip: View {
-  let pullRequest: PullRequestListItem
+  let tag: LanePrTag
 
   var body: some View {
-    let tint = lanePullRequestTint(pullRequest.state)
+    let tint = lanePullRequestTint(tag.state)
     HStack(spacing: 4) {
       Image(systemName: "arrow.triangle.pull")
         .font(.system(size: 9, weight: .bold))
-      Text(formatLanePrBadgeLabel(pullRequest))
+      Text(formatLanePrBadgeLabel(tag))
         .font(.caption2.monospaced().weight(.bold))
         .lineLimit(1)
     }
@@ -578,7 +578,7 @@ struct LanePrTagChip: View {
       RoundedRectangle(cornerRadius: 7, style: .continuous)
         .stroke(tint.opacity(0.28), lineWidth: 0.6)
     )
-    .accessibilityLabel(formatLanePrBadgeLabel(pullRequest))
+    .accessibilityLabel(formatLanePrBadgeLabel(tag))
   }
 }
 
@@ -589,7 +589,7 @@ struct LaneStackCard: View, Equatable {
   let isPinned: Bool
   let isOpen: Bool
   let depth: Int
-  var pullRequest: PullRequestListItem? = nil
+  var pullRequest: LanePrTag? = nil
   var transitionNamespace: Namespace.ID? = nil
   var isSelectedTransitionSource = false
 
@@ -619,7 +619,7 @@ struct LaneStackCard: View, Equatable {
           laneTypeBadge
 
           if let pullRequest {
-            LanePrTagChip(pullRequest: pullRequest)
+            LanePrTagChip(tag: pullRequest)
           }
 
           Spacer(minLength: 4)

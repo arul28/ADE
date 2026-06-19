@@ -15,10 +15,7 @@ struct FilesRootScreen: View {
   @State var workspaces: [FilesWorkspace] = []
   @State var lanes: [LaneSummary] = []
   @State var selectedWorkspaceId: String?
-  @State var quickOpenQuery = ""
-  @State var quickOpenResults: [FilesQuickOpenItem] = []
-  @State var textSearchQuery = ""
-  @State var textSearchResults: [FilesSearchTextMatch] = []
+  @State var isSearchPresented = false
   @State var proofArtifacts: [ComputerUseArtifactSummary] = []
   @State var proofErrorMessage: String?
   @State var selectedProofArtifact: ComputerUseArtifactSummary?
@@ -28,23 +25,11 @@ struct FilesRootScreen: View {
   @State var selectedFileTransitionPath: String?
   @State var lastFilesLocalProjectionReload = Date.distantPast
   @State var lastHandledFilesProjectionRevision: Int?
-  @State var lastHandledQuickOpenSearchKey: FilesSearchKey?
-  @State var lastHandledTextSearchKey: FilesSearchKey?
   @State var lastHandledProofArtifactsReloadKey: FilesProofArtifactsReloadKey?
   @State var suppressNextWorkspaceNavigationReset = false
 
   var filesProjectionReloadKey: Int? {
     isTabActive ? syncService.localStateRevision : nil
-  }
-
-  var quickOpenSearchKey: FilesSearchKey? {
-    guard isTabActive else { return nil }
-    return FilesSearchKey(workspaceId: selectedWorkspaceId, query: quickOpenQuery, isLive: canUseLiveFileActions)
-  }
-
-  var textSearchKey: FilesSearchKey? {
-    guard isTabActive else { return nil }
-    return FilesSearchKey(workspaceId: selectedWorkspaceId, query: textSearchQuery, isLive: canUseLiveFileActions)
   }
 
   var filesNavigationRequestKey: String? {
@@ -144,68 +129,6 @@ struct FilesRootScreen: View {
             )
             .environmentObject(syncService)
 
-            FilesQueryCard(
-              title: "Quick open",
-              prompt: "Search files",
-              query: $quickOpenQuery,
-              disabled: !canUseLiveFileActions,
-              emptyMessage: quickOpenResults.isEmpty ? quickOpenEmptyMessage : "",
-              scopeText: workspace.rootPath
-            )
-
-            if canUseLiveFileActions {
-              ForEach(quickOpenResults.prefix(40)) { item in
-                Button {
-                  openFile(item.path, in: workspace, focusLine: nil)
-                } label: {
-                  FilesResultRow(
-                    path: item.path,
-                    transitionNamespace: transitionNamespace,
-                    isSelectedTransitionSource: selectedFileTransitionPath == item.path
-                  )
-                }
-                .buttonStyle(.plain)
-              }
-              if quickOpenResults.count > 40 {
-                Text("Showing first 40 of \(quickOpenResults.count) results — refine the search to narrow further.")
-                  .font(.caption)
-                  .foregroundStyle(ADEColor.textMuted)
-                  .frame(maxWidth: .infinity, alignment: .leading)
-                  .padding(.horizontal, 4)
-              }
-            }
-
-            FilesQueryCard(
-              title: "Text search",
-              prompt: "Search text",
-              query: $textSearchQuery,
-              disabled: !canUseLiveFileActions,
-              emptyMessage: textSearchResults.isEmpty ? textSearchEmptyMessage : "",
-              scopeText: workspace.rootPath
-            )
-
-            if canUseLiveFileActions {
-              ForEach(textSearchResults.prefix(40)) { result in
-                Button {
-                  openFile(result.path, in: workspace, focusLine: result.line)
-                } label: {
-                  FilesSearchResultRow(
-                    result: result,
-                    transitionNamespace: transitionNamespace,
-                    isSelectedTransitionSource: selectedFileTransitionPath == result.path
-                  )
-                }
-                .buttonStyle(.plain)
-              }
-              if textSearchResults.count > 40 {
-                Text("Showing first 40 of \(textSearchResults.count) matches — refine the query to narrow further.")
-                  .font(.caption)
-                  .foregroundStyle(ADEColor.textMuted)
-                  .frame(maxWidth: .infinity, alignment: .leading)
-                  .padding(.horizontal, 4)
-              }
-            }
-
             if workspace.laneId != nil {
               FilesProofSection(
                 artifacts: proofArtifacts,
@@ -285,6 +208,15 @@ struct FilesRootScreen: View {
       .toolbar(.hidden, for: .navigationBar)
       .safeAreaInset(edge: .top, spacing: 0) {
         ADERootTopBar(title: "Files") {
+          if selectedWorkspace != nil {
+            Button {
+              isSearchPresented = true
+            } label: {
+              Image(systemName: "magnifyingglass")
+            }
+            .accessibilityLabel("Search files")
+            .disabled(!canUseLiveFileActions)
+          }
           Button {
             Task { await reload(refreshRemote: true) }
           } label: {
@@ -315,20 +247,6 @@ struct FilesRootScreen: View {
         guard !Task.isCancelled, filesProjectionReloadKey == revision else { return }
         lastHandledFilesProjectionRevision = revision
       }
-      .task(id: quickOpenSearchKey) {
-        guard let key = quickOpenSearchKey else { return }
-        guard lastHandledQuickOpenSearchKey != key else { return }
-        await runQuickOpenSearch()
-        guard !Task.isCancelled else { return }
-        lastHandledQuickOpenSearchKey = key
-      }
-      .task(id: textSearchKey) {
-        guard let key = textSearchKey else { return }
-        guard lastHandledTextSearchKey != key else { return }
-        await runTextSearch()
-        guard !Task.isCancelled else { return }
-        lastHandledTextSearchKey = key
-      }
       .task(id: filesNavigationRequestKey) {
         guard filesNavigationRequestKey != nil else { return }
         await handleRequestedNavigation()
@@ -348,16 +266,27 @@ struct FilesRootScreen: View {
         if !navigationPath.isEmpty {
           navigationPath = []
         }
-        if !quickOpenResults.isEmpty {
-          quickOpenResults = []
-        }
-        if !textSearchResults.isEmpty {
-          textSearchResults = []
-        }
       }
       .sheet(item: $selectedProofArtifact) { artifact in
         FilesProofArtifactSheet(artifact: artifact)
           .environmentObject(syncService)
+      }
+      .fullScreenCover(isPresented: $isSearchPresented) {
+        if let workspace = selectedWorkspace {
+          FilesSearchScreen(
+            workspace: workspace,
+            isLive: canUseLiveFileActions,
+            needsRepairing: needsRepairing,
+            onOpenFile: { path, line in
+              openFile(path, in: workspace, focusLine: line)
+            }
+          )
+          .environmentObject(syncService)
+        } else {
+          // The workspace list emptied while search was open (e.g. a disconnect
+          // reload). Never strand the user on a blank cover with no way out.
+          Color.clear.onAppear { isSearchPresented = false }
+        }
       }
     }
   }

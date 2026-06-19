@@ -2,6 +2,68 @@ import SwiftUI
 import UIKit
 import AVKit
 
+/// App-wide "last used" chat composer selection — the model + permission/runtime
+/// access mode (plus their coupled sub-settings) the user most recently picked or
+/// sent with. Restored when the New Chat screen opens so it defaults to the
+/// user's last choices instead of hardcoded defaults. Written from the New Chat
+/// composer, the in-session inline controls, and the session settings sheet, so
+/// "the same as the last time you sent a message or changed it" holds across both
+/// in-app chat and CLI launch (which share one composer).
+enum WorkComposerPreferences {
+  /// Persisted snapshot of the composer's model + access-mode selection.
+  struct Selection: Codable, Equatable {
+    var provider: String
+    var modelId: String
+    var runtimeMode: String
+    var reasoningEffort: String
+    var codexFastMode: Bool
+  }
+
+  /// Versioned so a future field change can migrate rather than mis-decode.
+  private static let storageKey = "ade.work.lastComposerSelection.v1"
+  private static var defaults: UserDefaults { ADESharedContainer.defaults }
+
+  /// The most recent selection, or nil if the user has not started or changed a
+  /// chat yet on this device.
+  static func load() -> Selection? {
+    guard let data = defaults.data(forKey: storageKey) else { return nil }
+    return try? JSONDecoder().decode(Selection.self, from: data)
+  }
+
+  /// Persists the full selection. Ignored when provider or model are blank so a
+  /// half-initialized composer can never clobber a good record.
+  static func save(_ selection: Selection) {
+    let provider = selection.provider.trimmingCharacters(in: .whitespacesAndNewlines)
+    let modelId = selection.modelId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !provider.isEmpty, !modelId.isEmpty else { return }
+    var normalized = selection
+    normalized.provider = provider
+    normalized.modelId = modelId
+    guard let data = try? JSONEncoder().encode(normalized) else { return }
+    defaults.set(data, forKey: storageKey)
+  }
+
+  /// Convenience for call sites that have the fields loose rather than as a
+  /// `Selection` value.
+  static func save(
+    provider: String,
+    modelId: String,
+    runtimeMode: String,
+    reasoningEffort: String,
+    codexFastMode: Bool
+  ) {
+    save(
+      Selection(
+        provider: provider,
+        modelId: modelId,
+        runtimeMode: runtimeMode,
+        reasoningEffort: reasoningEffort,
+        codexFastMode: codexFastMode
+      )
+    )
+  }
+}
+
 enum WorkToolCardStatus: String, Equatable {
   case running
   case completed

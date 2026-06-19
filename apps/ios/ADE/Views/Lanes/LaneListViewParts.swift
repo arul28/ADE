@@ -122,8 +122,12 @@ extension LanesTabView {
     treeSnapshots
   }
 
-  var lanePrTagsByLaneId: [String: PullRequestListItem] {
-    lanePrTagByLaneId(snapshots: laneSnapshots, pullRequests: pullRequests)
+  var lanePrTagsByLaneId: [String: LanePrTag] {
+    lanePrTagByLaneId(
+      snapshots: laneSnapshots,
+      pullRequests: pullRequests,
+      githubPrs: syncService.laneGithubPrItems
+    )
   }
 
   @ViewBuilder
@@ -400,6 +404,11 @@ extension LanesTabView {
       if pullRequests != loadedPullRequests {
         pullRequests = loadedPullRequests
       }
+      // Layer in GitHub PRs opened outside ADE (matched to lanes by branch).
+      // Best-effort and non-blocking: the ADE-mapped chip is already rendered;
+      // `laneGithubPrItems` publishes when the snapshot lands and recomputes the
+      // tag map. Pull-to-refresh forces a fresh fetch; routine reloads throttle.
+      Task { await syncService.refreshLaneGithubPrItems(force: refreshRemote) }
       let visibleIds = Set(loadedSnapshots.map(\.lane.id))
       let nextOpenLaneIds = openLaneIds.filter { visibleIds.contains($0) }
       if nextOpenLaneIds != openLaneIds {

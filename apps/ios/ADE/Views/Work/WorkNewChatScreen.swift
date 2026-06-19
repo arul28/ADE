@@ -147,6 +147,44 @@ struct WorkNewChatScreen: View {
   /// mirroring desktop's "Naming lane with <model>… → Creating lane…" flow.
   @State private var autoCreateStatus: String?
 
+  init(
+    lanes: [LaneSummary],
+    preferredLaneId: String?,
+    onStarted: @escaping @MainActor (AgentChatSessionSummary, String) async -> Void,
+    onCliStarted: @escaping @MainActor (TerminalSessionSummary) async -> Void,
+    onRefreshLanes: @escaping @MainActor () async -> Void
+  ) {
+    self.lanes = lanes
+    self.preferredLaneId = preferredLaneId
+    self.onStarted = onStarted
+    self.onCliStarted = onCliStarted
+    self.onRefreshLanes = onRefreshLanes
+    // Restore the last-used model + access mode so a fresh New Chat screen opens
+    // on the user's most recent choices. Seeding the @State initial values here
+    // (rather than assigning in onAppear) avoids the provider/model onChange
+    // handlers firing and resetting runtimeMode back to the provider default.
+    if let saved = WorkComposerPreferences.load() {
+      _provider = State(initialValue: saved.provider)
+      _modelId = State(initialValue: saved.modelId)
+      _runtimeMode = State(initialValue: saved.runtimeMode)
+      _reasoningEffort = State(initialValue: saved.reasoningEffort)
+      _codexFastMode = State(initialValue: saved.codexFastMode)
+    }
+  }
+
+  /// The live composer selection. Persisted as the app-wide "last used" choice
+  /// whenever it changes (see `.onChange` in `body`) so the next New Chat —
+  /// chat or CLI — restores it.
+  private var composerSelection: WorkComposerPreferences.Selection {
+    WorkComposerPreferences.Selection(
+      provider: provider,
+      modelId: modelId,
+      runtimeMode: runtimeMode,
+      reasoningEffort: reasoningEffort,
+      codexFastMode: codexFastMode
+    )
+  }
+
   /// Whether the synthetic "Auto-create lane" entry is the current selection.
   private var isAutoCreateLane: Bool {
     selectedLaneId == workAutoCreateLaneSentinelId
@@ -244,6 +282,16 @@ struct WorkNewChatScreen: View {
       }
     }
     .onAppear {
+      // A restored selection (see init) can carry a model only valid in the mode
+      // it was last used in — e.g. a CLI-only Cursor model. The screen opens in
+      // .chat and normalizeSelection only runs on a sessionMode *change*, which
+      // never fires for the initial state, so a CLI-only model would otherwise
+      // reach Send → createChatSession. Normalize here, but only when the model is
+      // actually disallowed, so a valid restored selection keeps its runtimeMode.
+      let availabilityMode: WorkCursorAvailabilityMode = sessionMode == .cli ? .cli : .chat
+      if !workModelAllowedForAvailabilityMode(modelId: modelId, provider: provider, mode: availabilityMode) {
+        normalizeSelection(for: sessionMode)
+      }
       if selectedLaneId.isEmpty {
         selectedLaneId = defaultNewSessionLane?.id ?? ""
       }
@@ -273,6 +321,12 @@ struct WorkNewChatScreen: View {
       if !fastModeSupported {
         codexFastMode = false
       }
+    }
+    .onChange(of: composerSelection) { _, newValue in
+      // Persist every model / access-mode change so the next New Chat restores
+      // it. Captures the full tuple atomically — a single field change here
+      // already reflects any cascading provider/model normalization above.
+      WorkComposerPreferences.save(newValue)
     }
     .sheet(isPresented: $modelPickerPresented) {
       WorkModelPickerSheet(
@@ -378,6 +432,9 @@ struct WorkNewChatScreen: View {
     let opener = openingMessage.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !busy && (isAutoCreateLane || !selectedLaneId.isEmpty) else { return false }
     guard !opener.isEmpty && !modelId.isEmpty else { return false }
+    // Anchor the "last time you sent a message" choice — covers the case where
+    // the user sent with the restored/default selection without changing it.
+    WorkComposerPreferences.save(composerSelection)
     busy = true
     errorMessage = nil
     let wire = workRuntimeWireFields(provider: provider, mode: runtimeMode)
@@ -588,7 +645,12 @@ struct WorkNewChatScreen: View {
 
 private func workNormalizedNewChatProvider(_ provider: String) -> String {
   let family = providerFamilyKey(provider)
-  return ["claude", "codex", "cursor", "opencode"].contains(family) ? family : "claude"
+  // Droid (Factory) is a first-class in-app chat runtime, and its Droid Core
+  // models (GLM / Kimi / MiniMax) only run under the droid provider — desktop
+  // and the TUI already derive provider from the model's family. Without droid
+  // in this allowlist, picking a Droid Core model silently collapsed the
+  // provider to "claude", sending a GLM model id to the Claude runtime.
+  return ["claude", "codex", "cursor", "opencode", "droid"].contains(family) ? family : "claude"
 }
 
 private func workNewChatModel(_ modelId: String, belongsTo provider: String) -> Bool {
@@ -696,10 +758,6 @@ private struct WorkNewChatComposerBar: View {
     "Type to vibecode…"
   }
 
-  private var sendLabel: String {
-    "Send"
-  }
-
   @MainActor
   private func dispatch() {
     let text = trimmedDraft
@@ -798,39 +856,18 @@ private struct WorkNewChatComposerBar: View {
     .padding(.bottom, 0)
   }
 
-  /// Primary foreground launch button — navigates into the new live chat.
+  /// Primary foreground launch button — the compact arrow-in-circle send glyph
+  /// shared with the in-session composer (desktop parity), navigating into the
+  /// new live chat.
   private var foregroundSendButton: some View {
-    Button {
+    ADEComposerSendButton(
+      enabled: canSend && !busy,
+      sending: busy,
+      accessibilityLabelText: "Send",
+      disabledAccessibilityLabel: "Enter a message to send"
+    ) {
       dispatch()
-    } label: {
-      HStack(spacing: 5) {
-        if busy {
-          ProgressView()
-            .controlSize(.mini)
-            .tint(canSend ? Color.white : ADEColor.textSecondary)
-        } else {
-          Image(systemName: "paperplane.fill")
-            .font(.system(size: 12, weight: .bold))
-        }
-        Text(sendLabel)
-          .font(.caption.weight(.semibold))
-      }
-      .foregroundStyle(canSend ? Color.white : ADEColor.textSecondary)
-      .padding(.horizontal, 12)
-      .padding(.vertical, 8)
-      .background(
-        Capsule(style: .continuous)
-          .fill(canSend ? ADEColor.accent : ADEColor.surfaceBackground.opacity(0.85))
-      )
-      .overlay(
-        Capsule(style: .continuous)
-          .stroke(canSend ? Color.clear : ADEColor.border.opacity(0.35), lineWidth: 0.8)
-      )
-      .shadow(color: canSend ? ADEColor.accent.opacity(0.4) : .clear, radius: 8, y: 2)
     }
-    .buttonStyle(.plain)
-    .disabled(!canSend || busy)
-    .accessibilityLabel(canSend ? "Send" : "Enter a message to send")
   }
 
 }

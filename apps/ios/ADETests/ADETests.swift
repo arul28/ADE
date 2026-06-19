@@ -6064,7 +6064,189 @@ final class ADETests: XCTestCase {
     )
 
     XCTAssertEqual(selectLanePrTag(lane: lane, pullRequests: [mergedPr, openPr])?.id, "pr-open")
-    XCTAssertEqual(formatLanePrBadgeLabel(openPr), "PR #561")
+    XCTAssertEqual(
+      selectLaneTabPrTag(lane: lane, pullRequests: [mergedPr, openPr], githubPrs: []).map(formatLanePrBadgeLabel),
+      "PR #561"
+    )
+  }
+
+  func testSelectLaneTabPrTagMergesAdeAndGithubProvenance() {
+    let lane = LaneSummary(
+      id: "lane-audit",
+      name: "mobile audit",
+      description: nil,
+      laneType: "worktree",
+      baseRef: "main",
+      branchRef: "ade/mobile-audit-34b23435",
+      worktreePath: "/tmp/mobile-audit",
+      attachedRootPath: nil,
+      parentLaneId: "lane-primary",
+      childCount: 0,
+      stackDepth: 1,
+      parentStatus: nil,
+      isEditProtected: false,
+      status: LaneStatus(dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false),
+      color: "#a78bfa",
+      icon: nil,
+      tags: [],
+      folder: nil,
+      createdAt: "2026-03-20T00:00:00.000Z",
+      archivedAt: nil
+    )
+    func adePr(id: String, number: Int, state: String) -> PullRequestListItem {
+      PullRequestListItem(
+        id: id,
+        laneId: "lane-audit",
+        laneName: "mobile audit",
+        projectId: "project-1",
+        repoOwner: "ade",
+        repoName: "ADE",
+        githubPrNumber: number,
+        githubUrl: "https://github.com/ade/ADE/pull/\(number)",
+        title: "Mobile audit",
+        state: state,
+        baseBranch: "main",
+        headBranch: "ade/mobile-audit-34b23435",
+        checksStatus: "passing",
+        reviewStatus: "approved",
+        additions: 1,
+        deletions: 1,
+        lastSyncedAt: nil,
+        createdAt: "2026-03-20T00:00:00.000Z",
+        updatedAt: "2026-03-21T00:00:00.000Z",
+        adeKind: nil,
+        linkedGroupId: nil,
+        linkedGroupType: nil,
+        linkedGroupName: nil,
+        linkedGroupPosition: nil,
+        linkedGroupCount: 0,
+        workflowDisplayState: nil,
+        cleanupState: nil
+      )
+    }
+    func githubPr(number: Int, state: String, headBranch: String, linkedLaneId: String?, linkedPrId: String?, headRepoOwner: String? = nil) -> GitHubPrListItem {
+      GitHubPrListItem(
+        id: "gh-\(number)",
+        scope: "repo",
+        repoOwner: "ade",
+        repoName: "ADE",
+        githubPrNumber: number,
+        githubUrl: "https://github.com/ade/ADE/pull/\(number)",
+        title: "Mobile audit",
+        state: state,
+        isDraft: false,
+        baseBranch: "main",
+        headBranch: headBranch,
+        headRepoOwner: headRepoOwner,
+        headRepoName: headRepoOwner == nil ? nil : "ADE",
+        author: "octocat",
+        createdAt: "2026-03-20T00:00:00.000Z",
+        updatedAt: "2026-03-22T00:00:00.000Z",
+        linkedPrId: linkedPrId,
+        linkedGroupId: nil,
+        linkedLaneId: linkedLaneId,
+        linkedLaneName: nil,
+        adeKind: nil,
+        workflowDisplayState: nil,
+        cleanupState: nil,
+        labels: [],
+        isBot: false,
+        commentCount: 0
+      )
+    }
+
+    // ADE-mapped only → tag carries the ADE provenance and its prId.
+    let adeOnly = selectLaneTabPrTag(lane: lane, pullRequests: [adePr(id: "pr-open", number: 561, state: "open")], githubPrs: [])
+    XCTAssertEqual(adeOnly?.source, .ade)
+    XCTAssertEqual(adeOnly?.state, "open")
+    XCTAssertEqual(adeOnly?.prId, "pr-open")
+
+    // GitHub-only PR on the lane's branch (opened outside ADE, not linked) still
+    // tags the lane; provenance is GitHub and prId is nil.
+    let githubOnly = selectLaneTabPrTag(
+      lane: lane,
+      pullRequests: [],
+      githubPrs: [githubPr(number: 777, state: "open", headBranch: "ade/mobile-audit-34b23435", linkedLaneId: nil, linkedPrId: nil)]
+    )
+    XCTAssertEqual(githubOnly?.source, .github)
+    XCTAssertEqual(githubOnly?.githubPrNumber, 777)
+    XCTAssertNil(githubOnly?.prId)
+
+    // ADE row still says "open" but GitHub reports the same PR merged → adopt the
+    // terminal GitHub state while preserving the ADE prId for in-app navigation.
+    let terminalUpdate = selectLaneTabPrTag(
+      lane: lane,
+      pullRequests: [adePr(id: "pr-open", number: 561, state: "open")],
+      githubPrs: [githubPr(number: 561, state: "merged", headBranch: "ade/mobile-audit-34b23435", linkedLaneId: nil, linkedPrId: nil)]
+    )
+    XCTAssertEqual(terminalUpdate?.state, "merged")
+    XCTAssertEqual(terminalUpdate?.prId, "pr-open")
+
+    // A GitHub PR on a different branch must not tag this lane.
+    let unrelated = selectLaneTabPrTag(
+      lane: lane,
+      pullRequests: [],
+      githubPrs: [githubPr(number: 999, state: "open", headBranch: "ade/other-branch", linkedLaneId: nil, linkedPrId: nil)]
+    )
+    XCTAssertNil(unrelated)
+
+    // A fork PR whose head branch name coincides with the lane branch but whose
+    // head repo differs must not tag the lane (its branch lives in the fork).
+    let forkPr = selectLaneTabPrTag(
+      lane: lane,
+      pullRequests: [],
+      githubPrs: [githubPr(number: 1001, state: "open", headBranch: "ade/mobile-audit-34b23435", linkedLaneId: nil, linkedPrId: nil, headRepoOwner: "someforker")]
+    )
+    XCTAssertNil(forkPr)
+  }
+
+  func testWorkComposerPreferencesRoundTripAndBlankGuard() {
+    let storageKey = "ade.work.lastComposerSelection.v1"
+    ADESharedContainer.defaults.removeObject(forKey: storageKey)
+    defer { ADESharedContainer.defaults.removeObject(forKey: storageKey) }
+
+    let selection = WorkComposerPreferences.Selection(
+      provider: "codex",
+      modelId: "gpt-5-codex",
+      runtimeMode: "auto",
+      reasoningEffort: "high",
+      codexFastMode: true
+    )
+    WorkComposerPreferences.save(selection)
+    XCTAssertEqual(WorkComposerPreferences.load(), selection)
+
+    // A half-initialized composer (blank provider/model) must never clobber a
+    // good record.
+    WorkComposerPreferences.save(provider: "   ", modelId: "", runtimeMode: "plan", reasoningEffort: "", codexFastMode: false)
+    XCTAssertEqual(WorkComposerPreferences.load(), selection)
+
+    // Provider/model are trimmed before persisting.
+    WorkComposerPreferences.save(
+      provider: "  claude  ",
+      modelId: " claude-opus-4-8 ",
+      runtimeMode: "default",
+      reasoningEffort: "",
+      codexFastMode: false
+    )
+    XCTAssertEqual(WorkComposerPreferences.load()?.provider, "claude")
+    XCTAssertEqual(WorkComposerPreferences.load()?.modelId, "claude-opus-4-8")
+  }
+
+  func testWorkComposerRuntimeProviderCoercesLocalOpenCodeGroups() {
+    // Local OpenCode-routed groups must collapse to the wireable `opencode`
+    // provider so a persisted "last used" selection restores supported access
+    // controls rather than an unsupported lmstudio/ollama provider.
+    XCTAssertEqual(
+      workComposerRuntimeProvider(forModelId: "opencode/lmstudio/qwen2.5-coder", currentProvider: "lmstudio"),
+      "opencode"
+    )
+    XCTAssertEqual(
+      workComposerRuntimeProvider(forModelId: "opencode/ollama/llama3.1", currentProvider: "ollama"),
+      "opencode"
+    )
+    // Canonical providers pass through unchanged.
+    XCTAssertEqual(workComposerRuntimeProvider(forModelId: "claude-opus-4-8", currentProvider: "claude"), "claude")
+    XCTAssertEqual(workComposerRuntimeProvider(forModelId: "gpt-5-codex", currentProvider: "codex"), "codex")
   }
 
   func testLaneStackCardAccessibilityLabelIncludesRebaseWarningSummary() {
@@ -6833,14 +7015,18 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(resolveFilesWorkspace(for: request, in: workspaces)?.id, "workspace-lane-2")
   }
 
-  func testFilesSearchEmptyMessageReflectsLiveAndQueryState() {
+  func testFilesSearchEmptyMessageReflectsConnectionState() {
     XCTAssertEqual(
-      filesSearchEmptyMessage(kind: .quickOpen, isLive: false, needsRepairing: false, query: ""),
-      "Quick open needs a live machine connection."
+      filesSearchEmptyMessage(isLive: false, needsRepairing: false),
+      "File search needs a live machine connection."
     )
     XCTAssertEqual(
-      filesSearchEmptyMessage(kind: .textSearch, isLive: true, needsRepairing: false, query: "needle"),
-      "No matches found."
+      filesSearchEmptyMessage(isLive: false, needsRepairing: true),
+      "Pair again before searching files."
+    )
+    XCTAssertEqual(
+      filesSearchEmptyMessage(isLive: true, needsRepairing: false),
+      "Matches file names and contents — tap a line to jump straight to it."
     )
   }
 

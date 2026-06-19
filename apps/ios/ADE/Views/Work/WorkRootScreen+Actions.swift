@@ -125,6 +125,13 @@ extension WorkRootScreen {
       if lanes != activeLanes {
         lanes = activeLanes
       }
+      let loadedPullRequests = try await syncService.fetchPullRequestListItems()
+      if pullRequests != loadedPullRequests {
+        pullRequests = loadedPullRequests
+      }
+      // Layer in GitHub PRs opened outside ADE (matched by branch). Best-effort,
+      // non-blocking, internally throttled; pull-to-refresh forces a fresh fetch.
+      Task { await syncService.refreshLaneGithubPrItems(force: refreshRemote) }
       var nextOptimisticSessions = optimisticSessions
       for session in loadedSessions where nextOptimisticSessions[session.id] != nil {
         nextOptimisticSessions[session.id] = nil
@@ -162,6 +169,11 @@ extension WorkRootScreen {
       if lanes != activeLanes {
         lanes = activeLanes
       }
+      let loadedPullRequests = try await syncService.fetchPullRequestListItems()
+      if pullRequests != loadedPullRequests {
+        pullRequests = loadedPullRequests
+      }
+      Task { await syncService.refreshLaneGithubPrItems() }
       var nextOptimisticSessions = optimisticSessions
       for session in loadedSessions where nextOptimisticSessions[session.id] != nil {
         nextOptimisticSessions[session.id] = nil

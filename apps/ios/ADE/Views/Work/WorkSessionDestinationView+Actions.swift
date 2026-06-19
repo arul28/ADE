@@ -163,6 +163,26 @@ extension WorkSessionDestinationView {
       _ = try await syncService.updateChatSession(sessionId: sessionId, modelId: modelId)
       await refreshChatStateAfterAction(forceRemote: true)
       errorMessage = nil
+      // Persist as the app-wide "last used" model so the next New Chat opens on
+      // it. The inline picker is cross-provider (a Claude chat can pick e.g. a
+      // Codex model), so re-derive the provider from the picked model rather
+      // than persisting the chat's old provider — otherwise restore would seed a
+      // mismatched provider/model pair the New Chat init does not reconcile.
+      // When the provider actually changes, the chat's access mode and
+      // sub-settings no longer apply, so reset them to the new provider default.
+      if let summary = chatSummary {
+        let resolvedProvider = workComposerRuntimeProvider(forModelId: modelId, currentProvider: summary.provider)
+        let providerChanged = resolvedProvider != summary.provider
+        WorkComposerPreferences.save(
+          provider: resolvedProvider,
+          modelId: modelId,
+          runtimeMode: providerChanged
+            ? workDefaultRuntimeMode(provider: resolvedProvider)
+            : workInitialRuntimeMode(summary),
+          reasoningEffort: providerChanged ? "" : (summary.reasoningEffort ?? ""),
+          codexFastMode: providerChanged ? false : summary.effectiveFastMode
+        )
+      }
       ADEHaptics.light()
     } catch {
       ADEHaptics.error()
@@ -177,6 +197,19 @@ extension WorkSessionDestinationView {
       _ = try await syncService.updateChatSession(sessionId: sessionId, reasoningEffort: trimmed)
       await refreshChatStateAfterAction(forceRemote: true)
       errorMessage = nil
+      // Mirror into the app-wide "last used" selection so the next New Chat
+      // restores it. Persisting from here (not only from selectModel) covers a
+      // combined model+effort inline change, where selectModel ran first with the
+      // prior effort and would otherwise leave the stored effort stale.
+      if let summary = chatSummary {
+        WorkComposerPreferences.save(
+          provider: summary.provider,
+          modelId: summary.modelId ?? summary.model,
+          runtimeMode: workInitialRuntimeMode(summary),
+          reasoningEffort: trimmed,
+          codexFastMode: summary.effectiveFastMode
+        )
+      }
       ADEHaptics.light()
     } catch {
       ADEHaptics.error()
@@ -190,6 +223,18 @@ extension WorkSessionDestinationView {
       _ = try await syncService.updateChatSession(sessionId: sessionId, codexFastMode: enabled)
       await refreshChatStateAfterAction(forceRemote: true)
       errorMessage = nil
+      // Mirror the fast-mode change into the app-wide "last used" selection (the
+      // model / effort are unchanged by a fast-mode toggle) so a combined inline
+      // change persists the final fast-mode value rather than selectModel's stale one.
+      if let summary = chatSummary {
+        WorkComposerPreferences.save(
+          provider: summary.provider,
+          modelId: summary.modelId ?? summary.model,
+          runtimeMode: workInitialRuntimeMode(summary),
+          reasoningEffort: summary.reasoningEffort ?? "",
+          codexFastMode: enabled
+        )
+      }
       ADEHaptics.light()
       return true
     } catch {
@@ -229,6 +274,15 @@ extension WorkSessionDestinationView {
       )
       await refreshChatStateAfterAction(forceRemote: true)
       errorMessage = nil
+      // Persist as the app-wide "last used" access mode so the next New Chat
+      // opens on it (the model / sub-settings are unchanged by a mode change).
+      WorkComposerPreferences.save(
+        provider: summary.provider,
+        modelId: summary.modelId ?? summary.model,
+        runtimeMode: modeId,
+        reasoningEffort: summary.reasoningEffort ?? "",
+        codexFastMode: summary.effectiveFastMode
+      )
       ADEHaptics.light()
       return true
     } catch {

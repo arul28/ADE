@@ -1429,7 +1429,11 @@ private struct WorkChatComposerSendButton: View {
   }
 
   var body: some View {
-    Button {
+    ADEComposerSendButton(
+      enabled: sendEnabled,
+      sending: sending,
+      accessibilityLabelText: accessibilityLabelText
+    ) {
       let text = draftState.consumeSendableText()
       Task { @MainActor in
         let sent = await onSend(text)
@@ -1439,27 +1443,7 @@ private struct WorkChatComposerSendButton: View {
           draftState.restoreUnsentText(text)
         }
       }
-    } label: {
-      ZStack {
-        if sending {
-          ProgressView()
-            .controlSize(.mini)
-            .tint(sendEnabled ? Color(red: 0.12, green: 0.12, blue: 0.14) : ADEColor.textSecondary)
-        } else {
-          Image(systemName: "arrow.up")
-            .font(.system(size: 14, weight: .bold))
-        }
-      }
-      .frame(width: 28, height: 28)
-      .foregroundStyle(sendEnabled ? Color(red: 0.12, green: 0.12, blue: 0.14) : ADEColor.textSecondary.opacity(0.2))
-      .background(
-        Circle()
-          .fill(sendEnabled ? Color.white.opacity(0.9) : Color.white.opacity(0.06))
-      )
     }
-    .buttonStyle(.plain)
-    .accessibilityLabel(sending ? "Sending message" : accessibilityLabelText)
-    .disabled(!sendEnabled)
     .adeInspectable(
       "Work.Chat.Composer.SendButton",
       metadata: [

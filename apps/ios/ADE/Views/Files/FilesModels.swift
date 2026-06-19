@@ -11,11 +11,6 @@ struct FilesSearchKey: Hashable {
   let isLive: Bool
 }
 
-enum FilesSearchKind {
-  case quickOpen
-  case textSearch
-}
-
 struct FilesBreadcrumbItem: Equatable {
   let label: String
   let path: String
@@ -294,29 +289,17 @@ func resolveFilesWorkspace(for request: FilesNavigationRequest, in workspaces: [
   return nil
 }
 
-func filesSearchEmptyMessage(kind: FilesSearchKind, isLive: Bool, needsRepairing: Bool, query: String) -> String {
-  let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines)
-  let label: String = switch kind {
-  case .quickOpen:
-    "Quick open"
-  case .textSearch:
-    "Workspace search"
-  }
-
+/// Copy for the unified file-search prompt / unavailable states. The new search
+/// page searches file names and contents together, so the message no longer
+/// branches on a search "kind" — it only reflects connection state. (No-match
+/// copy is rendered inline by the search page with the active query.)
+func filesSearchEmptyMessage(isLive: Bool, needsRepairing: Bool) -> String {
   if !isLive {
     return needsRepairing
-      ? "Pair again before using \(label.lowercased())."
-      : "\(label) needs a live machine connection."
+      ? "Pair again before searching files."
+      : "File search needs a live machine connection."
   }
-  if trimmed.isEmpty {
-    switch kind {
-    case .quickOpen:
-      return "Type a filename or path to fuzzy-search the selected workspace."
-    case .textSearch:
-      return "Search the selected workspace and preview matching lines before opening a file."
-    }
-  }
-  return "No matches found."
+  return "Matches file names and contents — tap a line to jump straight to it."
 }
 
 func filesBreadcrumbItems(relativePath: String, includeCurrentFile: Bool) -> [FilesBreadcrumbItem] {

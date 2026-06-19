@@ -651,6 +651,45 @@ struct ADEConnectionDot: View {
   fileprivate var a11yLabel: String { "Machine connection · \(accessibilityLabel)" }
 }
 
+private let projectIconImageCache = NSCache<NSString, UIImage>()
+
+/// Decodes a base64 `data:` URL project icon into a `UIImage`, memoised in a
+/// process-wide cache. Returns nil when the project has no icon. Shared by the
+/// project-home list rows and the root toolbar's projects affordance so both
+/// resolve icons through one cache.
+func projectIconImage(from dataUrl: String?) -> UIImage? {
+  guard let dataUrl, !dataUrl.isEmpty else { return nil }
+  let cacheKey = dataUrl as NSString
+  if let cached = projectIconImageCache.object(forKey: cacheKey) {
+    return cached
+  }
+  guard let commaIndex = dataUrl.firstIndex(of: ",") else { return nil }
+  let base64 = String(dataUrl[dataUrl.index(after: commaIndex)...])
+  // Project icons are pre-rendered host-side to a 64×64 PNG (a few KB), so a
+  // payload past ~768 KB of base64 is malformed or hostile — reject it rather
+  // than drive a large allocation/decode on the UI path.
+  guard base64.count <= 1_048_576,
+        let data = Data(base64Encoded: base64),
+        let image = UIImage(data: data)
+  else { return nil }
+  projectIconImageCache.setObject(image, forKey: cacheKey)
+  return image
+}
+
+extension Image {
+  /// Shared presentation for a decoded project icon: high-quality fit inside a
+  /// rounded square. Size and corner radius vary per surface (toolbar capsule,
+  /// leading disc, project-home rows), so they stay parameters.
+  func projectIconStyle(size: CGFloat, cornerRadius: CGFloat) -> some View {
+    self
+      .resizable()
+      .interpolation(.high)
+      .aspectRatio(contentMode: .fit)
+      .frame(width: size, height: size)
+      .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+  }
+}
+
 struct ADEProjectHomeButton: View {
   @EnvironmentObject private var syncService: SyncService
 
@@ -660,9 +699,14 @@ struct ADEProjectHomeButton: View {
         Text("Projects")
       } icon: {
         PrsGlassDisc(tint: PrsGlass.glowPurple, isAlive: true) {
-          Image(systemName: "square.grid.2x2.fill")
-            .font(.system(size: 13, weight: .semibold))
-            .foregroundStyle(PrsGlass.accentTop)
+          if let icon = projectIconImage(from: syncService.activeProject?.iconDataUrl) {
+            // Detected project logo replaces the generic grid glyph.
+            Image(uiImage: icon).projectIconStyle(size: 20, cornerRadius: 5)
+          } else {
+            Image(systemName: "square.grid.2x2.fill")
+              .font(.system(size: 13, weight: .semibold))
+              .foregroundStyle(PrsGlass.accentTop)
+          }
         }
       }
       .labelStyle(.iconOnly)
@@ -742,6 +786,7 @@ struct ADERootToolbarControls: View {
         icon: "square.grid.2x2.fill",
         tint: PrsGlass.accentTop,
         isAlive: false,
+        iconImage: projectIconImage(from: syncService.activeProject?.iconDataUrl),
         accessibilityLabel: "Projects",
         action: { syncService.showProjectHome() }
       )
@@ -823,6 +868,7 @@ struct ADERootToolbarControls: View {
     icon: String,
     tint: Color,
     isAlive: Bool,
+    iconImage: UIImage? = nil,
     accessibilityLabel: String,
     action: @escaping () -> Void
   ) -> some View {
@@ -834,10 +880,15 @@ struct ADERootToolbarControls: View {
             .frame(width: 24, height: 24)
             .blur(radius: 3)
         }
-        Image(systemName: icon)
-          .font(.system(size: 14, weight: .semibold))
-          .foregroundStyle(tint)
-          .shadow(color: isAlive ? tint.opacity(0.28) : .clear, radius: 2, x: 0, y: 0)
+        if let iconImage {
+          // Detected project logo replaces the generic grid glyph.
+          Image(uiImage: iconImage).projectIconStyle(size: 22, cornerRadius: 5)
+        } else {
+          Image(systemName: icon)
+            .font(.system(size: 14, weight: .semibold))
+            .foregroundStyle(tint)
+            .shadow(color: isAlive ? tint.opacity(0.28) : .clear, radius: 2, x: 0, y: 0)
+        }
       }
       .frame(width: 38, height: 34)
       .contentShape(Rectangle())
@@ -955,6 +1006,56 @@ struct ADERootToolbarLeadingItems: ToolbarContent {
       AttentionDrawerButton()
     }
     .sharedBackgroundVisibility(.hidden)
+  }
+}
+
+/// Canonical chat-composer send affordance: a compact circular button with an
+/// upward arrow, matching the desktop composer (phosphor `ArrowUp` in a white
+/// disc). Shared by the New Chat composer and the in-session chat composer so
+/// every prompt box sends with the same glyph instead of mismatched paperplanes.
+struct ADEComposerSendButton: View {
+  /// Whether there is sendable input. Drives the filled vs. recessed treatment.
+  let enabled: Bool
+  /// While a send is in flight, swaps the arrow for an inline spinner.
+  let sending: Bool
+  var accessibilityLabelText: String = "Send message"
+  /// Optional VoiceOver label used while disabled (e.g. "Enter a message to
+  /// send") so users hear *why* the button is unavailable. Falls back to
+  /// `accessibilityLabelText` when nil.
+  var disabledAccessibilityLabel: String? = nil
+  let action: () -> Void
+
+  /// Dark glyph color on the light disc (matches the in-session composer).
+  private let glyphColor = Color(red: 0.12, green: 0.12, blue: 0.14)
+
+  private var resolvedAccessibilityLabel: String {
+    if sending { return "Sending message" }
+    if !enabled, let disabledAccessibilityLabel { return disabledAccessibilityLabel }
+    return accessibilityLabelText
+  }
+
+  var body: some View {
+    Button(action: action) {
+      ZStack {
+        if sending {
+          ProgressView()
+            .controlSize(.mini)
+            .tint(enabled ? glyphColor : ADEColor.textSecondary)
+        } else {
+          Image(systemName: "arrow.up")
+            .font(.system(size: 14, weight: .bold))
+        }
+      }
+      .frame(width: 28, height: 28)
+      .foregroundStyle(enabled ? glyphColor : ADEColor.textSecondary.opacity(0.2))
+      .background(
+        Circle()
+          .fill(enabled ? Color.white.opacity(0.9) : Color.white.opacity(0.06))
+      )
+    }
+    .buttonStyle(.plain)
+    .disabled(!enabled)
+    .accessibilityLabel(resolvedAccessibilityLabel)
   }
 }
 

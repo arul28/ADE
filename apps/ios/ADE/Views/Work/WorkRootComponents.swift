@@ -458,6 +458,7 @@ struct WorkRunningBanner: View {
 struct WorkSessionListRow: View {
   let session: TerminalSessionSummary
   let lane: LaneSummary?
+  var pullRequest: LanePrTag? = nil
   let chatSummary: AgentChatSessionSummary?
   let isArchived: Bool
   let transitionNamespace: Namespace.ID?
@@ -493,6 +494,7 @@ struct WorkSessionListRow: View {
         WorkSessionRow(
           session: session,
           lane: lane,
+          pullRequest: pullRequest,
           chatSummary: chatSummary,
           isArchived: isArchived,
           transitionNamespace: transitionNamespace,
@@ -657,9 +659,36 @@ struct WorkProviderBareLogo: View {
   }
 }
 
+/// Minimal PR status indicator shown to the right of the lane name in the Work
+/// session list, where space is tight: a state-colored dot, the PR number, and
+/// a short state label ("Open" / "Draft" / "Closed" / "Merged"). Mirrors the
+/// Lanes tab `LanePrTagChip`, trimmed to fit the dense metadata row.
+struct WorkLanePrIndicator: View {
+  let tag: LanePrTag
+
+  var body: some View {
+    let tint = lanePullRequestTint(tag.state)
+    HStack(spacing: 3) {
+      Circle()
+        .fill(tint)
+        .frame(width: 6, height: 6)
+      Text("#\(tag.githubPrNumber)")
+        .font(.caption2.monospacedDigit().weight(.semibold))
+      Text(lanePrStateLabel(tag.state))
+        .font(.caption2.weight(.medium))
+    }
+    .foregroundStyle(tint)
+    .lineLimit(1)
+    .fixedSize()
+    .accessibilityElement(children: .ignore)
+    .accessibilityLabel("Pull request #\(tag.githubPrNumber), \(lanePrStateLabel(tag.state))")
+  }
+}
+
 struct WorkSessionRow: View {
   let session: TerminalSessionSummary
   let lane: LaneSummary?
+  var pullRequest: LanePrTag? = nil
   let chatSummary: AgentChatSessionSummary?
   let isArchived: Bool
   let transitionNamespace: Namespace.ID?
@@ -730,6 +759,11 @@ struct WorkSessionRow: View {
             .foregroundStyle(LaneColorPalette.color(forHex: lane?.color) ?? ADEColor.textMuted)
             .lineLimit(1)
             .truncationMode(.middle)
+            .layoutPriority(-1)
+
+          if let pullRequest {
+            WorkLanePrIndicator(tag: pullRequest)
+          }
 
           if lane?.status.dirty == true {
             Circle()

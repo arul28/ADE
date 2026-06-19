@@ -26,7 +26,7 @@ struct LaneTreeView: View {
   let pinnedLaneIds: Set<String>
   let openLaneIds: [String]
   let allLaneSnapshots: [LaneListSnapshot]
-  let lanePrTagsByLaneId: [String: PullRequestListItem]
+  let lanePrTagsByLaneId: [String: LanePrTag]
   let transitionNamespace: Namespace.ID?
   let selectedLaneId: String?
   let onRefreshRoot: () async -> Void
@@ -60,7 +60,7 @@ struct LaneTreeRow: View {
   let snapshot: LaneListSnapshot
   let depth: Int
   let allLaneSnapshots: [LaneListSnapshot]
-  let pullRequest: PullRequestListItem?
+  let pullRequest: LanePrTag?
   let isPinned: Bool
   let isOpen: Bool
   let transitionNamespace: Namespace.ID?
@@ -129,7 +129,7 @@ struct LaneTreeRow: View {
 
 struct LanePeekPreview: View {
   let snapshot: LaneListSnapshot
-  var pullRequest: PullRequestListItem? = nil
+  var pullRequest: LanePrTag? = nil
 
   var body: some View {
     let laneTint = laneSurfaceTint(forHex: snapshot.lane.color)
@@ -141,7 +141,7 @@ struct LanePeekPreview: View {
           .font(.headline)
           .foregroundStyle(laneAccent)
         if let pullRequest {
-          LanePrTagChip(pullRequest: pullRequest)
+          LanePrTagChip(tag: pullRequest)
         }
         Spacer(minLength: 0)
       }

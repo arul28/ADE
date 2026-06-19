@@ -466,8 +466,8 @@ export type SyncFileRequest =
   | { action: "createDirectory"; args: { workspaceId: string; path: string } }
   | { action: "rename"; args: { workspaceId: string; oldPath: string; newPath: string } }
   | { action: "deletePath"; args: { workspaceId: string; path: string } }
-  | { action: "quickOpen"; args: { workspaceId: string; query: string; limit?: number } }
-  | { action: "searchText"; args: { workspaceId: string; query: string; limit?: number } }
+  | { action: "quickOpen"; args: { workspaceId: string; query: string; limit?: number; includeIgnored?: boolean } }
+  | { action: "searchText"; args: { workspaceId: string; query: string; limit?: number; includeIgnored?: boolean } }
   | { action: "readArtifact"; args: { artifactId?: string; uri?: string; path?: string } };
 
 export type SyncFileResponsePayload = {
