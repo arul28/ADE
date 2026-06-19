@@ -706,6 +706,41 @@ describe("projectConfigService - PR transcript gists", () => {
     const tempLeftovers = fs.readdirSync(adeDir).filter((name) => name.endsWith(".tmp"));
     expect(tempLeftovers).toEqual([]);
   });
+
+  it.skipIf(process.platform === "win32")(
+    "preserves restrictive permissions on local.yaml across an atomic save",
+    () => {
+      const { root, adeDir } = makeProjectFixture("ade-project-config-perms-");
+      const localPath = path.join(adeDir, "local.yaml");
+      fs.writeFileSync(
+        localPath,
+        YAML.stringify({
+          version: 1,
+          processes: [],
+          stackButtons: [],
+          testSuites: [],
+          laneOverlayPolicies: [],
+          automations: [],
+        }),
+        "utf8",
+      );
+      // The user restricts the file because local config can hold per-user env vars.
+      fs.chmodSync(localPath, 0o600);
+
+      const service = createProjectConfigService({
+        projectRoot: root,
+        adeDir,
+        projectId: "project-1",
+        db: makeDb(),
+        logger: makeLogger(),
+      });
+      service.setPrTranscriptGists({ enabled: true });
+
+      // The temp+rename atomic write must copy the prior mode, not widen it to
+      // the umask default (commonly 644).
+      expect(fs.statSync(localPath).mode & 0o777).toBe(0o600);
+    },
+  );
 });
 
 describe("projectConfigService - linear sync", () => {

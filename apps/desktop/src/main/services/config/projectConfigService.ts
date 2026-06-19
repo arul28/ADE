@@ -123,6 +123,15 @@ function writeFileAtomicSync(target: string, data: string): void {
     } finally {
       fs.closeSync(fd);
     }
+    // Preserve the existing file's permissions: local.yaml may be chmod 600 to
+    // protect per-user env vars, but the temp file was created at the umask
+    // default (commonly 644). Copy the prior mode before swapping it in so the
+    // atomic write never widens permissions on a secrets-bearing config.
+    try {
+      fs.chmodSync(tmp, fs.statSync(target).mode & 0o777);
+    } catch {
+      // No existing target (first write) — keep the temp's default mode.
+    }
     fs.renameSync(tmp, target);
   } catch (error) {
     // Any failure after the temp file was created (write/fsync/close OR rename,
