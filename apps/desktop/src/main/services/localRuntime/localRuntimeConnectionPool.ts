@@ -1762,13 +1762,6 @@ function normalizeAdeActionRegistry(value: unknown): AdeActionRegistryEntry[] {
     }));
 }
 
-// The daemon replays at most `limit` buffered events per subscribe and signals
-// the remainder with hasMore/nextCursor. Drain those follow-up batches with the
-// widest replay window the daemon honours so a long disconnect gap needs only a
-// few round-trips to backfill.
-const RUNTIME_EVENT_DRAIN_LIMIT = 1000;
-const RUNTIME_EVENT_DRAIN_MAX_BATCHES = 64;
-
 async function subscribeToRuntimeEvents(
   client: RuntimeRpcClient,
   projectId: string,
@@ -1777,41 +1770,20 @@ async function subscribeToRuntimeEvents(
   onEnded?: () => void,
 ): Promise<() => void> {
   const pendingNotifications: RuntimeEventNotification[] = [];
-  // The primary subscription plus any throwaway drain subscriptions: replayed
-  // events arrive as `runtime/event` notifications tagged with the subscription
-  // that produced them, so every active id must be forwarded. Downstream dedup
-  // (remoteRuntimeSeenEventIds) collapses any overlap between batches.
-  const acceptedSubscriptionIds = new Set<string>();
   let closed = false;
   let subscriptionId: string | null = null;
-
-  const flushPendingNotifications = () => {
-    if (pendingNotifications.length === 0) return;
-    const ready: RuntimeEventNotification[] = [];
-    const notReady: RuntimeEventNotification[] = [];
-    for (const notification of pendingNotifications) {
-      (acceptedSubscriptionIds.has(notification.subscriptionId) ? ready : notReady).push(notification);
-    }
-    if (ready.length === 0) return;
-    pendingNotifications.length = 0;
-    pendingNotifications.push(...notReady);
-    for (const notification of ready) {
-      if (closed) break;
-      onEvent(notification.event, notification.eventEpoch);
-    }
-  };
 
   const removeNotificationListener = client.onNotification("runtime/event", (params) => {
     if (closed) return;
     const notification = normalizeRuntimeEventNotification(params);
     if (!notification || notification.projectId !== projectId) return;
-    if (!acceptedSubscriptionIds.has(notification.subscriptionId)) {
-      // The subscribe response that names this subscription may still be in
-      // flight; buffer until it lands so a fast replay is never dropped.
+    if (subscriptionId == null) {
       pendingNotifications.push(notification);
       return;
     }
-    onEvent(notification.event, notification.eventEpoch);
+    if (notification.subscriptionId === subscriptionId) {
+      onEvent(notification.event, notification.eventEpoch);
+    }
   });
   const removeDisconnectListener = client.onDisconnect(() => {
     if (closed) return;
@@ -1829,37 +1801,11 @@ async function subscribeToRuntimeEvents(
       ...(typeof request.replay === "boolean" ? { replay: request.replay } : {}),
     });
     subscriptionId = readSubscriptionId(value);
-    acceptedSubscriptionIds.add(subscriptionId);
-    flushPendingNotifications();
-
-    // If the buffer held more events than the first batch carried, keep draining
-    // with the advancing cursor so a reconnect after a long gap replays the whole
-    // backlog instead of silently dropping everything past the first `limit`.
-    let nextCursor = readSubscribeNextCursor(value, clampCursor(request.cursor));
-    let hasMore = request.replay === false ? false : readSubscribeHasMore(value);
-    for (let batch = 0; hasMore && !closed && batch < RUNTIME_EVENT_DRAIN_MAX_BATCHES; batch++) {
-      const drainValue = await client.call("runtimeEvents.subscribe", {
-        projectId,
-        cursor: nextCursor,
-        limit: RUNTIME_EVENT_DRAIN_LIMIT,
-        ...(isRemoteRuntimeEventCategory(request.category) ? { category: request.category } : {}),
-        replay: true,
-      });
-      const drainSubscriptionId = readSubscriptionId(drainValue);
-      // The drain subscription is throwaway — the primary subscription already
-      // carries live events. Tear it down unconditionally, BEFORE the closed
-      // check, so a disconnect racing the await can't leak a server-side
-      // subscription; it also stops the drain sub from double-forwarding live
-      // events. The replayed events for this batch were already buffered during
-      // the await, so flushPendingNotifications below still forwards them.
-      void client.call("runtimeEvents.unsubscribe", { subscriptionId: drainSubscriptionId }).catch(() => {});
+    for (const notification of pendingNotifications) {
       if (closed) break;
-      acceptedSubscriptionIds.add(drainSubscriptionId);
-      flushPendingNotifications();
-      const drainNextCursor = readSubscribeNextCursor(drainValue, nextCursor);
-      if (drainNextCursor <= nextCursor) break; // no forward progress; avoid a tight loop
-      nextCursor = drainNextCursor;
-      hasMore = readSubscribeHasMore(drainValue);
+      if (notification.subscriptionId === subscriptionId) {
+        onEvent(notification.event, notification.eventEpoch);
+      }
     }
   } catch (error) {
     closed = true;
@@ -1878,19 +1824,6 @@ async function subscribeToRuntimeEvents(
       void client.call("runtimeEvents.unsubscribe", { subscriptionId: id }).catch(() => {});
     }
   };
-}
-
-function readSubscribeNextCursor(value: unknown, fallback: number): number {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return fallback;
-  const nextCursor = (value as Record<string, unknown>).nextCursor;
-  return typeof nextCursor === "number" && Number.isFinite(nextCursor)
-    ? Math.max(0, Math.floor(nextCursor))
-    : fallback;
-}
-
-function readSubscribeHasMore(value: unknown): boolean {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-  return (value as Record<string, unknown>).hasMore === true;
 }
 
 function readSubscriptionId(value: unknown): string {
