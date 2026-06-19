@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.8] - 2026-06-19
+
+### Added
+
+- PR merge and timeline at GitHub parity across desktop and iOS: authoritative merge-state status, a merge dialog with selectable method and editable commit message, admin bypass, update-branch, and a unified commits/reviews/checks timeline.
+- Deterministic orchestration planning: an explicit planning → approval → developing state machine with structured plan specs, a real readiness gate, a structured validation-findings table, and crash-resume.
+- Mobile: unified Files search, project-picker icons, a Work-tab PR status indicator, and a composer that remembers your last-used model and mode.
+
+### Changed
+
+- Sync host hardening: inbound peer changesets are bounded so one oversized batch can't lock the database, cluster/brain ownership is host-authoritative so a paired peer can't seize it, and socket trust plus runtime-event availability are tightened.
+- iOS data layer is serialized through a single queue, eliminating apply-versus-main-actor data races and transaction interleaving.
+- Unified the project recents explorer and refined pending-input cards across chat surfaces.
+
+### Fixed
+
+- Security/correctness sweep: forgeable validator gate, bypassable plan-approval gate, credential-store wipe on OS-key rotation, non-atomic config writes, git commit-SHA option injection, and `/open` deeplink SSRF (now origin-pinned with a fetch timeout).
+- Sync gzip cap and Intel (x64) cr-sqlite packaging; iOS terminal/transcript renderer clamps hostile escape sequences so agent output can't exhaust memory.
+- Lost auto-create lane / background launch on project switch, macOS traffic-light overlap when zoomed out, remote image-paste attachment routing, chat mic refreshing live after a voice-model download, ADE browser downloads and overlay layering, external-link opening in remote PR surfaces, and mobile reconnect-cancel handling.
+
 ## [1.2.7] - 2026-06-16
 
 ### Added
@@ -428,7 +448,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.7...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.8...HEAD
+[1.2.8]: https://github.com/arul28/ADE/compare/v1.2.7...v1.2.8
 [1.2.7]: https://github.com/arul28/ADE/compare/v1.2.6...v1.2.7
 [1.2.6]: https://github.com/arul28/ADE/compare/v1.2.5...v1.2.6
 [1.2.5]: https://github.com/arul28/ADE/compare/v1.2.4...v1.2.5

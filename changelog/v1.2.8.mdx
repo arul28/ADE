@@ -1,0 +1,26 @@
+---
+title: "v1.2.8"
+description: "Release notes for ADE v1.2.8 - June 19, 2026"
+---
+
+v1.2.8 is a stability and hardening release: GitHub-parity PR merge and timeline across every surface, a deterministic orchestration planning flow, faster and more resilient sync, and a security and correctness sweep spanning orchestration, persistence, git, the deeplink web surface, and the iOS data layer.
+
+---
+
+## Desktop
+
+- **PR merge and timeline at GitHub parity.** The PRs tab now mirrors GitHub's merge flow end to end — authoritative merge-state status, a portaled merge dialog with selectable method and an editable commit message, admin bypass, update-branch, and a re-poll that clears a stuck "Checking mergeability…". The timeline renders commits, reviews, and checks as one unified thread.
+- **Deterministic orchestration planning.** Orchestrator runs move through an explicit planning → approval → developing state machine with structured plan specs and a real readiness gate, replacing the old gameable regex gate. Plan approval is the only way out of planning, validation findings render in a structured table, and a run resumes cleanly after a crash.
+- **Security and correctness hardening.** A sweep across orchestration, sync, persistence, git, and the deeplink endpoint: the validator gate can no longer be forged from a self-reported step id, the plan-approval gate can't be bypassed during normalization, the credential store fails safe on OS-key rotation instead of silently wiping all credentials, project config writes atomically so a crash or full disk can't truncate it, git commit-SHA arguments are validated against option injection, and the `/open` deeplink endpoint is pinned against SSRF with a fetch timeout.
+- **Sync reliability.** Inbound peer changesets are bounded so a single oversized batch can't lock the database, cluster and brain ownership is host-authoritative so a paired peer can't seize it, and the gzip cap plus Intel (x64) cr-sqlite packaging are fixed. Socket trust and runtime-event availability are tightened, and headless RPC sockets are created with restrictive permissions.
+- **Lanes and projects.** Fixed the lost auto-create lane and background launch when switching projects, unified the project recents explorer, and refined the pending-input cards across chat surfaces.
+- **More fixes.** macOS traffic-light overlap when zoomed out, remote image-paste attachment routing, the chat mic refreshing live after a voice-model download (no restart), ADE browser downloads and overlay layering, and external-link opening in remote PR surfaces.
+
+---
+
+## iOS
+
+- **PR merge and timeline parity.** The mobile PRs experience matches desktop and GitHub — authoritative merge-state, the merge method and commit-message flow, and the unified commits, reviews, and checks timeline.
+- **Files, projects, and Work.** Unified Files search, project-picker icons, a Work-tab PR status indicator, and a composer that remembers your last-used model and mode.
+- **Data-layer hardening.** The on-device database is serialized through a single queue, eliminating the apply-versus-main-actor data races and transaction interleaving that could corrupt sync or crash the app, and the terminal and transcript renderer clamps hostile escape sequences so ordinary agent output can't exhaust memory and take down the chat view.
+- **Sync fixes.** Reconnect-cancel handling is fixed, and the shared sync hardening above carries over to the companion app.
