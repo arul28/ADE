@@ -282,6 +282,16 @@ struct WorkNewChatScreen: View {
       }
     }
     .onAppear {
+      // A restored selection (see init) can carry a model only valid in the mode
+      // it was last used in — e.g. a CLI-only Cursor model. The screen opens in
+      // .chat and normalizeSelection only runs on a sessionMode *change*, which
+      // never fires for the initial state, so a CLI-only model would otherwise
+      // reach Send → createChatSession. Normalize here, but only when the model is
+      // actually disallowed, so a valid restored selection keeps its runtimeMode.
+      let availabilityMode: WorkCursorAvailabilityMode = sessionMode == .cli ? .cli : .chat
+      if !workModelAllowedForAvailabilityMode(modelId: modelId, provider: provider, mode: availabilityMode) {
+        normalizeSelection(for: sessionMode)
+      }
       if selectedLaneId.isEmpty {
         selectedLaneId = defaultNewSessionLane?.id ?? ""
       }

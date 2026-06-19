@@ -3167,6 +3167,11 @@ struct GitHubPrListItem: Codable, Identifiable, Equatable {
   var isDraft: Bool
   var baseBranch: String?
   var headBranch: String?
+  /// Owner/name of the PR's head repository. Differs from `repoOwner`/`repoName`
+  /// for fork PRs; used to reject a fork PR whose head branch name coincides with
+  /// a local lane branch. Nil against older hosts that don't send these fields.
+  var headRepoOwner: String? = nil
+  var headRepoName: String? = nil
   var author: String?
   var createdAt: String
   var updatedAt: String

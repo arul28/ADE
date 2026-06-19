@@ -389,6 +389,23 @@ func lanePrMatchesCurrentBranch(lane: LaneSummary, githubPr: GitHubPrListItem) -
   let laneBranch = normalizedPrBranchName(lane.branchRef)
   let prHeadBranch = normalizedPrBranchName(githubPr.headBranch)
   guard !laneBranch.isEmpty, !prHeadBranch.isEmpty, laneBranch == prHeadBranch else { return false }
+  // Reject fork PRs: a head repo that differs from the base repo means the head
+  // branch lives in another repository, so a same-named local lane branch is not
+  // this PR's branch. Mirrors desktop `githubPrMatchesCurrentBranch`. `headRepo*`
+  // is nil against older hosts that don't send it — then fall back to the
+  // branch-only match.
+  if let headRepoOwner = githubPr.headRepoOwner?.trimmingCharacters(in: .whitespaces),
+    !headRepoOwner.isEmpty, !githubPr.repoOwner.isEmpty,
+    headRepoOwner.lowercased() != githubPr.repoOwner.lowercased()
+  {
+    return false
+  }
+  if let headRepoName = githubPr.headRepoName?.trimmingCharacters(in: .whitespaces),
+    !headRepoName.isEmpty, !githubPr.repoName.isEmpty,
+    headRepoName.lowercased() != githubPr.repoName.lowercased()
+  {
+    return false
+  }
   if lane.laneType == "primary" {
     let baseBranch = normalizedPrBranchName(lane.baseRef)
     if !laneBranch.isEmpty, !baseBranch.isEmpty, laneBranch == baseBranch { return false }

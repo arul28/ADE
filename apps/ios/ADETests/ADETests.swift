@@ -6124,7 +6124,7 @@ final class ADETests: XCTestCase {
         cleanupState: nil
       )
     }
-    func githubPr(number: Int, state: String, headBranch: String, linkedLaneId: String?, linkedPrId: String?) -> GitHubPrListItem {
+    func githubPr(number: Int, state: String, headBranch: String, linkedLaneId: String?, linkedPrId: String?, headRepoOwner: String? = nil) -> GitHubPrListItem {
       GitHubPrListItem(
         id: "gh-\(number)",
         scope: "repo",
@@ -6137,6 +6137,8 @@ final class ADETests: XCTestCase {
         isDraft: false,
         baseBranch: "main",
         headBranch: headBranch,
+        headRepoOwner: headRepoOwner,
+        headRepoName: headRepoOwner == nil ? nil : "ADE",
         author: "octocat",
         createdAt: "2026-03-20T00:00:00.000Z",
         updatedAt: "2026-03-22T00:00:00.000Z",
@@ -6187,6 +6189,15 @@ final class ADETests: XCTestCase {
       githubPrs: [githubPr(number: 999, state: "open", headBranch: "ade/other-branch", linkedLaneId: nil, linkedPrId: nil)]
     )
     XCTAssertNil(unrelated)
+
+    // A fork PR whose head branch name coincides with the lane branch but whose
+    // head repo differs must not tag the lane (its branch lives in the fork).
+    let forkPr = selectLaneTabPrTag(
+      lane: lane,
+      pullRequests: [],
+      githubPrs: [githubPr(number: 1001, state: "open", headBranch: "ade/mobile-audit-34b23435", linkedLaneId: nil, linkedPrId: nil, headRepoOwner: "someforker")]
+    )
+    XCTAssertNil(forkPr)
   }
 
   func testWorkComposerPreferencesRoundTripAndBlankGuard() {
