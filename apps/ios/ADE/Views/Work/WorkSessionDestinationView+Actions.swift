@@ -171,7 +171,7 @@ extension WorkSessionDestinationView {
       // When the provider actually changes, the chat's access mode and
       // sub-settings no longer apply, so reset them to the new provider default.
       if let summary = chatSummary {
-        let resolvedProvider = workModelCatalogGroupKey(for: modelId, currentProvider: summary.provider)
+        let resolvedProvider = workComposerRuntimeProvider(forModelId: modelId, currentProvider: summary.provider)
         let providerChanged = resolvedProvider != summary.provider
         WorkComposerPreferences.save(
           provider: resolvedProvider,

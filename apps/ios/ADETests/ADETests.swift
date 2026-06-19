@@ -6232,6 +6232,23 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(WorkComposerPreferences.load()?.modelId, "claude-opus-4-8")
   }
 
+  func testWorkComposerRuntimeProviderCoercesLocalOpenCodeGroups() {
+    // Local OpenCode-routed groups must collapse to the wireable `opencode`
+    // provider so a persisted "last used" selection restores supported access
+    // controls rather than an unsupported lmstudio/ollama provider.
+    XCTAssertEqual(
+      workComposerRuntimeProvider(forModelId: "opencode/lmstudio/qwen2.5-coder", currentProvider: "lmstudio"),
+      "opencode"
+    )
+    XCTAssertEqual(
+      workComposerRuntimeProvider(forModelId: "opencode/ollama/llama3.1", currentProvider: "ollama"),
+      "opencode"
+    )
+    // Canonical providers pass through unchanged.
+    XCTAssertEqual(workComposerRuntimeProvider(forModelId: "claude-opus-4-8", currentProvider: "claude"), "claude")
+    XCTAssertEqual(workComposerRuntimeProvider(forModelId: "gpt-5-codex", currentProvider: "codex"), "codex")
+  }
+
   func testLaneStackCardAccessibilityLabelIncludesRebaseWarningSummary() {
     var snapshot = makeLaneListSnapshot(
       id: "lane-warning",

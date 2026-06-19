@@ -1034,6 +1034,17 @@ func workModelCatalogGroupKey(for currentModelId: String, currentProvider: Strin
   return provider.isEmpty ? "claude" : provider
 }
 
+/// The runtime/access provider to persist for a model id. Coerces OpenCode-routed
+/// local groups (lmstudio / ollama) back to `opencode`, because New Chat and the
+/// in-session controls only wire access options for the canonical providers — a
+/// persisted "last used" provider of `lmstudio`/`ollama` would restore an
+/// unsupported provider and silently drop the user's access settings. Mirrors the
+/// coercion in `WorkModelPickerSheet.runtimeProvider(for:)`.
+func workComposerRuntimeProvider(forModelId modelId: String, currentProvider: String) -> String {
+  let group = workModelCatalogGroupKey(for: modelId, currentProvider: currentProvider)
+  return (group == "lmstudio" || group == "ollama") ? "opencode" : group
+}
+
 func workModelTierLabel(_ tier: WorkModelOption.Tier) -> String {
   switch tier {
   case .fast: return "FAST"
