@@ -104,8 +104,16 @@ export function createOperationService({
     finish,
 
     pruneOld(opts?: { maxAgeDays?: number; maxRows?: number }): { deleted: number } {
-      const maxAgeDays = opts?.maxAgeDays ?? 60;
-      const maxRows = opts?.maxRows ?? 5000;
+      // Clamp to finite, non-negative integers so a bad caller can't produce a
+      // future cutoff or an ineffective row cap.
+      const rawMaxAgeDays = opts?.maxAgeDays;
+      const rawMaxRows = opts?.maxRows;
+      const maxAgeDays = typeof rawMaxAgeDays === "number" && Number.isFinite(rawMaxAgeDays)
+        ? Math.max(0, Math.floor(rawMaxAgeDays))
+        : 60;
+      const maxRows = typeof rawMaxRows === "number" && Number.isFinite(rawMaxRows)
+        ? Math.max(0, Math.floor(rawMaxRows))
+        : 5000;
       const cutoff = new Date(Date.now() - maxAgeDays * 86_400_000).toISOString();
 
       const countMatching = (sql: string, params: Array<string | number>): number => {
@@ -120,14 +128,17 @@ export function createOperationService({
       const ageDeleted = countMatching(`select count(*) as n from operations ${ageWhere}`, ageParams);
       db.run(`delete from operations ${ageWhere}`, ageParams);
 
-      // Count cap: keep only the newest maxRows operations per project. Never
-      // evict in-flight ('running') rows even when they fall outside the window.
+      // Count cap: keep only the newest maxRows FINISHED operations per project.
+      // The inner subquery is scoped to finished rows too, so newer in-flight
+      // ('running') ops can't occupy protected slots and shrink the retained
+      // finished history below maxRows. Running rows are never evicted.
       const countWhere = `
           where project_id = ?
             and status != 'running'
             and id not in (
               select id from operations
               where project_id = ?
+                and status != 'running'
               order by started_at desc
               limit ?
             )

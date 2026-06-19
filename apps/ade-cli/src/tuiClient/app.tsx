@@ -460,9 +460,10 @@ export function planSessionStatePrune(args: {
 }
 
 // Diff successive terminal id sets to find buffers/scroll state for closed
-// terminals. Unlike chat sessions there is no reconnect-empty hazard worth
-// special-casing here: an empty list simply means every previously-seen
-// terminal id is removed, which is the correct prune.
+// terminals. This is a pure diff; the caller is responsible for not invoking it
+// on a transient empty listing (a failed listTerminalSessions() catches to []),
+// which would otherwise look like "every terminal closed" and mass-prune live
+// buffers.
 export function planTerminalBufferPrune(
   previous: Set<string>,
   current: Set<string>,
@@ -5399,9 +5400,20 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   const prunedTerminalIdsRef = useRef<Set<string>>(new Set());
   useEffect(() => {
     const current = new Set(terminalSessions.map((terminal) => terminal.terminalId));
+    // listTerminalSessions() failures surface as an empty list (the call site
+    // catches to []), which is indistinguishable from "all terminals closed".
+    // Never mass-prune on an empty set — keep the prior seen-set and wait for a
+    // non-empty listing to authoritatively diff closed terminals. Worst case a
+    // genuinely-final terminal's buffers linger until the next terminal opens.
+    if (current.size === 0) return;
     const { nextSeen, removed } = planTerminalBufferPrune(prunedTerminalIdsRef.current, current);
     prunedTerminalIdsRef.current = nextSeen;
     if (!removed.length) return;
+    // Drop every terminal-id-keyed buffer for the closed terminals. pendingPty
+    // chunks must go too, else a flush after this effect would recreate a
+    // just-pruned terminalLiveChunks entry.
+    for (const terminalId of removed) pendingPtyChunksRef.current.delete(terminalId);
+    setTerminalPreviewById((prev) => pruneRecordKeys(prev, removed));
     setTerminalLiveChunks((prev) => pruneRecordKeys(prev, removed));
     setTerminalScrollBySessionId((prev) => pruneRecordKeys(prev, removed));
   }, [terminalSessions]);

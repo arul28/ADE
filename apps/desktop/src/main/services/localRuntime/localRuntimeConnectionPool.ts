@@ -1845,13 +1845,17 @@ async function subscribeToRuntimeEvents(
         ...(isRemoteRuntimeEventCategory(request.category) ? { category: request.category } : {}),
         replay: true,
       });
-      if (closed) break;
       const drainSubscriptionId = readSubscriptionId(drainValue);
+      // The drain subscription is throwaway — the primary subscription already
+      // carries live events. Tear it down unconditionally, BEFORE the closed
+      // check, so a disconnect racing the await can't leak a server-side
+      // subscription; it also stops the drain sub from double-forwarding live
+      // events. The replayed events for this batch were already buffered during
+      // the await, so flushPendingNotifications below still forwards them.
+      void client.call("runtimeEvents.unsubscribe", { subscriptionId: drainSubscriptionId }).catch(() => {});
+      if (closed) break;
       acceptedSubscriptionIds.add(drainSubscriptionId);
       flushPendingNotifications();
-      // The drain subscription is throwaway — the primary subscription already
-      // carries live events. Tear it down so it stops double-forwarding them.
-      void client.call("runtimeEvents.unsubscribe", { subscriptionId: drainSubscriptionId }).catch(() => {});
       const drainNextCursor = readSubscribeNextCursor(drainValue, nextCursor);
       if (drainNextCursor <= nextCursor) break; // no forward progress; avoid a tight loop
       nextCursor = drainNextCursor;

@@ -432,6 +432,16 @@ describe("ADE CLI", () => {
     },
   );
 
+  it("returns null for a named-pipe socket path (desktop path; no dir/chmod)", async () => {
+    // isAdeRuntimeNamedPipePath matches by string prefix, so this exercises the
+    // named-pipe early-return branch on any platform without touching the fs.
+    const stop = await startHeadlessRpcSocketServer({
+      socketPath: "//./pipe/ade-headless-named-pipe-test",
+      createHandler: () => (async () => ({})) as never,
+    });
+    expect(stop).toBeNull();
+  });
+
   it("recognizes the hidden PTY host worker entrypoint", () => {
     expect(buildCliPlan(["__ade-pty-host-worker"])).toEqual({
       kind: "pty-host-worker",
