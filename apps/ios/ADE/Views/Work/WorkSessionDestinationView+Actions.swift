@@ -197,6 +197,19 @@ extension WorkSessionDestinationView {
       _ = try await syncService.updateChatSession(sessionId: sessionId, reasoningEffort: trimmed)
       await refreshChatStateAfterAction(forceRemote: true)
       errorMessage = nil
+      // Mirror into the app-wide "last used" selection so the next New Chat
+      // restores it. Persisting from here (not only from selectModel) covers a
+      // combined model+effort inline change, where selectModel ran first with the
+      // prior effort and would otherwise leave the stored effort stale.
+      if let summary = chatSummary {
+        WorkComposerPreferences.save(
+          provider: summary.provider,
+          modelId: summary.modelId ?? summary.model,
+          runtimeMode: workInitialRuntimeMode(summary),
+          reasoningEffort: trimmed,
+          codexFastMode: summary.effectiveFastMode
+        )
+      }
       ADEHaptics.light()
     } catch {
       ADEHaptics.error()
@@ -210,6 +223,18 @@ extension WorkSessionDestinationView {
       _ = try await syncService.updateChatSession(sessionId: sessionId, codexFastMode: enabled)
       await refreshChatStateAfterAction(forceRemote: true)
       errorMessage = nil
+      // Mirror the fast-mode change into the app-wide "last used" selection (the
+      // model / effort are unchanged by a fast-mode toggle) so a combined inline
+      // change persists the final fast-mode value rather than selectModel's stale one.
+      if let summary = chatSummary {
+        WorkComposerPreferences.save(
+          provider: summary.provider,
+          modelId: summary.modelId ?? summary.model,
+          runtimeMode: workInitialRuntimeMode(summary),
+          reasoningEffort: summary.reasoningEffort ?? "",
+          codexFastMode: enabled
+        )
+      }
       ADEHaptics.light()
       return true
     } catch {
