@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { app } from "electron";
 import { autoUpdater, type UpdateInfo } from "electron-updater";
 import type { AutoUpdateSnapshot, RecentlyInstalledUpdate } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
@@ -270,7 +271,9 @@ export function createAutoUpdateService({
     // Dev/test override: ADE_UPDATE_FEED_URL points the updater at a local/staging
     // feed (generic provider) instead of the GitHub release feed. Used to exercise
     // the real Install-update flow against a local server. Unset in production.
-    const overrideFeedUrl = process.env.ADE_UPDATE_FEED_URL?.trim();
+    // Defense-in-depth: only honor the override in non-packaged (dev/test) builds so
+    // a packaged app can never be redirected to an attacker-controlled feed.
+    const overrideFeedUrl = !app.isPackaged ? process.env.ADE_UPDATE_FEED_URL?.trim() : undefined;
     if (overrideFeedUrl) {
       updater.setFeedURL?.({ provider: "generic", url: overrideFeedUrl });
       logger.info("autoUpdate.feed_override", { url: overrideFeedUrl });

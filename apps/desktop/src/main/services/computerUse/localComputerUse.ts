@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
@@ -138,7 +139,7 @@ export function createComputerUseArtifactPath(projectRoot: string, stem: string,
   fs.mkdirSync(artifactsDir, { recursive: true });
   const safeStem = stem.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "artifact";
   const safeExt = extension.replace(/^\./, "").trim() || "txt";
-  return path.join(artifactsDir, `${Date.now()}-${safeStem}.${safeExt}`);
+  return path.join(artifactsDir, `${Date.now()}-${safeStem}-${randomUUID().slice(0, 8)}.${safeExt}`);
 }
 
 export function toProjectArtifactUri(projectRoot: string, absolutePath: string): string {

@@ -201,31 +201,32 @@ function rewriteOg(template: string, target: OpenTarget, url: string): string {
     );
 }
 
-function resolveSelfOrigin(req: VercelReq): string | null {
-  const headerHost = req.headers["x-forwarded-host"] ?? req.headers.host;
-  const host = Array.isArray(headerHost) ? headerHost[0] : headerHost;
-  if (!host) return null;
-  // Vercel sets x-forwarded-proto; default to https because all Vercel
-  // deployments serve HTTPS and the function may be invoked from edges
-  // that strip the protocol header.
-  const proto = req.headers["x-forwarded-proto"];
-  const scheme = Array.isArray(proto) ? proto[0] : (proto ?? "https");
-  return `${scheme}://${host}`;
-}
+// Maximum time to wait for the self-fetch of /index.html before aborting and
+// degrading to the inline fallback shell. Prevents a hung upstream from
+// stalling the function (denial-of-wallet).
+const SELF_FETCH_TIMEOUT_MS = 2000;
 
-async function loadShellFromSelf(req: VercelReq): Promise<string | null> {
-  const origin = resolveSelfOrigin(req);
-  if (!origin) return null;
+async function loadShellFromSelf(): Promise<string | null> {
+  // Pin the self-fetch origin to the trusted canonical origin. Deriving it
+  // from attacker-controllable x-forwarded-host/host headers would let a
+  // spoofed host make this function fetch arbitrary HTML/JS and serve it from
+  // the trusted origin (SSRF + reflected content).
+  const origin = CANONICAL_OPEN_ORIGIN;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), SELF_FETCH_TIMEOUT_MS);
   try {
     const res = await fetch(`${origin}/index.html`, {
       // Cache the SPA shell for 60s edge-to-edge — index.html changes only
       // on deploy.
       headers: { "cache-control": "max-age=60" },
+      signal: controller.signal,
     });
     if (!res.ok) return null;
     return await res.text();
   } catch {
     return null;
+  } finally {
+    clearTimeout(timeout);
   }
 }
 
@@ -241,7 +242,7 @@ export default async function handler(req: VercelReq, res: VercelRes): Promise<v
   // URLs are cheap. Serve a stale response while revalidating for a day.
   res.setHeader("Cache-Control", "public, max-age=600, stale-while-revalidate=86400");
 
-  const shell = await loadShellFromSelf(req);
+  const shell = await loadShellFromSelf();
   if (shell) {
     res.status(200).send(rewriteOg(shell, target, canonical));
     return;
@@ -253,8 +254,10 @@ export default async function handler(req: VercelReq, res: VercelRes): Promise<v
 
 // Exported for unit testing.
 export {
+  CANONICAL_OPEN_ORIGIN,
   describe as describeOpenTarget,
   fallbackShell,
+  loadShellFromSelf,
   parseTarget as parseOpenTarget,
   rewriteOg,
 };

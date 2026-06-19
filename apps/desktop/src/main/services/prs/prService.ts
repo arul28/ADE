@@ -5526,9 +5526,16 @@ export function createPrService({
       let settled = false;
       let timer: NodeJS.Timeout | null = null;
 
+      let ghToken: string | null = null;
+      try {
+        ghToken = githubService.getTokenOrThrow();
+      } catch {
+        ghToken = null;
+      }
+
       const child = spawn("gh", ghArgs, {
         cwd: opts.cwd,
-        env: process.env,
+        env: ghToken ? { ...process.env, GH_TOKEN: ghToken, GITHUB_TOKEN: ghToken } : process.env,
         stdio: ["ignore", "pipe", "pipe"],
       });
 

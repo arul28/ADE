@@ -226,6 +226,25 @@ final class DatabaseService {
     let updatedAt: String?
   }
 
+  // Serializes ALL public DatabaseService access (one raw SQLite connection,
+  // FULLMUTEX) so the off-main SyncService apply Task and every @MainActor
+  // read/write are mutually exclusive. Without this, concurrent BEGIN/commit on
+  // the single connection throw "cannot start a transaction within a
+  // transaction" and cross-rollback data, race shouldCaptureLocalChanges, and
+  // collide on the non-atomic localDbVersion increment.
+  //
+  // CRITICAL: accessQueue.sync is NOT reentrant. Only the PUBLIC entry points
+  // acquire the lock; private helpers (exec/execute/run/query and the
+  // *Locked workers) run with the queue already held. The sqlite trigger
+  // callbacks (ade_capture_local_changes/ade_next_db_version/ade_local_site_id)
+  // run INSIDE sqlite3_step while the queue is held, so they touch the backing
+  // vars directly and never call withLock.
+  private let accessQueue = DispatchQueue(label: "com.ade.database", qos: .userInitiated)
+
+  private func withLock<T>(_ body: () throws -> T) rethrows -> T {
+    try accessQueue.sync(execute: body)
+  }
+
   private var db: OpaquePointer?
   private let encoder = JSONEncoder()
   private let decoder = JSONDecoder()
@@ -273,9 +292,11 @@ final class DatabaseService {
   }
 
   func close() {
-    if let db {
-      sqlite3_close(db)
-      self.db = nil
+    withLock {
+      if let db {
+        sqlite3_close(db)
+        self.db = nil
+      }
     }
   }
 
@@ -291,10 +312,14 @@ final class DatabaseService {
   }
 
   func currentDbVersion() -> Int {
-    localDbVersion
+    withLock { localDbVersion }
   }
 
   func exportChangesSince(version: Int) -> [CrsqlChangeRow] {
+    withLock { exportChangesSinceLocked(version: version) }
+  }
+
+  private func exportChangesSinceLocked(version: Int) -> [CrsqlChangeRow] {
     guard let db else { return [] }
     let sql = """
       select [table], pk, cid, val, col_version, db_version, site_id, cl, seq
@@ -330,6 +355,10 @@ final class DatabaseService {
   }
 
   func applyChanges(_ changes: [CrsqlChangeRow]) throws -> ApplyRemoteChangesResult {
+    try withLock { try applyChangesLocked(changes) }
+  }
+
+  private func applyChangesLocked(_ changes: [CrsqlChangeRow]) throws -> ApplyRemoteChangesResult {
     guard db != nil else {
       return ApplyRemoteChangesResult(appliedCount: 0, dbVersion: 0, touchedTables: [], rebuiltFts: false)
     }
@@ -410,7 +439,11 @@ final class DatabaseService {
   }
 
   func fetchLanes(includeArchived: Bool) -> [LaneSummary] {
-    let projectId = currentProjectId()
+    withLock { fetchLanesLocked(includeArchived: includeArchived) }
+  }
+
+  private func fetchLanesLocked(includeArchived: Bool) -> [LaneSummary] {
+    let projectId = currentProjectIdLocked()
     if projectId == nil && projectCount() > 0 {
       return []
     }
@@ -534,8 +567,12 @@ final class DatabaseService {
   }
 
   func replaceLaneSnapshots(_ lanes: [LaneSummary], snapshots: [LaneListSnapshot]? = nil) throws {
+    try withLock { try replaceLaneSnapshotsLocked(lanes, snapshots: snapshots) }
+  }
+
+  private func replaceLaneSnapshotsLocked(_ lanes: [LaneSummary], snapshots: [LaneListSnapshot]? = nil) throws {
     guard db != nil else { return }
-    guard let projectId = currentProjectId() else {
+    guard let projectId = currentProjectIdLocked() else {
       throw sqliteError(SyncHydrationMessaging.waitingForProjectData)
     }
 
@@ -752,7 +789,11 @@ final class DatabaseService {
   }
 
   func fetchLaneListSnapshots(includeArchived: Bool) -> [LaneListSnapshot] {
-    guard let projectId = currentProjectId() else { return [] }
+    withLock { fetchLaneListSnapshotsLocked(includeArchived: includeArchived) }
+  }
+
+  private func fetchLaneListSnapshotsLocked(includeArchived: Bool) -> [LaneListSnapshot] {
+    guard let projectId = currentProjectIdLocked() else { return [] }
     let sql = """
       select s.lane_id, s.snapshot_json, s.updated_at
         from lane_list_snapshots s
@@ -776,8 +817,12 @@ final class DatabaseService {
   }
 
   func replaceLaneDetail(_ detail: LaneDetailPayload) throws {
+    try withLock { try replaceLaneDetailLocked(detail) }
+  }
+
+  private func replaceLaneDetailLocked(_ detail: LaneDetailPayload) throws {
     guard db != nil else { return }
-    guard fetchLaneDetail(laneId: detail.lane.id) != detail else { return }
+    guard fetchLaneDetailLocked(laneId: detail.lane.id) != detail else { return }
 
     let encodedDetail = try encodeJsonString(detail)
     let updatedAt = ISO8601DateFormatter().string(from: Date())
@@ -797,7 +842,7 @@ final class DatabaseService {
   }
 
   private func laneSnapshotHydrationMatchesExisting(_ snapshots: [LaneListSnapshot]) -> Bool {
-    let existingSnapshots = fetchLaneListSnapshots(includeArchived: true)
+    let existingSnapshots = fetchLaneListSnapshotsLocked(includeArchived: true)
     guard existingSnapshots.count == snapshots.count else { return false }
     let existingByLaneId = Dictionary(uniqueKeysWithValues: existingSnapshots.map { ($0.lane.id, $0) })
     guard Set(existingByLaneId.keys) == Set(snapshots.map(\.lane.id)) else { return false }
@@ -811,6 +856,10 @@ final class DatabaseService {
   }
 
   func fetchLaneDetail(laneId: String) -> LaneDetailPayload? {
+    withLock { fetchLaneDetailLocked(laneId: laneId) }
+  }
+
+  private func fetchLaneDetailLocked(laneId: String) -> LaneDetailPayload? {
     let sql = """
       select lane_id, detail_json, updated_at
         from lane_detail_snapshots
@@ -832,8 +881,12 @@ final class DatabaseService {
   }
 
   func replaceTerminalSessions(_ sessions: [TerminalSessionSummary]) throws {
+    try withLock { try replaceTerminalSessionsLocked(sessions) }
+  }
+
+  private func replaceTerminalSessionsLocked(_ sessions: [TerminalSessionSummary]) throws {
     guard db != nil else { return }
-    guard let projectId = currentProjectId() else {
+    guard let projectId = currentProjectIdLocked() else {
       throw sqliteError(SyncHydrationMessaging.waitingForProjectData)
     }
 
@@ -1057,8 +1110,12 @@ final class DatabaseService {
   }
 
   func replacePullRequestHydration(_ payload: PullRequestRefreshPayload, pruneStale: Bool = true) throws {
+    try withLock { try replacePullRequestHydrationLocked(payload, pruneStale: pruneStale) }
+  }
+
+  private func replacePullRequestHydrationLocked(_ payload: PullRequestRefreshPayload, pruneStale: Bool = true) throws {
     guard db != nil else { return }
-    guard let projectId = currentProjectId() else {
+    guard let projectId = currentProjectIdLocked() else {
       throw sqliteError(SyncHydrationMessaging.waitingForProjectData)
     }
 
@@ -1201,7 +1258,11 @@ final class DatabaseService {
   }
 
   func listWorkspaces() -> [FilesWorkspace] {
-    let projectId = currentProjectId()
+    withLock { listWorkspacesLocked() }
+  }
+
+  private func listWorkspacesLocked() -> [FilesWorkspace] {
+    let projectId = currentProjectIdLocked()
     let hasProjects = projectCount() > 0
     let projectRoot = projectId.flatMap { id in
       queryString("select root_path from projects where id = ? limit 1", bind: { [self] statement in
@@ -1248,7 +1309,7 @@ final class DatabaseService {
       }
     }
 
-    return fetchLanes(includeArchived: false).map { lane in
+    return fetchLanesLocked(includeArchived: false).map { lane in
       FilesWorkspace(
         id: lane.id,
         kind: lane.laneType,
@@ -1262,8 +1323,12 @@ final class DatabaseService {
   }
 
   func replaceFilesWorkspaces(_ workspaces: [FilesWorkspace]) throws {
+    try withLock { try replaceFilesWorkspacesLocked(workspaces) }
+  }
+
+  private func replaceFilesWorkspacesLocked(_ workspaces: [FilesWorkspace]) throws {
     guard tableExists("files_workspaces") else { return }
-    let projectId = currentProjectId()
+    let projectId = currentProjectIdLocked()
     let hasProjects = projectCount() > 0
     let projectRoot = projectId.flatMap { id in
       queryString("select root_path from projects where id = ? limit 1", bind: { [self] statement in
@@ -1356,6 +1421,10 @@ final class DatabaseService {
   }
 
   func cacheDirectorySnapshot(workspaceId: String, parentPath: String, includeHidden: Bool, nodes: [FileTreeNode]) throws {
+    try withLock { try cacheDirectorySnapshotLocked(workspaceId: workspaceId, parentPath: parentPath, includeHidden: includeHidden, nodes: nodes) }
+  }
+
+  private func cacheDirectorySnapshotLocked(workspaceId: String, parentPath: String, includeHidden: Bool, nodes: [FileTreeNode]) throws {
     guard tableExists("file_directory_snapshots") else { return }
     let json = try encodeJsonString(nodes)
     _ = try execute(
@@ -1376,6 +1445,10 @@ final class DatabaseService {
   }
 
   func fetchDirectorySnapshot(workspaceId: String, parentPath: String, includeHidden: Bool) -> [FileTreeNode]? {
+    withLock { fetchDirectorySnapshotLocked(workspaceId: workspaceId, parentPath: parentPath, includeHidden: includeHidden) }
+  }
+
+  private func fetchDirectorySnapshotLocked(workspaceId: String, parentPath: String, includeHidden: Bool) -> [FileTreeNode]? {
     guard tableExists("file_directory_snapshots") else { return nil }
     let sql = """
       select nodes_json
@@ -1395,6 +1468,10 @@ final class DatabaseService {
   }
 
   func cacheFileContentSnapshot(workspaceId: String, path: String, blob: SyncFileBlob) throws {
+    try withLock { try cacheFileContentSnapshotLocked(workspaceId: workspaceId, path: path, blob: blob) }
+  }
+
+  private func cacheFileContentSnapshotLocked(workspaceId: String, path: String, blob: SyncFileBlob) throws {
     guard tableExists("file_content_snapshots") else { return }
     let json = try encodeJsonString(blob)
     _ = try execute(
@@ -1414,6 +1491,10 @@ final class DatabaseService {
   }
 
   func fetchFileContentSnapshot(workspaceId: String, path: String) -> SyncFileBlob? {
+    withLock { fetchFileContentSnapshotLocked(workspaceId: workspaceId, path: path) }
+  }
+
+  private func fetchFileContentSnapshotLocked(workspaceId: String, path: String) -> SyncFileBlob? {
     guard tableExists("file_content_snapshots") else { return nil }
     let sql = """
       select blob_json
@@ -1432,6 +1513,10 @@ final class DatabaseService {
   }
 
   func cacheFileDiffSnapshot(workspaceId: String, path: String, mode: String, diff: FileDiff) throws {
+    try withLock { try cacheFileDiffSnapshotLocked(workspaceId: workspaceId, path: path, mode: mode, diff: diff) }
+  }
+
+  private func cacheFileDiffSnapshotLocked(workspaceId: String, path: String, mode: String, diff: FileDiff) throws {
     guard tableExists("file_diff_snapshots") else { return }
     let json = try encodeJsonString(diff)
     _ = try execute(
@@ -1452,6 +1537,10 @@ final class DatabaseService {
   }
 
   func fetchFileDiffSnapshot(workspaceId: String, path: String, mode: String) -> FileDiff? {
+    withLock { fetchFileDiffSnapshotLocked(workspaceId: workspaceId, path: path, mode: mode) }
+  }
+
+  private func fetchFileDiffSnapshotLocked(workspaceId: String, path: String, mode: String) -> FileDiff? {
     guard tableExists("file_diff_snapshots") else { return nil }
     let sql = """
       select diff_json
@@ -1471,6 +1560,10 @@ final class DatabaseService {
   }
 
   func cacheFileHistorySnapshot(workspaceId: String, path: String, entries: [GitFileHistoryEntry]) throws {
+    try withLock { try cacheFileHistorySnapshotLocked(workspaceId: workspaceId, path: path, entries: entries) }
+  }
+
+  private func cacheFileHistorySnapshotLocked(workspaceId: String, path: String, entries: [GitFileHistoryEntry]) throws {
     guard tableExists("file_history_snapshots") else { return }
     let json = try encodeJsonString(entries)
     _ = try execute(
@@ -1490,6 +1583,10 @@ final class DatabaseService {
   }
 
   func fetchFileHistorySnapshot(workspaceId: String, path: String) -> [GitFileHistoryEntry]? {
+    withLock { fetchFileHistorySnapshotLocked(workspaceId: workspaceId, path: path) }
+  }
+
+  private func fetchFileHistorySnapshotLocked(workspaceId: String, path: String) -> [GitFileHistoryEntry]? {
     guard tableExists("file_history_snapshots") else { return nil }
     let sql = """
       select entries_json
@@ -1508,7 +1605,11 @@ final class DatabaseService {
   }
 
   func fetchSessions() -> [TerminalSessionSummary] {
-    guard let projectId = currentProjectId() else { return [] }
+    withLock { fetchSessionsLocked() }
+  }
+
+  private func fetchSessionsLocked() -> [TerminalSessionSummary] {
+    guard let projectId = currentProjectIdLocked() else { return [] }
     let sql = """
       select s.id, s.lane_id, coalesce(nullif(s.lane_name, ''), l.name, s.lane_id), s.pty_id, s.tracked, s.pinned, s.manually_named, s.goal, s.tool_type,
              s.title, s.status, s.started_at, s.ended_at, s.exit_code, s.transcript_path,
@@ -1598,6 +1699,17 @@ final class DatabaseService {
     pinned: Bool? = nil,
     manuallyNamed: Bool? = nil
   ) throws {
+    try withLock {
+      try updateSessionMetaLocked(sessionId: sessionId, title: title, pinned: pinned, manuallyNamed: manuallyNamed)
+    }
+  }
+
+  private func updateSessionMetaLocked(
+    sessionId: String,
+    title: String? = nil,
+    pinned: Bool? = nil,
+    manuallyNamed: Bool? = nil
+  ) throws {
     guard db != nil else { return }
     let trimmedSessionId = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmedSessionId.isEmpty else { return }
@@ -1642,6 +1754,10 @@ final class DatabaseService {
   }
 
   func fetchComputerUseArtifacts(ownerKind: String, ownerId: String) -> [ComputerUseArtifactSummary] {
+    withLock { fetchComputerUseArtifactsLocked(ownerKind: ownerKind, ownerId: ownerId) }
+  }
+
+  private func fetchComputerUseArtifactsLocked(ownerKind: String, ownerId: String) -> [ComputerUseArtifactSummary] {
     let projectIds = currentProjectScopeIds()
     guard !projectIds.isEmpty else { return [] }
     let projectPlaceholders = Array(repeating: "?", count: projectIds.count).joined(separator: ", ")
@@ -1718,7 +1834,11 @@ final class DatabaseService {
   }
 
   func fetchPullRequests() -> [PrSummary] {
-    guard let projectId = currentProjectId() else { return [] }
+    withLock { fetchPullRequestsLocked() }
+  }
+
+  private func fetchPullRequestsLocked() -> [PrSummary] {
+    guard let projectId = currentProjectIdLocked() else { return [] }
     let sql = """
       select id, lane_id, project_id, repo_owner, repo_name, github_pr_number, github_url, github_node_id,
              title, state, base_branch, head_branch, checks_status, review_status, additions, deletions,
@@ -1759,7 +1879,11 @@ final class DatabaseService {
   }
 
   func fetchPullRequestListItems(forLane laneId: String?) -> [PullRequestListItem] {
-    guard let projectId = currentProjectId() else { return [] }
+    withLock { fetchPullRequestListItemsLocked(forLane: laneId) }
+  }
+
+  private func fetchPullRequestListItemsLocked(forLane laneId: String?) -> [PullRequestListItem] {
+    guard let projectId = currentProjectIdLocked() else { return [] }
     let hasPrGroupContext = hasTable(named: "pr_group_members")
       && hasTable(named: "pr_groups")
       && tableHasColumn(tableName: "pr_group_members", columnName: "group_id")
@@ -1935,7 +2059,11 @@ final class DatabaseService {
   }
 
   func fetchPullRequestGroupMembers(groupId: String) -> [PrGroupMemberSummary] {
-    guard let projectId = currentProjectId() else { return [] }
+    withLock { fetchPullRequestGroupMembersLocked(groupId: groupId) }
+  }
+
+  private func fetchPullRequestGroupMembersLocked(groupId: String) -> [PrGroupMemberSummary] {
+    guard let projectId = currentProjectIdLocked() else { return [] }
     let sql = """
       select gm.group_id,
              g.group_type,
@@ -1986,7 +2114,11 @@ final class DatabaseService {
   }
 
   func fetchIntegrationProposals() -> [IntegrationProposal] {
-    guard let projectId = currentProjectId() else { return [] }
+    withLock { fetchIntegrationProposalsLocked() }
+  }
+
+  private func fetchIntegrationProposalsLocked() -> [IntegrationProposal] {
+    guard let projectId = currentProjectIdLocked() else { return [] }
     let sql = """
       select id,
              source_lane_ids_json,
@@ -2097,6 +2229,10 @@ final class DatabaseService {
   }
 
   func fetchQueueStates() -> [QueueLandingState] {
+    withLock { fetchQueueStatesLocked() }
+  }
+
+  private func fetchQueueStatesLocked() -> [QueueLandingState] {
     let sql = """
       select q.id,
              q.group_id,
@@ -2171,7 +2307,11 @@ final class DatabaseService {
   }
 
   func fetchPullRequestSnapshot(prId: String) -> PullRequestSnapshot? {
-    guard let projectId = currentProjectId() else { return nil }
+    withLock { fetchPullRequestSnapshotLocked(prId: prId) }
+  }
+
+  private func fetchPullRequestSnapshotLocked(prId: String) -> PullRequestSnapshot? {
+    guard let projectId = currentProjectIdLocked() else { return nil }
     let sql = """
       select s.detail_json, s.status_json, s.checks_json, s.reviews_json, s.comments_json, s.files_json, s.commits_json
         from pull_request_snapshots s
@@ -2209,11 +2349,17 @@ final class DatabaseService {
   }
 
   func executeSqlForTesting(_ sql: String) throws {
-    try exec(sql)
-    notifyDidChange()
+    try withLock {
+      try exec(sql)
+      notifyDidChange()
+    }
   }
 
   func hasHydratedControllerData() -> Bool {
+    withLock { hasHydratedControllerDataLocked() }
+  }
+
+  private func hasHydratedControllerDataLocked() -> Bool {
     let laneCount = hasTable(named: "lanes") ? (queryInt64("select count(*) from lanes") ?? 0) : 0
     let sessionCount = hasTable(named: "terminal_sessions") ? (queryInt64("select count(*) from terminal_sessions") ?? 0) : 0
     let pullRequestCount = hasTable(named: "pull_requests") ? (queryInt64("select count(*) from pull_requests") ?? 0) : 0
@@ -2992,10 +3138,14 @@ final class DatabaseService {
   }
 
   func setActiveProjectId(_ projectId: String?) {
-    activeProjectIdOverride = projectId
+    withLock { activeProjectIdOverride = projectId }
   }
 
   func hasProject(id: String) -> Bool {
+    withLock { hasProjectLocked(id: id) }
+  }
+
+  private func hasProjectLocked(id: String) -> Bool {
     guard hasTable(named: "projects") else { return false }
     return querySingle(
       "select 1 from projects where id = ? limit 1",
@@ -3007,6 +3157,10 @@ final class DatabaseService {
   }
 
   func upsertMobileProjectCache(_ project: MobileProjectSummary) throws {
+    try withLock { try upsertMobileProjectCacheLocked(project) }
+  }
+
+  private func upsertMobileProjectCacheLocked(_ project: MobileProjectSummary) throws {
     guard db != nil else { return }
     guard let rootPath = normalizedProjectCacheRoot(project.rootPath) else {
       throw sqliteError(SyncHydrationMessaging.waitingForProjectData)
@@ -3043,6 +3197,10 @@ final class DatabaseService {
   }
 
   func listMobileProjects() -> [MobileProjectSummary] {
+    withLock { listMobileProjectsLocked() }
+  }
+
+  private func listMobileProjectsLocked() -> [MobileProjectSummary] {
     guard hasTable(named: "projects") else { return [] }
 
     return query("""
@@ -3081,6 +3239,10 @@ final class DatabaseService {
   }
 
   func currentProjectId() -> String? {
+    withLock { currentProjectIdLocked() }
+  }
+
+  private func currentProjectIdLocked() -> String? {
     if let activeProjectIdOverride {
       return activeProjectIdOverride
     }
@@ -3088,7 +3250,7 @@ final class DatabaseService {
   }
 
   private func currentProjectScopeIds() -> [String] {
-    guard let projectId = currentProjectId() else { return [] }
+    guard let projectId = currentProjectIdLocked() else { return [] }
     let activeRootPath = queryString("select root_path from projects where id = ? limit 1") { [self] statement in
       try self.bindText(projectId, to: statement, index: 1)
     }

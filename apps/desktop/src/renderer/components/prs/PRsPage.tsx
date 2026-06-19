@@ -291,8 +291,32 @@ function PRsPageInner() {
     }
   }, [activeMode]);
 
-  if (error) {
-    return <EmptyState title="PRs" description={`Failed to load PRs: ${error}`} />;
+  if (error && prs.length === 0) {
+    return (
+      <EmptyState title="PRs" description={`Failed to load PRs: ${error}`}>
+        <button
+          type="button"
+          onClick={() => void handleRefresh()}
+          className="mt-4 flex items-center gap-2 active:scale-[0.97]"
+          style={{
+            height: 30,
+            padding: "0 14px",
+            borderRadius: 9,
+            fontFamily: SANS_FONT,
+            fontSize: 12,
+            fontWeight: 600,
+            color: "#fff",
+            background: "linear-gradient(135deg, #A78BFA 0%, #8B5CF6 100%)",
+            border: "none",
+            cursor: "pointer",
+            boxShadow: "0 2px 8px rgba(139,92,246,0.30), inset 0 1px 0 rgba(255,255,255,0.10)",
+            transition: "all 150ms ease",
+          }}
+        >
+          Retry
+        </button>
+      </EmptyState>
+    );
   }
 
   if (loading && prs.length === 0) {

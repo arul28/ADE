@@ -173,6 +173,45 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(output, "errok")
   }
 
+  func testTerminalTextReplayClampsHostileCsiParamsWithoutOom() {
+    // Hostile CSI params (cursor-forward / cursor-down / insert-line / huge
+    // scroll-region) must not drive billions of cell/line appends → OOM. The
+    // replay must complete quickly and stay bounded.
+    let hostile =
+      "\u{001B}[2000000000Cx" +      // cursor-forward 2e9 cols
+      "\u{001B}[2000000000By" +      // cursor-down 2e9 rows
+      "\u{001B}[2000000000Lz" +      // insert 2e9 blank lines
+      "\u{001B}[1;2000000000r" +     // scroll-region bottom 2e9
+      "\u{001B}[2000000000;1Hq"      // cursor-position row 2e9
+    let start = Date()
+    let output = sanitizeTerminalOutputForDisplay(hostile)
+    let elapsed = Date().timeIntervalSince(start)
+
+    XCTAssertLessThan(elapsed, 2.0, "hostile CSI replay should complete quickly")
+    // Bounded: a few thousand short lines, not billions of cells.
+    XCTAssertLessThan(output.count, 4_000 * 1_001)
+    XCTAssertLessThanOrEqual(output.split(separator: "\n", omittingEmptySubsequences: false).count, 4_001)
+    // Printable payload survives clamping.
+    XCTAssertTrue(output.contains("x"))
+  }
+
+  @MainActor
+  func testTerminalScreenClampsHostileCsiParamsWithoutOom() {
+    let view = ADETerminalTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 300))
+    let coordinator = WorkTerminalEmulatorView.Coordinator { _ in }
+    let hostile =
+      "\u{001B}[2000000000Cx" +
+      "\u{001B}[2000000000By" +
+      "\u{001B}[2000000000Lz" +
+      "\u{001B}[1;2000000000r" +
+      "\u{001B}[2000000000;1Hq"
+    let start = Date()
+    XCTAssertTrue(coordinator.render(rawText: hostile, revision: 1, in: view))
+    let elapsed = Date().timeIntervalSince(start)
+
+    XCTAssertLessThan(elapsed, 2.0, "hostile CSI render should complete quickly")
+  }
+
   @MainActor
   func testDeepLinkRouterRequestsWorkSessionNavigation() throws {
     let previousShared = SyncService.shared
@@ -4091,6 +4130,114 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(mirrored.last?.attachedRootPath, "/tmp/project/.ade/worktrees/linear-test")
     XCTAssertEqual(mirrored.last?.parentStatus?.dirty, true)
     XCTAssertEqual(database.listWorkspaces().first?.isReadOnlyByDefault, true)
+    database.close()
+  }
+
+  // Regression: DatabaseService wraps one raw SQLite connection. The off-main
+  // SyncService apply Task and the @MainActor hydration/read calls used to race
+  // on that single connection, opening overlapping BEGIN/commit transactions
+  // ("cannot start a transaction within a transaction") and colliding on the
+  // non-atomic localDbVersion bump. The serial accessQueue must make every
+  // public entry point mutually exclusive. Hammer applyChanges on one queue and
+  // replaceLaneSnapshots/fetchLanes on another and assert: no transaction throw
+  // and a monotonic db_version.
+  func testDatabaseConcurrentApplyAndHydrationStaySerialized() throws {
+    let source = makeDatabase(baseURL: makeTemporaryDirectory())
+    try source.executeSqlForTesting("""
+      insert into lanes (
+        id, name, description, lane_type, base_ref, branch_ref, worktree_path, parent_lane_id, created_at, archived_at
+      ) values (
+        'lane-remote', 'Remote', null, 'worktree', 'origin/main', 'feature/remote', '/tmp/remote', null, '2026-03-15T00:00:00.000Z', null
+      )
+    """)
+    let remoteChanges = source.exportChangesSince(version: 0)
+    source.close()
+    XCTAssertFalse(remoteChanges.isEmpty)
+
+    let database = makeLaneHydrationDatabase(baseURL: makeTemporaryDirectory())
+    XCTAssertNil(database.initializationError)
+    try database.executeSqlForTesting("""
+      insert into projects (
+        id, root_path, display_name, default_base_ref, created_at, last_opened_at
+      ) values (
+        'project-1', '/tmp/project', 'ADE', 'main', '2026-03-17T00:00:00.000Z', '2026-03-17T00:00:00.000Z'
+      )
+    """)
+    database.setActiveProjectId("project-1")
+
+    let hydrationLanes = [
+      LaneSummary(
+        id: "lane-primary",
+        name: "Primary",
+        description: nil,
+        laneType: "primary",
+        baseRef: "main",
+        branchRef: "dev",
+        worktreePath: "/tmp/project",
+        attachedRootPath: nil,
+        parentLaneId: nil,
+        childCount: 0,
+        stackDepth: 0,
+        parentStatus: nil,
+        isEditProtected: false,
+        status: LaneStatus(dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false),
+        color: nil,
+        icon: nil,
+        tags: [],
+        folder: nil,
+        createdAt: "2026-03-17T00:00:00.000Z",
+        archivedAt: nil
+      )
+    ]
+
+    let iterations = 3000
+    let applyFailure = ManagedAtomicErrorBox()
+    let hydrationFailure = ManagedAtomicErrorBox()
+    let monotonicViolation = ManagedAtomicErrorBox()
+
+    let group = DispatchGroup()
+    let applyQueue = DispatchQueue(label: "test.apply")
+    let hydrationQueue = DispatchQueue(label: "test.hydration")
+
+    group.enter()
+    applyQueue.async {
+      var lastVersion = 0
+      for _ in 0..<iterations {
+        do {
+          _ = try database.applyChanges(remoteChanges)
+        } catch {
+          applyFailure.store(error)
+          break
+        }
+        let version = database.currentDbVersion()
+        if version < lastVersion {
+          monotonicViolation.store(NSError(domain: "test", code: 1, userInfo: [NSLocalizedDescriptionKey: "db_version regressed \(lastVersion) -> \(version)"]))
+          break
+        }
+        lastVersion = version
+      }
+      group.leave()
+    }
+
+    group.enter()
+    hydrationQueue.async {
+      for _ in 0..<iterations {
+        do {
+          try database.replaceLaneSnapshots(hydrationLanes)
+        } catch {
+          hydrationFailure.store(error)
+          break
+        }
+        _ = database.fetchLanes(includeArchived: true)
+      }
+      group.leave()
+    }
+
+    let waitResult = group.wait(timeout: .now() + 60)
+    XCTAssertEqual(waitResult, .success, "concurrent DB workload timed out (possible deadlock)")
+    XCTAssertNil(applyFailure.value, "applyChanges threw under concurrency: \(String(describing: applyFailure.value))")
+    XCTAssertNil(hydrationFailure.value, "replaceLaneSnapshots threw under concurrency: \(String(describing: hydrationFailure.value))")
+    XCTAssertNil(monotonicViolation.value, "db_version was not monotonic: \(String(describing: monotonicViolation.value))")
     database.close()
   }
 
@@ -12575,6 +12722,27 @@ final class ADETests: XCTestCase {
 private extension Collection {
   subscript(safe index: Index) -> Element? {
     indices.contains(index) ? self[index] : nil
+  }
+}
+
+/// Thread-safe first-error capture used by concurrency tests that run work on
+/// multiple queues and assert outside the queues.
+private final class ManagedAtomicErrorBox {
+  private let lock = NSLock()
+  private var stored: Error?
+
+  func store(_ error: Error) {
+    lock.lock()
+    defer { lock.unlock() }
+    if stored == nil {
+      stored = error
+    }
+  }
+
+  var value: Error? {
+    lock.lock()
+    defer { lock.unlock() }
+    return stored
   }
 }
 

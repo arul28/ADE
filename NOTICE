@@ -1,0 +1,108 @@
+ADE
+Copyright (c) 2025 Arul Sharma
+
+This product is licensed under the GNU Affero General Public License v3.0
+(see the LICENSE file).
+
+This product redistributes the following third-party components in binary
+form. Each component is provided under its own license, reproduced below.
+
+================================================================================
+1. cr-sqlite (@vlcn.io)
+================================================================================
+
+Upstream:   https://github.com/vlcn-io/cr-sqlite
+Copyright:  Copyright (c) 2022 One Law LLC (Vulcan Labs)
+License:    MIT AND Apache-2.0 (dual-licensed)
+Bundled as: apps/desktop/vendor/crsqlite/{darwin-arm64,darwin-x64}/crsqlite.dylib
+            apps/desktop/vendor/crsqlite/win32-x64/crsqlite.dll
+
+cr-sqlite is dual-licensed under the MIT License and the Apache License,
+Version 2.0. You may choose either license. The MIT permission text is
+reproduced below. The Apache License, Version 2.0 is available at
+https://www.apache.org/licenses/LICENSE-2.0.
+
+MIT License
+
+Copyright (c) 2022 One Law LLC
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+================================================================================
+2. whisper.cpp
+================================================================================
+
+Upstream:   https://github.com/ggerganov/whisper.cpp
+Copyright:  Copyright (c) 2023-2024 The ggml authors / Georgi Gerganov
+License:    MIT
+Bundled as: resources/whisper/whisper-cli (and supporting libraries)
+
+MIT License
+
+Copyright (c) 2023-2024 The ggml authors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+================================================================================
+3. ggml
+================================================================================
+
+Upstream:   https://github.com/ggerganov/ggml
+Copyright:  Copyright (c) 2023-2024 The ggml authors / Georgi Gerganov
+License:    MIT
+Bundled as: shared libraries linked by the whisper-cli binary in
+            resources/whisper
+
+MIT License
+
+Copyright (c) 2023-2024 The ggml authors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

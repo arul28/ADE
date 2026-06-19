@@ -530,6 +530,11 @@ const ORCHESTRATION_PHASE_ORDER = ["planning", "developing", "validating", "wrap
 export function reconcileActivePhaseProgress(manifest: OrchestrationManifest): void {
   const phase = manifest.phases.find((entry) => entry.id === manifest.currentPhase);
   if (!phase || phase.status !== "active") return;
+  // Planning never auto-advances during normalize: the only legitimate
+  // planning→developing transition goes through setPlanApprovalState (which
+  // stamps currentPhase=developing + planApprovedAt together). Guarding here
+  // prevents a done planning-phase task from bypassing plan approval.
+  if (phase.id === "planning") return;
   const supersededTaskIds = collectSupersededTaskIds(manifest.tasks);
   const activePhaseTasks = manifest.tasks.filter(
     (task) => task.phaseId === phase.id && !supersededTaskIds.has(task.id),
@@ -571,6 +576,11 @@ export function buildPhaseTransitionOpsAfterTaskRelease(
   if (!phase || (manifest.currentPhase !== phase.id && phase.status !== "active")) {
     return [];
   }
+  // Planning never auto-advances: the only legitimate planning→developing
+  // transition goes through setPlanApprovalState (which stamps
+  // currentPhase=developing + planApprovedAt together). Guarding here prevents
+  // a done planning-phase task from bypassing plan approval.
+  if (phase.id === "planning") return [];
 
   const tasksAfterRelease = manifest.tasks.map((task) =>
     task.id === releasedTaskId

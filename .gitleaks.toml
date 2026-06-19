@@ -9,8 +9,7 @@ paths = [
   '''dist/''',
   '''release/''',
   '''\.git/''',
-  '''\.test\.ts$''',
-  '''\.test\.tsx$''',
-  '''\.spec\.ts$''',
-  '''\.spec\.tsx$''',
+  '''(^|/)__fixtures__/''',
+  '''(^|/)fixtures/''',
+  '''(^|/)__mocks__/''',
 ]

@@ -384,7 +384,7 @@ private final class WorkTerminalScreen {
     case "A":
       row = max(0, row - max(1, first))
     case "B":
-      row += max(1, first)
+      row = min(row + max(1, first), maxLines)
       ensureCursor()
     case "C":
       column = min(cols - 1, column + max(1, first))
@@ -393,7 +393,7 @@ private final class WorkTerminalScreen {
     case "G":
       column = max(0, min(cols - 1, max(1, first) - 1))
     case "H", "f":
-      row = max(0, max(1, first) - 1)
+      row = min(max(0, max(1, first) - 1), maxLines)
       column = max(0, min(cols - 1, max(1, params.dropFirst().first ?? 1) - 1))
       ensureCursor()
     case "J":
@@ -436,9 +436,9 @@ private final class WorkTerminalScreen {
         lines[row].removeSubrange(column..<lines[row].count)
       }
     case "L":
-      insertBlankLines(count: max(1, first))
+      insertBlankLines(count: min(max(1, first), maxLines))
     case "M":
-      deleteLines(count: max(1, first))
+      deleteLines(count: min(max(1, first), maxLines))
     case "P":
       deleteCharacters(count: max(1, first))
     case "r":
@@ -498,9 +498,9 @@ private final class WorkTerminalScreen {
   }
 
   private func setScrollRegion(_ params: [Int]) {
-    scrollTop = max(0, max(1, params.first ?? 1) - 1)
+    scrollTop = min(max(0, max(1, params.first ?? 1) - 1), maxLines)
     if let bottom = params.dropFirst().first, bottom > 0 {
-      scrollBottom = max(scrollTop, bottom - 1)
+      scrollBottom = min(max(scrollTop, bottom - 1), maxLines)
     } else {
       scrollBottom = nil
     }

@@ -2100,6 +2100,102 @@ describe("local runtime connection pool", () => {
     cleanup();
     expect(call).toHaveBeenCalledWith("runtimeEvents.unsubscribe", { subscriptionId: "runtime-events-4" });
   });
+
+  it("drains the full backlog when a reconnect replay reports hasMore beyond the first batch", async () => {
+    // A long disconnect gap can leave more buffered events than a single subscribe
+    // replays (limit 100). The daemon signals the remainder with hasMore/nextCursor;
+    // the pool must keep draining so every event is replayed, not just the first 100.
+    const FIRST_BATCH = 100;
+    const TOTAL = 150;
+    const notificationListeners = new Map<string, Set<(params: unknown) => void>>();
+    const makeEvent = (id: number) => ({
+      id,
+      timestamp: "2026-05-10T12:00:00.000Z",
+      category: "runtime" as const,
+      payload: { seq: id },
+    });
+    const emit = (subscriptionId: string, ids: number[]) => {
+      for (const listener of notificationListeners.get("runtime/event") ?? []) {
+        for (const id of ids) {
+          listener({
+            subscriptionId,
+            projectId: "project-1",
+            event: makeEvent(id),
+            eventEpoch: "epoch-local-1",
+          });
+        }
+      }
+    };
+    const call = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      if (method === "runtimeEvents.subscribe") {
+        const cursor = typeof params?.cursor === "number" ? params.cursor : 0;
+        if (cursor === 0) {
+          // First batch: replay events 1..100, then report there is more.
+          emit("sub-initial", Array.from({ length: FIRST_BATCH }, (_, i) => i + 1));
+          return { subscriptionId: "sub-initial", nextCursor: FIRST_BATCH, hasMore: true, eventEpoch: "epoch-local-1" };
+        }
+        // Drain batch: replay the remaining events under a throwaway subscription.
+        emit("sub-drain", Array.from({ length: TOTAL - FIRST_BATCH }, (_, i) => FIRST_BATCH + i + 1));
+        return { subscriptionId: "sub-drain", nextCursor: TOTAL, hasMore: false, eventEpoch: "epoch-local-1" };
+      }
+      if (method === "runtimeEvents.unsubscribe") {
+        return { removed: true };
+      }
+      return null;
+    });
+    const client = {
+      call,
+      onDisconnect: vi.fn(() => () => {}),
+      onNotification: vi.fn((method: string, callback: (params: unknown) => void) => {
+        const existing = notificationListeners.get(method) ?? new Set<(params: unknown) => void>();
+        existing.add(callback);
+        notificationListeners.set(method, existing);
+        return () => {
+          existing.delete(callback);
+          if (existing.size === 0) notificationListeners.delete(method);
+        };
+      }),
+    };
+    const pool = new LocalRuntimeConnectionPool("1.2.3", {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    } as never);
+    const rootPath = path.resolve("/repo");
+    (pool as unknown as { projectsByRoot: Map<string, unknown> }).projectsByRoot.set(rootPath, {
+      projectId: "project-1",
+      rootPath,
+      displayName: "repo",
+      addedAt: 1,
+      lastOpenedAt: 1,
+      gitOriginUrl: null,
+    });
+    (pool as unknown as { connection: Promise<unknown> }).connection = Promise.resolve({
+      client,
+      child: null,
+      socketPath: "/tmp/ade.sock",
+    });
+    const onEvent = vi.fn();
+
+    const cleanup = await pool.subscribeEventsForRoot(rootPath, { cursor: 0, category: "runtime" }, onEvent);
+
+    // Every buffered event — including the 50 past the first replay batch — was delivered.
+    expect(onEvent).toHaveBeenCalledTimes(TOTAL);
+    const deliveredIds = onEvent.mock.calls.map(([event]) => (event as { id: number }).id);
+    expect(deliveredIds).toEqual(Array.from({ length: TOTAL }, (_, i) => i + 1));
+
+    // The follow-up subscribe used the advancing cursor and the wide drain limit,
+    // and the throwaway drain subscription was torn down.
+    expect(call).toHaveBeenCalledWith("runtimeEvents.subscribe", expect.objectContaining({
+      cursor: FIRST_BATCH,
+      limit: 1000,
+      replay: true,
+    }));
+    expect(call).toHaveBeenCalledWith("runtimeEvents.unsubscribe", { subscriptionId: "sub-drain" });
+
+    cleanup();
+  });
 });
 
 describe("local runtime action retry classification", () => {

@@ -45,6 +45,10 @@ private final class WorkTerminalTextReplay {
   private var bold = false
   private var scrollTop = 0
   private var scrollBottom: Int?
+  // Bound CSI cursor params so hostile escapes (e.g. \033[2000000000C) can't
+  // drive put()/ensureCursor() into billions of cell/line appends → OOM.
+  private let maxLines = 4_000
+  private let maxColumns = 1_000
 
   var text: String {
     renderedLines()
@@ -98,6 +102,14 @@ private final class WorkTerminalTextReplay {
         }
       }
     }
+    trimLinesIfNeeded()
+  }
+
+  private func trimLinesIfNeeded() {
+    guard lines.count > maxLines else { return }
+    let overflow = lines.count - maxLines
+    lines.removeFirst(overflow)
+    row = max(0, row - overflow)
   }
 
   private func put(_ scalar: UnicodeScalar) {
@@ -190,17 +202,17 @@ private final class WorkTerminalTextReplay {
     case "A":
       row = max(0, row - max(1, first))
     case "B":
-      row += max(1, first)
+      row = min(row + max(1, first), maxLines)
       ensureCursor()
     case "C":
-      column += max(1, first)
+      column = min(column + max(1, first), maxColumns)
     case "D":
       column = max(0, column - max(1, first))
     case "G":
-      column = max(0, max(1, first) - 1)
+      column = min(max(0, max(1, first) - 1), maxColumns)
     case "H", "f":
-      row = max(0, max(1, first) - 1)
-      column = max(0, max(1, params.dropFirst().first ?? 1) - 1)
+      row = min(max(0, max(1, first) - 1), maxLines)
+      column = min(max(0, max(1, params.dropFirst().first ?? 1) - 1), maxColumns)
       ensureCursor()
     case "J":
       ensureCursor()
@@ -253,9 +265,9 @@ private final class WorkTerminalTextReplay {
         lines[row].removeSubrange(column..<lines[row].count)
       }
     case "L":
-      insertBlankLines(count: max(1, first))
+      insertBlankLines(count: min(max(1, first), maxLines))
     case "M":
-      deleteLines(count: max(1, first))
+      deleteLines(count: min(max(1, first), maxLines))
     case "P":
       deleteCharacters(count: max(1, first))
     case "r":
@@ -314,9 +326,9 @@ private final class WorkTerminalTextReplay {
   }
 
   private func setScrollRegion(_ params: [Int]) {
-    scrollTop = max(0, max(1, params.first ?? 1) - 1)
+    scrollTop = min(max(0, max(1, params.first ?? 1) - 1), maxLines)
     if let bottom = params.dropFirst().first, bottom > 0 {
-      scrollBottom = max(scrollTop, bottom - 1)
+      scrollBottom = min(max(scrollTop, bottom - 1), maxLines)
     } else {
       scrollBottom = nil
     }

@@ -507,7 +507,11 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
       try {
         return deserializeStore(raw, key, { emptyOnDecryptFailure: false });
       } catch {
-        const values = deserializeStore(raw, machineKey, { emptyOnDecryptFailure: true });
+        // Only the genuine legacy machine-key ciphertext should trigger a rewrite.
+        // If the legacy decrypt ALSO fails (true key rotation/corruption), propagate
+        // the error so the ciphertext is preserved instead of being overwritten with
+        // an empty store.
+        const values = deserializeStore(raw, machineKey, { emptyOnDecryptFailure: false });
         if (args.allowRewrite) {
           try {
             this.writeAll(values);

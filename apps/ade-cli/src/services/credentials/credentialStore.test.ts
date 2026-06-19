@@ -174,6 +174,35 @@ new EncryptedFileCredentialStore({ secretsDir }).setSync(key, value);
     expect(upgraded.getSync("agent.token")).toBe("bound_secret");
     expect(legacy.getSync("agent.token")).toBeNull();
   });
+
+  it("fails safe instead of wiping ciphertext when OS-bound key material rotates", () => {
+    const written = new EncryptedFileCredentialStore({
+      secretsDir: tempDir,
+      keyMaterialProvider: () => Buffer.from("os-material-A"),
+    });
+    written.setSync("agent.token", "secret");
+
+    const cipherPath = path.join(tempDir, "credentials.json.enc");
+    const before = fs.readFileSync(cipherPath, "utf8");
+
+    // Rotated OS material: neither the newly-derived key nor the bare machine key
+    // can decrypt ciphertext that was sealed with material A. The store must throw
+    // (preserving the ciphertext) instead of silently rewriting an empty store.
+    const rotated = new EncryptedFileCredentialStore({
+      secretsDir: tempDir,
+      keyMaterialProvider: () => Buffer.from("os-material-B"),
+    });
+    expect(() => rotated.getSync("agent.token")).toThrow();
+    expect(() => rotated.setSync("agent.token", "wiped")).toThrow();
+
+    // Ciphertext file untouched: the original credential is recoverable with material A.
+    expect(fs.readFileSync(cipherPath, "utf8")).toBe(before);
+    const recovered = new EncryptedFileCredentialStore({
+      secretsDir: tempDir,
+      keyMaterialProvider: () => Buffer.from("os-material-A"),
+    });
+    expect(recovered.getSync("agent.token")).toBe("secret");
+  });
 });
 
 describe("ElectronSafeStorageCredentialStore", () => {

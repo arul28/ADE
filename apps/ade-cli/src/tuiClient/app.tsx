@@ -459,6 +459,29 @@ export function planSessionStatePrune(args: {
   };
 }
 
+// Diff successive terminal id sets to find buffers/scroll state for closed
+// terminals. Unlike chat sessions there is no reconnect-empty hazard worth
+// special-casing here: an empty list simply means every previously-seen
+// terminal id is removed, which is the correct prune.
+export function planTerminalBufferPrune(
+  previous: Set<string>,
+  current: Set<string>,
+): { nextSeen: Set<string>; removed: string[] } {
+  return {
+    nextSeen: current,
+    removed: [...previous].filter((terminalId) => !current.has(terminalId)),
+  };
+}
+
+// Drop the given keys from a record, returning the same reference when nothing
+// is removed so dependent effects/state setters don't trigger needless renders.
+function pruneRecordKeys<T>(record: Record<string, T>, removed: string[]): Record<string, T> {
+  if (!removed.some((key) => key in record)) return record;
+  const next = { ...record };
+  for (const key of removed) delete next[key];
+  return next;
+}
+
 type ChatSessionActivity = Pick<AgentChatSessionSummary, "status" | "awaitingInput" | "idleSinceAt">;
 type TerminalSessionActivity = Pick<ChatTerminalSession, "status" | "runtimeState" | "pid">;
 
@@ -4995,7 +5018,19 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         ? result.text.split(/\r?\n/).map((line) => `${padding}${line}`).join("\n")
         : null);
     };
-    void refresh();
+    // Trailing debounce: this effect re-fires on every 'events' change (its deps
+    // include freshly-allocated statusLineStats/contextPercent/tokenSummary), so
+    // during streaming an unguarded refresh would fork a status-line shell many
+    // times/sec. Coalesce the burst; steady-state behaviour is unchanged.
+    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+    const scheduleRefresh = () => {
+      if (debounceTimer) clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(() => {
+        debounceTimer = null;
+        void refresh();
+      }, 300);
+    };
+    scheduleRefresh();
     const timer = config.refreshIntervalSeconds == null
       ? null
       : setInterval(() => {
@@ -5003,6 +5038,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         }, config.refreshIntervalSeconds * 1000);
     return () => {
       cancelled = true;
+      if (debounceTimer) clearTimeout(debounceTimer);
       if (timer) clearInterval(timer);
     };
   }, [activeLane?.branchRef, activeLane?.name, activeLaneId, activeSession?.claudeOutputStyle, activeSession?.reasoningEffort, activeSession?.sessionId, activeSession?.title, activeSessionId, contextPercent, modelState, models, project.projectRoot, project.workspaceRoot, statusLineStats, tokenSummary, vimMode, vimModeEnabled]);
@@ -5355,6 +5391,20 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     setInterruptedBySessionId(prune);
     setEventsBySessionId(prune);
   }, [selectActiveLaneId, selectActiveSessionId, sessions, setGridView]);
+
+  // Sibling prune for Claude PTY buffers: terminalLiveChunks (capped per buffer
+  // but never deleted) and terminalScrollBySessionId would otherwise leak up to
+  // MAX_RETAINED_CHUNKS per closed terminal for the process lifetime. Keyed on
+  // terminalSessions (by terminalId) rather than chat sessionId.
+  const prunedTerminalIdsRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    const current = new Set(terminalSessions.map((terminal) => terminal.terminalId));
+    const { nextSeen, removed } = planTerminalBufferPrune(prunedTerminalIdsRef.current, current);
+    prunedTerminalIdsRef.current = nextSeen;
+    if (!removed.length) return;
+    setTerminalLiveChunks((prev) => pruneRecordKeys(prev, removed));
+    setTerminalScrollBySessionId((prev) => pruneRecordKeys(prev, removed));
+  }, [terminalSessions]);
 
   const isTileableChatSessionId = useCallback((sessionId: string | null | undefined) => {
     if (!sessionId) return false;

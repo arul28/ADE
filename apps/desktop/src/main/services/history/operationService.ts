@@ -103,6 +103,42 @@ export function createOperationService({
     start,
     finish,
 
+    pruneOld(opts?: { maxAgeDays?: number; maxRows?: number }): { deleted: number } {
+      const maxAgeDays = opts?.maxAgeDays ?? 60;
+      const maxRows = opts?.maxRows ?? 5000;
+      const cutoff = new Date(Date.now() - maxAgeDays * 86_400_000).toISOString();
+
+      const countMatching = (sql: string, params: Array<string | number>): number => {
+        const row = db.get<{ n: number }>(sql, params);
+        const value = row?.n;
+        return typeof value === "number" ? value : 0;
+      };
+
+      // Age cap: drop finished (non-running) ops older than the cutoff for this project.
+      const ageWhere = "where project_id = ? and status != 'running' and started_at < ?";
+      const ageParams: Array<string | number> = [projectId, cutoff];
+      const ageDeleted = countMatching(`select count(*) as n from operations ${ageWhere}`, ageParams);
+      db.run(`delete from operations ${ageWhere}`, ageParams);
+
+      // Count cap: keep only the newest maxRows operations per project. Never
+      // evict in-flight ('running') rows even when they fall outside the window.
+      const countWhere = `
+          where project_id = ?
+            and status != 'running'
+            and id not in (
+              select id from operations
+              where project_id = ?
+              order by started_at desc
+              limit ?
+            )
+        `;
+      const countParams: Array<string | number> = [projectId, projectId, maxRows];
+      const countDeleted = countMatching(`select count(*) as n from operations ${countWhere}`, countParams);
+      db.run(`delete from operations ${countWhere}`, countParams);
+
+      return { deleted: ageDeleted + countDeleted };
+    },
+
     get(args: { operationId?: string; id?: string } | string): OperationRecord | null {
       const operationId =
         typeof args === "string" ? args : (args.operationId ?? args.id ?? "");

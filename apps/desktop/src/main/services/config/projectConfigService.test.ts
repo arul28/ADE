@@ -650,6 +650,62 @@ describe("projectConfigService - PR transcript gists", () => {
     persisted = YAML.parse(fs.readFileSync(localPath, "utf8")) as Record<string, any>;
     expect(persisted.github?.prTranscriptGists?.enabled).toBe(false);
   });
+
+  it("writes config atomically so an interrupted save never wipes prior processes/testSuites", () => {
+    const { root, adeDir } = makeProjectFixture("ade-project-config-atomic-write-");
+
+    const localPath = path.join(adeDir, "local.yaml");
+    fs.writeFileSync(
+      localPath,
+      YAML.stringify({
+        version: 1,
+        processes: [{ id: "proc-1", name: "Proc 1", command: ["echo", "ok"], cwd: root }],
+        stackButtons: [],
+        testSuites: [{ id: "suite-1", name: "Suite 1", command: ["echo", "ok"], cwd: root }],
+        laneOverlayPolicies: [],
+        automations: [],
+      }),
+      "utf8",
+    );
+
+    const service = createProjectConfigService({
+      projectRoot: root,
+      adeDir,
+      projectId: "project-1",
+      db: makeDb(),
+      logger: makeLogger(),
+    });
+
+    // Baseline: a read-modify-write mutator keeps the prior processes/testSuites.
+    const enabled = service.setPrTranscriptGists({ enabled: true });
+    expect(enabled.effective.processes?.map((p) => p.id)).toContain("proc-1");
+    expect(enabled.effective.testSuites?.map((s) => s.id)).toContain("suite-1");
+
+    const before = fs.readFileSync(localPath, "utf8");
+
+    // Simulate a crash/ENOSPC after the temp file is written but before the rename
+    // commits. With a truncating writeFileSync the live file would be left empty or
+    // partial; the atomic write must leave the original file untouched.
+    const renameSpy = vi.spyOn(fs, "renameSync").mockImplementation(() => {
+      throw new Error("simulated rename failure (ENOSPC)");
+    });
+    try {
+      expect(() => service.setPrTranscriptGists({ enabled: false })).toThrow();
+    } finally {
+      renameSpy.mockRestore();
+    }
+
+    // Live file content is byte-for-byte intact and still parses with prior data.
+    const after = fs.readFileSync(localPath, "utf8");
+    expect(after).toBe(before);
+    const persisted = YAML.parse(after) as Record<string, any>;
+    expect(persisted.processes?.map((p: any) => p.id)).toContain("proc-1");
+    expect(persisted.testSuites?.map((s: any) => s.id)).toContain("suite-1");
+
+    // No leftover temp files in the .ade dir after the failed atomic write.
+    const tempLeftovers = fs.readdirSync(adeDir).filter((name) => name.endsWith(".tmp"));
+    expect(tempLeftovers).toEqual([]);
+  });
 });
 
 describe("projectConfigService - linear sync", () => {

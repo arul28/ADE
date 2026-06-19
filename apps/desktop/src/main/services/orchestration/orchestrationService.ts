@@ -1305,7 +1305,6 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
     }
     const currentStepId = actor.currentStepId?.trim();
     if (!currentStepId) return false;
-    if (currentStepId === stepId || currentStepId === task.id) return true;
     const assignedTask = manifest.tasks.find((entry) => entry.id === currentStepId);
     return assignedTask?.assigneeSessionId === actor.sessionId
       && assignedTask.phaseId === "validating"

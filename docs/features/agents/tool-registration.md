@@ -55,6 +55,12 @@ codebase intake, run the functional/UI/extras planning rounds, derive
 validation steps, and capture model routing before approval or spawning
 unlocks. Raw manifest patches cannot write `leadState.planning` or
 `planSpec`; those fields only change through privileged service methods.
+The planning→developing transition is likewise the sole province of
+`setPlanApprovalState` (which stamps `currentPhase = developing` and
+`planApprovedAt` together): manifest normalization and task-release
+phase-transition logic in `manifestNormalization.ts` explicitly refuse
+to auto-advance the `planning` phase, so a completed planning-phase task
+can never bypass plan approval.
 
 ### ADE CLI path
 
