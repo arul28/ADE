@@ -2391,8 +2391,6 @@ function authorizePtyAdeActionInvocation(
     case "dispose":
       ensurePtyTargetAuthorized(runtime, session, method, ptyArgs);
       return;
-    case "list":
-      return;
     default:
       ptyAccessDenied(method);
   }
