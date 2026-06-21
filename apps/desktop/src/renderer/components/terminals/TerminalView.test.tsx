@@ -1150,6 +1150,134 @@ describe("TerminalView", () => {
     }
   });
 
+  it("falls back to browser clipboard when the local clipboard bridge rejects", async () => {
+    const platformDescriptor = Object.getOwnPropertyDescriptor(window.navigator, "platform");
+    const clipboardDescriptor = Object.getOwnPropertyDescriptor(window.navigator, "clipboard");
+    const originalPlatform = window.navigator.platform;
+    try {
+      Object.defineProperty(window.navigator, "platform", {
+        configurable: true,
+        value: "MacIntel",
+      });
+      Object.defineProperty(window.navigator, "clipboard", {
+        configurable: true,
+        value: {
+          writeText: vi.fn().mockResolvedValue(undefined),
+        },
+      });
+      (window.ade.app.writeClipboardText as unknown as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error("bridge unavailable"));
+
+      render(<TerminalView ptyId="pty-copy-fallback" sessionId="session-copy-fallback" isActive />);
+      await flushAllTimers();
+
+      const terminal = mockState.terminalInstances.at(-1) as {
+        attachCustomKeyEventHandler: ReturnType<typeof vi.fn>;
+        getSelection: ReturnType<typeof vi.fn>;
+      } | undefined;
+      const keyHandler = terminal?.attachCustomKeyEventHandler.mock.calls.at(-1)?.[0] as ((ev: KeyboardEvent) => boolean) | undefined;
+      expect(keyHandler).toBeTruthy();
+      terminal!.getSelection.mockReturnValue("fallback terminal text");
+
+      const ptyWrite = window.ade.pty.write as unknown as ReturnType<typeof vi.fn>;
+      ptyWrite.mockClear();
+
+      const handled = keyHandler!({
+        type: "keydown",
+        key: "c",
+        metaKey: true,
+        ctrlKey: false,
+        altKey: false,
+        shiftKey: false,
+        preventDefault: vi.fn(),
+      } as unknown as KeyboardEvent);
+
+      await flushPromises();
+
+      expect(handled).toBe(false);
+      expect(window.ade.app.writeClipboardText).toHaveBeenCalledWith("fallback terminal text");
+      expect(window.navigator.clipboard.writeText).toHaveBeenCalledWith("fallback terminal text");
+      expect(ptyWrite).not.toHaveBeenCalled();
+    } finally {
+      if (platformDescriptor) {
+        Object.defineProperty(window.navigator, "platform", platformDescriptor);
+      } else {
+        Object.defineProperty(window.navigator, "platform", {
+          configurable: true,
+          value: originalPlatform,
+        });
+      }
+      if (clipboardDescriptor) {
+        Object.defineProperty(window.navigator, "clipboard", clipboardDescriptor);
+      } else {
+        Reflect.deleteProperty(window.navigator, "clipboard");
+      }
+    }
+  });
+
+  it("falls back to browser clipboard when the local clipboard bridge returns false", async () => {
+    const platformDescriptor = Object.getOwnPropertyDescriptor(window.navigator, "platform");
+    const clipboardDescriptor = Object.getOwnPropertyDescriptor(window.navigator, "clipboard");
+    const originalPlatform = window.navigator.platform;
+    try {
+      Object.defineProperty(window.navigator, "platform", {
+        configurable: true,
+        value: "MacIntel",
+      });
+      Object.defineProperty(window.navigator, "clipboard", {
+        configurable: true,
+        value: {
+          writeText: vi.fn().mockResolvedValue(undefined),
+        },
+      });
+      (window.ade.app.writeClipboardText as unknown as ReturnType<typeof vi.fn>).mockResolvedValueOnce(false);
+
+      render(<TerminalView ptyId="pty-copy-false-fallback" sessionId="session-copy-false-fallback" isActive />);
+      await flushAllTimers();
+
+      const terminal = mockState.terminalInstances.at(-1) as {
+        attachCustomKeyEventHandler: ReturnType<typeof vi.fn>;
+        getSelection: ReturnType<typeof vi.fn>;
+      } | undefined;
+      const keyHandler = terminal?.attachCustomKeyEventHandler.mock.calls.at(-1)?.[0] as ((ev: KeyboardEvent) => boolean) | undefined;
+      expect(keyHandler).toBeTruthy();
+      terminal!.getSelection.mockReturnValue("false fallback text");
+
+      const ptyWrite = window.ade.pty.write as unknown as ReturnType<typeof vi.fn>;
+      ptyWrite.mockClear();
+
+      const handled = keyHandler!({
+        type: "keydown",
+        key: "c",
+        metaKey: true,
+        ctrlKey: false,
+        altKey: false,
+        shiftKey: false,
+        preventDefault: vi.fn(),
+      } as unknown as KeyboardEvent);
+
+      await flushPromises();
+
+      expect(handled).toBe(false);
+      expect(window.ade.app.writeClipboardText).toHaveBeenCalledWith("false fallback text");
+      expect(window.navigator.clipboard.writeText).toHaveBeenCalledWith("false fallback text");
+      expect(ptyWrite).not.toHaveBeenCalled();
+    } finally {
+      if (platformDescriptor) {
+        Object.defineProperty(window.navigator, "platform", platformDescriptor);
+      } else {
+        Object.defineProperty(window.navigator, "platform", {
+          configurable: true,
+          value: originalPlatform,
+        });
+      }
+      if (clipboardDescriptor) {
+        Object.defineProperty(window.navigator, "clipboard", clipboardDescriptor);
+      } else {
+        Reflect.deleteProperty(window.navigator, "clipboard");
+      }
+    }
+  });
+
   it("uploads image-only paste to runtime attachments for tracked agent CLI terminals", async () => {
     (window.ade.app.readClipboardImage as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
       data: "abc123",

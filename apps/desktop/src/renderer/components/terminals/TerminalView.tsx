@@ -893,28 +893,23 @@ function pasteClipboardImageShortcut(runtime: CachedRuntime, mode: TerminalImage
 }
 
 async function writeTerminalSelectionToClipboard(text: string): Promise<void> {
-  const attempts: Promise<void>[] = [];
   try {
-    attempts.push(window.ade.app.writeClipboardText(text));
+    const appBridge = window.ade?.app;
+    const writeClipboardText = appBridge?.writeClipboardText;
+    if (typeof writeClipboardText === "function") {
+      const result: unknown = await writeClipboardText.call(appBridge, text);
+      if (result !== false) return;
+    }
   } catch {
     // Browser-preview/test fallback below covers missing or partial bridges.
   }
   const writeText = navigator.clipboard?.writeText;
-  if (typeof writeText === "function") {
-    try {
-      attempts.push(writeText.call(navigator.clipboard, text));
-    } catch {
-      // Ignore synchronous browser clipboard failures; async failures are
-      // handled with the rest of the attempts below.
-    }
-  }
-  for (const attempt of attempts) {
-    try {
-      await attempt;
-      return;
-    } catch {
-      // Try the next clipboard path.
-    }
+  if (typeof writeText !== "function") return;
+  try {
+    await writeText.call(navigator.clipboard, text);
+  } catch {
+    // Ignore clipboard permission failures; there is no useful terminal-side
+    // recovery once the copy key has been handled.
   }
 }
 

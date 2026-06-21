@@ -3173,7 +3173,11 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       onNavigate: () => () => {},
       openExternal: resolvedArg(undefined),
       revealPath: resolvedArg(undefined),
-      writeClipboardText: resolvedArg(undefined),
+      writeClipboardText: async (text: string): Promise<void> => {
+        const writeText = window.navigator.clipboard?.writeText;
+        if (typeof writeText !== "function") return;
+        await writeText.call(window.navigator.clipboard, text);
+      },
       hasClipboardImage: resolved(false),
       readClipboardImage: resolved(null),
       saveClipboardImageAttachment: resolved(null),
