@@ -103,8 +103,6 @@ type CachedRuntime = {
   imagePasteMode: TerminalImagePasteMode;
   bracketedPasteMode: boolean;
   mouseTrackingModes: Set<number>;
-  shiftMouseBridgeCleanup: (() => void) | null;
-  shiftMouseCleanup: (() => void) | null;
   // Set when a webgl→dom fallback is in flight and the runtime turned
   // invisible before the webgl restore could run. Persists across renderer
   // changes so the restore can be retried on the next visibility-true.
@@ -841,86 +839,9 @@ function updateTerminalInputModes(runtime: CachedRuntime, data: string): void {
   }
 }
 
-function clampTerminalMouseCoordinate(value: number, max: number): number {
-  if (!Number.isFinite(value)) return 1;
-  return Math.max(1, Math.min(max, Math.floor(value)));
-}
-
-function terminalMousePoint(runtime: CachedRuntime, ev: MouseEvent): { col: number; row: number } | null {
-  const screen = runtime.term.element?.querySelector<HTMLElement>(".xterm-screen")
-    ?? runtime.host.querySelector<HTMLElement>(".xterm-screen")
-    ?? runtime.term.element
-    ?? runtime.host;
-  const rect = screen.getBoundingClientRect();
-  if (rect.width <= 0 || rect.height <= 0) return null;
-  const cols = Math.max(1, runtime.term.cols || 1);
-  const rows = Math.max(1, runtime.term.rows || 1);
-  const col = clampTerminalMouseCoordinate(((ev.clientX - rect.left) / rect.width) * cols + 1, cols);
-  const row = clampTerminalMouseCoordinate(((ev.clientY - rect.top) / rect.height) * rows + 1, rows);
-  return { col, row };
-}
-
-function writeSgrMouse(runtime: CachedRuntime, code: number, point: { col: number; row: number }, final: "M" | "m"): void {
-  writePtyInput(runtime, `\x1b[<${code};${point.col};${point.row}${final}`);
-}
-
 function isTerminalMouseTrackingActive(runtime: CachedRuntime): boolean {
   const xtermMode = runtime.term.modes?.mouseTrackingMode;
   return runtime.mouseTrackingModes.size > 0 || (xtermMode != null && xtermMode !== "none");
-}
-
-function consumeMouseEvent(ev: MouseEvent): void {
-  ev.preventDefault();
-  ev.stopPropagation();
-  ev.stopImmediatePropagation();
-}
-
-function installShiftMouseBridge(runtime: CachedRuntime): void {
-  const onMouseDown = (ev: MouseEvent) => {
-    if (runtime.disposed || !isTerminalMouseTrackingActive(runtime)) return;
-    if (!ev.shiftKey || ev.button !== 0) return;
-    const point = terminalMousePoint(runtime, ev);
-    if (!point) return;
-
-    consumeMouseEvent(ev);
-    writeSgrMouse(runtime, 4, point, "M");
-
-    let cleanup = () => {};
-    const onMouseMove = (moveEv: MouseEvent) => {
-      if (runtime.disposed) {
-        cleanup();
-        return;
-      }
-      if ((moveEv.buttons & 1) === 0) return;
-      const nextPoint = terminalMousePoint(runtime, moveEv);
-      if (!nextPoint) return;
-      consumeMouseEvent(moveEv);
-      writeSgrMouse(runtime, 36, nextPoint, "M");
-    };
-    const onMouseUp = (upEv: MouseEvent) => {
-      cleanup();
-      if (runtime.disposed) return;
-      const releasePoint = terminalMousePoint(runtime, upEv) ?? point;
-      consumeMouseEvent(upEv);
-      writeSgrMouse(runtime, 4, releasePoint, "m");
-    };
-
-    cleanup = () => {
-      document.removeEventListener("mousemove", onMouseMove, true);
-      document.removeEventListener("mouseup", onMouseUp, true);
-      if (runtime.shiftMouseCleanup === cleanup) runtime.shiftMouseCleanup = null;
-    };
-    runtime.shiftMouseCleanup?.();
-    runtime.shiftMouseCleanup = cleanup;
-    document.addEventListener("mousemove", onMouseMove, true);
-    document.addEventListener("mouseup", onMouseUp, true);
-  };
-  runtime.host.addEventListener("mousedown", onMouseDown, true);
-  const cleanupBridge = () => {
-    runtime.host.removeEventListener("mousedown", onMouseDown, true);
-    if (runtime.shiftMouseBridgeCleanup === cleanupBridge) runtime.shiftMouseBridgeCleanup = null;
-  };
-  runtime.shiftMouseBridgeCleanup = cleanupBridge;
 }
 
 async function pasteNativeClipboardImageShortcut(runtime: CachedRuntime): Promise<boolean> {
@@ -971,6 +892,32 @@ function pasteClipboardImageShortcut(runtime: CachedRuntime, mode: TerminalImage
     : pasteNativeClipboardImageShortcut(runtime);
 }
 
+async function writeTerminalSelectionToClipboard(text: string): Promise<void> {
+  const attempts: Promise<void>[] = [];
+  try {
+    attempts.push(window.ade.app.writeClipboardText(text));
+  } catch {
+    // Browser-preview/test fallback below covers missing or partial bridges.
+  }
+  const writeText = navigator.clipboard?.writeText;
+  if (typeof writeText === "function") {
+    try {
+      attempts.push(writeText.call(navigator.clipboard, text));
+    } catch {
+      // Ignore synchronous browser clipboard failures; async failures are
+      // handled with the rest of the attempts below.
+    }
+  }
+  for (const attempt of attempts) {
+    try {
+      await attempt;
+      return;
+    } catch {
+      // Try the next clipboard path.
+    }
+  }
+}
+
 function teardownRuntime(runtime: CachedRuntime) {
   flushPendingPtyInput(runtime);
   runtime.disposed = true;
@@ -985,16 +932,6 @@ function teardownRuntime(runtime: CachedRuntime) {
   if (runtime.hydrateRetryTimer) clearTimeout(runtime.hydrateRetryTimer);
   if (runtime.hydrationBackfillTimer) clearTimeout(runtime.hydrationBackfillTimer);
   if (runtime.invalidFitRetryTimer) clearTimeout(runtime.invalidFitRetryTimer);
-  try {
-    runtime.shiftMouseCleanup?.();
-  } catch {
-    // ignore
-  }
-  try {
-    runtime.shiftMouseBridgeCleanup?.();
-  } catch {
-    // ignore
-  }
 
   try {
     runtime.ptyDataUnsub?.();
@@ -1854,8 +1791,6 @@ function createRuntime(args: {
     imagePasteMode: args.imagePasteMode,
     bracketedPasteMode: false,
     mouseTrackingModes: new Set(),
-    shiftMouseBridgeCleanup: null,
-    shiftMouseCleanup: null,
     pendingWebGLRestore: false,
     invalidFitRetryTimer: null,
     fitWarningLogged: false,
@@ -1877,7 +1812,6 @@ function createRuntime(args: {
     }
     void pasteClipboardImageShortcut(runtime, runtime.imagePasteMode);
   }, true);
-  installShiftMouseBridge(runtime);
 
   term.attachCustomKeyEventHandler((ev) => {
     if (!runtime.inputEnabled) return false;
@@ -1917,7 +1851,8 @@ function createRuntime(args: {
     if (mod && key === "c") {
       const selection = term.getSelection();
       if (selection) {
-        navigator.clipboard.writeText(selection).catch(() => {});
+        ev.preventDefault();
+        void writeTerminalSelectionToClipboard(selection);
         return false;
       }
       if (isMac && ev.metaKey) {
