@@ -307,7 +307,10 @@ Renderer surfaces:
   back to `terminal.preview`. Work-tracked agent CLI terminals paste clipboard
   images by saving the bytes as chat temp attachments through the active runtime
   and bracketed-pasting a short path/type stub into the PTY, while standalone
-  terminals keep the native clipboard-image shortcut behavior.
+  terminals keep the native clipboard-image shortcut behavior. Selected terminal
+  text copies through the local desktop clipboard bridge (with browser clipboard
+  fallback for previews), and Shift+drag remains available for local text
+  selection when a full-screen CLI enables terminal mouse tracking.
 - `apps/desktop/src/renderer/components/terminals/workSessionTiling.ts` —
   pure helper that produces the seed `PaneSplit` for the Work grid from
   an ordered list of session IDs. Accepts a `TilingPreset` of

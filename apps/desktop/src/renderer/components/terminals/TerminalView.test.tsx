@@ -169,6 +169,7 @@ function installWindowAde() {
     app: {
       hasClipboardImage: vi.fn().mockResolvedValue(false),
       readClipboardImage: vi.fn().mockResolvedValue(null),
+      writeClipboardText: vi.fn().mockResolvedValue(undefined),
     },
     agentChat: {
       saveTempAttachment: vi.fn().mockResolvedValue({ path: "/project/a/.ade/attachments/clipboard.png" }),
@@ -1095,6 +1096,188 @@ describe("TerminalView", () => {
     }
   });
 
+  it("copies selected terminal text through the local clipboard bridge", async () => {
+    const platformDescriptor = Object.getOwnPropertyDescriptor(window.navigator, "platform");
+    const originalPlatform = window.navigator.platform;
+    try {
+      Object.defineProperty(window.navigator, "platform", {
+        configurable: true,
+        value: "MacIntel",
+      });
+
+      render(<TerminalView ptyId="pty-copy-selection" sessionId="session-copy-selection" isActive />);
+      await flushAllTimers();
+
+      const terminal = mockState.terminalInstances.at(-1) as {
+        attachCustomKeyEventHandler: ReturnType<typeof vi.fn>;
+        getSelection: ReturnType<typeof vi.fn>;
+      } | undefined;
+      const keyHandler = terminal?.attachCustomKeyEventHandler.mock.calls.at(-1)?.[0] as ((ev: KeyboardEvent) => boolean) | undefined;
+      expect(keyHandler).toBeTruthy();
+      terminal!.getSelection.mockReturnValue("selected terminal text");
+
+      const ptyWrite = window.ade.pty.write as unknown as ReturnType<typeof vi.fn>;
+      const writeClipboardText = window.ade.app.writeClipboardText as unknown as ReturnType<typeof vi.fn>;
+      ptyWrite.mockClear();
+      writeClipboardText.mockClear();
+      const preventDefault = vi.fn();
+
+      const handled = keyHandler!({
+        type: "keydown",
+        key: "c",
+        metaKey: true,
+        ctrlKey: false,
+        altKey: false,
+        shiftKey: false,
+        preventDefault,
+      } as unknown as KeyboardEvent);
+
+      await flushPromises();
+
+      expect(handled).toBe(false);
+      expect(preventDefault).toHaveBeenCalledTimes(1);
+      expect(writeClipboardText).toHaveBeenCalledWith("selected terminal text");
+      expect(ptyWrite).not.toHaveBeenCalled();
+    } finally {
+      if (platformDescriptor) {
+        Object.defineProperty(window.navigator, "platform", platformDescriptor);
+      } else {
+        Object.defineProperty(window.navigator, "platform", {
+          configurable: true,
+          value: originalPlatform,
+        });
+      }
+    }
+  });
+
+  it("falls back to browser clipboard when the local clipboard bridge rejects", async () => {
+    const platformDescriptor = Object.getOwnPropertyDescriptor(window.navigator, "platform");
+    const clipboardDescriptor = Object.getOwnPropertyDescriptor(window.navigator, "clipboard");
+    const originalPlatform = window.navigator.platform;
+    try {
+      Object.defineProperty(window.navigator, "platform", {
+        configurable: true,
+        value: "MacIntel",
+      });
+      Object.defineProperty(window.navigator, "clipboard", {
+        configurable: true,
+        value: {
+          writeText: vi.fn().mockResolvedValue(undefined),
+        },
+      });
+      (window.ade.app.writeClipboardText as unknown as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error("bridge unavailable"));
+
+      render(<TerminalView ptyId="pty-copy-fallback" sessionId="session-copy-fallback" isActive />);
+      await flushAllTimers();
+
+      const terminal = mockState.terminalInstances.at(-1) as {
+        attachCustomKeyEventHandler: ReturnType<typeof vi.fn>;
+        getSelection: ReturnType<typeof vi.fn>;
+      } | undefined;
+      const keyHandler = terminal?.attachCustomKeyEventHandler.mock.calls.at(-1)?.[0] as ((ev: KeyboardEvent) => boolean) | undefined;
+      expect(keyHandler).toBeTruthy();
+      terminal!.getSelection.mockReturnValue("fallback terminal text");
+
+      const ptyWrite = window.ade.pty.write as unknown as ReturnType<typeof vi.fn>;
+      ptyWrite.mockClear();
+
+      const handled = keyHandler!({
+        type: "keydown",
+        key: "c",
+        metaKey: true,
+        ctrlKey: false,
+        altKey: false,
+        shiftKey: false,
+        preventDefault: vi.fn(),
+      } as unknown as KeyboardEvent);
+
+      await flushPromises();
+
+      expect(handled).toBe(false);
+      expect(window.ade.app.writeClipboardText).toHaveBeenCalledWith("fallback terminal text");
+      expect(window.navigator.clipboard.writeText).toHaveBeenCalledWith("fallback terminal text");
+      expect(ptyWrite).not.toHaveBeenCalled();
+    } finally {
+      if (platformDescriptor) {
+        Object.defineProperty(window.navigator, "platform", platformDescriptor);
+      } else {
+        Object.defineProperty(window.navigator, "platform", {
+          configurable: true,
+          value: originalPlatform,
+        });
+      }
+      if (clipboardDescriptor) {
+        Object.defineProperty(window.navigator, "clipboard", clipboardDescriptor);
+      } else {
+        Reflect.deleteProperty(window.navigator, "clipboard");
+      }
+    }
+  });
+
+  it("falls back to browser clipboard when the local clipboard bridge returns false", async () => {
+    const platformDescriptor = Object.getOwnPropertyDescriptor(window.navigator, "platform");
+    const clipboardDescriptor = Object.getOwnPropertyDescriptor(window.navigator, "clipboard");
+    const originalPlatform = window.navigator.platform;
+    try {
+      Object.defineProperty(window.navigator, "platform", {
+        configurable: true,
+        value: "MacIntel",
+      });
+      Object.defineProperty(window.navigator, "clipboard", {
+        configurable: true,
+        value: {
+          writeText: vi.fn().mockResolvedValue(undefined),
+        },
+      });
+      (window.ade.app.writeClipboardText as unknown as ReturnType<typeof vi.fn>).mockResolvedValueOnce(false);
+
+      render(<TerminalView ptyId="pty-copy-false-fallback" sessionId="session-copy-false-fallback" isActive />);
+      await flushAllTimers();
+
+      const terminal = mockState.terminalInstances.at(-1) as {
+        attachCustomKeyEventHandler: ReturnType<typeof vi.fn>;
+        getSelection: ReturnType<typeof vi.fn>;
+      } | undefined;
+      const keyHandler = terminal?.attachCustomKeyEventHandler.mock.calls.at(-1)?.[0] as ((ev: KeyboardEvent) => boolean) | undefined;
+      expect(keyHandler).toBeTruthy();
+      terminal!.getSelection.mockReturnValue("false fallback text");
+
+      const ptyWrite = window.ade.pty.write as unknown as ReturnType<typeof vi.fn>;
+      ptyWrite.mockClear();
+
+      const handled = keyHandler!({
+        type: "keydown",
+        key: "c",
+        metaKey: true,
+        ctrlKey: false,
+        altKey: false,
+        shiftKey: false,
+        preventDefault: vi.fn(),
+      } as unknown as KeyboardEvent);
+
+      await flushPromises();
+
+      expect(handled).toBe(false);
+      expect(window.ade.app.writeClipboardText).toHaveBeenCalledWith("false fallback text");
+      expect(window.navigator.clipboard.writeText).toHaveBeenCalledWith("false fallback text");
+      expect(ptyWrite).not.toHaveBeenCalled();
+    } finally {
+      if (platformDescriptor) {
+        Object.defineProperty(window.navigator, "platform", platformDescriptor);
+      } else {
+        Object.defineProperty(window.navigator, "platform", {
+          configurable: true,
+          value: originalPlatform,
+        });
+      }
+      if (clipboardDescriptor) {
+        Object.defineProperty(window.navigator, "clipboard", clipboardDescriptor);
+      } else {
+        Reflect.deleteProperty(window.navigator, "clipboard");
+      }
+    }
+  });
+
   it("uploads image-only paste to runtime attachments for tracked agent CLI terminals", async () => {
     (window.ade.app.readClipboardImage as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
       data: "abc123",
@@ -1247,7 +1430,7 @@ describe("TerminalView", () => {
     });
   });
 
-  it("forwards Shift+mouse selection gestures while terminal mouse tracking is active", async () => {
+  it("leaves Shift+mouse gestures available for local selection while terminal mouse tracking is active", async () => {
     render(<TerminalView ptyId="pty-shift-mouse" sessionId="session-shift-mouse" isActive />);
     await flushAllTimers();
 
@@ -1313,75 +1496,10 @@ describe("TerminalView", () => {
     });
     document.dispatchEvent(up);
 
-    expect(down.defaultPrevented).toBe(true);
-    expect(move.defaultPrevented).toBe(true);
-    expect(up.defaultPrevented).toBe(true);
-    expect(ptyWrite).toHaveBeenNthCalledWith(1, {
-      ptyId: "pty-shift-mouse",
-      data: "\x1b[<4;1;1M",
-    });
-    expect(ptyWrite).toHaveBeenNthCalledWith(2, {
-      ptyId: "pty-shift-mouse",
-      data: "\x1b[<36;13;9M",
-    });
-    expect(ptyWrite).toHaveBeenNthCalledWith(3, {
-      ptyId: "pty-shift-mouse",
-      data: "\x1b[<4;13;9m",
-    });
-  });
-
-  it("does not forward a Shift+mouse release after the runtime is disposed", async () => {
-    render(<TerminalView ptyId="pty-shift-disposed" sessionId="session-shift-disposed" isActive />);
-    await flushAllTimers();
-
-    const terminal = mockState.terminalInstances.at(-1) as {
-      element: HTMLElement | null;
-    } | undefined;
-    expect(terminal?.element).toBeTruthy();
-
-    for (const listener of mockState.ptyDataListeners) {
-      listener({
-        ptyId: "pty-shift-disposed",
-        sessionId: "session-shift-disposed",
-        projectRoot: "/project/a",
-        data: "\x1b[?1000h\x1b[?1002h\x1b[?1006h",
-      });
-    }
-
-    const ptyWrite = window.ade.pty.write as unknown as ReturnType<typeof vi.fn>;
-    ptyWrite.mockClear();
-    terminal!.element!.dispatchEvent(new MouseEvent("mousedown", {
-      bubbles: true,
-      cancelable: true,
-      shiftKey: true,
-      button: 0,
-      buttons: 1,
-      clientX: 0,
-      clientY: 0,
-    }));
-    expect(ptyWrite).toHaveBeenCalledTimes(1);
-
-    __resetTerminalRuntimesForTests();
-    terminal!.element!.dispatchEvent(new MouseEvent("mousedown", {
-      bubbles: true,
-      cancelable: true,
-      shiftKey: true,
-      button: 0,
-      buttons: 1,
-      clientX: 0,
-      clientY: 0,
-    }));
-    document.dispatchEvent(new MouseEvent("mouseup", {
-      bubbles: true,
-      cancelable: true,
-      shiftKey: true,
-      button: 0,
-      buttons: 0,
-      clientX: 64,
-      clientY: 72,
-    }));
-
-    expect(ptyWrite).toHaveBeenCalledTimes(1);
+    expect(down.defaultPrevented).toBe(false);
+    expect(move.defaultPrevented).toBe(false);
+    expect(up.defaultPrevented).toBe(false);
+    expect(ptyWrite).not.toHaveBeenCalled();
   });
 
   it("falls back to native image paste when macOS Cmd+V does not fire a paste event", async () => {
