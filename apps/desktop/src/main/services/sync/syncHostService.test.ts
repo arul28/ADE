@@ -135,6 +135,7 @@ async function connectClient(args: {
   platform?: "macOS" | "linux" | "windows" | "iOS" | "unknown";
   deviceType?: "desktop" | "phone" | "vps" | "unknown";
   capabilities?: string[];
+  auth?: { kind: "bootstrap"; token: string } | { kind: "paired"; deviceId: string; secret: string };
 }) {
   const ws = new WebSocket(`ws://127.0.0.1:${args.port}`);
   await new Promise<void>((resolve, reject) => {
@@ -146,7 +147,7 @@ async function connectClient(args: {
     type: "hello",
     requestId: "hello",
     payload: {
-      token: args.token,
+      ...(args.auth ? { auth: args.auth } : { token: args.token }),
       peer: {
         deviceId: args.deviceId,
         deviceName: args.deviceName,
@@ -391,7 +392,7 @@ function createAckRetryHost(projectRoot: string) {
     port: 0,
     pollIntervalMs: 25,
     discoveryEnabled: false,
-    pinStore: createStubPinStore(),
+    pinStore: createStubPinStore("428193"),
     fileService: createStubFileService(projectRoot) as any,
     laneService: {
       list: vi.fn().mockResolvedValue([]),
@@ -440,6 +441,34 @@ it("processes pending ACK retries before active-chat background deferral through
   let dateNowSpy: { mockRestore(): void } | null = null;
   try {
     const port = await host.waitUntilListening();
+    const pairWs = new WebSocket(`ws://127.0.0.1:${port}`);
+    await new Promise<void>((resolve, reject) => {
+      pairWs.once("open", () => resolve());
+      pairWs.once("error", reject);
+    });
+    const pairQueue = createMessageQueue(pairWs);
+    pairWs.send(encodeSyncEnvelope({
+      type: "pairing_request",
+      requestId: "pair-ack-retry",
+      payload: {
+        code: "428193",
+        peer: {
+          deviceId: "ios-ack-retry",
+          deviceName: "iOS ACK retry",
+          platform: "iOS",
+          deviceType: "phone",
+          siteId: "ios-ack-retry-site",
+          dbVersion: 0,
+        },
+      },
+    }));
+    const pairingResponse = await pairQueue.next("pairing_result");
+    const pairingPayload = pairingResponse.payload as { ok: boolean; deviceId?: string; secret?: string };
+    expect(pairingPayload.ok).toBe(true);
+    expect(pairingPayload.secret).toBeTruthy();
+    pairWs.close();
+    await new Promise((resolve) => pairWs.once("close", resolve));
+
     client = await connectClient({
       port,
       token: host.getBootstrapToken(),
@@ -450,6 +479,11 @@ it("processes pending ACK retries before active-chat background deferral through
       platform: "iOS",
       deviceType: "phone",
       capabilities: ["changesetAck"],
+      auth: {
+        kind: "paired",
+        deviceId: "ios-ack-retry",
+        secret: pairingPayload.secret ?? "",
+      },
     });
 
     const firstBatch = await client.queue.next("changeset_batch");
