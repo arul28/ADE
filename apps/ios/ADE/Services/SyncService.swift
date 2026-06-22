@@ -2568,6 +2568,10 @@ final class SyncService: ObservableObject {
     return [
       "pull_requests",
       "pull_request_snapshots",
+      "pr_groups",
+      "pr_group_members",
+      "integration_proposals",
+      "queue_landing_state",
       "lanes",
       "lane_list_snapshots",
     ].contains(table)
@@ -3527,10 +3531,16 @@ final class SyncService: ObservableObject {
         "includeAutoRebaseStatus": includeDecorations,
       ])
       let payload = try decodeHydrationPayload(raw, as: LaneRefreshPayload.self, domainLabel: "lane", decoder: decoder)
-      let snapshots = includeDecorations
+      let lanes = includeStatus
+        ? payload.lanes
+        : lanesPreservingStatus(payload.lanes)
+      let decoratedSnapshots = includeDecorations
         ? payload.snapshots
         : laneSnapshotsPreservingDecorations(payload.snapshots)
-      try database.replaceLaneSnapshots(payload.lanes, snapshots: snapshots)
+      let snapshots = includeStatus
+        ? decoratedSnapshots
+        : laneSnapshotsPreservingStatus(decoratedSnapshots)
+      try database.replaceLaneSnapshots(lanes, snapshots: snapshots)
       setDomainStatus([.lanes, .files], phase: .ready)
     } catch {
       let friendlyMessage = SyncUserFacingError.message(for: error)
@@ -3540,6 +3550,35 @@ final class SyncService: ObservableObject {
         setDomainStatus([.lanes, .files], phase: .failed, error: friendlyMessage)
       }
       throw error
+    }
+  }
+
+  private func lanesPreservingStatus(_ lanes: [LaneSummary]) -> [LaneSummary] {
+    let existingByLaneId = Dictionary(
+      uniqueKeysWithValues: database.fetchLanes(includeArchived: true)
+        .map { ($0.id, $0) }
+    )
+    return lanes.map { lane in
+      guard let existing = existingByLaneId[lane.id] else { return lane }
+      var merged = lane
+      merged.status = existing.status
+      merged.parentStatus = existing.parentStatus
+      return merged
+    }
+  }
+
+  private func laneSnapshotsPreservingStatus(_ snapshots: [LaneListSnapshot]?) -> [LaneListSnapshot]? {
+    guard let snapshots else { return nil }
+    let existingByLaneId = Dictionary(
+      uniqueKeysWithValues: database.fetchLanes(includeArchived: true)
+        .map { ($0.id, $0) }
+    )
+    return snapshots.map { snapshot in
+      guard let existing = existingByLaneId[snapshot.lane.id] else { return snapshot }
+      var merged = snapshot
+      merged.lane.status = existing.status
+      merged.lane.parentStatus = existing.parentStatus
+      return merged
     }
   }
 
