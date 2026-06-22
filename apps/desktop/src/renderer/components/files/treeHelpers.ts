@@ -79,6 +79,17 @@ export function parentPathForFileChange(filePath: string): string {
   return index > 0 ? normalized.slice(0, index) : "";
 }
 
+function isAncestorDirectoryPath(ancestorPath: string, childPath: string): boolean {
+  if (ancestorPath === childPath) return false;
+  if (!ancestorPath) return Boolean(childPath);
+  return childPath.startsWith(`${ancestorPath}/`);
+}
+
+export function compactDirectoryRefreshPaths(paths: string[]): string[] {
+  const uniquePaths = [...new Set(paths.filter(Boolean))];
+  return uniquePaths.filter((path) => !uniquePaths.some((otherPath) => isAncestorDirectoryPath(otherPath, path)));
+}
+
 export function hasLoadedDirectoryChildren(nodes: FileTreeNode[], directoryPath: string): boolean {
   if (!directoryPath) return true;
   const node = findFileTreeNodeByPath(nodes, directoryPath);

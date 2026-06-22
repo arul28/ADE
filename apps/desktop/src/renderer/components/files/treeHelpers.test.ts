@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  compactDirectoryRefreshPaths,
   hasLoadedDirectoryChildren,
   isUnavailableGitDecorationsError,
   loadedDirectoryChildrenCount,
@@ -35,6 +36,16 @@ describe("file tree change refresh helpers", () => {
     expect(parentPathForFileChange("marketing/fastlane-brand-profile.md")).toBe("marketing");
     expect(parentPathForFileChange("src/routes/app/page.tsx")).toBe("src/routes/app");
     expect(parentPathForFileChange("src\\routes\\app\\page.tsx")).toBe("src/routes/app");
+  });
+
+  it("drops descendant directory refreshes when an ancestor is already queued", () => {
+    expect(compactDirectoryRefreshPaths(["src/foo", "marketing/assets", "src", "marketing"])).toEqual([
+      "src",
+      "marketing",
+    ]);
+    expect(compactDirectoryRefreshPaths(["marketing", "marketing/assets", "marketing/assets/icons"])).toEqual([
+      "marketing",
+    ]);
   });
 
   it("only treats directories with loaded children as refreshable", () => {

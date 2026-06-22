@@ -9,6 +9,7 @@ import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
 import {
   applyGitStatusToTree,
   appendTreeNodeChildren,
+  compactDirectoryRefreshPaths,
   defaultFilesWorkspaceId,
   filesSessionKey,
   formatFilesError,
@@ -390,7 +391,7 @@ export function FilesWorkbench({
 
     const flushQueuedRefreshes = () => {
       const reqId = workspaceIdRef.current;
-      const parentPaths = [...queuedParentPaths];
+      const parentPaths = compactDirectoryRefreshPaths([...queuedParentPaths]);
       queuedParentPaths.clear();
       const shouldRefreshRoot = rootRefreshQueued;
       const shouldRefreshFullRoot = fullRootRefreshQueued;
