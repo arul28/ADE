@@ -2529,6 +2529,8 @@ final class SyncService: ObservableObject {
       "lane_detail_snapshots",
       "pull_requests",
       "pull_request_snapshots",
+      "lane_linear_issues",
+      "lane_linear_issue_links",
     ].contains(table)
   }
 
@@ -3519,7 +3521,10 @@ final class SyncService: ObservableObject {
         "includeAutoRebaseStatus": includeDecorations,
       ])
       let payload = try decodeHydrationPayload(raw, as: LaneRefreshPayload.self, domainLabel: "lane", decoder: decoder)
-      try database.replaceLaneSnapshots(payload.lanes, snapshots: payload.snapshots)
+      let snapshots = includeDecorations
+        ? payload.snapshots
+        : laneSnapshotsPreservingDecorations(payload.snapshots)
+      try database.replaceLaneSnapshots(payload.lanes, snapshots: snapshots)
       setDomainStatus([.lanes, .files], phase: .ready)
     } catch {
       let friendlyMessage = SyncUserFacingError.message(for: error)
@@ -3529,6 +3534,22 @@ final class SyncService: ObservableObject {
         setDomainStatus([.lanes, .files], phase: .failed, error: friendlyMessage)
       }
       throw error
+    }
+  }
+
+  private func laneSnapshotsPreservingDecorations(_ snapshots: [LaneListSnapshot]?) -> [LaneListSnapshot]? {
+    guard let snapshots else { return nil }
+    let existingByLaneId = Dictionary(
+      uniqueKeysWithValues: database.fetchLaneListSnapshots(includeArchived: true)
+        .map { ($0.lane.id, $0) }
+    )
+    return snapshots.map { snapshot in
+      guard let existing = existingByLaneId[snapshot.lane.id] else { return snapshot }
+      var merged = snapshot
+      merged.rebaseSuggestion = existing.rebaseSuggestion
+      merged.autoRebaseStatus = existing.autoRebaseStatus
+      merged.conflictStatus = existing.conflictStatus
+      return merged
     }
   }
 

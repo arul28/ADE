@@ -2949,7 +2949,6 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         });
         continue;
       }
-      const prioritizeChat = shouldPrioritizeChatForPeer(peer);
       const pending = sendNextChangesetBatch(
         peer,
         "broadcast",
@@ -2957,7 +2956,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         exportedThroughDbVersion,
         changes,
         syncHostChangesetBatchOptionsForChat({
-          subscribedChatSessionCount: prioritizeChat ? peer.subscribedChatSessionIds.size : 0,
+          subscribedChatSessionCount: peer.subscribedChatSessionIds.size,
           maxRows: maxChangesetBatchRows,
           maxBytes: maxChangesetBatchBytes,
         }),
