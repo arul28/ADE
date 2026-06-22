@@ -828,6 +828,24 @@ describe("createSyncRemoteCommandService", () => {
       expect(result.lane).toBe(lane);
     });
 
+    it("lanes.getDetail includes the parent lane when computing rebase suggestions", async () => {
+      const lane = { id: "lane-child", name: "Child", parentLaneId: "lane-parent" };
+      const parent = { id: "lane-parent", name: "Parent" };
+      laneService.getSummary.mockImplementation(async (laneId: string) => {
+        if (laneId === "lane-child") return lane;
+        if (laneId === "lane-parent") return parent;
+        return null;
+      });
+      laneService.getStackChain.mockResolvedValue([parent, lane]);
+
+      await service.execute(makePayload("lanes.getDetail", { laneId: "lane-child" }));
+
+      expect(laneService.getSummary).toHaveBeenCalledWith("lane-child", { includeStatus: true });
+      expect(laneService.getSummary).toHaveBeenCalledWith("lane-parent", { includeStatus: true });
+      expect(laneService.list).not.toHaveBeenCalled();
+      expect(rebaseSuggestionService.listSuggestions).toHaveBeenCalledWith({ lanes: [lane, parent] });
+    });
+
     it("lanes.create parses name and routes to laneService.create", async () => {
       await service.execute(makePayload("lanes.create", {
         name: "my-lane",

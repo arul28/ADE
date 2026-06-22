@@ -68,7 +68,7 @@ extension LanesTabView {
                 initialSnapshot: snapshot,
                 allLaneSnapshots: laneSnapshots,
                 transitionNamespace: nil,
-                onRefreshRoot: { await reload(refreshRemote: true, includeDecorations: false) }
+                onRefreshRoot: { await reload(refreshRemote: true) }
               )
             } label: {
               LaneOpenChip(snapshot: snapshot, isPinned: pinnedLaneIds.contains(snapshot.lane.id))
@@ -194,7 +194,7 @@ extension LanesTabView {
                 initialSnapshot: primarySnapshot,
                 allLaneSnapshots: laneSnapshots,
                 transitionNamespace: transitionNamespace,
-                onRefreshRoot: { await reload(refreshRemote: true, includeDecorations: false) }
+                onRefreshRoot: { await reload(refreshRemote: true) }
               )
             } label: {
               LaneStackCard(
@@ -238,7 +238,7 @@ extension LanesTabView {
               lanePrTagsByLaneId: lanePrTagsByLaneId,
               transitionNamespace: transitionNamespace,
               selectedLaneId: selectedLaneTransitionId,
-              onRefreshRoot: { await reload(refreshRemote: true, includeDecorations: false) },
+              onRefreshRoot: { await reload(refreshRemote: true) },
               onContextMenu: { snapshot in AnyView(laneContextMenu(snapshot: snapshot)) },
               onTogglePin: { laneId in togglePin(laneId) },
               onSelectLane: { laneId in selectedLaneTransitionId = laneId }

@@ -1905,8 +1905,13 @@ async function buildLaneDetailPayload(args: SyncRemoteCommandServiceArgs, laneId
   const lane = await args.laneService.getSummary(laneId, { includeStatus: true });
   if (!lane) throw new Error(`Lane not found: ${laneId}`);
 
+  const stackChain = await args.laneService.getStackChain(laneId);
+  const parentLane = lane.parentLaneId
+    ? await args.laneService.getSummary(lane.parentLaneId, { includeStatus: true })
+    : null;
+  const suggestionLanes = parentLane ? [lane, parentLane] : [lane];
+
   const [
-    stackChain,
     children,
     sessions,
     chatSessions,
@@ -1922,11 +1927,10 @@ async function buildLaneDetailPayload(args: SyncRemoteCommandServiceArgs, laneId
     overlaps,
     envInitProgress,
   ] = await Promise.all([
-    args.laneService.getStackChain(laneId),
     args.laneService.getChildren(laneId),
     Promise.resolve(args.sessionService.list({ laneId, limit: 200 })),
     args.agentChatService?.listSessions(laneId, { includeAutomation: true }) ?? Promise.resolve([]),
-    Promise.resolve(args.rebaseSuggestionService?.listSuggestions({ lanes: [lane] }) ?? []),
+    Promise.resolve(args.rebaseSuggestionService?.listSuggestions({ lanes: suggestionLanes }) ?? []),
     Promise.resolve(args.autoRebaseService?.listStatuses({ lanes: [lane] }) ?? []),
     Promise.resolve(args.laneService.getStateSnapshot(laneId)),
     args.gitService?.listRecentCommits({ laneId, limit: 20 }) ?? Promise.resolve([]),
