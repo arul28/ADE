@@ -796,12 +796,10 @@ export function FilesWorkbench({
     (event: React.DragEvent<HTMLDivElement>) => {
       if (draggingTab || event.dataTransfer.files.length === 0) return;
       event.preventDefault();
-      const files = Array.from(event.dataTransfer.files);
-      files.forEach((file, index) => {
-        const droppedPath = window.ade.project.getDroppedPath(file);
-        if (!droppedPath) return;
-        void openExternalPathRequest(droppedPath, `drop:${Date.now()}:${index}:${droppedPath}`);
-      });
+      const firstFile = event.dataTransfer.files.item(0);
+      const droppedPath = firstFile ? window.ade.project.getDroppedPath(firstFile) : null;
+      if (!droppedPath) return;
+      void openExternalPathRequest(droppedPath, `drop:${Date.now()}:0:${droppedPath}`);
     },
     [draggingTab, openExternalPathRequest],
   );

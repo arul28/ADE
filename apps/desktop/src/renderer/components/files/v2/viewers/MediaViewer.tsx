@@ -34,7 +34,9 @@ export function MediaViewer({ workspaceId, rootPath, tab, content, kind }: Viewe
           maxBytes: MAX_MEDIA_STREAM_BYTES,
         });
         if (cancelled) return;
-        const blob = new Blob([bytes.buffer as ArrayBuffer], { type: mimeType });
+        const arrayBuffer = new ArrayBuffer(bytes.byteLength);
+        new Uint8Array(arrayBuffer).set(bytes);
+        const blob = new Blob([arrayBuffer], { type: mimeType });
         objectUrl = URL.createObjectURL(blob);
         setSrc(objectUrl);
       } catch (err) {
