@@ -73,6 +73,19 @@ private actor LaneBatchDeleteRecorder {
   }
 }
 
+@MainActor
+private final class IntentCommandRecorder: ADEIntentCommandBridge {
+  private(set) var commands: [(kind: ADEIntentCommandKind, payload: [String: String])] = []
+
+  func dispatch(_ kind: ADEIntentCommandKind, payload: [String: Any]) async {
+    var normalized: [String: String] = [:]
+    for (key, value) in payload {
+      normalized[key] = String(describing: value)
+    }
+    commands.append((kind, normalized))
+  }
+}
+
 final class ADETests: XCTestCase {
   func testSyncPreprocessRejectsCompressedPayloadAboveLimit() throws {
     let encodedPayload = "H4sIAAAAAAAAE6tWKkhMScnMS1eyUkqkECjVAgB1YfDxTgAAAA=="
@@ -245,6 +258,21 @@ final class ADETests: XCTestCase {
     DeepLinkRouter.shared.handle(try XCTUnwrap(URL(string: "ade://session/session-123")))
 
     XCTAssertEqual(service.requestedWorkSessionNavigation?.sessionId, "session-123")
+  }
+
+  @MainActor
+  func testDeepLinkRouterDecodesEncodedSessionPathComponent() throws {
+    let previousShared = SyncService.shared
+    defer { SyncService.shared = previousShared }
+
+    let database = makeDatabase(baseURL: makeTemporaryDirectory())
+    defer { database.close() }
+    let service = SyncService(database: database)
+    SyncService.shared = service
+
+    DeepLinkRouter.shared.handle(try XCTUnwrap(URL(string: "ade://session/session%201%2F2?lane=lane%26active")))
+
+    XCTAssertEqual(service.requestedWorkSessionNavigation?.sessionId, "session 1/2")
   }
 
   @MainActor
@@ -5515,6 +5543,29 @@ final class ADETests: XCTestCase {
     XCTAssertTrue(queued.first?.id.hasPrefix("ios-") == true)
   }
 
+  @MainActor
+  func testIntentCommandRegistryQueuesCommandsUntilBridgeRegisters() async {
+    ADEIntentCommandRegistry.resetForTesting()
+    defer { ADEIntentCommandRegistry.resetForTesting() }
+
+    await ADEIntentCommandRegistry.dispatch(.retryPrChecks, payload: [
+      "prNumber": 42,
+      "prId": "pr_42",
+    ])
+
+    XCTAssertNotNil(ADESharedContainer.defaults.data(forKey: ADEIntentCommandRegistry.pendingCommandsKey))
+
+    let recorder = IntentCommandRecorder()
+    ADEIntentCommandRegistry.register(recorder)
+    await ADEIntentCommandRegistry.drainPendingCommands()
+
+    XCTAssertNil(ADESharedContainer.defaults.data(forKey: ADEIntentCommandRegistry.pendingCommandsKey))
+    XCTAssertEqual(recorder.commands.count, 1)
+    XCTAssertEqual(recorder.commands.first?.kind, .retryPrChecks)
+    XCTAssertEqual(recorder.commands.first?.payload["prNumber"], "42")
+    XCTAssertEqual(recorder.commands.first?.payload["prId"], "pr_42")
+  }
+
   func testPrActionAvailabilityMatchesDesktopBaseline() {
     let open = PrActionAvailability(prState: "open")
     XCTAssertTrue(open.showsMerge)
@@ -5797,6 +5848,85 @@ final class ADETests: XCTestCase {
     )
 
     XCTAssertNil(match)
+  }
+
+  func testPrNavigationTargetResolvesNumberRouteToLocalPrId() {
+    func item(id: String, number: Int) -> PullRequestListItem {
+      PullRequestListItem(
+        id: id,
+        laneId: "lane-\(id)",
+        laneName: nil,
+        projectId: "project-1",
+        repoOwner: "arul",
+        repoName: "ADE",
+        githubPrNumber: number,
+        githubUrl: "https://github.com/arul/ADE/pull/\(number)",
+        title: "PR \(number)",
+        state: "open",
+        baseBranch: "main",
+        headBranch: "feature/\(number)",
+        checksStatus: "passing",
+        reviewStatus: "approved",
+        additions: 1,
+        deletions: 0,
+        lastSyncedAt: nil,
+        createdAt: "2026-05-14T00:00:00.000Z",
+        updatedAt: "2026-05-14T00:00:00.000Z",
+        adeKind: nil,
+        linkedGroupId: nil,
+        linkedGroupType: nil,
+        linkedGroupName: nil,
+        linkedGroupPosition: nil,
+        linkedGroupCount: 0,
+        workflowDisplayState: nil,
+        cleanupState: nil
+      )
+    }
+
+    let target = prNavigationTarget(
+      for: PrNavigationRequest(prNumber: 42),
+      pullRequests: [item(id: "pr_42", number: 42)],
+      githubItems: []
+    )
+
+    XCTAssertEqual(target, .detail(prId: "pr_42", laneId: "lane-pr_42"))
+  }
+
+  func testPrNavigationTargetUsesGitHubItemWhenNumberRouteHasNoLocalPr() {
+    let githubItem = GitHubPrListItem(
+      id: "repo-pr-42",
+      scope: "repo",
+      repoOwner: "arul",
+      repoName: "ADE",
+      githubPrNumber: 42,
+      githubUrl: "https://github.com/arul/ADE/pull/42",
+      title: "Repo PR",
+      state: "open",
+      isDraft: false,
+      baseBranch: "main",
+      headBranch: "feature/42",
+      author: "octocat",
+      createdAt: "2026-05-14T00:00:00.000Z",
+      updatedAt: "2026-05-14T00:00:00.000Z",
+      linkedPrId: nil,
+      linkedGroupId: nil,
+      linkedLaneId: nil,
+      linkedLaneName: nil,
+      adeKind: nil,
+      workflowDisplayState: nil,
+      cleanupState: nil,
+      labels: [],
+      isBot: false,
+      commentCount: 0
+    )
+
+    let target = prNavigationTarget(
+      for: PrNavigationRequest(prNumber: 42),
+      pullRequests: [],
+      githubItems: [githubItem]
+    )
+
+    XCTAssertEqual(target, .github(githubItem))
   }
 
   func testPrParsedDateHandlesFractionalAndFallbackIsoDates() {

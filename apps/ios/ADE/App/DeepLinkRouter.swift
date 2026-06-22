@@ -31,7 +31,9 @@ final class DeepLinkRouter {
     if routeHttpsOpenURL(url) { return }
     guard url.scheme?.lowercased() == "ade" else { return }
     let host = url.host?.lowercased()
-    let pathComponents = url.pathComponents.filter { $0 != "/" }
+    let pathComponents = url.pathComponents
+      .filter { $0 != "/" }
+      .map { $0.removingPercentEncoding ?? $0 }
     switch host {
     case "session":
       guard let sessionId = pathComponents.first, !sessionId.isEmpty else { return }

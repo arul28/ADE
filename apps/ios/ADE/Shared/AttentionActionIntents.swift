@@ -10,11 +10,18 @@ import Foundation
 
 // MARK: - Cross-target command bridge
 
-public enum ADEIntentCommandKind: String, Sendable {
+public enum ADEIntentCommandKind: String, Codable, Sendable {
     case approveSession
     case denySession
     case restartSession
     case retryPrChecks
+}
+
+struct ADEPendingIntentCommand: Codable, Equatable, Identifiable, Sendable {
+    var id: String
+    var kind: ADEIntentCommandKind
+    var payload: [String: String]
+    var createdAt: Date
 }
 
 @MainActor
@@ -24,14 +31,78 @@ public protocol ADEIntentCommandBridge: AnyObject {
 
 @MainActor
 public enum ADEIntentCommandRegistry {
+    static let pendingCommandsKey = "ade.intent.pendingCommands"
+
     public private(set) static weak var bridge: ADEIntentCommandBridge?
 
     public static func register(_ bridge: ADEIntentCommandBridge) {
         self.bridge = bridge
+        Task { @MainActor in
+            await drainPendingCommands()
+        }
     }
 
     static func dispatch(_ kind: ADEIntentCommandKind, payload: [String: Any]) async {
-        await bridge?.dispatch(kind, payload: payload)
+        if let bridge {
+            await bridge.dispatch(kind, payload: payload)
+            return
+        }
+
+        var pending = loadPendingCommands()
+        pending.append(ADEPendingIntentCommand(
+            id: UUID().uuidString,
+            kind: kind,
+            payload: stringPayload(from: payload),
+            createdAt: Date()
+        ))
+        storePendingCommands(Array(pending.suffix(20)))
+    }
+
+    static func drainPendingCommands() async {
+        guard let bridge else { return }
+        let pending = loadPendingCommands()
+        guard !pending.isEmpty else { return }
+        storePendingCommands([])
+        for command in pending {
+            await bridge.dispatch(command.kind, payload: command.payload)
+        }
+    }
+
+    static func resetForTesting() {
+        bridge = nil
+        storePendingCommands([])
+    }
+
+    private static func loadPendingCommands() -> [ADEPendingIntentCommand] {
+        guard let data = ADESharedContainer.defaults.data(forKey: pendingCommandsKey) else {
+            return []
+        }
+        return (try? JSONDecoder().decode([ADEPendingIntentCommand].self, from: data)) ?? []
+    }
+
+    private static func storePendingCommands(_ commands: [ADEPendingIntentCommand]) {
+        guard !commands.isEmpty else {
+            ADESharedContainer.defaults.removeObject(forKey: pendingCommandsKey)
+            ADESharedContainer.defaults.synchronize()
+            return
+        }
+        guard let data = try? JSONEncoder().encode(commands) else { return }
+        ADESharedContainer.defaults.set(data, forKey: pendingCommandsKey)
+        ADESharedContainer.defaults.synchronize()
+    }
+
+    private static func stringPayload(from payload: [String: Any]) -> [String: String] {
+        var result: [String: String] = [:]
+        for (key, value) in payload {
+            if let string = value as? String {
+                result[key] = string
+            } else if let number = value as? NSNumber {
+                result[key] = number.stringValue
+            } else {
+                result[key] = String(describing: value)
+            }
+        }
+        return result
     }
 }
 

@@ -289,10 +289,17 @@ private struct LockScreenPriorityStatus {
     }
 
     private static let workspaceURL = URL(string: "ade://workspace") ?? URL(fileURLWithPath: "/")
+    private static let deepLinkPathAllowed: CharacterSet = {
+        var allowed = CharacterSet.alphanumerics
+        allowed.insert(charactersIn: "-._~")
+        return allowed
+    }()
 
     private static func sessionURL(_ sessionId: String?) -> URL {
-        guard let sessionId, !sessionId.isEmpty,
-              let url = URL(string: "ade://session/\(sessionId)") else {
+        guard let sessionId = sessionId?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !sessionId.isEmpty,
+              let encoded = sessionId.addingPercentEncoding(withAllowedCharacters: deepLinkPathAllowed),
+              let url = URL(string: "ade://session/\(encoded)") else {
             return workspaceURL
         }
         return url

@@ -479,6 +479,56 @@ func prDetailRouteListItem(
   return candidates.count == 1 ? candidates[0] : nil
 }
 
+enum PrNavigationTarget: Equatable {
+  case detail(prId: String, laneId: String?)
+  case github(GitHubPrListItem)
+  case unresolved
+}
+
+func prNavigationTarget(
+  for request: PrNavigationRequest,
+  pullRequests: [PullRequestListItem],
+  githubItems: [GitHubPrListItem]
+) -> PrNavigationTarget {
+  let prId = request.prId.trimmingCharacters(in: .whitespacesAndNewlines)
+  guard !prId.isEmpty else { return .unresolved }
+
+  guard prId.hasPrefix("github-pr-number:") else {
+    let match = pullRequests.first { $0.id == prId }
+    return .detail(prId: prId, laneId: request.laneId ?? match?.laneId)
+  }
+
+  let requestedPrNumber = request.prNumber ?? syntheticPrNumber(from: prId)
+  guard let requestedPrNumber else { return .unresolved }
+  let githubItem = githubItems.first { $0.githubPrNumber == requestedPrNumber }
+
+  if let match = prDetailRouteListItem(
+    from: pullRequests,
+    prId: prId,
+    requestedPrNumber: requestedPrNumber,
+    githubItem: githubItem
+  ) {
+    return .detail(prId: match.id, laneId: request.laneId ?? match.laneId)
+  }
+
+  if let linkedPrId = githubItem?.linkedPrId?.trimmingCharacters(in: .whitespacesAndNewlines),
+     !linkedPrId.isEmpty {
+    return .detail(prId: linkedPrId, laneId: request.laneId ?? githubItem?.linkedLaneId)
+  }
+
+  if let githubItem {
+    return .github(githubItem)
+  }
+
+  return .unresolved
+}
+
+private func syntheticPrNumber(from prId: String) -> Int? {
+  let prefix = "github-pr-number:"
+  guard prId.hasPrefix(prefix) else { return nil }
+  return Int(prId.dropFirst(prefix.count))
+}
+
 func matchesPullRequestListItemStatus(_ item: PullRequestListItem, state: PrGitHubStatusFilter) -> Bool {
   switch state {
   case .all:
