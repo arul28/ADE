@@ -5341,6 +5341,60 @@ describe("AgentChatPane submit recovery", () => {
     expect(await screen.findByText("Background output kept streaming")).toBeTruthy();
   });
 
+  it("keeps Claude prompt suggestions scoped to the selected chat", async () => {
+    const primarySession = buildSession("session-1", {
+      title: "Primary chat",
+      lastActivityAt: "2026-03-24T05:57:45.700Z",
+    });
+    const backgroundSession = buildSession("session-2", {
+      title: "Background chat",
+      lastActivityAt: "2026-03-24T05:57:45.600Z",
+    });
+    const { emitChatEvent } = installAdeMocks({
+      sessions: [primarySession, backgroundSession],
+    });
+
+    renderTabbedPane(primarySession);
+
+    const primaryTab = await screen.findByRole("button", { name: /Primary chat/i });
+    const backgroundTab = await screen.findByRole("button", { name: /Background chat/i });
+
+    act(() => {
+      emitChatEvent({
+        sessionId: "session-1",
+        timestamp: "2026-03-24T06:00:00.000Z",
+        sequence: 1,
+        event: {
+          type: "prompt_suggestion",
+          suggestion: "Continue primary work",
+        },
+      } as AgentChatEventEnvelope);
+      emitChatEvent({
+        sessionId: "session-2",
+        timestamp: "2026-03-24T06:00:01.000Z",
+        sequence: 1,
+        event: {
+          type: "prompt_suggestion",
+          suggestion: "Continue background work",
+        },
+      } as AgentChatEventEnvelope);
+    });
+
+    await waitFor(() => {
+      expect((screen.getByRole("textbox") as HTMLTextAreaElement).placeholder).toBe("Continue primary work");
+    });
+
+    fireEvent.click(backgroundTab);
+    await waitFor(() => {
+      expect((screen.getByRole("textbox") as HTMLTextAreaElement).placeholder).toBe("Continue background work");
+    });
+
+    fireEvent.click(primaryTab);
+    await waitFor(() => {
+      expect((screen.getByRole("textbox") as HTMLTextAreaElement).placeholder).toBe("Continue primary work");
+    });
+  });
+
   it("validates empty legacy event-history snapshots before treating them as loaded", async () => {
     const session = buildSession("session-1", { title: "Possibly foreign chat" });
     installAdeMocks({

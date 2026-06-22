@@ -3221,7 +3221,7 @@ export function AgentChatPane({
   const composerDraftHydratingTextRef = useRef<string | null>(null);
   const [sessionDelta, setSessionDelta] = useState<{ insertions: number; deletions: number } | null>(null);
   const [sessionMutationKind, setSessionMutationKind] = useState<"model" | "permission" | "computer-use" | null>(null);
-  const [promptSuggestion, setPromptSuggestion] = useState<string | null>(null);
+  const [promptSuggestionsBySession, setPromptSuggestionsBySession] = useState<Record<string, string>>({});
   const [optimisticOutgoingMessage, setOptimisticOutgoingMessage] = useState<{
     sessionId: string;
     envelope: AgentChatEventEnvelope;
@@ -3321,6 +3321,16 @@ export function AgentChatPane({
     () => (selectedSessionId ? sessions.find((session) => session.sessionId === selectedSessionId) ?? null : null),
     [sessions, selectedSessionId]
   );
+  const promptSuggestion = selectedSessionId ? promptSuggestionsBySession[selectedSessionId] ?? null : null;
+  const clearPromptSuggestionForSession = useCallback((sessionId: string | null) => {
+    if (!sessionId) return;
+    setPromptSuggestionsBySession((prev) => {
+      if (!(sessionId in prev)) return prev;
+      const next = { ...prev };
+      delete next[sessionId];
+      return next;
+    });
+  }, []);
   const effectiveIosSimulatorOpen = !hideLaneToolDrawers && iosSimulatorOpen;
   const effectiveAppControlOpen = !hideLaneToolDrawers && appControlOpen;
   const laneToolsVisible = Boolean(showWorkspaceChrome && !hideLaneToolDrawers && laneId);
@@ -3444,16 +3454,16 @@ export function AgentChatPane({
   const updateComposerDraft = useCallback((value: string) => {
     setDraft(value);
     draftsPerSessionRef.current.set(companionStateKey, value);
-    if (value.length > 0) setPromptSuggestion(null);
-  }, [companionStateKey]);
+    if (value.length > 0) clearPromptSuggestionForSession(selectedSessionId);
+  }, [clearPromptSuggestionForSession, companionStateKey, selectedSessionId]);
   const insertComposerDraft = useCallback((value: string) => {
     setDraft((current) => {
       const next = current.trim().length ? `${current.trimEnd()}\n\n${value}` : value;
       draftsPerSessionRef.current.set(companionStateKey, next);
       return next;
     });
-    setPromptSuggestion(null);
-  }, [companionStateKey]);
+    clearPromptSuggestionForSession(selectedSessionId);
+  }, [clearPromptSuggestionForSession, companionStateKey, selectedSessionId]);
 
   const iosSimulatorProjectRoot = useMemo(() => {
     const scopedLaneId = selectedSession?.laneId ?? laneId;
@@ -5639,7 +5649,6 @@ export function AgentChatPane({
   ]);
 
   useEffect(() => {
-    setPromptSuggestion(null);
     setChatActionsOpen(false);
     setHandoffBusy(false);
     optimisticOutgoingMessageRef.current = null;
@@ -5891,18 +5900,27 @@ export function AgentChatPane({
         setSelectedSessionId(lockSessionId);
       }
 
-      // Wire prompt_suggestion events to state
+      // Keep prompt suggestions keyed by session so suggestions never leak
+      // across chat tabs before the composer renders the new selection.
       if (envelope.event.type === "prompt_suggestion" && "suggestion" in envelope.event) {
-        if (envelope.sessionId === selectedSessionIdRef.current) {
-          setPromptSuggestion((envelope.event as any).suggestion);
-        }
+        const suggestion = typeof (envelope.event as any).suggestion === "string"
+          ? (envelope.event as any).suggestion
+          : "";
+        setPromptSuggestionsBySession((prev) => (
+          suggestion.length > 0
+            ? { ...prev, [envelope.sessionId]: suggestion }
+            : (() => {
+                if (!(envelope.sessionId in prev)) return prev;
+                const next = { ...prev };
+                delete next[envelope.sessionId];
+                return next;
+              })()
+        ));
       }
 
       // Clear prompt suggestion when a new turn starts
       if (envelope.event.type === "status" && envelope.event.turnStatus === "started") {
-        if (envelope.sessionId === selectedSessionIdRef.current) {
-          setPromptSuggestion(null);
-        }
+        clearPromptSuggestionForSession(envelope.sessionId);
       }
 
       if (shouldRefreshSessionListForChatEvent(envelope)) {
@@ -5967,7 +5985,7 @@ export function AgentChatPane({
       }
     });
     return unsubscribe;
-  }, [isRemoteProject, isTileVisible, layoutVariant, lockSessionId, flushQueuedEvents, patchSessionSummary, scheduleQueuedEventFlush, scheduleSessionsRefresh, touchSession]);
+  }, [clearPromptSuggestionForSession, isRemoteProject, isTileVisible, layoutVariant, lockSessionId, flushQueuedEvents, patchSessionSummary, scheduleQueuedEventFlush, scheduleSessionsRefresh, touchSession]);
 
   useEffect(() => {
     if (!isTileActive) return undefined;
@@ -7265,7 +7283,7 @@ export function AgentChatPane({
       createdAtMs: Date.now(),
       snapshot,
     };
-    setPromptSuggestion(null);
+    clearPromptSuggestionForSession(selectedSessionId);
     setError(null);
     setDraftLaunchJobs((current) => pruneDraftLaunchJobs([
       job,
@@ -7367,6 +7385,7 @@ export function AgentChatPane({
     }
   }, [
     buildDraftLaunchSnapshotForCurrentState,
+    clearPromptSuggestionForSession,
     clearDraftLaunchComposer,
     draftLaunchJobExists,
     draftLaunchTargetIsAutoCreate,
@@ -7596,7 +7615,7 @@ export function AgentChatPane({
           setError("Plan revisions from the ready gate are text-only. Remove attachments or click Keep planning first.");
           return;
         }
-        setPromptSuggestion(null);
+        clearPromptSuggestionForSession(selectedSessionId);
         void copyPromptForLaunch(draftText);
         const resolved = await handleApproval(planReadyGate.itemId, "decline", draftText);
         if (resolved) setDraft("");
@@ -7608,7 +7627,7 @@ export function AgentChatPane({
         return;
       }
     }
-    setPromptSuggestion(null);
+    clearPromptSuggestionForSession(selectedSessionId);
 
     const isParallelLaunch =
       !lockSessionId
@@ -8191,6 +8210,7 @@ export function AgentChatPane({
     attachments,
     buildNativeControlPayload,
     busy,
+    clearPromptSuggestionForSession,
     fastMode,
     constrainedModelSelectionError,
     copyPromptForLaunch,
