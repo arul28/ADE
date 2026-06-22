@@ -332,7 +332,30 @@
       "category": "public.app-category.developer-tools",
       "extendInfo": {
         "NSAppleEventsUsageDescription": "ADE launches agent terminals that can use local app automation through Codex Computer Use.",
-        "NSMicrophoneUsageDescription": "ADE uses your microphone to dictate chat prompts with on-device voice-to-text."
+        "NSMicrophoneUsageDescription": "ADE uses your microphone to dictate chat prompts with on-device voice-to-text.",
+        "CFBundleDocumentTypes": [
+          {
+            "CFBundleTypeName": "ADE files and folders",
+            "CFBundleTypeRole": "Viewer",
+            "LSHandlerRank": "Alternate",
+            "LSItemContentTypes": [
+              "public.folder",
+              "public.text",
+              "public.source-code",
+              "public.image",
+              "public.audio",
+              "public.movie",
+              "com.adobe.pdf",
+              "public.comma-separated-values-text",
+              "org.openxmlformats.wordprocessingml.document",
+              "org.openxmlformats.presentationml.presentation",
+              "org.openxmlformats.spreadsheetml.sheet",
+              "com.microsoft.word.doc",
+              "com.microsoft.powerpoint.ppt",
+              "com.microsoft.excel.xls"
+            ]
+          }
+        ]
       },
       "hardenedRuntime": true,
       "gatekeeperAssess": false,
@@ -341,6 +364,60 @@
       "notarize": true,
       "mergeASARs": false,
       "artifactName": "${productName}-${version}-${arch}.${ext}"
-    }
+    },
+    "fileAssociations": [
+      {
+        "name": "ADE files",
+        "ext": [
+          "txt",
+          "md",
+          "mdx",
+          "json",
+          "jsonc",
+          "yaml",
+          "yml",
+          "toml",
+          "xml",
+          "html",
+          "css",
+          "js",
+          "jsx",
+          "ts",
+          "tsx",
+          "py",
+          "rs",
+          "go",
+          "java",
+          "swift",
+          "sh",
+          "csv",
+          "tsv",
+          "pdf",
+          "png",
+          "jpg",
+          "jpeg",
+          "gif",
+          "webp",
+          "svg",
+          "mp3",
+          "m4a",
+          "wav",
+          "flac",
+          "ogg",
+          "mp4",
+          "m4v",
+          "mov",
+          "webm",
+          "doc",
+          "docx",
+          "ppt",
+          "pptx",
+          "xls",
+          "xlsx"
+        ],
+        "role": "Viewer",
+        "rank": "Alternate"
+      }
+    ]
   }
 }

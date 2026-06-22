@@ -460,12 +460,18 @@ export type SyncFileBlob = {
 export type SyncFileRequest =
   | { action: "listWorkspaces"; args?: { includeArchived?: boolean } }
   | { action: "listTree"; args: { workspaceId: string; parentPath?: string; depth?: number; includeIgnored?: boolean } }
+  | { action: "listTreeChildren"; args: { workspaceId: string; parentPath: string; offset?: number; limit?: number; includeIgnored?: boolean } }
+  | { action: "refreshGitDecorations"; args: { workspaceId: string; forceFresh?: boolean } }
   | { action: "readFile"; args: { workspaceId: string; path: string } }
+  | { action: "readFileRange"; args: { workspaceId: string; path: string; offset: number; length?: number } }
+  | { action: "gitBlame"; args: { workspaceId: string; path: string; startLine?: number; endLine?: number } }
   | { action: "writeText"; args: { workspaceId: string; path: string; text: string } }
   | { action: "createFile"; args: { workspaceId: string; path: string; content?: string } }
   | { action: "createDirectory"; args: { workspaceId: string; path: string } }
   | { action: "rename"; args: { workspaceId: string; oldPath: string; newPath: string } }
   | { action: "deletePath"; args: { workspaceId: string; path: string } }
+  | { action: "watchChanges"; args: { workspaceId: string; includeIgnored?: boolean } }
+  | { action: "stopWatching"; args: { workspaceId: string; includeIgnored?: boolean } }
   | { action: "quickOpen"; args: { workspaceId: string; query: string; limit?: number; includeIgnored?: boolean } }
   | { action: "searchText"; args: { workspaceId: string; query: string; limit?: number; includeIgnored?: boolean } }
   | { action: "readArtifact"; args: { artifactId?: string; uri?: string; path?: string } };

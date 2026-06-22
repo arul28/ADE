@@ -5,12 +5,14 @@ import type { EditorTab } from "./editorGroupsStore";
 
 export function StatusBar({
   activeTab,
+  activeFullPath,
   branch,
   groupCount,
   openCount,
   dirtyCount,
 }: {
   activeTab: EditorTab | null;
+  activeFullPath?: string | null;
   branch?: string | null;
   groupCount: number;
   openCount: number;
@@ -26,8 +28,13 @@ export function StatusBar({
           <GitBranch size={11} /> {branch}
         </span>
       ) : null}
+      {activeFullPath ? (
+        <span className="min-w-0 flex-1 truncate" title={activeFullPath} style={{ color: COLORS.textDim }}>
+          {activeFullPath}
+        </span>
+      ) : null}
       {activeTab ? <span style={{ color: COLORS.textDim }}>{activeTab.languageId}</span> : null}
-      <span className="ml-auto" style={{ color: COLORS.textDim }}>
+      <span className={activeFullPath ? "shrink-0" : "ml-auto"} style={{ color: COLORS.textDim }}>
         {groupCount > 1 ? `${groupCount} groups · ` : ""}
         {openCount} open{dirtyCount > 0 ? ` · ${dirtyCount} unsaved` : ""}
       </span>

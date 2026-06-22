@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer, webFrame, webUtils } from "electron";
 import { IPC } from "../shared/ipc";
+import { EXTERNAL_FILES_WORKSPACE_ID_PREFIX } from "../shared/types/files";
 import { createOrchestrationBridge } from "./orchestrationBridge";
 import type { OrchestrationEventPayload } from "../shared/types/orchestration";
 import type {
@@ -176,6 +177,8 @@ import type {
   FilesListTreeChildrenArgs,
   FilesListTreeChildrenResult,
   FilesListWorkspacesArgs,
+  FilesOpenExternalPathArgs,
+  FilesOpenExternalPathResult,
   FilesQuickOpenArgs,
   FilesQuickOpenItem,
   FilesReadFileArgs,
@@ -1406,6 +1409,22 @@ async function callProjectFileRuntimeActionOr<T>(
     request,
   );
   return localRuntime.handled ? localRuntime.result : local();
+}
+
+function isExternalFilesWorkspaceId(workspaceId: string | null | undefined): boolean {
+  return typeof workspaceId === "string" && workspaceId.startsWith(EXTERNAL_FILES_WORKSPACE_ID_PREFIX);
+}
+
+function callFilesWorkspaceActionOr<T>(
+  workspaceId: string,
+  action: string,
+  request: Omit<RemoteRuntimeActionRequest, "domain" | "action">,
+  local: () => Promise<T>,
+): Promise<T> {
+  if (isExternalFilesWorkspaceId(workspaceId)) {
+    return local();
+  }
+  return callProjectFileRuntimeActionOr<T>(action, request, local);
 }
 
 async function callRemoteProjectSyncIfBound<T>(
@@ -6254,7 +6273,8 @@ contextBridge.exposeInMainWorld("ade", {
       );
     },
     listTree: async (args: FilesListTreeArgs): Promise<FileTreeNode[]> => {
-      return callProjectFileRuntimeActionOr<FileTreeNode[]>(
+      return callFilesWorkspaceActionOr<FileTreeNode[]>(
+        args.workspaceId,
         "listTree",
         { args },
         () => ipcRenderer.invoke(IPC.filesListTree, args),
@@ -6263,7 +6283,8 @@ contextBridge.exposeInMainWorld("ade", {
     listTreeChildren: async (
       args: FilesListTreeChildrenArgs,
     ): Promise<FilesListTreeChildrenResult> => {
-      return callProjectFileRuntimeActionOr<FilesListTreeChildrenResult>(
+      return callFilesWorkspaceActionOr<FilesListTreeChildrenResult>(
+        args.workspaceId,
         "listTreeChildren",
         { args },
         () => ipcRenderer.invoke(IPC.filesListTreeChildren, args),
@@ -6272,77 +6293,91 @@ contextBridge.exposeInMainWorld("ade", {
     refreshGitDecorations: async (
       args: FilesRefreshGitDecorationsArgs,
     ): Promise<FilesGitStatusEvent> => {
-      return callProjectFileRuntimeActionOr<FilesGitStatusEvent>(
+      return callFilesWorkspaceActionOr<FilesGitStatusEvent>(
+        args.workspaceId,
         "refreshGitDecorations",
         { args },
         () => ipcRenderer.invoke(IPC.filesRefreshGitDecorations, args),
       );
     },
+    openExternalPath: async (args: FilesOpenExternalPathArgs): Promise<FilesOpenExternalPathResult> => {
+      return ipcRenderer.invoke(IPC.filesOpenExternalPath, args);
+    },
     readFile: async (args: FilesReadFileArgs): Promise<FileContent> => {
-      return callProjectFileRuntimeActionOr<FileContent>(
+      return callFilesWorkspaceActionOr<FileContent>(
+        args.workspaceId,
         "readFile",
         { args },
         () => ipcRenderer.invoke(IPC.filesReadFile, args),
       );
     },
     readFileRange: async (args: FilesReadFileRangeArgs): Promise<FilesReadFileRangeResult> => {
-      return callProjectFileRuntimeActionOr<FilesReadFileRangeResult>(
+      return callFilesWorkspaceActionOr<FilesReadFileRangeResult>(
+        args.workspaceId,
         "readFileRange",
         { args },
         () => ipcRenderer.invoke(IPC.filesReadFileRange, args),
       );
     },
     gitBlame: async (args: FilesGitBlameArgs): Promise<FilesGitBlameResult> => {
-      return callProjectFileRuntimeActionOr<FilesGitBlameResult>(
+      return callFilesWorkspaceActionOr<FilesGitBlameResult>(
+        args.workspaceId,
         "blame",
         { args },
         () => ipcRenderer.invoke(IPC.filesGitBlame, args),
       );
     },
     writeText: async (args: FilesWriteTextArgs): Promise<void> => {
-      await callProjectFileRuntimeActionOr<void>(
+      await callFilesWorkspaceActionOr<void>(
+        args.workspaceId,
         "writeWorkspaceText",
         { args },
         () => ipcRenderer.invoke(IPC.filesWriteText, args),
       );
     },
     createFile: async (args: FilesCreateFileArgs): Promise<void> => {
-      await callProjectFileRuntimeActionOr<void>(
+      await callFilesWorkspaceActionOr<void>(
+        args.workspaceId,
         "createFile",
         { args },
         () => ipcRenderer.invoke(IPC.filesCreateFile, args),
       );
     },
     createDirectory: async (args: FilesCreateDirectoryArgs): Promise<void> => {
-      await callProjectFileRuntimeActionOr<void>(
+      await callFilesWorkspaceActionOr<void>(
+        args.workspaceId,
         "createDirectory",
         { args },
         () => ipcRenderer.invoke(IPC.filesCreateDirectory, args),
       );
     },
     rename: async (args: FilesRenameArgs): Promise<void> => {
-      await callProjectFileRuntimeActionOr<void>(
+      await callFilesWorkspaceActionOr<void>(
+        args.workspaceId,
         "rename",
         { args },
         () => ipcRenderer.invoke(IPC.filesRename, args),
       );
     },
     delete: async (args: FilesDeleteArgs): Promise<void> => {
-      await callProjectFileRuntimeActionOr<void>(
+      await callFilesWorkspaceActionOr<void>(
+        args.workspaceId,
         "deletePath",
         { args },
         () => ipcRenderer.invoke(IPC.filesDelete, args),
       );
     },
     watchChanges: async (args: FilesWatchArgs): Promise<void> => {
-      await callProjectFileRuntimeActionOr<void>(
+      await callFilesWorkspaceActionOr<void>(
+        args.workspaceId,
         "watchWorkspace",
         { args },
         () => ipcRenderer.invoke(IPC.filesWatchChanges, args),
       );
     },
     stopWatching: async (args: FilesWatchArgs): Promise<void> => {
-      await callProjectFileRuntimeActionOr<void>(
+      await callFilesWorkspaceActionOr<void>(
+        args.workspaceId,
         "stopWatching",
         { args },
         () => ipcRenderer.invoke(IPC.filesStopWatching, args),
@@ -6351,7 +6386,8 @@ contextBridge.exposeInMainWorld("ade", {
     quickOpen: async (
       args: FilesQuickOpenArgs,
     ): Promise<FilesQuickOpenItem[]> => {
-      return callProjectFileRuntimeActionOr<FilesQuickOpenItem[]>(
+      return callFilesWorkspaceActionOr<FilesQuickOpenItem[]>(
+        args.workspaceId,
         "quickOpen",
         { args },
         () => ipcRenderer.invoke(IPC.filesQuickOpen, args),
@@ -6360,7 +6396,8 @@ contextBridge.exposeInMainWorld("ade", {
     searchText: async (
       args: FilesSearchTextArgs,
     ): Promise<FilesSearchTextMatch[]> => {
-      return callProjectFileRuntimeActionOr<FilesSearchTextMatch[]>(
+      return callFilesWorkspaceActionOr<FilesSearchTextMatch[]>(
+        args.workspaceId,
         "searchText",
         { args },
         () => ipcRenderer.invoke(IPC.filesSearchText, args),

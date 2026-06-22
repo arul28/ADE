@@ -352,6 +352,7 @@ export const IPC = {
   filesListTree: "ade.files.listTree",
   filesListTreeChildren: "ade.files.listTreeChildren",
   filesRefreshGitDecorations: "ade.files.refreshGitDecorations",
+  filesOpenExternalPath: "ade.files.openExternalPath",
   filesReadFile: "ade.files.readFile",
   filesReadFileRange: "ade.files.readFileRange",
   filesGitBlame: "ade.files.gitBlame",

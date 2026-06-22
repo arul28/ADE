@@ -30,7 +30,7 @@ extension FilesDirectoryContentsView {
       open(node)
     }
 
-    Button("Copy Path") {
+    Button("Copy Full Path") {
       copyAbsolutePath(for: node)
     }
 
@@ -40,16 +40,11 @@ extension FilesDirectoryContentsView {
   }
 
   func copyAbsolutePath(for node: FileTreeNode) {
-    UIPasteboard.general.string = absolutePath(for: node.path)
+    UIPasteboard.general.string = filesFullPath(rootPath: workspace.rootPath, relativePath: node.path)
   }
 
   func copyRelativePath(for node: FileTreeNode) {
     UIPasteboard.general.string = node.path
-  }
-
-  func absolutePath(for relativePath: String) -> String {
-    guard !relativePath.isEmpty else { return workspace.rootPath }
-    return (workspace.rootPath as NSString).appendingPathComponent(relativePath)
   }
 
   struct DirectoryReloadKey: Hashable {

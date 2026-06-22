@@ -21,7 +21,7 @@ export type DeeplinkDispatcher = (
 
 const ADE_SCHEME_RE = new RegExp(`^${ADE_DEEPLINK_SCHEME}://`, "i");
 
-function isAdeDeeplinkArg(arg: unknown): arg is string {
+export function isAdeDeeplinkArg(arg: unknown): arg is string {
   if (typeof arg !== "string") return false;
   if (ADE_SCHEME_RE.test(arg)) return true;
   try {

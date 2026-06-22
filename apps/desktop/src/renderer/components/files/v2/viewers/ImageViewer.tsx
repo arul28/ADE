@@ -6,6 +6,7 @@ import type { ViewerProps } from "./types";
 
 const MIN_SCALE = 0.1;
 const MAX_SCALE = 12;
+const MAX_IMAGE_STREAM_BYTES = 100 * 1024 * 1024;
 
 function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;
@@ -30,18 +31,24 @@ export function ImageViewer({ workspaceId, content, tab }: ViewerProps) {
   useEffect(() => {
     let revoked: string | null = null;
     let cancelled = false;
+    setError(null);
     if (content.content && content.encoding === "base64" && !content.contentOmitted) {
       setSrc(`data:${mimeType};base64,${content.content}`);
       return;
     }
+    if (content.size > MAX_IMAGE_STREAM_BYTES) {
+      setSrc(null);
+      setError(`Image is too large for inline preview (${formatBytes(content.size)}). Use the OS to open it.`);
+      return;
+    }
     (async () => {
       try {
-        const bytes = await streamFileBytes(workspaceId, tab.path, { isCancelled: () => cancelled });
+        const bytes = await streamFileBytes(workspaceId, tab.path, {
+          isCancelled: () => cancelled,
+          maxBytes: MAX_IMAGE_STREAM_BYTES,
+        });
         if (cancelled) return;
-        // bytes is a fresh full-length Uint8Array, so its buffer is exactly the
-        // file bytes; pass the ArrayBuffer to sidestep the typed-array BlobPart
-        // generic mismatch.
-        const blob = new Blob([bytes.buffer as ArrayBuffer], { type: mimeType });
+        const blob = new Blob([bytes], { type: mimeType });
         const url = URL.createObjectURL(blob);
         revoked = url;
         setSrc(url);
@@ -53,7 +60,7 @@ export function ImageViewer({ workspaceId, content, tab }: ViewerProps) {
       cancelled = true;
       if (revoked) URL.revokeObjectURL(revoked);
     };
-  }, [workspaceId, tab.path, content.content, content.encoding, content.contentOmitted, mimeType]);
+  }, [workspaceId, tab.path, content.content, content.encoding, content.contentOmitted, content.size, mimeType]);
 
   const applyZoom = (factor: number, anchor?: { x: number; y: number }) => {
     setFit(false);

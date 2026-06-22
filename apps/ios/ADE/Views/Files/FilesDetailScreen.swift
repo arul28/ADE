@@ -60,6 +60,10 @@ struct FilesDetailScreen: View {
     return filesIsMarkdown(blob: blob, path: relativePath)
   }
 
+  var fullPath: String {
+    filesFullPath(rootPath: workspace.rootPath, relativePath: relativePath)
+  }
+
   var body: some View {
     Group {
       if let blob {
@@ -79,7 +83,20 @@ struct FilesDetailScreen: View {
     .navigationTitle(lastPathComponent(relativePath))
     .navigationBarTitleDisplayMode(.inline)
     .toolbar {
-      ToolbarItem(placement: .topBarTrailing) {
+      ToolbarItemGroup(placement: .topBarTrailing) {
+        Menu {
+          Button("Copy Full Path") {
+            UIPasteboard.general.string = fullPath
+          }
+
+          Button("Copy Relative Path") {
+            UIPasteboard.general.string = relativePath
+          }
+        } label: {
+          Image(systemName: "ellipsis.circle")
+        }
+        .accessibilityLabel("File actions")
+
         Button {
           isDetailsSheetPresented = true
         } label: {
@@ -136,6 +153,7 @@ struct FilesDetailScreen: View {
     .sheet(isPresented: $isDetailsSheetPresented) {
       FilesDetailsSheet(
         relativePath: relativePath,
+        fullPath: fullPath,
         blob: blob,
         metadata: metadata,
         language: language,
@@ -179,6 +197,9 @@ struct FilesDetailScreen: View {
     if filesIsImagePreviewable(path: relativePath, blob: blob) {
       return "Image"
     }
+    if let binaryKind = filesBinaryKind(path: relativePath, mimeType: blob.mimeType) {
+      return binaryKind.label
+    }
     if blob.isBinary {
       return "Binary"
     }
@@ -215,10 +236,11 @@ struct FilesDetailScreen: View {
         )
         .padding(16)
       } else {
+        let binaryKind = filesBinaryKind(path: relativePath, mimeType: blob.mimeType)
         FilesContentFallback(
-          symbol: "doc.fill",
-          title: "Binary file",
-          message: "iPhone keeps this read-only. Use ADE on the machine to open with a local tool."
+          symbol: binaryKind?.symbol ?? "doc.fill",
+          title: binaryKind.map { "\($0.label) file" } ?? "Binary file",
+          message: "iPhone keeps this read-only. Use ADE on the machine to preview or open it with a local tool."
         )
         .padding(16)
       }

@@ -8,14 +8,18 @@ import { WebSocket } from "ws";
 import { openKvDb } from "../state/kvDb";
 import { isCrsqliteAvailable } from "../state/crsqliteExtension";
 import {
+  assertFileRequestWorkspaceVisibleToPeer,
   createSyncHostService,
   parseNativeLanDiscoveryProcessList,
   shouldDeferSyncHostBackgroundChangesForChat,
   syncHostChangesetBatchOptionsForChat,
+  syncFileRequestWorkspaceId,
   syncHeartbeatMissLimitForPeerMetadata,
   SYNC_HOST_CHAT_ACTIVE_BACKGROUND_BACKPRESSURE_BYTES,
   SYNC_HOST_CHAT_ACTIVE_CHANGESET_BATCH_BYTES,
+  visibleFileWorkspacesForPeer,
 } from "./syncHostService";
+import type { SyncFileRequest } from "../../../shared/types";
 import type { SyncPinStore } from "./syncPinStore";
 import { encodeSyncEnvelope, parseSyncEnvelope } from "./syncProtocol";
 import type { ParsedSyncEnvelope } from "./syncProtocol";
@@ -131,6 +135,7 @@ async function connectClient(args: {
   platform?: "macOS" | "linux" | "windows" | "iOS" | "unknown";
   deviceType?: "desktop" | "phone" | "vps" | "unknown";
   capabilities?: string[];
+  auth?: { kind: "bootstrap"; token: string } | { kind: "paired"; deviceId: string; secret: string };
 }) {
   const ws = new WebSocket(`ws://127.0.0.1:${args.port}`);
   await new Promise<void>((resolve, reject) => {
@@ -142,7 +147,7 @@ async function connectClient(args: {
     type: "hello",
     requestId: "hello",
     payload: {
-      token: args.token,
+      ...(args.auth ? { auth: args.auth } : { token: args.token }),
       peer: {
         deviceId: args.deviceId,
         deviceName: args.deviceName,
@@ -387,7 +392,7 @@ function createAckRetryHost(projectRoot: string) {
     port: 0,
     pollIntervalMs: 25,
     discoveryEnabled: false,
-    pinStore: createStubPinStore(),
+    pinStore: createStubPinStore("428193"),
     fileService: createStubFileService(projectRoot) as any,
     laneService: {
       list: vi.fn().mockResolvedValue([]),
@@ -436,6 +441,34 @@ it("processes pending ACK retries before active-chat background deferral through
   let dateNowSpy: { mockRestore(): void } | null = null;
   try {
     const port = await host.waitUntilListening();
+    const pairWs = new WebSocket(`ws://127.0.0.1:${port}`);
+    await new Promise<void>((resolve, reject) => {
+      pairWs.once("open", () => resolve());
+      pairWs.once("error", reject);
+    });
+    const pairQueue = createMessageQueue(pairWs);
+    pairWs.send(encodeSyncEnvelope({
+      type: "pairing_request",
+      requestId: "pair-ack-retry",
+      payload: {
+        code: "428193",
+        peer: {
+          deviceId: "ios-ack-retry",
+          deviceName: "iOS ACK retry",
+          platform: "iOS",
+          deviceType: "phone",
+          siteId: "ios-ack-retry-site",
+          dbVersion: 0,
+        },
+      },
+    }));
+    const pairingResponse = await pairQueue.next("pairing_result");
+    const pairingPayload = pairingResponse.payload as { ok: boolean; deviceId?: string; secret?: string };
+    expect(pairingPayload.ok).toBe(true);
+    expect(pairingPayload.secret).toBeTruthy();
+    pairWs.close();
+    await new Promise((resolve) => pairWs.once("close", resolve));
+
     client = await connectClient({
       port,
       token: host.getBootstrapToken(),
@@ -446,6 +479,11 @@ it("processes pending ACK retries before active-chat background deferral through
       platform: "iOS",
       deviceType: "phone",
       capabilities: ["changesetAck"],
+      auth: {
+        kind: "paired",
+        deviceId: "ios-ack-retry",
+        secret: pairingPayload.secret ?? "",
+      },
     });
 
     const firstBatch = await client.queue.next("changeset_batch");
@@ -482,6 +520,81 @@ it("processes pending ACK retries before active-chat background deferral through
     await host.dispose();
     fs.rmSync(projectRoot, { recursive: true, force: true });
   }
+});
+
+it("hides external file workspaces from mobile peers", () => {
+  const workspaces = [
+    {
+      id: "workspace-1",
+      kind: "primary" as const,
+      laneId: "lane-1",
+      name: "Primary",
+      rootPath: "/project",
+      isReadOnlyByDefault: false,
+    },
+    {
+      id: "external-local:test",
+      kind: "external" as const,
+      laneId: null,
+      name: "External",
+      rootPath: "/Users/me/Downloads",
+      isReadOnlyByDefault: false,
+      mobileReadOnly: true,
+    },
+  ];
+
+  expect(visibleFileWorkspacesForPeer(workspaces, { isMobile: true }).map((workspace) => workspace.id)).toEqual(["workspace-1"]);
+  expect(visibleFileWorkspacesForPeer(workspaces, { isMobile: false }).map((workspace) => workspace.id)).toEqual([
+    "workspace-1",
+    "external-local:test",
+  ]);
+});
+
+it("blocks mobile file requests that target external workspaces", () => {
+  const externalWorkspace = {
+    id: "external-local:test",
+    kind: "external" as const,
+    laneId: null,
+    name: "External",
+    rootPath: "/Users/me/Downloads",
+    isReadOnlyByDefault: false,
+    mobileReadOnly: true,
+  };
+
+  expect(() => assertFileRequestWorkspaceVisibleToPeer({
+    isMobile: true,
+    workspace: externalWorkspace,
+  })).toThrow(/external local files/i);
+  expect(() => assertFileRequestWorkspaceVisibleToPeer({
+    isMobile: false,
+    workspace: externalWorkspace,
+  })).not.toThrow();
+});
+
+it("extracts workspace ids from every workspace-scoped file request", () => {
+  const requests: SyncFileRequest[] = [
+    { action: "listTree", args: { workspaceId: "external-local:test" } },
+    { action: "listTreeChildren", args: { workspaceId: "external-local:test", parentPath: "nested" } },
+    { action: "refreshGitDecorations", args: { workspaceId: "external-local:test" } },
+    { action: "readFile", args: { workspaceId: "external-local:test", path: "notes.txt" } },
+    { action: "readFileRange", args: { workspaceId: "external-local:test", path: "notes.txt", offset: 0 } },
+    { action: "gitBlame", args: { workspaceId: "external-local:test", path: "notes.txt" } },
+    { action: "writeText", args: { workspaceId: "external-local:test", path: "notes.txt", text: "hi" } },
+    { action: "createFile", args: { workspaceId: "external-local:test", path: "new.txt" } },
+    { action: "createDirectory", args: { workspaceId: "external-local:test", path: "new-dir" } },
+    { action: "rename", args: { workspaceId: "external-local:test", oldPath: "a.txt", newPath: "b.txt" } },
+    { action: "deletePath", args: { workspaceId: "external-local:test", path: "b.txt" } },
+    { action: "watchChanges", args: { workspaceId: "external-local:test", includeIgnored: true } },
+    { action: "stopWatching", args: { workspaceId: "external-local:test", includeIgnored: true } },
+    { action: "quickOpen", args: { workspaceId: "external-local:test", query: "note" } },
+    { action: "searchText", args: { workspaceId: "external-local:test", query: "note" } },
+  ];
+
+  for (const request of requests) {
+    expect(syncFileRequestWorkspaceId(request)).toBe("external-local:test");
+  }
+  expect(syncFileRequestWorkspaceId({ action: "listWorkspaces", args: {} })).toBeNull();
+  expect(syncFileRequestWorkspaceId({ action: "readArtifact", args: { artifactId: "artifact-1" } })).toBeNull();
 });
 
 it("parses ADE dns-sd discovery processes for orphan recovery", () => {

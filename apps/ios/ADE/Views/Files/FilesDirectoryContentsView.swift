@@ -54,7 +54,7 @@ struct FilesDirectoryContentsView: View {
             contextMenu(for: node)
           }
           .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-            Button("Copy Path") {
+            Button("Copy Full Path") {
               copyAbsolutePath(for: node)
             }
             .tint(ADEColor.accent)
@@ -64,7 +64,7 @@ struct FilesDirectoryContentsView: View {
             }
             .tint(ADEColor.info)
           }
-          .accessibilityAction(named: Text("Copy Path")) {
+          .accessibilityAction(named: Text("Copy Full Path")) {
             copyAbsolutePath(for: node)
           }
           .accessibilityAction(named: Text("Copy Relative Path")) {

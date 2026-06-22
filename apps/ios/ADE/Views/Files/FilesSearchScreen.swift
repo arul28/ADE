@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// Content matches for one file, grouped VS Code-style so a file with many
 /// hits collapses to a single header row with a count.
@@ -125,6 +126,14 @@ struct FilesSearchScreen: View {
               )
             }
             .buttonStyle(.plain)
+            .contextMenu {
+              Button("Copy Full Path") {
+                UIPasteboard.general.string = filesFullPath(rootPath: workspace.rootPath, relativePath: item.path)
+              }
+              Button("Copy Relative Path") {
+                UIPasteboard.general.string = item.path
+              }
+            }
           }
         }
 
@@ -134,6 +143,7 @@ struct FilesSearchScreen: View {
           ForEach(contentGroups) { group in
             FilesSearchContentGroupView(
               group: group,
+              workspaceRootPath: workspace.rootPath,
               isCollapsed: collapsedGroups.contains(group.path),
               onToggle: { toggleGroup(group.path) },
               onOpenLine: { line in open(path: group.path, line: line) }
@@ -294,6 +304,7 @@ struct FilesSearchScreen: View {
 /// A collapsible file group of content matches, each row a line number + preview.
 private struct FilesSearchContentGroupView: View {
   let group: FilesSearchContentGroup
+  let workspaceRootPath: String
   let isCollapsed: Bool
   let onToggle: () -> Void
   let onOpenLine: (Int) -> Void
@@ -338,6 +349,14 @@ private struct FilesSearchContentGroupView: View {
         .contentShape(Rectangle())
       }
       .buttonStyle(.plain)
+      .contextMenu {
+        Button("Copy Full Path") {
+          UIPasteboard.general.string = filesFullPath(rootPath: workspaceRootPath, relativePath: group.path)
+        }
+        Button("Copy Relative Path") {
+          UIPasteboard.general.string = group.path
+        }
+      }
       .accessibilityLabel("\(lastPathComponent(group.path)), \(group.matches.count) matches")
       .accessibilityHint(isCollapsed ? "Expands matches" : "Collapses matches")
 

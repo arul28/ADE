@@ -196,6 +196,11 @@ export type AppNavigationTarget =
   | {
       kind: "route";
       route: string;
+    }
+  | {
+      kind: "files-external";
+      /** Absolute local path requested by Finder/Open With or a native OS drop. */
+      path: string;
     };
 
 export type AppNavigationRequest = {

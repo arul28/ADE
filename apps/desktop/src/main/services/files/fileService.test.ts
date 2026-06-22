@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createFileService } from "./fileService";
+import { createExternalFilesWorkspaceRegistry, createFileService } from "./fileService";
 
 function createLaneServiceStub(rootPath: string) {
   return {
@@ -199,6 +199,126 @@ describe("fileService", () => {
       expect(Buffer.concat(chunks)).toEqual(pdfBytes);
     } finally {
       fs.rmSync(rootPath, { recursive: true, force: true });
+    }
+  });
+
+  it("streams media and Office document byte ranges as base64 for every chunk", async () => {
+    const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), "ade-file-service-binary-range-"));
+    const laneService = createLaneServiceStub(rootPath);
+    const service = createFileService({ laneService });
+
+    try {
+      for (const fileName of ["clip.mp4", "slides.pptx"]) {
+        const bytes = Buffer.concat([
+          Buffer.from([0x00, 0xff, 0x10, 0x20, 0x30]),
+          Buffer.alloc(31, fileName.length),
+        ]);
+        fs.writeFileSync(path.join(rootPath, fileName), bytes);
+
+        let offset = 0;
+        const chunks: Buffer[] = [];
+        for (;;) {
+          const page = await service.readFileRange({
+            workspaceId: "workspace-1",
+            path: fileName,
+            offset,
+            length: 5,
+          });
+          expect(page.encoding).toBe("base64");
+          chunks.push(Buffer.from(page.content, "base64"));
+          if (page.nextOffset == null) break;
+          offset = page.nextOffset;
+        }
+
+        expect(Buffer.concat(chunks)).toEqual(bytes);
+      }
+    } finally {
+      fs.rmSync(rootPath, { recursive: true, force: true });
+    }
+  });
+
+  it("streams generic binary byte ranges as base64 after the first chunk", async () => {
+    const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), "ade-file-service-generic-binary-range-"));
+    const laneService = createLaneServiceStub(rootPath);
+    const service = createFileService({ laneService });
+
+    try {
+      const bytes = Buffer.concat([
+        Buffer.from([0x00, 0xff, 0x10, 0x20, 0x30]),
+        Buffer.alloc(30, 0x41),
+      ]);
+      fs.writeFileSync(path.join(rootPath, "archive.dat"), bytes);
+
+      let offset = 0;
+      const chunks: Buffer[] = [];
+      for (;;) {
+        const page = await service.readFileRange({
+          workspaceId: "workspace-1",
+          path: "archive.dat",
+          offset,
+          length: 5,
+        });
+        expect(page.encoding).toBe("base64");
+        chunks.push(Buffer.from(page.content, "base64"));
+        if (page.nextOffset == null) break;
+        offset = page.nextOffset;
+      }
+
+      expect(Buffer.concat(chunks)).toEqual(bytes);
+    } finally {
+      fs.rmSync(rootPath, { recursive: true, force: true });
+    }
+  });
+
+  it("registers external file and folder workspaces for explicit local opens", async () => {
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-file-service-external-project-"));
+    const externalRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-file-service-external-root-"));
+    const laneService = createLaneServiceStub(projectRoot);
+    const externalWorkspaces = createExternalFilesWorkspaceRegistry();
+    const service = createFileService({ laneService, externalWorkspaces });
+
+    try {
+      fs.writeFileSync(path.join(projectRoot, "inside.txt"), "inside", "utf8");
+      fs.writeFileSync(path.join(externalRoot, "note.txt"), "hello", "utf8");
+      laneService.getFilesWorkspaces.mockReturnValue([
+        {
+          id: "primary",
+          kind: "primary",
+          laneId: null,
+          name: "Project",
+          branchRef: "refs/heads/main",
+          rootPath: projectRoot,
+          isReadOnlyByDefault: true,
+        },
+      ]);
+
+      const projectFileOpen = await service.openExternalPath({ path: path.join(projectRoot, "inside.txt") });
+      expect(projectFileOpen.pathType).toBe("file");
+      expect(projectFileOpen.openPath).toBe("inside.txt");
+      expect(projectFileOpen.workspace).toMatchObject({
+        id: "primary",
+        kind: "primary",
+        rootPath: projectRoot,
+      });
+      expect(externalWorkspaces.list()).toEqual([]);
+
+      const fileOpen = await service.openExternalPath({ path: path.join(externalRoot, "note.txt") });
+      expect(fileOpen.pathType).toBe("file");
+      expect(fileOpen.openPath).toBe("note.txt");
+      expect(fileOpen.workspace).toMatchObject({
+        kind: "external",
+        rootPath: fs.realpathSync(externalRoot),
+        mobileReadOnly: true,
+      });
+
+      const directoryOpen = await service.openExternalPath({ path: externalRoot });
+      expect(directoryOpen.pathType).toBe("directory");
+      expect(directoryOpen.openPath).toBeNull();
+      expect(directoryOpen.workspace.id).toBe(fileOpen.workspace.id);
+      expect(service.listWorkspaces().some((workspace) => workspace.id === fileOpen.workspace.id)).toBe(true);
+    } finally {
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+      fs.rmSync(externalRoot, { recursive: true, force: true });
     }
   });
 

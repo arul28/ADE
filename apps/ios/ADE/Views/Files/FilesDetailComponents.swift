@@ -374,6 +374,7 @@ struct FilesDetailsSheet: View {
   @Environment(\.dismiss) private var dismiss
 
   let relativePath: String
+  let fullPath: String
   let blob: SyncFileBlob?
   let metadata: FilesFileMetadata?
   let language: FilesLanguage
@@ -439,7 +440,8 @@ struct FilesDetailsSheet: View {
         .foregroundStyle(ADEColor.textPrimary)
 
       VStack(alignment: .leading, spacing: 14) {
-        FilesMetadataRow(label: "Path", value: relativePath)
+        FilesMetadataRow(label: "Full path", value: fullPath)
+        FilesMetadataRow(label: "Relative path", value: relativePath)
         FilesMetadataRow(
           label: "Size",
           value: metadata?.sizeText ?? blob.map { formattedFileSize($0.size) } ?? "—"

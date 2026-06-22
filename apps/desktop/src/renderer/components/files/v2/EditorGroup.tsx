@@ -8,6 +8,7 @@ import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
 import { ViewerHost } from "./ViewerHost";
 import { DiffViewer } from "./viewers/DiffViewer";
 import type { EditorApi, EditorThemeMode } from "./viewers/types";
+import { joinDisplayPath } from "./pathDisplay";
 
 export type EditorGroupProps = {
   group: EditorGroupModel;
@@ -17,6 +18,7 @@ export type EditorGroupProps = {
   /** Lane id of the active workspace, or null for the primary checkout (no diff). */
   laneId: string | null;
   canEdit: boolean;
+  canRevealInFinder: boolean;
   theme: EditorThemeMode;
   registry: MonacoModelRegistry;
   dirtyPaths: ReadonlySet<string>;
@@ -58,6 +60,7 @@ export function EditorGroup(props: EditorGroupProps) {
 
   const tabMenuItems = (path: string): ContextMenuItem[] => {
     const pinned = group.tabs.find((t) => t.path === path)?.pinned ?? false;
+    const name = path.split("/").filter(Boolean).pop() ?? path;
     return [
       { type: "item", label: "Close", icon: <X size={13} />, onClick: () => props.onCloseTab(group.id, path) },
       { type: "item", label: "Close Others", icon: <XCircle size={13} />, onClick: () => props.onCloseOthers(group.id, path), disabled: group.tabs.length <= 1 },
@@ -65,8 +68,16 @@ export function EditorGroup(props: EditorGroupProps) {
       { type: "item", label: pinned ? "Pinned" : "Pin", icon: <PushPin size={13} weight={pinned ? "fill" : "regular"} />, onClick: () => props.onPinTab(group.id, path), disabled: pinned },
       { type: "item", label: "Split Right", icon: <SplitHorizontal size={13} />, onClick: () => props.onSplitTab(group.id, path), disabled: group.tabs.length <= 1 },
       { type: "separator" },
-      { type: "item", label: "Copy Path", icon: <Copy size={13} />, onClick: () => void window.ade.app.writeClipboardText?.(path) },
-      { type: "item", label: "Reveal in Finder", icon: <ArrowSquareOut size={13} />, onClick: () => void window.ade.app.openPathInEditor?.({ rootPath: props.rootPath, relativePath: path, target: "finder" }).catch(() => {}) },
+      { type: "item", label: "Copy Full Path", icon: <Copy size={13} />, onClick: () => void window.ade.app.writeClipboardText?.(joinDisplayPath(props.rootPath, path)) },
+      { type: "item", label: "Copy Relative Path", icon: <Copy size={13} />, onClick: () => void window.ade.app.writeClipboardText?.(path) },
+      { type: "item", label: "Copy Name", icon: <Copy size={13} />, onClick: () => void window.ade.app.writeClipboardText?.(name) },
+      {
+        type: "item",
+        label: "Reveal in Finder",
+        icon: <ArrowSquareOut size={13} />,
+        onClick: () => void window.ade.app.openPathInEditor?.({ rootPath: props.rootPath, relativePath: path, target: "finder" }).catch(() => {}),
+        disabled: !props.canRevealInFinder,
+      },
     ];
   };
 

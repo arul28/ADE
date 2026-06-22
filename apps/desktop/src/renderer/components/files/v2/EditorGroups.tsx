@@ -18,6 +18,7 @@ export type EditorGroupsProps = {
   rootPath: string;
   laneId: string | null;
   canEdit: boolean;
+  canRevealInFinder: boolean;
   theme: EditorThemeMode;
   registry: MonacoModelRegistry;
   dirtyPaths: ReadonlySet<string>;
@@ -78,6 +79,7 @@ export function EditorGroups(props: EditorGroupsProps) {
               rootPath={props.rootPath}
               laneId={props.laneId}
               canEdit={props.canEdit}
+              canRevealInFinder={props.canRevealInFinder}
               theme={props.theme}
               registry={props.registry}
               dirtyPaths={props.dirtyPaths}
