@@ -83,6 +83,9 @@ const { SerializeAddon } = xtermSerializeModule;
 /** Delay before auto-generating a title from CLI output; keep in sync with tests. */
 export const PTY_AI_TITLE_DEBOUNCE_MS = 6000;
 export const PTY_AI_TITLE_TIMEOUT_MS = 60_000;
+// Delay before the early CLI title pass so a slice of session output exists to
+// summarize (seed + transcript). The deterministic name shows until then.
+export const EARLY_CLI_AI_TITLE_DELAY_MS = 5_000;
 const MAX_STARTUP_COMMAND_DELAY_MS = 1000;
 
 function normalizeStartupCommandDelayMs(value: unknown): number {
@@ -1407,6 +1410,63 @@ export function createPtyService({
     return typeof raw === "string" && raw.trim().length ? raw.trim() : null;
   };
 
+  // Generate an early CLI session title from the first user input PLUS a slice
+  // of the actual session output, so the name reflects what the session is doing
+  // (e.g. "Inspect GitHub login screenshot") rather than echoing the opening
+  // line ("Take a look at …"). Runs once, a few seconds after the first input so
+  // some output exists, and never overwrites a user rename. The on-complete pass
+  // refines it later.
+  const runEarlyCliAiTitle = async (entry: PtyEntry, seed: string): Promise<void> => {
+    if (entry.disposed) return;
+    if (!aiIntegrationService || aiIntegrationService.getMode() === "guest") return;
+    if (!isTitleGenerationEnabled()) return;
+    const session = sessionService.get(entry.sessionId);
+    if (!session) return;
+    if (isSessionManuallyNamed(sessionService, entry.sessionId)) {
+      logger.info("pty.cli_user_title_skipped_user_renamed", { sessionId: entry.sessionId });
+      return;
+    }
+    const laneName = session.laneName?.trim() || "Current lane";
+    const outputSlice = stripAnsi(entry.recentOutputTail).replace(/\r/g, "\n").trim().slice(-4000);
+    const titleModelId = resolveTitleModelId();
+    const titleReasoningEffort = resolveTitleReasoningEffort();
+    const prompt = [
+      "Write a concise title for this CLI coding session.",
+      "Return only plain text, max 80 characters, no punctuation at the end.",
+      "Base it on what the session is actually doing, not the literal opening words.",
+      "",
+      `Lane: ${laneName}`,
+      `Session type: ${session.toolType ?? "terminal"}`,
+      "Primary request (first submitted user input):",
+      seed,
+      ...(outputSlice ? ["", "Session output so far:", outputSlice] : []),
+    ].join("\n");
+    const capturedAi = aiIntegrationService;
+    try {
+      const result = await capturedAi.summarizeTerminal({
+        cwd: entry.boundCwd || entry.laneWorktreePath,
+        prompt,
+        taskType: "session_title",
+        timeoutMs: PTY_AI_TITLE_TIMEOUT_MS,
+        ...(titleModelId ? { model: titleModelId } : {}),
+        ...(titleReasoningEffort ? { reasoningEffort: titleReasoningEffort } : {}),
+      });
+      if (entry.disposed) return;
+      const title = sanitizeGeneratedCliTitle(result.text);
+      if (!title) return;
+      if (isSessionManuallyNamed(sessionService, entry.sessionId)) {
+        logger.info("pty.cli_user_title_skipped_user_renamed", { sessionId: entry.sessionId });
+        return;
+      }
+      sessionService.updateMeta({ sessionId: entry.sessionId, title, manuallyNamed: false });
+    } catch (err) {
+      logger.warn("pty.cli_user_title_generation_failed", {
+        sessionId: entry.sessionId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  };
+
   const tryCliUserTitleFromWrite = (entry: PtyEntry, data: string): void => {
     if (!CLI_USER_TITLE_TOOL_TYPES.has(entry.toolTypeHint ?? "shell")) return;
     if (entry.cliUserTitleCommitted || entry.disposed) return;
@@ -1445,45 +1505,15 @@ export function createPtyService({
       if (!aiIntegrationService || aiIntegrationService.getMode() === "guest") return;
       if (!isTitleGenerationEnabled()) return;
 
-      const laneName = session.laneName?.trim() || "Current lane";
-      const titleModelId = resolveTitleModelId();
-      const titleReasoningEffort = resolveTitleReasoningEffort();
-      const prompt = [
-        "Write a concise title for this CLI coding session.",
-        "Return only plain text, max 80 characters, no punctuation at the end.",
-        "",
-        `Lane: ${laneName}`,
-        `Session type: ${session.toolType ?? "terminal"}`,
-        "Primary request (first submitted user input):",
-        seed,
-      ].join("\n");
-
-      const capturedAi = aiIntegrationService;
-      capturedAi
-        .summarizeTerminal({
-          cwd: entry.boundCwd || entry.laneWorktreePath,
-          prompt,
-          taskType: "session_title",
-          timeoutMs: PTY_AI_TITLE_TIMEOUT_MS,
-          ...(titleModelId ? { model: titleModelId } : {}),
-          ...(titleReasoningEffort ? { reasoningEffort: titleReasoningEffort } : {}),
-        })
-        .then((result) => {
-          if (entry.disposed) return;
-          const title = sanitizeGeneratedCliTitle(result.text);
-          if (!title) return;
-          if (isSessionManuallyNamed(sessionService, entry.sessionId)) {
-            logger.info("pty.cli_user_title_skipped_user_renamed", { sessionId: entry.sessionId });
-            return;
-          }
-          sessionService.updateMeta({ sessionId: entry.sessionId, title, manuallyNamed: false });
-        })
-        .catch((err) => {
-          logger.warn("pty.cli_user_title_generation_failed", {
-            sessionId: entry.sessionId,
-            error: err instanceof Error ? err.message : String(err),
-          });
-        });
+      // Defer the AI title briefly so it can read a slice of the session's actual
+      // output (seed + transcript) rather than echoing the opening line. The
+      // deterministic fallback set above shows in the meantime. Fires once; the
+      // aiTitleTimer field is unused for interactive CLI tool types otherwise.
+      entry.aiTitleTimer = setTimeout(() => {
+        entry.aiTitleTimer = null;
+        void runEarlyCliAiTitle(entry, seed);
+      }, EARLY_CLI_AI_TITLE_DELAY_MS);
+      if (entry.aiTitleTimer.unref) entry.aiTitleTimer.unref();
       return;
     }
 

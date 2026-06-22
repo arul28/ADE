@@ -127,6 +127,7 @@ import { ChatActionsDrawerPanel, type ChatActionsTab } from "./ChatActionsDrawer
 import { CodexPlanCard } from "./codex/CodexPlanCard";
 import { ChatPrPane } from "./ChatPrPane";
 import { rootAppStoreApi, selectActiveProjectRoot, useAppStore, useRootAppStore } from "../../state/appStore";
+import { setLaneNaming } from "../../state/laneNamingStore";
 import { buildChatAppearanceRootStyle } from "./chatAppearance";
 import { copyLaunchPromptToClipboard } from "../../lib/launchPromptClipboard";
 import { LaneAccentDot } from "../lanes/LaneAccentDot";
@@ -662,42 +663,6 @@ function autoLaneGenericSuffix(date = new Date()): string {
 
 function createDeterministicAutoLaneName(prompt: string, options: { genericSuffix?: string | null } = {}): string {
   return deriveDeterministicLaneNameFromPrompt(prompt, options);
-}
-
-const AUTO_LANE_NAME_SUGGEST_TIMEOUT_MS = 10_000;
-
-async function suggestAutoLaneName(args: {
-  laneId: string;
-  prompt: string;
-  modelId: string;
-  genericSuffix?: string | null;
-  onFallback?: (message: string) => void;
-}): Promise<string> {
-  const fallbackName = createDeterministicAutoLaneName(args.prompt, { genericSuffix: args.genericSuffix });
-  let timeoutId: ReturnType<typeof setTimeout> | null = null;
-  try {
-    const suggested = await Promise.race([
-      window.ade.agentChat.suggestLaneName({
-        laneId: args.laneId,
-        prompt: args.prompt,
-        modelId: args.modelId,
-        fallbackName,
-      }),
-      new Promise<string>((resolve) => {
-        timeoutId = setTimeout(() => {
-          args.onFallback?.(`Lane naming with ${formatLocalModelLabel(args.modelId)} took longer than 10s; using a deterministic name.`);
-          resolve(fallbackName);
-        }, AUTO_LANE_NAME_SUGGEST_TIMEOUT_MS);
-      }),
-    ]);
-    return suggested.trim() || fallbackName;
-  } catch (error) {
-    console.warn("draft launch lane name suggestion failed; using fallback name", error);
-    args.onFallback?.("Lane naming failed; using a deterministic name.");
-    return fallbackName;
-  } finally {
-    if (timeoutId) clearTimeout(timeoutId);
-  }
 }
 
 export type AgentChatSessionCreatedOptions = {
@@ -6892,10 +6857,84 @@ export function AgentChatPane({
     });
   }, [draftLaunchJobs, forceDraft, openLaunchedDraftSession]);
 
+  // Shared background-naming lifecycle: flag the affected lanes as "naming", ask
+  // the backend for a name (it has its own timeout and returns the deterministic
+  // fallback on failure, so a no-op result is skipped), apply it via `apply`, then
+  // always clear the flags. Naming never sits on the critical path — lanes are
+  // created instantly with deterministic names and upgraded here in the background.
+  const runBackgroundLaneNaming = useCallback((args: {
+    laneId: string;
+    prompt: string;
+    modelId: string;
+    fallbackName: string;
+    flagLaneIds: string[];
+    apply: (suggested: string) => Promise<void>;
+  }) => {
+    if (!args.flagLaneIds.length) return;
+    for (const id of args.flagLaneIds) setLaneNaming(id, true);
+    void (async () => {
+      try {
+        const suggested = (await window.ade.agentChat.suggestLaneName({
+          laneId: args.laneId,
+          prompt: args.prompt,
+          modelId: args.modelId,
+          fallbackName: args.fallbackName,
+        })).trim();
+        if (suggested && suggested !== args.fallbackName) {
+          await args.apply(suggested);
+          await refreshLanesStore().catch(() => undefined);
+        }
+      } catch (error) {
+        console.warn("background lane naming failed; keeping deterministic name", error);
+      } finally {
+        for (const id of args.flagLaneIds) setLaneNaming(id, false);
+      }
+    })();
+  }, [refreshLanesStore]);
+
+  // Single auto-created lane: rename it in place to the AI name.
+  const startBackgroundLaneNaming = useCallback((args: {
+    laneId: string;
+    prompt: string;
+    modelId: string;
+    fallbackName: string;
+  }) => {
+    runBackgroundLaneNaming({
+      ...args,
+      flagLaneIds: [args.laneId],
+      apply: (suggested) => window.ade.lanes.rename({ laneId: args.laneId, name: suggested }),
+    });
+  }, [runBackgroundLaneNaming]);
+
+  // Parallel-models variant: each child lane is created instantly as
+  // `<deterministicBase>-<modelSuffix>`. One background AI call produces the base
+  // name, then every child is renamed to `<aiBase>-<modelSuffix>` in place. A
+  // single child's rename failure must not abort the rest.
+  const startBackgroundParallelLaneNaming = useCallback((args: {
+    laneId: string;
+    prompt: string;
+    modelId: string;
+    fallbackBase: string;
+    children: Array<{ laneId: string; suffix: string }>;
+  }) => {
+    runBackgroundLaneNaming({
+      laneId: args.laneId,
+      prompt: args.prompt,
+      modelId: args.modelId,
+      fallbackName: args.fallbackBase,
+      flagLaneIds: args.children.map((child) => child.laneId),
+      apply: async (suggested) => {
+        for (const child of args.children) {
+          await window.ade.lanes.rename({ laneId: child.laneId, name: `${suggested}-${child.suffix}` })
+            .catch((error: unknown) => console.warn("background parallel lane rename failed", error));
+        }
+      },
+    });
+  }, [runBackgroundLaneNaming]);
+
   const resolveDraftLaunchLane = useCallback(async (
     snapshot: DraftLaunchSnapshot,
     onAutoCreateNameResolved?: () => void,
-    onAutoCreateNameFallback?: (message: string) => void,
     onAutoCreateNameModelResolved?: (modelId: string) => void,
     assertActive?: () => void,
     pin?: OpenProjectBinding | null,
@@ -6913,15 +6952,10 @@ export function AgentChatPane({
       const namingModelId = titleModelId || snapshot.modelId;
       onAutoCreateNameModelResolved?.(namingModelId);
       const genericSuffix = autoLaneGenericSuffix();
-      const laneName = titleSettings?.enabled === false
-        ? createDeterministicAutoLaneName(namingSeed, { genericSuffix })
-        : await suggestAutoLaneName({
-            laneId: primaryLane.id,
-            prompt: namingSeed,
-            modelId: namingModelId,
-            genericSuffix,
-            onFallback: onAutoCreateNameFallback,
-          });
+      // Instant: name the lane deterministically now. If AI titles are enabled,
+      // the real name is generated in the background after creation and applied
+      // via lanes.rename — naming never blocks lane creation (no 10s race).
+      const laneName = createDeterministicAutoLaneName(namingSeed, { genericSuffix });
       onAutoCreateNameResolved?.();
       // Guard before branch discovery too: git.fetch/listBranches run against the
       // primary lane through the active binding, so a switch during naming must
@@ -6965,6 +6999,14 @@ export function AgentChatPane({
       await refreshLanesStore().catch((refreshError: unknown) => {
         console.warn("draft launch lane refresh failed", refreshError);
       });
+      if (titleSettings?.enabled !== false) {
+        startBackgroundLaneNaming({
+          laneId: createdLane.id,
+          prompt: namingSeed,
+          modelId: namingModelId,
+          fallbackName: laneName,
+        });
+      }
       return {
         laneId: createdLane.id,
         laneName: createdLane.name,
@@ -6981,7 +7023,7 @@ export function AgentChatPane({
       worktreePath: launchLane?.worktreePath ?? projectRoot ?? null,
       autoCreated: false,
     };
-  }, [availableLanes, draftLaunchTargetIsAutoCreate, laneDisplayLabel, laneId, lanes, projectRoot, refreshLanesStore]);
+  }, [availableLanes, draftLaunchTargetIsAutoCreate, laneDisplayLabel, laneId, lanes, projectRoot, refreshLanesStore, startBackgroundLaneNaming]);
 
   const clearDraftLaunchComposer = useCallback((snapshot: DraftLaunchSnapshot) => {
     setDraft((current) => {
@@ -7233,7 +7275,9 @@ export function AgentChatPane({
       id: jobId,
       mode,
       draftKind: kind,
-      status: draftLaunchTargetIsAutoCreate ? "naming-lane" : "starting-session",
+      // Auto-create no longer blocks on naming (deterministic name now, AI rename
+      // in the background), so the launch goes straight to lane creation.
+      status: draftLaunchTargetIsAutoCreate ? "creating-lane" : "starting-session",
       title: buildDraftLaunchJobTitle(kind, snapshot),
       laneId: null,
       laneName: null,
@@ -7262,8 +7306,6 @@ export function AgentChatPane({
     try {
       targetLane = await withDraftLaunchTimeout(resolveDraftLaunchLane(snapshot, () => {
         patchDraftLaunchJob(jobId, { status: "creating-lane" });
-      }, (message) => {
-        patchDraftLaunchJob(jobId, { warning: message });
       }, (modelId) => {
         patchDraftLaunchJob(jobId, { namingModelId: modelId });
       }, assertLaunchActive, launchBinding), "Lane setup", markLaunchTimedOut);
@@ -7659,19 +7701,12 @@ export function AgentChatPane({
         const titleSettings = projectConfigSnapshot?.effective?.ai?.sessionIntelligence?.titles;
         const titleModelId = typeof titleSettings?.modelId === "string" ? titleSettings.modelId.trim() : "";
         const namingModelId = titleModelId || parallelModelSlots[0]!.modelId;
-        if (titleSettings?.enabled !== false) {
-          setParallelLaunchStatus(`Naming lanes with ${formatLocalModelLabel(namingModelId)}...`);
-        }
         const genericSuffix = autoLaneGenericSuffix();
-        const baseName = titleSettings?.enabled === false
-          ? createDeterministicAutoLaneName(namingSeed, { genericSuffix })
-          : await suggestAutoLaneName({
-              laneId,
-              prompt: namingSeed,
-              modelId: namingModelId,
-              genericSuffix,
-              onFallback: setParallelLaunchStatus,
-            });
+        // Instant: name child lanes deterministically now. If AI titles are
+        // enabled, the real base name is generated in the background after the
+        // lanes exist and applied to each child via lanes.rename (no 10s race).
+        const baseName = createDeterministicAutoLaneName(namingSeed, { genericSuffix });
+        const childLaneNamings: Array<{ laneId: string; suffix: string }> = [];
         setParallelLaunchStatus(`Creating ${parallelModelSlots.length} child lanes…`);
 
         for (const slot of parallelModelSlots) {
@@ -7680,6 +7715,7 @@ export function AgentChatPane({
           const laneName = `${baseName}-${suffix}`;
           const childLane = await window.ade.lanes.createChild({ parentLaneId: laneId, name: laneName });
           createdLaneIds.push(childLane.id);
+          childLaneNamings.push({ laneId: childLane.id, suffix });
           await persistParallelLaunchState(buildParallelLaunchState({
             parentLaneId: laneId,
             createdLaneIds,
@@ -7702,6 +7738,16 @@ export function AgentChatPane({
         }
 
         await refreshLanesStore();
+
+        if (titleSettings?.enabled !== false) {
+          startBackgroundParallelLaneNaming({
+            laneId,
+            prompt: namingSeed,
+            modelId: namingModelId,
+            fallbackBase: baseName,
+            children: childLaneNamings,
+          });
+        }
 
         const { sendText, displayText: displayForSend } = buildParallelLaunchPrompt({
           text,
@@ -8218,6 +8264,7 @@ export function AgentChatPane({
     navigate,
     buildNativeControlPayloadForSlot,
     refreshLanesStore,
+    startBackgroundParallelLaneNaming,
     persistParallelLaunchState,
     setWorkViewState,
     setLaneWorkViewState,

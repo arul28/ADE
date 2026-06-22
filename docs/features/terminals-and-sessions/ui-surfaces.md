@@ -131,11 +131,18 @@ Three rows:
 1. **Status dot + title + relative time** — `sessionStatusDot()` and
    `primarySessionLabel()` drive these. The relative time comes from
    `relativeTimeCompact`.
-2. **Preview line** (conditional) — `session.summary` first. Running
-   sessions may then show sanitized `session.lastOutputPreview`; completed,
-   failed, disposed, and detached sessions fall back to `session.goal`
-   instead of raw last output. Sanitization strips ANSI and control chars via
-   `sanitizeTerminalInlineText`.
+2. **Preview line** (conditional) — when the card's lane is mid
+   background AI auto-naming (`useLaneNaming(lane.id)` from
+   `renderer/state/laneNamingStore.ts` is true), this row instead shows an
+   italic "Auto-naming lane underway…" status. Otherwise it shows
+   `session.summary` first; running sessions may then show sanitized
+   `session.lastOutputPreview`; completed, failed, disposed, and detached
+   sessions fall back to `session.goal` instead of raw last output.
+   Sanitization strips ANSI and control chars via
+   `sanitizeTerminalInlineText`. The title (row 1) gets a brief warm
+   accent-tinted highlight whenever its displayed text changes — e.g. when
+   the deterministic/seed name is replaced by the background AI name —
+   skipped on first mount.
 3. **Tool type + lane + badges** — `ToolLogo`, `shortToolTypeLabel`,
    lane icon/name, `ClaudeCacheTtlBadge` (Claude chat only), delta chips
    from `useSessionDelta`, exit code badge.

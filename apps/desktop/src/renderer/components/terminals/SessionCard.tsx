@@ -11,6 +11,7 @@ import {
 import { relativeTimeCompact } from "../../lib/format";
 import { GRID_SESSION_DND_MIME } from "../../lib/workGrid";
 import { useAppStore } from "../../state/appStore";
+import { useLaneNaming } from "../../state/laneNamingStore";
 import { useSessionDelta } from "./useSessionDelta";
 import { cn } from "../ui/cn";
 import { MONO_FONT } from "../lanes/laneDesignTokens";
@@ -154,6 +155,20 @@ export const SessionCard = React.memo(function SessionCard({
   const delta = useSessionDelta(session.id, !isRemoteProject || isSelected);
   const primaryText = primarySessionLabel(session);
   const previewLine = getPreviewLine(session, primaryText);
+  // True while this lane's AI auto-name is being generated in the background.
+  const isAutoNaming = useLaneNaming(lane?.id ?? null);
+  // Brief warm highlight when the displayed title actually changes (e.g. the
+  // deterministic/seed name is replaced by the AI name). Skipped on first mount.
+  const [titleJustChanged, setTitleJustChanged] = React.useState(false);
+  const prevTitleRef = React.useRef<string | null>(null);
+  React.useEffect(() => {
+    const prev = prevTitleRef.current;
+    prevTitleRef.current = primaryText;
+    if (prev === null || prev === primaryText) return undefined;
+    setTitleJustChanged(true);
+    const timer = setTimeout(() => setTitleJustChanged(false), 1100);
+    return () => clearTimeout(timer);
+  }, [primaryText]);
   const staleAgeHours = getStaleRunningCliSessionAgeHours(session);
   const isHighlighted = isSelected || isMultiSelected;
   const highlightedBorder = isHighlighted
@@ -230,9 +245,18 @@ export const SessionCard = React.memo(function SessionCard({
             <div className="flex min-w-0 items-center gap-1.5">
               <span
                 className={cn(
-                  "min-w-0 flex-1 truncate font-semibold text-fg/90",
+                  "min-w-0 flex-1 truncate rounded px-1 -mx-1 font-semibold text-fg/90",
                   compact ? "text-[11px]" : "text-[13px]",
                 )}
+                style={{
+                  transition: "background-color 900ms ease-out, box-shadow 900ms ease-out",
+                  backgroundColor: titleJustChanged
+                    ? `color-mix(in srgb, ${laneAccent ?? "rgb(250, 204, 21)"} 22%, transparent)`
+                    : "transparent",
+                  boxShadow: titleJustChanged
+                    ? `0 0 0 2px color-mix(in srgb, ${laneAccent ?? "rgb(250, 204, 21)"} 16%, transparent)`
+                    : "none",
+                }}
               >
                 {primaryText}
               </span>
@@ -300,8 +324,14 @@ export const SessionCard = React.memo(function SessionCard({
               </div>
             </div>
 
-            {/* Row 2: Summary/preview line (conditional) */}
-            {previewLine && !compact ? (
+            {/* Row 2: auto-naming status, else summary/preview line (conditional) */}
+            {!compact && isAutoNaming ? (
+              <div className="mt-0.5 min-w-0">
+                <span className="block truncate text-[10px] italic text-muted-fg/45 leading-snug">
+                  Auto-naming lane underway…
+                </span>
+              </div>
+            ) : previewLine && !compact ? (
               <div className="mt-0.5 min-w-0">
                 <span className="block truncate text-[10px] text-muted-fg/50 leading-snug">
                   {previewLine}
