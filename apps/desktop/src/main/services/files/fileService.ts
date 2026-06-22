@@ -673,11 +673,10 @@ export function createFileService({
       throw new Error("External path must be a file or directory.");
     }
 
-    const candidates = listWorkspaces()
-      .filter((workspace) => workspace.kind !== "external")
-      .map((workspace) => {
+    const workspaceCandidates = await Promise.all(
+      listWorkspaces().filter((workspace) => workspace.kind !== "external").map(async (workspace) => {
         try {
-          const realRootPath = fs.realpathSync.native(workspace.rootPath);
+          const realRootPath = await fsp.realpath(workspace.rootPath);
           const relativePath = path.relative(realRootPath, realPath);
           if (relativePath.startsWith("..") || path.isAbsolute(relativePath)) return null;
           return { workspace, relativePath: normalizeRelative(relativePath), realRootPath };
@@ -685,6 +684,8 @@ export function createFileService({
           return null;
         }
       })
+    );
+    const candidates = workspaceCandidates
       .filter((candidate): candidate is { workspace: FilesWorkspace; relativePath: string; realRootPath: string } => candidate !== null)
       .sort((a, b) => b.realRootPath.length - a.realRootPath.length);
 

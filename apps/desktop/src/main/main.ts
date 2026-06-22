@@ -870,7 +870,7 @@ app.on("open-file", (event, filePath) => {
 
 app.on("second-instance", (_event, argv) => {
   if (process.platform === "darwin") return;
-  for (const arg of argv) {
+  for (const arg of argv.slice(1)) {
     const filePath = normalizeExistingAbsoluteOpenFileArg(arg);
     if (filePath) enqueueProjectOpenFile(filePath);
   }

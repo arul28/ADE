@@ -68,7 +68,7 @@ function mergeExternalWorkspaces(next: FilesWorkspace[], previous: FilesWorkspac
 }
 
 function pathAncestors(path: string): string[] {
-  const segments = path.split("/").filter(Boolean);
+  const segments = path.replace(/\\/g, "/").split("/").filter(Boolean);
   const out: string[] = [];
   for (let i = 1; i <= segments.length; i++) {
     out.push(segments.slice(0, i).join("/"));

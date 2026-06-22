@@ -9,6 +9,16 @@ const STREAM_CHUNK_BYTES = 512 * 1024;
 // Cap streamed text so a multi-GB file can't exhaust renderer memory.
 const MAX_STREAM_BYTES = 25 * 1024 * 1024;
 
+export function decodeFileRangeContent(content: string, encoding: "utf-8" | "base64"): string {
+  if (encoding === "utf-8") return content;
+  const binary = atob(content);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return new TextDecoder().decode(bytes);
+}
+
 function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;
   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
@@ -49,7 +59,7 @@ export function LargeTextViewer({ workspaceId, tab, content }: ViewerProps) {
           length: Math.min(STREAM_CHUNK_BYTES, remainingBytes),
         });
         if (cancelled) return;
-        parts.push(page.content);
+        parts.push(decodeFileRangeContent(page.content, page.encoding));
         next = page.nextOffset;
         if ((page.rangeEnd >= MAX_STREAM_BYTES && next != null) || page.rangeEnd <= requestOffset) {
           setCapped(true);
