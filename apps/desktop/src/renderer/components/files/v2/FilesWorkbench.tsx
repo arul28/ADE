@@ -9,11 +9,12 @@ import { ContextMenu, type ContextMenuItem } from "./ContextMenu";
 import {
   applyGitStatusToTree,
   appendTreeNodeChildren,
-  compactDirectoryRefreshPaths,
   defaultFilesWorkspaceId,
   filesSessionKey,
   formatFilesError,
+  hasAncestorDirectoryPath,
   hasLoadedDirectoryChildren,
+  isMissingWorkspaceRootError,
   isUnavailableGitDecorationsError,
   loadedDirectoryChildrenCount,
   mergeTreePreservingLoadedChildren,
@@ -275,7 +276,7 @@ export function FilesWorkbench({
   }, []);
 
   const refreshLoadedDirectory = useCallback(
-    async (parentPath: string, reqId = workspaceId) => {
+    async (parentPath: string, reqId = workspaceId, options: { suppressMissingError?: boolean } = {}) => {
       if (!reqId) return;
       setLoadingDirs((prev) => new Set(prev).add(parentPath));
       try {
@@ -288,7 +289,9 @@ export function FilesWorkbench({
           return nextTree;
         });
       } catch (err) {
-        if (workspaceIdRef.current === reqId) setError(formatFilesError(err));
+        const message = formatFilesError(err);
+        if (options.suppressMissingError && isMissingWorkspaceRootError(message)) return;
+        if (workspaceIdRef.current === reqId) setError(message);
       } finally {
         setLoadingDirs((prev) => {
           const next = new Set(prev);
@@ -371,9 +374,11 @@ export function FilesWorkbench({
     const queuedParentPaths = new Set<string>();
     let rootRefreshQueued = false;
     let fullRootRefreshQueued = false;
+    let decorationsRefreshQueued = false;
 
     const enqueuePathRefresh = (path: string | undefined) => {
       if (!path) return;
+      decorationsRefreshQueued = true;
       if (fullRootRefreshQueued) return;
       const parentPath = parentPathForFileChange(path);
       if (!parentPath) {
@@ -391,12 +396,14 @@ export function FilesWorkbench({
 
     const flushQueuedRefreshes = () => {
       const reqId = workspaceIdRef.current;
-      const parentPaths = compactDirectoryRefreshPaths([...queuedParentPaths]);
+      const parentPaths = [...queuedParentPaths];
       queuedParentPaths.clear();
       const shouldRefreshRoot = rootRefreshQueued;
       const shouldRefreshFullRoot = fullRootRefreshQueued;
+      const shouldRefreshDecorations = decorationsRefreshQueued;
       rootRefreshQueued = false;
       fullRootRefreshQueued = false;
+      decorationsRefreshQueued = false;
 
       if (!reqId) return;
       if (shouldRefreshFullRoot) {
@@ -408,12 +415,20 @@ export function FilesWorkbench({
         void refreshRoot();
       }
       if (parentPaths.length > 0) {
-        const directoryRefreshes = parentPaths.map((parentPath) => refreshLoadedDirectory(parentPath, reqId));
+        const directoryRefreshes = parentPaths.map((parentPath) => (
+          refreshLoadedDirectory(parentPath, reqId, {
+            suppressMissingError: hasAncestorDirectoryPath(parentPath, parentPaths),
+          })
+        ));
         void Promise.allSettled(directoryRefreshes)
           .then(() => refreshTreeGitDecorations(reqId))
           .catch((err) => {
             if (workspaceIdRef.current === reqId) setError(formatFilesError(err));
           });
+      } else if (shouldRefreshDecorations && !shouldRefreshRoot) {
+        void refreshTreeGitDecorations(reqId).catch((err) => {
+          if (workspaceIdRef.current === reqId) setError(formatFilesError(err));
+        });
       }
     };
 

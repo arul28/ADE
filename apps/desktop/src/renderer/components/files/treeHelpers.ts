@@ -85,9 +85,8 @@ function isAncestorDirectoryPath(ancestorPath: string, childPath: string): boole
   return childPath.startsWith(`${ancestorPath}/`);
 }
 
-export function compactDirectoryRefreshPaths(paths: string[]): string[] {
-  const uniquePaths = [...new Set(paths.filter(Boolean))];
-  return uniquePaths.filter((path) => !uniquePaths.some((otherPath) => isAncestorDirectoryPath(otherPath, path)));
+export function hasAncestorDirectoryPath(directoryPath: string, paths: readonly string[]): boolean {
+  return paths.some((path) => isAncestorDirectoryPath(path, directoryPath));
 }
 
 export function hasLoadedDirectoryChildren(nodes: FileTreeNode[], directoryPath: string): boolean {
