@@ -14871,7 +14871,7 @@ describe("createAgentChatService", () => {
         method: "item/commandExecution/requestApproval",
         params: {
           itemId: "cmd-switch-1",
-          turnId: "turn-1",
+          turnId: "  turn-1  ",
           command: "/bin/zsh -lc 'npm test'",
         },
       });
@@ -14896,6 +14896,7 @@ describe("createAgentChatService", () => {
           event.event.type === "pending_input_resolved"
           && event.event.itemId === "cmd-switch-1"
           && event.event.resolution === "accepted"
+          && event.event.turnId === "turn-1"
         )).toBe(true);
       });
 
@@ -14903,6 +14904,76 @@ describe("createAgentChatService", () => {
       expect(summary?.permissionMode).toBe("full-auto");
       expect(summary?.codexApprovalPolicy).toBe("never");
       expect(summary?.codexSandbox).toBe("danger-full-access");
+    });
+
+    it("keeps escaped Codex command and file-change approvals manual in full-auto", async () => {
+      vi.mocked(mapPermissionToCodex).mockImplementation((mode) => {
+        if (mode === "full-auto") {
+          return { approvalPolicy: "never", sandbox: "danger-full-access" };
+        }
+        return { approvalPolicy: "on-request", sandbox: "read-only" };
+      });
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+        permissionMode: "full-auto",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Make the change.",
+      }, { awaitDispatch: true });
+
+      await vi.waitFor(() => {
+        expect(mockState.codexRequestPayloads.some((payload) => payload.method === "turn/start")).toBe(true);
+      });
+      mockState.codexRequestPayloads = [];
+
+      const outsideLane = path.dirname(tmpRoot);
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        id: "cmd-escape-1",
+        method: "item/commandExecution/requestApproval",
+        params: {
+          itemId: "cmd-escape-1",
+          turnId: "turn-1",
+          cwd: outsideLane,
+          command: "/bin/zsh -lc 'pwd'",
+        },
+      });
+
+      await vi.waitFor(() => {
+        expect(events.some((event) =>
+          event.event.type === "approval_request"
+          && event.event.itemId === "cmd-escape-1"
+        )).toBe(true);
+      });
+      expect(mockState.codexRequestPayloads.find((payload) => payload.id === "cmd-escape-1")).toBeUndefined();
+
+      mockState.emitCodexPayload({
+        jsonrpc: "2.0",
+        id: "file-escape-1",
+        method: "item/fileChange/requestApproval",
+        params: {
+          itemId: "file-escape-1",
+          turnId: "turn-1",
+          grantRoot: outsideLane,
+          reason: "Edit outside the lane",
+        },
+      });
+
+      await vi.waitFor(() => {
+        expect(events.some((event) =>
+          event.event.type === "approval_request"
+          && event.event.itemId === "file-escape-1"
+        )).toBe(true);
+      });
+      expect(mockState.codexRequestPayloads.find((payload) => payload.id === "file-escape-1")).toBeUndefined();
     });
 
     it("keeps Codex planner approval guard scoped to the turn that started in plan mode", async () => {

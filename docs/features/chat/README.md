@@ -137,9 +137,10 @@ render them, but neither one *runs* them.
 - **Codex permission switches.** Codex app-server receives approval/sandbox
   changes on thread/turn start. When a live Codex session is switched to
   Full Auto while an active turn still emits approval requests from its
-  older policy, the service auto-responds to stale command/file/permissions
-  gates and clears existing approval cards, while the planner guard still
-  declines mutation requests from turns that started in plan mode.
+  older policy, the service auto-responds to stale lane-confined
+  command/file/permissions gates and clears existing approval cards, while
+  escaped paths remain manual and the planner guard still declines mutation
+  requests from turns that started in plan mode.
 - **Steer queue.** Follow-up user messages during an active turn are
   queued (cap 10) with per-entry edit/cancel/dispatch. Default delivery
   happens on turn boundaries; for Claude SDK sessions the user can also
