@@ -78,12 +78,15 @@ export function ClaudeLoginPromptButton({
     setOpening(true);
     setError(null);
     void (async () => {
-      const listLanes = window.ade?.lanes?.list;
-      const availableLanes = typeof listLanes === "function" ? await listLanes({
-        includeArchived: false,
-        includeStatus: false,
-      }) : [];
-      const resolvedLaneId = laneId ?? availableLanes[0]?.id ?? null;
+      let resolvedLaneId = laneId ?? null;
+      if (!resolvedLaneId) {
+        const listLanes = window.ade?.lanes?.list;
+        const availableLanes = typeof listLanes === "function" ? await listLanes({
+          includeArchived: false,
+          includeStatus: false,
+        }) : [];
+        resolvedLaneId = availableLanes[0]?.id ?? null;
+      }
       if (!resolvedLaneId) {
         throw new Error("No active lane is available for this project.");
       }

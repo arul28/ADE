@@ -69,6 +69,7 @@ describe("ClaudeLoginPromptButton", () => {
       ptyId: "pty-claude-login",
       label: "Claude login",
     });
+    expect(window.ade.lanes.list).not.toHaveBeenCalled();
   });
 
   it("dismisses the prompt per storage key", () => {
