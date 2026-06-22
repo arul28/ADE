@@ -79,6 +79,10 @@ function makeDeps() {
     getManifestForRun: vi.fn(),
     runCreate: vi.fn(),
     manifestPatch: vi.fn(),
+    // Best-effort lineage write. Defaults to a no-op failure so the spawn falls
+    // back to the agent-append etag (existing assertions unchanged); tests that
+    // care override it to assert the ledger etag is surfaced.
+    recordDelegationSpawn: vi.fn(async () => ({ ok: false as const, error: "skip", message: "test default" })),
   };
   const agentChatService = {
     createSession: vi.fn(async (..._args: any[]) => ({ id: "sess-1" })),
@@ -167,6 +171,24 @@ describe("orchestrationDomain", () => {
     expect(result).toEqual({ sessionId: "sess-1", etag: "etag-B" });
     expect(h.agentChatService.createSession).toHaveBeenCalledTimes(1);
     expect(h.orchestrationService.manifestPatch).toHaveBeenCalledTimes(1);
+  });
+
+  it("spawnAgent surfaces the lineage-write etag (not the stale agent-append etag)", async () => {
+    h.orchestrationService.getManifestForRun.mockReturnValue(
+      makeApprovedManifest({ etag: "etag-A" }),
+    );
+    h.orchestrationService.manifestPatch.mockResolvedValue(patchOk("etag-B"));
+    // The delegation-edge write advances the manifest etag past the agent append.
+    h.orchestrationService.recordDelegationSpawn.mockResolvedValue({
+      ok: true as const,
+      etag: "etag-C",
+      edgeId: "D-1",
+    } as never);
+
+    const result = await h.service.spawnAgent(SPAWN_ARG);
+
+    expect(result).toEqual({ sessionId: "sess-1", etag: "etag-C" });
+    expect(h.orchestrationService.recordDelegationSpawn).toHaveBeenCalledTimes(1);
     // first patch uses the loaded manifest etag and adds the agent at /agents/-
     const [patchReq] = h.orchestrationService.manifestPatch.mock.calls[0]!;
     expect(patchReq.ifMatchEtag).toBe("etag-A");

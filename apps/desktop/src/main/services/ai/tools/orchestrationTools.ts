@@ -316,8 +316,11 @@ function createSpawnAgentTool(
         }
         // Record the lead→child delegation edge (best-effort; never fails the
         // spawn — the agent row is the source of truth, the edge is provenance).
+        // The ledger write advances the manifest etag, so surface its etag to
+        // the caller (fall back to the agent-append etag only if it failed).
+        let latestEtag = patchRes.etag;
         try {
-          await svc.recordDelegationSpawn(
+          const ledger = await svc.recordDelegationSpawn(
             {
               runId: ctx.runId,
               parentSessionId: ctx.sessionId,
@@ -337,6 +340,7 @@ function createSpawnAgentTool(
             },
             ctx.bundlePath,
           );
+          if (ledger.ok) latestEtag = ledger.etag;
         } catch {
           // Supplementary provenance only — swallow.
         }
@@ -361,14 +365,14 @@ function createSpawnAgentTool(
           return {
             ok: true as const,
             sessionId: created.id,
-            etag: patchRes.etag,
+            etag: latestEtag,
             warning: `agent spawned but initial message delivery failed: ${errorMessage(err)}`,
           };
         }
         return {
           ok: true as const,
           sessionId: created.id,
-          etag: patchRes.etag,
+          etag: latestEtag,
         };
       });
     },

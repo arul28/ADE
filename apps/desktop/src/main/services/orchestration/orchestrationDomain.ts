@@ -193,9 +193,12 @@ export function createOrchestrationDomainService(deps: OrchestrationDomainDeps) 
           `spawn manifest patch failed: ${"error" in patchRes ? patchRes.error : "unknown"}`,
         );
       }
-      // Record the lead→child delegation edge (best-effort; never fails the spawn).
+      // Record the lead→child delegation edge (best-effort; never fails the
+      // spawn). The ledger write advances the manifest etag, so surface its etag
+      // to the caller (fall back to the agent-append etag only if it failed).
+      let latestEtag = patchRes.etag;
       try {
-        await service.recordDelegationSpawn(
+        const ledger = await service.recordDelegationSpawn(
           {
             runId: arg.runId,
             parentSessionId: arg.leadSessionId,
@@ -208,6 +211,7 @@ export function createOrchestrationDomainService(deps: OrchestrationDomainDeps) 
           },
           bundlePath,
         );
+        if (ledger.ok) latestEtag = ledger.etag;
       } catch {
         // Supplementary provenance only — swallow.
       }
@@ -226,7 +230,7 @@ export function createOrchestrationDomainService(deps: OrchestrationDomainDeps) 
         },
         { awaitDispatch: false },
       );
-      return { sessionId: created.id, etag: patchRes.etag };
+      return { sessionId: created.id, etag: latestEtag };
     },
 
     agentInject: async (arg: OrchestrationAgentInjectRequest): Promise<void> => {
