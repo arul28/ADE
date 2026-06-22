@@ -16,33 +16,13 @@
 		AA1100000000000000000021 /* ADESharedContainer.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1000000000000000000001 /* ADESharedContainer.swift */; };
 		AA1100000000000000000022 /* ADESharedModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1000000000000000000002 /* ADESharedModels.swift */; };
 		AA1100000000000000000023 /* ADESharedTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1000000000000000000003 /* ADESharedTheme.swift */; };
-		AA5100000000000000000011 /* ADELiveActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5100000000000000000001 /* ADELiveActivity.swift */; };
-		AA5100000000000000000012 /* ADELiveActivityViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5100000000000000000002 /* ADELiveActivityViews.swift */; };
-		AA5100000000000000000013 /* LiveActivityCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5100000000000000000003 /* LiveActivityCoordinator.swift */; };
-		AA5100000000000000000014 /* LiveActivityIntentsForward.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5100000000000000000004 /* LiveActivityIntentsForward.swift */; };
-		AA5100000000000000000015 /* LiveActivityIntentsForward.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5100000000000000000004 /* LiveActivityIntentsForward.swift */; };
-		AA5100000000000000000016 /* LiveActivityIntentsForward.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5100000000000000000004 /* LiveActivityIntentsForward.swift */; };
-		AA5500000000000000000014 /* WidgetAppIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5500000000000000000004 /* WidgetAppIntents.swift */; };
-		AA5500000000000000000015 /* WidgetAppIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5500000000000000000004 /* WidgetAppIntents.swift */; };
-		AA5500000000000000000016 /* WidgetAppIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5500000000000000000004 /* WidgetAppIntents.swift */; };
-		AA5100000000000000000017 /* ADELiveActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5100000000000000000001 /* ADELiveActivity.swift */; };
-		AA5100000000000000000018 /* ADELiveActivityViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5100000000000000000002 /* ADELiveActivityViews.swift */; };
-		AA5600000000000000000011 /* ADELiveActivityPrimitives.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5600000000000000000001 /* ADELiveActivityPrimitives.swift */; };
-		AA5600000000000000000012 /* ADELiveActivityPrimitives.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5600000000000000000001 /* ADELiveActivityPrimitives.swift */; };
-		AA5800000000000000000011 /* DictationActivityShared.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5800000000000000000001 /* DictationActivityShared.swift */; };
-		AA5800000000000000000012 /* DictationActivityShared.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5800000000000000000001 /* DictationActivityShared.swift */; };
-		AA5800000000000000000022 /* DictationLiveActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5800000000000000000002 /* DictationLiveActivity.swift */; };
+		AA5100000000000000000014 /* AttentionActionIntents.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5100000000000000000004 /* AttentionActionIntents.swift */; };
 		D1C7A70000000000000001B1 /* DictationController.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1C7A70000000000000001A1 /* DictationController.swift */; };
 		AA5300000000000000000002 /* DeepLinkRouter.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5300000000000000000012 /* DeepLinkRouter.swift */; };
 		K10000000000000000000001 /* SendToMacCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = K20000000000000000000001 /* SendToMacCard.swift */; };
 		K10000000000000000000002 /* DeepLinkURLParsing.swift in Sources */ = {isa = PBXBuildFile; fileRef = K20000000000000000000002 /* DeepLinkURLParsing.swift */; };
 		AA5200000000000000000011 /* ADEWidgetBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5200000000000000000001 /* ADEWidgetBundle.swift */; };
-		AA5200000000000000000012 /* ADEWorkspaceWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5200000000000000000002 /* ADEWorkspaceWidget.swift */; };
-		AA5200000000000000000013 /* ADEWorkspaceWidgetViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5200000000000000000003 /* ADEWorkspaceWidgetViews.swift */; };
 		AA5200000000000000000014 /* ADELockScreenWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5200000000000000000004 /* ADELockScreenWidget.swift */; };
-		AA5200000000000000000015 /* ADEControlWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5200000000000000000005 /* ADEControlWidget.swift */; };
-		AA5200000000000000000016 /* ADEWidgetPreviewData.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5200000000000000000006 /* ADEWidgetPreviewData.swift */; };
-		AA5700000000000000000012 /* ADELiveActivityPreviews.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA5700000000000000000002 /* ADELiveActivityPreviews.swift */; };
 		AA2200000000000000000001 /* ADEWidgets.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = AA0000000000000000000002 /* ADEWidgets.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		0375D32BA5870617FA1758C6 /* KeychainService.swift in Sources */ = {isa = PBXBuildFile; fileRef = B5D5B5B87564C73F2FF34B0D /* KeychainService.swift */; };
 		0A1E077A24A5367ED58900F9 /* ADEDesignSystem.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4A9E6135ED52117E41DE95F7 /* ADEDesignSystem.swift */; };
@@ -235,24 +215,12 @@
 		AA0000000000000000000002 /* ADEWidgets.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = ADEWidgets.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		AA5000000000000000000001 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; name = Info.plist; path = ADEWidgets/Info.plist; sourceTree = "<group>"; };
 		AA5000000000000000000002 /* ADEWidgets.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; name = ADEWidgets.entitlements; path = ADEWidgets/ADEWidgets.entitlements; sourceTree = "<group>"; };
-		AA5100000000000000000001 /* ADELiveActivity.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADELiveActivity.swift; path = ADEWidgets/ADELiveActivity.swift; sourceTree = "<group>"; };
-		AA5100000000000000000002 /* ADELiveActivityViews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADELiveActivityViews.swift; path = ADEWidgets/ADELiveActivityViews.swift; sourceTree = "<group>"; };
-		AA5100000000000000000003 /* LiveActivityCoordinator.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LiveActivityCoordinator.swift; path = ADE/Services/LiveActivityCoordinator.swift; sourceTree = "<group>"; };
-		AA5100000000000000000004 /* LiveActivityIntentsForward.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = LiveActivityIntentsForward.swift; path = ADE/Shared/LiveActivityIntentsForward.swift; sourceTree = "<group>"; };
-		AA5500000000000000000004 /* WidgetAppIntents.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WidgetAppIntents.swift; path = ADE/Shared/WidgetAppIntents.swift; sourceTree = "<group>"; };
+		AA5100000000000000000004 /* AttentionActionIntents.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AttentionActionIntents.swift; path = ADE/Shared/AttentionActionIntents.swift; sourceTree = "<group>"; };
 		AA5300000000000000000012 /* DeepLinkRouter.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DeepLinkRouter.swift; path = ADE/App/DeepLinkRouter.swift; sourceTree = "<group>"; };
 		K20000000000000000000001 /* SendToMacCard.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SendToMacCard.swift; path = ADE/Views/Deeplinks/SendToMacCard.swift; sourceTree = "<group>"; };
 		K20000000000000000000002 /* DeepLinkURLParsing.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DeepLinkURLParsing.swift; path = ADE/App/DeepLinkURLParsing.swift; sourceTree = "<group>"; };
 		AA5200000000000000000001 /* ADEWidgetBundle.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADEWidgetBundle.swift; path = ADEWidgets/ADEWidgetBundle.swift; sourceTree = "<group>"; };
-		AA5200000000000000000002 /* ADEWorkspaceWidget.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADEWorkspaceWidget.swift; path = ADEWidgets/ADEWorkspaceWidget.swift; sourceTree = "<group>"; };
-		AA5200000000000000000003 /* ADEWorkspaceWidgetViews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADEWorkspaceWidgetViews.swift; path = ADEWidgets/ADEWorkspaceWidgetViews.swift; sourceTree = "<group>"; };
 		AA5200000000000000000004 /* ADELockScreenWidget.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADELockScreenWidget.swift; path = ADEWidgets/ADELockScreenWidget.swift; sourceTree = "<group>"; };
-		AA5200000000000000000005 /* ADEControlWidget.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADEControlWidget.swift; path = ADEWidgets/ADEControlWidget.swift; sourceTree = "<group>"; };
-		AA5200000000000000000006 /* ADEWidgetPreviewData.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADEWidgetPreviewData.swift; path = ADEWidgets/ADEWidgetPreviewData.swift; sourceTree = "<group>"; };
-		AA5600000000000000000001 /* ADELiveActivityPrimitives.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADELiveActivityPrimitives.swift; path = ADEWidgets/ADELiveActivityPrimitives.swift; sourceTree = "<group>"; };
-		AA5700000000000000000002 /* ADELiveActivityPreviews.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADELiveActivityPreviews.swift; path = ADEWidgets/ADELiveActivityPreviews.swift; sourceTree = "<group>"; };
-		AA5800000000000000000001 /* DictationActivityShared.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DictationActivityShared.swift; path = ADE/Shared/DictationActivityShared.swift; sourceTree = "<group>"; };
-		AA5800000000000000000002 /* DictationLiveActivity.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DictationLiveActivity.swift; path = ADEWidgets/DictationLiveActivity.swift; sourceTree = "<group>"; };
 		D1C7A70000000000000001A1 /* DictationController.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = DictationController.swift; path = ADE/Services/Dictation/DictationController.swift; sourceTree = "<group>"; };
 		CC5000000000000000000001 /* ADE.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; name = ADE.entitlements; path = ADE/ADE.entitlements; sourceTree = "<group>"; };
 		0C6ECFA9D57E70E57A60E8AB /* WorkTabView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkTabView.swift; path = ADE/Views/WorkTabView.swift; sourceTree = "<group>"; };
@@ -681,7 +649,6 @@
 				51942BAC0965C7D0CCE6E8B8 /* Database.swift */,
 				B5D5B5B87564C73F2FF34B0D /* KeychainService.swift */,
 				66B5024B0A05F3D9754101F1 /* SyncService.swift */,
-				AA5100000000000000000003 /* LiveActivityCoordinator.swift */,
 				B34C6C526E3BBB1E720C8D7C /* Dictation */,
 			);
 			name = Services;
@@ -735,9 +702,7 @@
 				AA1000000000000000000001 /* ADESharedContainer.swift */,
 				AA1000000000000000000002 /* ADESharedModels.swift */,
 				AA1000000000000000000003 /* ADESharedTheme.swift */,
-				AA5100000000000000000004 /* LiveActivityIntentsForward.swift */,
-				AA5500000000000000000004 /* WidgetAppIntents.swift */,
-				AA5800000000000000000001 /* DictationActivityShared.swift */,
+				AA5100000000000000000004 /* AttentionActionIntents.swift */,
 			);
 			name = Shared;
 			sourceTree = "<group>";
@@ -747,17 +712,8 @@
 			children = (
 				AA5000000000000000000001 /* Info.plist */,
 				AA5000000000000000000002 /* ADEWidgets.entitlements */,
-				AA5100000000000000000001 /* ADELiveActivity.swift */,
-				AA5100000000000000000002 /* ADELiveActivityViews.swift */,
 				AA5200000000000000000001 /* ADEWidgetBundle.swift */,
-				AA5200000000000000000002 /* ADEWorkspaceWidget.swift */,
-				AA5200000000000000000003 /* ADEWorkspaceWidgetViews.swift */,
 				AA5200000000000000000004 /* ADELockScreenWidget.swift */,
-				AA5200000000000000000005 /* ADEControlWidget.swift */,
-				AA5200000000000000000006 /* ADEWidgetPreviewData.swift */,
-				AA5600000000000000000001 /* ADELiveActivityPrimitives.swift */,
-				AA5700000000000000000002 /* ADELiveActivityPreviews.swift */,
-				AA5800000000000000000002 /* DictationLiveActivity.swift */,
 			);
 			name = ADEWidgets;
 			sourceTree = "<group>";
@@ -1002,7 +958,6 @@
 				01FE6A4E9FAB343B48940038 /* DictationCleanup.swift in Sources */,
 				8FCB968194DE9C66EC194223 /* VoiceGlossary.swift in Sources */,
 				D1C7A70000000000000001B1 /* DictationController.swift in Sources */,
-				AA5800000000000000000011 /* DictationActivityShared.swift in Sources */,
 				91D46087242081A9F29BBFF5 /* DictationMicButton.swift in Sources */,
 				C85070CCC923CAB6FD61AF85 /* RecordingPill.swift in Sources */,
 				B1D40000000000000000A001 /* GlobalDictationPill.swift in Sources */,
@@ -1152,12 +1107,7 @@
 				H1000000000000000000000A /* CtoWorkerDetailScreen.swift in Sources */,
 				H1000000000000000000000B /* CtoWorkflowsScreen.swift in Sources */,
 				H1000000000000000000000C /* CtoReloadHelpers.swift in Sources */,
-				AA5100000000000000000013 /* LiveActivityCoordinator.swift in Sources */,
-				AA5100000000000000000014 /* LiveActivityIntentsForward.swift in Sources */,
-				AA5500000000000000000014 /* WidgetAppIntents.swift in Sources */,
-				AA5100000000000000000017 /* ADELiveActivity.swift in Sources */,
-				AA5100000000000000000018 /* ADELiveActivityViews.swift in Sources */,
-				AA5600000000000000000011 /* ADELiveActivityPrimitives.swift in Sources */,
+				AA5100000000000000000014 /* AttentionActionIntents.swift in Sources */,
 				AA5300000000000000000002 /* DeepLinkRouter.swift in Sources */,
 				K10000000000000000000002 /* DeepLinkURLParsing.swift in Sources */,
 				K10000000000000000000001 /* SendToMacCard.swift in Sources */,
@@ -1183,20 +1133,8 @@
 				AA1100000000000000000011 /* ADESharedContainer.swift in Sources */,
 				AA1100000000000000000012 /* ADESharedModels.swift in Sources */,
 				AA1100000000000000000013 /* ADESharedTheme.swift in Sources */,
-				AA5100000000000000000011 /* ADELiveActivity.swift in Sources */,
-				AA5100000000000000000012 /* ADELiveActivityViews.swift in Sources */,
-				AA5600000000000000000012 /* ADELiveActivityPrimitives.swift in Sources */,
-				AA5100000000000000000015 /* LiveActivityIntentsForward.swift in Sources */,
-				AA5500000000000000000015 /* WidgetAppIntents.swift in Sources */,
-				AA5800000000000000000012 /* DictationActivityShared.swift in Sources */,
-				AA5800000000000000000022 /* DictationLiveActivity.swift in Sources */,
 				AA5200000000000000000011 /* ADEWidgetBundle.swift in Sources */,
-				AA5200000000000000000012 /* ADEWorkspaceWidget.swift in Sources */,
-				AA5200000000000000000013 /* ADEWorkspaceWidgetViews.swift in Sources */,
 				AA5200000000000000000014 /* ADELockScreenWidget.swift in Sources */,
-				AA5200000000000000000015 /* ADEControlWidget.swift in Sources */,
-				AA5200000000000000000016 /* ADEWidgetPreviewData.swift in Sources */,
-				AA5700000000000000000012 /* ADELiveActivityPreviews.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

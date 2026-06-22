@@ -424,6 +424,126 @@ private struct AttentionDrawerActionLabel: View {
     }
 }
 
+@available(iOS 17.0, *)
+private enum AttentionIcon {
+    static func symbol(for kind: AttentionKind) -> String {
+        switch kind {
+        case .awaitingInput:   return "bell.badge.fill"
+        case .failed:          return "xmark.octagon.fill"
+        case .ciFailing:       return "exclamationmark.triangle.fill"
+        case .reviewRequested: return "eye.fill"
+        case .mergeReady:      return "checkmark.seal.fill"
+        }
+    }
+
+    static func tint(for kind: AttentionKind) -> Color {
+        switch kind {
+        case .awaitingInput:   return ADESharedTheme.warningAmber
+        case .failed:          return ADESharedTheme.statusFailed
+        case .ciFailing:       return ADESharedTheme.statusFailed
+        case .reviewRequested: return ADESharedTheme.warningAmber
+        case .mergeReady:      return ADESharedTheme.statusSuccess
+        }
+    }
+}
+
+@available(iOS 17.0, *)
+private struct AttentionBadge: View {
+    let kind: AttentionKind
+    let size: CGFloat
+    let pulse: Bool
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        let color = AttentionIcon.tint(for: kind)
+        ZStack {
+            Circle()
+                .fill(color.opacity(0.13))
+                .frame(width: size, height: size)
+
+            if pulse && kind == .awaitingInput && !reduceMotion {
+                Circle()
+                    .stroke(color, lineWidth: 1.5)
+                    .frame(width: size, height: size)
+                    .phaseAnimator([0, 1]) { circle, phase in
+                        circle
+                            .scaleEffect(phase == 0 ? 1.0 : 1.5)
+                            .opacity(phase == 0 ? 0.9 : 0)
+                    } animation: { _ in
+                        .easeOut(duration: 1.6)
+                    }
+            }
+
+            Image(systemName: AttentionIcon.symbol(for: kind))
+                .font(.system(size: size * 0.5, weight: .semibold))
+                .foregroundStyle(color)
+                .modifier(BellWiggle(active: pulse && kind == .awaitingInput && !reduceMotion))
+        }
+        .accessibilityHidden(true)
+    }
+}
+
+@available(iOS 17.0, *)
+private struct BrandDot: View {
+    let slug: String
+    let size: CGFloat
+    let pulse: Bool
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        let color = ADESharedTheme.brandColor(for: slug)
+        ZStack {
+            if pulse && !reduceMotion {
+                Circle()
+                    .fill(color)
+                    .frame(width: size, height: size)
+                    .phaseAnimator([0, 1]) { circle, phase in
+                        circle
+                            .scaleEffect(phase == 0 ? 1.0 : 1.4)
+                            .opacity(phase == 0 ? 0.35 : 0)
+                    } animation: { _ in
+                        .easeInOut(duration: 1.4)
+                    }
+            }
+            Circle()
+                .fill(color)
+                .frame(width: size, height: size)
+                .shadow(color: color.opacity(0.4), radius: size * 0.3, x: 0, y: 0)
+        }
+        .frame(width: size, height: size)
+        .accessibilityHidden(true)
+    }
+}
+
+@available(iOS 17.0, *)
+private struct BellWiggle: ViewModifier {
+    let active: Bool
+
+    func body(content: Content) -> some View {
+        if active {
+            content.keyframeAnimator(
+                initialValue: 0.0,
+                repeating: true
+            ) { view, rotation in
+                view.rotationEffect(.degrees(rotation))
+            } keyframes: { _ in
+                KeyframeTrack {
+                    LinearKeyframe(0, duration: 1.32)
+                    CubicKeyframe(-14, duration: 0.176)
+                    CubicKeyframe(12, duration: 0.176)
+                    CubicKeyframe(-8, duration: 0.176)
+                    CubicKeyframe(5, duration: 0.176)
+                    CubicKeyframe(0, duration: 0.176)
+                }
+            }
+        } else {
+            content
+        }
+    }
+}
+
 /// `.symbolEffect(.pulse)` is gated behind Reduce Motion — when the user has
 /// that system setting on, the glyph renders statically.
 @available(iOS 17.0, *)

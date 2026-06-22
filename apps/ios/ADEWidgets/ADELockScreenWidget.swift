@@ -1,199 +1,452 @@
 import SwiftUI
 import WidgetKit
 
-/// Lock Screen / StandBy "accessory" widgets. Three families are supported:
-/// rectangular (one line + progress), circular (agent count ring), inline
-/// (short string). Each maps to a different mockup in
-/// `/tmp/ade-design/extracted/ade-ios-widgets/project/widgets.jsx`
-/// (lines 183–251).
+/// The only ADE system widget. It deliberately compresses the whole workspace
+/// into one priority-ranked status instead of spreading state across separate
+/// external surfaces.
 struct ADELockScreenWidget: Widget {
     static let kind = "ADELockScreenWidget"
 
     var body: some WidgetConfiguration {
         StaticConfiguration(
             kind: Self.kind,
-            provider: ADEWorkspaceTimelineProvider()
+            provider: ADEStatusTimelineProvider()
         ) { entry in
             LockScreenWidgetEntryView(entry: entry)
                 .containerBackground(.fill.tertiary, for: .widget)
         }
-        .configurationDisplayName("ADE Glance")
-        .description("Agents running and PRs needing attention, on your Lock Screen.")
+        .configurationDisplayName("ADE Status")
+        .description("The most important ADE agent or PR status on your Lock Screen.")
         .supportedFamilies([.accessoryRectangular, .accessoryCircular, .accessoryInline])
     }
 }
 
+struct ADEStatusEntry: TimelineEntry {
+    let date: Date
+    let snapshot: WorkspaceSnapshot
+}
+
+struct ADEStatusTimelineProvider: TimelineProvider {
+    func placeholder(in context: Context) -> ADEStatusEntry {
+        ADEStatusEntry(date: Date(), snapshot: .empty)
+    }
+
+    func getSnapshot(in context: Context, completion: @escaping (ADEStatusEntry) -> Void) {
+        let snapshot = ADESharedContainer.readWorkspaceSnapshot() ?? .empty
+        completion(ADEStatusEntry(date: Date(), snapshot: snapshot))
+    }
+
+    func getTimeline(in context: Context, completion: @escaping (Timeline<ADEStatusEntry>) -> Void) {
+        let now = Date()
+        let snapshot = ADESharedContainer.readWorkspaceSnapshot() ?? .empty
+        completion(Timeline(entries: [ADEStatusEntry(date: now, snapshot: snapshot)], policy: .after(now.addingTimeInterval(60))))
+    }
+}
+
 struct LockScreenWidgetEntryView: View {
-    let entry: ADEWorkspaceEntry
+    let entry: ADEStatusEntry
     @Environment(\.widgetFamily) private var family
 
     var body: some View {
-        let destination = destinationURL
+        let status = LockScreenPriorityStatus(snapshot: entry.snapshot)
 
         return Group {
             switch family {
-            case .accessoryRectangular: LockScreenRectangularView(snapshot: entry.snapshot)
-            case .accessoryCircular:    LockScreenCircularView(snapshot: entry.snapshot)
-            case .accessoryInline:      LockScreenInlineView(snapshot: entry.snapshot)
-            default:                    LockScreenInlineView(snapshot: entry.snapshot)
+            case .accessoryRectangular:
+                LockScreenRectangularView(status: status)
+            case .accessoryCircular:
+                LockScreenCircularView(status: status)
+            case .accessoryInline:
+                LockScreenInlineView(status: status)
+            default:
+                LockScreenInlineView(status: status)
             }
         }
-        .widgetURL(destination)
+        .widgetURL(status.destinationURL)
+    }
+}
+
+// MARK: - Priority model
+
+private struct LockScreenPriorityStatus {
+    enum Kind {
+        case awaitingInput
+        case failed
+        case ciFailing
+        case reviewRequested
+        case mergeReady
+        case running
+        case openPullRequests
+        case syncing
+        case offline
+        case idle
     }
 
-    private var destinationURL: URL {
-        // Awaiting-input is now a count, not a per-agent flag — surface as a
-        // generic deep link to the workspace approvals view via PR fallback.
-        let openPrs = entry.snapshot.prs.filter { $0.state == "open" }
-        if let focusPr = openPrs.first(where: { $0.checks == "failing" })
-            ?? openPrs.first(where: { $0.review == "changes_requested" || $0.review == "pending" })
-            ?? openPrs.first(where: { $0.mergeReady }),
-           let url = URL(string: "ade://pr/\(focusPr.number)") {
-            return url
-        }
+    let kind: Kind
+    let title: String
+    let detail: String
+    let inlineText: String
+    let count: Int
+    let symbol: String
+    let shortLabel: String
+    let tint: Color
+    let destinationURL: URL
+    let metrics: [Metric]
 
-        return URL(string: "ade://workspace") ?? URL(fileURLWithPath: "/")
+    struct Metric: Identifiable {
+        let id: String
+        let label: String
+        let symbol: String
+    }
+
+    init(snapshot: WorkspaceSnapshot) {
+        let running = snapshot.runningAgents.sorted { $0.lastActivityAt > $1.lastActivityAt }
+        let awaiting = snapshot.agents.filter { agent in
+            agent.awaitingInput || agent.status.lowercased() == "awaiting_input"
+        }
+        let failed = snapshot.agents.filter { agent in
+            let status = agent.status.lowercased()
+            return status == "failed" || status == "error"
+        }.sorted { $0.lastActivityAt > $1.lastActivityAt }
+        let openPrs = snapshot.prs.filter { $0.state == "open" }
+        let ciFailing = openPrs.filter { $0.checks == "failing" }
+        let reviewRequested = openPrs.filter {
+            $0.review == "changes_requested" || $0.review == "pending"
+        }
+        let mergeReady = openPrs.filter {
+            $0.mergeReady && $0.checks == "passing" && $0.review == "approved"
+        }
+        let waitingCount = max(snapshot.awaitingInputCount, awaiting.count)
+        let idleCount = snapshot.idleCount
+
+        let metrics = Self.metrics(
+            runningCount: running.count,
+            waitingCount: waitingCount,
+            openPrCount: openPrs.count,
+            idleCount: idleCount
+        )
+
+        if waitingCount > 0 {
+            let first = awaiting.first
+            self = .init(
+                kind: .awaitingInput,
+                title: waitingCount == 1 ? "1 chat waiting" : "\(waitingCount) chats waiting",
+                detail: first.map { Self.agentTitle($0) } ?? "Reply or approve in ADE",
+                inlineText: "ADE · \(waitingCount) waiting",
+                count: waitingCount,
+                symbol: "bell.badge.fill",
+                shortLabel: "WAIT",
+                tint: ADESharedTheme.warningAmber,
+                destinationURL: Self.sessionURL(first?.sessionId),
+                metrics: metrics
+            )
+        } else if let first = failed.first {
+            self = .init(
+                kind: .failed,
+                title: failed.count == 1 ? "Agent failed" : "\(failed.count) agents failed",
+                detail: Self.agentTitle(first),
+                inlineText: "ADE · \(failed.count) failed",
+                count: failed.count,
+                symbol: "xmark.octagon.fill",
+                shortLabel: "FAIL",
+                tint: ADESharedTheme.statusFailed,
+                destinationURL: Self.sessionURL(first.sessionId),
+                metrics: metrics
+            )
+        } else if let first = ciFailing.first {
+            self = .init(
+                kind: .ciFailing,
+                title: ciFailing.count == 1 ? "CI failing" : "\(ciFailing.count) PRs failing",
+                detail: Self.prTitle(first),
+                inlineText: "ADE · \(ciFailing.count) CI failing",
+                count: ciFailing.count,
+                symbol: "exclamationmark.triangle.fill",
+                shortLabel: "CI",
+                tint: ADESharedTheme.statusFailed,
+                destinationURL: Self.prURL(first),
+                metrics: metrics
+            )
+        } else if let first = reviewRequested.first {
+            let changes = reviewRequested.filter { $0.review == "changes_requested" }.count
+            let title = changes > 0
+                ? (changes == 1 ? "Changes requested" : "\(changes) PRs need changes")
+                : (reviewRequested.count == 1 ? "Review requested" : "\(reviewRequested.count) reviews waiting")
+            self = .init(
+                kind: .reviewRequested,
+                title: title,
+                detail: Self.prTitle(first),
+                inlineText: "ADE · \(reviewRequested.count) review",
+                count: reviewRequested.count,
+                symbol: "eye.fill",
+                shortLabel: "REV",
+                tint: ADESharedTheme.warningAmber,
+                destinationURL: Self.prURL(first),
+                metrics: metrics
+            )
+        } else if let first = mergeReady.first {
+            self = .init(
+                kind: .mergeReady,
+                title: mergeReady.count == 1 ? "Ready to merge" : "\(mergeReady.count) PRs ready",
+                detail: Self.prTitle(first),
+                inlineText: "ADE · \(mergeReady.count) ready",
+                count: mergeReady.count,
+                symbol: "checkmark.seal.fill",
+                shortLabel: "READY",
+                tint: ADESharedTheme.statusSuccess,
+                destinationURL: Self.prURL(first),
+                metrics: metrics
+            )
+        } else if let first = running.first {
+            self = .init(
+                kind: .running,
+                title: running.count == 1 ? "1 agent running" : "\(running.count) agents running",
+                detail: Self.runningDetail(first),
+                inlineText: "ADE · \(running.count) running",
+                count: running.count,
+                symbol: "circle.dotted",
+                shortLabel: "RUN",
+                tint: ADESharedTheme.statusSuccess,
+                destinationURL: Self.sessionURL(first.sessionId),
+                metrics: metrics
+            )
+        } else if let first = openPrs.first {
+            self = .init(
+                kind: .openPullRequests,
+                title: openPrs.count == 1 ? "1 open PR" : "\(openPrs.count) open PRs",
+                detail: Self.prTitle(first),
+                inlineText: "ADE · \(openPrs.count) PRs",
+                count: openPrs.count,
+                symbol: "arrow.triangle.pull",
+                shortLabel: "PR",
+                tint: ADESharedTheme.brandCursor,
+                destinationURL: Self.prURL(first),
+                metrics: metrics
+            )
+        } else if snapshot.connection.lowercased() == "syncing" {
+            self = .init(
+                kind: .syncing,
+                title: "Syncing",
+                detail: "Refreshing ADE state",
+                inlineText: "ADE · syncing",
+                count: 0,
+                symbol: "arrow.triangle.2.circlepath",
+                shortLabel: "SYNC",
+                tint: ADESharedTheme.statusAttention,
+                destinationURL: Self.workspaceURL,
+                metrics: metrics
+            )
+        } else if snapshot.connection.lowercased() == "disconnected" {
+            self = .init(
+                kind: .offline,
+                title: "Mac offline",
+                detail: "Reconnect to update agents and PRs",
+                inlineText: "ADE · offline",
+                count: 0,
+                symbol: "wifi.slash",
+                shortLabel: "OFF",
+                tint: ADESharedTheme.statusFailed,
+                destinationURL: Self.workspaceURL,
+                metrics: metrics
+            )
+        } else {
+            self = .init(
+                kind: .idle,
+                title: "ADE idle",
+                detail: "No agents or PRs need attention",
+                inlineText: "ADE · idle",
+                count: 0,
+                symbol: "moon.zzz.fill",
+                shortLabel: "IDLE",
+                tint: ADESharedTheme.statusIdle,
+                destinationURL: Self.workspaceURL,
+                metrics: metrics
+            )
+        }
+    }
+
+    private init(
+        kind: Kind,
+        title: String,
+        detail: String,
+        inlineText: String,
+        count: Int,
+        symbol: String,
+        shortLabel: String,
+        tint: Color,
+        destinationURL: URL,
+        metrics: [Metric]
+    ) {
+        self.kind = kind
+        self.title = title
+        self.detail = detail
+        self.inlineText = inlineText
+        self.count = count
+        self.symbol = symbol
+        self.shortLabel = shortLabel
+        self.tint = tint
+        self.destinationURL = destinationURL
+        self.metrics = metrics
+    }
+
+    private static let workspaceURL = URL(string: "ade://workspace") ?? URL(fileURLWithPath: "/")
+
+    private static func sessionURL(_ sessionId: String?) -> URL {
+        guard let sessionId, !sessionId.isEmpty,
+              let url = URL(string: "ade://session/\(sessionId)") else {
+            return workspaceURL
+        }
+        return url
+    }
+
+    private static func prURL(_ pr: PrSnapshot) -> URL {
+        URL(string: "ade://pr/\(pr.number)") ?? workspaceURL
+    }
+
+    private static func agentTitle(_ agent: AgentSnapshot) -> String {
+        let title = agent.title?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return title?.isEmpty == false ? title! : agent.sessionId
+    }
+
+    private static func runningDetail(_ agent: AgentSnapshot) -> String {
+        let model = agent.modelId?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let label = model?.isEmpty == false ? model! : agent.provider.lowercased()
+        let preview = agent.preview?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let preview, !preview.isEmpty {
+            return "\(label) · \(preview)"
+        }
+        return "\(label) · working"
+    }
+
+    private static func prTitle(_ pr: PrSnapshot) -> String {
+        "#\(pr.number) · \(pr.title)"
+    }
+
+    private static func metrics(
+        runningCount: Int,
+        waitingCount: Int,
+        openPrCount: Int,
+        idleCount: Int
+    ) -> [Metric] {
+        var result: [Metric] = []
+        if runningCount > 0 {
+            result.append(.init(id: "running", label: "\(runningCount) run", symbol: "circle.dotted"))
+        }
+        if waitingCount > 0 {
+            result.append(.init(id: "waiting", label: "\(waitingCount) wait", symbol: "bell.fill"))
+        }
+        if openPrCount > 0 {
+            result.append(.init(id: "prs", label: "\(openPrCount) PR", symbol: "arrow.triangle.pull"))
+        }
+        if result.isEmpty && idleCount > 0 {
+            result.append(.init(id: "idle", label: "\(idleCount) idle", symbol: "moon.zzz.fill"))
+        }
+        return Array(result.prefix(3))
     }
 }
 
 // MARK: - Rectangular
 
-struct LockScreenRectangularView: View {
-    let snapshot: WorkspaceSnapshot
+private struct LockScreenRectangularView: View {
+    let status: LockScreenPriorityStatus
     @Environment(\.isLuminanceReduced) private var isLuminanceReduced
 
     var body: some View {
-        let summary = ADESharedContainer.inlineSummary(for: snapshot)
-        let running = snapshot.runningAgents
-        let isRunning = !running.isEmpty
-        let secondary = secondaryLine()
-        let progress = averageProgress(running: running)
-
-        return ZStack {
+        ZStack {
             AccessoryWidgetBackground()
             VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 5) {
-                    Image(systemName: isRunning ? "circle.dotted" : "moon.zzz")
+                HStack(spacing: 6) {
+                    Image(systemName: status.symbol)
                         .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(status.tint)
                         .widgetAccentable()
-                    Text(summary)
+                        .frame(width: 14, alignment: .center)
+                    Text(status.title)
                         .font(.system(size: 13, weight: .semibold))
                         .lineLimit(1)
-                        .minimumScaleFactor(0.85)
+                        .minimumScaleFactor(0.82)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                if let secondary {
-                    Text(secondary)
-                        .font(.system(size: 11, weight: .regular))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                if isRunning {
-                    ProgressView(value: progress)
-                        .progressViewStyle(.linear)
-                        .tint(.primary)
-                        .frame(height: 3)
-                        .widgetAccentable()
+                Text(status.detail)
+                    .font(.system(size: 10.5, weight: .regular))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.82)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                if !status.metrics.isEmpty {
+                    HStack(spacing: 5) {
+                        ForEach(status.metrics) { metric in
+                            Label(metric.label, systemImage: metric.symbol)
+                                .font(.system(size: 9, weight: .semibold))
+                                .labelStyle(.titleAndIcon)
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.8)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer(minLength: 0)
+                    }
                 }
             }
-            .padding(.horizontal, 2)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
             .opacity(isLuminanceReduced ? 0.85 : 1)
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("ADE workspace")
-        .accessibilityValue(summary)
-    }
-
-    private func secondaryLine() -> String? {
-        let openPrs = snapshot.prs.filter { $0.state == "open" }.count
-        var parts: [String] = []
-        if snapshot.awaitingInputCount > 0 {
-            parts.append("\(snapshot.awaitingInputCount) waiting")
-        }
-        if openPrs > 0 {
-            parts.append("\(openPrs) PR\(openPrs == 1 ? "" : "s")")
-        }
-        return parts.isEmpty ? nil : parts.joined(separator: " · ")
-    }
-
-    private func averageProgress(running: [AgentSnapshot]) -> Double {
-        guard !running.isEmpty else { return 0 }
-        let sum = running.reduce(0.0) { $0 + ($1.progress ?? 0) }
-        return min(1, max(0, sum / Double(running.count)))
+        .accessibilityLabel("ADE status")
+        .accessibilityValue("\(status.title). \(status.detail)")
     }
 }
 
 // MARK: - Circular
 
-struct LockScreenCircularView: View {
-    let snapshot: WorkspaceSnapshot
+private struct LockScreenCircularView: View {
+    let status: LockScreenPriorityStatus
     @Environment(\.isLuminanceReduced) private var isLuminanceReduced
 
     var body: some View {
-        let active = snapshot.runningAgents.count
-        let waiting = snapshot.awaitingInputCount
-
-        return Group {
-            if active > 0 {
-                Gauge(value: Double(active), in: 0...Double(max(active, 1))) {
-                    EmptyView()
-                } currentValueLabel: {
-                    VStack(spacing: -1) {
-                        Text("\(active)")
-                            .font(.system(size: active >= 10 ? 16 : 20, weight: .black))
-                            .kerning(-0.5)
-                            .minimumScaleFactor(0.7)
-                            .lineLimit(1)
-                        Text("RUN")
-                            .font(.system(size: 8).monospaced())
-                            .tracking(0.3)
-                    }
-                }
-                .gaugeStyle(.accessoryCircular)
-            } else if waiting > 0 {
+        Group {
+            if status.count > 0 {
                 Gauge(value: 1, in: 0...1) {
                     EmptyView()
                 } currentValueLabel: {
                     VStack(spacing: -1) {
-                        Text("\(waiting)")
-                            .font(.system(size: waiting >= 10 ? 16 : 20, weight: .black))
-                            .kerning(-0.5)
+                        Text("\(min(status.count, 99))")
+                            .font(.system(size: status.count >= 10 ? 16 : 20, weight: .black))
                             .minimumScaleFactor(0.7)
                             .lineLimit(1)
-                        Text("WAIT")
-                            .font(.system(size: 8).monospaced())
-                            .tracking(0.3)
+                        Text(status.shortLabel)
+                            .font(.system(size: status.shortLabel.count > 4 ? 7 : 8, weight: .semibold))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.65)
                     }
                 }
                 .gaugeStyle(.accessoryCircular)
             } else {
                 ZStack {
                     AccessoryWidgetBackground()
-                    Image(systemName: "moon.zzz")
-                        .font(.system(size: 18, weight: .semibold))
+                    Image(systemName: status.symbol)
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(status.tint)
                 }
             }
         }
         .widgetAccentable()
         .opacity(isLuminanceReduced ? 0.85 : 1)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("ADE workspace")
-        .accessibilityValue(active > 0 ? "\(active) running" : (waiting > 0 ? "\(waiting) waiting" : "idle"))
+        .accessibilityLabel("ADE status")
+        .accessibilityValue(status.inlineText)
     }
 }
 
 // MARK: - Inline
 
-struct LockScreenInlineView: View {
-    let snapshot: WorkspaceSnapshot
+private struct LockScreenInlineView: View {
+    let status: LockScreenPriorityStatus
 
     var body: some View {
-        let summary = ADESharedContainer.inlineSummary(for: snapshot)
-        Text(summary)
+        Text(status.inlineText)
+            .lineLimit(1)
+            .minimumScaleFactor(0.82)
             .accessibilityLabel("ADE")
-            .accessibilityValue(summary)
+            .accessibilityValue(status.inlineText)
     }
 }
 
@@ -201,39 +454,141 @@ struct LockScreenInlineView: View {
 
 #if DEBUG
 
-@available(iOS 17.0, *)
-#Preview("Lock · Rectangular · populated", as: .accessoryRectangular) {
-    ADELockScreenWidget()
-} timeline: {
-    ADEWorkspaceEntry(date: .now, snapshot: ADEWidgetPreviewData.populatedSnapshot)
+private enum LockScreenPreviewData {
+    static let now = Date()
+
+    static func agent(
+        id: String,
+        title: String,
+        status: String,
+        awaiting: Bool = false,
+        preview: String? = nil,
+        minutesAgo: TimeInterval = 1
+    ) -> AgentSnapshot {
+        AgentSnapshot(
+            sessionId: id,
+            provider: "codex",
+            modelId: "gpt-5-codex",
+            laneName: "Primary",
+            title: title,
+            status: status,
+            awaitingInput: awaiting,
+            lastActivityAt: now.addingTimeInterval(-minutesAgo * 60),
+            elapsedSeconds: Int(minutesAgo * 60),
+            preview: preview,
+            pendingInputItemId: awaiting ? "approval-\(id)" : nil,
+            progress: nil,
+            phase: nil,
+            toolCalls: 0
+        )
+    }
+
+    static func pr(
+        id: String,
+        number: Int,
+        title: String,
+        checks: String,
+        review: String,
+        mergeReady: Bool = false
+    ) -> PrSnapshot {
+        PrSnapshot(
+            id: id,
+            number: number,
+            title: title,
+            checks: checks,
+            review: review,
+            state: "open",
+            mergeReady: mergeReady,
+            branch: "feature/status-widget",
+            updatedAt: now
+        )
+    }
+
+    static func snapshot(
+        agents: [AgentSnapshot] = [],
+        prs: [PrSnapshot] = [],
+        connection: String = "connected",
+        awaitingInputCount: Int = 0,
+        idleCount: Int = 0
+    ) -> WorkspaceSnapshot {
+        WorkspaceSnapshot(
+            generatedAt: now,
+            agents: agents,
+            prs: prs,
+            connection: connection,
+            awaitingInputCount: awaitingInputCount,
+            idleCount: idleCount
+        )
+    }
+
+    static let waiting = snapshot(
+        agents: [
+            agent(id: "chat-wait", title: "Release checklist", status: "awaiting_input", awaiting: true),
+            agent(id: "chat-run", title: "Fix login bug", status: "running", preview: "editing tests")
+        ],
+        prs: [pr(id: "pr-625", number: 625, title: "Mobile widget cleanup", checks: "passing", review: "approved", mergeReady: true)],
+        awaitingInputCount: 1
+    )
+
+    static let failed = snapshot(
+        agents: [agent(id: "chat-fail", title: "Pairing regression", status: "failed")]
+    )
+
+    static let ciFailing = snapshot(
+        agents: [agent(id: "chat-run", title: "Refactor sync", status: "running", preview: "running shard 3")],
+        prs: [pr(id: "pr-626", number: 626, title: "Sync reconnect hardening", checks: "failing", review: "pending")]
+    )
+
+    static let review = snapshot(
+        prs: [pr(id: "pr-627", number: 627, title: "PR detail polish", checks: "passing", review: "changes_requested")]
+    )
+
+    static let ready = snapshot(
+        prs: [pr(id: "pr-628", number: 628, title: "Ship mobile status", checks: "passing", review: "approved", mergeReady: true)]
+    )
+
+    static let running = snapshot(
+        agents: [
+            agent(id: "chat-a", title: "Implement status widget", status: "running", preview: "building lock screen"),
+            agent(id: "chat-b", title: "Audit sync", status: "running", preview: "reading tests", minutesAgo: 2)
+        ]
+    )
+
+    static let offline = snapshot(connection: "disconnected")
+    static let idle = snapshot()
 }
 
 @available(iOS 17.0, *)
-#Preview("Lock · Rectangular · empty", as: .accessoryRectangular) {
+#Preview("Lock · priority states", as: .accessoryRectangular) {
     ADELockScreenWidget()
 } timeline: {
-    ADEWorkspaceEntry(date: .now, snapshot: ADEWidgetPreviewData.emptySnapshot)
+    ADEStatusEntry(date: Date(), snapshot: LockScreenPreviewData.waiting)
+    ADEStatusEntry(date: Date(), snapshot: LockScreenPreviewData.failed)
+    ADEStatusEntry(date: Date(), snapshot: LockScreenPreviewData.ciFailing)
+    ADEStatusEntry(date: Date(), snapshot: LockScreenPreviewData.review)
+    ADEStatusEntry(date: Date(), snapshot: LockScreenPreviewData.ready)
+    ADEStatusEntry(date: Date(), snapshot: LockScreenPreviewData.running)
+    ADEStatusEntry(date: Date(), snapshot: LockScreenPreviewData.offline)
+    ADEStatusEntry(date: Date(), snapshot: LockScreenPreviewData.idle)
 }
 
 @available(iOS 17.0, *)
-#Preview("Lock · Circular", as: .accessoryCircular) {
+#Preview("Lock · circular", as: .accessoryCircular) {
     ADELockScreenWidget()
 } timeline: {
-    ADEWorkspaceEntry(date: .now, snapshot: ADEWidgetPreviewData.populatedSnapshot)
+    ADEStatusEntry(date: Date(), snapshot: LockScreenPreviewData.waiting)
+    ADEStatusEntry(date: Date(), snapshot: LockScreenPreviewData.ciFailing)
+    ADEStatusEntry(date: Date(), snapshot: LockScreenPreviewData.running)
+    ADEStatusEntry(date: Date(), snapshot: LockScreenPreviewData.offline)
 }
 
 @available(iOS 17.0, *)
-#Preview("Lock · Inline · populated", as: .accessoryInline) {
+#Preview("Lock · inline", as: .accessoryInline) {
     ADELockScreenWidget()
 } timeline: {
-    ADEWorkspaceEntry(date: .now, snapshot: ADEWidgetPreviewData.populatedSnapshot)
-}
-
-@available(iOS 17.0, *)
-#Preview("Lock · Inline · idle", as: .accessoryInline) {
-    ADELockScreenWidget()
-} timeline: {
-    ADEWorkspaceEntry(date: .now, snapshot: ADEWidgetPreviewData.emptySnapshot)
+    ADEStatusEntry(date: Date(), snapshot: LockScreenPreviewData.waiting)
+    ADEStatusEntry(date: Date(), snapshot: LockScreenPreviewData.ready)
+    ADEStatusEntry(date: Date(), snapshot: LockScreenPreviewData.idle)
 }
 
 #endif

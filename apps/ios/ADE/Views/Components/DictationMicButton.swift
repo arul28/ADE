@@ -27,7 +27,7 @@ struct DictationMicButton: View {
 
   /// App-level dictation singleton. Observing it (instead of owning a private
   /// `@StateObject` service) is what lets recording continue across navigation
-  /// and drive the Dynamic Island.
+  /// and drive the global in-app recording pill.
   @EnvironmentObject private var controller: DictationController
   /// The insertion coordinator is owned by the host composer so the matching
   /// `DictationRawUndoChip` can share span/undo state with this button.
@@ -166,7 +166,7 @@ struct DictationMicButton: View {
 
   /// Register this composer's draft + coordinator as the place a finished
   /// transcript should land. The controller invokes the closure on the main
-  /// actor when Done fires (from the pill OR the Dynamic Island).
+  /// actor when Done fires.
   private func registerTarget() {
     controller.registerInsertionTarget(id: targetId) { raw in
       insert(rawTranscript: raw)
