@@ -68,7 +68,7 @@ const TOOL_META: Record<string, ToolMeta> = {
   Artifact: { label: "Artifact", icon: Note, badgeCls: "border-emerald-400/25 bg-emerald-400/12 text-emerald-200", category: "meta", sourceTone: "success", getTarget: a => String(a.file_path ?? "") || null },
   PushNotification: { label: "Notify", icon: ChatCircle, badgeCls: "border-cyan-400/25 bg-cyan-400/12 text-cyan-200", category: "meta", sourceTone: "info", getTarget: a => String(a.message ?? "") || null },
   RemoteTrigger: { label: "Remote Trigger", icon: Globe, badgeCls: "border-indigo-400/25 bg-indigo-400/12 text-indigo-200", category: "web", sourceTone: "accent", getTarget: a => String(a.action ?? a.trigger_id ?? "") || null },
-  EnterWorktree: { label: "Enter Worktree", icon: FolderOpen, badgeCls: "border-violet-400/25 bg-violet-400/12 text-violet-200", category: "meta", sourceTone: "accent", getTarget: a => String(a.branch ?? a.path ?? "") || null },
+  EnterWorktree: { label: "Enter Worktree", icon: FolderOpen, badgeCls: "border-violet-400/25 bg-violet-400/12 text-violet-200", category: "meta", sourceTone: "accent", getTarget: a => String(a.name ?? "") || null },
   ExitWorktree: { label: "Exit Worktree", icon: FolderOpen, badgeCls: "border-violet-400/25 bg-violet-400/12 text-violet-200", category: "meta", sourceTone: "accent" },
   ExitPlanMode: { label: "Plan Approval", icon: ListChecks, badgeCls: "border-violet-400/25 bg-violet-400/12 text-violet-200", category: "plan", sourceTone: "accent" },
   exitPlanMode: { label: "Plan Approval", icon: ListChecks, badgeCls: "border-violet-400/25 bg-violet-400/12 text-violet-200", category: "plan", sourceTone: "accent" },

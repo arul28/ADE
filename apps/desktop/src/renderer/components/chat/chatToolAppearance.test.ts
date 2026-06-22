@@ -87,6 +87,13 @@ describe("getToolMeta", () => {
     expect(meta.getTarget!({})).toBe("0 task(s)");
   });
 
+  it("extracts worktree names for Claude worktree tools", () => {
+    const meta = getToolMeta("EnterWorktree");
+    expect(meta.getTarget).toBeDefined();
+    expect(meta.getTarget!({ name: "feature/sdk-upgrade" })).toBe("feature/sdk-upgrade");
+    expect(meta.getTarget!({ branch: "unused", path: "/tmp/unused" })).toBeNull();
+  });
+
   it("returns null or empty for getTarget when args are missing", () => {
     const readMeta = getToolMeta("Read");
     const result = readMeta.getTarget!({});
