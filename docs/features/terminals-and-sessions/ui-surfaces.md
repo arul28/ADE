@@ -220,6 +220,12 @@ prompt, while the continuation composer calls `ade.pty.sendToSession`
 and sends the follow-up as part of the first resume launch when
 structured resume metadata is present.
 
+Claude CLI surfaces whose recent preview/transcript reports `Please run
+/login` or a 401 invalid-credentials error show the same dismissible
+`Login to Claude` CTA used by Claude chat headers. It creates a tracked
+shell PTY in the session's lane and runs `claude auth login`; the Work
+tab selects that PTY so the user can finish the interactive login.
+
 Constants:
 
 - `CHAT_TILE_MIN_WIDTH = 440`, `CHAT_TILE_MIN_HEIGHT = 340`

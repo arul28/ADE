@@ -126,9 +126,11 @@ import { ConfirmDialog, useConfirmDialog } from "../shared/InlineDialogs";
 import { ChatActionsDrawerPanel, type ChatActionsTab } from "./ChatActionsDrawerPanel";
 import { CodexPlanCard } from "./codex/CodexPlanCard";
 import { ChatPrPane } from "./ChatPrPane";
+import { ClaudeLoginPromptButton } from "../work/ClaudeLoginPromptButton";
 import { rootAppStoreApi, selectActiveProjectRoot, useAppStore, useRootAppStore } from "../../state/appStore";
 import { buildChatAppearanceRootStyle } from "./chatAppearance";
 import { copyLaunchPromptToClipboard } from "../../lib/launchPromptClipboard";
+import { shouldShowClaudeChatLoginPrompt } from "../../lib/claudeAuthPrompt";
 import { LaneAccentDot } from "../lanes/LaneAccentDot";
 import {
   effectiveNewLaneBaseSource,
@@ -3143,6 +3145,10 @@ export function AgentChatPane({
     nonce: number;
   } | null>(null);
   const terminalRevealNonceRef = useRef(0);
+  const revealChatTerminal = useCallback((terminal: { terminalId: string; ptyId: string; label: string }) => {
+    setTerminalDrawerOpen(true);
+    setTerminalRevealRequest({ ...terminal, nonce: ++terminalRevealNonceRef.current });
+  }, []);
   const [rightPaneSplit, setRightPaneSplit] = useState<number>(() => {
     try {
       const raw = window.sessionStorage.getItem("ade.chat.rightPaneSplit");
@@ -4198,6 +4204,18 @@ export function AgentChatPane({
     if (selectedSession && !modelSelectionDiffersFromSession) return selectedSession.provider;
     return resolveChatRuntimeProvider(resolveModelDescriptorWithRuntimeCatalog(modelId) ?? getModelById(modelId));
   }, [selectedSession, modelSelectionDiffersFromSession, modelId]);
+  const showClaudeLoginPrompt = useMemo(() => shouldShowClaudeChatLoginPrompt({
+    provider: selectedSession?.provider ?? sessionProvider,
+    events: selectedEventsForDisplay,
+    turnActive,
+    authAvailable: providerConnections?.claude?.authAvailable === true,
+  }), [
+    providerConnections?.claude?.authAvailable,
+    selectedEventsForDisplay,
+    selectedSession?.provider,
+    sessionProvider,
+    turnActive,
+  ]);
   // Provider-agnostic context-usage for the composer dial. Codex pushes a live
   // CodexThreadTokenUsage (with modelContextWindow); the other runtimes report a
   // 4-field breakdown on the terminal `done`/`tokens` events. We take the
@@ -8970,8 +8988,7 @@ export function AgentChatPane({
           onAddAttachment={addAttachment}
           onInsertDraft={insertComposerDraft}
           onShowTerminal={(terminal) => {
-            setTerminalDrawerOpen(true);
-            setTerminalRevealRequest({ ...terminal, nonce: ++terminalRevealNonceRef.current });
+            revealChatTerminal(terminal);
           }}
           onAddContext={addAppControlContext}
         />
@@ -8980,7 +8997,16 @@ export function AgentChatPane({
   );
   const chatHeaderTrailingActions = (
     <>
-          {laneToolsVisible && iosSimulatorAvailable ? (
+      {chatTerminalVisible && selectedSessionId ? (
+        <ClaudeLoginPromptButton
+          visible={showClaudeLoginPrompt}
+          storageKey={`chat:${selectedSessionId}`}
+          laneId={laneId}
+          chatSessionId={selectedSessionId}
+          onRevealTerminal={revealChatTerminal}
+        />
+      ) : null}
+      {laneToolsVisible && iosSimulatorAvailable ? (
             <SmartTooltip
               content={{
                 label: iosSimulatorOpen ? "Close iOS simulator" : "Open iOS simulator",
@@ -10130,8 +10156,7 @@ export function AgentChatPane({
                       sessionId={selectedSessionId}
                       onInsertDraft={insertComposerDraft}
                       onRevealChatTerminal={(terminal) => {
-                        setTerminalDrawerOpen(true);
-                        setTerminalRevealRequest({ ...terminal, nonce: ++terminalRevealNonceRef.current });
+                        revealChatTerminal(terminal);
                       }}
                       onRewindFiles={selectedSession?.provider === "claude" ? rewindFilesFromMessage : undefined}
                       onApproval={(itemId, decision, responseText, answers) => {

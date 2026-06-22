@@ -26,7 +26,20 @@ describe("classifyAgentCliError", () => {
       agent: "claude",
       displayName: "Claude Code",
       category: "unauthenticated",
-      authCommand: "claude /login",
+      authCommand: "claude auth login",
+    });
+  });
+
+  it("classifies legacy Claude login hints", () => {
+    expect(classifyAgentCliError("Please run 'claude /login'", "claude")).toMatchObject({
+      agent: "claude",
+      category: "unauthenticated",
+      authCommand: "claude auth login",
+    });
+    expect(classifyAgentCliError("Please run /login · API Error: 401 Invalid authentication credentials", "claude")).toMatchObject({
+      agent: "claude",
+      category: "unauthenticated",
+      authCommand: "claude auth login",
     });
   });
 });

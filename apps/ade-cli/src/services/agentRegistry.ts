@@ -31,14 +31,16 @@ export const AGENT_CLI_REGISTRY: AgentCliDescriptor[] = [
     displayName: "Claude Code",
     binaryNames: ["claude"],
     installCommand: npmGlobalInstallCommand("@anthropic-ai/claude-code"),
-    authCommand: "claude /login",
+    authCommand: "claude auth login",
     missingErrorPatterns: [
       /\bclaude\b.*\b(command not found|not recognized|not found|enoent)\b/i,
       /\bspawn\s+claude\s+enoent\b/i,
     ],
     notAuthErrorPatterns: [
       /\bclaude\b.*\b(not logged in|not authenticated|unauthorized|authentication failed|login required)\b/i,
-      /\brun\s+[`'"]?claude\s+\/login[`'"]?/i,
+      /\bplease\s+run\s+\/login\b/i,
+      /\brun\s+[`'"]?claude\s+auth\s+login[`'"]?/i,
+      /\b(?:please\s+)?run\s+[`'"]?claude\s+\/login[`'"]?/i,
     ],
   },
   {

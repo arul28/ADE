@@ -286,11 +286,19 @@ Renderer surfaces:
   chats and tracked agent CLI terminals. It owns the title, lane chip,
   Claude cache badge, lane git toolbar slot, and trailing-action
   placement so chat and CLI surfaces share one visual shell.
+- `apps/desktop/src/renderer/components/work/ClaudeLoginPromptButton.tsx` —
+  dismissible Claude auth recovery CTA. Chat headers render it after a
+  Claude SDK auth error; CLI headers render it when a Claude terminal
+  preview contains the `Please run /login` / 401 invalid-credentials
+  failure. The action creates a tracked shell PTY in the same lane
+  (and same chat drawer when there is a chat owner) running
+  `claude auth login`.
 - `apps/desktop/src/renderer/components/terminals/CliSessionWorkSurfaceHeader.tsx`
   — CLI adapter for `WorkSurfaceHeader`. It maps a
-  `TerminalSessionSummary` to the shared header, adds the status dot,
-  Run menu, info, and overflow actions, and intentionally leaves stop
-  controls to the sidebar card / chat composer paths.
+  `TerminalSessionSummary` to the shared header, adds the Claude login
+  CTA when auth failure is detected, status dot, Run menu, info, and
+  overflow actions, and intentionally leaves stop controls to the
+  sidebar card / chat composer paths.
 - `apps/desktop/src/renderer/components/terminals/WorkStartSurface.tsx` —
   empty-state "start new chat / terminal" surface. It mounts
   `AgentChatPane` in embedded draft mode, passes `draftContextTargetId`
