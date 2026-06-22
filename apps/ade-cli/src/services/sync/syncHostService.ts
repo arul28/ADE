@@ -197,6 +197,39 @@ const MOBILE_MUTATING_FILE_ACTIONS = new Set<SyncFileRequest["action"]>([
   "deletePath",
 ]);
 
+export function syncFileRequestWorkspaceId(payload: SyncFileRequest): string | null {
+  switch (payload.action) {
+    case "listTree":
+    case "readFile":
+    case "writeText":
+    case "createFile":
+    case "createDirectory":
+    case "rename":
+    case "deletePath":
+    case "quickOpen":
+    case "searchText":
+      return toOptionalString(payload.args.workspaceId);
+    case "listWorkspaces":
+    case "readArtifact":
+      return null;
+    default:
+      return null;
+  }
+}
+
+export function visibleFileWorkspacesForPeer(workspaces: FilesWorkspace[], opts: { isMobile: boolean }): FilesWorkspace[] {
+  return opts.isMobile ? workspaces.filter((workspace) => workspace.kind !== "external") : workspaces;
+}
+
+export function assertFileRequestWorkspaceVisibleToPeer(args: {
+  isMobile: boolean;
+  workspace: FilesWorkspace | null;
+}): void {
+  if (args.isMobile && args.workspace?.kind === "external") {
+    throw new Error("External local files are not available on mobile.");
+  }
+}
+
 type LanePresenceEntry = {
   marker: DeviceMarker;
   lastAnnouncedAtMs: number;
@@ -3093,6 +3126,13 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     }
   }
 
+  function assertMobileExternalWorkspaceBlocked(peer: PeerState, payload: SyncFileRequest): void {
+    assertFileRequestWorkspaceVisibleToPeer({
+      isMobile: isMobilePeer(peer),
+      workspace: workspaceForId(syncFileRequestWorkspaceId(payload)),
+    });
+  }
+
   function assertFileMutationAllowed(peer: PeerState, payload: SyncFileRequest): void {
     if (!MOBILE_MUTATING_FILE_ACTIONS.has(payload.action)) return;
     const workspaceId = toOptionalString((payload as { args?: { workspaceId?: unknown } }).args?.workspaceId);
@@ -3113,6 +3153,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     };
 
     try {
+      assertMobileExternalWorkspaceBlocked(peer, payload);
       assertFileMutationAllowed(peer, payload);
       let result:
         | FilesWorkspace[]
@@ -3125,7 +3166,9 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
 
       switch (payload.action) {
         case "listWorkspaces":
-          result = args.fileService.listWorkspaces(payload.args ?? {});
+          result = visibleFileWorkspacesForPeer(args.fileService.listWorkspaces(payload.args ?? {}), {
+            isMobile: isMobilePeer(peer),
+          });
           break;
         case "listTree":
           result = await args.fileService.listTree(payload.args);

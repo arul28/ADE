@@ -941,6 +941,13 @@ function AppNavigationBridge() {
         });
         return;
       }
+      if (target.kind === "files-external") {
+        const params = new URLSearchParams();
+        params.set("externalPath", target.path);
+        params.set("externalOpen", String(Date.now()));
+        navigate(`/files?${params.toString()}`);
+        return;
+      }
       if (target.kind === "route") {
         navigate(target.route.startsWith("/") ? target.route : `/${target.route}`);
       }

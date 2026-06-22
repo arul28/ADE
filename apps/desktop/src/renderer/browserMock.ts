@@ -5033,6 +5033,9 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         files: [],
         directories: [],
       }),
+      openExternalPath: async () => {
+        throw new Error("External local files are not available in the browser mock.");
+      },
       readFile: async (args: any) => {
         const workspaceId = String(args?.workspaceId ?? "");
         const relPath = String(args?.path ?? "");

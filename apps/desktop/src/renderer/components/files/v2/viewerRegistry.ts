@@ -16,6 +16,9 @@ export type ViewerResolveContext = {
 };
 
 const IMAGE_EXTS = new Set(["png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "avif"]);
+const AUDIO_EXTS = new Set(["aac", "flac", "m4a", "mp3", "oga", "ogg", "opus", "wav"]);
+const VIDEO_EXTS = new Set(["avi", "m4v", "mkv", "mov", "mp4", "ogv", "webm"]);
+const DOCUMENT_EXTS = new Set(["doc", "docx", "ppt", "pptx", "xls", "xlsx"]);
 
 export function extensionOf(path: string): string {
   const base = path.toLowerCase().split(/[\\/]/).pop() ?? "";
@@ -24,7 +27,7 @@ export function extensionOf(path: string): string {
 
 /**
  * Ordered first-match resolution:
- *   pdf → image → csv → largeText(streamed) → markdown → binary → code(default).
+ *   pdf → image → media → csv → documents → largeText(streamed) → markdown → binary → code(default).
  *
  * Special file types (pdf/image/csv) win over the large-text streamer because
  * their viewers stream bytes themselves; an oversized plain/markdown/code file
@@ -35,7 +38,10 @@ export function resolveViewerKind(ctx: ViewerResolveContext): ViewerKind {
 
   if (ext === "pdf") return "pdf";
   if (ctx.previewKind === "image" || IMAGE_EXTS.has(ext) || ext === "svg") return "image";
+  if (ctx.mimeType?.startsWith("audio/") || AUDIO_EXTS.has(ext)) return "audio";
+  if (ctx.mimeType?.startsWith("video/") || VIDEO_EXTS.has(ext)) return "video";
   if (ext === "csv" || ext === "tsv") return "csv";
+  if (DOCUMENT_EXTS.has(ext)) return "document";
   // previewKind === "image" already returned above, so only text/binary remain here.
   if (ctx.isPartial && !ctx.isBinary) return "largeText";
   if (ext === "md" || ext === "mdx" || ext === "markdown") return "markdown";

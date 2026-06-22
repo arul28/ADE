@@ -8,6 +8,8 @@ import { ImageViewer } from "./viewers/ImageViewer";
 import { MarkdownViewer } from "./viewers/MarkdownViewer";
 import { CsvViewer } from "./viewers/CsvViewer";
 import { PdfViewer } from "./viewers/PdfViewer";
+import { MediaViewer } from "./viewers/MediaViewer";
+import { DocumentViewer } from "./viewers/DocumentViewer";
 import { LargeTextViewer } from "./viewers/LargeTextViewer";
 import { BinaryViewer } from "./viewers/BinaryViewer";
 import type { EditorApi, EditorThemeMode, ViewerProps } from "./viewers/types";
@@ -66,6 +68,12 @@ export function ViewerHost(props: ViewerHostProps) {
       return <CsvViewer key={tab.path} {...viewerProps} />;
     case "pdf":
       return <PdfViewer key={tab.path} {...viewerProps} />;
+    case "audio":
+      return <MediaViewer key={tab.path} {...viewerProps} kind="audio" />;
+    case "video":
+      return <MediaViewer key={tab.path} {...viewerProps} kind="video" />;
+    case "document":
+      return <DocumentViewer key={tab.path} {...viewerProps} />;
     case "largeText":
       return <LargeTextViewer key={tab.path} {...viewerProps} />;
     case "binary":

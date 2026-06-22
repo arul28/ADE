@@ -7,8 +7,15 @@ describe("resolveViewerKind", () => {
     ["png image", { path: "a/logo.png", previewKind: "image", isBinary: true }, "image"],
     ["jpg by extension", { path: "x.JPG" }, "image"],
     ["svg → image", { path: "icon.svg" }, "image"],
+    ["audio by extension", { path: "soundtrack.mp3", isBinary: true }, "audio"],
+    ["audio by mime", { path: "soundtrack.bin", mimeType: "audio/wav", isBinary: true }, "audio"],
+    ["video by extension", { path: "demo.mov", isBinary: true }, "video"],
+    ["video by mime", { path: "demo.bin", mimeType: "video/mp4", isBinary: true }, "video"],
     ["csv", { path: "data/rows.csv" }, "csv"],
     ["tsv", { path: "data/rows.tsv" }, "csv"],
+    ["word document", { path: "docs/spec.docx", isBinary: true }, "document"],
+    ["powerpoint document", { path: "deck.pptx", isBinary: true }, "document"],
+    ["excel document", { path: "budget.xlsx", isBinary: true }, "document"],
     ["markdown", { path: "README.md" }, "markdown"],
     ["mdx", { path: "page.mdx" }, "markdown"],
     ["plain code", { path: "src/index.ts" }, "code"],
@@ -38,7 +45,7 @@ describe("resolveViewerKind", () => {
 
   it("only the code viewer is editable", () => {
     expect(viewerIsEditable("code")).toBe(true);
-    for (const kind of ["image", "markdown", "csv", "pdf", "largeText", "binary", "diff", "conflict"] as const) {
+    for (const kind of ["image", "markdown", "csv", "pdf", "audio", "video", "document", "largeText", "binary", "diff", "conflict"] as const) {
       expect(viewerIsEditable(kind)).toBe(false);
     }
   });

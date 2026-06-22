@@ -620,7 +620,7 @@ payload.
 | Sub-protocol | Purpose | Used by |
 |---|---|---|
 | Changeset sync | Bidirectional cr-sqlite row exchange | All devices |
-| File access | On-demand file reads, listings, writes | iOS Files, desktop remote viewing |
+| File access | On-demand project/worktree file reads, listings, writes | iOS Files, desktop remote viewing |
 | Terminal stream/control | Subscribe to PTY output from the runtime; send input bytes and viewport resize events back to the subscribed PTY | iOS Work tab |
 | Chat stream | Agent chat transcript events. Each `chat_event` carries a host-assigned per-session monotonic `seq` backed by a capped replay buffer (500 events / 2 MB per session, 64-session LRU). `chat_subscribe` accepts `sinceSeq`: gaps the buffer covers replay as ordinary events; uncoverable gaps fall back to a snapshot, and a non-resumed ack tells the client to drop its stale seq watermark (seq epochs restart at 1 on a new host). The ack also carries `turnActive` from the live agent chat service — snapshots are byte-capped tails, so a long turn's `status: started` event can fall outside the window and the flag is what lets a mid-turn subscriber render streaming/stop affordances without waiting on the changeset pump (a full ack without the flag tells the client to drop any latched hint) | iOS Work tab, controller chat |
 | Command routing | Send named actions (`chat.send`, `lanes.create`, `git.push`, `prs.getMobileSnapshot`, etc.) | Controller devices |
@@ -691,6 +691,12 @@ project scope split.
 - **Secret isolation**: each device stores its own pairing secret in
   its OS keychain.
 - **Execution isolation**: the ADE runtime runs agents; controllers do not.
+- **External local files stay desktop-local.** Files opened in the desktop
+  from Finder / OS open-file events or local drag-and-drop are registered as
+  `external` workspaces on that desktop process. The sync host filters those
+  workspaces out of mobile `listWorkspaces` responses and rejects mobile file
+  requests that target them, so pairing a phone does not expose arbitrary
+  local folders.
 
 ## Current implementation status
 

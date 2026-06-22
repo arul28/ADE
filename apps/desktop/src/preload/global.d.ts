@@ -57,6 +57,8 @@ import type {
   FilesListTreeChildrenArgs,
   FilesListTreeChildrenResult,
   FilesListWorkspacesArgs,
+  FilesOpenExternalPathArgs,
+  FilesOpenExternalPathResult,
   FilesQuickOpenArgs,
   FilesQuickOpenItem,
   FilesReadFileArgs,
@@ -1640,6 +1642,9 @@ declare global {
         refreshGitDecorations: (
           args: FilesRefreshGitDecorationsArgs,
         ) => Promise<FilesGitStatusEvent>;
+        openExternalPath: (
+          args: FilesOpenExternalPathArgs,
+        ) => Promise<FilesOpenExternalPathResult>;
         readFile: (args: FilesReadFileArgs) => Promise<FileContent>;
         readFileRange: (
           args: FilesReadFileRangeArgs,

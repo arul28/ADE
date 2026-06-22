@@ -47,6 +47,7 @@ import { setPendingReveal } from "./pendingReveals";
 import { COLORS } from "../../lanes/laneDesignTokens";
 import { modifierKeyLabel } from "../../../lib/platform";
 import type { EditorThemeMode } from "./viewers/types";
+import { joinDisplayPath } from "./pathDisplay";
 
 const TREE_PAGE_SIZE = 2_000;
 const MAX_AUTO_LOADED_CHILDREN = 10_000;
@@ -60,6 +61,21 @@ const rootTreeCacheByKey = new Map<string, FileTreeNode[]>();
 const readCachedWorkspaces = (projectRoot: string): FilesWorkspace[] => workspacesCacheByProject.get(projectRoot) ?? [];
 const rootTreeCacheKey = (projectRoot: string, workspaceId: string): string => `${projectRoot}::${workspaceId}`;
 
+function mergeExternalWorkspaces(next: FilesWorkspace[], previous: FilesWorkspace[]): FilesWorkspace[] {
+  const seen = new Set(next.map((workspace) => workspace.id));
+  const preserved = previous.filter((workspace) => workspace.kind === "external" && !seen.has(workspace.id));
+  return [...next, ...preserved];
+}
+
+function pathAncestors(path: string): string[] {
+  const segments = path.split("/").filter(Boolean);
+  const out: string[] = [];
+  for (let i = 1; i <= segments.length; i++) {
+    out.push(segments.slice(0, i).join("/"));
+  }
+  return out;
+}
+
 /**
  * Files workbench: the VS Code-like shell for the main Files route and the
  * embedded Work sidebar. Reuses the proven IPC + FilesExplorer + Monaco model
@@ -69,13 +85,18 @@ export function FilesWorkbench({
   preferredLaneId,
   embedded,
   active = true,
+  externalOpenPath,
+  externalOpenNonce,
 }: {
   preferredLaneId?: string | null;
   embedded?: boolean;
   active?: boolean;
+  externalOpenPath?: string | null;
+  externalOpenNonce?: string | null;
 }) {
   const project = useAppStore((s) => s.project);
   const projectRootPath = project?.rootPath ?? "";
+  const isRemoteProject = useAppStore((s) => s.projectBinding?.kind === "remote");
   const selectedLaneId = useAppStore((s) => s.selectedLaneId);
   const globalLaneId = preferredLaneId ?? selectedLaneId ?? null;
 
@@ -94,6 +115,7 @@ export function FilesWorkbench({
   const [editOverrides, setEditOverrides] = useState<Set<string>>(() => new Set());
   const editOverride = workspaceId ? editOverrides.has(workspaceId) : false;
   const canEdit = workspace ? (!workspace.isReadOnlyByDefault || editOverride) : false;
+  const canRevealInFinder = workspace != null && (workspace.kind === "external" || !isRemoteProject);
   const showEnableEditing = Boolean(workspace?.isReadOnlyByDefault) && !editOverride;
   const enableEditingForWorkspace = () => {
     if (!workspaceId) return;
@@ -107,7 +129,10 @@ export function FilesWorkbench({
   const theme: EditorThemeMode = "dark";
   // Session (tabs/layout) follows the ACTIVE workspace's lane, so switching the
   // workspace picker switches the tab set; falls back to the global lane until resolved.
-  const sessionKey = filesSessionKey(projectRootPath, workspace?.laneId ?? globalLaneId);
+  const sessionKey = filesSessionKey(
+    projectRootPath,
+    workspace?.kind === "external" ? workspace.id : workspace?.laneId ?? globalLaneId,
+  );
 
   const [tree, setTree] = useState<FileTreeNode[]>(
     () => rootTreeCacheByKey.get(rootTreeCacheKey(projectRootPath, initialWorkspaceId)) ?? [],
@@ -127,6 +152,14 @@ export function FilesWorkbench({
   const [draggingTab, setDraggingTab] = useState(false);
   const [treeMenu, setTreeMenu] = useState<FilesExplorerContextMenuEvent | null>(null);
   const [inlineRename, setInlineRename] = useState<{ path: string; nonce: number } | null>(null);
+  const [pendingWorkspaceOpen, setPendingWorkspaceOpen] = useState<{
+    workspaceId: string;
+    path: string | null;
+    pathType: "file" | "directory";
+    nonce: string;
+  } | null>(null);
+  const handledExternalOpenRef = useRef<string | null>(null);
+  const lastGlobalLaneIdRef = useRef(globalLaneId);
   const renameNonceRef = useRef(0);
   const registryRef = useRef(createMonacoModelRegistry());
   const dragRef = useRef<{ groupId: string; path: string } | null>(null);
@@ -140,6 +173,19 @@ export function FilesWorkbench({
   const applyGroups = useCallback(
     (reducer: Parameters<typeof store.apply>[1]) => store.apply(sessionKey, reducer),
     [store, sessionKey],
+  );
+  const upsertWorkspace = useCallback(
+    (nextWorkspace: FilesWorkspace) => {
+      setWorkspaces((prev) => {
+        const next = [
+          ...prev.filter((candidate) => candidate.id !== nextWorkspace.id),
+          nextWorkspace,
+        ];
+        workspacesCacheByProject.set(projectRootPath, next);
+        return next;
+      });
+    },
+    [projectRootPath],
   );
 
   const activeGroup = groupsState.groups[groupsState.activeGroupId];
@@ -172,8 +218,11 @@ export function FilesWorkbench({
       .listWorkspaces()
       .then((ws) => {
         if (cancelled) return;
-        workspacesCacheByProject.set(projectRootPath, ws);
-        setWorkspaces(ws);
+        setWorkspaces((prev) => {
+          const merged = mergeExternalWorkspaces(ws, prev);
+          workspacesCacheByProject.set(projectRootPath, merged);
+          return merged;
+        });
         setWorkspacesLoaded(true);
       })
       .catch(() => {
@@ -184,14 +233,18 @@ export function FilesWorkbench({
     };
   }, [active, projectRootPath]);
 
-  // Resolve the workspace from the global lane on mount + when the global lane
-  // (or workspace list) changes. A manual pick via the picker persists because
-  // workspaceId is intentionally NOT a dependency here.
+  // Resolve the workspace from the global lane on mount + lane changes.
+  // Workspace-list refreshes preserve a still-valid manual/external selection.
   useEffect(() => {
     if (!workspaces.length) return;
-    const next = defaultFilesWorkspaceId(workspaces, globalLaneId);
-    if (next) setWorkspaceId(next);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    const laneChanged = lastGlobalLaneIdRef.current !== globalLaneId;
+    lastGlobalLaneIdRef.current = globalLaneId;
+    setWorkspaceId((current) => {
+      if (!laneChanged && current && workspaces.some((candidate) => candidate.id === current)) {
+        return current;
+      }
+      return defaultFilesWorkspaceId(workspaces, globalLaneId) || current;
+    });
   }, [workspaces, globalLaneId]);
 
   /* ---- Tree loading ---- */
@@ -465,6 +518,7 @@ export function FilesWorkbench({
         const viewerKind = resolveViewerKind({
           path,
           previewKind: content.previewKind,
+          mimeType: content.mimeType,
           isBinary: content.isBinary,
           isPartial: content.isPartial,
         });
@@ -484,6 +538,56 @@ export function FilesWorkbench({
     },
     [workspaceId, applyGroups, sessionKey],
   );
+
+  const openExternalPathRequest = useCallback(
+    async (absolutePath: string, nonce: string) => {
+      try {
+        const result = await window.ade.files.openExternalPath({ path: absolutePath });
+        if (result.workspace.kind === "external") {
+          upsertWorkspace(result.workspace);
+        }
+        setWorkspaceId(result.workspace.id);
+        setPendingWorkspaceOpen({
+          workspaceId: result.workspace.id,
+          path: result.openPath,
+          pathType: result.pathType,
+          nonce,
+        });
+      } catch (err) {
+        setError(err instanceof Error ? err.message : String(err));
+      }
+    },
+    [upsertWorkspace],
+  );
+
+  useEffect(() => {
+    if (!active || !externalOpenPath) return;
+    const key = `${externalOpenNonce ?? ""}:${externalOpenPath}`;
+    if (handledExternalOpenRef.current === key) return;
+    handledExternalOpenRef.current = key;
+    void openExternalPathRequest(externalOpenPath, key);
+  }, [active, externalOpenPath, externalOpenNonce, openExternalPathRequest]);
+
+  useEffect(() => {
+    if (!active || !pendingWorkspaceOpen || workspaceId !== pendingWorkspaceOpen.workspaceId) return;
+    const pending = pendingWorkspaceOpen;
+    setPendingWorkspaceOpen(null);
+    if (pending.pathType === "file" && pending.path) {
+      void openFile(pending.path, { preview: false });
+      return;
+    }
+    setSelectedNodePath(pending.path);
+    if (pending.path) {
+      setExpanded((prev) => {
+        const next = new Set(prev);
+        for (const ancestor of pathAncestors(pending.path ?? "")) next.add(ancestor);
+        return next;
+      });
+      void loadDirectory(pending.path).catch((err) => setError(formatFilesError(err)));
+    } else {
+      void refreshRoot({ preserveLoadedChildren: false });
+    }
+  }, [active, loadDirectory, openFile, pendingWorkspaceOpen, refreshRoot, workspaceId]);
 
   /* ---- Group/tab handlers ---- */
   const handleCloseTab = useCallback(
@@ -617,6 +721,8 @@ export function FilesWorkbench({
     if (!treeMenu) return [];
     const path = treeMenu.nodePath;
     const baseDir = dirForNode(treeMenu);
+    const fullPath = joinDisplayPath(rootPath, path);
+    const name = path.split("/").filter(Boolean).pop() ?? path;
     const items: ContextMenuItem[] = [];
     if (treeMenu.nodeType === "file") {
       items.push({ type: "item", label: "Open", onClick: () => void openFile(path, { preview: false }) });
@@ -628,10 +734,18 @@ export function FilesWorkbench({
     items.push({ type: "item", label: "Rename…", icon: <PencilSimple size={14} />, onClick: () => setInlineRename({ path, nonce: ++renameNonceRef.current }), disabled: !canEdit });
     items.push({ type: "item", label: "Delete", icon: <Trash size={14} />, danger: true, onClick: () => void deletePath(path), disabled: !canEdit });
     items.push({ type: "separator" });
-    items.push({ type: "item", label: "Copy Path", icon: <Copy size={14} />, onClick: () => void window.ade.app.writeClipboardText?.(path) });
-    items.push({ type: "item", label: "Reveal in Finder", icon: <ArrowSquareOut size={14} />, onClick: () => void window.ade.app.openPathInEditor?.({ rootPath, relativePath: path, target: "finder" }).catch(() => {}) });
+    items.push({ type: "item", label: "Copy Full Path", icon: <Copy size={14} />, onClick: () => void window.ade.app.writeClipboardText?.(fullPath) });
+    items.push({ type: "item", label: "Copy Relative Path", icon: <Copy size={14} />, onClick: () => void window.ade.app.writeClipboardText?.(path) });
+    items.push({ type: "item", label: "Copy Name", icon: <Copy size={14} />, onClick: () => void window.ade.app.writeClipboardText?.(name) });
+    items.push({
+      type: "item",
+      label: "Reveal in Finder",
+      icon: <ArrowSquareOut size={14} />,
+      onClick: () => void window.ade.app.openPathInEditor?.({ rootPath, relativePath: path, target: "finder" }).catch(() => {}),
+      disabled: !canRevealInFinder,
+    });
     return items;
-  }, [treeMenu, openFile, canEdit, deletePath, rootPath]);
+  }, [treeMenu, openFile, canEdit, deletePath, rootPath, canRevealInFinder]);
 
   const createInWorkspace = useCallback(
     async (kind: "file" | "directory", baseDir: string, name: string) => {
@@ -669,6 +783,29 @@ export function FilesWorkbench({
     return () => window.removeEventListener("keydown", onKey);
   }, [active]);
 
+  const handleNativeDragOver = useCallback(
+    (event: React.DragEvent<HTMLDivElement>) => {
+      if (draggingTab || !Array.from(event.dataTransfer.types).includes("Files")) return;
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "copy";
+    },
+    [draggingTab],
+  );
+
+  const handleNativeDrop = useCallback(
+    (event: React.DragEvent<HTMLDivElement>) => {
+      if (draggingTab || event.dataTransfer.files.length === 0) return;
+      event.preventDefault();
+      const files = Array.from(event.dataTransfer.files);
+      files.forEach((file, index) => {
+        const droppedPath = window.ade.project.getDroppedPath(file);
+        if (!droppedPath) return;
+        void openExternalPathRequest(droppedPath, `drop:${Date.now()}:${index}:${droppedPath}`);
+      });
+    },
+    [draggingTab, openExternalPathRequest],
+  );
+
   const noop = useCallback(() => {}, []);
 
   if (!workspaceId) {
@@ -687,7 +824,12 @@ export function FilesWorkbench({
   }
 
   return (
-    <div className="flex h-full min-h-0 flex-col" data-testid="files-workbench-v2">
+    <div
+      className="flex h-full min-h-0 flex-col"
+      data-testid="files-workbench-v2"
+      onDragOver={handleNativeDragOver}
+      onDrop={handleNativeDrop}
+    >
       {error ? (
         <div className="shrink-0 px-3 py-1 text-xs" style={{ color: COLORS.danger, background: "rgba(255,0,0,0.06)" }}>
           {error}
@@ -762,6 +904,7 @@ export function FilesWorkbench({
             rootPath={rootPath}
             laneId={workspace?.laneId ?? null}
             canEdit={canEdit}
+            canRevealInFinder={canRevealInFinder}
             theme={theme}
             registry={registryRef.current}
             dirtyPaths={dirtyPaths}
@@ -785,6 +928,7 @@ export function FilesWorkbench({
       </div>
       <StatusBar
         activeTab={activeTab}
+        activeFullPath={activeTab ? joinDisplayPath(rootPath, activeTab.path) : null}
         branch={branch}
         groupCount={groupsState.groupOrder.length}
         openCount={openCount}

@@ -174,11 +174,35 @@ func filesIsMarkdown(blob: SyncFileBlob, path: String) -> Bool {
 private let filesImageExtensions: Set<String> = [
   "png", "jpg", "jpeg", "gif", "webp", "heic", "bmp", "tiff", "ico", "avif", "svg",
 ]
+private let filesAudioExtensions: Set<String> = [
+  "aac", "flac", "m4a", "mp3", "oga", "ogg", "opus", "wav",
+]
+private let filesVideoExtensions: Set<String> = [
+  "avi", "m4v", "mkv", "mov", "mp4", "ogv", "webm",
+]
+private let filesDocumentExtensions: Set<String> = [
+  "pdf", "doc", "docx", "ppt", "pptx", "xls", "xlsx",
+]
 
 func filesIsImagePreviewable(path: String, blob: SyncFileBlob) -> Bool {
   let ext = (path.lowercased() as NSString).pathExtension
   if blob.previewKind?.lowercased() == "image" { return true }
   return filesImageExtensions.contains(ext)
+}
+
+func filesBinaryKind(path: String, mimeType: String?) -> (label: String, symbol: String)? {
+  let ext = (path.lowercased() as NSString).pathExtension
+  let mime = mimeType?.lowercased() ?? ""
+  if mime.hasPrefix("audio/") || filesAudioExtensions.contains(ext) {
+    return ("Audio", "waveform")
+  }
+  if mime.hasPrefix("video/") || filesVideoExtensions.contains(ext) {
+    return ("Video", "play.rectangle")
+  }
+  if filesDocumentExtensions.contains(ext) {
+    return ("Document", "doc.richtext")
+  }
+  return nil
 }
 
 func filesStripYamlFrontmatter(_ text: String) -> String {

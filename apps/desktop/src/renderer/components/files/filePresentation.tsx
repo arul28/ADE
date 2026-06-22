@@ -9,6 +9,11 @@ import {
   FileText,
   Terminal as TerminalSquare,
   FileXls as FileSpreadsheet,
+  FileDoc,
+  FilePdf,
+  FilePpt,
+  MusicNotes,
+  VideoCamera,
 } from "@phosphor-icons/react";
 import type { FileTreeNode } from "../../../shared/types";
 import { COLORS } from "../lanes/laneDesignTokens";
@@ -21,7 +26,12 @@ const FILE_ICON_COLORS = {
   style: "#818CF8",
   shell: "#2DD4BF",
   image: "#E879F9",
+  audio: "#22D3EE",
+  video: "#A78BFA",
   archive: "#FB7185",
+  document: "#60A5FA",
+  pdf: "#F87171",
+  presentation: "#F97316",
   spreadsheet: "#4ADE80",
   default: COLORS.textMuted,
 } as const;
@@ -59,6 +69,21 @@ export function getFileIcon(fileName: string): { icon: React.ComponentType<any>;
   }
   if (ext === ".png" || ext === ".jpg" || ext === ".jpeg" || ext === ".gif" || ext === ".webp" || ext === ".svg" || ext === ".ico") {
     return { icon: FileImage, color: FILE_ICON_COLORS.image };
+  }
+  if (ext === ".mp3" || ext === ".m4a" || ext === ".aac" || ext === ".wav" || ext === ".flac" || ext === ".ogg" || ext === ".oga" || ext === ".opus") {
+    return { icon: MusicNotes, color: FILE_ICON_COLORS.audio };
+  }
+  if (ext === ".mp4" || ext === ".m4v" || ext === ".mov" || ext === ".webm" || ext === ".ogv" || ext === ".avi" || ext === ".mkv") {
+    return { icon: VideoCamera, color: FILE_ICON_COLORS.video };
+  }
+  if (ext === ".pdf") {
+    return { icon: FilePdf, color: FILE_ICON_COLORS.pdf };
+  }
+  if (ext === ".doc" || ext === ".docx") {
+    return { icon: FileDoc, color: FILE_ICON_COLORS.document };
+  }
+  if (ext === ".ppt" || ext === ".pptx") {
+    return { icon: FilePpt, color: FILE_ICON_COLORS.presentation };
   }
   if (ext === ".zip" || ext === ".tar" || ext === ".gz" || ext === ".tgz" || ext === ".rar" || ext === ".7z") {
     return { icon: FileArchive, color: FILE_ICON_COLORS.archive };

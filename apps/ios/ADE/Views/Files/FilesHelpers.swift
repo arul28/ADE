@@ -23,6 +23,11 @@ func joinedPath(base: String, name: String) -> String {
   return "\(cleanedBase)/\(cleanedName)"
 }
 
+func filesFullPath(rootPath: String, relativePath: String) -> String {
+  guard !relativePath.isEmpty else { return rootPath }
+  return (rootPath as NSString).appendingPathComponent(relativePath)
+}
+
 func parentDirectory(of path: String) -> String {
   let components = pathComponents(path)
   guard components.count > 1 else { return "" }

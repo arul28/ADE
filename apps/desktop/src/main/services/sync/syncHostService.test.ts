@@ -8,6 +8,7 @@ import { WebSocket } from "ws";
 import { openKvDb } from "../state/kvDb";
 import { isCrsqliteAvailable } from "../state/crsqliteExtension";
 import {
+  assertFileRequestWorkspaceVisibleToPeer,
   createSyncHostService,
   parseNativeLanDiscoveryProcessList,
   shouldDeferSyncHostBackgroundChangesForChat,
@@ -15,6 +16,7 @@ import {
   syncHeartbeatMissLimitForPeerMetadata,
   SYNC_HOST_CHAT_ACTIVE_BACKGROUND_BACKPRESSURE_BYTES,
   SYNC_HOST_CHAT_ACTIVE_CHANGESET_BATCH_BYTES,
+  visibleFileWorkspacesForPeer,
 } from "./syncHostService";
 import type { SyncPinStore } from "./syncPinStore";
 import { encodeSyncEnvelope, parseSyncEnvelope } from "./syncProtocol";
@@ -482,6 +484,55 @@ it("processes pending ACK retries before active-chat background deferral through
     await host.dispose();
     fs.rmSync(projectRoot, { recursive: true, force: true });
   }
+});
+
+it("hides external file workspaces from mobile peers", () => {
+  const workspaces = [
+    {
+      id: "workspace-1",
+      kind: "primary" as const,
+      laneId: "lane-1",
+      name: "Primary",
+      rootPath: "/project",
+      isReadOnlyByDefault: false,
+    },
+    {
+      id: "external-local:test",
+      kind: "external" as const,
+      laneId: null,
+      name: "External",
+      rootPath: "/Users/me/Downloads",
+      isReadOnlyByDefault: false,
+      mobileReadOnly: true,
+    },
+  ];
+
+  expect(visibleFileWorkspacesForPeer(workspaces, { isMobile: true }).map((workspace) => workspace.id)).toEqual(["workspace-1"]);
+  expect(visibleFileWorkspacesForPeer(workspaces, { isMobile: false }).map((workspace) => workspace.id)).toEqual([
+    "workspace-1",
+    "external-local:test",
+  ]);
+});
+
+it("blocks mobile file requests that target external workspaces", () => {
+  const externalWorkspace = {
+    id: "external-local:test",
+    kind: "external" as const,
+    laneId: null,
+    name: "External",
+    rootPath: "/Users/me/Downloads",
+    isReadOnlyByDefault: false,
+    mobileReadOnly: true,
+  };
+
+  expect(() => assertFileRequestWorkspaceVisibleToPeer({
+    isMobile: true,
+    workspace: externalWorkspace,
+  })).toThrow(/external local files/i);
+  expect(() => assertFileRequestWorkspaceVisibleToPeer({
+    isMobile: false,
+    workspace: externalWorkspace,
+  })).not.toThrow();
 });
 
 it("parses ADE dns-sd discovery processes for orphan recovery", () => {

@@ -546,6 +546,12 @@ first fetch instead of returning an empty passive cache.
   `createFile`, `createDirectory`, `rename`, or `deletePath` request.
   The brain's `MOBILE_MUTATING_FILE_ACTIONS` set mirrors this list so
   a hostile controller cannot bypass it.
+- **External desktop file opens are not mobile-visible.** Desktop
+  `files.openExternalPath` workspaces use `kind: "external"` and
+  `external-local:*` ids. The sync host filters them from mobile
+  `listWorkspaces` and rejects every mobile file action that targets one,
+  including reads and search, because those roots can point anywhere on the
+  desktop user's local filesystem.
 - **`requireService` throws lazily.** A runtime missing a service does
   not cause registration to fail; it causes the first invocation of
   a command that needs that service to fail with a specific message.

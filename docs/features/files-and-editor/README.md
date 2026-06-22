@@ -48,6 +48,9 @@ targets for the legacy IPC path.
 - `apps/desktop/src/main/services/files/fileService.ts` — directory
   listing, paginated child loading, Git status decorations, range reads,
   blame, atomic writes, quick open, cross-file search, path safety.
+- `apps/desktop/src/main/services/files/externalFilesWorkspaceRegistry.ts`
+  — local-only registry for files or folders opened from outside the active
+  project through Finder / OS open-file events or renderer drag-and-drop.
 - `apps/desktop/src/main/services/files/fileWatcherService.ts` —
   chokidar wrapper with per-sender ref counting, debounced events,
   idle watcher close, plus `stopAllForWorkspace(workspaceId)` and
@@ -71,7 +74,7 @@ Shared types and IPC:
   `FileTreeNode`, `FilesListTreeChildrenResult`, `FileContent`,
   `FilesReadFileRangeResult`, `FilesGitStatusEvent`,
   `FilesGitBlameResult`, `FilesQuickOpenItem`, `FilesSearchTextMatch`,
-  and the IPC arg shapes.
+  `FilesOpenExternalPathResult`, and the IPC arg shapes.
 - `apps/desktop/src/shared/types/git.ts` (and related shared types) —
   `FileDiff`, `FilePatch`, and other shapes returned by `diffService`
   for the diff viewer.
@@ -84,7 +87,8 @@ Shared types and IPC:
   `filesReadFile`, `filesReadFileRange`, `filesGitBlame`,
   `filesWriteTextAtomic`, `filesWriteText`, `filesCreateFile`,
   `filesCreateDirectory`, `filesRename`, `filesDelete`, `filesQuickOpen`,
-  `filesSearchText`, `filesWatchChanges`, `filesStopWatching`, plus
+  `filesSearchText`, `filesWatchChanges`, `filesStopWatching`,
+  `filesOpenExternalPath`, plus
   `diffGetChanges`, `diffGetFile`, `diffGetFilePatch`).
 
 Preload bridge:
@@ -117,8 +121,8 @@ Renderer:
 - `apps/desktop/src/renderer/components/files/v2/` — VS Code-style
   workbench shell: editor groups, preview/pinned tabs, split/move
   support, warm empty state, search/create overlays, and
-  viewers for code, markdown, image, CSV/TSV, PDF, large text, binary,
-  and diffs.
+  viewers for code, markdown, image, audio/video playback, CSV/TSV,
+  PDF, Office-document fallback, large text, binary, and diffs.
 - `apps/desktop/src/renderer/components/shared/AdeDiffViewer.tsx` —
   shared read-only diff chrome (`@pierre/diffs` `MultiFileDiff` /
   `PatchDiff` with split/unified, wrap, line numbers); editable working-tree
@@ -168,13 +172,21 @@ exist:
 | `primary` | Repository root | Always present. |
 | `worktree` | `.ade/worktrees/<lane>` | One per active lane. `laneId` set. |
 | `attached` | User-provided path | External worktrees the user linked in. |
+| `external` | Explicit local open | Ephemeral local-only roots created from OS open-file events or drag/drop. |
 
 `laneService.getFilesWorkspaces()` produces the list;
 `resolveWorkspaceById(workspaceId)` does the reverse lookup and is used
-on every file-scoped IPC call.
+on every lane-backed file-scoped IPC call. `external` workspaces are
+registered by `externalFilesWorkspaceRegistry.ts` and have stable
+`external-local:<hash>` ids for the lifetime of the local runtime. If the
+opened absolute path is already inside a known project/worktree workspace,
+`files.openExternalPath` returns that existing workspace instead of creating
+an external root.
 
 The renderer always shows the active workspace name prominently so the
 user never edits primary when they meant to edit a lane worktree.
+External tabs also show the full host path in the status bar and path-copy
+menus so it is clear when a file comes from outside the project.
 
 ## Editor modes
 
@@ -278,8 +290,9 @@ UTF-8-safe first chunk with `isPartial`, `rangeStart`, `rangeEnd`, and
 `readFileRange` uses byte offsets, clamps each request, and trims
 non-final UTF-8 responses to a complete code-point boundary so chunks
 can be concatenated without corrupting text. Binary/image/PDF range
-responses are base64-encoded per range; consumers must treat each range
-as independently decodable bytes and advance only by `nextOffset`.
+responses, plus audio/video and Office-document ranges, are base64-encoded
+per range; consumers must treat each range as independently decodable bytes
+and advance only by `nextOffset`.
 
 ## Trust boundary
 
@@ -293,6 +306,14 @@ which refuses `..` escapes, null bytes, and `.git` internals. Remote
 runtimes apply the same path-safety primitives on the remote host, so
 the trust boundary still holds when the renderer is browsing files on
 a remote machine.
+
+`files.openExternalPath` is intentionally local-only. It registers an
+absolute path that the user explicitly opened from Finder / the OS or dropped
+into the desktop renderer. A remote-bound desktop window continues to route
+normal workspace reads/writes to the remote runtime, but `external-local:*`
+workspace ids are handled by the local desktop process so arbitrary local
+files can open beside remote project tabs without pretending they belong to
+the remote filesystem.
 
 For deeper detail on the watcher + trust boundary, see
 [file-watcher-and-trust.md](./file-watcher-and-trust.md).

@@ -201,7 +201,7 @@ struct FilesTreeNodeRow: View {
     }
     .buttonStyle(.plain)
     .contextMenu {
-      Button("Copy Path", action: onCopyPath)
+      Button("Copy Full Path", action: onCopyPath)
       Button("Copy Relative Path", action: onCopyRelativePath)
     }
     .accessibilityElement(children: .ignore)

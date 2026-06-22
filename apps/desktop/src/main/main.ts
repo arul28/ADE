@@ -49,7 +49,7 @@ import {
   DEFAULT_PROCESS_REGISTRY_LIVENESS_WINDOW_MS,
 } from "./services/runtime/processRegistryService";
 import { createDiffService } from "./services/diffs/diffService";
-import { createFileService } from "./services/files/fileService";
+import { createExternalFilesWorkspaceRegistry, createFileService, type FileServiceLaneAdapter } from "./services/files/fileService";
 import { createConflictService } from "./services/conflicts/conflictService";
 import { createProjectConfigService } from "./services/config/projectConfigService";
 import { createProcessService } from "./services/processes/processService";
@@ -2647,8 +2647,10 @@ app.whenReady().then(async () => {
       aiIntegrationService,
     });
 
+    const externalFilesRegistry = createExternalFilesWorkspaceRegistry();
     const fileService = createFileService({
       laneService,
+      externalWorkspaces: externalFilesRegistry,
       onLaneWorktreeMutation: ({ laneId, reason }) => {
         jobEngine.onLaneDirtyChanged({ laneId, reason });
       },
@@ -4291,6 +4293,19 @@ app.whenReady().then(async () => {
     });
     adeCliService.applyToProcessEnv();
     installAdeCliForTerminalInBackground(adeCliService, logger);
+    const externalOnlyLaneService: FileServiceLaneAdapter = {
+      getFilesWorkspaces: () => [],
+      resolveWorkspaceById: (workspaceId: string) => {
+        throw new Error(`Workspace is not available locally: ${workspaceId}`);
+      },
+      getLaneBaseAndBranch: (laneId: string) => {
+        throw new Error(`Lane is not available locally: ${laneId}`);
+      },
+    };
+    const externalOnlyFileService = createFileService({
+      laneService: externalOnlyLaneService,
+      externalWorkspaces: createExternalFilesWorkspaceRegistry(),
+    });
     let usageTrackingService: ReturnType<typeof createUsageTrackingService> | null = null;
     if (options.enableUsageTracking !== false) {
       usageTrackingService = createUsageTrackingService({
@@ -4335,7 +4350,7 @@ app.whenReady().then(async () => {
       sessionService: null,
       ptyService: null,
       diffService: null,
-      fileService: null,
+      fileService: externalOnlyFileService,
       operationService: null,
       gitService: null,
       conflictService: null,
@@ -6042,9 +6057,7 @@ app.whenReady().then(async () => {
     });
   };
 
-  const openProjectFileRequest = async (filePath: string): Promise<void> => {
-    const projectRoot = normalizeProjectPath(filePath);
-    if (!isLikelyRepoRoot(projectRoot)) return;
+  const openProjectRootFromFileRequest = async (projectRoot: string): Promise<void> => {
     const normalizedRoot = normalizeProjectRoot(projectRoot);
     const existing = BrowserWindow.getAllWindows()
       .find((win) => !win.isDestroyed() && windowProjectRoots.get(win.id) === normalizedRoot) ?? null;
@@ -6055,6 +6068,33 @@ app.whenReady().then(async () => {
       return;
     }
     await openAdeWindow({ projectRoot: normalizedRoot });
+  };
+
+  const openProjectFileRequest = async (filePath: string): Promise<void> => {
+    const projectRoot = normalizeProjectPath(filePath);
+    if (isLikelyRepoRoot(projectRoot)) {
+      await openProjectRootFromFileRequest(projectRoot);
+      return;
+    }
+
+    try {
+      const repoRoot = normalizeProjectRoot(await resolveRepoRoot(filePath));
+      if (isLikelyRepoRoot(repoRoot)) {
+        await deliverAppNavigationToProject(repoRoot, {
+          target: { kind: "files-external", path: filePath },
+          source: "desktop",
+        });
+        return;
+      }
+    } catch {
+      // Not inside a known Git repository: fall through to the focused ADE window
+      // and let Files register it as an explicit external workspace.
+    }
+
+    dispatchAppNavigationRequest?.({
+      target: { kind: "files-external", path: filePath },
+      source: "desktop",
+    });
   };
 
   handleProjectOpenFile = (filePath) => {

@@ -431,7 +431,8 @@ ade.cto.*                    # identity, agent roster, Linear
 ade.sessions.*               # terminal session CRUD
 ade.files.*                  # runtime-routed file workspace/tree/read/write/watch/search actions,
                              # including paginated children, Git decorations, range reads,
-                             # and blame; fallback IPC handlers run the same fileService code.
+                             # blame, and local-only explicit external opens; fallback IPC handlers
+                             # run the same fileService code.
 ade.agentChat.*              # agent chat sessions, model inventory, parallel launch state.
                              # Includes ade.agentChat.modelCatalog (provider-grouped catalog
                              # used by desktop + TUI + iOS ModelPickers; accepts

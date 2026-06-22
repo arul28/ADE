@@ -18,6 +18,8 @@ import type {
   FilesListTreeChildrenArgs,
   FilesListTreeChildrenResult,
   FilesListWorkspacesArgs,
+  FilesOpenExternalPathArgs,
+  FilesOpenExternalPathResult,
   FilesQuickOpenArgs,
   FilesReadFileRangeArgs,
   FilesReadFileRangeResult,
@@ -32,6 +34,7 @@ import type {
   FilesWriteTextArgs
 } from "../../../shared/types";
 import type { createLaneService } from "../lanes/laneService";
+import type { ExternalFilesWorkspaceRegistry } from "./externalFilesWorkspaceRegistry";
 import { runGit } from "../git/git";
 import {
   hasNullByte,
@@ -44,6 +47,12 @@ import {
 } from "../shared/utils";
 import { createFileWatcherService } from "./fileWatcherService";
 import { createFileSearchIndexService } from "./fileSearchIndexService";
+export { createExternalFilesWorkspaceRegistry, type ExternalFilesWorkspaceRegistry } from "./externalFilesWorkspaceRegistry";
+
+export type FileServiceLaneAdapter = Pick<
+  ReturnType<typeof createLaneService>,
+  "getFilesWorkspaces" | "resolveWorkspaceById" | "getLaneBaseAndBranch"
+>;
 
 const MAX_EDITOR_TEXT_READ_BYTES = 1024 * 1024;
 const MAX_INLINE_IMAGE_PREVIEW_BYTES = 1024 * 1024;
@@ -121,7 +130,61 @@ const TEXT_EXTENSIONS = new Set([
   ".yml",
   ".zsh",
 ]);
-const BASE64_RANGE_EXTENSIONS = new Set([".pdf"]);
+const BASE64_RANGE_EXTENSIONS = new Set([
+  ".pdf",
+  ".mp3",
+  ".m4a",
+  ".aac",
+  ".wav",
+  ".flac",
+  ".ogg",
+  ".oga",
+  ".opus",
+  ".mp4",
+  ".m4v",
+  ".mov",
+  ".webm",
+  ".ogv",
+  ".avi",
+  ".mkv",
+  ".doc",
+  ".docx",
+  ".ppt",
+  ".pptx",
+  ".xls",
+  ".xlsx",
+]);
+
+const DOCUMENT_MIME_BY_EXTENSION = new Map<string, string>([
+  [".pdf", "application/pdf"],
+  [".doc", "application/msword"],
+  [".docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"],
+  [".ppt", "application/vnd.ms-powerpoint"],
+  [".pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation"],
+  [".xls", "application/vnd.ms-excel"],
+  [".xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"],
+]);
+
+const AUDIO_MIME_BY_EXTENSION = new Map<string, string>([
+  [".aac", "audio/aac"],
+  [".flac", "audio/flac"],
+  [".m4a", "audio/mp4"],
+  [".mp3", "audio/mpeg"],
+  [".oga", "audio/ogg"],
+  [".ogg", "audio/ogg"],
+  [".opus", "audio/ogg"],
+  [".wav", "audio/wav"],
+]);
+
+const VIDEO_MIME_BY_EXTENSION = new Map<string, string>([
+  [".avi", "video/x-msvideo"],
+  [".m4v", "video/mp4"],
+  [".mkv", "video/x-matroska"],
+  [".mov", "video/quicktime"],
+  [".mp4", "video/mp4"],
+  [".ogv", "video/ogg"],
+  [".webm", "video/webm"],
+]);
 
 function containsDotGit(absPath: string): boolean {
   const parts = absPath.split(path.sep);
@@ -178,6 +241,17 @@ function inferImageMimeType(relPath: string): string | null {
     default:
       return null;
   }
+}
+
+function inferBinaryMimeType(relPath: string): string {
+  const ext = path.extname(relPath).toLowerCase();
+  return (
+    inferImageMimeType(relPath)
+    ?? AUDIO_MIME_BY_EXTENSION.get(ext)
+    ?? VIDEO_MIME_BY_EXTENSION.get(ext)
+    ?? DOCUMENT_MIME_BY_EXTENSION.get(ext)
+    ?? "application/octet-stream"
+  );
 }
 
 function shouldReturnRangeAsBase64(relPath: string): boolean {
@@ -425,10 +499,12 @@ function parseFileTreeStatus(code: string): FileTreeChangeStatus {
 
 export function createFileService({
   laneService,
-  onLaneWorktreeMutation
+  onLaneWorktreeMutation,
+  externalWorkspaces,
 }: {
-  laneService: ReturnType<typeof createLaneService>;
+  laneService: FileServiceLaneAdapter;
   onLaneWorktreeMutation?: (args: { laneId: string; reason: string }) => void;
+  externalWorkspaces?: ExternalFilesWorkspaceRegistry;
 }) {
   const watcherService = createFileWatcherService();
   const indexService = createFileSearchIndexService();
@@ -477,7 +553,8 @@ export function createFileService({
     includeIgnored: boolean,
   ): string => `${rootPath}::${parentPath}::${includeIgnored ? "ignored" : "tracked"}`;
 
-  const resolveWorkspace = (workspaceId: string) => laneService.resolveWorkspaceById(workspaceId);
+  const resolveWorkspace = (workspaceId: string) =>
+    externalWorkspaces?.resolve(workspaceId) ?? laneService.resolveWorkspaceById(workspaceId);
 
   const primeIgnoreCache = async (rootPath: string, relPaths: string[], includeIgnored: boolean): Promise<void> => {
     if (includeIgnored || relPaths.length === 0) return;
@@ -551,16 +628,58 @@ export function createFileService({
         if (b.kind === "primary") return 1;
         return 0;
       });
-    return scopes.map((scope) => ({
-      id: scope.id,
-      kind: scope.kind,
-      laneId: scope.laneId,
-      name: scope.name,
-      branchRef: scope.branchRef,
-      rootPath: scope.rootPath,
-      isReadOnlyByDefault: scope.isReadOnlyByDefault,
-      mobileReadOnly: true,
-    }));
+    return [
+      ...scopes.map((scope) => ({
+        id: scope.id,
+        kind: scope.kind,
+        laneId: scope.laneId,
+        name: scope.name,
+        branchRef: scope.branchRef,
+        rootPath: scope.rootPath,
+        isReadOnlyByDefault: scope.isReadOnlyByDefault,
+        mobileReadOnly: true,
+      })),
+      ...(externalWorkspaces?.list() ?? []),
+    ];
+  };
+
+  const resolveKnownWorkspaceOpenPath = async (requestedPath: string): Promise<FilesOpenExternalPathResult | null> => {
+    const trimmedPath = requestedPath.trim();
+    if (!trimmedPath || trimmedPath.includes("\0")) {
+      throw new Error("Invalid external path.");
+    }
+    if (!path.isAbsolute(trimmedPath)) {
+      throw new Error("External path must be absolute.");
+    }
+
+    const realPath = await fsp.realpath(trimmedPath);
+    const stat = await fsp.stat(realPath);
+    if (!stat.isFile() && !stat.isDirectory()) {
+      throw new Error("External path must be a file or directory.");
+    }
+
+    const candidates = listWorkspaces()
+      .filter((workspace) => workspace.kind !== "external")
+      .map((workspace) => {
+        try {
+          const realRootPath = fs.realpathSync.native(workspace.rootPath);
+          const relativePath = path.relative(realRootPath, realPath);
+          if (relativePath.startsWith("..") || path.isAbsolute(relativePath)) return null;
+          return { workspace, relativePath: normalizeRelative(relativePath), realRootPath };
+        } catch {
+          return null;
+        }
+      })
+      .filter((candidate): candidate is { workspace: FilesWorkspace; relativePath: string; realRootPath: string } => candidate !== null)
+      .sort((a, b) => b.realRootPath.length - a.realRootPath.length);
+
+    const target = candidates[0] ?? null;
+    if (!target) return null;
+    return {
+      workspace: target.workspace,
+      openPath: stat.isFile() ? target.relativePath : target.relativePath || null,
+      pathType: stat.isDirectory() ? "directory" : "file",
+    };
   };
 
   const readGitStatusSnapshot = async (rootPath: string, timeoutMs: number): Promise<GitStatusSnapshot> => {
@@ -794,6 +913,21 @@ export function createFileService({
       return listWorkspaces(args);
     },
 
+    async openExternalPath(args: FilesOpenExternalPathArgs): Promise<FilesOpenExternalPathResult> {
+      if (!externalWorkspaces) {
+        throw new Error("External files are not available in this runtime.");
+      }
+      const knownWorkspaceTarget = await resolveKnownWorkspaceOpenPath(args.path);
+      if (knownWorkspaceTarget) {
+        return knownWorkspaceTarget;
+      }
+      return await externalWorkspaces.openPath(args);
+    },
+
+    isExternalWorkspaceRoot(rootPath: string): boolean {
+      return externalWorkspaces?.isRegisteredRoot(rootPath) ?? false;
+    },
+
     async listTree(args: FilesListTreeArgs): Promise<FileTreeNode[]> {
       const workspace = resolveWorkspace(args.workspaceId);
       const depth = Number.isFinite(args.depth) ? Math.max(1, Math.min(8, Math.floor(args.depth ?? 1))) : 1;
@@ -894,12 +1028,13 @@ export function createFileService({
       const sample = await readFilePrefix(absPath, Math.min(stat.size, 8192));
       const isBinary = looksLikeBinary(sample, normalizedRel);
       if (isBinary) {
+        const mimeType = inferBinaryMimeType(normalizedRel);
         if (stat.size > MAX_INLINE_BINARY_BYTES) {
           return omittedFileContent({
             relPath: normalizedRel,
             size: stat.size,
             encoding: "base64",
-            mimeType: "application/octet-stream",
+            mimeType,
             reason: "unsupported_binary",
           });
         }
@@ -911,7 +1046,7 @@ export function createFileService({
           languageId: languageIdFromPath(normalizedRel),
           isBinary: true,
           previewKind: "binary",
-          mimeType: "application/octet-stream",
+          mimeType,
         };
       }
       if (stat.size > MAX_EDITOR_TEXT_READ_BYTES) {

@@ -4,7 +4,7 @@
 
 export type FilesWorkspace = {
   id: string;
-  kind: "primary" | "worktree" | "attached";
+  kind: "primary" | "worktree" | "attached" | "external";
   laneId: string | null;
   name: string;
   /** Stored branch ref for this lane workspace (e.g. refs/heads/foo). */
@@ -13,6 +13,8 @@ export type FilesWorkspace = {
   isReadOnlyByDefault: boolean;
   mobileReadOnly?: boolean;
 };
+
+export const EXTERNAL_FILES_WORKSPACE_ID_PREFIX = "external-local:";
 
 export type FilesListWorkspacesArgs = {
   includeArchived?: boolean;
@@ -171,6 +173,18 @@ export type FilesGitBlameResult = {
 export type FilesReadFileArgs = {
   workspaceId: string;
   path: string; // relative to workspace root
+};
+
+export type FilesOpenExternalPathArgs = {
+  /** Absolute local path from Finder, Electron open-file, or OS drag/drop. */
+  path: string;
+};
+
+export type FilesOpenExternalPathResult = {
+  workspace: FilesWorkspace;
+  /** Relative file path to open, or null when the external path is a directory. */
+  openPath: string | null;
+  pathType: "file" | "directory";
 };
 
 export type FilesWriteTextArgs = {

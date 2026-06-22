@@ -115,6 +115,8 @@ import type {
   FilesListTreeChildrenArgs,
   FilesListTreeChildrenResult,
   FilesListWorkspacesArgs,
+  FilesOpenExternalPathArgs,
+  FilesOpenExternalPathResult,
   FilesQuickOpenArgs,
   FilesQuickOpenItem,
   FilesReadFileArgs,
@@ -3302,7 +3304,7 @@ export function registerIpc({
         } catch {
           return false;
         }
-      });
+      }) || getCtx().fileService?.isExternalWorkspaceRoot(rootPath) === true;
       if (!rootAllowed) {
         throw new Error("rootPath is outside allowed directories.");
       }
@@ -7416,6 +7418,18 @@ export function registerIpc({
       {
         workspaceId: arg.workspaceId,
         forceFresh: Boolean(arg.forceFresh),
+      }
+    );
+  });
+
+  ipcMain.handle(IPC.filesOpenExternalPath, async (_event, arg: FilesOpenExternalPathArgs): Promise<FilesOpenExternalPathResult> => {
+    const ctx = ensureFileContext();
+    return await withIpcTiming(
+      ctx,
+      "files.openExternalPath",
+      async () => await ctx.fileService.openExternalPath(arg),
+      {
+        pathLength: arg.path.length,
       }
     );
   });

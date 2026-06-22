@@ -23,8 +23,10 @@ Path: `apps/desktop/src/renderer/components/files/v2/FilesWorkbench.tsx`
 - split editor groups and tab move/drop behavior
 - unified quick-open and content-search overlay
 - file and directory creation prompts
-- context-menu actions for open, rename, delete, copy path, and reveal
-- status bar with branch, group, open-tab, and dirty counts
+- context-menu actions for open, rename, delete, copy full/relative path,
+  copy name, and reveal
+- status bar with branch, group, open-tab, dirty counts, and the active
+  full path
 
 The component accepts `preferredLaneId`, `embedded`, and `active`. The
 `active` prop gates IPC loading and keybindings for inactive project tabs.
@@ -115,14 +117,18 @@ Supported viewers:
 - `CodeViewer` for editable text and Monaco-backed source files
 - `MarkdownViewer`
 - `ImageViewer`
+- `MediaViewer` for audio/video files Chromium can play, with a renderer-side
+  size cap before it builds a Blob URL
 - `CsvViewer`
 - `PdfViewer`
 - `LargeTextViewer` for streamed large text
+- `DocumentViewer` for Office-style documents; it shows type/path metadata
+  and opens the file in the OS default app for full editing/viewing
 - `BinaryViewer`
 - `DiffViewer`, backed by `window.ade.diff` and `AdeDiffViewer`
 
-Large text uses `readFileRange` for follow-up chunks. Unsupported binary
-content remains non-editable.
+Large text and media/document previews use `readFileRange` for follow-up
+chunks. Unsupported binary content remains non-editable.
 
 ## Search And Create Overlays
 
@@ -171,7 +177,9 @@ Registered through the global keybinding service
   enforced by the file service and preload boundary; renderer affordances are
   only presentation.
 - **Large files.** Oversized text opens as read-only streamed content. Do not
-  force large files through the editable Monaco viewer.
+  force large files through the editable Monaco viewer. Media playback has a
+  fixed byte cap so large videos are handed off instead of loaded into
+  renderer memory.
 - **Tab ordering.** Editor group order lives in renderer memory for the
   session key. Persisting it across full reloads belongs to future
   editor-state work.

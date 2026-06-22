@@ -24,7 +24,9 @@ go through:
    runtime first, then a strict local runtime route for local-bound
    windows. It falls through to the in-process IPC handler only when no
    runtime route is available, not when a bound runtime rejects the file
-   action.
+   action. `external-local:*` workspace ids are the exception: those are
+   explicit local desktop opens and are sent to local IPC even when the
+   window is bound to a remote runtime.
 2. `ade.files.*` IPC channels registered in
    `apps/desktop/src/main/services/ipc/registerIpc.ts` (fallback
    path for the desktop's local in-process implementation).
@@ -42,6 +44,15 @@ The renderer never sees an absolute host path until the active runtime
 (or, on the fallback path, the desktop main process) has validated it.
 `FileContent.languageId` is a Monaco hint; it is derived from the
 extension by `languageIdFromPath`, not from any path metadata.
+
+External local opens are registered through
+`externalFilesWorkspaceRegistry.ts`. The registry accepts only absolute
+file/folder paths the user explicitly opened through the OS or dropped into
+the renderer, canonicalizes them with `realpath`, and exposes them as
+ephemeral `external` workspaces rooted at the opened folder or the opened
+file's parent. If the path already belongs to a known project/worktree
+workspace, `fileService.openExternalPath` returns that workspace instead of
+creating an external root.
 
 ### Path safety invariants
 
@@ -233,12 +244,13 @@ same handler shapes; the desktop fallback handlers are registered in
 
 | Channel | Handler behavior |
 |---|---|
-| `ade.files.listWorkspaces` | calls `laneService.getFilesWorkspaces`, sorts primary first |
+| `ade.files.listWorkspaces` | calls `laneService.getFilesWorkspaces`, sorts primary first, then appends locally registered external workspaces |
+| `ade.files.openExternalPath` | canonicalizes an explicit absolute local file/folder open and returns the existing or external workspace plus the path to open |
 | `ade.files.listTree` | resolves workspace, optionally lazy per `parentPath`/`depth`, returns `FileTreeNode[]` |
 | `ade.files.listTreeChildren` | paginated child listing with the same filtering/order as `listTree` |
 | `ade.files.refreshGitDecorations` | returns flat file statuses plus ancestor directory rollups without refetching tree structure |
 | `ade.files.readFile` | bounded preview read: inline text/image up to 1 MB, small unsupported binaries up to 256 KB, partial first chunk for oversized text, metadata-only `contentOmitted` for oversized images/binaries |
-| `ade.files.readFileRange` | byte-range reader; UTF-8 text ranges are trimmed to code-point boundaries, binary/image ranges are base64 |
+| `ade.files.readFileRange` | byte-range reader; UTF-8 text ranges are trimmed to code-point boundaries, binary/image/PDF/media/document ranges are base64 |
 | `ade.files.gitBlame` | `git blame --line-porcelain` result mapped to per-line author/sha/time/summary records |
 | `ade.files.writeTextAtomic` | temp file + rename |
 | `ade.files.writeText` | plain write |
