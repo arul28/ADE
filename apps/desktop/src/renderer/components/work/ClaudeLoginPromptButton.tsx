@@ -108,7 +108,7 @@ export function ClaudeLoginPromptButton({
         label: "Claude login",
       };
       onRevealTerminal?.(reveal);
-      if (!chatSessionId && typeof window !== "undefined") {
+      if (!chatSessionId) {
         window.dispatchEvent(new CustomEvent("ade:work:select-session", {
           detail: { sessionId: created.sessionId, laneId: resolvedLaneId },
         }));
