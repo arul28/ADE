@@ -61,6 +61,46 @@ export function fileTreeNodeByPath(nodes: FileTreeNode[]): Map<string, FileTreeN
   return out;
 }
 
+function findFileTreeNodeByPath(nodes: FileTreeNode[], nodePath: string): FileTreeNode | undefined {
+  for (const node of nodes) {
+    if (node.path === nodePath) return node;
+    if (node.children?.length) {
+      const child = findFileTreeNodeByPath(node.children, nodePath);
+      if (child) return child;
+    }
+  }
+  return undefined;
+}
+
+export function parentPathForFileChange(filePath: string): string {
+  const normalized = filePath.replace(/\\/g, "/").split("/").filter(Boolean).join("/");
+  if (!normalized) return "";
+  const index = normalized.lastIndexOf("/");
+  return index > 0 ? normalized.slice(0, index) : "";
+}
+
+function isAncestorDirectoryPath(ancestorPath: string, childPath: string): boolean {
+  if (ancestorPath === childPath) return false;
+  if (!ancestorPath) return Boolean(childPath);
+  return childPath.startsWith(`${ancestorPath}/`);
+}
+
+export function hasAncestorDirectoryPath(directoryPath: string, paths: readonly string[]): boolean {
+  return paths.some((path) => isAncestorDirectoryPath(path, directoryPath));
+}
+
+export function hasLoadedDirectoryChildren(nodes: FileTreeNode[], directoryPath: string): boolean {
+  if (!directoryPath) return true;
+  const node = findFileTreeNodeByPath(nodes, directoryPath);
+  return node?.type === "directory" && Array.isArray(node.children);
+}
+
+export function loadedDirectoryChildrenCount(nodes: FileTreeNode[], directoryPath: string): number {
+  if (!directoryPath) return nodes.length;
+  const node = findFileTreeNodeByPath(nodes, directoryPath);
+  return node?.type === "directory" && Array.isArray(node.children) ? node.children.length : 0;
+}
+
 /** Merge a freshly-fetched root listing while keeping already-loaded subtrees. */
 export function mergeTreePreservingLoadedChildren(
   nextNodes: FileTreeNode[],
@@ -80,6 +120,24 @@ export function mergeTreePreservingLoadedChildren(
   });
 }
 
+function mergeChildrenPreservingLoadedDescendants(
+  nextChildren: FileTreeNode[],
+  previousChildren: FileTreeNode[] = [],
+): FileTreeNode[] {
+  const previousByPath = fileTreeNodeByPath(previousChildren);
+  return nextChildren.map((child) => {
+    if (child.type !== "directory" || child.children) return child;
+    const previous = previousByPath.get(child.path);
+    if (!previous?.children) return child;
+    return {
+      ...child,
+      children: previous.children,
+      childrenTruncated: previous.childrenTruncated,
+      loadMoreOffset: previous.loadMoreOffset,
+    };
+  });
+}
+
 /** Replace a directory node's children (used by paginated lazy expansion). */
 export function replaceTreeNodeChildren(
   nodes: FileTreeNode[],
@@ -89,7 +147,12 @@ export function replaceTreeNodeChildren(
 ): FileTreeNode[] {
   return nodes.map((node) => {
     if (node.path === parentPath) {
-      return { ...node, children, loadMoreOffset, childrenTruncated: loadMoreOffset != null };
+      return {
+        ...node,
+        children: mergeChildrenPreservingLoadedDescendants(children, node.children),
+        loadMoreOffset,
+        childrenTruncated: loadMoreOffset != null,
+      };
     }
     if (node.children?.length) {
       return { ...node, children: replaceTreeNodeChildren(node.children, parentPath, children, loadMoreOffset) };
