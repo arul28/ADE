@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { Client, ConnectConfig, SFTPWrapper } from "ssh2";
+import type { ProjectIcon } from "../../../shared/types/core";
 import type {
   RemoteRuntimeCapabilities,
   RemoteRuntimeConnectResult,
@@ -1255,6 +1256,16 @@ async function openValidatedRuntimeClient(args: {
   }
 }
 
+function coerceProjectIcon(value: unknown): ProjectIcon | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const dataUrl = typeof record.dataUrl === "string" ? record.dataUrl : null;
+  const sourcePath = typeof record.sourcePath === "string" ? record.sourcePath : null;
+  const mimeType = typeof record.mimeType === "string" ? record.mimeType : null;
+  if (dataUrl === null && sourcePath === null && mimeType === null) return null;
+  return { dataUrl, sourcePath, mimeType };
+}
+
 export function coerceProjects(value: unknown): RemoteRuntimeProjectRecord[] {
   if (!Array.isArray(value)) return [];
   return value.flatMap((entry) => {
@@ -1270,6 +1281,7 @@ export function coerceProjects(value: unknown): RemoteRuntimeProjectRecord[] {
       addedAt: typeof record.addedAt === "number" ? record.addedAt : 0,
       lastOpenedAt: typeof record.lastOpenedAt === "number" ? record.lastOpenedAt : 0,
       gitOriginUrl: typeof record.gitOriginUrl === "string" ? record.gitOriginUrl : null,
+      icon: coerceProjectIcon(record.icon),
     }];
   });
 }

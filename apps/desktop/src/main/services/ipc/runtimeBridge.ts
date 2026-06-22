@@ -704,6 +704,7 @@ export function registerRuntimeBridge({
           projectId: project.projectId,
           rootPath: project.rootPath,
           displayName: project.displayName || path.basename(project.rootPath),
+          iconDataUrl: project.icon?.dataUrl ?? null,
         };
         if (
           isLatestOpenRequest() &&

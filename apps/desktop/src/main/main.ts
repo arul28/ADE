@@ -1101,6 +1101,9 @@ app.whenReady().then(async () => {
       projectId,
       rootPath,
       displayName: readString(record, "displayName") ?? path.basename(rootPath),
+      // Restore the cached project logo so the tab shows it immediately on a
+      // cold start, before the remote reconnects and refreshes the icon.
+      iconDataUrl: readString(record, "iconDataUrl") ?? null,
     };
   };
   const savedRemoteProjectBinding = parseSavedRemoteProjectBinding(

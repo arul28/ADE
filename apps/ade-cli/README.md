@@ -162,11 +162,13 @@ ade init /path/to/project          # adds an explicit path
 …or call the same JSON-RPC methods directly:
 
 ```text
-projects.list   { } -> ProjectRecord[]
+projects.list   { } -> ProjectRecord[]   # each record also carries a host-resolved icon
 projects.add    { rootPath } -> ProjectRecord
 projects.remove { projectId } -> { removed }
 projects.touch  { projectId } -> ProjectRecord
 ```
+
+`projects.list` stamps each returned record with an `icon: { dataUrl, sourcePath, mimeType }` resolved on the host (`resolveRemoteProjectIcon` in `src/services/projects/projectIconResolver.ts`) — a best-effort, electron-free icon lookup (`.ade/ade.yaml` override, conventional icon/logo files, `index.html` `<link rel="icon">`, capped at 2 MB) so a desktop connected over the remote runtime can show the real project logo in its tab instead of a blank folder. A per-project resolution failure degrades to a null icon and never breaks the list.
 
 Adding a project creates `<rootPath>/.ade/` if needed but does not run any heavy onboarding. The first project-scoped JSON-RPC call lazily builds an `AdeRuntime` for that root via `ProjectScopeRegistry`.
 

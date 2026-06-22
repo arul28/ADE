@@ -57,9 +57,16 @@ The wire transport is the same JSON-RPC the local machine runtime answers. The r
   remote runtime are localized through a local TCP forward before the renderer
   opens them.
 - `apps/ade-cli/src/multiProjectRpcServer.ts` — runtime-level project catalog
-  and sync methods plus project-scoped action dispatch.
-- `apps/ade-cli/src/services/projects/` — machine project registry and
-  per-project service scope cache.
+  and sync methods plus project-scoped action dispatch. `projects.list` inlines
+  each project's host-resolved icon (`icon: { dataUrl, sourcePath, mimeType }`)
+  so a connected desktop can render the real project logo in its remote tab
+  instead of a blank folder.
+- `apps/ade-cli/src/services/projects/` — machine project registry,
+  per-project service scope cache, and `projectIconResolver.ts`
+  (`resolveRemoteProjectIcon`, an electron-free port of the desktop icon
+  resolver: `.ade/ade.yaml` override + conventional icon/logo files +
+  `index.html` `<link rel="icon">`, best-effort and capped at 2 MB to stay
+  inline-safe on the wire).
 - `apps/ade-cli/scripts/build-static.mjs` — produces the static
   `ade-<platform-arch>` SEA binary and the `.native.tar.gz` of native modules,
   resolves the runtime version from the CLI / desktop package metadata, and
@@ -147,7 +154,7 @@ After install, the headless machine can already serve clients. Desktop ADE on a 
 
 ## What works remotely
 
-Remote project bindings route lanes, agent chat, PTYs, terminal IO, file operations, file-watch notifications, git actions, PR actions, PR queue automation, PR AI conflict-resolution sessions, PR issue-resolution launch flows, AI PR summaries, issue inventory, and event streaming through the remote runtime. Remote lane preview URLs are opened through a local TCP forward created by the desktop, so a dev server bound to `127.0.0.1` on the remote can be inspected from the local window. Agent CLI failures (Claude / Codex / Cursor / Droid not installed or not authenticated) surface as inline `AgentCliAuthCard` cards in chat; the install / login buttons open a tracked terminal in the active runtime, so a remote project runs the install or login command on the remote machine.
+Remote project bindings route lanes, agent chat, PTYs, terminal IO, file operations, file-watch notifications, git actions, PR actions, PR queue automation, PR AI conflict-resolution sessions, PR issue-resolution launch flows, AI PR summaries, issue inventory, and event streaming through the remote runtime. Remote lane preview URLs are opened through a local TCP forward created by the desktop, so a dev server bound to `127.0.0.1` on the remote can be inspected from the local window. A connected remote project's tab shows the real project logo and a yellow connected accent: the host brain resolves the icon and inlines it on `projects.list`, the desktop threads it through `RemoteRuntimeProjectRecord.icon` → `OpenProjectBinding.iconDataUrl` to the tab, and persists it so the logo is restored on a cold start before the remote reconnects. Agent CLI failures (Claude / Codex / Cursor / Droid not installed or not authenticated) surface as inline `AgentCliAuthCard` cards in chat; the install / login buttons open a tracked terminal in the active runtime, so a remote project runs the install or login command on the remote machine.
 
 Local project bindings use the local ADE runtime for the same surfaces — agent chat, session history, PTYs, terminal reads/writes, file operations and watchers, diffs, lanes, PRs, PR queues, PR issue-resolution launch flows, PR AI conflict-resolution sessions, issue inventory, tests, processes, project config, and most git operations. Electron main still owns desktop-only services that physically require an Electron host.
 

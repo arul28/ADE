@@ -1057,7 +1057,11 @@ describe("local runtime connection pool", () => {
     const pool = new LocalRuntimeConnectionPool("1.2.3", logger as never);
     (pool as unknown as { createConnection: () => Promise<unknown> }).createConnection = createConnection;
 
-    await expect(pool.ensureProject(rootPath)).resolves.toEqual(project);
+    // ensureProject coerces the record, which stamps a null icon by default.
+    await expect(pool.ensureProject(rootPath)).resolves.toEqual({
+      ...project,
+      icon: null,
+    });
 
     expect(createConnection).toHaveBeenCalledTimes(2);
     expect(firstClient.call).not.toHaveBeenCalled();

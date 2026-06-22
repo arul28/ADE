@@ -22,6 +22,7 @@ import {
   type JsonRpcRequest,
 } from "./jsonrpc";
 import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
+import { resolveRemoteProjectIcon } from "./services/projects/projectIconResolver";
 import {
   ProjectRegistry,
   type ProjectId,
@@ -184,6 +185,60 @@ function createMachineProjectScaffoldService() {
     logger: machineProjectLogger,
     githubService: githubService as never,
   });
+}
+
+type ResolvedProjectIcon = ReturnType<typeof resolveRemoteProjectIcon>;
+
+// Frozen so the shared fallback can't be mutated by a consumer and corrupt
+// every subsequent budget-exceeded project record.
+const EMPTY_PROJECT_ICON: ResolvedProjectIcon = Object.freeze({
+  dataUrl: null,
+  sourcePath: null,
+  mimeType: null,
+});
+
+// `projects.list` is on the connect-critical path (bootstrapRemoteRuntime awaits
+// it before a target is "connected"), so bound the icon work it does: resolve at
+// most this many icons and this many inlined bytes per call. A large or
+// slow-filesystem registry then can't stall a connect just to render tab
+// artwork — projects past the budget fall back to a null icon.
+const LIST_ICON_COUNT_BUDGET = 64;
+const LIST_ICON_BYTE_BUDGET = 12 * 1024 * 1024;
+
+// Stamp a single project record with its host-resolved icon so a remote desktop
+// can render the real project logo. Used for the records returned by
+// add/create/clone (which feed the desktop's cached connection.projects), so a
+// freshly registered project opens with its icon instead of a blank folder.
+// Best-effort: a failed resolve degrades to a null icon and never throws.
+function decorateProjectWithIcon<T extends { rootPath: string }>(
+  record: T,
+): T & { icon: ResolvedProjectIcon } {
+  return { ...record, icon: resolveRemoteProjectIcon(record.rootPath) };
+}
+
+// Decorate a full project list with icons under the connect-path budget above.
+// Icons are resolved for the most-recently-opened projects first (those most
+// likely to be open as tabs) while the returned array stays in registry order.
+function decorateProjectListWithIcons<T extends { rootPath: string; lastOpenedAt: number }>(
+  records: readonly T[],
+): Array<T & { icon: ResolvedProjectIcon }> {
+  const icons = new Map<number, ResolvedProjectIcon>();
+  let count = 0;
+  let bytes = 0;
+  const byRecency = records
+    .map((record, index) => ({ record, index }))
+    .sort((a, b) => b.record.lastOpenedAt - a.record.lastOpenedAt);
+  for (const { record, index } of byRecency) {
+    if (count >= LIST_ICON_COUNT_BUDGET || bytes >= LIST_ICON_BYTE_BUDGET) break;
+    const icon = resolveRemoteProjectIcon(record.rootPath);
+    count += 1;
+    if (icon.dataUrl) bytes += icon.dataUrl.length;
+    icons.set(index, icon);
+  }
+  return records.map((record, index) => ({
+    ...record,
+    icon: icons.get(index) ?? EMPTY_PROJECT_ICON,
+  }));
 }
 
 function defaultParentDir(projectRegistry: ProjectRegistry): string {
@@ -474,7 +529,7 @@ export function createMultiProjectRpcRequestHandler(
     }
 
     if (method === "projects.list") {
-      return projectRegistry.list();
+      return decorateProjectListWithIcons(projectRegistry.list());
     }
 
     if (method === "projects.add") {
@@ -486,7 +541,7 @@ export function createMultiProjectRpcRequestHandler(
           "projects.add requires rootPath.",
         );
       }
-      return projectRegistry.add(rootPath);
+      return decorateProjectWithIcon(projectRegistry.add(rootPath));
     }
 
     if (method === "projects.remove") {
@@ -548,7 +603,7 @@ export function createMultiProjectRpcRequestHandler(
         await createMachineProjectScaffoldService().createLocalProject(
           readCreateProjectInput(params),
         );
-      return projectRegistry.add(result.rootPath);
+      return decorateProjectWithIcon(projectRegistry.add(result.rootPath));
     }
 
     if (method === "projects.clone") {
@@ -556,7 +611,7 @@ export function createMultiProjectRpcRequestHandler(
         await createMachineProjectScaffoldService().cloneRepository(
           readCloneProjectInput(params),
         );
-      return projectRegistry.add(result.rootPath);
+      return decorateProjectWithIcon(projectRegistry.add(result.rootPath));
     }
 
     if (method === "projects.listMyGitHubRepos") {
