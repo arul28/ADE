@@ -62,6 +62,31 @@ phase-transition logic in `manifestNormalization.ts` explicitly refuse
 to auto-advance the `planning` phase, so a completed planning-phase task
 can never bypass plan approval.
 
+#### Delegation lineage ledger
+
+The manifest carries an optional `lineage: DelegationEdge[]` ledger
+(`apps/desktop/src/shared/types/orchestration.ts`) that records the
+otherwise-implicit "who spawned whom, for what, and what came back" as
+first-class state — the agent row itself has no parent link. Each
+`DelegationEdge` captures the `parentSessionId` (the lead today),
+`childSessionId`, `childRole`, a `briefDigest` (sha256 of the dispatched
+brief), the `spawnFingerprint` (provider / model / reasoning effort / fast
+mode / routing key), and a `status` that moves `running` →
+`completed`/`failed` with a contract-level `resultSummary`. Edges are
+written only by service methods: `recordDelegationSpawn` at spawn time
+(best-effort — it never fails the spawn, since the agent row is the source
+of truth and the edge is supplementary provenance), the result side is
+recorded eagerly in `releaseTask`, and `releaseStaleClaims` is the
+lead-triggered reconcile backstop for validators or any missed terminal
+transition. The lead is denied raw `/lineage` patches in `patchPolicy`
+(the `/lineage` and `/lineage/**` deny patterns), so edges are
+authoritative coordination state rather than lead-authored prose. The
+field is additive and optional for back-compat — `manifestNormalization.ts`
+defaults it to `[]` on load and drops malformed edges, so an in-memory
+runtime manifest always has a lineage array. Scope is deliberately
+lead↔worker/validator only: a worker's own provider-native subagents stay
+in the observability pane and are not ingested here.
+
 ### ADE CLI path
 
 CLI-wrapped providers and ordinary shell sessions invoke ADE through the

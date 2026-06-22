@@ -193,6 +193,24 @@ export function createOrchestrationDomainService(deps: OrchestrationDomainDeps) 
           `spawn manifest patch failed: ${"error" in patchRes ? patchRes.error : "unknown"}`,
         );
       }
+      // Record the lead→child delegation edge (best-effort; never fails the spawn).
+      try {
+        await service.recordDelegationSpawn(
+          {
+            runId: arg.runId,
+            parentSessionId: arg.leadSessionId,
+            childSessionId: created.id,
+            childRole: arg.role,
+            childTag: arg.tag,
+            stepId: arg.stepId,
+            briefText: arg.initialMessage,
+            spawnFingerprint: fp,
+          },
+          bundlePath,
+        );
+      } catch {
+        // Supplementary provenance only — swallow.
+      }
       const origin: OrchestrationOrigin = {
         runId: arg.runId,
         fromSessionId: arg.leadSessionId,

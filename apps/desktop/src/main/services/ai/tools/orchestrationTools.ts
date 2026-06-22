@@ -314,6 +314,32 @@ function createSpawnAgentTool(
                 : "unknown"),
           };
         }
+        // Record the lead→child delegation edge (best-effort; never fails the
+        // spawn — the agent row is the source of truth, the edge is provenance).
+        try {
+          await svc.recordDelegationSpawn(
+            {
+              runId: ctx.runId,
+              parentSessionId: ctx.sessionId,
+              childSessionId: created.id,
+              childRole: input.role,
+              childTag: input.tag,
+              stepId: input.stepId,
+              briefText: input.initialMessage,
+              spawnFingerprint: {
+                provider: routedSelection.provider,
+                modelId: routedSelection.modelId,
+                reasoningEffort: routedSelection.reasoningEffort ?? null,
+                fastMode: routedSelection.fastMode,
+                resolvedAt: spawnedAt,
+                routingKey: routedSelection.routingKey,
+              },
+            },
+            ctx.bundlePath,
+          );
+        } catch {
+          // Supplementary provenance only — swallow.
+        }
         try {
           await chat.sendMessage(
             {

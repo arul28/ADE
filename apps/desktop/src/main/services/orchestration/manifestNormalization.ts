@@ -1,4 +1,6 @@
 import type {
+  DelegationEdge,
+  DelegationStatus,
   ManifestPatchOp,
   OrchestrationManifest,
   OrchestrationTaskStatus,
@@ -121,6 +123,49 @@ export function isTaskStatus(value: unknown): value is OrchestrationTaskStatus {
 }
 
 // ---------------------------------------------------------------------------
+// Delegation lineage seed / repair
+// ---------------------------------------------------------------------------
+
+export const DELEGATION_STATUSES = new Set<string>([
+  "running",
+  "completed",
+  "failed",
+  "cancelled",
+  "superseded",
+]);
+
+export function isDelegationStatus(value: unknown): value is DelegationStatus {
+  return typeof value === "string" && DELEGATION_STATUSES.has(value);
+}
+
+/**
+ * Default `lineage` to `[]` and drop malformed edges (tolerant of hand-edited
+ * manifests), mirroring how decisions/userOverrides are normalized. Runs on
+ * every load + write, so an in-memory runtime manifest always has a lineage
+ * array — which is what keeps `/lineage/-` patches from hitting a missing-key
+ * error in applyPatches.
+ */
+function ensureLineage(manifest: OrchestrationManifest): void {
+  const raw = (manifest as { lineage?: unknown }).lineage;
+  if (!Array.isArray(raw)) {
+    manifest.lineage = [];
+    return;
+  }
+  const seen = new Set<string>();
+  manifest.lineage = raw.filter((entry): entry is DelegationEdge => {
+    if (!entry || typeof entry !== "object") return false;
+    const record = entry as Record<string, unknown>;
+    const id = typeof record.id === "string" ? record.id.trim() : "";
+    if (!id || seen.has(id)) return false;
+    if (typeof record.parentSessionId !== "string" || !record.parentSessionId.trim()) return false;
+    if (typeof record.childSessionId !== "string" || !record.childSessionId.trim()) return false;
+    if (!isDelegationStatus(record.status)) return false;
+    seen.add(id);
+    return true;
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Full manifest shape normalization
 // ---------------------------------------------------------------------------
 
@@ -132,6 +177,7 @@ export function normalizeManifestShape(manifest: OrchestrationManifest): Orchest
   normalizeValidationRerunSupersedes(next.tasks);
   normalizeChecklist(next);
   ensurePlanningAndSpec(next);
+  ensureLineage(next);
   reconcileActivePhaseProgress(next);
   return next;
 }
@@ -381,6 +427,32 @@ export function validateManifestShape(manifest: OrchestrationManifest): string |
   if (vsError) return vsError;
   const planningError = validatePlanningState(manifest.leadState?.planning);
   if (planningError) return planningError;
+  const lineageError = validateLineage(manifest.lineage);
+  if (lineageError) return lineageError;
+  return null;
+}
+
+function validateLineage(lineage: OrchestrationManifest["lineage"]): string | null {
+  if (lineage === undefined) return null;
+  if (!Array.isArray(lineage)) return "manifest.lineage must be an array";
+  const seen = new Set<string>();
+  for (const edge of lineage) {
+    if (!edge || typeof edge !== "object") return "manifest.lineage entries must be objects";
+    if (typeof edge.id !== "string" || !edge.id.trim()) {
+      return "manifest.lineage entries must include a non-empty id";
+    }
+    if (seen.has(edge.id)) return `manifest.lineage contains duplicate id ${edge.id}`;
+    seen.add(edge.id);
+    if (typeof edge.parentSessionId !== "string" || !edge.parentSessionId.trim()) {
+      return `manifest.lineage edge ${edge.id} must include parentSessionId`;
+    }
+    if (typeof edge.childSessionId !== "string" || !edge.childSessionId.trim()) {
+      return `manifest.lineage edge ${edge.id} must include childSessionId`;
+    }
+    if (!isDelegationStatus(edge.status)) {
+      return `manifest.lineage edge ${edge.id} has invalid status`;
+    }
+  }
   return null;
 }
 

@@ -89,6 +89,35 @@ describe("patchPolicy", () => {
     expect(() => parsePatchPath("/tasks/0/status")).toThrow(/numeric/i);
   });
 
+  it("denies every role from patching delegation lineage directly", () => {
+    const manifest = makeManifest();
+    const append: ManifestPatchOp = {
+      op: "add",
+      path: "/lineage/-",
+      value: {
+        id: "D-x",
+        parentSessionId: "S-lead",
+        childSessionId: "S-worker",
+        childRole: "worker",
+        status: "running",
+      },
+    };
+    const sessionFor = { lead: "S-lead", worker: "S-worker", validator: "S-v" } as const;
+    for (const role of ["lead", "worker", "validator"] as const) {
+      expect(
+        checkPatchOp(append, { actorRole: role, actorSessionId: sessionFor[role], manifest }).allowed,
+      ).toBe(false);
+    }
+    const replace: ManifestPatchOp = {
+      op: "replace",
+      path: "/lineage/{id:D-x}/status",
+      value: "completed",
+    };
+    expect(
+      checkPatchOp(replace, { actorRole: "lead", actorSessionId: "S-lead", manifest }).allowed,
+    ).toBe(false);
+  });
+
   it("pattern matches wildcards", () => {
     const parsed = parsePatchPath("/tasks/{id:T-3}/status");
     expect(pathMatchesPattern(parsed, "/tasks/{id:*}/status")).toBe(true);

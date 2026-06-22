@@ -8,6 +8,9 @@ import {
   ORCHESTRATION_MANIFEST_VERSION,
   ORCHESTRATION_EVENT_CHANNEL,
   ORCHESTRATION_SPAWN_BRIEF_REQUIRED_SECTIONS,
+  type DelegationEdge,
+  type DelegationStatus,
+  type SpawnFingerprint,
   type ManifestPatchOp,
   type OrchestrationEventPayload,
   type OrchestrationManifest,
@@ -844,6 +847,7 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
         history: [
           { etag, at: createdAt, summary: "run created", patchKindSummary: "init" },
         ],
+        lineage: [],
       };
       await persistManifest(runtime, manifest);
       await persistPlan(runtime, initialPlanMd(manifest));
@@ -1278,6 +1282,19 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
           path: `/agents/{sessionId:${req.sessionId}}/status`,
           value: agentStatus,
         });
+        // Close this child's open delegation edge when it goes terminal.
+        if (agentStatus === "completed" || agentStatus === "failed") {
+          const edgeStatus: DelegationStatus = agentStatus === "completed" ? "completed" : "failed";
+          ops.push(
+            ...buildDelegationResultOps(
+              manifest,
+              req.sessionId,
+              edgeStatus,
+              summarizeDelegationOutcome(manifest, req.sessionId, edgeStatus, req.taskId),
+              nowIso(),
+            ),
+          );
+        }
       }
       const projectedManifest = applyPatches(manifest, ops);
       ops.push(
@@ -1683,6 +1700,146 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
       patch: [...patches],
     });
     return { manifest: next, etag };
+  }
+
+  // --------------------------------------------------------------------------
+  // Delegation lineage (lead→worker/validator spawn + result edges).
+  //
+  // Written through directPatch only — the lead is denied raw /lineage access
+  // (see patchPolicy), so spawn/result edges are authoritative coordination
+  // state, not agent-authored prose. recordDelegationSpawn is called by the
+  // spawn path (best-effort). Results are recorded eagerly in releaseTask, with
+  // releaseStaleClaims as a lead-triggered backstop for validators / any missed
+  // terminal transition.
+  // --------------------------------------------------------------------------
+
+  /** Short, contract-level outcome for a child's terminal transition. */
+  function summarizeDelegationOutcome(
+    manifest: OrchestrationManifest,
+    childSessionId: string,
+    edgeStatus: DelegationStatus,
+    releasedTaskId?: string,
+  ): string {
+    if (releasedTaskId) {
+      if (edgeStatus === "failed") {
+        const released = manifest.tasks.find((task) => task.id === releasedTaskId);
+        const attempt =
+          released?.attempts?.find((a) => a.id === released.currentAttemptId) ??
+          released?.attempts?.[released.attempts.length - 1];
+        const reason = attempt?.failureReason?.trim();
+        return reason ? `failed: ${releasedTaskId} — ${reason}` : `failed: ${releasedTaskId}`;
+      }
+      return `done: ${releasedTaskId}`;
+    }
+    const doneIds = manifest.tasks
+      .filter((task) => task.assigneeSessionId === childSessionId && task.status === "done")
+      .map((task) => task.id);
+    if (edgeStatus === "completed") {
+      return doneIds.length ? `completed: ${doneIds.join(", ")}` : "completed";
+    }
+    return "failed";
+  }
+
+  /**
+   * Build result-side replace ops for the (single) running edge of a child
+   * session. Returns [] when there is no open edge to close. resultEtag is the
+   * etag observed before this transaction (the new etag isn't known until the
+   * patch commits).
+   */
+  function buildDelegationResultOps(
+    manifest: OrchestrationManifest,
+    childSessionId: string,
+    edgeStatus: DelegationStatus,
+    summary: string,
+    completedAt: string,
+  ): ManifestPatchOp[] {
+    const edge = (manifest.lineage ?? []).find(
+      (entry) => entry.childSessionId === childSessionId && entry.status === "running",
+    );
+    if (!edge) return [];
+    const owned = manifest.tasks
+      .filter((task) => task.assigneeSessionId === childSessionId)
+      .map((task) => task.id);
+    return [
+      { op: "replace", path: `/lineage/{id:${edge.id}}/status`, value: edgeStatus },
+      { op: "replace", path: `/lineage/{id:${edge.id}}/resultSummary`, value: summary },
+      { op: "replace", path: `/lineage/{id:${edge.id}}/completedAt`, value: completedAt },
+      { op: "replace", path: `/lineage/{id:${edge.id}}/resultEtag`, value: manifest.etag },
+      ...(owned.length
+        ? [{ op: "replace" as const, path: `/lineage/{id:${edge.id}}/taskIds`, value: owned }]
+        : []),
+    ];
+  }
+
+  /**
+   * Record a lead→child delegation edge at spawn time. Best-effort and
+   * idempotent (one edge per child session) — a failure here never fails the
+   * spawn, since the agent row is the source of truth and the edge is
+   * supplementary provenance.
+   */
+  async function recordDelegationSpawn(
+    args: {
+      runId: string;
+      parentSessionId: string;
+      childSessionId: string;
+      childRole: OrchestrationRole;
+      childTag?: string;
+      stepId?: string;
+      briefText: string;
+      spawnFingerprint?: SpawnFingerprint;
+    },
+    bundlePath: string,
+  ): Promise<
+    | { ok: true; manifest: OrchestrationManifest; etag: string; edgeId: string }
+    | { ok: false; error: string; message: string }
+  > {
+    const runtime = getOrCreateRuntime(args.runId, bundlePath);
+    return runtime.mutex.run(async () => {
+      await loadIntoRuntime(runtime);
+      if (runtime.suspended) {
+        return { ok: false, error: "run_suspended", message: RUN_SUSPENDED_MESSAGE };
+      }
+      const manifest = runtime.manifest;
+      if (!manifest) {
+        return { ok: false, error: "run_not_found", message: `run ${args.runId} not found` };
+      }
+      const existing = (manifest.lineage ?? []).find(
+        (entry) => entry.childSessionId === args.childSessionId,
+      );
+      if (existing) {
+        return { ok: true, manifest, etag: manifest.etag, edgeId: existing.id };
+      }
+      const edgeId = `D-${(manifest.lineage?.length ?? 0) + 1}-${shortRand()}`;
+      const edge: DelegationEdge = {
+        id: edgeId as DelegationEdge["id"],
+        parentSessionId: args.parentSessionId,
+        childSessionId: args.childSessionId,
+        childRole: args.childRole,
+        ...(args.childTag ? { childTag: args.childTag } : {}),
+        ...(args.stepId ? { stepId: args.stepId } : {}),
+        spawnedAt: nowIso(),
+        spawnEtag: manifest.etag,
+        briefDigest: crypto.createHash("sha256").update(args.briefText).digest("hex"),
+        ...(args.spawnFingerprint ? { spawnFingerprint: args.spawnFingerprint } : {}),
+        status: "running",
+      };
+      try {
+        const res = await directPatch(
+          runtime,
+          [{ op: "add", path: "/lineage/-", value: edge }],
+          `delegation spawn → ${args.childSessionId}`,
+        );
+        return { ok: true, manifest: res.manifest, etag: res.etag, edgeId };
+      } catch (err) {
+        if (err instanceof OrchestrationRunSuspendedError) {
+          return { ok: false, error: "run_suspended", message: RUN_SUSPENDED_MESSAGE };
+        }
+        if (err instanceof OrchestrationPersistConflictError) {
+          return { ok: false, error: "etag_conflict", message: "manifest advanced during delegation spawn" };
+        }
+        throw err;
+      }
+    });
   }
 
   /**
@@ -2177,9 +2334,6 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
           return !Number.isFinite(leaseMs) || leaseMs <= nowMs;
         },
       );
-      if (!stale.length) {
-        return { ok: true, manifest, etag: manifest.etag, recovered: [] };
-      }
       const ops: ManifestPatchOp[] = [];
       for (const task of stale) {
         ops.push({ op: "replace", path: `/tasks/{id:${task.id}}/status`, value: "pending" });
@@ -2193,8 +2347,37 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
           ops.push({ op: "remove", path: `/tasks/{id:${task.id}}/claimLeaseUntil` });
         }
       }
+      // Backstop: close any running delegation edge whose child agent has gone
+      // terminal but whose edge was never recorded (e.g. a validator that
+      // self-marked completed, or a missed release). Only touches running edges.
+      const reconcileAt = nowIso();
+      let reconciledEdges = 0;
+      for (const edge of manifest.lineage ?? []) {
+        if (edge.status !== "running") continue;
+        const agent = manifest.agents.find((a) => a.sessionId === edge.childSessionId);
+        if (!agent || (agent.status !== "completed" && agent.status !== "failed")) continue;
+        const edgeStatus: DelegationStatus = agent.status === "completed" ? "completed" : "failed";
+        const resultOps = buildDelegationResultOps(
+          manifest,
+          edge.childSessionId,
+          edgeStatus,
+          summarizeDelegationOutcome(manifest, edge.childSessionId, edgeStatus),
+          reconcileAt,
+        );
+        if (resultOps.length) {
+          ops.push(...resultOps);
+          reconciledEdges += 1;
+        }
+      }
+      if (!ops.length) {
+        return { ok: true, manifest, etag: manifest.etag, recovered: [] };
+      }
       try {
-        const res = await directPatch(runtime, ops, `recover ${stale.length} stale task(s)`);
+        const res = await directPatch(
+          runtime,
+          ops,
+          `recover ${stale.length} stale task(s)${reconciledEdges ? `, reconcile ${reconciledEdges} edge(s)` : ""}`,
+        );
         return { ok: true, manifest: res.manifest, etag: res.etag, recovered: stale.map((t) => t.id) };
       } catch (err) {
         if (err instanceof OrchestrationRunSuspendedError) {
@@ -2229,6 +2412,7 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
     claimTask,
     releaseTask,
     recordValidationRun,
+    recordDelegationSpawn,
     agentHeartbeat,
     approvePlan,
     recordPlanningIntake,

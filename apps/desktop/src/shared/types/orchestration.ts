@@ -410,6 +410,65 @@ export type PlanSpec = {
   };
 };
 
+// ---------------------------------------------------------------------------
+// Delegation lineage — lead↔worker/validator spawn/result edges.
+//
+// Records the otherwise-implicit "who spawned whom, for what, and what came
+// back" as first-class manifest state (the agent row carries no parent link).
+// Written ONLY by service methods on the spawn / task-release / reconcile
+// paths — the lead is denied raw /lineage access (see patchPolicy), so edges
+// are authoritative coordination state, not lead-authored prose. Scope is
+// lead→worker/validator only; a worker's own provider-native subagents stay in
+// the observability pane and are deliberately NOT ingested here.
+// ---------------------------------------------------------------------------
+
+export type DelegationId = `D-${string}`;
+
+export type DelegationStatus =
+  | "running" // spawned; no terminal result yet
+  | "completed" // child finished its work
+  | "failed" // child errored / its task failed
+  | "cancelled" // reserved (cancellation flow); not written in v1
+  | "superseded"; // reserved (re-run/fix flow); not written in v1
+
+/** One lead→child delegation edge. */
+export type DelegationEdge = {
+  id: DelegationId;
+  /** Spawner — the lead today; `coordinatorSessionId` in a future multi-run. */
+  parentSessionId: string;
+  /** The spawned worker/validator session. */
+  childSessionId: string;
+  childRole: OrchestrationRole;
+  childTag?: string;
+  /**
+   * Tasks this delegation owns, snapshotted at result time. The live truth is
+   * always derivable from `task.assigneeSessionId`. An edge is per-child-session
+   * lifetime and terminalizes at the child's first terminal transition, so for a
+   * worker that completes more than one task this is the snapshot at that first
+   * completion — not a running tally.
+   */
+  taskIds?: string[];
+  /** Validation step, when childRole === "validator". */
+  stepId?: string;
+  spawnedAt: string;
+  /** Manifest etag observed immediately before the edge was recorded (one generation before it becomes visible). */
+  spawnEtag: string;
+  /** sha256 of the brief actually dispatched — provenance + deterministic respawn key. */
+  briefDigest: string;
+  spawnFingerprint?: SpawnFingerprint;
+  status: DelegationStatus;
+  // result side — filled when the child goes terminal (release or reconcile):
+  /** Short, contract-level outcome — never the transcript. */
+  resultSummary?: string;
+  /** Manifest etag observed immediately before the result was recorded (one generation before it becomes visible). */
+  resultEtag?: string;
+  completedAt?: string;
+  /** Reserved: a future re-run/fix path will set this. Not written in v1. */
+  supersededBy?: DelegationId;
+  /** Reserved (v2 multi-run); mirrors the manifest.parentRunId reservation. Not written in v1. */
+  parentRunId?: string;
+};
+
 export type OrchestrationManifest = {
   version: 1;
   schemaCompatibility?: { minReader: 1; maxKnown: 1 };
@@ -445,6 +504,12 @@ export type OrchestrationManifest = {
   planSpec?: PlanSpec;
   history: OrchestrationHistoryEntry[];
   defaultBudget?: AgentBudget;
+  /**
+   * Lead→worker/validator delegation edges (spawn + result). Optional for
+   * back-compat; `normalizeManifestShape` defaults it to `[]` on load, so it is
+   * always an array on an in-memory runtime manifest.
+   */
+  lineage?: DelegationEdge[];
 
   // v2 reservations (present in schema; unused in v1):
   coordinatorSessionId?: string;
@@ -470,6 +535,7 @@ export type ManifestPatchKind =
   | "userOverrides"
   | "leadState"
   | "history"
+  | "lineage"
   | "core"
   | "unknown";
 
@@ -478,7 +544,8 @@ export type ManifestSection =
   | "agents"
   | "validationStrategy"
   | "decisions"
-  | "assets";
+  | "assets"
+  | "lineage";
 
 export type OrchestrationRunSummary = {
   runId: string;
