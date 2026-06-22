@@ -187,6 +187,18 @@ function createMachineProjectScaffoldService() {
   });
 }
 
+// Stamp a project record with its host-resolved icon so a remote desktop can
+// render the real project logo. Applied to every project record that reaches a
+// connected desktop — the live list AND the records returned by add/create/clone
+// (which feed the desktop's cached connection.projects), so a freshly registered
+// project opens with its icon instead of a blank folder. Best-effort: a failed
+// resolve degrades to a null icon and never throws.
+function decorateProjectWithIcon<T extends { rootPath: string }>(
+  record: T,
+): T & { icon: ReturnType<typeof resolveRemoteProjectIcon> } {
+  return { ...record, icon: resolveRemoteProjectIcon(record.rootPath) };
+}
+
 function defaultParentDir(projectRegistry: ProjectRegistry): string {
   const first = projectRegistry.list()[0]?.rootPath;
   if (first) return path.dirname(first);
@@ -475,14 +487,7 @@ export function createMultiProjectRpcRequestHandler(
     }
 
     if (method === "projects.list") {
-      // Inline each project's icon so a remote desktop can render the real
-      // project logo in its tab instead of a blank folder. Resolution is a
-      // best-effort local filesystem read; a failure for one project must not
-      // break the whole list, so it degrades to a null icon.
-      return projectRegistry.list().map((record) => ({
-        ...record,
-        icon: resolveRemoteProjectIcon(record.rootPath),
-      }));
+      return projectRegistry.list().map(decorateProjectWithIcon);
     }
 
     if (method === "projects.add") {
@@ -494,7 +499,7 @@ export function createMultiProjectRpcRequestHandler(
           "projects.add requires rootPath.",
         );
       }
-      return projectRegistry.add(rootPath);
+      return decorateProjectWithIcon(projectRegistry.add(rootPath));
     }
 
     if (method === "projects.remove") {
@@ -556,7 +561,7 @@ export function createMultiProjectRpcRequestHandler(
         await createMachineProjectScaffoldService().createLocalProject(
           readCreateProjectInput(params),
         );
-      return projectRegistry.add(result.rootPath);
+      return decorateProjectWithIcon(projectRegistry.add(result.rootPath));
     }
 
     if (method === "projects.clone") {
@@ -564,7 +569,7 @@ export function createMultiProjectRpcRequestHandler(
         await createMachineProjectScaffoldService().cloneRepository(
           readCloneProjectInput(params),
         );
-      return projectRegistry.add(result.rootPath);
+      return decorateProjectWithIcon(projectRegistry.add(result.rootPath));
     }
 
     if (method === "projects.listMyGitHubRepos") {

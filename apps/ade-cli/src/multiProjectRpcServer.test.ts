@@ -80,14 +80,9 @@ describe("multi-project RPC server", () => {
       method: "projects.list",
       params: {},
     });
-    // projects.list inlines each project's resolved icon; the temp project
-    // root has no icon file, so resolution yields the all-null icon.
-    expect(listed).toEqual([
-      {
-        ...(added as Record<string, unknown>),
-        icon: { dataUrl: null, sourcePath: null, mimeType: null },
-      },
-    ]);
+    // Both projects.add and projects.list stamp the host-resolved icon; the
+    // temp project root has no icon file, so each yields the same all-null icon.
+    expect(listed).toEqual([added]);
 
     const projectId = (added as { projectId: string }).projectId;
     const touched = await handler({
