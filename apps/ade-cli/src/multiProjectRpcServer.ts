@@ -189,11 +189,13 @@ function createMachineProjectScaffoldService() {
 
 type ResolvedProjectIcon = ReturnType<typeof resolveRemoteProjectIcon>;
 
-const EMPTY_PROJECT_ICON: ResolvedProjectIcon = {
+// Frozen so the shared fallback can't be mutated by a consumer and corrupt
+// every subsequent budget-exceeded project record.
+const EMPTY_PROJECT_ICON: ResolvedProjectIcon = Object.freeze({
   dataUrl: null,
   sourcePath: null,
   mimeType: null,
-};
+});
 
 // `projects.list` is on the connect-critical path (bootstrapRemoteRuntime awaits
 // it before a target is "connected"), so bound the icon work it does: resolve at
