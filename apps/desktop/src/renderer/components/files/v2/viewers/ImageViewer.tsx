@@ -38,10 +38,7 @@ export function ImageViewer({ workspaceId, content, tab }: ViewerProps) {
       try {
         const bytes = await streamFileBytes(workspaceId, tab.path, { isCancelled: () => cancelled });
         if (cancelled) return;
-        // bytes is a fresh full-length Uint8Array, so its buffer is exactly the
-        // file bytes; pass the ArrayBuffer to sidestep the typed-array BlobPart
-        // generic mismatch.
-        const blob = new Blob([bytes.buffer as ArrayBuffer], { type: mimeType });
+        const blob = new Blob([bytes], { type: mimeType });
         const url = URL.createObjectURL(blob);
         revoked = url;
         setSrc(url);

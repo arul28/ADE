@@ -9,7 +9,7 @@ export async function streamFileBytes(
   workspaceId: string,
   path: string,
   opts: { chunkLength?: number; isCancelled?: () => boolean; maxBytes?: number } = {},
-): Promise<Uint8Array> {
+): Promise<Uint8Array<ArrayBuffer>> {
   const chunkLength = opts.chunkLength ?? 512 * 1024;
   const parts: Uint8Array[] = [];
   let total = 0;

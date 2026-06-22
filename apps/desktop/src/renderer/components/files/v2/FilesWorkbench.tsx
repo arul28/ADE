@@ -160,6 +160,7 @@ export function FilesWorkbench({
   } | null>(null);
   const handledExternalOpenRef = useRef<string | null>(null);
   const lastGlobalLaneIdRef = useRef(globalLaneId);
+  const workspacesProjectRootRef = useRef(projectRootPath);
   const renameNonceRef = useRef(0);
   const registryRef = useRef(createMonacoModelRegistry());
   const dragRef = useRef<{ groupId: string; path: string } | null>(null);
@@ -214,12 +215,19 @@ export function FilesWorkbench({
   useEffect(() => {
     if (!active) return;
     let cancelled = false;
+    const projectChanged = workspacesProjectRootRef.current !== projectRootPath;
+    workspacesProjectRootRef.current = projectRootPath;
+    if (projectChanged) {
+      const cachedForProject = readCachedWorkspaces(projectRootPath).filter((workspace) => workspace.kind !== "external");
+      setWorkspaces(cachedForProject);
+      setWorkspacesLoaded(cachedForProject.length > 0);
+    }
     window.ade.files
       .listWorkspaces()
       .then((ws) => {
         if (cancelled) return;
         setWorkspaces((prev) => {
-          const merged = mergeExternalWorkspaces(ws, prev);
+          const merged = projectChanged ? ws : mergeExternalWorkspaces(ws, prev);
           workspacesCacheByProject.set(projectRootPath, merged);
           return merged;
         });
