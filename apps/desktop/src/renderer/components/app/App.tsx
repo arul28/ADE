@@ -294,6 +294,17 @@ function serializeProjectRoute(location: ReturnType<typeof useLocation>): string
   return `${pathname}${location.search ?? ""}${location.hash ?? ""}`;
 }
 
+function serializeStoredProjectRoute(location: ReturnType<typeof useLocation>): string | null {
+  const route = serializeProjectRoute(location);
+  if (!route || location.pathname !== "/files") return route;
+  const params = new URLSearchParams(location.search ?? "");
+  if (!params.has("externalPath") && !params.has("externalOpen")) return route;
+  params.delete("externalPath");
+  params.delete("externalOpen");
+  const search = params.toString();
+  return `${location.pathname}${search ? `?${search}` : ""}${location.hash ?? ""}`;
+}
+
 function readStoredProjectRoute(projectRoot: string): string | null {
   try {
     const value = window.localStorage.getItem(projectRouteStorageKey(projectRoot));
@@ -723,7 +734,7 @@ function ProjectTabHost() {
   React.useEffect(() => {
     const previousSurfaceKey = previousActiveSurfaceKeyRef.current;
     if (previousSurfaceKey === activeSurfaceKey) return;
-    const currentRoute = serializeProjectRoute(location);
+    const currentRoute = serializeStoredProjectRoute(location);
     if (previousSurfaceKey && currentRoute) {
       writeStoredProjectRoute(previousSurfaceKey, currentRoute);
       setRoutesBySurfaceKey((prev) => ({ ...prev, [previousSurfaceKey]: currentRoute }));
@@ -748,7 +759,7 @@ function ProjectTabHost() {
 
   React.useEffect(() => {
     if (!activeSurfaceKey) return;
-    const route = serializeProjectRoute(location);
+    const route = serializeStoredProjectRoute(location);
     if (!route) return;
     const pending = pendingNavigationRef.current;
     if (pending?.surfaceKey === activeSurfaceKey && pending.route !== route) return;
