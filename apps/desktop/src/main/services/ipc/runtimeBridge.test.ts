@@ -868,6 +868,7 @@ describe("registerRuntimeBridge", () => {
       projectId: "project-1",
       rootPath: "/srv/ade",
       displayName: "ADE",
+      iconDataUrl: null,
     });
 
     expect(remoteConnectMock).toHaveBeenCalledWith(target, {
@@ -883,6 +884,7 @@ describe("registerRuntimeBridge", () => {
       projectId: "project-1",
       rootPath: "/srv/ade",
       displayName: "ADE",
+      iconDataUrl: null,
     });
   });
 

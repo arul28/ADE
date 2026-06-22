@@ -21,11 +21,13 @@ export type RemoteProjectIcon = {
 
 const REMOTE_ICON_MAX_DATAURL_BYTES = 2 * 1024 * 1024;
 
-const EMPTY_ICON: RemoteProjectIcon = {
+// Frozen so the shared singleton can't be mutated by a caller and silently
+// corrupt every subsequent resolve.
+const EMPTY_ICON: RemoteProjectIcon = Object.freeze({
   dataUrl: null,
   sourcePath: null,
   mimeType: null,
-};
+});
 
 export function resolveRemoteProjectIcon(projectRoot: string): RemoteProjectIcon {
   if (typeof projectRoot !== "string" || projectRoot.trim().length === 0) {
