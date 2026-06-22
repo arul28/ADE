@@ -13,6 +13,7 @@ import type {
 import {
   CHAT_EVENT_REPLAY_MAX_BYTES,
   CHAT_EVENT_REPLAY_MAX_EVENTS,
+  SYNC_HOST_CHAT_ACTIVE_BACKGROUND_BACKPRESSURE_BYTES,
   buildSyncHostHelloOkPayload,
   createChatEventReplayBuffer,
   createSyncHostService,
@@ -908,7 +909,12 @@ function waitForEnvelope(envelopes: ParsedSyncEnvelope[], type: string, requestI
   );
 }
 
-async function connectPeer(port: number, token: string, deviceId: string) {
+async function connectPeer(
+  port: number,
+  token: string,
+  deviceId: string,
+  peerOverrides: Partial<SyncPeerMetadata> = {},
+) {
   const ws = new WebSocket(`ws://127.0.0.1:${port}`);
   const tracked = trackClientEnvelopes(ws);
   await new Promise<void>((resolve, reject) => {
@@ -925,6 +931,7 @@ async function connectPeer(port: number, token: string, deviceId: string) {
         deviceType: "phone",
         siteId: `${deviceId}-site`,
         dbVersion: 0,
+        ...peerOverrides,
       },
       auth: { kind: "bootstrap", token },
     },
@@ -935,6 +942,97 @@ async function connectPeer(port: number, token: string, deviceId: string) {
   );
   return { ws, ...tracked };
 }
+
+describe("outbound changeset ack retries", () => {
+  beforeEach(() => {
+    publishMock.mockReset();
+    spawnMock.mockReset();
+    bonjourDestroyMock.mockReset();
+    bonjourConstructorMock.mockReset();
+    spawnMock.mockImplementation(() => ({ kill: vi.fn(), once: vi.fn(), unref: vi.fn() }));
+  });
+
+  function createAckRetryHost(projectRoot: string) {
+    const base = createHostArgs(projectRoot, []);
+    const changes = [makeChange(1, 0)];
+    return createSyncHostService({
+      ...base,
+      pollIntervalMs: 25,
+      projectId: "project-1",
+      db: {
+        sync: {
+          getSiteId: () => "site-host-ack",
+          getDbVersion: () => 1,
+          exportChangesSince: (fromDbVersion: number) =>
+            changes.filter((change) => Number(change.db_version) > fromDbVersion),
+          applyChanges: () => ({ appliedCount: 0 }),
+          discardUnpublishedChangesForTables: () => {},
+        },
+      },
+      deviceRegistryService: {
+        ...base.deviceRegistryService,
+        upsertPeerMetadata: vi.fn(),
+      },
+    } as unknown as Parameters<typeof createSyncHostService>[0]);
+  }
+
+  it("processes pending ACK retries before active-chat background deferral", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const host = createAckRetryHost(projectRoot);
+    let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    let bufferedAmountSpy: { mockRestore(): void } | null = null;
+    let dateNowSpy: { mockRestore(): void } | null = null;
+    try {
+      const port = await host.waitUntilListening();
+      peer = await connectPeer(port, host.getBootstrapToken(), "ios-ack-retry", {
+        capabilities: ["changesetAck"],
+      });
+
+      const firstBatch = await waitForValue(
+        () => peer?.envelopes.find((envelope) => envelope.type === "changeset_batch"),
+        "initial changeset batch",
+      );
+      const firstPayload = firstBatch.payload as { batchId: string; toDbVersion: number };
+
+      peer.ws.send(encodeSyncEnvelope({
+        type: "chat_subscribe",
+        requestId: "chat-subscribe",
+        payload: { sessionId: "session-1" },
+      }));
+      await waitForEnvelope(peer.envelopes, "chat_subscribe", "chat-subscribe");
+
+      bufferedAmountSpy = vi
+        .spyOn(WebSocket.prototype, "bufferedAmount", "get")
+        .mockReturnValue(SYNC_HOST_CHAT_ACTIVE_BACKGROUND_BACKPRESSURE_BYTES);
+      const realDateNow = Date.now.bind(Date);
+      dateNowSpy = vi
+        .spyOn(Date, "now")
+        .mockImplementation(() => realDateNow() + 11_000);
+
+      const resentBatch = await waitForValue(
+        () => peer?.envelopes.filter((envelope) =>
+          envelope.type === "changeset_batch"
+          && (envelope.payload as { batchId?: string }).batchId === firstPayload.batchId
+        )[1],
+        "resent changeset batch under chat backpressure",
+      );
+      expect(resentBatch.payload).toMatchObject({
+        batchId: firstPayload.batchId,
+        toDbVersion: firstPayload.toDbVersion,
+      });
+    } finally {
+      dateNowSpy?.mockRestore();
+      bufferedAmountSpy?.mockRestore();
+      try {
+        peer?.ws.close();
+      } catch {
+        // ignore
+      }
+      await host.dispose();
+      cleanup();
+    }
+  });
+});
 
 describe("mobile command result ledger", () => {
   beforeEach(() => {

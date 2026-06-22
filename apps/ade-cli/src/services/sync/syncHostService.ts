@@ -2870,14 +2870,6 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     for (const peer of peers) {
       if (!peer.authenticated || !peer.metadata || peer.ws.readyState !== WebSocket.OPEN) continue;
       if (isPeerBackpressured(peer)) continue;
-      if (shouldDeferBackgroundChangesForChat(peer)) {
-        args.logger.debug("sync_host.changeset_deferred_chat_backpressure", {
-          peerDeviceId: peer.metadata?.deviceId ?? null,
-          bufferedAmount: peer.ws.bufferedAmount,
-          thresholdBytes: SYNC_HOST_CHAT_ACTIVE_BACKGROUND_BACKPRESSURE_BYTES,
-        });
-        continue;
-      }
       if (peer.pendingChangesetBatch) {
         if (nowMs - peer.pendingChangesetBatch.sentAtMs >= CHANGESET_ACK_TIMEOUT_MS) {
           const pending = peer.pendingChangesetBatch;
@@ -2906,6 +2898,14 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
             resent,
           });
         }
+        continue;
+      }
+      if (shouldDeferBackgroundChangesForChat(peer)) {
+        args.logger.debug("sync_host.changeset_deferred_chat_backpressure", {
+          peerDeviceId: peer.metadata?.deviceId ?? null,
+          bufferedAmount: peer.ws.bufferedAmount,
+          thresholdBytes: SYNC_HOST_CHAT_ACTIVE_BACKGROUND_BACKPRESSURE_BYTES,
+        });
         continue;
       }
       if (currentDbVersion <= peer.lastKnownServerDbVersion) continue;
