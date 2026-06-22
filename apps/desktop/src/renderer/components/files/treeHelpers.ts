@@ -74,6 +74,12 @@ export function hasLoadedDirectoryChildren(nodes: FileTreeNode[], directoryPath:
   return node?.type === "directory" && Array.isArray(node.children);
 }
 
+export function loadedDirectoryChildrenCount(nodes: FileTreeNode[], directoryPath: string): number {
+  if (!directoryPath) return nodes.length;
+  const node = fileTreeNodeByPath(nodes).get(directoryPath);
+  return node?.type === "directory" && Array.isArray(node.children) ? node.children.length : 0;
+}
+
 /** Merge a freshly-fetched root listing while keeping already-loaded subtrees. */
 export function mergeTreePreservingLoadedChildren(
   nextNodes: FileTreeNode[],

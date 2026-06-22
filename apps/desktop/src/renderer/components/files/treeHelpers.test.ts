@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   hasLoadedDirectoryChildren,
   isUnavailableGitDecorationsError,
+  loadedDirectoryChildrenCount,
   parentPathForFileChange,
 } from "./treeHelpers";
 
@@ -60,5 +61,9 @@ describe("file tree change refresh helpers", () => {
     expect(hasLoadedDirectoryChildren(tree, "marketing")).toBe(true);
     expect(hasLoadedDirectoryChildren(tree, "src")).toBe(false);
     expect(hasLoadedDirectoryChildren(tree, "missing")).toBe(false);
+    expect(loadedDirectoryChildrenCount(tree, "")).toBe(2);
+    expect(loadedDirectoryChildrenCount(tree, "marketing")).toBe(1);
+    expect(loadedDirectoryChildrenCount(tree, "src")).toBe(0);
+    expect(loadedDirectoryChildrenCount(tree, "missing")).toBe(0);
   });
 });

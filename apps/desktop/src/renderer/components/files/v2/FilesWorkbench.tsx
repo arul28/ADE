@@ -14,6 +14,7 @@ import {
   formatFilesError,
   hasLoadedDirectoryChildren,
   isUnavailableGitDecorationsError,
+  loadedDirectoryChildrenCount,
   mergeTreePreservingLoadedChildren,
   parentPathForFileChange,
   replaceTreeNodeChildren,
@@ -239,10 +240,11 @@ export function FilesWorkbench({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active, workspaceId, refreshRoot, projectRootPath]);
 
-  const fetchDirectoryChildren = useCallback(async (reqId: string, parentPath: string) => {
+  const fetchDirectoryChildren = useCallback(async (reqId: string, parentPath: string, minChildren = MAX_AUTO_LOADED_CHILDREN) => {
     const children: FileTreeNode[] = [];
     let offset = 0;
     let loadMoreOffset: number | null = null;
+    const targetChildren = Math.max(MAX_AUTO_LOADED_CHILDREN, minChildren);
     for (;;) {
       const page = await window.ade.files.listTreeChildren({
         workspaceId: reqId,
@@ -254,7 +256,7 @@ export function FilesWorkbench({
       if (workspaceIdRef.current !== reqId) return null;
       children.push(...page.children);
       if (page.nextOffset == null) break;
-      if (children.length >= MAX_AUTO_LOADED_CHILDREN) {
+      if (children.length >= targetChildren) {
         loadMoreOffset = page.nextOffset;
         break;
       }
@@ -268,7 +270,8 @@ export function FilesWorkbench({
       if (!reqId) return;
       setLoadingDirs((prev) => new Set(prev).add(parentPath));
       try {
-        const result = await fetchDirectoryChildren(reqId, parentPath);
+        const loadedCount = loadedDirectoryChildrenCount(treeRef.current, parentPath);
+        const result = await fetchDirectoryChildren(reqId, parentPath, loadedCount);
         if (!result || workspaceIdRef.current !== reqId) return;
         setTree((prev) => {
           const nextTree = replaceTreeNodeChildren(prev, parentPath, result.children, result.loadMoreOffset);
@@ -362,6 +365,7 @@ export function FilesWorkbench({
 
     const enqueuePathRefresh = (path: string | undefined) => {
       if (!path) return;
+      if (fullRootRefreshQueued) return;
       const parentPath = parentPathForFileChange(path);
       if (!parentPath) {
         rootRefreshQueued = true;
@@ -371,6 +375,7 @@ export function FilesWorkbench({
         queuedParentPaths.add(parentPath);
         if (queuedParentPaths.size > MAX_QUEUED_TREE_PARENT_REFRESHES) {
           fullRootRefreshQueued = true;
+          queuedParentPaths.clear();
         }
       }
     };
