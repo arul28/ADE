@@ -159,6 +159,10 @@ function ensureLineage(manifest: OrchestrationManifest): void {
     if (!id || seen.has(id)) return false;
     if (typeof record.parentSessionId !== "string" || !record.parentSessionId.trim()) return false;
     if (typeof record.childSessionId !== "string" || !record.childSessionId.trim()) return false;
+    if (typeof record.childRole !== "string" || !record.childRole.trim()) return false;
+    if (typeof record.spawnedAt !== "string" || !record.spawnedAt.trim()) return false;
+    if (typeof record.spawnEtag !== "string" || !record.spawnEtag.trim()) return false;
+    if (typeof record.briefDigest !== "string" || !record.briefDigest.trim()) return false;
     if (!isDelegationStatus(record.status)) return false;
     seen.add(id);
     return true;
@@ -448,6 +452,18 @@ function validateLineage(lineage: OrchestrationManifest["lineage"]): string | nu
     }
     if (typeof edge.childSessionId !== "string" || !edge.childSessionId.trim()) {
       return `manifest.lineage edge ${edge.id} must include childSessionId`;
+    }
+    if (typeof edge.childRole !== "string" || !edge.childRole.trim()) {
+      return `manifest.lineage edge ${edge.id} must include childRole`;
+    }
+    if (typeof edge.spawnedAt !== "string" || !edge.spawnedAt.trim()) {
+      return `manifest.lineage edge ${edge.id} must include spawnedAt`;
+    }
+    if (typeof edge.spawnEtag !== "string" || !edge.spawnEtag.trim()) {
+      return `manifest.lineage edge ${edge.id} must include spawnEtag`;
+    }
+    if (typeof edge.briefDigest !== "string" || !edge.briefDigest.trim()) {
+      return `manifest.lineage edge ${edge.id} must include briefDigest`;
     }
     if (!isDelegationStatus(edge.status)) {
       return `manifest.lineage edge ${edge.id} has invalid status`;

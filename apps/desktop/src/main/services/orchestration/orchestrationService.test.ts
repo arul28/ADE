@@ -1974,6 +1974,7 @@ describe("orchestration watcher resilience", () => {
     it("records a running delegation edge at spawn with a brief digest + fingerprint", async () => {
       const svc = createOrchestrationService({ resolveLaneWorktree: () => lane });
       const { manifest } = await makeRun(svc);
+      await seedChild(svc, manifest, { sessionId: "S-worker" });
       const res = await svc.recordDelegationSpawn(
         {
           runId: manifest.runId,
@@ -2011,6 +2012,7 @@ describe("orchestration watcher resilience", () => {
     it("recordDelegationSpawn is idempotent per child session", async () => {
       const svc = createOrchestrationService({ resolveLaneWorktree: () => lane });
       const { manifest } = await makeRun(svc);
+      await seedChild(svc, manifest, { sessionId: "S-worker" });
       const first = await svc.recordDelegationSpawn(
         { runId: manifest.runId, parentSessionId: "S-lead", childSessionId: "S-worker", childRole: "worker", briefText: BRIEF },
         manifest.bundlePath,
@@ -2023,6 +2025,30 @@ describe("orchestration watcher resilience", () => {
       if (first.ok && second.ok) expect(second.edgeId).toBe(first.edgeId);
       const bundle = await svc.bundleRead(manifest.runId, manifest.bundlePath);
       expect(bundle.manifest.lineage ?? []).toHaveLength(1);
+      await svc.dispose();
+    });
+
+    it("rejects a spawn edge with an unregistered parent/child or a role mismatch (no orphan edges)", async () => {
+      const svc = createOrchestrationService({ resolveLaneWorktree: () => lane });
+      const { manifest } = await makeRun(svc);
+      const noChild = await svc.recordDelegationSpawn(
+        { runId: manifest.runId, parentSessionId: "S-lead", childSessionId: "S-ghost", childRole: "worker", briefText: BRIEF },
+        manifest.bundlePath,
+      );
+      expect(noChild.ok).toBe(false);
+      await seedChild(svc, manifest, { sessionId: "S-worker" });
+      const noParent = await svc.recordDelegationSpawn(
+        { runId: manifest.runId, parentSessionId: "S-nobody", childSessionId: "S-worker", childRole: "worker", briefText: BRIEF },
+        manifest.bundlePath,
+      );
+      expect(noParent.ok).toBe(false);
+      const roleMismatch = await svc.recordDelegationSpawn(
+        { runId: manifest.runId, parentSessionId: "S-lead", childSessionId: "S-worker", childRole: "validator", briefText: BRIEF },
+        manifest.bundlePath,
+      );
+      expect(roleMismatch.ok).toBe(false);
+      const bundle = await svc.bundleRead(manifest.runId, manifest.bundlePath);
+      expect(bundle.manifest.lineage ?? []).toHaveLength(0);
       await svc.dispose();
     });
 
@@ -2081,6 +2107,55 @@ describe("orchestration watcher resilience", () => {
       const edge = (after.manifest.lineage ?? []).find((e) => e.childSessionId === "S-val")!;
       expect(edge.status).toBe("completed");
       expect(edge.completedAt).toBeTruthy();
+      await svc.dispose();
+    });
+
+    it("reconcile snapshots taskIds against the post-reset state (excludes a recovered stale task)", async () => {
+      const svc = createOrchestrationService({ resolveLaneWorktree: () => lane });
+      const { manifest } = await makeRun(svc);
+      // A failed worker still holding a stale (expired-lease) claimed task.
+      const seeded = await svc.manifestPatch(
+        {
+          runId: manifest.runId,
+          ifMatchEtag: manifest.etag,
+          actorRole: "lead" as const,
+          actorSessionId: "S-lead",
+          patches: [
+            {
+              op: "add" as const,
+              path: "/agents/-",
+              value: { sessionId: "S-worker", role: "worker", tag: "impl", goalSummary: "g", status: "failed", spawnedAt: "now" },
+            },
+            {
+              op: "add" as const,
+              path: "/tasks/-",
+              value: {
+                id: "T-stale",
+                phaseId: "developing",
+                title: "t",
+                description: "",
+                status: "claimed",
+                validationGate: { required: false, stepIds: [] },
+                assigneeSessionId: "S-worker",
+                claimLeaseUntil: new Date(Date.now() - 60_000).toISOString(),
+              },
+            },
+          ],
+        },
+        manifest.bundlePath,
+      );
+      expect(seeded.ok).toBe(true);
+      await svc.recordDelegationSpawn(
+        { runId: manifest.runId, parentSessionId: "S-lead", childSessionId: "S-worker", childRole: "worker", briefText: BRIEF },
+        manifest.bundlePath,
+      );
+      const recovered = await svc.releaseStaleClaims(manifest.runId, manifest.bundlePath);
+      expect(recovered.ok).toBe(true);
+      const after = await svc.bundleRead(manifest.runId, manifest.bundlePath);
+      const edge = (after.manifest.lineage ?? []).find((e) => e.childSessionId === "S-worker")!;
+      expect(edge.status).toBe("failed");
+      // T-stale was un-assigned in the same transaction → not snapshotted onto the edge.
+      expect(edge.taskIds ?? []).not.toContain("T-stale");
       await svc.dispose();
     });
 

@@ -1760,13 +1760,16 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
     const owned = manifest.tasks
       .filter((task) => task.assigneeSessionId === childSessionId)
       .map((task) => task.id);
+    // status already exists ("running") → replace; the result-side fields are
+    // absent on first write → add (RFC-6902-correct and defensive against any
+    // future tightening of applyPatches).
     return [
       { op: "replace", path: `/lineage/{id:${edge.id}}/status`, value: edgeStatus },
-      { op: "replace", path: `/lineage/{id:${edge.id}}/resultSummary`, value: summary },
-      { op: "replace", path: `/lineage/{id:${edge.id}}/completedAt`, value: completedAt },
-      { op: "replace", path: `/lineage/{id:${edge.id}}/resultEtag`, value: manifest.etag },
+      { op: "add", path: `/lineage/{id:${edge.id}}/resultSummary`, value: summary },
+      { op: "add", path: `/lineage/{id:${edge.id}}/completedAt`, value: completedAt },
+      { op: "add", path: `/lineage/{id:${edge.id}}/resultEtag`, value: manifest.etag },
       ...(owned.length
-        ? [{ op: "replace" as const, path: `/lineage/{id:${edge.id}}/taskIds`, value: owned }]
+        ? [{ op: "add" as const, path: `/lineage/{id:${edge.id}}/taskIds`, value: owned }]
         : []),
     ];
   }
@@ -1802,6 +1805,33 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
       const manifest = runtime.manifest;
       if (!manifest) {
         return { ok: false, error: "run_not_found", message: `run ${args.runId} not found` };
+      }
+      // Guard against orphaned/mismatched edges from a stale or wrong caller:
+      // both endpoints must be registered agents and the child's recorded role
+      // must match the edge. (parentSessionId is the lead today; the type
+      // reserves a non-lead coordinator for v2, so we require it be registered
+      // but do not hard-pin it to "lead".)
+      if (!manifest.agents.some((a) => a.sessionId === args.parentSessionId)) {
+        return {
+          ok: false,
+          error: "validation_failed",
+          message: `parent session ${args.parentSessionId} is not a registered agent`,
+        };
+      }
+      const child = manifest.agents.find((a) => a.sessionId === args.childSessionId);
+      if (!child) {
+        return {
+          ok: false,
+          error: "validation_failed",
+          message: `child session ${args.childSessionId} is not a registered agent`,
+        };
+      }
+      if (child.role !== args.childRole) {
+        return {
+          ok: false,
+          error: "validation_failed",
+          message: `child role mismatch for ${args.childSessionId}: agent is ${child.role}, edge claims ${args.childRole}`,
+        };
       }
       const existing = (manifest.lineage ?? []).find(
         (entry) => entry.childSessionId === args.childSessionId,
@@ -2350,18 +2380,22 @@ export function createOrchestrationService(deps: OrchestrationServiceDeps) {
       // Backstop: close any running delegation edge whose child agent has gone
       // terminal but whose edge was never recorded (e.g. a validator that
       // self-marked completed, or a missed release). Only touches running edges.
+      // Snapshot edge results against the post-reset projection so a stale task
+      // being un-assigned in this same transaction isn't recorded onto the edge's
+      // taskIds (it was recovered, not finished).
+      const projected = ops.length ? applyPatches(manifest, ops) : manifest;
       const reconcileAt = nowIso();
       let reconciledEdges = 0;
-      for (const edge of manifest.lineage ?? []) {
+      for (const edge of projected.lineage ?? []) {
         if (edge.status !== "running") continue;
-        const agent = manifest.agents.find((a) => a.sessionId === edge.childSessionId);
+        const agent = projected.agents.find((a) => a.sessionId === edge.childSessionId);
         if (!agent || (agent.status !== "completed" && agent.status !== "failed")) continue;
         const edgeStatus: DelegationStatus = agent.status === "completed" ? "completed" : "failed";
         const resultOps = buildDelegationResultOps(
-          manifest,
+          projected,
           edge.childSessionId,
           edgeStatus,
-          summarizeDelegationOutcome(manifest, edge.childSessionId, edgeStatus),
+          summarizeDelegationOutcome(projected, edge.childSessionId, edgeStatus),
           reconcileAt,
         );
         if (resultOps.length) {
