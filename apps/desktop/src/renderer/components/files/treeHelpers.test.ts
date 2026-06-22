@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { isUnavailableGitDecorationsError } from "./treeHelpers";
+import {
+  hasLoadedDirectoryChildren,
+  isUnavailableGitDecorationsError,
+  parentPathForFileChange,
+} from "./treeHelpers";
 
 describe("isUnavailableGitDecorationsError", () => {
   it("matches optional remote git decoration action availability failures", () => {
@@ -20,5 +24,41 @@ describe("isUnavailableGitDecorationsError", () => {
   it("does not hide unrelated Files errors", () => {
     expect(isUnavailableGitDecorationsError(new Error("ENOENT: no such file or directory"))).toBe(false);
     expect(isUnavailableGitDecorationsError(new Error("Action 'file.readFile' is not callable."))).toBe(false);
+  });
+});
+
+describe("file tree change refresh helpers", () => {
+  it("resolves changed paths to the directory that needs a scoped reload", () => {
+    expect(parentPathForFileChange("README.md")).toBe("");
+    expect(parentPathForFileChange("marketing/fastlane-brand-profile.md")).toBe("marketing");
+    expect(parentPathForFileChange("src/routes/app/page.tsx")).toBe("src/routes/app");
+    expect(parentPathForFileChange("src\\routes\\app\\page.tsx")).toBe("src/routes/app");
+  });
+
+  it("only treats directories with loaded children as refreshable", () => {
+    const tree = [
+      {
+        name: "marketing",
+        path: "marketing",
+        type: "directory" as const,
+        children: [
+          {
+            name: "existing.md",
+            path: "marketing/existing.md",
+            type: "file" as const,
+          },
+        ],
+      },
+      {
+        name: "src",
+        path: "src",
+        type: "directory" as const,
+      },
+    ];
+
+    expect(hasLoadedDirectoryChildren(tree, "")).toBe(true);
+    expect(hasLoadedDirectoryChildren(tree, "marketing")).toBe(true);
+    expect(hasLoadedDirectoryChildren(tree, "src")).toBe(false);
+    expect(hasLoadedDirectoryChildren(tree, "missing")).toBe(false);
   });
 });

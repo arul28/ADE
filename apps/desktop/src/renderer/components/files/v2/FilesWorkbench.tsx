@@ -12,8 +12,10 @@ import {
   defaultFilesWorkspaceId,
   filesSessionKey,
   formatFilesError,
+  hasLoadedDirectoryChildren,
   isUnavailableGitDecorationsError,
   mergeTreePreservingLoadedChildren,
+  parentPathForFileChange,
   replaceTreeNodeChildren,
 } from "../treeHelpers";
 import {
@@ -45,6 +47,7 @@ import type { EditorThemeMode } from "./viewers/types";
 
 const TREE_PAGE_SIZE = 2_000;
 const MAX_AUTO_LOADED_CHILDREN = 10_000;
+const MAX_QUEUED_TREE_PARENT_REFRESHES = 24;
 
 // Module-level caches survive remounts (the route unmounts FilesWorkbench when you
 // switch tabs), so re-opening Files shows the workspace + tree instantly instead of
@@ -126,6 +129,8 @@ export function FilesWorkbench({
   const dragRef = useRef<{ groupId: string; path: string } | null>(null);
   const workspaceIdRef = useRef(workspaceId);
   workspaceIdRef.current = workspaceId;
+  const treeRef = useRef(tree);
+  treeRef.current = tree;
 
   const store = useEditorGroupsStore();
   const groupsState = store.sessions[sessionKey] ?? createInitialGroupsState();
@@ -187,14 +192,15 @@ export function FilesWorkbench({
   }, [workspaces, globalLaneId]);
 
   /* ---- Tree loading ---- */
-  const refreshRoot = useCallback(async () => {
+  const refreshRoot = useCallback(async (options: { preserveLoadedChildren?: boolean } = {}) => {
     if (!workspaceId) return;
     const reqId = workspaceId;
+    const preserveLoadedChildren = options.preserveLoadedChildren !== false;
     try {
       const nodes = await window.ade.files.listTree({ workspaceId: reqId, depth: 1, includeIgnored: true });
       if (workspaceIdRef.current !== reqId) return;
       setTree((prev) => {
-        const merged = mergeTreePreservingLoadedChildren(nodes, prev);
+        const merged = preserveLoadedChildren ? mergeTreePreservingLoadedChildren(nodes, prev) : nodes;
         rootTreeCacheByKey.set(rootTreeCacheKey(projectRootPath, reqId), merged);
         return merged;
       });
@@ -233,33 +239,42 @@ export function FilesWorkbench({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [active, workspaceId, refreshRoot, projectRootPath]);
 
-  const loadDirectory = useCallback(
-    async (parentPath: string) => {
-      if (!workspaceId) return;
-      const reqId = workspaceId;
+  const fetchDirectoryChildren = useCallback(async (reqId: string, parentPath: string) => {
+    const children: FileTreeNode[] = [];
+    let offset = 0;
+    let loadMoreOffset: number | null = null;
+    for (;;) {
+      const page = await window.ade.files.listTreeChildren({
+        workspaceId: reqId,
+        parentPath,
+        offset,
+        limit: TREE_PAGE_SIZE,
+        includeIgnored: true,
+      });
+      if (workspaceIdRef.current !== reqId) return null;
+      children.push(...page.children);
+      if (page.nextOffset == null) break;
+      if (children.length >= MAX_AUTO_LOADED_CHILDREN) {
+        loadMoreOffset = page.nextOffset;
+        break;
+      }
+      offset = page.nextOffset;
+    }
+    return { children, loadMoreOffset };
+  }, []);
+
+  const refreshLoadedDirectory = useCallback(
+    async (parentPath: string, reqId = workspaceId) => {
+      if (!reqId) return;
       setLoadingDirs((prev) => new Set(prev).add(parentPath));
       try {
-        const children: FileTreeNode[] = [];
-        let offset = 0;
-        let loadMoreOffset: number | null = null;
-        for (;;) {
-          const page = await window.ade.files.listTreeChildren({
-            workspaceId: reqId,
-            parentPath,
-            offset,
-            limit: TREE_PAGE_SIZE,
-            includeIgnored: true,
-          });
-          if (workspaceIdRef.current !== reqId) return;
-          children.push(...page.children);
-          if (page.nextOffset == null) break;
-          if (children.length >= MAX_AUTO_LOADED_CHILDREN) {
-            loadMoreOffset = page.nextOffset;
-            break;
-          }
-          offset = page.nextOffset;
-        }
-        setTree((prev) => replaceTreeNodeChildren(prev, parentPath, children, loadMoreOffset));
+        const result = await fetchDirectoryChildren(reqId, parentPath);
+        if (!result || workspaceIdRef.current !== reqId) return;
+        setTree((prev) => {
+          const nextTree = replaceTreeNodeChildren(prev, parentPath, result.children, result.loadMoreOffset);
+          rootTreeCacheByKey.set(rootTreeCacheKey(projectRootPath, reqId), nextTree);
+          return nextTree;
+        });
       } catch (err) {
         if (workspaceIdRef.current === reqId) setError(formatFilesError(err));
       } finally {
@@ -270,7 +285,14 @@ export function FilesWorkbench({
         });
       }
     },
-    [workspaceId],
+    [fetchDirectoryChildren, projectRootPath, workspaceId],
+  );
+
+  const loadDirectory = useCallback(
+    async (parentPath: string) => {
+      await refreshLoadedDirectory(parentPath);
+    },
+    [refreshLoadedDirectory],
   );
 
   const loadMoreChildren = useCallback(
@@ -334,14 +356,58 @@ export function FilesWorkbench({
   useEffect(() => {
     if (!active || !workspaceId) return;
     let timer: ReturnType<typeof setTimeout> | null = null;
+    const queuedParentPaths = new Set<string>();
+    let rootRefreshQueued = false;
+    let fullRootRefreshQueued = false;
+
+    const enqueuePathRefresh = (path: string | undefined) => {
+      if (!path) return;
+      const parentPath = parentPathForFileChange(path);
+      if (!parentPath) {
+        rootRefreshQueued = true;
+        return;
+      }
+      if (hasLoadedDirectoryChildren(treeRef.current, parentPath)) {
+        queuedParentPaths.add(parentPath);
+        if (queuedParentPaths.size > MAX_QUEUED_TREE_PARENT_REFRESHES) {
+          fullRootRefreshQueued = true;
+        }
+      }
+    };
+
+    const flushQueuedRefreshes = () => {
+      const reqId = workspaceIdRef.current;
+      const parentPaths = [...queuedParentPaths];
+      queuedParentPaths.clear();
+      const shouldRefreshRoot = rootRefreshQueued;
+      const shouldRefreshFullRoot = fullRootRefreshQueued;
+      rootRefreshQueued = false;
+      fullRootRefreshQueued = false;
+
+      if (!reqId) return;
+      if (shouldRefreshFullRoot) {
+        setExpanded(new Set());
+        void refreshRoot({ preserveLoadedChildren: false });
+        return;
+      }
+      if (shouldRefreshRoot) {
+        void refreshRoot();
+      }
+      for (const parentPath of parentPaths) {
+        void refreshLoadedDirectory(parentPath, reqId);
+      }
+    };
+
     const unsub = window.ade.files.onChange((ev) => {
       if (ev.workspaceId !== workspaceIdRef.current) return;
       // Drop the cached content for the changed path so a reopen re-reads disk.
       invalidateFileContent(ev.workspaceId, ev.path);
       if (ev.oldPath) invalidateFileContent(ev.workspaceId, ev.oldPath);
+      enqueuePathRefresh(ev.path);
+      enqueuePathRefresh(ev.oldPath);
       if (timer) clearTimeout(timer);
       timer = setTimeout(() => {
-        void refreshRoot();
+        flushQueuedRefreshes();
       }, 200);
     });
     void window.ade.files.watchChanges({ workspaceId, includeIgnored: true }).catch(() => {});
@@ -350,7 +416,7 @@ export function FilesWorkbench({
       unsub();
       void window.ade.files.stopWatching({ workspaceId, includeIgnored: true }).catch(() => {});
     };
-  }, [active, workspaceId, refreshRoot]);
+  }, [active, workspaceId, refreshLoadedDirectory, refreshRoot]);
 
   /* ---- Open file ---- */
   const openFile = useCallback(

@@ -61,6 +61,19 @@ export function fileTreeNodeByPath(nodes: FileTreeNode[]): Map<string, FileTreeN
   return out;
 }
 
+export function parentPathForFileChange(filePath: string): string {
+  const normalized = filePath.replace(/\\/g, "/").split("/").filter(Boolean).join("/");
+  if (!normalized) return "";
+  const index = normalized.lastIndexOf("/");
+  return index > 0 ? normalized.slice(0, index) : "";
+}
+
+export function hasLoadedDirectoryChildren(nodes: FileTreeNode[], directoryPath: string): boolean {
+  if (!directoryPath) return true;
+  const node = fileTreeNodeByPath(nodes).get(directoryPath);
+  return node?.type === "directory" && Array.isArray(node.children);
+}
+
 /** Merge a freshly-fetched root listing while keeping already-loaded subtrees. */
 export function mergeTreePreservingLoadedChildren(
   nextNodes: FileTreeNode[],
