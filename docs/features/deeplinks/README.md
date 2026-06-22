@@ -213,7 +213,7 @@ resolve Linear issue to lane).
 ```html
 <!-- ade:link v=1 type=pr repo=<owner>/<repo> branch=<branch> num=<n> -->
 <p>
-  <img src="https://ade-app.dev/images/ade-mark.svg" height="18" align="left" alt="ADE">
+  <img src="https://ade-app.dev/logo.png" height="18" align="left" alt="ADE">
   &nbsp;&nbsp;<strong>Open in ADE</strong>
   &nbsp;·&nbsp; <a href="…">branch link</a>
   &nbsp;·&nbsp; <a href="…">PR link</a>

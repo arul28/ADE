@@ -20,7 +20,8 @@ describe("renderAdeDeeplinkFooter", () => {
     expect(block).toContain("Open in ADE");
     expect(block).toMatch(/ade-app\.dev\/open\?type=branch/);
     expect(block).toMatch(/ade-app\.dev\/open\?type=pr/);
-    expect(block).toContain("https://ade-app.dev/images/ade-mark.svg");
+    expect(block).toContain("https://ade-app.dev/logo.png");
+    expect(block).not.toContain("ade-mark.svg");
     expect(block).toContain("<!-- /ade:link -->");
   });
 

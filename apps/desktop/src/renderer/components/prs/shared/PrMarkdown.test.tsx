@@ -3,6 +3,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
+import { ADE_DEEPLINK_FOOTER_LOGO_URL } from "../../../../shared/adeDeeplinkFooter";
 import { PrMarkdown } from "./PrMarkdown";
 
 // Keep Shiki out of the unit test — we only care that fenced code blocks
@@ -158,6 +159,15 @@ describe("PrMarkdown", () => {
 
     const img = screen.getByRole("img", { name: /html screenshot/i }) as HTMLImageElement;
     expect(img.getAttribute("src")).toBe(src);
+  });
+
+  it("renders ADE deeplink footer images with the bundled wordmark", () => {
+    const markdown = `<img src="${ADE_DEEPLINK_FOOTER_LOGO_URL}" height="18" align="left" alt="ADE">`;
+
+    render(<PrMarkdown {...BASE_PROPS}>{markdown}</PrMarkdown>);
+
+    const img = screen.getByRole("img", { name: "ADE" }) as HTMLImageElement;
+    expect(img.getAttribute("src")).toBe("./logo.png");
   });
 
   it("renders the image inside a linked image ([![]()]())", () => {

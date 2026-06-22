@@ -21,6 +21,7 @@ import {
 } from "../../chat/chatMarkdown";
 import { HighlightedCode } from "../../chat/CodeHighlighter";
 import { COLORS } from "../../lanes/laneDesignTokens";
+import { ADE_DEEPLINK_FOOTER_LOGO_URL } from "../../../../shared/adeDeeplinkFooter";
 import { normalizeEscapedMarkdownNewlines } from "../../../../shared/prMarkdownText";
 import { PrMermaid } from "./PrMermaid";
 
@@ -270,10 +271,12 @@ function PrImage({
     [src],
   );
   if (!src) return null;
-  // ADE's branded "Open in ADE" footer references an external SVG mark that the
-  // renderer CSP blocks (→ blank, wrong logo). Swap it for the bundled app logo,
-  // rendered small + inline so it sits cleanly next to the footer text.
-  if (src.includes("ade-app.dev") && src.includes("ade-mark")) {
+  // Keep ADE's footer logo small + inline, and translate legacy footer bodies
+  // that still point at the removed blue mark to the bundled app logo.
+  if (
+    src === ADE_DEEPLINK_FOOTER_LOGO_URL
+    || (src.includes("ade-app.dev") && src.includes("ade-mark"))
+  ) {
     return (
       <img
         src="./logo.png"
