@@ -29,6 +29,14 @@ function writeDismissed(storageKey: string): void {
   }
 }
 
+function clearDismissed(storageKey: string): void {
+  try {
+    window.sessionStorage.removeItem(dismissedKey(storageKey));
+  } catch {
+    // Best-effort per-window dismissal reset.
+  }
+}
+
 export function ClaudeLoginPromptButton({
   visible,
   storageKey,
@@ -53,6 +61,13 @@ export function ClaudeLoginPromptButton({
     setError(null);
   }, [storageKey]);
 
+  useEffect(() => {
+    if (visible) return;
+    clearDismissed(storageKey);
+    setDismissed(false);
+    setError(null);
+  }, [storageKey, visible]);
+
   const dismiss = useCallback(() => {
     writeDismissed(storageKey);
     setDismissed(true);
@@ -63,10 +78,12 @@ export function ClaudeLoginPromptButton({
     setOpening(true);
     setError(null);
     void (async () => {
-      const resolvedLaneId = laneId ?? (await window.ade.lanes.list({
+      const listLanes = window.ade?.lanes?.list;
+      const availableLanes = typeof listLanes === "function" ? await listLanes({
         includeArchived: false,
         includeStatus: false,
-      }))[0]?.id ?? null;
+      }) : [];
+      const resolvedLaneId = laneId ?? availableLanes[0]?.id ?? null;
       if (!resolvedLaneId) {
         throw new Error("No active lane is available for this project.");
       }

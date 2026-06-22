@@ -82,4 +82,35 @@ describe("ClaudeLoginPromptButton", () => {
     rerender(<ClaudeLoginPromptButton visible storageKey="cli:term-1" laneId="lane-1" />);
     expect(screen.queryByRole("button", { name: "Login to Claude" })).toBeNull();
   });
+
+  it("allows a dismissed prompt to reappear after the auth condition clears", async () => {
+    const { rerender } = render(
+      <ClaudeLoginPromptButton visible storageKey="cli:term-1" laneId="lane-1" />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss Claude login prompt" }));
+    expect(screen.queryByRole("button", { name: "Login to Claude" })).toBeNull();
+
+    rerender(<ClaudeLoginPromptButton visible={false} storageKey="cli:term-1" laneId="lane-1" />);
+
+    await waitFor(() => {
+      expect(window.sessionStorage.getItem("ade.claudeLoginPrompt.dismissed.v1:cli:term-1")).toBeNull();
+    });
+
+    rerender(<ClaudeLoginPromptButton visible storageKey="cli:term-1" laneId="lane-1" />);
+    expect(screen.getByRole("button", { name: "Login to Claude" })).toBeTruthy();
+  });
+
+  it("shows a clear error if no lane can be resolved", async () => {
+    delete (window.ade as any).lanes;
+
+    render(<ClaudeLoginPromptButton visible storageKey="cli:term-1" laneId={null} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Login to Claude" }));
+
+    await waitFor(() => {
+      expect(screen.getByText("No active lane is available for this project.")).toBeTruthy();
+    });
+    expect(window.ade.pty.create).not.toHaveBeenCalled();
+  });
 });
