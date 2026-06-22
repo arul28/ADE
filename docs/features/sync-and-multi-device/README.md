@@ -328,15 +328,11 @@ iOS service files (`apps/ios/ADE/Services/`):
   the same root disappear together.
 - `KeychainService.swift` — iOS Keychain Services for paired device
   secrets (per-machine token shelf included).
-- `LiveActivityCoordinator.swift` — owns the single workspace
-  `Activity<ADESessionAttributes>` lifecycle.
 
 iOS widget files (under `apps/ios/`):
 
 - `ADE/App/DeepLinkRouter.swift`.
-- `ADEWidgets/ADELiveActivity.swift`, `ADEWorkspaceWidget.swift`,
-  `ADELockScreenWidget.swift`, `ADEControlWidget.swift` (Control
-  Center widgets, iOS 18+).
+- `ADEWidgets/ADELockScreenWidget.swift`.
 - `ADE/Shared/ADESharedModels.swift`, `ADE/Models/RemoteModels.swift`,
   `ADE/Resources/DatabaseBootstrap.sql` (generated from desktop
   `kvDb.ts`).

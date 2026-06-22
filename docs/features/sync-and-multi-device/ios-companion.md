@@ -81,7 +81,6 @@ apps/ios/
 │   ├── Services/
 │   │   ├── Database.swift           # SQLite + pure-SQL CRR + offline caches
 │   │   ├── KeychainService.swift    # paired device secret storage
-│   │   ├── LiveActivityCoordinator.swift # workspace Live Activity lifecycle
 │   │   ├── Dictation/               # SpeechDictationService,
 │   │   │                            # DictationController, deterministic
 │   │   │                            # cleanup, VoiceGlossary loader
@@ -96,10 +95,7 @@ apps/ios/
 │   │   ├── ADESharedContainer.swift # App Group UserDefaults + WorkspaceSnapshot helpers
 │   │   ├── ADESharedModels.swift    # AgentSnapshot, PrSnapshot — shared with widgets
 │   │   ├── ADESharedTheme.swift     # Provider color/icon table mirrored from desktop
-│   │   ├── DictationActivityShared.swift # Dictation Live Activity attributes,
-│   │   │                            # waveform, Done/Cancel intents
-│   │   ├── LiveActivityIntentsForward.swift # ADEIntentCommandKind, ADEIntentCommandRegistry
-│   │   └── WidgetAppIntents.swift   # widget configuration intents
+│   │   └── AttentionActionIntents.swift # widget actions for approve/deny/restart/retry
 │   ├── Views/
 │   │   ├── Components/              # ADEDesignSystem (incl. ADEConnectionDot,
 │   │   │                            # ADEUIKitAppearance.configureTabBar(),
@@ -151,15 +147,8 @@ apps/ios/
 │                                    # (Anthropic, Claude, Codex, Cursor,
 │                                    # Droid, OpenAI, OpenCode)
 ├── ADEWidgets/
-│   ├── ADEWidgetBundle.swift        # WidgetBundle registering all three widget surfaces
-│   ├── ADELiveActivity.swift        # ADESessionAttributes (ActivityKit), ADELiveActivity widget
-│   ├── ADELiveActivityViews.swift   # Lock Screen / banner + Dynamic Island view hierarchy
-│   ├── DictationLiveActivity.swift  # Dictation Lock Screen + Dynamic Island surface
-│   ├── ADEWorkspaceWidget.swift     # Home Screen widget (small/medium/large)
-│   ├── ADEWorkspaceWidgetViews.swift# Widget entry views
-│   ├── ADELockScreenWidget.swift    # Lock Screen accessory widget
-│   ├── ADEControlWidget.swift       # Control Center widgets (iOS 18+): Open ADE + Mute
-│   └── ADEWidgetPreviewData.swift   # Xcode preview fixtures
+│   ├── ADEWidgetBundle.swift        # WidgetBundle registering the lock-screen widget
+│   └── ADELockScreenWidget.swift    # Lock Screen accessory widget + previews
 └── ADETests/
     └── ADETests.swift
 ```
@@ -502,76 +491,33 @@ per-IP rate limiting (5 failures → 10-minute cooldown).
 - Priority order: sync cr-sqlite changesets and update shared workspace
   snapshots.
 
-### Live Activities
-
-Source: `apps/ios/ADE/Services/LiveActivityCoordinator.swift`,
-`apps/ios/ADE/Services/Dictation/DictationController.swift`,
-`apps/ios/ADE/Shared/DictationActivityShared.swift`,
-`apps/ios/ADEWidgets/ADELiveActivity.swift`, and
-`apps/ios/ADEWidgets/DictationLiveActivity.swift`.
-
-A single workspace Live Activity (`ADESessionAttributes`) shows the
-current agent roster + the single most important pending action on the
-Lock Screen and in the Dynamic Island. The coordinator keeps one
-workspace activity alive at a time and ends stale per-session activities
-from older builds on launch. ADE can also run a separate dictation Live
-Activity while voice capture is active; when both activities share the
-Dynamic Island, iOS may demote one or both to compact/minimal regions.
-
-`ADESessionAttributes.ContentState` carries:
-- `sessions: [ActiveSession]` — currently-streaming chats only,
-  sorted failed → newest. SyncService filters at the source by
-  `runtimeState == "running"` and a recent `lastActivityAt`, so the
-  Live Activity roster is always the streaming subset; idle, awaiting,
-  and stale chats stay in the in-app Attention Drawer.
-- `attention: Attention?` — one of `awaitingInput`, `failed`,
-  `ciFailing`, `reviewRequested`, `mergeReady`. Nil when nothing
-  requires immediate action.
-- `failingCheckCount`, `awaitingReviewCount`, `mergeReadyCount` — PR
-  aggregate counts.
-
-`LiveActivityCoordinator.reconcile(with:prs:focusedLaneName:)` is the
-single entry point from `SyncService`. `focusedLaneName` is the
-most-recently-active running chat's lane name; the coordinator uses it
-as the system-header suffix (`ADE · <lane>`). Because
-`ActivityAttributes` are immutable across an activity's lifetime, a
-focus-lane change forces the coordinator to end the existing activity
-and request a new one, so the header always matches the lane the user
-is watching. Push-to-start (iOS 17.2+) and per-activity update tokens
-are not used; the app updates the activity from local sync state while
-it is running.
-
-The `ADELiveActivity` widget registers the `ActivityConfiguration`
-for the lock-screen / banner presentation and the Dynamic Island
-expanded/leading/trailing/minimal regions.
-
-The dictation activity (`DictationActivityAttributes`) is owned by
-`DictationController`, the same app-level singleton that owns
-`SpeechDictationService`. It carries a rolling waveform, elapsed timer,
-and finalizing flag to `DictationLiveActivity`. The Done/Cancel buttons
-are `LiveActivityIntent`s declared in `DictationActivityShared.swift`;
-they call back into the in-process `DictationActivityActionRegistry` so
-the app can finish or cancel the active local recording. The main app
-declares `UIBackgroundModes = audio` and keeps its `.playAndRecord`
-session active until SpeechAnalyzer finalization completes, so Dynamic
-Island Done can finish a recording after ADE leaves the foreground.
-
-### Widgets
+### Lock Screen widget
 
 Source: `apps/ios/ADEWidgets/`.
 
-Three widget / control surfaces are registered by `ADEWidgetBundle`:
+`ADEWidgetBundle` registers a single `ADELockScreenWidget` surface.
+The widget reads the shared `WorkspaceSnapshot` from the App Group
+(`ADESharedContainer.readWorkspaceSnapshot()`) and presents one
+prioritized status across agents and PRs:
 
-- `ADEWorkspaceWidget` (Home Screen) — `systemSmall`, `systemMedium`,
-  `systemLarge`. Reads `WorkspaceSnapshot` from the App Group
-  (`ADESharedContainer.readWorkspaceSnapshot()`). Shows running
-  agents and PR attention counts. Main app triggers
-  `WidgetCenter.shared.reloadAllTimelines()` after each snapshot write.
+- awaiting user input,
+- failed agents,
+- failing CI,
+- requested reviews or changes,
+- merge-ready PRs,
+- running agents,
+- open PRs,
+- sync/offline/idle fallback states.
 
-- `ADELockScreenWidget` — accessory rectangular/circular sizes
-  for the iOS Lock Screen; reads from the same shared snapshot.
+The rectangular accessory carries the richest summary and, when useful,
+an App Intent action from `AttentionActionIntents.swift` for approve,
+deny, restart, or retry checks. Circular and inline accessories use the
+same priority model with compact count/status treatments. The iOS app
+still updates the shared snapshot and calls
+`WidgetCenter.shared.reloadAllTimelines()` after snapshot writes.
 
-- `ADEControlWidget` (iOS 18+) — Control Center "Open ADE" button.
+Home Screen widgets, Control Center widgets, ActivityKit surfaces, and
+Dynamic Island presentations are intentionally not registered.
 
 Shared DTOs live in `apps/ios/ADE/Shared/ADESharedModels.swift`:
 `AgentSnapshot` and `PrSnapshot` — lightweight Codable structs
@@ -830,8 +776,8 @@ reflected in the phone's UI on the next descriptor read.
 | Settings tab (pairing / appearance / diagnostics) | Implemented |
 | CTO / Automations / Graph / History tabs | Planned |
 | Full Settings parity | Planned |
-| Widgets (Home Screen / Lock Screen / Control) | Implemented |
-| Live Activities (workspace roster + attention) | Implemented |
+| Lock Screen widget | Implemented; single prioritized status across agents, PRs, sync, offline, and idle states |
+| Home Screen / Control Center widgets and ActivityKit surfaces | Not shipped |
 | iPad adaptive layout | Planned |
 | Spotlight indexing | Planned |
 

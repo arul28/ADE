@@ -273,7 +273,7 @@ final class ADETests: XCTestCase {
   }
 
   @MainActor
-  func testPrIntentPayloadRequestsLocalPrNavigation() throws {
+  func testPrNotificationPayloadRequestsLocalPrNavigation() throws {
     let previousShared = SyncService.shared
     defer { SyncService.shared = previousShared }
 
@@ -282,7 +282,7 @@ final class ADETests: XCTestCase {
     let service = SyncService(database: database)
     SyncService.shared = service
 
-    requestPrNavigationFromIntentPayload([
+    DeepLinkRouter.shared.handleNotificationUserInfo([
       "prId": "pr_123",
       "prNumber": "42",
     ])

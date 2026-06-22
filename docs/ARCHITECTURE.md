@@ -199,9 +199,9 @@ Native SwiftUI app acting as a controller. It pairs with an ADE machine over Web
 
 - Stack: native SwiftUI + `SQLite3` C API + iOS system SQLite.
 - CRDT: pure-SQL CRR emulation layer (trigger-based change tracking) since iOS blocks `sqlite3_load_extension()`/`sqlite3_auto_extension()`. Changesets are wire-compatible with desktop cr-sqlite.
-- Core services: `Database.swift`, `SyncService.swift`, `KeychainService.swift`, `LiveActivityCoordinator.swift`.
+- Core services: `Database.swift`, `SyncService.swift`, `KeychainService.swift`.
 - Shipped tabs: Lanes, Files, Work, PRs, CTO, Settings.
-- Shipped: workspace Live Activity (Lock Screen + Dynamic Island), Home Screen / Lock Screen / Control Center widgets.
+- Shipped: one Lock Screen widget for prioritized agent, PR, sync, offline, and idle status.
 - Planned: Automations, Graph, History tabs; iPad layout; Spotlight.
 - Target: iOS 26+, iPhone + iPad.
 
@@ -894,7 +894,7 @@ The sync subsystem is **owned by the ADE runtime** (`apps/ade-cli/src/services/s
   shared with the desktop Work tab through
   `apps/desktop/src/shared/cliLaunch.ts`.
 - Pairing is a **user-set 6-digit PIN** stored at `.ade/secrets/sync-pin.json` on the host. The phone sends the PIN once; the host returns a durable per-device secret. QR payload is v2 (host identity + port + address candidates, no pairing code).
-- Widgets: `ADEWorkspaceWidget` (Home Screen), `ADELockScreenWidget`, `ADEControlWidget` (Control Center, iOS 18+) read from a shared `WorkspaceSnapshot` in the App Group container. `LiveActivityCoordinator` manages the single workspace Live Activity.
+- Widgets: `ADELockScreenWidget` reads from a shared `WorkspaceSnapshot` in the App Group container. Home Screen, Control Center, and ActivityKit surfaces are not registered.
 - Tabs: Lanes, Files, Work, PRs, CTO, Settings.
 
 ### 13.4 Conflict resolution semantics
