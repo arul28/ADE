@@ -71,6 +71,7 @@ export function shouldShowClaudeCliLoginPrompt(
 ): boolean {
   if (!CLAUDE_CLI_TOOL_TYPES.has(session.toolType)) return false;
 
+  const previewHasAuthError = textHasClaudeAuthError(session.lastOutputPreview);
   const detected = textHasClaudeAuthError([
     session.lastOutputPreview,
     session.summary,
@@ -78,5 +79,9 @@ export function shouldShowClaudeCliLoginPrompt(
   ].filter(Boolean).join("\n"));
   if (!detected) return false;
 
-  return !(session.status === "running" && session.runtimeState === "running" && !textHasClaudeAuthError(session.lastOutputPreview));
+  const liveHealthySession = session.status === "running"
+    && (session.runtimeState === "running" || session.runtimeState === "idle")
+    && !previewHasAuthError
+    && Boolean(session.lastOutputPreview?.trim());
+  return !liveHealthySession;
 }

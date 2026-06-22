@@ -107,4 +107,16 @@ describe("claude auth prompt helpers", () => {
       endedAt: null,
     }))).toBe(false);
   });
+
+  it("ignores a stale auth summary when a live Claude CLI session has healthy output", () => {
+    expect(shouldShowClaudeCliLoginPrompt(cliSession({
+      status: "running",
+      runtimeState: "idle",
+      ptyId: "pty-1",
+      lastOutputPreview: "Claude Code ready",
+      summary: "Previous run failed: Please run /login · API Error: 401 Invalid authentication credentials",
+      exitCode: null,
+      endedAt: null,
+    }))).toBe(false);
+  });
 });

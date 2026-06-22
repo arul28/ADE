@@ -38,8 +38,9 @@ export const AGENT_CLI_REGISTRY: AgentCliDescriptor[] = [
     ],
     notAuthErrorPatterns: [
       /\bclaude\b.*\b(not logged in|not authenticated|unauthorized|authentication failed|login required)\b/i,
+      /\bplease\s+run\s+\/login\b/i,
       /\brun\s+[`'"]?claude\s+auth\s+login[`'"]?/i,
-      /\brun\s+[`'"]?claude\s+\/login[`'"]?/i,
+      /\b(?:please\s+)?run\s+[`'"]?claude\s+\/login[`'"]?/i,
     ],
   },
   {
