@@ -10,6 +10,10 @@ extension Notification.Name {
   static let adeDatabaseDidChange = Notification.Name("ADE.DatabaseDidChange")
 }
 
+enum ADEDatabaseChangeNotification {
+  static let touchedTablesUserInfoKey = "touchedTables"
+}
+
 final class DatabaseService {
   private struct SyncColumnInfo {
     let name: String
@@ -427,7 +431,7 @@ final class DatabaseService {
     let rebuiltFts = false
 
     if appliedCount > 0 {
-      notifyDidChange()
+      notifyDidChange(touchedTables: touchedTables)
     }
 
     return ApplyRemoteChangesResult(
@@ -780,7 +784,7 @@ final class DatabaseService {
       try exec("drop table if exists temp_hydrated_lane_ids")
 
       try exec("commit")
-      notifyDidChange()
+      notifyDidChange(touchedTables: ["lanes", "lane_state_snapshots", "lane_list_snapshots", "lane_detail_snapshots"])
     } catch {
       try? exec("rollback")
       try? exec("drop table if exists temp_hydrated_lane_ids")
@@ -838,7 +842,7 @@ final class DatabaseService {
       try bindText(encodedDetail, to: statement, index: 2)
       try bindText(updatedAt, to: statement, index: 3)
     }
-    notifyDidChange()
+    notifyDidChange(touchedTables: ["lane_detail_snapshots"])
   }
 
   private func laneSnapshotHydrationMatchesExisting(_ snapshots: [LaneListSnapshot]) -> Bool {
@@ -1100,7 +1104,7 @@ final class DatabaseService {
       try exec("drop table if exists temp_project_lane_ids")
 
       try exec("commit")
-      notifyDidChange()
+      notifyDidChange(touchedTables: ["terminal_sessions", "session_deltas", "checkpoints"])
     } catch {
       try? exec("rollback")
       try? exec("drop table if exists temp_hydrated_session_ids")
@@ -1250,7 +1254,7 @@ final class DatabaseService {
       }
 
       try exec("commit")
-      notifyDidChange()
+      notifyDidChange(touchedTables: ["pull_requests", "pull_request_snapshots"])
     } catch {
       try? exec("rollback")
       throw error
@@ -1414,6 +1418,13 @@ final class DatabaseService {
         }
       }
       try exec("commit")
+      notifyDidChange(touchedTables: [
+        "files_workspaces",
+        "file_directory_snapshots",
+        "file_content_snapshots",
+        "file_diff_snapshots",
+        "file_history_snapshots",
+      ])
     } catch {
       try? exec("rollback")
       throw error
@@ -1750,7 +1761,7 @@ final class DatabaseService {
       }
       try self.bindText(trimmedSessionId, to: statement, index: Int32(binders.count + 1))
     }
-    notifyDidChange()
+    notifyDidChange(touchedTables: ["terminal_sessions"])
   }
 
   func fetchComputerUseArtifacts(ownerKind: String, ownerId: String) -> [ComputerUseArtifactSummary] {
@@ -3193,7 +3204,7 @@ final class DatabaseService {
       try bindText(now, to: statement, index: 5)
       try bindText(lastOpenedAt, to: statement, index: 6)
     }
-    notifyDidChange()
+    notifyDidChange(touchedTables: ["projects"])
   }
 
   func listMobileProjects() -> [MobileProjectSummary] {
@@ -3316,8 +3327,15 @@ final class DatabaseService {
     }
   }
 
-  private func notifyDidChange() {
-    NotificationCenter.default.post(name: .adeDatabaseDidChange, object: nil)
+  private func notifyDidChange(touchedTables: Set<String> = []) {
+    let normalizedTables = touchedTables
+      .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+      .filter { !$0.isEmpty }
+      .sorted()
+    let userInfo: [AnyHashable: Any]? = normalizedTables.isEmpty
+      ? nil
+      : [ADEDatabaseChangeNotification.touchedTablesUserInfoKey: normalizedTables]
+    NotificationCenter.default.post(name: .adeDatabaseDidChange, object: nil, userInfo: userInfo)
   }
 
   private func decodeJson<T: Decodable>(_ raw: String?, as type: T.Type) -> T? {

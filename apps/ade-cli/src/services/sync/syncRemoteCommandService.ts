@@ -435,6 +435,9 @@ function parseListLanesArgs(value: Record<string, unknown>): ListLanesArgs {
   return {
     includeArchived: asOptionalBoolean(value.includeArchived),
     includeStatus: asOptionalBoolean(value.includeStatus),
+    includeConflictStatus: asOptionalBoolean(value.includeConflictStatus),
+    includeRebaseSuggestions: asOptionalBoolean(value.includeRebaseSuggestions),
+    includeAutoRebaseStatus: asOptionalBoolean(value.includeAutoRebaseStatus),
   };
 }
 
@@ -1866,13 +1869,20 @@ function summarizeLaneRuntime(
 async function buildLaneListSnapshots(
   args: SyncRemoteCommandServiceArgs,
   lanes: Awaited<ReturnType<ReturnType<typeof createLaneService>["list"]>>,
+  options: ListLanesArgs = {},
 ): Promise<LaneListSnapshot[]> {
   const [sessions, rebaseSuggestions, autoRebaseStatuses, stateSnapshots, batchAssessment] = await Promise.all([
     Promise.resolve(args.sessionService.list({ limit: 500 })),
-    Promise.resolve(args.rebaseSuggestionService?.listSuggestions() ?? []),
-    Promise.resolve(args.autoRebaseService?.listStatuses() ?? []),
+    options.includeRebaseSuggestions === false
+      ? Promise.resolve([])
+      : Promise.resolve(args.rebaseSuggestionService?.listSuggestions({ lanes }) ?? []),
+    options.includeAutoRebaseStatus === false
+      ? Promise.resolve([])
+      : Promise.resolve(args.autoRebaseService?.listStatuses({ lanes }) ?? []),
     Promise.resolve(args.laneService.listStateSnapshots()),
-    args.conflictService?.getBatchAssessment({ lanes }).catch(() => null) ?? Promise.resolve(null),
+    options.includeConflictStatus === false
+      ? Promise.resolve(null)
+      : args.conflictService?.getBatchAssessment({ lanes }).catch(() => null) ?? Promise.resolve(null),
   ]);
 
   const rebaseByLaneId = new Map(rebaseSuggestions.map((entry) => [entry.laneId, entry] as const));
@@ -1892,11 +1902,16 @@ async function buildLaneListSnapshots(
 }
 
 async function buildLaneDetailPayload(args: SyncRemoteCommandServiceArgs, laneId: string): Promise<LaneDetailPayload> {
-  const lane = (await args.laneService.list({ includeArchived: true, includeStatus: true })).find((entry) => entry.id === laneId) ?? null;
+  const lane = await args.laneService.getSummary(laneId, { includeStatus: true });
   if (!lane) throw new Error(`Lane not found: ${laneId}`);
 
+  const stackChain = await args.laneService.getStackChain(laneId);
+  const parentLane = lane.parentLaneId
+    ? await args.laneService.getSummary(lane.parentLaneId, { includeStatus: true })
+    : null;
+  const suggestionLanes = parentLane ? [lane, parentLane] : [lane];
+
   const [
-    stackChain,
     children,
     sessions,
     chatSessions,
@@ -1912,12 +1927,11 @@ async function buildLaneDetailPayload(args: SyncRemoteCommandServiceArgs, laneId
     overlaps,
     envInitProgress,
   ] = await Promise.all([
-    args.laneService.getStackChain(laneId),
     args.laneService.getChildren(laneId),
     Promise.resolve(args.sessionService.list({ laneId, limit: 200 })),
     args.agentChatService?.listSessions(laneId, { includeAutomation: true }) ?? Promise.resolve([]),
-    Promise.resolve(args.rebaseSuggestionService?.listSuggestions() ?? []),
-    Promise.resolve(args.autoRebaseService?.listStatuses() ?? []),
+    Promise.resolve(args.rebaseSuggestionService?.listSuggestions({ lanes: suggestionLanes }) ?? []),
+    Promise.resolve(args.autoRebaseService?.listStatuses({ lanes: [lane] }) ?? []),
     Promise.resolve(args.laneService.getStateSnapshot(laneId)),
     args.gitService?.listRecentCommits({ laneId, limit: 20 }) ?? Promise.resolve([]),
     args.diffService?.getChanges(laneId).catch(() => null) ?? Promise.resolve(null),
@@ -1965,10 +1979,11 @@ type RemoteCommandRegistrationDeps = {
 function registerLaneRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
   register("lanes.list", { viewerAllowed: true }, async (payload) => args.laneService.list(parseListLanesArgs(payload)));
   register("lanes.refreshSnapshots", { viewerAllowed: true }, async (payload) => {
-    const refreshed = await args.laneService.refreshSnapshots(parseListLanesArgs(payload));
+    const listArgs = parseListLanesArgs(payload);
+    const refreshed = await args.laneService.refreshSnapshots(listArgs);
     return {
       ...refreshed,
-      snapshots: await buildLaneListSnapshots(args, refreshed.lanes),
+      snapshots: await buildLaneListSnapshots(args, refreshed.lanes, listArgs),
     };
   });
   register("lanes.getDetail", { viewerAllowed: true }, async (payload) =>

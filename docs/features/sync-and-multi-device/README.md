@@ -155,7 +155,10 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
 - `syncHostService.ts` — the per-project WebSocket host. Owns
   connection acceptance, hello/pairing handshakes, per-peer state,
   changeset fan-out + ack tracking (bounded, windowed exports — see
-  `crdt-model.md`), the mobile changeset diet
+  `crdt-model.md`), chat-first scheduling (chat events are pumped before
+  background changesets, and peers with active chat subscriptions get
+  smaller background batches / backpressure deferral when the WebSocket
+  send buffer is already backed up), the mobile changeset diet
   (`MOBILE_CHANGESET_EXCLUDED_TABLES`: high-churn tables the phone
   never reads — `attempt_transcripts`, `operations`, `ai_usage_log`,
   `budget_usage_records`, `automation_runs`,
@@ -235,6 +238,10 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   controller CLI launches resolve the target lane worktree before
   building provider argv/env so Agent Skill roots and
   `ADE_AGENT_SKILLS_DIRS` stay lane-aware.
+  Lane snapshot commands accept decoration flags so mobile can refresh
+  runtime/session buckets without recomputing conflict status, rebase
+  suggestions, or auto-rebase status on every light refresh; lane detail
+  uses the scoped lane-summary path instead of forcing a full lane list.
   Model-picker commands read/write the same per-project CRR-backed
   favorites/recents store as desktop and the TUI; the sync service falls
   back to the DB-wired shared store when no explicit accessor is

@@ -35,8 +35,8 @@ struct PrDetailView: View {
   @State private var hasSeededFromWarmCache = false
 
   /// How long a warm detail cache entry is considered fresh. Within this window
-  /// a `localStateRevision` bump renders from cache without re-firing the cold
-  /// sidecar fan-out. The pull-to-refresh and explicit retry paths bypass this.
+  /// a PR projection bump renders from cache without re-firing the cold sidecar
+  /// fan-out. The pull-to-refresh and explicit retry paths bypass this.
   private static let detailFreshnessWindow: TimeInterval = 25
 
   // MARK: - Durable per-control busy keys
@@ -560,7 +560,7 @@ struct PrDetailView: View {
       await reload(refreshRemote: true)
     }
     .adeNavigationZoomTransition(id: transitionNamespace == nil ? nil : "pr-container-\(prId)", in: transitionNamespace)
-    .task(id: syncService.localStateRevision) {
+    .task(id: syncService.prsProjectionRevision) {
       // Seed from the warm cache first so an instant render is shown and, when
       // the cached entry is fresh, `hasLoadedLiveSidecars` is set BEFORE the
       // gate below evaluates. Doing this inside `.task` (rather than relying on

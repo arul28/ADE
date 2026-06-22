@@ -286,7 +286,7 @@ struct PRsTabView: View {
   }
 
   private var prsProjectionReloadKey: Int? {
-    isActive ? syncService.localStateRevision : nil
+    isActive ? syncService.prsProjectionRevision : nil
   }
 
   private var prNavigationRequestKey: String? {

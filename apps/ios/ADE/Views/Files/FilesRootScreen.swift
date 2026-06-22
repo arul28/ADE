@@ -29,7 +29,7 @@ struct FilesRootScreen: View {
   @State var suppressNextWorkspaceNavigationReset = false
 
   var filesProjectionReloadKey: Int? {
-    isTabActive ? syncService.localStateRevision : nil
+    isTabActive ? syncService.filesProjectionRevision : nil
   }
 
   var filesNavigationRequestKey: String? {
@@ -39,7 +39,7 @@ struct FilesRootScreen: View {
 
   var proofArtifactsReloadKey: FilesProofArtifactsReloadKey? {
     isTabActive
-      ? FilesProofArtifactsReloadKey(workspaceId: selectedWorkspaceId, revision: syncService.localStateRevision)
+      ? FilesProofArtifactsReloadKey(workspaceId: selectedWorkspaceId, revision: syncService.proofArtifactsProjectionRevision)
       : nil
   }
 

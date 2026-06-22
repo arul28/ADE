@@ -1166,6 +1166,12 @@ final class SyncService: ObservableObject {
   @Published private(set) var subscribedChatSessionIds: Set<String> = []
   @Published private(set) var pendingOperationCount = 0
   @Published private(set) var localStateRevision = 0
+  @Published private(set) var lanesProjectionRevision = 0
+  @Published private(set) var laneDetailProjectionRevision = 0
+  @Published private(set) var workProjectionRevision = 0
+  @Published private(set) var filesProjectionRevision = 0
+  @Published private(set) var prsProjectionRevision = 0
+  @Published private(set) var proofArtifactsProjectionRevision = 0
   @Published private(set) var workspaceSnapshotRevision = 0
   @Published var settingsPresented = false
   @Published var projectHomePresented = true
@@ -1336,9 +1342,11 @@ final class SyncService: ObservableObject {
   /// leading-edge check in `markChatEventsChanged`.
   private var lastChatEventRevisionBumpAt = Date.distantPast
   private var databaseObserver: NSObjectProtocol?
-  /// Coalesces bursty `adeDatabaseDidChange` notifications so SwiftUI `.task(id: localStateRevision)` surfaces
-  /// do not reload on every CRDT row during host sync (was freezing the Work tab and Settings UI).
+  /// Coalesces bursty `adeDatabaseDidChange` notifications so SwiftUI projection
+  /// reloads do not fire on every CRDT row during host sync.
   private var databaseRevisionDebounceTask: Task<Void, Never>?
+  private var pendingDatabaseTouchedTables: Set<String> = []
+  private var pendingDatabaseChangeAffectsAll = false
   private var latestRemoteDbVersion = 0
   private var outboundLocalDbVersion = 0
   private let discoveryBrowser = SyncBonjourBrowser()
@@ -2155,6 +2163,9 @@ final class SyncService: ObservableObject {
     activeProjectId = projectId
     activeProjectRootPath = nextRootPath
     database.setActiveProjectId(projectId)
+    if scopeChanged {
+      bumpProjectionRevisions(for: Set())
+    }
     if let projectId {
       UserDefaults.standard.set(projectId, forKey: activeProjectIdKey)
     } else {
@@ -2411,10 +2422,15 @@ final class SyncService: ObservableObject {
       forName: .adeDatabaseDidChange,
       object: nil,
       queue: .main
-    ) { [weak self] _ in
+    ) { [weak self] notification in
       guard let self else { return }
+      let touchedTables = Set(
+        (notification.userInfo?[ADEDatabaseChangeNotification.touchedTablesUserInfoKey] as? [String] ?? [])
+          .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+          .filter { !$0.isEmpty }
+      )
       Task { @MainActor in
-        self.scheduleLocalStateRevisionBumpAfterDatabaseChange()
+        self.scheduleProjectionRevisionBumpAfterDatabaseChange(touchedTables: touchedTables)
       }
     }
     socketSessionDelegate.service = self
@@ -2453,16 +2469,123 @@ final class SyncService: ObservableObject {
     }
   }
 
-  private func scheduleLocalStateRevisionBumpAfterDatabaseChange() {
+  private func scheduleProjectionRevisionBumpAfterDatabaseChange(touchedTables: Set<String>) {
+    if touchedTables.isEmpty {
+      pendingDatabaseChangeAffectsAll = true
+      pendingDatabaseTouchedTables.removeAll()
+    } else if !pendingDatabaseChangeAffectsAll {
+      pendingDatabaseTouchedTables.formUnion(touchedTables)
+    }
     databaseRevisionDebounceTask?.cancel()
     databaseRevisionDebounceTask = Task { @MainActor [weak self] in
       guard let self else { return }
       try? await Task.sleep(nanoseconds: 280_000_000)
       guard !Task.isCancelled else { return }
+      let touchedTables = self.pendingDatabaseChangeAffectsAll ? Set<String>() : self.pendingDatabaseTouchedTables
+      self.pendingDatabaseTouchedTables.removeAll()
+      self.pendingDatabaseChangeAffectsAll = false
       self.refreshProjectCatalog()
       localStateRevision += 1
+      self.bumpProjectionRevisions(for: touchedTables)
       self.refreshActiveSessionsAndSnapshot()
     }
+  }
+
+  private func bumpProjectionRevisions(for touchedTables: Set<String>) {
+    let affectsAll = touchedTables.isEmpty
+    if affectsAll || touchedTables.contains(where: Self.tableAffectsLanesProjection) {
+      lanesProjectionRevision += 1
+    }
+    if affectsAll || touchedTables.contains(where: Self.tableAffectsLaneDetailProjection) {
+      laneDetailProjectionRevision += 1
+    }
+    if affectsAll || touchedTables.contains(where: Self.tableAffectsWorkProjection) {
+      workProjectionRevision += 1
+    }
+    if affectsAll || touchedTables.contains(where: Self.tableAffectsFilesProjection) {
+      filesProjectionRevision += 1
+    }
+    if affectsAll || touchedTables.contains(where: Self.tableAffectsPrsProjection) {
+      prsProjectionRevision += 1
+    }
+    if affectsAll || touchedTables.contains(where: Self.tableAffectsProofArtifactsProjection) {
+      proofArtifactsProjectionRevision += 1
+    }
+  }
+
+  private static func tableAffectsLanesProjection(_ table: String) -> Bool {
+    if table == "projects" { return true }
+    return [
+      "lanes",
+      "lane_list_snapshots",
+      "lane_state_snapshots",
+      "pull_requests",
+      "pull_request_snapshots",
+      "terminal_sessions",
+      "lane_linear_issues",
+      "lane_linear_issue_links",
+    ].contains(table)
+  }
+
+  private static func tableAffectsLaneDetailProjection(_ table: String) -> Bool {
+    if table == "projects" { return true }
+    return [
+      "lanes",
+      "lane_detail_snapshots",
+      "pull_requests",
+      "pull_request_snapshots",
+      "lane_linear_issues",
+      "lane_linear_issue_links",
+    ].contains(table)
+  }
+
+  private static func tableAffectsWorkProjection(_ table: String) -> Bool {
+    if table == "projects" { return true }
+    return [
+      "terminal_sessions",
+      "session_deltas",
+      "checkpoints",
+      "lanes",
+      "lane_list_snapshots",
+      "pull_requests",
+      "pull_request_snapshots",
+      "computer_use_artifacts",
+      "computer_use_artifact_links",
+    ].contains(table)
+  }
+
+  private static func tableAffectsFilesProjection(_ table: String) -> Bool {
+    if table == "projects" { return true }
+    return [
+      "files_workspaces",
+      "file_directory_snapshots",
+      "file_content_snapshots",
+      "file_diff_snapshots",
+      "file_history_snapshots",
+      "lanes",
+    ].contains(table)
+  }
+
+  private static func tableAffectsPrsProjection(_ table: String) -> Bool {
+    if table == "projects" { return true }
+    return [
+      "pull_requests",
+      "pull_request_snapshots",
+      "pr_groups",
+      "pr_group_members",
+      "integration_proposals",
+      "queue_landing_state",
+      "lanes",
+      "lane_list_snapshots",
+    ].contains(table)
+  }
+
+  private static func tableAffectsProofArtifactsProjection(_ table: String) -> Bool {
+    if table == "projects" { return true }
+    return [
+      "computer_use_artifacts",
+      "computer_use_artifact_links",
+    ].contains(table)
   }
 
   func announceLaneOpen(laneId: String) {
@@ -3400,15 +3523,27 @@ final class SyncService: ObservableObject {
     return matchesDiscoveredHost(host, profile: profile)
   }
 
-  func refreshLaneSnapshots() async throws {
+  func refreshLaneSnapshots(includeStatus: Bool = true, includeDecorations: Bool = true) async throws {
     setDomainStatus([.lanes, .files], phase: .hydrating)
     do {
       let raw = try await sendCommand(action: "lanes.refreshSnapshots", args: [
         "includeArchived": true,
-        "includeStatus": true,
+        "includeStatus": includeStatus,
+        "includeConflictStatus": includeDecorations,
+        "includeRebaseSuggestions": includeDecorations,
+        "includeAutoRebaseStatus": includeDecorations,
       ])
       let payload = try decodeHydrationPayload(raw, as: LaneRefreshPayload.self, domainLabel: "lane", decoder: decoder)
-      try database.replaceLaneSnapshots(payload.lanes, snapshots: payload.snapshots)
+      let lanes = includeStatus
+        ? payload.lanes
+        : lanesPreservingStatus(payload.lanes)
+      let decoratedSnapshots = includeDecorations
+        ? payload.snapshots
+        : laneSnapshotsPreservingDecorations(payload.snapshots)
+      let snapshots = includeStatus
+        ? decoratedSnapshots
+        : laneSnapshotsPreservingStatus(decoratedSnapshots)
+      try database.replaceLaneSnapshots(lanes, snapshots: snapshots)
       setDomainStatus([.lanes, .files], phase: .ready)
     } catch {
       let friendlyMessage = SyncUserFacingError.message(for: error)
@@ -3418,6 +3553,51 @@ final class SyncService: ObservableObject {
         setDomainStatus([.lanes, .files], phase: .failed, error: friendlyMessage)
       }
       throw error
+    }
+  }
+
+  private func lanesPreservingStatus(_ lanes: [LaneSummary]) -> [LaneSummary] {
+    let existingByLaneId = Dictionary(
+      uniqueKeysWithValues: database.fetchLanes(includeArchived: true)
+        .map { ($0.id, $0) }
+    )
+    return lanes.map { lane in
+      guard let existing = existingByLaneId[lane.id] else { return lane }
+      var merged = lane
+      merged.status = existing.status
+      merged.parentStatus = existing.parentStatus
+      return merged
+    }
+  }
+
+  private func laneSnapshotsPreservingStatus(_ snapshots: [LaneListSnapshot]?) -> [LaneListSnapshot]? {
+    guard let snapshots else { return nil }
+    let existingByLaneId = Dictionary(
+      uniqueKeysWithValues: database.fetchLanes(includeArchived: true)
+        .map { ($0.id, $0) }
+    )
+    return snapshots.map { snapshot in
+      guard let existing = existingByLaneId[snapshot.lane.id] else { return snapshot }
+      var merged = snapshot
+      merged.lane.status = existing.status
+      merged.lane.parentStatus = existing.parentStatus
+      return merged
+    }
+  }
+
+  private func laneSnapshotsPreservingDecorations(_ snapshots: [LaneListSnapshot]?) -> [LaneListSnapshot]? {
+    guard let snapshots else { return nil }
+    let existingByLaneId = Dictionary(
+      uniqueKeysWithValues: database.fetchLaneListSnapshots(includeArchived: true)
+        .map { ($0.lane.id, $0) }
+    )
+    return snapshots.map { snapshot in
+      guard let existing = existingByLaneId[snapshot.lane.id] else { return snapshot }
+      var merged = snapshot
+      merged.rebaseSuggestion = existing.rebaseSuggestion
+      merged.autoRebaseStatus = existing.autoRebaseStatus
+      merged.conflictStatus = existing.conflictStatus
+      return merged
     }
   }
 

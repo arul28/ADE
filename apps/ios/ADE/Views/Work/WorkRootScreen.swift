@@ -99,7 +99,7 @@ struct WorkRootScreen: View {
   @State var bulkBusy: Bool = false
   @State var bulkDeleteConfirmPresented: Bool = false
   @State var navigationMutationPending = false
-  /// Coalesces expensive per-lane `listChatSessions` refreshes when `localStateRevision` bumps during CRDT sync.
+  /// Coalesces expensive per-lane `listChatSessions` refreshes when the work projection bumps during CRDT sync.
   @State var lastCoalescedChatSummaryRefresh = Date.distantPast
   @State var lastWorkLocalProjectionReload = Date.distantPast
   @State var lastWorkProjectionReloadRevision: Int?
@@ -248,7 +248,7 @@ struct WorkRootScreen: View {
   }
 
   var workProjectionReloadKey: Int? {
-    isWorkRootActive ? syncService.localStateRevision : nil
+    isWorkRootActive ? syncService.workProjectionRevision : nil
   }
 
   var workSessionNavigationRequestKey: String? {
@@ -635,7 +635,7 @@ struct WorkRootScreen: View {
   var pollingKey: String {
     guard isWorkRootActive else { return "paused" }
     let ids = liveChatSessions.map(\.id).sorted().joined(separator: ",")
-    // Intentionally omit `localStateRevision`: it changes constantly during host DB sync and was
+    // Intentionally omit global DB revision: it changes constantly during host DB sync and was
     // restarting this poll loop while the list `.task(id:)` also reloaded sessions every tick.
     return "\(isLive)-\(ids)"
   }

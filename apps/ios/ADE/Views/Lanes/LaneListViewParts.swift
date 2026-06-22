@@ -1,15 +1,21 @@
 import SwiftUI
 import UIKit
 
+struct LaneListPresentation: Equatable {
+  var filteredSnapshots: [LaneListSnapshot]
+  var stackOrderedSnapshots: [LaneListSnapshot]
+  var lanePrTagsByLaneId: [String: LanePrTag]
+
+  static let empty = LaneListPresentation(
+    filteredSnapshots: [],
+    stackOrderedSnapshots: [],
+    lanePrTagsByLaneId: [:]
+  )
+}
+
 extension LanesTabView {
   var filteredSnapshots: [LaneListSnapshot] {
-    laneListFilteredSnapshots(
-      laneSnapshots,
-      scope: scope,
-      runtimeFilter: runtimeFilter,
-      searchText: searchText,
-      pinnedLaneIds: pinnedLaneIds
-    )
+    laneListPresentation.filteredSnapshots
   }
 
   var normalVisibleSnapshots: [LaneListSnapshot] {
@@ -103,7 +109,7 @@ extension LanesTabView {
   }
 
   var stackOrderedSnapshots: [LaneListSnapshot] {
-    laneStackGraphOrder(filteredSnapshots)
+    laneListPresentation.stackOrderedSnapshots
   }
 
   var stickyPrimarySnapshot: LaneListSnapshot? {
@@ -123,11 +129,29 @@ extension LanesTabView {
   }
 
   var lanePrTagsByLaneId: [String: LanePrTag] {
-    lanePrTagByLaneId(
-      snapshots: laneSnapshots,
-      pullRequests: pullRequests,
-      githubPrs: syncService.laneGithubPrItems
+    laneListPresentation.lanePrTagsByLaneId
+  }
+
+  @MainActor
+  func refreshLaneListPresentation() {
+    let filtered = laneListFilteredSnapshots(
+      laneSnapshots,
+      scope: scope,
+      runtimeFilter: runtimeFilter,
+      searchText: searchText,
+      pinnedLaneIds: pinnedLaneIds
     )
+    let next = LaneListPresentation(
+      filteredSnapshots: filtered,
+      stackOrderedSnapshots: laneStackGraphOrder(filtered),
+      lanePrTagsByLaneId: lanePrTagByLaneId(
+        snapshots: laneSnapshots,
+        pullRequests: pullRequests,
+        githubPrs: syncService.laneGithubPrItems
+      )
+    )
+    guard next != laneListPresentation else { return }
+    laneListPresentation = next
   }
 
   @ViewBuilder
@@ -391,10 +415,10 @@ extension LanesTabView {
   }
 
   @MainActor
-  func reload(refreshRemote: Bool = false) async {
+  func reload(refreshRemote: Bool = false, includeDecorations: Bool = true) async {
     do {
       if refreshRemote {
-        try await syncService.refreshLaneSnapshots()
+        try await syncService.refreshLaneSnapshots(includeDecorations: includeDecorations)
       }
       let loadedSnapshots = try await syncService.fetchLaneListSnapshots(includeArchived: true)
       let loadedPullRequests = try await syncService.fetchPullRequestListItems()
@@ -404,6 +428,7 @@ extension LanesTabView {
       if pullRequests != loadedPullRequests {
         pullRequests = loadedPullRequests
       }
+      refreshLaneListPresentation()
       // Layer in GitHub PRs opened outside ADE (matched to lanes by branch).
       // Best-effort and non-blocking: the ADE-mapped chip is already rendered;
       // `laneGithubPrItems` publishes when the snapshot lands and recomputes the

@@ -2,20 +2,20 @@ import SwiftUI
 
 extension FilesDetailScreen {
   @MainActor
-  func refreshForLocalStateRevision(_ revision: Int) async {
-    guard lastHandledFilesDetailRevision != revision || blob == nil else { return }
+  func refreshForFilesProjectionRevision(_ revision: Int) async {
+    guard lastHandledFilesProjectionRevision != revision || blob == nil else { return }
     let now = Date()
     if let delay = filesDetailRefreshDelay(
       hasLoadedBlob: blob != nil,
       elapsedSinceLastLoad: now.timeIntervalSince(lastFilesDetailReload)
     ) {
       try? await Task.sleep(for: .milliseconds(max(1, Int(delay * 1_000))))
-      guard !Task.isCancelled, syncService.localStateRevision == revision else { return }
+      guard !Task.isCancelled, syncService.filesProjectionRevision == revision else { return }
     }
     lastFilesDetailReload = Date()
     await load(refreshDiff: mode == .diff, preservesVisibleHistory: true)
-    guard !Task.isCancelled, syncService.localStateRevision == revision else { return }
-    lastHandledFilesDetailRevision = revision
+    guard !Task.isCancelled, syncService.filesProjectionRevision == revision else { return }
+    lastHandledFilesProjectionRevision = revision
   }
 
   @MainActor

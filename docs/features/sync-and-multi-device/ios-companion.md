@@ -86,7 +86,8 @@ apps/ios/
 │   │   │                            # DictationController, deterministic
 │   │   │                            # cleanup, VoiceGlossary loader
 │   │   └── SyncService.swift        # WebSocket client, command routing,
-│   │                                # PIN pairing, lane presence, terminal
+│   │                                # PIN pairing, scoped projection
+│   │                                # revisions, lane presence, terminal
 │   │                                # subscribe/unsubscribe + input/resize,
 │   │                                # CLI launcher (startCliSession), chat push,
 │   │                                # machine project browse/open/create/clone,
@@ -318,6 +319,10 @@ and across the WebSocket.
 
 `Notification.Name.adeDatabaseDidChange` is posted after every write
 that materially alters read-visible state so SwiftUI views re-query.
+The notification includes touched table names when the writer knows
+them, letting `SyncService` coalesce updates and bump only the affected
+projection revision instead of invalidating every tab for every
+incoming changeset.
 
 ## Sync service
 
@@ -740,7 +745,20 @@ sends:
 The runtime produces these via `lanes.refreshSnapshots` and
 `lanes.getDetail` remote commands. The phone calls the command, stores
 the result, and reads from the local store afterward so reconnects and
-offline usage remain fast.
+offline usage remain fast. Lightweight list refreshes can ask the
+runtime to skip expensive decorations (`includeConflictStatus`,
+`includeRebaseSuggestions`, `includeAutoRebaseStatus`); the phone
+preserves the last known decoration values in its local snapshot cache
+so rebase/conflict badges do not disappear while a cheap runtime-bucket
+refresh is in flight.
+
+Projection reloads are keyed by narrow revision counters:
+`lanesProjectionRevision`, `laneDetailProjectionRevision`,
+`workProjectionRevision`, `filesProjectionRevision`,
+`prsProjectionRevision`, and `proofArtifactsProjectionRevision`.
+Top-level tabs and detail screens observe only the revision that maps
+to their data, so a chat transcript changeset no longer causes Files,
+Lanes, and PRs to all re-query together.
 
 ## PR data projection
 

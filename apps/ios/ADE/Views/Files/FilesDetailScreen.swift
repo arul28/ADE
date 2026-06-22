@@ -24,7 +24,7 @@ struct FilesDetailScreen: View {
   @State var hasLoadedDiff = false
   @State var isDetailsSheetPresented = false
   @State var codeLayoutMode: FilesCodeLayoutMode = .wrap
-  @State var lastHandledFilesDetailRevision: Int?
+  @State var lastHandledFilesProjectionRevision: Int?
   @State var lastFilesDetailReload = Date.distantPast
 
   var language: FilesLanguage {
@@ -148,8 +148,8 @@ struct FilesDetailScreen: View {
       .presentationDragIndicator(.visible)
       .environmentObject(syncService)
     }
-    .task(id: syncService.localStateRevision) {
-      await refreshForLocalStateRevision(syncService.localStateRevision)
+    .task(id: syncService.filesProjectionRevision) {
+      await refreshForFilesProjectionRevision(syncService.filesProjectionRevision)
     }
     .task(id: mode) {
       if mode == .diff {

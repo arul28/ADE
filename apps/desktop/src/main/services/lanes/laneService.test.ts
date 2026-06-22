@@ -159,6 +159,59 @@ describe("laneService createFromUnstaged", () => {
     }
   });
 
+  it("preserves agent summaries during status-only snapshot refreshes", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-status-snapshot-"));
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    try {
+      await seedProjectAndStack(db, { projectId: "proj-status-snapshot", repoRoot });
+      const now = "2026-03-11T12:00:00.000Z";
+      db.run(
+        "insert into lane_state_snapshots(lane_id, agent_summary_json, updated_at) values (?, ?, ?)",
+        ["lane-child", JSON.stringify({ headline: "Keep this summary" }), now],
+      );
+
+      vi.mocked(runGit).mockImplementation(async (args: string[], opts?: { cwd?: string }) => {
+        const laneBranchGitStub = defaultLaneBranchGitStub(args);
+        if (laneBranchGitStub) return laneBranchGitStub;
+        const cwd = opts?.cwd ?? repoRoot;
+        if (args[0] === "worktree" && args[1] === "list") return { exitCode: 0, stdout: "", stderr: "" };
+        if (args[0] === "rev-parse" && args[1] === "--abbrev-ref" && args[2] === "HEAD") {
+          return { exitCode: 0, stdout: "main\n", stderr: "" };
+        }
+        if (args[0] === "rev-parse" && args[1] === "--path-format=absolute" && args[2] === "--show-toplevel") {
+          return { exitCode: 0, stdout: `${cwd}\n`, stderr: "" };
+        }
+        if (args[0] === "rev-parse" && args[1] === "--verify") return { exitCode: 1, stdout: "", stderr: "" };
+        if (args[0] === "status") return { exitCode: 0, stdout: "", stderr: "" };
+        if (args[0] === "rev-list" && args[1] === "--left-right") return { exitCode: 0, stdout: "0\t0\n", stderr: "" };
+        if (args[0] === "rev-parse" && args[1] === "--abbrev-ref" && args.includes("@{upstream}")) {
+          return { exitCode: 1, stdout: "", stderr: "" };
+        }
+        if (args[0] === "rev-parse" && args[1] === "--path-format=absolute" && args[2] === "--git-dir") {
+          return { exitCode: 1, stdout: "", stderr: "" };
+        }
+        throw new Error(`Unexpected git call: ${args.join(" ")}`);
+      });
+
+      const service = createLaneService({
+        db,
+        projectRoot: repoRoot,
+        projectId: "proj-status-snapshot",
+        defaultBaseRef: "main",
+        worktreesDir: path.join(repoRoot, "worktrees"),
+      });
+
+      await service.getSummary("lane-child", { includeStatus: true });
+
+      expect(service.getStateSnapshot("lane-child")?.agentSummary).toEqual({
+        headline: "Keep this summary",
+      });
+    } finally {
+      db.close();
+      fs.rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
   it("recreates the primary lane when the only stored primary lane is archived", async () => {
     const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-primary-archived-"));
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());

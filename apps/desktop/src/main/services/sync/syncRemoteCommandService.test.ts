@@ -176,6 +176,7 @@ function createLogger() {
 function createMockLaneService() {
   return {
     list: vi.fn().mockResolvedValue([]),
+    getSummary: vi.fn().mockResolvedValue(null),
     refreshSnapshots: vi.fn().mockResolvedValue({ lanes: [] }),
     create: vi.fn().mockResolvedValue({ id: "lane-1" }),
     createChild: vi.fn().mockResolvedValue({ id: "child-1" }),
@@ -785,7 +786,64 @@ describe("createSyncRemoteCommandService", () => {
       expect(laneService.list).toHaveBeenCalledWith({
         includeArchived: true,
         includeStatus: undefined,
+        includeConflictStatus: undefined,
+        includeRebaseSuggestions: undefined,
+        includeAutoRebaseStatus: undefined,
       });
+    });
+
+    it("lanes.refreshSnapshots forwards light-refresh flags and skips expensive decorations", async () => {
+      const lane = { id: "lane-1", name: "Lane one" };
+      laneService.refreshSnapshots.mockResolvedValue({ lanes: [lane] });
+
+      const result = await service.execute(makePayload("lanes.refreshSnapshots", {
+        includeArchived: true,
+        includeStatus: false,
+        includeConflictStatus: false,
+        includeRebaseSuggestions: false,
+        includeAutoRebaseStatus: false,
+      })) as { snapshots: Array<{ lane: unknown }> };
+
+      expect(laneService.refreshSnapshots).toHaveBeenCalledWith({
+        includeArchived: true,
+        includeStatus: false,
+        includeConflictStatus: false,
+        includeRebaseSuggestions: false,
+        includeAutoRebaseStatus: false,
+      });
+      expect(conflictService.getBatchAssessment).not.toHaveBeenCalled();
+      expect(rebaseSuggestionService.listSuggestions).not.toHaveBeenCalled();
+      expect(result.snapshots.map((entry) => entry.lane)).toEqual([lane]);
+    });
+
+    it("lanes.getDetail loads only the requested lane summary", async () => {
+      const lane = { id: "lane-1", name: "Lane one" };
+      laneService.getSummary.mockResolvedValue(lane);
+
+      const result = await service.execute(makePayload("lanes.getDetail", { laneId: "lane-1" })) as { lane: unknown };
+
+      expect(laneService.getSummary).toHaveBeenCalledWith("lane-1", { includeStatus: true });
+      expect(laneService.list).not.toHaveBeenCalled();
+      expect(rebaseSuggestionService.listSuggestions).toHaveBeenCalledWith({ lanes: [lane] });
+      expect(result.lane).toBe(lane);
+    });
+
+    it("lanes.getDetail includes the parent lane when computing rebase suggestions", async () => {
+      const lane = { id: "lane-child", name: "Child", parentLaneId: "lane-parent" };
+      const parent = { id: "lane-parent", name: "Parent" };
+      laneService.getSummary.mockImplementation(async (laneId: string) => {
+        if (laneId === "lane-child") return lane;
+        if (laneId === "lane-parent") return parent;
+        return null;
+      });
+      laneService.getStackChain.mockResolvedValue([parent, lane]);
+
+      await service.execute(makePayload("lanes.getDetail", { laneId: "lane-child" }));
+
+      expect(laneService.getSummary).toHaveBeenCalledWith("lane-child", { includeStatus: true });
+      expect(laneService.getSummary).toHaveBeenCalledWith("lane-parent", { includeStatus: true });
+      expect(laneService.list).not.toHaveBeenCalled();
+      expect(rebaseSuggestionService.listSuggestions).toHaveBeenCalledWith({ lanes: [lane, parent] });
     });
 
     it("lanes.create parses name and routes to laneService.create", async () => {
@@ -2527,6 +2585,9 @@ describe("createSyncRemoteCommandService", () => {
       expect(laneService.list).toHaveBeenCalledWith({
         includeArchived: undefined,
         includeStatus: undefined,
+        includeConflictStatus: undefined,
+        includeRebaseSuggestions: undefined,
+        includeAutoRebaseStatus: undefined,
       });
     });
 
