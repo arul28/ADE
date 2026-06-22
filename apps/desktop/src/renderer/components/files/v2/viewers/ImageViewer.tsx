@@ -60,7 +60,7 @@ export function ImageViewer({ workspaceId, content, tab }: ViewerProps) {
       cancelled = true;
       if (revoked) URL.revokeObjectURL(revoked);
     };
-  }, [workspaceId, tab.path, content.content, content.encoding, content.contentOmitted, mimeType]);
+  }, [workspaceId, tab.path, content.content, content.encoding, content.contentOmitted, content.size, mimeType]);
 
   const applyZoom = (factor: number, anchor?: { x: number; y: number }) => {
     setFit(false);

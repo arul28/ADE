@@ -65,7 +65,10 @@ export function LargeTextViewer({ workspaceId, tab, content }: ViewerProps) {
           setCapped(true);
           break;
         }
-        if (++guard > 10_000) break;
+        if (++guard > 10_000) {
+          setCapped(true);
+          break;
+        }
       }
       if (!cancelled) {
         setText(parts.join(""));
